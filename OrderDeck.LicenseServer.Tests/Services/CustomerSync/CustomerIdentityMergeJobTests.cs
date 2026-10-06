@@ -1,0 +1,587 @@
+using FluentAssertions;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.CustomerSync;
+
+/// <summary>
+/// A7: aynı kişinin birden çok asıl kaydını tek kayıtta toplayan bir kerelik
+/// iş. Gerçek SQL Server gerekir: iş grup başına işlem açar, onarım işi ve
+/// testlerin anahtar bozması <c>ExecuteUpdate</c> kullanır (InMemory ikisini de
+/// desteklemiyor). <see cref="IAsyncLifetime"/> her test METODUNA kendi
+/// veritabanını verir — <c>CountMismatchedKeysAsync</c> tüm lisansları saysa da
+/// başka bir testin bozduğu satırı görmez.
+/// </summary>
+[Collection(SqlServerCollection.Name)]
+[Trait("Category", "Testcontainers")]
+public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
+{
+    private readonly SqlServerContainerFixture _sql;
+    private string _cs = null!;
+    private RelationalApiFactory _factory = null!;
+    public CustomerIdentityMergeJobTests(SqlServerContainerFixture sql) => _sql = sql;
+
+    public async Task InitializeAsync()
+    {
+        _cs = await _sql.CreateDatabaseAsync();
+        _factory = new RelationalApiFactory(_cs);
+    }
+
+    public Task DisposeAsync() { _factory.Dispose(); return Task.CompletedTask; }
+
+    /// <summary>Lisans tohumu: IdentityKeyRepairJobTests'teki doğrudan
+    /// Customer+License deseni (HTTP kaydı gerekmez). Değerler üretilmiş.</summary>
+    private static async Task<Guid> NewLicenseAsync(LicenseDbContext db)
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            Email = $"musteri-{Guid.NewGuid():N}@example.test",
+            Name = "Birleştirme İşi Testi",
+            PasswordHash = $"h-{Guid.NewGuid():N}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var license = new License
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            LicenseKey = "cmj-" + Guid.NewGuid().ToString("N")[..12],
+            SkuCode = "STD",
+            ActivationSlots = 1,
+            IssuedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddYears(1),
+        };
+        db.Customers.Add(customer);
+        db.Licenses.Add(license);
+        await db.SaveChangesAsync();
+        return license.Id;
+    }
+
+    private static WpfCustomerProjection Row(Guid license, string username, DateTimeOffset updatedAt) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = license, Platform = "tiktok", Username = username, UpdatedAt = updatedAt,
+    };
+
+    private static Order OrderFor(Guid license, WpfCustomerProjection p, DateTimeOffset addedAt) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = license, CustomerId = p.Id.ToString("N"), Platform = p.Platform,
+        Username = p.Username, MessageText = "A1", Price = 10, AddedAt = addedAt, UpdatedAt = addedAt,
+    };
+
+    private CustomerIdentityMergeJob Job(LicenseDbContext db) => new(db, new CustomerIdentityMerger(db));
+
+    [Fact]
+    public async Task Kuru_calistirma_hicbir_sey_yazmaz_ve_sayilari_raporlar()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var oldest = Row(lic, "ayse", t0.AddDays(5));
+        var newer = Row(lic, "AYSE", t0.AddDays(9));
+        db.WpfCustomerProjections.AddRange(oldest, newer, Row(lic, "mehmet", t0));
+        db.Orders.AddRange(OrderFor(lic, oldest, t0), OrderFor(lic, newer, t0.AddDays(1)));
+        db.CustomerBalances.Add(new CustomerBalance { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = newer.Id, Balance = 30m, UpdatedAt = t0 });
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: false, default);
+
+        report.Groups.Should().Be(1);
+        report.CopyRows.Should().Be(1);
+        report.OrdersToMove.Should().Be(1);
+        report.BalancesToSum.Should().Be(1);
+        report.FailedGroups.Should().Be(0);
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.MergedIntoId != null)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Gercek_calistirma_en_eski_siparisli_kaydi_asil_yapar_doldurur_ve_idempotent()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var oldest = Row(lic, "ayse", t0.AddDays(5));
+        oldest.FullName = "Ayşe Kaya";
+        var newer = Row(lic, "AYSE", t0.AddDays(9));
+        newer.Address = "İzmir adresi";
+        db.WpfCustomerProjections.AddRange(oldest, newer);
+        // En eski SİPARİŞ "oldest"ta → asıl kayıt o (UpdatedAt'e bakılmaz).
+        db.Orders.AddRange(OrderFor(lic, oldest, t0), OrderFor(lic, newer, t0.AddDays(1)));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(lic, apply: true, default);
+        db.ChangeTracker.Clear();
+
+        var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == oldest.Id);
+        canonical.FullName.Should().Be("Ayşe Kaya");
+        canonical.Address.Should().Be("İzmir adresi");
+        var copy = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == newer.Id);
+        copy.MergedIntoId.Should().Be(oldest.Id);
+        copy.Address.Should().BeNull();
+        (await db.Orders.CountAsync(o => o.CustomerId == oldest.Id.ToString("N"))).Should().Be(2);
+
+        (await Job(db).RunAsync(lic, apply: true, default)).Groups.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Takma_ad_yedegi_olan_asil_kayit_kopyanin_gercek_adini_alir()
+    {
+        // E2'de sunucuda DisplayName yok; eski sürüm takma ad (= kullanıcı adı) göndermişti.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var canonical = Row(lic, "ayse_tt", t0);
+        canonical.FullName = "ayse_tt";
+        var copy = Row(lic, "AYSE_TT", t0.AddDays(1));
+        copy.FullName = "Ayşe Yılmaz";
+        db.WpfCustomerProjections.AddRange(canonical, copy);
+        db.Orders.Add(OrderFor(lic, canonical, t0));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(lic, apply: true, default);
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == canonical.Id)).FullName.Should().Be("Ayşe Yılmaz");
+    }
+
+    [Fact]
+    public async Task Kopyaya_yonlenmis_eski_kopya_asil_kayda_yonlenir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var a = Row(lic, "zeynep", t0);
+        var b = Row(lic, "Zeynep", t0.AddDays(1));
+        var x = Row(lic, "ZEYNEP", t0.AddDays(2));
+        x.MergedIntoId = b.Id; // A5'in canlıda açtığı kopya, şimdi kopyaya dönecek satıra bağlı
+        db.WpfCustomerProjections.AddRange(a, b, x);
+        db.Orders.Add(OrderFor(lic, a, t0));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(lic, apply: true, default);
+        db.ChangeTracker.Clear();
+        var all = await db.WpfCustomerProjections.IgnoreQueryFilters().Where(p => p.LicenseId == lic).ToListAsync();
+        all.Single(p => p.Id == b.Id).MergedIntoId.Should().Be(a.Id);
+        all.Single(p => p.Id == x.Id).MergedIntoId.Should().Be(a.Id); // zincir yok
+    }
+
+    [Fact]
+    public async Task Saklanan_anahtari_bozuk_satir_da_hesaplanan_anahtarla_gruplanir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var a = Row(lic, "mehmet", t0);
+        var b = Row(lic, "Mehmet", t0.AddDays(1));
+        db.WpfCustomerProjections.AddRange(a, b);
+        db.Orders.Add(OrderFor(lic, a, t0));
+        await db.SaveChangesAsync();
+        // Geri alınmış deploy'un NEWID varsayılanı gibi: saklı anahtar bozuk.
+        await db.WpfCustomerProjections.Where(p => p.Id == b.Id)
+            .ExecuteUpdateAsync(u => u.SetProperty(p => p.IdentityKey, Guid.NewGuid().ToString()));
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+        report.Groups.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Bos_hesaplanan_anahtarli_satirlar_birlestirilmez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        db.WpfCustomerProjections.AddRange(Row(lic, "   ", t0), Row(lic, " ", t0.AddDays(1)));
+        await db.SaveChangesAsync();
+
+        (await Job(db).RunAsync(lic, apply: true, default)).Groups.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Silinmis_kopya_kisinin_tamamini_siler_en_erken_tarihle()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var a = Row(lic, "fatma", t0);
+        a.FullName = "Fatma Demir";
+        var b = Row(lic, "Fatma", t0.AddDays(1));
+        b.MarkPurged(t0.AddDays(2));
+        db.WpfCustomerProjections.AddRange(a, b);
+        db.Orders.Add(OrderFor(lic, a, t0));
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+        report.PurgedGroups.Should().Be(1);
+        db.ChangeTracker.Clear();
+        var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == a.Id);
+        canonical.PurgedAt.Should().BeCloseTo(t0.AddDays(2), TimeSpan.FromMilliseconds(1));
+        canonical.FullName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Lisanslar_birbirine_karismaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic1 = await NewLicenseAsync(db);
+        var lic2 = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        db.WpfCustomerProjections.AddRange(Row(lic1, "ali", t0), Row(lic2, "ALI", t0));
+        await db.SaveChangesAsync();
+
+        (await Job(db).RunAsync(lic1, apply: true, default)).Groups.Should().Be(0);
+        (await Job(db).RunAsync(lic2, apply: true, default)).Groups.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Onarimdan_sonra_uyusmaz_anahtar_kalmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var p = Row(lic, "veli", DateTimeOffset.UtcNow);
+        db.WpfCustomerProjections.Add(p);
+        await db.SaveChangesAsync();
+        await db.WpfCustomerProjections.Where(x => x.Id == p.Id)
+            .ExecuteUpdateAsync(u => u.SetProperty(x => x.IdentityKey, Guid.NewGuid().ToString()));
+        var job = Job(db);
+        (await job.CountMismatchedKeysAsync(default)).Should().BeGreaterThan(0);
+
+        await new IdentityKeyRepairJob(db, NullLogger<IdentityKeyRepairJob>.Instance).RunAsync(default);
+        (await job.CountMismatchedKeysAsync(default)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Cakisan_grup_geri_alinir_sayilir_is_devam_eder_yeniden_kosu_tamamlar()
+    {
+        Guid lic;
+        WpfCustomerProjection a1, a2, b1, b2;
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            lic = await NewLicenseAsync(db);
+            a1 = Row(lic, "hakan", t0);
+            a2 = Row(lic, "Hakan", t0.AddDays(1));
+            b1 = Row(lic, "irmak", t0);
+            b2 = Row(lic, "Irmak", t0.AddDays(1));
+            db.WpfCustomerProjections.AddRange(a1, a2, b1, b2);
+            db.Orders.AddRange(
+                OrderFor(lic, a1, t0), OrderFor(lic, a2, t0.AddDays(1)),
+                OrderFor(lic, b1, t0), OrderFor(lic, b2, t0.AddDays(1)));
+            await db.SaveChangesAsync();
+        }
+
+        // Eşzamanlı KVKK silmesi: iş a2'yi okuduktan SONRA, grubunu kaydetmeden
+        // HEMEN ÖNCE ayrı bir bağlantıdan (sıraya dayalı, zamanlamaya değil).
+        // a2'nin UPDATE'i PurgedAt jetonuna takılır.
+        var purgedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var hook = new SaveHookInterceptor();
+        await using var hooked = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseSqlServer(_cs).AddInterceptors(hook).Options);
+        var fired = false;
+        hook.BeforeSave = async () =>
+        {
+            if (fired || !hooked.ChangeTracker.Entries<WpfCustomerProjection>().Any(e => e.Entity.Id == a2.Id)) return;
+            fired = true;
+            await using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE WpfCustomerProjections SET PurgedAt = @at WHERE Id = @id";
+            cmd.Parameters.AddWithValue("@at", purgedAt);
+            cmd.Parameters.AddWithValue("@id", a2.Id);
+            await cmd.ExecuteNonQueryAsync();
+        };
+
+        var first = await new CustomerIdentityMergeJob(hooked, new CustomerIdentityMerger(hooked))
+            .RunAsync(lic, apply: true, default);
+
+        fired.Should().BeTrue();
+        first.Groups.Should().Be(2);
+        first.FailedGroups.Should().Be(1, "çakışan grup sayılır, iş durmaz");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var rows = await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => p.LicenseId == lic).ToDictionaryAsync(p => p.Id);
+            // Çakışan grup BÜTÜNÜYLE geri alındı: yönlendirme yok, sipariş yerinde.
+            rows[a2.Id].MergedIntoId.Should().BeNull();
+            rows[a1.Id].PurgedAt.Should().BeNull();
+            (await db.Orders.CountAsync(o => o.CustomerId == a2.Id.ToString("N"))).Should().Be(1);
+            // Öteki grup birleşti.
+            rows[b2.Id].MergedIntoId.Should().Be(b1.Id);
+            (await db.Orders.CountAsync(o => o.CustomerId == b1.Id.ToString("N"))).Should().Be(2);
+
+            // Yeniden koşu yalnız kalanı bulur ve tamamlar; arada silinen kopya
+            // kişinin tamamını siler.
+            var second = await Job(db).RunAsync(lic, apply: true, default);
+            second.Groups.Should().Be(1);
+            second.FailedGroups.Should().Be(0);
+            second.PurgedGroups.Should().Be(1);
+            db.ChangeTracker.Clear();
+            (await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == a2.Id))
+                .MergedIntoId.Should().Be(a1.Id);
+            (await db.WpfCustomerProjections.SingleAsync(p => p.Id == a1.Id))
+                .PurgedAt.Should().BeCloseTo(purgedAt, TimeSpan.FromMilliseconds(1));
+            (await db.Orders.CountAsync(o => o.CustomerId == a1.Id.ToString("N"))).Should().Be(2);
+            (await Job(db).RunAsync(lic, apply: true, default)).Groups.Should().Be(0);
+        }
+    }
+
+    // ── A5c: Shopper'ın açtığı GEÇİCİ kayıt ─────────────────────────────────
+    // Geçici satırın ad/telefon/adresi kaydolanın KENDİ beyanı, bağlantısı
+    // kanıtsız. Yayıncının satırı varken asıl kayıt olamaz, alan kaynağı
+    // olamaz, silinmişliği kişiye yayılmaz; ondan taşınan bağlantı asıl kaydın
+    // (yayıncı kaynaklı) telefonuyla yeniden kanıt ister.
+
+    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+
+    /// <summary>Shopper kaydının açtığı geçici satır (ShopperAuthController
+    /// adım 8a ile aynı alanlar).</summary>
+    private static WpfCustomerProjection ProvisionalRow(
+        Guid license, string username, DateTimeOffset updatedAt, string phone) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = license, Platform = "tiktok", Username = username, UpdatedAt = updatedAt,
+        FullName = "Shopper Beyanı", Phone = phone, Address = "Shopper adresi", CreatedByShopper = true,
+    };
+
+    /// <summary>Telefonu OTP ile doğrulanmış bir shopper ve
+    /// <paramref name="boundTo"/>'ya bağlı (ayrılmamış) bağlantısı; bağlantı
+    /// Id'sini döner. Kaydetmez — çağıran kendi tohumuyla birlikte kaydeder.</summary>
+    private static Guid AddVerifiedShopperLink(
+        LicenseDbContext db, Guid license, WpfCustomerProjection boundTo, string shopperPhone)
+    {
+        var shopper = new OrderDeck.LicenseServer.Domain.Shopper
+        {
+            Id = Guid.NewGuid(),
+            FullName = "Shopper Beyanı",
+            Phone = shopperPhone,
+            PhoneVerifiedAt = DateTimeOffset.UtcNow,
+            PasswordHash = $"hash-{Guid.NewGuid():N}",
+            Address = "Shopper adresi",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        var link = new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license, Platform = boundTo.Platform,
+            Username = boundTo.Username, WpfCustomerId = boundTo.Id, JoinedAt = DateTimeOffset.UtcNow,
+        };
+        db.Shoppers.Add(shopper);
+        db.ShopperBroadcasterLinks.Add(link);
+        return link.Id;
+    }
+
+    private static async Task<Guid?> LinkTargetAsync(LicenseDbContext db, Guid linkId)
+        => (await db.ShopperBroadcasterLinks.AsNoTracking().SingleAsync(l => l.Id == linkId)).WpfCustomerId;
+
+    [Fact]
+    public async Task Gecici_satir_asil_kayit_ve_alan_kaynagi_olmaz_baglantisi_kanitsizsa_beklemeye_duser()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        // Yayıncının satırı: siparişli, telefonsuz (yayıncı kişinin telefonunu bilmiyor).
+        var wpf = Row(lic, "gizem", t0.AddDays(3));
+        wpf.FullName = "Gizem Yayıncı Kaydı";
+        // Geçici satır her başka ölçütte kazanırdı: en eski UpdatedAt'i ve en
+        // erken siparişi (eski ingest'le o Id'ye düşmüş) onda. Kaydolanın
+        // telefonu doğrulanmış ama yayıncının bildiği telefon değil.
+        var provisional = ProvisionalRow(lic, "Gizem", t0, NewPhone());
+        db.WpfCustomerProjections.AddRange(wpf, provisional);
+        db.Orders.AddRange(OrderFor(lic, provisional, t0), OrderFor(lic, wpf, t0.AddDays(1)));
+        var linkId = AddVerifiedShopperLink(db, lic, provisional, provisional.Phone!);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.Groups.Should().Be(1);
+        report.CopyRows.Should().Be(1);
+        report.LinksToMove.Should().Be(1);
+        report.LinksUnbound.Should().Be(1, "bağlantı asıl kaydın telefonuyla kanıtlanamıyor");
+        report.FailedGroups.Should().Be(0);
+        db.ChangeTracker.Clear();
+
+        var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id);
+        canonical.CreatedByShopper.Should().BeFalse();
+        canonical.Phone.Should().BeNull("geçici satırın beyanı alan kaynağı değil — dolsaydı kanıt kendiliğinden geçerdi");
+        canonical.Address.Should().BeNull();
+        canonical.FullName.Should().Be("Gizem Yayıncı Kaydı");
+
+        var copy = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == provisional.Id);
+        copy.MergedIntoId.Should().Be(wpf.Id, "yayıncının satırı varken geçici satır asıl kayıt olamaz");
+        copy.Phone.Should().BeNull();
+        copy.FullName.Should().BeNull();
+        copy.CreatedByShopper.Should().BeTrue("bayrak köken olarak kalır");
+
+        (await LinkTargetAsync(db, linkId)).Should().BeNull("kanıtsız bağlantı beklemeye düşer");
+        (await db.Orders.CountAsync(o => o.CustomerId == wpf.Id.ToString("N"))).Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Geciciden_tasinan_baglanti_yayincinin_telefonuyla_yeniden_kanitlanir(bool samePhone)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var broadcasterPhone = NewPhone();
+        var wpf = Row(lic, "kemal", t0);
+        wpf.Phone = broadcasterPhone;
+        var shopperPhone = samePhone ? broadcasterPhone : NewPhone();
+        var provisional = ProvisionalRow(lic, "KEMAL", t0.AddDays(1), shopperPhone);
+        db.WpfCustomerProjections.AddRange(wpf, provisional);
+        db.Orders.Add(OrderFor(lic, wpf, t0));
+        var linkId = AddVerifiedShopperLink(db, lic, provisional, shopperPhone);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.LinksUnbound.Should().Be(samePhone ? 0 : 1);
+        db.ChangeTracker.Clear();
+        (await LinkTargetAsync(db, linkId)).Should().Be(samePhone ? wpf.Id : null,
+            "bağlantı yalnız yayıncının telefonu doğrulanmış shopper telefonuyla eşleşirse asıl kayda bağlı kalır");
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id)).Phone.Should().Be(broadcasterPhone);
+    }
+
+    [Fact]
+    public async Task Silinmis_gecici_kopya_kisiyi_silmez()
+    {
+        // Sahte bir hesabın KVKK silmesi gerçek müşterinin asıl kaydını silmesin.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var wpf = Row(lic, "derya", t0);
+        wpf.FullName = "Derya Kaya";
+        var provisional = ProvisionalRow(lic, "DERYA", t0.AddDays(1), NewPhone());
+        provisional.MarkPurged(t0.AddDays(2));
+        db.WpfCustomerProjections.AddRange(wpf, provisional);
+        db.Orders.Add(OrderFor(lic, wpf, t0));
+        await db.SaveChangesAsync();
+
+        var dryRun = await Job(db).RunAsync(lic, apply: false, default);
+        dryRun.PurgedGroups.Should().Be(0);
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.Groups.Should().Be(1);
+        report.PurgedGroups.Should().Be(0, "geçici satırın silinmişliği kişiye yayılmaz");
+        db.ChangeTracker.Clear();
+        var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id);
+        canonical.PurgedAt.Should().BeNull();
+        canonical.FullName.Should().Be("Derya Kaya");
+        var copy = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == provisional.Id);
+        copy.MergedIntoId.Should().Be(wpf.Id);
+        copy.PurgedAt.Should().BeCloseTo(t0.AddDays(2), TimeSpan.FromMilliseconds(1), "kopyanın kendi silme damgasına dokunulmaz");
+    }
+
+    [Fact]
+    public async Task Yeniden_kanit_kopyalarin_islenme_sirasina_bagli_degil()
+    {
+        // Geçici kopya en yeni UpdatedAt'li: kopyalar yeniden eskiye gezildiğinden
+        // ilk o işlenir. Asıl kaydın telefonu ondan SONRA işlenen yayıncı
+        // kopyasından dolar. Kanıt asıl kaydın SON telefonuna karşı verilir.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var phone = NewPhone();
+        var wpf = Row(lic, "selin", t0);
+        var broadcasterCopy = Row(lic, "Selin", t0.AddDays(1));
+        broadcasterCopy.Phone = phone;
+        var provisional = ProvisionalRow(lic, "SELIN", t0.AddDays(5), phone);
+        db.WpfCustomerProjections.AddRange(wpf, broadcasterCopy, provisional);
+        db.Orders.Add(OrderFor(lic, wpf, t0));
+        var linkId = AddVerifiedShopperLink(db, lic, provisional, phone);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.CopyRows.Should().Be(2);
+        report.LinksUnbound.Should().Be(0);
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id)).Phone.Should().Be(phone);
+        (await LinkTargetAsync(db, linkId)).Should().Be(wpf.Id);
+    }
+
+    [Fact]
+    public async Task Kanittan_sonra_islenen_damgali_telefon_baglantiyi_bagli_birakmaz()
+    {
+        // Güvensiz yön: geçici kopya önce işlenir ve o anki telefon (A) kanıtı
+        // geçirir; sonra işlenen yayıncı kopyasının DAMGALI telefonu (B) asıl
+        // kaydınkini ezer. Kanıt ara durumdan verilseydi bağlantı, telefonu artık
+        // B olan kayda A'nın sahibi olarak bağlı kalırdı.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var oldPhone = NewPhone();
+        var newPhone = NewPhone();
+        var wpf = Row(lic, "cem", t0);
+        wpf.Phone = oldPhone;
+        var stampedCopy = Row(lic, "Cem", t0.AddDays(1));
+        stampedCopy.Phone = newPhone;
+        stampedCopy.PhoneChangedAt = t0.AddDays(1);
+        var provisional = ProvisionalRow(lic, "CEM", t0.AddDays(5), oldPhone);
+        db.WpfCustomerProjections.AddRange(wpf, stampedCopy, provisional);
+        db.Orders.Add(OrderFor(lic, wpf, t0));
+        var linkId = AddVerifiedShopperLink(db, lic, provisional, oldPhone);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.LinksUnbound.Should().Be(1);
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id)).Phone.Should().Be(newPhone);
+        (await LinkTargetAsync(db, linkId)).Should().BeNull(
+            "kanıt asıl kaydın kaydedilen telefonuna karşı verilir, ara durumuna değil");
+    }
+
+    [Fact]
+    public async Task Kisi_silinirse_geciciden_tasinan_baglanti_beklemeye_duser()
+    {
+        // Kanıt kaydedilen asıl kayda karşı: kişi silinince telefonu boşalır,
+        // geçici kökenli bağlantı silinmiş kayda bağlı kalmaz.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var phone = NewPhone();
+        var wpf = Row(lic, "burcu", t0);
+        wpf.Phone = phone;
+        var purgedCopy = Row(lic, "Burcu", t0.AddDays(1));
+        purgedCopy.MarkPurged(t0.AddDays(2));
+        var provisional = ProvisionalRow(lic, "BURCU", t0.AddDays(5), phone);
+        db.WpfCustomerProjections.AddRange(wpf, purgedCopy, provisional);
+        db.Orders.Add(OrderFor(lic, wpf, t0));
+        var linkId = AddVerifiedShopperLink(db, lic, provisional, phone);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.PurgedGroups.Should().Be(1);
+        report.LinksUnbound.Should().Be(1);
+        db.ChangeTracker.Clear();
+        var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id);
+        canonical.PurgedAt.Should().NotBeNull();
+        canonical.Phone.Should().BeNull();
+        (await LinkTargetAsync(db, linkId)).Should().BeNull();
+    }
+}
