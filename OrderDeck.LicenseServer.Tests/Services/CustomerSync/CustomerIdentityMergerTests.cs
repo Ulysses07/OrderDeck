@@ -168,6 +168,9 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         counts.WaConversations.Should().Be(1);
         counts.IbanMemories.Should().Be(1);
         counts.PaymentMatches.Should().Be(1);
+        counts.Orders.Should().Be(0);
+        counts.Shipments.Should().Be(0);
+        counts.Balances.Should().Be(0);
 
         (await db.CustomerBalanceTransactions.SingleAsync(t => t.LicenseId == license.Id)).WpfCustomerId.Should().Be(canonical.Id);
         (await db.ShopperBroadcasterLinks.SingleAsync(l => l.LicenseId == license.Id)).WpfCustomerId.Should().Be(canonical.Id);
@@ -299,6 +302,16 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
             Platform = "tiktok", Username = "ayse", MessageText = "A1", Price = 10,
             AddedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow, SyncVersion = 3,
         });
+        // Guard'ın asıl koruduğu durum: fromId/toId aynı olunca fromBal/toBal
+        // AYNI satıra düşer — guard olmasaydı bu satır kendi üzerine toplanıp
+        // SİLİNİRDİ (CustomerBalance merge dalı). Burada varlığı ve tutarı
+        // değişmeden kaldığını doğrulamadan guard'ın gerçek etkisi kanıtlanmaz.
+        var balanceId = Guid.NewGuid();
+        db.CustomerBalances.Add(new CustomerBalance
+        {
+            Id = balanceId, LicenseId = license.Id, WpfCustomerId = same.Id,
+            Balance = 70m, UpdatedAt = DateTimeOffset.UtcNow,
+        });
         await db.SaveChangesAsync();
 
         var merger = scope.ServiceProvider.GetRequiredService<CustomerIdentityMerger>();
@@ -314,5 +327,8 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         counts.PaymentMatches.Should().Be(0);
         counts.WaConversations.Should().Be(0);
         (await db.Orders.SingleAsync(o => o.Id == orderId)).SyncVersion.Should().Be(3, "dokunulmamalı — kopya=asıl yozlaşmış çağrı");
+        var balance = await db.CustomerBalances.SingleAsync(b => b.Id == balanceId);
+        balance.WpfCustomerId.Should().Be(same.Id);
+        balance.Balance.Should().Be(70m, "guard olmasaydı bu satır kendi üzerine toplanıp silinirdi");
     }
 }
