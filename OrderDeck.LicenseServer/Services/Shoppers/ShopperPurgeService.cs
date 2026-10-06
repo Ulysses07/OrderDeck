@@ -297,7 +297,7 @@ public sealed class ShopperPurgeService
         shopper.Phone = "";
         shopper.Address = "";
         shopper.Email = null;
-        shopper.Tc = null;
+        shopper.TcProtected = null;
         shopper.PasswordHash = "PURGED";
         shopper.SmsConsent = false;
         shopper.DeletedAt ??= now;

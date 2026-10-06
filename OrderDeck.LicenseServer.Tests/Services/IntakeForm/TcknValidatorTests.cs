@@ -1,5 +1,6 @@
 using FluentAssertions;
 using OrderDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.IntakeForm;
@@ -48,4 +49,28 @@ public class TcknValidatorTests
     [Fact]
     public void Normalize_trims_surrounding_whitespace()
         => TcknValidator.Normalize("  12345678950 ").Should().Be("12345678950");
+
+    // TestTckn üretiminin bu dosyadaki algoritmayla tutarlı kaldığını doğrular
+    // — TcknReadToleranceTests gibi başka yerler üretilen değerin GEÇERLİ
+    // olduğunu varsayıyor. 1000 tekrar genel bir fuzz taraması — negatif-mod
+    // dalı gibi nadir bir deseni GÜVENİLİR yakalamaz (p≈1,1e-4 çekiliş
+    // başına); o dal aşağıdaki Negatif_mod_dali_dogru_normalize_edilir'de
+    // belirlenimli olarak sınanıyor.
+    [Fact]
+    public void TestTckn_uretimi_kontrol_basamaklariyla_tutarli()
+    {
+        for (var i = 0; i < 1000; i++)
+            TcknValidator.Validate(TestTckn.NewValid()).Should().BeNull();
+    }
+
+    // odd*7 < even deseni kasıtlı zorlanıyor (1+0+0+0+0)*7=7 < 9+9+9+9=36 —
+    // normalize eksikse (("...%10+10)%10" yerine yalnız "%10") C#'ta negatif
+    // kalan döner ve bu TCKN geçersiz sayılır. Dizi doğrudan rakamlardan
+    // kuruluyor, kimlik-şekilli bir dize yazılmıyor.
+    [Fact]
+    public void Negatif_mod_dali_dogru_normalize_edilir()
+    {
+        var tckn = TestTckn.FromFirstNine(new[] { 1, 9, 0, 9, 0, 9, 0, 9, 0 });
+        TcknValidator.Validate(tckn).Should().BeNull();
+    }
 }

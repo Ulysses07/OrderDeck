@@ -23,7 +23,7 @@ public sealed class Shopper
     public string PasswordHash { get; set; } = ""; // bcrypt
     public string Address { get; set; } = "";
     public string? Email { get; set; }
-    public string? Tc { get; set; }                // KVKK: AES at-rest (Faz 0b'de)
+    public string? TcProtected { get; set; } // Düz metin VEYA şifreli (TcknProtector); her okuma Unprotect ile. Kolon adı "Tc"
 
     public bool NotificationsEnabledBroadcast { get; set; } = true;
     public bool NotificationsEnabledOrders { get; set; } = true;

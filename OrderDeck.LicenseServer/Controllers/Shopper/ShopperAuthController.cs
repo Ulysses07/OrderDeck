@@ -126,6 +126,37 @@ public sealed class ShopperAuthController : ControllerBase
         if (req.Password.Length < 8)
             return Problem(title: "weak-password", statusCode: 400);
 
+        // 3b. TC normalize + sınır. Kolon artık şifreli metni de sığdıracak
+        // şekilde büyütüldüğü için (512) — bu sürümde yazma hâlâ düz metin,
+        // şifreleme büyütmesi yok — kontrolsüz bırakılsa 512 karaktere kadar
+        // sessizce kabul edilirdi. Tam checksum doğrulaması hâlâ YOK; 11
+        // hane sınırı TİTİZLİK değil GÜVENLİK sınırıdır. Çözme kâhini
+        // (decryption oracle) kuralı — bkz. TcknProtector sınıf dokümanı:
+        // PR-0a'da yazmalar olduğu gibi saklanır, okumalar CfDJ8 önekli
+        // değeri çözer; yapıştırılmış bir şifreli yükün (en az ~134
+        // karakter) çözdürülmesini engelleyen şey bu girdi sınırıdır. Aynı
+        // sebeple CfDJ8 önekiyle başlayan girdi UZUNLUĞUNDAN BAĞIMSIZ da
+        // reddedilir — sızan bir yedekteki şifreli metnin buraya
+        // yapıştırılıp profil ucundan çözdürülmesini önler (ikinci koşul).
+        //
+        // Dört somut davranış değişikliği: (1) trim sonrası >11 hane artık
+        // 400 invalid-tc döner — eskiden DB kırpma hatasıyla 500 veriyordu;
+        // var olan telefon dalında Tc hiç yazılmadığı için sessizce YOK
+        // SAYILIYORDU, şimdi o dalda da reddediliyor. (2) Baştan/sondan
+        // boşluklu ama trim sonrası ≤11 haneye inen değer artık BAŞARIYLA
+        // kaydediliyor — eskiden ham uzunluk 11'i aşarsa aynı DB kırpma
+        // hatasıyla 500 veriyordu. (3) Yalnız boşluktan oluşan değer artık
+        // NULL saklanıyor — eskiden olduğu gibi (boşluk dizesi)
+        // saklanıyordu. (4) CfDJ8 önekiyle başlayan değer artık 400
+        // invalid-tc döner — YENİ, çözme kâhini koruması. Mobil uygulama
+        // (OnboardingFormScreen.tsx) checksum'suz ^\d{11}$ doğrular ve
+        // tc.trim() || undefined gönderir; girdi de istemcide 11 haneye
+        // kırpılıyor (yalnız rakam) — yani gerçek uygulama kullanıcıları bu
+        // dört değişiklikten hiçbirinden etkilenmez.
+        var tc = Services.IntakeForm.TcknValidator.Normalize(req.Tc);
+        if (tc is not null && (tc.Length > 11 || !Services.Privacy.TcknProtector.IsLegacyPlaintext(tc)))
+            return Problem(title: "invalid-tc", statusCode: 400);
+
         // 4. Lookup license by broadcaster code (lowercase)
         var normalizedCode = req.BroadcasterCode.Trim().ToLowerInvariant();
         var license = await _db.Licenses
@@ -167,7 +198,11 @@ public sealed class ShopperAuthController : ControllerBase
                 PasswordHash = _passwordHasher.Hash(req.Password),
                 Address = req.Address,
                 Email = req.Email,
-                Tc = req.Tc,
+                // Genişlet adımı (1. sürüm/PR-0a): yazma henüz DÜZ, okuma her iki
+                // biçimi de çözer. Şifreli yazma PR-0b'de (2. sürüm). PR-0b'den
+                // PR-0a'ya geri alma güvenli (şifreliyi de okur); PR-0a'dan PR-0
+                // öncesine geri alma güvenli (hiç şifreli YAZMAZ).
+                TcProtected = tc,
                 CreatedAt = now,
                 UpdatedAt = now,
             };

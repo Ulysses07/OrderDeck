@@ -140,7 +140,7 @@ public sealed class ShopperPaymentSubmissionServiceTests
             Phone = $"+9050{Guid.NewGuid():N}".Substring(0, 13),
             PasswordHash = "x",
             Address = "Test Address",
-            Tc = tc,
+            TcProtected = tc,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         };

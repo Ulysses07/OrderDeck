@@ -184,7 +184,7 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var shopper = await db.Shoppers.FindAsync(shopperId);
-        shopper!.Tc.Should().BeNull("TC should not have been updated with invalid checksum");
+        shopper!.TcProtected.Should().BeNull("TC should not have been updated with invalid checksum");
     }
 
     // ── T13.5: Valid TC with correct checksum → 200 ───────────────────────────
