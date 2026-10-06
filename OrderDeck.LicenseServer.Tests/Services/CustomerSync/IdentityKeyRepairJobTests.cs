@@ -401,8 +401,18 @@ public sealed class IdentityKeyRepairJobTests : IAsyncLifetime
         // Eski imaj satırları: IdentityKey kolonu HİÇ verilmeden INSERT —
         // NEWID() DEFAULT'u tetikler (hâlâ benzersiz, kanonikle çakışmaz —
         // çakışma yalnız ONARIM kanonik anahtara YAZMAYA kalkınca oluşur).
-        var duplicateId = Guid.NewGuid(); // kanonikle AYNI kimlik — "eski imaj" kopyası
-        var unrelatedId = Guid.NewGuid(); // tamamen ayrı, ilgisiz kimlik
+        // Id'ler BİLEREK sabit: RunAsync aday satırları Id'ye göre ARTAN
+        // sırada tarıyor (OrderBy(p => p.Id) — bkz. RunAsync). SQL Server
+        // uniqueidentifier'ı karşılaştırırken SON 6 BAYTI önce değerlendirir;
+        // bu iki Id son bayt DIŞINDA birebir aynı olduğu için sıralama o tek
+        // bayta iner ve 01, 02'den önce gelir. Rastgele NEWID() kullanılsaydı
+        // "çakışmadan SONRA diğer satırlarla devam edilir" yolu yalnız
+        // duplicateId İLK taranırsa sınanırdı (~yarı koşu, diğer yarısında
+        // collision son satır olur ve devam-eden-kod hiç çalışmadan da test
+        // yanlışlıkla geçerdi) — sabit Id'ler duplicateId'yi HER koşuda
+        // unrelatedId'den ÖNCE taratıp testi deterministik yapıyor.
+        var duplicateId = Guid.Parse("00000000-0000-0000-0000-000000000001"); // kanonikle AYNI kimlik — "eski imaj" kopyası; HER koşuda İLK taranır
+        var unrelatedId = Guid.Parse("00000000-0000-0000-0000-000000000002"); // tamamen ayrı, ilgisiz kimlik; duplicateId'den SONRA taranır
         await InsertWithoutIdentityKeyAsync(_cs, duplicateId, licenseId, "tiktok", "kullanici", now);
         await InsertWithoutIdentityKeyAsync(_cs, unrelatedId, licenseId, "tiktok", "baskakullanici", now);
 

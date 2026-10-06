@@ -44,9 +44,9 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// doğru-anahtarlı satırıyla eşleşmeyi KAÇIRIR — birleştirme hiç çalışmasa
 /// da aynı kişi iki ayrı "asıl" kayıt olarak kalır.</para>
 ///
-/// <para><b>Çakışma (gelecekteki B1 tekil indeksi):</b> PR-1'in B1 task'ı
-/// <c>(LicenseId, Platform, IdentityKey)</c> için <c>WHERE MergedIntoId IS
-/// NULL</c> filtreli bir TEKİL indeks ekleyecek. O indeks varken, bir satırın
+/// <para><b>Çakışma (gelecekteki B1 tekil indeksi):</b> PR-2'deki B1 tekil
+/// indeksi <c>(LicenseId, Platform, IdentityKey)</c> için <c>WHERE
+/// MergedIntoId IS NULL</c> filtreli olarak eklenecek. O indeks varken, bir satırın
 /// düzeltilmiş anahtarı BAŞKA bir kanonik satırın (henüz birleştirme işi
 /// tarafından işlenmemiş bir eski-imaj kopyasının) anahtarıyla ÇAKIŞABİLİR —
 /// ikisi GERÇEKTEN aynı kimliğe ait, yalnız henüz birleştirilmemiş. Bu durum
@@ -96,7 +96,13 @@ public sealed class IdentityKeyRepairJob
         // bellekte yapmak, kuralı IdentityKeyOf'ta TEK yerde tutar.
         // AsNoTracking: bu satırlar hiç izlenmeyecek — gerçek yazma
         // aşağıdaki CAS'tan geçiyor (bkz. sınıf dokümanı).
+        // OrderBy(Id): tarama sırası ORDER BY'sız bırakılırsa SQL Server'ın
+        // hiçbir GARANTİSİ olmaz (genelde clustered index sırası görünür ama
+        // bu bir uygulama ayrıntısı, sözleşme değil). Çakışma sonrası diğer
+        // satırlarla devam edilmesi (aşağıdaki catch) deterministik test
+        // edilebilsin diye tarama sırası burada AÇIKÇA Id'ye sabitleniyor.
         var rows = await _db.WpfCustomerProjections.AsNoTracking()
+            .OrderBy(p => p.Id)
             .Select(p => new { p.Id, p.Username, p.IdentityKey })
             .ToListAsync(ct);
 
