@@ -16,41 +16,56 @@ namespace OrderDeck.LicenseServer.Services.Privacy;
 ///
 /// Açık çağrı, EF değer dönüştürücüsü değil: dönüştürücü model önbelleğine
 /// gömülür ve farklı anahtarlı test fabrikaları aynı modeli paylaşınca çözme
-/// kırılır. Domain özellikleri bu yüzden *Protected adını taşır; her okuma
-/// yeri (2. sürümden itibaren yazma yerleri de) bu sınıfı çağırmak zorunda.
+/// kırılır. Domain özellikleri bu yüzden *Protected adını taşır; her okuma VE
+/// yazma yeri bu sınıfı çağırmak zorunda.
 ///
-/// İKİ SÜRÜMLÜ YAYIN (genişlet/daralt, PR-0a + PR-0b): deploy iş akışı
-/// /ready 60 sn içinde başarısız olursa ÖNCEKİ imaja OTOMATİK geri dönüyor —
-/// tek adımlı bir yayın olsaydı, geçici bir ağ sorunu bile geri almayı
+/// İKİ SÜRÜMLÜ YAYIN (genişlet/daralt, PR-0a + PR-0b) — BU SÜRÜM PR-0b: deploy
+/// iş akışı /ready 60 sn içinde başarısız olursa ÖNCEKİ imaja OTOMATİK geri
+/// dönüyor; tek adımlı bir yayın olsaydı, geçici bir ağ sorunu bile geri almayı
 /// tetikler ve TC'yi şifreli yazan bir imajın ardına, şifreli metni TC diye
 /// okuyup WPF'e ve e-Fatura'ya KALICI olarak yazacak eski bir imaj
 /// bırakabilirdi. Bu yüzden İKİ YÖNLÜ geri almanın da güvenli olduğu bir
 /// sıraya bölündü:
-///   PR-0a (bu sürüm, 1. sürüm): her okuma Unprotect çağırır (düz metni VE
-///      şifreli metni ikisini de çözer); yazmalar HÂLÂ düz metin.
-///      - PR-0b'den PR-0a'ya geri alma GÜVENLİ: bu sürüm PR-0b'nin
-///        yazdığı/backfill'in şifrelediği satırları da okuyabiliyor.
-///      - PR-0a'dan PR-0'DAN ÖNCEKİ imaja geri alma GÜVENLİ: bu sürüm
-///        hiçbir satırı şifreli YAZMIYOR, o yüzden Unprotect'i hiç tanımayan
-///        eski imaj karşısına asla şifreli metin çıkmaz.
-///   PR-0b (2. sürüm): yazmalar Protect'e geçer ve TcknBackfillJob var olan
-///      düz metin satırları arka planda şifreler.
-/// PR-0a sahada bir süre durup gözlendikten sonra PR-0b basılır.
+///   PR-0a (1. sürüm, sahada doğrulandı): her okuma Unprotect çağırır (düz
+///      metni VE şifreli metni ikisini de çözer); yazmalar düz metindi.
+///   PR-0b (bu sürüm, 2. sürüm): yazmalar Protect'e geçti;
+///      <see cref="TcknBackfillJob"/> var olan düz metin satırları arka
+///      planda şifreliyor.
+///      - PR-0b'den PR-0a'ya geri alma GÜVENLİ: PR-0a bu sürümün (ve
+///        backfill'in) yazdığı şifreli satırları da okuyabiliyor.
+///      - PR-0a'DAN ÖNCEKİ bir imaja ELLE geri almak GÜVENLİ DEĞİL: eski
+///        imajlar GHCR'dan HER ZAMAN çekilebilir — yerelde tutulan 72 saatlik
+///        imaj geçmişiyle sınırlı değil, bu yalnız bir prune ayrıntısı. Asıl
+///        sınır deploy/README.md'de ("Deploy geri alma" bölümü,
+///        master-d38f710 UYARISI). O imaj Unprotect'i hiç tanımıyor —
+///        şifreli metni TC diye olduğu gibi okur ve WPF'e/e-Fatura'ya KALICI
+///        yazar. Otomatik geri alma (deploy workflow) her zaman BİR ÖNCEKİ
+///        imaja döndüğü için bu senaryoya girmez; risk yalnız PR-0a'dan daha
+///        eskiye ELLE dönülürse oluşur.
+///      - PR-0a'ya (elle ya da otomatik) geri dönülürse: o sürümde
+///        <c>TcknBackfillJob</c> tipi hiç yok, Hangfire "tckn-backfill"
+///        kaydını yükleyemez ve o iş gürültülü biçimde FAILED düşer — veri
+///        kaybı değil, geri alınan sürümde backfill'in duraklaması.
 ///
-/// Data Protection öneki (CfDJ8) taşımayan değer düz metindir (eski satır ya
-/// da bu sürümün kendi yazdığı satır — ikisi de Unprotect'ten aynı şekilde
-/// geçer), olduğu gibi döner.
+/// Data Protection öneki (CfDJ8) taşımayan değer düz metindir (backfill henüz
+/// uğramamış eski satır), olduğu gibi döner.
 ///
 /// Protect önekli (CfDJ8) görünen girdiyi de HER ZAMAN şifreler, asla
 /// atlamaz: atlasaydı, sızan bir yedekteki şifreli metin kayıt formuna
-/// yapıştırılıp profil ucundan çözdürülebilirdi.
+/// yapıştırılıp profil ucundan çözdürülebilirdi — şimdi böyle bir girdi
+/// yeniden şifrelenip olduğu gibi saklanır, hiç çözülmez.
 ///
-/// ÇÖZME KÂHİNİ (decryption oracle) KURALI — PR-0a'da ayrıca geçerli:
-/// yazmalar olduğu gibi saklanır, okumalar CfDJ8 önekli değeri çözer.
-/// Yapıştırılmış bir yükün (en az ~134 karakter) çözdürülmesini engelleyen
-/// şey girdi sınırlarıdır: kayıtta ≤11 karakter (+ CfDJ8 önekini ayrıca
-/// reddeden kontrol), PATCH'te ve formda 11 rakam + checksum. Bu sınırları
-/// gevşetmek bir çözme kâhini açar.
+/// ÇÖZME KÂHİNİ (decryption oracle) KURALI: Protect'in yukarıdaki "her zaman
+/// şifrele" davranışı sayesinde yapıştırılmış bir şifreli yük artık yazma
+/// yolunda OLDUĞU GİBİ saklanmıyor, dolayısıyla sonraki bir okumada da
+/// çözülmüyor — kâhin riski yazma tarafında kapalı. Girdi sınırları (kayıtta
+/// ≤11 karakter + CfDJ8 önekini ayrıca reddeden kontrol; PATCH'te ve formda 11
+/// rakam + checksum) bu yüzden artık kâhini önleyen TEK katman değil, EK bir
+/// savunma katmanı — gevşetilmeleri bir kâhin açmaz ama girdi doğrulamasını
+/// zayıflatır.
+///
+/// Çözülmüş (Unprotect edilmiş) bir değer HİÇBİR ZAMAN geri yazılmaz — yalnız
+/// okunup response'a konur. Aksi hâlde düz metin tekrar satıra sızardı.
 ///
 /// Anahtar kaybı: çözülemeyen değer null döner ve uyarı yazılır — TCKN
 /// müşteriden yeniden alınabilir; 500 ile akışı kilitlemek daha kötü.

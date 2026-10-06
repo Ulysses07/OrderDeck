@@ -208,6 +208,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifier>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifyJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.TcknBackfillJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentCollector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentPushJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>();
@@ -976,6 +977,16 @@ public class Program
                 "netgsm-account-verify",
                 j => j.RunAsync(CancellationToken.None),
                 "35 4 * * *");  // günde bir, 04:35 UTC
+
+            // TCKN şifreleme geçişi + bekçi — günde bir, 04:40 UTC (yayın
+            // penceresinin dışında). Ayrıca açılışta bir kez kuyruğa alınır:
+            // deploy sonrası eski düz metin satırlar bir gün beklemesin.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Privacy.TcknBackfillJob>(
+                "tckn-backfill",
+                j => j.RunAsync(CancellationToken.None),
+                "40 4 * * *");
+            scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>()
+                .Enqueue<OrderDeck.LicenseServer.Services.Privacy.TcknBackfillJob>(j => j.RunAsync(CancellationToken.None));
 
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen

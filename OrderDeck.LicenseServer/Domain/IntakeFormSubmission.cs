@@ -46,10 +46,11 @@ public sealed class IntakeFormSubmission
 
     /// <summary>Formda zorunlu. DB'de nullable (eski satırlar null).</summary>
     public string? Email { get; set; }
-    /// <summary>Fatura için opsiyonel TCKN. Bu sürümde (genişlet adımı) yazma
-    /// hâlâ düz metin; kolon düz metin VEYA şifreli (TcknProtector) tutabilir
-    /// — her okuma Unprotect ile ikisini de çözer. Şifreli yazma bir sonraki
-    /// sürümde (bkz. TcknProtector sınıf dokümanı).</summary>
+    /// <summary>Fatura için opsiyonel TCKN. Yazma artık ŞİFRELİ
+    /// (TcknProtector.Protect — PR-0b/2. sürüm); kolon yine de eski düz
+    /// metin bir satır taşıyabilir (TcknBackfillJob o satırı şifreleyene
+    /// kadar) — her okuma Unprotect ile ikisini de çözer. Bkz. TcknProtector
+    /// sınıf dokümanı.</summary>
     public string? TcknProtected { get; set; }
 
     // Mesaj izinleri — şimdilik yalnız toplanır, gönderim ileride (Faz 4).

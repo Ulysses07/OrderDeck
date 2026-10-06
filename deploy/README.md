@@ -236,7 +236,20 @@ sed'ler, compose bu deploy'da değiştiyse `docker-compose.yml.prev`'i geri koya
 Kayıtlı durum yoksa (`.rollback` silinmişse — başarılı deploy sonrası silinir)
 klasik yol: `.env`'de `LICENSE_SERVER_TAG`'i bir önceki `master-<short-sha>`'ya
 çevir, `docker compose up -d license-server`. Tüm sha etiketleri değişmez;
-imaj prune 72 saatlik geçmişi tutar, daha eskisi GHCR'dan çekilir.
+eski imajlar GHCR'dan **HER ZAMAN** çekilebilir — yerelde tutulan 72 saatlik
+imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
+
+> **UYARI — TCKN şifreleme tabanı.** `master-d38f710`'dan (PR-0a, #488) ESKİ
+> bir etikete bu elle yoldan ASLA geçme. O PR'dan önceki her imaj
+> `TcknProtector.Unprotect` çağırmaz: Shoppers.Tc / IntakeFormSubmissions.Tckn
+> kolonlarında artık duran şifreli metni (TCKN şifreleme 2. adımdan beri her
+> yazma şifreli; `TcknBackfillJob` eski düz metin satırları da arka planda
+> şifreliyor) OLDUĞU GİBİ "TC" sayıp döner. O değer yayıncının WPF masaüstü
+> uygulamasına senkronize edilip ORADA KALICI saklanır ve e-Fatura'ya o
+> hâliyle yazılır — geri dönüşü yok. Otomatik geri alma (yukarıdaki workflow)
+> her zaman BİR ÖNCEKİ imaja döndüğü için bu sınıra hiç çarpmaz; risk yalnız
+> buradaki ELLE müdahalede, `master-d38f710`'dan daha eski bir etiket
+> seçilirse oluşur.
 
 ## EF migration history bootstrap (one-time, before first Migrate() deploy)
 
