@@ -21,6 +21,9 @@ public sealed class ShipmentSyncService
     private const int PushBatchSize = 50;
     private const int PullPageSize = 200;
 
+    /// <summary>Durum satırındaki gönderim ilerlemesinin adı (D2 incelemesi I-3).</summary>
+    public const string PushStatusName = "kargo";
+
     private readonly LicenseApiClient _api;
     private readonly ShipmentRepository _shipments;
     private readonly SettingsStore _settingsStore;
@@ -28,6 +31,7 @@ public sealed class ShipmentSyncService
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<ShipmentSyncService> _log;
+    private readonly SyncStatusTracker? _tracker;
 
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
@@ -41,7 +45,8 @@ public sealed class ShipmentSyncService
         AppSettings settings,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
-        ILogger<ShipmentSyncService> log)
+        ILogger<ShipmentSyncService> log,
+        SyncStatusTracker? statusTracker = null)
     {
         _api = api;
         _shipments = shipments;
@@ -50,6 +55,8 @@ public sealed class ShipmentSyncService
         _licenseProvider = licenseProvider;
         _clock = clock;
         _log = log;
+        _tracker = statusTracker;
+        _tracker?.RegisterPush(PushStatusName);
     }
 
     public readonly record struct SyncResult(int Pushed, int Pulled);
@@ -80,7 +87,11 @@ public sealed class ShipmentSyncService
     private async Task<int> PushOutboxAsync(Guid licenseId, CancellationToken ct)
     {
         var batch = _shipments.GetUnsynced(PushBatchSize);
-        if (batch.Count == 0) return 0;
+        if (batch.Count == 0)
+        {
+            _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);   // I-3: gönderecek bir şey yok
+            return 0;
+        }
 
         var items = batch.Select(s => new SyncShipmentItem(
             Id: Guid.Parse(s.Id),
@@ -107,6 +118,7 @@ public sealed class ShipmentSyncService
         // değiştiyse MarkSynced 0 satır etkiler, sonraki tick tekrar gönderir.
         foreach (var item in batch)
             _shipments.MarkSynced(item.Id, now, item.Revision);
+        _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);       // I-3: parti gitti
 
         return batch.Count;
     }

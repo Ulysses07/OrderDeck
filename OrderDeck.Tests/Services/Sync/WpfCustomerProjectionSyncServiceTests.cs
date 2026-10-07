@@ -88,17 +88,20 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         Func<HttpRequestMessage, HttpResponseMessage> responder,
         bool seedLicense = true,
         CustomerBusySet? busy = null,
-        Func<IDbConnectionFactory, IDbConnectionFactory>? syncFactory = null)
-        => Build(req => Task.FromResult(responder(req)), seedLicense, busy, syncFactory);
+        Func<IDbConnectionFactory, IDbConnectionFactory>? syncFactory = null,
+        SyncStatusTracker? tracker = null)
+        => Build(req => Task.FromResult(responder(req)), seedLicense, busy, syncFactory, tracker);
 
     /// <param name="busy">Ödeme akışındaki müşteriler (U13); null = hiçbir müşteri meşgul değil.</param>
     /// <param name="syncFactory">Yalnız senkron deposunun bağlantı fabrikasını sarar (hata enjeksiyonu);
     /// imleç ve müşteri depoları gerçek veritabanını kullanır.</param>
+    /// <param name="tracker">Durum satırının gönderim ilerlemesi (D2 incelemesi I-3).</param>
     private static Fixture Build(
         Func<HttpRequestMessage, Task<HttpResponseMessage>> responder,
         bool seedLicense = true,
         CustomerBusySet? busy = null,
-        Func<IDbConnectionFactory, IDbConnectionFactory>? syncFactory = null)
+        Func<IDbConnectionFactory, IDbConnectionFactory>? syncFactory = null,
+        SyncStatusTracker? tracker = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -115,7 +118,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         var svc = new WpfCustomerProjectionSyncService(
             api, sync, cursors, licenseProvider, new FixedClock(),
-            NullLogger<WpfCustomerProjectionSyncService>.Instance);
+            NullLogger<WpfCustomerProjectionSyncService>.Instance, tracker);
 
         return new Fixture(svc, customers, sync, cursors, licenseProvider, db);
     }
@@ -1324,4 +1327,39 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         posts.Should().Be(1, "ikinci tur ilerlemiş imleci okur");
     }
+
+    // ── durum satırı: gönderim ilerlemesi (D2 incelemesi I-3) ──────────
+
+    [Fact]
+    public async Task Gonderim_ilerlemesi_kuyruk_bosalinca_yazilir_parti_hatasinda_yazilmaz()
+    {
+        var tracker = new SyncStatusTracker();
+        var fail = true;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+                return fail ? FakeHttpMessageHandler.Json(500, "{}") : FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 1));
+            return FakeHttpMessageHandler.Empty(404);
+        }, tracker: tracker);
+        using var _d = fx.Db;
+        fx.Customers.Insert(MakeCustomer(1000));
+        PushOk(tracker).Should().BeNull("kayıtlı, henüz başarmadı");
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+        PushOk(tracker).Should().BeNull("parti her turda düştü — çekme iyi olsa da durum satırı gönderilemediğini söylemeli");
+
+        fail = false;
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+        var sent = PushOk(tracker);
+        sent.Should().NotBeNull();
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+        PushOk(tracker).Should().BeOnOrAfter(sent!.Value, "gönderecek bir şey olmayan tur da gönderimin sağlıklı olduğunu söyler");
+    }
+
+    private static DateTimeOffset? PushOk(SyncStatusTracker tracker)
+        => tracker.Snapshot().PushOkAt![WpfCustomerProjectionSyncService.PushStatusName];
 }

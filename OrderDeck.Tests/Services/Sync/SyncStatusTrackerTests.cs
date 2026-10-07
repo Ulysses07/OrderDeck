@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FluentAssertions;
 using OrderDeck.App.Services.Sync;
 using Xunit;
@@ -61,5 +62,29 @@ public sealed class SyncStatusTrackerTests
         s.LastCatchUpProgressAt.Should().Be(at.AddMinutes(-1));
         s.BlockedOn.Should().Be(block);
         s.TrackingSince.Should().Be(tracker.TrackingSince);
+    }
+
+    [Fact]
+    public void Gonderim_ilerlemesi_kayitla_baslar_basariyla_yazilir_lisans_degisince_sifirlanir()
+    {
+        var tracker = new SyncStatusTracker();
+        tracker.RegisterPush("musteri");
+        tracker.RegisterPush("odeme");
+        var at = DateTimeOffset.UtcNow;
+
+        tracker.MarkPushOk("musteri", at);
+        tracker.RegisterPush("musteri");                      // ikinci kayıt ilerlemeyi silmez
+        var s = tracker.Snapshot();
+
+        s.PushOkAt.Should().BeEquivalentTo(new Dictionary<string, DateTimeOffset?> { ["musteri"] = at, ["odeme"] = null },
+            "kayıtlı ama hiç başarmamış gönderim 'hiç' olarak görünür — izleme başından ölçülür");
+
+        tracker.MarkPushOk("odeme", at);
+        s.PushOkAt!["odeme"].Should().BeNull("anlık görüntü sonraki yazımlardan etkilenmez");
+
+        tracker.ResetForLicenseChange();
+        tracker.Snapshot().PushOkAt.Should().BeEquivalentTo(
+            new Dictionary<string, DateTimeOffset?> { ["musteri"] = null, ["odeme"] = null },
+            "önceki lisansın gönderimi yeni lisansı anlatmaz; kayıtlar kalır");
     }
 }

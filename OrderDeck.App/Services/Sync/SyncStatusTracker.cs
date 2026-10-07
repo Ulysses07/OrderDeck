@@ -16,11 +16,14 @@ public sealed record SyncBlock(string ItemId, SyncBlockReason Reason, DateTimeOf
 
 /// <summary>Durum satırının (D2) okuduğu her şey, TEK kilit altında (D2 incelemesi I-4): ayrı ayrı
 /// okunan özellikler arasında bir tur bitip öncelik sırası yanlış dala düşmesin.</summary>
+/// <param name="PushOkAt">Kayıtlı her gönderim servisinin son başarılı turu (null = bu izlemede hiç);
+/// anlık görüntüde bir kopya.</param>
 public readonly record struct SyncStatusSnapshot(
     DateTimeOffset? LastPullOkAt,
     DateTimeOffset? LastCatchUpProgressAt,
     SyncBlock? BlockedOn,
-    DateTimeOffset TrackingSince);
+    DateTimeOffset TrackingSince,
+    IReadOnlyDictionary<string, DateTimeOffset?>? PushOkAt = null);
 
 /// <summary>
 /// Sunucuyla son başarılı yetişmenin tek kaydı (Faz 0, D2–D4). Faz 1'de tek kaynağı
@@ -40,6 +43,12 @@ public readonly record struct SyncStatusSnapshot(
 /// <para><see cref="TrackingSince"/>: izlemenin başladığı an (kuruluş ya da lisans değişimi). Hiç
 /// yetişemeyen süreç de çevrimdışı görünebilsin diye durum satırının son dayanağı (I-1).</para>
 ///
+/// <para><b>Gönderim ilerlemesi (D2 incelemesi I-3):</b> bekleyen sayıya (D1) giren her gönderim
+/// servisi (müşteri, oturum+etiket, ödeme, kargo) kurulurken kendini kaydeder
+/// (<see cref="RegisterPush"/>) ve her başarılı turunda — gönderdiyse ya da gönderecek bir şey
+/// yoksa — <see cref="MarkPushOk"/> yazar. Çekme iyiyken gönderimi düşen bilgisayar durum satırında
+/// sağlıklı görünmesin.</para>
+///
 /// <para>Bütün zamanlar duvar saatidir (<see cref="DateTimeOffset.UtcNow"/>, IClock değil).</para>
 ///
 /// <para>Yetişme LİSANSA bağlıdır (C10 incelemesi): form oynatmasının işareti lisans anahtarına
@@ -56,6 +65,7 @@ public sealed class SyncStatusTracker
     private SyncBlock? _blockedOn;
     private DateTimeOffset? _catchUpProgress;
     private DateTimeOffset _trackingSince = DateTimeOffset.UtcNow;
+    private readonly Dictionary<string, DateTimeOffset?> _pushOk = new(StringComparer.Ordinal);
 
     public DateTimeOffset? LastPullOkAt { get { lock (_gate) return _lastPullOk; } }
 
@@ -103,7 +113,21 @@ public sealed class SyncStatusTracker
             _blockedOn = null;
             _catchUpProgress = null;
             _trackingSince = DateTimeOffset.UtcNow;
+            foreach (var service in _pushOk.Keys.ToList()) _pushOk[service] = null;
         }
+    }
+
+    /// <summary>Gönderim servisi kendini kaydeder (kurucusunda): hiç başarılı turu olmasa da durum
+    /// satırı onu izlemenin başından ölçer. Yinelenen kayıt ilerlemeyi silmez.</summary>
+    public void RegisterPush(string service)
+    {
+        lock (_gate) _pushOk.TryAdd(service, null);
+    }
+
+    /// <summary>Gönderim turu başarılı: gönderdi ya da gönderecek bir şey yoktu.</summary>
+    public void MarkPushOk(string service, DateTimeOffset at)
+    {
+        lock (_gate) _pushOk[service] = at;
     }
 
     public void SetBlockedOn(SyncBlock? block)
@@ -114,6 +138,8 @@ public sealed class SyncStatusTracker
     /// <summary>Durum satırının bütün girdileri tek kilit altında.</summary>
     public SyncStatusSnapshot Snapshot()
     {
-        lock (_gate) return new(_lastPullOk, _catchUpProgress, _blockedOn, _trackingSince);
+        lock (_gate)
+            return new(_lastPullOk, _catchUpProgress, _blockedOn, _trackingSince,
+                new Dictionary<string, DateTimeOffset?>(_pushOk, StringComparer.Ordinal));
     }
 }

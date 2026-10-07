@@ -111,4 +111,25 @@ public sealed class CustomerSyncDiTests
         PrivateField<SyncOutboxRepository>(counter, "_outbox").Should().BeSameAs(
             host.Services.GetRequiredService<SyncOutboxRepository>());
     }
+
+    [Fact]
+    public void Bekleyen_sayiya_giren_her_gonderim_durum_izleyicisine_yazar()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var tracker = host.Services.GetRequiredService<SyncStatusTracker>();
+        object[] pushes =
+        [
+            host.Services.GetRequiredService<WpfCustomerProjectionSyncService>(),
+            host.Services.GetRequiredService<SessionOrderSyncService>(),
+            host.Services.GetRequiredService<PaymentSyncService>(),
+            host.Services.GetRequiredService<ShipmentSyncService>(),
+        ];
+
+        foreach (var push in pushes)
+            PrivateField<SyncStatusTracker>(push, "_tracker").Should().BeSameAs(tracker,
+                $"I-3: {push.GetType().Name} isteğe bağlı parametreyi DI'dan almazsa düşen gönderimi durum satırı göremezdi");
+        tracker.Snapshot().PushOkAt!.Keys.Should().BeEquivalentTo(
+            WpfCustomerProjectionSyncService.PushStatusName, SessionOrderSyncService.PushStatusName,
+            PaymentSyncService.PushStatusName, ShipmentSyncService.PushStatusName);
+    }
 }

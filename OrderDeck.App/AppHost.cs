@@ -495,7 +495,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<SyncCursorRepository>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
-            sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>()));
+            sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>(),
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
         // Kümülatif kargo Shipment sync (PR-D, 2026-05-13).
@@ -506,7 +507,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
-            sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>()));
+            sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>(),
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
         // Session + Order sync (PR siparis-sync 2026-05-13)
@@ -517,7 +519,8 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 sp.GetRequiredService<IClock>(),
-                sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>()));
+                sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>(),
+                sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.SessionOrderSyncHostedService>();
 
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save

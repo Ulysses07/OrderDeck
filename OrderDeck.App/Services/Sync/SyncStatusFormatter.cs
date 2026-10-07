@@ -29,6 +29,10 @@ namespace OrderDeck.App.Services.Sync;
 /// gösterir: atlanan akış öğesinin kaydı aynı Id'nin sonraki başarılı değişikliğinde silinir
 /// (U10); miras ödeme işi o müşterinin "Ödeme iste"siyle kapanır (U8).</para>
 ///
+/// <para><b>Gönderim (I-3):</b> çekme iyiyken bekleyen kayıt varsa ve kayıtlı gönderim
+/// servislerinden biri üç dakikadır başarılı tur yazmadıysa (hiç yazmadıysa izlemenin başından
+/// beri) satır "Gönderilemiyor — N değişiklik bekliyor" (sağlıksız) olur; yoksa "Gönderiliyor (N)".</para>
+///
 /// <para>Metinde kişisel veri yok: takılan öğe yalnız sunucu Id'sinin ilk 8 karakteriyle anılır
 /// ("kod" — günlükteki uyarının tam Id'siyle eşleşir); sayılar sayıdır.</para>
 /// </summary>
@@ -49,7 +53,7 @@ public static class SyncStatusFormatter
     public static Status Format(int pending, SyncStatusSnapshot snapshot, DateTimeOffset now,
         SyncAttention attention = default)
         => Format(pending, snapshot.LastPullOkAt, now, attention, snapshot.BlockedOn,
-            snapshot.LastCatchUpProgressAt, snapshot.TrackingSince);
+            snapshot.LastCatchUpProgressAt, snapshot.TrackingSince, snapshot.PushOkAt);
 
     /// <param name="pending">Gönderilmemiş kayıt sayısı (<see cref="SyncPendingCounter.Count"/>).</param>
     /// <param name="lastPullOk">Son tam yetişme (<see cref="SyncStatusTracker.LastPullOkAt"/>).</param>
@@ -61,11 +65,13 @@ public static class SyncStatusFormatter
     /// (<see cref="SyncStatusTracker.LastCatchUpProgressAt"/>).</param>
     /// <param name="trackingSince">İzlemenin başladığı an (<see cref="SyncStatusTracker.TrackingSince"/>);
     /// verilmezse ve hiç yetişilmediyse satır "Güncelleniyor…"da kalır.</param>
+    /// <param name="pushOkAt">Kayıtlı gönderim servislerinin son başarılı turu
+    /// (<see cref="SyncStatusSnapshot.PushOkAt"/>; null = hiç, izleme başından ölçülür).</param>
     public static Status Format(int pending, DateTimeOffset? lastPullOk, DateTimeOffset now,
         SyncAttention attention = default, SyncBlock? blockedOn = null, DateTimeOffset? catchUpProgressAt = null,
-        DateTimeOffset? trackingSince = null)
+        DateTimeOffset? trackingSince = null, IReadOnlyDictionary<string, DateTimeOffset?>? pushOkAt = null)
     {
-        var status = Decide(pending, lastPullOk, now, blockedOn, catchUpProgressAt, trackingSince);
+        var status = Decide(pending, lastPullOk, now, blockedOn, catchUpProgressAt, trackingSince, pushOkAt);
         if (!attention.Any) return status;
         var notes = new List<string>(2);
         if (attention.SkippedFeedItems > 0)
@@ -76,7 +82,8 @@ public static class SyncStatusFormatter
     }
 
     private static Status Decide(int pending, DateTimeOffset? lastPullOk, DateTimeOffset now,
-        SyncBlock? blockedOn, DateTimeOffset? catchUpProgressAt, DateTimeOffset? trackingSince)
+        SyncBlock? blockedOn, DateTimeOffset? catchUpProgressAt, DateTimeOffset? trackingSince,
+        IReadOnlyDictionary<string, DateTimeOffset?>? pushOkAt)
     {
         // 1) Akış bir öğede takılı (ve takılma taze): çevrimdışı değil, "bekliyor".
         if (blockedOn is { } block && IsFresh(block.LastSeenAt, now)) return new(Blocked(block), false);
@@ -91,8 +98,23 @@ public static class SyncStatusFormatter
             return new(pending > 0 ? $"Çevrimdışı — {pending} değişiklik bekliyor" : "Çevrimdışı", false);
         if (lastPullOk is null) return new(Updating, false);      // izleme yeni, ilk tam akış bekleniyor
 
+        // 4) Çekme iyi; bekleyen var ama bir gönderim üç dakikadır başaramıyor (I-3).
+        if (pending > 0 && AnyPushStale(pushOkAt, trackingSince, now))
+            return new($"Gönderilemiyor — {pending} değişiklik bekliyor", false);
         if (pending > 0) return new($"Gönderiliyor ({pending})", true);
         return new($"Güncel ✓ (son: {lastPullOk.Value.ToLocalTime():HH:mm})", true);
+    }
+
+    /// <summary>Kayıtlı bir gönderimin son başarısı (yoksa izlemenin başı) bayat mı. Dayanak yoksa
+    /// (izleme başı verilmedi) hiç başarmamış gönderim yargılanmaz.</summary>
+    private static bool AnyPushStale(IReadOnlyDictionary<string, DateTimeOffset?>? pushOkAt,
+        DateTimeOffset? trackingSince, DateTimeOffset now)
+    {
+        if (pushOkAt is null) return false;
+        foreach (var lastOk in pushOkAt.Values)
+            if ((lastOk ?? trackingSince) is { } reference && !IsFresh(reference, now))
+                return true;
+        return false;
     }
 
     /// <summary>Son <see cref="OfflineAfter"/> içinde (eşik dahil) ve en çok

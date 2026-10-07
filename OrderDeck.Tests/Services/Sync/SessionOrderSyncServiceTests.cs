@@ -45,8 +45,11 @@ public sealed class SessionOrderSyncServiceTests
     /// "işlenirken" (yanıt dönmeden önce) çalışır — uçuş sırasındaki yerel
     /// mutasyonu simüle eder.</param>
     /// <param name="onOrdersPush">Aynısı orders/sync için.</param>
+    /// <param name="tracker">Durum satırının gönderim ilerlemesi (D2 incelemesi I-3).</param>
+    /// <param name="failOrders">true dönerken orders/sync 500 verir.</param>
     private static Fx Build(Action<SessionRepository>? onSessionsPush = null,
-        Action<LabelRepository>? onOrdersPush = null)
+        Action<LabelRepository>? onOrdersPush = null,
+        SyncStatusTracker? tracker = null, Func<bool>? failOrders = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -72,6 +75,7 @@ public sealed class SessionOrderSyncServiceTests
             }
             if (path.EndsWith("/orders/sync"))
             {
+                if (failOrders?.Invoke() == true) return FakeHttpMessageHandler.Json(500, "{}");
                 onOrdersPush?.Invoke(labels);
                 // Sahte handler, gerçek ağ yok; gövde JsonContent.Create tarafından
                 // bellekte oluşturulmuş — GetAwaiter().GetResult() burada güvenli.
@@ -86,9 +90,45 @@ public sealed class SessionOrderSyncServiceTests
 
         var svc = new SessionOrderSyncService(api, sessions, labels,
             new FakeLicenseProvider(), new FakeClock(),
-            NullLogger<SessionOrderSyncService>.Instance);
+            NullLogger<SessionOrderSyncService>.Instance, tracker);
 
         return new Fx(svc, sessions, labels, db, capturedOrdersJson);
+    }
+
+    // ── durum satırı: gönderim ilerlemesi (D2 incelemesi I-3) ──────────
+
+    [Fact]
+    public async Task Gonderim_ilerlemesi_iki_gonderim_de_basarinca_yazilir_biri_duserse_yazilmaz()
+    {
+        var tracker = new SyncStatusTracker();
+        var fail = true;
+        var fx = Build(tracker: tracker, failOrders: () => fail);
+        using var _d = fx.Db;
+        DateTimeOffset? PushOk() => tracker.Snapshot().PushOkAt![SessionOrderSyncService.PushStatusName];
+        var sid = Guid.NewGuid().ToString("N");
+        fx.Sessions.Insert(new StreamSession(sid, "Örnek yayın", 1700000000L, null, new[] { "instagram" }, null));
+        fx.Labels.Insert(new Label(Guid.NewGuid().ToString("N"), sid, "c1hex", "instagram", "@alice",
+            "ürün", null, 250m, 1700000200L, null, DisplayName: "Alice"));
+
+        await fx.Svc.SyncOnceAsync();
+        await fx.Svc.SyncOnceAsync();
+        PushOk().Should().BeNull("oturum gitti ama etiket her turda düştü");
+
+        fail = false;
+        await fx.Svc.SyncOnceAsync();
+        PushOk().Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Gonderecek_bir_sey_yoksa_gonderim_saglikli_sayilir()
+    {
+        var tracker = new SyncStatusTracker();
+        var fx = Build(tracker: tracker);
+        using var _d = fx.Db;
+
+        await fx.Svc.SyncOnceAsync();
+
+        tracker.Snapshot().PushOkAt![SessionOrderSyncService.PushStatusName].Should().NotBeNull();
     }
 
     [Fact]

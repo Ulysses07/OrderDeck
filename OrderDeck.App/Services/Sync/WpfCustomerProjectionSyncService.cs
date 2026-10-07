@@ -56,12 +56,16 @@ public sealed class WpfCustomerProjectionSyncService
     /// D1'in sayacı da bu sabiti okur.</summary>
     public const string CursorName = "customer-projection-out-v2";
 
+    /// <summary>Durum satırındaki gönderim ilerlemesinin adı (D2 incelemesi I-3).</summary>
+    public const string PushStatusName = "musteri";
+
     private readonly LicenseApiClient _api;
     private readonly CustomerSyncRepository _sync;
     private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<WpfCustomerProjectionSyncService> _log;
+    private readonly SyncStatusTracker? _tracker;
 
     /// <summary>Tek tur kuralı: zamanlayıcı, akış servisinin durma sonrası çağrısı (C7),
     /// "gönder ve kapat" (D5) ve imleç geri sarma (C7) aynı imleci yazıyor; üst üste
@@ -77,7 +81,8 @@ public sealed class WpfCustomerProjectionSyncService
         SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
-        ILogger<WpfCustomerProjectionSyncService> log)
+        ILogger<WpfCustomerProjectionSyncService> log,
+        SyncStatusTracker? statusTracker = null)
     {
         _api             = api;
         _sync            = sync;
@@ -85,6 +90,8 @@ public sealed class WpfCustomerProjectionSyncService
         _licenseProvider = licenseProvider;
         _clock           = clock;
         _log             = log;
+        _tracker         = statusTracker;
+        _tracker?.RegisterPush(PushStatusName);
     }
 
     // Sunucunun kabul sınırları (LicensesWpfCustomersSyncController "Validate
@@ -151,11 +158,12 @@ public sealed class WpfCustomerProjectionSyncService
 
         var watermark = Watermark(licenseKey);
         int totalSynced = 0, totalMatches = 0, rekeyed = 0, waiting = 0;
+        var drained = false;
 
         while (!ct.IsCancellationRequested)
         {
             var batch = _sync.GetForPush(watermark, BatchSize);
-            if (batch.Count == 0) break;
+            if (batch.Count == 0) { drained = true; break; }
 
             var items = new List<WpfCustomerSyncItem>(batch.Count);
             foreach (var c in batch)
@@ -225,7 +233,7 @@ public sealed class WpfCustomerProjectionSyncService
             if (items.Count == 0)
             {
                 AdvanceWatermark(licenseKey, batch, ref watermark);
-                if (batch.Count < BatchSize) break;
+                if (batch.Count < BatchSize) { drained = true; break; }
                 continue;
             }
 
@@ -253,8 +261,12 @@ public sealed class WpfCustomerProjectionSyncService
             if (lockContention) return totalSynced;
 
             AdvanceWatermark(licenseKey, batch, ref watermark);
-            if (batch.Count < BatchSize) break; // last page — no more rows
+            if (batch.Count < BatchSize) { drained = true; break; } // last page — no more rows
         }
+
+        // I-3: kuyruk bu turda boşaldı (gönderecek bir şey yoksa da) — durum satırı gönderimi sağlıklı
+        // sayar. Parti hatası ve kilit çekişmesi yukarıda erken döner, yazılmaz.
+        if (drained) _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);
 
         if (totalSynced > 0 || rekeyed + waiting > 0)
         {

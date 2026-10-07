@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using FluentAssertions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Storage.Repositories;
@@ -155,6 +157,45 @@ public sealed class SyncStatusFormatterTests
         => SyncStatusFormatter.Format(0, null, Now, new SyncAttention(0, 1))
             .Text.Should().Be("Güncelleniyor… · 1 ödeme işi uzlaştırma bekliyor");
 
+    // ── gönderim ilerlemesi: çekme iyiyken gönderim düşüyorsa sağlıklı görünmez (I-3) ──
+
+    private static IReadOnlyDictionary<string, DateTimeOffset?> Pushes(params (string Name, DateTimeOffset? At)[] p)
+        => p.ToDictionary(x => x.Name, x => x.At);
+
+    [Fact] public void Bir_gonderim_uc_dakikadir_basarisizsa_cekme_iyi_olsa_da_gonderilemiyor()
+    {
+        var s = SyncStatusFormatter.Format(4, Now.AddSeconds(-20), Now, trackingSince: Now.AddMinutes(-30),
+            pushOkAt: Pushes(("musteri", Now.AddSeconds(-30)), ("odeme", Now.AddMinutes(-5))));
+
+        s.Text.Should().Be("Gönderilemiyor — 4 değişiklik bekliyor");
+        s.Healthy.Should().BeFalse();
+    }
+
+    [Fact] public void Hic_basarmayan_gonderim_izleme_basindan_uc_dakika_sonra_gonderilemiyor()
+    {
+        var pushes = Pushes(("musteri", Now.AddSeconds(-30)), ("kargo", null));
+
+        SyncStatusFormatter.Format(4, Now.AddSeconds(-20), Now, trackingSince: Now.AddMinutes(-10), pushOkAt: pushes)
+            .Text.Should().Be("Gönderilemiyor — 4 değişiklik bekliyor");
+        SyncStatusFormatter.Format(4, Now.AddSeconds(-20), Now, trackingSince: Now.AddMinutes(-1), pushOkAt: pushes)
+            .Text.Should().Be("Gönderiliyor (4)", "süreç yeni başladı — gönderim henüz ilk turunu koşmadı");
+    }
+
+    [Fact] public void Gonderimler_tazeyse_gonderiliyor()
+        => SyncStatusFormatter.Format(4, Now.AddSeconds(-20), Now, trackingSince: Now.AddMinutes(-30),
+                pushOkAt: Pushes(("musteri", Now.AddSeconds(-30)), ("odeme", Now - SyncStatusFormatter.OfflineAfter)))
+            .Text.Should().Be("Gönderiliyor (4)", "eşik dahil taze");
+
+    [Fact] public void Bekleyen_yoksa_bayat_gonderim_durumu_bozmaz()
+        => SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now, trackingSince: Now.AddMinutes(-30),
+                pushOkAt: Pushes(("odeme", Now.AddMinutes(-5))))
+            .Text.Should().StartWith("Güncel ✓");
+
+    [Fact] public void Cekme_bayatsa_cevrimdisi_gonderilemiyorun_onunde()
+        => SyncStatusFormatter.Format(4, Now.AddMinutes(-10), Now, trackingSince: Now.AddMinutes(-30),
+                pushOkAt: Pushes(("odeme", Now.AddMinutes(-5))))
+            .Text.Should().Be("Çevrimdışı — 4 değişiklik bekliyor");
+
     // ── anlık görüntü (I-4) ─────────────────────────────────────────────
 
     [Fact] public void Anlik_goruntu_butun_alanlari_tasir()
@@ -163,7 +204,8 @@ public sealed class SyncStatusFormatterTests
             LastPullOkAt: Now.AddMinutes(-10),
             LastCatchUpProgressAt: null,
             BlockedOn: Block(SyncBlockReason.Busy, Now.AddSeconds(-20)),
-            TrackingSince: Now.AddMinutes(-30));
+            TrackingSince: Now.AddMinutes(-30),
+            PushOkAt: Pushes(("musteri", Now.AddMinutes(-5))));
 
         SyncStatusFormatter.Format(1, snapshot, Now, new SyncAttention(0, 1))
             .Text.Should().Be($"Müşteri güncellemeleri bekliyor: ödemesi süren bir müşteri (kod {Code}) · 1 ödeme işi uzlaştırma bekliyor");
@@ -171,5 +213,7 @@ public sealed class SyncStatusFormatterTests
             .Text.Should().Be("Çevrimdışı — 1 değişiklik bekliyor");
         SyncStatusFormatter.Format(1, snapshot with { BlockedOn = null, LastPullOkAt = null }, Now)
             .Text.Should().Be("Çevrimdışı — 1 değişiklik bekliyor", "izleme 30 dk önce başladı, hiç yetişilmedi");
+        SyncStatusFormatter.Format(1, snapshot with { BlockedOn = null, LastPullOkAt = Now.AddSeconds(-20) }, Now)
+            .Text.Should().Be("Gönderilemiyor — 1 değişiklik bekliyor", "gönderim ilerlemesi de görüntüden okunur");
     }
 }

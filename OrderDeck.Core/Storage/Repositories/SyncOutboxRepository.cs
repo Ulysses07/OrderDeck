@@ -13,7 +13,9 @@ public readonly record struct SyncAttention(int SkippedFeedItems, int OpenLegacy
 /// Henüz sunucuya gitmemiş kayıtların toplamı — kapanış uyarısı ve durum
 /// satırı için. Her tablo kendi servisinin outbox ölçütüyle sayılır
 /// (SyncedAt IS NULL; müşteri için SyncSeq > biçim-2 gönderim imleci). Yeni bir
-/// gönderilen tablo eklenince BURAYA da eklenmeli.
+/// gönderilen tablo eklenince BURAYA da eklenmeli — ve gönderim servisi durum izleyicisine
+/// kaydolup başarılı turlarını yazmalı (<c>SyncStatusTracker.RegisterPush</c>/<c>MarkPushOk</c>,
+/// D2 incelemesi I-3), yoksa düşen gönderimi durum satırı göremez.
 ///
 /// <para>Müşteri sayımı bir fark değil <c>COUNT(*)</c>'tır — SyncSeq ardışık değildir (C1).
 /// Silinmiş (<c>PurgedAt</c> dolu) satır hiç gönderilmez (C6) ama gönderim turu onu geçene dek

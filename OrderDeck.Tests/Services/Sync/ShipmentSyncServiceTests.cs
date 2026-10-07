@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
+using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
@@ -40,7 +41,8 @@ public sealed class ShipmentSyncServiceTests
         SettingsStore Store,
         InMemorySqlite Db);
 
-    private static Fixture Build(Func<HttpRequestMessage, HttpResponseMessage> responder)
+    private static Fixture Build(Func<HttpRequestMessage, HttpResponseMessage> responder,
+        SyncStatusTracker? tracker = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -58,7 +60,7 @@ public sealed class ShipmentSyncServiceTests
 
         var svc = new ShipmentSyncService(
             api, shipments, store, settings, licenseProvider,
-            new FakeClock(), NullLogger<ShipmentSyncService>.Instance);
+            new FakeClock(), NullLogger<ShipmentSyncService>.Instance, tracker);
 
         return new Fixture(svc, settings, store, db);
     }
@@ -103,5 +105,39 @@ public sealed class ShipmentSyncServiceTests
             "imleç sunucunun teslim ettiği SON satır olmalı — .NET Guid sırasıyla yeniden seçilirse " +
             "sunucu sayfa sınırının gerisine düşer ve aynı satırlar tekrar iner");
         fx.Store.Load().LastShipmentReverseSyncId.Should().Be(sqlBig, "diske de aynı imleç yazılmalı");
+    }
+
+    // ── durum satırı: gönderim ilerlemesi (D2 incelemesi I-3) ──────────
+
+    [Fact]
+    public async Task Gonderim_ilerlemesi_basarili_gonderimde_ve_bos_kuyrukta_yazilir_hatada_yazilmaz()
+    {
+        var tracker = new SyncStatusTracker();
+        var fail = true;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/shipments/sync"))
+                return fail ? FakeHttpMessageHandler.Json(500, "{}") : FakeHttpMessageHandler.Json(200, "[]");
+            if (path.Contains("/shipments/since")) return FakeHttpMessageHandler.Json(200, "[]");
+            return FakeHttpMessageHandler.Empty(404);
+        }, tracker);
+        using var _d = fx.Db;
+        DateTimeOffset? PushOk() => tracker.Snapshot().PushOkAt![ShipmentSyncService.PushStatusName];
+        new ShipmentRepository(fx.Db).Insert(new Shipment(Guid.NewGuid().ToString(), Guid.NewGuid().ToString("N"),
+            ShipmentStatus.Pending, 1_716_000_000L, null, null, 250m));
+
+        await fx.Svc.SyncOnceAsync();
+        await fx.Svc.SyncOnceAsync();
+        PushOk().Should().BeNull("gönderim her turda düştü");
+
+        fail = false;
+        await fx.Svc.SyncOnceAsync();
+        var sent = PushOk();
+        sent.Should().NotBeNull();
+
+        await fx.Svc.SyncOnceAsync();
+        PushOk().Should().BeOnOrAfter(sent!.Value, "gönderecek bir şey olmayan tur da sağlıklı");
     }
 }

@@ -143,9 +143,9 @@ public sealed class CustomerChangesPullServiceTests
         var fake = new FakeLicenseProvider { CurrentLicenseKey = license ? Lisans : null };
         var lic = licenseProvider ?? fake;
         var clock = new FixedClock();
-        var push = new WpfCustomerProjectionSyncService(api, syncRepo, cursors, lic, clock,
-            NullLogger<WpfCustomerProjectionSyncService>.Instance);
         var tracker = new SyncStatusTracker();
+        var push = new WpfCustomerProjectionSyncService(api, syncRepo, cursors, lic, clock,
+            NullLogger<WpfCustomerProjectionSyncService>.Instance, tracker);
         var log = new RecordingLogger<CustomerChangesPullService>();
         var svc = new CustomerChangesPullService(api, customers, syncRepo, cursors, push, lic, clock, tracker, log);
         return new Fixture(svc, push, customers, cursors, tracker, db, http, pushed, faults, fake, log);
@@ -1176,6 +1176,30 @@ public sealed class CustomerChangesPullServiceTests
         fx.FeedCursor.Should().Be(5);
         fx.Tracker.LastCatchUpProgressAt.Should().NotBeNull("akış bu turda ilerledi");
         fx.Tracker.IsInitialCatchUpDone.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Gonderim_hep_duserken_cekme_basarili_durum_satiri_gonderilemiyor_der()
+    {
+        // I-3: akış her turda boş sayfaya yetişiyor, gönderim her turda 500 — "Gönderiliyor (1)"
+        // sağlıklı görünürdü; satır diğer bilgisayarlara hiç ulaşmıyor.
+        using var fx = Build(after => FakeHttpMessageHandler.Json(200, Page(after)),
+            sync: () => FakeHttpMessageHandler.Json(500, "{}"));
+        LocalRow(fx, "ornek_musteri");
+
+        for (var round = 0; round < 3; round++)
+            (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        var s = fx.Tracker.Snapshot();
+        s.LastPullOkAt.Should().NotBeNull();
+        s.PushOkAt![WpfCustomerProjectionSyncService.PushStatusName].Should().BeNull();
+        var pending = new SyncPendingCounter(new SyncOutboxRepository(fx.Db), fx.Cursors, fx.License).Count();
+        pending.Should().Be(1);
+
+        // Üç dakikadan sonra (izleme 10 dk önce başlamış; çekme hâlâ taze):
+        var now = s.LastPullOkAt!.Value;
+        SyncStatusFormatter.Format(pending, s with { TrackingSince = now.AddMinutes(-10) }, now)
+            .Should().Be(new SyncStatusFormatter.Status("Gönderilemiyor — 1 değişiklik bekliyor", Healthy: false));
     }
 
     [Fact]
