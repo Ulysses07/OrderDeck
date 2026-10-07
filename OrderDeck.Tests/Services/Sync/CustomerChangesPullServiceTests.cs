@@ -1340,6 +1340,36 @@ public sealed class CustomerChangesPullServiceTests
     }
 
     [Fact]
+    public async Task Tam_yeniden_esitlemeden_sonra_hala_uygulanamayan_oge_bes_turda_yeniden_atlanir()
+    {
+        // Hata kayıtları silindiği için deneme sayımı baştan başlar (C7 incelemesi kararı): öğe ilk
+        // denemede değil beşinci turda yeniden atlanır, arkasındaki akış o sürede bekler, sonra imleç
+        // öğenin ötesine geçer ve kalıcı uyarı geri gelir.
+        var poison = Guid.NewGuid();
+        var ok = Guid.NewGuid();
+        using var fx = Build(after => after == 0 ? Page(6, Item(poison, "zehir", 5), Item(ok, "saglam", 6)) : Page(after));
+        using (var c = fx.Db.Open())
+            c.Execute("CREATE TRIGGER zehir BEFORE INSERT ON Customer WHEN new.Username = 'zehir' BEGIN SELECT RAISE(ABORT, 'zehir'); END");
+        for (var tour = 1; tour <= CustomerChangesPullService.MaxAttemptsBeforeSkip; tour++)
+            await fx.Svc.PullOnceAsync(CancellationToken.None);
+        fx.FeedCursor.Should().Be(6);
+
+        (await fx.Svc.RequestFullResyncAsync(CancellationToken.None)).Should().BeTrue();
+
+        for (var tour = 1; tour < CustomerChangesPullService.MaxAttemptsBeforeSkip; tour++)
+        {
+            (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed, $"tur {tour}");
+            fx.FeedCursor.Should().Be(0, "deneme sayımı baştan — öğe henüz atlanmaz");
+        }
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        fx.FeedCursor.Should().Be(6, "beşinci turda atlandı, imleç öğenin ötesinde");
+        Exists(fx, poison.ToString("N")).Should().BeFalse();
+        Exists(fx, ok.ToString("N")).Should().BeTrue();
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure WHERE SkippedAt IS NOT NULL").Should().Be(1,
+            "kalıcı uyarı geri gelir");
+    }
+
+    [Fact]
     public async Task Tam_yeniden_esitleme_lisans_yoksa_hicbir_seyi_sifirlamaz()
     {
         using var fx = Build(after => Page(after), license: false);

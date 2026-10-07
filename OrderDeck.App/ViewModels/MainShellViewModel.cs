@@ -441,19 +441,32 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private const string ResyncTitle = "Senkronu baştan al";
 
+    /// <summary>D5b: yayın sürerken kapalı — bütün müşterilerin yeniden gönderimi sipariş senkronuyla
+    /// sunucunun hız sınırını paylaşır (<see cref="IsStreamActive"/> değişince yeniden değerlendirilir).</summary>
+    private bool CanResyncCustomers() => !IsStreamActive;
+
     /// <summary>
     /// D5b — destek eylemi ("Diğer" menüsü): müşteri senkronunu baştan al. Veri silinmez; işi arka plan
-    /// servisi yapar, birkaç dakika "Gönderiliyor (N)" görünmesi normal. Sıfırlama arayüz iş parçacığı
-    /// dışında koşar (süren turu bekler; imleç yazımları SQLite yazma kilidini bekleyebilir).
+    /// servisi yapar, birkaç dakika "Gönderiliyor (N)" ve "Güncelleniyor…" görünmesi normal. Yayın
+    /// sürerken kullanılamaz (<see cref="CanResyncCustomers"/>; yine de çağrılırsa nedeni söylenir).
+    /// Sıfırlama arayüz iş parçacığı dışında koşar (süren turu bekler; imleç yazımları SQLite yazma
+    /// kilidini bekleyebilir).
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanResyncCustomers))]
     private async Task ResyncCustomersAsync()
     {
         if (_customerPull is not { } pull) return;
+        if (_sessions.GetActive() is not null)
+        {
+            _dialogs.Show("Yayın sürerken müşteri senkronu baştan alınamaz — yayını bitirdikten sonra dene.",
+                ResyncTitle);
+            return;
+        }
         if (!_dialogs.Confirm(
                 "Müşteri senkronu baştan alınacak: bu bilgisayardaki bütün müşteriler sunucuya yeniden " +
                 "gönderilir ve diğer bilgisayarların değişiklikleri baştan indirilir. Hiçbir kayıt silinmez; " +
-                "birkaç dakika \"Gönderiliyor\" görünmesi normal.\n\nYalnız destek istediğinde kullan. Devam edilsin mi?",
+                "birkaç dakika durum satırında \"Gönderiliyor\" ve \"Güncelleniyor\" görünmesi normal.\n\n" +
+                "Yalnız destek istediğinde kullan. Devam edilsin mi?",
                 ResyncTitle))
             return;
 
@@ -483,7 +496,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// açıkken "Yayını Bitir". <see cref="UpdateStreamStatusLabel"/> ile
     /// birlikte güncellenir — iki ayrı yerden set edilmesin.
     /// </summary>
-    [ObservableProperty] private bool _isStreamActive;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ResyncCustomersCommand))]
+    private bool _isStreamActive;
     [ObservableProperty] private bool _isGiveawayActive;
     [ObservableProperty] private bool _canStartGiveaway;
     [ObservableProperty] private LabelViewModel? _selectedQueueItem;

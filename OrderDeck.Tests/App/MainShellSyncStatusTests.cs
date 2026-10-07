@@ -437,6 +437,21 @@ public sealed class MainShellSyncStatusTests
             tracker, NullLogger<CustomerChangesPullService>.Instance);
     }
 
+    private const string ResyncConfirmText =
+        "Müşteri senkronu baştan alınacak: bu bilgisayardaki bütün müşteriler sunucuya yeniden " +
+        "gönderilir ve diğer bilgisayarların değişiklikleri baştan indirilir. Hiçbir kayıt silinmez; " +
+        "birkaç dakika durum satırında \"Gönderiliyor\" ve \"Güncelleniyor\" görünmesi normal.\n\n" +
+        "Yalnız destek istediğinde kullan. Devam edilsin mi?";
+
+    /// <summary>Harness yayını açık kurar; destek eylemi yayın sürerken kullanılamaz.</summary>
+    private static async Task EndStreamAsync(MainShellTestHarness.Harness h)
+    {
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+        h.Dialogs.ConfirmResult = _ => false;
+        h.Dialogs.Confirmations.Clear();
+    }
+
     [Fact]
     public async Task Senkronu_bastan_al_onay_sorar_hayir_derse_hicbir_sey_degismez()
     {
@@ -446,14 +461,12 @@ public sealed class MainShellSyncStatusTests
         cursors.Upsert(CustomerChangesPullService.CursorName, key, seq: 9);
         cursors.Upsert(WpfCustomerProjectionSyncService.CursorName, key, seq: 9);
         using var h = MainShellTestHarness.Build(customerPull: PullService(syncDb, key));
+        await EndStreamAsync(h);
 
         await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
 
         h.Dialogs.Confirmations.Should().ContainSingle(c => c.Title == ResyncTitle)
-            .Which.Message.Should().Be(
-                "Müşteri senkronu baştan alınacak: bu bilgisayardaki bütün müşteriler sunucuya yeniden " +
-                "gönderilir ve diğer bilgisayarların değişiklikleri baştan indirilir. Hiçbir kayıt silinmez; " +
-                "birkaç dakika \"Gönderiliyor\" görünmesi normal.\n\nYalnız destek istediğinde kullan. Devam edilsin mi?");
+            .Which.Message.Should().Be(ResyncConfirmText);
         cursors.Get(CustomerChangesPullService.CursorName, key)!.Seq.Should().Be(9);
         cursors.Get(WpfCustomerProjectionSyncService.CursorName, key)!.Seq.Should().Be(9);
     }
@@ -471,6 +484,7 @@ public sealed class MainShellSyncStatusTests
         using var h = MainShellTestHarness.Build(syncStatus: tracker,
             pendingCounter: EmptyCounter(syncDb, new FixedLicense(key)), customerPull: PullService(syncDb, key));
         tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        await EndStreamAsync(h);
         h.Vm.RefreshSyncStatus();
         h.Vm.SyncStatusText.Should().StartWith("Güncel ✓");
         h.Dialogs.ConfirmResult = title => title == ResyncTitle;
@@ -484,10 +498,39 @@ public sealed class MainShellSyncStatusTests
     }
 
     [Fact]
+    public async Task Senkronu_bastan_al_yayin_surerken_kullanilamaz_nedeni_soylenir()
+    {
+        // Bütün müşterilerin yeniden gönderimi sipariş senkronuyla sunucunun hız sınırını paylaşır:
+        // yayın sürerken menü öğesi kapalı; yine de çağrılırsa tek satırlık neden, soru yok.
+        using var syncDb = MigratedDb();
+        var key = $"lisans-{Guid.NewGuid():N}";
+        var cursors = new SyncCursorRepository(syncDb);
+        cursors.Upsert(CustomerChangesPullService.CursorName, key, seq: 9);
+        using var h = MainShellTestHarness.Build(customerPull: PullService(syncDb, key));
+        h.Sessions.GetActive().Should().NotBeNull("harness yayını açık kurar");
+        h.Dialogs.ConfirmResult = _ => true;
+
+        h.Vm.ResyncCustomersCommand.CanExecute(null).Should().BeFalse();
+        await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
+
+        h.Dialogs.Confirmations.Should().NotContain(c => c.Title == ResyncTitle);
+        h.Dialogs.Shown.Should().ContainSingle().Which.Should().Be((ResyncTitle,
+            "Yayın sürerken müşteri senkronu baştan alınamaz — yayını bitirdikten sonra dene.", DialogSeverity.Info));
+        cursors.Get(CustomerChangesPullService.CursorName, key)!.Seq.Should().Be(9);
+
+        await EndStreamAsync(h);
+        h.Vm.ResyncCustomersCommand.CanExecute(null).Should().BeTrue("yayın bitti");
+        h.Dialogs.ConfirmResult = _ => true;
+        h.Vm.StartStreamCommand.Execute(null);
+        h.Vm.ResyncCustomersCommand.CanExecute(null).Should().BeFalse("yeni yayın başladı");
+    }
+
+    [Fact]
     public async Task Senkronu_bastan_al_lisans_yoksa_soyler()
     {
         using var syncDb = MigratedDb();
         using var h = MainShellTestHarness.Build(customerPull: PullService(syncDb, licenseKey: null));
+        await EndStreamAsync(h);
         h.Dialogs.ConfirmResult = _ => true;
 
         await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
@@ -503,6 +546,7 @@ public sealed class MainShellSyncStatusTests
         var log = new WarningCounter();
         using var h = MainShellTestHarness.Build(log: log,
             customerPull: PullService(new FailingFactory(syncDb), $"lisans-{Guid.NewGuid():N}"));
+        await EndStreamAsync(h);
         h.Dialogs.ConfirmResult = _ => true;
         var warnings = log.Warnings;
 

@@ -309,7 +309,9 @@
                         <Separator/>
                         <MenuItem Header="Ayarlar" Command="{Binding OpenSettingsCommand}"/>
                         <MenuItem Header="Destek Talepleri" Command="{Binding OpenSupportRequestsCommand}"/>
-                        <MenuItem Header="Müşteri senkronunu baştan al…" Command="{Binding ResyncCustomersCommand}"/>
+                        <MenuItem Header="Müşteri senkronunu baştan al…" Command="{Binding ResyncCustomersCommand}"
+                                  ToolTip="Yalnız destek istediğinde. Yayın sürerken kullanılamaz."
+                                  ToolTipService.ShowOnDisabled="True"/>
                         <MenuItem Header="Hesap" Command="{Binding OpenAccountCommand}"/>
                     </ContextMenu>
                 </Button.ContextMenu>
