@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -18,6 +19,10 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 ///
 /// Bakiye DÜŞÜLMESİ bu controller'da değil — WPF "Ödeme iste" anında
 /// LicensesCustomerBalanceApplyController'a (sonraki) çağrı yapılır.
+///
+/// Rotadaki Id bir kopya olabilir (A5b: eski bağlantı/sekme ya da eski
+/// sürümün Id'si): her uç onu önce asıl kayda çözer, işlem asıl kayıtla
+/// yapılır — kopyaya asla bakiye satırı açılmaz.
 /// </summary>
 [ApiController]
 [Route("api/panel/customers/{wpfCustomerId:guid}/balance")]
@@ -25,7 +30,13 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelCustomerBalanceController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public PanelCustomerBalanceController(LicenseDbContext db) => _db = db;
+    private readonly CustomerIdResolver _customerIds;
+
+    public PanelCustomerBalanceController(LicenseDbContext db, CustomerIdResolver customerIds)
+    {
+        _db = db;
+        _customerIds = customerIds;
+    }
 
     public sealed record BalanceDto(
         Guid WpfCustomerId,
@@ -58,17 +69,18 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         if (take < 1 || take > 200) take = 50;
 
         var customerId = User.GetTenantCustomerId();
-        var (licenseId, valid) = await ResolveLicenseAsync(wpfCustomerId, customerId, ct);
+        var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
+        // Yanıttaki Id rotadaki Id'dir (önceki davranış); bakiye asıl kaydınki.
         var balance = await _db.CustomerBalances
-            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
-            .Select(b => new BalanceDto(b.WpfCustomerId, b.LicenseId, b.Balance, b.UpdatedAt))
+            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
+            .Select(b => new BalanceDto(wpfCustomerId, b.LicenseId, b.Balance, b.UpdatedAt))
             .FirstOrDefaultAsync(ct)
             ?? new BalanceDto(wpfCustomerId, licenseId, 0m, DateTimeOffset.UtcNow);
 
         var transactions = await _db.CustomerBalanceTransactions
-            .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == wpfCustomerId)
+            .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == canonicalId)
             .OrderByDescending(t => t.CreatedAt)
             .Take(take)
             .Select(t => new TransactionDto(
@@ -93,10 +105,10 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         if (req.Amount <= 0) return Problem(title: "invalid-amount", statusCode: 400);
 
         var customerId = User.GetTenantCustomerId();
-        var (licenseId, valid) = await ResolveLicenseAsync(wpfCustomerId, customerId, ct);
+        var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+        await ApplyTransactionAsync(licenseId, canonicalId, customerId,
             amount: req.Amount,
             kind: "refund-full",
             originalAmount: req.Amount,
@@ -129,10 +141,10 @@ public sealed class PanelCustomerBalanceController : ControllerBase
 
         var netAmount = req.OriginalAmount - req.ShippingDeducted;
         var customerId = User.GetTenantCustomerId();
-        var (licenseId, valid) = await ResolveLicenseAsync(wpfCustomerId, customerId, ct);
+        var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+        await ApplyTransactionAsync(licenseId, canonicalId, customerId,
             amount: netAmount,
             kind: "refund-net",
             originalAmount: req.OriginalAmount,
@@ -160,13 +172,13 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             return Problem(title: "reason-required", statusCode: 400);
 
         var customerId = User.GetTenantCustomerId();
-        var (licenseId, valid) = await ResolveLicenseAsync(wpfCustomerId, customerId, ct);
+        var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
         // Negatif manuel ayar bakiyeyi sıfırın altına düşürmesin — kontrol
         // ApplyTransactionAsync'in retry döngüsünün İÇİNDE yapılır (F02):
         // buradaki ayrı bir ön okuma, eşzamanlı yazımlarda bayat değere bakardı.
-        var applied = await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+        var applied = await ApplyTransactionAsync(licenseId, canonicalId, customerId,
             amount: req.Amount,
             kind: "manual-adjustment",
             originalAmount: null,
@@ -189,13 +201,13 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         CancellationToken ct)
     {
         var customerId = User.GetTenantCustomerId();
-        var (licenseId, valid) = await ResolveLicenseAsync(wpfCustomerId, customerId, ct);
+        var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
         var original = await _db.CustomerBalanceTransactions
             .FirstOrDefaultAsync(t => t.Id == transactionId
                 && t.LicenseId == licenseId
-                && t.WpfCustomerId == wpfCustomerId, ct);
+                && t.WpfCustomerId == canonicalId, ct);
         if (original is null) return NotFound();
 
         // Daha önce reverse edilmiş mi? Bu ön kontrol hızlı yol — yarışta iki
@@ -212,7 +224,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         bool applied;
         try
         {
-            applied = await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+            applied = await ApplyTransactionAsync(licenseId, canonicalId, customerId,
                 amount: reverseAmount,
                 kind: "reversal",
                 originalAmount: null,
@@ -235,17 +247,17 @@ public sealed class PanelCustomerBalanceController : ControllerBase
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private async Task<(Guid licenseId, bool valid)> ResolveLicenseAsync(
+    /// <summary>
+    /// Rotadaki Id → (lisans, asıl kayıt). WpfCustomerProjection → License →
+    /// CustomerId (yayıncı) eşleşmesiyle çağıranın bu projeksiyona sahip olduğu
+    /// doğrulanır (kiracı yalıtımı) — kopya Id'si için kopyanın KENDİ
+    /// lisansından. Kopya asıl kayda çözülür (A5b); işlemler asıl kayıtla.
+    /// </summary>
+    private async Task<(Guid licenseId, Guid canonicalId, bool valid)> ResolveAsync(
         Guid wpfCustomerId, Guid callerCustomerId, CancellationToken ct)
-    {
-        // WpfCustomerProjection → License → CustomerId (yayıncı) match.
-        // Caller'ın bu projection'a sahip olduğunu doğrula (cross-tenant izolasyon).
-        var row = await _db.WpfCustomerProjections
-            .Where(p => p.Id == wpfCustomerId && p.License.CustomerId == callerCustomerId)
-            .Select(p => (Guid?)p.LicenseId)
-            .FirstOrDefaultAsync(ct);
-        return row is null ? (Guid.Empty, false) : (row.Value, true);
-    }
+        => await _customerIds.LocateForTenantAsync(callerCustomerId, wpfCustomerId, ct) is { } located
+            ? (located.LicenseId, located.CanonicalId, true)
+            : (Guid.Empty, Guid.Empty, false);
 
     /// <summary>
     /// Ledger satırı yazar + CustomerBalance.Balance'ı günceller (tek transaction).

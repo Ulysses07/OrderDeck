@@ -241,6 +241,62 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         (await MatchAsync(txId))?.ActualWpfCustomerId.Should().BeNull();
     }
 
+    /// <summary>
+    /// A5b: kopya (MergedIntoId dolu) asıl kaydın kullanıcı adını taşır ama müşteri değil, yönlendirmedir. Aranan adla
+    /// eşleşen ikinci satır sayılsaydı birleşmiş her kişi için "belirsiz" denir, elle eşleme hiç yapılamazdı.
+    /// </summary>
+    [Fact]
+    public async Task Elle_eslemede_ayni_kullanici_adli_kopya_belirsizlik_yaratmaz_asil_kayit_bulunur()
+    {
+        var (lic, txId, wpfId) = await SeedAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34",
+                MergedIntoId = wpfId, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var post = await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
+
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var m = await MatchAsync(txId);
+        m.Should().NotBeNull("kullanıcı adı tek bir müşteriye (asıl kayıt) çözülmeli");
+        m!.ActualWpfCustomerId.Should().Be(wpfId);
+    }
+
+    /// <summary>
+    /// Kullanıcı adı kimlik anahtarıyla aranır (Shopper aday aramalarıyla aynı gerekçe): SQL Server'ın CI_AS'si "İrem" ile
+    /// "irem"i farklı sayar; yönetici büyük harfle, noktalı İ ile ya da kenar boşluğuyla yazsa da aynı müşteri bulunmalı.
+    /// </summary>
+    [Fact]
+    public async Task Elle_esleme_kullanici_adini_kimlik_anahtariyla_bulur()
+    {
+        var (lic, txId, _) = await SeedAsync();
+        Guid customerId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = new WpfCustomerProjection
+                { Id = Guid.NewGuid(), LicenseId = lic, Platform = "instagram", Username = "irem_k", UpdatedAt = DateTimeOffset.UtcNow };
+            db.WpfCustomerProjections.Add(customer);
+            await db.SaveChangesAsync();
+            customerId = customer.Id;
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var post = await PostAsync(client, "ManualMatch", lic, txId, " İrem_K ");
+
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var match = await MatchAsync(txId);
+        match.Should().NotBeNull("'İrem_K' ile 'irem_k' aynı kimlik anahtarına düşer");
+        match!.ActualWpfCustomerId.Should().Be(customerId);
+    }
+
     [Fact]
     public async Task Baska_lisansin_hareketi_elle_eslenmez_ve_karari_kaldirilmaz()
     {

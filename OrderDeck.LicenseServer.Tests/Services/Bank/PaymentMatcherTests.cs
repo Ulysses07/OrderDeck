@@ -227,6 +227,31 @@ public sealed class PaymentMatcherTests
         m.Evidence.Should().StartWith("ambiguous:");
     }
 
+    /// <summary>
+    /// A5b: kopya (MergedIntoId dolu) asıl kaydın kullanıcı adını taşır ama
+    /// müşteri değil, yönlendirmedir. Aday sayılsaydı birleşmiş HER kişi için
+    /// açıklamadaki kullanıcı adı iki adaya çarpar ve "belirsiz" denirdi.
+    /// </summary>
+    [Fact]
+    public async Task Ayni_kullanici_adinda_asil_ve_kopya_varken_asil_kayit_onerilir()
+    {
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var ayse = Customer(db, lic, "ayse_gul34");
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "Ayse_Gul34",
+            MergedIntoId = ayse.Id, UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+        var tx = Incoming(db, lic, "HAVALE - AYSE GUL34 - siparis");
+
+        var m = await Matcher(db).MatchAsync(tx, CancellationToken.None);
+
+        m.Status.Should().Be(PaymentMatchStatus.Proposed);
+        m.ProposedWpfCustomerId.Should().Be(ayse.Id);
+        m.Layer.Should().Be(PaymentMatchLayer.UsernameInDescription);
+    }
+
     [Fact]
     public async Task Iban_hafizasi_ikinci_katman_ve_ikisi_birlikte_yuksek_guven()
     {

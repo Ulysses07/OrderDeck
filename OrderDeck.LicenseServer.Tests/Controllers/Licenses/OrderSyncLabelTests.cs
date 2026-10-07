@@ -146,6 +146,39 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
         (await LabelCountAsync(s.ConversationId)).Should().Be(0);
     }
 
+    /// <summary>
+    /// A5b: eski sürüm birleştirmeden sonra da kopyanın Id'siyle gönderir; kopyanın
+    /// telefonu yok. Etiket kuralı çözülmüş (asıl kayıt) Id'yle telefona ulaşmalı —
+    /// yoksa birleşmiş her kişinin siparişi sessizce etiketsiz kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task Kopya_Idsiyle_gelen_siparis_asil_kaydin_sohbetini_etiketler()
+    {
+        var s = await SeedAsync();
+        var aliasId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = aliasId,
+                LicenseId = s.LicenseId,
+                Platform = "youtube",
+                Username = "Ayse",
+                MergedIntoId = s.WpfCustomerId,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/v1/licenses/{s.LicenseId}/orders/sync",
+            Body(aliasId, printedAt: DateTimeOffset.UtcNow));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await LabelCountAsync(s.ConversationId)).Should().Be(1);
+    }
+
     [Fact]
     public async Task An_unprinted_order_is_not_an_event_yet()
     {

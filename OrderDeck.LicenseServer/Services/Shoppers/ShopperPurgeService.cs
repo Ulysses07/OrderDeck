@@ -211,13 +211,14 @@ public sealed class ShopperPurgeService
                 .Where(c => projectionKeys.Contains((c.LicenseId, c.Id)))
                 .ToList();
 
+        // Tek boşaltma listesi WpfCustomerProjection'da yaşıyor (ScrubPersonal)
+        // ve WPF'teki aynı KVKK politikasını yansıtıyor: Notes ve kara liste
+        // alanları BİLEREK kalır. MarkPurged ayrıca PurgedAt'ı İLK silme
+        // tarihinde sabitler (??=) — elle yazılan önceki satır bunu her
+        // çağrıda ezip adli kaydı bozuyordu.
         foreach (var c in projections)
         {
-            c.FullName = null;
-            c.Phone = null;
-            c.Address = null;
-            c.PurgedAt = now;
-            c.UpdatedAt = now;
+            c.MarkPurged(now);
         }
 
         // 3b. Gölge banka eşleştirmesinin izi (Obifin). IBAN hafızası "bu IBAN bu

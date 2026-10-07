@@ -725,6 +725,183 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         customers[0].GetProperty("orderCount").GetInt32().Should().Be(1);
     }
 
+    /// <summary>Kopya satırı (MergedIntoId dolu, kişisel alanları boş) asıl kayda
+    /// yönlendirmedir; A5b'de varsayılan sorgulardan gizli.</summary>
+    private async Task SeedAliasAsync(Guid licenseId, Guid aliasId, Guid canonicalId,
+        string username, string platform)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = aliasId,
+            LicenseId = licenseId,
+            Platform = platform,
+            Username = username,
+            MergedIntoId = canonicalId,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// A5b: kopya bir yönlendirmedir, müşteri değil — liste onu adı/telefonu boş
+    /// ikinci bir "hayalet" müşteri olarak göstermemeli.
+    /// </summary>
+    [Fact]
+    public async Task List_kopya_hayalet_musteri_olarak_gorunmez()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var canonicalId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "Ayşe Kaya", "@ayse", "instagram");
+        await SeedAliasAsync(licenseId, Guid.NewGuid(), canonicalId, "@Ayse", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("customers").EnumerateArray()
+            .Select(c => c.GetProperty("id").GetString())
+            .Should().Equal(canonicalId.ToString("N"));
+    }
+
+    /// <summary>
+    /// A5b: eski bir yer imi/sekme kopya Id'si taşıyabilir. Id önce asıl kayda
+    /// çözülür (sıfır siparişli yol): kopyanın boş özeti değil, asıl kaydınki döner.
+    /// </summary>
+    [Fact]
+    public async Task Get_kopya_Id_ile_siparissiz_asil_kaydin_ozetini_doner()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "Yeni Musteri", "@yeni", "instagram");
+        await SeedAliasAsync(licenseId, aliasId, canonicalId, "@Yeni", "instagram");
+
+        var resp = await client.GetAsync($"/api/panel/customers/{aliasId:N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("customerId").GetString().Should().Be(canonicalId.ToString("N"));
+        root.GetProperty("displayName").GetString().Should().Be("Yeni Musteri");
+        root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(canonicalId.ToString());
+    }
+
+    /// <summary>
+    /// A5b: çözüm en başta yapılır — asıl kaydın siparişleri varsa kopya Id'siyle
+    /// gelen istek de onları görür (sıfır siparişli bir özet değil).
+    /// </summary>
+    [Fact]
+    public async Task Get_kopya_Id_ile_asil_kaydin_siparislerini_doner()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "Buyer", "@buyer", "instagram");
+        await SeedAliasAsync(licenseId, aliasId, canonicalId, "@Buyer", "instagram");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, canonicalId.ToString("N"), "instagram", "@buyer", "Buyer",
+                100m, DateTimeOffset.UtcNow.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync($"/api/panel/customers/{aliasId:N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("customerId").GetString().Should().Be(canonicalId.ToString("N"));
+        root.GetProperty("orderCount").GetInt32().Should().Be(1);
+        root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(canonicalId.ToString());
+    }
+
+    /// <summary>
+    /// wpfCustomerProjectionId (bakiye uçlarının anahtarı) kullanıcı adı
+    /// aramasına değil çözülmüş asıl kaydın Id'sine dayanır. Bölüm B'nin tekil
+    /// indeksinden önce aynı platform + kullanıcı adında birden çok asıl kayıt
+    /// olabilir; arama sipariş satırının kullanıcı adıyla BAŞKA bir kaydı
+    /// seçerdi ve panel bakiyeyi yanlış kişinin kaydında açardı.
+    /// </summary>
+    [Fact]
+    public async Task Get_projeksiyon_Idsi_kullanici_adi_aramasina_degil_cozulmus_asil_kayda_dayanir()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var otherId = Guid.NewGuid();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        // Sipariş satırının kullanıcı adı birebir öteki kayıtta; asıl kaydınki
+        // yalnız büyük/küçük harfte farklı (başka bilgisayarın yazımı).
+        await SeedProjectionAsync(licenseId, otherId, "Öteki Kayıt", "@ikiz", "instagram");
+        await SeedProjectionAsync(licenseId, canonicalId, "Asıl Kayıt", "@Ikiz", "instagram");
+        await SeedAliasAsync(licenseId, aliasId, canonicalId, "@ikiz", "instagram");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, canonicalId.ToString("N"), "instagram", "@ikiz", "Asıl Kayıt",
+                100m, DateTimeOffset.UtcNow.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync($"/api/panel/customers/{aliasId:N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("customerId").GetString().Should().Be(canonicalId.ToString("N"));
+        root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(canonicalId.ToString());
+    }
+
+    /// <summary>Sipariş müşteri Id'si Guid değilse (eski veri) projeksiyon
+    /// eskisi gibi platform + kullanıcı adıyla aranır.</summary>
+    [Fact]
+    public async Task Get_Guid_olmayan_musteri_Idsinde_kullanici_adi_aramasina_duser()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var projectionId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, projectionId, "Eski Kayıt", "@eski", "instagram");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, "eski-musteri", "instagram", "@eski", "Eski Kayıt",
+                50m, DateTimeOffset.UtcNow.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers/eski-musteri");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(projectionId.ToString());
+    }
+
+    /// <summary>Id çözüldü ama o Id'nin projeksiyonu yok (müşteri senkronu
+    /// siparişlerin gerisinde): null — kullanıcı adıyla başka bir kayda
+    /// düşülmez, bakiye bu müşteri için açılmaz.</summary>
+    [Fact]
+    public async Task Get_cozulmus_Idnin_projeksiyonu_yoksa_null_doner()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        await SeedProjectionAsync(licenseId, Guid.NewGuid(), "Başka Bilgisayarın Kaydı", "@gecikmeli", "instagram");
+        var customerHex = Guid.NewGuid().ToString("N");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, customerHex, "instagram", "@gecikmeli", "Gecikmeli",
+                20m, DateTimeOffset.UtcNow.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync($"/api/panel/customers/{customerHex}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("wpfCustomerProjectionId").ValueKind
+            .Should().Be(System.Text.Json.JsonValueKind.Null);
+    }
+
     [Fact]
     public async Task Get_zero_order_projection_returns_summary()
     {

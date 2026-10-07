@@ -323,6 +323,64 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         link!.WpfCustomerId.Should().Be(projection!.Id);
     }
 
+    /// <summary>
+    /// A5c: katılmada açılan projeksiyon da kaydınki gibi GEÇİCİDİR (kişinin
+    /// kendi beyanı, kanıtsız bağlantı).
+    /// </summary>
+    [Fact]
+    public async Task Join_otomatik_projeksiyon_gecici_olarak_isaretlenir()
+    {
+        var client = _factory.CreateClient();
+        var (_, codeA, _) = await SeedLicenseAsync();
+        var (licenseIdB, codeB, _) = await SeedLicenseAsync();
+        var (token, _, _) = await RegisterShopperAsync(client, codeA);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        (await client.PostAsJsonAsync("/api/v1/shopper/broadcasters/join",
+                new JoinRequest(codeB, "tiktok", "gecici-katilim")))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var projection = await db.WpfCustomerProjections
+            .SingleAsync(p => p.LicenseId == licenseIdB && p.Username == "gecici-katilim");
+        projection.CreatedByShopper.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A5c: katılmada da aday araması kimlik anahtarıyla — "irem" projeksiyonu
+    /// varken "İrem" ile katılım adayı bulur, yeni geçici satır açmaz.
+    /// </summary>
+    [Fact]
+    public async Task Join_farkli_yazimli_kullanici_adi_adayi_kimlik_anahtariyla_bulur_yeni_satir_acmaz()
+    {
+        var client = _factory.CreateClient();
+        var (_, codeA, _) = await SeedLicenseAsync();
+        var (licenseIdB, codeB, _) = await SeedLicenseAsync();
+        var (token, shopperId, _) = await RegisterShopperAsync(client, codeA);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseIdB, Platform = "tiktok", Username = "irem",
+                Phone = UniquePhone(), UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        (await client.PostAsJsonAsync("/api/v1/shopper/broadcasters/join", new JoinRequest(codeB, "tiktok", "İrem")))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var check = _factory.Services.CreateScope();
+        var vdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.LicenseId == licenseIdB))
+            .Should().Be(1, "aday bulundu, yeni geçici satır açılmadı");
+        (await vdb.ShopperBroadcasterLinks.SingleAsync(l => l.ShopperId == shopperId && l.LicenseId == licenseIdB))
+            .WpfCustomerId.Should().BeNull("kanıt yok — bağlantı beklemede");
+    }
+
     // ── T9: Existing WpfProjection on Join → no duplicate created ───────────
 
     [Fact]

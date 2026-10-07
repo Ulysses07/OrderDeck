@@ -93,13 +93,15 @@ public sealed class ShopperBroadcastersController : ControllerBase
 
         // 6. Match WpfCustomerProjection — bağlamak için telefon kanıtı şart.
         // Kayıt akışıyla (ShopperAuthController.Register adım 7) aynı kural;
-        // gerekçe WpfCustomerLinkMatcher'da.
+        // gerekçe WpfCustomerLinkMatcher'da. Aday kimlik anahtarıyla aranır
+        // (aynı adımdaki gerekçe).
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
+        var identityKey = WpfCustomerProjection.IdentityKeyOf(usernameNorm);
         var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
-                        p.Username == usernameNorm)
+                        p.IdentityKey == identityKey)
             .ToListAsync(ct);
         var wpfMatch = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt);
@@ -123,6 +125,9 @@ public sealed class ShopperBroadcastersController : ControllerBase
         // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
         // yeni satır açmak, gerçek müşterinin kaydını taklit eden bir kopya
         // üretirdi. Bağlantı beklemede kalır (WpfCustomerId = null).
+        //
+        // Açılan satır GEÇİCİDİR (CreatedByShopper) — kayıt akışındaki gerekçe
+        // (ShopperAuthController.Register adım 8a).
         if (candidates.Count == 0)
         {
             var projectionId = Guid.NewGuid();
@@ -135,6 +140,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
                 FullName = shopper.FullName,
                 Phone = shopper.Phone,
                 Address = shopper.Address,
+                CreatedByShopper = true,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             link.WpfCustomerId = projectionId;
