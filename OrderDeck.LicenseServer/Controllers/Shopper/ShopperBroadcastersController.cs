@@ -99,14 +99,14 @@ public sealed class ShopperBroadcastersController : ControllerBase
         // 6. Match WpfCustomerProjection — bağlamak için telefon kanıtı şart.
         // Kayıt akışıyla (ShopperAuthController.Register adım 7) aynı kural;
         // gerekçe WpfCustomerLinkMatcher'da. Aday kimlik anahtarıyla aranır
-        // (aynı adımdaki gerekçe).
+        // (aynı adımdaki gerekçe; IdentityKey != "" filtreli indeksi kullandırır).
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
         var identityKey = WpfCustomerProjection.IdentityKeyOf(usernameNorm);
         var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
-                        p.IdentityKey == identityKey)
+                        p.IdentityKey == identityKey && p.IdentityKey != "")
             .ToListAsync(ct);
         var wpfMatch = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt);

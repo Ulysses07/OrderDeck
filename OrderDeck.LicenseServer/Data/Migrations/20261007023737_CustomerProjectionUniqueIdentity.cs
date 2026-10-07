@@ -1,5 +1,4 @@
 ﻿using Microsoft.EntityFrameworkCore.Migrations;
-using OrderDeck.LicenseServer.Services.CustomerSync;
 
 #nullable disable
 
@@ -11,35 +10,33 @@ namespace OrderDeck.LicenseServer.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // KAPILAR — indekse dokunmadan ÖNCE. İkisi de yalnız okunur bir mesajla
-            // düşer, başka hiçbir şey yapmaz (veriyi burada düzeltmeye kalkmak,
-            // açılışta, gözetimsiz bir birleştirme olurdu). Düşen göç kayda
-            // geçmez (göç işlemi geri alınır), açılıştaki Migrate() fırlatır,
-            // /ready gelmez ve deploy önceki imaja (PR-1) otomatik döner — veri
-            // bozulmaz. Ön koşul: PR-1 prod'da, E2 (merge-customer-identities
+            // KAPI — indekse dokunmadan ÖNCE: kopyalı asıl kayıt varsa indeks
+            // kurulamaz. Yalnız okunur bir mesajla düşer, başka hiçbir şey yapmaz
+            // (veriyi burada düzeltmek açılışta gözetimsiz bir birleştirme olurdu).
+            // Düşen göç kayda geçmez (göç işlemi geri alınır), açılıştaki Migrate()
+            // fırlatır, /ready gelmez ve deploy önceki imaja (PR-1) otomatik döner —
+            // veri bozulmaz. Ön koşul: PR-1 prod'da, E2 (merge-customer-identities
             // --all --apply) koşmuş, kuru çalıştırma kopyalı kişi=0, B1 kapısı=0,
             // zincir=0 göstermiş.
             //
-            // (1) Kopyalı asıl kayıt: indeks bu hâlde kurulamaz. Sayım CLI'nin
-            // "B1 kapısı" satırının KENDİSİ (sabit kopyalanmadı, kullanıldı):
-            // operatörün gördüğü sayı burada denetlenen sayıdır. Bu göç bir kez
-            // koştuktan sonra sabitin değişmesi uygulanmış veritabanını etkilemez;
-            // boş (yeni) veritabanında sayım zaten 0.
-            migrationBuilder.Sql($"""
-                IF ({CustomerIdentityMergeJob.DuplicateHeadsSql}) > 0
-                    THROW 50000, N'B1: kopyalı asıl kayıt var — önce merge-customer-identities --all --apply koşun', 1;
-                """);
-
-            // (2) Onarılmamış kimlik anahtarı: geri alma penceresinde kolonu
-            // tanımayan imajın açtığı satırda NEWID() varsayılanı kalmıştır.
-            // Benzersiz olduğu için indeksi engellemez, ama aynı kişinin asıl
-            // kaydıyla buluşmamış bir kopyadır — indeks kurulunca onarım işi o
-            // satırı düzeltirken çakışır. Kolon BIN2: [A-Z] yalnız büyük ASCII
-            // harfi yakalar; IdentityKeyOf ve SQL LOWER onu asla üretmez, NEWID
-            // üretir (onaltılık, büyük harf).
+            // Sayım CustomerIdentityMergeJob.DuplicateHeadsSql'in (CLI'nin "B1
+            // kapısı" satırı) BAYT BAYT kopyası: operatörün gördüğü sayı burada
+            // denetlenen sayıdır. Kopya, çünkü göç tarihsel bir belgedir — uygulama
+            // sabitine bağlansaydı sabitteki sonraki bir değişiklik bu göçü sessizce
+            // değiştirirdi. İkisi EŞİT kalmalı; kaymayı
+            // CustomerProjectionUniqueIdentityMigrationTests yakalar.
+            //
+            // Onarılmamış (NEWID varsayılanlı) anahtar için kapı YOK, bilerek:
+            // NEWID benzersizdir, indeksi engelleyemez; açılışta Migrate'ten sonra
+            // kuyruğa alınan identity-key-repair onu düzeltir, aynı kişinin asıl
+            // kaydıyla çakışırsa o lisansı birleştirip yeniden onarır. Yalnız
+            // boşluktan oluşan kullanıcı adının NEWID anahtarı hiç onarılmaz (boş
+            // anahtar yazılmaz) ama zararsızdır: benzersiz, kimlik değil. Bir kapı
+            // o satıra takılır ve — hiçbir ön denetimde görünmeden — açılışı kalıcı
+            // olarak düşürürdü.
             migrationBuilder.Sql("""
-                IF EXISTS (SELECT 1 FROM WpfCustomerProjections WHERE IdentityKey LIKE N'%[A-Z]%')
-                    THROW 50000, N'B1: onarılmamış kimlik anahtarı var — önce identity-key-repair koşun (PR-1 imajı açılışta koşar)', 1;
+                IF (SELECT COUNT(*) FROM (SELECT 1 x FROM WpfCustomerProjections WHERE MergedIntoId IS NULL AND IdentityKey <> N'' GROUP BY LicenseId, Platform, IdentityKey HAVING COUNT(*) > 1) d) > 0
+                    THROW 50000, N'B1: kopyalı asıl kayıt var — önce merge-customer-identities --all --apply koşun', 1;
                 """);
 
             migrationBuilder.DropIndex(

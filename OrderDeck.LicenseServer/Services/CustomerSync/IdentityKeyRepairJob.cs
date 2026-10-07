@@ -57,7 +57,9 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// döner ve filtreli indeksin dışına çıkar; ardından onarım geçişi BİR kez
 /// daha yapılır. Birleştirme bir grubu eşzamanlı değişiklik yüzünden atlarsa o
 /// çakışma ikinci geçişte yine sayılır, sonraki koşu yeniden dener (döngü
-/// yok). Günlüğe yalnız sayılar ve lisans/satır Id'leri.</para>
+/// yok). Günlüğe yalnız sayılar ve lisans/satır Id'leri. B1 göçü NEWID
+/// anahtarı için kapı koymaz (benzersiz olduğundan indeksi engellemez): o
+/// satırları açılışta Migrate'ten sonra kuyruğa alınan bu koşu düzeltir.</para>
 ///
 /// <para><b>Satır başına KARŞILAŞTIR-VE-DEĞİŞTİR (CAS), izlenen entity +
 /// SaveChanges DEĞİL</b> —

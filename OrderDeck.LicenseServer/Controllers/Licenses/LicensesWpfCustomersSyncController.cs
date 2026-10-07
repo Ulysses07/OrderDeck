@@ -421,8 +421,11 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         var newItems = items.Where(c => !existing.ContainsKey(c.Id)).ToList();
         var platforms = newItems.Select(c => KeyOf(c).Platform).Distinct().ToList();
         var keys = newItems.Select(c => KeyOf(c).IdentityKey).Distinct().ToList();
+        // IdentityKey != "": anahtarlar zaten boş değil (IsAcceptable); sabit
+        // koşul sorguyu filtreli kimlik indeksinin koşuluna (asıl kayıt + boş
+        // olmayan anahtar) bağlar, SQL Server o indeksi kullanabilsin.
         var canonicalByKey = (await _db.WpfCustomerProjections
-                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null
+                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && p.IdentityKey != ""
                     && platforms.Contains(p.Platform) && keys.Contains(p.IdentityKey))
                 .ToListAsync(ct))
             .GroupBy(p => (p.Platform, p.IdentityKey))

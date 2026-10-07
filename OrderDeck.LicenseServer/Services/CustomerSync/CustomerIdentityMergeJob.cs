@@ -96,9 +96,12 @@ public sealed class CustomerIdentityMergeJob
     /// anahtar) arasında (LicenseId, Platform, IdentityKey) yinelenen grup sayısı
     /// — SQL Server'ın kendi karşılaştırma kurallarıyla (Platform harf duyarsız,
     /// sondaki boşluk yok sayılır; IdentityKey BIN2). İşin bellekteki
-    /// gruplamasından geniştir: o bir şeyi kaçırırsa bu yakalar. B1 göçünün kapısı
-    /// bu sabiti KULLANIR (kopya değil): operatörün gördüğü sayı göçün
-    /// denetlediğidir.</summary>
+    /// gruplamasından geniştir: o bir şeyi kaçırırsa bu yakalar. B1 göçünün
+    /// (<c>CustomerProjectionUniqueIdentity</c>) kapısı bu metnin BAYT BAYT
+    /// kopyasını koşar — operatörün gördüğü sayı göçün denetlediğidir. İkisi EŞİT
+    /// kalmalı: biri değişirse öteki de (göç tarihsel olduğu için sabite
+    /// bağlanmadı); kaymayı CustomerProjectionUniqueIdentityMigrationTests
+    /// yakalar.</summary>
     public const string DuplicateHeadsSql =
         "SELECT COUNT(*) FROM (SELECT 1 x FROM WpfCustomerProjections WHERE MergedIntoId IS NULL AND IdentityKey <> N'' GROUP BY LicenseId, Platform, IdentityKey HAVING COUNT(*) > 1) d";
 

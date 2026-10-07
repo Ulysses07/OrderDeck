@@ -1006,7 +1006,9 @@ public class Program
             // backfill'inin .NET'le ayrıştığı satırlar, ya da bir geri alma
             // penceresinde NEWID ile açılmış satırlar) bir gün beklemesin —
             // PR-1'in birleştirme işi IdentityKey'e göre gruplayacağı için
-            // yanlış-anahtarlı satırlar o işten ÖNCE düzelmeli.
+            // yanlış-anahtarlı satırlar o işten ÖNCE düzelmeli. B1'in göçü NEWID
+            // anahtarı için kapı koymaz; o satırları (tekil indeksle çakışırsa
+            // lisansı birleştirerek) bu açılış koşusu düzeltir.
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.CustomerSync.IdentityKeyRepairJob>(
                 "identity-key-repair",
                 j => j.RunAsync(CancellationToken.None),

@@ -3,7 +3,10 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Data.Migrations;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -17,11 +20,11 @@ namespace OrderDeck.LicenseServer.Tests.Data;
 /// kadar kur → eski şemaya satır yaz → yalnız hedefi uygula
 /// (<see cref="CustomerProjectionFullSyncMigrationTests"/> deseni).
 ///
-/// <para>Göçün iki kapısı var ve prod açılışını durdurabilen tek şey onlar:
-/// kopyalı asıl kayıt (birleştirme koşmamış) ya da onarılmamış kimlik anahtarı
-/// (NEWID varsayılanı). İkisi de OKUNUR bir mesajla düşmeli ve HİÇBİR şeyi
+/// <para>Göçün tek kapısı var ve prod açılışını durdurabilen tek şey o: kopyalı
+/// asıl kayıt (birleştirme koşmamış). OKUNUR bir mesajla düşmeli ve HİÇBİR şeyi
 /// değiştirmemeli — göç kayda geçmez, eski indeks yerinde kalır, deploy'un
-/// otomatik geri alması önceki imaja temiz döner.</para>
+/// otomatik geri alması önceki imaja temiz döner. Onarılmamış (NEWID) anahtar
+/// kapı DEĞİL: indeksi engellemez, açılıştaki onarım işi düzeltir.</para>
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -148,32 +151,62 @@ public sealed class CustomerProjectionUniqueIdentityMigrationTests
         await ShouldBeUntouchedAsync(s);
     }
 
+    /// <summary>
+    /// Onarılmamış (NEWID) anahtar göçü DURDURMAZ: NEWID benzersizdir, indekse
+    /// çarpamaz. Açılıştaki onarım işi (Migrate'ten sonra kuyruğa alınır) onu
+    /// düzeltir; aynı kişinin asıl kaydıyla çakışırsa birleştirip yeniden onarır.
+    /// Yalnız boşluktan oluşan kullanıcı adının NEWID anahtarı ise hiç onarılmaz
+    /// (boş anahtar yazılmaz) ve zararsız kalır: benzersiz, kimlik değil. Bir kapı
+    /// olsaydı bu satır — hiçbir ön denetimde görünmeden — açılışı kalıcı olarak
+    /// düşürürdü (prod'da tam olarak bir yalnız-boşluk satırı var).
+    /// </summary>
     [Fact]
-    public async Task Onarilmamis_kimlik_anahtari_varsa_okunur_mesajla_duser_hicbir_sey_degismez()
+    public async Task Onarilmamis_kimlik_anahtari_gocu_durdurmaz_acilistaki_onarim_duzeltir()
     {
         await using var s = await PreviousSchemaAsync();
-        // Geri alma penceresinde kolonu tanımayan imajın açtığı satır: IdentityKey
-        // hiç verilmez, A1'in NEWID() varsayılanı düşer (büyük harfli onaltılık).
-        await using (var conn = new SqlConnection(s.ConnectionString))
-        {
-            await conn.OpenAsync();
-            await using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
-                INSERT INTO WpfCustomerProjections (Id, LicenseId, Platform, Username, UpdatedAt)
-                VALUES (@id, @licenseId, 'tiktok', @username, SYSDATETIMEOFFSET())
-                """;
-            cmd.Parameters.AddWithValue("@id", Guid.NewGuid());
-            cmd.Parameters.AddWithValue("@licenseId", s.LicenseId);
-            cmd.Parameters.AddWithValue("@username", "u" + Guid.NewGuid().ToString("N")[..10]);
-            await cmd.ExecuteNonQueryAsync();
-        }
+        var head = Row(s.LicenseId, "ayse");
+        s.Db.WpfCustomerProjections.Add(head);
+        await s.Db.SaveChangesAsync();
+        // Geri alma penceresinde kolonu tanımayan imajın açtığı satırlar:
+        // IdentityKey hiç verilmez, A1'in NEWID() varsayılanı düşer.
+        var sameId = await InsertWithoutIdentityKeyAsync(s, "Ayse");       // asıl kayıtla aynı kişi
+        var unrelatedId = await InsertWithoutIdentityKeyAsync(s, "mehmet"); // başka kişi
+        var blankId = await InsertWithoutIdentityKeyAsync(s, "   ");        // kimlik değil
+        var blankKey = await KeyAsync(s, blankId);
 
-        var act = async () => await s.Migrator.MigrateAsync(s.Target);
+        await s.Migrator.MigrateAsync(s.Target);
 
-        (await act.Should().ThrowAsync<SqlException>()).Which.Should().Match<SqlException>(e =>
-            e.Number == 50000
-            && e.Message == "B1: onarılmamış kimlik anahtarı var — önce identity-key-repair koşun (PR-1 imajı açılışta koşar)");
-        await ShouldBeUntouchedAsync(s);
+        (await s.Db.Database.GetAppliedMigrationsAsync()).Should().Contain(s.Target);
+        s.Db.ChangeTracker.Clear();
+        var merge = new CustomerIdentityMergeJob(s.Db, new CustomerIdentityMerger(s.Db));
+        var repaired = await new IdentityKeyRepairJob(s.Db, merge, NullLogger<IdentityKeyRepairJob>.Instance)
+            .RunAsync(default);
+
+        repaired.Should().Be(2, "ilgisiz satır ilk geçişte, aynı kişinin satırı birleştirmeden sonra düzelir");
+        var pair = await s.Db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.Id == head.Id || p.Id == sameId).ToListAsync();
+        var canonical = pair.Should().ContainSingle(p => p.MergedIntoId == null, "aynı kişi birleşti").Subject;
+        pair.Single(p => p.Id != canonical.Id).MergedIntoId.Should().Be(canonical.Id);
+        pair.Should().OnlyContain(p => p.IdentityKey == "ayse");
+        (await KeyAsync(s, unrelatedId)).Should().Be("mehmet");
+        (await KeyAsync(s, blankId)).Should().Be(blankKey, "boş anahtar yazılmaz: NEWID'de kalır, zararsız");
+        (await merge.CountMismatchedKeysAsync(default)).Should().Be(0);
+        (await merge.CountDuplicateHeadsAsync(default)).Should().Be(0);
+    }
+
+    /// <summary>Göçün kapısı, operatörün kuru çalıştırmada gördüğü "B1 kapısı"
+    /// sayımıyla BİREBİR aynı SQL'i koşar. Göç metni sabitten kopyalandı (göç
+    /// tarihsel bir belge, uygulama koduna bağlanmaz); kayma burada yakalanır.
+    /// Kapı ilk işlemdir: indekse dokunulmadan önce.</summary>
+    [Fact]
+    public void Gocun_kapisi_kopyali_kisi_sayimiyla_birebir_ayni_ve_ilk_islem()
+    {
+        var up = new CustomerProjectionUniqueIdentity().UpOperations;
+
+        var gate = up[0].Should().BeOfType<SqlOperation>().Subject;
+        gate.Sql.Should().Contain($"IF ({CustomerIdentityMergeJob.DuplicateHeadsSql}) > 0")
+            .And.Contain("THROW 50000, N'B1: kopyalı asıl kayıt var — önce merge-customer-identities --all --apply koşun', 1;");
+        up.OfType<SqlOperation>().Should().ContainSingle("tek kapı: kopyalı asıl kayıt");
     }
 
     [Fact]
@@ -192,6 +225,28 @@ public sealed class CustomerProjectionUniqueIdentityMigrationTests
         s.Db.WpfCustomerProjections.Add(Row(s.LicenseId, "  "));
         await s.Db.SaveChangesAsync(); // üçüncü boş anahtarlı asıl kayıt da serbest
     }
+
+    /// <summary>Eski imajın INSERT'ü: IdentityKey verilmez, NEWID varsayılanı düşer.</summary>
+    private static async Task<Guid> InsertWithoutIdentityKeyAsync(PreviousSchema s, string username)
+    {
+        var id = Guid.NewGuid();
+        await using var conn = new SqlConnection(s.ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO WpfCustomerProjections (Id, LicenseId, Platform, Username, UpdatedAt)
+            VALUES (@id, @licenseId, 'tiktok', @username, SYSDATETIMEOFFSET())
+            """;
+        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Parameters.AddWithValue("@licenseId", s.LicenseId);
+        cmd.Parameters.AddWithValue("@username", username);
+        await cmd.ExecuteNonQueryAsync();
+        return id;
+    }
+
+    private static Task<string> KeyAsync(PreviousSchema s, Guid id)
+        => s.Db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.Id == id).Select(p => p.IdentityKey).SingleAsync();
 
     /// <summary>Kapı düştü: göç kayda geçmedi, şema B1 öncesi gibi.</summary>
     private static async Task ShouldBeUntouchedAsync(PreviousSchema s)

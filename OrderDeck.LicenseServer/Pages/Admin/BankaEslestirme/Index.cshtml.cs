@@ -138,10 +138,12 @@ public class IndexModel : PageModel
         if (BankDisabled) return BankDisabledResult();
         var username = (Username ?? "").Trim();
         var key = WpfCustomerProjection.IdentityKeyOf(username);
+        // IdentityKey != "": anahtar burada zaten boş değil; sabit koşul sorguyu
+        // filtreli kimlik indeksinin koşuluna bağlar (CustomerIdentityIndex).
         var customerIds = key.Length == 0
             ? []
             : await _db.WpfCustomerProjections.AsNoTracking()
-                .Where(c => c.LicenseId == LicenseId && c.IdentityKey == key && c.PurgedAt == null)
+                .Where(c => c.LicenseId == LicenseId && c.IdentityKey == key && c.IdentityKey != "" && c.PurgedAt == null)
                 .Select(c => c.Id).ToListAsync(ct);
         if (customerIds.Count != 1)
         {

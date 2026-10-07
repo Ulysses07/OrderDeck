@@ -25,10 +25,12 @@ public static class ProvisionalProjectionConflict
         Shopper shopper, CancellationToken ct)
     {
         db.Entry(provisional).State = EntityState.Detached;
+        // IdentityKey != "": filtreli kimlik indeksinin koşulu (kayıt/katılma
+        // aday aramasıyla aynı sorgu).
         var candidates = await db.WpfCustomerProjections
             .Where(p => p.LicenseId == provisional.LicenseId
                 && p.Platform == provisional.Platform
-                && p.IdentityKey == provisional.IdentityKey)
+                && p.IdentityKey == provisional.IdentityKey && p.IdentityKey != "")
             .ToListAsync(ct);
         link.WpfCustomerId = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt)?.Id;

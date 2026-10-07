@@ -247,14 +247,16 @@ public sealed class ShopperAuthController : ControllerBase
         // "irem" kaydı varken "İrem" ile kayıt (CI_AS'de bile N'İrem' ≠
         // N'irem') adayı kaçırır, aynı kimliğe ikinci bir asıl kayıt açardı —
         // Bölüm B'nin tekil indeksiyle kayıt 500'e düşerdi. IdentityKey BIN2:
-        // birebir karşılaştırma.
+        // birebir karşılaştırma. IdentityKey != "": anahtar zaten boş değil
+        // (kullanıcı adı doğrulandı); sabit koşul sorguyu filtreli kimlik
+        // indeksinin koşuluna bağlar (CustomerIdentityIndex).
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
         var identityKey = WpfCustomerProjection.IdentityKeyOf(usernameNorm);
         var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
-                        p.IdentityKey == identityKey)
+                        p.IdentityKey == identityKey && p.IdentityKey != "")
             .ToListAsync(ct);
         var wpfMatch = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt);
@@ -775,12 +777,13 @@ public sealed class ShopperAuthController : ControllerBase
 
         foreach (var link in pendingLinks)
         {
-            // Aday kimlik anahtarıyla (kayıt adımı 7 ile aynı gerekçe).
+            // Aday kimlik anahtarıyla (kayıt adımı 7 ile aynı gerekçe; boş
+            // anahtar kimlik değil, koşul filtreli indeksi de kullandırır).
             var identityKey = WpfCustomerProjection.IdentityKeyOf(link.Username);
             var candidates = await _db.WpfCustomerProjections
                 .Where(p => p.LicenseId == link.LicenseId
                     && p.Platform == link.Platform
-                    && p.IdentityKey == identityKey
+                    && p.IdentityKey == identityKey && p.IdentityKey != ""
                     && p.PurgedAt == null)
                 .ToListAsync(ct);
             var match = WpfCustomerLinkMatcher.FindProven(
