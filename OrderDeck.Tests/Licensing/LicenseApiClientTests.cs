@@ -151,11 +151,11 @@ public sealed class LicenseApiClientTests
             return FakeHttpMessageHandler.Empty(204);
         });
 
-        await client.SyncPaymentAccountAsync(TestLicenseId, "TR330006100519786457841326", "Ahmet Yilmaz");
+        await client.SyncPaymentAccountAsync(TestLicenseId, "TR330006100519786457841326", "Ornek Musteri");
 
         capturedPath.Should().Be($"/api/v1/licenses/{TestLicenseId}/payment-account");
         capturedBody.Should().Contain("TR330006100519786457841326");
-        capturedBody.Should().Contain("Ahmet Yilmaz");
+        capturedBody.Should().Contain("Ornek Musteri");
     }
 
     // ─── SyncWpfCustomersAsync ─────────────────────────────────────────────
@@ -176,9 +176,9 @@ public sealed class LicenseApiClientTests
 
         var customers = new List<WpfCustomerSyncItem>
         {
-            new(Guid.NewGuid(), "youtube", "user1", "User One",   "+905001111111", null,           DateTimeOffset.UtcNow),
-            new(Guid.NewGuid(), "youtube", "user2", null,          null,           "Istanbul",     DateTimeOffset.UtcNow),
-            new(Guid.NewGuid(), "twitch",  "user3", "User Three",  "+905002222222", "Ankara",      DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), "youtube", "user1", "User One",   TestPhone.NewE164(), null,       DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), "youtube", "user2", null,          null,                "Istanbul", DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), "twitch",  "user3", "User Three",  TestPhone.NewE164(), "Ankara",   DateTimeOffset.UtcNow),
         };
 
         var result = await client.SyncWpfCustomersAsync(TestLicenseId, customers);
