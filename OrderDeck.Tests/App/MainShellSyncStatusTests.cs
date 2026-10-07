@@ -137,7 +137,10 @@ public sealed class MainShellSyncStatusTests
 
         h.Vm.StartStreamCommand.Execute(null);
 
-        h.Dialogs.Confirmations.Should().Contain(c => c.Title == "Güncelleniyor");
+        h.Dialogs.Confirmations.Should().ContainSingle(c => c.Title == "Güncelleniyor")
+            .Which.Message.Should().Be(
+                "Müşteri bilgilerindeki son değişiklikler henüz inmedi (diğer bilgisayarlar / müşteri uygulaması). " +
+                "İnternet yoksa yine de başlatabilirsin. Yayını başlatayım mı?");
         h.Sessions.GetActive().Should().BeNull("operatör hayır dedi");
     }
 
@@ -193,8 +196,10 @@ public sealed class MainShellSyncStatusTests
     {
         // Deneme sürümünde senkron hiç koşmaz — soru her yayında çıkar ve hiç geçmezdi.
         using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker(), licensed: false);
+        h.LicenseKey.Should().BeNull();
         h.Dialogs.ConfirmResult = _ => true;
         await h.Vm.EndStreamCommand.ExecuteAsync(null);
+        h.Vm.StartStreamCommand.CanExecute(null).Should().BeTrue("deneme sürümü yazabilir — yoksa test bir şey sınamazdı");
 
         h.Vm.StartStreamCommand.Execute(null);
 

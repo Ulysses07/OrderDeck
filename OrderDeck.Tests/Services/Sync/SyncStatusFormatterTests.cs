@@ -56,11 +56,11 @@ public sealed class SyncStatusFormatterTests
 
     [Fact] public void Uzlastirma_bekleyen_odeme_isi_uyarisi()
         => SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now, new SyncAttention(0, 2))
-            .Text.Should().EndWith(" · 2 ödeme işi uzlaştırma bekliyor");
+            .Text.Should().EndWith(" · 2 ödeme işi tamamlanmayı bekliyor");
 
     [Fact] public void Iki_uyari_birlikte_bekleyen_sayisinin_arkasinda()
         => SyncStatusFormatter.Format(3, Now.AddSeconds(-20), Now, new SyncAttention(1, 2))
-            .Text.Should().Be("Gönderiliyor (3) · 1 müşteri değişikliği uygulanamadı · 2 ödeme işi uzlaştırma bekliyor");
+            .Text.Should().Be("Gönderiliyor (3) · 1 müşteri değişikliği uygulanamadı · 2 ödeme işi tamamlanmayı bekliyor");
 
     // ── sınırlar (M-7) ve geri giden saat (M-4) ─────────────────────────
 
@@ -155,7 +155,7 @@ public sealed class SyncStatusFormatterTests
 
     [Fact] public void Yetisirken_kalici_uyarilar_eklenir()
         => SyncStatusFormatter.Format(0, null, Now, new SyncAttention(0, 1))
-            .Text.Should().Be("Güncelleniyor… · 1 ödeme işi uzlaştırma bekliyor");
+            .Text.Should().Be("Güncelleniyor… · 1 ödeme işi tamamlanmayı bekliyor");
 
     // ── gönderim ilerlemesi: çekme iyiyken gönderim düşüyorsa sağlıklı görünmez (I-3) ──
 
@@ -208,7 +208,7 @@ public sealed class SyncStatusFormatterTests
             PushOkAt: Pushes(("musteri", Now.AddMinutes(-5))));
 
         SyncStatusFormatter.Format(1, snapshot, Now, new SyncAttention(0, 1))
-            .Text.Should().Be($"Müşteri güncellemeleri bekliyor: ödemesi süren bir müşteri (kod {Code}) · 1 ödeme işi uzlaştırma bekliyor");
+            .Text.Should().Be($"Müşteri güncellemeleri bekliyor: ödemesi süren bir müşteri (kod {Code}) · 1 ödeme işi tamamlanmayı bekliyor");
         SyncStatusFormatter.Format(1, snapshot with { BlockedOn = null }, Now)
             .Text.Should().Be("Çevrimdışı — 1 değişiklik bekliyor");
         SyncStatusFormatter.Format(1, snapshot with { BlockedOn = null, LastPullOkAt = null }, Now)
@@ -239,10 +239,12 @@ public sealed class SyncStatusFormatterTests
         counted.Should().Be(2, "gösterilen her durumda bir kez");
     }
 
+    private const string CheckInternet = "İnternet bağlantını kontrol et; sürerse destekle iletişime geç.";
+
     [Fact] public void Ipucu_kalici_uyarida_ne_yapilacagini_soyler()
     {
         var plain = SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now);
-        SyncStatusFormatter.Tooltip(plain).Should().Be(plain.Text, "uyarı yoksa ipucu metnin tamamı");
+        SyncStatusFormatter.Tooltip(plain).Should().Be(plain.Text, "sağlıklı satırda ipucu metnin tamamı");
 
         var attention = new SyncAttention(1, 2);
         var warned = SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now, attention);
@@ -251,6 +253,30 @@ public sealed class SyncStatusFormatterTests
         lines[0].Should().Be(warned.Text, "kırpılan satırın tamamı");
         lines.Should().HaveCount(3);
         lines[1].Should().Contain("destek", "atlanan akış öğesi kendiliğinden geçmeyebilir");
-        lines[2].Should().Contain("Ödeme iste").And.Contain("destek");
+        lines[2].Should().Contain("Ödeme iste").And.Contain("tamamlanır").And.Contain("destek");
+    }
+
+    [Fact] public void Her_sagliksiz_durum_ne_yapilacagini_soyler()
+    {
+        var offline = SyncStatusFormatter.Format(3, Now.AddMinutes(-10), Now);
+        offline.Advice.Should().Be(CheckInternet);
+        SyncStatusFormatter.Tooltip(offline).Should().Be("Çevrimdışı — 3 değişiklik bekliyor\n" + CheckInternet);
+
+        SyncStatusFormatter.Format(3, Now.AddSeconds(-20), Now, trackingSince: Now.AddMinutes(-10),
+                pushOkAt: Pushes(("musteri", null)))
+            .Should().Be(new SyncStatusFormatter.Status("Gönderilemiyor — 3 değişiklik bekliyor", false, CheckInternet));
+        SyncStatusFormatter.Format(0, null, Now, blockedOn: Block(SyncBlockReason.Stalled, Now)).Advice
+            .Should().Be(CheckInternet, "bekleyen kayıt gönderilince akış kendiliğinden sürer");
+        SyncStatusFormatter.Format(0, null, Now, blockedOn: Block(SyncBlockReason.Busy, Now)).Advice
+            .Should().Be("Açık ödeme isteğini tamamla.");
+
+        var withNotes = SyncStatusFormatter.Format(3, Now.AddMinutes(-10), Now, new SyncAttention(1, 0));
+        withNotes.Advice.Should().Be(CheckInternet, "kalıcı uyarı eklenince durumun ipucu kaybolmaz");
+        SyncStatusFormatter.Tooltip(withNotes, new SyncAttention(1, 0)).Split('\n')
+            .Should().HaveCount(3).And.HaveElementAt(1, CheckInternet);
+
+        SyncStatusFormatter.Format(0, null, Now, trackingSince: Now).Advice
+            .Should().BeNull("\"Güncelleniyor…\" geçicidir — yapılacak bir şey yok");
+        SyncStatusFormatter.Format(2, Now.AddSeconds(-20), Now).Advice.Should().BeNull();
     }
 }

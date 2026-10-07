@@ -167,7 +167,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _isPrinterConfigured;
 
     /// <summary>Senkron durum satırı (D3): diğer bilgisayarlara yetişildi mi, gönderilmemiş
-    /// kayıt var mı. Sağlıksızsa sarı; ipucu kırpılan metnin tamamı + kalıcı uyarıda ne yapılacağı.</summary>
+    /// kayıt var mı. Sağlıksızsa sarı; ipucu kırpılan metnin tamamı + sağlıksız durumda ve kalıcı
+    /// uyarıda ne yapılacağı.</summary>
     [ObservableProperty] private string _syncStatusText = "";
     [ObservableProperty] private bool _isSyncHealthy = true;
     [ObservableProperty] private string _syncStatusTooltip = "";
@@ -911,16 +912,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 "Yayın aktif");
             return;
         }
-        // Faz 0 (D4): bilgisayar değiştiren operatör, diğer bilgisayarın son
-        // müşteri değişiklikleri (kara liste, adres) inmeden yayına girmesin.
-        // Engellemiyoruz — internet yokken de yayın yapılabilmeli. Yetişme
-        // lisansa bağlı (önceki lisansınki sayılmaz); lisans yoksa (deneme
-        // sürümü) senkron hiç koşmaz, soru da sorulmaz.
+        // Faz 0 (D4): bilgisayar değiştiren operatör, son müşteri değişiklikleri
+        // (kara liste, adres — diğer bilgisayarlardan ya da müşteri
+        // uygulamasından) inmeden yayına girmesin. Engellemiyoruz — internet
+        // yokken de yayın yapılabilmeli. Yetişme lisansa bağlı (önceki
+        // lisansınki sayılmaz); lisans yoksa (deneme sürümü) senkron hiç
+        // koşmaz, soru da sorulmaz.
         if (_syncStatus is not null
             && SyncLicenseKey() is { } licenseKey
             && !_syncStatus.IsInitialCatchUpDoneFor(licenseKey)
             && !_dialogs.Confirm(
-                "Diğer bilgisayardaki son değişiklikler henüz gelmedi. Yine de yayını başlatayım mı?",
+                "Müşteri bilgilerindeki son değişiklikler henüz inmedi (diğer bilgisayarlar / müşteri uygulaması). " +
+                "İnternet yoksa yine de başlatabilirsin. Yayını başlatayım mı?",
                 "Güncelleniyor"))
             return;
         var started = _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });

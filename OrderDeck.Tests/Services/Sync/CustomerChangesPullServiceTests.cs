@@ -1255,7 +1255,7 @@ public sealed class CustomerChangesPullServiceTests
         // Üç dakikadan sonra (izleme 10 dk önce başlamış; çekme hâlâ taze):
         var now = s.LastPullOkAt!.Value;
         SyncStatusFormatter.Format(pending, s with { TrackingSince = now.AddMinutes(-10) }, now)
-            .Should().Be(new SyncStatusFormatter.Status("Gönderilemiyor — 1 değişiklik bekliyor", Healthy: false));
+            .Should().BeEquivalentTo(new { Text = "Gönderilemiyor — 1 değişiklik bekliyor", Healthy = false });
     }
 
     [Fact]

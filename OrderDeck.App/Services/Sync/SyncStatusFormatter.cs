@@ -35,6 +35,10 @@ namespace OrderDeck.App.Services.Sync;
 ///
 /// <para>Metinde kişisel veri yok: takılan öğe yalnız sunucu Id'sinin ilk 8 karakteriyle anılır
 /// ("kod" — günlükteki uyarının tam Id'siyle eşleşir); sayılar sayıdır.</para>
+///
+/// <para><b>İpucu (D3 incelemesi):</b> kendiliğinden geçmeyebilecek her sağlıksız durum
+/// (<see cref="Status.Advice"/>) ve her kalıcı uyarı operatöre ne yapacağını söyler; geçici
+/// "Güncelleniyor…" söylemez. Metin sade: iç terimler (uzlaştırma, akış) yok.</para>
 /// </summary>
 public static class SyncStatusFormatter
 {
@@ -47,11 +51,20 @@ public static class SyncStatusFormatter
 
     private const string Updating = "Güncelleniyor…";
 
-    public readonly record struct Status(string Text, bool Healthy);
+    private const string CheckInternet = "İnternet bağlantını kontrol et; sürerse destekle iletişime geç.";
+
+    /// <param name="Advice">Operatör ne yapmalı (ipucunda metnin altında); geçici ya da sağlıklı
+    /// durumda null.</param>
+    public readonly record struct Status(string Text, bool Healthy, string? Advice = null);
 
     /// <summary>Deneme sürümü (lisans yok): senkron hiç koşmaz, sayım da yapılmaz. Nötr (sağlıklı) —
     /// yoksa deneme kullanıcısı kalıcı turuncu "Çevrimdışı — N" görürdü (D3).</summary>
     public static readonly Status NoLicense = new("Senkron kapalı (lisans yok)", Healthy: true);
+
+    /// <summary>Durum satırının girdileri okunamadı (yerel veritabanı hatası; D3 incelemesi): satır
+    /// sarı kalır, kabuk etkilenmez.</summary>
+    public static readonly Status ReadFailed =
+        new("Senkron durumu okunamadı", Healthy: false, Advice: "Sürerse destekle iletişime geç.");
 
     /// <summary>İzleyicinin tek kilit altındaki anlık görüntüsüyle.</summary>
     public static Status Format(int pending, SyncStatusSnapshot snapshot, DateTimeOffset now,
@@ -66,18 +79,18 @@ public static class SyncStatusFormatter
         => WithAttention(Decide(pendingCount, snapshot.LastPullOkAt, now, snapshot.BlockedOn,
             snapshot.LastCatchUpProgressAt, snapshot.TrackingSince, snapshot.PushOkAt), attention);
 
-    /// <summary>Durum satırının ipucu (D3): metnin tamamı (dar kenar çubuğunda kırpılır) ve kalıcı
-    /// uyarılarda operatörün ne yapacağı — kendiliğinden geçmeyebilecek durum yalnız sayıyla
-    /// bırakılmaz. Satırlar <c>\n</c> ile ayrılır.</summary>
+    /// <summary>Durum satırının ipucu (D3): metnin tamamı (dar kenar çubuğunda kırpılır), durumun
+    /// ipucu (<see cref="Status.Advice"/>) ve her kalıcı uyarıda operatörün ne yapacağı —
+    /// kendiliğinden geçmeyebilecek durum yalnız sayıyla bırakılmaz. Satırlar <c>\n</c> ile ayrılır.</summary>
     public static string Tooltip(Status status, SyncAttention attention = default)
     {
-        if (!attention.Any) return status.Text;
-        var lines = new List<string>(3) { status.Text };
+        var lines = new List<string>(4) { status.Text };
+        if (status.Advice is { } advice) lines.Add(advice);
         if (attention.SkippedFeedItems > 0)
             lines.Add("Diğer bilgisayarlardan gelen bazı müşteri değişiklikleri bu bilgisayara uygulanamadı; " +
                       "uyarı geçmezse destekle iletişime geç.");
         if (attention.OpenLegacyPaymentJobs > 0)
-            lines.Add("Bekleyen ödeme işleri, ilgili müşteriye internet varken \"Ödeme iste\" denince uzlaşır; " +
+            lines.Add("Bekleyen ödeme işleri, ilgili müşteriye internet varken \"Ödeme iste\" denince tamamlanır; " +
                       "hangi müşteri olduğunu bilmiyorsan destekle iletişime geç.");
         return string.Join("\n", lines);
     }
@@ -107,8 +120,8 @@ public static class SyncStatusFormatter
         if (attention.SkippedFeedItems > 0)
             notes.Add($"{attention.SkippedFeedItems} müşteri değişikliği uygulanamadı");
         if (attention.OpenLegacyPaymentJobs > 0)
-            notes.Add($"{attention.OpenLegacyPaymentJobs} ödeme işi uzlaştırma bekliyor");
-        return new(status.Text + " · " + string.Join(" · ", notes), Healthy: false);
+            notes.Add($"{attention.OpenLegacyPaymentJobs} ödeme işi tamamlanmayı bekliyor");
+        return status with { Text = status.Text + " · " + string.Join(" · ", notes), Healthy = false };
     }
 
     /// <param name="pendingCount">Yalnız metinde sayı gösterilecekse ve en çok bir kez çağrılır.</param>
@@ -117,7 +130,9 @@ public static class SyncStatusFormatter
         IReadOnlyDictionary<string, DateTimeOffset?>? pushOkAt)
     {
         // 1) Akış bir öğede takılı (ve takılma taze): çevrimdışı değil, "bekliyor".
-        if (blockedOn is { } block && IsFresh(block.LastSeenAt, now)) return new(Blocked(block), false);
+        if (blockedOn is { } block && IsFresh(block.LastSeenAt, now))
+            return new(Blocked(block), false,
+                block.Reason == SyncBlockReason.Busy ? "Açık ödeme isteğini tamamla." : CheckInternet);
 
         // 2) Yetişiyor: son turlar akışı ilerletti ama boş sayfaya varmadı.
         if (IsFresh(catchUpProgressAt, now)) return new(Updating, false);
@@ -128,7 +143,7 @@ public static class SyncStatusFormatter
         if (!IsFresh(reference, now))
         {
             var offline = pendingCount();
-            return new(offline > 0 ? $"Çevrimdışı — {offline} değişiklik bekliyor" : "Çevrimdışı", false);
+            return new(offline > 0 ? $"Çevrimdışı — {offline} değişiklik bekliyor" : "Çevrimdışı", false, CheckInternet);
         }
         if (lastPullOk is null) return new(Updating, false);      // izleme yeni, ilk tam akış bekleniyor
 
@@ -136,7 +151,7 @@ public static class SyncStatusFormatter
 
         // 4) Çekme iyi; bekleyen var ama bir gönderim üç dakikadır başaramıyor (I-3).
         if (pending > 0 && AnyPushStale(pushOkAt, trackingSince, now))
-            return new($"Gönderilemiyor — {pending} değişiklik bekliyor", false);
+            return new($"Gönderilemiyor — {pending} değişiklik bekliyor", false, CheckInternet);
         if (pending > 0) return new($"Gönderiliyor ({pending})", true);
         return new($"Güncel ✓ (son: {lastPullOk.Value.ToLocalTime():HH:mm})", true);
     }
