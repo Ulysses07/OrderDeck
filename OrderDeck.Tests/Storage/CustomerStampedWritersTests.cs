@@ -207,15 +207,15 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void Backfill_doldurdugu_adi_form_damgasiyla_damgalar_damgali_bos_adi_doldurmaz()
     {
-        var a = Chat("musa");
-        var b = Chat("musa2");
+        var a = Chat("zeynep.kaya");
+        var b = Chat("zeynep.kaya2");
         SetStamp(b, "FullNameChangedAt", T2);       // T2'de bilerek boş bırakıldı
 
         _repo.BackfillFullNameForIdentities(
-                new[] { ("instagram", "musa"), ("instagram", "musa2") }, "Musa S", submittedAtMs: T1)
+                new[] { ("instagram", "zeynep.kaya"), ("instagram", "zeynep.kaya2") }, "Zeynep Kaya", submittedAtMs: T1)
             .Should().Be(1);
 
-        _repo.GetById(a)!.FullName.Should().Be("Musa S");
+        _repo.GetById(a)!.FullName.Should().Be("Zeynep Kaya");
         Stamp(a, "FullNameChangedAt").Should().Be(T1);
         _repo.GetById(b)!.FullName.Should().BeNull();
     }
@@ -386,13 +386,13 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void Backfill_tek_islemde_uygulanir_gec_hata_grup_yazimini_geri_alir()
     {
-        var grouped = Chat("musa");
+        var grouped = Chat("zeynep.kaya");
         _repo.SetGroupId(grouped, Guid.NewGuid().ToString("N"));
-        var solo = Chat("musa2");
+        var solo = Chat("zeynep.kaya2");
         FailWhenUpdated(solo, "FullName");     // grup satırları önce, tekil satır sonra yazılır
 
         var act = () => _repo.BackfillFullNameForIdentities(
-            new[] { ("instagram", "musa"), ("instagram", "musa2") }, "Musa S", submittedAtMs: T1);
+            new[] { ("instagram", "zeynep.kaya"), ("instagram", "zeynep.kaya2") }, "Zeynep Kaya", submittedAtMs: T1);
 
         act.Should().Throw<SqliteException>().WithMessage("*enjekte gec hata*");
         _repo.GetById(grouped)!.FullName.Should().BeNull("grup yazımı aynı işlemdeydi");
@@ -438,6 +438,35 @@ public sealed class CustomerStampedWritersTests : IDisposable
         Form("kotu_yeni", T1, phone: phone);
 
         _repo.FindByPlatformAndUsername("instagram", "kotu_yeni")!.BlacklistedAt.Should().Be(T1 / 1000);
+    }
+
+    [Fact]
+    public void Kara_liste_yayilimi_esit_tarihte_kaynagi_Id_ile_secer()
+    {
+        // Aynı tarihli iki kara liste üyesi: kaynak tarama sırasına (ekleme sırası) bırakılsaydı
+        // aynı veriye sahip iki bilgisayar farklı sebep yayardı — eşit damgayla, yakınsamadan.
+        var phone = NewPhone();
+        var formId = Guid.NewGuid();
+        var members = new[] { ("kaynak-1", "kotu_a", "sebep-a"), ("kaynak-2", "kotu_b", "sebep-b") };
+        string PropagatedReason(bool reverseInsertOrder)
+        {
+            using var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var repo = new CustomerRepository(db);
+            var order = reverseInsertOrder ? new[] { members[1], members[0] } : members;
+            foreach (var (id, user, reason) in order)
+                repo.Insert(new Customer(id, "instagram", user, DisplayName: user, AvatarUrl: null,
+                    FirstSeenAt: 1, LastSeenAt: 1, IsBlacklisted: true, BlacklistReason: reason, Notes: null,
+                    TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: 999, Address: null, Phone: phone));
+            repo.UpsertPersonFromIntake(
+                new[] { ("instagram", "kotu_yeni", (string?)null) },
+                "Ayşe Yılmaz", "Atatürk Cd. 1", phone, null, null, false, false,
+                nowUnix: 1000, formId: formId, submittedAtMs: T1);
+            return repo.FindByPlatformAndUsername("instagram", "kotu_yeni")!.BlacklistReason!;
+        }
+
+        PropagatedReason(reverseInsertOrder: false).Should().Be("sebep-a");
+        PropagatedReason(reverseInsertOrder: true).Should().Be("sebep-a", "eşit tarihte en küçük Id — ekleme sırası değil");
     }
 
     [Fact]

@@ -996,10 +996,13 @@ public sealed class CustomerRepository
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string groupId, long fallbackAt,
         long? formAt)
     {
+        // Eşit tarihte Id bozar: tarama sırası (ekleme sırası) bilgisayardan bilgisayara
+        // değişir; aynı veriye sahip iki bilgisayar farklı kaynak seçip eşit damgayla farklı
+        // sebep yayardı.
         var b = conn.QueryFirstOrDefault<Row>(
             @"SELECT * FROM Customer
               WHERE GroupId = @groupId AND IsBlacklisted = 1
-              ORDER BY COALESCE(BlacklistedAt, 0) DESC LIMIT 1",
+              ORDER BY COALESCE(BlacklistedAt, 0) DESC, Id LIMIT 1",
             new { groupId }, tx);
         if (b is null) return;
 

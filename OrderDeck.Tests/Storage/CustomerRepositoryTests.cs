@@ -25,6 +25,9 @@ public class CustomerRepositoryTests
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
             Address: null, Phone: null);
 
+    // Telefon sabit YAZILMAZ (CLAUDE.md, repo public): üretilir.
+    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+
     [Fact]
     public void Insert_then_FindByPlatformAndUsername_returns_customer()
     {
@@ -881,18 +884,18 @@ public class CustomerRepositoryTests
     {
         var repo = CreateRepository();
         // Grup: IG (chat takma adlı, FullName boş) + YouTube. FullName ikisinde de boş.
-        repo.Insert(new Customer("ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+        repo.Insert(new Customer("ig1", "instagram", "ayse.yilmaz", "ayse.yilmaz", null,
             100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
-        repo.Insert(new Customer("yt1", "youtube", "UCabc", "@musa", null,
+        repo.Insert(new Customer("yt1", "youtube", "UCabc", "@ayse", null,
             100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
 
         var updated = repo.BackfillFullNameForIdentities(
-            new[] { ("instagram", "musaa.sevinc") }, "Musa Sevinç", submittedAtMs: 5_000_000);
+            new[] { ("instagram", "ayse.yilmaz") }, "Ayşe Yılmaz", submittedAtMs: 5_000_000);
 
         updated.Should().Be(2); // eşleşen satırın tüm grubu
-        repo.GetById("ig1")!.FullName.Should().Be("Musa Sevinç");
-        repo.GetById("yt1")!.FullName.Should().Be("Musa Sevinç");
-        repo.GetById("ig1")!.DisplayName.Should().Be("musaa.sevinc"); // dokunulmadı
+        repo.GetById("ig1")!.FullName.Should().Be("Ayşe Yılmaz");
+        repo.GetById("yt1")!.FullName.Should().Be("Ayşe Yılmaz");
+        repo.GetById("ig1")!.DisplayName.Should().Be("ayse.yilmaz"); // dokunulmadı
     }
 
     [Fact]
@@ -951,17 +954,18 @@ public class CustomerRepositoryTests
     {
         var repo = CreateRepository();
         // Chat'ten gelmiş IG satırı: DisplayName = IG takma adı (gerçek isim değil).
-        repo.Insert(new Customer("ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+        repo.Insert(new Customer("ig1", "instagram", "ayse.yilmaz", "ayse.yilmaz", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
+        var phone = NewPhone();
 
         // Form: gerçek Ad Soyad farklı.
         repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("instagram", "musaa.sevinc", null) },
-            "Musa Sevinç", "Adres", "+905076313815", "e@x.com", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            new (string, string, string?)[] { ("instagram", "ayse.yilmaz", null) },
+            "Ayşe Yılmaz", "Adres", phone, "e@x.com", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         var c = repo.GetById("ig1")!;
-        c.DisplayName.Should().Be("musaa.sevinc"); // chat takma adı korundu (chat eşleşmesi sürsün)
-        c.FullName.Should().Be("Musa Sevinç");     // gerçek isim ayrı kolonda saklandı
-        c.Phone.Should().Be("+905076313815");
+        c.DisplayName.Should().Be("ayse.yilmaz"); // chat takma adı korundu (chat eşleşmesi sürsün)
+        c.FullName.Should().Be("Ayşe Yılmaz");    // gerçek isim ayrı kolonda saklandı
+        c.Phone.Should().Be(phone);
     }
 }

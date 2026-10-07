@@ -312,23 +312,68 @@ public sealed class IntakeFormSyncServiceTests
                 "damga doldurma anı değil, formun gönderim anı");
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_bos_form_kimligi_sonraki_formlari_kilitlemez_turetilmis_grup_her_bilgisayarda_ayni()
+    {
+        // JSON'da "id" yok → Guid.Empty. Depo boş kimliği reddeder (yeni grup ondan türer); servis
+        // ona hiç boş kimlik geçmez, her bilgisayarda aynı çıkan türetilmiş kimliği kullanır. Tek
+        // bozuk gönderim sayfanın geri kalanını ve imleci kilitlememeli.
+        const string page =
+            """
+            [{"username":"ayse_y","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T11:00:00Z","instagramUsername":"ayse_y"},
+             {"id":"00000000-0000-0000-0000-000000000002","username":"fatma_k","fullName":"Fatma K","address":"Adres 2","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"fatma_k"}]
+            """;
+        var lisans = $"lisans-{Guid.NewGuid():N}";
+        async Task<(CustomerRepository Repo, SyncCursorRepository Cursors, int Count)> RunOnFreshDb()
+        {
+            var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var repo = new CustomerRepository(db);
+            var cursors = new SyncCursorRepository(db);
+            var api = new LicenseApiClient(
+                new HttpClient(new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200, page)))
+                    { BaseAddress = new Uri("https://test.local") },
+                new OrderDeck.Licensing.Api.LicenseTokenStore());
+            var svc = new IntakeFormSyncService(api, repo, cursors,
+                new StubLicenseProvider { CurrentLicenseKey = lisans }, new FakeClock(),
+                NullLogger<IntakeFormSyncService>.Instance);
+            return (repo, cursors, await svc.SyncOnceAsync());
+        }
+
+        var here = await RunOnFreshDb();
+        var there = await RunOnFreshDb();
+
+        here.Count.Should().Be(2);
+        var emptyIdRow = here.Repo.FindByPlatformAndUsername("instagram", "ayse_y")!;
+        emptyIdRow.FullName.Should().Be("Ayşe Y", "boş kimlikli form da uygulandı");
+        here.Repo.FindByPlatformAndUsername("instagram", "fatma_k")!.FullName.Should().Be("Fatma K");
+        var cursor = here.Cursors.Get(CursorName, lisans)!;
+        cursor.LastId.Should().Be(Guid.Parse("00000000-0000-0000-0000-000000000002"));
+        cursor.UpdatedAt.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
+
+        emptyIdRow.GroupId.Should().NotBeNullOrEmpty()
+            .And.NotBe(Guid.Empty.ToString("N"))
+            .And.Be(there.Repo.FindByPlatformAndUsername("instagram", "ayse_y")!.GroupId,
+                "türetilmiş kimlik her bilgisayarda aynı — grup ayrışmaz");
+    }
+
     // ── FullName backfill (tek seferlik geriye-dönük düzeltme) ────────────
 
     [Fact]
     public async Task BackfillFullNamesOnceAsync_fills_missing_fullname_from_server()
     {
         var (svc, repo, cursors, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"musaa.sevinc","fullName":"Musa Sevinç","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"musaa.sevinc"}]"""));
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse.yilmaz","fullName":"Ayşe Yılmaz","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ayse.yilmaz"}]"""));
         // Chat'ten gelmiş IG satırı: DisplayName = takma ad, FullName boş.
         repo.Insert(new OrderDeck.Core.Customers.Customer(
-            "ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            "ig1", "instagram", "ayse.yilmaz", "ayse.yilmaz", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
 
         var updated = await svc.BackfillFullNamesOnceAsync();
 
         updated.Should().Be(1);
-        repo.GetById("ig1")!.FullName.Should().Be("Musa Sevinç");
-        repo.GetById("ig1")!.DisplayName.Should().Be("musaa.sevinc"); // dokunulmadı
+        repo.GetById("ig1")!.FullName.Should().Be("Ayşe Yılmaz");
+        repo.GetById("ig1")!.DisplayName.Should().Be("ayse.yilmaz"); // dokunulmadı
         // R9-D03: "bitti" işareti = SyncCursor satırı, Seq = sürüm 2.
         cursors.Get(BackfillMarkerName, TestLicenseKey)!.Seq.Should().Be(2);
     }

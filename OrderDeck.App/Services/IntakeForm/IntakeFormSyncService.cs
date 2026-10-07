@@ -1,4 +1,8 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using OrderDeck.App.Services.Sync;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
@@ -246,7 +250,7 @@ public sealed class IntakeFormSyncService
                     sub.FullName, sub.Address, sub.Phone,
                     sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
                     nowUnix,
-                    formId: sub.Id,
+                    formId: FormIdOf(sub, identities),
                     submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
                     city: sub.City, district: sub.District);
             }
@@ -271,5 +275,41 @@ public sealed class IntakeFormSyncService
 
         SubmissionsSynced?.Invoke(this, submissions.Count);
         return submissions.Count;
+    }
+
+    /// <summary>
+    /// Formun kimliği; sunucu boş göndermişse (JSON'da "id" yok → <see cref="Guid.Empty"/>)
+    /// her bilgisayarda AYNI çıkan türetilmiş kimlik. Depo boş kimliği reddeder (yeni grup
+    /// ondan türer) ve imleç sayfanın SONUNDA ilerlediği için, boş kimlik depoya geçseydi tek
+    /// bozuk gönderim sonraki BÜTÜN formları her bilgisayarda kilitler, sayfanın önceki
+    /// formlarını da her turda yeniden uygulatıp gönderime koyardı.
+    /// </summary>
+    private Guid FormIdOf(
+        IntakeFormSubmissionDto sub,
+        IReadOnlyList<(string Platform, string Username, string? PreferredDisplayName)> identities)
+    {
+        if (sub.Id != Guid.Empty) return sub.Id;
+
+        // Kişisel veri yazılmaz: kullanıcı adı / ad yok, yalnız gönderim anı.
+        _log.LogWarning("Intake form: boş form kimliği, türetilmiş kimlik kullanıldı (gönderim {SubmittedAt})",
+            sub.SubmittedAt);
+        return DerivedFormId(sub.SubmittedAt.ToUnixTimeMilliseconds(), identities);
+    }
+
+    /// <summary>
+    /// Boş kimlikli formun belirleyici yedeği: SHA-256("{gönderim ms}|{sıralı
+    /// "platform:kimlik anahtarı" çiftleri '|' ile}") özetinin ilk 16 baytı. Aynı formu işleyen
+    /// her bilgisayar aynı kimliği — dolayısıyla aynı yeni grubu — türetir. Sıralama ordinal, sayı
+    /// biçimi kültürden bağımsız: sonuç makinenin diline bağlı olmamalı.
+    /// </summary>
+    private static Guid DerivedFormId(
+        long submittedAtMs,
+        IEnumerable<(string Platform, string Username, string? PreferredDisplayName)> identities)
+    {
+        var pairs = identities
+            .Select(i => $"{i.Platform}:{CustomerIdentity.KeyOrNull(i.Username)}")
+            .OrderBy(pair => pair, StringComparer.Ordinal);
+        var text = submittedAtMs.ToString(CultureInfo.InvariantCulture) + "|" + string.Join('|', pairs);
+        return new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(text)).AsSpan(0, 16));
     }
 }
