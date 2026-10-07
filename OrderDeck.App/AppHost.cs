@@ -81,6 +81,13 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<MigrationRunner>();
         services.AddSingleton<SessionRepository>();
         services.AddSingleton<CustomerRepository>();
+        // U13: ödeme akışındaki müşteriler — TEK paylaşılan örnek. Senkron deposu ile
+        // PaymentRequestService aynı kümeyi görmeli; ikinci bir örnek öbürünün kirasını
+        // görmez ve U13 sessizce çalışmaz (CustomerSyncDiTests denetler).
+        services.AddSingleton<CustomerBusySet>();
+        // Çoklu bilgisayar senkronunun müşteri deposu (Bölüm C): gönderim okuması, sunucu
+        // satırını uygulama, Id taşıma. Kurucusu kümeyi DI'dan alır.
+        services.AddSingleton<CustomerSyncRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
         // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService).
@@ -524,6 +531,8 @@ public sealed class AppHost : IDisposable
         // WPF customer projection sync (Faz 0c-2): lokal Customer tablosunun
         // LicenseServer'a delta sync'i. 60 sn cadence, 500'lük batch, watermark
         // SyncCursor tablosunda (R6-04). Shopper app login match için gerekli.
+        // Bölüm C6: biçim 2 (tam alan + birim damgaları), imleç customer-projection-out-v2,
+        // yanıttaki yönlendirmeler yerel satırı asıl kayda taşır (CustomerSyncRepository).
         services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
         services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
 
