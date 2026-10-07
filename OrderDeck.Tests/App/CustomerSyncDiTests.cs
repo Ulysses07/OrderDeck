@@ -143,4 +143,22 @@ public sealed class CustomerSyncDiTests
         PrivateField<IReadOnlyList<Func<CancellationToken, Task>>>(flush, "_steps").Should().HaveCount(4,
             "D5: müşteri, oturum+etiket, ödeme, kargo — bekleyen sayıya (D1) giren her gönderim");
     }
+
+    [Fact]
+    public void Kabugun_istege_bagli_senkron_parametreleri_DIda_kayitli()
+    {
+        // Kabuk ViewModel'i kurulmadan (22 servis, zamanlayıcılar) türleriyle sınanır: kayıt eksikse
+        // DI isteğe bağlı parametreyi sessizce null bırakır — durum satırı (D3), kapanış uyarısı (D5)
+        // ya da destek eylemi (D5b) hiç görünmezdi.
+        using var host = new global::OrderDeck.App.AppHost();
+        var syncParameters = typeof(global::OrderDeck.App.ViewModels.MainShellViewModel).GetConstructors().Single()
+            .GetParameters()
+            .Where(p => p.IsOptional && p.ParameterType.Namespace == typeof(SyncStatusTracker).Namespace)
+            .ToList();
+
+        syncParameters.Select(p => p.ParameterType).Should().BeEquivalentTo(
+            new[] { typeof(SyncStatusTracker), typeof(SyncPendingCounter), typeof(CustomerChangesPullService) });
+        foreach (var p in syncParameters)
+            host.Services.GetService(p.ParameterType).Should().NotBeNull(p.Name);
+    }
 }

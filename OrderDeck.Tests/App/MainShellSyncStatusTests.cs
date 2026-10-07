@@ -1,22 +1,27 @@
 using System;
 using System.Data;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using OrderDeck.App.Services;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Licensing.Api;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.App;
 
-/// <summary>Faz 0: kenar çubuğu durum satırı (D3), yetişilmeden yayın başlatma uyarısı (D4) ve
-/// kapanışta gönderilmemiş kayıt uyarısı (D5).</summary>
+/// <summary>Faz 0: kenar çubuğu durum satırı (D3), yetişilmeden yayın başlatma uyarısı (D4),
+/// kapanışta gönderilmemiş kayıt uyarısı (D5) ve müşteri senkronunu baştan alma (D5b).</summary>
 public sealed class MainShellSyncStatusTests
 {
     /// <summary>Bağlantı açılışlarını sayar: durum satırının kaç sorgu koştuğu.</summary>
@@ -399,5 +404,109 @@ public sealed class MainShellSyncStatusTests
         h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(CloseSyncChoice.Close);
 
         h.Dialogs.ThreeWayConfirmations.Should().BeEmpty();
+    }
+
+    // ── D5b: müşteri senkronunu baştan al (destek eylemi) ──────────────
+
+    private const string ResyncTitle = "Senkronu baştan al";
+
+    private sealed class FixedLicense(string? key) : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey { get; } = key;
+    }
+
+    /// <summary>Gerçek akış servisi; sıfırlama yerel olduğu için ağa gitmez (sahte istemci 404).</summary>
+    private static CustomerChangesPullService PullService(IDbConnectionFactory db, string? licenseKey)
+    {
+        var api = new LicenseApiClient(
+            new HttpClient(new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Empty(404)))
+                { BaseAddress = new Uri("https://test.local") },
+            new LicenseTokenStore());
+        var license = new FixedLicense(licenseKey);
+        var clock = new SystemClock();
+        var tracker = new SyncStatusTracker();
+        var sync = new CustomerSyncRepository(db);
+        var cursors = new SyncCursorRepository(db);
+        var push = new WpfCustomerProjectionSyncService(api, sync, cursors, license, clock,
+            NullLogger<WpfCustomerProjectionSyncService>.Instance, tracker);
+        return new CustomerChangesPullService(api, new CustomerRepository(db), sync, cursors, push, license, clock,
+            tracker, NullLogger<CustomerChangesPullService>.Instance);
+    }
+
+    [Fact]
+    public async Task Senkronu_bastan_al_onay_sorar_hayir_derse_hicbir_sey_degismez()
+    {
+        using var syncDb = MigratedDb();
+        var key = $"lisans-{Guid.NewGuid():N}";
+        var cursors = new SyncCursorRepository(syncDb);
+        cursors.Upsert(CustomerChangesPullService.CursorName, key, seq: 9);
+        cursors.Upsert(WpfCustomerProjectionSyncService.CursorName, key, seq: 9);
+        using var h = MainShellTestHarness.Build(customerPull: PullService(syncDb, key));
+
+        await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
+
+        h.Dialogs.Confirmations.Should().ContainSingle(c => c.Title == ResyncTitle)
+            .Which.Message.Should().Be(
+                "Müşteri senkronu baştan alınacak: bu bilgisayardaki bütün müşteriler sunucuya yeniden " +
+                "gönderilir ve diğer bilgisayarların değişiklikleri baştan indirilir. Hiçbir kayıt silinmez; " +
+                "birkaç dakika \"Gönderiliyor\" görünmesi normal.\n\nYalnız destek istediğinde kullan. Devam edilsin mi?");
+        cursors.Get(CustomerChangesPullService.CursorName, key)!.Seq.Should().Be(9);
+        cursors.Get(WpfCustomerProjectionSyncService.CursorName, key)!.Seq.Should().Be(9);
+    }
+
+    [Fact]
+    public async Task Senkronu_bastan_al_evet_derse_imlecler_sifirlanir_durum_satiri_tazelenir()
+    {
+        using var syncDb = MigratedDb();
+        SeedUnsent(syncDb);
+        var key = $"lisans-{Guid.NewGuid():N}";
+        var cursors = new SyncCursorRepository(syncDb);
+        cursors.Upsert(CustomerChangesPullService.CursorName, key, seq: 1_000_000);
+        cursors.Upsert(WpfCustomerProjectionSyncService.CursorName, key, seq: 1_000_000);
+        var tracker = new SyncStatusTracker();
+        using var h = MainShellTestHarness.Build(syncStatus: tracker,
+            pendingCounter: EmptyCounter(syncDb, new FixedLicense(key)), customerPull: PullService(syncDb, key));
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        h.Vm.RefreshSyncStatus();
+        h.Vm.SyncStatusText.Should().StartWith("Güncel ✓");
+        h.Dialogs.ConfirmResult = title => title == ResyncTitle;
+
+        await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
+
+        cursors.Get(CustomerChangesPullService.CursorName, key)!.Seq.Should().Be(0);
+        cursors.Get(WpfCustomerProjectionSyncService.CursorName, key)!.Seq.Should().Be(0);
+        h.Vm.SyncStatusText.Should().Be("Gönderiliyor (1)", "bütün müşteriler yeniden gönderilecek — beklemeden görünür");
+        h.Dialogs.Shown.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Senkronu_bastan_al_lisans_yoksa_soyler()
+    {
+        using var syncDb = MigratedDb();
+        using var h = MainShellTestHarness.Build(customerPull: PullService(syncDb, licenseKey: null));
+        h.Dialogs.ConfirmResult = _ => true;
+
+        await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
+
+        h.Dialogs.Shown.Should().ContainSingle().Which.Should().Be(
+            (ResyncTitle, "Lisans bulunamadı — senkron baştan alınamadı.", DialogSeverity.Warning));
+    }
+
+    [Fact]
+    public async Task Senkronu_bastan_al_hatasi_operatore_soylenir_kabuk_etkilenmez()
+    {
+        using var syncDb = MigratedDb();
+        var log = new WarningCounter();
+        using var h = MainShellTestHarness.Build(log: log,
+            customerPull: PullService(new FailingFactory(syncDb), $"lisans-{Guid.NewGuid():N}"));
+        h.Dialogs.ConfirmResult = _ => true;
+        var warnings = log.Warnings;
+
+        await h.Vm.ResyncCustomersCommand.ExecuteAsync(null);
+
+        h.Dialogs.Shown.Should().ContainSingle().Which.Severity.Should().Be(DialogSeverity.Warning);
+        h.Dialogs.Shown[0].Title.Should().Be(ResyncTitle);
+        h.Dialogs.Shown[0].Message.Should().StartWith("Müşteri senkronu baştan alınamadı");
+        log.Warnings.Should().Be(warnings + 1);
     }
 }

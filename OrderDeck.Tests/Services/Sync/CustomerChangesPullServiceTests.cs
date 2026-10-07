@@ -1299,6 +1299,121 @@ public sealed class CustomerChangesPullServiceTests
         fx.Tracker.LastCatchUpProgressAt.Should().BeNull("imleç yerinde — yetişme yok, çevrimdışı sayacı işler");
     }
 
+    // ── D5b: tam yeniden eşitleme (destek eylemi) ────────────────────────
+
+    [Fact]
+    public async Task Tam_yeniden_esitleme_imlecleri_sifirlar_atlanan_ogeyi_yeniden_uygular()
+    {
+        var poison = Guid.NewGuid();
+        var ok = Guid.NewGuid();
+        using var fx = Build(after => after == 0 ? Page(6, Item(poison, "zehir", 5), Item(ok, "saglam", 6)) : Page(after));
+        using (var c = fx.Db.Open())
+            c.Execute("CREATE TRIGGER zehir BEFORE INSERT ON Customer WHEN new.Username = 'zehir' BEGIN SELECT RAISE(ABORT, 'zehir'); END");
+        for (var tour = 1; tour <= CustomerChangesPullService.MaxAttemptsBeforeSkip; tour++)
+            await fx.Svc.PullOnceAsync(CancellationToken.None);
+        Exists(fx, poison.ToString("N")).Should().BeFalse("beşinci turda atlandı (U10)");
+        fx.FeedCursor.Should().Be(6);
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure WHERE SkippedAt IS NOT NULL").Should().Be(1);
+
+        // Form imleci ve oynatma işareti (U14) sıfırlanmaz: bilgisayar damgalı kipte kalır.
+        fx.Cursors.Upsert("intake-form-in", Lisans, seq: 42);
+        fx.Cursors.Upsert("intake-form-replay", Lisans, seq: 2);
+
+        using (var c = fx.Db.Open()) c.Execute("DROP TRIGGER zehir");     // hatanın nedeni giderildi
+        var posts = fx.Posts;
+
+        (await fx.Svc.RequestFullResyncAsync(CancellationToken.None)).Should().BeTrue();
+
+        fx.FeedCursor.Should().Be(0);
+        fx.Push.Watermark(Lisans).Should().Be(0);
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0,
+            "C7 incelemesi: hata kayıtları silinir — uygulama kapalıyken lisans değiştiyse kalan eski kayıtlar dahil");
+        fx.Cursors.Get("intake-form-in", Lisans)!.Seq.Should().Be(42);
+        fx.Cursors.Get("intake-form-replay", Lisans)!.Seq.Should().Be(2);
+        fx.Log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning
+            && e.Message.StartsWith("Destek: müşteri senkronu baştan alınıyor", StringComparison.Ordinal));
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        Exists(fx, poison.ToString("N")).Should().BeTrue("akış baştan uygulandı — atlanan öğe de");
+        fx.Posts.Should().BeGreaterThan(posts, "bütün müşteriler yeniden gönderildi");
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0, "uygulanan öğenin uyarısı geri gelmez");
+    }
+
+    [Fact]
+    public async Task Tam_yeniden_esitleme_lisans_yoksa_hicbir_seyi_sifirlamaz()
+    {
+        using var fx = Build(after => Page(after), license: false);
+        fx.Cursors.Upsert(CustomerChangesPullService.CursorName, Lisans, seq: 7);
+        using (var c = fx.Db.Open())
+            c.Execute("INSERT INTO CustomerFeedFailure (ItemId, ChangeSeq, Attempts, LastError, FirstFailedAt, SkippedAt) " +
+                      "VALUES (@id, 3, 5, 'x', 100, 200)", new { id = Guid.NewGuid().ToString("N") });
+
+        (await fx.Svc.RequestFullResyncAsync(CancellationToken.None)).Should().BeFalse();
+
+        fx.FeedCursor.Should().Be(7);
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Tam_yeniden_esitleme_takilma_durumunu_temizler()
+    {
+        // Takılma durumu yalnız bellekte (C7 incelemesi): sıfırlamadan sonra "bekliyor" satırı eski
+        // imlecin öğesini anlatmaz. Öğe hâlâ takılıysa sonraki turlar eşikten yeniden kurar.
+        var canonical = Guid.NewGuid();
+        var busy = new CustomerBusySet();
+        using var fx = Build(after => after == 0 ? Page(7, Item(canonical, "ornek", 7)) : Page(after), busy: busy);
+        var holder = LocalRow(fx, "Ornek");
+        using var lease = await busy.EnterAsync(holder);
+        for (var round = 1; round <= CustomerChangesPullService.BlockedRoundsBeforeWarning; round++)
+            (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+        fx.Tracker.BlockedOn.Should().NotBeNull();
+
+        (await fx.Svc.RequestFullResyncAsync(CancellationToken.None)).Should().BeTrue();
+
+        fx.Tracker.BlockedOn.Should().BeNull();
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+        fx.Tracker.BlockedOn.Should().BeNull("takılma sayımı baştan — eşiğin altında");
+    }
+
+    [Fact]
+    public async Task Tam_yeniden_esitleme_suren_turu_bekler_turun_imlec_yazimi_sifirlamayi_ezmez()
+    {
+        // Tur kilidi: zamanlayıcının turu sayfa sonunda imleci yazar — sıfırlama turun ortasına
+        // girseydi o yazım sıfırlamayı ezerdi (akış baştan uygulanmaz, atlanan öğe geri gelmezdi).
+        var a = Guid.NewGuid();
+        var entered = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        var first = 0;
+        using var fx = Build(after =>
+        {
+            if (after == 0 && Interlocked.Increment(ref first) == 1)
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(30));
+            }
+            return after == 0 ? Page(6, Item(a, "ornek_a", 6)) : Page(after);
+        });
+
+        var tour = Task.Run(() => fx.Svc.PullOnceAsync(CancellationToken.None));
+        Task<bool>? resync = null;
+        try
+        {
+            entered.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue("tur akış sayfasını istedi");
+            resync = Task.Run(() => fx.Svc.RequestFullResyncAsync(CancellationToken.None));
+            await Task.Delay(200);
+            resync.IsCompleted.Should().BeFalse("süren tur bitmeden imleçler sıfırlanmaz");
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        (await tour.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be(CustomerPullOutcome.CaughtUp);
+        (await resync!.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        fx.FeedCursor.Should().Be(0, "sıfırlama turun imleç yazımından SONRA");
+        fx.Push.Watermark(Lisans).Should().Be(0);
+    }
+
     // ── arka plan işi (M-10) ────────────────────────────────────────────
 
     [Fact]

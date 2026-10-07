@@ -79,7 +79,8 @@ public enum CustomerPullOutcome
 ///
 /// <para><b>İş parçacığı:</b> bütün <c>await</c>'ler <c>ConfigureAwait(false)</c> — öğe uygulaması
 /// <c>CustomerBusySet</c> kilidini eşzamanlı bekler, arayüz iş parçacığında koşmamalı.
-/// Aynı anda tek çağıran varsayılır (arka plan işi, 30 sn).</para>
+/// Turlar ve destek eyleminin sıfırlaması (<see cref="RequestFullResyncAsync"/>, D5b) tek tur
+/// kilidinden geçer; turu yalnız arka plan işi başlatır (30 sn) — sıfırlama da işi ona bırakır.</para>
 /// </summary>
 public sealed class CustomerChangesPullService
 {
@@ -114,6 +115,12 @@ public sealed class CustomerChangesPullService
     private readonly SyncStatusTracker _tracker;
     private readonly ILogger<CustomerChangesPullService> _log;
 
+    /// <summary>Tek tur kuralı: zamanlayıcının turu ile destek eyleminin (D5b) imleç sıfırlaması üst
+    /// üste binmez — turun sayfa sonundaki imleç yazımı sıfırlamayı ezerdi. Kilit sırası: önce bu kilit,
+    /// sonra gönderim servisinin tur kilidi (tur da sıfırlama da bu sırayla alır; gönderim bu kilidi
+    /// hiç almaz).</summary>
+    private readonly SemaphoreSlim _tourGate = new(1, 1);
+
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
     private string? _lastLicenseKey;
@@ -147,6 +154,46 @@ public sealed class CustomerChangesPullService
     }
 
     public async Task<CustomerPullOutcome> PullOnceAsync(CancellationToken ct)
+    {
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        try { return await PullOnceCoreAsync(ct).ConfigureAwait(false); }
+        finally { _tourGate.Release(); }
+    }
+
+    /// <summary>
+    /// D5b — destek eylemi: müşteri senkronunu baştan al. Biçim-2 gönderim imleci ve akış imleci
+    /// sıfırlanır; işi arka plan servisinin sonraki turu yapar (bütün müşteriler yeniden gönderilir,
+    /// akış baştan uygulanır — <c>CursorReset</c> yolunun aynısı, yeniden uygulama damga kurallarıyla
+    /// zararsız: eşit damga yazmaz, kilit altındaki yazım yankılanmaz). Akış hatası kayıtları silinir
+    /// (C7 incelemesi; uygulama kapalıyken lisans değiştiyse kalan eski kayıtlar dahil) ve bellekteki
+    /// takılma durumu temizlenir — düzelen öğe yeniden uygulanır, hâlâ uygulanamayan beş turda yeniden
+    /// atlanır. Form imleci ve oynatma işareti (U14) değişmez: bilgisayar damgalı kipte kalır. Hiçbir
+    /// yerel veri silinmez. Sürmekte olan tur önce biter (<see cref="_tourGate"/>).
+    /// </summary>
+    /// <returns>Lisans yoksa false (hiçbir şey sıfırlanmaz).</returns>
+    public async Task<bool> RequestFullResyncAsync(CancellationToken ct)
+    {
+        var licenseKey = _licenseProvider.CurrentLicenseKey;
+        if (string.IsNullOrWhiteSpace(licenseKey)) return false;
+
+        int cleared;
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _push.RewindAsync(licenseKey, ct).ConfigureAwait(false);
+            _cursors.Upsert(CursorName, licenseKey, seq: 0);
+            cleared = _sync.ClearFeedFailures();
+            ClearBlocked();
+        }
+        finally { _tourGate.Release(); }
+
+        _log.LogWarning(
+            "Destek: müşteri senkronu baştan alınıyor — gönderim ve akış imleçleri sıfırlandı, {Count} akış hatası kaydı silindi",
+            cleared);
+        return true;
+    }
+
+    private async Task<CustomerPullOutcome> PullOnceCoreAsync(CancellationToken ct)
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
         if (string.IsNullOrWhiteSpace(licenseKey))
