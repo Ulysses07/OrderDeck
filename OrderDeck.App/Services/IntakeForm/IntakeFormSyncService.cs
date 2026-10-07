@@ -24,6 +24,10 @@ namespace OrderDeck.App.Services.IntakeForm;
 /// <para>Damga = formun <c>SubmittedAt</c>'i (Bölüm C kural 3): her bilgisayar
 /// formları kendi imleciyle uygular; işleme anı damgası geç açılan bilgisayarın eski
 /// formları en yeni damgayla oynatıp sonradan yapılan düzeltmeleri ezmesi demekti.</para>
+///
+/// <para>U14: imleçsiz başlayan bilgisayarın ilk tam oynatması doldurma kipinde
+/// (<see cref="IntakeApplyMode.FillOnly"/> — yalnız boş ve damgasız birim, damga yazılmaz); form
+/// işleme iki kipte de bu süreçteki ilk tam müşteri akışını bekler.</para>
 /// </summary>
 public sealed class IntakeFormSyncService
 {
@@ -41,22 +45,33 @@ public sealed class IntakeFormSyncService
     private const string BackfillMarkerName = "intake-fullname-backfill";
     private const long BackfillVersion = 2;
 
+    // U14: taze bilgisayarın (intake-form-in imleci olmadan başlayan) ilk tam form oynatması
+    // doldurma kipinde. İşaret SyncCursor satırında (yedekle birlikte taşınır): Seq 1 = oynatma
+    // sürüyor, 2 = bitti (ya da hiç gerekmedi).
+    private const string ReplayMarkerName = "intake-form-replay";
+    private const long ReplayRunning = 1;
+    private const long ReplayDone = 2;
+
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
     private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<IntakeFormSyncService> _log;
+    private readonly SyncStatusTracker? _tracker;
 
     public event EventHandler<int>? SubmissionsSynced;
 
+    /// <param name="tracker">Müşteri akışının durum izleyicisi (DI'da tekil): form işleme bu süreçteki
+    /// ilk tam akıştan sonra başlar. Boşsa (yalnız testler) beklenmez.</param>
     public IntakeFormSyncService(
         LicenseApiClient api,
         CustomerRepository customers,
         SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
-        ILogger<IntakeFormSyncService> log)
+        ILogger<IntakeFormSyncService> log,
+        SyncStatusTracker? tracker = null)
     {
         _api = api;
         _customers = customers;
@@ -64,7 +79,33 @@ public sealed class IntakeFormSyncService
         _licenseProvider = licenseProvider;
         _clock = clock;
         _log = log;
+        _tracker = tracker;
     }
+
+    /// <summary>U14: imleç yoksa (yeni kurulum, yedeksiz açılış) ilk tam oynatma doldurma kipinde;
+    /// imleç varsa (güncellenen kurulum, yedekten dönüş) oynatma yok. İşaret ilk karar anında
+    /// yazılır — sonradan oluşan imleç (oynatmanın kendisi ilerletir) kararı değiştirmez.</summary>
+    private IntakeApplyMode ModeFor(string licenseKey)
+    {
+        var marker = _cursors.Get(ReplayMarkerName, licenseKey)?.Seq;
+        if (marker == ReplayDone) return IntakeApplyMode.Stamped;
+        if (marker == ReplayRunning) return IntakeApplyMode.FillOnly;
+        if (_cursors.Get(CursorName, licenseKey) is not null)
+        {
+            _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayDone);
+            return IntakeApplyMode.Stamped;
+        }
+        _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayRunning);
+        return IntakeApplyMode.FillOnly;
+    }
+
+    /// <summary>Form işleme (İKİ kipte de) yalnız bu süreçteki ilk tam müşteri akışından SONRA: önce
+    /// sunucu gerçeği iner. Doldurma kipinde form yalnız onun bıraktığı boşluğu doldurur (U14);
+    /// damgalı kipte sırayla kullanılan bilgisayar, başka bilgisayarın aynı form için gönderdiği
+    /// (eşit damgalı) sonucu indirmeden formu kendi yerel durumuyla işleyip türetilen değerde (grup)
+    /// ayrışmaz (C2 kalite incelemesi). İzleyici yalnız akış boş sayfaya ulaşınca kurulur — büyük
+    /// lisansta ilk yetişme birkaç tur sürebilir. İzleyicisiz kurulum (testler) beklemez.</summary>
+    private bool MustWaitForFeed() => _tracker is { IsInitialCatchUpDone: false };
 
     /// <summary>
     /// UI freeze fix (2026-05-13): consecutive auth-failure tracking. 25 art arda
@@ -92,6 +133,12 @@ public sealed class IntakeFormSyncService
 
         if ((_cursors.Get(BackfillMarkerName, licenseKey)?.Seq ?? 0) >= BackfillVersion)
             return 0;
+
+        // U14: taze bilgisayarda doldurma kipinde (boş + damgasız ad, damga yazılmaz); her iki kipte
+        // ilk tam müşteri akışından sonra. Beklerken işaret yazılmaz → arka plan işi sonraki turda
+        // yeniden dener.
+        var mode = ModeFor(licenseKey);
+        if (MustWaitForFeed()) return 0;
 
         int totalUpdated = 0;
         DateTimeOffset? since = null;
@@ -135,7 +182,8 @@ public sealed class IntakeFormSyncService
 
                 if (identities.Count > 0 && !string.IsNullOrWhiteSpace(sub.FullName))
                     totalUpdated += _customers.BackfillFullNameForIdentities(
-                        identities, sub.FullName, submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds());
+                        identities, sub.FullName, submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
+                        mode: mode);
             }
 
             // R9-D03 / R3-01: imleç sunucunun teslim ettiği SON satırdan
@@ -179,6 +227,13 @@ public sealed class IntakeFormSyncService
             return 0;
         }
 
+        var mode = ModeFor(licenseKey);
+        if (MustWaitForFeed())
+        {
+            _log.LogDebug("Form senkronu ilk tam müşteri akışını bekliyor ({Mode})", mode);
+            return 0;
+        }
+
         // Satır yoksa baştan çekim (since=null): eski settings imleci tohum
         // OLMUYOR — settings dosyası yedeğin dışında yaşadığı için hangi veri
         // nesline/lisansa ait olduğu kanıtlanamaz; geri yüklemeden sonra ileri
@@ -210,7 +265,16 @@ public sealed class IntakeFormSyncService
             return 0;
         }
 
-        if (submissions.Count == 0) return 0;
+        if (submissions.Count == 0)
+        {
+            // U14: tam oynatma boş sayfaya ulaştı — bundan sonraki formlar damgalı (kural 3).
+            if (mode == IntakeApplyMode.FillOnly)
+            {
+                _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayDone);
+                _log.LogInformation("Taze bilgisayar form oynatması tamamlandı — yeni formlar damgalı uygulanır (U14)");
+            }
+            return 0;
+        }
 
         var nowUnix = _clock.UnixNow();
 
@@ -252,7 +316,7 @@ public sealed class IntakeFormSyncService
                     nowUnix,
                     formId: FormIdOf(sub, identities),
                     submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
-                    city: sub.City, district: sub.District);
+                    city: sub.City, district: sub.District, mode: mode);
             }
             else
             {
@@ -260,7 +324,7 @@ public sealed class IntakeFormSyncService
                 // legacy tek-satır davranışına düş.
                 _customers.UpsertFromIntakeForm(
                     sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix,
-                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds());
+                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(), mode: mode);
             }
         }
 

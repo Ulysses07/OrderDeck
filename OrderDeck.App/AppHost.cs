@@ -475,13 +475,15 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<TrialService>>()));
 
         // Intake form sync (Phase 4f). R9-D02: imleç SyncCursor tablosunda.
+        // U14: form işleme müşteri akışının TEK izleyicisinden ilk tam yetişmeyi bekler.
         services.AddSingleton<IntakeFormSyncService>(sp => new IntakeFormSyncService(
             sp.GetRequiredService<LicenseApiClient>(),
             sp.GetRequiredService<CustomerRepository>(),
             sp.GetRequiredService<SyncCursorRepository>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
-            sp.GetRequiredService<ILogger<IntakeFormSyncService>>()));
+            sp.GetRequiredService<ILogger<IntakeFormSyncService>>(),
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<IntakeFormSyncHostedService>();
 
         // Payment sync (PR B): WPF outbox push + reverse pull (mobile onay/red).

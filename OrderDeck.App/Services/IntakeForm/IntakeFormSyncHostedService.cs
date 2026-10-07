@@ -43,7 +43,8 @@ public sealed class IntakeFormSyncHostedService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Tek seferlik: eski müşterilerde boş FullName'i sunucudaki form verisinden
-        // doldur (migration 022 öncesi kayıtlar). Bir kez çalışır, sonra no-op.
+        // doldur (migration 022 öncesi kayıtlar). Bir kez çalışır, sonra no-op (taze
+        // bilgisayarda ilk tam müşteri akışını bekler — aşağıdaki döngü yeniden dener, U14).
         try
         {
             await _syncService.BackfillFullNamesOnceAsync(stoppingToken);
@@ -72,6 +73,22 @@ public sealed class IntakeFormSyncHostedService : BackgroundService
             catch (OperationCanceledException)
             {
                 break;
+            }
+
+            // U14: taze bilgisayarda backfill ilk tam müşteri akışını bekler; işareti yazılana kadar
+            // her tur yeniden dener (işaret varken tek imleç okuması — maliyetsiz). Ayrı korunur:
+            // backfill'in hatası form senkronunu durdurmasın.
+            try
+            {
+                await _syncService.BackfillFullNamesOnceAsync(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "FullName backfill failed; will retry next interval");
             }
 
             try

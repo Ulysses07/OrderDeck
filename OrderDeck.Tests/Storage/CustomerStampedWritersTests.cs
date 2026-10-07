@@ -534,4 +534,191 @@ public sealed class CustomerStampedWritersTests : IDisposable
         c.City.Should().BeNull("blok formun hâliyle yazılır — formda il yok");
         Stamp(id, "AddressChangedAt").Should().Be(T2);
     }
+
+    // ── taze bilgisayarın ilk oynatması: doldurma kipi (U14) ────────────
+
+    private string FillForm(string user, long at, string? phone = null, string? email = null, string? address = "Atatürk Cd. 1")
+        => _repo.UpsertPersonFromIntake(
+            new[] { ("instagram", user, (string?)null) },
+            "Örnek Müşteri", address ?? "", phone, email, tckn: null, whatsAppConsent: true, smsConsent: false,
+            nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: at, mode: IntakeApplyMode.FillOnly);
+
+    private long Seq(string id)
+    {
+        using var c = _db.Open();
+        return c.ExecuteScalar<long>("SELECT SyncSeq FROM Customer WHERE Id = @id", new { id });
+    }
+
+    private int GuardRows()
+    {
+        using var c = _db.Open();
+        return c.ExecuteScalar<int>("SELECT COUNT(*) FROM SyncApplyGuard");
+    }
+
+    [Fact]
+    public void Doldurma_kipi_damgasiz_dolu_birimi_ezmez_bos_birimi_damgasiz_doldurur()
+    {
+        var id = Chat("ayse_y");
+        var legacyPhone = TestPhone.NewE164();
+        _repo.UpdatePhone(id, legacyPhone);
+        SetStamp(id, "PhoneChangedAt", null);                // göç öncesi elle girilmiş, damgasız
+        var seq = Seq(id);
+        var lastSeen = _repo.GetById(id)!.LastSeenAt;
+
+        FillForm("ayse_y", T1, phone: TestPhone.NewE164(), email: "ayse@example.test");
+
+        var c = _repo.GetById(id)!;
+        c.Phone.Should().Be(legacyPhone, "kural 3'ün damgalı yazımı eski formla bunu ezerdi");
+        c.Email.Should().Be("ayse@example.test");
+        c.FullName.Should().Be("Örnek Müşteri");
+        c.WhatsAppConsent.Should().BeTrue();
+        Stamp(id, "EmailChangedAt").Should().BeNull("doldurma damga yazmaz");
+        Stamp(id, "FullNameChangedAt").Should().BeNull();
+        Stamp(id, "WhatsAppConsentChangedAt").Should().BeNull();
+        Stamp(id, "PhoneChangedAt").Should().BeNull();
+        Seq(id).Should().BeGreaterThan(seq, "doldurulan değerler gönderilsin (sunucuda da yalnız boşu doldurur)");
+        c.LastSeenAt.Should().Be(lastSeen, "eski formun oynatılması 'son görülme' değildir (2. inceleme)");
+        GuardRows().Should().Be(0);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_doldurulacak_birim_yoksa_satiri_yazmaz_gonderime_koymaz()
+    {
+        var id = Chat("ayse_y");
+        FillForm("ayse_y", T1);                               // ad, adres, grup, izin dolar
+        var seq = Seq(id);
+        var lastSeen = _repo.GetById(id)!.LastSeenAt;
+
+        FillForm("ayse_y", T1);                               // aynı form yeniden: doldurulacak bir şey yok
+
+        Seq(id).Should().Be(seq, "değişmeyen satır yeniden gönderilmez");
+        _repo.GetById(id)!.LastSeenAt.Should().Be(lastSeen);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_damgali_bos_birimi_doldurmaz()
+    {
+        var id = Chat("ayse_y");
+        SetStamp(id, "EmailChangedAt", T2);                  // e-posta T2'de bilerek boşaltıldı
+
+        FillForm("ayse_y", T1, email: "ayse@example.test");
+
+        _repo.GetById(id)!.Email.Should().BeNull();
+        Stamp(id, "EmailChangedAt").Should().Be(T2);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_yeni_satiri_damgasiz_acar()
+    {
+        FillForm("yeni_kisi", T1, phone: TestPhone.NewE164());
+
+        var c = _repo.FindByPlatformAndUsername("instagram", "yeni_kisi")!;
+        c.Phone.Should().NotBeNull();
+        c.FirstSeenAt.Should().Be(T1 / 1000, "oynatmanın açtığı satırın görülme anı formun gönderim anı");
+        c.LastSeenAt.Should().Be(T1 / 1000);
+        foreach (var col in new[] { "FullNameChangedAt", "DisplayNameChangedAt", "AddressChangedAt", "PhoneChangedAt",
+                                    "GroupIdChangedAt", "WhatsAppConsentChangedAt", "SmsConsentChangedAt" })
+            Stamp(c.Id, col).Should().BeNull($"{col}: kilit altında açıldı — INSERT tetikleyicisi damgalamadı");
+        GuardRows().Should().Be(0);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_telefonla_yalniz_bos_grubu_doldurur_baska_grubu_birlestirmez()
+    {
+        var phone = TestPhone.NewE164();
+        var first = Chat("ilk_grup");
+        _repo.UpdatePhone(first, phone);
+        _repo.SetGroupId(first, "g0");
+        SetStamp(first, "GroupIdChangedAt", null);            // göç öncesi gruplanmış: damgasız ama dolu
+        var second = Chat("ikinci_grup");
+        _repo.UpdatePhone(second, phone);
+        _repo.SetGroupId(second, "g9");
+        SetStamp(second, "GroupIdChangedAt", null);
+        var loose = Chat("grupsuz");
+        _repo.UpdatePhone(loose, phone);
+
+        var groupId = FillForm("ayse_y", T1, phone: phone);
+
+        _repo.GetById(first)!.GroupId.Should().Be("g0", "doldurma kipi dolu grubu değiştirmez");
+        _repo.GetById(second)!.GroupId.Should().Be("g9", "doldurma kipi grupları birleştirmez");
+        _repo.GetById(loose)!.GroupId.Should().Be(groupId, "boş ve damgasız grup doldurulur");
+        Stamp(loose, "GroupIdChangedAt").Should().BeNull();
+    }
+
+    [Fact]
+    public void Doldurma_kipi_kara_liste_yayilimi_telefonsuz_formda_da_kosar_damgasiz_ve_damgali_satiri_ezmez()
+    {
+        // #495: yayılım her formda (telefonsuz form da kimliği gruba koyar). Doldurma kipinde kilit
+        // altında — damga yazılmaz; damgalı (başka bilgisayarda bilerek kara listeden çıkarılmış)
+        // satır yeniden kara listeye alınmaz (yalnız boş VE damgasız birim).
+        var group = Guid.NewGuid().ToString("N");
+        _repo.Insert(new Customer(Guid.NewGuid().ToString("N"), "instagram", "kotu", DisplayName: "kotu",
+            AvatarUrl: null, FirstSeenAt: 1, LastSeenAt: 1, IsBlacklisted: true, BlacklistReason: "dolandırıcı",
+            Notes: null, TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: 999, Address: null, Phone: null,
+            GroupId: group));
+        var cleared = Chat("kotu_eski_hesap");
+        _repo.SetGroupId(cleared, group);
+        SetStamp(cleared, "BlacklistChangedAt", T2);          // başka bilgisayarda T2'de kara listeden çıkarıldı
+
+        _repo.UpsertPersonFromIntake(
+            new[] { ("instagram", "kotu", (string?)null), ("tiktok", "kotu_tt", (string?)null) },
+            "Örnek Müşteri", "", phone: null, email: null, tckn: null, whatsAppConsent: false, smsConsent: false,
+            nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: T1, mode: IntakeApplyMode.FillOnly)
+            .Should().Be(group);
+
+        var fresh = _repo.FindByPlatformAndUsername("tiktok", "kotu_tt")!;
+        fresh.GroupId.Should().Be(group);
+        fresh.IsBlacklisted.Should().BeTrue("grubun kara listesi telefonsuz formda da yayılır");
+        fresh.BlacklistReason.Should().Be("dolandırıcı");
+        Stamp(fresh.Id, "BlacklistChangedAt").Should().BeNull("doldurma kipi damga yazmaz");
+        _repo.GetById(cleared)!.IsBlacklisted.Should().BeFalse();
+        Stamp(cleared, "BlacklistChangedAt").Should().Be(T2);
+        GuardRows().Should().Be(0);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_backfill_damgasiz_bos_adi_doldurur_damga_yazmaz()
+    {
+        var a = Chat("deneme.alici");
+        var b = Chat("deneme.alici2");
+        SetStamp(b, "FullNameChangedAt", T2);                // T2'de bilerek boş bırakıldı
+        var seq = Seq(a);
+
+        _repo.BackfillFullNameForIdentities(
+                new[] { ("instagram", "deneme.alici"), ("instagram", "deneme.alici2") }, "Deneme Alıcı",
+                submittedAtMs: T1, mode: IntakeApplyMode.FillOnly)
+            .Should().Be(1);
+
+        _repo.GetById(a)!.FullName.Should().Be("Deneme Alıcı");
+        Stamp(a, "FullNameChangedAt").Should().BeNull();
+        Seq(a).Should().BeGreaterThan(seq, "doldurulan ad gönderilsin");
+        _repo.GetById(b)!.FullName.Should().BeNull("damgalı boş ad bilinçli silmedir");
+        GuardRows().Should().Be(0);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_eski_form_yolu_damgasiz_acar_dolu_birimi_ezmez_LastSeenAt_ilerletmez()
+    {
+        var opened = _repo.UpsertFromIntakeForm("eski.form", "Örnek Müşteri", "Eski Cd. 1", null,
+            nowUnix: 1000, submittedAtMs: T1, mode: IntakeApplyMode.FillOnly);
+
+        opened.FirstSeenAt.Should().Be(T1 / 1000);
+        opened.LastSeenAt.Should().Be(T1 / 1000);
+        foreach (var col in new[] { "DisplayNameChangedAt", "AddressChangedAt" })
+            Stamp(opened.Id, col).Should().BeNull($"{col}: kilit altında açıldı");
+        var seq = Seq(opened.Id);
+        var phone = TestPhone.NewE164();
+
+        var again = _repo.UpsertFromIntakeForm("eski.form", "Başka Ad", "Yeni Cd. 2", phone,
+            nowUnix: 2000, submittedAtMs: T2, mode: IntakeApplyMode.FillOnly);
+
+        again.Id.Should().Be(opened.Id);
+        again.DisplayName.Should().Be("Örnek Müşteri", "dolu takma ad ezilmez");
+        again.Address.Should().Be("Eski Cd. 1", "dolu adres ezilmez");
+        again.Phone.Should().Be(phone, "boş ve damgasız telefon doldurulur");
+        Stamp(opened.Id, "PhoneChangedAt").Should().BeNull();
+        again.LastSeenAt.Should().Be(T1 / 1000, "doldurma LastSeenAt'i ilerletmez");
+        Seq(opened.Id).Should().BeGreaterThan(seq);
+        GuardRows().Should().Be(0);
+    }
 }

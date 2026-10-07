@@ -87,4 +87,16 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<ShipmentRepository>(),
             "C8: isteğe bağlı parametre DI'dan gelmezse iki açık kargo uyarısı sessizce kapanırdı");
     }
+
+    [Fact]
+    public void Form_senkronu_durum_izleyicisini_DIdan_alir()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var intake = host.Services.GetRequiredService<global::OrderDeck.App.Services.IntakeForm.IntakeFormSyncService>();
+
+        PrivateField<SyncStatusTracker>(intake, "_tracker").Should().BeSameAs(
+            host.Services.GetRequiredService<SyncStatusTracker>(),
+            "U14: form işleme ilk tam akışı aynı izleyiciden bekler — isteğe bağlı parametre DI'dan " +
+            "gelmezse taze bilgisayar eski formları akıştan önce oynatırdı");
+    }
 }

@@ -30,6 +30,7 @@ public sealed class IntakeFormSyncServiceTests
     private const string TestLicenseKey = "LDK-TEST-FIXTURE";
     private const string CursorName = "intake-form-in";
     private const string BackfillMarkerName = "intake-fullname-backfill";
+    private const string ReplayMarkerName = "intake-form-replay";
 
     private static (IntakeFormSyncService svc, CustomerRepository repo, SyncCursorRepository cursors, FakeHttpMessageHandler handler) Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -48,6 +49,9 @@ public sealed class IntakeFormSyncServiceTests
         {
             CurrentLicenseKey = seedLicense ? TestLicenseKey : null
         };
+        // Bu dosyanın testleri damgalı kipi sınar; taze bilgisayarın doldurma kipi (U14)
+        // IntakeFormReplayTests'te. Oynatma bitmiş sayılır.
+        cursors.Upsert(ReplayMarkerName, TestLicenseKey, seq: 2);
 
         var svc = new IntakeFormSyncService(api, repo, cursors, licenseProvider, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
@@ -251,6 +255,7 @@ public sealed class IntakeFormSyncServiceTests
         var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
             new OrderDeck.Licensing.Api.LicenseTokenStore());
         var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        new SyncCursorRepository(db).Upsert(ReplayMarkerName, lisans.CurrentLicenseKey!, seq: 2);
         var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
 
@@ -276,6 +281,7 @@ public sealed class IntakeFormSyncServiceTests
         var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
             new OrderDeck.Licensing.Api.LicenseTokenStore());
         var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        new SyncCursorRepository(db).Upsert(ReplayMarkerName, lisans.CurrentLicenseKey!, seq: 2);
         var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
 
@@ -303,6 +309,7 @@ public sealed class IntakeFormSyncServiceTests
         var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
             new OrderDeck.Licensing.Api.LicenseTokenStore());
         var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        new SyncCursorRepository(db).Upsert(ReplayMarkerName, lisans.CurrentLicenseKey!, seq: 2);
         var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
 
@@ -332,6 +339,7 @@ public sealed class IntakeFormSyncServiceTests
             new MigrationRunner(db).Run();
             var repo = new CustomerRepository(db);
             var cursors = new SyncCursorRepository(db);
+            cursors.Upsert(ReplayMarkerName, lisans, seq: 2);
             var api = new LicenseApiClient(
                 new HttpClient(new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200, page)))
                     { BaseAddress = new Uri("https://test.local") },
