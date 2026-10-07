@@ -911,6 +911,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 "Yayın aktif");
             return;
         }
+        // Faz 0 (D4): bilgisayar değiştiren operatör, diğer bilgisayarın son
+        // müşteri değişiklikleri (kara liste, adres) inmeden yayına girmesin.
+        // Engellemiyoruz — internet yokken de yayın yapılabilmeli. Yetişme
+        // lisansa bağlı (önceki lisansınki sayılmaz); lisans yoksa (deneme
+        // sürümü) senkron hiç koşmaz, soru da sorulmaz.
+        if (_syncStatus is not null
+            && SyncLicenseKey() is { } licenseKey
+            && !_syncStatus.IsInitialCatchUpDoneFor(licenseKey)
+            && !_dialogs.Confirm(
+                "Diğer bilgisayardaki son değişiklikler henüz gelmedi. Yine de yayını başlatayım mı?",
+                "Güncelleniyor"))
+            return;
         var started = _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();

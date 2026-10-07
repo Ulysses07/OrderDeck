@@ -124,4 +124,81 @@ public sealed class MainShellSyncStatusTests
         h.Vm.IsSyncHealthy.Should().BeFalse();
         h.Vm.SyncStatusTooltip.Should().StartWith(h.Vm.SyncStatusText + "\n").And.Contain("destek");
     }
+
+    // ── D4: yetişilmeden yayın başlatma (harness yayını açık kurar; önce bitirilir) ─────
+
+    [Fact]
+    public async Task Yetisilmeden_yayin_baslatilirsa_onay_sorulur_hayir_derse_baslamaz()
+    {
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker());
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+        h.Dialogs.ConfirmResult = title => title != "Güncelleniyor";
+
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Dialogs.Confirmations.Should().Contain(c => c.Title == "Güncelleniyor");
+        h.Sessions.GetActive().Should().BeNull("operatör hayır dedi");
+    }
+
+    [Fact]
+    public async Task Yetisilmeden_yayin_evet_derse_baslar()
+    {
+        // Engellemiyoruz — internet yokken de yayın yapılabilmeli.
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker());
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Dialogs.Confirmations.Should().ContainSingle(c => c.Title == "Güncelleniyor");
+        h.Sessions.GetActive().Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Yetisildiyse_yayin_sorusuz_baslar()
+    {
+        var tracker = new SyncStatusTracker();
+        using var h = MainShellTestHarness.Build(syncStatus: tracker);
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Dialogs.Confirmations.Should().NotContain(c => c.Title == "Güncelleniyor");
+        h.Sessions.GetActive().Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Baska_lisansin_yetismesi_bu_lisansi_yetismis_saymaz()
+    {
+        // Lisans değişimini akış servisi bir sonraki turunda görür (≤ 30 sn): o arada önceki
+        // lisansın yetişmesi yeni lisansın verisini anlatmaz (C10 incelemesi).
+        var tracker = new SyncStatusTracker();
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, $"lisans-{Guid.NewGuid():N}");
+        using var h = MainShellTestHarness.Build(syncStatus: tracker);
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+        h.Dialogs.ConfirmResult = title => title != "Güncelleniyor";
+
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Dialogs.Confirmations.Should().Contain(c => c.Title == "Güncelleniyor");
+        h.Sessions.GetActive().Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Lisans_yoksa_yetisme_sorulmaz()
+    {
+        // Deneme sürümünde senkron hiç koşmaz — soru her yayında çıkar ve hiç geçmezdi.
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker(), licensed: false);
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Dialogs.Confirmations.Should().NotContain(c => c.Title == "Güncelleniyor");
+        h.Sessions.GetActive().Should().NotBeNull();
+    }
 }
