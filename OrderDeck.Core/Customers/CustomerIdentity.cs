@@ -16,4 +16,18 @@ public static class CustomerIdentity
     /// </summary>
     public static string KeyOf(string username)
         => username.Trim().ToLowerInvariant().Replace('İ', 'i');
+
+    /// <summary>
+    /// <c>IdentityKey</c> kolonuna YAZILACAK değer: kullanıcı adı yoksa ya da anahtarı boşsa (boş,
+    /// yalnız boşluk) null. Boş anahtar yazılmaz — platformun bütün boş adlı satırlarını tek kişi
+    /// sayardı (kimlik araması onları birleştirir, mezar taşı eşleşmesiyle bir KVKK silmesi hepsini
+    /// boşaltırdı). Göç 045'in geri doldurmasındaki <c>NULLIF(od_identity_key(Username), '')</c>
+    /// ile aynı; kolonu yazan ya da onaran her yol bunu kullanır.
+    /// </summary>
+    public static string? KeyOrNull(string? username)
+    {
+        if (username is null) return null;
+        var key = KeyOf(username);
+        return key.Length == 0 ? null : key;
+    }
 }

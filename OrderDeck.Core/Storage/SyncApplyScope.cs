@@ -36,7 +36,7 @@ public sealed class SyncApplyScope : IDisposable
     internal IDbTransaction Transaction { get; }
 
     // U17: bu akışta yazma kapsamı açık — kapsam açıkken aynı akış ikinci bağlantı açmaz ve
-    // CustomerBusySet'in kilidini almaz (DEBUG denetimi: WriteScopeGuard).
+    // CustomerBusySet'in kilidini almaz (denetim: WriteScopeGuard — DEBUG derlemede ve testlerde).
     private readonly IDisposable _scopeMark;
 
     private SyncApplyScope(IDbConnection connection, IDbTransaction transaction)

@@ -11,10 +11,17 @@
 -- DAMGAYI KİM BASIYOR: tetikleyiciler (036 ile aynı gerekçe — Customer'a yazan
 -- çok sayıda yol var, birini unutmak o değişikliğin hiçbir bilgisayara gitmemesi).
 -- Kural: birimin bir alanı DEĞİŞTİ ve damga aynı UPDATE'te açıkça yazılMADIYSA
--- damga = MAX(şimdi, eski damga + 1). "+1": saati ileri bir bilgisayardan inmiş
--- damga yerelde dururken yapılan düzenleme onu yenmeli, yoksa sunucu reddeder.
--- "UPDATE OF" yalnız SET'te geçen kolonlarda tetikler; WHEN değer değişimine
--- bakar — aynı değeri yeniden yazmak damga üretmez.
+-- damga = MAX(şimdi, eski damga + 1). "Açıkça yazıldı" DEĞERLE anlaşılır: damga
+-- yeni bir değer aldıysa açıktır; değer değişikliğiyle birlikte damga ESKİ değeriyle
+-- yeniden yazılırsa (new.Damga IS old.Damga) yazılmamış sayılır ve "şimdi" basılır.
+-- "+1": saati ileri bir bilgisayardan inmiş damga yerelde dururken yapılan düzenleme
+-- onu yenmeli, yoksa sunucu reddeder. "UPDATE OF" yalnız SET'te geçen kolonlarda
+-- tetikler; WHEN değer değişimine bakar — aynı değeri yeniden yazmak damga üretmez.
+-- Metin birimleri BOŞA göre karşılaştırılır, NULLIF(TRIM(x), '') — ekleme tetikleyicisi
+-- ve sunucu da böyle sayar: NULL, '' ve yalnız boşluk aynı "boş"tur. Boşu boşla
+-- değiştirmek ya da yalnız kenar boşluğunu değiştirmek düzenleme değildir (sayılsaydı
+-- taze damgalı bir "silme" son-yazan-kazanır ile öbür bilgisayarların gerçek değerini
+-- ezerdi); 'a' → '' gerçek bir silmedir ve damgalanır.
 --
 -- YENİ SATIRDA yalnız DOLU birimler damgalanır (açık damga varsa o kalır). Sohbetten
 -- açılan, takma addan başka bilgisi olmayan satır "şimdi değişti" sayılsaydı başka
@@ -29,12 +36,35 @@
 -- düzenleme DEĞİLDİR. Bunlar aynı yazma işleminde bu
 -- tabloya tek satır ekleyip sonunda siler (SyncApplyScope); satır varken damga
 -- tetikleyicileri ve SyncSeq GÜNCELLEME tetikleyicisi çalışmaz. TEMP tablo olamaz:
--- TEMP olmayan tetikleyici temp şemaya başvuramaz. SyncSeq EKLEME tetikleyicisine
--- (036) dokunulmaz: SyncSeq benzersiz kalmalı (F07 sayfa sözleşmesi).
+-- TEMP olmayan tetikleyici temp şemaya başvuramaz. SyncSeq EKLEME tetikleyicisi kilide
+-- UYMAZ: eklemede numara her zaman verilir (SyncSeq benzersiz kalmalı — F07 sayfa
+-- sözleşmesi).
+--
+-- SYNCSEQ SAYACI. 036 numarayı MAX(SyncSeq)+1 ile veriyordu; bu yalnız SİLME YOKKEN
+-- tekdüze artar. PR-3 Customer'dan satır siler: yeniden anahtarlama yeni gönderilmiş
+-- sohbet kopyasını siler, o da çoğu zaman en büyük SyncSeq'li satırdır. En büyük satır
+-- silinince sonraki numaralar gönderim imlecinin ALTINA düşer — asıl kaydın ilerletmesi
+-- ve BAŞKA müşterilerin sonraki düzenlemeleri hiç gönderilmez, bekleyen sayacı 0 gösterir.
+-- Bu yüzden iki SyncSeq tetikleyicisi de (036'nın ekleme tetikleyicisi dahil) burada
+-- yeniden kurulur ve numarayı tek satırlık SyncSeqCounter'dan alır: sayaç yalnız artar,
+-- silme onu geri almaz, numaralar benzersiz (F07) ve tekdüze kalır. Sayaç bugünkü en
+-- büyük SyncSeq'le tohumlanır (bugüne kadar hiçbir yol Customer'dan satır silmedi: en
+-- büyük = verilmiş en büyük numara). Açık ilerletme (yeniden anahtarlama, dönüştürme,
+-- form oynatması) aynı sayacı CustomerSyncSeq.Bump ile, yazma işleminin içinde kullanır;
+-- MAX(SyncSeq)+1 hiçbir yerde YAZILMAZ (sayaçla aynı numarayı üretir). Numaralar arasında
+-- boşluk olur (ör. ekleme iki numara tüketir — damga tetikleyicisinin iç UPDATE'i de
+-- numara alır); ardışıklık varsayılmaz.
+--
+-- KURAL: Customer'a INSERT OR REPLACE / REPLACE INTO yazılmaz — çakışan satırı silme
+-- tetikleyicisi çalıştırmadan siler ve 035'in harici içerikli FTS indeksini bozar.
 --
 -- IdentityKey: sunucudaki IdentityKeyOf'un aynası (CustomerIdentity.KeyOf). Burada
--- yalnız geri doldurulur; yeni satırlarda C# yazar. Tetikleyici YOK, çünkü bu
--- dosyadaki tetikleyiciler YALNIZ yerleşik SQL kullanmalı: uygulama fonksiyonu
+-- yalnız geri doldurulur; yeni satırlarda C# yazar (CustomerIdentity.KeyOrNull).
+-- Username'i değiştiren her yazım IdentityKey'i AYNI ifadede yazar — kolonu kendiliğinden
+-- güncel tutan bir şey yok. Boş ya da yalnız boşluk kullanıcı adının anahtarı NULL'dur:
+-- boş anahtar platformun bütün boş adlı satırlarını tek kişi sayardı (kimlik araması;
+-- mezar taşı eşleşmesiyle bir KVKK silmesi hepsini boşaltırdı). Tetikleyici YOK, çünkü
+-- bu dosyadaki tetikleyiciler YALNIZ yerleşik SQL kullanmalı: uygulama fonksiyonu
 -- çağıran bir tetikleyici, eski sürüme geri dönüşte (fonksiyonu kaydetmeyen ikili)
 -- Customer'a bütün yazımları düşürürdü. Yerel tekil kural UX_Customer_Platform_Username
 -- DEĞİŞMEZ (yerelde harf kopyası varsa yeniden kurulurken göç düşerdi).
@@ -52,7 +82,7 @@
 -- yazımda kısaltılır; canlı bir Id hiçbir zaman FromId değildir.
 --
 -- CustomerPurgeTombstone.IdentityKey (U16): NOCASE yalnız ASCII katlar ("ŞEYMA" ≠ "şeyma");
--- mezar taşı engeli kimlik anahtarıyla da eşler. Geri doldurma aynı fonksiyonla.
+-- mezar taşı engeli kimlik anahtarıyla da eşler. Geri doldurma aynı ifadeyle (boş anahtar NULL).
 --
 -- CustomerFeedFailure (U10): uygulanamayan akış öğesinin kalıcı deneme sayacı; beş turdan
 -- sonra öğe atlanır, satır kalır ve durum satırında uyarı gösterilir.
@@ -73,9 +103,11 @@ ALTER TABLE Customer ADD COLUMN WhatsAppConsentChangedAt INTEGER;
 ALTER TABLE Customer ADD COLUMN SmsConsentChangedAt      INTEGER;
 ALTER TABLE Customer ADD COLUMN BlacklistChangedAt       INTEGER;
 ALTER TABLE Customer ADD COLUMN NotesChangedAt           INTEGER;
+-- Username'i değiştiren her yazım bu kolonu AYNI ifadede yazar: kendiliğinden güncel
+-- tutan bir şey yok. Boş anahtar NULL.
 ALTER TABLE Customer ADD COLUMN IdentityKey              TEXT;
 
-UPDATE Customer SET IdentityKey = od_identity_key(Username);
+UPDATE Customer SET IdentityKey = NULLIF(od_identity_key(Username), '');
 
 -- Akışın kimlik sahibi araması ve FindByPlatformAndUsername'in yedek araması.
 CREATE INDEX IX_Customer_Identity ON Customer(Platform COLLATE NOCASE, IdentityKey);
@@ -88,7 +120,7 @@ CREATE TABLE CustomerRedirect (
 CREATE INDEX IX_CustomerRedirect_ToId ON CustomerRedirect(ToId);
 
 ALTER TABLE CustomerPurgeTombstone ADD COLUMN IdentityKey TEXT;
-UPDATE CustomerPurgeTombstone SET IdentityKey = od_identity_key(Username);
+UPDATE CustomerPurgeTombstone SET IdentityKey = NULLIF(od_identity_key(Username), '');
 CREATE INDEX IX_CustomerPurgeTombstone_Identity ON CustomerPurgeTombstone(Platform, IdentityKey);
 
 CREATE TABLE CustomerFeedFailure (
@@ -99,6 +131,14 @@ CREATE TABLE CustomerFeedFailure (
     FirstFailedAt INTEGER NOT NULL,
     SkippedAt     INTEGER
 );
+
+-- SyncSeq sayacı (bkz. başlıktaki SYNCSEQ SAYACI): hiçbir tetikleyici kurulmadan ÖNCE
+-- bugünkü en büyük numarayla tohumlanır.
+CREATE TABLE SyncSeqCounter (
+    Id    INTEGER PRIMARY KEY CHECK (Id = 1),
+    Value INTEGER NOT NULL
+);
+INSERT INTO SyncSeqCounter (Id, Value) SELECT 1, COALESCE(MAX(SyncSeq), 0) FROM Customer;
 
 CREATE TRIGGER Customer_stamp_ai AFTER INSERT ON Customer
 WHEN NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
@@ -147,8 +187,10 @@ BEGIN
      WHERE rowid = new.rowid;
 END;
 
+-- Güncelleme tetikleyicileri: metin birimleri NULLIF(TRIM(x), '') ile (boş = boş),
+-- bayraklar ve tarih ham değerle karşılaştırılır.
 CREATE TRIGGER Customer_stamp_fullname_au AFTER UPDATE OF FullName ON Customer
-WHEN old.FullName IS NOT new.FullName
+WHEN NULLIF(TRIM(old.FullName), '') IS NOT NULLIF(TRIM(new.FullName), '')
  AND new.FullNameChangedAt IS old.FullNameChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -159,7 +201,7 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_displayname_au AFTER UPDATE OF DisplayName ON Customer
-WHEN old.DisplayName IS NOT new.DisplayName
+WHEN NULLIF(TRIM(old.DisplayName), '') IS NOT NULLIF(TRIM(new.DisplayName), '')
  AND new.DisplayNameChangedAt IS old.DisplayNameChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -170,7 +212,7 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_groupid_au AFTER UPDATE OF GroupId ON Customer
-WHEN old.GroupId IS NOT new.GroupId
+WHEN NULLIF(TRIM(old.GroupId), '') IS NOT NULLIF(TRIM(new.GroupId), '')
  AND new.GroupIdChangedAt IS old.GroupIdChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -181,7 +223,9 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_address_au AFTER UPDATE OF Address, City, District ON Customer
-WHEN (old.Address IS NOT new.Address OR old.City IS NOT new.City OR old.District IS NOT new.District)
+WHEN (NULLIF(TRIM(old.Address), '') IS NOT NULLIF(TRIM(new.Address), '')
+      OR NULLIF(TRIM(old.City), '') IS NOT NULLIF(TRIM(new.City), '')
+      OR NULLIF(TRIM(old.District), '') IS NOT NULLIF(TRIM(new.District), ''))
  AND new.AddressChangedAt IS old.AddressChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -203,7 +247,7 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_phone_au AFTER UPDATE OF Phone ON Customer
-WHEN old.Phone IS NOT new.Phone
+WHEN NULLIF(TRIM(old.Phone), '') IS NOT NULLIF(TRIM(new.Phone), '')
  AND new.PhoneChangedAt IS old.PhoneChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -214,7 +258,7 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_email_au AFTER UPDATE OF Email ON Customer
-WHEN old.Email IS NOT new.Email
+WHEN NULLIF(TRIM(old.Email), '') IS NOT NULLIF(TRIM(new.Email), '')
  AND new.EmailChangedAt IS old.EmailChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -225,7 +269,7 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_tckn_au AFTER UPDATE OF Tckn ON Customer
-WHEN old.Tckn IS NOT new.Tckn
+WHEN NULLIF(TRIM(old.Tckn), '') IS NOT NULLIF(TRIM(new.Tckn), '')
  AND new.TcknChangedAt IS old.TcknChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
@@ -258,7 +302,8 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_blacklist_au AFTER UPDATE OF IsBlacklisted, BlacklistReason, BlacklistedAt ON Customer
-WHEN (old.IsBlacklisted IS NOT new.IsBlacklisted OR old.BlacklistReason IS NOT new.BlacklistReason
+WHEN (old.IsBlacklisted IS NOT new.IsBlacklisted
+      OR NULLIF(TRIM(old.BlacklistReason), '') IS NOT NULLIF(TRIM(new.BlacklistReason), '')
       OR old.BlacklistedAt IS NOT new.BlacklistedAt)
  AND new.BlacklistChangedAt IS old.BlacklistChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
@@ -270,13 +315,24 @@ BEGIN
 END;
 
 CREATE TRIGGER Customer_stamp_notes_au AFTER UPDATE OF Notes ON Customer
-WHEN old.Notes IS NOT new.Notes
+WHEN NULLIF(TRIM(old.Notes), '') IS NOT NULLIF(TRIM(new.Notes), '')
  AND new.NotesChangedAt IS old.NotesChangedAt
  AND NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
     UPDATE Customer SET NotesChangedAt = MAX(
         CAST(ROUND((julianday('now') - 2440587.5) * 86400000.0) AS INTEGER),
         COALESCE(old.NotesChangedAt, 0) + 1)
+     WHERE rowid = new.rowid;
+END;
+
+-- SyncSeq tetikleyicileri 036'nınkilerin YERİNE: numara silinmeye dayanıklı sayaçtan
+-- (bkz. başlıktaki SYNCSEQ SAYACI). Gövdeler yalnız yerleşik SQL — önceki sürüm şema 45'te
+-- çalışır. Ekleme tetikleyicisi kilide UYMAZ: eklemede numara her zaman verilir.
+DROP TRIGGER Customer_syncseq_ai;
+CREATE TRIGGER Customer_syncseq_ai AFTER INSERT ON Customer
+BEGIN
+    UPDATE SyncSeqCounter SET Value = Value + 1 WHERE Id = 1;
+    UPDATE Customer SET SyncSeq = (SELECT Value FROM SyncSeqCounter WHERE Id = 1)
      WHERE rowid = new.rowid;
 END;
 
@@ -298,8 +354,8 @@ AFTER UPDATE OF Platform, Username, DisplayName, FullName, GroupId,
 ON Customer
 WHEN NOT EXISTS (SELECT 1 FROM SyncApplyGuard)
 BEGIN
-    UPDATE Customer
-       SET SyncSeq = (SELECT COALESCE(MAX(SyncSeq), 0) + 1 FROM Customer)
+    UPDATE SyncSeqCounter SET Value = Value + 1 WHERE Id = 1;
+    UPDATE Customer SET SyncSeq = (SELECT Value FROM SyncSeqCounter WHERE Id = 1)
      WHERE rowid = new.rowid;
 END;
 

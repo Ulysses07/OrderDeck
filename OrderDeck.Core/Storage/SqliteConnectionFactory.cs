@@ -55,7 +55,8 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
 
     public IDbConnection Open()
     {
-        // U17: açık bir DbWrite/SyncApplyScope varken aynı akıştan ikinci bağlantı (DEBUG).
+        // U17: açık bir DbWrite/SyncApplyScope varken aynı akıştan ikinci bağlantı (DEBUG derlemede
+        // ve testlerde fırlatır; üretimde denetim kapalı).
         WriteScopeGuard.AssertNoActiveScope("SqliteConnectionFactory.Open");
         var conn = new SqliteConnection(_connectionString);
         conn.Open();

@@ -28,7 +28,8 @@ namespace OrderDeck.Core.Storage;
 /// (<c>LabelService.Add</c>'in <c>GetOrCreate</c> + etiket INSERT'i dahil: paketi alan aşırı
 /// yüklemeler; iç içe <c>_factory.Open()</c> yazımı YASAK). (2) Paket açıkken
 /// <c>CustomerBusySet</c> kilidi alınmaz — sıra her zaman önce küme, sonra SQLite yazma kilidi.
-/// İkisini de DEBUG derlemede <see cref="WriteScopeGuard"/> denetler.</para>
+/// İkisini de <see cref="WriteScopeGuard"/> denetler (DEBUG derlemede ve testlerde — anahtar
+/// <see cref="WriteScopeGuard.ChecksSwitch"/>; üretimde kapalı).</para>
 /// </summary>
 public sealed class DbWrite : IDisposable
 {

@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using System.Linq;
 using Dapper;
 using FluentAssertions;
@@ -14,34 +10,12 @@ namespace OrderDeck.Tests.Storage;
 /// <summary>
 /// N03-g göçü (036): mevcut satırların numaralanması ve tetikleyicilerin
 /// sayacı ilerletmesi. Bu dosya göçün KENDİSİNİ sınıyor — repo API'si üzerinden
-/// davranış testleri <c>CustomerRepositoryTests</c>'te.
+/// davranış testleri <c>CustomerRepositoryTests</c>'te. 035 dünyası
+/// (<see cref="EmbeddedMigrationScripts.UpTo"/>) kurulup veri ekildikten sonra
+/// 036'nın geri doldurma SQL'i gerçek satırlar üstünde sınanır.
 /// </summary>
 public sealed class CustomerSyncSeqMigrationTests
 {
-    /// <summary>Gömülü script'leri <paramref name="maxVersion"/>'a KADAR yükler —
-    /// 035 dünyası kurulup veri ekildikten sonra 036'nın geri doldurma SQL'i
-    /// gerçek satırlar üstünde sınanabiliyor.</summary>
-    private static IReadOnlyList<(int Version, string Sql)> EmbeddedScriptsUpTo(int maxVersion)
-    {
-        var asm = typeof(MigrationRunner).Assembly;
-        const string prefix = "OrderDeck.Core.Storage.Migrations.";
-        var list = new List<(int Version, string Sql)>();
-        foreach (var name in asm.GetManifestResourceNames())
-        {
-            if (!name.StartsWith(prefix, StringComparison.Ordinal) ||
-                !name.EndsWith(".sql", StringComparison.Ordinal))
-                continue;
-            var file = name.Substring(prefix.Length);
-            var version = int.Parse(
-                file.Substring(0, file.IndexOf('_')), CultureInfo.InvariantCulture);
-            if (version > maxVersion) continue;
-            using var stream = asm.GetManifestResourceStream(name)!;
-            using var reader = new StreamReader(stream);
-            list.Add((version, reader.ReadToEnd()));
-        }
-        return list.OrderBy(t => t.Version).ToList();
-    }
-
     private static void SeedCustomer(InMemorySqlite fx, string id, long lastSeenAt)
     {
         using var conn = fx.Open();
@@ -57,7 +31,7 @@ public sealed class CustomerSyncSeqMigrationTests
     public void Migration036_MevcutSatirlar_BenzersizArtanSyncSeq_Alir()
     {
         using var fx = new InMemorySqlite();
-        new MigrationRunner(fx, EmbeddedScriptsUpTo(35)).Run();
+        new MigrationRunner(fx, EmbeddedMigrationScripts.UpTo(35)).Run();
 
         // Aynı saniyeye düşen satırlar dahil — eski imlecin kaybettiği desen.
         SeedCustomer(fx, "c1", 1000);
@@ -80,7 +54,7 @@ public sealed class CustomerSyncSeqMigrationTests
         // Tetikleyici MAX(SyncSeq)+1 yazıyor; geri doldurulan satırların üstüne
         // çıkmazsa yeni kayıtlar imlecin ALTINDA doğar ve hiç senkronlanmaz.
         using var fx = new InMemorySqlite();
-        new MigrationRunner(fx, EmbeddedScriptsUpTo(35)).Run();
+        new MigrationRunner(fx, EmbeddedMigrationScripts.UpTo(35)).Run();
         SeedCustomer(fx, "c1", 1000);
         SeedCustomer(fx, "c2", 2000);
 

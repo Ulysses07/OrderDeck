@@ -1018,7 +1018,7 @@ public sealed class CustomerRepository
     /// Faz 0c-2: WpfCustomerProjection sync için delta query.
     ///
     /// <para>N03-g (2026-09-12 denetimi): imleç artık <c>SyncSeq</c> — göç
-    /// 036'daki tetikleyicilerin yazdığı, tablo genelinde kesin artan sayaç.
+    /// 036/045 tetikleyicilerinin yazdığı, tablo genelinde kesin artan sayaç.
     /// Eskiden imleç <c>(LastSeenAt, Id)</c> idi ve şu sınıf hatayı doğuruyordu:
     /// imleç GENEL, <c>MAX(LastSeenAt+1, now)</c> artışı ise SATIRA ÖZEL. İleri
     /// zamanlı/saat kaymış tek bir satır imleci 60 sn öne taşıdığında BAŞKA bir
@@ -1027,8 +1027,11 @@ public sealed class CustomerRepository
     /// düzeltmeleri bu sınıfı kapatamaz; sorun aritmetikte değil, iş zamanı ile
     /// senkron sırasının aynı kolona yüklenmesindeydi.</para>
     ///
-    /// <para>Yeni değer her zaman tablodaki en büyükten büyük olduğu için
-    /// güncellenen satır imlecin ÖNÜNE geçmek zorunda. SyncSeq benzersiz
+    /// <para>Yeni değer her zaman bugüne kadar verilmiş her numaradan büyük olduğu
+    /// için güncellenen satır imlecin ÖNÜNE geçmek zorunda: göç 045'ten beri numarayı
+    /// silinmeye dayanıklı <c>SyncSeqCounter</c> veriyor (036'nın MAX(SyncSeq)+1'i en
+    /// büyük satır silinince imlecin altına düşerdi). Numaralar arasında boşluk olur;
+    /// ardışıklık varsayılmaz. SyncSeq benzersiz
     /// olduğundan F07'nin (aynı saniyede BatchSize'dan fazla satır → sayfa
     /// sınırında kalıcı atlama) sebebi de ortadan kalkıyor; eşitlik bozucu Id'ye
     /// gerek kalmadı.</para>

@@ -41,9 +41,13 @@ public static class SqliteSearchFunctions
             isDeterministic: true);
 
         // Göç 045'in IdentityKey geri doldurması ve CustomerSyncRepository.HealIdentityKeys
-        // kullanır. Tetikleyicide BİLEREK kullanılmıyor: eski sürüme dönüşte bu fonksiyonu
-        // kaydetmeyen ikili, onu çağıran bir tetikleyici yüzünden Customer'a hiç yazamazdı.
-        // Anahtarı satır açan her yol C# ile yazar (bkz. CustomerIdentity).
+        // kullanır. Hiçbir ŞEMA NESNESİNDE BİLEREK kullanılmıyor — tetikleyici, indeks (ifade ya
+        // da kısmi indeks), üretilmiş kolon, görünüm, CHECK kısıtı: eski sürüme dönüşte bu
+        // fonksiyonu kaydetmeyen ikili, ona başvuran bir nesne yüzünden Customer'a hiç yazamazdı.
+        // isDeterministic ifade indeksine izin verir; böyle bir indeks KURULMAMALI.
+        // Anahtarı satır açan her yol C# ile yazar (bkz. CustomerIdentity.KeyOrNull). Boş anahtar
+        // kolona yazılmaz: geri doldurma NULLIF(od_identity_key(Username), '') yazar, onarım
+        // anahtarı boş çıkacak satırı atlar (yoksa her turda NULL'ı yeniden yazardı).
         connection.CreateFunction<string?, string?>(
             "od_identity_key",
             username => username is null ? null : CustomerIdentity.KeyOf(username),

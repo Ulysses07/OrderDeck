@@ -1,7 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using System.Linq;
 using Dapper;
 using FluentAssertions;
@@ -16,7 +13,9 @@ namespace OrderDeck.Tests.Storage;
 
 /// <summary>
 /// Göç 045: birim damgaları, SyncApplyGuard, kimlik anahtarı. Göçün KENDİSİNİ
-/// sınar; yazan yolların damgaları CustomerStampedWritersTests'te.
+/// sınar; yazan yolların damgaları CustomerStampedWritersTests'te. 044 dünyası
+/// (<see cref="EmbeddedMigrationScripts.UpTo"/>) kurulup veri ekildikten sonra 045
+/// gerçek satırlar üstünde sınanır. SyncSeq sayacı CustomerSyncSeqCounterTests'te.
 /// </summary>
 public sealed class CustomerUnitStampsMigrationTests
 {
@@ -26,28 +25,6 @@ public sealed class CustomerUnitStampsMigrationTests
         "RecipientPaysChangedAt", "PhoneChangedAt", "EmailChangedAt", "TcknChangedAt",
         "WhatsAppConsentChangedAt", "SmsConsentChangedAt", "BlacklistChangedAt", "NotesChangedAt",
     };
-
-    /// <summary>CustomerSyncSeqMigrationTests'teki yardımcının aynısı: 044 dünyası
-    /// kurulup veri ekildikten sonra 045 gerçek satırlar üstünde sınanır.</summary>
-    private static IReadOnlyList<(int Version, string Sql)> EmbeddedScriptsUpTo(int maxVersion)
-    {
-        var asm = typeof(MigrationRunner).Assembly;
-        const string prefix = "OrderDeck.Core.Storage.Migrations.";
-        var list = new List<(int Version, string Sql)>();
-        foreach (var name in asm.GetManifestResourceNames())
-        {
-            if (!name.StartsWith(prefix, StringComparison.Ordinal) ||
-                !name.EndsWith(".sql", StringComparison.Ordinal))
-                continue;
-            var file = name.Substring(prefix.Length);
-            var version = int.Parse(file.Substring(0, file.IndexOf('_')), CultureInfo.InvariantCulture);
-            if (version > maxVersion) continue;
-            using var stream = asm.GetManifestResourceStream(name)!;
-            using var reader = new StreamReader(stream);
-            list.Add((version, reader.ReadToEnd()));
-        }
-        return list.OrderBy(t => t.Version).ToList();
-    }
 
     private static (InMemorySqlite Db, CustomerRepository Repo) Fresh()
     {
@@ -73,7 +50,7 @@ public sealed class CustomerUnitStampsMigrationTests
     public void Mevcut_satirlar_damgalanmaz_kimlik_anahtari_doldurulur()
     {
         using var db = new InMemorySqlite();
-        new MigrationRunner(db, EmbeddedScriptsUpTo(44)).Run();
+        new MigrationRunner(db, EmbeddedMigrationScripts.UpTo(44)).Run();
         using (var c = db.Open())
             c.Execute(@"INSERT INTO Customer (Id, Platform, Username, DisplayName, FirstSeenAt, LastSeenAt,
                             Address, City, Notes, IsBlacklisted, WhatsAppConsent, RecipientPaysActive)
@@ -97,7 +74,7 @@ public sealed class CustomerUnitStampsMigrationTests
         // U15: önceki sürüme dönüşte o sürüm kendi imleçleriyle kaldığı yerden sürer; bu sürüm
         // biçim-2 gönderimini kendi imleciyle yapar (satırı yok → ilk açılışta tam gönderim).
         using var db = new InMemorySqlite();
-        new MigrationRunner(db, EmbeddedScriptsUpTo(44)).Run();
+        new MigrationRunner(db, EmbeddedMigrationScripts.UpTo(44)).Run();
         var lisans = $"lisans-{Guid.NewGuid():N}";
         var cursors = new SyncCursorRepository(db);
         cursors.Upsert("customer-projection-out", lisans, seq: 99);
@@ -296,7 +273,7 @@ public sealed class CustomerUnitStampsMigrationTests
     public void Mezar_tasina_kimlik_anahtari_eklenir_yonlendirme_ve_akis_hatasi_tablolari_kurulur()
     {
         using var db = new InMemorySqlite();
-        new MigrationRunner(db, EmbeddedScriptsUpTo(44)).Run();
+        new MigrationRunner(db, EmbeddedMigrationScripts.UpTo(44)).Run();
         using (var c = db.Open())
             c.Execute("INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt) VALUES ('instagram', 'ŞEYMA', 5000)");
 
@@ -325,5 +302,102 @@ public sealed class CustomerUnitStampsMigrationTests
 
         repo.GetById("c1")!.SyncSeq.Should().Be(seq, "etiket basımı sıcak yol, projeksiyonu değiştirmiyor");
         Stamp(db, "c1", "DisplayNameChangedAt").Should().Be(stamp);
+    }
+
+    /// <summary>Her metin kolonu ve biriminin damgası × boş değer geçişleri. NULL, '' ve yalnız
+    /// boşluk aynı "boş"tur (ekleme tetikleyicisi ve sunucu da böyle sayar).</summary>
+    public static TheoryData<string, string, string?, string?, bool> BosDegerGecisleri()
+    {
+        var units = new (string Column, string Stamp)[]
+        {
+            ("FullName", "FullNameChangedAt"), ("DisplayName", "DisplayNameChangedAt"),
+            ("GroupId", "GroupIdChangedAt"), ("Address", "AddressChangedAt"),
+            ("City", "AddressChangedAt"), ("District", "AddressChangedAt"),
+            ("Phone", "PhoneChangedAt"), ("Email", "EmailChangedAt"), ("Tckn", "TcknChangedAt"),
+            ("BlacklistReason", "BlacklistChangedAt"), ("Notes", "NotesChangedAt"),
+        };
+        var transitions = new (string? From, string? To, bool Stamps)[]
+        {
+            (null, "", false), ("", "   ", false), (null, "  ", false),
+            ("a", "", true),                        // gerçek bir silme
+            (" a", "a", false),
+        };
+        var data = new TheoryData<string, string, string?, string?, bool>();
+        foreach (var (column, stamp) in units)
+            foreach (var (from, to, stamps) in transitions)
+                data.Add(column, stamp, from, to, stamps);
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(BosDegerGecisleri))]
+    public void Bosu_bosla_degistirmek_duzenleme_sayilmaz_gercek_silme_sayilir(
+        string column, string stampColumn, string? from, string? to, bool stamps)
+    {
+        // Boş→boş damgalansaydı taze damgalı bir "silme" son-yazan-kazanır ile öbür
+        // bilgisayarların gerçek değerini ezerdi.
+        var (db, repo) = Fresh();
+        using var _d = db;
+        repo.Insert(Chat("c1", "ayse"));
+        using (var c = db.Open())
+            c.Execute($"UPDATE Customer SET {column} = @from, {stampColumn} = 42 WHERE Id = 'c1'", new { from });
+
+        using (var c = db.Open())
+            c.Execute($"UPDATE Customer SET {column} = @to WHERE Id = 'c1'", new { to });
+
+        if (stamps)
+            Stamp(db, "c1", stampColumn).Should().BeGreaterThan(42, $"{column}: dolu → boş gerçek bir düzenleme");
+        else
+            Stamp(db, "c1", stampColumn).Should().Be(42, $"{column}: boş ↔ boş ve kenar boşluğu düzenleme değil");
+    }
+
+    [Fact]
+    public void Bos_kullanici_adinin_kimlik_anahtari_NULL_olur()
+    {
+        // Boş anahtar platformun bütün boş adlı satırlarını tek kişi sayardı: kimlik
+        // araması onları birleştirir, mezar taşı eşleşmesiyle bir KVKK silmesi hepsini boşaltırdı.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db, EmbeddedMigrationScripts.UpTo(44)).Run();
+        using (var c = db.Open())
+        {
+            c.Execute(@"INSERT INTO Customer (Id, Platform, Username, FirstSeenAt, LastSeenAt)
+                        VALUES ('bos', 'facebook', '', 1, 1), ('bosluk', 'facebook', '   ', 1, 1)");
+            c.Execute("INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt) VALUES ('facebook', '  ', 5000)");
+        }
+
+        new MigrationRunner(db).Run();
+
+        using var conn = db.Open();
+        conn.Query<string?>("SELECT IdentityKey FROM Customer WHERE Id IN ('bos', 'bosluk')")
+            .Should().HaveCount(2).And.OnlyContain(k => k == null);
+        conn.ExecuteScalar<string?>("SELECT IdentityKey FROM CustomerPurgeTombstone").Should().BeNull();
+    }
+
+    [Fact]
+    public void Damga_tetikleyicileri_ve_Id_yeniden_yazimi_arama_indeksini_bozmaz()
+    {
+        // 035'in harici içerikli FTS indeksi Customer'ın rowid'ine bağlı: çok birimli
+        // (damga tetikleyicilerinin iç UPDATE'leri + arama tetikleyicisi) yazımlar ve miras
+        // satırı dönüştürmesinin Id yeniden yazımı indeksi Customer ile tutarlı bırakmalı.
+        var (db, repo) = Fresh();
+        using var _d = db;
+        repo.Insert(Chat("c1", "ayse"));
+        repo.Insert(Chat("c2", "mehmet"));
+        var numara = $"0555{Random.Shared.Next(1_000_000, 10_000_000)}";
+        using var conn = db.Open();
+        conn.Execute(@"UPDATE Customer
+                          SET DisplayName = 'Ayşe', FullName = 'Ayşe Kaya', Phone = @numara,
+                              Address = 'Atatürk Cd. 1', City = 'İzmir', Notes = 'kapıya'
+                        WHERE Id = 'c1'", new { numara });
+        conn.Execute("UPDATE Customer SET Id = 'c1-yeni' WHERE Id = 'c1'");
+        conn.Execute("UPDATE Customer SET FullName = 'Mehmet Can', Notes = 'iade' WHERE Id IN ('c1-yeni', 'c2')");
+
+        var check = () => conn.Execute("INSERT INTO CustomerFts(CustomerFts, rank) VALUES('integrity-check', 1)");
+        check.Should().NotThrow("arama indeksi Customer ile tutarlı kalmalı");
+
+        // Denetimin ayrışmayı gerçekten yakaladığının kanıtı: indekslenen kolon tetikleyici
+        // atlanarak yazılınca aynı komut düşer.
+        conn.Execute("UPDATE Customer SET SearchKey = 'bozuk' WHERE Id = 'c2'");
+        check.Should().Throw<SqliteException>();
     }
 }

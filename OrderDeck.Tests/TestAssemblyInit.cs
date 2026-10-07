@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using OrderDeck.Core;
+using OrderDeck.Core.Storage;
 
 namespace OrderDeck.Tests;
 
@@ -18,4 +19,12 @@ internal static class TestAssemblyInit
         var root = Path.Combine(Path.GetTempPath(), $"orderdeck-tests-{Environment.ProcessId}", "OrderDeck");
         AppContext.SetData(AppPaths.DocumentsRootOverrideKey, root);
     }
+
+    /// <summary>
+    /// U17 kilit sırası denetimleri test sürecinde HER derlemede açık. CI testleri Release koşar;
+    /// denetim yalnız DEBUG'a bağlı kalsaydı orada hiç çalışmaz, ihlal eden yol yeşil geçerdi.
+    /// </summary>
+    [ModuleInitializer]
+    internal static void EnableWriteScopeChecks()
+        => AppContext.SetSwitch(WriteScopeGuard.ChecksSwitch, true);
 }

@@ -16,6 +16,14 @@ public sealed class CustomerIdentityTests
     public void KeyOf_sunucudaki_IdentityKeyOf_ile_ayni_sonucu_verir(string username, string expected)
         => CustomerIdentity.KeyOf(username).Should().Be(expected);
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    [InlineData("   ", null)]       // boş anahtar platformun bütün boş adlı satırlarını tek kişi sayardı
+    [InlineData(" Ayse ", "ayse")]
+    public void KeyOrNull_bos_anahtari_NULL_yapar(string? username, string? expected)
+        => CustomerIdentity.KeyOrNull(username).Should().Be(expected);
+
     [Fact]
     public void SQL_fonksiyonu_ayni_anahtari_uretir()
     {
