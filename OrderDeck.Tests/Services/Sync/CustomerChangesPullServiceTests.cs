@@ -800,6 +800,62 @@ public sealed class CustomerChangesPullServiceTests
         fx.Tracker.IsInitialCatchUpDoneFor(Lisans2).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Lisans_calisirken_ilk_kez_gorulunce_izleme_ve_gonderim_ilerlemesi_yeniden_baslar()
+    {
+        // N-3: deneme sürümünde saatlerce açık kalan uygulamaya giriş yapıldı. İzleme kuruluştan
+        // ölçülseydi durum satırı yeni girişte "Çevrimdışı" / "Gönderilemiyor" gösterirdi.
+        using var fx = Build(after => Page(after), license: false);
+        fx.Tracker.RegisterPush("odeme");
+        var started = fx.Tracker.TrackingSince;
+        fx.Tracker.MarkPushOk("odeme", started);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.NoLicense);
+        fx.Tracker.TrackingSince.Should().Be(started, "lisans yokken izleme başlamaz");
+
+        SpinWait.SpinUntil(() => DateTimeOffset.UtcNow > started);
+        var login = DateTimeOffset.UtcNow;
+        fx.License.CurrentLicenseKey = Lisans;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        var s = fx.Tracker.Snapshot();
+        s.TrackingSince.Should().BeOnOrAfter(login);
+        s.PushOkAt!["odeme"].Should().BeNull("lisanssız dönemin gönderim ilerlemesi yeni izlemeyi anlatmaz");
+        s.PushOkAt[WpfCustomerProjectionSyncService.PushStatusName].Should().BeOnOrAfter(login,
+            "turun kendi gönderimi izleme başladıktan SONRA yazılır");
+        fx.Tracker.IsInitialCatchUpDoneFor(Lisans).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ilk_turda_izleme_yeniden_baslar_sonraki_turlarda_baslamaz_hata_kayitlari_kalir()
+    {
+        // N-3: açılışın ilk turu da "ilk görülme" — ama kalıcı uyarılar (U10) yeniden başlatmada
+        // silinmez: yalnız lisans DEĞİŞİMİ siler (M-3).
+        using var fx = Build(after => Page(after));
+        using (var c = fx.Db.Open())
+            c.Execute("INSERT INTO CustomerFeedFailure (ItemId, ChangeSeq, Attempts, LastError, FirstFailedAt, SkippedAt) " +
+                      "VALUES (@id, 3, 5, 'x', 100, 200)", new { id = Guid.NewGuid().ToString("N") });
+        fx.Tracker.RegisterPush("odeme");
+        var started = fx.Tracker.TrackingSince;
+        fx.Tracker.MarkPushOk("odeme", started);
+        SpinWait.SpinUntil(() => DateTimeOffset.UtcNow > started);
+        var firstRound = DateTimeOffset.UtcNow;
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        var restarted = fx.Tracker.TrackingSince;
+        restarted.Should().BeOnOrAfter(firstRound);
+        fx.Tracker.Snapshot().PushOkAt!["odeme"].Should().BeNull();
+
+        var later = DateTimeOffset.UtcNow;
+        fx.Tracker.MarkPushOk("odeme", later);
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        fx.Tracker.TrackingSince.Should().Be(restarted, "aynı lisansın sonraki turu izlemeyi yeniden başlatmaz");
+        fx.Tracker.Snapshot().PushOkAt!["odeme"].Should().Be(later);
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(1,
+            "atlanan öğe kaydı süreçler arası kalıcı uyarıdır — ilk görülme onu silmez");
+    }
+
     // ── takılan öğe: KVKK silmeleri beklemez, uzun takılma görünür (I-1) ─
 
     [Fact]

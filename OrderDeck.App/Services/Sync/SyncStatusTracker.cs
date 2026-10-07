@@ -40,7 +40,7 @@ public readonly record struct SyncStatusSnapshot(
 /// uygulandıktan sonra 429/hata/takılma). Durum satırı (D2) bu bilgisayarı ilerleme taze kaldıkça
 /// "çevrimdışı" yerine "güncelleniyor" gösterir; tam yetişme ve lisans değişimi siler.</para>
 ///
-/// <para><see cref="TrackingSince"/>: izlemenin başladığı an (kuruluş ya da lisans değişimi). Hiç
+/// <para><see cref="TrackingSince"/>: izlemenin başladığı an (kuruluş, lisansın ilk görülmesi ya da lisans değişimi). Hiç
 /// yetişemeyen süreç de çevrimdışı görünebilsin diye durum satırının son dayanağı (I-1).</para>
 ///
 /// <para><b>Gönderim ilerlemesi (D2 incelemesi I-3):</b> bekleyen sayıya (D1) giren her gönderim
@@ -69,7 +69,7 @@ public sealed class SyncStatusTracker
 
     public DateTimeOffset? LastPullOkAt { get { lock (_gate) return _lastPullOk; } }
 
-    /// <summary>İzlemenin başladığı an: kuruluş ya da son lisans değişimi.</summary>
+    /// <summary>İzlemenin başladığı an: kuruluş, lisansın ilk görülmesi (<see cref="RestartTracking"/>) ya da son lisans değişimi.</summary>
     public DateTimeOffset TrackingSince { get { lock (_gate) return _trackingSince; } }
 
     /// <summary>Akışı ilerletip boş sayfaya varmayan son turun anı; tam yetişmeden sonra null.</summary>
@@ -112,9 +112,23 @@ public sealed class SyncStatusTracker
             _caughtUpLicense = null;
             _blockedOn = null;
             _catchUpProgress = null;
-            _trackingSince = DateTimeOffset.UtcNow;
-            foreach (var service in _pushOk.Keys.ToList()) _pushOk[service] = null;
+            RestartTrackingLocked();
         }
+    }
+
+    /// <summary>Lisans bu süreçte İLK KEZ görüldü (açılışın ilk akış turu ya da çalışırken deneme →
+    /// lisanslı; D2 yeniden incelemesi N-3): izleme şimdi başlar, gönderim ilerlemesi yeni izlemeden
+    /// ölçülür. Lisanssız geçen süre durum satırında "Çevrimdışı" / "Gönderilemiyor" sayılmasın.
+    /// Yetişme ve takılma bilgisi değişmez — onları yalnız lisans değişimi siler.</summary>
+    public void RestartTracking()
+    {
+        lock (_gate) RestartTrackingLocked();
+    }
+
+    private void RestartTrackingLocked()
+    {
+        _trackingSince = DateTimeOffset.UtcNow;
+        foreach (var service in _pushOk.Keys.ToList()) _pushOk[service] = null;
     }
 
     /// <summary>Gönderim servisi kendini kaydeder (kurucusunda): hiç başarılı turu olmasa da durum

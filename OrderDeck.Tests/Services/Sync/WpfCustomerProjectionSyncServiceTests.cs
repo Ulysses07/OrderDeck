@@ -1360,6 +1360,34 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         PushOk(tracker).Should().BeOnOrAfter(sent!.Value, "gönderecek bir şey olmayan tur da gönderimin sağlıklı olduğunu söyler");
     }
 
+    [Fact]
+    public async Task Gonderim_ilerlemesi_imleci_ilerleten_her_partide_yazilir_kuyruk_bosalmasa_da()
+    {
+        // N-2: büyük ilk gönderim (biçim 2) 429'lar altında birkaç tura yayılır; her tur bir parti
+        // ilerletirken durum satırı "Gönderilemiyor" göstermemeli.
+        var tracker = new SyncStatusTracker();
+        var posts = 0;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+                return ++posts % 2 == 1
+                    ? FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 500))
+                    : FakeHttpMessageHandler.Json(429, "{}");            // her turun ikinci partisi
+            return FakeHttpMessageHandler.Empty(404);
+        }, tracker: tracker);
+        using var _d = fx.Db;
+        for (var i = 1; i <= 501; i++)
+            fx.Customers.Insert(MakeCustomer(i));
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        posts.Should().Be(2, "ilk parti gitti, ikinci 429 aldı — kuyruk boşalmadı");
+        fx.CursorSeq().Should().BeGreaterThan(0, "ilk partinin imleci kaydedildi");
+        PushOk(tracker).Should().NotBeNull("gönderim ilerliyor — takılı değil");
+    }
+
     private static DateTimeOffset? PushOk(SyncStatusTracker tracker)
         => tracker.Snapshot().PushOkAt![WpfCustomerProjectionSyncService.PushStatusName];
 }

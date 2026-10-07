@@ -87,4 +87,28 @@ public sealed class SyncStatusTrackerTests
             new Dictionary<string, DateTimeOffset?> { ["musteri"] = null, ["odeme"] = null },
             "önceki lisansın gönderimi yeni lisansı anlatmaz; kayıtlar kalır");
     }
+
+    [Fact]
+    public void Izlemeyi_yeniden_baslatmak_baslangici_ve_gonderim_ilerlemesini_tazeler_yetismeye_dokunmaz()
+    {
+        // N-3: lisans süreçte ilk kez görülünce (deneme → lisanslı) lisanssız geçen süre "hiç
+        // yetişemedi" / "gönderemedi" sayılmasın.
+        var tracker = new SyncStatusTracker();
+        tracker.RegisterPush("musteri");
+        var started = tracker.TrackingSince;
+        var at = DateTimeOffset.UtcNow;
+        tracker.MarkPushOk("musteri", at);
+        tracker.MarkCatchUpProgress(at);
+        tracker.MarkPullSucceeded(at, Lisans);
+        System.Threading.SpinWait.SpinUntil(() => DateTimeOffset.UtcNow > started);
+        var beforeRestart = DateTimeOffset.UtcNow;
+
+        tracker.RestartTracking();
+
+        tracker.TrackingSince.Should().BeOnOrAfter(beforeRestart);
+        tracker.Snapshot().PushOkAt.Should().BeEquivalentTo(
+            new Dictionary<string, DateTimeOffset?> { ["musteri"] = null }, "kayıt kalır, ilerleme yeni izlemeden ölçülür");
+        tracker.IsInitialCatchUpDoneFor(Lisans).Should().BeTrue("yetişme bilgisi yalnız lisans değişiminde silinir");
+        tracker.LastPullOkAt.Should().Be(at);
+    }
 }

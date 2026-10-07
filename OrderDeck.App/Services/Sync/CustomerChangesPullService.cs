@@ -421,14 +421,20 @@ public sealed class CustomerChangesPullService
 
     /// <summary>M-3: akış hatası kayıtları ve takılma durumu lisansa bağlı değil — önceki turdan
     /// farklı bir lisans anahtarı görülünce silinir (imleçler zaten anahtara bağlı). Yetişme durumu
-    /// da sıfırlanır (C10): yeni lisansın form oynatması kendi akışını bekler.</summary>
+    /// da sıfırlanır (C10): yeni lisansın form oynatması kendi akışını bekler. Süreçte ilk görülen
+    /// lisansta yalnız izleme yeniden başlar (N-3).</summary>
     private void OnLicenseSeen(string licenseKey)
     {
-        if (_lastLicenseKey is null || string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal))
+        if (_lastLicenseKey is null)
         {
+            // N-3: lisans bu süreçte İLK KEZ görüldü — açılışın ilk turu ya da çalışırken deneme →
+            // lisanslı. İzleme şimdi başlar: lisanssız geçen süre durum satırında "Çevrimdışı" /
+            // "Gönderilemiyor" sayılmasın. Hata kayıtları silinmez (süreçler arası kalıcı uyarı).
+            _tracker.RestartTracking();
             _lastLicenseKey = licenseKey;
             return;
         }
+        if (string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal)) return;
         // Bellekte, düşemez — aşağıdaki silme başarısız olup sonraki turda yinelense de zararsız.
         _tracker.ResetForLicenseChange();
         try

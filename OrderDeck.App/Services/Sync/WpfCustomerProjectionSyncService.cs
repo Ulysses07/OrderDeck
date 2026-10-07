@@ -261,6 +261,9 @@ public sealed class WpfCustomerProjectionSyncService
             if (lockContention) return totalSynced;
 
             AdvanceWatermark(licenseKey, batch, ref watermark);
+            // N-2: gönderilip imleci ilerleten her parti ilerlemedir — büyük ilk gönderim (biçim 2)
+            // 429'lar altında birkaç tura yayılırken durum satırı "Gönderilemiyor" göstermesin.
+            _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);
             if (batch.Count < BatchSize) { drained = true; break; } // last page — no more rows
         }
 
