@@ -83,12 +83,19 @@ public sealed class CustomerChangesPullService
     /// <summary>U10: bu kadar başarısız turdan sonra öğe atlanır (30 sn ritimde ~2,5 dk).</summary>
     internal const int MaxAttemptsBeforeSkip = 5;
 
-    /// <summary>I-1: aynı öğede bu kadar tur üst üste takılınca (~5 dk) bir uyarı ve durum.</summary>
-    internal const int BlockedRoundsBeforeWarning = 10;
+    /// <summary>I-1: aynı öğede bu kadar tur üst üste takılınca (~3 dk — D2'nin "çevrimdışı" eşiğiyle
+    /// aynı) bir uyarı ve durum.</summary>
+    internal const int BlockedRoundsBeforeWarning = 6;
 
-    /// <summary>M-7: tur başına en fazla sayfa (500'lük sayfalarla 10.000 öğe); kalanı sonraki tur.
-    /// Büyük bir ilk yetişme tek turda sunucunun IP başına hız sınırını tüketmesin.</summary>
-    internal const int MaxPagesPerRound = 20;
+    /// <summary>M-7: tur başına en fazla sayfa (500'lük sayfalarla 5.000 öğe); kalanı sonraki tur.
+    /// Büyük bir ilk yetişme tek turda sunucunun IP başına hız sınırını (dakikada ~100 istek)
+    /// tüketmesin — turun sonundaki yankı gönderimine (U2) ve diğer senkron servislerine pay kalsın.</summary>
+    internal const int MaxPagesPerRound = 10;
+
+    /// <summary>N-1: veritabanı bozulmasında operatöre/desteğe yol gösterir.</summary>
+    private const string CorruptionHint =
+        "'PRAGMA integrity_check' ile veritabanını denetleyin; arama dizini (CustomerFts) tutarsızsa " +
+        "INSERT INTO CustomerFts(CustomerFts) VALUES('rebuild') ile yeniden kurun";
 
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
@@ -107,6 +114,7 @@ public sealed class CustomerChangesPullService
     private int _lastLegacyJobs = -1;
     private int _pagesThisRound;
     private bool _offlineLogged;
+    private bool _environmentErrorLogged;
     private bool _reentrancyLogged;
 
     private BlockKey? _block;
@@ -168,6 +176,7 @@ public sealed class CustomerChangesPullService
         if (outcome is not (CustomerPullOutcome.CaughtUp or CustomerPullOutcome.MorePending)) return outcome;
 
         ClearBlocked();
+        _environmentErrorLogged = false;                      // N-2: ortam hatası serisi bitti
         if (outcome == CustomerPullOutcome.CaughtUp)
         {
             _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow);
@@ -236,19 +245,32 @@ public sealed class CustomerChangesPullService
                             // denenir; temizlik fırlatırsa (bu catch'in dışına) tur biter.
                             guardRecovered = true;
                             var cleared = _sync.ClearStaleGuards();
-                            _log.LogError(ex,
-                                "SyncApplyGuard'da tur ortasında kalmış {Count} kilit satırı silindi (öğe {ItemId}) — bir yol kilit satırını bırakmadan commit etti; öğe yeniden deneniyor",
-                                cleared, itemId);
+                            if (cleared > 0)
+                                _log.LogError(ex,
+                                    "SyncApplyGuard'da tur ortasında kalmış {Count} kilit satırı silindi (öğe {ItemId}) — bir yol kilit satırını bırakmadan commit etti; öğe yeniden deneniyor",
+                                    cleared, itemId);
+                            else
+                                _log.LogError(ex,
+                                    "SyncApplyGuard kilit satırı eklenemedi ama kalmış satır bulunamadı (öğe {ItemId}) — öğe yeniden deneniyor",
+                                    itemId);
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException && !IsNotItemSpecific(ex))
                         {
                             // U10: uygulanamayan öğe. Deneme kalıcı sayılır (yeniden başlatma sıfırlamaz).
+                            // Bozulma (SQLITE_CORRUPT) da burada: çoğu zaman öğeye özgüdür (ör. FTS5 dış
+                            // içerik dizini YALNIZ o satır için tutarsız → CORRUPT_VTAB); geçici sayılsaydı akışı
+                            // kayıtsız ve görünmez biçimde sonsuza dek durdururdu (N-1).
+                            var corrupt = IsCorruption(ex);
                             var attempts = _sync.RecordFeedFailure(itemId, item.ChangeSeq, $"{ex.GetType().Name}: {ex.Message}", now);
                             if (attempts < MaxAttemptsBeforeSkip)
                             {
                                 _cursors.Upsert(CursorName, licenseKey, seq: after);
                                 // M-2: yığın izi yalnız bu (Id, ChangeSeq) çiftinin ilk hatasında.
-                                if (attempts == 1)
+                                if (corrupt)
+                                    _log.LogError(attempts == 1 ? ex : null,
+                                        "Müşteri akışı öğesi {ItemId} (seq {Seq}) uygulanırken veritabanı bozulma hatası (SQLITE_CORRUPT) — deneme {Attempts}/{Max}. {Hint}",
+                                        itemId, item.ChangeSeq, attempts, MaxAttemptsBeforeSkip, CorruptionHint);
+                                else if (attempts == 1)
                                     _log.LogWarning(ex,
                                         "Müşteri akışı öğesi {ItemId} (seq {Seq}) uygulanamadı — deneme {Attempts}/{Max}, sonraki turda yeniden",
                                         itemId, item.ChangeSeq, attempts, MaxAttemptsBeforeSkip);
@@ -260,8 +282,9 @@ public sealed class CustomerChangesPullService
                             }
                             _sync.MarkFeedItemSkipped(itemId, now);
                             _log.LogError(
-                                "Müşteri akışı öğesi {ItemId} (seq {Seq}) {Max} turda uygulanamadı ({Error}) — ATLANDI; durum satırı uyarı gösterir",
-                                itemId, item.ChangeSeq, MaxAttemptsBeforeSkip, ex.GetType().Name);
+                                "Müşteri akışı öğesi {ItemId} (seq {Seq}) {Max} turda uygulanamadı ({Error}) — ATLANDI; durum satırı uyarı gösterir{Hint}",
+                                itemId, item.ChangeSeq, MaxAttemptsBeforeSkip, ex.GetType().Name,
+                                corrupt ? ". " + CorruptionHint : "");
                             applied = FeedApplyResult.Skipped;
                         }
                     }
@@ -480,20 +503,26 @@ public sealed class CustomerChangesPullService
     // ── hata sınıfları ──────────────────────────────────────────────────
 
     /// <summary>Öğeye özgü OLMAYAN hata (M-1): deneme sayılmaz, öğe atlanmaz, tur başarısız biter.
-    /// Yerel ortam (kilit çekişmesi, disk dolu, G/Ç, salt okunur, açılamayan/bozuk dosya), sızmış
+    /// Yerel ortam (kilit çekişmesi, disk dolu, G/Ç, salt okunur, açılamayan dosya), sızmış
     /// kilit satırı ve kilit yeniden girişi (programlama hatası).</summary>
     private static bool IsNotItemSpecific(Exception ex)
         => IsEnvironmentError(ex) || IsGuardLeak(ex) || ex is CustomerBusySetReentrancyException;
 
     /// <summary>SQLite birincil sonuç kodları: BUSY 5, LOCKED 6 (kilit çekişmesi — başka bir yazım
     /// yazma kilidini bütçeden uzun tuttu; gönderimin sınıflandırmasıyla aynı), NOMEM 7, READONLY 8,
-    /// IOERR 10, CORRUPT 11, FULL 13, CANTOPEN 14, PROTOCOL 15, NOTADB 26.</summary>
+    /// IOERR 10, FULL 13, CANTOPEN 14, PROTOCOL 15. CORRUPT (11) ve NOTADB (26) BURADA DEĞİL (N-1):
+    /// bozulma çoğu zaman öğeye özgüdür ve U10 ile sayılır — bkz. <see cref="IsCorruption"/>.</summary>
     private static bool IsEnvironmentError(Exception ex)
-        => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) is 5 or 6 or 7 or 8 or 10 or 11 or 13 or 14 or 15 or 26;
+        => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) is 5 or 6 or 7 or 8 or 10 or 13 or 14 or 15;
 
-    /// <summary>Kilit satırı zaten var: <c>SyncApplyScope.Begin</c>'in eklemesi birincil anahtara çarptı.</summary>
+    /// <summary>SQLITE_CORRUPT ve genişletilmiş kodları (ör. CORRUPT_VTAB 267).</summary>
+    private static bool IsCorruption(Exception ex)
+        => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) == 11;
+
+    /// <summary>Kilit satırı zaten var: <c>SyncApplyScope.Begin</c>'in eklemesi birincil anahtara çarptı
+    /// (SQLITE_CONSTRAINT 19, genişletilmiş kodlar dahil).</summary>
     private static bool IsGuardLeak(Exception ex)
-        => ex is SqliteException { SqliteErrorCode: 19 } s
+        => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) == 19
            && s.Message.Contains("SyncApplyGuard", StringComparison.Ordinal);
 
     /// <summary>Sunucunun genel hız sınırı gövdesiz 429 döner → <c>http-429</c>.</summary>
@@ -517,6 +546,19 @@ public sealed class CustomerChangesPullService
             }
             else
                 _log.LogWarning("Müşteri akışı hâlâ sunucuya ulaşamıyor (seq {After}); sonraki turda yeniden", after);
+        }
+        else if (IsEnvironmentError(ex))
+        {
+            // N-2: ortam hatası serisinde yığın izi bir kez; başarılı bir turda sıfırlanır.
+            if (!_environmentErrorLogged)
+            {
+                _environmentErrorLogged = true;
+                _log.LogWarning(ex, "Customer changes pull failed at seq {After} (yerel ortam hatası); will retry", after);
+            }
+            else
+                _log.LogWarning(
+                    "Müşteri akışı yine yerel ortam hatasına takıldı (SQLite {Code}, seq {After}); sonraki turda yeniden",
+                    ((SqliteException)ex).SqliteErrorCode, after);
         }
         else if (ex is CustomerBusySetReentrancyException)
         {

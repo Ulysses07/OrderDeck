@@ -809,8 +809,11 @@ public sealed class CustomerChangesPullServiceTests
     [Fact]
     public async Task Erken_uygulanan_silme_takilan_eski_kayitla_geri_acilmaz()
     {
-        // Sıra: k'de X kimliğinin asıl kaydı (takılı), k+2'de aynı kimliğin silmesi. Silme erken
-        // uygulanır; takılma çözülünce k'deki kayıt sonradan uygulanır — kişiyi geri açmamalı.
+        // Silme işlemlerinin sıradan bağımsızlığı: k'de X kimliğinin asıl kaydı (takılı), k+2'de aynı
+        // kimliğe düşen bir silme. Silme erken uygulanır; takılma çözülünce k'deki kayıt sonradan
+        // uygulanır — kişiyi geri açmamalı. Sunucu bu sayfayı üretemez (filtreli tekil indeks bir
+        // kimliğe tek asıl kayıt bırakır, PR-2); test yalnız erken silmenin sonradan gelen yazımla
+        // bozulmadığını sınar.
         var canonical = Guid.NewGuid();
         var other = Guid.NewGuid();
         var purgedRecord = Guid.NewGuid();
@@ -900,6 +903,106 @@ public sealed class CustomerChangesPullServiceTests
         fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0, "öğeye özgü değil — deneme sayılmaz");
         fx.Count("SELECT COUNT(*) FROM SyncApplyGuard").Should().Be(0);
         fx.Log.Entries.Should().Contain(e => e.Level == LogLevel.Error && e.Message.Contains("SyncApplyGuard"));
+    }
+
+    [Fact]
+    public async Task Kalmis_satiri_bulunamayan_kilit_cakismasi_silindi_demez_oge_yeniden_denenir()
+    {
+        // N-3: genişletilmiş kod (SQLITE_CONSTRAINT_PRIMARYKEY 1555) da tanınır; temizlik 0 satır
+        // sildiyse günlük "silindi" demez.
+        var a = Guid.NewGuid();
+        Fixture? fixture = null;
+        var injected = false;
+        using var fx = fixture = Build(after =>
+        {
+            if (after == 0 && !injected)
+            {
+                injected = true;
+                fixture!.Faults.FailNextOpen(new SqliteException("UNIQUE constraint failed: SyncApplyGuard.Id", 1555));
+            }
+            return FakeHttpMessageHandler.Json(200, after == 0 ? Page(4, Item(a, "ornek", 4)) : Page(after));
+        });
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        Exists(fx, a.ToString("N")).Should().BeTrue();
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0);
+        var error = fx.Log.Entries.Single(e => e.Level == LogLevel.Error);
+        error.Message.Should().Contain("bulunamadı").And.NotContain("silindi");
+    }
+
+    [Fact]
+    public async Task Ogeye_ozgu_bozulma_hatasi_deneme_sayilir_sinirda_atlanir_arkasi_uygulanir()
+    {
+        // N-1: SQLITE_CORRUPT çoğu zaman öğeye özgüdür (ör. FTS5 dış içerik dizini YALNIZ bu satır için
+        // tutarsız → CORRUPT_VTAB 267). Geçici sayılsaydı akış kayıtsız, takılma durumu ve ileri silme
+        // olmadan sonsuza dek dururdu.
+        var broken = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var purged = Guid.NewGuid();
+        Fixture? fixture = null;
+        using var fx = fixture = Build(after =>
+        {
+            if (after == 0)
+                fixture!.Faults.FailNextOpen(new SqliteException("database disk image is malformed", 267));
+            return FakeHttpMessageHandler.Json(200, after == 0
+                ? Page(8, Item(broken, "bozuk", 4), Item(other, "saglam", 6), Item(purged, "silinecek", 8) with { PurgedAt = T1 })
+                : Page(after));
+        });
+        var victim = LocalRow(fx, "silinecek");
+
+        for (var round = 1; round < CustomerChangesPullService.MaxAttemptsBeforeSkip; round++)
+        {
+            (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed, $"tur {round}");
+            fx.FeedCursor.Should().Be(0);
+        }
+        fx.Count("SELECT Attempts FROM CustomerFeedFailure WHERE ItemId = @id", new { id = broken.ToString("N") })
+            .Should().Be(CustomerChangesPullService.MaxAttemptsBeforeSkip - 1, "bozulma deneme sayılır (U10)");
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure WHERE ItemId = @id AND SkippedAt IS NOT NULL",
+            new { id = broken.ToString("N") }).Should().Be(1, "kayıt kalır → durum satırında kalıcı uyarı (D2)");
+        Exists(fx, other.ToString("N")).Should().BeTrue();
+        fx.Customers.GetById(victim)!.DisplayName.Should().Be("[Silindi]");
+        fx.FeedCursor.Should().Be(8);
+        fx.Log.Entries.Should().Contain(e => e.Level == LogLevel.Error
+                                             && e.Message.Contains("integrity_check") && e.Message.Contains("'rebuild'"));
+        fx.Log.Entries.Where(e => e.Level == LogLevel.Error && e.Message.Contains("SQLITE_CORRUPT"))
+            .Select(e => e.Exception is not null).Should().Equal(new[] { true, false, false, false },
+                "yığın izi yalnız ilk denemede (M-2)");
+    }
+
+    [Fact]
+    public async Task Ortam_hatasi_serisinde_yigin_izi_bir_kez_basarili_turdan_sonra_yeniden()
+    {
+        // N-2: disk dolu gibi bir ortam hatası her 30 sn'de bir yığın izi yazmaz.
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var phase = 1;
+        Fixture? fixture = null;
+        using var fx = fixture = Build(after =>
+        {
+            if ((phase == 1 && after == 0) || (phase == 3 && after == 4))
+                fixture!.Faults.FailNextOpen(new SqliteException("database or disk is full", 13));
+            return FakeHttpMessageHandler.Json(200, (phase, after) switch
+            {
+                (1 or 2, 0) => Page(4, Item(a, "ornek_a", 4)),
+                (3, 4) => Page(8, Item(b, "ornek_b", 8)),
+                _ => Page(after),
+            });
+        });
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+        phase = 2;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        phase = 3;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        fx.Log.Entries.Where(e => e.Level == LogLevel.Warning).Select(e => e.Exception is not null)
+            .Should().Equal(new[] { true, false, true });
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0);
     }
 
     [Fact]
