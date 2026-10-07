@@ -489,7 +489,7 @@ public sealed class DekontEkleViewModelTests
     public void TryFillFromPdf_warns_when_recipient_iban_does_not_match_settings()
     {
         var fx = new Fixture();
-        fx.Settings.Payment.Iban = "TR12 0011 1000 0000 0107 0201 32"; // boşluklu ok
+        fx.Settings.Payment.Iban = TestIban.Grouped(TestIban.NewTr("00111")); // boşluklu ok
         // PDF text içinde ALICI IBAN tamamen farklı:
         var pdfText = "ALICI IBAN: TR99 0099 9999 9999 9999 9999 99";
 
@@ -512,13 +512,14 @@ public sealed class DekontEkleViewModelTests
     public void TryFillFromPdf_no_warning_when_recipient_iban_matches()
     {
         var fx = new Fixture();
-        fx.Settings.Payment.Iban = "TR12 0011 1000 0000 0107 0201 32";
-        var pdfText = "ALICI IBAN: TR120011100000000107020132";  // boşluksuz aynı
+        var iban = TestIban.NewTr("00111");
+        fx.Settings.Payment.Iban = TestIban.Grouped(iban);
+        var pdfText = $"ALICI IBAN: {iban}";  // boşluksuz aynı
 
         var parser = new OrderDeck.PdfParsing.PdfDekontParser();
         var parsed = parser.ParseFromText(pdfText, "fakehash");
 
-        parsed.RecipientIban.Should().Be("TR120011100000000107020132");
+        parsed.RecipientIban.Should().Be(iban);
         // Normalize sonrası eşleşmeli
         parsed.RecipientIban.Should().Be(NormalizeIban(fx.Settings.Payment.Iban));
     }
