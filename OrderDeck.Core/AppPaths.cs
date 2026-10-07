@@ -9,10 +9,21 @@ namespace OrderDeck.Core;
 /// </summary>
 public static class AppPaths
 {
-    public static string DocumentsRoot { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        "Documents",
-        "OrderDeck");
+    /// <summary>
+    /// Süreç içi kök değiştirme anahtarı. Yalnız test derlemesi kurar
+    /// (<c>OrderDeck.Tests/TestAssemblyInit.cs</c> — modül başlatıcısı, test derlemesinde
+    /// herhangi bir kod koşmadan önce çalışır; AppPaths'in statik ilk değer ataması ise ilk
+    /// erişimde). Ortam değişkeni BİLEREK değil: kullanıcı ortamından sızıp üretimde
+    /// veritabanını başka klasöre taşıyamaz.
+    /// </summary>
+    public const string DocumentsRootOverrideKey = "OrderDeck.DocumentsRootOverride";
+
+    public static string DocumentsRoot { get; } =
+        AppContext.GetData(DocumentsRootOverrideKey) as string
+        ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Documents",
+            "OrderDeck");
 
     public static string DataFolder => Path.Combine(DocumentsRoot, "data");
     public static string LogsFolder => Path.Combine(DocumentsRoot, "Logs");

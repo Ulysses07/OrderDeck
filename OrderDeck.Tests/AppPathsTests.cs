@@ -36,4 +36,16 @@ public class AppPathsTests
         System.IO.Directory.Exists(AppPaths.DataFolder).Should().BeTrue();
         System.IO.Directory.Exists(AppPaths.LogsFolder).Should().BeTrue();
     }
+
+    [Fact]
+    public void Test_surecinde_kok_gecici_klasordedir_gercek_belgeler_degil()
+    {
+        var real = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents", "OrderDeck");
+
+        AppPaths.DocumentsRoot.Should().NotBe(real,
+            "AppHost kuran testler geliştiricinin gerçek veritabanını göç ettirmesin");
+        AppPaths.DocumentsRoot.Should().StartWith(Path.GetTempPath());
+        AppPaths.DocumentsRoot.Should().EndWith("OrderDeck", "mevcut yol sözleşmesi korunur");
+    }
 }
