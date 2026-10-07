@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
@@ -97,5 +98,25 @@ public sealed class WriteScopeGuardTests
 
         gate.Set();
         await queued;                                             // fırlatmaz — kapsam kapandı
+    }
+
+    [Fact]
+    public async Task Yazma_kapsami_acikken_mesgul_musteri_kumesi_kilitlenmez()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var busy = new CustomerBusySet();
+
+        using (DbWrite.Begin(db))
+        {
+            var run = () => busy.RunLocked(_ => 0);
+            run.Should().Throw<InvalidOperationException>().WithMessage("*CustomerBusySet*",
+                "kilit sırası: önce küme, sonra SQLite yazma kilidi (U17)");
+            var enter = () => busy.EnterAsync("c1");
+            await enter.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        busy.RunLocked(_ => 42).Should().Be(42, "kapsam dışında serbest");
+        (await busy.EnterAsync("c1")).Dispose();
     }
 }
