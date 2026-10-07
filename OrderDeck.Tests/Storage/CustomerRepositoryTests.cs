@@ -178,16 +178,16 @@ public class CustomerRepositoryTests
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
 
-        repo.Insert(new Customer("c-1", "instagram", "blldlkrt", "Bilal Delikurt", null,
+        repo.Insert(new Customer("c-1", "instagram", "dnmalc", "Deneme Alıcı", null,
             100, 200, false, null, null, 0, 0m, null, null, null));
         repo.Insert(new Customer("c-2", "instagram", "ayse_o", null, null,
             100, 300, false, null, null, 0, 0m, null, null, null,
-            FullName: "Ayşe Önal"));
+            FullName: "Örnek Müşteri"));
 
-        repo.Search("Bilal Delikurt", limit: 50).Select(c => c.Id).Should().Equal("c-1");
-        repo.Search("Ayşe Önal", limit: 50).Select(c => c.Id).Should().Equal("c-2");
+        repo.Search("Deneme Alıcı", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("Örnek Müşteri", limit: 50).Select(c => c.Id).Should().Equal("c-2");
         // Kullanıcı adıyla arama bozulmamalı.
-        repo.Search("blldlkrt", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("dnmalc", limit: 50).Select(c => c.Id).Should().Equal("c-1");
     }
 
     [Fact]
@@ -197,38 +197,50 @@ public class CustomerRepositoryTests
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
 
-        repo.Insert(new Customer("c-1", "instagram", "u1", "Şeyma Işık", null,
+        // Kurgusal sözcükler; sınanan harfler (Ş/ş, I/ı) korunuyor.
+        repo.Insert(new Customer("c-1", "instagram", "u1", "Şemsiye Işıma", null,
             100, 200, false, null, null, 0, 0m, null, null, null));
 
-        // SQLite LOWER() yalnız ASCII küçültür → "şeyma" eskiden eşleşmiyordu.
-        repo.Search("şeyma", limit: 50).Select(c => c.Id).Should().Equal("c-1");
-        // Türkçe i ailesi: "ışık" / "isik" değil ama "IŞIK" aynı harf sayılmalı.
-        repo.Search("IŞIK", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        // SQLite LOWER() yalnız ASCII küçültür → "şemsiye" eskiden eşleşmiyordu.
+        repo.Search("şemsiye", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        // Türkçe i ailesi: "ışıma" / "isima" değil ama "IŞIMA" aynı harf sayılmalı.
+        repo.Search("IŞIMA", limit: 50).Select(c => c.Id).Should().Equal("c-1");
         // Sözcük sırası ve fazladan boşluk sonucu değiştirmemeli.
-        repo.Search("ışık   şeyma", limit: 50).Select(c => c.Id).Should().Equal("c-1");
-        repo.Search("şeyma kaya", limit: 50).Should().BeEmpty();
+        repo.Search("ışıma   şemsiye", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("şemsiye defter", limit: 50).Should().BeEmpty();
     }
 
     /// <summary>Operatör numarayı kayıttakinden farklı biçimde yazıyor
-    /// ("0555 111 22 33" ↔ "+905551112233"); iki taraf da rakamlara
-    /// indirgenmezse hiçbir zaman eşleşmez.</summary>
+    /// (başında 0 olan boşluklu ulusal yazılış ↔ kanonik +90'lı biçim); iki taraf
+    /// da rakamlara indirgenmezse hiçbir zaman eşleşmez.</summary>
     [Fact]
     public void Search_finds_customers_by_phone_in_any_format()
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
+        // Numaralar her koşuda üretilir; biçimli sorgular kayıttaki numaradan türetilir.
+        // Parça: sona yakın dört hane (son ek değil). Arama baştaki sıfırları attığı için
+        // "0" ile başlayan parça dört haneden kısa kalıp hiç aranmazdı — böyle numara alınmaz.
+        string telefon;
+        do telefon = TestPhone.NewE164(); while (telefon[^6] == '0');
+        var ulusal = telefon[3..];                  // 10 hane, "+90" atılmış
+        var parca = ulusal[^6..^2];
+        // İkinci numara parçayı taşımamalı — taşısaydı parça araması iki müşteriyi de bulurdu.
+        var baskaTelefon = TestPhone.NewE164();
+        while (baskaTelefon[3..].Contains(parca)) baskaTelefon = TestPhone.NewE164();
 
-        repo.Insert(new Customer("c-1", "instagram", "u1", "Bilal Delikurt", null,
-            100, 200, false, null, null, 0, 0m, null, null, "+905551112233"));
+        repo.Insert(new Customer("c-1", "instagram", "u1", "Deneme Alıcı", null,
+            100, 200, false, null, null, 0, 0m, null, null, telefon));
         repo.Insert(new Customer("c-2", "instagram", "u2", "Veli", null,
-            100, 300, false, null, null, 0, 0m, null, null, "+905559998877"));
+            100, 300, false, null, null, 0, 0m, null, null, baskaTelefon));
 
-        repo.Search("+905551112233", limit: 50).Select(c => c.Id).Should().Equal("c-1");
-        repo.Search("0555 111 22 33", limit: 50).Select(c => c.Id).Should().Equal("c-1");
-        repo.Search("5551112233", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search(telefon, limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search($"0{ulusal[..3]} {ulusal[3..6]} {ulusal[6..8]} {ulusal[8..]}", limit: 50)
+            .Select(c => c.Id).Should().Equal("c-1");
+        repo.Search(ulusal, limit: 50).Select(c => c.Id).Should().Equal("c-1");
         // Numaranın son parçası da yeter (operatör sadece sonunu hatırlıyor).
-        repo.Search("1122", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search(parca, limit: 50).Select(c => c.Id).Should().Equal("c-1");
         // Çok kısa girdi tüm listeyi getirmemeli.
         repo.Search("55", limit: 50).Should().BeEmpty();
     }
@@ -300,11 +312,12 @@ public class CustomerRepositoryTests
         var c = new Customer("id1", "twitch", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null);
         repo.Insert(c);
+        var telefon = TestPhone.NewE164();
 
-        repo.UpdatePhone("id1", "+905551234567");
+        repo.UpdatePhone("id1", telefon);
 
         var loaded = repo.GetById("id1");
-        loaded!.Phone.Should().Be("+905551234567");
+        loaded!.Phone.Should().Be(telefon);
     }
 
     // ── R12-D02 (2026-09-16 denetimi): telefon yazısı da silme kapısına tabi ──
@@ -324,7 +337,7 @@ public class CustomerRepositoryTests
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         repo.RecordPurge("twitch", "alice", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
-        var written = repo.UpdatePhone("id1", "+905551234567");
+        var written = repo.UpdatePhone("id1", TestPhone.NewE164());
 
         written.Should().Be(0, "çağıran hiç satır değişmediğini görebilmeli");
         repo.GetById("id1")!.Phone.Should().BeNull();
@@ -339,11 +352,12 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
         repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
+        var telefon = TestPhone.NewE164();
 
-        var written = repo.UpdatePhone("id1", "+905551234567");
+        var written = repo.UpdatePhone("id1", telefon);
 
         written.Should().Be(1);
-        repo.GetById("id1")!.Phone.Should().Be("+905551234567");
+        repo.GetById("id1")!.Phone.Should().Be(telefon);
 
         // …ve sonradan inen silme onu yine temizliyor (R11-D01 korunuyor).
         repo.RecordPurge("twitch", "alice", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
@@ -356,7 +370,7 @@ public class CustomerRepositoryTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
-        Action act = () => repo.UpdatePhone("nonexistent-id", "+905551234567");
+        Action act = () => repo.UpdatePhone("nonexistent-id", TestPhone.NewE164());
         act.Should().NotThrow();
     }
 
@@ -379,11 +393,12 @@ public class CustomerRepositoryTests
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
         repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
+        var telefon = TestPhone.NewE164();
 
-        repo.UpdatePhone("id1", "+905551234567");
+        repo.UpdatePhone("id1", telefon);
 
         var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+        delta.Should().ContainSingle().Which.Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -397,15 +412,19 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
         repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
-        repo.UpdatePhone("id1", "+905551111111");
+        // Aynı üretilen gövde, farklı son hane: iki numara kesin farklı.
+        var govde = TestPhone.NewNational()[..9];
+        var ilkTelefon = $"+90{govde}1";
+        var ikinciTelefon = $"+90{govde}2";
+        repo.UpdatePhone("id1", ilkTelefon);
         var cursor = CursorAfter(repo, "id1");
         repo.GetUpdatedSince(cursor, 100)
             .Should().BeEmpty("ilk güncelleme senkronlandı, imleç satırın üzerinde");
 
-        repo.UpdatePhone("id1", "+905552222222");
+        repo.UpdatePhone("id1", ikinciTelefon);
 
         var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be("+905552222222");
+        delta.Should().ContainSingle().Which.Phone.Should().Be(ikinciTelefon);
     }
 
     // ── N03-k (2026-09-11 denetimi): intake upsert'leri de imleci ilerletmeli ──
@@ -495,12 +514,13 @@ public class CustomerRepositoryTests
         var batch = repo.GetUpdatedSince(0, 100);
         batch.Should().HaveCount(2);
         var cursor = batch[^1].SyncSeq;
+        var telefon = TestPhone.NewE164();
 
-        repo.UpdatePhone("id1", "+905551234567");
+        repo.UpdatePhone("id1", telefon);
 
         var delta = repo.GetUpdatedSince(cursor, 100);
         delta.Should().ContainSingle("ileri zamanlı satır imleci taşısa da güncelleme kaybolmamalı")
-            .Which.Phone.Should().Be("+905551234567");
+            .Which.Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -518,10 +538,11 @@ public class CustomerRepositoryTests
 
         // UpdatePhone MAX(LastSeenAt+1, now) yazar; LastSeenAt zaten çok ileride
         // olduğu için iş zamanı pratikte ilerlemese de satır delta'ya düşmeli.
-        repo.UpdatePhone("id1", "+905551234567");
+        var telefon = TestPhone.NewE164();
+        repo.UpdatePhone("id1", telefon);
 
         repo.GetUpdatedSince(cursor, 100).Should().ContainSingle()
-            .Which.Phone.Should().Be("+905551234567");
+            .Which.Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -618,18 +639,19 @@ public class CustomerRepositoryTests
     public void UpsertPersonFromIntake_creates_row_per_platform_sharing_one_group()
     {
         var repo = CreateRepository();
+        var tckn = TestTckn.NewValid();
 
         var groupId = repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("instagram", "@sibel_s", null), ("youtube", "sibelgelibolu", null), ("tiktok", "sibel.tt", null) },
-            fullName: "Sibel S", address: "İstanbul", phone: "+905551112233",
-            email: "sibel@example.com", tckn: "12345678901",
+            new (string, string, string?)[] { ("instagram", "@sibel_s", null), ("youtube", "ornekkanal", null), ("tiktok", "sibel.tt", null) },
+            fullName: "Sibel S", address: "İstanbul", phone: TestPhone.NewE164(),
+            email: "sibel@example.com", tckn: tckn,
             whatsAppConsent: true, smsConsent: false, nowUnix: 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         groupId.Should().NotBeNullOrEmpty();
 
         // Handle normalize: baştaki '@' atılır.
         var ig = repo.FindByPlatformAndUsername("instagram", "sibel_s");
-        var yt = repo.FindByPlatformAndUsername("youtube", "sibelgelibolu");
+        var yt = repo.FindByPlatformAndUsername("youtube", "ornekkanal");
         var tt = repo.FindByPlatformAndUsername("tiktok", "sibel.tt");
 
         ig.Should().NotBeNull();
@@ -643,7 +665,7 @@ public class CustomerRepositoryTests
 
         // İletişim/izin bilgisi tüm satırlara yazıldı; DisplayName Ad Soyad'a set edildi.
         ig.Email.Should().Be("sibel@example.com");
-        ig.Tckn.Should().Be("12345678901");
+        ig.Tckn.Should().Be(tckn);
         ig.Address.Should().Be("İstanbul");
         ig.WhatsAppConsent.Should().BeTrue();
         ig.SmsConsent.Should().BeFalse();
@@ -657,7 +679,7 @@ public class CustomerRepositoryTests
 
         // İlk kayıt: Instagram + YouTube tek grupta.
         var g1 = repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("instagram", "sibel_s", null), ("youtube", "sibelgelibolu", null) },
+            new (string, string, string?)[] { ("instagram", "sibel_s", null), ("youtube", "ornekkanal", null) },
             "Sibel S", "İstanbul", null, null, null, false, false, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         // İkinci kayıt: aynı Instagram + yeni Facebook → grup yeniden kullanılmalı (merge).
@@ -701,13 +723,13 @@ public class CustomerRepositoryTests
         var repo = CreateRepository();
 
         // Chat'ten kaydedilmiş YouTube müşterisi: Username=channelId, DisplayName=@handle.
-        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@ornekkanal", null,
             100, 100, false, null, null, 2, 180m, null, null, null));
 
         // Form: müşteri @handle'ını yazıyor (channelId'yi bilmez).
         var telefon = TestPhone.NewE164();
         repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },   // farklı casing + @ yok
+            new (string, string, string?)[] { ("youtube", "OrnekKanal", null) },      // farklı casing + @ yok
             "Sibel G", "Ankara", telefon, null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         // channelId satırına birleşmeli, AYRI (youtube, handle) satırı açılmamalı.
@@ -739,7 +761,7 @@ public class CustomerRepositoryTests
     public void RecordPurge_youtube_handle_koprusunu_de_kapsar()
     {
         var repo = CreateRepository();
-        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@ornekkanal", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
 
         // Yetkili silme kanal kimliğiyle iniyor; DisplayName köprüsü kopuyor.
@@ -747,7 +769,7 @@ public class CustomerRepositoryTests
 
         // Silmeden önce kabul edilmiş, channelId taşımayan form şimdi uygulanıyor.
         repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },
+            new (string, string, string?)[] { ("youtube", "OrnekKanal", null) },
             "Sibel G", "Ankara", TestPhone.NewE164(), "s@example.com", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
@@ -761,11 +783,11 @@ public class CustomerRepositoryTests
         // Karşı kontrol 1: silme YOKKEN handle-only form hâlâ kanal satırına
         // birleşiyor (köprünün kendisi çalışır durumda).
         var repo = CreateRepository();
-        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@ornekkanal", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
 
         repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },
+            new (string, string, string?)[] { ("youtube", "OrnekKanal", null) },
             "Sibel G", "Ankara", TestPhone.NewE164(), null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
         repo.RecordPurge("youtube", "UCabc123channel", 6000);
 
@@ -779,7 +801,7 @@ public class CustomerRepositoryTests
     {
         // Karşı kontrol 2: karar yalnız silinen kimliğin bağını kapsar.
         var repo = CreateRepository();
-        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@ornekkanal", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
         repo.RecordPurge("youtube", "UCabc123channel", 4000);
 
@@ -793,10 +815,11 @@ public class CustomerRepositoryTests
 
         // (b) Aynı görünen adı taşıyan BAŞKA bir kanal kimliği de serbest —
         //     kanonik kimlik çözülebildiğinde yeniden kayıt yolu açık kalır.
-        repo.Insert(new Customer("yt2", "youtube", "UCxyz999other", "@sibelgelibolu", null,
+        repo.Insert(new Customer("yt2", "youtube", "UCxyz999other", "@ornekkanal", null,
             200, 200, false, null, null, 0, 0m, null, null, null));
-        repo.UpdatePhone("yt2", "+905554443322");
-        repo.GetById("yt2")!.Phone.Should().Be("+905554443322");
+        var ikinciKanalTelefonu = TestPhone.NewE164();
+        repo.UpdatePhone("yt2", ikinciKanalTelefonu);
+        repo.GetById("yt2")!.Phone.Should().Be(ikinciKanalTelefonu);
     }
 
     [Fact]
@@ -806,7 +829,7 @@ public class CustomerRepositoryTests
         // 2 chat-only (telefonsuz) + 1 kayıtlı (telefonlu)
         repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null));
         repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null));
-        repo.Insert(new Customer("c", "instagram", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, "Adres", "+905551112233"));
+        repo.Insert(new Customer("c", "instagram", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, "Adres", TestPhone.NewE164()));
 
         repo.CountAll().Should().Be(3);
         repo.CountRegistered().Should().Be(1);

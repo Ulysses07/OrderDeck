@@ -68,13 +68,13 @@ public sealed class IntakeFormSyncServiceTests
     public async Task SyncOnceAsync_creates_customer_with_form_platform()
     {
         var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"bilalcanli","fullName":"Bilal Canlı","address":"Atatürk Cad","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ornekmusteri","fullName":"Örnek Müşteri","address":"Atatürk Cad","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var count = await svc.SyncOnceAsync();
 
         count.Should().Be(1);
-        var customers = repo.Search("bilalcanli", limit: 5);
-        customers.Should().Contain(c => c.Platform == "form" && c.Username == "bilalcanli");
+        var customers = repo.Search("ornekmusteri", limit: 5);
+        customers.Should().Contain(c => c.Platform == "form" && c.Username == "ornekmusteri");
     }
 
     [Fact]
@@ -207,22 +207,24 @@ public sealed class IntakeFormSyncServiceTests
     [Fact]
     public async Task SyncOnceAsync_propagates_phone_from_dto_to_customer()
     {
+        var telefon = TestPhone.NewE164();
         var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"alice","fullName":"Alice","address":"Addr","phone":"+905551111111","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+            $$"""[{"id":"00000000-0000-0000-0000-000000000001","username":"alice","fullName":"Alice","address":"Addr","phone":"{{telefon}}","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var count = await svc.SyncOnceAsync();
 
         count.Should().Be(1);
         var customer = repo.Search("alice", limit: 5).Single(c => c.Platform == "form");
-        customer.Phone.Should().Be("+905551111111");
+        customer.Phone.Should().Be(telefon);
     }
 
     [Fact]
     public async Task SyncOnceAsync_youtube_channelId_merges_into_existing_chat_customer()
     {
         // Chat'ten kaydedilmiş YouTube müşterisi: Username=channelId.
+        var telefon = TestPhone.NewE164();
         var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"UCabc123","fullName":"Sibel G","address":"Ankara","phone":"+905559998877","submittedAt":"2026-04-30T12:00:00Z","youTubeUsername":"sibelg","youTubeChannelId":"UCabc123"}]"""));
+            $$"""[{"id":"00000000-0000-0000-0000-000000000001","username":"UCabc123","fullName":"Sibel G","address":"Ankara","phone":"{{telefon}}","submittedAt":"2026-04-30T12:00:00Z","youTubeUsername":"sibelg","youTubeChannelId":"UCabc123"}]"""));
         repo.Insert(new OrderDeck.Core.Customers.Customer(
             "yt1", "youtube", "UCabc123", "@sibelg", null,
             100, 100, false, null, null, 2, 180m, null, null, null));
@@ -234,7 +236,7 @@ public sealed class IntakeFormSyncServiceTests
         var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
         yts.Should().HaveCount(1);
         yts[0].Id.Should().Be("yt1");
-        yts[0].Phone.Should().Be("+905559998877");
+        yts[0].Phone.Should().Be(telefon);
         yts[0].TotalAmount.Should().Be(180m);
     }
 
