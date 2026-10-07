@@ -139,7 +139,7 @@ public class PanelShopperCodeControllerTests : IClassFixture<ApiFactory>
         var (client, _, _) = await SeedAsync();
 
         // Contains hyphen — fails AlphaNumLower regex
-        var resp = await client.PutAsJsonAsync("/api/panel/shopper-code", new { code = "ROYAL-1" });
+        var resp = await client.PutAsJsonAsync("/api/panel/shopper-code", new { code = "ORNEKMAGAZA-1" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await resp.Content.ReadAsStringAsync();
