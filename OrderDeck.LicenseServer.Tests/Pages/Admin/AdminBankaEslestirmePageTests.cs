@@ -269,6 +269,34 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         m!.ActualWpfCustomerId.Should().Be(wpfId);
     }
 
+    /// <summary>
+    /// Kullanıcı adı kimlik anahtarıyla aranır (Shopper aday aramalarıyla aynı gerekçe): SQL Server'ın CI_AS'si "İrem" ile
+    /// "irem"i farklı sayar; yönetici büyük harfle, noktalı İ ile ya da kenar boşluğuyla yazsa da aynı müşteri bulunmalı.
+    /// </summary>
+    [Fact]
+    public async Task Elle_esleme_kullanici_adini_kimlik_anahtariyla_bulur()
+    {
+        var (lic, txId, _) = await SeedAsync();
+        Guid customerId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = new WpfCustomerProjection
+                { Id = Guid.NewGuid(), LicenseId = lic, Platform = "instagram", Username = "irem_k", UpdatedAt = DateTimeOffset.UtcNow };
+            db.WpfCustomerProjections.Add(customer);
+            await db.SaveChangesAsync();
+            customerId = customer.Id;
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var post = await PostAsync(client, "ManualMatch", lic, txId, " İrem_K ");
+
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var match = await MatchAsync(txId);
+        match.Should().NotBeNull("'İrem_K' ile 'irem_k' aynı kimlik anahtarına düşer");
+        match!.ActualWpfCustomerId.Should().Be(customerId);
+    }
+
     [Fact]
     public async Task Baska_lisansin_hareketi_elle_eslenmez_ve_karari_kaldirilmaz()
     {

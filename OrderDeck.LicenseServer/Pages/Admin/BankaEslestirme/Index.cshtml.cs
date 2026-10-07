@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
@@ -128,16 +129,19 @@ public class IndexModel : PageModel
         }).ToList();
     }
 
-    /// <summary>Kullanıcı adı tam eşitlikle, yalnız formdaki lisansın silinmemiş müşterilerinde aranır. Aynı ad birden çok
-    /// müşterideyse (ör. iki platform) hangisi olduğu tahmin edilmez.</summary>
+    /// <summary>Kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>: kırpılmış, küçük harf,
+    /// İ/i farkı yok — Shopper aday aramalarıyla aynı kural; CI_AS "İrem" ile "irem"i farklı sayar), yalnız formdaki lisansın
+    /// silinmemiş asıl kayıtlarında aranır. Aynı kimlik birden çok müşterideyse (ör. iki platform) hangisi olduğu tahmin
+    /// edilmez.</summary>
     public async Task<IActionResult> OnPostManualMatchAsync(CancellationToken ct)
     {
         if (BankDisabled) return BankDisabledResult();
         var username = (Username ?? "").Trim();
-        var customerIds = username.Length == 0
+        var key = WpfCustomerProjection.IdentityKeyOf(username);
+        var customerIds = key.Length == 0
             ? []
             : await _db.WpfCustomerProjections.AsNoTracking()
-                .Where(c => c.LicenseId == LicenseId && c.Username == username && c.PurgedAt == null)
+                .Where(c => c.LicenseId == LicenseId && c.IdentityKey == key && c.PurgedAt == null)
                 .Select(c => c.Id).ToListAsync(ct);
         if (customerIds.Count != 1)
         {
