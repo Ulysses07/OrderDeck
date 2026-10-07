@@ -12,13 +12,15 @@ public static class AppPaths
     /// <summary>
     /// Süreç içi kök değiştirme anahtarı. Yalnız test derlemesi kurar
     /// (<c>OrderDeck.Tests/TestAssemblyInit.cs</c> — modül başlatıcısı, test derlemesinde
-    /// herhangi bir kod koşmadan önce çalışır; AppPaths'in statik ilk değer ataması ise ilk
-    /// erişimde). Ortam değişkeni BİLEREK değil: kullanıcı ortamından sızıp üretimde
-    /// veritabanını başka klasöre taşıyamaz.
+    /// herhangi bir kod koşmadan önce çalışır). Ortam değişkeni BİLEREK değil: kullanıcı
+    /// ortamından sızıp üretimde veritabanını başka klasöre taşıyamaz.
     /// </summary>
     public const string DocumentsRootOverrideKey = "OrderDeck.DocumentsRootOverride";
 
-    public static string DocumentsRoot { get; } =
+    // Önbelleğe ALINMAZ (her erişimde okunur): statik bir ilk değer ataması modül
+    // başlatıcısından önce koşarsa anahtar sessizce yok sayılır ve testler yeniden gerçek
+    // veritabanına dokunurdu; böylece sıra sorusu hiç doğmaz.
+    public static string DocumentsRoot =>
         AppContext.GetData(DocumentsRootOverrideKey) as string
         ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
