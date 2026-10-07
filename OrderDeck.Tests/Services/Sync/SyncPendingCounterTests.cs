@@ -68,6 +68,16 @@ public sealed class SyncPendingCounterTests : IDisposable
     }
 
     [Fact]
+    public void Bosluk_lisans_anahtari_lisans_yok_sayilir()
+    {
+        var id = Local("ornek_musteri_1");
+        _cursors.Upsert(WpfCustomerProjectionSyncService.CursorName, "  ", seq: _customers.GetById(id)!.SyncSeq);
+        _license.CurrentLicenseKey = "  ";
+
+        _counter.Count().Should().Be(1, "gönderim boşluk anahtarla koşmaz — o anahtarın imleci bir şey anlatmaz");
+    }
+
+    [Fact]
     public void Dikkat_sayaci_depodan_gecer()
         => _counter.Attention().Should().Be(default(SyncAttention));
 }

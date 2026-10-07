@@ -2,6 +2,8 @@ using System;
 using Dapper;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
+using OrderDeck.Core.Payments;
+using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
@@ -63,15 +65,36 @@ public sealed class SyncOutboxRepositoryTests : IDisposable
     }
 
     [Fact]
-    public void Diger_tablolarin_gonderilmemis_satirlari_da_sayilir()
+    public void Diger_tablolarin_gonderilmemis_satirlari_tablo_basina_sayilir()
     {
+        // Müşteriler bu testin konusu değil: imleç hepsinin üstünde.
+        const long allCustomersPushed = long.MaxValue;
+        var customerId = Local("ornek_musteri_1");
         var sessions = new SessionRepository(_db);
-        sessions.Insert(new StreamSession("yayin-1", "Örnek yayın", 100, null, new[] { "tiktok" }, null));
-        _outbox.CountPending(customerPushCursor: 0).Should().Be(1);
+        var labels = new LabelRepository(_db);
+        var payments = new PaymentRepository(_db);
+        var shipments = new ShipmentRepository(_db);
+        var sessionId = Guid.NewGuid().ToString("N");
+        var labelId = Guid.NewGuid().ToString("N");
+        var paymentId = Guid.NewGuid().ToString("N");
+        var shipmentId = Guid.NewGuid().ToString("N");
 
-        sessions.MarkSynced("yayin-1", syncedAt: 200, revision: sessions.GetById("yayin-1")!.Revision);
+        sessions.Insert(new StreamSession(sessionId, "Örnek yayın", 100, null, new[] { "tiktok" }, null));
+        labels.Insert(new Label(labelId, sessionId, customerId, "tiktok", "ornek_musteri_1", "ürün", null, 250m, 110, null));
+        payments.Insert(new Payment(paymentId, "Örnek Müşteri", 250m, 120, $"ref-{Guid.NewGuid():N}", null,
+            PaymentStatus.Pending, 120, 120, SyncedAt: null, ApprovedAt: null, RejectedAt: null, RejectReason: null));
+        shipments.Insert(new Shipment(shipmentId, customerId, ShipmentStatus.Pending, 130, null, null, 250m));
+        _outbox.CountPending(allCustomersPushed).Should().Be(4);
 
-        _outbox.CountPending(customerPushCursor: 0).Should().Be(0);
+        // Her tablonun ölçütü ayrı ayrı: yalnız o tablonun satırı gönderilince sayı bir düşer.
+        sessions.MarkSynced(sessionId, syncedAt: 200, revision: sessions.GetById(sessionId)!.Revision);
+        _outbox.CountPending(allCustomersPushed).Should().Be(3, "oturum gönderildi");
+        labels.MarkSynced(labelId, syncedAt: 200, revision: labels.GetById(labelId)!.Revision);
+        _outbox.CountPending(allCustomersPushed).Should().Be(2, "etiket gönderildi");
+        payments.MarkSynced(paymentId, syncedAt: 200);
+        _outbox.CountPending(allCustomersPushed).Should().Be(1, "ödeme gönderildi");
+        shipments.MarkSynced(shipmentId, syncedAt: 200, revision: shipments.GetById(shipmentId)!.Revision);
+        _outbox.CountPending(allCustomersPushed).Should().Be(0, "kargo gönderildi");
     }
 
     [Fact]
