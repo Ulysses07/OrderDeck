@@ -264,6 +264,34 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
     }
 
+    // ─── WPF müşteri değişiklik akışı (çoklu bilgisayar, Bölüm C) ──────────
+
+    /// <summary>
+    /// Müşteri değişiklik akışının bir sayfası. İmleç sunucunun rowversion'ı
+    /// (<see cref="WpfCustomerChangesPage.NextAfterSeq"/>); istemci saati yok.
+    /// <para>Katalog uçlarıyla aynı gerekçe: boş sayfa DÖNGÜ SONLANDIRICISI — bozuk gövde
+    /// (200 + <c>null</c>, items'sız) sessizce boş sayfaya çevrilseydi çağıran "yetiştim"
+    /// sanıp turu başarı sayardı. Fırlatılır.</para>
+    /// <para><paramref name="take"/> 1..500 dışında FIRLATIR: sunucu kırpar ve çağıran
+    /// elindeki değeri yanlış yorumlardı.</para>
+    /// </summary>
+    public async Task<WpfCustomerChangesPage> GetWpfCustomerChangesAsync(
+        Guid licenseId, long afterSeq, int take = 500, CancellationToken ct = default)
+    {
+        if (take is < 1 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..500 olmalı (sunucu sınırı, LicensesWpfCustomersPullController.Changes).");
+
+        var qs = $"?afterSeq={afterSeq.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+               + $"&take={take.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        var page = await GetExpectingJsonAsync<WpfCustomerChangesPage>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/changes{qs}", ct);
+        if (page?.Items is null)
+            throw new LicenseApiUnknownException(200,
+                "Müşteri değişiklik sayfası bozuk geldi (gövde ya da items null). Bu 'değişiklik yok' demek değildir.");
+        return page;
+    }
+
     // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
 
     // Bu iki metot, dosyadaki diğer liste uçlarından (örn.
