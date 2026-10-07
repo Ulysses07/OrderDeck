@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Services.Sync;
@@ -235,6 +236,80 @@ public sealed class IntakeFormSyncServiceTests
         yts[0].Id.Should().Be("yt1");
         yts[0].Phone.Should().Be("+905559998877");
         yts[0].TotalAmount.Should().Be(180m);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_form_birimlerini_SubmittedAt_ile_damgalar()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse_y","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ayse_y"}]"""));
+        var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
+            new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
+            NullLogger<IntakeFormSyncService>.Instance);
+
+        await svc.SyncOnceAsync();
+
+        var id = repo.FindByPlatformAndUsername("instagram", "ayse_y")!.Id;
+        using var c = db.Open();
+        c.ExecuteScalar<long?>("SELECT FullNameChangedAt FROM Customer WHERE Id = @id", new { id })
+            .Should().Be(DateTimeOffset.Parse("2026-04-30T12:00:00Z").ToUnixTimeMilliseconds(),
+                "damga işleme anı (FakeClock) değil, formun gönderim anı");
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_eski_form_satirini_SubmittedAt_ile_damgalar()
+    {
+        // Platform alanı olmayan eski gönderim → UpsertFromIntakeForm yolu; o da formun
+        // gönderim anını almalı (üç çağrının ikincisi).
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse_form","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+        var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
+            new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
+            NullLogger<IntakeFormSyncService>.Instance);
+
+        await svc.SyncOnceAsync();
+
+        var id = repo.FindByPlatformAndUsername("form", "ayse_form")!.Id;
+        using var c = db.Open();
+        c.ExecuteScalar<long?>("SELECT DisplayNameChangedAt FROM Customer WHERE Id = @id", new { id })
+            .Should().Be(DateTimeOffset.Parse("2026-04-30T12:00:00Z").ToUnixTimeMilliseconds(),
+                "damga işleme anı (FakeClock) değil, formun gönderim anı");
+    }
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_adi_SubmittedAt_ile_damgalar()
+    {
+        // Üç çağrının üçüncüsü: geriye dönük ad doldurma da formun gönderim anını alır.
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new OrderDeck.Core.Customers.Customer(
+            "ig1", "instagram", "ayse_y", "ayse_y", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse_y","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ayse_y"}]"""));
+        var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
+            new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
+            NullLogger<IntakeFormSyncService>.Instance);
+
+        (await svc.BackfillFullNamesOnceAsync()).Should().Be(1);
+
+        using var c = db.Open();
+        c.ExecuteScalar<long?>("SELECT FullNameChangedAt FROM Customer WHERE Id = 'ig1'")
+            .Should().Be(DateTimeOffset.Parse("2026-04-30T12:00:00Z").ToUnixTimeMilliseconds(),
+                "damga doldurma anı değil, formun gönderim anı");
     }
 
     // ── FullName backfill (tek seferlik geriye-dönük düzeltme) ────────────

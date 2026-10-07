@@ -16,6 +16,10 @@ namespace OrderDeck.App.Services.IntakeForm;
 /// Eski settings alanları (LastIntakeFormSync/Id) SİLİNDİ ve tohum olarak da
 /// okunmuyor. Satır yoksa baştan çekim — UpsertPersonFromIntake idempotent.
 /// Idempotent: duplicate calls are no-op (server filters by SubmittedAt &gt; since).
+///
+/// <para>Damga = formun <c>SubmittedAt</c>'i (Bölüm C kural 3): her bilgisayar
+/// formları kendi imleciyle uygular; işleme anı damgası geç açılan bilgisayarın eski
+/// formları en yeni damgayla oynatıp sonradan yapılan düzeltmeleri ezmesi demekti.</para>
 /// </summary>
 public sealed class IntakeFormSyncService
 {
@@ -126,7 +130,8 @@ public sealed class IntakeFormSyncService
                 Add("tiktok", sub.TikTokUsername);
 
                 if (identities.Count > 0 && !string.IsNullOrWhiteSpace(sub.FullName))
-                    totalUpdated += _customers.BackfillFullNameForIdentities(identities, sub.FullName);
+                    totalUpdated += _customers.BackfillFullNameForIdentities(
+                        identities, sub.FullName, submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds());
             }
 
             // R9-D03 / R3-01: imleç sunucunun teslim ettiği SON satırdan
@@ -240,14 +245,16 @@ public sealed class IntakeFormSyncService
                     identities,
                     sub.FullName, sub.Address, sub.Phone,
                     sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
-                    nowUnix, sub.City, sub.District);
+                    nowUnix, sub.City, sub.District,
+                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds());
             }
             else
             {
                 // Eski sunucudan gelen (platform alanları olmayan) gönderim —
                 // legacy tek-satır davranışına düş.
                 _customers.UpsertFromIntakeForm(
-                    sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix);
+                    sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix,
+                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds());
             }
         }
 
