@@ -69,7 +69,7 @@ public class CustomerSearchViewModelTests
         {
             using var _db = db;
             var alice = new Customer("c1", "twitch", "alice", "Alice", null,
-                100, 100, false, null, null, 0, 0m, null, null, "+905551111111");
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164());
             customers.Insert(alice);
             sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 50m, 110, 120));
@@ -102,7 +102,7 @@ public class CustomerSearchViewModelTests
             }
             // Aranan kayıt: youtube'da, daha eski → ilk 50'nin dışında.
             customers.Insert(new Customer("y1", "youtube", "elma_gercek", "Elma Gerçek", null,
-                10, 10, false, null, null, 0, 0m, null, null, "+905551111111"));
+                10, 10, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
 
             sut.PlatformFilter = "youtube";
             sut.Query = "elma";
@@ -128,7 +128,7 @@ public class CustomerSearchViewModelTests
             }
             // Tek kayıtlı (telefonlu) müşteri en eski → ilk 50'nin dışında.
             customers.Insert(new Customer("y1", "youtube", "elma_gercek", "Elma Gerçek", null,
-                10, 10, false, null, null, 0, 0m, null, null, "+905551111111"));
+                10, 10, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
 
             sut.RegisteredOnly = true;
             sut.Query = "elma";
@@ -150,11 +150,12 @@ public class CustomerSearchViewModelTests
         try
         {
             using var _db = db;
+            var telefon = TestPhone.NewE164();
             // Aynı kişinin iki satırı: yeni instagram (100) + çok eski tiktok (200).
             customers.Insert(new Customer("g-new", "instagram", "elma_yeni", "Ali Veli", null,
                 1000, 900_000, false, null, null, 1, 100m, null, null, null, GroupId: "grp-1"));
             customers.Insert(new Customer("g-old", "tiktok", "elma_eski", "Ali Veli", null,
-                1000, 1, false, null, null, 2, 200m, null, null, "+905551112233",
+                1000, 1, false, null, null, 2, 200m, null, null, telefon,
                 GroupId: "grp-1"));
 
             // 60 dolgu: arada kalıp ilk 50'yi doldururlar, eski üye dışarıda kalır.
@@ -171,7 +172,7 @@ public class CustomerSearchViewModelTests
             card.TotalAmount.Should().Be(300m);
             // Birincil üye telefonlu olan: kart iletişimsiz görünmemeli.
             card.Primary.Id.Should().Be("g-old");
-            card.Phone.Should().Be("+905551112233");
+            card.Phone.Should().Be(telefon);
             card.Platforms.Should().BeEquivalentTo(new[] { "instagram", "tiktok" });
         }
         finally { if (File.Exists(path)) File.Delete(path); }
@@ -191,7 +192,7 @@ public class CustomerSearchViewModelTests
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 50m, 110, 120));
             sessions.End("s1", 200);
 
-            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, "+905551111111"); return true; };
+            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, TestPhone.NewE164()); return true; };
 
             sut.RefreshSearch();
             await sut.OpenWhatsAppCommand.ExecuteAsync(sut.Results[0]);
@@ -210,7 +211,7 @@ public class CustomerSearchViewModelTests
         {
             using var _db = db;
             var alice = new Customer("c1", "twitch", "alice", "Alice", null,
-                100, 100, false, null, null, 0, 0m, null, null, "+905551111111");
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164());
             customers.Insert(alice);
             sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 50m, 110, 120));
@@ -238,7 +239,7 @@ public class CustomerSearchViewModelTests
         {
             using var _db = db;
             customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null,
-                100, 100, false, null, null, 0, 0m, null, null, "+905551111111"));
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
             sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 50m, 110, 120));
             sessions.End("s1", 200);
@@ -275,7 +276,7 @@ public class CustomerSearchViewModelTests
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 50m, 110, 120));
             sessions.End("s1", 200);
 
-            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, "+905551111111"); return true; };
+            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, TestPhone.NewE164()); return true; };
 
             sut.RefreshSearch();
             await sut.OpenWhatsAppCommand.ExecuteAsync(sut.Results[0]);
@@ -304,7 +305,7 @@ public class CustomerSearchViewModelTests
             // Bakiye/iş akışı yalnız GUID biçimli müşteri kimliğinde çalışır.
             var cid = Guid.NewGuid().ToString("N");
             customers.Insert(new Customer(cid, "twitch", "alice", "Alice", null,
-                100, 100, false, null, null, 0, 0m, null, null, "+905551111111"));
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
             sessions.Insert(new StreamSession("s1", "Yayın 1", 100, null, Array.Empty<string>(), null));
             labels.Insert(new Label("l1", "s1", cid, "twitch", "alice", "Apple", null, 50m, 110, 120));
             sessions.End("s1", 200);

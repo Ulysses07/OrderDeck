@@ -310,7 +310,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         fx.Customers.Insert(MakeCustomer(100L, username: "takma_ad") with
         {
             DisplayName = "yayinci_takma_ad",
-            FullName    = "Ayşe Yılmaz",
+            FullName    = "Örnek Müşteri",
         });
         // Gerçek adı OLMAYAN müşteri: DisplayName'e düşmeli.
         fx.Customers.Insert(MakeCustomer(200L, username: "sadece_takma") with
@@ -323,7 +323,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         captured.Should().NotBeNull();
         captured!.Single(c => c.Username == "takma_ad").FullName
-            .Should().Be("Ayşe Yılmaz", "gerçek ad varken takma ad gönderilmemeli");
+            .Should().Be("Örnek Müşteri", "gerçek ad varken takma ad gönderilmemeli");
         captured.Single(c => c.Username == "sadece_takma").FullName
             .Should().Be("Sadece Takma", "gerçek ad yoksa görünen ada düşülür");
     }

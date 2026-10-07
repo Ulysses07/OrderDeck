@@ -59,7 +59,7 @@ public sealed class DekontEkleViewModelTests
 
     private static void FillValid(DekontEkleViewModel vm)
     {
-        vm.PayerName = "Ahmet Yıldız";
+        vm.PayerName = "Test Gönderen";
         vm.AmountText = "250,50";
         vm.ReferansNo = "REF-001";
         vm.PaidAt = DateTime.Today;
@@ -139,7 +139,7 @@ public sealed class DekontEkleViewModelTests
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
         var stored = fx.Payments.FindByReferansNo("REF-001");
         stored.Should().NotBeNull();
-        stored!.PayerName.Should().Be("Ahmet Yıldız");
+        stored!.PayerName.Should().Be("Test Gönderen");
         stored.Amount.Should().Be(250.50m);
         stored.Status.Should().Be(PaymentStatus.Pending);
         stored.ShipmentDirective.Should().Be(ShipmentDirective.Normal);
@@ -719,12 +719,13 @@ public sealed class DekontEkleViewModelTests
         fx.Settings.Payment.ShippingWonTemplate = "Tebrikler {ad}, {kumulatif_tutar} TL!";
 
         // Customer + phone (E.164 TR)
+        var telefon = TestPhone.NewE164();
         var customer = new Customer(
             "c1", "instagram", "@ayse_y", "Ayşe", null,
             FirstSeenAt: 500, LastSeenAt: 1000,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
-            Address: null, Phone: "+905551234567");
+            Address: null, Phone: telefon);
         fx.Customers.Insert(customer);
 
         // Eşik aşan label
@@ -774,7 +775,7 @@ public sealed class DekontEkleViewModelTests
                 ShipmentDecision.ShipNow);
 
             launcher.LaunchedUrls.Should().HaveCount(1);
-            launcher.LaunchedUrls[0].Should().StartWith("https://wa.me/905551234567?text=");
+            launcher.LaunchedUrls[0].Should().StartWith($"https://wa.me/{telefon[1..]}?text=");
             launcher.LaunchedUrls[0].Should().Contain("Tebrikler%20Ay%C5%9Fe");
             launcher.LaunchedUrls[0].Should().Contain("5.300%2C00");
         }
@@ -797,7 +798,7 @@ public sealed class DekontEkleViewModelTests
             FirstSeenAt: 500, LastSeenAt: 1000,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
-            Address: null, Phone: "+905551234567");
+            Address: null, Phone: TestPhone.NewE164());
         fx.Customers.Insert(customer);
 
         var sid = SeedActiveSession(fx);
