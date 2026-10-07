@@ -1350,10 +1350,11 @@ public sealed class CustomerRepository
     /// <param name="fillOnly">U14 — taze bilgisayarın ilk oynatması: yalnız kara liste birimi BOŞ
     /// (kara listede değil) VE damgasız satırlar. Çağıran <see cref="SyncApplyScope"/> içinde: damga
     /// yazılmaz, SyncSeq ilerlemez. Başka bilgisayarda bilerek kara listeden çıkarılmış (damgalı) satır
-    /// yeniden kara listeye alınmaz. <paramref name="formAt"/> yok sayılır. Kabul edilen sınır:
-    /// yalnız yayılım alan satır gönderilmez, başka bir birimi de doldurulup gönderime giren satır ise
-    /// kara listeyi damgasız taşır (sunucu yalnız boşsa doldurur) — iki durumda da sonuç her
-    /// bilgisayarda aynı grup ve kara liste verisinden türer.</param>
+    /// yeniden kara listeye alınmaz. <paramref name="formAt"/> yok sayılır. Yalnız yayılım alan satır
+    /// gönderilmez; başka bir birimi de doldurulup gönderime giren satır kara listeyi damgasız taşır
+    /// (sunucu yalnız boşsa doldurur). Kabul edilen sınır (önemsiz): kara listede olmayan damgasız
+    /// satırda kalmış eski <c>BlacklistReason</c>/<c>BlacklistedAt</c> kaynağın değerleriyle ezilir —
+    /// <c>CustomerUnitMerge.FillBlacklist</c> ise hedefin mevcut sebep/tarihini korur.</param>
     private static void PropagateGroupBlacklist(
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string groupId, long fallbackAt,
         long? formAt, bool fillOnly = false)
