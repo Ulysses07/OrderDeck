@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using FluentAssertions;
 using OrderDeck.PdfParsing;
+using OrderDeck.Tests.TestHelpers;
 using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Fonts.Standard14Fonts;
 using UglyToad.PdfPig.Writer;
@@ -88,17 +89,18 @@ public sealed class PdfDekontParserLimitsTests
     {
         // Koruma eklenirken normal yolun aynı kaldığını gösteren nöbetçi:
         // tek sayfalık, kısa bir dekont hâlâ tüm alanlarıyla çıkıyor.
-        const string text =
-            "Gönderen : AHMET YILMAZ Alıcı : RIDVAN ÖZCAN Alıcı IBAN : TR48 0011 1000 0000 0107 0201 32 "
+        var aliciIban = TestIban.NewTr("00111");
+        var text =
+            $"Gönderen : ÖRNEK ŞAHIS Alıcı : DENEME YAYINCI Alıcı IBAN : {TestIban.Grouped(aliciIban)} "
             + "Tutar : 1.250,50 TL Tarih : 14.05.2026 Referans No : 1503468325";
 
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("AHMET YILMAZ");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.Amount.Should().Be(1250.50m);
         result.PaidAt.Should().Be(new DateTime(2026, 5, 14));
         result.ReferansNo.Should().Be("1503468325");
-        result.RecipientIban.Should().Be("TR480011100000000107020132");
+        result.RecipientIban.Should().Be(aliciIban);
     }
 
     private static byte[] BuildPdf(int pageCount, Func<int, string> textOnPage)
