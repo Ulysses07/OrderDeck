@@ -196,7 +196,7 @@ public sealed class PanelCustomersController : ControllerBase
             projectionsQuery = projectionsQuery.Where(p => platformList.Contains(p.Platform.ToLower()));
 
         var projections = await projectionsQuery
-            .Select(p => new { p.Id, p.FullName, p.Username, p.Platform, p.UpdatedAt })
+            .Select(p => new { p.Id, p.FullName, p.DisplayName, p.Username, p.Platform, p.UpdatedAt })
             .ToListAsync(ct);
 
         foreach (var p in projections)
@@ -209,7 +209,7 @@ public sealed class PanelCustomersController : ControllerBase
                 TotalSpent: 0m,
                 OrderCount: 0,
                 LastOrderAt: DateTimeOffset.MinValue,
-                DisplayName: p.FullName,
+                DisplayName: ResolveDisplayName(p.FullName, p.DisplayName),
                 Username: p.Username,
                 Platform: p.Platform));
         }
@@ -315,6 +315,18 @@ public sealed class PanelCustomersController : ControllerBase
                     return ((string?)latest.DisplayName, latest.Username, latest.Platform);
                 });
     }
+
+    /// <summary>
+    /// Görüntülenecek ad: FullName boş/boşluksa DisplayName'e (platform takma
+    /// adı) düşer. Masaüstünün eski "R3-02" yedeği (form adı yoksa FullName'e
+    /// takma adı yazma) PR-3 ile kalkıyor — yeni istemciden gelen, form adı
+    /// girilmemiş müşteride FullName gerçekten boş olacak ve DisplayName ayrı
+    /// alanda gelecek. Bu düşüş olmasa panel o müşteriyi @kullanıcı adıyla
+    /// gösterirdi. Eski satırlarda FullName zaten takma adı taşıdığı için
+    /// davranış değişmez.
+    /// </summary>
+    private static string? ResolveDisplayName(string? fullName, string? displayName)
+        => string.IsNullOrWhiteSpace(fullName) ? displayName : fullName;
 
     private static (string? sortValue, string? customerId) ParseCursor(string? cursor)
     {
@@ -428,13 +440,13 @@ public sealed class PanelCustomersController : ControllerBase
                 return NotFound();
             var proj = await _db.WpfCustomerProjections
                 .Where(p => p.Id == pid && licenseIds.Contains(p.LicenseId))
-                .Select(p => new { p.Id, p.FullName, p.Username, p.Platform, p.UpdatedAt })
+                .Select(p => new { p.Id, p.FullName, p.DisplayName, p.Username, p.Platform, p.UpdatedAt })
                 .FirstOrDefaultAsync(ct);
             if (proj is null) return NotFound();
 
             return Ok(new CustomerSummaryDto(
                 customerId,
-                proj.FullName,
+                ResolveDisplayName(proj.FullName, proj.DisplayName),
                 proj.Username,
                 proj.Platform,
                 OrderCount: 0,

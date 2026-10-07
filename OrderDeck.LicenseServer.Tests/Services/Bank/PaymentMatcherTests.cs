@@ -28,9 +28,9 @@ public sealed class PaymentMatcherTests
         => new(db, Options.Create(new BankOptions { ExcludedTransactionCodes = excluded.Length == 0 ? ["CCP"] : excluded }),
             NullLogger<PaymentMatcher>.Instance);
 
-    private static WpfCustomerProjection Customer(LicenseDbContext db, Guid lic, string username, string? fullName = null)
+    private static WpfCustomerProjection Customer(LicenseDbContext db, Guid lic, string username, string? fullName = null, string? displayName = null)
     {
-        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = fullName, UpdatedAt = DateTimeOffset.UtcNow };
+        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = fullName, DisplayName = displayName, UpdatedAt = DateTimeOffset.UtcNow };
         db.WpfCustomerProjections.Add(c); db.SaveChanges();
         return c;
     }
@@ -298,6 +298,43 @@ public sealed class PaymentMatcherTests
         m.Confidence.Should().Be(0.50m);
         // Ad kişisel veri: KVKK silmesi projeksiyondaki adı siler, kanıta dokunmaz. Kanıt yalnız katmanı ve
         // eşleşen token sayısını taşır; ad, admin sayfasında önerilen müşteriden (silinmemişse) okunur.
+        m.Evidence.Should().Be("name:2");
+    }
+
+    /// <summary>
+    /// Masaüstünün R3-02 yedeği (form adı yoksa FullName'e takma adı yazma)
+    /// kalkınca: formu doldurmamış müşteride FullName boş kalır, platform
+    /// takma adı DisplayName'de ayrı gelir. Ad katmanı bu durumda DisplayName'i
+    /// denemeli — yoksa bankadan gelen gerçek ada dayalı öneri hiç kurulamazdı.
+    /// </summary>
+    [Fact]
+    public async Task Ad_bossa_takma_adla_eslesir()
+    {
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var c = Customer(db, lic, "xk_77", displayName: "Deneme Alıcı");
+        var tx = Incoming(db, lic, "T.GARANTI BANKASI /IBAN MERKEZ SUBESI gonderilen havale DENEME ALICI odeme");
+
+        var m = await Matcher(db).MatchAsync(tx, CancellationToken.None);
+
+        m.Layer.Should().Be(PaymentMatchLayer.NameAmount);
+        m.ProposedWpfCustomerId.Should().Be(c.Id);
+        m.Confidence.Should().Be(0.50m);
+        m.Evidence.Should().Be("name:2");
+    }
+
+    /// <summary>FullName doluyken DisplayName de ayrıca dolu ve FARKLIYSA, ad katmanı
+    /// yine gerçek adı kullanmalı — takma adın geçtiği bir açıklama eşleşmemeli.</summary>
+    [Fact]
+    public async Task Ad_doluysa_takma_ad_yerine_gercek_ad_kullanilir()
+    {
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var c = Customer(db, lic, "xk_77", fullName: "Deneme Alıcı", displayName: "Baska Takma Ad");
+        var tx = Incoming(db, lic, "T.GARANTI BANKASI /IBAN MERKEZ SUBESI gonderilen havale DENEME ALICI odeme");
+
+        var m = await Matcher(db).MatchAsync(tx, CancellationToken.None);
+
+        m.Layer.Should().Be(PaymentMatchLayer.NameAmount);
+        m.ProposedWpfCustomerId.Should().Be(c.Id);
         m.Evidence.Should().Be("name:2");
     }
 
