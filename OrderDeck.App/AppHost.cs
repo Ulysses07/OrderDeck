@@ -617,6 +617,14 @@ public sealed class AppHost : IDisposable
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
+        // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
+        // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
+        // satır artıktır.
+        var staleGuards = SyncApplyScope.ClearStale(Services.GetRequiredService<IDbConnectionFactory>());
+        if (staleGuards > 0)
+            Services.GetRequiredService<ILogger<AppHost>>().LogWarning(
+                "SyncApplyGuard'da kalmış {Count} kilit satırı silindi — kaldığı sürece müşteri düzenlemeleri damgalanmadı ve gönderilmedi",
+                staleGuards);
 
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).

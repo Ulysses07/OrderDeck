@@ -69,9 +69,16 @@ public sealed class SqliteContentionTests : IDisposable
         var sw = Stopwatch.StartNew();
         Action blocked = () =>
         {
-            using var second = DbWrite.Begin(b);
-            second.Connection.Execute("INSERT INTO t (v) VALUES (2);", transaction: second.Transaction);
-            second.Commit();
+            // İkinci yazar BAŞKA bir akış (U17: aynı akışta ikinci bağlantı DEBUG'da reddedilir).
+            Task task;
+            using (ExecutionContext.SuppressFlow())
+                task = Task.Run(() =>
+                {
+                    using var second = DbWrite.Begin(b);
+                    second.Connection.Execute("INSERT INTO t (v) VALUES (2);", transaction: second.Transaction);
+                    second.Commit();
+                });
+            task.GetAwaiter().GetResult();      // SqliteException'ı sarmadan yeniden fırlatır
         };
         blocked.Should().Throw<SqliteException>("kilidi bırakmayan bir yazar sonsuza dek bekletmemeli");
         sw.Stop();

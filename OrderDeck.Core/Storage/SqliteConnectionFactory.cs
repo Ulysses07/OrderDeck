@@ -55,6 +55,8 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
 
     public IDbConnection Open()
     {
+        // U17: açık bir DbWrite/SyncApplyScope varken aynı akıştan ikinci bağlantı (DEBUG).
+        WriteScopeGuard.AssertNoActiveScope("SqliteConnectionFactory.Open");
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
         // Göç 035'in tetikleyicileri od_search_key/od_phone_key'i çağırıyor;

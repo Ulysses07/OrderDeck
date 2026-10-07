@@ -39,5 +39,14 @@ public static class SqliteSearchFunctions
             "od_phone_key",
             phone => CustomerSearch.NormalizePhoneKey(phone),
             isDeterministic: true);
+
+        // Göç 045'in IdentityKey geri doldurması ve CustomerSyncRepository.HealIdentityKeys
+        // kullanır. Tetikleyicide BİLEREK kullanılmıyor: eski sürüme dönüşte bu fonksiyonu
+        // kaydetmeyen ikili, onu çağıran bir tetikleyici yüzünden Customer'a hiç yazamazdı.
+        // Anahtarı satır açan her yol C# ile yazar (bkz. CustomerIdentity).
+        connection.CreateFunction<string?, string?>(
+            "od_identity_key",
+            username => username is null ? null : CustomerIdentity.KeyOf(username),
+            isDeterministic: true);
     }
 }

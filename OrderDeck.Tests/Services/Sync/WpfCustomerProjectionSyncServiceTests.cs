@@ -64,6 +64,15 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         /// okunmuyor — tek kalıcı kaynak bu satır.</summary>
         public long CursorSeq(string licenseKey = TestLicenseKey) =>
             Cursors.Get("customer-projection-out", licenseKey)?.Seq ?? 0L;
+
+        /// <summary>Son satırın SyncSeq'i. Göç 045'ten beri ekleme satır başına İKİ numara
+        /// alır (036'nın ekleme tetikleyicisi + damga tetikleyicisinin iç UPDATE'i): satır
+        /// sayısı imleç değeri değildir.</summary>
+        public long MaxSyncSeq()
+        {
+            using var conn = Db.Open();
+            return conn.ExecuteScalar<long>("SELECT COALESCE(MAX(SyncSeq), 0) FROM Customer");
+        }
     }
 
     private static Fixture Build(
@@ -140,6 +149,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     {
         // 3 customers with LastSeenAt 100, 200, 300; initial watermark = 0
         int syncPosts = 0;
+        var postedIds = new List<Guid>();
         var fx = Build(req =>
         {
             var path = req.RequestUri!.AbsolutePath;
@@ -148,21 +158,27 @@ public sealed class WpfCustomerProjectionSyncServiceTests
             if (path.Contains("/wpf-customers/sync"))
             {
                 Interlocked.Increment(ref syncPosts);
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                postedIds.AddRange(JsonDocument.Parse(body).RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => Guid.Parse(e.GetProperty("id").GetString()!)));
                 return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 3));
             }
             return FakeHttpMessageHandler.Empty(404);
         });
         using var _d = fx.Db;
 
-        fx.Customers.Insert(MakeCustomer(100L));
-        fx.Customers.Insert(MakeCustomer(200L));
-        fx.Customers.Insert(MakeCustomer(300L));
+        var customers = new[] { MakeCustomer(100L), MakeCustomer(200L), MakeCustomer(300L) };
+        foreach (var c in customers) fx.Customers.Insert(c);
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: son satırın SyncSeq'i
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(3);
         syncPosts.Should().Be(1, "all 3 fit in one batch");
-        fx.CursorSeq().Should().Be(3L, "watermark advances to the batch max SyncSeq");
+        postedIds.Should().BeEquivalentTo(customers.Select(c => Guid.Parse(c.Id)),
+            "the batch carries exactly the 3 customers");
+        fx.CursorSeq().Should().Be(expectedCursor, "watermark advances to the batch max SyncSeq");
     }
 
     [Fact]
@@ -250,7 +266,8 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         });
         using var _d = fx.Db;
 
-        fx.Customers.Insert(MakeCustomer(100L));
+        var first = MakeCustomer(100L);
+        fx.Customers.Insert(first);
 
         // Username'i boş kayıt: repo Insert'i böyle bir kaydı üretmiyor olabilir,
         // sahadaki satır da doğrudan ingestor'dan gelmişti — düz SQL ile kur.
@@ -262,15 +279,19 @@ public sealed class WpfCustomerProjectionSyncServiceTests
               VALUES (@id, 'facebook', '', NULL, NULL, 190, 200, 0, NULL, NULL, 7, 0, NULL, NULL, NULL, 0)",
             new { id = Guid.NewGuid().ToString("N") });
 
-        fx.Customers.Insert(MakeCustomer(300L));
+        var last = MakeCustomer(300L);
+        fx.Customers.Insert(last);
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: son (geçerli) satırın SyncSeq'i
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         capturedIds.Should().NotBeNull("parti gönderilmiş olmalı");
         capturedIds!.Should().HaveCount(2, "yalnız Username'i boş kayıt elenmeli");
+        capturedIds!.Select(Guid.Parse).Should().BeEquivalentTo(
+            new[] { Guid.Parse(first.Id), Guid.Parse(last.Id) }, "giden iki satır geçerli olanlar");
         result.Should().Be(2);
 
-        fx.CursorSeq().Should().Be(3L,
+        fx.CursorSeq().Should().Be(expectedCursor,
             "watermark bozuk satırın ÖTESİNE geçmeli, yoksa kilit ertesi turda geri gelir");
     }
 
@@ -377,13 +398,19 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         for (var i = 1; i <= total; i++)
             fx.Customers.Insert(MakeCustomer((long)i));
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: son satırın SyncSeq'i
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(total, "all 700 customers synced across two batches");
         postBodies.Should().HaveCount(2, "700 customers → batch1=500 + batch2=200");
+        postBodies
+            .SelectMany(b => JsonDocument.Parse(b).RootElement.GetProperty("customers")
+                .EnumerateArray()
+                .Select(e => e.GetProperty("id").GetString()!))
+            .Distinct().Should().HaveCount(total, "every customer goes exactly once — none skipped");
 
-        fx.CursorSeq().Should().Be(total,
+        fx.CursorSeq().Should().Be(expectedCursor,
             "watermark advances to the last row's SyncSeq after both batches");
     }
 
@@ -425,6 +452,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         for (var i = 0; i < total; i++)
             fx.Customers.Insert(MakeCustomer(sameSecond, username: $"same_sec_{i}"));
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: son satırın SyncSeq'i
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
@@ -432,7 +460,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         postedIds.Distinct().Should().HaveCount(total,
             "501 satır → sayfa1=500 + sayfa2=1; eski imleçte 501. satır kayboluyordu");
 
-        fx.CursorSeq().Should().Be(total,
+        fx.CursorSeq().Should().Be(expectedCursor,
             "imleç son satırın SyncSeq'ine oturmalı — bir sonraki tur oradan devam eder");
     }
 
@@ -468,12 +496,15 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         // 100'deki satır eski dünyada atlanmış bir satırı temsil ediyor: eski
         // watermark'ın altında ama sunucuya hiç gitmemiş. İmleç satırı YOK →
         // watermark 0'dan tam tarama, satır kurtulur.
-        fx.Customers.Insert(MakeCustomer(100L));
+        var lost = MakeCustomer(100L);
+        fx.Customers.Insert(lost);
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: satırın SyncSeq'i
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(1, "tam tarama eski imlecin altındaki kayıp satırı kurtarmalı");
-        fx.CursorSeq().Should().Be(1L,
+        postedIds.Select(Guid.Parse).Should().Equal(Guid.Parse(lost.Id));
+        fx.CursorSeq().Should().Be(expectedCursor,
             "tarama sonrası imleç gerçek son satırın SyncSeq'ine oturur");
     }
 
@@ -538,18 +569,23 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         });
         using var _d = fx.Db;
 
-        // Geri yüklenen veritabanı: 3 müşteri (SyncSeq 1..3) + kendi imleci (2).
+        // Geri yüklenen veritabanı: 3 müşteri + kendi imleci (ikinci satırın SyncSeq'i).
         fx.Customers.Insert(MakeCustomer(100L));
-        fx.Customers.Insert(MakeCustomer(200L));
-        fx.Customers.Insert(MakeCustomer(300L));
-        fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 2L);
+        var second = MakeCustomer(200L);
+        fx.Customers.Insert(second);
+        var third = MakeCustomer(300L);
+        fx.Customers.Insert(third);
+        fx.Cursors.Upsert("customer-projection-out", TestLicenseKey,
+            seq: fx.Customers.GetById(second.Id)!.SyncSeq);
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: üçüncü satırın SyncSeq'i
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
-        result.Should().Be(1, "DB imleci 2 → yalnız SyncSeq 3'teki satır gider; " +
+        result.Should().Be(1, "DB imleci ikinci satırda → yalnız üçüncü satır gider; " +
             "settings'teki 999 kazansaydı hiçbir şey gitmezdi (denetim deneyi)");
         postedIds.Should().HaveCount(1);
-        fx.CursorSeq().Should().Be(3L);
+        postedIds.Select(Guid.Parse).Should().Equal(Guid.Parse(third.Id));
+        fx.CursorSeq().Should().Be(expectedCursor);
     }
 
     /// <summary>R6-04 hedef ekseni: lisans değişince imleç yeni lisans için
@@ -561,6 +597,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         const string otherKey = "WPF-CUST-OTHER-KEY";
         var otherId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
         var syncedCount = 0;
+        var postedIds = new List<Guid>();
         var fx = Build(req =>
         {
             var path = req.RequestUri!.AbsolutePath;
@@ -571,23 +608,30 @@ public sealed class WpfCustomerProjectionSyncServiceTests
             if (path.Contains("/wpf-customers/sync"))
             {
                 Interlocked.Increment(ref syncedCount);
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                postedIds.AddRange(JsonDocument.Parse(body).RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => Guid.Parse(e.GetProperty("id").GetString()!)));
                 return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 2));
             }
             return FakeHttpMessageHandler.Empty(404);
         });
         using var _d = fx.Db;
 
-        fx.Customers.Insert(MakeCustomer(100L));
-        fx.Customers.Insert(MakeCustomer(200L));
+        var customers = new[] { MakeCustomer(100L), MakeCustomer(200L) };
+        foreach (var c in customers) fx.Customers.Insert(c);
         // Eski lisansın imleci her şeyin ötesinde — eski davranışta bu imleç
         // yeni lisansa da uygulanır ve B'nin ilk gönderimi tamamen atlanırdı.
         fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 999L);
+        var expectedCursor = fx.MaxSyncSeq();     // gönderimden ÖNCE: son satırın SyncSeq'i
 
         fx.License.CurrentLicenseKey = otherKey;
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(2, "yeni lisans kendi imleciyle (0) tam tarama yapmalı");
-        fx.CursorSeq(otherKey).Should().Be(2L);
+        postedIds.Should().BeEquivalentTo(customers.Select(c => Guid.Parse(c.Id)),
+            "tam tarama iki satırın ikisini de gönderir");
+        fx.CursorSeq(otherKey).Should().Be(expectedCursor);
         fx.CursorSeq(TestLicenseKey).Should().Be(999L, "eski lisansın imleci bozulmamalı");
     }
 }
