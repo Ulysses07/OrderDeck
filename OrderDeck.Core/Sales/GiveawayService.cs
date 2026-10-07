@@ -139,9 +139,10 @@ public sealed class GiveawayService
                 ?? new HashSet<string>(_giveaways.GetWinnerCustomerIdsForSession(g.SessionId, g.Id));
             // U12: önbellek çekiliş başında kuruldu; kazananın satırı o günden beri başka
             // bilgisayarın asıl kaydına taşınmış olabilir (GetOrCreate artık asıl kaydın Id'sini
-            // verir). Kazanan sayısı küçük — yalnız doğrudan eşleşme yoksa çözülür.
+            // verir). Doğrudan eşleşme yoksa tek sorgu: önceki kazananlardan biri bu müşteriye
+            // taşındı mı (her sohbet mesajında, arayüz iş parçacığında — kazanan başına sorgu yok).
             if (prevWinners.Contains(customer.Id)
-                || prevWinners.Any(w => _customers.ResolveId(w) == customer.Id)) return;
+                || _customers.AnyRedirectedTo(customer.Id, prevWinners)) return;
         }
 
         // (e) Kişi başına tek şans: müşteri (güncel Id'siyle) zaten katıldıysa yazılmaz
@@ -195,11 +196,15 @@ public sealed class GiveawayService
         //
         // Kişi başına tek şans (C4 incelemesi): yeniden anahtarlama iki ayrı katılımcıyı aynı
         // müşteriye taşıyabilir — tekil indeks kullanıcı adında, CustomerId'de değil. Güncel
-        // müşteri Id'sine göre (U12; okumadan sonra taşınmış olabilir) ilk giriş kalır.
-        // Katılımcı satırları silinmez ve değişmez; kazanan kaydı yalnız seçilen satıra yazılır.
-        var participants = allParticipants
+        // müşteri Id'sine göre (U12; okumadan sonra taşınmış olabilir — tek sorguda çözülür)
+        // ilk giriş kalır. Katılımcı satırları silinmez ve değişmez; kazanan kaydı yalnız
+        // seçilen satıra yazılır.
+        var eligible = allParticipants
             .Where(p => _customers.Find(p.Platform, p.Username)?.IsBlacklisted != true)
-            .GroupBy(p => _customers.ResolveId(p.CustomerId), StringComparer.Ordinal)
+            .ToList();
+        var currentIds = _customers.ResolveIds(eligible.Select(p => p.CustomerId));
+        var participants = eligible
+            .GroupBy(p => currentIds[p.CustomerId], StringComparer.Ordinal)
             .Select(sameCustomer => sameCustomer.First())
             .ToList();
         if (participants.Count == 0)

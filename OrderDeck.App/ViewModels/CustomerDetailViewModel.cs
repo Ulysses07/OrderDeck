@@ -253,6 +253,10 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     {
         if (_customerId is null) return;
 
+        // U12: pencere açıkken kayıt yerel taşımayla asıl kayda geçmiş olabilir — etiketleri de
+        // oraya taşındı. Eski Id'yle okunan liste boş görünürdü.
+        _customerId = _customers.ResolveId(_customerId);
+
         Labels.Clear();
         SelectedLabels.Clear();
 

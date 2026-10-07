@@ -219,6 +219,37 @@ public sealed class CustomerRepository
     public string ResolveId(string customerId)
         => _factory.ExecuteScalar<string>(null, "SELECT " + CustomerIdSql.Resolve("@id"), new { id = customerId })!;
 
+    /// <summary>U12: <see cref="ResolveId"/>'nin toplu hâli — tek sorgu. Her girdi Id'si (tekrarlar
+    /// bir kez) güncel Id'sine eşlenir; taşınmamış ya da hiç olmayan Id kendisine.</summary>
+    public IReadOnlyDictionary<string, string> ResolveIds(IEnumerable<string> customerIds)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var id in customerIds) map[id] = id;
+        if (map.Count == 0) return map;
+
+        using var conn = _factory.Open();
+        foreach (var (from, to) in conn.Query<(string From, string To)>(
+                     CustomerIdSql.ResolveMany("@ids"), new { ids = map.Keys.ToList() }))
+            map[from] = to;
+        return map;
+    }
+
+    /// <summary>U12: <paramref name="fromIds"/>'ten biri yerel taşımayla <paramref name="customerId"/>'ye
+    /// taşındı mı — tek sorgu (çekilişin önceki kazanan denetimi, her sohbet mesajında). Zincir
+    /// yazımda kısaltıldığı için canlı Id'ye taşınmış her eski Id'nin kaydı doğrudan ona yönlenir.</summary>
+    public bool AnyRedirectedTo(string customerId, IReadOnlyCollection<string> fromIds)
+    {
+        if (fromIds.Count == 0) return false;
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            "SELECT EXISTS(SELECT 1 FROM CustomerRedirect WHERE ToId = @customerId AND FromId IN @fromIds)",
+            new { customerId, fromIds }) == 1;
+    }
+
+    /// <summary>Müşteri yazımlarını tek işleme bağlayan paket (U12) — <see cref="CustomerService"/>
+    /// sohbet yolunun yazan dalı için.</summary>
+    internal DbWrite BeginWrite() => DbWrite.Begin(_factory);
+
     /// <summary>U12: taşınmış Id de bulunur — satır GÜNCEL Id'siyle döner (Id saklayan çağıran
     /// dönen <c>Id</c>'yi saklamalı). Ham varlık denetimi gereken yer (senkron deposu, testler)
     /// kendi SQL'ini kullanır.</summary>
@@ -314,9 +345,11 @@ public sealed class CustomerRepository
     ///
     /// <para>U12: seçim listesi pencere açıkken taşınmış satırları gösterebilir — Id'ler
     /// yönlendirmeden çözülür; çözüm ve bütün yazımlar tek yazma işleminde (taşıma araya
-    /// giremez).</para>
+    /// giremez). Çözümden sonra tek kişi kalırsa (seçilen kartlar birbirine taşınmış) hiçbir
+    /// şey yazılmaz — tek üyeli grup açılıp gönderilmez — ve kişinin mevcut grubu (yoksa
+    /// null) döner.</para>
     /// </summary>
-    public string MergeIntoGroup(IReadOnlyList<string> customerIds)
+    public string? MergeIntoGroup(IReadOnlyList<string> customerIds)
     {
         var ids = customerIds?.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList()
                   ?? new List<string>();
@@ -330,6 +363,9 @@ public sealed class CustomerRepository
         // U12: arama listesindeki kartlar taşınmış satırları gösterebilir — güncel Id'ler.
         ids = ids.Select(i => conn.ExecuteScalar<string>("SELECT " + CustomerIdSql.Resolve("@id"), new { id = i }, tx)!)
                  .Distinct(StringComparer.Ordinal).ToList();
+        if (ids.Count < 2)
+            return conn.ExecuteScalar<string?>(
+                "SELECT GroupId FROM Customer WHERE Id = @id", new { id = ids[0] }, tx);
 
         // Mevcut grup id'lerini topla; varsa ilkini koru, yoksa yeni üret.
         var existingGroups = conn.Query<string>(

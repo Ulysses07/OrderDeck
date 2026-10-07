@@ -70,9 +70,9 @@ public sealed class GiveawayRepository
     }
 
     /// <summary>
-    /// U12: CustomerId yönlendirmeden YAZIMLA AYNI İFADEDE çözülür — katılım tek INSERT
-    /// ifadesi, yani yerel taşıma çözüm ile yazım arasına giremez (FK hatası yok). Ayrı işlem
-    /// gerekmez: araya giren okumalar (kara liste, önceki kazanan) zaten anlık.
+    /// Yalnız test fikstürleri; üretim yolu <see cref="TryAddParticipant"/> (kişi başına tek
+    /// şans). U12: CustomerId yönlendirmeden YAZIMLA AYNI İFADEDE çözülür — katılım tek INSERT
+    /// ifadesi, yani yerel taşıma çözüm ile yazım arasına giremez (FK hatası yok).
     /// </summary>
     public void AddParticipant(GiveawayParticipant p)
     {
@@ -90,7 +90,8 @@ public sealed class GiveawayRepository
     /// çekilişte zaten varsa yazmaz ve false döner — kişi başına tek şans. Tekil indeks
     /// <c>(GiveawayId, Platform, Username)</c> kullanıcı adında: aynı kişi harf farkıyla
     /// (kimlik anahtarı, U7) ikinci satır açabilirdi. Karar ve yazım tek ifadede. Aynı kullanıcı
-    /// adının tekrarı yine tekil indekse takılır (çağıran yutar).
+    /// adının tekrarı yine tekil indekse takılır (çağıran yutar). Ayrı işlem gerekmez: araya
+    /// giren okumalar (kara liste, önceki kazanan) zaten anlık.
     /// </summary>
     public bool TryAddParticipant(GiveawayParticipant p)
     {

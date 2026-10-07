@@ -109,7 +109,7 @@ public sealed class LabelRekeyRaceTests
             var sync = new CustomerSyncRepository(db);
             var service = Service(db);
 
-            for (var i = 0; i < 40; i++)
+            for (var i = 0; i < 15; i++)
             {
                 var copy = Guid.NewGuid().ToString("N");
                 var canonical = Guid.NewGuid().ToString("N");

@@ -98,6 +98,28 @@ public sealed class CustomerIdResolutionTests : IDisposable
     }
 
     [Fact]
+    public void ResolveIds_ve_AnyRedirectedTo_tek_sorguda_zinciri_cozer()
+    {
+        // İki taşıma: ilk → ara, ara → asıl. Yönlendirme zinciri yazımda kısaltılır.
+        var first = Local("ayse");
+        var middle = Local("AYSE");
+        var canonical = Local("Ayse");
+        _sync.RekeyToLocal(first, middle, pushedThroughSeq: long.MaxValue, nowUnix: Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(middle, canonical, pushedThroughSeq: long.MaxValue, nowUnix: Now).Should().Be(RekeyResult.Rekeyed);
+
+        var map = _customers.ResolveIds(new[] { first, middle, canonical, "hic-yok", first });
+
+        map.Should().HaveCount(4);
+        map[first].Should().Be(canonical);
+        map[middle].Should().Be(canonical);
+        map[canonical].Should().Be(canonical);
+        map["hic-yok"].Should().Be("hic-yok");
+        _customers.AnyRedirectedTo(canonical, new[] { "hic-yok", first }).Should().BeTrue();
+        _customers.AnyRedirectedTo(canonical, new[] { "hic-yok", canonical }).Should().BeFalse("canlı Id yönlendirme kaynağı değildir");
+        _customers.AnyRedirectedTo(canonical, Array.Empty<string>()).Should().BeFalse();
+    }
+
+    [Fact]
     public void MergeIntoGroup_tasinmis_Idleri_cozer()
     {
         var (stale, canonical) = Rekeyed();
@@ -110,15 +132,50 @@ public sealed class CustomerIdResolutionTests : IDisposable
     }
 
     [Fact]
+    public void MergeIntoGroup_tek_kisiye_coken_secimde_grup_acmaz()
+    {
+        // Arama listesinde iki kart seçildi; pencere açıkken biri ötekine taşındı.
+        var (stale, canonical) = Rekeyed();
+        var seqBefore = _customers.GetById(canonical)!.SyncSeq;
+
+        var groupId = _customers.MergeIntoGroup(new[] { stale, canonical });
+
+        groupId.Should().BeNull("kişinin grubu yoktu — tek üyeli grup açılıp gönderilmez");
+        var c = _customers.GetById(canonical)!;
+        c.GroupId.Should().BeNull();
+        c.SyncSeq.Should().Be(seqBefore, "hiçbir şey yazılmadı");
+    }
+
+    private void SeedGiveaway()
+    {
+        using var c = _db.Open();
+        c.Execute("INSERT INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
+        c.Execute(@"INSERT INTO Giveaway (Id, SessionId, Keyword, DurationSeconds, WinnerCount, RandomSeed, StartedAt)
+                    VALUES ('g1', 's1', 'k', 60, 1, 'seed', 1)");
+    }
+
+    [Fact]
+    public void Sohbet_katilimi_tasinmis_Idyi_cozer_ve_ayni_kisiyi_ikinci_kez_almaz()
+    {
+        // Üretim yolu (GiveawayService → TryAddParticipant). Çözülmeseydi FK hatası (787)
+        // DrainPendingChat'ten kaçar, sohbet partisinin kalanı düşerdi.
+        var (stale, canonical) = Rekeyed();
+        SeedGiveaway();
+        var repo = new GiveawayRepository(_db);
+
+        repo.TryAddParticipant(new GiveawayParticipant(Guid.NewGuid().ToString("N"), "g1", stale, "tiktok", "ayse", 1, false))
+            .Should().BeTrue();
+        repo.TryAddParticipant(new GiveawayParticipant(Guid.NewGuid().ToString("N"), "g1", canonical, "tiktok", "Ayse", 2, false))
+            .Should().BeFalse("aynı kişi farklı yazılışla ikinci şans almaz");
+
+        repo.GetParticipants("g1").Should().ContainSingle().Which.CustomerId.Should().Be(canonical);
+    }
+
+    [Fact]
     public void Etiket_cekilis_ve_kargo_yazimlari_tasinmis_Idyi_cozer()
     {
         var (stale, canonical) = Rekeyed();
-        using (var c = _db.Open())
-        {
-            c.Execute("INSERT INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
-            c.Execute(@"INSERT INTO Giveaway (Id, SessionId, Keyword, DurationSeconds, WinnerCount, RandomSeed, StartedAt)
-                        VALUES ('g1', 's1', 'k', 60, 1, 'seed', 1)");
-        }
+        SeedGiveaway();
         var labels = new LabelRepository(_db);
         var shipments = new ShipmentRepository(_db);
         var shipmentService = new ShipmentService(shipments, labels, () => new AppSettings());

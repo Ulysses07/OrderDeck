@@ -362,6 +362,27 @@ public class CustomerDetailViewModelTests
     }
 
     [Fact]
+    public void Etiket_listesi_pencere_acikken_tasinan_musteride_bos_kalmaz()
+    {
+        var h = Build();
+        SeedActiveSession(h, "s-active");
+        SeedCustomer(h, id: "c1", username: "alice");
+        SeedCustomer(h, id: "k1", username: "Alice");
+        SeedLabel(h, "l-1", "c1", "s-active", cancelledAt: 150, cancelReason: "wrong-price");
+        h.Vm.Load("c1").Should().BeTrue();
+        h.Vm.SelectedLabels.Add(h.Vm.Labels.Single());
+
+        // Pencere açıkken c1 asıl kayda taşındı; etiketi de k1'e geçti.
+        new CustomerSyncRepository(h.Db).RekeyToLocal("c1", "k1", pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+        h.Vm.UncancelSelectedCommand.Execute(null);   // listeyi yeniden okur
+
+        h.Vm.Labels.Should().ContainSingle("liste eski Id'yle boş okunmasın")
+            .Which.Id.Should().Be("l-1");
+        h.Vm.Labels.Single().IsCancelled.Should().BeFalse();
+    }
+
+    [Fact]
     public void Load_tasimadan_kalan_iki_acik_kargoyu_uyarir()
     {
         // Taşıma kargoları birleştirmez: kopyanın ve asıl kaydın açık dosyaları aynı kişide kalır.
