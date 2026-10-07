@@ -1,6 +1,7 @@
 using Dapper;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
@@ -10,6 +11,7 @@ using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -19,10 +21,12 @@ namespace OrderDeck.Tests.Sync;
 /// İki bilgisayar, tek (sahte) sunucu: Bölüm C protokolünün uçtan uca yakınsaması (C11, inceleme M2).
 /// Her bilgisayar gerçek yığınını koşturur — kendi SQLite'ı, gerçek
 /// <see cref="WpfCustomerProjectionSyncService"/> + <see cref="CustomerChangesPullService"/> +
-/// <see cref="CustomerSyncRepository"/>; sunucu <see cref="FakeCustomerServer"/>. Bir tur = akış servisinin
-/// bir turu (bakım → gönderim → akış → gerekirse yankı gönderimi). Form yolu
-/// <see cref="CustomerRepository.UpsertPersonFromIntake"/>'i doğrudan damgalı kipte çağırır
-/// (<c>IntakeFormSyncService</c>'in oynatma işareti/akış beklemesi burada sınanmaz — C10).
+/// <see cref="CustomerSyncRepository"/> (+ taze bilgisayar senaryosunda <see cref="IntakeFormSyncService"/>);
+/// sunucu <see cref="FakeCustomerServer"/> (sunucu kurallarının bağımsız kopyası). Bir tur = akış
+/// servisinin bir turu (bakım → gönderim → akış → gerekirse yankı gönderimi); her turdan sonra sahte
+/// sunucunun işleyemediği istek olmadığı doğrulanır (istemci gönderim hatasını yalnız günlüğe yazar).
+/// Form yolu çoğu senaryoda <see cref="CustomerRepository.UpsertPersonFromIntake"/>'i doğrudan damgalı
+/// kipte çağırır; oynatma işareti ve akış beklemesi yalnız taze bilgisayar senaryosunda gerçek servisle.
 /// </summary>
 public sealed class TwoPcConvergenceTests
 {
@@ -36,21 +40,37 @@ public sealed class TwoPcConvergenceTests
         public long UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     }
 
-    /// <summary>Bir bilgisayarın gerçek yığını: kendi SQLite'ı, gerçek gönderim ve akış servisleri.</summary>
+    /// <summary>Yerel satırın sınanan kolonları (ham — GetById yönlendirmeyi izler).</summary>
+    private sealed class LocalRow
+    {
+        public string Id { get; set; } = "";
+        public string? Notes { get; set; }
+        public string? Phone { get; set; }
+        public long? PhoneChangedAt { get; set; }
+        public string? DisplayName { get; set; }
+        public string? FullName { get; set; }
+        public string? Address { get; set; }
+        public string? GroupId { get; set; }
+        public string? Tckn { get; set; }
+    }
+
+    /// <summary>Bir bilgisayarın gerçek yığını: kendi SQLite'ı, gerçek gönderim, akış ve form servisleri.</summary>
     private sealed class Pc : IDisposable
     {
-        private readonly string _lisans;
+        private readonly FakeCustomerServer _server;
+        private readonly WpfCustomerProjectionSyncService _push;
 
         public InMemorySqlite Db { get; } = new();
         public CustomerRepository Customers { get; }
         public CustomerService CustomerService { get; }
         public LabelService Labels { get; }
         public CustomerChangesPullService Pull { get; }
+        public IntakeFormSyncService Forms { get; }
         public SyncStatusTracker Tracker { get; } = new();
 
         public Pc(FakeCustomerServer server)
         {
-            _lisans = server.Lisans;
+            _server = server;
             new MigrationRunner(Db).Run();
             var clock = new Clock();
             new SessionRepository(Db).Insert(new StreamSession("s1", null, 1, null, new[] { "tiktok" }, null));
@@ -64,17 +84,35 @@ public sealed class TwoPcConvergenceTests
                 new HttpClient(server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") },
                 new LicenseTokenStore());
             var license = new License(server.Lisans);
-            var push = new WpfCustomerProjectionSyncService(api, sync, cursors, license, clock,
+            _push = new WpfCustomerProjectionSyncService(api, sync, cursors, license, clock,
                 NullLogger<WpfCustomerProjectionSyncService>.Instance);
-            Pull = new CustomerChangesPullService(api, Customers, sync, cursors, push, license, clock,
+            Pull = new CustomerChangesPullService(api, Customers, sync, cursors, _push, license, clock,
                 Tracker, NullLogger<CustomerChangesPullService>.Instance);
+            Forms = new IntakeFormSyncService(api, Customers, cursors, license, clock,
+                NullLogger<IntakeFormSyncService>.Instance, Tracker);
         }
 
         /// <summary>Akış servisinin bir turu; küçük veride her tur boş sayfaya kadar yetişir.</summary>
         public async Task TourAsync()
         {
             (await Pull.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
-            Tracker.IsInitialCatchUpDoneFor(_lisans).Should().BeTrue();
+            _server.Faults.Should().BeEmpty("sahte sunucu her isteği işleyebilmeli");
+            Tracker.IsInitialCatchUpDoneFor(_server.Lisans).Should().BeTrue();
+        }
+
+        /// <summary>Yalnız gönderim (akış yok): yanıttaki yönlendirmeler tek yerel taşıma yolu.</summary>
+        public async Task PushAsync()
+        {
+            await _push.SyncOnceAsync(CancellationToken.None);
+            _server.Faults.Should().BeEmpty("sahte sunucu her isteği işleyebilmeli");
+        }
+
+        /// <summary>Form senkronunun bir turu (gerçek servis; işlenen form sayısı).</summary>
+        public async Task<int> FormsAsync()
+        {
+            var processed = await Forms.SyncOnceAsync(CancellationToken.None);
+            _server.Faults.Should().BeEmpty("sahte sunucu her isteği işleyebilmeli");
+            return processed;
         }
 
         public string Chat(string username) => CustomerService.GetOrCreate("tiktok", username, username, null).Id;
@@ -83,24 +121,31 @@ public sealed class TwoPcConvergenceTests
             new ChatMessage(Guid.NewGuid().ToString("N"), "tiktok", null, username, username, null, "A1", 1, Array.Empty<string>()),
             10m, null);
 
-        /// <summary>Kimlik anahtarı aynı olan bütün yerel satırlar (ham — GetById yönlendirmeyi izler).</summary>
-        public List<(string Id, string? Notes, string? Phone, string? DisplayName)> Identity(string username)
+        /// <summary>Kimlik anahtarı aynı olan bütün yerel satırlar.</summary>
+        public List<LocalRow> Identity(string username)
         {
             using var c = Db.Open();
-            return c.Query<(string, string?, string?, string?)>(
-                "SELECT Id, Notes, Phone, DisplayName FROM Customer WHERE IdentityKey = @key",
+            return c.Query<LocalRow>(
+                @"SELECT Id, Notes, Phone, PhoneChangedAt, DisplayName, FullName, Address, GroupId, Tckn
+                  FROM Customer WHERE IdentityKey = @key",
                 new { key = CustomerIdentity.KeyOrNull(username) }).ToList();
         }
 
-        /// <summary>Eski <c>since</c> ingest'inin geçici Id'yle açtığı satır (göç öncesi, damgasız):
-        /// beyan adı takma ada, telefon ve adres düz yazılmıştı.</summary>
-        public void LegacyRow(Guid id, string username, string displayName, string phone, string address, string notes)
+        /// <summary>Eski sürümden kalma, göç öncesi (damgasız) tiktok satırı — eski <c>since</c> ingest'inin
+        /// geçici Id'yle açtığı satır (beyan adı takma ada, telefon ve adres düz yazılmıştı) ya da eski
+        /// ingest'in harf duyarlı eşlemesinin bıraktığı harf kopyası.</summary>
+        public void LegacyRow(Guid id, string username, string? displayName = null, string? phone = null,
+            string? address = null, string? notes = null, string? fullName = null, string? groupId = null)
         {
             using var scope = SyncApplyScope.Begin(Db);
             scope.Execute(@"INSERT INTO Customer (Id, Platform, Username, IdentityKey, DisplayName, FirstSeenAt, LastSeenAt,
-                                                  Phone, Address, Notes)
-                            VALUES (@id, 'tiktok', @username, @key, @displayName, 1, 1, @phone, @address, @notes)",
-                new { id = id.ToString("N"), username, key = CustomerIdentity.KeyOrNull(username), displayName, phone, address, notes });
+                                                  Phone, Address, Notes, FullName, GroupId)
+                            VALUES (@id, 'tiktok', @username, @key, @displayName, 1, 1, @phone, @address, @notes, @fullName, @groupId)",
+                new
+                {
+                    id = id.ToString("N"), username, key = CustomerIdentity.KeyOrNull(username), displayName,
+                    phone, address, notes, fullName, groupId,
+                });
             scope.Commit();
         }
 
@@ -140,10 +185,16 @@ public sealed class TwoPcConvergenceTests
         public void Dispose() => Db.Dispose();
     }
 
-    [Fact]
-    public async Task Iki_bilgisayar_ayni_kisiyi_ayri_acar_tek_asil_kayitta_bulusur_birimler_bagimsiz()
+    private static FakeCustomerServer Server(string order)
+        => new() { Order = Enum.Parse<FakeCustomerServer.CommitOrder>(order) };
+
+    [Theory]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.ModifiedFirst))]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.InsertedFirst))]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.Reversed))]
+    public async Task Iki_bilgisayar_ayni_kisiyi_ayri_acar_tek_asil_kayitta_bulusur_birimler_bagimsiz(string order)
     {
-        using var server = new FakeCustomerServer();
+        using var server = Server(order);
         using var a = new Pc(server);
         using var b = new Pc(server);
         var idA = a.Chat("ornek_kisi");
@@ -174,8 +225,83 @@ public sealed class TwoPcConvergenceTests
             row.Phone.Should().Be(phone, "farklı birimler iki bilgisayarda da kalır");
         }
         var canonical = server.CanonicalOf("tiktok", "ornek_kisi")!;
-        canonical.Fields.Notes.Should().Be("A notu");
-        canonical.Fields.Phone.Should().Be(phone);
+        canonical.Notes.Should().Be("A notu");
+        canonical.Phone.Should().Be(phone);
+    }
+
+    /// <summary>
+    /// I-1(a): eski (harf duyarlı) ingest'in bıraktığı YEREL harf kopyaları — PR-3'ün sahadaki ilk
+    /// turunda her bilgisayarda. İlk gönderim ikisini de götürür; sunucu ikinciyi kopya yapıp yanıtta
+    /// yönlendirir. Yerel birleşmenin karar veren yolu bu yanıt: yalnız gönderim koşulur (akış yok).
+    /// </summary>
+    [Fact]
+    public async Task Yerel_harf_kopyalari_gonderim_yanitindaki_yonlendirmeyle_tek_satira_iner()
+    {
+        using var server = new FakeCustomerServer();
+        using var a = new Pc(server);
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        a.LegacyRow(first, "ornek_kisi", "ornek_kisi", notes: "birinci");
+        a.LegacyRow(second, "Ornek_Kisi", "Ornek_Kisi", phone: TestPhone.NewE164());
+        var label = a.Sell("Ornek_Kisi");
+        label.CustomerId.Should().Be(second.ToString("N"), "ön koşul: yorum ikinci (harf farklı) satıra yazıldı");
+
+        await a.PushAsync();
+
+        server.RedirectsReturned.Should().Be(1);
+        a.Identity("ornek_kisi").Should().ContainSingle().Which.Id.Should().Be(first.ToString("N"),
+            "gönderim yanıtındaki yönlendirme kopyayı yerelde asıl kayda taşıdı");
+        a.LabelOwner(label.Id).Should().Be(first.ToString("N"));
+
+        await a.TourAsync();
+
+        var canonical = server.CanonicalOf("tiktok", "ornek_kisi")!;
+        canonical.Id.Should().Be(first);
+        var local = a.Identity("ornek_kisi").Should().ContainSingle().Subject;
+        local.Notes.Should().Be(canonical.Notes).And.Be("birinci");
+        local.Phone.Should().NotBeNull().And.Be(canonical.Phone, "kopyanın telefonu sunucuda asıl kayda birleşti, akışla indi");
+        local.DisplayName.Should().Be(canonical.DisplayName);
+    }
+
+    /// <summary>
+    /// I-1(b): yerel harf kopyaları sunucuda B1 öncesinden İKİ asıl kayıt olarak durur; sunucunun kimlik
+    /// birleştirme işi birini kopya yapar — hiçbir gönderim olmadan. Bilgisayar bunu yalnız akıştaki
+    /// kopya satırından öğrenir: karar veren yol akış yönlendirmesi (asıl kayıt zaten yerelde aynı Id'de,
+    /// kopya gönderilmiş). Her rowversion sırasında (U4).
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.ModifiedFirst))]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.InsertedFirst))]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.Reversed))]
+    public async Task Sunucunun_birlestirme_isi_yerel_kopyayi_akistaki_yonlendirmeyle_birlestirir(string order)
+    {
+        using var server = Server(order);
+        using var a = new Pc(server);
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        a.LegacyRow(first, "ornek_kisi", "ornek_kisi", notes: "birinci");
+        a.LegacyRow(second, "Ornek_Kisi", "Ornek_Kisi", phone: TestPhone.NewE164());
+        var label = a.Sell("Ornek_Kisi");
+
+        server.IdentityLookup = false;                         // B1 öncesi: aynı kimliğin iki asıl kaydı
+        await a.TourAsync();
+        server.IdentityLookup = true;
+        server.Get(first).MergedIntoId.Should().BeNull();
+        server.Get(second).MergedIntoId.Should().BeNull();
+        a.Identity("ornek_kisi").Should().HaveCount(2, "ön koşul: yerelde iki satır, ikisi de gönderildi");
+
+        server.MergeInto(loser: second, winner: first);
+        await a.TourAsync();
+
+        server.RedirectsReturned.Should().Be(0, "yönlendirme gönderim yanıtından gelmedi");
+        var local = a.Identity("ornek_kisi").Should().ContainSingle().Subject;
+        local.Id.Should().Be(first.ToString("N"));
+        a.LabelOwner(label.Id).Should().Be(first.ToString("N"));
+        a.Customers.ResolveId(second.ToString("N")).Should().Be(first.ToString("N"));
+        var canonical = server.CanonicalOf("tiktok", "ornek_kisi")!;
+        canonical.Id.Should().Be(first);
+        local.Notes.Should().Be(canonical.Notes);
+        local.Phone.Should().NotBeNull().And.Be(canonical.Phone, "birleştirme işi kopyanın telefonunu asıl kayda taşıdı");
     }
 
     [Fact]
@@ -240,11 +366,98 @@ public sealed class TwoPcConvergenceTests
 
         foreach (var (platform, user) in new[] { ("tiktok", "ornek_kisi"), ("instagram", "ornek.kisi") })
         {
-            var serverGroup = server.CanonicalOf(platform, user)!.Fields.GroupId;
+            var serverGroup = server.CanonicalOf(platform, user)!.GroupId;
             serverGroup.Should().Be(firstGroup, "sunucu eşit damgada ilk geleni tutar");
             a.GroupOf(platform, user).Should().Be(serverGroup);
             b.GroupOf(platform, user).Should().Be(serverGroup, "eşit damgada sunucunun değeri kazanır (incomingWinsTie)");
         }
+    }
+
+    /// <summary>
+    /// U14/C10: A eski bir bilgisayar — formu PR-3'ten önce işlemiş, sonra telefonu ve adresi elle
+    /// düzeltmiş (göç öncesi, damgasız). Taze B formları ancak bu süreçteki ilk tam akıştan SONRA ve
+    /// oynatmanın başlangıcından (T0) önceki formları DOLDURMA kipinde oynatır: göç öncesi düzeltmeler
+    /// ezilmez, damga yazılmaz. T0'dan sonra gelen form damgalı uygulanır ve her yere yayılır.
+    /// </summary>
+    [Fact]
+    public async Task Taze_bilgisayar_formlari_ilk_akistan_sonra_doldurma_kipinde_oynatir_duzeltmeler_ezilmez()
+    {
+        using var server = new FakeCustomerServer();
+        using var a = new Pc(server);
+        using var b = new Pc(server);
+        var fixedPhone = TestPhone.NewE164();
+        var oldForm = new IntakeFormSubmissionDto(Guid.NewGuid(), "ornek_kisi", "Örnek Müşteri", "Örnek Sk. No 1",
+            TestPhone.NewE164(), DateTimeOffset.UtcNow.AddDays(-1), TikTokUsername: "ornek_kisi");
+        server.AddForm(oldForm);
+        a.LegacyRow(Guid.NewGuid(), "ornek_kisi", "ornek_kisi", phone: fixedPhone, address: "Örnek Sk. No 2",
+            fullName: "Örnek Müşteri", groupId: "g-eski");
+        await a.TourAsync();
+
+        (await b.FormsAsync()).Should().Be(0, "taze bilgisayar formları ilk tam akıştan önce işlemez");
+        await b.TourAsync();
+        (await b.FormsAsync()).Should().Be(1, "oynatma eski formu işledi");
+        await b.TourAsync();
+        await a.TourAsync();
+
+        foreach (var pc in new[] { a, b })
+        {
+            var row = pc.Identity("ornek_kisi").Should().ContainSingle().Subject;
+            row.Phone.Should().Be(fixedPhone, "eski formun telefonu göç öncesi düzeltmeyi ezmez");
+            row.Address.Should().Be("Örnek Sk. No 2");
+            row.GroupId.Should().Be("g-eski");
+        }
+        b.Identity("ornek_kisi").Single().PhoneChangedAt.Should().BeNull("doldurma kipi damga yazmaz");
+        server.CanonicalOf("tiktok", "ornek_kisi")!.Phone.Should().Be(fixedPhone);
+
+        var newPhone = TestPhone.NewE164();
+        server.AddForm(oldForm with
+        {
+            Id = Guid.NewGuid(), Phone = newPhone, Address = "Örnek Sk. No 3", SubmittedAt = DateTimeOffset.UtcNow.AddSeconds(5),
+        });
+        (await b.FormsAsync()).Should().Be(1);
+        await b.TourAsync();
+        await a.TourAsync();
+
+        foreach (var pc in new[] { a, b })
+        {
+            var row = pc.Identity("ornek_kisi").Single();
+            row.Phone.Should().Be(newPhone, "oynatmadan sonra gelen form damgalı uygulanır ve yayılır");
+            row.Address.Should().Be("Örnek Sk. No 3");
+        }
+        server.CanonicalOf("tiktok", "ornek_kisi")!.Phone.Should().Be(newPhone);
+    }
+
+    [Fact]
+    public async Task Sunucu_TCKN_cozemezse_esit_damgali_bos_deger_yerel_TCKNyi_silmez()
+    {
+        // S13: anahtar kaybında akış TCKN'yi null verir, damga değişmez — eşit damgalı boş "silme"
+        // değildir; yerel düz metin (tek kurtarılabilir kopya) kalır ve geri gönderilip sunucuyu da silmez.
+        using var server = new FakeCustomerServer();
+        using var a = new Pc(server);
+        using var b = new Pc(server);
+        var id = a.Chat("ornek_kisi");
+        var tckn = TestTckn.NewValid();
+        a.Customers.UpsertPersonFromIntake(new[] { ("tiktok", "ornek_kisi", (string?)null) },
+            "Örnek Müşteri", "Örnek Sk. No 1", phone: null, email: null, tckn: tckn,
+            whatsAppConsent: false, smsConsent: false, nowUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            formId: Guid.NewGuid(), submittedAtMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await a.TourAsync();
+        await b.TourAsync();
+        b.Identity("ornek_kisi").Single().Tckn.Should().Be(tckn);
+
+        server.TcknUnreadable = true;
+        a.Customers.UpdateNotes(id, "anahtar kaybından sonra");    // satır akışa yeniden girsin
+        await a.TourAsync();
+        await b.TourAsync();
+        await a.TourAsync();
+
+        foreach (var pc in new[] { a, b })
+        {
+            var row = pc.Identity("ornek_kisi").Single();
+            row.Tckn.Should().Be(tckn);
+            row.Notes.Should().Be("anahtar kaybından sonra");
+        }
+        server.CanonicalOf("tiktok", "ornek_kisi")!.Tckn.Should().Be(tckn);
     }
 
     [Fact]
@@ -267,7 +480,7 @@ public sealed class TwoPcConvergenceTests
         var canonical = server.CanonicalOf("tiktok", "beyanci_bir")!;
         canonical.Id.Should().Be(Guid.Parse(own));
         canonical.CreatedByShopper.Should().BeFalse("yayıncının satırı asıl kayıt");
-        canonical.Fields.Phone.Should().BeNull("beyan telefonu asıl kayda taşınmaz — sahiplenenin bağlantısı yeniden kanıt ister");
+        canonical.Phone.Should().BeNull("beyan telefonu asıl kayda taşınmaz — sahiplenenin bağlantısı yeniden kanıt ister");
         a.Identity("beyanci_bir").Should().ContainSingle().Which.Phone.Should().BeNull();
     }
 
@@ -295,8 +508,8 @@ public sealed class TwoPcConvergenceTests
         server.Get(provisional).MergedIntoId.Should().Be(Guid.Parse(local.Id));
         var canonical = server.CanonicalOf("tiktok", "beyanci_iki")!;
         canonical.Id.Should().Be(Guid.Parse(local.Id));
-        canonical.Fields.Phone.Should().BeNull();
-        canonical.Fields.Notes.Should().Be("kapıda");
+        canonical.Phone.Should().BeNull();
+        canonical.Notes.Should().Be("kapıda");
     }
 
     [Fact]
@@ -320,19 +533,22 @@ public sealed class TwoPcConvergenceTests
         var canonical = server.CanonicalOf("tiktok", "beyanci_dort")!;
         canonical.Id.Should().Be(provisional);
         canonical.CreatedByShopper.Should().BeFalse("damgalı telefon geçici kaydı benimsetti");
-        canonical.Fields.Phone.Should().Be(fixedPhone);
+        canonical.Phone.Should().Be(fixedPhone);
         var local = a.Identity("beyanci_dort").Should().ContainSingle().Subject;
         local.Id.Should().Be(provisional.ToString("N"), "benimsenen kayıt geçici değil — dönüştürülmez");
         local.Phone.Should().Be(fixedPhone);
         local.Notes.Should().Be("kapıda");
     }
 
-    [Fact]
-    public async Task Baska_bilgisayar_devraldiktan_sonra_miras_satiri_notunu_tasir_beyan_birimlerini_tasimaz()
+    [Theory]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.ModifiedFirst))]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.InsertedFirst))]
+    [InlineData(nameof(FakeCustomerServer.CommitOrder.Reversed))]
+    public async Task Baska_bilgisayar_devraldiktan_sonra_miras_satiri_notunu_tasir_beyan_birimlerini_tasimaz(string order)
     {
         // U3(a) kalan kaybın sınırı: devralma başka bilgisayarda olduysa beyan bilinmez — beyan
         // olabilen damgasız birimler taşınmaz, beyan olamayanlar (not) taşınır.
-        using var server = new FakeCustomerServer();
+        using var server = Server(order);
         using var a = new Pc(server);
         using var b = new Pc(server);
         var claimPhone = TestPhone.NewE164();
@@ -349,7 +565,7 @@ public sealed class TwoPcConvergenceTests
         local.Id.Should().Be(own);
         local.Notes.Should().Be("kapıda");
         local.Phone.Should().BeNull();
-        server.CanonicalOf("tiktok", "beyanci_uc")!.Fields.Notes.Should().Be("kapıda", "taşınan not gönderildi");
+        server.CanonicalOf("tiktok", "beyanci_uc")!.Notes.Should().Be("kapıda", "taşınan not gönderildi");
     }
 
     [Fact]
@@ -391,13 +607,13 @@ public sealed class TwoPcConvergenceTests
         var snapshot = server.Snapshot();
         a.Customers.UpdateNotes(id, "yedekten sonra");
         await a.TourAsync();
-        server.CanonicalOf("tiktok", "ornek_kisi")!.Fields.Notes.Should().Be("yedekten sonra");
+        server.CanonicalOf("tiktok", "ornek_kisi")!.Notes.Should().Be("yedekten sonra");
 
         server.Restore(snapshot);        // sunucu notu ve sayacı kaybetti
         await a.TourAsync();             // CursorReset → akış baştan, gönderim imleci geri sarılır
         await a.TourAsync();             // turun başındaki gönderim her şeyi yeniden götürür
 
-        server.CanonicalOf("tiktok", "ornek_kisi")!.Fields.Notes.Should().Be("yedekten sonra");
+        server.CanonicalOf("tiktok", "ornek_kisi")!.Notes.Should().Be("yedekten sonra");
         a.Identity("ornek_kisi").Single().Notes.Should().Be("yedekten sonra", "sunucunun eski hâli yerel damgalı notu ezmez");
     }
 }
