@@ -70,12 +70,12 @@ public sealed class BankRawJsonRedactorTests
     [Fact]
     public void Diger_degerlerin_JSON_turu_korunur_Turkce_karakterler_kacislanmaz()
     {
-        // Saklanan kopya insan gözüyle okunur (admin tanısı): "Şükrü", "\u015E\u00FCkr\u00FC" diye kaçışlanarak yazılmaz.
-        var json = """{"Sayi":10.5,"Bos":null,"Evet":true,"GonderenAdi":"Şükrü Çağlar Öz"}""";
+        // Saklanan kopya insan gözüyle okunur (admin tanısı): "Müşteri", "M\u00FC\u015Fteri" diye kaçışlanarak yazılmaz.
+        var json = """{"Sayi":10.5,"Bos":null,"Evet":true,"GonderenAdi":"Örnek Müşteri"}""";
 
         var redacted = BankRawJsonRedactor.Redact(json);
 
-        redacted.Should().Contain("Şükrü Çağlar Öz");
+        redacted.Should().Contain("Örnek Müşteri");
         using var doc = JsonDocument.Parse(redacted);
         var root = doc.RootElement;
         root.GetProperty("Sayi").GetDecimal().Should().Be(10.5m);

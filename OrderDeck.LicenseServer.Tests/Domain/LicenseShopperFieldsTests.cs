@@ -42,7 +42,7 @@ public class LicenseShopperFieldsTests
             ShopperCode = "royal",
             ShopperCodeUpdatedAt = now,
             PaymentIban = "TR330006100519786457841326",
-            PaymentAccountHolder = "BURAK YILMAZ",
+            PaymentAccountHolder = "ÖRNEK MÜŞTERİ",
             ShopperAppEnabled = true,
         });
         await db.SaveChangesAsync();
@@ -50,7 +50,7 @@ public class LicenseShopperFieldsTests
         var loaded = await db.Licenses.SingleAsync(l => l.Id == licenseId);
         loaded.ShopperCode.Should().Be("royal");
         loaded.PaymentIban.Should().Be("TR330006100519786457841326");
-        loaded.PaymentAccountHolder.Should().Be("BURAK YILMAZ");
+        loaded.PaymentAccountHolder.Should().Be("ÖRNEK MÜŞTERİ");
         loaded.ShopperAppEnabled.Should().BeTrue();
     }
 

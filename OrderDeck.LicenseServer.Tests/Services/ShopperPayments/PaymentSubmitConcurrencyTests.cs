@@ -163,12 +163,12 @@ public sealed class PaymentSubmitConcurrencyTests : IAsyncLifetime
         public StaticParser(string hash, string referansNo) { _hash = hash; _ref = referansNo; }
 
         public PdfDekontParser.ParseResult Parse(byte[] pdfBytes) => new(
-            PayerName: "AYŞE YILMAZ",
+            PayerName: "ÖRNEK MÜŞTERİ",
             Amount: 500m,
             PaidAt: new DateTime(2026, 8, 1, 12, 0, 0),
             ReferansNo: _ref,
             PdfHash: _hash,
-            RawText: "AYŞE YILMAZ 500,00 TL",
+            RawText: "ÖRNEK MÜŞTERİ 500,00 TL",
             RecipientIban: "TR330006100519786457841326",
             RecipientName: "TEST ALICI");
     }
@@ -215,7 +215,7 @@ public sealed class PaymentSubmitConcurrencyTests : IAsyncLifetime
         var shopper = new Shopper
         {
             Id = Guid.NewGuid(),
-            FullName = "Ayşe Yılmaz",
+            FullName = "Örnek Müşteri",
             Phone = "+90500" + Random.Shared.Next(1_000_000, 9_999_999),
             PasswordHash = "hash",
             Address = "Ankara",

@@ -32,23 +32,23 @@ public sealed class PaymentMatchReconcileJobTests : IClassFixture<ApiFactory>
                 Id = Guid.NewGuid(), LicenseId = lic, BaseUrl = "https://obifin.invalid", UserCode = $"u-{Guid.NewGuid():N}",
                 Status = ObifinConnectionStatus.Verified, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow };
+        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow };
         var tx = new BankTransaction
         {
             Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb",
-            Direction = BankTransactionDirection.Incoming, Amount = 275m, Currency = "TL", OccurredAt = when, Description = "HAVALE ayse_gul34",
+            Direction = BankTransactionDirection.Incoming, Amount = 275m, Currency = "TL", OccurredAt = when, Description = "HAVALE ornek_musteri34",
             FetchedAt = when,
         };
         var payment = new Payment
         {
-            Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = "AYSE GUL", Amount = 275m, PaidAt = when,
+            Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = "ORNEK MUSTERI", Amount = 275m, PaidAt = when,
             ReferansNo = $"r-{Guid.NewGuid():N}", Status = status, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             ApprovedAt = status == PaymentStatus.Approved ? DateTimeOffset.UtcNow : null,
         };
         db.WpfCustomerProjections.Add(wpf);
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ayse_gul34",
+            Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34",
             WpfCustomerId = wpf.Id, JoinedAt = DateTimeOffset.UtcNow,
         });
         db.BankTransactions.Add(tx);

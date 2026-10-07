@@ -18,13 +18,13 @@ public sealed class ShopperPurgeServiceTests
             .UseInMemoryDatabase($"purge-{Guid.NewGuid():N}")
             .Options);
 
-    private static Shopper SeedShopper(LicenseDbContext db, string phone = "+905001112233")
+    private static Shopper SeedShopper(LicenseDbContext db, string? phone = null)
     {
         var shopper = new Shopper
         {
             Id = Guid.NewGuid(),
-            FullName = "Ayşe Yılmaz",
-            Phone = phone,
+            FullName = "Örnek Müşteri",
+            Phone = phone ?? TestPhone.NewE164(),
             PasswordHash = "argon2-hash",
             Address = "Örnek Mah. 1. Sok. No:2 Kadıköy/İstanbul",
             Email = "ayse@example.com",
@@ -42,7 +42,7 @@ public sealed class ShopperPurgeServiceTests
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"{Guid.NewGuid():N}@test.com",
+            Email = $"{Guid.NewGuid():N}@example.test",
             Name = "Yayıncı",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -80,7 +80,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ShopperId = shopper.Id,
-            PayerName = "Ayşe Yılmaz",
+            PayerName = "Örnek Müşteri",
             ReferansNo = "REF-1",
             MediaObjectKey = objectKey,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -255,7 +255,7 @@ public sealed class ShopperPurgeServiceTests
     public async Task Telefonu_bosaltir()
     {
         using var db = NewDb();
-        var shopper = SeedShopper(db, "+905551234567");
+        var shopper = SeedShopper(db, TestPhone.NewE164());
         await db.SaveChangesAsync();
 
         var (service, _) = Build(db);
@@ -282,7 +282,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ShopperId = shopper.Id,
-            PayerName = "Ayşe Yılmaz",
+            PayerName = "Örnek Müşteri",
             Amount = 1500m,
             PaidAt = paidAt,
             ReferansNo = "REF-42",
@@ -329,7 +329,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ShopperId = shopper.Id,
-            PayerName = "Ayşe Yılmaz",
+            PayerName = "Örnek Müşteri",
             ReferansNo = "REF-1",
             MediaObjectKey = key,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -357,7 +357,8 @@ public sealed class ShopperPurgeServiceTests
     public async Task Yayinci_kopyasini_temizler_ve_senkron_icin_damgalar()
     {
         using var db = NewDb();
-        var shopper = SeedShopper(db, "+905551110000");
+        var telefon = TestPhone.NewE164();
+        var shopper = SeedShopper(db, telefon);
         var license = SeedLicense(db);
         var stale = DateTimeOffset.UtcNow.AddDays(-10);
         var projectionId = Guid.NewGuid();
@@ -368,7 +369,7 @@ public sealed class ShopperPurgeServiceTests
             ShopperId = shopper.Id,
             LicenseId = license.Id,
             Platform = "instagram",
-            Username = "ayse_y",
+            Username = "ornek_m",
             WpfCustomerId = projectionId,
             JoinedAt = DateTimeOffset.UtcNow,
         });
@@ -377,9 +378,9 @@ public sealed class ShopperPurgeServiceTests
             Id = projectionId,
             LicenseId = license.Id,
             Platform = "instagram",
-            Username = "ayse_y",
-            FullName = "Ayşe Yılmaz",
-            Phone = "+905551110000",
+            Username = "ornek_m",
+            FullName = "Örnek Müşteri",
+            Phone = telefon,
             Address = "Örnek Mah.",
             UpdatedAt = stale,
         });
@@ -423,7 +424,7 @@ public sealed class ShopperPurgeServiceTests
             ShopperId = shopper.Id,
             LicenseId = license.Id,
             Platform = "youtube",
-            Username = "ayse_y2",
+            Username = "ornek_m2",
             WpfCustomerId = projectionId,
             JoinedAt = DateTimeOffset.UtcNow,
         });
@@ -432,9 +433,9 @@ public sealed class ShopperPurgeServiceTests
             Id = projectionId,
             LicenseId = license.Id,
             Platform = "youtube",
-            Username = "ayse_y2",
-            FullName = "Ayşe Yılmaz",
-            DisplayName = "ayse.y",
+            Username = "ornek_m2",
+            FullName = "Örnek Müşteri",
+            DisplayName = "ornek.m",
             Phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999),
             Email = "ayse2@example.com",
             TcknProtected = "sifreli-x",
@@ -509,7 +510,7 @@ public sealed class ShopperPurgeServiceTests
             ShopperId = shopper.Id,
             LicenseId = license.Id,
             Platform = "youtube",
-            Username = "ayse_y3",
+            Username = "ornek_m3",
             WpfCustomerId = projectionId,
             JoinedAt = DateTimeOffset.UtcNow,
         });
@@ -520,7 +521,7 @@ public sealed class ShopperPurgeServiceTests
             Id = projectionId,
             LicenseId = license.Id,
             Platform = "youtube",
-            Username = "ayse_y3",
+            Username = "ornek_m3",
             FullName = null,
             Phone = null,
             Address = null,
@@ -555,11 +556,11 @@ public sealed class ShopperPurgeServiceTests
         var stale = DateTimeOffset.UtcNow.AddDays(-3);
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y",
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m",
             WpfCustomerId = purgedId, JoinedAt = DateTimeOffset.UtcNow,
         });
         db.WpfCustomerProjections.AddRange(
-            new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y", UpdatedAt = stale },
+            new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m", UpdatedAt = stale },
             new WpfCustomerProjection { Id = otherId, LicenseId = license.Id, Platform = "instagram", Username = "mehmet_k", UpdatedAt = stale });
         CustomerIbanMemory Memory(Guid customer) => new()
         {
@@ -571,7 +572,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(), LicenseId = license.Id, BankTransactionId = Guid.NewGuid(), ProposedWpfCustomerId = proposed,
             ActualWpfCustomerId = actual, Evidence = evidence, Status = PaymentMatchStatus.Proposed, CreatedAt = stale, UpdatedAt = stale,
         };
-        var purgedKey = BankTextNormalizer.UsernameKey("ayse_y");
+        var purgedKey = BankTextNormalizer.UsernameKey("ornek_m");
         var proposedToPurged = Match($"username={purgedKey}", proposed: purgedId);
         var linkedToPurged = Match("no-signal", actual: purgedId);
         var conflictNamingPurged = Match($"conflict:username={purgedKey},iban-memory");
@@ -627,7 +628,7 @@ public sealed class ShopperPurgeServiceTests
             ShopperId = shopper.Id,
             LicenseId = license.Id,
             Platform = "instagram",
-            Username = "ayse_y",
+            Username = "ornek_m",
             JoinedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();

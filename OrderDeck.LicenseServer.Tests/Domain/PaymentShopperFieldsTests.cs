@@ -38,7 +38,7 @@ public class PaymentShopperFieldsTests
             PdfHash = "sha256-abc",
             MetadataHash = "sha256-meta",
             RecipientIban = "TR33...",
-            RecipientName = "BURAK YILMAZ",
+            RecipientName = "DENEME ALICI",
             FraudFlags = "iban-mismatch",
             ParserConfidence = "Medium",
             PdfPurgedAt = null,

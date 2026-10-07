@@ -22,7 +22,7 @@ public class BroadcastPostMigrationTests : IClassFixture<ApiFactory>
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"bp-{Guid.NewGuid():N}@test.com",
+            Email = $"bp-{Guid.NewGuid():N}@example.test",
             Name = "X", PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow
         };

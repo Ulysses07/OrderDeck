@@ -21,7 +21,7 @@ public class BroadcastPostCleanupJobTests : IClassFixture<ApiFactory>
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var c = new Customer
         {
-            Id = Guid.NewGuid(), Email = $"cu-{Guid.NewGuid():N}@t.com",
+            Id = Guid.NewGuid(), Email = $"cu-{Guid.NewGuid():N}@example.test",
             Name = "X", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
         };
         db.Customers.Add(c);
