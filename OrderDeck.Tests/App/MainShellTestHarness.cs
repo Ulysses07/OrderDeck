@@ -88,12 +88,14 @@ internal static class MainShellTestHarness
     /// <param name="pendingCounter">Bekleyen kayıt sayacı (D3); null = durum satırı kapalı.</param>
     /// <param name="licensed">false = deneme sürümü: lisans kaydı yok, deneme etkin
     /// (<see cref="Harness.LicenseKey"/> null) — StartupFlow'un lisanssız kabul ettiği hâl.</param>
+    /// <param name="log">VM'in günlüğü (durum satırı hata uyarısı); null = yazılmaz.</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
         ILabelPrinter? printerOverride = null,
         OrderDeck.App.Services.Sync.SyncStatusTracker? syncStatus = null,
         OrderDeck.App.Services.Sync.SyncPendingCounter? pendingCounter = null,
-        bool licensed = true)
+        bool licensed = true,
+        Microsoft.Extensions.Logging.ILogger<MainShellViewModel>? log = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -151,7 +153,7 @@ internal static class MainShellTestHarness
             bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
-            drawers: drawers, syncStatus: syncStatus, pendingCounter: pendingCounter);
+            drawers: drawers, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }
@@ -195,7 +197,7 @@ internal static class MainShellTestHarness
                 CustomerId: Guid.NewGuid(),
                 Email: "test@example.test",
                 Name: "Test User",
-                Token: "test-token",
+                Token: $"tok-{Guid.NewGuid():N}",
                 TokenExpiresAt: DateTimeOffset.UtcNow.AddDays(30)));
 
             licenseStore.Save(new LicenseRecord(

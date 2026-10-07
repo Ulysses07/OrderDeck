@@ -3,7 +3,10 @@ using System.Data;
 using System.Threading.Tasks;
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.Sync;
+using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Tests.TestHelpers;
@@ -28,6 +31,25 @@ public sealed class MainShellSyncStatusTests
         public string? CurrentLicenseKey { get { Reads++; return null; } }
     }
 
+    /// <summary>Yerel veritabanı hatası: <see cref="Failing"/> açıkken her açılış fırlatır.</summary>
+    private sealed class FailingFactory(IDbConnectionFactory inner) : IDbConnectionFactory
+    {
+        public bool Failing { get; set; } = true;
+        public IDbConnection Open() => Failing ? throw new SqliteException("disk I/O error", 10) : inner.Open();
+    }
+
+    private sealed class WarningCounter : ILogger<MainShellViewModel>
+    {
+        public int Warnings { get; private set; }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning) Warnings++;
+        }
+    }
+
     /// <summary>Ayrı, boş veritabanında sayan sayaç (bekleyen 0); harness'in veritabanına dokunmaz.</summary>
     private static SyncPendingCounter EmptyCounter(IDbConnectionFactory db, ICurrentLicenseProvider? license = null)
         => new(new SyncOutboxRepository(db), new SyncCursorRepository(db),
@@ -47,8 +69,7 @@ public sealed class MainShellSyncStatusTests
         var tracker = new SyncStatusTracker();
         using var h = MainShellTestHarness.Build(syncStatus: tracker, pendingCounter: EmptyCounter(outboxDb));
 
-        for (var i = 0; i < 5; i++) h.Vm.RefreshHeroStats();      // sayım beş çağrıda bir
-        h.Vm.SyncStatusText.Should().Be("Güncelleniyor…");
+        h.Vm.SyncStatusText.Should().Be("Güncelleniyor…", "kurucudaki ilk tazeleme satırı hemen doldurur");
         h.Vm.IsSyncHealthy.Should().BeFalse();
 
         tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
@@ -67,9 +88,71 @@ public sealed class MainShellSyncStatusTests
         h.Dialogs.ConfirmResult = _ => true;
         await h.Vm.EndStreamCommand.ExecuteAsync(null);           // harness yayını açık kurar
         tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        var t = Environment.TickCount64 + 1_000_000;              // son tazelemeden çok sonra
+        h.Vm.SyncTicks = () => t;
 
-        for (var i = 0; i < 5; i++) h.Vm.RefreshHeroStats();      // oturum yok: metot erken döner
+        h.Vm.RefreshHeroStats();                                  // oturum yok: metot erken döner
         h.Vm.SyncStatusText.Should().StartWith("Güncel ✓", "durum satırı yayından bağımsız tazelenir");
+    }
+
+    [Fact]
+    public void Durum_satiri_kac_cagiran_olursa_olsun_en_cok_bes_saniyede_bir_tazelenir()
+    {
+        // Hero zamanlayıcısı, toplu baskı ve kuyruğa ekleme hepsi RefreshHeroStats'ı tetikler:
+        // çağrı sayısı değil zaman sınırlar.
+        using var outboxDb = MigratedDb();
+        var counting = new CountingFactory(outboxDb);
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker(),
+            pendingCounter: EmptyCounter(counting));
+        var t = Environment.TickCount64 + 1_000_000;
+        h.Vm.SyncTicks = () => t;
+        h.Vm.RefreshHeroStats();                                  // kapı açık: tazeler
+        var opens = counting.Opens;
+
+        for (var i = 0; i < 20; i++) h.Vm.RefreshHeroStats();
+        MainShellTestHarness.EnqueueLabel(h.Vm, "ornek_musteri", 100m);   // kuyruk değişimi de tetikler
+        t += 4_999;
+        h.Vm.RefreshHeroStats();
+        counting.Opens.Should().Be(opens, "son tazelemeden beri 5 sn geçmedi");
+
+        t += 1;
+        h.Vm.RefreshHeroStats();
+        h.Vm.RefreshHeroStats();
+        counting.Opens.Should().Be(opens + 1, "5 sn dolunca bir kez (dikkat sayımı; bekleyen gösterilmiyor)");
+    }
+
+    [Fact]
+    public void Senkron_sorgusu_patlarsa_kabuk_acilir_etiket_yazimi_tamamlanir_uyari_seri_basina_bir_kez()
+    {
+        // Durum satırı kurucudan, zamanlayıcıdan ve PrintQueue.CollectionChanged'den (WriteOrder'ın
+        // ortasında) çağrılır: senkron sorgusunun hatası kabuğu açılmaz bırakmamalı, üst üste
+        // MessageBox açmamalı, etiket yazımını yarıda kesmemeli.
+        using var outboxDb = MigratedDb();
+        var failing = new FailingFactory(outboxDb);
+        var log = new WarningCounter();
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker(),
+            pendingCounter: EmptyCounter(failing), log: log);
+
+        h.Vm.SyncStatusText.Should().Be("Senkron durumu okunamadı");
+        h.Vm.IsSyncHealthy.Should().BeFalse();
+        h.Vm.SyncStatusTooltip.Should().Be("Senkron durumu okunamadı\nSürerse destekle iletişime geç.");
+
+        var t = Environment.TickCount64 + 1_000_000;
+        h.Vm.SyncTicks = () => t += 5_000;                        // her çağrı tazeler
+        MainShellTestHarness.EnqueueLabel(h.Vm, "ornek_musteri", 100m);
+        MainShellTestHarness.EnqueueLabel(h.Vm, "ornek_musteri", 150m);
+        h.Vm.RefreshHeroStats();
+
+        h.Vm.PrintQueue.Should().HaveCount(2, "iki etiket yazımı da tamamlandı");
+        h.Labels.GetQueue(h.Sessions.GetActive()!.Id).Should().HaveCount(2);
+        log.Warnings.Should().Be(1, "hata serisi başına tek uyarı — günlük her 5 sn'de dolmasın");
+
+        failing.Failing = false;
+        h.Vm.RefreshSyncStatus();
+        h.Vm.SyncStatusText.Should().Be("Güncelleniyor…");
+        failing.Failing = true;
+        h.Vm.RefreshSyncStatus();
+        log.Warnings.Should().Be(2, "düzelip yeniden bozulan yeni bir seri");
     }
 
     [Fact]

@@ -28,6 +28,8 @@ using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Core.Settings;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -86,6 +88,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly Services.Sync.SyncStatusTracker? _syncStatus;
     private readonly Func<int>? _pendingCount;
     private readonly Func<SyncAttention>? _attention;
+    private readonly ILogger<MainShellViewModel> _log;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -172,7 +175,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _syncStatusText = "";
     [ObservableProperty] private bool _isSyncHealthy = true;
     [ObservableProperty] private string _syncStatusTooltip = "";
-    private int _syncRefreshTick;
+
+    /// <summary>Durum satırı en çok bu aralıkla tazelenir — kaç çağıran tetiklerse tetiklesin.</summary>
+    private const long SyncRefreshIntervalMs = 5_000;
+    private long? _lastSyncRefreshAt;
+    private bool _syncReadFailing;
+
+    /// <summary>Durum satırı kapısının milisaniye saati (test dikişi; varsayılan
+    /// <see cref="Environment.TickCount64"/> — duvar saati değişimlerinden etkilenmez).</summary>
+    internal Func<long> SyncTicks { get; set; } = () => Environment.TickCount64;
 
     /// <summary>
     /// Yeni veri katmanı YOK: ViewerCountTracker zaten platform başına
@@ -286,7 +297,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public void RefreshHeroStats()
     {
         // BAŞTA: metot oturum yokken erken dönüyor — sonda olsa durum satırı yayın dışında donardı.
-        if (_syncRefreshTick++ % 5 == 0) RefreshSyncStatus();
+        RefreshSyncStatusThrottled();
 
         QueueCount = PrintQueue.Count;
         ClockText = DateTime.Now.ToString("HH:mm");
@@ -313,22 +324,53 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             : 0;
     }
 
+    /// <summary><see cref="RefreshHeroStats"/>'ın kapısı: durum satırı en çok 5 sn'de bir tazelenir
+    /// (ilk çağrı hemen). Çağrı sayılmaz — hero zamanlayıcısı (1 sn), toplu baskı ve kuyruğa ekleme
+    /// (<c>PrintQueue.CollectionChanged</c>) hepsi tetikler; sorgular UI iş parçacığında koşar.</summary>
+    private void RefreshSyncStatusThrottled()
+    {
+        var now = SyncTicks();
+        if (_lastSyncRefreshAt is { } last && now - last < SyncRefreshIntervalMs) return;
+        _lastSyncRefreshAt = now;
+        RefreshSyncStatus();
+    }
+
     /// <summary>
-    /// Senkron durum satırı (D3). 1 sn'lik hero zamanlayıcısında her turda değil, 5 turda bir koşar
-    /// (UI iş parçacığı); bekleyen sayım yalnız metinde gösterilecekse koşar (takılı/yetişen satırda
-    /// yok). Lisans yoksa (deneme sürümü — senkron hiç koşmaz) nötr satır, sorgu yok.
+    /// Senkron durum satırı (D3). Bekleyen sayım yalnız metinde gösterilecekse koşar (takılı/yetişen
+    /// satırda yok). Lisans yoksa (deneme sürümü — senkron hiç koşmaz) nötr satır, sorgu yok.
+    ///
+    /// <para><b>Hata yalıtımı:</b> kurucudan, zamanlayıcıdan ve <c>PrintQueue.CollectionChanged</c>'den
+    /// (<c>WriteOrder</c>'ın ortasında) çağrılır. Senkron sorgusunun hatası kabuğun açılmasını
+    /// engellememeli, üst üste MessageBox açmamalı, çok varyantlı etiket yazımını yarıda kesmemeli:
+    /// yakalanır, satır sarı "Senkron durumu okunamadı" olur, hata serisi başına bir uyarı yazılır.</para>
+    ///
+    /// <para><b>Bilinen sınır:</b> girişten ya da hesap değişiminden sonra ~30 sn (akış servisinin bir
+    /// sonraki turuna dek) satır önceki durumu yansıtabilir.</para>
     /// </summary>
     public void RefreshSyncStatus()
     {
         if (_syncStatus is null || _pendingCount is null) return;
-        if (SyncLicenseKey() is null)
+        try
         {
-            ApplySyncStatus(Services.Sync.SyncStatusFormatter.NoLicense, default);
-            return;
+            if (SyncLicenseKey() is null)
+            {
+                ApplySyncStatus(Services.Sync.SyncStatusFormatter.NoLicense, default);
+            }
+            else
+            {
+                var attention = _attention?.Invoke() ?? default;
+                ApplySyncStatus(Services.Sync.SyncStatusFormatter.Format(
+                    _pendingCount, _syncStatus.Snapshot(), DateTimeOffset.UtcNow, attention), attention);
+            }
+            _syncReadFailing = false;
         }
-        var attention = _attention?.Invoke() ?? default;
-        ApplySyncStatus(Services.Sync.SyncStatusFormatter.Format(
-            _pendingCount, _syncStatus.Snapshot(), DateTimeOffset.UtcNow, attention), attention);
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (!_syncReadFailing)
+                _log.LogWarning(ex, "Senkron durum satırı okunamadı; sonraki tazelemede yeniden denenecek");
+            _syncReadFailing = true;
+            ApplySyncStatus(Services.Sync.SyncStatusFormatter.ReadFailed, default);
+        }
     }
 
     private void ApplySyncStatus(Services.Sync.SyncStatusFormatter.Status status, SyncAttention attention)
@@ -446,7 +488,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Drawers.IDrawerService? drawers = null,
         Services.Pages.IPageService? pages = null,
         Services.Sync.SyncStatusTracker? syncStatus = null,
-        Services.Sync.SyncPendingCounter? pendingCounter = null)
+        Services.Sync.SyncPendingCounter? pendingCounter = null,
+        ILogger<MainShellViewModel>? log = null)
     {
         _dialogs = dialogs;
         _drawers = drawers;
@@ -455,6 +498,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _syncStatus = syncStatus;
         _pendingCount = pendingCounter is null ? null : pendingCounter.Count;
         _attention = pendingCounter is null ? null : pendingCounter.Attention;
+        _log = log ?? NullLogger<MainShellViewModel>.Instance;
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
