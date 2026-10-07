@@ -178,6 +178,31 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var all = await db.WpfCustomerProjections.IgnoreQueryFilters().Where(p => p.LicenseId == lic).ToListAsync();
         all.Single(p => p.Id == b.Id).MergedIntoId.Should().Be(a.Id);
         all.Single(p => p.Id == x.Id).MergedIntoId.Should().Be(a.Id); // zincir yok
+        // Kopyaya dönen satırların UpdatedAt'i korunur: PR-1 tarafında okuyan yok;
+        // elle eski bir imaja dönülürse eski `since` onları yeniden dağıtmasın.
+        all.Single(p => p.Id == b.Id).UpdatedAt.Should().BeCloseTo(t0.AddDays(1), TimeSpan.FromMilliseconds(1));
+        all.Single(p => p.Id == x.Id).UpdatedAt.Should().BeCloseTo(t0.AddDays(2), TimeSpan.FromMilliseconds(1));
+        (await Job(db).CountChainsAsync(default)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Zincir_sayaci_kopyanin_kopyasini_sayar()
+    {
+        // B1 kapısı gibi BİREBİR SQL: kopyası da kopya olan satır (bir yarışın
+        // bıraktığı zincir) — iş yalnız birleştirdiği grubu düzleştirir.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var root = Row(lic, "irmak", t0);
+        var middle = Row(lic, "Irmak", t0);
+        middle.MergedIntoId = root.Id;
+        var tail = Row(lic, "IRMAK", t0);
+        tail.MergedIntoId = middle.Id;
+        db.WpfCustomerProjections.AddRange(root, middle, tail);
+        await db.SaveChangesAsync();
+
+        (await Job(db).CountChainsAsync(default)).Should().Be(1);
     }
 
     [Fact]

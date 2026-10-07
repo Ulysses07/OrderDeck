@@ -46,15 +46,17 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdentityMerger _merger;
+    private readonly CustomerIdResolver _customerIds;
     private readonly TcknProtector _tckn;
     private readonly ILogger<LicensesWpfCustomersSyncController> _logger;
 
     public LicensesWpfCustomersSyncController(
-        LicenseDbContext db, CustomerIdentityMerger merger, TcknProtector tckn,
+        LicenseDbContext db, CustomerIdentityMerger merger, CustomerIdResolver customerIds, TcknProtector tckn,
         ILogger<LicensesWpfCustomersSyncController> logger)
     {
         _db = db;
         _merger = merger;
+        _customerIds = customerIds;
         _tckn = tckn;
         _logger = logger;
     }
@@ -248,7 +250,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         {
             try
             {
-                outcome = await ApplyBatchAsync(licenseId, items, ids, now, ct);
+                outcome = await ApplyBatchAsync(licenseId, items, ids, ct);
                 await _db.SaveChangesAsync(ct);
                 break;
             }
@@ -374,7 +376,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
     /// izleyici temizlendikten sonra aynen yeniden çağrılabilir.
     /// </summary>
     private async Task<BatchOutcome> ApplyBatchAsync(
-        Guid licenseId, List<SyncItem> items, List<Guid> ids, DateTimeOffset now, CancellationToken ct)
+        Guid licenseId, List<SyncItem> items, List<Guid> ids, CancellationToken ct)
     {
         // IgnoreQueryFilters ŞART: kopyalar varsayılan sorgulardan gizli (A5b).
         // Filtreli kalsa eski sürümün kopya Id'siyle gönderimi "yeni satır"
@@ -405,13 +407,19 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 .OrderBy(p => p.CreatedByShopper).ThenBy(p => p.UpdatedAt).ThenBy(p => p.Id)
                 .First());
 
-        // Yönlendirilmiş Id'lerin asıl kayıtları (bilinen kopya yeniden gönderiyor).
-        // Hedef de bir kopyaysa (zincir — birleştirme işi düzleştirir, olmamalı)
-        // asıl kayıt sayılmaz: kopya satırına asla veri yazılmaz.
-        var mergedTargets = existing.Values.Where(p => p.MergedIntoId is not null)
-            .Select(p => p.MergedIntoId!.Value).Distinct().ToList();
+        // Bilinen kopyaların (eski Id'yle yeniden gönderen) asıl kayıtları — ÇOK
+        // ADIMDA ve sınırlı (CustomerIdResolver): bir yarışın bıraktığı zincir
+        // (kopyanın kopyası) tek adımda kopyaya çıkar ve gönderim sonsuza dek
+        // sessizce düşerdi. Sınırın ötesindeki uç hâlâ kopyaysa asıl kayıt
+        // sayılmaz: kopya satırına asla veri yazılmaz. Veritabanı durumuyla
+        // çözülür; bu partide devralınan geçici satır aşağıda halefine (W) izlenir.
+        var knownAliasIds = existing.Values.Where(p => p.MergedIntoId is not null).Select(p => p.Id).ToList();
+        var canonicalOfAlias = knownAliasIds.Count == 0
+            ? new Dictionary<Guid, Guid>()
+            : await _customerIds.CanonicalOfAsync(licenseId, knownAliasIds, ct);
+        var targetIds = canonicalOfAlias.Values.Distinct().ToList();
         var targets = await _db.WpfCustomerProjections
-            .Where(p => p.LicenseId == licenseId && mergedTargets.Contains(p.Id) && p.MergedIntoId == null)
+            .Where(p => p.LicenseId == licenseId && targetIds.Contains(p.Id) && p.MergedIntoId == null)
             .ToDictionaryAsync(p => p.Id, ct);
 
         var redirects = new List<SyncRedirect>();
@@ -453,6 +461,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // kopyası nerede gelirse gelsin S'yi kopya olarak görsün — sonuç
         // payload sırasına bağlı kalmasın.
         var takenOver = new List<(Guid From, Guid To)>();
+        var successorOf = new Dictionary<Guid, Guid>(); // devralınan S → W
         var takeoverItems = new HashSet<Guid>();
         foreach (var item in newItems)
         {
@@ -465,20 +474,19 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             // W yeni satır gibi kendi gönderim zamanıyla (AddCanonical) kalır:
             // taşınan karar UpdatedAt'i ilerletmez (gerekçe kopya yolunda, aşağıda).
             CustomerFieldMerge.Apply(created, carried);
+            // Kopyaya dönen S'nin (ve ona yönlenmiş eski kopyaların) UpdatedAt'i
+            // KORUNUR — gerekçe yeni kopya yolunda, aşağıda.
             provisional.ScrubPersonal();
             provisional.MergedIntoId = created.Id;
-            provisional.UpdatedAt = now;
             var olderAliases = await _db.WpfCustomerProjections.IgnoreQueryFilters()
                 .Where(p => p.LicenseId == licenseId && p.MergedIntoId == provisional.Id)
                 .ToListAsync(ct);
             foreach (var alias in olderAliases)
-            {
                 alias.MergedIntoId = created.Id;
-                alias.UpdatedAt = now;
-            }
 
             canonicalByKey[key] = created; // partide aynı kimliğin sonraki Id'leri W'ye bağlansın
             targets[created.Id] = created; // S ve eski kopyalar artık W'ye yönlü
+            successorOf[provisional.Id] = created.Id;
             reprove[created.Id] = created;
             takenOver.Add((provisional.Id, created.Id));
             takeoverItems.Add(item.Id);
@@ -497,8 +505,15 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
 
             if (existing.TryGetValue(item.Id, out var current))
             {
-                if (current.MergedIntoId is { } canonicalId)
+                if (current.MergedIntoId is { } immediateTarget)
                 {
+                    // Zincirin sonu (yukarıda çok adımda çözüldü). Satır bu partide
+                    // kopyaya döndüyse (devralınan S) çözüm tablosunda yok: anlık
+                    // hedefi W. Çözülen asıl kayıt bu partide devralındıysa halefi.
+                    var canonicalId = canonicalOfAlias.TryGetValue(current.Id, out var resolved)
+                        ? resolved
+                        : immediateTarget;
+                    if (successorOf.TryGetValue(canonicalId, out var successor)) canonicalId = successor;
                     if (targets.TryGetValue(canonicalId, out var target))
                     {
                         if (current.CreatedByShopper)
@@ -573,6 +588,11 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 // asıl kayda aynı birim kurallarıyla yazılır. Asıl kayıt burada
                 // geçici OLAMAZ: yeni Id'lerin geçici asıl kayıtları yukarıda
                 // devralındı.
+                // Kopya satırı istemcinin UpdatedAt'iyle (sunucu saati değil): PR-1
+                // tarafında kopyanın UpdatedAt'ini okuyan yok; elle PR-1 öncesi bir
+                // imaja dönülürse eski `since` (kopya filtresi yok) yeni zamanlı
+                // kopyaları bütün bilgisayarlara ikinci müşteri olarak yeniden
+                // dağıtırdı (bkz. deploy/README "PR-1 geri dönüş tabanı").
                 _db.WpfCustomerProjections.Add(new WpfCustomerProjection
                 {
                     Id = item.Id,
@@ -580,7 +600,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                     Platform = key.Platform,
                     Username = item.Username!,
                     MergedIntoId = canonical.Id,
-                    UpdatedAt = now,
+                    UpdatedAt = item.UpdatedAt,
                 });
                 // Asıl kaydın UpdatedAt'i İLERLEMEZ (bilinen kopya ve devralma da
                 // böyle; kendi Id'siyle gönderim istemcinin değerini yazar). Eski
@@ -588,8 +608,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 // ilerleyen UpdatedAt asıl kaydı, yalnız harf farklı kopyayı tutan
                 // bilgisayara YENİ bir yerel müşteri olarak indirirdi. Değişiklik
                 // akışı rowversion kullanır — verinin yeni istemcilere inişi
-                // etkilenmez. Kopya satırının UpdatedAt'i serbest: `since` kopyaları
-                // göstermez.
+                // etkilenmez. (Kopya satırının kendisi: yukarıda, istemcinin değeri.)
                 Merge(canonical, item, viaCopy: true);
                 redirects.Add(new SyncRedirect(item.Id, canonical.Id));
                 newAliases.Add((item.Id, canonical.Id));

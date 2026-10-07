@@ -732,18 +732,19 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
 
     /// <summary>
     /// Savunma: bilinen bir kopyanın asıl kaydı bulunamıyorsa (silinmiş satır;
-    /// ya da hedef kendisi bir kopya — zinciri birleştirme işi düzleştirir)
-    /// veri kopya satırına ASLA yazılmaz, yönlendirme de dönmez; öğe yine
-    /// sayılır ki istemcinin imleci ilerlesin.
+    /// ya da zincir CustomerIdResolver'ın adım sınırından uzun — olmamalı,
+    /// CLI'nin son koşulu zinciri sayar) veri kopya satırına ASLA yazılmaz,
+    /// yönlendirme de dönmez; öğe yine sayılır ki istemcinin imleci ilerlesin.
+    /// Sınır içindeki zincir asıl kayda iner (bkz.
+    /// Zincirli_kopyanin_gonderimi_asil_kayda_iner).
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Asil_kaydi_bulunamayan_kopyaya_veri_yazilmaz(bool chainedTarget)
+    public async Task Asil_kaydi_bulunamayan_kopyaya_veri_yazilmaz(bool overlongChain)
     {
         var (client, _, licenseId) = await SetupAsync();
         var alias = Guid.NewGuid();
-        var middle = Guid.NewGuid();
         var root = Guid.NewGuid();
         using (var scope = _factory.Services.CreateScope())
         {
@@ -753,8 +754,13 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
                 Id = id, LicenseId = licenseId, Platform = "tiktok", Username = "kayip-asil",
                 MergedIntoId = into, UpdatedAt = DateTimeOffset.UtcNow,
             };
-            if (chainedTarget)
-                db.WpfCustomerProjections.AddRange(Row(root, null), Row(middle, root), Row(alias, middle));
+            if (overlongChain)
+            {
+                // root ← m1 ← m2 ← m3 ← alias: çözümleyici en çok 3 adım izler.
+                var (m1, m2, m3) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+                db.WpfCustomerProjections.AddRange(
+                    Row(root, null), Row(m1, root), Row(m2, m1), Row(m3, m2), Row(alias, m3));
+            }
             else
                 db.WpfCustomerProjections.Add(Row(alias, Guid.NewGuid())); // hedef yok
             await db.SaveChangesAsync();
@@ -777,6 +783,99 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         rows.Should().OnlyContain(p => p.FullName == null && p.City == null,
             "kopya satırına da, zincirin herhangi bir halkasına da veri yazılmadı");
         rows.Single(p => p.Id == alias).MergedIntoId.Should().NotBeNull("kopya kopya olarak kalır");
+    }
+
+    /// <summary>
+    /// Bir yarışın bıraktığı zincir (kopya → kopya → asıl kayıt) sessizce
+    /// düşmez: bilinen kopyanın asıl kaydı ÇOK ADIMDA çözülür (CustomerIdResolver,
+    /// sınırlı), veri asıl kayda iner ve yönlendirme doğrudan asıl kaydı söyler.
+    /// Koruma aynen: geçici kökenli kopyanın gönderimi hiçbir şey yazmaz.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Zincirli_kopyanin_gonderimi_asil_kayda_iner(bool provisionalOrigin)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (root, middle, alias) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            WpfCustomerProjection Row(Guid id, Guid? into) => new()
+            {
+                Id = id, LicenseId = licenseId, Platform = "tiktok", Username = "zincirli",
+                MergedIntoId = into, UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            var last = Row(alias, middle);
+            last.CreatedByShopper = provisionalOrigin;
+            db.WpfCustomerProjections.AddRange(Row(root, null), Row(middle, root), last);
+            await db.SaveChangesAsync();
+        }
+
+        var body = await PostAsync(client, licenseId,
+            V2Item(alias, "Zincirli", city: "Bursa", addressAt: DateTimeOffset.UtcNow));
+
+        body.Synced.Should().Be(1);
+        body.Redirects.Should().ContainSingle().Which.Should().Be(new Redirect(alias, root));
+        var rows = await RowsAsync(licenseId);
+        rows.Single(p => p.Id == root).City.Should().Be(provisionalOrigin ? null : "Bursa");
+        rows.Where(p => p.Id != root).Should().OnlyContain(p => p.City == null, "kopya satırlarına yazılmaz");
+    }
+
+    /// <summary>
+    /// Kopya satırının UpdatedAt'i sunucu saatiyle İLERLETİLMEZ: yeni kopya
+    /// istemcinin değerini taşır. PR-1 tarafında kopyanın UpdatedAt'ini okuyan
+    /// yok; elle PR-1 öncesi bir imaja dönülürse eski <c>since</c> (kopya
+    /// filtresi yok) yeni zamanlı kopyaları bütün bilgisayarlara ikinci müşteri
+    /// olarak yeniden dağıtırdı (bkz. deploy/README "PR-1 geri dönüş tabanı").
+    /// </summary>
+    [Fact]
+    public async Task Yeni_kopya_satiri_istemcinin_UpdatedAtini_tasir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        await PostAsync(client, licenseId, V2Item(a, "yasemin"));
+        var clientTime = DateTimeOffset.UtcNow.AddDays(-3);
+
+        await PostAsync(client, licenseId, new { id = b, platform = "tiktok", username = "YASEMIN", updatedAt = clientTime, format = 2 });
+
+        var alias = (await RowsAsync(licenseId)).Single(p => p.Id == b);
+        alias.MergedIntoId.Should().Be(a);
+        alias.UpdatedAt.Should().BeCloseTo(clientTime, TimeSpan.FromMilliseconds(1));
+    }
+
+    /// <summary>Devralmada kopyaya dönen satırların (geçici S ve ona yönlenmiş
+    /// eski kopya) UpdatedAt'i korunur.</summary>
+    [Fact]
+    public async Task Devralmada_kopyaya_donen_satirlarin_UpdatedAti_korunur()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var provisionalTime = DateTimeOffset.UtcNow.AddDays(-5);
+        var s = await SeedProvisionalAsync(licenseId, "korunan", updatedAt: provisionalTime);
+        var olderAlias = Guid.NewGuid();
+        var aliasTime = DateTimeOffset.UtcNow.AddDays(-4);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = olderAlias, LicenseId = licenseId, Platform = "tiktok", Username = "Korunan",
+                MergedIntoId = s.ProjectionId, CreatedByShopper = true, UpdatedAt = aliasTime,
+            });
+            await db.SaveChangesAsync();
+        }
+        var w = Guid.NewGuid();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, w, "korunan", "Yayıncının Kaydı", NewPhone()));
+
+        var rows = await RowsAsync(licenseId);
+        var provisional = rows.Single(p => p.Id == s.ProjectionId);
+        provisional.MergedIntoId.Should().Be(w);
+        provisional.UpdatedAt.Should().BeCloseTo(provisionalTime, TimeSpan.FromMilliseconds(1));
+        var flattened = rows.Single(p => p.Id == olderAlias);
+        flattened.MergedIntoId.Should().Be(w);
+        flattened.UpdatedAt.Should().BeCloseTo(aliasTime, TimeSpan.FromMilliseconds(1));
     }
 
     // ── istemci kuyruğunu kalıcı kilitleyen yollar (A5 kalite incelemesi) ────

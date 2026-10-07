@@ -58,8 +58,10 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///
 /// <para><b>Kopya</b> silinmez: kişisel alanları boşaltılır (PurgedAt'e
 /// dokunulmaz — eşzamanlılık jetonu), MergedIntoId = asıl kayıt; geçici
-/// kopyanın CreatedByShopper bayrağı köken olarak kalır. Ona zaten yönlenmiş
-/// kopyalar da asıl kayda yönlendirilir (zincir olmaz). Kopyaya bağlı
+/// kopyanın CreatedByShopper bayrağı köken olarak kalır; UpdatedAt'i KORUNUR
+/// (elle PR-1 öncesi imaja dönülürse eski <c>since</c> onu yeniden dağıtmasın).
+/// Ona zaten yönlenmiş kopyalar da asıl kayda yönlendirilir (zincir olmaz;
+/// kalan zinciri <see cref="CountChainsAsync"/> sayar, CLI son koşulu). Kopyaya bağlı
 /// sipariş/kargo/bakiye/bağlantılar <see cref="CustomerIdentityMerger"/> ile
 /// taşınır; her kopya DOĞRUDAN asıl kayda (zincirleme birleştirme tek
 /// SaveChanges içinde yapılmaz — birleştiricinin bakiye araması buna dayanır).</para>
@@ -96,6 +98,13 @@ public sealed class CustomerIdentityMergeJob
     /// o bir şeyi kaçırırsa bu yakalar.</summary>
     public const string DuplicateHeadsSql =
         "SELECT COUNT(*) FROM (SELECT 1 x FROM WpfCustomerProjections WHERE MergedIntoId IS NULL GROUP BY LicenseId, Platform, IdentityKey HAVING COUNT(*) > 1) d";
+
+    /// <summary>Zincir: kopyası da kopya olan satır (tüm lisanslar). İş
+    /// birleştirdiği grubun eski kopyalarını düzleştirir; geriye kalan zincir
+    /// bir yarışın izidir (--apply sırasında açık kalan bir bilgisayar). Sync ucu
+    /// zinciri sınırlı adımda çözer ama B1 öncesi son koşul sıfır ister.</summary>
+    public const string ChainsSql =
+        "SELECT COUNT(*) FROM WpfCustomerProjections a JOIN WpfCustomerProjections b ON a.MergedIntoId = b.Id WHERE b.MergedIntoId IS NOT NULL";
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdentityMerger _merger;
@@ -170,14 +179,16 @@ public sealed class CustomerIdentityMergeJob
 
     /// <summary><see cref="DuplicateHeadsSql"/>'i koşturur: tüm lisanslarda
     /// B1'in tekil indeksine çarpacak yinelenen asıl kayıt grubu sayısı.</summary>
-    public async Task<int> CountDuplicateHeadsAsync(CancellationToken ct)
+    public Task<int> CountDuplicateHeadsAsync(CancellationToken ct) => CountAsync(DuplicateHeadsSql, ct);
+
+    private async Task<int> CountAsync(string sql, CancellationToken ct)
     {
         var connection = _db.Database.GetDbConnection();
         await _db.Database.OpenConnectionAsync(ct);
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = DuplicateHeadsSql;
+            command.CommandText = sql;
             return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
         }
         finally
@@ -185,6 +196,10 @@ public sealed class CustomerIdentityMergeJob
             await _db.Database.CloseConnectionAsync();
         }
     }
+
+    /// <summary><see cref="ChainsSql"/>'i koşturur: tüm lisanslarda kopyası da
+    /// kopya olan satır sayısı.</summary>
+    public Task<int> CountChainsAsync(CancellationToken ct) => CountAsync(ChainsSql, ct);
 
     public async Task<Report> RunAsync(Guid licenseId, bool apply, CancellationToken ct)
     {
@@ -349,19 +364,20 @@ public sealed class CustomerIdentityMergeJob
                     .ToListAsync(ct));
             // Kopyanın boşaltılması silme kararı DEĞİL: PurgedAt'e dokunulmaz
             // (eşzamanlılık jetonu — aç/kapa yapmak eşzamanlı bir purge'ü ezerdi).
-            // Kopyanın UpdatedAt'i ilerleyebilir: eski `since` ucu kopyaları göstermez.
+            // Kopyaya dönen satırın UpdatedAt'i KORUNUR (zincirden düzleştirilenler
+            // de): PR-1 tarafında okuyan yok; elle PR-1 öncesi bir imaja dönülürse
+            // eski `since` (kopya filtresi yok) yeni zamanlı kopyaları bütün
+            // bilgisayarlara ikinci müşteri olarak yeniden dağıtırdı (bkz.
+            // deploy/README "PR-1 geri dönüş tabanı"). Satır yine yazılır:
+            // rowversion ilerler, değişiklik akışı yönlendirmeyi taşır.
             copy.ScrubPersonal();
-            copy.UpdatedAt = now;
             copy.MergedIntoId = canonical.Id;
 
             var chained = await _db.WpfCustomerProjections.IgnoreQueryFilters()
                 .Where(p => p.LicenseId == licenseId && p.MergedIntoId == copy.Id)
                 .ToListAsync(ct);
             foreach (var alias in chained)
-            {
                 alias.MergedIntoId = canonical.Id;
-                alias.UpdatedAt = now;
-            }
 
             await _merger.RepointReferencesAsync(licenseId, copy.Id, canonical.Id, ct);
         }

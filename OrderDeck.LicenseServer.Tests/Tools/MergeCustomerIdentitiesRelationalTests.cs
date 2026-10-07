@@ -155,6 +155,43 @@ public sealed class MergeCustomerIdentitiesRelationalTests : IAsyncLifetime
         text.Should().Contain("SON KOŞUL TUTMADI");
     }
 
+    /// <summary>
+    /// Son koşul: zincir (kopyanın kopyası) yok. Zincir bir yarışın izidir
+    /// (--apply sırasında bir bilgisayar açık kaldı); iş yalnız birleştirdiği
+    /// grubu düzleştirir. Kuru çalıştırma sayıyı yazar, uygulama 3 döner.
+    /// </summary>
+    [Fact]
+    public async Task Zincir_varsa_kuru_calistirma_yazar_uygulama_3_doner()
+    {
+        var seed = await SeedPersonAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var root = new WpfCustomerProjection
+                { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = "zincir", UpdatedAt = DateTimeOffset.UtcNow };
+            var middle = new WpfCustomerProjection
+                { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = "Zincir", MergedIntoId = root.Id, UpdatedAt = DateTimeOffset.UtcNow };
+            var tail = new WpfCustomerProjection
+                { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = "ZINCIR", MergedIntoId = middle.Id, UpdatedAt = DateTimeOffset.UtcNow };
+            db.WpfCustomerProjections.AddRange(root, middle, tail);
+            await db.SaveChangesAsync();
+        }
+
+        await using (var dryDb = NewDb())
+        {
+            var (dryExit, dryText) = await RunCliAsync(dryDb, license: null, apply: false);
+            dryExit.Should().Be(0);
+            dryText.Should().Contain("Zincir (kopyanın kopyası, SQL, tüm lisanslar): 1");
+        }
+
+        await using var cliDb = NewDb();
+        var (exit, text) = await RunCliAsync(cliDb, license: null, apply: true);
+
+        exit.Should().Be(3, text);
+        text.Should().Contain("SON KOŞUL TUTMADI").And.Contain("zincir");
+        ShouldHoldNoPersonalData(text, seed);
+    }
+
     [Fact]
     public async Task Atlanan_grup_varsa_1_doner()
     {

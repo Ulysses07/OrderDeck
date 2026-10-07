@@ -32,7 +32,9 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
     public Task DisposeAsync() { _factory.Dispose(); return Task.CompletedTask; }
 
     private sealed record Item(Guid Id, string Platform, string Username, Guid? MergedIntoId,
-        DateTimeOffset? PurgedAt, string? City, string? Tckn, long ChangeSeq, bool CreatedByShopper);
+        DateTimeOffset? PurgedAt, string? City, string? Tckn, long ChangeSeq, bool CreatedByShopper,
+        string? Notes = null, DateTimeOffset? NotesChangedAt = null, bool IsBlacklisted = false,
+        DateTimeOffset? BlacklistChangedAt = null, DateTimeOffset? PhoneChangedAt = null);
     private sealed record Page(List<Item> Items, long NextAfterSeq, bool CursorReset);
 
     private async Task<(HttpClient Client, Guid LicenseId)> SetupAsync()
@@ -152,9 +154,59 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
                 .Balance.Should().Be(30m);
         }
         var page = await GetPageAsync(client, licenseId, afterSeq: 0);
-        page.Items.Should().Contain(i => i.Id == provisionalId && i.MergedIntoId == w && i.CreatedByShopper,
-            "kopyada bayrak köken olarak kalır ve akışta görünür");
+        page.Items.Should().Contain(i => i.Id == provisionalId && i.MergedIntoId == w && !i.CreatedByShopper,
+            "kopya akışta yalnız yönlendirmedir — köken bayrağı bile taşımaz");
         page.Items.Should().Contain(i => i.Id == w && i.MergedIntoId == null && !i.CreatedByShopper);
+    }
+
+    /// <summary>
+    /// Kopya satırı akışta YALNIZ yönlendirmedir: Id, platform, kullanıcı adı,
+    /// MergedIntoId, ChangeSeq. Öbür her alan ve damga boş — PurgedAt ve
+    /// CreatedByShopper dahil. Kopyanın damgalı boşlarını bir istemci asla
+    /// uygulamasın; silinmiş (belki geçici kökenli) bir kopya da kimliğin
+    /// tamamını silen bir mezar taşı sanılmasın.
+    /// </summary>
+    [Fact]
+    public async Task Silinmis_gecici_kokenli_kopya_akista_yalniz_yonlendirmedir()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow.AddDays(-1);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = canonicalId, LicenseId = licenseId, Platform = "tiktok", Username = "asil", UpdatedAt = t,
+            });
+            var alias = new WpfCustomerProjection
+            {
+                Id = aliasId, LicenseId = licenseId, Platform = "tiktok", Username = "Asil",
+                MergedIntoId = canonicalId, CreatedByShopper = true, UpdatedAt = t,
+                PhoneChangedAt = t, Notes = "kopyadaki not", NotesChangedAt = t,
+                IsBlacklisted = true, BlacklistReason = "kopyadaki sebep", BlacklistChangedAt = t,
+            };
+            alias.MarkPurged(t);
+            db.WpfCustomerProjections.Add(alias);
+            await db.SaveChangesAsync();
+        }
+
+        var page = await GetPageAsync(client, licenseId, afterSeq: 0);
+
+        var item = page.Items.Should().ContainSingle(i => i.Id == aliasId).Which;
+        item.MergedIntoId.Should().Be(canonicalId);
+        item.Username.Should().Be("Asil");
+        item.ChangeSeq.Should().BeGreaterThan(0);
+        item.PurgedAt.Should().BeNull("kopyanın silinmişliği kimliğin mezar taşı değildir");
+        item.CreatedByShopper.Should().BeFalse();
+        item.PhoneChangedAt.Should().BeNull("kopyanın damgalı boşu istemciye inmez");
+        item.Notes.Should().BeNull();
+        item.NotesChangedAt.Should().BeNull();
+        item.IsBlacklisted.Should().BeFalse();
+        item.BlacklistChangedAt.Should().BeNull();
+        item.City.Should().BeNull();
+        item.Tckn.Should().BeNull();
     }
 
     /// <summary>

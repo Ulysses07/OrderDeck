@@ -106,7 +106,14 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     /// okuyucular yok sayar.</param>
     /// <remarks>Her birimin damgası ayrı (bkz. CustomerSyncFields). FullName
     /// olduğu gibi gider: eski sürümün takma ad yedeğini (R3-02) ayıklamak
-    /// istemcinin işi (Bölüm C notu 5).</remarks>
+    /// istemcinin işi (Bölüm C notu 5).
+    ///
+    /// <para><b>Kopya satırı yalnız yönlendirmedir</b> (<see cref="Redirect"/>):
+    /// Id, Platform, Username, MergedIntoId, ChangeSeq; öbür her alan ve damga
+    /// boş/false — PurgedAt ve CreatedByShopper DAHİL. Kopyanın boşaltılmış
+    /// alanlarındaki damgalı boşları bir istemci asla uygulamasın; silinmiş
+    /// (belki Shopper'ın açtığı) bir kopya da kimliğin tamamını silen bir mezar
+    /// taşı sanılmasın — silinmişlik asıl kaydın satırında gelir.</para></remarks>
     public sealed record WpfCustomerChangeItem(
         Guid Id, string Platform, string Username, Guid? MergedIntoId, DateTimeOffset? PurgedAt,
         string? FullName, DateTimeOffset? FullNameChangedAt,
@@ -122,7 +129,27 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         bool IsBlacklisted, string? BlacklistReason, DateTimeOffset? BlacklistedAt, DateTimeOffset? BlacklistChangedAt,
         string? Notes, DateTimeOffset? NotesChangedAt,
         long ChangeSeq,
-        bool CreatedByShopper = false);
+        bool CreatedByShopper = false)
+    {
+        /// <summary>Kopya satırı: YALNIZ yönlendirme (bkz. kayıt dokümanı).</summary>
+        public static WpfCustomerChangeItem Redirect(
+            Guid id, string platform, string username, Guid mergedIntoId, long changeSeq) => new(
+            Id: id, Platform: platform, Username: username, MergedIntoId: mergedIntoId, PurgedAt: null,
+            FullName: null, FullNameChangedAt: null,
+            DisplayName: null, DisplayNameChangedAt: null,
+            GroupId: null, GroupIdChangedAt: null,
+            Address: null, City: null, District: null, AddressChangedAt: null,
+            RecipientPaysActive: false, RecipientPaysChangedAt: null,
+            Phone: null, PhoneChangedAt: null,
+            Email: null, EmailChangedAt: null,
+            Tckn: null, TcknChangedAt: null,
+            WhatsAppConsent: false, WhatsAppConsentChangedAt: null,
+            SmsConsent: false, SmsConsentChangedAt: null,
+            IsBlacklisted: false, BlacklistReason: null, BlacklistedAt: null, BlacklistChangedAt: null,
+            Notes: null, NotesChangedAt: null,
+            ChangeSeq: changeSeq,
+            CreatedByShopper: false);
+    }
 
     /// <param name="CursorReset">İstemcinin imleci geçersizdi (eksi ya da
     /// ufkun üstü) ve sayfa BAŞTAN verildi. İstemci tam yeniden indirme yapar
@@ -189,12 +216,15 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
             .Take(take)
             .ToListAsync(ct);
 
+        // Kopya satırı YALNIZ yönlendirme olarak gider (bkz. WpfCustomerChangeItem).
         // TCKN veritabanında şifreli; çözme EF sorgusuna çevrilemez, bellekte.
         // Çözülemeyen değer (anahtar kaybı) null gider. Bilgisayarlar bir birimi
         // yalnız damgası kendilerininkinden YENİYSE yazar; anahtar kaybında
         // mevcut satırların TCKN damgası değişmediği için yerel kopyalar bu
         // null ile silinmez.
-        var items = rows.Select(p => new WpfCustomerChangeItem(
+        var items = rows.Select(p => p.MergedIntoId is { } target
+                ? WpfCustomerChangeItem.Redirect(p.Id, p.Platform, p.Username, target, p.ChangeSeq)
+                : new WpfCustomerChangeItem(
                 p.Id, p.Platform, p.Username, p.MergedIntoId, p.PurgedAt,
                 p.FullName, p.FullNameChangedAt,
                 p.DisplayName, p.DisplayNameChangedAt,

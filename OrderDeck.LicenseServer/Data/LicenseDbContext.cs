@@ -711,8 +711,8 @@ public class LicenseDbContext : DbContext
             // IgnoreQueryFilters() ister: sync ucunun Id araması, kimlik anahtarı
             // onarımı, TCKN bekçisi (kolonun tamamını tarar), CustomerIdResolver
             // (müşteri Id'si kabul eden uçlar kopyayı onunla asıl kayda çözer),
-            // değişiklik akışı (kopyayı yönlendirme olarak taşır); ileride
-            // birleştirme işi.
+            // değişiklik akışı (kopyayı yönlendirme olarak taşır), birleştirme
+            // işi (CustomerIdentityMergeJob — lisansları ve zincirleri bulur).
             b.HasQueryFilter(p => p.MergedIntoId == null);
         });
 

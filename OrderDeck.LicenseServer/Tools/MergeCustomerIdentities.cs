@@ -13,9 +13,10 @@ namespace OrderDeck.LicenseServer.Tools;
 ///       merge-customer-identities (--all | --license &lt;guid&gt;) [--apply]
 /// --apply yoksa kuru çalıştırma (hiçbir şey yazmaz; taşınacak kayıtları,
 /// platform başına grupları ve asıl kayıtla kopya arasındaki çelişkileri sayar,
-/// B1 kapısının bugünkü sayısını yazar). --apply sırası KODDA: anahtar onarımı
-/// → birleştirme → anahtar onarımı → son koşul (uyuşmaz anahtar 0 VE B1'in
-/// birebir SQL kapısı 0). --apply sırasında TÜM bilgisayarlarda OrderDeck
+/// B1 kapısının ve zincirlerin bugünkü sayısını yazar). --apply sırası KODDA:
+/// anahtar onarımı → birleştirme → anahtar onarımı → son koşul (uyuşmaz
+/// anahtar 0 VE B1'in birebir SQL kapısı 0 VE zincir — kopyanın kopyası — 0).
+/// --apply sırasında TÜM bilgisayarlarda OrderDeck
 /// kapalı olmalı: arada gelen bir gönderim kopyaya yazılıp boşaltılabilir ya
 /// da zincir bırakabilir.
 ///
@@ -23,7 +24,8 @@ namespace OrderDeck.LicenseServer.Tools;
 /// veritabanı hatası yüzünden geri alınıp atlandı — yeniden çalıştır (biten
 /// gruplar kalıcı; kalan kopyalar B1 kapısında görünür, beklenen); 2
 /// kullanım/yapılandırma; 3 son koşul tutmadı (uyuşmaz anahtar ya da atlanan
-/// grup yokken B1 kapısı sıfır değil — B1 göçü bu hâlde düşer). Kapı TÜM
+/// grup yokken B1 kapısı sıfır değil — B1 göçü bu hâlde düşer — ya da zincir
+/// kaldı). Kapı TÜM
 /// lisansları sayar: <c>--license</c> ile koşulduysa öbür lisansların
 /// kopyaları da içindedir.</para>
 ///
@@ -91,6 +93,7 @@ public static class MergeCustomerIdentities
         {
             output.WriteLine($"Uyuşmaz kimlik anahtarı: {await job.CountMismatchedKeysAsync(ct)} satır (--apply önce onarır)");
             output.WriteLine($"B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu {await job.CountDuplicateHeadsAsync(ct)} (--apply sonrası 0 olmalı)");
+            output.WriteLine($"Zincir (kopyanın kopyası, SQL, tüm lisanslar): {await job.CountChainsAsync(ct)} (--apply sonrası 0 olmalı; iş yalnız birleştirdiği grubu düzleştirir)");
         }
 
         var total = new CustomerIdentityMergeJob.Report(0, 0, 0, 0, 0, 0, 0, 0);
@@ -109,7 +112,8 @@ public static class MergeCustomerIdentities
         db.ChangeTracker.Clear();
         var mismatched = await job.CountMismatchedKeysAsync(ct);
         var duplicates = await job.CountDuplicateHeadsAsync(ct);
-        output.WriteLine($"Anahtar onarımı (sonra): {fixedAfter} satır; kalan uyuşmaz anahtar: {mismatched}; B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu {duplicates}");
+        var chains = await job.CountChainsAsync(ct);
+        output.WriteLine($"Anahtar onarımı (sonra): {fixedAfter} satır; kalan uyuşmaz anahtar: {mismatched}; B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu {duplicates}; zincir (kopyanın kopyası): {chains}");
         if (mismatched > 0)
         {
             error.WriteLine("SON KOŞUL TUTMADI: uyuşmaz anahtar var — B1 (tekil indeks) göçü bu hâlde düşer. Komutu yeniden çalıştırın; sürerse inceleyin.");
@@ -125,6 +129,11 @@ public static class MergeCustomerIdentities
         if (duplicates > 0)
         {
             error.WriteLine($"SON KOŞUL TUTMADI: B1 kapısı {duplicates} yinelenen asıl kayıt grubu buluyor (tüm lisanslar) — B1 göçü bu hâlde düşer. --license ile koşulduysa --all ile koşun; sürerse inceleyin.");
+            return 3;
+        }
+        if (chains > 0)
+        {
+            error.WriteLine($"SON KOŞUL TUTMADI: {chains} zincir (kopyanın kopyası) var (tüm lisanslar) — bir yarışın izi: --apply sırasında açık kalan bir bilgisayar. Bilgisayarları kapatıp inceleyin.");
             return 3;
         }
         return 0;
