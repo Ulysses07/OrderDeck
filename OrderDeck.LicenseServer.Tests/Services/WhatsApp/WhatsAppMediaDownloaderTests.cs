@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
 using Xunit;
 
@@ -75,7 +76,11 @@ public sealed class WhatsAppMediaDownloaderTests
         """;
 
     private static string ImagePayload(
-        string wamId = "wamid.IMG", string pnid = "PNID_1", string from = "905321234567") => $$$"""
+        string wamId = "wamid.IMG", string pnid = "PNID_1", string? from = null)
+    {
+        // Numara verilmezse her çağrıda üretilir ('+' işaretsiz wa_id biçimi).
+        from ??= TestPhone.NewE164()[1..];
+        return $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "{{{pnid}}}" },
@@ -87,6 +92,7 @@ public sealed class WhatsAppMediaDownloaderTests
           }}]}]
         }
         """;
+    }
 
     private static (LicenseDbContext Db, WhatsAppInboundJob Job, InMemoryWhatsAppMediaStore Store)
         Build(FakeGraphHandler handler)
@@ -103,7 +109,7 @@ public sealed class WhatsAppMediaDownloaderTests
             LicenseId = Guid.NewGuid(),
             WabaId = "waba-1",
             PhoneNumberId = "PNID_1",
-            DisplayPhoneNumber = "+905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("TOKEN_X"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,

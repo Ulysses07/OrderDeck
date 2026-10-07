@@ -62,7 +62,7 @@ public sealed class FacebookNameClientTests
         {
             Respond = req => req.RequestUri!.AbsolutePath.Contains("oauth/access_token")
                 ? Json($$"""{"access_token":"{{Tok}}"}""")
-                : Json("""{"id":"123","name":"Musa Sevinç"}""")
+                : Json("""{"id":"123","name":"Deneme Alıcı"}""")
         };
 
         var (client, http) = NewClient(handler);
@@ -74,7 +74,7 @@ public sealed class FacebookNameClientTests
             // Handle/ChannelId YOK: canlı yorumlarda Facebook'tan gelen şey görünen
             // ad — eşleştirme de o adla yapılıyor (HandleValidator'da FB kuralı
             // olmamasıyla aynı gerekçe).
-            result.Identity.Should().Be(new IntakeLinkedIdentity("Musa Sevinç", null, null));
+            result.Identity.Should().Be(new IntakeLinkedIdentity("Deneme Alıcı", null, null));
 
             var tokenReq = handler.Requests[0];
             tokenReq.Uri.ToString().Should().NotContain(_appSecret, "sır URI'ye sızmamalı");

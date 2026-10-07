@@ -175,9 +175,11 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         var (token, shopperId) = await RegisterShopperAsync(client);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        // "12345678901" — wrong checksum
+        // Üretilen geçerli TCKN'nin son kontrol hanesi bozulur → checksum tutmaz.
+        var valid = TestTckn.NewValid();
+        var invalidTc = valid[..10] + (char)('0' + (valid[10] - '0' + 1) % 10);
         var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
-            new PatchMeRequest(Tc: "12345678901"));
+            new PatchMeRequest(Tc: invalidTc));
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
@@ -196,13 +198,14 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         var (token, shopperId) = await RegisterShopperAsync(client);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        // "10000000146" — known valid TCKN for tests
+        // Kontrol haneleri tutan TCKN her koşuda üretilir.
+        var tc = TestTckn.NewValid();
         var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
-            new PatchMeRequest(Tc: "10000000146"));
+            new PatchMeRequest(Tc: tc));
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync<MeResponse>();
-        body!.Tc.Should().Be("10000000146");
+        body!.Tc.Should().Be(tc);
     }
 
     // ── SMS consent: opt-in (onay kutusu işaretlenmeden kayıt → izin yok) ─────

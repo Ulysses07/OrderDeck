@@ -949,6 +949,55 @@ public class CustomerRepositoryTests
         members.Should().OnlyContain(m => m.IsBlacklisted);
     }
 
+    // Telefonsuz form da kimlikleri bir gruba koyar (mevcut gruba katılım ya da yeni
+    // grup), kara liste ise satır bayrağından okunur (sohbet, etiket kuyruğu,
+    // çekiliş). Yayılım yalnız telefon dalında koşunca telefonsuz formla gruba giren
+    // yeni kimlik işaretsiz kalıyor, kişi o platformdan alışveriş yapabiliyordu.
+
+    [Fact]
+    public void UpsertPersonFromIntake_phoneless_form_propagates_group_blacklist_to_new_identity()
+    {
+        var repo = CreateRepository();
+        // Kara listeli üyesi olan mevcut grup.
+        repo.Insert(new Customer("bad1", "instagram", "uye.ig", "Üye", null,
+            1, 1, true, "ödemedi", null, 0, 0m, 999, null, null, GroupId: "g1"));
+
+        // Telefonsuz form: mevcut IG kimliği + yeni TikTok kimliği → TikTok g1'e girer.
+        var groupId = repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "uye.ig", null), ("tiktok", "uye.tt", null) },
+            "Form Kişi", "Adres", phone: null, email: null, tckn: null,
+            whatsAppConsent: false, smsConsent: false, nowUnix: 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+
+        groupId.Should().Be("g1");
+        var tt = repo.FindByPlatformAndUsername("tiktok", "uye.tt")!;
+        tt.GroupId.Should().Be("g1");
+        tt.IsBlacklisted.Should().BeTrue();
+        tt.BlacklistReason.Should().Be("ödemedi");
+        tt.BlacklistedAt.Should().Be(999, "yayılım kaynak üyenin tarihini taşır, telefon dalıyla aynı");
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_phoneless_form_without_blacklisted_member_blacklists_nobody()
+    {
+        // Karşı kontrol: yayılım her formda koşuyor; grupta kara listeli üye yoksa
+        // kimse işaretlenmez, başka grubun kara listesi de bu gruba sızmaz.
+        var repo = CreateRepository();
+        repo.Insert(new Customer("ok1", "instagram", "uye.ig", "Üye", null,
+            1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("bad2", "instagram", "baska.ig", "Başka", null,
+            1, 1, true, "ödemedi", null, 0, 0m, 999, null, null, GroupId: "g2"));
+
+        var groupId = repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "uye.ig", null), ("tiktok", "uye.tt", null) },
+            "Form Kişi", "Adres", phone: null, email: null, tckn: null,
+            whatsAppConsent: false, smsConsent: false, nowUnix: 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+
+        groupId.Should().Be("g1");
+        var members = repo.GetGroupMembers("g1");
+        members.Should().HaveCount(2);
+        members.Should().OnlyContain(m => !m.IsBlacklisted && m.BlacklistReason == null && m.BlacklistedAt == null);
+    }
+
     [Fact]
     public void UpsertPersonFromIntake_stores_real_fullname_without_overwriting_chat_displayname()
     {

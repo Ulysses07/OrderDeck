@@ -47,7 +47,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
     private async Task SeedProjectionAsync(Guid licenseId, Guid id, string platform, string username,
         string? fullName = null, string? phone = null, string? address = null, DateTimeOffset? updatedAt = null,
-        DateTimeOffset? purgedAt = null)
+        DateTimeOffset? purgedAt = null, string? displayName = null, bool createdByShopper = false)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -58,12 +58,14 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
             Platform = platform,
             Username = username,
             FullName = fullName,
+            DisplayName = displayName,
             Phone = phone,
             Address = address,
             // Varsayılan damga kararlılık ufkunun gerisinde: uç, son saniyelerde
             // değişen satırları bilerek okumuyor (bkz. ReverseSyncCursor).
             UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
             PurgedAt = purgedAt,
+            CreatedByShopper = createdByShopper,
         });
         await db.SaveChangesAsync();
     }
@@ -84,7 +86,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         var id2 = Guid.NewGuid();
         var id3 = Guid.NewGuid();
 
-        await SeedProjectionAsync(licenseId, id1, "youtube", "user1", "Ali", "+905001112233", "Ankara", t1);
+        await SeedProjectionAsync(licenseId, id1, "youtube", "user1", "Ali", TestPhone.NewE164(), "Ankara", t1);
         await SeedProjectionAsync(licenseId, id2, "instagram", "user2", null, null, null, t2);
         await SeedProjectionAsync(licenseId, id3, "tiktok", "user3", null, null, null, t3);
 
@@ -206,6 +208,67 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         items!.Select(i => i.Id).Should().Contain(new[] { id1, id2 });
     }
 
+    /// <summary>
+    /// A5b: kopya (MergedIntoId dolu) asıl kayda yönlendirmedir; öbür
+    /// bilgisayarlara dağıtılmaz — WPF onu kişisel alanları boş ikinci bir
+    /// müşteri olarak eklerdi. Yalnız asıl kayıt gider.
+    /// </summary>
+    [Fact]
+    public async Task Since_kopyayi_dondurmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var canonicalId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "tiktok", "ayse");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                Platform = "tiktok",
+                Username = "Ayse",
+                MergedIntoId = canonicalId,
+                UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
+        items!.Select(i => i.Id).Should().Equal(canonicalId);
+    }
+
+    /// <summary>
+    /// A6: eski istemci çektiği FullName'i yerel satırın takma adı olarak açar
+    /// (ShopperRegistrationIngestService: <c>DisplayName = item.FullName</c>).
+    /// Yeni istemci takma adı DisplayName'de AYRI gönderdiği için FullName boş
+    /// kalabilir — o zaman takma ad gider, yoksa eski sürümde kişi adsız
+    /// açılırdı. İkisi de doluysa FullName kazanır.
+    /// </summary>
+    [Fact]
+    public async Task Since_FullName_bossa_takma_adi_dondurur()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var nickOnly = Guid.NewGuid();
+        var both = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, nickOnly, "tiktok", "yalniztakma", displayName: "Ayşe K.");
+        await SeedProjectionAsync(licenseId, both, "tiktok", "ikisidedolu",
+            fullName: "Örnek Müşteri", displayName: "ayşoş");
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}"))!;
+
+        items.Single(i => i.Id == nickOnly).FullName.Should().Be("Ayşe K.",
+            "FullName boşken takma ad gitmezse eski istemci kişiyi adsız açar");
+        items.Single(i => i.Id == both).FullName.Should().Be("Örnek Müşteri",
+            "tam ad varsa takma ad onu ezmez");
+    }
+
     // ── Empty result when no new projections ─────────────────────────────────
 
     [Fact]
@@ -310,7 +373,8 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
         var id = Guid.NewGuid();
         var updatedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
-        await SeedProjectionAsync(licenseId, id, "youtube", "fielduser", "Full Name", "+905001112233", "Istanbul", updatedAt);
+        var phone = TestPhone.NewE164();
+        await SeedProjectionAsync(licenseId, id, "youtube", "fielduser", "Full Name", phone, "Istanbul", updatedAt);
 
         var since = Uri.EscapeDataString(updatedAt.AddSeconds(-1).ToString("O"));
         var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
@@ -323,7 +387,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         item.Platform.Should().Be("youtube");
         item.Username.Should().Be("fielduser");
         item.FullName.Should().Be("Full Name");
-        item.Phone.Should().Be("+905001112233");
+        item.Phone.Should().Be(phone);
         item.Address.Should().Be("Istanbul");
         item.PurgedAt.Should().BeNull("silinmemiş satırda damga boş olmalı");
     }
@@ -355,5 +419,59 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         item.PurgedAt.Should().NotBeNull("WPF'in yerel kopyayı temizleyebilmesi için işaret şart");
         item.Username.Should().Be("silinenkullanici",
             "kimlik anahtarı kalmalı — WPF eşleşmeyi (Platform, Username) ile yapıyor");
+    }
+
+    // ── Shopper'ın açtığı GEÇİCİ kayıt eski istemcilere hiç gitmez ───────────
+    //
+    // Eski masaüstü ingest'i (ShopperRegistrationIngestService) yerelde olmayan
+    // her `since` satırını o Id'yle SIRADAN müşteri olarak ekler: başkasının
+    // kullanıcı adıyla önce kaydolan, gerçek müşterinin sonraki siparişlerini
+    // alırdı. Silinmiş satırda da RecordPurge o kullanıcı adının bütün yerel
+    // satırlarını boşaltır: saldırganın KVKK silmesi gerçek müşteriyi yerelde
+    // silerdi.
+
+    [Fact]
+    public async Task Since_Shopperin_actigi_gecici_kaydi_vermez_siradan_kayit_aynen_gelir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var provisional = Guid.NewGuid();
+        var ordinary = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, provisional, "tiktok", "gecicikayit",
+            fullName: "Shopper Beyanı", phone: "+905001112244", address: "Shopper adresi", createdByShopper: true);
+        await SeedProjectionAsync(licenseId, ordinary, "tiktok", "siradankayit",
+            fullName: "Yayıncı Kaydı", phone: "+905001112255", address: "Ankara");
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}"))!;
+
+        items.Select(i => i.Id).Should().Equal(new[] { ordinary }, "geçici kayıt eski istemciye sıradan müşteri olarak inmez");
+        var item = items.Single();
+        item.Username.Should().Be("siradankayit");
+        item.FullName.Should().Be("Yayıncı Kaydı");
+        item.Phone.Should().Be("+905001112255");
+        item.Address.Should().Be("Ankara");
+        item.PurgedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Since_silinmis_gecici_kaydi_vermez_silinmis_siradan_kayit_damgasiyla_gelir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var purgedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var purgedProvisional = Guid.NewGuid();
+        var purgedOrdinary = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, purgedProvisional, "tiktok", "silinengecici",
+            updatedAt: purgedAt, purgedAt: purgedAt, createdByShopper: true);
+        await SeedProjectionAsync(licenseId, purgedOrdinary, "tiktok", "silinensiradan",
+            updatedAt: purgedAt, purgedAt: purgedAt);
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}"))!;
+
+        items.Select(i => i.Id).Should().Equal(new[] { purgedOrdinary },
+            "geçici kaydın mezar taşı eski istemcide o kullanıcı adının bütün yerel satırlarını boşaltırdı");
+        items.Single().PurgedAt.Should().NotBeNull("sıradan kaydın silinmesi eskisi gibi damgayla iner");
     }
 }

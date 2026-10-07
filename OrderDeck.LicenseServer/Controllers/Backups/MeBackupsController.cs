@@ -230,7 +230,7 @@ public sealed class MeBackupsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Kota hakemini kaybettik: ya damga uyuşmadı (satır zaten vardı) ya
             // da ilk satırı ikimiz birden yazmaya çalıştık ve biri PK çakışması
@@ -238,11 +238,13 @@ public sealed class MeBackupsController : ControllerBase
             // geniş tür yakalanıyor — dar yakalasaydık 409'un var olma sebebi
             // olan pencerede 500 dönerdi (emsal: PanelBarcodesController).
             // Yedek satırı aynı SaveChanges'te olduğu için o da geri alındı;
-            // geriye yalnız blob kalıyor.
+            // geriye yalnız blob kalıyor. Tür + SQL numarası günlükte: EF'in
+            // kendi kayıt hatası günlüğü Debug'da (LicenseDbContext), yarış
+            // dışı bir hata buradan ayırt edilebilsin (ileti yazılmaz).
             _storage.DeleteBlob(blobPath);
             _log.LogInformation(
-                "Yedek yükleme kota hakemini kaybetti (customer={Customer}) — istemci yeniden denemeli",
-                CustomerId);
+                "Yedek yükleme kota hakemini kaybetti (customer={Customer}, {ExceptionType}, SqlError={SqlError}) — istemci yeniden denemeli",
+                CustomerId, ex.GetType().Name, (ex.InnerException as Microsoft.Data.SqlClient.SqlException)?.Number);
             return Conflict(new
             {
                 error = "backup-quota-busy",

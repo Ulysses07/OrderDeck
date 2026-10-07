@@ -149,6 +149,7 @@ public sealed class ShopperRegistrationIngestServiceTests
     {
         var shopperId = Guid.NewGuid();
         var updatedAt = DateTimeOffset.UtcNow;
+        var telefon = TestPhone.NewE164();
 
         var fx = Build(req =>
         {
@@ -157,7 +158,7 @@ public sealed class ShopperRegistrationIngestServiceTests
                 return FakeHttpMessageHandler.Json(200, LicensesJson());
             if (path.Contains("/wpf-customers/since"))
                 return FakeHttpMessageHandler.Json(200, PullJson(
-                    (shopperId, "youtube", "newuser", "Yeni Kullanıcı", "+905001112233", "İstanbul", updatedAt)));
+                    (shopperId, "youtube", "newuser", "Yeni Kullanıcı", telefon, "İstanbul", updatedAt)));
             return FakeHttpMessageHandler.Empty(404);
         });
         using var _d = fx.Db;
@@ -171,7 +172,7 @@ public sealed class ShopperRegistrationIngestServiceTests
         customer.Should().NotBeNull("shopper must be inserted as local Customer");
         customer!.Id.Should().Be(shopperId.ToString("N"));
         customer.DisplayName.Should().Be("Yeni Kullanıcı");
-        customer.Phone.Should().Be("+905001112233");
+        customer.Phone.Should().Be(telefon);
         customer.Address.Should().Be("İstanbul");
         customer.Platform.Should().Be("youtube");
         customer.Username.Should().Be("newuser");
@@ -281,7 +282,7 @@ public sealed class ShopperRegistrationIngestServiceTests
                 return FakeHttpMessageHandler.Json(200, LicensesJson());
             if (path.Contains("/wpf-customers/since"))
                 return FakeHttpMessageHandler.Json(200, PullJson(
-                    (newId, "tiktok", "brandnew", "Yeni", "+905001112233", null, t1),
+                    (newId, "tiktok", "brandnew", "Yeni", TestPhone.NewE164(), null, t1),
                     (existingId, "tiktok", "alreadyhere", "Old", null, null, t2)));
             return FakeHttpMessageHandler.Empty(404);
         });
@@ -343,7 +344,7 @@ public sealed class ShopperRegistrationIngestServiceTests
             Id: shopperId.ToString("N"),
             Platform: "youtube",
             Username: "silinen",
-            DisplayName: "Ayşe Y.",
+            DisplayName: "Örnek M.",
             AvatarUrl: "https://cdn.example/a.jpg",
             FirstSeenAt: 1000L,
             LastSeenAt: 2000L,
@@ -354,14 +355,14 @@ public sealed class ShopperRegistrationIngestServiceTests
             TotalAmount: 450m,
             BlacklistedAt: 1500L,
             Address: "Ankara",
-            Phone: "+905001112233",
+            Phone: TestPhone.NewE164(),
             RecipientPaysActive: false,
             GroupId: null,
             Email: "a@example.com",
             Tckn: "TCKN-YER-TUTUCU",
             WhatsAppConsent: true,
             SmsConsent: true,
-            FullName: "Ayşe Yılmaz",
+            FullName: "Örnek Müşteri",
             City: "Ankara",
             District: "Çankaya"));
 

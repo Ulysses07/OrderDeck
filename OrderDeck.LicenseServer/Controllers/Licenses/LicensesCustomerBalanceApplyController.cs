@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -32,6 +33,12 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// alınır, "yarısı yazıldı" hâli imkânsız. WhatsApp'ta rezervasyon şart çünkü
 /// orada araya <b>dış</b> bir yan etki (Graph çağrısı) giriyor ve geri
 /// alınamıyor.</para>
+///
+/// <para><b>Kopya Id'si (A5b):</b> eski sürüm birleştirmeden sonra da
+/// kopyanın Id'siyle gelir; bakiye ise asıl kayıttadır (birleştirici
+/// kopyanınkini 0'layıp asıl satıra ekler). preview/scope/apply istekteki
+/// Id'yi önce <see cref="CustomerIdResolver"/>'dan geçirir; kopyaya hiçbir
+/// hareket ya da bakiye yazılmaz.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/customer-balance")]
@@ -43,12 +50,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     private const string KindPurchaseDeduction = "purchase-deduction";
 
     private readonly LicenseDbContext _db;
+    private readonly CustomerIdResolver _customerIds;
     private readonly ILogger<LicensesCustomerBalanceApplyController> _log;
 
     public LicensesCustomerBalanceApplyController(
-        LicenseDbContext db, ILogger<LicensesCustomerBalanceApplyController> log)
+        LicenseDbContext db, CustomerIdResolver customerIds,
+        ILogger<LicensesCustomerBalanceApplyController> log)
     {
         _db = db;
+        _customerIds = customerIds;
         _log = log;
     }
 
@@ -69,9 +79,12 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     {
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
 
+        // Bakiye asıl kayıtta (A5b). Yanıt istemcinin gönderdiği Id'yi taşır —
+        // istemci yanıtı kendi Id'siyle eşleştirebilir.
+        var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, wpfCustomerId, ct);
         var row = await _db.CustomerBalances
-            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
-            .Select(b => new PreviewResponse(b.WpfCustomerId, b.Balance, b.UpdatedAt))
+            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
+            .Select(b => new PreviewResponse(wpfCustomerId, b.Balance, b.UpdatedAt))
             .FirstOrDefaultAsync(ct);
 
         return Ok(row ?? new PreviewResponse(wpfCustomerId, 0m, DateTimeOffset.UtcNow));
@@ -122,10 +135,13 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
 
+        // Düşüm asıl kayıtta (A5b: hareketler birleştirmede taşınır, yenileri
+        // çözülmüş Id'yle yazılır).
+        var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, wpfCustomerId, ct);
         var row = await _db.CustomerBalanceTransactions
             .AsNoTracking()
             .Where(t => t.LicenseId == licenseId
-                && t.WpfCustomerId == wpfCustomerId
+                && t.WpfCustomerId == canonicalId
                 && t.SaleScope == saleScope
                 && t.Kind == KindPurchaseDeduction
                 && !_db.CustomerBalanceTransactions.Any(r => r.ReversesTransactionId == t.Id))
@@ -236,11 +252,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
 
+        // Kopya Id'si asıl kayda çözülür (A5b): bakiye araması, yazılan hareket
+        // ve idempotency karşılaştırması asıl kayıtla.
+        var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, req.WpfCustomerId, ct);
+
         // Sahiplik kontrolünden SONRA bakıyoruz: anahtar başka lisansa aitse
         // çağıran onun sonucunu görmemeli.
         if (req.IdempotencyKey is { } preKey)
         {
-            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, preKey, ct);
+            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, preKey, ct);
             if (foreign) return NotFound();
             if (conflict)
                 return Problem(title: "content-conflict", statusCode: 409,
@@ -250,7 +270,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         var balance = await _db.CustomerBalances
             .FirstOrDefaultAsync(b => b.LicenseId == licenseId
-                && b.WpfCustomerId == req.WpfCustomerId, ct);
+                && b.WpfCustomerId == canonicalId, ct);
         if (balance is null || balance.Balance <= 0)
             return Problem(title: "no-balance", statusCode: 409);
 
@@ -269,7 +289,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         {
             Id = txId,
             LicenseId = licenseId,
-            WpfCustomerId = req.WpfCustomerId,
+            WpfCustomerId = canonicalId,
             Amount = -appliedAmount,
             Kind = KindPurchaseDeduction,
             OriginalAmount = req.ProductTotal,
@@ -325,7 +345,8 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 // Kazananın sonucunu oynatabiliyorsak yarış hikâyesi tutuyor demektir;
                 // tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
                 _db.ChangeTracker.Clear();
-                var (winner, _, conflict) = await LookupAsync(licenseId, req, req.IdempotencyKey.Value, ct);
+                var (winner, _, conflict) = await LookupAsync(
+                    licenseId, req, canonicalId, req.IdempotencyKey.Value, ct);
                 if (conflict)
                     return Problem(title: "content-conflict", statusCode: 409,
                         detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
@@ -359,8 +380,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// operatöre yanlış bakiye gösterirdi. <c>AppliedAmount</c> ise ledger
     /// satırından gelir — "ne kadar düştü" cevabı değişmemeli.</para>
     /// </summary>
+    /// <param name="canonicalCustomerId">İstekteki müşteri Id'sinin asıl kaydı
+    /// (A5b, <see cref="CustomerIdResolver"/>).</param>
     private async Task<(ApplyResponse? Replay, bool Foreign, bool ContentConflict)> LookupAsync(
-        Guid licenseId, ApplyRequest req, Guid key, CancellationToken ct)
+        Guid licenseId, ApplyRequest req, Guid canonicalCustomerId, Guid key, CancellationToken ct)
     {
         var tx = await _db.CustomerBalanceTransactions
             .AsNoTracking()
@@ -387,7 +410,14 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // olarak kilitlenirdi (Seçenek A'nın düştüğü tuzağın aynısı). Kimliği
         // zaten müşteri + tutar bağlıyor, kapsamın eklenmesi bir şey kazandırmaz:
         // anahtarı olmayan (geri yüklenmiş) istemci onu zaten replay edemez.
-        if (tx.WpfCustomerId != req.WpfCustomerId
+        // A5b: müşteri KİŞİ düzeyinde karşılaştırılır — iki taraf da asıl kayda
+        // çözülür. Birleştirmeden önce yazılmış düşümün hareketi asıl kayda
+        // taşınır, eski sürüm aynı isteği kopya Id'siyle tekrarlar: bu çelişki
+        // değil, aynı kişinin aynı isteği. Hareketin kendi Id'si yalnız istekle
+        // farklıysa çözülür (çelişki yolunda tek ek sorgu).
+        var sameCustomer = tx.WpfCustomerId == canonicalCustomerId
+            || await _customerIds.CanonicalOfAsync(licenseId, tx.WpfCustomerId, ct) == canonicalCustomerId;
+        if (!sameCustomer
             || tx.OriginalAmount != req.ProductTotal
             || -tx.Amount > req.Amount)
         {
@@ -397,9 +427,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             return (null, false, true);
         }
 
+        // Kalan bakiye asıl kayıttan (kopyanın satırı birleştirmede 0'lanır).
         var remaining = await _db.CustomerBalances
             .AsNoTracking()
-            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == tx.WpfCustomerId)
+            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalCustomerId)
             .Select(b => (decimal?)b.Balance)
             .FirstOrDefaultAsync(ct) ?? 0m;
 

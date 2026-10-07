@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -24,10 +25,12 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelCustomersController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly CustomerIdResolver _customerIds;
 
-    public PanelCustomersController(LicenseDbContext db)
+    public PanelCustomersController(LicenseDbContext db, CustomerIdResolver customerIds)
     {
         _db = db;
+        _customerIds = customerIds;
     }
 
     public sealed record CustomerSummaryDto(
@@ -42,9 +45,10 @@ public sealed class PanelCustomersController : ControllerBase
         DateTimeOffset LastOrderAt,
         List<CustomerRecentOrderDto> RecentOrders,
         List<CustomerShipmentDto> ActiveShipments,
-        // WpfCustomerProjection.Id (Platform+Username match). Müşteri panel
-        // balance endpoint'ine bunu geçer. Eşleşme yoksa null — bakiye
-        // özelliği bu müşteri için kullanılamaz (henüz shopper app ile bağ kurmamış).
+        // WpfCustomerProjection.Id — çözülmüş asıl kaydın Id'si (Guid olmayan
+        // eski müşteri Id'sinde Platform+Username eşleşmesi). Müşteri panel
+        // balance endpoint'ine bunu geçer. Projeksiyon yoksa null — bakiye
+        // özelliği bu müşteri için kullanılamaz.
         Guid? WpfCustomerProjectionId);
 
     public sealed record CustomerRecentOrderDto(
@@ -399,6 +403,16 @@ public sealed class PanelCustomersController : ControllerBase
 
         if (licenseIds.Count == 0) return NotFound();
 
+        // Eski yer imi/sekme kopya Id'si taşıyabilir (A5b): Id ÖNCE asıl kayda
+        // çözülür, sipariş/kargo ve sıfır siparişli yol asıl kayıtla çalışır.
+        // Yalnız sıfır siparişli yolda çözülseydi, siparişi olan bir asıl kayıt
+        // kopya Id'siyle "0 sipariş" diye görünürdü. Yanıttaki CustomerId de
+        // asıl kaydınki.
+        if (Guid.TryParseExact(customerId, "N", out var requestedId)
+            && await _customerIds.LocateForTenantAsync(authCustomerId, requestedId, ct) is { } located
+            && located.CanonicalId != requestedId)
+            customerId = located.CanonicalId.ToString("N");
+
         // Müşteri için tüm order'ları — display info için ilkini almaya yetecek
         // kadar projeksiyon.
         var ordersQuery = _db.Orders
@@ -496,16 +510,32 @@ public sealed class PanelCustomersController : ControllerBase
                 s.HeldAt))
             .ToListAsync(ct);
 
-        // WpfCustomerProjection lookup — Platform+Username match. Bakiye
-        // endpoint'i bunun ID'sine ihtiyaç duyuyor. Müşteri shopper app ile
-        // bağ kurmamışsa eşleşme olmayabilir → null.
-        var platformLower = identity.Platform.ToLowerInvariant();
-        var wpfProjectionId = await _db.WpfCustomerProjections
-            .Where(p => licenseIds.Contains(p.LicenseId)
-                && p.Platform == platformLower
-                && p.Username == identity.Username)
-            .Select(p => (Guid?)p.Id)
-            .FirstOrDefaultAsync(ct);
+        // WpfCustomerProjection Id'si — bakiye uçlarının anahtarı. Sipariş
+        // müşteri Id'si yukarıda asıl kayda ÇÖZÜLDÜ; projeksiyon o Id'yle
+        // aranır, kullanıcı adıyla değil: Bölüm B'nin tekil indeksinden önce
+        // aynı platform + kullanıcı adında birden çok asıl kayıt olabilir ve
+        // arama başka birinin kaydını seçerdi. O Id'nin projeksiyonu yoksa
+        // (müşteri senkronu siparişlerin gerisinde) null — bakiye açılmaz.
+        // Guid olmayan eski müşteri Id'si için eski platform + kullanıcı adı
+        // araması kalır.
+        Guid? wpfProjectionId;
+        if (Guid.TryParseExact(customerId, "N", out var resolvedId))
+        {
+            wpfProjectionId = await _db.WpfCustomerProjections
+                .Where(p => p.Id == resolvedId && licenseIds.Contains(p.LicenseId))
+                .Select(p => (Guid?)p.Id)
+                .FirstOrDefaultAsync(ct);
+        }
+        else
+        {
+            var platformLower = identity.Platform.ToLowerInvariant();
+            wpfProjectionId = await _db.WpfCustomerProjections
+                .Where(p => licenseIds.Contains(p.LicenseId)
+                    && p.Platform == platformLower
+                    && p.Username == identity.Username)
+                .Select(p => (Guid?)p.Id)
+                .FirstOrDefaultAsync(ct);
+        }
 
         return Ok(new CustomerSummaryDto(
             customerId,

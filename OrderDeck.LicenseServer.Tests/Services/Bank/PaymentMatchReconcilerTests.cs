@@ -26,12 +26,12 @@ public sealed class PaymentMatchReconcilerTests
 
     private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid WpfCustomerId);
 
-    private static Seed SeedShopper(LicenseDbContext db, string username = "ayse_gul34")
+    private static Seed SeedShopper(LicenseDbContext db, string username = "ornek_musteri34")
     {
         var lic = Guid.NewGuid(); var shopperId = Guid.NewGuid();
-        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = "Ayse Gul", UpdatedAt = DateTimeOffset.UtcNow };
+        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = "Ornek Musteri", UpdatedAt = DateTimeOffset.UtcNow };
         db.WpfCustomerProjections.Add(wpf);
-        db.Shoppers.Add(new Shopper { Id = shopperId, FullName = "Ayse Gul", Phone = $"+9050{Random.Shared.Next(10000000, 99999999)}", PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-" });
+        db.Shoppers.Add(new Shopper { Id = shopperId, FullName = "Ornek Musteri", Phone = $"+9050{Random.Shared.Next(10000000, 99999999)}", PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-" });
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink { Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = username, WpfCustomerId = wpf.Id, JoinedAt = DateTimeOffset.UtcNow });
         db.SaveChanges();
         return new Seed(lic, shopperId, wpf.Id);
@@ -54,7 +54,7 @@ public sealed class PaymentMatchReconcilerTests
         return t;
     }
 
-    private static Payment Approved(LicenseDbContext db, Guid lic, Guid shopperId, decimal amount, DateTimeOffset paidAt, string payer = "AYSE GUL")
+    private static Payment Approved(LicenseDbContext db, Guid lic, Guid shopperId, decimal amount, DateTimeOffset paidAt, string payer = "ORNEK MUSTERI")
     {
         var p = new Payment { Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = payer, Amount = amount, PaidAt = paidAt, ReferansNo = $"r-{Guid.NewGuid():N}",
             Status = PaymentStatus.Approved, ApprovedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow };
@@ -68,7 +68,7 @@ public sealed class PaymentMatchReconcilerTests
         using var db = NewDb(); var s = SeedShopper(db);
         var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
         var when = DateTimeOffset.UtcNow.AddHours(-3);
-        var tx = Tx(db, s.LicenseId, 500m, when, "HAVALE ayse_gul34", hash);
+        var tx = Tx(db, s.LicenseId, 500m, when, "HAVALE ornek_musteri34", hash);
         var recon = Recon(db);
         await recon.Matcher.MatchAsync(tx, CancellationToken.None);
         var payment = Approved(db, s.LicenseId, s.ShopperId, 500m, when.AddMinutes(10));
@@ -85,7 +85,7 @@ public sealed class PaymentMatchReconcilerTests
     [Fact]
     public async Task Oneri_farkli_musteriyse_Contradicted()
     {
-        using var db = NewDb(); var s = SeedShopper(db, "ayse_gul34");
+        using var db = NewDb(); var s = SeedShopper(db, "ornek_musteri34");
         OtherCustomer(db, s.LicenseId, "mehmet_k");
         var when = DateTimeOffset.UtcNow.AddHours(-1);
         var tx = Tx(db, s.LicenseId, 250m, when, "HAVALE mehmet_k");
@@ -130,12 +130,12 @@ public sealed class PaymentMatchReconcilerTests
     {
         using var db = NewDb(); var s = SeedShopper(db);
         var when = DateTimeOffset.UtcNow.AddHours(-2);
-        var a = Tx(db, s.LicenseId, 100m, when, "HAVALE AYSE GUL odeme");
-        var b = Tx(db, s.LicenseId, 100m, when.AddMinutes(5), "HAVALE MEHMET KAYA odeme");
+        var a = Tx(db, s.LicenseId, 100m, when, "HAVALE ORNEK MUSTERI odeme");
+        var b = Tx(db, s.LicenseId, 100m, when.AddMinutes(5), "HAVALE DENEME ALICI odeme");
         var recon = Recon(db);
         await recon.Matcher.MatchAsync(a, CancellationToken.None); await recon.Matcher.MatchAsync(b, CancellationToken.None);
 
-        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 100m, when, payer: "AYSE GUL"), CancellationToken.None);
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 100m, when, payer: "ORNEK MUSTERI"), CancellationToken.None);
         (await db.PaymentMatches.SingleAsync(m => m.BankTransactionId == a.Id)).PaymentId.Should().NotBeNull();
         (await db.PaymentMatches.SingleAsync(m => m.BankTransactionId == b.Id)).PaymentId.Should().BeNull();
 
@@ -155,7 +155,7 @@ public sealed class PaymentMatchReconcilerTests
         await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
         (await db.PaymentMatchGaps.SingleAsync()).ResolvedAt.Should().BeNull();
 
-        var late = Tx(db, s.LicenseId, 750m, paidAt.AddHours(4), "HAVALE ayse_gul34");
+        var late = Tx(db, s.LicenseId, 750m, paidAt.AddHours(4), "HAVALE ornek_musteri34");
         await recon.Matcher.MatchAsync(late, CancellationToken.None);
         await recon.TryResolveGapAsync(late, CancellationToken.None);
 
@@ -191,7 +191,7 @@ public sealed class PaymentMatchReconcilerTests
         using var db = NewDb(); var s = SeedShopper(db);
         var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
         var when = DateTimeOffset.UtcNow.AddHours(-2);
-        var tx = Tx(db, s.LicenseId, 410m, when, "HAVALE ayse_gul34", hash);
+        var tx = Tx(db, s.LicenseId, 410m, when, "HAVALE ornek_musteri34", hash);
         var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
         var payment = Approved(db, s.LicenseId, s.ShopperId, 410m, when);
         await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
@@ -220,7 +220,7 @@ public sealed class PaymentMatchReconcilerTests
         var payment = Approved(db, s.LicenseId, s.ShopperId, 760m, paidAt);
         var recon = Recon(db);
         await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
-        var late = Tx(db, s.LicenseId, 760m, paidAt.AddHours(4), "HAVALE ayse_gul34");
+        var late = Tx(db, s.LicenseId, 760m, paidAt.AddHours(4), "HAVALE ornek_musteri34");
         await recon.MatchAndResolveGapAsync(late, CancellationToken.None);
         (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedBankTransactionId.Should().Be(late.Id);
 
@@ -245,11 +245,11 @@ public sealed class PaymentMatchReconcilerTests
         db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = other.Id, IbanHash = hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = DateTimeOffset.UtcNow });
         db.SaveChanges();
         var when = DateTimeOffset.UtcNow;
-        var tx = Tx(db, s.LicenseId, 50m, when, "EFT GELEN AYSE GUL", hash);
+        var tx = Tx(db, s.LicenseId, 50m, when, "EFT GELEN ORNEK MUSTERI", hash);
         var log = new LogRecorder<PaymentMatchReconciler>();
         var recon = Recon(db, log); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
 
-        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 50m, when, payer: "AYSE GUL"), CancellationToken.None);
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 50m, when, payer: "ORNEK MUSTERI"), CancellationToken.None);
 
         var mem = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
         mem.WpfCustomerId.Should().Be(other.Id, "başka müşterinin hafızası sessizce ezilmez");
@@ -320,10 +320,10 @@ public sealed class PaymentMatchReconcilerTests
         using var db = NewDb(); var s = SeedShopper(db);
         OtherCustomer(db, s.LicenseId, "mehmet_k");
         var when = DateTimeOffset.UtcNow.AddHours(-1);
-        var tx = Tx(db, s.LicenseId, 270m, when, "FAST AYSE GUL mehmet_k", Hasher.HashIban(BankHasherTests.TestIban()));
+        var tx = Tx(db, s.LicenseId, 270m, when, "FAST ORNEK MUSTERI mehmet_k", Hasher.HashIban(BankHasherTests.TestIban()));
         var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
 
-        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 270m, when, payer: "AYSE GUL"), CancellationToken.None);
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 270m, when, payer: "ORNEK MUSTERI"), CancellationToken.None);
 
         (await db.PaymentMatches.AsNoTracking().SingleAsync()).Status.Should().Be(PaymentMatchStatus.Contradicted);
         var mem = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
@@ -401,7 +401,7 @@ public sealed class PaymentMatchReconcilerTests
         using var db = NewDb(); var s = SeedShopper(db);
         var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
         var when = DateTimeOffset.UtcNow.AddHours(-1);
-        var approved = Tx(db, s.LicenseId, 370m, when, "HAVALE ayse_gul34");
+        var approved = Tx(db, s.LicenseId, 370m, when, "HAVALE ornek_musteri34");
         var manual = Tx(db, s.LicenseId, 380m, when, "EFT GELEN");
         var recon = Recon(db);
         await recon.Matcher.MatchAsync(approved, CancellationToken.None); await recon.Matcher.MatchAsync(manual, CancellationToken.None);
@@ -495,7 +495,7 @@ public sealed class PaymentMatchReconcilerTests
         var payment = Approved(db, s.LicenseId, s.ShopperId, 120m, paidAt);
         var recon = Recon(db);
         await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
-        var late = Tx(db, s.LicenseId, 120m, paidAt.AddHours(1), "HAVALE ayse_gul34");
+        var late = Tx(db, s.LicenseId, 120m, paidAt.AddHours(1), "HAVALE ornek_musteri34");
 
         await recon.MatchAndResolveGapAsync(late, CancellationToken.None);
 

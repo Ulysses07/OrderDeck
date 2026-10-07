@@ -36,9 +36,9 @@ public class ShopperCodeValidatorTests
     }
 
     [Theory]
-    [InlineData("royal-1")]     // dash
-    [InlineData("royal_1")]     // underscore
-    [InlineData("royal 1")]     // space (post-trim internal space)
+    [InlineData("ornekmagaza-1")]     // dash
+    [InlineData("ornekmagaza_1")]     // underscore
+    [InlineData("ornekmagaza 1")]     // space (post-trim internal space)
     [InlineData("ürün")]        // non-ASCII
     public void Invalid_chars_returns_format(string input)
     {
@@ -48,8 +48,8 @@ public class ShopperCodeValidatorTests
     [Fact]
     public void Uppercase_input_normalised_to_lowercase_passes_format_if_valid()
     {
-        // "ROYAL" → normalised to "royal" → passes format (no invalid chars)
-        var result = new ShopperCodeValidator(null!).ValidateFormat("ROYAL");
+        // "ORNEKMAGAZA" → normalised to "ornekmagaza" → passes format (no invalid chars)
+        var result = new ShopperCodeValidator(null!).ValidateFormat("ORNEKMAGAZA");
         result.IsValid.Should().BeTrue();
     }
 
@@ -76,7 +76,7 @@ public class ShopperCodeValidatorTests
     }
 
     [Theory]
-    [InlineData("royal")]
+    [InlineData("ornekmagaza")]
     [InlineData("antika1907")]
     [InlineData("mezat")]
     [InlineData("abc")]        // min length boundary (3 chars)

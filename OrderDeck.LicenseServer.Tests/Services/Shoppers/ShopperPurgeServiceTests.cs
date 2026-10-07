@@ -18,13 +18,13 @@ public sealed class ShopperPurgeServiceTests
             .UseInMemoryDatabase($"purge-{Guid.NewGuid():N}")
             .Options);
 
-    private static Shopper SeedShopper(LicenseDbContext db, string phone = "+905001112233")
+    private static Shopper SeedShopper(LicenseDbContext db, string? phone = null)
     {
         var shopper = new Shopper
         {
             Id = Guid.NewGuid(),
-            FullName = "Ayşe Yılmaz",
-            Phone = phone,
+            FullName = "Örnek Müşteri",
+            Phone = phone ?? TestPhone.NewE164(),
             PasswordHash = "argon2-hash",
             Address = "Örnek Mah. 1. Sok. No:2 Kadıköy/İstanbul",
             Email = "ayse@example.com",
@@ -42,7 +42,7 @@ public sealed class ShopperPurgeServiceTests
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"{Guid.NewGuid():N}@test.com",
+            Email = $"{Guid.NewGuid():N}@example.test",
             Name = "Yayıncı",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -80,7 +80,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ShopperId = shopper.Id,
-            PayerName = "Ayşe Yılmaz",
+            PayerName = "Örnek Müşteri",
             ReferansNo = "REF-1",
             MediaObjectKey = objectKey,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -255,7 +255,7 @@ public sealed class ShopperPurgeServiceTests
     public async Task Telefonu_bosaltir()
     {
         using var db = NewDb();
-        var shopper = SeedShopper(db, "+905551234567");
+        var shopper = SeedShopper(db, TestPhone.NewE164());
         await db.SaveChangesAsync();
 
         var (service, _) = Build(db);
@@ -282,7 +282,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ShopperId = shopper.Id,
-            PayerName = "Ayşe Yılmaz",
+            PayerName = "Örnek Müşteri",
             Amount = 1500m,
             PaidAt = paidAt,
             ReferansNo = "REF-42",
@@ -329,7 +329,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ShopperId = shopper.Id,
-            PayerName = "Ayşe Yılmaz",
+            PayerName = "Örnek Müşteri",
             ReferansNo = "REF-1",
             MediaObjectKey = key,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -357,7 +357,8 @@ public sealed class ShopperPurgeServiceTests
     public async Task Yayinci_kopyasini_temizler_ve_senkron_icin_damgalar()
     {
         using var db = NewDb();
-        var shopper = SeedShopper(db, "+905551110000");
+        var telefon = TestPhone.NewE164();
+        var shopper = SeedShopper(db, telefon);
         var license = SeedLicense(db);
         var stale = DateTimeOffset.UtcNow.AddDays(-10);
         var projectionId = Guid.NewGuid();
@@ -368,7 +369,7 @@ public sealed class ShopperPurgeServiceTests
             ShopperId = shopper.Id,
             LicenseId = license.Id,
             Platform = "instagram",
-            Username = "ayse_y",
+            Username = "ornek_m",
             WpfCustomerId = projectionId,
             JoinedAt = DateTimeOffset.UtcNow,
         });
@@ -377,9 +378,9 @@ public sealed class ShopperPurgeServiceTests
             Id = projectionId,
             LicenseId = license.Id,
             Platform = "instagram",
-            Username = "ayse_y",
-            FullName = "Ayşe Yılmaz",
-            Phone = "+905551110000",
+            Username = "ornek_m",
+            FullName = "Örnek Müşteri",
+            Phone = telefon,
             Address = "Örnek Mah.",
             UpdatedAt = stale,
         });
@@ -401,6 +402,145 @@ public sealed class ShopperPurgeServiceTests
     }
 
     /// <summary>
+    /// A2: A1'de WpfCustomerProjection'a eklenen yeni kişisel alanlar (City,
+    /// District, Email, DisplayName, TcknProtected, consent'ler) de KVKK
+    /// silmesinde boşalmalı — eski kod yalnız FullName/Phone/Address'i elle
+    /// temizliyordu. Notes ve kara liste alanları politika gereği (bkz.
+    /// <see cref="WpfCustomerProjection.ScrubPersonal"/>) KALMALI.
+    /// </summary>
+    [Fact]
+    public async Task Yayinci_kopyasinin_yeni_kisisel_alanlarini_da_temizler_notu_ve_kara_listeyi_korur()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(
+            db, "+9055" + Random.Shared.Next(10_000_000, 99_999_999));
+        var license = SeedLicense(db);
+        var projectionId = Guid.NewGuid();
+        var blacklistedAt = DateTimeOffset.UtcNow.AddDays(-20);
+
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ornek_m2",
+            WpfCustomerId = projectionId,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = projectionId,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ornek_m2",
+            FullName = "Örnek Müşteri",
+            DisplayName = "ornek.m",
+            Phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999),
+            Email = "ayse2@example.com",
+            TcknProtected = "sifreli-x",
+            Address = "Örnek Mah.",
+            City = "İstanbul",
+            District = "Kadıköy",
+            SmsConsent = true,
+            WhatsAppConsent = true,
+            Notes = "VIP müşteri, kargo notu: kapıcıya bırak",
+            IsBlacklisted = true,
+            BlacklistReason = "Sahte dekont denemesi",
+            BlacklistedAt = blacklistedAt,
+            UpdatedAt = DateTimeOffset.UtcNow.AddDays(-20),
+        });
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        var result = await service.PurgeAsync(shopper.Id, default);
+
+        var projection = await db.WpfCustomerProjections.FirstAsync(c => c.Id == projectionId);
+        projection.FullName.Should().BeNull();
+        projection.DisplayName.Should().BeNull();
+        projection.Phone.Should().BeNull();
+        projection.Email.Should().BeNull();
+        projection.TcknProtected.Should().BeNull();
+        projection.Address.Should().BeNull();
+        projection.City.Should().BeNull();
+        projection.District.Should().BeNull();
+        projection.SmsConsent.Should().BeFalse();
+        projection.WhatsAppConsent.Should().BeFalse();
+
+        // Politika gereği kalanlar: işletme notu + kara liste (sahtekârlık
+        // koruması — silme talebi kara listeden çıkmanın yolu olmamalı).
+        projection.Notes.Should().Be("VIP müşteri, kargo notu: kapıcıya bırak");
+        projection.IsBlacklisted.Should().BeTrue();
+        projection.BlacklistReason.Should().Be("Sahte dekont denemesi");
+        projection.BlacklistedAt.Should().Be(blacklistedAt);
+
+        projection.PurgedAt.Should().NotBeNull();
+        result!.ProjectionsScrubbed.Should().Be(1);
+    }
+
+    /// <summary>
+    /// MarkPurged <c>PurgedAt ??= now</c> kullanır: tarih adli kayıt, İLK
+    /// silme tarihini korumalı. ShopperPurgeService'in projeksiyon sorgusu
+    /// (3. adım) PurgedAt'a göre FİLTRELEMİYOR — bağlı link hâlâ duruyorsa
+    /// zaten-purge'lenmiş bir satır da yeniden işleme girer.
+    ///
+    /// <para><b>Not:</b> AYNI shopper için <c>PurgeAsync</c>'i art arda iki kez
+    /// çağırmak bu senaryoyu SINAMAZ — 4. adım o shopper'ın
+    /// <see cref="ShopperBroadcasterLink"/> satırını siliyor, dolayısıyla
+    /// ikinci çağrıda link kalmadığı için projeksiyon kapsama hiç girmiyor
+    /// (doğrulandı: bu test önce iki art arda çağrıyla yazılmıştı ve ESKİ —
+    /// hatalı — kodla da yanlışlıkla geçiyordu). Bunun yerine satır burada
+    /// DAHA ÖNCEDEN purge'lenmiş olarak seed ediliyor; gerçek sistemde bunun
+    /// kaynağı örn. aynı projeksiyona bağlı BAŞKA bir shopper'ın daha önceki
+    /// purge'u olabilir.</para>
+    /// </summary>
+    [Fact]
+    public async Task Daha_once_purge_edilmis_projeksiyonun_PurgedAt_tarihi_degismez()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(
+            db, "+9055" + Random.Shared.Next(10_000_000, 99_999_999));
+        var license = SeedLicense(db);
+        var projectionId = Guid.NewGuid();
+        var firstPurge = DateTimeOffset.UtcNow.AddDays(-30);
+
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ornek_m3",
+            WpfCustomerId = projectionId,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+        // Zaten temizlenmiş durumda seed ediliyor: kişisel alanlar boş,
+        // PurgedAt 30 gün önceye damgalı.
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = projectionId,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ornek_m3",
+            FullName = null,
+            Phone = null,
+            Address = null,
+            PurgedAt = firstPurge,
+            UpdatedAt = firstPurge,
+        });
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        await service.PurgeAsync(shopper.Id, default);
+
+        var projection = await db.WpfCustomerProjections.FirstAsync(c => c.Id == projectionId);
+        projection.PurgedAt.Should().Be(firstPurge,
+            "tarih adli kayıt; servis MarkPurged üzerinden çağırdığı için İLK silme tarihini korumalı — üzerine yazmamalı");
+        projection.UpdatedAt.Should().BeAfter(firstPurge,
+            "senkron imleci (UpdatedAt) yine de ilerlemeli");
+    }
+
+    /// <summary>
     /// Gölge banka eşleştirmesinin izi: "bu IBAN bu kişinin" hafıza satırı silinir; müşteriyi öneren, ona bağlanan ya da
     /// kullanıcı adı anahtarını çelişki kanıtında taşıyan eşleşmelerin kanıt metni boşaltılır. Eşleşme satırı ölçüm
     /// kaydıdır, kalır. Başka müşterinin hafızası ve kanıtı dokunulmaz kalır.
@@ -416,11 +556,11 @@ public sealed class ShopperPurgeServiceTests
         var stale = DateTimeOffset.UtcNow.AddDays(-3);
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y",
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m",
             WpfCustomerId = purgedId, JoinedAt = DateTimeOffset.UtcNow,
         });
         db.WpfCustomerProjections.AddRange(
-            new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y", UpdatedAt = stale },
+            new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m", UpdatedAt = stale },
             new WpfCustomerProjection { Id = otherId, LicenseId = license.Id, Platform = "instagram", Username = "mehmet_k", UpdatedAt = stale });
         CustomerIbanMemory Memory(Guid customer) => new()
         {
@@ -432,7 +572,7 @@ public sealed class ShopperPurgeServiceTests
             Id = Guid.NewGuid(), LicenseId = license.Id, BankTransactionId = Guid.NewGuid(), ProposedWpfCustomerId = proposed,
             ActualWpfCustomerId = actual, Evidence = evidence, Status = PaymentMatchStatus.Proposed, CreatedAt = stale, UpdatedAt = stale,
         };
-        var purgedKey = BankTextNormalizer.UsernameKey("ayse_y");
+        var purgedKey = BankTextNormalizer.UsernameKey("ornek_m");
         var proposedToPurged = Match($"username={purgedKey}", proposed: purgedId);
         var linkedToPurged = Match("no-signal", actual: purgedId);
         var conflictNamingPurged = Match($"conflict:username={purgedKey},iban-memory");
@@ -488,7 +628,7 @@ public sealed class ShopperPurgeServiceTests
             ShopperId = shopper.Id,
             LicenseId = license.Id,
             Platform = "instagram",
-            Username = "ayse_y",
+            Username = "ornek_m",
             JoinedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();

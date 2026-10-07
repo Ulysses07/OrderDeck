@@ -12,6 +12,7 @@ using OrderDeck.App.ViewModels;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.ViewModels;
@@ -80,8 +81,8 @@ public class SupportRequestsViewModelTests
     {
         var (vm, _) = Build(new[]
         {
-            Req("Resolved One", "+905550000001", resolved: true),
-            Req("Pending One", "+905550000002", resolved: false),
+            Req("Resolved One", TestPhone.NewE164(), resolved: true),
+            Req("Pending One", TestPhone.NewE164(), resolved: false),
         });
 
         await vm.LoadAsync();
@@ -121,7 +122,7 @@ public class SupportRequestsViewModelTests
     [Fact]
     public async Task Issue_verification_sent_status_marks_row_sent_and_resolved()
     {
-        var (vm, _) = Build(new[] { Req("Pending One", "+905550000002", resolved: false) });
+        var (vm, _) = Build(new[] { Req("Pending One", TestPhone.NewE164(), resolved: false) });
         await vm.LoadAsync();
         var row = vm.Items.Single();
 
@@ -140,7 +141,7 @@ public class SupportRequestsViewModelTests
         // Eski sunucu davranışı: 200 + tempPassword dolu ama status yok.
         // Bu BAŞARI SAYILMAZ — istemci parolayı asla göstermeyeceği için
         // yayıncı "tamam" sanıp talebi kapatırsa shopper kilitli kalır.
-        var handler = new FakeHandler(new[] { Req("Pending One", "+905550000002", resolved: false) })
+        var handler = new FakeHandler(new[] { Req("Pending One", TestPhone.NewE164(), resolved: false) })
         {
             IssueResponse = () => new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -165,7 +166,7 @@ public class SupportRequestsViewModelTests
     [Fact]
     public async Task Issue_http_error_sets_RowError_and_keeps_row_open()
     {
-        var handler = new FakeHandler(new[] { Req("Pending One", "+905550000002", resolved: false) })
+        var handler = new FakeHandler(new[] { Req("Pending One", TestPhone.NewE164(), resolved: false) })
         {
             IssueResponse = () => new HttpResponseMessage(HttpStatusCode.InternalServerError),
         };
@@ -185,7 +186,7 @@ public class SupportRequestsViewModelTests
     public async Task Issue_ignores_already_resolved_row()
     {
         var handler = new FakeHandler(
-            new[] { Req("Resolved One", "+905550000001", resolved: true) });
+            new[] { Req("Resolved One", TestPhone.NewE164(), resolved: true) });
         var (vm, _) = Build(Array.Empty<SupportRequestDto>(), handler);
         await vm.LoadAsync();
         var row = vm.Items.Single();
@@ -203,7 +204,7 @@ public class SupportRequestsViewModelTests
         // yüzeyinde parola metni bulunmamalı — repo public, ekran görüntüsü
         // riskli; parolanın tek yolu shopper'ın telefonundaki SMS.
         var leaked = $"pw-{Guid.NewGuid():N}";
-        var handler = new FakeHandler(new[] { Req("Pending One", "+905550000002", resolved: false) })
+        var handler = new FakeHandler(new[] { Req("Pending One", TestPhone.NewE164(), resolved: false) })
         {
             IssueResponse = () => new HttpResponseMessage(HttpStatusCode.OK)
             {

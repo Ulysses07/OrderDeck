@@ -8,6 +8,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
@@ -138,7 +139,7 @@ public class IysConsentPushJobTests
         SeedAccount(db, LicenseA, BrandA);
         var onayAt = DateTimeOffset.UtcNow.AddDays(-5);
         var retAt = DateTimeOffset.UtcNow.AddHours(-1);
-        var row = Pending("+905550000001");
+        var row = Pending(TestPhone.NewE164());
         row.Status = IysConsentStatus.Ret;
         row.ConsentDate = onayAt;
         row.LastLocalEventAt = retAt;
@@ -161,8 +162,10 @@ public class IysConsentPushJobTests
     {
         var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
+        // Üretilen ortak önek + sıra no: her kayıt ayrı alıcı.
+        var onek = TestPhone.NewNational()[..7];
         for (var i = 0; i < count; i++)
-            db.IysConsents.Add(Pending($"+90555{i:D7}"));
+            db.IysConsents.Add(Pending($"+90{onek}{i:D3}"));
         await db.SaveChangesAsync();
         return db;
     }
@@ -178,8 +181,8 @@ public class IysConsentPushJobTests
         // değişiklik bu testi kırar; kapıyı açma kararı elle NetgsmAccount
         // satırı açmaktır.
         using var db = NewDb();
-        db.IysConsents.Add(Pending("+905551110001", BrandA));
-        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandA));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandB));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
@@ -252,7 +255,7 @@ public class IysConsentPushJobTests
     {
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
-        var row = Pending("+905551112233");
+        var row = Pending(TestPhone.NewE164());
         row.PushDeadline = DateTimeOffset.UtcNow.AddHours(-1);
         db.IysConsents.Add(row);
         await db.SaveChangesAsync();
@@ -288,8 +291,8 @@ public class IysConsentPushJobTests
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pending("+905551110001", BrandA));
-        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandA));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandB));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
@@ -310,8 +313,12 @@ public class IysConsentPushJobTests
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pending("+905551110001", BrandA));
-        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        // Aynı üretilen gövde, farklı son hane: iki alıcı kesin farklı.
+        var govde = TestPhone.NewNational()[..9];
+        var telefonA = $"+90{govde}1";
+        var telefonB = $"+90{govde}2";
+        db.IysConsents.Add(Pending(telefonA, BrandA));
+        db.IysConsents.Add(Pending(telefonB, BrandB));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
@@ -322,7 +329,7 @@ public class IysConsentPushJobTests
         for (var i = 0; i < client.AddCalls.Count; i++)
         {
             var brand = client.AddAccounts[i].BrandCode;
-            var expectedPhone = brand == BrandA ? "+905551110001" : "+905551110002";
+            var expectedPhone = brand == BrandA ? telefonA : telefonB;
             client.AddCalls[i].Select(r => r.Recipient).Should().Equal(expectedPhone);
         }
     }
@@ -344,7 +351,7 @@ public class IysConsentPushJobTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandA));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
@@ -374,8 +381,8 @@ public class IysConsentPushJobTests
         var broken = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
         broken.PasswordProtected = foreign;
 
-        db.IysConsents.Add(Pending("+905551110001", BrandA));
-        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandA));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandB));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
@@ -421,8 +428,8 @@ public class IysConsentPushJobTests
             var brokenB = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
             brokenB.PasswordProtected = foreign;
 
-            db.IysConsents.Add(Pending("+905551110001", BrandA));
-            db.IysConsents.Add(Pending("+905551110002", BrandB));
+            db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandA));
+            db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandB));
             await db.SaveChangesAsync();
 
             var client = new FakeIysClient();
@@ -447,7 +454,7 @@ public class IysConsentPushJobTests
     {
         using var db = NewDb();
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandB));
         await db.SaveChangesAsync();
 
         await Job(db, new FakeIysClient()).RunAsync();
@@ -471,8 +478,8 @@ public class IysConsentPushJobTests
         using var db = NewDb(name: null, fail);
         SeedAccount(db, LicenseA, BrandA, createdAt: DateTimeOffset.UtcNow.AddHours(-1));
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pending("+905551110001", BrandA));
-        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandA));
+        db.IysConsents.Add(Pending(TestPhone.NewE164(), BrandB));
         await db.SaveChangesAsync();
 
         await Job(db, new FakeIysClient()).RunAsync();

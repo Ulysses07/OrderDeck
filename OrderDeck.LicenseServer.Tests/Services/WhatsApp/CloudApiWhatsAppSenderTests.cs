@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -22,6 +23,11 @@ namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 public sealed class CloudApiWhatsAppSenderTests
 {
     private static readonly WhatsAppSendContext Ctx = new("PNID_1", "TOKEN_X");
+
+    // Alıcı numarası her koşuda üretilir: 10 haneli ulusal gövde ve Graph "to"
+    // alanının beklediği '+'sız 90… biçimi.
+    private static readonly string Ulusal = TestPhone.NewNational();
+    private static readonly string Alici = "90" + Ulusal;
 
     private sealed class CapturingHandler : HttpMessageHandler
     {
@@ -60,21 +66,21 @@ public sealed class CloudApiWhatsAppSenderTests
         }
     }
 
-    private const string OkBody = """
+    private static readonly string OkBody = $$"""
         {
           "messaging_product": "whatsapp",
-          "contacts": [{ "input": "905551112233", "wa_id": "905551112233" }],
+          "contacts": [{ "input": "{{Alici}}", "wa_id": "{{Alici}}" }],
           "messages": [{ "id": "wamid.HBgMOTA1NTUx" }]
         }
         """;
 
     private static (CloudApiWhatsAppSender Sender, CapturingHandler Handler) Build(
         HttpStatusCode status = HttpStatusCode.OK,
-        string body = OkBody,
+        string? body = null,
         string contentType = "application/json",
         Exception? throwOnSend = null)
     {
-        var handler = new CapturingHandler(status, body, contentType, throwOnSend);
+        var handler = new CapturingHandler(status, body ?? OkBody, contentType, throwOnSend);
         var sender = new CloudApiWhatsAppSender(
             new HttpClient(handler),
             Options.Create(new WhatsAppOptions
@@ -93,7 +99,8 @@ public sealed class CloudApiWhatsAppSenderTests
     {
         var (sender, handler) = Build();
 
-        var result = await sender.SendTextAsync(Ctx, "+90 555 111 22 33", "merhaba");
+        var result = await sender.SendTextAsync(
+            Ctx, $"+90 {Ulusal[..3]} {Ulusal[3..6]} {Ulusal[6..8]} {Ulusal[8..]}", "merhaba");
 
         result.Ok.Should().BeTrue();
         result.MessageId.Should().Be("wamid.HBgMOTA1NTUx");
@@ -108,7 +115,7 @@ public sealed class CloudApiWhatsAppSenderTests
         body.GetProperty("recipient_type").GetString().Should().Be("individual");
         body.GetProperty("type").GetString().Should().Be("text");
         // Graph "to" alanı yalnız rakam ister — '+' ve boşluklar temizlenmeli.
-        body.GetProperty("to").GetString().Should().Be("905551112233");
+        body.GetProperty("to").GetString().Should().Be(Alici);
         body.GetProperty("text").GetProperty("body").GetString().Should().Be("merhaba");
         body.GetProperty("text").GetProperty("preview_url").GetBoolean().Should().BeFalse();
     }
@@ -119,7 +126,7 @@ public sealed class CloudApiWhatsAppSenderTests
         var (sender, handler) = Build();
 
         var result = await sender.SendTemplateAsync(
-            Ctx, "905551112233", new WhatsAppTemplate("hello_world", "en_US", Array.Empty<string>()));
+            Ctx, Alici, new WhatsAppTemplate("hello_world", "en_US", Array.Empty<string>()));
 
         result.Ok.Should().BeTrue();
 
@@ -138,7 +145,7 @@ public sealed class CloudApiWhatsAppSenderTests
         var (sender, handler) = Build();
 
         await sender.SendTemplateAsync(
-            Ctx, "905551112233",
+            Ctx, Alici,
             new WhatsAppTemplate("siparis_hazir", "tr", new[] { "Ayşe", "SP-1042" }));
 
         var components = Json(handler.RequestBody!).GetProperty("template").GetProperty("components");
@@ -168,7 +175,7 @@ public sealed class CloudApiWhatsAppSenderTests
             }
             """);
 
-        var result = await sender.SendTextAsync(Ctx, "905551112233", "merhaba");
+        var result = await sender.SendTextAsync(Ctx, Alici, "merhaba");
 
         result.Ok.Should().BeFalse();
         result.MessageId.Should().BeNull();
@@ -186,7 +193,7 @@ public sealed class CloudApiWhatsAppSenderTests
             { "error": { "message": "Error validating access token", "code": 190 } }
             """);
 
-        var result = await sender.SendTextAsync(Ctx, "905551112233", "merhaba");
+        var result = await sender.SendTextAsync(Ctx, Alici, "merhaba");
 
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be("190");
@@ -199,7 +206,7 @@ public sealed class CloudApiWhatsAppSenderTests
         var (sender, _) = Build(
             HttpStatusCode.BadGateway, "<html>502 Bad Gateway</html>", contentType: "text/html");
 
-        var result = await sender.SendTextAsync(Ctx, "905551112233", "merhaba");
+        var result = await sender.SendTextAsync(Ctx, Alici, "merhaba");
 
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be("502");
@@ -211,7 +218,7 @@ public sealed class CloudApiWhatsAppSenderTests
     {
         var (sender, _) = Build(throwOnSend: new HttpRequestException("no route to host"));
 
-        var result = await sender.SendTextAsync(Ctx, "905551112233", "merhaba");
+        var result = await sender.SendTextAsync(Ctx, Alici, "merhaba");
 
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be("network");
@@ -224,7 +231,7 @@ public sealed class CloudApiWhatsAppSenderTests
         // 200 ama beklenen zarf yok → wamid uyduramayız, başarısız say.
         var (sender, _) = Build(HttpStatusCode.OK, """{ "messaging_product": "whatsapp" }""");
 
-        var result = await sender.SendTextAsync(Ctx, "905551112233", "merhaba");
+        var result = await sender.SendTextAsync(Ctx, Alici, "merhaba");
 
         result.Ok.Should().BeFalse();
         result.MessageId.Should().BeNull();

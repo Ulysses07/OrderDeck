@@ -65,7 +65,7 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
                     new
                     {
                         id = paymentId,
-                        payerName = "Ahmet Yıldız",
+                        payerName = "Örnek Müşteri",
                         amount = 250.75m,
                         paidAt = DateTimeOffset.UtcNow.AddHours(-1),
                         referansNo = "REF-001",
@@ -83,7 +83,7 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var stored = await db.Payments.FirstAsync(p => p.Id == paymentId);
-        stored.PayerName.Should().Be("Ahmet Yıldız");
+        stored.PayerName.Should().Be("Örnek Müşteri");
         stored.Amount.Should().Be(250.75m);
         stored.LicenseId.Should().Be(licenseId);
     }

@@ -6,12 +6,21 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 
 public sealed class WhatsAppMessagingServiceTests
 {
+    // Müşteri numarası her koşuda üretilir. Sohbet tablosu onu '+' işaretsiz
+    // wa_id biçiminde tutar.
+    private static readonly string Telefon = TestPhone.NewE164();
+    private static readonly string SohbetTelefonu = Telefon[1..];
+
+    /// <summary>10 haneli ulusal numaranın boşluklu E.164 yazılışı.</summary>
+    private static string Bosluklu(string n) => $"+90 {n[..3]} {n[3..6]} {n[6..8]} {n[8..]}";
+
     /// <summary>Graph'a hiç gitmeyen sahte gönderen — çağrıları kaydeder.</summary>
     private sealed class RecordingSender : IWhatsAppSender
     {
@@ -54,7 +63,7 @@ public sealed class WhatsAppMessagingServiceTests
                 LicenseId = licenseId,
                 WabaId = "waba-1",
                 PhoneNumberId = "pnid-1",
-                DisplayPhoneNumber = "+905550000000",
+                DisplayPhoneNumber = TestPhone.NewE164(),
                 AccessTokenProtected = accounts.ProtectToken("secret-token"),
                 Status = "active",
                 ConnectedAt = DateTimeOffset.UtcNow,
@@ -89,7 +98,7 @@ public sealed class WhatsAppMessagingServiceTests
     {
         var (_, svc, sender, licenseId) = Build(withAccount: false);
 
-        var result = await svc.SendTextAsync(licenseId, "+905321234567", "merhaba", "panel", default);
+        var result = await svc.SendTextAsync(licenseId, Telefon, "merhaba", "panel", default);
 
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be(WhatsAppMessagingService.ErrNoAccount);
@@ -100,9 +109,9 @@ public sealed class WhatsAppMessagingServiceTests
     public async Task SendText_blocked_when_window_closed_and_never_calls_graph()
     {
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddHours(-25));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddHours(-25));
 
-        var result = await svc.SendTextAsync(licenseId, "+90 532 123 45 67", "merhaba", "panel", default);
+        var result = await svc.SendTextAsync(licenseId, Bosluklu(Telefon[3..]), "merhaba", "panel", default);
 
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be(WhatsAppMessagingService.ErrWindowClosed);
@@ -115,7 +124,7 @@ public sealed class WhatsAppMessagingServiceTests
     {
         var (_, svc, sender, licenseId) = Build();
 
-        var result = await svc.SendTextAsync(licenseId, "905321234567", "merhaba", "panel", default);
+        var result = await svc.SendTextAsync(licenseId, SohbetTelefonu, "merhaba", "panel", default);
 
         result.ErrorCode.Should().Be(WhatsAppMessagingService.ErrWindowClosed);
         sender.Texts.Should().BeEmpty();
@@ -125,13 +134,13 @@ public sealed class WhatsAppMessagingServiceTests
     public async Task SendText_succeeds_within_window_and_persists_message()
     {
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddHours(-2));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddHours(-2));
 
-        var result = await svc.SendTextAsync(licenseId, "+905321234567", "merhaba", "panel", default);
+        var result = await svc.SendTextAsync(licenseId, Telefon, "merhaba", "panel", default);
 
         result.Ok.Should().BeTrue();
         sender.Texts.Should().ContainSingle();
-        sender.Texts[0].To.Should().Be("905321234567");
+        sender.Texts[0].To.Should().Be(SohbetTelefonu);
         sender.Texts[0].Ctx.PhoneNumberId.Should().Be("pnid-1");
         sender.Texts[0].Ctx.AccessToken.Should().Be("secret-token");
 
@@ -149,9 +158,9 @@ public sealed class WhatsAppMessagingServiceTests
     {
         var (db, svc, _, licenseId) = Build();
         var inbound = DateTimeOffset.UtcNow.AddHours(-2);
-        SeedConversation(db, licenseId, "905321234567", inbound);
+        SeedConversation(db, licenseId, SohbetTelefonu, inbound);
 
-        await svc.SendTextAsync(licenseId, "905321234567", "merhaba", "panel", default);
+        await svc.SendTextAsync(licenseId, SohbetTelefonu, "merhaba", "panel", default);
 
         var convo = db.WaConversations.Single();
         convo.LastInboundAt.Should().BeCloseTo(inbound, TimeSpan.FromSeconds(1));
@@ -163,10 +172,10 @@ public sealed class WhatsAppMessagingServiceTests
     public async Task Failed_send_is_persisted_with_error_and_local_wamid()
     {
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddHours(-1));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddHours(-1));
         sender.NextResult = WhatsAppSendResult.Failure("131026", "Message undeliverable");
 
-        var result = await svc.SendTextAsync(licenseId, "905321234567", "merhaba", "panel", default);
+        var result = await svc.SendTextAsync(licenseId, SohbetTelefonu, "merhaba", "panel", default);
 
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be("131026");
@@ -181,10 +190,10 @@ public sealed class WhatsAppMessagingServiceTests
     public async Task SendTemplate_works_even_when_window_closed()
     {
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddDays(-5));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddDays(-5));
         var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe", "250 TL" });
 
-        var result = await svc.SendTemplateAsync(licenseId, "905321234567", tpl, "panel", default);
+        var result = await svc.SendTemplateAsync(licenseId, SohbetTelefonu, tpl, "panel", default);
 
         result.Ok.Should().BeTrue();
         sender.Templates.Should().ContainSingle();
@@ -200,11 +209,12 @@ public sealed class WhatsAppMessagingServiceTests
     {
         var (db, svc, _, licenseId) = Build();
         var tpl = new WhatsAppTemplate("hosgeldin", "tr", Array.Empty<string>());
+        var n = TestPhone.NewNational();
 
-        await svc.SendTemplateAsync(licenseId, "+90 532 999 88 77", tpl, "panel", default);
+        await svc.SendTemplateAsync(licenseId, Bosluklu(n), tpl, "panel", default);
 
         var convo = db.WaConversations.Single();
-        convo.CustomerPhone.Should().Be("905329998877");
+        convo.CustomerPhone.Should().Be("90" + n);
         convo.LicenseId.Should().Be(licenseId);
         convo.PhoneNumberId.Should().Be("pnid-1");
     }
@@ -217,11 +227,11 @@ public sealed class WhatsAppMessagingServiceTests
         // Prodda asıl yol bu: müşteri son 24 saatte yazmadıysa serbest metin
         // Meta tarafından reddediliyor, gönderim ancak onaylı şablonla olur.
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddDays(-3));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddDays(-3));
         var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe", "250,00" });
 
         var result = await svc.SendWithFallbackAsync(
-            licenseId, "905321234567", "serbest metin", tpl, "wpf-payment", default);
+            licenseId, SohbetTelefonu, "serbest metin", tpl, "wpf-payment", default);
 
         result.Ok.Should().BeTrue();
         sender.Texts.Should().BeEmpty();
@@ -241,11 +251,11 @@ public sealed class WhatsAppMessagingServiceTests
         // Pencere açıkken serbest metin ÜCRETSİZ servis mesajı; şablona düşmek
         // gereksiz yere para harcamak olurdu.
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddHours(-2));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddHours(-2));
         var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe" });
 
         var result = await svc.SendWithFallbackAsync(
-            licenseId, "905321234567", "serbest metin", tpl, "wpf-payment", default);
+            licenseId, SohbetTelefonu, "serbest metin", tpl, "wpf-payment", default);
 
         result.Ok.Should().BeTrue();
         sender.Templates.Should().BeEmpty();
@@ -259,10 +269,10 @@ public sealed class WhatsAppMessagingServiceTests
         // Şablon göndermeyen eski WPF sürümleri eski cevabı almalı — yoksa
         // wa.me'ye düşemez ve müşteriye hiçbir şey ulaşmaz.
         var (db, svc, sender, licenseId) = Build();
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddDays(-3));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddDays(-3));
 
         var result = await svc.SendWithFallbackAsync(
-            licenseId, "905321234567", "serbest metin", null, "wpf-payment", default);
+            licenseId, SohbetTelefonu, "serbest metin", null, "wpf-payment", default);
 
         result.ErrorCode.Should().Be(WhatsAppMessagingService.ErrWindowClosed);
         sender.Texts.Should().BeEmpty();
@@ -280,14 +290,15 @@ public sealed class WhatsAppMessagingServiceTests
         // görünmez ve aynı (lisans, numara) için ikinci satır eklenirdi.
         var (db, svc, sender, licenseId) = Build();
         var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe" });
+        var n = TestPhone.NewNational();
 
         var result = await svc.SendWithFallbackAsync(
-            licenseId, "+90 532 999 88 77", "serbest metin", tpl, "wpf-payment", default);
+            licenseId, Bosluklu(n), "serbest metin", tpl, "wpf-payment", default);
 
         result.Ok.Should().BeTrue();
         sender.Templates.Should().ContainSingle();
         db.WaConversations.Should().ContainSingle()
-            .Which.CustomerPhone.Should().Be("905329998877");
+            .Which.CustomerPhone.Should().Be("90" + n);
     }
 
     [Fact]
@@ -297,7 +308,7 @@ public sealed class WhatsAppMessagingServiceTests
 
         (await svc.SendTextAsync(licenseId, "   ", "merhaba", "panel", default))
             .ErrorCode.Should().Be("bad_phone");
-        (await svc.SendTextAsync(licenseId, "905321234567", "  ", "panel", default))
+        (await svc.SendTextAsync(licenseId, SohbetTelefonu, "  ", "panel", default))
             .ErrorCode.Should().Be("empty_body");
         sender.Texts.Should().BeEmpty();
     }
@@ -342,7 +353,7 @@ public sealed class WhatsAppMessagingServiceTests
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = "pnid-1",
-            DisplayPhoneNumber = "+905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("secret-token"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,
@@ -364,13 +375,13 @@ public sealed class WhatsAppMessagingServiceTests
         var sender = new CallerCancellingSender();
         var (db, svc, licenseId) = BuildWithSender(sender);
         using var _db = db;
-        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddMinutes(-5));
+        SeedConversation(db, licenseId, SohbetTelefonu, DateTimeOffset.UtcNow.AddMinutes(-5));
 
         using var callerCts = new CancellationTokenSource();
         sender.CallerCts = callerCts;
 
         var result = await svc.SendTextAsync(
-            licenseId, "905321234567", "merhaba", "panel", callerCts.Token);
+            licenseId, SohbetTelefonu, "merhaba", "panel", callerCts.Token);
 
         sender.SawCancelledToken.Should().BeFalse();
         result.Ok.Should().BeTrue();
@@ -391,7 +402,7 @@ public sealed class WhatsAppMessagingServiceTests
         sender.CallerCts = callerCts;
 
         var result = await svc.SendTemplateAsync(
-            licenseId, "905321234567",
+            licenseId, SohbetTelefonu,
             new WhatsAppTemplate("odeme_hatirlatma", "tr", Array.Empty<string>()),
             "panel", callerCts.Token);
 

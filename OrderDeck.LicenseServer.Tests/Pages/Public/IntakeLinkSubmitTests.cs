@@ -51,7 +51,7 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Slug = slug,
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = TestPhone.NewE164(),
             IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -93,12 +93,12 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
         {
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         };
         foreach (var (k, v) in extra) d[k] = v;
         return new FormUrlEncodedContent(d);
@@ -161,7 +161,7 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
     {
         var (slug, customerId) = await SeedAsync();
         var client = await LinkAsync("facebook", slug, new IntakeLoginResult(true, null,
-            new IntakeLinkedIdentity("Musa Sevinç", null, null)));
+            new IntakeLinkedIdentity("Deneme Alıcı", null, null)));
 
         var resp = await client.PostAsync($"/musteri-kayit/{slug}?handler=Submit",
             Form(await TokenAsync(client, slug), slug));
@@ -169,7 +169,7 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         // Görünen ad HandleValidator'dan GEÇMEZ: boşluk/Türkçe karakter serbest.
         // Chat satırı da görünen adla düşüyor — eşleşme bunun üzerinden.
-        (await LatestAsync(customerId))!.FacebookUsername.Should().Be("Musa Sevinç");
+        (await LatestAsync(customerId))!.FacebookUsername.Should().Be("Deneme Alıcı");
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
@@ -29,11 +30,14 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly LabelRuleApplier _labels;
+    private readonly CustomerIdResolver _customerIds;
 
-    public LicensesShipmentsSyncController(LicenseDbContext db, LabelRuleApplier labels)
+    public LicensesShipmentsSyncController(
+        LicenseDbContext db, LabelRuleApplier labels, CustomerIdResolver customerIds)
     {
         _db = db;
         _labels = labels;
+        _customerIds = customerIds;
     }
 
     public sealed record SyncShipmentItem(
@@ -91,17 +95,29 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
             .ToDictionaryAsync(s => s.Id, ct);
 
+        // Eski sürüm birleştirmeden sonra da kopyanın Id'sini gönderir (A5b):
+        // ekleme de güncelleme de asıl kaydın hex'ini yazar. Güncelleme
+        // CustomerId'yi her gönderimde yeniden yazıyor — çözülmeseydi
+        // birleştiricinin asıl kayda taşıdığı kargo bir sonraki durum
+        // değişikliğinde kopyaya geri dönerdi. Paket tek çağrıda çözülür.
+        // CustomerId gövdede zorunlu (null → 400, model doğrulaması); Guid
+        // olmayan değer aynen döner.
+        var canonicalHex = await _customerIds.CanonicalHexOfAsync(
+            licenseId, req.Shipments.Select(s => s.CustomerId), ct);
+        string CanonicalHex(string hex) => canonicalHex.GetValueOrDefault(hex, hex);
+
         foreach (var item in req.Shipments)
         {
             var status = ParseStatus(item.Status);
+            var customerHex = CanonicalHex(item.CustomerId);
 
             if (existing.TryGetValue(item.Id, out var current))
             {
-                if (current.Status != status && !string.IsNullOrWhiteSpace(item.CustomerId))
-                    statusChangedCustomers.Add(item.CustomerId);
+                if (current.Status != status && !string.IsNullOrWhiteSpace(customerHex))
+                    statusChangedCustomers.Add(customerHex);
 
                 // WPF authoritative — tüm mutable alanları update
-                current.CustomerId = item.CustomerId;
+                current.CustomerId = customerHex;
                 current.Status = status;
                 current.CumulativeAmount = item.CumulativeAmount;
                 current.HeldAt = item.HeldAt;
@@ -114,14 +130,14 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
                 // Yeni dosya "Pending" ile açılıyor — bu bir karar değil, yalnız
                 // kaydın doğuşu. Yayıncı beklet/alıcı ödemeli/kargolandı dediyse
                 // ilk sync'te bile olay sayılır.
-                if (status != ShipmentStatus.Pending && !string.IsNullOrWhiteSpace(item.CustomerId))
-                    statusChangedCustomers.Add(item.CustomerId);
+                if (status != ShipmentStatus.Pending && !string.IsNullOrWhiteSpace(customerHex))
+                    statusChangedCustomers.Add(customerHex);
 
                 _db.Shipments.Add(new Shipment
                 {
                     Id = item.Id,
                     LicenseId = licenseId,
-                    CustomerId = item.CustomerId,
+                    CustomerId = customerHex,
                     Status = status,
                     CumulativeAmount = item.CumulativeAmount,
                     CreatedAt = item.CreatedAt,

@@ -376,4 +376,155 @@ public sealed class TcknBackfillJobTests : IAsyncLifetime
         var after = await verifyDb.Shoppers.AsNoTracking().FirstAsync(s => s.Id == shopperId);
         after.TcProtected.Should().BeNull("purge'ün sildiği kişisel veri geri gelmemeli");
     }
+
+    // ── WpfCustomerProjections.Tckn (A5 — A1 incelemesi): sync ucu bu kolona
+    // HER ZAMAN şifreli yazıyor; bekçi burada düz metin bulursa Protect'i
+    // atlayan bir yazma yolu var demektir. Aynı satır başına CAS deseni. ──────
+
+    /// <summary>Projeksiyon satırları için lisans (LicenseId FK'si) ve onun
+    /// yayıncısı (Customer).</summary>
+    private static async Task<Guid> SeedLicenseAsync(LicenseDbContext db)
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            Email = $"cust-{Guid.NewGuid():N}@x.test",
+            Name = "Backfill-" + Guid.NewGuid().ToString("N")[..6],
+            PasswordHash = $"h-{Guid.NewGuid():N}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var license = new License
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            // LicenseKey HasMaxLength(40) — gerçek SQL'de tam Guid taşar.
+            LicenseKey = "bf-" + Guid.NewGuid().ToString("N")[..12],
+            SkuCode = "STD",
+            ActivationSlots = 1,
+            IssuedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+        };
+        db.Customers.Add(customer);
+        db.Licenses.Add(license);
+        await db.SaveChangesAsync();
+        return license.Id;
+    }
+
+    private static WpfCustomerProjection NewProjection(Guid licenseId, string? tckn) => new()
+    {
+        Id = Guid.NewGuid(),
+        LicenseId = licenseId,
+        Platform = "tiktok",
+        Username = "bf-" + Guid.NewGuid().ToString("N")[..8],
+        TcknProtected = tckn,
+        UpdatedAt = DateTimeOffset.UtcNow,
+    };
+
+    [Fact]
+    public async Task Projeksiyon_duz_metin_TCKNsini_sifreler_ikinci_kosu_dokunmaz()
+    {
+        Guid plaintextId, alreadyProtectedId, emptyId;
+        string plaintextValue, alreadyProtectedCiphertext;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var protector = scope.ServiceProvider.GetRequiredService<TcknProtector>();
+            var licenseId = await SeedLicenseAsync(db);
+
+            // (a) düz metin — Protect'i atlayan bir yolun bıraktığı satır.
+            plaintextValue = TestTckn.NewValid();
+            var plain = NewProjection(licenseId, plaintextValue);
+            // (b) sync ucunun yazdığı gibi şifreli — dokunulmamalı.
+            alreadyProtectedCiphertext = protector.Protect(TestTckn.NewValid())!;
+            var alreadyProtected = NewProjection(licenseId, alreadyProtectedCiphertext);
+            // (c) TCKN'siz satır — aday bile değil.
+            var empty = NewProjection(licenseId, null);
+            db.WpfCustomerProjections.AddRange(plain, alreadyProtected, empty);
+            await db.SaveChangesAsync();
+            (plaintextId, alreadyProtectedId, emptyId) = (plain.Id, alreadyProtected.Id, empty.Id);
+        }
+
+        // Bu test metoduna ÖZEL veritabanı (IAsyncLifetime) — tam sayı.
+        using (var scope = _factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<TcknBackfillJob>().RunAsync(CancellationToken.None))
+                .Should().Be(1);
+        using (var scope = _factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<TcknBackfillJob>().RunAsync(CancellationToken.None))
+                .Should().Be(0, "idempotent: şifreli satır yeniden şifrelenmez");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var vprotector = verify.ServiceProvider.GetRequiredService<TcknProtector>();
+        var a = await vdb.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == plaintextId);
+        a.TcknProtected.Should().StartWith("CfDJ8");
+        vprotector.Unprotect(a.TcknProtected).Should().Be(plaintextValue);
+        (await vdb.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == alreadyProtectedId))
+            .TcknProtected.Should().Be(alreadyProtectedCiphertext, "zaten şifreliydi — job dokunmamalı");
+        (await vdb.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == emptyId))
+            .TcknProtected.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A5b: kopya satırlar (MergedIntoId dolu) varsayılan sorgulardan gizli,
+    /// ama bekçi KOLONUN tamamını taramalı: kopyada bulunan düz metin de
+    /// Protect'i atlayan bir yol demektir. Hem tarama hem CAS kopyayı görmeli.
+    /// </summary>
+    [Fact]
+    public async Task Projeksiyon_kopya_satirdaki_duz_metin_TCKN_de_sifrelenir()
+    {
+        Guid aliasId;
+        string plaintextValue;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var licenseId = await SeedLicenseAsync(db);
+            var canonical = NewProjection(licenseId, null);
+            plaintextValue = TestTckn.NewValid();
+            var alias = NewProjection(licenseId, plaintextValue);
+            alias.MergedIntoId = canonical.Id;
+            db.WpfCustomerProjections.AddRange(canonical, alias);
+            await db.SaveChangesAsync();
+            aliasId = alias.Id;
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<TcknBackfillJob>().RunAsync(CancellationToken.None))
+                .Should().Be(1, "kopya satırdaki düz metin de bulunup şifrelenmeli");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await vdb.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(p => p.Id == aliasId);
+        row.TcknProtected.Should().StartWith("CfDJ8");
+        verify.ServiceProvider.GetRequiredService<TcknProtector>().Unprotect(row.TcknProtected)
+            .Should().Be(plaintextValue);
+    }
+
+    [Fact]
+    public async Task Projeksiyon_CAS_arada_purge_edilen_satiri_atlar()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var job = scope.ServiceProvider.GetRequiredService<TcknBackfillJob>();
+        var licenseId = await SeedLicenseAsync(db);
+
+        var plainA = TestTckn.NewValid();
+        var projection = NewProjection(licenseId, plainA);
+        db.WpfCustomerProjections.Add(projection);
+        await db.SaveChangesAsync();
+
+        // İş A'yı OKUDUKTAN SONRA KVKK silmesi satırı boşaltır (MarkPurged:
+        // TcknProtected = null, PurgedAt damgası) — bayat A'nın şifreli hâli
+        // satıra geri yazılmamalı.
+        await db.WpfCustomerProjections.Where(p => p.Id == projection.Id)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(p => p.TcknProtected, (string?)null)
+                .SetProperty(p => p.PurgedAt, DateTimeOffset.UtcNow));
+
+        var changed = await job.EncryptProjectionIfUnchangedAsync(projection.Id, plainA, CancellationToken.None);
+        changed.Should().Be(0, "satır arada purge edildi — iş kendi okumadığı değerin üstüne yazmamalı");
+
+        var after = await db.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == projection.Id);
+        after.TcknProtected.Should().BeNull("purge'ün sildiği kişisel veri geri gelmemeli");
+    }
 }

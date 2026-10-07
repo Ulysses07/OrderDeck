@@ -35,13 +35,14 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
         db.Licenses.Add(license);
 
         var wpfCustomerId = Guid.NewGuid();
+        var phone = TestPhone.NewE164();
         db.WpfCustomerProjections.Add(new WpfCustomerProjection
         {
             Id = wpfCustomerId,
             LicenseId = license.Id,
             Platform = "youtube",
             Username = "ayse",
-            Phone = "+905321234567",
+            Phone = phone,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
 
@@ -49,7 +50,7 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
         {
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
-            CustomerPhone = "905321234567",
+            CustomerPhone = phone[1..], // WhatsApp biçimi: başında + yok
             PhoneNumberId = "PNID_1",
             Status = "open",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -144,6 +145,39 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
         // olsaydı da çıkardı — o zaman test filtreyi değil hatayı ölçerdi.
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await LabelCountAsync(s.ConversationId)).Should().Be(0);
+    }
+
+    /// <summary>
+    /// A5b: eski sürüm birleştirmeden sonra da kopyanın Id'siyle gönderir; kopyanın
+    /// telefonu yok. Etiket kuralı çözülmüş (asıl kayıt) Id'yle telefona ulaşmalı —
+    /// yoksa birleşmiş her kişinin siparişi sessizce etiketsiz kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task Kopya_Idsiyle_gelen_siparis_asil_kaydin_sohbetini_etiketler()
+    {
+        var s = await SeedAsync();
+        var aliasId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = aliasId,
+                LicenseId = s.LicenseId,
+                Platform = "youtube",
+                Username = "Ayse",
+                MergedIntoId = s.WpfCustomerId,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/v1/licenses/{s.LicenseId}/orders/sync",
+            Body(aliasId, printedAt: DateTimeOffset.UtcNow));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await LabelCountAsync(s.ConversationId)).Should().Be(1);
     }
 
     [Fact]

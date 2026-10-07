@@ -309,7 +309,9 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
 
         var job = new IysDepartureRetentionJob(db,
             NullLogger<IysDepartureRetentionJob>.Instance);
+        var before = DateTimeOffset.UtcNow;
         await job.RunAsync(CancellationToken.None);
+        var after = DateTimeOffset.UtcNow;
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -321,7 +323,9 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
             "imha randevusunu EZMEMELİ, yoksa o dönemin ispatı asla imha edilmez");
         departures[0].Id.Should().Be(firstDepartureId, "eski dönem kaydı olduğu gibi kalmalı");
         var newest = departures[1];
-        newest.DepartedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1));
+        // DepartedAt, koşu başındaki `now`. Assert anına göre sabit tolerans yükte
+        // aşılıyordu; koşuyu önce/sonra damgasıyla sınırlamak yükten bağımsız.
+        newest.DepartedAt.Should().BeOnOrAfter(before).And.BeOnOrBefore(after);
         newest.PurgedAt.Should().BeNull();
     }
 

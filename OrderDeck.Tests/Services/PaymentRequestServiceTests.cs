@@ -19,6 +19,7 @@ using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.Fakes;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Services;
@@ -29,6 +30,7 @@ public class PaymentRequestServiceTests : IDisposable
     private readonly SettingsStore _store;
     private readonly FakeUrlLauncher _launcher;
     private readonly InMemoryPaymentJobStore _jobs = new();
+    private static readonly string Telefon = TestPhone.NewE164();
 
     public PaymentRequestServiceTests()
     {
@@ -390,11 +392,11 @@ public class PaymentRequestServiceTests : IDisposable
         _store.Save(settings);
 
         var sut = MakeSut(_store, _launcher);
-        var result = sut.OpenWhatsApp(MakeCustomer("+905551234567"), 100m, new DateTime(2026, 4, 30));
+        var result = sut.OpenWhatsApp(MakeCustomer(Telefon), 100m, new DateTime(2026, 4, 30));
 
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().HaveCount(1);
-        _launcher.LaunchedUrls[0].Should().StartWith("https://wa.me/905551234567?text=");
+        _launcher.LaunchedUrls[0].Should().StartWith($"https://wa.me/{Telefon[1..]}?text=");
         _launcher.LaunchedUrls[0].Should().Contain("Pay%20100%2C00");
     }
 
@@ -403,7 +405,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
         var sut = MakeSut(_store, _launcher);
-        var result = sut.OpenWhatsApp(MakeCustomer("+905551234567"), 100m, new DateTime(2026, 4, 30));
+        var result = sut.OpenWhatsApp(MakeCustomer(Telefon), 100m, new DateTime(2026, 4, 30));
         result.Should().Be(PaymentRequestResult.LaunchFailed);
     }
 
@@ -416,7 +418,7 @@ public class PaymentRequestServiceTests : IDisposable
         settings.Shipping.FreeShippingThreshold = 5000m;
         settings.Shipping.ShippingFee = 150m;
 
-        var customer = MakeCustomer("+905551234567", recipientPaysActive: true);
+        var customer = MakeCustomer(Telefon, recipientPaysActive: true);
         var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings);
 
         total.Should().Be(3000m, "alıcı ödemeli — total değişmez");
@@ -429,7 +431,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var settings = new AppSettings();   // Shipping defaults null
 
-        var customer = MakeCustomer("+905551234567");
+        var customer = MakeCustomer(Telefon);
         var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings);
 
         total.Should().Be(3000m);
@@ -444,7 +446,7 @@ public class PaymentRequestServiceTests : IDisposable
         settings.Shipping.FreeShippingThreshold = 5000m;
         settings.Shipping.ShippingFee = 150m;
 
-        var customer = MakeCustomer("+905551234567");
+        var customer = MakeCustomer(Telefon);
         var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 6000m, settings);
 
         total.Should().Be(6000m);
@@ -459,7 +461,7 @@ public class PaymentRequestServiceTests : IDisposable
         settings.Shipping.FreeShippingThreshold = 5000m;
         settings.Shipping.ShippingFee = 150m;
 
-        var customer = MakeCustomer("+905551234567");
+        var customer = MakeCustomer(Telefon);
         var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings);
 
         total.Should().Be(3150m);
@@ -478,7 +480,7 @@ public class PaymentRequestServiceTests : IDisposable
         _store.Save(settings);
 
         var sut = MakeSut(_store, _launcher);
-        var result = sut.OpenWhatsApp(MakeCustomer("+905551234567"), 3000m, new DateTime(2026, 4, 30));
+        var result = sut.OpenWhatsApp(MakeCustomer(Telefon), 3000m, new DateTime(2026, 4, 30));
 
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().HaveCount(1);
@@ -508,7 +510,7 @@ public class PaymentRequestServiceTests : IDisposable
         _store.Save(settings);
 
         var sut = MakeSut(_store, _launcher);
-        var result = sut.OpenShippingWonWhatsApp(MakeCustomer("+905551234567"), 5300m);
+        var result = sut.OpenShippingWonWhatsApp(MakeCustomer(Telefon), 5300m);
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().BeEmpty();
     }
@@ -521,11 +523,11 @@ public class PaymentRequestServiceTests : IDisposable
         _store.Save(settings);
 
         var sut = MakeSut(_store, _launcher);
-        var result = sut.OpenShippingWonWhatsApp(MakeCustomer("+905551234567"), 5300m);
+        var result = sut.OpenShippingWonWhatsApp(MakeCustomer(Telefon), 5300m);
 
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().HaveCount(1);
-        _launcher.LaunchedUrls[0].Should().StartWith("https://wa.me/905551234567?text=");
+        _launcher.LaunchedUrls[0].Should().StartWith($"https://wa.me/{Telefon[1..]}?text=");
         _launcher.LaunchedUrls[0].Should().Contain("Tebrikler%20Alice");
         _launcher.LaunchedUrls[0].Should().Contain("5.300%2C00%20TL");
     }
@@ -539,7 +541,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.Sent);
         _launcher.LaunchedUrls.Should().BeEmpty();
@@ -559,7 +561,7 @@ public class PaymentRequestServiceTests : IDisposable
             """{"ok":false,"errorCode":"window_closed","errorMessage":"kapalı","messageId":null}""";
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().ContainSingle()
@@ -574,7 +576,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.SendStatusCode = HttpStatusCode.InternalServerError;
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().ContainSingle()
@@ -601,7 +603,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.ThrowTimeoutOnSend = true;
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().ContainSingle()
@@ -616,7 +618,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher, new StubLicenseProvider());
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.Opened);
         handler.SentBodies.Should().BeEmpty();
@@ -633,7 +635,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         handler.SentBodies.Should().ContainSingle();
         using var body = JsonDocument.Parse(handler.SentBodies[0]);
@@ -653,7 +655,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
 
         await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N")),
+            MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N")),
             250m, new DateTime(2026, 7, 28), "cumulative");
 
         handler.AppliedBalanceBodies.Should().ContainSingle();
@@ -690,7 +692,7 @@ public class PaymentRequestServiceTests : IDisposable
             """{"ok":false,"errorCode":"in_progress","errorMessage":"işleniyor","messageId":null}""";
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.SendPending);
         _launcher.LaunchedUrls.Should().BeEmpty();
@@ -716,7 +718,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         handler.SentBodies.Should().ContainSingle();
         var template = SentTemplate(handler.SentBodies[0]);
@@ -749,7 +751,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         handler.SentBodies.Should().ContainSingle();
         SentTemplate(handler.SentBodies[0]).Should().BeNull();
@@ -769,7 +771,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         handler.SentBodies.Should().ContainSingle();
         SentTemplate(handler.SentBodies[0]).Should().BeNull();
@@ -788,7 +790,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         handler.SentBodies.Should().ContainSingle();
         SentTemplate(handler.SentBodies[0]).Should().BeNull();
@@ -800,7 +802,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);   // UseCloudApi varsayılan false
 
         var result = await sut.OpenWhatsAppAsync(
-            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28), "cumulative");
+            MakeCustomer(Telefon), 250m, new DateTime(2026, 7, 28), "cumulative");
 
         result.Should().Be(PaymentRequestResult.Opened);
         handler.SentBodies.Should().BeEmpty();
@@ -828,7 +830,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -846,7 +848,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -867,7 +869,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 0m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -884,7 +886,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         handler.ThrowTimeoutOnApply = true;
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -910,7 +912,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -928,7 +930,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -947,7 +949,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -978,7 +980,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1006,7 +1008,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1024,7 +1026,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         var legacyKey = Guid.NewGuid();
         _jobs.Seed(new PaymentJob(
             Guid.NewGuid().ToString("N"), customer.Id, "legacy", 250m, 0,
@@ -1052,7 +1054,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 1000m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         var eskiKey = Guid.NewGuid();
         var yeniKey = Guid.NewGuid();
         _jobs.Seed(new PaymentJob(
@@ -1093,7 +1095,7 @@ public class PaymentRequestServiceTests : IDisposable
             var repo = new PaymentJobRepository(factory);
             var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
             handler.PreviewBalance = 100m;
-            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+            var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
             // Rendezvous: iki istek de preview'a VARANA kadar ikisi de bekler —
             // ikisinin de FindOrCreate'i geçip BeginApply'a yarışarak girmesi garanti.
@@ -1145,7 +1147,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 1000m;
         handler.CapAppliedToRequest = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1189,7 +1191,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 1000m;
         handler.CapAppliedToRequest = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1215,7 +1217,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 1000m;
         handler.CapAppliedToRequest = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1263,7 +1265,7 @@ public class PaymentRequestServiceTests : IDisposable
             var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
             handler.PreviewBalance = 1000m;
             handler.CapAppliedToRequest = true; // sunucu istenen tutarı uygular
-            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+            var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
             var ilkApplyVardi = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1340,7 +1342,7 @@ public class PaymentRequestServiceTests : IDisposable
             var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
             handler.PreviewBalance = 1000m;
             handler.CapAppliedToRequest = true;
-            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+            var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
             var ilkApplyVardi = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1408,7 +1410,7 @@ public class PaymentRequestServiceTests : IDisposable
             var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
             handler.PreviewBalance = 1000m;
             handler.CapAppliedToRequest = true;
-            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+            var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
             // A önizlemeye VARDI ama henüz anahtar yazmadı — burada askıda kalır.
             // (B önizlemeyi hiç çağırmaz: revizyon dalı BeginRevision→Settle gider.)
@@ -1482,7 +1484,7 @@ public class PaymentRequestServiceTests : IDisposable
         EnableCloudApi();
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.ThrowTimeoutOnLicenses = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1498,7 +1500,7 @@ public class PaymentRequestServiceTests : IDisposable
         EnableCloudApi();
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.ThrowTimeoutOnLicenses = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 100m, Guid.NewGuid());
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1515,7 +1517,7 @@ public class PaymentRequestServiceTests : IDisposable
         EnableCloudApi();
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.ThrowTimeoutOnLicenses = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.ApplyUncertain, 250m, null, Guid.NewGuid());
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1531,7 +1533,7 @@ public class PaymentRequestServiceTests : IDisposable
         EnableCloudApi();
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.ThrowTimeoutOnLicenses = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 100m, Guid.NewGuid());
 
         (await sut.OpenWhatsAppAsync(customer, 300m, T, "session:s1"))
@@ -1547,7 +1549,7 @@ public class PaymentRequestServiceTests : IDisposable
         EnableCloudApi();
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.ThrowTimeoutOnLicenses = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.ApplyUncertain, 250m, null, Guid.NewGuid(),
             scopeKey: "legacy");
 
@@ -1571,7 +1573,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1");
 
@@ -1587,7 +1589,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
         var tx = Guid.NewGuid();
         handler.ScopeResponseJson = ScopeJson(tx, applied: 40m, total: 250m);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1605,7 +1607,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1");
 
@@ -1623,7 +1625,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
         handler.ThrowOnScope = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.BalanceUncertain);
@@ -1648,7 +1650,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
         var key = Guid.NewGuid();
         handler.TxStatusResponseJson = TxStatusJson(key, applied: 40m, reversed: false);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1677,7 +1679,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
         var key = Guid.NewGuid();
         handler.TxStatusResponseJson = TxStatusJson(key, applied: 40m, reversed: true);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1706,7 +1708,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         // Anahtar stub defterinde yok → türetilmiş cevap 404 (gerçek sunucu
         // paritesi: bilinmeyen/yabancı/düşüm-olmayan kimlik).
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, Guid.NewGuid());
@@ -1729,7 +1731,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
         handler.ThrowOnTxStatus = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, Guid.NewGuid());
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1747,7 +1749,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
         var tx = Guid.NewGuid();
         handler.ScopeResponseJson = ScopeJson(tx, applied: 40m, total: 250m);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1760,7 +1762,7 @@ public class PaymentRequestServiceTests : IDisposable
     public async Task OpenWhatsAppAsync_no_balance_tekrar_paylasimi_durum_ucunu_sormaz()
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.NoBalance, 250m, 0m, Guid.NewGuid());
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1778,7 +1780,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
         var tx = Guid.NewGuid();
         handler.ScopeResponseJson = ScopeJson(tx, applied: 40m, total: 250m);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         // Yerelde 250 değil 300 isteniyor: benimsenen düşüm geri alınıp
         // yeni tutarla yeniden uygulanmalı.
@@ -1797,7 +1799,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         var key = Guid.NewGuid();
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
 
@@ -1816,7 +1818,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         (await sut.OpenWhatsAppAsync(customer, 0m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
@@ -1831,7 +1833,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
         handler.ThrowTimeoutOnReverse = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, Guid.NewGuid());
 
         (await sut.OpenWhatsAppAsync(customer, 0m, T, "session:s1"))
@@ -1849,7 +1851,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
 
         // 1. tıklama: apply cevabı yolda kaybolur — istek tele çıktı, sunucu
         // defterine işlendi ama iş yerelde belirsiz kaldı.
@@ -1880,7 +1882,7 @@ public class PaymentRequestServiceTests : IDisposable
     {
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         var key = Guid.NewGuid();
         SeedJob(customer.Id, PaymentJobState.ApplyUncertain, 250m, null, key,
             scopeKey: "legacy");
@@ -1902,7 +1904,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.PreviewBalance = 100m;
         var key = Guid.NewGuid();
         handler.TxStatusResponseJson = TxStatusJson(key, applied: 40m, reversed: false);
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         var seeded = SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
 
         // Durum cevabı yoldayken eşzamanlı bir akış geri alma niyeti yazar:
@@ -1932,7 +1934,7 @@ public class PaymentRequestServiceTests : IDisposable
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.PreviewBalance = 100m;
         handler.TxStatusBare404 = true;
-        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         var key = Guid.NewGuid();
         SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
 

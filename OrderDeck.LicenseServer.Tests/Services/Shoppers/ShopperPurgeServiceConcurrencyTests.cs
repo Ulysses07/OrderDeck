@@ -131,20 +131,20 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         };
         var shopper = new Shopper
         {
-            Id = Guid.NewGuid(), FullName = "Ayse Yilmaz", Phone = $"+9055{Random.Shared.Next(10000000, 99999999)}",
+            Id = Guid.NewGuid(), FullName = "Ornek Musteri", Phone = $"+9055{Random.Shared.Next(10000000, 99999999)}",
             PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-", CreatedAt = now, UpdatedAt = now,
         };
         var wpf = new WpfCustomerProjection
         {
-            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "instagram", Username = "ayse_y", UpdatedAt = now,
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "instagram", Username = "ornek_m", UpdatedAt = now,
         };
         var tx = new BankTransaction
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
             BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 300m, Currency = "TL",
-            OccurredAt = now.AddHours(-1), Description = "HAVALE ayse_y", TransactionCode = "FT", FetchedAt = now,
+            OccurredAt = now.AddHours(-1), Description = "HAVALE ornek_m", TransactionCode = "FT", FetchedAt = now,
         };
-        var marker = "username=" + BankTextNormalizer.UsernameKey("ayse_y");
+        var marker = "username=" + BankTextNormalizer.UsernameKey("ornek_m");
         var match = new PaymentMatch
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, BankTransactionId = tx.Id, ProposedWpfCustomerId = wpf.Id,
@@ -157,7 +157,7 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         db.WpfCustomerProjections.Add(wpf);
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y",
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m",
             WpfCustomerId = wpf.Id, JoinedAt = now,
         });
         db.BankTransactions.Add(tx);

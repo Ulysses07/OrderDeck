@@ -111,16 +111,16 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
         };
         var shopper = new Shopper
         {
-            Id = Guid.NewGuid(), FullName = "Ayse Gul", Phone = $"+9055{Random.Shared.Next(10000000, 99999999)}",
+            Id = Guid.NewGuid(), FullName = "Ornek Musteri", Phone = $"+9055{Random.Shared.Next(10000000, 99999999)}",
             PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-", CreatedAt = now, UpdatedAt = now,
         };
         var wpf = new WpfCustomerProjection
         {
-            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = now,
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = now,
         };
         var payment = new Payment
         {
-            Id = Guid.NewGuid(), LicenseId = license.Id, ShopperId = shopper.Id, PayerName = "AYSE GUL", Amount = 450m,
+            Id = Guid.NewGuid(), LicenseId = license.Id, ShopperId = shopper.Id, PayerName = "ORNEK MUSTERI", Amount = 450m,
             PaidAt = now.AddHours(-3), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, ApprovedAt = now,
             CreatedAt = now, UpdatedAt = now,
         };
@@ -131,7 +131,7 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
         db.WpfCustomerProjections.Add(wpf);
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "youtube", Username = "ayse_gul34",
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "youtube", Username = "ornek_musteri34",
             WpfCustomerId = wpf.Id, JoinedAt = now,
         });
         db.Payments.Add(payment);

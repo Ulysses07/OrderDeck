@@ -1,6 +1,7 @@
 using System;
 using FluentAssertions;
 using OrderDeck.PdfParsing;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Payments;
@@ -9,6 +10,11 @@ namespace OrderDeck.Tests.Payments;
 /// PdfDekontParser unit testleri — PdfPig'siz, text directly besleniyor.
 /// Türkçe banka dekontu text örnekleri farklı banka format'larını
 /// taklit eder (Ziraat / Garanti / Yapı Kredi / Akbank / Papara).
+///
+/// Banka formatlarının yapısı (bitişik etiketler, boşluk düzeni) gerçek
+/// dekontlardan alındı; içlerindeki kişi/şirket adları kurgusal, IBAN'lar
+/// banka kodu korunarak her koşuda üretiliyor. Kurgusal adlar ayrıştırıcının
+/// etiket/sonlandırıcı kelimelerini (ALICI, GÖNDEREN, MÜŞTERİ, HESAP…) içermez.
 /// </summary>
 public sealed class PdfDekontParserTests
 {
@@ -48,10 +54,10 @@ public sealed class PdfDekontParserTests
     // ── Payer name parse ────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("Gönderen: Ahmet Yıldız\nIBAN: TR...", "Ahmet Yıldız")]
-    [InlineData("Ad Soyad: Ayşe Demir\nTC: 12345", "Ayşe Demir")]
-    [InlineData("Hesap Sahibi: Mehmet Öztürk Tarih: 01.01.2025", "Mehmet Öztürk")]
-    [InlineData("Gonderen: Burak Kaya\nIBAN: TR...", "Burak Kaya")]
+    [InlineData("Gönderen: Örnek Şahıs\nIBAN: TR...", "Örnek Şahıs")]
+    [InlineData("Ad Soyad: Deneme Şahıs\nTC: 12345", "Deneme Şahıs")]
+    [InlineData("Hesap Sahibi: Test Şahıs Tarih: 01.01.2025", "Test Şahıs")]
+    [InlineData("Gonderen: Kurgu Şahıs\nIBAN: TR...", "Kurgu Şahıs")]
     public void ExtractPayerName_recognizes_common_labels(string text, string expected)
     {
         var result = _parser.ParseFromText(text, FakeHash);
@@ -140,7 +146,7 @@ Havale İşlem Dekontu
 Tarih: 15.03.2025 14:32
 İşlem No: GTI8765432101
 
-Gönderen: Ahmet Yıldız
+Gönderen: Örnek Şahıs
 Hesap: TR12 0006 2000 1234 5678 9012 34
 
 Alıcı: ORDERDECK YAYINCI
@@ -152,7 +158,7 @@ Açıklama: Yayın ödemesi
 
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("Ahmet Yıldız");
+        result.PayerName.Should().Be("Örnek Şahıs");
         result.Amount.Should().Be(1500.00m);
         result.PaidAt.Should().Be(new DateTime(2025, 3, 15));
         result.ReferansNo.Should().Be("GTI8765432101");
@@ -180,21 +186,22 @@ Açıklama: Yayın ödemesi
         // Real PDF text dump: "GÖNDEREN" + "İsim : NAME" 2-step,
         // dash-alphanumeric referans no, "Düzenleme Tarihi" label,
         // US-format amount.
+        var aliciIban = TestIban.NewTr("00111");
         var text = "Büyük Mükellefler V.D. No:0680063870DEKONTFAST" +
                    "Düzenleme Tarihi  : 8.05.2026 18:22:00" +
                    "Referans No       : 20260508-99-XOGKX" +
-                   "GÖNDERENİsim              : HARUN CEYLAN" +
-                   "ALICIİsim              : RIDVAN ÖZCAN" +
-                   "IBAN/Hesap No     : TR480011100000000107020132" +
+                   "GÖNDERENİsim              : ÖRNEK ŞAHIS" +
+                   "ALICIİsim              : DENEME YAYINCI" +
+                   $"IBAN/Hesap No     : {aliciIban}" +
                    "İŞLEMTutar             : 24,270.00";
 
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("HARUN CEYLAN");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.Amount.Should().Be(24270m);
         result.PaidAt.Should().Be(new DateTime(2026, 5, 8));
         result.ReferansNo.Should().Be("20260508-99-XOGKX");
-        result.RecipientIban.Should().Be("TR480011100000000107020132");
+        result.RecipientIban.Should().Be(aliciIban);
     }
 
     // ── Ziraat format (2026-05-12 real-world iterate) ───────────────────
@@ -205,23 +212,24 @@ Açıklama: Yayın ödemesi
         // Real Ziraat sample format. Inline "Gönderen : NAME Alan Banka : ..."
         // ve "Alıcı Hesap : TR..." (IBAN keyword'ü yok).
         // Referans no "Fast Sorgu No" label'i altında.
+        var aliciIban = TestIban.NewTr("00015");
         var text = "İŞLEM TARİHİ:06/02/2024-12:19:17 - F06195VALÖR:06.02.2024" +
                    "İŞLEM YERİ:ZİRAAT MOBİLHESAPTAN FASTsagolun" +
                    "Fast Mesaj Kodu : A01 Fast Sorgu No : 2383575454" +
-                   "Gönderen : FUAD HAMOOD" +
+                   "Gönderen : ÖRNEK ŞAHIS" +
                    "Alan Banka : 0015 - Türkiye Vakıﬂar Bankası T.A.O." +
-                   "Alıcı Hesap : TR380001500158007306339861 " +
-                   "Alıcı : Doha Mokhtar Mohamed Issa Harby" +
+                   $"Alıcı Hesap : {aliciIban} " +
+                   "Alıcı : Deneme Uzun Yabancı Kurgu Şahıs" +
                    "İşlem Tutarı : 1.500,00 TRYKomisyon : 3,97 TRY";
 
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("FUAD HAMOOD");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.Amount.Should().Be(1500m);
         result.PaidAt.Should().Be(new DateTime(2024, 2, 6));
         result.ReferansNo.Should().Be("2383575454");
-        result.RecipientIban.Should().Be("TR380001500158007306339861");
-        result.RecipientName.Should().Be("Doha Mokhtar Mohamed Issa Harby");
+        result.RecipientIban.Should().Be(aliciIban);
+        result.RecipientName.Should().Be("Deneme Uzun Yabancı Kurgu Şahıs");
     }
 
     // ── Vakıfbank format (2026-05-12 real-world iterate) ────────────────
@@ -232,22 +240,24 @@ Açıklama: Yayın ödemesi
         // Vakıfbank klasik havale formatı: separator yok, label sonrası direkt
         // değer continuous text. "GONDEREN ADSOYAD/UNVAN", "ALICI HESAP NO",
         // "ALICI AD SOYAD/UNVAN", "İŞLEM TUTARI" — hiçbir colon yok.
+        var aliciIban = TestIban.NewTr("00015");
+        var gonderenIban = TestIban.NewTr("00015");
         var text = "VAKIFBANKİŞLEM BİLGİLERİİŞLEMHesaptan Havale" +
                    "İŞLEM TARİHİ10.08.2022 15:29:05" +
-                   "ALICI HESAP NOTR54 0001 5001 5800 73168592 23" +
+                   $"ALICI HESAP NO{VakifbankGrouped(aliciIban)}" +
                    "ALICI AD SOYAD/UNVANKIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ" +
-                   "GONDEREN HESAP NOTR55 0001 5001 5800 73017241 98" +
-                   "GONDEREN ADSOYAD/UNVANERDAL TÖRE" +
+                   $"GONDEREN HESAP NO{VakifbankGrouped(gonderenIban)}" +
+                   "GONDEREN ADSOYAD/UNVANÖRNEK ŞAHIS" +
                    "İŞLEM TUTARI300,00 TLMASRAF TUTARI" +
                    "İŞLEM NO2022003572846205FİŞ NO";
 
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("ERDAL TÖRE");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.Amount.Should().Be(300m);
         result.PaidAt.Should().Be(new DateTime(2022, 8, 10));
         result.ReferansNo.Should().Be("2022003572846205");
-        result.RecipientIban.Should().Be("TR540001500158007316859223");
+        result.RecipientIban.Should().Be(aliciIban);
         result.RecipientName.Should().Be("KIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ");
     }
 
@@ -258,20 +268,21 @@ Açıklama: Yayın ödemesi
     {
         // Kuveyt Türk PDF tek satır + hiçbir boşluk yok. Continuous text
         // pattern'larıyla yakalanır: GönderenKişi/Alıcı/GönderilenIBAN/Tutar.
+        var aliciIban = TestIban.NewTr("00111");
         var text = "KUVEYTTÜRKKATILIMBANKASIVergiNo:6000026814" +
                    "İşlemTarihi30.03.202614:06SorguNumarası9360608" +
-                   "GönderenKişiV2SPORMALZEMELERİTEKSTİLLİMİTEDŞİRKETİ" +
-                   "AlıcıRıdvanÖzcanGönderilenIBANTR480011100000000107020132" +
+                   "GönderenKişiÖRNEK2SPORMALZEMELERİTEKSTİLLİMİTEDŞİRKETİ" +
+                   $"AlıcıDenemeYayıncıGönderilenIBAN{aliciIban}" +
                    "AlıcıBankaQnbBankA.Ş.İşlemYeriMobilŞubeAçıklama" +
                    "Tutar20.000,00TLYalnızYirmiBinTL";
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("V2SPORMALZEMELERİTEKSTİLLİMİTEDŞİRKETİ");
+        result.PayerName.Should().Be("ÖRNEK2SPORMALZEMELERİTEKSTİLLİMİTEDŞİRKETİ");
         result.Amount.Should().Be(20000m);
         result.PaidAt.Should().Be(new DateTime(2026, 3, 30));
         result.ReferansNo.Should().Be("9360608");
-        result.RecipientIban.Should().Be("TR480011100000000107020132");
-        result.RecipientName.Should().Be("RıdvanÖzcan");
+        result.RecipientIban.Should().Be(aliciIban);
+        result.RecipientName.Should().Be("DenemeYayıncı");
     }
 
     [Fact]
@@ -279,21 +290,23 @@ Açıklama: Yayın ödemesi
     {
         // Garanti BBVA: "SAYIN NAME" (PayerName), "ALACAKLI : NAME" (Recipient),
         // "ALACAKLI IBAN : TR48...", "FAST REF NO : 8794..."
+        var gonderenIban = TestIban.NewTr("00062");
+        var aliciIban = TestIban.NewTr("00111");
         var text = "T. Garanti Bankası A.Ş.HESAPTAN FAST" +
                    "İŞLEM TARİHİ     : 05/05/2026" +
-                   "IBAN:TR44 0006 2000 0920 0006 8833 65" +
-                   "SAYINKUBİLAY ÇİFTÇİİZMİR DENİZ ER EĞİTİM MERKEZİ" +
+                   $"IBAN:{TestIban.Grouped(gonderenIban)}" +
+                   "SAYINÖRNEK ŞAHISİZMİR ÖRNEK EĞİTİM MERKEZİ" +
                    "FAST REF NO      : 8794000212" +
-                   "ALACAKLI         : RIDVAN ÖZCAN" +
-                   "ALACAKLI IBAN    : TR48 0011 1000 0000 0107 0201 32" +
+                   "ALACAKLI         : DENEME YAYINCI" +
+                   $"ALACAKLI IBAN    : {TestIban.Grouped(aliciIban)}" +
                    "MASRAF           :  15,96 TL  Tutar 25.200,00 TL";
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("KUBİLAY ÇİFTÇİ");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.PaidAt.Should().Be(new DateTime(2026, 5, 5));
         result.ReferansNo.Should().Be("8794000212");
-        result.RecipientIban.Should().Be("TR480011100000000107020132");
-        result.RecipientName.Should().Be("RIDVAN ÖZCAN");
+        result.RecipientIban.Should().Be(aliciIban);
+        result.RecipientName.Should().Be("DENEME YAYINCI");
     }
 
     [Fact]
@@ -301,19 +314,22 @@ Açıklama: Yayın ödemesi
     {
         // Denizbank: "Adı SoyadıNAME" (no colon, continuous), "Alıcı Adı SoyadıNAME",
         // "Alıcı IBANTR48..."
-        var text = "Denizbank A.Ş.Müşteri BilgisiAdı SoyadıLAMİA DİLEK" +
-                   "VKN / TCKN/3773007****IBANTR36 0013 4000 0190 0768 3000 01" +
+        var gonderenIban = TestIban.NewTr("00134");
+        var aliciIban = TestIban.NewTr("00111");
+        var maskeliTc = TestTckn.NewValid()[..7] + "****";
+        var text = "Denizbank A.Ş.Müşteri BilgisiAdı SoyadıÖRNEK ŞAHIS" +
+                   $"VKN / TCKN/{maskeliTc}IBAN{TestIban.Grouped(gonderenIban)}" +
                    "İşlem Tarihi01.05.2026 19:31:38" +
                    "Alıcı Banka0111-QNB BANK A.Ş." +
-                   "Alıcı IBANTR48 0011 1000 0000 0107 0201 32" +
-                   "Alıcı Adı SoyadıRIDVAN ÖZCANTutar10.000,00 TL";
+                   $"Alıcı IBAN{TestIban.Grouped(aliciIban)}" +
+                   "Alıcı Adı SoyadıDENEME YAYINCITutar10.000,00 TL";
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("LAMİA DİLEK");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.Amount.Should().Be(10000m);
         result.PaidAt.Should().Be(new DateTime(2026, 5, 1));
-        result.RecipientIban.Should().Be("TR480011100000000107020132");
-        result.RecipientName.Should().Be("RIDVAN ÖZCAN");
+        result.RecipientIban.Should().Be(aliciIban);
+        result.RecipientName.Should().Be("DENEME YAYINCI");
     }
 
     [Fact]
@@ -321,21 +337,23 @@ Açıklama: Yayın ödemesi
     {
         // İş Bankası "Bilgi Dekontu" format: "Alıcı Isim\Unvan:NAME" backslash
         // sub-label.
-        var text = "Bilgi DekontuİBRAHİM BARIN BESLEKMüşteri No:515066630" +
+        var aliciIban = TestIban.NewTr("00111");
+        var musteriNo = Random.Shared.Next(100_000_000, 1_000_000_000);
+        var text = $"Bilgi DekontuÖRNEK İKİNCİ ŞAHISMüşteri No:{musteriNo}" +
                    "İşlem Zam./Valör:24.04.2026 17:53:41 / 24.04.2026" +
                    "İşlem Tutarı:20.000,00 TRY" +
                    "Sorgu Numarası:3327706380" +
                    "Alıcı Banka:111 - QNB Finansbank A.Ş." +
-                   "Alıcı IBAN:TR48 0011 1000 0000 0107 0201 32" +
-                   @"Alıcı Isim\Unvan:RIDVAN ÖZCANBSMV:0,77 TRY";
+                   $"Alıcı IBAN:{TestIban.Grouped(aliciIban)}" +
+                   @"Alıcı Isim\Unvan:DENEME YAYINCIBSMV:0,77 TRY";
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("İBRAHİM BARIN BESLEK");
+        result.PayerName.Should().Be("ÖRNEK İKİNCİ ŞAHIS");
         result.Amount.Should().Be(20000m);
         result.PaidAt.Should().Be(new DateTime(2026, 4, 24));
         result.ReferansNo.Should().Be("3327706380");
-        result.RecipientIban.Should().Be("TR480011100000000107020132");
-        result.RecipientName.Should().Be("RIDVAN ÖZCAN");
+        result.RecipientIban.Should().Be(aliciIban);
+        result.RecipientName.Should().Be("DENEME YAYINCI");
     }
 
     [Fact]
@@ -345,22 +363,23 @@ Açıklama: Yayın ödemesi
         // outgoing format, decimal yok. PayerName="GÖNDEREN ADI", RecipientName=
         // "ALICI ADI" boşluk padding'li label'lar. Amount abs alınır (caller için
         // pozitif tutar).
+        var aliciIban = TestIban.NewTr("00111");
         var text = "e-DekontFAST GÖNDERİMİ" +
                    "İŞLEM TARİHİ:30.04.2026 15:04:56" +
                    "GİDEN FAST TUTARI :-35000                                            " +
-                   "GÖNDEREN ADI      :NURSEL ATBAŞ                                      " +
+                   "GÖNDEREN ADI      :ÖRNEK ŞAHIS                                       " +
                    "ALICI BANKA       :QNB Bank A.Ş.                                     " +
                    "SORGU NO                :2854829652                " +
-                   "ALICI HESAP       :TR430011100000000155645255                        " +
+                   $"ALICI HESAP       :{aliciIban}                        " +
                    "ALICI ADI         :EMAR GLOBAL TEKSTİL GIDA İNŞAAT TURİZM YAZILIM VE TİC.LTD.ŞTİ.                                       " +
                    "ALICI TCKN/VD/VKN : -";
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Be("NURSEL ATBAŞ");
+        result.PayerName.Should().Be("ÖRNEK ŞAHIS");
         result.Amount.Should().Be(35000m); // abs alındı, pozitif
         result.PaidAt.Should().Be(new DateTime(2026, 4, 30));
         result.ReferansNo.Should().Be("2854829652");
-        result.RecipientIban.Should().Be("TR430011100000000155645255");
+        result.RecipientIban.Should().Be(aliciIban);
         result.RecipientName.Should().Contain("EMAR GLOBAL TEKSTİL");
     }
 
@@ -370,20 +389,21 @@ Açıklama: Yayın ödemesi
         // Vakıfbank yeni FAST (2026 format): "GÖNDEREN AD SOYAD /UNVAN" ve
         // "ALICI HESAP NO / IBAN" (slash öncesi/sonrası boşluk var; eski
         // continuous format "GONDEREN ADSOYAD/UNVAN"dan farklı).
+        var aliciIban = TestIban.NewTr("00111");
         var text = "VAKIFBANKİŞLEM BİLGİLERİİŞLEM TÜRÜFAST Giden Anlık Ödeme" +
                    "İŞLEM TARİHİ10.04.2026 12:52:11" +
                    "SORGU NO2553031025İŞLEM TUTARI80.000,00 TLMASRAF TUTARI" +
-                   "GÖNDEREN AD SOYAD /UNVAN242 GİYİM TEKSTİLSANAYİ" +
+                   "GÖNDEREN AD SOYAD /UNVAN123 ÖRNEK TEKSTİLSANAYİ" +
                    "ALICI AD SOYAD/UNVANEMAR GLOBAL TEKSTİL" +
-                   "ALICI HESAP NO / IBANTR43 0011 1000 0000 01556452 55" +
+                   $"ALICI HESAP NO / IBAN{VakifbankGrouped(aliciIban)}" +
                    "İŞLEM NO2026005253222628FİŞ NO";
         var result = _parser.ParseFromText(text, FakeHash);
 
-        result.PayerName.Should().Contain("242 GİYİM TEKSTİL");
+        result.PayerName.Should().Contain("123 ÖRNEK TEKSTİL");
         result.Amount.Should().Be(80000m);
         result.PaidAt.Should().Be(new DateTime(2026, 4, 10));
         result.ReferansNo.Should().Be("2026005253222628");
-        result.RecipientIban.Should().Be("TR430011100000000155645255");
+        result.RecipientIban.Should().Be(aliciIban);
         result.RecipientName.Should().Contain("EMAR GLOBAL");
     }
 
@@ -393,27 +413,31 @@ Açıklama: Yayın ödemesi
         // Vakıfbank "GONDEREN HESAP NOTR55..." — eski loose pattern
         // ("Gönderen" + whitespace) "HESAP NO"'yu PayerName olarak yutuyordu.
         // Doğru pattern colon zorunlu, label "ADSOYAD/UNVAN" lookahead'lı.
-        var text = "GONDEREN HESAP NOTR55 0001 5001 5800 73017241 98ALICI";
+        var text = $"GONDEREN HESAP NO{VakifbankGrouped(TestIban.NewTr("00015"))}ALICI";
         var result = _parser.ParseFromText(text, FakeHash);
         result.PayerName.Should().BeNull();
     }
 
     // ── RecipientIban (2026-05-12) ──────────────────────────────────────
 
+    // IBAN her koşuda üretilir: {0} bitişik, {1} dörtlü gruplu yazılış.
     [Theory]
-    [InlineData("ALICI IBAN: TR830020500009512140100001", "TR830020500009512140100001")]
-    [InlineData("ALICIIsim : X IBAN/Hesap No : TR48 0011 1000 0000 0107 0201 32", "TR480011100000000107020132")]
-    [InlineData("Alıcı : ERDEM HAN GIDA IBAN: TR430011100000000155645255", "TR430011100000000155645255")]
-    public void ExtractRecipientIban_finds_iban_in_alici_section(string text, string expected)
+    [InlineData("ALICI IBAN: {0}", "00205")]
+    [InlineData("ALICIIsim : X IBAN/Hesap No : {1}", "00111")]
+    [InlineData("Alıcı : DENEME ÖRNEK GIDA IBAN: {0}", "00111")]
+    public void ExtractRecipientIban_finds_iban_in_alici_section(string format, string bankCode)
     {
+        var iban = TestIban.NewTr(bankCode);
+        var text = string.Format(format, iban, TestIban.Grouped(iban));
+
         var result = _parser.ParseFromText(text, FakeHash);
-        result.RecipientIban.Should().Be(expected);
+        result.RecipientIban.Should().Be(iban);
     }
 
     [Fact]
     public void ExtractRecipientIban_null_when_only_gonderen_iban_present()
     {
-        var text = "Gönderen: Foo IBAN: TR12 0011 1000 0000 0107 0201 32";
+        var text = $"Gönderen: Foo IBAN: {TestIban.Grouped(TestIban.NewTr("00111"))}";
         var result = _parser.ParseFromText(text, FakeHash);
         result.RecipientIban.Should().BeNull();
     }
@@ -431,9 +455,9 @@ Açıklama: Yayın ödemesi
     // ── RecipientName (2026-05-12 — IBAN + name match güvenliği) ────────
 
     [Theory]
-    [InlineData("ALICI ÜNVANI: ERDEM HAN GIDA   ALICI IBAN: TR...", "ERDEM HAN GIDA")]
-    [InlineData("ALICIIsim              : RIDVAN ÖZCANIBAN/Hesap No", "RIDVAN ÖZCAN")]
-    [InlineData("Alıcı : ERDEM HAN GIDA Kuveyt Türk Katılım", "ERDEM HAN GIDA")]
+    [InlineData("ALICI ÜNVANI: DENEME ÖRNEK GIDA   ALICI IBAN: TR...", "DENEME ÖRNEK GIDA")]
+    [InlineData("ALICIIsim              : DENEME YAYINCIIBAN/Hesap No", "DENEME YAYINCI")]
+    [InlineData("Alıcı : DENEME ÖRNEK GIDA Kuveyt Türk Katılım", "DENEME ÖRNEK GIDA")]
     public void ExtractRecipientName_recognizes_common_formats(string text, string expected)
     {
         var result = _parser.ParseFromText(text, FakeHash);
@@ -449,11 +473,11 @@ Açıklama: Yayın ödemesi
     }
 
     [Theory]
-    [InlineData("Erdem Han Gıda", "Erdem Han Gıda", true)]
-    [InlineData("Erdem Han Gıda", "ERDEM HAN GIDA", true)]   // case-insensitive
-    [InlineData("Erdem Han Gıda", "Erdem Han Gida", true)]   // Türkçe ı→i normalize
-    [InlineData("Erdem Han Gıda", "ERDEM HAN GIDA Kuveyt Türk Katılım", true)]   // substring
-    [InlineData("Erdem Han Gıda", "Mehmet Yılmaz", false)]
+    [InlineData("Deneme Örnek Gıda", "Deneme Örnek Gıda", true)]
+    [InlineData("Deneme Örnek Gıda", "DENEME ÖRNEK GIDA", true)]   // case-insensitive
+    [InlineData("Deneme Örnek Gıda", "Deneme Örnek Gida", true)]   // Türkçe ı→i normalize
+    [InlineData("Deneme Örnek Gıda", "DENEME ÖRNEK GIDA Kuveyt Türk Katılım", true)]   // substring
+    [InlineData("Deneme Örnek Gıda", "Kurgu Şahıs", false)]
     public void NormalizeName_supports_case_and_turkish_compare(
         string vendor, string pdf, bool expectsMatch)
     {
@@ -462,4 +486,8 @@ Açıklama: Yayın ödemesi
         var match = !string.IsNullOrEmpty(v) && (p.Contains(v) || v.Contains(p));
         match.Should().Be(expectsMatch);
     }
+
+    /// <summary>Vakıfbank dekontlarındaki IBAN yazılışı: 4-4-4-4-8-2 gruplar.</summary>
+    private static string VakifbankGrouped(string iban)
+        => $"{iban[..4]} {iban[4..8]} {iban[8..12]} {iban[12..16]} {iban[16..24]} {iban[24..]}";
 }

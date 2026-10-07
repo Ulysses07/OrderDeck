@@ -4,12 +4,18 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 
 public sealed class LabelRuleApplierTests
 {
+    // Numara her koşuda üretilir. Sohbet tablosu onu '+' işaretsiz wa_id
+    // biçiminde tutar (LabelRuleApplier.ToConversationPhone).
+    private static readonly string Telefon = TestPhone.NewE164();
+    private static readonly string SohbetTelefonu = Telefon[1..];
+
     private static (LicenseDbContext Db, LabelRuleApplier Applier, Guid LicenseId) Build()
     {
         var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
@@ -42,13 +48,13 @@ public sealed class LabelRuleApplierTests
     }
 
     private static Guid SeedConversation(
-        LicenseDbContext db, Guid licenseId, string canonicalPhone = "905321234567")
+        LicenseDbContext db, Guid licenseId, string? canonicalPhone = null)
     {
         var convo = new WaConversation
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            CustomerPhone = canonicalPhone,
+            CustomerPhone = canonicalPhone ?? SohbetTelefonu,
             PhoneNumberId = "PNID_1",
             Status = "open",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -58,13 +64,17 @@ public sealed class LabelRuleApplierTests
         return convo.Id;
     }
 
+    // InlineData yalnız yazılış biçimini taşır: {0} operatör kodu (3 hane),
+    // {1} 3 hane, {2} ve {3} ikişer hane.
     [Theory]
-    [InlineData("+905321234567")]
-    [InlineData("05321234567")]
-    [InlineData("905321234567")]
-    [InlineData("0532 123 45 67")]
-    public async Task Attaches_the_rule_label_whatever_shape_the_phone_arrives_in(string phone)
+    [InlineData("+90{0}{1}{2}{3}")]
+    [InlineData("0{0}{1}{2}{3}")]
+    [InlineData("90{0}{1}{2}{3}")]
+    [InlineData("0{0} {1} {2} {3}")]
+    public async Task Attaches_the_rule_label_whatever_shape_the_phone_arrives_in(string format)
     {
+        var n = Telefon[3..];
+        var phone = string.Format(format, n[..3], n[3..6], n[6..8], n[8..]);
         var (db, applier, licenseId) = Build();
         var labelId = SeedLabelAndRule(db, licenseId, WaLabelEvent.PaymentApproved);
         var conversationId = SeedConversation(db, licenseId);
@@ -87,7 +97,7 @@ public sealed class LabelRuleApplierTests
         SeedConversation(db, licenseId);
 
         // Kural PaymentApproved için tanımlı; gelen olay PaymentRejected.
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentRejected, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentRejected, Telefon, default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().BeEmpty();
@@ -100,7 +110,7 @@ public sealed class LabelRuleApplierTests
         SeedLabelAndRule(db, licenseId, WaLabelEvent.PaymentApproved);
         // Sohbet YOK.
 
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, Telefon, default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().BeEmpty();
@@ -111,14 +121,14 @@ public sealed class LabelRuleApplierTests
     {
         var (db, applier, licenseId) = Build();
         SeedLabelAndRule(db, licenseId, WaLabelEvent.PaymentApproved);
-        SeedConversation(db, licenseId, canonicalPhone: "14155552671");
+        SeedConversation(db, licenseId, canonicalPhone: "14155550123");
 
         // Eleyen adımın normalize olduğunu açıkça yaz: sohbet duruyor ve
         // numarası birebir tutuyor, buna rağmen etiket yapışmıyorsa sebep
         // "sohbet bulunamadı" değil, numaranın TR olmaması.
-        LabelRuleApplier.ToConversationPhone("+14155552671").Should().BeNull();
+        LabelRuleApplier.ToConversationPhone("+14155550123").Should().BeNull();
 
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+14155552671", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+14155550123", default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().BeEmpty();
@@ -131,13 +141,13 @@ public sealed class LabelRuleApplierTests
         SeedLabelAndRule(db, licenseId, WaLabelEvent.PaymentApproved);
         SeedConversation(db, Guid.NewGuid());   // BAŞKA yayıncının sohbeti, aynı numara
 
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, Telefon, default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().BeEmpty();
         // Numara tutuyor, sohbet duruyor — tek fark lisans. Bu satır olmasa
         // test, numara hiç çözülemediği için de yeşil kalabilirdi.
-        db.WaConversations.Single().CustomerPhone.Should().Be("905321234567");
+        db.WaConversations.Single().CustomerPhone.Should().Be(SohbetTelefonu);
     }
 
     [Fact]
@@ -147,9 +157,9 @@ public sealed class LabelRuleApplierTests
         SeedLabelAndRule(db, licenseId, WaLabelEvent.PaymentApproved);
         SeedConversation(db, licenseId);
 
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, Telefon, default);
         await db.SaveChangesAsync();
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, Telefon, default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().ContainSingle();
@@ -167,8 +177,8 @@ public sealed class LabelRuleApplierTests
         SeedLabelAndRule(db, licenseId, WaLabelEvent.CustomerSentDocument);
         SeedConversation(db, licenseId);
 
-        await applier.ApplyAsync(licenseId, WaLabelEvent.CustomerSentDocument, "+905321234567", default);
-        await applier.ApplyAsync(licenseId, WaLabelEvent.CustomerSentDocument, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.CustomerSentDocument, Telefon, default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.CustomerSentDocument, Telefon, default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().ContainSingle();
@@ -195,7 +205,7 @@ public sealed class LabelRuleApplierTests
         });
         db.SaveChanges();
 
-        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+        await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, Telefon, default);
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Single().Source.Should().Be("manual");
@@ -242,7 +252,7 @@ public sealed class LabelRuleApplierTests
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            CustomerPhone = "905321234567",
+            CustomerPhone = SohbetTelefonu,
             PhoneNumberId = "PNID_1",
             Status = "open",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -278,7 +288,8 @@ public sealed class LabelRuleApplierTests
         var labelId = SeedLabelAndRule(db, licenseId, WaLabelEvent.OrderReceived);
         var conversationId = SeedConversation(db, licenseId);
         var customerId = Guid.NewGuid();
-        SeedWpfCustomer(db, licenseId, customerId, "0532 123 45 67");
+        var n = Telefon[3..];
+        SeedWpfCustomer(db, licenseId, customerId, $"0{n[..3]} {n[3..6]} {n[6..8]} {n[8..]}");
 
         await applier.TryApplyAndSaveByWpfCustomersAsync(
             licenseId, WaLabelEvent.OrderReceived, new[] { customerId.ToString("N") }, default);
@@ -326,12 +337,16 @@ public sealed class LabelRuleApplierTests
     {
         var (db, applier, licenseId) = Build();
         SeedLabelAndRule(db, licenseId, WaLabelEvent.ShipmentStatusChanged);
-        SeedConversation(db, licenseId, "905321234567");
-        SeedConversation(db, licenseId, "905339876543");
+        // Ortak gövde + farklı son hane: iki müşteri kurgu gereği ayrı.
+        var kok = TestPhone.NewE164()[..^1];
+        var telefonA = kok + "1";
+        var telefonB = kok + "2";
+        SeedConversation(db, licenseId, telefonA[1..]);
+        SeedConversation(db, licenseId, telefonB[1..]);
         var a = Guid.NewGuid();
         var b = Guid.NewGuid();
-        SeedWpfCustomer(db, licenseId, a, "+905321234567");
-        SeedWpfCustomer(db, licenseId, b, "+905339876543");
+        SeedWpfCustomer(db, licenseId, a, telefonA);
+        SeedWpfCustomer(db, licenseId, b, telefonB);
 
         // Aynı müşteri pakette iki kez → yine tek etiket.
         await applier.TryApplyAndSaveByWpfCustomersAsync(
@@ -352,7 +367,7 @@ public sealed class LabelRuleApplierTests
         var (db, applier, licenseId) = Build();
 
         var act = async () => await applier.TryApplyAndSaveAsync(
-            licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+            licenseId, WaLabelEvent.PaymentApproved, Telefon, default);
 
         await act.Should().NotThrowAsync();
         db.WaConversationLabels.Should().BeEmpty();

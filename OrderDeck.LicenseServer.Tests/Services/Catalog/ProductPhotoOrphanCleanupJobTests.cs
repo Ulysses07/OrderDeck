@@ -29,7 +29,7 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var customer = new Customer
         {
-            Id = Guid.NewGuid(), Email = $"orphan-{Guid.NewGuid():N}@t.com",
+            Id = Guid.NewGuid(), Email = $"orphan-{Guid.NewGuid():N}@example.test",
             Name = "Yetim", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Customers.Add(customer);

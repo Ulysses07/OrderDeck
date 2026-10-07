@@ -27,11 +27,14 @@ public sealed class PanelBarcodesController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly BarcodeAllocator _barcodes;
+    private readonly ILogger<PanelBarcodesController> _log;
 
-    public PanelBarcodesController(LicenseDbContext db, BarcodeAllocator barcodes)
+    public PanelBarcodesController(
+        LicenseDbContext db, BarcodeAllocator barcodes, ILogger<PanelBarcodesController> log)
     {
         _db = db;
         _barcodes = barcodes;
+        _log = log;
     }
 
     public sealed record NextBarcodesDto(IReadOnlyList<string> Barcodes);
@@ -69,8 +72,15 @@ public sealed class PanelBarcodesController : ControllerBase
         // Geniş yakalamak burada güvenli: bu eylem TEK satır yazıyor (sayaç),
         // dolayısıyla buradan çıkan her DbUpdateException o satır hakkındadır
         // ve iki başarısızlık biçiminin de çaresi aynı — tekrar dene.
-        catch (DbUpdateException)
+        //
+        // Yine de günlüğe düşer: EF'in kendi kayıt hatası günlüğü Debug'da
+        // (LicenseDbContext), beklenmeyen bir hata burada sessiz kalmasın. Yalnız
+        // tür + SQL numarası — iletisi anahtar değeri taşıyabilir.
+        catch (DbUpdateException ex)
         {
+            _log.LogWarning(
+                "Barkod sayacı yazılamadı ({ExceptionType}, SqlError={SqlError}); barcode-counter-busy dönülüyor",
+                ex.GetType().Name, (ex.InnerException as Microsoft.Data.SqlClient.SqlException)?.Number);
             return Problem(title: "barcode-counter-busy",
                 detail: "Aynı anda başka bir barkod işlemi yapıldı; tekrar dene.",
                 statusCode: 409);

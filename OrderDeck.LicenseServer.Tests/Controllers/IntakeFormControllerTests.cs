@@ -72,7 +72,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         var resp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
             slug,
-            whatsAppPhone = "+905551234567",
+            whatsAppPhone = TestPhone.NewE164(),
             customTitle = "Test Form",
             isActive = true
         });
@@ -91,7 +91,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
 
         await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
-            slug, whatsAppPhone = "+905551234567", isActive = true
+            slug, whatsAppPhone = TestPhone.NewE164(), isActive = true
         });
 
         var resp = await client.GetAsync("/api/v1/me/intake-form");
@@ -106,7 +106,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         var (client, _) = await CreateAuthedClientAsync();
         var resp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
-            slug = "ADMIN", whatsAppPhone = "+905551234567"
+            slug = "ADMIN", whatsAppPhone = TestPhone.NewE164()
         });
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -131,13 +131,13 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
 
         var first = await client1.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
-            slug, whatsAppPhone = "+905551111111"
+            slug, whatsAppPhone = TestPhone.NewE164()
         });
         first.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var second = await client2.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
-            slug, whatsAppPhone = "+905552222222"
+            slug, whatsAppPhone = TestPhone.NewE164()
         });
         second.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
@@ -148,7 +148,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         var (client, customerId) = await CreateAuthedClientAsync();
         var slug = $"s-{Guid.NewGuid():N}"[..10];
         await client.PutAsJsonAsync("/api/v1/me/intake-form",
-            new { slug, whatsAppPhone = "+905551234567" });
+            new { slug, whatsAppPhone = TestPhone.NewE164() });
 
         // Initial: empty
         var resp1 = await client.GetAsync("/api/v1/me/form-submissions");
@@ -190,7 +190,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
             slug,
-            whatsAppPhone = "+905551234567",
+            whatsAppPhone = TestPhone.NewE164(),
             isActive = true,
             instagramDmBotEnabled = true
         });
@@ -217,11 +217,12 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
     {
         var (client, customerId) = await CreateAuthedClientAsync();
         var slug = $"s-{Guid.NewGuid():N}"[..10];
+        var phone = TestPhone.NewE164();
 
         await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
             slug,
-            whatsAppPhone = "+905551234567",
+            whatsAppPhone = phone,
             isActive = true,
             instagramDmBotEnabled = true
         });
@@ -230,7 +231,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
         {
             slug,
-            whatsAppPhone = "+905551234567",
+            whatsAppPhone = phone,
             isActive = true
         });
         putResp.StatusCode.Should().Be(HttpStatusCode.OK);

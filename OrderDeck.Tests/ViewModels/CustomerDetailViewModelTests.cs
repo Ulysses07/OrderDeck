@@ -174,15 +174,15 @@ public class CustomerDetailViewModelTests
     {
         // Kayıt formundan gelen müşteride DisplayName = Ad Soyad (arama listesi
         // için). Rozet bunu gösterirse operatör Instagram kullanıcı adını hiç
-        // göremez — "Instagram: Ayşe Önal" gibi.
+        // göremez — "Instagram: Örnek Müşteri" gibi.
         var h = Build();
         SeedCustomer(h, id: "c1", platform: "instagram",
-                     username: "alminays.design", displayName: "Ayşe Önal");
+                     username: "ornek.tasarim", displayName: "Örnek Müşteri");
 
         h.Vm.Load("c1").Should().BeTrue();
 
         h.Vm.Identities.Should().ContainSingle()
-            .Which.Should().Be("Instagram: alminays.design");
+            .Which.Should().Be("Instagram: ornek.tasarim");
     }
 
     [Fact]
@@ -190,12 +190,12 @@ public class CustomerDetailViewModelTests
     {
         var h = Build();
         SeedCustomer(h, id: "c1", platform: "youtube",
-                     username: "UCabc123", displayName: "@ayseonal");
+                     username: "UCabc123", displayName: "@ornekmusteri");
 
         h.Vm.Load("c1").Should().BeTrue();
 
         h.Vm.Identities.Should().ContainSingle()
-            .Which.Should().Be("YouTube: @ayseonal");
+            .Which.Should().Be("YouTube: @ornekmusteri");
     }
 
     // ─── Section title (active session vs lifetime) ──────────────────────────

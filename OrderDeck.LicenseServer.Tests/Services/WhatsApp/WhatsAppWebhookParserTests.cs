@@ -1,12 +1,20 @@
 using FluentAssertions;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 
 public sealed class WhatsAppWebhookParserTests
 {
-    private const string TextMessagePayload = """
+    // Numaralar her koşuda üretilir; Meta wa_id'yi '+' işaretsiz yazar. Müşteri
+    // ve işletme ortak gövde + farklı son haneyle kurgu gereği ayrı: echo ve
+    // geçmiş testleri karşı tarafın hangisi olduğunu bu farktan ölçüyor.
+    private static readonly string Kok = TestPhone.NewE164()[1..^1];
+    private static readonly string MusteriWaId = Kok + "1";
+    private static readonly string IsletmeWaId = Kok + "2";
+
+    private static readonly string TextMessagePayload = $$$"""
     {
       "object": "whatsapp_business_account",
       "entry": [{
@@ -15,10 +23,10 @@ public sealed class WhatsAppWebhookParserTests
           "field": "messages",
           "value": {
             "messaging_product": "whatsapp",
-            "metadata": { "display_phone_number": "905550000000", "phone_number_id": "PNID_1" },
-            "contacts": [{ "profile": { "name": "Ayşe Yılmaz" }, "wa_id": "905321234567" }],
+            "metadata": { "display_phone_number": "{{{IsletmeWaId}}}", "phone_number_id": "PNID_1" },
+            "contacts": [{ "profile": { "name": "Örnek Müşteri" }, "wa_id": "{{{MusteriWaId}}}" }],
             "messages": [{
-              "from": "905321234567",
+              "from": "{{{MusteriWaId}}}",
               "id": "wamid.ABC",
               "timestamp": "1753440000",
               "type": "text",
@@ -38,8 +46,8 @@ public sealed class WhatsAppWebhookParserTests
         var m = events.Messages.Should().ContainSingle().Subject;
         m.PhoneNumberId.Should().Be("PNID_1");
         m.WamId.Should().Be("wamid.ABC");
-        m.FromPhone.Should().Be("905321234567");
-        m.ProfileName.Should().Be("Ayşe Yılmaz");
+        m.FromPhone.Should().Be(MusteriWaId);
+        m.ProfileName.Should().Be("Örnek Müşteri");
         m.Type.Should().Be("text");
         m.Body.Should().Be("12 numaralı ürün bende");
         m.IsEcho.Should().BeFalse();
@@ -49,12 +57,12 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Parses_image_message_with_media_id_and_caption()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "messages": [{
-              "from": "905321234567", "id": "wamid.IMG", "timestamp": "1753440000",
+              "from": "{{{MusteriWaId}}}", "id": "wamid.IMG", "timestamp": "1753440000",
               "type": "image",
               "image": { "id": "MEDIA_9", "mime_type": "image/jpeg", "caption": "dekont" }
             }]
@@ -72,12 +80,12 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Echo_uses_to_as_counterparty_and_is_flagged()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_message_echoes", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "message_echoes": [{
-              "from": "905550000000", "to": "905321234567",
+              "from": "{{{IsletmeWaId}}}", "to": "{{{MusteriWaId}}}",
               "id": "wamid.ECHO", "timestamp": "1753440000",
               "type": "text", "text": { "body": "elden yazdım" }
             }]
@@ -87,19 +95,19 @@ public sealed class WhatsAppWebhookParserTests
 
         var m = WhatsAppWebhookParser.Parse(payload).Messages.Should().ContainSingle().Subject;
         m.IsEcho.Should().BeTrue();
-        m.FromPhone.Should().Be("905321234567");
+        m.FromPhone.Should().Be(MusteriWaId);
         m.Body.Should().Be("elden yazdım");
     }
 
     [Fact]
     public void Parses_status_updates_with_errors()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "statuses": [
-              { "id": "wamid.OK", "status": "delivered", "timestamp": "1753440000", "recipient_id": "905321234567" },
+              { "id": "wamid.OK", "status": "delivered", "timestamp": "1753440000", "recipient_id": "{{{MusteriWaId}}}" },
               { "id": "wamid.BAD", "status": "failed", "timestamp": "1753440001",
                 "errors": [{ "code": 131026, "title": "Message undeliverable" }] }
             ]
@@ -130,11 +138,11 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Message_without_id_is_skipped()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "messages": [{ "from": "905321234567", "timestamp": "1753440000", "type": "text",
+            "messages": [{ "from": "{{{MusteriWaId}}}", "timestamp": "1753440000", "type": "text",
                            "text": { "body": "kimliksiz" } }]
           }}]}]
         }
@@ -146,11 +154,11 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Unsupported_type_is_kept_without_body()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "messages": [{ "from": "905321234567", "id": "wamid.X", "timestamp": "1753440000",
+            "messages": [{ "from": "{{{MusteriWaId}}}", "id": "wamid.X", "timestamp": "1753440000",
                            "type": "contacts", "contacts": [{ "name": { "first_name": "Ali" } }] }]
           }}]}]
         }
@@ -246,18 +254,18 @@ public sealed class WhatsAppWebhookParserTests
     /// "from = müşteri" varsayımı burada çalışmaz — işletmenin kendi yazdığı
     /// mesaj müşteriden gelmiş gibi kaydedilirdi.
     /// </summary>
-    private const string HistoryPayload = """
+    private static readonly string HistoryPayload = $$$"""
     {
       "entry": [{ "changes": [{ "field": "history", "value": {
         "metadata": { "phone_number_id": "PNID_1" },
         "history": [{
           "metadata": { "phase": "0", "chunk_order": 1, "progress": 100 },
           "threads": [{
-            "id": "905321234567",
+            "id": "{{{MusteriWaId}}}",
             "messages": [
-              { "from": "905321234567", "id": "wamid.H_IN", "timestamp": "1753440000",
+              { "from": "{{{MusteriWaId}}}", "id": "wamid.H_IN", "timestamp": "1753440000",
                 "type": "text", "text": { "body": "eski soru" } },
-              { "from": "905550000000", "to": "905321234567", "id": "wamid.H_OUT",
+              { "from": "{{{IsletmeWaId}}}", "to": "{{{MusteriWaId}}}", "id": "wamid.H_OUT",
                 "timestamp": "1753440060", "type": "text", "text": { "body": "eski cevap" } }
             ]
           }]
@@ -277,7 +285,7 @@ public sealed class WhatsAppWebhookParserTests
         inbound.IsEcho.Should().BeFalse();
         inbound.IsHistory.Should().BeTrue();
         inbound.PhoneNumberId.Should().Be("PNID_1");
-        inbound.FromPhone.Should().Be("905321234567");
+        inbound.FromPhone.Should().Be(MusteriWaId);
         inbound.Body.Should().Be("eski soru");
 
         // İşletmenin yazdığı mesaj giden sayılmalı, ama karşı taraf yine
@@ -285,7 +293,7 @@ public sealed class WhatsAppWebhookParserTests
         var outbound = events.Messages.Single(m => m.WamId == "wamid.H_OUT");
         outbound.IsEcho.Should().BeTrue();
         outbound.IsHistory.Should().BeTrue();
-        outbound.FromPhone.Should().Be("905321234567");
+        outbound.FromPhone.Should().Be(MusteriWaId);
     }
 
     [Fact]
@@ -301,12 +309,12 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Kimliksiz_thread_atlanir()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "history", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "history": [{ "threads": [{
-              "messages": [{ "from": "905321234567", "id": "wamid.H", "timestamp": "1753440000",
+              "messages": [{ "from": "{{{MusteriWaId}}}", "id": "wamid.H", "timestamp": "1753440000",
                              "type": "text", "text": { "body": "sahipsiz" } }]
             }]}]
           }}]}]
@@ -319,17 +327,18 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Rehber_senkronu_kisi_adlarini_tasir()
     {
-        var payload = """
+        var silinen = TestPhone.NewE164()[1..];
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "state_sync": [
               { "type": "contact", "action": "add",
-                "contact": { "phone_number": "905321234567", "full_name": "Ayşe Yılmaz" } },
+                "contact": { "phone_number": "{{{MusteriWaId}}}", "full_name": "Örnek Müşteri" } },
               { "type": "contact", "action": "remove",
-                "contact": { "phone_number": "905329999999", "full_name": "Silinen" } },
+                "contact": { "phone_number": "{{{silinen}}}", "full_name": "Silinen" } },
               { "type": "contact", "action": "add", "contact": { "full_name": "Numarasız" } },
-              { "type": "chat", "chat": { "id": "905321234567" } }
+              { "type": "chat", "chat": { "id": "{{{MusteriWaId}}}" } }
             ]
           }}]}]
         }
@@ -343,8 +352,8 @@ public sealed class WhatsAppWebhookParserTests
 
         var added = events.Contacts[0];
         added.PhoneNumberId.Should().Be("PNID_1");
-        added.Phone.Should().Be("905321234567");
-        added.FullName.Should().Be("Ayşe Yılmaz");
+        added.Phone.Should().Be(MusteriWaId);
+        added.FullName.Should().Be("Örnek Müşteri");
         added.Action.Should().Be("add");
 
         events.Contacts[1].Action.Should().Be("remove");
@@ -355,12 +364,12 @@ public sealed class WhatsAppWebhookParserTests
     [Fact]
     public void Yalniz_rehber_iceren_paket_bos_sayilmaz()
     {
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "state_sync": [{ "type": "contact", "action": "add",
-              "contact": { "phone_number": "905321234567", "full_name": "Ayşe" } }]
+              "contact": { "phone_number": "{{{MusteriWaId}}}", "full_name": "Ayşe" } }]
           }}]}]
         }
         """;

@@ -108,17 +108,19 @@ public class LabelRepositoryPeriodTests
     {
         var (db, labels, customers) = Fx();
         using var _ = db;
-        customers.Insert(Cust("c1", fullName: "Ayşe Yılmaz", phone: "+905551112233",
-            address: "Moda Cad. 5", tckn: "12345678901",
+        var telefon = TestPhone.NewE164();
+        var tckn = TestTckn.NewValid();
+        customers.Insert(Cust("c1", fullName: "Örnek Müşteri", phone: telefon,
+            address: "Moda Cad. 5", tckn: tckn,
             city: "İstanbul", district: "Kadıköy"));
         labels.Insert(Lbl("l1", "c1", 100m, printedAt: 1_500));
 
         var row = labels.GetPeriodAccountRows(From, To).Single();
 
-        row.FullName.Should().Be("Ayşe Yılmaz");
-        row.Phone.Should().Be("+905551112233");
+        row.FullName.Should().Be("Örnek Müşteri");
+        row.Phone.Should().Be(telefon);
         row.Address.Should().Be("Moda Cad. 5");
-        row.Tckn.Should().Be("12345678901");
+        row.Tckn.Should().Be(tckn);
         // e-Fatura şablonu il/ilçeyi ayrı sütunda istiyor.
         row.City.Should().Be("İstanbul");
         row.District.Should().Be("Kadıköy");

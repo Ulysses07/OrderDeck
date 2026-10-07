@@ -101,7 +101,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var lic = AddLicense(db, connected: true);
-        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow };
+        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow };
         db.WpfCustomerProjections.Add(wpf);
         var tx = Tx(lic, 120m, "EFT GELEN aciklamasiz");
         db.BankTransactions.Add(tx);
@@ -160,19 +160,19 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         tr.QuerySelector("[data-cell='description']")!.TextContent.Trim().Should().Be("EFT GELEN aciklamasiz");
         list.QuerySelector("[data-box='metrics'] [data-phase2='receipt']")!.TextContent.Trim().Should().Be("0/200, çelişki 0/0 (—)");
 
-        var post = await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
+        var post = await PostAsync(client, "ManualMatch", lic, txId, "ornek_musteri34");
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
         var m = (await MatchAsync(txId))!;
         m.Status.Should().Be(PaymentMatchStatus.ManualOnly); m.ActualWpfCustomerId.Should().Be(wpfId);
         var doc = await PageAsync(client, path);
-        doc.QuerySelector($"tr[data-tx='{txId}'] [data-cell='actual']")!.TextContent.Should().Contain("ayse_gul34");
+        doc.QuerySelector($"tr[data-tx='{txId}'] [data-cell='actual']")!.TextContent.Should().Contain("ornek_musteri34");
         doc.QuerySelector("[data-box='metrics'] [data-platform='youtube']")!.TextContent.Trim()
             .Should().Be("youtube ✓0 ✗0 elle 1 · çelişki —", "önerisiz karar gerçek müşterinin platformunda elle sayılır");
         doc.QuerySelector($"tr[data-tx='{txId}'] button[formaction*='Unmatch']")!.GetAttribute("onclick")
             .Should().Be($"return confirm('{IndexModel.UnmatchConfirmMessage}')", "kaldırma arayüzden geri alınamaz");
 
         // Karara bağlı harekete ikinci elle eşleme: servisin mesajı gösterilir, karar değişmez.
-        await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
+        await PostAsync(client, "ManualMatch", lic, txId, "ornek_musteri34");
         (await ToastAsync(client, path, "danger")).Should().Be(PaymentMatchReconciler.AlreadyDecidedMessage);
         (await MatchAsync(txId))!.ActualWpfCustomerId.Should().Be(wpfId);
 
@@ -187,7 +187,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             .Where(a => a.TargetId == txId.ToString()).ToListAsync();
         audits.Should().OnlyContain(a => a.TargetType == AuditTargets.BankTransaction);
         audits.Should().ContainSingle(a => a.EventType == AuditEvents.BankMatchManual, "reddedilen ikinci eşleme audit yazmaz")
-            .Which.Details.Should().Be("{\"username\":\"ayse_gul34\"}");
+            .Which.Details.Should().Be("{\"username\":\"ornek_musteri34\"}");
         audits.Should().ContainSingle(a => a.EventType == AuditEvents.BankMatchUnmatch).Which.Details.Should().BeNull();
     }
 
@@ -230,7 +230,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
                  {
                      ("baska_lisansta", IndexModel.UnknownUsernameMessage),
                      ("silinmis_biri", IndexModel.UnknownUsernameMessage),
-                     ("ayse_gul3", IndexModel.UnknownUsernameMessage),
+                     ("ornek_musteri3", IndexModel.UnknownUsernameMessage),
                      ("iki_platformda", IndexModel.AmbiguousUsernameMessage),
                  })
         {
@@ -241,6 +241,62 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         (await MatchAsync(txId))?.ActualWpfCustomerId.Should().BeNull();
     }
 
+    /// <summary>
+    /// A5b: kopya (MergedIntoId dolu) asıl kaydın kullanıcı adını taşır ama müşteri değil, yönlendirmedir. Aranan adla
+    /// eşleşen ikinci satır sayılsaydı birleşmiş her kişi için "belirsiz" denir, elle eşleme hiç yapılamazdı.
+    /// </summary>
+    [Fact]
+    public async Task Elle_eslemede_ayni_kullanici_adli_kopya_belirsizlik_yaratmaz_asil_kayit_bulunur()
+    {
+        var (lic, txId, wpfId) = await SeedAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34",
+                MergedIntoId = wpfId, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var post = await PostAsync(client, "ManualMatch", lic, txId, "ornek_musteri34");
+
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var m = await MatchAsync(txId);
+        m.Should().NotBeNull("kullanıcı adı tek bir müşteriye (asıl kayıt) çözülmeli");
+        m!.ActualWpfCustomerId.Should().Be(wpfId);
+    }
+
+    /// <summary>
+    /// Kullanıcı adı kimlik anahtarıyla aranır (Shopper aday aramalarıyla aynı gerekçe): SQL Server'ın CI_AS'si "İrem" ile
+    /// "irem"i farklı sayar; yönetici büyük harfle, noktalı İ ile ya da kenar boşluğuyla yazsa da aynı müşteri bulunmalı.
+    /// </summary>
+    [Fact]
+    public async Task Elle_esleme_kullanici_adini_kimlik_anahtariyla_bulur()
+    {
+        var (lic, txId, _) = await SeedAsync();
+        Guid customerId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = new WpfCustomerProjection
+                { Id = Guid.NewGuid(), LicenseId = lic, Platform = "instagram", Username = "irem_k", UpdatedAt = DateTimeOffset.UtcNow };
+            db.WpfCustomerProjections.Add(customer);
+            await db.SaveChangesAsync();
+            customerId = customer.Id;
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var post = await PostAsync(client, "ManualMatch", lic, txId, " İrem_K ");
+
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var match = await MatchAsync(txId);
+        match.Should().NotBeNull("'İrem_K' ile 'irem_k' aynı kimlik anahtarına düşer");
+        match!.ActualWpfCustomerId.Should().Be(customerId);
+    }
+
     [Fact]
     public async Task Baska_lisansin_hareketi_elle_eslenmez_ve_karari_kaldirilmaz()
     {
@@ -249,11 +305,11 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var (licB, txB, wpfB) = await SeedAsync();
         var client = await _factory.CreateLoggedInAdminClientAsync();
 
-        await PostAsync(client, "ManualMatch", licA, txB, "ayse_gul34");
+        await PostAsync(client, "ManualMatch", licA, txB, "ornek_musteri34");
         (await ToastAsync(client, PathFor(licA), "danger")).Should().Be("Hareket bulunamadı.");
         (await MatchAsync(txB)).Should().BeNull("B'nin hareketine satır yazılmadı");
 
-        await PostAsync(client, "ManualMatch", licB, txB, "ayse_gul34");
+        await PostAsync(client, "ManualMatch", licB, txB, "ornek_musteri34");
         var decided = (await MatchAsync(txB))!;
         decided.ActualWpfCustomerId.Should().Be(wpfB);
 
@@ -361,7 +417,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         using var factory = new RecomputeFailingApiFactory();
         var (lic, txId, wpfId) = await SeedAsync(factory);
         var client = await factory.CreateLoggedInAdminClientAsync();
-        await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
+        await PostAsync(client, "ManualMatch", lic, txId, "ornek_musteri34");
         using (var scope = factory.Services.CreateScope())
         {
             (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().PaymentMatches.AsNoTracking()
@@ -515,7 +571,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         (await ParseAsync(await get.Content.ReadAsStringAsync())).QuerySelector("[data-banner='bank-disabled']")!.TextContent.Trim()
             .Should().Be(BankHasher.DisabledMessage);
 
-        var post = await PostAsync(client, handler, lic, txId, "ayse_gul34");
+        var post = await PostAsync(client, handler, lic, txId, "ornek_musteri34");
 
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
         (await ToastAsync(client, PathFor(lic), "danger")).Should().Be(BankHasher.DisabledMessage, $"{handler} aynı mesajla döner");

@@ -139,6 +139,91 @@ public class LicensesShipmentsSyncControllerTests : IClassFixture<ApiFactory>
         stored.HeldAt.Should().NotBeNull();
     }
 
+    // ── A5b: kopya Id'si asıl kayda çözülür ─────────────────────────────────
+    // Eski sürüm birleştirmeden sonra da kopyanın Id'siyle gönderir. Güncelleme
+    // CustomerId'yi her gönderimde yeniden yazdığı için çözülmeden yazılsaydı,
+    // birleştiricinin asıl kayda taşıdığı kargo bir sonraki durum değişikliğinde
+    // kopyaya geri dönerdi.
+
+    private async Task<(Guid canonicalId, Guid aliasId)> SeedAliasAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        db.WpfCustomerProjections.AddRange(
+            new WpfCustomerProjection
+            {
+                Id = canonicalId, LicenseId = licenseId, Platform = "tiktok",
+                Username = "kargo-kopya", UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            new WpfCustomerProjection
+            {
+                Id = aliasId, LicenseId = licenseId, Platform = "tiktok",
+                Username = "Kargo-Kopya", MergedIntoId = canonicalId, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+        await db.SaveChangesAsync();
+        return (canonicalId, aliasId);
+    }
+
+    [Fact]
+    public async Task Sync_kopya_hexiyle_gelen_yeni_kargo_asil_hexle_saklanir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (canonicalId, aliasId) = await SeedAliasAsync(licenseId);
+        var shipmentId = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/shipments/sync",
+            new { shipments = new[] {
+                new { id = shipmentId, customerId = aliasId.ToString("N"), status = "pending",
+                      cumulativeAmount = 500m, createdAt = DateTimeOffset.UtcNow.AddHours(-1),
+                      heldAt = (DateTimeOffset?)null, shippedAt = (DateTimeOffset?)null }
+            }});
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Shipments.SingleAsync(s => s.Id == shipmentId)).CustomerId
+            .Should().Be(canonicalId.ToString("N"));
+    }
+
+    [Fact]
+    public async Task Sync_asil_hexli_kargo_kopya_hexli_guncellemeden_sonra_asil_hexte_kalir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (canonicalId, aliasId) = await SeedAliasAsync(licenseId);
+        var shipmentId = Guid.NewGuid();
+        // Birleştirici kargoyu asıl kayda taşımış.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Shipments.Add(new Shipment
+            {
+                Id = shipmentId, LicenseId = licenseId, CustomerId = canonicalId.ToString("N"),
+                Status = ShipmentStatus.Pending, CumulativeAmount = 500m,
+                CreatedAt = DateTimeOffset.UtcNow.AddHours(-1), UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Eski sürüm durumu değiştirip kopya hex'iyle gönderir.
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/shipments/sync",
+            new { shipments = new[] {
+                new { id = shipmentId, customerId = aliasId.ToString("N"), status = "held",
+                      cumulativeAmount = 750m, createdAt = DateTimeOffset.UtcNow.AddHours(-1),
+                      heldAt = (DateTimeOffset?)DateTimeOffset.UtcNow, shippedAt = (DateTimeOffset?)null }
+            }});
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var check = _factory.Services.CreateScope();
+        var vdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var stored = await vdb.Shipments.SingleAsync(s => s.Id == shipmentId);
+        stored.CustomerId.Should().Be(canonicalId.ToString("N"));
+        stored.Status.Should().Be(ShipmentStatus.Held, "güncellemenin kendisi yine uygulanır");
+    }
+
     [Fact]
     public async Task Sync_rejects_when_license_not_owned_by_caller()
     {

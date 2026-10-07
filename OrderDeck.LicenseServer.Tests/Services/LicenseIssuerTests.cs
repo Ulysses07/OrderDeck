@@ -51,7 +51,7 @@ public class LicenseIssuerTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var issuer = scope.ServiceProvider.GetRequiredService<LicenseIssuer>();
 
-        var act = async () => await issuer.IssueAsync(new("nope@x.com", "STD", null, null));
+        var act = async () => await issuer.IssueAsync(new("nope@example.test", "STD", null, null));
         var ex = await act.Should().ThrowAsync<LicenseIssuer.IssueException>();
         ex.Which.Code.Should().Be("customer-not-found");
     }

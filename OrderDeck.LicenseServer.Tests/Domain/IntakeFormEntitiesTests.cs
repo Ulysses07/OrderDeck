@@ -1,5 +1,6 @@
 using FluentAssertions;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Domain;
@@ -14,7 +15,7 @@ public class IntakeFormEntitiesTests
             Id = Guid.NewGuid(),
             CustomerId = Guid.NewGuid(),
             Slug = "test",
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = TestPhone.NewE164(),
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -31,15 +32,15 @@ public class IntakeFormEntitiesTests
         {
             Id = Guid.NewGuid(),
             IntakeFormConfigId = Guid.NewGuid(),
-            Username = "bilalcanli",
-            FullName = "Bilal Canlı",
+            Username = "ornekmusteri",
+            FullName = "Örnek Müşteri",
             Address = "Atatürk Cad. No:12",
             SubmittedAt = DateTimeOffset.UtcNow,
             IpAddress = "10.0.0.5",
             UserAgent = "Mozilla/5.0"
         };
 
-        sub.Username.Should().Be("bilalcanli");
+        sub.Username.Should().Be("ornekmusteri");
         sub.IpAddress.Should().Be("10.0.0.5");
     }
 }

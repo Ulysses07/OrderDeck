@@ -156,9 +156,10 @@ public class CustomerServiceTests
         new MigrationRunner(db).Run();
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 1L);
         var svc = MakeSvc(db, clock, out var customers, out var sessions, out var labels);
+        var telefon = TestPhone.NewE164();
 
         customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null,
-            100, 100, false, null, null, 0, 0m, null, null, "+905551111111"));
+            100, 100, false, null, null, 0, 0m, null, null, telefon));
 
         sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
         labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice",
@@ -169,7 +170,7 @@ public class CustomerServiceTests
 
         result.Should().HaveCount(1);
         result[0].Id.Should().Be("c1");
-        result[0].Phone.Should().Be("+905551111111");
+        result[0].Phone.Should().Be(telefon);
     }
 
     [Fact]

@@ -37,6 +37,13 @@ public sealed class WpfCustomerProjectionPurgeConcurrencyTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Sync'in ilk kaydı PurgedAt jetonunda çakışır. Uç partiyi BİR KEZ taze
+    /// okumayla yeniden uygular (A5): taze satır silinmiş, kişisel alanlara
+    /// hiçbir şey yazılmaz ve öğe sayılır — 200, istemcinin imleci ilerler.
+    /// Yeniden deneme bayat değerleri yeniden kaydetseydi silme geri alınırdı;
+    /// aşağıdaki doğrulama tam olarak onu yakalar.
+    /// </summary>
     [Fact]
     public async Task Purge_sync_yarisinda_tombstone_kisisel_veriyi_kazanir()
     {
@@ -83,7 +90,10 @@ public sealed class WpfCustomerProjectionPurgeConcurrencyTests : IAsyncLifetime
         }
 
         var sync = await syncTask;
-        sync.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        sync.StatusCode.Should().Be(HttpStatusCode.OK,
+            "çakışma bir kez taze okumayla yeniden denenir; taze satır silinmiş");
+        (await sync.Content.ReadFromJsonAsync<SyncBody>())!.Synced.Should().Be(1,
+            "silinmiş satır yazılmadan sayılır — istemcinin imleci ilerlemeli");
 
         using var verifyScope = _factory.Services.CreateScope();
         var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -106,6 +116,8 @@ public sealed class WpfCustomerProjectionPurgeConcurrencyTests : IAsyncLifetime
             // Asıl yarış/timeout hatasını korurken arka plan isteğini gözlemle.
         }
     }
+
+    private sealed record SyncBody(int Synced, int RetroactiveMatches);
 
     private sealed record Seed(
         Guid ShopperId, Guid LicenseId, Guid ProjectionId, string Phone);

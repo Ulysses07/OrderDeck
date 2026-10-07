@@ -18,7 +18,7 @@ public class PaymentRepositoryTests
 
     private static Payment NewPayment(string id = "p1", string? refNo = null) => new(
         Id: id,
-        PayerName: "Ahmet Yıldız",
+        PayerName: "Test Gönderen",
         Amount: 250.75m,
         PaidAt: 1714521600L,
         ReferansNo: refNo ?? $"REF-{id}",
@@ -40,7 +40,7 @@ public class PaymentRepositoryTests
 
         var found = repo.FindById("p1");
         found.Should().NotBeNull();
-        found!.PayerName.Should().Be("Ahmet Yıldız");
+        found!.PayerName.Should().Be("Test Gönderen");
         found.Amount.Should().Be(250.75m);
         found.ReferansNo.Should().Be("REF-p1");
         found.Status.Should().Be(PaymentStatus.Pending);

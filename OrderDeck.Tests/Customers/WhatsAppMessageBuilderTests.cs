@@ -1,6 +1,7 @@
 using System;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Customers;
@@ -47,15 +48,17 @@ public class WhatsAppMessageBuilderTests
     [Fact]
     public void BuildWaMeLink_StripsPlusAndEscapesMessage()
     {
-        var link = _sut.BuildWaMeLink("+905551234567", "Hello\nWorld");
-        link.Should().Be("https://wa.me/905551234567?text=Hello%0AWorld");
+        var telefon = TestPhone.NewE164();
+        var link = _sut.BuildWaMeLink(telefon, "Hello\nWorld");
+        link.Should().Be($"https://wa.me/{telefon[1..]}?text=Hello%0AWorld");
     }
 
     [Fact]
     public void BuildWaMeLink_EscapesTurkishCharsAndSpaces()
     {
-        var link = _sut.BuildWaMeLink("+905551234567", "Merhaba Ali, ödeme bekleniyor");
-        link.Should().StartWith("https://wa.me/905551234567?text=");
+        var telefon = TestPhone.NewE164();
+        var link = _sut.BuildWaMeLink(telefon, "Merhaba Ali, ödeme bekleniyor");
+        link.Should().StartWith($"https://wa.me/{telefon[1..]}?text=");
         link.Should().Contain("Merhaba%20Ali");
         link.Should().NotContain(" ");
     }
@@ -106,9 +109,9 @@ public class WhatsAppMessageBuilderTests
     {
         var result = _sut.BuildShippingWonMessage(
             "Merhaba {ad}, {kumulatif_tutar} TL alımınızla ücretsiz kargo kazandınız!",
-            "Ayşe Yılmaz",
+            "Örnek Müşteri",
             5300m);
-        result.Should().Be("Merhaba Ayşe Yılmaz, 5.300,00 TL alımınızla ücretsiz kargo kazandınız!");
+        result.Should().Be("Merhaba Örnek Müşteri, 5.300,00 TL alımınızla ücretsiz kargo kazandınız!");
     }
 
     [Fact]
@@ -132,7 +135,7 @@ public class WhatsAppMessageBuilderTests
     // ── Meta şablon parametreleri (2026-07-29) ────────────────────────────
 
     private static PaymentContext FullContext(
-        string name = "Ayşe Yılmaz", string? iban = "TR12 0006 4000 0011",
+        string name = "Örnek Müşteri", string? iban = "TR12 0006 4000 0011",
         string? holder = "Burak S", string shippingNote = "Ücretsiz kargo") =>
         new(name, 450m, new DateTime(2026, 7, 28), iban, holder, null,
             ProductTotal: 450m, ShippingFee: null, ShippingNote: shippingNote);
@@ -151,7 +154,7 @@ public class WhatsAppMessageBuilderTests
         var result = _sut.BuildPaymentTemplateParams(FullContext(), SevenSlotMapping);
 
         result.Should().Equal(
-            "Ayşe Yılmaz", "28 Temmuz 2026", "450,00", "Ücretsiz kargo",
+            "Örnek Müşteri", "28 Temmuz 2026", "450,00", "Ücretsiz kargo",
             "450,00", "TR12 0006 4000 0011", "Burak S");
     }
 
@@ -162,7 +165,7 @@ public class WhatsAppMessageBuilderTests
         var result = _sut.BuildPaymentTemplateParams(
             FullContext(), new[] { "tutar", "ad", "hesap_sahibi", "iban" });
 
-        result.Should().Equal("450,00", "Ayşe Yılmaz", "Burak S", "TR12 0006 4000 0011");
+        result.Should().Equal("450,00", "Örnek Müşteri", "Burak S", "TR12 0006 4000 0011");
     }
 
     [Fact]
@@ -212,10 +215,10 @@ public class WhatsAppMessageBuilderTests
     {
         // Ad sohbetten geliyor; satır sonu/sekme taşıyan parametreyi Meta reddeder.
         var result = _sut.BuildPaymentTemplateParams(
-            FullContext(name: "Ayşe\n\tYılmaz  Kaya"), SevenSlotMapping);
+            FullContext(name: "Örnek\n\tAra  Müşteri"), SevenSlotMapping);
 
         result.Should().NotBeNull();
-        result![0].Should().Be("Ayşe Yılmaz Kaya");
+        result![0].Should().Be("Örnek Ara Müşteri");
     }
 
     [Fact]

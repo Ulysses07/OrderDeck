@@ -79,7 +79,7 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Slug = slug,
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = TestPhone.NewE164(),
             IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -104,12 +104,12 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
         {
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         };
         foreach (var (k, v) in extra) d[k] = v;
         return new FormUrlEncodedContent(d);
@@ -701,7 +701,7 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
         var callsBefore = _factory.Resolver.Calls.Count;
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
-            ("Input.InstagramUsername", "bilalcanli")));
+            ("Input.InstagramUsername", "ornekmusteri")));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         _factory.Resolver.Calls.Count.Should().Be(callsBefore);

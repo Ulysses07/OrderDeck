@@ -101,9 +101,9 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
         await using var scope = sp.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var lic = Guid.NewGuid();
-        var customer = Customer(lic, "ayse_gul34");
+        var customer = Customer(lic, "ornek_musteri34");
         db.WpfCustomerProjections.Add(customer);
-        var txs = Enumerable.Range(0, count).Select(_ => Incoming(lic, "HAVALE ayse_gul34")).ToList();
+        var txs = Enumerable.Range(0, count).Select(_ => Incoming(lic, "HAVALE ornek_musteri34")).ToList();
         db.BankTransactions.AddRange(txs);
         await db.SaveChangesAsync();
         return (customer.Id, txs);
@@ -150,12 +150,12 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
             var shopperId = Guid.NewGuid();
             db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
             {
-                Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = tx.LicenseId, Platform = "youtube", Username = "ayse_gul34",
+                Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = tx.LicenseId, Platform = "youtube", Username = "ornek_musteri34",
                 WpfCustomerId = customerId, JoinedAt = DateTimeOffset.UtcNow,
             });
             var payment = new Payment
             {
-                Id = Guid.NewGuid(), LicenseId = tx.LicenseId, ShopperId = shopperId, PayerName = "AYSE GUL", Amount = tx.Amount,
+                Id = Guid.NewGuid(), LicenseId = tx.LicenseId, ShopperId = shopperId, PayerName = "ORNEK MUSTERI", Amount = tx.Amount,
                 PaidAt = tx.OccurredAt.AddHours(-1), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved,
                 ApprovedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             };
@@ -196,8 +196,8 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(), LicenseId = lic, BaseUrl = "https://obifin.invalid", UserCode = $"u-{Guid.NewGuid():N}",
             Status = ObifinConnectionStatus.Verified, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         };
-        var customer = Customer(lic, "ayse_gul34");
-        var tx = Incoming(lic, "HAVALE ayse_gul34");
+        var customer = Customer(lic, "ornek_musteri34");
+        var tx = Incoming(lic, "HAVALE ornek_musteri34");
         jobDb.AddRange(conn, customer, tx);
         await jobDb.SaveChangesAsync();
         conn.LastError = "kaydedilmemiş iş değişikliği";
@@ -237,7 +237,7 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
         exception.Should().NotBeNull();
         message.Should().Contain(txs[0].Id.ToString());
         // Kimlik çıkarılınca kalan metinde açıklama da tutar da yok (Guid'in hex'i "100" içerebilir, önce o atılır).
-        message.Replace(txs[0].Id.ToString(), "").Should().NotContainAny("HAVALE", "ayse", "100");
+        message.Replace(txs[0].Id.ToString(), "").Should().NotContainAny("HAVALE", "ornek", "100");
         (await MatchesAsync(sp)).Should().BeEmpty();
 
         // Düşen çağrı alt bağlamda iz bırakmaz: aynı koşunun sonraki hareketi normal eşleşir.

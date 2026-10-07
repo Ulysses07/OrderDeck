@@ -1,5 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.Shared.Text;
@@ -12,6 +14,34 @@ namespace OrderDeck.LicenseServer.Data;
 public class LicenseDbContext : DbContext
 {
     public LicenseDbContext(DbContextOptions<LicenseDbContext> options) : base(options) { }
+
+    /// <summary>
+    /// Bağlam düzeyindeki seçenekler. Burada, çünkü DI kaydı (Program.cs), test
+    /// fabrikaları ve doğrudan <c>new LicenseDbContext(options)</c> kuran her yer
+    /// buradan geçer — modelin bir özelliği kayıt yerine bağlı kalmasın.
+    /// </summary>
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // WpfCustomerProjection'ın kopya filtresi (MergedIntoId == null) ile
+        // CustomerBalance / CustomerBalanceTransaction'ın ZORUNLU WpfCustomer
+        // gezinmesi EF'in "filtrelenen zorunlu uç" uyarısını doğurur: gezinme
+        // birleşimi (Include / gezinmeyle Select) kopyaya bağlı satırları gizler.
+        // İSTENEN davranış: kopyanın bakiye satırı birleştirmede sıfırlanıp
+        // tutulur, hareketleri asıl kayda taşınır (CustomerIdentityMerger) — o
+        // sıfır satırın gezinme birleşimlerinde görünmemesi doğru. (Bugün bu
+        // gezinmeler hiçbir sorguda kullanılmıyor; yalnız FK eşlemesi.)
+        //
+        // SaveChangesFailed Debug'a: EF bu kayıtta istisnanın iletisini yazar ve
+        // tekil indeks ihlalinin iletisi anahtarın DEĞERİNİ taşır — kimlik
+        // indeksinde (B1) küçük harfli kullanıcı adı. O ihlal artık beklenen ve
+        // ele alınan bir yarış (sync ucu, Shopper kayıt/katılma); ele alınan
+        // hatayı kodumuz kişisel veri olmadan günlükler, ele alınmayan istisnayı
+        // ise host (istek/iş hata günlüğü) yine yazar. Kesmeciler (interceptor)
+        // düzeyden bağımsız çağrılmaya devam eder.
+        optionsBuilder.ConfigureWarnings(w => w
+            .Ignore(CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)
+            .Log((CoreEventId.SaveChangesFailed, LogLevel.Debug)));
+    }
 
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
@@ -649,11 +679,60 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(c => c.Platform).HasMaxLength(32).IsRequired();
             b.Property(c => c.Username).HasMaxLength(128).IsRequired();
+            // BIN2: varsayılan (CI_AS) collation "ayşe🌸" ile "ayşe"yi EŞİT
+            // sayabiliyor (emoji/tam genişlikli harfler göz ardı edilir) —
+            // C# tarafı (Dictionary, InMemory testleri) ise TAM eşitlik
+            // karşılaştırır. Tekil indeksten ÖNCE bu fark yanlış birleştirmeye,
+            // SONRA ise aynı anahtarda takılıp kalan bir 409 döngüsüne yol
+            // açar. BIN2 bayt-bayt (ordinal) karşılaştırır — SQL Server'ın bu
+            // kolon üzerindeki eşitlik fikri C#'ınkiyle birebir aynı olsun diye.
+            b.Property(c => c.IdentityKey).HasMaxLength(128).IsRequired()
+             .UseCollation("Latin1_General_100_BIN2");
             b.Property(c => c.FullName).HasMaxLength(200);
+            b.Property(c => c.DisplayName).HasMaxLength(200);
+            b.Property(c => c.GroupId).HasMaxLength(64);
             b.Property(c => c.Phone).HasMaxLength(20);
             b.Property(c => c.Address).HasMaxLength(500);
+            b.Property(c => c.City).HasMaxLength(64);
+            b.Property(c => c.District).HasMaxLength(64);
+            b.Property(c => c.Email).HasMaxLength(254);
+            b.Property(c => c.TcknProtected).HasColumnName("Tckn")
+             .HasMaxLength(Services.Privacy.TcknProtector.ProtectedMaxLength);
+            b.Property(c => c.Notes).HasMaxLength(2000);
+            b.Property(c => c.BlacklistReason).HasMaxLength(500);
             b.Property(c => c.PurgedAt).IsConcurrencyToken();
+            // rowversion: değer üreteci SQL Server. Eşzamanlılık jetonu DEĞİL —
+            // bugünkü yazıcıların davranışını değiştirmemek için (jeton yalnız
+            // PurgedAt). NumberToBytesConverter büyük-endian: ikili karşılaştırma
+            // sayısal sırayla aynı, bu yüzden LINQ'taki > / < doğru çevrilir.
+            b.Property(c => c.ChangeSeq)
+             .HasColumnType("rowversion")
+             .HasConversion<byte[]>()
+             .ValueGeneratedOnAddOrUpdate();
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
+            // Kişi başına TEK asıl kayıt. Kopyalar (MergedIntoId dolu) aynı
+            // kimliği taşır, filtre onları dışarıda bırakır; boş anahtar
+            // (yalnız boşluktan oluşan eski kullanıcı adı) kimlik değildir.
+            // Uygulama kontrolü yarışı kapatamaz; kuralı veritabanı koyar.
+            // MergedIntoId'ye öz-FK EKLEME: devralmada EF'in tablo içi sırası
+            // (önce S UPDATE, sonra W INSERT) tersine döner ve her denemede 2601 olur.
+            b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey })
+             .IsUnique()
+             .HasFilter(Services.CustomerSync.CustomerIdentityIndex.Filter)
+             .HasDatabaseName(Services.CustomerSync.CustomerIdentityIndex.Name);
+            b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
+            // Kopya (MergedIntoId dolu) bir YÖNLENDİRMEDİR, müşteri değil: kişisel
+            // alanları boş, kullanıcı adı asıl kayıtla aynı. Varsayılan sorgulardan
+            // GİZLİ — panel listesi, Shopper eşleştirme, banka eşleştirmesi, eski
+            // `since` ucu hep yalnız asıl kaydı görmeli (2026-10-06 taraması:
+            // filtresiz ~12 okuma yeri kopyayı ya ikinci müşteri ya da "belirsiz"
+            // eşleşme sayıyordu). Kopyayı görmesi GEREKEN yerler açıkça
+            // IgnoreQueryFilters() ister: sync ucunun Id araması, kimlik anahtarı
+            // onarımı, TCKN bekçisi (kolonun tamamını tarar), CustomerIdResolver
+            // (müşteri Id'si kabul eden uçlar kopyayı onunla asıl kayda çözer),
+            // değişiklik akışı (kopyayı yönlendirme olarak taşır), birleştirme
+            // işi (CustomerIdentityMergeJob — lisansları ve zincirleri bulur).
+            b.HasQueryFilter(p => p.MergedIntoId == null);
         });
 
         mb.Entity<ShopperPushDevice>(b =>

@@ -10,6 +10,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Facebook;
 using OrderDeck.LicenseServer.Services.Instagram;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Instagram;
@@ -63,7 +64,7 @@ public sealed class InstagramLiveCommentJobTests
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"c-{Guid.NewGuid():N}@x.tr",
+            Email = $"c-{Guid.NewGuid():N}@example.test",
             Name = "Test"
         };
         var license = new License
@@ -81,7 +82,7 @@ public sealed class InstagramLiveCommentJobTests
             Slug = slug,
             IsActive = isActive,
             InstagramDmBotEnabled = botEnabled,
-            WhatsAppPhone = "+905550000000"
+            WhatsAppPhone = TestPhone.NewE164()
         };
         var protector = dpProvider.CreateProtector(InstagramAccountService.ProtectorPurpose);
         var acc = new InstagramAccount

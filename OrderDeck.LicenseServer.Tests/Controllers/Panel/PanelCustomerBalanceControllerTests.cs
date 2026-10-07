@@ -219,4 +219,97 @@ public class PanelCustomerBalanceControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/customers/{wpfCustomerIdA}/balance");
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    // ── A5b: rotadaki kopya Id'si asıl kayda çözülür ────────────────────────
+    // Panel eski bir bağlantı/sekme ya da eski sürümün Id'siyle kopyaya gelebilir.
+    // Çözülmeden işlense kopyaya ikinci, bölünmüş bir bakiye açılırdı.
+
+    private async Task<Guid> SeedAliasAsync(Guid licenseId, Guid canonicalId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var aliasId = Guid.NewGuid();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = aliasId,
+            LicenseId = licenseId,
+            Platform = "youtube",
+            Username = "k" + aliasId.ToString("N")[..6],
+            MergedIntoId = canonicalId,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return aliasId;
+    }
+
+    [Fact]
+    public async Task Get_kopya_Id_ile_asil_kaydin_bakiyesini_doner()
+    {
+        var (client, _, licenseId, canonicalId) = await SetupAsync();
+        (await client.PostAsJsonAsync(
+            $"/api/panel/customers/{canonicalId}/balance/refund-full",
+            new { Amount = 300m, Reason = "Hata" })).StatusCode.Should().Be(HttpStatusCode.OK);
+        var aliasId = await SeedAliasAsync(licenseId, canonicalId);
+
+        var resp = await client.GetFromJsonAsync<BalanceDetailsResponse>(
+            $"/api/panel/customers/{aliasId}/balance");
+
+        resp!.Balance.Balance.Should().Be(300m);
+        resp.Transactions.Should().ContainSingle().Which.Kind.Should().Be("refund-full");
+    }
+
+    [Fact]
+    public async Task ManualAdjustment_kopya_Id_ile_asil_kayda_yazar_kopyaya_satir_acmaz()
+    {
+        var (client, _, licenseId, canonicalId) = await SetupAsync();
+        var aliasId = await SeedAliasAsync(licenseId, canonicalId);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/panel/customers/{aliasId}/balance/manual-adjustment",
+            new { Amount = 50m, Reason = "Elle düzeltme" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.CustomerBalances.SingleAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId))
+            .Balance.Should().Be(50m);
+        (await db.CustomerBalances.AnyAsync(b => b.WpfCustomerId == aliasId))
+            .Should().BeFalse("kopyaya asla bakiye satırı açılmaz");
+        (await db.CustomerBalanceTransactions.AnyAsync(t => t.WpfCustomerId == aliasId))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Reverse_kopya_Id_ile_asil_kaydin_hareketini_geri_alir()
+    {
+        var (client, _, licenseId, canonicalId) = await SetupAsync();
+        await client.PostAsJsonAsync(
+            $"/api/panel/customers/{canonicalId}/balance/refund-full",
+            new { Amount = 200m, Reason = "Hata" });
+        var details = await client.GetFromJsonAsync<BalanceDetailsResponse>(
+            $"/api/panel/customers/{canonicalId}/balance");
+        var txId = details!.Transactions[0].Id;
+        var aliasId = await SeedAliasAsync(licenseId, canonicalId);
+
+        var resp = await client.PostAsync(
+            $"/api/panel/customers/{aliasId}/balance/transactions/{txId}/reverse", content: null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var after = await client.GetFromJsonAsync<BalanceDetailsResponse>(
+            $"/api/panel/customers/{canonicalId}/balance");
+        after!.Balance.Balance.Should().Be(0m);
+        after.Transactions[0].ReversesTransactionId.Should().Be(txId);
+    }
+
+    [Fact]
+    public async Task Kopya_Id_kiraci_yalitimini_delmez()
+    {
+        var (_, _, licenseIdA, canonicalA) = await SetupAsync();
+        var aliasA = await SeedAliasAsync(licenseIdA, canonicalA);
+        var (clientB, _, _, _) = await SetupAsync();
+
+        var resp = await clientB.GetAsync($"/api/panel/customers/{aliasA}/balance");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

@@ -69,7 +69,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = $"pnid-{Guid.NewGuid():N}",
-            DisplayPhoneNumber = "905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164()[1..],
             AccessTokenProtected = accounts.ProtectToken("token-1234"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,
@@ -100,11 +100,13 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551112233");
+        // Sohbet '+'sız kanonik biçimde, istek aynı numaranın boşluklu yazılışıyla.
+        var n = TestPhone.NewNational();
+        await OpenServiceWindowAsync(licenseId, "90" + n);
 
         var resp = await client.PostAsJsonAsync(
             Url(licenseId),
-            new { toPhone = "+90 555 111 22 33", text = "Merhaba, ödemeniz bekleniyor.", origin = "wpf-payment" });
+            new { toPhone = $"+90 {n[..3]} {n[3..6]} {n[6..8]} {n[8..]}", text = "Merhaba, ödemeniz bekleniyor.", origin = "wpf-payment" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
@@ -125,12 +127,13 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551112244");
+        var n = TestPhone.NewNational();
+        await OpenServiceWindowAsync(licenseId, "90" + n);
 
         // origin alanı hiç gönderilmiyor → sunucu "wpf" yazmalı.
         var resp = await client.PostAsJsonAsync(
             Url(licenseId),
-            new { toPhone = "+90 555 111 22 44", text = "Merhaba." });
+            new { toPhone = $"+90 {n[..3]} {n[3..6]} {n[6..8]} {n[8..]}", text = "Merhaba." });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -148,7 +151,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         // Hiç gelen mesaj yok → pencere kapalı.
         var resp = await client.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", text = "merhaba" });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = "merhaba" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
@@ -162,7 +165,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var (client, licenseId) = await SeedAsync();
 
         var resp = await client.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", text = "merhaba" });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = "merhaba" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await resp.Content.ReadFromJsonAsync<SendResponse>())!.ErrorCode.Should().Be("no_account");
@@ -175,7 +178,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var (client, _) = await SeedAsync();
 
         var resp = await client.PostAsJsonAsync(
-            Url(otherLicenseId), new { toPhone = "905559998877", text = "merhaba" });
+            Url(otherLicenseId), new { toPhone = TestPhone.NewE164()[1..], text = "merhaba" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
@@ -187,7 +190,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         (await client.PostAsJsonAsync(Url(licenseId), new { toPhone = "abc", text = "x" }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await client.PostAsJsonAsync(Url(licenseId), new { toPhone = "905559998877", text = "   " }))
+        (await client.PostAsJsonAsync(Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = "   " }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
@@ -197,7 +200,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var (client, licenseId) = await SeedAsync();
 
         var resp = await client.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", text = new string('x', 4097) });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = new string('x', 4097) });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -208,7 +211,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var (client, licenseId) = await SeedAsync();
 
         var resp = await client.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", text = new string('x', 4096) });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = new string('x', 4096) });
 
         // Hesap bağlı olmadığı için gövde no_account döner; buradaki mesele
         // sınır değerin doğrulamadan geçmesi, o yüzden HTTP durumuna bakıyoruz.
@@ -221,7 +224,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var (_, licenseId) = await SeedAsync();
         var anon = _factory.CreateClient();
 
-        (await anon.PostAsJsonAsync(Url(licenseId), new { toPhone = "905559998877", text = "x" }))
+        (await anon.PostAsJsonAsync(Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = "x" }))
             .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
@@ -268,12 +271,13 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110001");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         var key = Guid.NewGuid();
         var body = new
         {
-            toPhone = "905551110001", text = "Ödemeniz bekleniyor.",
+            toPhone = telefon, text = "Ödemeniz bekleniyor.",
             origin = "wpf-payment", idempotencyKey = key,
         };
 
@@ -295,13 +299,14 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110002");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         for (var i = 0; i < 2; i++)
         {
             var resp = await client.PostAsJsonAsync(Url(licenseId), new
             {
-                toPhone = "905551110002", text = $"mesaj {i}",
+                toPhone = telefon, text = $"mesaj {i}",
                 idempotencyKey = Guid.NewGuid(),
             });
             resp.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -315,9 +320,10 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110003");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
-        var body = new { toPhone = "905551110003", text = "anahtarsız" };
+        var body = new { toPhone = telefon, text = "anahtarsız" };
         (await client.PostAsJsonAsync(Url(licenseId), body)).StatusCode.Should().Be(HttpStatusCode.OK);
         (await client.PostAsJsonAsync(Url(licenseId), body)).StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -329,14 +335,15 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110004");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         var key = Guid.NewGuid();
         await SeedAttemptAsync(licenseId, key, DateTimeOffset.UtcNow);
 
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
-            toPhone = "905551110004", text = "tekrar", idempotencyKey = key,
+            toPhone = telefon, text = "tekrar", idempotencyKey = key,
         });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -351,7 +358,8 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110005");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         // 5 dakikalık "pending" → istek yarıda kalmış sayılır, devralınır.
         var key = Guid.NewGuid();
@@ -360,7 +368,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
-            toPhone = "905551110005", text = "devralındı", idempotencyKey = key,
+            toPhone = telefon, text = "devralındı", idempotencyKey = key,
         });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -386,14 +394,15 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var (_, otherLicenseId) = await SeedAsync();
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110006");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         var key = Guid.NewGuid();
         await SeedAttemptAsync(otherLicenseId, key, DateTimeOffset.UtcNow);
 
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
-            toPhone = "905551110006", text = "başkasının anahtarı", idempotencyKey = key,
+            toPhone = telefon, text = "başkasının anahtarı", idempotencyKey = key,
         });
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -408,7 +417,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         // Pencere açılmıyor → ilk çağrı window_closed döner.
 
         var key = Guid.NewGuid();
-        var body = new { toPhone = "905551110007", text = "kapalı pencere", idempotencyKey = key };
+        var body = new { toPhone = TestPhone.NewE164()[1..], text = "kapalı pencere", idempotencyKey = key };
 
         var first = (await (await client.PostAsJsonAsync(Url(licenseId), body))
             .Content.ReadFromJsonAsync<SendResponse>())!;
@@ -447,13 +456,14 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110008");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         // Boş Guid'i "anahtar verilmemiş" saymak, para yolunda idempotency'yi
         // SESSİZCE kapatmak demek. Bozuk anahtar reddedilmeli.
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
-            toPhone = "905551110008", text = "boş anahtar", idempotencyKey = Guid.Empty,
+            toPhone = telefon, text = "boş anahtar", idempotencyKey = Guid.Empty,
         });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -466,10 +476,11 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         // Guid.Empty reddi, alanı hiç göndermeyen eski istemcileri kırmamalı.
         var (client, licenseId) = await SeedAsync();
         await ConnectAccountAsync(licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551110009");
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon);
 
         var resp = await client.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905551110009", text = "anahtarsız" });
+            Url(licenseId), new { toPhone = telefon, text = "anahtarsız" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await resp.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
@@ -485,10 +496,11 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         using var factory = new ThrowingSenderApiFactory();
         var (client, licenseId) = await SeedAsync(factory);
         await ConnectAccountAsync(licenseId, factory);
-        await OpenServiceWindowAsync(licenseId, "905551110010", factory);
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon, factory);
 
         var key = Guid.NewGuid();
-        var body = new { toPhone = "905551110010", text = "patlayan gönderim", idempotencyKey = key };
+        var body = new { toPhone = telefon, text = "patlayan gönderim", idempotencyKey = key };
 
         // Hata bilerek dışarı sızıyor (500) — istemci yeniden denesin diye.
         await Assert.ThrowsAnyAsync<Exception>(() => client.PostAsJsonAsync(Url(licenseId), body));
@@ -519,12 +531,13 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         using var factory = new FailingResultWriteApiFactory();
         var (client, licenseId) = await SeedAsync(factory);
         await ConnectAccountAsync(licenseId, factory);
-        await OpenServiceWindowAsync(licenseId, "905551110011", factory);
+        var telefon = TestPhone.NewE164()[1..];
+        await OpenServiceWindowAsync(licenseId, telefon, factory);
 
         var key = Guid.NewGuid();
         var body = new
         {
-            toPhone = "905551110011", text = "yazımı patlayan gönderim",
+            toPhone = telefon, text = "yazımı patlayan gönderim",
             origin = "wpf-payment", idempotencyKey = key,
         };
 
@@ -565,7 +578,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
-            toPhone = "905551110020",
+            toPhone = TestPhone.NewE164()[1..],
             text = "Merhaba Ayşe, ödemeniz bekleniyor.",
             origin = "wpf-payment",
             idempotencyKey = Guid.NewGuid(),
@@ -599,7 +612,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         var body = new
         {
-            toPhone = "905551110021", text = "metin", origin = "wpf-payment",
+            toPhone = TestPhone.NewE164()[1..], text = "metin", origin = "wpf-payment",
             idempotencyKey = Guid.NewGuid(),
             template = new { name = "odeme_hatirlatma", languageCode = "tr", bodyParams = new[] { "Ayşe" } },
         };
@@ -615,8 +628,8 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     [InlineData("", "tr", new[] { "Ayşe" })]           // şablon adı boş
     [InlineData("odeme_hatirlatma", "", new[] { "Ayşe" })] // dil kodu boş
     [InlineData("odeme_hatirlatma", "tr", new[] { "" })]   // boş parametre
-    [InlineData("odeme_hatirlatma", "tr", new[] { "Ayşe\nYılmaz" })] // satır sonu
-    [InlineData("odeme_hatirlatma", "tr", new[] { "Ayşe\tYılmaz" })] // sekme
+    [InlineData("odeme_hatirlatma", "tr", new[] { "Örnek\nMüşteri" })] // satır sonu
+    [InlineData("odeme_hatirlatma", "tr", new[] { "Örnek\tMüşteri" })] // sekme
     public async Task Rejects_invalid_template(string name, string language, string[] bodyParams)
     {
         var (client, licenseId) = await SeedAsync();
@@ -624,7 +637,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
-            toPhone = "905551110022", text = "metin",
+            toPhone = TestPhone.NewE164()[1..], text = "metin",
             template = new { name, languageCode = language, bodyParams },
         });
 

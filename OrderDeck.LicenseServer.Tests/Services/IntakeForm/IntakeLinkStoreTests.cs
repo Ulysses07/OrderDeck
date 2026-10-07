@@ -35,7 +35,7 @@ public sealed class IntakeLinkStoreTests
     {
         var store = NewStore();
         var yt = new IntakeLinkedIdentity("Kanal Adı", "@kanal", "UCabc");
-        var fb = new IntakeLinkedIdentity("Musa Sevinç", null, null);
+        var fb = new IntakeLinkedIdentity("Deneme Alıcı", null, null);
 
         store.SaveIdentity("nonce1", "youtube", yt);
         store.SaveIdentity("nonce1", "facebook", fb);

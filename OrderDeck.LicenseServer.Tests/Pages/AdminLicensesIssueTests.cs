@@ -74,7 +74,7 @@ public sealed class AdminLicensesIssueTests : IClassFixture<ApiFactory>
         var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["__RequestVerificationToken"] = token,
-            ["Input.CustomerEmail"] = "nope@x.com",
+            ["Input.CustomerEmail"] = "nope@example.test",
             ["Input.SkuCode"] = "STD"
         });
         var postResp = await client.PostAsync("/admin/licenses/issue", form);

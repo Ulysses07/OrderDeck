@@ -251,6 +251,34 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > buradaki ELLE müdahalede, `master-d38f710`'dan daha eski bir etiket
 > seçilirse oluşur.
 
+> **UYARI — PR-1 geri dönüş tabanı (çok bilgisayarlı müşteri senkronu).**
+> `OrderDeck.LicenseServer/Services/CustomerSync/CustomerIdResolver.cs`
+> dosyasını İÇERMEYEN (PR-1 öncesi) bir imaja bu elle yoldan ASLA geçme
+> (etiketin kaynağında `git cat-file -e <sha>:OrderDeck.LicenseServer/Services/CustomerSync/CustomerIdResolver.cs`
+> başarısızsa o imaj PR-1 öncesidir). Kopya
+> satırları (`WpfCustomerProjections.MergedIntoId` dolu) deploy'dan sonraki
+> İLK müşteri senkronuyla oluşmaya başlar, tek seferlik birleştirmeden (E2,
+> `merge-customer-identities --apply`) sonra kesin vardır. Ondan sonra PR-1
+> öncesi her imaj müşterileri SESSİZCE yeniden böler:
+> - `MergedIntoId` filtresi yok: kopyalar panelde ikinci ("hayalet") müşteri
+>   olarak görünür, banka eşleştiricisi kopyalı ~466 kişiyi (2026-10 ölçümü)
+>   "belirsiz" sayar;
+> - eski `since` ucu kopya satırlarını bilgisayarlara yeni müşteri olarak
+>   yeniden dağıtır;
+> - eski `orders/sync` YENİ siparişlerde, eski `shipments/sync` HER durum
+>   değişikliğinde kopyanın hex Id'sini yeniden yazar ve o referansları asıl
+>   kayda geri taşıyan hiçbir şey yoktur;
+> - eski sync ucu kişisel veriyi kopya satırlarına yazar — KVKK silmesi o
+>   satırlara ulaşamaz.
+>
+> Otomatik geri alma (yukarıdaki workflow, deploy anında BİR ÖNCEKİ imaja)
+> güvenli: göç şeması eski imajla uyumlu (doğrulandı) ve o anda kopya ya hiç
+> yoktur ya da ilk dakikalarda oluşmuş birkaç tanedir. Risk asıl SONRAKİ elle
+> müdahalede. Kopya satırlarının UpdatedAt'i bilerek ilerletilmez (eski `since`
+> onları yeniden dağıtmasın) — bu yalnız hasarı küçültür, sınırı kaldırmaz:
+> geri dönmek gerekirse ileri düzelt ya da yalnız `CustomerIdResolver.cs`'yi
+> içeren imajlara dön.
+
 ## EF migration history bootstrap (one-time, before first Migrate() deploy)
 
 The original deploy used `EnsureCreated()` so the DB has all the schema but no

@@ -379,7 +379,7 @@ public sealed class TcknAtRestTests : IClassFixture<ApiFactory>
         var (authedClient, customerId) = await CreateAuthedClientAsync();
         var slug = $"s-{Guid.NewGuid():N}"[..10];
         var putResp = await authedClient.PutAsJsonAsync("/api/v1/me/intake-form",
-            new { slug, whatsAppPhone = "+905551234567" });
+            new { slug, whatsAppPhone = TestPhone.NewE164() });
         putResp.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var seededPlain = TestTckn.NewValid();

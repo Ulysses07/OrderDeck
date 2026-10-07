@@ -95,12 +95,12 @@ public sealed class BankMatchSweepJobTests
     public async Task Eslesmesi_olmayan_gelen_hareket_eslestirilir_giden_sifir_ve_eski_hareket_atlanir()
     {
         using var db = NewDb(); var lic = ConnectedLicense(db);
-        var customer = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow };
-        var named = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(2));
+        var customer = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow };
+        var named = Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(2));
         var noSignal = Tx(lic, "HAVALE siparis", TimeSpan.FromDays(29));
-        var outgoing = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(1), BankTransactionDirection.Outgoing);
-        var zero = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(1), amount: 0m);
-        var old = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(BankMatchSweepJob.LookbackDays + 1));
+        var outgoing = Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(1), BankTransactionDirection.Outgoing);
+        var zero = Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(1), amount: 0m);
+        var old = Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(BankMatchSweepJob.LookbackDays + 1));
         db.WpfCustomerProjections.Add(customer);
         db.BankTransactions.AddRange(named, noSignal, outgoing, zero, old);
         await db.SaveChangesAsync();
@@ -118,8 +118,8 @@ public sealed class BankMatchSweepJobTests
     public async Task Eslesmesi_olan_harekete_dokunulmaz()
     {
         using var db = NewDb(); var lic = ConnectedLicense(db);
-        db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow });
-        var tx = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(1));
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow });
+        var tx = Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(1));
         var stamp = DateTimeOffset.UtcNow.AddDays(-1);
         // Eşleştirici bugün başka bir sonuç üretirdi (kullanıcı adı var): tarama yine de dokunmamalı.
         var existing = new PaymentMatch
@@ -257,19 +257,19 @@ public sealed class BankMatchSweepJobTests
         // Sink'in kaçırdığı hareketi tarama eşleştirir; o hareketi bekleyen onaylı dekontun gap'i de çözülmeli, yoksa
         // taramanın eşleştirdiği hareket bir daha taranmadığı için gap sonsuza dek açık kalırdı.
         using var db = NewDb(); var lic = ConnectedLicense(db);
-        var customer = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow };
+        var customer = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow };
         var shopperId = Guid.NewGuid();
-        var tx = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(1));
+        var tx = Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(1));
         var payment = new Payment
         {
-            Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = "AYSE GUL", Amount = tx.Amount,
+            Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = "ORNEK MUSTERI", Amount = tx.Amount,
             PaidAt = tx.OccurredAt.AddHours(-2), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved,
             ApprovedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         };
         db.WpfCustomerProjections.Add(customer);
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ayse_gul34",
+            Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34",
             WpfCustomerId = customer.Id, JoinedAt = DateTimeOffset.UtcNow,
         });
         db.BankTransactions.Add(tx);

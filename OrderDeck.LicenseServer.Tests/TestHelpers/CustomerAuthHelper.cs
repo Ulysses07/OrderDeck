@@ -10,7 +10,7 @@ public static class CustomerAuthHelper
 {
     public static async Task<(HttpClient client, Guid customerId, string jwt)> CreateAuthenticatedClientAsync(ApiFactory factory)
     {
-        var email = $"backup-test-{Guid.NewGuid():N}@test.com";
+        var email = $"backup-test-{Guid.NewGuid():N}@example.test";
         var password = "TestPass1234!";
 
         var client = factory.CreateClient();

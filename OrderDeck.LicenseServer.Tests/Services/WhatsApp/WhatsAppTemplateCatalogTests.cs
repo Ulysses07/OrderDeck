@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -188,13 +189,14 @@ public sealed class WhatsAppTemplateCatalogTests
     [Fact]
     public async Task A_fixed_button_is_not_a_problem()
     {
-        var result = await ListAsync(HttpStatusCode.OK, """
+        var telefon = TestPhone.NewE164();
+        var result = await ListAsync(HttpStatusCode.OK, $$"""
             { "data": [ { "id": "4002", "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
                 "language": "tr", "components": [
                   { "type": "BODY", "text": "İndirim başladı." },
                   { "type": "BUTTONS", "buttons": [
                     { "type": "URL", "text": "Siteye git", "url": "https://x.test/kampanya" },
-                    { "type": "PHONE_NUMBER", "text": "Ara", "phone_number": "+905551112233" } ] } ] } ] }
+                    { "type": "PHONE_NUMBER", "text": "Ara", "phone_number": "{{telefon}}" } ] } ] } ] }
             """);
 
         var t = result.Value!.Single();
@@ -423,13 +425,14 @@ public sealed class WhatsAppTemplateCatalogTests
     [Fact]
     public async Task Butonlarin_adresi_ve_numarasi_okunuyor()
     {
-        var handler = new StubHandler("""
+        var telefon = TestPhone.NewE164();
+        var handler = new StubHandler($$"""
         {"data":[{"id":"7","name":"kampanya","status":"APPROVED","category":"MARKETING",
           "language":"tr","components":[
             {"type":"BODY","text":"İndirim başladı."},
             {"type":"BUTTONS","buttons":[
               {"type":"URL","text":"Siteye git","url":"https://orderdeckapp.com"},
-              {"type":"PHONE_NUMBER","text":"Ara","phone_number":"+905321234567"},
+              {"type":"PHONE_NUMBER","text":"Ara","phone_number":"{{telefon}}"},
               {"type":"QUICK_REPLY","text":"Tamam"}]}]}]}
         """);
 
@@ -438,7 +441,7 @@ public sealed class WhatsAppTemplateCatalogTests
         var b = Assert.Single(result.Value!).Buttons;
         Assert.Equal(["URL", "PHONE_NUMBER", "QUICK_REPLY"], b.Select(x => x.Type));
         Assert.Equal("https://orderdeckapp.com", b[0].Url);
-        Assert.Equal("+905321234567", b[1].PhoneNumber);
+        Assert.Equal(telefon, b[1].PhoneNumber);
         Assert.Null(b[2].Url);
     }
 }

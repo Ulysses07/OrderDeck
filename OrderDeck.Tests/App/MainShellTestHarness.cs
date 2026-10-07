@@ -179,7 +179,7 @@ internal static class MainShellTestHarness
 
         authStore.Save(new AuthRecord(
             CustomerId: Guid.NewGuid(),
-            Email: "test@test.com",
+            Email: "test@example.test",
             Name: "Test User",
             Token: "test-token",
             TokenExpiresAt: DateTimeOffset.UtcNow.AddDays(30)));

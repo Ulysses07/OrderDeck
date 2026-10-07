@@ -14,13 +14,13 @@ public sealed class IntakeIgTokenServiceTests
     public void Uretilen_token_geri_okunur()
     {
         var svc = NewService();
-        var token = svc.Create("royalmezat", "musa.sevinc");
+        var token = svc.Create("ornekmagaza", "deneme.alici");
 
-        token.Should().NotContain("royalmezat", "payload şifreli olmalı, düz metin sızmamalı");
+        token.Should().NotContain("ornekmagaza", "payload şifreli olmalı, düz metin sızmamalı");
         Uri.EscapeDataString(token).Should().Be(token, "token URL-güvenli olmalı — kaçış gerektirmemeli");
 
         var payload = svc.TryRead(token);
-        payload.Should().Be(("royalmezat", "musa.sevinc"));
+        payload.Should().Be(("ornekmagaza", "deneme.alici"));
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public sealed class IntakeIgTokenServiceTests
     [Fact]
     public void Baska_anahtarin_tokeni_null_doner()
     {
-        var token = NewService().Create("royalmezat", "musa");
+        var token = NewService().Create("ornekmagaza", "musa");
         NewService().TryRead(token).Should().BeNull("EphemeralDataProtectionProvider her seferinde ayrı anahtar üretir");
     }
 

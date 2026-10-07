@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
@@ -16,7 +17,7 @@ namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 /// </summary>
 public class IysConsentEventTenantColumnsTests
 {
-    private const string Phone = "+905551112233";
+    private static readonly string Phone = TestPhone.NewE164();
     private const string BrandCode = "731734";
 
     /// <summary>

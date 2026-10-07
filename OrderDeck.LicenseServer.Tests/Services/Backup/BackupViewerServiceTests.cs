@@ -15,6 +15,8 @@ public class BackupViewerServiceTests : IClassFixture<ApiFactory>
     private readonly ApiFactory _factory;
     public BackupViewerServiceTests(ApiFactory factory) => _factory = factory;
 
+    private static readonly string MusteriTelefonu = TestPhone.NewE164();
+
     /// <summary>Builds a minimal valid orderdeck.db zip with one Customer + one Session + one Label.</summary>
     private static byte[] BuildSampleDbZip()
     {
@@ -24,7 +26,7 @@ public class BackupViewerServiceTests : IClassFixture<ApiFactory>
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"
+            cmd.CommandText = $@"
                 CREATE TABLE Customer (
                     Id TEXT PRIMARY KEY, Platform TEXT, Username TEXT,
                     DisplayName TEXT, AvatarUrl TEXT,
@@ -50,7 +52,7 @@ public class BackupViewerServiceTests : IClassFixture<ApiFactory>
                 );
 
                 INSERT INTO Customer VALUES
-                    ('c1','twitch','alice','Alice',NULL,1000,2000,0,NULL,NULL,3,150.0,NULL,NULL,'+905551111111');
+                    ('c1','twitch','alice','Alice',NULL,1000,2000,0,NULL,NULL,3,150.0,NULL,NULL,'{MusteriTelefonu}');
                 INSERT INTO StreamSession VALUES
                     ('s1','Yayın #1',1500,1900,'[]',NULL);
                 INSERT INTO Label VALUES
@@ -85,7 +87,7 @@ public class BackupViewerServiceTests : IClassFixture<ApiFactory>
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"viewer-{Guid.NewGuid():N}@test.com",
+            Email = $"viewer-{Guid.NewGuid():N}@example.test",
             Name = "T", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
         };
         db.Customers.Add(customer);
@@ -141,7 +143,7 @@ public class BackupViewerServiceTests : IClassFixture<ApiFactory>
 
         page.Rows.Should().HaveCount(1);
         page.Rows[0].Username.Should().Be("alice");
-        page.Rows[0].Phone.Should().Be("+905551111111");
+        page.Rows[0].Phone.Should().Be(MusteriTelefonu);
         page.TotalCount.Should().Be(1);
     }
 

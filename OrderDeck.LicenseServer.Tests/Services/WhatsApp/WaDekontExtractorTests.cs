@@ -28,7 +28,7 @@ public sealed class WaDekontExtractorTests
     }
 
     private static PdfDekontParser.ParseResult FullResult() => new(
-        PayerName: "AYŞE YILMAZ",
+        PayerName: "ÖRNEK MÜŞTERİ",
         Amount: 1250.50m,
         PaidAt: new DateTime(2026, 8, 18, 14, 30, 0),
         ReferansNo: "REF123456",
@@ -52,7 +52,7 @@ public sealed class WaDekontExtractorTests
         row.Should().NotBeNull();
         row!.LicenseId.Should().Be(licenseId);
         row.WaMessageId.Should().Be(messageId);
-        row.PayerName.Should().Be("AYŞE YILMAZ");
+        row.PayerName.Should().Be("ÖRNEK MÜŞTERİ");
         row.Amount.Should().Be(1250.50m);
         row.ReferansNo.Should().Be("REF123456");
         row.PdfHash.Should().Be("abc123");

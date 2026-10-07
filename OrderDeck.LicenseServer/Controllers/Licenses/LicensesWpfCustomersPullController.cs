@@ -3,14 +3,17 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.Sync;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
 /// <summary>
-/// WPF App'in shopper-registered customers'ı (otomatik oluşturulan
-/// WpfCustomerProjection rows) çekmesi için. Mevcut sync endpoint
-/// WPF → server outbound; bu da inbound (server → WPF) pull.
+/// WPF App'in sunucudaki müşteri kayıtlarını (WpfCustomerProjection) çekmesi
+/// için. Mevcut sync endpoint WPF → server outbound; bu da inbound
+/// (server → WPF) pull. <c>since</c> eski sürümler içindir (yalnız asıl
+/// kayıtlar, Shopper'ın açtığı geçici kayıtlar HARİÇ — gerekçe orada);
+/// <c>changes</c> çoklu bilgisayar senkronunun rowversion imleçli akışı.
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/wpf-customers")]
@@ -18,14 +21,27 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesWpfCustomersPullController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public LicensesWpfCustomersPullController(LicenseDbContext db) => _db = db;
+    private readonly TcknProtector _tckn;
+    private readonly ILogger<LicensesWpfCustomersPullController> _logger;
 
+    public LicensesWpfCustomersPullController(
+        LicenseDbContext db, TcknProtector tckn, ILogger<LicensesWpfCustomersPullController> logger)
+    {
+        _db = db;
+        _tckn = tckn;
+        _logger = logger;
+    }
+
+    /// <param name="FullName">Boşsa takma ad (DisplayName) gider: eski
+    /// istemci bu alanı yerel satırın takma adı olarak açar, yeni istemci ise
+    /// takma adı ayrı gönderdiği için FullName boş kalabilir.</param>
     /// <param name="PurgedAt">
     /// KVKK silme talebiyle sunucudaki kişisel alanlar temizlendiyse dolu.
     /// Bu satırlar yanıttan ELENMİYOR, işaretlenerek gönderiliyor: yayıncının
     /// kendi bilgisayarındaki kopyayı ancak bu işaret temizletebilir (WPF'in
     /// sunucudan silme haberi alacağı başka bir kanal yok). Elenselerdi silme
-    /// yayıncının diskinde sonsuza kadar kalırdı.
+    /// yayıncının diskinde sonsuza kadar kalırdı. Tek istisna Shopper'ın açtığı
+    /// geçici kayıt: o hiç verilmez, silinmişi de (bkz. <see cref="Since"/>).
     ///
     /// Alanın SONA eklenmesi kasıtlı — sahadaki eski kurulumlar (v0.8.0 ve
     /// öncesi) bilinmeyen JSON alanını yok sayar; bu ekleme onları kırmaz,
@@ -46,6 +62,25 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     /// altında; gerekçe <see cref="ReverseSyncCursor"/>'da. WPF bir sonraki
     /// imleci sayfanın son satırından okur — yanıt sırası <c>(UpdatedAt, Id)</c>.
     /// take default 100, max 500.
+    ///
+    /// <para><b>Shopper'ın açtığı GEÇİCİ kayıt (<c>CreatedByShopper</c>) hiç
+    /// verilmez — silinmişi de.</b> Eski masaüstü ingest'i
+    /// (<c>ShopperRegistrationIngestService</c>) yerelde olmayan her satırı o
+    /// Id'yle SIRADAN müşteri olarak ekler. Kullanıcı adı yayın sohbetinde
+    /// herkese açık: başkasının adıyla önce kaydolan kişi, gerçek müşterinin
+    /// sonraki siparişlerini alırdı (Shopper'da ad işgalinin ana yolu). Silinmiş
+    /// satırda ise <c>RecordPurge</c> o kullanıcı adının bütün yerel satırlarını
+    /// boşaltır ve kimliğe silme kararı yazar: işgalcinin KVKK silmesi gerçek
+    /// müşteriyi yerelde silerdi.</para>
+    ///
+    /// <para>Panel bu satırları sunucuda listelemeyi sürdürür. Yeni masaüstü
+    /// (PR-3) de geçici satırı yerelde hiç açmaz: kişi, yayıncının bilgisayarı
+    /// onu sohbette görünce belirir ve sunucunun devralması yayıncının satırını
+    /// asıl kayıt yapar. Ürün sonucu: kaydolup hiç yorum yazmamış bir shopper,
+    /// eski masaüstü sürümlerinin müşteri listesinde artık görünmez. Bedeli:
+    /// bu değişiklikten önce geçici bir satırı indirmiş eski bir istemci, o satır
+    /// sonra silinirse mezar taşını buradan alamaz (geçici satırlar PR-1 ile
+    /// başladı).</para>
     /// </summary>
     [HttpGet("since")]
     public async Task<IActionResult> Since(
@@ -63,8 +98,15 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         take = Math.Clamp(take, 1, 500);
         var horizon = ReverseSyncCursor.Horizon();
 
+        // Kopya (MergedIntoId dolu) A5b'nin sorgu filtresiyle zaten gizli; açık
+        // koşul belge için: eski istemci kopyayı kişisel alanları boş ikinci bir
+        // müşteri olarak eklerdi. Kopyaları yalnız `changes` akışı taşır.
+        // Shopper'ın açtığı geçici kayıt — silinmişi de — hiç gitmez (bkz.
+        // metot dokümanı).
         var rows = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == licenseId
+                        && p.MergedIntoId == null
+                        && !p.CreatedByShopper
                         && p.UpdatedAt <= horizon
                         && (p.UpdatedAt > since
                             || (p.UpdatedAt == since && p.Id.CompareTo(sinceId) > 0)))
@@ -72,10 +114,158 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
             .Take(take)
             .Select(p => new WpfCustomerPullItem(
                 p.Id, p.Platform, p.Username,
-                p.FullName, p.Phone, p.Address,
+                p.FullName ?? p.DisplayName, p.Phone, p.Address,
                 p.UpdatedAt, p.PurgedAt))
             .ToListAsync(ct);
 
         return Ok(rows);
+    }
+
+    /// <param name="Tckn">DÜZ metin — sunucuda şifreli tutulur, burada çözülür.</param>
+    /// <param name="CreatedByShopper">Shopper uygulamasının açtığı GEÇİCİ kayıt
+    /// (kopyada köken): ad/telefon/adres kişinin kendi beyanı. İstemci bunu
+    /// yayıncının müşterisi gibi indirmesin diye taşınır — eski <c>since</c>
+    /// ingest'i beyanı sıradan müşteri olarak indiriyordu. Sona eklendi: eski
+    /// okuyucular yok sayar.</param>
+    /// <remarks>Her birimin damgası ayrı (bkz. CustomerSyncFields). FullName
+    /// olduğu gibi gider: eski sürümün takma ad yedeğini (R3-02) ayıklamak
+    /// istemcinin işi (Bölüm C notu 5).
+    ///
+    /// <para><b>Kopya satırı yalnız yönlendirmedir</b> (<see cref="Redirect"/>):
+    /// Id, Platform, Username, MergedIntoId, ChangeSeq; öbür her alan ve damga
+    /// boş/false — PurgedAt ve CreatedByShopper DAHİL. Kopyanın boşaltılmış
+    /// alanlarındaki damgalı boşları bir istemci asla uygulamasın; silinmiş
+    /// (belki Shopper'ın açtığı) bir kopya da kimliğin tamamını silen bir mezar
+    /// taşı sanılmasın — silinmişlik asıl kaydın satırında gelir.</para></remarks>
+    public sealed record WpfCustomerChangeItem(
+        Guid Id, string Platform, string Username, Guid? MergedIntoId, DateTimeOffset? PurgedAt,
+        string? FullName, DateTimeOffset? FullNameChangedAt,
+        string? DisplayName, DateTimeOffset? DisplayNameChangedAt,
+        string? GroupId, DateTimeOffset? GroupIdChangedAt,
+        string? Address, string? City, string? District, DateTimeOffset? AddressChangedAt,
+        bool RecipientPaysActive, DateTimeOffset? RecipientPaysChangedAt,
+        string? Phone, DateTimeOffset? PhoneChangedAt,
+        string? Email, DateTimeOffset? EmailChangedAt,
+        string? Tckn, DateTimeOffset? TcknChangedAt,
+        bool WhatsAppConsent, DateTimeOffset? WhatsAppConsentChangedAt,
+        bool SmsConsent, DateTimeOffset? SmsConsentChangedAt,
+        bool IsBlacklisted, string? BlacklistReason, DateTimeOffset? BlacklistedAt, DateTimeOffset? BlacklistChangedAt,
+        string? Notes, DateTimeOffset? NotesChangedAt,
+        long ChangeSeq,
+        bool CreatedByShopper = false)
+    {
+        /// <summary>Kopya satırı: YALNIZ yönlendirme (bkz. kayıt dokümanı).</summary>
+        public static WpfCustomerChangeItem Redirect(
+            Guid id, string platform, string username, Guid mergedIntoId, long changeSeq) => new(
+            Id: id, Platform: platform, Username: username, MergedIntoId: mergedIntoId, PurgedAt: null,
+            FullName: null, FullNameChangedAt: null,
+            DisplayName: null, DisplayNameChangedAt: null,
+            GroupId: null, GroupIdChangedAt: null,
+            Address: null, City: null, District: null, AddressChangedAt: null,
+            RecipientPaysActive: false, RecipientPaysChangedAt: null,
+            Phone: null, PhoneChangedAt: null,
+            Email: null, EmailChangedAt: null,
+            Tckn: null, TcknChangedAt: null,
+            WhatsAppConsent: false, WhatsAppConsentChangedAt: null,
+            SmsConsent: false, SmsConsentChangedAt: null,
+            IsBlacklisted: false, BlacklistReason: null, BlacklistedAt: null, BlacklistChangedAt: null,
+            Notes: null, NotesChangedAt: null,
+            ChangeSeq: changeSeq,
+            CreatedByShopper: false);
+    }
+
+    /// <param name="CursorReset">İstemcinin imleci geçersizdi (eksi ya da
+    /// ufkun üstü) ve sayfa BAŞTAN verildi. İstemci tam yeniden indirme yapar
+    /// ve push imlecini de geri sarar (veritabanı yedekten dönmüşse sunucu son
+    /// gönderilenleri kaybetmiş olabilir). Sona eklendi: eski okuyucular yok
+    /// sayar.</param>
+    public sealed record WpfCustomerChangesPage(
+        List<WpfCustomerChangeItem> Items, long NextAfterSeq, bool CursorReset = false);
+
+    /// <summary>
+    /// Çoklu bilgisayar senkronunun değişiklik akışı: asıl kayıtlar tam
+    /// alanlarıyla, kopyalar yönlendirme (<c>MergedIntoId</c>), silinenler
+    /// <c>PurgedAt</c> ile. İmleç sunucunun rowversion'ı; istemci saati yok.
+    ///
+    /// Ufuk <c>MIN_ACTIVE_ROWVERSION()</c>: henüz commit olmamış bir işlem
+    /// daha KÜÇÜK bir rowversion almış olabilir. Ufkun üstünü vermek, o işlem
+    /// commit olunca imlecin gerisinde kalıp satırın hiç inmemesi demek.
+    ///
+    /// <para><b>Geçersiz imleç sıfırlanır.</b> Normal işleyişte dönen imleç
+    /// hep ufkun altındadır ve ufuk hiç gerilemez; eksi imleç (büyük-endian
+    /// baytları her rowversion'dan BÜYÜK karşılaştırılır) ya da ufkun üstündeki
+    /// imleç (veritabanı değişti: .bak geri yüklemesi rowversion sayacını geri
+    /// sarar, bacpac/kopya hepsini yeniden üretir) her sayfayı boş döndürür ve
+    /// o bilgisayar sessizce değişiklik almayı bırakırdı. Sayfa baştan verilir
+    /// ve <see cref="WpfCustomerChangesPage.CursorReset"/> bunu söyler; baştan
+    /// yeniden indirme güvenli — damga kuralları yeniden uygulamayı etkisiz
+    /// kılar.</para>
+    /// </summary>
+    [HttpGet("changes")]
+    public async Task<IActionResult> Changes(
+        Guid licenseId,
+        [FromQuery] long afterSeq = 0,
+        [FromQuery] int take = 500,
+        CancellationToken ct = default)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var ownsLicense = await _db.Licenses
+            .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
+        if (!ownsLicense) return NotFound();
+
+        take = Math.Clamp(take, 1, 500);
+        var horizon = await _db.Database
+            .SqlQueryRaw<long>("SELECT CAST(MIN_ACTIVE_ROWVERSION() AS bigint) AS [Value]")
+            .SingleAsync(ct);
+
+        var cursorReset = afterSeq < 0 || afterSeq >= horizon;
+        if (cursorReset)
+        {
+            _logger.LogWarning(
+                "Müşteri değişiklik akışı: geçersiz imleç {AfterSeq} (ufuk {Horizon}), baştan veriliyor (lisans {LicenseId}) — veritabanı yedekten dönmüş ya da kopyalanmış olabilir",
+                afterSeq, horizon, licenseId);
+            afterSeq = 0;
+        }
+
+        // IgnoreQueryFilters ŞART: kopyalar varsayılan sorgulardan gizli (A5b)
+        // ama akış onları yönlendirme olarak taşımalı — öbür bilgisayarlar
+        // yerel satırlarını asıl kayda ancak böyle taşır. Filtre kalkınca lisans
+        // sınırını yalnız aşağıdaki açık LicenseId koşulu çiziyor.
+        var rows = await _db.WpfCustomerProjections
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(p => p.LicenseId == licenseId && p.ChangeSeq > afterSeq && p.ChangeSeq < horizon)
+            .OrderBy(p => p.ChangeSeq)
+            .Take(take)
+            .ToListAsync(ct);
+
+        // Kopya satırı YALNIZ yönlendirme olarak gider (bkz. WpfCustomerChangeItem).
+        // TCKN veritabanında şifreli; çözme EF sorgusuna çevrilemez, bellekte.
+        // Çözülemeyen değer (anahtar kaybı) null gider. Bilgisayarlar bir birimi
+        // yalnız damgası kendilerininkinden YENİYSE yazar; anahtar kaybında
+        // mevcut satırların TCKN damgası değişmediği için yerel kopyalar bu
+        // null ile silinmez.
+        var items = rows.Select(p => p.MergedIntoId is { } target
+                ? WpfCustomerChangeItem.Redirect(p.Id, p.Platform, p.Username, target, p.ChangeSeq)
+                : new WpfCustomerChangeItem(
+                p.Id, p.Platform, p.Username, p.MergedIntoId, p.PurgedAt,
+                p.FullName, p.FullNameChangedAt,
+                p.DisplayName, p.DisplayNameChangedAt,
+                p.GroupId, p.GroupIdChangedAt,
+                p.Address, p.City, p.District, p.AddressChangedAt,
+                p.RecipientPaysActive, p.RecipientPaysChangedAt,
+                p.Phone, p.PhoneChangedAt,
+                p.Email, p.EmailChangedAt,
+                _tckn.Unprotect(p.TcknProtected), p.TcknChangedAt,
+                p.WhatsAppConsent, p.WhatsAppConsentChangedAt,
+                p.SmsConsent, p.SmsConsentChangedAt,
+                p.IsBlacklisted, p.BlacklistReason, p.BlacklistedAt, p.BlacklistChangedAt,
+                p.Notes, p.NotesChangedAt,
+                p.ChangeSeq,
+                p.CreatedByShopper))
+            .ToList();
+
+        var next = items.Count == 0 ? afterSeq : items[^1].ChangeSeq;
+        return Ok(new WpfCustomerChangesPage(items, next, cursorReset));
     }
 }

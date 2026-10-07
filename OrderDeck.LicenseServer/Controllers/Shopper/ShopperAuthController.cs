@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.Shoppers;
 
@@ -237,16 +238,25 @@ public sealed class ShopperAuthController : ControllerBase
                 userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
         }
 
-        // 7. Match WpfCustomerProjection by (LicenseId, Platform, Username) — ama
-        // bağlamak için telefon kanıtı şart. Kullanıcı adı yayın sohbetinde
+        // 7. Match WpfCustomerProjection by (LicenseId, Platform, kimlik anahtarı) —
+        // ama bağlamak için telefon kanıtı şart. Kullanıcı adı yayın sohbetinde
         // herkese açık olduğu için tek başına sahiplik kanıtı değil; gerekçe
         // WpfCustomerLinkMatcher'da.
+        //
+        // Aday KİMLİK ANAHTARIYLA aranır (A5c), tam kullanıcı adıyla değil:
+        // "irem" kaydı varken "İrem" ile kayıt (CI_AS'de bile N'İrem' ≠
+        // N'irem') adayı kaçırır, aynı kimliğe ikinci bir asıl kayıt açardı —
+        // Bölüm B'nin tekil indeksiyle kayıt 500'e düşerdi. IdentityKey BIN2:
+        // birebir karşılaştırma. IdentityKey != "": anahtar zaten boş değil
+        // (kullanıcı adı doğrulandı); sabit koşul sorguyu filtreli kimlik
+        // indeksinin koşuluna bağlar (CustomerIdentityIndex).
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
+        var identityKey = WpfCustomerProjection.IdentityKeyOf(usernameNorm);
         var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
-                        p.Username == usernameNorm)
+                        p.IdentityKey == identityKey && p.IdentityKey != "")
             .ToListAsync(ct);
         var wpfMatch = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt);
@@ -265,32 +275,56 @@ public sealed class ShopperAuthController : ControllerBase
         _db.ShopperBroadcasterLinks.Add(link);
 
         // 8a. Auto-projection: if no existing WpfCustomerProjection matched, create one
-        // so the broadcaster sees the new shopper immediately (without waiting for a
-        // WPF → server customer sync). WPF polls /wpf-customers/since to ingest these rows.
+        // so the broadcaster sees the new shopper in the panel immediately (without
+        // waiting for a WPF → server customer sync). Masaüstüne İNMEZ: eski `since`
+        // ucu geçici satırı vermez, yeni masaüstü de yerelde açmaz — kişi, yayıncının
+        // bilgisayarı onu sohbette görünce belirir (LicensesWpfCustomersPullController.Since).
         //
         // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
         // yeni satır AÇILMAZ. Açsaydık yayıncının müşteri listesinde aynı
         // (platform, kullanıcı adı) için ikinci bir kayıt belirir, üstelik
         // kanıtlanmamış kişinin bilgileriyle — gerçek müşterinin kaydını taklit
         // eden bir kopya. Bağlantı beklemede kalır (WpfCustomerId = null).
+        //
+        // Açılan satır GEÇİCİDİR (CreatedByShopper): ad/telefon/adres kişinin
+        // kendi beyanı, bağlantı kanıtsız. Yayıncının yazımı bu kaydı gerçek
+        // müşterinin kaydıyla buluşturduğunda bağlantı telefona karşı yeniden
+        // kanıt ister (LicensesWpfCustomersSyncController).
+        WpfCustomerProjection? provisional = null;
         if (candidates.Count == 0)
         {
-            var projectionId = Guid.NewGuid();
-            _db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            provisional = new WpfCustomerProjection
             {
-                Id = projectionId,
+                Id = Guid.NewGuid(),
                 LicenseId = license.Id,
                 Platform = platformNorm,
                 Username = usernameNorm,
                 FullName = shopper.FullName,
                 Phone = shopper.Phone,
                 Address = shopper.Address,
+                CreatedByShopper = true,
                 UpdatedAt = DateTimeOffset.UtcNow,
-            });
-            link.WpfCustomerId = projectionId;
+            };
+            _db.WpfCustomerProjections.Add(provisional);
+            link.WpfCustomerId = provisional.Id;
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (provisional is not null && CustomerIdentityIndex.IsViolation(ex))
+        {
+            // Aday yokken açılan geçici satır, okuma ile kayıt arasında aynı
+            // kimliği açan yayıncı gönderimine ya da başka bir shopper'a çarptı
+            // (B1). Satır bırakılır, bağlantı aradaki asıl kayda kanıtla bağlanır
+            // ya da beklemede kalır; kayıt bütünüyle yeniden yazılır.
+            await ProvisionalProjectionConflict.YieldAsync(_db, provisional, link, shopper, ct);
+            _log.LogInformation(
+                "Shopper kaydı: geçici müşteri kaydı eşzamanlı açılan bir asıl kayda çarptı (lisans {LicenseId}); bağlantı {LinkState}",
+                license.Id, link.WpfCustomerId is null ? "beklemede" : "kanıtla bağlandı");
+            await _db.SaveChangesAsync(ct);
+        }
 
         // 9. & 10. Issue tokens
         var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
@@ -745,10 +779,13 @@ public sealed class ShopperAuthController : ControllerBase
 
         foreach (var link in pendingLinks)
         {
+            // Aday kimlik anahtarıyla (kayıt adımı 7 ile aynı gerekçe; boş
+            // anahtar kimlik değil, koşul filtreli indeksi de kullandırır).
+            var identityKey = WpfCustomerProjection.IdentityKeyOf(link.Username);
             var candidates = await _db.WpfCustomerProjections
                 .Where(p => p.LicenseId == link.LicenseId
                     && p.Platform == link.Platform
-                    && p.Username == link.Username
+                    && p.IdentityKey == identityKey && p.IdentityKey != ""
                     && p.PurgedAt == null)
                 .ToListAsync(ct);
             var match = WpfCustomerLinkMatcher.FindProven(

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Push;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
@@ -23,6 +24,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private readonly INotificationSender _push;
     private readonly Services.Stock.StockLedgerWriter _ledger;
     private readonly LabelRuleApplier _labels;
+    private readonly CustomerIdResolver _customerIds;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
     public LicensesSessionsSyncController(
@@ -30,12 +32,14 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         INotificationSender push,
         Services.Stock.StockLedgerWriter ledger,
         LabelRuleApplier labels,
+        CustomerIdResolver customerIds,
         ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
         _push = push;
         _ledger = ledger;
         _labels = labels;
+        _customerIds = customerIds;
         _log = log;
     }
 
@@ -253,6 +257,17 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // shopper, identified via ShopperBroadcasterLink.WpfCustomerId).
         var newOrdersForShopperPush = new List<(string CustomerIdHex, decimal Price)>();
 
+        // Eski sürüm birleştirmeden sonra da kopyanın Id'sini gönderir (A5b):
+        // yeni sipariş asıl kaydın hex'iyle eklenir — asıl kayda bağlı Shopper
+        // siparişi görsün, etiket kuralı telefonu olan asıl kayda baksın.
+        // Paketin tamamı tek çağrıda çözülür. Güncelleme yolu CustomerId
+        // yazmıyor (birleştiricinin taşıması korunur) — öyle kalıyor.
+        // CustomerId gövdede zorunlu (null → 400, model doğrulaması); Guid
+        // olmayan değer aynen döner.
+        var canonicalHex = await _customerIds.CanonicalHexOfAsync(
+            licenseId, orders.Select(o => o.CustomerId), ct);
+        string CanonicalHex(string hex) => canonicalHex.GetValueOrDefault(hex, hex);
+
         foreach (var item in orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
@@ -279,12 +294,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             }
             else
             {
+                var customerHex = CanonicalHex(item.CustomerId);
                 _db.Orders.Add(new Order
                 {
                     Id = item.Id,
                     LicenseId = licenseId,
                     SessionId = item.SessionId,
-                    CustomerId = item.CustomerId,
+                    CustomerId = customerHex,
                     Platform = item.Platform,
                     Username = item.Username,
                     DisplayName = item.DisplayName,
@@ -311,8 +327,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     && !item.IsTentativeBackup)
                 {
                     newPrintedOrders.Add(item.Price);
-                    if (!string.IsNullOrWhiteSpace(item.CustomerId))
-                        newOrdersForShopperPush.Add((item.CustomerId, item.Price));
+                    if (!string.IsNullOrWhiteSpace(customerHex))
+                        newOrdersForShopperPush.Add((customerHex, item.Price));
                 }
             }
         }

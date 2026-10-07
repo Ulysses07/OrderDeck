@@ -7,18 +7,18 @@ namespace OrderDeck.LicenseServer.Tests.Services.IntakeForm;
 /// <summary>
 /// Kayıt formuna girilen kullanıcı adlarının platform kurallarına uyduğunu
 /// doğrular. NEDEN: Instagram scraper'ı sohbet yazarını
-/// <c>^@?[a-z0-9._]+$</c> ile süzüyor; forma "Musa Sevinç" gibi bir değer
+/// <c>^@?[a-z0-9._]+$</c> ile süzüyor; forma "Deneme Alıcı" gibi bir ad soyad
 /// girilirse kayıt sohbetteki kişiyle hiçbir zaman eşleşemez. Prod verisinde
 /// 924 Instagram kaydının 29'u bu yüzden ölü kalmıştı.
 /// </summary>
 public class HandleValidatorTests
 {
     [Theory]
-    [InlineData("bilalcanli", "bilalcanli")]
-    [InlineData("  bilalcanli  ", "bilalcanli")]
-    [InlineData("@bilalcanli", "bilalcanli")]
-    [InlineData("@@bilalcanli", "bilalcanli")]
-    [InlineData("@ bilalcanli", "bilalcanli")]
+    [InlineData("ornekmusteri", "ornekmusteri")]
+    [InlineData("  ornekmusteri  ", "ornekmusteri")]
+    [InlineData("@ornekmusteri", "ornekmusteri")]
+    [InlineData("@@ornekmusteri", "ornekmusteri")]
+    [InlineData("@ ornekmusteri", "ornekmusteri")]
     public void Normalize_strips_at_prefix_and_outer_whitespace(string raw, string expected)
         => HandleValidator.Normalize(raw).Should().Be(expected);
 
@@ -31,37 +31,37 @@ public class HandleValidatorTests
         => HandleValidator.Normalize(raw).Should().BeNull();
 
     /// <summary>
-    /// İç boşluk KORUNMALI. Sessizce silinirse "Musa Sevinc" → "MusaSevinc"
+    /// İç boşluk KORUNMALI. Sessizce silinirse "Deneme Alici" → "DenemeAlici"
     /// olur; bu geçerli görünen ama var olmayan bir hesaba işaret eder ve
     /// kullanıcı hatasını hiç fark etmez.
     /// </summary>
     [Fact]
     public void Normalize_keeps_inner_whitespace_so_validation_can_reject_it()
     {
-        var normalized = HandleValidator.Normalize("Musa Sevinç");
+        var normalized = HandleValidator.Normalize("Deneme Alıcı");
 
-        normalized.Should().Be("Musa Sevinç");
+        normalized.Should().Be("Deneme Alıcı");
         HandleValidator.Validate(HandleValidator.Instagram, normalized)
             .Should().Contain("boşluk");
     }
 
     [Theory]
-    [InlineData("bilalcanli")]
-    [InlineData("bilal.canli")]
-    [InlineData("bilal_canli")]
+    [InlineData("ornekmusteri")]
+    [InlineData("ornek.musteri")]
+    [InlineData("ornek_musteri")]
     [InlineData("Bilal123")]
     public void Instagram_accepts_valid_handles(string handle)
         => HandleValidator.Validate(HandleValidator.Instagram, handle).Should().BeNull();
 
     [Theory]
-    [InlineData("Musa Sevinç")]      // ad soyad — asıl şikâyet
-    [InlineData("musasevinç")]       // Türkçe karakter
-    [InlineData("musa@gmail.com")]   // e-posta
+    [InlineData("Deneme Alıcı")]     // ad soyad — asıl şikâyet
+    [InlineData("denemealıcı")]      // Türkçe karakter
+    [InlineData("musa@example.com")] // e-posta
     [InlineData("instagram.com/musa")] // profil bağlantısı
     [InlineData(".musa")]            // nokta ile başlıyor
     [InlineData("musa.")]            // nokta ile bitiyor
     [InlineData("mu..sa")]           // art arda nokta
-    [InlineData("musa-sevinc")]      // Instagram tireye izin vermez
+    [InlineData("deneme-alici")]     // Instagram tireye izin vermez
     public void Instagram_rejects_invalid_handles(string handle)
         => HandleValidator.Validate(HandleValidator.Instagram, handle).Should().NotBeNull();
 
@@ -71,9 +71,9 @@ public class HandleValidatorTests
             .Should().NotBeNull();
 
     [Theory]
-    [InlineData("edanurs")]
-    [InlineData("eda.nur")]
-    [InlineData("eda_nur")]
+    [InlineData("ikincimusteri")]
+    [InlineData("ikinci.musteri")]
+    [InlineData("ikinci_musteri")]
     public void TikTok_accepts_valid_handles(string handle)
         => HandleValidator.Validate(HandleValidator.TikTok, handle).Should().BeNull();
 
@@ -81,8 +81,8 @@ public class HandleValidatorTests
     [InlineData("a")]                // 2 karakterden kısa
     [InlineData("_eda")]             // alt çizgi ile başlıyor
     [InlineData("eda_")]             // alt çizgi ile bitiyor
-    [InlineData("eda-nur")]          // TikTok tireye izin vermez
-    [InlineData("Eda Nur")]
+    [InlineData("ikinci-musteri")]   // TikTok tireye izin vermez
+    [InlineData("Ikinci Musteri")]
     public void TikTok_rejects_invalid_handles(string handle)
         => HandleValidator.Validate(HandleValidator.TikTok, handle).Should().NotBeNull();
 
@@ -113,9 +113,9 @@ public class HandleValidatorTests
     /// handle kuralı koymak Facebook eşleşmesini tamamen kırar.
     /// </summary>
     [Theory]
-    [InlineData("Musa Sevinç")]
-    [InlineData("musa.sevinc")]
-    [InlineData("Ayşe Öztürk")]
+    [InlineData("Deneme Alıcı")]
+    [InlineData("deneme.alici")]
+    [InlineData("Örnek Müşteri")]
     public void Facebook_accepts_display_names(string handle)
         => HandleValidator.Validate(HandleValidator.Facebook, handle).Should().BeNull();
 

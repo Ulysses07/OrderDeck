@@ -892,7 +892,6 @@ public sealed class CustomerRepository
         // Böylece aynı kişi farklı platformdan ayrı ayrı kaydolmuşsa tek kart olur.
         // BAŞKA satırların GroupId'si de formdan türeyen yazımdır → aynı damga, aynı
         // "yalnız daha yeniyse" kuralı (sonradan elle ayrılan satır geri bağlanmaz).
-        // Kara liste yayılımı da formdan türer: formun damgası, aynı kural.
         if (phoneValue is not null)
         {
             var otherGroups = conn.Query<string>(
@@ -914,11 +913,17 @@ public sealed class CustomerRepository
                       WHERE GroupId IN @otherGroups
                         AND (GroupIdChangedAt IS NULL OR GroupIdChangedAt < @at)",
                     new { groupId, otherGroups, at }, tx);
-
-            // Kaynak üyenin kara liste tarihi yoksa yayılan tarih de formdan (gönderim
-            // anı, sn): işleme anı aynı formu işleyen bilgisayarlarda farklı olurdu.
-            PropagateGroupBlacklist(conn, tx, groupId, fallbackAt: at / 1000, formAt: at);
         }
+
+        // Kara liste yayılımı HER formda (telefonla gruplamadan sonra): telefonsuz form
+        // da kimlikleri gruba koyar (mevcut gruba katılım ya da yeni grup). Kara liste
+        // satır bayrağından okunduğu için (sohbet, etiket kuyruğu, çekiliş) yayılım
+        // yalnız telefon dalında koşunca telefonsuz formla gruba giren yeni kimlik
+        // işaretsiz kalıyor, kişi o platformdan alışveriş yapabiliyordu.
+        // Yayılım da formdan türer: formun damgası, aynı "yalnız daha yeniyse" kuralı.
+        // Kaynak üyenin kara liste tarihi yoksa yayılan tarih de formdan (gönderim
+        // anı, sn): işleme anı aynı formu işleyen bilgisayarlarda farklı olurdu.
+        PropagateGroupBlacklist(conn, tx, groupId, fallbackAt: at / 1000, formAt: at);
 
         write.Commit();
         return groupId;

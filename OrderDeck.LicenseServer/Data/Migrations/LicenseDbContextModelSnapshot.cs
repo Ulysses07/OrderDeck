@@ -3253,16 +3253,91 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<DateTimeOffset?>("AddressChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("BlacklistChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("BlacklistReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTimeOffset?>("BlacklistedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<byte[]>("ChangeSeq")
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("City")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<bool>("CreatedByShopper")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("DisplayNameChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("District")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<DateTimeOffset?>("EmailChangedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("FullName")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<DateTimeOffset?>("FullNameChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("GroupId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset?>("GroupIdChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("IdentityKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<bool>("IsBlacklisted")
+                        .HasColumnType("bit");
+
                     b.Property<Guid>("LicenseId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("MergedIntoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTimeOffset?>("NotesChangedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("Phone")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTimeOffset?>("PhoneChangedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("Platform")
                         .IsRequired()
@@ -3273,6 +3348,26 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsConcurrencyToken()
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<bool>("RecipientPaysActive")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("RecipientPaysChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("SmsConsent")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("SmsConsentChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("TcknChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("TcknProtected")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("Tckn");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -3281,7 +3376,20 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
+                    b.Property<bool>("WhatsAppConsent")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("WhatsAppConsentChangedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("LicenseId", "ChangeSeq");
+
+                    b.HasIndex("LicenseId", "Platform", "IdentityKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_WpfCustomerProjections_Identity")
+                        .HasFilter("[MergedIntoId] IS NULL AND [IdentityKey] <> N''");
 
                     b.HasIndex("LicenseId", "Platform", "Username");
 

@@ -53,10 +53,11 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
 
         var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        var cfg = await svc.UpsertConfigAsync(customer.Id, slug, "+905551234567", "Title", true, default);
+        var phone = TestPhone.NewE164();
+        var cfg = await svc.UpsertConfigAsync(customer.Id, slug, phone, "Title", true, default);
 
         cfg.Slug.Should().Be(slug);
-        cfg.WhatsAppPhone.Should().Be("+905551234567");
+        cfg.WhatsAppPhone.Should().Be(phone);
         cfg.IsActive.Should().BeTrue();
         cfg.CreatedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5));
     }
@@ -70,11 +71,15 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
 
         var slug1 = $"slug-{Guid.NewGuid():N}"[..15];
         var slug2 = $"slug-{Guid.NewGuid():N}"[..15];
-        await svc.UpsertConfigAsync(customer.Id, slug1, "+905551111111", null, true, default);
-        var updated = await svc.UpsertConfigAsync(customer.Id, slug2, "+905552222222", "New", false, default);
+        // Aynı üretilen gövde, farklı son hane: iki numara kesin farklı.
+        var govde = TestPhone.NewNational()[..9];
+        var ilkTelefon = $"+90{govde}1";
+        var yeniTelefon = $"+90{govde}2";
+        await svc.UpsertConfigAsync(customer.Id, slug1, ilkTelefon, null, true, default);
+        var updated = await svc.UpsertConfigAsync(customer.Id, slug2, yeniTelefon, "New", false, default);
 
         updated.Slug.Should().Be(slug2);
-        updated.WhatsAppPhone.Should().Be("+905552222222");
+        updated.WhatsAppPhone.Should().Be(yeniTelefon);
         updated.CustomTitle.Should().Be("New");
         updated.IsActive.Should().BeFalse();
     }
@@ -89,9 +94,9 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
 
-        await svc.UpsertConfigAsync(c1.Id, slug, "+905551111111", null, true, default);
+        await svc.UpsertConfigAsync(c1.Id, slug, TestPhone.NewE164(), null, true, default);
 
-        var act = async () => await svc.UpsertConfigAsync(c2.Id, slug, "+905552222222", null, true, default);
+        var act = async () => await svc.UpsertConfigAsync(c2.Id, slug, TestPhone.NewE164(), null, true, default);
         var ex = await act.Should().ThrowAsync<IntakeFormService.SlugAlreadyTakenException>();
         ex.Which.Slug.Should().Be(slug);
     }
@@ -103,7 +108,7 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
         var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        await svc.UpsertConfigAsync(customer.Id, slug, "+905551234567", null, true, default);
+        await svc.UpsertConfigAsync(customer.Id, slug, TestPhone.NewE164(), null, true, default);
 
         var loaded = await svc.GetActiveBySlugAsync(slug, default);
 
@@ -118,7 +123,7 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
         var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        await svc.UpsertConfigAsync(customer.Id, slug, "+905551234567", null, isActive: false, default);
+        await svc.UpsertConfigAsync(customer.Id, slug, TestPhone.NewE164(), null, isActive: false, default);
 
         var loaded = await svc.GetActiveBySlugAsync(slug, default);
 
@@ -132,7 +137,7 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
         var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        await svc.UpsertConfigAsync(customer.Id, slug, "+905551234567", null, true, default);
+        await svc.UpsertConfigAsync(customer.Id, slug, TestPhone.NewE164(), null, true, default);
 
         var loaded = await svc.GetActiveBySlugAsync(slug, default);
 
@@ -146,7 +151,7 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
         var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        var cfg = await svc.UpsertConfigAsync(customer.Id, slug, "+905551234567", null, true, default);
+        var cfg = await svc.UpsertConfigAsync(customer.Id, slug, TestPhone.NewE164(), null, true, default);
 
         var submission = await svc.SaveSubmissionAsync(
             cfg.Id, "uname", "Full Name", "Address",
@@ -190,7 +195,7 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
         var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        return await svc.UpsertConfigAsync(customerId, slug, "+905551234567", null, true, default);
+        return await svc.UpsertConfigAsync(customerId, slug, TestPhone.NewE164(), null, true, default);
     }
 
     /// <summary>Kararlılık ufkunun gerisinde kalan bir damga — <c>since</c> ucu

@@ -26,6 +26,12 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
     // "PNID_1" sonraki testlere 409 döndürürdü.
     private readonly List<OnboardingApiFactory> _factories = [];
 
+    // İşletme hattının Meta'nın döndürdüğü boşluklu yazılışı; numara her koşuda
+    // üretilir. Bilerek kanonikleştirilmeden saklandığı için yanıtta aynen aranır.
+    private static readonly string DisplayNumber = Spaced(TestPhone.NewNational());
+
+    private static string Spaced(string n) => $"+90 {n[..3]} {n[3..6]} {n[6..8]} {n[8..]}";
+
     /// <summary>Her adımı ayrı ayrı başarılı/başarısız kılabilen sahte Graph.</summary>
     private sealed class FakeOnboardingClient : IWhatsAppOnboardingClient
     {
@@ -33,7 +39,7 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         public GraphResult<bool> Subscribe = GraphResult<bool>.Success(true);
         public GraphResult<WhatsAppPhoneNumberInfo> Phone =
             GraphResult<WhatsAppPhoneNumberInfo>.Success(
-                new WhatsAppPhoneNumberInfo("+90 555 111 22 33", "Emar Global"));
+                new WhatsAppPhoneNumberInfo(DisplayNumber, "Emar Global"));
         public GraphResult<bool> Register = GraphResult<bool>.Success(true);
         public GraphResult<bool> Unsubscribe = GraphResult<bool>.Success(true);
         public GraphResult<string> Sync = GraphResult<string>.Success("REQ_1");
@@ -197,7 +203,7 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await resp.Content.ReadAsStringAsync();
         json.Should().NotContain("BIZ_TOKEN");
-        json.Should().Contain("+90 555 111 22 33");
+        json.Should().Contain(DisplayNumber);
 
         seed.Graph.SeenCode.Should().Be("CODE_1");
         seed.Graph.SeenWabaId.Should().Be("1001");
@@ -361,7 +367,7 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
     /// <summary>Numarayı Business App'te yaşıyor gösteren Graph cevabı.</summary>
     private static GraphResult<WhatsAppPhoneNumberInfo> Coexistence =>
         GraphResult<WhatsAppPhoneNumberInfo>.Success(
-            new WhatsAppPhoneNumberInfo("+90 555 111 22 33", "Emar Global", "SMB_APP"));
+            new WhatsAppPhoneNumberInfo(DisplayNumber, "Emar Global", "SMB_APP"));
 
     [Fact]
     public async Task A_coexistence_number_is_never_registered_because_it_already_is()
@@ -538,7 +544,7 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         var theirs = await second.Client.GetAsync("/api/panel/whatsapp/account");
 
         mine.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await mine.Content.ReadAsStringAsync()).Should().Contain("+90 555 111 22 33");
+        (await mine.Content.ReadAsStringAsync()).Should().Contain(DisplayNumber);
 
         // Sorgu lisansa göre daraltılmasaydı B, A'nın numarasını ve WABA id'sini
         // görürdü — tek store'da iki yayıncı gerçek üretim şekli.

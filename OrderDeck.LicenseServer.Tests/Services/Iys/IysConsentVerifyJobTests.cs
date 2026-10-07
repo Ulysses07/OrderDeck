@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
@@ -66,7 +67,7 @@ public class IysConsentVerifyJobTests
         }
     }
 
-    private const string Phone = "+905551112233";
+    private static readonly string Phone = TestPhone.NewE164();
     private static readonly Guid LicenseA = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid LicenseB = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private const string BrandA = "731734";
@@ -89,6 +90,14 @@ public class IysConsentVerifyJobTests
 
     private static IysConsentVerifyJob Job(LicenseDbContext db, IIysClient client)
         => new(db, client, Accounts(db), NullLogger<IysConsentVerifyJob>.Instance);
+
+    /// <summary>A ve B markalarının alıcıları: aynı üretilen gövde, farklı son hane —
+    /// iki numara kesin farklı.</summary>
+    private static (string A, string B) TwoPhones()
+    {
+        var govde = TestPhone.NewNational()[..9];
+        return ($"+90{govde}1", $"+90{govde}2");
+    }
 
     private static void SeedAccount(
         LicenseDbContext db, Guid licenseId, string brandCode,
@@ -308,10 +317,12 @@ public class IysConsentVerifyJobTests
         var old = DateTimeOffset.UtcNow.AddHours(-2);
         var aPhones = new List<string>();
         var bPhones = new List<string>();
+        // Üretilen ortak önek + marka hanesi + sıra no: iki liste kesişmez.
+        var onek = TestPhone.NewNational()[..6];
         for (var i = 0; i < IysConsentVerifyJob.MaxPerBrandPerRun; i++)
         {
-            aPhones.Add($"+90555{i:D7}");
-            bPhones.Add($"+90666{i:D7}");
+            aPhones.Add($"+90{onek}1{i:D3}");
+            bPhones.Add($"+90{onek}2{i:D3}");
             db.IysConsents.Add(Pushed(aPhones[i], BrandA, nextVerifyAt: old));
             db.IysConsents.Add(Pushed(bPhones[i], BrandB, nextVerifyAt: old));
         }
@@ -350,11 +361,12 @@ public class IysConsentVerifyJobTests
         using var db = NewDb(fail);
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pushed("+905551110001", BrandA));
-        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        var (telefonA, telefonB) = TwoPhones();
+        db.IysConsents.Add(Pushed(telefonA, BrandA));
+        db.IysConsents.Add(Pushed(telefonB, BrandB));
         await db.SaveChangesAsync();
 
-        var client = new FakeIysClient { Answer = { ["+905551110002"] = IysConsentStatus.Onay } };
+        var client = new FakeIysClient { Answer = { [telefonB] = IysConsentStatus.Onay } };
 
         await Job(db, client).RunAsync();
 
@@ -394,8 +406,8 @@ public class IysConsentVerifyJobTests
             var brokenB = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
             brokenB.PasswordProtected = foreign;
 
-            db.IysConsents.Add(Pushed("+905551110001", BrandA));
-            db.IysConsents.Add(Pushed("+905551110002", BrandB));
+            db.IysConsents.Add(Pushed(TestPhone.NewE164(), BrandA));
+            db.IysConsents.Add(Pushed(TestPhone.NewE164(), BrandB));
             await db.SaveChangesAsync();
 
             await Job(db, new FakeIysClient()).RunAsync();
@@ -456,8 +468,9 @@ public class IysConsentVerifyJobTests
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pushed("+905551110001", BrandA));
-        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        var (telefonA, telefonB) = TwoPhones();
+        db.IysConsents.Add(Pushed(telefonA, BrandA));
+        db.IysConsents.Add(Pushed(telefonB, BrandB));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
@@ -468,7 +481,7 @@ public class IysConsentVerifyJobTests
         for (var i = 0; i < client.SearchCalls.Count; i++)
         {
             var expectedPhone = client.SearchAccounts[i].BrandCode == BrandA
-                ? "+905551110001" : "+905551110002";
+                ? telefonA : telefonB;
             client.SearchCalls[i].Should().Equal(expectedPhone);
         }
     }
@@ -479,11 +492,12 @@ public class IysConsentVerifyJobTests
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
-        db.IysConsents.Add(Pushed("+905551110001", BrandA));
-        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        var (telefonA, telefonB) = TwoPhones();
+        db.IysConsents.Add(Pushed(telefonA, BrandA));
+        db.IysConsents.Add(Pushed(telefonB, BrandB));
         await db.SaveChangesAsync();
 
-        var client = new FakeIysClient { Answer = { ["+905551110002"] = IysConsentStatus.Onay } };
+        var client = new FakeIysClient { Answer = { [telefonB] = IysConsentStatus.Onay } };
         client.ThrowByBrand[BrandA] = new IysConfigurationException("60", "marka kodu");
 
         await Job(db, client).RunAsync();
@@ -509,11 +523,12 @@ public class IysConsentVerifyJobTests
         var broken = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
         broken.PasswordProtected = foreign;
 
-        db.IysConsents.Add(Pushed("+905551110001", BrandA));
-        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        var (telefonA, telefonB) = TwoPhones();
+        db.IysConsents.Add(Pushed(telefonA, BrandA));
+        db.IysConsents.Add(Pushed(telefonB, BrandB));
         await db.SaveChangesAsync();
 
-        var client = new FakeIysClient { Answer = { ["+905551110002"] = IysConsentStatus.Onay } };
+        var client = new FakeIysClient { Answer = { [telefonB] = IysConsentStatus.Onay } };
 
         await Job(db, client).RunAsync();
 
@@ -542,8 +557,8 @@ public class IysConsentVerifyJobTests
         // cevabı bir BAŞKA yayıncının kimliğiyle sorulur ve gelen yanlış cevap
         // hiçbir hata fırlatmadan doğru satıra yazılır.
         using var db = NewDb();
-        db.IysConsents.Add(Pushed("+905551110001", BrandA));
-        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        db.IysConsents.Add(Pushed(TestPhone.NewE164(), BrandA));
+        db.IysConsents.Add(Pushed(TestPhone.NewE164(), BrandB));
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
