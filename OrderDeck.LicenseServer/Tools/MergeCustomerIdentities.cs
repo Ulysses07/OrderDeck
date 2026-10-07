@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -10,10 +11,21 @@ namespace OrderDeck.LicenseServer.Tools;
 /// Konteyner içinde elle koşulur:
 ///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll \
 ///       merge-customer-identities (--all | --license &lt;guid&gt;) [--apply]
-/// --apply yoksa kuru çalıştırma (hiçbir şey yazmaz). --apply sırası KODDA:
-/// anahtar onarımı → birleştirme → anahtar onarımı → son koşul (uyuşmaz anahtar
-/// 0). Çıkış kodları: 0 tamam, 1 bazı gruplar eşzamanlılık yüzünden atlandı
-/// (yeniden çalıştır), 2 kullanım/yapılandırma, 3 son koşul tutmadı.
+/// --apply yoksa kuru çalıştırma (hiçbir şey yazmaz; taşınacak kayıtları,
+/// platform başına grupları ve asıl kayıtla kopya arasındaki çelişkileri sayar,
+/// B1 kapısının bugünkü sayısını yazar). --apply sırası KODDA: anahtar onarımı
+/// → birleştirme → anahtar onarımı → son koşul (uyuşmaz anahtar 0 VE B1'in
+/// birebir SQL kapısı 0). --apply sırasında TÜM bilgisayarlarda OrderDeck
+/// kapalı olmalı: arada gelen bir gönderim kopyaya yazılıp boşaltılabilir ya
+/// da zincir bırakabilir.
+///
+/// <para>Çıkış kodları: 0 tamam; 1 bazı gruplar eşzamanlı değişiklik ya da
+/// veritabanı hatası yüzünden geri alınıp atlandı — yeniden çalıştır (biten
+/// gruplar kalıcı; kalan kopyalar B1 kapısında görünür, beklenen); 2
+/// kullanım/yapılandırma; 3 son koşul tutmadı (uyuşmaz anahtar ya da atlanan
+/// grup yokken B1 kapısı sıfır değil — B1 göçü bu hâlde düşer). Kapı TÜM
+/// lisansları sayar: <c>--license</c> ile koşulduysa öbür lisansların
+/// kopyaları da içindedir.</para>
 ///
 /// <para>Argümanlar katı: tanınmayan argüman, değeri eksik ya da GUID olmayan
 /// <c>--license</c>, ikinci kez verilen seçenek, <c>--all</c> ile
@@ -23,9 +35,9 @@ namespace OrderDeck.LicenseServer.Tools;
 /// lisanslara, yazım hatalı <c>--apply</c> kuru çalıştırmaya dönüşmemeli.</para>
 ///
 /// Bağlantı dizesi web host'unkiyle aynı kaynaktan (ConnectionStrings:LicenseDb,
-/// ortam değişkeni dahil). Çıktıda kişisel veri YOK — yalnız sayılar ve lisans
-/// Id'leri (anahtar onarımının uyarıları satır Id'si taşıyabilir, ad/telefon/
-/// kullanıcı adı asla).
+/// ortam değişkeni dahil). Çıktıda kişisel veri YOK — yalnız sayılar, platform
+/// adları ve lisans Id'leri (anahtar onarımının uyarıları satır Id'si
+/// taşıyabilir, ad/telefon/kullanıcı adı asla).
 /// </summary>
 public static class MergeCustomerIdentities
 {
@@ -33,7 +45,7 @@ public static class MergeCustomerIdentities
 
     public static async Task<int> RunAsync(string[] args)
     {
-        if (!TryParseArgs(args, out var all, out var single, out var apply))
+        if (!TryParseArgs(args, out _, out var single, out var apply))
         {
             Console.Error.WriteLine(Usage);
             return 2;
@@ -53,21 +65,32 @@ public static class MergeCustomerIdentities
         var options = new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(conn).Options;
         await using var db = new LicenseDbContext(options);
         using var logs = LoggerFactory.Create(b => b.AddSimpleConsole());
-        var job = new CustomerIdentityMergeJob(db, new CustomerIdentityMerger(db));
-        var repair = new IdentityKeyRepairJob(db, logs.CreateLogger<IdentityKeyRepairJob>());
-        var ct = CancellationToken.None;
+        return await RunAsync(db, single, apply, Console.Out, Console.Error, logs, CancellationToken.None);
+    }
 
-        var licenses = single is { } one ? new[] { one } : (await job.LicenseIdsAsync(ct)).ToArray();
+    /// <summary>Komutun gövdesi: argümanlar ayrıştırılmış, bağlantı kurulmuş.
+    /// <paramref name="license"/> null ise projeksiyonu olan bütün lisanslar
+    /// (<c>--all</c>). Testler gerçek SQL Server'a buradan girer.</summary>
+    public static async Task<int> RunAsync(
+        LicenseDbContext db, Guid? license, bool apply, TextWriter output, TextWriter error,
+        ILoggerFactory loggerFactory, CancellationToken ct)
+    {
+        var job = new CustomerIdentityMergeJob(db, new CustomerIdentityMerger(db),
+            loggerFactory.CreateLogger<CustomerIdentityMergeJob>());
+        var repair = new IdentityKeyRepairJob(db, loggerFactory.CreateLogger<IdentityKeyRepairJob>());
+
+        var licenses = license is { } one ? new[] { one } : (await job.LicenseIdsAsync(ct)).ToArray();
 
         if (apply)
         {
             var fixedBefore = await repair.RunAsync(ct);
             db.ChangeTracker.Clear();
-            Console.WriteLine($"Anahtar onarımı (önce): {fixedBefore} satır");
+            output.WriteLine($"Anahtar onarımı (önce): {fixedBefore} satır");
         }
         else
         {
-            Console.WriteLine($"Uyuşmaz kimlik anahtarı: {await job.CountMismatchedKeysAsync(ct)} satır (--apply önce onarır)");
+            output.WriteLine($"Uyuşmaz kimlik anahtarı: {await job.CountMismatchedKeysAsync(ct)} satır (--apply önce onarır)");
+            output.WriteLine($"B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu {await job.CountDuplicateHeadsAsync(ct)} (--apply sonrası 0 olmalı)");
         }
 
         var total = new CustomerIdentityMergeJob.Report(0, 0, 0, 0, 0, 0, 0, 0);
@@ -75,26 +98,34 @@ public static class MergeCustomerIdentities
         {
             var r = await job.RunAsync(licenseId, apply, ct);
             if (r.Groups > 0)
-                Console.WriteLine($"{licenseId}: {Format(r)}");
+                output.WriteLine($"{licenseId}: {Format(r)}");
             total = Sum(total, r);
         }
-        Console.WriteLine($"{(apply ? "UYGULANDI" : "KURU ÇALIŞTIRMA")} — TOPLAM ({licenses.Length} lisans): {Format(total)}");
+        output.WriteLine($"{(apply ? "UYGULANDI" : "KURU ÇALIŞTIRMA")} — TOPLAM ({licenses.Length} lisans): {Format(total)}");
 
         if (!apply) return 0;
 
         var fixedAfter = await repair.RunAsync(ct);
         db.ChangeTracker.Clear();
         var mismatched = await job.CountMismatchedKeysAsync(ct);
-        Console.WriteLine($"Anahtar onarımı (sonra): {fixedAfter} satır; kalan uyuşmaz anahtar: {mismatched}");
+        var duplicates = await job.CountDuplicateHeadsAsync(ct);
+        output.WriteLine($"Anahtar onarımı (sonra): {fixedAfter} satır; kalan uyuşmaz anahtar: {mismatched}; B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu {duplicates}");
         if (mismatched > 0)
         {
-            Console.Error.WriteLine("SON KOŞUL TUTMADI: uyuşmaz anahtar var — B1 (tekil indeks) göçü bu hâlde düşer. Komutu yeniden çalıştırın; sürerse inceleyin.");
+            error.WriteLine("SON KOŞUL TUTMADI: uyuşmaz anahtar var — B1 (tekil indeks) göçü bu hâlde düşer. Komutu yeniden çalıştırın; sürerse inceleyin.");
             return 3;
         }
+        // Atlanan grup B1 kapısından ÖNCE: atlanan grubun kopyaları kapıda zaten
+        // görünür; kapı önce denetlenseydi çıkış 1 hiç dönmezdi.
         if (total.FailedGroups > 0)
         {
-            Console.Error.WriteLine($"{total.FailedGroups} grup eşzamanlı değişiklik yüzünden atlandı; komutu yeniden çalıştırın (biten gruplar kalıcı).");
+            error.WriteLine($"{total.FailedGroups} grup eşzamanlı değişiklik ya da veritabanı hatası yüzünden geri alınıp atlandı; komutu yeniden çalıştırın (biten gruplar kalıcı; B1 kapısındaki sayı atlanan grupları da içerir).");
             return 1;
+        }
+        if (duplicates > 0)
+        {
+            error.WriteLine($"SON KOŞUL TUTMADI: B1 kapısı {duplicates} yinelenen asıl kayıt grubu buluyor (tüm lisanslar) — B1 göçü bu hâlde düşer. --license ile koşulduysa --all ile koşun; sürerse inceleyin.");
+            return 3;
         }
         return 0;
     }
@@ -128,14 +159,40 @@ public static class MergeCustomerIdentities
         return all != license.HasValue;
     }
 
-    private static string Format(CustomerIdentityMergeJob.Report r) =>
-        $"kopyalı kişi={r.Groups} kopya satır={r.CopyRows} sipariş={r.OrdersToMove} kargo={r.ShipmentsToMove} " +
-        $"Shopper bağlantısı={r.LinksToMove} toplanacak bakiye={r.BalancesToSum} silinmiş kişi={r.PurgedGroups} " +
-        $"atlanan grup={r.FailedGroups} beklemeye düşen Shopper bağlantısı={r.LinksUnbound}";
+    private static string Format(CustomerIdentityMergeJob.Report r)
+    {
+        var platforms = r.GroupsByPlatform.Count == 0
+            ? ""
+            : " (" + string.Join(", ", r.GroupsByPlatform.OrderBy(p => p.Key, StringComparer.Ordinal)
+                .Select(p => $"{p.Key}={p.Value}")) + ")";
+        return $"kopyalı kişi={r.Groups}{platforms} harf/boşluk farklı={r.VariantGroups} kopya satır={r.CopyRows} " +
+               $"sipariş={r.OrdersToMove} kargo={r.ShipmentsToMove} Shopper bağlantısı={r.LinksToMove} " +
+               $"toplanacak bakiye={r.BalancesToSum} bakiye hareketi={r.BalanceTransactionsToMove} " +
+               $"IBAN hafızası={r.IbanMemoriesToMove} ödeme eşleşmesi={r.PaymentMatchesToMove} " +
+               $"WhatsApp sohbeti={r.WaConversationsToMove} silinmiş kişi={r.PurgedGroups} | " +
+               $"asıl kayıtla kopyada ikisi de dolu ama farklı (grup): telefon={r.PhoneConflicts} adres={r.AddressConflicts} " +
+               $"e-posta={r.EmailConflicts} ad={r.NameConflicts} not={r.NotesConflicts} | " +
+               $"atlanan grup={r.FailedGroups} beklemeye düşen Shopper bağlantısı={r.LinksUnbound}";
+    }
 
     private static CustomerIdentityMergeJob.Report Sum(CustomerIdentityMergeJob.Report a, CustomerIdentityMergeJob.Report b) => new(
         a.Groups + b.Groups, a.CopyRows + b.CopyRows, a.OrdersToMove + b.OrdersToMove,
         a.ShipmentsToMove + b.ShipmentsToMove, a.LinksToMove + b.LinksToMove,
         a.BalancesToSum + b.BalancesToSum, a.PurgedGroups + b.PurgedGroups, a.FailedGroups + b.FailedGroups,
-        a.LinksUnbound + b.LinksUnbound);
+        a.LinksUnbound + b.LinksUnbound)
+    {
+        GroupsByPlatform = a.GroupsByPlatform.Concat(b.GroupsByPlatform)
+            .GroupBy(p => p.Key, StringComparer.Ordinal)
+            .ToImmutableSortedDictionary(g => g.Key, g => g.Sum(p => p.Value), StringComparer.Ordinal),
+        VariantGroups = a.VariantGroups + b.VariantGroups,
+        PhoneConflicts = a.PhoneConflicts + b.PhoneConflicts,
+        AddressConflicts = a.AddressConflicts + b.AddressConflicts,
+        EmailConflicts = a.EmailConflicts + b.EmailConflicts,
+        NameConflicts = a.NameConflicts + b.NameConflicts,
+        NotesConflicts = a.NotesConflicts + b.NotesConflicts,
+        BalanceTransactionsToMove = a.BalanceTransactionsToMove + b.BalanceTransactionsToMove,
+        IbanMemoriesToMove = a.IbanMemoriesToMove + b.IbanMemoriesToMove,
+        PaymentMatchesToMove = a.PaymentMatchesToMove + b.PaymentMatchesToMove,
+        WaConversationsToMove = a.WaConversationsToMove + b.WaConversationsToMove,
+    };
 }

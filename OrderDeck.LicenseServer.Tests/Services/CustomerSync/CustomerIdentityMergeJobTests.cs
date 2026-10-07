@@ -1,10 +1,13 @@
+using System.Security.Cryptography;
 using FluentAssertions;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Shoppers;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -65,9 +68,10 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         return license.Id;
     }
 
-    private static WpfCustomerProjection Row(Guid license, string username, DateTimeOffset updatedAt) => new()
+    private static WpfCustomerProjection Row(
+        Guid license, string username, DateTimeOffset updatedAt, string platform = "tiktok") => new()
     {
-        Id = Guid.NewGuid(), LicenseId = license, Platform = "tiktok", Username = username, UpdatedAt = updatedAt,
+        Id = Guid.NewGuid(), LicenseId = license, Platform = platform, Username = username, UpdatedAt = updatedAt,
     };
 
     private static Order OrderFor(Guid license, WpfCustomerProjection p, DateTimeOffset addedAt) => new()
@@ -749,5 +753,320 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
             canonical.FullName.Should().Be("Sena Gerçek Müşteri");
             canonical.Phone.Should().Be(broadcasterPhone);
         }
+    }
+
+    // ── A7-düzeltme: kuru çalıştırma raporu, B1 kapısı, hata yalıtımı, UpdatedAt ──
+
+    private static string NewEmail() => $"{Guid.NewGuid():N}@example.test";
+
+    [Fact]
+    public async Task Kuru_calistirma_platform_harf_farki_ve_alan_celiskilerini_sayar()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var email = NewEmail();
+
+        // 1) instagram, harf farkı: telefon ve not farklı; e-posta, ad, adres
+        //    SameText'e göre aynı (adres bloğu uyumlu, ortak parça var).
+        var a1 = Row(lic, "ayse", t0, "instagram");
+        a1.Phone = NewPhone(); a1.Email = email; a1.FullName = "Ayşe Kaya"; a1.Notes = "not bir";
+        a1.Address = "Atatürk Cd. 5"; a1.City = "İzmir";
+        var a2 = Row(lic, "AYSE", t0.AddDays(1), "instagram");
+        a2.Phone = NewPhone(); a2.Email = email.ToUpperInvariant() + " "; a2.FullName = "AYŞE KAYA"; a2.Notes = "not iki";
+        a2.Address = "atatürk cd. 5"; a2.District = "Bornova";
+        // 2) instagram, aynı yazım (iki bilgisayar): ad, adres, e-posta farklı.
+        var b1 = Row(lic, "mehmet", t0, "instagram");
+        b1.FullName = "Mehmet Yılmaz"; b1.Address = "Cumhuriyet Cd. 1"; b1.Email = NewEmail();
+        var b2 = Row(lic, "mehmet", t0.AddDays(1), "instagram");
+        b2.FullName = "Mehmet Demir"; b2.Address = "Gazi Cd. 2"; b2.Email = NewEmail();
+        // 3) tiktok, boşluk farkı; asıl kayıtta telefon boş — çelişki değil.
+        var c1 = Row(lic, "zeynep", t0);
+        var c2 = Row(lic, " zeynep ", t0.AddDays(1));
+        c2.Phone = NewPhone();
+        db.WpfCustomerProjections.AddRange(a1, a2, b1, b2, c1, c2, Row(lic, "tekil", t0));
+        db.Orders.AddRange(OrderFor(lic, a1, t0), OrderFor(lic, b1, t0), OrderFor(lic, c1, t0));
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: false, default);
+
+        report.Groups.Should().Be(3);
+        report.GroupsByPlatform.Should().BeEquivalentTo(new Dictionary<string, int> { ["instagram"] = 2, ["tiktok"] = 1 });
+        report.VariantGroups.Should().Be(2, "'ayse'/'AYSE' ve 'zeynep'/' zeynep '; 'mehmet' iki kez aynı yazım");
+        report.PhoneConflicts.Should().Be(1);
+        report.NotesConflicts.Should().Be(1);
+        report.EmailConflicts.Should().Be(1, "harf ve kenar boşluğu farkı çelişki değil");
+        report.NameConflicts.Should().Be(1, "'AYŞE KAYA' ile 'Ayşe Kaya' aynı");
+        report.AddressConflicts.Should().Be(1, "aynı satırı paylaşan uyumlu bloklar çelişmez");
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.MergedIntoId != null)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Kuru_calistirma_tasinacak_iban_eslesme_hareket_ve_sohbetleri_sayar_uygulama_tasir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var canonical = Row(lic, "kerem", t0);
+        var copy = Row(lic, "Kerem", t0.AddDays(1));
+        db.WpfCustomerProjections.AddRange(canonical, copy);
+        db.Orders.Add(OrderFor(lic, canonical, t0));
+        BankTransaction BankTx() => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
+            BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 10m, Currency = "TL",
+            OccurredAt = t0, FetchedAt = t0,
+        };
+        PaymentMatch Match(BankTransaction tx, Guid? proposed, Guid? actual) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx.Id, ProposedWpfCustomerId = proposed,
+            ActualWpfCustomerId = actual, Layer = PaymentMatchLayer.UsernameInDescription, Confidence = 0.9m,
+            Status = PaymentMatchStatus.Proposed, CreatedAt = t0, UpdatedAt = t0,
+        };
+        var tx1 = BankTx();
+        var tx2 = BankTx();
+        db.BankTransactions.AddRange(tx1, tx2);
+        db.PaymentMatches.AddRange(Match(tx1, copy.Id, null), Match(tx2, null, copy.Id));
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = copy.Id,
+            IbanHash = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant(),
+            IbanMasked = "TR** **** **** 0001", LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = t0,
+        });
+        db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = copy.Id, Amount = 10m, Kind = "manual-adjustment",
+            CreatedByCustomerId = Guid.NewGuid(), CreatedAt = t0,
+        });
+        db.WaConversations.Add(new WaConversation
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, CustomerPhone = NewPhone(), PhoneNumberId = $"pn-{Guid.NewGuid():N}",
+            Status = "open", WpfCustomerId = copy.Id, CreatedAt = t0,
+        });
+        await db.SaveChangesAsync();
+
+        var dryRun = await Job(db).RunAsync(lic, apply: false, default);
+
+        dryRun.PaymentMatchesToMove.Should().Be(2, "önerilen de bağlanan da sayılır");
+        dryRun.IbanMemoriesToMove.Should().Be(1);
+        dryRun.BalanceTransactionsToMove.Should().Be(1);
+        dryRun.WaConversationsToMove.Should().Be(1);
+
+        (await Job(db).RunAsync(lic, apply: true, default)).FailedGroups.Should().Be(0);
+        db.ChangeTracker.Clear();
+        (await db.PaymentMatches.CountAsync(m => m.LicenseId == lic
+            && (m.ProposedWpfCustomerId == canonical.Id || m.ActualWpfCustomerId == canonical.Id))).Should().Be(2);
+        (await db.CustomerIbanMemories.CountAsync(m => m.WpfCustomerId == canonical.Id)).Should().Be(1);
+        (await db.CustomerBalanceTransactions.CountAsync(t => t.WpfCustomerId == canonical.Id)).Should().Be(1);
+        (await db.WaConversations.CountAsync(c => c.WpfCustomerId == canonical.Id)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task B1_kapisi_SQL_kurallariyla_sayar_bos_anahtarli_ikizler_birlestirilmeden_kalir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var upper = Row(lic, "ali", t0, "TikTok");
+        db.WpfCustomerProjections.AddRange(
+            Row(lic, "   ", t0), Row(lic, " ", t0.AddDays(1)), // hesaplanan anahtar boş: iş bilerek birleştirmez
+            upper, Row(lic, "ali", t0.AddDays(1), "tiktok"));   // platform harf farkı: ikisi için de aynı kişi
+        db.Orders.Add(OrderFor(lic, upper, t0));
+        await db.SaveChangesAsync();
+        var job = Job(db);
+
+        (await job.CountDuplicateHeadsAsync(default)).Should().Be(2);
+        (await job.RunAsync(lic, apply: true, default)).Groups.Should().Be(1);
+        (await job.CountDuplicateHeadsAsync(default)).Should().Be(1,
+            "boş anahtarlı ikizler SQL'de aynı grupta kalır — B1 bunları görür, iş bilerek dokunmaz");
+    }
+
+    [Fact]
+    public async Task Asil_kaydin_UpdatedAti_yalniz_bu_kosuda_silinirse_ilerler()
+    {
+        // Eski istemcinin `since` ingest'i kullanıcı adını harf duyarlı eşler:
+        // ilerleyen UpdatedAt asıl kaydı, yalnız harf farklı kopyayı tutan
+        // bilgisayara YENİ müşteri olarak indirirdi. Yalnız mezar taşı ulaşmalı.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var kept = Row(lic, "nur", t0);
+        var keptCopy = Row(lic, "Nur", t0.AddDays(1));
+        keptCopy.Address = "Kopyadaki adres";
+        var nowPurged = Row(lic, "ece", t0);
+        var purgingCopy = Row(lic, "Ece", t0.AddDays(1));
+        purgingCopy.MarkPurged(t0.AddDays(2));
+        var alreadyPurged = Row(lic, "eda", t0);
+        alreadyPurged.MarkPurged(t0.AddDays(3));
+        var earlierPurgedCopy = Row(lic, "Eda", t0.AddDays(1));
+        earlierPurgedCopy.MarkPurged(t0.AddDays(2));
+        db.WpfCustomerProjections.AddRange(kept, keptCopy, nowPurged, purgingCopy, alreadyPurged, earlierPurgedCopy);
+        db.Orders.AddRange(OrderFor(lic, kept, t0), OrderFor(lic, nowPurged, t0), OrderFor(lic, alreadyPurged, t0));
+        await db.SaveChangesAsync();
+        var before = DateTimeOffset.UtcNow;
+
+        (await Job(db).RunAsync(lic, apply: true, default)).FailedGroups.Should().Be(0);
+
+        db.ChangeTracker.Clear();
+        var heads = await db.WpfCustomerProjections.Where(p => p.LicenseId == lic).ToDictionaryAsync(p => p.Id);
+        heads.Should().HaveCount(3);
+        heads[kept.Id].Address.Should().Be("Kopyadaki adres");
+        heads[kept.Id].UpdatedAt.Should().Be(t0, "alan doldurmak UpdatedAt'i ilerletmez");
+        heads[nowPurged.Id].PurgedAt.Should().BeCloseTo(t0.AddDays(2), TimeSpan.FromMilliseconds(1));
+        heads[nowPurged.Id].UpdatedAt.Should().BeOnOrAfter(before, "bu koşuda silinen kişinin mezar taşı eski istemcilere ulaşmalı");
+        heads[alreadyPurged.Id].PurgedAt.Should().BeCloseTo(t0.AddDays(2), TimeSpan.FromMilliseconds(1), "ilk silme tarihi en erkeni");
+        heads[alreadyPurged.Id].UpdatedAt.Should().Be(t0.AddDays(3), "zaten silinmişti — mezar taşı çoktan indi");
+    }
+
+    [Fact]
+    public async Task Asil_kaydin_eszamanli_silinmesi_UpdatedAt_ilerlemese_de_yakalanir()
+    {
+        // Asıl kayda yazılacak alan yok ve UpdatedAt ilerlemiyor: jeton denetimi
+        // (PurgedAt) yine yapılmalı, yoksa eşzamanlı KVKK silmesi fark edilmezdi.
+        Guid lic;
+        WpfCustomerProjection canonical, copy;
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            lic = await NewLicenseAsync(db);
+            canonical = Row(lic, "baris", t0);
+            copy = Row(lic, "Baris", t0.AddDays(1));
+            db.WpfCustomerProjections.AddRange(canonical, copy);
+            db.Orders.Add(OrderFor(lic, canonical, t0));
+            await db.SaveChangesAsync();
+        }
+        var hook = new SaveHookInterceptor();
+        await using var hooked = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseSqlServer(_cs).AddInterceptors(hook).Options);
+        var fired = false;
+        hook.BeforeSave = async () =>
+        {
+            if (fired || !hooked.ChangeTracker.Entries<WpfCustomerProjection>().Any(e => e.Entity.Id == canonical.Id)) return;
+            fired = true;
+            await ExecuteSqlAsync("UPDATE WpfCustomerProjections SET PurgedAt = SYSDATETIMEOFFSET() WHERE Id = @id",
+                ("@id", canonical.Id));
+        };
+
+        var report = await new CustomerIdentityMergeJob(hooked, new CustomerIdentityMerger(hooked))
+            .RunAsync(lic, apply: true, default);
+
+        fired.Should().BeTrue();
+        report.FailedGroups.Should().Be(1);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking().SingleAsync(p => p.Id == copy.Id))
+                .MergedIntoId.Should().BeNull("grup geri alındı");
+        }
+    }
+
+    [Fact]
+    public async Task Eszamanlilik_disi_veritabani_hatasi_grubu_geri_alir_sayar_is_surer_gunluge_kisisel_veri_yazmaz()
+    {
+        // Eşzamanlı bir bakiye uygulaması asıl kaydın bakiye satırını tam o anda
+        // açar: işin açtığı satır tekil indekse çarpar (2601) — DbUpdateException,
+        // eşzamanlılık değil. Grup geri alınır, sayılır, iş sürer.
+        Guid lic;
+        WpfCustomerProjection a1, a2, b1, b2;
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            lic = await NewLicenseAsync(db);
+            a1 = Row(lic, "tolga", t0);
+            a2 = Row(lic, "Tolga", t0.AddDays(1));
+            b1 = Row(lic, "ugur", t0);
+            b2 = Row(lic, "Ugur", t0.AddDays(1));
+            db.WpfCustomerProjections.AddRange(a1, a2, b1, b2);
+            db.Orders.AddRange(OrderFor(lic, a1, t0), OrderFor(lic, b1, t0));
+            db.CustomerBalances.Add(new CustomerBalance
+                { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = a2.Id, Balance = 30m, UpdatedAt = t0 });
+            await db.SaveChangesAsync();
+        }
+        var hook = new SaveHookInterceptor();
+        await using var hooked = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseSqlServer(_cs).AddInterceptors(hook).Options);
+        var fired = false;
+        hook.BeforeSave = async () =>
+        {
+            if (fired || !hooked.ChangeTracker.Entries<CustomerBalance>()
+                    .Any(e => e.State == EntityState.Added && e.Entity.WpfCustomerId == a1.Id)) return;
+            fired = true;
+            await ExecuteSqlAsync(
+                "INSERT INTO CustomerBalances (Id, LicenseId, WpfCustomerId, Balance, UpdatedAt) VALUES (@id, @lic, @wpf, 5, SYSDATETIMEOFFSET())",
+                ("@id", Guid.NewGuid()), ("@lic", lic), ("@wpf", a1.Id));
+        };
+        var log = new LogRecorder<CustomerIdentityMergeJob>();
+
+        var first = await new CustomerIdentityMergeJob(hooked, new CustomerIdentityMerger(hooked), log)
+            .RunAsync(lic, apply: true, default);
+
+        fired.Should().BeTrue();
+        first.Groups.Should().Be(2);
+        first.FailedGroups.Should().Be(1);
+        var entry = log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning).Subject;
+        entry.Message.Should().Contain(nameof(DbUpdateException)).And.Contain("2601").And.Contain(lic.ToString());
+        entry.Message.Should().NotContainEquivalentOf("tolga").And.NotContainEquivalentOf("ugur");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var rows = await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => p.LicenseId == lic).ToDictionaryAsync(p => p.Id);
+            rows[a2.Id].MergedIntoId.Should().BeNull("hatalı grup bütünüyle geri alındı");
+            (await db.CustomerBalances.SingleAsync(b => b.WpfCustomerId == a2.Id)).Balance.Should().Be(30m);
+            rows[b2.Id].MergedIntoId.Should().Be(b1.Id, "öteki grup birleşti");
+
+            var second = await Job(db).RunAsync(lic, apply: true, default);
+            second.Groups.Should().Be(1);
+            second.FailedGroups.Should().Be(0);
+            db.ChangeTracker.Clear();
+            (await db.CustomerBalances.SingleAsync(b => b.WpfCustomerId == a1.Id)).Balance.Should().Be(35m);
+            (await db.CustomerBalances.SingleAsync(b => b.WpfCustomerId == a2.Id)).Balance.Should().Be(0m);
+        }
+    }
+
+    [Fact]
+    public async Task Esit_UpdatedAtli_kopyalar_Id_sirasiyla_gezilir()
+    {
+        // Kopyalar UpdatedAt'i en yeniden eskiye gezilir; eşitlikte Id. Bu iki
+        // Id'de .NET sırası ile SQL Server'ın uniqueidentifier sırası TERS: sıra
+        // sorgunun dönüş sırasına kalsaydı sonuç ötekisi olurdu.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var canonical = Row(lic, "cansu", t0);
+        var firstEmail = NewEmail();
+        var first = Row(lic, "Cansu", t0.AddDays(1));
+        first.Id = Guid.Parse("00000001-0000-0000-0000-000000000002");
+        first.Email = firstEmail;
+        var second = Row(lic, "CANSU", t0.AddDays(1));
+        second.Id = Guid.Parse("00000002-0000-0000-0000-000000000001");
+        second.Email = NewEmail();
+        db.WpfCustomerProjections.AddRange(canonical, second, first);
+        db.Orders.Add(OrderFor(lic, canonical, t0));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(lic, apply: true, default);
+
+        db.ChangeTracker.Clear();
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == canonical.Id)).Email.Should().Be(firstEmail);
+    }
+
+    private async Task ExecuteSqlAsync(string sql, params (string Name, object Value)[] parameters)
+    {
+        await using var conn = new SqlConnection(_cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in parameters) cmd.Parameters.AddWithValue(name, value);
+        await cmd.ExecuteNonQueryAsync();
     }
 }
