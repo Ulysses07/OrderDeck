@@ -113,10 +113,10 @@ public sealed class ShipmentService
     /// göstermeli belirler.
     ///
     /// <para>U12: yerel taşıma kişide birden çok açık dosya bırakabilir. Eşik kişinin
-    /// BÜTÜN açık dosyalarının toplamından hesaplanır; dönen <c>Shipment</c> kararın
-    /// verileceği en yeni dosyadır ve <c>CumulativeAmount</c>'u o durumda havuzun
-    /// toplamıdır (yalnız gösterim/karar için — kalıcı değil; çekmece bu tutarı gösterir).
-    /// Tek dosyada davranış değişmez.</para>
+    /// BÜTÜN açık dosyalarının toplamından hesaplanır ve
+    /// <see cref="ShipmentDecisionContext.PooledAmount"/>'ta taşınır (çekmece bu tutarı
+    /// gösterir); dönen <c>Shipment</c> kararın verileceği en yeni dosyadır, satırın aynası.
+    /// Tek dosyada havuz dosyanın kendi tutarıdır — davranış değişmez.</para>
     /// </summary>
     public ShipmentDecisionContext EvaluateAfterPayment(string customerId, bool allLabelsPaid)
     {
@@ -126,7 +126,8 @@ public sealed class ShipmentService
         var open = _shipments.GetAllOpenByCustomer(customerId);
         if (open.Count == 0)
             return ShipmentDecisionContext.Silent(customerId);
-        var shipment = Pooled(open[0], open.Skip(1));
+        var shipment = open[0];
+        var pooled = open.Sum(s => s.CumulativeAmount);
 
         var shipping = _settings().Shipping;
         if (!shipping.IsEnabled)
@@ -135,18 +136,20 @@ public sealed class ShipmentService
                 AllLabelsPaid: true,
                 ThresholdReached: false,
                 AmountToThreshold: 0m,
-                ShouldPrompt: false);
+                ShouldPrompt: false,
+                PooledAmount: pooled);
 
         var threshold = shipping.FreeShippingThreshold!.Value;
-        var reached = shipment.CumulativeAmount >= threshold;
-        var remaining = reached ? 0m : threshold - shipment.CumulativeAmount;
+        var reached = pooled >= threshold;
+        var remaining = reached ? 0m : threshold - pooled;
 
         return new ShipmentDecisionContext(
             Shipment: shipment,
             AllLabelsPaid: true,
             ThresholdReached: reached,
             AmountToThreshold: remaining,
-            ShouldPrompt: true);
+            ShouldPrompt: true,
+            PooledAmount: pooled);
     }
 
     /// <summary>
@@ -154,18 +157,27 @@ public sealed class ShipmentService
     /// Geçişler spec'te tanımlı; geçersiz transition InvalidOperationException
     /// fırlatır.
     ///
-    /// <para>U12: karar kişinin yerel taşımadan kalan öbür açık dosyalarına da aynen
-    /// uygulanır (tek havuz — <see cref="EvaluateAfterPayment"/>): fazla dosya gönder /
-    /// alıcı öder kararında kapanır ve durum kendiliğinden düzelir; bekletmede hepsi
-    /// bekler, sonraki etiketler en yeni dosyaya gider, eşik yine toplamdan. Aksi hâlde en
-    /// yeni dosya kapandıktan sonra eski dosya eski toplamıyla sonraki etiketleri alır ve
-    /// eşik kararı (ve "kazandın" mesajı) yanlış olurdu. Dönen dosyanın
-    /// <c>CumulativeAmount</c>'u birden çok dosyada havuzun toplamıdır (kalıcı değil).
-    /// Tek dosyada davranış değişmez.</para>
+    /// <para>U12: hedef dosya karardan ÖNCE açıksa (Pending/Held) karar kişinin yerel
+    /// taşımadan kalan öbür açık dosyalarına da aynen uygulanır (tek havuz —
+    /// <see cref="EvaluateAfterPayment"/>): fazla dosya gönder / alıcı öder kararında kapanır
+    /// ve durum kendiliğinden düzelir; bekletmede hepsi bekler, sonraki etiketler en yeni
+    /// dosyaya gider, eşik yine toplamdan. Aksi hâlde en yeni dosya kapandıktan sonra eski
+    /// dosya eski toplamıyla sonraki etiketleri alır ve eşik kararı (ve "kazandın" mesajı)
+    /// yanlış olurdu. Zaten kapalı bir dosyaya (alıcı öder) verilen karar havuza dokunmaz.
+    /// Hepsi TEK işlemde: yarım uygulanmış karar havuzu bölerdi. Tek dosyada davranış
+    /// değişmez.</para>
     /// </summary>
+    /// <returns>Kararın uygulandığı dosya — satırın aynası.</returns>
     public Shipment ApplyDecision(string shipmentId, ShipmentDecision decision)
+        => ApplyDecision(shipmentId, decision, out _);
+
+    /// <inheritdoc cref="ApplyDecision(string, ShipmentDecision)"/>
+    /// <param name="pooledAmount">Kararın kapsadığı dosyaların toplam tutarı ("kazandın"
+    /// mesajı bunu söyler); tek dosyada dosyanın kendi tutarı.</param>
+    public Shipment ApplyDecision(string shipmentId, ShipmentDecision decision, out decimal pooledAmount)
     {
-        var shipment = _shipments.GetById(shipmentId)
+        using var write = _shipments.BeginWrite();
+        var shipment = _shipments.GetById(shipmentId, write)
             ?? throw new InvalidOperationException($"Shipment {shipmentId} not found.");
 
         if (shipment.Status is ShipmentStatus.Shipped)
@@ -174,24 +186,24 @@ public sealed class ShipmentService
 
         var now = _nowUnix();
         var updated = Decide(shipment, decision, now);
-        _shipments.Update(updated);
+        _shipments.Update(updated, write);
+        pooledAmount = updated.CumulativeAmount;
 
-        var others = _shipments.GetAllOpenByCustomer(shipment.CustomerId)
-            .Where(s => !string.Equals(s.Id, shipment.Id, StringComparison.Ordinal))
-            .ToList();
-        foreach (var other in others)
-            _shipments.Update(Decide(other, decision, now));
+        if (shipment.Status is ShipmentStatus.Pending or ShipmentStatus.Held)
+        {
+            var others = _shipments.GetAllOpenByCustomer(shipment.CustomerId, write)
+                .Where(s => !string.Equals(s.Id, shipment.Id, StringComparison.Ordinal));
+            foreach (var other in others)
+            {
+                _shipments.Update(Decide(other, decision, now), write);
+                pooledAmount += other.CumulativeAmount;
+            }
+        }
 
-        return Pooled(updated, others);
-    }
-
-    /// <summary>Tek dosyada dosyanın kendisi; havuzda tutarı toplam olan kopyası.</summary>
-    private static Shipment Pooled(Shipment main, IEnumerable<Shipment> others)
-    {
-        var extra = others.ToList();
-        return extra.Count == 0
-            ? main
-            : main with { CumulativeAmount = main.CumulativeAmount + extra.Sum(s => s.CumulativeAmount) };
+        // Satırın kendisi (Update Revision'ı artırır, SyncedAt'i düşürür) — bellekteki kopya değil.
+        var stored = _shipments.GetById(shipmentId, write)!;
+        write.Commit();
+        return stored;
     }
 
     private static Shipment Decide(Shipment shipment, ShipmentDecision decision, long now)
@@ -225,12 +237,17 @@ public sealed class ShipmentService
 /// kargo özelliği kapalı). ShouldPrompt=true ise UI ThresholdReached'a
 /// göre hangi modal varyantını göstereceğine karar verir.
 /// </summary>
+/// <param name="Shipment">Kararın verileceği dosya (kişinin en yeni açık dosyası) — satırın aynası.</param>
+/// <param name="PooledAmount">U12: eşiğin hesaplandığı tutar — kişinin bütün açık dosyalarının
+/// toplamı (yerel taşımadan kalan fazla dosya dahil); tek dosyada dosyanın kendi tutarı.
+/// Çekmece bunu gösterir. Sessiz bağlamda 0.</param>
 public sealed record ShipmentDecisionContext(
     Shipment? Shipment,
     bool AllLabelsPaid,
     bool ThresholdReached,
     decimal AmountToThreshold,
-    bool ShouldPrompt)
+    bool ShouldPrompt,
+    decimal PooledAmount = 0m)
 {
     public static ShipmentDecisionContext Silent(string _customerId) =>
         new(Shipment: null, AllLabelsPaid: false, ThresholdReached: false,

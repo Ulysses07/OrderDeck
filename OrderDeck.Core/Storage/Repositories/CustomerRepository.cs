@@ -219,8 +219,13 @@ public sealed class CustomerRepository
     public string ResolveId(string customerId)
         => _factory.ExecuteScalar<string>(null, "SELECT " + CustomerIdSql.Resolve("@id"), new { id = customerId })!;
 
-    /// <summary>U12: <see cref="ResolveId"/>'nin toplu hâli — tek sorgu. Her girdi Id'si (tekrarlar
-    /// bir kez) güncel Id'sine eşlenir; taşınmamış ya da hiç olmayan Id kendisine.</summary>
+    /// <summary><see cref="ResolveIds"/>'in tek sorgudaki Id sayısı: SQLite'ın parametre sınırının
+    /// (eski derlemelerde 999) altında.</summary>
+    private const int ResolveChunkSize = 900;
+
+    /// <summary>U12: <see cref="ResolveId"/>'nin toplu hâli — <see cref="ResolveChunkSize"/>'lık
+    /// parça başına tek sorgu. Her girdi Id'si (tekrarlar bir kez) güncel Id'sine eşlenir;
+    /// taşınmamış ya da hiç olmayan Id kendisine.</summary>
     public IReadOnlyDictionary<string, string> ResolveIds(IEnumerable<string> customerIds)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -228,9 +233,10 @@ public sealed class CustomerRepository
         if (map.Count == 0) return map;
 
         using var conn = _factory.Open();
-        foreach (var (from, to) in conn.Query<(string From, string To)>(
-                     CustomerIdSql.ResolveMany("@ids"), new { ids = map.Keys.ToList() }))
-            map[from] = to;
+        foreach (var chunk in map.Keys.ToList().Chunk(ResolveChunkSize))
+            foreach (var (from, to) in conn.Query<(string From, string To)>(
+                         CustomerIdSql.ResolveMany("@ids"), new { ids = chunk }))
+                map[from] = to;
         return map;
     }
 

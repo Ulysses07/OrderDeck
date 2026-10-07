@@ -38,6 +38,15 @@ internal static class DbWriteExtensions
     }
 
     /// <inheritdoc cref="QueryFirstOrDefault{T}"/>
+    public static IReadOnlyList<T> Query<T>(
+        this IDbConnectionFactory factory, DbWrite? write, string sql, object? param = null)
+    {
+        if (write is not null) return write.Connection.Query<T>(sql, param, write.Transaction).ToList();
+        using var conn = factory.Open();
+        return conn.Query<T>(sql, param).ToList();
+    }
+
+    /// <inheritdoc cref="QueryFirstOrDefault{T}"/>
     public static T? ExecuteScalar<T>(
         this IDbConnectionFactory factory, DbWrite? write, string sql, object? param = null)
     {

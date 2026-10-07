@@ -787,6 +787,80 @@ public sealed class DekontEkleViewModelTests
     }
 
     [Fact]
+    public void ApplyShipmentDecision_ShipNow_kazandin_mesaji_tasimadan_kalan_dosyalarin_toplamini_soyler()
+    {
+        // U12: yerel taşıma kişide iki açık dosya bıraktı. Eşik ve "kazandın" mesajı havuzun
+        // toplamından (3000 + 5300); Shipment nesneleri ise satırların aynası kalır.
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+        fx.Settings.Payment.ShippingWonTemplate = "Tebrikler {ad}, {kumulatif_tutar} TL!";
+
+        var telefon = TestPhone.NewE164();
+        var customer = new Customer(
+            "c1", "instagram", "@ayse_y", "Ayşe", null,
+            FirstSeenAt: 500, LastSeenAt: 1000,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null, Phone: telefon);
+        fx.Customers.Insert(customer);
+        fx.Shipments.Insert(new Shipment("kargo-eski", customer.Id, ShipmentStatus.Held, 50, 60, null, 3000m));
+        fx.Shipments.Insert(new Shipment("kargo-yeni", customer.Id, ShipmentStatus.Pending, 70, null, null, 0m));
+
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 5300m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"od-pr-{System.Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new SettingsStore(path);
+            store.Save(fx.Settings);
+            var launcher = new OrderDeck.Tests.Fakes.FakeUrlLauncher();
+            var paymentRequest = new OrderDeck.App.Services.PaymentRequestService(
+                store, new WhatsAppMessageBuilder(), launcher,
+                PaymentRequestServiceTestHelpers.StubApiClient(),
+                new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
+                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore());
+            var vm = new DekontEkleViewModel(
+                fx.Payments, fx.Customers, fx.Sessions,
+                new PaymentMatcherService(fx.Labels, () => fx.Settings),
+                fx.Labels, fx.ShipmentSvc,
+                new PdfDekontParser(), fx.Settings,
+                new FakeClock(),
+                NullLogger<DekontEkleViewModel>.Instance,
+                paymentRequest);
+
+            FillValid(vm);
+            vm.AmountText = "5300";
+            vm.CustomerPlatform = "instagram";
+            vm.CustomerUsername = "@ayse_y";
+
+            var result = vm.TrySave();
+            var ctx = result.ThresholdContext!;
+            ctx.Shipment!.Id.Should().Be("kargo-yeni");
+            ctx.Shipment.CumulativeAmount.Should().Be(5300m);
+            ctx.PooledAmount.Should().Be(8300m);
+            new ShipmentThresholdDialogViewModel(ctx, "instagram/@ayse_y", 5000m)
+                .CumulativeAmount.Should().Be(8300m, "çekmece havuzun toplamını gösterir");
+
+            vm.ApplyShipmentDecision(ctx.Shipment.Id, ShipmentDecision.ShipNow);
+
+            launcher.LaunchedUrls.Should().ContainSingle()
+                .Which.Should().Contain("8.300%2C00");
+            fx.Shipments.GetById("kargo-eski")!.Status.Should().Be(ShipmentStatus.Shipped);
+        }
+        finally
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ApplyShipmentDecision_Hold_does_not_trigger_whatsapp()
     {
         var fx = new Fixture();

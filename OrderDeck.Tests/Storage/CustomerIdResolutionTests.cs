@@ -29,6 +29,18 @@ public sealed class CustomerIdResolutionTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
+    /// <summary>Açtığı her bağlantının SQLite parametre sınırını düşürür.</summary>
+    private sealed class VariableLimitFactory(IDbConnectionFactory inner, int limit) : IDbConnectionFactory
+    {
+        public System.Data.IDbConnection Open()
+        {
+            var conn = inner.Open();
+            SQLitePCL.raw.sqlite3_limit(((Microsoft.Data.Sqlite.SqliteConnection)conn).Handle,
+                SQLitePCL.raw.SQLITE_LIMIT_VARIABLE_NUMBER, limit);
+            return conn;
+        }
+    }
+
     private string Local(string username)
     {
         var id = Guid.NewGuid().ToString("N");
@@ -117,6 +129,27 @@ public sealed class CustomerIdResolutionTests : IDisposable
         _customers.AnyRedirectedTo(canonical, new[] { "hic-yok", first }).Should().BeTrue();
         _customers.AnyRedirectedTo(canonical, new[] { "hic-yok", canonical }).Should().BeFalse("canlı Id yönlendirme kaynağı değildir");
         _customers.AnyRedirectedTo(canonical, Array.Empty<string>()).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ResolveIds_parca_parca_sorgular_cok_sayida_Idyi_eksiksiz_cozer()
+    {
+        // Parça sınırının (900) iki yanında yönlendirilmiş Id: sonuçlar birleşir, hiçbiri düşmez.
+        var (stale, canonical) = Rekeyed();
+        var (stale2, canonical2) = (Local("mehmet"), Local("Mehmet"));
+        _sync.RekeyToLocal(stale2, canonical2, pushedThroughSeq: long.MaxValue, nowUnix: Now).Should().Be(RekeyResult.Rekeyed);
+        var ids = Enumerable.Range(0, 2000).Select(i => $"yok-{i}").ToList();
+        ids[10] = stale;
+        ids[1500] = stale2;
+
+        // Eski SQLite derlemelerinin parametre sınırı (999): parçalanmasaydı tek sorgu
+        // "too many SQL variables" ile düşerdi.
+        var map = new CustomerRepository(new VariableLimitFactory(_db, 999)).ResolveIds(ids);
+
+        map.Should().HaveCount(2000);
+        map[stale].Should().Be(canonical);
+        map[stale2].Should().Be(canonical2);
+        map["yok-1999"].Should().Be("yok-1999");
     }
 
     [Fact]

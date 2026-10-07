@@ -1,4 +1,5 @@
 using System;
+using Dapper;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -413,11 +414,13 @@ public class ShipmentServiceTests
         ctx.ThresholdReached.Should().BeTrue("eşik kişinin bütün açık dosyalarından (3000 + 2500)");
         ctx.AmountToThreshold.Should().Be(0m);
         ctx.Shipment!.Id.Should().Be("kargo-yeni", "karar en yeni dosya üstünden verilir");
-        ctx.Shipment.CumulativeAmount.Should().Be(5500m, "çekmece havuzun toplamını gösterir");
+        ctx.Shipment.CumulativeAmount.Should().Be(2500m, "Shipment nesnesi her zaman satırın aynası");
+        ctx.PooledAmount.Should().Be(5500m, "çekmece havuzun toplamını gösterir");
 
-        var shipped = svc.ApplyDecision(ctx.Shipment.Id, ShipmentDecision.ShipNow);
+        var shipped = svc.ApplyDecision(ctx.Shipment.Id, ShipmentDecision.ShipNow, out var pooled);
 
-        shipped.CumulativeAmount.Should().Be(5500m, "'kazandın' mesajı havuzun toplamını söyler");
+        pooled.Should().Be(5500m, "'kazandın' mesajı havuzun toplamını söyler");
+        shipped.Should().BeEquivalentTo(repo.GetById("kargo-yeni"), "dönen dosya satırın aynası");
         repo.GetById("kargo-yeni")!.Status.Should().Be(ShipmentStatus.Shipped);
         var stale = repo.GetById("kargo-eski")!;
         stale.Status.Should().Be(ShipmentStatus.Shipped, "fazla dosya bir sonraki kararda kapanır — durum kendiliğinden düzelir");
@@ -466,6 +469,57 @@ public class ShipmentServiceTests
 
         var ctx = svc.EvaluateAfterPayment(Cid, allLabelsPaid: true);
         ctx.ThresholdReached.Should().BeTrue("1000 + 1500 + 3000");
-        ctx.Shipment!.CumulativeAmount.Should().Be(5500m);
+        ctx.PooledAmount.Should().Be(5500m);
+        ctx.Shipment!.CumulativeAmount.Should().Be(4500m);
+    }
+
+    [Fact]
+    public void Tek_dosyada_havuz_dosyanin_kendi_tutari()
+    {
+        var (db, svc, repo, labels, _, _) = Fx(threshold: 5000m);
+        using var _d = db;
+        labels.Insert(MakeLabel("l1", 1200m));
+        var s = svc.GetOrCreateOpenShipment(Cid);
+        svc.AttachLabels(s.Id, new[] { "l1" });
+
+        svc.EvaluateAfterPayment(Cid, allLabelsPaid: true).PooledAmount.Should().Be(1200m);
+        svc.ApplyDecision(s.Id, ShipmentDecision.ShipNow, out var pooled);
+        pooled.Should().Be(1200m);
+        svc.EvaluateAfterPayment(Cid, allLabelsPaid: false).PooledAmount.Should().Be(0m, "sessiz bağlam");
+    }
+
+    [Fact]
+    public void Karar_tek_islemde_ikinci_dosya_dusarse_ilki_de_geri_alinir()
+    {
+        var (db, svc, repo, _, _, _) = Fx();
+        using var _d = db;
+        TwoOpenAfterRekey(db, repo, staleAmount: 3000m, newestAmount: 2500m);
+        using (var c = db.Open())
+            c.Execute(@"CREATE TRIGGER kargo_bozuk BEFORE UPDATE ON Shipment WHEN NEW.Id = 'kargo-eski'
+                        BEGIN SELECT RAISE(ABORT, 'disk dolu'); END");
+
+        var act = () => svc.ApplyDecision("kargo-yeni", ShipmentDecision.ShipNow);
+
+        act.Should().Throw<Microsoft.Data.Sqlite.SqliteException>();
+        repo.GetById("kargo-yeni")!.Status.Should().Be(ShipmentStatus.Held,
+            "karar bütün dosyalara birlikte uygulanır ya da hiçbirine — yarım havuz eşiği yanlış hesaplatırdı");
+        repo.GetById("kargo-eski")!.Status.Should().Be(ShipmentStatus.Pending);
+    }
+
+    [Fact]
+    public void Kapali_dosyaya_verilen_karar_havuza_dokunmaz()
+    {
+        // Hedef dosya karardan ÖNCE açık değildi (alıcı öder): o kişinin açık dosyaları bu
+        // kararın konusu değil.
+        var (db, svc, repo, _, _, _) = Fx();
+        using var _d = db;
+        repo.Insert(new Shipment("kargo-alici", Cid, ShipmentStatus.RecipientPays, 40, null, null, 700m));
+        repo.Insert(new Shipment("kargo-acik", Cid, ShipmentStatus.Pending, 50, null, null, 300m));
+
+        var shipped = svc.ApplyDecision("kargo-alici", ShipmentDecision.ShipNow, out var pooled);
+
+        shipped.Status.Should().Be(ShipmentStatus.Shipped);
+        pooled.Should().Be(700m);
+        repo.GetById("kargo-acik")!.Status.Should().Be(ShipmentStatus.Pending);
     }
 }

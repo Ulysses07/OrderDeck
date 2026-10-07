@@ -42,15 +42,20 @@ public sealed class ShipmentRepository
             });
     }
 
-    public Shipment? GetById(string id)
+    /// <param name="write">Doluysa çağıranın paketinde (kargo kararı tek işlem —
+    /// <c>ShipmentService.ApplyDecision</c>). Boşsa kendi bağlantısı — davranış değişmez.</param>
+    public Shipment? GetById(string id, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
+        var row = _factory.QueryFirstOrDefault<Row>(write,
             @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
     }
+
+    /// <summary>Kargo yazımlarını tek işleme bağlayan paket (kargo kararı: hedef dosya + kişinin
+    /// öbür açık dosyaları birlikte ya da hiç).</summary>
+    internal DbWrite BeginWrite() => DbWrite.Begin(_factory);
 
     /// <summary>
     /// Müşterinin açık Shipment'ı (Pending veya Held). Shipped/RecipientPays
@@ -79,16 +84,14 @@ public sealed class ShipmentRepository
     /// <summary>Müşterinin BÜTÜN açık (Pending/Held) kargo dosyaları, en yenisi başta
     /// (<see cref="GetOpenByCustomer"/> ile aynı sıra); Id yönlendirmeden çözülür (U12).
     /// <c>ShipmentService</c> kararları bunları tek havuz sayar.</summary>
-    public IReadOnlyList<Shipment> GetAllOpenByCustomer(string customerId)
-    {
-        using var conn = _factory.Open();
-        return conn.Query<Row>(
+    /// <param name="write"><inheritdoc cref="GetById" path="/param[@name='write']"/></param>
+    public IReadOnlyList<Shipment> GetAllOpenByCustomer(string customerId, DbWrite? write = null)
+        => _factory.Query<Row>(write,
             @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment
               WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC, Id DESC",
             new { customerId }).Select(Map).ToList();
-    }
 
     /// <summary>Müşterinin açık (Pending/Held) kargo dosyası sayısı; Id yönlendirmeden çözülür
     /// (U12). Birden fazlası yerel taşımadan kalır (bkz. <see cref="GetOpenByCustomer"/>).</summary>
@@ -121,12 +124,12 @@ public sealed class ShipmentRepository
     /// Status + timestamp + cumulative güncelleme. ShipmentService state
     /// transition'larda kullanır; full row update tek sorgu.
     /// </summary>
-    public void Update(Shipment s)
+    /// <param name="write"><inheritdoc cref="GetById" path="/param[@name='write']"/></param>
+    public void Update(Shipment s, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // Lokal state değişti → SyncedAt'i NULL'a düşür ki bir sonraki sync
         // tick'inde tekrar push edilsin (Payment outbox pattern ile aynı).
-        conn.Execute(
+        _factory.Execute(write,
             @"UPDATE Shipment SET
                 Status=@Status, HeldAt=@HeldAt, ShippedAt=@ShippedAt,
                 CumulativeAmount=@CumulativeAmount,
