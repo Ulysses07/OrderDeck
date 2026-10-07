@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Sms;
@@ -60,8 +61,9 @@ public class NetgsmSmsSenderTests
     public async Task SendAsync_posts_to_v2_endpoint_with_basic_auth_and_payload()
     {
         var (sender, handler) = Build(Opt());
+        var telefon = TestPhone.NewE164();
 
-        await sender.SendAsync("+905551112233", "Kodunuz 123456", SmsKind.Transactional);
+        await sender.SendAsync(telefon, "Kodunuz 123456", SmsKind.Transactional);
 
         handler.Request!.Method.Should().Be(HttpMethod.Post);
         handler.Request.RequestUri!.ToString()
@@ -78,7 +80,7 @@ public class NetgsmSmsSenderTests
         messages.GetArrayLength().Should().Be(1);
         messages[0].GetProperty("msg").GetString().Should().Be("Kodunuz 123456");
         // +90 strip → 10 hane
-        messages[0].GetProperty("no").GetString().Should().Be("5551112233");
+        messages[0].GetProperty("no").GetString().Should().Be(telefon[3..]);
     }
 
     [Fact]
@@ -86,7 +88,7 @@ public class NetgsmSmsSenderTests
     {
         var (sender, handler) = Build(Opt());
 
-        await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
+        await sender.SendAsync(TestPhone.NewE164(), "msg", SmsKind.Transactional);
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.TryGetProperty("iysfilter", out _).Should().BeFalse();
@@ -101,7 +103,7 @@ public class NetgsmSmsSenderTests
         opt.Encoding = "TR";
         var (sender, handler) = Build(opt);
 
-        await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
+        await sender.SendAsync(TestPhone.NewE164(), "msg", SmsKind.Transactional);
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("0");
@@ -121,7 +123,7 @@ public class NetgsmSmsSenderTests
         var (sender, handler) = Build(opt);
 
         var act = async () =>
-            await sender.SendAsync("+905551112233", "Kampanya!", SmsKind.Commercial);
+            await sender.SendAsync(TestPhone.NewE164(), "Kampanya!", SmsKind.Commercial);
 
         (await act.Should().ThrowAsync<InvalidOperationException>())
             .WithMessage("iys-tenant-sender-missing",
@@ -143,7 +145,7 @@ public class NetgsmSmsSenderTests
         opt.CommercialIysFilter = "11";
         var (sender, handler) = Build(opt);
 
-        await sender.SendAsync("+905551112233", "Kodunuz 123456", SmsKind.Transactional);
+        await sender.SendAsync(TestPhone.NewE164(), "Kodunuz 123456", SmsKind.Transactional);
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("0");
@@ -153,7 +155,7 @@ public class NetgsmSmsSenderTests
     public async Task SendAsync_success_code_00_does_not_throw()
     {
         var (sender, _) = Build(Opt(), respBody: "{\"code\":\"00\",\"bulkid\":\"123\"}");
-        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
+        var act = async () => await sender.SendAsync(TestPhone.NewE164(), "msg", SmsKind.Transactional);
         await act.Should().NotThrowAsync();
     }
 
@@ -161,7 +163,7 @@ public class NetgsmSmsSenderTests
     public async Task SendAsync_rejected_code_throws()
     {
         var (sender, _) = Build(Opt(), respBody: "{\"code\":\"30\"}");
-        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
+        var act = async () => await sender.SendAsync(TestPhone.NewE164(), "msg", SmsKind.Transactional);
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
@@ -169,7 +171,7 @@ public class NetgsmSmsSenderTests
     public async Task SendAsync_non_success_status_throws()
     {
         var (sender, _) = Build(Opt(), status: HttpStatusCode.InternalServerError, respBody: "{}");
-        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
+        var act = async () => await sender.SendAsync(TestPhone.NewE164(), "msg", SmsKind.Transactional);
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
@@ -178,7 +180,7 @@ public class NetgsmSmsSenderTests
     {
         var (sender, handler) = Build(Opt());
         handler.ThrowOnSend = new HttpRequestException("connection refused");
-        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
+        var act = async () => await sender.SendAsync(TestPhone.NewE164(), "msg", SmsKind.Transactional);
         await act.Should().ThrowAsync<HttpRequestException>();
     }
 }

@@ -26,7 +26,7 @@ public class EmailSendCoordinatorTransientTests : IClassFixture<ApiFactory>
         var c = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"transient-{Guid.NewGuid():N}@x.com",
+            Email = $"transient-{Guid.NewGuid():N}@example.test",
             Name = "T",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow,

@@ -33,7 +33,7 @@ public class AdminBackupsIndexTests : IClassFixture<ApiFactory>
             var c = new Customer
             {
                 Id = Guid.NewGuid(),
-                Email = $"admin-list-{Guid.NewGuid():N}@test.com",
+                Email = $"admin-list-{Guid.NewGuid():N}@example.test",
                 Name = "T", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
             };
             db.Customers.Add(c);

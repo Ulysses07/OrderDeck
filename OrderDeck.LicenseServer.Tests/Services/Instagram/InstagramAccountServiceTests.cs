@@ -45,7 +45,7 @@ public sealed class InstagramAccountServiceTests
     private static async Task<(Guid CustomerId, Guid LicenseId)> SeedAsync(
         LicenseDbContext db, bool botEnabled)
     {
-        var customer = new Customer { Id = Guid.NewGuid(), Email = $"c-{Guid.NewGuid():N}@x.tr", Name = "T" };
+        var customer = new Customer { Id = Guid.NewGuid(), Email = $"c-{Guid.NewGuid():N}@example.test", Name = "T" };
         var license = new License
         {
             Id = Guid.NewGuid(), CustomerId = customer.Id,
@@ -84,7 +84,7 @@ public sealed class InstagramAccountServiceTests
     {
         using var db = NewDb();
         var (customerId, licenseId) = await SeedAsync(db, botEnabled: true);
-        var pagesJson = $$$"""{"data":[{"id":"page-9","access_token":"{{{PageTok}}}","instagram_business_account":{"id":"ig-77","username":"royal.mezat"}}]}""";
+        var pagesJson = $$$"""{"data":[{"id":"page-9","access_token":"{{{PageTok}}}","instagram_business_account":{"id":"ig-77","username":"ornek.magaza"}}]}""";
         var handler = new StubHandler
         {
             Respond = req => req.RequestUri!.AbsolutePath.Contains("/me/accounts")
@@ -98,7 +98,7 @@ public sealed class InstagramAccountServiceTests
         acc.LicenseId.Should().Be(licenseId);
         acc.PageId.Should().Be("page-9");
         acc.IgUserId.Should().Be("ig-77");
-        acc.IgUsername.Should().Be("royal.mezat");
+        acc.IgUsername.Should().Be("ornek.magaza");
         acc.PageTokenProtected.Should().NotBeEmpty().And.NotBe(PageTok, "şifreli saklanmalı");
 
         handler.Requests.Should().HaveCount(2);
@@ -129,7 +129,7 @@ public sealed class InstagramAccountServiceTests
     {
         using var db = NewDb();
         var (customerId, _) = await SeedAsync(db, botEnabled: true);
-        var pagesJson2 = $$$"""{"data":[{"id":"page-9","access_token":"{{{PageTok}}}","instagram_business_account":{"id":"ig-77","username":"royal.mezat"}}]}""";
+        var pagesJson2 = $$$"""{"data":[{"id":"page-9","access_token":"{{{PageTok}}}","instagram_business_account":{"id":"ig-77","username":"ornek.magaza"}}]}""";
         var handler = new StubHandler
         {
             Respond = req => req.RequestUri!.AbsolutePath.Contains("/me/accounts")

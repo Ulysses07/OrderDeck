@@ -14,8 +14,8 @@ public sealed class ProfileUrlParserTests
 {
     /// <summary>Adres olmayan girdi olduğu gibi geçer — HandleValidator'ın işi bozulmasın.</summary>
     [Theory]
-    [InlineData("bilalcanli")]
-    [InlineData("@bilalcanli")]
+    [InlineData("ornekmusteri")]
+    [InlineData("@ornekmusteri")]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData(null)]
@@ -94,10 +94,10 @@ public sealed class ProfileUrlParserTests
 
     /// <summary>Instagram: ?igsh= paylaşım eki ve sondaki eğik çizgi atılır.</summary>
     [Theory]
-    [InlineData("https://instagram.com/bilalcanli", "bilalcanli")]
-    [InlineData("https://www.instagram.com/bilalcanli/", "bilalcanli")]
-    [InlineData("https://instagram.com/bilalcanli?igsh=MWx5", "bilalcanli")]
-    [InlineData("instagram.com/bilalcanli", "bilalcanli")]
+    [InlineData("https://instagram.com/ornekmusteri", "ornekmusteri")]
+    [InlineData("https://www.instagram.com/ornekmusteri/", "ornekmusteri")]
+    [InlineData("https://instagram.com/ornekmusteri?igsh=MWx5", "ornekmusteri")]
+    [InlineData("instagram.com/ornekmusteri", "ornekmusteri")]
     public void Instagram_profil_adresinden_handle_cikar(string raw, string expected)
     {
         var r = ProfileUrlParser.Parse(HandleValidator.Instagram, raw);
@@ -113,7 +113,7 @@ public sealed class ProfileUrlParserTests
     [Theory]
     [InlineData("https://instagram.com/p/Cxyz123")]
     [InlineData("https://www.instagram.com/reel/Cxyz123")]
-    [InlineData("https://instagram.com/stories/bilalcanli/123456")]
+    [InlineData("https://instagram.com/stories/ornekmusteri/123456")]
     public void Instagram_gonderi_adresi_reddedilir(string raw)
     {
         var r = ProfileUrlParser.Parse(HandleValidator.Instagram, raw);
@@ -129,7 +129,7 @@ public sealed class ProfileUrlParserTests
     /// </summary>
     [Theory]
     [InlineData("instagram.com/accounts/login")]
-    [InlineData("https://www.instagram.com/accounts/login/?next=/bilalcanli/")]
+    [InlineData("https://www.instagram.com/accounts/login/?next=/ornekmusteri/")]
     [InlineData("instagram.com/direct/inbox")]
     [InlineData("https://instagram.com/explore/tags/moda")]
     public void Instagram_ayrilmis_yollar_reddedilir(string raw)
@@ -147,17 +147,17 @@ public sealed class ProfileUrlParserTests
     [Fact]
     public void Instagram_baslangic_ve_son_boslugu_temizlenir()
     {
-        var r = ProfileUrlParser.Parse(HandleValidator.Instagram, "  https://www.instagram.com/bilalcanli  ");
+        var r = ProfileUrlParser.Parse(HandleValidator.Instagram, "  https://www.instagram.com/ornekmusteri  ");
 
         r.Kind.Should().Be(ProfileInputKind.Handle);
-        r.Value.Should().Be("bilalcanli");
+        r.Value.Should().Be("ornekmusteri");
     }
 
     /// <summary>TikTok: yol @ ile başlamalı; sondaki /video/… kırpılır.</summary>
     [Theory]
-    [InlineData("https://www.tiktok.com/@edanur", "edanur")]
-    [InlineData("https://tiktok.com/@edanur/video/7412345678901234567", "edanur")]
-    [InlineData("tiktok.com/@edanur?lang=tr", "edanur")]
+    [InlineData("https://www.tiktok.com/@ikincimusteri", "ikincimusteri")]
+    [InlineData("https://tiktok.com/@ikincimusteri/video/7412345678901234567", "ikincimusteri")]
+    [InlineData("tiktok.com/@ikincimusteri?lang=tr", "ikincimusteri")]
     public void TikTok_profil_adresinden_handle_cikar(string raw, string expected)
     {
         var r = ProfileUrlParser.Parse(HandleValidator.TikTok, raw);
@@ -200,8 +200,8 @@ public sealed class ProfileUrlParserTests
     /// </summary>
     [Theory]
     [InlineData(HandleValidator.Instagram, "https://www.youtube.com/@orderdeck", "YouTube")]
-    [InlineData(HandleValidator.YouTube, "https://www.instagram.com/bilalcanli", "Instagram")]
-    [InlineData(HandleValidator.TikTok, "https://www.instagram.com/bilalcanli", "Instagram")]
+    [InlineData(HandleValidator.YouTube, "https://www.instagram.com/ornekmusteri", "Instagram")]
+    [InlineData(HandleValidator.TikTok, "https://www.instagram.com/ornekmusteri", "Instagram")]
     public void Yanlis_kutuya_yapistirilan_adres_dogru_kutuyu_soyler(
         string platform, string raw, string expectedPlatformName)
     {
@@ -229,9 +229,9 @@ public sealed class ProfileUrlParserTests
     [Fact]
     public void Facebook_platformu_girdiyi_degistirmez()
     {
-        var r = ProfileUrlParser.Parse(HandleValidator.Facebook, "https://facebook.com/bilal.canli");
+        var r = ProfileUrlParser.Parse(HandleValidator.Facebook, "https://facebook.com/ornek.musteri");
 
         r.Kind.Should().Be(ProfileInputKind.Handle);
-        r.Value.Should().Be("https://facebook.com/bilal.canli");
+        r.Value.Should().Be("https://facebook.com/ornek.musteri");
     }
 }

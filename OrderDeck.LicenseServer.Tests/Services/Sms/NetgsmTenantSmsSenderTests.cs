@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Sms;
@@ -65,7 +66,7 @@ public class NetgsmTenantSmsSenderTests
         var (sender, handler) = Build(Opt(),
             respBody: "{\"code\":\"00\",\"jobid\":\"12345\"}");
 
-        var jobId = await sender.SendAsync(creds, "+905551112233", "Kampanya!");
+        var jobId = await sender.SendAsync(creds, TestPhone.NewE164(), "Kampanya!");
 
         jobId.Should().Be("12345");
         handler.Request!.Method.Should().Be(HttpMethod.Post);
@@ -91,7 +92,7 @@ public class NetgsmTenantSmsSenderTests
     {
         var (sender, _) = Build(Opt(), respBody: "{\"code\":\"00\"}");
 
-        var jobId = await sender.SendAsync(NewCreds(), "+905551112233", "msg");
+        var jobId = await sender.SendAsync(NewCreds(), TestPhone.NewE164(), "msg");
 
         jobId.Should().BeNull();
     }
@@ -103,7 +104,7 @@ public class NetgsmTenantSmsSenderTests
         // iysfilter koşulsuz CommercialIysFilter ("11") ile gider.
         var (sender, handler) = Build(Opt());
 
-        await sender.SendAsync(NewCreds(), "+905551112233", "msg");
+        await sender.SendAsync(NewCreds(), TestPhone.NewE164(), "msg");
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("11");
@@ -115,7 +116,7 @@ public class NetgsmTenantSmsSenderTests
         var (sender, _) = Build(Opt(), status: HttpStatusCode.NotAcceptable,
             respBody: "{\"code\":\"30\",\"description\":\"gecersiz kimlik\"}");
 
-        var act = async () => await sender.SendAsync(NewCreds(), "+905551112233", "msg");
+        var act = async () => await sender.SendAsync(NewCreds(), TestPhone.NewE164(), "msg");
 
         (await act.Should().ThrowAsync<NetgsmSmsException>())
             .Which.Code.Should().Be("30");
@@ -127,7 +128,7 @@ public class NetgsmTenantSmsSenderTests
         var (sender, _) = Build(Opt(), status: HttpStatusCode.NotAcceptable,
             respBody: "40");
 
-        var act = async () => await sender.SendAsync(NewCreds(), "+905551112233", "msg");
+        var act = async () => await sender.SendAsync(NewCreds(), TestPhone.NewE164(), "msg");
 
         (await act.Should().ThrowAsync<NetgsmSmsException>())
             .Which.Code.Should().Be("40");
@@ -139,7 +140,7 @@ public class NetgsmTenantSmsSenderTests
         // Yanıt alındı ama kabul kodu yok → iş kabul edilmedi varsayılır.
         var (sender, _) = Build(Opt(), respBody: "garip");
 
-        var act = async () => await sender.SendAsync(NewCreds(), "+905551112233", "msg");
+        var act = async () => await sender.SendAsync(NewCreds(), TestPhone.NewE164(), "msg");
 
         (await act.Should().ThrowAsync<NetgsmSmsException>())
             .Which.Code.Should().BeNull();
@@ -153,7 +154,7 @@ public class NetgsmTenantSmsSenderTests
         var (sender, handler) = Build(Opt());
         handler.ThrowOnSend = new HttpRequestException("connection refused");
 
-        var act = async () => await sender.SendAsync(NewCreds(), "+905551112233", "msg");
+        var act = async () => await sender.SendAsync(NewCreds(), TestPhone.NewE164(), "msg");
 
         var thrown = await act.Should().ThrowAsync<HttpRequestException>();
         thrown.Which.Should().NotBeOfType<NetgsmSmsException>();
@@ -163,11 +164,12 @@ public class NetgsmTenantSmsSenderTests
     public async Task SendAsync_telefon_e164ten_10_haneye_donusur()
     {
         var (sender, handler) = Build(Opt());
+        var telefon = TestPhone.NewE164();
 
-        await sender.SendAsync(NewCreds(), "+905321234567", "msg");
+        await sender.SendAsync(NewCreds(), telefon, "msg");
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.GetProperty("messages")[0]
-            .GetProperty("no").GetString().Should().Be("5321234567");
+            .GetProperty("no").GetString().Should().Be(telefon[3..]);
     }
 }

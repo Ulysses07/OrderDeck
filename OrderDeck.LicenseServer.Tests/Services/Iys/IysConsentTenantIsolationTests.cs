@@ -21,7 +21,7 @@ namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 [Collection(SqlServerCollection.Name)]
 public sealed class IysConsentTenantIsolationTests : IAsyncLifetime
 {
-    private const string Phone = "+905551112233";
+    private static readonly string Phone = TestPhone.NewE164();
     private const string BrandA = "731734";
     private const string BrandB = "763208";
 

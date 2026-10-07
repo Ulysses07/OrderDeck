@@ -7,13 +7,14 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 
 public class IysConsentCollectorTests
 {
-    private const string Phone = "+905551112233";
+    private static readonly string Phone = TestPhone.NewE164();
     private const string BrandA = "731734";
     private static readonly Guid LicenseA = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
@@ -52,8 +53,8 @@ public class IysConsentCollectorTests
 
     private static Task RecordAsync(
         IysConsentCollector c, bool consented, DateTimeOffset at,
-        string phone = Phone, Guid? licenseId = null)
-        => c.RecordAsync(licenseId ?? LicenseA, phone, consented, at, "Shopper", Guid.NewGuid(),
+        string? phone = null, Guid? licenseId = null)
+        => c.RecordAsync(licenseId ?? LicenseA, phone ?? Phone, consented, at, "Shopper", Guid.NewGuid(),
             ip: "203.0.113.7", userAgent: "test-agent");
 
     [Fact]
@@ -220,7 +221,7 @@ public class IysConsentCollectorTests
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         // 9 hane + baştaki 0 — Faz 1'den sonra normalize edilemez
-        await RecordAsync(Collector(db), true, DateTimeOffset.UtcNow, phone: "0533466482");
+        await RecordAsync(Collector(db), true, DateTimeOffset.UtcNow, phone: "05" + TestPhone.Digits(8));
         await db.SaveChangesAsync();
 
         db.IysConsents.Should().BeEmpty("E.164 olmayan numara tekil anahtarı kirletmez");
