@@ -827,6 +827,37 @@ public sealed class CustomerChangesPullServiceTests
     }
 
     [Fact]
+    public async Task Cikis_sonrasi_ayni_lisansla_giriste_izleme_yeniden_baslar_yetisme_korunur()
+    {
+        // D3 incelemesi: çıkış (lisans yok) → aynı hesapla giriş. Aradaki lisanssız süre durum
+        // satırında "Çevrimdışı"/"Gönderilemiyor" sayılmasın; yetişme bilgisi aynı lisansın — korunur.
+        var feedFails = false;
+        using var fx = Build(after => feedFails ? FakeHttpMessageHandler.Json(500, "{}") : FakeHttpMessageHandler.Json(200, Page(after)));
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        fx.Tracker.RegisterPush("odeme");
+        var started = fx.Tracker.TrackingSince;
+        fx.Tracker.MarkPushOk("odeme", DateTimeOffset.UtcNow);
+
+        fx.License.CurrentLicenseKey = null;                       // çıkış
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.NoLicense);
+        fx.Tracker.TrackingSince.Should().Be(started);
+
+        SpinWait.SpinUntil(() => DateTimeOffset.UtcNow > started);
+        var login = DateTimeOffset.UtcNow;
+        fx.License.CurrentLicenseKey = Lisans;                     // aynı hesapla giriş
+        feedFails = true;                                          // bu tur yetişemez
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        var restarted = fx.Tracker.TrackingSince;
+        restarted.Should().BeOnOrAfter(login);
+        fx.Tracker.Snapshot().PushOkAt!["odeme"].Should().BeNull();
+        fx.Tracker.IsInitialCatchUpDoneFor(Lisans).Should().BeTrue("aynı lisansın yetişmesi silinmez");
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+        fx.Tracker.TrackingSince.Should().Be(restarted, "boşluksuz sonraki tur yeniden başlatmaz");
+    }
+
+    [Fact]
     public async Task Ilk_turda_izleme_yeniden_baslar_sonraki_turlarda_baslamaz_hata_kayitlari_kalir()
     {
         // N-3: açılışın ilk turu da "ilk görülme" — ama kalıcı uyarılar (U10) yeniden başlatmada

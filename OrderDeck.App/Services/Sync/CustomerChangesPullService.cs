@@ -117,6 +117,8 @@ public sealed class CustomerChangesPullService
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
     private string? _lastLicenseKey;
+    /// <summary>Son tur lisanssızdı (çıkış): aynı lisansla dönüşte izleme yeniden başlar (D3 incelemesi).</summary>
+    private bool _licenseGap;
     private bool _identityKeysHealed;
     private int _lastLegacyJobs = -1;
     private int _pagesThisRound;
@@ -147,7 +149,11 @@ public sealed class CustomerChangesPullService
     public async Task<CustomerPullOutcome> PullOnceAsync(CancellationToken ct)
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
-        if (string.IsNullOrWhiteSpace(licenseKey)) return CustomerPullOutcome.NoLicense;
+        if (string.IsNullOrWhiteSpace(licenseKey))
+        {
+            _licenseGap = true;
+            return CustomerPullOutcome.NoLicense;
+        }
 
         OnLicenseSeen(licenseKey);
         // Gönderimden ÖNCE: kalmış bir kilit satırında gönderimin taşımaları da (SyncApplyScope
@@ -422,9 +428,12 @@ public sealed class CustomerChangesPullService
     /// <summary>M-3: akış hatası kayıtları ve takılma durumu lisansa bağlı değil — önceki turdan
     /// farklı bir lisans anahtarı görülünce silinir (imleçler zaten anahtara bağlı). Yetişme durumu
     /// da sıfırlanır (C10): yeni lisansın form oynatması kendi akışını bekler. Süreçte ilk görülen
-    /// lisansta yalnız izleme yeniden başlar (N-3).</summary>
+    /// lisansta (N-3) ve lisanssız bir turdan sonra AYNI lisansla dönüşte (çıkış → giriş) yalnız
+    /// izleme yeniden başlar; yetişme bilgisi aynı lisansın olduğu için kalır.</summary>
     private void OnLicenseSeen(string licenseKey)
     {
+        var afterGap = _licenseGap;
+        _licenseGap = false;
         if (_lastLicenseKey is null)
         {
             // N-3: lisans bu süreçte İLK KEZ görüldü — açılışın ilk turu ya da çalışırken deneme →
@@ -434,7 +443,11 @@ public sealed class CustomerChangesPullService
             _lastLicenseKey = licenseKey;
             return;
         }
-        if (string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal)) return;
+        if (string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal))
+        {
+            if (afterGap) _tracker.RestartTracking();
+            return;
+        }
         // Bellekte, düşemez — aşağıdaki silme başarısız olup sonraki turda yinelense de zararsız.
         _tracker.ResetForLicenseChange();
         try
