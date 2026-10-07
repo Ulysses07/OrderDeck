@@ -318,7 +318,8 @@ public sealed class LabelRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<TopCustomerRow>(
-            @"SELECT c.Username,
+            @"SELECT l.CustomerId,
+                     c.Username,
                      c.DisplayName,
                      l.Platform,
                      COUNT(*)   AS LabelCount,
@@ -331,7 +332,7 @@ public sealed class LabelRepository
               ORDER BY SUM(l.Price) DESC
               LIMIT @limit",
             new { sessionId, limit }).ToList();
-        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName)).ToList();
+        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName, r.CustomerId)).ToList();
     }
 
     /// <summary>U12 (Bölüm C): verilen müşterilerin bu yayındaki satış toplamı —
@@ -600,6 +601,7 @@ public sealed class LabelRepository
 
     private sealed class TopCustomerRow
     {
+        public string CustomerId { get; init; } = "";
         public string Username { get; init; } = "";
         public string? DisplayName { get; init; }
         public string Platform { get; init; } = "";
@@ -661,9 +663,12 @@ public sealed record PlatformBreakdown(
 /// Bir yayında ürün alan müşteri (rapor + arama için). <see cref="Username"/> ham
 /// platform kimliği (YouTube'da channel id); insan-okur gösterim için <see
 /// cref="Display"/> kullan — DisplayName varsa onu, yoksa Username'e düşer.
+/// <see cref="CustomerId"/>: satırın toplandığı yerel müşteri Id'si (U12, Bölüm C — rapor açıkken
+/// yerel taşıma o Id'yi silmişse ödeme isteği satırı bayat sayar).
 /// </summary>
 public sealed record TopCustomer(
-    string Username, string Platform, int LabelCount, decimal TotalAmount, string? DisplayName = null)
+    string Username, string Platform, int LabelCount, decimal TotalAmount, string? DisplayName = null,
+    string? CustomerId = null)
 {
     public string Display => string.IsNullOrWhiteSpace(DisplayName) ? Username : DisplayName!;
 }

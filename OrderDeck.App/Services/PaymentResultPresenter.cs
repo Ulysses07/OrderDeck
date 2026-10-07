@@ -52,6 +52,13 @@ public static class PaymentResultPresenter
                     DialogSeverity.Warning);
                 break;
 
+            case PaymentRequestResult.ListStale:
+                // U12 (Bölüm C): liste açıkken yerel taşıma müşteriyi başka kayda geçirdi;
+                // hiçbir şey gönderilmedi, çağıran listeyi yeniledi.
+                dialogs.ShowInfo(
+                    "Müşteri listesi bilgisayarlar arası birleştirme nedeniyle güncellendi — lütfen tekrar seçin.");
+                break;
+
             case PaymentRequestResult.PhoneRequired:
                 // Buraya yalnız telefon diyaloğundan SONRA gelinir (ilk çağrının
                 // PhoneRequired'ı diyaloğu açar, bildirime düşmez). Numara

@@ -184,8 +184,8 @@ public class StreamReportViewModel_OpenWhatsAppTests
     // ── C9 (U12): rapor açıkken senkron kopyayı asıl kayda taşıdı ───────────
     //
     // Rapor satırları yüklenirken Id başına toplandı; taşımadan sonra kopyanın satırı yalnız
-    // kendi yazımının payını taşır ama ödeme işi asıl kaydın Id'sinde açılır. Ödeme akışı
-    // tutarı kiraladığı GÜNCEL Id için yeniden okur.
+    // kendi yazımının payını taşır ama ödeme işi asıl kaydın Id'sinde açılır. Satırın Id'si
+    // artık güncel değilse istek GÖNDERİLMEZ: rapor yenilenir, operatör yeniden seçer.
 
     /// <summary>Senkronlu kurulum: ödeme servisi Id'yi çözer ve müşteriyi kiralar; dönen senkron
     /// deposu AYNI kümeyle taşır (DI'daki tekil örnek gibi).</summary>
@@ -203,7 +203,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
     }
 
     [Fact]
-    public async Task OpenWhatsApp_rapor_acikken_tasinan_kopyanin_satiri_kisinin_tam_yayin_tutarini_ister()
+    public async Task OpenWhatsApp_rapor_acikken_tasinan_kopyanin_satiri_istek_gondermez_rapor_yenilenir()
     {
         var (db, customers, sessions, labels, giveaways, _, dialogs, settingsPath, _) =
             Setup(cloudApiInProgress: true);
@@ -233,11 +233,19 @@ public class StreamReportViewModel_OpenWhatsAppTests
 
             await sut.OpenWhatsAppCommand.ExecuteAsync(copyRow);
 
+            jobs.Snapshot.Should().BeEmpty("bayat satırın tutarı yalnız kopyanın 100'ü — istek gönderilmez");
+            dialogs.InfosShown.Should().ContainSingle().Which.Should().Contain("tekrar seçin");
+            var refreshed = sut.TopCustomers.Should().ContainSingle("rapor yenilendi: kişi tek satır").Subject;
+            refreshed.CustomerId.Should().Be(canonical);
+            refreshed.TotalAmount.Should().Be(250m);
+
+            // Operatör yenilenen satırı seçer: kişinin tam yayın toplamı.
+            await sut.OpenWhatsAppCommand.ExecuteAsync(refreshed);
+
             var job = jobs.Snapshot.Should().ContainSingle().Subject;
-            job.CustomerId.Should().Be(canonical, "kopyanın adı kimlik anahtarıyla asıl kayda bulunur");
+            job.CustomerId.Should().Be(canonical);
             job.ScopeKey.Should().Be("session:s1");
-            job.ProductTotal.Should().Be(250m,
-                "raporun kopya satırı yalnız kendi 100'ünü biliyordu; kişinin bu yayındaki toplamı 250");
+            job.ProductTotal.Should().Be(250m);
         }
         finally
         {

@@ -38,6 +38,11 @@ public enum PaymentRequestResult
     /// da lisans/önizleme erişilemedi). Mesaj GÖNDERİLMEDİ — operatör tekrar
     /// denemeli; deneme aynı anahtarla replay yapar, çift düşüm imkânsız.</summary>
     BalanceUncertain,
+
+    /// <summary>U12 (Bölüm C): çağıranın anlık görüntüsü (liste/rapor) bayat — liste
+    /// yüklendikten sonra yerel taşıma müşteriyi başka Id'ye geçirdi. Hiçbir şey
+    /// GÖNDERİLMEDİ, iş açılmadı; çağıran listeyi yeniler, operatör yeniden seçer.</summary>
+    ListStale,
 }
 
 /// <summary>
@@ -181,24 +186,56 @@ public sealed class PaymentRequestService
     /// güncel Id'yi KİRALAR ve onu bir kez çözer; bakiye işi (FindOrCreate → … → BeginApply →
     /// mesaj → Close) o Id ile koşar. Kira sürdükçe senkron bu müşteriyi taşımaz/dönüştürmez
     /// (U13) — iş uçuşta yeniden adlandırılıp kapatılamaz (U8'in çift düşüm penceresi).</para>
+    ///
+    /// <para>Gönderim, çağıranın tuttuğu nesneyle değil kira altında okunan GÜNCEL satırla yapılır
+    /// (telefon, alıcı ödemeli, ad): taşıma asıl kaydın verisini, KVKK silmesi boşaltılmış satırı
+    /// bırakmış olabilir — silinmiş kişinin eski telefonuna mesaj gitmemeli.</para>
     /// </summary>
     /// <param name="productTotalFor">Kiralanan GÜNCEL Id ile, kira altında BİR KEZ çağrılır ve
     /// o Id'nin ürün toplamını döner. Liste/rapor anlık görüntüsünün tutarı Id başına tutuldu:
     /// taşımadan önce alınmışsa kopyanın satırı yalnız kendi yazımının payını taşır ve asıl
-    /// kaydın işiyle uyuşmaz (her tıklama işi başka bir toplamla revize ederdi).</param>
+    /// kaydın işiyle uyuşmaz. <c>null</c> = çağıran reddetti (anlık görüntüsü bayat):
+    /// <see cref="PaymentRequestResult.ListStale"/> döner, hiçbir şey gönderilmez.</param>
     public async Task<PaymentRequestResult> OpenWhatsAppAsync(
-        Customer customer, Func<string, decimal> productTotalFor, DateTime streamDate,
+        Customer customer, Func<string, decimal?> productTotalFor, DateTime streamDate,
         string scopeKey, CancellationToken ct = default)
     {
-        if (!PhoneNormalizer.IsValidTr(customer.Phone))
-            return PaymentRequestResult.PhoneRequired;
+        IDisposable lease;
+        string customerId;
+        try
+        {
+            (lease, customerId) = await EnterCustomerAsync(customer.Id, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // M-1: giriş (Id çözümü, kiralama) yerel bir hatayla düşerse mesaj engellenir —
+            // genel hata kutusuna gitmez; operatör tekrar dener.
+            _log?.LogError(ex, "Ödeme akışının girişi düştü — mesaj engellendi (customer={CustomerId})",
+                customer.Id);
+            return PaymentRequestResult.BalanceUncertain;
+        }
 
-        var (lease, customerId) = await EnterCustomerAsync(customer.Id, ct);
         using (lease)
         {
-            var productTotal = productTotalFor(customerId);
-            return await OpenWhatsAppCoreAsync(
-                customer with { Id = customerId }, productTotal, streamDate, scopeKey, ct);
+            decimal? productTotal;
+            Customer current;
+            try
+            {
+                // Önce çağıranın reddi: bayat kartta operatöre telefon da sorulmaz.
+                productTotal = productTotalFor(customerId);
+                if (productTotal is null) return PaymentRequestResult.ListStale;
+                current = _customers?.GetById(customerId) ?? customer with { Id = customerId };
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log?.LogError(ex, "Ödeme akışının tutarı/müşterisi okunamadı — mesaj engellendi (customer={CustomerId})",
+                    customerId);
+                return PaymentRequestResult.BalanceUncertain;
+            }
+
+            if (!PhoneNormalizer.IsValidTr(current.Phone))
+                return PaymentRequestResult.PhoneRequired;
+            return await OpenWhatsAppCoreAsync(current, productTotal.Value, streamDate, scopeKey, ct);
         }
     }
 
@@ -251,8 +288,8 @@ public sealed class PaymentRequestService
         public void Dispose() { }
     }
 
-    /// <summary>Bakiye akışının gövdesi — müşteri Id'si çözülmüş ve kiralı (bkz.
-    /// <see cref="OpenWhatsAppAsync(Customer, Func{string, decimal}, DateTime, string, CancellationToken)"/>).</summary>
+    /// <summary>Bakiye akışının gövdesi — müşteri Id'si çözülmüş ve kiralı, <paramref name="customer"/>
+    /// kira altında okunan güncel satır (bkz. tutarı yeniden okuyan <c>OpenWhatsAppAsync</c> biçimi).</summary>
     private async Task<PaymentRequestResult> OpenWhatsAppCoreAsync(
         Customer customer, decimal productTotal, DateTime streamDate,
         string scopeKey, CancellationToken ct)
