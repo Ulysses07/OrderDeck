@@ -321,15 +321,18 @@ public sealed class CustomerSyncRepository
     /// akış servisi her turda çağırır.</summary>
     public int ClearStaleGuards() => SyncApplyScope.ClearStale(_factory);
 
+    /// <summary>U8: anahtarlı açık miras ödeme işinin ölçütü (<c>PaymentJob</c> üzerinde WHERE
+    /// koşulu). Tek kaynak: akış servisinin günlüğü ve durum satırının dikkat sayacı
+    /// (<see cref="SyncOutboxRepository.CountAttention"/>) aynı işleri saymalı.</summary>
+    internal const string OpenKeyedLegacyJobCondition =
+        "ClosedAt IS NULL AND ApplyKey IS NOT NULL AND (ScopeKey = 'legacy' OR ScopeKey LIKE 'legacy:%')";
+
     /// <summary>U8: uzlaştırma bekleyen anahtarlı açık miras ödeme işleri (taşımanın ya da 034
     /// göçünün bıraktığı; D1 dikkat sayacıyla aynı ölçüt).</summary>
     public int CountOpenKeyedLegacyJobs()
     {
         using var conn = _factory.Open();
-        return conn.ExecuteScalar<int>(
-            @"SELECT COUNT(*) FROM PaymentJob
-              WHERE ClosedAt IS NULL AND ApplyKey IS NOT NULL
-                AND (ScopeKey = 'legacy' OR ScopeKey LIKE 'legacy:%')");
+        return conn.ExecuteScalar<int>("SELECT COUNT(*) FROM PaymentJob WHERE " + OpenKeyedLegacyJobCondition);
     }
 
     // ── zehirli akış öğesi (U10) ────────────────────────────────────────

@@ -546,6 +546,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.CustomerChangesPullService>();
         services.AddHostedService<Services.Sync.CustomerChangesPullHostedService>();
 
+        // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
+        // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
+        // null olurdu (CustomerSyncDiTests denetler).
+        services.AddSingleton<SyncOutboxRepository>();
+        services.AddSingleton<Services.Sync.SyncPendingCounter>();
+
         // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
         // görüntüsü yerel SQLite'a yazılır. Ritim İKİ kademeli — ilk GERÇEKTEN
         // başarılı tura kadar 30 saniye, sonra 5 dakika (bkz.

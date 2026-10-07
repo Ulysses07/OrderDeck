@@ -99,4 +99,16 @@ public sealed class CustomerSyncDiTests
             "U14: form işleme ilk tam akışı aynı izleyiciden bekler — isteğe bağlı parametre DI'dan " +
             "gelmezse taze bilgisayar eski formları akıştan önce oynatırdı");
     }
+
+    [Fact]
+    public void Bekleyen_kayit_sayaci_DIdan_cozulur()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var counter = host.Services.GetRequiredService<SyncPendingCounter>();
+
+        counter.Should().NotBeNull("D3'ün isteğe bağlı kurucu parametresi kayıt eksikse sessizce null olurdu");
+        host.Services.GetRequiredService<SyncPendingCounter>().Should().BeSameAs(counter);
+        PrivateField<SyncOutboxRepository>(counter, "_outbox").Should().BeSameAs(
+            host.Services.GetRequiredService<SyncOutboxRepository>());
+    }
 }
