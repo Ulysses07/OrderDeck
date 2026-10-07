@@ -86,6 +86,11 @@
 --
 -- CustomerFeedFailure (U10): uygulanamayan akış öğesinin kalıcı deneme sayacı; beş turdan
 -- sonra öğe atlanır, satır kalır ve durum satırında uyarı gösterilir.
+--
+-- IX_GiveawayParticipant_CustomerId: yeniden anahtarlama her taşımada başvuran tabloları
+-- CustomerId ile günceller; Customer satırının silinmesi ve Id'sinin değişmesi FK denetiminde
+-- aynı aramayı yapar. Label, Shipment ve PaymentJob'da CustomerId ile başlayan indeks zaten
+-- var; çekiliş katılımcısında yoktu — her taşıma tabloyu baştan sona tarardı.
 
 CREATE TABLE SyncApplyGuard (
     Id INTEGER PRIMARY KEY CHECK (Id = 1)
@@ -118,6 +123,8 @@ CREATE TABLE CustomerRedirect (
     At     INTEGER NOT NULL
 );
 CREATE INDEX IX_CustomerRedirect_ToId ON CustomerRedirect(ToId);
+
+CREATE INDEX IX_GiveawayParticipant_CustomerId ON GiveawayParticipant(CustomerId);
 
 ALTER TABLE CustomerPurgeTombstone ADD COLUMN IdentityKey TEXT;
 UPDATE CustomerPurgeTombstone SET IdentityKey = NULLIF(od_identity_key(Username), '');

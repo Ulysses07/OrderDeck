@@ -44,7 +44,19 @@ public enum FeedApplyResult
     Skipped,
 }
 
-public enum RekeyResult { SourceMissing, TargetMissing, Rekeyed, Busy }
+public enum RekeyResult
+{
+    SourceMissing,
+    TargetMissing,
+    Rekeyed,
+    /// <summary>Kaynak ya da hedef ödeme akışında (U13): taşınmadı, kaynak aynı işlemde yeniden
+    /// gönderime kondu — sonraki gönderimin yanıtı yönlendirmeyi yeniden getirir (S7).</summary>
+    Busy,
+    /// <summary>Kaynak, gönderilen partinin okunmasından SONRA değişti (M-7): taşınmadı. Zaten
+    /// gönderim imlecinin üstünde — sonraki gönderim yeni hâlini götürür, sunucu yönlendirmeyi
+    /// yeniden söyler.</summary>
+    Deferred,
+}
 
 /// <summary>
 /// Çoklu bilgisayar senkronunun müşteri tarafı (Bölüm C). CustomerRepository ekran ve
@@ -58,11 +70,21 @@ public enum RekeyResult { SourceMissing, TargetMissing, Rekeyed, Busy }
 ///
 /// <para><b>Kilit sırası (U17):</b> önce <see cref="CustomerBusySet"/> kilidi, sonra
 /// <see cref="SyncApplyScope"/> (SQLite yazma kilidi). Kapsam açıkken bütün okuma ve yazımlar
-/// kapsamın bağlantısı ve işlemiyle; ikinci bağlantı açılmaz. Kapsam dışında kendi bağlantısını
-/// açan yollar (<see cref="Requeue"/>, bakım metotları) hiçbir kapsamın içinden çağrılmaz.</para>
+/// kapsamın bağlantısı ve işlemiyle; ikinci bağlantı açılmaz. Kendi bağlantısını açan bakım
+/// metotları hiçbir kapsamın içinden çağrılmaz.</para>
 /// </summary>
 public sealed class CustomerSyncRepository
 {
+    /// <summary>
+    /// Customer.Id'ye başvuran HER yerel tablo (göç 001–045 şemasından): Label, GiveawayParticipant
+    /// (FK), Shipment, PaymentJob (FK yok). Taşıma bunların HEPSİNİ yeni Id'ye geçirir
+    /// (<see cref="MoveReferences"/> bu listeyle koşar). Şema koruma testi göç edilmiş şemadaki
+    /// Customer FK'larını ve CustomerId kolonlarını bu listeyle karşılaştırır: yeni bir tablo eklenip
+    /// buraya yazılmazsa test düşer — yazılmasaydı satırları silinen Id'de öksüz kalırdı.
+    /// </summary>
+    public static IReadOnlyList<string> CustomerReferenceTables { get; } =
+        ["Label", "GiveawayParticipant", "Shipment", "PaymentJob"];
+
     private readonly IDbConnectionFactory _factory;
     private readonly CustomerBusySet? _busy;
 
@@ -213,12 +235,11 @@ public sealed class CustomerSyncRepository
     /// Akıştaki kopya satırı <c>{Id → MergedIntoId}</c>. Yerel kopya gönderilmemişse
     /// ertelenir (gönderimi yönlendirmeyi zaten döndürür — S7). Hedef yönlendirme tablosundan
     /// güncel Id'ye çözülür (U12); yerelde yoksa beklenir: asıl kayıt akışta geldiğinde bu satır
-    /// kimlik sahibi olarak taşınır (U4). Kopya ya da hedef ödeme akışındaysa kopya yeniden
-    /// gönderime konur ve ertelenir (U13) — akış durmaz.
+    /// kimlik sahibi olarak taşınır (U4). Kopya ya da hedef ödeme akışındaysa kopya kararla AYNI
+    /// işlemde yeniden gönderime konur ve ertelenir (U13) — akış durmaz.
     /// </summary>
     public FeedApplyResult ApplyFeedRedirect(string aliasId, string targetId, long pushWatermark, long nowUnix)
-    {
-        var result = Locked(isBusy =>
+        => Locked(isBusy =>
         {
             using var scope = SyncApplyScope.Begin(_factory);
             var conn = scope.Connection;
@@ -230,43 +251,51 @@ public sealed class CustomerSyncRepository
             // Hedef yok ya da yerelde kopyanın KENDİSİNE çözülüyor (hedef Id burada dönüştürülüp
             // bu satır olmuştu): asıl kayıt akışta gelince kimlik sahibi yolu taşır (U4).
             if (to is null || to.Id == from.Id) return FeedApplyResult.Ignored;
-            if (isBusy(from.Id) || isBusy(to.Id)) return FeedApplyResult.Busy;
+            if (isBusy(from.Id) || isBusy(to.Id))
+            {
+                RequeueInScope(scope, from.Id);
+                return FeedApplyResult.Deferred;
+            }
             RekeyCore(conn, tx, from, to, nowUnix);
             scope.Commit();
             return FeedApplyResult.Rekeyed;
         });
-        if (result != FeedApplyResult.Busy) return result;
-        Requeue(aliasId);
-        return FeedApplyResult.Deferred;
-    }
 
     /// <summary>
     /// Push yanıtındaki yönlendirme (S6/S7): <paramref name="fromId"/> az önce gönderildi
     /// (damgasız verisi sunucuda birleşti), asıl kayıt yerelde ise taşınır. Hedef
     /// yönlendirme tablosundan çözülür (U12). Hedef yerelde değilse
     /// <see cref="RekeyResult.TargetMissing"/> — akış asıl kaydı getirince taşınır.
-    /// Ödeme akışındaysa <see cref="RekeyResult.Busy"/>: kaynak yeniden gönderime konur,
-    /// sonraki turun yanıtı yönlendirmeyi yeniden getirir (S7).
+    /// Ödeme akışındaysa <see cref="RekeyResult.Busy"/>: kaynak kararla AYNI işlemde yeniden
+    /// gönderime konur, sonraki turun yanıtı yönlendirmeyi yeniden getirir (S7).
     /// </summary>
-    public RekeyResult RekeyToLocal(string fromId, string toId, long nowUnix)
+    /// <param name="pushedThroughSeq">Yanıtı gelen gönderim partisinin en büyük SyncSeq'i (M-7).
+    /// Kaynağın SyncSeq'i bundan büyükse satır parti okunduktan SONRA değişti — yeni hâli sunucuya
+    /// gitmedi; şimdi taşınsaydı (ör. damgasız bir doldurma, C10) taşınmayan birimleri kaybolurdu.
+    /// <see cref="RekeyResult.Deferred"/> döner: satır zaten imlecin üstünde, sonraki gönderim onu
+    /// götürür ve sunucu yönlendirmeyi yeniden söyler.</param>
+    public RekeyResult RekeyToLocal(string fromId, string toId, long pushedThroughSeq, long nowUnix)
     {
         if (string.Equals(fromId, toId, StringComparison.Ordinal)) return RekeyResult.SourceMissing;
-        var result = Locked(isBusy =>
+        return Locked(isBusy =>
         {
             using var scope = SyncApplyScope.Begin(_factory);
             var conn = scope.Connection;
             var tx = scope.Transaction;
             var from = ReadById(conn, tx, fromId);
             if (from is null) return RekeyResult.SourceMissing;
+            if (from.SyncSeq > pushedThroughSeq) return RekeyResult.Deferred;
             var to = ReadResolved(conn, tx, toId);
             if (to is null || to.Id == from.Id) return RekeyResult.TargetMissing;
-            if (isBusy(from.Id) || isBusy(to.Id)) return RekeyResult.Busy;
+            if (isBusy(from.Id) || isBusy(to.Id))
+            {
+                RequeueInScope(scope, from.Id);
+                return RekeyResult.Busy;
+            }
             RekeyCore(conn, tx, from, to, nowUnix);
             scope.Commit();
             return RekeyResult.Rekeyed;
         });
-        if (result == RekeyResult.Busy) Requeue(fromId);
-        return result;
     }
 
     /// <summary>
@@ -301,16 +330,21 @@ public sealed class CustomerSyncRepository
     // ── zehirli akış öğesi (U10) ────────────────────────────────────────
 
     /// <summary>Başarısız denemeyi kalıcı sayar, güncel deneme sayısını döner. Aynı Id'nin
-    /// DAHA YENİ bir değişikliği başarısız olursa sayaç baştan başlar (içerik değişti).</summary>
+    /// DAHA YENİ bir değişikliği başarısız olursa sayaç baştan başlar (içerik değişti) — ilk
+    /// başarısızlık anı da o değişikliğinki olur (inceleme M-9).</summary>
     public int RecordFeedFailure(string itemId, long changeSeq, string error, long nowUnix)
     {
         using var conn = _factory.Open();
+        // SET ifadelerinin hepsi satırın ESKİ değerlerini görür (SQLite): ChangeSeq karşılaştırması
+        // atama sırasından bağımsız.
         return conn.ExecuteScalar<int>(@"
             INSERT INTO CustomerFeedFailure (ItemId, ChangeSeq, Attempts, LastError, FirstFailedAt)
             VALUES (@itemId, @changeSeq, 1, @error, @now)
             ON CONFLICT(ItemId) DO UPDATE SET
                 Attempts  = CASE WHEN CustomerFeedFailure.ChangeSeq = excluded.ChangeSeq
                                  THEN CustomerFeedFailure.Attempts + 1 ELSE 1 END,
+                FirstFailedAt = CASE WHEN CustomerFeedFailure.ChangeSeq = excluded.ChangeSeq
+                                     THEN CustomerFeedFailure.FirstFailedAt ELSE excluded.FirstFailedAt END,
                 ChangeSeq = excluded.ChangeSeq,
                 LastError = excluded.LastError,
                 SkippedAt = NULL
@@ -385,15 +419,14 @@ public sealed class CustomerSyncRepository
     }
 
     /// <summary>U13: ödeme akışı yüzünden ertelenen satırı yeniden gönderime koyar — gönderimin
-    /// yanıtı yönlendirmeyi yeniden getirir (S7). SyncSeq hiçbir tetikleyici listesinde değil.
-    /// Kapsam ve küme kilidi DIŞINDA, kendi kısa işleminde koşar.</summary>
-    private void Requeue(string id)
+    /// yanıtı yönlendirmeyi yeniden getirir (S7). "Meşgul" kararını veren AYNI işlemde, küme
+    /// kilidi altında (inceleme M-2): ayrı bir işlem kararla arasında kaybolabilir (çökme) ya da
+    /// o arada taşınmış bir satıra yazardı. SyncSeq hiçbir tetikleyici listesinde değil; kilit
+    /// satırı bu açık ilerletmeyi engellemez.</summary>
+    private static void RequeueInScope(SyncApplyScope scope, string id)
     {
-        // C1 incelemesi: sayaç artışı iki ifade — işlem şart (arada başka yazıcı aynı numarayı alamasın).
-        using var conn = _factory.Open();
-        using var tx = conn.BeginTransaction();
-        CustomerSyncSeq.Bump(conn, tx, id);
-        tx.Commit();
+        CustomerSyncSeq.Bump(scope.Connection, scope.Transaction, id);
+        scope.Commit();
     }
 
     /// <summary>Kimlik sahipleri: aynı platform (harf duyarsız) + aynı kimlik anahtarı.
@@ -418,36 +451,42 @@ public sealed class CustomerSyncRepository
             $"SELECT {Columns} FROM Customer WHERE Id = {CustomerIdSql.Resolve("@id")}", new { id }, tx);
 
     /// <summary>
-    /// Customer.Id'ye başvuran HER yerel tablo (göç 001–045 şemasından): Label, GiveawayParticipant
-    /// (FK), Shipment, PaymentJob (FK yok). Yeni bir tablo Customer'a bağlanırsa BURAYA eklenmeli —
-    /// eklenmezse taşımada o satırlar silinen Id'de öksüz kalır. GroupId bir başvuru değildir;
-    /// CustomerRedirect eski Id'leri tutar, RecordRedirect yazar.
+    /// <see cref="CustomerReferenceTables"/>'ın bütün satırlarını yeni Id'ye geçirir (yeni bir tablo
+    /// Customer'a bağlanırsa O LİSTEYE eklenir; şema koruma testi unutulanı yakalar). GroupId bir
+    /// başvuru değildir; CustomerRedirect eski Id'leri tutar, RecordRedirect yazar.
     /// Etiket/kargo yeniden gönderilmez: sunucu kopyanın siparişlerini asıl kayda kendisi taşır
     /// ve kopya Id'sini her uçta çözer (S18).
     /// </summary>
     private static void MoveReferences(IDbConnection conn, IDbTransaction tx, string fromId, string toId, long nowUnix)
     {
         var p = new { fromId, toId, now = nowUnix };
-        conn.Execute("UPDATE Label SET CustomerId = @toId WHERE CustomerId = @fromId", p, tx);
-        conn.Execute("UPDATE GiveawayParticipant SET CustomerId = @toId WHERE CustomerId = @fromId", p, tx);
-        conn.Execute("UPDATE Shipment SET CustomerId = @toId WHERE CustomerId = @fromId", p, tx);
         // U8: UX_PaymentJob_Scope(CustomerId, ScopeKey). Hedefte aynı kapsamda iş varsa
         // kopyanınki miras kapsamına alınır: anahtarı (para hareketi) varsa açık kalır ve
         // PaymentRequestService'in miras uzlaştırması kesinleştirir/geri alır; anahtarsız
         // iş (hiç hareket yok) kapatılır. Ödeme akışı süren müşteriye buraya hiç gelinmez (U13).
+        //
+        // Yeni ad 'legacy:{ApplyKey ya da Id}:{Id}' — iş Id'si adı KENDİLİĞİNDEN benzersiz kılar
+        // (inceleme I-1). Miras devralması (PaymentJobRepository.AdoptLegacyResult) kapalı
+        // 'legacy:K' işini yerinde bırakıp K'yi kapsam işine taşır; o iş 'legacy:K' adını alsaydı
+        // kopyanın kendi kapalı işine çarpar, taşıma her turda düşer ve kimlik kalıcı bölünürdü.
+        // Adı hiçbir yol ayrıştırmaz: miras taraması LIKE 'legacy:%', yeniden oynatma ApplyKey
+        // kolonunu okur; sunucuya SaleScope olarak giderse 72 karakter (sunucu sınırı 128).
         conn.Execute(@"
             UPDATE PaymentJob
-               SET ScopeKey  = 'legacy:' || COALESCE(ApplyKey, Id),
+               SET ScopeKey  = 'legacy:' || COALESCE(ApplyKey, Id) || ':' || Id,
                    ClosedAt  = CASE WHEN ApplyKey IS NULL THEN COALESCE(ClosedAt, @now) ELSE ClosedAt END,
                    UpdatedAt = @now
              WHERE CustomerId = @fromId
                AND EXISTS (SELECT 1 FROM PaymentJob t
                            WHERE t.CustomerId = @toId AND t.ScopeKey = PaymentJob.ScopeKey)", p, tx);
-        conn.Execute("UPDATE PaymentJob SET CustomerId = @toId WHERE CustomerId = @fromId", p, tx);
+        // Tablo adları sabit listeden (kullanıcı girdisi değil).
+        foreach (var table in CustomerReferenceTables)
+            conn.Execute($"UPDATE {table} SET CustomerId = @toId WHERE CustomerId = @fromId", p, tx);
     }
 
     /// <summary>Yerel toplamlar (taşınmayan alanlar): etiket sayısı ve ciro toplanır,
-    /// ilk/son görülme genişler, avatar boşsa alınır.</summary>
+    /// ilk/son görülme genişler, avatar boşsa alınır — hedef SİLİNMEMİŞSE (inceleme M-1, KVKK):
+    /// avatar kişisel veridir, silinmiş kayda geri gelmez; toplamlar kişisel veri değildir.</summary>
     private static void AddAggregates(IDbConnection conn, IDbTransaction tx, string toId,
         IReadOnlyCollection<Row> sources, bool includeSeen)
         => conn.Execute(@"
@@ -456,7 +495,7 @@ public sealed class CustomerSyncRepository
                 TotalAmount        = TotalAmount + @amount,
                 FirstSeenAt        = CASE WHEN @includeSeen = 1 THEN MIN(FirstSeenAt, @first) ELSE FirstSeenAt END,
                 LastSeenAt         = CASE WHEN @includeSeen = 1 THEN MAX(LastSeenAt, @last) ELSE LastSeenAt END,
-                AvatarUrl          = COALESCE(AvatarUrl, @avatar)
+                AvatarUrl          = CASE WHEN PurgedAt IS NULL THEN COALESCE(AvatarUrl, @avatar) ELSE AvatarUrl END
             WHERE Id = @toId",
             new
             {

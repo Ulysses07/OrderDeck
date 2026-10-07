@@ -290,6 +290,24 @@ public sealed class CustomerUnitStampsMigrationTests
     }
 
     [Fact]
+    public void Cekilis_katilimcisi_musteri_kolonuyla_indekslenir()
+    {
+        // M-6: yeniden anahtarlama her taşımada GiveawayParticipant'ı CustomerId ile günceller;
+        // Customer satırının silinmesi ve Id'sinin değişmesi de FK denetiminde aynı aramayı yapar.
+        // İndeks olmadan her taşıma tabloyu baştan sona tarar (yayın boyunca birikir).
+        var (db, _) = Fresh();
+        using var _d = db;
+        using var conn = db.Open();
+
+        conn.Query<string>("SELECT name FROM pragma_index_info('IX_GiveawayParticipant_CustomerId')")
+            .Should().Equal("CustomerId");
+        conn.Query<(long Id, long Parent, long NotUsed, string Detail)>(
+                "EXPLAIN QUERY PLAN UPDATE GiveawayParticipant SET CustomerId = 'b' WHERE CustomerId = 'a'")
+            .Select(r => r.Detail)
+            .Should().Contain(d => d.Contains("IX_GiveawayParticipant_CustomerId"));
+    }
+
+    [Fact]
     public void Etiket_sayaci_damgayi_ve_SyncSeqi_degistirmez()
     {
         var (db, repo) = Fresh();

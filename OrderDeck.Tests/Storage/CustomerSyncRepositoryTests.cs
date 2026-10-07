@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
@@ -43,10 +44,10 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     // Telefon sabit YAZILMAZ (CLAUDE.md, repo public): üretilir.
     private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
 
-    private string Local(string username, string? displayName = "takma", string? id = null)
+    private string Local(string username, string? displayName = "takma", string? id = null, string? avatar = null)
     {
         id ??= NewId();
-        _customers.Insert(new Customer(id, "tiktok", username, displayName, AvatarUrl: null,
+        _customers.Insert(new Customer(id, "tiktok", username, displayName, AvatarUrl: avatar,
             FirstSeenAt: 100, LastSeenAt: 200, IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 2, TotalAmount: 100m, BlacklistedAt: null, Address: null, Phone: null));
         return id;
@@ -138,6 +139,32 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
                     VALUES (@id, @customerId, @scope, '100', @state, 1, 1, @applyKey)",
             new { id, customerId, scope, applyKey, state = applyKey is null ? "created" : "applied" });
         return id;
+    }
+
+    /// <summary>PaymentRequestService'in miras devralmasından sonraki hâl
+    /// (<see cref="PaymentJobRepository.AdoptLegacyResult"/>): kapalı <c>legacy:K</c> işi ve K'yi
+    /// devralmış AÇIK kapsam işi — ikisi de aynı müşteride.</summary>
+    private (string Legacy, string Adopted, string Key) AdoptedLegacy(string customerId, string scope = "cumulative")
+    {
+        var key = NewId();
+        var legacy = Job(customerId, $"legacy:{key}", key);
+        var adopted = Job(customerId, scope, applyKey: null);
+        new PaymentJobRepository(_db).AdoptLegacyResult(adopted, legacy);
+        return (legacy, adopted, key);
+    }
+
+    /// <summary>035'in harici içerikli FTS indeksi Customer ile tutarlı mı (tutarsızsa fırlatır).</summary>
+    private void AssertSearchIndexConsistent()
+    {
+        using var c = _db.Open();
+        var check = () => c.Execute("INSERT INTO CustomerFts(CustomerFts, rank) VALUES('integrity-check', 1)");
+        check.Should().NotThrow("arama indeksi Customer ile tutarlı kalmalı");
+    }
+
+    private long? FirstFailedAt(string itemId)
+    {
+        using var c = _db.Open();
+        return c.ExecuteScalar<long?>("SELECT FirstFailedAt FROM CustomerFeedFailure WHERE ItemId = @itemId", new { itemId });
     }
 
     private int Refs(string customerId) =>
@@ -372,6 +399,50 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     }
 
     [Fact]
+    public void Kimlik_sahipleri_devralinmis_miras_isleriyle_de_tasinir()
+    {
+        // I-1, kimlik sahibi yolu: iki sahibin de devralınmış miras işi var — hangisi ikinci
+        // taşınırsa onun kapsam işi çakışır; sınama sahiplerin okunma sırasından bağımsız.
+        var exact = Local("ayse");
+        var variant = Local("AYSE");
+        var first = AdoptedLegacy(exact);
+        var second = AdoptedLegacy(variant);
+        var canonical = NewId();
+
+        _sync.ApplyServerCustomer(Server(canonical, "ayse"), Pushed, Now).Should().Be(FeedApplyResult.Rekeyed);
+
+        using var c = _db.Open();
+        var jobs = c.Query<(string Id, string ScopeKey, long? ClosedAt)>(
+            "SELECT Id, ScopeKey, ClosedAt FROM PaymentJob WHERE CustomerId = @canonical", new { canonical }).ToList();
+        jobs.Should().HaveCount(4);
+        jobs.Should().ContainSingle(j => j.ScopeKey == "cumulative");
+        jobs.Where(j => j.ClosedAt is not null).Select(j => j.ScopeKey)
+            .Should().BeEquivalentTo(new[] { $"legacy:{first.Key}", $"legacy:{second.Key}" }, "kapalı miras işleri adını korur");
+        jobs.Single(j => j.ClosedAt is null && j.ScopeKey != "cumulative").ScopeKey
+            .Should().BeOneOf($"legacy:{first.Key}:{first.Adopted}", $"legacy:{second.Key}:{second.Adopted}");
+        _sync.CountOpenKeyedLegacyJobs().Should().Be(1);
+    }
+
+    [Fact]
+    public void Kimlik_sahibi_mezar_tasli_asil_kayda_avatar_tasimaz()
+    {
+        // M-1 (KVKK). Eski sürümün yazdığı, kimlik anahtarı henüz onarılmamış mezar taşı: NOCASE
+        // 'ŞEYMA' ile 'şeyma'yı eşlemez — sahip boşaltılmadı; sunucunun asıl kaydı birebir adla
+        // eşleşip boşaltılır. Toplamlar silinmiş kayda avatarı geri getirmemeli.
+        using (var c = _db.Open())
+            c.Execute("INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt) VALUES ('tiktok', 'ŞEYMA', 5000)");
+        var holder = Local("şeyma", avatar: "https://cdn.example.test/a.jpg");
+        var canonical = NewId();
+
+        _sync.ApplyServerCustomer(Server(canonical, "ŞEYMA"), Seq(holder), Now).Should().Be(FeedApplyResult.Rekeyed);
+
+        var row = _customers.GetById(canonical)!;
+        row.DisplayName.Should().Be("[Silindi]");
+        row.AvatarUrl.Should().BeNull("silinmiş kayda kişisel veri geri gelmez");
+        row.TotalLabelsPrinted.Should().Be(2, "toplamlar kişisel veri değildir, taşınır");
+    }
+
+    [Fact]
     public void Kimlik_sahibi_tasinirken_esit_damgada_sunucunun_degeri_kalir()
     {
         // Yerel kopya→asıl birleştirmesi sunucununkiyle aynı: eşit damga yankıdır (U11 —
@@ -503,7 +574,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         SeedRefs(copy);
         var before = Seq(canonical);
 
-        _sync.RekeyToLocal(copy, canonical, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         Exists(copy).Should().BeFalse();
         RedirectOf(copy).Should().Be(canonical);
@@ -525,7 +596,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         Guarded("UPDATE Customer SET Notes = 'asıl not', NotesChangedAt = @T1 WHERE Id = @canonical", new { T1, canonical });
         Guarded("UPDATE Customer SET Notes = 'kopya not', NotesChangedAt = @T1 WHERE Id = @copy", new { T1, copy });
 
-        _sync.RekeyToLocal(copy, canonical, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         _customers.GetById(canonical)!.Notes.Should().Be("asıl not");
         Stamp(canonical, "NotesChangedAt").Should().Be(T1);
@@ -535,9 +606,51 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     public void RekeyToLocal_hedef_ya_da_kaynak_yoksa_hicbir_sey_yapmaz()
     {
         var copy = Local("ayse");
-        _sync.RekeyToLocal(copy, NewId(), Now).Should().Be(RekeyResult.TargetMissing);
-        _sync.RekeyToLocal(NewId(), copy, Now).Should().Be(RekeyResult.SourceMissing);
+        _sync.RekeyToLocal(copy, NewId(), Pushed, Now).Should().Be(RekeyResult.TargetMissing);
+        _sync.RekeyToLocal(NewId(), copy, Pushed, Now).Should().Be(RekeyResult.SourceMissing);
         Exists(copy).Should().BeTrue();
+    }
+
+    [Fact]
+    public void RekeyToLocal_gonderilen_partiden_sonra_degisen_kaynagi_tasimaz()
+    {
+        // M-7: yönlendirme, partinin okunduğu andaki satır için geldi. Kaynak o andan sonra
+        // değiştiyse (ör. taze bilgisayarın form oynatmasının damgasız doldurması — C10) yeni hâli
+        // sunucuya hiç gitmedi: şimdi taşınsaydı beyan olabilen damgasız birim düşer, veri kaybolurdu.
+        // Satır zaten imlecin üstünde: sonraki gönderim onu götürür, sunucu yönlendirmeyi yeniden söyler.
+        var copy = Local("ayse");
+        var canonical = Local("Ayse");
+        var pushedThrough = Seq(copy);                         // gönderilen partinin en büyük SyncSeq'i
+        _customers.UpdateNotes(copy, "parti okunduktan sonra");
+        var seq = Seq(copy);
+
+        _sync.RekeyToLocal(copy, canonical, pushedThrough, Now).Should().Be(RekeyResult.Deferred);
+
+        Exists(copy).Should().BeTrue();
+        RedirectOf(copy).Should().BeNull();
+        Seq(copy).Should().Be(seq, "zaten gönderim bekliyor — ilerletmek gerekmez");
+        GuardRows().Should().Be(0);
+
+        _sync.RekeyToLocal(copy, canonical, pushedThroughSeq: seq, Now).Should().Be(RekeyResult.Rekeyed,
+            "yeni hâli de gönderildikten sonra taşınır");
+        _customers.GetById(canonical)!.Notes.Should().Be("parti okunduktan sonra");
+    }
+
+    [Fact]
+    public void Customera_baslanan_her_tablo_tasimada_ele_alinir()
+    {
+        // Şema koruması: Customer'a FK'sı olan ya da CustomerId kolonu taşıyan her tablo taşımanın
+        // listesinde olmalı. Yeni bir tablo eklenip unutulursa satırları silinen Id'de öksüz kalır
+        // (FK'lıysa commit düşer ve taşıma her turda başarısız olur).
+        using var c = _db.Open();
+        var referencing = c.Query<string>(@"
+            SELECT m.name FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f
+             WHERE m.type = 'table' AND f.""table"" = 'Customer' COLLATE NOCASE
+            UNION
+            SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) p
+             WHERE m.type = 'table' AND p.name = 'CustomerId' COLLATE NOCASE").ToList();
+
+        referencing.Should().BeEquivalentTo(CustomerSyncRepository.CustomerReferenceTables);
     }
 
     [Fact]
@@ -548,10 +661,10 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var a = Local("ayse");
         var b = Local("AYSE");
         var k = Local("Ayse");
-        _sync.RekeyToLocal(a, k, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(a, k, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
         SeedRefs(b);
 
-        _sync.RekeyToLocal(b, a, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(b, a, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         Exists(b).Should().BeFalse();
         Refs(k).Should().Be(4);
@@ -563,10 +676,10 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     {
         var a = Local("ayse");
         var k = Local("Ayse");
-        _sync.RekeyToLocal(a, k, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(a, k, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
         var z = Local("AYSE");
 
-        _sync.RekeyToLocal(k, z, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(k, z, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         RedirectOf(a).Should().Be(z, "a → k → z zinciri tek adıma iner");
         RedirectOf(k).Should().Be(z);
@@ -588,15 +701,37 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         Job(canonical, "session:s1", null);
         var fresh = Job(copy, "session:s1", null);                  // hiç hareket yok
 
-        _sync.RekeyToLocal(copy, canonical, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         using var c = _db.Open();
         c.QuerySingle<(string ScopeKey, long? ClosedAt)>("SELECT ScopeKey, ClosedAt FROM PaymentJob WHERE Id = @applied", new { applied })
-            .Should().Be(($"legacy:{copyKey}", (long?)null), "açık miras iş: PaymentRequestService uzlaştırır (U8)");
+            .Should().Be(($"legacy:{copyKey}:{applied}", (long?)null), "açık miras iş: PaymentRequestService uzlaştırır (U8)");
         var closed = c.QuerySingle<(string ScopeKey, long? ClosedAt)>("SELECT ScopeKey, ClosedAt FROM PaymentJob WHERE Id = @fresh", new { fresh });
-        closed.ScopeKey.Should().Be($"legacy:{fresh}");
+        closed.ScopeKey.Should().Be($"legacy:{fresh}:{fresh}");
         closed.ClosedAt.Should().Be(Now);
         c.ExecuteScalar<int>("SELECT COUNT(*) FROM PaymentJob WHERE CustomerId = @canonical", new { canonical }).Should().Be(4);
+    }
+
+    [Fact]
+    public void RekeyToLocal_devralinmis_miras_isi_olan_kopya_da_tasinir()
+    {
+        // I-1: miras devralması (AdoptLegacyResult) kapalı 'legacy:K' işini bırakır, K'yi kapsam
+        // işine taşır. Kapsam çakışmasında o iş yeniden 'legacy:K' adını alsaydı kopyanın kendi kapalı
+        // işine çarpar (UX_PaymentJob_Scope) ve taşıma her turda düşerdi — kimlik kalıcı bölünürdü.
+        var copy = Local("ayse");
+        var canonical = Local("Ayse");
+        var (legacy, adopted, key) = AdoptedLegacy(copy);
+        Job(canonical, "cumulative", NewId());
+
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
+
+        using var c = _db.Open();
+        c.QuerySingle<(string ScopeKey, long? ClosedAt)>("SELECT ScopeKey, ClosedAt FROM PaymentJob WHERE Id = @adopted", new { adopted })
+            .Should().Be(($"legacy:{key}:{adopted}", (long?)null), "anahtarlı açık miras iş: uzlaştırılır (U8)");
+        c.ExecuteScalar<string>("SELECT ScopeKey FROM PaymentJob WHERE Id = @legacy", new { legacy })
+            .Should().Be($"legacy:{key}", "kapalı miras işi adını korur");
+        c.ExecuteScalar<int>("SELECT COUNT(*) FROM PaymentJob WHERE CustomerId = @canonical", new { canonical }).Should().Be(3);
+        _sync.CountOpenKeyedLegacyJobs().Should().Be(1);
     }
 
     [Fact]
@@ -612,11 +747,104 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         // Kopya silinmiş: telefon boşaldı, damgası kaldı (akıştan inen silme kilit altında yazar).
         Guarded("UPDATE Customer SET Phone = NULL, DisplayName = '[Silindi]', PurgedAt = 5000 WHERE Id = @copy", new { copy });
 
-        _sync.RekeyToLocal(copy, canonical, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         var r = _customers.GetById(canonical)!;
         r.Phone.Should().Be(phone, "silinmiş kaynaktaki damgalı boş bilinçli silme değildir (S15)");
         r.Notes.Should().Be("not kalır");
+    }
+
+    [Fact]
+    public void RekeyToLocal_silinmis_asil_kayda_avatar_tasimaz()
+    {
+        // M-1 (KVKK): taşımanın toplamları silinmiş asıl kayda kişisel veri (avatar) getirmez.
+        var canonical = Local("Ayse");
+        _customers.ScrubPersonalData(canonical);
+        var copy = Local("ayse", avatar: "https://cdn.example.test/b.jpg");
+
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
+
+        var row = _customers.GetById(canonical)!;
+        row.AvatarUrl.Should().BeNull("silinmiş kayda kişisel veri geri gelmez");
+        row.TotalLabelsPrinted.Should().Be(4, "toplamlar kişisel veri değildir, taşınır");
+    }
+
+    [Fact]
+    public void Tasima_ve_donusturme_arama_indeksini_tutarli_birakir()
+    {
+        // 035'in FTS indeksi rowid'e bağlı: sahip silme + asıl kayıt ekleme, kopya silme ve
+        // Id yeniden yazımı (dönüştürme) indeksi Customer ile tutarlı bırakmalı.
+        var holder = Local("ayse", displayName: "Ayşe takma");
+        _customers.UpdatePhone(holder, NewPhone());
+        _sync.ApplyServerCustomer(Server(NewId(), "ayse", new CustomerSyncState { FullName = "Ayşe Yılmaz", FullNameChangedAt = T1 }),
+            Seq(holder), Now).Should().Be(FeedApplyResult.Rekeyed);
+        AssertSearchIndexConsistent();
+
+        var copy = Local("mehmet");
+        var target = Local("Mehmet");
+        _sync.RekeyToLocal(copy, target, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
+        AssertSearchIndexConsistent();
+
+        var provisional = NewId();
+        Legacy(provisional, "zeynep", displayName: "Zeynep Y", phone: NewPhone(), address: "Adres");
+        _sync.ApplyProvisional(provisional, claims: null, Now).Should().Be(FeedApplyResult.Converted);
+        AssertSearchIndexConsistent();
+
+        _customers.Search("ayse").Should().ContainSingle();
+        _customers.Search("mehm").Should().ContainSingle();
+        _customers.Search("zeyn").Select(c => c.Username).Should().Equal("zeynep");
+    }
+
+    [Fact]
+    public async Task Dosya_veritabaninda_tasima_yarisan_yaziciyi_bekler_yazdigini_kaybetmez()
+    {
+        // Üretim kurgusu (dosya, WAL, havuz): başka bir bağlantı yazma kilidini tutarken taşıma
+        // OKUMADAN önce kilidi bekler (BEGIN IMMEDIATE) — okuma-birleştirme-yazma yarışan yazımın
+        // ARDINA düşer, operatörün o an kaydettiği not kaybolmaz.
+        var path = Path.Combine(Path.GetTempPath(), $"od-rekey-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(path);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var customers = new CustomerRepository(factory);
+            var sync = new CustomerSyncRepository(factory, new CustomerBusySet());
+            string Insert(string username)
+            {
+                var id = NewId();
+                customers.Insert(new Customer(id, "tiktok", username, "takma", AvatarUrl: null,
+                    FirstSeenAt: 100, LastSeenAt: 200, IsBlacklisted: false, BlacklistReason: null, Notes: null,
+                    TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null, Address: null, Phone: null));
+                return id;
+            }
+            var copy = Insert("ayse");
+            var canonical = Insert("Ayse");
+
+            using (var writer = new SqliteConnection($"Data Source={path};Foreign Keys=true;Pooling=false"))
+            {
+                writer.Open();
+                SqliteSearchFunctions.Register(writer);
+                using var tx = writer.BeginTransaction();                 // BEGIN IMMEDIATE: kilit onda
+                writer.Execute("UPDATE Customer SET Notes = 'yarışan not' WHERE Id = @copy", new { copy }, tx);
+
+                var rekey = Task.Run(() => sync.RekeyToLocal(copy, canonical, Pushed, Now));
+                await Task.Delay(300);
+                rekey.IsCompleted.Should().BeFalse("taşıma yazma kilidini bekler");
+                tx.Commit();
+
+                (await rekey.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be(RekeyResult.Rekeyed);
+            }
+
+            customers.GetById(canonical)!.Notes.Should().Be("yarışan not", "kopyanın taşımadan hemen önceki düzenlemesi taşındı");
+            using var conn = factory.Open();
+            conn.ExecuteScalar<int>("SELECT COUNT(*) FROM Customer WHERE Id = @copy", new { copy }).Should().Be(0);
+            conn.ExecuteScalar<int>("SELECT COUNT(*) FROM SyncApplyGuard").Should().Be(0);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var f in new[] { path, path + "-wal", path + "-shm" })
+                if (File.Exists(f)) File.Delete(f);
+        }
     }
 
     [Fact]
@@ -628,7 +856,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
                   VALUES ('eski1', 'tiktok', 'ayse', 'ayse', 'Ayşe', 1, 1, @phone)", new { phone });
         var canonical = Local("Ayse", displayName: null);
 
-        _sync.RekeyToLocal("eski1", canonical, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal("eski1", canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         var c = _customers.GetById(canonical)!;
         c.Phone.Should().Be(phone);
@@ -649,10 +877,13 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var lease = await _busy.EnterAsync(copy);
         var provisionalLease = await _busy.EnterAsync(provisional);
 
-        _sync.RekeyToLocal(copy, canonical, Now).Should().Be(RekeyResult.Busy);
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Busy);
         Exists(copy).Should().BeTrue();
         Seq(copy).Should().BeGreaterThan(seqBefore, "yeniden gönderilsin: sunucu yönlendirmeyi yeniden söyler (S7)");
+        var seqAfterPushRedirect = Seq(copy);
         _sync.ApplyFeedRedirect(copy, canonical, Pushed, Now).Should().Be(FeedApplyResult.Deferred);
+        Seq(copy).Should().BeGreaterThan(seqAfterPushRedirect, "akış yönlendirmesi de yeniden gönderime koyar (U13)");
+        GuardRows().Should().Be(0);
         _sync.ApplyServerCustomer(Server(NewId(), "AYSE"), Pushed, Now).Should().Be(FeedApplyResult.Busy,
             "kimlik sahibi ödeme akışında: akış bu öğede kalır, sonraki tur");
         _sync.ApplyProvisional(provisional, claims: null, Now).Should().Be(FeedApplyResult.Busy);
@@ -661,7 +892,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         lease.Dispose();
         provisionalLease.Dispose();
 
-        _sync.RekeyToLocal(copy, canonical, Now).Should().Be(RekeyResult.Rekeyed);
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
         _sync.ApplyProvisional(provisional, claims: null, Now).Should().Be(FeedApplyResult.Converted);
         GuardRows().Should().Be(0);
     }
@@ -697,12 +928,14 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         // değişmiştir — sayaç baştan, atlama işareti kalkar.
         var item = NewId();
         _sync.RecordFeedFailure(item, changeSeq: 7, "ilk hata", Now).Should().Be(1);
-        _sync.RecordFeedFailure(item, changeSeq: 7, "yine", Now).Should().Be(2);
-        _sync.MarkFeedItemSkipped(item, Now);
+        _sync.RecordFeedFailure(item, changeSeq: 7, "yine", Now + 60).Should().Be(2);
+        FirstFailedAt(item).Should().Be(Now, "aynı değişiklik: ilk başarısızlık anı korunur");
+        _sync.MarkFeedItemSkipped(item, Now + 60);
         _sync.GetFeedFailureIds().Should().BeEquivalentTo(new[] { item });
         Count("SELECT COUNT(*) FROM CustomerFeedFailure WHERE SkippedAt IS NOT NULL").Should().Be(1);
 
-        _sync.RecordFeedFailure(item, changeSeq: 9, new string('x', 600), Now).Should().Be(1);
+        _sync.RecordFeedFailure(item, changeSeq: 9, new string('x', 600), Now + 120).Should().Be(1);
+        FirstFailedAt(item).Should().Be(Now + 120, "sayaç baştan: yeni değişikliğin ilk başarısızlık anı (M-9)");
         Count("SELECT COUNT(*) FROM CustomerFeedFailure WHERE SkippedAt IS NOT NULL").Should().Be(0);
         Count("SELECT LENGTH(LastError) FROM CustomerFeedFailure").Should().Be(500, "hata metni sınırlı tutulur");
 
