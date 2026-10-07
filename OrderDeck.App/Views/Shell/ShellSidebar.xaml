@@ -265,6 +265,33 @@
                 </TextBlock>
             </StackPanel>
 
+            <!-- Dar modda yukarıdaki panel (senkron satırı dahil) gizli: senkron
+                 sağlıksızsa yerinde yalnız sarı nokta kalır, ipucu satırınkiyle
+                 aynı. Nokta bağlantı noktalarıyla aynı boyda; saydam zemin +
+                 dolgu fareyle ipucunu bulmayı kolaylaştırır. -->
+            <Border x:Name="SyncDot" Grid.Row="2"
+                    Background="Transparent"
+                    Padding="{StaticResource OD.Pad.2}"
+                    Margin="{StaticResource OD.Pad.2}"
+                    HorizontalAlignment="Center"
+                    ToolTip="{Binding SyncStatusTooltip}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding IsCompact}" Value="True"/>
+                                    <Condition Binding="{Binding IsSyncHealthy}" Value="False"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Ellipse Width="8" Height="8" Fill="{StaticResource OD.Brush.Amber}"/>
+            </Border>
+
             <!-- Taşma menüsü (x:Name ve handler MainShellView'dan aynen) -->
             <Button Grid.Row="3"
                     x:Name="MenuButton"
