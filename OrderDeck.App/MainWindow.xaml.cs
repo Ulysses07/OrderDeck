@@ -28,10 +28,24 @@ public partial class MainWindow : Window
     /// <summary>D5: "gönder ve kapat" sürüyor.</summary>
     private bool _flushing;
 
+    /// <summary>D5: gönderilmemiş kayıt uyarısı açık (modal kutu mesaj döngüsünü pompalar — ikinci bir
+    /// kapatma isteği OnClosing'e yeniden girer).</summary>
+    private bool _closePromptOpen;
+
+    /// <summary>D5: gönderim bitti, pencere kendini kapatıyor — çekiliş kapısı yeniden sorulmaz.</summary>
+    private bool _closingAfterFlush;
+
+    /// <summary>D5: Windows oturumu kapanıyor/yeniden başlıyor — uyarı sorulmaz.</summary>
+    private bool _sessionEnding;
+
     public MainWindow(Views.AppRootView root)
     {
         InitializeComponent();
         RootHost.Content = root;
+        // D5: oturum kapanışında modal soru Windows'un kapanışını bekletir; kayıtlar yerelde kalır,
+        // sonraki açılışta gider. Pencere uygulamayla aynı ömürde — abonelik bırakılmaz.
+        if (Application.Current is { } app)
+            app.SessionEnding += (_, _) => _sessionEnding = true;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -61,16 +75,21 @@ public partial class MainWindow : Window
 
         // "Gönder ve kapat" sürüyor: kapatma istekleri yok sayılır — gönderim en geç bütçe
         // dolunca pencereyi kendisi kapatır (yarıda kesilen kapanış Host'u gönderimin altından söker).
-        if (_flushing)
+        // Windows oturumu kapanıyorsa beklenmez: kayıtlar yerelde, sonraki açılışta gider.
+        // Uyarı açıkken gelen ikinci istek de yok sayılır: iç içe ikinci bir soru açılmaz (içteki
+        // "Evet" + dıştaki "Hayır" Host'u gönderimin altından sökerdi); açık soru cevaplanınca karar
+        // onunla verilir.
+        if ((_flushing && !_sessionEnding) || _closePromptOpen)
         {
             e.Cancel = true;
             return;
         }
 
         // If a giveaway is active, refuse the close and tell the user to finish/cancel it
-        // first — the regular EndStream path has the same gate.
+        // first — the regular EndStream path has the same gate. Gönderimden sonraki kapanışta
+        // sorulmaz: kapı soru öncesinde geçildi, gönderim boyunca pencere kilitliydi.
         var vm = App.Host.Services.GetService<MainShellViewModel>();
-        if (vm is not null && vm.IsGiveawayActive)
+        if (!_closingAfterFlush && vm is not null && vm.IsGiveawayActive)
         {
             MessageBox.Show(
                 "Aktif çekiliş var. Önce çekilişi tamamla veya iptal et.",
@@ -83,10 +102,13 @@ public partial class MainWindow : Window
 
         // Faz 0 (D5): gönderilmemiş kayıt varsa sor. Bir kez: "gönder ve kapat"tan sonraki Close()
         // yeniden sormaz. Giriş ekranından kapatma yukarıda erken döner ve sormaz — doğru, o yolda
-        // gönderilecek oturum verisi yok.
-        if (!_flushHandled && vm is not null)
+        // gönderilecek oturum verisi yok. Windows oturumu kapanırken de sorulmaz.
+        if (!_flushHandled && !_sessionEnding && vm is not null)
         {
-            var choice = AskAboutUnsentRecords(vm);
+            CloseSyncChoice choice;
+            _closePromptOpen = true;
+            try { choice = AskAboutUnsentRecords(vm); }
+            finally { _closePromptOpen = false; }
             if (choice == CloseSyncChoice.Cancel)
             {
                 e.Cancel = true;
@@ -150,6 +172,7 @@ public partial class MainWindow : Window
         flush.ContinueWith(_ => Dispatcher.BeginInvoke(() =>
         {
             _flushing = false;
+            _closingAfterFlush = true;
             Close();
         }), TaskScheduler.Default);
     }

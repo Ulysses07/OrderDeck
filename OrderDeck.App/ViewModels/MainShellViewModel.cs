@@ -393,7 +393,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// Kapanışta gönderilmemiş kayıt uyarısı (Faz 0, D5). <c>MainWindow.OnClosing</c> çağırır (kabuk
     /// kuruluyken, çekiliş denetiminden sonra); "gönder ve kapat"ı pencere koşar
     /// (<see cref="Services.Sync.SyncFlushService"/>). Sayı ve durum metni durum satırıyla AYNI
-    /// kaynaktan: bekleyen sayaç ve izleyicinin tek kilitli anlık görüntüsü
+    /// kaynaktan: bekleyen sayaç, dikkat sayacı ve izleyicinin tek kilitli anlık görüntüsü
     /// (<see cref="Services.Sync.SyncStatusFormatter"/>) — çevrimdışı bilgisayarda "gönder ve
     /// kapat"ın işe yaramayacağı uyarının kendisinden okunur.
     ///
@@ -413,7 +413,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             pending = _pendingCount();
             if (pending <= 0) return Services.Sync.CloseSyncChoice.Close;
-            status = Services.Sync.SyncStatusFormatter.Format(pending, _syncStatus.Snapshot(), DateTimeOffset.UtcNow);
+            // Kalıcı uyarılar da kenar çubuğundaki gibi (D5 incelemesi): metin satırla birebir aynı.
+            status = Services.Sync.SyncStatusFormatter.Format(pending, _syncStatus.Snapshot(), DateTimeOffset.UtcNow,
+                _attention?.Invoke() ?? default);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -343,14 +343,18 @@ public sealed class MainShellSyncStatusTests
     [Fact]
     public void Kapanis_uyarisi_durum_satiriyla_ayni_sayaci_ve_anlik_goruntuyu_kullanir()
     {
-        // Çevrimdışı bilgisayarda "gönder ve kapat"ın işe yaramayacağı uyarının kendisinden okunur.
+        // Çevrimdışı bilgisayarda "gönder ve kapat"ın işe yaramayacağı uyarının kendisinden okunur;
+        // kalıcı uyarılar da kenar çubuğundaki gibi eklenir (inceleme küçük 4).
         using var outboxDb = MigratedDb();
         SeedUnsent(outboxDb);
+        using (var c = outboxDb.Open())
+            c.Execute("INSERT INTO CustomerFeedFailure (ItemId, ChangeSeq, Attempts, LastError, FirstFailedAt, SkippedAt) " +
+                      "VALUES (@id, 3, 5, 'x', 100, 200)", new { id = Guid.NewGuid().ToString("N") });
         var tracker = new SyncStatusTracker();
         using var h = MainShellTestHarness.Build(syncStatus: tracker, pendingCounter: EmptyCounter(outboxDb));
         tracker.MarkPullSucceeded(DateTimeOffset.UtcNow - TimeSpan.FromMinutes(10), h.LicenseKey!);
         h.Vm.RefreshSyncStatus();
-        h.Vm.SyncStatusText.Should().Be("Çevrimdışı — 1 değişiklik bekliyor");
+        h.Vm.SyncStatusText.Should().Be("Çevrimdışı — 1 değişiklik bekliyor · 1 müşteri değişikliği uygulanamadı");
 
         h.Vm.ConfirmCloseWithUnsentRecords();
 

@@ -555,24 +555,16 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SyncOutboxRepository>();
         services.AddSingleton<Services.Sync.SyncPendingCounter>();
 
-        // Faz 0 (D5): kapanışta "gönder ve kapat" — bekleyen sayıya (D1) giren her gönderim birer
-        // kez, toplam süre sınırıyla. Servisler kurulurken çözülür: eksik kayıt kapanışta değil
-        // DI testinde (CustomerSyncDiTests) düşsün. Sıra önemli: sunucu siparişleri oturumdan sonra
-        // kabul ediyor (unknown-session); müşteriler siparişlerden önce yönlensin diye en başta.
-        services.AddSingleton(sp =>
-        {
-            var customers = sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>();
-            var sessions = sp.GetRequiredService<Services.Sync.SessionOrderSyncService>();
-            var payments = sp.GetRequiredService<Services.Sync.PaymentSyncService>();
-            var shipments = sp.GetRequiredService<Services.Sync.ShipmentSyncService>();
-            return new Services.Sync.SyncFlushService(new Func<CancellationToken, Task>[]
-            {
-                ct => customers.SyncOnceAsync(ct),
-                ct => sessions.SyncOnceAsync(ct),
-                ct => payments.SyncOnceAsync(ct),
-                ct => shipments.SyncOnceAsync(ct),
-            }, sp.GetRequiredService<ILogger<Services.Sync.SyncFlushService>>());
-        });
+        // Faz 0 (D5): kapanışta "gönder ve kapat" — bekleyen sayıya (D1) giren her gönderim, kuyruğu
+        // boşaltana dek, toplam süre sınırıyla (sıra ve paylar SyncFlushService.ForClose'ta).
+        // Servisler kurulurken çözülür: eksik kayıt kapanışta değil DI testinde (CustomerSyncDiTests)
+        // düşsün.
+        services.AddSingleton(sp => OrderDeck.App.Services.Sync.SyncFlushService.ForClose(
+            sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
+            sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
+            sp.GetRequiredService<Services.Sync.PaymentSyncService>(),
+            sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+            sp.GetRequiredService<ILogger<Services.Sync.SyncFlushService>>()));
 
         // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
         // görüntüsü yerel SQLite'a yazılır. Ritim İKİ kademeli — ilk GERÇEKTEN

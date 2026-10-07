@@ -140,8 +140,10 @@ public sealed class CustomerSyncDiTests
         var flush = host.Services.GetRequiredService<SyncFlushService>();
 
         host.Services.GetRequiredService<SyncFlushService>().Should().BeSameAs(flush);
-        PrivateField<IReadOnlyList<Func<CancellationToken, Task>>>(flush, "_steps").Should().HaveCount(4,
-            "D5: müşteri, oturum+etiket, ödeme, kargo — bekleyen sayıya (D1) giren her gönderim");
+        var steps = PrivateField<IReadOnlyList<FlushStep>>(flush, "_steps")!;
+        steps.Select(s => s.Name).Should().Equal(new[] { "müşteri", "oturum ve etiket", "ödeme", "kargo" },
+            "D5: bekleyen sayıya (D1) giren her gönderim; müşteriler siparişlerden önce yönlenir");
+        steps.Select(s => s.MaxShare).Should().Equal(SyncFlushService.CustomerShare, null, null, null);
     }
 
     [Fact]
