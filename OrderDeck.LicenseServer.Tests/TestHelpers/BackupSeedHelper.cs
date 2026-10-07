@@ -9,6 +9,10 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
 public static class BackupSeedHelper
 {
+    /// <summary>Örnek yedekteki müşterinin telefonu. Sabit literal yerine koşu
+    /// başına üretilir; yedeği render eden sayfa testleri bununla doğrular.</summary>
+    public static readonly string SamplePhone = TestPhone.NewE164();
+
     /// <summary>
     /// Seeds a Customer + a CustomerBackup row with an encrypted blob containing a
     /// minimal valid orderdeck.db zip (1 customer "alice" + 1 session "Yayın #1" + 2 labels of 75 TL each = 150 TL).
@@ -23,7 +27,7 @@ public static class BackupSeedHelper
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"viewer-seed-{Guid.NewGuid():N}@test.com",
+            Email = $"viewer-seed-{Guid.NewGuid():N}@example.test",
             Name = "T",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow
@@ -58,7 +62,7 @@ public static class BackupSeedHelper
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"
+            cmd.CommandText = $@"
                 CREATE TABLE Customer (
                     Id TEXT PRIMARY KEY, Platform TEXT, Username TEXT,
                     DisplayName TEXT, AvatarUrl TEXT,
@@ -84,7 +88,7 @@ public static class BackupSeedHelper
                 );
 
                 INSERT INTO Customer VALUES
-                    ('c1','twitch','alice','Alice',NULL,1000,2000,0,NULL,NULL,3,150.0,NULL,NULL,'+905551111111');
+                    ('c1','twitch','alice','Alice',NULL,1000,2000,0,NULL,NULL,3,150.0,NULL,NULL,'{SamplePhone}');
                 INSERT INTO StreamSession VALUES
                     ('s1','Yayın #1',1500,1900,'[]',NULL);
                 INSERT INTO Label VALUES
