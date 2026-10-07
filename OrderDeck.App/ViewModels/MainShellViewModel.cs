@@ -385,6 +385,54 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private string? SyncLicenseKey()
         => _licenseService.CurrentLicense?.LicenseKey is { } key && !string.IsNullOrWhiteSpace(key) ? key : null;
 
+    /// <summary>
+    /// Kapanışta gönderilmemiş kayıt uyarısı (Faz 0, D5). <c>MainWindow.OnClosing</c> çağırır (kabuk
+    /// kuruluyken, çekiliş denetiminden sonra); "gönder ve kapat"ı pencere koşar
+    /// (<see cref="Services.Sync.SyncFlushService"/>). Sayı ve durum metni durum satırıyla AYNI
+    /// kaynaktan: bekleyen sayaç ve izleyicinin tek kilitli anlık görüntüsü
+    /// (<see cref="Services.Sync.SyncStatusFormatter"/>) — çevrimdışı bilgisayarda "gönder ve
+    /// kapat"ın işe yaramayacağı uyarının kendisinden okunur.
+    ///
+    /// <para><b>Sormadan kapanır:</b> senkron bağlı değilse; lisans yoksa (deneme sürümü — senkron hiç
+    /// koşmaz, bütün müşteriler "bekliyor" sayılır ve uyarı hiç geçmezdi); bekleyen yoksa; sayım
+    /// okunamazsa (yerel veritabanı hatası — gönderim de aynı veritabanını okuyacaktı). Kapanış
+    /// engellenmez: kayıtlar yerelde kalır, bu bilgisayar bir sonraki açılışta gönderir.</para>
+    /// </summary>
+    public Services.Sync.CloseSyncChoice ConfirmCloseWithUnsentRecords()
+    {
+        if (_syncStatus is null || _pendingCount is null || SyncLicenseKey() is null)
+            return Services.Sync.CloseSyncChoice.Close;
+
+        int pending;
+        Services.Sync.SyncStatusFormatter.Status status;
+        try
+        {
+            pending = _pendingCount();
+            if (pending <= 0) return Services.Sync.CloseSyncChoice.Close;
+            status = Services.Sync.SyncStatusFormatter.Format(pending, _syncStatus.Snapshot(), DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex,
+                "Kapanışta gönderilmemiş kayıt sayılamadı; sorulmadan kapatılıyor (kayıtlar yerelde kalır, sonraki açılışta gider)");
+            return Services.Sync.CloseSyncChoice.Close;
+        }
+
+        var answer = _dialogs.ConfirmYesNoCancel(
+            $"{pending} kayıt henüz sunucuya gitmedi.\n" +
+            $"Senkron durumu: {status.Text}\n\n" +
+            $"Evet: gönder ve kapat (en fazla {(int)Services.Sync.SyncFlushService.CloseBudget.TotalSeconds} sn)\n" +
+            "Hayır: yine de kapat — kayıtlar kaybolmaz, bu bilgisayar bir sonraki açılışta gönderir\n" +
+            "İptal: kapatma",
+            "Gönderilmemiş kayıt var");
+        return answer switch
+        {
+            true => Services.Sync.CloseSyncChoice.FlushThenClose,
+            false => Services.Sync.CloseSyncChoice.Close,
+            null => Services.Sync.CloseSyncChoice.Cancel,
+        };
+    }
+
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
     /// <summary>

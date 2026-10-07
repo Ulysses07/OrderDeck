@@ -132,4 +132,15 @@ public sealed class CustomerSyncDiTests
             WpfCustomerProjectionSyncService.PushStatusName, SessionOrderSyncService.PushStatusName,
             PaymentSyncService.PushStatusName, ShipmentSyncService.PushStatusName);
     }
+
+    [Fact]
+    public void Gonder_ve_kapat_servisi_DIdan_cozulur_bekleyen_sayiya_giren_her_gonderimi_kosar()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var flush = host.Services.GetRequiredService<SyncFlushService>();
+
+        host.Services.GetRequiredService<SyncFlushService>().Should().BeSameAs(flush);
+        PrivateField<IReadOnlyList<Func<CancellationToken, Task>>>(flush, "_steps").Should().HaveCount(4,
+            "D5: müşteri, oturum+etiket, ödeme, kargo — bekleyen sayıya (D1) giren her gönderim");
+    }
 }

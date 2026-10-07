@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Tests.TestHelpers;
@@ -14,7 +15,8 @@ using Xunit;
 
 namespace OrderDeck.Tests.App;
 
-/// <summary>Faz 0: kenar çubuğu durum satırı (D3) ve yetişilmeden yayın başlatma uyarısı (D4).</summary>
+/// <summary>Faz 0: kenar çubuğu durum satırı (D3), yetişilmeden yayın başlatma uyarısı (D4) ve
+/// kapanışta gönderilmemiş kayıt uyarısı (D5).</summary>
 public sealed class MainShellSyncStatusTests
 {
     /// <summary>Bağlantı açılışlarını sayar: durum satırının kaç sorgu koştuğu.</summary>
@@ -288,5 +290,114 @@ public sealed class MainShellSyncStatusTests
 
         h.Dialogs.Confirmations.Should().NotContain(c => c.Title == "Güncelleniyor");
         h.Sessions.GetActive().Should().NotBeNull();
+    }
+
+    // ── D5: kapanışta gönderilmemiş kayıt uyarısı ──────────────────────
+
+    /// <summary>Sayacın veritabanına gönderilmemiş bir müşteri (imleç 0 → bekleyen 1).</summary>
+    private static void SeedUnsent(IDbConnectionFactory db)
+        => new CustomerRepository(db).Insert(new Customer(Guid.NewGuid().ToString("N"), "tiktok", "ornek_musteri",
+            "Örnek Müşteri", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+    [Fact]
+    public void Kapanista_bekleyen_yoksa_sorulmaz()
+    {
+        using var outboxDb = MigratedDb();
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker(), pendingCounter: EmptyCounter(outboxDb));
+
+        h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(CloseSyncChoice.Close);
+
+        h.Dialogs.ThreeWayConfirmations.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(true, CloseSyncChoice.FlushThenClose)]
+    [InlineData(false, CloseSyncChoice.Close)]
+    [InlineData(null, CloseSyncChoice.Cancel)]
+    public void Kapanista_bekleyen_varsa_sorulur_cevap_secimi_belirler(bool? answer, CloseSyncChoice expected)
+    {
+        using var outboxDb = MigratedDb();
+        SeedUnsent(outboxDb);
+        var tracker = new SyncStatusTracker();
+        using var h = MainShellTestHarness.Build(syncStatus: tracker, pendingCounter: EmptyCounter(outboxDb));
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        h.Dialogs.ThreeWayResult = _ => answer;
+
+        h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(expected);
+
+        var asked = h.Dialogs.ThreeWayConfirmations.Should().ContainSingle().Subject;
+        asked.Title.Should().Be("Gönderilmemiş kayıt var");
+        asked.Message.Should().Be(
+            "1 kayıt henüz sunucuya gitmedi.\n" +
+            "Senkron durumu: Gönderiliyor (1)\n\n" +
+            "Evet: gönder ve kapat (en fazla 30 sn)\n" +
+            "Hayır: yine de kapat — kayıtlar kaybolmaz, bu bilgisayar bir sonraki açılışta gönderir\n" +
+            "İptal: kapatma");
+    }
+
+    [Fact]
+    public void Kapanis_uyarisi_durum_satiriyla_ayni_sayaci_ve_anlik_goruntuyu_kullanir()
+    {
+        // Çevrimdışı bilgisayarda "gönder ve kapat"ın işe yaramayacağı uyarının kendisinden okunur.
+        using var outboxDb = MigratedDb();
+        SeedUnsent(outboxDb);
+        var tracker = new SyncStatusTracker();
+        using var h = MainShellTestHarness.Build(syncStatus: tracker, pendingCounter: EmptyCounter(outboxDb));
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow - TimeSpan.FromMinutes(10), h.LicenseKey!);
+        h.Vm.RefreshSyncStatus();
+        h.Vm.SyncStatusText.Should().Be("Çevrimdışı — 1 değişiklik bekliyor");
+
+        h.Vm.ConfirmCloseWithUnsentRecords();
+
+        h.Dialogs.ThreeWayConfirmations.Should().ContainSingle()
+            .Which.Message.Should().Contain("\nSenkron durumu: " + h.Vm.SyncStatusText + "\n");
+    }
+
+    [Fact]
+    public void Kapanista_lisans_yoksa_sorulmaz_sayim_kosmaz()
+    {
+        // Deneme sürümü: senkron hiç koşmaz — imleç yok, bütün müşteriler "bekliyor" sayılır ve
+        // uyarı her kapanışta çıkıp hiç geçmezdi.
+        using var outboxDb = MigratedDb();
+        SeedUnsent(outboxDb);
+        var counting = new CountingFactory(outboxDb);
+        using var h = MainShellTestHarness.Build(syncStatus: new SyncStatusTracker(),
+            pendingCounter: EmptyCounter(counting), licensed: false);
+        var opens = counting.Opens;
+
+        h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(CloseSyncChoice.Close);
+
+        h.Dialogs.ThreeWayConfirmations.Should().BeEmpty();
+        counting.Opens.Should().Be(opens);
+    }
+
+    [Fact]
+    public void Kapanista_sayim_okunamazsa_sorulmadan_kapanir_uyari_gunluge()
+    {
+        // Yerel veritabanı hatası kapanışı engellemez: gönderim de aynı veritabanını okuyacaktı;
+        // kayıtlar yerelde kalır, sonraki açılışta gider.
+        using var outboxDb = MigratedDb();
+        var failing = new FailingFactory(outboxDb) { Failing = false };
+        var log = new WarningCounter();
+        var tracker = new SyncStatusTracker();
+        using var h = MainShellTestHarness.Build(syncStatus: tracker, pendingCounter: EmptyCounter(failing), log: log);
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, h.LicenseKey!);
+        var warnings = log.Warnings;
+        failing.Failing = true;
+
+        h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(CloseSyncChoice.Close);
+
+        h.Dialogs.ThreeWayConfirmations.Should().BeEmpty();
+        log.Warnings.Should().Be(warnings + 1);
+    }
+
+    [Fact]
+    public void Kapanista_senkron_bagli_degilse_sorulmaz()
+    {
+        using var h = MainShellTestHarness.Build();
+
+        h.Vm.ConfirmCloseWithUnsentRecords().Should().Be(CloseSyncChoice.Close);
+
+        h.Dialogs.ThreeWayConfirmations.Should().BeEmpty();
     }
 }
