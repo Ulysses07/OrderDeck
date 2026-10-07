@@ -172,11 +172,13 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         Giveaways.Clear();
         foreach (var g in _giveaways.GetParticipationsByCustomer(customerId)) Giveaways.Add(g);
 
-        // Yerel taşıma iki açık kargo dosyası bırakabilir; yeni etiketler en yenisine gider
-        // (ShipmentRepository.GetOpenByCustomer) — fazlası elle kapatılmalı.
+        // Yerel taşıma iki açık kargo dosyası bırakabilir. Yeni etiketler en yenisine gider,
+        // eşik ve kargo kararı hepsini tek havuz sayar; fazla dosya bir sonraki kararda kapanır
+        // (ShipmentService) — operatörün yapacağı bir şey yok, yalnız bilgilendirilir.
         var open = _shipments?.CountOpenByCustomer(c.Id) ?? 0;
         OpenShipmentWarning = open > 1
-            ? $"{open} açık kargo dosyası var — yeni etiketler en yenisine eklenir; fazlasını kargo listesinden kapatın."
+            ? $"Bu kişinin {open} açık kargo dosyası var (bilgisayarlar arası birleştirme sonrası). "
+              + $"Bir sonraki kargo kararı {(open == 2 ? "ikisine" : "hepsine")} birden uygulanır."
             : null;
 
         // Bakiye fire-and-forget — UI hemen açılır, balance gelince güncellenir.

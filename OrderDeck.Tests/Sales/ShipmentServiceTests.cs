@@ -383,4 +383,89 @@ public class ShipmentServiceTests
         s4.Status.Should().Be(ShipmentStatus.Pending);
         s4.CumulativeAmount.Should().Be(0m);
     }
+
+    // ── U12: yerel taşımadan kalan açık dosyalar tek karar havuzu ───────
+
+    /// <summary>Kopya ve asıl kayıt ayrı açık dosyalarla; push yanıtındaki taşıma ikisini aynı
+    /// kişide bırakır (taşıma kargoları birleştirmez). Eski dosya daha önce açılmış.</summary>
+    private static void TwoOpenAfterRekey(InMemorySqlite db, ShipmentRepository repo,
+        decimal staleAmount, decimal newestAmount)
+    {
+        new CustomerRepository(db).Insert(new Customer("c-kopya", "instagram", "@A", null, null, 100, 100,
+            false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
+        repo.Insert(new Shipment("kargo-eski", "c-kopya", ShipmentStatus.Pending, 50, null, null, staleAmount));
+        repo.Insert(new Shipment("kargo-yeni", Cid, ShipmentStatus.Held, 60, 70, null, newestAmount));
+        new CustomerSyncRepository(db).RekeyToLocal("c-kopya", Cid, pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+        repo.CountOpenByCustomer(Cid).Should().Be(2);
+    }
+
+    [Fact]
+    public void Iki_acik_dosyada_esik_toplamdan_hesaplanir_ve_karar_ikisini_kapatir()
+    {
+        var (db, svc, repo, _, _, now) = Fx(threshold: 5000m);
+        using var _d = db;
+        TwoOpenAfterRekey(db, repo, staleAmount: 3000m, newestAmount: 2500m);
+
+        var ctx = svc.EvaluateAfterPayment(Cid, allLabelsPaid: true);
+
+        ctx.ShouldPrompt.Should().BeTrue();
+        ctx.ThresholdReached.Should().BeTrue("eşik kişinin bütün açık dosyalarından (3000 + 2500)");
+        ctx.AmountToThreshold.Should().Be(0m);
+        ctx.Shipment!.Id.Should().Be("kargo-yeni", "karar en yeni dosya üstünden verilir");
+        ctx.Shipment.CumulativeAmount.Should().Be(5500m, "çekmece havuzun toplamını gösterir");
+
+        var shipped = svc.ApplyDecision(ctx.Shipment.Id, ShipmentDecision.ShipNow);
+
+        shipped.CumulativeAmount.Should().Be(5500m, "'kazandın' mesajı havuzun toplamını söyler");
+        repo.GetById("kargo-yeni")!.Status.Should().Be(ShipmentStatus.Shipped);
+        var stale = repo.GetById("kargo-eski")!;
+        stale.Status.Should().Be(ShipmentStatus.Shipped, "fazla dosya bir sonraki kararda kapanır — durum kendiliğinden düzelir");
+        stale.ShippedAt.Should().Be(now);
+        stale.CumulativeAmount.Should().Be(3000m, "dosyaların kendi tutarı değişmez");
+        repo.GetById("kargo-yeni")!.CumulativeAmount.Should().Be(2500m);
+        repo.CountOpenByCustomer(Cid).Should().Be(0);
+    }
+
+    [Fact]
+    public void Karardan_sonra_eski_dosya_yeni_etiket_almaz()
+    {
+        var (db, svc, repo, labels, _, _) = Fx();
+        using var _d = db;
+        TwoOpenAfterRekey(db, repo, staleAmount: 3000m, newestAmount: 2500m);
+        svc.ApplyDecision("kargo-yeni", ShipmentDecision.ShipNow);
+
+        labels.Insert(MakeLabel("l-sonra", 100m));
+        var open = svc.GetOrCreateOpenShipment(Cid);
+        svc.AttachLabels(open.Id, new[] { "l-sonra" });
+
+        open.Id.Should().NotBe("kargo-eski", "eski toplamıyla yeni etiket alsaydı eşik kararı yanlış olurdu");
+        open.Id.Should().NotBe("kargo-yeni");
+        repo.GetLabelIds("kargo-eski").Should().BeEmpty();
+        repo.GetById("kargo-eski")!.CumulativeAmount.Should().Be(3000m);
+    }
+
+    [Fact]
+    public void Beklet_karari_ikisine_uygulanir_sonraki_etiket_en_yeniye_esik_havuzdan()
+    {
+        var (db, svc, repo, labels, _, now) = Fx(threshold: 5000m);
+        using var _d = db;
+        TwoOpenAfterRekey(db, repo, staleAmount: 1000m, newestAmount: 1500m);
+
+        svc.ApplyDecision("kargo-yeni", ShipmentDecision.Hold);
+
+        var stale = repo.GetById("kargo-eski")!;
+        stale.Status.Should().Be(ShipmentStatus.Held);
+        stale.HeldAt.Should().Be(now);
+        repo.GetById("kargo-yeni")!.HeldAt.Should().Be(70, "ilk bekletme anı korunur");
+
+        labels.Insert(MakeLabel("l-sonra", 3000m));
+        var open = svc.GetOrCreateOpenShipment(Cid);
+        open.Id.Should().Be("kargo-yeni");
+        svc.AttachLabels(open.Id, new[] { "l-sonra" });
+
+        var ctx = svc.EvaluateAfterPayment(Cid, allLabelsPaid: true);
+        ctx.ThresholdReached.Should().BeTrue("1000 + 1500 + 3000");
+        ctx.Shipment!.CumulativeAmount.Should().Be(5500m);
+    }
 }

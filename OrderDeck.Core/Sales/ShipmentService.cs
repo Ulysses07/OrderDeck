@@ -43,7 +43,9 @@ public sealed class ShipmentService
     /// Pending Shipment oluşturup persist eder. Müşteri başına en fazla 1
     /// açık Shipment invariant'ı bu method tarafından korunur — yerel taşıma
     /// (U12) iki dosyayı aynı kişide bırakabilir; o zaman en yenisi seçilir
-    /// (<see cref="ShipmentRepository.GetOpenByCustomer"/>).
+    /// (<see cref="ShipmentRepository.GetOpenByCustomer"/>), eşik ve karar ise
+    /// hepsini tek havuz sayar (<see cref="EvaluateAfterPayment"/>,
+    /// <see cref="ApplyDecision"/>).
     /// </summary>
     public Shipment GetOrCreateOpenShipment(string customerId)
     {
@@ -109,15 +111,22 @@ public sealed class ShipmentService
     /// edilmiş olmalı (caller AttachLabels çağırdı). Threshold check
     /// yapılır → ThresholdReached field'ı UI hangi modal varyantını
     /// göstermeli belirler.
+    ///
+    /// <para>U12: yerel taşıma kişide birden çok açık dosya bırakabilir. Eşik kişinin
+    /// BÜTÜN açık dosyalarının toplamından hesaplanır; dönen <c>Shipment</c> kararın
+    /// verileceği en yeni dosyadır ve <c>CumulativeAmount</c>'u o durumda havuzun
+    /// toplamıdır (yalnız gösterim/karar için — kalıcı değil; çekmece bu tutarı gösterir).
+    /// Tek dosyada davranış değişmez.</para>
     /// </summary>
     public ShipmentDecisionContext EvaluateAfterPayment(string customerId, bool allLabelsPaid)
     {
         if (!allLabelsPaid)
             return ShipmentDecisionContext.Silent(customerId);
 
-        var shipment = _shipments.GetOpenByCustomer(customerId);
-        if (shipment is null)
+        var open = _shipments.GetAllOpenByCustomer(customerId);
+        if (open.Count == 0)
             return ShipmentDecisionContext.Silent(customerId);
+        var shipment = Pooled(open[0], open.Skip(1));
 
         var shipping = _settings().Shipping;
         if (!shipping.IsEnabled)
@@ -144,6 +153,15 @@ public sealed class ShipmentService
     /// Vendor'un modal'da verdiği kararı Shipment state machine'ine uygular.
     /// Geçişler spec'te tanımlı; geçersiz transition InvalidOperationException
     /// fırlatır.
+    ///
+    /// <para>U12: karar kişinin yerel taşımadan kalan öbür açık dosyalarına da aynen
+    /// uygulanır (tek havuz — <see cref="EvaluateAfterPayment"/>): fazla dosya gönder /
+    /// alıcı öder kararında kapanır ve durum kendiliğinden düzelir; bekletmede hepsi
+    /// bekler, sonraki etiketler en yeni dosyaya gider, eşik yine toplamdan. Aksi hâlde en
+    /// yeni dosya kapandıktan sonra eski dosya eski toplamıyla sonraki etiketleri alır ve
+    /// eşik kararı (ve "kazandın" mesajı) yanlış olurdu. Dönen dosyanın
+    /// <c>CumulativeAmount</c>'u birden çok dosyada havuzun toplamıdır (kalıcı değil).
+    /// Tek dosyada davranış değişmez.</para>
     /// </summary>
     public Shipment ApplyDecision(string shipmentId, ShipmentDecision decision)
     {
@@ -155,6 +173,29 @@ public sealed class ShipmentService
                 $"Shipment {shipmentId} is already Shipped (terminal).");
 
         var now = _nowUnix();
+        var updated = Decide(shipment, decision, now);
+        _shipments.Update(updated);
+
+        var others = _shipments.GetAllOpenByCustomer(shipment.CustomerId)
+            .Where(s => !string.Equals(s.Id, shipment.Id, StringComparison.Ordinal))
+            .ToList();
+        foreach (var other in others)
+            _shipments.Update(Decide(other, decision, now));
+
+        return Pooled(updated, others);
+    }
+
+    /// <summary>Tek dosyada dosyanın kendisi; havuzda tutarı toplam olan kopyası.</summary>
+    private static Shipment Pooled(Shipment main, IEnumerable<Shipment> others)
+    {
+        var extra = others.ToList();
+        return extra.Count == 0
+            ? main
+            : main with { CumulativeAmount = main.CumulativeAmount + extra.Sum(s => s.CumulativeAmount) };
+    }
+
+    private static Shipment Decide(Shipment shipment, ShipmentDecision decision, long now)
+    {
         Shipment updated = decision switch
         {
             ShipmentDecision.ShipNow => shipment with
@@ -174,8 +215,6 @@ public sealed class ShipmentService
             },
             _ => throw new ArgumentOutOfRangeException(nameof(decision), decision, null)
         };
-
-        _shipments.Update(updated);
         return updated;
     }
 }

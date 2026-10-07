@@ -201,7 +201,7 @@ public sealed class CustomerIdResolutionTests : IDisposable
         var id = Local("ayse");
         var shipments = new ShipmentRepository(_db);
         var a = new Shipment("a" + Guid.NewGuid().ToString("N"), id, ShipmentStatus.Pending, 100, null, null, 0m);
-        var b = new Shipment("b" + Guid.NewGuid().ToString("N"), id, ShipmentStatus.Held, 100, 150, null, 0m);
+        var b = new Shipment("b" + Guid.NewGuid().ToString("N"), id, ShipmentStatus.Pending, 100, null, null, 0m);
         shipments.Insert(a);
         shipments.Insert(b);
 

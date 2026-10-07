@@ -400,7 +400,9 @@ public class CustomerDetailViewModelTests
             .Should().Be(RekeyResult.Rekeyed);
 
         h.Vm.Load("c1").Should().BeTrue();
-        h.Vm.OpenShipmentWarning.Should().StartWith("2 açık kargo dosyası");
+        h.Vm.OpenShipmentWarning.Should().Be(
+            "Bu kişinin 2 açık kargo dosyası var (bilgisayarlar arası birleştirme sonrası). "
+            + "Bir sonraki kargo kararı ikisine birden uygulanır.");
     }
 
     // ─── CanCancelSelected / CanUncancelSelected ─────────────────────────────

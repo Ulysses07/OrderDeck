@@ -58,8 +58,10 @@ public sealed class ShipmentRepository
     ///
     /// <para>U12: müşteri Id'si yönlendirmeden çözülür. Yerel taşıma kargoları birleştirmez
     /// (bilinçli kabul): kişi iki açık dosyayla kalabilir — en yenisi seçilir, eşitlikte Id
-    /// (her bilgisayar aynı dosyayı seçer). Kaç tane olduğu <see cref="CountOpenByCustomer"/>;
-    /// müşteri penceresi fazlasını uyarır.</para>
+    /// (her bilgisayar aynı dosyayı seçer) ve yeni etiketler ona bağlanır. Eşik ve kargo kararı
+    /// kişinin bütün açık dosyalarını tek havuz sayar (<see cref="GetAllOpenByCustomer"/>,
+    /// <c>ShipmentService</c>); fazla dosya bir sonraki kararda kapanır. Müşteri penceresi
+    /// bunu <see cref="CountOpenByCustomer"/> ile bildirir.</para>
     /// </summary>
     public Shipment? GetOpenByCustomer(string customerId)
     {
@@ -72,6 +74,20 @@ public sealed class ShipmentRepository
               LIMIT 1",
             new { customerId });
         return row is null ? null : Map(row);
+    }
+
+    /// <summary>Müşterinin BÜTÜN açık (Pending/Held) kargo dosyaları, en yenisi başta
+    /// (<see cref="GetOpenByCustomer"/> ile aynı sıra); Id yönlendirmeden çözülür (U12).
+    /// <c>ShipmentService</c> kararları bunları tek havuz sayar.</summary>
+    public IReadOnlyList<Shipment> GetAllOpenByCustomer(string customerId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<Row>(
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+              FROM Shipment
+              WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
+              ORDER BY CreatedAt DESC, Id DESC",
+            new { customerId }).Select(Map).ToList();
     }
 
     /// <summary>Müşterinin açık (Pending/Held) kargo dosyası sayısı; Id yönlendirmeden çözülür
