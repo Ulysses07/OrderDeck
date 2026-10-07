@@ -1074,7 +1074,7 @@ public sealed class CustomerRepository
     /// <summary>
     /// KVKK silme talebi: yayıncının kendi bilgisayarındaki kişisel alanları
     /// kalıcı olarak boşaltır. Sunucudaki <c>ShopperPurgeService</c>'in üçüncü
-    /// katmanı — tetikleyici <c>ShopperRegistrationIngestService</c>'e gelen
+    /// katmanı — tetikleyici <c>CustomerChangesPullService</c>'in akışından gelen
     /// <c>PurgedAt</c> işareti.
     ///
     /// <para><b>Satır silinmiyor, boşaltılıyor.</b> Sunucudaki desenin aynısı:

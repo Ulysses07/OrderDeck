@@ -18,7 +18,7 @@ namespace OrderDeck.Tests.Services.Sync;
 public class StockSyncServiceTests
 {
     // FakeLicenseProvider / RecordingLogger kalıpları
-    // CatalogSyncServiceTests ve ShopperRegistrationIngestServiceTests içinde
+    // CatalogSyncServiceTests ve CustomerChangesPullServiceTests içinde
     // private nested class olarak tanımlı; burada da aynı şekilde tanımlıyoruz.
 
     private sealed class FakeLicenseProvider : ICurrentLicenseProvider

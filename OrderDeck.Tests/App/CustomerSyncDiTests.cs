@@ -1,6 +1,7 @@
 using System.Reflection;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage.Repositories;
@@ -32,5 +33,31 @@ public sealed class CustomerSyncDiTests
             "U13: senkron deposu ödeme akışıyla AYNI kümeyi görmeli");
         PrivateField<CustomerSyncRepository>(host.Services.GetRequiredService<WpfCustomerProjectionSyncService>(), "_sync")
             .Should().BeSameAs(sync);
+    }
+
+    [Fact]
+    public void Degisiklik_akisi_servisi_cozulur_arka_plan_isi_kayitli_eski_ingest_yok()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var pull = host.Services.GetRequiredService<CustomerChangesPullService>();
+        var tracker = host.Services.GetRequiredService<SyncStatusTracker>();
+
+        host.Services.GetRequiredService<CustomerChangesPullService>().Should().BeSameAs(pull);
+        host.Services.GetRequiredService<SyncStatusTracker>().Should().BeSameAs(tracker);
+        PrivateField<SyncStatusTracker>(pull, "_tracker").Should().BeSameAs(tracker,
+            "durum satırı (D2) ve form oynatması (C10) akışın yazdığı AYNI izleyiciyi okumalı");
+        PrivateField<WpfCustomerProjectionSyncService>(pull, "_push").Should().BeSameAs(
+            host.Services.GetRequiredService<WpfCustomerProjectionSyncService>(),
+            "gönderimin tek tur kilidi yalnız tek örnekte geçerli");
+        PrivateField<CustomerSyncRepository>(pull, "_sync").Should().BeSameAs(
+            host.Services.GetRequiredService<CustomerSyncRepository>());
+
+        // App.xaml.cs'e elle başlatma gerekmiyor: WpfStartupEnvironment kayıtlı bütün
+        // IHostedService'leri başlatır (CLAUDE.md, PR #89).
+        var hosted = host.Services.GetServices<IHostedService>().ToList();
+        hosted.Should().ContainSingle(h => h is CustomerChangesPullHostedService);
+        PrivateField<CustomerChangesPullService>(hosted.OfType<CustomerChangesPullHostedService>().Single(), "_service")
+            .Should().BeSameAs(pull);
+        hosted.Should().NotContain(h => h.GetType().Name == "ShopperRegistrationIngestHostedService");
     }
 }

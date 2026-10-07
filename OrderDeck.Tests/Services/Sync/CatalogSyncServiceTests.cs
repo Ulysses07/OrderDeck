@@ -25,7 +25,7 @@ namespace OrderDeck.Tests.Services.Sync;
 
 /// <summary>
 /// Katalog senkronunun sözleşmesi. Koşum takımı
-/// <c>ShopperRegistrationIngestServiceTests</c>'ten alındı (sahte handler,
+/// eski <c>since</c> ingest'inin testlerinden (bugün <c>CustomerChangesPullServiceTests</c>) alındı (sahte handler,
 /// <c>ICurrentLicenseProvider</c> sahtesi, lisans listesi JSON'u); yalnız
 /// yönlendirmeye katalog dalları ve fotoğraf indirmesi için ayrı bir
 /// <see cref="IHttpClientFactory"/> eklendi.
@@ -417,7 +417,7 @@ public sealed class CatalogSyncServiceTests
         stored.Should().NotBeNull();
 
         // Kimlikler repo genelinde tiresiz "N" biçiminde (bkz.
-        // ShopperRegistrationIngestService); tireli bir Id başka yerde üretilen
+        // CustomerChangesPullService); tireli bir Id başka yerde üretilen
         // kimliklerle SESSİZCE eşleşmez.
         stored!.Id.Should().Be("11111111222233334444555555555555");
         stored.CategoryId.Should().Be("66666666777788889999aaaaaaaaaaaa");

@@ -536,11 +536,13 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
         services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
 
-        // Shopper registration ingest (Faz 0c-3): server'da shopper register/join
-        // sırasında otomatik oluşturulan WpfCustomerProjection kayıtlarını WPF lokal
-        // Customer tablosuna ingest eder. 30 sn cadence, imleç SyncCursor tablosunda (R6-04).
-        services.AddSingleton<Services.Sync.ShopperRegistrationIngestService>();
-        services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
+        // Çoklu bilgisayar müşteri akışı (Bölüm C): diğer bilgisayarların ve Shopper
+        // uygulamasının müşteri değişiklikleri, kopya yönlendirmeleri, KVKK silmeleri.
+        // Eski ShopperRegistrationIngest'in yerine. 30 sn; açılışta hemen bir tur (Faz 0).
+        // İzleyici TEK örnek: durum satırı (D2) ve form oynatması (C10) akışın yazdığını okur.
+        services.AddSingleton<Services.Sync.SyncStatusTracker>();
+        services.AddSingleton<Services.Sync.CustomerChangesPullService>();
+        services.AddHostedService<Services.Sync.CustomerChangesPullHostedService>();
 
         // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
         // görüntüsü yerel SQLite'a yazılır. Ritim İKİ kademeli — ilk GERÇEKTEN

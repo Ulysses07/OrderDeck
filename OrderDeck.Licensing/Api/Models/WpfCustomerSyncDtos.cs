@@ -82,20 +82,3 @@ public sealed record WpfCustomerChangeItem(
 /// veritabanı yedekten dönmüş ya da kopyalanmış olabilir) ve sayfayı BAŞTAN verdi.</param>
 public sealed record WpfCustomerChangesPage(
     IReadOnlyList<WpfCustomerChangeItem> Items, long NextAfterSeq, bool CursorReset = false);
-
-/// <summary>Single item returned by the server-side /wpf-customers/since pull
-/// endpoint (Faz 0c-3). Auto-created on shopper register/join.</summary>
-/// <param name="PurgedAt">
-/// Doluysa bu kişi KVKK kapsamında silinmiştir ve sunucudaki kişisel alanları
-/// zaten boştur. WPF için tek silme sinyali bu: <c>ShopperRegistrationIngestService</c>
-/// yerel satırı temizler, yeni satır AÇMAZ.
-/// </param>
-public sealed record WpfCustomerPullItem(
-    Guid Id,
-    string Platform,
-    string Username,
-    string? FullName,
-    string? Phone,
-    string? Address,
-    DateTimeOffset UpdatedAt,
-    DateTimeOffset? PurgedAt = null);

@@ -328,7 +328,7 @@ public sealed class CatalogSyncService
         c.Name, c.Path, c.SortOrder, c.IsActive);
 
     // ─── Lisans kimliği çözümlemesi ───────────────────────────────────────────
-    // ShopperRegistrationIngestService ile birebir aynı kalıp — bilerek. İki
+    // CustomerChangesPullService ile birebir aynı kalıp — bilerek. İki
     // servis ayrışırsa lisans çözümleme davranışı iki farklı yerde yaşamaya başlar.
 
     private async Task<Guid?> ResolveLicenseIdAsync(string licenseKey, CancellationToken ct)

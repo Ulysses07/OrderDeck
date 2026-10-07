@@ -78,7 +78,7 @@ public sealed class PaymentRequestService
         _log = log;
     }
 
-    // License key → Guid LicenseId resolution. Aynı pattern ShopperRegistrationIngest /
+    // License key → Guid LicenseId resolution. Aynı pattern CustomerChangesPullService /
     // WpfCustomerProjectionSync'te de var. Caching: LicenseKey değişene kadar tutar.
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;

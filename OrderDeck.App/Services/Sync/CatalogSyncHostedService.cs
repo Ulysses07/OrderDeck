@@ -19,7 +19,7 @@ namespace OrderDeck.App.Services.Sync;
 /// katalogla otururdu — sınıfın "açılışta replika dolar" sözü kâğıt üstünde
 /// kalırdı. Bu yüzden ilk GERÇEKTEN başarılı tura kadar 30 saniyede bir
 /// denenir, sonra 5 dakikaya oturulur. (Kardeş servis
-/// <c>ShopperRegistrationIngestHostedService</c> aynı sorunu sabit 30 saniyeyle
+/// <c>CustomerChangesPullHostedService</c> aynı sorunu sabit 30 saniyeyle
 /// çözüyor; burada yük daha ağır olduğu için sabitlemek yerine oturuyoruz.)
 ///
 /// "Başarılı" = replikaya en az bir ürün yazılmış tur. Kataloğu gerçekten boş

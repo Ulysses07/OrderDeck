@@ -257,21 +257,6 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             "Müşteri senkron yanıtı bozuk geldi (gövde null). Bu 'yönlendirme yok' demek değildir.");
     }
 
-    // ─── WPF customers pull (Faz 0c-3) ────────────────────────────────────
-
-    /// <summary>Pulls server-created WpfCustomerProjection rows (auto-created on
-    /// shopper register/join). İmleç bileşik — (<paramref name="since"/>,
-    /// <paramref name="sinceId"/>); gerekçe <see cref="GetPaymentsSinceAsync"/>'de.
-    /// WPF sayfanın son satırından imleci ilerletir.</summary>
-    public async Task<List<WpfCustomerPullItem>> GetWpfCustomersSinceAsync(
-        Guid licenseId, DateTimeOffset since, Guid sinceId,
-        int take = 100, CancellationToken ct = default)
-    {
-        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&sinceId={sinceId:D}&take={take}";
-        return await GetExpectingJsonAsync<List<WpfCustomerPullItem>>(
-            $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
-    }
-
     // ─── WPF müşteri değişiklik akışı (çoklu bilgisayar, Bölüm C) ──────────
 
     /// <summary>
@@ -309,7 +294,7 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
 
     // Bu iki metot, dosyadaki diğer liste uçlarından (örn.
-    // GetWpfCustomersSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
+    // GetPaymentsSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
     // liste dönmek zararsız, burada boş liste DÖNGÜ SONLANDIRICISI. Bozuk bir
     // gövde (200 + literal `null`) sessizce boş listeye çevrilirse çekme döngüsü
     // "katalog boş" sanır ve işlemsel DELETE+INSERT replikayı komple siler —
