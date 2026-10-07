@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -28,7 +29,8 @@ namespace OrderDeck.App.Services.Sync;
 /// tükenene kadar parti parti sürer.</para>
 ///
 /// <para><b>Elenen satırlar</b> gönderilmez ama imleç üstlerinden geçer: yerelde silinmiş
-/// (<c>PurgedAt</c>), GUID olmayan Id, sunucunun reddedeceği Platform/Username.</para>
+/// (<c>PurgedAt</c>), GUID olmayan Id, sunucunun reddedeceği Platform/Username, öğesi
+/// kurulamayan bozuk satır (ör. aralık dışı damga).</para>
 ///
 /// <para><b>Yönlendirmeler:</b> sunucu gönderilen bir Id'yi bir asıl kaydın kopyası olarak
 /// bağladıysa yanıt bunu söyler; yerel satır asıl kayda taşınır
@@ -201,7 +203,21 @@ public sealed class WpfCustomerProjectionSyncService
                         c.Id, c.Platform?.Length ?? 0, c.Username?.Length ?? 0);
                     continue;
                 }
-                items.Add(ToItem(customerGuid, c));
+                // Bozuk satır (ör. aralık dışı damga — DateTimeOffset dönüşümü fırlatır) yalnız
+                // kendisi elenir. Yoksa aynı istisna her turda bütün turu düşürür, imleç hiç
+                // ilerlemez ve arkasındaki herkes rehin kalırdı (yukarıdaki 2026-08-14 olayıyla
+                // aynı sınıf). Günlüğe yalnız Id.
+                WpfCustomerSyncItem item;
+                try
+                {
+                    item = ToItem(customerGuid, c);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _log.LogWarning(ex, "Skipping customer Id={Id}: gönderim öğesi kurulamadı (bozuk değer)", c.Id);
+                    continue;
+                }
+                items.Add(item);
             }
 
             // If all items in the batch were skipped (purged / invalid rows), advance
@@ -229,9 +245,12 @@ public sealed class WpfCustomerProjectionSyncService
             // İmleçten ÖNCE: taşıma asıl kaydın SyncSeq'ini ilerletir (U2) → aynı turun
             // sonraki partisinde ya da sonraki turda asıl kaydın Id'siyle gider. Eşik,
             // gönderilen partinin en büyük SyncSeq'i (C4 incelemesi M-7) — imleç değil.
-            var (r, w) = ApplyRedirects(resp.Redirects, pushedThroughSeq: batch[^1].SyncSeq);
+            var (r, w, lockContention) = ApplyRedirects(resp.Redirects, pushedThroughSeq: batch[^1].SyncSeq);
             rekeyed += r;
             waiting += w;
+            // Kilit çekişmesi geçicidir: tur biter, imleç İLERLEMEZ — parti sonraki turda yeniden
+            // gider (sunucuda idempotent), sunucu yönlendirmeleri yeniden söyler (S7).
+            if (lockContention) return totalSynced;
 
             AdvanceWatermark(licenseKey, batch, ref watermark);
             if (batch.Count < BatchSize) break; // last page — no more rows
@@ -304,17 +323,24 @@ public sealed class WpfCustomerProjectionSyncService
     /// <summary>
     /// Sunucu bu Id'yi bir asıl kaydın KOPYASI olarak bağladı (S6/S7). Asıl kayıt yerelde
     /// varsa yerel satır ona taşınır; yoksa (TargetMissing) yapılacak şey yok — akış asıl
-    /// kaydı indirdiğinde bu satır kimlik sahibi olarak bulunup taşınır (U4). Başarısız taşıma
-    /// kalıcı değildir: sunucu yönlendirmeyi saklıyor, akıştaki kopya satırı ya da satırın
-    /// bir sonraki gönderimi aynı taşımayı yeniden dener. Ödeme akışındaki müşteri taşınmaz (U13):
-    /// depo kaynağı kararla aynı işlemde yeniden gönderime koyar, sonraki turun yanıtı
-    /// yönlendirmeyi yeniden getirir. Günlüğe yalnız Id'ler.
+    /// kaydı indirdiğinde bu satır kimlik sahibi olarak bulunup taşınır (U4). Ödeme akışındaki
+    /// müşteri taşınmaz (U13): depo kaynağı kararla aynı işlemde yeniden gönderime koyar, sonraki
+    /// turun yanıtı yönlendirmeyi yeniden getirir.
+    /// <para><b>Taşıma fırlatırsa</b> iki ayrı yol: kilit çekişmesi (SQLITE_BUSY/LOCKED — başka bir
+    /// yazım yazma kilidini bütçeden uzun tuttu) geçicidir: kalan yönlendirmeler denenmez,
+    /// <c>LockContention</c> döner ve çağıran turu imleci İLERLETMEDEN bitirir — parti sonraki
+    /// turda yeniden gider (sunucuda idempotent), sunucu yönlendirmeleri yeniden söyler (S7).
+    /// Başka her hata kalıcı olabilir (zehirli yönlendirme) ve kuyruğu kilitlememeli: günlüğe
+    /// yazılır, sıradaki yönlendirmeye geçilir, imleç ilerler. O taşımayı akıştaki kopya satırı
+    /// (C7) ya da satırın sonraki bir değişiklikle giden gönderimi yeniden dener. Günlüğe yalnız
+    /// Id'ler.</para>
     /// </summary>
     /// <param name="pushedThroughSeq">Gönderilen partinin en büyük SyncSeq'i (C4 incelemesi M-7): kopya
     /// partiden sonra değiştiyse depo yeniden anahtarlamaz (Deferred) — sonraki gönderim onu götürür.</param>
-    private (int Rekeyed, int Waiting) ApplyRedirects(IReadOnlyList<WpfCustomerRedirect>? redirects, long pushedThroughSeq)
+    private (int Rekeyed, int Waiting, bool LockContention) ApplyRedirects(
+        IReadOnlyList<WpfCustomerRedirect>? redirects, long pushedThroughSeq)
     {
-        if (redirects is null || redirects.Count == 0) return (0, 0);
+        if (redirects is null || redirects.Count == 0) return (0, 0, false);
         var now = _clock.UnixNow();
         int rekeyed = 0, waiting = 0;
         foreach (var r in redirects)
@@ -330,14 +356,26 @@ public sealed class WpfCustomerProjectionSyncService
                     case RekeyResult.SourceMissing: break;             // yerelde yok (zaten taşınmış) — yapılacak şey yok
                 }
             }
+            catch (Exception ex) when (IsLockContention(ex))
+            {
+                _log.LogWarning(ex,
+                    "Müşteri {From} → {To} yerel taşıma kilit çekişmesine takıldı; tur bitti, parti sonraki turda yeniden gönderilecek",
+                    r.Id, r.CanonicalId);
+                return (rekeyed, waiting, true);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _log.LogWarning(ex, "Müşteri {From} → {To} yerel taşıma başarısız; yeniden denenecek",
+                _log.LogWarning(ex, "Müşteri {From} → {To} yerel taşıma başarısız; atlandı, akış ya da sonraki gönderim yeniden dener",
                     r.Id, r.CanonicalId);
             }
         }
-        return (rekeyed, waiting);
+        return (rekeyed, waiting, false);
     }
+
+    /// <summary>Kilit çekişmesi (başka bir yazım yazma kilidini bütçeden uzun tuttu) geçicidir —
+    /// akış servisinin (C7) sınıflandırmasıyla aynı: SQLITE_BUSY (5), SQLITE_LOCKED (6).</summary>
+    private static bool IsLockContention(Exception ex)
+        => ex is SqliteException { SqliteErrorCode: 5 or 6 };
 
     /// <summary>İmleci partinin SON satırına taşır ve kalıcılaştırır. Depo
     /// SyncSeq ASC sıralı döndürdüğü için son satır = partinin en büyük imleci.

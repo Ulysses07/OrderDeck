@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
@@ -86,20 +87,24 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     private static Fixture Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
         bool seedLicense = true,
-        CustomerBusySet? busy = null)
-        => Build(req => Task.FromResult(responder(req)), seedLicense, busy);
+        CustomerBusySet? busy = null,
+        Func<IDbConnectionFactory, IDbConnectionFactory>? syncFactory = null)
+        => Build(req => Task.FromResult(responder(req)), seedLicense, busy, syncFactory);
 
     /// <param name="busy">Ödeme akışındaki müşteriler (U13); null = hiçbir müşteri meşgul değil.</param>
+    /// <param name="syncFactory">Yalnız senkron deposunun bağlantı fabrikasını sarar (hata enjeksiyonu);
+    /// imleç ve müşteri depoları gerçek veritabanını kullanır.</param>
     private static Fixture Build(
         Func<HttpRequestMessage, Task<HttpResponseMessage>> responder,
         bool seedLicense = true,
-        CustomerBusySet? busy = null)
+        CustomerBusySet? busy = null,
+        Func<IDbConnectionFactory, IDbConnectionFactory>? syncFactory = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var customers = new CustomerRepository(db);
         var cursors   = new SyncCursorRepository(db);
-        var sync      = new CustomerSyncRepository(db, busy);
+        var sync      = new CustomerSyncRepository(syncFactory?.Invoke(db) ?? db, busy);
 
         var handler = new FakeHttpMessageHandler(responder);
         var http    = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
@@ -144,6 +149,36 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     /// <summary>Sunucu yanıtı: <paramref name="copy"/> → <paramref name="canonical"/> yönlendirmesi (S6/S7).</summary>
     private static string RedirectRespJson(Guid copy, Guid canonical, int synced = 1) =>
         $$"""{"synced":{{synced}},"retroactiveMatches":0,"redirects":[{"id":"{{copy}}","canonicalId":"{{canonical}}"}]}""";
+
+    /// <summary>Birden çok yönlendirmeli sunucu yanıtı (verilen sırayla uygulanır).</summary>
+    private static string RedirectsRespJson(params (Guid Copy, Guid Canonical)[] redirects)
+    {
+        var list = string.Join(",", redirects.Select(r => $$"""{"id":"{{r.Copy}}","canonicalId":"{{r.Canonical}}"}"""));
+        return $$"""{"synced":{{redirects.Length}},"retroactiveMatches":0,"redirects":[{{list}}]}""";
+    }
+
+    /// <summary>Gönderilen partinin öğeleri, ağdaki gövdeden (sunucunun okuyacağı biçim).</summary>
+    private static List<WpfCustomerSyncItem> PostedItems(HttpRequestMessage req)
+        => JsonSerializer.Deserialize<WpfCustomerSyncRequest>(
+                req.Content!.ReadAsStringAsync().GetAwaiter().GetResult(),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web))!
+            .Customers.ToList();
+
+    /// <summary>Kurulan hata, fabrikanın SONRAKİ ilk <c>Open</c>'ında bir kez fırlatılır — senkron
+    /// deposunun o anki işlemi (ör. yönlendirmenin taşıması) bağlantı alamadan düşer.</summary>
+    private sealed class FaultyFactory(IDbConnectionFactory inner) : IDbConnectionFactory
+    {
+        private Exception? _next;
+
+        public void FailNextOpen(Exception ex) => _next = ex;
+
+        public System.Data.IDbConnection Open()
+        {
+            var ex = Interlocked.Exchange(ref _next, null);
+            if (ex is not null) throw ex;
+            return inner.Open();
+        }
+    }
 
     private static HttpResponseMessage DefaultResponder(HttpRequestMessage req)
     {
@@ -526,6 +561,48 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     }
 
     /// <summary>
+    /// C6 incelemesi: dört bayrak birimi (alıcı ödemeli, WhatsApp izni, SMS izni, kara liste) tam
+    /// dolu satır testinde hepsi true gittiği için ikisinin yer değiştirmesi yakalanmıyordu. Her
+    /// koşuda yalnız biri true: öğede de yalnız o true, kalanı false olmalı.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(WpfCustomerSyncItem.RecipientPaysActive))]
+    [InlineData(nameof(WpfCustomerSyncItem.WhatsAppConsent))]
+    [InlineData(nameof(WpfCustomerSyncItem.SmsConsent))]
+    [InlineData(nameof(WpfCustomerSyncItem.IsBlacklisted))]
+    public async Task SyncOnce_bayrak_birimleri_birbirinden_ayri_eslenir(string onlyTrue)
+    {
+        WpfCustomerSyncItem? item = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                item = PostedItems(req).Single();
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 1));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+        fx.Customers.Insert(MakeCustomer(1000) with
+        {
+            RecipientPaysActive = onlyTrue == nameof(WpfCustomerSyncItem.RecipientPaysActive),
+            WhatsAppConsent     = onlyTrue == nameof(WpfCustomerSyncItem.WhatsAppConsent),
+            SmsConsent          = onlyTrue == nameof(WpfCustomerSyncItem.SmsConsent),
+            IsBlacklisted       = onlyTrue == nameof(WpfCustomerSyncItem.IsBlacklisted),
+        });
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        item.Should().NotBeNull("parti gönderilmiş olmalı");
+        item!.RecipientPaysActive.Should().Be(onlyTrue == nameof(WpfCustomerSyncItem.RecipientPaysActive), "alıcı ödemeli");
+        item.WhatsAppConsent.Should().Be(onlyTrue == nameof(WpfCustomerSyncItem.WhatsAppConsent), "WhatsApp izni");
+        item.SmsConsent.Should().Be(onlyTrue == nameof(WpfCustomerSyncItem.SmsConsent), "SMS izni");
+        item.IsBlacklisted.Should().Be(onlyTrue == nameof(WpfCustomerSyncItem.IsBlacklisted), "kara liste");
+    }
+
+    /// <summary>
     /// C4 kalite incelemesi: yerelde silinmiş satır (<c>PurgedAt</c> dolu) gönderilmez. KVKK kararı
     /// inmiş bir kimliğe sohbetten gelen yorum satırı açar; mezar taşı boşaltması "[Silindi]"yi şimdi
     /// damgasıyla yazar — gitseydi sunucudaki asıl kayıt silinmemişse gerçek takma adı her
@@ -597,6 +674,47 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         result.Should().Be(0);
         syncPosts.Should().Be(0, "gönderilecek satır yok");
         fx.CursorSeq().Should().Be(expectedCursor, "imleç atlanan satırın üstünden geçer, bir sonraki tur onu yeniden okumaz");
+    }
+
+    /// <summary>
+    /// C6 incelemesi (sertleştirme): öğesi kurulamayan bozuk satır — burada ms yerine µs yazılmış,
+    /// DateTimeOffset aralığının dışında kalan bir damga; dönüşüm fırlatır — yalnız kendisi elenir:
+    /// tur düşmez, imleç üstünden geçer, sonraki tur onu yeniden okumaz. Yoksa aynı istisna her
+    /// turda bütün kuyruğu kilitlerdi (2026-08-14'teki boş Username olayıyla aynı sınıf).
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_damgasi_aralik_disi_bozuk_satir_elenir_kuyruk_kilitlenmez()
+    {
+        var posted = new List<List<Guid>>();
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                var ids = PostedIds(req);
+                posted.Add(ids);
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: ids.Count));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+        var good = MakeCustomer(100L);
+        fx.Customers.Insert(good);
+        var corrupt = MakeCustomer(200L);
+        fx.Customers.Insert(corrupt);
+        using (var conn = fx.Db.Open())
+            conn.Execute("UPDATE Customer SET NotesChangedAt = 1759312800000000 WHERE Id = @id", new { id = corrupt.Id });
+        var expectedCursor = fx.MaxSyncSeq();
+        Seq(fx, corrupt.Id).Should().Be(expectedCursor, "ön koşul: bozuk satır partinin son satırı");
+
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        posted.Should().ContainSingle("sonraki tur bozuk satırı yeniden okumaz")
+            .Which.Should().Equal(new[] { Guid.Parse(good.Id) }, "yalnız bozuk satır elenir");
+        result.Should().Be(1);
+        fx.CursorSeq().Should().Be(expectedCursor, "imleç bozuk satırın üstünden geçer");
     }
 
     /// <summary>U15: biçim-2 gönderimi önceki sürümün imlecini ne tohum olarak okur ne de yazar.
@@ -1058,6 +1176,99 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         posted[1].Should().Equal(new[] { copy }, "yalnız yeniden kuyruğa alınan kopya gider");
         Exists(fx, copy.ToString("N")).Should().BeFalse("kira bitti: yeniden gelen yönlendirme taşır");
         Exists(fx, canonical.ToString("N")).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// C6 incelemesi: yönlendirmeyi uygularken kilit çekişmesi (SQLITE_BUSY/LOCKED — başka bir
+    /// yazım yazma kilidini bütçeden uzun tuttu) geçicidir. Tur orada biter, imleç İLERLEMEZ, kalan
+    /// yönlendirmeler denenmez; parti sonraki turda aynen yeniden gider (sunucuda idempotent),
+    /// sunucu yönlendirmeleri yeniden söyler (S7) ve taşımalar o zaman olur. İmleç ilerleseydi
+    /// taşınmayan kopyalar değişmedikçe yeniden gönderilmez, taşıma akışa kalırdı.
+    /// </summary>
+    [Theory]
+    [InlineData(5)]   // SQLITE_BUSY
+    [InlineData(6)]   // SQLITE_LOCKED
+    public async Task SyncOnce_yonlendirmede_kilit_cekismesi_turu_bitirir_imlec_ilerlemez(int sqliteErrorCode)
+    {
+        var canonical = Guid.NewGuid();
+        var copyA = Guid.NewGuid();
+        var copyB = Guid.NewGuid();
+        var posted = new List<List<Guid>>();
+        FaultyFactory? faults = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                posted.Add(PostedIds(req));
+                // İlk turun ilk taşıması (deponun sonraki bağlantı isteği) kilide takılır.
+                if (posted.Count == 1)
+                    faults!.FailNextOpen(new SqliteException("database is locked", sqliteErrorCode));
+                return FakeHttpMessageHandler.Json(200, RedirectsRespJson((copyA, canonical), (copyB, canonical)));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        }, syncFactory: db => faults = new FaultyFactory(db));
+        using var _d = fx.Db;
+        fx.Customers.Insert(MakeCustomer(1000, id: canonical.ToString("N"), username: "OrnekMusteri"));
+        fx.Customers.Insert(MakeCustomer(1001, id: copyA.ToString("N"), username: "ornekmusteri"));
+        fx.Customers.Insert(MakeCustomer(1002, id: copyB.ToString("N"), username: "ORNEKMUSTERI"));
+        var batchMax = fx.MaxSyncSeq();
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        fx.Cursors.Get(WpfCustomerProjectionSyncService.CursorName, TestLicenseKey).Should().BeNull(
+            "kilit çekişmesinde imleç ilerlemez");
+        Exists(fx, copyA.ToString("N")).Should().BeTrue("taşıma kilide takıldı");
+        Exists(fx, copyB.ToString("N")).Should().BeTrue("tur bitti — kalan yönlendirme denenmedi");
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        posted.Should().HaveCount(2);
+        posted[1].Should().Equal(posted[0], "parti sonraki turda aynen yeniden gider");
+        Exists(fx, copyA.ToString("N")).Should().BeFalse("yeniden gelen yönlendirme taşır");
+        Exists(fx, copyB.ToString("N")).Should().BeFalse("yeniden gelen yönlendirme taşır");
+        fx.CursorSeq().Should().Be(batchMax);
+    }
+
+    /// <summary>
+    /// C6 incelemesi: kilit çekişmesi dışındaki hata (zehirli yönlendirme) kuyruğu kilitlemez —
+    /// günlüğe yazılır, sıradaki yönlendirme yine uygulanır, imleç ilerler. O taşımayı akıştaki
+    /// kopya satırı (C7) ya da satırın sonraki gönderimi yeniden dener.
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_yonlendirmede_kalici_hata_kuyrugu_kilitlemez_digerleri_uygulanir()
+    {
+        var canonical = Guid.NewGuid();
+        var copyA = Guid.NewGuid();
+        var copyB = Guid.NewGuid();
+        var posted = new List<List<Guid>>();
+        FaultyFactory? faults = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses") return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                posted.Add(PostedIds(req));
+                if (posted.Count == 1)
+                    faults!.FailNextOpen(new SqliteException("enjekte kalıcı hata", 1));   // SQLITE_ERROR
+                return FakeHttpMessageHandler.Json(200, RedirectsRespJson((copyA, canonical), (copyB, canonical)));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        }, syncFactory: db => faults = new FaultyFactory(db));
+        using var _d = fx.Db;
+        fx.Customers.Insert(MakeCustomer(1000, id: canonical.ToString("N"), username: "OrnekMusteri"));
+        fx.Customers.Insert(MakeCustomer(1001, id: copyA.ToString("N"), username: "ornekmusteri"));
+        fx.Customers.Insert(MakeCustomer(1002, id: copyB.ToString("N"), username: "ORNEKMUSTERI"));
+        var batchMax = fx.MaxSyncSeq();
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        posted.Should().ContainSingle();
+        Exists(fx, copyA.ToString("N")).Should().BeTrue("hatalı taşıma atlandı");
+        Exists(fx, copyB.ToString("N")).Should().BeFalse("sıradaki yönlendirme yine uygulandı");
+        fx.CursorSeq().Should().Be(batchMax, "imleç ilerler — zehirli yönlendirme kuyruğu kilitlemez");
     }
 
     // ─── İmleç geri sarma ve tek tur kilidi ───────────────────────────────────

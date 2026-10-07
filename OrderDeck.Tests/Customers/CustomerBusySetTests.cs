@@ -16,6 +16,11 @@ public sealed class CustomerBusySetTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
 
+    /// <summary>Yalnız asılmaya karşı üst sınır: bir gerileme testi asmasın, düşsün. Doğruluk hiçbir
+    /// adımda süreye bağlı değil; yükte (iş parçacığı havuzu doluyken) yanlış alarm vermesin diye
+    /// cömert.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(60);
+
     [Fact]
     public async Task Ic_ice_RunLocked_kilitlenmez_firlatir()
     {
@@ -72,25 +77,39 @@ public sealed class CustomerBusySetTests
     {
         // Taşıma gövdesi koşarken kiralama başlayamaz: ödeme akışı kiralayıp Id'yi yeniden
         // çözdüğünde (C9) taşıma ya hiç başlamamış ya da commit edilmiştir.
+        //
+        // Zamanlamaya dayanmaz (yükte bir kez düştü): adımlar sinyalle sıralanır; gövde havuz dışı
+        // kendi iş parçacığında koşar (havuz doluyken başlaması gecikmesin); "kira bekliyor"
+        // denetimi bir bekleme süresiyle değil EnterAsync'in eşzamanlı dönüşüyle yapılır. Süre
+        // sınırları yalnız asılmaya karşı (HangGuard).
         var busy = new CustomerBusySet();
-        var inside = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var inside = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
-        var body = Task.Run(() => busy.RunLocked(isBusy =>
+        var body = Task.Factory.StartNew(() => busy.RunLocked(isBusy =>
         {
-            inside.SetResult();
+            inside.Set();
             release.Wait();
             return isBusy("c1");
-        }));
-        await inside.Task.WaitAsync(Deadline);
+        }), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-        var lease = busy.EnterAsync("c1");
-        await Task.Delay(100);
-        lease.IsCompleted.Should().BeFalse("gövde kilidi tutuyor");
+        try
+        {
+            inside.Wait(HangGuard).Should().BeTrue("gövde kilidi aldı");
 
-        release.Set();
-        (await body.WaitAsync(Deadline)).Should().BeFalse("kira gövde sürerken başlamadı");
-        using (await lease.WaitAsync(Deadline))
-            busy.RunLocked(isBusy => isBusy("c1")).Should().BeTrue();
-        busy.RunLocked(isBusy => isBusy("c1")).Should().BeFalse("kira bitti");
+            // EnterAsync ilk await'e kadar çağıranın iş parçacığında koşar: kilit boş olsaydı kira
+            // burada TAMAMLANMIŞ dönerdi. Tutulan kilitte bekler — gecikme gerekmez.
+            var lease = busy.EnterAsync("c1");
+            lease.IsCompleted.Should().BeFalse("gövde kilidi tutuyor");
+
+            release.Set();
+            (await body.WaitAsync(HangGuard)).Should().BeFalse("kira gövde sürerken başlamadı");
+            using (await lease.WaitAsync(HangGuard))
+                busy.RunLocked(isBusy => isBusy("c1")).Should().BeTrue();
+            busy.RunLocked(isBusy => isBusy("c1")).Should().BeFalse("kira bitti");
+        }
+        finally
+        {
+            release.Set();   // bir denetim düşerse gövde iş parçacığı asılı kalmasın
+        }
     }
 }
