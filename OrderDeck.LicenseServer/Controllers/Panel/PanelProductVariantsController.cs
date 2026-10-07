@@ -29,11 +29,14 @@ public sealed class PanelProductVariantsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly BarcodeAllocator _barcodes;
+    private readonly ILogger<PanelProductVariantsController> _log;
 
-    public PanelProductVariantsController(LicenseDbContext db, BarcodeAllocator barcodes)
+    public PanelProductVariantsController(
+        LicenseDbContext db, BarcodeAllocator barcodes, ILogger<PanelProductVariantsController> log)
     {
         _db = db;
         _barcodes = barcodes;
+        _log = log;
     }
 
     // Doğrulama attribute'ları positional record'un PARAMETRESİNE yazılıyor;
@@ -114,7 +117,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             var racedBarcode = await BarcodeTakenAsync(
                 product.LicenseId, barcode, excludeId: null, ct);
             if (racedBarcode is not null) return racedBarcode;
-            if (CounterRaced(ex)) return CounterBusy();
+            if (CounterRaced(ex)) return CounterBusy(ex);
             throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
         }
 
@@ -274,7 +277,7 @@ public sealed class PanelProductVariantsController : ControllerBase
                     product.LicenseId, code, excludeId: null, ct);
                 if (racedBarcode is not null) return racedBarcode;
             }
-            if (CounterRaced(ex)) return CounterBusy();
+            if (CounterRaced(ex)) return CounterBusy(ex);
             throw;
         }
 
@@ -397,7 +400,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             var racedBarcode = await BarcodeTakenAsync(
                 product.LicenseId, variant.Barcode, id, ct);
             if (racedBarcode is not null) return racedBarcode;
-            if (CounterRaced(ex)) return CounterBusy();
+            if (CounterRaced(ex)) return CounterBusy(ex);
             throw;
         }
 
@@ -594,10 +597,19 @@ public sealed class PanelProductVariantsController : ControllerBase
     private static bool CounterRaced(DbUpdateException ex) =>
         ex.Entries.Any(e => e.Entity is BarcodeCounter);
 
-    private IActionResult CounterBusy() =>
-        Problem(title: "barcode-counter-busy",
+    /// <summary>Sayaç satırının yazımı düştü: 409, tekrar dene. Günlüğe düşer —
+    /// EF'in kendi kayıt hatası günlüğü Debug'da (LicenseDbContext) ve bu dal
+    /// nedeni yalnız girdinin türünden çıkarıyor; beklenmeyen bir hata sessiz
+    /// kalmasın. Yalnız tür + SQL numarası (iletisi anahtar değeri taşıyabilir).</summary>
+    private IActionResult CounterBusy(DbUpdateException ex)
+    {
+        _log.LogWarning(
+            "Varyant kaydında barkod sayacı yazılamadı ({ExceptionType}, SqlError={SqlError}); barcode-counter-busy dönülüyor",
+            ex.GetType().Name, (ex.InnerException as Microsoft.Data.SqlClient.SqlException)?.Number);
+        return Problem(title: "barcode-counter-busy",
             detail: "Aynı anda başka bir barkod işlemi yapıldı; tekrar dene.",
             statusCode: 409);
+    }
 
     /// <summary>
     /// Bu kırılım üründe zaten varsa 409 döndürür, yoksa null.
