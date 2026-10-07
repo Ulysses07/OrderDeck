@@ -626,6 +626,41 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         row.TcknChangedAt.Should().BeCloseTo(t, TimeSpan.FromMilliseconds(1));
     }
 
+    /// <summary>
+    /// Kopya yolundan (yeni ya da bilinen kopya) gelen birleştirme asıl kaydın
+    /// UpdatedAt'ini İLERLETMEZ: eski istemcilerin <c>since</c> ingest'i kullanıcı
+    /// adını harf duyarlı eşler — ilerleyen UpdatedAt asıl kaydı, yalnız harf
+    /// farklı kopyayı tutan bilgisayara YENİ bir yerel müşteri olarak indirirdi.
+    /// Kendi Id'siyle gönderim eskisi gibi istemcinin UpdatedAt'ini yazar.
+    /// </summary>
+    [Fact]
+    public async Task Kopya_yolundan_gelen_birlestirme_asil_kaydin_UpdatedAtini_ilerletmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow.AddHours(-2);
+        await PostAsync(client, licenseId, new
+        {
+            id = a, platform = "tiktok", username = "selim", fullName = (string?)null, phone = (string?)null,
+            address = (string?)null, updatedAt = t, format = 2,
+        });
+        (await RowsAsync(licenseId)).Single(p => p.Id == a).UpdatedAt
+            .Should().Be(t, "kendi Id'siyle gönderim istemcinin değerini yazar");
+
+        // Yeni kopya (harf farkı) asıl kayda damgalı il yazar.
+        await PostAsync(client, licenseId, V2Item(b, "SELIM", city: "İzmir", addressAt: DateTimeOffset.UtcNow));
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == a);
+        canonical.City.Should().Be("İzmir");
+        canonical.UpdatedAt.Should().Be(t, "yeni kopya yolu");
+
+        // Bilinen kopya daha yeni damgalı il yazar.
+        await PostAsync(client, licenseId, V2Item(b, "SELIM", city: "Ankara", addressAt: DateTimeOffset.UtcNow.AddMinutes(1)));
+        canonical = (await RowsAsync(licenseId)).Single(p => p.Id == a);
+        canonical.City.Should().Be("Ankara");
+        canonical.UpdatedAt.Should().Be(t, "bilinen kopya yolu");
+    }
+
     // ── kopya ve eski sürüm kuralları (A3 kalite incelemesi) ────────────────
 
     [Fact]
@@ -1413,6 +1448,36 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         canonical.Phone.Should().BeNull("shopper'ın damgasız telefonu beyandır, W'ye geçmez");
         canonical.Address.Should().BeNull();
         canonical.FullName.Should().Be("Yayıncının Kaydı");
+    }
+
+    /// <summary>Devralmada taşınan damgalı karar W'nin UpdatedAt'ini ilerletmez:
+    /// W, yeni satır gibi kendi gönderim zamanıyla kalır (eski istemcinin
+    /// <c>since</c> ingest'i harf duyarlı — bkz. kopya yolu testi).</summary>
+    [Fact]
+    public async Task Devralmada_tasinan_damgali_karar_W_nin_UpdatedAtini_ilerletmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "damgali-devralma");
+        var t = DateTimeOffset.UtcNow;
+        await PostAsync(client, licenseId, new
+        {
+            id = s.ProjectionId, platform = "tiktok", username = "damgali-devralma", updatedAt = t, format = 2,
+            isBlacklisted = true, blacklistReason = "ödeme yapmadı", blacklistedAt = t, blacklistChangedAt = t,
+        });
+        var w = Guid.NewGuid();
+        var wUpdatedAt = DateTimeOffset.UtcNow.AddHours(-1);
+
+        await PostAsync(client, licenseId, new
+        {
+            id = w, platform = "tiktok", username = "damgali-devralma", fullName = "Yayıncının Kaydı",
+            phone = (string?)null, address = (string?)null, updatedAt = wUpdatedAt, format = 2,
+            fullNameChangedAt = wUpdatedAt,
+        });
+
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == w);
+        canonical.MergedIntoId.Should().BeNull("devralma: W asıl kayıt");
+        canonical.IsBlacklisted.Should().BeTrue("S'nin damgalı kararı W'ye taşındı");
+        canonical.UpdatedAt.Should().Be(wUpdatedAt);
     }
 
     /// <summary>Silinmiş geçici satırın kişisel birimlerindeki "damgalı boş"

@@ -23,7 +23,9 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// olan bir Id'nin kimliği (platform + <see cref="WpfCustomerProjection.IdentityKey"/>)
 /// başka bir asıl kayıtta zaten varsa Id KOPYA olarak bağlanır, verisi asıl
 /// kayda yazılır ve yanıtta yönlendirme döner; istemci yerel satırını asıl
-/// kaydın Id'sine taşır.</para>
+/// kaydın Id'sine taşır. Kopya yolundan (ve devralmada taşınan kararla) gelen
+/// yazım asıl kaydın UpdatedAt'ini ilerletmez — eski istemcilerin <c>since</c>
+/// ingest'i kullanıcı adını harf duyarlı eşler (bkz. yeni kopya yolu).</para>
 ///
 /// <para>Shopper'ın açtığı GEÇİCİ kayıt
 /// (<see cref="WpfCustomerProjection.CreatedByShopper"/>, A5c): birleştirme
@@ -460,7 +462,9 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             var created = AddCanonical(licenseId, item);
             var carried = CustomerSyncFields.From(provisional).StampedOnly();
             if (provisional.PurgedAt is not null) carried = carried.WithoutScrubbedUnits();
-            if (CustomerFieldMerge.Apply(created, carried)) created.UpdatedAt = now;
+            // W yeni satır gibi kendi gönderim zamanıyla (AddCanonical) kalır:
+            // taşınan karar UpdatedAt'i ilerletmez (gerekçe kopya yolunda, aşağıda).
+            CustomerFieldMerge.Apply(created, carried);
             provisional.ScrubPersonal();
             provisional.MergedIntoId = created.Id;
             provisional.UpdatedAt = now;
@@ -518,7 +522,8 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                             // yeni değer kazanır, damgasız yalnız damgasız boşu
                             // doldurur). Asıl kayıt geçici olabilir (birleştirme
                             // işinden sonra): kural kendi Id'siyle yazımdakiyle aynı.
-                            if (Merge(target, item, viaCopy: true)) target.UpdatedAt = now;
+                            // UpdatedAt ilerlemez (gerekçe yeni kopya yolunda, aşağıda).
+                            Merge(target, item, viaCopy: true);
                             NoteProvisionalWrite(target, item, reprove);
                         }
                         // Yönlendirme her durumda (yeniden) söylenir.
@@ -577,7 +582,15 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                     MergedIntoId = canonical.Id,
                     UpdatedAt = now,
                 });
-                if (Merge(canonical, item, viaCopy: true)) canonical.UpdatedAt = now;
+                // Asıl kaydın UpdatedAt'i İLERLEMEZ (bilinen kopya ve devralma da
+                // böyle; kendi Id'siyle gönderim istemcinin değerini yazar). Eski
+                // istemcilerin `since` ingest'i kullanıcı adını HARF DUYARLI eşler:
+                // ilerleyen UpdatedAt asıl kaydı, yalnız harf farklı kopyayı tutan
+                // bilgisayara YENİ bir yerel müşteri olarak indirirdi. Değişiklik
+                // akışı rowversion kullanır — verinin yeni istemcilere inişi
+                // etkilenmez. Kopya satırının UpdatedAt'i serbest: `since` kopyaları
+                // göstermez.
+                Merge(canonical, item, viaCopy: true);
                 redirects.Add(new SyncRedirect(item.Id, canonical.Id));
                 newAliases.Add((item.Id, canonical.Id));
                 synced++;
