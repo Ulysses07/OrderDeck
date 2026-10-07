@@ -22,6 +22,11 @@ public sealed record SyncBlock(string ItemId, SyncBlockReason Reason, DateTimeOf
 /// durum satırı (D2) "çevrimdışı" yerine "akış X için bekliyor" gösterebilsin. Öğe uygulanınca
 /// null.</para>
 ///
+/// <para><see cref="LastCatchUpProgressAt"/>: akış ilerliyor ama tur sayfa sınırına takıldı
+/// (<see cref="CustomerPullOutcome.MorePending"/> — büyük ilk yetişme, CursorReset). Durum satırı
+/// (D2) bu bilgisayarı ilerleme taze kaldıkça "çevrimdışı" yerine "güncelleniyor" gösterir; tam
+/// yetişme ve lisans değişimi siler. Zaman duvar saatidir (<see cref="LastPullOkAt"/> gibi).</para>
+///
 /// <para>Yetişme LİSANSA bağlıdır (C10 incelemesi): form oynatmasının işareti lisans anahtarına
 /// bağlı, yetişme ise süreç içi. Lisans değişince akış servisi durumu sıfırlar
 /// (<see cref="ResetForLicenseChange"/>); değişimi henüz görmemişken (≤ bir akış turu) gelen form
@@ -34,8 +39,12 @@ public sealed class SyncStatusTracker
     private DateTimeOffset? _lastPullOk;
     private string? _caughtUpLicense;
     private SyncBlock? _blockedOn;
+    private DateTimeOffset? _catchUpProgress;
 
     public DateTimeOffset? LastPullOkAt { get { lock (_gate) return _lastPullOk; } }
+
+    /// <summary>Son sayfa sınırlı (yetişmesi süren) turun anı; tam yetişmeden sonra null.</summary>
+    public DateTimeOffset? LastCatchUpProgressAt { get { lock (_gate) return _catchUpProgress; } }
     public bool IsInitialCatchUpDone => LastPullOkAt is not null;
 
     /// <summary>Bu süreçte <paramref name="licenseKey"/>'in akışı boş sayfaya kadar yetişti mi.</summary>
@@ -53,7 +62,15 @@ public sealed class SyncStatusTracker
         {
             _lastPullOk = at;
             _caughtUpLicense = licenseKey;
+            _catchUpProgress = null;
         }
+    }
+
+    /// <summary>Tur akışı ilerletti ama sayfa sınırına takıldı (<see cref="CustomerPullOutcome.MorePending"/>):
+    /// yetişme sürüyor. Yetişme sayılmaz — <see cref="LastPullOkAt"/> değişmez.</summary>
+    public void MarkCatchUpProgress(DateTimeOffset at)
+    {
+        lock (_gate) _catchUpProgress = at;
     }
 
     /// <summary>Lisans değişti: önceki lisansın yetişmesi ve takılma durumu yeni lisansı anlatmaz —
@@ -65,6 +82,7 @@ public sealed class SyncStatusTracker
             _lastPullOk = null;
             _caughtUpLicense = null;
             _blockedOn = null;
+            _catchUpProgress = null;
         }
     }
 

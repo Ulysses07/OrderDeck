@@ -1148,10 +1148,13 @@ public sealed class CustomerChangesPullServiceTests
         fx.Pulls.Should().Be(max);
         fx.FeedCursor.Should().Be(max);
         fx.Tracker.IsInitialCatchUpDone.Should().BeFalse("sayfa sınırı yetişme sayılmaz");
+        fx.Tracker.LastCatchUpProgressAt.Should().NotBeNull(
+            "D2: sayfa sınırına takılan bilgisayar 'yetişiyor' görünür, çevrimdışı değil");
 
         (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
         fx.FeedCursor.Should().Be(max + 1);
         fx.Tracker.IsInitialCatchUpDone.Should().BeTrue();
+        fx.Tracker.LastCatchUpProgressAt.Should().BeNull();
     }
 
     // ── arka plan işi (M-10) ────────────────────────────────────────────

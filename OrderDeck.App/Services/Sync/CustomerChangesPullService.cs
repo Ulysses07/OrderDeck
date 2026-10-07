@@ -22,7 +22,8 @@ public enum CustomerPullOutcome
     /// <summary>Taşınacak müşteri ödeme akışında (U13). İmleç o öğede, sonraki tur.</summary>
     Busy,
     /// <summary>Tur başına sayfa sınırına ulaşıldı (<see cref="CustomerChangesPullService.MaxPagesPerRound"/>);
-    /// akış sonraki turda kaldığı yerden sürer. Yetişme sayılmaz.</summary>
+    /// akış sonraki turda kaldığı yerden sürer. Yetişme sayılmaz; izleyiciye yetişme ilerlemesi
+    /// olarak işlenir (<see cref="SyncStatusTracker.MarkCatchUpProgress"/>, D2).</summary>
     MorePending,
     /// <summary>Akış boş sayfaya kadar uygulandı; <see cref="SyncStatusTracker"/>'a işlendi.</summary>
     CaughtUp,
@@ -181,6 +182,11 @@ public sealed class CustomerChangesPullService
         {
             _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, licenseKey);
             LogLegacyPaymentJobs();
+        }
+        else
+        {
+            // M-7: sayfa sınırı — yetişme sürüyor; durum satırı (D2) "çevrimdışı" göstermesin.
+            _tracker.MarkCatchUpProgress(DateTimeOffset.UtcNow);
         }
 
         // U2: eklenen satırın yankısı ve taşıma/dönüştürmeyle gönderime giren birimler 60 sn'lik
