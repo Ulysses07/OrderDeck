@@ -887,9 +887,15 @@ public sealed class CustomerChangesPullServiceTests
         fx.Tracker.BlockedOn!.ItemId.Should().Be(id);
         fx.Tracker.BlockedOn.Reason.Should().Be(SyncBlockReason.Busy);
         fx.Tracker.BlockedOn.Since.Should().BeOnOrBefore(DateTimeOffset.UtcNow);
+        fx.Tracker.BlockedOn.LastSeenAt.Should().BeOnOrAfter(fx.Tracker.BlockedOn.Since);
+        var atThreshold = fx.Tracker.BlockedOn;
 
         (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
         Warnings().Should().Be(1, "tek uyarı — her turda yinelenmez");
+        fx.Tracker.BlockedOn.Should().NotBeSameAs(atThreshold,
+            "I-2: takılma her turda tazelenir — tazelenmeyen takılma durum satırında çevrimdışını gizlemez");
+        fx.Tracker.BlockedOn!.LastSeenAt.Should().BeOnOrAfter(atThreshold.LastSeenAt);
+        fx.Tracker.BlockedOn.Since.Should().Be(atThreshold.Since, "aynı takılma");
 
         lease.Dispose();
         (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
@@ -1155,6 +1161,31 @@ public sealed class CustomerChangesPullServiceTests
         fx.FeedCursor.Should().Be(max + 1);
         fx.Tracker.IsInitialCatchUpDone.Should().BeTrue();
         fx.Tracker.LastCatchUpProgressAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Sayfa_uygulanip_hiz_sinirina_takilan_tur_yetisme_ilerlemesi_sayilir()
+    {
+        // M-2: tur başarısız bitti ama akış ilerledi — bilgisayar yetişiyor, çevrimdışı değil.
+        using var fx = Build((_, after) => after == 0
+            ? FakeHttpMessageHandler.Json(200, Page(5, Item(Guid.NewGuid(), "ornek", 5)))
+            : FakeHttpMessageHandler.Json(429, "{}"));
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        fx.FeedCursor.Should().Be(5);
+        fx.Tracker.LastCatchUpProgressAt.Should().NotBeNull("akış bu turda ilerledi");
+        fx.Tracker.IsInitialCatchUpDone.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Ilerlemeyen_basarisiz_tur_yetisme_ilerlemesi_yazmaz()
+    {
+        using var fx = Build((_, _) => FakeHttpMessageHandler.Json(500, "{}"));
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        fx.Tracker.LastCatchUpProgressAt.Should().BeNull("imleç yerinde — yetişme yok, çevrimdışı sayacı işler");
     }
 
     // ── arka plan işi (M-10) ────────────────────────────────────────────

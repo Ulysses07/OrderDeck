@@ -5,8 +5,9 @@ using Xunit;
 
 namespace OrderDeck.Tests.Services.Sync;
 
-/// <summary>Faz 0 (D2): izleyicinin yetişme ilerlemesi — durum satırı sayfa sınırına takılan
-/// (<see cref="CustomerPullOutcome.MorePending"/>) bilgisayarı çevrimdışı göstermesin.</summary>
+/// <summary>Faz 0 (D2): izleyicinin durum satırına verdiği bilgiler — yetişme ilerlemesi
+/// (<see cref="CustomerPullOutcome.MorePending"/> çevrimdışı görünmesin), izleme başlangıcı (hiç
+/// yetişemeyen süreç de çevrimdışı görünsün) ve tek kilit altında anlık görüntü.</summary>
 public sealed class SyncStatusTrackerTests
 {
     private static readonly string Lisans = $"lisans-{Guid.NewGuid():N}";
@@ -25,13 +26,40 @@ public sealed class SyncStatusTrackerTests
     }
 
     [Fact]
-    public void Lisans_degisince_yetisme_ilerlemesi_silinir()
+    public void Izleme_kurulusta_baslar_lisans_degisince_yeniden_baslar()
     {
+        var before = DateTimeOffset.UtcNow;
         var tracker = new SyncStatusTracker();
-        tracker.MarkCatchUpProgress(DateTimeOffset.UtcNow);
+        var started = tracker.TrackingSince;
+        started.Should().BeOnOrAfter(before).And.BeOnOrBefore(DateTimeOffset.UtcNow);
 
+        tracker.MarkCatchUpProgress(DateTimeOffset.UtcNow);
+        tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, Lisans);
+        tracker.SetBlockedOn(new SyncBlock(Guid.NewGuid().ToString("N"), SyncBlockReason.Busy, before, before));
+        var beforeReset = DateTimeOffset.UtcNow;
         tracker.ResetForLicenseChange();
 
+        tracker.TrackingSince.Should().BeOnOrAfter(beforeReset, "yeni lisansın 'hiç yetişemedi' süresi şimdiden sayılır");
         tracker.LastCatchUpProgressAt.Should().BeNull("önceki lisansın akışı yeni lisansı anlatmaz");
+        tracker.LastPullOkAt.Should().BeNull();
+        tracker.BlockedOn.Should().BeNull();
+    }
+
+    [Fact]
+    public void Anlik_goruntu_butun_alanlari_tasir()
+    {
+        var tracker = new SyncStatusTracker();
+        var at = DateTimeOffset.UtcNow;
+        var block = new SyncBlock(Guid.NewGuid().ToString("N"), SyncBlockReason.Stalled, at.AddMinutes(-3), at);
+        tracker.MarkPullSucceeded(at.AddMinutes(-5), Lisans);
+        tracker.MarkCatchUpProgress(at.AddMinutes(-1));
+        tracker.SetBlockedOn(block);
+
+        var s = tracker.Snapshot();
+
+        s.LastPullOkAt.Should().Be(at.AddMinutes(-5));
+        s.LastCatchUpProgressAt.Should().Be(at.AddMinutes(-1));
+        s.BlockedOn.Should().Be(block);
+        s.TrackingSince.Should().Be(tracker.TrackingSince);
     }
 }

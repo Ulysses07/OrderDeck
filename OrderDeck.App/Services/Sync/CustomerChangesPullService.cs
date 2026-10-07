@@ -61,8 +61,13 @@ public enum CustomerPullOutcome
 /// uygulanması geri açamaz: bütün yazımlar <c>PurgedAt IS NULL</c> kapılı, eklemeler mezar taşına
 /// takılır. Aynı öğe <see cref="BlockedRoundsBeforeWarning"/> tur üst üste takılırsa öğe Id'si ve
 /// sebebiyle BİR uyarı yazılır ve durum <see cref="SyncStatusTracker.BlockedOn"/>'da görünür (D2:
-/// "çevrimdışı" değil "bekliyor"); öğe uygulanınca kalkar. Takılan öğe ASLA kendiliğinden
-/// atlanmaz (U5/U13'ün koruduğu veri kaybolurdu).</para>
+/// "çevrimdışı" değil "bekliyor"); eşikten sonra her takılı turda tazelenir (D2 incelemesi I-2 —
+/// tazelenmeyen takılmayı durum satırı üç dakika sonra yok sayar), öğe uygulanınca kalkar. Takılan
+/// öğe ASLA kendiliğinden atlanmaz (U5/U13'ün koruduğu veri kaybolurdu).</para>
+///
+/// <para><b>Yetişme ilerlemesi (D2 incelemesi M-2):</b> akış imleci bu turda ilerlediyse ama tur
+/// boş sayfaya varmadıysa (sayfa sınırı, ya da sayfalar uygulanıp sonra 429/hata/takılma) izleyiciye
+/// yetişme ilerlemesi yazılır — durum satırı ilerleyen bilgisayarı çevrimdışı göstermez.</para>
 ///
 /// <para><b>Gönderimin hatası:</b> gönderim HTTP hatasını kendisi yutar (imleç ilerlemez) ama
 /// yerel SQLite hatası çıkabilir. Çağrı korunur: tur başarısız sayılır, akış yine uygulanır (KVKK
@@ -84,9 +89,10 @@ public sealed class CustomerChangesPullService
     /// <summary>U10: bu kadar başarısız turdan sonra öğe atlanır (30 sn ritimde ~2,5 dk).</summary>
     internal const int MaxAttemptsBeforeSkip = 5;
 
-    /// <summary>I-1: aynı öğede bu kadar tur üst üste takılınca (~3 dk — D2'nin "çevrimdışı" eşiğiyle
-    /// aynı) bir uyarı ve durum.</summary>
-    internal const int BlockedRoundsBeforeWarning = 6;
+    /// <summary>I-1: aynı öğede bu kadar tur üst üste takılınca (30 sn ritimde ~2,5 dk) bir uyarı ve
+    /// durum. D2'nin "çevrimdışı" eşiğinin (3 dk) ALTINDA (D2 incelemesi M-1): takılma, satır
+    /// çevrimdışına düşmeden görünür.</summary>
+    internal const int BlockedRoundsBeforeWarning = 5;
 
     /// <summary>M-7: tur başına en fazla sayfa (500'lük sayfalarla 5.000 öğe); kalanı sonraki tur.
     /// Büyük bir ilk yetişme tek turda sunucunun IP başına hız sınırını (dakikada ~100 istek)
@@ -114,6 +120,7 @@ public sealed class CustomerChangesPullService
     private bool _identityKeysHealed;
     private int _lastLegacyJobs = -1;
     private int _pagesThisRound;
+    private bool _feedAdvancedThisRound;
     private bool _offlineLogged;
     private bool _environmentErrorLogged;
     private bool _reentrancyLogged;
@@ -147,6 +154,7 @@ public sealed class CustomerChangesPullService
         // ikinci kilit satırına çarpar) düşerdi.
         RunLocalMaintenance();
         _pagesThisRound = 0;
+        _feedAdvancedThisRound = false;
 
         // Gönderim her çekmeden ÖNCE (eski Açık soru 13). İki bilgisayar aynı yayında yorum
         // okurken yeni yorumcuların satırları sunucuya önce gider; asıl kayıt geldiğinde
@@ -174,6 +182,10 @@ public sealed class CustomerChangesPullService
         }
         LogTally(tally);
         if (pass.Block is { } block) NoteBlocked(block);
+        // M-2: akış bu turda ilerledi ama boş sayfaya varmadı — yetişiyor (durum satırı, D2).
+        if (outcome != CustomerPullOutcome.CaughtUp
+            && (_feedAdvancedThisRound || outcome == CustomerPullOutcome.MorePending))
+            _tracker.MarkCatchUpProgress(DateTimeOffset.UtcNow);
         if (outcome is not (CustomerPullOutcome.CaughtUp or CustomerPullOutcome.MorePending)) return outcome;
 
         ClearBlocked();
@@ -182,11 +194,6 @@ public sealed class CustomerChangesPullService
         {
             _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, licenseKey);
             LogLegacyPaymentJobs();
-        }
-        else
-        {
-            // M-7: sayfa sınırı — yetişme sürüyor; durum satırı (D2) "çevrimdışı" göstermesin.
-            _tracker.MarkCatchUpProgress(DateTimeOffset.UtcNow);
         }
 
         // U2: eklenen satırın yankısı ve taşıma/dönüştürmeyle gönderime giren birimler 60 sn'lik
@@ -310,6 +317,7 @@ public sealed class CustomerChangesPullService
                     if (_block?.ItemId == itemId) ClearBlocked();
                     tally[result] = tally.GetValueOrDefault(result) + 1;
                     after = item.ChangeSeq;
+                    _feedAdvancedThisRound = true;
                 }
                 after = page.NextAfterSeq;
                 _cursors.Upsert(CursorName, licenseKey, seq: after);
@@ -476,6 +484,7 @@ public sealed class CustomerChangesPullService
 
     private void NoteBlocked(BlockKey key)
     {
+        var now = DateTimeOffset.UtcNow;
         if (_block == key)
             _blockRounds++;
         else
@@ -485,20 +494,21 @@ public sealed class CustomerChangesPullService
             if (_block is not null) _tracker.SetBlockedOn(null);
             _block = key;
             _blockRounds = 1;
-            _blockSince = DateTimeOffset.UtcNow;
+            _blockSince = now;
         }
 
         if (_blockRounds == BlockedRoundsBeforeWarning)
-        {
             _log.LogWarning(
                 "Müşteri akışı {Rounds} turdur öğe {ItemId} (seq {Seq}) için bekliyor: {Reason} — arkasındaki değişiklikler inmiyor (KVKK silmeleri aynı sayfada uygulanıyor)",
                 _blockRounds, key.ItemId, key.ChangeSeq,
                 key.Reason == SyncBlockReason.Stalled ? "gönderilemeyen yerel kopya (durma)" : "ödeme akışındaki müşteri");
-            _tracker.SetBlockedOn(new SyncBlock(key.ItemId, key.Reason, _blockSince));
-        }
         else if (_blockRounds < BlockedRoundsBeforeWarning)
             _log.LogDebug("Müşteri akışı öğe {ItemId} (seq {Seq}) için bekliyor ({Reason}), tur {Rounds}",
                 key.ItemId, key.ChangeSeq, key.Reason, _blockRounds);
+
+        // I-2: eşikten sonra HER takılı turda tazelenir — son görülme anı durum satırının tazelik ölçüsü.
+        if (_blockRounds >= BlockedRoundsBeforeWarning)
+            _tracker.SetBlockedOn(new SyncBlock(key.ItemId, key.Reason, _blockSince, now));
     }
 
     private void ClearBlocked()

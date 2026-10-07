@@ -13,7 +13,9 @@ namespace OrderDeck.App.Services.Sync;
 /// </summary>
 public sealed class CustomerChangesPullHostedService : BackgroundService
 {
-    private static readonly TimeSpan DefaultCadence = TimeSpan.FromSeconds(30);
+    /// <summary>Tur ritmi. Akış servisinin takılma eşiği bununla durum satırının (D2) çevrimdışı
+    /// eşiğinin altında kalır (testi <c>SyncStatusFormatterTests</c>).</summary>
+    internal static readonly TimeSpan DefaultCadence = TimeSpan.FromSeconds(30);
 
     private readonly CustomerChangesPullService _service;
     private readonly ILogger<CustomerChangesPullHostedService> _log;
