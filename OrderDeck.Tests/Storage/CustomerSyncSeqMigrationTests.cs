@@ -51,8 +51,9 @@ public sealed class CustomerSyncSeqMigrationTests
     [Fact]
     public void Migration036_GeriDoldurmaSonrasi_YeniSatir_EnBuyuktenBuyukSeqAlir()
     {
-        // Tetikleyici MAX(SyncSeq)+1 yazıyor; geri doldurulan satırların üstüne
-        // çıkmazsa yeni kayıtlar imlecin ALTINDA doğar ve hiç senkronlanmaz.
+        // Tam göç zincirinden sonra numarayı 045'in sayacı verir (036'nın MAX(SyncSeq)+1'inin
+        // yerine; sayaç geri doldurulan en büyük numarayla tohumlanır). Yeni kayıt geri
+        // doldurulan satırların üstüne çıkmazsa imlecin ALTINDA doğar ve hiç senkronlanmaz.
         using var fx = new InMemorySqlite();
         new MigrationRunner(fx, EmbeddedMigrationScripts.UpTo(35)).Run();
         SeedCustomer(fx, "c1", 1000);

@@ -46,11 +46,14 @@ public static class SqliteSearchFunctions
         // fonksiyonu kaydetmeyen ikili, ona başvuran bir nesne yüzünden Customer'a hiç yazamazdı.
         // isDeterministic ifade indeksine izin verir; böyle bir indeks KURULMAMALI.
         // Anahtarı satır açan her yol C# ile yazar (bkz. CustomerIdentity.KeyOrNull). Boş anahtar
-        // kolona yazılmaz: geri doldurma NULLIF(od_identity_key(Username), '') yazar, onarım
-        // anahtarı boş çıkacak satırı atlar (yoksa her turda NULL'ı yeniden yazardı).
+        // kolona hiçbir yoldan yazılmaz: fonksiyon KeyOrNull'un aynısıdır — boş ya da yalnız
+        // boşluk adda NULL döner (savunma derinliği: "SET IdentityKey = od_identity_key(Username)"
+        // biçimli bir onarım da '' yazamaz). 045'in geri doldurmasındaki NULLIF(…, '') bu yüzden
+        // fazladan ama doğru. Onarım anahtarı NULL çıkacak satırı atlar (yoksa her turda NULL'ı
+        // yeniden yazardı).
         connection.CreateFunction<string?, string?>(
             "od_identity_key",
-            username => username is null ? null : CustomerIdentity.KeyOf(username),
+            username => CustomerIdentity.KeyOrNull(username),
             isDeterministic: true);
     }
 }

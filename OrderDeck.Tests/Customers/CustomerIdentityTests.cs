@@ -32,4 +32,18 @@ public sealed class CustomerIdentityTests
         c.ExecuteScalar<string>("SELECT od_identity_key('  İrem.K ')")
             .Should().Be(CustomerIdentity.KeyOf("  İrem.K "));
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void SQL_fonksiyonu_bos_adda_KeyOrNull_gibi_NULL_doner(string? username)
+    {
+        // Savunma derinliği: "SET IdentityKey = od_identity_key(Username)" biçimli bir onarım
+        // boş adlı satırlara '' yazıp onları tek kişi saymasın.
+        using var db = new InMemorySqlite();
+        using var c = db.Open();
+        c.ExecuteScalar<string?>("SELECT od_identity_key(@username)", new { username })
+            .Should().BeNull();
+    }
 }
