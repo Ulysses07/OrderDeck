@@ -115,7 +115,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var lic = await NewLicenseAsync(db);
         var t0 = DateTimeOffset.UtcNow.AddDays(-30);
         var oldest = Row(lic, "ayse", t0.AddDays(5));
-        oldest.FullName = "Ayşe Kaya";
+        oldest.FullName = "Örnek Müşteri";
         var newer = Row(lic, "AYSE", t0.AddDays(9));
         newer.Address = "İzmir adresi";
         db.WpfCustomerProjections.AddRange(oldest, newer);
@@ -127,7 +127,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         db.ChangeTracker.Clear();
 
         var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == oldest.Id);
-        canonical.FullName.Should().Be("Ayşe Kaya");
+        canonical.FullName.Should().Be("Örnek Müşteri");
         canonical.Address.Should().Be("İzmir adresi");
         var copy = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == newer.Id);
         copy.MergedIntoId.Should().Be(oldest.Id);
@@ -148,14 +148,14 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var canonical = Row(lic, "ayse_tt", t0);
         canonical.FullName = "ayse_tt";
         var copy = Row(lic, "AYSE_TT", t0.AddDays(1));
-        copy.FullName = "Ayşe Yılmaz";
+        copy.FullName = "Örnek Müşteri";
         db.WpfCustomerProjections.AddRange(canonical, copy);
         db.Orders.Add(OrderFor(lic, canonical, t0));
         await db.SaveChangesAsync();
 
         await Job(db).RunAsync(lic, apply: true, default);
         db.ChangeTracker.Clear();
-        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == canonical.Id)).FullName.Should().Be("Ayşe Yılmaz");
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == canonical.Id)).FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -246,7 +246,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var lic = await NewLicenseAsync(db);
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
         var a = Row(lic, "fatma", t0);
-        a.FullName = "Fatma Demir";
+        a.FullName = "Örnek Müşteri";
         var b = Row(lic, "Fatma", t0.AddDays(1));
         b.MarkPurged(t0.AddDays(2));
         db.WpfCustomerProjections.AddRange(a, b);
@@ -431,7 +431,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
         // Yayıncının satırı: siparişli, telefonsuz (yayıncı kişinin telefonunu bilmiyor).
         var wpf = Row(lic, "gizem", t0.AddDays(3));
-        wpf.FullName = "Gizem Yayıncı Kaydı";
+        wpf.FullName = "Yayıncının Kaydı";
         // Geçici satır her başka ölçütte kazanırdı: en eski UpdatedAt'i ve en
         // erken siparişi (eski ingest'le o Id'ye düşmüş) onda. Kaydolanın
         // telefonu doğrulanmış ama yayıncının bildiği telefon değil.
@@ -454,7 +454,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         canonical.CreatedByShopper.Should().BeFalse();
         canonical.Phone.Should().BeNull("geçici satırın beyanı alan kaynağı değil — dolsaydı kanıt kendiliğinden geçerdi");
         canonical.Address.Should().BeNull();
-        canonical.FullName.Should().Be("Gizem Yayıncı Kaydı");
+        canonical.FullName.Should().Be("Yayıncının Kaydı");
 
         var copy = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == provisional.Id);
         copy.MergedIntoId.Should().Be(wpf.Id, "yayıncının satırı varken geçici satır asıl kayıt olamaz");
@@ -503,7 +503,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var lic = await NewLicenseAsync(db);
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
         var wpf = Row(lic, "derya", t0);
-        wpf.FullName = "Derya Kaya";
+        wpf.FullName = "Örnek Müşteri";
         var provisional = ProvisionalRow(lic, "DERYA", t0.AddDays(1), NewPhone());
         provisional.MarkPurged(t0.AddDays(2));
         db.WpfCustomerProjections.AddRange(wpf, provisional);
@@ -519,7 +519,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         db.ChangeTracker.Clear();
         var canonical = await db.WpfCustomerProjections.SingleAsync(p => p.Id == wpf.Id);
         canonical.PurgedAt.Should().BeNull();
-        canonical.FullName.Should().Be("Derya Kaya");
+        canonical.FullName.Should().Be("Örnek Müşteri");
         var copy = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == provisional.Id);
         copy.MergedIntoId.Should().Be(wpf.Id);
         copy.PurgedAt.Should().BeCloseTo(t0.AddDays(2), TimeSpan.FromMilliseconds(1), "kopyanın kendi silme damgasına dokunulmaz");
@@ -631,7 +631,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var lic = await NewLicenseAsync(db);
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
         var wpf = Row(lic, "nalan", t0);
-        wpf.FullName = "Nalan Yayıncı Kaydı";
+        wpf.FullName = "Yayıncının Kaydı";
         var provisional = ProvisionalRow(lic, "NALAN", t0.AddDays(1), NewPhone());
         provisional.IsBlacklisted = true;
         provisional.BlacklistReason = "ödeme yapmadı";
@@ -652,7 +652,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         canonical.Notes.Should().Be("kapıda teslim");
         canonical.Phone.Should().BeNull("damgasız beyan alan kaynağı değil");
         canonical.Address.Should().BeNull();
-        canonical.FullName.Should().Be("Nalan Yayıncı Kaydı");
+        canonical.FullName.Should().Be("Yayıncının Kaydı");
     }
 
     [Fact]
@@ -665,7 +665,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var lic = await NewLicenseAsync(db);
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
         var a = Row(lic, "oya", t0);
-        a.FullName = "Oya Demir";
+        a.FullName = "Örnek Müşteri";
         var b = Row(lic, "Oya", t0.AddDays(1));
         b.IsBlacklisted = true;
         b.BlacklistReason = "iade suistimali";
@@ -746,7 +746,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
             var t0 = DateTimeOffset.UtcNow.AddDays(-10);
             broadcasterPhone = NewPhone();
             var wpf = Row(lic, "sena", t0);
-            wpf.FullName = "Sena Gerçek Müşteri";
+            wpf.FullName = "Gerçek Müşteri";
             wpf.Phone = broadcasterPhone;
             var provisional = ProvisionalRow(lic, "SENA", t0.AddDays(1), NewPhone());
             db.WpfCustomerProjections.AddRange(wpf, provisional);
@@ -775,7 +775,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             var canonical = await db.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == canonicalId);
             canonical.PurgedAt.Should().BeNull("saldırganın KVKK silmesi gerçek müşterinin kaydını silmez");
-            canonical.FullName.Should().Be("Sena Gerçek Müşteri");
+            canonical.FullName.Should().Be("Gerçek Müşteri");
             canonical.Phone.Should().Be(broadcasterPhone);
         }
     }
@@ -796,16 +796,16 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         // 1) instagram, harf farkı: telefon ve not farklı; e-posta, ad, adres
         //    SameText'e göre aynı (adres bloğu uyumlu, ortak parça var).
         var a1 = Row(lic, "ayse", t0, "instagram");
-        a1.Phone = NewPhone(); a1.Email = email; a1.FullName = "Ayşe Kaya"; a1.Notes = "not bir";
+        a1.Phone = NewPhone(); a1.Email = email; a1.FullName = "Örnek Müşteri"; a1.Notes = "not bir";
         a1.Address = "Atatürk Cd. 5"; a1.City = "İzmir";
         var a2 = Row(lic, "AYSE", t0.AddDays(1), "instagram");
-        a2.Phone = NewPhone(); a2.Email = email.ToUpperInvariant() + " "; a2.FullName = "AYŞE KAYA"; a2.Notes = "not iki";
+        a2.Phone = NewPhone(); a2.Email = email.ToUpperInvariant() + " "; a2.FullName = "ÖRNEK MÜŞTERİ"; a2.Notes = "not iki";
         a2.Address = "atatürk cd. 5"; a2.District = "Bornova";
         // 2) instagram, aynı yazım (iki bilgisayar): ad, adres, e-posta farklı.
         var b1 = Row(lic, "mehmet", t0, "instagram");
-        b1.FullName = "Mehmet Yılmaz"; b1.Address = "Cumhuriyet Cd. 1"; b1.Email = NewEmail();
+        b1.FullName = "Birinci Müşteri"; b1.Address = "Cumhuriyet Cd. 1"; b1.Email = NewEmail();
         var b2 = Row(lic, "mehmet", t0.AddDays(1), "instagram");
-        b2.FullName = "Mehmet Demir"; b2.Address = "Gazi Cd. 2"; b2.Email = NewEmail();
+        b2.FullName = "İkinci Müşteri"; b2.Address = "Gazi Cd. 2"; b2.Email = NewEmail();
         // 3) tiktok, boşluk farkı; asıl kayıtta telefon boş — çelişki değil.
         var c1 = Row(lic, "zeynep", t0);
         var c2 = Row(lic, " zeynep ", t0.AddDays(1));
@@ -822,7 +822,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         report.PhoneConflicts.Should().Be(1);
         report.NotesConflicts.Should().Be(1);
         report.EmailConflicts.Should().Be(1, "harf ve kenar boşluğu farkı çelişki değil");
-        report.NameConflicts.Should().Be(1, "'AYŞE KAYA' ile 'Ayşe Kaya' aynı");
+        report.NameConflicts.Should().Be(1, "'ÖRNEK MÜŞTERİ' ile 'Örnek Müşteri' aynı");
         report.AddressConflicts.Should().Be(1, "aynı satırı paylaşan uyumlu bloklar çelişmez");
         db.ChangeTracker.Clear();
         (await db.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.MergedIntoId != null)).Should().Be(0);

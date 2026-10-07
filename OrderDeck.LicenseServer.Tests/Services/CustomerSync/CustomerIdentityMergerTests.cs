@@ -150,7 +150,7 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         var shopperId = Guid.NewGuid();
         db.Shoppers.Add(new Shopper
         {
-            Id = shopperId, FullName = "Ayse Gul",
+            Id = shopperId, FullName = "Ornek Musteri",
             Phone = $"+905{Random.Shared.Next(10000000, 99999999)}",
             PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-",
         });

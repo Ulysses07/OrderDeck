@@ -588,7 +588,7 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
             Platform = platform,
             Username = username,
             FullName = fullName,
-            Phone = "+905550000000",
+            Phone = TestPhone.NewE164(),
             Address = "Test addr",
             UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow,
         });
@@ -753,7 +753,7 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
     {
         var (client, licenseId) = await SeedListAsync();
         var canonicalId = Guid.NewGuid();
-        await SeedProjectionAsync(licenseId, canonicalId, "Ayşe Kaya", "@ayse", "instagram");
+        await SeedProjectionAsync(licenseId, canonicalId, "Örnek Müşteri", "@ayse", "instagram");
         await SeedAliasAsync(licenseId, Guid.NewGuid(), canonicalId, "@Ayse", "instagram");
 
         var resp = await client.GetAsync("/api/panel/customers");

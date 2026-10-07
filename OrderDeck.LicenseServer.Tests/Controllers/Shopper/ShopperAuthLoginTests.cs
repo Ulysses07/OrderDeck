@@ -88,7 +88,7 @@ public class ShopperAuthLoginTests : IClassFixture<ApiFactory>
     {
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/login",
-                new LoginRequest("+905512345678", "AnyPassword1!"));
+                new LoginRequest(UniquePhone(), $"pw-{Guid.NewGuid():N}"));
         resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 

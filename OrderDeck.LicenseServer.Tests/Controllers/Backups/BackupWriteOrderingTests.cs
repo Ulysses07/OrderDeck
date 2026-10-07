@@ -124,7 +124,7 @@ public class BackupWriteOrderingTests
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"trim-order-{Guid.NewGuid():N}@t.com",
+            Email = $"trim-order-{Guid.NewGuid():N}@example.test",
             Name = "T",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow,

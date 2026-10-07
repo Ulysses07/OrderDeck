@@ -35,7 +35,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     public async Task Issue_creates_license_for_existing_customer()
     {
         var client = await AdminClientAsync();
-        var email = $"l-{Guid.NewGuid():N}@x.com";
+        var email = $"l-{Guid.NewGuid():N}@example.test";
         await CreateCustomerAsync(client, email);
 
         var resp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
@@ -53,7 +53,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
         var client = await AdminClientAsync();
         var resp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
         {
-            customerEmail = "nope@x.com", skuCode = "STD"
+            customerEmail = "nope@example.test", skuCode = "STD"
         });
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -62,7 +62,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     public async Task Get_returns_license_with_customer_and_empty_activations()
     {
         var client = await AdminClientAsync();
-        var email = $"g-{Guid.NewGuid():N}@x.com";
+        var email = $"g-{Guid.NewGuid():N}@example.test";
         await CreateCustomerAsync(client, email);
         var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
         {
@@ -78,7 +78,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     public async Task Revoke_marks_license_revoked()
     {
         var client = await AdminClientAsync();
-        var email = $"r-{Guid.NewGuid():N}@x.com";
+        var email = $"r-{Guid.NewGuid():N}@example.test";
         await CreateCustomerAsync(client, email);
         var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
         {
@@ -97,7 +97,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     public async Task Extend_adds_days_to_expiry()
     {
         var client = await AdminClientAsync();
-        var email = $"e-{Guid.NewGuid():N}@x.com";
+        var email = $"e-{Guid.NewGuid():N}@example.test";
         await CreateCustomerAsync(client, email);
         var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
         {
@@ -116,7 +116,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     public async Task ChangeSlots_updates_activation_slots()
     {
         var client = await AdminClientAsync();
-        var email = $"s-{Guid.NewGuid():N}@x.com";
+        var email = $"s-{Guid.NewGuid():N}@example.test";
         await CreateCustomerAsync(client, email);
         var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
         {
@@ -137,7 +137,7 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     public async Task ChangeSlots_out_of_range_returns_400()
     {
         var client = await AdminClientAsync();
-        var email = $"s2-{Guid.NewGuid():N}@x.com";
+        var email = $"s2-{Guid.NewGuid():N}@example.test";
         await CreateCustomerAsync(client, email);
         var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
         {

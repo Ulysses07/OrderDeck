@@ -85,7 +85,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         var id2 = Guid.NewGuid();
         var id3 = Guid.NewGuid();
 
-        await SeedProjectionAsync(licenseId, id1, "youtube", "user1", "Ali", "+905001112233", "Ankara", t1);
+        await SeedProjectionAsync(licenseId, id1, "youtube", "user1", "Ali", TestPhone.NewE164(), "Ankara", t1);
         await SeedProjectionAsync(licenseId, id2, "instagram", "user2", null, null, null, t2);
         await SeedProjectionAsync(licenseId, id3, "tiktok", "user3", null, null, null, t3);
 
@@ -256,7 +256,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         var both = Guid.NewGuid();
         await SeedProjectionAsync(licenseId, nickOnly, "tiktok", "yalniztakma", displayName: "Ayşe K.");
         await SeedProjectionAsync(licenseId, both, "tiktok", "ikisidedolu",
-            fullName: "Ayşe Kaya", displayName: "ayşoş");
+            fullName: "Örnek Müşteri", displayName: "ayşoş");
 
         var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
         var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
@@ -264,7 +264,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
         items.Single(i => i.Id == nickOnly).FullName.Should().Be("Ayşe K.",
             "FullName boşken takma ad gitmezse eski istemci kişiyi adsız açar");
-        items.Single(i => i.Id == both).FullName.Should().Be("Ayşe Kaya",
+        items.Single(i => i.Id == both).FullName.Should().Be("Örnek Müşteri",
             "tam ad varsa takma ad onu ezmez");
     }
 
@@ -372,7 +372,8 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
         var id = Guid.NewGuid();
         var updatedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
-        await SeedProjectionAsync(licenseId, id, "youtube", "fielduser", "Full Name", "+905001112233", "Istanbul", updatedAt);
+        var phone = TestPhone.NewE164();
+        await SeedProjectionAsync(licenseId, id, "youtube", "fielduser", "Full Name", phone, "Istanbul", updatedAt);
 
         var since = Uri.EscapeDataString(updatedAt.AddSeconds(-1).ToString("O"));
         var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
@@ -385,7 +386,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         item.Platform.Should().Be("youtube");
         item.Username.Should().Be("fielduser");
         item.FullName.Should().Be("Full Name");
-        item.Phone.Should().Be("+905001112233");
+        item.Phone.Should().Be(phone);
         item.Address.Should().Be("Istanbul");
         item.PurgedAt.Should().BeNull("silinmemiş satırda damga boş olmalı");
     }

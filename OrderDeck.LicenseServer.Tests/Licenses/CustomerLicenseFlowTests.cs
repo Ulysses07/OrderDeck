@@ -24,7 +24,7 @@ public class CustomerLicenseFlowTests : IClassFixture<ApiFactory>
         var adminClient = _factory.CreateClient();
         adminClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
 
-        var email = $"flow-{Guid.NewGuid():N}@x.com";
+        var email = $"flow-{Guid.NewGuid():N}@example.test";
         await adminClient.PostAsJsonAsync("/api/v1/admin/customers", new
         {
             email, name = "Flow", initialPassword = "pw12345678", autoConfirm = true

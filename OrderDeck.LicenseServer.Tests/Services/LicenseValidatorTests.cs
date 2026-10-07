@@ -32,7 +32,7 @@ public class LicenseValidatorTests : IClassFixture<ApiFactory>
 
         var customer = new Customer
         {
-            Id = Guid.NewGuid(), Email = $"v-{Guid.NewGuid():N}@x.com",
+            Id = Guid.NewGuid(), Email = $"v-{Guid.NewGuid():N}@example.test",
             Name = "V", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
         };
         var license = new License
@@ -59,7 +59,7 @@ public class LicenseValidatorTests : IClassFixture<ApiFactory>
 
         var customer = new Customer
         {
-            Id = Guid.NewGuid(), Email = $"x-{Guid.NewGuid():N}@x.com",
+            Id = Guid.NewGuid(), Email = $"x-{Guid.NewGuid():N}@example.test",
             Name = "X", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
         };
         var license = new License
@@ -85,7 +85,7 @@ public class LicenseValidatorTests : IClassFixture<ApiFactory>
 
         var customer = new Customer
         {
-            Id = Guid.NewGuid(), Email = $"a-{Guid.NewGuid():N}@x.com",
+            Id = Guid.NewGuid(), Email = $"a-{Guid.NewGuid():N}@example.test",
             Name = "A", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
         };
         var license = new License
