@@ -83,10 +83,23 @@ public sealed class CustomerRepository
             PurgedAt    = MIN(CustomerPurgeTombstone.PurgedAt, excluded.PurgedAt),
             IdentityKey = COALESCE(CustomerPurgeTombstone.IdentityKey, excluded.IdentityKey)";
 
-    public void Insert(Customer c)
+    /// <param name="write">Doluysa çağıranın paketinde (U12: <c>LabelService.Add</c> müşteriyi ve
+    /// etiketi tek işlemde yazar). Boşsa kendi işlemi — davranış değişmez.</param>
+    public void Insert(Customer c, DbWrite? write = null)
     {
+        if (write is not null)
+        {
+            InsertCore(write.Connection, write.Transaction, c);
+            return;
+        }
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
+        InsertCore(conn, tx, c);
+        tx.Commit();
+    }
+
+    private static void InsertCore(System.Data.IDbConnection conn, System.Data.IDbTransaction tx, Customer c)
+    {
         conn.Execute(
             @"INSERT INTO Customer
               (Id, Platform, Username, IdentityKey, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
@@ -124,7 +137,6 @@ public sealed class CustomerRepository
         // açılıyor çünkü etiket/sipariş ona bağlanacak; bariyer de o satır
         // (PurgedAt dolu → tüm güncelleme yolları kapalı).
         conn.Execute(ScrubIfTombstonedSql, new { id = c.Id }, tx);
-        tx.Commit();
     }
 
     /// <summary>Kargo PR F: vendor "Alıcı Ödemeli" seçince true,
@@ -133,7 +145,7 @@ public sealed class CustomerRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Customer SET RecipientPaysActive=@active WHERE Id=@customerId",
+            "UPDATE Customer SET RecipientPaysActive=@active WHERE Id = " + CustomerIdSql.Resolve("@customerId"),
             new { customerId, active = active ? 1 : 0 });
     }
 
@@ -144,8 +156,14 @@ public sealed class CustomerRepository
     /// satır açardı (sunucuda yeni kopya → yerel taşıma → döngü) ve kara liste
     /// denetimi kişiyi kaçırırdı. İkinci sorgu da indeksli (IX_Customer_Identity).
     /// </summary>
-    public Customer? FindByPlatformAndUsername(string platform, string username)
+    /// <param name="write">Doluysa arama çağıranın paketinde (U12, U17 — sohbet yolunun tek işlemi).</param>
+    public Customer? FindByPlatformAndUsername(string platform, string username, DbWrite? write = null)
     {
+        if (write is not null)
+        {
+            var inScope = FindRow(write.Connection, write.Transaction, platform, username);
+            return inScope is null ? null : Map(inScope);
+        }
         using var conn = _factory.Open();
         var row = FindRow(conn, null, platform, username);
         return row is null ? null : Map(row);
@@ -195,11 +213,19 @@ public sealed class CustomerRepository
         return rows.Select(Map).ToList();
     }
 
-    public Customer? GetById(string id)
+    /// <summary>U12: taşınmış (yerel yeniden anahtarlamayla silinmiş) Id'nin güncel karşılığı;
+    /// taşınmamışsa — ya da hiç yoksa — kendisi. Önbellekte Id tutanlar (çekiliş önceki
+    /// kazananları) ve ödeme akışının girişi (C9) kullanır.</summary>
+    public string ResolveId(string customerId)
+        => _factory.ExecuteScalar<string>(null, "SELECT " + CustomerIdSql.Resolve("@id"), new { id = customerId })!;
+
+    /// <summary>U12: taşınmış Id de bulunur — satır GÜNCEL Id'siyle döner (Id saklayan çağıran
+    /// dönen <c>Id</c>'yi saklamalı). Ham varlık denetimi gereken yer (senkron deposu, testler)
+    /// kendi SQL'ini kullanır.</summary>
+    public Customer? GetById(string id, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT * FROM Customer WHERE Id=@id", new { id });
+        var row = _factory.QueryFirstOrDefault<Row>(write,
+            "SELECT * FROM Customer WHERE Id = " + CustomerIdSql.Resolve("@id"), new { id });
         return row is null ? null : Map(row);
     }
 
@@ -218,20 +244,19 @@ public sealed class CustomerRepository
               SET TotalLabelsPrinted = TotalLabelsPrinted + @labelDelta,
                   TotalAmount        = TotalAmount + @amountDelta,
                   LastSeenAt         = @lastSeenAt
-              WHERE Id = @id",
+              WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { id, labelDelta, amountDelta, lastSeenAt });
     }
 
     /// <summary>Sets or clears the blacklist flag, with optional reason and timestamp.</summary>
-    public void UpdateBlacklist(string id, bool isBlacklisted, string? reason, long? blacklistedAt)
-    {
-        using var conn = _factory.Open();
-        conn.Execute(
+    /// <param name="write">Doluysa çağıranın paketinde (sohbet yolu, U12).</param>
+    public void UpdateBlacklist(string id, bool isBlacklisted, string? reason, long? blacklistedAt, DbWrite? write = null)
+        => _factory.Execute(write,
             @"UPDATE Customer
               SET IsBlacklisted   = @flag,
                   BlacklistReason = @reason,
                   BlacklistedAt   = @blacklistedAt
-              WHERE Id = @id",
+              WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new
             {
                 id,
@@ -239,16 +264,12 @@ public sealed class CustomerRepository
                 reason,
                 blacklistedAt
             });
-    }
 
     /// <summary>True if any customer in the group is blacklisted.</summary>
-    public bool IsGroupBlacklisted(string groupId)
-    {
-        using var conn = _factory.Open();
-        return conn.ExecuteScalar<long>(
+    public bool IsGroupBlacklisted(string groupId, DbWrite? write = null)
+        => _factory.ExecuteScalar<long>(write,
             "SELECT COUNT(*) FROM Customer WHERE GroupId = @groupId AND IsBlacklisted = 1",
             new { groupId }) > 0;
-    }
 
     /// <summary>Sets/clears the blacklist flag for EVERY customer in the group.
     /// Used so blacklisting one identity blacklists the whole linked person.</summary>
@@ -279,12 +300,10 @@ public sealed class CustomerRepository
     }
 
     /// <summary>Assigns a customer to a group (YouTube channelId adoption).</summary>
-    public void SetGroupId(string customerId, string groupId)
-    {
-        using var conn = _factory.Open();
-        conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id = @id",
+    public void SetGroupId(string customerId, string groupId, DbWrite? write = null)
+        => _factory.Execute(write,
+            "UPDATE Customer SET GroupId = @groupId WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { groupId, id = customerId });
-    }
 
     /// <summary>
     /// Manuel birleştirme: seçilen müşterileri tek bir gruba bağlar. Aralarında
@@ -292,6 +311,10 @@ public sealed class CustomerRepository
     /// baz alınır, hepsi ona toplanır); yoksa yeni grup id üretilir. Grubun
     /// üyelerinden herhangi biri kara listedeyse tüm birleşmiş grup kara listeye
     /// yayılır. Dönen değer nihai grup id'si.
+    ///
+    /// <para>U12: seçim listesi pencere açıkken taşınmış satırları gösterebilir — Id'ler
+    /// yönlendirmeden çözülür; çözüm ve bütün yazımlar tek yazma işleminde (taşıma araya
+    /// giremez).</para>
     /// </summary>
     public string MergeIntoGroup(IReadOnlyList<string> customerIds)
     {
@@ -300,12 +323,18 @@ public sealed class CustomerRepository
         if (ids.Count < 2)
             throw new ArgumentException("Birleştirmek için en az iki müşteri gerekli", nameof(customerIds));
 
-        using var conn = _factory.Open();
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
+
+        // U12: arama listesindeki kartlar taşınmış satırları gösterebilir — güncel Id'ler.
+        ids = ids.Select(i => conn.ExecuteScalar<string>("SELECT " + CustomerIdSql.Resolve("@id"), new { id = i }, tx)!)
+                 .Distinct(StringComparer.Ordinal).ToList();
 
         // Mevcut grup id'lerini topla; varsa ilkini koru, yoksa yeni üret.
         var existingGroups = conn.Query<string>(
             "SELECT DISTINCT GroupId FROM Customer WHERE Id IN @ids AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''",
-            new { ids }).Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
+            new { ids }, tx).Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
         var groupId = existingGroups.FirstOrDefault() ?? Guid.NewGuid().ToString("N");
 
         // Güncellenecek tüm id'leri bellekte topla: seçilenler + mevcut grupların
@@ -315,16 +344,17 @@ public sealed class CustomerRepository
         {
             var groupMemberIds = conn.Query<string>(
                 "SELECT Id FROM Customer WHERE GroupId IN @groups",
-                new { groups = existingGroups });
+                new { groups = existingGroups }, tx);
             foreach (var id in groupMemberIds) targetIds.Add(id);
         }
 
         conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id IN @targetIds",
-            new { groupId, targetIds = targetIds.ToList() });
+            new { groupId, targetIds = targetIds.ToList() }, tx);
 
         // Elle birleştirme yerel eylemdir: yayılımı tetikleyici "şimdi" damgalar.
-        PropagateGroupBlacklist(conn, null, groupId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), formAt: null);
+        PropagateGroupBlacklist(conn, tx, groupId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), formAt: null);
 
+        write.Commit();
         return groupId;
     }
 
@@ -455,10 +485,9 @@ public sealed class CustomerRepository
     /// messages arrive keyed by channelId — this bridges them via the handle
     /// (chat DisplayName). Returns null if no grouped handle row exists.
     /// </summary>
-    public Customer? FindGroupedYouTubeByHandle(string handle)
+    public Customer? FindGroupedYouTubeByHandle(string handle, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
+        var row = _factory.QueryFirstOrDefault<Row>(write,
             @"SELECT * FROM Customer
               WHERE Platform = 'youtube' AND GroupId IS NOT NULL
                 AND LOWER(Username) = LOWER(@handle)
@@ -483,7 +512,7 @@ public sealed class CustomerRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Customer SET Notes=@notes WHERE Id=@id",
+            "UPDATE Customer SET Notes=@notes WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { id = customerId, notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim() });
     }
 
@@ -1113,7 +1142,7 @@ public sealed class CustomerRepository
         return conn.Execute(
             "UPDATE Customer SET " + ScrubAssignments + @",
                   PurgedAt        = COALESCE(PurgedAt, @now)
-              WHERE Id = @id",
+              WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { id = customerId, now = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
     }
 
@@ -1249,7 +1278,7 @@ public sealed class CustomerRepository
         using var conn = _factory.Open();
         return conn.Execute(
             @"UPDATE Customer SET Phone=@phone, LastSeenAt=MAX(LastSeenAt+1, @now)
-              WHERE Id=@id AND PurgedAt IS NULL",
+              WHERE Id = " + CustomerIdSql.Resolve("@id") + @" AND PurgedAt IS NULL",
             new
             {
                 phone = e164Phone,

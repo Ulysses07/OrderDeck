@@ -16,6 +16,10 @@ public sealed class ShipmentRepository
     private readonly IDbConnectionFactory _factory;
     public ShipmentRepository(IDbConnectionFactory factory) => _factory = factory;
 
+    /// <summary>U12: CustomerId yönlendirmeden yazımla aynı ifadede çözülür — taşınmış Id'yle
+    /// açılan kargo silinmiş Id'de öksüz kalmaz (Shipment'ta FK yok; hata değil sessiz kayıp
+    /// olurdu). Çağıranın elindeki nesnenin <c>CustomerId</c>'si bayat kalabilir; sonraki
+    /// işlemler (<c>AttachLabels</c>, <c>ApplyDecision</c>) kargonun Id'siyle yürür.</summary>
     public void Insert(Shipment s)
     {
         using var conn = _factory.Open();
@@ -23,7 +27,8 @@ public sealed class ShipmentRepository
             @"INSERT INTO Shipment
               (Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt)
               VALUES
-              (@Id, @CustomerId, @Status, @CreatedAt, @HeldAt, @ShippedAt, @CumulativeAmount, @SyncedAt)",
+              (@Id, " + CustomerIdSql.Resolve("@CustomerId") + @", @Status, @CreatedAt, @HeldAt, @ShippedAt,
+               @CumulativeAmount, @SyncedAt)",
             new
             {
                 s.Id,
@@ -50,6 +55,11 @@ public sealed class ShipmentRepository
     /// <summary>
     /// Müşterinin açık Shipment'ı (Pending veya Held). Shipped/RecipientPays
     /// kapalı sayılır — yeni alım yeni Shipment açar.
+    ///
+    /// <para>U12: müşteri Id'si yönlendirmeden çözülür. Yerel taşıma kargoları birleştirmez
+    /// (bilinçli kabul): kişi iki açık dosyayla kalabilir — en yenisi seçilir, eşitlikte Id
+    /// (her bilgisayar aynı dosyayı seçer). Kaç tane olduğu <see cref="CountOpenByCustomer"/>;
+    /// müşteri penceresi fazlasını uyarır.</para>
     /// </summary>
     public Shipment? GetOpenByCustomer(string customerId)
     {
@@ -57,11 +67,22 @@ public sealed class ShipmentRepository
         var row = conn.QueryFirstOrDefault<Row>(
             @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment
-              WHERE CustomerId=@customerId AND Status IN ('Pending', 'Held')
-              ORDER BY CreatedAt DESC
+              WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
+              ORDER BY CreatedAt DESC, Id DESC
               LIMIT 1",
             new { customerId });
         return row is null ? null : Map(row);
+    }
+
+    /// <summary>Müşterinin açık (Pending/Held) kargo dosyası sayısı; Id yönlendirmeden çözülür
+    /// (U12). Birden fazlası yerel taşımadan kalır (bkz. <see cref="GetOpenByCustomer"/>).</summary>
+    public int CountOpenByCustomer(string customerId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM Shipment WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId")
+            + " AND Status IN ('Pending', 'Held')",
+            new { customerId });
     }
 
     /// <summary>

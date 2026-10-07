@@ -10,9 +10,10 @@ public sealed class LabelRepository
     private readonly IDbConnectionFactory _factory;
     public LabelRepository(IDbConnectionFactory factory) => _factory = factory;
 
-    public void Insert(Label l)
+    /// <param name="write">Doluysa çağıranın paketinde (<c>LabelService.Add</c>: müşteri + etiket
+    /// tek işlem, U12). Boşsa kendi bağlantısı — davranış değişmez.</param>
+    public void Insert(Label l, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // SQLite stores BOOLs as INTEGER — Dapper handles bool→0/1 conversion,
         // but we cast explicitly so the parameter type is unambiguous on
         // callers that pass an anonymous-typed projection.
@@ -22,13 +23,18 @@ public sealed class LabelRepository
         // çoktan gitmiş bir satırda ikisi de dolu olmalı — yoksa geri yükleme
         // bakiyeden bir kez daha düşerdi. Label kaydına ayrı bir alan eklemeye
         // gerek yok: damganın kaynağı zaten SyncedAt.
-        conn.Execute(
+        //
+        // U12: CustomerId yönlendirmeden YAZIMLA AYNI İFADEDE çözülür — bayat bir Customer
+        // nesnesiyle gelen yazım (AddShippingFee, açık pencere) taşınmış Id'de FK hatası
+        // vermez, asıl kayda iner.
+        _factory.Execute(write,
             @"INSERT INTO Label
               (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price, AddedAt, PrintedAt,
                IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt,
                StockSyncedAt, ProductId, ProductVariantId)
               VALUES
-              (@Id, @SessionId, @CustomerId, @Platform, @Username, @DisplayName, @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
+              (@Id, @SessionId, " + CustomerIdSql.Resolve("@CustomerId") + @", @Platform, @Username, @DisplayName,
+               @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
                @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId, @SyncedAt,
                @SyncedAt, @ProductId, @ProductVariantId)",
             new
@@ -444,11 +450,12 @@ public sealed class LabelRepository
     public IReadOnlyList<Label> GetUnattachedByCustomer(string customerId)
     {
         using var conn = _factory.Open();
+        // U12: ödeme onayı akışı müşteri Id'sini ekranda açık kalmış bir karttan alabilir.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
                      Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
-              WHERE CustomerId=@customerId
+              WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @"
                 AND ShipmentId IS NULL
                 AND CancelledAt IS NULL
                 AND IsTentativeBackup = 0

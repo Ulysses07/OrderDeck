@@ -69,6 +69,11 @@ public sealed class GiveawayRepository
             new { id, cancelledAt });
     }
 
+    /// <summary>
+    /// U12: CustomerId yönlendirmeden YAZIMLA AYNI İFADEDE çözülür — katılım tek INSERT
+    /// ifadesi, yani yerel taşıma çözüm ile yazım arasına giremez (FK hatası yok). Ayrı işlem
+    /// gerekmez: araya giren okumalar (kara liste, önceki kazanan) zaten anlık.
+    /// </summary>
     public void AddParticipant(GiveawayParticipant p)
     {
         using var conn = _factory.Open();
@@ -76,13 +81,35 @@ public sealed class GiveawayRepository
             @"INSERT INTO GiveawayParticipant
               (Id, GiveawayId, CustomerId, Platform, Username, EnteredAt, IsWinner)
               VALUES
-              (@Id, @GiveawayId, @CustomerId, @Platform, @Username, @EnteredAt, @IsWinner)",
-            new
-            {
-                p.Id, p.GiveawayId, p.CustomerId, p.Platform, p.Username,
-                p.EnteredAt, IsWinner = p.IsWinner ? 1 : 0
-            });
+              (@Id, @GiveawayId, " + CustomerIdSql.Resolve("@CustomerId") + @", @Platform, @Username, @EnteredAt, @IsWinner)",
+            ParticipantParams(p));
     }
+
+    /// <summary>
+    /// Sohbetten katılım: <see cref="AddParticipant"/> gibi, ama müşteri (güncel Id'siyle) bu
+    /// çekilişte zaten varsa yazmaz ve false döner — kişi başına tek şans. Tekil indeks
+    /// <c>(GiveawayId, Platform, Username)</c> kullanıcı adında: aynı kişi harf farkıyla
+    /// (kimlik anahtarı, U7) ikinci satır açabilirdi. Karar ve yazım tek ifadede. Aynı kullanıcı
+    /// adının tekrarı yine tekil indekse takılır (çağıran yutar).
+    /// </summary>
+    public bool TryAddParticipant(GiveawayParticipant p)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            @"INSERT INTO GiveawayParticipant
+              (Id, GiveawayId, CustomerId, Platform, Username, EnteredAt, IsWinner)
+              SELECT @Id, @GiveawayId, r.CustomerId, @Platform, @Username, @EnteredAt, @IsWinner
+                FROM (SELECT " + CustomerIdSql.Resolve("@CustomerId") + @" AS CustomerId) r
+               WHERE NOT EXISTS (SELECT 1 FROM GiveawayParticipant x
+                                  WHERE x.GiveawayId = @GiveawayId AND x.CustomerId = r.CustomerId)",
+            ParticipantParams(p)) > 0;
+    }
+
+    private static object ParticipantParams(GiveawayParticipant p) => new
+    {
+        p.Id, p.GiveawayId, p.CustomerId, p.Platform, p.Username,
+        p.EnteredAt, IsWinner = p.IsWinner ? 1 : 0
+    };
 
     public int GetParticipantCount(string giveawayId)
     {

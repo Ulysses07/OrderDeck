@@ -216,4 +216,52 @@ public class GiveawayServiceTests
         repo.GetById(g.Id)!.CancelledAt.Should().NotBeNull();
         repo.GetActiveBySession(sid).Should().BeNull();
     }
+
+    // ── Kişi başına tek şans (C4 incelemesi, U12) ───────────────────────────
+    //
+    // Tekil indeks (GiveawayId, Platform, Username) kullanıcı adında, CustomerId'de
+    // değil: aynı kişi harf farkıyla ikinci kez girebilir (kimlik anahtarı, U7) ya da
+    // yeniden anahtarlama iki ayrı katılımcıyı aynı müşteriye taşıyabilir.
+
+    [Fact]
+    public void AddParticipantFromChat_ayni_musteriyi_farkli_yazilisla_ikinci_kez_almaz()
+    {
+        var (svc, repo, customers, db, sid) = Fx();
+        using var _2 = db;
+        customers.Insert(new Customer(Guid.NewGuid().ToString("N"), "instagram", "@Ayse", null, null, 100, 100,
+            false, null, null, 0, 0m, null, null, null));
+        var g = svc.Start(sid, "🌹", 60, 1, null, true);
+
+        svc.AddParticipantFromChat(g.Id, Msg("@Ayse", "🌹"));
+        svc.AddParticipantFromChat(g.Id, Msg("@ayse", "🌹"));   // kimlik anahtarıyla aynı müşteri (U7)
+
+        repo.GetParticipants(g.Id).Should().ContainSingle();
+    }
+
+    [Fact]
+    public void Draw_tasimayla_ayni_musteriye_dusen_iki_katilimciya_tek_sans_verir()
+    {
+        var (svc, repo, customers, db, sid) = Fx();
+        using var _2 = db;
+        var copy = Guid.NewGuid().ToString("N");
+        var canonical = Guid.NewGuid().ToString("N");
+        customers.Insert(new Customer(copy, "instagram", "@ayse", null, null, 100, 100,
+            false, null, null, 0, 0m, null, null, null));
+        customers.Insert(new Customer(canonical, "instagram", "@Ayse", null, null, 100, 100,
+            false, null, null, 0, 0m, null, null, null));
+        var g = svc.Start(sid, "🌹", 60, winnerCount: 2, null, true);
+        svc.AddParticipantFromChat(g.Id, Msg("@ayse", "🌹"));   // o an iki ayrı müşteri
+        svc.AddParticipantFromChat(g.Id, Msg("@Ayse", "🌹"));
+
+        // Çekiliş sürerken push yanıtı kopyayı asıl kayda taşıdı: iki katılımcı satırı aynı müşteride.
+        new CustomerSyncRepository(db).RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+
+        var winners = svc.Draw(g.Id);
+
+        winners.Should().ContainSingle("aynı kişi iki satırla iki şans almaz");
+        var ps = repo.GetParticipants(g.Id);
+        ps.Should().HaveCount(2, "katılımcı satırları silinmez — denetim kaydı");
+        ps.Where(p => p.IsWinner).Should().ContainSingle();
+    }
 }

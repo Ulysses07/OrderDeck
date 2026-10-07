@@ -41,7 +41,9 @@ public sealed class ShipmentService
     /// <summary>
     /// Müşterinin açık (Pending veya Held) Shipment'ını döndürür; yoksa yeni
     /// Pending Shipment oluşturup persist eder. Müşteri başına en fazla 1
-    /// açık Shipment invariant'ı bu method tarafından korunur.
+    /// açık Shipment invariant'ı bu method tarafından korunur — yerel taşıma
+    /// (U12) iki dosyayı aynı kişide bırakabilir; o zaman en yenisi seçilir
+    /// (<see cref="ShipmentRepository.GetOpenByCustomer"/>).
     /// </summary>
     public Shipment GetOrCreateOpenShipment(string customerId)
     {

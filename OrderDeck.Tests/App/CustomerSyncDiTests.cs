@@ -60,4 +60,15 @@ public sealed class CustomerSyncDiTests
             .Should().BeSameAs(pull);
         hosted.Should().NotContain(h => h.GetType().Name == "ShopperRegistrationIngestHostedService");
     }
+
+    [Fact]
+    public void Musteri_detay_penceresi_kargo_deposunu_DIdan_alir()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var vm = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.CustomerDetailViewModel>();
+
+        PrivateField<ShipmentRepository>(vm, "_shipments").Should().BeSameAs(
+            host.Services.GetRequiredService<ShipmentRepository>(),
+            "C8: isteğe bağlı parametre DI'dan gelmezse iki açık kargo uyarısı sessizce kapanırdı");
+    }
 }

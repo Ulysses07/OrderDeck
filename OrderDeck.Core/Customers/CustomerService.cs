@@ -32,12 +32,16 @@ public sealed class CustomerService
     public Customer? Find(string platform, string username) =>
         _repo.FindByPlatformAndUsername(platform, username);
 
+    /// <summary>Sohbet yolu: müşteriyi bulur, yoksa açar.</summary>
+    /// <param name="write">U12: doluysa bütün okuma ve yazımlar o pakette — çağıran
+    /// (<see cref="Sales.LabelService.Add"/>) müşteriyi ve etiketi tek işlemde yazar; ayrı
+    /// yazımlar arasında yerel taşıma (push yanıtı) müşteriyi silebilirdi.</param>
     public Customer GetOrCreate(string platform, string username,
-        string? displayName, string? avatarUrl)
+        string? displayName, string? avatarUrl, Storage.DbWrite? write = null)
     {
-        var existing = _repo.FindByPlatformAndUsername(platform, username);
+        var existing = _repo.FindByPlatformAndUsername(platform, username, write);
         if (existing is not null)
-            return MaybeAdoptYouTube(existing, platform, displayName) ?? existing;
+            return MaybeAdoptYouTube(existing, platform, displayName, write) ?? existing;
 
         var now = _clock.UnixNow();
         var customer = new Customer(
@@ -56,9 +60,13 @@ public sealed class CustomerService
             BlacklistedAt: null,
             Address: null,
             Phone: null);
-        _repo.Insert(customer);
-        return MaybeAdoptYouTube(customer, platform, displayName) ?? customer;
+        _repo.Insert(customer, write);
+        return MaybeAdoptYouTube(customer, platform, displayName, write) ?? customer;
     }
+
+    /// <summary>U12: taşınmış Id'nin güncel karşılığı (çekiliş önceki kazanan önbelleği,
+    /// katılımcıların kişi başına tekilleştirilmesi).</summary>
+    public string ResolveId(string customerId) => _repo.ResolveId(customerId);
 
     /// <summary>
     /// YouTube channelId satırını, intake formda @handle ile bildirilen kişinin
@@ -66,7 +74,7 @@ public sealed class CustomerService
     /// Zaten gruplu ya da YouTube olmayan satırlarda no-op. Grup kara listedeyse
     /// satır da kara listeye alınır. Adopte edilirse güncel kaydı döner, yoksa null.
     /// </summary>
-    private Customer? MaybeAdoptYouTube(Customer row, string platform, string? displayName)
+    private Customer? MaybeAdoptYouTube(Customer row, string platform, string? displayName, Storage.DbWrite? write)
     {
         if (!string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase)) return null;
         if (!string.IsNullOrEmpty(row.GroupId)) return null;
@@ -75,16 +83,16 @@ public sealed class CustomerService
         var handle = displayName.Trim().TrimStart('@').Trim();
         if (handle.Length == 0) return null;
 
-        var declared = _repo.FindGroupedYouTubeByHandle(handle);
+        var declared = _repo.FindGroupedYouTubeByHandle(handle, write);
         if (declared?.GroupId is not { Length: > 0 } groupId) return null;
         if (string.Equals(declared.Id, row.Id, StringComparison.Ordinal)) return null;
 
-        _repo.SetGroupId(row.Id, groupId);
-        if (_repo.IsGroupBlacklisted(groupId))
+        _repo.SetGroupId(row.Id, groupId, write);
+        if (_repo.IsGroupBlacklisted(groupId, write))
             _repo.UpdateBlacklist(row.Id, isBlacklisted: true,
-                declared.BlacklistReason, declared.BlacklistedAt ?? _clock.UnixNow());
+                declared.BlacklistReason, declared.BlacklistedAt ?? _clock.UnixNow(), write);
 
-        return _repo.GetById(row.Id);
+        return _repo.GetById(row.Id, write);
     }
 
     /// <param name="write">
