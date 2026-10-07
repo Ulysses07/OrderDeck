@@ -9,7 +9,7 @@ namespace OrderDeck.Tests.Customers;
 public sealed class CustomerIdentityTests
 {
     [Theory]
-    [InlineData("  Ayse.KAYA ", "ayse.kaya")]
+    [InlineData("  Ornek.MUSTERI ", "ornek.musteri")]
     [InlineData("İREM", "irem")]     // sunucudaki Replace('İ','i') ile aynı
     [InlineData("ırem", "ırem")]     // noktasız ı KORUNUR — sunucu IdentityKeyOf ı→i yapmaz
     [InlineData("ŞEYMA", "şeyma")]

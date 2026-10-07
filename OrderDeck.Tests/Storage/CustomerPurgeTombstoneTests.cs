@@ -73,7 +73,7 @@ public class CustomerPurgeTombstoneTests
             // Backfill'in mevcut filtresi "FullName boş olanlar" — temizlenmiş
             // satır tam da bu filtreye düşüyordu (denetim probu: yalnız isim dirildi).
             var updated = repo.BackfillFullNameForIdentities(
-                new List<(string, string)> { ("instagram", "ayse_y") }, "Ayşe Yılmaz", submittedAtMs: 5_000_000);
+                new List<(string, string)> { ("instagram", "ayse_y") }, "Örnek Müşteri", submittedAtMs: 5_000_000);
 
             updated.Should().Be(0);
             repo.FindByPlatformAndUsername("instagram", "ayse_y")!.FullName.Should().BeNull();
@@ -86,12 +86,13 @@ public class CustomerPurgeTombstoneTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
+        var telefon = TestPhone.NewE164();
 
-        repo.UpsertFromIntakeForm("ayse_form", "Ayşe Yılmaz", "Adres 1", "+905551112233", nowUnix: 1000, submittedAtMs: 1_000_000);
+        repo.UpsertFromIntakeForm("ayse_form", "Örnek Müşteri", "Adres 1", telefon, nowUnix: 1000, submittedAtMs: 1_000_000);
         var seeded = repo.FindByPlatformAndUsername("form", "ayse_form")!;
         repo.ScrubPersonalData(seeded.Id);
 
-        var returned = repo.UpsertFromIntakeForm("ayse_form", "Ayşe Yılmaz", "Adres 1", "+905551112233", nowUnix: 2000, submittedAtMs: 2_000_000);
+        var returned = repo.UpsertFromIntakeForm("ayse_form", "Örnek Müşteri", "Adres 1", telefon, nowUnix: 2000, submittedAtMs: 2_000_000);
 
         // Dönen kayıt iyimser kopya DEĞİL, temizlenmiş gerçek satır olmalı —
         // çağıran onu ekrana/başka yazılara taşıyabilir.
@@ -194,7 +195,7 @@ public class CustomerPurgeTombstoneTests
         repo.RecordPurge("form", "ayse_form", purgedAtUnix: 1500);
 
         var returned = repo.UpsertFromIntakeForm(
-            "ayse_form", "Ayşe Yılmaz", "Adres 1", "+905551112233", nowUnix: 2000, submittedAtMs: 2_000_000);
+            "ayse_form", "Örnek Müşteri", "Adres 1", TestPhone.NewE164(), nowUnix: 2000, submittedAtMs: 2_000_000);
 
         // Dönen kayıt iyimser kopya DEĞİL — çağıran onu ekrana/başka yazılara taşıyabilir.
         returned.DisplayName.Should().Be("[Silindi]");

@@ -41,9 +41,6 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
 
     private static string NewId() => Guid.NewGuid().ToString("N");
 
-    // Telefon sabit YAZILMAZ (CLAUDE.md, repo public): üretilir.
-    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
-
     private string Local(string username, string? displayName = "takma", string? id = null, string? avatar = null)
     {
         id ??= NewId();
@@ -229,7 +226,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         _customers.RecordPurge("tiktok", "silinen", purgedAtUnix: 5000);
         var id = NewId();
 
-        _sync.ApplyServerCustomer(Server(id, "SILINEN", new CustomerSyncState { Phone = NewPhone(), PhoneChangedAt = T1 }),
+        _sync.ApplyServerCustomer(Server(id, "SILINEN", new CustomerSyncState { Phone = TestPhone.NewE164(), PhoneChangedAt = T1 }),
             NothingPushed, Now);
 
         var c = _customers.GetById(id)!;
@@ -303,7 +300,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var id = Local("ayse");
         var seq = Seq(id);
 
-        _sync.ApplyServerCustomer(Server(id, "ayse", new CustomerSyncState { Phone = NewPhone(), PhoneChangedAt = T3 }), Pushed, Now)
+        _sync.ApplyServerCustomer(Server(id, "ayse", new CustomerSyncState { Phone = TestPhone.NewE164(), PhoneChangedAt = T3 }), Pushed, Now)
             .Should().Be(FeedApplyResult.Updated);
 
         Seq(id).Should().Be(seq);
@@ -342,7 +339,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     {
         var holder = Local("ayse");                       // birebir aynı kullanıcı adı → tekil indeks
         _customers.UpdateNotes(holder, "kapıya bırak");     // damgalı: taşınır
-        _customers.UpdatePhone(holder, NewPhone());
+        _customers.UpdatePhone(holder, TestPhone.NewE164());
         Guarded("UPDATE Customer SET PhoneChangedAt = NULL, Email = 'ayse@example.test' WHERE Id = @holder", new { holder });
         SeedRefs(holder);
         var canonical = NewId();
@@ -350,14 +347,14 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var holderLastSeen = _customers.GetById(holder)!.LastSeenAt;   // UpdatePhone ilerletti (N03)
 
         var r = _sync.ApplyServerCustomer(
-            Server(canonical, "ayse", new CustomerSyncState { FullName = "Ayşe Yılmaz", FullNameChangedAt = T1 }),
+            Server(canonical, "ayse", new CustomerSyncState { FullName = "Örnek Müşteri", FullNameChangedAt = T1 }),
             pushWatermark: watermark, Now);
 
         r.Should().Be(FeedApplyResult.Rekeyed);
         Exists(holder).Should().BeFalse();
         RedirectOf(holder).Should().Be(canonical, "uçuştaki eski Id yazımları asıl kayda çözülür (U12)");
         var c2 = _customers.GetById(canonical)!;
-        c2.FullName.Should().Be("Ayşe Yılmaz");
+        c2.FullName.Should().Be("Örnek Müşteri");
         c2.Notes.Should().Be("kapıya bırak");
         c2.Phone.Should().BeNull("beyan olabilen damgasız birim taşınmaz (U3a) — sıradan kopyanınki sunucuda zaten birleşti");
         c2.Email.Should().Be("ayse@example.test", "beyan olamayan damgasız birim doldurma olarak taşınır (U3a)");
@@ -467,7 +464,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     {
         var holder = Local("ayse");
         var squatter = NewId();
-        _sync.ApplyServerCustomer(Server(squatter, "AYSE", new CustomerSyncState { Phone = NewPhone() }, provisional: true), Pushed, Now)
+        _sync.ApplyServerCustomer(Server(squatter, "AYSE", new CustomerSyncState { Phone = TestPhone.NewE164() }, provisional: true), Pushed, Now)
             .Should().Be(FeedApplyResult.SkippedProvisional);
         Exists(squatter).Should().BeFalse();
         Exists(holder).Should().BeTrue("gerçek müşteri sahiplenenin kaydına ASLA taşınmaz (kural 7)");
@@ -486,7 +483,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     public void Miras_satiri_yeni_yerel_Idye_donusur_beyana_esit_damgasiz_birimler_duser_farklilar_kalir()
     {
         var provisional = NewId();
-        var claimPhone = NewPhone();
+        var claimPhone = TestPhone.NewE164();
         // Eski ingest beyanı indirdi; yayıncı göç öncesi ili ekleyip not yazmış (damgasız).
         Legacy(provisional, "ayse", displayName: "Ayşe Y", phone: claimPhone, address: "Atatürk Cd. 1",
             notes: "kapıda", city: "İzmir");
@@ -517,7 +514,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     public void Silinmis_gecici_kaydin_miras_satiri_beyan_bilinmeden_donusur_mezar_tasi_yazilmaz()
     {
         var provisional = NewId();
-        Legacy(provisional, "ayse", displayName: "Ayşe Y", phone: NewPhone(), address: "Adres", notes: "kapıda");
+        Legacy(provisional, "ayse", displayName: "Ayşe Y", phone: TestPhone.NewE164(), address: "Adres", notes: "kapıda");
         var real = Local("Ayse_Gercek");
 
         _sync.ApplyProvisional(provisional, claims: null, Now).Should().Be(FeedApplyResult.Converted);
@@ -738,11 +735,11 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     public void RekeyToLocal_silinmis_kopyanin_damgali_bos_kisisel_birimi_asil_kaydi_silmez()
     {
         var canonical = Local("Ayse");
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         _customers.UpdatePhone(canonical, phone);
         Guarded("UPDATE Customer SET PhoneChangedAt = @T1 WHERE Id = @canonical", new { T1, canonical });
         var copy = Local("ayse");
-        _customers.UpdatePhone(copy, NewPhone());                  // damga: şimdi (> T1)
+        _customers.UpdatePhone(copy, TestPhone.NewE164());         // damga: şimdi (> T1)
         _customers.UpdateNotes(copy, "not kalır");
         // Kopya silinmiş: telefon boşaldı, damgası kaldı (akıştan inen silme kilit altında yazar).
         Guarded("UPDATE Customer SET Phone = NULL, DisplayName = '[Silindi]', PurgedAt = 5000 WHERE Id = @copy", new { copy });
@@ -775,8 +772,8 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         // 035'in FTS indeksi rowid'e bağlı: sahip silme + asıl kayıt ekleme, kopya silme ve
         // Id yeniden yazımı (dönüştürme) indeksi Customer ile tutarlı bırakmalı.
         var holder = Local("ayse", displayName: "Ayşe takma");
-        _customers.UpdatePhone(holder, NewPhone());
-        _sync.ApplyServerCustomer(Server(NewId(), "ayse", new CustomerSyncState { FullName = "Ayşe Yılmaz", FullNameChangedAt = T1 }),
+        _customers.UpdatePhone(holder, TestPhone.NewE164());
+        _sync.ApplyServerCustomer(Server(NewId(), "ayse", new CustomerSyncState { FullName = "Örnek Müşteri", FullNameChangedAt = T1 }),
             Seq(holder), Now).Should().Be(FeedApplyResult.Rekeyed);
         AssertSearchIndexConsistent();
 
@@ -786,7 +783,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         AssertSearchIndexConsistent();
 
         var provisional = NewId();
-        Legacy(provisional, "zeynep", displayName: "Zeynep Y", phone: NewPhone(), address: "Adres");
+        Legacy(provisional, "zeynep", displayName: "Zeynep Y", phone: TestPhone.NewE164(), address: "Adres");
         _sync.ApplyProvisional(provisional, claims: null, Now).Should().Be(FeedApplyResult.Converted);
         AssertSearchIndexConsistent();
 
@@ -851,7 +848,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
     public void GUID_olmayan_Idli_kopyanin_damgasiz_verisi_de_tasinir()
     {
         // U3b: gönderim GUID olmayan Id'yi hiç göndermedi — verisi sunucuda yok; geçici kökenli olamaz.
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         Guarded(@"INSERT INTO Customer (Id, Platform, Username, IdentityKey, DisplayName, FirstSeenAt, LastSeenAt, Phone)
                   VALUES ('eski1', 'tiktok', 'ayse', 'ayse', 'Ayşe', 1, 1, @phone)", new { phone });
         var canonical = Local("Ayse", displayName: null);

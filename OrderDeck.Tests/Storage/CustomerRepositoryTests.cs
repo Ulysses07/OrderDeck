@@ -25,9 +25,6 @@ public class CustomerRepositoryTests
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
             Address: null, Phone: null);
 
-    // Telefon sabit YAZILMAZ (CLAUDE.md, repo public): üretilir.
-    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
-
     [Fact]
     public void Insert_then_FindByPlatformAndUsername_returns_customer()
     {
@@ -242,11 +239,11 @@ public class CustomerRepositoryTests
         var repo = CreateRepository();
         var now = 1714521600L;
 
-        var customer = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Canlı", "Atatürk Cad. No:12", null, now, submittedAtMs: now * 1000);
+        var customer = repo.UpsertFromIntakeForm("ornekmusteri", "Örnek Müşteri", "Atatürk Cad. No:12", null, now, submittedAtMs: now * 1000);
 
         customer.Platform.Should().Be("form");
-        customer.Username.Should().Be("bilalcanli");
-        customer.DisplayName.Should().Be("Bilal Canlı");
+        customer.Username.Should().Be("ornekmusteri");
+        customer.DisplayName.Should().Be("Örnek Müşteri");
         customer.Address.Should().Be("Atatürk Cad. No:12");
         customer.FirstSeenAt.Should().Be(now);
         customer.LastSeenAt.Should().Be(now);
@@ -259,8 +256,8 @@ public class CustomerRepositoryTests
         var firstNow = 1714521600L;
         var secondNow = 1714608000L;
 
-        var first = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Eski", "Eski Adres", null, firstNow, submittedAtMs: firstNow * 1000);
-        var second = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Yeni", "Yeni Adres", null, secondNow, submittedAtMs: secondNow * 1000);
+        var first = repo.UpsertFromIntakeForm("ornekmusteri", "Bilal Eski", "Eski Adres", null, firstNow, submittedAtMs: firstNow * 1000);
+        var second = repo.UpsertFromIntakeForm("ornekmusteri", "Bilal Yeni", "Yeni Adres", null, secondNow, submittedAtMs: secondNow * 1000);
 
         second.Id.Should().Be(first.Id);    // same row
         second.DisplayName.Should().Be("Bilal Yeni");
@@ -276,19 +273,19 @@ public class CustomerRepositoryTests
         var now = 1714521600L;
 
         // Same username, different platform — distinct customers
-        repo.UpsertFromIntakeForm("bilalcanli", "Bilal F", "Form Adres", null, now, submittedAtMs: now * 1000);
+        repo.UpsertFromIntakeForm("ornekmusteri", "Bilal F", "Form Adres", null, now, submittedAtMs: now * 1000);
         // Mevcut Insert API ile Instagram customer create
         repo.Insert(new Customer(
             Id: Guid.NewGuid().ToString("N"),
             Platform: "instagram",
-            Username: "bilalcanli",
+            Username: "ornekmusteri",
             DisplayName: "Bilal IG",
             AvatarUrl: null, FirstSeenAt: now, LastSeenAt: now,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
             Address: null, Phone: null));
 
-        var allByUsername = repo.Search("bilalcanli", limit: 10);
+        var allByUsername = repo.Search("ornekmusteri", limit: 10);
         allByUsername.Should().HaveCount(2);
         allByUsername.Should().Contain(c => c.Platform == "form");
         allByUsername.Should().Contain(c => c.Platform == "instagram");
@@ -427,11 +424,12 @@ public class CustomerRepositoryTests
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
         repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
+        var telefon = TestPhone.NewE164();
 
-        repo.UpsertFromIntakeForm("alice", "Alice Yılmaz", "İzmir", "+905551234567", nowUnix: 1000, submittedAtMs: 1_000_000);
+        repo.UpsertFromIntakeForm("alice", "Örnek Müşteri", "İzmir", telefon, nowUnix: 1000, submittedAtMs: 1_000_000);
 
         var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+        delta.Should().ContainSingle().Which.Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -445,7 +443,7 @@ public class CustomerRepositoryTests
         repo.Insert(new Customer("id1", "form", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
 
-        var returned = repo.UpsertFromIntakeForm("alice", "Alice Yılmaz", "İzmir", null, nowUnix: 1000, submittedAtMs: 1_000_000);
+        var returned = repo.UpsertFromIntakeForm("alice", "Örnek Müşteri", "İzmir", null, nowUnix: 1000, submittedAtMs: 1_000_000);
 
         returned.LastSeenAt.Should().Be(repo.GetById("id1")!.LastSeenAt);
     }
@@ -462,13 +460,14 @@ public class CustomerRepositoryTests
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
         repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
+        var telefon = TestPhone.NewE164();
 
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("instagram", "alice", null) },
-            "Alice Yılmaz", "İzmir", "+905551234567", null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
+            "Örnek Müşteri", "İzmir", telefon, null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
         var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+        delta.Should().ContainSingle().Which.Phone.Should().Be(telefon);
     }
 
     // ── N03-g (2026-09-12 denetimi): imleç saatten bağımsız olmalı ──────
@@ -680,16 +679,17 @@ public class CustomerRepositoryTests
             100, 100, false, null, null, 3, 250m, null, null, null));
 
         // Form: aynı kişi küçük harfle kaydoluyor.
+        var telefon = TestPhone.NewE164();
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("instagram", "sibelvip", null) },
-            "Sibel Yılmaz", "İzmir", "+905551112233", null, null, true, false, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Örnek Müşteri", "İzmir", telefon, null, null, true, false, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         // AYRI satır AÇILMAMALI — mevcut satır güncellenmeli (geçmiş korunur).
         var all = repo.GetRecent(1000).Where(c => c.Platform == "instagram").ToList();
         all.Should().HaveCount(1);
         var c = all[0];
         c.Id.Should().Be("shop1");
-        c.Phone.Should().Be("+905551112233");
+        c.Phone.Should().Be(telefon);
         c.Address.Should().Be("İzmir");
         c.TotalAmount.Should().Be(250m);          // alışveriş geçmişi korundu
         c.GroupId.Should().NotBeNullOrEmpty();
@@ -705,9 +705,10 @@ public class CustomerRepositoryTests
             100, 100, false, null, null, 2, 180m, null, null, null));
 
         // Form: müşteri @handle'ını yazıyor (channelId'yi bilmez).
+        var telefon = TestPhone.NewE164();
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },   // farklı casing + @ yok
-            "Sibel G", "Ankara", "+905559998877", null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Sibel G", "Ankara", telefon, null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         // channelId satırına birleşmeli, AYRI (youtube, handle) satırı açılmamalı.
         var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
@@ -715,7 +716,7 @@ public class CustomerRepositoryTests
         var c = yts[0];
         c.Id.Should().Be("yt1");
         c.Username.Should().Be("UCabc123channel");  // channelId korundu (chat eşleşmesi sürsün)
-        c.Phone.Should().Be("+905559998877");
+        c.Phone.Should().Be(telefon);
         c.TotalAmount.Should().Be(180m);            // geçmiş korundu
     }
 
@@ -747,7 +748,7 @@ public class CustomerRepositoryTests
         // Silmeden önce kabul edilmiş, channelId taşımayan form şimdi uygulanıyor.
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },
-            "Sibel G", "Ankara", "+905559998877", "s@example.com", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Sibel G", "Ankara", TestPhone.NewE164(), "s@example.com", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
         yts.Should().OnlyContain(c => c.Phone == null && c.FullName == null && c.Address == null,
@@ -765,7 +766,7 @@ public class CustomerRepositoryTests
 
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },
-            "Sibel G", "Ankara", "+905559998877", null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Sibel G", "Ankara", TestPhone.NewE164(), null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
         repo.RecordPurge("youtube", "UCabc123channel", 6000);
 
         var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
@@ -783,11 +784,12 @@ public class CustomerRepositoryTests
         repo.RecordPurge("youtube", "UCabc123channel", 4000);
 
         // (a) Başka bir handle serbest.
+        var telefon = TestPhone.NewE164();
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("youtube", "baskakisi", null) },
-            "Başka Kişi", "İzmir", "+905551112233", null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Başka Kişi", "İzmir", telefon, null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
         repo.FindByPlatformAndUsername("youtube", "baskakisi")!.Phone
-            .Should().Be("+905551112233");
+            .Should().Be(telefon);
 
         // (b) Aynı görünen adı taşıyan BAŞKA bir kanal kimliği de serbest —
         //     kanonik kimlik çözülebildiğinde yeniden kayıt yolu açık kalır.
@@ -884,18 +886,18 @@ public class CustomerRepositoryTests
     {
         var repo = CreateRepository();
         // Grup: IG (chat takma adlı, FullName boş) + YouTube. FullName ikisinde de boş.
-        repo.Insert(new Customer("ig1", "instagram", "ayse.yilmaz", "ayse.yilmaz", null,
+        repo.Insert(new Customer("ig1", "instagram", "ornek.musteri", "ornek.musteri", null,
             100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
         repo.Insert(new Customer("yt1", "youtube", "UCabc", "@ayse", null,
             100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
 
         var updated = repo.BackfillFullNameForIdentities(
-            new[] { ("instagram", "ayse.yilmaz") }, "Ayşe Yılmaz", submittedAtMs: 5_000_000);
+            new[] { ("instagram", "ornek.musteri") }, "Örnek Müşteri", submittedAtMs: 5_000_000);
 
         updated.Should().Be(2); // eşleşen satırın tüm grubu
-        repo.GetById("ig1")!.FullName.Should().Be("Ayşe Yılmaz");
-        repo.GetById("yt1")!.FullName.Should().Be("Ayşe Yılmaz");
-        repo.GetById("ig1")!.DisplayName.Should().Be("ayse.yilmaz"); // dokunulmadı
+        repo.GetById("ig1")!.FullName.Should().Be("Örnek Müşteri");
+        repo.GetById("yt1")!.FullName.Should().Be("Örnek Müşteri");
+        repo.GetById("ig1")!.DisplayName.Should().Be("ornek.musteri"); // dokunulmadı
     }
 
     [Fact]
@@ -916,14 +918,15 @@ public class CustomerRepositoryTests
     public void UpsertPersonFromIntake_links_by_phone_when_usernames_differ()
     {
         var repo = CreateRepository();
+        var telefon = TestPhone.NewE164();
         // Önceden IG'den kaydolmuş, telefonlu, gruplu müşteri.
         repo.Insert(new Customer("ig1", "instagram", "ayse", "Ayşe Y", null,
-            1, 1, false, null, null, 0, 0m, null, "Adr", "+905551112233", GroupId: "g1"));
+            1, 1, false, null, null, 0, 0m, null, "Adr", telefon, GroupId: "g1"));
 
         // Aynı kişi FB'den FARKLI kullanıcı adıyla ama AYNI telefonla kaydoluyor.
         var groupId = repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("facebook", "ayse.fb", null) },
-            "Ayşe Yılmaz", "Adr", "+905551112233", null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Örnek Müşteri", "Adr", telefon, null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         groupId.Should().Be("g1"); // mevcut grup telefonla bulundu, korundu
         repo.GetById("ig1")!.GroupId.Should().Be("g1");
@@ -935,14 +938,15 @@ public class CustomerRepositoryTests
     public void UpsertPersonFromIntake_phone_merge_propagates_blacklist()
     {
         var repo = CreateRepository();
+        var telefon = TestPhone.NewE164();
         // Kara listeli, telefonlu, tekil (grupsuz) mevcut müşteri.
         repo.Insert(new Customer("bad1", "instagram", "kotu", "Kötü", null,
-            1, 1, true, "dolandırıcı", null, 0, 0m, 999, "Adr", "+905550001122"));
+            1, 1, true, "dolandırıcı", null, 0, 0m, 999, "Adr", telefon));
 
         // Aynı telefonla FB'den yeni kayıt → aynı gruba çekilir + kara liste yayılır.
         var groupId = repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("facebook", "kotu.fb", null) },
-            "Kötü Kişi", "Adr", "+905550001122", null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            "Kötü Kişi", "Adr", telefon, null, null, false, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         var members = repo.GetGroupMembers(groupId);
         members.Should().HaveCount(2);
@@ -1003,18 +1007,18 @@ public class CustomerRepositoryTests
     {
         var repo = CreateRepository();
         // Chat'ten gelmiş IG satırı: DisplayName = IG takma adı (gerçek isim değil).
-        repo.Insert(new Customer("ig1", "instagram", "ayse.yilmaz", "ayse.yilmaz", null,
+        repo.Insert(new Customer("ig1", "instagram", "ornek.musteri", "ornek.musteri", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
 
         // Form: gerçek Ad Soyad farklı.
         repo.UpsertPersonFromIntake(
-            new (string, string, string?)[] { ("instagram", "ayse.yilmaz", null) },
-            "Ayşe Yılmaz", "Adres", phone, "e@x.com", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
+            new (string, string, string?)[] { ("instagram", "ornek.musteri", null) },
+            "Örnek Müşteri", "Adres", phone, "e@example.test", null, true, true, 5000, formId: Guid.NewGuid(), submittedAtMs: 5_000_000);
 
         var c = repo.GetById("ig1")!;
-        c.DisplayName.Should().Be("ayse.yilmaz"); // chat takma adı korundu (chat eşleşmesi sürsün)
-        c.FullName.Should().Be("Ayşe Yılmaz");    // gerçek isim ayrı kolonda saklandı
+        c.DisplayName.Should().Be("ornek.musteri"); // chat takma adı korundu (chat eşleşmesi sürsün)
+        c.FullName.Should().Be("Örnek Müşteri");    // gerçek isim ayrı kolonda saklandı
         c.Phone.Should().Be(phone);
     }
 }

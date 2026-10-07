@@ -32,10 +32,6 @@ public sealed class CustomerStampedWritersTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    // Telefon / TCKN sabit YAZILMAZ (CLAUDE.md, repo public): üretilir.
-    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
-    private static string NewTckn() => Random.Shared.NextInt64(10_000_000_000, 99_999_999_999).ToString();
-
     private long? Stamp(string id, string column) => Stamp(_db, id, column);
 
     private static long? Stamp(InMemorySqlite db, string id, string column)
@@ -78,7 +74,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
         return id;
     }
 
-    private string Form(string user, long at, string? fullName = "Ayşe Yılmaz", string? address = "Atatürk Cd. 1",
+    private string Form(string user, long at, string? fullName = "Örnek Müşteri", string? address = "Atatürk Cd. 1",
         string? phone = null, string? email = null, string? tckn = null, bool wa = false, bool sms = false,
         string? city = null, Guid? formId = null)
         => _repo.UpsertPersonFromIntake(
@@ -90,12 +86,12 @@ public sealed class CustomerStampedWritersTests : IDisposable
     public void Form_birimleri_SubmittedAt_damgasiyla_yazilir_dolu_takma_ada_dokunulmaz()
     {
         var id = Chat("ayse_y");
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
 
-        Form("ayse_y", T1, phone: phone, email: "ayse@example.test", tckn: NewTckn(), wa: true, city: "İzmir");
+        Form("ayse_y", T1, phone: phone, email: "ayse@example.test", tckn: TestTckn.NewValid(), wa: true, city: "İzmir");
 
         var c = _repo.GetById(id)!;
-        c.FullName.Should().Be("Ayşe Yılmaz");
+        c.FullName.Should().Be("Örnek Müşteri");
         c.Phone.Should().Be(phone);
         c.City.Should().Be("İzmir");
         foreach (var col in new[] { "FullNameChangedAt", "PhoneChangedAt", "EmailChangedAt", "TcknChangedAt",
@@ -109,10 +105,10 @@ public sealed class CustomerStampedWritersTests : IDisposable
     public void Eski_form_sonradan_yapilan_elle_duzenlemeyi_ezmez()
     {
         var id = Chat("ayse_y");
-        var manual = NewPhone();
+        var manual = TestPhone.NewE164();
         _repo.UpdatePhone(id, manual);              // tetikleyici: şimdi (T1'den yeni)
 
-        Form("ayse_y", T1, phone: NewPhone());       // geç açılan bilgisayarın oynattığı eski form
+        Form("ayse_y", T1, phone: TestPhone.NewE164());       // geç açılan bilgisayarın oynattığı eski form
 
         _repo.GetById(id)!.Phone.Should().Be(manual);
     }
@@ -122,9 +118,9 @@ public sealed class CustomerStampedWritersTests : IDisposable
     {
         // Göç öncesi veri damgasızdır; form (damgalı) onun üstüne yazar — kural 3.
         var id = Chat("ayse_y");
-        _repo.UpdatePhone(id, NewPhone());
+        _repo.UpdatePhone(id, TestPhone.NewE164());
         SetStamp(id, "PhoneChangedAt", null);
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
 
         Form("ayse_y", T1, phone: phone);
 
@@ -136,7 +132,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
     public void Bos_form_alani_yazilmaz()
     {
         var id = Chat("ayse_y");
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         Form("ayse_y", T1, phone: phone, email: "ayse@example.test");
 
         Form("ayse_y", T2, fullName: null, address: null, phone: null, email: null);
@@ -144,7 +140,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
         var c = _repo.GetById(id)!;
         c.Phone.Should().Be(phone);
         c.Email.Should().Be("ayse@example.test");
-        c.FullName.Should().Be("Ayşe Yılmaz");
+        c.FullName.Should().Be("Örnek Müşteri");
         c.Address.Should().Be("Atatürk Cd. 1");
         Stamp(id, "PhoneChangedAt").Should().Be(T1);
         Stamp(id, "AddressChangedAt").Should().Be(T1);
@@ -175,13 +171,13 @@ public sealed class CustomerStampedWritersTests : IDisposable
 
         Form("ayse_y", T1, fullName: "Başka Ad");
 
-        _repo.GetById(id)!.FullName.Should().Be("Ayşe Yılmaz", "eşit damga yazım üretmez (kural 4)");
+        _repo.GetById(id)!.FullName.Should().Be("Örnek Müşteri", "eşit damga yazım üretmez (kural 4)");
     }
 
     [Fact]
     public void Telefonla_gruplama_baska_satirin_grubunu_form_damgasiyla_yazar()
     {
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         var other = Chat("ayse_eski_hesap");
         _repo.UpdatePhone(other, phone);
 
@@ -194,7 +190,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void Telefonla_gruplama_sonradan_ayrilmis_satiri_geri_baglamaz()
     {
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         var other = Chat("ayse_eski_hesap");
         _repo.UpdatePhone(other, phone);
         SetStamp(other, "GroupIdChangedAt", T2);    // operatör T2'de gruptan ayırdı
@@ -207,15 +203,15 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void Backfill_doldurdugu_adi_form_damgasiyla_damgalar_damgali_bos_adi_doldurmaz()
     {
-        var a = Chat("zeynep.kaya");
-        var b = Chat("zeynep.kaya2");
+        var a = Chat("deneme.alici");
+        var b = Chat("deneme.alici2");
         SetStamp(b, "FullNameChangedAt", T2);       // T2'de bilerek boş bırakıldı
 
         _repo.BackfillFullNameForIdentities(
-                new[] { ("instagram", "zeynep.kaya"), ("instagram", "zeynep.kaya2") }, "Zeynep Kaya", submittedAtMs: T1)
+                new[] { ("instagram", "deneme.alici"), ("instagram", "deneme.alici2") }, "Deneme Alıcı", submittedAtMs: T1)
             .Should().Be(1);
 
-        _repo.GetById(a)!.FullName.Should().Be("Zeynep Kaya");
+        _repo.GetById(a)!.FullName.Should().Be("Deneme Alıcı");
         Stamp(a, "FullNameChangedAt").Should().Be(T1);
         _repo.GetById(b)!.FullName.Should().BeNull();
     }
@@ -235,14 +231,14 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void Satir_acan_yollar_kimlik_anahtarini_yazar()
     {
-        var chat = Chat("Ayse.KAYA");
+        var chat = Chat("Ornek.MUSTERI");
         Form("Form.Kisi", T1);
         var form = _repo.FindByPlatformAndUsername("instagram", "Form.Kisi")!.Id;
         var legacy = _repo.UpsertFromIntakeForm("Eski.Form", "Ad", "Adres", null, nowUnix: 1000, submittedAtMs: 1_000_000).Id;
 
         using var c = _db.Open();
         string? Key(string id) => c.ExecuteScalar<string?>("SELECT IdentityKey FROM Customer WHERE Id = @id", new { id });
-        Key(chat).Should().Be("ayse.kaya");
+        Key(chat).Should().Be("ornek.musteri");
         Key(form).Should().Be("form.kisi");
         Key(legacy).Should().Be("eski.form");
     }
@@ -250,12 +246,12 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void FindByPlatformAndUsername_harf_farkli_kaydi_kimlik_anahtariyla_bulur()
     {
-        var id = Chat("Ayse.Kaya");
+        var id = Chat("Ornek.Musteri");
 
-        _repo.FindByPlatformAndUsername("instagram", "ayse.kaya")!.Id.Should().Be(id);
-        _repo.FindByPlatformAndUsername("instagram", "AYSE.KAYA ")!.Id.Should().Be(id);
+        _repo.FindByPlatformAndUsername("instagram", "ornek.musteri")!.Id.Should().Be(id);
+        _repo.FindByPlatformAndUsername("instagram", "ORNEK.MUSTERI ")!.Id.Should().Be(id);
         _repo.FindByPlatformAndUsername("instagram", "baskasi").Should().BeNull();
-        _repo.FindByPlatformAndUsername("tiktok", "ayse.kaya").Should().BeNull("platform kimliğin parçası");
+        _repo.FindByPlatformAndUsername("tiktok", "ornek.musteri").Should().BeNull("platform kimliğin parçası");
     }
 
     [Fact]
@@ -273,7 +269,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
     {
         // NOCASE yalnız ASCII katlar: "ŞEYMA" ile "şeyma"yı eşleyen kimlik anahtarı.
         var id = Chat("ŞEYMA");
-        _repo.UpdatePhone(id, NewPhone());
+        _repo.UpdatePhone(id, TestPhone.NewE164());
         var seq = _repo.GetById(id)!.SyncSeq;
         var phoneStamp = Stamp(id, "PhoneChangedAt");
 
@@ -324,10 +320,10 @@ public sealed class CustomerStampedWritersTests : IDisposable
                 FirstSeenAt: 1, LastSeenAt: 1, IsBlacklisted: false, BlacklistReason: null, Notes: null,
                 TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null, Address: null, Phone: null));
         var formId = Guid.NewGuid();
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         string Apply(CustomerRepository repo) => repo.UpsertPersonFromIntake(
             new[] { ("instagram", "ayse_y", (string?)null), ("tiktok", "ayse_tt", (string?)null) },
-            "Ayşe Yılmaz", "Atatürk Cd. 1", phone, null, null, false, false,
+            "Örnek Müşteri", "Atatürk Cd. 1", phone, null, null, false, false,
             nowUnix: 1000, formId: formId, submittedAtMs: T1);
 
         var here = Apply(_repo);
@@ -364,13 +360,13 @@ public sealed class CustomerStampedWritersTests : IDisposable
         // (kendi BEGIN IMMEDIATE'i) da Id ile yazımı boşa düşürüp formu sessizce kaybettirebilirdi.
         var existing = Chat("ayse_y");
         var victim = Chat("ayse_eski_hesap");
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         _repo.UpdatePhone(victim, phone);
         FailWhenUpdated(victim, "GroupId");
 
         var act = () => _repo.UpsertPersonFromIntake(
             new[] { ("instagram", "ayse_y", (string?)null), ("tiktok", "ayse_tt", (string?)null) },
-            "Ayşe Yılmaz", "Atatürk Cd. 1", phone, null, null, false, false,
+            "Örnek Müşteri", "Atatürk Cd. 1", phone, null, null, false, false,
             nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: T1);
 
         act.Should().Throw<SqliteException>().WithMessage("*enjekte gec hata*");
@@ -386,13 +382,13 @@ public sealed class CustomerStampedWritersTests : IDisposable
     [Fact]
     public void Backfill_tek_islemde_uygulanir_gec_hata_grup_yazimini_geri_alir()
     {
-        var grouped = Chat("zeynep.kaya");
+        var grouped = Chat("deneme.alici");
         _repo.SetGroupId(grouped, Guid.NewGuid().ToString("N"));
-        var solo = Chat("zeynep.kaya2");
+        var solo = Chat("deneme.alici2");
         FailWhenUpdated(solo, "FullName");     // grup satırları önce, tekil satır sonra yazılır
 
         var act = () => _repo.BackfillFullNameForIdentities(
-            new[] { ("instagram", "zeynep.kaya"), ("instagram", "zeynep.kaya2") }, "Zeynep Kaya", submittedAtMs: T1);
+            new[] { ("instagram", "deneme.alici"), ("instagram", "deneme.alici2") }, "Deneme Alıcı", submittedAtMs: T1);
 
         act.Should().Throw<SqliteException>().WithMessage("*enjekte gec hata*");
         _repo.GetById(grouped)!.FullName.Should().BeNull("grup yazımı aynı işlemdeydi");
@@ -405,7 +401,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
         // Eski formun geç oynatılması, başka bilgisayarda SONRADAN kara listeden çıkarılmış satırı
         // yeniden kara listeye almamalı: yayılım formdan türeyen yazımdır → formun damgası ve
         // "yalnız daha yeniyse" kuralı.
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         var source = Guid.NewGuid().ToString("N");
         _repo.Insert(new Customer(source, "instagram", "kotu", DisplayName: "kotu", AvatarUrl: null,
             FirstSeenAt: 1, LastSeenAt: 1, IsBlacklisted: true, BlacklistReason: "dolandırıcı", Notes: null,
@@ -430,7 +426,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
     {
         // Kaynak üyede kara liste tarihi yoksa yayılan tarih de formdan türer (gönderim anı, sn).
         // İşleme anı olsaydı aynı formu işleyen iki bilgisayar eşit damgayla farklı değer yazardı.
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         _repo.Insert(new Customer(Guid.NewGuid().ToString("N"), "instagram", "kotu", DisplayName: "kotu",
             AvatarUrl: null, FirstSeenAt: 1, LastSeenAt: 1, IsBlacklisted: true, BlacklistReason: "dolandırıcı",
             Notes: null, TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null, Address: null, Phone: phone));
@@ -445,7 +441,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
     {
         // Aynı tarihli iki kara liste üyesi: kaynak tarama sırasına (ekleme sırası) bırakılsaydı
         // aynı veriye sahip iki bilgisayar farklı sebep yayardı — eşit damgayla, yakınsamadan.
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         var formId = Guid.NewGuid();
         var members = new[] { ("kaynak-1", "kotu_a", "sebep-a"), ("kaynak-2", "kotu_b", "sebep-b") };
         string PropagatedReason(bool reverseInsertOrder)
@@ -460,7 +456,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
                     TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: 999, Address: null, Phone: phone));
             repo.UpsertPersonFromIntake(
                 new[] { ("instagram", "kotu_yeni", (string?)null) },
-                "Ayşe Yılmaz", "Atatürk Cd. 1", phone, null, null, false, false,
+                "Örnek Müşteri", "Atatürk Cd. 1", phone, null, null, false, false,
                 nowUnix: 1000, formId: formId, submittedAtMs: T1);
             return repo.FindByPlatformAndUsername("instagram", "kotu_yeni")!.BlacklistReason!;
         }
@@ -474,10 +470,10 @@ public sealed class CustomerStampedWritersTests : IDisposable
     {
         var first = _repo.UpsertFromIntakeForm("Ayse.Form", "Ayşe", "Adres 1", null, nowUnix: 1000, submittedAtMs: T1);
 
-        var second = _repo.UpsertFromIntakeForm("ayse.form", "Ayşe Yılmaz", "Adres 2", null, nowUnix: 1001, submittedAtMs: T2);
+        var second = _repo.UpsertFromIntakeForm("ayse.form", "Örnek Müşteri", "Adres 2", null, nowUnix: 1001, submittedAtMs: T2);
 
         second.Id.Should().Be(first.Id, "kimlik anahtarı aynı kişi diyor — ikinci satır açılmaz");
-        second.DisplayName.Should().Be("Ayşe Yılmaz");
+        second.DisplayName.Should().Be("Örnek Müşteri");
         second.Address.Should().Be("Adres 2");
         CustomerCount().Should().Be(1);
     }
@@ -487,7 +483,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
     {
         // NOCASE "ŞEYMA" ile "şeyma"yı eşlemez; FindExistingForIntake'in kimlik anahtarı adımı eşler.
         var id = Chat("ŞEYMA");
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
 
         Form("şeyma", T1, phone: phone);
 
@@ -501,7 +497,7 @@ public sealed class CustomerStampedWritersTests : IDisposable
         var id = Chat("ŞEYMA");
         _repo.ScrubPersonalData(id);                    // satır silinmiş (PurgedAt); mezar taşı yok
 
-        Form("şeyma", T1, phone: NewPhone());
+        Form("şeyma", T1, phone: TestPhone.NewE164());
 
         var c = _repo.GetById(id)!;
         c.Phone.Should().BeNull();

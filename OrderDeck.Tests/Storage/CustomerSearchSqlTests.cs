@@ -364,11 +364,12 @@ public class CustomerSearchSqlTests
         repo.Search("rnek", limit: 10).Select(c => c.Id).Should().Equal("t-1");
 
         // 4) Intake upsert — ad değişince ESKİ ad artık bulunmamalı.
-        repo.UpsertFromIntakeForm("@ibo2", "Şeyma Işık", "adres", "+905551112233", 2000, submittedAtMs: 2_000_000);
-        repo.Search("eyma", limit: 10).Should().ContainSingle();
-        repo.UpsertFromIntakeForm("@ibo2", "Gökhan Ünal", "adres", "+905551112233", 3000, submittedAtMs: 3_000_000);
-        repo.Search("eyma", limit: 10).Should().BeEmpty();
-        repo.Search("khan", limit: 10).Should().ContainSingle();
+        var formTelefonu = TestPhone.NewE164();
+        repo.UpsertFromIntakeForm("@ibo2", "Şemsiye Işıma", "adres", formTelefonu, 2000, submittedAtMs: 2_000_000);
+        repo.Search("emsiye", limit: 10).Should().ContainSingle();
+        repo.UpsertFromIntakeForm("@ibo2", "Görsel Üzüm", "adres", formTelefonu, 3000, submittedAtMs: 3_000_000);
+        repo.Search("emsiye", limit: 10).Should().BeEmpty();
+        repo.Search("rsel", limit: 10).Should().ContainSingle();
 
         // 5) KVKK boşaltma — kişisel veri hem kolondan hem indeksten gitmeli.
         repo.ScrubPersonalData("t-1");

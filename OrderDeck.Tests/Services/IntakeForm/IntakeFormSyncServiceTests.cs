@@ -363,17 +363,17 @@ public sealed class IntakeFormSyncServiceTests
     public async Task BackfillFullNamesOnceAsync_fills_missing_fullname_from_server()
     {
         var (svc, repo, cursors, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse.yilmaz","fullName":"Ayşe Yılmaz","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ayse.yilmaz"}]"""));
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ornek.musteri","fullName":"Örnek Müşteri","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ornek.musteri"}]"""));
         // Chat'ten gelmiş IG satırı: DisplayName = takma ad, FullName boş.
         repo.Insert(new OrderDeck.Core.Customers.Customer(
-            "ig1", "instagram", "ayse.yilmaz", "ayse.yilmaz", null,
+            "ig1", "instagram", "ornek.musteri", "ornek.musteri", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
 
         var updated = await svc.BackfillFullNamesOnceAsync();
 
         updated.Should().Be(1);
-        repo.GetById("ig1")!.FullName.Should().Be("Ayşe Yılmaz");
-        repo.GetById("ig1")!.DisplayName.Should().Be("ayse.yilmaz"); // dokunulmadı
+        repo.GetById("ig1")!.FullName.Should().Be("Örnek Müşteri");
+        repo.GetById("ig1")!.DisplayName.Should().Be("ornek.musteri"); // dokunulmadı
         // R9-D03: "bitti" işareti = SyncCursor satırı, Seq = sürüm 2.
         cursors.Get(BackfillMarkerName, TestLicenseKey)!.Seq.Should().Be(2);
     }

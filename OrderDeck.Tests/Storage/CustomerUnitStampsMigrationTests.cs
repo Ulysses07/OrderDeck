@@ -54,7 +54,7 @@ public sealed class CustomerUnitStampsMigrationTests
         using (var c = db.Open())
             c.Execute(@"INSERT INTO Customer (Id, Platform, Username, DisplayName, FirstSeenAt, LastSeenAt,
                             Address, City, Notes, IsBlacklisted, WhatsAppConsent, RecipientPaysActive)
-                        VALUES ('old1', 'instagram', '  Ayse.KAYA ', 'takma', 1, 5,
+                        VALUES ('old1', 'instagram', '  Ornek.MUSTERI ', 'takma', 1, 5,
                                 'adres', 'İzmir', 'not', 1, 1, 1)");
 
         new MigrationRunner(db).Run();
@@ -64,7 +64,7 @@ public sealed class CustomerUnitStampsMigrationTests
                 $"{col}: LastSeenAt iş zamanıdır, düzenleme anı değil — göç damga UYDURMAZ");
         using var conn = db.Open();
         conn.ExecuteScalar<string>("SELECT IdentityKey FROM Customer WHERE Id = 'old1'")
-            .Should().Be("ayse.kaya");
+            .Should().Be("ornek.musteri");
         conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(45);
     }
 
@@ -401,14 +401,14 @@ public sealed class CustomerUnitStampsMigrationTests
         using var _d = db;
         repo.Insert(Chat("c1", "ayse"));
         repo.Insert(Chat("c2", "mehmet"));
-        var numara = $"0555{Random.Shared.Next(1_000_000, 10_000_000)}";
+        var numara = "0" + TestPhone.NewNational();
         using var conn = db.Open();
         conn.Execute(@"UPDATE Customer
-                          SET DisplayName = 'Ayşe', FullName = 'Ayşe Kaya', Phone = @numara,
+                          SET DisplayName = 'Ayşe', FullName = 'Örnek Müşteri', Phone = @numara,
                               Address = 'Atatürk Cd. 1', City = 'İzmir', Notes = 'kapıya'
                         WHERE Id = 'c1'", new { numara });
         conn.Execute("UPDATE Customer SET Id = 'c1-yeni' WHERE Id = 'c1'");
-        conn.Execute("UPDATE Customer SET FullName = 'Mehmet Can', Notes = 'iade' WHERE Id IN ('c1-yeni', 'c2')");
+        conn.Execute("UPDATE Customer SET FullName = 'Deneme Alıcı', Notes = 'iade' WHERE Id IN ('c1-yeni', 'c2')");
 
         var check = () => conn.Execute("INSERT INTO CustomerFts(CustomerFts, rank) VALUES('integrity-check', 1)");
         check.Should().NotThrow("arama indeksi Customer ile tutarlı kalmalı");

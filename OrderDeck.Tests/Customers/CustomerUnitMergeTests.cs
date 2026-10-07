@@ -1,6 +1,7 @@
 using System;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Customers;
@@ -15,10 +16,6 @@ public sealed class CustomerUnitMergeTests
     private const long T1 = 1_759_312_800_000;  // yalnız sıra önemli
     private const long T2 = T1 + 3_600_000;
     private const long T3 = T1 + 7_200_000;
-
-    // Sabit telefon / TCKN YAZILMAZ (CLAUDE.md, repo public): üretilir.
-    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
-    private static string NewTckn() => Random.Shared.NextInt64(10_000_000_000, 99_999_999_999).ToString();
 
     // ── son yazan kazanır (damgalı birim) ───────────────────────────────
 
@@ -116,16 +113,16 @@ public sealed class CustomerUnitMergeTests
     [Fact]
     public void Esit_damgada_harf_farki_da_farktir_sunucunun_yazimi_alinir()
     {
-        var t = new CustomerSyncState { FullName = "ayşe kaya", FullNameChangedAt = T1 };
-        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "Ayşe Kaya", FullNameChangedAt = T1 }, incomingWinsTie: true)
+        var t = new CustomerSyncState { FullName = "örnek müşteri", FullNameChangedAt = T1 };
+        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "Örnek Müşteri", FullNameChangedAt = T1 }, incomingWinsTie: true)
             .Should().BeTrue();
-        t.FullName.Should().Be("Ayşe Kaya");
+        t.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
     public void Esit_damgada_sunucudan_null_TCKN_yerel_degeri_silmez()
     {
-        var tckn = NewTckn();
+        var tckn = TestTckn.NewValid();
         var t = new CustomerSyncState { Tckn = tckn, TcknChangedAt = T1 };
         CustomerUnitMerge.Apply(t, new CustomerSyncState { Tckn = null, TcknChangedAt = T1 }, incomingWinsTie: true)
             .Should().BeFalse("sunucu çözemeyince null gönderir, damga aynı (S13)");
@@ -137,7 +134,7 @@ public sealed class CustomerUnitMergeTests
     {
         // M-3: boş string de null kadar "çözülemedi" anlamına gelir — eski kod yalnız `is not null`
         // kontrol ettiği için "" yerel TCKN'yi silerdi.
-        var tckn = NewTckn();
+        var tckn = TestTckn.NewValid();
         var t = new CustomerSyncState { Tckn = tckn, TcknChangedAt = T1 };
         CustomerUnitMerge.Apply(t, new CustomerSyncState { Tckn = "", TcknChangedAt = T1 }, incomingWinsTie: true)
             .Should().BeFalse("boş TCKN de çözülemedi anlamına gelir (M-3)");
@@ -147,8 +144,8 @@ public sealed class CustomerUnitMergeTests
     [Fact]
     public void Esit_damgada_TCKN_farkliysa_ve_sunucu_doluysa_sunucununki_yazilir()
     {
-        var t = new CustomerSyncState { Tckn = NewTckn(), TcknChangedAt = T1 };
-        var sunucununTckni = NewTckn();
+        var t = new CustomerSyncState { Tckn = TestTckn.NewValid(), TcknChangedAt = T1 };
+        var sunucununTckni = TestTckn.NewValid();
         CustomerUnitMerge.Apply(t, new CustomerSyncState { Tckn = sunucununTckni, TcknChangedAt = T1 }, incomingWinsTie: true)
             .Should().BeTrue();
         t.Tckn.Should().Be(sunucununTckni);
@@ -231,14 +228,14 @@ public sealed class CustomerUnitMergeTests
     [Fact]
     public void Telefon_degisikligi_eposta_ve_TCKN_yi_silmez()
     {
-        var tckn = NewTckn();
+        var tckn = TestTckn.NewValid();
         var t = new CustomerSyncState
         {
-            Phone = NewPhone(), PhoneChangedAt = T1,
+            Phone = TestPhone.NewE164(), PhoneChangedAt = T1,
             Email = "kisi@example.test", EmailChangedAt = T1,
             Tckn = tckn, TcknChangedAt = T1,
         };
-        var yeni = NewPhone();
+        var yeni = TestPhone.NewE164();
         CustomerUnitMerge.Apply(t, new CustomerSyncState { Phone = yeni, PhoneChangedAt = T2 });
         t.Phone.Should().Be(yeni);
         t.Email.Should().Be("kisi@example.test");
@@ -389,7 +386,7 @@ public sealed class CustomerUnitMergeTests
     public void Silinmis_hedefe_hicbir_birim_yazilmaz()
     {
         var t = new CustomerSyncState { PurgedAt = 5000 };
-        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "x", FullNameChangedAt = T3, Phone = NewPhone() })
+        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "x", FullNameChangedAt = T3, Phone = TestPhone.NewE164() })
             .Should().BeFalse();
         t.FullName.Should().BeNull();
         t.Phone.Should().BeNull();
@@ -413,17 +410,17 @@ public sealed class CustomerUnitMergeTests
     public void Yerel_ad_takma_adsa_gelen_gercek_ad_yerine_gecer()
     {
         var t = new CustomerSyncState { Username = "ayse_tt", FullName = "ayse_tt" };
-        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "Ayşe Yılmaz" }).Should().BeTrue();
-        t.FullName.Should().Be("Ayşe Yılmaz");
+        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "Örnek Müşteri" }).Should().BeTrue();
+        t.FullName.Should().Be("Örnek Müşteri");
         t.FullNameChangedAt.Should().BeNull("damgasız doldurma damgasız kalır");
     }
 
     [Fact]
     public void Yerel_gercek_ad_damgasiz_baska_gercek_adla_ezilmez()
     {
-        var t = new CustomerSyncState { Username = "ayse_tt", FullName = "Ayşe Yılmaz" };
-        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "Ayşe Kaya" }).Should().BeFalse();
-        t.FullName.Should().Be("Ayşe Yılmaz");
+        var t = new CustomerSyncState { Username = "ayse_tt", FullName = "Örnek Müşteri" };
+        CustomerUnitMerge.Apply(t, new CustomerSyncState { FullName = "Deneme Alıcı" }).Should().BeFalse();
+        t.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -442,7 +439,7 @@ public sealed class CustomerUnitMergeTests
     {
         var copy = new CustomerSyncState
         {
-            Phone = NewPhone(),                                   // damgasız: beyan / geçmiş
+            Phone = TestPhone.NewE164(),                          // damgasız: beyan / geçmiş
             Notes = "kargo kapıya", NotesChangedAt = T2,           // damgalı: yayıncı kararı
             SmsConsent = true,                                   // damgasız evet
         };
@@ -457,7 +454,7 @@ public sealed class CustomerUnitMergeTests
     [Fact]
     public void WithoutScrubbedUnits_silinmis_kopyanin_damgali_bos_kisisel_birimini_tasimaz()
     {
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         var t = new CustomerSyncState { Phone = phone, PhoneChangedAt = T1 };
         // Silinmiş kopya: telefon damgalıydı, boşaltıldı (damga kaldı) — bilinçli silme DEĞİL.
         var purgedCopy = new CustomerSyncState { Phone = null, PhoneChangedAt = T3, Notes = "not", NotesChangedAt = T3, PurgedAt = 5000 };
@@ -510,11 +507,11 @@ public sealed class CustomerUnitMergeTests
     [Fact]
     public void WithoutShopperClaims_beyana_esit_damgasiz_birimleri_cikarir_farkli_olanlari_tutar()
     {
-        var claimPhone = NewPhone();
-        var claims = new CustomerSyncState { FullName = "Ayşe Yılmaz", Phone = claimPhone, Address = "Atatürk Cd. 1" };
+        var claimPhone = TestPhone.NewE164();
+        var claims = new CustomerSyncState { FullName = "Örnek Müşteri", Phone = claimPhone, Address = "Atatürk Cd. 1" };
         var legacy = new CustomerSyncState
         {
-            DisplayName = "AYŞE YILMAZ",                       // eski ingest beyan adını takma ada yazdı
+            DisplayName = "ÖRNEK MÜŞTERİ",                     // eski ingest beyan adını takma ada yazdı
             Phone = "0" + claimPhone[3..],                     // aynı numara, başka yazım
             Address = "Atatürk Cd. 1", City = "İzmir",         // yayıncı ili eklemiş → blok farklı
             Notes = "kapıda",                                  // beyan olamaz
@@ -551,7 +548,7 @@ public sealed class CustomerUnitMergeTests
     [Fact]
     public void WithoutShopperClaims_damgali_birime_dokunmaz()
     {
-        var phone = NewPhone();
+        var phone = TestPhone.NewE164();
         var s = new CustomerSyncState { Phone = phone, PhoneChangedAt = T1, DisplayName = "Ayşe", DisplayNameChangedAt = T1 }
             .WithoutShopperClaims(new CustomerSyncState { Phone = phone, FullName = "Ayşe" });
 
@@ -564,16 +561,16 @@ public sealed class CustomerUnitMergeTests
     {
         // M-1: yerel FullName hiçbir zaman Shopper beyanı sayılmaz — eski ingest beyanı
         // yalnız DisplayName'e yazdı; FullName yalnız formdan (yayıncı verisi) gelir.
-        var claims = new CustomerSyncState { FullName = "Ayşe Yılmaz" };
-        var s = new CustomerSyncState { FullName = "Ayşe Yılmaz" }.WithoutShopperClaims(claims);
-        s.FullName.Should().Be("Ayşe Yılmaz");
+        var claims = new CustomerSyncState { FullName = "Örnek Müşteri" };
+        var s = new CustomerSyncState { FullName = "Örnek Müşteri" }.WithoutShopperClaims(claims);
+        s.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
     public void WithoutShopperClaims_FullName_bilinmeyen_beyanda_da_kalir()
     {
-        var s = new CustomerSyncState { FullName = "Ayşe Yılmaz" }.WithoutShopperClaims(claims: null);
-        s.FullName.Should().Be("Ayşe Yılmaz");
+        var s = new CustomerSyncState { FullName = "Örnek Müşteri" }.WithoutShopperClaims(claims: null);
+        s.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -581,7 +578,7 @@ public sealed class CustomerUnitMergeTests
     {
         var s = new CustomerSyncState
         {
-            FullName = "Gerçek Ad", DisplayName = "takma", Address = "adres", City = "İzmir", Phone = NewPhone(),
+            FullName = "Gerçek Ad", DisplayName = "takma", Address = "adres", City = "İzmir", Phone = TestPhone.NewE164(),
             Notes = "not", Email = "a@example.test", IsBlacklisted = true, GroupId = "g1", SmsConsent = true,
         }.WithoutShopperClaims(claims: null);
 
@@ -605,7 +602,7 @@ public sealed class CustomerUnitMergeTests
         // AYNI ("bilinmiyor", hepsini düşür) sayılmalı; gerçek beyan asla hepsi boş olamaz.
         var s = new CustomerSyncState
         {
-            DisplayName = "takma", Address = "adres", City = "İzmir", Phone = NewPhone(),
+            DisplayName = "takma", Address = "adres", City = "İzmir", Phone = TestPhone.NewE164(),
             Notes = "not", Email = "a@example.test", IsBlacklisted = true, GroupId = "g1", SmsConsent = true,
         }.WithoutShopperClaims(claims: new CustomerSyncState());
 
@@ -643,14 +640,14 @@ public sealed class CustomerUnitMergeTests
     private static CustomerSyncState Dolu(long? at) => new()
     {
         Username = "ayse",
-        FullName = "Ayşe Yılmaz", FullNameChangedAt = at,
+        FullName = "Örnek Müşteri", FullNameChangedAt = at,
         DisplayName = "ayse🌸", DisplayNameChangedAt = at,
         GroupId = Guid.NewGuid().ToString("N"), GroupIdChangedAt = at,
         Address = "Atatürk Cd. 1", City = "İzmir", District = "Bornova", AddressChangedAt = at,
         RecipientPaysActive = true, RecipientPaysChangedAt = at,
-        Phone = NewPhone(), PhoneChangedAt = at,
+        Phone = TestPhone.NewE164(), PhoneChangedAt = at,
         Email = "ayse@example.test", EmailChangedAt = at,
-        Tckn = NewTckn(), TcknChangedAt = at,
+        Tckn = TestTckn.NewValid(), TcknChangedAt = at,
         WhatsAppConsent = true, WhatsAppConsentChangedAt = at,
         SmsConsent = true, SmsConsentChangedAt = at,
         IsBlacklisted = true, BlacklistReason = "ödemedi", BlacklistedAt = 1_759_000_000, BlacklistChangedAt = at,

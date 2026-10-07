@@ -342,9 +342,6 @@ public sealed class LicenseApiClientTests
         "changeSeq", "createdByShopper",
     };
 
-    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
-    private static string NewTckn() => Random.Shared.NextInt64(10_000_000_000, 99_999_999_999).ToString();
-
     [Fact]
     public async Task GetWpfCustomerChangesAsync_degisiklik_satirinin_her_alani_sunucu_WpfCustomerChangeItem_ile_birebir()
     {
@@ -354,8 +351,8 @@ public sealed class LicenseApiClientTests
         var id = Guid.NewGuid();
         var mergedIntoId = Guid.NewGuid();
         var groupId = Guid.NewGuid().ToString("N");
-        var phone = NewPhone();
-        var tckn = NewTckn();
+        var phone = TestPhone.NewE164();
+        var tckn = TestTckn.NewValid();
         var json = $$"""
             {"items":[
               {"id":"{{id}}","platform":"tiktok","username":"ornek.musteri","mergedIntoId":"{{mergedIntoId}}","purgedAt":"2026-10-05T09:00:00.123+00:00",
@@ -407,14 +404,14 @@ public sealed class LicenseApiClientTests
         var now = DateTimeOffset.UtcNow;
         var item = new WpfCustomerSyncItem(
             Id: Guid.NewGuid(), Platform: "tiktok", Username: "ornek.musteri",
-            FullName: "Örnek Müşteri", Phone: NewPhone(), Address: "Örnek Mahallesi 1. Sokak No:1",
+            FullName: "Örnek Müşteri", Phone: TestPhone.NewE164(), Address: "Örnek Mahallesi 1. Sokak No:1",
             UpdatedAt: now, Format: 2, FullNameChangedAt: now,
             DisplayName: "ornekmusteri", DisplayNameChangedAt: now,
             GroupId: Guid.NewGuid().ToString("N"), GroupIdChangedAt: now,
             City: "Örnekşehir", District: "Örnek", AddressChangedAt: now,
             RecipientPaysActive: true, RecipientPaysChangedAt: now,
             PhoneChangedAt: now, Email: "ornek.musteri@ornek.test", EmailChangedAt: now,
-            Tckn: NewTckn(), TcknChangedAt: now,
+            Tckn: TestTckn.NewValid(), TcknChangedAt: now,
             WhatsAppConsent: true, WhatsAppConsentChangedAt: now,
             SmsConsent: true, SmsConsentChangedAt: now,
             IsBlacklisted: true, BlacklistReason: "örnek neden", BlacklistedAt: now, BlacklistChangedAt: now,
