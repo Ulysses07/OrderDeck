@@ -76,7 +76,7 @@ public class PanelOperatorsControllerTests : IClassFixture<ApiFactory>
         var (client, _) = await SeedAsync();
         var resp = await client.PostAsJsonAsync("/api/panel/operators", new
         {
-            email = "x@e.com", name = "X", password = "kisa"
+            email = "x@example.test", name = "X", password = Guid.NewGuid().ToString("N")[..4] // 8 karakterden kısa
         });
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -103,14 +103,14 @@ public class PanelOperatorsControllerTests : IClassFixture<ApiFactory>
         var (client2, _) = await SeedAsync();
 
         await client1.PostAsJsonAsync("/api/panel/operators", new
-        { email = "first@a.com", name = "First", password = DummyPassword() });
+        { email = "first@example.test", name = "First", password = DummyPassword() });
         await client2.PostAsJsonAsync("/api/panel/operators", new
-        { email = "second@b.com", name = "Second", password = DummyPassword() });
+        { email = "second@example.test", name = "Second", password = DummyPassword() });
 
         var listResp1 = await client1.GetAsync("/api/panel/operators");
         var rows1 = await listResp1.Content.ReadFromJsonAsync<List<OperatorDto>>();
-        rows1!.Should().ContainSingle(r => r.Email == "first@a.com");
-        rows1.Should().NotContain(r => r.Email == "second@b.com");
+        rows1!.Should().ContainSingle(r => r.Email == "first@example.test");
+        rows1.Should().NotContain(r => r.Email == "second@example.test");
     }
 
     [Fact]
@@ -118,7 +118,7 @@ public class PanelOperatorsControllerTests : IClassFixture<ApiFactory>
     {
         var (client, _) = await SeedAsync();
         var createResp = await client.PostAsJsonAsync("/api/panel/operators", new
-        { email = "del@a.com", name = "Del", password = DummyPassword() });
+        { email = "del@example.test", name = "Del", password = DummyPassword() });
         var created = await createResp.Content.ReadFromJsonAsync<OperatorDto>();
 
         var del = await client.DeleteAsync($"/api/panel/operators/{created!.Id}");
@@ -137,7 +137,7 @@ public class PanelOperatorsControllerTests : IClassFixture<ApiFactory>
         var (client2, _) = await SeedAsync();
 
         var createResp = await client1.PostAsJsonAsync("/api/panel/operators", new
-        { email = "iso@a.com", name = "I", password = DummyPassword() });
+        { email = "iso@example.test", name = "I", password = DummyPassword() });
         var created = await createResp.Content.ReadFromJsonAsync<OperatorDto>();
 
         var del = await client2.DeleteAsync($"/api/panel/operators/{created!.Id}");

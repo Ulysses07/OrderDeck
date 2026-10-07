@@ -62,9 +62,9 @@ public class EmailTemplatesEncodingTests
     {
         // Encoding'in "her şeyi bozalım" olmadığını gösteren nöbetçi: Türkçe
         // karakterler ve normal bir ad aynen görünüyor.
-        var html = EmailTemplates.ConfirmEmail("Rıdvan Özcan & Şürekası", Url).Html;
+        var html = EmailTemplates.ConfirmEmail("Örnek Alıcı & Şürekası", Url).Html;
 
-        html.Should().Contain("Merhaba Rıdvan Özcan &amp; Şürekası,");
+        html.Should().Contain("Merhaba Örnek Alıcı &amp; Şürekası,");
     }
 
     [Fact]

@@ -64,6 +64,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         var id1 = Guid.NewGuid();
         var id2 = Guid.NewGuid();
         var id3 = Guid.NewGuid();
+        var phone = NewPhone();
 
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
@@ -71,7 +72,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
             {
                 customers = new[]
                 {
-                    MakeSyncItem(id1, "youtube", "user1", "Ali Veli", "+905001112233"),
+                    MakeSyncItem(id1, "youtube", "user1", "Ali Veli", phone),
                     MakeSyncItem(id2, "instagram", "user2"),
                     MakeSyncItem(id3, "tiktok", "user3"),
                 }
@@ -89,7 +90,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
 
         var proj1 = await db.WpfCustomerProjections.FirstAsync(p => p.Id == id1);
         proj1.FullName.Should().Be("Ali Veli");
-        proj1.Phone.Should().Be("+905001112233");
+        proj1.Phone.Should().Be(phone);
         proj1.Platform.Should().Be("youtube");
     }
 
@@ -118,6 +119,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         // başka bir asıl kaydın üstüne kayabilirdi); ad yalnız boşsa doldurulur
         // (eski sürüm gerçek ad yoksa takma adı gönderiyor); dolu telefon/adres
         // son gönderimle yazılır, boş değer silmez.
+        var phone = NewPhone();
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
             new
@@ -125,7 +127,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
                 customers = new[]
                 {
                     new { id = id1, platform = "youtube", username = "newuser1", fullName = "New Name",
-                          phone = "+905559998877", address = "New Address", updatedAt = DateTimeOffset.UtcNow },
+                          phone, address = "New Address", updatedAt = DateTimeOffset.UtcNow },
                     new { id = id2, platform = "instagram", username = "newuser2", fullName = (string?)null,
                           phone = (string?)null, address = (string?)null, updatedAt = DateTimeOffset.UtcNow },
                 }
@@ -141,7 +143,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         proj1.Username.Should().Be("olduser1"); // mevcut Id'de kullanıcı adı değişmez
         proj1.FullName.Should().Be("Old Name"); // damgasız ad yalnız boşu doldurur
         // Telefon boştu: dolu değer yazılır.
-        proj1.Phone.Should().Be("+905559998877");
+        proj1.Phone.Should().Be(phone);
 
         // No duplicate rows
         var totalCount = await db.WpfCustomerProjections.CountAsync(p => p.LicenseId == licenseId);
@@ -363,10 +365,11 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
     {
         var (client, _, licenseId) = await SetupAsync();
         var id = Guid.NewGuid();
+        var phone = NewPhone();
 
         await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
-            new { customers = new[] { MakeSyncItem(id, "youtube", "silinen", "Ayşe Yılmaz", "+905001112233", "Kadıköy") } });
+            new { customers = new[] { MakeSyncItem(id, "youtube", "silinen", "Örnek Müşteri", phone, "Kadıköy") } });
 
         using (var scope = _factory.Services.CreateScope())
         {
@@ -381,7 +384,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
 
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
-            new { customers = new[] { MakeSyncItem(id, "youtube", "silinen", "Ayşe Yılmaz", "+905001112233", "Kadıköy") } });
+            new { customers = new[] { MakeSyncItem(id, "youtube", "silinen", "Örnek Müşteri", phone, "Kadıköy") } });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         // Sayılıyor: istemcinin watermark'ı ilerlemezse aynı parti sonsuza
@@ -528,7 +531,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         var b = Guid.NewGuid();
         var t = DateTimeOffset.UtcNow;
         await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
-            new { customers = new[] { V2Item(a, "ayse", fullName: "Ayşe Kaya", fullNameAt: t) } });
+            new { customers = new[] { V2Item(a, "ayse", fullName: "Örnek Müşteri", fullNameAt: t) } });
 
         var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
             new { customers = new[] { V2Item(b, "AYSE", fullName: null, city: "İzmir", addressAt: t.AddSeconds(5)) } });
@@ -538,7 +541,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var canonical = await db.WpfCustomerProjections.SingleAsync(x => x.Id == a);
-        canonical.FullName.Should().Be("Ayşe Kaya"); // kopyanın boş adı damgasız → dokunmaz
+        canonical.FullName.Should().Be("Örnek Müşteri"); // kopyanın boş adı damgasız → dokunmaz
         canonical.City.Should().Be("İzmir");          // kopyanın damgalı adres birimi yazıldı
         // Kopya varsayılan sorgulardan gizli (A5b) — burada açıkça istenir.
         var alias = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(x => x.Id == b);
@@ -689,14 +692,14 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
         var id = Guid.NewGuid();
         var tel = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
-        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(id, "tiktok", "ayse_tt", "Ayşe Yılmaz", tel, "adres") } });
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(id, "tiktok", "ayse_tt", "Örnek Müşteri", tel, "adres") } });
         // Eski sürüm gerçek ad yoksa takma adı gönderir; telefon/adres boş.
         await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(id, "tiktok", "ayse_tt", "ayse_tt") } });
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var p = await db.WpfCustomerProjections.SingleAsync(x => x.Id == id);
-        p.FullName.Should().Be("Ayşe Yılmaz");
+        p.FullName.Should().Be("Örnek Müşteri");
         p.Phone.Should().Be(tel);
         p.Address.Should().Be("adres");
     }

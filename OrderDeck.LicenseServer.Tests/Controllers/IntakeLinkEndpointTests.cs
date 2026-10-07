@@ -202,7 +202,7 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
     public async Task Facebook_donusu_kimligi_kaydeder()
     {
         _factory.Facebook.Result = new IntakeLoginResult(true, null,
-            new IntakeLinkedIdentity("Musa Sevinç", null, null));
+            new IntakeLinkedIdentity("Deneme Alıcı", null, null));
         var slug = await SeedSlugAsync();
         var client = NewClient();
         var startResp = await client.GetAsync($"/musteri-kayit/{slug}/baglan/facebook");
@@ -212,7 +212,7 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
 
         resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=ok");
         var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
-        html.Should().Contain("Musa Sevinç");
+        html.Should().Contain("Deneme Alıcı");
     }
 
     /// <summary>Bağlama akışını sonuna kadar koşturur: start → callback.
@@ -337,7 +337,7 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Slug = slug,
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = TestPhone.NewE164(),
             IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -461,7 +461,7 @@ public sealed class IntakeLinkDisabledTests : IClassFixture<IntakeLinkDisabledFa
                 Id = Guid.NewGuid(),
                 CustomerId = customer.Id,
                 Slug = slug,
-                WhatsAppPhone = "+905551234567",
+                WhatsAppPhone = TestPhone.NewE164(),
                 IsActive = true,
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow

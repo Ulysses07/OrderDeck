@@ -65,7 +65,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
         try
         {
             var alice = new Customer("c1", "twitch", "alice", "Alice", null,
-                100, 100, false, null, null, 0, 0m, null, null, "+905551111111");
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164());
             customers.Insert(alice);
             sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 75m, 110, 120));
@@ -125,7 +125,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
         try
         {
             customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null,
-                100, 100, false, null, null, 0, 0m, null, null, "+905551111111"));
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
             sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 75m, 110, 120));
             sessions.End("s1", 200);
@@ -163,7 +163,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 75m, 110, 120));
             sessions.End("s1", 200);
 
-            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, "+905551111111"); return true; };
+            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, TestPhone.NewE164()); return true; };
 
             sut.Load("s1");
 

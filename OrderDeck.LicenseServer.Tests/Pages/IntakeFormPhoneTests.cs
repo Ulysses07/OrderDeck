@@ -19,7 +19,7 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
     private readonly ApiFactory _factory;
     public IntakeFormPhoneTests(ApiFactory factory) => _factory = factory;
 
-    private async Task<(string slug, Guid customerId)> SeedConfigAsync()
+    private async Task<(string slug, Guid customerId)> SeedConfigAsync(string? whatsAppPhone = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -49,7 +49,7 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Slug = slug,
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = whatsAppPhone ?? TestPhone.NewE164(),
             IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -64,8 +64,8 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
-            ["Input.InstagramUsername"] = "bilalcanli",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.InstagramUsername"] = "ornekmusteri",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
@@ -120,7 +120,8 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Post_submit_with_valid_phone_persists_e164_and_redirects()
     {
-        var (slug, customerId) = await SeedConfigAsync();
+        var magazaTelefonu = TestPhone.NewE164();
+        var (slug, customerId) = await SeedConfigAsync(magazaTelefonu);
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false,
@@ -130,7 +131,8 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         var getResp = await client.GetAsync($"/r/{slug}");
         var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
 
-        var form = BuildForm(antiForgery, slug, phone: "5551234567");
+        var musteriTelefonu = TestPhone.NewNational();
+        var form = BuildForm(antiForgery, slug, phone: musteriTelefonu);
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
         // POST artık WhatsApp'a değil, kendi sayfasına dönüyor; wa.me linki
@@ -139,15 +141,15 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         postResp.Headers.Location!.ToString().Should().Be($"/r/{slug}");
         var waUrl = await ReadWhatsAppLinkAsync(client, $"/r/{slug}");
-        waUrl.Should().StartWith("https://wa.me/905551234567?text=");
+        waUrl.Should().StartWith($"https://wa.me/{magazaTelefonu[1..]}?text=");
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var sub = await db.IntakeFormSubmissions
-            .Where(s => s.Config.CustomerId == customerId && s.Username == "bilalcanli")
+            .Where(s => s.Config.CustomerId == customerId && s.Username == "ornekmusteri")
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
-        sub!.Phone.Should().Be("+905551234567");
+        sub!.Phone.Should().Be("+90" + musteriTelefonu);
     }
 
     [Fact]
@@ -163,14 +165,15 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         var getResp = await client.GetAsync($"/r/{slug}");
         var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
 
-        var form = BuildForm(antiForgery, slug, phone: "05551234567");
+        var musteriTelefonu = TestPhone.NewNational();
+        var form = BuildForm(antiForgery, slug, phone: "0" + musteriTelefonu);
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
         postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         var url = await ReadWhatsAppLinkAsync(client, $"/r/{slug}");
         var queryStart = url.IndexOf("?text=") + 6;
         var decoded = Uri.UnescapeDataString(url[queryStart..]);
-        decoded.Should().Contain("Telefon: +905551234567");
+        decoded.Should().Contain("Telefon: +90" + musteriTelefonu);
     }
 
     /// <summary>Onay ekranını çekip "WhatsApp'tan gönder" butonunun hedefini döner.

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
 using Xunit;
 
@@ -13,6 +14,13 @@ namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 
 public sealed class WhatsAppInboundJobTests
 {
+    // Numaralar her koşuda üretilir; Meta wa_id'yi '+' işaretsiz yazar. Echo ve
+    // geçmiş testlerinde işletme ile müşteri ortak gövde + farklı son haneyle
+    // kurgu gereği ayrı.
+    private static readonly string Kok = TestPhone.NewE164()[1..^1];
+    private static readonly string MusteriWaId = Kok + "1";
+    private static readonly string IsletmeWaId = Kok + "2";
+
     private static (LicenseDbContext Db, WhatsAppInboundJob Job, Guid LicenseId) Build(string pnid = "PNID_1")
     {
         var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
@@ -28,7 +36,7 @@ public sealed class WhatsAppInboundJobTests
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = pnid,
-            DisplayPhoneNumber = "+905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("t"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,
@@ -43,8 +51,11 @@ public sealed class WhatsAppInboundJobTests
     }
 
     private static string TextPayload(
-        string wamId, string from = "905321234567", string pnid = "PNID_1",
-        long ts = 1753440000, string name = "Ayşe") => $$$"""
+        string wamId, string? from = null, string pnid = "PNID_1",
+        long ts = 1753440000, string name = "Ayşe")
+    {
+        from ??= MusteriWaId;
+        return $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "{{{pnid}}}" },
@@ -54,6 +65,7 @@ public sealed class WhatsAppInboundJobTests
           }}]}]
         }
         """;
+    }
 
     [Fact]
     public async Task Inbound_message_creates_conversation_and_opens_window()
@@ -64,7 +76,7 @@ public sealed class WhatsAppInboundJobTests
 
         var convo = db.WaConversations.Single();
         convo.LicenseId.Should().Be(licenseId);
-        convo.CustomerPhone.Should().Be("905321234567");
+        convo.CustomerPhone.Should().Be(MusteriWaId);
         convo.ProfileName.Should().Be("Ayşe");
         convo.UnreadCount.Should().Be(1);
         convo.LastInboundAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(1753440000));
@@ -103,11 +115,11 @@ public sealed class WhatsAppInboundJobTests
     public async Task Echo_is_stored_as_outbound_and_does_not_open_window()
     {
         var (db, job, _) = Build();
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_message_echoes", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "message_echoes": [{ "from": "905550000000", "to": "905321234567",
+            "message_echoes": [{ "from": "{{{IsletmeWaId}}}", "to": "{{{MusteriWaId}}}",
                                  "id": "wamid.ECHO", "timestamp": "1753440000",
                                  "type": "text", "text": { "body": "elden yazdım" } }]
           }}]}]
@@ -133,7 +145,7 @@ public sealed class WhatsAppInboundJobTests
         var (db, job, licenseId) = Build();
         db.WaConversations.Add(new WaConversation
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = "905321234567",
+            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = MusteriWaId,
             PhoneNumberId = "PNID_1", Status = "closed", CreatedAt = DateTimeOffset.UtcNow.AddDays(-3),
         });
         await db.SaveChangesAsync();
@@ -150,7 +162,7 @@ public sealed class WhatsAppInboundJobTests
         var convoId = Guid.NewGuid();
         db.WaConversations.Add(new WaConversation
         {
-            Id = convoId, LicenseId = licenseId, CustomerPhone = "905321234567",
+            Id = convoId, LicenseId = licenseId, CustomerPhone = MusteriWaId,
             PhoneNumberId = "PNID_1", Status = "open", CreatedAt = DateTimeOffset.UtcNow,
         });
         db.WaMessages.Add(new WaMessage
@@ -176,7 +188,7 @@ public sealed class WhatsAppInboundJobTests
         var convoId = Guid.NewGuid();
         db.WaConversations.Add(new WaConversation
         {
-            Id = convoId, LicenseId = licenseId, CustomerPhone = "905321234567",
+            Id = convoId, LicenseId = licenseId, CustomerPhone = MusteriWaId,
             PhoneNumberId = "PNID_1", Status = "open", CreatedAt = DateTimeOffset.UtcNow,
         });
         db.WaMessages.Add(new WaMessage
@@ -220,11 +232,11 @@ public sealed class WhatsAppInboundJobTests
           "entry": [{ "changes": [{ "field": "history", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "history": [{ "threads": [{
-              "id": "905321234567",
+              "id": "{{{MusteriWaId}}}",
               "messages": [
-                { "from": "905321234567", "id": "wamid.H_IN", "timestamp": "{{{inboundTs}}}",
+                { "from": "{{{MusteriWaId}}}", "id": "wamid.H_IN", "timestamp": "{{{inboundTs}}}",
                   "type": "text", "text": { "body": "eski soru" } },
-                { "from": "905550000000", "to": "905321234567", "id": "wamid.H_OUT",
+                { "from": "{{{IsletmeWaId}}}", "to": "{{{MusteriWaId}}}", "id": "wamid.H_OUT",
                   "timestamp": "{{{inboundTs + 60}}}", "type": "text",
                   "text": { "body": "eski cevap" } }]
             }]}]
@@ -264,7 +276,7 @@ public sealed class WhatsAppInboundJobTests
         var (db, job, licenseId) = Build();
         db.WaConversations.Add(new WaConversation
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = "905321234567",
+            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = MusteriWaId,
             PhoneNumberId = "PNID_1", Status = "closed", CreatedAt = DateTimeOffset.UtcNow.AddDays(-3),
         });
         await db.SaveChangesAsync();
@@ -285,12 +297,12 @@ public sealed class WhatsAppInboundJobTests
         // Müşteri kendi WhatsApp adını zaten göndermiş.
         await job.ProcessAsync(TextPayload("wamid.1", name: "Ayşe"));
 
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "state_sync": [{ "type": "contact", "action": "add",
-              "contact": { "phone_number": "905321234567", "full_name": "Rehberdeki Ad" } }]
+              "contact": { "phone_number": "{{{MusteriWaId}}}", "full_name": "Rehberdeki Ad" } }]
           }}]}]
         }
         """);
@@ -307,17 +319,17 @@ public sealed class WhatsAppInboundJobTests
         var (db, job, licenseId) = Build();
         db.WaConversations.Add(new WaConversation
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = "905321234567",
+            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = MusteriWaId,
             PhoneNumberId = "PNID_1", Status = "open", CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
 
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "state_sync": [{ "type": "contact", "action": "add",
-              "contact": { "phone_number": "905321234567", "full_name": "Rehberdeki Ad" } }]
+              "contact": { "phone_number": "{{{MusteriWaId}}}", "full_name": "Rehberdeki Ad" } }]
           }}]}]
         }
         """);
@@ -331,13 +343,14 @@ public sealed class WhatsAppInboundJobTests
     public async Task Contact_sync_never_creates_a_conversation()
     {
         var (db, job, _) = Build();
+        var rehberdekiNumara = TestPhone.NewE164()[1..];
 
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "state_sync": [{ "type": "contact", "action": "add",
-              "contact": { "phone_number": "905339998877", "full_name": "Hiç Yazmayan" } }]
+              "contact": { "phone_number": "{{{rehberdekiNumara}}}", "full_name": "Hiç Yazmayan" } }]
           }}]}]
         }
         """);

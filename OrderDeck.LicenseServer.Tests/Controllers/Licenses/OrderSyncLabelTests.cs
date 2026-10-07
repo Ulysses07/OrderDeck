@@ -35,13 +35,14 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
         db.Licenses.Add(license);
 
         var wpfCustomerId = Guid.NewGuid();
+        var phone = TestPhone.NewE164();
         db.WpfCustomerProjections.Add(new WpfCustomerProjection
         {
             Id = wpfCustomerId,
             LicenseId = license.Id,
             Platform = "youtube",
             Username = "ayse",
-            Phone = "+905321234567",
+            Phone = phone,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
 
@@ -49,7 +50,7 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
         {
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
-            CustomerPhone = "905321234567",
+            CustomerPhone = phone[1..], // WhatsApp biçimi: başında + yok
             PhoneNumberId = "PNID_1",
             Status = "open",
             CreatedAt = DateTimeOffset.UtcNow,

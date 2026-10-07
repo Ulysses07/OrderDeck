@@ -250,10 +250,10 @@ public sealed class CustomerFieldMergeTests
     {
         // Sohbetten yeni açılmış kopya: yalnız takma ad dolu ve damgalı; boş
         // FullName damgasız (istemci yalnız dolu ya da değiştirilen alanı damgalar).
-        var canonical = new WpfCustomerProjection { FullName = "Ayşe Yılmaz", FullNameChangedAt = T1 };
+        var canonical = new WpfCustomerProjection { FullName = "Örnek Müşteri", FullNameChangedAt = T1 };
         var copy = new WpfCustomerProjection { DisplayName = "ayse_tt", DisplayNameChangedAt = T3 };
         CustomerFieldMerge.Apply(canonical, CustomerSyncFields.From(copy));
-        canonical.FullName.Should().Be("Ayşe Yılmaz");
+        canonical.FullName.Should().Be("Örnek Müşteri");
         canonical.DisplayName.Should().Be("ayse_tt");
     }
 
@@ -307,17 +307,17 @@ public sealed class CustomerFieldMergeTests
     {
         // Eski sürüm gerçek ad yoksa takma adı FullName diye gönderiyordu.
         var p = new WpfCustomerProjection { FullName = "ayse_tt" };
-        CustomerFieldMerge.Apply(p, new CustomerSyncFields { FullName = "Ayşe Yılmaz", DisplayName = "ayse_tt" })
+        CustomerFieldMerge.Apply(p, new CustomerSyncFields { FullName = "Örnek Müşteri", DisplayName = "ayse_tt" })
             .Should().BeTrue();
-        p.FullName.Should().Be("Ayşe Yılmaz");
+        p.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
     public void Takma_ad_olmayan_gercek_ad_damgasiz_baska_adla_degismez()
     {
-        var p = new WpfCustomerProjection { FullName = "Ayşe Yılmaz", DisplayName = "ayse_tt" };
-        CustomerFieldMerge.Apply(p, new CustomerSyncFields { FullName = "Ayşe Kaya", DisplayName = "ayse_tt" });
-        p.FullName.Should().Be("Ayşe Yılmaz");
+        var p = new WpfCustomerProjection { FullName = "Örnek Müşteri", DisplayName = "ayse_tt" };
+        CustomerFieldMerge.Apply(p, new CustomerSyncFields { FullName = "Örnek Alıcı", DisplayName = "ayse_tt" });
+        p.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -325,7 +325,7 @@ public sealed class CustomerFieldMergeTests
     {
         // Damgalı ad bilinçli girilmiştir.
         var p = new WpfCustomerProjection { FullName = "ayse_tt", FullNameChangedAt = T1 };
-        CustomerFieldMerge.Apply(p, new CustomerSyncFields { FullName = "Ayşe Yılmaz", DisplayName = "ayse_tt" });
+        CustomerFieldMerge.Apply(p, new CustomerSyncFields { FullName = "Örnek Müşteri", DisplayName = "ayse_tt" });
         p.FullName.Should().Be("ayse_tt");
     }
 
@@ -347,9 +347,9 @@ public sealed class CustomerFieldMergeTests
     {
         // İnceleme bulgusu 2: birleştirmeden sonra asıl kayıt B'nin gerçek
         // adını taşıyor; A'nın eski sürümü takma adı gönderiyor.
-        var p = new WpfCustomerProjection { FullName = "Ayşe Yılmaz" };
+        var p = new WpfCustomerProjection { FullName = "Örnek Müşteri" };
         CustomerFieldMerge.ApplyLegacy(p, "ayse_tt", null, null).Should().BeFalse();
-        p.FullName.Should().Be("Ayşe Yılmaz");
+        p.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -449,9 +449,9 @@ public sealed class CustomerFieldMergeTests
         // E2: sunucuda DisplayName hiç yok (eski sürüm göndermez). Asıl kaydın
         // adı eski sürümün takma ad yedeği = kullanıcı adı; kopyada gerçek ad.
         var canonical = new WpfCustomerProjection { Username = "ayse_tt", FullName = "ayse_tt" };
-        var copy = new WpfCustomerProjection { Username = "AYSE_TT", FullName = "Ayşe Yılmaz" };
+        var copy = new WpfCustomerProjection { Username = "AYSE_TT", FullName = "Örnek Müşteri" };
         CustomerFieldMerge.Apply(canonical, CustomerSyncFields.From(copy)).Should().BeTrue();
-        canonical.FullName.Should().Be("Ayşe Yılmaz");
+        canonical.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -461,11 +461,11 @@ public sealed class CustomerFieldMergeTests
         CustomerFieldMerge.ApplyLegacy(p, "ayse_tt", null, null);
         p.FullName.Should().Be("ayse_tt");
         // Gerçek adı bilen (eski sürüm) bilgisayarın gönderimi takma adın yerine geçer.
-        CustomerFieldMerge.ApplyLegacy(p, "Ayşe Yılmaz", null, null).Should().BeTrue();
-        p.FullName.Should().Be("Ayşe Yılmaz");
+        CustomerFieldMerge.ApplyLegacy(p, "Örnek Müşteri", null, null).Should().BeTrue();
+        p.FullName.Should().Be("Örnek Müşteri");
         // Takma ad gerçek adın yerine GEÇMEZ.
         CustomerFieldMerge.ApplyLegacy(p, "ayse_tt", null, null).Should().BeFalse();
-        p.FullName.Should().Be("Ayşe Yılmaz");
+        p.FullName.Should().Be("Örnek Müşteri");
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
@@ -23,7 +24,7 @@ public class IysConsentRecoveryJobTests
         {
             Id = Guid.NewGuid(),
             BrandCode = "731734",
-            Recipient = "+905551234567",
+            Recipient = TestPhone.NewE164(),
             Status = IysConsentStatus.Onay,
             ConsentDate = updatedAt,
             LastLocalEventAt = updatedAt,

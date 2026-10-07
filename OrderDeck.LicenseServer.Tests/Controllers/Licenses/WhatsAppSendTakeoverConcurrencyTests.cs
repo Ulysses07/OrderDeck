@@ -52,7 +52,7 @@ public sealed class WhatsAppSendTakeoverConcurrencyTests : IAsyncLifetime
     public async Task Bayat_rezervasyonu_esazamanli_devralan_isteklerden_yalniz_biri_gonderir()
     {
         var (jwt, licenseId) = await SeedAsync();
-        const string phone = "905551110101";
+        var phone = TestPhone.NewE164()[1..];
         await ConnectAccountAsync(licenseId);
         await OpenServiceWindowAsync(licenseId, phone);
 
@@ -74,7 +74,7 @@ public sealed class WhatsAppSendTakeoverConcurrencyTests : IAsyncLifetime
     public async Task Esazamanli_devralmada_tum_yanitlar_ayni_mesaji_isaret_eder()
     {
         var (jwt, licenseId) = await SeedAsync();
-        const string phone = "905551110102";
+        var phone = TestPhone.NewE164()[1..];
         await ConnectAccountAsync(licenseId);
         await OpenServiceWindowAsync(licenseId, phone);
 
@@ -234,7 +234,7 @@ public sealed class WhatsAppSendTakeoverConcurrencyTests : IAsyncLifetime
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = $"pnid-{Guid.NewGuid():N}",
-            DisplayPhoneNumber = "905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164()[1..],
             AccessTokenProtected = accounts.ProtectToken("token-1234"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,

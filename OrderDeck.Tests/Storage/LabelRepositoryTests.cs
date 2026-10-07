@@ -110,7 +110,7 @@ public class LabelRepositoryTests
         using var _2 = db;
 
         // YouTube müşterisi: Username = channel id, DisplayName = okunur ad.
-        new CustomerRepository(db).Insert(new Customer("cyt", "youtube", "UCchannelid", "Ayşe Kaya", null,
+        new CustomerRepository(db).Insert(new Customer("cyt", "youtube", "UCchannelid", "Örnek Müşteri", null,
             100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
         repo.Insert(MakeLabel("l1", sid, "c1", price: 100m, printedAt: 500));
         repo.Insert(new Label("ly", sid, "cyt", "youtube", "UCchannelid", "kod 5", "5", 300m,
@@ -119,8 +119,8 @@ public class LabelRepositoryTests
         var top = repo.GetTopCustomersBySession(sid, int.MaxValue);
 
         var yt = top.Single(t => t.Username == "UCchannelid");
-        yt.DisplayName.Should().Be("Ayşe Kaya");
-        yt.Display.Should().Be("Ayşe Kaya"); // channel id değil, okunur ad
+        yt.DisplayName.Should().Be("Örnek Müşteri");
+        yt.Display.Should().Be("Örnek Müşteri"); // channel id değil, okunur ad
 
         var ig = top.Single(t => t.Username == "@a");
         ig.DisplayName.Should().BeNull();

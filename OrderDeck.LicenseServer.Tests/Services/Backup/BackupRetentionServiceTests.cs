@@ -26,7 +26,7 @@ public class BackupRetentionServiceTests : IClassFixture<ApiFactory>
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"retention-{Guid.NewGuid():N}@test.com",
+            Email = $"retention-{Guid.NewGuid():N}@example.test",
             Name = "T",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow

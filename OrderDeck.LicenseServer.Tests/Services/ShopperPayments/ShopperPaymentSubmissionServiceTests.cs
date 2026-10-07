@@ -5,6 +5,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Push;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
 
 namespace OrderDeck.LicenseServer.Tests.Services.ShopperPayments;
@@ -84,12 +85,12 @@ file static class ParseResults
         string pdfHash = "aabbccdd",
         string? recipientIban = "TR330006100519786457841326") =>
         new(
-            PayerName: "RIDVAN ÖZCAN",
+            PayerName: "ÖRNEK MÜŞTERİ",
             Amount: 500m,
             PaidAt: new DateTime(2026, 5, 1, 12, 0, 0),
             ReferansNo: "123456789",
             PdfHash: pdfHash,
-            RawText: "RIDVAN ÖZCAN Tutar 500,00 TL",
+            RawText: "ÖRNEK MÜŞTERİ Tutar 500,00 TL",
             RecipientIban: recipientIban,
             RecipientName: "TEST ALICI");
 
@@ -122,7 +123,7 @@ public sealed class ShopperPaymentSubmissionServiceTests
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"{Guid.NewGuid():N}@test.com",
+            Email = $"{Guid.NewGuid():N}@example.test",
             Name = "Test Customer",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -543,7 +544,7 @@ public sealed class ShopperPaymentSubmissionServiceTests
         await db.SaveChangesAsync();
 
         // Parser returns a DIFFERENT IBAN
-        var parseResult = ParseResults.FullHigh(recipientIban: "TR480011100000000107020132");
+        var parseResult = ParseResults.FullHigh(recipientIban: NewTrIban("00111"));
         var svc = BuildService(db, new FakePdfDekontParser(parseResult));
 
         var result = await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
@@ -628,7 +629,7 @@ public sealed class ShopperPaymentSubmissionServiceTests
         await using var db = NewDb();
         SeedSku(db);
         var customer = SeedCustomer(db);
-        var shopper = SeedShopper(db, tc: "12345678901");   // TC present
+        var shopper = SeedShopper(db, tc: TestTckn.NewValid());   // TC present
         var license = SeedLicense(db, customer.Id, iban: null);
         await db.SaveChangesAsync();
 
@@ -1056,6 +1057,18 @@ public sealed class ShopperPaymentSubmissionServiceTests
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>Kontrol basamakları tutan rastgele TR IBAN'ı: verilen banka kodu, ayrılmış hane "0" ve
+    /// 16 rastgele hane. Kontrol basamakları ISO 13616'ya göre hesaplanır: "TR00" sona alınır, harfler
+    /// sayıya çevrilir (T=29, R=27), kontrol = 98 - (sayı mod 97).</summary>
+    private static string NewTrIban(string bankCode)
+    {
+        var bban = bankCode + "0" + string.Concat(Enumerable.Range(0, 16).Select(_ => Random.Shared.Next(10)));
+        var mod = 0;
+        foreach (var rakam in bban + "292700")
+            mod = (mod * 10 + (rakam - '0')) % 97;
+        return $"TR{98 - mod:D2}{bban}";
+    }
 
     /// <summary>Mirrors the private ComputeMetadataHash in the service.</summary>
     private static string ComputeMetadataHashForTest(

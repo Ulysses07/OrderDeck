@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
 using Xunit;
 
@@ -38,7 +39,7 @@ public sealed class WhatsAppDroppedInboundTests
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = "PNID_1",
-            DisplayPhoneNumber = "+905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("t"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,
@@ -188,12 +189,13 @@ public sealed class WhatsAppDroppedInboundTests
     public async Task Normal_mesaj_sayaca_yazilmaz()
     {
         var (db, job, _) = Build();
+        var telefon = TestPhone.NewE164()[1..];
 
-        var payload = """
+        var payload = $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "messages": [{ "from": "905321234567", "id": "wamid.NORMAL",
+            "messages": [{ "from": "{{{telefon}}}", "id": "wamid.NORMAL",
                            "timestamp": "1753440000", "type": "text",
                            "text": { "body": "merhaba" } }]
           }}]}]

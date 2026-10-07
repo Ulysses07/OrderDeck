@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -37,6 +38,14 @@ public sealed class WhatsAppOnboardingClientTests
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
         }
+    }
+
+    /// <summary>Meta'nın görünen numara yazılışı (boşluklu E.164); numara her
+    /// çağrıda üretilir.</summary>
+    private static string NewDisplayNumber()
+    {
+        var n = TestPhone.NewNational();
+        return $"+90 {n[..3]} {n[3..6]} {n[6..8]} {n[8..]}";
     }
 
     private static WhatsAppOnboardingClient Client(ScriptedHandler handler)
@@ -156,10 +165,11 @@ public sealed class WhatsAppOnboardingClientTests
     [Fact]
     public async Task Reading_the_phone_number_goes_through_the_wabas_own_number_list()
     {
-        var handler = new ScriptedHandler((HttpStatusCode.OK, """
+        var hedef = NewDisplayNumber();
+        var handler = new ScriptedHandler((HttpStatusCode.OK, $$"""
             { "data": [
-                { "id": "PNID_1", "display_phone_number": "+90 555 000 00 00", "verified_name": "Başka" },
-                { "id": "PNID_7", "display_phone_number": "+90 555 111 22 33", "verified_name": "Emar Global" }
+                { "id": "PNID_1", "display_phone_number": "{{NewDisplayNumber()}}", "verified_name": "Başka" },
+                { "id": "PNID_7", "display_phone_number": "{{hedef}}", "verified_name": "Emar Global" }
             ] }
             """));
 
@@ -167,7 +177,7 @@ public sealed class WhatsAppOnboardingClientTests
             .ReadPhoneNumberAsync("WABA_9", "PNID_7", "BIZ_TOKEN", CancellationToken.None);
 
         result.Ok.Should().BeTrue();
-        result.Value!.DisplayPhoneNumber.Should().Be("+90 555 111 22 33");
+        result.Value!.DisplayPhoneNumber.Should().Be(hedef);
         result.Value.VerifiedName.Should().Be("Emar Global");
 
         // Numarayı doğrudan `GET /{pnid}` ile okumak da görünen numarayı verirdi
@@ -185,8 +195,8 @@ public sealed class WhatsAppOnboardingClientTests
     [Fact]
     public async Task A_number_that_belongs_to_a_different_waba_is_reported_as_a_mismatch()
     {
-        var handler = new ScriptedHandler((HttpStatusCode.OK, """
-            { "data": [ { "id": "PNID_1", "display_phone_number": "+90 555 000 00 00" } ] }
+        var handler = new ScriptedHandler((HttpStatusCode.OK, $$"""
+            { "data": [ { "id": "PNID_1", "display_phone_number": "{{NewDisplayNumber()}}" } ] }
             """));
 
         var result = await Client(handler)
@@ -223,7 +233,7 @@ public sealed class WhatsAppOnboardingClientTests
     {
         var field = platformType is null ? "" : $", \"platform_type\": \"{platformType}\"";
         var handler = new ScriptedHandler((HttpStatusCode.OK, $$"""
-            { "data": [ { "id": "PNID_7", "display_phone_number": "+90 555 111 22 33"{{field}} } ] }
+            { "data": [ { "id": "PNID_7", "display_phone_number": "{{NewDisplayNumber()}}"{{field}} } ] }
             """));
 
         var result = await Client(handler)

@@ -69,10 +69,10 @@ public class LabelPrintDocumentTests
     public void BuildLines_gift_mode_shows_keyword_and_HEDIYE_not_price()
     {
         // Çekiliş kazanan etiketi: ad + çekiliş kodu (keyword) + "HEDİYE", fiyat YOK.
-        var lines = LabelPrintDocument.BuildLines("Ayşe Yılmaz", "KAZAN", price: 0m, isGift: true);
+        var lines = LabelPrintDocument.BuildLines("Örnek Müşteri", "KAZAN", price: 0m, isGift: true);
 
         lines.Should().HaveCount(2);
-        lines[0].Text.Should().Be("Ayşe Yılmaz");
+        lines[0].Text.Should().Be("Örnek Müşteri");
         lines[1].Text.Should().Contain("KAZAN").And.Contain("HEDİYE");
         lines[1].Text.Should().NotContain("TL");
     }
@@ -135,8 +135,8 @@ public class LabelPrintDocumentTests
     [Fact]
     public void ResolveDisplayLabel_uses_DisplayName_when_set()
     {
-        var label = MakeLabel("UCxxx_youtube_channel_id", "Ayşe Yılmaz");
-        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Ayşe Yılmaz");
+        var label = MakeLabel("UCxxx_youtube_channel_id", "Örnek Müşteri");
+        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Örnek Müşteri");
     }
 
     [Fact]
@@ -156,7 +156,7 @@ public class LabelPrintDocumentTests
     [Fact]
     public void ResolveDisplayLabel_trims_DisplayName_whitespace()
     {
-        var label = MakeLabel("UCxxx", "  Ayşe Yılmaz  ");
-        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Ayşe Yılmaz");
+        var label = MakeLabel("UCxxx", "  Örnek Müşteri  ");
+        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Örnek Müşteri");
     }
 }

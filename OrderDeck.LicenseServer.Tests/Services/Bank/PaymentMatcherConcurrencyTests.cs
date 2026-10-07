@@ -90,13 +90,13 @@ public sealed class PaymentMatcherConcurrencyTests : IAsyncLifetime
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
             BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 500m, Currency = "TL", OccurredAt = now,
-            Description = "HAVALE ayse_gul34", TransactionCode = "FT", FetchedAt = now,
+            Description = "HAVALE ornek_musteri34", TransactionCode = "FT", FetchedAt = now,
         };
         db.Customers.Add(customer);
         db.Licenses.Add(license);
         db.WpfCustomerProjections.Add(new WpfCustomerProjection
         {
-            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = now,
+            Id = Guid.NewGuid(), LicenseId = license.Id, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = now,
         });
         db.BankTransactions.Add(tx);
         await db.SaveChangesAsync();

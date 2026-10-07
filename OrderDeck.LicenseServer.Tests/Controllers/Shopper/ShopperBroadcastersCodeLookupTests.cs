@@ -25,7 +25,7 @@ public class ShopperBroadcastersCodeLookupTests : IClassFixture<ApiFactory>
         {
             Id = Guid.NewGuid(),
             Email = $"u-{Guid.NewGuid():N}@x",
-            Name = "Royal Mezat",
+            Name = "Örnek Mağaza",
             PasswordHash = "h",
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -68,7 +68,7 @@ public class ShopperBroadcastersCodeLookupTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Lookup_is_case_insensitive()
     {
-        var uniqueCode = "royal" + Guid.NewGuid().ToString("N")[..6];
+        var uniqueCode = "ornekmagaza" + Guid.NewGuid().ToString("N")[..6];
         await SeedLicenseAsync(uniqueCode);
         var resp = await _factory.CreateClient()
             .GetAsync($"/api/v1/shopper/broadcasters/code-lookup?code={uniqueCode.ToUpperInvariant()}");

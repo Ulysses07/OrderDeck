@@ -378,7 +378,7 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         var phone = UniquePhone();
 
         var resp = await _factory.CreateClient().PostAsJsonAsync("/api/v1/shopper/auth/register",
-            new RegisterRequest(code, "İrem Kaya", phone, $"kayit-{Guid.NewGuid():N}", "Sivas", "tiktok", "İrem"));
+            new RegisterRequest(code, "Örnek Müşteri", phone, $"kayit-{Guid.NewGuid():N}", "Sivas", "tiktok", "İrem"));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         using var check = _factory.Services.CreateScope();

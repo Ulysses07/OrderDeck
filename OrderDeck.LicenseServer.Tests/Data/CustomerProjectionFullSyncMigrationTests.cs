@@ -83,7 +83,7 @@ public sealed class CustomerProjectionFullSyncMigrationTests
         const string melikeUsername = "  MELİKE ";
         const string suleUsername = "Şule";
         const string aysegulUsername = "ayşe🌸";
-        const string asciiUsername = "mehmetyilmaz";
+        const string asciiUsername = "ornekmusteri";
 
         await using (var conn = new SqlConnection(connectionString))
         {

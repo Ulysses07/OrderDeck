@@ -18,7 +18,7 @@ public class AdminBackupTablesTests : IClassFixture<ApiFactory>
         resp.EnsureSuccessStatusCode();
         var html = await resp.Content.ReadAsStringAsync();
         html.Should().Contain("alice");
-        html.Should().Contain("+905551111111");
+        html.Should().Contain(BackupSeedHelper.SamplePhone);
     }
 
     [Fact]

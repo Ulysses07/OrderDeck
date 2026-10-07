@@ -21,7 +21,7 @@ public class ActivationManagerTests : IClassFixture<ApiFactory>
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var customer = new Customer
         {
-            Id = Guid.NewGuid(), Email = $"a-{Guid.NewGuid():N}@x.com",
+            Id = Guid.NewGuid(), Email = $"a-{Guid.NewGuid():N}@example.test",
             Name = "AM", PasswordHash = "x", CreatedAt = DateTimeOffset.UtcNow
         };
         var license = new License

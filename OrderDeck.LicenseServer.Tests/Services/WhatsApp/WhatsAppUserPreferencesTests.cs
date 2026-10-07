@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
 using Xunit;
 
@@ -23,6 +24,9 @@ public sealed class WhatsAppUserPreferencesTests
 {
     private const string Bsuid = "US.13491208655302741918";
 
+    // Müşteri numarası her koşuda üretilir; Meta wa_id'yi '+' işaretsiz yazar.
+    private static readonly string MusteriWaId = TestPhone.NewE164()[1..];
+
     private static (LicenseDbContext Db, WhatsAppInboundJob Job, Guid LicenseId) Build(
         string pnid = "PNID_1")
     {
@@ -39,7 +43,7 @@ public sealed class WhatsAppUserPreferencesTests
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = pnid,
-            DisplayPhoneNumber = "+905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("t"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,
@@ -56,12 +60,12 @@ public sealed class WhatsAppUserPreferencesTests
     /// <summary>Meta'nın belgelediği biçim: <c>timestamp</c> SAYI, mesaj
     /// webhook'undaki gibi string değil.</summary>
     private static string Payload(
-        string value, long ts, string? waId = "905321234567", string? userId = null,
+        string value, long ts, bool withWaId = true, string? userId = null,
         string category = "marketing_messages", string pnid = "PNID_1")
     {
         var idFields = string.Join(", ", new[]
         {
-            waId is null ? null : $"\"wa_id\": \"{waId}\"",
+            withWaId ? $"\"wa_id\": \"{MusteriWaId}\"" : null,
             userId is null ? null : $"\"user_id\": \"{userId}\"",
         }.Where(x => x is not null));
 
@@ -87,7 +91,7 @@ public sealed class WhatsAppUserPreferencesTests
 
         var p = events.UserPreferences.Should().ContainSingle().Subject;
         p.PhoneNumberId.Should().Be("PNID_1");
-        p.WaId.Should().Be("905321234567");
+        p.WaId.Should().Be(MusteriWaId);
         p.UserId.Should().Be(Bsuid);
         p.Category.Should().Be("marketing_messages");
         p.Value.Should().Be("stop");
@@ -115,7 +119,7 @@ public sealed class WhatsAppUserPreferencesTests
         {
           "entry": [{ "changes": [{ "field": "user_preferences", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "user_preferences": [{ "wa_id": "905321234567", {{{onlyField}}}, "timestamp": 1731705721 }]
+            "user_preferences": [{ "wa_id": "{{{MusteriWaId}}}", {{{onlyField}}}, "timestamp": 1731705721 }]
           }}]}]
         }
         """;
@@ -134,7 +138,7 @@ public sealed class WhatsAppUserPreferencesTests
 
         var row = db.WaMarketingPreferences.Single();
         row.LicenseId.Should().Be(licenseId);
-        row.CustomerPhone.Should().Be("905321234567");
+        row.CustomerPhone.Should().Be(MusteriWaId);
         row.BsuId.Should().Be(Bsuid);
         row.Category.Should().Be("marketing_messages");
         row.Preference.Should().Be(WaMarketingPreferences.Stop);
@@ -183,11 +187,11 @@ public sealed class WhatsAppUserPreferencesTests
         var (db, job, _) = Build();
 
         await job.ProcessAsync(Payload("stop", 1731705721, userId: Bsuid));
-        await job.ProcessAsync(Payload("resume", 1731705999, waId: null, userId: Bsuid));
+        await job.ProcessAsync(Payload("resume", 1731705999, withWaId: false, userId: Bsuid));
 
         var row = db.WaMarketingPreferences.Single();
         row.Preference.Should().Be(WaMarketingPreferences.Resume);
-        row.CustomerPhone.Should().Be("905321234567", "önceden bilinen telefon silinmemeli");
+        row.CustomerPhone.Should().Be(MusteriWaId, "önceden bilinen telefon silinmemeli");
     }
 
     /// <summary>Önce yalnız BSUID'li olay geldiyse, telefon sonradan
@@ -198,12 +202,12 @@ public sealed class WhatsAppUserPreferencesTests
     {
         var (db, job, _) = Build();
 
-        await job.ProcessAsync(Payload("stop", 1731705721, waId: null, userId: Bsuid));
+        await job.ProcessAsync(Payload("stop", 1731705721, withWaId: false, userId: Bsuid));
         db.WaMarketingPreferences.Single().CustomerPhone.Should().BeNull();
 
         await job.ProcessAsync(Payload("stop", 1731705999, userId: Bsuid));
 
-        db.WaMarketingPreferences.Single().CustomerPhone.Should().Be("905321234567");
+        db.WaMarketingPreferences.Single().CustomerPhone.Should().Be(MusteriWaId);
     }
 
     /// <summary>Kimliksiz olay kaydedilemez: kimin kararı olduğunu bilmiyoruz.
@@ -213,7 +217,7 @@ public sealed class WhatsAppUserPreferencesTests
     {
         var (db, job, _) = Build();
 
-        await job.ProcessAsync(Payload("stop", 1731705721, waId: null));
+        await job.ProcessAsync(Payload("stop", 1731705721, withWaId: false));
 
         db.WaMarketingPreferences.Should().BeEmpty();
     }
@@ -321,13 +325,13 @@ public sealed class WhatsAppUserPreferencesTests
     public async Task Dusen_pazarlama_mesaji_stop_olarak_deftere_yazilir()
     {
         var (db, job, licenseId) = Build();
-        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+        SeedOutbound(db, licenseId, MusteriWaId, "wamid.OUT1");
 
         await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.OUT1"));
 
         var row = db.WaMarketingPreferences.Single();
         row.LicenseId.Should().Be(licenseId);
-        row.CustomerPhone.Should().Be("905321234567");
+        row.CustomerPhone.Should().Be(MusteriWaId);
         row.Category.Should().Be(WaMarketingPreferences.MarketingCategory);
         row.Preference.Should().Be(WaMarketingPreferences.Stop);
         row.PreferenceAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(1731705721));
@@ -349,7 +353,7 @@ public sealed class WhatsAppUserPreferencesTests
     public async Task Baska_hata_kodu_deftere_yazilmaz(string code)
     {
         var (db, job, licenseId) = Build();
-        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+        SeedOutbound(db, licenseId, MusteriWaId, "wamid.OUT1");
 
         await job.ProcessAsync(FailedPayload(1731705721, code, "wamid.OUT1"));
 
@@ -362,7 +366,7 @@ public sealed class WhatsAppUserPreferencesTests
     public async Task Sonraki_resume_131050_karari_ezer()
     {
         var (db, job, licenseId) = Build();
-        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+        SeedOutbound(db, licenseId, MusteriWaId, "wamid.OUT1");
 
         await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.OUT1"));
         await job.ProcessAsync(Payload("resume", 1731705999));
@@ -382,7 +386,7 @@ public sealed class WhatsAppUserPreferencesTests
     public async Task Gec_gelen_131050_yeni_resume_u_ezmez()
     {
         var (db, job, licenseId) = Build();
-        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+        SeedOutbound(db, licenseId, MusteriWaId, "wamid.OUT1");
 
         await job.ProcessAsync(Payload("resume", 1731705999));
         await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.OUT1"));
@@ -398,7 +402,7 @@ public sealed class WhatsAppUserPreferencesTests
     public async Task Zaten_stop_olan_musteride_ikinci_satir_acilmaz()
     {
         var (db, job, licenseId) = Build();
-        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+        SeedOutbound(db, licenseId, MusteriWaId, "wamid.OUT1");
 
         await job.ProcessAsync(Payload("stop", 1731705721));
         await job.ProcessAsync(FailedPayload(1731705999, "131050", "wamid.OUT1"));
@@ -418,7 +422,7 @@ public sealed class WhatsAppUserPreferencesTests
     public async Task Ayni_paketteki_iki_dusen_mesaj_tek_satir_yazar()
     {
         var (db, job, licenseId) = Build();
-        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1", "wamid.OUT2");
+        SeedOutbound(db, licenseId, MusteriWaId, "wamid.OUT1", "wamid.OUT2");
 
         await job.ProcessAsync(
             FailedPayload(1731705721, "131050", "wamid.OUT1", "wamid.OUT2"));

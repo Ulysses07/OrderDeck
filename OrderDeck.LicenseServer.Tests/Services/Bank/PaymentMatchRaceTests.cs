@@ -94,10 +94,10 @@ public sealed class PaymentMatchRaceTests
     {
         await using var db = Ctx();
         var lic = Guid.NewGuid(); var shopperId = Guid.NewGuid();
-        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow };
+        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow };
         db.WpfCustomerProjections.Add(wpf);
-        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink { Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", WpfCustomerId = wpf.Id, JoinedAt = DateTimeOffset.UtcNow });
-        var tx = Incoming(db, lic, amount, "HAVALE ayse_gul34");
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink { Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ornek_musteri34", WpfCustomerId = wpf.Id, JoinedAt = DateTimeOffset.UtcNow });
+        var tx = Incoming(db, lic, amount, "HAVALE ornek_musteri34");
         await db.SaveChangesAsync();
         (await Matcher(db).MatchAsync(tx, CancellationToken.None)).Status.Should().Be(PaymentMatchStatus.Proposed);
         return new Seed(lic, shopperId, wpf.Id, tx);
@@ -129,7 +129,7 @@ public sealed class PaymentMatchRaceTests
         await using var db = Ctx();
         var p = new Payment
         {
-            Id = Guid.NewGuid(), LicenseId = s.LicenseId, ShopperId = s.ShopperId, PayerName = "AYSE GUL", Amount = amount, PaidAt = s.Tx.OccurredAt,
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId, ShopperId = s.ShopperId, PayerName = "ORNEK MUSTERI", Amount = amount, PaidAt = s.Tx.OccurredAt,
             ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, ApprovedAt = DateTimeOffset.UtcNow,
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         };
@@ -442,7 +442,7 @@ public sealed class PaymentMatchRaceTests
             {
                 await using (var db = Ctx())
                 {
-                    named = Incoming(db, s.LicenseId, 450m, "HAVALE AYSE GUL").Id;
+                    named = Incoming(db, s.LicenseId, 450m, "HAVALE ORNEK MUSTERI").Id;
                     await db.SaveChangesAsync();
                 }
                 await Recon(other).ReconcileApprovalAsync(payment, CancellationToken.None);

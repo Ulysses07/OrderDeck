@@ -1,5 +1,6 @@
 using FluentAssertions;
 using OrderDeck.Core.Sales;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Sales;
@@ -57,12 +58,12 @@ public class PeriodReportBuilderTests
         var result = PeriodReportBuilder.Build(new[]
         {
             Row("c1", "instagram", "ayse", groupId: "g1",
-                fullName: "Ayşe Y.", address: "Eski Adres", lastSeenAt: 100),
+                fullName: "Örnek M.", address: "Eski Adres", lastSeenAt: 100),
             Row("c2", "youtube", "UCxx", groupId: "g1",
-                fullName: "Ayşe Yılmaz", address: "Yeni Adres", lastSeenAt: 900),
+                fullName: "Örnek Müşteri", address: "Yeni Adres", lastSeenAt: 900),
         });
 
-        result[0].FullName.Should().Be("Ayşe Yılmaz");
+        result[0].FullName.Should().Be("Örnek Müşteri");
         result[0].Address.Should().Be("Yeni Adres");
     }
 
@@ -70,17 +71,18 @@ public class PeriodReportBuilderTests
     public void Empty_fields_fall_back_to_the_other_account_in_the_group()
     {
         // En güncel hesapta adres boş, eski hesapta dolu → boş bırakılmamalı.
+        var telefon = TestPhone.NewE164();
         var result = PeriodReportBuilder.Build(new[]
         {
             Row("c1", "instagram", "ayse", groupId: "g1",
-                fullName: "Ayşe", address: "Moda Cad. 5", phone: "+905551112233", lastSeenAt: 100),
+                fullName: "Ayşe", address: "Moda Cad. 5", phone: telefon, lastSeenAt: 100),
             Row("c2", "youtube", "UCxx", groupId: "g1",
                 fullName: null, address: "  ", phone: null, lastSeenAt: 900),
         });
 
         result[0].FullName.Should().Be("Ayşe");
         result[0].Address.Should().Be("Moda Cad. 5");
-        result[0].Phone.Should().Be("+905551112233");
+        result[0].Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -90,7 +92,7 @@ public class PeriodReportBuilderTests
         // dummy'leniyor — fatura kesmeye engel olan tek eksik isim.
         var nameOnly = PeriodReportBuilder.Build(new[]
         {
-            Row("c1", "instagram", "a", fullName: "Ayşe Yılmaz")
+            Row("c1", "instagram", "a", fullName: "Örnek Müşteri")
         })[0];
         var chatOnly = PeriodReportBuilder.Build(new[] { Row("c3", "instagram", "c") })[0];
 
@@ -107,9 +109,9 @@ public class PeriodReportBuilderTests
         // birleştirilmemeli, yoksa muhasebe tek fatura keser.
         var rows = new[]
         {
-            Row("c1", "instagram", "ayse", fullName: "Ayşe Yılmaz",
+            Row("c1", "instagram", "ayse", fullName: "Örnek Müşteri",
                 day: "2026-07-03", lastPrintedAt: 1_000, totalAmount: 300m, orderCount: 2),
-            Row("c1", "instagram", "ayse", fullName: "Ayşe Yılmaz",
+            Row("c1", "instagram", "ayse", fullName: "Örnek Müşteri",
                 day: "2026-07-09", lastPrintedAt: 9_000, totalAmount: 120m, orderCount: 1),
         };
 
@@ -133,9 +135,9 @@ public class PeriodReportBuilderTests
     {
         var invoices = PeriodReportBuilder.BuildInvoices(new[]
         {
-            Row("c1", "instagram", "ayse", groupId: "g1", fullName: "Ayşe Yılmaz",
+            Row("c1", "instagram", "ayse", groupId: "g1", fullName: "Örnek Müşteri",
                 day: "2026-07-03", lastPrintedAt: 1_000, totalAmount: 300m),
-            Row("c2", "youtube", "UCxx", groupId: "g1", fullName: "Ayşe Yılmaz",
+            Row("c2", "youtube", "UCxx", groupId: "g1", fullName: "Örnek Müşteri",
                 day: "2026-07-03", lastPrintedAt: 5_000, totalAmount: 200m),
         });
 
@@ -153,10 +155,10 @@ public class PeriodReportBuilderTests
         var invoices = PeriodReportBuilder.BuildInvoices(new[]
         {
             // Eski hesap: adres yok, kimlik bilgisi eksik.
-            Row("c1", "instagram", "ayse", groupId: "g1", fullName: "Ayşe Yılmaz",
+            Row("c1", "instagram", "ayse", groupId: "g1", fullName: "Örnek Müşteri",
                 lastSeenAt: 100, day: "2026-07-03"),
             // Yeni hesap: kayıt formundan gelen tam adres.
-            Row("c2", "youtube", "UCxx", groupId: "g1", fullName: "Ayşe Yılmaz",
+            Row("c2", "youtube", "UCxx", groupId: "g1", fullName: "Örnek Müşteri",
                 lastSeenAt: 900, day: "2026-07-03",
                 address: "Moda Cad. 5", city: "İstanbul", district: "Kadıköy",
                 email: "ayse@example.com"),
@@ -174,17 +176,17 @@ public class PeriodReportBuilderTests
     {
         var invoices = PeriodReportBuilder.BuildInvoices(new[]
         {
-            Row("c1", "instagram", "ayse", fullName: "Ayşe Yılmaz"),
+            Row("c1", "instagram", "ayse", fullName: "Örnek Müşteri"),
             Row("c2", "instagram", "nickonly", displayName: "@nick"),
         });
 
         invoices.Should().ContainSingle();
-        invoices[0].FullName.Should().Be("Ayşe Yılmaz");
+        invoices[0].FullName.Should().Be("Örnek Müşteri");
     }
 
     [Theory]
-    [InlineData("Ayşe Yılmaz", "Ayşe", "Yılmaz")]
-    [InlineData("Mehmet Oğuzhan Tanrıverdi", "Mehmet Oğuzhan", "Tanrıverdi")]
+    [InlineData("Örnek Müşteri", "Örnek", "Müşteri")]
+    [InlineData("Örnek Ara Müşteri", "Örnek Ara", "Müşteri")]
     [InlineData("Cher", "Cher", "")]
     public void Name_splits_on_the_last_space(string full, string first, string last)
     {
@@ -201,12 +203,12 @@ public class PeriodReportBuilderTests
     public void DisplayLabel_prefers_full_name_then_display_name_then_username()
     {
         var named = PeriodReportBuilder.Build(new[] {
-            Row("c1", "youtube", "UCxx", fullName: "Ayşe Yılmaz", displayName: "@ayse") })[0];
+            Row("c1", "youtube", "UCxx", fullName: "Örnek Müşteri", displayName: "@ayse") })[0];
         var nickOnly = PeriodReportBuilder.Build(new[] {
             Row("c2", "youtube", "UCyy", displayName: "@mehmet") })[0];
         var raw = PeriodReportBuilder.Build(new[] { Row("c3", "youtube", "UCzz") })[0];
 
-        named.DisplayLabel.Should().Be("Ayşe Yılmaz");
+        named.DisplayLabel.Should().Be("Örnek Müşteri");
         nickOnly.DisplayLabel.Should().Be("@mehmet");
         raw.DisplayLabel.Should().Be("UCzz");
     }

@@ -64,11 +64,15 @@ public class AdminWhatsAppAccountTests : IClassFixture<ApiFactory>
         string? VerifiedName, string Status, string TokenHint, string? LastError,
         DateTimeOffset ConnectedAt);
 
+    // İşletme numarası her koşuda üretilir (10 haneli ulusal biçim); istek onu
+    // boşluklu yazılışla gönderir, yanıt '+'sız kanonik biçimi döner.
+    private static readonly string Isletme = TestPhone.NewNational();
+
     private static object Body(string phoneNumberId, string token = "EAAG-super-secret-1234") => new
     {
         wabaId = "waba-1",
         phoneNumberId,
-        displayPhoneNumber = "+90 555 000 00 00",
+        displayPhoneNumber = $"+90 {Isletme[..3]} {Isletme[3..6]} {Isletme[6..8]} {Isletme[8..]}",
         accessToken = token,
         verifiedName = "OrderDeck",
     };
@@ -93,7 +97,7 @@ public class AdminWhatsAppAccountTests : IClassFixture<ApiFactory>
         body.Status.Should().Be("active");
         body.TokenHint.Should().Be("****1234");
         // Numara kanonikleştirilmeli — sohbet eşleştirmesi bu forma dayanıyor.
-        body.DisplayPhoneNumber.Should().Be("905550000000");
+        body.DisplayPhoneNumber.Should().Be("90" + Isletme);
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -154,7 +158,7 @@ public class AdminWhatsAppAccountTests : IClassFixture<ApiFactory>
 
         var resp = await admin.PutAsJsonAsync(
             $"/api/v1/admin/licenses/{licenseId}/whatsapp/account",
-            new { wabaId = "w", phoneNumberId = "p", displayPhoneNumber = "+905550000000", accessToken = "" });
+            new { wabaId = "w", phoneNumberId = "p", displayPhoneNumber = TestPhone.NewE164(), accessToken = "" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }

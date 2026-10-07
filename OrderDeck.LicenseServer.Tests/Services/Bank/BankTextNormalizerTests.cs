@@ -10,14 +10,14 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 public sealed class BankTextNormalizerTests
 {
     [Theory]
-    [InlineData("Işıl ŞENGÜL", "isil sengul")]
-    [InlineData("@Ayse_Gül.34", "ayse gul 34")]
+    [InlineData("Işınım DÜŞÜNCE", "isinim dusunce")]
+    [InlineData("@Ornek_Müşteri.34", "ornek musteri 34")]
     [InlineData("EFT-GELEN/İSTANBUL:ÖDEME", "eft gelen istanbul odeme")]
     [InlineData("  çok   boşluk ", "cok bosluk")]
-    [InlineData("ĞÜLÇİN Buğra", "gulcin bugra")]
+    [InlineData("İÇGÜDÜ Dağıtım", "icgudu dagitim")]
     [InlineData("Kâzım Hâlâ Îlim Ûmit", "kazim hala ilim umit")]
     [InlineData("IŞIL İSTANBUL ığüşöç ĞÜLÇİN", "isil istanbul igusoc gulcin")]
-    [InlineData("AYSE\u00A0GUL\tX\r\nY", "ayse gul x y")] // bölünmez boşluk (U+00A0), sekme, satır sonu
+    [InlineData("ORNEK\u00A0MUSTERI\tX\r\nY", "ornek musteri x y")] // bölünmez boşluk (U+00A0), sekme, satır sonu
     public void Normalize_turkce_harf_ve_ayiricilari_sadelestirir(string input, string expected)
         => BankTextNormalizer.Normalize(input).Should().Be(expected);
 
@@ -34,7 +34,7 @@ public sealed class BankTextNormalizerTests
     }
 
     [Theory]
-    [InlineData("José Hélène Rojên", "jose helene rojen")]
+    [InlineData("Café Crème Fête", "cafe creme fete")]
     [InlineData("ＡＹＳＥ", "ayse")] // tam genişlikli "AYSE"
     [InlineData("ﬁliz", "filiz")] // "fi" bitişik harfi
     [InlineData("ay\u00ADse", "ayse")] // yumuşak tire (U+00AD) görünmez, kelimeyi bölmez
@@ -69,9 +69,9 @@ public sealed class BankTextNormalizerTests
     [Fact]
     public void Tokenlar_ve_bitisik_metin()
     {
-        var t = BankTextNormalizer.Tokenize("HAVALE ayse_gul34 acıklama");
-        t.Tokens.Should().Equal("havale", "ayse", "gul34", "aciklama");
-        t.Joined.Should().Be("havaleaysegul34aciklama");
+        var t = BankTextNormalizer.Tokenize("HAVALE ornek_musteri34 acıklama");
+        t.Tokens.Should().Equal("havale", "ornek", "musteri34", "aciklama");
+        t.Joined.Should().Be("havaleornekmusteri34aciklama");
     }
 
     [Fact]
@@ -81,8 +81,8 @@ public sealed class BankTextNormalizerTests
     [Fact]
     public void Kullanici_adi_anahtari_ayni_kurallarla_uretilir()
     {
-        BankTextNormalizer.UsernameKey("@Ayse_Gül.34").Should().Be("aysegul34", "bitişik anahtar: ayırıcısız");
-        BankTextNormalizer.UsernameTokens("Ayse_Gül.34").Should().Equal("ayse", "gul", "34");
+        BankTextNormalizer.UsernameKey("@Ornek_Müşteri.34").Should().Be("ornekmusteri34", "bitişik anahtar: ayırıcısız");
+        BankTextNormalizer.UsernameTokens("Ornek_Müşteri.34").Should().Equal("ornek", "musteri", "34");
     }
 
     [Fact]

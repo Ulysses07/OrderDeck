@@ -16,8 +16,9 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     private readonly ApiFactory _factory;
     public IntakeFormPageTests(ApiFactory factory) => _factory = factory;
 
+    // whatsAppPhone verilmezse üretilir; boş dize "numara tanımsız" demektir.
     private async Task<(string slug, Guid customerId)> SeedConfigAsync(
-        bool licenseActive = true, bool formActive = true, string whatsAppPhone = "+905551234567")
+        bool licenseActive = true, bool formActive = true, string? whatsAppPhone = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -50,7 +51,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Slug = slug,
-            WhatsAppPhone = whatsAppPhone,
+            WhatsAppPhone = whatsAppPhone ?? TestPhone.NewE164(),
             IsActive = formActive,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -120,7 +121,8 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Post_submit_with_valid_input_redirects_to_wa_me()
     {
-        var (slug, customerId) = await SeedConfigAsync();
+        var magazaTelefonu = TestPhone.NewE164();
+        var (slug, customerId) = await SeedConfigAsync(whatsAppPhone: magazaTelefonu);
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false,
@@ -135,13 +137,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.InstagramUsername"] = "bilalcanli",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.InstagramUsername"] = "ornekmusteri",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -155,13 +157,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         okResp.StatusCode.Should().Be(HttpStatusCode.OK);
         var okHtml = await okResp.Content.ReadAsStringAsync();
         okHtml.Should().Contain("Kaydın alındı");
-        okHtml.Should().Contain("https://wa.me/905551234567?text=");
+        okHtml.Should().Contain($"https://wa.me/{magazaTelefonu[1..]}?text=");
 
         // Submission persisted?
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var sub = await db.IntakeFormSubmissions
-            .Where(s => s.Config.CustomerId == customerId && s.Username == "bilalcanli")
+            .Where(s => s.Config.CustomerId == customerId && s.Username == "ornekmusteri")
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
         sub!.City.Should().Be("İstanbul");
@@ -231,13 +233,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.InstagramUsername"] = "bilalcanli",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.InstagramUsername"] = "ornekmusteri",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
 
     private static FormUrlEncodedContent BuildMinimalForm(string antiForgery, string slug)
@@ -245,12 +247,12 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
 
     [Fact]
@@ -386,7 +388,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Input.FullName"] = "Bilal",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Adres",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -418,13 +420,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.InstagramUsername"] = "https://www.instagram.com/bilalcanli/?igsh=MWx5",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.InstagramUsername"] = "https://www.instagram.com/ornekmusteri/?igsh=MWx5",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -436,7 +438,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .Where(s => s.Config.CustomerId == customerId)
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
-        sub!.InstagramUsername.Should().Be("bilalcanli");
+        sub!.InstagramUsername.Should().Be("ornekmusteri");
     }
 
     [Fact]
@@ -456,13 +458,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.TikTokUsername"] = "https://www.tiktok.com/@edanur/video/7412345678901234567",
-            ["Input.FullName"] = "Eda Nur",
+            ["Input.TikTokUsername"] = "https://www.tiktok.com/@ikincimusteri/video/7412345678901234567",
+            ["Input.FullName"] = "İkinci Müşteri",
             ["Input.Email"] = "eda@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -474,7 +476,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .Where(s => s.Config.CustomerId == customerId)
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
-        sub!.TikTokUsername.Should().Be("edanur");
+        sub!.TikTokUsername.Should().Be("ikincimusteri");
     }
 
     /// <summary>
@@ -498,12 +500,12 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "https://www.instagram.com/p/Cxyz123",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -542,12 +544,12 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
             ["Input.TikTokUsername"] = longUrl,
-            ["Input.FullName"] = "Eda Nur",
+            ["Input.FullName"] = "İkinci Müşteri",
             ["Input.Email"] = "eda@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -585,12 +587,12 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
             ["Input.YouTubeUsername"] = "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -627,13 +629,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
             // Instagram adresi TikTok kutusuna yapıştırıldı.
-            ["Input.TikTokUsername"] = "https://www.instagram.com/bilalcanli",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.TikTokUsername"] = "https://www.instagram.com/ornekmusteri",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -669,13 +671,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.FacebookUsername"] = "Bilal Canlı",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FacebookUsername"] = "Örnek Müşteri",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -687,7 +689,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .Where(s => s.Config.CustomerId == customerId)
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
-        sub!.FacebookUsername.Should().Be("Bilal Canlı");
+        sub!.FacebookUsername.Should().Be("Örnek Müşteri");
     }
 
     /// <summary>
@@ -713,13 +715,13 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.FacebookUsername"] = "https://www.instagram.com/bilalcanli",
-            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.FacebookUsername"] = "https://www.instagram.com/ornekmusteri",
+            ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
             ["Input.City"] = "İstanbul",
             ["Input.District"] = "Kadıköy",
-            ["Input.Phone"] = "5551234567"
+            ["Input.Phone"] = TestPhone.NewNational()
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
@@ -731,6 +733,6 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .Where(s => s.Config.CustomerId == customerId)
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
-        sub!.FacebookUsername.Should().Be("https://www.instagram.com/bilalcanli");
+        sub!.FacebookUsername.Should().Be("https://www.instagram.com/ornekmusteri");
     }
 }

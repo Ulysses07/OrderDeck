@@ -160,7 +160,7 @@ public class ForgotPasswordSupportRequestPushTests : IClassFixture<ApiFactory>
         _factory.Push.Clear();
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
-                new ForgotPasswordRequest("+905555555555"));
+                new ForgotPasswordRequest(TestPhone.NewE164()));
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
         _factory.Push.Sent.Should().BeEmpty();

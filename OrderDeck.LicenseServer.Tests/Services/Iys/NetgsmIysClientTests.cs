@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
@@ -73,7 +74,7 @@ public class NetgsmIysClientTests
         var (client, handler) = Build("{\"code\":\"0\"}");
         var account = Account("763208");   // markanın TEK kaynağı bu bağlam
 
-        await client.AddAsync(account, new[] { Rec("+905551112233") });
+        await client.AddAsync(account, new[] { Rec(TestPhone.NewE164()) });
 
         using var doc = JsonDocument.Parse(handler.Body!);
         var header = doc.RootElement.GetProperty("header");
@@ -88,7 +89,7 @@ public class NetgsmIysClientTests
         var (client, handler) = Build("{\"code\":\"0\",\"query\":[]}");
         var account = Account("763208");
 
-        await client.SearchAsync(account, new[] { "+905551112233" });
+        await client.SearchAsync(account, new[] { TestPhone.NewE164() });
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.GetProperty("header").GetProperty("brandCode")
@@ -100,8 +101,9 @@ public class NetgsmIysClientTests
     {
         var (client, handler) = Build("{\"code\":\"0\"}");
         var account = Account("731734");
+        var telefon = TestPhone.NewE164();
 
-        await client.AddAsync(account, new[] { Rec("+905551112233") });
+        await client.AddAsync(account, new[] { Rec(telefon) });
 
         handler.Uri!.ToString().Should().Be("https://api.netgsm.com.tr/iys/add");
         using var doc = JsonDocument.Parse(handler.Body!);
@@ -110,7 +112,7 @@ public class NetgsmIysClientTests
         header.GetProperty("username").GetString().Should().Be(account.UserCode);
 
         var row = doc.RootElement.GetProperty("body").GetProperty("data")[0];
-        row.GetProperty("recipient").GetString().Should().Be("+905551112233");
+        row.GetProperty("recipient").GetString().Should().Be(telefon);
         row.GetProperty("status").GetString().Should().Be("ONAY");
         row.GetProperty("type").GetString().Should().Be("MESAJ");
         row.GetProperty("source").GetString().Should().Be("HS_WEB");
@@ -126,7 +128,7 @@ public class NetgsmIysClientTests
         // burada verilemez — yalnız /iys/search verebilir.
         var (client, _) = Build("{\"code\":\"0\",\"error\":\"false\"}");
 
-        var result = await client.AddAsync(Account("731734"), new[] { Rec("+905551112233") });
+        var result = await client.AddAsync(Account("731734"), new[] { Rec(TestPhone.NewE164()) });
 
         result.Queued.Should().BeTrue();
         result.Code.Should().Be("0");
@@ -138,29 +140,32 @@ public class NetgsmIysClientTests
     [Fact]
     public async Task SearchAsync_query_dizisinden_alici_bazinda_durum_cikarir()
     {
-        var (client, _) = Build("""
+        var onayli = TestPhone.NewE164();
+        var retli = onayli[..^1] + (onayli[^1] == '0' ? '1' : '0');   // yalnız son hanesi farklı
+        var (client, _) = Build($$"""
         {"code":"0","error":"false","query":[
           {"consentDate":"","source":"","recipientType":"BIREYSEL","status":"ONAY",
-           "type":"MESAJ","recipient":"+905310826728","transactionId":"6716aee7"},
+           "type":"MESAJ","recipient":"{{onayli}}","transactionId":"6716aee7"},
           {"consentDate":"","source":"","recipientType":"BIREYSEL","status":"RET",
-           "type":"MESAJ","recipient":"+905000000000","transactionId":"6716aee7"}]}
+           "type":"MESAJ","recipient":"{{retli}}","transactionId":"6716aee7"}]}
         """);
 
         var result = await client.SearchAsync(
-            Account("731734"), new[] { "+905310826728", "+905000000000" });
+            Account("731734"), new[] { onayli, retli });
 
-        result.Statuses["+905310826728"].Should().Be(IysConsentStatus.Onay);
-        result.Statuses["+905000000000"].Should().Be(IysConsentStatus.Ret);
+        result.Statuses[onayli].Should().Be(IysConsentStatus.Onay);
+        result.Statuses[retli].Should().Be(IysConsentStatus.Ret);
     }
 
     [Fact]
     public async Task SearchAsync_yanitta_olmayan_alici_Unknown_kalir()
     {
         var (client, _) = Build("{\"code\":\"0\",\"query\":[]}");
+        var telefon = TestPhone.NewE164();
 
-        var result = await client.SearchAsync(Account("731734"), new[] { "+905551112233" });
+        var result = await client.SearchAsync(Account("731734"), new[] { telefon });
 
-        result.Statuses.Should().NotContainKey("+905551112233");
+        result.Statuses.Should().NotContainKey(telefon);
     }
 
     /// <summary>
@@ -173,7 +178,9 @@ public class NetgsmIysClientTests
     [Fact]
     public async Task SearchAsync_2000_karakteri_asan_yanitta_tum_alicilari_ayristirir()
     {
-        var recipients = Enumerable.Range(0, 20).Select(i => $"+9053{i:D8}").ToArray();
+        // Üretilen ortak önek + sıra no: 20 alıcı kesin farklı.
+        var onek = TestPhone.NewNational()[..8];
+        var recipients = Enumerable.Range(0, 20).Select(i => $"+90{onek}{i:D2}").ToArray();
         var rows = string.Join(",", recipients.Select((r, i) =>
             $$"""{"consentDate":"2026-09-20 10:00:00","source":"HS_WEB","recipientType":"BIREYSEL","status":"{{(i % 2 == 0 ? "ONAY" : "RET")}}","type":"MESAJ","recipient":"{{r}}","transactionId":"6716aee7-{{i:D4}}"}"""));
         var body = $$"""{"code":"0","error":"false","query":[{{rows}}]}""";
@@ -197,7 +204,7 @@ public class NetgsmIysClientTests
     {
         var (client, _) = Build("{\"code\":\"0\",\"error\":\"false\",\"query\":[");
 
-        var result = await client.SearchAsync(Account("731734"), new[] { "+905551112233" });
+        var result = await client.SearchAsync(Account("731734"), new[] { TestPhone.NewE164() });
 
         result.Code.Should().NotBe("0");
         result.Statuses.Should().BeEmpty();
@@ -211,7 +218,7 @@ public class NetgsmIysClientTests
         var (client, _) = Build($"{{\"code\":\"{code}\"}}");
 
         var act = async () => await client.AddAsync(
-            Account("731734"), new[] { Rec("+905551112233") });
+            Account("731734"), new[] { Rec(TestPhone.NewE164()) });
 
         await act.Should().ThrowAsync<IysConfigurationException>();
     }

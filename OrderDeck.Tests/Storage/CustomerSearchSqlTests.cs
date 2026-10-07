@@ -20,11 +20,13 @@ namespace OrderDeck.Tests.Storage;
 /// </summary>
 public class CustomerSearchSqlTests
 {
+    // Ad/soyad yerine kurgusal sözcükler: katlamanın sınandığı harfler
+    // (İ, I/ı, Ş, Ö, Ç, Ğ, Ü) ve düz ASCII sözcükler korunuyor.
     private static readonly string[] FirstNames =
-        { "Ayşe", "İbrahim", "Işıl", "Şeyma", "Ömer", "Çağla", "Ali", "Bilal", "Ülkü", "Gökhan" };
+        { "Ayrışma", "İşaret", "Işıldak", "Şemsiye", "Ödev", "Çoğul", "Masa", "Defter", "Ütü", "Görsel" };
 
     private static readonly string[] LastNames =
-        { "Yılmaz", "Şahin", "Öztürk", "Çelik", "Işık", "Delikurt", "Ünal", "Doğan" };
+        { "Sınav", "Şube", "Önlük", "Çizgi", "Işıma", "Merdiven", "Üzüm", "Dağıtım" };
 
     private static readonly string[] Platforms = { "instagram", "tiktok", "youtube", "form" };
 
@@ -80,8 +82,14 @@ public class CustomerSearchSqlTests
             var len = Math.Min(rnd.Next(1, 8), source.Length - start);
             queries.Add(source.Substring(start, len));
         }
-        // Telefon parçaları + hiç eşleşmeyenler.
-        queries.AddRange(new[] { "0550 000 00 12", "5500000012", "00001", "55", "zzzqqq", "ayşe yılmaz" });
+        // Telefon parçaları + hiç eşleşmeyenler. Biçimli numaralar korpustaki bir
+        // numaradan türetilir: başında 0 olan boşluklu yazılış ve 10 haneli hâli.
+        var ulusal = all.First(c => c.Phone is not null).Phone![3..];
+        queries.AddRange(new[]
+        {
+            $"0{ulusal[..3]} {ulusal[3..6]} {ulusal[6..8]} {ulusal[8..]}", ulusal,
+            "00001", "55", "zzzqqq", "ayrışma sınav"
+        });
 
         foreach (var q in queries)
         {
@@ -166,6 +174,7 @@ public class CustomerSearchSqlTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
+        var telefon = TestPhone.NewE164();
 
         // Aynı kişi: yeni instagram satırı + ÇOK eski tiktok satırı.
         repo.Insert(new Customer(
@@ -179,7 +188,7 @@ public class CustomerSearchSqlTests
             FirstSeenAt: 1000, LastSeenAt: 1,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 2, TotalAmount: 200m, BlacklistedAt: null,
-            Address: null, Phone: "+905551112233", GroupId: "grp-1"));
+            Address: null, Phone: telefon, GroupId: "grp-1"));
 
         // Araya 60 dolgu: limit 50'yi doldurup eski üyeyi dışarıda bırakıyorlar.
         for (var i = 0; i < 60; i++)
@@ -200,7 +209,7 @@ public class CustomerSearchSqlTests
         completed.Should().HaveCount(51);
         completed.Where(c => c.GroupId == "grp-1").Sum(c => c.TotalAmount).Should().Be(300m);
         // Telefonlu (birincil) üye geri geldi — kart başlığı iletişimsiz kalmaz.
-        completed.Should().Contain(c => c.Id == "g-old" && c.Phone == "+905551112233");
+        completed.Should().Contain(c => c.Id == "g-old" && c.Phone == telefon);
         // Hiçbir satır atılmadı, sıra korundu.
         completed.Take(50).Select(c => c.Id).Should().Equal(rows.Select(c => c.Id));
     }
@@ -226,7 +235,7 @@ public class CustomerSearchSqlTests
             FirstSeenAt: 1000, LastSeenAt: 400,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 2, TotalAmount: 200m, BlacklistedAt: null,
-            Address: null, Phone: "+905551112233", GroupId: "grp-2"));
+            Address: null, Phone: TestPhone.NewE164(), GroupId: "grp-2"));
 
         var rows = repo.Search("elma", limit: 50, platform: "instagram");
         rows.Select(c => c.Id).Should().Equal("p-ig");
@@ -251,7 +260,7 @@ public class CustomerSearchSqlTests
                 FirstSeenAt: 1000, LastSeenAt: 100_000 + i,
                 IsBlacklisted: false, BlacklistReason: null, Notes: null,
                 TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
-                Address: null, Phone: i == 0 ? "+905551112233" : null));
+                Address: null, Phone: i == 0 ? TestPhone.NewE164() : null));
         }
 
         // Limit 50'den sonra dışarıda süzülseydi ikisi de boş dönerdi.
@@ -319,7 +328,7 @@ public class CustomerSearchSqlTests
             tx.Commit();
         }
 
-        foreach (var q in new[] { "yılmaz", "ayşe", "user5999", "işık şahin" })
+        foreach (var q in new[] { "sınav", "ayrışma", "user5999", "işıma şube" })
         {
             repo.Search(q, limit: 50).Select(c => c.Id)
                 .Should().Equal(Reference(all, q, 50).Select(c => c.Id), $"sorgu: '{q}'");
@@ -332,23 +341,27 @@ public class CustomerSearchSqlTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
+        var telefon = TestPhone.NewE164();
+        // Numaranın ortasından bir parça; '5' ile başladığı için aramanın baştaki
+        // sıfırları atması onu kısaltamaz.
+        var telefonParcasi = telefon[4..^1];
 
         // 1) Insert
         repo.Insert(new Customer(
-            "t-1", "instagram", "@ibo", "İbrahim Şahin", null,
+            "t-1", "instagram", "@ibo", "Örnek Müşteri", null,
             FirstSeenAt: 1000, LastSeenAt: 1000,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
             Address: null, Phone: null));
-        repo.Search("brahim", limit: 10).Select(c => c.Id).Should().Equal("t-1");
+        repo.Search("rnek", limit: 10).Select(c => c.Id).Should().Equal("t-1");
 
         // 2) UpdatePhone — telefon anahtarı da tetikleyiciden gelir.
-        repo.UpdatePhone("t-1", "+905339998877");
-        repo.Search("99988", limit: 10).Select(c => c.Id).Should().Equal("t-1");
+        repo.UpdatePhone("t-1", telefon);
+        repo.Search(telefonParcasi, limit: 10).Select(c => c.Id).Should().Equal("t-1");
 
         // 3) İlgisiz kolon (tetikleyicinin UPDATE OF listesinde yok) — bozmamalı.
         repo.IncrementLabelStats("t-1", 1, 250m, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-        repo.Search("brahim", limit: 10).Select(c => c.Id).Should().Equal("t-1");
+        repo.Search("rnek", limit: 10).Select(c => c.Id).Should().Equal("t-1");
 
         // 4) Intake upsert — ad değişince ESKİ ad artık bulunmamalı.
         repo.UpsertFromIntakeForm("@ibo2", "Şeyma Işık", "adres", "+905551112233", 2000);
@@ -359,8 +372,8 @@ public class CustomerSearchSqlTests
 
         // 5) KVKK boşaltma — kişisel veri hem kolondan hem indeksten gitmeli.
         repo.ScrubPersonalData("t-1");
-        repo.Search("brahim", limit: 10).Should().BeEmpty();
-        repo.Search("99988", limit: 10).Should().BeEmpty();
+        repo.Search("rnek", limit: 10).Should().BeEmpty();
+        repo.Search(telefonParcasi, limit: 10).Should().BeEmpty();
 
         // 6) Harici içerikli FTS5, tetikleyiciler yanlış değerle silerse sessizce
         // bozulur — integrity-check bunu yakalayan tek şey.

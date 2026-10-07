@@ -35,11 +35,12 @@ public class PanelPaymentsLabelTests : IClassFixture<ApiFactory>
         };
         db.Licenses.Add(license);
 
+        var phone = TestPhone.NewE164();
         var shopper = new DomainShopper
         {
             Id = Guid.NewGuid(),
             FullName = "Ayşe K.",
-            Phone = "+905321234567",
+            Phone = phone,
             PasswordHash = "x",
             Address = "adres",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -66,7 +67,7 @@ public class PanelPaymentsLabelTests : IClassFixture<ApiFactory>
         {
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
-            CustomerPhone = "905321234567",
+            CustomerPhone = phone[1..], // WhatsApp biçimi: başında + yok
             PhoneNumberId = "PNID_1",
             Status = "open",
             CreatedAt = DateTimeOffset.UtcNow,

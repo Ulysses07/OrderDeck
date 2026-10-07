@@ -77,7 +77,7 @@ public sealed class IntakeFormSmsConsentVisibilityTests : IClassFixture<ApiFacto
             Id = Guid.NewGuid(),
             CustomerId = customerId,
             Slug = slug,
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = TestPhone.NewE164(),
             IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,

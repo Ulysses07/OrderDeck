@@ -66,7 +66,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
         {
             wabaId = "waba-1",
             phoneNumberId = $"pnid-{Guid.NewGuid():N}",
-            displayPhoneNumber = "+905550000000",
+            displayPhoneNumber = TestPhone.NewE164(),
             accessToken = "token-1234",
         })).EnsureSuccessStatusCode();
 
@@ -98,10 +98,12 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
         var licenseId = await SeedLicenseAsync();
         var admin = await AdminClientAsync();
         await ConnectAccountAsync(admin, licenseId);
-        await OpenServiceWindowAsync(licenseId, "905551112233");
+        // Sohbet '+'sız kanonik biçimde, istek aynı numaranın boşluklu yazılışıyla.
+        var n = TestPhone.NewNational();
+        await OpenServiceWindowAsync(licenseId, "90" + n);
 
         var resp = await admin.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "+90 555 111 22 33", text = "merhaba" });
+            Url(licenseId), new { toPhone = $"+90 {n[..3]} {n[3..6]} {n[6..8]} {n[8..]}", text = "merhaba" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
@@ -125,7 +127,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
 
         // Hiç gelen mesaj yok → pencere kapalı.
         var resp = await admin.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", text = "merhaba" });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = "merhaba" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
@@ -141,7 +143,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
         await ConnectAccountAsync(admin, licenseId);
 
         var resp = await admin.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", templateName = "hello_world" });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], templateName = "hello_world" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
@@ -161,7 +163,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
         var admin = await AdminClientAsync();
 
         var resp = await admin.PostAsJsonAsync(
-            Url(licenseId), new { toPhone = "905559998877", templateName = "hello_world" });
+            Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], templateName = "hello_world" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await resp.Content.ReadFromJsonAsync<SendResponse>())!.ErrorCode.Should().Be("no_account");
@@ -175,7 +177,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
 
         (await admin.PostAsJsonAsync(Url(licenseId), new { toPhone = "abc", text = "x" }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await admin.PostAsJsonAsync(Url(licenseId), new { toPhone = "905559998877" }))
+        (await admin.PostAsJsonAsync(Url(licenseId), new { toPhone = TestPhone.NewE164()[1..] }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
@@ -185,7 +187,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
         var admin = await AdminClientAsync();
 
         var resp = await admin.PostAsJsonAsync(
-            Url(Guid.NewGuid()), new { toPhone = "905559998877", text = "x" });
+            Url(Guid.NewGuid()), new { toPhone = TestPhone.NewE164()[1..], text = "x" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
@@ -196,7 +198,7 @@ public class AdminWhatsAppSendTests : IClassFixture<ApiFactory>
         var licenseId = await SeedLicenseAsync();
         var anon = _factory.CreateClient();
 
-        (await anon.PostAsJsonAsync(Url(licenseId), new { toPhone = "905559998877", text = "x" }))
+        (await anon.PostAsJsonAsync(Url(licenseId), new { toPhone = TestPhone.NewE164()[1..], text = "x" }))
             .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 }

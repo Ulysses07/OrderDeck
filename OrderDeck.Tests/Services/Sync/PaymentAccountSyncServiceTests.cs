@@ -142,7 +142,7 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(DefaultResponder);
         var settings = fx.Store.Load();
         settings.Payment.Iban          = "TR330006100519786457841326";
-        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        settings.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(settings);
 
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
@@ -158,7 +158,7 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(DefaultResponder);
         var settings = fx.Store.Load();
         settings.Payment.Iban          = "TR330006100519786457841326";
-        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        settings.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(settings);
 
         // First call → sends
@@ -285,7 +285,7 @@ public sealed class PaymentAccountSyncServiceTests
 
         var settings = fx.Store.Load();
         settings.Payment.Iban          = "TR330006100519786457841326";
-        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        settings.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(settings);
 
         // A hedefine ilk gönderim
@@ -328,7 +328,7 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var s1 = fx.Store.Load();
         s1.Payment.Iban          = "TR330006100519786457841326";
-        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        s1.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(s1);
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None); // sunucu artık dolu
 
@@ -386,7 +386,7 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var s1 = fx.Store.Load();
         s1.Payment.Iban          = "TR330006100519786457841326";
-        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        s1.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(s1);
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
 
@@ -433,7 +433,7 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var settings = fx.Store.Load();
         settings.Payment.Iban          = "TR330006100519786457841326";
-        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        settings.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(settings);
 
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);   // ulaştı mı? bilinmiyor
@@ -494,7 +494,7 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var s1 = fx.Store.Load();
         s1.Payment.Iban          = "TR330006100519786457841326";
-        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        s1.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(s1);
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
         postCount.Should().Be(1, "ilk kurulum hesabı sunucuya gönderir");
@@ -535,14 +535,14 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var s1 = fx.Store.Load();
         s1.Payment.Iban          = "TR330006100519786457841326";
-        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        s1.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(s1);
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
 
         var restored = RestoreToFreshDevice(fx, responder);
         var s2 = restored.Store.Load();
         s2.Payment.Iban          = "TR330006100519786457841326";
-        s2.Payment.AccountHolder = "Ahmet Yıldız";
+        s2.Payment.AccountHolder = "Örnek Müşteri";
         restored.Store.Save(s2);
 
         await restored.Svc.SyncIfChangedAsync(CancellationToken.None);
@@ -574,14 +574,14 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var s1 = fx.Store.Load();
         s1.Payment.Iban          = "TR330006100519786457841326";
-        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        s1.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(s1);
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
 
         var restored = RestoreToFreshDevice(fx, responder);
         var s2 = restored.Store.Load();
         s2.Payment.Iban          = "TR330006100519786457841326";
-        s2.Payment.AccountHolder = "Ahmet Yıldız";
+        s2.Payment.AccountHolder = "Örnek Müşteri";
         restored.Store.Save(s2);
         await restored.Svc.SyncIfChangedAsync(CancellationToken.None); // sahiplenme
 
@@ -623,14 +623,14 @@ public sealed class PaymentAccountSyncServiceTests
         var fx = Build(responder);
         var s1 = fx.Store.Load();
         s1.Payment.Iban          = "TR330006100519786457841326";
-        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        s1.Payment.AccountHolder = "Örnek Müşteri";
         fx.Store.Save(s1);
         await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
 
         var restored = RestoreToFreshDevice(fx, responder);
         var s2 = restored.Store.Load();
         s2.Payment.Iban          = "TR440006100519786457841327";
-        s2.Payment.AccountHolder = "Ayşe Demir";
+        s2.Payment.AccountHolder = "Deneme Alıcı";
         restored.Store.Save(s2);
 
         await restored.Svc.SyncIfChangedAsync(CancellationToken.None);

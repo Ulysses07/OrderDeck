@@ -124,7 +124,7 @@ public sealed class PanelWhatsAppMessageTemplatesControllerTests : IDisposable
             LicenseId = s.LicenseId,
             WabaId = wabaId,
             PhoneNumberId = "PNID_" + Guid.NewGuid().ToString("N")[..8],
-            DisplayPhoneNumber = "+90 555 111 22 33",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("BIZ_TOKEN"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,

@@ -40,7 +40,7 @@ public class BackupOrphanCleanupJobTests : IClassFixture<ApiFactory>
         var customer = new Customer
         {
             Id = Guid.NewGuid(),
-            Email = $"orphan-blob-{Guid.NewGuid():N}@t.com",
+            Email = $"orphan-blob-{Guid.NewGuid():N}@example.test",
             Name = "Yetim",
             PasswordHash = "x",
             CreatedAt = DateTimeOffset.UtcNow,

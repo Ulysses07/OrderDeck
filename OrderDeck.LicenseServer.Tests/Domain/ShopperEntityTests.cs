@@ -21,12 +21,13 @@ public class ShopperEntityTests
         var id = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
         var tcDegeri = TestTckn.NewValid();
+        var telefon = TestPhone.NewE164();
 
         db.Shoppers.Add(new Shopper
         {
             Id = id,
             FullName = "Ali Veli",
-            Phone = "+905551112233",
+            Phone = telefon,
             PasswordHash = "bcrypt-hash",
             Address = "Bağdat Cd. 1",
             Email = "ali@example.com",
@@ -41,7 +42,7 @@ public class ShopperEntityTests
 
         var loaded = await db.Shoppers.SingleAsync(s => s.Id == id);
         loaded.FullName.Should().Be("Ali Veli");
-        loaded.Phone.Should().Be("+905551112233");
+        loaded.Phone.Should().Be(telefon);
         loaded.PasswordHash.Should().Be("bcrypt-hash");
         loaded.Email.Should().Be("ali@example.com");
         loaded.TcProtected.Should().Be(tcDegeri);
@@ -53,16 +54,17 @@ public class ShopperEntityTests
     {
         await using var db = NewDb();
         var now = DateTimeOffset.UtcNow;
+        var telefon = TestPhone.NewE164();
         db.Shoppers.Add(new Shopper
         {
-            Id = Guid.NewGuid(), FullName = "A", Phone = "+905551112233",
+            Id = Guid.NewGuid(), FullName = "A", Phone = telefon,
             PasswordHash = "h", Address = "x", CreatedAt = now, UpdatedAt = now,
         });
         await db.SaveChangesAsync();
 
         db.Shoppers.Add(new Shopper
         {
-            Id = Guid.NewGuid(), FullName = "B", Phone = "+905551112233",
+            Id = Guid.NewGuid(), FullName = "B", Phone = telefon,
             PasswordHash = "h2", Address = "y", CreatedAt = now, UpdatedAt = now,
         });
 

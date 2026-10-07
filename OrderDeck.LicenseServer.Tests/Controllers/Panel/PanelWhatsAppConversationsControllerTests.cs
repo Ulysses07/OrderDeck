@@ -36,7 +36,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
 
     private sealed record Seed(HttpClient Client, Guid LicenseId, Guid LabelId, Guid ConversationId);
 
-    private async Task<Seed> SeedAsync(string phone = "905321234567")
+    private async Task<Seed> SeedAsync(string? phone = null)
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         var licenseId = Guid.NewGuid();
@@ -56,7 +56,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             db.WaConversations.Add(new WaConversation
             {
                 Id = conversationId, LicenseId = licenseId,
-                CustomerPhone = phone, PhoneNumberId = "PNID_1",
+                CustomerPhone = phone ?? TestPhone.NewE164()[1..], PhoneNumberId = "PNID_1",
                 ProfileName = "Ayşe", Status = "open", UnreadCount = 2,
                 LastMessageAt = DateTimeOffset.UtcNow,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -74,13 +74,14 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     [Fact]
     public async Task Lists_conversations_with_no_labels_initially()
     {
-        var s = await SeedAsync();
+        var telefon = TestPhone.NewE164()[1..];
+        var s = await SeedAsync(telefon);
 
         var list = await s.Client.GetFromJsonAsync<List<ConversationDto>>(
             "/api/panel/whatsapp-conversations");
 
         var row = list!.Single(c => c.Id == s.ConversationId);
-        row.CustomerPhone.Should().Be("905321234567");
+        row.CustomerPhone.Should().Be(telefon);
         row.ProfileName.Should().Be("Ayşe");
         row.UnreadCount.Should().Be(2);
         row.Labels.Should().BeEmpty();
@@ -159,7 +160,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             db.WaConversations.Add(new WaConversation
             {
                 Id = otherConversationId, LicenseId = s.LicenseId,
-                CustomerPhone = "905339998877", PhoneNumberId = "PNID_1",
+                CustomerPhone = TestPhone.NewE164()[1..], PhoneNumberId = "PNID_1",
                 Status = "open", CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -223,7 +224,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             }
 
             SeedDekont("wamid.old", "ESKİ GÖNDEREN", 100m, timestampMinutesAgo: 60, createdAtMinutesAgo: 1);
-            SeedDekont("wamid.new", "AYŞE YILMAZ", 1250.50m, timestampMinutesAgo: 1, createdAtMinutesAgo: 60);
+            SeedDekont("wamid.new", "ÖRNEK MÜŞTERİ", 1250.50m, timestampMinutesAgo: 1, createdAtMinutesAgo: 60);
 
             await db.SaveChangesAsync();
         }
@@ -233,7 +234,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
 
         var dekont = list!.Single(c => c.Id == s.ConversationId).LatestDekont;
         dekont.Should().NotBeNull();
-        dekont!.PayerName.Should().Be("AYŞE YILMAZ");
+        dekont!.PayerName.Should().Be("ÖRNEK MÜŞTERİ");
         dekont.Amount.Should().Be(1250.50m);
         dekont.ReferansNo.Should().Be("REFwamid.new");
         dekont.ParserConfidence.Should().Be("High");
@@ -243,7 +244,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task Another_broadcasters_conversation_is_not_reachable()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
 
         var list = await mine.Client.GetFromJsonAsync<List<ConversationDto>>(
             "/api/panel/whatsapp-conversations");
@@ -258,7 +259,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task Another_broadcasters_label_cannot_be_detached()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
 
         await mine.Client.PostAsync(
             $"/api/panel/whatsapp-conversations/{mine.ConversationId}/labels/{mine.LabelId}", null);
@@ -425,7 +426,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task Another_broadcasters_messages_cannot_be_read()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
 
         using (var scope = _factory.Services.CreateScope())
         {
@@ -452,7 +453,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task A_label_from_another_broadcaster_cannot_be_attached()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
 
         var resp = await mine.Client.PostAsync(
             $"/api/panel/whatsapp-conversations/{mine.ConversationId}/labels/{theirs.LabelId}", null);
@@ -472,7 +473,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
         {
             Id = Guid.NewGuid(), LicenseId = s.LicenseId,
             WabaId = "WABA_" + Guid.NewGuid().ToString("N")[..8],
-            PhoneNumberId = "PNID_1", DisplayPhoneNumber = "+905550000000",
+            PhoneNumberId = "PNID_1", DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("token"),
             Status = "active", ConnectedAt = DateTimeOffset.UtcNow,
         });
@@ -536,7 +537,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task Another_broadcasters_conversation_cannot_be_replied_to()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
         await ConnectWhatsAppAsync(theirs, DateTimeOffset.UtcNow.AddHours(-1));
 
         var resp = await mine.Client.PostAsJsonAsync(
@@ -658,7 +659,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task Another_broadcasters_conversation_cannot_be_sent_a_template()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
         await ConnectWhatsAppAsync(theirs, DateTimeOffset.UtcNow.AddHours(-25));
 
         var resp = await SendTemplateAsync(
@@ -810,7 +811,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     public async Task Baska_yayincinin_kaybi_sizmaz()
     {
         var mine = await SeedAsync();
-        var theirs = await SeedAsync("905441112233");
+        var theirs = await SeedAsync();
 
         await AddDroppedAsync(
             theirs.LicenseId, "US.9", 99,

@@ -205,6 +205,9 @@ public class LicenseApiClientTests
         fakeInner.Requests[1].Headers.Authorization.Should().BeNull();
     }
 
+    // Repo public: telefon literal'i yazılmaz, her koşuda üretilir.
+    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+
     [Fact]
     public async Task GetIntakeFormAsync_returns_null_on_404()
     {
@@ -218,7 +221,7 @@ public class LicenseApiClientTests
     public async Task GetIntakeFormAsync_returns_dto_on_200()
     {
         var (client, _) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
-            """{"slug":"burak","whatsAppPhone":"+905551234567","customTitle":"Title","isActive":true,"formUrl":"https://x/r/burak"}"""));
+            $$"""{"slug":"burak","whatsAppPhone":"{{NewPhone()}}","customTitle":"Title","isActive":true,"formUrl":"https://x/r/burak"}"""));
 
         var result = await client.GetIntakeFormAsync();
 
@@ -230,10 +233,11 @@ public class LicenseApiClientTests
     [Fact]
     public async Task UpsertIntakeFormAsync_uses_PUT_method()
     {
+        var phone = NewPhone();
         var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
-            """{"slug":"new","whatsAppPhone":"+905551234567","customTitle":null,"isActive":true,"formUrl":"https://x/r/new"}"""));
+            $$"""{"slug":"new","whatsAppPhone":"{{phone}}","customTitle":null,"isActive":true,"formUrl":"https://x/r/new"}"""));
 
-        await client.UpsertIntakeFormAsync(new IntakeFormUpsertRequest("new", "+905551234567", null, true));
+        await client.UpsertIntakeFormAsync(new IntakeFormUpsertRequest("new", phone, null, true));
 
         handler.Requests[0].Method.Method.Should().Be("PUT");
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/intake-form");
@@ -242,8 +246,9 @@ public class LicenseApiClientTests
     [Fact]
     public async Task GetFormSubmissionsAsync_returns_list_with_since_query_param()
     {
+        var phone = NewPhone();
         var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"u","fullName":"n","address":"a","phone":"+905551111111","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+            $$"""[{"id":"00000000-0000-0000-0000-000000000001","username":"u","fullName":"n","address":"a","phone":"{{phone}}","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var since = new DateTimeOffset(2026, 4, 30, 11, 0, 0, TimeSpan.Zero);
         var sinceId = Guid.Parse("00000000-0000-0000-0000-0000000000aa");
@@ -251,7 +256,7 @@ public class LicenseApiClientTests
 
         rows.Should().HaveCount(1);
         rows[0].Username.Should().Be("u");
-        rows[0].Phone.Should().Be("+905551111111");
+        rows[0].Phone.Should().Be(phone);
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/form-submissions");
         // İmleç bileşik: yalnız damga gönderilseydi, aynı damgayı paylaşan
         // kayıtlar sayfa sınırında kesildiğinde kalanları bir daha dönmezdi.

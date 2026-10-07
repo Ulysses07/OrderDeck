@@ -85,7 +85,8 @@ public sealed class LoginServiceTests : IDisposable
     {
         var (svc, handler, _) = Build(_ => FakeHttpMessageHandler.Empty(201));
 
-        await svc.RegisterAsync("u@x.com", "User", "password123");
+        var uretilen = $"pw-{Guid.NewGuid():N}";
+        await svc.RegisterAsync("u@example.test", "User", uretilen);
 
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/auth/register");
         _authStore.IsPresent.Should().BeFalse();

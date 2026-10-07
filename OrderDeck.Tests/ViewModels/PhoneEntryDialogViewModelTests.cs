@@ -41,13 +41,14 @@ public class PhoneEntryDialogViewModelTests
         var customers = CreateRepoWithCustomer();
         var closed = false;
         var sut = new PhoneEntryDialogViewModel(customers, "c1", () => closed = true);
-        sut.PhoneInput = "5551234567";
+        var telefon = TestPhone.NewNational();
+        sut.PhoneInput = telefon;
 
         sut.SaveCommand.Execute(null);
 
         sut.ValidationError.Should().BeNull();
         closed.Should().BeTrue();
-        customers.GetById("c1")!.Phone.Should().Be("+905551234567");
+        customers.GetById("c1")!.Phone.Should().Be("+90" + telefon);
     }
 
     [Fact]
@@ -77,7 +78,7 @@ public class PhoneEntryDialogViewModelTests
         var customers = CreateRepoWithCustomer();
         var closed = false;
         var sut = new PhoneEntryDialogViewModel(customers, "c1", () => closed = true);
-        sut.PhoneInput = "5551234567";
+        sut.PhoneInput = TestPhone.NewNational();
 
         // Çekmece açıkken silme kararı iniyor.
         customers.RecordPurge("twitch", "alice", DateTimeOffset.UtcNow.ToUnixTimeSeconds());

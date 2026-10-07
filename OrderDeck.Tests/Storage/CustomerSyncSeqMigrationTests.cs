@@ -105,11 +105,11 @@ public sealed class CustomerSyncSeqMigrationTests
 
         using var conn = fx.Open();
         var before = conn.ExecuteScalar<long>("SELECT SyncSeq FROM Customer WHERE Id='c1'");
-        conn.Execute("UPDATE Customer SET FullName='Ayşe Yılmaz' WHERE Id='c1'");
+        conn.Execute("UPDATE Customer SET FullName='Deneme Alıcı' WHERE Id='c1'");
 
         var after = conn.QueryFirst<(long SyncSeq, string SearchKey)>(
             "SELECT SyncSeq, SearchKey FROM Customer WHERE Id='c1'");
         after.SyncSeq.Should().BeGreaterThan(before);
-        after.SearchKey.Should().Contain("yilmaz", "035 tetikleyicisi hâlâ çalışmalı");
+        after.SearchKey.Should().Contain("alici", "035 tetikleyicisi hâlâ çalışmalı");
     }
 }

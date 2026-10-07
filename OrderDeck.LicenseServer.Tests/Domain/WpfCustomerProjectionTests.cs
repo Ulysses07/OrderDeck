@@ -55,13 +55,13 @@ public class WpfCustomerProjectionTests
     [Fact]
     public void IdentityKey_Username_setter_ile_otomatik_turetilir()
     {
-        var p = new WpfCustomerProjection { Username = "  Ayse.Kaya " };
-        p.IdentityKey.Should().Be("ayse.kaya");
+        var p = new WpfCustomerProjection { Username = "  Ornek.Musteri " };
+        p.IdentityKey.Should().Be("ornek.musteri");
     }
 
     [Theory]
     // Kırpma + küçük harf (temel durum).
-    [InlineData("  Ayse.Kaya ", "ayse.kaya")]
+    [InlineData("  Ornek.Musteri ", "ornek.musteri")]
     // Türkçe büyük 'İ' (U+0130): .NET ToLowerInvariant bunu DEĞİŞTİRMEZ,
     // Replace('İ','i') ile SQL LOWER'ın verdiği sonuca (her collation'da 'i')
     // eşitleniyor — asıl prod bulgusu bu.
