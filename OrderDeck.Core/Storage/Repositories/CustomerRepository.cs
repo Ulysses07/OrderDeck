@@ -803,9 +803,14 @@ public sealed class CustomerRepository
                 conn.Execute(
                     "UPDATE Customer SET GroupId = @groupId WHERE GroupId IN @otherGroups",
                     new { groupId, otherGroups });
-
-            PropagateGroupBlacklist(conn, groupId, nowUnix);
         }
+
+        // Kara liste yayılımı HER formda: telefonsuz form da kimlikleri gruba koyar
+        // (mevcut gruba katılım ya da yeni grup). Kara liste satır bayrağından
+        // okunduğu için (sohbet, etiket kuyruğu, çekiliş) yayılım yalnız telefon
+        // dalında koşunca telefonsuz formla gruba giren yeni kimlik işaretsiz
+        // kalıyor, kişi o platformdan alışveriş yapabiliyordu.
+        PropagateGroupBlacklist(conn, groupId, nowUnix);
 
         return groupId;
     }
