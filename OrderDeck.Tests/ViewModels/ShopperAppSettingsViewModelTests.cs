@@ -81,7 +81,7 @@ public class ShopperAppSettingsViewModelTests
     public async Task Load_populates_code_and_cooldown_state()
     {
         var resp = new ShopperCodeResponse(
-            "royal",
+            "ornekmagaza",
             DateTimeOffset.UtcNow.AddDays(-3),
             DateTimeOffset.UtcNow.AddDays(4),
             TestLicenseId);
@@ -90,7 +90,7 @@ public class ShopperAppSettingsViewModelTests
 
         await vm.LoadAsync(default);
 
-        vm.CodeInput.Should().Be("royal");
+        vm.CodeInput.Should().Be("ornekmagaza");
         vm.CanEditCode.Should().BeFalse(); // cooldown active
         vm.CooldownMessage.Should().NotBeNullOrEmpty();
         vm.ErrorMessage.Should().BeNull();

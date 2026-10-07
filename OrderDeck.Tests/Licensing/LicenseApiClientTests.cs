@@ -27,7 +27,7 @@ public sealed class LicenseApiClientTests
     {
         var json = $$"""
             {
-              "code": "royal",
+              "code": "ornekmagaza",
               "updatedAt": "2026-05-20T10:00:00Z",
               "canChangeAt": "2026-05-27T10:00:00Z",
               "licenseId": "{{TestLicenseId}}"
@@ -38,7 +38,7 @@ public sealed class LicenseApiClientTests
 
         var result = await client.GetShopperCodeAsync();
 
-        result.Code.Should().Be("royal");
+        result.Code.Should().Be("ornekmagaza");
         result.UpdatedAt.Should().Be(DateTimeOffset.Parse("2026-05-20T10:00:00Z"));
         result.CanChangeAt.Should().Be(DateTimeOffset.Parse("2026-05-27T10:00:00Z"));
         result.LicenseId.Should().Be(TestLicenseId);
@@ -75,7 +75,7 @@ public sealed class LicenseApiClientTests
     {
         var responseJson = $$"""
             {
-              "code": "royal",
+              "code": "ornekmagaza",
               "updatedAt": "2026-05-20T10:00:00Z",
               "canChangeAt": "2026-05-27T10:00:00Z",
               "licenseId": "{{TestLicenseId}}"
@@ -94,14 +94,14 @@ public sealed class LicenseApiClientTests
             return FakeHttpMessageHandler.Json(200, responseJson);
         });
 
-        var result = await client.SetShopperCodeAsync("royal");
+        var result = await client.SetShopperCodeAsync("ornekmagaza");
 
         capturedMethod.Should().Be(HttpMethod.Put);
         capturedPath.Should().Be("/api/panel/shopper-code");
         capturedBody.Should().Contain("\"code\"");
-        capturedBody.Should().Contain("royal");
+        capturedBody.Should().Contain("ornekmagaza");
 
-        result.Code.Should().Be("royal");
+        result.Code.Should().Be("ornekmagaza");
         result.LicenseId.Should().Be(TestLicenseId);
     }
 

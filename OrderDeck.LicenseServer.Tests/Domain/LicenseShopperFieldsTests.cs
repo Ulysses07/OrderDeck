@@ -39,7 +39,7 @@ public class LicenseShopperFieldsTests
             IssuedAt = now,
             ExpiresAt = now.AddYears(1),
             LicenseKey = "key-1",
-            ShopperCode = "royal",
+            ShopperCode = "ornekmagaza",
             ShopperCodeUpdatedAt = now,
             PaymentIban = "TR330006100519786457841326",
             PaymentAccountHolder = "ÖRNEK MÜŞTERİ",
@@ -48,7 +48,7 @@ public class LicenseShopperFieldsTests
         await db.SaveChangesAsync();
 
         var loaded = await db.Licenses.SingleAsync(l => l.Id == licenseId);
-        loaded.ShopperCode.Should().Be("royal");
+        loaded.ShopperCode.Should().Be("ornekmagaza");
         loaded.PaymentIban.Should().Be("TR330006100519786457841326");
         loaded.PaymentAccountHolder.Should().Be("ÖRNEK MÜŞTERİ");
         loaded.ShopperAppEnabled.Should().BeTrue();
