@@ -275,8 +275,10 @@ public sealed class ShopperAuthController : ControllerBase
         _db.ShopperBroadcasterLinks.Add(link);
 
         // 8a. Auto-projection: if no existing WpfCustomerProjection matched, create one
-        // so the broadcaster sees the new shopper immediately (without waiting for a
-        // WPF → server customer sync). WPF polls /wpf-customers/since to ingest these rows.
+        // so the broadcaster sees the new shopper in the panel immediately (without
+        // waiting for a WPF → server customer sync). Masaüstüne İNMEZ: eski `since`
+        // ucu geçici satırı vermez, yeni masaüstü de yerelde açmaz — kişi, yayıncının
+        // bilgisayarı onu sohbette görünce belirir (LicensesWpfCustomersPullController.Since).
         //
         // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
         // yeni satır AÇILMAZ. Açsaydık yayıncının müşteri listesinde aynı

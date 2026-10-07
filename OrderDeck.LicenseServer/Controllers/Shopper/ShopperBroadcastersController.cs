@@ -125,7 +125,8 @@ public sealed class ShopperBroadcastersController : ControllerBase
         _db.ShopperBroadcasterLinks.Add(link);
 
         // 7a. Auto-projection: if no existing WpfCustomerProjection matched, create one
-        // so the broadcaster sees the new shopper immediately.
+        // so the broadcaster sees the new shopper in the panel immediately (masaüstüne
+        // inmez — gerekçe ShopperAuthController.Register adım 8a).
         //
         // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
         // yeni satır açmak, gerçek müşterinin kaydını taklit eden bir kopya
