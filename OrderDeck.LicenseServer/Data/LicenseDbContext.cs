@@ -700,7 +700,16 @@ public class LicenseDbContext : DbContext
              .HasConversion<byte[]>()
              .ValueGeneratedOnAddOrUpdate();
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
-            b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey });
+            // Kişi başına TEK asıl kayıt. Kopyalar (MergedIntoId dolu) aynı
+            // kimliği taşır, filtre onları dışarıda bırakır; boş anahtar
+            // (yalnız boşluktan oluşan eski kullanıcı adı) kimlik değildir.
+            // Uygulama kontrolü yarışı kapatamaz; kuralı veritabanı koyar.
+            // MergedIntoId'ye öz-FK EKLEME: devralmada EF'in tablo içi sırası
+            // (önce S UPDATE, sonra W INSERT) tersine döner ve her denemede 2601 olur.
+            b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey })
+             .IsUnique()
+             .HasFilter(Services.CustomerSync.CustomerIdentityIndex.Filter)
+             .HasDatabaseName(Services.CustomerSync.CustomerIdentityIndex.Name);
             b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
             // Kopya (MergedIntoId dolu) bir YÖNLENDİRMEDİR, müşteri değil: kişisel
             // alanları boş, kullanıcı adı asıl kayıtla aynı. Varsayılan sorgulardan

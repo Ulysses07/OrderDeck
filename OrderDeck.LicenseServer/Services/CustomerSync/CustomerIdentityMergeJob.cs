@@ -91,13 +91,16 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// </summary>
 public sealed class CustomerIdentityMergeJob
 {
-    /// <summary>B1 tekil indeksinin kapısı, BİREBİR: asıl kayıtlar arasında
-    /// (LicenseId, Platform, IdentityKey) yinelenen grup sayısı — SQL Server'ın
-    /// kendi karşılaştırma kurallarıyla (Platform harf duyarsız, sondaki boşluk
-    /// yok sayılır; IdentityKey BIN2). İşin bellekteki gruplamasından geniştir:
-    /// o bir şeyi kaçırırsa bu yakalar.</summary>
+    /// <summary>B1 tekil indeksinin kapısı, BİREBİR: indeksin kapsadığı satırlar
+    /// (<see cref="CustomerIdentityIndex.Filter"/> — asıl kayıt, boş olmayan
+    /// anahtar) arasında (LicenseId, Platform, IdentityKey) yinelenen grup sayısı
+    /// — SQL Server'ın kendi karşılaştırma kurallarıyla (Platform harf duyarsız,
+    /// sondaki boşluk yok sayılır; IdentityKey BIN2). İşin bellekteki
+    /// gruplamasından geniştir: o bir şeyi kaçırırsa bu yakalar. B1 göçünün kapısı
+    /// bu sabiti KULLANIR (kopya değil): operatörün gördüğü sayı göçün
+    /// denetlediğidir.</summary>
     public const string DuplicateHeadsSql =
-        "SELECT COUNT(*) FROM (SELECT 1 x FROM WpfCustomerProjections WHERE MergedIntoId IS NULL GROUP BY LicenseId, Platform, IdentityKey HAVING COUNT(*) > 1) d";
+        "SELECT COUNT(*) FROM (SELECT 1 x FROM WpfCustomerProjections WHERE MergedIntoId IS NULL AND IdentityKey <> N'' GROUP BY LicenseId, Platform, IdentityKey HAVING COUNT(*) > 1) d";
 
     /// <summary>Zincir: kopyası da kopya olan satır (tüm lisanslar). İş
     /// birleştirdiği grubun eski kopyalarını düzleştirir; geriye kalan zincir

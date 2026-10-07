@@ -17,6 +17,7 @@ namespace OrderDeck.LicenseServer.Tests.Tools;
 /// olmaması. Gövde, bağlantısı ve yazıcıları verilmiş
 /// <see cref="MergeCustomerIdentities.RunAsync(LicenseDbContext, Guid?, bool, TextWriter, TextWriter, Microsoft.Extensions.Logging.ILoggerFactory, CancellationToken)"/>'ten
 /// girilir; argüman ayrıştırması <see cref="MergeCustomerIdentitiesTests"/>'te.
+/// Şema B1 öncesi (<see cref="PreB1Schema"/>): komut prod'da orada koşar (E2).
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -30,7 +31,8 @@ public sealed class MergeCustomerIdentitiesRelationalTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _cs = await _sql.CreateDatabaseAsync();
-        _factory = new RelationalApiFactory(_cs); // ilk kapsamda göçleri koşturur
+        _factory = new RelationalApiFactory(_cs); // açılışta göçleri koşturur
+        await PreB1Schema.ApplyAsync(_factory, _cs);
     }
 
     public Task DisposeAsync() { _factory.Dispose(); return Task.CompletedTask; }
@@ -136,15 +138,19 @@ public sealed class MergeCustomerIdentitiesRelationalTests : IAsyncLifetime
     [Fact]
     public async Task B1_kapisi_tutmazsa_3_doner()
     {
-        // Hesaplanan anahtarı boş ikizleri iş bilerek birleştirmez; B1'in SQL
-        // kapısı onları aynı grupta görür — göç bu hâlde düşerdi.
+        // İşin bellekteki gruplaması platformu sondaki boşlukla ayırır; SQL (ve
+        // B1'in indeksi) ikisini aynı sayar: iş birleştirmez, kapı görür — göç bu
+        // hâlde düşerdi. Boş anahtarlı ikizler ise kimlik değil: ne kapıya ne
+        // indekse girer (sayı yalnız sondaki boşluklu çifti gösterir).
         var seed = await SeedPersonAsync();
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             db.WpfCustomerProjections.AddRange(
                 new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = "   ", UpdatedAt = DateTimeOffset.UtcNow },
-                new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = " ", UpdatedAt = DateTimeOffset.UtcNow });
+                new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = " ", UpdatedAt = DateTimeOffset.UtcNow },
+                new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok", Username = "veli", UpdatedAt = DateTimeOffset.UtcNow },
+                new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "tiktok ", Username = "veli", UpdatedAt = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
         }
         await using var cliDb = NewDb();
@@ -152,7 +158,8 @@ public sealed class MergeCustomerIdentitiesRelationalTests : IAsyncLifetime
         var (exit, text) = await RunCliAsync(cliDb, license: null, apply: true);
 
         exit.Should().Be(3, text);
-        text.Should().Contain("SON KOŞUL TUTMADI");
+        text.Should().Contain("SON KOŞUL TUTMADI")
+            .And.Contain("B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu 1;");
     }
 
     /// <summary>

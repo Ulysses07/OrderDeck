@@ -79,7 +79,7 @@ public static class MergeCustomerIdentities
     {
         var job = new CustomerIdentityMergeJob(db, new CustomerIdentityMerger(db),
             loggerFactory.CreateLogger<CustomerIdentityMergeJob>());
-        var repair = new IdentityKeyRepairJob(db, loggerFactory.CreateLogger<IdentityKeyRepairJob>());
+        var repair = new IdentityKeyRepairJob(db, job, loggerFactory.CreateLogger<IdentityKeyRepairJob>());
 
         var licenses = license is { } one ? new[] { one } : (await job.LicenseIdsAsync(ct)).ToArray();
 

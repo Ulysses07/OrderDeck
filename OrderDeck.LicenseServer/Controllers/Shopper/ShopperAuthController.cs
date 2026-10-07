@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.Shoppers;
 
@@ -285,12 +286,12 @@ public sealed class ShopperAuthController : ControllerBase
         // kendi beyanı, bağlantı kanıtsız. Yayıncının yazımı bu kaydı gerçek
         // müşterinin kaydıyla buluşturduğunda bağlantı telefona karşı yeniden
         // kanıt ister (LicensesWpfCustomersSyncController).
+        WpfCustomerProjection? provisional = null;
         if (candidates.Count == 0)
         {
-            var projectionId = Guid.NewGuid();
-            _db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            provisional = new WpfCustomerProjection
             {
-                Id = projectionId,
+                Id = Guid.NewGuid(),
                 LicenseId = license.Id,
                 Platform = platformNorm,
                 Username = usernameNorm,
@@ -299,11 +300,27 @@ public sealed class ShopperAuthController : ControllerBase
                 Address = shopper.Address,
                 CreatedByShopper = true,
                 UpdatedAt = DateTimeOffset.UtcNow,
-            });
-            link.WpfCustomerId = projectionId;
+            };
+            _db.WpfCustomerProjections.Add(provisional);
+            link.WpfCustomerId = provisional.Id;
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (provisional is not null && CustomerIdentityIndex.IsViolation(ex))
+        {
+            // Aday yokken açılan geçici satır, okuma ile kayıt arasında aynı
+            // kimliği açan yayıncı gönderimine ya da başka bir shopper'a çarptı
+            // (B1). Satır bırakılır, bağlantı aradaki asıl kayda kanıtla bağlanır
+            // ya da beklemede kalır; kayıt bütünüyle yeniden yazılır.
+            await ProvisionalProjectionConflict.YieldAsync(_db, provisional, link, shopper, ct);
+            _log.LogInformation(
+                "Shopper kaydı: geçici müşteri kaydı eşzamanlı açılan bir asıl kayda çarptı (lisans {LicenseId}); bağlantı {LinkState}",
+                license.Id, link.WpfCustomerId is null ? "beklemede" : "kanıtla bağlandı");
+            await _db.SaveChangesAsync(ct);
+        }
 
         // 9. & 10. Issue tokens
         var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(

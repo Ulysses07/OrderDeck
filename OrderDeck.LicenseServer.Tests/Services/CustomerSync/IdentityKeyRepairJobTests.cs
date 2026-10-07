@@ -17,8 +17,9 @@ namespace OrderDeck.LicenseServer.Tests.Services.CustomerSync;
 /// IdentityKeyRepairJob: <c>CustomerProjectionFullSync</c> göçünün SQL
 /// backfill'i ile <see cref="WpfCustomerProjection.IdentityKeyOf"/>'un
 /// ayrıştığı satırları (rollback NEWID varsayılanı, kenar boşlukları,
-/// "exotic" harfler) .NET tarafında yeniden hesaplayıp düzeltir; gelecekteki
-/// B1 tekil indeksiyle bir ÇAKIŞMA olursa satırı atlayıp devam eder.
+/// "exotic" harfler) .NET tarafında yeniden hesaplayıp düzeltir; B1 tekil
+/// indeksiyle bir ÇAKIŞMA olursa satırı atlayıp devam eder, geçişin sonunda o
+/// lisansı birleştirip onarımı bir kez daha yapar.
 ///
 /// <para>Gerçek SQL Server gerekir: satır başına CAS <c>ExecuteUpdateAsync</c>
 /// kullanıyor — InMemory sağlayıcıda desteklenmiyor (bkz.
@@ -363,7 +364,9 @@ public sealed class IdentityKeyRepairJobTests : IAsyncLifetime
                 .UseSqlServer(_cs)
                 .AddInterceptors(new RenameAfterCandidateReadInterceptor(_cs, rowId, "ayşe🌸"))
                 .Options);
-        var job = new IdentityKeyRepairJob(interceptedDb, NullLogger<IdentityKeyRepairJob>.Instance);
+        var job = new IdentityKeyRepairJob(
+            interceptedDb, new CustomerIdentityMergeJob(interceptedDb, new CustomerIdentityMerger(interceptedDb)),
+            NullLogger<IdentityKeyRepairJob>.Instance);
 
         (await job.RunAsync(default)).Should().Be(0,
             "satır aday olarak okunduktan sonra kullanıcı adı değişti — RunAsync bu satırı ATLAMALI (CAS ıskalar)");
@@ -371,62 +374,74 @@ public sealed class IdentityKeyRepairJobTests : IAsyncLifetime
         (await ReadIdentityKeyAsync(rowId)).Should().Be("eski", "CAS ıskaladığı için YAZMAMALI");
     }
 
+    /// <summary>
+    /// B1 çakışma politikası, GERÇEK indeksle (göç zinciri test veritabanına
+    /// B1'i de kurar): asıl kayıt C doğru anahtarda; R aynı kişinin satırı, geri
+    /// alma penceresinde kolonu tanımayan imajın açtığı (anahtarı NEWID). Onarım
+    /// R'yi C'nin anahtarına yazarken indekse çarpar: çakışmayı sayıp geçer,
+    /// geçişin SONUNDA o lisansın birleştirmesini koşar (gruplama HESAPLANAN
+    /// anahtarla — R ile C aynı gruba düşer, biri kopyaya döner ve indeksin
+    /// dışına çıkar), ardından onarımı BİR kez daha yapar.
+    /// </summary>
     [Fact]
-    public async Task Gelecekteki_B1_tekil_indeksiyle_cakisma_atlanir_digerleri_duzelir_RunAsync_patlamaz()
+    public async Task B1_cakismasinda_lisans_birlestirilir_onarim_bir_kez_daha_gecer()
     {
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var licenseId = await SeedLicenseAsync(db);
-        var job = scope.ServiceProvider.GetRequiredService<IdentityKeyRepairJob>();
-
-        // B1'in (henüz yazılmamış) tekil indeksini bu testin veritabanında
-        // elle kuruyoruz: bu iş B1'den ÖNCE koşacağı için bugün bu indeks
-        // YOK, ama onarım iki görevin sırasından bağımsız güvenli olmalı.
-        await using (var conn = new SqlConnection(_cs))
+        Guid licenseId, canonicalId;
+        using (var scope = _factory.Services.CreateScope())
         {
-            await conn.OpenAsync();
-            await using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
-                CREATE UNIQUE INDEX UX_test ON WpfCustomerProjections(LicenseId, Platform, IdentityKey)
-                WHERE MergedIntoId IS NULL
-                """;
-            await cmd.ExecuteNonQueryAsync();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            licenseId = await SeedLicenseAsync(db);
+            var canonical = new WpfCustomerProjection
+            { Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "tiktok", Username = "kullanici", UpdatedAt = DateTimeOffset.UtcNow };
+            db.WpfCustomerProjections.Add(canonical);
+            await db.SaveChangesAsync();
+            canonicalId = canonical.Id;
         }
 
-        var now = DateTimeOffset.UtcNow;
-        var canonicalRow = new WpfCustomerProjection
-        { Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "tiktok", Username = "kullanici", UpdatedAt = now };
-        db.WpfCustomerProjections.Add(canonicalRow);
-        await db.SaveChangesAsync();
-
         // Eski imaj satırları: IdentityKey kolonu HİÇ verilmeden INSERT —
-        // NEWID() DEFAULT'u tetikler (hâlâ benzersiz, kanonikle çakışmaz —
-        // çakışma yalnız ONARIM kanonik anahtara YAZMAYA kalkınca oluşur).
-        // Id'ler BİLEREK sabit: RunAsync aday satırları Id'ye göre ARTAN
-        // sırada tarıyor (OrderBy(p => p.Id) — bkz. RunAsync). SQL Server
-        // uniqueidentifier'ı karşılaştırırken SON 6 BAYTI önce değerlendirir;
-        // bu iki Id son bayt DIŞINDA birebir aynı olduğu için sıralama o tek
-        // bayta iner ve 01, 02'den önce gelir. Rastgele NEWID() kullanılsaydı
-        // "çakışmadan SONRA diğer satırlarla devam edilir" yolu yalnız
-        // duplicateId İLK taranırsa sınanırdı (~yarı koşu, diğer yarısında
-        // collision son satır olur ve devam-eden-kod hiç çalışmadan da test
-        // yanlışlıkla geçerdi) — sabit Id'ler duplicateId'yi HER koşuda
-        // unrelatedId'den ÖNCE taratıp testi deterministik yapıyor.
-        var duplicateId = Guid.Parse("00000000-0000-0000-0000-000000000001"); // kanonikle AYNI kimlik — "eski imaj" kopyası; HER koşuda İLK taranır
-        var unrelatedId = Guid.Parse("00000000-0000-0000-0000-000000000002"); // tamamen ayrı, ilgisiz kimlik; duplicateId'den SONRA taranır
-        await InsertWithoutIdentityKeyAsync(_cs, duplicateId, licenseId, "tiktok", "kullanici", now);
+        // NEWID() DEFAULT'u tetikler (benzersiz, indekse çarpmaz; çarpma ancak
+        // ONARIM C'nin anahtarına yazmaya kalkınca). Id'ler BİLEREK sabit:
+        // RunAsync satırları Id sırasıyla tarar ve SQL Server uniqueidentifier'ı
+        // son baytlardan karşılaştırır — 01, 02'den önce gelir. Böylece çakışan R
+        // her koşuda ilgisiz U'dan ÖNCE taranır ve "çakışmadan sonra diğer
+        // satırlarla devam edilir" yolu deterministik sınanır.
+        var duplicateId = Guid.Parse("00000000-0000-0000-0000-000000000001"); // R: C ile AYNI kişi
+        var unrelatedId = Guid.Parse("00000000-0000-0000-0000-000000000002"); // U: ilgisiz kimlik
+        var now = DateTimeOffset.UtcNow;
+        await InsertWithoutIdentityKeyAsync(_cs, duplicateId, licenseId, "tiktok", "Kullanici", now);
         await InsertWithoutIdentityKeyAsync(_cs, unrelatedId, licenseId, "tiktok", "baskakullanici", now);
+        (await ReadIdentityKeyAsync(duplicateId)).Should().NotBe("kullanici", "test GERÇEK bir çakışma sınamalı");
 
-        var duplicateKeyBefore = await ReadIdentityKeyAsync(duplicateId);
-        duplicateKeyBefore.Should().NotBe("kullanici", "test GERÇEK bir çakışma sınamalı (NEWID zaten farklı)");
+        var log = new LogRecorder<IdentityKeyRepairJob>();
+        int fixedCount;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var job = new IdentityKeyRepairJob(
+                db, scope.ServiceProvider.GetRequiredService<CustomerIdentityMergeJob>(), log);
+            fixedCount = await job.RunAsync(CancellationToken.None);
+        }
 
-        Func<Task> act = async () => await job.RunAsync(CancellationToken.None);
-        await act.Should().NotThrowAsync("çakışma yakalanıp atlanmalı, iş bütünüyle PATLAMAMALI");
+        fixedCount.Should().Be(2, "U ilk geçişte, R birleştirmeden sonraki geçişte düzelir");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var pair = await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => p.Id == duplicateId || p.Id == canonicalId).ToListAsync();
+            var head = pair.Should().ContainSingle(p => p.MergedIntoId == null, "R ile C birleşti").Subject;
+            pair.Single(p => p.Id != head.Id).MergedIntoId.Should().Be(head.Id);
+            pair.Should().OnlyContain(p => p.IdentityKey == "kullanici");
+            (await ReadIdentityKeyAsync(unrelatedId)).Should().Be("baskakullanici");
 
-        (await ReadIdentityKeyAsync(duplicateId)).Should().Be(duplicateKeyBefore,
-            "çakışan satırın anahtarı DEĞİŞMEMELİ — kanonikle aynı anahtara düşerdi");
-        (await ReadIdentityKeyAsync(unrelatedId)).Should().Be("baskakullanici",
-            "ilgisiz satır düzelmeli — çakışma başka bir satırı etkilememeli");
+            var merge = scope.ServiceProvider.GetRequiredService<CustomerIdentityMergeJob>();
+            (await merge.CountMismatchedKeysAsync(default)).Should().Be(0);
+            (await merge.CountDuplicateHeadsAsync(default)).Should().Be(0);
+        }
+
+        log.Entries.Should().Contain(e => e.Message.Contains(licenseId.ToString()),
+            "çakışan lisans günlükte Id'siyle görünür");
+        log.Entries.Should().NotContain(e => e.Message.Contains("kullanici", StringComparison.OrdinalIgnoreCase),
+            "günlükte yalnız sayılar ve Id'ler — kullanıcı adı asla");
     }
 
     /// <summary>

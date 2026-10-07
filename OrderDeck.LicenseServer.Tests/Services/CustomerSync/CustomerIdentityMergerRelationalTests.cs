@@ -19,6 +19,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.CustomerSync;
 /// tekil indeksini patlatır. InMemory sağlayıcı bu indeksi uygulamadığından
 /// senaryo yalnız gerçek SQL Server'da (Testcontainers) kanıtlanabilir (A4
 /// kalite incelemesi, 2026-10-06 — reviewer SQL Server'da tekrar üretti).
+/// Şema B1 öncesi (<see cref="PreB1Schema"/>): tohum aynı kişinin üç asıl
+/// kaydı — A7'nin koştuğu durum.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -30,7 +32,11 @@ public sealed class CustomerIdentityMergerRelationalTests : IAsyncLifetime
     public CustomerIdentityMergerRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
 
     public async Task InitializeAsync()
-        => _factory = new RelationalApiFactory(await _sql.CreateDatabaseAsync());
+    {
+        var cs = await _sql.CreateDatabaseAsync();
+        _factory = new RelationalApiFactory(cs);
+        await PreB1Schema.ApplyAsync(_factory, cs);
+    }
 
     public Task DisposeAsync()
     {

@@ -133,6 +133,9 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Privacy.TcknProtector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdResolver>();
+        // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
+        // merge-customer-identities kendi örneğini kurar).
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
