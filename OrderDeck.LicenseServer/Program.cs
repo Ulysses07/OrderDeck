@@ -133,6 +133,9 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Privacy.TcknProtector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdResolver>();
+        // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
+        // merge-customer-identities kendi örneğini kurar).
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
@@ -1003,7 +1006,9 @@ public class Program
             // backfill'inin .NET'le ayrıştığı satırlar, ya da bir geri alma
             // penceresinde NEWID ile açılmış satırlar) bir gün beklemesin —
             // PR-1'in birleştirme işi IdentityKey'e göre gruplayacağı için
-            // yanlış-anahtarlı satırlar o işten ÖNCE düzelmeli.
+            // yanlış-anahtarlı satırlar o işten ÖNCE düzelmeli. B1'in göçü NEWID
+            // anahtarı için kapı koymaz; o satırları (tekil indeksle çakışırsa
+            // lisansı birleştirerek) bu açılış koşusu düzeltir.
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.CustomerSync.IdentityKeyRepairJob>(
                 "identity-key-repair",
                 j => j.RunAsync(CancellationToken.None),

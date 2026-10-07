@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Pagination;
 using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
@@ -22,11 +23,15 @@ public sealed class ShopperBroadcastersController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly ShopperPaymentSubmissionService _paymentService;
+    private readonly ILogger<ShopperBroadcastersController> _log;
 
-    public ShopperBroadcastersController(LicenseDbContext db, ShopperPaymentSubmissionService paymentService)
+    public ShopperBroadcastersController(
+        LicenseDbContext db, ShopperPaymentSubmissionService paymentService,
+        ILogger<ShopperBroadcastersController> log)
     {
         _db = db;
         _paymentService = paymentService;
+        _log = log;
     }
 
     public sealed record CodeLookupResponse(Guid LicenseId, string DisplayName);
@@ -94,14 +99,14 @@ public sealed class ShopperBroadcastersController : ControllerBase
         // 6. Match WpfCustomerProjection — bağlamak için telefon kanıtı şart.
         // Kayıt akışıyla (ShopperAuthController.Register adım 7) aynı kural;
         // gerekçe WpfCustomerLinkMatcher'da. Aday kimlik anahtarıyla aranır
-        // (aynı adımdaki gerekçe).
+        // (aynı adımdaki gerekçe; IdentityKey != "" filtreli indeksi kullandırır).
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
         var identityKey = WpfCustomerProjection.IdentityKeyOf(usernameNorm);
         var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
-                        p.IdentityKey == identityKey)
+                        p.IdentityKey == identityKey && p.IdentityKey != "")
             .ToListAsync(ct);
         var wpfMatch = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt);
@@ -120,7 +125,8 @@ public sealed class ShopperBroadcastersController : ControllerBase
         _db.ShopperBroadcasterLinks.Add(link);
 
         // 7a. Auto-projection: if no existing WpfCustomerProjection matched, create one
-        // so the broadcaster sees the new shopper immediately.
+        // so the broadcaster sees the new shopper in the panel immediately (masaüstüne
+        // inmez — gerekçe ShopperAuthController.Register adım 8a).
         //
         // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
         // yeni satır açmak, gerçek müşterinin kaydını taklit eden bir kopya
@@ -128,12 +134,12 @@ public sealed class ShopperBroadcastersController : ControllerBase
         //
         // Açılan satır GEÇİCİDİR (CreatedByShopper) — kayıt akışındaki gerekçe
         // (ShopperAuthController.Register adım 8a).
+        WpfCustomerProjection? provisional = null;
         if (candidates.Count == 0)
         {
-            var projectionId = Guid.NewGuid();
-            _db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            provisional = new WpfCustomerProjection
             {
-                Id = projectionId,
+                Id = Guid.NewGuid(),
                 LicenseId = license.Id,
                 Platform = platformNorm,
                 Username = usernameNorm,
@@ -142,12 +148,25 @@ public sealed class ShopperBroadcastersController : ControllerBase
                 Address = shopper.Address,
                 CreatedByShopper = true,
                 UpdatedAt = DateTimeOffset.UtcNow,
-            });
-            link.WpfCustomerId = projectionId;
+            };
+            _db.WpfCustomerProjections.Add(provisional);
+            link.WpfCustomerId = provisional.Id;
         }
 
-        // 8. SaveChanges
-        await _db.SaveChangesAsync(ct);
+        // 8. SaveChanges — geçici satır eşzamanlı açılan bir asıl kayda (B1)
+        // çarparsa kayıt akışıyla aynı çözüm (ShopperAuthController.Register).
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (provisional is not null && CustomerIdentityIndex.IsViolation(ex))
+        {
+            await ProvisionalProjectionConflict.YieldAsync(_db, provisional, link, shopper, ct);
+            _log.LogInformation(
+                "Shopper katılması: geçici müşteri kaydı eşzamanlı açılan bir asıl kayda çarptı (lisans {LicenseId}); bağlantı {LinkState}",
+                license.Id, link.WpfCustomerId is null ? "beklemede" : "kanıtla bağlandı");
+            await _db.SaveChangesAsync(ct);
+        }
 
         // 9. Load all active links → BroadcasterSummary array
         var broadcasters = await _db.ShopperBroadcasterLinks

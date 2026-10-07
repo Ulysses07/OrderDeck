@@ -47,7 +47,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
     private async Task SeedProjectionAsync(Guid licenseId, Guid id, string platform, string username,
         string? fullName = null, string? phone = null, string? address = null, DateTimeOffset? updatedAt = null,
-        DateTimeOffset? purgedAt = null, string? displayName = null)
+        DateTimeOffset? purgedAt = null, string? displayName = null, bool createdByShopper = false)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -65,6 +65,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
             // değişen satırları bilerek okumuyor (bkz. ReverseSyncCursor).
             UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
             PurgedAt = purgedAt,
+            CreatedByShopper = createdByShopper,
         });
         await db.SaveChangesAsync();
     }
@@ -417,5 +418,59 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         item.PurgedAt.Should().NotBeNull("WPF'in yerel kopyayı temizleyebilmesi için işaret şart");
         item.Username.Should().Be("silinenkullanici",
             "kimlik anahtarı kalmalı — WPF eşleşmeyi (Platform, Username) ile yapıyor");
+    }
+
+    // ── Shopper'ın açtığı GEÇİCİ kayıt eski istemcilere hiç gitmez ───────────
+    //
+    // Eski masaüstü ingest'i (ShopperRegistrationIngestService) yerelde olmayan
+    // her `since` satırını o Id'yle SIRADAN müşteri olarak ekler: başkasının
+    // kullanıcı adıyla önce kaydolan, gerçek müşterinin sonraki siparişlerini
+    // alırdı. Silinmiş satırda da RecordPurge o kullanıcı adının bütün yerel
+    // satırlarını boşaltır: saldırganın KVKK silmesi gerçek müşteriyi yerelde
+    // silerdi.
+
+    [Fact]
+    public async Task Since_Shopperin_actigi_gecici_kaydi_vermez_siradan_kayit_aynen_gelir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var provisional = Guid.NewGuid();
+        var ordinary = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, provisional, "tiktok", "gecicikayit",
+            fullName: "Shopper Beyanı", phone: "+905001112244", address: "Shopper adresi", createdByShopper: true);
+        await SeedProjectionAsync(licenseId, ordinary, "tiktok", "siradankayit",
+            fullName: "Yayıncı Kaydı", phone: "+905001112255", address: "Ankara");
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}"))!;
+
+        items.Select(i => i.Id).Should().Equal(new[] { ordinary }, "geçici kayıt eski istemciye sıradan müşteri olarak inmez");
+        var item = items.Single();
+        item.Username.Should().Be("siradankayit");
+        item.FullName.Should().Be("Yayıncı Kaydı");
+        item.Phone.Should().Be("+905001112255");
+        item.Address.Should().Be("Ankara");
+        item.PurgedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Since_silinmis_gecici_kaydi_vermez_silinmis_siradan_kayit_damgasiyla_gelir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var purgedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var purgedProvisional = Guid.NewGuid();
+        var purgedOrdinary = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, purgedProvisional, "tiktok", "silinengecici",
+            updatedAt: purgedAt, purgedAt: purgedAt, createdByShopper: true);
+        await SeedProjectionAsync(licenseId, purgedOrdinary, "tiktok", "silinensiradan",
+            updatedAt: purgedAt, purgedAt: purgedAt);
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}"))!;
+
+        items.Select(i => i.Id).Should().Equal(new[] { purgedOrdinary },
+            "geçici kaydın mezar taşı eski istemcide o kullanıcı adının bütün yerel satırlarını boşaltırdı");
+        items.Single().PurgedAt.Should().NotBeNull("sıradan kaydın silinmesi eskisi gibi damgayla iner");
     }
 }

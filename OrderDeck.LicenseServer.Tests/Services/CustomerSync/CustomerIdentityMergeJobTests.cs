@@ -21,7 +21,9 @@ namespace OrderDeck.LicenseServer.Tests.Services.CustomerSync;
 /// testlerin anahtar bozması <c>ExecuteUpdate</c> kullanır (InMemory ikisini de
 /// desteklemiyor). <see cref="IAsyncLifetime"/> her test METODUNA kendi
 /// veritabanını verir — <c>CountMismatchedKeysAsync</c> tüm lisansları saysa da
-/// başka bir testin bozduğu satırı görmez.
+/// başka bir testin bozduğu satırı görmez. Şema B1 öncesi
+/// (<see cref="PreB1Schema"/>): iş prod'da orada koşar; B1'den sonraki kullanımı
+/// (onarımın çakışma politikası) IdentityKeyRepairJobTests'te gerçek indeksle.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -36,6 +38,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
     {
         _cs = await _sql.CreateDatabaseAsync();
         _factory = new RelationalApiFactory(_cs);
+        await PreB1Schema.ApplyAsync(_factory, _cs);
     }
 
     public Task DisposeAsync() { _factory.Dispose(); return Task.CompletedTask; }
@@ -290,7 +293,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var job = Job(db);
         (await job.CountMismatchedKeysAsync(default)).Should().BeGreaterThan(0);
 
-        await new IdentityKeyRepairJob(db, NullLogger<IdentityKeyRepairJob>.Instance).RunAsync(default);
+        await new IdentityKeyRepairJob(db, job, NullLogger<IdentityKeyRepairJob>.Instance).RunAsync(default);
         (await job.CountMismatchedKeysAsync(default)).Should().Be(0);
     }
 
@@ -890,7 +893,7 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task B1_kapisi_SQL_kurallariyla_sayar_bos_anahtarli_ikizler_birlestirilmeden_kalir()
+    public async Task B1_kapisi_SQL_kurallariyla_sayar_bos_anahtarli_ikizleri_saymaz()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -898,16 +901,17 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
         var upper = Row(lic, "ali", t0, "TikTok");
         db.WpfCustomerProjections.AddRange(
-            Row(lic, "   ", t0), Row(lic, " ", t0.AddDays(1)), // hesaplanan anahtar boş: iş bilerek birleştirmez
-            upper, Row(lic, "ali", t0.AddDays(1), "tiktok"));   // platform harf farkı: ikisi için de aynı kişi
+            Row(lic, "   ", t0), Row(lic, " ", t0.AddDays(1)),           // anahtar boş: kimlik değil — iş birleştirmez, indeks kapsamaz
+            upper, Row(lic, "ali", t0.AddDays(1), "tiktok"),              // platform harf farkı: ikisi için de aynı kişi
+            Row(lic, "veli", t0, "tiktok"), Row(lic, "veli", t0, "tiktok ")); // sondaki boşluk: SQL'de aynı, işte ayrı platform
         db.Orders.Add(OrderFor(lic, upper, t0));
         await db.SaveChangesAsync();
         var job = Job(db);
 
-        (await job.CountDuplicateHeadsAsync(default)).Should().Be(2);
+        (await job.CountDuplicateHeadsAsync(default)).Should().Be(2, "ali ve veli; boş anahtarlı ikizler indeksin dışında");
         (await job.RunAsync(lic, apply: true, default)).Groups.Should().Be(1);
         (await job.CountDuplicateHeadsAsync(default)).Should().Be(1,
-            "boş anahtarlı ikizler SQL'de aynı grupta kalır — B1 bunları görür, iş bilerek dokunmaz");
+            "kapı SQL'in kuralıyla sayar: işin bellekteki gruplamasının kaçırdığını (veli) yakalar");
     }
 
     [Fact]

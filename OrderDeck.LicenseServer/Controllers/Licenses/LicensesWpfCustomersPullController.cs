@@ -9,10 +9,10 @@ using OrderDeck.LicenseServer.Services.Sync;
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
 /// <summary>
-/// WPF App'in shopper-registered customers'ı (otomatik oluşturulan
-/// WpfCustomerProjection rows) çekmesi için. Mevcut sync endpoint
-/// WPF → server outbound; bu da inbound (server → WPF) pull.
-/// <c>since</c> eski sürümler içindir (yalnız asıl kayıtlar);
+/// WPF App'in sunucudaki müşteri kayıtlarını (WpfCustomerProjection) çekmesi
+/// için. Mevcut sync endpoint WPF → server outbound; bu da inbound
+/// (server → WPF) pull. <c>since</c> eski sürümler içindir (yalnız asıl
+/// kayıtlar, Shopper'ın açtığı geçici kayıtlar HARİÇ — gerekçe orada);
 /// <c>changes</c> çoklu bilgisayar senkronunun rowversion imleçli akışı.
 /// </summary>
 [ApiController]
@@ -40,7 +40,8 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     /// Bu satırlar yanıttan ELENMİYOR, işaretlenerek gönderiliyor: yayıncının
     /// kendi bilgisayarındaki kopyayı ancak bu işaret temizletebilir (WPF'in
     /// sunucudan silme haberi alacağı başka bir kanal yok). Elenselerdi silme
-    /// yayıncının diskinde sonsuza kadar kalırdı.
+    /// yayıncının diskinde sonsuza kadar kalırdı. Tek istisna Shopper'ın açtığı
+    /// geçici kayıt: o hiç verilmez, silinmişi de (bkz. <see cref="Since"/>).
     ///
     /// Alanın SONA eklenmesi kasıtlı — sahadaki eski kurulumlar (v0.8.0 ve
     /// öncesi) bilinmeyen JSON alanını yok sayar; bu ekleme onları kırmaz,
@@ -61,6 +62,25 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     /// altında; gerekçe <see cref="ReverseSyncCursor"/>'da. WPF bir sonraki
     /// imleci sayfanın son satırından okur — yanıt sırası <c>(UpdatedAt, Id)</c>.
     /// take default 100, max 500.
+    ///
+    /// <para><b>Shopper'ın açtığı GEÇİCİ kayıt (<c>CreatedByShopper</c>) hiç
+    /// verilmez — silinmişi de.</b> Eski masaüstü ingest'i
+    /// (<c>ShopperRegistrationIngestService</c>) yerelde olmayan her satırı o
+    /// Id'yle SIRADAN müşteri olarak ekler. Kullanıcı adı yayın sohbetinde
+    /// herkese açık: başkasının adıyla önce kaydolan kişi, gerçek müşterinin
+    /// sonraki siparişlerini alırdı (Shopper'da ad işgalinin ana yolu). Silinmiş
+    /// satırda ise <c>RecordPurge</c> o kullanıcı adının bütün yerel satırlarını
+    /// boşaltır ve kimliğe silme kararı yazar: işgalcinin KVKK silmesi gerçek
+    /// müşteriyi yerelde silerdi.</para>
+    ///
+    /// <para>Panel bu satırları sunucuda listelemeyi sürdürür. Yeni masaüstü
+    /// (PR-3) de geçici satırı yerelde hiç açmaz: kişi, yayıncının bilgisayarı
+    /// onu sohbette görünce belirir ve sunucunun devralması yayıncının satırını
+    /// asıl kayıt yapar. Ürün sonucu: kaydolup hiç yorum yazmamış bir shopper,
+    /// eski masaüstü sürümlerinin müşteri listesinde artık görünmez. Bedeli:
+    /// bu değişiklikten önce geçici bir satırı indirmiş eski bir istemci, o satır
+    /// sonra silinirse mezar taşını buradan alamaz (geçici satırlar PR-1 ile
+    /// başladı).</para>
     /// </summary>
     [HttpGet("since")]
     public async Task<IActionResult> Since(
@@ -81,9 +101,12 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         // Kopya (MergedIntoId dolu) A5b'nin sorgu filtresiyle zaten gizli; açık
         // koşul belge için: eski istemci kopyayı kişisel alanları boş ikinci bir
         // müşteri olarak eklerdi. Kopyaları yalnız `changes` akışı taşır.
+        // Shopper'ın açtığı geçici kayıt — silinmişi de — hiç gitmez (bkz.
+        // metot dokümanı).
         var rows = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == licenseId
                         && p.MergedIntoId == null
+                        && !p.CreatedByShopper
                         && p.UpdatedAt <= horizon
                         && (p.UpdatedAt > since
                             || (p.UpdatedAt == since && p.Id.CompareTo(sinceId) > 0)))

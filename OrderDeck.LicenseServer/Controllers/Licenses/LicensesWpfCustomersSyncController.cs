@@ -245,6 +245,13 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // isteğin okumasından sonra tombstone yazdıysa (PurgedAt jetonu
         // çakışmanın kaynağı), taze okuma PurgedAt'ı görür ve kişisel alanlara
         // hiçbir şey yazılmaz.
+        //
+        // Kimlik indeksi ihlali (B1) de aynı döngüde: bu partinin "asıl kaydı
+        // yok" diye açtığı kimliği okuma ile kayıt arasında başka bir istek
+        // (öbür bilgisayar, Shopper kaydı) açtı. Taze okumada kimlik araması o
+        // asıl kaydı bulur: bu Id kopya + yönlendirme olur, ya da açılan satır
+        // geçiciyse devralınır. Günlüğe yalnız sayı ve lisans Id'si — ihlalin
+        // iletisi anahtarın değerini (kullanıcı adı) taşır.
         BatchOutcome outcome;
         for (var attempt = 1; ; attempt++)
         {
@@ -269,10 +276,24 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 _logger.LogWarning(
                     "Müşteri senkronu yeniden denemede de çakıştı (lisans {LicenseId}, varlık {Entities}); 409 dönülüyor",
                     licenseId, ConflictingEntities(ex));
-                return Problem(
-                    title: "sync-conflict",
-                    detail: "Müşteri verisi eşzamanlı değişti; güncel durumla yeniden deneyin.",
-                    statusCode: StatusCodes.Status409Conflict);
+                return SyncConflict();
+            }
+            catch (DbUpdateException ex) when (attempt < MaxAttempts && CustomerIdentityIndex.IsViolation(ex))
+            {
+                _logger.LogInformation(
+                    "Müşteri senkronu eşzamanlı açılan bir asıl kayda çarptı (lisans {LicenseId}, {Count} öğe); parti taze okumayla bir kez yeniden uygulanıyor",
+                    licenseId, items.Count);
+                _db.ChangeTracker.Clear();
+            }
+            catch (DbUpdateException ex) when (CustomerIdentityIndex.IsViolation(ex))
+            {
+                // İstemci partiyi yeniden gönderir; o zaman kimlik araması
+                // aradaki asıl kayıtları bulur.
+                _db.ChangeTracker.Clear();
+                _logger.LogWarning(
+                    "Müşteri senkronu yeniden denemede de eşzamanlı açılan bir asıl kayda çarptı (lisans {LicenseId}, {Count} öğe); 409 dönülüyor",
+                    licenseId, items.Count);
+                return SyncConflict();
             }
         }
 
@@ -388,18 +409,23 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             .ToDictionaryAsync(p => p.Id, ct);
 
         // Kimlik araması: bu partide yeni olan Id'lerin (platform, anahtar)
-        // asıl kayıtları. Bölüm B'deki tekil indeks kurulana kadar bir kimliğin
-        // birden çok asıl kaydı olabilir. Yayıncı satırı varken Shopper'ın
-        // açtığı GEÇİCİ satır asıl kayıt seçilmez (A5c: beyan, yayıncı verisinin
-        // asıl kaydı olamaz; seçilen geçici satır aşağıda devralınır); sonra en
-        // eski UpdatedAt'li olan, eşitlikte küçük Id — sorgu sırasından
-        // bağımsız, her istek aynı kaydı seçsin (birleştirme işi sonra hepsini
-        // toparlar).
+        // asıl kayıtları. B1'in tekil indeksi (CustomerIdentityIndex) bir
+        // kimliğe tek asıl kayıt bırakır; bu okumadan sonra aynı kimliği başka
+        // bir istek açarsa kayıt indekse çarpar ve parti taze okumayla yeniden
+        // uygulanır (bkz. Sync). Aşağıdaki seçim kuralı indeksten önceki
+        // dönemden kaldı (indeksle her grupta tek satır olur): yayıncı satırı
+        // varken Shopper'ın açtığı GEÇİCİ satır asıl kayıt seçilmez (A5c: beyan,
+        // yayıncı verisinin asıl kaydı olamaz; seçilen geçici satır aşağıda
+        // devralınır); sonra en eski UpdatedAt'li olan, eşitlikte küçük Id —
+        // sorgu sırasından bağımsız, her istek aynı kaydı seçsin.
         var newItems = items.Where(c => !existing.ContainsKey(c.Id)).ToList();
         var platforms = newItems.Select(c => KeyOf(c).Platform).Distinct().ToList();
         var keys = newItems.Select(c => KeyOf(c).IdentityKey).Distinct().ToList();
+        // IdentityKey != "": anahtarlar zaten boş değil (IsAcceptable); sabit
+        // koşul sorguyu filtreli kimlik indeksinin koşuluna (asıl kayıt + boş
+        // olmayan anahtar) bağlar, SQL Server o indeksi kullanabilsin.
         var canonicalByKey = (await _db.WpfCustomerProjections
-                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null
+                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && p.IdentityKey != ""
                     && platforms.Contains(p.Platform) && keys.Contains(p.IdentityKey))
                 .ToListAsync(ct))
             .GroupBy(p => (p.Platform, p.IdentityKey))
@@ -753,6 +779,13 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             ? CustomerFieldMerge.Apply(target, new CustomerSyncFields
                 { FullName = item.FullName, Phone = item.Phone, Address = item.Address })
             : CustomerFieldMerge.ApplyLegacy(target, item.FullName, item.Phone, item.Address);
+
+    /// <summary>Tek yeniden deneme de çakıştı: istemci partiyi sonra yeniden
+    /// gönderir.</summary>
+    private ObjectResult SyncConflict() => Problem(
+        title: "sync-conflict",
+        detail: "Müşteri verisi eşzamanlı değişti; güncel durumla yeniden deneyin.",
+        statusCode: StatusCodes.Status409Conflict);
 
     /// <summary>Çakışan varlıkların tür adları — günlük için; kişisel veri
     /// taşımaz.</summary>

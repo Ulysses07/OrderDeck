@@ -33,13 +33,16 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly WhatsAppMessagingService _messaging;
     private readonly IWhatsAppMediaStore _mediaStore;
+    private readonly ILogger<PanelWhatsAppConversationsController> _log;
 
     public PanelWhatsAppConversationsController(
-        LicenseDbContext db, WhatsAppMessagingService messaging, IWhatsAppMediaStore mediaStore)
+        LicenseDbContext db, WhatsAppMessagingService messaging, IWhatsAppMediaStore mediaStore,
+        ILogger<PanelWhatsAppConversationsController> log)
     {
         _db = db;
         _messaging = messaging;
         _mediaStore = mediaStore;
+        _log = log;
     }
 
     public sealed record DekontDto(
@@ -468,12 +471,19 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Yarış: operatör tıklarken LabelRuleApplier (ayrı DbContext, gelen
             // webhook işi) aynı etiketi otomatik yapıştırmış olabilir. Benzersiz
             // indeks bunu reddeder ama çağıranın istediği sonuç — bağın var
             // olması — yine sağlandı; uç zaten idempotent.
+            //
+            // Yine de günlüğe düşer: EF'in kendi kayıt hatası günlüğü Debug'da
+            // (LicenseDbContext), yarış dışı bir hata burada sessiz kalmasın.
+            // Yalnız tür + SQL numarası — iletisi anahtar değeri taşıyabilir.
+            _log.LogWarning(
+                "WhatsApp sohbet etiketi bağlanamadı ({ExceptionType}, SqlError={SqlError}); bağ var sayılıp 204 dönülüyor",
+                ex.GetType().Name, (ex.InnerException as Microsoft.Data.SqlClient.SqlException)?.Number);
         }
 
         return NoContent();

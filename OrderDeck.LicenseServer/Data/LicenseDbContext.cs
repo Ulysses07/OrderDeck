@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.Shared.Text;
@@ -29,8 +30,17 @@ public class LicenseDbContext : DbContext
         // tutulur, hareketleri asıl kayda taşınır (CustomerIdentityMerger) — o
         // sıfır satırın gezinme birleşimlerinde görünmemesi doğru. (Bugün bu
         // gezinmeler hiçbir sorguda kullanılmıyor; yalnız FK eşlemesi.)
-        optionsBuilder.ConfigureWarnings(w =>
-            w.Ignore(CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning));
+        //
+        // SaveChangesFailed Debug'a: EF bu kayıtta istisnanın iletisini yazar ve
+        // tekil indeks ihlalinin iletisi anahtarın DEĞERİNİ taşır — kimlik
+        // indeksinde (B1) küçük harfli kullanıcı adı. O ihlal artık beklenen ve
+        // ele alınan bir yarış (sync ucu, Shopper kayıt/katılma); ele alınan
+        // hatayı kodumuz kişisel veri olmadan günlükler, ele alınmayan istisnayı
+        // ise host (istek/iş hata günlüğü) yine yazar. Kesmeciler (interceptor)
+        // düzeyden bağımsız çağrılmaya devam eder.
+        optionsBuilder.ConfigureWarnings(w => w
+            .Ignore(CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)
+            .Log((CoreEventId.SaveChangesFailed, LogLevel.Debug)));
     }
 
     public DbSet<Customer> Customers => Set<Customer>();
@@ -700,7 +710,16 @@ public class LicenseDbContext : DbContext
              .HasConversion<byte[]>()
              .ValueGeneratedOnAddOrUpdate();
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
-            b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey });
+            // Kişi başına TEK asıl kayıt. Kopyalar (MergedIntoId dolu) aynı
+            // kimliği taşır, filtre onları dışarıda bırakır; boş anahtar
+            // (yalnız boşluktan oluşan eski kullanıcı adı) kimlik değildir.
+            // Uygulama kontrolü yarışı kapatamaz; kuralı veritabanı koyar.
+            // MergedIntoId'ye öz-FK EKLEME: devralmada EF'in tablo içi sırası
+            // (önce S UPDATE, sonra W INSERT) tersine döner ve her denemede 2601 olur.
+            b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey })
+             .IsUnique()
+             .HasFilter(Services.CustomerSync.CustomerIdentityIndex.Filter)
+             .HasDatabaseName(Services.CustomerSync.CustomerIdentityIndex.Name);
             b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
             // Kopya (MergedIntoId dolu) bir YÖNLENDİRMEDİR, müşteri değil: kişisel
             // alanları boş, kullanıcı adı asıl kayıtla aynı. Varsayılan sorgulardan
