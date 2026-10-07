@@ -1,5 +1,6 @@
 using FluentAssertions;
 using OrderDeck.LicenseServer.Services.Observability;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Observability;
@@ -11,8 +12,8 @@ public sealed class PiiMaskerTests
     [Theory]
     [InlineData("ahmet@example.com", "a***@e***.com")]
     [InlineData("a@example.com", "a***@e***.com")]
-    [InlineData("burak.demir@orderdeckapp.com", "b***@o***.com")]
-    [InlineData("test@gmail.com", "t***@g***.com")]
+    [InlineData("ornek.musteri@example.org", "o***@e***.org")]
+    [InlineData("test@example.net", "t***@e***.net")]
     public void MaskEmail_masks_local_and_domain_preserving_tld(string input, string expected)
     {
         PiiMasker.MaskEmail(input).Should().Be(expected);
@@ -39,15 +40,22 @@ public sealed class PiiMaskerTests
 
     // ── MaskPhone ─────────────────────────────────────────────────────────
 
+    // Numara her koşuda üretilir: {0} operatör kodu, {1} 3 hane, {2} ve {3} ikişer hane.
     [Theory]
-    [InlineData("+90 555 123 45 67", "***4567")]
-    [InlineData("05551234567", "***4567")]
-    [InlineData("(555) 123-4567", "***4567")]
-    [InlineData("12345", "***2345")]
-    public void MaskPhone_keeps_last_four_digits(string input, string expected)
+    [InlineData("+90 {0} {1} {2} {3}")]
+    [InlineData("0{0}{1}{2}{3}")]
+    [InlineData("({0}) {1}-{2}{3}")]
+    public void MaskPhone_keeps_last_four_digits(string format)
     {
-        PiiMasker.MaskPhone(input).Should().Be(expected);
+        var n = TestPhone.NewNational();
+        var input = string.Format(format, n[..3], n[3..6], n[6..8], n[8..]);
+
+        PiiMasker.MaskPhone(input).Should().Be("***" + n[^4..]);
     }
+
+    [Fact]
+    public void MaskPhone_keeps_last_four_digits_of_short_input()
+        => PiiMasker.MaskPhone("12345").Should().Be("***2345");
 
     [Theory]
     [InlineData(null)]
@@ -62,9 +70,9 @@ public sealed class PiiMaskerTests
     // ── MaskName ──────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("Ahmet Yıldız", "A*** Y***")]
+    [InlineData("Örnek Müşteri", "Ö*** M***")]
     [InlineData("Burak", "B***")]
-    [InlineData("Ali Veli Selim", "A*** V*** S***")]
+    [InlineData("Örnek Ara Müşteri", "Ö*** A*** M***")]
     [InlineData("  Foo  Bar  ", "F*** B***")]
     public void MaskName_masks_each_word_with_first_letter(string input, string expected)
     {

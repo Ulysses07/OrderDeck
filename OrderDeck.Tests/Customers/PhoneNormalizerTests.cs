@@ -1,24 +1,31 @@
 using FluentAssertions;
 using OrderDeck.Core.Customers;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Customers;
 
 public class PhoneNormalizerTests
 {
+    // Numara her koşuda üretilir; InlineData yalnız yazılış biçimini taşır.
+    // {0} operatör kodu (3 hane), {1} 3 hane, {2} ve {3} ikişer hane.
     [Theory]
-    [InlineData("5551234567", "+905551234567")]            // 10 digit, no prefix
-    [InlineData("05551234567", "+905551234567")]           // 11 digit, leading 0
-    [InlineData("905551234567", "+905551234567")]          // 12 digit, no plus
-    [InlineData("+905551234567", "+905551234567")]         // already E.164
-    [InlineData("+90 555 123 45 67", "+905551234567")]     // spaces
-    [InlineData("0 555 123-45-67", "+905551234567")]       // mixed spacing
-    [InlineData("(0555) 123 45 67", "+905551234567")]      // parens
-    public void NormalizeTr_AcceptsCommonFormats(string input, string expected)
+    [InlineData("{0}{1}{2}{3}")]            // 10 digit, no prefix
+    [InlineData("0{0}{1}{2}{3}")]           // 11 digit, leading 0
+    [InlineData("90{0}{1}{2}{3}")]          // 12 digit, no plus
+    [InlineData("+90{0}{1}{2}{3}")]         // already E.164
+    [InlineData("+90 {0} {1} {2} {3}")]     // spaces
+    [InlineData("0 {0} {1}-{2}-{3}")]       // mixed spacing
+    [InlineData("(0{0}) {1} {2} {3}")]      // parens
+    public void NormalizeTr_AcceptsCommonFormats(string format)
     {
-        PhoneNormalizer.NormalizeTr(input).Should().Be(expected);
+        var n = TestPhone.NewNational();
+        var input = string.Format(format, n[..3], n[3..6], n[6..8], n[8..]);
+
+        PhoneNormalizer.NormalizeTr(input).Should().Be("+90" + n);
     }
 
+    // {0} rastgele 8 hane, {1} rastgele 9 hane.
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -26,26 +33,37 @@ public class PhoneNormalizerTests
     [InlineData("abc")]
     [InlineData("123")]            // too short
     [InlineData("12345678901234")] // too long
-    [InlineData("+12025551234")]   // non-TR country code
-    [InlineData("0533466482")]     // 9 hane + baştaki 0 → 10 hane sanılıyordu
-    [InlineData("2125551234")]     // sabit hat (2 ile başlar), mobil değil
-    [InlineData("03334664821")]    // 11 hane ama abone 3 ile başlıyor
-    [InlineData("904334664821")]   // 12 hane ama abone 4 ile başlıyor
-    public void NormalizeTr_RejectsInvalidInput(string? input)
+    [InlineData("+15551234567")]   // non-TR country code
+    [InlineData("05{0}")]          // 9 hane + baştaki 0 → 10 hane sanılıyordu
+    [InlineData("2{1}")]           // sabit hat (2 ile başlar), mobil değil
+    [InlineData("03{1}")]          // 11 hane ama abone 3 ile başlıyor
+    [InlineData("904{1}")]         // 12 hane ama abone 4 ile başlıyor
+    public void NormalizeTr_RejectsInvalidInput(string? format)
     {
+        var input = format is null
+            ? null
+            : string.Format(format, TestPhone.Digits(8), TestPhone.Digits(9));
+
         PhoneNormalizer.NormalizeTr(input).Should().BeNull();
     }
 
+    // {0} üretilen 10 haneli ulusal numara, {1} onun ilk 9 hanesi,
+    // {2} rastgele 9 hane (sabit hat gövdesi).
     [Theory]
-    [InlineData("+905551234567", true)]
-    [InlineData("+9055512345670", false)]   // 14 chars
-    [InlineData("+9055512345", false)]      // 12 chars
+    [InlineData("+90{0}", true)]
+    [InlineData("+90{0}0", false)]          // 14 chars
+    [InlineData("+90{1}", false)]           // 12 chars
     [InlineData("+15551234567", false)]     // not TR
-    [InlineData("+902125551234", false)]   // sabit hat E.164 uzunluğunda
+    [InlineData("+902{2}", false)]          // sabit hat E.164 uzunluğunda
     [InlineData(null, false)]
     [InlineData("", false)]
-    public void IsValidTr_ChecksE164TrFormat(string? input, bool expected)
+    public void IsValidTr_ChecksE164TrFormat(string? format, bool expected)
     {
+        var n = TestPhone.NewNational();
+        var input = format is null
+            ? null
+            : string.Format(format, n, n[..9], TestPhone.Digits(9));
+
         PhoneNormalizer.IsValidTr(input).Should().Be(expected);
     }
 }
