@@ -96,20 +96,27 @@ public sealed class CustomerSyncState
 
     /// <summary>
     /// Shopper beyanı (kural 7, U3a, U9). Geçici satırı yalnız Shopper kaydı açar ve beyanı
-    /// FullName/Phone/Address'tir (S17); eski <c>since</c> ingest'i beyan adını yerel
-    /// <c>DisplayName</c>'e yazdı. Bu dört birimden (ad, takma ad, adres bloğu, telefon) DAMGASIZ
-    /// olup değeri beyana eşit olan çıkar — beyandır; farklı olan kalır (göç öncesi yayıncı
-    /// düzeltmesi olabilir). Damgalı birim ve beyan olamayan birimler (GroupId, alıcı ödemeli,
-    /// e-posta, TCKN, izinler, kara liste, not) hiç değişmez.
+    /// FullName/Phone/Address'tir (S17); eski <c>since</c> ingest'i beyan adını HER sürümde yalnız
+    /// yerel <c>DisplayName</c>'e yazdı — yerel <c>FullName</c>'e HİÇBİR ZAMAN değil, o yalnız
+    /// formdan (yayıncı verisi) gelir. Bu yüzden FullName burada hiç dokunulmaz (M-1 kalite
+    /// incelemesi): silinmiş bir geçici kaydın beyanı, kaynağı apayrı olan yerel gerçek adı
+    /// silemez (kural 8 — kimliğe yayılmaz). Takma ad, adres bloğu, telefon — bu üç birimden
+    /// DAMGASIZ olup değeri beyana eşit olan çıkar — beyandır; farklı olan kalır (göç öncesi
+    /// yayıncı düzeltmesi olabilir). Damgalı birim ve beyan olamayan birimler (ad, GroupId,
+    /// alıcı ödemeli, e-posta, TCKN, izinler, kara liste, not) hiç değişmez.
     /// <paramref name="claims"/> null = beyan bilinmiyor (silinmiş geçici satır; devralma sonrası
-    /// kopya — S19): beyan olabilen damgasız birimlerin hepsi çıkar.
+    /// kopya — S19): beyan olabilen damgasız birimlerin hepsi çıkar. Altı alanı da (FullName,
+    /// DisplayName, Phone, Address, City, District) boş, NON-null bir nesne de AYNI sayılır
+    /// (M-2 — "boş beyan = bilinmiyor"): gerçek bir Shopper kaydı bunların hiçbirini boş
+    /// bırakamaz (kayıt ad/telefon/adres ister), böyle bir nesne yalnız silinmiş/boşaltılmış bir
+    /// geçici satırdan gelir — "bilinen ama hiçbiri eşleşmiyor" (hepsini KORU) sayılırsa KVKK
+    /// niyetinin tersi olur.
     /// </summary>
     public CustomerSyncState WithoutShopperClaims(CustomerSyncState? claims)
     {
+        if (claims is not null && IsBlankClaims(claims)) claims = null;
+
         var s = Clone();
-        if (s.FullNameChangedAt is null
-            && (claims is null || CustomerUnitMerge.SameText(s.FullName, claims.FullName)))
-            s.FullName = null;
         if (s.DisplayNameChangedAt is null
             && (claims is null
                 || CustomerUnitMerge.SameText(s.DisplayName, claims.FullName)
@@ -123,6 +130,14 @@ public sealed class CustomerSyncState
             s.Phone = null;
         return s;
     }
+
+    /// <summary>Beyan nesnesinin altı alanı da (FullName, DisplayName, Phone, Address, City,
+    /// District) boş mu — M-2. Gerçek bir Shopper kaydı bunların hiçbirini boş bırakamaz;
+    /// böyle bir nesne yalnız silinmiş/boşaltılmış bir geçici satırdan gelir.</summary>
+    private static bool IsBlankClaims(CustomerSyncState claims)
+        => string.IsNullOrWhiteSpace(claims.FullName) && string.IsNullOrWhiteSpace(claims.DisplayName)
+           && string.IsNullOrWhiteSpace(claims.Phone) && string.IsNullOrWhiteSpace(claims.Address)
+           && string.IsNullOrWhiteSpace(claims.City) && string.IsNullOrWhiteSpace(claims.District);
 
     /// <summary>Blok olarak eşit: her parça ya iki tarafta da boş ya da aynı metin.</summary>
     private static bool SameAddressBlock(CustomerSyncState a, CustomerSyncState b)

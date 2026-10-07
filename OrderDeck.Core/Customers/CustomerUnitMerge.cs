@@ -80,9 +80,10 @@ public static class CustomerUnitMerge
           | Unit(f.TcknChangedAt, t.TcknChangedAt, at => t.TcknChangedAt = at,
                 write: () => t.Tckn = Norm(f.Tckn),
                 fill: () => Fill(t.Tckn, f.Tckn, v => t.Tckn = v),
-                // S13: sunucu TCKN'yi çözemezse null gönderir, damga değişmez — eşit damgalı null
-                // "silme" değildir; yerel düz metin (anahtar kaybında tek kurtarılabilir kopya) korunur.
-                tieDiffers: tie && f.Tckn is not null && !SameAsServer(t.Tckn, f.Tckn, int.MaxValue))
+                // S13: sunucu TCKN'yi çözemezse null/boş gönderir, damga değişmez — eşit damgalı
+                // boş "silme" değildir; yerel düz metin (anahtar kaybında tek kurtarılabilir kopya)
+                // korunur (M-3: boş string de null kadar "çözülemedi" sayılır — IsBlank, yalnız null değil).
+                tieDiffers: tie && !IsBlank(f.Tckn) && !SameAsServer(t.Tckn, f.Tckn, int.MaxValue))
           | Unit(f.WhatsAppConsentChangedAt, t.WhatsAppConsentChangedAt, at => t.WhatsAppConsentChangedAt = at,
                 write: () => t.WhatsAppConsent = f.WhatsAppConsent,
                 fill: () => FillFlag(t.WhatsAppConsent, f.WhatsAppConsent, () => t.WhatsAppConsent = true),
@@ -134,9 +135,13 @@ public static class CustomerUnitMerge
 
     /// <summary>Eşit damgada yakınsamanın ölçüsü: yerel değer sunucunun yazacağı biçime (boş → null,
     /// sınırda kırpılmış) getirilip gelen değerle BİREBİR (ordinal) karşılaştırılır — harf farkı da
-    /// farktır; hedef, sunucudaki değerin aynısı.</summary>
+    /// farktır; hedef, sunucudaki değerin aynısı. Kırpma SONRASI dış <c>Norm</c> şart (M-4): kırpılan
+    /// önek boşluktan ibaret kalırsa (ör. uzun değerin ilk <c>max</c> karakteri boşluk, gerisi dolu)
+    /// sonuç null'a döner — sunucu da aynı değeri kendi <c>Norm(..., max)</c>'ıyla yazmış olsaydı
+    /// boşu bütün değer üstünden (kırpmadan ÖNCE) kontrol ederdi; iki taraf aynı "boş" sonucuna
+    /// gelmeli, yoksa kırpılmış önek yanlışlıkla "farklı" sayılıp yerel değer boşa yazılırdı.</summary>
     private static bool SameAsServer(string? local, string? incoming, int max)
-        => string.Equals(Clip(Norm(local), max), Norm(incoming), StringComparison.Ordinal);
+        => string.Equals(Norm(Clip(Norm(local), max)), Norm(incoming), StringComparison.Ordinal);
 
     /// <summary>Sunucudaki <c>CustomerFieldMerge.Clip</c>'in aynası (vekil çifti bölünmez).</summary>
     private static string? Clip(string? s, int max)
