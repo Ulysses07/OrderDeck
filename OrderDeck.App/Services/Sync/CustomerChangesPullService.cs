@@ -13,14 +13,17 @@ public enum CustomerPullOutcome
 {
     /// <summary>Lisans yok ya da çözülemedi — akış istenmedi.</summary>
     NoLicense,
-    /// <summary>Sayfa/ağ hatası (429 dahil), uygulanamayan öğe (atlanana kadar), kilit çekişmesi
-    /// ya da gönderimin yerel hatası. İmleç son uygulanan öğede.</summary>
+    /// <summary>Sayfa/ağ hatası (429 dahil), uygulanamayan öğe (atlanana kadar), yerel ortam hatası
+    /// (kilit çekişmesi, disk dolu…) ya da gönderimin yerel hatası. İmleç son uygulanan öğede.</summary>
     Failed,
     /// <summary>Gönderilmemiş yerel kimlik sahibi (U5) ve durmadan sonraki gönderim onu
     /// götüremedi. İmleç o öğede.</summary>
     Stalled,
     /// <summary>Taşınacak müşteri ödeme akışında (U13). İmleç o öğede, sonraki tur.</summary>
     Busy,
+    /// <summary>Tur başına sayfa sınırına ulaşıldı (<see cref="CustomerChangesPullService.MaxPagesPerRound"/>);
+    /// akış sonraki turda kaldığı yerden sürer. Yetişme sayılmaz.</summary>
+    MorePending,
     /// <summary>Akış boş sayfaya kadar uygulandı; <see cref="SyncStatusTracker"/>'a işlendi.</summary>
     CaughtUp,
 }
@@ -37,10 +40,12 @@ public enum CustomerPullOutcome
 /// anahtarı onarımı — U6), gönderim, sonra akış. İmleç
 /// SyncCursor(<see cref="CursorName"/>, LicenseKey).Seq = sunucunun rowversion'ı; öğe uygulandıkça
 /// ilerler, sayfa başına kaydedilir, BOŞ sayfaya kadar döner (dolu olmayan sayfa son sayılmaz —
-/// S11). Durma (U5) ve meşgul müşteri (U13) imleci o öğede bırakır. Uygulanamayan öğe
-/// <see cref="MaxAttemptsBeforeSkip"/> turdan sonra atlanır, kaydı ve uyarısı kalır (U10). Yeniden
-/// uygulama damga kurallarıyla zararsız. Sayfa/ağ hatasında (429 dahil — sunucu IP başına dakikada
-/// ~100 istek kabul eder) tur başarısız, sonraki tur kaydedilen sayfadan sürer.</para>
+/// S11) — en fazla <see cref="MaxPagesPerRound"/> sayfa, kalanı sonraki tur. Durma (U5) ve meşgul
+/// müşteri (U13) imleci o öğede bırakır. Uygulanamayan öğe <see cref="MaxAttemptsBeforeSkip"/>
+/// turdan sonra atlanır, kaydı ve uyarısı kalır (U10); öğeye özgü olmayan hatalar (yerel ortam,
+/// sızmış kilit satırı, kilit yeniden girişi) deneme sayılmaz. Yeniden uygulama damga kurallarıyla
+/// zararsız. Sayfa/ağ hatasında (429 dahil — sunucu IP başına dakikada ~100 istek kabul eder) tur
+/// başarısız, sonraki tur kaydedilen sayfadan sürer. İptalde imleç son uygulanan öğede kaydedilir.</para>
 ///
 /// <para><b>Durma (U5):</b> asıl kayıt geldiğinde yerelde aynı kimlikte, HENÜZ GÖNDERİLMEMİŞ
 /// başka Id'li satır varsa taşınmaz: önce gönderim koşar (sunucu o satırı kopya olarak bağlar,
@@ -48,9 +53,23 @@ public enum CustomerPullOutcome
 /// gönderim filigranı ilerlediyse. Gönderim HTTP hatasında fırlatmadan döner; filigran
 /// ilerlemediyse ikinci deneme aynı öğede yine dururdu: istek harcanmaz, tur biter.</para>
 ///
+/// <para><b>Takılan öğe (C7 incelemesi I-1):</b> durma ya da meşgul müşteri imleci o öğede
+/// tutar; arkasındaki her şey bekler. KVKK silmeleri beklemez: aynı sayfada takılan öğenin
+/// ilerisindeki (geçici olmayan) silmeler imleç ilerlemeden hemen uygulanır — imleç oraya
+/// varınca yeniden uygulanır (zararsız). Erken uygulanan silmeyi, daha önceki bir öğenin sonradan
+/// uygulanması geri açamaz: bütün yazımlar <c>PurgedAt IS NULL</c> kapılı, eklemeler mezar taşına
+/// takılır. Aynı öğe <see cref="BlockedRoundsBeforeWarning"/> tur üst üste takılırsa öğe Id'si ve
+/// sebebiyle BİR uyarı yazılır ve durum <see cref="SyncStatusTracker.BlockedOn"/>'da görünür (D2:
+/// "çevrimdışı" değil "bekliyor"); öğe uygulanınca kalkar. Takılan öğe ASLA kendiliğinden
+/// atlanmaz (U5/U13'ün koruduğu veri kaybolurdu).</para>
+///
 /// <para><b>Gönderimin hatası:</b> gönderim HTTP hatasını kendisi yutar (imleç ilerlemez) ama
 /// yerel SQLite hatası çıkabilir. Çağrı korunur: tur başarısız sayılır, akış yine uygulanır (KVKK
 /// silmeleri bir gönderim hatasının arkasında beklemez); yetişme kaydı yalnız akışa bakar.</para>
+///
+/// <para><b>Lisans değişimi:</b> imleçler lisans anahtarına bağlı (yeni lisansın akışı baştan);
+/// akış hatası kayıtları bağlı değil — servis önceki turdan farklı bir anahtar görünce onları ve
+/// takılma durumunu siler (M-3).</para>
 ///
 /// <para><b>İş parçacığı:</b> bütün <c>await</c>'ler <c>ConfigureAwait(false)</c> — öğe uygulaması
 /// <c>CustomerBusySet</c> kilidini eşzamanlı bekler, arayüz iş parçacığında koşmamalı.
@@ -64,6 +83,13 @@ public sealed class CustomerChangesPullService
     /// <summary>U10: bu kadar başarısız turdan sonra öğe atlanır (30 sn ritimde ~2,5 dk).</summary>
     internal const int MaxAttemptsBeforeSkip = 5;
 
+    /// <summary>I-1: aynı öğede bu kadar tur üst üste takılınca (~5 dk) bir uyarı ve durum.</summary>
+    internal const int BlockedRoundsBeforeWarning = 10;
+
+    /// <summary>M-7: tur başına en fazla sayfa (500'lük sayfalarla 10.000 öğe); kalanı sonraki tur.
+    /// Büyük bir ilk yetişme tek turda sunucunun IP başına hız sınırını tüketmesin.</summary>
+    internal const int MaxPagesPerRound = 20;
+
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
     private readonly CustomerSyncRepository _sync;
@@ -76,8 +102,21 @@ public sealed class CustomerChangesPullService
 
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
+    private string? _lastLicenseKey;
     private bool _identityKeysHealed;
     private int _lastLegacyJobs = -1;
+    private int _pagesThisRound;
+    private bool _offlineLogged;
+    private bool _reentrancyLogged;
+
+    private BlockKey? _block;
+    private int _blockRounds;
+    private DateTimeOffset _blockSince;
+
+    /// <summary>Takılan öğe: aynı öğe, aynı değişiklik, aynı sebep (I-1).</summary>
+    private readonly record struct BlockKey(string ItemId, long ChangeSeq, SyncBlockReason Reason);
+
+    private readonly record struct PassResult(CustomerPullOutcome Outcome, long PushWatermark = 0, BlockKey? Block = null);
 
     public CustomerChangesPullService(
         LicenseApiClient api, CustomerRepository customers, CustomerSyncRepository sync,
@@ -94,9 +133,11 @@ public sealed class CustomerChangesPullService
         var licenseKey = _licenseProvider.CurrentLicenseKey;
         if (string.IsNullOrWhiteSpace(licenseKey)) return CustomerPullOutcome.NoLicense;
 
+        OnLicenseSeen(licenseKey);
         // Gönderimden ÖNCE: kalmış bir kilit satırında gönderimin taşımaları da (SyncApplyScope
         // ikinci kilit satırına çarpar) düşerdi.
         RunLocalMaintenance();
+        _pagesThisRound = 0;
 
         // Gönderim her çekmeden ÖNCE (eski Açık soru 13). İki bilgisayar aynı yayında yorum
         // okurken yeni yorumcuların satırları sunucuya önce gider; asıl kayıt geldiğinde
@@ -107,8 +148,8 @@ public sealed class CustomerChangesPullService
         if (licenseId is null) return CustomerPullOutcome.NoLicense;
 
         var tally = new Dictionary<FeedApplyResult, int>();
-        var (outcome, stalledAtWatermark) =
-            await PullPassAsync(licenseKey, licenseId.Value, tally, ct).ConfigureAwait(false);
+        var pass = await PullPassAsync(licenseKey, licenseId.Value, tally, ct).ConfigureAwait(false);
+        var outcome = pass.Outcome;
         if (outcome == CustomerPullOutcome.Stalled)
         {
             // U5: sahibi gönder, akışı aynı turda bir kez daha dene. Gönderim HTTP hatasında
@@ -116,14 +157,22 @@ public sealed class CustomerChangesPullService
             // filigran duran öğenin gördüğünden ilerlemediyse ikinci deneme aynı yerde durur.
             if (!await TryPushAsync(ct).ConfigureAwait(false))
                 outcome = CustomerPullOutcome.Failed;
-            else if (_push.Watermark(licenseKey) > stalledAtWatermark)
-                (outcome, _) = await PullPassAsync(licenseKey, licenseId.Value, tally, ct).ConfigureAwait(false);
+            else if (_push.Watermark(licenseKey) > pass.PushWatermark)
+            {
+                pass = await PullPassAsync(licenseKey, licenseId.Value, tally, ct).ConfigureAwait(false);
+                outcome = pass.Outcome;
+            }
         }
-        LogTally(tally, stalled: outcome == CustomerPullOutcome.Stalled);
-        if (outcome != CustomerPullOutcome.CaughtUp) return outcome;
+        LogTally(tally);
+        if (pass.Block is { } block) NoteBlocked(block);
+        if (outcome is not (CustomerPullOutcome.CaughtUp or CustomerPullOutcome.MorePending)) return outcome;
 
-        _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow);
-        LogLegacyPaymentJobs();
+        ClearBlocked();
+        if (outcome == CustomerPullOutcome.CaughtUp)
+        {
+            _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow);
+            LogLegacyPaymentJobs();
+        }
 
         // U2: eklenen satırın yankısı ve taşıma/dönüştürmeyle gönderime giren birimler 60 sn'lik
         // gönderim turunu beklemesin (D1/D5 "gönderilmemiş" sayısı da boşalır; dönüştürülen
@@ -133,11 +182,11 @@ public sealed class CustomerChangesPullService
             && !await TryPushAsync(ct).ConfigureAwait(false))
             pushOk = false;
 
-        return pushOk ? CustomerPullOutcome.CaughtUp : CustomerPullOutcome.Failed;
+        return pushOk ? outcome : CustomerPullOutcome.Failed;
     }
 
-    /// <returns>Sonuç ve — durma/meşgulde — o sayfanın uygulandığı gönderim filigranı.</returns>
-    private async Task<(CustomerPullOutcome Outcome, long PushWatermark)> PullPassAsync(
+    /// <returns>Sonuç; durma/meşgulde o sayfanın uygulandığı gönderim filigranı ve takılan öğe.</returns>
+    private async Task<PassResult> PullPassAsync(
         string licenseKey, Guid licenseId, Dictionary<FeedApplyResult, int> tally, CancellationToken ct)
     {
         var after = _cursors.Get(CursorName, licenseKey)?.Seq ?? 0L;
@@ -147,7 +196,10 @@ public sealed class CustomerChangesPullService
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
+                if (_pagesThisRound >= MaxPagesPerRound) return new(CustomerPullOutcome.MorePending);
                 var page = await _api.GetWpfCustomerChangesAsync(licenseId, after, PageSize, ct).ConfigureAwait(false);
+                _pagesThisRound++;
+                _offlineLogged = false;                       // M-8: sunucuya ulaşıldı
 
                 if (page.CursorReset)
                 {
@@ -164,42 +216,69 @@ public sealed class CustomerChangesPullService
 
                 var pushWatermark = _push.Watermark(licenseKey);
                 var now = _clock.UnixNow();
-                foreach (var item in page.Items)
+                for (var i = 0; i < page.Items.Count; i++)
                 {
+                    ct.ThrowIfCancellationRequested();
+                    var item = page.Items[i];
                     var itemId = item.Id.ToString("N");
-                    FeedApplyResult result;
-                    try
+                    FeedApplyResult? applied = null;
+                    var guardRecovered = false;
+                    while (applied is null)
                     {
-                        result = Apply(item, pushWatermark, now);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException && !IsLockContention(ex))
-                    {
-                        // U10: uygulanamayan öğe. Deneme kalıcı sayılır (yeniden başlatma sıfırlamaz).
-                        var attempts = _sync.RecordFeedFailure(itemId, item.ChangeSeq, $"{ex.GetType().Name}: {ex.Message}", now);
-                        if (attempts < MaxAttemptsBeforeSkip)
+                        try
                         {
-                            _cursors.Upsert(CursorName, licenseKey, seq: after);
-                            _log.LogWarning(ex,
-                                "Müşteri akışı öğesi {ItemId} (seq {Seq}) uygulanamadı — deneme {Attempts}/{Max}, sonraki turda yeniden",
-                                itemId, item.ChangeSeq, attempts, MaxAttemptsBeforeSkip);
-                            return (CustomerPullOutcome.Failed, pushWatermark);
+                            applied = Apply(item, pushWatermark, now);
                         }
-                        _sync.MarkFeedItemSkipped(itemId, now);
-                        _log.LogError(ex,
-                            "Müşteri akışı öğesi {ItemId} (seq {Seq}) {Max} turda uygulanamadı — ATLANDI; durum satırı uyarı gösterir",
-                            itemId, item.ChangeSeq, MaxAttemptsBeforeSkip);
-                        result = FeedApplyResult.Skipped;
+                        catch (Exception ex) when (IsGuardLeak(ex) && !guardRecovered)
+                        {
+                            // M-1: başka bir yolun sızdırdığı kilit satırı (tur başındaki temizlikten
+                            // sonra). Öğeye özgü değil: deneme sayılmaz. Temizlenir, öğe bir kez daha
+                            // denenir; temizlik fırlatırsa (bu catch'in dışına) tur biter.
+                            guardRecovered = true;
+                            var cleared = _sync.ClearStaleGuards();
+                            _log.LogError(ex,
+                                "SyncApplyGuard'da tur ortasında kalmış {Count} kilit satırı silindi (öğe {ItemId}) — bir yol kilit satırını bırakmadan commit etti; öğe yeniden deneniyor",
+                                cleared, itemId);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException && !IsNotItemSpecific(ex))
+                        {
+                            // U10: uygulanamayan öğe. Deneme kalıcı sayılır (yeniden başlatma sıfırlamaz).
+                            var attempts = _sync.RecordFeedFailure(itemId, item.ChangeSeq, $"{ex.GetType().Name}: {ex.Message}", now);
+                            if (attempts < MaxAttemptsBeforeSkip)
+                            {
+                                _cursors.Upsert(CursorName, licenseKey, seq: after);
+                                // M-2: yığın izi yalnız bu (Id, ChangeSeq) çiftinin ilk hatasında.
+                                if (attempts == 1)
+                                    _log.LogWarning(ex,
+                                        "Müşteri akışı öğesi {ItemId} (seq {Seq}) uygulanamadı — deneme {Attempts}/{Max}, sonraki turda yeniden",
+                                        itemId, item.ChangeSeq, attempts, MaxAttemptsBeforeSkip);
+                                else
+                                    _log.LogWarning(
+                                        "Müşteri akışı öğesi {ItemId} (seq {Seq}) yine uygulanamadı ({Error}) — deneme {Attempts}/{Max}",
+                                        itemId, item.ChangeSeq, ex.GetType().Name, attempts, MaxAttemptsBeforeSkip);
+                                return new(CustomerPullOutcome.Failed);
+                            }
+                            _sync.MarkFeedItemSkipped(itemId, now);
+                            _log.LogError(
+                                "Müşteri akışı öğesi {ItemId} (seq {Seq}) {Max} turda uygulanamadı ({Error}) — ATLANDI; durum satırı uyarı gösterir",
+                                itemId, item.ChangeSeq, MaxAttemptsBeforeSkip, ex.GetType().Name);
+                            applied = FeedApplyResult.Skipped;
+                        }
                     }
+                    var result = applied.Value;
 
                     if (result is FeedApplyResult.Stalled or FeedApplyResult.Busy)
                     {
                         _cursors.Upsert(CursorName, licenseKey, seq: after);
-                        return (result == FeedApplyResult.Stalled ? CustomerPullOutcome.Stalled : CustomerPullOutcome.Busy,
-                            pushWatermark);
+                        ApplyPurgesAhead(page.Items, i + 1, tally, ct);
+                        var reason = result == FeedApplyResult.Stalled ? SyncBlockReason.Stalled : SyncBlockReason.Busy;
+                        return new(result == FeedApplyResult.Stalled ? CustomerPullOutcome.Stalled : CustomerPullOutcome.Busy,
+                            pushWatermark, new BlockKey(itemId, item.ChangeSeq, reason));
                     }
                     // Aynı Id'nin daha yeni bir değişikliği uygulandı: eski hata kaydı ve uyarı kalkar.
                     if (result != FeedApplyResult.Skipped && failing.Contains(itemId))
                         _sync.ClearFeedFailure(itemId);
+                    if (_block?.ItemId == itemId) ClearBlocked();
                     tally[result] = tally.GetValueOrDefault(result) + 1;
                     after = item.ChangeSeq;
                 }
@@ -207,19 +286,23 @@ public sealed class CustomerChangesPullService
                 _cursors.Upsert(CursorName, licenseKey, seq: after);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            // M-6: uygulanan öğeler yeniden uygulanmasın diye imleç kaydedilir (yine de zararsız olurdu).
+            try { _cursors.Upsert(CursorName, licenseKey, seq: after); }
+            catch (Exception saveEx) when (saveEx is not OperationCanceledException)
+            {
+                _log.LogDebug(saveEx, "İptalde müşteri akışı imleci kaydedilemedi");
+            }
+            throw;
+        }
+        catch (Exception ex)
         {
             _cursors.Upsert(CursorName, licenseKey, seq: after);
-            if (IsRateLimited(ex))
-                // Beklenen yük durumu (C5 incelemesi): yalnız sayılar, yığın izi yok.
-                _log.LogWarning(
-                    "Müşteri akışı sunucu hız sınırına takıldı (429) — bu tur {Applied} öğe uygulandı, kalan sonraki turda",
-                    tally.Values.Sum());
-            else
-                _log.LogWarning(ex, "Customer changes pull failed at seq {After}; will retry", after);
-            return (CustomerPullOutcome.Failed, 0L);
+            LogRoundFailure(ex, after, tally);
+            return new(CustomerPullOutcome.Failed);
         }
-        return (CustomerPullOutcome.CaughtUp, 0L);
+        return new(CustomerPullOutcome.CaughtUp);
     }
 
     private FeedApplyResult Apply(WpfCustomerChangeItem item, long pushWatermark, long now)
@@ -240,13 +323,47 @@ public sealed class CustomerChangesPullService
         // 3) Silinmiş asıl kayıt: kimlik geneli karar, mezar taşı. Yerelde satır yoksa AÇILMAZ
         //    (eski ingest'in davranışı); karar mezar taşında kalır.
         if (item.PurgedAt is { } purgedAt)
-        {
-            _customers.RecordPurge(item.Platform, item.Username, purgedAt.ToUnixTimeSeconds());
-            return FeedApplyResult.Purged;
-        }
+            return ApplyPurge(item, purgedAt);
 
         // 4) Asıl kayıt.
         return _sync.ApplyServerCustomer(ToServerCustomer(item), pushWatermark, now);
+    }
+
+    /// <summary>Yalnız yeni bir şey yapan silme <see cref="FeedApplyResult.Purged"/> sayılır (M-4):
+    /// CursorReset tekrarında zaten uygulanmış silme "KVKK silme" günlüğünü yinelemez.</summary>
+    private FeedApplyResult ApplyPurge(WpfCustomerChangeItem item, DateTimeOffset purgedAt)
+    {
+        _customers.RecordPurge(item.Platform, item.Username, purgedAt.ToUnixTimeSeconds(), out var changed);
+        return changed ? FeedApplyResult.Purged : FeedApplyResult.Unchanged;
+    }
+
+    /// <summary>
+    /// I-1: takılan öğenin ilerisindeki KVKK silmeleri (yalnız geçici olmayan asıl kayıt silmeleri —
+    /// kopya satırı ve geçici satır sıradaki işlemlerini bekler) imleç İLERLEMEDEN uygulanır. İmleç
+    /// oraya varınca yeniden uygulanır (zararsız, günlük yinelenmez). Başarısızlık turu değiştirmez:
+    /// öğe sırası gelince normal yolundan (U10 dahil) uygulanır.
+    /// </summary>
+    private void ApplyPurgesAhead(IReadOnlyList<WpfCustomerChangeItem> items, int from,
+        Dictionary<FeedApplyResult, int> tally, CancellationToken ct)
+    {
+        for (var i = from; i < items.Count; i++)
+        {
+            if (ct.IsCancellationRequested) return;
+            var item = items[i];
+            if (item.MergedIntoId is not null || item.CreatedByShopper || item.PurgedAt is not { } purgedAt) continue;
+            try
+            {
+                var result = ApplyPurge(item, purgedAt);
+                tally[result] = tally.GetValueOrDefault(result) + 1;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning(
+                    "Takılan akışın ilerisindeki silme öğesi {ItemId} şimdi uygulanamadı ({Error}); imleç oraya varınca yeniden denenir",
+                    item.Id.ToString("N"), ex.GetType().Name);
+                return;
+            }
+        }
     }
 
     /// <summary>Gönderim turu. HTTP hatası gönderimin içinde kalır (imleç ilerlemez); buraya
@@ -262,6 +379,31 @@ public sealed class CustomerChangesPullService
         {
             _log.LogWarning(ex, "Müşteri gönderimi yerel hatayla düştü; tur başarısız sayılır, akış sürer");
             return false;
+        }
+    }
+
+    /// <summary>M-3: akış hatası kayıtları ve takılma durumu lisansa bağlı değil — önceki turdan
+    /// farklı bir lisans anahtarı görülünce silinir (imleçler zaten anahtara bağlı).</summary>
+    private void OnLicenseSeen(string licenseKey)
+    {
+        if (_lastLicenseKey is null || string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal))
+        {
+            _lastLicenseKey = licenseKey;
+            return;
+        }
+        try
+        {
+            var cleared = _sync.ClearFeedFailures();
+            ClearBlocked();
+            _lastLegacyJobs = -1;
+            _offlineLogged = false;
+            _lastLicenseKey = licenseKey;
+            if (cleared > 0)
+                _log.LogInformation("Lisans değişti — önceki lisansın {Count} müşteri akışı hata kaydı silindi", cleared);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Lisans değişiminde müşteri akışı hata kayıtları silinemedi; sonraki turda yeniden");
         }
     }
 
@@ -298,15 +440,98 @@ public sealed class CustomerChangesPullService
         }
     }
 
-    /// <summary>Kilit çekişmesi (başka bir yazım yazma kilidini bütçeden uzun tuttu) geçicidir:
-    /// deneme sayılmaz, tur başarısız olur, sonraki tur aynı öğeden sürer (U10). Gönderimin
-    /// sınıflandırmasıyla aynı.</summary>
-    private static bool IsLockContention(Exception ex)
-        => ex is SqliteException { SqliteErrorCode: 5 or 6 };   // SQLITE_BUSY, SQLITE_LOCKED
+    // ── takılan öğe (I-1) ────────────────────────────────────────────────
+
+    private void NoteBlocked(BlockKey key)
+    {
+        if (_block == key)
+            _blockRounds++;
+        else
+        {
+            // Başka bir takılma (başka öğe, değişiklik ya da sebep): sayım baştan; eski durum artık
+            // bu takılmayı anlatmıyor.
+            if (_block is not null) _tracker.SetBlockedOn(null);
+            _block = key;
+            _blockRounds = 1;
+            _blockSince = DateTimeOffset.UtcNow;
+        }
+
+        if (_blockRounds == BlockedRoundsBeforeWarning)
+        {
+            _log.LogWarning(
+                "Müşteri akışı {Rounds} turdur öğe {ItemId} (seq {Seq}) için bekliyor: {Reason} — arkasındaki değişiklikler inmiyor (KVKK silmeleri aynı sayfada uygulanıyor)",
+                _blockRounds, key.ItemId, key.ChangeSeq,
+                key.Reason == SyncBlockReason.Stalled ? "gönderilemeyen yerel kopya (durma)" : "ödeme akışındaki müşteri");
+            _tracker.SetBlockedOn(new SyncBlock(key.ItemId, key.Reason, _blockSince));
+        }
+        else if (_blockRounds < BlockedRoundsBeforeWarning)
+            _log.LogDebug("Müşteri akışı öğe {ItemId} (seq {Seq}) için bekliyor ({Reason}), tur {Rounds}",
+                key.ItemId, key.ChangeSeq, key.Reason, _blockRounds);
+    }
+
+    private void ClearBlocked()
+    {
+        if (_block is null) return;
+        _block = null;
+        _blockRounds = 0;
+        _tracker.SetBlockedOn(null);
+    }
+
+    // ── hata sınıfları ──────────────────────────────────────────────────
+
+    /// <summary>Öğeye özgü OLMAYAN hata (M-1): deneme sayılmaz, öğe atlanmaz, tur başarısız biter.
+    /// Yerel ortam (kilit çekişmesi, disk dolu, G/Ç, salt okunur, açılamayan/bozuk dosya), sızmış
+    /// kilit satırı ve kilit yeniden girişi (programlama hatası).</summary>
+    private static bool IsNotItemSpecific(Exception ex)
+        => IsEnvironmentError(ex) || IsGuardLeak(ex) || ex is CustomerBusySetReentrancyException;
+
+    /// <summary>SQLite birincil sonuç kodları: BUSY 5, LOCKED 6 (kilit çekişmesi — başka bir yazım
+    /// yazma kilidini bütçeden uzun tuttu; gönderimin sınıflandırmasıyla aynı), NOMEM 7, READONLY 8,
+    /// IOERR 10, CORRUPT 11, FULL 13, CANTOPEN 14, PROTOCOL 15, NOTADB 26.</summary>
+    private static bool IsEnvironmentError(Exception ex)
+        => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) is 5 or 6 or 7 or 8 or 10 or 11 or 13 or 14 or 15 or 26;
+
+    /// <summary>Kilit satırı zaten var: <c>SyncApplyScope.Begin</c>'in eklemesi birincil anahtara çarptı.</summary>
+    private static bool IsGuardLeak(Exception ex)
+        => ex is SqliteException { SqliteErrorCode: 19 } s
+           && s.Message.Contains("SyncApplyGuard", StringComparison.Ordinal);
 
     /// <summary>Sunucunun genel hız sınırı gövdesiz 429 döner → <c>http-429</c>.</summary>
     private static bool IsRateLimited(Exception ex)
         => ex is ValidationException { Code: "http-429" };
+
+    private void LogRoundFailure(Exception ex, long after, Dictionary<FeedApplyResult, int> tally)
+    {
+        if (IsRateLimited(ex))
+            // Beklenen yük durumu (C5 incelemesi): yalnız sayılar, yığın izi yok.
+            _log.LogWarning(
+                "Müşteri akışı sunucu hız sınırına takıldı (429) — bu tur {Applied} öğe uygulandı, kalan sonraki turda",
+                tally.Values.Sum());
+        else if (ex is LicenseApiNetworkException)
+        {
+            // M-8: çevrimdışıyken her 30 sn'de bir yığın izi yazılmaz; sunucuya ulaşılınca sıfırlanır.
+            if (!_offlineLogged)
+            {
+                _offlineLogged = true;
+                _log.LogWarning(ex, "Customer changes pull failed at seq {After} (ağ); will retry", after);
+            }
+            else
+                _log.LogWarning("Müşteri akışı hâlâ sunucuya ulaşamıyor (seq {After}); sonraki turda yeniden", after);
+        }
+        else if (ex is CustomerBusySetReentrancyException)
+        {
+            // M-1: programlama hatası işareti — bir kez yığın iziyle.
+            if (!_reentrancyLogged)
+            {
+                _reentrancyLogged = true;
+                _log.LogError(ex, "Müşteri akışında CustomerBusySet kilidine yeniden girildi (programlama hatası); tur bitti, öğe deneme sayılmadı");
+            }
+            else
+                _log.LogDebug("Müşteri akışında CustomerBusySet kilidine yine yeniden girildi (seq {After})", after);
+        }
+        else
+            _log.LogWarning(ex, "Customer changes pull failed at seq {After}; will retry", after);
+    }
 
     private static ServerCustomer ToServerCustomer(WpfCustomerChangeItem i) => new(
         i.Id.ToString("N"), i.Platform, i.Username, i.CreatedByShopper,
@@ -332,19 +557,19 @@ public sealed class CustomerChangesPullService
     private static long? Ms(DateTimeOffset? d) => d?.ToUnixTimeMilliseconds();
 
     /// <summary>Tek satır, yalnız sayılar — kişisel veri yok. Silme satırı ayrı: silmenin
-    /// sahaya indiğinin tek kanıtı bu günlük (eski ingest'le aynı).</summary>
-    private void LogTally(Dictionary<FeedApplyResult, int> t, bool stalled)
+    /// sahaya indiğinin tek kanıtı bu günlük (eski ingest'le aynı). Takılma (durma/meşgul) burada
+    /// değil: eşiğe kadar Debug, eşikte bir uyarı (I-1).</summary>
+    private void LogTally(Dictionary<FeedApplyResult, int> t)
     {
         int N(FeedApplyResult r) => t.GetValueOrDefault(r);
         if (N(FeedApplyResult.Inserted) + N(FeedApplyResult.Updated) + N(FeedApplyResult.Rekeyed)
             + N(FeedApplyResult.Converted) + N(FeedApplyResult.SkippedProvisional) + N(FeedApplyResult.Deferred)
-            + N(FeedApplyResult.Skipped) > 0 || stalled)
+            + N(FeedApplyResult.Skipped) > 0)
             _log.LogInformation(
-                "Customer changes: +{Inserted} ~{Updated} ⇄{Rekeyed} (miras dönüştürüldü {Converted}, geçici atlandı {Provisional}, ertelendi {Deferred}, uygulanamayıp atlandı {Poison}){Stalled}",
+                "Customer changes: +{Inserted} ~{Updated} ⇄{Rekeyed} (miras dönüştürüldü {Converted}, geçici atlandı {Provisional}, ertelendi {Deferred}, uygulanamayıp atlandı {Poison})",
                 N(FeedApplyResult.Inserted), N(FeedApplyResult.Updated), N(FeedApplyResult.Rekeyed),
                 N(FeedApplyResult.Converted), N(FeedApplyResult.SkippedProvisional), N(FeedApplyResult.Deferred),
-                N(FeedApplyResult.Skipped),
-                stalled ? " — gönderilmemiş yerel kopya için durdu" : "");
+                N(FeedApplyResult.Skipped));
         if (N(FeedApplyResult.Purged) > 0)
             _log.LogInformation("KVKK silme: {Count} silme kararı uygulandı", N(FeedApplyResult.Purged));
     }

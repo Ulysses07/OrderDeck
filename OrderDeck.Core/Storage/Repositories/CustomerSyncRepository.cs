@@ -108,7 +108,12 @@ public sealed class CustomerSyncRepository
         IsBlacklisted, BlacklistReason, BlacklistedAt, BlacklistChangedAt,
         Notes, NotesChangedAt";
 
-    /// <summary>Gönderim partisi: <c>SyncSeq &gt; since</c>, artan (036 sözleşmesi).</summary>
+    /// <summary>Gönderim partisi: <c>SyncSeq &gt; since</c>, artan (036 sözleşmesi).
+    /// <para>N03-g: imleç iş zamanı (<c>LastSeenAt</c>) değil, tablo geneli kesin artan
+    /// <c>SyncSeq</c> — ileri zamanlı tek satır imleci öne taşıyıp başka satırın güncellemesini
+    /// kaybettiremez, saat geri alınsa da güncelleme seçilir; değer benzersiz olduğu için sayfa
+    /// sınırında satır atlanmaz (F07). Numaralar ardışık değildir (göç 045'in silinmeye dayanıklı
+    /// sayacı). Eski <c>CustomerRepository.GetUpdatedSince</c>'in yerine (C7 incelemesi M-9).</para></summary>
     public IReadOnlyList<CustomerSyncRow> GetForPush(long sinceSeq, int max)
     {
         using var conn = _factory.Open();
@@ -368,6 +373,15 @@ public sealed class CustomerSyncRepository
     {
         using var conn = _factory.Open();
         conn.Execute("DELETE FROM CustomerFeedFailure WHERE ItemId = @itemId", new { itemId });
+    }
+
+    /// <summary>Bütün akış hatası kayıtlarını siler, sayısını döner. Kayıtlar lisansa bağlı değil:
+    /// akış servisi lisans değişince çağırır (C7 incelemesi M-3) — önceki lisansın atlanan öğeleri
+    /// yeni lisansın durum satırında uyarı olarak kalmasın. D5b'nin tam yeniden eşitlemesi de.</summary>
+    public int ClearFeedFailures()
+    {
+        using var conn = _factory.Open();
+        return conn.Execute("DELETE FROM CustomerFeedFailure");
     }
 
     // ── çekirdek ────────────────────────────────────────────────────────

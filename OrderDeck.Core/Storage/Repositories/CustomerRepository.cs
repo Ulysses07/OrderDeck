@@ -1092,10 +1092,9 @@ public sealed class CustomerRepository
     /// notu; serbest metin olduğu için kişisel veri içerebilir ama silinmesi
     /// operatörün kendi kaydını yok etmek olur — bilerek dokunulmuyor.</para>
     ///
-    /// <para><c>LastSeenAt</c>'e DOKUNULMUYOR: değişseydi satır
-    /// <c>GetUpdatedSince</c>'e düşer ve bir sonraki push'ta sunucuya geri
-    /// giderdi (orada <c>PurgedAt</c> kapısına takılıp yazılmazdı ama boşuna
-    /// tur atardı).</para>
+    /// <para><c>LastSeenAt</c>'e DOKUNULMUYOR: iş zamanıdır ("en son görülme"),
+    /// silme bir görülme değildir. Gönderime düşme ona bağlı değil (imleç
+    /// <c>SyncSeq</c> — N03-g); yerelde silinmiş satır zaten gönderilmez (C6).</para>
     ///
     /// <para><b>R10-D02 (2026-09-15):</b> boşaltma tek başına kalıcı bariyer
     /// değildi — silmeden önce çekilmiş ama sonra uygulanan bir form cevabı
@@ -1147,6 +1146,14 @@ public sealed class CustomerRepository
     /// </summary>
     /// <returns>Boşaltılan yerel satır sayısı; satır yoksa 0 — karar yine de yazılmıştır.</returns>
     public int RecordPurge(string platform, string username, long purgedAtUnix)
+        => RecordPurge(platform, username, purgedAtUnix, out _);
+
+    /// <inheritdoc cref="RecordPurge(string, string, long)"/>
+    /// <param name="changed">Karar bu çağrıyla YENİ bir şey yaptı: yeni mezar taşı (kimlik ya da
+    /// YouTube alias'ı) yazıldı ya da henüz silinmemiş (<c>PurgedAt</c> boş) bir satır boşaltıldı.
+    /// Zaten uygulanmış silmenin tekrarı (akış CursorReset'le yeniden oynatıldı) false — akış
+    /// servisinin "KVKK silme" günlüğü yinelenmez (C7 incelemesi M-4).</param>
+    public int RecordPurge(string platform, string username, long purgedAtUnix, out bool changed)
     {
         // Akıştan inen KVKK kararı bir DÜZENLEME değildir (kural 2): kilit altında
         // yazılır — boşaltılan birimler "şimdi" damgalanmaz, SyncSeq ilerlemez (sunucu
@@ -1155,8 +1162,7 @@ public sealed class CustomerRepository
         var conn = scope.Connection;
         var tx = scope.Transaction;
 
-        conn.Execute(TombstoneUpsertSql,
-            new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
+        var newTombstones = UpsertTombstone(conn, tx, platform, username, purgedAtUnix) ? 1 : 0;
 
         // R12-D01: YouTube'da kararın kapsamı, uygulamanın eşleştirmede
         // GÜVENDİĞİ bağın tamamı olmalı. Boşaltma DisplayName'i de siliyor;
@@ -1185,11 +1191,16 @@ public sealed class CustomerRepository
                 new { platform, username }, tx);
 
             foreach (var alias in aliases)
-                conn.Execute(TombstoneUpsertSql,
-                    new { platform, username = alias, purgedAtUnix, key = CustomerIdentity.KeyOrNull(alias) }, tx);
+                newTombstones += UpsertTombstone(conn, tx, platform, alias, purgedAtUnix) ? 1 : 0;
         }
 
         // Harf duyarsız: NOCASE (ASCII) + kimlik anahtarı (ASCII dışı harf farkı).
+        var newlyScrubbed = conn.ExecuteScalar<int>(
+            @"SELECT COUNT(*) FROM Customer
+              WHERE Platform = @platform
+                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)
+                AND PurgedAt IS NULL",
+            new { platform, username, key = CustomerIdentity.KeyOrNull(username) }, tx);
         var scrubbed = conn.Execute(
             "UPDATE Customer SET " + ScrubAssignments + @",
                   PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
@@ -1198,16 +1209,29 @@ public sealed class CustomerRepository
             new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
 
         scope.Commit();
+        changed = newTombstones > 0 || newlyScrubbed > 0;
         return scrubbed;
+    }
+
+    /// <summary>Mezar taşını yazar (ilk tarih korunur); kimlik için ilk karar mıydı.</summary>
+    private static bool UpsertTombstone(System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        string platform, string username, long purgedAtUnix)
+    {
+        // Birincil anahtarla aynı karşılaştırma: Platform birebir, Username NOCASE (kolon harmanı).
+        var existed = conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM CustomerPurgeTombstone WHERE Platform = @platform AND Username = @username",
+            new { platform, username }, tx) > 0;
+        conn.Execute(TombstoneUpsertSql,
+            new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
+        return !existed;
     }
 
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.
     ///
-    /// <para>N03 (2026-09-10 denetimi): <c>LastSeenAt</c> de ilerletilir —
-    /// delta imleci (<see cref="GetUpdatedSince"/>) bu sütunu okur; ilerlemezse
-    /// telefon sunucuya HİÇ senkronlanmaz (müşteri bir daha chat'e yazana
-    /// kadar). <c>MAX(LastSeenAt+1, @now)</c>: satır başına kesin artan, böylece
-    /// aynı saniyedeki ikinci güncelleme de imlecin önüne düşer.</para>
+    /// <para>N03 (2026-09-10 denetimi): <c>LastSeenAt</c> de ilerletilir — iş zamanı
+    /// ("en son görülme"). Sunucuya gidiş artık ona bağlı DEĞİL (N03-g): gönderim imleci
+    /// <c>SyncSeq</c>'tir; telefon değişince göç 036/045 tetikleyicileri SyncSeq'i ilerletir ve
+    /// <c>PhoneChangedAt</c>'i damgalar (C6, <c>CustomerSyncRepository.GetForPush</c>).</para>
     ///
     /// <para><b>R12-D02 (2026-09-16 denetimi):</b> <c>AND PurgedAt IS NULL</c>
     /// — elle telefon girişi de silme kapısına tabi. Telefon çekmecesi
@@ -1232,45 +1256,5 @@ public sealed class CustomerRepository
                 id = customerId,
                 now = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             });
-    }
-
-    /// <summary>
-    /// Faz 0c-2: WpfCustomerProjection sync için delta query.
-    ///
-    /// <para>N03-g (2026-09-12 denetimi): imleç artık <c>SyncSeq</c> — göç
-    /// 036/045 tetikleyicilerinin yazdığı, tablo genelinde kesin artan sayaç.
-    /// Eskiden imleç <c>(LastSeenAt, Id)</c> idi ve şu sınıf hatayı doğuruyordu:
-    /// imleç GENEL, <c>MAX(LastSeenAt+1, now)</c> artışı ise SATIRA ÖZEL. İleri
-    /// zamanlı/saat kaymış tek bir satır imleci 60 sn öne taşıdığında BAŞKA bir
-    /// satırın bir saniyelik artışı imlece asla yetişemiyor, o güncelleme
-    /// sunucuya HİÇ gitmiyordu — ve bir daha denenmiyordu. N03/N03-k'nın "+1"
-    /// düzeltmeleri bu sınıfı kapatamaz; sorun aritmetikte değil, iş zamanı ile
-    /// senkron sırasının aynı kolona yüklenmesindeydi.</para>
-    ///
-    /// <para>Yeni değer her zaman bugüne kadar verilmiş her numaradan büyük olduğu
-    /// için güncellenen satır imlecin ÖNÜNE geçmek zorunda: göç 045'ten beri numarayı
-    /// silinmeye dayanıklı <c>SyncSeqCounter</c> veriyor (036'nın MAX(SyncSeq)+1'i en
-    /// büyük satır silinince imlecin altına düşerdi). Numaralar arasında boşluk olur;
-    /// ardışıklık varsayılmaz. SyncSeq benzersiz
-    /// olduğundan F07'nin (aynı saniyede BatchSize'dan fazla satır → sayfa
-    /// sınırında kalıcı atlama) sebebi de ortadan kalkıyor; eşitlik bozucu Id'ye
-    /// gerek kalmadı.</para>
-    ///
-    /// Sonuçlar SyncSeq ASC sıralı — imleç son satırdan okunur.
-    /// </summary>
-    public IReadOnlyList<Customer> GetUpdatedSince(long sinceSeq, int max)
-    {
-        using var conn = _factory.Open();
-        var rows = conn.Query<Row>(
-            @"SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
-                     IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                     BlacklistedAt, Address, Phone, RecipientPaysActive, FullName, SyncSeq
-              FROM Customer
-              WHERE SyncSeq > @since
-              ORDER BY SyncSeq ASC
-              LIMIT @max",
-            new { since = sinceSeq, max })
-            .ToList();
-        return rows.Select(Map).ToList();
     }
 }

@@ -381,6 +381,11 @@ public class CustomerRepositoryTests
     private static long CursorAfter(CustomerRepository repo, string id)
         => repo.GetById(id)!.SyncSeq;
 
+    /// <summary>Gönderimin delta sorgusu (C6, <see cref="CustomerSyncRepository.GetForPush"/>) — üretim
+    /// çağıranı kalmayan eski <c>GetUpdatedSince</c>'in yerine (C7 incelemesi M-9).</summary>
+    private static IReadOnlyList<CustomerSyncRow> Delta(InMemorySqlite db, long cursor, int max = 100)
+        => new CustomerSyncRepository(db).GetForPush(cursor, max);
+
     [Fact]
     public void UpdatePhone_satiri_delta_sorgusuna_dusurur()
     {
@@ -392,13 +397,13 @@ public class CustomerRepositoryTests
         repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
-        repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
+        Delta(db, cursor).Should().BeEmpty("imleç satırı zaten geçti");
         var telefon = TestPhone.NewE164();
 
         repo.UpdatePhone("id1", telefon);
 
-        var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be(telefon);
+        var delta = Delta(db, cursor);
+        delta.Should().ContainSingle().Which.Fields.Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -418,13 +423,13 @@ public class CustomerRepositoryTests
         var ikinciTelefon = $"+90{govde}2";
         repo.UpdatePhone("id1", ilkTelefon);
         var cursor = CursorAfter(repo, "id1");
-        repo.GetUpdatedSince(cursor, 100)
+        Delta(db, cursor)
             .Should().BeEmpty("ilk güncelleme senkronlandı, imleç satırın üzerinde");
 
         repo.UpdatePhone("id1", ikinciTelefon);
 
-        var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be(ikinciTelefon);
+        var delta = Delta(db, cursor);
+        delta.Should().ContainSingle().Which.Fields.Phone.Should().Be(ikinciTelefon);
     }
 
     // ── N03-k (2026-09-11 denetimi): intake upsert'leri de imleci ilerletmeli ──
@@ -442,13 +447,13 @@ public class CustomerRepositoryTests
         repo.Insert(new Customer("id1", "form", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
-        repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
+        Delta(db, cursor).Should().BeEmpty("imleç satırı zaten geçti");
         var telefon = TestPhone.NewE164();
 
         repo.UpsertFromIntakeForm("alice", "Örnek Müşteri", "İzmir", telefon, nowUnix: 1000, submittedAtMs: 1_000_000);
 
-        var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be(telefon);
+        var delta = Delta(db, cursor);
+        delta.Should().ContainSingle().Which.Fields.Phone.Should().Be(telefon);
     }
 
     [Fact]
@@ -478,21 +483,21 @@ public class CustomerRepositoryTests
         repo.Insert(new Customer("id1", "instagram", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
-        repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
+        Delta(db, cursor).Should().BeEmpty("imleç satırı zaten geçti");
         var telefon = TestPhone.NewE164();
 
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("instagram", "alice", null) },
             "Örnek Müşteri", "İzmir", telefon, null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
-        var delta = repo.GetUpdatedSince(cursor, 100);
-        delta.Should().ContainSingle().Which.Phone.Should().Be(telefon);
+        var delta = Delta(db, cursor);
+        delta.Should().ContainSingle().Which.Fields.Phone.Should().Be(telefon);
     }
 
     // ── N03-g (2026-09-12 denetimi): imleç saatten bağımsız olmalı ──────
 
     [Fact]
-    public void GetUpdatedSince_ileri_zamanli_baska_satir_imleci_tasisa_da_guncelleme_kaybolmaz()
+    public void GetForPush_ileri_zamanli_baska_satir_imleci_tasisa_da_guncelleme_kaybolmaz()
     {
         // Denetimin kontrollü deneyi: imleç GENEL, LastSeenAt artışı SATIRA
         // ÖZEL. Saat kaymış/ileri zamanlı TEK satır imleci 60 sn öne taşırsa,
@@ -511,20 +516,20 @@ public class CustomerRepositoryTests
         repo.Insert(new Customer("skew", "twitch", "bob", "Bob", null,
             now, now + 60, false, null, null, 0, 0m, null, null, null));
 
-        var batch = repo.GetUpdatedSince(0, 100);
+        var batch = Delta(db, 0);
         batch.Should().HaveCount(2);
         var cursor = batch[^1].SyncSeq;
         var telefon = TestPhone.NewE164();
 
         repo.UpdatePhone("id1", telefon);
 
-        var delta = repo.GetUpdatedSince(cursor, 100);
+        var delta = Delta(db, cursor);
         delta.Should().ContainSingle("ileri zamanlı satır imleci taşısa da güncelleme kaybolmamalı")
-            .Which.Phone.Should().Be(telefon);
+            .Which.Fields.Phone.Should().Be(telefon);
     }
 
     [Fact]
-    public void GetUpdatedSince_saat_geri_alinirsa_bile_guncelleme_secilir()
+    public void GetForPush_saat_geri_alinirsa_bile_guncelleme_secilir()
     {
         // Saat geri alındığında LastSeenAt geri gidebilir (iş zamanı öyle
         // olmalı — "en son ne zaman görüldü" kullanıcıya gösteriliyor), ama
@@ -541,12 +546,12 @@ public class CustomerRepositoryTests
         var telefon = TestPhone.NewE164();
         repo.UpdatePhone("id1", telefon);
 
-        repo.GetUpdatedSince(cursor, 100).Should().ContainSingle()
-            .Which.Phone.Should().Be(telefon);
+        Delta(db, cursor).Should().ContainSingle()
+            .Which.Fields.Phone.Should().Be(telefon);
     }
 
     [Fact]
-    public void GetUpdatedSince_ayni_saniyedeki_satirlar_sayfa_sinirinda_atlanmaz()
+    public void GetForPush_ayni_saniyedeki_satirlar_sayfa_sinirinda_atlanmaz()
     {
         // F07: aynı saniyeye BatchSize'dan fazla satır düştüğünde yalnız-zaman
         // imleci sayfa sınırındaki satırları sonsuza dek atlıyordu. SyncSeq
@@ -564,7 +569,7 @@ public class CustomerRepositoryTests
         long cursor = 0;
         while (true)
         {
-            var page = repo.GetUpdatedSince(cursor, 10);
+            var page = Delta(db, cursor, 10);
             if (page.Count == 0) break;
             seen.AddRange(page.Select(c => c.Id));
             cursor = page[^1].SyncSeq;
@@ -588,7 +593,7 @@ public class CustomerRepositoryTests
 
         repo.IncrementLabelStats("id1", 1, 250m, lastSeenAt: 2000);
 
-        repo.GetUpdatedSince(cursor, 100).Should()
+        Delta(db, cursor).Should()
             .BeEmpty("etiket sayacı sunucu projeksiyonunu değiştirmiyor");
     }
 

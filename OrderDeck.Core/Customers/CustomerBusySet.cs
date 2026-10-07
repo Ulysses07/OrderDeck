@@ -86,7 +86,7 @@ public sealed class CustomerBusySet
     private void ThrowIfHeldByThisFlow(string operation)
     {
         if (_hold.Value is { Active: true })
-            throw new InvalidOperationException(
+            throw new CustomerBusySetReentrancyException(
                 $"{operation}: bu akış CustomerBusySet kilidini zaten tutuyor (RunLocked gövdesinin içi). " +
                 "Kilit yeniden girişli değildir; iç içe çağrı sonsuza dek beklerdi.");
     }
@@ -117,3 +117,10 @@ public sealed class CustomerBusySet
         }
     }
 }
+
+/// <summary>
+/// <see cref="CustomerBusySet"/> kilidine aynı akıştan yeniden girme denemesi — bir programlama
+/// hatasının işareti (kilit yeniden girişli değildir). Belirli bir müşterinin verisine bağlı
+/// değildir: müşteri akışı bunu uygulanamayan öğe (U10) saymaz, öğeyi atlamaz (C7 incelemesi M-1).
+/// </summary>
+public sealed class CustomerBusySetReentrancyException(string message) : InvalidOperationException(message);

@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
@@ -34,29 +35,57 @@ public sealed class CustomerChangesPullServiceTests
         public string? CurrentLicenseKey { get; set; }
     }
 
+    /// <summary>Her okumada geri çağrı — arka plan işinin turlarını sinyalle izlemek için.</summary>
+    private sealed class CallbackLicenseProvider(Func<string?> get) : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => get();
+    }
+
     private sealed class FixedClock : IClock
     {
         public long UnixNow() => 1_791_000_000L;
     }
 
-    /// <summary>Kurulan hata, fabrikanın SONRAKİ ilk <c>Open</c>'ında bir kez fırlatılır
-    /// (yalnız senkron deposunun fabrikası sarılır).</summary>
+    /// <summary>Kurulan hata (ya da geri çağrı), fabrikanın SONRAKİ ilk <c>Open</c>'ında bir kez
+    /// fırlatılır/koşar (yalnız senkron deposunun fabrikası sarılır).</summary>
     private sealed class FaultyFactory(IDbConnectionFactory inner) : IDbConnectionFactory
     {
         private Exception? _next;
+        private Action? _onNext;
 
         public void FailNextOpen(Exception ex) => _next = ex;
 
+        public void OnNextOpen(Action action) => _onNext = action;
+
         public System.Data.IDbConnection Open()
         {
+            Interlocked.Exchange(ref _onNext, null)?.Invoke();
             var ex = Interlocked.Exchange(ref _next, null);
             if (ex is not null) throw ex;
             return inner.Open();
         }
     }
 
+    /// <summary>Günlük satırları: düzey, biçimlenmiş metin, istisna (yığın izi var mı).</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (Entries) Entries.Add((logLevel, formatter(state, exception), exception));
+        }
+    }
+
     private static readonly Guid LicenseId = Guid.NewGuid();
     private static readonly string Lisans = $"lisans-{Guid.NewGuid():N}";
+    private static readonly Guid LicenseId2 = Guid.NewGuid();
+    private static readonly string Lisans2 = $"lisans-{Guid.NewGuid():N}";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private static readonly DateTimeOffset T1 = new(2026, 10, 1, 10, 0, 0, TimeSpan.Zero);
 
@@ -64,18 +93,26 @@ public sealed class CustomerChangesPullServiceTests
         CustomerChangesPullService Svc, WpfCustomerProjectionSyncService Push,
         CustomerRepository Customers, SyncCursorRepository Cursors, SyncStatusTracker Tracker,
         InMemorySqlite Db, FakeHttpMessageHandler Http, List<WpfCustomerSyncRequest> Pushed,
-        FaultyFactory Faults) : IDisposable
+        FaultyFactory Faults, FakeLicenseProvider License, RecordingLogger<CustomerChangesPullService> Log) : IDisposable
     {
         public long FeedCursor => Cursors.Get(CustomerChangesPullService.CursorName, Lisans)?.Seq ?? 0L;
         public int Posts => Http.Requests.Count(r => r.RequestUri!.AbsolutePath.EndsWith("/wpf-customers/sync"));
         public int Pulls => Http.Requests.Count(r => r.RequestUri!.AbsolutePath.EndsWith("/wpf-customers/changes"));
+
+        public int Count(string sql, object? p = null)
+        {
+            using var c = Db.Open();
+            return c.ExecuteScalar<int>(sql, p);
+        }
+
         public void Dispose() => Db.Dispose();
     }
 
-    /// <param name="changes">afterSeq → sayfa yanıtı.</param>
+    /// <param name="changes">(lisans Id'si, afterSeq) → sayfa yanıtı.</param>
     /// <param name="sync">Gönderim yanıtı (varsayılan: yönlendirmesiz).</param>
-    private static Fixture Build(Func<long, HttpResponseMessage> changes, Func<HttpResponseMessage>? sync = null,
-        bool license = true, CustomerBusySet? busy = null)
+    /// <param name="licenseProvider">Verilirse servisler bunu okur (<see cref="Fixture.License"/> kullanılmaz).</param>
+    private static Fixture Build(Func<Guid, long, HttpResponseMessage> changes, Func<HttpResponseMessage>? sync = null,
+        bool license = true, CustomerBusySet? busy = null, ICurrentLicenseProvider? licenseProvider = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -88,9 +125,10 @@ public sealed class CustomerChangesPullServiceTests
         {
             var path = req.RequestUri!.AbsolutePath;
             if (path == "/api/v1/me/licenses")
-                return FakeHttpMessageHandler.Json(200, $"[{{\"id\":\"{LicenseId}\",\"licenseKey\":\"{Lisans}\"}}]");
+                return FakeHttpMessageHandler.Json(200,
+                    $"[{{\"id\":\"{LicenseId}\",\"licenseKey\":\"{Lisans}\"}},{{\"id\":\"{LicenseId2}\",\"licenseKey\":\"{Lisans2}\"}}]");
             if (path.EndsWith("/wpf-customers/changes"))
-                return changes(AfterSeq(req));
+                return changes(LicenseOf(req), AfterSeq(req));
             if (path.EndsWith("/wpf-customers/sync"))
             {
                 lock (pushed)
@@ -102,21 +140,29 @@ public sealed class CustomerChangesPullServiceTests
             return FakeHttpMessageHandler.Empty(404);
         });
         var api = new LicenseApiClient(new HttpClient(http) { BaseAddress = new Uri("https://test.local") }, new LicenseTokenStore());
-        var lic = new FakeLicenseProvider { CurrentLicenseKey = license ? Lisans : null };
+        var fake = new FakeLicenseProvider { CurrentLicenseKey = license ? Lisans : null };
+        var lic = licenseProvider ?? fake;
         var clock = new FixedClock();
         var push = new WpfCustomerProjectionSyncService(api, syncRepo, cursors, lic, clock,
             NullLogger<WpfCustomerProjectionSyncService>.Instance);
         var tracker = new SyncStatusTracker();
-        var svc = new CustomerChangesPullService(api, customers, syncRepo, cursors, push, lic, clock, tracker,
-            NullLogger<CustomerChangesPullService>.Instance);
-        return new Fixture(svc, push, customers, cursors, tracker, db, http, pushed, faults);
+        var log = new RecordingLogger<CustomerChangesPullService>();
+        var svc = new CustomerChangesPullService(api, customers, syncRepo, cursors, push, lic, clock, tracker, log);
+        return new Fixture(svc, push, customers, cursors, tracker, db, http, pushed, faults, fake, log);
     }
 
+    private static Fixture Build(Func<long, HttpResponseMessage> changes, Func<HttpResponseMessage>? sync = null,
+        bool license = true, CustomerBusySet? busy = null, ICurrentLicenseProvider? licenseProvider = null)
+        => Build((_, after) => changes(after), sync, license, busy, licenseProvider);
+
     private static Fixture Build(Func<long, string> changes, Func<string>? sync = null, bool license = true,
-        CustomerBusySet? busy = null)
-        => Build(after => FakeHttpMessageHandler.Json(200, changes(after)),
+        CustomerBusySet? busy = null, ICurrentLicenseProvider? licenseProvider = null)
+        => Build((_, after) => FakeHttpMessageHandler.Json(200, changes(after)),
             sync is null ? null : () => FakeHttpMessageHandler.Json(200, sync()),
-            license, busy);
+            license, busy, licenseProvider);
+
+    /// <summary><c>/api/v1/licenses/{id}/wpf-customers/changes</c></summary>
+    private static Guid LicenseOf(HttpRequestMessage r) => Guid.Parse(r.RequestUri!.AbsolutePath.Split('/')[4]);
 
     private static long AfterSeq(HttpRequestMessage r)
         => long.Parse(Regex.Match(r.RequestUri!.Query, @"afterSeq=(-?\d+)").Groups[1].Value);
@@ -539,12 +585,18 @@ public sealed class CustomerChangesPullServiceTests
     }
 
     [Theory]
-    [InlineData(5)]   // SQLITE_BUSY
-    [InlineData(6)]   // SQLITE_LOCKED
-    public async Task Kilit_cekismesi_deneme_sayilmaz_tur_basarisiz_sonraki_tur_ayni_ogeden(int sqliteErrorCode)
+    [InlineData(5)]    // SQLITE_BUSY
+    [InlineData(6)]    // SQLITE_LOCKED
+    [InlineData(8)]    // SQLITE_READONLY
+    [InlineData(10)]   // SQLITE_IOERR
+    [InlineData(13)]   // SQLITE_FULL
+    [InlineData(14)]   // SQLITE_CANTOPEN
+    [InlineData(266)]  // SQLITE_IOERR_READ (genişletilmiş kod — birincil kod 10)
+    public async Task Kilit_cekismesi_ve_ortam_hatalari_deneme_sayilmaz_tur_basarisiz_sonraki_tur_ayni_ogeden(int sqliteErrorCode)
     {
-        // U10: kilit çekişmesi geçicidir — zehirli öğe sayacına yazılmaz (yoksa yoğun bir yayında beş
-        // çekişme sağlam bir öğeyi atlatırdı).
+        // U10 + C7 incelemesi M-1: kilit çekişmesi ve yerel ortam hataları öğeye özgü değildir —
+        // zehirli öğe sayacına yazılmaz (yoksa yoğun bir yayında beş çekişme ya da dolu bir disk
+        // sağlam bir öğeyi atlatırdı).
         var id = Guid.NewGuid();
         Fixture? fixture = null;
         var contended = true;
@@ -632,5 +684,402 @@ public sealed class CustomerChangesPullServiceTests
         fx.Pushed.SelectMany(p => p.Customers).Should().Contain(i => i.Id == Guid.ParseExact(earlier, "N"),
             "yedekten dönen sunucuya önceden gönderilmiş satırlar da yeniden gider");
         fx.Push.Watermark(Lisans).Should().Be(MaxSyncSeq(fx));
+    }
+
+    [Fact]
+    public async Task CursorReset_daha_once_gonderilmis_kimlik_sahibiyle_tek_turda_yakinsar()
+    {
+        // Geri sarılan gönderim filigranı (0) sahibi "gönderilmemiş" yapar → durma → gönderim sahibi
+        // yeniden götürür → akış aynı turda baştan sürer ve taşır.
+        var canonical = Guid.NewGuid();
+        using var fx = Build(after => after switch
+        {
+            999 => ResetPage(5, Item(canonical, "ornek", 5)),
+            0 => Page(5, Item(canonical, "ornek", 5)),
+            _ => Page(after),
+        });
+        var holder = LocalRow(fx, "Ornek");
+        await fx.Push.SyncOnceAsync(CancellationToken.None);   // sahip daha önce gönderilmiş
+        fx.Cursors.Upsert(CustomerChangesPullService.CursorName, Lisans, seq: 999);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        Exists(fx, holder).Should().BeFalse();
+        Exists(fx, canonical.ToString("N")).Should().BeTrue();
+        fx.FeedCursor.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task Ertelenen_kopya_satiri_imleci_gecer_sonraki_gonderim_yonlendirmeyi_getirir()
+    {
+        // U5: akıştaki kopya satırının yerel kopyası gönderilmemişse durma gerekmez — o satırın
+        // gönderimi yönlendirmeyi zaten döndürür (S7).
+        var copy = Guid.NewGuid();
+        var canonical = Guid.NewGuid();
+        var posts = 0;
+        using var fx = Build(
+            after => FakeHttpMessageHandler.Json(200, after == 0 ? Page(4, Alias(copy, "ornek", canonical, 4)) : Page(after)),
+            sync: () => Interlocked.Increment(ref posts) == 1
+                ? FakeHttpMessageHandler.Empty(503)                   // turun başındaki gönderim düşer
+                : FakeHttpMessageHandler.Json(200,
+                    $$"""{"synced":2,"retroactiveMatches":0,"redirects":[{"id":"{{copy}}","canonicalId":"{{canonical}}"}]}"""));
+        LocalRow(fx, "Ornek", canonical);
+        var local = LocalRow(fx, "ornek", copy);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        fx.FeedCursor.Should().Be(4, "ertelenen kopya satırı akışı durdurmaz");
+        Exists(fx, local).Should().BeTrue();
+
+        await fx.Push.SyncOnceAsync(CancellationToken.None);
+
+        Exists(fx, local).Should().BeFalse("gönderimin yanıtındaki yönlendirme taşıdı");
+        Exists(fx, canonical.ToString("N")).Should().BeTrue();
+    }
+
+    // ── lisans değişimi (M-3, M-10) ─────────────────────────────────────
+
+    [Fact]
+    public async Task Lisans_degisince_yeni_lisansin_akisi_bastan_baslar()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        using var fx = Build((license, after) => FakeHttpMessageHandler.Json(200, (license == LicenseId, after) switch
+        {
+            (true, 0) => Page(6, Item(a, "ornek_a", 6)),
+            (false, 0) => Page(3, Item(b, "ornek_b", 3)),
+            _ => Page(after),
+        }));
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        fx.License.CurrentLicenseKey = Lisans2;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        AfterSeq(fx.Http.Requests.First(r => r.RequestUri!.AbsolutePath.EndsWith("/wpf-customers/changes") && LicenseOf(r) == LicenseId2))
+            .Should().Be(0, "imleç lisansa bağlı — önceki lisansın imleci kullanılmaz");
+        fx.Customers.GetById(b.ToString("N")).Should().NotBeNull();
+        fx.Cursors.Get(CustomerChangesPullService.CursorName, Lisans2)!.Seq.Should().Be(3);
+        fx.FeedCursor.Should().Be(6, "önceki lisansın imleci yerinde kalır");
+    }
+
+    [Fact]
+    public async Task Lisans_degisince_onceki_lisansin_akis_hata_kayitlari_ve_takilma_durumu_silinir()
+    {
+        var poison = Guid.NewGuid();
+        using var fx = Build((license, after) => FakeHttpMessageHandler.Json(200,
+            license == LicenseId && after == 0 ? Page(5, Item(poison, "zehir", 5)) : Page(after)));
+        using (var c = fx.Db.Open())
+            c.Execute("CREATE TRIGGER zehir BEFORE INSERT ON Customer WHEN new.Username = 'zehir' BEGIN SELECT RAISE(ABORT, 'zehir'); END");
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(1);
+
+        fx.License.CurrentLicenseKey = Lisans2;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0,
+            "kayıtlar lisansa bağlı değil — önceki lisansın öğesi yeni lisansın durum satırında uyarı olarak kalmaz");
+        fx.Tracker.BlockedOn.Should().BeNull();
+    }
+
+    // ── takılan öğe: KVKK silmeleri beklemez, uzun takılma görünür (I-1) ─
+
+    [Fact]
+    public async Task Takilan_sayfanin_ilerisindeki_KVKK_silmeleri_yine_uygulanir_imlec_ilerlemez()
+    {
+        var canonical = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var purged = Guid.NewGuid();
+        var busy = new CustomerBusySet();
+        using var fx = Build(after => after == 0
+            ? Page(9, Item(canonical, "ornek", 5), Item(other, "baska", 7), Item(purged, "silinecek", 9) with { PurgedAt = T1 })
+            : Page(after), busy: busy);
+        var holder = LocalRow(fx, "Ornek");
+        var victim = LocalRow(fx, "silinecek");
+        using var lease = await busy.EnterAsync(holder);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+
+        fx.Customers.GetById(victim)!.DisplayName.Should().Be("[Silindi]",
+            "ilgisiz kişinin KVKK silmesi takılan öğeyi beklemez");
+        Exists(fx, other.ToString("N")).Should().BeFalse("silme dışındaki öğeler sıralarını bekler");
+        fx.FeedCursor.Should().Be(0, "imleç takılan öğede kalır");
+        fx.Log.Entries.Should().ContainSingle(e => e.Message.Contains("KVKK silme: 1"));
+    }
+
+    [Fact]
+    public async Task Erken_uygulanan_silme_takilan_eski_kayitla_geri_acilmaz()
+    {
+        // Sıra: k'de X kimliğinin asıl kaydı (takılı), k+2'de aynı kimliğin silmesi. Silme erken
+        // uygulanır; takılma çözülünce k'deki kayıt sonradan uygulanır — kişiyi geri açmamalı.
+        var canonical = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var purgedRecord = Guid.NewGuid();
+        var phone = TestPhone.NewE164();
+        var busy = new CustomerBusySet();
+        using var fx = Build(after => after == 0
+            ? Page(9,
+                Item(canonical, "ornek", 5) with { FullName = "Örnek Müşteri", FullNameChangedAt = T1, Phone = phone, PhoneChangedAt = T1 },
+                Item(other, "baska", 7),
+                Item(purgedRecord, "ORNEK", 9) with { PurgedAt = T1 })
+            : Page(after), busy: busy);
+        var holder = LocalRow(fx, "Ornek");
+        var lease = await busy.EnterAsync(holder);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+        fx.Customers.GetById(holder)!.DisplayName.Should().Be("[Silindi]", "silme takılmayı beklemeden uygulandı");
+        lease.Dispose();
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        using var conn = fx.Db.Open();
+        var row = conn.QuerySingle<(string? FullName, string? Phone, string? DisplayName, long? PurgedAt)>(
+            "SELECT FullName, Phone, DisplayName, PurgedAt FROM Customer WHERE Id = @id", new { id = canonical.ToString("N") });
+        row.PurgedAt.Should().NotBeNull("mezar taşı sonradan eklenen asıl kaydı da boş doğurur");
+        row.FullName.Should().BeNull();
+        row.Phone.Should().BeNull();
+        row.DisplayName.Should().Be("[Silindi]");
+        fx.FeedCursor.Should().Be(9);
+    }
+
+    [Fact]
+    public async Task Uzun_sure_takilan_oge_esikte_bir_kez_uyarilir_izleyicide_gorunur_uygulaninca_kalkar()
+    {
+        var canonical = Guid.NewGuid();
+        var busy = new CustomerBusySet();
+        using var fx = Build(after => after == 0 ? Page(7, Item(canonical, "ornek", 7)) : Page(after), busy: busy);
+        var holder = LocalRow(fx, "Ornek");
+        var lease = await busy.EnterAsync(holder);
+        var id = canonical.ToString("N");
+        var threshold = CustomerChangesPullService.BlockedRoundsBeforeWarning;
+        int Warnings() => fx.Log.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains(id));
+
+        for (var round = 1; round < threshold; round++)
+        {
+            (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+            fx.Tracker.BlockedOn.Should().BeNull($"tur {round}: eşiğin altında");
+        }
+        fx.Log.Entries.Should().NotContain(e => e.Level >= LogLevel.Information, "eşiğin altındaki takılma sessiz (Debug)");
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+        Warnings().Should().Be(1);
+        fx.Tracker.BlockedOn.Should().NotBeNull();
+        fx.Tracker.BlockedOn!.ItemId.Should().Be(id);
+        fx.Tracker.BlockedOn.Reason.Should().Be(SyncBlockReason.Busy);
+        fx.Tracker.BlockedOn.Since.Should().BeOnOrBefore(DateTimeOffset.UtcNow);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+        Warnings().Should().Be(1, "tek uyarı — her turda yinelenmez");
+
+        lease.Dispose();
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        fx.Tracker.BlockedOn.Should().BeNull("öğe uygulandı");
+    }
+
+    // ── öğeye özgü olmayan hatalar (M-1), günlük (M-2, M-4, M-8) ────────
+
+    [Fact]
+    public async Task Tur_ortasinda_sizan_kilit_satiri_deneme_sayilmaz_temizlenip_oge_uygulanir()
+    {
+        var a = Guid.NewGuid();
+        Fixture? fixture = null;
+        var leaked = false;
+        using var fx = fixture = Build(after =>
+        {
+            if (!leaked)
+            {
+                // Başka bir yolun tur başındaki temizlikten SONRA sızdırdığı kilit satırı.
+                leaked = true;
+                using var c = fixture!.Db.Open();
+                c.Execute("INSERT INTO SyncApplyGuard (Id) VALUES (1)");
+            }
+            return after == 0 ? Page(4, Item(a, "ornek", 4)) : Page(after);
+        });
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        Exists(fx, a.ToString("N")).Should().BeTrue();
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0, "öğeye özgü değil — deneme sayılmaz");
+        fx.Count("SELECT COUNT(*) FROM SyncApplyGuard").Should().Be(0);
+        fx.Log.Entries.Should().Contain(e => e.Level == LogLevel.Error && e.Message.Contains("SyncApplyGuard"));
+    }
+
+    [Fact]
+    public async Task Kilit_yeniden_girisi_programlama_hatasidir_deneme_sayilmaz_bir_kez_hata_yazilir()
+    {
+        var a = Guid.NewGuid();
+        Fixture? fixture = null;
+        var inject = true;
+        using var fx = fixture = Build(after =>
+        {
+            if (after == 0 && inject)
+                fixture!.Faults.FailNextOpen(new CustomerBusySetReentrancyException("enjekte yeniden giriş"));
+            return FakeHttpMessageHandler.Json(200, after == 0 ? Page(4, Item(a, "ornek", 4)) : Page(after));
+        });
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        fx.Count("SELECT COUNT(*) FROM CustomerFeedFailure").Should().Be(0);
+        fx.Log.Entries.Count(e => e.Level == LogLevel.Error).Should().Be(1);
+
+        inject = false;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        Exists(fx, a.ToString("N")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ayni_ogenin_tekrarlanan_hatasi_yigin_izi_olmadan_tek_satir()
+    {
+        var poison = Guid.NewGuid();
+        using var fx = Build(after => after == 0 ? Page(5, Item(poison, "zehir", 5)) : Page(after));
+        using (var c = fx.Db.Open())
+            c.Execute("CREATE TRIGGER zehir BEFORE INSERT ON Customer WHEN new.Username = 'zehir' BEGIN SELECT RAISE(ABORT, 'zehir'); END");
+
+        await fx.Svc.PullOnceAsync(CancellationToken.None);
+        await fx.Svc.PullOnceAsync(CancellationToken.None);
+
+        fx.Log.Entries.Where(e => e.Level == LogLevel.Warning && e.Message.Contains(poison.ToString("N")))
+            .Select(e => e.Exception is not null)
+            .Should().Equal(new[] { true, false }, "yığın izi yalnız (Id, ChangeSeq) çiftinin ilk hatasında");
+    }
+
+    [Fact]
+    public async Task CursorReset_tekrarinda_uygulanmis_silmeler_yeniden_gunluge_yazilmaz()
+    {
+        var known = Guid.NewGuid();
+        var unseen = Guid.NewGuid();
+        WpfCustomerChangeItem[] Items() =>
+        [
+            Item(known, "silinen", 3) with { PurgedAt = T1 },
+            Item(unseen, "hic_gorulmemis", 4) with { PurgedAt = T1 },
+        ];
+        using var fx = Build(after => after switch
+        {
+            0 => Page(4, Items()),
+            999 => ResetPage(4, Items()),
+            _ => Page(after),
+        });
+        LocalRow(fx, "silinen");
+
+        await fx.Svc.PullOnceAsync(CancellationToken.None);
+        fx.Log.Entries.Should().ContainSingle(e => e.Message.Contains("KVKK silme: 2"),
+            "satır boşaltıldı + yerelde olmayan kişi için yeni mezar taşı");
+
+        fx.Cursors.Upsert(CustomerChangesPullService.CursorName, Lisans, seq: 999);
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        fx.Log.Entries.Count(e => e.Message.Contains("KVKK silme")).Should().Be(1,
+            "yeniden oynatılan silmeler yeni bir şey yapmadı — sahaya inme kanıtı yinelenmez");
+    }
+
+    [Fact]
+    public async Task Cevrimdisiyken_yigin_izi_yalniz_ilk_hatada_sunucuya_ulasinca_sifirlanir()
+    {
+        var offline = true;
+        using var fx = Build(after => offline ? throw new HttpRequestException("ağ yok") : Page(after));
+
+        await fx.Svc.PullOnceAsync(CancellationToken.None);
+        await fx.Svc.PullOnceAsync(CancellationToken.None);
+        offline = false;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        offline = true;
+        await fx.Svc.PullOnceAsync(CancellationToken.None);
+
+        fx.Log.Entries.Where(e => e.Level == LogLevel.Warning).Select(e => e.Exception is not null)
+            .Should().Equal(new[] { true, false, true });
+    }
+
+    // ── iptal, sayfa sınırı (M-6, M-7) ──────────────────────────────────
+
+    [Fact]
+    public async Task Iptal_edilince_imlec_son_uygulanan_ogede_kaydedilir()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        using var cts = new CancellationTokenSource();
+        Fixture? fixture = null;
+        using var fx = fixture = Build(after =>
+        {
+            // Sayfa yanıtından sonraki ilk depo bağlantısı = ilk öğenin uygulaması: öğe uygulanır,
+            // iptal ikinci öğeden önce görülür.
+            if (after == 0) fixture!.Faults.OnNextOpen(cts.Cancel);
+            return FakeHttpMessageHandler.Json(200,
+                after == 0 ? Page(5, Item(a, "ornek_a", 3), Item(b, "ornek_b", 5)) : Page(after));
+        });
+
+        var act = () => fx.Svc.PullOnceAsync(cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        Exists(fx, a.ToString("N")).Should().BeTrue();
+        Exists(fx, b.ToString("N")).Should().BeFalse();
+        fx.FeedCursor.Should().Be(3, "uygulanan öğe yeniden istenmesin");
+    }
+
+    [Fact]
+    public async Task Tur_basina_sayfa_siniri_kalan_sonraki_turda_surer()
+    {
+        var max = CustomerChangesPullService.MaxPagesPerRound;
+        using var fx = Build(after => after <= max
+            ? Page(after + 1, Item(Guid.NewGuid(), $"ornek_{after}", after + 1))
+            : Page(after));
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.MorePending);
+        fx.Pulls.Should().Be(max);
+        fx.FeedCursor.Should().Be(max);
+        fx.Tracker.IsInitialCatchUpDone.Should().BeFalse("sayfa sınırı yetişme sayılmaz");
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        fx.FeedCursor.Should().Be(max + 1);
+        fx.Tracker.IsInitialCatchUpDone.Should().BeTrue();
+    }
+
+    // ── arka plan işi (M-10) ────────────────────────────────────────────
+
+    [Fact]
+    public async Task Arka_plan_isi_acilista_ritmi_beklemeden_bir_tur_kosar()
+    {
+        var firstRound = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var fx = Build(after => Page(after), licenseProvider: new CallbackLicenseProvider(() =>
+        {
+            firstRound.TrySetResult();
+            return null;
+        }));
+        using var hosted = new CustomerChangesPullHostedService(
+            fx.Svc, NullLogger<CustomerChangesPullHostedService>.Instance, TimeSpan.FromHours(1));
+
+        await hosted.StartAsync(CancellationToken.None);
+        try
+        {
+            await firstRound.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Arka_plan_isi_turun_hatasindan_sonra_dongu_surer()
+    {
+        var calls = 0;
+        var secondRound = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var fx = Build(after => Page(after), licenseProvider: new CallbackLicenseProvider(() =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) throw new InvalidOperationException("enjekte tur hatası");
+            secondRound.TrySetResult();
+            return null;
+        }));
+        using var hosted = new CustomerChangesPullHostedService(
+            fx.Svc, NullLogger<CustomerChangesPullHostedService>.Instance, TimeSpan.FromMilliseconds(10));
+
+        await hosted.StartAsync(CancellationToken.None);
+        try
+        {
+            await secondRound.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+        hosted.ExecuteTask!.IsFaulted.Should().BeFalse();
     }
 }
