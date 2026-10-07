@@ -781,6 +781,25 @@ public sealed class CustomerChangesPullServiceTests
         fx.Tracker.BlockedOn.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Lisans_degisince_yetisme_durumu_sifirlanir_yeni_lisans_kendi_akisini_bekler()
+    {
+        // Form oynatmasının işareti lisansa bağlı, yetişme süreç içi: yeni lisansın oynatması ÖNCEKİ
+        // lisansın yetişmesiyle başlamamalı (C10 incelemesi).
+        using var fx = Build((license, after) => license == LicenseId
+            ? FakeHttpMessageHandler.Json(200, Page(after))
+            : FakeHttpMessageHandler.Json(500, "{}"));
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+        fx.Tracker.IsInitialCatchUpDoneFor(Lisans).Should().BeTrue();
+
+        fx.License.CurrentLicenseKey = Lisans2;
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        fx.Tracker.IsInitialCatchUpDone.Should().BeFalse("yeni lisansın akışı henüz yetişmedi");
+        fx.Tracker.LastPullOkAt.Should().BeNull();
+        fx.Tracker.IsInitialCatchUpDoneFor(Lisans2).Should().BeFalse();
+    }
+
     // ── takılan öğe: KVKK silmeleri beklemez, uzun takılma görünür (I-1) ─
 
     [Fact]

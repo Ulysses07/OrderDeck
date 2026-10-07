@@ -623,6 +623,88 @@ public sealed class CustomerStampedWritersTests : IDisposable
     }
 
     [Fact]
+    public void Doldurma_kipi_actigi_satir_gonderilebilir_SyncSeq_alir()
+    {
+        // Kilit SyncSeq GÜNCELLEME tetikleyicisini susturur, ekleme tetikleyicisini değil (U2): açılan
+        // satır gönderim partisine girer.
+        long before;
+        using (var c = _db.Open()) before = c.ExecuteScalar<long>("SELECT COALESCE(MAX(SyncSeq), 0) FROM Customer");
+
+        FillForm("yeni_kisi", T1, phone: TestPhone.NewE164());
+
+        var id = _repo.FindByPlatformAndUsername("instagram", "yeni_kisi")!.Id;
+        new CustomerSyncRepository(_db).GetForPush(before, 100).Select(r => r.Id).Should().Contain(id);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_mezar_tasli_kimligi_bos_ve_damgasiz_acar()
+    {
+        _repo.RecordPurge("instagram", "silinen_kisi", purgedAtUnix: 5000);
+
+        FillForm("silinen_kisi", T1, phone: TestPhone.NewE164(), email: "ayse@example.test");
+
+        var c = _repo.FindByPlatformAndUsername("instagram", "silinen_kisi")!;
+        c.DisplayName.Should().Be("[Silindi]");
+        c.FullName.Should().BeNull();
+        c.Phone.Should().BeNull();
+        c.Email.Should().BeNull();
+        c.Address.Should().BeNull();
+        using var conn = _db.Open();
+        conn.ExecuteScalar<long?>("SELECT PurgedAt FROM Customer WHERE Id = @id", new { id = c.Id }).Should().Be(5000);
+        foreach (var col in new[] { "FullNameChangedAt", "DisplayNameChangedAt", "AddressChangedAt", "PhoneChangedAt",
+                                    "EmailChangedAt", "WhatsAppConsentChangedAt" })
+            Stamp(c.Id, col).Should().BeNull($"{col}: boşaltma da kilit altında — damga yazılmaz");
+        GuardRows().Should().Be(0);
+    }
+
+    [Fact]
+    public void Doldurma_kipi_eslesen_silinmis_satira_dokunmaz_gonderime_koymaz()
+    {
+        var id = Chat("silinen_kisi");
+        _repo.ScrubPersonalData(id);
+        var seq = Seq(id);
+
+        FillForm("silinen_kisi", T1, phone: TestPhone.NewE164(), email: "ayse@example.test");
+
+        var c = _repo.GetById(id)!;
+        c.Phone.Should().BeNull();
+        c.Email.Should().BeNull();
+        c.FullName.Should().BeNull();
+        c.GroupId.Should().BeNull();
+        Seq(id).Should().Be(seq, "silinmiş satır gönderime girmez");
+        CustomerCount().Should().Be(1, "silinmiş satır kimliğin bariyeri — yeni satır açılmaz");
+    }
+
+    [Fact]
+    public void Telefonla_grup_secimi_ekleme_sirasindan_bagimsiz()
+    {
+        // Kimlikler gruplanmamışken aynı telefonlu iki grup varsa seçim belirleyici olmalı: aynı veriye
+        // sahip iki bilgisayar formu farklı gruba bağlamasın (iki kipte ortak grup çözümü).
+        var phone = TestPhone.NewE164();
+        string Resolve(bool reverse, IntakeApplyMode mode)
+        {
+            using var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var repo = new CustomerRepository(db);
+            var groups = reverse ? new[] { "g9", "g0" } : new[] { "g0", "g9" };
+            foreach (var g in groups)
+                repo.Insert(new Customer(Guid.NewGuid().ToString("N"), "instagram", "uye_" + g, DisplayName: "uye_" + g,
+                    AvatarUrl: null, FirstSeenAt: 1, LastSeenAt: 1, IsBlacklisted: false, BlacklistReason: null,
+                    Notes: null, TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null, Address: null,
+                    Phone: phone, GroupId: g));
+            return repo.UpsertPersonFromIntake(
+                new[] { ("instagram", "ayse_y", (string?)null) }, "Örnek Müşteri", "", phone, null, null, false, false,
+                nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: T1, mode: mode);
+        }
+
+        foreach (var mode in new[] { IntakeApplyMode.Stamped, IntakeApplyMode.FillOnly })
+        {
+            Resolve(reverse: false, mode).Should().Be("g0", $"{mode}");
+            Resolve(reverse: true, mode).Should().Be("g0", $"{mode}: ekleme sırası değil, en küçük grup");
+        }
+    }
+
+    [Fact]
     public void Doldurma_kipi_telefonla_yalniz_bos_grubu_doldurur_baska_grubu_birlestirmez()
     {
         var phone = TestPhone.NewE164();

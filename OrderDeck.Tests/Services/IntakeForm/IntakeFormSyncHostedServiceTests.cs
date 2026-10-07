@@ -34,13 +34,20 @@ public sealed class IntakeFormSyncHostedServiceTests
     // handler has actually fired ≥2 times, with a 5s watchdog timeout that
     // catches a genuinely-broken hosted service (vs. just a slow runner).
 
+    /// <summary>Form senkronunun isteği (<c>limit=50</c>); backfill'inki <c>limit=100</c>. Testler
+    /// yalnız form senkronunu sayar — backfill de her turda istek atabildiği için toplam sayı
+    /// SyncOnceAsync'in koştuğunu kanıtlamaz.</summary>
+    private static bool IsFormSync(HttpRequestMessage req)
+        => req.RequestUri!.Query.Contains("limit=50", StringComparison.Ordinal);
+
     [Fact]
     public async Task Hosted_service_calls_SyncOnceAsync_periodically()
     {
         int callCount = 0;
         var twoCallsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = new FakeHttpMessageHandler(_ =>
+        var handler = new FakeHttpMessageHandler(req =>
         {
+            if (!IsFormSync(req)) return FakeHttpMessageHandler.Json(200, "[]");
             var c = Interlocked.Increment(ref callCount);
             if (c >= 2) twoCallsObserved.TrySetResult();
             return FakeHttpMessageHandler.Json(200, "[]");
@@ -74,11 +81,14 @@ public sealed class IntakeFormSyncHostedServiceTests
     {
         int callCount = 0;
         var twoCallsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = new FakeHttpMessageHandler(_ =>
+        var handler = new FakeHttpMessageHandler(req =>
         {
+            if (!IsFormSync(req)) return FakeHttpMessageHandler.Json(200, "[]");
             var c = Interlocked.Increment(ref callCount);
             if (c >= 2) twoCallsObserved.TrySetResult();
-            if (c == 1) throw new HttpRequestException("fail once");
+            // HttpRequestException'ı istemci LicenseApiNetworkException'a çevirir ve servis yutar —
+            // SyncOnceAsync'in gerçekten FIRLATMASI için istemcinin sarmadığı bir hata.
+            if (c == 1) throw new InvalidOperationException("form senkronu bir kez patlar");
             return FakeHttpMessageHandler.Json(200, "[]");
         });
 

@@ -1135,12 +1135,15 @@ public sealed class CustomerRepository
             if (existing?.GroupId is { Length: > 0 } g) return g;
         }
         // Telefon-bazlı: kimlikler eşleşmese bile aynı telefonlu mevcut bir grup
-        // varsa onu kullan (aynı kişi başka platformdan tekrar kaydolduğunda).
+        // varsa onu kullan (aynı kişi başka platformdan tekrar kaydolduğunda). Birden çok
+        // grup varsa en küçüğü: tarama (ekleme) sırası bilgisayardan bilgisayara değişir,
+        // aynı veriye sahip iki bilgisayar formu farklı gruba bağlamasın.
         if (phoneValue is not null)
         {
             var byPhone = conn.QueryFirstOrDefault<string>(
                 @"SELECT GroupId FROM Customer
                   WHERE Phone = @phoneValue AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''
+                  ORDER BY GroupId
                   LIMIT 1",
                 new { phoneValue }, tx);
             if (!string.IsNullOrWhiteSpace(byPhone)) return byPhone;
@@ -1162,6 +1165,11 @@ public sealed class CustomerRepository
     /// tetikleyicisi yine numaralar — U2). Telefonla gruplama yalnız boş ve damgasız GroupId'ye,
     /// başka grupları birleştirmez. Yalnız gerçekten doldurulan mevcut satırların SyncSeq'i açıkça
     /// ilerler (damgasız doldurma sunucuda da yalnız boşu doldurur); LastSeenAt ilerlemez (2. inceleme).
+    ///
+    /// <para>Kabul edilen sınır (geçiş penceresi): oynatma formları eskiden yeniye uyguladığı için
+    /// sunucuda olmayan bir birimi oynatmanın başlangıcından (T0) önceki en ESKİ form doldurur; aynı
+    /// birimi taşıyan daha yeni (yine T0 öncesi) form onu değiştirmez — T0'dan sonraki form damgalı
+    /// uygulanır ve yazar.</para>
     /// </summary>
     /// <param name="submittedAtMs">Formun gönderim anı: açılan satırın ilk/son görülmesi (saniyeye
     /// çevrilir) ve kara liste yayılımının tarih yedeği.</param>
@@ -1342,7 +1350,10 @@ public sealed class CustomerRepository
     /// <param name="fillOnly">U14 — taze bilgisayarın ilk oynatması: yalnız kara liste birimi BOŞ
     /// (kara listede değil) VE damgasız satırlar. Çağıran <see cref="SyncApplyScope"/> içinde: damga
     /// yazılmaz, SyncSeq ilerlemez. Başka bilgisayarda bilerek kara listeden çıkarılmış (damgalı) satır
-    /// yeniden kara listeye alınmaz. <paramref name="formAt"/> yok sayılır.</param>
+    /// yeniden kara listeye alınmaz. <paramref name="formAt"/> yok sayılır. Kabul edilen sınır:
+    /// yalnız yayılım alan satır gönderilmez, başka bir birimi de doldurulup gönderime giren satır ise
+    /// kara listeyi damgasız taşır (sunucu yalnız boşsa doldurur) — iki durumda da sonuç her
+    /// bilgisayarda aynı grup ve kara liste verisinden türer.</param>
     private static void PropagateGroupBlacklist(
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string groupId, long fallbackAt,
         long? formAt, bool fillOnly = false)

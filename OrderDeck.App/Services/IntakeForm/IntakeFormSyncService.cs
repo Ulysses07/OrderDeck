@@ -25,9 +25,10 @@ namespace OrderDeck.App.Services.IntakeForm;
 /// formları kendi imleciyle uygular; işleme anı damgası geç açılan bilgisayarın eski
 /// formları en yeni damgayla oynatıp sonradan yapılan düzeltmeleri ezmesi demekti.</para>
 ///
-/// <para>U14: imleçsiz başlayan bilgisayarın ilk tam oynatması doldurma kipinde
-/// (<see cref="IntakeApplyMode.FillOnly"/> — yalnız boş ve damgasız birim, damga yazılmaz); form
-/// işleme iki kipte de bu süreçteki ilk tam müşteri akışını bekler.</para>
+/// <para>U14: imleçsiz başlayan bilgisayarın ilk tam oynatmasında oynatmanın başlangıcından (T0)
+/// önce gönderilmiş formlar doldurma kipinde (<see cref="IntakeApplyMode.FillOnly"/> — yalnız boş ve
+/// damgasız birim, damga yazılmaz), sonrakiler damgalı; form işleme iki kipte de bu süreçte bu
+/// lisansın ilk tam müşteri akışını bekler.</para>
 /// </summary>
 public sealed class IntakeFormSyncService
 {
@@ -41,16 +42,30 @@ public sealed class IntakeFormSyncService
     // (denetim: 1000 kayıttan 599'u işlenmiş). Sürüm 2 = bu onarılmış kod.
     // Satır yoksa VEYA Seq < 2 ise backfill yeniden koşar: eski kurulumların
     // yanlış "bitti" işareti böylece kendiliğinden onarılır; işaret DB'de
-    // olduğu için yedekle birlikte taşınır.
+    // olduğu için yedekle birlikte taşınır. Seq < 2 iken UpdatedAt/LastId =
+    // kaldığı yer (C10 incelemesi: tur başına sınırlı sayfa, sonraki tur sürer).
     private const string BackfillMarkerName = "intake-fullname-backfill";
     private const long BackfillVersion = 2;
 
     // U14: taze bilgisayarın (intake-form-in imleci olmadan başlayan) ilk tam form oynatması
     // doldurma kipinde. İşaret SyncCursor satırında (yedekle birlikte taşınır): Seq 1 = oynatma
-    // sürüyor, 2 = bitti (ya da hiç gerekmedi).
+    // sürüyor, 2 = bitti (ya da hiç gerekmedi). UpdatedAt = oynatmanın başladığı an (T0, yerel
+    // saat): oynatma sürerken T0'dan SONRA gönderilen form damgalı uygulanır (ReplayState).
     private const string ReplayMarkerName = "intake-form-replay";
     private const long ReplayRunning = 1;
     private const long ReplayDone = 2;
+
+    // Tur başına sayfa sınırları (C10 incelemesi): sunucunun genel sınırı IP başına dakikada 100
+    // istek; diğer senkron servisleri de aynı bütçeyi kullanır (aynı NAT arkasındaki ikinci
+    // bilgisayar dahil). Oynatma sürerken form turu birkaç sayfa çeker (pencere kısalır), backfill
+    // her turda en çok bu kadar sayfa çekip kaldığı yeri kaydeder.
+    private const int ReplayPagesPerTick = 5;
+    private const int BackfillPagesPerTick = 5;
+    private const int FormPageSize = 50;
+    private const int BackfillPageSize = 100;
+
+    /// <summary>Akışı bundan uzun bekleyen form işleme bir kez bilgi günlüğüne yazılır (sn).</summary>
+    private const long FeedWaitLogAfterSeconds = 10 * 60;
 
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
@@ -60,6 +75,13 @@ public sealed class IntakeFormSyncService
     private readonly ILogger<IntakeFormSyncService> _log;
     private readonly SyncStatusTracker? _tracker;
 
+    // Akış beklemesinin başladığı an (unix s) ve bu bekleme için uzun bekleme günlüğü yazıldı mı.
+    // Form turu ve backfill aynı arka plan işinden sırayla çağrılır.
+    private long? _feedWaitSince;
+    private bool _feedWaitLogged;
+
+    /// <summary>"Bu oturumda yeni" form sayısı (rozet). Yalnız damgalı uygulanan (yeni) formlar
+    /// sayılır — taze bilgisayar oynatmasının eski formları yeni değildir.</summary>
     public event EventHandler<int>? SubmissionsSynced;
 
     /// <param name="tracker">Müşteri akışının durum izleyicisi (DI'da tekil): form işleme bu süreçteki
@@ -82,30 +104,72 @@ public sealed class IntakeFormSyncService
         _tracker = tracker;
     }
 
-    /// <summary>U14: imleç yoksa (yeni kurulum, yedeksiz açılış) ilk tam oynatma doldurma kipinde;
-    /// imleç varsa (güncellenen kurulum, yedekten dönüş) oynatma yok. İşaret ilk karar anında
-    /// yazılır — sonradan oluşan imleç (oynatmanın kendisi ilerletir) kararı değiştirmez.</summary>
-    private IntakeApplyMode ModeFor(string licenseKey)
+    /// <summary>
+    /// Taze bilgisayar oynatmasının durumu: sürüyorsa başladığı an (T0). Kip FORM BAŞINA seçilir:
+    /// oynatma sürerken T0'dan ÖNCE gönderilmiş form doldurma kipinde (U14 — göç öncesi damgasız
+    /// değerleri ezmesin), T0'dan sonraki form damgalı. Sunucu formdan müşteri kaydı türetmez; tek
+    /// bilgisayarlı lisansta oynatma sürerken gelen yeni form (geri dönen müşterinin yeni adresi)
+    /// yalnız doldurulsaydı yeni değer kalıcı kaybolurdu — T0'dan sonraki form ise oynatma öncesindeki
+    /// her değerden yenidir, U14'ün koruduğu hiçbir şeyi ezmez. T0 yerel saatten: saat kayması sınırı
+    /// o kadar kaydırır (kabul).
+    /// </summary>
+    private readonly record struct ReplayState(DateTimeOffset? RunningSince)
     {
-        var marker = _cursors.Get(ReplayMarkerName, licenseKey)?.Seq;
-        if (marker == ReplayDone) return IntakeApplyMode.Stamped;
-        if (marker == ReplayRunning) return IntakeApplyMode.FillOnly;
-        if (_cursors.Get(CursorName, licenseKey) is not null)
-        {
-            _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayDone);
-            return IntakeApplyMode.Stamped;
-        }
-        _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayRunning);
-        return IntakeApplyMode.FillOnly;
+        public bool Running => RunningSince is not null;
+
+        public IntakeApplyMode ModeOf(DateTimeOffset submittedAt)
+            => RunningSince is { } t0 && submittedAt < t0 ? IntakeApplyMode.FillOnly : IntakeApplyMode.Stamped;
     }
 
-    /// <summary>Form işleme (İKİ kipte de) yalnız bu süreçteki ilk tam müşteri akışından SONRA: önce
-    /// sunucu gerçeği iner. Doldurma kipinde form yalnız onun bıraktığı boşluğu doldurur (U14);
-    /// damgalı kipte sırayla kullanılan bilgisayar, başka bilgisayarın aynı form için gönderdiği
+    /// <summary>U14: imleç yoksa (yeni kurulum, yedeksiz açılış) ilk tam oynatma doldurma kipinde;
+    /// imleç varsa (güncellenen kurulum, yedekten dönüş) oynatma yok. İşaret ilk karar anında T0 ile
+    /// yazılır ve İMLEÇTEN ÖNCE denetlenir — oynatmanın kendisi imleci ilerletir, yarıda kalan oynatma
+    /// yeniden başlatmada da aynı T0 ile sürer.</summary>
+    private ReplayState ReplayFor(string licenseKey)
+    {
+        var marker = _cursors.Get(ReplayMarkerName, licenseKey);
+        if (marker?.Seq == ReplayDone) return new ReplayState(null);
+        if (marker?.Seq == ReplayRunning && marker.UpdatedAt is { } t0) return new ReplayState(t0);
+        if (marker?.Seq != ReplayRunning && _cursors.Get(CursorName, licenseKey) is not null)
+        {
+            _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayDone);
+            return new ReplayState(null);
+        }
+        var start = DateTimeOffset.FromUnixTimeSeconds(_clock.UnixNow());
+        _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayRunning, updatedAt: start);
+        return new ReplayState(start);
+    }
+
+    /// <summary>Form işleme (İKİ kipte de) yalnız bu süreçte BU LİSANSIN ilk tam müşteri akışından
+    /// SONRA: önce sunucu gerçeği iner. Doldurma kipinde form yalnız onun bıraktığı boşluğu doldurur
+    /// (U14); damgalı kipte sırayla kullanılan bilgisayar, başka bilgisayarın aynı form için gönderdiği
     /// (eşit damgalı) sonucu indirmeden formu kendi yerel durumuyla işleyip türetilen değerde (grup)
     /// ayrışmaz (C2 kalite incelemesi). İzleyici yalnız akış boş sayfaya ulaşınca kurulur — büyük
-    /// lisansta ilk yetişme birkaç tur sürebilir. İzleyicisiz kurulum (testler) beklemez.</summary>
-    private bool MustWaitForFeed() => _tracker is { IsInitialCatchUpDone: false };
+    /// lisansta ilk yetişme birkaç tur sürebilir; bekleme <see cref="FeedWaitLogAfterSeconds"/>'ı aşarsa
+    /// bir kez bilgi günlüğü. İzleyicisiz kurulum (testler) beklemez.</summary>
+    private bool MustWaitForFeed(string licenseKey)
+    {
+        if (_tracker is null || _tracker.IsInitialCatchUpDoneFor(licenseKey))
+        {
+            _feedWaitSince = null;
+            _feedWaitLogged = false;
+            return false;
+        }
+
+        var now = _clock.UnixNow();
+        _feedWaitSince ??= now;
+        if (!_feedWaitLogged && now - _feedWaitSince.Value > FeedWaitLogAfterSeconds)
+        {
+            _feedWaitLogged = true;
+            _log.LogInformation(
+                "Form senkronu {Minutes} dakikadır ilk tam müşteri akışını bekliyor — formlar akış yetişince uygulanır",
+                (now - _feedWaitSince.Value) / 60);
+        }
+        return true;
+    }
+
+    /// <summary>Sunucunun genel hız sınırı gövdesiz 429 döner → <c>http-429</c>.</summary>
+    private static bool IsRateLimited(LicenseApiException ex) => ex is ValidationException { Code: "http-429" };
 
     /// <summary>
     /// UI freeze fix (2026-05-13): consecutive auth-failure tracking. 25 art arda
@@ -122,43 +186,56 @@ public sealed class IntakeFormSyncService
     /// yalnızca boş FullName'lere, LastSeenAt/DisplayName'e dokunmadan.
     /// R9-D03: "bitti" işareti SyncCursor("intake-fullname-backfill").Seq ≥ 2;
     /// işaret YALNIZ doğal tamamlanmada (boş sayfa / kısa sayfa) yazılır —
-    /// tavan çıkışı veya iptalde yazılmaz, sonraki açılış devam eder.
+    /// tur sınırı, 429 ya da iptalde yazılmaz.
     /// BackfillFullNameForIdentities yalnız boş FullName doldurduğu için
     /// yeniden koşmak güvenli.
+    ///
+    /// <para>C10 incelemesi: arka plan işi backfill'i bitene dek HER TURDA dener (U14: taze
+    /// bilgisayarda akışı bekler). Bu yüzden tur başına en çok <see cref="BackfillPagesPerTick"/>
+    /// sayfa ve konum (son satırın SubmittedAt/Id'si) her sayfadan sonra işaret satırına yazılır
+    /// (Seq &lt; 2 iken UpdatedAt/LastId); sonraki tur kaldığı yerden sürer. Eskisi gibi her turda
+    /// baştan 500 sayfa, büyük lisansta IP başına dakikada 100 isteklik sınırı her turda tüketirdi
+    /// (429) — ne backfill ne oynatma ilerler, diğer senkronlar da 429 alırdı.</para>
     /// </summary>
     public async Task<int> BackfillFullNamesOnceAsync(CancellationToken ct = default)
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
         if (string.IsNullOrWhiteSpace(licenseKey)) return 0;
 
-        if ((_cursors.Get(BackfillMarkerName, licenseKey)?.Seq ?? 0) >= BackfillVersion)
+        var marker = _cursors.Get(BackfillMarkerName, licenseKey);
+        if ((marker?.Seq ?? 0) >= BackfillVersion)
             return 0;
 
-        // U14: taze bilgisayarda doldurma kipinde (boş + damgasız ad, damga yazılmaz); her iki kipte
-        // ilk tam müşteri akışından sonra. Beklerken işaret yazılmaz → arka plan işi sonraki turda
-        // yeniden dener.
-        var mode = ModeFor(licenseKey);
-        if (MustWaitForFeed()) return 0;
+        // U14: taze bilgisayarda oynatma sürerken T0'dan önceki form doldurma kipinde (boş + damgasız
+        // ad, damga yazılmaz); iki kipte de ilk tam müşteri akışından sonra. Beklerken işaret yazılmaz →
+        // arka plan işi sonraki turda yeniden dener.
+        var replay = ReplayFor(licenseKey);
+        if (MustWaitForFeed(licenseKey)) return 0;
 
         int totalUpdated = 0;
-        DateTimeOffset? since = null;
-        var sinceId = Guid.Empty;
+        // Kaldığı yer (Seq < 2 iken işaret satırında); yoksa baştan.
+        var since = marker?.UpdatedAt;
+        var sinceId = marker?.LastId ?? Guid.Empty;
         var completed = false;
         // Sayfalama imleci (SubmittedAt, Id); son sayfa < limit olunca dur.
         // Yalnız damgayla ilerleseydi, tam bir sayfa dolusu kayıt aynı damgayı
-        // paylaştığında imleç HİÇ ilerlemez ve döngü tavana kadar aynı sayfayı
-        // çekerdi. Güvenlik tavanı yine de duruyor.
-        for (var page = 0; page < 500 && !ct.IsCancellationRequested; page++)
+        // paylaştığında imleç HİÇ ilerlemezdi.
+        for (var page = 0; page < BackfillPagesPerTick && !ct.IsCancellationRequested; page++)
         {
             List<IntakeFormSubmissionDto> submissions;
             try
             {
-                submissions = await _api.GetFormSubmissionsAsync(since, sinceId, limit: 100, ct);
+                submissions = await _api.GetFormSubmissionsAsync(since, sinceId, limit: BackfillPageSize, ct);
             }
             catch (LicenseApiException ex)
             {
-                _log.LogWarning(ex, "FullName backfill fetch failed: {Code} (will retry next launch)", ex.Code);
-                return totalUpdated; // flag'i işaretleme → sonraki açılışta tekrar dener
+                // Tur biter, konum işaret satırında kalır → sonraki tur kaldığı yerden.
+                if (IsRateLimited(ex))
+                    _log.LogInformation("FullName backfill: hız sınırı (429) — {Count} satır güncellendi, sonraki turda sürer",
+                        totalUpdated);
+                else
+                    _log.LogWarning(ex, "FullName backfill fetch failed: {Code} (will retry next interval)", ex.Code);
+                return totalUpdated;
             }
 
             if (submissions.Count == 0) { completed = true; break; }
@@ -183,7 +260,7 @@ public sealed class IntakeFormSyncService
                 if (identities.Count > 0 && !string.IsNullOrWhiteSpace(sub.FullName))
                     totalUpdated += _customers.BackfillFullNameForIdentities(
                         identities, sub.FullName, submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
-                        mode: mode);
+                        mode: replay.ModeOf(sub.SubmittedAt));
             }
 
             // R9-D03 / R3-01: imleç sunucunun teslim ettiği SON satırdan
@@ -195,18 +272,17 @@ public sealed class IntakeFormSyncService
             var last = submissions[^1];
             since = last.SubmittedAt;
             sinceId = last.Id;
+            // Konum kalıcı (Seq < 2 korunur): sınır, 429 ya da iptal kaldığı yeri kaybettirmez.
+            _cursors.Upsert(BackfillMarkerName, licenseKey, seq: marker?.Seq, updatedAt: since, lastId: sinceId);
 
-            if (submissions.Count < 100) { completed = true; break; } // son sayfa
+            if (submissions.Count < BackfillPageSize) { completed = true; break; } // son sayfa
         }
 
         if (!completed)
         {
-            // Tavan çıkışı veya iptal — iş YARIM. İşaret yazılmaz ki sonraki
-            // açılış kaldığı yerden değil ama en azından yeniden denesin
-            // (eski kod burada bool'u true yazıp 599/1000'de bırakıyordu).
-            _log.LogWarning(
-                "FullName backfill did not finish (page cap or cancel) — updated {Count} row(s), will retry next launch",
-                totalUpdated);
+            // Tur sınırı ya da iptal — iş YARIM. "Bitti" işareti yazılmaz; sonraki tur kaldığı
+            // yerden sürer (eski kod burada bool'u true yazıp 599/1000'de bırakıyordu).
+            _log.LogDebug("FullName backfill sürüyor — bu turda {Count} satır güncellendi", totalUpdated);
             return totalUpdated;
         }
 
@@ -227,10 +303,10 @@ public sealed class IntakeFormSyncService
             return 0;
         }
 
-        var mode = ModeFor(licenseKey);
-        if (MustWaitForFeed())
+        var replay = ReplayFor(licenseKey);
+        if (MustWaitForFeed(licenseKey))
         {
-            _log.LogDebug("Form senkronu ilk tam müşteri akışını bekliyor ({Mode})", mode);
+            _log.LogDebug("Form senkronu ilk tam müşteri akışını bekliyor (oynatma: {Replay})", replay.Running);
             return 0;
         }
 
@@ -242,103 +318,129 @@ public sealed class IntakeFormSyncService
         var row = _cursors.Get(CursorName, licenseKey);
         var since = row?.UpdatedAt;
         var sinceId = row?.LastId ?? Guid.Empty;
-
-        List<IntakeFormSubmissionDto> submissions;
-        try
-        {
-            submissions = await _api.GetFormSubmissionsAsync(since, sinceId, limit: 50, ct);
-            LastSyncWasAuthFailure = false;
-        }
-        catch (InvalidCredentialsException ex)
-        {
-            // Auth token expired — bir sonraki login'e kadar denemek log spam'i
-            // ve exception storm yaratıyor. Hosted service'e flag ile bildir,
-            // backoff aralığını uzatsın.
-            LastSyncWasAuthFailure = true;
-            _log.LogWarning(ex, "Intake form sync auth failed: {Code} (backing off)", ex.Code);
-            return 0;
-        }
-        catch (LicenseApiException ex)
-        {
-            LastSyncWasAuthFailure = false;
-            _log.LogWarning(ex, "Intake form sync failed: {Code}", ex.Code);
-            return 0;
-        }
-
-        if (submissions.Count == 0)
-        {
-            // U14: tam oynatma boş sayfaya ulaştı — bundan sonraki formlar damgalı (kural 3).
-            if (mode == IntakeApplyMode.FillOnly)
-            {
-                _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayDone);
-                _log.LogInformation("Taze bilgisayar form oynatması tamamlandı — yeni formlar damgalı uygulanır (U14)");
-            }
-            return 0;
-        }
-
         var nowUnix = _clock.UnixNow();
 
-        // İmleç (SubmittedAt, Id) çifti. Yalnız en büyük SubmittedAt alınsaydı,
-        // aynı damgayı paylaşan kayıtlar sayfa sınırında kesildiğinde kalanları
-        // bir daha hiç istenmezdi — ve o satır bir müşteri KAYDI olduğu için
-        // eksik kendiliğinden kapanmazdı.
-        // R3-01: sunucunun teslim sırası olduğu gibi kullanılır — yeniden
-        // SIRALAMA YOK. Sunucu SQL uniqueidentifier sırasıyla sayfalıyor; .NET
-        // Guid sırası farklı, istemci "son"u kendisi seçerse imleç sunucu sayfa
-        // sınırının gerisinde kalır ve aynı satırlar tekrar iner.
-        foreach (var sub in submissions)
+        // Oynatma sürerken tur birkaç sayfa çeker (doldurma penceresi kısalır; hız sınırına uyar),
+        // sonra tur başına tek sayfa (bugünkü ritim).
+        var maxPages = replay.Running ? ReplayPagesPerTick : 1;
+        var processed = 0;
+        var stamped = 0;
+        for (var page = 0; page < maxPages; page++)
         {
-            // Bildirilen platform kimliklerini topla (çoklu-platform).
-            var identities = new List<(string Platform, string Username, string? PreferredDisplayName)>();
-            void Add(string platform, string? username, string? display = null)
+            List<IntakeFormSubmissionDto> submissions;
+            try
             {
-                if (!string.IsNullOrWhiteSpace(username))
-                    identities.Add((platform, username!, display));
+                submissions = await _api.GetFormSubmissionsAsync(since, sinceId, limit: FormPageSize, ct);
+                LastSyncWasAuthFailure = false;
             }
-            // YouTube: doğrulama channelId çektiyse Username=channelId → chat kaydıyla
-            // (youtube, channelId) BİREBİR eşleşir. Ama UI'da channelId ASLA görünmesin
-            // diye @handle'ı PreferredDisplayName olarak taşırız (DisplayName=@handle).
-            // channelId yoksa handle'a düş (repository DisplayName ile köprüler).
-            if (!string.IsNullOrWhiteSpace(sub.YouTubeChannelId))
-                Add("youtube", sub.YouTubeChannelId, sub.YouTubeUsername);
-            else
-                Add("youtube", sub.YouTubeUsername);
-            Add("instagram", sub.InstagramUsername);
-            Add("facebook", sub.FacebookUsername);
-            Add("tiktok", sub.TikTokUsername);
+            catch (InvalidCredentialsException ex)
+            {
+                // Auth token expired — bir sonraki login'e kadar denemek log spam'i
+                // ve exception storm yaratıyor. Hosted service'e flag ile bildir,
+                // backoff aralığını uzatsın.
+                LastSyncWasAuthFailure = true;
+                _log.LogWarning(ex, "Intake form sync auth failed: {Code} (backing off)", ex.Code);
+                break;
+            }
+            catch (LicenseApiException ex)
+            {
+                // Tur biter; işlenen sayfaların imleci kaydedildi, sonraki tur kaldığı yerden.
+                LastSyncWasAuthFailure = false;
+                if (IsRateLimited(ex))
+                    _log.LogInformation("Intake form sync: hız sınırı (429) — {Count} form işlendi, sonraki turda sürer",
+                        processed);
+                else
+                    _log.LogWarning(ex, "Intake form sync failed: {Code}", ex.Code);
+                break;
+            }
 
-            if (identities.Count > 0)
+            if (submissions.Count == 0)
             {
-                _customers.UpsertPersonFromIntake(
-                    identities,
-                    sub.FullName, sub.Address, sub.Phone,
-                    sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
-                    nowUnix,
-                    formId: FormIdOf(sub, identities),
-                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
-                    city: sub.City, district: sub.District, mode: mode);
+                // U14: tam oynatma boş sayfaya ulaştı — bundan sonraki formlar damgalı (kural 3).
+                if (replay.Running)
+                {
+                    _cursors.Upsert(ReplayMarkerName, licenseKey, seq: ReplayDone, updatedAt: replay.RunningSince);
+                    _log.LogInformation("Taze bilgisayar form oynatması tamamlandı — yeni formlar damgalı uygulanır (U14)");
+                }
+                break;
             }
-            else
+
+            var filled = 0;
+            foreach (var sub in submissions)
             {
-                // Eski sunucudan gelen (platform alanları olmayan) gönderim —
-                // legacy tek-satır davranışına düş.
-                _customers.UpsertFromIntakeForm(
-                    sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix,
-                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(), mode: mode);
+                var mode = replay.ModeOf(sub.SubmittedAt);
+                ApplySubmission(sub, mode, nowUnix);
+                if (mode == IntakeApplyMode.Stamped) stamped++;
+                else filled++;
             }
+
+            // İmleç (SubmittedAt, Id) çifti. Yalnız en büyük SubmittedAt alınsaydı,
+            // aynı damgayı paylaşan kayıtlar sayfa sınırında kesildiğinde kalanları
+            // bir daha hiç istenmezdi — ve o satır bir müşteri KAYDI olduğu için
+            // eksik kendiliğinden kapanmazdı.
+            // R3-01: sunucunun teslim sırası olduğu gibi kullanılır — yeniden
+            // SIRALAMA YOK. Sunucu SQL uniqueidentifier sırasıyla sayfalıyor; .NET
+            // Guid sırası farklı, istemci "son"u kendisi seçerse imleç sunucu sayfa
+            // sınırının gerisinde kalır ve aynı satırlar tekrar iner.
+            var last = submissions[^1];
+            since = last.SubmittedAt;
+            sinceId = last.Id;
+            // R6-04 emsali: imleç, işlediği Customer satırlarıyla aynı SQLite
+            // dosyasına yazılır — yedek/geri yükleme ikisini birlikte taşır.
+            _cursors.Upsert(CursorName, licenseKey, updatedAt: since, lastId: sinceId);
+            processed += submissions.Count;
+
+            _log.LogInformation(
+                "Intake form sync: {Count} submission(s) processed, {Filled} fill-only (cursor → {Cursor}/{CursorId})",
+                submissions.Count, filled, last.SubmittedAt, last.Id);
         }
 
-        var last = submissions[^1];
-        // R6-04 emsali: imleç, işlediği Customer satırlarıyla aynı SQLite
-        // dosyasına yazılır — yedek/geri yükleme ikisini birlikte taşır.
-        _cursors.Upsert(CursorName, licenseKey,
-            updatedAt: last.SubmittedAt, lastId: last.Id);
+        // "Bu oturumda yeni" rozeti: oynatmanın eski formları (doldurma) yeni değildir.
+        if (stamped > 0) SubmissionsSynced?.Invoke(this, stamped);
+        return processed;
+    }
 
-        _log.LogInformation("Intake form sync: {Count} submission(s) processed (cursor → {Cursor}/{CursorId})",
-            submissions.Count, last.SubmittedAt, last.Id);
+    /// <summary>Tek formu kipine göre uygular (bkz. <see cref="ReplayState"/>).</summary>
+    private void ApplySubmission(IntakeFormSubmissionDto sub, IntakeApplyMode mode, long nowUnix)
+    {
+        // Bildirilen platform kimliklerini topla (çoklu-platform).
+        var identities = new List<(string Platform, string Username, string? PreferredDisplayName)>();
+        void Add(string platform, string? username, string? display = null)
+        {
+            if (!string.IsNullOrWhiteSpace(username))
+                identities.Add((platform, username!, display));
+        }
+        // YouTube: doğrulama channelId çektiyse Username=channelId → chat kaydıyla
+        // (youtube, channelId) BİREBİR eşleşir. Ama UI'da channelId ASLA görünmesin
+        // diye @handle'ı PreferredDisplayName olarak taşırız (DisplayName=@handle).
+        // channelId yoksa handle'a düş (repository DisplayName ile köprüler).
+        if (!string.IsNullOrWhiteSpace(sub.YouTubeChannelId))
+            Add("youtube", sub.YouTubeChannelId, sub.YouTubeUsername);
+        else
+            Add("youtube", sub.YouTubeUsername);
+        Add("instagram", sub.InstagramUsername);
+        Add("facebook", sub.FacebookUsername);
+        Add("tiktok", sub.TikTokUsername);
 
-        SubmissionsSynced?.Invoke(this, submissions.Count);
-        return submissions.Count;
+        if (identities.Count > 0)
+        {
+            _customers.UpsertPersonFromIntake(
+                identities,
+                sub.FullName, sub.Address, sub.Phone,
+                sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
+                nowUnix,
+                formId: FormIdOf(sub, identities),
+                submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
+                city: sub.City, district: sub.District, mode: mode);
+        }
+        else
+        {
+            // Eski sunucudan gelen (platform alanları olmayan) gönderim —
+            // legacy tek-satır davranışına düş.
+            _customers.UpsertFromIntakeForm(
+                sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix,
+                submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(), mode: mode);
+        }
     }
 
     /// <summary>

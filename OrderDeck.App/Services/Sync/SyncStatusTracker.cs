@@ -21,21 +21,51 @@ public sealed record SyncBlock(string ItemId, SyncBlockReason Reason, DateTimeOf
 /// <para><see cref="BlockedOn"/>: akış aynı öğede uzun süredir (eşik turu) takılıysa o öğe —
 /// durum satırı (D2) "çevrimdışı" yerine "akış X için bekliyor" gösterebilsin. Öğe uygulanınca
 /// null.</para>
+///
+/// <para>Yetişme LİSANSA bağlıdır (C10 incelemesi): form oynatmasının işareti lisans anahtarına
+/// bağlı, yetişme ise süreç içi. Lisans değişince akış servisi durumu sıfırlar
+/// (<see cref="ResetForLicenseChange"/>); değişimi henüz görmemişken (≤ bir akış turu) gelen form
+/// turu da <see cref="IsInitialCatchUpDoneFor"/> ile önceki lisansın yetişmesini kendi yetişmesi
+/// sanmaz.</para>
 /// </summary>
 public sealed class SyncStatusTracker
 {
     private readonly object _gate = new();
     private DateTimeOffset? _lastPullOk;
+    private string? _caughtUpLicense;
     private SyncBlock? _blockedOn;
 
     public DateTimeOffset? LastPullOkAt { get { lock (_gate) return _lastPullOk; } }
     public bool IsInitialCatchUpDone => LastPullOkAt is not null;
 
+    /// <summary>Bu süreçte <paramref name="licenseKey"/>'in akışı boş sayfaya kadar yetişti mi.</summary>
+    public bool IsInitialCatchUpDoneFor(string licenseKey)
+    {
+        lock (_gate)
+            return _lastPullOk is not null && string.Equals(_caughtUpLicense, licenseKey, StringComparison.Ordinal);
+    }
+
     public SyncBlock? BlockedOn { get { lock (_gate) return _blockedOn; } }
 
-    public void MarkPullSucceeded(DateTimeOffset at)
+    public void MarkPullSucceeded(DateTimeOffset at, string licenseKey)
     {
-        lock (_gate) _lastPullOk = at;
+        lock (_gate)
+        {
+            _lastPullOk = at;
+            _caughtUpLicense = licenseKey;
+        }
+    }
+
+    /// <summary>Lisans değişti: önceki lisansın yetişmesi ve takılma durumu yeni lisansı anlatmaz —
+    /// yeni lisansın form oynatması KENDİ akışını bekler.</summary>
+    public void ResetForLicenseChange()
+    {
+        lock (_gate)
+        {
+            _lastPullOk = null;
+            _caughtUpLicense = null;
+            _blockedOn = null;
+        }
     }
 
     public void SetBlockedOn(SyncBlock? block)

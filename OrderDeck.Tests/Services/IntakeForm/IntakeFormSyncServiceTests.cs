@@ -449,25 +449,83 @@ public sealed class IntakeFormSyncServiceTests
             ".NET sırasına göre seçilseydi sqlSmall giderdi ve aynı sayfa tekrar inerdi");
     }
 
-    /// <summary>R9-D03 (b): 500 sayfa tavanına çarpan (veya iptal edilen)
-    /// backfill işi YARIMDIR — "bitti" işareti yazılmaz, sonraki açılış
-    /// yeniden dener. Eski kod tavana çarpınca bile bool'u true yazıyordu
-    /// (denetim: 1000 kayıttan 599'u işlenmiş, kalan 401 sonsuza dek eksik).</summary>
+    /// <summary>R9-D03 (b): tur sınırına çarpan (veya iptal edilen) backfill işi
+    /// YARIMDIR — "bitti" işareti yazılmaz, sonraki tur kaldığı yerden sürer. Eski kod
+    /// tavana çarpınca bile bool'u true yazıyordu (denetim: 1000 kayıttan 599'u
+    /// işlenmiş, kalan 401 sonsuza dek eksik). C10 incelemesi: tur başına en çok beş
+    /// sayfa — arka plan işi backfill'i her turda dener; büyük lisansta 500 sayfa
+    /// IP başına dakikada 100 isteklik sınırı her turda tüketirdi (429).</summary>
     [Fact]
-    public async Task BackfillFullNamesOnceAsync_tavana_carpinca_bitti_isareti_yazilmaz()
+    public async Task BackfillFullNamesOnceAsync_tur_sinirina_carpinca_bitti_isareti_yazilmaz()
     {
-        // Her istekte AYNI tam sayfa dönen sunucu — imleç ilerleyemiyor,
-        // döngü ancak tavanla durur.
+        // Her istekte AYNI tam sayfa dönen sunucu — iş ancak tur sınırıyla durur.
         var items = new List<string>();
         for (var i = 0; i < 100; i++)
             items.Add($$"""{"id":"11111111-1111-1111-1111-{{i:D12}}","username":"u{{i}}","fullName":"N","address":"a","submittedAt":"2026-04-30T12:00:00Z"}""");
         var page = "[" + string.Join(",", items) + "]";
-        var (svc, _, cursors, _) = Build(_ => FakeHttpMessageHandler.Json(200, page));
+        var (svc, _, cursors, handler) = Build(_ => FakeHttpMessageHandler.Json(200, page));
 
         await svc.BackfillFullNamesOnceAsync();
 
-        cursors.Get(BackfillMarkerName, TestLicenseKey).Should().BeNull(
-            "tavan çıkışı = iş yarım; işaret yazılırsa kalan satırlar sonsuza dek eksik kalır");
+        handler.Requests.Should().HaveCount(5, "tur başına sayfa sınırı");
+        (cursors.Get(BackfillMarkerName, TestLicenseKey)?.Seq ?? 0).Should().BeLessThan(2,
+            "sınır çıkışı = iş yarım; işaret yazılırsa kalan satırlar sonsuza dek eksik kalır");
+    }
+
+    /// <summary>Tam sayfa (100 kayıt) — her çağrıda yeni Id'ler; sayfanın son Id'si kaydedilir.</summary>
+    private static Func<HttpRequestMessage, HttpResponseMessage> FullPages(List<Guid> lastIds)
+        => _ =>
+        {
+            var ids = Enumerable.Range(0, 100).Select(_ => Guid.NewGuid()).ToList();
+            lastIds.Add(ids[^1]);
+            return FakeHttpMessageHandler.Json(200, "[" + string.Join(",", ids.Select(id =>
+                $$"""{"id":"{{id}}","username":"u","fullName":"N","address":"a","submittedAt":"2026-04-30T12:00:00Z"}""")) + "]");
+        };
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_kaldigi_yerden_surer()
+    {
+        // Konum her sayfadan sonra işaret satırına yazılır (Seq < 2 iken): sonraki tur baştan değil,
+        // kaldığı yerden çeker.
+        var lastIds = new List<Guid>();
+        var (svc, _, cursors, handler) = Build(FullPages(lastIds));
+
+        await svc.BackfillFullNamesOnceAsync();
+        var marker = cursors.Get(BackfillMarkerName, TestLicenseKey)!;
+        marker.LastId.Should().Be(lastIds[^1]);
+        marker.UpdatedAt.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
+
+        await svc.BackfillFullNamesOnceAsync();
+
+        handler.Requests.Should().HaveCount(10);
+        handler.Requests[5].RequestUri!.Query.Should().Contain($"sinceId={lastIds[4]}",
+            "ikinci tur ilk turun son satırından devam eder");
+    }
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_429_turu_durdurur_konum_kaybolmaz()
+    {
+        var lastIds = new List<Guid>();
+        var pages = FullPages(lastIds);
+        var calls = 0;
+        var (svc, _, cursors, handler) = Build(req => ++calls switch
+        {
+            1 => pages(req),
+            2 => FakeHttpMessageHandler.Empty(429),
+            _ => FakeHttpMessageHandler.Json(200, "[]"),
+        });
+
+        await svc.BackfillFullNamesOnceAsync();
+
+        handler.Requests.Should().HaveCount(2, "429 turu durdurur — kalan sayfalar denenmez");
+        var marker = cursors.Get(BackfillMarkerName, TestLicenseKey)!;
+        (marker.Seq ?? 0).Should().BeLessThan(2);
+        marker.LastId.Should().Be(lastIds[0], "429'dan önceki sayfanın konumu korunur");
+
+        await svc.BackfillFullNamesOnceAsync();
+
+        handler.Requests[2].RequestUri!.Query.Should().Contain($"sinceId={lastIds[0]}");
+        cursors.Get(BackfillMarkerName, TestLicenseKey)!.Seq.Should().Be(2);
     }
 
     // ── UI freeze fix #1 (2026-05-13): auth failure flag ──────────────────

@@ -179,7 +179,7 @@ public sealed class CustomerChangesPullService
         _environmentErrorLogged = false;                      // N-2: ortam hatası serisi bitti
         if (outcome == CustomerPullOutcome.CaughtUp)
         {
-            _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow);
+            _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, licenseKey);
             LogLegacyPaymentJobs();
         }
 
@@ -406,7 +406,8 @@ public sealed class CustomerChangesPullService
     }
 
     /// <summary>M-3: akış hatası kayıtları ve takılma durumu lisansa bağlı değil — önceki turdan
-    /// farklı bir lisans anahtarı görülünce silinir (imleçler zaten anahtara bağlı).</summary>
+    /// farklı bir lisans anahtarı görülünce silinir (imleçler zaten anahtara bağlı). Yetişme durumu
+    /// da sıfırlanır (C10): yeni lisansın form oynatması kendi akışını bekler.</summary>
     private void OnLicenseSeen(string licenseKey)
     {
         if (_lastLicenseKey is null || string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal))
@@ -414,6 +415,8 @@ public sealed class CustomerChangesPullService
             _lastLicenseKey = licenseKey;
             return;
         }
+        // Bellekte, düşemez — aşağıdaki silme başarısız olup sonraki turda yinelense de zararsız.
+        _tracker.ResetForLicenseChange();
         try
         {
             var cleared = _sync.ClearFeedFailures();

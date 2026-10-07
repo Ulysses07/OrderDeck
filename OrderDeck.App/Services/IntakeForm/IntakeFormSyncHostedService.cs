@@ -75,22 +75,7 @@ public sealed class IntakeFormSyncHostedService : BackgroundService
                 break;
             }
 
-            // U14: taze bilgisayarda backfill ilk tam müşteri akışını bekler; işareti yazılana kadar
-            // her tur yeniden dener (işaret varken tek imleç okuması — maliyetsiz). Ayrı korunur:
-            // backfill'in hatası form senkronunu durdurmasın.
-            try
-            {
-                await _syncService.BackfillFullNamesOnceAsync(stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex, "FullName backfill failed; will retry next interval");
-            }
-
+            // Önce yeni formlar (asıl iş): hız sınırı bütçesini backfill tüketmesin.
             try
             {
                 await _syncService.SyncOnceAsync(stoppingToken);
@@ -102,6 +87,22 @@ public sealed class IntakeFormSyncHostedService : BackgroundService
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Intake form sync tick failed; will retry next interval");
+            }
+
+            // U14: taze bilgisayarda backfill ilk tam müşteri akışını bekler; işareti yazılana kadar
+            // her tur kaldığı yerden sınırlı sayfa çeker (işaret varken tek imleç okuması —
+            // maliyetsiz). Ayrı korunur: backfill'in hatası form senkronunu durdurmasın.
+            try
+            {
+                await _syncService.BackfillFullNamesOnceAsync(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "FullName backfill failed; will retry next interval");
             }
         }
     }
