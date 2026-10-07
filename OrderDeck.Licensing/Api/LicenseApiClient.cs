@@ -242,12 +242,20 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     // ─── WPF customers bulk sync (Faz 0c-1) ───────────────────────────────
 
     /// <summary>Batch upsert of WPF customers (all platforms). Returns server-side
-    /// synced count and retroactive shopper-code matches.</summary>
-    public Task<WpfCustomerSyncResponse> SyncWpfCustomersAsync(
+    /// synced count, retroactive shopper-code matches and copy→canonical redirects.
+    /// <para>Bozuk gövde (200 + <c>null</c>) sessizce "yönlendirme yok" sayılmaz ve fırlatılır:
+    /// <see cref="WpfCustomerSyncResponse.Redirects"/> yerel yeniden anahtarlamayı (C4
+    /// <c>RekeyToLocal</c>) tetikler — sessizce yutulan bir null gövde kopya satırı yerelde
+    /// sonsuza dek bırakırdı.</para></summary>
+    public async Task<WpfCustomerSyncResponse> SyncWpfCustomersAsync(
         Guid licenseId, IReadOnlyList<WpfCustomerSyncItem> customers, CancellationToken ct = default)
-        => PostJsonExpectingJsonAsync<WpfCustomerSyncRequest, WpfCustomerSyncResponse>(
+    {
+        var resp = await PostJsonExpectingJsonAsync<WpfCustomerSyncRequest, WpfCustomerSyncResponse>(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
             new WpfCustomerSyncRequest(customers), ct);
+        return resp ?? throw new LicenseApiUnknownException(200,
+            "Müşteri senkron yanıtı bozuk geldi (gövde null). Bu 'yönlendirme yok' demek değildir.");
+    }
 
     // ─── WPF customers pull (Faz 0c-3) ────────────────────────────────────
 
@@ -286,9 +294,15 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
                + $"&take={take.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
         var page = await GetExpectingJsonAsync<WpfCustomerChangesPage>(
             $"/api/v1/licenses/{licenseId}/wpf-customers/changes{qs}", ct);
-        if (page?.Items is null)
+        // Boş öğe (JSON dizisinde literal null) ya da kullanılamaz imleç — ikisi de
+        // "bozuk gövde" sınıfında. Kullanılamaz imleç ÖZELLİKLE tehlikeli: sunucu
+        // NextAfterSeq'i normalde son öğenin ChangeSeq'i yapar (Changes action,
+        // "var next = items.Count == 0 ? afterSeq : items[^1].ChangeSeq"); ondan
+        // KÜÇÜK bir değer çağıranı aynı sayfayı sonsuza dek yeniden istemeye düşürür.
+        if (page?.Items is null || page.Items.Any(i => i is null)
+            || (page.Items.Count > 0 && page.NextAfterSeq < page.Items[^1].ChangeSeq))
             throw new LicenseApiUnknownException(200,
-                "Müşteri değişiklik sayfası bozuk geldi (gövde ya da items null). Bu 'değişiklik yok' demek değildir.");
+                "Müşteri değişiklik sayfası bozuk geldi (gövde, items, bir öğe ya da imleç null/geçersiz). Bu 'değişiklik yok' demek değildir.");
         return page;
     }
 

@@ -77,7 +77,7 @@ public sealed record WpfCustomerChangeItem(
     long ChangeSeq,
     bool CreatedByShopper = false);
 
-/// <param name="NextAfterSeq">Sonraki istek için imleç (boş sayfada istekteki değer).</param>
+/// <param name="NextAfterSeq">Sonraki istek için imleç (boş sayfada istekteki değer; CursorReset'te 0).</param>
 /// <param name="CursorReset">Sunucu imleci geçersiz buldu (eksi ya da ufkun üstü —
 /// veritabanı yedekten dönmüş ya da kopyalanmış olabilir) ve sayfayı BAŞTAN verdi.</param>
 public sealed record WpfCustomerChangesPage(

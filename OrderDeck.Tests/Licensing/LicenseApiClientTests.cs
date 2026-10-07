@@ -222,7 +222,7 @@ public sealed class LicenseApiClientTests
 
         await client.SyncWpfCustomersAsync(TestLicenseId, new[]
         {
-            new WpfCustomerSyncItem(Guid.NewGuid(), "tiktok", "ayse", null, null, null, DateTimeOffset.UtcNow),
+            new WpfCustomerSyncItem(Guid.NewGuid(), "tiktok", "ornek.musteri", null, null, null, DateTimeOffset.UtcNow),
         });
 
         using var doc = JsonDocument.Parse(body!);
@@ -257,12 +257,12 @@ public sealed class LicenseApiClientTests
             query = req.RequestUri!.PathAndQuery;
             return FakeHttpMessageHandler.Json(200, $$"""
                 {"items":[
-                  {"id":"{{id}}","platform":"tiktok","username":"ayse","mergedIntoId":null,"purgedAt":null,
-                   "fullName":"Ayşe","fullNameChangedAt":"2026-10-05T10:00:00+00:00",
-                   "city":"İzmir","addressChangedAt":"2026-10-05T11:00:00.123+00:00",
+                  {"id":"{{id}}","platform":"tiktok","username":"ornek.musteri","mergedIntoId":null,"purgedAt":null,
+                   "fullName":"Örnek Müşteri","fullNameChangedAt":"2026-10-05T10:00:00+00:00",
+                   "city":"Örnekşehir","addressChangedAt":"2026-10-05T11:00:00.123+00:00",
                    "recipientPaysActive":false,"whatsAppConsent":true,"smsConsent":false,"isBlacklisted":false,
                    "tckn":null,"changeSeq":41,"createdByShopper":true},
-                  {"id":"{{alias}}","platform":"tiktok","username":"Ayse","mergedIntoId":"{{id}}","purgedAt":null,
+                  {"id":"{{alias}}","platform":"tiktok","username":"Ornek.Musteri","mergedIntoId":"{{id}}","purgedAt":null,
                    "recipientPaysActive":false,"whatsAppConsent":false,"smsConsent":false,"isBlacklisted":false,
                    "changeSeq":42,"createdByShopper":false}],
                  "nextAfterSeq":42,"cursorReset":true}
@@ -295,6 +295,164 @@ public sealed class LicenseApiClientTests
         var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """{"items":[],"nextAfterSeq":0}"""));
         var act = () => client.GetWpfCustomerChangesAsync(TestLicenseId, 0, take: 501);
         await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task GetWpfCustomerChangesAsync_listedeki_null_ogeyi_bozuk_sayar_firlatir()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """{"items":[null],"nextAfterSeq":5}"""));
+        var act = () => client.GetWpfCustomerChangesAsync(TestLicenseId, 0);
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
+    }
+
+    [Fact]
+    public async Task GetWpfCustomerChangesAsync_imlec_son_ogeden_eskiyse_kullanilamaz_sayar_firlatir()
+    {
+        // Sunucu NextAfterSeq'i normalde son öğenin ChangeSeq'i yapar
+        // (LicensesWpfCustomersPullController.Changes). Ondan küçük bir imleç bu
+        // sayfayı sonsuza dek yeniden istetirdi — bozuk gövde sayılıp fırlatılmalı.
+        var id = Guid.NewGuid();
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, $$"""
+            {"items":[{"id":"{{id}}","platform":"tiktok","username":"ornek.musteri","mergedIntoId":null,"purgedAt":null,
+             "recipientPaysActive":false,"whatsAppConsent":false,"smsConsent":false,"isBlacklisted":false,
+             "changeSeq":50,"createdByShopper":false}],"nextAfterSeq":49}
+            """));
+        var act = () => client.GetWpfCustomerChangesAsync(TestLicenseId, 0);
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
+    }
+
+    /// <summary>Sunucudaki LicensesWpfCustomersPullController.WpfCustomerChangeItem'ın
+    /// alanları (PR-1/PR-2, `origin/master`). Biri eklenir/çıkarılırsa/yeniden adlandırılırsa
+    /// iki taraf birlikte değişmeli.</summary>
+    private static readonly string[] ServerChangeItemFields =
+    {
+        "id", "platform", "username", "mergedIntoId", "purgedAt",
+        "fullName", "fullNameChangedAt",
+        "displayName", "displayNameChangedAt",
+        "groupId", "groupIdChangedAt",
+        "address", "city", "district", "addressChangedAt",
+        "recipientPaysActive", "recipientPaysChangedAt",
+        "phone", "phoneChangedAt",
+        "email", "emailChangedAt",
+        "tckn", "tcknChangedAt",
+        "whatsAppConsent", "whatsAppConsentChangedAt",
+        "smsConsent", "smsConsentChangedAt",
+        "isBlacklisted", "blacklistReason", "blacklistedAt", "blacklistChangedAt",
+        "notes", "notesChangedAt",
+        "changeSeq", "createdByShopper",
+    };
+
+    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+    private static string NewTckn() => Random.Shared.NextInt64(10_000_000_000, 99_999_999_999).ToString();
+
+    [Fact]
+    public async Task GetWpfCustomerChangesAsync_degisiklik_satirinin_her_alani_sunucu_WpfCustomerChangeItem_ile_birebir()
+    {
+        // Her alan BİLEREK dolu ve varsayılan-olmayan: adı değişmiş, kaldırılmış ya
+        // da tipi değişmiş bir alan burada sessizce null/false/0'a düşer ve testi
+        // düşürür — isim kümesi karşılaştırması tek başına bunu yakalamaz.
+        var id = Guid.NewGuid();
+        var mergedIntoId = Guid.NewGuid();
+        var groupId = Guid.NewGuid().ToString("N");
+        var phone = NewPhone();
+        var tckn = NewTckn();
+        var json = $$"""
+            {"items":[
+              {"id":"{{id}}","platform":"tiktok","username":"ornek.musteri","mergedIntoId":"{{mergedIntoId}}","purgedAt":"2026-10-05T09:00:00.123+00:00",
+               "fullName":"Örnek Müşteri","fullNameChangedAt":"2026-10-05T10:00:00.123+00:00",
+               "displayName":"ornekmusteri","displayNameChangedAt":"2026-10-05T10:05:00.123+00:00",
+               "groupId":"{{groupId}}","groupIdChangedAt":"2026-10-05T10:10:00.123+00:00",
+               "address":"Örnek Mahallesi 1. Sokak No:1","city":"Örnekşehir","district":"Örnek","addressChangedAt":"2026-10-05T11:00:00.123+00:00",
+               "recipientPaysActive":true,"recipientPaysChangedAt":"2026-10-05T11:05:00.123+00:00",
+               "phone":"{{phone}}","phoneChangedAt":"2026-10-05T11:10:00.123+00:00",
+               "email":"ornek.musteri@ornek.test","emailChangedAt":"2026-10-05T11:15:00.123+00:00",
+               "tckn":"{{tckn}}","tcknChangedAt":"2026-10-05T11:20:00.123+00:00",
+               "whatsAppConsent":true,"whatsAppConsentChangedAt":"2026-10-05T11:25:00.123+00:00",
+               "smsConsent":true,"smsConsentChangedAt":"2026-10-05T11:30:00.123+00:00",
+               "isBlacklisted":true,"blacklistReason":"örnek neden","blacklistedAt":"2026-10-05T11:35:00.123+00:00","blacklistChangedAt":"2026-10-05T11:40:00.123+00:00",
+               "notes":"örnek not","notesChangedAt":"2026-10-05T11:45:00.123+00:00",
+               "changeSeq":99,"createdByShopper":true}],
+             "nextAfterSeq":99,"cursorReset":false}
+            """;
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, json));
+
+        var page = await client.GetWpfCustomerChangesAsync(TestLicenseId, afterSeq: 0);
+        var item = page.Items.Should().ContainSingle().Subject;
+
+        var reserialized = JsonSerializer.SerializeToElement(item, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        reserialized.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(ServerChangeItemFields);
+        foreach (var prop in reserialized.EnumerateObject())
+        {
+            var isNullFalseOrZero = prop.Value.ValueKind switch
+            {
+                JsonValueKind.Null => true,
+                JsonValueKind.False => true,
+                JsonValueKind.Number => prop.Value.GetDouble() == 0,
+                _ => false,
+            };
+            isNullFalseOrZero.Should().BeFalse($"alan '{prop.Name}' null/false/0 olmamalı — adı/tipi değişmiş olabilir");
+        }
+    }
+
+    [Fact]
+    public async Task SyncWpfCustomersAsync_govde_tum_alanlar_dolu_ogede_tipleri_dogru_yazar()
+    {
+        string? body = null;
+        var client = BuildClient(req =>
+        {
+            body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return FakeHttpMessageHandler.Json(200, """{"synced":1,"retroactiveMatches":0,"redirects":[]}""");
+        });
+
+        var now = DateTimeOffset.UtcNow;
+        var item = new WpfCustomerSyncItem(
+            Id: Guid.NewGuid(), Platform: "tiktok", Username: "ornek.musteri",
+            FullName: "Örnek Müşteri", Phone: NewPhone(), Address: "Örnek Mahallesi 1. Sokak No:1",
+            UpdatedAt: now, Format: 2, FullNameChangedAt: now,
+            DisplayName: "ornekmusteri", DisplayNameChangedAt: now,
+            GroupId: Guid.NewGuid().ToString("N"), GroupIdChangedAt: now,
+            City: "Örnekşehir", District: "Örnek", AddressChangedAt: now,
+            RecipientPaysActive: true, RecipientPaysChangedAt: now,
+            PhoneChangedAt: now, Email: "ornek.musteri@ornek.test", EmailChangedAt: now,
+            Tckn: NewTckn(), TcknChangedAt: now,
+            WhatsAppConsent: true, WhatsAppConsentChangedAt: now,
+            SmsConsent: true, SmsConsentChangedAt: now,
+            IsBlacklisted: true, BlacklistReason: "örnek neden", BlacklistedAt: now, BlacklistChangedAt: now,
+            Notes: "örnek not", NotesChangedAt: now);
+
+        await client.SyncWpfCustomersAsync(TestLicenseId, new[] { item });
+
+        using var doc = JsonDocument.Parse(body!);
+        var sent = doc.RootElement.GetProperty("customers")[0];
+        // Mevcut biçim-2 testi isim kümesini zaten doğruluyor; burada EK olarak
+        // tel türleri de doğrulanır — Guid/DateTimeOffset dize, format sayı, bayrak true.
+        sent.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(ServerSyncItemFields);
+
+        foreach (var name in new[]
+        {
+            "id", "updatedAt", "fullNameChangedAt", "displayNameChangedAt",
+            "groupIdChangedAt", "addressChangedAt", "recipientPaysChangedAt", "phoneChangedAt",
+            "emailChangedAt", "tcknChangedAt", "whatsAppConsentChangedAt", "smsConsentChangedAt",
+            "blacklistedAt", "blacklistChangedAt", "notesChangedAt",
+        })
+            sent.GetProperty(name).ValueKind.Should().Be(JsonValueKind.String, $"{name} dize (Guid/DateTimeOffset) olmalı");
+
+        sent.GetProperty("format").ValueKind.Should().Be(JsonValueKind.Number);
+        sent.GetProperty("format").GetInt32().Should().Be(2);
+
+        foreach (var name in new[] { "recipientPaysActive", "whatsAppConsent", "smsConsent", "isBlacklisted" })
+            sent.GetProperty(name).ValueKind.Should().Be(JsonValueKind.True, $"{name} true olmalı");
+    }
+
+    [Fact]
+    public async Task SyncWpfCustomersAsync_bozuk_govde_null_firlatir()
+    {
+        // Redirects artık yerel yeniden anahtarlamayı tetikliyor: null gövdeyi
+        // sessizce yutmak kopya satırı yerelde sonsuza dek bırakırdı.
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "null"));
+        var one = new[] { new WpfCustomerSyncItem(Guid.NewGuid(), "tiktok", "ornek.musteri", null, null, null, DateTimeOffset.UtcNow) };
+        var act = () => client.SyncWpfCustomersAsync(TestLicenseId, one);
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
     }
 
     // ─── Katalog çekme (Stok Faz 1b) ───────────────────────────────────────
