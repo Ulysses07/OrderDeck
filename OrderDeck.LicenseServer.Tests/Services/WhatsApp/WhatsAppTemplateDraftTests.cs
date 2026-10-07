@@ -1,4 +1,5 @@
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -104,7 +105,7 @@ public class WhatsAppTemplateDraftTests
             new("QUICK_REPLY", "Evet", null, null),
             new("QUICK_REPLY", "Hayır", null, null),
             new("URL", "Siteye git", "https://orderdeckapp.com", null),
-            new("PHONE_NUMBER", "Ara", null, "+905321234567"),
+            new("PHONE_NUMBER", "Ara", null, TestPhone.NewE164()),
         ])));
 
     [Fact]
@@ -144,8 +145,8 @@ public class WhatsAppTemplateDraftTests
     [Fact]
     public void Birden_fazla_telefon_butonu_reddedilir() =>
         Assert.NotNull(WhatsAppTemplateShape.Validate(Draft(buttons: [
-            new("PHONE_NUMBER", "Ara", null, "+905321234567"),
-            new("PHONE_NUMBER", "Ara 2", null, "+905321234568"),
+            new("PHONE_NUMBER", "Ara", null, TestPhone.NewE164()),
+            new("PHONE_NUMBER", "Ara 2", null, TestPhone.NewE164()),
         ])));
 
     // Meta hızlı yanıt butonlarının bitişik olmasını şart koşuyor. Sessizce

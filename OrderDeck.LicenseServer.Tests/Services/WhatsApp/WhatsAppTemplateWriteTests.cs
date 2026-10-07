@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -150,7 +151,7 @@ public class WhatsAppTemplateWriteTests
             new WhatsAppTemplateButton("QUICK_REPLY", "Evet", null, null),
             new WhatsAppTemplateButton("QUICK_REPLY", "Hayır", null, null),
             new WhatsAppTemplateButton("URL", "Siteye git", "https://orderdeckapp.com", null),
-            new WhatsAppTemplateButton("PHONE_NUMBER", "Ara", null, "+905321234567"),
+            new WhatsAppTemplateButton("PHONE_NUMBER", "Ara", null, TestPhone.NewE164()),
         ]),
     };
 

@@ -128,7 +128,7 @@ public class PanelWhatsAppLabelsControllerTests : IClassFixture<ApiFactory>
             db.WaConversations.Add(new WaConversation
             {
                 Id = conversationId, LicenseId = licenseId,
-                CustomerPhone = "905321234567", PhoneNumberId = "PNID_1",
+                CustomerPhone = TestPhone.NewE164()[1..], PhoneNumberId = "PNID_1",
                 Status = "open", CreatedAt = DateTimeOffset.UtcNow,
             });
             db.WaLabelRules.Add(new WaLabelRule

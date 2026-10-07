@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.PdfParsing;
 using Xunit;
 
@@ -13,6 +14,12 @@ namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 
 public sealed class WhatsAppInboundLabelTests
 {
+    // Numaralar her koşuda üretilir; Meta wa_id'yi '+' işaretsiz yazar. Echo
+    // testinde işletme ile müşteri ortak gövde + farklı son haneyle kurgu gereği ayrı.
+    private static readonly string Kok = TestPhone.NewE164()[1..^1];
+    private static readonly string MusteriWaId = Kok + "1";
+    private static readonly string IsletmeWaId = Kok + "2";
+
     /// <summary>Testin kontrol edebildiği sahte PDF ayrıştırıcısı.</summary>
     private sealed class StubParser : IPdfDekontParser
     {
@@ -22,7 +29,7 @@ public sealed class WhatsAppInboundLabelTests
         {
             Calls++;
             return new PdfDekontParser.ParseResult(
-                PayerName: "AYŞE YILMAZ",
+                PayerName: "ÖRNEK MÜŞTERİ",
                 Amount: 1250.50m,
                 PaidAt: new DateTime(2026, 8, 18, 14, 30, 0),
                 ReferansNo: "REF123456",
@@ -78,7 +85,7 @@ public sealed class WhatsAppInboundLabelTests
             LicenseId = licenseId,
             WabaId = "waba-1",
             PhoneNumberId = "PNID_1",
-            DisplayPhoneNumber = "+905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164(),
             AccessTokenProtected = accounts.ProtectToken("t"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,
@@ -114,8 +121,10 @@ public sealed class WhatsAppInboundLabelTests
     }
 
     /// <summary>Tek medya mesajı içeren webhook gövdesi.</summary>
-    private static string MediaPayload(string wamId, string type, string from = "905321234567")
-        => $$$"""
+    private static string MediaPayload(string wamId, string type, string? from = null)
+    {
+        from ??= MusteriWaId;
+        return $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
@@ -126,6 +135,7 @@ public sealed class WhatsAppInboundLabelTests
           }}]}]
         }
         """;
+    }
 
     [Theory]
     [InlineData("document")]
@@ -146,12 +156,12 @@ public sealed class WhatsAppInboundLabelTests
     {
         var (db, job, _, _, _) = Build();
 
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "contacts": [{ "profile": { "name": "Ayşe" }, "wa_id": "905321234567" }],
-            "messages": [{ "from": "905321234567", "id": "wamid.t", "timestamp": "1753440000",
+            "contacts": [{ "profile": { "name": "Ayşe" }, "wa_id": "{{{MusteriWaId}}}" }],
+            "messages": [{ "from": "{{{MusteriWaId}}}", "id": "wamid.t", "timestamp": "1753440000",
                            "type": "text", "text": { "body": "merhaba" } }]
           }}]}]
         }
@@ -165,15 +175,15 @@ public sealed class WhatsAppInboundLabelTests
     {
         var (db, job, _, _, _) = Build();
 
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "contacts": [{ "profile": { "name": "Ayşe" }, "wa_id": "905321234567" }],
+            "contacts": [{ "profile": { "name": "Ayşe" }, "wa_id": "{{{MusteriWaId}}}" }],
             "messages": [
-              { "from": "905321234567", "id": "wamid.a", "timestamp": "1753440000",
+              { "from": "{{{MusteriWaId}}}", "id": "wamid.a", "timestamp": "1753440000",
                 "type": "document", "document": { "id": "M1", "mime_type": "application/pdf" } },
-              { "from": "905321234567", "id": "wamid.b", "timestamp": "1753440001",
+              { "from": "{{{MusteriWaId}}}", "id": "wamid.b", "timestamp": "1753440001",
                 "type": "document", "document": { "id": "M2", "mime_type": "application/pdf" } }]
           }}]}]
         }
@@ -194,7 +204,7 @@ public sealed class WhatsAppInboundLabelTests
         // etiket ondan SONRAKİ ayrı kayıtta yazılır; FK yine tutmalı.
         db.WaConversations.Should().BeEmpty();
 
-        await job.ProcessAsync(MediaPayload("wamid.new", "document", from: "905339998877"));
+        await job.ProcessAsync(MediaPayload("wamid.new", "document", from: TestPhone.NewE164()[1..]));
 
         var convo = await db.WaConversations.SingleAsync();
         var link = await db.WaConversationLabels.SingleAsync();
@@ -207,11 +217,11 @@ public sealed class WhatsAppInboundLabelTests
         var (db, job, _, _, _) = Build();
 
         // Parser echo'yu field=="smb_message_echoes" ile tanır, "context" alanıyla değil.
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "smb_message_echoes", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
-            "message_echoes": [{ "from": "905550000000", "to": "905321234567",
+            "message_echoes": [{ "from": "{{{IsletmeWaId}}}", "to": "{{{MusteriWaId}}}",
                                  "id": "wamid.echo", "timestamp": "1753440000",
                                  "type": "document",
                                  "document": { "id": "M9", "mime_type": "application/pdf" } }]
@@ -256,7 +266,7 @@ public sealed class WhatsAppInboundLabelTests
         var row = await db.WaDekontExtractions.SingleAsync();
         row.WaMessageId.Should().Be(msg.Id);
         row.LicenseId.Should().Be(licenseId);
-        row.PayerName.Should().Be("AYŞE YILMAZ");
+        row.PayerName.Should().Be("ÖRNEK MÜŞTERİ");
         row.Amount.Should().Be(1250.50m);
         row.ParserConfidence.Should().Be("High");
     }
@@ -289,13 +299,13 @@ public sealed class WhatsAppInboundLabelTests
     {
         var (db, job, _, _, parser) = Build(FakeMedia.ReturningPdf([9, 9, 9]));
 
-        await job.ProcessAsync("""
+        await job.ProcessAsync($$$"""
         {
           "entry": [{ "changes": [{ "field": "history", "value": {
             "metadata": { "phone_number_id": "PNID_1" },
             "history": [{ "threads": [{
-              "id": "905321234567",
-              "messages": [{ "from": "905321234567", "id": "wamid.HDOC",
+              "id": "{{{MusteriWaId}}}",
+              "messages": [{ "from": "{{{MusteriWaId}}}", "id": "wamid.HDOC",
                              "timestamp": "1753440000", "type": "document",
                              "document": { "id": "M_OLD", "mime_type": "application/pdf" } }]
             }]}]

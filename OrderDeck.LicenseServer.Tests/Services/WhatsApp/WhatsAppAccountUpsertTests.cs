@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -25,8 +26,14 @@ public sealed class WhatsAppAccountUpsertTests
             db, DataProtectionProvider.Create("tests"), Options.Create(new WhatsAppOptions()));
     }
 
+    // Numara, erişim değeri ve iki adımlı kod her koşuda üretilir (CLAUDE.md:
+    // testte sabit kimlik bilgisi yazılmaz). Tüm çağrılar aynı girdiyi kullanır.
+    private static readonly string GorunenNumara = TestPhone.NewE164();
+    private static readonly string Erisim = $"erisim-{Guid.NewGuid():N}";
+    private static readonly string IkiAdimKodu = Random.Shared.Next(100_000, 1_000_000).ToString();
+
     private static WhatsAppAccountUpsert Input(string pnid) =>
-        new("WABA_1", pnid, "+90 555 111 22 33", "TOKEN", "Emar", "123456");
+        new("WABA_1", pnid, GorunenNumara, Erisim, "Emar", IkiAdimKodu);
 
     [Fact]
     public async Task Connecting_twice_updates_the_same_row_instead_of_adding_one()
@@ -67,9 +74,9 @@ public sealed class WhatsAppAccountUpsertTests
         await svc.UpsertAsync(licenseId, Input("PNID_2"), CancellationToken.None);
 
         var row = db.WhatsAppAccounts.Single(a => a.LicenseId == licenseId);
-        row.AccessTokenProtected.Should().NotContain("TOKEN");
-        row.TwoStepPinProtected.Should().NotBeNull().And.NotContain("123456");
-        svc.TryUnprotectToken(row.AccessTokenProtected).Should().Be("TOKEN");
+        row.AccessTokenProtected.Should().NotContain(Erisim);
+        row.TwoStepPinProtected.Should().NotBeNull().And.NotContain(IkiAdimKodu);
+        svc.TryUnprotectToken(row.AccessTokenProtected).Should().Be(Erisim);
     }
 
     [Fact]
@@ -82,7 +89,7 @@ public sealed class WhatsAppAccountUpsertTests
         await svc.UpsertAsync(licenseId, Input("PNID_3"), CancellationToken.None);
         var row = db.WhatsAppAccounts.Single(a => a.LicenseId == licenseId);
 
-        svc.TryUnprotectPin(row.TwoStepPinProtected!).Should().Be("123456");
+        svc.TryUnprotectPin(row.TwoStepPinProtected!).Should().Be(IkiAdimKodu);
 
         // Ayrı purpose = kriptografik alan ayrımı. Tek purpose'ta iki şifreli
         // metin birbirinin yerine geçirilebilirdi: satıra yazabilen biri token'ı

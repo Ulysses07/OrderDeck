@@ -32,7 +32,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 public sealed class WhatsAppInboundConcurrencyTests : IAsyncLifetime
 {
     private const string Pnid = "PNID_CONC_1";
-    private const string CustomerPhone = "905321234567";
+    // Her koşuda üretilir; Meta wa_id'yi '+' işaretsiz yazar.
+    private static readonly string CustomerPhone = TestPhone.NewE164()[1..];
     private const int ParallelWorkers = 6;
 
     private readonly SqlServerContainerFixture _sql;
@@ -182,7 +183,7 @@ public sealed class WhatsAppInboundConcurrencyTests : IAsyncLifetime
             LicenseId = license.Id,
             WabaId = "waba-1",
             PhoneNumberId = Pnid,
-            DisplayPhoneNumber = "905550000000",
+            DisplayPhoneNumber = TestPhone.NewE164()[1..],
             AccessTokenProtected = accounts.ProtectToken("token-1234"),
             Status = "active",
             ConnectedAt = DateTimeOffset.UtcNow,

@@ -124,9 +124,11 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var licenseId = await SeedLicenseAsync();
         var admin = await AdminClientAsync();
         var now = DateTimeOffset.UtcNow;
+        // Ortak gövde + farklı son hane: iki sohbet kurgu gereği ayırt edilir.
+        var kok = TestPhone.NewE164()[1..^1];
 
-        await SeedConversationAsync(licenseId, "905550000001", now.AddHours(-30), now.AddHours(-30));
-        await SeedConversationAsync(licenseId, "905550000002", now.AddMinutes(-10), now.AddMinutes(-5));
+        await SeedConversationAsync(licenseId, kok + "1", now.AddHours(-30), now.AddHours(-30));
+        await SeedConversationAsync(licenseId, kok + "2", now.AddMinutes(-10), now.AddMinutes(-5));
 
         var resp = await admin.GetAsync(Url(licenseId));
 
@@ -134,7 +136,7 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var rows = (await resp.Content.ReadFromJsonAsync<List<ConversationSummary>>())!;
         rows.Should().HaveCount(2);
 
-        rows[0].CustomerPhone.Should().Be("905550000002", "en son hareket eden başa gelir");
+        rows[0].CustomerPhone.Should().Be(kok + "2", "en son hareket eden başa gelir");
         rows[0].WindowOpen.Should().BeTrue();
         rows[0].WindowExpiresAt.Should().BeCloseTo(
             now.AddMinutes(-10).AddHours(24), TimeSpan.FromMinutes(1),
@@ -143,7 +145,7 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         rows[0].UnreadCount.Should().Be(2);
 
         // 30 saat önce yazmış → pencere kapalı, serbest metin gidemez.
-        rows[1].CustomerPhone.Should().Be("905550000001");
+        rows[1].CustomerPhone.Should().Be(kok + "1");
         rows[1].WindowOpen.Should().BeFalse();
     }
 
@@ -153,7 +155,7 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var licenseId = await SeedLicenseAsync();
         var admin = await AdminClientAsync();
 
-        await SeedConversationAsync(licenseId, "905550000003", null, DateTimeOffset.UtcNow);
+        await SeedConversationAsync(licenseId, TestPhone.NewE164()[1..], null, DateTimeOffset.UtcNow);
 
         var rows = (await (await admin.GetAsync(Url(licenseId)))
             .Content.ReadFromJsonAsync<List<ConversationSummary>>())!;
@@ -170,15 +172,16 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var other = await SeedLicenseAsync();
         var admin = await AdminClientAsync();
         var now = DateTimeOffset.UtcNow;
+        var kok = TestPhone.NewE164()[1..^1];
 
-        await SeedConversationAsync(mine, "905550000010", now, now);
-        await SeedConversationAsync(other, "905550000011", now, now);
+        await SeedConversationAsync(mine, kok + "1", now, now);
+        await SeedConversationAsync(other, kok + "2", now, now);
 
         var rows = (await (await admin.GetAsync(Url(mine)))
             .Content.ReadFromJsonAsync<List<ConversationSummary>>())!;
 
         rows.Should().ContainSingle();
-        rows[0].CustomerPhone.Should().Be("905550000010");
+        rows[0].CustomerPhone.Should().Be(kok + "1");
     }
 
     [Fact]
@@ -187,7 +190,7 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var licenseId = await SeedLicenseAsync();
         var admin = await AdminClientAsync();
         var now = DateTimeOffset.UtcNow;
-        var convo = await SeedConversationAsync(licenseId, "905550000020", now, now);
+        var convo = await SeedConversationAsync(licenseId, TestPhone.NewE164()[1..], now, now);
 
         // Kasıtlı olarak ters sırayla yazılıyor — sıralama Timestamp'e dayanmalı,
         // satırın yazılma sırasına değil (gecikmeli webhook senaryosu).
@@ -212,7 +215,7 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var admin = await AdminClientAsync();
         var now = DateTimeOffset.UtcNow;
 
-        var foreign = await SeedConversationAsync(other, "905550000030", now, now);
+        var foreign = await SeedConversationAsync(other, TestPhone.NewE164()[1..], now, now);
         await SeedMessageAsync(other, foreign, "in", "gizli", now);
 
         // Sohbet id'si doğru ama lisans başkasının → 404.
@@ -227,9 +230,10 @@ public class AdminWhatsAppConversationsTests : IClassFixture<ApiFactory>
         var licenseId = await SeedLicenseAsync();
         var admin = await AdminClientAsync();
         var now = DateTimeOffset.UtcNow;
+        var kok = TestPhone.NewE164()[1..^1];
 
-        await SeedConversationAsync(licenseId, "905550000040", now, now.AddMinutes(-1));
-        await SeedConversationAsync(licenseId, "905550000041", now, now.AddMinutes(-2));
+        await SeedConversationAsync(licenseId, kok + "1", now, now.AddMinutes(-1));
+        await SeedConversationAsync(licenseId, kok + "2", now, now.AddMinutes(-2));
 
         var limited = (await (await admin.GetAsync($"{Url(licenseId)}?limit=1"))
             .Content.ReadFromJsonAsync<List<ConversationSummary>>())!;

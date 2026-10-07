@@ -1,5 +1,6 @@
 using FluentAssertions;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -52,14 +53,19 @@ public sealed class WhatsAppServiceWindowTests
 
 public sealed class WaPhoneTests
 {
+    // Numara her koşuda üretilir; InlineData yalnız yazılış biçimini ve beklenen
+    // öneki taşır. {0} operatör kodu (3 hane), {1} 3 hane, {2} ve {3} ikişer hane.
     [Theory]
-    [InlineData("+90 532 123 45 67", "905321234567")]
-    [InlineData("905321234567", "905321234567")]
-    [InlineData("+90-532-123-45-67", "905321234567")]
-    [InlineData("(0532) 123 45 67", "05321234567")]
-    public void Canonical_strips_everything_but_digits(string input, string expected)
+    [InlineData("+90 {0} {1} {2} {3}", "90")]
+    [InlineData("90{0}{1}{2}{3}", "90")]
+    [InlineData("+90-{0}-{1}-{2}-{3}", "90")]
+    [InlineData("(0{0}) {1} {2} {3}", "0")]
+    public void Canonical_strips_everything_but_digits(string format, string expectedPrefix)
     {
-        WaPhone.Canonical(input).Should().Be(expected);
+        var n = TestPhone.NewNational();
+        var input = string.Format(format, n[..3], n[3..6], n[6..8], n[8..]);
+
+        WaPhone.Canonical(input).Should().Be(expectedPrefix + n);
     }
 
     [Theory]
