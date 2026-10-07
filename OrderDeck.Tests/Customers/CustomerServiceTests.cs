@@ -201,7 +201,8 @@ public class CustomerServiceTests
         // Kişi iki platformda kayıtlı (tek grup).
         customers.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("instagram", "sibel_ig", null), ("facebook", "sibel_fb", null) },
-            "Sibel", "İstanbul", null, null, null, false, false, 1000);
+            "Sibel", "İstanbul", null, null, null, false, false, 1000,
+            formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
         // Instagram kimliğinden kara listeye al → grup yayılımı.
         var ig = customers.FindByPlatformAndUsername("instagram", "sibel_ig")!;
@@ -226,7 +227,8 @@ public class CustomerServiceTests
         // Form: kişi Instagram + YouTube @handle bildirdi (grup).
         customers.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("instagram", "sibel_ig", null), ("youtube", "SibelGelibolu", null) },
-            "Sibel", "İstanbul", null, null, null, false, false, 1000);
+            "Sibel", "İstanbul", null, null, null, false, false, 1000,
+            formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
         // Instagram'dan kara listeye al → tüm grup.
         var ig = customers.FindByPlatformAndUsername("instagram", "sibel_ig")!;

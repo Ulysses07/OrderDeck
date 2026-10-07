@@ -245,8 +245,10 @@ public sealed class IntakeFormSyncService
                     identities,
                     sub.FullName, sub.Address, sub.Phone,
                     sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
-                    nowUnix, sub.City, sub.District,
-                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds());
+                    nowUnix,
+                    formId: sub.Id,
+                    submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(),
+                    city: sub.City, district: sub.District);
             }
             else
             {
