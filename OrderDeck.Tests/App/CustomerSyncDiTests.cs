@@ -62,6 +62,22 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Odeme_servisi_ayni_mesgul_musteri_kumesini_ve_musteri_deposunu_alir()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+        var payment = host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>();
+
+        PrivateField<CustomerBusySet>(payment, "_busy").Should().BeSameAs(
+            host.Services.GetRequiredService<CustomerBusySet>(),
+            "U13: TEK paylaşılan küme — ikinci örnek kirayı senkrona görünmez yapardı");
+        PrivateField<CustomerBusySet>(host.Services.GetRequiredService<CustomerSyncRepository>(), "_busy")
+            .Should().BeSameAs(PrivateField<CustomerBusySet>(payment, "_busy"),
+                "kirayı alan (ödeme) ile ona bakan (senkron) aynı kümede");
+        PrivateField<CustomerRepository>(payment, "_customers").Should().BeSameAs(
+            host.Services.GetRequiredService<CustomerRepository>(), "U12: ödeme girişi Id'yi çözer");
+    }
+
+    [Fact]
     public void Musteri_detay_penceresi_kargo_deposunu_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();

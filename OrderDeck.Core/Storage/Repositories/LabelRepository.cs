@@ -334,6 +334,23 @@ public sealed class LabelRepository
         return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName)).ToList();
     }
 
+    /// <summary>U12 (Bölüm C): verilen müşterilerin bu yayındaki satış toplamı —
+    /// <see cref="GetTopCustomersBySession"/> ile AYNI tanım (basılmış, iptal edilmemiş, yedek
+    /// olmayan etiketler). Ödeme akışı, liste/rapor anlık görüntüsünün Id başına tuttuğu tutarı
+    /// kiraladığı GÜNCEL Id için bununla yeniden okur: görüntü bir yerel taşımadan önce
+    /// alındıysa kopyanın satırı yalnız kendi yazımının payını taşır.</summary>
+    public decimal GetSessionPrintedTotal(string sessionId, IReadOnlyCollection<string> customerIds)
+    {
+        if (customerIds.Count == 0) return 0m;
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<decimal?>(
+            @"SELECT COALESCE(SUM(Price), 0)
+              FROM Label
+              WHERE SessionId=@sessionId AND CustomerId IN @customerIds
+                AND PrintedAt IS NOT NULL AND CancelledAt IS NULL AND IsTentativeBackup = 0",
+            new { sessionId, customerIds }) ?? 0m;
+    }
+
     /// <summary>Returns the labels a customer added in a specific session, ordered
     /// oldest-first so the auctioneer sees them in the order they happened during
     /// the live. Cancelled rows are returned too — UI flags them visually.</summary>

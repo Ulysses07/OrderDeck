@@ -60,7 +60,8 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate)
         {
             var j = _jobs[id];
-            if (j.ApplyKey is not null) return false;
+            // U8 (Bölüm C): kapalı işe anahtar yazılmaz — gerçek deponun koşuluyla aynı sözleşme.
+            if (j.ApplyKey is not null || j.ClosedAt is not null) return false;
             _jobs[id] = j with
             {
                 ApplyKey = applyKey,

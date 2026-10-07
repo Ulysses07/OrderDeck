@@ -313,7 +313,24 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         // müşterinin kümülatif bakiyesine aittir.
         async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
             await _paymentService.OpenWhatsAppAsync(
-                c, amount, streamDate,
+                c, CurrentAmount, streamDate,
                 streamSum > 0m && session is not null ? $"session:{session.Id}" : "cumulative");
+
+        // U12 (Bölüm C): yukarıdaki tutar liste anlık görüntüsünden ve Id başına. Liste açıkken
+        // senkron bir kopyayı (harf farklı yazım) asıl kayda taşıdıysa kopyanın kartı yalnız kendi
+        // yazımının payını bilir, ödeme işi ise asıl kaydın Id'sinde açılır — iki karta tıklamak
+        // aynı işi iki farklı toplamla revize ederdi. Ödeme akışı tutarı, kiraladığı GÜNCEL Id için
+        // burada yeniden okur: aynı tanımla (yayın-içi ya da kümülatif) ve kişinin güncel grubu
+        // üzerinden — liste yenilense kartın göstereceği küme. Yayın, kapsam kimliği gibi anlık
+        // görüntüden kalır (R4-08).
+        decimal CurrentAmount(string customerId)
+        {
+            var current = _customers.GetById(customerId);
+            if (current is null) return amount;
+            var members = _customers.CompleteGroups(new[] { current });
+            return streamSum > 0m && session is not null
+                ? _labels.GetSessionPrintedTotal(session.Id, members.Select(m => m.Id).ToList())
+                : members.Sum(m => m.TotalAmount);
+        }
     }
 }

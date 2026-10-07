@@ -229,6 +229,14 @@ public sealed partial class StreamReportViewModel : ViewModelBase
 
         async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
             await _paymentService.OpenWhatsAppAsync(
-                c, topCustomer.TotalAmount, _currentSessionDate, $"session:{_sessionId}");
+                c, CurrentAmount, _currentSessionDate, $"session:{_sessionId}");
+
+        // U12 (Bölüm C): satırın tutarı rapor yüklenirken Id başına toplandı. Rapor açıkken
+        // senkron bir kopyayı (harf farklı yazım) asıl kayda taşıdıysa kopyanın satırı yalnız
+        // kendi yazımının payını taşır, ödeme işi ise asıl kaydın Id'sinde açılır. Ödeme akışı
+        // tutarı kiraladığı GÜNCEL Id için, raporla aynı tanımla burada yeniden okur.
+        decimal CurrentAmount(string customerId) => _sessionId is null
+            ? topCustomer.TotalAmount
+            : _labels.GetSessionPrintedTotal(_sessionId, new[] { customerId });
     }
 }

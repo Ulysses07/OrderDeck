@@ -328,4 +328,101 @@ public class CustomerSearchViewModelTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    // ── C9 (U12): liste açıkken senkron kopyayı asıl kayda taşıdı ───────────
+    //
+    // Liste anlık görüntüsü tutarı Id başına tuttu (_streamAmounts[m.Id], card.TotalAmount):
+    // taşımadan sonra kopyanın kartı yalnız kendi yazımının payını bilir, ödeme işi ise asıl
+    // kaydın Id'sinde açılır — iki karta tıklamak aynı işi iki farklı toplamla revize ederdi.
+    // Ödeme akışı tutarı kiraladığı GÜNCEL Id için yeniden okur.
+
+    private const long SyncNow = 1_791_000_000;
+
+    /// <summary>Senkronlu kurulum: ödeme servisi Id'yi çözer ve müşteriyi kiralar; dönen senkron
+    /// deposu AYNI kümeyle taşır (DI'daki tekil örnek gibi).</summary>
+    private static (CustomerSearchViewModel Sut, CustomerSyncRepository Sync) Synced(
+        InMemorySqlite db, CustomerRepository customers, SessionRepository sessions, LabelRepository labels,
+        InMemoryPaymentJobStore jobs, string settingsPath, FakeDialogService dialogs)
+    {
+        var busy = new CustomerBusySet();
+        var (api, license) = PaymentRequestServiceTestHelpers.InProgressCloudApiClient();
+        var payment = new PaymentRequestService(new SettingsStore(settingsPath), new WhatsAppMessageBuilder(),
+            new FakeUrlLauncher(), api, license, jobs, log: null, customers: customers, busy: busy);
+        var customerService = new CustomerService(customers, sessions, labels, Mock.Of<IClock>(c => c.UnixNow() == 1L));
+        return (new CustomerSearchViewModel(customers, customerService, sessions, labels, payment, dialogs),
+                new CustomerSyncRepository(db, busy));
+    }
+
+    /// <summary>Aynı kişinin iki yazımı (harf farkı): taşımadan önce iki satır, iki kart.</summary>
+    private static (string Copy, string Canonical) TwoSpellings(
+        CustomerRepository customers, decimal copyTotal, decimal canonicalTotal)
+    {
+        var copy = Guid.NewGuid().ToString("N");
+        var canonical = Guid.NewGuid().ToString("N");
+        customers.Insert(new Customer(copy, "tiktok", "ornek.musteri", "Örnek Müşteri", null,
+            100, 100, false, null, null, 1, copyTotal, null, null, TestPhone.NewE164()));
+        customers.Insert(new Customer(canonical, "tiktok", "Ornek.Musteri", "Örnek Müşteri", null,
+            100, 101, false, null, null, 1, canonicalTotal, null, null, TestPhone.NewE164()));
+        return (copy, canonical);
+    }
+
+    [Fact]
+    public async Task OpenWhatsApp_yayin_listesi_acikken_tasinan_kopyanin_karti_kisinin_tam_yayin_tutarini_ister()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, sync) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            var (copy, canonical) = TwoSpellings(customers, 0m, 0m);
+            sessions.Insert(new StreamSession("s1", "Yayın 1", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", copy, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+            labels.Insert(new Label("l2", "s1", canonical, "tiktok", "Ornek.Musteri", "Armut", null, 150m, 111, 121));
+            sessions.End("s1", 200);
+
+            sut.LastStreamShoppersOnly = true;
+            sut.Results.Should().HaveCount(2, "taşımadan önce iki satır, iki kart");
+            var copyCard = sut.Results.Single(c => c.Primary.Id == copy);
+
+            // Liste açıkken push yanıtı kopyayı asıl kayda taşıdı; ekran yenilenmedi.
+            sync.RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(copyCard);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.CustomerId.Should().Be(canonical, "taşınmış Id asıl kayda çözülür");
+            job.ScopeKey.Should().Be("session:s1");
+            job.ProductTotal.Should().Be(250m,
+                "kopyanın kartı yalnız kendi 100'ünü biliyordu; kişinin bu yayındaki toplamı 250");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task OpenWhatsApp_liste_acikken_tasinan_kopyanin_karti_kisinin_tam_kumulatif_tutarini_ister()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, sync) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            var (copy, canonical) = TwoSpellings(customers, copyTotal: 100m, canonicalTotal: 150m);
+
+            sut.RefreshSearch();
+            sut.Results.Should().HaveCount(2, "taşımadan önce iki satır, iki kart");
+            var copyCard = sut.Results.Single(c => c.Primary.Id == copy);
+
+            sync.RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(copyCard);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.CustomerId.Should().Be(canonical, "taşınmış Id asıl kayda çözülür");
+            job.ScopeKey.Should().Be("cumulative");
+            job.ProductTotal.Should().Be(250m, "taşıma kopyanın cirosunu asıl kayda ekledi (100 + 150)");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }
