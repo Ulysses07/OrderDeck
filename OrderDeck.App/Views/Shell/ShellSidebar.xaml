@@ -243,6 +243,26 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
+
+                <!-- Senkron durumu: diğer bilgisayarlara yetişildi mi, gönderilmemiş kayıt var mı.
+                     Kalıcı uyarılar eklenince metin dar kenar çubuğunda kırpılır; tamamı ve
+                     ne yapılacağı ipucunda. -->
+                <TextBlock Text="{Binding SyncStatusText}"
+                           FontSize="{StaticResource OD.Font.F1}"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding SyncStatusTooltip}"
+                           Margin="{StaticResource OD.Pad.Top5}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.Amber}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSyncHealthy}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
             </StackPanel>
 
             <!-- Taşma menüsü (x:Name ve handler MainShellView'dan aynen) -->

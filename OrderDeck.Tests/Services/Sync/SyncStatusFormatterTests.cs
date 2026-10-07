@@ -216,4 +216,41 @@ public sealed class SyncStatusFormatterTests
         SyncStatusFormatter.Format(1, snapshot with { BlockedOn = null, LastPullOkAt = Now.AddSeconds(-20) }, Now)
             .Text.Should().Be("Gönderilemiyor — 1 değişiklik bekliyor", "gönderim ilerlemesi de görüntüden okunur");
     }
+
+    // ── ucuz tazeleme ve ipucu (D3) ─────────────────────────────────────
+
+    [Fact] public void Bekleyen_sayi_yalniz_metinde_gosterilecekse_sayilir()
+    {
+        var counted = 0;
+        int Pending() { counted++; return 2; }
+        var tracking = new SyncStatusSnapshot(null, null, null, Now.AddSeconds(-20));
+
+        SyncStatusFormatter.Format(Pending, tracking, Now).Text.Should().Be("Güncelleniyor…");
+        SyncStatusFormatter.Format(Pending, tracking with { BlockedOn = Block(SyncBlockReason.Busy, Now) }, Now)
+            .Text.Should().StartWith("Müşteri güncellemeleri bekliyor");
+        SyncStatusFormatter.Format(Pending, tracking with { LastCatchUpProgressAt = Now.AddSeconds(-5) }, Now)
+            .Text.Should().Be("Güncelleniyor…");
+        counted.Should().Be(0, "takılı/yetişen satır sayı göstermez — sayım SQL'i koşmaz");
+
+        SyncStatusFormatter.Format(Pending, tracking with { LastPullOkAt = Now.AddSeconds(-5) }, Now)
+            .Should().Be(new SyncStatusFormatter.Status("Gönderiliyor (2)", Healthy: true));
+        SyncStatusFormatter.Format(Pending, tracking with { TrackingSince = Now.AddMinutes(-10) }, Now)
+            .Text.Should().Be("Çevrimdışı — 2 değişiklik bekliyor");
+        counted.Should().Be(2, "gösterilen her durumda bir kez");
+    }
+
+    [Fact] public void Ipucu_kalici_uyarida_ne_yapilacagini_soyler()
+    {
+        var plain = SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now);
+        SyncStatusFormatter.Tooltip(plain).Should().Be(plain.Text, "uyarı yoksa ipucu metnin tamamı");
+
+        var attention = new SyncAttention(1, 2);
+        var warned = SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now, attention);
+        var lines = SyncStatusFormatter.Tooltip(warned, attention).Split('\n');
+
+        lines[0].Should().Be(warned.Text, "kırpılan satırın tamamı");
+        lines.Should().HaveCount(3);
+        lines[1].Should().Contain("destek", "atlanan akış öğesi kendiliğinden geçmeyebilir");
+        lines[2].Should().Contain("Ödeme iste").And.Contain("destek");
+    }
 }

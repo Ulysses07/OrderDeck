@@ -78,6 +78,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly ExtensionBridgeServer? _bridge;
     private readonly ViewerCountTracker? _viewers;
 
+    /// <summary>
+    /// Senkron durum satırı (Faz 0, D3). Opsiyonel: kabuk ViewModel'i testlerde
+    /// senkronsuz kuruluyor; üretimde DI ikisini de doldurur (kayıtları D1'in
+    /// DI testi sınıyor — eksik kayıt satırı sessizce kapatırdı).
+    /// </summary>
+    private readonly Services.Sync.SyncStatusTracker? _syncStatus;
+    private readonly Func<int>? _pendingCount;
+    private readonly Func<SyncAttention>? _attention;
+
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
     // average. Matches the ChatBus ring buffer cap so the UI never lags
@@ -156,6 +165,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty] private string _printerStatusText = "Yazıcı seçilmedi";
     [ObservableProperty] private bool _isPrinterConfigured;
+
+    /// <summary>Senkron durum satırı (D3): diğer bilgisayarlara yetişildi mi, gönderilmemiş
+    /// kayıt var mı. Sağlıksızsa sarı; ipucu kırpılan metnin tamamı + kalıcı uyarıda ne yapılacağı.</summary>
+    [ObservableProperty] private string _syncStatusText = "";
+    [ObservableProperty] private bool _isSyncHealthy = true;
+    [ObservableProperty] private string _syncStatusTooltip = "";
+    private int _syncRefreshTick;
 
     /// <summary>
     /// Yeni veri katmanı YOK: ViewerCountTracker zaten platform başına
@@ -268,6 +284,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// </summary>
     public void RefreshHeroStats()
     {
+        // BAŞTA: metot oturum yokken erken dönüyor — sonda olsa durum satırı yayın dışında donardı.
+        if (_syncRefreshTick++ % 5 == 0) RefreshSyncStatus();
+
         QueueCount = PrintQueue.Count;
         ClockText = DateTime.Now.ToString("HH:mm");
 
@@ -292,6 +311,36 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             ? _labelRepo.CountSessionLabelsByCode(session.Id, code)
             : 0;
     }
+
+    /// <summary>
+    /// Senkron durum satırı (D3). 1 sn'lik hero zamanlayıcısında her turda değil, 5 turda bir koşar
+    /// (UI iş parçacığı); bekleyen sayım yalnız metinde gösterilecekse koşar (takılı/yetişen satırda
+    /// yok). Lisans yoksa (deneme sürümü — senkron hiç koşmaz) nötr satır, sorgu yok.
+    /// </summary>
+    public void RefreshSyncStatus()
+    {
+        if (_syncStatus is null || _pendingCount is null) return;
+        if (SyncLicenseKey() is null)
+        {
+            ApplySyncStatus(Services.Sync.SyncStatusFormatter.NoLicense, default);
+            return;
+        }
+        var attention = _attention?.Invoke() ?? default;
+        ApplySyncStatus(Services.Sync.SyncStatusFormatter.Format(
+            _pendingCount, _syncStatus.Snapshot(), DateTimeOffset.UtcNow, attention), attention);
+    }
+
+    private void ApplySyncStatus(Services.Sync.SyncStatusFormatter.Status status, SyncAttention attention)
+    {
+        SyncStatusText = status.Text;
+        IsSyncHealthy = status.Healthy;
+        SyncStatusTooltip = Services.Sync.SyncStatusFormatter.Tooltip(status, attention);
+    }
+
+    /// <summary>Senkronun gördüğü lisans (<c>ICurrentLicenseProvider</c> ile aynı kaynak); boş ya da
+    /// boşluk = lisans yok (D1 incelemesi).</summary>
+    private string? SyncLicenseKey()
+        => _licenseService.CurrentLicense?.LicenseKey is { } key && !string.IsNullOrWhiteSpace(key) ? key : null;
 
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
@@ -394,11 +443,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ViewerCountTracker? viewers = null,
         FacebookModerationService? facebookModeration = null,
         Services.Drawers.IDrawerService? drawers = null,
-        Services.Pages.IPageService? pages = null)
+        Services.Pages.IPageService? pages = null,
+        Services.Sync.SyncStatusTracker? syncStatus = null,
+        Services.Sync.SyncPendingCounter? pendingCounter = null)
     {
         _dialogs = dialogs;
         _drawers = drawers;
         _pages = pages;
+        // İlk RefreshHeroStats'tan (kurucunun sonu) önce: açılışta durum satırı hemen dolsun.
+        _syncStatus = syncStatus;
+        _pendingCount = pendingCounter is null ? null : pendingCounter.Count;
+        _attention = pendingCounter is null ? null : pendingCounter.Attention;
         _labels = labels;
         _sessions = sessions;
         _printer = printer;

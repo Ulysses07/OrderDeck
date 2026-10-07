@@ -49,11 +49,38 @@ public static class SyncStatusFormatter
 
     public readonly record struct Status(string Text, bool Healthy);
 
-    /// <summary>Durum satırının olağan girişi (D3): izleyicinin tek kilit altındaki anlık görüntüsü.</summary>
+    /// <summary>Deneme sürümü (lisans yok): senkron hiç koşmaz, sayım da yapılmaz. Nötr (sağlıklı) —
+    /// yoksa deneme kullanıcısı kalıcı turuncu "Çevrimdışı — N" görürdü (D3).</summary>
+    public static readonly Status NoLicense = new("Senkron kapalı (lisans yok)", Healthy: true);
+
+    /// <summary>İzleyicinin tek kilit altındaki anlık görüntüsüyle.</summary>
     public static Status Format(int pending, SyncStatusSnapshot snapshot, DateTimeOffset now,
         SyncAttention attention = default)
-        => Format(pending, snapshot.LastPullOkAt, now, attention, snapshot.BlockedOn,
-            snapshot.LastCatchUpProgressAt, snapshot.TrackingSince, snapshot.PushOkAt);
+        => Format(() => pending, snapshot, now, attention);
+
+    /// <summary>Durum satırının olağan girişi (D3): izleyicinin tek kilit altındaki anlık görüntüsü;
+    /// bekleyen sayı YALNIZ metinde gösterilecekse sayılır — takılı ya da yetişen satırda sayım SQL'i
+    /// (UI iş parçacığında, 5 sn'de bir) koşmaz.</summary>
+    public static Status Format(Func<int> pendingCount, SyncStatusSnapshot snapshot, DateTimeOffset now,
+        SyncAttention attention = default)
+        => WithAttention(Decide(pendingCount, snapshot.LastPullOkAt, now, snapshot.BlockedOn,
+            snapshot.LastCatchUpProgressAt, snapshot.TrackingSince, snapshot.PushOkAt), attention);
+
+    /// <summary>Durum satırının ipucu (D3): metnin tamamı (dar kenar çubuğunda kırpılır) ve kalıcı
+    /// uyarılarda operatörün ne yapacağı — kendiliğinden geçmeyebilecek durum yalnız sayıyla
+    /// bırakılmaz. Satırlar <c>\n</c> ile ayrılır.</summary>
+    public static string Tooltip(Status status, SyncAttention attention = default)
+    {
+        if (!attention.Any) return status.Text;
+        var lines = new List<string>(3) { status.Text };
+        if (attention.SkippedFeedItems > 0)
+            lines.Add("Diğer bilgisayarlardan gelen bazı müşteri değişiklikleri bu bilgisayara uygulanamadı; " +
+                      "uyarı geçmezse destekle iletişime geç.");
+        if (attention.OpenLegacyPaymentJobs > 0)
+            lines.Add("Bekleyen ödeme işleri, ilgili müşteriye internet varken \"Ödeme iste\" denince uzlaşır; " +
+                      "hangi müşteri olduğunu bilmiyorsan destekle iletişime geç.");
+        return string.Join("\n", lines);
+    }
 
     /// <param name="pending">Gönderilmemiş kayıt sayısı (<see cref="SyncPendingCounter.Count"/>).</param>
     /// <param name="lastPullOk">Son tam yetişme (<see cref="SyncStatusTracker.LastPullOkAt"/>).</param>
@@ -70,8 +97,11 @@ public static class SyncStatusFormatter
     public static Status Format(int pending, DateTimeOffset? lastPullOk, DateTimeOffset now,
         SyncAttention attention = default, SyncBlock? blockedOn = null, DateTimeOffset? catchUpProgressAt = null,
         DateTimeOffset? trackingSince = null, IReadOnlyDictionary<string, DateTimeOffset?>? pushOkAt = null)
+        => WithAttention(Decide(() => pending, lastPullOk, now, blockedOn, catchUpProgressAt, trackingSince, pushOkAt),
+            attention);
+
+    private static Status WithAttention(Status status, SyncAttention attention)
     {
-        var status = Decide(pending, lastPullOk, now, blockedOn, catchUpProgressAt, trackingSince, pushOkAt);
         if (!attention.Any) return status;
         var notes = new List<string>(2);
         if (attention.SkippedFeedItems > 0)
@@ -81,7 +111,8 @@ public static class SyncStatusFormatter
         return new(status.Text + " · " + string.Join(" · ", notes), Healthy: false);
     }
 
-    private static Status Decide(int pending, DateTimeOffset? lastPullOk, DateTimeOffset now,
+    /// <param name="pendingCount">Yalnız metinde sayı gösterilecekse ve en çok bir kez çağrılır.</param>
+    private static Status Decide(Func<int> pendingCount, DateTimeOffset? lastPullOk, DateTimeOffset now,
         SyncBlock? blockedOn, DateTimeOffset? catchUpProgressAt, DateTimeOffset? trackingSince,
         IReadOnlyDictionary<string, DateTimeOffset?>? pushOkAt)
     {
@@ -95,8 +126,13 @@ public static class SyncStatusFormatter
         var reference = lastPullOk ?? catchUpProgressAt ?? trackingSince;
         if (reference is null) return new(Updating, false);      // dayanak verilmedi
         if (!IsFresh(reference, now))
-            return new(pending > 0 ? $"Çevrimdışı — {pending} değişiklik bekliyor" : "Çevrimdışı", false);
+        {
+            var offline = pendingCount();
+            return new(offline > 0 ? $"Çevrimdışı — {offline} değişiklik bekliyor" : "Çevrimdışı", false);
+        }
         if (lastPullOk is null) return new(Updating, false);      // izleme yeni, ilk tam akış bekleniyor
+
+        var pending = pendingCount();
 
         // 4) Çekme iyi; bekleyen var ama bir gönderim üç dakikadır başaramıyor (I-3).
         if (pending > 0 && AnyPushStale(pushOkAt, trackingSince, now))
