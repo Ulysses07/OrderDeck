@@ -129,8 +129,8 @@ public sealed class GiveawayService
         var customer = _customers.GetOrCreate(
             message.Platform, message.Username, message.DisplayName, message.AvatarUrl);
 
-        // (c) Blacklist check
-        if (customer.IsBlacklisted) return;
+        // (c) Blacklist check — adın iki yazımı da ("ad"/"@ad"; bkz. CustomerService.IsBlacklisted).
+        if (customer.IsBlacklisted || _customers.IsBlacklisted(message.Platform, message.Username)) return;
 
         // (d) PreventRewinning check — cache populated by Start; defensive fallback to DB if null.
         if (g.PreventRewinning)
@@ -200,7 +200,7 @@ public sealed class GiveawayService
         // ilk giriş kalır. Katılımcı satırları silinmez ve değişmez; kazanan kaydı yalnız
         // seçilen satıra yazılır.
         var eligible = allParticipants
-            .Where(p => _customers.Find(p.Platform, p.Username)?.IsBlacklisted != true)
+            .Where(p => !_customers.IsBlacklisted(p.Platform, p.Username))
             .ToList();
         var currentIds = _customers.ResolveIds(eligible.Select(p => p.CustomerId));
         var participants = eligible

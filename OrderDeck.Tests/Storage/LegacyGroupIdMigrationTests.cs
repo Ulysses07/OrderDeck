@@ -169,4 +169,71 @@ public sealed class LegacyGroupIdMigrationTests
         CustomerIdentity.LegacyGroupIdOf("instagram|ornek")
             .Should().NotBe(CustomerIdentity.LegacyGroupIdOf("tiktok|ornek"));
     }
+
+    [Fact]
+    public void SQL_numarasi_CSharp_turetimiyle_ayni()
+    {
+        // Sözleşme SQL'de (çapa ayrıştırma) ve C#'ta: ikisi birlikte sabit.
+        using var db = Pc(new Row("instagram", "kisi_h", TestPhone.NewE164(), NewGroup()));
+
+        new MigrationRunner(db).Run();
+
+        GroupOf(db, "instagram", "kisi_h").Should().Be(CustomerIdentity.LegacyGroupIdOf("instagram|kisi_h"));
+    }
+
+    [Fact]
+    public void At_yazimi_bir_bilgisayarda_grupta_olsa_da_numara_ayni()
+    {
+        // A'da operatör "@kisi_i" satırına telefon girdi, form "kisi_i" aynı telefonla geldi → v0.9.8 telefonla
+        // ikisini aynı gruba koydu. B'de yalnız form satırı var. '@' her harften önce sıralanır; çapada
+        // sayılsaydı A "@kisi_i"ye, B "kisi_i"ye bağlanırdı.
+        var phone = TestPhone.NewE164();
+        string gA = NewGroup(), gB = NewGroup();
+        using var a = Pc(new Row("instagram", "@kisi_i", phone, gA), new Row("instagram", "kisi_i", phone, gA));
+        using var b = Pc(new Row("instagram", "kisi_i", phone, gB));
+
+        new MigrationRunner(a).Run();
+        new MigrationRunner(b).Run();
+
+        GroupOf(a, "instagram", "@kisi_i").Should().Be(GroupOf(b, "instagram", "kisi_i"));
+        GroupOf(a, "instagram", "kisi_i").Should().Be(GroupOf(b, "instagram", "kisi_i"));
+        GroupOf(b, "instagram", "kisi_i").Should().Be(CustomerIdentity.LegacyGroupIdOf("instagram|kisi_i"));
+    }
+
+    [Fact]
+    public void Damgali_ve_damgasiz_uyesi_olan_gruba_dokunulmaz()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db, EmbeddedMigrationScripts.UpTo(45)).Run();
+        var group = NewGroup();
+        using (var c = db.Open())
+        {
+            c.Execute(@"INSERT INTO Customer (Id, Platform, Username, IdentityKey, DisplayName, FirstSeenAt, LastSeenAt,
+                                              Phone, GroupId, GroupIdChangedAt)
+                        VALUES (@id, 'instagram', 'kisi_j', 'kisi_j', 'kisi_j', 1, 1, @phone, @group, 1791000000000)",
+                new { id = Guid.NewGuid().ToString("N"), phone = TestPhone.NewE164(), group });
+            c.Execute(@"INSERT INTO Customer (Id, Platform, Username, IdentityKey, DisplayName, FirstSeenAt, LastSeenAt, GroupId)
+                        VALUES (@id, 'tiktok', 'kisi_j_tt', 'kisi_j_tt', 'kisi_j_tt', 1, 1, @group)",
+                new { id = Guid.NewGuid().ToString("N"), group });
+            c.Execute("INSERT INTO SyncApplyGuard (Id) VALUES (1)");   // damgayı silerken yeniden basılmasın
+            c.Execute("UPDATE Customer SET GroupIdChangedAt = NULL WHERE Username = 'kisi_j_tt'");
+            c.Execute("DELETE FROM SyncApplyGuard");
+        }
+
+        new MigrationRunner(db).Run();
+
+        GroupOf(db, "instagram", "kisi_j").Should().Be(group);
+        GroupOf(db, "tiktok", "kisi_j_tt").Should().Be(group);
+    }
+
+    [Fact]
+    public void Anahtarsiz_uye_grubuyla_birlikte_tasinir()
+    {
+        var g = NewGroup();
+        using var db = Pc(new Row("instagram", "kisi_l", TestPhone.NewE164(), g), new Row("tiktok", "   ", null, g));
+
+        new MigrationRunner(db).Run();
+
+        GroupOf(db, "tiktok", "   ").Should().Be(GroupOf(db, "instagram", "kisi_l")).And.NotBe(g);
+    }
 }

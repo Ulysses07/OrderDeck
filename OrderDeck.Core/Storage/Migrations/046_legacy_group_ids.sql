@@ -11,8 +11,9 @@
 -- form satırını yerel grubundan koparırdı.
 --
 -- ÇÖZÜM. Damgasız (göç öncesi) her grubun numarası üyelerinden türetilir: çapa üye =
--- telefonu olan üyeler önce (form kimlikleri — formlar her bilgisayara aynı iner), sonra
--- en küçük (platform, kimlik anahtarı); yeni numara od_legacy_group_id(çapa) — çapanın
+-- telefonu olan üyeler önce (form kimlikleri — formlar her bilgisayara aynı iner; kamuya açık
+-- form telefonu zorunlu tutar), sonra en küçük (platform, kimlik anahtarı; IG/TikTok/FB'de
+-- baştaki '@' sayılmaz — aşağıda); yeni numara od_legacy_group_id(çapa) — çapanın
 -- SHA-256'sından 32 onaltılık hane (Guid "N" biçimi). Aynı üyeler her bilgisayarda aynı
 -- numarayı alır; bilgisayara özgü fazladan bir sohbet üyesi (telefonsuz) çapayı
 -- değiştirmez. Kimse gruba girmez ya da gruptan çıkmaz; tek istisna: çapası aynı iki grup
@@ -28,7 +29,16 @@
 -- od_legacy_group_id yalnız bu ifadede kullanılır, hiçbir şema nesnesinde DEĞİL (önceki sürüm
 -- onu kaydetmez; bkz. SqliteSearchFunctions).
 
+-- ÇAPADA "@ad" = "ad" (Instagram/TikTok/Facebook): 2026-08-05'ten bu sürüme dek Instagram API yolu
+-- adı "@ad" yazdı; aynı kişinin iki yazımı bir bilgisayarda aynı grupta olabilir (ör. operatörün
+-- "@ad" satırına girdiği telefonla form grubuna çekilmesi), öbüründe yalnız "ad". '@' her harften
+-- önce sıralandığı için "@ad" çapayı kazanır ve iki bilgisayar ayrışırdı. Yalnız "@"tan oluşan ad
+-- boş anahtara inmez (hepsi tek çapada birleşirdi). Anahtar kolondan değil od_identity_key'den:
+-- 045 sürümüyle önceki sürüm arasında gidip gelmiş veritabanında kolon boş kalmış olabilir.
+
 INSERT OR IGNORE INTO SyncApplyGuard (Id) VALUES (1);
+
+DROP TABLE IF EXISTS temp.LegacyGroupMap;
 
 CREATE TEMP TABLE LegacyGroupMap AS
 SELECT GroupId AS OldId,
@@ -36,10 +46,14 @@ SELECT GroupId AS OldId,
 FROM (
     SELECT GroupId,
            CASE WHEN NULLIF(TRIM(Phone), '') IS NOT NULL THEN '0' ELSE '1' END
-               || '|' || LOWER(Platform) || '|' || IdentityKey AS Anchor
+               || '|' || LOWER(Platform) || '|'
+               || CASE WHEN LOWER(Platform) IN ('instagram', 'tiktok', 'facebook')
+                       THEN COALESCE(NULLIF(LTRIM(od_identity_key(Username), '@'), ''), od_identity_key(Username))
+                       ELSE od_identity_key(Username)
+                  END AS Anchor
     FROM Customer
     WHERE NULLIF(TRIM(GroupId), '') IS NOT NULL
-      AND IdentityKey IS NOT NULL
+      AND od_identity_key(Username) IS NOT NULL
 )
 WHERE GroupId NOT IN (SELECT GroupId FROM Customer
                       WHERE GroupIdChangedAt IS NOT NULL AND GroupId IS NOT NULL)

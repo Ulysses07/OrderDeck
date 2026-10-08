@@ -309,4 +309,56 @@ public class CustomerPurgeTombstoneTests
         row.Phone.Should().Be(telefon);
         row.FullName.Should().Be("Örnek Müşteri");
     }
+
+    // IG/TikTok/FB'de "ad" ile "@ad" aynı hesap (2026-08-05 → 2026-10 Instagram adı "@ad" yazıldı).
+
+    private static Customer ChatRow(string id, string platform, string username) => new(
+        Id: id, Platform: platform, Username: username,
+        DisplayName: "Takma Ad", AvatarUrl: "https://cdn.example/a.jpg",
+        FirstSeenAt: 2000, LastSeenAt: 2000,
+        IsBlacklisted: false, BlacklistReason: null, Notes: null,
+        TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+        Address: null, Phone: null);
+
+    [Fact]
+    public void Instagram_silmesi_adin_iki_yazimindaki_satiri_da_bosaltir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.UpsertPersonFromIntake(AyseIdentity, "Örnek Müşteri", "Adres 1", TestPhone.NewE164(),
+            null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
+        repo.Insert(ChatRow("eski-at", "instagram", "@ayse_y"));
+
+        repo.RecordPurge("instagram", "ayse_y", purgedAtUnix: 1500).Should().Be(2);
+
+        repo.GetById("eski-at")!.DisplayName.Should().Be("[Silindi]");
+        repo.GetById("eski-at")!.AvatarUrl.Should().BeNull();
+    }
+
+    [Fact]
+    public void At_yazimiyla_silinen_kisi_atsiz_adla_geri_gelince_bosaltilir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        // Sunucunun kararı eski poller'ın yazımıyla ("@ad") geldi; kişi yeni sürümde "@"sız yorum yazıyor.
+        repo.RecordPurge("instagram", "@ayse_y", purgedAtUnix: 1500);
+        repo.Insert(ChatRow("chat-yeni", "instagram", "ayse_y"));
+
+        repo.GetById("chat-yeni")!.DisplayName.Should().Be("[Silindi]");
+    }
+
+    [Fact]
+    public void YouTube_silmesi_at_yazimina_genislemez()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.RecordPurge("youtube", "@kanal_x", purgedAtUnix: 1500);
+        repo.Insert(ChatRow("yt-baska", "youtube", "kanal_x"));
+
+        repo.GetById("yt-baska")!.DisplayName.Should().Be("Takma Ad");
+    }
 }

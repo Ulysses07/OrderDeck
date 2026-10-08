@@ -282,7 +282,8 @@ public sealed class CustomerStampedWritersTests : IDisposable
         Stamp(id, "PhoneChangedAt").Should().Be(phoneStamp, "akıştan inen silme düzenleme değildir");
         using var conn = _db.Open();
         conn.ExecuteScalar<int>("SELECT COUNT(*) FROM SyncApplyGuard").Should().Be(0);
-        conn.ExecuteScalar<int>("SELECT COUNT(*) FROM CustomerPurgeTombstone").Should().Be(1);
+        conn.ExecuteScalar<int>("SELECT COUNT(*) FROM CustomerPurgeTombstone").Should().Be(2,
+            "karar adın iki yazımına (\"ad\"/\"@ad\") yazılır — IG'de aynı hesap");
     }
 
     [Fact]
@@ -299,7 +300,8 @@ public sealed class CustomerStampedWritersTests : IDisposable
         c.Phone.Should().BeNull();
         using var conn = _db.Open();
         conn.ExecuteScalar<long?>("SELECT PurgedAt FROM Customer WHERE Id = @id", new { id }).Should().Be(5000);
-        conn.ExecuteScalar<string>("SELECT IdentityKey FROM CustomerPurgeTombstone").Should().Be("şeyma");
+        conn.ExecuteScalar<string>("SELECT IdentityKey FROM CustomerPurgeTombstone WHERE Username NOT LIKE '@%'")
+            .Should().Be("şeyma");
     }
 
     // ── Form yolu: grup kimliği formdan türer, tek işlemde uygulanır, kara liste yayılımı form

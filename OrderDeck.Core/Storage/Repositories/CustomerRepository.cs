@@ -191,6 +191,22 @@ public sealed class CustomerRepository
                ? FindSpelling(conn, tx, platform, alt)
                : null);
 
+    /// <summary>
+    /// Sohbet vurgusu ve çekiliş süzgeci için: kişi, tanıtıcısının HERHANGİ bir yazımında ("ad" ya da
+    /// "@ad", <see cref="CustomerIdentity.AlternateAtSpellingOf"/>) kara listedeyse kara listede sayılır.
+    /// 2026-08-05 → 2026-10 arasında Instagram adı "@ad" yazıldı; o dönemde sohbetten kara listeye
+    /// alınan kişi "@ad" satırında işaretli, aynı kişinin formlu "ad" satırı değil. Yorumlar artık
+    /// "@"sız geldiği için <see cref="FindByPlatformAndUsername"/> "ad" satırını bulur — tek satıra
+    /// bakan denetim bu kişiyi kaçırırdı. İkizler sunucuda birleştirilene dek iki yazım da sorulur.
+    /// </summary>
+    public bool IsBlacklistedAnySpelling(string platform, string username)
+    {
+        using var conn = _factory.Open();
+        if (FindSpelling(conn, null, platform, username)?.IsBlacklisted == 1) return true;
+        return CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt
+               && FindSpelling(conn, null, platform, alt)?.IsBlacklisted == 1;
+    }
+
     private static Row? FindSpelling(
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
         => conn.QueryFirstOrDefault<Row>(
@@ -1577,19 +1593,34 @@ public sealed class CustomerRepository
                 newTombstones += UpsertTombstone(conn, tx, platform, alias, purgedAtUnix) ? 1 : 0;
         }
 
+        // IG/TikTok/FB: "ad" ile "@ad" aynı hesap ('@' adın parçası değil; 2026-08-05 → 2026-10
+        // Instagram adı "@ad" yazıldı, aynı kişinin iki satırı olabilir). Karar iki yazımı da kapsar:
+        // öbür yazımın mezar taşı, sonradan o yazımla açılan satırı da boşaltır (ScrubIfTombstonedSql).
+        var spellings = new List<string> { username };
+        if (CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt)
+        {
+            spellings.Add(alt);
+            newTombstones += UpsertTombstone(conn, tx, platform, alt, purgedAtUnix) ? 1 : 0;
+        }
+
         // Harf duyarsız: NOCASE (ASCII) + kimlik anahtarı (ASCII dışı harf farkı).
-        var newlyScrubbed = conn.ExecuteScalar<int>(
-            @"SELECT COUNT(*) FROM Customer
-              WHERE Platform = @platform
-                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)
-                AND PurgedAt IS NULL",
-            new { platform, username, key = CustomerIdentity.KeyOrNull(username) }, tx);
-        var scrubbed = conn.Execute(
-            "UPDATE Customer SET " + ScrubAssignments + @",
-                  PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
-              WHERE Platform = @platform
-                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)",
-            new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
+        int newlyScrubbed = 0, scrubbed = 0;
+        foreach (var spelling in spellings)
+        {
+            var key = CustomerIdentity.KeyOrNull(spelling);
+            newlyScrubbed += conn.ExecuteScalar<int>(
+                @"SELECT COUNT(*) FROM Customer
+                  WHERE Platform = @platform
+                    AND (Username = @spelling COLLATE NOCASE OR IdentityKey = @key)
+                    AND PurgedAt IS NULL",
+                new { platform, spelling, key }, tx);
+            scrubbed += conn.Execute(
+                "UPDATE Customer SET " + ScrubAssignments + @",
+                      PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
+                  WHERE Platform = @platform
+                    AND (Username = @spelling COLLATE NOCASE OR IdentityKey = @key)",
+                new { platform, spelling, purgedAtUnix, key }, tx);
+        }
 
         scope.Commit();
         changed = newTombstones > 0 || newlyScrubbed > 0;

@@ -350,4 +350,68 @@ public class CustomerServiceTests
         customers.CountAll().Should().Be(1, "form sohbet satırına bağlanmalı, ayrı satır açmamalı");
         customers.GetById(eski.Id)!.Phone.Should().Be(phone);
     }
+
+    [Fact]
+    public void Adin_bir_yaziminda_kara_listedeki_kisi_kara_listede_sayilir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        SeedChatRow(customers, "instagram", "musteri_k");
+        var atli = SeedChatRow(customers, "instagram", "@musteri_k");
+        svc.IsBlacklisted("instagram", "musteri_k").Should().BeFalse();
+
+        svc.AddToBlacklist(atli.Id, "ödemedi");
+
+        svc.IsBlacklisted("instagram", "musteri_k").Should().BeTrue(
+            "Ağustos–Ekim'de \"@ad\" satırında kara listeye alınan kişinin yorumu artık \"@\"sız gelir");
+        svc.IsBlacklisted("instagram", "@musteri_k").Should().BeTrue();
+        customers.IsBlacklistedAnySpelling("instagram", "musteri_k").Should().BeTrue();
+        svc.Find("instagram", "musteri_k")!.IsBlacklisted.Should().BeFalse(
+            "satırların kendisi değişmez — ikizler sunucuda birleşir");
+    }
+
+    [Fact]
+    public void Duz_satirda_kara_listedeki_kisi_eski_at_yazimiyla_da_kara_listede()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var duz = SeedChatRow(customers, "instagram", "musteri_l");
+        SeedChatRow(customers, "instagram", "@musteri_l");
+
+        svc.AddToBlacklist(duz.Id, "ödemedi");
+
+        customers.IsBlacklistedAnySpelling("instagram", "@musteri_l").Should().BeTrue();
+    }
+
+    [Fact]
+    public void YouTube_kara_listesi_at_yazimlarini_birbirine_eslemez()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var kanal = SeedChatRow(customers, "youtube", "@kanal_c");
+        svc.AddToBlacklist(kanal.Id, "spam");
+
+        svc.IsBlacklisted("youtube", "kanal_c").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Taze_bilgisayarin_doldurma_kipindeki_formu_da_eski_at_satirina_baglanir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var eski = SeedChatRow(customers, "instagram", "@musteri_m");
+        var phone = TestPhone.NewE164();
+
+        customers.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "musteri_m", null) },
+            "Deneme Kisi", "Deneme adres", phone, null, null, false, false, 1000,
+            formId: Guid.NewGuid(), submittedAtMs: 1_000_000, mode: IntakeApplyMode.FillOnly);
+
+        customers.CountAll().Should().Be(1);
+        customers.GetById(eski.Id)!.Phone.Should().Be(phone);
+    }
 }

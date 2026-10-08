@@ -32,6 +32,11 @@ public sealed class CustomerService
     public Customer? Find(string platform, string username) =>
         _repo.FindByPlatformAndUsername(platform, CustomerIdentity.ChatHandleOf(platform, username));
 
+    /// <summary>Kişi, adının herhangi bir yazımında ("ad"/"@ad") kara listede mi
+    /// (<see cref="CustomerRepository.IsBlacklistedAnySpelling"/>).</summary>
+    public bool IsBlacklisted(string platform, string username) =>
+        _repo.IsBlacklistedAnySpelling(platform, username);
+
     /// <summary>Sohbet yolu: müşteriyi bulur, yoksa açar.
     ///
     /// <para>Paket verilmezse (çekiliş katılımı, elle kara liste) YAZAN dal — yeni satır ya da

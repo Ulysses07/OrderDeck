@@ -264,4 +264,22 @@ public class GiveawayServiceTests
         ps.Should().HaveCount(2, "katılımcı satırları silinmez — denetim kaydı");
         ps.Where(p => p.IsWinner).Should().ContainSingle();
     }
+
+    [Fact]
+    public void Yalniz_eski_at_satiri_kara_listedeki_ikiz_cekilise_giremez()
+    {
+        // Ağustos–Ekim'de Instagram adı "@ad" yazıldı: kişi "@ad" satırında kara listede, formlu "ad"
+        // satırında değil. Yorum artık "@"sız geliyor — iki yazım da sorulmalı.
+        var (svc, repo, customers, db, sid) = Fx();
+        using var _2 = db;
+        var g = svc.Start(sid, "🌹", 60, 1, null, true);
+        foreach (var name in new[] { "ikiz_k", "@ikiz_k" })
+            customers.Insert(new Customer(System.Guid.NewGuid().ToString("N"), "instagram", name, null, null,
+                100, 100, false, null, null, 0, 0m, null, null, null));
+        customers.UpdateBlacklist(customers.FindByPlatformAndUsername("instagram", "@ikiz_k")!.Id, true, "test", 999);
+
+        svc.AddParticipantFromChat(g.Id, Msg("ikiz_k", "🌹"));
+
+        repo.GetParticipants(g.Id).Should().BeEmpty();
+    }
 }
