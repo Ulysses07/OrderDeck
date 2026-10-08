@@ -38,4 +38,18 @@ public static class CustomerIdentity
     /// geçerli sayıp depo boş sayarsa form depoda reddedilir ve imleci kilitler.
     /// </summary>
     public static string IntakeHandleOf(string? username) => (username ?? "").Trim().TrimStart('@').Trim();
+
+    /// <summary>
+    /// Göç 046: göç öncesi (damgasız) bir grubun bilgisayardan bağımsız numarası. <paramref name="anchor"/>
+    /// = çapa üyenin "platform|kimlik anahtarı"; numara onun SHA-256'sının ilk 16 baytı, Guid "N"
+    /// biçiminde (32 küçük onaltılık hane) — form gruplarının numarası da bu biçimde. Aynı çapa her
+    /// bilgisayarda aynı numarayı verir. DEĞİŞTİRİLMEZ: uygulanmış göç yeniden koşmaz, farklı bir
+    /// türetme sonradan güncellenen bilgisayarla eskileri ayrıştırır.
+    /// </summary>
+    public static string LegacyGroupIdOf(string anchor)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("orderdeck-legacy-group|" + anchor));
+        return System.Convert.ToHexString(hash, 0, 16).ToLowerInvariant();
+    }
 }

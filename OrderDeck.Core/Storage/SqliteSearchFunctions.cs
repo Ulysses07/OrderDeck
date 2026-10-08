@@ -55,5 +55,12 @@ public static class SqliteSearchFunctions
             "od_identity_key",
             username => CustomerIdentity.KeyOrNull(username),
             isDeterministic: true);
+
+        // Yalnız göç 046'nın tek seferlik ifadesi kullanır (eski grup numaraları); od_identity_key
+        // ile aynı kural: hiçbir şema nesnesinde kullanılmaz.
+        connection.CreateFunction<string?, string?>(
+            "od_legacy_group_id",
+            anchor => anchor is null ? null : CustomerIdentity.LegacyGroupIdOf(anchor),
+            isDeterministic: true);
     }
 }
