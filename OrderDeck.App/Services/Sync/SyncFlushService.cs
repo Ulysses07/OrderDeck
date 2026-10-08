@@ -44,7 +44,11 @@ public sealed record FlushStep(string Name, Func<CancellationToken, Task> Run, d
 /// iş parçacığından başlar (C4/C6 incelemesi). Bütçe KESİN: belirteci dinlemeyen ya da eşzamanlı
 /// bekleyen bir adım beklenmez — kayıtlar kaybolmaz, sonraki açılışta gider. Bırakılan adım arka
 /// planda biter ya da süreçle birlikte kesilir (SQLite yazımı işlem bütünlüğünde, sunucu gönderimi
-/// idempotent).</para>
+/// idempotent). "Ne kadar kaldı" TEK bir saatten (<see cref="Stopwatch"/>) okunur — her adımın
+/// <c>CancelAfter</c>'ı AYNI okumadan türer, genel bütçe için AYRI bir zamanlayıcı yoktur (son
+/// inceleme): iki bağımsız zamanlayıcı aynı anı hedeflese de hangisinin önce ateşleyeceği garanti
+/// değildi, yük altında sıraları değişip bir adımın payı bitince sıradaki adımın genel bütçe de
+/// bitmiş olduğu hâlde yanlışlıkla başlamasına yol açabiliyordu.</para>
 ///
 /// <para><b>Hata yalıtımı:</b> <see cref="FlushAsync"/> fırlatmaz; bir adımın hatası (ör. gönderimin
 /// yerel SQLite hatası — HTTP hatasını servisler kendileri yutar) günlüğe yazılır, sıradakine
@@ -112,26 +116,64 @@ public sealed class SyncFlushService
         return share < remaining ? share : remaining;
     }
 
+    /// <summary><see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> kesirli milisaniyeyi
+    /// KIRPAR (aşağı yuvarlar); yukarı yuvarlamak bunu telafi eder — gerçekleşen bekleme asla
+    /// istenenden kısa olmaz (<see cref="FlushAsync"/>'teki tek-saat kararıyla çelişmez).</summary>
+    private static TimeSpan RoundUpToMillisecond(TimeSpan t) => TimeSpan.FromMilliseconds(Math.Ceiling(t.TotalMilliseconds));
+
+    /// <summary>Son inceleme: payı REMAINING'E TAM eşit bir adımdan (maxShare 1.0, ya da sıradaki
+    /// son adım) sonra "genel bütçe de bitti mi" kararı iki AYRI saat arasında sıfır marjlı bir
+    /// karşılaştırmaya dayanıyordu — <see cref="Stopwatch"/> ile <see cref="CancellationTokenSource"/>'ın
+    /// kendi zamanlayıcısı aynı mikrosaniyeye kadar ASLA tam örtüşmez (yukarı yuvarlama tek
+    /// başına yetmedi — 400 turluk bir denemede %12'den %2,5'e düştü ama sıfırlanmadı). Bu küçük
+    /// pay, karşılaştırmayı sıfır marjdan güvenli bir marja taşır: saniyelik bütçeler için önemsiz,
+    /// ama "bitti" kararını birkaç mikro/milisaniyelik gürültüye bırakmaz.</summary>
+    private static readonly TimeSpan BudgetExhaustionMargin = TimeSpan.FromMilliseconds(5);
+
+    private static bool IsBudgetExhausted(TimeSpan budget, Stopwatch elapsed) => budget - elapsed.Elapsed <= BudgetExhaustionMargin;
+
     public async Task FlushAsync(TimeSpan budget)
     {
+        // TEK zaman kaynağı (son inceleme — bütçe tek saatten): "ne kadar kaldı" HER ZAMAN bu
+        // Stopwatch'tan okunur. Önceki sürüm AYRICA `overall`'ın kendi zamanlayıcısını
+        // (CancellationTokenSource(budget)) kuruyor, adımın kendi CancelAfter'ıyla AYNI anı
+        // hedefliyordu — ama bunlar BAĞIMSIZ iki zamanlayıcıydı: aynı anı hedeflemeleri hangisinin
+        // ÖNCE ateşleyeceğini garanti etmiyordu (zamanlayıcı kuyruğu/çözünürlük yük altında
+        // sıralarını değiştirebiliyordu). Adımın payı bitip "overall.IsCancellationRequested" henüz
+        // false'ken (overall'ın kendi zamanlayıcısı az sonra ateşleyecek ama DAHA ateşlemedi) döngü
+        // bunu "yalnız bu adımın payı bitti, GENEL bütçe değil" sanıp sıradaki adımı YANLIŞLIKLA
+        // başlatabiliyordu. Artık `overall`'ın kendi zamanlayıcısı yok — yalnız adımların CTS'lerini
+        // bağlayan ortak kaynak; her kararı (adım başlasın mı, bütçe gerçekten bitti mi) aynı
+        // `elapsed` okur, iki zamanlayıcı asla çelişemez.
         var elapsed = Stopwatch.StartNew();
         // Bırakılan bir adım belirteci hâlâ tutuyor olabilir: kaynaklar yalnız hiçbir adım
         // bırakılmadıysa elden çıkarılır (süresi dolmuş zamanlayıcı kaynağı bekletmez).
-        var overall = new CancellationTokenSource(budget);
+        var overall = new CancellationTokenSource();
         var abandoned = false;
         try
         {
             for (var i = 0; i < _steps.Count; i++)
             {
-                var allowance = StepAllowance(budget, budget - elapsed.Elapsed, _steps[i].MaxShare, _steps.Count - i);
-                if (overall.IsCancellationRequested || allowance <= TimeSpan.Zero)
+                var remaining = budget - elapsed.Elapsed;
+                var allowance = StepAllowance(budget, remaining, _steps[i].MaxShare, _steps.Count - i);
+                if (IsBudgetExhausted(budget, elapsed) || allowance <= TimeSpan.Zero)
                 {
                     LogBudgetExhausted(i);
                     return;
                 }
                 var step = _steps[i];
                 var stepCts = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
-                stepCts.CancelAfter(allowance);
+                // CancelAfter'a YUVARLANMADAN verilen pay erken ateşleyebilir: CancelAfter kendi
+                // içinde TimeSpan'i tam milisaniyeye KIRPAR (kesirli kısmı atar — .NET'in belgelenmiş
+                // davranışı), Stopwatch ise mikrosaniye hassasiyetinde. Payın remaining'e TAM eşit
+                // olduğu (son inceleme: maxShare 1.0, ya da sırada son adım) durumda bu, zamanlayıcının
+                // "remaining"den <1 ms ÖNCE ateşlemesine yol açıyordu — iptalden hemen sonra okunan
+                // elapsed.Elapsed budget'ı henüz aşmamış görünüyor, döngü bunu "bütçe bitmedi" sanıp
+                // SIRADAKİ adımı yanlışlıkla başlatıyordu (bir süreç içi 400 turluk denemede ~%12
+                // görüldü — DAR değil GERÇEK bir kusurdu). Yukarı yuvarlamak CancelAfter'ın kendi
+                // kırpmasının asla remaining'in ALTINA düşmemesini garanti eder; adım en çok <1 ms
+                // fazla pay alır (saniyelik bütçeler için önemsiz).
+                stepCts.CancelAfter(RoundUpToMillisecond(allowance));
                 var run = Task.Run(() => step.Run(stepCts.Token));
                 try
                 {
@@ -148,7 +190,10 @@ public sealed class SyncFlushService
                             TaskScheduler.Default);
                     }
                     else stepCts.Dispose();
-                    if (overall.IsCancellationRequested)
+                    // Aynı saatten: genel bütçe gerçekten bitti mi, yoksa yalnız bu adımın payı mı
+                    // (kalanlar sıradaki adımlara geçer) — iki ayrı zamanlayıcının çelişmesi yok;
+                    // BudgetExhaustionMargin sıfır marjlı karşılaştırmayı güvenli hâle getirir.
+                    if (IsBudgetExhausted(budget, elapsed))
                     {
                         LogBudgetExhausted(i);
                         return;

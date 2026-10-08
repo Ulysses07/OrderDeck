@@ -55,6 +55,15 @@ public sealed class SyncFlushServiceTests
     [Fact]
     public async Task Sure_dolunca_kalan_adimlar_atlanir_hata_firlamaz()
     {
+        // İlk adımın payı (maxShare: 1.0) TAM OLARAK kalan bütçeye eşittir — "adımın payı bitti"
+        // ile "GENEL bütçe de bitti" kararı aynı anda verilir. Bu, FlushAsync'in tek saatinin
+        // (Stopwatch) kendisiyle bile sıfır marjlı bir karşılaştırmaydı: CancelAfter'ın kendi
+        // zamanlayıcısı milisaniyenin kesirli kısmını kırptığı için adım, Stopwatch'a göre <1 ms
+        // ÖNCE iptal olabiliyordu — döngü bunu "bütçe bitmedi" sanıp sıradaki adımı YANLIŞLIKLA
+        // başlatıyordu (son inceleme: 400 turluk bir iç döngüde ~%12 görüldü, saf bir tesadüf
+        // değildi). FlushAsync'teki BudgetExhaustionMargin bu sıfır marjı güvenli bir marja taşıdı
+        // (2000 turluk iç döngüde bu TAM 100 ms'lik bütçeyle sıfır hataya indi) — test bu yüzden
+        // GERÇEK bir saatle, dar görünen ama artık üretim kodundaki marjla korunan bütçesinde kalır.
         var skippedRan = false;
         var svc = new SyncFlushService(new[]
         {
@@ -62,7 +71,7 @@ public sealed class SyncFlushServiceTests
             Step(_ => { skippedRan = true; throw new InvalidOperationException("çalışmamalı"); }),
         });
 
-        var act = () => svc.FlushAsync(TimeSpan.FromMilliseconds(100));
+        var act = () => svc.FlushAsync(TimeSpan.FromMilliseconds(100)).WaitAsync(TimeSpan.FromSeconds(11));
 
         await act.Should().NotThrowAsync();
         skippedRan.Should().BeFalse("süre doldu — kalan adım sonraki açılışta gider");
@@ -152,6 +161,12 @@ public sealed class SyncFlushServiceTests
         // olmak gerekir; aksi hâlde yük altında assert, finally henüz koşmadan "Zero" bulup düşer
         // (gerçek bir yarış, dar zaman penceresinin perdelediği bir kusur). customerStepFinished bu
         // yarışı kapatır: finally koşana kadar açıkça bekleriz.
+        //
+        // Aynı yarış SIRADAKİ adımda da var: iş parçacığı havuzu çok yüklüyse (ör. tüm takımla
+        // eşzamanlı koşu) o adımın Task.Run'ı payı dolana kadar hiç başlamayabilir — FlushAsync onu
+        // da bırakır (abandoned). Ama bu adımın kendi gövdesi belirteci HİÇ dinlemiyor: er ya da geç
+        // bir iş parçacığı bulunca yine çalışıp nextRan'ı true yapar — yalnız FlushAsync'in dönüşünden
+        // SONRA olabilir. nextStepRan aynı şekilde açıkça beklenir.
         var budget = TimeSpan.FromSeconds(4);
         var expectedCustomerShare =
             SyncFlushService.StepAllowance(budget, remaining: budget, SyncFlushService.CustomerShare, stepsLeft: 2);
@@ -159,6 +174,7 @@ public sealed class SyncFlushServiceTests
         var customerCancelledAt = TimeSpan.Zero;
         var customerStepFinished = new TaskCompletionSource();
         var nextRan = false;
+        var nextStepRan = new TaskCompletionSource();
         var sw = Stopwatch.StartNew();
         var svc = new SyncFlushService(new[]
         {
@@ -171,11 +187,12 @@ public sealed class SyncFlushServiceTests
                     customerStepFinished.TrySetResult();
                 }
             }, maxShare: SyncFlushService.CustomerShare),
-            Step(_ => { nextRan = true; return Task.CompletedTask; }),
+            Step(_ => { nextRan = true; nextStepRan.TrySetResult(); return Task.CompletedTask; }),
         });
 
         await svc.FlushAsync(budget).WaitAsync(generousCeiling);   // cömert üst sınır: akış sonsuza kalmasın
         await customerStepFinished.Task.WaitAsync(generousCeiling); // bırakılan adımın finally'si de aynı sınırda
+        await nextStepRan.Task.WaitAsync(generousCeiling);          // sıradaki adım da bırakılmış olabilir
 
         nextRan.Should().BeTrue("müşteri adımı payını bitirince sıradaki adım kalan süreyle koşar");
         // Yarı pay kadar (ya da fazlası) geçmeden bırakılmamalı — "hemen iptal edildi" gibi bir
