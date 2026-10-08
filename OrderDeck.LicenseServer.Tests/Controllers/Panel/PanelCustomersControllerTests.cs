@@ -576,8 +576,8 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
 
     // ─── Siparişsiz kayıtlı shopper'lar (WpfCustomerProjection) ───────────────
 
-    private async Task SeedProjectionAsync(Guid licenseId, Guid id, string fullName,
-        string username, string platform, DateTimeOffset? updatedAt = null)
+    private async Task SeedProjectionAsync(Guid licenseId, Guid id, string? fullName,
+        string username, string platform, DateTimeOffset? updatedAt = null, string? displayName = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -588,6 +588,7 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
             Platform = platform,
             Username = username,
             FullName = fullName,
+            DisplayName = displayName,
             Phone = TestPhone.NewE164(),
             Address = "Test addr",
             UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow,
@@ -613,6 +614,59 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         c.GetProperty("totalSpent").GetDecimal().Should().Be(0m);
         c.GetProperty("displayName").GetString().Should().Be("Yeni Musteri");
         c.GetProperty("isActive").GetBoolean().Should().BeFalse();
+    }
+
+    /// <summary>
+    /// R3-02 yedeği (masaüstü PR-3) kalkınca: form adı girilmemiş müşteride
+    /// FullName boş kalır, platform takma adı ayrı DisplayName alanında gelir.
+    /// Bu düşüş olmasa panel listesi @kullanıcı adını gösterirdi.
+    /// </summary>
+    [Fact]
+    public async Task List_zero_order_blank_fullName_uses_displayName()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var pid = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, pid, fullName: null, "@yenitakmaadli", "instagram",
+            displayName: "YeniTakmaAd");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        customers[0].GetProperty("displayName").GetString().Should().Be("YeniTakmaAd");
+    }
+
+    /// <summary>Yalnız boşluktan oluşan FullName da boş sayılmalı (null ile aynı davranış).</summary>
+    [Fact]
+    public async Task List_zero_order_whitespace_fullName_uses_displayName()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var pid = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, pid, fullName: "   ", "@takmaadli2", "instagram",
+            displayName: "TakmaAdIkincisi");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("customers")[0].GetProperty("displayName").GetString()
+            .Should().Be("TakmaAdIkincisi");
+    }
+
+    /// <summary>FullName doluysa — DisplayName de ayrıca dolu olsa bile — gerçek ad kullanılır.</summary>
+    [Fact]
+    public async Task List_zero_order_keeps_fullName_when_displayName_also_present()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var pid = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, pid, fullName: "Gercek Ad", "@takmaadli3", "instagram",
+            displayName: "Baska Takma Ad");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("customers")[0].GetProperty("displayName").GetString()
+            .Should().Be("Gercek Ad");
     }
 
     [Fact]
@@ -919,5 +973,21 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         root.GetProperty("displayName").GetString().Should().Be("Yeni Musteri");
         root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(pid.ToString());
         root.GetProperty("recentOrders").GetArrayLength().Should().Be(0);
+    }
+
+    /// <summary>Detay uçu da (liste gibi) FullName boşsa DisplayName'e düşmeli — R3-02 yedeği kalkınca.</summary>
+    [Fact]
+    public async Task Get_zero_order_blank_fullName_uses_displayName()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var pid = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, pid, fullName: null, "@detaytakmaad", "instagram",
+            displayName: "DetayTakmaAd");
+
+        var resp = await client.GetAsync($"/api/panel/customers/{pid:N}");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("displayName").GetString().Should().Be("DetayTakmaAd");
     }
 }

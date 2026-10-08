@@ -203,9 +203,12 @@ public sealed class PaymentMatcher
         if (_candidates.TryGetValue(licenseId, out var cached)) return cached;
         var rows = await _db.WpfCustomerProjections.AsNoTracking()
             .Where(c => c.LicenseId == licenseId && c.PurgedAt == null)
-            .Select(c => new { c.Id, c.Username, c.FullName }).ToListAsync(ct);
+            .Select(c => new { c.Id, c.Username, c.FullName, c.DisplayName }).ToListAsync(ct);
+        // Gerçek ad yoksa (form adı girilmemiş müşteri — masaüstünün R3-02 yedeği
+        // kalkınca FullName boş kalır) ad katmanı takma adla (DisplayName) dener.
         var list = rows.Select(r => new Candidate(r.Id, BankTextNormalizer.UsernameKey(r.Username),
-            BankTextNormalizer.UsernameTokens(r.Username), BankTextNormalizer.Tokenize(r.FullName).Tokens)).ToList();
+            BankTextNormalizer.UsernameTokens(r.Username),
+            BankTextNormalizer.Tokenize(string.IsNullOrWhiteSpace(r.FullName) ? r.DisplayName : r.FullName).Tokens)).ToList();
         _candidates[licenseId] = list;
         return list;
     }
