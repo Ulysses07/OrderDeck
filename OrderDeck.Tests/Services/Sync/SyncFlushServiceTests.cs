@@ -140,7 +140,24 @@ public sealed class SyncFlushServiceTests
     {
         // D5b'den ya da ilk biçim-2 gönderiminden sonra müşteri kuyruğu çok büyük olabilir: bütün
         // bütçeyi o yerse oturum, etiket, ödeme ve kargo kapanışta hiç gitmezdi.
+        //
+        // Davranış sınanır, dar bir zaman penceresi değil (yük altında kararlı olsun — bir CI
+        // koşucusunun gecikmesi test düşürmesin). StepAllowance'ın KESİN aritmetiği zaten
+        // Adimin_payi'de deterministik (wall-clock'suz) sınanıyor; burada yalnız üçü doğrulanır:
+        // müşteri adımı payını (sıfıra yakın değil) bitirmeden bırakılmıyor, SIRADAKİ adım koşuyor,
+        // ve bütün akış cömert bir üst sınırın içinde bitiyor (sonsuza kalmıyor).
+        //
+        // FlushAsync bırakılan adımı BEKLEMEZ (abandoned = true, devam eder) — bu yüzden
+        // customerCancelledAt'in finally'de yazıldığından FlushAsync'in dönüşünden SONRA da emin
+        // olmak gerekir; aksi hâlde yük altında assert, finally henüz koşmadan "Zero" bulup düşer
+        // (gerçek bir yarış, dar zaman penceresinin perdelediği bir kusur). customerStepFinished bu
+        // yarışı kapatır: finally koşana kadar açıkça bekleriz.
+        var budget = TimeSpan.FromSeconds(4);
+        var expectedCustomerShare =
+            SyncFlushService.StepAllowance(budget, remaining: budget, SyncFlushService.CustomerShare, stepsLeft: 2);
+        var generousCeiling = budget + TimeSpan.FromSeconds(10);
         var customerCancelledAt = TimeSpan.Zero;
+        var customerStepFinished = new TaskCompletionSource();
         var nextRan = false;
         var sw = Stopwatch.StartNew();
         var svc = new SyncFlushService(new[]
@@ -148,15 +165,23 @@ public sealed class SyncFlushServiceTests
             Step(async ct =>
             {
                 try { await Task.Delay(Timeout.Infinite, ct); }
-                finally { customerCancelledAt = sw.Elapsed; }
+                finally
+                {
+                    customerCancelledAt = sw.Elapsed;
+                    customerStepFinished.TrySetResult();
+                }
             }, maxShare: SyncFlushService.CustomerShare),
             Step(_ => { nextRan = true; return Task.CompletedTask; }),
         });
 
-        await svc.FlushAsync(TimeSpan.FromSeconds(4));
+        await svc.FlushAsync(budget).WaitAsync(generousCeiling);   // cömert üst sınır: akış sonsuza kalmasın
+        await customerStepFinished.Task.WaitAsync(generousCeiling); // bırakılan adımın finally'si de aynı sınırda
 
         nextRan.Should().BeTrue("müşteri adımı payını bitirince sıradaki adım kalan süreyle koşar");
-        customerCancelledAt.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(1.9)).And.BeLessThan(TimeSpan.FromSeconds(4));
+        // Yarı pay kadar (ya da fazlası) geçmeden bırakılmamalı — "hemen iptal edildi" gibi bir
+        // regresyonu yakalar; kesin değeri Adimin_payi zaten sınıyor, o yüzden burada bol tolerans var.
+        customerCancelledAt.Should().BeGreaterThan(expectedCustomerShare / 2,
+            "müşteri adımı payını bitirmeden bırakılmamalı");
     }
 
     // ── tek partide gönderenler kuyruğu boşaltır (inceleme önemli 1) ─────
