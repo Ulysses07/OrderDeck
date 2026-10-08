@@ -45,7 +45,7 @@ public class CustomerDetailViewModelTests
         Mock<IClock> Clock,
         CustomerDetailViewModel Vm);
 
-    private static Harness Build()
+    private static Harness Build(bool withShipments = false)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -67,7 +67,10 @@ public class CustomerDetailViewModelTests
         // Network call yapmaz çünkü test'ler hiçbir noktada balance reload tetiklemiyor.
         var stubHttp = new HttpClient(new StubHandler()) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(stubHttp, new LicenseTokenStore());
-        var vm = new CustomerDetailViewModel(customerRepo, labelRepo, labelSvc, giveawayRepo, sessionSvc, api);
+        var vm = withShipments
+            ? new CustomerDetailViewModel(customerRepo, labelRepo, labelSvc, giveawayRepo, sessionSvc, api,
+                shipments: new ShipmentRepository(db))
+            : new CustomerDetailViewModel(customerRepo, labelRepo, labelSvc, giveawayRepo, sessionSvc, api);
         return new Harness(db, customerRepo, labelRepo, labelSvc, giveawayRepo,
                            sessionRepo, sessionSvc, clock, vm);
     }
@@ -320,6 +323,86 @@ public class CustomerDetailViewModelTests
         h.Vm.SaveNotesCommand.Execute(null);
 
         h.Customers.GetById("c1")!.Notes.Should().Be("untouched");
+    }
+
+    // ─── U12: pencere açıkken yerel taşıma ───────────────────────────────────
+
+    [Fact]
+    public void SaveNotes_pencere_acikken_musteri_tasinsa_da_not_asil_kayda_yazilir()
+    {
+        var h = Build();
+        SeedCustomer(h, id: "c1", username: "alice");
+        SeedCustomer(h, id: "k1", username: "Alice");
+        h.Vm.Load("c1").Should().BeTrue();
+
+        // Pencere açıkken push yanıtı c1'i asıl kayda taşıdı (U12).
+        new CustomerSyncRepository(h.Db).RekeyToLocal("c1", "k1", pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+        h.Vm.NotesEdit = "kapıya bırak";
+        h.Vm.SaveNotesCommand.Execute(null);
+
+        h.Customers.GetById("k1")!.Notes.Should().Be("kapıya bırak", "0 satır güncellenip not sessizce kaybolmasın");
+    }
+
+    [Fact]
+    public void Load_tasinmis_Idyi_asil_kayitla_acar()
+    {
+        var h = Build();
+        SeedActiveSession(h, "s-active");
+        SeedCustomer(h, id: "c1", username: "alice");
+        SeedCustomer(h, id: "k1", username: "Alice", notes: "asıl");
+        SeedLabel(h, "l-k1", "k1", "s-active");
+        new CustomerSyncRepository(h.Db).RekeyToLocal("c1", "k1", pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+
+        h.Vm.Load("c1").Should().BeTrue("arama listesindeki eski kart da açılır");
+        h.Vm.NotesEdit.Should().Be("asıl");
+        h.Vm.Labels.Should().ContainSingle("etiket ve çekiliş okumaları da güncel Id'yle")
+            .Which.Id.Should().Be("l-k1");
+    }
+
+    [Fact]
+    public void Etiket_listesi_pencere_acikken_tasinan_musteride_bos_kalmaz()
+    {
+        var h = Build();
+        SeedActiveSession(h, "s-active");
+        SeedCustomer(h, id: "c1", username: "alice");
+        SeedCustomer(h, id: "k1", username: "Alice");
+        SeedLabel(h, "l-1", "c1", "s-active", cancelledAt: 150, cancelReason: "wrong-price");
+        h.Vm.Load("c1").Should().BeTrue();
+        h.Vm.SelectedLabels.Add(h.Vm.Labels.Single());
+
+        // Pencere açıkken c1 asıl kayda taşındı; etiketi de k1'e geçti.
+        new CustomerSyncRepository(h.Db).RekeyToLocal("c1", "k1", pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+        h.Vm.UncancelSelectedCommand.Execute(null);   // listeyi yeniden okur
+
+        h.Vm.Labels.Should().ContainSingle("liste eski Id'yle boş okunmasın")
+            .Which.Id.Should().Be("l-1");
+        h.Vm.Labels.Single().IsCancelled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Load_tasimadan_kalan_iki_acik_kargoyu_uyarir()
+    {
+        // Taşıma kargoları birleştirmez: kopyanın ve asıl kaydın açık dosyaları aynı kişide kalır.
+        var h = Build(withShipments: true);
+        SeedCustomer(h, id: "c1", username: "alice");
+        SeedCustomer(h, id: "k1", username: "Alice");
+        var shipments = new ShipmentRepository(h.Db);
+        shipments.Insert(new Shipment("kargo-1", "c1", ShipmentStatus.Pending, 100, null, null, 0m));
+
+        h.Vm.Load("c1").Should().BeTrue();
+        h.Vm.OpenShipmentWarning.Should().BeNull("tek açık dosya olağan durum");
+
+        shipments.Insert(new Shipment("kargo-2", "k1", ShipmentStatus.Held, 120, 130, null, 0m));
+        new CustomerSyncRepository(h.Db).RekeyToLocal("c1", "k1", pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+
+        h.Vm.Load("c1").Should().BeTrue();
+        h.Vm.OpenShipmentWarning.Should().Be(
+            "Bu kişinin 2 açık kargo dosyası var (bilgisayarlar arası birleştirme sonrası). "
+            + "Bir sonraki kargo kararı ikisine birden uygulanır.");
     }
 
     // ─── CanCancelSelected / CanUncancelSelected ─────────────────────────────

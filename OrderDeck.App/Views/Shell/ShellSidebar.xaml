@@ -243,7 +243,54 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
+
+                <!-- Senkron durumu: diğer bilgisayarlara yetişildi mi, gönderilmemiş kayıt var mı.
+                     Kalıcı uyarılar eklenince metin dar kenar çubuğunda kırpılır; tamamı ve
+                     ne yapılacağı ipucunda. -->
+                <TextBlock Text="{Binding SyncStatusText}"
+                           FontSize="{StaticResource OD.Font.F1}"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding SyncStatusTooltip}"
+                           Margin="{StaticResource OD.Pad.Top5}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.Amber}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSyncHealthy}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
             </StackPanel>
+
+            <!-- Dar modda yukarıdaki panel (senkron satırı dahil) gizli: senkron
+                 sağlıksızsa yerinde yalnız sarı nokta kalır, ipucu satırınkiyle
+                 aynı. Nokta bağlantı noktalarıyla aynı boyda; saydam zemin +
+                 dolgu fareyle ipucunu bulmayı kolaylaştırır. -->
+            <Border x:Name="SyncDot" Grid.Row="2"
+                    Background="Transparent"
+                    Padding="{StaticResource OD.Pad.2}"
+                    Margin="{StaticResource OD.Pad.2}"
+                    HorizontalAlignment="Center"
+                    ToolTip="{Binding SyncStatusTooltip}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding IsCompact}" Value="True"/>
+                                    <Condition Binding="{Binding IsSyncHealthy}" Value="False"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Ellipse Width="8" Height="8" Fill="{StaticResource OD.Brush.Amber}"/>
+            </Border>
 
             <!-- Taşma menüsü (x:Name ve handler MainShellView'dan aynen) -->
             <Button Grid.Row="3"
@@ -262,6 +309,9 @@
                         <Separator/>
                         <MenuItem Header="Ayarlar" Command="{Binding OpenSettingsCommand}"/>
                         <MenuItem Header="Destek Talepleri" Command="{Binding OpenSupportRequestsCommand}"/>
+                        <MenuItem Header="Müşteri senkronunu baştan al…" Command="{Binding ResyncCustomersCommand}"
+                                  ToolTip="Yalnız destek istediğinde. Yayın sürerken kullanılamaz."
+                                  ToolTipService.ShowOnDisabled="True"/>
                         <MenuItem Header="Hesap" Command="{Binding OpenAccountCommand}"/>
                     </ContextMenu>
                 </Button.ContextMenu>

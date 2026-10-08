@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Services.Sync;
@@ -29,6 +30,7 @@ public sealed class IntakeFormSyncServiceTests
     private const string TestLicenseKey = "LDK-TEST-FIXTURE";
     private const string CursorName = "intake-form-in";
     private const string BackfillMarkerName = "intake-fullname-backfill";
+    private const string ReplayMarkerName = "intake-form-replay";
 
     private static (IntakeFormSyncService svc, CustomerRepository repo, SyncCursorRepository cursors, FakeHttpMessageHandler handler) Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -47,6 +49,9 @@ public sealed class IntakeFormSyncServiceTests
         {
             CurrentLicenseKey = seedLicense ? TestLicenseKey : null
         };
+        // Bu dosyanın testleri damgalı kipi sınar; taze bilgisayarın doldurma kipi (U14)
+        // IntakeFormReplayTests'te. Oynatma bitmiş sayılır.
+        cursors.Upsert(ReplayMarkerName, TestLicenseKey, seq: 2);
 
         var svc = new IntakeFormSyncService(api, repo, cursors, licenseProvider, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
@@ -67,13 +72,13 @@ public sealed class IntakeFormSyncServiceTests
     public async Task SyncOnceAsync_creates_customer_with_form_platform()
     {
         var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"bilalcanli","fullName":"Bilal Canlı","address":"Atatürk Cad","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ornekmusteri","fullName":"Örnek Müşteri","address":"Atatürk Cad","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var count = await svc.SyncOnceAsync();
 
         count.Should().Be(1);
-        var customers = repo.Search("bilalcanli", limit: 5);
-        customers.Should().Contain(c => c.Platform == "form" && c.Username == "bilalcanli");
+        var customers = repo.Search("ornekmusteri", limit: 5);
+        customers.Should().Contain(c => c.Platform == "form" && c.Username == "ornekmusteri");
     }
 
     [Fact]
@@ -206,22 +211,24 @@ public sealed class IntakeFormSyncServiceTests
     [Fact]
     public async Task SyncOnceAsync_propagates_phone_from_dto_to_customer()
     {
+        var telefon = TestPhone.NewE164();
         var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"alice","fullName":"Alice","address":"Addr","phone":"+905551111111","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+            $$"""[{"id":"00000000-0000-0000-0000-000000000001","username":"alice","fullName":"Alice","address":"Addr","phone":"{{telefon}}","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var count = await svc.SyncOnceAsync();
 
         count.Should().Be(1);
         var customer = repo.Search("alice", limit: 5).Single(c => c.Platform == "form");
-        customer.Phone.Should().Be("+905551111111");
+        customer.Phone.Should().Be(telefon);
     }
 
     [Fact]
     public async Task SyncOnceAsync_youtube_channelId_merges_into_existing_chat_customer()
     {
         // Chat'ten kaydedilmiş YouTube müşterisi: Username=channelId.
+        var telefon = TestPhone.NewE164();
         var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"UCabc123","fullName":"Sibel G","address":"Ankara","phone":"+905559998877","submittedAt":"2026-04-30T12:00:00Z","youTubeUsername":"sibelg","youTubeChannelId":"UCabc123"}]"""));
+            $$"""[{"id":"00000000-0000-0000-0000-000000000001","username":"UCabc123","fullName":"Sibel G","address":"Ankara","phone":"{{telefon}}","submittedAt":"2026-04-30T12:00:00Z","youTubeUsername":"sibelg","youTubeChannelId":"UCabc123"}]"""));
         repo.Insert(new OrderDeck.Core.Customers.Customer(
             "yt1", "youtube", "UCabc123", "@sibelg", null,
             100, 100, false, null, null, 2, 180m, null, null, null));
@@ -233,8 +240,131 @@ public sealed class IntakeFormSyncServiceTests
         var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
         yts.Should().HaveCount(1);
         yts[0].Id.Should().Be("yt1");
-        yts[0].Phone.Should().Be("+905559998877");
+        yts[0].Phone.Should().Be(telefon);
         yts[0].TotalAmount.Should().Be(180m);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_form_birimlerini_SubmittedAt_ile_damgalar()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse_y","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ayse_y"}]"""));
+        var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
+            new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        new SyncCursorRepository(db).Upsert(ReplayMarkerName, lisans.CurrentLicenseKey!, seq: 2);
+        var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
+            NullLogger<IntakeFormSyncService>.Instance);
+
+        await svc.SyncOnceAsync();
+
+        var id = repo.FindByPlatformAndUsername("instagram", "ayse_y")!.Id;
+        using var c = db.Open();
+        c.ExecuteScalar<long?>("SELECT FullNameChangedAt FROM Customer WHERE Id = @id", new { id })
+            .Should().Be(DateTimeOffset.Parse("2026-04-30T12:00:00Z").ToUnixTimeMilliseconds(),
+                "damga işleme anı (FakeClock) değil, formun gönderim anı");
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_eski_form_satirini_SubmittedAt_ile_damgalar()
+    {
+        // Platform alanı olmayan eski gönderim → UpsertFromIntakeForm yolu; o da formun
+        // gönderim anını almalı (üç çağrının ikincisi).
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse_form","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+        var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
+            new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        new SyncCursorRepository(db).Upsert(ReplayMarkerName, lisans.CurrentLicenseKey!, seq: 2);
+        var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
+            NullLogger<IntakeFormSyncService>.Instance);
+
+        await svc.SyncOnceAsync();
+
+        var id = repo.FindByPlatformAndUsername("form", "ayse_form")!.Id;
+        using var c = db.Open();
+        c.ExecuteScalar<long?>("SELECT DisplayNameChangedAt FROM Customer WHERE Id = @id", new { id })
+            .Should().Be(DateTimeOffset.Parse("2026-04-30T12:00:00Z").ToUnixTimeMilliseconds(),
+                "damga işleme anı (FakeClock) değil, formun gönderim anı");
+    }
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_adi_SubmittedAt_ile_damgalar()
+    {
+        // Üç çağrının üçüncüsü: geriye dönük ad doldurma da formun gönderim anını alır.
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new OrderDeck.Core.Customers.Customer(
+            "ig1", "instagram", "ayse_y", "ayse_y", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ayse_y","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ayse_y"}]"""));
+        var api = new LicenseApiClient(new HttpClient(handler) { BaseAddress = new Uri("https://test.local") },
+            new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var lisans = new StubLicenseProvider { CurrentLicenseKey = $"lisans-{Guid.NewGuid():N}" };
+        new SyncCursorRepository(db).Upsert(ReplayMarkerName, lisans.CurrentLicenseKey!, seq: 2);
+        var svc = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db), lisans, new FakeClock(),
+            NullLogger<IntakeFormSyncService>.Instance);
+
+        (await svc.BackfillFullNamesOnceAsync()).Should().Be(1);
+
+        using var c = db.Open();
+        c.ExecuteScalar<long?>("SELECT FullNameChangedAt FROM Customer WHERE Id = 'ig1'")
+            .Should().Be(DateTimeOffset.Parse("2026-04-30T12:00:00Z").ToUnixTimeMilliseconds(),
+                "damga doldurma anı değil, formun gönderim anı");
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_bos_form_kimligi_sonraki_formlari_kilitlemez_turetilmis_grup_her_bilgisayarda_ayni()
+    {
+        // JSON'da "id" yok → Guid.Empty. Depo boş kimliği reddeder (yeni grup ondan türer); servis
+        // ona hiç boş kimlik geçmez, her bilgisayarda aynı çıkan türetilmiş kimliği kullanır. Tek
+        // bozuk gönderim sayfanın geri kalanını ve imleci kilitlememeli.
+        const string page =
+            """
+            [{"username":"ayse_y","fullName":"Ayşe Y","address":"Adres","submittedAt":"2026-04-30T11:00:00Z","instagramUsername":"ayse_y"},
+             {"id":"00000000-0000-0000-0000-000000000002","username":"fatma_k","fullName":"Fatma K","address":"Adres 2","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"fatma_k"}]
+            """;
+        var lisans = $"lisans-{Guid.NewGuid():N}";
+        async Task<(CustomerRepository Repo, SyncCursorRepository Cursors, int Count)> RunOnFreshDb()
+        {
+            var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var repo = new CustomerRepository(db);
+            var cursors = new SyncCursorRepository(db);
+            cursors.Upsert(ReplayMarkerName, lisans, seq: 2);
+            var api = new LicenseApiClient(
+                new HttpClient(new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200, page)))
+                    { BaseAddress = new Uri("https://test.local") },
+                new OrderDeck.Licensing.Api.LicenseTokenStore());
+            var svc = new IntakeFormSyncService(api, repo, cursors,
+                new StubLicenseProvider { CurrentLicenseKey = lisans }, new FakeClock(),
+                NullLogger<IntakeFormSyncService>.Instance);
+            return (repo, cursors, await svc.SyncOnceAsync());
+        }
+
+        var here = await RunOnFreshDb();
+        var there = await RunOnFreshDb();
+
+        here.Count.Should().Be(2);
+        var emptyIdRow = here.Repo.FindByPlatformAndUsername("instagram", "ayse_y")!;
+        emptyIdRow.FullName.Should().Be("Ayşe Y", "boş kimlikli form da uygulandı");
+        here.Repo.FindByPlatformAndUsername("instagram", "fatma_k")!.FullName.Should().Be("Fatma K");
+        var cursor = here.Cursors.Get(CursorName, lisans)!;
+        cursor.LastId.Should().Be(Guid.Parse("00000000-0000-0000-0000-000000000002"));
+        cursor.UpdatedAt.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
+
+        emptyIdRow.GroupId.Should().NotBeNullOrEmpty()
+            .And.NotBe(Guid.Empty.ToString("N"))
+            .And.Be(there.Repo.FindByPlatformAndUsername("instagram", "ayse_y")!.GroupId,
+                "türetilmiş kimlik her bilgisayarda aynı — grup ayrışmaz");
     }
 
     // ── FullName backfill (tek seferlik geriye-dönük düzeltme) ────────────
@@ -243,17 +373,17 @@ public sealed class IntakeFormSyncServiceTests
     public async Task BackfillFullNamesOnceAsync_fills_missing_fullname_from_server()
     {
         var (svc, repo, cursors, _) = Build(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"musaa.sevinc","fullName":"Musa Sevinç","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"musaa.sevinc"}]"""));
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"ornek.musteri","fullName":"Örnek Müşteri","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"ornek.musteri"}]"""));
         // Chat'ten gelmiş IG satırı: DisplayName = takma ad, FullName boş.
         repo.Insert(new OrderDeck.Core.Customers.Customer(
-            "ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            "ig1", "instagram", "ornek.musteri", "ornek.musteri", null,
             100, 100, false, null, null, 0, 0m, null, null, null));
 
         var updated = await svc.BackfillFullNamesOnceAsync();
 
         updated.Should().Be(1);
-        repo.GetById("ig1")!.FullName.Should().Be("Musa Sevinç");
-        repo.GetById("ig1")!.DisplayName.Should().Be("musaa.sevinc"); // dokunulmadı
+        repo.GetById("ig1")!.FullName.Should().Be("Örnek Müşteri");
+        repo.GetById("ig1")!.DisplayName.Should().Be("ornek.musteri"); // dokunulmadı
         // R9-D03: "bitti" işareti = SyncCursor satırı, Seq = sürüm 2.
         cursors.Get(BackfillMarkerName, TestLicenseKey)!.Seq.Should().Be(2);
     }
@@ -319,25 +449,83 @@ public sealed class IntakeFormSyncServiceTests
             ".NET sırasına göre seçilseydi sqlSmall giderdi ve aynı sayfa tekrar inerdi");
     }
 
-    /// <summary>R9-D03 (b): 500 sayfa tavanına çarpan (veya iptal edilen)
-    /// backfill işi YARIMDIR — "bitti" işareti yazılmaz, sonraki açılış
-    /// yeniden dener. Eski kod tavana çarpınca bile bool'u true yazıyordu
-    /// (denetim: 1000 kayıttan 599'u işlenmiş, kalan 401 sonsuza dek eksik).</summary>
+    /// <summary>R9-D03 (b): tur sınırına çarpan (veya iptal edilen) backfill işi
+    /// YARIMDIR — "bitti" işareti yazılmaz, sonraki tur kaldığı yerden sürer. Eski kod
+    /// tavana çarpınca bile bool'u true yazıyordu (denetim: 1000 kayıttan 599'u
+    /// işlenmiş, kalan 401 sonsuza dek eksik). C10 incelemesi: tur başına en çok beş
+    /// sayfa — arka plan işi backfill'i her turda dener; büyük lisansta 500 sayfa
+    /// IP başına dakikada 100 isteklik sınırı her turda tüketirdi (429).</summary>
     [Fact]
-    public async Task BackfillFullNamesOnceAsync_tavana_carpinca_bitti_isareti_yazilmaz()
+    public async Task BackfillFullNamesOnceAsync_tur_sinirina_carpinca_bitti_isareti_yazilmaz()
     {
-        // Her istekte AYNI tam sayfa dönen sunucu — imleç ilerleyemiyor,
-        // döngü ancak tavanla durur.
+        // Her istekte AYNI tam sayfa dönen sunucu — iş ancak tur sınırıyla durur.
         var items = new List<string>();
         for (var i = 0; i < 100; i++)
             items.Add($$"""{"id":"11111111-1111-1111-1111-{{i:D12}}","username":"u{{i}}","fullName":"N","address":"a","submittedAt":"2026-04-30T12:00:00Z"}""");
         var page = "[" + string.Join(",", items) + "]";
-        var (svc, _, cursors, _) = Build(_ => FakeHttpMessageHandler.Json(200, page));
+        var (svc, _, cursors, handler) = Build(_ => FakeHttpMessageHandler.Json(200, page));
 
         await svc.BackfillFullNamesOnceAsync();
 
-        cursors.Get(BackfillMarkerName, TestLicenseKey).Should().BeNull(
-            "tavan çıkışı = iş yarım; işaret yazılırsa kalan satırlar sonsuza dek eksik kalır");
+        handler.Requests.Should().HaveCount(5, "tur başına sayfa sınırı");
+        (cursors.Get(BackfillMarkerName, TestLicenseKey)?.Seq ?? 0).Should().BeLessThan(2,
+            "sınır çıkışı = iş yarım; işaret yazılırsa kalan satırlar sonsuza dek eksik kalır");
+    }
+
+    /// <summary>Tam sayfa (100 kayıt) — her çağrıda yeni Id'ler; sayfanın son Id'si kaydedilir.</summary>
+    private static Func<HttpRequestMessage, HttpResponseMessage> FullPages(List<Guid> lastIds)
+        => _ =>
+        {
+            var ids = Enumerable.Range(0, 100).Select(_ => Guid.NewGuid()).ToList();
+            lastIds.Add(ids[^1]);
+            return FakeHttpMessageHandler.Json(200, "[" + string.Join(",", ids.Select(id =>
+                $$"""{"id":"{{id}}","username":"u","fullName":"N","address":"a","submittedAt":"2026-04-30T12:00:00Z"}""")) + "]");
+        };
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_kaldigi_yerden_surer()
+    {
+        // Konum her sayfadan sonra işaret satırına yazılır (Seq < 2 iken): sonraki tur baştan değil,
+        // kaldığı yerden çeker.
+        var lastIds = new List<Guid>();
+        var (svc, _, cursors, handler) = Build(FullPages(lastIds));
+
+        await svc.BackfillFullNamesOnceAsync();
+        var marker = cursors.Get(BackfillMarkerName, TestLicenseKey)!;
+        marker.LastId.Should().Be(lastIds[^1]);
+        marker.UpdatedAt.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
+
+        await svc.BackfillFullNamesOnceAsync();
+
+        handler.Requests.Should().HaveCount(10);
+        handler.Requests[5].RequestUri!.Query.Should().Contain($"sinceId={lastIds[4]}",
+            "ikinci tur ilk turun son satırından devam eder");
+    }
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_429_turu_durdurur_konum_kaybolmaz()
+    {
+        var lastIds = new List<Guid>();
+        var pages = FullPages(lastIds);
+        var calls = 0;
+        var (svc, _, cursors, handler) = Build(req => ++calls switch
+        {
+            1 => pages(req),
+            2 => FakeHttpMessageHandler.Empty(429),
+            _ => FakeHttpMessageHandler.Json(200, "[]"),
+        });
+
+        await svc.BackfillFullNamesOnceAsync();
+
+        handler.Requests.Should().HaveCount(2, "429 turu durdurur — kalan sayfalar denenmez");
+        var marker = cursors.Get(BackfillMarkerName, TestLicenseKey)!;
+        (marker.Seq ?? 0).Should().BeLessThan(2);
+        marker.LastId.Should().Be(lastIds[0], "429'dan önceki sayfanın konumu korunur");
+
+        await svc.BackfillFullNamesOnceAsync();
+
+        handler.Requests[2].RequestUri!.Query.Should().Contain($"sinceId={lastIds[0]}");
+        cursors.Get(BackfillMarkerName, TestLicenseKey)!.Seq.Should().Be(2);
     }
 
     // ── UI freeze fix #1 (2026-05-13): auth failure flag ──────────────────

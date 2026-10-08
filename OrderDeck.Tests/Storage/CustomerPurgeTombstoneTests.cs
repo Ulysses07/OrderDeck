@@ -31,9 +31,9 @@ public class CustomerPurgeTombstoneTests
         var repo = new CustomerRepository(db);
 
         repo.UpsertPersonFromIntake(
-            AyseIdentity, "Ayşe Yılmaz", "Adres 1", "+905551112233",
-            "ayse@example.com", "12345678901", whatsAppConsent: true, smsConsent: true,
-            nowUnix: 1000);
+            AyseIdentity, "Örnek Müşteri", "Adres 1", TestPhone.NewE164(),
+            "ayse@example.com", TestTckn.NewValid(), whatsAppConsent: true, smsConsent: true,
+            nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
         var row = repo.FindByPlatformAndUsername("instagram", "ayse_y")!;
         repo.ScrubPersonalData(row.Id).Should().Be(1);
@@ -48,9 +48,9 @@ public class CustomerPurgeTombstoneTests
         {
             // Silmeden önce çekilmiş, silmeden SONRA uygulanan form cevabı senaryosu.
             repo.UpsertPersonFromIntake(
-                AyseIdentity, "Ayşe Yılmaz", "Adres 1", "+905551112233",
-                "ayse@example.com", "12345678901", whatsAppConsent: true, smsConsent: true,
-                nowUnix: 2000);
+                AyseIdentity, "Örnek Müşteri", "Adres 1", TestPhone.NewE164(),
+                "ayse@example.com", TestTckn.NewValid(), whatsAppConsent: true, smsConsent: true,
+                nowUnix: 2000, formId: Guid.NewGuid(), submittedAtMs: 2_000_000);
 
             var row = repo.FindByPlatformAndUsername("instagram", "ayse_y")!;
             row.DisplayName.Should().Be("[Silindi]");
@@ -73,7 +73,7 @@ public class CustomerPurgeTombstoneTests
             // Backfill'in mevcut filtresi "FullName boş olanlar" — temizlenmiş
             // satır tam da bu filtreye düşüyordu (denetim probu: yalnız isim dirildi).
             var updated = repo.BackfillFullNameForIdentities(
-                new List<(string, string)> { ("instagram", "ayse_y") }, "Ayşe Yılmaz");
+                new List<(string, string)> { ("instagram", "ayse_y") }, "Örnek Müşteri", submittedAtMs: 5_000_000);
 
             updated.Should().Be(0);
             repo.FindByPlatformAndUsername("instagram", "ayse_y")!.FullName.Should().BeNull();
@@ -86,12 +86,13 @@ public class CustomerPurgeTombstoneTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
+        var telefon = TestPhone.NewE164();
 
-        repo.UpsertFromIntakeForm("ayse_form", "Ayşe Yılmaz", "Adres 1", "+905551112233", nowUnix: 1000);
+        repo.UpsertFromIntakeForm("ayse_form", "Örnek Müşteri", "Adres 1", telefon, nowUnix: 1000, submittedAtMs: 1_000_000);
         var seeded = repo.FindByPlatformAndUsername("form", "ayse_form")!;
         repo.ScrubPersonalData(seeded.Id);
 
-        var returned = repo.UpsertFromIntakeForm("ayse_form", "Ayşe Yılmaz", "Adres 1", "+905551112233", nowUnix: 2000);
+        var returned = repo.UpsertFromIntakeForm("ayse_form", "Örnek Müşteri", "Adres 1", telefon, nowUnix: 2000, submittedAtMs: 2_000_000);
 
         // Dönen kayıt iyimser kopya DEĞİL, temizlenmiş gerçek satır olmalı —
         // çağıran onu ekrana/başka yazılara taşıyabilir.
@@ -110,8 +111,8 @@ public class CustomerPurgeTombstoneTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
-        repo.UpsertPersonFromIntake(AyseIdentity, "Ayşe Yılmaz", "Adres 1", null,
-            null, null, false, false, nowUnix: 1000);
+        repo.UpsertPersonFromIntake(AyseIdentity, "Örnek Müşteri", "Adres 1", null,
+            null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
         var id = repo.FindByPlatformAndUsername("instagram", "ayse_y")!.Id;
 
         repo.ScrubPersonalData(id);
@@ -165,9 +166,9 @@ public class CustomerPurgeTombstoneTests
 
         // Silmeden ÖNCE sunucudan çekilmiş, silmeden SONRA uygulanan form cevabı.
         repo.UpsertPersonFromIntake(
-            AyseIdentity, "Ayşe Yılmaz", "Adres 1", "+905551112233",
-            "ayse@example.com", "12345678901", whatsAppConsent: true, smsConsent: true,
-            nowUnix: 2000);
+            AyseIdentity, "Örnek Müşteri", "Adres 1", TestPhone.NewE164(),
+            "ayse@example.com", TestTckn.NewValid(), whatsAppConsent: true, smsConsent: true,
+            nowUnix: 2000, formId: Guid.NewGuid(), submittedAtMs: 2_000_000);
 
         var row = repo.FindByPlatformAndUsername("instagram", "ayse_y")!;
         row.DisplayName.Should().Be("[Silindi]");
@@ -194,7 +195,7 @@ public class CustomerPurgeTombstoneTests
         repo.RecordPurge("form", "ayse_form", purgedAtUnix: 1500);
 
         var returned = repo.UpsertFromIntakeForm(
-            "ayse_form", "Ayşe Yılmaz", "Adres 1", "+905551112233", nowUnix: 2000);
+            "ayse_form", "Örnek Müşteri", "Adres 1", TestPhone.NewE164(), nowUnix: 2000, submittedAtMs: 2_000_000);
 
         // Dönen kayıt iyimser kopya DEĞİL — çağıran onu ekrana/başka yazılara taşıyabilir.
         returned.DisplayName.Should().Be("[Silindi]");
@@ -245,8 +246,8 @@ public class CustomerPurgeTombstoneTests
         repo.RecordPurge("instagram", "Ayse_Y", purgedAtUnix: 1500);
 
         repo.UpsertPersonFromIntake(
-            AyseIdentity, "Ayşe Yılmaz", "Adres 1", "+905551112233",
-            null, null, false, false, nowUnix: 2000);
+            AyseIdentity, "Örnek Müşteri", "Adres 1", TestPhone.NewE164(),
+            null, null, false, false, nowUnix: 2000, formId: Guid.NewGuid(), submittedAtMs: 2_000_000);
 
         repo.FindByPlatformAndUsername("instagram", "ayse_y")!.Phone.Should().BeNull();
     }
@@ -274,8 +275,8 @@ public class CustomerPurgeTombstoneTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
-        repo.UpsertPersonFromIntake(AyseIdentity, "Ayşe Yılmaz", "Adres 1", "+905551112233",
-            null, null, false, false, nowUnix: 1000);
+        repo.UpsertPersonFromIntake(AyseIdentity, "Örnek Müşteri", "Adres 1", TestPhone.NewE164(),
+            null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
         repo.RecordPurge("instagram", "ayse_y", purgedAtUnix: 1500).Should().Be(1);
 
@@ -295,16 +296,17 @@ public class CustomerPurgeTombstoneTests
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
-        repo.UpsertPersonFromIntake(AyseIdentity, "Ayşe Yılmaz", "Adres 1", null,
-            null, null, false, false, nowUnix: 1000);
+        repo.UpsertPersonFromIntake(AyseIdentity, "Örnek Müşteri", "Adres 1", null,
+            null, null, false, false, nowUnix: 1000, formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
 
         // Kontrol: bariyer yalnız PurgedAt'li satırları kapsar, normal akış aynı.
-        repo.UpsertPersonFromIntake(AyseIdentity, "Ayşe Yılmaz", "Adres 2", "+905551112233",
-            null, null, false, false, nowUnix: 2000);
+        var telefon = TestPhone.NewE164();
+        repo.UpsertPersonFromIntake(AyseIdentity, "Örnek Müşteri", "Adres 2", telefon,
+            null, null, false, false, nowUnix: 2000, formId: Guid.NewGuid(), submittedAtMs: 2_000_000);
 
         var row = repo.FindByPlatformAndUsername("instagram", "ayse_y")!;
         row.Address.Should().Be("Adres 2");
-        row.Phone.Should().Be("+905551112233");
-        row.FullName.Should().Be("Ayşe Yılmaz");
+        row.Phone.Should().Be(telefon);
+        row.FullName.Should().Be("Örnek Müşteri");
     }
 }

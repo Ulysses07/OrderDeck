@@ -138,6 +138,20 @@ public abstract class PaymentJobStoreContractTests
         store.MarkNoBalance(job.Id, key, 0).Should().BeTrue();
         store.Get(job.Id)!.State.Should().Be(PaymentJobState.NoBalance);
     }
+
+    [Fact] // U8 (Bölüm C): taşımanın mirasa çevirip kapattığı işe uçuştaki akış anahtar yazamaz
+    public void BeginApply_KapaliIste_Reddeder()
+    {
+        var store = CreateStore();
+        var job = store.FindOrCreate("c1", "session:s1", 250m);
+        store.Close(job.Id);
+
+        store.BeginApply(job.Id, Guid.NewGuid()).Should().BeFalse(
+            "kapalı (ör. taşımanın mirasa çevirip kapattığı) işte düşüm hiç uzlaşmazdı (U8)");
+        var sonra = store.Get(job.Id)!;
+        sonra.ApplyKey.Should().BeNull();
+        sonra.State.Should().Be(PaymentJobState.Created);
+    }
 }
 
 public sealed class SqlitePaymentJobStoreContractTests : PaymentJobStoreContractTests

@@ -39,5 +39,21 @@ public static class SqliteSearchFunctions
             "od_phone_key",
             phone => CustomerSearch.NormalizePhoneKey(phone),
             isDeterministic: true);
+
+        // Göç 045'in IdentityKey geri doldurması ve CustomerSyncRepository.HealIdentityKeys
+        // kullanır. Hiçbir ŞEMA NESNESİNDE BİLEREK kullanılmıyor — tetikleyici, indeks (ifade ya
+        // da kısmi indeks), üretilmiş kolon, görünüm, CHECK kısıtı: eski sürüme dönüşte bu
+        // fonksiyonu kaydetmeyen ikili, ona başvuran bir nesne yüzünden Customer'a hiç yazamazdı.
+        // isDeterministic ifade indeksine izin verir; böyle bir indeks KURULMAMALI.
+        // Anahtarı satır açan her yol C# ile yazar (bkz. CustomerIdentity.KeyOrNull). Boş anahtar
+        // kolona hiçbir yoldan yazılmaz: fonksiyon KeyOrNull'un aynısıdır — boş ya da yalnız
+        // boşluk adda NULL döner (savunma derinliği: "SET IdentityKey = od_identity_key(Username)"
+        // biçimli bir onarım da '' yazamaz). 045'in geri doldurmasındaki NULLIF(…, '') bu yüzden
+        // fazladan ama doğru. Onarım anahtarı NULL çıkacak satırı atlar (yoksa her turda NULL'ı
+        // yeniden yazardı).
+        connection.CreateFunction<string?, string?>(
+            "od_identity_key",
+            username => CustomerIdentity.KeyOrNull(username),
+            isDeterministic: true);
     }
 }

@@ -22,16 +22,26 @@ namespace OrderDeck.Core.Storage;
 /// <b>Kullanım kuralı:</b> paket açıkken yalnızca aynı paketi alan yazmalar
 /// çağrılmalı. Paket açıkken ikinci bir bağlantıdan yazmaya kalkmak SQLite'ta
 /// kilide düşer (<c>SQLITE_BUSY</c>). Okumalar paket açılmadan önce bitirilir.
+///
+/// <para><b>Kilit sırası değişmezleri (U17):</b> (1) paket açıkken aynı akış İKİNCİ bir bağlantı
+/// açmaz — her okuma ve yazma <see cref="Connection"/>/<see cref="Transaction"/> üstünden
+/// (<c>LabelService.Add</c>'in <c>GetOrCreate</c> + etiket INSERT'i dahil: paketi alan aşırı
+/// yüklemeler; iç içe <c>_factory.Open()</c> yazımı YASAK). (2) Paket açıkken
+/// <c>CustomerBusySet</c> kilidi alınmaz — sıra her zaman önce küme, sonra SQLite yazma kilidi.
+/// İkisini de <see cref="WriteScopeGuard"/> denetler (DEBUG derlemede ve testlerde — anahtar
+/// <see cref="WriteScopeGuard.ChecksSwitch"/>; üretimde kapalı).</para>
 /// </summary>
 public sealed class DbWrite : IDisposable
 {
     public IDbConnection Connection { get; }
     public IDbTransaction Transaction { get; }
+    private readonly IDisposable _scopeMark;
 
     private DbWrite(IDbConnection connection, IDbTransaction transaction)
     {
         Connection = connection;
         Transaction = transaction;
+        _scopeMark = WriteScopeGuard.Enter(nameof(DbWrite));
     }
 
     public static DbWrite Begin(IDbConnectionFactory factory)
@@ -49,7 +59,11 @@ public sealed class DbWrite : IDisposable
         }
     }
 
-    public void Commit() => Transaction.Commit();
+    public void Commit()
+    {
+        Transaction.Commit();
+        _scopeMark.Dispose();                 // işlem bitti: aynı akış yeniden bağlantı açabilir
+    }
 
     /// <summary>
     /// Commit edilmemiş işlemi geri sarma işini <see cref="IDbTransaction"/>
@@ -59,6 +73,7 @@ public sealed class DbWrite : IDisposable
     /// </summary>
     public void Dispose()
     {
+        _scopeMark.Dispose();
         Transaction.Dispose();
         Connection.Dispose();
     }

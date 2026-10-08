@@ -328,4 +328,192 @@ public class CustomerSearchViewModelTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    // ── C9 (U12): liste açıkken senkron kopyayı asıl kayda taşıdı ───────────
+    //
+    // Liste anlık görüntüsü tutarı Id başına tuttu (_streamAmounts[m.Id], card.TotalAmount):
+    // taşımadan sonra kopyanın kartı yalnız kendi yazımının payını bilir, ödeme işi ise asıl
+    // kaydın Id'sinde açılır — iki bayat karta tıklamak aynı kişi için iki iş açardı. Kartın
+    // Id'si artık güncel değilse istek GÖNDERİLMEZ: liste yenilenir, operatör yeniden seçer.
+    // Taşıma yoksa davranış değişmez (tutar, kiralanan güncel Id için okunur = kartınki).
+
+    private const long SyncNow = 1_791_000_000;
+
+    /// <summary>Senkronlu kurulum: ödeme servisi Id'yi çözer ve müşteriyi kiralar; dönen senkron
+    /// deposu AYNI kümeyle taşır (DI'daki tekil örnek gibi).</summary>
+    private static (CustomerSearchViewModel Sut, CustomerSyncRepository Sync) Synced(
+        InMemorySqlite db, CustomerRepository customers, SessionRepository sessions, LabelRepository labels,
+        InMemoryPaymentJobStore jobs, string settingsPath, FakeDialogService dialogs)
+    {
+        var busy = new CustomerBusySet();
+        var (api, license) = PaymentRequestServiceTestHelpers.InProgressCloudApiClient();
+        var payment = new PaymentRequestService(new SettingsStore(settingsPath), new WhatsAppMessageBuilder(),
+            new FakeUrlLauncher(), api, license, jobs, log: null, customers: customers, busy: busy);
+        var customerService = new CustomerService(customers, sessions, labels, Mock.Of<IClock>(c => c.UnixNow() == 1L));
+        return (new CustomerSearchViewModel(customers, customerService, sessions, labels, payment, dialogs),
+                new CustomerSyncRepository(db, busy));
+    }
+
+    /// <summary>Aynı kişinin iki yazımı (harf farkı): taşımadan önce iki satır, iki kart.</summary>
+    private static (string Copy, string Canonical) TwoSpellings(
+        CustomerRepository customers, decimal copyTotal, decimal canonicalTotal)
+    {
+        var copy = Guid.NewGuid().ToString("N");
+        var canonical = Guid.NewGuid().ToString("N");
+        customers.Insert(new Customer(copy, "tiktok", "ornek.musteri", "Örnek Müşteri", null,
+            100, 100, false, null, null, 1, copyTotal, null, null, TestPhone.NewE164()));
+        customers.Insert(new Customer(canonical, "tiktok", "Ornek.Musteri", "Örnek Müşteri", null,
+            100, 101, false, null, null, 1, canonicalTotal, null, null, TestPhone.NewE164()));
+        return (copy, canonical);
+    }
+
+    [Fact]
+    public async Task OpenWhatsApp_yayin_listesi_acikken_tasinan_kopyanin_karti_istek_gondermez_liste_yenilenir()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, sync) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            var (copy, canonical) = TwoSpellings(customers, 0m, 0m);
+            sessions.Insert(new StreamSession("s1", "Yayın 1", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", copy, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+            labels.Insert(new Label("l2", "s1", canonical, "tiktok", "Ornek.Musteri", "Armut", null, 150m, 111, 121));
+            sessions.End("s1", 200);
+
+            sut.LastStreamShoppersOnly = true;
+            sut.Results.Should().HaveCount(2, "taşımadan önce iki satır, iki kart");
+            var copyCard = sut.Results.Single(c => c.Primary.Id == copy);
+
+            // Liste açıkken push yanıtı kopyayı asıl kayda taşıdı; ekran yenilenmedi.
+            sync.RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(copyCard);
+
+            jobs.Snapshot.Should().BeEmpty("bayat kartın tutarı yalnız kopyanın 100'ü — istek gönderilmez");
+            dialogs.InfosShown.Should().ContainSingle().Which.Should().Contain("tekrar seçin");
+            var refreshed = sut.Results.Should().ContainSingle("liste yenilendi: kişi tek kart").Subject;
+            refreshed.Primary.Id.Should().Be(canonical);
+
+            // Operatör yenilenen kartı seçer: kişinin tam yayın toplamı.
+            await sut.OpenWhatsAppCommand.ExecuteAsync(refreshed);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.CustomerId.Should().Be(canonical);
+            job.ScopeKey.Should().Be("session:s1");
+            job.ProductTotal.Should().Be(250m);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task OpenWhatsApp_liste_acikken_tasinan_kopyanin_karti_kumulatif_istek_gondermez_liste_yenilenir()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, sync) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            var (copy, canonical) = TwoSpellings(customers, copyTotal: 100m, canonicalTotal: 150m);
+
+            sut.RefreshSearch();
+            sut.Results.Should().HaveCount(2, "taşımadan önce iki satır, iki kart");
+            var copyCard = sut.Results.Single(c => c.Primary.Id == copy);
+
+            sync.RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(copyCard);
+
+            jobs.Snapshot.Should().BeEmpty("bayat kart — istek gönderilmez");
+            dialogs.InfosShown.Should().ContainSingle().Which.Should().Contain("tekrar seçin");
+            var refreshed = sut.Results.Should().ContainSingle("liste yenilendi: kişi tek kart").Subject;
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(refreshed);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.CustomerId.Should().Be(canonical);
+            job.ScopeKey.Should().Be("cumulative");
+            job.ProductTotal.Should().Be(250m, "taşıma kopyanın cirosunu asıl kayda ekledi (100 + 150)");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>Kopya (tek başına kart) + aynı kişinin grubu (asıl kayıt telefonsuz, Instagram satırı
+    /// telefonlu — grup kartının birincili o). Yayında: kopya 100, asıl kayıt 150, Instagram 50.</summary>
+    private static (string Copy, string Canonical, string Ig) GroupScenario(
+        CustomerRepository customers, SessionRepository sessions, LabelRepository labels)
+    {
+        var copy = Guid.NewGuid().ToString("N");
+        var canonical = Guid.NewGuid().ToString("N");
+        var ig = Guid.NewGuid().ToString("N");
+        customers.Insert(new Customer(copy, "tiktok", "ornek.musteri", "Örnek Müşteri", null,
+            100, 100, false, null, null, 1, 100m, null, null, TestPhone.NewE164()));
+        customers.Insert(new Customer(canonical, "tiktok", "Ornek.Musteri", "Örnek Müşteri", null,
+            100, 101, false, null, null, 1, 150m, null, null, null, GroupId: "grp-1"));
+        customers.Insert(new Customer(ig, "instagram", "ornek_ig", "Örnek Müşteri", null,
+            100, 102, false, null, null, 1, 50m, null, null, TestPhone.NewE164(), GroupId: "grp-1"));
+        sessions.Insert(new StreamSession("s1", "Yayın 1", 100, null, Array.Empty<string>(), null));
+        labels.Insert(new Label("l1", "s1", copy, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+        labels.Insert(new Label("l2", "s1", canonical, "tiktok", "Ornek.Musteri", "Armut", null, 150m, 111, 121));
+        labels.Insert(new Label("l3", "s1", ig, "instagram", "ornek_ig", "Kiraz", null, 50m, 112, 122));
+        sessions.End("s1", 200);
+        return (copy, canonical, ig);
+    }
+
+    // İnceleme PROBE_D: taşımadan sonra iki bayat kart (kopyanınki ve grubunki) aynı kişi için iki iş
+    // açıyordu (asıl kayıtta 300 + Instagram satırında 300). Kopyanın kartı reddedilir; grup kartının
+    // Id'si güncel, tutarı kiralanan Id'nin grubu üzerinden okunur — kişi için TEK istek.
+    [Fact]
+    public async Task OpenWhatsApp_tasimadan_sonra_iki_bayat_kart_ikinci_istek_acmaz()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, sync) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            var (copy, canonical, ig) = GroupScenario(customers, sessions, labels);
+            sut.LastStreamShoppersOnly = true;
+            sut.Results.Should().HaveCount(2);
+            var copyCard = sut.Results.Single(c => c.Primary.Id == copy);
+            var groupCard = sut.Results.Single(c => c.GroupId == "grp-1");
+            groupCard.Primary.Id.Should().Be(ig, "ön koşul: grubun telefonlu satırı birincil");
+
+            sync.RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            await sut.OpenWhatsAppCommand.ExecuteAsync(copyCard);
+            await sut.OpenWhatsAppCommand.ExecuteAsync(groupCard);
+
+            dialogs.InfosShown.Should().ContainSingle().Which.Should().Contain("tekrar seçin");
+            var job = jobs.Snapshot.Should().ContainSingle("kişi için tek istek").Subject;
+            job.CustomerId.Should().Be(ig);
+            job.ProductTotal.Should().Be(300m, "kişinin bu yayındaki satışı 100 + 150 + 50");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    // İnceleme PROBE_E: taşıma yokken davranış değişmez — yeniden okunan tutar kartınkiyle aynı.
+    [Fact]
+    public async Task OpenWhatsApp_tasima_yokken_tutar_kartinkiyle_ayni()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, _) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            GroupScenario(customers, sessions, labels);
+
+            sut.LastStreamShoppersOnly = true;
+            await sut.OpenWhatsAppCommand.ExecuteAsync(sut.Results.Single(c => c.GroupId == "grp-1"));
+            jobs.Snapshot.Single(j => j.ScopeKey == "session:s1").ProductTotal.Should().Be(200m, "yayın: 150 + 50");
+
+            sut.LastStreamShoppersOnly = false;
+            var groupCard = sut.Results.Single(c => c.GroupId == "grp-1");
+            await sut.OpenWhatsAppCommand.ExecuteAsync(groupCard);
+            jobs.Snapshot.Single(j => j.ScopeKey == "cumulative").ProductTotal.Should().Be(groupCard.TotalAmount);
+            dialogs.InfosShown.Should().NotContain(m => m.Contains("tekrar seçin"));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

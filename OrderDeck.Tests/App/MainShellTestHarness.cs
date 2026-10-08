@@ -71,7 +71,8 @@ internal static class MainShellTestHarness
         CustomerRepository CustomerRepo,
         StreamSessionService Sessions,
         Mock<IClock> Clock,
-        FakeDialogService Dialogs) : IDisposable
+        FakeDialogService Dialogs,
+        string? LicenseKey) : IDisposable
     {
         public void Dispose()
         {
@@ -83,9 +84,20 @@ internal static class MainShellTestHarness
     /// <param name="printerOverride">Verilirse VM bu yazıcıyı kullanır;
     /// <see cref="Harness.Printer"/> yine de oluşturulur ama devre dışıdır.
     /// Gated/throwing yazıcı isteyen yaşam döngüsü testleri için.</param>
+    /// <param name="syncStatus">Senkron durum izleyicisi (D3/D4); null = durum satırı kapalı.</param>
+    /// <param name="pendingCounter">Bekleyen kayıt sayacı (D3); null = durum satırı kapalı.</param>
+    /// <param name="licensed">false = deneme sürümü: lisans kaydı yok, deneme etkin
+    /// (<see cref="Harness.LicenseKey"/> null) — StartupFlow'un lisanssız kabul ettiği hâl.</param>
+    /// <param name="log">VM'in günlüğü (durum satırı hata uyarısı); null = yazılmaz.</param>
+    /// <param name="customerPull">Müşteri akışı (D5b destek eylemi); null = eylem kapalı.</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
-        ILabelPrinter? printerOverride = null)
+        ILabelPrinter? printerOverride = null,
+        OrderDeck.App.Services.Sync.SyncStatusTracker? syncStatus = null,
+        OrderDeck.App.Services.Sync.SyncPendingCounter? pendingCounter = null,
+        bool licensed = true,
+        Microsoft.Extensions.Logging.ILogger<MainShellViewModel>? log = null,
+        OrderDeck.App.Services.Sync.CustomerChangesPullService? customerPull = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -107,7 +119,9 @@ internal static class MainShellTestHarness
         var bus = new ChatBus(ringBufferSize: 50);
         var printer = new FakeLabelPrinter();
         var banner = new GiveawayBannerViewModel(giveawayRepo, clock.Object);
-        var licenseSvc = BuildActiveLicenseService();
+        // Üretilmiş anahtar: testte sabit kimlik bilgisi yazılmaz (CLAUDE.md).
+        var licenseKey = licensed ? $"lisans-{Guid.NewGuid():N}" : null;
+        var licenseSvc = BuildLicenseService(licenseKey);
 
         var stubHttp = new HttpClient(new FakeHttpMessageHandler(
             _ => new HttpResponseMessage(HttpStatusCode.NotFound)))
@@ -141,9 +155,10 @@ internal static class MainShellTestHarness
             bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
-            drawers: drawers);
+            drawers: drawers, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
+            customerPull: customerPull);
 
-        return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs);
+        return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }
 
     public static ChatMessageViewModel ChatVm(string username, string text,
@@ -167,8 +182,10 @@ internal static class MainShellTestHarness
     }
 
     /// <summary>Pre-seeded LicenseService → Active status. Same logic as the original
-    /// <c>MainShellPrintTests.BuildActiveLicenseService</c>, lifted unchanged.</summary>
-    private static LicenseService BuildActiveLicenseService()
+    /// <c>MainShellPrintTests.BuildActiveLicenseService</c>, lifted unchanged — anahtar artık
+    /// üretilmiş. <paramref name="licenseKey"/> null ise hiçbir kayıt yazılmaz: servis deneme
+    /// yoluna düşer (TrialActive, <c>CurrentLicense</c> null).</summary>
+    private static LicenseService BuildLicenseService(string? licenseKey)
     {
         var dir = Path.Combine(Path.GetTempPath(), "OrderDeckTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -177,21 +194,24 @@ internal static class MainShellTestHarness
         var authStore = new AuthStore(enc, Path.Combine(dir, "auth.dat"));
         var licenseStore = new LicenseStateStore(enc, Path.Combine(dir, "license.dat"));
 
-        authStore.Save(new AuthRecord(
-            CustomerId: Guid.NewGuid(),
-            Email: "test@example.test",
-            Name: "Test User",
-            Token: "test-token",
-            TokenExpiresAt: DateTimeOffset.UtcNow.AddDays(30)));
+        if (licenseKey is not null)
+        {
+            authStore.Save(new AuthRecord(
+                CustomerId: Guid.NewGuid(),
+                Email: "test@example.test",
+                Name: "Test User",
+                Token: $"tok-{Guid.NewGuid():N}",
+                TokenExpiresAt: DateTimeOffset.UtcNow.AddDays(30)));
 
-        licenseStore.Save(new LicenseRecord(
-            LicenseKey: "LDK-TEST",
-            SkuCode: "STD",
-            ExpiresAt: DateTimeOffset.UtcNow.AddDays(365),
-            RemainingDaysAtLastCheck: 365,
-            LastValidatedAt: DateTimeOffset.UtcNow,
-            LastSuccessfulOnlineAt: DateTimeOffset.UtcNow,
-            LastKnownStatus: "Active"));
+            licenseStore.Save(new LicenseRecord(
+                LicenseKey: licenseKey,
+                SkuCode: "STD",
+                ExpiresAt: DateTimeOffset.UtcNow.AddDays(365),
+                RemainingDaysAtLastCheck: 365,
+                LastValidatedAt: DateTimeOffset.UtcNow,
+                LastSuccessfulOnlineAt: DateTimeOffset.UtcNow,
+                LastKnownStatus: "Active"));
+        }
 
         const string activeJson = """{"status":"Active","sku":"STD","expiresAt":null,"remainingDays":365}""";
         var handler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

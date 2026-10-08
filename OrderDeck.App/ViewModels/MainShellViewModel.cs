@@ -28,6 +28,8 @@ using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Core.Settings;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -77,6 +79,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly AnimationCatalogClient? _animationCatalogClient;
     private readonly ExtensionBridgeServer? _bridge;
     private readonly ViewerCountTracker? _viewers;
+
+    /// <summary>
+    /// Senkron durum satırı (Faz 0, D3). Opsiyonel: kabuk ViewModel'i testlerde
+    /// senkronsuz kuruluyor; üretimde DI ikisini de doldurur (kayıtları D1'in
+    /// DI testi sınıyor — eksik kayıt satırı sessizce kapatırdı).
+    /// </summary>
+    private readonly Services.Sync.SyncStatusTracker? _syncStatus;
+    private readonly Func<int>? _pendingCount;
+    private readonly Func<SyncAttention>? _attention;
+    private readonly ILogger<MainShellViewModel> _log;
+
+    /// <summary>Müşteri akışı — yalnız destek eylemi (D5b) için. Opsiyonel, aynı gerekçeyle; üretimde
+    /// DI doldurur (<c>CustomerSyncDiTests</c> kaydı sınar).</summary>
+    private readonly Services.Sync.CustomerChangesPullService? _customerPull;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -156,6 +172,22 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty] private string _printerStatusText = "Yazıcı seçilmedi";
     [ObservableProperty] private bool _isPrinterConfigured;
+
+    /// <summary>Senkron durum satırı (D3): diğer bilgisayarlara yetişildi mi, gönderilmemiş
+    /// kayıt var mı. Sağlıksızsa sarı; ipucu kırpılan metnin tamamı + sağlıksız durumda ve kalıcı
+    /// uyarıda ne yapılacağı.</summary>
+    [ObservableProperty] private string _syncStatusText = "";
+    [ObservableProperty] private bool _isSyncHealthy = true;
+    [ObservableProperty] private string _syncStatusTooltip = "";
+
+    /// <summary>Durum satırı en çok bu aralıkla tazelenir — kaç çağıran tetiklerse tetiklesin.</summary>
+    private const long SyncRefreshIntervalMs = 5_000;
+    private long? _lastSyncRefreshAt;
+    private bool _syncReadFailing;
+
+    /// <summary>Durum satırı kapısının milisaniye saati (test dikişi; varsayılan
+    /// <see cref="Environment.TickCount64"/> — duvar saati değişimlerinden etkilenmez).</summary>
+    internal Func<long> SyncTicks { get; set; } = () => Environment.TickCount64;
 
     /// <summary>
     /// Yeni veri katmanı YOK: ViewerCountTracker zaten platform başına
@@ -268,6 +300,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// </summary>
     public void RefreshHeroStats()
     {
+        // BAŞTA: metot oturum yokken erken dönüyor — sonda olsa durum satırı yayın dışında donardı.
+        RefreshSyncStatusThrottled();
+
         QueueCount = PrintQueue.Count;
         ClockText = DateTime.Now.ToString("HH:mm");
 
@@ -293,6 +328,167 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             : 0;
     }
 
+    /// <summary><see cref="RefreshHeroStats"/>'ın kapısı: durum satırı en çok 5 sn'de bir tazelenir
+    /// (ilk çağrı hemen). Çağrı sayılmaz — hero zamanlayıcısı (1 sn), toplu baskı ve kuyruğa ekleme
+    /// (<c>PrintQueue.CollectionChanged</c>) hepsi tetikler; sorgular UI iş parçacığında koşar.</summary>
+    private void RefreshSyncStatusThrottled()
+    {
+        var now = SyncTicks();
+        if (_lastSyncRefreshAt is { } last && now - last < SyncRefreshIntervalMs) return;
+        _lastSyncRefreshAt = now;
+        RefreshSyncStatus();
+    }
+
+    /// <summary>
+    /// Senkron durum satırı (D3). Bekleyen sayım yalnız metinde gösterilecekse koşar (takılı/yetişen
+    /// satırda yok). Lisans yoksa (deneme sürümü — senkron hiç koşmaz) nötr satır, sorgu yok.
+    ///
+    /// <para><b>Hata yalıtımı:</b> kurucudan, zamanlayıcıdan ve <c>PrintQueue.CollectionChanged</c>'den
+    /// (<c>WriteOrder</c>'ın ortasında) çağrılır. Senkron sorgusunun hatası kabuğun açılmasını
+    /// engellememeli, üst üste MessageBox açmamalı, çok varyantlı etiket yazımını yarıda kesmemeli:
+    /// yakalanır, satır sarı "Senkron durumu okunamadı" olur, hata serisi başına bir uyarı yazılır.</para>
+    ///
+    /// <para><b>Bilinen sınır:</b> girişten ya da hesap değişiminden sonra ~30 sn (akış servisinin bir
+    /// sonraki turuna dek) satır önceki durumu yansıtabilir.</para>
+    /// </summary>
+    public void RefreshSyncStatus()
+    {
+        if (_syncStatus is null || _pendingCount is null) return;
+        try
+        {
+            if (SyncLicenseKey() is null)
+            {
+                ApplySyncStatus(Services.Sync.SyncStatusFormatter.NoLicense, default);
+            }
+            else
+            {
+                var attention = _attention?.Invoke() ?? default;
+                ApplySyncStatus(Services.Sync.SyncStatusFormatter.Format(
+                    _pendingCount, _syncStatus.Snapshot(), DateTimeOffset.UtcNow, attention), attention);
+            }
+            _syncReadFailing = false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (!_syncReadFailing)
+                _log.LogWarning(ex, "Senkron durum satırı okunamadı; sonraki tazelemede yeniden denenecek");
+            _syncReadFailing = true;
+            ApplySyncStatus(Services.Sync.SyncStatusFormatter.ReadFailed, default);
+        }
+    }
+
+    private void ApplySyncStatus(Services.Sync.SyncStatusFormatter.Status status, SyncAttention attention)
+    {
+        SyncStatusText = status.Text;
+        IsSyncHealthy = status.Healthy;
+        SyncStatusTooltip = Services.Sync.SyncStatusFormatter.Tooltip(status, attention);
+    }
+
+    /// <summary>Senkronun gördüğü lisans (<c>ICurrentLicenseProvider</c> ile aynı kaynak); boş ya da
+    /// boşluk = lisans yok (D1 incelemesi).</summary>
+    private string? SyncLicenseKey()
+        => _licenseService.CurrentLicense?.LicenseKey is { } key && !string.IsNullOrWhiteSpace(key) ? key : null;
+
+    /// <summary>
+    /// Kapanışta gönderilmemiş kayıt uyarısı (Faz 0, D5). <c>MainWindow.OnClosing</c> çağırır (kabuk
+    /// kuruluyken, çekiliş denetiminden sonra); "gönder ve kapat"ı pencere koşar
+    /// (<see cref="Services.Sync.SyncFlushService"/>). Sayı ve durum metni durum satırıyla AYNI
+    /// kaynaktan: bekleyen sayaç, dikkat sayacı ve izleyicinin tek kilitli anlık görüntüsü
+    /// (<see cref="Services.Sync.SyncStatusFormatter"/>) — çevrimdışı bilgisayarda "gönder ve
+    /// kapat"ın işe yaramayacağı uyarının kendisinden okunur.
+    ///
+    /// <para><b>Sormadan kapanır:</b> senkron bağlı değilse; lisans yoksa (deneme sürümü — senkron hiç
+    /// koşmaz, bütün müşteriler "bekliyor" sayılır ve uyarı hiç geçmezdi); bekleyen yoksa; sayım
+    /// okunamazsa (yerel veritabanı hatası — gönderim de aynı veritabanını okuyacaktı). Kapanış
+    /// engellenmez: kayıtlar yerelde kalır, bu bilgisayar bir sonraki açılışta gönderir.</para>
+    /// </summary>
+    public Services.Sync.CloseSyncChoice ConfirmCloseWithUnsentRecords()
+    {
+        if (_syncStatus is null || _pendingCount is null || SyncLicenseKey() is null)
+            return Services.Sync.CloseSyncChoice.Close;
+
+        int pending;
+        Services.Sync.SyncStatusFormatter.Status status;
+        try
+        {
+            pending = _pendingCount();
+            if (pending <= 0) return Services.Sync.CloseSyncChoice.Close;
+            // Kalıcı uyarılar da kenar çubuğundaki gibi (D5 incelemesi): metin satırla birebir aynı.
+            status = Services.Sync.SyncStatusFormatter.Format(pending, _syncStatus.Snapshot(), DateTimeOffset.UtcNow,
+                _attention?.Invoke() ?? default);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex,
+                "Kapanışta gönderilmemiş kayıt sayılamadı; sorulmadan kapatılıyor (kayıtlar yerelde kalır, sonraki açılışta gider)");
+            return Services.Sync.CloseSyncChoice.Close;
+        }
+
+        var answer = _dialogs.ConfirmYesNoCancel(
+            $"{pending} kayıt henüz sunucuya gitmedi.\n" +
+            $"Senkron durumu: {status.Text}\n\n" +
+            $"Evet: gönder ve kapat (en fazla {(int)Services.Sync.SyncFlushService.CloseBudget.TotalSeconds} sn)\n" +
+            "Hayır: yine de kapat — kayıtlar kaybolmaz, bu bilgisayar bir sonraki açılışta gönderir\n" +
+            "İptal: kapatma",
+            "Gönderilmemiş kayıt var");
+        return answer switch
+        {
+            true => Services.Sync.CloseSyncChoice.FlushThenClose,
+            false => Services.Sync.CloseSyncChoice.Close,
+            null => Services.Sync.CloseSyncChoice.Cancel,
+        };
+    }
+
+    private const string ResyncTitle = "Senkronu baştan al";
+
+    /// <summary>D5b: yayın sürerken kapalı — bütün müşterilerin yeniden gönderimi sipariş senkronuyla
+    /// sunucunun hız sınırını paylaşır (<see cref="IsStreamActive"/> değişince yeniden değerlendirilir).</summary>
+    private bool CanResyncCustomers() => !IsStreamActive;
+
+    /// <summary>
+    /// D5b — destek eylemi ("Diğer" menüsü): müşteri senkronunu baştan al. Veri silinmez; işi arka plan
+    /// servisi yapar, birkaç dakika "Gönderiliyor (N)" ve "Güncelleniyor…" görünmesi normal. Yayın
+    /// sürerken kullanılamaz (<see cref="CanResyncCustomers"/>; yine de çağrılırsa nedeni söylenir).
+    /// Sıfırlama arayüz iş parçacığı dışında koşar (süren turu bekler; imleç yazımları SQLite yazma
+    /// kilidini bekleyebilir).
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanResyncCustomers))]
+    private async Task ResyncCustomersAsync()
+    {
+        if (_customerPull is not { } pull) return;
+        if (_sessions.GetActive() is not null)
+        {
+            _dialogs.Show("Yayın sürerken müşteri senkronu baştan alınamaz — yayını bitirdikten sonra dene.",
+                ResyncTitle);
+            return;
+        }
+        if (!_dialogs.Confirm(
+                "Müşteri senkronu baştan alınacak: bu bilgisayardaki bütün müşteriler sunucuya yeniden " +
+                "gönderilir ve diğer bilgisayarların değişiklikleri baştan indirilir. Hiçbir kayıt silinmez; " +
+                "birkaç dakika durum satırında \"Gönderiliyor\" ve \"Güncelleniyor\" görünmesi normal.\n\n" +
+                "Yalnız destek istediğinde kullan. Devam edilsin mi?",
+                ResyncTitle))
+            return;
+
+        bool done;
+        try
+        {
+            done = await Task.Run(() => pull.RequestFullResyncAsync(CancellationToken.None));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Destek: müşteri senkronu baştan alınamadı");
+            _dialogs.Show($"Müşteri senkronu baştan alınamadı: {ex.Message}", ResyncTitle, DialogSeverity.Warning);
+            return;
+        }
+        if (!done)
+        {
+            _dialogs.Show("Lisans bulunamadı — senkron baştan alınamadı.", ResyncTitle, DialogSeverity.Warning);
+            return;
+        }
+        RefreshSyncStatus();
+    }
+
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
     /// <summary>
@@ -300,7 +496,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// açıkken "Yayını Bitir". <see cref="UpdateStreamStatusLabel"/> ile
     /// birlikte güncellenir — iki ayrı yerden set edilmesin.
     /// </summary>
-    [ObservableProperty] private bool _isStreamActive;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ResyncCustomersCommand))]
+    private bool _isStreamActive;
     [ObservableProperty] private bool _isGiveawayActive;
     [ObservableProperty] private bool _canStartGiveaway;
     [ObservableProperty] private LabelViewModel? _selectedQueueItem;
@@ -394,11 +592,21 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ViewerCountTracker? viewers = null,
         FacebookModerationService? facebookModeration = null,
         Services.Drawers.IDrawerService? drawers = null,
-        Services.Pages.IPageService? pages = null)
+        Services.Pages.IPageService? pages = null,
+        Services.Sync.SyncStatusTracker? syncStatus = null,
+        Services.Sync.SyncPendingCounter? pendingCounter = null,
+        ILogger<MainShellViewModel>? log = null,
+        Services.Sync.CustomerChangesPullService? customerPull = null)
     {
         _dialogs = dialogs;
         _drawers = drawers;
         _pages = pages;
+        _customerPull = customerPull;
+        // İlk RefreshHeroStats'tan (kurucunun sonu) önce: açılışta durum satırı hemen dolsun.
+        _syncStatus = syncStatus;
+        _pendingCount = pendingCounter is null ? null : pendingCounter.Count;
+        _attention = pendingCounter is null ? null : pendingCounter.Attention;
+        _log = log ?? NullLogger<MainShellViewModel>.Instance;
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
@@ -856,6 +1064,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 "Yayın aktif");
             return;
         }
+        // Faz 0 (D4): bilgisayar değiştiren operatör, son müşteri değişiklikleri
+        // (kara liste, adres — diğer bilgisayarlardan ya da müşteri
+        // uygulamasından) inmeden yayına girmesin. Engellemiyoruz — internet
+        // yokken de yayın yapılabilmeli. Yetişme lisansa bağlı (önceki
+        // lisansınki sayılmaz); lisans yoksa (deneme sürümü) senkron hiç
+        // koşmaz, soru da sorulmaz.
+        if (_syncStatus is not null
+            && SyncLicenseKey() is { } licenseKey
+            && !_syncStatus.IsInitialCatchUpDoneFor(licenseKey)
+            && !_dialogs.Confirm(
+                "Müşteri bilgilerindeki son değişiklikler henüz inmedi (diğer bilgisayarlar / müşteri uygulaması). " +
+                "İnternet yoksa yine de başlatabilirsin. Yayını başlatayım mı?",
+                "Güncelleniyor"))
+            return;
         var started = _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();

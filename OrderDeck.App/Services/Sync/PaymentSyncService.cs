@@ -32,12 +32,16 @@ public sealed class PaymentSyncService
     private const int PullPageSize = 200;
     private const string PullCursorName = "payment-decision-in";
 
+    /// <summary>Durum satırındaki gönderim ilerlemesinin adı (D2 incelemesi I-3).</summary>
+    public const string PushStatusName = "odeme";
+
     private readonly LicenseApiClient _api;
     private readonly PaymentRepository _payments;
     private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<PaymentSyncService> _log;
+    private readonly SyncStatusTracker? _tracker;
 
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
@@ -50,7 +54,8 @@ public sealed class PaymentSyncService
         SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
-        ILogger<PaymentSyncService> log)
+        ILogger<PaymentSyncService> log,
+        SyncStatusTracker? statusTracker = null)
     {
         _api = api;
         _payments = payments;
@@ -58,6 +63,8 @@ public sealed class PaymentSyncService
         _licenseProvider = licenseProvider;
         _clock = clock;
         _log = log;
+        _tracker = statusTracker;
+        _tracker?.RegisterPush(PushStatusName);
     }
 
     public readonly record struct SyncResult(int Pushed, int Pulled);
@@ -89,7 +96,11 @@ public sealed class PaymentSyncService
     private async Task<int> PushOutboxAsync(Guid licenseId, CancellationToken ct)
     {
         var batch = _payments.GetUnsynced(PushBatchSize);
-        if (batch.Count == 0) return 0;
+        if (batch.Count == 0)
+        {
+            _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);   // I-3: gönderecek bir şey yok
+            return 0;
+        }
 
         var items = batch.Select(p => new SyncPaymentItem(
             Id: Guid.Parse(p.Id),
@@ -115,6 +126,7 @@ public sealed class PaymentSyncService
         var now = _clock.UnixNow();
         foreach (var item in batch)
             _payments.MarkSynced(item.Id, now);
+        _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);       // I-3: parti gitti
 
         // Server'dan dönen status (echo) içinde onaylanmış/reddedilmiş varsa onları
         // da uygula — push ile pull arasında mobile aksiyon olursa kaybolmasın.

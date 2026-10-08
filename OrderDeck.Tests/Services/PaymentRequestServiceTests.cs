@@ -311,15 +311,19 @@ public class PaymentRequestServiceTests : IDisposable
 
     /// <param name="jobs">Varsayılan fake depo yerine başka bir depo — A9
     /// yarışın hakemini GERÇEK <see cref="PaymentJobRepository"/> yapıyor.</param>
+    /// <param name="customers">Bölüm C (U12): akış girişinde Id'yi çözen depo.</param>
+    /// <param name="busy">Bölüm C (U13): senkron deposuyla paylaşılan meşgul müşteri kümesi.</param>
     private (PaymentRequestService Sut, WhatsAppStubHandler Handler) MakeCloudSut(
         SettingsStore store, FakeUrlLauncher launcher,
-        ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null)
+        ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null,
+        CustomerRepository? customers = null, CustomerBusySet? busy = null)
     {
         var handler = new WhatsAppStubHandler();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         var sut = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs);
+            api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs,
+            log: null, customers: customers, busy: busy);
         return (sut, handler);
     }
 
@@ -1949,5 +1953,408 @@ public class PaymentRequestServiceTests : IDisposable
         job.State.Should().Be(PaymentJobState.Applied);
         job.ApplyKey.Should().Be(key,
             "anahtar korunur — eski sunucuya karşı çifte düşüm kapısı açılmaz");
+    }
+
+    // ── Bölüm C: çoklu bilgisayar taşıması ve ödeme işi (U8, U12, U13) ──────
+    //
+    // Senkron, yerel bir kopyayı (harf farklı yazım) asıl kayda taşıyabilir: satır silinir,
+    // ödeme işleri asıl kayda geçer, aynı kapsamdaki kopya işi miras kapsamına alınır (U8).
+    // Ödeme akışı müşteriyi kiralar (U13) ve Id'yi girişte bir kez çözer (U12).
+
+    private sealed record SyncedDb(string Path, SqliteConnectionFactory Factory, CustomerRepository Customers,
+        CustomerSyncRepository Sync, PaymentJobRepository Jobs, CustomerBusySet Busy);
+
+    private const long SyncNow = 1_791_000_000;
+
+    /// <summary>A9 deseni: eşzamanlı yazım için geçici DOSYA (WAL). Senkron deposu ve ödeme
+    /// servisi AYNI <see cref="CustomerBusySet"/>'i alır (DI'daki tekil örnek gibi).</summary>
+    private static SyncedDb FileDb()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"odsync-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(path);
+        new MigrationRunner(factory).Run();
+        var busy = new CustomerBusySet();
+        return new SyncedDb(path, factory, new CustomerRepository(factory),
+            new CustomerSyncRepository(factory, busy), new PaymentJobRepository(factory), busy);
+    }
+
+    private static void Drop(SyncedDb db)
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        foreach (var f in new[] { db.Path, db.Path + "-wal", db.Path + "-shm" })
+            if (File.Exists(f)) File.Delete(f);
+    }
+
+    private static Customer SeedCustomer(SyncedDb db, string username)
+    {
+        var c = MakeCustomer(TestPhone.NewE164(), id: Guid.NewGuid().ToString("N")) with { Username = username };
+        db.Customers.Insert(c);
+        return c;
+    }
+
+    private static bool Leased(SyncedDb db, string customerId)
+        => db.Busy.RunLocked(isBusy => isBusy(customerId));
+
+    /// <summary>Girişin çözüm ↔ kiralama sırasını belirlenimci sınar (uyku yok): <see cref="HookAfterOpen"/>'ıncı
+    /// bağlantı kapanınca (sorgusu bitti) <see cref="Hook"/> koşar; her açılışın başında <see cref="OnOpen"/>
+    /// (açılış sırasıyla) koşar; <see cref="FailOnOpen"/>'ıncı açılış fırlatır.</summary>
+    private sealed class ScriptedFactory(IDbConnectionFactory inner) : IDbConnectionFactory
+    {
+        private int _opens;
+        public int HookAfterOpen { get; init; }
+        public Action? Hook { get; init; }
+        public Action<int>? OnOpen { get; init; }
+        public int FailOnOpen { get; init; }
+
+        public System.Data.IDbConnection Open()
+        {
+            var n = Interlocked.Increment(ref _opens);
+            OnOpen?.Invoke(n);
+            if (n == FailOnOpen) throw new InvalidOperationException("test: çözüm düştü");
+            var conn = inner.Open();
+            if (n == HookAfterOpen && Hook is { } hook)
+                ((Microsoft.Data.Sqlite.SqliteConnection)conn).StateChange += (_, e) =>
+                {
+                    if (e.CurrentState == System.Data.ConnectionState.Closed) hook();
+                };
+            return conn;
+        }
+    }
+
+    [Fact] // U8: taşımanın mirasa çevirdiği reverse_pending iş netleşir — çift düşüm yok
+    public async Task Tasimanin_mirasa_cevirdigi_geri_alma_bekleyen_is_netlesir()
+    {
+        var db = FileDb();
+        try
+        {
+            var copy = SeedCustomer(db, "ornek.musteri");
+            var canonical = SeedCustomer(db, "Ornek.Musteri");
+            var copyKey = Guid.NewGuid();
+            // Kopyada bu satışın düşümü vardı ve geri alma niyeti diske inmişti (R4-02).
+            var copyJob = db.Jobs.FindOrCreate(copy.Id, "session:s1", 250m);
+            db.Jobs.BeginApply(copyJob.Id, copyKey).Should().BeTrue();
+            db.Jobs.MarkApplied(copyJob.Id, copyKey, 0, 100m).Should().BeTrue();
+            db.Jobs.BeginReversal(copyJob.Id, 0, copyKey, targetTotal: 250m).Should().BeTrue();
+            db.Jobs.FindOrCreate(canonical.Id, "session:s1", 250m);           // hedefte aynı kapsam (created)
+
+            db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var legacy = db.Jobs.GetOpenLegacies(canonical.Id).Should().ContainSingle().Subject;
+            legacy.ScopeKey.Should().Be($"legacy:{copyKey:N}:{legacy.Id}");   // C4 incelemesi I-1: yapı gereği benzersiz
+            legacy.State.Should().Be(PaymentJobState.ReversePending);
+
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(canonical, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);
+
+            handler.ReverseCalls.Should().ContainSingle().Which.Should().Be(copyKey,
+                "kopyanın düşümü geri alınır");
+            var keys = handler.AppliedBalanceBodies.Select(AppliedKey).ToList();
+            keys.Should().HaveCount(2);
+            keys[0].Should().Be(copyKey, "miras döngüsü önce eski anahtarı yeniden oynatır (ResultGuard sonucu reddeder)");
+            keys[1].Should().NotBe(copyKey, "taze düşüm yeni anahtarla — sunucuda net tek düşüm");
+            db.Jobs.GetOpenLegacies(canonical.Id).Should().BeEmpty();
+            var hedef = db.Jobs.FindOrCreate(canonical.Id, "session:s1", 250m);
+            hedef.State.Should().Be(PaymentJobState.Applied);
+            hedef.ApplyKey.Should().Be(keys[1]);
+            _launcher.LaunchedUrls.Should().ContainSingle().Which.Should().Contain("150%2C00", "250 − 100");
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // U13: ödeme akışı sürerken taşıma bekler; iş kapatılıp yeniden adlandırılmaz
+    public async Task Odeme_akisi_surerken_tasima_bekler()
+    {
+        var db = FileDb();
+        try
+        {
+            var copy = SeedCustomer(db, "ornek.musteri");
+            var canonical = SeedCustomer(db, "Ornek.Musteri");
+            db.Jobs.FindOrCreate(canonical.Id, "session:s1", 250m);           // hedefte aynı kapsam
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 100m;
+            RekeyResult? duringFlow = null;
+            handler.OnPreviewAsync = () =>
+            {
+                // Akış anahtarsız işi tutarken (FindOrCreate → … → BeginApply arası) push yanıtı geldi.
+                duringFlow = db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow);
+                return Task.CompletedTask;
+            };
+
+            (await sut.OpenWhatsAppAsync(copy, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+
+            duringFlow.Should().Be(RekeyResult.Busy, "kiralı müşteri taşınmaz (U13)");
+            var job = db.Jobs.FindOrCreate(copy.Id, "session:s1", 250m);
+            job.ScopeKey.Should().Be("session:s1", "iş miras kapsamına alınıp kapatılmadı");
+            job.State.Should().Be(PaymentJobState.Applied);
+            Leased(db, copy.Id).Should().BeFalse("akış bitince kira bırakılır");
+
+            // Kira bitti: sonraki tur taşır. Teslim edilmiş (kapalı) iş mirasa döner ama açık değil.
+            db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            db.Jobs.GetOpenLegacies(canonical.Id).Should().BeEmpty();
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // U12: pencere eski Id'yi tutuyordu — ödeme asıl kaydın işinde
+    public async Task Tasinmis_Idyle_odeme_istegi_asil_kaydin_isinde_calisir()
+    {
+        var db = FileDb();
+        try
+        {
+            var copy = SeedCustomer(db, "ornek.musteri");
+            var canonical = SeedCustomer(db, "Ornek.Musteri");
+            db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(copy, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+
+            using var conn = db.Factory.Open();
+            Dapper.SqlMapper.ExecuteScalar<int>(conn, "SELECT COUNT(*) FROM PaymentJob WHERE CustomerId = @id", new { id = copy.Id })
+                .Should().Be(0, "silinmiş Id'ye iş açılmaz");
+            db.Jobs.FindOrCreate(canonical.Id, "session:s1", 250m).State.Should().Be(PaymentJobState.Applied);
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // U12/U13: çözümle kiralama arasında taşınan müşteri — güncel Id kiralanır, tutar onun için okunur
+    public async Task Cozumle_kiralama_arasinda_tasinan_musteri_guncel_Idyle_kiralanir_tutar_o_Id_icin_okunur()
+    {
+        var db = FileDb();
+        try
+        {
+            var copy = SeedCustomer(db, "ornek.musteri");
+            var canonical = SeedCustomer(db, "Ornek.Musteri");
+            RekeyResult? betweenResolveAndLease = null;
+            // Girişin İLK çözümü (kopya → kopya) bittiği an, kiralamadan ÖNCE push yanıtı taşır.
+            var scripted = new ScriptedFactory(db.Factory)
+            {
+                HookAfterOpen = 1,
+                Hook = () => betweenResolveAndLease = db.Sync.RekeyToLocal(
+                    copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow),
+            };
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs,
+                customers: new CustomerRepository(scripted), busy: db.Busy);
+            handler.PreviewBalance = 100m;
+            var amountReads = new List<(string Id, bool Leased, bool CopyLeased)>();
+
+            (await sut.OpenWhatsAppAsync(copy, id =>
+                {
+                    amountReads.Add((id, Leased(db, id), Leased(db, copy.Id)));
+                    return 250m;
+                }, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);
+
+            betweenResolveAndLease.Should().Be(RekeyResult.Rekeyed, "kopya henüz kiralanmamıştı");
+            amountReads.Should().ContainSingle().Which.Should().Be((canonical.Id, true, false),
+                "tutar kiralanan GÜNCEL Id için, kira altında ve bir kez okunur; kopyanın kirası bırakıldı");
+            var job = db.Jobs.FindOrCreate(canonical.Id, "session:s1", 0m);
+            job.State.Should().Be(PaymentJobState.Applied);
+            job.ProductTotal.Should().Be(250m);
+            using var conn = db.Factory.Open();
+            Dapper.SqlMapper.ExecuteScalar<int>(conn, "SELECT COUNT(*) FROM PaymentJob WHERE CustomerId = @id", new { id = copy.Id })
+                .Should().Be(0, "silinmiş Id'ye iş açılmaz");
+            Leased(db, canonical.Id).Should().BeFalse("akış bitince kira bırakılır");
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // C4 incelemesi: kiralamadan sonraki hata kirayı sızdırmaz
+    public async Task Kiralamadan_sonraki_cozum_hatasi_kirayi_birakir()
+    {
+        var db = FileDb();
+        try
+        {
+            var customer = SeedCustomer(db, "ornek.musteri");
+            // Girişin İKİNCİ çözümü (kiralamadan sonraki doğrulama) düşer. Açılış 1 = kiralamadan
+            // önceki çözüm, açılış 2 = kiralamadan sonraki — düşen açılış anında kiranın gerçekten
+            // alınmış olduğu ayrıca ölçülür (test kendiliğinden geçemesin).
+            bool? leasedWhenFailing = null;
+            var scripted = new ScriptedFactory(db.Factory)
+            {
+                FailOnOpen = 2,
+                OnOpen = n => { if (n == 2) leasedWhenFailing = Leased(db, customer.Id); },
+            };
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs,
+                customers: new CustomerRepository(scripted), busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.BalanceUncertain, "M-1: giriş hatası mesajı engeller, uygulamayı düşürmez");
+
+            leasedWhenFailing.Should().BeTrue("hata kiralamadan SONRA oldu");
+            Leased(db, customer.Id).Should().BeFalse(
+                "sızan kira müşteriyi yeniden başlatmaya dek meşgul tutardı — akış o öğede her turda Busy");
+            handler.AppliedBalanceBodies.Should().BeEmpty();
+            _launcher.LaunchedUrls.Should().BeEmpty();
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // M-1: kiralamadan önceki çözüm düşerse genel hata kutusuna gidilmez
+    public async Task Giris_cozumu_duserse_BalanceUncertain_doner_is_acilmaz()
+    {
+        var db = FileDb();
+        try
+        {
+            var customer = SeedCustomer(db, "ornek.musteri");
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs,
+                customers: new CustomerRepository(new ScriptedFactory(db.Factory) { FailOnOpen = 1 }),
+                busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+            Leased(db, customer.Id).Should().BeFalse();
+            _launcher.LaunchedUrls.Should().BeEmpty();
+            using var conn = db.Factory.Open();
+            Dapper.SqlMapper.ExecuteScalar<int>(conn, "SELECT COUNT(*) FROM PaymentJob").Should().Be(0);
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // M-1: tutar okuması (çağıranın kodu) düşerse kira bırakılır, mesaj gitmez
+    public async Task Tutar_okunamazsa_BalanceUncertain_doner_kira_birakilir()
+    {
+        var db = FileDb();
+        try
+        {
+            var customer = SeedCustomer(db, "ornek.musteri");
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(customer,
+                    _ => throw new InvalidOperationException("test: tutar okunamadı"), T, "session:s1"))
+                .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+            Leased(db, customer.Id).Should().BeFalse();
+            _launcher.LaunchedUrls.Should().BeEmpty();
+            handler.AppliedBalanceBodies.Should().BeEmpty();
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // I-3: çağıran (liste anlık görüntüsü bayat) tutarı reddederse hiçbir şey gönderilmez
+    public async Task Cagiran_tutari_reddederse_ListStale_doner_istek_gitmez()
+    {
+        var db = FileDb();
+        try
+        {
+            var customer = SeedCustomer(db, "ornek.musteri");
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(customer, _ => null, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.ListStale);
+
+            Leased(db, customer.Id).Should().BeFalse();
+            _launcher.LaunchedUrls.Should().BeEmpty();
+            handler.AppliedBalanceBodies.Should().BeEmpty();
+            using var conn = db.Factory.Open();
+            Dapper.SqlMapper.ExecuteScalar<int>(conn, "SELECT COUNT(*) FROM PaymentJob").Should().Be(0);
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // I-1: mesaj kiralanan satırın GÜNCEL telefonuna gider, kopyanın anlık görüntüsündekine değil
+    public async Task Tasinmis_kopyayla_istek_asil_kaydin_guncel_telefonuna_gider()
+    {
+        var db = FileDb();
+        try
+        {
+            var copy = SeedCustomer(db, "ornek.musteri");
+            var canonical = SeedCustomer(db, "Ornek.Musteri");
+            db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var current = db.Customers.GetById(canonical.Id)!;
+            current.Phone.Should().NotBe(copy.Phone, "ön koşul: iki yazımın numarası farklı");
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 100m;
+
+            (await sut.OpenWhatsAppAsync(copy, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+
+            _launcher.LaunchedUrls.Single().Should().StartWith($"https://wa.me/{current.Phone![1..]}?text=",
+                "mesaj asıl kaydın GÜNCEL telefonuna gitmeli");
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // I-1: alıcı ödemeli bayrağı kiralanan satırdan — kopyanınkiyle kargo ücreti eklenmez
+    public async Task Tasinmis_kopyayla_istek_alici_odemeyi_asil_kayittan_alir()
+    {
+        var settings = new AppSettings();
+        settings.Shipping.FreeShippingThreshold = 5000m;
+        settings.Shipping.ShippingFee = 150m;
+        _store.Save(settings);
+        var db = FileDb();
+        try
+        {
+            var copy = MakeCustomer(TestPhone.NewE164(), id: Guid.NewGuid().ToString("N")) with { Username = "ornek.musteri" };
+            db.Customers.Insert(copy);
+            var canonical = MakeCustomer(TestPhone.NewE164(), recipientPaysActive: true, id: Guid.NewGuid().ToString("N"))
+                with { Username = "Ornek.Musteri" };
+            db.Customers.Insert(canonical);
+            db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            db.Customers.GetById(canonical.Id)!.RecipientPaysActive.Should().BeTrue("ön koşul");
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 0m;
+
+            (await sut.OpenWhatsAppAsync(copy, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+
+            db.Jobs.FindOrCreate(canonical.Id, "session:s1", 0m).ProductTotal.Should().Be(250m,
+                "asıl kayıt alıcı ödemeli — kopyanın bayrağıyla 150 kargo eklenirdi");
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // I-1 (KVKK): liste açıkken kişisel verisi silinen müşteriye eski telefonla mesaj gitmez
+    public async Task Liste_acikken_kisisel_verisi_silinen_musteriye_mesaj_gitmez()
+    {
+        var db = FileDb();
+        try
+        {
+            var snapshot = SeedCustomer(db, "ornek.musteri");          // pencere bu satırı (telefonuyla) tutuyor
+            db.Customers.ScrubPersonalData(snapshot.Id).Should().Be(1);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: db.Jobs, customers: db.Customers, busy: db.Busy);
+            handler.PreviewBalance = 0m;
+
+            (await sut.OpenWhatsAppAsync(snapshot, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.PhoneRequired, "silinmiş kişinin eski telefonuna mesaj gitmemeli");
+
+            _launcher.LaunchedUrls.Should().BeEmpty();
+            handler.SentBodies.Should().BeEmpty();
+            using var conn = db.Factory.Open();
+            Dapper.SqlMapper.ExecuteScalar<int>(conn, "SELECT COUNT(*) FROM PaymentJob").Should().Be(0);
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact] // U8 ikinci katman: kira olmasa da uçuştaki akış kapatılmış işe düşüm yazmaz
+    public async Task Ucustaki_akisin_isi_kapatilirsa_dusum_yazilmaz_mesaj_gitmez()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        // Akış anahtarsız işi tutarken (FindOrCreate → … → BeginApply arası) iş kapatıldı —
+        // taşımanın anahtarsız kopya işine yaptığı gibi (legacy:{Id}:{Id} + ClosedAt).
+        handler.OnPreviewAsync = () =>
+        {
+            _jobs.Close(_jobs.Snapshot.Single().Id);
+            return Task.CompletedTask;
+        };
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        handler.AppliedBalanceBodies.Should().BeEmpty("kapalı işe yazılan düşüm hiç uzlaşmaz, sonraki tıklama ikinci kez düşerdi");
+        _launcher.LaunchedUrls.Should().BeEmpty();
+        _jobs.Snapshot.Single().ApplyKey.Should().BeNull();
     }
 }

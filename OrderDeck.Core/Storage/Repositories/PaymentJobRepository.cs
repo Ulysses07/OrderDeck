@@ -67,8 +67,12 @@ public interface IPaymentJobStore
     IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId);
 
     /// <summary>Anahtarı diske indirir ve işi apply_uncertain'e geçirir —
-    /// yalnız anahtar HENÜZ yoksa. false = yarışı kaybettik; yeniden oku,
-    /// kazananın anahtarıyla devam et.</summary>
+    /// yalnız anahtar HENÜZ yoksa ve iş KAPANMAMIŞSA. false = yarışı kaybettik
+    /// (yeniden oku, kazananın anahtarıyla devam et) ya da iş kapandı.
+    ///
+    /// <para>U8 (Bölüm C): yerel taşıma kopyanın anahtarsız işini miras kapsamına
+    /// alıp kapatabilir; o işi uçuşta tutan bir akışın düşümü kapalı işe yazılsaydı
+    /// hiç uzlaşmazdı (sonraki tıklama ikinci kez düşerdi).</para></summary>
     bool BeginApply(string id, Guid applyKey);
 
     /// <summary>Sunucudan kesin "uygulandı" cevabı geldi.
@@ -217,10 +221,15 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     public bool BeginApply(string id, Guid applyKey)
     {
         using var conn = _factory.Open();
+        // U8 (Bölüm C): kapalı işe anahtar yazılmaz. Taşıma kopyanın anahtarsız işini
+        // legacy:{Id}:{Id} yapıp kapatabilir; uçuştaki bir akış onu tutuyorsa düşüm kapalı
+        // miras işine yazılır ve hiç uzlaşmazdı (sonraki tıklama ikinci kez düşerdi). Normal
+        // akışta FindOrCreate'in döndürdüğü kapalı iş hep applied/no_balance'tır — buraya
+        // hiç gelmez. Asıl koruma kiradır (U13, CustomerBusySet); bu koşul ikinci katman.
         return conn.Execute(
             @"UPDATE PaymentJob
               SET ApplyKey=@key, State=@state, UpdatedAt=@now
-              WHERE Id=@id AND ApplyKey IS NULL",
+              WHERE Id=@id AND ApplyKey IS NULL AND ClosedAt IS NULL",
             new
             {
                 id,

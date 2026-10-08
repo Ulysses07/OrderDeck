@@ -145,6 +145,43 @@ public class LabelRepositoryTests
         top.Should().HaveCount(15); // top-10 değil, o yayında alan herkes
     }
 
+    // U12 (Bölüm C): ödeme akışı liste/rapor tutarını kiraladığı güncel Id için bununla yeniden
+    // okur — tanım raporun müşteri satırıyla birebir aynı olmalı.
+    [Fact]
+    public void GetSessionPrintedTotal_raporun_musteri_toplamiyla_ayni_tanimi_kullanir()
+    {
+        var (db, repo, sid, _) = Fx(); // c1 hazır
+        using var _2 = db;
+        new CustomerRepository(db).Insert(new Customer("c2", "instagram", "@b", null, null,
+            100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
+        new SessionRepository(db).Insert(
+            new StreamSession("s2", null, 300, null, new[] { "instagram" }, null));
+
+        repo.Insert(MakeLabel("l1", sid, "c1", price: 100m, printedAt: 500));
+        repo.Insert(MakeLabel("l2", sid, "c1", price: 40m, printedAt: 500));
+        repo.Insert(MakeLabel("l3", sid, "c1", price: 7m, printedAt: null));                                   // basılmadı
+        repo.Insert(MakeLabel("l4", sid, "c1", price: 11m, printedAt: 500));                                   // iptal (aşağıda)
+        repo.Insert(MakeLabel("l5", sid, "c1", price: 13m, printedAt: 500) with { IsTentativeBackup = true }); // yedek
+        repo.Insert(MakeLabel("l6", "s2", "c1", price: 17m, printedAt: 500));                                  // başka yayın
+        repo.Insert(MakeLabel("l7", sid, "c2", price: 60m, printedAt: 500));
+        repo.MarkCancelled(new[] { "l4" }, cancelledAt: 600, reason: "iptal");
+
+        repo.GetSessionPrintedTotal(sid, new[] { "c1" }).Should().Be(140m,
+            "basılmamış, iptal edilmiş, yedek ve başka yayının etiketi sayılmaz");
+        repo.GetSessionPrintedTotal(sid, new[] { "c2" }).Should().Be(60m);
+        repo.GetSessionPrintedTotal(sid, new[] { "c1", "c2" }).Should().Be(200m, "çok Id: toplamları");
+        repo.GetSessionPrintedTotal(sid, new[] { "yok" }).Should().Be(0m);
+        repo.GetSessionPrintedTotal(sid, Array.Empty<string>()).Should().Be(0m);
+
+        // Raporun satırlarıyla aynı tanım: müşteri başına ve toplamda birebir.
+        var top = repo.GetTopCustomersBySession(sid, int.MaxValue);
+        top.Select(t => t.CustomerId).Should().BeEquivalentTo(new[] { "c1", "c2" });
+        foreach (var t in top)
+            repo.GetSessionPrintedTotal(sid, new[] { t.CustomerId! }).Should().Be(t.TotalAmount);
+        repo.GetSessionPrintedTotal(sid, top.Select(t => t.CustomerId!).ToList())
+            .Should().Be(top.Sum(t => t.TotalAmount));
+    }
+
     [Fact]
     public void GetByCustomer_returns_labels_ordered_by_recent_for_only_that_customer()
     {

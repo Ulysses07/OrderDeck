@@ -111,4 +111,27 @@ public class GiveawayServicePreventRewinningCacheTests
 
         repo.GetParticipants(g3.Id).Should().BeEmpty();
     }
+
+    [Fact]
+    public void Onbellekteki_kazanan_tasinsa_da_yeniden_kazanamaz()
+    {
+        var (svc, repo, customers, db, sid) = Fx();
+        using var _ = db;
+        var g1 = svc.Start(sid, "🌹", 60, 1, null, preventRewinning: true);
+        svc.AddParticipantFromChat(g1.Id, Msg("@winner", "🌹"));
+        svc.Draw(g1.Id);
+        var g2 = svc.Start(sid, "🎁", 60, 1, null, preventRewinning: true);   // önbellek eski Id'yi tutar
+
+        // Çekiliş sürerken kazananın satırı başka bilgisayarın asıl kaydına taşındı (U12).
+        var winner = customers.FindByPlatformAndUsername("instagram", "@winner")!.Id;
+        var canonical = Guid.NewGuid().ToString("N");
+        customers.Insert(new Customer(canonical, "instagram", "@Winner", "@Winner", null, 1, 1,
+            false, null, null, 0, 0m, null, null, null));
+        new CustomerSyncRepository(db).RekeyToLocal(winner, canonical, pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+
+        svc.AddParticipantFromChat(g2.Id, Msg("@winner", "🎁"));
+
+        repo.GetParticipants(g2.Id).Should().BeEmpty("önceki kazanan taşınmış Id'siyle de tanınır");
+    }
 }

@@ -10,9 +10,10 @@ public sealed class LabelRepository
     private readonly IDbConnectionFactory _factory;
     public LabelRepository(IDbConnectionFactory factory) => _factory = factory;
 
-    public void Insert(Label l)
+    /// <param name="write">Doluysa çağıranın paketinde (<c>LabelService.Add</c>: müşteri + etiket
+    /// tek işlem, U12). Boşsa kendi bağlantısı — davranış değişmez.</param>
+    public void Insert(Label l, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // SQLite stores BOOLs as INTEGER — Dapper handles bool→0/1 conversion,
         // but we cast explicitly so the parameter type is unambiguous on
         // callers that pass an anonymous-typed projection.
@@ -22,13 +23,18 @@ public sealed class LabelRepository
         // çoktan gitmiş bir satırda ikisi de dolu olmalı — yoksa geri yükleme
         // bakiyeden bir kez daha düşerdi. Label kaydına ayrı bir alan eklemeye
         // gerek yok: damganın kaynağı zaten SyncedAt.
-        conn.Execute(
+        //
+        // U12: CustomerId yönlendirmeden YAZIMLA AYNI İFADEDE çözülür — bayat bir Customer
+        // nesnesiyle gelen yazım (AddShippingFee, açık pencere) taşınmış Id'de FK hatası
+        // vermez, asıl kayda iner.
+        _factory.Execute(write,
             @"INSERT INTO Label
               (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price, AddedAt, PrintedAt,
                IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt,
                StockSyncedAt, ProductId, ProductVariantId)
               VALUES
-              (@Id, @SessionId, @CustomerId, @Platform, @Username, @DisplayName, @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
+              (@Id, @SessionId, " + CustomerIdSql.Resolve("@CustomerId") + @", @Platform, @Username, @DisplayName,
+               @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
                @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId, @SyncedAt,
                @SyncedAt, @ProductId, @ProductVariantId)",
             new
@@ -312,7 +318,8 @@ public sealed class LabelRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<TopCustomerRow>(
-            @"SELECT c.Username,
+            @"SELECT l.CustomerId,
+                     c.Username,
                      c.DisplayName,
                      l.Platform,
                      COUNT(*)   AS LabelCount,
@@ -325,7 +332,24 @@ public sealed class LabelRepository
               ORDER BY SUM(l.Price) DESC
               LIMIT @limit",
             new { sessionId, limit }).ToList();
-        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName)).ToList();
+        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName, r.CustomerId)).ToList();
+    }
+
+    /// <summary>U12 (Bölüm C): verilen müşterilerin bu yayındaki satış toplamı —
+    /// <see cref="GetTopCustomersBySession"/> ile AYNI tanım (basılmış, iptal edilmemiş, yedek
+    /// olmayan etiketler). Ödeme akışı, liste/rapor anlık görüntüsünün Id başına tuttuğu tutarı
+    /// kiraladığı GÜNCEL Id için bununla yeniden okur: görüntü bir yerel taşımadan önce
+    /// alındıysa kopyanın satırı yalnız kendi yazımının payını taşır.</summary>
+    public decimal GetSessionPrintedTotal(string sessionId, IReadOnlyCollection<string> customerIds)
+    {
+        if (customerIds.Count == 0) return 0m;
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<decimal?>(
+            @"SELECT COALESCE(SUM(Price), 0)
+              FROM Label
+              WHERE SessionId=@sessionId AND CustomerId IN @customerIds
+                AND PrintedAt IS NOT NULL AND CancelledAt IS NULL AND IsTentativeBackup = 0",
+            new { sessionId, customerIds }) ?? 0m;
     }
 
     /// <summary>Returns the labels a customer added in a specific session, ordered
@@ -444,11 +468,12 @@ public sealed class LabelRepository
     public IReadOnlyList<Label> GetUnattachedByCustomer(string customerId)
     {
         using var conn = _factory.Open();
+        // U12: ödeme onayı akışı müşteri Id'sini ekranda açık kalmış bir karttan alabilir.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
                      Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
-              WHERE CustomerId=@customerId
+              WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @"
                 AND ShipmentId IS NULL
                 AND CancelledAt IS NULL
                 AND IsTentativeBackup = 0
@@ -576,6 +601,7 @@ public sealed class LabelRepository
 
     private sealed class TopCustomerRow
     {
+        public string CustomerId { get; init; } = "";
         public string Username { get; init; } = "";
         public string? DisplayName { get; init; }
         public string Platform { get; init; } = "";
@@ -637,9 +663,12 @@ public sealed record PlatformBreakdown(
 /// Bir yayında ürün alan müşteri (rapor + arama için). <see cref="Username"/> ham
 /// platform kimliği (YouTube'da channel id); insan-okur gösterim için <see
 /// cref="Display"/> kullan — DisplayName varsa onu, yoksa Username'e düşer.
+/// <see cref="CustomerId"/>: satırın toplandığı yerel müşteri Id'si (U12, Bölüm C — rapor açıkken
+/// yerel taşıma o Id'yi silmişse ödeme isteği satırı bayat sayar).
 /// </summary>
 public sealed record TopCustomer(
-    string Username, string Platform, int LabelCount, decimal TotalAmount, string? DisplayName = null)
+    string Username, string Platform, int LabelCount, decimal TotalAmount, string? DisplayName = null,
+    string? CustomerId = null)
 {
     public string Display => string.IsNullOrWhiteSpace(DisplayName) ? Username : DisplayName!;
 }

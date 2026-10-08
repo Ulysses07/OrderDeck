@@ -307,13 +307,36 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             result = await RequestPaymentAsync(updated);
         }
 
+        // U12 (Bölüm C): kart liste yüklendikten sonra yerel taşımayla bayatladı — istek
+        // gönderilmedi; liste yenilenir, operatör güncel kartı yeniden seçer.
+        if (result == PaymentRequestResult.ListStale) RefreshSearch();
+
         PaymentResultPresenter.Notify(_dialogService, result);
 
         // Kapsam: yayın-içi tutar kullanıldıysa satış o oturuma, değilse
         // müşterinin kümülatif bakiyesine aittir.
         async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
             await _paymentService.OpenWhatsAppAsync(
-                c, amount, streamDate,
+                c, CurrentAmount, streamDate,
                 streamSum > 0m && session is not null ? $"session:{session.Id}" : "cumulative");
+
+        // U12 (Bölüm C): yukarıdaki tutar liste anlık görüntüsünden ve Id başına. Liste açıkken
+        // senkron bir kopyayı (harf farklı yazım) asıl kayda taşıdıysa kopyanın kartı yalnız kendi
+        // yazımının payını bilir, ödeme işi ise asıl kaydın Id'sinde açılır — iki bayat karta
+        // tıklamak aynı kişi için iki iş açardı. Ödeme akışının kiraladığı GÜNCEL Id kartın Id'si
+        // değilse (liste yüklendikten sonra taşındı) istek REDDEDİLİR (null → ListStale). Değilse
+        // tutar o Id için burada yeniden okunur: aynı tanımla (yayın-içi ya da kümülatif) ve
+        // kişinin güncel grubu üzerinden — liste yenilense kartın göstereceği küme; taşıma yoksa
+        // kartınkiyle aynı. Yayın, kapsam kimliği gibi anlık görüntüden kalır (R4-08).
+        decimal? CurrentAmount(string customerId)
+        {
+            if (!string.Equals(customerId, customer.Id, StringComparison.Ordinal)) return null;
+            var current = _customers.GetById(customerId);
+            if (current is null) return amount;
+            var members = _customers.CompleteGroups(new[] { current });
+            return streamSum > 0m && session is not null
+                ? _labels.GetSessionPrintedTotal(session.Id, members.Select(m => m.Id).ToList())
+                : members.Sum(m => m.TotalAmount);
+        }
     }
 }

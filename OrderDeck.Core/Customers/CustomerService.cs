@@ -32,12 +32,40 @@ public sealed class CustomerService
     public Customer? Find(string platform, string username) =>
         _repo.FindByPlatformAndUsername(platform, username);
 
+    /// <summary>Sohbet yolu: müşteriyi bulur, yoksa açar.
+    ///
+    /// <para>Paket verilmezse (çekiliş katılımı, elle kara liste) YAZAN dal — yeni satır ya da
+    /// YouTube benimsemesi — kendi IMMEDIATE işleminde koşar ve arama işlemin İÇİNDE yinelenir:
+    /// arada aynı kullanıcı adını ekleyen başka bir yazıcı (akıştan inen satır, ikinci sohbet
+    /// kaynağı) ayrı arama+eklemeyi UNIQUE çakışmasıyla düşürürdü; benimsemenin grup ve kara
+    /// liste yazımları da ancak birlikte kalıcı olur. Bilinen ve benimsenecek grubu olmayan
+    /// müşteri (sıcak yol) yazma kilidi ALMAZ: çekiliş katılımı arayüz iş parçacığında koşar,
+    /// WAL'de okuma hiçbir yazıcıyı beklemez.</para></summary>
+    /// <param name="write">U12: doluysa bütün okuma ve yazımlar o pakette — çağıran
+    /// (<see cref="Sales.LabelService.Add"/>) müşteriyi ve etiketi tek işlemde yazar; ayrı
+    /// yazımlar arasında yerel taşıma (push yanıtı) müşteriyi silebilirdi.</param>
     public Customer GetOrCreate(string platform, string username,
+        string? displayName, string? avatarUrl, Storage.DbWrite? write = null)
+    {
+        if (write is not null)
+            return GetOrCreateIn(write, platform, username, displayName, avatarUrl);
+
+        var known = _repo.FindByPlatformAndUsername(platform, username);
+        if (known is not null && FindYouTubeGroupToAdopt(known, platform, displayName, write: null) is null)
+            return known;
+
+        using var own = _repo.BeginWrite();
+        var customer = GetOrCreateIn(own, platform, username, displayName, avatarUrl);
+        own.Commit();
+        return customer;
+    }
+
+    private Customer GetOrCreateIn(Storage.DbWrite write, string platform, string username,
         string? displayName, string? avatarUrl)
     {
-        var existing = _repo.FindByPlatformAndUsername(platform, username);
+        var existing = _repo.FindByPlatformAndUsername(platform, username, write);
         if (existing is not null)
-            return MaybeAdoptYouTube(existing, platform, displayName) ?? existing;
+            return MaybeAdoptYouTube(existing, platform, displayName, write) ?? existing;
 
         var now = _clock.UnixNow();
         var customer = new Customer(
@@ -56,9 +84,18 @@ public sealed class CustomerService
             BlacklistedAt: null,
             Address: null,
             Phone: null);
-        _repo.Insert(customer);
-        return MaybeAdoptYouTube(customer, platform, displayName) ?? customer;
+        _repo.Insert(customer, write);
+        return MaybeAdoptYouTube(customer, platform, displayName, write) ?? customer;
     }
+
+    /// <summary>U12: Id'lerin güncel karşılıkları tek sorguda (çekilişte kişi başına tek şans).</summary>
+    public IReadOnlyDictionary<string, string> ResolveIds(IEnumerable<string> customerIds)
+        => _repo.ResolveIds(customerIds);
+
+    /// <summary>U12: verilen Id'lerden biri yerel taşımayla bu müşteriye taşındı mı — tek sorgu
+    /// (çekiliş önceki kazanan önbelleği, çekiliş başında kurulmuş).</summary>
+    public bool AnyRedirectedTo(string customerId, IReadOnlyCollection<string> fromIds)
+        => _repo.AnyRedirectedTo(customerId, fromIds);
 
     /// <summary>
     /// YouTube channelId satırını, intake formda @handle ile bildirilen kişinin
@@ -66,7 +103,23 @@ public sealed class CustomerService
     /// Zaten gruplu ya da YouTube olmayan satırlarda no-op. Grup kara listedeyse
     /// satır da kara listeye alınır. Adopte edilirse güncel kaydı döner, yoksa null.
     /// </summary>
-    private Customer? MaybeAdoptYouTube(Customer row, string platform, string? displayName)
+    private Customer? MaybeAdoptYouTube(Customer row, string platform, string? displayName, Storage.DbWrite write)
+    {
+        var declared = FindYouTubeGroupToAdopt(row, platform, displayName, write);
+        if (declared is null) return null;
+        var groupId = declared.GroupId!;
+
+        _repo.SetGroupId(row.Id, groupId, write);
+        if (_repo.IsGroupBlacklisted(groupId, write))
+            _repo.UpdateBlacklist(row.Id, isBlacklisted: true,
+                declared.BlacklistReason, declared.BlacklistedAt ?? _clock.UnixNow(), write);
+
+        return _repo.GetById(row.Id, write);
+    }
+
+    /// <summary>Benimsenecek grup (formda @handle ile bildirilmiş gruplu YouTube satırı) ya da
+    /// null — yalnız okur. Sıcak yol bununla yazma gerekip gerekmediğine karar verir.</summary>
+    private Customer? FindYouTubeGroupToAdopt(Customer row, string platform, string? displayName, Storage.DbWrite? write)
     {
         if (!string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase)) return null;
         if (!string.IsNullOrEmpty(row.GroupId)) return null;
@@ -75,16 +128,10 @@ public sealed class CustomerService
         var handle = displayName.Trim().TrimStart('@').Trim();
         if (handle.Length == 0) return null;
 
-        var declared = _repo.FindGroupedYouTubeByHandle(handle);
-        if (declared?.GroupId is not { Length: > 0 } groupId) return null;
+        var declared = _repo.FindGroupedYouTubeByHandle(handle, write);
+        if (declared?.GroupId is not { Length: > 0 }) return null;
         if (string.Equals(declared.Id, row.Id, StringComparison.Ordinal)) return null;
-
-        _repo.SetGroupId(row.Id, groupId);
-        if (_repo.IsGroupBlacklisted(groupId))
-            _repo.UpdateBlacklist(row.Id, isBlacklisted: true,
-                declared.BlacklistReason, declared.BlacklistedAt ?? _clock.UnixNow());
-
-        return _repo.GetById(row.Id);
+        return declared;
     }
 
     /// <param name="write">

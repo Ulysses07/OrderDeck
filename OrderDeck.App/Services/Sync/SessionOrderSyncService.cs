@@ -21,12 +21,16 @@ public sealed class SessionOrderSyncService
     private const int SessionBatchSize = 50;
     private const int OrderBatchSize = 100;
 
+    /// <summary>Durum satırındaki gönderim ilerlemesinin adı (D2 incelemesi I-3).</summary>
+    public const string PushStatusName = "oturum-siparis";
+
     private readonly LicenseApiClient _api;
     private readonly SessionRepository _sessions;
     private readonly LabelRepository _labels;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<SessionOrderSyncService> _log;
+    private readonly SyncStatusTracker? _tracker;
 
     private System.Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
@@ -37,7 +41,8 @@ public sealed class SessionOrderSyncService
         LabelRepository labels,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
-        ILogger<SessionOrderSyncService> log)
+        ILogger<SessionOrderSyncService> log,
+        SyncStatusTracker? statusTracker = null)
     {
         _api = api;
         _sessions = sessions;
@@ -45,6 +50,8 @@ public sealed class SessionOrderSyncService
         _licenseProvider = licenseProvider;
         _clock = clock;
         _log = log;
+        _tracker = statusTracker;
+        _tracker?.RegisterPush(PushStatusName);
     }
 
     public readonly record struct SyncResult(int SessionsPushed, int OrdersPushed);
@@ -59,8 +66,11 @@ public sealed class SessionOrderSyncService
         }
 
         // Önce session'lar (Order.SessionId FK olduğu için)
-        int sessionsPushed = await PushSessionsAsync(licenseId.Value, ct);
-        int ordersPushed = await PushOrdersAsync(licenseId.Value, ct);
+        var (sessionsPushed, sessionsOk) = await PushSessionsAsync(licenseId.Value, ct);
+        var (ordersPushed, ordersOk) = await PushOrdersAsync(licenseId.Value, ct);
+
+        // I-3: iki gönderim de başardı ya da gönderecek bir şey yoktu — durum satırı sağlıklı sayar.
+        if (sessionsOk && ordersOk) _tracker?.MarkPushOk(PushStatusName, System.DateTimeOffset.UtcNow);
 
         if (sessionsPushed > 0 || ordersPushed > 0)
             _log.LogInformation(
@@ -70,10 +80,11 @@ public sealed class SessionOrderSyncService
         return new SyncResult(sessionsPushed, ordersPushed);
     }
 
-    private async Task<int> PushSessionsAsync(System.Guid licenseId, System.Threading.CancellationToken ct)
+    /// <returns>Gönderilen sayı; <c>Ok</c> = gönderim başarılı ya da gönderecek bir şey yoktu.</returns>
+    private async Task<(int Pushed, bool Ok)> PushSessionsAsync(System.Guid licenseId, System.Threading.CancellationToken ct)
     {
         var batch = _sessions.GetUnsynced(SessionBatchSize);
-        if (batch.Count == 0) return 0;
+        if (batch.Count == 0) return (0, true);
 
         var items = batch.Select(s => new SyncSessionItem(
             Id: System.Guid.Parse(s.Id),
@@ -91,20 +102,21 @@ public sealed class SessionOrderSyncService
         catch (LicenseApiException ex)
         {
             _log.LogWarning(ex, "Session outbox push failed: {Code}", ex.Code);
-            return 0;
+            return (0, false);
         }
 
         var now = _clock.UnixNow();
         // F05: push'a giden Revision ile onayla — uçuş sırasında satır
         // değiştiyse MarkSynced 0 satır etkiler, sonraki tick tekrar gönderir.
         foreach (var s in batch) _sessions.MarkSynced(s.Id, now, s.Revision);
-        return batch.Count;
+        return (batch.Count, true);
     }
 
-    private async Task<int> PushOrdersAsync(System.Guid licenseId, System.Threading.CancellationToken ct)
+    /// <returns>Gönderilen sayı; <c>Ok</c> = gönderim başarılı ya da gönderecek bir şey yoktu.</returns>
+    private async Task<(int Pushed, bool Ok)> PushOrdersAsync(System.Guid licenseId, System.Threading.CancellationToken ct)
     {
         var batch = _labels.GetUnsynced(OrderBatchSize);
-        if (batch.Count == 0) return 0;
+        if (batch.Count == 0) return (0, true);
 
         var items = batch.Select(l => new SyncOrderItem(
             Id: System.Guid.Parse(l.Id),
@@ -138,13 +150,13 @@ public sealed class SessionOrderSyncService
         catch (LicenseApiException ex)
         {
             _log.LogWarning(ex, "Order outbox push failed: {Code}", ex.Code);
-            return 0;
+            return (0, false);
         }
 
         var now = _clock.UnixNow();
         // F05: bkz. PushSessionsAsync'teki not.
         foreach (var l in batch) _labels.MarkSynced(l.Id, now, l.Revision);
-        return batch.Count;
+        return (batch.Count, true);
     }
 
     private async Task<System.Guid?> ResolveLicenseIdAsync(System.Threading.CancellationToken ct)

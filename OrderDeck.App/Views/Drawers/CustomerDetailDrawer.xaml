@@ -224,6 +224,14 @@
                     <TextBlock Text="{Binding BlacklistedAtLabel}"
                                Style="{StaticResource OD.Text.Hint}"/>
                 </StackPanel>
+
+                <!-- Yerel taşıma iki açık kargo dosyası bırakabilir (U12) -->
+                <TextBlock Text="{Binding OpenShipmentWarning}"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Foreground="{StaticResource OD.Brush.Amber}"
+                           TextWrapping="Wrap"
+                           Margin="{StaticResource OD.Pad.Top3}"
+                           Visibility="{Binding OpenShipmentWarning, Converter={StaticResource NullToCollapsedConverter}}"/>
             </StackPanel>
         </Border>
 

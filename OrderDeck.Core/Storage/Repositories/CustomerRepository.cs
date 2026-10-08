@@ -7,6 +7,17 @@ using OrderDeck.Core.Customers;
 
 namespace OrderDeck.Core.Storage.Repositories;
 
+/// <summary>Form yazımlarının kipi (Bölüm C kural 3, U14).</summary>
+public enum IntakeApplyMode
+{
+    /// <summary>Kural 3: birim, formun SubmittedAt'i yerel damgadan yeniyse ya da yerel birim
+    /// damgasızsa yazılır, damga = SubmittedAt.</summary>
+    Stamped,
+    /// <summary>U14 — taze bilgisayarın ilk tam oynatması: yalnız BOŞ ve damgasız birim, damga
+    /// yazılmaz, her şey SyncApplyGuard altında; LastSeenAt ilerlemez.</summary>
+    FillOnly,
+}
+
 public sealed class CustomerRepository
 {
     private readonly IDbConnectionFactory _factory;
@@ -33,6 +44,10 @@ public sealed class CustomerRepository
         WhatsAppConsent = 0,
         SmsConsent      = 0";
 
+    /// <summary>Boş ya da yalnız boşluk → null; değilse kırpılmış değer. Formdan gelen
+    /// boş alan bir birim DEĞİLDİR, yazılmaz (bağlayıcı kural 3).</summary>
+    private static string? Clean(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
     /// <summary>
     /// R11-D01: "bu satırın kimliği silinmişse temizle." Satır AÇAN her yol,
     /// açtığı satır için bunu AYNI işlemde koşar.
@@ -42,50 +57,80 @@ public sealed class CustomerRepository
     /// yazının <c>WHERE</c>'inde. <c>PurgedAt</c> tombstone'un tarihinden
     /// alınır — satır yeni açıldığı için silme anı "şimdi" değil, sunucunun
     /// bildirdiği andır.</para>
+    ///
+    /// <para><b>U16 — kimlik anahtarıyla da eşler.</b> <c>t.Username</c>
+    /// kolonunun NOCASE harmanı yalnız ASCII katlar ("ŞEYMA" ≠ "şeyma"); kimlik
+    /// anahtarı ASCII dışı harf farkını da yakalar. Önceki sürümün açtığı satırda
+    /// <c>Customer.IdentityKey</c> NULL olabilir: o zaman yalnız ad eşleşmesi
+    /// (bugünkü davranış). <c>MIN</c>: iki yazım da eşleşirse ilk silme tarihi
+    /// (adli kayıt).</para>
+    ///
+    /// <para><c>internal</c>: senkron deposu sunucudan eklediği satırda da koşar.</para>
     /// </summary>
-    private const string ScrubIfTombstonedSql = @"
+    internal const string ScrubIfTombstonedSql = @"
         UPDATE Customer
         SET " + ScrubAssignments + @",
             PurgedAt = COALESCE(PurgedAt, (
-                SELECT t.PurgedAt FROM CustomerPurgeTombstone t
-                WHERE t.Platform = Customer.Platform AND t.Username = Customer.Username))
+                SELECT MIN(t.PurgedAt) FROM CustomerPurgeTombstone t
+                WHERE t.Platform = Customer.Platform
+                  AND (t.Username = Customer.Username OR t.IdentityKey = Customer.IdentityKey)))
         WHERE Id = @id
           AND EXISTS (
                 SELECT 1 FROM CustomerPurgeTombstone t
-                WHERE t.Platform = Customer.Platform AND t.Username = Customer.Username)";
+                WHERE t.Platform = Customer.Platform
+                  AND (t.Username = Customer.Username OR t.IdentityKey = Customer.IdentityKey))";
 
     /// <summary>
     /// Kimlik başına tek silme kararı. <c>MIN</c>: tekrarlanan bildirim İLK
     /// silme tarihini korur (tarih adli kayıt). Tek metinde, çünkü
     /// <see cref="RecordPurge"/> kanonik kimlik ve (R12-D01) YouTube alias'ı
-    /// için aynı ifadeyi koşar.
+    /// için aynı ifadeyi koşar. Kimlik anahtarı (U16) da yazılır; satır zaten
+    /// varsa dolu anahtar korunur.
     /// </summary>
     private const string TombstoneUpsertSql = @"
-        INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt)
-        VALUES (@platform, @username, @purgedAtUnix)
+        INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt, IdentityKey)
+        VALUES (@platform, @username, @purgedAtUnix, @key)
         ON CONFLICT(Platform, Username) DO UPDATE SET
-            PurgedAt = MIN(CustomerPurgeTombstone.PurgedAt, excluded.PurgedAt)";
+            PurgedAt    = MIN(CustomerPurgeTombstone.PurgedAt, excluded.PurgedAt),
+            IdentityKey = COALESCE(CustomerPurgeTombstone.IdentityKey, excluded.IdentityKey)";
 
-    public void Insert(Customer c)
+    /// <param name="write">Doluysa çağıranın paketinde (U12: <c>LabelService.Add</c> müşteriyi ve
+    /// etiketi tek işlemde yazar). Boşsa kendi işlemi — davranış değişmez.</param>
+    public void Insert(Customer c, DbWrite? write = null)
     {
+        if (write is not null)
+        {
+            InsertCore(write.Connection, write.Transaction, c);
+            return;
+        }
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
+        InsertCore(conn, tx, c);
+        tx.Commit();
+    }
+
+    private static void InsertCore(System.Data.IDbConnection conn, System.Data.IDbTransaction tx, Customer c)
+    {
         conn.Execute(
             @"INSERT INTO Customer
-              (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+              (Id, Platform, Username, IdentityKey, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
                TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone,
                RecipientPaysActive, GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName,
                City, District)
               VALUES
-              (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
+              (@Id, @Platform, @Username, @IdentityKey, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
                @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone,
                @RecipientPaysActive, @GroupId, @Email, @Tckn, @WhatsAppConsent, @SmsConsent, @FullName,
                @City, @District)",
             new
             {
-                c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
+                c.Id, c.Platform, c.Username,
+                // U6: kimlik anahtarını C# yazar (tetikleyici değil — bkz. göç 045). Birim
+                // damgalarını INSERT tetikleyicisi basar: dolu birim = şimdi.
+                IdentityKey = CustomerIdentity.KeyOrNull(c.Username),
+                c.DisplayName, c.AvatarUrl,
                 c.FirstSeenAt, c.LastSeenAt,
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
                 c.BlacklistReason, c.Notes,
@@ -103,7 +148,6 @@ public sealed class CustomerRepository
         // açılıyor çünkü etiket/sipariş ona bağlanacak; bariyer de o satır
         // (PurgedAt dolu → tüm güncelleme yolları kapalı).
         conn.Execute(ScrubIfTombstonedSql, new { id = c.Id }, tx);
-        tx.Commit();
     }
 
     /// <summary>Kargo PR F: vendor "Alıcı Ödemeli" seçince true,
@@ -112,18 +156,51 @@ public sealed class CustomerRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Customer SET RecipientPaysActive=@active WHERE Id=@customerId",
+            "UPDATE Customer SET RecipientPaysActive=@active WHERE Id = " + CustomerIdSql.Resolve("@customerId"),
             new { customerId, active = active ? 1 : 0 });
     }
 
-    public Customer? FindByPlatformAndUsername(string platform, string username)
+    /// <summary>
+    /// Önce birebir (Platform, Username) — tekil indeks, sıcak yol. Yoksa sunucunun
+    /// kimlik anahtarıyla (U7): yeniden anahtarlama harf-farklı yerel kopyayı sildikten
+    /// sonra sohbet aynı kişiyi birebir adla bulamayıp her gönderim aralığında yeni
+    /// satır açardı (sunucuda yeni kopya → yerel taşıma → döngü) ve kara liste
+    /// denetimi kişiyi kaçırırdı. İkinci sorgu da indeksli (IX_Customer_Identity).
+    /// </summary>
+    /// <param name="write">Doluysa arama çağıranın paketinde (U12, U17 — sohbet yolunun tek işlemi).</param>
+    public Customer? FindByPlatformAndUsername(string platform, string username, DbWrite? write = null)
     {
+        if (write is not null)
+        {
+            var inScope = FindRow(write.Connection, write.Transaction, platform, username);
+            return inScope is null ? null : Map(inScope);
+        }
         using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT * FROM Customer WHERE Platform=@platform AND Username=@username",
-            new { platform, username });
+        var row = FindRow(conn, null, platform, username);
         return row is null ? null : Map(row);
     }
+
+    /// <summary>Birebir (Platform, Username), yoksa kimlik anahtarı (U7) — tek arama kuralı:
+    /// <see cref="FindByPlatformAndUsername"/> ve eski form yolu (<see cref="UpsertFromIntakeForm"/>,
+    /// yazma işleminin içinde) aynısını kullanır.</summary>
+    private static Row? FindRow(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
+        => conn.QueryFirstOrDefault<Row>(
+               "SELECT * FROM Customer WHERE Platform=@platform AND Username=@username",
+               new { platform, username }, tx)
+           ?? FindByIdentity(conn, tx, platform, username);
+
+    /// <summary>Sunucunun kimlik anahtarıyla (U6) arama — U7. Boş kullanıcı adının anahtarı
+    /// NULL: hiçbir satırla eşleşmez. Birden çok aday varsa silinmemiş ve en son görülen
+    /// kazanır.</summary>
+    private static Row? FindByIdentity(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
+        => conn.QueryFirstOrDefault<Row>(
+            @"SELECT * FROM Customer
+              WHERE Platform = @platform COLLATE NOCASE AND IdentityKey = @key
+              ORDER BY (PurgedAt IS NOT NULL), LastSeenAt DESC, Id
+              LIMIT 1",
+            new { platform, key = CustomerIdentity.KeyOrNull(username) }, tx);
 
     /// <summary>Returns the top-N shoppers from a session via a single
     /// JOIN — replaces the previous N+1 pattern in CustomerService where
@@ -147,11 +224,56 @@ public sealed class CustomerRepository
         return rows.Select(Map).ToList();
     }
 
-    public Customer? GetById(string id)
+    /// <summary>U12: taşınmış (yerel yeniden anahtarlamayla silinmiş) Id'nin güncel karşılığı;
+    /// taşınmamışsa — ya da hiç yoksa — kendisi. Önbellekte Id tutanlar (çekiliş önceki
+    /// kazananları) ve ödeme akışının girişi (C9) kullanır.</summary>
+    public string ResolveId(string customerId)
+        => _factory.ExecuteScalar<string>(null, "SELECT " + CustomerIdSql.Resolve("@id"), new { id = customerId })!;
+
+    /// <summary><see cref="ResolveIds"/>'in tek sorgudaki Id sayısı: SQLite'ın parametre sınırının
+    /// (eski derlemelerde 999) altında.</summary>
+    private const int ResolveChunkSize = 900;
+
+    /// <summary>U12: <see cref="ResolveId"/>'nin toplu hâli — <see cref="ResolveChunkSize"/>'lık
+    /// parça başına tek sorgu. Her girdi Id'si (tekrarlar bir kez) güncel Id'sine eşlenir;
+    /// taşınmamış ya da hiç olmayan Id kendisine.</summary>
+    public IReadOnlyDictionary<string, string> ResolveIds(IEnumerable<string> customerIds)
     {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var id in customerIds) map[id] = id;
+        if (map.Count == 0) return map;
+
         using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT * FROM Customer WHERE Id=@id", new { id });
+        foreach (var chunk in map.Keys.ToList().Chunk(ResolveChunkSize))
+            foreach (var (from, to) in conn.Query<(string From, string To)>(
+                         CustomerIdSql.ResolveMany("@ids"), new { ids = chunk }))
+                map[from] = to;
+        return map;
+    }
+
+    /// <summary>U12: <paramref name="fromIds"/>'ten biri yerel taşımayla <paramref name="customerId"/>'ye
+    /// taşındı mı — tek sorgu (çekilişin önceki kazanan denetimi, her sohbet mesajında). Zincir
+    /// yazımda kısaltıldığı için canlı Id'ye taşınmış her eski Id'nin kaydı doğrudan ona yönlenir.</summary>
+    public bool AnyRedirectedTo(string customerId, IReadOnlyCollection<string> fromIds)
+    {
+        if (fromIds.Count == 0) return false;
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            "SELECT EXISTS(SELECT 1 FROM CustomerRedirect WHERE ToId = @customerId AND FromId IN @fromIds)",
+            new { customerId, fromIds }) == 1;
+    }
+
+    /// <summary>Müşteri yazımlarını tek işleme bağlayan paket (U12) — <see cref="CustomerService"/>
+    /// sohbet yolunun yazan dalı için.</summary>
+    internal DbWrite BeginWrite() => DbWrite.Begin(_factory);
+
+    /// <summary>U12: taşınmış Id de bulunur — satır GÜNCEL Id'siyle döner (Id saklayan çağıran
+    /// dönen <c>Id</c>'yi saklamalı). Ham varlık denetimi gereken yer (senkron deposu, testler)
+    /// kendi SQL'ini kullanır.</summary>
+    public Customer? GetById(string id, DbWrite? write = null)
+    {
+        var row = _factory.QueryFirstOrDefault<Row>(write,
+            "SELECT * FROM Customer WHERE Id = " + CustomerIdSql.Resolve("@id"), new { id });
         return row is null ? null : Map(row);
     }
 
@@ -170,20 +292,19 @@ public sealed class CustomerRepository
               SET TotalLabelsPrinted = TotalLabelsPrinted + @labelDelta,
                   TotalAmount        = TotalAmount + @amountDelta,
                   LastSeenAt         = @lastSeenAt
-              WHERE Id = @id",
+              WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { id, labelDelta, amountDelta, lastSeenAt });
     }
 
     /// <summary>Sets or clears the blacklist flag, with optional reason and timestamp.</summary>
-    public void UpdateBlacklist(string id, bool isBlacklisted, string? reason, long? blacklistedAt)
-    {
-        using var conn = _factory.Open();
-        conn.Execute(
+    /// <param name="write">Doluysa çağıranın paketinde (sohbet yolu, U12).</param>
+    public void UpdateBlacklist(string id, bool isBlacklisted, string? reason, long? blacklistedAt, DbWrite? write = null)
+        => _factory.Execute(write,
             @"UPDATE Customer
               SET IsBlacklisted   = @flag,
                   BlacklistReason = @reason,
                   BlacklistedAt   = @blacklistedAt
-              WHERE Id = @id",
+              WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new
             {
                 id,
@@ -191,16 +312,12 @@ public sealed class CustomerRepository
                 reason,
                 blacklistedAt
             });
-    }
 
     /// <summary>True if any customer in the group is blacklisted.</summary>
-    public bool IsGroupBlacklisted(string groupId)
-    {
-        using var conn = _factory.Open();
-        return conn.ExecuteScalar<long>(
+    public bool IsGroupBlacklisted(string groupId, DbWrite? write = null)
+        => _factory.ExecuteScalar<long>(write,
             "SELECT COUNT(*) FROM Customer WHERE GroupId = @groupId AND IsBlacklisted = 1",
             new { groupId }) > 0;
-    }
 
     /// <summary>Sets/clears the blacklist flag for EVERY customer in the group.
     /// Used so blacklisting one identity blacklists the whole linked person.</summary>
@@ -231,12 +348,10 @@ public sealed class CustomerRepository
     }
 
     /// <summary>Assigns a customer to a group (YouTube channelId adoption).</summary>
-    public void SetGroupId(string customerId, string groupId)
-    {
-        using var conn = _factory.Open();
-        conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id = @id",
+    public void SetGroupId(string customerId, string groupId, DbWrite? write = null)
+        => _factory.Execute(write,
+            "UPDATE Customer SET GroupId = @groupId WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { groupId, id = customerId });
-    }
 
     /// <summary>
     /// Manuel birleştirme: seçilen müşterileri tek bir gruba bağlar. Aralarında
@@ -244,20 +359,35 @@ public sealed class CustomerRepository
     /// baz alınır, hepsi ona toplanır); yoksa yeni grup id üretilir. Grubun
     /// üyelerinden herhangi biri kara listedeyse tüm birleşmiş grup kara listeye
     /// yayılır. Dönen değer nihai grup id'si.
+    ///
+    /// <para>U12: seçim listesi pencere açıkken taşınmış satırları gösterebilir — Id'ler
+    /// yönlendirmeden çözülür; çözüm ve bütün yazımlar tek yazma işleminde (taşıma araya
+    /// giremez). Çözümden sonra tek kişi kalırsa (seçilen kartlar birbirine taşınmış) hiçbir
+    /// şey yazılmaz — tek üyeli grup açılıp gönderilmez — ve kişinin mevcut grubu (yoksa
+    /// null) döner.</para>
     /// </summary>
-    public string MergeIntoGroup(IReadOnlyList<string> customerIds)
+    public string? MergeIntoGroup(IReadOnlyList<string> customerIds)
     {
         var ids = customerIds?.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList()
                   ?? new List<string>();
         if (ids.Count < 2)
             throw new ArgumentException("Birleştirmek için en az iki müşteri gerekli", nameof(customerIds));
 
-        using var conn = _factory.Open();
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
+
+        // U12: arama listesindeki kartlar taşınmış satırları gösterebilir — güncel Id'ler.
+        ids = ids.Select(i => conn.ExecuteScalar<string>("SELECT " + CustomerIdSql.Resolve("@id"), new { id = i }, tx)!)
+                 .Distinct(StringComparer.Ordinal).ToList();
+        if (ids.Count < 2)
+            return conn.ExecuteScalar<string?>(
+                "SELECT GroupId FROM Customer WHERE Id = @id", new { id = ids[0] }, tx);
 
         // Mevcut grup id'lerini topla; varsa ilkini koru, yoksa yeni üret.
         var existingGroups = conn.Query<string>(
             "SELECT DISTINCT GroupId FROM Customer WHERE Id IN @ids AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''",
-            new { ids }).Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
+            new { ids }, tx).Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
         var groupId = existingGroups.FirstOrDefault() ?? Guid.NewGuid().ToString("N");
 
         // Güncellenecek tüm id'leri bellekte topla: seçilenler + mevcut grupların
@@ -267,15 +397,17 @@ public sealed class CustomerRepository
         {
             var groupMemberIds = conn.Query<string>(
                 "SELECT Id FROM Customer WHERE GroupId IN @groups",
-                new { groups = existingGroups });
+                new { groups = existingGroups }, tx);
             foreach (var id in groupMemberIds) targetIds.Add(id);
         }
 
         conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id IN @targetIds",
-            new { groupId, targetIds = targetIds.ToList() });
+            new { groupId, targetIds = targetIds.ToList() }, tx);
 
-        PropagateGroupBlacklist(conn, groupId, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        // Elle birleştirme yerel eylemdir: yayılımı tetikleyici "şimdi" damgalar.
+        PropagateGroupBlacklist(conn, tx, groupId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), formAt: null);
 
+        write.Commit();
         return groupId;
     }
 
@@ -285,26 +417,29 @@ public sealed class CustomerRepository
     /// Soyad'ı yazar. Eşleşen satır grupluysa tüm grup üyelerine yayılır (aynı kişi).
     /// LastSeenAt / DisplayName / Phone gibi alanlara <b>dokunmaz</b> — sadece
     /// FullName. Dönen: güncellenen satır sayısı.
+    ///
+    /// <para>Damga = formun gönderim anı (<paramref name="submittedAtMs"/>, kural 3) ve
+    /// yalnız yerel ad damgası daha eskiyse ya da yoksa: damgalı boş ad bilinçli
+    /// silmedir, daha eski form onu doldurmaz. Arama ve yazımlar tek yazma işleminde
+    /// (bkz. <see cref="UpsertPersonFromIntake"/>).</para>
     /// </summary>
+    /// <param name="mode">U14: taze bilgisayarın ilk oynatmasında <see cref="IntakeApplyMode.FillOnly"/> —
+    /// yalnız boş VE damgasız ad, damga yazılmaz (<see cref="FillFullNameForIdentities"/>).</param>
     public int BackfillFullNameForIdentities(
-        IReadOnlyList<(string Platform, string Username)> identities, string fullName)
+        IReadOnlyList<(string Platform, string Username)> identities, string fullName, long submittedAtMs,
+        IntakeApplyMode mode = IntakeApplyMode.Stamped)
     {
         var value = string.IsNullOrWhiteSpace(fullName) ? null : fullName.Trim();
         if (value is null) return 0;
+        // U14: doldurma kipi DbWrite'tan ÖNCE dallanır — bütünüyle kendi kilitli işleminde.
+        if (mode == IntakeApplyMode.FillOnly) return FillFullNameForIdentities(identities, value);
+        var at = submittedAtMs;
 
-        using var conn = _factory.Open();
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
 
-        var groupIds = new HashSet<string>(StringComparer.Ordinal);
-        var soloIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (p, u) in identities)
-        {
-            var handle = (u ?? "").Trim().TrimStart('@').Trim();
-            if (handle.Length == 0) continue;
-            var row = FindExistingForIntake(conn, p, handle);
-            if (row is null) continue;
-            if (!string.IsNullOrWhiteSpace(row.GroupId)) groupIds.Add(row.GroupId!);
-            else soloIds.Add(row.Id);
-        }
+        var (groupIds, soloIds) = BackfillTargets(conn, tx, identities);
 
         // R10-D02: "FullName boş" filtresi temizlenmiş satırları da yakalıyordu
         // (scrub FullName'i NULL'lar) — backfill KVKK silmesini geri dolduruyordu.
@@ -312,17 +447,79 @@ public sealed class CustomerRepository
         int updated = 0;
         if (groupIds.Count > 0)
             updated += conn.Execute(
-                @"UPDATE Customer SET FullName = @value
+                @"UPDATE Customer SET FullName = @value, FullNameChangedAt = @at
                   WHERE GroupId IN @groups AND (FullName IS NULL OR TRIM(FullName) = '')
-                    AND PurgedAt IS NULL",
-                new { value, groups = groupIds.ToList() });
+                    AND PurgedAt IS NULL
+                    AND (FullNameChangedAt IS NULL OR FullNameChangedAt < @at)",
+                new { value, groups = groupIds.ToList(), at }, tx);
         if (soloIds.Count > 0)
             updated += conn.Execute(
+                @"UPDATE Customer SET FullName = @value, FullNameChangedAt = @at
+                  WHERE Id IN @ids AND (FullName IS NULL OR TRIM(FullName) = '')
+                    AND PurgedAt IS NULL
+                    AND (FullNameChangedAt IS NULL OR FullNameChangedAt < @at)",
+                new { value, ids = soloIds.ToList(), at }, tx);
+
+        write.Commit();
+        return updated;
+    }
+
+    /// <summary>Backfill'in hedefleri (iki kipte ortak, çağıranın işleminde — U17): eşleşen satır
+    /// grupluysa bütün grubu, değilse yalnız kendisi.</summary>
+    private static (HashSet<string> GroupIds, HashSet<string> SoloIds) BackfillTargets(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        IReadOnlyList<(string Platform, string Username)> identities)
+    {
+        var groupIds = new HashSet<string>(StringComparer.Ordinal);
+        var soloIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (p, u) in identities)
+        {
+            var handle = (u ?? "").Trim().TrimStart('@').Trim();
+            if (handle.Length == 0) continue;
+            var row = FindExistingForIntake(conn, tx, p, handle);
+            if (row is null) continue;
+            if (!string.IsNullOrWhiteSpace(row.GroupId)) groupIds.Add(row.GroupId!);
+            else soloIds.Add(row.Id);
+        }
+        return (groupIds, soloIds);
+    }
+
+    /// <summary>
+    /// U14 — <see cref="BackfillFullNameForIdentities"/>'in doldurma kipi: yalnız boş VE damgasız ad,
+    /// damga yazılmaz. Arama ve yazımlar TEK kilitli işlemde (<see cref="SyncApplyScope"/>; her okuma
+    /// kapsamın bağlantısında — U17). Kilit SyncSeq tetikleyicisini de susturduğu için gerçekten
+    /// doldurulan satırlar açıkça ilerletilir (gönderilsin — damgasız ad sunucuda da yalnız boşu
+    /// doldurur). Dönen: doldurulan satır sayısı.
+    /// </summary>
+    private int FillFullNameForIdentities(IReadOnlyList<(string Platform, string Username)> identities, string value)
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var (groupIds, soloIds) = BackfillTargets(conn, tx, identities);
+
+        var filled = new List<string>();
+        if (groupIds.Count > 0)
+            filled.AddRange(conn.Query<string>(
+                @"UPDATE Customer SET FullName = @value
+                  WHERE GroupId IN @groups AND (FullName IS NULL OR TRIM(FullName) = '')
+                    AND FullNameChangedAt IS NULL AND PurgedAt IS NULL
+                  RETURNING Id",
+                new { value, groups = groupIds.ToList() }, tx));
+        if (soloIds.Count > 0)
+            filled.AddRange(conn.Query<string>(
                 @"UPDATE Customer SET FullName = @value
                   WHERE Id IN @ids AND (FullName IS NULL OR TRIM(FullName) = '')
-                    AND PurgedAt IS NULL",
-                new { value, ids = soloIds.ToList() });
-        return updated;
+                    AND FullNameChangedAt IS NULL AND PurgedAt IS NULL
+                  RETURNING Id",
+                new { value, ids = soloIds.ToList() }, tx));
+
+        var ids = filled.Distinct(StringComparer.Ordinal).ToList();
+        foreach (var id in ids)
+            CustomerSyncSeq.Bump(conn, tx, id);
+        scope.Commit();
+        return ids.Count;
     }
 
     /// <summary>Bir grubun tüm üye satırlarını döner (platform bazında). Detay
@@ -394,10 +591,9 @@ public sealed class CustomerRepository
     /// messages arrive keyed by channelId — this bridges them via the handle
     /// (chat DisplayName). Returns null if no grouped handle row exists.
     /// </summary>
-    public Customer? FindGroupedYouTubeByHandle(string handle)
+    public Customer? FindGroupedYouTubeByHandle(string handle, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
+        var row = _factory.QueryFirstOrDefault<Row>(write,
             @"SELECT * FROM Customer
               WHERE Platform = 'youtube' AND GroupId IS NOT NULL
                 AND LOWER(Username) = LOWER(@handle)
@@ -422,7 +618,7 @@ public sealed class CustomerRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Customer SET Notes=@notes WHERE Id=@id",
+            "UPDATE Customer SET Notes=@notes WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { id = customerId, notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim() });
     }
 
@@ -597,88 +793,185 @@ public sealed class CustomerRepository
 
     /// <summary>
     /// Upsert by (Platform, Username). Phase 4f intake form sync için.
-    /// Mevcut müşteri varsa DisplayName, Address, LastSeenAt güncellenir;
-    /// yoksa yeni satır insert edilir.
+    /// Mevcut müşteri varsa DisplayName, Address, Phone birim birim (form damgası
+    /// yerel damgadan yeniyse ya da yerel birim damgasızsa; boş form alanı
+    /// yazılmaz — kural 3) ve LastSeenAt güncellenir; yoksa yeni satır insert edilir.
+    /// Dönen kayıt veritabanındaki hâldir. Arama <see cref="FindByPlatformAndUsername"/>
+    /// ile aynı (birebir, yoksa kimlik anahtarı); arama ve yazım tek yazma işleminde
+    /// (bkz. <see cref="UpsertPersonFromIntake"/>).
     /// </summary>
-    public Customer UpsertFromIntakeForm(string username, string fullName, string address, string? phone, long nowUnix)
+    /// <param name="mode">U14: taze bilgisayarın ilk oynatmasında <see cref="IntakeApplyMode.FillOnly"/>
+    /// (<see cref="FillFromLegacyIntakeForm"/>).</param>
+    public Customer UpsertFromIntakeForm(string username, string fullName, string address, string? phone, long nowUnix, long submittedAtMs,
+        IntakeApplyMode mode = IntakeApplyMode.Stamped)
     {
         const string platform = "form";
-        using var conn = _factory.Open();
+        var fullNameValue = Clean(fullName);
+        var addressValue = Clean(address);
+        var phoneValue = Clean(phone);
+        // U14: doldurma kipi DbWrite'tan ÖNCE dallanır — bütünüyle kendi kilitli işleminde. Açılan
+        // satırın görülme anı formun gönderim anı (sn), işleme anı değil.
+        if (mode == IntakeApplyMode.FillOnly)
+            return FillFromLegacyIntakeForm(username, fullNameValue, addressValue, phoneValue,
+                seenAt: submittedAtMs / 1000);
+        // Damga = formun gönderim anı (kural 3).
+        var at = submittedAtMs;
 
-        var existing = conn.QueryFirstOrDefault<Row>(@"
-            SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
-                   IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                   BlacklistedAt, Address, Phone
-            FROM Customer
-            WHERE Platform = @platform AND Username = @username",
-            new { platform, username });
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
 
+        var existing = FindRow(conn, tx, platform, username);
+
+        string id;
         if (existing is not null)
         {
+            // Birim birim: değer doluysa VE yerel damga daha eski (ya da yoksa). Eski
+            // form "adres" alanı tek satırdır, il/ilçe bilmez → blok bütün yazılır
+            // (City/District = NULL); "form" satırlarında zaten hep boş.
+            //
             // N03-k: LastSeenAt = @nowUnix düz yazımı, satır delta imlecinin
-            // (GetUpdatedSince) üzerinde/ötesindeyse güncellemeyi imlecin
-            // ARKASINDA bırakıyordu → telefon/adres sunucuya hiç senkronlanmazdı.
+            // üzerinde/ötesindeyse güncellemeyi imlecin ARKASINDA bırakıyordu.
             // MAX(LastSeenAt+1, @nowUnix) satır başına kesin artan (bkz.
             // UpdatePhone'daki N03 düzeltmesi).
-            var affected = conn.Execute(@"
-                UPDATE Customer
-                SET DisplayName = @fullName,
-                    Address = @address,
-                    Phone = @phone,
-                    LastSeenAt = MAX(LastSeenAt + 1, @nowUnix)
+            conn.Execute(@"
+                UPDATE Customer SET
+                    DisplayName          = CASE WHEN @fullName IS NOT NULL AND (DisplayNameChangedAt IS NULL OR DisplayNameChangedAt < @at) THEN @fullName ELSE DisplayName END,
+                    DisplayNameChangedAt = CASE WHEN @fullName IS NOT NULL AND (DisplayNameChangedAt IS NULL OR DisplayNameChangedAt < @at) THEN @at ELSE DisplayNameChangedAt END,
+                    Address          = CASE WHEN @address IS NOT NULL AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN @address ELSE Address END,
+                    City             = CASE WHEN @address IS NOT NULL AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN NULL ELSE City END,
+                    District         = CASE WHEN @address IS NOT NULL AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN NULL ELSE District END,
+                    AddressChangedAt = CASE WHEN @address IS NOT NULL AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN @at ELSE AddressChangedAt END,
+                    Phone          = CASE WHEN @phone IS NOT NULL AND (PhoneChangedAt IS NULL OR PhoneChangedAt < @at) THEN @phone ELSE Phone END,
+                    PhoneChangedAt = CASE WHEN @phone IS NOT NULL AND (PhoneChangedAt IS NULL OR PhoneChangedAt < @at) THEN @at ELSE PhoneChangedAt END,
+                    LastSeenAt = MAX(LastSeenAt + 1, @nowUnix) -- N03-k
                 WHERE Id = @id
                   AND PurgedAt IS NULL -- R10-D02: KVKK tombstone'u geç gelen form cevabına yenilmez",
-                new { fullName, address, phone, nowUnix, id = existing.Id });
+                new { id = existing.Id, fullName = fullNameValue, address = addressValue, phone = phoneValue, at, nowUnix },
+                tx);
+            id = existing.Id;
+        }
+        else
+        {
+            id = Guid.NewGuid().ToString("N");
+            conn.Execute(@"
+                INSERT INTO Customer (Id, Platform, Username, IdentityKey, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+                                      IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+                                      BlacklistedAt, Address, Phone,
+                                      DisplayNameChangedAt, AddressChangedAt, PhoneChangedAt)
+                VALUES (@id, @platform, @username, @key, @fullName, NULL, @nowUnix, @nowUnix,
+                        0, NULL, NULL, 0, 0, NULL, @address, @phone,
+                        @displayAt, @addressAt, @phoneAt)",
+                new
+                {
+                    id, platform, username, key = CustomerIdentity.KeyOrNull(username),
+                    fullName = fullNameValue, nowUnix, address = addressValue, phone = phoneValue,
+                    displayAt = fullNameValue is null ? (long?)null : at,
+                    addressAt = addressValue is null ? (long?)null : at,
+                    phoneAt = phoneValue is null ? (long?)null : at,
+                }, tx);
 
-            // R10-D02: satır tombstone'luysa yazı uygulanmadı — iyimser kopya
-            // dönmek diriltilmiş veriyi çağırana (UI/sync) sızdırırdı; gerçek
-            // (temizlenmiş) satırı olduğu gibi dön.
-            if (affected == 0) return Map(existing);
-
-            var newSeen = Math.Max(existing.LastSeenAt + 1, nowUnix);
-            var updated = Map(existing);
-            return updated with { DisplayName = fullName, Address = address, Phone = phone, LastSeenAt = newSeen };
+            // R11-D01: yerelde satır YOKKEN inmiş bir KVKK tombstone'u varsa satır
+            // boş doğar. Yukarıdaki UPDATE dalı zaten kapılıydı; açık olan tek
+            // kapak buydu — silinen kişi, gecikmiş form cevabıyla sıfırdan
+            // diriliyordu.
+            conn.Execute(ScrubIfTombstonedSql, new { id }, tx);
         }
 
-        var id = Guid.NewGuid().ToString("N");
-        using var tx = conn.BeginTransaction();
-        conn.Execute(@"
-            INSERT INTO Customer (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
-                                  IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                                  BlacklistedAt, Address, Phone)
-            VALUES (@id, @platform, @username, @fullName, NULL, @nowUnix, @nowUnix,
-                    0, NULL, NULL, 0, 0, NULL, @address, @phone)",
-            new { id, platform, username, fullName, nowUnix, address, phone }, tx);
-
-        // R11-D01: yerelde satır YOKKEN inmiş bir KVKK tombstone'u varsa satır
-        // boş doğar. Yukarıdaki UPDATE dalı zaten kapılıydı; açık olan tek
-        // kapak buydu — silinen kişi, gecikmiş form cevabıyla sıfırdan
-        // diriliyordu.
-        var scrubbed = conn.Execute(ScrubIfTombstonedSql, new { id }, tx) > 0;
-        tx.Commit();
-
-        return scrubbed
-            ? new Customer(id, platform, username, "[Silindi]", null, nowUnix, nowUnix,
-                false, null, null, 0, 0m, null, null, null)
-            : new Customer(id, platform, username, fullName, null, nowUnix, nowUnix,
-                false, null, null, 0, 0m, null, address, phone);
+        // Yazılmak istenen değil, veritabanındaki hâl: damga kuralı birimleri
+        // atlamış ya da silinmiş satıra hiç yazılmamış olabilir (R10-D02) —
+        // iyimser kopya dönmek diriltilmiş veriyi çağırana (UI/sync) sızdırırdı.
+        var stored = conn.QueryFirst<Row>("SELECT * FROM Customer WHERE Id = @id", new { id }, tx);
+        write.Commit();
+        return Map(stored);
     }
+
+    /// <summary>
+    /// U14 — platform alanı olmayan eski formun doldurma kipi. Arama ve yazım TEK kilitli işlemde
+    /// (<see cref="SyncApplyScope"/>; arama <see cref="UpsertFromIntakeForm"/> ile aynı kural, kapsamın
+    /// bağlantısında — U17). Birim yalnız BOŞ ve damgasızsa yazılır, damga yazılmaz; açılan satır
+    /// damgasız doğar (kilit INSERT tetikleyicisini susturur, SyncSeq ekleme tetikleyicisi yine
+    /// numaralar — U2). LastSeenAt ilerlemez; yalnız gerçekten doldurulan mevcut satır gönderime
+    /// konur.
+    /// </summary>
+    /// <param name="seenAt">Açılan satırın ilk/son görülmesi: formun gönderim anı (unix s).</param>
+    private Customer FillFromLegacyIntakeForm(string username, string? fullName, string? address, string? phone, long seenAt)
+    {
+        const string platform = "form";
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var existing = FindRow(conn, tx, platform, username);
+        string id;
+        if (existing is not null)
+        {
+            id = existing.Id;
+            if (conn.Execute(LegacyIntakeFillSql, new { id, fullName, address, phone }, tx) > 0)
+                CustomerSyncSeq.Bump(conn, tx, id);      // kilit SyncSeq tetikleyicisini susturdu
+        }
+        else
+        {
+            id = Guid.NewGuid().ToString("N");
+            conn.Execute(@"
+                INSERT INTO Customer (Id, Platform, Username, IdentityKey, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+                                      IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+                                      BlacklistedAt, Address, Phone)
+                VALUES (@id, @platform, @username, @key, @fullName, NULL, @seenAt, @seenAt,
+                        0, NULL, NULL, 0, 0, NULL, @address, @phone)",
+                new { id, platform, username, key = CustomerIdentity.KeyOrNull(username), fullName, seenAt, address, phone },
+                tx);
+            conn.Execute(ScrubIfTombstonedSql, new { id }, tx);   // R11-D01: kilit altında → damgasız
+        }
+
+        var stored = conn.QueryFirst<Row>("SELECT * FROM Customer WHERE Id = @id", new { id }, tx);
+        scope.Commit();
+        return Map(stored);
+    }
+
+    /// <summary>U14 eski form doldurması: takma ad, adres bloğu (yalnız üç parçası da boşsa), telefon —
+    /// her biri yalnız BOŞ ve damgasızsa; damga kolonlarına ve LastSeenAt'e dokunulmaz. Doldurulacak
+    /// birim yoksa satır eşleşmez (0 döner) — değişmeyen satır gönderime konmaz.</summary>
+    private const string LegacyIntakeFillSql = @"
+        UPDATE Customer SET
+            DisplayName = CASE WHEN @fullName IS NOT NULL AND DisplayNameChangedAt IS NULL
+                                AND NULLIF(TRIM(DisplayName), '') IS NULL THEN @fullName ELSE DisplayName END,
+            Address     = CASE WHEN @address IS NOT NULL AND AddressChangedAt IS NULL
+                                AND NULLIF(TRIM(Address), '') IS NULL AND NULLIF(TRIM(City), '') IS NULL
+                                AND NULLIF(TRIM(District), '') IS NULL THEN @address ELSE Address END,
+            Phone       = CASE WHEN @phone IS NOT NULL AND PhoneChangedAt IS NULL
+                                AND NULLIF(TRIM(Phone), '') IS NULL THEN @phone ELSE Phone END
+        WHERE Id = @id AND PurgedAt IS NULL
+          AND (   (@fullName IS NOT NULL AND DisplayNameChangedAt IS NULL AND NULLIF(TRIM(DisplayName), '') IS NULL)
+               OR (@address IS NOT NULL AND AddressChangedAt IS NULL AND NULLIF(TRIM(Address), '') IS NULL
+                   AND NULLIF(TRIM(City), '') IS NULL AND NULLIF(TRIM(District), '') IS NULL)
+               OR (@phone IS NOT NULL AND PhoneChangedAt IS NULL AND NULLIF(TRIM(Phone), '') IS NULL))";
 
     /// <summary>
     /// Intake form çoklu-platform upsert. Kişinin bildirdiği her platform kimliği
     /// için bir Customer satırı oluşturur/günceller ve hepsini tek bir
     /// <c>GroupId</c> ile bağlar. Kimliklerden biri zaten bir gruba aitse o grup
-    /// yeniden kullanılır (kimlikler tek kişide birleşir), yoksa yeni grup üretilir.
+    /// yeniden kullanılır (kimlikler tek kişide birleşir), yoksa yeni grup formun
+    /// kimliğinden (<paramref name="formId"/>) türer.
     /// Handle normalize: trim + baştaki '@' atılır. IG/TikTok/FB'de Username = chat
     /// handle olduğundan chat satırıyla doğal birleşir; YouTube form satırı @handle
     /// ile durur (channelId adopsiyonu Faz 3'te). İletişim/izin bilgisi tüm satırlara
     /// yazılır; DisplayName boşsa Ad Soyad'a set edilir. Grup id'yi döner.
+    ///
+    /// <para>Bölüm C kural 3: her birim formun gönderim anıyla
+    /// (<paramref name="submittedAtMs"/>) damgalanır ve yalnız yerel birim damgası daha
+    /// eskiyse ya da yoksa yazılır; boş form alanı yazılmaz. Form tek yazma işleminde
+    /// uygulanır.</para>
     /// </summary>
+    /// <param name="formId">Sunucudaki form gönderiminin kimliği (zorunlu, boş olamaz).</param>
+    /// <param name="mode">U14: taze bilgisayarın ilk oynatmasında <see cref="IntakeApplyMode.FillOnly"/>
+    /// (<see cref="FillPersonFromIntake"/>).</param>
     public string UpsertPersonFromIntake(
         IReadOnlyList<(string Platform, string Username, string? PreferredDisplayName)> identities,
         string fullName, string address, string? phone,
         string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
-        long nowUnix, string? city = null, string? district = null)
+        long nowUnix, Guid formId, long submittedAtMs, string? city = null, string? district = null,
+        IntakeApplyMode mode = IntakeApplyMode.Stamped)
     {
         // Normalize + boşları ele. PreferredDisplayName: YouTube'da channelId
         // Username olduğunda operatöre @handle gösterilsin diye taşınır (UI asla
@@ -693,84 +986,89 @@ public sealed class CustomerRepository
 
         // Gerçek Ad Soyad'ı ayrı kolona yaz (boşsa null). DisplayName fallback'ı
         // aşağıda ayrıca korunur (chat takma adı ezilmesin diye).
-        var fullNameValue = string.IsNullOrWhiteSpace(fullName) ? null : fullName.Trim();
-        var phoneValue = string.IsNullOrWhiteSpace(phone) ? null : phone.Trim();
+        // Boş form alanı YAZILMAZ (kural 3). Adres bloğu tek birim: parçalarından biri
+        // doluysa blok formun hâliyle yazılır (boş parça = NULL), hiçbiri doluysa yazılmaz.
         // İl/ilçe 2026-08-03'ten sonraki formlardan gelir; eski gönderimlerde boş.
-        var cityValue = string.IsNullOrWhiteSpace(city) ? null : city.Trim();
-        var districtValue = string.IsNullOrWhiteSpace(district) ? null : district.Trim();
+        var fullNameValue = Clean(fullName);
+        var phoneValue = Clean(phone);
+        var addressValue = Clean(address);
+        var cityValue = Clean(city);
+        var districtValue = Clean(district);
+        var emailValue = Clean(email);
+        var tcknValue = Clean(tckn);
+        var hasAddress = addressValue is not null || cityValue is not null || districtValue is not null;
+        // Damga = formun gönderim anı, işleme anı DEĞİL: her bilgisayar formları kendi
+        // imleciyle oynatır; geç açılan bilgisayar eski formu "şimdi" damgasıyla yazsaydı
+        // sonradan yapılmış elle düzeltmeleri her yerde ezerdi.
+        var at = submittedAtMs;
+        if (formId == Guid.Empty)
+            throw new ArgumentException(
+                "Formun kimliği gerekli: yeni grup ondan türer — boş kimlik ilgisiz kişileri tek grupta toplardı",
+                nameof(formId));
 
-        using var conn = _factory.Open();
+        // U14 — taze bilgisayarın ilk tam oynatması: doldurma kipi DbWrite'tan ÖNCE dallanır ve
+        // bütünüyle kendi SyncApplyScope'unda koşar (eşleştirme ve grup çözümü dahil her okuma
+        // kapsamın bağlantısında — U17).
+        if (mode == IntakeApplyMode.FillOnly)
+            return FillPersonFromIntake(norm, formId, submittedAtMs,
+                fullNameValue, phoneValue, addressValue, cityValue, districtValue, emailValue, tcknValue,
+                whatsAppConsent, smsConsent);
 
-        // Grup id çözümle: kimliklerden biri zaten gruplanmışsa onu kullan.
-        string? groupId = null;
-        foreach (var (p, u, _) in norm)
-        {
-            var existing = FindExistingForIntake(conn, p, u);
-            if (existing?.GroupId is { Length: > 0 } g) { groupId = g; break; }
-        }
-        // Telefon-bazlı: kimlikler eşleşmese bile aynı telefonlu mevcut bir grup
-        // varsa onu kullan (aynı kişi başka platformdan tekrar kaydolduğunda).
-        if (groupId is null && phoneValue is not null)
-        {
-            var byPhone = conn.QueryFirstOrDefault<string>(
-                @"SELECT GroupId FROM Customer
-                  WHERE Phone = @phoneValue AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''
-                  LIMIT 1",
-                new { phoneValue });
-            if (!string.IsNullOrWhiteSpace(byPhone)) groupId = byPhone;
-        }
-        groupId ??= Guid.NewGuid().ToString("N");
+        // Bütün form TEK yazma işleminde (BEGIN IMMEDIATE — okumadan önce yazma kilidi):
+        // arama → grup çözümü → güncelleme/ekleme → telefonla gruplama → kara liste
+        // yayılımı. Ayrı ifadelerde kalsaydı arada bir yeniden anahtarlama (kendi
+        // işleminde kopyayı siler, yönlendirme yazar) Id ile yazımı 0 satıra düşürür,
+        // form imleci ilerlediği için de form o bilgisayarda sessizce kaybolurdu; geç bir
+        // hata da yarım uygulanmış form bırakırdı. Her okuma ve yazma işlemin bağlantısıyla
+        // (U17).
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
+
+        var groupId = ResolveIntakeGroup(conn, tx, norm, phoneValue, formId);
 
         foreach (var (p, u, disp) in norm)
         {
             // Gösterilecek ad: YouTube'da channelId Username olduğunda @handle (disp);
             // diğerlerinde Ad Soyad. UI asla channelId göstermesin diye önemli.
-            var displayForRow = disp ?? fullName;
-            var existing = FindExistingForIntake(conn, p, u);
+            //
+            // Kabul edilen sınır: takma ad yalnız yerelde BOŞSA doldurulur ama formun
+            // damgasını taşır. Eşzamanlı pencerede (bu bilgisayar satırı formdan açtı, başka
+            // bilgisayarda aynı kimliğin sohbetten gelmiş dolu takma adı var ve sohbet anı
+            // formdan eski) sunucu birim kuralıyla formun değerini seçer; öbür bilgisayardaki
+            // takma ad Ad Soyad'la değişir. Kabul edildi.
+            var displayForRow = disp ?? fullNameValue;
+            var existing = FindExistingForIntake(conn, tx, p, u);
             if (existing is not null)
             {
-                conn.Execute(
-                    @"UPDATE Customer SET
-                        GroupId = @groupId,
-                        Address = @address, City = @city, District = @district,
-                        Phone = @phone, Email = @email, Tckn = @tckn,
-                        WhatsAppConsent = @wa, SmsConsent = @sms,
-                        LastSeenAt = MAX(LastSeenAt + 1, @now), -- N03-k: delta imleci için kesin artan
-
-                        DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow),
-                        FullName = @fullName
-                      WHERE Id = @id
-                        AND PurgedAt IS NULL -- R10-D02: KVKK tombstone'u geç gelen form cevabına yenilmez",
-                    new
-                    {
-                        groupId, address, city = cityValue, district = districtValue, phone, email, tckn,
-                        wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
-                        now = nowUnix, displayForRow, fullName = fullNameValue, id = existing.Id
-                    });
+                conn.Execute(IntakeUpdateSql, new
+                {
+                    id = existing.Id, at, now = nowUnix, groupId,
+                    hasAddress = hasAddress ? 1 : 0, address = addressValue, city = cityValue, district = districtValue,
+                    phone = phoneValue, email = emailValue, tckn = tcknValue,
+                    wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
+                    displayForRow, fullName = fullNameValue,
+                }, tx);
             }
             else
             {
                 var newId = Guid.NewGuid().ToString("N");
-                using var tx = conn.BeginTransaction();
-                conn.Execute(
-                    @"INSERT INTO Customer
-                      (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
-                       IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                       BlacklistedAt, Address, Phone, RecipientPaysActive,
-                       GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName,
-                       City, District)
-                      VALUES
-                      (@id, @p, @u, @displayForRow, NULL, @now, @now,
-                       0, NULL, NULL, 0, 0,
-                       NULL, @address, @phone, 0,
-                       @groupId, @email, @tckn, @wa, @sms, @fullName,
-                       @city, @district)",
-                    new
-                    {
-                        id = newId, p, u, displayForRow, now = nowUnix,
-                        address, city = cityValue, district = districtValue, phone, groupId, email, tckn,
-                        wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0, fullName = fullNameValue
-                    }, tx);
+                conn.Execute(IntakeInsertSql, new
+                {
+                    id = newId, p, u, key = CustomerIdentity.KeyOrNull(u), displayForRow, now = nowUnix,
+                    address = addressValue, city = cityValue, district = districtValue,
+                    phone = phoneValue, groupId, email = emailValue, tckn = tcknValue,
+                    wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0, fullName = fullNameValue,
+                    // Yalnız DOLU birim damgalanır; izin her zaman formun cevabıdır.
+                    displayAt = displayForRow is null ? (long?)null : at,
+                    groupAt = at,
+                    addressAt = hasAddress ? at : (long?)null,
+                    phoneAt = phoneValue is null ? (long?)null : at,
+                    emailAt = emailValue is null ? (long?)null : at,
+                    tcknAt = tcknValue is null ? (long?)null : at,
+                    consentAt = at,
+                    fullNameAt = fullNameValue is null ? (long?)null : at,
+                }, tx);
 
                 // R11-D01: yukarıdaki UPDATE dalı "AND PurgedAt IS NULL" ile
                 // kapılıydı ama yerelde satırı hiç olmayan silinmiş kimlik bu
@@ -778,58 +1076,318 @@ public sealed class CustomerRepository
                 // telefon, e-posta, TCKN) sıfırdan yazıyordu. Karar artık
                 // kimliğin kendisinde duruyor; satır boş doğuyor.
                 conn.Execute(ScrubIfTombstonedSql, new { id = newId }, tx);
-                tx.Commit();
             }
         }
 
         // Telefon-bazlı otomatik birleştirme: aynı telefona sahip mevcut TÜM
         // müşterileri (ve ait oldukları grupların kalan üyelerini) bu gruba çek.
         // Böylece aynı kişi farklı platformdan ayrı ayrı kaydolmuşsa tek kart olur.
+        // BAŞKA satırların GroupId'si de formdan türeyen yazımdır → aynı damga, aynı
+        // "yalnız daha yeniyse" kuralı (sonradan elle ayrılan satır geri bağlanmaz).
         if (phoneValue is not null)
         {
             var otherGroups = conn.Query<string>(
                 @"SELECT DISTINCT GroupId FROM Customer
                   WHERE Phone = @phoneValue AND GroupId IS NOT NULL
                     AND TRIM(GroupId) <> '' AND GroupId <> @groupId",
-                new { phoneValue, groupId })
+                new { phoneValue, groupId }, tx)
                 .Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
 
             conn.Execute(
-                @"UPDATE Customer SET GroupId = @groupId
-                  WHERE Phone = @phoneValue AND (GroupId IS NULL OR GroupId <> @groupId)",
-                new { groupId, phoneValue });
+                @"UPDATE Customer SET GroupId = @groupId, GroupIdChangedAt = @at
+                  WHERE Phone = @phoneValue AND (GroupId IS NULL OR GroupId <> @groupId)
+                    AND (GroupIdChangedAt IS NULL OR GroupIdChangedAt < @at)",
+                new { groupId, phoneValue, at }, tx);
 
             if (otherGroups.Count > 0)
                 conn.Execute(
-                    "UPDATE Customer SET GroupId = @groupId WHERE GroupId IN @otherGroups",
-                    new { groupId, otherGroups });
+                    @"UPDATE Customer SET GroupId = @groupId, GroupIdChangedAt = @at
+                      WHERE GroupId IN @otherGroups
+                        AND (GroupIdChangedAt IS NULL OR GroupIdChangedAt < @at)",
+                    new { groupId, otherGroups, at }, tx);
         }
 
-        // Kara liste yayılımı HER formda: telefonsuz form da kimlikleri gruba koyar
-        // (mevcut gruba katılım ya da yeni grup). Kara liste satır bayrağından
-        // okunduğu için (sohbet, etiket kuyruğu, çekiliş) yayılım yalnız telefon
-        // dalında koşunca telefonsuz formla gruba giren yeni kimlik işaretsiz
-        // kalıyor, kişi o platformdan alışveriş yapabiliyordu.
-        PropagateGroupBlacklist(conn, groupId, nowUnix);
+        // Kara liste yayılımı HER formda (telefonla gruplamadan sonra): telefonsuz form
+        // da kimlikleri gruba koyar (mevcut gruba katılım ya da yeni grup). Kara liste
+        // satır bayrağından okunduğu için (sohbet, etiket kuyruğu, çekiliş) yayılım
+        // yalnız telefon dalında koşunca telefonsuz formla gruba giren yeni kimlik
+        // işaretsiz kalıyor, kişi o platformdan alışveriş yapabiliyordu.
+        // Yayılım da formdan türer: formun damgası, aynı "yalnız daha yeniyse" kuralı.
+        // Kaynak üyenin kara liste tarihi yoksa yayılan tarih de formdan (gönderim
+        // anı, sn): işleme anı aynı formu işleyen bilgisayarlarda farklı olurdu.
+        PropagateGroupBlacklist(conn, tx, groupId, fallbackAt: at / 1000, formAt: at);
 
+        write.Commit();
         return groupId;
     }
 
+    /// <summary>Formun grubu — iki kipte ortak, çağıranın işleminde (U17): kimliklerden biri zaten
+    /// gruplanmışsa o grup; yoksa aynı telefonlu mevcut bir grup (aynı kişi başka platformdan tekrar
+    /// kaydolduğunda); yoksa formun kimliğinden türeyen yeni grup.</summary>
+    private static string ResolveIntakeGroup(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        IReadOnlyList<(string Platform, string Username, string? Display)> norm, string? phoneValue, Guid formId)
+    {
+        // Kimliklerden biri zaten gruplanmışsa onu kullan.
+        foreach (var (p, u, _) in norm)
+        {
+            var existing = FindExistingForIntake(conn, tx, p, u);
+            if (existing?.GroupId is { Length: > 0 } g) return g;
+        }
+        // Telefon-bazlı: kimlikler eşleşmese bile aynı telefonlu mevcut bir grup
+        // varsa onu kullan (aynı kişi başka platformdan tekrar kaydolduğunda). Birden çok
+        // grup varsa en küçüğü: tarama (ekleme) sırası bilgisayardan bilgisayara değişir,
+        // aynı veriye sahip iki bilgisayar formu farklı gruba bağlamasın.
+        if (phoneValue is not null)
+        {
+            var byPhone = conn.QueryFirstOrDefault<string>(
+                @"SELECT GroupId FROM Customer
+                  WHERE Phone = @phoneValue AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''
+                  ORDER BY GroupId
+                  LIMIT 1",
+                new { phoneValue }, tx);
+            if (!string.IsNullOrWhiteSpace(byPhone)) return byPhone;
+        }
+        // Yeni grup formun kimliğinden türer (bugünkü GroupId biçimi, "N"), rastgele DEĞİL:
+        // grup birimi formun damgasını taşır; aynı formu birbirinin gönderimini görmeden
+        // işleyen iki bilgisayar rastgele grupla eşit damgalı iki farklı değer yazardı —
+        // sunucu da istemci de eşit damgayı yok saydığı için hiç yakınsamazlardı (kart
+        // bölünür, toplam yanlış, grup kara listesi yanlış kümede). Doldurma kipinde de aynı
+        // değer: taze bilgisayarın oynattığı form her yerde aynı grubu açar.
+        return formId.ToString("N");
+    }
+
+    /// <summary>
+    /// U14 — taze bilgisayarın ilk tam oynatması (<see cref="UpsertPersonFromIntake"/>'in doldurma
+    /// kipi). Eşleştirme, grup çözümü ve yazımlar TEK kilitli işlemde (<see cref="SyncApplyScope"/>;
+    /// her okuma kapsamın bağlantısında — U17). Birim yalnız BOŞ ve damgasızsa yazılır, damga
+    /// yazılmaz; açılan satır damgasız doğar (kilit INSERT tetikleyicisini susturur, SyncSeq ekleme
+    /// tetikleyicisi yine numaralar — U2). Telefonla gruplama yalnız boş ve damgasız GroupId'ye,
+    /// başka grupları birleştirmez. Yalnız gerçekten doldurulan mevcut satırların SyncSeq'i açıkça
+    /// ilerler (damgasız doldurma sunucuda da yalnız boşu doldurur); LastSeenAt ilerlemez (2. inceleme).
+    ///
+    /// <para>Kabul edilen sınır (geçiş penceresi): oynatma formları eskiden yeniye uyguladığı için
+    /// sunucuda olmayan bir birimi oynatmanın başlangıcından (T0) önceki en ESKİ form doldurur; aynı
+    /// birimi taşıyan daha yeni (yine T0 öncesi) form onu değiştirmez — T0'dan sonraki form damgalı
+    /// uygulanır ve yazar.</para>
+    /// </summary>
+    /// <param name="submittedAtMs">Formun gönderim anı: açılan satırın ilk/son görülmesi (saniyeye
+    /// çevrilir) ve kara liste yayılımının tarih yedeği.</param>
+    private string FillPersonFromIntake(
+        List<(string Platform, string Username, string? Display)> norm, Guid formId, long submittedAtMs,
+        string? fullName, string? phone, string? address, string? city, string? district,
+        string? email, string? tckn, bool whatsAppConsent, bool smsConsent)
+    {
+        var hasAddress = address is not null || city is not null || district is not null;
+        // Oynatmanın açtığı satırın görülme anı formun gönderim anı — "şimdi" değil.
+        var seenAt = submittedAtMs / 1000;
+
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var groupId = ResolveIntakeGroup(conn, tx, norm, phone, formId);
+        var touched = new List<string>();
+
+        foreach (var (p, u, disp) in norm)
+        {
+            var displayForRow = disp ?? fullName;
+            var existing = FindExistingForIntake(conn, tx, p, u);
+            if (existing is not null)
+            {
+                if (conn.Execute(IntakeFillSql, new
+                    {
+                        id = existing.Id, groupId,
+                        hasAddress = hasAddress ? 1 : 0, address, city, district,
+                        phone, email, tckn, wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
+                        displayForRow, fullName,
+                    }, tx) > 0)
+                    touched.Add(existing.Id);          // yalnız en az bir birim doldurulduysa (UPDATE koşulu)
+            }
+            else
+            {
+                var newId = Guid.NewGuid().ToString("N");
+                conn.Execute(IntakeInsertSql, new
+                {
+                    id = newId, p, u, key = CustomerIdentity.KeyOrNull(u), displayForRow, now = seenAt,
+                    address, city, district, phone, groupId, email, tckn,
+                    wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0, fullName,
+                    displayAt = (long?)null, groupAt = (long?)null, addressAt = (long?)null, phoneAt = (long?)null,
+                    emailAt = (long?)null, tcknAt = (long?)null, consentAt = (long?)null, fullNameAt = (long?)null,
+                }, tx);
+                conn.Execute(ScrubIfTombstonedSql, new { id = newId }, tx);   // R11-D01: kilit altında → damgasız
+            }
+        }
+
+        if (phone is not null)
+            touched.AddRange(conn.Query<string>(
+                @"UPDATE Customer SET GroupId = @groupId
+                  WHERE Phone = @phone AND NULLIF(TRIM(GroupId), '') IS NULL AND GroupIdChangedAt IS NULL
+                    AND PurgedAt IS NULL
+                  RETURNING Id",
+                new { groupId, phone }, tx));
+
+        // Kara liste yayılımı HER formda (#495 — telefonsuz form da kimliği gruba koyar), doldurma
+        // olarak: yalnız boş ve damgasız kara liste birimine, kilit altında damgasız. Yerel türetilmiş
+        // eylemdir; o satırlar ayrıca gönderime konmaz — her bilgisayar aynı grup ve kara liste
+        // verisinden aynı sonucu türetir. Tarih yedeği formdan (damgalı kiple aynı gerekçe).
+        PropagateGroupBlacklist(conn, tx, groupId, fallbackAt: seenAt, formAt: null, fillOnly: true);
+
+        // Kilit SyncSeq tetikleyicisini susturduğu için açıkça, tek tek (çağrı başına tek satır).
+        foreach (var id in touched.Distinct(StringComparer.Ordinal))
+            CustomerSyncSeq.Bump(conn, tx, id);
+        scope.Commit();
+        return groupId;
+    }
+
+    /// <summary>U14 doldurma: her birim yalnız yerel birim BOŞ ve damgasızsa; damga kolonlarına ve
+    /// LastSeenAt'e dokunulmaz. Bayrak yalnız "evet" doldurur; adres bloğu yalnız üç parçası boşsa
+    /// bütün. Doldurulacak birim yoksa satır eşleşmez (0 döner).</summary>
+    private const string IntakeFillSql = @"
+        UPDATE Customer SET
+            GroupId  = CASE WHEN NULLIF(TRIM(GroupId), '') IS NULL AND GroupIdChangedAt IS NULL THEN @groupId ELSE GroupId END,
+            Address  = CASE WHEN @hasAddress = 1 AND AddressChangedAt IS NULL
+                             AND NULLIF(TRIM(Address), '') IS NULL AND NULLIF(TRIM(City), '') IS NULL
+                             AND NULLIF(TRIM(District), '') IS NULL THEN @address ELSE Address END,
+            City     = CASE WHEN @hasAddress = 1 AND AddressChangedAt IS NULL
+                             AND NULLIF(TRIM(Address), '') IS NULL AND NULLIF(TRIM(City), '') IS NULL
+                             AND NULLIF(TRIM(District), '') IS NULL THEN @city ELSE City END,
+            District = CASE WHEN @hasAddress = 1 AND AddressChangedAt IS NULL
+                             AND NULLIF(TRIM(Address), '') IS NULL AND NULLIF(TRIM(City), '') IS NULL
+                             AND NULLIF(TRIM(District), '') IS NULL THEN @district ELSE District END,
+            Phone    = CASE WHEN @phone IS NOT NULL AND PhoneChangedAt IS NULL AND NULLIF(TRIM(Phone), '') IS NULL THEN @phone ELSE Phone END,
+            Email    = CASE WHEN @email IS NOT NULL AND EmailChangedAt IS NULL AND NULLIF(TRIM(Email), '') IS NULL THEN @email ELSE Email END,
+            Tckn     = CASE WHEN @tckn IS NOT NULL AND TcknChangedAt IS NULL AND NULLIF(TRIM(Tckn), '') IS NULL THEN @tckn ELSE Tckn END,
+            WhatsAppConsent = CASE WHEN @wa = 1 AND WhatsAppConsentChangedAt IS NULL THEN 1 ELSE WhatsAppConsent END,
+            SmsConsent      = CASE WHEN @sms = 1 AND SmsConsentChangedAt IS NULL THEN 1 ELSE SmsConsent END,
+            DisplayName = CASE WHEN @displayForRow IS NOT NULL AND DisplayNameChangedAt IS NULL
+                                AND NULLIF(TRIM(DisplayName), '') IS NULL THEN @displayForRow ELSE DisplayName END,
+            FullName    = CASE WHEN @fullName IS NOT NULL AND FullNameChangedAt IS NULL
+                                AND NULLIF(TRIM(FullName), '') IS NULL THEN @fullName ELSE FullName END
+        WHERE Id = @id
+          AND PurgedAt IS NULL
+          -- LastSeenAt ilerlemediğinden UPDATE başka hiçbir şeyi değiştirmez: yalnız en az bir birim
+          -- gerçekten doluyorsa eşleşsin — yoksa her eşleşen satır değişmiş sayılıp gönderime girerdi.
+          AND (   (NULLIF(TRIM(GroupId), '') IS NULL AND GroupIdChangedAt IS NULL)
+               OR (@hasAddress = 1 AND AddressChangedAt IS NULL AND NULLIF(TRIM(Address), '') IS NULL
+                   AND NULLIF(TRIM(City), '') IS NULL AND NULLIF(TRIM(District), '') IS NULL)
+               OR (@phone IS NOT NULL AND PhoneChangedAt IS NULL AND NULLIF(TRIM(Phone), '') IS NULL)
+               OR (@email IS NOT NULL AND EmailChangedAt IS NULL AND NULLIF(TRIM(Email), '') IS NULL)
+               OR (@tckn IS NOT NULL AND TcknChangedAt IS NULL AND NULLIF(TRIM(Tckn), '') IS NULL)
+               OR (@wa = 1 AND WhatsAppConsentChangedAt IS NULL AND WhatsAppConsent = 0)
+               OR (@sms = 1 AND SmsConsentChangedAt IS NULL AND SmsConsent = 0)
+               OR (@displayForRow IS NOT NULL AND DisplayNameChangedAt IS NULL AND NULLIF(TRIM(DisplayName), '') IS NULL)
+               OR (@fullName IS NOT NULL AND FullNameChangedAt IS NULL AND NULLIF(TRIM(FullName), '') IS NULL))";
+
+    /// <summary>Form → mevcut satır. Her birim: form değeri doluysa VE yerel damga daha
+    /// eski ya da yoksa yaz + damga = @at (kural 3). Eşit damga yankıdır. SET ifadeleri
+    /// ESKİ satır değerlerine göre hesaplanır (SQL), yani değer ve damga CASE'leri aynı
+    /// koşulu görür. Damga değiştiği için damga tetikleyicisi çalışmaz.
+    ///
+    /// <para>SyncSeq tetikleyicisi değere değil SET listesine bakar (<c>UPDATE OF</c>): bu
+    /// ifade bütün birim kolonlarını SET'te taşıdığı için (silinmemiş) satırı HER koşuşta —
+    /// hiçbir birim yazılmasa da, eşit damgalı yankıda bile — gönderime yeniden koyar.
+    /// Zararsız (sunucu aynı damgaları yok sayar), yalnız fazladan bir gönderim.</para></summary>
+    private const string IntakeUpdateSql = @"
+        UPDATE Customer SET
+            GroupId          = CASE WHEN GroupIdChangedAt IS NULL OR GroupIdChangedAt < @at THEN @groupId ELSE GroupId END,
+            GroupIdChangedAt = CASE WHEN GroupIdChangedAt IS NULL OR GroupIdChangedAt < @at THEN @at ELSE GroupIdChangedAt END,
+            Address  = CASE WHEN @hasAddress = 1 AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN @address  ELSE Address  END,
+            City     = CASE WHEN @hasAddress = 1 AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN @city     ELSE City     END,
+            District = CASE WHEN @hasAddress = 1 AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN @district ELSE District END,
+            AddressChangedAt = CASE WHEN @hasAddress = 1 AND (AddressChangedAt IS NULL OR AddressChangedAt < @at) THEN @at ELSE AddressChangedAt END,
+            Phone          = CASE WHEN @phone IS NOT NULL AND (PhoneChangedAt IS NULL OR PhoneChangedAt < @at) THEN @phone ELSE Phone END,
+            PhoneChangedAt = CASE WHEN @phone IS NOT NULL AND (PhoneChangedAt IS NULL OR PhoneChangedAt < @at) THEN @at ELSE PhoneChangedAt END,
+            Email          = CASE WHEN @email IS NOT NULL AND (EmailChangedAt IS NULL OR EmailChangedAt < @at) THEN @email ELSE Email END,
+            EmailChangedAt = CASE WHEN @email IS NOT NULL AND (EmailChangedAt IS NULL OR EmailChangedAt < @at) THEN @at ELSE EmailChangedAt END,
+            Tckn          = CASE WHEN @tckn IS NOT NULL AND (TcknChangedAt IS NULL OR TcknChangedAt < @at) THEN @tckn ELSE Tckn END,
+            TcknChangedAt = CASE WHEN @tckn IS NOT NULL AND (TcknChangedAt IS NULL OR TcknChangedAt < @at) THEN @at ELSE TcknChangedAt END,
+            WhatsAppConsent          = CASE WHEN WhatsAppConsentChangedAt IS NULL OR WhatsAppConsentChangedAt < @at THEN @wa ELSE WhatsAppConsent END,
+            WhatsAppConsentChangedAt = CASE WHEN WhatsAppConsentChangedAt IS NULL OR WhatsAppConsentChangedAt < @at THEN @at ELSE WhatsAppConsentChangedAt END,
+            SmsConsent          = CASE WHEN SmsConsentChangedAt IS NULL OR SmsConsentChangedAt < @at THEN @sms ELSE SmsConsent END,
+            SmsConsentChangedAt = CASE WHEN SmsConsentChangedAt IS NULL OR SmsConsentChangedAt < @at THEN @at ELSE SmsConsentChangedAt END,
+            DisplayName          = CASE WHEN NULLIF(TRIM(DisplayName), '') IS NULL AND @displayForRow IS NOT NULL
+                                         AND (DisplayNameChangedAt IS NULL OR DisplayNameChangedAt < @at)
+                                        THEN @displayForRow ELSE DisplayName END,
+            DisplayNameChangedAt = CASE WHEN NULLIF(TRIM(DisplayName), '') IS NULL AND @displayForRow IS NOT NULL
+                                         AND (DisplayNameChangedAt IS NULL OR DisplayNameChangedAt < @at)
+                                        THEN @at ELSE DisplayNameChangedAt END,
+            FullName          = CASE WHEN @fullName IS NOT NULL AND (FullNameChangedAt IS NULL OR FullNameChangedAt < @at) THEN @fullName ELSE FullName END,
+            FullNameChangedAt = CASE WHEN @fullName IS NOT NULL AND (FullNameChangedAt IS NULL OR FullNameChangedAt < @at) THEN @at ELSE FullNameChangedAt END,
+            LastSeenAt = MAX(LastSeenAt + 1, @now) -- N03-k: delta imleci için kesin artan
+        WHERE Id = @id
+          AND PurgedAt IS NULL -- R10-D02: KVKK tombstone'u geç gelen form cevabına yenilmez";
+
+    /// <summary>Form → yeni satır. Dolu birimler açık damga taşır; GroupId ve izinler
+    /// (WhatsApp, SMS) HER ZAMAN damgalanır — grup formdan türer, izin formun cevabıdır
+    /// ("hayır" da). Boş birimin damgası null: INSERT tetikleyicisi de damgalamaz, çünkü
+    /// birim boştur.</summary>
+    private const string IntakeInsertSql = @"
+        INSERT INTO Customer
+          (Id, Platform, Username, IdentityKey, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+           IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+           BlacklistedAt, Address, Phone, RecipientPaysActive,
+           GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName, City, District,
+           DisplayNameChangedAt, GroupIdChangedAt, AddressChangedAt, PhoneChangedAt, EmailChangedAt,
+           TcknChangedAt, WhatsAppConsentChangedAt, SmsConsentChangedAt, FullNameChangedAt)
+        VALUES
+          (@id, @p, @u, @key, @displayForRow, NULL, @now, @now,
+           0, NULL, NULL, 0, 0,
+           NULL, @address, @phone, 0,
+           @groupId, @email, @tckn, @wa, @sms, @fullName, @city, @district,
+           @displayAt, @groupAt, @addressAt, @phoneAt, @emailAt,
+           @tcknAt, @consentAt, @consentAt, @fullNameAt)";
+
     /// <summary>Grupta kara listede en az bir üye varsa, o üyenin sebep/tarihiyle
     /// tüm grubu kara listeye alır (birleştirme kara liste kaçışını kapatsın diye).
-    /// Verilen açık bağlantıyı kullanır.</summary>
-    private static void PropagateGroupBlacklist(System.Data.IDbConnection conn, string groupId, long fallbackAt)
+    /// Verilen açık bağlantıyı (ve varsa işlemi) kullanır.</summary>
+    /// <param name="fallbackAt">Kaynak üyenin kara liste tarihi yoksa yazılacak tarih (sn).</param>
+    /// <param name="formAt">Doluysa yayılım formdan türeyen yazımdır: kara liste damgası =
+    /// formun gönderim anı ve yalnız yerel damga daha eskiyse ya da yoksa yazılır — eski
+    /// formun geç oynatılması, başka bilgisayarda sonradan kara listeden çıkarılmış satırı
+    /// yeniden kara listeye almaz. Boşsa (elle birleştirme) yerel eylemdir: tetikleyici
+    /// "şimdi" damgalar.</param>
+    /// <param name="fillOnly">U14 — taze bilgisayarın ilk oynatması: yalnız kara liste birimi BOŞ
+    /// (kara listede değil) VE damgasız satırlar. Çağıran <see cref="SyncApplyScope"/> içinde: damga
+    /// yazılmaz, SyncSeq ilerlemez. Başka bilgisayarda bilerek kara listeden çıkarılmış (damgalı) satır
+    /// yeniden kara listeye alınmaz. <paramref name="formAt"/> yok sayılır. Yalnız yayılım alan satır
+    /// gönderilmez; başka bir birimi de doldurulup gönderime giren satır kara listeyi damgasız taşır
+    /// (sunucu yalnız boşsa doldurur). Kabul edilen sınır (önemsiz): kara listede olmayan damgasız
+    /// satırda kalmış eski <c>BlacklistReason</c>/<c>BlacklistedAt</c> kaynağın değerleriyle ezilir —
+    /// <c>CustomerUnitMerge.FillBlacklist</c> ise hedefin mevcut sebep/tarihini korur.</param>
+    private static void PropagateGroupBlacklist(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string groupId, long fallbackAt,
+        long? formAt, bool fillOnly = false)
     {
+        // Eşit tarihte Id bozar: tarama sırası (ekleme sırası) bilgisayardan bilgisayara
+        // değişir; aynı veriye sahip iki bilgisayar farklı kaynak seçip eşit damgayla farklı
+        // sebep yayardı.
         var b = conn.QueryFirstOrDefault<Row>(
             @"SELECT * FROM Customer
               WHERE GroupId = @groupId AND IsBlacklisted = 1
-              ORDER BY COALESCE(BlacklistedAt, 0) DESC LIMIT 1",
-            new { groupId });
+              ORDER BY COALESCE(BlacklistedAt, 0) DESC, Id LIMIT 1",
+            new { groupId }, tx);
         if (b is null) return;
-        conn.Execute(
-            @"UPDATE Customer SET IsBlacklisted = 1, BlacklistReason = @reason, BlacklistedAt = @at
-              WHERE GroupId = @groupId AND IsBlacklisted = 0",
-            new { groupId, reason = b.BlacklistReason, at = b.BlacklistedAt ?? fallbackAt });
+
+        var reason = b.BlacklistReason;
+        var at = b.BlacklistedAt ?? fallbackAt;
+        if (fillOnly)
+            conn.Execute(
+                @"UPDATE Customer SET IsBlacklisted = 1, BlacklistReason = @reason, BlacklistedAt = @at
+                  WHERE GroupId = @groupId AND IsBlacklisted = 0 AND BlacklistChangedAt IS NULL",
+                new { groupId, reason, at }, tx);
+        else if (formAt is null)
+            conn.Execute(
+                @"UPDATE Customer SET IsBlacklisted = 1, BlacklistReason = @reason, BlacklistedAt = @at
+                  WHERE GroupId = @groupId AND IsBlacklisted = 0",
+                new { groupId, reason, at }, tx);
+        else
+            conn.Execute(
+                @"UPDATE Customer SET IsBlacklisted = 1, BlacklistReason = @reason, BlacklistedAt = @at,
+                                      BlacklistChangedAt = @formAt
+                  WHERE GroupId = @groupId AND IsBlacklisted = 0
+                    AND (BlacklistChangedAt IS NULL OR BlacklistChangedAt < @formAt)",
+                new { groupId, reason, at, formAt }, tx);
     }
 
     /// <summary>
@@ -839,22 +1397,30 @@ public sealed class CustomerRepository
     /// <list type="number">
     ///   <item>Önce <c>(Platform, Username)</c> birebir — büyük/küçük harf
     ///   duyarsız (COLLATE NOCASE) → IG/TikTok/FB'de handle chat'le birebir aynı.</item>
+    ///   <item>Kimlik anahtarı (U7): NOCASE yalnız ASCII katlar; "ŞEYMA" ile "şeyma"yı
+    ///   anahtar eşler.</item>
     ///   <item>YouTube özel: chat satırının Username'i channelId (UCxxx), form ise
     ///   @handle verir → doğrudan tutmaz. Bu satırların <c>DisplayName</c>'i @handle
     ///   tuttuğu için handle'ı DisplayName ile eşleştirip channelId satırını buluruz
     ///   (Username=channelId korunur, gelecekteki chat de eşleşmeye devam eder).</item>
     /// </list>
-    /// Eşleşme yoksa null döner → çağıran yeni satır açar (regresyon yok).
+    /// Eşleşme yoksa null döner → çağıran yeni satır açar (regresyon yok). Çağıranın
+    /// yazma işleminin içinde koşar (<paramref name="tx"/>).
     /// </summary>
-    private static Row? FindExistingForIntake(System.Data.IDbConnection conn, string platform, string handle)
+    private static Row? FindExistingForIntake(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx, string platform, string handle)
     {
         // 1) (Platform, Username) birebir — harf duyarsız.
         var exact = conn.QueryFirstOrDefault<Row>(
             "SELECT * FROM Customer WHERE Platform=@platform AND Username=@handle COLLATE NOCASE",
-            new { platform, handle });
+            new { platform, handle }, tx);
         if (exact is not null) return exact;
 
-        // 2) YouTube: chat satırı channelId ile; @handle DisplayName'de saklı.
+        // 2) Kimlik anahtarı: NOCASE yalnız ASCII katlar ("ŞEYMA" ≠ "şeyma").
+        var byKey = FindByIdentity(conn, tx, platform, handle);
+        if (byKey is not null) return byKey;
+
+        // 3) YouTube: chat satırı channelId ile; @handle DisplayName'de saklı.
         if (string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase))
         {
             return conn.QueryFirstOrDefault<Row>(
@@ -862,7 +1428,7 @@ public sealed class CustomerRepository
                   WHERE Platform='youtube'
                     AND LTRIM(DisplayName, '@') = @handle COLLATE NOCASE
                   LIMIT 1",
-                new { handle });
+                new { handle }, tx);
         }
 
         return null;
@@ -871,7 +1437,7 @@ public sealed class CustomerRepository
     /// <summary>
     /// KVKK silme talebi: yayıncının kendi bilgisayarındaki kişisel alanları
     /// kalıcı olarak boşaltır. Sunucudaki <c>ShopperPurgeService</c>'in üçüncü
-    /// katmanı — tetikleyici <c>ShopperRegistrationIngestService</c>'e gelen
+    /// katmanı — tetikleyici <c>CustomerChangesPullService</c>'in akışından gelen
     /// <c>PurgedAt</c> işareti.
     ///
     /// <para><b>Satır silinmiyor, boşaltılıyor.</b> Sunucudaki desenin aynısı:
@@ -889,10 +1455,9 @@ public sealed class CustomerRepository
     /// notu; serbest metin olduğu için kişisel veri içerebilir ama silinmesi
     /// operatörün kendi kaydını yok etmek olur — bilerek dokunulmuyor.</para>
     ///
-    /// <para><c>LastSeenAt</c>'e DOKUNULMUYOR: değişseydi satır
-    /// <c>GetUpdatedSince</c>'e düşer ve bir sonraki push'ta sunucuya geri
-    /// giderdi (orada <c>PurgedAt</c> kapısına takılıp yazılmazdı ama boşuna
-    /// tur atardı).</para>
+    /// <para><c>LastSeenAt</c>'e DOKUNULMUYOR: iş zamanıdır ("en son görülme"),
+    /// silme bir görülme değildir. Gönderime düşme ona bağlı değil (imleç
+    /// <c>SyncSeq</c> — N03-g); yerelde silinmiş satır zaten gönderilmez (C6).</para>
     ///
     /// <para><b>R10-D02 (2026-09-15):</b> boşaltma tek başına kalıcı bariyer
     /// değildi — silmeden önce çekilmiş ama sonra uygulanan bir form cevabı
@@ -911,7 +1476,7 @@ public sealed class CustomerRepository
         return conn.Execute(
             "UPDATE Customer SET " + ScrubAssignments + @",
                   PurgedAt        = COALESCE(PurgedAt, @now)
-              WHERE Id = @id",
+              WHERE Id = " + CustomerIdSql.Resolve("@id"),
             new { id = customerId, now = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
     }
 
@@ -935,15 +1500,32 @@ public sealed class CustomerRepository
     ///
     /// <para>Boşaltma <c>Id</c> ile değil <c>(Platform, Username)</c> ile
     /// yapılıyor: aynı kimlikten birden fazla satır kalmışsa (eski
-    /// birleştirmelerden) hepsi kapsanır.</para>
+    /// birleştirmelerden) hepsi kapsanır. Harf duyarsız: NOCASE (ASCII) +
+    /// kimlik anahtarı (U16 — ASCII dışı harf farkı); mezar taşı da anahtarı
+    /// taşır.</para>
+    ///
+    /// <para>Bölüm C kural 2 + 8: akıştan inen silme kilit altında
+    /// (<see cref="SyncApplyScope"/>) yazılır — düzenleme değildir.</para>
     /// </summary>
     /// <returns>Boşaltılan yerel satır sayısı; satır yoksa 0 — karar yine de yazılmıştır.</returns>
     public int RecordPurge(string platform, string username, long purgedAtUnix)
-    {
-        using var conn = _factory.Open();
-        using var tx = conn.BeginTransaction();
+        => RecordPurge(platform, username, purgedAtUnix, out _);
 
-        conn.Execute(TombstoneUpsertSql, new { platform, username, purgedAtUnix }, tx);
+    /// <inheritdoc cref="RecordPurge(string, string, long)"/>
+    /// <param name="changed">Karar bu çağrıyla YENİ bir şey yaptı: yeni mezar taşı (kimlik ya da
+    /// YouTube alias'ı) yazıldı ya da henüz silinmemiş (<c>PurgedAt</c> boş) bir satır boşaltıldı.
+    /// Zaten uygulanmış silmenin tekrarı (akış CursorReset'le yeniden oynatıldı) false — akış
+    /// servisinin "KVKK silme" günlüğü yinelenmez (C7 incelemesi M-4).</param>
+    public int RecordPurge(string platform, string username, long purgedAtUnix, out bool changed)
+    {
+        // Akıştan inen KVKK kararı bir DÜZENLEME değildir (kural 2): kilit altında
+        // yazılır — boşaltılan birimler "şimdi" damgalanmaz, SyncSeq ilerlemez (sunucu
+        // satırı zaten silinmiş; geri göndermek boşuna tur).
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var newTombstones = UpsertTombstone(conn, tx, platform, username, purgedAtUnix) ? 1 : 0;
 
         // R12-D01: YouTube'da kararın kapsamı, uygulamanın eşleştirmede
         // GÜVENDİĞİ bağın tamamı olmalı. Boşaltma DisplayName'i de siliyor;
@@ -972,27 +1554,47 @@ public sealed class CustomerRepository
                 new { platform, username }, tx);
 
             foreach (var alias in aliases)
-                conn.Execute(TombstoneUpsertSql,
-                    new { platform, username = alias, purgedAtUnix }, tx);
+                newTombstones += UpsertTombstone(conn, tx, platform, alias, purgedAtUnix) ? 1 : 0;
         }
 
+        // Harf duyarsız: NOCASE (ASCII) + kimlik anahtarı (ASCII dışı harf farkı).
+        var newlyScrubbed = conn.ExecuteScalar<int>(
+            @"SELECT COUNT(*) FROM Customer
+              WHERE Platform = @platform
+                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)
+                AND PurgedAt IS NULL",
+            new { platform, username, key = CustomerIdentity.KeyOrNull(username) }, tx);
         var scrubbed = conn.Execute(
             "UPDATE Customer SET " + ScrubAssignments + @",
                   PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
-              WHERE Platform = @platform AND Username = @username COLLATE NOCASE",
-            new { platform, username, purgedAtUnix }, tx);
+              WHERE Platform = @platform
+                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)",
+            new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
 
-        tx.Commit();
+        scope.Commit();
+        changed = newTombstones > 0 || newlyScrubbed > 0;
         return scrubbed;
+    }
+
+    /// <summary>Mezar taşını yazar (ilk tarih korunur); kimlik için ilk karar mıydı.</summary>
+    private static bool UpsertTombstone(System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        string platform, string username, long purgedAtUnix)
+    {
+        // Birincil anahtarla aynı karşılaştırma: Platform birebir, Username NOCASE (kolon harmanı).
+        var existed = conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM CustomerPurgeTombstone WHERE Platform = @platform AND Username = @username",
+            new { platform, username }, tx) > 0;
+        conn.Execute(TombstoneUpsertSql,
+            new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
+        return !existed;
     }
 
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.
     ///
-    /// <para>N03 (2026-09-10 denetimi): <c>LastSeenAt</c> de ilerletilir —
-    /// delta imleci (<see cref="GetUpdatedSince"/>) bu sütunu okur; ilerlemezse
-    /// telefon sunucuya HİÇ senkronlanmaz (müşteri bir daha chat'e yazana
-    /// kadar). <c>MAX(LastSeenAt+1, @now)</c>: satır başına kesin artan, böylece
-    /// aynı saniyedeki ikinci güncelleme de imlecin önüne düşer.</para>
+    /// <para>N03 (2026-09-10 denetimi): <c>LastSeenAt</c> de ilerletilir — iş zamanı
+    /// ("en son görülme"). Sunucuya gidiş artık ona bağlı DEĞİL (N03-g): gönderim imleci
+    /// <c>SyncSeq</c>'tir; telefon değişince göç 036/045 tetikleyicileri SyncSeq'i ilerletir ve
+    /// <c>PhoneChangedAt</c>'i damgalar (C6, <c>CustomerSyncRepository.GetForPush</c>).</para>
     ///
     /// <para><b>R12-D02 (2026-09-16 denetimi):</b> <c>AND PurgedAt IS NULL</c>
     /// — elle telefon girişi de silme kapısına tabi. Telefon çekmecesi
@@ -1010,49 +1612,12 @@ public sealed class CustomerRepository
         using var conn = _factory.Open();
         return conn.Execute(
             @"UPDATE Customer SET Phone=@phone, LastSeenAt=MAX(LastSeenAt+1, @now)
-              WHERE Id=@id AND PurgedAt IS NULL",
+              WHERE Id = " + CustomerIdSql.Resolve("@id") + @" AND PurgedAt IS NULL",
             new
             {
                 phone = e164Phone,
                 id = customerId,
                 now = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             });
-    }
-
-    /// <summary>
-    /// Faz 0c-2: WpfCustomerProjection sync için delta query.
-    ///
-    /// <para>N03-g (2026-09-12 denetimi): imleç artık <c>SyncSeq</c> — göç
-    /// 036'daki tetikleyicilerin yazdığı, tablo genelinde kesin artan sayaç.
-    /// Eskiden imleç <c>(LastSeenAt, Id)</c> idi ve şu sınıf hatayı doğuruyordu:
-    /// imleç GENEL, <c>MAX(LastSeenAt+1, now)</c> artışı ise SATIRA ÖZEL. İleri
-    /// zamanlı/saat kaymış tek bir satır imleci 60 sn öne taşıdığında BAŞKA bir
-    /// satırın bir saniyelik artışı imlece asla yetişemiyor, o güncelleme
-    /// sunucuya HİÇ gitmiyordu — ve bir daha denenmiyordu. N03/N03-k'nın "+1"
-    /// düzeltmeleri bu sınıfı kapatamaz; sorun aritmetikte değil, iş zamanı ile
-    /// senkron sırasının aynı kolona yüklenmesindeydi.</para>
-    ///
-    /// <para>Yeni değer her zaman tablodaki en büyükten büyük olduğu için
-    /// güncellenen satır imlecin ÖNÜNE geçmek zorunda. SyncSeq benzersiz
-    /// olduğundan F07'nin (aynı saniyede BatchSize'dan fazla satır → sayfa
-    /// sınırında kalıcı atlama) sebebi de ortadan kalkıyor; eşitlik bozucu Id'ye
-    /// gerek kalmadı.</para>
-    ///
-    /// Sonuçlar SyncSeq ASC sıralı — imleç son satırdan okunur.
-    /// </summary>
-    public IReadOnlyList<Customer> GetUpdatedSince(long sinceSeq, int max)
-    {
-        using var conn = _factory.Open();
-        var rows = conn.Query<Row>(
-            @"SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
-                     IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                     BlacklistedAt, Address, Phone, RecipientPaysActive, FullName, SyncSeq
-              FROM Customer
-              WHERE SyncSeq > @since
-              ORDER BY SyncSeq ASC
-              LIMIT @max",
-            new { since = sinceSeq, max })
-            .ToList();
-        return rows.Select(Map).ToList();
     }
 }

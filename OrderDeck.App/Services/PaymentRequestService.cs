@@ -38,6 +38,11 @@ public enum PaymentRequestResult
     /// da lisans/önizleme erişilemedi). Mesaj GÖNDERİLMEDİ — operatör tekrar
     /// denemeli; deneme aynı anahtarla replay yapar, çift düşüm imkânsız.</summary>
     BalanceUncertain,
+
+    /// <summary>U12 (Bölüm C): çağıranın anlık görüntüsü (liste/rapor) bayat — liste
+    /// yüklendikten sonra yerel taşıma müşteriyi başka Id'ye geçirdi. Hiçbir şey
+    /// GÖNDERİLMEDİ, iş açılmadı; çağıran listeyi yeniler, operatör yeniden seçer.</summary>
+    ListStale,
 }
 
 /// <summary>
@@ -59,7 +64,13 @@ public sealed class PaymentRequestService
     private readonly ICurrentLicenseProvider _currentLicense;
     private readonly IPaymentJobStore _jobs;
     private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
+    private readonly CustomerRepository? _customers;
+    private readonly CustomerBusySet? _busy;
 
+    /// <param name="customers">U12 (Bölüm C): bakiye akışının girişinde müşteri Id'sini yerel
+    /// yönlendirme tablosundan çözer. DI verir; null yalnız testlerde (Id olduğu gibi kullanılır).</param>
+    /// <param name="busy">U13: senkron deposuyla paylaşılan TEK meşgul müşteri kümesi (DI tekil
+    /// örneği — ikinci bir örnek kirayı senkrona görünmez yapardı). Null yalnız testlerde (kira yok).</param>
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
@@ -67,7 +78,9 @@ public sealed class PaymentRequestService
         LicenseApiClient api,
         ICurrentLicenseProvider currentLicense,
         IPaymentJobStore jobs,
-        Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null)
+        Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null,
+        CustomerRepository? customers = null,
+        CustomerBusySet? busy = null)
     {
         _settingsStore = settingsStore;
         _messageBuilder = messageBuilder;
@@ -76,9 +89,11 @@ public sealed class PaymentRequestService
         _currentLicense = currentLicense;
         _jobs = jobs;
         _log = log;
+        _customers = customers;
+        _busy = busy;
     }
 
-    // License key → Guid LicenseId resolution. Aynı pattern ShopperRegistrationIngest /
+    // License key → Guid LicenseId resolution. Aynı pattern CustomerChangesPullService /
     // WpfCustomerProjectionSync'te de var. Caching: LicenseKey değişene kadar tutar.
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
@@ -158,13 +173,127 @@ public sealed class PaymentRequestService
     /// <param name="scopeKey">Satışın kalıcı kimlik kapsamı:
     /// "session:{id}" (yayın raporu) | "cumulative" (genel bakiye).
     /// Aynı kapsam + aynı müşteri = aynı satış; tutar değişirse revizyon.</param>
-    public async Task<PaymentRequestResult> OpenWhatsAppAsync(
+    public Task<PaymentRequestResult> OpenWhatsAppAsync(
         Customer customer, decimal productTotal, DateTime streamDate,
         string scopeKey, CancellationToken ct = default)
-    {
-        if (!PhoneNormalizer.IsValidTr(customer.Phone))
-            return PaymentRequestResult.PhoneRequired;
+        => OpenWhatsAppAsync(customer, _ => productTotal, streamDate, scopeKey, ct);
 
+    /// <summary>
+    /// <see cref="OpenWhatsAppAsync(Customer, decimal, DateTime, string, CancellationToken)"/>'ın,
+    /// tutarı akış girişinde yeniden okuyan biçimi (U12, Bölüm C).
+    ///
+    /// <para>Pencere ya da liste açıkken senkron müşteriyi başka Id'ye taşımış olabilir: akış
+    /// güncel Id'yi KİRALAR ve onu bir kez çözer; bakiye işi (FindOrCreate → … → BeginApply →
+    /// mesaj → Close) o Id ile koşar. Kira sürdükçe senkron bu müşteriyi taşımaz/dönüştürmez
+    /// (U13) — iş uçuşta yeniden adlandırılıp kapatılamaz (U8'in çift düşüm penceresi).</para>
+    ///
+    /// <para>Gönderim, çağıranın tuttuğu nesneyle değil kira altında okunan GÜNCEL satırla yapılır
+    /// (telefon, alıcı ödemeli, ad): taşıma asıl kaydın verisini, KVKK silmesi boşaltılmış satırı
+    /// bırakmış olabilir — silinmiş kişinin eski telefonuna mesaj gitmemeli.</para>
+    /// </summary>
+    /// <param name="productTotalFor">Kiralanan GÜNCEL Id ile, kira altında BİR KEZ çağrılır ve
+    /// o Id'nin ürün toplamını döner. Liste/rapor anlık görüntüsünün tutarı Id başına tutuldu:
+    /// taşımadan önce alınmışsa kopyanın satırı yalnız kendi yazımının payını taşır ve asıl
+    /// kaydın işiyle uyuşmaz. <c>null</c> = çağıran reddetti (anlık görüntüsü bayat):
+    /// <see cref="PaymentRequestResult.ListStale"/> döner, hiçbir şey gönderilmez.</param>
+    public async Task<PaymentRequestResult> OpenWhatsAppAsync(
+        Customer customer, Func<string, decimal?> productTotalFor, DateTime streamDate,
+        string scopeKey, CancellationToken ct = default)
+    {
+        IDisposable lease;
+        string customerId;
+        try
+        {
+            (lease, customerId) = await EnterCustomerAsync(customer.Id, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // M-1: giriş (Id çözümü, kiralama) yerel bir hatayla düşerse mesaj engellenir —
+            // genel hata kutusuna gitmez; operatör tekrar dener.
+            _log?.LogError(ex, "Ödeme akışının girişi düştü — mesaj engellendi (customer={CustomerId})",
+                customer.Id);
+            return PaymentRequestResult.BalanceUncertain;
+        }
+
+        using (lease)
+        {
+            decimal? productTotal;
+            Customer current;
+            try
+            {
+                // Önce çağıranın reddi: bayat kartta operatöre telefon da sorulmaz.
+                productTotal = productTotalFor(customerId);
+                if (productTotal is null) return PaymentRequestResult.ListStale;
+                current = _customers?.GetById(customerId) ?? customer with { Id = customerId };
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log?.LogError(ex, "Ödeme akışının tutarı/müşterisi okunamadı — mesaj engellendi (customer={CustomerId})",
+                    customerId);
+                return PaymentRequestResult.BalanceUncertain;
+            }
+
+            if (!PhoneNormalizer.IsValidTr(current.Phone))
+                return PaymentRequestResult.PhoneRequired;
+            return await OpenWhatsAppCoreAsync(current, productTotal.Value, streamDate, scopeKey, ct);
+        }
+    }
+
+    /// <summary>Müşteriyi kiralar ve kiralanan Id'nin güncel olduğunu doğrular: kiralama kümenin
+    /// kilidinden geçer, yani o ana kadar başlamış bir taşıma commit edilmiştir; çözüm değiştiyse
+    /// (çözümle kiralama arasında taşındı) o kira bırakılır ve güncel Id kiralanır.
+    ///
+    /// <para>U17: hiçbir veritabanı işlemi açıkken çağrılmaz; arayüz iş parçacığında yalnız
+    /// <c>await</c> ile beklenir (küme kilidi bir senkron öğesinin yazma işlemini bekliyor
+    /// olabilir).</para></summary>
+    private async Task<(IDisposable Lease, string CustomerId)> EnterCustomerAsync(
+        string customerId, CancellationToken ct)
+    {
+        if (_busy is null) return (NoLease.Instance, ResolveCustomerId(customerId));
+
+        var id = customerId;
+        for (var attempt = 0; attempt < MaxEnterAttempts; attempt++)
+        {
+            var resolved = ResolveCustomerId(id);
+            var lease = await _busy.EnterAsync(resolved, ct);
+            string current;
+            try
+            {
+                current = ResolveCustomerId(resolved);
+            }
+            catch
+            {
+                // C4 incelemesi: sızan kira o müşteriyi uygulama yeniden başlayana dek meşgul
+                // tutardı — senkron akışı her turda o öğede Busy olur, arkasındaki KVKK
+                // silmeleri dahil her şey beklerdi.
+                lease.Dispose();
+                throw;
+            }
+            if (string.Equals(current, resolved, StringComparison.Ordinal)) return (lease, resolved);
+            lease.Dispose();
+            id = current;
+        }
+        throw new InvalidOperationException($"Müşteri Id'si kararlı çözülemedi (customer={customerId})");
+    }
+
+    /// <summary>Her deneme bir taşımanın çözümle kiralama arasına girmesi demek; taşıma tek
+    /// yönlü (kopya → asıl) ve zincir kısaltılarak yazıldığı için birkaç deneme fazlasıyla yeter.</summary>
+    private const int MaxEnterAttempts = 8;
+
+    private string ResolveCustomerId(string id) => _customers?.ResolveId(id) ?? id;
+
+    private sealed class NoLease : IDisposable
+    {
+        public static readonly NoLease Instance = new();
+        public void Dispose() { }
+    }
+
+    /// <summary>Bakiye akışının gövdesi — müşteri Id'si çözülmüş ve kiralı, <paramref name="customer"/>
+    /// kira altında okunan güncel satır (bkz. tutarı yeniden okuyan <c>OpenWhatsAppAsync</c> biçimi).</summary>
+    private async Task<PaymentRequestResult> OpenWhatsAppCoreAsync(
+        Customer customer, decimal productTotal, DateTime streamDate,
+        string scopeKey, CancellationToken ct)
+    {
         var settings = _settingsStore.Load();
         var (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, settings);
 

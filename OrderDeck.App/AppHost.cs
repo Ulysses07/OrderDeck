@@ -81,6 +81,13 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<MigrationRunner>();
         services.AddSingleton<SessionRepository>();
         services.AddSingleton<CustomerRepository>();
+        // U13: ödeme akışındaki müşteriler — TEK paylaşılan örnek. Senkron deposu ile
+        // PaymentRequestService aynı kümeyi görmeli; ikinci bir örnek öbürünün kirasını
+        // görmez ve U13 sessizce çalışmaz (CustomerSyncDiTests denetler).
+        services.AddSingleton<CustomerBusySet>();
+        // Çoklu bilgisayar senkronunun müşteri deposu (Bölüm C): gönderim okuması, sunucu
+        // satırını uygulama, Id taşıma. Kurucusu kümeyi DI'dan alır.
+        services.AddSingleton<CustomerSyncRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
         // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService).
@@ -468,13 +475,15 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<TrialService>>()));
 
         // Intake form sync (Phase 4f). R9-D02: imleç SyncCursor tablosunda.
+        // U14: form işleme müşteri akışının TEK izleyicisinden ilk tam yetişmeyi bekler.
         services.AddSingleton<IntakeFormSyncService>(sp => new IntakeFormSyncService(
             sp.GetRequiredService<LicenseApiClient>(),
             sp.GetRequiredService<CustomerRepository>(),
             sp.GetRequiredService<SyncCursorRepository>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
-            sp.GetRequiredService<ILogger<IntakeFormSyncService>>()));
+            sp.GetRequiredService<ILogger<IntakeFormSyncService>>(),
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<IntakeFormSyncHostedService>();
 
         // Payment sync (PR B): WPF outbox push + reverse pull (mobile onay/red).
@@ -486,7 +495,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<SyncCursorRepository>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
-            sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>()));
+            sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>(),
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
         // Kümülatif kargo Shipment sync (PR-D, 2026-05-13).
@@ -497,7 +507,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
-            sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>()));
+            sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>(),
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
         // Session + Order sync (PR siparis-sync 2026-05-13)
@@ -508,7 +519,8 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 sp.GetRequiredService<IClock>(),
-                sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>()));
+                sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>(),
+                sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.SessionOrderSyncHostedService>();
 
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save
@@ -524,14 +536,35 @@ public sealed class AppHost : IDisposable
         // WPF customer projection sync (Faz 0c-2): lokal Customer tablosunun
         // LicenseServer'a delta sync'i. 60 sn cadence, 500'lük batch, watermark
         // SyncCursor tablosunda (R6-04). Shopper app login match için gerekli.
+        // Bölüm C6: biçim 2 (tam alan + birim damgaları), imleç customer-projection-out-v2,
+        // yanıttaki yönlendirmeler yerel satırı asıl kayda taşır (CustomerSyncRepository).
         services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
         services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
 
-        // Shopper registration ingest (Faz 0c-3): server'da shopper register/join
-        // sırasında otomatik oluşturulan WpfCustomerProjection kayıtlarını WPF lokal
-        // Customer tablosuna ingest eder. 30 sn cadence, imleç SyncCursor tablosunda (R6-04).
-        services.AddSingleton<Services.Sync.ShopperRegistrationIngestService>();
-        services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
+        // Çoklu bilgisayar müşteri akışı (Bölüm C): diğer bilgisayarların ve Shopper
+        // uygulamasının müşteri değişiklikleri, kopya yönlendirmeleri, KVKK silmeleri.
+        // Eski ShopperRegistrationIngest'in yerine. 30 sn; açılışta hemen bir tur (Faz 0).
+        // İzleyici TEK örnek: durum satırı (D2) ve form oynatması (C10) akışın yazdığını okur.
+        services.AddSingleton<Services.Sync.SyncStatusTracker>();
+        services.AddSingleton<Services.Sync.CustomerChangesPullService>();
+        services.AddHostedService<Services.Sync.CustomerChangesPullHostedService>();
+
+        // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
+        // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
+        // null olurdu (CustomerSyncDiTests denetler).
+        services.AddSingleton<SyncOutboxRepository>();
+        services.AddSingleton<Services.Sync.SyncPendingCounter>();
+
+        // Faz 0 (D5): kapanışta "gönder ve kapat" — bekleyen sayıya (D1) giren her gönderim, kuyruğu
+        // boşaltana dek, toplam süre sınırıyla (sıra ve paylar SyncFlushService.ForClose'ta).
+        // Servisler kurulurken çözülür: eksik kayıt kapanışta değil DI testinde (CustomerSyncDiTests)
+        // düşsün.
+        services.AddSingleton(sp => OrderDeck.App.Services.Sync.SyncFlushService.ForClose(
+            sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
+            sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
+            sp.GetRequiredService<Services.Sync.PaymentSyncService>(),
+            sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+            sp.GetRequiredService<ILogger<Services.Sync.SyncFlushService>>()));
 
         // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
         // görüntüsü yerel SQLite'a yazılır. Ritim İKİ kademeli — ilk GERÇEKTEN
@@ -617,6 +650,14 @@ public sealed class AppHost : IDisposable
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
+        // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
+        // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
+        // satır artıktır.
+        var staleGuards = SyncApplyScope.ClearStale(Services.GetRequiredService<IDbConnectionFactory>());
+        if (staleGuards > 0)
+            Services.GetRequiredService<ILogger<AppHost>>().LogWarning(
+                "SyncApplyGuard'da kalmış {Count} kilit satırı silindi — kaldığı sürece müşteri düzenlemeleri damgalanmadı ve gönderilmedi",
+                staleGuards);
 
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).

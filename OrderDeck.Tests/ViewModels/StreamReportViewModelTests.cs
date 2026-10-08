@@ -180,4 +180,76 @@ public class StreamReportViewModel_OpenWhatsAppTests
             if (File.Exists(settingsPath)) File.Delete(settingsPath);
         }
     }
+
+    // ── C9 (U12): rapor açıkken senkron kopyayı asıl kayda taşıdı ───────────
+    //
+    // Rapor satırları yüklenirken Id başına toplandı; taşımadan sonra kopyanın satırı yalnız
+    // kendi yazımının payını taşır ama ödeme işi asıl kaydın Id'sinde açılır. Satırın Id'si
+    // artık güncel değilse istek GÖNDERİLMEZ: rapor yenilenir, operatör yeniden seçer.
+
+    /// <summary>Senkronlu kurulum: ödeme servisi Id'yi çözer ve müşteriyi kiralar; dönen senkron
+    /// deposu AYNI kümeyle taşır (DI'daki tekil örnek gibi).</summary>
+    private static (StreamReportViewModel Sut, CustomerSyncRepository Sync, InMemoryPaymentJobStore Jobs) Synced(
+        InMemorySqlite db, CustomerRepository customers, SessionRepository sessions, LabelRepository labels,
+        GiveawayRepository giveaways, string settingsPath, FakeDialogService dialogs)
+    {
+        var busy = new CustomerBusySet();
+        var jobs = new InMemoryPaymentJobStore();
+        var (api, license) = PaymentRequestServiceTestHelpers.InProgressCloudApiClient();
+        var payment = new PaymentRequestService(new SettingsStore(settingsPath), new WhatsAppMessageBuilder(),
+            new FakeUrlLauncher(), api, license, jobs, log: null, customers: customers, busy: busy);
+        return (new StreamReportViewModel(labels, sessions, giveaways, customers, payment, dialogs),
+                new CustomerSyncRepository(db, busy), jobs);
+    }
+
+    [Fact]
+    public async Task OpenWhatsApp_rapor_acikken_tasinan_kopyanin_satiri_istek_gondermez_rapor_yenilenir()
+    {
+        var (db, customers, sessions, labels, giveaways, _, dialogs, settingsPath, _) =
+            Setup(cloudApiInProgress: true);
+        using var _db = db;
+        try
+        {
+            var (sut, sync, jobs) = Synced(db, customers, sessions, labels, giveaways, settingsPath, dialogs);
+            // Aynı kişinin iki yazımı (harf farkı): taşımadan önce iki satır.
+            var copy = Guid.NewGuid().ToString("N");
+            var canonical = Guid.NewGuid().ToString("N");
+            customers.Insert(new Customer(copy, "tiktok", "ornek.musteri", "Örnek Müşteri", null,
+                100, 100, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
+            customers.Insert(new Customer(canonical, "tiktok", "Ornek.Musteri", "Örnek Müşteri", null,
+                100, 101, false, null, null, 0, 0m, null, null, TestPhone.NewE164()));
+            sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", copy, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+            labels.Insert(new Label("l2", "s1", canonical, "tiktok", "Ornek.Musteri", "Armut", null, 150m, 111, 121));
+            sessions.End("s1", 200);
+
+            sut.Load("s1");
+            sut.TopCustomers.Should().HaveCount(2);
+            var copyRow = sut.TopCustomers.Single(t => t.Username == "ornek.musteri");
+
+            // Rapor açıkken push yanıtı kopyayı asıl kayda taşıdı; ekran yenilenmedi.
+            sync.RekeyToLocal(copy, canonical, pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+                .Should().Be(RekeyResult.Rekeyed);
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(copyRow);
+
+            jobs.Snapshot.Should().BeEmpty("bayat satırın tutarı yalnız kopyanın 100'ü — istek gönderilmez");
+            dialogs.InfosShown.Should().ContainSingle().Which.Should().Contain("tekrar seçin");
+            var refreshed = sut.TopCustomers.Should().ContainSingle("rapor yenilendi: kişi tek satır").Subject;
+            refreshed.CustomerId.Should().Be(canonical);
+            refreshed.TotalAmount.Should().Be(250m);
+
+            // Operatör yenilenen satırı seçer: kişinin tam yayın toplamı.
+            await sut.OpenWhatsAppCommand.ExecuteAsync(refreshed);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.CustomerId.Should().Be(canonical);
+            job.ScopeKey.Should().Be("session:s1");
+            job.ProductTotal.Should().Be(250m);
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+        }
+    }
 }

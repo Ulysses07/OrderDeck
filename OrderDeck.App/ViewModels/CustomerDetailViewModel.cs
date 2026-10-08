@@ -32,6 +32,10 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     /// komutları sessizce erken döndürüyor.</summary>
     private readonly IDrawerService? _drawers;
 
+    /// <summary>Açık kargo dosyası sayımı (iki açık kargo uyarısı). DI kayıtlı tekil örneği verir;
+    /// testlerin çoğu vermez — uyarı o zaman hiç gösterilmez.</summary>
+    private readonly ShipmentRepository? _shipments;
+
     private string? _customerId;
 
     [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))][NotifyPropertyChangedFor(nameof(HeaderName))] private string _username = "";
@@ -58,6 +62,9 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     [ObservableProperty] private string? _blacklistReason;
     [ObservableProperty] private string _blacklistedAtLabel = "";
     [ObservableProperty] private string _notesEdit = "";
+
+    /// <summary>Kişinin birden fazla açık kargo dosyası varsa uyarı metni, yoksa null.</summary>
+    [ObservableProperty] private string? _openShipmentWarning;
 
     // Kayıt formu / iletişim bilgileri (form doldurulduysa dolu; chat-only müşteride boş).
     [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))][NotifyPropertyChangedFor(nameof(HeaderName))] private string? _fullName;
@@ -101,7 +108,8 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         GiveawayRepository giveaways,
         StreamSessionService sessions,
         LicenseApiClient api,
-        IDrawerService? drawers = null)
+        IDrawerService? drawers = null,
+        ShipmentRepository? shipments = null)
     {
         _customers = customers;
         _labels = labels;
@@ -110,6 +118,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         _sessions = sessions;
         _api = api;
         _drawers = drawers;
+        _shipments = shipments;
 
         SelectedLabels.CollectionChanged += (_, _) =>
         {
@@ -124,6 +133,10 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         var c = _customers.GetById(customerId);
         if (c is null) return false;
 
+        // U12: GetById taşınmış Id'yi asıl kayda çözer. Pencere GÜNCEL Id'yi saklar; metodun
+        // geri kalanı (etiket, çekiliş, grup, bakiye okumaları) da onu kullanır. Kayıt yolları
+        // (not, telefon) ayrıca kendileri çözer — pencere açıkken taşınma da olabilir.
+        customerId = c.Id;
         _customerId = customerId;
         Username = c.Username;
         Platform = c.Platform;
@@ -158,6 +171,15 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
         Giveaways.Clear();
         foreach (var g in _giveaways.GetParticipationsByCustomer(customerId)) Giveaways.Add(g);
+
+        // Yerel taşıma iki açık kargo dosyası bırakabilir. Yeni etiketler en yenisine gider,
+        // eşik ve kargo kararı hepsini tek havuz sayar; fazla dosya bir sonraki kararda kapanır
+        // (ShipmentService) — operatörün yapacağı bir şey yok, yalnız bilgilendirilir.
+        var open = _shipments?.CountOpenByCustomer(c.Id) ?? 0;
+        OpenShipmentWarning = open > 1
+            ? $"Bu kişinin {open} açık kargo dosyası var (bilgisayarlar arası birleştirme sonrası). "
+              + $"Bir sonraki kargo kararı {(open == 2 ? "ikisine" : "hepsine")} birden uygulanır."
+            : null;
 
         // Bakiye fire-and-forget — UI hemen açılır, balance gelince güncellenir.
         _ = ReloadBalanceAsync();
@@ -232,6 +254,10 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private void ReloadLabels()
     {
         if (_customerId is null) return;
+
+        // U12: pencere açıkken kayıt yerel taşımayla asıl kayda geçmiş olabilir — etiketleri de
+        // oraya taşındı. Eski Id'yle okunan liste boş görünürdü.
+        _customerId = _customers.ResolveId(_customerId);
 
         Labels.Clear();
         SelectedLabels.Clear();

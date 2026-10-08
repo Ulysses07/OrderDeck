@@ -35,7 +35,8 @@ public sealed class PaymentSyncServiceTests
     private static (PaymentSyncService svc, PaymentRepository repo, SyncCursorRepository cursors,
             StubLicenseProvider licenseProvider, List<(HttpMethod Method, string Path, string? Body)> requests) Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
-        bool seedLicense = true)
+        bool seedLicense = true,
+        SyncStatusTracker? tracker = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -56,7 +57,7 @@ public sealed class PaymentSyncServiceTests
         if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
 
         var svc = new PaymentSyncService(api, repo, cursors, licenseProvider,
-            new FakeClock(), NullLogger<PaymentSyncService>.Instance);
+            new FakeClock(), NullLogger<PaymentSyncService>.Instance, tracker);
         return (svc, repo, cursors, licenseProvider, requests);
     }
 
@@ -360,5 +361,36 @@ public sealed class PaymentSyncServiceTests
         var result = await svc.SyncOnceAsync();
         result.Pushed.Should().Be(0);
         result.Pulled.Should().Be(0);
+    }
+
+    // ── durum satırı: gönderim ilerlemesi (D2 incelemesi I-3) ──────────
+
+    [Fact]
+    public async Task Gonderim_ilerlemesi_basarili_gonderimde_ve_bos_kuyrukta_yazilir_hatada_yazilmaz()
+    {
+        var tracker = new SyncStatusTracker();
+        var fail = true;
+        var (svc, repo, _, _, _) = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses")) return JsonResp(200, LicensesJson());
+            if (path.Contains("/payments/sync")) return fail ? JsonResp(500, "{}") : JsonResp(200, "[]");
+            if (path.Contains("/payments/since")) return JsonResp(200, "[]");
+            return JsonResp(404, "{}");
+        }, tracker: tracker);
+        DateTimeOffset? PushOk() => tracker.Snapshot().PushOkAt![PaymentSyncService.PushStatusName];
+        repo.Insert(NewLocalPayment(Guid.NewGuid().ToString()));
+
+        await svc.SyncOnceAsync();
+        await svc.SyncOnceAsync();
+        PushOk().Should().BeNull("gönderim her turda düştü — çekme iyi olsa da durum satırı bunu söylemeli");
+
+        fail = false;
+        await svc.SyncOnceAsync();
+        var sent = PushOk();
+        sent.Should().NotBeNull();
+
+        await svc.SyncOnceAsync();
+        PushOk().Should().BeOnOrAfter(sent!.Value, "gönderecek bir şey olmayan tur da sağlıklı");
     }
 }

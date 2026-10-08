@@ -107,7 +107,8 @@ public sealed class GiveawayService
     /// Adds the chat message author as a participant if (a) the message contains the
     /// giveaway keyword (case-insensitive substring), (b) the platform passes the filter,
     /// (c) the customer is not blacklisted, (d) PreventRewinning + previous winner check
-    /// passes, (e) this username hasn't already entered (UNIQUE constraint).
+    /// passes, (e) this username hasn't already entered (UNIQUE constraint) and neither has
+    /// this customer under another spelling (CustomerId — one chance per person).
     /// All filters fail silently — there is no surface to report errors to.
     /// </summary>
     public void AddParticipantFromChat(string giveawayId, ChatMessage message)
@@ -136,10 +137,17 @@ public sealed class GiveawayService
         {
             var prevWinners = _activePreviousWinners
                 ?? new HashSet<string>(_giveaways.GetWinnerCustomerIdsForSession(g.SessionId, g.Id));
-            if (prevWinners.Contains(customer.Id)) return;
+            // U12: önbellek çekiliş başında kuruldu; kazananın satırı o günden beri başka
+            // bilgisayarın asıl kaydına taşınmış olabilir (GetOrCreate artık asıl kaydın Id'sini
+            // verir). Doğrudan eşleşme yoksa tek sorgu: önceki kazananlardan biri bu müşteriye
+            // taşındı mı (her sohbet mesajında, arayüz iş parçacığında — kazanan başına sorgu yok).
+            if (prevWinners.Contains(customer.Id)
+                || _customers.AnyRedirectedTo(customer.Id, prevWinners)) return;
         }
 
-        // (e) UNIQUE INDEX guard — wrap insert in try/catch to swallow duplicate
+        // (e) Kişi başına tek şans: müşteri (güncel Id'siyle) zaten katıldıysa yazılmaz
+        // (TryAddParticipant). UNIQUE INDEX guard — aynı kullanıcı adının tekrarı yine
+        // tekil indekse takılır; try/catch onu yutar.
         var participant = new GiveawayParticipant(
             Id: Guid.NewGuid().ToString("N"),
             GiveawayId: g.Id,
@@ -150,7 +158,7 @@ public sealed class GiveawayService
             IsWinner: false);
         try
         {
-            _giveaways.AddParticipant(participant);
+            if (!_giveaways.TryAddParticipant(participant)) return;
         }
         catch (Microsoft.Data.Sqlite.SqliteException ex)
             when (ex.SqliteExtendedErrorCode == SqliteUniqueConstraintCode)
@@ -185,8 +193,19 @@ public sealed class GiveawayService
         // Çekim anı kara-liste süzgeci: bir katılımcı çekilişe GİRDİKTEN sonra
         // (grup yayılımı dahil) kara listeye alınmış olabilir; giriş süzgeci bunu
         // yakalayamaz. Kazananları seçmeden önce güncel kara-liste durumuna göre ele.
-        var participants = allParticipants
+        //
+        // Kişi başına tek şans (C4 incelemesi): yeniden anahtarlama iki ayrı katılımcıyı aynı
+        // müşteriye taşıyabilir — tekil indeks kullanıcı adında, CustomerId'de değil. Güncel
+        // müşteri Id'sine göre (U12; okumadan sonra taşınmış olabilir — tek sorguda çözülür)
+        // ilk giriş kalır. Katılımcı satırları silinmez ve değişmez; kazanan kaydı yalnız
+        // seçilen satıra yazılır.
+        var eligible = allParticipants
             .Where(p => _customers.Find(p.Platform, p.Username)?.IsBlacklisted != true)
+            .ToList();
+        var currentIds = _customers.ResolveIds(eligible.Select(p => p.CustomerId));
+        var participants = eligible
+            .GroupBy(p => currentIds[p.CustomerId], StringComparer.Ordinal)
+            .Select(sameCustomer => sameCustomer.First())
             .ToList();
         if (participants.Count == 0)
             throw new GiveawayHasNoParticipantsException(g.Keyword);

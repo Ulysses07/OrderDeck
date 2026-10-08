@@ -242,32 +242,59 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     // ─── WPF customers bulk sync (Faz 0c-1) ───────────────────────────────
 
     /// <summary>Batch upsert of WPF customers (all platforms). Returns server-side
-    /// synced count and retroactive shopper-code matches.</summary>
-    public Task<WpfCustomerSyncResponse> SyncWpfCustomersAsync(
+    /// synced count, retroactive shopper-code matches and copy→canonical redirects.
+    /// <para>Bozuk gövde (200 + <c>null</c>) sessizce "yönlendirme yok" sayılmaz ve fırlatılır:
+    /// <see cref="WpfCustomerSyncResponse.Redirects"/> yerel yeniden anahtarlamayı (C4
+    /// <c>RekeyToLocal</c>) tetikler — sessizce yutulan bir null gövde kopya satırı yerelde
+    /// sonsuza dek bırakırdı.</para></summary>
+    public async Task<WpfCustomerSyncResponse> SyncWpfCustomersAsync(
         Guid licenseId, IReadOnlyList<WpfCustomerSyncItem> customers, CancellationToken ct = default)
-        => PostJsonExpectingJsonAsync<WpfCustomerSyncRequest, WpfCustomerSyncResponse>(
+    {
+        var resp = await PostJsonExpectingJsonAsync<WpfCustomerSyncRequest, WpfCustomerSyncResponse>(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
             new WpfCustomerSyncRequest(customers), ct);
+        return resp ?? throw new LicenseApiUnknownException(200,
+            "Müşteri senkron yanıtı bozuk geldi (gövde null). Bu 'yönlendirme yok' demek değildir.");
+    }
 
-    // ─── WPF customers pull (Faz 0c-3) ────────────────────────────────────
+    // ─── WPF müşteri değişiklik akışı (çoklu bilgisayar, Bölüm C) ──────────
 
-    /// <summary>Pulls server-created WpfCustomerProjection rows (auto-created on
-    /// shopper register/join). İmleç bileşik — (<paramref name="since"/>,
-    /// <paramref name="sinceId"/>); gerekçe <see cref="GetPaymentsSinceAsync"/>'de.
-    /// WPF sayfanın son satırından imleci ilerletir.</summary>
-    public async Task<List<WpfCustomerPullItem>> GetWpfCustomersSinceAsync(
-        Guid licenseId, DateTimeOffset since, Guid sinceId,
-        int take = 100, CancellationToken ct = default)
+    /// <summary>
+    /// Müşteri değişiklik akışının bir sayfası. İmleç sunucunun rowversion'ı
+    /// (<see cref="WpfCustomerChangesPage.NextAfterSeq"/>); istemci saati yok.
+    /// <para>Katalog uçlarıyla aynı gerekçe: boş sayfa DÖNGÜ SONLANDIRICISI — bozuk gövde
+    /// (200 + <c>null</c>, items'sız) sessizce boş sayfaya çevrilseydi çağıran "yetiştim"
+    /// sanıp turu başarı sayardı. Fırlatılır.</para>
+    /// <para><paramref name="take"/> 1..500 dışında FIRLATIR: sunucu kırpar ve çağıran
+    /// elindeki değeri yanlış yorumlardı.</para>
+    /// </summary>
+    public async Task<WpfCustomerChangesPage> GetWpfCustomerChangesAsync(
+        Guid licenseId, long afterSeq, int take = 500, CancellationToken ct = default)
     {
-        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&sinceId={sinceId:D}&take={take}";
-        return await GetExpectingJsonAsync<List<WpfCustomerPullItem>>(
-            $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
+        if (take is < 1 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..500 olmalı (sunucu sınırı, LicensesWpfCustomersPullController.Changes).");
+
+        var qs = $"?afterSeq={afterSeq.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+               + $"&take={take.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        var page = await GetExpectingJsonAsync<WpfCustomerChangesPage>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/changes{qs}", ct);
+        // Boş öğe (JSON dizisinde literal null) ya da kullanılamaz imleç — ikisi de
+        // "bozuk gövde" sınıfında. Kullanılamaz imleç ÖZELLİKLE tehlikeli: sunucu
+        // NextAfterSeq'i normalde son öğenin ChangeSeq'i yapar (Changes action,
+        // "var next = items.Count == 0 ? afterSeq : items[^1].ChangeSeq"); ondan
+        // KÜÇÜK bir değer çağıranı aynı sayfayı sonsuza dek yeniden istemeye düşürür.
+        if (page?.Items is null || page.Items.Any(i => i is null)
+            || (page.Items.Count > 0 && page.NextAfterSeq < page.Items[^1].ChangeSeq))
+            throw new LicenseApiUnknownException(200,
+                "Müşteri değişiklik sayfası bozuk geldi (gövde, items, bir öğe ya da imleç null/geçersiz). Bu 'değişiklik yok' demek değildir.");
+        return page;
     }
 
     // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
 
     // Bu iki metot, dosyadaki diğer liste uçlarından (örn.
-    // GetWpfCustomersSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
+    // GetPaymentsSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
     // liste dönmek zararsız, burada boş liste DÖNGÜ SONLANDIRICISI. Bozuk bir
     // gövde (200 + literal `null`) sessizce boş listeye çevrilirse çekme döngüsü
     // "katalog boş" sanır ve işlemsel DELETE+INSERT replikayı komple siler —

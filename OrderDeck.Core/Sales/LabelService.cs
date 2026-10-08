@@ -39,8 +39,12 @@ public sealed class LabelService
         bool isTentativeBackup = false,
         string? productId = null, string? productVariantId = null)
     {
+        // U12: müşteri çözümü/açılışı ve etiket TEK IMMEDIATE işlemde. Ayrı yazımlar arasında
+        // yerel taşıma (push yanıtı) müşteriyi silebilir → FK hatası = kayıp satış. Paket
+        // açıkken her okuma ve yazma paketin bağlantısıyla (U17).
+        using var write = DbWrite.Begin(_factory);
         var customer = _customers.GetOrCreate(
-            message.Platform, message.Username, message.DisplayName, message.AvatarUrl);
+            message.Platform, message.Username, message.DisplayName, message.AvatarUrl, write);
 
         var label = new Label(
             Id: Guid.NewGuid().ToString("N"),
@@ -60,7 +64,8 @@ public sealed class LabelService
             ProductId: productId,
             ProductVariantId: productVariantId);
 
-        _labels.Insert(label);
+        _labels.Insert(label, write);
+        write.Commit();
         return label;
     }
 

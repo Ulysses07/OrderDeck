@@ -23,6 +23,7 @@ public sealed class InMemorySqlite : IDbConnectionFactory, System.IDisposable
 
     public IDbConnection Open()
     {
+        WriteScopeGuard.AssertNoActiveScope("InMemorySqlite.Open");
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
         // Üretimdeki SqliteConnectionFactory ile aynı: göç 035 tetikleyicileri

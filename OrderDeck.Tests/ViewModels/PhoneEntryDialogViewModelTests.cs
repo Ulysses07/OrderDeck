@@ -92,4 +92,28 @@ public class PhoneEntryDialogViewModelTests
         sut.ValidationError.Should().NotBeNullOrEmpty(
             "operatör numaranın neden kaydedilmediğini görmeli");
     }
+
+    // ── U12: pencere açıkken yerel taşıma ───────────────────────────────────
+
+    [Fact]
+    public void Save_pencere_acikken_musteri_tasinsa_da_telefon_asil_kayda_yazilir()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var customers = new CustomerRepository(db);
+        customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null, 100, 100, false, null, null, 0, 0m, null, null, null));
+        customers.Insert(new Customer("k1", "twitch", "Alice", "Alice", null, 100, 100, false, null, null, 0, 0m, null, null, null));
+        var closed = false;
+        var sut = new PhoneEntryDialogViewModel(customers, "c1", () => closed = true);
+        new CustomerSyncRepository(db).RekeyToLocal("c1", "k1", pushedThroughSeq: long.MaxValue, nowUnix: 1_791_000_000)
+            .Should().Be(RekeyResult.Rekeyed);
+        var national = TestPhone.NewNational();
+        sut.PhoneInput = national;
+
+        sut.SaveCommand.Execute(null);
+
+        sut.ValidationError.Should().BeNull("taşınmış kayıt 'silme talebi' sanılmasın");
+        closed.Should().BeTrue();
+        customers.GetById("k1")!.Phone.Should().Be("+90" + national);
+    }
 }

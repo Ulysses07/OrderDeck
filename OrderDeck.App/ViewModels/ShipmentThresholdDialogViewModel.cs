@@ -25,7 +25,9 @@ public sealed class ShipmentThresholdDialogViewModel
     public string CustomerDisplay { get; }
     public decimal FreeShippingThreshold { get; }
 
-    public decimal CumulativeAmount => Context.Shipment?.CumulativeAmount ?? 0m;
+    /// <summary>Eşiğin hesaplandığı tutar: kişinin bütün açık dosyalarının toplamı (U12 —
+    /// yerel taşımadan kalan fazla dosya dahil; tek dosyada dosyanın kendi tutarı).</summary>
+    public decimal CumulativeAmount => Context.PooledAmount;
 
     public string CumulativeAmountText =>
         CumulativeAmount.ToString("N2", CultureInfo.GetCultureInfo("tr-TR")) + " TL";

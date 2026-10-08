@@ -459,7 +459,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             {
                 _log.LogInformation(
                     "Kümülatif eşik aşıldı: Customer={Cid} Shipment={Sid} Total={Total}",
-                    customer.Id, ctx.Shipment!.Id, ctx.Shipment.CumulativeAmount);
+                    customer.Id, ctx.Shipment!.Id, ctx.PooledAmount);
                 return ctx;
             }
             return null;
@@ -485,9 +485,10 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     public void ApplyShipmentDecision(string shipmentId, ShipmentDecision decision)
     {
         Shipment? updated = null;
+        decimal pooledAmount;
         try
         {
-            updated = _shipments.ApplyDecision(shipmentId, decision);
+            updated = _shipments.ApplyDecision(shipmentId, decision, out pooledAmount);
             _log.LogInformation(
                 "Shipment {Id} → {Decision} (kümülatif kargo çekmecesinden)",
                 shipmentId, decision);
@@ -503,11 +504,13 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         // null ise (test fixture'larda) sessiz geç.
         if (decision == ShipmentDecision.ShipNow && _paymentRequest is not null && updated is not null)
         {
-            TriggerShippingWonWhatsApp(updated);
+            TriggerShippingWonWhatsApp(updated, pooledAmount);
         }
     }
 
-    private void TriggerShippingWonWhatsApp(Shipment shipment)
+    /// <param name="pooledAmount">Kararın kapsadığı dosyaların toplamı (U12 — yerel taşımadan
+    /// kalan fazla dosya dahil); mesaj ve günlük bunu söyler.</param>
+    private void TriggerShippingWonWhatsApp(Shipment shipment, decimal pooledAmount)
     {
         try
         {
@@ -518,10 +521,10 @@ public sealed partial class DekontEkleViewModel : ObservableObject
                     shipment.CustomerId);
                 return;
             }
-            var result = _paymentRequest!.OpenShippingWonWhatsApp(customer, shipment.CumulativeAmount);
+            var result = _paymentRequest!.OpenShippingWonWhatsApp(customer, pooledAmount);
             _log.LogInformation(
                 "Kazandın WhatsApp tetikleyici: Shipment={Sid} Customer={Cid} Tutar={Amt} → {Result}",
-                shipment.Id, shipment.CustomerId, shipment.CumulativeAmount, result);
+                shipment.Id, shipment.CustomerId, pooledAmount, result);
         }
         catch (Exception ex)
         {
