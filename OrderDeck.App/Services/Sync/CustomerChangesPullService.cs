@@ -67,7 +67,10 @@ public enum CustomerPullOutcome
 ///
 /// <para><b>Yetişme ilerlemesi (D2 incelemesi M-2):</b> akış imleci bu turda ilerlediyse ama tur
 /// boş sayfaya varmadıysa (sayfa sınırı, ya da sayfalar uygulanıp sonra 429/hata/takılma) izleyiciye
-/// yetişme ilerlemesi yazılır — durum satırı ilerleyen bilgisayarı çevrimdışı göstermez.</para>
+/// yetişme ilerlemesi yazılır — durum satırı ilerleyen bilgisayarı çevrimdışı göstermez. Turun
+/// BAŞINDAKİ, akıştan ÖNCE koşan gönderim de aynı şekilde sayılır (son inceleme M-1): ilk kurulumun
+/// uzun biçim-2 resend'i akışın ilk sayfasına varmadan üç dakikayı geçerse durum satırı yine
+/// "Çevrimdışı" demesin — sunucuya gerçekten ulaşılıyor.</para>
 ///
 /// <para><b>Gönderimin hatası:</b> gönderim HTTP hatasını kendisi yutar (imleç ilerlemez) ama
 /// yerel SQLite hatası çıkabilir. Çağrı korunur: tur başarısız sayılır, akış yine uygulanır (KVKK
@@ -212,7 +215,15 @@ public sealed class CustomerChangesPullService
         // Gönderim her çekmeden ÖNCE (eski Açık soru 13). İki bilgisayar aynı yayında yorum
         // okurken yeni yorumcuların satırları sunucuya önce gider; asıl kayıt geldiğinde
         // sahipleri "gönderildi" olur, durma (U5) nadirleşir.
-        var pushOk = await TryPushAsync(ct).ConfigureAwait(false);
+        //
+        // Son inceleme M-1: ilk kurulumun biçim-2 TAM gönderimi de burada, akışın ilk sayfasından
+        // ÖNCE koşar. Binlerce yerel müşteri varsa bu resend üç dakikayı geçebilir; o süre boyunca
+        // SyncStatusFormatter'ın "çevrimdışı" dayanağı (TrackingSince) bayatlar — ama sunucuya
+        // GERÇEKTEN ulaşılıyor. countsAsCatchUpProgress: true, gerçek bir parti giden her başarılı
+        // gönderimi yetişme ilerlemesi sayar (durum satırı "Güncelleniyor…" gösterir, "Çevrimdışı"
+        // değil). Aşağıdaki durma-sonrası ve "hemen gönder" (U2) çağrıları bunu BİLEREK vermez —
+        // onlar akışın kendi sonucu belirlendikten (ör. tam yetişme) SONRA koşar.
+        var pushOk = await TryPushAsync(ct, countsAsCatchUpProgress: true).ConfigureAwait(false);
 
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
         if (licenseId is null) return CustomerPullOutcome.NoLicense;
@@ -458,11 +469,12 @@ public sealed class CustomerChangesPullService
 
     /// <summary>Gönderim turu. HTTP hatası gönderimin içinde kalır (imleç ilerlemez); buraya
     /// çıkan yalnız yerel hata (ör. <c>GetForPush</c>) — tur başarısız sayılır, servis düşmez.</summary>
-    private async Task<bool> TryPushAsync(CancellationToken ct)
+    /// <param name="countsAsCatchUpProgress">Son inceleme M-1: bkz. <see cref="WpfCustomerProjectionSyncService.SyncOnceAsync"/>.</param>
+    private async Task<bool> TryPushAsync(CancellationToken ct, bool countsAsCatchUpProgress = false)
     {
         try
         {
-            await _push.SyncOnceAsync(ct).ConfigureAwait(false);
+            await _push.SyncOnceAsync(ct, countsAsCatchUpProgress).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

@@ -1266,6 +1266,33 @@ public sealed class CustomerChangesPullServiceTests
     }
 
     [Fact]
+    public async Task Akistan_once_uzun_resend_basarili_partiler_cevrimdisi_degil_guncelleniyor_gosterir()
+    {
+        // Son inceleme M-1: ilk kurulumun biçim-2 TAM gönderimi akışın ilk sayfasından ÖNCE koşar
+        // (yukarıdaki TryPushAsync çağrısı). Binlerce yerel müşteri varsa bu resend üç dakikayı
+        // geçebilir; akış bu turda hız sınırına (429) çarpıp hiç ilerlemese ve kendi M-2 yolunu
+        // tetiklemese de, gönderimin GERÇEK partileri yetişme ilerlemesi saymalı — durum satırı
+        // bayat TrackingSince'e rağmen "Çevrimdışı" değil "Güncelleniyor…" göstermeli (sunucuya
+        // gerçekten ulaşılıyor).
+        const int localRows = 700; // BatchSize (500) → iki parti
+        using var fx = Build(_ => FakeHttpMessageHandler.Empty(429)); // akış bu turda hiç ilerlemez
+        for (var i = 1; i <= localRows; i++) LocalRow(fx, $"resend_{i}");
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Failed);
+
+        fx.Posts.Should().Be(2, "700 yerel satır iki partiye bölünür, ikisi de akıştan ÖNCE gider");
+        fx.Tracker.IsInitialCatchUpDone.Should().BeFalse("akış bu turda hiç ilerlemedi");
+        var snapshot = fx.Tracker.Snapshot();
+        snapshot.LastCatchUpProgressAt.Should().NotBeNull(
+            "akıştan önceki resend'in gerçek partileri gitti — bağlantı var, yetişme sayılır");
+
+        var now = DateTimeOffset.UtcNow;
+        SyncStatusFormatter.Format(0, snapshot with { TrackingSince = now.AddMinutes(-10) }, now)
+            .Should().BeEquivalentTo(new { Text = "Güncelleniyor…", Healthy = false },
+                "resend sürerken durum satırı 'Çevrimdışı' göstermemeli");
+    }
+
+    [Fact]
     public async Task Gonderim_hep_duserken_cekme_basarili_durum_satiri_gonderilemiyor_der()
     {
         // I-3: akış her turda boş sayfaya yetişiyor, gönderim her turda 500 — "Gönderiliyor (1)"

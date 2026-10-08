@@ -69,7 +69,8 @@ public sealed class SqliteContentionTests : IDisposable
         var sw = Stopwatch.StartNew();
         Action blocked = () =>
         {
-            // İkinci yazar BAŞKA bir akış (U17: aynı akışta ikinci bağlantı DEBUG'da reddedilir).
+            // İkinci yazar BAŞKA bir akış (U17: aynı akışta ikinci bağlantı test sürecinde HER
+            // derlemede reddedilir — TestAssemblyInit anahtarı Release'te de açar, bkz. WriteScopeGuard).
             Task task;
             using (ExecutionContext.SuppressFlow())
                 task = Task.Run(() =>

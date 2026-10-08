@@ -118,10 +118,19 @@ public sealed class WpfCustomerProjectionSyncService
     /// tablosunda ilerler; bir parti başarısız olursa tur, imleci o partinin ötesine taşımadan
     /// biter. Aynı anda tek tur koşar (<see cref="_gate"/>).
     /// </summary>
-    public async Task<int> SyncOnceAsync(CancellationToken ct)
+    /// <param name="countsAsCatchUpProgress">Son inceleme M-1: bu çağrı akış turunun İÇİNDE, akışın
+    /// ilk sayfasından ÖNCE koşuyorsa (<see cref="OrderDeck.App.Services.Sync.CustomerChangesPullService"/>)
+    /// true. Gerçek bir parti giden her başarılı gönderim o zaman izleyiciye yetişme ilerlemesi de
+    /// yazar (<see cref="SyncStatusTracker.MarkCatchUpProgress"/>) — ilk kurulumun uzun biçim-2 resend'i
+    /// akışın ilk sayfasına varmadan üç dakikayı geçerse durum satırı yine de "Çevrimdışı" demesin
+    /// (sunucuya gerçekten ulaşılıyor). Varsayılan false: bağımsız zamanlayıcı turu ve "gönder ve
+    /// kapat" (D5) akıştan bağımsızdır — tam yetişmenin HEMEN ardından gelen yankı gönderimi
+    /// (<see cref="CustomerChangesPullService"/>'in kendi çağrısı) de bunu bilerek vermez, yoksa
+    /// <see cref="SyncStatusTracker.MarkPullSucceeded"/>'in sıfırladığı ilerleme hemen geri gelirdi.</param>
+    public async Task<int> SyncOnceAsync(CancellationToken ct, bool countsAsCatchUpProgress = false)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try { return await SyncCoreAsync(ct).ConfigureAwait(false); }
+        try { return await SyncCoreAsync(ct, countsAsCatchUpProgress).ConfigureAwait(false); }
         finally { _gate.Release(); }
     }
 
@@ -146,7 +155,7 @@ public sealed class WpfCustomerProjectionSyncService
     /// </summary>
     public long Watermark(string licenseKey) => _cursors.Get(CursorName, licenseKey)?.Seq ?? 0L;
 
-    private async Task<int> SyncCoreAsync(CancellationToken ct)
+    private async Task<int> SyncCoreAsync(CancellationToken ct, bool countsAsCatchUpProgress = false)
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
         var licenseId  = await ResolveLicenseIdAsync(ct).ConfigureAwait(false);
@@ -264,6 +273,10 @@ public sealed class WpfCustomerProjectionSyncService
             // N-2: gönderilip imleci ilerleten her parti ilerlemedir — büyük ilk gönderim (biçim 2)
             // 429'lar altında birkaç tura yayılırken durum satırı "Gönderilemiyor" göstermesin.
             _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);
+            // Son inceleme M-1: akıştan ÖNCE koşan bu çağrının gerçek bir partisi gitti — bağlantı
+            // var. Parti parti yazılır ki uzun bir resend sürerken (binlerce yerel müşteri) durum
+            // satırı akışın ilk sayfasını beklemeden "Güncelleniyor…" görünsün.
+            if (countsAsCatchUpProgress) _tracker?.MarkCatchUpProgress(DateTimeOffset.UtcNow);
             if (batch.Count < BatchSize) { drained = true; break; } // last page — no more rows
         }
 
