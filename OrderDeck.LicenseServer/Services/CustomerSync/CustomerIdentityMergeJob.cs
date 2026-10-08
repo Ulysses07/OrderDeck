@@ -487,7 +487,10 @@ public sealed class CustomerIdentityMergeJob
             licenseId, ex.GetType().Name, SqlErrorOf(ex)?.ToString(CultureInfo.InvariantCulture) ?? "yok");
     }
 
-    private static int? SqlErrorOf(Exception ex)
+    /// <summary>İstisna zincirindeki ilk SQL hata numarası, yoksa null —
+    /// günlüğe yazılabilecek tek ayrıntı (iletisi kişisel veri taşıyabilir).
+    /// <see cref="CustomerGroupingJob"/> da kullanır.</summary>
+    internal static int? SqlErrorOf(Exception ex)
     {
         for (Exception? e = ex; e is not null; e = e.InnerException)
             if (e is SqlException sql) return sql.Number;
