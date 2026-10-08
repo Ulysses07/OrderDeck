@@ -110,8 +110,8 @@ public class InstagramLiveCommentsPollerTests
             received[0].Text.Should().Be("yeni");
             received[0].ExternalId.Should().Be("c2");
             received[0].Platform.Should().Be("instagram");
-            // Extension ile aynı anahtar biçimi — müşteri eşleştirmesi buna bağlı.
-            received[0].Username.Should().Be("@veli");
+            // Form ve eski eklentiyle aynı biçim ("@"sız) — müşteri eşleştirmesi buna bağlı.
+            received[0].Username.Should().Be("veli");
             received[0].DisplayName.Should().Be("veli");
         }
     }

@@ -592,7 +592,7 @@ public sealed class TwoPcConvergenceTests
             row.DisplayName.Should().Be("[Silindi]");
             row.Phone.Should().BeNull();
             using var c = pc.Db.Open();
-            c.ExecuteScalar<int>("SELECT COUNT(*) FROM CustomerPurgeTombstone").Should().Be(1);
+            c.ExecuteScalar<int>("SELECT COUNT(*) FROM CustomerPurgeTombstone WHERE Username NOT LIKE '@%'").Should().Be(1);
         }
         a.LabelOwner(label.Id).Should().Be(id, "satış kaydı silmeden etkilenmez");
     }

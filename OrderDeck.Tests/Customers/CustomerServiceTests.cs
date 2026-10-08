@@ -115,7 +115,7 @@ public class CustomerServiceTests
         var c = svc.EnsureBlacklistedManual("tiktok", "@spammer", "Spam");
 
         c.Platform.Should().Be("tiktok");
-        c.Username.Should().Be("@spammer");
+        c.Username.Should().Be("spammer", "elle kara liste de kimliği \"@\"sız açar");
         c.IsBlacklisted.Should().BeTrue();
         c.BlacklistReason.Should().Be("Spam");
         c.BlacklistedAt.Should().Be(9000L);
@@ -241,5 +241,177 @@ public class CustomerServiceTests
         // channelId satırı gruba adopte edildi ve kara listeyi devraldı.
         yt.GroupId.Should().NotBeNullOrEmpty();
         yt.IsBlacklisted.Should().BeTrue();
+    }
+
+    // ── Instagram "@" bölünmesi (2026-10-08) ─────────────────────────────────
+    // 2026-08-05'ten bu sürüme dek Instagram API yolu kullanıcı adını "@ad" diye yazdı;
+    // form ve eski eklenti "@"sız yazar. Kimlik "@"sız tutulur, eski "@ad" satırı yine bulunur.
+
+    private static Customer SeedChatRow(CustomerRepository customers, string platform, string username)
+    {
+        var c = new Customer(Guid.NewGuid().ToString("N"), platform, username, username, null,
+            100, 100, false, null, null, 0, 0m, null, null, null);
+        customers.Insert(c);
+        return c;
+    }
+
+    [Theory]
+    [InlineData("instagram")]
+    [InlineData("tiktok")]
+    [InlineData("facebook")]
+    public void Sohbetten_acilan_musteri_bastaki_at_isareti_olmadan_saklanir(string platform)
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+
+        var c = svc.GetOrCreate(platform, "@yeni_kisi", "yeni_kisi", null);
+
+        c.Username.Should().Be("yeni_kisi");
+        customers.CountAll().Should().Be(1);
+    }
+
+    [Fact]
+    public void YouTube_kullanici_adina_dokunulmaz()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out _, out _, out _);
+
+        svc.GetOrCreate("youtube", "@kanal_adi", null, null).Username.Should().Be("@kanal_adi");
+    }
+
+    [Fact]
+    public void Yalniz_eski_at_satiri_olan_musteri_yeni_satir_acmadan_bulunur()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var eski = SeedChatRow(customers, "instagram", "@musteri_a");
+
+        svc.GetOrCreate("instagram", "musteri_a", "musteri_a", null).Id.Should().Be(eski.Id);
+        svc.Find("instagram", "musteri_a")!.Id.Should().Be(eski.Id);
+        customers.CountAll().Should().Be(1, "bölünme yeni satırla sürmemeli");
+    }
+
+    [Fact]
+    public void Iki_yazim_da_varsa_her_arama_kendi_yazimini_bulur()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var duz = SeedChatRow(customers, "instagram", "musteri_b");
+        var atli = SeedChatRow(customers, "instagram", "@musteri_b");
+
+        // Yeni yorum (artık "@"sız) form/eski satıra gider; eski etiketlerin "@ad"ı kendi satırını bulur.
+        svc.GetOrCreate("instagram", "musteri_b", null, null).Id.Should().Be(duz.Id);
+        svc.GetOrCreate("instagram", "@musteri_b", null, null).Id.Should().Be(duz.Id,
+            "sohbet yolu adı \"@\"sız arar — iki kayıt varken yeni etiket formlu satıra gider");
+        customers.FindByPlatformAndUsername("instagram", "@musteri_b")!.Id.Should().Be(atli.Id);
+        customers.FindByPlatformAndUsername("instagram", "musteri_b")!.Id.Should().Be(duz.Id);
+    }
+
+    [Fact]
+    public void Eski_at_yazimi_aramasi_yalniz_duz_satir_varsa_onu_bulur()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var duz = SeedChatRow(customers, "instagram", "musteri_c");
+
+        customers.FindByPlatformAndUsername("instagram", "@musteri_c")!.Id.Should().Be(duz.Id);
+    }
+
+    [Fact]
+    public void YouTube_aramasi_at_yazimlarini_birbirine_eslemez()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        SeedChatRow(customers, "youtube", "@kanal_b");
+
+        customers.FindByPlatformAndUsername("youtube", "kanal_b").Should().BeNull();
+    }
+
+    [Fact]
+    public void Form_yalniz_eski_at_satiri_olan_musteriye_baglanir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var eski = SeedChatRow(customers, "instagram", "@musteri_d");
+        var phone = TestPhone.NewE164();
+
+        customers.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "musteri_d", null) },
+            "Deneme Kisi", "Deneme adres", phone, null, null, false, false, 1000,
+            formId: Guid.NewGuid(), submittedAtMs: 1_000_000);
+
+        customers.CountAll().Should().Be(1, "form sohbet satırına bağlanmalı, ayrı satır açmamalı");
+        customers.GetById(eski.Id)!.Phone.Should().Be(phone);
+    }
+
+    [Fact]
+    public void Adin_bir_yaziminda_kara_listedeki_kisi_kara_listede_sayilir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        SeedChatRow(customers, "instagram", "musteri_k");
+        var atli = SeedChatRow(customers, "instagram", "@musteri_k");
+        svc.IsBlacklisted("instagram", "musteri_k").Should().BeFalse();
+
+        svc.AddToBlacklist(atli.Id, "ödemedi");
+
+        svc.IsBlacklisted("instagram", "musteri_k").Should().BeTrue(
+            "Ağustos–Ekim'de \"@ad\" satırında kara listeye alınan kişinin yorumu artık \"@\"sız gelir");
+        svc.IsBlacklisted("instagram", "@musteri_k").Should().BeTrue();
+        customers.IsBlacklistedAnySpelling("instagram", "musteri_k").Should().BeTrue();
+        svc.Find("instagram", "musteri_k")!.IsBlacklisted.Should().BeFalse(
+            "satırların kendisi değişmez — ikizler sunucuda birleşir");
+    }
+
+    [Fact]
+    public void Duz_satirda_kara_listedeki_kisi_eski_at_yazimiyla_da_kara_listede()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var duz = SeedChatRow(customers, "instagram", "musteri_l");
+        SeedChatRow(customers, "instagram", "@musteri_l");
+
+        svc.AddToBlacklist(duz.Id, "ödemedi");
+
+        customers.IsBlacklistedAnySpelling("instagram", "@musteri_l").Should().BeTrue();
+    }
+
+    [Fact]
+    public void YouTube_kara_listesi_at_yazimlarini_birbirine_eslemez()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var svc = MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var kanal = SeedChatRow(customers, "youtube", "@kanal_c");
+        svc.AddToBlacklist(kanal.Id, "spam");
+
+        svc.IsBlacklisted("youtube", "kanal_c").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Taze_bilgisayarin_doldurma_kipindeki_formu_da_eski_at_satirina_baglanir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        MakeSvc(db, Mock.Of<IClock>(c => c.UnixNow() == 1234L), out var customers, out _, out _);
+        var eski = SeedChatRow(customers, "instagram", "@musteri_m");
+        var phone = TestPhone.NewE164();
+
+        customers.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "musteri_m", null) },
+            "Deneme Kisi", "Deneme adres", phone, null, null, false, false, 1000,
+            formId: Guid.NewGuid(), submittedAtMs: 1_000_000, mode: IntakeApplyMode.FillOnly);
+
+        customers.CountAll().Should().Be(1);
+        customers.GetById(eski.Id)!.Phone.Should().Be(phone);
     }
 }

@@ -832,8 +832,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         foreach (var m in batch)
         {
-            var customer = _customerRepo.FindByPlatformAndUsername(m.Platform, m.Username);
-            var blacklisted = customer?.IsBlacklisted ?? false;
+            // İki yazım ("ad"/"@ad") — Ağustos–Ekim'de "@ad" satırında kara listeye alınanlar da.
+            var blacklisted = _customerRepo.IsBlacklistedAnySpelling(m.Platform, m.Username);
             ChatMessages.Add(new ChatMessageViewModel(m, blacklisted));
 
             // Forward to active giveaway. Same per-message work as before;
@@ -2044,8 +2044,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         foreach (var vm in ChatMessages)
         {
-            var c = _customerRepo.FindByPlatformAndUsername(vm.Platform, vm.Username);
-            vm.IsSenderBlacklisted = c?.IsBlacklisted ?? false;
+            vm.IsSenderBlacklisted = _customerRepo.IsBlacklistedAnySpelling(vm.Platform, vm.Username);
         }
         foreach (var vm in PrintQueue)
         {

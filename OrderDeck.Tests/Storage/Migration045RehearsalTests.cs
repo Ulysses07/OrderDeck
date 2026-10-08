@@ -78,6 +78,8 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
             var identity = AssertMigrated(factory, before);
             identity.Should().Be(seeded,
                 "harf/İ farklı kopyalar aynı kimlik anahtarını alır; mezar taşı kimlik anahtarıyla canlı satırı bulur (U16)");
+            AssertGroupsPreserved(before, factory).Should().Be(0,
+                "tohumda kopyalar asıllarıyla aynı grupta — çapası ortak iki ayrı grup yok");
             sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "göç açılışta koşar — kullanıcı bekler");
         }
         finally { Drop(path); }
@@ -109,10 +111,12 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
             sw.Stop();
 
             var identity = AssertMigrated(factory, before);
+            var mergedGroups = AssertGroupsPreserved(before, factory);
             output.WriteLine(
                 $"045 provası: {before.Customers} müşteri, {before.Labels} etiket, {before.Tombstones} mezar taşı, " +
                 $"FK ihlali {before.FkViolations}, arama dizini {(before.SearchIndexOk ? "tutarlı" : "TUTARSIZ")}, {sw.ElapsedMilliseconds} ms; " +
-                $"ilk turda yerelde birleşecek kimlik grubu {identity.DuplicateIdentityGroups}, mezar taşıyla eşleşen canlı satır {identity.TombstoneMatchedRows}");
+                $"ilk turda yerelde birleşecek kimlik grubu {identity.DuplicateIdentityGroups}, mezar taşıyla eşleşen canlı satır {identity.TombstoneMatchedRows}; " +
+                $"046: {before.Groups.Values.Distinct().Count()} eski grup, çapası ortak olduğu için birleşen {mergedGroups}");
         }
         finally { Drop(path); }
     }
@@ -124,11 +128,11 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
         var factory = new SqliteConnectionFactory(path);
         try
         {
-            new MigrationRunner(factory).Run();                                          // bu sürüm: şema 45
+            new MigrationRunner(factory).Run();                                          // bu sürüm: şema 46
             new MigrationRunner(factory, EmbeddedMigrationScripts.UpTo(44)).Run();       // önceki sürümün koşucusu: no-op
             using (var c = factory.Open())
             {
-                c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(45);
+                c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(46);
                 // U6: hiçbir şema nesnesi (tetikleyici, indeks, görünüm) önceki sürümün kaydetmediği bir
                 // uygulama fonksiyonunu çağırmaz — od_identity_key yalnız C# ve onarım SQL'inde.
                 var called = c.Query<string>("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL")
@@ -208,8 +212,16 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
 
     /// <param name="ContentDigest">Customer ve CustomerPurgeTombstone'un göçten önce de var olan
     /// kolonlarının özeti — göç hiçbir veriyi değiştirmez.</param>
+    /// <param name="Groups">Gruplu satırın Id'si → grup numarası. 046 numarayı yeniden türetir; bölümleme
+    /// korunur (<see cref="AssertGroupsPreserved"/>).</param>
     private sealed record Counts(long Customers, long Labels, long Tombstones, long FkViolations, bool SearchIndexOk,
-        string ContentDigest);
+        string ContentDigest, IReadOnlyDictionary<string, string> Groups)
+    {
+        // Kayıt eşitliği sözlüğü başvuruyla karşılaştırırdı; bölümlemeyi AssertGroupsPreserved sınar.
+        public bool Equals(Counts? o) => o is not null && (Customers, Labels, Tombstones, FkViolations, SearchIndexOk, ContentDigest)
+            == (o.Customers, o.Labels, o.Tombstones, o.FkViolations, o.SearchIndexOk, o.ContentDigest);
+        public override int GetHashCode() => HashCode.Combine(Customers, Labels, Tombstones, FkViolations, SearchIndexOk, ContentDigest);
+    }
 
     /// <param name="DuplicateIdentityGroups">Aynı platformda aynı kimlik anahtarını taşıyan satır grupları
     /// (eski harf duyarlı ingest'in bıraktığı yerel kopyalar — PR-3'ün ilk turunda birleşir).</param>
@@ -225,7 +237,9 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
             c.ExecuteScalar<long>("SELECT COUNT(*) FROM CustomerPurgeTombstone"),
             c.Query("PRAGMA foreign_key_check").LongCount(),
             SearchIndexOk(c),
-            ContentDigest(c));
+            ContentDigest(c),
+            c.Query<(string Id, string GroupId)>("SELECT Id, GroupId FROM Customer WHERE NULLIF(TRIM(GroupId), '') IS NOT NULL")
+                .ToDictionary(r => r.Id, r => r.GroupId));
     }
 
     private static string ContentDigest(System.Data.IDbConnection c)
@@ -240,7 +254,8 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
                         (reader.IsDBNull(i) ? "∅" : Convert.ToString(reader.GetValue(i), CultureInfo.InvariantCulture)) + "\u001f"));
         }
         Feed(@"SELECT Id, Platform, Username, DisplayName, FullName, AvatarUrl, Phone, Email, Tckn, Address, City, District,
-                      GroupId, Notes, IsBlacklisted, BlacklistReason, BlacklistedAt, PurgedAt, RecipientPaysActive,
+                      CASE WHEN NULLIF(TRIM(GroupId), '') IS NULL THEN NULL ELSE 'grup' END,
+                      Notes, IsBlacklisted, BlacklistReason, BlacklistedAt, PurgedAt, RecipientPaysActive,
                       WhatsAppConsent, SmsConsent, TotalLabelsPrinted, TotalAmount, FirstSeenAt, LastSeenAt
                FROM Customer ORDER BY Id");
         Feed("SELECT Platform, Username, PurgedAt FROM CustomerPurgeTombstone ORDER BY Platform, Username");
@@ -263,10 +278,22 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
         }
     }
 
+    /// <summary>Göç 046 grup numaralarını yeniden türetir: aynı satırlar gruplu kalır, hiçbir grup
+    /// bölünmez, gruplar yalnız çapası (telefonlular önce en küçük platform|kimlik anahtarı) ortaksa
+    /// birleşir. Dönen: birleşmeyle kaybolan grup sayısı.</summary>
+    private static int AssertGroupsPreserved(Counts before, IDbConnectionFactory factory)
+    {
+        var after = Snapshot(factory).Groups;
+        after.Keys.Should().BeEquivalentTo(before.Groups.Keys, "göç hiçbir satırı gruba sokmaz ya da gruptan çıkarmaz");
+        foreach (var old in before.Groups.GroupBy(kv => kv.Value))
+            old.Select(kv => after[kv.Key]).Distinct().Should().ContainSingle($"eski grup {old.Key} bölünmez");
+        return before.Groups.Values.Distinct().Count() - after.Values.Distinct().Count();
+    }
+
     private static IdentityStats AssertMigrated(IDbConnectionFactory factory, Counts before)
     {
         using var c = factory.Open();
-        c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(45);
+        c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(46);
         Snapshot(factory).Should().Be(before,
             "göç satır eklemez/silmez ve var olan veriyi değiştirmez, yeni FK ihlali üretmez, arama indeksini bozmaz");
         // Boş/boşluk kullanıcı adı kimlik değildir: anahtarı bilerek NULL (C1 incelemesi M-1).

@@ -30,7 +30,12 @@ public sealed class CustomerService
     /// animation pool from existing participants) and don't want the
     /// side-effect of creating a new row.</summary>
     public Customer? Find(string platform, string username) =>
-        _repo.FindByPlatformAndUsername(platform, username);
+        _repo.FindByPlatformAndUsername(platform, CustomerIdentity.ChatHandleOf(platform, username));
+
+    /// <summary>Kişi, adının herhangi bir yazımında ("ad"/"@ad") kara listede mi
+    /// (<see cref="CustomerRepository.IsBlacklistedAnySpelling"/>).</summary>
+    public bool IsBlacklisted(string platform, string username) =>
+        _repo.IsBlacklistedAnySpelling(platform, username);
 
     /// <summary>Sohbet yolu: müşteriyi bulur, yoksa açar.
     ///
@@ -47,6 +52,9 @@ public sealed class CustomerService
     public Customer GetOrCreate(string platform, string username,
         string? displayName, string? avatarUrl, Storage.DbWrite? write = null)
     {
+        // Tek giriş noktası: hangi kaynak "@ad" verirse versin kimlik "@"sız açılır ve aranır
+        // (form ile aynı); eski "@ad" satırı aramanın yedeğiyle yine bulunur.
+        username = CustomerIdentity.ChatHandleOf(platform, username);
         if (write is not null)
             return GetOrCreateIn(write, platform, username, displayName, avatarUrl);
 

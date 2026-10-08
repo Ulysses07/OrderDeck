@@ -180,10 +180,34 @@ public sealed class CustomerRepository
         return row is null ? null : Map(row);
     }
 
-    /// <summary>Birebir (Platform, Username), yoksa kimlik anahtarı (U7) — tek arama kuralı:
-    /// <see cref="FindByPlatformAndUsername"/> ve eski form yolu (<see cref="UpsertFromIntakeForm"/>,
+    /// <summary>Birebir (Platform, Username), yoksa kimlik anahtarı (U7); ikisi de tutmazsa aynı
+    /// tanıtıcının öbür "@" yazımı (<see cref="CustomerIdentity.AlternateAtSpellingOf"/>) — tek arama
+    /// kuralı: <see cref="FindByPlatformAndUsername"/> ve eski form yolu (<see cref="UpsertFromIntakeForm"/>,
     /// yazma işleminin içinde) aynısını kullanır.</summary>
     private static Row? FindRow(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
+        => FindSpelling(conn, tx, platform, username)
+           ?? (CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt
+               ? FindSpelling(conn, tx, platform, alt)
+               : null);
+
+    /// <summary>
+    /// Sohbet vurgusu ve çekiliş süzgeci için: kişi, tanıtıcısının HERHANGİ bir yazımında ("ad" ya da
+    /// "@ad", <see cref="CustomerIdentity.AlternateAtSpellingOf"/>) kara listedeyse kara listede sayılır.
+    /// 2026-08-05 → 2026-10 arasında Instagram adı "@ad" yazıldı; o dönemde sohbetten kara listeye
+    /// alınan kişi "@ad" satırında işaretli, aynı kişinin formlu "ad" satırı değil. Yorumlar artık
+    /// "@"sız geldiği için <see cref="FindByPlatformAndUsername"/> "ad" satırını bulur — tek satıra
+    /// bakan denetim bu kişiyi kaçırırdı. İkizler sunucuda birleştirilene dek iki yazım da sorulur.
+    /// </summary>
+    public bool IsBlacklistedAnySpelling(string platform, string username)
+    {
+        using var conn = _factory.Open();
+        if (FindSpelling(conn, null, platform, username)?.IsBlacklisted == 1) return true;
+        return CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt
+               && FindSpelling(conn, null, platform, alt)?.IsBlacklisted == 1;
+    }
+
+    private static Row? FindSpelling(
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
         => conn.QueryFirstOrDefault<Row>(
                "SELECT * FROM Customer WHERE Platform=@platform AND Username=@username",
@@ -1399,6 +1423,7 @@ public sealed class CustomerRepository
     ///   duyarsız (COLLATE NOCASE) → IG/TikTok/FB'de handle chat'le birebir aynı.</item>
     ///   <item>Kimlik anahtarı (U7): NOCASE yalnız ASCII katlar; "ŞEYMA" ile "şeyma"yı
     ///   anahtar eşler.</item>
+    ///   <item>IG/TikTok/FB: eski "@ad" yazımı (<see cref="CustomerIdentity.AlternateAtSpellingOf"/>).</item>
     ///   <item>YouTube özel: chat satırının Username'i channelId (UCxxx), form ise
     ///   @handle verir → doğrudan tutmaz. Bu satırların <c>DisplayName</c>'i @handle
     ///   tuttuğu için handle'ı DisplayName ile eşleştirip channelId satırını buluruz
@@ -1419,6 +1444,17 @@ public sealed class CustomerRepository
         // 2) Kimlik anahtarı: NOCASE yalnız ASCII katlar ("ŞEYMA" ≠ "şeyma").
         var byKey = FindByIdentity(conn, tx, platform, handle);
         if (byKey is not null) return byKey;
+
+        // 2b) Eski "@ad" yazımı (Instagram API yolu 2026-08-05 → 2026-10 sürümü): o dönemde yalnız
+        // sohbetten gelmiş müşterinin formu ayrı satır açmaz, sohbet satırına bağlanır.
+        if (CustomerIdentity.AlternateAtSpellingOf(platform, handle) is { } alt)
+        {
+            var legacy = conn.QueryFirstOrDefault<Row>(
+                "SELECT * FROM Customer WHERE Platform=@platform AND Username=@alt COLLATE NOCASE",
+                new { platform, alt }, tx)
+                ?? FindByIdentity(conn, tx, platform, alt);
+            if (legacy is not null) return legacy;
+        }
 
         // 3) YouTube: chat satırı channelId ile; @handle DisplayName'de saklı.
         if (string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase))
@@ -1557,19 +1593,34 @@ public sealed class CustomerRepository
                 newTombstones += UpsertTombstone(conn, tx, platform, alias, purgedAtUnix) ? 1 : 0;
         }
 
+        // IG/TikTok/FB: "ad" ile "@ad" aynı hesap ('@' adın parçası değil; 2026-08-05 → 2026-10
+        // Instagram adı "@ad" yazıldı, aynı kişinin iki satırı olabilir). Karar iki yazımı da kapsar:
+        // öbür yazımın mezar taşı, sonradan o yazımla açılan satırı da boşaltır (ScrubIfTombstonedSql).
+        var spellings = new List<string> { username };
+        if (CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt)
+        {
+            spellings.Add(alt);
+            newTombstones += UpsertTombstone(conn, tx, platform, alt, purgedAtUnix) ? 1 : 0;
+        }
+
         // Harf duyarsız: NOCASE (ASCII) + kimlik anahtarı (ASCII dışı harf farkı).
-        var newlyScrubbed = conn.ExecuteScalar<int>(
-            @"SELECT COUNT(*) FROM Customer
-              WHERE Platform = @platform
-                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)
-                AND PurgedAt IS NULL",
-            new { platform, username, key = CustomerIdentity.KeyOrNull(username) }, tx);
-        var scrubbed = conn.Execute(
-            "UPDATE Customer SET " + ScrubAssignments + @",
-                  PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
-              WHERE Platform = @platform
-                AND (Username = @username COLLATE NOCASE OR IdentityKey = @key)",
-            new { platform, username, purgedAtUnix, key = CustomerIdentity.KeyOrNull(username) }, tx);
+        int newlyScrubbed = 0, scrubbed = 0;
+        foreach (var spelling in spellings)
+        {
+            var key = CustomerIdentity.KeyOrNull(spelling);
+            newlyScrubbed += conn.ExecuteScalar<int>(
+                @"SELECT COUNT(*) FROM Customer
+                  WHERE Platform = @platform
+                    AND (Username = @spelling COLLATE NOCASE OR IdentityKey = @key)
+                    AND PurgedAt IS NULL",
+                new { platform, spelling, key }, tx);
+            scrubbed += conn.Execute(
+                "UPDATE Customer SET " + ScrubAssignments + @",
+                      PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
+                  WHERE Platform = @platform
+                    AND (Username = @spelling COLLATE NOCASE OR IdentityKey = @key)",
+                new { platform, spelling, purgedAtUnix, key }, tx);
+        }
 
         scope.Commit();
         changed = newTombstones > 0 || newlyScrubbed > 0;

@@ -38,4 +38,51 @@ public static class CustomerIdentity
     /// geçerli sayıp depo boş sayarsa form depoda reddedilir ve imleci kilitler.
     /// </summary>
     public static string IntakeHandleOf(string? username) => (username ?? "").Trim().TrimStart('@').Trim();
+
+    /// <summary>
+    /// Göç 046: göç öncesi (damgasız) bir grubun bilgisayardan bağımsız numarası. <paramref name="anchor"/>
+    /// = çapa üyenin "platform|kimlik anahtarı"; numara onun SHA-256'sının ilk 16 baytı, Guid "N"
+    /// biçiminde (32 küçük onaltılık hane) — form gruplarının numarası da bu biçimde. Aynı çapa her
+    /// bilgisayarda aynı numarayı verir. DEĞİŞTİRİLMEZ: uygulanmış göç yeniden koşmaz, farklı bir
+    /// türetme sonradan güncellenen bilgisayarla eskileri ayrıştırır.
+    /// </summary>
+    public static string LegacyGroupIdOf(string anchor)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("orderdeck-legacy-group|" + anchor));
+        return System.Convert.ToHexString(hash, 0, 16).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Sohbetten gelen kullanıcı adının saklanan hâli. Instagram/TikTok/Facebook'ta '@' adın parçası
+    /// değildir: form (<see cref="IntakeHandleOf"/>) ve eski Instagram eklentisi onu atar, kimlik "@"sız
+    /// tutulur. YouTube'a dokunulmaz (sohbet satırının adı kanal kimliği, @tanıtıcı ayrı eşleşir).
+    /// "@"tan başka bir şey kalmazsa ad olduğu gibi döner — boş adlı satır açılmaz.
+    /// </summary>
+    public static string ChatHandleOf(string platform, string username)
+    {
+        if (!AtIsNotPartOfHandle(platform)) return username;
+        var bare = IntakeHandleOf(username);
+        return bare.Length == 0 ? username : bare;
+    }
+
+    /// <summary>
+    /// Aynı tanıtıcının öbür yazımı ("ad" ↔ "@ad"), yoksa null. 2026-08-05'ten 2026-10 sürümüne dek
+    /// Instagram resmi API yolu adı "@ad" diye yazdı; o dönemde açılan satırlar "@"lı kaldı. Arama
+    /// önce verilen yazımı dener, bulamazsa bunu — böylece eski "@ad" satırı olan müşteri yeni yorumda
+    /// ikinci kez bölünmez, form da ona bağlanır. Yalnız sohbet/form yolunun araması kullanır; senkron
+    /// kimliği (<see cref="KeyOf"/>) iki yazımı ayrı tutar (sunucuyla aynı).
+    /// </summary>
+    public static string? AlternateAtSpellingOf(string platform, string username)
+    {
+        if (!AtIsNotPartOfHandle(platform)) return null;
+        var bare = IntakeHandleOf(username);
+        if (bare.Length == 0) return null;
+        return username.TrimStart().StartsWith('@') ? bare : "@" + bare;
+    }
+
+    private static bool AtIsNotPartOfHandle(string platform)
+        => platform.Equals("instagram", System.StringComparison.OrdinalIgnoreCase)
+           || platform.Equals("tiktok", System.StringComparison.OrdinalIgnoreCase)
+           || platform.Equals("facebook", System.StringComparison.OrdinalIgnoreCase);
 }
