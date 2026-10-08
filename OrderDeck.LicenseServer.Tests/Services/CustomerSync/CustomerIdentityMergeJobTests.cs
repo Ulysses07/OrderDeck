@@ -832,6 +832,59 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Olagan_kipte_de_grup_numarasi_celiskisi_sayilir()
+    {
+        // İki numara da dolu ve farklı → çelişki (ordinal, kırpılmış); biri boşsa değil.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var a1 = Row(lic, "ali", t0);
+        a1.GroupId = Guid.NewGuid().ToString("N");
+        var a2 = Row(lic, "ALI", t0.AddDays(1));
+        a2.GroupId = Guid.NewGuid().ToString("N");
+        var b1 = Row(lic, "veli", t0);
+        b1.GroupId = Guid.NewGuid().ToString("N");
+        var b2 = Row(lic, "VELI", t0.AddDays(1));
+        db.WpfCustomerProjections.AddRange(a1, a2, b1, b2);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: false, default);
+
+        report.Groups.Should().Be(2);
+        report.GroupConflicts.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Olagan_kip_gruplari_birlestirmez_yalniz_sayar()
+    {
+        // Grup birliği yalnız "@" ikizi kipinde (bkz. CustomerIdentityMergeJob
+        // "Grup birliği"): olağan kip E2 olarak koştu, davranışı değişmedi.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var (l, g) = (Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"));
+        var a1 = Row(lic, "ali", t0);
+        a1.GroupId = l;
+        var a2 = Row(lic, "ALI", t0.AddDays(1));
+        a2.GroupId = g;
+        var gMember = Row(lic, "ali_fb", t0, "facebook");
+        gMember.GroupId = g;
+        db.WpfCustomerProjections.AddRange(a1, a2, gMember);
+        db.Orders.Add(OrderFor(lic, a1, t0));
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default);
+
+        report.GroupConflicts.Should().Be(1);
+        db.ChangeTracker.Clear();
+        var member = await db.WpfCustomerProjections.AsNoTracking().SingleAsync(p => p.Id == gMember.Id);
+        member.GroupId.Should().Be(g);
+        member.GroupIdChangedAt.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Kuru_calistirma_tasinacak_iban_eslesme_hareket_ve_sohbetleri_sayar_uygulama_tasir()
     {
         using var scope = _factory.Services.CreateScope();

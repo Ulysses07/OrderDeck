@@ -88,6 +88,43 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// bulur (idempotent). Rapor sayıları (FailedGroups ve LinksUnbound hariç)
 /// uygulamada da "bulunan" sayılardır: atlanan grubun satırları da
 /// içlerindedir.</para>
+///
+/// <para><b>"@" ikizi kipi</b> (<c>atTwins</c>; CLI <c>--at-twins</c>,
+/// 2026-10-08): 2026-08-05'ten v0.9.9'a dek Instagram resmi API yolu kullanıcı
+/// adını "@ad" diye yazdı; form ve eski eklenti "ad" yazıyordu. Kimlik
+/// anahtarları farklı olduğundan aynı kişinin İKİ asıl kaydı oldu (prod'da 512
+/// Instagram kişisi) — olağan kip onları aynı kişi saymaz. v0.9.9 "@"sız yazar
+/// ve bilgisayardaki arama öbür yazıma düşer; ikizleri tek kayıtta toplayan bu
+/// kiptir. Yalnız Instagram/TikTok/Facebook (<see cref="AtTwinPlatforms"/> —
+/// orada '@' adın parçası değil; YouTube hiç gruplanmaz); grup anahtarı baştaki
+/// '@'leri atılmış kimlik anahtarı (<see cref="AtTwinKeyOf"/>). Asıl kayıt
+/// "@"SIZ yazım: form ve yeni yorumlar onu kullanır — "@"lı satır asıl kalsaydı
+/// "ad" anahtarının asıl kaydı olmaz, sonraki gönderim aynı kişiye yeniden ayrı
+/// bir asıl kayıt açardı. Sıra: geçici satır kuralı (A5c) yine önce; sonra CANLI
+/// satır (silinmiş asıl kayıt bilgisayarlarda hiç açılmaz — canlı "@" kopyasından
+/// ona yönlendirme "@"sız satırı görmemiş bilgisayarda yok sayılır ve kişisel veri
+/// orada kalırdı; canlı asıl kaydı ise silinmişlik kuralı boşaltır ve silme mezar
+/// taşı olarak iner); sonra "@"sız yazım; sonra olağan sıra. "@"lı asıl kayıtla
+/// biten grup ayrıca sayılır (<see cref="Report.AtSpelledCanonicals"/>). Geri
+/// kalan her şey (alan aktarımı, boşaltma, başvuruların taşınması, zincir,
+/// silinmişlik, yeniden kanıt) olağan kiple AYNI. Bilgisayarlar yönlendirmeyi
+/// (kopya → asıl kayıt) değişiklik akışından alır ve yerel başvurularını (etiket,
+/// kargo, ödeme işi) asıl kayda taşır.</para>
+///
+/// <para><b>Grup birliği</b> (yalnız "@" ikizi kipi): ikizler FARKLI kişi
+/// gruplarındaysa birim kuralı ya asıl kaydı kopyanın grubuna taşır (damgalı
+/// kopya) ya da kopyanın grubunu kimliksiz bırakır (ikisi damgasız) — kişinin
+/// grubu her bilgisayarda bölünür ve sonradan <c>group-customers</c> da onaramaz
+/// (çiftler "zaten birlikte" görünür). Bu yüzden grubun işleminde, masaüstündeki
+/// elle birleştirme (<c>MergeIntoGroup</c>) gibi bütün numaraların üyeleri
+/// toplanır: hedef asıl kaydın birleştirme ÖNCESİ numarası, yoksa kopyanınki;
+/// asıl kayıt hedefe yazılıp kopyalarınkinden yeni damgayla damgalanır, öbür
+/// numaraların asıl ve silinmemiş bütün üyeleri hedefe taşınır, son grupta kara
+/// liste yayılır (<see cref="CustomerGroupUnion"/> — group-customers ile ORTAK
+/// kod). Olağan kipte YOK: o kip E2 olarak incelenip prod'da koştu ve B1 tekil
+/// indeksinden beri bulacak grubu yok; değişmesi bir kazanç getirmeden incelenmiş
+/// bir yolu değiştirirdi. Olağan kip numara farkını yalnız sayar
+/// (<see cref="Report.GroupConflicts"/>).</para>
 /// </summary>
 public sealed class CustomerIdentityMergeJob
 {
@@ -111,6 +148,26 @@ public sealed class CustomerIdentityMergeJob
     /// zinciri sınırlı adımda çözer ama B1 öncesi son koşul sıfır ister.</summary>
     public const string ChainsSql =
         "SELECT COUNT(*) FROM WpfCustomerProjections a JOIN WpfCustomerProjections b ON a.MergedIntoId = b.Id WHERE b.MergedIntoId IS NOT NULL";
+
+    /// <summary>"@" ikizi kipinin gezdiği platformlar (küçük harf): '@' adın
+    /// parçası değil — masaüstündeki <c>CustomerIdentity</c>'nin "@"sız tuttuğu
+    /// üç platformla aynı. YouTube yok: sohbet satırının adı kanal kimliği,
+    /// "@tanıtıcı" ayrı bir şey.</summary>
+    public static readonly IReadOnlySet<string> AtTwinPlatforms =
+        new HashSet<string>(["instagram", "tiktok", "facebook"], StringComparer.Ordinal);
+
+    /// <summary>"@" ikizi kipinin grup anahtarı: kimlik anahtarının
+    /// (<see cref="WpfCustomerProjection.IdentityKeyOf"/>) baştaki '@'leri
+    /// atılmış hâli. Geriye bir şey kalmazsa (ad yalnız '@'lerden oluşuyorsa)
+    /// kırpılmamış anahtar: yoksa "@", "@@" ve bütün böyle adlar tek kişi
+    /// sayılırdı. Boş anahtar (yalnız boşluk) boş kalır — olağan kipteki gibi
+    /// gruplanmaz.</summary>
+    public static string AtTwinKeyOf(string username)
+    {
+        var key = WpfCustomerProjection.IdentityKeyOf(username);
+        var bare = key.TrimStart('@');
+        return bare.Length == 0 ? key : bare;
+    }
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdentityMerger _merger;
@@ -154,6 +211,23 @@ public sealed class CustomerIdentityMergeJob
         public int EmailConflicts { get; init; }
         public int NameConflicts { get; init; }
         public int NotesConflicts { get; init; }
+        /// <summary>Satırları (asıl kayıt + kopyalar) birden çok FARKLI grup
+        /// numarası taşıyan grup (kırpılmış, ORDİNAL — numara bir kimlik, metin
+        /// değil; bilgisayarlar da onu bayt bayt karşılaştırır).
+        /// <para>"@" ikizi kipinde bu gruplar BİRLEŞTİRİLİR: numaraların bütün
+        /// üyeleri tek numarada toplanır (bkz. sınıf dokümanı, "Grup birliği") —
+        /// sayı "birleştirilen grup" demektir. Olağan kipte yalnız sayılır: hangi
+        /// numaranın kalacağını öteki alanlardaki gibi birim kuralı
+        /// (<see cref="CustomerFieldMerge.Apply"/>, damga) seçer, kaybeden
+        /// numaranın öbür üyeleri o grupta kalır.</para></summary>
+        public int GroupConflicts { get; init; }
+
+        /// <summary>"@" ikizi kipi: seçilen asıl kaydı "@"lı yazım olan grup —
+        /// "@"sız satır geçici (Shopper'ın açtığı) ya da silinmiş, ya da grupta
+        /// hiç yok (ör. "@ad" ile "@@ad"). Bu kişilerin "ad" anahtarının asıl kaydı
+        /// yok: sonraki "@"sız gönderim yeniden ayrı kayıt açabilir. Olağan kipte
+        /// hep 0.</summary>
+        public int AtSpelledCanonicals { get; init; }
 
         // Kopyalardan asıl kayda taşınacak öteki kayıtlar (CustomerIdentityMerger'in
         // taşıdıklarıyla aynı yüklemler).
@@ -207,31 +281,18 @@ public sealed class CustomerIdentityMergeJob
     /// kopya olan satır sayısı.</summary>
     public Task<int> CountChainsAsync(CancellationToken ct) => CountAsync(ChainsSql, ct);
 
-    public async Task<Report> RunAsync(Guid licenseId, bool apply, CancellationToken ct)
+    /// <param name="atTwins">"@" ikizi kipi (bkz. sınıf dokümanı): yalnız
+    /// <see cref="AtTwinPlatforms"/>, anahtar <see cref="AtTwinKeyOf"/>, asıl
+    /// kayıt "@"sız yazım.</param>
+    public async Task<Report> RunAsync(Guid licenseId, bool apply, CancellationToken ct, bool atTwins = false)
     {
-        var heads = await _db.WpfCustomerProjections.AsNoTracking()
-            .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null)
-            .Select(p => new { p.Id, p.Platform, p.Username })
-            .ToListAsync(ct);
-        var groups = heads
-            .Select(h => new { h.Id, h.Username, Platform = h.Platform.ToLowerInvariant(), Key = WpfCustomerProjection.IdentityKeyOf(h.Username) })
-            .Where(h => h.Key != "")
-            .GroupBy(h => (h.Platform, h.Key))
-            .Where(g => g.Count() > 1)
-            .Select(g => new
-            {
-                g.Key.Platform,
-                Ids = g.Select(h => h.Id).ToList(),
-                Variant = g.Select(h => h.Username).Distinct(StringComparer.Ordinal).Count() > 1,
-            })
-            .ToList();
-
+        var groups = await FindGroupsAsync(licenseId, atTwins, ct);
         var tally = new Tally();
         foreach (var group in groups)
         {
             try
             {
-                await MergeGroupAsync(licenseId, group.Ids, apply, tally, ct);
+                await MergeGroupAsync(licenseId, group.Ids, apply, atTwins, tally, ct);
             }
             catch (DbUpdateException ex) // DbUpdateConcurrencyException dahil
             {
@@ -258,6 +319,8 @@ public sealed class CustomerIdentityMergeJob
             EmailConflicts = tally.EmailConflicts,
             NameConflicts = tally.NameConflicts,
             NotesConflicts = tally.NotesConflicts,
+            GroupConflicts = tally.GroupConflicts,
+            AtSpelledCanonicals = tally.AtSpelledCanonicals,
             BalanceTransactionsToMove = tally.BalanceTransactions,
             IbanMemoriesToMove = tally.IbanMemories,
             PaymentMatchesToMove = tally.PaymentMatches,
@@ -265,11 +328,45 @@ public sealed class CustomerIdentityMergeJob
         };
     }
 
+    /// <summary>Lisansta bugün kaç kopyalı kişi (grup) var — <see cref="RunAsync"/>
+    /// ile AYNI gruplama. CLI "@" ikizi kipinin son koşulu: uygulamadan sonra 0
+    /// olmalı.</summary>
+    public async Task<int> CountGroupsAsync(Guid licenseId, bool atTwins, CancellationToken ct)
+        => (await FindGroupsAsync(licenseId, atTwins, ct)).Count;
+
+    private sealed record Group(string Platform, List<Guid> Ids, bool Variant);
+
+    /// <summary>Gruplama (bkz. sınıf dokümanı): asıl kayıtlar, bellekte hesaplanan
+    /// anahtarla; boş anahtar hariç; "@" ikizi kipinde yalnız
+    /// <see cref="AtTwinPlatforms"/> ve <see cref="AtTwinKeyOf"/>.</summary>
+    private async Task<List<Group>> FindGroupsAsync(Guid licenseId, bool atTwins, CancellationToken ct)
+    {
+        var heads = await _db.WpfCustomerProjections.AsNoTracking()
+            .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null)
+            .Select(p => new { p.Id, p.Platform, p.Username })
+            .ToListAsync(ct);
+        return heads
+            .Select(h => new
+            {
+                h.Id, h.Username, Platform = h.Platform.ToLowerInvariant(),
+                Key = atTwins ? AtTwinKeyOf(h.Username) : WpfCustomerProjection.IdentityKeyOf(h.Username),
+            })
+            .Where(h => h.Key != "" && (!atTwins || AtTwinPlatforms.Contains(h.Platform)))
+            .GroupBy(h => (h.Platform, h.Key))
+            .Where(g => g.Count() > 1)
+            .Select(g => new Group(
+                g.Key.Platform,
+                g.Select(h => h.Id).ToList(),
+                g.Select(h => h.Username).Distinct(StringComparer.Ordinal).Count() > 1))
+            .ToList();
+    }
+
     /// <summary>Bir grubu sayar, <paramref name="apply"/> ise kendi işleminde
     /// birleştirir. Sayımlar ancak grubun bütün okumaları bittikten sonra
     /// toplanır: okuma yarıda düşen grup yarım sayılmaz. Hata çağırana çıkar —
     /// işlem kapsamdan çıkarken geri alınır.</summary>
-    private async Task MergeGroupAsync(Guid licenseId, List<Guid> ids, bool apply, Tally tally, CancellationToken ct)
+    private async Task MergeGroupAsync(
+        Guid licenseId, List<Guid> ids, bool apply, bool atTwins, Tally tally, CancellationToken ct)
     {
         var rows = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && ids.Contains(p.Id))
@@ -288,6 +385,17 @@ public sealed class CustomerIdentityMergeJob
         var canonical = rows
             // Shopper'ın açtığı geçici kayıt asıl olamaz, yayıncının satırı varken (A5c).
             .OrderBy(r => r.CreatedByShopper ? 1 : 0)
+            // "@" ikizi kipi: önce CANLI satır. Silinmiş asıl kayıt bilgisayarlarda
+            // hiç açılmaz; canlı "@" kopyasından ona yönlendirme, "@"sız satırı
+            // hiç görmemiş bilgisayarda yok sayılır ve kişisel veri orada kalırdı.
+            // Canlı asıl kayıtta ise aşağıdaki silinmişlik kuralı onu boşaltır,
+            // silme bilgisayarlara mezar taşı olarak ulaşır (v0.9.9 iki yazıma da
+            // uygular).
+            .ThenBy(r => atTwins && r.PurgedAt is not null ? 1 : 0)
+            // "@" ikizi kipi: "@"sız yazım asıl kayıt — form ve yeni yorumlar onu
+            // kullanır (bkz. sınıf dokümanı). Siparişin daha eski olması da onu
+            // geçmez: asıl kayıt "@"lı kalsaydı "ad" anahtarının asıl kaydı olmazdı.
+            .ThenBy(r => atTwins && r.Username.Trim().StartsWith('@') ? 1 : 0)
             .ThenBy(r => orderStats.TryGetValue(r.Id.ToString("N"), out var s) ? s.First : DateTimeOffset.MaxValue)
             .ThenBy(r => r.UpdatedAt)
             .ThenBy(r => r.Id.ToString("N"), StringComparer.Ordinal)
@@ -333,6 +441,9 @@ public sealed class CustomerIdentityMergeJob
         if (others.Any(c => Conflicting(canonical.Email, c.Email))) tally.EmailConflicts++;
         if (others.Any(c => Conflicting(canonical.FullName, c.FullName))) tally.NameConflicts++;
         if (others.Any(c => Conflicting(canonical.Notes, c.Notes))) tally.NotesConflicts++;
+        if (rows.Select(r => CustomerGroupUnion.KeyOf(r.GroupId)).OfType<string>()
+                .Distinct(StringComparer.Ordinal).Count() > 1) tally.GroupConflicts++;
+        if (atTwins && canonical.Username.Trim().StartsWith('@')) tally.AtSpelledCanonicals++;
         if (anyPurged) tally.Purged++;
 
         if (!apply)
@@ -341,6 +452,8 @@ public sealed class CustomerIdentityMergeJob
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         var now = DateTimeOffset.UtcNow;
         var becomesPurged = anyPurged && canonical.PurgedAt is null;
+        // Grup birliği ("@" ikizi kipi) asıl kaydın birleştirme ÖNCESİ numarasını hedefler.
+        var groupBefore = canonical.GroupId;
         // Geçici kopyalardan taşınan bağlantılar (ayrılmışlar dahil):
         // kanıt aşağıda, bütün kopyalar ve silme uygulandıktan SONRA.
         var provisionalLinks = new List<ShopperBroadcasterLink>();
@@ -395,6 +508,8 @@ public sealed class CustomerIdentityMergeJob
             canonical.ScrubPersonal();
             canonical.PurgedAt = canonical.PurgedAt is { } p && p < purgedAt ? p : purgedAt;
         }
+        if (atTwins)
+            await UnionGroupsAsync(licenseId, canonical, groupBefore, others, now, ct);
         // Kaydedilecek telefona karşı (bkz. sınıf dokümanı).
         var groupUnbound = 0; // yalnız işlem başarılıysa toplama eklenir
         foreach (var link in provisionalLinks)
@@ -418,6 +533,47 @@ public sealed class CustomerIdentityMergeJob
         tally.Unbound += groupUnbound;
     }
 
+    /// <summary>
+    /// "@" ikizi kipinin grup birliği (bkz. sınıf dokümanı, "Grup birliği"):
+    /// grubun işleminde, alan aktarımından ve silinmişlikten SONRA. Hedef asıl
+    /// kaydın birleştirme ÖNCESİ (kırpılmış) numarası, yoksa kopyaların ordinal en
+    /// küçüğü. Asıl kayıt hedefe yazılır ve damgalanır — numara birden çoksa ya da
+    /// değeri değiştiyse; hedef dışındaki numaraların bütün asıl, silinmemiş
+    /// üyeleri hedefe taşınır; son grupta kara liste yayılır
+    /// (<see cref="CustomerGroupUnion"/>, group-customers ile ORTAK).
+    /// </summary>
+    private async Task UnionGroupsAsync(
+        Guid licenseId, WpfCustomerProjection canonical, string? groupBefore,
+        IReadOnlyList<WpfCustomerProjection> copies, DateTimeOffset now, CancellationToken ct)
+    {
+        var copyGroups = copies.Select(c => CustomerGroupUnion.KeyOf(c.GroupId)).OfType<string>().ToList();
+        var target = CustomerGroupUnion.KeyOf(groupBefore)
+                     ?? copyGroups.Order(StringComparer.Ordinal).FirstOrDefault();
+        if (target is null) return; // kimsenin grubu yok
+
+        var groups = new HashSet<string>(copyGroups, StringComparer.Ordinal) { target };
+        if (CustomerGroupUnion.KeyOf(canonical.GroupId) is { } merged) groups.Add(merged);
+        var canonicalChanges = !string.Equals(canonical.GroupId, groupBefore, StringComparison.Ordinal)
+                               || !string.Equals(canonical.GroupId, target, StringComparison.Ordinal);
+        if (groups.Count == 1 && !canonicalChanges)
+            return; // tek numara ve asıl kayıt zaten onda: birleştirilecek bir şey yok
+
+        // Asıl kaydın damgası kopyalarınkinden de yeni olmalı: bilgisayar
+        // yönlendirmede kopyanın yerel satırını asıl kayda birim kuralıyla katar
+        // (RekeyCore) — kopyanın damgalı numarası yerelde kazanır, gönderilir ve
+        // birliği yeniden bölerdi; damgasız numara da yerelde boş asıl kaydı
+        // doldururdu. Değeri değişmese de damgalanır (birden çok numara varken).
+        var newest = copies.Select(c => c.GroupIdChangedAt).Append(canonical.GroupIdChangedAt).Max();
+        canonical.GroupId = target;
+        canonical.GroupIdChangedAt = CustomerGroupUnion.StampAt(now, newest);
+
+        // Üyeler bu işlemde izlenen örnekler: asıl kayıt ve kopyalar zaten izleniyor
+        // (kopyalar bellekte kopya — yükleyici onları süzer).
+        var members = await CustomerGroupUnion.LoadGroupRowsAsync(_db, licenseId, groups, ct);
+        CustomerGroupUnion.MoveToGroup(members, target, now);
+        CustomerGroupUnion.PropagateBlacklist(members.Append(canonical).DistinctBy(r => r.Id).ToList(), now);
+    }
+
     private void Skipped(Guid licenseId, Exception ex, Tally tally)
     {
         tally.Failed++;
@@ -426,7 +582,10 @@ public sealed class CustomerIdentityMergeJob
             licenseId, ex.GetType().Name, SqlErrorOf(ex)?.ToString(CultureInfo.InvariantCulture) ?? "yok");
     }
 
-    private static int? SqlErrorOf(Exception ex)
+    /// <summary>İstisna zincirindeki ilk SQL hata numarası, yoksa null —
+    /// günlüğe yazılabilecek tek ayrıntı (iletisi kişisel veri taşıyabilir).
+    /// <see cref="CustomerGroupingJob"/> da kullanır.</summary>
+    internal static int? SqlErrorOf(Exception ex)
     {
         for (Exception? e = ex; e is not null; e = e.InnerException)
             if (e is SqlException sql) return sql.Number;
@@ -456,6 +615,7 @@ public sealed class CustomerIdentityMergeJob
     {
         public int Copies, Orders, Shipments, Links, Balances, Purged, Failed, Unbound;
         public int BalanceTransactions, IbanMemories, PaymentMatches, WaConversations;
-        public int PhoneConflicts, AddressConflicts, EmailConflicts, NameConflicts, NotesConflicts;
+        public int PhoneConflicts, AddressConflicts, EmailConflicts, NameConflicts, NotesConflicts, GroupConflicts;
+        public int AtSpelledCanonicals;
     }
 }
