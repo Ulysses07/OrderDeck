@@ -474,7 +474,7 @@ public sealed class CustomerRepository
         var soloIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (p, u) in identities)
         {
-            var handle = (u ?? "").Trim().TrimStart('@').Trim();
+            var handle = CustomerIdentity.IntakeHandleOf(u);
             if (handle.Length == 0) continue;
             var row = FindExistingForIntake(conn, tx, p, handle);
             if (row is null) continue;
@@ -979,7 +979,7 @@ public sealed class CustomerRepository
         var norm = new List<(string Platform, string Username, string? Display)>();
         foreach (var (p, u, disp) in identities)
         {
-            var handle = (u ?? "").Trim().TrimStart('@').Trim();
+            var handle = CustomerIdentity.IntakeHandleOf(u);
             if (handle.Length > 0) norm.Add((p, handle, string.IsNullOrWhiteSpace(disp) ? null : disp!.Trim()));
         }
         if (norm.Count == 0) throw new ArgumentException("En az bir kimlik gerekli", nameof(identities));
