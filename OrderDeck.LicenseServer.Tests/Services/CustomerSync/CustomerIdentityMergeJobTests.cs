@@ -832,6 +832,30 @@ public sealed class CustomerIdentityMergeJobTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Olagan_kipte_de_grup_numarasi_celiskisi_sayilir()
+    {
+        // İki numara da dolu ve farklı → çelişki (ordinal, kırpılmış); biri boşsa değil.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var a1 = Row(lic, "ali", t0);
+        a1.GroupId = Guid.NewGuid().ToString("N");
+        var a2 = Row(lic, "ALI", t0.AddDays(1));
+        a2.GroupId = Guid.NewGuid().ToString("N");
+        var b1 = Row(lic, "veli", t0);
+        b1.GroupId = Guid.NewGuid().ToString("N");
+        var b2 = Row(lic, "VELI", t0.AddDays(1));
+        db.WpfCustomerProjections.AddRange(a1, a2, b1, b2);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: false, default);
+
+        report.Groups.Should().Be(2);
+        report.GroupConflicts.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Kuru_calistirma_tasinacak_iban_eslesme_hareket_ve_sohbetleri_sayar_uygulama_tasir()
     {
         using var scope = _factory.Services.CreateScope();

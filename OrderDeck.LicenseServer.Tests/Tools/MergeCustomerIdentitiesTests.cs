@@ -28,6 +28,11 @@ public class MergeCustomerIdentitiesTests
             // Tanınmayan argüman (--apply yazım hatası) kuru çalıştırma sanılmamalı.
             new[] { "merge-customer-identities", "--license", license, "--aply" },
             new[] { "merge-customer-identities", "--license", license, "--license", license },
+            // --at-twins iki kez: öteki seçenekler gibi yinelenen argüman.
+            new[] { "merge-customer-identities", "--all", "--at-twins", "--at-twins" },
+            new[] { "merge-customer-identities", "--at-twins" },
+            new[] { "merge-customer-identities", "--at-twins", "--apply" },
+            new[] { "merge-customer-identities", "--all", "--at-twin" },
         };
     }
 
@@ -35,4 +40,31 @@ public class MergeCustomerIdentitiesTests
     [MemberData(nameof(UsageErrors))]
     public async Task Kullanim_hatasi_2_doner(string[] args)
         => (await MergeCustomerIdentities.RunAsync(args)).Should().Be(2);
+
+    [Theory]
+    [MemberData(nameof(UsageErrors))]
+    public void Ayristirici_kullanim_hatalarini_reddeder(string[] args)
+        => MergeCustomerIdentities.TryParseArgs(args, out _, out _, out _, out _).Should().BeFalse();
+
+    [Fact]
+    public void At_twins_all_ve_license_ile_apply_ile_kabul_edilir()
+    {
+        var license = Guid.NewGuid();
+
+        MergeCustomerIdentities.TryParseArgs(
+                ["merge-customer-identities", "--all", "--at-twins"], out var all, out var single, out var apply, out var atTwins)
+            .Should().BeTrue();
+        (all, single, apply, atTwins).Should().Be((true, (Guid?)null, false, true));
+
+        MergeCustomerIdentities.TryParseArgs(
+                ["merge-customer-identities", "--at-twins", "--license", license.ToString(), "--apply"],
+                out all, out single, out apply, out atTwins)
+            .Should().BeTrue();
+        (all, single, apply, atTwins).Should().Be((false, (Guid?)license, true, true));
+
+        MergeCustomerIdentities.TryParseArgs(
+                ["merge-customer-identities", "--license", license.ToString()], out _, out _, out _, out atTwins)
+            .Should().BeTrue();
+        atTwins.Should().BeFalse("bayraksız olağan kip");
+    }
 }

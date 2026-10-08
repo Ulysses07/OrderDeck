@@ -15,7 +15,7 @@ namespace OrderDeck.LicenseServer.Tests.Tools;
 /// <c>merge-customer-identities</c> komutunun gövdesi gerçek SQL Server'da:
 /// çıkış kodları (0 tamam, 1 atlanan grup, 3 son koşul) ve çıktıda kişisel veri
 /// olmaması. Gövde, bağlantısı ve yazıcıları verilmiş
-/// <see cref="MergeCustomerIdentities.RunAsync(LicenseDbContext, Guid?, bool, TextWriter, TextWriter, Microsoft.Extensions.Logging.ILoggerFactory, CancellationToken)"/>'ten
+/// <see cref="MergeCustomerIdentities.RunAsync(LicenseDbContext, Guid?, bool, TextWriter, TextWriter, Microsoft.Extensions.Logging.ILoggerFactory, CancellationToken, bool)"/>'ten
 /// girilir; argüman ayrıştırması <see cref="MergeCustomerIdentitiesTests"/>'te.
 /// Şema B1 öncesi (<see cref="PreB1Schema"/>): komut prod'da orada koşar (E2).
 /// </summary>
