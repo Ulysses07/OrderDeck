@@ -242,6 +242,45 @@ public sealed class CustomerGroupingJobTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Silinmis_uye_kara_liste_kaynagi_olur_hedef_olmaz()
+    {
+        // Masaüstünün PropagateGroupBlacklist'i gibi: KVKK boşaltması kara listeyi
+        // korur, silinmiş üye kaynak seçilir. Silinmiş satır ise hiç yazılmaz.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var l = Group('7');
+        var buyer = Row(lic);
+        var registered = Row(lic, l);
+        var purgedSource = Row(lic, l, "tiktok");
+        purgedSource.IsBlacklisted = true;
+        purgedSource.BlacklistReason = "sahte sipariş";
+        purgedSource.BlacklistedAt = T0.AddDays(-2);
+        purgedSource.MarkPurged(T0);
+        var purgedClean = Row(lic, l, "facebook");
+        purgedClean.MarkPurged(T0);
+        db.WpfCustomerProjections.AddRange(buyer, registered, purgedSource, purgedClean);
+        await db.SaveChangesAsync();
+        var before = await RowsAsync(db, lic);
+
+        var dry = await Job(db).RunAsync(lic, [P(buyer, registered)], apply: false, default);
+        var applied = await Job(db).RunAsync(lic, [P(buyer, registered)], apply: true, default);
+
+        dry.BlacklistPropagations.Should().Be(2, "alıcı ve kayıtlı satır; silinmişler hedef değil");
+        applied.Should().Be(dry);
+        var rows = await RowsAsync(db, lic);
+        foreach (var id in new[] { buyer.Id, registered.Id })
+        {
+            rows[id].IsBlacklisted.Should().BeTrue();
+            rows[id].BlacklistReason.Should().Be("sahte sipariş");
+            rows[id].BlacklistedAt.Should().BeCloseTo(T0.AddDays(-2), TimeSpan.FromMilliseconds(1));
+        }
+        rows[purgedClean.Id].IsBlacklisted.Should().BeFalse("silinmiş satır hedef olmaz");
+        rows[purgedClean.Id].ChangeSeq.Should().Be(before[purgedClean.Id].ChangeSeq);
+        rows[purgedSource.Id].ChangeSeq.Should().Be(before[purgedSource.Id].ChangeSeq, "kaynak yalnız okunur");
+    }
+
+    [Fact]
     public async Task Kopya_Idsi_asil_kayda_cozulur()
     {
         using var scope = _factory.Services.CreateScope();

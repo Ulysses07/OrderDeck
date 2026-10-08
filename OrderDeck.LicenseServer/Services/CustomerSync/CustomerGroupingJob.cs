@@ -52,16 +52,19 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// hedefte olan satıra dokunulmaz, damgası da değişmez — bilgisayarlarda zaten
 /// o numara var; gereksiz damga yalnız yazım dalgası olurdu. Damga ancak
 /// satırınki koşunun anından eski değilse (saati ileri bir bilgisayarın damgası)
-/// onun 1 ms sonrası olur (<see cref="StampAt"/>).</para>
+/// onun 1 ms sonrası olur (<see cref="StampAt"/>). Taşıma ve kara liste yazımı
+/// "@" ikizi birleştirmesiyle ORTAK (<see cref="CustomerGroupUnion"/>).</para>
 ///
 /// <para><b>Kara liste yayılımı</b> masaüstündeki elle birleştirmenin
 /// (<c>CustomerRepository.PropagateGroupBlacklist</c>, <c>formAt</c> boş kolu)
-/// aynası: taşımadan sonra hedef gruptaki (asıl, silinmemiş) satırlardan biri
-/// kara listedeyse kaynak = en yeni BlacklistedAt'li (boşlar sona), eşitlikte
-/// küçük Id ("N" metni — masaüstüyle aynı bozma: herkes aynı kaynağı seçsin);
-/// kara listede olmayan her üye kaynağın sebebi ve tarihiyle (tarih yoksa koşunun
-/// anı) kara listeye girer, BlacklistChangedAt = koşunun anı. Gruplama kara
-/// listeden kaçışın yolu olmasın.</para>
+/// aynası (<see cref="CustomerGroupUnion.PropagateBlacklist"/>): taşımadan sonra
+/// hedef grupta kara listede biri varsa kaynak = en yeni BlacklistedAt'li (boşlar
+/// sona), eşitlikte küçük Id ("N" metni — masaüstüyle aynı bozma: herkes aynı
+/// kaynağı seçsin). Grubun SİLİNMİŞ asıl kayıtları da kaynak olabilir (KVKK
+/// boşaltması kara listeyi korur, masaüstü de onları seçer) ama hedef olmaz.
+/// Kara listede olmayan her silinmemiş üye kaynağın sebebi ve tarihiyle (tarih
+/// yoksa koşunun anı) kara listeye girer, BlacklistChangedAt = koşunun anı.
+/// Gruplama kara listeden kaçışın yolu olmasın.</para>
 ///
 /// <para><b>UpdatedAt'e dokunulmaz</b> (birleştirme işiyle aynı): değişiklik
 /// akışı rowversion (ChangeSeq) kullanır, satırın yazılması yeter.</para>
@@ -113,16 +116,9 @@ public sealed class CustomerGroupingJob
         int PairsRead, int PairsResolved, int PairsUnresolved, int AlreadyTogether, int Components,
         int RowsToChange, int ComponentsJoiningRegistered, int BlacklistPropagations, int FailedComponents);
 
-    /// <summary>Yazılacak damga: koşunun anı; satırın damgası milisaniye
-    /// düzeyinde ondan eski değilse (saati ileri bir bilgisayarın damgası)
-    /// onun 1 ms sonrası. Bilgisayarlar damgayı milisaniyeyle karşılaştırır ve
-    /// yeni olmayanı yok sayar: değer değişip damga eskide kalsaydı o damgayı
-    /// bilen bilgisayar farkı hiç almaz, kalıcı ayrışırdı (A3 kalite
-    /// incelemesinin dersi).</summary>
+    /// <inheritdoc cref="CustomerGroupUnion.StampAt"/>
     public static DateTimeOffset StampAt(DateTimeOffset now, DateTimeOffset? current)
-        => current is { } c && c.ToUnixTimeMilliseconds() >= now.ToUnixTimeMilliseconds()
-            ? c.AddMilliseconds(1)
-            : now;
+        => CustomerGroupUnion.StampAt(now, current);
 
     public async Task<Report> RunAsync(Guid licenseId, IReadOnlyList<Pair> pairs, bool apply, CancellationToken ct)
     {
@@ -152,18 +148,18 @@ public sealed class CustomerGroupingJob
         }
 
         var components = nodes.Components().Where(c => c.Count >= 2).ToList();
-        // Grup üyeleri: lisansın asıl, silinmemiş, grubu olan satırları. Eşleme
-        // bellekte, ORDİNAL: kolonun SQL karşılaştırması (varsayılan collation)
-        // harf ve sondaki boşluk farkını yok sayar, bilgisayarlar ise numarayı
-        // bayt bayt karşılaştırır.
+        // Grup üyeleri: lisansın grubu olan asıl kayıtları — silinmişler DAHİL
+        // (yalnız kara liste kaynağı olarak). Eşleme bellekte, ORDİNAL: kolonun
+        // SQL karşılaştırması (varsayılan collation) harf ve sondaki boşluk
+        // farkını yok sayar, bilgisayarlar ise numarayı bayt bayt karşılaştırır.
         var byGroup = components.Count == 0
             ? Enumerable.Empty<Info>().ToLookup(i => "", StringComparer.Ordinal)
             : (await _db.WpfCustomerProjections.AsNoTracking()
-                    .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && p.PurgedAt == null && p.GroupId != null)
+                    .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && p.GroupId != null)
                     .Select(p => new Info(p.Id, p.LicenseId, p.MergedIntoId, p.PurgedAt, p.GroupId, p.IsBlacklisted, p.BlacklistedAt))
                     .ToListAsync(ct))
-                .Where(i => !string.IsNullOrWhiteSpace(i.GroupId))
-                .ToLookup(i => i.GroupId!.Trim(), StringComparer.Ordinal);
+                .Where(i => CustomerGroupUnion.KeyOf(i.GroupId) is not null)
+                .ToLookup(i => CustomerGroupUnion.KeyOf(i.GroupId)!, StringComparer.Ordinal);
 
         var plans = components.Select(c => PlanOf(c, registeredNodes, rowNodes, byGroup)).ToList();
         var failed = 0;
@@ -210,52 +206,37 @@ public sealed class CustomerGroupingJob
                          .Order(StringComparer.Ordinal).FirstOrDefault()
                      ?? groupIds.FirstOrDefault()
                      ?? Guid.NewGuid().ToString("N");
-        var members = groupIds.SelectMany(g => byGroup[g])
+        var groupRows = groupIds.SelectMany(g => byGroup[g]).ToList();
+        // Taşınacak/yayılım alacak üyeler silinmemiş olanlar; silinmiş üye yalnız
+        // kara liste kaynağı (bkz. CustomerGroupUnion.PropagateBlacklist).
+        var members = groupRows.Where(i => i.PurgedAt is null)
             .Concat(component.Where(n => n.GroupId is null).Select(n => rowNodes[n.RowId]))
             .DistinctBy(i => i.Id)
             .ToList();
+        var purgedSources = groupRows.Where(i => i.PurgedAt is not null && i.IsBlacklisted).ToList();
         var move = members.Where(m => !string.Equals(m.GroupId, target, StringComparison.Ordinal)).ToList();
-        var propagations = members.Any(m => m.IsBlacklisted) ? members.Count(m => !m.IsBlacklisted) : 0;
+        var propagations = members.Any(m => m.IsBlacklisted) || purgedSources.Count > 0
+            ? members.Count(m => !m.IsBlacklisted)
+            : 0;
         return new Plan(
-            target, members.Select(m => m.Id).ToList(), move, propagations,
+            target, members.Concat(purgedSources).Select(m => m.Id).ToList(), move, propagations,
             component.Count(registeredNodes.Contains) >= 2);
     }
 
     /// <summary>Planı bileşenin kendi işleminde uygular. Satırlar işlem içinde
     /// yeniden okunur (izlenen örnekler); bu arada kopyaya dönen satırı süzgeç
-    /// gizler, silinmiş satıra yazılmaz. Hata çağırana çıkar — işlem kapsamdan
-    /// çıkarken geri alınır.</summary>
+    /// gizler, silinmiş satıra yazılmaz (yalnız kara liste kaynağı olabilir).
+    /// Hata çağırana çıkar — işlem kapsamdan çıkarken geri alınır.</summary>
     private async Task ApplyAsync(Guid licenseId, Plan plan, DateTimeOffset now, CancellationToken ct)
     {
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         var ids = plan.Members;
-        var rows = (await _db.WpfCustomerProjections
-                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && ids.Contains(p.Id))
-                .ToListAsync(ct))
-            .Where(p => p.PurgedAt is null)
-            .ToList();
+        var rows = await _db.WpfCustomerProjections
+            .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && ids.Contains(p.Id))
+            .ToListAsync(ct);
 
-        foreach (var row in rows.Where(r => !string.Equals(r.GroupId, plan.Target, StringComparison.Ordinal)))
-        {
-            row.GroupId = plan.Target;
-            row.GroupIdChangedAt = StampAt(now, row.GroupIdChangedAt);
-        }
-
-        // Masaüstünün PropagateGroupBlacklist'i: ORDER BY COALESCE(BlacklistedAt, 0) DESC, Id.
-        var source = rows.Where(r => r.IsBlacklisted)
-            .OrderByDescending(r => r.BlacklistedAt ?? DateTimeOffset.MinValue)
-            .ThenBy(r => r.Id.ToString("N"), StringComparer.Ordinal)
-            .FirstOrDefault();
-        if (source is not null)
-        {
-            foreach (var row in rows.Where(r => !r.IsBlacklisted))
-            {
-                row.IsBlacklisted = true;
-                row.BlacklistReason = source.BlacklistReason;
-                row.BlacklistedAt = source.BlacklistedAt ?? now;
-                row.BlacklistChangedAt = StampAt(now, row.BlacklistChangedAt);
-            }
-        }
+        CustomerGroupUnion.MoveToGroup(rows, plan.Target, now);
+        CustomerGroupUnion.PropagateBlacklist(rows, now);
 
         await _db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
@@ -302,7 +283,7 @@ public sealed class CustomerGroupingJob
     }
 
     private static Node NodeOf(Info row)
-        => string.IsNullOrWhiteSpace(row.GroupId) ? new Node(null, row.Id) : new Node(row.GroupId.Trim(), Guid.Empty);
+        => CustomerGroupUnion.KeyOf(row.GroupId) is { } key ? new Node(key, Guid.Empty) : new Node(null, row.Id);
 
     private void Skipped(Guid licenseId, Exception ex)
         => _log.LogWarning(
@@ -320,7 +301,8 @@ public sealed class CustomerGroupingJob
     private readonly record struct Node(string? GroupId, Guid RowId);
 
     /// <param name="Members">Taşımadan sonra hedef grupta olacak bütün satırlar
-    /// (zaten hedefte olanlar dahil) — kara liste yayılımının kapsamı.</param>
+    /// (zaten hedefte olanlar dahil) ve grubun kara listedeki silinmiş asıl
+    /// kayıtları — kara liste yayılımının kapsamı.</param>
     /// <param name="Move">Grup numarası hedefe değişecek satırlar.</param>
     private sealed record Plan(
         string Target, List<Guid> Members, IReadOnlyList<Info> Move, int Propagations, bool JoinsRegistered);

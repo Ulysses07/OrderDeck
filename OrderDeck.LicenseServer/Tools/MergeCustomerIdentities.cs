@@ -27,18 +27,21 @@ namespace OrderDeck.LicenseServer.Tools;
 /// onları görmez. Bu kip yalnız Instagram/TikTok/Facebook'ta, baştaki '@'leri
 /// atılmış anahtarla gruplar (YouTube hiç) ve "@"SIZ yazımı asıl kayıt yapar:
 /// form ve yeni yorumlar o yazımı kullanır — "@"lı satır asıl kalsaydı sonraki
-/// gönderim aynı kişiye yeniden ayrı kayıt açardı. Bilgisayarlar yönlendirmeyi
-/// (kopya → asıl kayıt) değişiklik akışından alır ve yerel kayıtlarını
-/// (etiket, kargo, ödeme işi) asıl kayda taşır. Sıra, son koşullar ve
-/// "bilgisayarlar kapalı" kuralı aynı. Ayrıntı:
-/// <see cref="CustomerIdentityMergeJob"/>.</para>
+/// gönderim aynı kişiye yeniden ayrı kayıt açardı (canlı satır yine önce gelir;
+/// "@"lı asıl kayıtla biten grup ayrıca yazılır). İkizler farklı kişi
+/// gruplarındaysa grupların bütün üyeleri tek numarada toplanır — kişinin grubu
+/// bölünmez. Bilgisayarlar yönlendirmeyi (kopya → asıl kayıt) değişiklik
+/// akışından alır ve yerel kayıtlarını (etiket, kargo, ödeme işi) asıl kayda
+/// taşır. Sıra, son koşullar ve "bilgisayarlar kapalı" kuralı aynı; ek son koşul:
+/// aynı gruplamayla yeniden sayılan @ ikizi grubu (bu koşunun lisansları) 0.
+/// Ayrıntı: <see cref="CustomerIdentityMergeJob"/>.</para>
 ///
 /// <para>Çıkış kodları: 0 tamam; 1 bazı gruplar eşzamanlı değişiklik ya da
 /// veritabanı hatası yüzünden geri alınıp atlandı — yeniden çalıştır (biten
-/// gruplar kalıcı; kalan kopyalar B1 kapısında görünür, beklenen); 2
-/// kullanım/yapılandırma; 3 son koşul tutmadı (uyuşmaz anahtar ya da atlanan
-/// grup yokken B1 kapısı sıfır değil — B1 göçü bu hâlde düşer — ya da zincir
-/// kaldı). Kapı TÜM
+/// gruplar kalıcı; kalan kopyalar B1 kapısında ve kalan ikiz sayımında görünür,
+/// beklenen); 2 kullanım/yapılandırma; 3 son koşul tutmadı (uyuşmaz anahtar ya da
+/// atlanan grup yokken B1 kapısı sıfır değil — B1 göçü bu hâlde düşer — ya da
+/// zincir ya da <c>--at-twins</c>'te @ ikizi grubu kaldı). Kapı TÜM
 /// lisansları sayar: <c>--license</c> ile koşulduysa öbür lisansların
 /// kopyaları da içindedir.</para>
 ///
@@ -128,16 +131,26 @@ public static class MergeCustomerIdentities
         var duplicates = await job.CountDuplicateHeadsAsync(ct);
         var chains = await job.CountChainsAsync(ct);
         output.WriteLine($"Anahtar onarımı (sonra): {fixedAfter} satır; kalan uyuşmaz anahtar: {mismatched}; B1 kapısı (SQL, tüm lisanslar): yinelenen asıl kayıt grubu {duplicates}; zincir (kopyanın kopyası): {chains}");
+        // "@" ikizi kipinin son koşulu: aynı gruplamayla yeniden sayım — yalnız bu
+        // koşunun lisansları (B1 kapısı gibi bir göçe bağlı değil).
+        var twinsLeft = 0;
+        if (atTwins)
+        {
+            foreach (var licenseId in licenses)
+                twinsLeft += await job.CountGroupsAsync(licenseId, atTwins: true, ct);
+            output.WriteLine($"Kalan @ ikizi grubu ({licenses.Length} lisans): {twinsLeft} (0 olmalı)");
+        }
         if (mismatched > 0)
         {
             error.WriteLine("SON KOŞUL TUTMADI: uyuşmaz anahtar var — B1 (tekil indeks) göçü bu hâlde düşer. Komutu yeniden çalıştırın; sürerse inceleyin.");
             return 3;
         }
-        // Atlanan grup B1 kapısından ÖNCE: atlanan grubun kopyaları kapıda zaten
-        // görünür; kapı önce denetlenseydi çıkış 1 hiç dönmezdi.
+        // Atlanan grup B1 kapısından (ve kalan ikiz sayımından) ÖNCE: atlanan
+        // grubun kopyaları orada zaten görünür; önce onlar denetlenseydi çıkış 1
+        // hiç dönmezdi.
         if (total.FailedGroups > 0)
         {
-            error.WriteLine($"{total.FailedGroups} grup eşzamanlı değişiklik ya da veritabanı hatası yüzünden geri alınıp atlandı; komutu yeniden çalıştırın (biten gruplar kalıcı; B1 kapısındaki sayı atlanan grupları da içerir).");
+            error.WriteLine($"{total.FailedGroups} grup eşzamanlı değişiklik ya da veritabanı hatası yüzünden geri alınıp atlandı; komutu yeniden çalıştırın (biten gruplar kalıcı; B1 kapısındaki ve kalan ikiz sayısı atlanan grupları da içerir).");
             return 1;
         }
         if (duplicates > 0)
@@ -148,6 +161,11 @@ public static class MergeCustomerIdentities
         if (chains > 0)
         {
             error.WriteLine($"SON KOŞUL TUTMADI: {chains} zincir (kopyanın kopyası) var (tüm lisanslar) — bir yarışın izi: --apply sırasında açık kalan bir bilgisayar. Bilgisayarları kapatıp inceleyin.");
+            return 3;
+        }
+        if (twinsLeft > 0)
+        {
+            error.WriteLine($"SON KOŞUL TUTMADI: {twinsLeft} @ ikizi grubu kaldı — --apply sırasında açık kalan bir bilgisayarın ya da eski (v0.9.9 öncesi) sürümün yeni gönderimi olabilir. Bilgisayarları kapatıp komutu yeniden çalıştırın; sürerse inceleyin.");
             return 3;
         }
         return 0;
@@ -192,21 +210,26 @@ public static class MergeCustomerIdentities
     }
 
     /// <param name="atTwins">"@" ikizi kipi satırın başında görünür: iki kipin
-    /// sayıları farklı şeyleri sayar, karıştırılmasın.</param>
+    /// sayıları farklı şeyleri sayar, karıştırılmasın. Bu kipte "harf/boşluk
+    /// farklı" anlamsız (her ikiz yazımca farklıdır) — yerine "@"lı asıl kayıtla
+    /// biten grup yazılır.</param>
     private static string Format(CustomerIdentityMergeJob.Report r, bool atTwins)
     {
         var platforms = r.GroupsByPlatform.Count == 0
             ? ""
             : " (" + string.Join(", ", r.GroupsByPlatform.OrderBy(p => p.Key, StringComparer.Ordinal)
                 .Select(p => $"{p.Key}={p.Value}")) + ")";
-        return (atTwins ? "@ ikizi kipi | " : "") +
-               $"kopyalı kişi={r.Groups}{platforms} harf/boşluk farklı={r.VariantGroups} kopya satır={r.CopyRows} " +
+        var mode = atTwins
+            ? $"@ ikizi kipi | kopyalı kişi={r.Groups}{platforms} \"@\"lı asıl kayıt={r.AtSpelledCanonicals} "
+            : $"kopyalı kişi={r.Groups}{platforms} harf/boşluk farklı={r.VariantGroups} ";
+        return mode + $"kopya satır={r.CopyRows} " +
                $"sipariş={r.OrdersToMove} kargo={r.ShipmentsToMove} Shopper bağlantısı={r.LinksToMove} " +
                $"toplanacak bakiye={r.BalancesToSum} bakiye hareketi={r.BalanceTransactionsToMove} " +
                $"IBAN hafızası={r.IbanMemoriesToMove} ödeme eşleşmesi={r.PaymentMatchesToMove} " +
                $"WhatsApp sohbeti={r.WaConversationsToMove} silinmiş kişi={r.PurgedGroups} | " +
                $"asıl kayıtla kopyada ikisi de dolu ama farklı (grup): telefon={r.PhoneConflicts} adres={r.AddressConflicts} " +
-               $"e-posta={r.EmailConflicts} ad={r.NameConflicts} not={r.NotesConflicts} grup numarası={r.GroupConflicts} | " +
+               $"e-posta={r.EmailConflicts} ad={r.NameConflicts} not={r.NotesConflicts} | " +
+               $"{(atTwins ? "birleştirilen kişi grubu" : "farklı grup numaralı kişi")}={r.GroupConflicts} | " +
                $"atlanan grup={r.FailedGroups} beklemeye düşen Shopper bağlantısı={r.LinksUnbound}";
     }
 
@@ -226,6 +249,7 @@ public static class MergeCustomerIdentities
         NameConflicts = a.NameConflicts + b.NameConflicts,
         NotesConflicts = a.NotesConflicts + b.NotesConflicts,
         GroupConflicts = a.GroupConflicts + b.GroupConflicts,
+        AtSpelledCanonicals = a.AtSpelledCanonicals + b.AtSpelledCanonicals,
         BalanceTransactionsToMove = a.BalanceTransactionsToMove + b.BalanceTransactionsToMove,
         IbanMemoriesToMove = a.IbanMemoriesToMove + b.IbanMemoriesToMove,
         PaymentMatchesToMove = a.PaymentMatchesToMove + b.PaymentMatchesToMove,

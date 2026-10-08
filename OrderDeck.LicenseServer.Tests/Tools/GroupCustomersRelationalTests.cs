@@ -122,6 +122,21 @@ public sealed class GroupCustomersRelationalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Ciftsiz_dosya_2_doner_veritabanina_dokunmaz()
+    {
+        var seed = await SeedAsync();
+        var before = await ReadAsync(seed.Buyer.Id);
+        var path = WriteFile("# alıcı kayıtlı", "");
+
+        var (exit, output, error) = await RunCliAsync(seed.LicenseId, path, apply: true);
+
+        exit.Should().Be(2);
+        error.Should().Contain("hiç çift yok");
+        output.Should().BeEmpty("kuru çalıştırma raporu bile yazılmaz — iş hiç koşmadı");
+        (await ReadAsync(seed.Buyer.Id)).ChangeSeq.Should().Be(before.ChangeSeq);
+    }
+
+    [Fact]
     public async Task Uygulama_0_doner_ciktida_yalniz_sayilar_ve_lisans_Idsi()
     {
         var seed = await SeedAsync();

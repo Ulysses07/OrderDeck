@@ -27,13 +27,14 @@ namespace OrderDeck.LicenseServer.Tests.Services.CustomerSync;
 public sealed class CustomerIdentityMergeJobAtTwinsTests : IAsyncLifetime
 {
     private readonly SqlServerContainerFixture _sql;
+    private string _cs = null!;
     private RelationalApiFactory _factory = null!;
     public CustomerIdentityMergeJobAtTwinsTests(SqlServerContainerFixture sql) => _sql = sql;
 
     public async Task InitializeAsync()
     {
-        var cs = await _sql.CreateDatabaseAsync();
-        _factory = new RelationalApiFactory(cs);
+        _cs = await _sql.CreateDatabaseAsync();
+        _factory = new RelationalApiFactory(_cs);
         _ = _factory.Services; // göçleri (B1 indeksi dahil) şimdi kur
     }
 
@@ -84,6 +85,15 @@ public sealed class CustomerIdentityMergeJobAtTwinsTests : IAsyncLifetime
     };
 
     private static CustomerIdentityMergeJob Job(LicenseDbContext db) => new(db, new CustomerIdentityMerger(db));
+
+    private static async Task<Dictionary<Guid, WpfCustomerProjection>> RowsAsync(LicenseDbContext db, Guid license)
+    {
+        db.ChangeTracker.Clear();
+        return await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.LicenseId == license).ToDictionaryAsync(p => p.Id);
+    }
+
+    private static string NewGroup() => Guid.NewGuid().ToString("N");
 
     [Theory]
     [InlineData("ayse", "ayse")]
@@ -201,7 +211,6 @@ public sealed class CustomerIdentityMergeJobAtTwinsTests : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var lic = await NewLicenseAsync(db);
         var t0 = DateTimeOffset.UtcNow.AddDays(-10);
-        static string NewGroup() => Guid.NewGuid().ToString("N");
         var shared = NewGroup();
         var a1 = Row(lic, "g1", t0); a1.GroupId = NewGroup();
         var a2 = Row(lic, "@g1", t0); a2.GroupId = NewGroup();           // iki numara, farklı → çelişki
@@ -246,11 +255,204 @@ public sealed class CustomerIdentityMergeJobAtTwinsTests : IAsyncLifetime
 
             exit.Should().Be(0, text);
             text.Should().Contain("@ ikizi kipi").And.Contain("kopyalı kişi=1 (instagram=1)")
-                .And.Contain("grup numarası=0").And.Contain(lic.ToString());
+                .And.Contain("\"@\"lı asıl kayıt=0").And.Contain("birleştirilen kişi grubu=0")
+                .And.Contain("Kalan @ ikizi grubu (1 lisans): 0").And.Contain(lic.ToString());
+            text.Should().NotContain("harf/boşluk farklı", "bu kipte her ikiz yazımca farklı — sayı anlamsız");
             text.Should().NotContainEquivalentOf(username, "çıktıda yalnız sayılar ve lisans Id'leri olur");
             db.ChangeTracker.Clear();
             (await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == atId))
                 .MergedIntoId.Should().Be(bareId);
         }
+    }
+
+    // ── Grup birliği: ikizler farklı kişi gruplarındaysa kişinin grubu bölünmez ──
+
+    [Fact]
+    public async Task Farkli_gruplardaki_ikizlerin_butun_uyeleri_asil_kaydin_numarasinda_toplanir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var (l, g) = (NewGroup(), NewGroup());
+        var bare = Row(lic, "deniz", t0); bare.GroupId = l;
+        var bareMember = Row(lic, "deniz_tt", t0, "tiktok"); bareMember.GroupId = l;
+        var at = Row(lic, "@deniz", t0); at.GroupId = g;
+        var atMember = Row(lic, "deniz_fb", t0, "facebook"); atMember.GroupId = g;
+        db.WpfCustomerProjections.AddRange(bare, bareMember, at, atMember);
+        await db.SaveChangesAsync();
+        var before = await RowsAsync(db, lic);
+        var start = DateTimeOffset.UtcNow;
+
+        var report = await Job(db).RunAsync(lic, apply: true, default, atTwins: true);
+
+        report.GroupConflicts.Should().Be(1, "iki numara birleştirildi");
+        report.FailedGroups.Should().Be(0);
+        var rows = await RowsAsync(db, lic);
+        rows[bare.Id].GroupId.Should().Be(l, "hedef asıl kaydın birleştirme öncesi numarası");
+        rows[bare.Id].GroupIdChangedAt.Should().NotBeNull("numara birden çokken asıl kayıt damgalanır")
+            .And.BeOnOrAfter(start.AddSeconds(-1));
+        rows[atMember.Id].GroupId.Should().Be(l, "kopyanın grubunun öbür üyesi de taşınır — grup bölünmez");
+        rows[atMember.Id].GroupIdChangedAt.Should().NotBeNull();
+        rows[bareMember.Id].GroupIdChangedAt.Should().BeNull("zaten hedefte");
+        rows[bareMember.Id].ChangeSeq.Should().Be(before[bareMember.Id].ChangeSeq, "zaten hedefte olan üye yazılmaz");
+        rows[at.Id].MergedIntoId.Should().Be(bare.Id);
+    }
+
+    [Fact]
+    public async Task Damgali_kopyanin_numarasi_asil_kaydi_tasimaz_asil_kayit_kopyadan_yeni_damga_alir()
+    {
+        // Birim kuralı tek başına asıl kaydı kopyanın grubuna taşırdı (damgalı
+        // kopya, damgasız asıl kayıt) ve asıl kaydın eski grubu kimliksiz kalırdı.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var (l, g) = (NewGroup(), NewGroup());
+        var copyStamp = DateTimeOffset.UtcNow.AddMinutes(30); // saati ileri bir bilgisayar
+        var bare = Row(lic, "ece", t0); bare.GroupId = l;
+        var at = Row(lic, "@ece", t0); at.GroupId = g; at.GroupIdChangedAt = copyStamp;
+        var atMember = Row(lic, "ece_tt", t0, "tiktok"); atMember.GroupId = g;
+        db.WpfCustomerProjections.AddRange(bare, at, atMember);
+        await db.SaveChangesAsync();
+
+        (await Job(db).RunAsync(lic, apply: true, default, atTwins: true)).FailedGroups.Should().Be(0);
+
+        var rows = await RowsAsync(db, lic);
+        rows[bare.Id].GroupId.Should().Be(l);
+        rows[bare.Id].GroupIdChangedAt.Should().BeAfter(copyStamp,
+            "bilgisayarın yönlendirmesi kopyanın damgalı numarasını yerelde asıl kayda katar — sunucununki daha yeni olmalı");
+        rows[atMember.Id].GroupId.Should().Be(l);
+    }
+
+    [Fact]
+    public async Task Grupsuz_asil_kayit_kopyanin_grubuna_damgali_girer()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var g = NewGroup();
+        var bare = Row(lic, "can", t0);
+        var at = Row(lic, "@can", t0); at.GroupId = g;
+        var atMember = Row(lic, "can_tt", t0, "tiktok"); atMember.GroupId = g;
+        db.WpfCustomerProjections.AddRange(bare, at, atMember);
+        await db.SaveChangesAsync();
+        var before = await RowsAsync(db, lic);
+
+        var report = await Job(db).RunAsync(lic, apply: true, default, atTwins: true);
+
+        report.GroupConflicts.Should().Be(0, "tek numara var — birleştirilecek iki grup yok");
+        var rows = await RowsAsync(db, lic);
+        rows[bare.Id].GroupId.Should().Be(g);
+        rows[bare.Id].GroupIdChangedAt.Should().NotBeNull("asıl kaydın değeri değişti: damgalı");
+        rows[atMember.Id].ChangeSeq.Should().Be(before[atMember.Id].ChangeSeq, "zaten hedefte");
+    }
+
+    [Fact]
+    public async Task Birlesen_grupta_kara_liste_yayilir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var (l, g) = (NewGroup(), NewGroup());
+        var bare = Row(lic, "irem", t0); bare.GroupId = l;
+        var bareMember = Row(lic, "irem_tt", t0, "tiktok"); bareMember.GroupId = l;
+        var at = Row(lic, "@irem", t0); at.GroupId = g;
+        var atMember = Row(lic, "irem_fb", t0, "facebook"); atMember.GroupId = g;
+        atMember.IsBlacklisted = true;
+        atMember.BlacklistReason = "ödeme yapmadı";
+        atMember.BlacklistedAt = t0.AddDays(1);
+        db.WpfCustomerProjections.AddRange(bare, bareMember, at, atMember);
+        await db.SaveChangesAsync();
+        var start = DateTimeOffset.UtcNow;
+
+        (await Job(db).RunAsync(lic, apply: true, default, atTwins: true)).FailedGroups.Should().Be(0);
+
+        var rows = await RowsAsync(db, lic);
+        foreach (var id in new[] { bare.Id, bareMember.Id })
+        {
+            rows[id].IsBlacklisted.Should().BeTrue();
+            rows[id].BlacklistReason.Should().Be("ödeme yapmadı");
+            rows[id].BlacklistedAt.Should().BeCloseTo(t0.AddDays(1), TimeSpan.FromMilliseconds(1));
+            rows[id].BlacklistChangedAt.Should().NotBeNull().And.BeOnOrAfter(start.AddSeconds(-1));
+        }
+    }
+
+    // ── Canlı asıl kayıt ve "@"lı asıl kayıt sayımı ───────────────────────────
+
+    [Fact]
+    public async Task Silinmis_at_isaretsiz_satir_varken_canli_at_satiri_asil_olur_kisi_silinir_ve_sayilir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var lic = await NewLicenseAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var bare = Row(lic, "nur", t0);
+        bare.MarkPurged(t0.AddDays(1));
+        var at = Row(lic, "@nur", t0.AddDays(2));
+        at.FullName = "Örnek Müşteri";
+        db.WpfCustomerProjections.AddRange(bare, at);
+        await db.SaveChangesAsync();
+
+        var report = await Job(db).RunAsync(lic, apply: true, default, atTwins: true);
+
+        report.Groups.Should().Be(1);
+        report.PurgedGroups.Should().Be(1);
+        report.AtSpelledCanonicals.Should().Be(1, "\"@\"sız satır silinmiş: asıl kayıt \"@\"lı yazım");
+        var rows = await RowsAsync(db, lic);
+        rows[bare.Id].MergedIntoId.Should().Be(at.Id, "canlı satır asıl kayıt olur");
+        rows[at.Id].MergedIntoId.Should().BeNull();
+        rows[at.Id].PurgedAt.Should().BeCloseTo(t0.AddDays(1), TimeSpan.FromMilliseconds(1),
+            "kişinin silinmişliği canlı asıl kayda geçer — mezar taşı bilgisayarlara iner");
+        rows[at.Id].FullName.Should().BeNull("kişisel veri boşaltıldı");
+    }
+
+    [Fact]
+    public async Task CLI_uygulamadan_sonra_ikiz_kalirsa_3_doner()
+    {
+        Guid lic;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            lic = await NewLicenseAsync(db);
+            var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+            db.WpfCustomerProjections.AddRange(Row(lic, "x" + Guid.NewGuid().ToString("N")[..8], t0));
+            var name = "y" + Guid.NewGuid().ToString("N")[..8];
+            db.WpfCustomerProjections.AddRange(Row(lic, name, t0), Row(lic, "@" + name, t0));
+            await db.SaveChangesAsync();
+        }
+
+        // Açık kalan bir bilgisayar gibi: iş ilk grubu kaydetmeden hemen önce
+        // yeni bir ikiz çifti başka bir bağlantıdan gelir — işin grup listesinde
+        // yok, uygulamadan sonraki yeniden sayım onu bulur.
+        var late = "z" + Guid.NewGuid().ToString("N")[..8];
+        var hook = new SaveHookInterceptor();
+        await using var hooked = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseSqlServer(_cs).AddInterceptors(hook).Options);
+        var fired = false;
+        hook.BeforeSave = async () =>
+        {
+            if (fired) return;
+            fired = true;
+            using var scope = _factory.Services.CreateScope();
+            var other = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var t1 = DateTimeOffset.UtcNow;
+            other.WpfCustomerProjections.AddRange(Row(lic, late, t1), Row(lic, "@" + late, t1));
+            await other.SaveChangesAsync();
+        };
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exit = await MergeCustomerIdentities.RunAsync(
+            hooked, lic, apply: true, output, error, NullLoggerFactory.Instance, default, atTwins: true);
+
+        fired.Should().BeTrue();
+        var text = output + Environment.NewLine + error;
+        exit.Should().Be(3, text);
+        text.Should().Contain("Kalan @ ikizi grubu (1 lisans): 1").And.Contain("SON KOŞUL TUTMADI")
+            .And.Contain("@ ikizi grubu kaldı");
+        text.Should().NotContainEquivalentOf(late, "çıktıda kişisel veri yok");
     }
 }

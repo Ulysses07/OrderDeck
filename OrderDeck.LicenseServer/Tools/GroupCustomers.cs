@@ -25,7 +25,8 @@ namespace OrderDeck.LicenseServer.Tools;
 /// biçimi): <c>&lt;alıcı projeksiyon Id&gt; &lt;kayıtlı projeksiyon Id&gt;</c>.
 /// Tek bir bozuk satır bütün dosyayı reddeder → 2, veritabanına dokunmadan;
 /// iletide satırın NUMARASI vardır, içeriği yoktur. Yarım dosyayla yarım
-/// gruplama yapılmaz.</para>
+/// gruplama yapılmaz. Hiç çift içermeyen dosya da (yalnız boş ve yorum
+/// satırları) 2 — büyük olasılıkla yanlış dosya.</para>
 ///
 /// <para>Çıkış kodları: 0 tamam; 1 bazı bileşenler eşzamanlı değişiklik ya da
 /// veritabanı hatası yüzünden geri alınıp atlandı — yeniden çalıştır (biten
@@ -142,9 +143,9 @@ public static class GroupCustomers
     }
 
     /// <summary>Eşleşme dosyasını okur ve doğrular (biçim: sınıf dokümanı).
-    /// Okunamayan dosya ya da tek bir bozuk satır → false; iletide istisna tipi
-    /// ya da 1'den sayılan satır NUMARASI var — dosya yolu ve satırın içeriği
-    /// yazılmaz.</summary>
+    /// Okunamayan dosya, tek bir bozuk satır ya da hiç çift olmaması → false;
+    /// iletide istisna tipi ya da 1'den sayılan satır NUMARASI var — dosya yolu
+    /// ve satırın içeriği yazılmaz.</summary>
     public static bool TryReadPairs(string path, TextWriter error, out IReadOnlyList<CustomerGroupingJob.Pair> pairs)
     {
         pairs = [];
@@ -172,6 +173,13 @@ public static class GroupCustomers
                 return false;
             }
             read.Add(new CustomerGroupingJob.Pair(buyer, registered));
+        }
+        // Çiftsiz dosya büyük olasılıkla yanlış dosya (ya da boş kopyalanmış):
+        // "0 çift, tamam" diye sessizce geçmesin.
+        if (read.Count == 0)
+        {
+            error.WriteLine("Eşleşme dosyasında hiç çift yok (yalnız boş ve '#' satırları). Hiçbir şey yazılmadı.");
+            return false;
         }
         pairs = read;
         return true;

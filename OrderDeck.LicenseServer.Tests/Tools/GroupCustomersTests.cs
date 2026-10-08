@@ -126,6 +126,28 @@ public sealed class GroupCustomersTests : IDisposable
         text.Should().NotContain(path, "dosya yolu yazılmaz");
     }
 
+    public static TheoryData<string[]> PairlessFiles() => new()
+    {
+        Array.Empty<string>(),
+        new[] { "", "   " },
+        new[] { "# alıcı kayıtlı", "", "  # yalnız yorum" },
+    };
+
+    [Theory]
+    [MemberData(nameof(PairlessFiles))]
+    public async Task Ciftsiz_dosya_reddedilir_2_doner(string[] lines)
+    {
+        var path = WriteFile(lines);
+        var error = new StringWriter();
+
+        GroupCustomers.TryReadPairs(path, error, out var pairs).Should().BeFalse();
+
+        pairs.Should().BeEmpty();
+        error.ToString().Should().Contain("hiç çift yok").And.NotContain(path);
+        (await GroupCustomers.RunAsync(["group-customers", "--license", Guid.NewGuid().ToString(), "--pairs", path]))
+            .Should().Be(2);
+    }
+
     [Fact]
     public void Okunamayan_dosya_reddedilir_yol_yazilmaz()
     {
