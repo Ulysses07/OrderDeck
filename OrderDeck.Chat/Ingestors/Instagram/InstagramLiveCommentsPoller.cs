@@ -294,10 +294,11 @@ public sealed class InstagramLiveCommentsPoller : IChatIngestor, IDisposable
 
     private void Publish(InstagramComment c)
     {
-        // Extension "@ayse_y" gönderiyordu ve müşteri eşleştirmesi bu anahtara
-        // dayanıyor; Graph username'i @'sız veriyor. Başına @ koymazsak aynı
-        // müşteri iki ayrı kayda bölünür.
-        var handle = string.IsNullOrEmpty(c.Username) ? "bilinmiyor" : "@" + c.Username;
+        // Kullanıcı adı "@"sız: kayıt formu ve eski Instagram eklentisi de öyle yazar
+        // (eklenti `username.replace('@', '')` yapıyordu). 2026-08-05'teki ilk sürüm buraya
+        // "@" ekledi ve Ağustos'tan sonraki her Instagram müşterisi formundan ve eski
+        // kaydından ayrı, ikinci bir satıra düştü.
+        var handle = string.IsNullOrEmpty(c.Username) ? "bilinmiyor" : c.Username;
 
         if (_spamFilter is not null)
         {

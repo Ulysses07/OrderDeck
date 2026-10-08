@@ -180,10 +180,18 @@ public sealed class CustomerRepository
         return row is null ? null : Map(row);
     }
 
-    /// <summary>Birebir (Platform, Username), yoksa kimlik anahtarı (U7) — tek arama kuralı:
-    /// <see cref="FindByPlatformAndUsername"/> ve eski form yolu (<see cref="UpsertFromIntakeForm"/>,
+    /// <summary>Birebir (Platform, Username), yoksa kimlik anahtarı (U7); ikisi de tutmazsa aynı
+    /// tanıtıcının öbür "@" yazımı (<see cref="CustomerIdentity.AlternateAtSpellingOf"/>) — tek arama
+    /// kuralı: <see cref="FindByPlatformAndUsername"/> ve eski form yolu (<see cref="UpsertFromIntakeForm"/>,
     /// yazma işleminin içinde) aynısını kullanır.</summary>
     private static Row? FindRow(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
+        => FindSpelling(conn, tx, platform, username)
+           ?? (CustomerIdentity.AlternateAtSpellingOf(platform, username) is { } alt
+               ? FindSpelling(conn, tx, platform, alt)
+               : null);
+
+    private static Row? FindSpelling(
         System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string platform, string username)
         => conn.QueryFirstOrDefault<Row>(
                "SELECT * FROM Customer WHERE Platform=@platform AND Username=@username",
@@ -1399,6 +1407,7 @@ public sealed class CustomerRepository
     ///   duyarsız (COLLATE NOCASE) → IG/TikTok/FB'de handle chat'le birebir aynı.</item>
     ///   <item>Kimlik anahtarı (U7): NOCASE yalnız ASCII katlar; "ŞEYMA" ile "şeyma"yı
     ///   anahtar eşler.</item>
+    ///   <item>IG/TikTok/FB: eski "@ad" yazımı (<see cref="CustomerIdentity.AlternateAtSpellingOf"/>).</item>
     ///   <item>YouTube özel: chat satırının Username'i channelId (UCxxx), form ise
     ///   @handle verir → doğrudan tutmaz. Bu satırların <c>DisplayName</c>'i @handle
     ///   tuttuğu için handle'ı DisplayName ile eşleştirip channelId satırını buluruz
@@ -1419,6 +1428,17 @@ public sealed class CustomerRepository
         // 2) Kimlik anahtarı: NOCASE yalnız ASCII katlar ("ŞEYMA" ≠ "şeyma").
         var byKey = FindByIdentity(conn, tx, platform, handle);
         if (byKey is not null) return byKey;
+
+        // 2b) Eski "@ad" yazımı (Instagram API yolu 2026-08-05 → 2026-10 sürümü): o dönemde yalnız
+        // sohbetten gelmiş müşterinin formu ayrı satır açmaz, sohbet satırına bağlanır.
+        if (CustomerIdentity.AlternateAtSpellingOf(platform, handle) is { } alt)
+        {
+            var legacy = conn.QueryFirstOrDefault<Row>(
+                "SELECT * FROM Customer WHERE Platform=@platform AND Username=@alt COLLATE NOCASE",
+                new { platform, alt }, tx)
+                ?? FindByIdentity(conn, tx, platform, alt);
+            if (legacy is not null) return legacy;
+        }
 
         // 3) YouTube: chat satırı channelId ile; @handle DisplayName'de saklı.
         if (string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase))
