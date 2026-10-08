@@ -7,6 +7,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Tests.TestHelpers;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -25,6 +26,16 @@ public sealed class IntakeFormSyncServiceTests
         public string? CurrentLicenseKey { get; set; }
     }
 
+    private sealed class RecordingLogger : ILogger<IntakeFormSyncService>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
+    }
+
     // R9-D02/D03: imleç ve backfill işareti Customer satırlarıyla aynı SQLite
     // dosyasındaki SyncCursor tablosunda, lisans anahtarına bağlı.
     private const string TestLicenseKey = "LDK-TEST-FIXTURE";
@@ -34,7 +45,8 @@ public sealed class IntakeFormSyncServiceTests
 
     private static (IntakeFormSyncService svc, CustomerRepository repo, SyncCursorRepository cursors, FakeHttpMessageHandler handler) Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
-        bool seedLicense = true)
+        bool seedLicense = true,
+        ILogger<IntakeFormSyncService>? log = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -54,7 +66,7 @@ public sealed class IntakeFormSyncServiceTests
         cursors.Upsert(ReplayMarkerName, TestLicenseKey, seq: 2);
 
         var svc = new IntakeFormSyncService(api, repo, cursors, licenseProvider, new FakeClock(),
-            NullLogger<IntakeFormSyncService>.Instance);
+            log ?? NullLogger<IntakeFormSyncService>.Instance);
         return (svc, repo, cursors, handler);
     }
 
@@ -365,6 +377,62 @@ public sealed class IntakeFormSyncServiceTests
             .And.NotBe(Guid.Empty.ToString("N"))
             .And.Be(there.Repo.FindByPlatformAndUsername("instagram", "ayse_y")!.GroupId,
                 "türetilmiş kimlik her bilgisayarda aynı — grup ayrışmaz");
+    }
+
+    [Theory]
+    [InlineData("@")]
+    [InlineData("@@")]
+    [InlineData(" @ ")]
+    public async Task SyncOnceAsync_kimligi_bos_kalan_form_atlanir_sonraki_formlari_kilitlemez(string bosTanitici)
+    {
+        // Kullanıcı tanıtıcı yerine yalnız "@" yazmış: ham alan dolu (servis kişi yoluna girer) ama
+        // normalize edilince boş. Depo kimliksiz formu reddeder; imleç sayfanın SONUNDA ilerlediği
+        // için bu tek form sonraki BÜTÜN formları her turda kilitliyordu. Form atlanır; uyarıya
+        // yalnız gönderim Id'si yazılır (kişisel veri yok) ve sayfa günlüğünde sayılır.
+        var bozukId = Guid.NewGuid();
+        var sonrakiId = Guid.NewGuid();
+        var tanitici = $"musteri_{Guid.NewGuid():N}";
+        var bozukAd = $"Ad {Guid.NewGuid():N}";
+        var bozukTelefon = TestPhone.NewE164();
+        var log = new RecordingLogger();
+        var (svc, repo, cursors, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            $$"""
+            [{"id":"{{bozukId}}","username":"{{bosTanitici}}","fullName":"{{bozukAd}}","address":"Adres","phone":"{{bozukTelefon}}","submittedAt":"2026-04-30T11:00:00Z","instagramUsername":"{{bosTanitici}}","tikTokUsername":"{{bosTanitici}}"},
+             {"id":"{{sonrakiId}}","username":"{{tanitici}}","fullName":"Fatma K","address":"Adres 2","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"{{tanitici}}"}]
+            """), log: log);
+
+        var count = await svc.SyncOnceAsync();
+
+        count.Should().Be(2, "imleç iki formun da ötesine geçti");
+        repo.FindByPlatformAndUsername("instagram", tanitici)!.FullName.Should().Be("Fatma K",
+            "kimliksiz formdan sonraki form uygulandı");
+        repo.GetRecent(1000).Should().NotContain(c => c.Phone == bozukTelefon, "atlanan formdan satır açılmaz");
+        var cursor = cursors.Get(CursorName, TestLicenseKey)!;
+        cursor.LastId.Should().Be(sonrakiId);
+        cursor.UpdatedAt.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
+
+        var uyari = log.Entries.Where(e => e.Level == LogLevel.Warning).Should().ContainSingle().Subject.Message;
+        uyari.Should().Contain(bozukId.ToString());
+        uyari.Should().NotContain(bozukAd).And.NotContain(bozukTelefon);
+        log.Entries.Should().Contain(e => e.Level == LogLevel.Information && e.Message.Contains("1 skipped"),
+            "atlanan form sayfa günlüğünde sayılır");
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_bos_tanitici_yaninda_gecerli_kimlik_varsa_form_uygulanir()
+    {
+        // Atlama yalnız BÜTÜN tanıtıcılar boşa düşünce: "@" yanında geçerli bir kimlik varsa form
+        // eskisi gibi uygulanır (depo boş tanıtıcıyı eler).
+        var tanitici = $"musteri_{Guid.NewGuid():N}";
+        var log = new RecordingLogger();
+        var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            $$"""[{"id":"{{Guid.NewGuid()}}","username":"{{tanitici}}","fullName":"Fatma K","address":"Adres","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"@","tikTokUsername":"{{tanitici}}"}]"""),
+            log: log);
+
+        (await svc.SyncOnceAsync()).Should().Be(1);
+
+        repo.FindByPlatformAndUsername("tiktok", tanitici)!.FullName.Should().Be("Fatma K");
+        log.Entries.Should().NotContain(e => e.Level == LogLevel.Warning);
     }
 
     // ── FullName backfill (tek seferlik geriye-dönük düzeltme) ────────────

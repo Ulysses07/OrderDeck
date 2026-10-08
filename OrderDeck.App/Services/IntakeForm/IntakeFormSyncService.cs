@@ -366,10 +366,11 @@ public sealed class IntakeFormSyncService
             }
 
             var filled = 0;
+            var skipped = 0;
             foreach (var sub in submissions)
             {
                 var mode = replay.ModeOf(sub.SubmittedAt);
-                ApplySubmission(sub, mode, nowUnix);
+                if (!ApplySubmission(sub, mode, nowUnix)) { skipped++; continue; }
                 if (mode == IntakeApplyMode.Stamped) stamped++;
                 else filled++;
             }
@@ -391,8 +392,8 @@ public sealed class IntakeFormSyncService
             processed += submissions.Count;
 
             _log.LogInformation(
-                "Intake form sync: {Count} submission(s) processed, {Filled} fill-only (cursor → {Cursor}/{CursorId})",
-                submissions.Count, filled, last.SubmittedAt, last.Id);
+                "Intake form sync: {Count} submission(s) processed, {Filled} fill-only, {Skipped} skipped without identity (cursor → {Cursor}/{CursorId})",
+                submissions.Count, filled, skipped, last.SubmittedAt, last.Id);
         }
 
         // "Bu oturumda yeni" rozeti: oynatmanın eski formları (doldurma) yeni değildir.
@@ -400,8 +401,9 @@ public sealed class IntakeFormSyncService
         return processed;
     }
 
-    /// <summary>Tek formu kipine göre uygular (bkz. <see cref="ReplayState"/>).</summary>
-    private void ApplySubmission(IntakeFormSubmissionDto sub, IntakeApplyMode mode, long nowUnix)
+    /// <summary>Tek formu kipine göre uygular (bkz. <see cref="ReplayState"/>). Kullanılabilir
+    /// kimliği olmayan form atlanır → false.</summary>
+    private bool ApplySubmission(IntakeFormSubmissionDto sub, IntakeApplyMode mode, long nowUnix)
     {
         // Bildirilen platform kimliklerini topla (çoklu-platform).
         var identities = new List<(string Platform, string Username, string? PreferredDisplayName)>();
@@ -422,6 +424,17 @@ public sealed class IntakeFormSyncService
         Add("facebook", sub.FacebookUsername);
         Add("tiktok", sub.TikTokUsername);
 
+        // Platform alanı dolu ama hepsi normalize edilince boş (kullanıcı tanıtıcı yerine yalnız "@"
+        // yazmış): depo kimliksiz formu reddeder; imleç sayfanın SONUNDA ilerlediği için bu tek form
+        // sonraki BÜTÜN formları her turda, her bilgisayarda kilitlerdi. Bağlanacak kişi yok — form
+        // atlanır. Eski sunucu yoluna da düşmez: o, platform alanı HİÇ olmayan gönderim içindir.
+        // Kişisel veri yazılmaz, yalnız gönderim Id'si.
+        if (identities.Count > 0 && identities.All(i => CustomerIdentity.IntakeHandleOf(i.Username).Length == 0))
+        {
+            _log.LogWarning("Intake form {FormId}: kullanılabilir platform kimliği yok — form atlandı", sub.Id);
+            return false;
+        }
+
         if (identities.Count > 0)
         {
             _customers.UpsertPersonFromIntake(
@@ -441,6 +454,7 @@ public sealed class IntakeFormSyncService
                 sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix,
                 submittedAtMs: sub.SubmittedAt.ToUnixTimeMilliseconds(), mode: mode);
         }
+        return true;
     }
 
     /// <summary>

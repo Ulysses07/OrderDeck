@@ -30,4 +30,12 @@ public static class CustomerIdentity
         var key = KeyOf(username);
         return key.Length == 0 ? null : key;
     }
+
+    /// <summary>
+    /// Formdaki platform tanıtıcısının kimlik olarak kullanılan hâli: kırp, baştaki '@'leri at, yine
+    /// kırp. Boşsa tanıtıcı kullanılamaz (ör. yalnız "@" yazılmış). Form yolunun hepsi (kişi upsert'ü,
+    /// ad backfill'i, form senkronunun "kimliksiz form" kararı) bunu kullanır: servis tanıtıcıyı
+    /// geçerli sayıp depo boş sayarsa form depoda reddedilir ve imleci kilitler.
+    /// </summary>
+    public static string IntakeHandleOf(string? username) => (username ?? "").Trim().TrimStart('@').Trim();
 }
