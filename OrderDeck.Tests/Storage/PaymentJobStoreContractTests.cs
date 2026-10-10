@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using FluentAssertions;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Tests.Fakes;
@@ -152,19 +155,320 @@ public abstract class PaymentJobStoreContractTests
         sonra.ApplyKey.Should().BeNull();
         sonra.State.Should().Be(PaymentJobState.Created);
     }
+
+    // ── Kişi × kapsam (FindOrCreateForPerson) ────────────────────────────
+    //
+    // Mantıksal kimlik (kişi, kapsam): iş, sahip satırın kişisindeki bütün üyeler taranarak bulunur.
+    // İki depo da AYNI planı (PersonScopePlan) uygular; üye kümesi işlemin içinde yeniden okunur.
+
+    /// <summary>Aynı kişide (tek grup) <paramref name="count"/> üye açar; dönen kişide tıklanan
+    /// satır ilk üyedir.</summary>
+    protected abstract PaymentPerson NewPerson(IPaymentJobStore store, int count);
+
+    /// <summary>Kişiye sonradan üye ekler (elle birleştirme) — akışın anlık görüntüsü bayatlar.</summary>
+    protected abstract string JoinNewMember(IPaymentJobStore store, PaymentPerson person);
+
+    /// <summary>Kişiyi güncel üyeleriyle yeniden okur (akışın yeniden denemesi).</summary>
+    protected abstract PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person);
+
+    private static PersonJobRequest Req(PaymentPerson p, string scope = "session:s1", decimal total = 100m,
+        string? leasedId = null, string? token = null)
+        => new(leasedId ?? p.LeasedId, p.MemberKey, p.MemberIds, p.OwnerId!, scope, total,
+            token is null ? null : new HashSet<string> { token });
+
+    private static string NotOwner(PaymentPerson p) => p.MemberIds.First(id => id != p.OwnerId);
+
+    /// <summary><paramref name="customerId"/>'de uygulanmış (ve istenirse teslim edilmiş) iş.</summary>
+    private static PaymentJob Applied(IPaymentJobStore store, string customerId, decimal applied, bool delivered,
+        string scope = "session:s1")
+    {
+        var job = store.FindOrCreate(customerId, scope, 300m);
+        var key = Guid.NewGuid();
+        store.BeginApply(job.Id, key).Should().BeTrue();
+        store.MarkApplied(job.Id, key, 0, applied).Should().BeTrue();
+        if (delivered) store.Close(job.Id);
+        return store.Get(job.Id)!;
+    }
+
+    [Fact]
+    public void FindOrCreateForPerson_is_yokken_sahipte_olusturur()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 3);
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.Ready);
+        r.Job!.CustomerId.Should().Be(person.OwnerId, "yeni iş belirlenimli sahip satırda açılır");
+        r.Job.State.Should().Be(PaymentJobState.Created);
+        r.Job.ProductTotal.Should().Be(100m);
+        r.Demoted.Should().BeEmpty();
+    }
+
+    [Fact] // Repro A: birincil kaydı — iş başka üyede açılmıştı, aynı iş bulunur
+    public void FindOrCreateForPerson_baska_uyedeki_isi_bulur()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var onceki = store.FindOrCreate(NotOwner(person), "session:s1", 100m);
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.Ready);
+        r.Job!.Id.Should().Be(onceki.Id, "işin sahibi sahip kuralından farklı olsa da kişinin işidir");
+        r.Job.CustomerId.Should().Be(NotOwner(person), "kalan iş sahip satırını korur — para anahtarı");
+    }
+
+    [Fact] // Sahip kararı 2: teslim edilmiş istek varsa ağ/para adımından önce sorulur
+    public void FindOrCreateForPerson_kapali_isi_bulur_yeni_is_acmaz_once_sorar()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var teslim = Applied(store, NotOwner(person), 40m, delivered: true);
+
+        var soru = store.FindOrCreateForPerson(Req(person));
+
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Resend);
+        soru.Plan.PromptJobs.Should().ContainSingle().Which.Id.Should().Be(teslim.Id);
+        store.Get(teslim.Id).Should().Be(teslim, "soru sorulurken hiçbir şey yazılmaz");
+
+        var onay = store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token));
+
+        onay.Status.Should().Be(PersonJobStatus.Ready);
+        onay.Job!.Id.Should().Be(teslim.Id, "tekrar paylaşım — yeni iş açılmaz");
+    }
+
+    [Fact] // Onay belirteci durumun parmak izidir: arada iş değişirse yeniden sorulur
+    public void FindOrCreateForPerson_bayat_belirtecle_yeniden_sorar()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 40m, delivered: true);
+        var token = store.FindOrCreateForPerson(Req(person)).Plan!.Token;
+
+        store.BeginRevision(job.Id, 120m, Guid.NewGuid(), job.Revision).Should().BeTrue();
+        store.Close(job.Id);
+
+        store.FindOrCreateForPerson(Req(person, token: token)).Status
+            .Should().Be(PersonJobStatus.ConfirmationRequired, "operatör bu durumu görmedi");
+    }
+
+    [Fact] // Kalan iş: para taşıyan önce — sahibin el değmemiş işi tercih edilmez; parasız kaybeden sessizce kapanır
+    public void FindOrCreateForPerson_parali_isi_tutar_parasiz_kaybedeni_sorusuz_kapatir()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var bos = store.FindOrCreate(person.OwnerId!, "session:s1", 100m);   // sahibin el değmemiş işi
+        var parali = Applied(store, NotOwner(person), 40m, delivered: false);
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.Ready, "parasız ve teslim edilmemiş kaybeden soru gerektirmez");
+        r.Job!.Id.Should().Be(parali.Id, "bakiye satır başına: düşüm yapılmış iş kalır");
+        r.Demoted.Should().ContainSingle().Which.Should().Be(
+            new DemotedJob(bos.Id, bos.CustomerId, "session:s1", KeptOpen: false));
+        var indirilen = store.Get(bos.Id)!;
+        indirilen.ScopeKey.Should().Be($"legacy:{bos.Id}:{bos.Id}");
+        indirilen.PriorScopeKey.Should().Be("session:s1");
+        indirilen.ClosedAt.Should().NotBeNull("parasız kaybeden kapanır");
+        store.GetOpenLegacies(person.MemberIds).Should().BeEmpty();
+    }
+
+    [Fact] // Sahip kararı 4: para taşıyan/teslim edilmiş kaybeden varsa birleştirme sorulur; onayda açık mirasa iner
+    public void FindOrCreateForPerson_iki_parali_is_sorar_onayda_kaybedeni_acik_legacy_yapar()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var eski = Applied(store, person.OwnerId!, 100m, delivered: true);
+        var belirsiz = store.FindOrCreate(NotOwner(person), "session:s1", 200m);
+        var belirsizKey = Guid.NewGuid();
+        store.BeginApply(belirsiz.Id, belirsizKey).Should().BeTrue();
+
+        var soru = store.FindOrCreateForPerson(Req(person));
+
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Merge);
+        soru.Plan.PromptJobs.Select(j => j.Id).Should().BeEquivalentTo(new[] { eski.Id, belirsiz.Id });
+        store.GetOpenLegacies(person.MemberIds).Should().BeEmpty("onaydan önce indirme yok");
+
+        var onay = store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token));
+
+        onay.Status.Should().Be(PersonJobStatus.Ready);
+        onay.Job!.Id.Should().Be(eski.Id, "ikisi de para taşıyor: en son teslim edilen kalır");
+        onay.Demoted.Should().ContainSingle().Which.Should().Be(
+            new DemotedJob(belirsiz.Id, belirsiz.CustomerId, "session:s1", KeptOpen: true));
+        var legacy = store.GetOpenLegacies(person.MemberIds).Should().ContainSingle().Subject;
+        legacy.Id.Should().Be(belirsiz.Id);
+        legacy.ScopeKey.Should().Be($"legacy:{belirsizKey:N}:{belirsiz.Id}");
+        legacy.CustomerId.Should().Be(belirsiz.CustomerId, "miras iş kendi sahibiyle uzlaşır");
+    }
+
+    [Fact]
+    public void FindOrCreateForPerson_legacy_kapsamlari_saymaz()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        // Miras işi depo yüzeyinden tohumlanamaz; kişi birleştirmesiyle oluşturulur (parasız kaybeden).
+        var kalan = Applied(store, person.OwnerId!, 10m, delivered: false);
+        var kaybeden = store.FindOrCreate(NotOwner(person), "session:s1", 100m);
+        store.FindOrCreateForPerson(Req(person)).Demoted.Should().ContainSingle();
+        store.Get(kaybeden.Id)!.ScopeKey.Should().StartWith("legacy:");
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.Ready, "miras iş kişi × kapsamın işi sayılmaz — ikinci tur birleştirme yok");
+        r.Job!.Id.Should().Be(kalan.Id);
+        r.Demoted.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FindOrCreateForPerson_tek_uyede_eski_FindOrCreate_ile_esdeger()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+
+        var r = store.FindOrCreateForPerson(Req(person, total: 77m));
+        var eski = store.FindOrCreate(person.LeasedId, "session:s1", 999m);
+
+        eski.Id.Should().Be(r.Job!.Id);
+        eski.ProductTotal.Should().Be(77m);
+    }
+
+    [Fact] // Tasarım 2 D-1: üye kümesi işlemin İÇİNDE yeniden okunur
+    public void FindOrCreateForPerson_uye_kumesi_degistiyse_hicbir_sey_yazmaz()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var yeni = JoinNewMember(store, person);
+        store.FindOrCreate(yeni, "session:s1", 50m);
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.MembershipChanged);
+        r.Job.Should().BeNull();
+
+        // Akış kişiyi yeniden okur: bayat çağrı iş açmadığı için tek iş vardır, birleştirme yok.
+        var guncel = Reload(store, person);
+        guncel.MemberIds.Should().Contain(yeni);
+        var tekrar = store.FindOrCreateForPerson(Req(guncel));
+        tekrar.Status.Should().Be(PersonJobStatus.Ready);
+        tekrar.Job!.CustomerId.Should().Be(yeni, "yeni üyenin işi bulunur");
+        tekrar.Demoted.Should().BeEmpty("bayat çağrı ikinci bir iş açmadı");
+    }
+
+    [Fact]
+    public void GetOpenLegacies_kisinin_butun_uyelerini_tarar()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        Applied(store, person.OwnerId!, 10m, delivered: true);
+        var b = Applied(store, NotOwner(person), 20m, delivered: false);
+        var plan = store.FindOrCreateForPerson(Req(person)).Plan!;
+        store.FindOrCreateForPerson(Req(person, token: plan.Token)).Status.Should().Be(PersonJobStatus.Ready);
+
+        store.GetOpenLegacies(person.MemberIds).Should().ContainSingle().Which.Id.Should().Be(b.Id);
+        store.GetOpenLegacies(person.OwnerId!).Should().BeEmpty("tek satır biçimi yalnız o satırı tarar");
+    }
+
+    [Fact]
+    public void ReassignOwner_yalniz_taze_iste()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var taze = store.FindOrCreate(person.OwnerId!, "session:s1", 100m);
+
+        store.ReassignOwner(taze.Id, NotOwner(person)).Should().BeTrue();
+        store.Get(taze.Id)!.CustomerId.Should().Be(NotOwner(person));
+
+        var anahtarli = Applied(store, person.OwnerId!, 10m, delivered: false, scope: "session:s2");
+        store.ReassignOwner(anahtarli.Id, NotOwner(person)).Should().BeFalse("denenmiş işin para anahtarı değişmez");
+
+        var cakisan = store.FindOrCreate(person.OwnerId!, "session:s1", 100m);
+        store.ReassignOwner(cakisan.Id, NotOwner(person)).Should().BeFalse("hedefte aynı kapsamlı iş var");
+    }
+
+    [Fact] // Başka sahip satırın miras sonucu benimsenmez; legacy de kapanmaz
+    public void AdoptLegacyResult_farkli_sahipte_hicbir_sey_yazmaz()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        Applied(store, person.OwnerId!, 10m, delivered: true);
+        var b = Applied(store, NotOwner(person), 20m, delivered: false);
+        var plan = store.FindOrCreateForPerson(Req(person)).Plan!;
+        store.FindOrCreateForPerson(Req(person, token: plan.Token));
+        var hedef = store.FindOrCreate(person.OwnerId!, "session:s9", 100m);
+
+        store.AdoptLegacyResult(hedef.Id, b.Id);
+
+        store.Get(hedef.Id)!.ApplyKey.Should().BeNull("başka satırın anahtarı benimsenmez");
+        store.Get(b.Id)!.ClosedAt.Should().BeNull("geri alınmamış düşüm gömülmez");
+    }
 }
 
 public sealed class SqlitePaymentJobStoreContractTests : PaymentJobStoreContractTests
 {
+    private InMemorySqlite? _fx;
+
     protected override IPaymentJobStore CreateStore()
     {
-        var fx = new InMemorySqlite();
-        new MigrationRunner(fx).Run();
-        return new PaymentJobRepository(fx);
+        _fx = new InMemorySqlite();
+        new MigrationRunner(_fx).Run();
+        return new PaymentJobRepository(_fx);
     }
+
+    private CustomerRepository Customers => new(_fx!);
+
+    private string Insert(string groupId)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        Customers.Insert(new Customer(id, "instagram", "u" + id[..10], null, null, 1, 1, false, null, null,
+            0, 0m, null, null, null, GroupId: groupId));
+        return id;
+    }
+
+    protected override PaymentPerson NewPerson(IPaymentJobStore store, int count)
+    {
+        var group = Guid.NewGuid().ToString("N");
+        var ids = Enumerable.Range(0, count).Select(_ => Insert(group)).ToList();
+        return Customers.GetPaymentPerson(ids[0]);
+    }
+
+    protected override string JoinNewMember(IPaymentJobStore store, PaymentPerson person)
+    {
+        var group = Customers.GetById(person.LeasedId)!.GroupId!;
+        return Insert(group);
+    }
+
+    protected override PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person)
+        => Customers.GetPaymentPerson(person.LeasedId);
 }
 
 public sealed class InMemoryPaymentJobStoreContractTests : PaymentJobStoreContractTests
 {
-    protected override IPaymentJobStore CreateStore() => new InMemoryPaymentJobStore();
+    private readonly Dictionary<string, List<string>> _people = new();
+
+    protected override IPaymentJobStore CreateStore()
+        => new InMemoryPaymentJobStore
+        {
+            MembersOf = id => _people.Values.FirstOrDefault(m => m.Contains(id)) ?? new List<string> { id },
+        };
+
+    protected override PaymentPerson NewPerson(IPaymentJobStore store, int count)
+    {
+        var ids = Enumerable.Range(0, count).Select(_ => Guid.NewGuid().ToString("N")).ToList();
+        _people[ids[0]] = ids;
+        return new PaymentPerson(ids[0], ids.Select(id => new PaymentPersonMember(id, null, false)).ToList());
+    }
+
+    protected override string JoinNewMember(IPaymentJobStore store, PaymentPerson person)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        _people.Values.First(m => m.Contains(person.LeasedId)).Add(id);
+        return id;
+    }
+
+    protected override PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person)
+        => new(person.LeasedId, _people.Values.First(m => m.Contains(person.LeasedId))
+            .Select(id => new PaymentPersonMember(id, null, false)).ToList());
 }

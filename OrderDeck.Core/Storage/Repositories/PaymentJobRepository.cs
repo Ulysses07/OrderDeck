@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Dapper;
+using OrderDeck.Core.Customers;
 
 namespace OrderDeck.Core.Storage.Repositories;
 
@@ -75,8 +76,26 @@ public sealed record PaymentJob(
 public interface IPaymentJobStore
 {
     /// <summary>Atomik find-or-create: UNIQUE (CustomerId, ScopeKey) +
-    /// INSERT OR IGNORE. İki eşzamanlı çağrı aynı satırı görür (R2-04).</summary>
+    /// INSERT OR IGNORE. İki eşzamanlı çağrı aynı satırı görür (R2-04).
+    /// Tek satırlık kişide <see cref="FindOrCreateForPerson"/> ile eşdeğerdir (soru ve üye
+    /// doğrulaması hariç); ödeme akışı artık kişi biçimini kullanır.</summary>
     PaymentJob FindOrCreate(string customerId, string scopeKey, decimal productTotal);
+
+    /// <summary>
+    /// Kişi × kapsam için TEK yazma işleminde (SQLite: <c>BEGIN IMMEDIATE</c>) ara ya da oluştur.
+    /// <list type="number">
+    /// <item>Üye kümesi işlemin İÇİNDE <see cref="PersonJobRequest.LeasedId"/>'den yeniden okunur;
+    ///   anahtar tutmazsa <see cref="PersonJobStatus.MembershipChanged"/> (hiçbir şey yazılmaz).</item>
+    /// <item>Üyelerin bu kapsamdaki işleri okunur — kapalılar dahil (tekrar paylaşım), miras kapsamları
+    ///   hariç. İş yoksa sahip satırda açılır.</item>
+    /// <item>İş varsa <see cref="PersonScopePlan"/>: bir kalır, ötekiler ortak
+    ///   <see cref="PaymentJobSql.DemoteToLegacy"/> ile indirilir. Soru gerekiyorsa
+    ///   (<see cref="PersonScopePlan.NeedsConfirmation"/>) ve belirteci onaylanmamışsa
+    ///   <see cref="PersonJobStatus.ConfirmationRequired"/> — hiçbir şey yazılmaz.</item>
+    /// </list>
+    /// Sunucu çağrısı yok; kararlar yerel. Kalan iş sahibini korur (para anahtarı değişmez).
+    /// </summary>
+    PersonJob FindOrCreateForPerson(PersonJobRequest request);
 
     PaymentJob? Get(string id);
 
@@ -84,6 +103,16 @@ public interface IPaymentJobStore
     /// eskiye. R4-04: müşteri başına birden fazla olabilir; hepsinin sonucu
     /// öğrenilmeden yeni satışa geçilemez.</summary>
     IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId);
+
+    /// <summary><see cref="GetOpenLegacies(string)"/>'in kişi biçimi: verilen satırların HEPSİNİN açık
+    /// miras işleri, en yeniden eskiye. Kişinin başka üyesinde kalmış miras iş de uzlaşır.</summary>
+    IReadOnlyList<PaymentJob> GetOpenLegacies(IReadOnlyCollection<string> customerIds);
+
+    /// <summary>Taze işin sahip satırını değiştirir — yalnız iş hiç denenmemişse (created + anahtarsız
+    /// + açık) ve hedefte aynı kapsamlı iş yoksa. Kişi düzeyindeki kapsam uzlaştırması (R4-03) sunucuda
+    /// bu kapsamdaki düşümü BAŞKA bir üyede bulduğunda iş o üyeye geçer: sunucu anahtarı farklı asıl
+    /// kayıtla oynatmayı içerik çakışması sayar. false = koşul tutmadı; yeniden oku.</summary>
+    bool ReassignOwner(string id, string newCustomerId);
 
     /// <summary>Anahtarı diske indirir ve işi apply_uncertain'e geçirir —
     /// yalnız anahtar HENÜZ yoksa ve iş KAPANMAMIŞSA. false = yarışı kaybettik
@@ -152,7 +181,11 @@ public interface IPaymentJobStore
 
     /// <summary>Legacy işin sonucunu (ApplyKey/AppliedAmount/State/ProductTotal)
     /// TAZE hedefe kopyalar ve legacy'yi kapatır — tek transaction. Hedef taze
-    /// değilse (anahtarı varsa) hedefe dokunmaz, yine de legacy'yi kapatır.</summary>
+    /// değilse (anahtarı varsa) hedefe dokunmaz, yine de legacy'yi kapatır.
+    ///
+    /// <para>İkinci kat koruma: iki iş AYNI sahip satıra (CustomerId) ait değilse hiçbir şey yazılmaz.
+    /// Başka satıra ait düşüm benimsenseydi sunucuya o anahtarla başka WpfCustomerId gider (içerik
+    /// çakışması — iş kalıcı belirsiz kalır) ve legacy kapatıldığı için düşüm hiç geri alınmazdı.</para></summary>
     void AdoptLegacyResult(string targetId, string legacyId);
 
     /// <summary>R4-03: sunucuda bu kapsam için duran düşümü TAZE işe benimsetir
@@ -197,11 +230,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         using var conn = _factory.Open();
         var now = Now();
         conn.Execute(
-            @"INSERT OR IGNORE INTO PaymentJob
-              (Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
-               AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt)
-              VALUES (@id, @customerId, @scopeKey, @total, 0, NULL,
-                      NULL, @state, @now, @now, NULL)",
+            InsertSql,
             new
             {
                 id = Guid.NewGuid().ToString("N"),
@@ -217,6 +246,67 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         return Map(row);
     }
 
+    public PersonJob FindOrCreateForPerson(PersonJobRequest request)
+    {
+        // BEGIN IMMEDIATE (DbWrite): yazma kilidi OKUMADAN önce alınır — iki pencereden aynı kişiye
+        // gelen iki akış üye/iş okumasını sırayla yapar; ikincisi birincinin açtığı işi görür.
+        // U17: çağıran (ödeme akışı) kiralarını bu paketten ÖNCE almıştır; içeride yalnız paketin
+        // bağlantısı kullanılır.
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
+
+        var members = PaymentPersonSql.ReadMembers(conn, tx, request.LeasedId);
+        if (!string.Equals(PaymentPerson.KeyOf(members.Select(m => m.Id)), request.MemberKey, StringComparison.Ordinal))
+            return PersonJob.MembershipChanged;                     // Dispose: hiçbir şey yazılmadı
+
+        var ids = members.Select(m => m.Id).ToList();
+        var jobs = conn.Query<Row>(
+                SelectSql + " WHERE CustomerId IN @ids AND ScopeKey=@scopeKey",
+                new { ids, scopeKey = request.ScopeKey }, tx)
+            .Select(Map).ToList();
+        var now = Now();
+
+        if (jobs.Count == 0)
+        {
+            conn.Execute(InsertSql, new
+            {
+                id = Guid.NewGuid().ToString("N"),
+                customerId = request.OwnerId,
+                scopeKey = request.ScopeKey,
+                total = Dec(request.ProductTotal),
+                state = PaymentJobState.Created,
+                now,
+            }, tx);
+            var created = Map(conn.QuerySingle<Row>(
+                SelectSql + " WHERE CustomerId=@customerId AND ScopeKey=@scopeKey",
+                new { customerId = request.OwnerId, scopeKey = request.ScopeKey }, tx));
+            write.Commit();
+            return PersonJob.Ready(created, Array.Empty<DemotedJob>());
+        }
+
+        var plan = PersonScopePlan.For(jobs);
+        if (plan.NeedsConfirmation && request.ConfirmedTokens?.Contains(plan.Token) != true)
+            return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
+                Array.Empty<DemotedJob>(), plan);                  // Dispose: hiçbir şey yazılmadı
+
+        var demoted = new List<DemotedJob>(plan.Losers.Count);
+        foreach (var loser in plan.Losers)
+        {
+            conn.Execute(PaymentJobSql.DemoteToLegacy + " WHERE Id=@id", new { id = loser.Id, now }, tx);
+            demoted.Add(PersonScopePlan.Demotion(loser));
+        }
+        write.Commit();
+        return PersonJob.Ready(plan.Survivor, demoted);
+    }
+
+    private const string InsertSql =
+        @"INSERT OR IGNORE INTO PaymentJob
+          (Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
+           AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt)
+          VALUES (@id, @customerId, @scopeKey, @total, 0, NULL,
+                  NULL, @state, @now, @now, NULL)";
+
     public PaymentJob? Get(string id)
     {
         using var conn = _factory.Open();
@@ -225,16 +315,31 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     }
 
     public IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId)
+        => GetOpenLegacies(new[] { customerId });
+
+    public IReadOnlyList<PaymentJob> GetOpenLegacies(IReadOnlyCollection<string> customerIds)
     {
+        if (customerIds.Count == 0) return Array.Empty<PaymentJob>();
         using var conn = _factory.Open();
         // 'legacy' (anahtar başına benzersizleştirmeden önce göç edilmiş
         // geliştirme veritabanları) ve 'legacy:{anahtar}' birlikte taranır.
         return conn.Query<Row>(
-            SelectSql + @" WHERE CustomerId=@customerId AND ClosedAt IS NULL
+            SelectSql + @" WHERE CustomerId IN @customerIds AND ClosedAt IS NULL
                              AND (ScopeKey='legacy' OR ScopeKey LIKE 'legacy:%')
                            ORDER BY CreatedAt DESC, Id DESC",
-            new { customerId })
+            new { customerIds })
             .Select(Map).ToList();
+    }
+
+    public bool ReassignOwner(string id, string newCustomerId)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            @"UPDATE PaymentJob SET CustomerId=@newCustomerId, UpdatedAt=@now
+              WHERE Id=@id AND State=@created AND ApplyKey IS NULL AND ClosedAt IS NULL
+                AND NOT EXISTS (SELECT 1 FROM PaymentJob t
+                                WHERE t.CustomerId=@newCustomerId AND t.ScopeKey=PaymentJob.ScopeKey)",
+            new { id, newCustomerId, created = PaymentJobState.Created, now = Now() }) == 1;
     }
 
     public bool BeginApply(string id, Guid applyKey)
@@ -400,6 +505,13 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
         var now = Now();
+        // İkinci kat koruma (servis zaten yalnız aynı sahipte çağırır): başka satıra ait düşüm
+        // benimsenmez ve legacy de KAPATILMAZ — kapatmak geri alınmamış düşümü gömerdi.
+        var sameOwner = conn.ExecuteScalar<long>(
+            @"SELECT COUNT(*) FROM PaymentJob t JOIN PaymentJob l ON l.Id=@legacyId
+              WHERE t.Id=@targetId AND t.CustomerId=l.CustomerId",
+            new { targetId, legacyId }, tx) == 1;
+        if (!sameOwner) return;
         conn.Execute(
             @"UPDATE PaymentJob SET
                   ProductTotal  = (SELECT ProductTotal  FROM PaymentJob WHERE Id=@legacyId),
@@ -407,7 +519,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                   AppliedAmount = (SELECT AppliedAmount FROM PaymentJob WHERE Id=@legacyId),
                   State         = (SELECT State         FROM PaymentJob WHERE Id=@legacyId),
                   UpdatedAt     = @now
-              WHERE Id=@targetId AND ApplyKey IS NULL AND State=@created",
+              WHERE Id=@targetId AND ApplyKey IS NULL AND State=@created
+                AND (SELECT CustomerId FROM PaymentJob WHERE Id=@legacyId) = PaymentJob.CustomerId",
             new { targetId, legacyId, now, created = PaymentJobState.Created },
             tx);
         conn.Execute(

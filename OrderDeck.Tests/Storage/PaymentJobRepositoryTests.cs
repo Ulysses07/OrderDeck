@@ -1,5 +1,9 @@
 using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using FluentAssertions;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Tests.TestHelpers;
@@ -504,5 +508,59 @@ public sealed class PaymentJobRepositoryTests
         repo.AdoptRemoteResult(job.Id, Guid.NewGuid(), 40m, 250m).Should().BeFalse();
 
         repo.Get(job.Id)!.State.Should().Be(PaymentJobState.ReversePending);
+    }
+
+    // ── Kişi × kapsam: eşzamanlılık (gerçek SQLite DOSYASI, WAL — prod ile aynı) ──
+    //
+    // İki pencere (rapor ve müşteriler) aynı kişinin FARKLI üyelerinden aynı anda istek başlatır.
+    // FindOrCreateForPerson tek IMMEDIATE işlemde okur ve yazar: ikinci işlem birincinin commit'ini
+    // bekler ve onun açtığı işi bulur. Okuma ayrı bir işlemde olsaydı ikisi de "iş yok" görüp kişiye
+    // iki iş açardı (sahipler farklı verildiğinde UNIQUE indeks bunu engellemez).
+    [Fact]
+    public async Task FindOrCreateForPerson_farkli_uyelerden_es_zamanli_iki_akis_tek_is_acar()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"odperson-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(path);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var customers = new CustomerRepository(factory);
+            var repo = new PaymentJobRepository(factory);
+            var group = Guid.NewGuid().ToString("N");
+            var a = Guid.NewGuid().ToString("N");
+            var b = Guid.NewGuid().ToString("N");
+            foreach (var id in new[] { a, b })
+                customers.Insert(new Customer(id, "instagram", "u" + id[..10], null, null,
+                    1, 1, false, null, null, 0, 0m, null, null, null, GroupId: group));
+            var fromA = customers.GetPaymentPerson(a);
+            var fromB = customers.GetPaymentPerson(b);
+            fromA.MemberKey.Should().Be(fromB.MemberKey);
+
+            for (var round = 0; round < 25; round++)
+            {
+                var scope = $"session:s{round}";
+                using var barrier = new Barrier(2);
+                // Sahipler bilerek FARKLI: hakem yalnız işlem olsun (sahip kuralı değil).
+                PersonJob Run(PaymentPerson p, string owner) =>
+                    repo.FindOrCreateForPerson(new PersonJobRequest(
+                        p.LeasedId, p.MemberKey, p.MemberIds, owner, scope, 100m));
+                var t1 = Task.Run(() => { barrier.SignalAndWait(); return Run(fromA, a); });
+                var t2 = Task.Run(() => { barrier.SignalAndWait(); return Run(fromB, b); });
+                var results = await Task.WhenAll(t1, t2);
+
+                results.Should().OnlyContain(r => r.Status == PersonJobStatus.Ready);
+                results.Select(r => r.Job!.Id).Distinct().Should().ContainSingle($"tur {round}: kişiye tek iş");
+                using var conn = factory.Open();
+                Dapper.SqlMapper.ExecuteScalar<long>(conn,
+                        "SELECT COUNT(*) FROM PaymentJob WHERE ScopeKey = @scope", new { scope })
+                    .Should().Be(1, $"tur {round}: kapsamda tam bir satır");
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var f in new[] { path, path + "-wal", path + "-shm" })
+                if (File.Exists(f)) File.Delete(f);
+        }
     }
 }
