@@ -2091,10 +2091,13 @@ public class PaymentRequestServiceTests : IDisposable
             job.State.Should().Be(PaymentJobState.Applied);
             Leased(db, copy.Id).Should().BeFalse("akış bitince kira bırakılır");
 
-            // Kira bitti: sonraki tur taşır. Teslim edilmiş (kapalı) iş mirasa döner ama açık değil.
+            // Kira bitti: sonraki tur taşır. Teslim edilmiş ama 100 düşülmüş iş AÇIK mirasa iner (ortak
+            // DemoteToLegacy): hedefte aynı kapsamda iş var, sıradaki tıklama fazla düşümü geri alır.
+            // Eskiden kapalı kalıyordu ve miras taraması onu hiç görmüyordu.
             db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
                 .Should().Be(RekeyResult.Rekeyed);
-            db.Jobs.GetOpenLegacies(canonical.Id).Should().BeEmpty();
+            db.Jobs.GetOpenLegacies(canonical.Id).Should().ContainSingle()
+                .Which.PriorScopeKey.Should().Be("session:s1", "asıl kapsam göç 047 kolonunda");
         }
         finally { Drop(db); }
     }

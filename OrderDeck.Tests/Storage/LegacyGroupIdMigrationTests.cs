@@ -123,7 +123,7 @@ public sealed class LegacyGroupIdMigrationTests
         SyncSeqs().Should().BeEquivalentTo(before,
             "ilk açılışın biçim-2 tam gönderimi satırları zaten götürür; göç sıra numarası tüketmez");
         conn.ExecuteScalar<long>("SELECT COUNT(*) FROM SyncApplyGuard").Should().Be(0);
-        conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(46);
+        conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(47);
     }
 
     [Fact]

@@ -32,8 +32,12 @@ public static class PaymentJobState
 }
 
 /// <summary>Bir "Ödeme iste" satışının kalıcı kimliği ve düşüm sonucu.
-/// Kapsam: (CustomerId, ScopeKey) — "session:{id}" | "cumulative" | "legacy".
-/// İşler ASLA silinmez; teslimatta ClosedAt dolar.</summary>
+/// Fiziksel anahtar: (CustomerId, ScopeKey) — "session:{id}" | "cumulative" | "legacy".
+/// İşler ASLA silinmez; teslimatta ClosedAt dolar.
+///
+/// <para>Mantıksal kimlik (kişi, ScopeKey)'dir: iş, sahip satırının (<see cref="CustomerId"/> — para
+/// anahtarı, sunucuya giden WpfCustomerId) kişisindeki bütün üyeler taranarak bulunur
+/// (<see cref="IPaymentJobStore.FindOrCreateForPerson"/>). Kart birincili değişse de aynı iş.</para></summary>
 public sealed record PaymentJob(
     string Id,
     string CustomerId,
@@ -48,7 +52,22 @@ public sealed record PaymentJob(
     long? ClosedAt,
     /// <summary>R4-02: yalnız <see cref="PaymentJobState.ReversePending"/>
     /// durumunda dolu — geri alma kesinleşince geçilecek toplam.</summary>
-    decimal? PendingTotal = null);
+    decimal? PendingTotal = null,
+    /// <summary>Göç 047: iş miras kapsamına indirildiyse ASIL kapsamı (<see cref="PaymentJobSql.DemoteToLegacy"/>).</summary>
+    string? PriorScopeKey = null)
+{
+    /// <summary>İş para taşıyor mu — <see cref="PaymentJobSql.CarriesMoney"/>'nin C# karşılığı
+    /// (ikisi aynı kalmalı).</summary>
+    public bool CarriesMoney =>
+        State is PaymentJobState.ApplyUncertain or PaymentJobState.ReversePending
+        || (State == PaymentJobState.Applied && (AppliedAmount is null || AppliedAmount > 0m));
+
+    /// <summary>Mesaj müşteriye ulaştı (teslim edildi).</summary>
+    public bool IsDelivered => ClosedAt is not null;
+
+    /// <summary>Müşteriden istenen net tutar (kargo dahil toplam − düşülen bakiye).</summary>
+    public decimal RequestedNet => ProductTotal - (AppliedAmount ?? 0m);
+}
 
 /// <summary>R2-01..04: ödeme işi yaşam döngüsünün disk katmanı. Tüm geçişler
 /// koşullu UPDATE'lerle yarışa dayanıklı; servis katmanı false dönüşünde
@@ -445,7 +464,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
 
     private const string SelectSql =
         @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
-                 AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal
+                 AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey
           FROM PaymentJob";
 
     private static PaymentJob Map(Row r) => new(
@@ -464,7 +483,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         r.ClosedAt,
         r.PendingTotal is null
             ? null
-            : decimal.Parse(r.PendingTotal, CultureInfo.InvariantCulture));
+            : decimal.Parse(r.PendingTotal, CultureInfo.InvariantCulture),
+        r.PriorScopeKey);
 
     private sealed class Row
     {
@@ -480,5 +500,6 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         public long UpdatedAt { get; init; }
         public long? ClosedAt { get; init; }
         public string? PendingTotal { get; init; }
+        public string? PriorScopeKey { get; init; }
     }
 }

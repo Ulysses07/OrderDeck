@@ -731,6 +731,48 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         _sync.CountOpenKeyedLegacyJobs().Should().Be(1);
     }
 
+    /// <summary>Durumu ve teslim anı verilen iş (taşıma çakışmasının girdisi).</summary>
+    private string JobAt(string customerId, string scope, string state, string? applyKey, string? applied, long? closedAt)
+    {
+        var id = NewId();
+        using var c = _db.Open();
+        c.Execute(@"INSERT INTO PaymentJob (Id, CustomerId, ScopeKey, ProductTotal, State, CreatedAt, UpdatedAt,
+                                            ApplyKey, AppliedAmount, ClosedAt)
+                    VALUES (@id, @customerId, @scope, '100', @state, 1, 1, @applyKey, @applied, @closedAt)",
+            new { id, customerId, scope, state, applyKey, applied, closedAt });
+        return id;
+    }
+
+    // Ortak DemoteToLegacy: para taşıyan kopya işi KAPALI (teslim edilmiş) olsa da açılır — miras
+    // uzlaştırması fazla düşümü ancak açık işte görür. Eskiden kapalı kalıyor, düşüm hiç geri alınmıyordu.
+    [Fact]
+    public void RekeyToLocal_kapali_parali_kopya_isi_acik_mirasa_iner_parasizlar_kapali_kalir()
+    {
+        var copy = Local("ayse");
+        var canonical = Local("Ayse");
+        foreach (var scope in new[] { "session:s1", "session:s2", "session:s3", "session:s4" })
+            Job(canonical, scope, applyKey: null);
+        var copyKey = NewId();
+        var paid = JobAt(copy, "session:s1", "applied", copyKey, "40", closedAt: 5);      // teslim edilmiş, 40 düşülmüş
+        var noBalance = JobAt(copy, "session:s2", "no_balance", NewId(), "0", closedAt: 5);
+        var keyless = JobAt(copy, "session:s3", "created", null, null, closedAt: 5);
+        var zero = JobAt(copy, "session:s4", "applied", NewId(), "0", closedAt: null);   // düşüm 0, teslim edilmemiş
+
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
+
+        using var c = _db.Open();
+        (string ScopeKey, long? ClosedAt, string? PriorScopeKey) Of(string id) =>
+            c.QuerySingle<(string, long?, string?)>("SELECT ScopeKey, ClosedAt, PriorScopeKey FROM PaymentJob WHERE Id = @id", new { id });
+
+        Of(paid).Should().Be(($"legacy:{copyKey}:{paid}", (long?)null, "session:s1"),
+            "para taşıyan kapalı iş açık mirasa iner; asıl kapsam PriorScopeKey'de (göç 047)");
+        Of(noBalance).ClosedAt.Should().Be(5, "kapalı no_balance kapalı kalır (ilk zaman korunur)");
+        Of(noBalance).PriorScopeKey.Should().Be("session:s2");
+        Of(keyless).ClosedAt.Should().Be(5, "anahtarsız iş kapalı kalır");
+        Of(zero).ClosedAt.Should().Be(Now, "sıfır düşümlü iş para taşımaz — kapanır");
+        _sync.CountOpenKeyedLegacyJobs().Should().Be(1, "dikkat sayacı yalnız para taşıyan açık mirası sayar");
+    }
+
     [Fact]
     public void RekeyToLocal_silinmis_kopyanin_damgali_bos_kisisel_birimi_asil_kaydi_silmez()
     {
