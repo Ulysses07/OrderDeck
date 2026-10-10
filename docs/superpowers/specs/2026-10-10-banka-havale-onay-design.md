@@ -402,9 +402,9 @@ Havale `Unmatched`'e, dekont açık gap'e döner (bugünkü kaldırma kuralı). 
 
 **Bağımlılık — Obifin kiracılık:** sahip tek paylaşılan Obifin kullanıcısı + banka bağlantısı→lisans eşlemesini istiyor; Obifin'e "sakıncası var mı" sorusu hafta başı gidiyor (§13). Bu spec iki modelle de çalışır; seçilen model ayrı bir spec/PR dizisidir. Kimlik değişimine karşı koruma bu spec'te (§13).
 
-### Sahibe sorulacaklar (inceleme sonrası)
-1. **§16-6'ya alt sınır.** "Otomatik olurdu" vakaları için bir alt sınır eklensin mi? Alt sınır olmazsa kural pencerede hiç tutmadığında "çelişki yok" kanıtsız geçer (sıfır vaka, sıfır çelişki). **Öneri:** en az 20 "otomatik olurdu" vakası; sıfır çelişki, sıfır geri alma.
-2. **Harcanmış fazlanın geri alınması.** Yanlış onay geri alınırken bakiyeye yazılmış fazla çoktan harcanmışsa ne olsun? **Öneri (karar gelene dek varsayılan):** geri alma engellenmez, bakiyede ne varsa o kadarı geri alınır, kalan tutar uyarı olarak gösterilir, bakiye eksiye düşmez. Alternatif: bakiye eksiye düşer ve müşteri kartında "Borç X ₺" görünür (bugün bakiye hiçbir yolda eksiye inmiyor).
+### İnceleme sonrası sahip kararları (2026-10-10)
+1. **§16-6 alt sınır:** otomatik onay ancak yalnız-soru pilotunda en az **20 "otomatik olurdu"** vakası birikmişse, bunların **hiçbiri** insan kararıyla çelişmemişse ve **hiç geri alma** yoksa önerilir (≥ 2 hafta ve ≥ 30 "Evet" koşulları da geçerli).
+2. **Harcanmış fazlanın geri alınması:** geri alma **engellenmez**; bakiyede kalan kadarı `reversal` ile geri alınır, kalan eksik **uyarı** olarak gösterilir ve olay satırına yazılır; bakiye **eksiye düşmez**.
 
 ## 17. İnceleme (2026-10-10) — bulgu kararları
 
