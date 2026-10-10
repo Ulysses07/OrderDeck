@@ -578,8 +578,9 @@ public sealed class CustomerRepository
     /// </summary>
     public IReadOnlyList<Customer> CompleteGroups(IReadOnlyList<Customer> rows)
     {
+        // Grup eşitliği TEK tanımdan (CustomerGroup): kart, ödeme kişisi ve rapor aynı kişiyi görür.
         var groupIds = rows
-            .Where(c => !string.IsNullOrWhiteSpace(c.GroupId))
+            .Where(c => CustomerGroup.IsGrouped(c.GroupId))
             .Select(c => c.GroupId!)
             .Distinct(StringComparer.Ordinal)
             .ToList();
@@ -596,6 +597,18 @@ public sealed class CustomerRepository
             if (seen.Add(m.Id)) completed.Add(Map(m));
 
         return completed;
+    }
+
+    /// <summary>
+    /// Ödeme kişisi: <paramref name="customerId"/>'nin (güncel Id'ye çözülür) bütün üyeleri, sahip
+    /// kuralı sırasıyla — tek okuma (<see cref="PaymentPersonSql"/>; işlem içi doğrulamayla aynı tanım).
+    /// Satır yoksa üyesiz kişi döner; çağıran (ödeme akışı) bunu bilinen satıra düşürür.
+    /// </summary>
+    public PaymentPerson GetPaymentPerson(string customerId)
+    {
+        using var conn = _factory.Open();
+        var id = conn.ExecuteScalar<string>("SELECT " + CustomerIdSql.Resolve("@id"), new { id = customerId })!;
+        return new PaymentPerson(id, PaymentPersonSql.ReadMembers(conn, null, id));
     }
 
     /// <summary>Bir grubun tüm üyelerini gruptan ayırır (GroupId = NULL). Yanlış

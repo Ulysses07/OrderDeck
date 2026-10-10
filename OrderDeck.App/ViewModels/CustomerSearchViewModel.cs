@@ -224,8 +224,9 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         var list = customers.ToList();
         var cards = new List<CustomerCard>();
 
-        // GroupId null olanları kendi Id'siyle tekilleştir (grup anahtarı çakışmasın).
-        var groups = list.GroupBy(c => string.IsNullOrWhiteSpace(c.GroupId) ? "id:" + c.Id : "grp:" + c.GroupId);
+        // GroupId null olanları kendi Id'siyle tekilleştir (grup anahtarı çakışmasın). Kişi eşitliği
+        // TEK tanımdan (CustomerGroup): ödeme kişisi ve rapor aynı anahtarla toplar.
+        var groups = list.GroupBy(c => CustomerGroup.PersonKey(c.Id, c.GroupId));
         foreach (var g in groups)
         {
             var members = g.ToList();

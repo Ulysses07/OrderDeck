@@ -1,0 +1,91 @@
+{
+  "_aciklama": "PaymentOwnerRule ortak test vektörleri. Sunucu ileride aynı sahip kuralını uygularsa bu dosya ona da koşturulur. Telefonlar sembolik: valid = geçerli TR cep (test anında üretilir), invalid = numara şekilli geçersiz, none = boş. Id'ler sembolik 32 haneli GUID 'N' biçimi; 'c...' ile başlayanlar GUID değildir.",
+  "vectors": [
+    {
+      "name": "tek_uye_sahiptir",
+      "members": [ { "id": "a0000000000000000000000000000001", "phone": "none" } ],
+      "owner": "a0000000000000000000000000000001"
+    },
+    {
+      "name": "telefonlu_uye_once",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "none" },
+        { "id": "a0000000000000000000000000000002", "phone": "valid" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "gecersiz_telefon_telefonsuz_sayilir",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "invalid" },
+        { "id": "a0000000000000000000000000000002", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000001"
+    },
+    {
+      "name": "gecerli_telefon_gecersizi_yener",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "invalid" },
+        { "id": "a0000000000000000000000000000002", "phone": "valid" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "silinmis_uye_sona_duser",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "valid", "purged": true },
+        { "id": "a0000000000000000000000000000002", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "hepsi_silinmisse_yine_sahip_secilir",
+      "members": [
+        { "id": "a0000000000000000000000000000002", "phone": "none", "purged": true },
+        { "id": "a0000000000000000000000000000001", "phone": "none", "purged": true }
+      ],
+      "owner": "a0000000000000000000000000000001"
+    },
+    {
+      "name": "guid_olmayan_id_hic_secilmez",
+      "members": [
+        { "id": "c1", "phone": "valid" },
+        { "id": "a0000000000000000000000000000009", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000009"
+    },
+    {
+      "name": "guid_uye_yoksa_sahip_yok",
+      "members": [
+        { "id": "c1", "phone": "valid" },
+        { "id": "c2", "phone": "none" }
+      ],
+      "owner": null
+    },
+    {
+      "name": "esitlikte_kucuk_id",
+      "members": [
+        { "id": "a0000000000000000000000000000003", "phone": "valid" },
+        { "id": "a0000000000000000000000000000002", "phone": "valid" }
+      ],
+      "owner": "a0000000000000000000000000000002"
+    },
+    {
+      "name": "id_kucuk_harfe_indirilerek_karsilastirilir",
+      "members": [
+        { "id": "A0000000000000000000000000000002", "phone": "none" },
+        { "id": "a0000000000000000000000000000001", "phone": "none" }
+      ],
+      "owner": "a0000000000000000000000000000001"
+    },
+    {
+      "name": "telefon_oncelik_silinmeden_sonra",
+      "members": [
+        { "id": "a0000000000000000000000000000001", "phone": "valid", "purged": true },
+        { "id": "a0000000000000000000000000000002", "phone": "none" },
+        { "id": "a0000000000000000000000000000003", "phone": "valid" }
+      ],
+      "owner": "a0000000000000000000000000000003"
+    }
+  ]
+}
