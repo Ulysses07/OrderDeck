@@ -18,15 +18,19 @@ Kaynaklar: LiveDeck `origin/master` 3d484d73, OrderDeck-Mobile `origin/main` 76f
 - Obifin kimliği değişince hareketlerin yeniden anahtarlanması: ortak kimlik spec'inin işi. Bu spec yalnız korumayı tanımlar (§13).
 - Self-servis banka bağlama
 - WPF'te ödeme geçmişi ekranı
-- `GroupId` birleştirmesi
+- Sunucu tarafında `GroupId`'ye göre beklenti birleştirmesi. WPF her kişi×kapsam için tek bir sahip satıra yazar (ön koşul: WPF ödeme isteği kişi anahtarı düzeltmesi, §2.1); sunucu kişiyi yalnız değerlendirmede okur (§2 "Kişi", §5).
 - POS ve giden hareketler (`BankOptions.ExcludedTransactionCodes`)
 
 ## 2. Veri modeli
 
+**Kişi.** Sunucuda bir kişi, aynı `GroupId`'yi paylaşan asıl kayıtlardır (`WpfCustomerProjection.GroupId`, `MergedIntoId` ile asıl kayda çevrilmiş); `GroupId` boşsa yalnız kaydın kendisi. `GroupId` WPF'ten zaten senkronlanıyor; ek veri gerekmez. Gruplama değerlendirme anındaki hâliyle okunur: ayrılan (unmerge) satırlar ayrı kişi sayılır. Bu belgede "kişi" hep bu anlamdadır.
+
 **1. `PaymentExpectation` (yeni, ayrı tablo).** Sunucu bugün istenen tutarı bilmiyor. Kargo hesabı yalnız WPF'te (`PaymentRequestService.cs:1171-1194`, `ComputeShipping`), mesaj da serbest metin. Bu tablo o boşluğu kapatır.
-- Alanlar: `LicenseId`, `WpfCustomerId`, `ScopeKey`, `RequestId` (son isteğin istemci kimliği), `Revision` (sunucu verir), `GrossAmount`, `AppliedBalance`, `Amount` (net istenen), `PaidAmount` (tahsislerin toplamı; aynı SaveChanges'te güncellenen önbellek), `Channel`, `RequestedAt`, `ExpiresAt`, `Status` (Open / Fulfilled / Cancelled), `CancelReason` (Wpf / Waived / Purged), `Flags` (Conflicted, RevisedAfterPayment), `UpdatedAt` (jeton).
+- Alanlar: `LicenseId`, `WpfCustomerId`, `ScopeKey`, `RequestId` (son isteğin istemci kimliği), `Revision` (sunucu verir), `GrossAmount`, `AppliedBalance`, `Amount` (net istenen), `PaidAmount` (tahsislerin toplamı; aynı SaveChanges'te güncellenen önbellek), `Channel`, `RequestedAt`, `ExpiresAt`, `Status` (Open / Fulfilled / Cancelled), `CancelReason` (Wpf / Waived / Purged / Superseded), `Flags` (Conflicted, RevisedAfterPayment), `UpdatedAt` (jeton).
 - `(LicenseId, WpfCustomerId, ScopeKey)` tekil.
 - **Kaynak:** WPF, isteğin müşteriye gerçekten gittiği iki noktada beklenti üretir: Cloud API `Sent` (`PaymentRequestService.cs:348`) ve wa.me `Opened` (`:362`). `deliveryJob`'un null kaldığı yollar da (`:306-319`: bakiye akışına girmeyen müşteri, çevrimdışı) dahildir; beklenti `CloseJob`'a (`:376`) bağlanmaz. `SendPending` sonuçlanınca üretilir.
+- **`WpfCustomerId` = kişinin ödeme işinin sahip satırı** (`PaymentJob.CustomerId`). İş kişi×kapsam başına tektir ve doğduğu satırda kalır; sahip yalnız iki durumda değişir: kopya satırdan asıl satıra taşımada ve taze (anahtarsız, açık) işin sunucudaki kapsam izi kişinin başka bir üyesinde bulunduğunda (`ReassignOwner`). WPF'in o iş için yaptığı her sunucu çağrısı bu Id'yi kullanır. İşsiz yollarda (bakiye akışına girmeyen, çevrimdışı) aynı belirlenimli sahip kuralı uygulanır (`PaymentOwnerRule`: GUID Id → silinmemiş → geçerli telefon → ordinal Id). GUID'li üye yoksa beklenti üretilmez. Kart birincili ya da tıklanan satır **kullanılmaz**; ikisi de liste sırasına ve girişe göre değişir. W2 sahibi yeniden türetmez, ödeme servisinin dönüşünden alır (`BalanceOutcome.OwnerId`). Senkron yakınsadıktan sonra iki PC aynı kişi×kapsam için aynı anahtarı seçer.
+- **Kişi birleştirmesi (WPF):** WPF aynı kişi×kapsamdaki iki işi tek işte birleştirince (para taşıyan ya da teslim edilmiş kaybedende operatör onayıyla) indirilen işin `(WpfCustomerId, asıl ScopeKey)` beklentisine `Cancelled (Superseded)` revizyonu gönderir; kalan işin beklentisi yeni toplamla revize edilir. Kaybedenin asıl kapsamı WPF'te kalıcı yazılır (`PaymentJob.PriorScopeKey`); commit ile kuyruk yazımı arasındaki çökme iptali kaybettirmez. Kaybeden beklentide `PaidAmount > 0` ise satır `Cancelled` olmaz: `Fulfilled` olur ve `Amount = PaidAmount` yazılır, tahsisler yerinde kalır. Bu durumda kalan beklenti `RevisedAfterPayment` işareti alır (otomatik onay dışı).
 - **Revizyon sırasını sunucu verir.** PUT öğesi `requestId` (her gönderimde yeni Guid; `PaymentJob`'dan bağımsız) ve `baseRevision` (bu PC'nin o anahtar için son gördüğü sunucu revizyonu) taşır. Yanıt her öğenin güncel revizyonunu döner, PC onu saklar.
   - Satır yoksa ya da `baseRevision` güncel revizyona eşitse kabul edilir: `Revision + 1`, `Conflicted` kalkar.
   - Aynı `requestId` yeniden gelirse idempotent, değişiklik yok.
@@ -63,9 +67,9 @@ Bankadan doğan bir satır şöyle yazılır:
 - `CustomerIbanMemory` tekil indeksi `(LicenseId, IbanHash)` yerine `(LicenseId, IbanHash, WpfCustomerId)` olur (`:1099`). Bugünkü indeksle "IBAN tek müşteriye bağlı" koşulu hep doğru çıkıyor; denetim olarak işe yaramıyor. Göç, birleştirilmiş kopyaları önce asıl kayda çevirip tekilleştirir.
 - Yeni kaynak `IbanMemorySource.BankConfirm`, yeni alan `ConfirmedAt`.
 - "Evet" **upsert** eder. Çift varsa (gölgede `HumanApproval` ya da `ManualMatch` ile öğrenilmiş) `LearnedFrom = BankConfirm`, `ConfirmedAt = now`, `SourceBankTransactionId = tx` olur; yoksa eklenir. Bugünkü `LearnIbanAsync` satır varsa erken dönüyor (`Reconciler:333-351`); "Evet" o yolu kullanmaz.
-- Sayım asıl kayıt üzerinden yapılır: çiftlerin `WpfCustomerId`'leri `MergedIntoId` ile asıl kayda çevrilir, sonra farklı müşteri sayılır (`PaymentMatcher.cs:141-143`'teki `FirstOrDefault` yerine). Adaylar da asıl kayda çevrilir (`:204-206`).
+- Sayım **kişi** üzerinden yapılır: çiftlerin `WpfCustomerId`'leri `MergedIntoId` ile asıl kayda çevrilir, asıl kayıtlar kişiye toplanır (§2 "Kişi"), sonra farklı kişi sayılır (`PaymentMatcher.cs:141-143`'teki `FirstOrDefault` yerine). Adaylar da asıl kayda çevrilir (`:204-206`). Aynı kişinin iki satırı (ör. IG ve TT) tek kişi sayılır.
 - **`BankIbanState` (yeni, `(LicenseId, IbanHash)` tekil).** Kişiye bağ taşımaz; purge ve geri alma onu silmez.
-  - `Shared`: IBAN iki farklı asıl müşteri için onaylanınca yazılır ve **hiç kalkmaz**. Bugün bu durumda yalnız log yazılıyor (`Reconciler:338-341`). Purge ya da geri alma çiftlerden birini silse de IBAN yeniden tek sahipli sayılmaz; bunun bedeli yalnız soru sormaktır.
+  - `Shared`: IBAN iki farklı **kişi** için onaylanınca yazılır ve **hiç kalkmaz**. Aynı kişinin iki satırına verilen iki "Evet" `Shared` yazmaz; yazsaydı işaret kalkmadığı için o IBAN kalıcı olarak soruya düşerdi. Bugün bu durumda yalnız log yazılıyor (`Reconciler:338-341`). Purge ya da geri alma çiftlerden birini silse de IBAN yeniden tek sahipli sayılmaz; bunun bedeli yalnız soru sormaktır.
   - `Disputed`: IBAN önerisine "Hayır" denince ya da o IBAN'dan gelen bir onay geri alınınca yazılır. Aynı IBAN için yeni bir `BankConfirm` "Evet"i gelene dek otomatik onay yok.
 
 **6. `BankDecisionEvent` (yalnız ekleme yapılan denetim satırı)**
@@ -113,15 +117,15 @@ Geri alma ayrı bir durum değildir; `Reverted` olayı yazılır ve satır `Unma
 
 ### 4.1 Tek servis
 - `PanelPaymentsController`'daki private yan etki metotları (`:192-281`) `PaymentApprovalService`'e taşınır. Dekont ve banka kararları bu tek servisi kullanır; kodu kopyalamak iki yolun zamanla ayrışmasına yol açardı.
-- "Evet" tek `SaveChanges` içinde şunları yapar: Payment oluşturur (ya da bekleyen dekontu onaylar), `PaymentMatch`'i günceller (`Decision`, `Status`, `PaymentId`, `DecisionRevision`), IBAN çiftini upsert eder (§2.5), `BankIbanState`'i günceller (`Disputed` kalkar; ikinci asıl müşteriyse `Shared` olur), tahsisleri ve beklenti durumlarını yazar, fazla varsa bakiye satırı ekler, olay satırını yazar.
+- "Evet" tek `SaveChanges` içinde şunları yapar: Payment oluşturur (ya da bekleyen dekontu onaylar), `PaymentMatch`'i günceller (`Decision`, `Status`, `PaymentId`, `DecisionRevision`), IBAN çiftini upsert eder (§2.5), `BankIbanState`'i günceller (`Disputed` kalkar; ikinci kişiyse `Shared` olur, §2.5), tahsisleri ve beklenti durumlarını yazar, fazla varsa bakiye satırı ekler, olay satırını yazar.
 - Commit'ten sonra `PaymentApproved` etiketi uygulanır. `ShopperId` yoksa `TryApplyAndSaveByWpfCustomersAsync` kullanılır (`LabelRuleApplier.cs:131`). Ardından shopper push gider. `PaymentMatchReconcileJob` zamanlanmaz.
 
 ### 4.2 Tahsis: havale hangi isteği kapatır
-- **Uygun beklenti:** müşterinin (asıl kayıt) `Open`, süresi geçmemiş, `cumulative` kapsamlı olmayan beklentileri. `cumulative` kapsam ömür boyu toplamdır ve ödeme gelince düşmüyor (`CustomerRepository.cs:317`).
+- **Uygun beklenti:** müşterinin kişisindeki (§2 "Kişi") bütün asıl kayıtların `Open`, süresi geçmemiş, `cumulative` kapsamlı olmayan beklentileri. WPF beklentiyi tıklanan satıra değil işin sahip satırına yazdığı için (§2.1) önerilen satır ile beklentinin satırı farklı olabilir. `cumulative` kapsam ömür boyu toplamdır ve ödeme gelince düşmüyor (`CustomerRepository.cs:317`).
 - **Otomatik onayda** §5-5'teki kural hangi beklentileri seçtiyse onlar kapanır.
-- **İnsan "Evet"inde** alt sayfa müşterinin açık beklentilerini listeler; en eskiden başlayarak havale tutarı bitene dek seçili gelir, yayıncı değiştirebilir. İstek seçilen beklenti id'lerini ve revizyonlarını taşır.
+- **İnsan "Evet"inde** alt sayfa seçilen müşterinin kişisindeki uygun beklentileri listeler; en eskiden başlayarak havale tutarı bitene dek seçili gelir, yayıncı değiştirebilir. İstek seçilen beklenti id'lerini ve revizyonlarını taşır.
 - Tahsis en eski beklentiden başlar; sonuncusu kısmen kapanabilir (eksik ödeme). Havale seçilen kalanları aşıyorsa artan kısım "fazla"dır.
-- **Dekont onayı da** aynı servisten geçtiği için beklentiyi aynı kuralla kapatır: tek eşit beklenti varsa o; bütün açıkların toplamına eşitse hepsi; tek açık beklentiden küçükse kısmi. Kural tahsis üretemezse beklenti açık kalır ve müşteride "beklentiye bağlanmamış onaylı ödeme" oluşur. Bu durumda §5-6 o müşteride otomatik onayı kapatır; panel beklentiyi "Kalanı sil" ya da "İptal" ile kapatmayı önerir (§6).
+- **Dekont onayı da** aynı servisten geçtiği için beklentiyi aynı kuralla kapatır: tek eşit beklenti varsa o; bütün açıkların toplamına eşitse hepsi; tek açık beklentiden küçükse kısmi. Kural tahsis üretemezse beklenti açık kalır ve müşteride "beklentiye bağlanmamış onaylı ödeme" oluşur. Bu durumda §5-6 o kişide otomatik onayı kapatır; panel beklentiyi "Kalanı sil" ya da "İptal" ile kapatmayı önerir (§6).
 
 ### 4.3 Fazla ve eksik ödeme
 - **Fazla (karar §16-4):** fazla yalnız **güvenilir** beklentiye karşı hesaplanır. Seçili beklentiler uygun olmalı (§4.2) ve lisansın beklenti akışı güvenilir olmalı (§5-5: bütün etkin PC'ler W2+). Bu sağlanınca "Evet" fazlayı her zaman bakiyeye yazar (`bank-overpayment`) ve alt sayfa "Fazla X ₺ bakiyeye eklenecek" der.
@@ -154,18 +158,19 @@ Bütün koşullar her zaman değerlendirilir; ilk tutmayan koşulda durulmaz. Tu
 
 1. Lisansta `BankAutoApproveEnabled` açık.
 2. Öneri IBAN hafızasından geliyor (`Layer = IbanMemory`). Yalnız kullanıcı adına dayanan öneri her zaman sorulur.
-3. IBAN'ın asıl kayda çevrilmiş tam olarak **bir** onaylı çifti var, bu çiftin kaynağı `BankConfirm`, ve `BankIbanState` ne `Shared` ne `Disputed`.
+3. IBAN'ın onaylı çiftleri asıl kayda çevrilip kişiye toplandığında tam olarak **bir** kişiye düşüyor (§2.5), önerilen müşteri o kişinin bir kaydı, o kişinin çiftlerinden en az birinin kaynağı `BankConfirm`, ve `BankIbanState` ne `Shared` ne `Disputed`. Sayım müşteri başına değil kişi başınadır; aynı kişinin IG ve TT satırlarındaki iki çift koşulu bozmaz.
 4. Müşteri asıl kayıt: birleştirilmiş, silinmiş ya da KVKK ile temizlenmiş değil. WPF silmesi sunucuya ulaşıyor (§12).
 5. Tutar kuralı (karar §16-2), uygun beklentilerin (§4.2) kalanları (`Amount − PaidAmount`) üzerinden, kuruşu kuruşuna:
    - havaleye eşit **tam olarak bir** beklenti varsa o kapanır;
    - yoksa ve **bütün** uygun beklentilerin toplamı havaleye eşitse hepsi kapanır;
    - aksi hâlde sorulur: aynı tutarda iki ayrı beklenti, yalnız bir alt kümenin toplamına eşitlik (hangisinin ödendiği belirsiz; tahmin yürütülmez), uygun beklenti yok;
    - `Conflicted` ya da `RevisedAfterPayment` işaretli beklenti varsa sorulur;
-   - lisansın beklenti akışı güvenilir olmalı: son `Bank:ActivePcWindowDays` (varsayılan 14) gün içinde görülmüş ve devre dışı bırakılmamış her etkinleştirme W2 sürümünde ya da üstünde (`Activation.AppVersion`, `LastSeenAt`, `Activation.cs:13-20`). Eski sürüm PC'nin istekleri sunucuya hiç gelmez, toplam eksik kalır.
-6. Çift ödeme izi yok:
-   - aynı tutarda, ±2 gün içinde, müşterisi bu müşteri **ya da bilinmeyen** (`Payment.WpfCustomerId` null; shopper bağı çözülemeyen) bekleyen dekont yok;
-   - bu müşteride aynı tutarda, ±2 gün içinde, hiçbir harekete bağlanmamış onaylı ödeme yok;
-   - açık beklentinin `RequestedAt`'inden sonra onaylanmış ama hiçbir beklentiye tahsis edilmemiş ödeme yok (§4.2). Varsa beklentinin "açık" görünmesi güvenilir değildir.
+   - kişide aynı `ScopeKey`'li, farklı `WpfCustomerId`'li iki açık beklenti varsa sorulur (`ExpectationUnreliable`; "bütün açıkların toplamı" uygulanmaz). Kişi anahtarından sonra bu yalnız geçiş döneminde oluşur: düzeltmeden önce eski sahiplerde açılmış işler ya da senkron yakınsamadan önce farklı sahip seçen PC'ler. Toplamak aynı borcu iki kez sayardı;
+   - lisansın beklenti akışı güvenilir olmalı: son `Bank:ActivePcWindowDays` (varsayılan 14) gün içinde görülmüş ve devre dışı bırakılmamış her etkinleştirme W2 sürümünde ya da üstünde (`Activation.AppVersion`, `LastSeenAt`, `Activation.cs:13-20`). Eski sürüm PC'nin istekleri sunucuya hiç gelmez, toplam eksik kalır. W2 sürümü WPF kişi anahtarı düzeltmesini de içerir (§15); bu koşul, beklenti üreten her PC'nin kişi başına tek sahip satıra yazdığını da garanti eder.
+6. Çift ödeme izi yok. İzler kişinin **bütün** asıl kayıtlarında aranır; dekont ya da ödeme kişinin başka bir satırına yazılmış olabilir:
+   - aynı tutarda, ±2 gün içinde, müşterisi bu kişinin bir kaydı **ya da bilinmeyen** (`Payment.WpfCustomerId` null; shopper bağı çözülemeyen) bekleyen dekont yok;
+   - bu kişinin kayıtlarında aynı tutarda, ±2 gün içinde, hiçbir harekete bağlanmamış onaylı ödeme yok;
+   - kişinin açık beklentilerinden birinin `RequestedAt`'inden sonra kişinin bir kaydına onaylanmış ama hiçbir beklentiye tahsis edilmemiş ödeme yok (§4.2). Varsa beklentinin "açık" görünmesi güvenilir değildir.
 7. Havale en fazla 3 günlük. Geriye dönük doldurulan eski hareketler otomatik onaylanmaz.
 
 ### 5.2 Sorma nedenleri (kapalı küme)
@@ -181,7 +186,7 @@ Metni sunucu üretir; panel ve WPF aynı metni gösterir. Bayrak durumu hiçbir 
 | `NoExpectation` | İstenen tutar bilinmiyor |
 | `AmountMismatch` | İstenen {X} ₺, gelen {Y} ₺ |
 | `AmbiguousExpectations` | Açık isteklerden hangisinin ödendiği belirsiz |
-| `ExpectationUnreliable` | İstek kaydı güvenilir değil (çakışma, ödeme sonrası değişiklik ya da istek bildirmeyen eski sürüm PC) |
+| `ExpectationUnreliable` | İstek kaydı güvenilir değil (çakışma, ödeme sonrası değişiklik, aynı istek için iki kayıt ya da istek bildirmeyen eski sürüm PC) |
 | `PendingReceipt` | Aynı tutarda bekleyen dekont var |
 | `UnlinkedApprovedPayment` | Bu müşteride havaleye ya da isteğe bağlanmamış onaylı ödeme var |
 | `ReceiptOtherCustomer` | {Müşteri}'nin dekontuyla aynı tutar |
@@ -253,7 +258,7 @@ Genel bakiye geri alma ucu `bank-overpayment` satırını 409 `use-bank-revert` 
   - `AppHost`'ta kaydedilir ve `App.xaml.cs`'te ayrıca başlatılır.
 - Cevap çevrimiçi ve doğrudan gönderilir; kuyruğa yazılmaz. Kuyrukta bekleyen bir "Evet", başka PC'nin verdiği "Hayır"ı ezebilir. Çevrimdışıyken düğmeler pasif kalır.
 - **W1** ayrıca müşteri silme işaretini müşteri senkronuna ekler (§12).
-- **W2 — beklenti:** beklenti, gönderilmemiş kayıt kuyruğu üzerinden gider; bekleyen sayıya (`SyncPendingCounter`) ve kapanışta boşaltmaya (`SyncFlushService`) dahil edilir. Üretim noktaları ve revizyon kuralları §2.1'de. Banka dışı kapanışlar (Papara, elden, elle "ödendi", satış iptali) `Fulfilled` ya da `Cancelled` revizyonu gönderir. Müşteri kartındaki "Eksik X ₺" beklenti ucundan okunur.
+- **W2 — beklenti:** beklenti, gönderilmemiş kayıt kuyruğu üzerinden gider; bekleyen sayıya (`SyncPendingCounter`) ve kapanışta boşaltmaya (`SyncFlushService`) dahil edilir. Üretim noktaları ve revizyon kuralları §2.1'de. Banka dışı kapanışlar (Papara, elden, elle "ödendi", satış iptali) `Fulfilled` ya da `Cancelled` revizyonu gönderir. Kişi birleştirmesinde indirilen iş için `Cancelled (Superseded)` gider (§2.1). Sahibi değişen iş (§2.1, `ReassignOwner` ya da taşıma) daha önce beklenti ürettiyse eski `(WpfCustomerId, ScopeKey)` beklentisine `Cancelled (Superseded)` gider, beklenti yeni sahip satırında yeniden açılır; `PaidAmount > 0` kuralı birleştirmedeki gibidir. Müşteri kartındaki "Eksik X ₺" beklenti ucundan okunur.
 - **W3 — ödemeler:** `ApplyServerStatus` bugün yalnız UPDATE yapıyor (`PaymentRepository.cs:94-112`). INSERT yolu ve SQLite göçü eklenir (`CustomerId`, `Source`). Bu değişiklik, shopper dekontlarının WPF'e hiç inmemesi açığını da kapatır.
   - Sunucudan inen satır `SyncedAt = now` ile yazılır. Yoksa WPF satırı geri iterdi ve sunucu `PayerName`, `Amount`, `PaidAt`, `PdfHash`'i ezerdi (`LicensesPaymentsSyncController.cs:105-110`); boş bir `PdfHash` sunucudaki çift dekont korumasını silerdi. Sunucu da banka ve shopper satırlarında istemci düzenlemesini yok sayar.
   - WPF'te `ReferansNo` UNIQUE (`014_payments.sql:13`); banka anahtarı (`bank:…:n`) yerel dekont numaralarıyla çakışmaz.
@@ -374,8 +379,9 @@ Havale `Unmatched`'e, dekont açık gap'e döner (bugünkü kaldırma kuralı). 
 **OrderDeck-Shopper:** SH1 `source` alanına göre metinler, push metni ve "Havale fazlası" etiketi.
 
 **WPF:** W1 rozet, çekmece, sayfa, yoklama servisi, müşteri seçici ve müşteri silme işareti; W2 beklenti kuyruğu ve banka dışı kapanışlar; W3 payments INSERT yolu, göç, imleç sıfırlama, `PayerName` kuralı, kargo yönergesi ve `LabelOf`. Ardından Velopack sürümü.
+- **Sürüm kapısı:** W2'yi taşıyan en düşük WPF sürümü, ödeme isteği kişi anahtarı düzeltmesini (`fix/odeme-istegi-kisi`) de içermelidir: düzeltme W2 ile aynı ya da daha önceki bir Velopack sürümünde çıkar. Sürüm notuna "W2 ⊇ kişi anahtarı" yazılır. Böylece §5-5'in "bütün etkin PC'ler W2+" koşulu kişi anahtarını da kapsar.
 
-**Akış:** 1 → 2 → 3 → 4 → P1 (web) → W1 → aydınlatma metni → **pilot: EMAR'da yalnız sorular** → 5 + W2 + W3 → EMAR'ın bütün PC'leri W2+ → **§16-6 penceresi** → 6 → rakamlar sahibe → EMAR'da otomatik onay. SH1, 3'ten sonra paralel ilerleyebilir; gizlilik sunucuda sağlandığı için pilot SH1'i beklemez.
+**Akış:** 1 → 2 → 3 → 4 → P1 (web) → W1 → aydınlatma metni → **pilot: EMAR'da yalnız sorular** → 5 + W2 (kişi anahtarı dahil) + W3 → EMAR'ın bütün PC'leri W2+ → **§16-6 penceresi** → 6 → rakamlar sahibe → EMAR'da otomatik onay. SH1, 3'ten sonra paralel ilerleyebilir; gizlilik sunucuda sağlandığı için pilot SH1'i beklemez.
 
 ### Testler
 Çift onay güvenliği tekil indekslere ve jetonlara dayanıyor; InMemory ikisini de uygulamıyor (`PanelPaymentDecisionConcurrencyTests` notu). Bu yüzden:
@@ -471,3 +477,14 @@ Mercekler: **kod** = kod tutarlılığı, **para** = para güvenliği, **kvkk** 
 | 57 | eleştirmen | Küçük | İade edilen fazla için eylem yok | İşlendi §6, §11.2 |
 
 Sonuç: 57 bulgunun 57'si işlendi; hiçbiri bütünüyle reddedilmedi. Bir alt öneri reddedildi (16: fazla için elle tutar girişi). Üç bulgu, önerilenden farklı ama eşdeğer bir çözümle işlendi: 2 (ayrı değer yerine tek SaveChanges), 12 (Status'a değer eklenmedi), 40 (sayfa yerine çekmece). İki iş kararı sahibe soruldu (§16).
+
+### 2026-10-10 kişi anahtarı uyumu
+
+WPF'te ödeme isteği kişi düzeyine taşındı: kişi×kapsam başına tek iş, iş doğduğu sahip satırda kalır ve her sunucu çağrısı o satırın Id'siyle yapılır. Spec buna uyduruldu:
+- §1: "`GroupId` birleştirmesi" maddesi daraltıldı; yalnız sunucu tarafı beklenti birleştirmesi kapsam dışı.
+- §2 "Kişi" tanımı (sunucu `GroupId`'sindeki asıl kayıtlar). §2.1: `WpfCustomerId` = işin sahip satırı, işsizde aynı belirlenimli kural; indirilen iş `Cancelled (Superseded)` alır, `PaidAmount > 0` ise `Fulfilled` + `Amount = PaidAmount`, kalan `RevisedAfterPayment`.
+- §2.5, §4.1, §5-3: IBAN sayımı ve `Shared` kişi başına; aynı kişinin iki satırına verilen "Evet" IBAN'ı paylaşılmış yapmaz.
+- §4.2, §5-5: uygun beklentiler kişinin bütün kayıtlarından toplanır; aynı kişi ve `ScopeKey`'de farklı `WpfCustomerId`'li iki açık beklenti sorulur (`ExpectationUnreliable`).
+- §5-6: çift ödeme izleri kişinin bütün kayıtlarında aranır.
+- §8 W2, §15: `Superseded` revizyonu W2'de; sürüm kapısı "W2 ⊇ kişi anahtarı".
+- §2.1, §8 W2: sahip değişimi (`ReassignOwner`, taşıma) eski beklentiyi `Superseded` ile kapatır, yenisini yeni sahipte açar.
