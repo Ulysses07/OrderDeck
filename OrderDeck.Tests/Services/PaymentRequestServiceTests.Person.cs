@@ -1142,6 +1142,50 @@ public partial class PaymentRequestServiceTests
         finally { Drop(db); }
     }
 
+    // Çıkışsız blok (3e32410a): teslim edilmiş taze iş (burada çevrimdışı teslim) izi başka üyedeyken
+    // taşınamıyordu — her onaylı tıklama BalanceUncertain, istek kaybı. Artık iş o üyeye geçer; istek
+    // gitmiş olduğu için önce sorulur, onayda tek istek gider, ikinci düşüm yok.
+    [Fact]
+    public async Task Teslimli_taze_isin_izi_baska_uyedeyse_once_sorulur_onayda_is_tasinir_tek_istek_gider()
+    {
+        var db = FileDb();
+        try
+        {
+            var a = Uye(db, "kisi.a", phone: false);
+            var b = Uye(db, "kisi.b");
+            Kisi(db, a, b);
+            var (sut, handler) = KisiSut(db);
+            handler.PreviewBalance = 100m;
+            handler.ThrowTimeoutOnLicenses = true;
+            (await sut.OpenWhatsAppAsync(b, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            var teslimli = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            teslimli.Should().Match<PaymentJob>(j =>
+                j.CustomerId == b.Id && j.State == PaymentJobState.Created && j.Deliveries == 1 && j.ClosedAt == null);
+
+            // Sunucu döndü; bu kapsamın düşümü kişinin öbür üyesinde (eski sürüm bilgisayar, yedekten dönüş).
+            handler.ThrowTimeoutOnLicenses = false;
+            var tx = Guid.NewGuid();
+            handler.ScopeResponseFor = id => id == G(a) ? ScopeJsonAt(tx, 40m, 250m, DateTimeOffset.UtcNow) : null;
+
+            var soru = await sut.RequestPaymentAsync(b, _ => 250m, T, "session:s1");
+            soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "istek gitmişti — önce sorulur");
+            _launcher.LaunchedUrls.Should().ContainSingle("cevapsız hiçbir şey gitmez");
+
+            var dialogs = new FakeDialogService();
+            (await EvetAsync(sut, b, 250m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
+
+            dialogs.Confirmations.Should().ContainSingle().Which.Message.Should().Contain("250,00 TL istendi");
+            var job = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            job.Id.Should().Be(teslimli.Id);
+            job.CustomerId.Should().Be(a.Id, "iz a'da — iş o üyeye geçti");
+            job.ApplyKey.Should().Be(tx, "iz benimsendi");
+            handler.AppliedBalanceBodies.Should().BeEmpty("sunucu bu satışı a'da zaten düşmüş — ikinci düşüm yok");
+            _launcher.LaunchedUrls.Should().HaveCount(2);
+            _launcher.LaunchedUrls[^1].Should().Contain("210%2C00", "250 − 40");
+        }
+        finally { Drop(db); }
+    }
+
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
     {

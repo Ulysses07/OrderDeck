@@ -128,7 +128,6 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         {
             var j = _jobs[id];
             if (j.State != PaymentJobState.Created || j.ApplyKey is not null || j.ClosedAt is not null) return false;
-            if (j.Deliveries > 0 || j.SendAttempts > 0) return false;   // gönderilmiş/denenmiş iş taşınmaz
             if (_jobs.Values.Any(t => t.CustomerId == newCustomerId && t.ScopeKey == j.ScopeKey)) return false;
             _jobs[id] = j with { CustomerId = newCustomerId, UpdatedAt = Now() };
             return true;

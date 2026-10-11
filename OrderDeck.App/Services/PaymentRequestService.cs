@@ -1151,6 +1151,8 @@ public sealed class PaymentRequestService
         var (owner, scope) = traces[0];
         if (!string.Equals(owner, job.CustomerId, StringComparison.Ordinal))
         {
+            // Teslim edilmiş taze iş de taşınır (soru kapıda sorulmuştu). W2: taşınan teslimin beklentisi
+            // yeni sahibe yeniden anahtarlanmalı, eski sahipte Superseded.
             if (!_jobs.ReassignOwner(job.Id, owner))
             {
                 _log?.LogWarning(

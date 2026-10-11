@@ -451,28 +451,25 @@ public abstract class PaymentJobStoreContractTests
         store.ReassignOwner(cakisan.Id, NotOwner(person)).Should().BeFalse("hedefte aynı kapsamlı iş var");
     }
 
-    // Tarafsız yargıç koşulu (son inceleme): sahip yalnız hiç istek gönderilmemiş/denenmemiş işte değişir.
-    // Çevrimdışı teslim edilmiş taze iş (created, açık) eskiden taşınabiliyordu: W2 beklentisi teslimde eski
-    // sahibin (CustomerId, ScopeKey) anahtarına yazılır — taşıma onu sahipsiz bırakır, aynı kişide iki açık
-    // beklenti oluşurdu.
+    // Teslim edilmiş ya da denenmiş taze iş de taşınır. "Deliveries = 0 ve SendAttempts = 0" koşulu, yeniden
+    // taze hâle gelmiş teslimli işi (çevrimdışı teslim, geri alma, dış iade) izi başka üyedeyken kalıcı
+    // BalanceUncertain'e kilitliyordu. Teslim kaydı işle birlikte taşınır: kapı yine sorar.
     [Fact]
-    public void ReassignOwner_gonderilmis_ya_da_denenmis_taze_isi_tasimaz()
+    public void ReassignOwner_teslim_edilmis_ya_da_denenmis_taze_isi_de_tasir_teslim_kaydi_kalir()
     {
         var store = CreateStore();
         var person = NewPerson(store, 2);
         var teslimli = store.FindOrCreate(person.OwnerId!, "session:s1", 100m);
         store.MarkDelivered(teslimli.Id, 100m);                    // çevrimdışı teslim: iş created ve açık kalır
-        store.Get(teslimli.Id)!.Should().Match<PaymentJob>(j => j.State == PaymentJobState.Created && j.ClosedAt == null);
 
-        store.ReassignOwner(teslimli.Id, NotOwner(person)).Should().BeFalse("istek gönderilmiş");
-        store.Get(teslimli.Id)!.CustomerId.Should().Be(person.OwnerId);
+        store.ReassignOwner(teslimli.Id, NotOwner(person)).Should().BeTrue();
+        store.Get(teslimli.Id)!.Should().Match<PaymentJob>(j =>
+            j.CustomerId == NotOwner(person) && j.Deliveries == 1 && j.DeliveredNet == 100m && j.IsDelivered);
 
         var denenmis = store.FindOrCreate(person.OwnerId!, "session:s2", 100m);
         store.BeginSend(denenmis.Id, 100m);                        // sonucu yazılamamış gönderim
-        store.ReassignOwner(denenmis.Id, NotOwner(person)).Should().BeFalse("istek gitmiş olabilir");
-
-        var temiz = store.FindOrCreate(person.OwnerId!, "session:s3", 100m);
-        store.ReassignOwner(temiz.Id, NotOwner(person)).Should().BeTrue();
+        store.ReassignOwner(denenmis.Id, NotOwner(person)).Should().BeTrue();
+        store.Get(denenmis.Id)!.HasUnconfirmedSend.Should().BeTrue();
     }
 
     [Fact] // Başka sahip satırın miras sonucu benimsenmez; legacy de kapanmaz
