@@ -739,6 +739,34 @@ public abstract class PaymentJobStoreContractTests
         PersonScopePlan.For(new[] { teslim, sonra }, person.OwnerId).Survivor!.Id.Should().Be(sonra.Id);
     }
 
+    // RV1 (onay damgası): kapı işi kalan iş olarak geçirince (Hazır) plandaki iş ve miras Id'lerini kalan işe
+    // yazar. Yarım kalan adım yalnız bu izleri muaf tutar; damga yazılmasaydı onaylı birleştirmenin kapattığı
+    // teslimli kaybeden sıradaki tıklamada yeniden sorulurdu.
+    [Fact]
+    public void FindOrCreateForPerson_hazir_donuste_kalan_ise_onay_damgasi_yazar_yarim_adim_sorusuz_surer()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var kalan = Applied(store, person.OwnerId!, 10m, delivered: true);
+        var parasiz = store.FindOrCreate(NotOwner(person), "session:s1", 100m);
+        store.MarkNoBalance(parasiz.Id, null, 0).Should().BeTrue();
+        store.MarkDelivered(parasiz.Id, 100m);
+        var soru = store.FindOrCreateForPerson(Req(person));
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Merge);
+
+        var onay = store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token));
+
+        onay.Status.Should().Be(PersonJobStatus.Ready);
+        onay.Job!.Id.Should().Be(kalan.Id);
+        var damga = store.Get(kalan.Id)!.ResumeCovers;
+        damga.Should().Be(soru.Plan.Covers);
+        damga!.Split(';').Should().BeEquivalentTo(new[] { kalan.Id, parasiz.Id });
+
+        // Onaylı tıklamanın revizyonu yarım kaldı: indirilen teslimli kaybeden (kapalı miras) yeniden sorulmaz.
+        store.BeginReversal(kalan.Id, kalan.Revision, kalan.ApplyKey!.Value, targetTotal: 400m).Should().BeTrue();
+        store.FindOrCreateForPerson(Req(person, total: 400m)).Status.Should().Be(PersonJobStatus.Ready);
+    }
+
     // Sonucu yazılamamış denemenin sorusu O denemenin tutarını göstermeli — işin güncel alanlarını değil.
     // Senaryo: 150'lik gönderim yetim kaldı; onaylı tıklama revizyonla 250'ye çıktı ama wa.me açılamadı
     // (deneme geri alındı). Gidebilecek tek mesaj 150'ydi; eskiden soru "250 istendi" diyordu.

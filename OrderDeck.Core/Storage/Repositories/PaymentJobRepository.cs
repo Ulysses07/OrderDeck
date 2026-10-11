@@ -74,7 +74,12 @@ public sealed record PaymentJob(
     decimal? AttemptNet = null,
     /// <summary>Göç 047: bir önceki denemenin neti — <see cref="IPaymentJobStore.AbandonSend"/> başlamamış
     /// denemeyi geri alırken <see cref="AttemptNet"/>'i buna döndürür.</summary>
-    decimal? PriorAttemptNet = null)
+    decimal? PriorAttemptNet = null,
+    /// <summary>Göç 047: onay damgası — kişi × kapsamın kapısı (<see cref="IPaymentJobStore.FindOrCreateForPerson"/>)
+    /// bu işi kalan iş olarak SON geçirdiğinde (operatör onayladı ya da soru gerekmedi) planda gördüğü işlerin
+    /// ve mirasların Id'leri (<see cref="PersonScopePlan.Covers"/>). Yarım kalan adım (<see cref="PersonScopePlan.Resumes"/>)
+    /// yalnız bu izleri soru dışında tutar; sonradan kapsama giren teslim izi yine sordurur.</summary>
+    string? ResumeCovers = null)
 {
     /// <summary>İş para taşıyor mu — <see cref="PaymentJobSql.CarriesMoney"/>'nin C# karşılığı
     /// (ikisi aynı kalmalı).</summary>
@@ -155,6 +160,8 @@ public interface IPaymentJobStore
     ///   <see cref="PaymentJobSql.DemoteToLegacy"/> ile indirilir; hiç iş yoksa sahip satırda açılır.
     ///   Soru gerekiyorsa (<see cref="PersonScopePlan.NeedsConfirmation"/>) ve belirteci onaylanmamışsa
     ///   <see cref="PersonJobStatus.ConfirmationRequired"/> — hiçbir şey yazılmaz.</item>
+    /// <item>Hazır dönüşte kalan işe (ya da açılan işe) onay damgası yazılır
+    ///   (<see cref="PaymentJob.ResumeCovers"/> = <see cref="PersonScopePlan.Covers"/>).</item>
     /// </list>
     /// Sunucu çağrısı yok; kararlar yerel. Kalan iş sahibini korur (para anahtarı değişmez).
     /// </summary>
@@ -371,6 +378,10 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
                 Array.Empty<DemotedJob>(), plan);                      // Dispose: hiçbir şey yazılmadı
 
+        // Onay damgası: kapı bu işi şimdi geçirdi — gördüğü izler (operatörün onayladığı soru ya da soru
+        // gerektirmeyen durum) kalan işin yarım kalabilecek adımında yeniden sorulmaz; sonradan gelenler sorulur.
+        var covers = plan?.Covers;
+
         if (jobs.Count == 0)
         {
             conn.Execute(InsertSql, new
@@ -382,6 +393,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 state = PaymentJobState.Created,
                 now,
             }, tx);
+            conn.Execute(StampSql + " WHERE CustomerId=@customerId AND ScopeKey=@scopeKey",
+                new { covers, customerId = request.OwnerId, scopeKey = request.ScopeKey }, tx);
             var created = Map(conn.QuerySingle<Row>(
                 SelectSql + " WHERE CustomerId=@customerId AND ScopeKey=@scopeKey",
                 new { customerId = request.OwnerId, scopeKey = request.ScopeKey }, tx));
@@ -395,9 +408,14 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             conn.Execute(PaymentJobSql.DemoteToLegacy + " WHERE Id=@id", new { id = loser.Id, now }, tx);
             demoted.Add(PersonScopePlan.Demotion(loser));
         }
+        conn.Execute(StampSql + " WHERE Id=@id", new { covers, id = plan.Survivor!.Id }, tx);
         write.Commit();
-        return PersonJob.Ready(plan.Survivor!, demoted);
+        return PersonJob.Ready(plan.Survivor with { ResumeCovers = covers }, demoted);
     }
+
+    /// <summary>Onay damgası (<see cref="PaymentJob.ResumeCovers"/>) — UpdatedAt'e dokunmaz: işin durumu
+    /// değişmedi, yalnız kapıdan geçti.</summary>
+    private const string StampSql = "UPDATE PaymentJob SET ResumeCovers=@covers";
 
     /// <summary>Asıl kapsamı <c>@scopeKey</c> olan miras işler: açık olanlar (uzlaştırma bekliyor) ve
     /// teslim edilmiş olanlar (bu kapsama istek gitmiş ya da gitmiş olabilir — <see cref="PaymentJob.IsDelivered"/>;
@@ -725,7 +743,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     private const string SelectSql =
         @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
                  AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey,
-                 DeliveredAt, DeliveredNet, Deliveries, SendAttempts, AttemptNet, PriorAttemptNet
+                 DeliveredAt, DeliveredNet, Deliveries, SendAttempts, AttemptNet, PriorAttemptNet,
+                 ResumeCovers
           FROM PaymentJob";
 
     private static PaymentJob Map(Row r) => new(
@@ -751,7 +770,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         r.Deliveries,
         r.SendAttempts,
         DecOrNull(r.AttemptNet),
-        DecOrNull(r.PriorAttemptNet));
+        DecOrNull(r.PriorAttemptNet),
+        r.ResumeCovers);
 
     private static decimal? DecOrNull(string? text)
         => text is null ? null : decimal.Parse(text, CultureInfo.InvariantCulture);
@@ -777,5 +797,6 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         public int SendAttempts { get; init; }
         public string? AttemptNet { get; init; }
         public string? PriorAttemptNet { get; init; }
+        public string? ResumeCovers { get; init; }
     }
 }

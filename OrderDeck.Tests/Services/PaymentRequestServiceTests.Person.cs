@@ -1004,6 +1004,51 @@ public partial class PaymentRequestServiceTests
             "150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
     }
 
+    // RV1 (son inceleme): yarım kalan istek yalnız onaylı tıklamanın gördüğü izler için sorusuz sürer.
+    // x (kopya) ve y (asıl) ayrı kartken x'e 100 TL istendi (bakiyesiz, teslim edildi). y'nin tıklamasında
+    // apply ağda kayboldu (apply_uncertain, mesaj yok). Sonra senkron x'i y'ye taşıdı: x'in teslim edilmiş
+    // parasız işi KAPALI mirasa indi. y'ye yeniden tıklanınca eskiden yarım adım muafiyeti soruyu tamamen
+    // kapatıyordu — kişi toplamlı ikinci istek sorusuz gidiyor, müşteri ikisini birden ödeyebiliyordu.
+    [Fact]
+    public async Task Yarim_kalan_istekten_sonra_tasimanin_getirdigi_teslim_sorulur()
+    {
+        var db = FileDb();
+        try
+        {
+            var x = Uye(db, "kisi.r");                      // kopya
+            var y = Uye(db, "Kisi.R");                      // asıl kayıt
+            var (sut, handler) = KisiSut(db);
+            handler.RowBalances = new() { [G(y)] = 50m };
+
+            (await sut.OpenWhatsAppAsync(x, 100m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            handler.ThrowTimeoutOnApply = true;
+            (await sut.OpenWhatsAppAsync(y, 200m, T, "session:s1")).Should().Be(PaymentRequestResult.BalanceUncertain);
+            handler.ThrowTimeoutOnApply = false;
+            var yarim = Isler(db, "session:s1").Single(j => j.CustomerId == y.Id);
+            yarim.State.Should().Be(PaymentJobState.ApplyUncertain);
+            db.Sync.RekeyToLocal(x.Id, y.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var miras = Isler(db).Single(j => j.PriorScopeKey == "session:s1");
+            miras.ClosedAt.Should().NotBeNull("parasız kopya işi kapalı mirasa indi");
+            miras.IsDelivered.Should().BeTrue();
+            var mesajlar = _launcher.LaunchedUrls.Count;
+
+            var hayir = new FakeDialogService();
+            var red = await PaymentResultPresenter.RequestConfirmedAsync(hayir, t =>
+                sut.RequestPaymentAsync(y, _ => 300m, T, "session:s1", t));
+
+            red.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "kişi × kapsama istek gitmişti — sahip kararı 2");
+            hayir.Confirmations.Should().ContainSingle().Which.Message.Should().EndWith("100,00 TL istendi, tekrar gönderilsin mi?");
+            _launcher.LaunchedUrls.Should().HaveCount(mesajlar, "sorusuz ikinci istek yok");
+            Isler(db, "session:s1").Single().State.Should().Be(PaymentJobState.ApplyUncertain, "ret: hiçbir şey değişmedi");
+
+            (await EvetAsync(sut, y, 300m, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            _launcher.LaunchedUrls.Should().HaveCount(mesajlar + 1);
+            _launcher.LaunchedUrls[^1].Should().Contain("250%2C00", "300 − 50: tek net düşüm");
+        }
+        finally { Drop(db); }
+    }
+
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
     {

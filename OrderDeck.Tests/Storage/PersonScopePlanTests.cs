@@ -106,6 +106,38 @@ public sealed class PersonScopePlanTests
         (job with { ClosedAt = 100 }).LastRequestedNet.Should().Be(210m, "bu sürümün teslimi: teslim kaydı");
     }
 
+    // Son inceleme RV1: yarım kalan kalan iş (apply_uncertain/reverse_pending) yalnız KENDİ teslimini ve
+    // onaylı tıklamanın kapıda gördüğü izleri (onay damgası) muaf tutar. Yarım adımdan SONRA kapsama giren
+    // kapalı, teslim edilmiş miras — taşımanın indirdiği parasız kopya işi — o tıklamada hiç sorulmamıştı:
+    // yine sorulur. Eskiden Resumes soruyu tamamen kapatıyordu, ikinci istek sorusuz gidiyordu.
+    [Fact]
+    public void Yarim_kalan_is_yalniz_kendi_teslimini_ve_damgadaki_izleri_muaf_tutar()
+    {
+        var kalan = Taze(Satir) with { State = PaymentJobState.ApplyUncertain, ApplyKey = Guid.NewGuid() };
+        var mirasId = Guid.NewGuid().ToString("N");
+        var sonradanGelen = new PaymentJob(mirasId, Satir, $"legacy:{mirasId}:{mirasId}", 100m, 0, null, 0m,
+            PaymentJobState.NoBalance, 3, 9, ClosedAt: 9, PriorScopeKey: "session:s1",
+            DeliveredAt: 4, DeliveredNet: 100m, Deliveries: 1, SendAttempts: 1);
+
+        var plan = PersonScopePlan.For(new[] { kalan with { ResumeCovers = kalan.Id } }, new[] { sonradanGelen }, Satir);
+
+        plan.Resumes.Should().BeTrue();
+        plan.IsLoudMerge.Should().BeFalse("kapalı miras iade edilmez");
+        plan.NeedsConfirmation.Should().BeTrue("bu teslim izi yarım kalan tıklamada sorulmamıştı");
+        plan.Kind.Should().Be(PersonScopePromptKind.Resend);
+        plan.PromptJobs.Should().ContainSingle().Which.Id.Should().Be(mirasId);
+
+        var damgali = kalan with { ResumeCovers = PersonScopePlan.For(new[] { kalan }, new[] { sonradanGelen }, Satir).Covers };
+        PersonScopePlan.For(new[] { damgali }, new[] { sonradanGelen }, Satir).NeedsConfirmation
+            .Should().BeFalse("onaylı tıklama bu izi kapıda görmüştü — yarım adım sorusuz sürer");
+
+        var kendiTeslimi = kalan with { DeliveredAt = 4, DeliveredNet = 150m, Deliveries = 1, SendAttempts = 1 };
+        PersonScopePlan.For(new[] { kendiTeslimi }, Satir).NeedsConfirmation
+            .Should().BeFalse("kalan işin kendi teslimi damgasız da muaf");
+        PersonScopePlan.For(new[] { kendiTeslimi with { State = PaymentJobState.NoBalance } }, Satir).NeedsConfirmation
+            .Should().BeTrue("yarım adım yoksa muafiyet de yok");
+    }
+
     [Fact] // Miras kapsamında kapanış uzlaştırmadır, teslim sayılmaz
     public void Miras_kapsaminda_kapanis_teslim_sayilmaz()
     {

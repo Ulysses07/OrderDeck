@@ -1,5 +1,6 @@
 -- 047 — Ödeme işinin ASIL kapsamı (PriorScopeKey), TESLİM kaydı (DeliveredAt, DeliveredNet,
--- Deliveries) ve GÖNDERİM denemesi (SendAttempts, AttemptNet, PriorAttemptNet).
+-- Deliveries), GÖNDERİM denemesi (SendAttempts, AttemptNet, PriorAttemptNet) ve ONAY damgası
+-- (ResumeCovers).
 --
 -- PriorScopeKey. Bir iş iki yoldan 'legacy:{anahtar}:{Id}' kapsamına iner: yerel kopya taşıması
 -- (CustomerSyncRepository.MoveReferences — kopyanın işi asıl kayıttaki aynı kapsamlı işe
@@ -27,6 +28,14 @@
 -- PriorAttemptNet bir önceki denemenin netidir: başlamamış deneme (wa.me açılamadı) geri alınınca
 -- AttemptNet ona döner; daha eski yetim deneme duruyorsa soru onun tutarını gösterir.
 --
+-- Onay damgası. Kalan işin para adımı yarım kalmışsa (apply_uncertain/reverse_pending) sıradaki
+-- tıklama tekrar göndermeyi SORMADAN sürer — o tıklama kapıda sorulmuş ya da sorulacak bir şey
+-- yoktu. Muafiyet yalnız o kapının gördüğü izlere uygulanabilir: kapı (FindOrCreateForPerson) işi
+-- kalan iş olarak her geçirişinde plandaki iş ve miras Id'lerini ResumeCovers'a yazar. Yarım adımdan
+-- sonra kapsama giren teslim izi (ör. taşımanın kapalı mirasa indirdiği teslim edilmiş kopya işi)
+-- damgada yoktur ve yine sorulur. Zaman karşılaştırması değil: izleri farklı yollar farklı saatlerle
+-- yazar.
+--
 -- Nullable, varsayılansız (Deliveries/SendAttempts 0): eski satırlarda asıl kapsam bilinmiyor. Eski
 -- teslim edilmiş işler (legacy olmayan kapsamda ClosedAt dolu = mesaj ulaşmıştı; o kapsamda
 -- ClosedAt'ı yalnız teslim yazar) DeliveredAt = ClosedAt ile işaretlenir ve net tutar ŞİMDİ
@@ -48,6 +57,7 @@ ALTER TABLE PaymentJob ADD COLUMN Deliveries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE PaymentJob ADD COLUMN SendAttempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE PaymentJob ADD COLUMN AttemptNet TEXT;
 ALTER TABLE PaymentJob ADD COLUMN PriorAttemptNet TEXT;
+ALTER TABLE PaymentJob ADD COLUMN ResumeCovers TEXT;
 
 UPDATE PaymentJob SET DeliveredAt = ClosedAt, DeliveredNet = od_payment_net(ProductTotal, AppliedAmount),
                       Deliveries = 1, SendAttempts = 1

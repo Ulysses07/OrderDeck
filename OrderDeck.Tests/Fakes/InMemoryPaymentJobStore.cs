@@ -76,7 +76,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             {
                 var job = new PaymentJob(
                     Guid.NewGuid().ToString("N"), request.OwnerId, request.ScopeKey, request.ProductTotal,
-                    0, null, null, PaymentJobState.Created, now, now, null);
+                    0, null, null, PaymentJobState.Created, now, now, null) { ResumeCovers = plan?.Covers };
                 _jobs[job.Id] = job;
                 return PersonJob.Ready(job, Array.Empty<DemotedJob>());
             }
@@ -95,7 +95,10 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
                 };
                 demoted.Add(PersonScopePlan.Demotion(l));
             }
-            return PersonJob.Ready(plan.Survivor!, demoted);
+            // Gerçek depo gibi: onay damgası kalan işe yazılır.
+            var survivor = _jobs[plan.Survivor!.Id] with { ResumeCovers = plan.Covers };
+            _jobs[survivor.Id] = survivor;
+            return PersonJob.Ready(survivor, demoted);
         }
     }
 

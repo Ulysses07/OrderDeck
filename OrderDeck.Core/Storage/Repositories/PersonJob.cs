@@ -96,10 +96,14 @@ public enum PersonScopePromptKind
 ///
 /// <para><b>Yarım kalmış istek sorulmaz</b> (<see cref="Resumes"/>): kalan iş belirsiz ya da geri alma
 /// bekliyorsa (<c>apply_uncertain</c>/<c>reverse_pending</c>) önceki bir tıklama para adımını başlatmış
-/// ve mesaj göndermeden durmuştur (BalanceUncertain — "tekrar deneyin"). Teslim edilmiş işte o tıklama
-/// zaten sorulup onaylanmıştı; akış kaldığı yerden sürer (önceki sürüm gibi). Yeniden "tekrar
+/// ve mesaj göndermeden durmuştur (BalanceUncertain — "tekrar deneyin"). O tıklamanın kapıda gördüğü
+/// izler zaten sorulup onaylanmıştı; akış kaldığı yerden sürer (önceki sürüm gibi). Yeniden "tekrar
 /// gönderilsin mi?" sormak geçersizleşmiş eski tutarı "istendi" diye gösterirdi; "Hayır" da yarım
-/// birleştirmenin iadelerini yeni istek olmadan bırakırdı. Birleştirme sorusu (yeni kaybeden) yine sorulur.</para>
+/// birleştirmenin iadelerini yeni istek olmadan bırakırdı. Muafiyet DAR: yalnız kalan işin kendi teslimi
+/// ve kapının o tıklamada gördüğü izler (onay damgası, <see cref="PaymentJob.ResumeCovers"/>). Yarım
+/// adımdan SONRA kapsama giren teslim izi — ör. taşımanın (MoveReferences) kapalı mirasa indirdiği
+/// teslim edilmiş kopya işi — o tıklamada hiç sorulmamıştır: yine sorulur. Birleştirme sorusu (yeni
+/// kaybeden) her zaman sorulur.</para>
 /// </summary>
 public sealed class PersonScopePlan
 {
@@ -135,11 +139,21 @@ public sealed class PersonScopePlan
         var settled = Losers.Concat(refundedLegacies).ToList();
         IsLoudMerge = Losers.Any(j => j.CarriesMoney || j.IsDelivered) || refundedLegacies.Any(j => j.IsDelivered);
         Resumes = Survivor is { State: PaymentJobState.ApplyUncertain or PaymentJobState.ReversePending };
-        NeedsConfirmation = IsLoudMerge || (!Resumes && jobs.Concat(legacies).Any(j => j.IsDelivered));
+        var covered = Resumes ? CoveredBy(Survivor!) : null;
+        NeedsConfirmation = IsLoudMerge || jobs.Concat(legacies).Any(j => j.IsDelivered && covered?.Contains(j.Id) != true);
         RefundsDeductions = settled.Any(j => j.CarriesMoney);
         RefundsToOtherRow = IsLoudMerge && settled.Any(j =>
             j.CarriesMoney && !string.Equals(j.CustomerId, survivorRow, StringComparison.Ordinal));
         Token = TokenOf(jobs.Concat(legacies));
+        Covers = string.Join(";", jobs.Concat(legacies).Select(j => j.Id).Distinct().OrderBy(id => id, StringComparer.Ordinal));
+    }
+
+    /// <summary>Yarım kalan kalan işin muaf tuttuğu izler: kendisi ve onay damgasındakiler.</summary>
+    private static HashSet<string> CoveredBy(PaymentJob survivor)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal) { survivor.Id };
+        if (survivor.ResumeCovers is { Length: > 0 } stamp) set.UnionWith(stamp.Split(';'));
+        return set;
     }
 
     /// <summary>Teslim sırası: sonucu yazılamamış gönderim en sonuncusudur (anı bilinmez); yoksa son
@@ -165,8 +179,13 @@ public sealed class PersonScopePlan
     public PaymentJob? AdoptedLegacy { get; }
 
     /// <summary>Kalan işin para adımı yarım kalmış (<c>apply_uncertain</c>/<c>reverse_pending</c>): akış
-    /// kaldığı yerden sürer, tekrar gönderme sorulmaz (sınıf belgesi).</summary>
+    /// kaldığı yerden sürer — kalan işin kendi teslimi ve onay damgasındaki izler için tekrar gönderme
+    /// sorulmaz (sınıf belgesi).</summary>
     public bool Resumes { get; }
+
+    /// <summary>Onay damgası: plandaki bütün işlerin ve mirasların Id'leri (sıralı, ';' ayraçlı). Depo kapı
+    /// geçilince (Hazır) kalan işe yazar (<see cref="PaymentJob.ResumeCovers"/>).</summary>
+    public string Covers { get; }
 
     /// <summary>Kalan iş; kapsamın işi yoksa <c>null</c> (onayda sahip satırda açılır).</summary>
     public PaymentJob? Survivor { get; }
