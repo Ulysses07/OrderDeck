@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Dapper;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 
 namespace OrderDeck.Core.Storage.Repositories;
@@ -314,11 +315,17 @@ public sealed class LabelRepository
             .ToList();
     }
 
+    /// <summary>Yayında alan müşteriler, satır (Customer) başına, ciroya göre azalan.
+    /// <see cref="TopCustomer.PersonTotalAmount"/>: satırın kişisi (<see cref="CustomerGroup"/>) bu
+    /// raporda birden çok satırla görünüyorsa kişinin yayın toplamı — ödeme isteği bu tutarı ister
+    /// (sahip kararı 3). Toplam bütün satırlar üzerinden, <paramref name="limit"/>'ten ÖNCE alınır;
+    /// tanım <see cref="GetSessionPrintedTotal"/> ile aynıdır (aynı etiket süzgeci, aynı kişi kuralı).</summary>
     public IReadOnlyList<TopCustomer> GetTopCustomersBySession(string sessionId, int limit = 10)
     {
         using var conn = _factory.Open();
         var rows = conn.Query<TopCustomerRow>(
             @"SELECT l.CustomerId,
+                     c.GroupId,
                      c.Username,
                      c.DisplayName,
                      l.Platform,
@@ -329,10 +336,19 @@ public sealed class LabelRepository
               WHERE l.SessionId=@sessionId AND l.PrintedAt IS NOT NULL
                 AND l.CancelledAt IS NULL AND l.IsTentativeBackup = 0
               GROUP BY l.CustomerId
-              ORDER BY SUM(l.Price) DESC
-              LIMIT @limit",
-            new { sessionId, limit }).ToList();
-        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName, r.CustomerId)).ToList();
+              ORDER BY SUM(l.Price) DESC",
+            new { sessionId }).ToList();
+        var persons = rows
+            .GroupBy(r => CustomerGroup.PersonKey(r.CustomerId, r.GroupId))
+            .Where(g => g.Count() > 1)
+            .ToDictionary(g => g.Key, g => g.Sum(r => r.TotalAmount));
+        return rows
+            .Take(limit)
+            .Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName, r.CustomerId,
+                persons.TryGetValue(CustomerGroup.PersonKey(r.CustomerId, r.GroupId), out var personTotal)
+                    ? personTotal
+                    : null))
+            .ToList();
     }
 
     /// <summary>U12 (Bölüm C): verilen müşterilerin bu yayındaki satış toplamı —
@@ -602,6 +618,7 @@ public sealed class LabelRepository
     private sealed class TopCustomerRow
     {
         public string CustomerId { get; init; } = "";
+        public string? GroupId { get; init; }
         public string Username { get; init; } = "";
         public string? DisplayName { get; init; }
         public string Platform { get; init; } = "";
@@ -665,10 +682,13 @@ public sealed record PlatformBreakdown(
 /// cref="Display"/> kullan — DisplayName varsa onu, yoksa Username'e düşer.
 /// <see cref="CustomerId"/>: satırın toplandığı yerel müşteri Id'si (U12, Bölüm C — rapor açıkken
 /// yerel taşıma o Id'yi silmişse ödeme isteği satırı bayat sayar).
+/// <see cref="PersonTotalAmount"/>: aynı kişinin bu raporda başka satırı da varsa kişinin yayın
+/// toplamı (yoksa null). Ödeme isteği satırın değil kişinin toplamını ister (sahip kararı 3); satır
+/// 100 gösterip mesaj 300 yazdığında operatör farkı burada görür.
 /// </summary>
 public sealed record TopCustomer(
     string Username, string Platform, int LabelCount, decimal TotalAmount, string? DisplayName = null,
-    string? CustomerId = null)
+    string? CustomerId = null, decimal? PersonTotalAmount = null)
 {
     public string Display => string.IsNullOrWhiteSpace(DisplayName) ? Username : DisplayName!;
 }

@@ -102,7 +102,7 @@ public sealed class PaymentJobMigrationTests
         eskiTablo.Should().Be(0);
 
         var version = conn.ExecuteScalar<long>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(46);
+        version.Should().Be(47);
     }
 
     [Fact]
@@ -120,5 +120,82 @@ public sealed class PaymentJobMigrationTests
         var act = () => conn.Execute(insert, new { id = Guid.NewGuid().ToString("N") });
         act.Should().Throw<Microsoft.Data.Sqlite.SqliteException>()
            .Which.SqliteErrorCode.Should().Be(19); // SQLITE_CONSTRAINT
+    }
+
+    // 047: göç öncesi teslim edilmiş istekler de "tekrar gönderilsin mi?" sorusunu tetiklemeli. Legacy
+    // olmayan kapsamda ClosedAt'ı yalnız teslim yazar → DeliveredAt = ClosedAt; miras kapsamında kapanış
+    // uzlaştırmadır, teslim sayılmaz.
+    [Fact]
+    public void Migration047_eski_teslimleri_teslim_kaydina_tasir()
+    {
+        var fx = new InMemorySqlite();
+        new MigrationRunner(fx, EmbeddedScriptsUpTo(46)).Run();
+        using (var seed = fx.Open())
+            foreach (var (id, scope, closedAt) in new (string, string, long?)[]
+                     {
+                         ("teslim", "session:s1", 500), ("acik", "session:s2", null),
+                         ("miras", "legacy:k:miras", 600), ("eski-miras", "legacy", 700),
+                     })
+                seed.Execute(
+                    @"INSERT INTO PaymentJob (Id, CustomerId, ScopeKey, ProductTotal, Revision, State,
+                                              CreatedAt, UpdatedAt, ClosedAt)
+                      VALUES (@id, 'c1', @scope, '10', 0, 'no_balance', 1, 1, @closedAt)",
+                    new { id, scope, closedAt });
+
+        new MigrationRunner(fx).Run();
+
+        using var conn = fx.Open();
+        var rows = conn.Query<(string Id, long? DeliveredAt, long Deliveries, string? DeliveredNet, long SendAttempts)>(
+                "SELECT Id, DeliveredAt, Deliveries, DeliveredNet, SendAttempts FROM PaymentJob")
+            .ToDictionary(r => r.Id);
+        rows["teslim"].Should().Be(("teslim", (long?)500, 1L, (string?)"10", 1L),
+            "net göçte dondurulur; teslim bir gönderim denemesidir (SendAttempts ≥ Deliveries)");
+        rows["acik"].DeliveredAt.Should().BeNull();
+        rows["acik"].Deliveries.Should().Be(0);
+        rows["acik"].SendAttempts.Should().Be(0, "sonucu yazılmamış deneme yok");
+        rows["miras"].DeliveredAt.Should().BeNull("miras kapanışı uzlaştırmadır");
+        rows["eski-miras"].DeliveredAt.Should().BeNull();
+    }
+
+    // Son inceleme RV3: göç öncesi teslimin neti okurken işin GÜNCEL alanlarından türetiliyordu. İş sonra
+    // yeniden açılınca (panel iadesi → R6-02 dış iade benimsemesi; revizyon; geri alma) alanlar değişir ve
+    // "tekrar gönderilsin mi?" sorusu müşteriden hiç istenmemiş tutarı gösterirdi (200 istenmişken 300).
+    // Göç neti DONDURUR — kayıpsız: tutarlar TEXT ondalık, SQL aritmetiği REAL'e çevirip yuvarlardı.
+    [Fact]
+    public void Migration047_teslim_netini_kayipsiz_dondurur_yeniden_acilinca_degismez()
+    {
+        var fx = new InMemorySqlite();
+        new MigrationRunner(fx, EmbeddedScriptsUpTo(46)).Run();
+        var key = Guid.NewGuid();
+        using (var seed = fx.Open())
+            foreach (var (id, total, applied, applyKey) in new (string, string, string?, string?)[]
+                     {
+                         ("dusumlu", "300", "100", key.ToString("N")), ("kurus", "0.3", "0.1", null),
+                         ("kesirli", "250.50", "0", null),
+                     })
+                seed.Execute(
+                    @"INSERT INTO PaymentJob (Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
+                                              AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt)
+                      VALUES (@id, @id, 'session:s1', @total, 0, @applyKey, @applied, 'applied', 1, 1, 500)",
+                    new { id, total, applied, applyKey });
+
+        new MigrationRunner(fx).Run();
+
+        using (var conn = fx.Open())
+            conn.Query<(string Id, string? DeliveredNet)>("SELECT Id, DeliveredNet FROM PaymentJob")
+                .ToDictionary(r => r.Id, r => r.DeliveredNet)
+                .Should().BeEquivalentTo(new Dictionary<string, string?>
+                {
+                    ["dusumlu"] = "200", ["kurus"] = "0.2", ["kesirli"] = "250.50",
+                }, "REAL aritmetiği 0.3 − 0.1'i 0.19999999999999998 yapardı");
+
+        var repo = new OrderDeck.Core.Storage.Repositories.PaymentJobRepository(fx);
+        repo.Get("dusumlu")!.LastRequestedNet.Should().Be(200m);
+        repo.AdoptExternalReversal("dusumlu", key, expectedRevision: 0).Should().BeTrue("panel iadesi");
+        var acik = repo.Get("dusumlu")!;
+        acik.ClosedAt.Should().BeNull();
+        acik.AppliedAmount.Should().BeNull();
+        acik.LastRequestedNet.Should().Be(200m, "müşteriden istenen 300 − 100 — işin yeni alanları (300) değil");
+        acik.PromptNet.Should().Be(200m);
     }
 }

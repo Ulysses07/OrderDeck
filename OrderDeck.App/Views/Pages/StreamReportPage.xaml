@@ -98,6 +98,11 @@
                 <DataGridTextColumn Header="Tutar"
                                     Binding="{Binding TotalAmount, StringFormat={}{0:N2} TL}"
                                     Width="*"/>
+                <!-- Sahip kararı 3: ödeme isteği kişinin yayın toplamını ister. Aynı kişinin
+                     başka satırı da varsa toplam burada görünür (yoksa boş). -->
+                <DataGridTextColumn Header="Kişi toplamı"
+                                    Binding="{Binding PersonTotalAmount, StringFormat={}{0:N2} TL, TargetNullValue=''}"
+                                    Width="*"/>
                 <DataGridTemplateColumn Header="Ödeme" Width="110">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>

@@ -478,21 +478,18 @@ public sealed class CustomerSyncRepository
     {
         var p = new { fromId, toId, now = nowUnix };
         // U8: UX_PaymentJob_Scope(CustomerId, ScopeKey). Hedefte aynı kapsamda iş varsa
-        // kopyanınki miras kapsamına alınır: anahtarı (para hareketi) varsa açık kalır ve
-        // PaymentRequestService'in miras uzlaştırması kesinleştirir/geri alır; anahtarsız
-        // iş (hiç hareket yok) kapatılır. Ödeme akışı süren müşteriye buraya hiç gelinmez (U13).
+        // kopyanınki miras kapsamına alınır — kişi birleştirmesiyle ORTAK metin
+        // (PaymentJobSql.DemoteToLegacy): para taşıyan iş açık kalır (KAPALI olsa bile açılır) ve
+        // PaymentRequestService'in miras uzlaştırması kesinleştirir/geri alır; parasız iş
+        // kapatılır; asıl kapsam PriorScopeKey'e yazılır (göç 047). Ödeme akışı süren müşteriye
+        // buraya hiç gelinmez (U13).
         //
         // Yeni ad 'legacy:{ApplyKey ya da Id}:{Id}' — iş Id'si adı KENDİLİĞİNDEN benzersiz kılar
         // (inceleme I-1). Miras devralması (PaymentJobRepository.AdoptLegacyResult) kapalı
         // 'legacy:K' işini yerinde bırakıp K'yi kapsam işine taşır; o iş 'legacy:K' adını alsaydı
         // kopyanın kendi kapalı işine çarpar, taşıma her turda düşer ve kimlik kalıcı bölünürdü.
-        // Adı hiçbir yol ayrıştırmaz: miras taraması LIKE 'legacy:%', yeniden oynatma ApplyKey
-        // kolonunu okur; sunucuya SaleScope olarak giderse 72 karakter (sunucu sınırı 128).
-        conn.Execute(@"
-            UPDATE PaymentJob
-               SET ScopeKey  = 'legacy:' || COALESCE(ApplyKey, Id) || ':' || Id,
-                   ClosedAt  = CASE WHEN ApplyKey IS NULL THEN COALESCE(ClosedAt, @now) ELSE ClosedAt END,
-                   UpdatedAt = @now
+        // Sunucuya SaleScope olarak giderse 72 karakter (sunucu sınırı 128).
+        conn.Execute(PaymentJobSql.DemoteToLegacy + @"
              WHERE CustomerId = @fromId
                AND EXISTS (SELECT 1 FROM PaymentJob t
                            WHERE t.CustomerId = @toId AND t.ScopeKey = PaymentJob.ScopeKey)", p, tx);

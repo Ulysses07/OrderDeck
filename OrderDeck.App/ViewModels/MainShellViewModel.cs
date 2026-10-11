@@ -1536,16 +1536,21 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>Kargo PR F: print'lenecek label'lar arasında müşterisi
-    /// RecipientPaysActive=true olanları seç. CustomerRepository.FindById
-    /// her customerId için bir kez çağrılır (distinct over snapshot).</summary>
+    /// alıcı ödemeli olanları seç. Karar KİŞİ düzeyinde (sahip kararı 1,
+    /// 2026-10-10): kişinin üyelerinden HERHANGİ birinde bayrak açıksa bütün
+    /// satırlarının etiketi "ALICI ÖDEMELİ" basılır — ödeme mesajı
+    /// (<see cref="OrderDeck.Core.Customers.PaymentPerson.RecipientPaysActive"/>)
+    /// aynı kişiden kargo ücreti istemiyor; satır başına okunsaydı bayraksız
+    /// satırın paketi gönderici ödemeli çıkar, ücreti kimse ödemezdi.
+    /// Kişi her customerId için bir kez okunur (distinct over snapshot).</summary>
     private System.Collections.Generic.IReadOnlySet<string> ComputeRecipientPaysLabelIds(
         System.Collections.Generic.IReadOnlyList<OrderDeck.Core.Sales.Label> labels)
     {
         var recipientCustomers = new System.Collections.Generic.HashSet<string>();
         foreach (var customerId in labels.Select(l => l.CustomerId).Distinct())
         {
-            var c = _customerRepo.GetById(customerId);
-            if (c?.RecipientPaysActive == true) recipientCustomers.Add(customerId);
+            if (_customerRepo.GetPaymentPerson(customerId).RecipientPaysActive)
+                recipientCustomers.Add(customerId);
         }
         return labels
             .Where(l => recipientCustomers.Contains(l.CustomerId))

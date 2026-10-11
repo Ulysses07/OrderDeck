@@ -1,3 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Threading.Tasks;
+using OrderDeck.Core.Storage.Repositories;
+
 namespace OrderDeck.App.Services;
 
 /// <summary>
@@ -59,6 +66,16 @@ public static class PaymentResultPresenter
                     "Müşteri listesi bilgisayarlar arası birleştirme nedeniyle güncellendi — lütfen tekrar seçin.");
                 break;
 
+            case PaymentRequestResult.PaymentInProgress:
+                // Aynı kişi için öbür pencerede bir akış sürüyor (ör. Cloud API gönderimi) ve
+                // sınırlı bekleme doldu; hiçbir şey gönderilmedi.
+                dialogs.ShowInfo(
+                    "Bu müşteri için başka bir pencerede ödeme isteği sürüyor — biraz sonra tekrar deneyin.");
+                break;
+
+            // AlreadyRequested / MergeRequired soru olarak RequestConfirmedAsync'te sorulur; buraya
+            // gelmeleri operatörün "Hayır" dediği anlamına gelir — hiçbir şey yapılmadı, bildirim yok.
+
             case PaymentRequestResult.PhoneRequired:
                 // Buraya yalnız telefon diyaloğundan SONRA gelinir (ilk çağrının
                 // PhoneRequired'ı diyaloğu açar, bildirime düşmez). Numara
@@ -69,5 +86,117 @@ public static class PaymentResultPresenter
                     "okunamadı. Müşteri kartından numarayı kontrol edin.");
                 break;
         }
+    }
+
+    /// <summary>
+    /// Ödeme isteğini, servisin sorularını (sahip kararları 2 ve 4) operatöre sorarak yürütür:
+    /// <see cref="PaymentRequestResult.AlreadyRequested"/> / <see cref="PaymentRequestResult.MergeRequired"/>
+    /// gelirse metin gösterilir; "Evet" → aynı istek onay belirteciyle yeniden çağrılır (PhoneRequired
+    /// deseni — kira diyalog boyunca tutulmaz, servis belirteçle durumun değişmediğini doğrular).
+    /// "Hayır" → hiçbir şey değişmez, soru sonucu döner (<see cref="Notify"/> sessiz geçer).
+    /// İki çağrı yeri (müşteri arama, yayın raporu) aynı yoldan geçer (R4-07 gerekçesi).
+    /// </summary>
+    public static async Task<PaymentRequestOutcome> RequestConfirmedAsync(
+        IDialogService dialogs, Func<IReadOnlySet<string>?, Task<PaymentRequestOutcome>> request)
+    {
+        var tokens = new HashSet<string>(StringComparer.Ordinal);
+        var outcome = await request(null);
+        // Onay ile yeniden çağrı arasında durum değişirse (öbür pencere gönderdi) yeni durum yeniden
+        // sorulur; sınır sonsuz döngüye karşı.
+        for (var round = 0; round < MaxPromptRounds && outcome.Prompt is { } prompt; round++)
+        {
+            var (title, message) = PromptText(prompt, DateTimeOffset.Now);
+            if (!await dialogs.ConfirmAsync(message, title)) return outcome;
+            tokens.Add(prompt.Token);
+            outcome = await request(tokens);
+        }
+        return outcome;
+    }
+
+    private const int MaxPromptRounds = 3;
+
+    private static readonly CultureInfo Tr = CultureInfo.GetCultureInfo("tr-TR");
+
+    /// <summary>Sorunun başlığı ve metni (sahip kararlarındaki metinler).
+    ///
+    /// <para>Birleştirmede yalnız TESLİM edilmiş istekler "gitmiş" sayılır; para taşıyan ama hiç
+    /// gönderilmemiş istek ayrıca söylenir (operatöre gitmemiş bir isteği gitmiş diye göstermemek
+    /// için). "Fazladan düşülen" denmez: iki ayrı kartken ayrı ürünler için yapılmış düşümler de
+    /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın bakiyesine dönüyorsa
+    /// (bakiye satır başına) bu da söylenir: o tutar bu istekte kullanılmaz. İade edilecek düşüm yoksa
+    /// (parasız istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
+    ///
+    /// <para>Sunucunun bulduğu ayrı düşümler (<see cref="PaymentPrompt.RemoteDeductions"/>) "gitmiş
+    /// istek" değildir — sunucu teslimi bilmez; bulunan düşüm olarak anlatılır.</para>
+    ///
+    /// <para>Sonucu yazılamamış gönderim (<see cref="PriorPaymentRequest.Unconfirmed"/>) olgu diye
+    /// anlatılmaz ("zaten gönderildi", "istendi" denmez): istek gitmemiş de olabilir — operatör az önce
+    /// "WhatsApp açılamadı" görmüş olabilir; "Hayır" derse müşteriye hiç istek gitmeyebilir.</para></summary>
+    public static (string Title, string Message) PromptText(PaymentPrompt prompt, DateTimeOffset now)
+    {
+        if (prompt.Kind == PersonScopePromptKind.Resend)
+        {
+            var last = prompt.Requests.LastOrDefault();
+            var at = last?.At is { } t ? WhenText(t, now) + " " : "";
+            if (last is { Unconfirmed: true })
+                return ("Ödeme isteği gönderilmiş olabilir",
+                    $"{at}{Money(last.Amount)} tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), " +
+                    "tekrar gönderilsin mi?");
+            return ("Ödeme isteği zaten gönderildi",
+                $"{at}{Money(last?.Amount ?? 0m)} istendi, tekrar gönderilsin mi?");
+        }
+
+        var scope = prompt.ScopeKey.StartsWith("session:", StringComparison.Ordinal)
+            ? "bu yayın için"
+            : "genel toplam için";
+
+        if (prompt.RemoteDeductions is { Count: > 0 } remote)
+        {
+            // Onayda en eski düşüm kalır (sunucu teslim sırasını bilmez), ötekiler iade edilir.
+            var found = $"Sunucuda bu kişinin {scope} {remote.Count} ayrı bakiye düşümü bulundu " +
+                        $"({string.Join(", ", remote.Select(Money))}); müşteriye gidip gitmedikleri bilinmiyor. " +
+                        "Tek istekte birleştirilsin mi? En eski düşüm kalır, ötekiler iade edilir; " +
+                        "kişinin toplamı tek istekte yeniden istenir.";
+            return ("Birden çok ödeme isteği", WithOtherRowNote(found, prompt));
+        }
+
+        var sent = prompt.Requests.Count;
+        var unsent = prompt.UnsentDeductions;
+        string lead;
+        if (sent > 0)
+        {
+            var amounts = string.Join(", ", prompt.Requests.Select(r =>
+                r.Unconfirmed ? Money(r.Amount) + " (gitmiş olabilir)" : Money(r.Amount)));
+            lead = $"Bu kişiye {scope} {sent} istek gitmiş ({amounts})";
+            if (unsent > 0) lead += $"; ayrıca {unsent} gönderilmemiş bakiye düşümü var";
+        }
+        else
+        {
+            lead = $"Bu kişinin {scope} {unsent} gönderilmemiş bakiye düşümü var";
+        }
+
+        var message = lead + "; tek istekte birleştirilsin mi? " +
+                      (prompt.RefundsDeductions
+                          ? "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir."
+                          : "Kişinin toplamı tek istekte yeniden istenir.");
+        return ("Birden çok ödeme isteği", WithOtherRowNote(message, prompt));
+    }
+
+    private static string WithOtherRowNote(string message, PaymentPrompt prompt)
+        => prompt.RefundsToOtherRow
+            ? message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
+              "iade o hesaba döner, bu istekte kullanılmaz."
+            : message;
+
+    /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim (rapordaki kişi toplamı, kargo notu):
+    /// iki kuruş hanesi + "TL".</summary>
+    private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
+
+    private static string WhenText(DateTimeOffset at, DateTimeOffset now)
+    {
+        var local = at.ToLocalTime();
+        return local.Date == now.ToLocalTime().Date
+            ? local.ToString("HH:mm", Tr)
+            : local.ToString("dd.MM.yyyy HH:mm", Tr);
     }
 }

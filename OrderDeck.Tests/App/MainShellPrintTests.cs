@@ -294,6 +294,32 @@ public class MainShellPrintTests
         vm.SelectedQueueItems.Should().BeEmpty();
     }
 
+    // Sahip kararı 1 (2026-10-10): alıcı ödemeli KİŞİ düzeyindedir — üyelerden herhangi birinde açıksa.
+    // Ödeme mesajı bu kişiden kargo ücreti istemiyor; etiket satır başına okunsaydı bayraksız satırın
+    // (kart birincili) paketi "ALICI ÖDEMELİ" yazmadan gönderici ödemeli çıkar, ücreti kimse ödemezdi.
+    [Fact]
+    public async Task Alici_odemeli_kisinin_bayraksiz_satirinin_etiketi_de_alici_odemeli_basilir()
+    {
+        var (vm, printer, db) = Fx();
+        using var _ = db;
+        var customers = new CustomerRepository(db);
+
+        Enqueue(vm, "@tt", 100);                                    // telefonlu satır, bayrak kapalı
+        Enqueue(vm, "@yalniz", 200);                               // karşılaştırma: bayraksız tek satırlık kişi
+        var tt = customers.FindByPlatformAndUsername("instagram", "@tt")!;
+        var ig = new Customer(Guid.NewGuid().ToString("N"), "instagram", "@ig", null, null, 1000, 1000,
+            false, null, null, 0, 0m, null, null, null, RecipientPaysActive: true);   // önceki dekontta işaretlendi
+        customers.Insert(ig);
+        customers.MergeIntoGroup(new[] { tt.Id, ig.Id });
+
+        await vm.PrintCommand.ExecuteAsync(null);
+
+        var basilan = printer.Calls.Should().ContainSingle().Subject;
+        printer.RecipientPaysCalls.Should().ContainSingle().Which.Should().BeEquivalentTo(
+            basilan.Where(l => l.CustomerId == tt.Id).Select(l => l.Id),
+            "kişinin IG satırında bayrak açık — TT etiketi de alıcı ödemeli basılır, bayraksız tek kişi basılmaz");
+    }
+
     // ── R7-04 Soru A: yayın kapanışında kısmi seçim (PO-01/PO-02) ────────
     //
     // EndStream eskiden Print()'i doğrudan çağırıyordu; Print seçim varsa

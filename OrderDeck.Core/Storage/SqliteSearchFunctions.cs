@@ -62,5 +62,14 @@ public static class SqliteSearchFunctions
             "od_legacy_group_id",
             anchor => anchor is null ? null : CustomerIdentity.LegacyGroupIdOf(anchor),
             isDeterministic: true);
+
+        // Ödeme işinin istenen neti (ProductTotal − AppliedAmount), kayıpsız: tutarlar TEXT ondalık
+        // (invariant) saklanır, SQL aritmetiği REAL'e çevirip kuruşu bozardı. Göç 047'nin teslim neti
+        // doldurması ve teslim kaydını donduran ortak SQL (PaymentJobSql.FreezeDelivery) kullanır;
+        // od_identity_key ile aynı kural: hiçbir şema nesnesinde kullanılmaz.
+        connection.CreateFunction<string?, string?, string?>(
+            "od_payment_net",
+            Repositories.PaymentJobSql.NetText,
+            isDeterministic: true);
     }
 }
