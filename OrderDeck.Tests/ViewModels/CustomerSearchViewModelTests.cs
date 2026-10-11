@@ -487,7 +487,9 @@ public class CustomerSearchViewModelTests
 
             dialogs.InfosShown.Should().ContainSingle().Which.Should().Contain("tekrar seçin");
             var job = jobs.Snapshot.Should().ContainSingle("kişi için tek istek").Subject;
-            job.CustomerId.Should().Be(ig);
+            // Sahip kartın birincili değil, belirlenimli kural: taşıma kopyanın telefonunu asıl kayda
+            // getirdi, iki telefonlu üyeden küçük Id'li olan sahiptir (iki bilgisayar aynısını seçer).
+            job.CustomerId.Should().Be(customers.GetPaymentPerson(ig).OwnerId);
             job.ProductTotal.Should().Be(300m, "kişinin bu yayındaki satışı 100 + 150 + 50");
         }
         finally { if (File.Exists(path)) File.Delete(path); }

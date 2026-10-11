@@ -1,3 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Threading.Tasks;
+using OrderDeck.Core.Storage.Repositories;
+
 namespace OrderDeck.App.Services;
 
 /// <summary>
@@ -59,6 +66,16 @@ public static class PaymentResultPresenter
                     "Müşteri listesi bilgisayarlar arası birleştirme nedeniyle güncellendi — lütfen tekrar seçin.");
                 break;
 
+            case PaymentRequestResult.PaymentInProgress:
+                // Aynı kişi için öbür pencerede bir akış sürüyor (ör. Cloud API gönderimi) ve
+                // sınırlı bekleme doldu; hiçbir şey gönderilmedi.
+                dialogs.ShowInfo(
+                    "Bu müşteri için başka bir pencerede ödeme isteği sürüyor — biraz sonra tekrar deneyin.");
+                break;
+
+            // AlreadyRequested / MergeRequired soru olarak RequestConfirmedAsync'te sorulur; buraya
+            // gelmeleri operatörün "Hayır" dediği anlamına gelir — hiçbir şey yapılmadı, bildirim yok.
+
             case PaymentRequestResult.PhoneRequired:
                 // Buraya yalnız telefon diyaloğundan SONRA gelinir (ilk çağrının
                 // PhoneRequired'ı diyaloğu açar, bildirime düşmez). Numara
@@ -69,5 +86,64 @@ public static class PaymentResultPresenter
                     "okunamadı. Müşteri kartından numarayı kontrol edin.");
                 break;
         }
+    }
+
+    /// <summary>
+    /// Ödeme isteğini, servisin sorularını (sahip kararları 2 ve 4) operatöre sorarak yürütür:
+    /// <see cref="PaymentRequestResult.AlreadyRequested"/> / <see cref="PaymentRequestResult.MergeRequired"/>
+    /// gelirse metin gösterilir; "Evet" → aynı istek onay belirteciyle yeniden çağrılır (PhoneRequired
+    /// deseni — kira diyalog boyunca tutulmaz, servis belirteçle durumun değişmediğini doğrular).
+    /// "Hayır" → hiçbir şey değişmez, soru sonucu döner (<see cref="Notify"/> sessiz geçer).
+    /// İki çağrı yeri (müşteri arama, yayın raporu) aynı yoldan geçer (R4-07 gerekçesi).
+    /// </summary>
+    public static async Task<PaymentRequestOutcome> RequestConfirmedAsync(
+        IDialogService dialogs, Func<IReadOnlySet<string>?, Task<PaymentRequestOutcome>> request)
+    {
+        var tokens = new HashSet<string>(StringComparer.Ordinal);
+        var outcome = await request(null);
+        // Onay ile yeniden çağrı arasında durum değişirse (öbür pencere gönderdi) yeni durum yeniden
+        // sorulur; sınır sonsuz döngüye karşı.
+        for (var round = 0; round < MaxPromptRounds && outcome.Prompt is { } prompt; round++)
+        {
+            var (title, message) = PromptText(prompt, DateTimeOffset.Now);
+            if (!await dialogs.ConfirmAsync(message, title)) return outcome;
+            tokens.Add(prompt.Token);
+            outcome = await request(tokens);
+        }
+        return outcome;
+    }
+
+    private const int MaxPromptRounds = 3;
+
+    private static readonly CultureInfo Tr = CultureInfo.GetCultureInfo("tr-TR");
+
+    /// <summary>Sorunun başlığı ve metni (sahip kararlarındaki metinler).</summary>
+    public static (string Title, string Message) PromptText(PaymentPrompt prompt, DateTimeOffset now)
+    {
+        if (prompt.Kind == PersonScopePromptKind.Resend)
+        {
+            var last = prompt.Requests.LastOrDefault();
+            var at = last?.At is { } t ? WhenText(t, now) + " " : "";
+            return ("Ödeme isteği zaten gönderildi",
+                $"{at}{Money(last?.Amount ?? 0m)} istendi, tekrar gönderilsin mi?");
+        }
+
+        var scope = prompt.ScopeKey.StartsWith("session:", StringComparison.Ordinal)
+            ? "bu yayın için"
+            : "genel toplam için";
+        var amounts = string.Join(", ", prompt.Requests.Select(r => Money(r.Amount)));
+        return ("Birden çok ödeme isteği",
+            $"Bu kişiye {scope} {prompt.Requests.Count} istek gitmiş ({amounts}); tek istekte birleştirilsin mi? " +
+            "Fazladan düşülen bakiye iade edilir.");
+    }
+
+    private static string Money(decimal amount) => amount.ToString("#,##0.##", Tr) + " ₺";
+
+    private static string WhenText(DateTimeOffset at, DateTimeOffset now)
+    {
+        var local = at.ToLocalTime();
+        return local.Date == now.ToLocalTime().Date
+            ? local.ToString("HH:mm", Tr)
+            : local.ToString("dd.MM.yyyy HH:mm", Tr);
     }
 }

@@ -43,7 +43,44 @@ public enum PaymentRequestResult
     /// yüklendikten sonra yerel taşıma müşteriyi başka Id'ye geçirdi. Hiçbir şey
     /// GÖNDERİLMEDİ, iş açılmadı; çağıran listeyi yeniler, operatör yeniden seçer.</summary>
     ListStale,
+
+    /// <summary>Sahip kararı 2 (2026-10-10): bu kişiye bu kapsam için TESLİM EDİLMİŞ bir istek var.
+    /// Ağ ya da para adımından ÖNCE döner, hiçbir şey değişmedi; çağıran operatöre
+    /// <see cref="PaymentRequestOutcome.Prompt"/>'u sorar, "Evet" gelirse belirteçle yeniden çağırır
+    /// (PhoneRequired deseni). "Hayır" → hiçbir şey yapılmaz.</summary>
+    AlreadyRequested,
+
+    /// <summary>Sahip kararı 4: bu kişiye bu kapsam için birden çok istek gitmiş (biri para taşıyor ya
+    /// da teslim edilmiş) — tek istekte birleştirilsin mi? Onaydan önce indirme, geri alma, ağ çağrısı
+    /// ve mesaj YOK; onay gelirse fazladan düşülen bakiye iade edilir.</summary>
+    MergeRequired,
+
+    /// <summary>Bu kişi için başka bir ödeme akışı sürüyor (öbür pencere) ve süresi sınırlı bekleme
+    /// doldu. Hiçbir şey gönderilmedi; operatör biraz sonra tekrar dener.</summary>
+    PaymentInProgress,
 }
+
+/// <summary>Operatöre sorulacak soru (<see cref="PaymentRequestResult.AlreadyRequested"/> /
+/// <see cref="PaymentRequestResult.MergeRequired"/>). Metni <see cref="PaymentResultPresenter"/> kurar.</summary>
+/// <param name="Requests">Daha önce gitmiş istekler (eskiden yeniye).</param>
+/// <param name="Token">Onay belirteci: "Evet" gelince yeniden çağrıya verilir. Soru ile onay arasında
+/// durum değiştiyse belirteç tutmaz ve yeniden sorulur.</param>
+public sealed record PaymentPrompt(
+    PersonScopePromptKind Kind, string ScopeKey, IReadOnlyList<PriorPaymentRequest> Requests, string Token);
+
+/// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve teslim anı.</summary>
+public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At);
+
+/// <summary>"Ödeme iste"nin sonucu.
+/// <para><see cref="OwnerId"/> ve <see cref="Demoted"/> banka beklentisi (W2) için: beklenti işin sahip
+/// satırına yazılır (işsiz yollarda kişinin belirlenimli sahibi; GUID'li üye yoksa null → beklenti yok),
+/// indirilen her iş için (CustomerId, OriginalScopeKey) beklentisi iptal edilir. Sahip yeniden
+/// türetilmez.</para></summary>
+public sealed record PaymentRequestOutcome(
+    PaymentRequestResult Result,
+    PaymentPrompt? Prompt = null,
+    string? OwnerId = null,
+    IReadOnlyList<DemotedJob>? Demoted = null);
 
 /// <summary>
 /// Phase 4g: Customer + tutar + tarih → Settings template substitution + wa.me launch.
@@ -66,6 +103,13 @@ public sealed class PaymentRequestService
     private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
     private readonly CustomerRepository? _customers;
     private readonly CustomerBusySet? _busy;
+
+    /// <summary>Kişi başına özel ödeme kilidi — servis tekil (AppHost), yani süreç içi tek kilit tablosu.</summary>
+    private readonly PaymentPersonGate _personGate = new();
+
+    /// <summary>Aynı kişinin başka bir akışını bekleme süresi; dolarsa
+    /// <see cref="PaymentRequestResult.PaymentInProgress"/>. Testler kısaltır.</summary>
+    internal TimeSpan PersonGateTimeout { get; set; } = TimeSpan.FromSeconds(20);
 
     /// <param name="customers">U12 (Bölüm C): bakiye akışının girişinde müşteri Id'sini yerel
     /// yönlendirme tablosundan çözer. DI verir; null yalnız testlerde (Id olduğu gibi kullanılır).</param>
@@ -178,27 +222,43 @@ public sealed class PaymentRequestService
         string scopeKey, CancellationToken ct = default)
         => OpenWhatsAppAsync(customer, _ => productTotal, streamDate, scopeKey, ct);
 
+    /// <summary><see cref="RequestPaymentAsync"/>'in yalnız sonucu dönen biçimi (onay belirteci
+    /// vermez: teslim edilmiş istekte <see cref="PaymentRequestResult.AlreadyRequested"/> döner).</summary>
+    public async Task<PaymentRequestResult> OpenWhatsAppAsync(
+        Customer customer, Func<PaymentPerson, decimal?> productTotalFor, DateTime streamDate,
+        string scopeKey, CancellationToken ct = default)
+        => (await RequestPaymentAsync(customer, productTotalFor, streamDate, scopeKey, null, ct)).Result;
+
     /// <summary>
-    /// <see cref="OpenWhatsAppAsync(Customer, decimal, DateTime, string, CancellationToken)"/>'ın,
-    /// tutarı akış girişinde yeniden okuyan biçimi (U12, Bölüm C).
+    /// "Ödeme iste" — KİŞİ düzeyinde (tasarım 1, 2026-10-10). Tutar akış girişinde yeniden okunur
+    /// (U12, Bölüm C).
     ///
     /// <para>Pencere ya da liste açıkken senkron müşteriyi başka Id'ye taşımış olabilir: akış
-    /// güncel Id'yi KİRALAR ve onu bir kez çözer; bakiye işi (FindOrCreate → … → BeginApply →
-    /// mesaj → Close) o Id ile koşar. Kira sürdükçe senkron bu müşteriyi taşımaz/dönüştürmez
+    /// tıklanan satırın güncel Id'sini KİRALAR, kişisini (aynı gruptaki bütün satırlar) okur, kişinin
+    /// bütün üyelerini özel ödeme kilidiyle (<see cref="PaymentPersonGate"/>) ve senkron kirasıyla
+    /// (<see cref="CustomerBusySet"/>) tutar. Kira sürdükçe senkron hiçbir üyeyi taşımaz/dönüştürmez
     /// (U13) — iş uçuşta yeniden adlandırılıp kapatılamaz (U8'in çift düşüm penceresi).</para>
     ///
-    /// <para>Gönderim, çağıranın tuttuğu nesneyle değil kira altında okunan GÜNCEL satırla yapılır
-    /// (telefon, alıcı ödemeli, ad): taşıma asıl kaydın verisini, KVKK silmesi boşaltılmış satırı
-    /// bırakmış olabilir — silinmiş kişinin eski telefonuna mesaj gitmemeli.</para>
+    /// <para>Ödeme işi kişi × kapsamdır: kart birincili ya da tıklanan satır ne olursa olsun aynı kişi
+    /// ve kapsam için aynı iş bulunur (<see cref="IPaymentJobStore.FindOrCreateForPerson"/>). Sunucuya
+    /// giden her çağrı işin SAHİP satırının Id'siyle yapılır.</para>
+    ///
+    /// <para>Gönderim, çağıranın tuttuğu nesneyle değil kira altında okunan GÜNCEL satırlarla yapılır:
+    /// ad tıklanan satırdan; telefon ve alıcı ödemeli kişi düzeyinde (<see cref="PaymentPerson.ContactPhone"/>,
+    /// <see cref="PaymentPerson.RecipientPaysActive"/>) — kart ve rapor farklı satırları kiralasa da aynı
+    /// toplam. KVKK silmesi boşaltılmış satırı bırakmış olabilir — silinmiş kişinin eski telefonuna
+    /// mesaj gitmez.</para>
     /// </summary>
-    /// <param name="productTotalFor">Kiralanan GÜNCEL Id ile, kira altında BİR KEZ çağrılır ve
-    /// o Id'nin ürün toplamını döner. Liste/rapor anlık görüntüsünün tutarı Id başına tutuldu:
-    /// taşımadan önce alınmışsa kopyanın satırı yalnız kendi yazımının payını taşır ve asıl
-    /// kaydın işiyle uyuşmaz. <c>null</c> = çağıran reddetti (anlık görüntüsü bayat):
-    /// <see cref="PaymentRequestResult.ListStale"/> döner, hiçbir şey gönderilmez.</param>
-    public async Task<PaymentRequestResult> OpenWhatsAppAsync(
-        Customer customer, Func<string, decimal?> productTotalFor, DateTime streamDate,
-        string scopeKey, CancellationToken ct = default)
+    /// <param name="productTotalFor">Kira altında okunan GÜNCEL kişiyle çağrılır ve kişinin ürün
+    /// toplamını döner (kart: üyelerin yayın/kümülatif toplamı; rapor: üyelerin yayın toplamı — ikisi
+    /// aynı kişide aynı sonucu vermeli, yoksa iş girişler arasında sürekli revize edilir). Üye kümesi
+    /// akış sırasında değişirse yeniden çağrılabilir. <c>null</c> = çağıran reddetti (anlık görüntüsü
+    /// bayat): <see cref="PaymentRequestResult.ListStale"/> döner, hiçbir şey gönderilmez.</param>
+    /// <param name="confirmedTokens">Operatörün onayladığı soruların belirteçleri
+    /// (<see cref="PaymentPrompt.Token"/>).</param>
+    public async Task<PaymentRequestOutcome> RequestPaymentAsync(
+        Customer customer, Func<PaymentPerson, decimal?> productTotalFor, DateTime streamDate,
+        string scopeKey, IReadOnlySet<string>? confirmedTokens = null, CancellationToken ct = default)
     {
         IDisposable lease;
         string customerId;
@@ -212,31 +272,124 @@ public sealed class PaymentRequestService
             // genel hata kutusuna gitmez; operatör tekrar dener.
             _log?.LogError(ex, "Ödeme akışının girişi düştü — mesaj engellendi (customer={CustomerId})",
                 customer.Id);
-            return PaymentRequestResult.BalanceUncertain;
+            return new(PaymentRequestResult.BalanceUncertain);
         }
 
         using (lease)
         {
-            decimal? productTotal;
-            Customer current;
+            // Üye kümesi akış sırasında değişirse (elle birleştirme kiraya takılmaz) iş, yazma
+            // işleminin içinde bunu görür (MembershipChanged) ve kişi yeniden okunur.
+            for (var attempt = 0; attempt < MaxEnterAttempts; attempt++)
+            {
+                PersonHold? hold;
+                try
+                {
+                    hold = await EnterPersonAsync(customer, customerId, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _log?.LogError(ex, "Ödeme kişisi kiralanamadı — mesaj engellendi (customer={CustomerId})",
+                        customerId);
+                    return new(PaymentRequestResult.BalanceUncertain);
+                }
+                if (hold is null)
+                {
+                    _log?.LogWarning("Bu kişi için başka bir ödeme akışı sürüyor (customer={CustomerId})", customerId);
+                    return new(PaymentRequestResult.PaymentInProgress);
+                }
+
+                using (hold)
+                {
+                    var person = hold.Person;
+                    decimal? productTotal;
+                    Customer current;
+                    try
+                    {
+                        // Önce çağıranın reddi: bayat kartta operatöre telefon da sorulmaz.
+                        productTotal = productTotalFor(person);
+                        if (productTotal is null) return new(PaymentRequestResult.ListStale);
+                        current = _customers?.GetById(person.LeasedId) ?? customer with { Id = person.LeasedId };
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _log?.LogError(ex, "Ödeme akışının tutarı/müşterisi okunamadı — mesaj engellendi (customer={CustomerId})",
+                            customerId);
+                        return new(PaymentRequestResult.BalanceUncertain);
+                    }
+
+                    var phone = person.ContactPhone;
+                    if (!PhoneNormalizer.IsValidTr(phone))
+                        return new(PaymentRequestResult.PhoneRequired, OwnerId: person.OwnerId);
+                    var contact = current with { Phone = phone, RecipientPaysActive = person.RecipientPaysActive };
+
+                    var outcome = await OpenWhatsAppCoreAsync(
+                        contact, person, productTotal.Value, streamDate, scopeKey, confirmedTokens, ct);
+                    if (outcome is not null) return outcome;
+                    _log?.LogInformation(
+                        "Ödeme kişisinin üye kümesi akış sırasında değişti — yeniden okunuyor (customer={CustomerId})",
+                        customerId);
+                }
+            }
+            _log?.LogError("Ödeme kişisi kararlı okunamadı — mesaj engellendi (customer={CustomerId})", customerId);
+            return new(PaymentRequestResult.BalanceUncertain);
+        }
+    }
+
+    /// <summary>Kişinin kilitleri: özel ödeme kilidi + tıklanan dışındaki üyelerin senkron kiraları.</summary>
+    private sealed class PersonHold(PaymentPerson person, IReadOnlyList<IDisposable> holds) : IDisposable
+    {
+        public PaymentPerson Person { get; } = person;
+
+        public void Dispose()
+        {
+            for (var i = holds.Count - 1; i >= 0; i--) holds[i].Dispose();
+        }
+    }
+
+    /// <summary>Kişiyi okur, bütün üyelerini özel ödeme kilidiyle ve senkron kirasıyla tutar. Kiralar
+    /// kümenin kilidinden geçer: o ana kadar başlamış taşıma commit edilmiştir; bir üye arada taşındıysa
+    /// ya da üye kümesi değiştiyse bütün kilitler bırakılır ve baştan okunur. Bekleme süresi dolarsa
+    /// (başka pencerenin akışı sürüyor) <c>null</c>.
+    ///
+    /// <para>U17: sıra tıklanan satırın kirası → kişi kilidi → öbür üyelerin kiraları → (sonra) SQLite
+    /// yazma kilidi; hiçbiri açık bir veritabanı işlemi içinden alınmaz.</para></summary>
+    private async Task<PersonHold?> EnterPersonAsync(Customer customer, string leasedId, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < MaxEnterAttempts; attempt++)
+        {
+            var person = ReadPerson(customer, leasedId);
+            var gate = await _personGate.TryEnterAsync(person.MemberIds, PersonGateTimeout, ct);
+            if (gate is null) return null;
+
+            var holds = new List<IDisposable> { gate };
             try
             {
-                // Önce çağıranın reddi: bayat kartta operatöre telefon da sorulmaz.
-                productTotal = productTotalFor(customerId);
-                if (productTotal is null) return PaymentRequestResult.ListStale;
-                current = _customers?.GetById(customerId) ?? customer with { Id = customerId };
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log?.LogError(ex, "Ödeme akışının tutarı/müşterisi okunamadı — mesaj engellendi (customer={CustomerId})",
-                    customerId);
-                return PaymentRequestResult.BalanceUncertain;
-            }
+                if (_busy is not null)
+                    foreach (var m in person.MemberIds)
+                        if (!string.Equals(m, leasedId, StringComparison.Ordinal))
+                            holds.Add(await _busy.EnterAsync(m, ct));
 
-            if (!PhoneNormalizer.IsValidTr(current.Phone))
-                return PaymentRequestResult.PhoneRequired;
-            return await OpenWhatsAppCoreAsync(current, productTotal.Value, streamDate, scopeKey, ct);
+                var again = ReadPerson(customer, leasedId);
+                var moved = _customers is not null
+                    && _customers.ResolveIds(person.MemberIds).Any(kv => !string.Equals(kv.Key, kv.Value, StringComparison.Ordinal));
+                if (!moved && string.Equals(again.MemberKey, person.MemberKey, StringComparison.Ordinal))
+                    return new PersonHold(again, holds);
+            }
+            catch
+            {
+                for (var i = holds.Count - 1; i >= 0; i--) holds[i].Dispose();
+                throw;
+            }
+            for (var i = holds.Count - 1; i >= 0; i--) holds[i].Dispose();
         }
+        throw new InvalidOperationException($"Ödeme kişisinin üyeleri kararlı kiralanamadı (customer={leasedId})");
+    }
+
+    /// <summary>Kiralanan satırın kişisi; depo yoksa (testler) ya da satır okunamadıysa tek satırlık kişi.</summary>
+    private PaymentPerson ReadPerson(Customer customer, string leasedId)
+    {
+        var person = _customers?.GetPaymentPerson(leasedId);
+        return person is { Members.Count: > 0 } ? person : PaymentPerson.Single(customer with { Id = leasedId });
     }
 
     /// <summary>Müşteriyi kiralar ve kiralanan Id'nin güncel olduğunu doğrular: kiralama kümenin
@@ -288,11 +441,13 @@ public sealed class PaymentRequestService
         public void Dispose() { }
     }
 
-    /// <summary>Bakiye akışının gövdesi — müşteri Id'si çözülmüş ve kiralı, <paramref name="customer"/>
-    /// kira altında okunan güncel satır (bkz. tutarı yeniden okuyan <c>OpenWhatsAppAsync</c> biçimi).</summary>
-    private async Task<PaymentRequestResult> OpenWhatsAppCoreAsync(
-        Customer customer, decimal productTotal, DateTime streamDate,
-        string scopeKey, CancellationToken ct)
+    /// <summary>Bakiye akışının gövdesi — kişi kiralı, <paramref name="customer"/> kira altında okunan
+    /// iletişim satırı (ad tıklanan satırdan; telefon ve alıcı ödemeli kişi düzeyinde). <c>null</c> =
+    /// üye kümesi yazma işleminin içinde değişmiş bulundu; çağıran kişiyi yeniden okur (hiçbir şey
+    /// yazılmadı, gönderilmedi).</summary>
+    private async Task<PaymentRequestOutcome?> OpenWhatsAppCoreAsync(
+        Customer customer, PaymentPerson person, decimal productTotal, DateTime streamDate,
+        string scopeKey, IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
     {
         var settings = _settingsStore.Load();
         var (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, settings);
@@ -304,22 +459,37 @@ public sealed class PaymentRequestService
         decimal appliedBalance = 0m;
         var totalBeforeBalance = totalAmount;
         PaymentJob? deliveryJob = null;   // mesaj müşteriye ulaşınca kapatılacak iş
+        // W2: beklentinin sahibi — iş varsa onun sahip satırı, işsiz yolda kişinin belirlenimli sahibi.
+        var ownerId = person.OwnerId;
+        IReadOnlyList<DemotedJob> demoted = Array.Empty<DemotedJob>();
         // S5: sıfır toplam da bakiye akışına girer. Eski kapı (totalAmount > 0)
         // satıştaki tüm ürünler kaldırıldığında akışı komple atlıyordu; sunucuda
         // duran düşüm ise yerinde kalıyordu — müşterinin parası, karşılığı olmayan
         // bir satışta asılı kalırdı. Sıfır tutar bir satışın İPTALİDİR ve iadeyi
         // hak eder. Düşülecek bir şey yoksa aşağıdaki akış zaten ağa çıkmadan
         // "bakiye yok" ile kapanır.
-        if (Guid.TryParseExact(customer.Id, "N", out var wpfCustomerId))
+        //
+        // Kişinin GUID'li bir üyesi varsa (sahip) bakiye akışına girilir — tıklanan satır GUID'siz
+        // olsa da. GUID'li üye yoksa iş yoktur (sunucu GUID olmayan Id'ye düşüm yazamaz).
+        if (person.OwnerId is not null)
         {
-            var outcome = await ResolveBalanceAsync(
-                customer, wpfCustomerId, totalAmount, scopeKey, ct);
+            var outcome = await ResolveBalanceAsync(person, totalAmount, scopeKey, confirmedTokens, ct);
+            if (outcome.MembershipChanged) return null;
+            demoted = outcome.Demoted ?? demoted;
+            ownerId = outcome.Job?.CustomerId ?? ownerId;
+            if (outcome.Prompt is { } prompt)
+                return new(prompt.Kind == PersonScopePromptKind.Merge
+                        ? PaymentRequestResult.MergeRequired
+                        : PaymentRequestResult.AlreadyRequested,
+                    prompt, ownerId, demoted);
             if (outcome.Uncertain)
-                return PaymentRequestResult.BalanceUncertain;
+                return new(PaymentRequestResult.BalanceUncertain, null, ownerId, demoted);
             deliveryJob = outcome.Job;
             appliedBalance = outcome.AppliedBalance;
             totalAmount -= appliedBalance;
         }
+
+        PaymentRequestOutcome Done(PaymentRequestResult result) => new(result, null, ownerId, demoted);
 
         var ctx = new PaymentContext(
             DisplayName: customer.DisplayName ?? customer.Username,
@@ -346,11 +516,11 @@ public sealed class PaymentRequestService
             {
                 case CloudSendOutcome.Sent:
                     CloseJob(deliveryJob);
-                    return PaymentRequestResult.Sent;
+                    return Done(PaymentRequestResult.Sent);
                 case CloudSendOutcome.Pending:
                     // Sonuç bilinmiyor — iş açık kalır, bir sonraki deneme aynı
                     // anahtarı yeniden kullanır (R2-01).
-                    return PaymentRequestResult.SendPending;
+                    return Done(PaymentRequestResult.SendPending);
             }
         }
 
@@ -360,13 +530,13 @@ public sealed class PaymentRequestService
         {
             _launcher.Launch(link);
             CloseJob(deliveryJob);
-            return PaymentRequestResult.Opened;
+            return Done(PaymentRequestResult.Opened);
         }
         catch
         {
             // İş açık kalır: operatörün ikinci tıklaması aynı anahtarı bulur,
             // bakiye ikinci kez düşmez (R2-01).
-            return PaymentRequestResult.LaunchFailed;
+            return Done(PaymentRequestResult.LaunchFailed);
         }
     }
 
@@ -383,11 +553,21 @@ public sealed class PaymentRequestService
         }
     }
 
-    private sealed record BalanceOutcome(bool Uncertain, decimal AppliedBalance, PaymentJob? Job);
+    private sealed record BalanceOutcome(bool Uncertain, decimal AppliedBalance, PaymentJob? Job)
+    {
+        /// <summary>Doluysa akış durur ve operatöre sorulur (hiçbir şey değişmedi).</summary>
+        public PaymentPrompt? Prompt { get; init; }
+
+        /// <summary>Üye kümesi yazma işleminin içinde değişmiş bulundu — kişi yeniden okunur.</summary>
+        public bool MembershipChanged { get; init; }
+
+        /// <summary>Bu tıklamada miras kapsamına indirilen işler (W2 iptali için).</summary>
+        public IReadOnlyList<DemotedJob>? Demoted { get; init; }
+    }
 
     /// <summary>
-    /// Lisans id'si çözülemediğinde (anahtar yok, ya da sunucuya ulaşılamıyor)
-    /// verilecek karar.
+    /// Lisans id'si çözülemediğinde (sunucuya ulaşılamıyor) verilecek karar. Kişi × kapsamın işi
+    /// zaten bulundu/açıldı (<see cref="IPaymentJobStore.FindOrCreateForPerson"/> yereldir).
     ///
     /// Bu dal apply'dan ÖNCE çalışır: bu tıklamada para adına sunucuya tek bir
     /// istek bile gitmemiştir. Yani belirsiz olan sunucuya erişim, satışın
@@ -397,19 +577,17 @@ public sealed class PaymentRequestService
     /// Her şeyi bloklamak, tek bir VPS kesintisinde bakiyesi hiç olmayan
     /// müşteriler dahil TÜM ödeme mesajlarını durdururdu — yayın ortasında tam
     /// iş durması. Blok yalnızca gerçekten bilinmeyen durumlara saklanır.
+    ///
+    /// <para>Çevrimdışı yapılan kişi birleştirmesi yalnız yereldir: para taşıyan kaybeden açık
+    /// mirastır ve aşağıdaki denetim bu tıklamayı durdurur; sıradaki çevrimiçi tıklama onu geri alır.</para>
     /// </summary>
-    private BalanceOutcome OfflineOutcome(Customer customer, decimal totalAmount, string scopeKey)
+    private BalanceOutcome OfflineOutcome(PaymentPerson person, PaymentJob job, decimal totalAmount)
     {
-        // Anahtar hiç yoksa bakiye özelliği zaten kapalı — eski davranış.
-        if (string.IsNullOrEmpty(_currentLicense.CurrentLicenseKey))
-            return new(Uncertain: false, 0m, null);
-
-        // Açık miras (033→034) iş: anahtarı var, sonucu bilinmiyor. Hangi
-        // satışa ait olduğu da belirsiz — kesinleştirmeden devam edilemez.
-        if (_jobs.GetOpenLegacies(customer.Id).Count > 0)
+        // Açık miras (033→034, taşıma ya da kişi birleştirmesi) iş: anahtarı var, sonucu
+        // bilinmiyor. Hangi satışa ait olduğu da belirsiz — kesinleştirmeden devam edilemez.
+        // Kişinin BÜTÜN üyeleri taranır.
+        if (ReconcilableLegacies(person).Count > 0)
             return new(Uncertain: true, 0m, null);
-
-        var job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
 
         // created = BeginApply hiç çalışmamış (anahtar yazımı ile durum aynı
         // UPDATE'te değişir) → bu satış için hiç para hareketi yok.
@@ -431,335 +609,474 @@ public sealed class PaymentRequestService
         return new(Uncertain: true, 0m, job);
     }
 
+    /// <summary>Kişinin bütün üyelerindeki açık miras işleri — en yeniden eskiye. Sahibi GUID
+    /// OLMAYAN miras iş uyarı günlüğüyle KAPATILIR, akışı bloklamaz: sunucu GUID olmayan Id'ye
+    /// düşüm yazamaz (uzlaştırılacak bir şey yok); bloklasaydı miras tarama bütün üyelerde ve her
+    /// kapsamdan önce koştuğu için kişi kalıcı olarak bloklanırdı.</summary>
+    private IReadOnlyList<PaymentJob> ReconcilableLegacies(PaymentPerson person)
+    {
+        var result = new List<PaymentJob>();
+        foreach (var l in _jobs.GetOpenLegacies(person.MemberIds))
+        {
+            if (PaymentOwnerRule.IsOwnerCapable(l.CustomerId))
+            {
+                result.Add(l);
+                continue;
+            }
+            _log?.LogWarning(
+                "GUID olmayan satırın miras ödeme işi kapatıldı — sunucu bu Id'ye düşüm yazamaz (job={JobId})", l.Id);
+            _jobs.Close(l.Id);
+        }
+        return result;
+    }
+
     /// <summary>Satışın bakiye sonucunu kesinleştirir. Dönüşte ya sonuç
     /// kesindir (Uncertain=false; AppliedBalance mesaja yazılabilir) ya da
-    /// akış durmalıdır (Uncertain=true; çağıran BalanceUncertain döner).</summary>
+    /// akış durmalıdır (Uncertain=true; çağıran BalanceUncertain döner) ya da
+    /// operatöre sorulmalıdır (<see cref="BalanceOutcome.Prompt"/>).</summary>
     private async Task<BalanceOutcome> ResolveBalanceAsync(
-        Customer customer, Guid wpfCustomerId, decimal totalAmount,
-        string scopeKey, CancellationToken ct)
+        PaymentPerson person, decimal totalAmount, string scopeKey,
+        IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
     {
         try
         {
-            var licenseId = await ResolveLicenseIdAsync(ct);
-            if (licenseId is null)
-                return OfflineOutcome(customer, totalAmount, scopeKey);
+            // Anahtar hiç yoksa bakiye özelliği zaten kapalı — eski davranış (iş açılmaz).
+            if (string.IsNullOrEmpty(_currentLicense.CurrentLicenseKey))
+                return new(Uncertain: false, 0m, null);
 
-            // 1) Miras (033→034) işleri: önce HEPSİNİ kesinleştir, sonra devret.
-            //
-            // R4-04: müşteri başına birden fazla açık miras anahtarı olabilir
-            // (R2-04 bunun oluşabildiğini gösterdi). Her birinin sonucu ayrı
-            // öğrenilmeli; biri bile belirsiz kalırsa akış durur — yoksa
-            // sunucudaki fazla düşümü hiç göremeden yeni satış açmış oluruz.
-            var legacies = _jobs.GetOpenLegacies(customer.Id);
-            PaymentJob job;
-
-            // R6-02: işin sunucu sonucu BU tıklama içinde sunucudan GÜNCEL
-            // geçerlilik taşıyan bir cevapla öğrenildiyse true — 6. adımdaki
-            // tekrar-paylaşım doğrulaması o zaman gereksizdir (aynı cevabı
-            // ikinci kez sormak olurdu).
-            //
-            // R9-F01: replay cevabı bu tanıma GİRMEZ. Sunucu idempotency
-            // kaydından TARİHSEL sonucu döndürür; düşüm panel iadesiyle geri
-            // alınmış olsa da replay "applied" der. Yalnız kapsam benimsemesi
-            // (4. adım) sayılır: /scope sorgusu geri alınmış satırları dışlar,
-            // cevabı güncel gerçektir.
-            var remoteConfirmed = false;
-
-            if (legacies.Count > 0)
+            // 0) Kişi × kapsam — ağ ve para adımlarından ÖNCE, tek yerel işlemde: iş bulunur ya da
+            //    sahip satırda açılır; fazla işler indirilir. Teslim edilmiş istek (sahip kararı 2) ya
+            //    da para taşıyan/teslim edilmiş fazla iş (sahip kararı 4) varsa ve operatör onaylamadıysa
+            //    hiçbir şey yazılmadan soru döner.
+            var pj = _jobs.FindOrCreateForPerson(new PersonJobRequest(
+                person.LeasedId, person.MemberKey, person.MemberIds, person.OwnerId!,
+                scopeKey, totalAmount, confirmedTokens));
+            switch (pj.Status)
             {
-                var resolved = new List<PaymentJob>(legacies.Count);
-                foreach (var l in legacies)
-                {
-                    var r = await ReplayAsync(licenseId.Value, wpfCustomerId, l, ct);
-                    if (r.State == PaymentJobState.ApplyUncertain)
-                        return new(true, 0m, r);
-                    resolved.Add(r);
-                }
-
-                job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
-
-                // Devralma en fazla BİR miras işine uygulanabilir: taze hedef
-                // tek bir anahtar taşır. En yenisi seçilir — 033 akışında bu
-                // satışa en yakın olan odur; kalanlar artık düşüm sayılır.
-                var adopted = job.State == PaymentJobState.Created && job.ApplyKey is null
-                    ? resolved[0]
-                    : null;
-                if (adopted is not null)
-                {
-                    // R9-F01: remoteConfirmed BİLEREK set edilmiyor — replay
-                    // tarihsel sonuçtur, 6. adım güncelliği ayrıca doğrular.
-                    _jobs.AdoptLegacyResult(job.Id, adopted.Id);
-                }
-
-                foreach (var l in resolved)
-                {
-                    if (adopted is not null && l.Id == adopted.Id) continue;
-
-                    // Devralınmayan miras düşümü artık: geri al, işi kapat.
-                    // Geri alma kesinleşmezse iş AÇIK kalır ve akış durur —
-                    // kapatmak, bilinmeyen bir düşümü sessizce gömmek olurdu.
-                    if (l.AppliedAmount is > 0m
-                        && !await TryReverseAsync(licenseId.Value, l.ApplyKey!.Value, ct))
-                    {
-                        // Koşul tutmazsa satırı başka bir akış devraldı; bizim
-                        // geri almamız yine de bilinmiyor — bu tıklama durur.
-                        _jobs.MarkUncertain(l.Id, l.ApplyKey, l.Revision);
-                        return new(true, 0m, l);
-                    }
-                    _jobs.Close(l.Id);
-                }
-
-                job = _jobs.Get(job.Id)!;
+                case PersonJobStatus.MembershipChanged:
+                    return new(true, 0m, null) { MembershipChanged = true };
+                case PersonJobStatus.ConfirmationRequired:
+                    return new(true, 0m, pj.Job) { Prompt = PromptOf(pj.Plan!, scopeKey) };
             }
-            else
-            {
-                job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
-            }
-
-            // 2) Yarım kalmış geri alma (R4-02): HER ŞEYDEN önce uzlaştır.
-            //
-            // İstenen toplam eski değere dönmüş olabilir; o zaman revizyon dalı
-            // hiç çalışmaz ve niyet burada yakalanmazsa görünmez olur. Geri
-            // alınmış bir işlemin anahtarı replay edilirse sunucu onun tarihsel
-            // sonucunu döndürür ve geri alınan tutar geçerli düşüm sanılır.
-            if (job.State == PaymentJobState.ReversePending)
-            {
-                job = await FinishReversalAsync(licenseId.Value, job, ct);
-                if (job.State == PaymentJobState.ReversePending)
-                    return new(true, 0m, job);
-            }
-
-            // 3) Belirsiz iş: bir kez replay (K3) — hâlâ belirsizse blokla.
-            //    R9-F01: replay idempotency kaydının TARİHSEL sonucunu getirir;
-            //    düşüm bu arada dışarıdan geri alındıysa yine "applied" der.
-            //    remoteConfirmed set edilmez — 6. adım güncelliği doğrulasın.
-            if (job.State == PaymentJobState.ApplyUncertain)
-            {
-                job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
-                if (job.State == PaymentJobState.ApplyUncertain)
-                    return new(true, 0m, job);
-            }
-
-            // 4) R4-03 uzlaştırma: iş hiç denenmemiş görünüyor ama sunucuda bu
-            //    kapsamda geri alınmamış bir düşüm olabilir.
-            //
-            //    Tipik sebep yedek geri yükleme: satışın yerel kimliği (apply
-            //    anahtarı) diskte yaşıyordu ve onunla birlikte yok oldu; uzak
-            //    defter ise düşümü hatırlamaya devam ediyor. Sormadan devam
-            //    etmek aynı satışı ikinci kez düşürür — R4-03'ün ta kendisi.
-            //
-            //    Sıra önemli: geri alma tamamlandıktan (2) ve belirsiz iş
-            //    kesinleştikten (3) SONRA sorulmalı, yoksa az önce geri
-            //    aldığımız satırı benimseyebiliriz. Revizyondan (5) ÖNCE
-            //    olmalı ki tutar karşılaştırması benimsenen gerçek tutara karşı
-            //    yapılsın.
-            //    R6-01: sorgu BAŞARISIZSA (null) mesaj bloklanır. Anahtarsız
-            //    created iş tam da çifte düşüm penceresidir; "sorulamadı"yı
-            //    "yok" saymak, yedeği geri yüklenmiş kurulumda aynı satışı
-            //    ikinci kez düşürür. İş dokunulmamış (created/anahtarsız)
-            //    kaldığı için operatörün sıradaki tıklaması temiz dener.
-            if (job.State == PaymentJobState.Created && job.ApplyKey is null)
-            {
-                var reconciled = await AdoptRemoteScopeAsync(licenseId.Value, wpfCustomerId, job, ct);
-                if (reconciled is null) return new(true, 0m, job);
-                job = reconciled;
-                if (job.ApplyKey is not null)
-                    remoteConfirmed = true; // düşüm az önce sunucudan benimsendi
-            }
-
-            // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
-            //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
-            //    çalışır (geri alınacak şey yoktur, sadece tutar güncellenir).
-            if (job.ProductTotal != totalAmount)
-            {
-                if (job.AppliedAmount is > 0m)
-                {
-                    // R4-02: niyet ÖNCE diske — istek tele çıkmadan.
-                    // false = eşzamanlı akış kazandı; satırı yeniden okuyup
-                    // onun bıraktığı duruma göre devam ederiz.
-                    _jobs.BeginReversal(job.Id, job.Revision, job.ApplyKey!.Value, totalAmount);
-                    job = _jobs.Get(job.Id)!;
-
-                    if (job.State == PaymentJobState.ReversePending)
-                    {
-                        job = await FinishReversalAsync(licenseId.Value, job, ct);
-                        if (job.State == PaymentJobState.ReversePending)
-                            return new(true, 0m, job);
-                    }
-                }
-
-                // Buraya gelindiğinde geri alınacak düşüm yok: ya hiç olmadı ya
-                // da kesinleşerek geri alındı (o durumda CompleteReversal işi
-                // zaten hedef toplamla 'created'a döndürdü, koşul tutmaz ve
-                // akış aşağıdaki taze uygulama adımına düşer).
-                if (job.ProductTotal != totalAmount)
-                {
-                    _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
-                    job = _jobs.Get(job.Id)!;
-                    return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
-                }
-            }
-
-            // 6) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal YAZMA yok.
-            //
-            //    R6-02: para düşülmüş görünen iş, paylaşımdan önce sunucudan
-            //    DOĞRULANIR — panel iadesi düşümü geri almış olabilir; eski fişi
-            //    "bakiye düşüldü" diye tekrar paylaşmak müşteriye olmayan bir
-            //    indirimi gösterirdi. Doğrulama fırsatçıdır: uç cevap veremezse
-            //    diskteki kesin sonuçla devam edilir (Applied iş çevrimdışı bile
-            //    paylaşılabiliyor — S3; çevrimiçi tek uç hatası daha katı
-            //    olamaz). no_balance hiç sorulmaz: sunucudan bir şey düşülmedi.
-            if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
-            {
-                if (!remoteConfirmed
-                    && job is { State: PaymentJobState.Applied, ApplyKey: { } appliedKey,
-                                AppliedAmount: > 0m })
-                {
-                    var blocked = await VerifyAppliedStillStandsAsync(
-                        licenseId.Value, job, appliedKey, ct);
-                    if (blocked is not null) return blocked;
-
-                    // R9-F02: doğrulama await'i sırasında eşzamanlı bir akış
-                    // satırı taşımış olabilir (geri alma niyeti, revizyon).
-                    // Sunucu cevabı await ÖNCESİ duruma aitti; kesin mesaj
-                    // await SONRASI satırdan verilmeli. Deneme kimliği
-                    // tutmuyorsa bu tıklama durur — sıradaki tıklama satırın
-                    // güncel hâlinden sürdürür (K3, ClassifySettledJob deseni).
-                    var current = _jobs.Get(job.Id)!;
-                    if (current.State != PaymentJobState.Applied
-                        || current.ApplyKey != appliedKey
-                        || current.Revision != job.Revision)
-                    {
-                        _log?.LogWarning(
-                            "Doğrulama sırasında iş taşındı — mesaj engellendi "
-                            + "(job={JobId}, durum={State})", current.Id, current.State);
-                        return new(true, 0m, current);
-                    }
-                    job = current;
-                }
-                return DefiniteForCall(job, totalAmount);
-            }
-
-            // 7) S5: satış sıfıra indi. Geri alınacak eski düşüm varsa (5)
-            //    çoktan geri alındı; buradan sonrası için düşülecek bir şey
-            //    yok. Sunucuya apply GÖNDERMİYORUZ — sıfır tutarı zaten
-            //    "nothing-to-apply" ile reddeder; sonucu yerelde kesinleştirip
-            //    boş bir gidiş-dönüşten kaçınıyoruz.
-            if (totalAmount <= 0m)
-            {
-                if (!_jobs.MarkNoBalance(job.Id, job.ApplyKey, job.Revision))
-                {
-                    job = _jobs.Get(job.Id)!;
-                    return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
-                        ? DefiniteForCall(job, totalAmount)
-                        : new(true, 0m, job);
-                }
-                return new(false, 0m, _jobs.Get(job.Id));
-            }
-
-            // R6-03: 2. adım geri alma niyetini boşaltmıştı; buraya
-            // reverse_pending ile düşmenin tek yolu araya giren eşzamanlı bir
-            // akışın niyeti O ANDAN SONRA yazmasıdır. Aşağıdaki taze uygulama
-            // diskteki anahtarı yeniden kullanır (BeginApply yarışı kaybeder ve
-            // akış Settle'a düşer) — yani geri alınmak üzere olan düşümü ikinci
-            // kez yazardık. Mesajı engelle; operatörün sıradaki tıklaması
-            // 2. adımdan kaldığı yerden sürdürür.
-            if (job.State == PaymentJobState.ReversePending)
-            {
+            foreach (var d in pj.Demoted)
                 _log?.LogWarning(
-                    "Geri alma beklerken taze düşüm istendi — mesaj engellendi (job={JobId})",
-                    job.Id);
-                return new(true, 0m, job);
-            }
+                    "Kişi birleştirmesi: survivor={SurvivorJobId} demoted={DemotedJobId} owner={CustomerId} keptOpen={KeptOpen}",
+                    pj.Job!.Id, d.JobId, d.CustomerId, d.KeptOpen);
 
-            // 8) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
-            //    anahtar diske → apply.
-            decimal previewBalance;
-            try
-            {
-                var preview = await _api.GetBalancePreviewAsync(licenseId.Value, wpfCustomerId, ct);
-                previewBalance = preview.Balance;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log?.LogWarning(ex,
-                    "Bakiye önizlemesi alınamadı — mesaj engellendi (job={JobId})", job.Id);
-                return new(true, 0m, job); // anahtar yazılmadı, iş created kaldı
-            }
-            if (previewBalance <= 0)
-            {
-                if (!_jobs.MarkNoBalance(job.Id, job.ApplyKey, job.Revision))
-                {
-                    // Araya başka bir akış girdi ve sonucu o yazdı: bizim
-                    // "bakiye yok" gözlemimiz artık bu denemeye ait değil.
-                    job = _jobs.Get(job.Id)!;
-                    return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
-                        ? DefiniteForCall(job, totalAmount)
-                        : new(true, 0m, job);
-                }
-                return new(false, 0m, _jobs.Get(job.Id));
-            }
-
-            if (!_jobs.BeginApply(job.Id, Guid.NewGuid()))
-            {
-                // Yarışı kaybettik (R2-04/A9): kazananın anahtarı diskte.
-                job = _jobs.Get(job.Id)!;
-                if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
-                    return DefiniteForCall(job, totalAmount);
-            }
-            job = _jobs.Get(job.Id)!;
-            return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
+            var outcome = await SettleScopeAsync(person, pj.Job!, totalAmount, confirmedTokens, ct);
+            return outcome with { Demoted = pj.Demoted };
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             _log?.LogError(ex,
                 "Bakiye akışında beklenmeyen hata — mesaj engellendi (customer={CustomerId})",
-                customer.Id);
+                person.LeasedId);
             return new(true, 0m, null);
         }
     }
 
-    /// <summary>R4-03: sunucuda bu kapsamda duran geri alınmamış düşümü işe
-    /// benimsetir. Kayıt yoksa (204) iş olduğu gibi döner ve akış değişmez.
-    ///
-    /// <para>R6-01: sorgu <b>başarısız</b> olursa <c>null</c> döner ve çağıran
-    /// mesajı bloklar. "Yok" ile "sorulamadı" aynı şey değil: bu pencerede
-    /// (anahtarsız created iş) sorulamamışken devam etmek, sunucudaki düşümü
-    /// görmeden ikinci kez düşmek demek — denetimin çifte düşüm deneyi tam
-    /// buydu. Eski K2 gerekçesi ("yeni blokaj yaratma") aldatıcıydı: tam ağ
-    /// kesintisinde akış zaten önizlemede duruyor; yalnız bu ucun düştüğü
-    /// kısmi kesintide ise durmamak parayı riske atıyordu.</para>
-    ///
-    /// <para>Benimseme koşullu: araya giren bir akış işe anahtar yazdıysa
-    /// (false) satır yeniden okunur ve onun bıraktığı durumdan devam edilir.
-    /// Sunucudaki satır o durumda zaten o akışın yazdığı satırdır.</para></summary>
-    private async Task<PaymentJob?> AdoptRemoteScopeAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+    private static PaymentPrompt PromptOf(PersonScopePlan plan, string scopeKey)
+        => new(plan.Kind, scopeKey,
+            plan.PromptJobs.Select(j => new PriorPaymentRequest(
+                j.RequestedNet,
+                j.ClosedAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null)).ToList(),
+            plan.Token);
+
+    /// <summary>Kişi × kapsamın işini (<paramref name="job"/>) kesinleştirir. Sunucuya giden BÜTÜN
+    /// çağrılar (replay, kapsam, önizleme, apply) işin SAHİP satırının Id'siyle yapılır — tıklanan
+    /// satırınkiyle değil: sunucu bir anahtarı farklı asıl kayıtla oynatmayı içerik çakışması sayar.</summary>
+    private async Task<BalanceOutcome> SettleScopeAsync(
+        PaymentPerson person, PaymentJob job, decimal totalAmount,
+        IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
     {
-        CustomerBalanceScope? remote;
+        var licenseId = await ResolveLicenseIdAsync(ct);
+        if (licenseId is null)
+            return OfflineOutcome(person, job, totalAmount);
+
+        // 1) Miras işleri: önce HEPSİNİ kesinleştir, sonra devret ya da geri al.
+        //
+        // R4-04: müşteri başına birden fazla açık miras anahtarı olabilir
+        // (R2-04 bunun oluşabildiğini gösterdi). Her birinin sonucu ayrı
+        // öğrenilmeli; biri bile belirsiz kalırsa akış durur — yoksa
+        // sunucudaki fazla düşümü hiç göremeden yeni satış açmış oluruz.
+        //
+        // Kişinin BÜTÜN üyeleri taranır ve her miras iş KENDİ sahip satırının Id'siyle yeniden
+        // oynatılır (eskiden tıklanan satırın Id'siyle — başka satırın anahtarı içerik çakışmasıyla
+        // kalıcı belirsiz kalırdı).
+        var legacies = ReconcilableLegacies(person);
+
+        // R6-02: işin sunucu sonucu BU tıklama içinde sunucudan GÜNCEL
+        // geçerlilik taşıyan bir cevapla öğrenildiyse true — 6. adımdaki
+        // tekrar-paylaşım doğrulaması o zaman gereksizdir (aynı cevabı
+        // ikinci kez sormak olurdu).
+        //
+        // R9-F01: replay cevabı bu tanıma GİRMEZ. Sunucu idempotency
+        // kaydından TARİHSEL sonucu döndürür; düşüm panel iadesiyle geri
+        // alınmış olsa da replay "applied" der. Yalnız kapsam benimsemesi
+        // (4. adım) sayılır: /scope sorgusu geri alınmış satırları dışlar,
+        // cevabı güncel gerçektir.
+        var remoteConfirmed = false;
+
+        if (legacies.Count > 0)
+        {
+            var resolved = new List<PaymentJob>(legacies.Count);
+            foreach (var l in legacies)
+            {
+                var r = await ReplayAsync(licenseId.Value, Guid.ParseExact(l.CustomerId, "N"), l, ct);
+                if (r.State == PaymentJobState.ApplyUncertain)
+                    return new(true, 0m, r);
+                resolved.Add(r);
+            }
+
+            job = _jobs.Get(job.Id)!;
+
+            // Devralma en fazla BİR miras işine uygulanabilir: taze hedef
+            // tek bir anahtar taşır. Yalnız AYNI sahip satırın miras işi
+            // devralınabilir (sunucu anahtarı o asıl kayıtla tanır); onlardan
+            // en yenisi seçilir — 033 akışında bu satışa en yakın olan odur.
+            // Kalanlar (başka satırınkiler dahil) artık düşüm sayılır.
+            var adoptTarget = job;
+            var adopted = adoptTarget.State == PaymentJobState.Created && adoptTarget.ApplyKey is null
+                ? resolved.FirstOrDefault(r => string.Equals(r.CustomerId, adoptTarget.CustomerId, StringComparison.Ordinal))
+                : null;
+            if (adopted is not null)
+            {
+                // R9-F01: remoteConfirmed BİLEREK set edilmiyor — replay
+                // tarihsel sonuçtur, 6. adım güncelliği ayrıca doğrular.
+                _jobs.AdoptLegacyResult(job.Id, adopted.Id);
+            }
+
+            foreach (var l in resolved)
+            {
+                if (adopted is not null && l.Id == adopted.Id) continue;
+
+                // Devralınmayan miras düşümü artık: geri al, işi kapat (müşteri
+                // istemez). Geri alma kesinleşmezse iş AÇIK kalır ve akış durur —
+                // kapatmak, bilinmeyen bir düşümü sessizce gömmek olurdu.
+                if (l.AppliedAmount is > 0m
+                    && !await TryReverseAsync(licenseId.Value, l.ApplyKey!.Value, ct))
+                {
+                    // Koşul tutmazsa satırı başka bir akış devraldı; bizim
+                    // geri almamız yine de bilinmiyor — bu tıklama durur.
+                    _jobs.MarkUncertain(l.Id, l.ApplyKey, l.Revision);
+                    return new(true, 0m, l);
+                }
+                _jobs.Close(l.Id);
+            }
+
+            job = _jobs.Get(job.Id)!;
+        }
+
+        if (!Guid.TryParseExact(job.CustomerId, "N", out var wpfCustomerId))
+        {
+            _log?.LogError("Ödeme işinin sahibi GUID değil — mesaj engellendi (job={JobId})", job.Id);
+            return new(true, 0m, job);
+        }
+
+        // 2) Yarım kalmış geri alma (R4-02): HER ŞEYDEN önce uzlaştır.
+        //
+        // İstenen toplam eski değere dönmüş olabilir; o zaman revizyon dalı
+        // hiç çalışmaz ve niyet burada yakalanmazsa görünmez olur. Geri
+        // alınmış bir işlemin anahtarı replay edilirse sunucu onun tarihsel
+        // sonucunu döndürür ve geri alınan tutar geçerli düşüm sanılır.
+        if (job.State == PaymentJobState.ReversePending)
+        {
+            job = await FinishReversalAsync(licenseId.Value, job, ct);
+            if (job.State == PaymentJobState.ReversePending)
+                return new(true, 0m, job);
+        }
+
+        // 3) Belirsiz iş: bir kez replay (K3) — hâlâ belirsizse blokla.
+        //    R9-F01: replay idempotency kaydının TARİHSEL sonucunu getirir;
+        //    düşüm bu arada dışarıdan geri alındıysa yine "applied" der.
+        //    remoteConfirmed set edilmez — 6. adım güncelliği doğrulasın.
+        if (job.State == PaymentJobState.ApplyUncertain)
+        {
+            job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
+            if (job.State == PaymentJobState.ApplyUncertain)
+                return new(true, 0m, job);
+        }
+
+        // 4) R4-03 uzlaştırma (KİŞİ düzeyinde): iş hiç denenmemiş görünüyor ama
+        //    sunucuda bu kapsamda geri alınmamış bir düşüm olabilir — kişinin
+        //    HERHANGİ bir GUID'li üyesinde.
+        //
+        //    Tipik sebep yedek geri yükleme: satışın yerel kimliği (apply
+        //    anahtarı) diskte yaşıyordu ve onunla birlikte yok oldu; uzak
+        //    defter ise düşümü hatırlamaya devam ediyor. Sormadan devam
+        //    etmek aynı satışı ikinci kez düşürür — R4-03'ün ta kendisi.
+        //    Kişi düzeyi: geçiş dönemindeki eski sahipler, başka bilgisayarın
+        //    (eski sürüm) düşümü ve telefon senkron gecikmesi aynı kişinin
+        //    başka satırında iz bırakabilir; yalnız işin sahibine sormak onu
+        //    görmez ve ikinci kez düşerdi.
+        //
+        //    Sıra önemli: geri alma tamamlandıktan (2) ve belirsiz iş
+        //    kesinleştikten (3) SONRA sorulmalı, yoksa az önce geri
+        //    aldığımız satırı benimseyebiliriz. Revizyondan (5) ÖNCE
+        //    olmalı ki tutar karşılaştırması benimsenen gerçek tutara karşı
+        //    yapılsın.
+        //    R6-01: sorgulardan biri BAŞARISIZSA mesaj bloklanır. Anahtarsız
+        //    created iş tam da çifte düşüm penceresidir; "sorulamadı"yı
+        //    "yok" saymak, yedeği geri yüklenmiş kurulumda aynı satışı
+        //    ikinci kez düşürür. İş dokunulmamış (created/anahtarsız)
+        //    kaldığı için operatörün sıradaki tıklaması temiz dener.
+        if (job.State == PaymentJobState.Created && job.ApplyKey is null)
+        {
+            var reconciled = await ReconcilePersonScopeAsync(licenseId.Value, person, job, confirmedTokens, ct);
+            if (reconciled.Prompt is not null) return new(true, 0m, job) { Prompt = reconciled.Prompt };
+            if (reconciled.Job is null) return new(true, 0m, job);
+            job = reconciled.Job;
+            wpfCustomerId = Guid.ParseExact(job.CustomerId, "N");   // iz başka üyedeyse sahip oraya geçti
+            if (job.ApplyKey is not null)
+                remoteConfirmed = true; // düşüm az önce sunucudan benimsendi
+        }
+
+        // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
+        //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
+        //    çalışır (geri alınacak şey yoktur, sadece tutar güncellenir).
+        if (job.ProductTotal != totalAmount)
+        {
+            if (job.AppliedAmount is > 0m)
+            {
+                // R4-02: niyet ÖNCE diske — istek tele çıkmadan.
+                // false = eşzamanlı akış kazandı; satırı yeniden okuyup
+                // onun bıraktığı duruma göre devam ederiz.
+                _jobs.BeginReversal(job.Id, job.Revision, job.ApplyKey!.Value, totalAmount);
+                job = _jobs.Get(job.Id)!;
+
+                if (job.State == PaymentJobState.ReversePending)
+                {
+                    job = await FinishReversalAsync(licenseId.Value, job, ct);
+                    if (job.State == PaymentJobState.ReversePending)
+                        return new(true, 0m, job);
+                }
+            }
+
+            // Buraya gelindiğinde geri alınacak düşüm yok: ya hiç olmadı ya
+            // da kesinleşerek geri alındı (o durumda CompleteReversal işi
+            // zaten hedef toplamla 'created'a döndürdü, koşul tutmaz ve
+            // akış aşağıdaki taze uygulama adımına düşer).
+            if (job.ProductTotal != totalAmount)
+            {
+                _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
+                job = _jobs.Get(job.Id)!;
+                return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
+            }
+        }
+
+        // 6) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal YAZMA yok.
+        //
+        //    R6-02: para düşülmüş görünen iş, paylaşımdan önce sunucudan
+        //    DOĞRULANIR — panel iadesi düşümü geri almış olabilir; eski fişi
+        //    "bakiye düşüldü" diye tekrar paylaşmak müşteriye olmayan bir
+        //    indirimi gösterirdi. Doğrulama fırsatçıdır: uç cevap veremezse
+        //    diskteki kesin sonuçla devam edilir (Applied iş çevrimdışı bile
+        //    paylaşılabiliyor — S3; çevrimiçi tek uç hatası daha katı
+        //    olamaz). no_balance hiç sorulmaz: sunucudan bir şey düşülmedi.
+        if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
+        {
+            if (!remoteConfirmed
+                && job is { State: PaymentJobState.Applied, ApplyKey: { } appliedKey,
+                            AppliedAmount: > 0m })
+            {
+                var blocked = await VerifyAppliedStillStandsAsync(
+                    licenseId.Value, job, appliedKey, ct);
+                if (blocked is not null) return blocked;
+
+                // R9-F02: doğrulama await'i sırasında eşzamanlı bir akış
+                // satırı taşımış olabilir (geri alma niyeti, revizyon).
+                // Sunucu cevabı await ÖNCESİ duruma aitti; kesin mesaj
+                // await SONRASI satırdan verilmeli. Deneme kimliği
+                // tutmuyorsa bu tıklama durur — sıradaki tıklama satırın
+                // güncel hâlinden sürdürür (K3, ClassifySettledJob deseni).
+                var current = _jobs.Get(job.Id)!;
+                if (current.State != PaymentJobState.Applied
+                    || current.ApplyKey != appliedKey
+                    || current.Revision != job.Revision)
+                {
+                    _log?.LogWarning(
+                        "Doğrulama sırasında iş taşındı — mesaj engellendi "
+                        + "(job={JobId}, durum={State})", current.Id, current.State);
+                    return new(true, 0m, current);
+                }
+                job = current;
+            }
+            return DefiniteForCall(job, totalAmount);
+        }
+
+        // 7) S5: satış sıfıra indi. Geri alınacak eski düşüm varsa (5)
+        //    çoktan geri alındı; buradan sonrası için düşülecek bir şey
+        //    yok. Sunucuya apply GÖNDERMİYORUZ — sıfır tutarı zaten
+        //    "nothing-to-apply" ile reddeder; sonucu yerelde kesinleştirip
+        //    boş bir gidiş-dönüşten kaçınıyoruz.
+        if (totalAmount <= 0m)
+        {
+            if (!_jobs.MarkNoBalance(job.Id, job.ApplyKey, job.Revision))
+            {
+                job = _jobs.Get(job.Id)!;
+                return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
+                    ? DefiniteForCall(job, totalAmount)
+                    : new(true, 0m, job);
+            }
+            return new(false, 0m, _jobs.Get(job.Id));
+        }
+
+        // R6-03: 2. adım geri alma niyetini boşaltmıştı; buraya
+        // reverse_pending ile düşmenin tek yolu araya giren eşzamanlı bir
+        // akışın niyeti O ANDAN SONRA yazmasıdır. Aşağıdaki taze uygulama
+        // diskteki anahtarı yeniden kullanır (BeginApply yarışı kaybeder ve
+        // akış Settle'a düşer) — yani geri alınmak üzere olan düşümü ikinci
+        // kez yazardık. Mesajı engelle; operatörün sıradaki tıklaması
+        // 2. adımdan kaldığı yerden sürdürür.
+        if (job.State == PaymentJobState.ReversePending)
+        {
+            _log?.LogWarning(
+                "Geri alma beklerken taze düşüm istendi — mesaj engellendi (job={JobId})",
+                job.Id);
+            return new(true, 0m, job);
+        }
+
+        // 8) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
+        //    anahtar diske → apply.
+        decimal previewBalance;
         try
         {
-            remote = await _api.GetBalanceScopeAsync(licenseId, wpfCustomerId, job.ScopeKey, ct);
+            var preview = await _api.GetBalancePreviewAsync(licenseId.Value, wpfCustomerId, ct);
+            previewBalance = preview.Balance;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log?.LogWarning(ex,
-                "Kapsam uzlaştırması yapılamadı — mesaj engellendi (job={JobId}, scope={ScopeKey})",
-                job.Id, job.ScopeKey);
-            return null;
+                "Bakiye önizlemesi alınamadı — mesaj engellendi (job={JobId})", job.Id);
+            return new(true, 0m, job); // anahtar yazılmadı, iş created kaldı
+        }
+        if (previewBalance <= 0)
+        {
+            if (!_jobs.MarkNoBalance(job.Id, job.ApplyKey, job.Revision))
+            {
+                // Araya başka bir akış girdi ve sonucu o yazdı: bizim
+                // "bakiye yok" gözlemimiz artık bu denemeye ait değil.
+                job = _jobs.Get(job.Id)!;
+                return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
+                    ? DefiniteForCall(job, totalAmount)
+                    : new(true, 0m, job);
+            }
+            return new(false, 0m, _jobs.Get(job.Id));
         }
 
-        if (remote is null) return job;
+        if (!_jobs.BeginApply(job.Id, Guid.NewGuid()))
+        {
+            // Yarışı kaybettik (R2-04/A9): kazananın anahtarı diskte.
+            job = _jobs.Get(job.Id)!;
+            if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
+                return DefiniteForCall(job, totalAmount);
+        }
+        job = _jobs.Get(job.Id)!;
+        return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
+    }
+
+    /// <summary>Kişi düzeyindeki kapsam uzlaştırmasının sonucu: <see cref="Job"/> null = sorgu ya da
+    /// geri alma kesinleşmedi (mesaj bloklanır); <see cref="Prompt"/> dolu = operatöre sorulmalı.</summary>
+    private sealed record ScopeReconciliation(PaymentJob? Job, PaymentPrompt? Prompt = null);
+
+    /// <summary>R4-03 (kişi düzeyinde): sunucuda bu kapsamda duran geri alınmamış düşümü TAZE işe
+    /// benimsetir. Mevcut /scope ucu kişinin HER GUID'li üyesi için sorulur (sunucu değişikliği yok);
+    /// sonuçlar işlem kimliğiyle tekilleştirilir.
+    /// <list type="bullet">
+    /// <item>İz yok → iş olduğu gibi döner, akış değişmez.</item>
+    /// <item>Tek iz → iş o üyeye geçer (<see cref="IPaymentJobStore.ReassignOwner"/> — yalnız taze işte)
+    ///   ve iz benimsenir: düşüm o asıl kayıtla tanınır, başka sahiple tekrar oynatmak içerik çakışması
+    ///   olurdu.</item>
+    /// <item>Birden çok iz (aynı kişiye iki satırdan düşülmüş) → birleştirme sorulur; onayda en eski
+    ///   düşüm kalır, ötekiler geri alınır.</item>
+    /// </list>
+    ///
+    /// <para>R6-01: sorgulardan biri <b>başarısız</b> olursa <c>Job = null</c> döner ve çağıran
+    /// mesajı bloklar. "Yok" ile "sorulamadı" aynı şey değil: bu pencerede
+    /// (anahtarsız created iş) sorulamamışken devam etmek, sunucudaki düşümü
+    /// görmeden ikinci kez düşmek demek — denetimin çifte düşüm deneyi tam
+    /// buydu.</para>
+    ///
+    /// <para>Benimseme koşullu: araya giren bir akış işe anahtar yazdıysa
+    /// (false) satır yeniden okunur ve onun bıraktığı durumdan devam edilir.</para></summary>
+    private async Task<ScopeReconciliation> ReconcilePersonScopeAsync(
+        Guid licenseId, PaymentPerson person, PaymentJob job,
+        IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
+    {
+        var candidates = person.Members.Select(m => m.Id).Where(PaymentOwnerRule.IsOwnerCapable).ToList();
+        if (!candidates.Contains(job.CustomerId, StringComparer.Ordinal)) candidates.Insert(0, job.CustomerId);
+
+        var traces = new List<(string MemberId, CustomerBalanceScope Scope)>();
+        foreach (var memberId in candidates)
+        {
+            CustomerBalanceScope? remote;
+            try
+            {
+                remote = await _api.GetBalanceScopeAsync(licenseId, Guid.ParseExact(memberId, "N"), job.ScopeKey, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log?.LogWarning(ex,
+                    "Kapsam uzlaştırması yapılamadı — mesaj engellendi (job={JobId}, scope={ScopeKey})",
+                    job.Id, job.ScopeKey);
+                return new(null);
+            }
+            if (remote is not null && traces.All(t => t.Scope.TransactionId != remote.TransactionId))
+                traces.Add((memberId, remote));
+        }
+
+        if (traces.Count == 0) return new(job);
+
+        if (traces.Count > 1)
+        {
+            var token = "uzak:" + string.Join(";", traces
+                .Select(t => t.Scope.TransactionId.ToString("N")).OrderBy(x => x, StringComparer.Ordinal));
+            if (confirmedTokens?.Contains(token) != true)
+                return new(job, new PaymentPrompt(PersonScopePromptKind.Merge, job.ScopeKey,
+                    traces.OrderBy(t => t.Scope.CreatedAt)
+                        .Select(t => new PriorPaymentRequest(t.Scope.ProductTotal - t.Scope.AppliedAmount, t.Scope.CreatedAt))
+                        .ToList(),
+                    token));
+
+            // Onaylandı: en eski düşüm kalır (sunucu teslim bilgisini bilmez); fazlası iade edilir.
+            var keep = traces.OrderBy(t => t.Scope.CreatedAt).ThenBy(t => candidates.IndexOf(t.MemberId)).First();
+            foreach (var extra in traces.Where(t => t.Scope.TransactionId != keep.Scope.TransactionId))
+            {
+                if (!await TryReverseAsync(licenseId, extra.Scope.TransactionId, ct))
+                {
+                    _log?.LogWarning(
+                        "Kişinin fazladan düşümü geri alınamadı — mesaj engellendi (job={JobId}, tx={TransactionId})",
+                        job.Id, extra.Scope.TransactionId);
+                    return new(null);
+                }
+                _log?.LogWarning(
+                    "Kişinin fazladan düşümü geri alındı (job={JobId}, tx={TransactionId}, kalan={KeptTransactionId})",
+                    job.Id, extra.Scope.TransactionId, keep.Scope.TransactionId);
+            }
+            traces = new() { keep };
+        }
+
+        var (owner, scope) = traces[0];
+        if (!string.Equals(owner, job.CustomerId, StringComparison.Ordinal))
+        {
+            if (!_jobs.ReassignOwner(job.Id, owner))
+            {
+                _log?.LogWarning(
+                    "Kapsam izi başka üyede ama iş ona geçirilemedi — mesaj engellendi (job={JobId})", job.Id);
+                return new(null);
+            }
+            _log?.LogInformation(
+                "Kapsam izi başka üyede — iş o üyeye geçti (job={JobId}, owner={CustomerId})", job.Id, owner);
+        }
 
         _log?.LogInformation(
             "Sunucuda bu kapsamda düşüm bulundu, benimseniyor "
             + "(job={JobId}, scope={ScopeKey}, tx={TransactionId}, applied={Applied})",
-            job.Id, job.ScopeKey, remote.TransactionId, remote.AppliedAmount);
+            job.Id, job.ScopeKey, scope.TransactionId, scope.AppliedAmount);
 
-        _jobs.AdoptRemoteResult(
-            job.Id, remote.TransactionId, remote.AppliedAmount, remote.ProductTotal);
-        return _jobs.Get(job.Id)!;
+        _jobs.AdoptRemoteResult(job.Id, scope.TransactionId, scope.AppliedAmount, scope.ProductTotal);
+        return new(_jobs.Get(job.Id)!);
     }
 
     /// <summary>R6-02: tekrar paylaşımdan önce "kayıtlı düşüm sunucuda hâlâ

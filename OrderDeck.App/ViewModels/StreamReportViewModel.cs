@@ -231,23 +231,29 @@ public sealed partial class StreamReportViewModel : ViewModelBase
 
         PaymentResultPresenter.Notify(_dialogService, result);
 
+        // Sahip kararları 2 ve 4: teslim edilmiş istek ya da birden çok istek varsa operatöre sorulur;
+        // "Evet" → aynı istek onay belirteciyle yeniden.
         async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
-            await _paymentService.OpenWhatsAppAsync(
-                c, CurrentAmount, _currentSessionDate, $"session:{_sessionId}");
+            (await PaymentResultPresenter.RequestConfirmedAsync(_dialogService, tokens =>
+                _paymentService.RequestPaymentAsync(
+                    c, CurrentAmount, _currentSessionDate, $"session:{_sessionId}", tokens))).Result;
 
         // U12 (Bölüm C): satırın tutarı rapor yüklenirken Id başına toplandı. Rapor açıkken
         // senkron bir kopyayı (harf farklı yazım) asıl kayda taşıdıysa kopyanın satırı yalnız
-        // kendi yazımının payını taşır, ödeme işi ise asıl kaydın Id'sinde açılır. Ödeme akışının
-        // kiraladığı GÜNCEL Id satırın Id'si değilse istek REDDEDİLİR (null → ListStale); değilse
-        // tutar o Id için, raporla aynı tanımla burada yeniden okunur (taşıma yoksa satırınkiyle aynı).
-        decimal? CurrentAmount(string customerId)
+        // kendi yazımının payını taşır. Ödeme akışının kiraladığı GÜNCEL Id satırın Id'si değilse
+        // istek REDDEDİLİR (null → ListStale).
+        //
+        // Sahip kararı 3: istenen tutar KİŞİNİN oturum toplamıdır (bütün üyeler), satırınki değil —
+        // kartla aynı küme ve aynı toplam; yoksa aynı iş iki giriş arasında sürekli revize edilirdi.
+        // Satır kendi tutarının yanında kişi toplamını gösterir (PersonTotalAmount).
+        decimal? CurrentAmount(PaymentPerson person)
         {
             if (topCustomer.CustomerId is { } rowId
-                && !string.Equals(customerId, rowId, StringComparison.Ordinal))
+                && !string.Equals(person.LeasedId, rowId, StringComparison.Ordinal))
                 return null;
             return _sessionId is null
                 ? topCustomer.TotalAmount
-                : _labels.GetSessionPrintedTotal(_sessionId, new[] { customerId });
+                : _labels.GetSessionPrintedTotal(_sessionId, person.MemberIds.ToList());
         }
     }
 }

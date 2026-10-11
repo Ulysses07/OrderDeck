@@ -24,7 +24,7 @@ using Xunit;
 
 namespace OrderDeck.Tests.Services;
 
-public class PaymentRequestServiceTests : IDisposable
+public partial class PaymentRequestServiceTests : IDisposable
 {
     private readonly string _settingsPath;
     private readonly SettingsStore _store;
@@ -190,13 +190,17 @@ public class PaymentRequestServiceTests : IDisposable
             {
                 lock (_sync) ScopeQueries.Add(request.RequestUri!.Query);
                 if (ThrowOnScope) throw new TaskCanceledException("stub timeout");
-                return ScopeResponseJson is null
+                var scopeJson = ScopeResponseFor is { } perCustomer
+                    ? perCustomer(WpfCustomerIdOf(request))
+                    : ScopeResponseJson;
+                return scopeJson is null
                     ? new HttpResponseMessage(HttpStatusCode.NoContent)
-                    : Json(ScopeResponseJson);
+                    : Json(scopeJson);
             }
 
             if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
             {
+                lock (_sync) PreviewCustomerIds.Add(WpfCustomerIdOf(request));
                 if (OnPreviewAsync is not null) await OnPreviewAsync();
                 return Json($$"""
                     {"wpfCustomerId":"{{Guid.Empty}}","balance":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
@@ -274,6 +278,28 @@ public class PaymentRequestServiceTests : IDisposable
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
+        /// <summary>Kişi düzeyindeki R4-03: kapsam ucunun müşteri başına cevabı (WpfCustomerId →
+        /// gövde; null → 204). Doluysa <see cref="ScopeResponseJson"/>'ın yerine geçer.</summary>
+        public Func<Guid, string?>? ScopeResponseFor { get; set; }
+
+        /// <summary>Önizleme ucuna sorulan WpfCustomerId'ler (sahip anahtarı testleri).</summary>
+        public List<Guid> PreviewCustomerIds { get; } = new();
+
+        /// <summary>Apply gövdelerinin WpfCustomerId'leri, gönderim sırasıyla.</summary>
+        public IReadOnlyList<Guid> AppliedCustomerIds
+        {
+            get { lock (_sync) return AppliedBalanceBodies.Select(WpfCustomerIdOf).ToList(); }
+        }
+
+        private static Guid WpfCustomerIdOf(HttpRequestMessage request)
+            => Guid.Parse(System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["wpfCustomerId"]!);
+
+        public static Guid WpfCustomerIdOf(string applyBody)
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(applyBody);
+            return doc.RootElement.GetProperty("wpfCustomerId").GetGuid();
+        }
+
         private static decimal AppliedAmountRequested(string body)
         {
             using var doc = System.Text.Json.JsonDocument.Parse(body);
@@ -319,12 +345,50 @@ public class PaymentRequestServiceTests : IDisposable
         CustomerRepository? customers = null, CustomerBusySet? busy = null)
     {
         var handler = new WhatsAppStubHandler();
+        var sut = SutOn(handler, store, launcher, licenseProvider, jobs, customers, busy);
+        return (sut, handler);
+    }
+
+    /// <summary>Verilen sahte sunucu üstünde bir servis örneği. Kişi kilidinin bekleme süresi
+    /// kısaltılır: kilide takılan bir test 20 sn asılı kalmasın, hızla düşsün.</summary>
+    private PaymentRequestService SutOn(
+        WhatsAppStubHandler handler, SettingsStore store, FakeUrlLauncher launcher,
+        ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null,
+        CustomerRepository? customers = null, CustomerBusySet? busy = null)
+    {
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
-        var sut = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
+        return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
             api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs,
-            log: null, customers: customers, busy: busy);
-        return (sut, handler);
+            log: null, customers: customers, busy: busy)
+        {
+            PersonGateTimeout = TimeSpan.FromSeconds(5),
+        };
+    }
+
+    /// <summary>
+    /// Aynı depo ve aynı sahte sunucu üstünde İKİNCİ bir servis örneği — kendi kişi kilidiyle.
+    ///
+    /// <para>Kişi kilidi (<see cref="PaymentPersonGate"/>) aynı örnekte aynı kişinin iki akışını
+    /// sıraya sokar; o yüzden aynı kişinin iç içe geçen iki akışı tek örnekte artık kurulamaz.
+    /// Yarış testleri kilidin ARKASINDAKİ katmanı sınar: deponun koşullu yazımları (R4-01, R6-03,
+    /// R10-F01) kilitsiz iki akışta da tek düşüm ve doğru mesaj üretmeli — kilit ikinci bir güvence,
+    /// tek güvence değil.</para>
+    /// </summary>
+    private PaymentRequestService IkinciSut(WhatsAppStubHandler handler, IPaymentJobStore jobs)
+        => SutOn(handler, _store, _launcher, jobs: jobs);
+
+    /// <summary>Operatörün her soruya (tekrar gönderme, birleştirme) "Evet" dediği istek — VM'lerin
+    /// yolu (<see cref="PaymentResultPresenter.RequestConfirmedAsync"/>). Sorulan sorular
+    /// <paramref name="dialogs"/>'ın <c>Confirmations</c> listesindedir.</summary>
+    private static async Task<PaymentRequestResult> EvetAsync(
+        PaymentRequestService sut, Customer customer, decimal productTotal, string scopeKey,
+        FakeDialogService? dialogs = null)
+    {
+        dialogs ??= new FakeDialogService();
+        dialogs.ConfirmResult = _ => true;
+        return (await PaymentResultPresenter.RequestConfirmedAsync(dialogs, tokens =>
+            sut.RequestPaymentAsync(customer, _ => productTotal, T, scopeKey, tokens))).Result;
     }
 
     /// <summary>Cloud API açık, sade şablonlu bir ayar dosyası yazar.
@@ -920,8 +984,17 @@ public class PaymentRequestServiceTests : IDisposable
 
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
+
+        // Sahip kararı 2: teslim edilmiş istek — ağ/para adımından ÖNCE sorulur, hiçbir şey değişmez.
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.AlreadyRequested);
+        _launcher.LaunchedUrls.Should().ContainSingle("soru cevaplanmadan mesaj gitmez");
+
+        var dialogs = new FakeDialogService();
+        (await EvetAsync(sut, customer, 250m, "session:s1", dialogs))
             .Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle()
+            .Which.Message.Should().Contain("istendi, tekrar gönderilsin mi?");
 
         handler.AppliedBalanceBodies.Should().ContainSingle(
             "aynı satışın tekrar paylaşımı — düşüm sonucu diskten okunur");
@@ -959,7 +1032,8 @@ public class PaymentRequestServiceTests : IDisposable
             .Should().Be(PaymentRequestResult.Opened);
         var ilkKey = AppliedKey(handler.AppliedBalanceBodies[0]);
 
-        (await sut.OpenWhatsAppAsync(customer, 300m, T, "session:s1"))
+        // İlk istek teslim edildi: operatör "tekrar gönderilsin mi?"ye Evet der (sahip kararı 2).
+        (await EvetAsync(sut, customer, 300m, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
 
         handler.ReverseCalls.Should().ContainSingle().Which.Should().Be(
@@ -991,7 +1065,7 @@ public class PaymentRequestServiceTests : IDisposable
         var oncekiSentSayisi = _launcher.LaunchedUrls.Count;
 
         handler.ThrowTimeoutOnReverse = true;
-        (await sut.OpenWhatsAppAsync(customer, 300m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 300m, "session:s1"))
             .Should().Be(PaymentRequestResult.BalanceUncertain);
 
         handler.AppliedBalanceBodies.Should().ContainSingle(
@@ -1018,7 +1092,7 @@ public class PaymentRequestServiceTests : IDisposable
             .Should().Be(PaymentRequestResult.Opened);
 
         handler.ReverseProblemTitle = "already-reversed";
-        (await sut.OpenWhatsAppAsync(customer, 300m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 300m, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
 
         handler.AppliedBalanceBodies.Should().HaveCount(2);
@@ -1112,8 +1186,11 @@ public class PaymentRequestServiceTests : IDisposable
                 await bothArrived.Task;
             };
 
+            // İki ayrı örnek: aynı örnekte kişi kilidi ikinci akışı sıraya sokardı (bkz. IkinciSut) —
+            // burada sınanan, kilidin arkasındaki koşullu BeginApply.
+            var sut2 = IkinciSut(handler, repo);
             var t1 = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
-            var t2 = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            var t2 = Task.Run(() => sut2.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
             var results = await Task.WhenAll(t1, t2);
 
             results.Should().AllBeEquivalentTo(PaymentRequestResult.Opened);
@@ -1159,13 +1236,13 @@ public class PaymentRequestServiceTests : IDisposable
 
         // Revizyon: geri alma sunucuda GERÇEKLEŞTİ, iki cevap da kayboldu.
         handler.ThrowTimeoutOnReverse = true;
-        (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 50m, "session:s1"))
             .Should().Be(PaymentRequestResult.BalanceUncertain);
         handler.ReverseCalls.Should().HaveCount(2).And.OnlyContain(k => k == ilkKey);
 
         // Ağ düzeldi; aynı kapsam ESKİ toplamla yeniden istendi.
         handler.ThrowTimeoutOnReverse = false;
-        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 250m, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
 
         // Toplam eski değere döndüğü için revizyon dalı çalışmaz; niyeti
@@ -1207,7 +1284,7 @@ public class PaymentRequestServiceTests : IDisposable
         handler.OnReverse = _ => istekAninda ??= _jobs.Snapshot.Single();
 
         handler.ThrowTimeoutOnReverse = true;
-        (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 50m, "session:s1"))
             .Should().Be(PaymentRequestResult.BalanceUncertain);
 
         istekAninda.Should().NotBeNull();
@@ -1228,12 +1305,12 @@ public class PaymentRequestServiceTests : IDisposable
         var ilkKey = AppliedKey(handler.AppliedBalanceBodies[0]);
 
         handler.ThrowTimeoutOnReverse = true;
-        (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 50m, "session:s1"))
             .Should().Be(PaymentRequestResult.BalanceUncertain);
 
         // Operatör bu arada sepete bir ürün daha ekledi: hedef artık 80.
         handler.ThrowTimeoutOnReverse = false;
-        (await sut.OpenWhatsAppAsync(customer, 80m, T, "session:s1"))
+        (await EvetAsync(sut, customer, 80m, "session:s1"))
             .Should().Be(PaymentRequestResult.Opened);
 
         var job = _jobs.Snapshot.Single();
@@ -1282,12 +1359,13 @@ public class PaymentRequestServiceTests : IDisposable
                 await ilkCevapSerbest.Task;
             };
 
-            var ilkTiklama = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            // İlk tıklama ayrı örnekte (bkz. IkinciSut): aynı örnekte kişi kilidi sonrakileri sıraya sokardı.
+            var ilkTiklama = Task.Run(() => IkinciSut(handler, repo).OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
             await ilkApplyVardi.Task; // 250 sunucuda işlendi, cevap yolda
 
             (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
                 .Should().Be(PaymentRequestResult.Opened);      // replay: 250 öğrenildi
-            (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+            (await EvetAsync(sut, customer, 50m, "session:s1"))
                 .Should().Be(PaymentRequestResult.Opened);      // revizyon: 50 uygulandı
 
             var mesajSayisi = _launcher.LaunchedUrls.Count;
@@ -1309,7 +1387,7 @@ public class PaymentRequestServiceTests : IDisposable
 
             // Aynı satışın yeniden paylaşımı: 50 − 50 = 0. Finansal çağrı da yok.
             var applyAdedi = handler.AppliedBalanceBodies.Count;
-            (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+            (await EvetAsync(sut, customer, 50m, "session:s1"))
                 .Should().Be(PaymentRequestResult.Opened);
             handler.AppliedBalanceBodies.Should().HaveCount(applyAdedi);
             _launcher.LaunchedUrls[^1].Should().Contain("0%2C00").And.NotContain("-200");
@@ -1359,7 +1437,8 @@ public class PaymentRequestServiceTests : IDisposable
                 await ilkCevapSerbest.Task;
             };
 
-            var ilkTiklama = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            // İlk tıklama ayrı örnekte (bkz. IkinciSut): aynı örnekte kişi kilidi sonrakileri sıraya sokardı.
+            var ilkTiklama = Task.Run(() => IkinciSut(handler, repo).OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
             await ilkApplyVardi.Task; // 250 sunucuda işlendi, cevap yolda
 
             (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
@@ -1367,7 +1446,7 @@ public class PaymentRequestServiceTests : IDisposable
 
             // Revizyon 50'ye: niyet diske indi, geri alma cevabı kayboldu.
             handler.ThrowTimeoutOnReverse = true;
-            (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+            (await EvetAsync(sut, customer, 50m, "session:s1"))
                 .Should().Be(PaymentRequestResult.BalanceUncertain);
             var mesajSayisi = _launcher.LaunchedUrls.Count;
 
@@ -1428,7 +1507,8 @@ public class PaymentRequestServiceTests : IDisposable
                 await aSerbest.Task;
             };
 
-            var aTiklama = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            // İlk tıklama ayrı örnekte (bkz. IkinciSut): aynı örnekte kişi kilidi sonrakileri sıraya sokardı.
+            var aTiklama = Task.Run(() => IkinciSut(handler, repo).OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
             await aOnizlemede.Task;
 
             // B: operatör sepeti 400'e çıkardı — revizyon + taze uygulama.
@@ -2146,9 +2226,9 @@ public class PaymentRequestServiceTests : IDisposable
             handler.PreviewBalance = 100m;
             var amountReads = new List<(string Id, bool Leased, bool CopyLeased)>();
 
-            (await sut.OpenWhatsAppAsync(copy, id =>
+            (await sut.OpenWhatsAppAsync(copy, person =>
                 {
-                    amountReads.Add((id, Leased(db, id), Leased(db, copy.Id)));
+                    amountReads.Add((person.LeasedId, Leased(db, person.LeasedId), Leased(db, copy.Id)));
                     return 250m;
                 }, T, "session:s1"))
                 .Should().Be(PaymentRequestResult.Opened);
