@@ -1,6 +1,6 @@
 -- 047 — Ödeme işinin ASIL kapsamı (PriorScopeKey), TESLİM kaydı (DeliveredAt, DeliveredNet,
--- Deliveries), GÖNDERİM denemesi (SendAttempts, AttemptNet, PriorAttemptNet) ve ONAY damgası
--- (ResumeCovers).
+-- Deliveries), GÖNDERİM denemesi (SendAttempts, AttemptNet, PriorAttemptNet, AttemptAt,
+-- PriorAttemptAt) ve ONAY damgası (ResumeCovers).
 --
 -- PriorScopeKey. Bir iş iki yoldan 'legacy:{anahtar}:{Id}' kapsamına iner: yerel kopya taşıması
 -- (CustomerSyncRepository.MoveReferences — kopyanın işi asıl kayıttaki aynı kapsamlı işe
@@ -26,7 +26,11 @@
 -- AttemptNet = son denemenin mesajındaki net: sonucu yazılamamış denemenin sorusu ("gönderilmiş
 -- olabilir") o tutarı gösterir — işin alanları denemeden sonra değişebilir (revizyon, geri alma).
 -- PriorAttemptNet bir önceki denemenin netidir: başlamamış deneme (wa.me açılamadı) geri alınınca
--- AttemptNet ona döner; daha eski yetim deneme duruyorsa soru onun tutarını gösterir.
+-- AttemptNet ona döner; daha eski yetim deneme duruyorsa soru onun tutarını gösterir. AttemptAt /
+-- PriorAttemptAt aynı ikilinin anıdır: sonucu yazılamamış deneme kendi anıyla sıralanır ve soruda o
+-- saatle görünür. Anı bilinmeseydi deneme hep "en son" sayılırdı: başka bir işte kalmış yetim (ör.
+-- birleştirmenin mirasa indirdiği iş — miraslara teslim yazılmaz, fark hiç kapanmaz) sonraki her soruda
+-- daha yeni onaylı teslimi gizlerdi.
 --
 -- Onay damgası. Kalan işin para adımı yarım kalmışsa (apply_uncertain/reverse_pending) sıradaki
 -- tıklama tekrar göndermeyi SORMADAN sürer — o tıklama kapıda sorulmuş ya da sorulacak bir şey
@@ -57,6 +61,8 @@ ALTER TABLE PaymentJob ADD COLUMN Deliveries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE PaymentJob ADD COLUMN SendAttempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE PaymentJob ADD COLUMN AttemptNet TEXT;
 ALTER TABLE PaymentJob ADD COLUMN PriorAttemptNet TEXT;
+ALTER TABLE PaymentJob ADD COLUMN AttemptAt INTEGER;
+ALTER TABLE PaymentJob ADD COLUMN PriorAttemptAt INTEGER;
 ALTER TABLE PaymentJob ADD COLUMN ResumeCovers TEXT;
 
 UPDATE PaymentJob SET DeliveredAt = ClosedAt, DeliveredNet = od_payment_net(ProductTotal, AppliedAmount),

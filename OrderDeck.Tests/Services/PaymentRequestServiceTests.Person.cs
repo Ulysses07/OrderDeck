@@ -832,8 +832,10 @@ public partial class PaymentRequestServiceTests
 
         var soru = await Iste();
         soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "mesaj gitmiş olabilir — sorusuz ikinci mesaj yok");
-        soru.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, null, Unconfirmed: true),
-            "gönderilen net 250 − 100; anı yazılamadı");
+        var deneme = _jobs.Snapshot.Single().AttemptAt!.Value;
+        soru.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(
+            new PriorPaymentRequest(150m, DateTimeOffset.FromUnixTimeSeconds(deneme), Unconfirmed: true),
+            "gönderilen net 250 − 100; an gönderim denemesinin anı");
         _launcher.LaunchedUrls.Should().ContainSingle();
 
         // İki pencere aynı soruyu gösteriyor; birinin "Evet"i gönderdi, teslim yine yazılamadı.
@@ -1043,7 +1045,7 @@ public partial class PaymentRequestServiceTests
         var ilk = new FakeDialogService();
         (await EvetAsync(sut, customer, 350m, "session:s1", ilk)).Should().Be(PaymentRequestResult.LaunchFailed);
         _launcher.ThrowOnLaunch = null;
-        ilk.Confirmations.Should().ContainSingle().Which.Message.Should().StartWith("150,00 TL tutarındaki istek");
+        ilk.Confirmations.Should().ContainSingle().Which.Message.Should().Contain(" 150,00 TL tutarındaki istek");
         _jobs.Snapshot.Single().RequestedNet.Should().Be(250m, "revizyon yapıldı: 350 − 100");
 
         var dialogs = new FakeDialogService();
@@ -1051,11 +1053,13 @@ public partial class PaymentRequestServiceTests
             sut.RequestPaymentAsync(customer, _ => 350m, T, "session:s1", t));
 
         sonuc.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
-        sonuc.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, null, Unconfirmed: true));
+        var deneme = DateTimeOffset.FromUnixTimeSeconds(_jobs.Snapshot.Single().AttemptAt!.Value);
+        sonuc.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, deneme, Unconfirmed: true),
+            "geri alınan 250'lik denemenin değil, yetim 150'lik denemenin anı");
         var soru = dialogs.Confirmations.Should().ContainSingle().Subject;
         soru.Title.Should().Be("Ödeme isteği gönderilmiş olabilir");
-        soru.Message.Should().Be(
-            "150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
+        soru.Message.Should().EndWith(Saat(deneme) +
+            " 150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
     }
 
     // RV1 (son inceleme): yarım kalan istek yalnız onaylı tıklamanın gördüğü izler için sorusuz sürer.
@@ -1185,6 +1189,79 @@ public partial class PaymentRequestServiceTests
         }
         finally { Drop(db); }
     }
+
+    // Sonucu yazılamamış deneme (yetim) kendi anıyla sıralanır. Eskiden "hep en son" sayılıyordu: yetim,
+    // birleştirmenin mirasa indirdiği işteyse (miraslara teslim yazılmaz, fark hiç kapanmaz) o kişi × kapsamın
+    // sonraki her sorusu eski yetimi saatsiz gösteriyor, daha yeni onaylı teslimi gizliyordu. Yetim en
+    // yeniyse soru yine "gönderilmiş olabilir" der — kendi tutarı ve saatiyle.
+    [Fact]
+    public async Task Mirastaki_yetim_deneme_kendi_aniyla_siralanir_yeni_onayli_teslimi_gizlemez()
+    {
+        var db = FileDb();
+        try
+        {
+            var o = Uye(db, "kisi.o");
+            var n = Uye(db, "kisi.n");
+            var depo = new TeslimYazimiDusenDepo(db.Jobs);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: depo, customers: db.Customers, busy: db.Busy);
+            handler.RowBalances = new() { [G(o)] = 40m };
+
+            // Ayrı kartlarken: o'ya 300 istendi (40 düşüldü, 260 gitti); n'ye 100 istendi, teslimi yazılamadı.
+            (await sut.OpenWhatsAppAsync(o, 300m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            depo.TeslimDussun = true;
+            (await sut.OpenWhatsAppAsync(n, 100m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            depo.TeslimDussun = false;
+            var oIsi = Isler(db, "session:s1").Single(j => j.CustomerId == o.Id);
+            var nIsi = Isler(db, "session:s1").Single(j => j.CustomerId == n.Id);
+            nIsi.HasUnconfirmedSend.Should().BeTrue();
+            var simdi = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var (oTeslim, nDeneme) = (simdi - 3600, simdi - 1800);   // o'nun teslimi 1 sa, n'nin denemesi 30 dk önce
+            using (var conn = db.Factory.Open())
+            {
+                Dapper.SqlMapper.Execute(conn, "UPDATE PaymentJob SET DeliveredAt=@t, ClosedAt=@t WHERE Id=@id",
+                    new { t = oTeslim, id = oIsi.Id });
+                Dapper.SqlMapper.Execute(conn, "UPDATE PaymentJob SET AttemptAt=@t WHERE Id=@id",
+                    new { t = nDeneme, id = nIsi.Id });
+            }
+            Kisi(db, o, n);
+
+            // Birleştirme onaylandı (n'nin işi kapalı mirasa iner, yetim üstünde kalır) ama wa.me açılamadı.
+            _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+            (await EvetAsync(sut, o, 400m, "session:s1")).Should().Be(PaymentRequestResult.LaunchFailed);
+            _launcher.ThrowOnLaunch = null;
+            var miras = db.Jobs.Get(nIsi.Id)!;
+            miras.Should().Match<PaymentJob>(j => j.IsLegacyScope && j.ClosedAt != null && j.HasUnconfirmedSend);
+
+            // Yetim en yeni (30 dk önce > 1 sa önce): "gönderilmiş olabilir", kendi tutarı ve saatiyle.
+            var yetimSoru = await sut.RequestPaymentAsync(o, _ => 400m, T, "session:s1");
+            yetimSoru.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+            var yetimAni = DateTimeOffset.FromUnixTimeSeconds(nDeneme);
+            yetimSoru.Prompt!.Requests[^1].Should().Be(new PriorPaymentRequest(100m, yetimAni, Unconfirmed: true));
+            PaymentResultPresenter.PromptText(yetimSoru.Prompt, DateTimeOffset.Now).Message.Should().EndWith(Saat(yetimAni) +
+                " 100,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
+
+            // Onaylı tekrar gönderim teslim edildi: sıradaki soru O teslimi gösterir, mirastaki eski yetimi değil.
+            (await EvetAsync(sut, o, 400m, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            var kalan = db.Jobs.Get(oIsi.Id)!;
+            kalan.DeliveredNet.Should().Be(360m, "400 − 40");
+            var teslimAni = DateTimeOffset.FromUnixTimeSeconds(kalan.DeliveredAt!.Value);
+
+            var soru = await sut.RequestPaymentAsync(o, _ => 400m, T, "session:s1");
+
+            soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+            soru.Prompt!.Requests[^1].Should().Be(new PriorPaymentRequest(360m, teslimAni),
+                "en son istek az önceki onaylı teslim — mirastaki eski yetim değil");
+            var (baslik, metin) = PaymentResultPresenter.PromptText(soru.Prompt, DateTimeOffset.Now);
+            baslik.Should().Be("Ödeme isteği zaten gönderildi");
+            metin.Should().EndWith(Saat(teslimAni) + " 360,00 TL istendi, tekrar gönderilsin mi?");
+        }
+        finally { Drop(db); }
+    }
+
+    /// <summary>Sorudaki saat (<see cref="PaymentResultPresenter"/>: bugünse "HH:mm", değilse tarihli — ikisi de
+    /// "HH:mm" ile biter).</summary>
+    private static string Saat(DateTimeOffset at)
+        => at.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore

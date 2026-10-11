@@ -156,10 +156,16 @@ public sealed class PersonScopePlan
         return set;
     }
 
-    /// <summary>Teslim sırası: sonucu yazılamamış gönderim en sonuncusudur (anı bilinmez); yoksa son
-    /// teslim (önceki sürümün teslimi dahil — <see cref="PaymentJob.LastDeliveredAt"/>).</summary>
+    /// <summary>Teslim sırası: son teslim (önceki sürümün teslimi dahil — <see cref="PaymentJob.LastDeliveredAt"/>)
+    /// ile sonucu yazılamamış gönderimin kendi anından (<see cref="PaymentJob.AttemptAt"/>) yenisi. Yetim
+    /// deneme "hep en son" sayılmaz: başka bir işte kalmış yetim (ör. birleştirmenin mirasa indirdiği iş —
+    /// miraslara teslim yazılmaz, fark hiç kapanmaz) daha yeni onaylı teslimi gizlerdi. Anı bilinmeyen
+    /// deneme (BeginSend anı hep yazar) temkinle en son sayılır.</summary>
     private static long DeliveryRank(PaymentJob j)
-        => j.HasUnconfirmedSend ? long.MaxValue : j.LastDeliveredAt ?? long.MinValue;
+    {
+        var delivered = j.LastDeliveredAt ?? long.MinValue;
+        return j.HasUnconfirmedSend ? Math.Max(delivered, j.AttemptAt ?? long.MaxValue) : delivered;
+    }
 
     private static List<PaymentJob> Oldest(IEnumerable<PaymentJob> jobs)
         => jobs.OrderBy(j => j.CreatedAt).ThenBy(j => j.Id, StringComparer.Ordinal).ToList();

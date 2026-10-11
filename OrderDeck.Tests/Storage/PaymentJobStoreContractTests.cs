@@ -171,6 +171,9 @@ public abstract class PaymentJobStoreContractTests
     /// <summary>Kişiyi güncel üyeleriyle yeniden okur (akışın yeniden denemesi).</summary>
     protected abstract PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person);
 
+    /// <summary>Gönderim denemesinin anını geriye alır (saniyelik saatte iki denemeyi ayırmak için).</summary>
+    protected abstract void SetAttemptAt(IPaymentJobStore store, string jobId, long at);
+
     private static PersonJobRequest Req(PaymentPerson p, string scope = "session:s1", decimal total = 100m,
         string? leasedId = null, string? token = null)
         => new(leasedId ?? p.LeasedId, p.MemberKey, p.MemberIds, p.OwnerId!, scope, total,
@@ -609,7 +612,8 @@ public abstract class PaymentJobStoreContractTests
         soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
         soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Resend);
         var istek = soru.Plan.PromptJobs.Should().ContainSingle().Subject;
-        istek.PromptAt.Should().BeNull("anı yazılamadı");
+        istek.PromptAt.Should().Be(istek.AttemptAt, "teslim anı yazılamadı; soru denemenin anını gösterir")
+            .And.NotBeNull();
         istek.PromptNet.Should().Be(260m, "gönderilen mesajın neti: 300 − 40");
 
         store.AbandonSend(job.Id);                                 // wa.me açılamadı — mesaj gitmedi
@@ -798,6 +802,8 @@ public abstract class PaymentJobStoreContractTests
         var person = NewPerson(store, 1);
         var job = Applied(store, person.LeasedId, 150m, delivered: false);   // 300 − 150 = 150
         store.BeginSend(job.Id, 150m);                                        // yetim: sonuç yazılamadı
+        var yetimAni = store.Get(job.Id)!.AttemptAt!.Value - 600;
+        SetAttemptAt(store, job.Id, yetimAni);                               // yetim 10 dk önceydi
 
         var yeniKey = Guid.NewGuid();
         store.BeginRevision(job.Id, 400m, yeniKey, job.Revision).Should().BeTrue();
@@ -811,6 +817,8 @@ public abstract class PaymentJobStoreContractTests
         sonra.HasUnconfirmedSend.Should().BeTrue("150'lik deneme hâlâ gitmiş olabilir");
         sonra.AttemptNet.Should().Be(150m);
         sonra.PromptNet.Should().Be(150m, "işin alanları (250) hiç gitmemiş tutar");
+        sonra.AttemptAt.Should().Be(yetimAni, "deneme anı da yetiminkine döner");
+        sonra.PromptAt.Should().Be(yetimAni);
         var soru = store.FindOrCreateForPerson(Req(person, total: 400m));
         soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
         soru.Plan!.PromptJobs.Single().PromptNet.Should().Be(150m);
@@ -853,6 +861,12 @@ public sealed class SqlitePaymentJobStoreContractTests : PaymentJobStoreContract
 
     protected override PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person)
         => Customers.GetPaymentPerson(person.LeasedId);
+
+    protected override void SetAttemptAt(IPaymentJobStore store, string jobId, long at)
+    {
+        using var conn = _fx!.Open();
+        Dapper.SqlMapper.Execute(conn, "UPDATE PaymentJob SET AttemptAt=@at WHERE Id=@jobId", new { at, jobId });
+    }
 }
 
 public sealed class InMemoryPaymentJobStoreContractTests : PaymentJobStoreContractTests
@@ -882,4 +896,7 @@ public sealed class InMemoryPaymentJobStoreContractTests : PaymentJobStoreContra
     protected override PaymentPerson Reload(IPaymentJobStore store, PaymentPerson person)
         => new(person.LeasedId, _people.Values.First(m => m.Contains(person.LeasedId))
             .Select(id => new PaymentPersonMember(id, null, false)).ToList());
+
+    protected override void SetAttemptAt(IPaymentJobStore store, string jobId, long at)
+        => ((InMemoryPaymentJobStore)store).Seed(store.Get(jobId)! with { AttemptAt = at });
 }

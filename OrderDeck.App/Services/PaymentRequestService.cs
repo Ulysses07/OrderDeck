@@ -83,7 +83,7 @@ public sealed record PaymentPrompt(
 
 /// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.
 /// <see cref="Unconfirmed"/> = gönderim başladı ama sonucu yazılamadı: istek GİTMİŞ OLABİLİR (kesin
-/// değil); tutar o denemenin tutarıdır, anı bilinmez.</summary>
+/// değil); tutar ve an o denemenin tutarı ve anıdır.</summary>
 public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, bool Unconfirmed = false);
 
 /// <summary>"Ödeme iste"nin sonucu.

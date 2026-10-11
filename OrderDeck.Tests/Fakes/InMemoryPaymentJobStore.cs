@@ -242,12 +242,15 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate)
         {
             if (!_jobs.TryGetValue(id, out var j)) return;
+            var now = Now();
             _jobs[id] = j with
             {
                 SendAttempts = j.SendAttempts + 1,
                 PriorAttemptNet = j.AttemptNet,
                 AttemptNet = requestedNet,
-                UpdatedAt = Now(),
+                PriorAttemptAt = j.AttemptAt,
+                AttemptAt = now,
+                UpdatedAt = now,
             };
         }
     }
@@ -257,7 +260,13 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate)
         {
             if (!_jobs.TryGetValue(id, out var j) || j.SendAttempts <= j.Deliveries) return;
-            _jobs[id] = j with { SendAttempts = j.SendAttempts - 1, AttemptNet = j.PriorAttemptNet, UpdatedAt = Now() };
+            _jobs[id] = j with
+            {
+                SendAttempts = j.SendAttempts - 1,
+                AttemptNet = j.PriorAttemptNet,
+                AttemptAt = j.PriorAttemptAt,
+                UpdatedAt = Now(),
+            };
         }
     }
 

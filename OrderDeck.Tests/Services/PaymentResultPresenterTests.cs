@@ -104,7 +104,7 @@ public sealed class PaymentResultPresenterTests
 
     // Son inceleme: sonucu yazılamamış gönderim olgu diye anlatılmaz. Operatör az önce "WhatsApp açılamadı"
     // görmüş olabilir; "zaten gönderildi / 150 TL istendi" derse "Hayır"la müşteriye hiç istek gitmeyebilir.
-    // Anı bilinmez — saat yazılmaz; tutar O denemenin tutarıdır.
+    // Tutar O denemenin tutarıdır (an verilmezse saat yazılmaz; verilirse denemenin anıdır).
     [Fact]
     public void Tekrar_gonderme_sonucu_yazilamamis_istegi_gonderilmis_olabilir_diye_sorar()
     {
