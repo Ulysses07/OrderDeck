@@ -869,6 +869,60 @@ public partial class PaymentRequestServiceTests
         handler.SentBodies.Should().BeEmpty();
     }
 
+    // Son inceleme: sunucunun Ok=false cevabı her zaman "gönderilmedi" demek değil. Graph zaman aşımı
+    // ('network'), sunucu istisnası ('server_error' — yeniden deneme oynatır) ve Graph'ın kendi hata kodu
+    // (5xx dahil) sonucu bilinmeyen gönderimdir: Meta mesajı kabul etmiş olabilir. wa.me de açılamazsa
+    // deneme geri alınmamalı; eskiden geri alınıyor, sıradaki tıklama Cloud API ile sorusuz ikinci kez
+    // gönderiyordu.
+    [Theory]
+    [InlineData("network")]
+    [InlineData("server_error")]
+    [InlineData("131000")]
+    [InlineData("503")]
+    public async Task CloudAPI_sonucu_bilinmeyen_hata_ve_wame_acilamazsa_sonraki_tiklama_sorar(string errorCode)
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var basarili = handler.SendResponseJson;
+        handler.SendResponseJson = $$"""{"ok":false,"errorCode":"{{errorCode}}","errorMessage":"x","messageId":null}""";
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.LaunchFailed);
+        _launcher.ThrowOnLaunch = null;
+        handler.SendResponseJson = basarili;
+        var gonderimler = handler.SentBodies.Count;
+
+        var soru = await sut.RequestPaymentAsync(customer, _ => 250m, T, "session:s1");
+
+        soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "Cloud API gönderimi ulaşmış olabilir");
+        soru.Prompt!.Requests.Should().ContainSingle().Which.Unconfirmed.Should().BeTrue();
+        handler.SentBodies.Should().HaveCount(gonderimler, "sorusuz ikinci gönderim yok");
+    }
+
+    // Sınır: sunucu Graph'a çıkmadan reddettiyse (pencere kapalı, hesap yok, telefon geçersiz) mesaj kesin
+    // gitmedi — wa.me de açılamazsa deneme geri alınır, sıradaki tıklama sorusuz dener (A2).
+    [Theory]
+    [InlineData("window_closed")]
+    [InlineData("no_account")]
+    [InlineData("bad_phone")]
+    public async Task CloudAPI_kesin_red_ve_wame_acilamazsa_deneme_geri_alinir(string errorCode)
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        handler.SendResponseJson = $$"""{"ok":false,"errorCode":"{{errorCode}}","errorMessage":"x","messageId":null}""";
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.LaunchFailed);
+        _launcher.ThrowOnLaunch = null;
+
+        _jobs.Snapshot.Single().HasUnconfirmedSend.Should().BeFalse("mesaj kesin gitmedi");
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+    }
+
     // Para incelemesi: onaylı birleştirmede kaybeden iade edilip kapandı, kalan işin geri alması düştü
     // (reverse_pending). Eskiden sıradaki tıklama bunu düz "tekrar gönderilsin mi?" diye soruyordu — kalan
     // işin geçersizleşmiş eski tutarını "istendi" diye göstererek; "Hayır" iadeleri yeni istek olmadan

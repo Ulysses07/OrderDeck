@@ -1451,12 +1451,14 @@ public sealed class PaymentRequestService
         /// <summary>Sunucu gönderimi onayladı.</summary>
         Sent,
 
-        /// <summary>Çağıran wa.me'ye düşmeli; Cloud API mesajı GÖNDERMEDİ (hesap bağlı değil,
-        /// pencere kapalı, lisans çözülemedi — sunucu reddetti ya da istek hiç gitmedi).</summary>
+        /// <summary>Çağıran wa.me'ye düşmeli; Cloud API mesajı KESİN GÖNDERMEDİ: istek hiç gitmedi
+        /// (lisans çözülemedi) ya da sunucu Graph'a çıkmadan reddetti
+        /// (<see cref="CloudNeverSentCodes"/>). Yalnız bu durumda wa.me açılamazsa deneme geri alınır.</summary>
         FallBack,
 
         /// <summary>Çağıran wa.me'ye düşmeli ama Cloud API'nin mesajı gönderip göndermediği
-        /// bilinmiyor (zaman aşımı, ağ/sunucu hatası) — wa.me de açılamazsa gönderim denemesi
+        /// bilinmiyor (zaman aşımı, ağ/sunucu hatası, sunucunun <c>network</c>/<c>server_error</c>
+        /// cevabı, Graph'ın hata kodu ve tanınmayan her kod) — wa.me de açılamazsa gönderim denemesi
         /// geri alınmaz.</summary>
         FallBackUnknown,
 
@@ -1508,6 +1510,16 @@ public sealed class PaymentRequestService
         return new WhatsAppTemplateRef(name.Trim(), language.Trim(), parameters);
     }
 
+    /// <summary>Sunucunun Graph'a ÇIKMADAN döndürdüğü ret kodları — mesaj kesin gönderilmedi
+    /// (LicenseServer WhatsAppMessagingService.SendWithFallbackAsync: telefon geçersiz, gövde boş,
+    /// lisansa bağlı hesap yok, 24 saatlik pencere kapalı ve şablon yok). Gerisi — 'network',
+    /// 'server_error', Graph'ın sayısal hata kodları ya da HTTP durumu, tanınmayan kod — sonucu bilinmeyen
+    /// gönderimdir.</summary>
+    private static readonly HashSet<string> CloudNeverSentCodes = new(StringComparer.Ordinal)
+    {
+        "bad_phone", "empty_body", "no_account", "window_closed",
+    };
+
     /// <summary>
     /// Mesajı Cloud API ile göndermeyi dener.
     ///
@@ -1548,7 +1560,13 @@ public sealed class PaymentRequestService
                 _log?.LogInformation(
                     "WhatsApp Cloud API gönderimi yapılamadı ({Code}) — wa.me'ye düşülüyor (key={Key})",
                     resp.ErrorCode, idempotencyKey);
-                return CloudSendOutcome.FallBack;
+                // Ok=false her zaman "gönderilmedi" demek değil: sunucu Graph'a çıkıp sonucu bilemediğinde
+                // de (Graph zaman aşımı → 'network', sunucu istisnası → 'server_error' — dayanıklılık
+                // katmanının yeniden denemesi bunu oynatır, Graph 5xx) Ok=false döner; Meta mesajı kabul
+                // etmiş olabilir. Yalnız Graph'a ÇIKMADAN verilen ret kesin.
+                return resp.ErrorCode is { } code && CloudNeverSentCodes.Contains(code)
+                    ? CloudSendOutcome.FallBack
+                    : CloudSendOutcome.FallBackUnknown;
             }
 
             return CloudSendOutcome.Sent;
