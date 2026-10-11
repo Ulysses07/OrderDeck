@@ -68,7 +68,13 @@ public sealed record PaymentJob(
     int Deliveries = 0,
     /// <summary>Göç 047: gönderim denemesi sayacı — her gönderimden ÖNCE artar
     /// (<see cref="IPaymentJobStore.BeginSend"/>), onay belirtecine girer.</summary>
-    int SendAttempts = 0)
+    int SendAttempts = 0,
+    /// <summary>Göç 047: SON gönderim denemesinin mesajındaki net tutar (<see cref="IPaymentJobStore.BeginSend"/>
+    /// yazar) — sonucu yazılamamış denemenin sorusunda gösterilen tutar; işin alanları sonradan değişebilir.</summary>
+    decimal? AttemptNet = null,
+    /// <summary>Göç 047: bir önceki denemenin neti — <see cref="IPaymentJobStore.AbandonSend"/> başlamamış
+    /// denemeyi geri alırken <see cref="AttemptNet"/>'i buna döndürür.</summary>
+    decimal? PriorAttemptNet = null)
 {
     /// <summary>İş para taşıyor mu — <see cref="PaymentJobSql.CarriesMoney"/>'nin C# karşılığı
     /// (ikisi aynı kalmalı).</summary>
@@ -119,9 +125,10 @@ public sealed record PaymentJob(
     /// sonuncusudur ve anı bilinmez (null); yoksa son teslim.</summary>
     public long? PromptAt => HasUnconfirmedSend ? null : LastDeliveredAt;
 
-    /// <summary>Soruda gösterilecek net: sonucu yazılamamış gönderimde işin güncel alanları (gönderim
-    /// bakiye sonucu kesinleştikten sonra yapılır — alanlar o mesajın alanlarıdır), yoksa son teslimin.</summary>
-    public decimal PromptNet => HasUnconfirmedSend ? RequestedNet : LastRequestedNet;
+    /// <summary>Soruda gösterilecek net: sonucu yazılamamış gönderimde O denemenin neti
+    /// (<see cref="AttemptNet"/> — işin alanları denemeden sonra değişmiş olabilir: revizyon, geri alma),
+    /// yoksa son teslimin.</summary>
+    public decimal PromptNet => HasUnconfirmedSend ? AttemptNet ?? RequestedNet : LastRequestedNet;
 }
 
 /// <summary>R2-01..04: ödeme işi yaşam döngüsünün disk katmanı. Tüm geçişler
@@ -218,13 +225,16 @@ public interface IPaymentJobStore
     /// soruda saat hiç görünmez, iş her birleştirmede "en son teslim edilen" sayılırdı.</para></summary>
     void MarkDelivered(string id, decimal requestedNet);
 
-    /// <summary>Gönderim denemesi başlıyor: SendAttempts + 1 — mesaj ağa/WhatsApp'a çıkmadan ÖNCE.
+    /// <summary>Gönderim denemesi başlıyor: SendAttempts + 1 — mesaj ağa/WhatsApp'a çıkmadan ÖNCE — ve
+    /// denemenin neti (<see cref="PaymentJob.AttemptNet"/>; öncekisi <see cref="PaymentJob.PriorAttemptNet"/>'e).
     /// Sonucu (<see cref="MarkDelivered"/>) yazılamasa da iş "gitmiş olabilir" görünür
-    /// (<see cref="PaymentJob.HasUnconfirmedSend"/>) ve bekleyen eski onay belirteci tutmaz.</summary>
-    void BeginSend(string id);
+    /// (<see cref="PaymentJob.HasUnconfirmedSend"/>), soru o denemenin tutarını gösterir ve bekleyen eski
+    /// onay belirteci tutmaz.</summary>
+    void BeginSend(string id, decimal requestedNet);
 
     /// <summary>Deneme hiç başlamadı (wa.me açılamadı, mesaj kesin gitmedi): <see cref="BeginSend"/>'in
-    /// artışı geri alınır — yalnız sonucu yazılmamış bir deneme varsa.</summary>
+    /// artışı geri alınır, deneme neti bir öncekine döner — yalnız sonucu yazılmamış bir deneme varsa.
+    /// (Daha eski bir yetim deneme duruyorsa soru onun tutarını göstermeli, gitmemiş olanınkini değil.)</summary>
     void AbandonSend(string id);
 
     /// <summary>Revizyon: yeni toplam + yeni anahtar + Revision+1, eski sonuç
@@ -558,18 +568,22 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             });
     }
 
-    public void BeginSend(string id)
+    public void BeginSend(string id, decimal requestedNet)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE PaymentJob SET SendAttempts=SendAttempts+1, UpdatedAt=@now WHERE Id=@id",
-            new { id, now = Now() });
+        conn.Execute(
+            @"UPDATE PaymentJob
+              SET SendAttempts=SendAttempts+1, PriorAttemptNet=AttemptNet, AttemptNet=@net, UpdatedAt=@now
+              WHERE Id=@id",
+            new { id, net = Dec(requestedNet), now = Now() });
     }
 
     public void AbandonSend(string id)
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE PaymentJob SET SendAttempts=SendAttempts-1, UpdatedAt=@now WHERE Id=@id AND SendAttempts > Deliveries",
+            @"UPDATE PaymentJob SET SendAttempts=SendAttempts-1, AttemptNet=PriorAttemptNet, UpdatedAt=@now
+              WHERE Id=@id AND SendAttempts > Deliveries",
             new { id, now = Now() });
     }
 
@@ -711,7 +725,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     private const string SelectSql =
         @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
                  AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey,
-                 DeliveredAt, DeliveredNet, Deliveries, SendAttempts
+                 DeliveredAt, DeliveredNet, Deliveries, SendAttempts, AttemptNet, PriorAttemptNet
           FROM PaymentJob";
 
     private static PaymentJob Map(Row r) => new(
@@ -735,7 +749,12 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         r.DeliveredAt,
         r.DeliveredNet is null ? null : decimal.Parse(r.DeliveredNet, CultureInfo.InvariantCulture),
         r.Deliveries,
-        r.SendAttempts);
+        r.SendAttempts,
+        DecOrNull(r.AttemptNet),
+        DecOrNull(r.PriorAttemptNet));
+
+    private static decimal? DecOrNull(string? text)
+        => text is null ? null : decimal.Parse(text, CultureInfo.InvariantCulture);
 
     private sealed class Row
     {
@@ -756,5 +775,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         public string? DeliveredNet { get; init; }
         public int Deliveries { get; init; }
         public int SendAttempts { get; init; }
+        public string? AttemptNet { get; init; }
+        public string? PriorAttemptNet { get; init; }
     }
 }

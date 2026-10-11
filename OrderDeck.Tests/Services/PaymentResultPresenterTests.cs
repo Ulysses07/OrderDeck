@@ -102,13 +102,32 @@ public sealed class PaymentResultPresenterTests
             .And.NotContain("istek gitmiş");
     }
 
-    [Fact] // Sonucu yazılamamış gönderimin anı bilinmez — saat yazılmaz
-    public void Tekrar_gonderme_ani_bilinmeyen_istekte_saat_yazmaz()
+    // Son inceleme: sonucu yazılamamış gönderim olgu diye anlatılmaz. Operatör az önce "WhatsApp açılamadı"
+    // görmüş olabilir; "zaten gönderildi / 150 TL istendi" derse "Hayır"la müşteriye hiç istek gitmeyebilir.
+    // Anı bilinmez — saat yazılmaz; tutar O denemenin tutarıdır.
+    [Fact]
+    public void Tekrar_gonderme_sonucu_yazilamamis_istegi_gonderilmis_olabilir_diye_sorar()
     {
         var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "session:s1",
-            new[] { new PriorPaymentRequest(150m, null) }, "t");
+            new[] { Istek(90m, 120), new PriorPaymentRequest(150m, null, Unconfirmed: true) }, "t");
 
-        PaymentResultPresenter.PromptText(prompt, Simdi).Message
-            .Should().Be("150,00 TL istendi, tekrar gönderilsin mi?");
+        var (title, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        title.Should().Be("Ödeme isteği gönderilmiş olabilir");
+        message.Should().Be(
+            "150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
+        message.Should().NotContain("istendi");
+    }
+
+    [Fact] // Birleştirmede de sonucu yazılamamış istek "gitmiş" diye kesin sayılmaz
+    public void Birlestirme_sonucu_yazilamamis_istegi_gitmis_olabilir_diye_isaretler()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            new[] { Istek(50m, 60), new PriorPaymentRequest(150m, null, Unconfirmed: true) }, "t");
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        message.Should().StartWith(
+            "Bu kişiye bu yayın için 2 istek gitmiş (50,00 TL, 150,00 TL (gitmiş olabilir)); tek istekte birleştirilsin mi?");
     }
 }

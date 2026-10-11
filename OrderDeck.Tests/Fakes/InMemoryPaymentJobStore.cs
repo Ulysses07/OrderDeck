@@ -234,12 +234,18 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         }
     }
 
-    public void BeginSend(string id)
+    public void BeginSend(string id, decimal requestedNet)
     {
         lock (_gate)
         {
             if (!_jobs.TryGetValue(id, out var j)) return;
-            _jobs[id] = j with { SendAttempts = j.SendAttempts + 1, UpdatedAt = Now() };
+            _jobs[id] = j with
+            {
+                SendAttempts = j.SendAttempts + 1,
+                PriorAttemptNet = j.AttemptNet,
+                AttemptNet = requestedNet,
+                UpdatedAt = Now(),
+            };
         }
     }
 
@@ -248,7 +254,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate)
         {
             if (!_jobs.TryGetValue(id, out var j) || j.SendAttempts <= j.Deliveries) return;
-            _jobs[id] = j with { SendAttempts = j.SendAttempts - 1, UpdatedAt = Now() };
+            _jobs[id] = j with { SendAttempts = j.SendAttempts - 1, AttemptNet = j.PriorAttemptNet, UpdatedAt = Now() };
         }
     }
 

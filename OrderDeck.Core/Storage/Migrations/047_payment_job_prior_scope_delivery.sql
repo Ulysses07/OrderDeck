@@ -1,5 +1,5 @@
 -- 047 — Ödeme işinin ASIL kapsamı (PriorScopeKey), TESLİM kaydı (DeliveredAt, DeliveredNet,
--- Deliveries) ve GÖNDERİM denemesi (SendAttempts).
+-- Deliveries) ve GÖNDERİM denemesi (SendAttempts, AttemptNet, PriorAttemptNet).
 --
 -- PriorScopeKey. Bir iş iki yoldan 'legacy:{anahtar}:{Id}' kapsamına iner: yerel kopya taşıması
 -- (CustomerSyncRepository.MoveReferences — kopyanın işi asıl kayıttaki aynı kapsamlı işe
@@ -21,7 +21,11 @@
 -- SONRA yazılır. SendAttempts > Deliveries = gönderim başladı ama sonucu yazılamadı (süreç düştü,
 -- teslim yazımı hata verdi): mesaj gitmiş olabilir, sıradaki tıklama sorar. Sayaç da onay
 -- belirtecine girer: öbür pencerenin gönderimi, teslim kaydı yazılamasa bile, bekleyen eski onayı
--- geçersiz kılar.
+-- geçersiz kılar. Teslim o ana kadarki bütün denemeleri karşılar (SendAttempts = Deliveries).
+-- AttemptNet = son denemenin mesajındaki net: sonucu yazılamamış denemenin sorusu ("gönderilmiş
+-- olabilir") o tutarı gösterir — işin alanları denemeden sonra değişebilir (revizyon, geri alma).
+-- PriorAttemptNet bir önceki denemenin netidir: başlamamış deneme (wa.me açılamadı) geri alınınca
+-- AttemptNet ona döner; daha eski yetim deneme duruyorsa soru onun tutarını gösterir.
 --
 -- Nullable, varsayılansız (Deliveries/SendAttempts 0): eski satırlarda asıl kapsam bilinmiyor. Eski
 -- teslim edilmiş işler (legacy olmayan kapsamda ClosedAt dolu = mesaj ulaşmıştı; o kapsamda
@@ -42,6 +46,8 @@ ALTER TABLE PaymentJob ADD COLUMN DeliveredAt INTEGER;
 ALTER TABLE PaymentJob ADD COLUMN DeliveredNet TEXT;
 ALTER TABLE PaymentJob ADD COLUMN Deliveries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE PaymentJob ADD COLUMN SendAttempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE PaymentJob ADD COLUMN AttemptNet TEXT;
+ALTER TABLE PaymentJob ADD COLUMN PriorAttemptNet TEXT;
 
 UPDATE PaymentJob SET DeliveredAt = ClosedAt, DeliveredNet = od_payment_net(ProductTotal, AppliedAmount),
                       Deliveries = 1, SendAttempts = 1

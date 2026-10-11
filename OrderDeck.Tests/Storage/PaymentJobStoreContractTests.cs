@@ -564,7 +564,7 @@ public abstract class PaymentJobStoreContractTests
         var job = Applied(store, person.LeasedId, 40m, delivered: true);
         var token = store.FindOrCreateForPerson(Req(person)).Plan!.Token;
 
-        store.BeginSend(job.Id);                                   // öbür pencere gönderdi, teslim yazılamadı
+        store.BeginSend(job.Id, 260m);                             // öbür pencere gönderdi, teslim yazılamadı
 
         store.Get(job.Id)!.HasUnconfirmedSend.Should().BeTrue();
         var soru = store.FindOrCreateForPerson(Req(person, token: token));
@@ -583,7 +583,7 @@ public abstract class PaymentJobStoreContractTests
         var job = Applied(store, person.LeasedId, 40m, delivered: false);
         store.FindOrCreateForPerson(Req(person)).Status.Should().Be(PersonJobStatus.Ready);
 
-        store.BeginSend(job.Id);
+        store.BeginSend(job.Id, 260m);
         var soru = store.FindOrCreateForPerson(Req(person));
         soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
         soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Resend);
@@ -718,10 +718,10 @@ public abstract class PaymentJobStoreContractTests
         var person = NewPerson(store, 2);
         var job = store.FindOrCreate(person.OwnerId!, "session:s1", 300m);
         store.MarkNoBalance(job.Id, null, 0).Should().BeTrue();
-        store.BeginSend(job.Id);                                   // gönderim başladı, süreç düştü
+        store.BeginSend(job.Id, 300m);                             // gönderim başladı, süreç düştü
         store.Get(job.Id)!.HasUnconfirmedSend.Should().BeTrue();
 
-        store.BeginSend(job.Id);                                   // operatör onayladı, yeniden gönderildi
+        store.BeginSend(job.Id, 300m);                             // operatör onayladı, yeniden gönderildi
         store.MarkDelivered(job.Id, 300m);
 
         var teslim = store.Get(job.Id)!;
@@ -737,6 +737,34 @@ public abstract class PaymentJobStoreContractTests
             SendAttempts = 1, Deliveries = 1,
         };
         PersonScopePlan.For(new[] { teslim, sonra }, person.OwnerId).Survivor!.Id.Should().Be(sonra.Id);
+    }
+
+    // Sonucu yazılamamış denemenin sorusu O denemenin tutarını göstermeli — işin güncel alanlarını değil.
+    // Senaryo: 150'lik gönderim yetim kaldı; onaylı tıklama revizyonla 250'ye çıktı ama wa.me açılamadı
+    // (deneme geri alındı). Gidebilecek tek mesaj 150'ydi; eskiden soru "250 istendi" diyordu.
+    [Fact]
+    public void Yetim_denemenin_neti_saklanir_baslamamis_deneme_geri_alininca_oncekine_doner()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 150m, delivered: false);   // 300 − 150 = 150
+        store.BeginSend(job.Id, 150m);                                        // yetim: sonuç yazılamadı
+
+        var yeniKey = Guid.NewGuid();
+        store.BeginRevision(job.Id, 400m, yeniKey, job.Revision).Should().BeTrue();
+        store.MarkApplied(job.Id, yeniKey, job.Revision + 1, 150m).Should().BeTrue();   // 400 − 150 = 250
+        store.BeginSend(job.Id, 250m);
+        store.Get(job.Id)!.PromptNet.Should().Be(250m, "son deneme 250'lik");
+
+        store.AbandonSend(job.Id);                                             // wa.me açılamadı — 250 gitmedi
+
+        var sonra = store.Get(job.Id)!;
+        sonra.HasUnconfirmedSend.Should().BeTrue("150'lik deneme hâlâ gitmiş olabilir");
+        sonra.AttemptNet.Should().Be(150m);
+        sonra.PromptNet.Should().Be(150m, "işin alanları (250) hiç gitmemiş tutar");
+        var soru = store.FindOrCreateForPerson(Req(person, total: 400m));
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.PromptJobs.Single().PromptNet.Should().Be(150m);
     }
 }
 

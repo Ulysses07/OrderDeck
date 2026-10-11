@@ -832,7 +832,7 @@ public partial class PaymentRequestServiceTests
 
         var soru = await Iste();
         soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "mesaj gitmiş olabilir — sorusuz ikinci mesaj yok");
-        soru.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, null),
+        soru.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, null, Unconfirmed: true),
             "gönderilen net 250 − 100; anı yazılamadı");
         _launcher.LaunchedUrls.Should().ContainSingle();
 
@@ -970,6 +970,40 @@ public partial class PaymentRequestServiceTests
         _launcher.LaunchedUrls.Should().HaveCount(2);
     }
 
+    // Sonucu yazılamamış deneme: soru onu olgu diye anlatmaz ve O denemenin tutarını gösterir. 150'lik
+    // gönderimin teslimi yazılamadı; onaylı tıklama revizyonla 250 istedi ama wa.me açılamadı (deneme geri
+    // alındı). Eskiden sıradaki soru "250,00 TL istendi" diyordu — 250 hiç gitmedi, gitmiş olabilecek tek
+    // mesaj 150'ydi; operatör "Hayır" derse müşteri eksik tutarla öderdi.
+    [Fact]
+    public async Task Yetim_deneme_sorusu_gonderilmis_olabilir_der_o_denemenin_tutarini_gosterir()
+    {
+        var depo = new TeslimYazimiDusenDepo(_jobs);
+        var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: depo);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        depo.TeslimDussun = true;
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+        depo.TeslimDussun = false;
+
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        var ilk = new FakeDialogService();
+        (await EvetAsync(sut, customer, 350m, "session:s1", ilk)).Should().Be(PaymentRequestResult.LaunchFailed);
+        _launcher.ThrowOnLaunch = null;
+        ilk.Confirmations.Should().ContainSingle().Which.Message.Should().StartWith("150,00 TL tutarındaki istek");
+        _jobs.Snapshot.Single().RequestedNet.Should().Be(250m, "revizyon yapıldı: 350 − 100");
+
+        var dialogs = new FakeDialogService();
+        var sonuc = await PaymentResultPresenter.RequestConfirmedAsync(dialogs, t =>
+            sut.RequestPaymentAsync(customer, _ => 350m, T, "session:s1", t));
+
+        sonuc.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        sonuc.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, null, Unconfirmed: true));
+        var soru = dialogs.Confirmations.Should().ContainSingle().Subject;
+        soru.Title.Should().Be("Ödeme isteği gönderilmiş olabilir");
+        soru.Message.Should().Be(
+            "150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
+    }
+
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
     {
@@ -997,7 +1031,7 @@ public partial class PaymentRequestServiceTests
         public bool MarkUncertain(string id, Guid? expectedKey, int expectedRevision)
             => inner.MarkUncertain(id, expectedKey, expectedRevision);
         public void Close(string id) => inner.Close(id);
-        public void BeginSend(string id) => inner.BeginSend(id);
+        public void BeginSend(string id, decimal requestedNet) => inner.BeginSend(id, requestedNet);
         public void AbandonSend(string id) => inner.AbandonSend(id);
         public bool BeginRevision(string id, decimal newProductTotal, Guid newApplyKey, int expectedRevision)
             => inner.BeginRevision(id, newProductTotal, newApplyKey, expectedRevision);

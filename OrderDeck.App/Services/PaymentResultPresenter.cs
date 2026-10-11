@@ -127,13 +127,21 @@ public static class PaymentResultPresenter
     /// (parasız istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
     ///
     /// <para>Sunucunun bulduğu ayrı düşümler (<see cref="PaymentPrompt.RemoteDeductions"/>) "gitmiş
-    /// istek" değildir — sunucu teslimi bilmez; bulunan düşüm olarak anlatılır.</para></summary>
+    /// istek" değildir — sunucu teslimi bilmez; bulunan düşüm olarak anlatılır.</para>
+    ///
+    /// <para>Sonucu yazılamamış gönderim (<see cref="PriorPaymentRequest.Unconfirmed"/>) olgu diye
+    /// anlatılmaz ("zaten gönderildi", "istendi" denmez): istek gitmemiş de olabilir — operatör az önce
+    /// "WhatsApp açılamadı" görmüş olabilir; "Hayır" derse müşteriye hiç istek gitmeyebilir.</para></summary>
     public static (string Title, string Message) PromptText(PaymentPrompt prompt, DateTimeOffset now)
     {
         if (prompt.Kind == PersonScopePromptKind.Resend)
         {
             var last = prompt.Requests.LastOrDefault();
             var at = last?.At is { } t ? WhenText(t, now) + " " : "";
+            if (last is { Unconfirmed: true })
+                return ("Ödeme isteği gönderilmiş olabilir",
+                    $"{at}{Money(last.Amount)} tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), " +
+                    "tekrar gönderilsin mi?");
             return ("Ödeme isteği zaten gönderildi",
                 $"{at}{Money(last?.Amount ?? 0m)} istendi, tekrar gönderilsin mi?");
         }
@@ -157,7 +165,8 @@ public static class PaymentResultPresenter
         string lead;
         if (sent > 0)
         {
-            var amounts = string.Join(", ", prompt.Requests.Select(r => Money(r.Amount)));
+            var amounts = string.Join(", ", prompt.Requests.Select(r =>
+                r.Unconfirmed ? Money(r.Amount) + " (gitmiş olabilir)" : Money(r.Amount)));
             lead = $"Bu kişiye {scope} {sent} istek gitmiş ({amounts})";
             if (unsent > 0) lead += $"; ayrıca {unsent} gönderilmemiş bakiye düşümü var";
         }

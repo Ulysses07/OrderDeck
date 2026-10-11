@@ -81,8 +81,10 @@ public sealed record PaymentPrompt(
     int UnsentDeductions = 0, bool RefundsToOtherRow = false, bool RefundsDeductions = true,
     IReadOnlyList<decimal>? RemoteDeductions = null);
 
-/// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.</summary>
-public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At);
+/// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.
+/// <see cref="Unconfirmed"/> = gönderim başladı ama sonucu yazılamadı: istek GİTMİŞ OLABİLİR (kesin
+/// değil); tutar o denemenin tutarıdır, anı bilinmez.</summary>
+public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, bool Unconfirmed = false);
 
 /// <summary>"Ödeme iste"nin sonucu.
 /// <para><see cref="OwnerId"/> ve <see cref="Demoted"/> banka beklentisi (W2) için: beklenti işin sahip
@@ -524,7 +526,7 @@ public sealed class PaymentRequestService
         // öbür pencerede bekleyen eski onay tutmaz, sıradaki tıklama "tekrar gönderilsin mi?" diye
         // sorar. Yazılamazsa mesaj gönderilmez — sonucu hiç kaydedilemeyecek bir gönderim sorusuz
         // ikinci kez gidebilirdi. Bakiye sonucu kesin; operatörün tekrar denemesi çift düşüm yapmaz.
-        if (deliveryJob is not null && !TryBeginSend(deliveryJob))
+        if (deliveryJob is not null && !TryBeginSend(deliveryJob, totalAmount))
             return Done(PaymentRequestResult.BalanceUncertain);
 
         // Cloud API açıksa doğrudan gönder. Başarısızsa (pencere kapalı, hesap
@@ -571,13 +573,13 @@ public sealed class PaymentRequestService
         return Done(PaymentRequestResult.Opened);
     }
 
-    /// <summary>Gönderim denemesini yazar (<see cref="IPaymentJobStore.BeginSend"/>); yazılamazsa
-    /// false — çağıran mesajı göndermez.</summary>
-    private bool TryBeginSend(PaymentJob job)
+    /// <summary>Gönderim denemesini mesajın netiyle yazar (<see cref="IPaymentJobStore.BeginSend"/>);
+    /// yazılamazsa false — çağıran mesajı göndermez.</summary>
+    private bool TryBeginSend(PaymentJob job, decimal requestedNet)
     {
         try
         {
-            _jobs.BeginSend(job.Id);
+            _jobs.BeginSend(job.Id, requestedNet);
             return true;
         }
         catch (Exception ex)
@@ -758,7 +760,8 @@ public sealed class PaymentRequestService
         => new(plan.Kind, scopeKey,
             plan.PromptJobs.Select(j => new PriorPaymentRequest(
                 j.PromptNet,
-                j.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null)).ToList(),
+                j.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null,
+                j.HasUnconfirmedSend)).ToList(),
             plan.Token,
             plan.UnsentDeductions,
             plan.RefundsToOtherRow,
