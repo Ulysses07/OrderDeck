@@ -1103,6 +1103,45 @@ public partial class PaymentRequestServiceTests
         finally { Drop(db); }
     }
 
+    // Miras işin replay'i asıl apply'ın kapsamını (PriorScopeKey) göndermeli. Kopya x'in S1 düşümü ağda
+    // kaldı (apply_uncertain); taşıma onu açık mirasa indirdi. Asıl kayıt y'nin S1 tıklaması mirası yeniden
+    // oynatıp benimser. Anahtar sunucuya hiç ulaşmamışsa düşüm o anda yazılır: eskiden SaleScope
+    // 'legacy:…' gidiyordu, /scope (tam eşleşme) onu S1'de bulamaz, R4-03 çift düşüm koruması delinirdi.
+    [Fact]
+    public async Task Miras_replayi_asil_kapsamla_ayni_anahtarla_gider()
+    {
+        var db = FileDb();
+        try
+        {
+            var x = Uye(db, "kisi.m");                      // kopya
+            var y = Uye(db, "Kisi.M");                      // asıl kayıt
+            var (sut, handler) = KisiSut(db);
+            handler.PreviewBalance = 100m;
+            handler.ThrowTimeoutOnApply = true;
+            (await sut.OpenWhatsAppAsync(x, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.BalanceUncertain);
+            handler.ThrowTimeoutOnApply = false;
+            var kopyaIsi = Isler(db, "session:s1").Single();
+            var key = kopyaIsi.ApplyKey!.Value;
+            db.Jobs.FindOrCreate(y.Id, "session:s1", 250m);   // asıl kayıtta taze iş
+            db.Sync.RekeyToLocal(x.Id, y.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var miras = db.Jobs.GetOpenLegacies(y.Id).Should().ContainSingle().Subject;
+            miras.ScopeKey.Should().StartWith("legacy:");
+            miras.PriorScopeKey.Should().Be("session:s1");
+            var oncekiGovdeler = handler.AppliedBalanceBodies.Count;
+
+            (await sut.OpenWhatsAppAsync(y, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+
+            var replay = handler.AppliedBalanceBodies.Skip(oncekiGovdeler).Should().ContainSingle().Subject;
+            AppliedKey(replay).Should().Be(key, "idempotency anahtarı değişmez");
+            using (var body = System.Text.Json.JsonDocument.Parse(replay))
+                body.RootElement.GetProperty("saleScope").GetString().Should().Be("session:s1",
+                    "asıl apply'ın kapsamı — 'legacy:…' değil");
+            Isler(db, "session:s1").Single().ApplyKey.Should().Be(key, "miras taze işe benimsendi — ikinci düşüm yok");
+        }
+        finally { Drop(db); }
+    }
+
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
     {

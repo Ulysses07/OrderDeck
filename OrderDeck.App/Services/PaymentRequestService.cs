@@ -1302,7 +1302,8 @@ public sealed class PaymentRequestService
     /// R4-03: gövdeye işin <c>ScopeKey</c>'i de eklenir — satışın kalıcı
     /// kimliği. Sunucu bunu A11 karşılaştırmasının DIŞINDA tutar, yoksa bu
     /// sürüme yükselen bir kurulumun kapsamsız yazılmış satırı tekrar
-    /// denemesi kalıcı çakışmaya dönerdi.
+    /// denemesi kalıcı çakışmaya dönerdi. Miras işte asıl apply'ın kapsamı
+    /// gider (<see cref="SaleScopeOf"/>).
     ///
     /// R4-01: cevap, GÖNDERİLDİĞİ denemeye aittir. İstek tele çıktıktan sonra
     /// araya bir revizyon girebilir (ağda takılan cevap dakikalarca sürebilir);
@@ -1330,7 +1331,7 @@ public sealed class PaymentRequestService
             var apply = await _api.ApplyBalanceAsync(
                 licenseId,
                 new CustomerBalanceApplyRequest(
-                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, job.ScopeKey),
+                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, SaleScopeOf(job)),
                 ct);
             if (!_jobs.MarkApplied(job.Id, key, revision, apply.AppliedAmount))
                 LogBayat("uygulandı");
@@ -1357,6 +1358,16 @@ public sealed class PaymentRequestService
         }
         return _jobs.Get(job.Id)!;
     }
+
+    /// <summary>Sunucuya giden satış kapsamı: asıl apply'ın gönderdiği kapsam. Miras işte bu, indirme
+    /// öncesi kapsamdır (<see cref="PaymentJob.PriorScopeKey"/>) — <c>legacy:…</c> adı değil. Anahtar
+    /// sunucuya hiç ulaşmamışsa replay düşümü ŞİMDİ yazar; miras adıyla yazılsaydı /scope (tam eşleşme)
+    /// onu asıl kapsamda bulamaz, R4-03 çift düşüm koruması delinirdi (yedekten dönen kurulum aynı satışı
+    /// ikinci kez düşerdi). Kapsam A11 içerik karşılaştırmasının dışında: kayıtlı anahtarların replay'i
+    /// etkilenmez, idempotency anahtarı (ApplyKey) aynı kalır. Asıl kapsamı bilinmeyen (047 öncesi) miras
+    /// eskisi gibi kendi adıyla gider.</summary>
+    private static string SaleScopeOf(PaymentJob job)
+        => job.IsLegacyScope && job.PriorScopeKey is { } prior ? prior : job.ScopeKey;
 
     /// <summary>R4-02: diske inmiş geri alma niyetini uzlaştırır. Sunucudaki
     /// geri alma deterministik idempotenttir (tekrar = 409 already-reversed =
