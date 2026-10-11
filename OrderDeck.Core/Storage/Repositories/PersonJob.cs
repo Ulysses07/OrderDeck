@@ -71,10 +71,12 @@ public enum PersonScopePromptKind
 /// <summary>
 /// Kişi × kapsamdaki işlerin kararı — saf; SQLite deposu ve taklit depo AYNI planı uygular.
 ///
-/// <para><b>Kalan iş:</b> önce para taşıyan, sonra en son teslim edilen, sonra en eski (CreatedAt, Id).
-/// Sahibin el değmemiş işi tercih EDİLMEZ: bakiye satır başına tutulur; başka üyenin bakiyesinden
-/// düşmüş işi geri alıp bakiyesi olmayan satırda yeniden uygulamak müşterinin indirimini yok ederdi.
-/// Kalan iş kendi sahip satırını korur.</para>
+/// <para><b>Kalan iş:</b> önce para taşıyan, sonra en son teslim edilen, sonra belirlenimli sahibin
+/// işi, sonra en eski (CreatedAt, Id). Sahibin el değmemiş işi para taşıyan ya da teslim edilmiş bir
+/// işin önüne GEÇMEZ: bakiye satır başına tutulur; başka üyenin bakiyesinden düşmüş işi geri alıp
+/// bakiyesi olmayan satırda yeniden uygulamak müşterinin indirimini yok ederdi. Eşitlikte sahibinki
+/// kalır: iki bilgisayar aynı (WpfCustomerId, ScopeKey) anahtarında buluşur. Kalan iş kendi sahip
+/// satırını korur.</para>
 ///
 /// <para><b>Ne zaman sorulur:</b> kaybedenlerden biri para taşıyor ya da teslim edilmişse birleştirme
 /// (<see cref="PersonScopePromptKind.Merge"/>); yoksa ama herhangi bir iş teslim edilmişse tekrar
@@ -83,11 +85,12 @@ public enum PersonScopePromptKind
 /// </summary>
 public sealed class PersonScopePlan
 {
-    private PersonScopePlan(IReadOnlyList<PaymentJob> jobs)
+    private PersonScopePlan(IReadOnlyList<PaymentJob> jobs, string? ownerId)
     {
         var ordered = jobs
             .OrderByDescending(j => j.CarriesMoney)
             .ThenByDescending(j => j.ClosedAt ?? long.MinValue)
+            .ThenByDescending(j => string.Equals(j.CustomerId, ownerId, StringComparison.Ordinal))
             .ThenBy(j => j.CreatedAt)
             .ThenBy(j => j.Id, StringComparer.Ordinal)
             .ToList();
@@ -125,10 +128,11 @@ public sealed class PersonScopePlan
     public string Token { get; }
 
     /// <param name="jobs">Kişi × kapsamın bütün işleri (en az bir).</param>
-    public static PersonScopePlan For(IReadOnlyList<PaymentJob> jobs)
+    /// <param name="ownerId">Kişinin belirlenimli sahibi (<c>PaymentPerson.OwnerId</c>) — eşitlik bozucu.</param>
+    public static PersonScopePlan For(IReadOnlyList<PaymentJob> jobs, string? ownerId)
     {
         if (jobs.Count == 0) throw new ArgumentException("En az bir iş gerekli", nameof(jobs));
-        return new PersonScopePlan(jobs);
+        return new PersonScopePlan(jobs, ownerId);
     }
 
     private static string TokenOf(IEnumerable<PaymentJob> jobs)

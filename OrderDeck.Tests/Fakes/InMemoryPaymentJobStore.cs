@@ -49,7 +49,10 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
     {
         lock (_gate)
         {
-            var members = MembersOf?.Invoke(request.LeasedId) ?? request.MemberIds;
+            // Gerçek depo gibi: satırın üyesi okunamıyorsa kişi yalnız kiralanan satırdır.
+            var members = MembersOf is null
+                ? request.MemberIds
+                : MembersOf(request.LeasedId) is { Count: > 0 } read ? read : new[] { request.LeasedId };
             if (PaymentPerson.KeyOf(members) != request.MemberKey) return PersonJob.MembershipChanged;
 
             var memberSet = members.ToHashSet(StringComparer.Ordinal);
@@ -66,7 +69,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
                 return PersonJob.Ready(job, Array.Empty<DemotedJob>());
             }
 
-            var plan = PersonScopePlan.For(jobs);
+            var plan = PersonScopePlan.For(jobs, request.OwnerId);
             if (plan.NeedsConfirmation && request.ConfirmedTokens?.Contains(plan.Token) != true)
                 return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
                     Array.Empty<DemotedJob>(), plan);

@@ -275,6 +275,21 @@ public abstract class PaymentJobStoreContractTests
         store.GetOpenLegacies(person.MemberIds).Should().BeEmpty();
     }
 
+    [Fact] // Eşitlikte (ikisi de parasız, teslim edilmemiş) sahibin işi kalır — daha yeni olsa da
+    public void FindOrCreateForPerson_esitlikte_sahibin_isini_tutar()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var eski = store.FindOrCreate(NotOwner(person), "session:s1", 100m);
+        var sahibin = store.FindOrCreate(person.OwnerId!, "session:s1", 100m);
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.Ready, "parasız ve teslim edilmemiş kaybeden sorusuz iner");
+        r.Job!.Id.Should().Be(sahibin.Id, "iki bilgisayar aynı (WpfCustomerId, ScopeKey) anahtarında buluşsun");
+        r.Demoted.Should().ContainSingle().Which.JobId.Should().Be(eski.Id);
+    }
+
     [Fact] // Sahip kararı 4: para taşıyan/teslim edilmiş kaybeden varsa birleştirme sorulur; onayda açık mirasa iner
     public void FindOrCreateForPerson_iki_parali_is_sorar_onayda_kaybedeni_acik_legacy_yapar()
     {

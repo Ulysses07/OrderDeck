@@ -256,11 +256,13 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         var conn = write.Connection;
         var tx = write.Transaction;
 
+        // Satır Customer tablosunda hiç yoksa kişi yalnız o satırdır (PaymentPerson.Single ile aynı
+        // tanım): grup yok, doğrulanacak başka üye de yok. Kiralanan satırı senkron silemez (U13).
         var members = PaymentPersonSql.ReadMembers(conn, tx, request.LeasedId);
-        if (!string.Equals(PaymentPerson.KeyOf(members.Select(m => m.Id)), request.MemberKey, StringComparison.Ordinal))
+        var ids = members.Count > 0 ? members.Select(m => m.Id).ToList() : new List<string> { request.LeasedId };
+        if (!string.Equals(PaymentPerson.KeyOf(ids), request.MemberKey, StringComparison.Ordinal))
             return PersonJob.MembershipChanged;                     // Dispose: hiçbir şey yazılmadı
 
-        var ids = members.Select(m => m.Id).ToList();
         var jobs = conn.Query<Row>(
                 SelectSql + " WHERE CustomerId IN @ids AND ScopeKey=@scopeKey",
                 new { ids, scopeKey = request.ScopeKey }, tx)
@@ -285,7 +287,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             return PersonJob.Ready(created, Array.Empty<DemotedJob>());
         }
 
-        var plan = PersonScopePlan.For(jobs);
+        var plan = PersonScopePlan.For(jobs, request.OwnerId);
         if (plan.NeedsConfirmation && request.ConfirmedTokens?.Contains(plan.Token) != true)
             return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
                 Array.Empty<DemotedJob>(), plan);                  // Dispose: hiçbir şey yazılmadı
