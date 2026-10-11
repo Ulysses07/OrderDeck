@@ -182,6 +182,39 @@ public class LabelRepositoryTests
             .Should().Be(top.Sum(t => t.TotalAmount));
     }
 
+    // Sahip kararı 3: ödeme isteği kişinin yayın toplamını ister; satır kendi tutarının yanında kişi
+    // toplamını gösterir. Toplam GetSessionPrintedTotal(kişinin üyeleri) ile aynı, limitten bağımsız.
+    [Fact]
+    public void GetTopCustomersBySession_gruplu_kisinin_satirlari_kisi_toplamini_tasir()
+    {
+        var (db, repo, sid, _) = Fx(); // c1 hazır, grupsuz
+        using var _2 = db;
+        var customers = new CustomerRepository(db);
+        foreach (var (id, platform) in new[] { ("ca", "instagram"), ("cb", "tiktok"), ("cc", "youtube") })
+            customers.Insert(new Customer(id, platform, "@" + id, null, null,
+                100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
+        var group = customers.MergeIntoGroup(new[] { "ca", "cb", "cc" });
+
+        repo.Insert(MakeLabel("l1", sid, "ca", price: 100m, printedAt: 500));
+        repo.Insert(MakeLabel("l2", sid, "cb", price: 200m, printedAt: 500));
+        repo.Insert(MakeLabel("l3", sid, "c1", price: 150m, printedAt: 500));
+        // cc bu yayında almadı: satırı yok, kişi toplamına katkısı 0.
+
+        var top = repo.GetTopCustomersBySession(sid, int.MaxValue);
+
+        top.Single(t => t.CustomerId == "ca").PersonTotalAmount.Should().Be(300m);
+        top.Single(t => t.CustomerId == "cb").PersonTotalAmount.Should().Be(300m);
+        top.Single(t => t.CustomerId == "c1").PersonTotalAmount.Should().BeNull("tek satırlı kişi — tutar zaten satırınki");
+        repo.GetSessionPrintedTotal(sid, customers.CompleteGroups(new[] { customers.GetById("ca")! })
+                .Select(c => c.Id).ToList())
+            .Should().Be(300m, "rapor ile ödeme akışı aynı kişi toplamını görür");
+
+        // Limit kişi toplamını kesmez: ilk satır (200) kişinin 100'lük satırı listede olmasa da 300 der.
+        repo.GetTopCustomersBySession(sid, 1).Should().ContainSingle()
+            .Which.PersonTotalAmount.Should().Be(300m);
+        group.Should().NotBeNull();
+    }
+
     [Fact]
     public void GetByCustomer_returns_labels_ordered_by_recent_for_only_that_customer()
     {
