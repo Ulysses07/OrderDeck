@@ -1,5 +1,5 @@
--- 047 — Ödeme işinin ASIL kapsamı (PriorScopeKey) ve TESLİM kaydı (DeliveredAt, DeliveredNet,
--- Deliveries).
+-- 047 — Ödeme işinin ASIL kapsamı (PriorScopeKey), TESLİM kaydı (DeliveredAt, DeliveredNet,
+-- Deliveries) ve GÖNDERİM denemesi (SendAttempts).
 --
 -- PriorScopeKey. Bir iş iki yoldan 'legacy:{anahtar}:{Id}' kapsamına iner: yerel kopya taşıması
 -- (CustomerSyncRepository.MoveReferences — kopyanın işi asıl kayıttaki aynı kapsamlı işe
@@ -17,18 +17,30 @@
 -- Deliveries + 1. Hiçbir yol bunları silmez. Deliveries onay belirtecine girer: saniyelik
 -- damga aynı saniyedeki iki gönderimi ayırmaz, sayaç ayırır.
 --
--- Nullable, varsayılansız (Deliveries 0): eski satırlarda asıl kapsam bilinmiyor. Eski teslim
--- edilmiş işler (legacy olmayan kapsamda ClosedAt dolu = mesaj ulaşmıştı; o kapsamda ClosedAt'ı
--- yalnız teslim yazar) DeliveredAt = ClosedAt ile işaretlenir; net tutarı okuyucu işin kendi
--- alanlarından hesaplar (kapalı işte o alanlar gönderilen mesajın alanlarıdır).
--- Önceki sürüm kolonları tanımaz ama SELECT'leri kolon adıyla okuduğu için etkilenmez.
+-- Gönderim denemesi. SendAttempts her gönderimden (Cloud API ya da wa.me) ÖNCE artar, teslim kaydı
+-- SONRA yazılır. SendAttempts > Deliveries = gönderim başladı ama sonucu yazılamadı (süreç düştü,
+-- teslim yazımı hata verdi): mesaj gitmiş olabilir, sıradaki tıklama sorar. Sayaç da onay
+-- belirtecine girer: öbür pencerenin gönderimi, teslim kaydı yazılamasa bile, bekleyen eski onayı
+-- geçersiz kılar.
+--
+-- Nullable, varsayılansız (Deliveries/SendAttempts 0): eski satırlarda asıl kapsam bilinmiyor. Eski
+-- teslim edilmiş işler (legacy olmayan kapsamda ClosedAt dolu = mesaj ulaşmıştı; o kapsamda
+-- ClosedAt'ı yalnız teslim yazar) DeliveredAt = ClosedAt ile işaretlenir; net tutarı okuyucu işin
+-- kendi alanlarından hesaplar (kapalı işte o alanlar gönderilen mesajın alanlarıdır).
+--
+-- Geri dönüş (Velopack ile önceki sürüm): önceki sürüm kolonları tanımaz ama SELECT'leri kolon adıyla
+-- okuduğu için etkilenmez; teslimde yalnız ClosedAt yazar. Bu sürüme dönünce okuyucu aynı kuralla
+-- (legacy olmayan kapsamda ClosedAt = teslim; teslim kaydından yeniyse en son teslim odur) o
+-- teslimleri görür (PaymentJob.LastDeliveredAt); indirme (PaymentJobSql.DemoteToLegacy) bu izi teslim
+-- kaydına geçirir — miras kapsamında kural artık geçmez.
 
 ALTER TABLE PaymentJob ADD COLUMN PriorScopeKey TEXT;
 ALTER TABLE PaymentJob ADD COLUMN DeliveredAt INTEGER;
 ALTER TABLE PaymentJob ADD COLUMN DeliveredNet TEXT;
 ALTER TABLE PaymentJob ADD COLUMN Deliveries INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE PaymentJob ADD COLUMN SendAttempts INTEGER NOT NULL DEFAULT 0;
 
-UPDATE PaymentJob SET DeliveredAt = ClosedAt, Deliveries = 1
+UPDATE PaymentJob SET DeliveredAt = ClosedAt, Deliveries = 1, SendAttempts = 1
  WHERE ClosedAt IS NOT NULL AND ScopeKey <> 'legacy' AND ScopeKey NOT LIKE 'legacy:%';
 
 UPDATE _meta SET SchemaVersion = 47 WHERE Id = 1;

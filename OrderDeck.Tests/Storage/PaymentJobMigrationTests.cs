@@ -145,12 +145,14 @@ public sealed class PaymentJobMigrationTests
         new MigrationRunner(fx).Run();
 
         using var conn = fx.Open();
-        var rows = conn.Query<(string Id, long? DeliveredAt, long Deliveries, string? DeliveredNet)>(
-                "SELECT Id, DeliveredAt, Deliveries, DeliveredNet FROM PaymentJob")
+        var rows = conn.Query<(string Id, long? DeliveredAt, long Deliveries, string? DeliveredNet, long SendAttempts)>(
+                "SELECT Id, DeliveredAt, Deliveries, DeliveredNet, SendAttempts FROM PaymentJob")
             .ToDictionary(r => r.Id);
-        rows["teslim"].Should().Be(("teslim", (long?)500, 1L, (string?)null), "net tutarı okuyucu işten hesaplar");
+        rows["teslim"].Should().Be(("teslim", (long?)500, 1L, (string?)null, 1L),
+            "net tutarı okuyucu işten hesaplar; teslim bir gönderim denemesidir (SendAttempts ≥ Deliveries)");
         rows["acik"].DeliveredAt.Should().BeNull();
         rows["acik"].Deliveries.Should().Be(0);
+        rows["acik"].SendAttempts.Should().Be(0, "sonucu yazılmamış deneme yok");
         rows["miras"].DeliveredAt.Should().BeNull("miras kapanışı uzlaştırmadır");
         rows["eski-miras"].DeliveredAt.Should().BeNull();
     }

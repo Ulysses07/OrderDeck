@@ -59,10 +59,11 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             var jobs = _jobs.Values
                 .Where(j => memberSet.Contains(j.CustomerId) && j.ScopeKey == request.ScopeKey)
                 .ToList();
-            // Gerçek deponun ScopeLegacyCondition'ı: asıl kapsamı bu olan açık ya da teslim edilmiş miras.
+            // Gerçek deponun ScopeLegacyCondition'ı: asıl kapsamı bu olan açık ya da teslim edilmiş (gitmiş
+            // olabilecek) miras — miras kapsamında IsDelivered ClosedAt'a bakmaz.
             var legacies = _jobs.Values
                 .Where(j => memberSet.Contains(j.CustomerId) && j.PriorScopeKey == request.ScopeKey
-                            && IsLegacyScope(j.ScopeKey) && (j.ClosedAt is null || j.DeliveredAt is not null))
+                            && IsLegacyScope(j.ScopeKey) && (j.ClosedAt is null || j.IsDelivered))
                 .ToList();
             var now = Now();
 
@@ -83,12 +84,17 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             var demoted = new List<DemotedJob>();
             foreach (var l in plan!.Losers)
             {
-                // Gerçek deponun PaymentJobSql.DemoteToLegacy metniyle aynı karar.
+                // Gerçek deponun PaymentJobSql.DemoteToLegacy metniyle aynı karar — önceki sürümün
+                // teslimi (ClosedByLaterDelivery) teslim kaydına geçer.
+                var oncekiSurumTeslimi = !IsLegacyScope(l.ScopeKey) && l.ClosedAt is long closed
+                    && (l.DeliveredAt is not long delivered || closed > delivered);
                 _jobs[l.Id] = l with
                 {
                     PriorScopeKey = l.PriorScopeKey ?? l.ScopeKey,
                     ScopeKey = $"legacy:{l.ApplyKey?.ToString("N") ?? l.Id}:{l.Id}",
                     ClosedAt = l.CarriesMoney ? null : l.ClosedAt ?? now,
+                    DeliveredAt = oncekiSurumTeslimi ? l.ClosedAt : l.DeliveredAt,
+                    DeliveredNet = oncekiSurumTeslimi ? null : l.DeliveredNet,
                     UpdatedAt = now,
                 };
                 demoted.Add(PersonScopePlan.Demotion(l));
@@ -225,9 +231,28 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
                 DeliveredAt = now,
                 DeliveredNet = requestedNet,
                 Deliveries = j.Deliveries + 1,
+                SendAttempts = Math.Max(j.SendAttempts, j.Deliveries + 1),
                 ClosedAt = settled ? j.ClosedAt ?? now : j.ClosedAt,
                 UpdatedAt = now,
             };
+        }
+    }
+
+    public void BeginSend(string id)
+    {
+        lock (_gate)
+        {
+            if (!_jobs.TryGetValue(id, out var j)) return;
+            _jobs[id] = j with { SendAttempts = j.SendAttempts + 1, UpdatedAt = Now() };
+        }
+    }
+
+    public void AbandonSend(string id)
+    {
+        lock (_gate)
+        {
+            if (!_jobs.TryGetValue(id, out var j) || j.SendAttempts <= j.Deliveries) return;
+            _jobs[id] = j with { SendAttempts = j.SendAttempts - 1, UpdatedAt = Now() };
         }
     }
 

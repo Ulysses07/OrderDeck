@@ -64,7 +64,10 @@ public sealed record PaymentJob(
     /// (<see cref="LastRequestedNet"/> işin alanlarından hesaplar).</summary>
     decimal? DeliveredNet = null,
     /// <summary>Göç 047: teslim sayısı — onay belirtecine girer (aynı saniyedeki iki gönderimi de ayırır).</summary>
-    int Deliveries = 0)
+    int Deliveries = 0,
+    /// <summary>Göç 047: gönderim denemesi sayacı — her gönderimden ÖNCE artar
+    /// (<see cref="IPaymentJobStore.BeginSend"/>), onay belirtecine girer.</summary>
+    int SendAttempts = 0)
 {
     /// <summary>İş para taşıyor mu — <see cref="PaymentJobSql.CarriesMoney"/>'nin C# karşılığı
     /// (ikisi aynı kalmalı).</summary>
@@ -72,15 +75,43 @@ public sealed record PaymentJob(
         State is PaymentJobState.ApplyUncertain or PaymentJobState.ReversePending
         || (State == PaymentJobState.Applied && (AppliedAmount is null || AppliedAmount > 0m));
 
-    /// <summary>Bu iş için müşteriye en az bir mesaj ulaştı (teslim edildi).</summary>
-    public bool IsDelivered => DeliveredAt is not null;
+    /// <summary>Miras kapsamı ('legacy' ya da 'legacy:…').</summary>
+    public bool IsLegacyScope =>
+        ScopeKey == "legacy" || ScopeKey.StartsWith("legacy:", StringComparison.Ordinal);
+
+    /// <summary>Önceki sürümün (Velopack geri dönüşü) teslimi: legacy olmayan kapsamda ClosedAt'ı iki
+    /// sürümde de yalnız teslim yazar, önceki sürüm teslim kaydı yazmaz. ClosedAt teslim kaydından
+    /// yeniyse o kapanış en son teslimdir. SQL karşılığı <see cref="PaymentJobSql.ClosedByLaterDelivery"/>
+    /// (ikisi aynı kalmalı).</summary>
+    private bool ClosedByLaterDelivery =>
+        !IsLegacyScope && ClosedAt is long closed && (DeliveredAt is not long delivered || closed > delivered);
+
+    /// <summary>Son teslimin anı: teslim kaydı ya da (önceki sürümün teslimiyse) kapanış.</summary>
+    public long? LastDeliveredAt => ClosedByLaterDelivery ? ClosedAt : DeliveredAt;
+
+    /// <summary>Gönderim başladı ama sonucu yazılamadı (süreç düştü, teslim yazımı hata verdi) — mesaj
+    /// müşteriye gitmiş olabilir.</summary>
+    public bool HasUnconfirmedSend => SendAttempts > Deliveries;
+
+    /// <summary>Bu iş için müşteriye en az bir mesaj ulaştı (teslim edildi) ya da ulaşmış olabilir
+    /// (<see cref="HasUnconfirmedSend"/>) — tekrar göndermeden önce sorulur.</summary>
+    public bool IsDelivered => LastDeliveredAt is not null || HasUnconfirmedSend;
 
     /// <summary>Müşteriden istenen net tutar (kargo dahil toplam − düşülen bakiye).</summary>
     public decimal RequestedNet => ProductTotal - (AppliedAmount ?? 0m);
 
-    /// <summary>Son teslim edilen mesajın net tutarı; göç öncesi teslimde işin alanlarından (o işte
-    /// alanlar gönderilen mesajın alanlarıdır — revizyon teslim kaydını değil ClosedAt'ı siler).</summary>
-    public decimal LastRequestedNet => DeliveredNet ?? RequestedNet;
+    /// <summary>Son teslim edilen mesajın net tutarı; göç öncesi ya da önceki sürümün teslimiyse işin
+    /// alanlarından (kapalı işte alanlar gönderilen mesajın alanlarıdır — revizyon teslim kaydını değil
+    /// ClosedAt'ı siler).</summary>
+    public decimal LastRequestedNet => ClosedByLaterDelivery ? RequestedNet : DeliveredNet ?? RequestedNet;
+
+    /// <summary>Soruda "son istek" olarak gösterilecek an: sonucu yazılamamış gönderim varsa o en
+    /// sonuncusudur ve anı bilinmez (null); yoksa son teslim.</summary>
+    public long? PromptAt => HasUnconfirmedSend ? null : LastDeliveredAt;
+
+    /// <summary>Soruda gösterilecek net: sonucu yazılamamış gönderimde işin güncel alanları (gönderim
+    /// bakiye sonucu kesinleştikten sonra yapılır — alanlar o mesajın alanlarıdır), yoksa son teslimin.</summary>
+    public decimal PromptNet => HasUnconfirmedSend ? RequestedNet : LastRequestedNet;
 }
 
 /// <summary>R2-01..04: ödeme işi yaşam döngüsünün disk katmanı. Tüm geçişler
@@ -168,8 +199,18 @@ public interface IPaymentJobStore
     /// gönderilsin mi?" sorusu SON gönderimi gösterir, eski onay belirteci tutmaz). Sonucu kesin iş
     /// (applied / no_balance) ayrıca kapanır (ilk kapanış zamanı korunur). Çevrimdışı gönderilen
     /// taze (created) iş AÇIK kalır: kapalı işe anahtar yazılmaz (U8), onaylı sonraki tıklama onu
-    /// çevrimiçi düşümle sürdürür.</summary>
+    /// çevrimiçi düşümle sürdürür. SendAttempts teslim sayısının altına düşmez (deneme yazılmadan
+    /// gelen teslim de bir denemedir).</summary>
     void MarkDelivered(string id, decimal requestedNet);
+
+    /// <summary>Gönderim denemesi başlıyor: SendAttempts + 1 — mesaj ağa/WhatsApp'a çıkmadan ÖNCE.
+    /// Sonucu (<see cref="MarkDelivered"/>) yazılamasa da iş "gitmiş olabilir" görünür
+    /// (<see cref="PaymentJob.HasUnconfirmedSend"/>) ve bekleyen eski onay belirteci tutmaz.</summary>
+    void BeginSend(string id);
+
+    /// <summary>Deneme hiç başlamadı (wa.me açılamadı, mesaj kesin gitmedi): <see cref="BeginSend"/>'in
+    /// artışı geri alınır — yalnız sonucu yazılmamış bir deneme varsa.</summary>
+    void AbandonSend(string id);
 
     /// <summary>Revizyon: yeni toplam + yeni anahtar + Revision+1, eski sonuç
     /// sıfırlanır, durum apply_uncertain. Yalnız Revision == expectedRevision
@@ -334,11 +375,12 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     }
 
     /// <summary>Asıl kapsamı <c>@scopeKey</c> olan miras işler: açık olanlar (uzlaştırma bekliyor) ve
-    /// teslim edilmiş olanlar (bu kapsama istek gitmiş). Kapalı ve teslim edilmemiş miras işin söyleyecek
-    /// bir şeyi yok.</summary>
+    /// teslim edilmiş olanlar (bu kapsama istek gitmiş ya da gitmiş olabilir — <see cref="PaymentJob.IsDelivered"/>;
+    /// miras kapsamında ClosedAt teslim sayılmaz). Kapalı ve teslim edilmemiş miras işin söyleyecek bir
+    /// şeyi yok.</summary>
     private const string ScopeLegacyCondition =
         "PriorScopeKey=@scopeKey AND (ScopeKey='legacy' OR ScopeKey LIKE 'legacy:%') " +
-        "AND (ClosedAt IS NULL OR DeliveredAt IS NOT NULL)";
+        "AND (ClosedAt IS NULL OR DeliveredAt IS NOT NULL OR SendAttempts > Deliveries)";
 
     private const string InsertSql =
         @"INSERT OR IGNORE INTO PaymentJob
@@ -488,6 +530,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         conn.Execute(
             @"UPDATE PaymentJob
               SET DeliveredAt=@now, DeliveredNet=@net, Deliveries=Deliveries+1, UpdatedAt=@now,
+                  SendAttempts=MAX(SendAttempts, Deliveries+1),
                   ClosedAt=CASE WHEN State IN (@applied, @noBalance) THEN COALESCE(ClosedAt,@now) ELSE ClosedAt END
               WHERE Id=@id",
             new
@@ -498,6 +541,21 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 applied = PaymentJobState.Applied,
                 noBalance = PaymentJobState.NoBalance,
             });
+    }
+
+    public void BeginSend(string id)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE PaymentJob SET SendAttempts=SendAttempts+1, UpdatedAt=@now WHERE Id=@id",
+            new { id, now = Now() });
+    }
+
+    public void AbandonSend(string id)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE PaymentJob SET SendAttempts=SendAttempts-1, UpdatedAt=@now WHERE Id=@id AND SendAttempts > Deliveries",
+            new { id, now = Now() });
     }
 
     public bool BeginRevision(string id, decimal newProductTotal, Guid newApplyKey, int expectedRevision)
@@ -638,7 +696,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     private const string SelectSql =
         @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
                  AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey,
-                 DeliveredAt, DeliveredNet, Deliveries
+                 DeliveredAt, DeliveredNet, Deliveries, SendAttempts
           FROM PaymentJob";
 
     private static PaymentJob Map(Row r) => new(
@@ -661,7 +719,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         r.PriorScopeKey,
         r.DeliveredAt,
         r.DeliveredNet is null ? null : decimal.Parse(r.DeliveredNet, CultureInfo.InvariantCulture),
-        r.Deliveries);
+        r.Deliveries,
+        r.SendAttempts);
 
     private sealed class Row
     {
@@ -681,5 +740,6 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         public long? DeliveredAt { get; init; }
         public string? DeliveredNet { get; init; }
         public int Deliveries { get; init; }
+        public int SendAttempts { get; init; }
     }
 }

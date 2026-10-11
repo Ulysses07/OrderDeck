@@ -247,8 +247,11 @@ public abstract class PaymentJobStoreContractTests
         var job = Applied(store, person.LeasedId, 40m, delivered: true);
         var token = store.FindOrCreateForPerson(Req(person)).Plan!.Token;
 
-        store.BeginRevision(job.Id, 120m, Guid.NewGuid(), job.Revision).Should().BeTrue();
-        store.MarkDelivered(job.Id, 120m);
+        // Öbür pencere revize edip yeniden teslim etti (teslim yalnız kesin sonuçtan sonra gelir).
+        var yeniKey = Guid.NewGuid();
+        store.BeginRevision(job.Id, 120m, yeniKey, job.Revision).Should().BeTrue();
+        store.MarkApplied(job.Id, yeniKey, job.Revision + 1, 40m).Should().BeTrue();
+        store.MarkDelivered(job.Id, 80m);
 
         store.FindOrCreateForPerson(Req(person, token: token)).Status
             .Should().Be(PersonJobStatus.ConfirmationRequired, "operatör bu durumu görmedi");
@@ -547,6 +550,112 @@ public abstract class PaymentJobStoreContractTests
         var onay = store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token));
         onay.Status.Should().Be(PersonJobStatus.Ready);
         onay.Demoted.Should().BeEmpty("miras iş yeniden indirilmez; uzlaştırma servisin işi");
+    }
+
+    // ── İnceleme turu 2 ──────────────────────────────────────────────────────
+
+    // Eşzamanlılık incelemesi: gönderim denemesi ağdan ÖNCE yazılır ve belirtece girer — sonucu (teslim
+    // kaydı) yazılamasa da bekleyen eski onay tutmaz; iş "gitmiş olabilir" sayılır ve sorulur.
+    [Fact]
+    public void BeginSend_belirteci_degistirir_sonucu_yazilmamis_deneme_sorulur()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 40m, delivered: true);
+        var token = store.FindOrCreateForPerson(Req(person)).Plan!.Token;
+
+        store.BeginSend(job.Id);                                   // öbür pencere gönderdi, teslim yazılamadı
+
+        store.Get(job.Id)!.HasUnconfirmedSend.Should().BeTrue();
+        var soru = store.FindOrCreateForPerson(Req(person, token: token));
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired, "bayat onay ikinci bir gönderime izin vermez");
+        soru.Plan!.Token.Should().NotBe(token);
+
+        store.MarkDelivered(job.Id, 260m);
+        store.Get(job.Id)!.HasUnconfirmedSend.Should().BeFalse("teslim denemeyi karşılar");
+    }
+
+    [Fact] // Hiç teslim edilmemiş işte de: sonucu yazılmamış deneme "gitmiş olabilir" — sorulur
+    public void BeginSend_teslimsiz_iste_de_sordurur_AbandonSend_geri_alir()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 40m, delivered: false);
+        store.FindOrCreateForPerson(Req(person)).Status.Should().Be(PersonJobStatus.Ready);
+
+        store.BeginSend(job.Id);
+        var soru = store.FindOrCreateForPerson(Req(person));
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Resend);
+        var istek = soru.Plan.PromptJobs.Should().ContainSingle().Subject;
+        istek.PromptAt.Should().BeNull("anı yazılamadı");
+        istek.PromptNet.Should().Be(260m, "gönderilen mesajın neti: 300 − 40");
+
+        store.AbandonSend(job.Id);                                 // wa.me açılamadı — mesaj gitmedi
+        store.Get(job.Id)!.SendAttempts.Should().Be(0);
+        store.FindOrCreateForPerson(Req(person)).Status.Should().Be(PersonJobStatus.Ready);
+        store.AbandonSend(job.Id);
+        store.Get(job.Id)!.SendAttempts.Should().Be(0, "sonucu yazılmamış deneme yoksa dokunulmaz");
+    }
+
+    // Para incelemesi: teslim edilmiş işin revizyonunda geri alma kesinleşmedi (reverse_pending). O tıklama
+    // zaten sorulup onaylanmıştı ve mesaj gitmeden durdu — sıradaki tıklama sormadan kaldığı yerden sürer.
+    [Fact]
+    public void FindOrCreateForPerson_yarim_kalan_revizyon_sorulmadan_surer()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 40m, delivered: true);
+        store.BeginReversal(job.Id, job.Revision, job.ApplyKey!.Value, targetTotal: 400m).Should().BeTrue();
+
+        var r = store.FindOrCreateForPerson(Req(person));
+
+        r.Status.Should().Be(PersonJobStatus.Ready, "eski tutar 'istendi' diye yeniden sorulmaz");
+        r.Job!.Id.Should().Be(job.Id);
+    }
+
+    // Geri dönüş (Velopack): önceki sürüm teslimde yalnız ClosedAt yazar. Bu sürüme dönünce o teslim görülmeli
+    // — legacy olmayan kapsamda ClosedAt'ı yalnız teslim yazar. Görülmeseydi soru sorulmaz, istek sessizce
+    // yeniden gönderilirdi (düzeltmenin kapattığı davranış).
+    [Fact]
+    public void Onceki_surumun_teslimi_ClosedAtla_gorulur_ve_sorulur()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 40m, delivered: false);
+        store.Close(job.Id);                                       // önceki sürümün CloseJob'u
+
+        var kapali = store.Get(job.Id)!;
+        kapali.DeliveredAt.Should().BeNull();
+        kapali.IsDelivered.Should().BeTrue();
+        kapali.LastDeliveredAt.Should().Be(kapali.ClosedAt);
+        kapali.LastRequestedNet.Should().Be(260m, "kapalı işin alanları gönderilen mesajın alanları: 300 − 40");
+        var soru = store.FindOrCreateForPerson(Req(person));
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Resend);
+    }
+
+    // Geri dönüşte teslim edilmiş iş sonra kişi birleştirmesinde indirilirse iz miras kapsamında da kalır:
+    // para taşıyan kaybeden açılır (ClosedAt silinir), teslim kaydına geçmeseydi kaybolurdu.
+    [Fact]
+    public void Onceki_surumun_teslimi_indirmede_teslim_kaydina_gecer()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var eski = Applied(store, NotOwner(person), 20m, delivered: false);
+        store.Close(eski.Id);                                      // önceki sürümün teslimi (önce)
+        var kapanis = store.Get(eski.Id)!.ClosedAt;
+        Applied(store, person.OwnerId!, 10m, delivered: true);     // sahibin teslimi (sonra ya da aynı saniye)
+
+        var miras = Indir(store, person);
+
+        miras.Id.Should().Be(eski.Id, "daha eski teslim (ya da eşitlikte sahip olmayanın işi) iner");
+        miras.ClosedAt.Should().BeNull("para taşıyan kaybeden açık kalır");
+        miras.DeliveredAt.Should().Be(kapanis, "önceki sürümün teslimi teslim kaydına geçti");
+        miras.IsDelivered.Should().BeTrue();
+        miras.LastRequestedNet.Should().Be(280m);
+        store.FindOrCreateForPerson(Req(person)).Plan!.Kind.Should().Be(PersonScopePromptKind.Merge,
+            "açık ve teslim edilmiş miras iade edilecek — sessiz değil");
     }
 }
 

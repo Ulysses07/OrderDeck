@@ -123,7 +123,11 @@ public static class PaymentResultPresenter
     /// gönderilmemiş istek ayrıca söylenir (operatöre gitmemiş bir isteği gitmiş diye göstermemek
     /// için). "Fazladan düşülen" denmez: iki ayrı kartken ayrı ürünler için yapılmış düşümler de
     /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın bakiyesine dönüyorsa
-    /// (bakiye satır başına) bu da söylenir: o tutar bu istekte kullanılmaz.</para></summary>
+    /// (bakiye satır başına) bu da söylenir: o tutar bu istekte kullanılmaz. İade edilecek düşüm yoksa
+    /// (parasız istekler birleşiyor) iade cümlesi hiç kurulmaz.</para>
+    ///
+    /// <para>Sunucunun bulduğu ayrı düşümler (<see cref="PaymentPrompt.RemoteDeductions"/>) "gitmiş
+    /// istek" değildir — sunucu teslimi bilmez; bulunan düşüm olarak anlatılır.</para></summary>
     public static (string Title, string Message) PromptText(PaymentPrompt prompt, DateTimeOffset now)
     {
         if (prompt.Kind == PersonScopePromptKind.Resend)
@@ -137,6 +141,17 @@ public static class PaymentResultPresenter
         var scope = prompt.ScopeKey.StartsWith("session:", StringComparison.Ordinal)
             ? "bu yayın için"
             : "genel toplam için";
+
+        if (prompt.RemoteDeductions is { Count: > 0 } remote)
+        {
+            // Onayda en eski düşüm kalır (sunucu teslim sırasını bilmez), ötekiler iade edilir.
+            var found = $"Sunucuda bu kişinin {scope} {remote.Count} ayrı bakiye düşümü bulundu " +
+                        $"({string.Join(", ", remote.Select(Money))}); müşteriye gidip gitmedikleri bilinmiyor. " +
+                        "Tek istekte birleştirilsin mi? En eski düşüm kalır, ötekiler iade edilir; " +
+                        "kişinin toplamı tek istekte yeniden istenir.";
+            return ("Birden çok ödeme isteği", WithOtherRowNote(found, prompt));
+        }
+
         var sent = prompt.Requests.Count;
         var unsent = prompt.UnsentDeductions;
         string lead;
@@ -152,12 +167,17 @@ public static class PaymentResultPresenter
         }
 
         var message = lead + "; tek istekte birleştirilsin mi? " +
-                      "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir.";
-        if (prompt.RefundsToOtherRow)
-            message += " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
-                       "iade o hesaba döner, bu istekte kullanılmaz.";
-        return ("Birden çok ödeme isteği", message);
+                      (prompt.RefundsDeductions
+                          ? "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir."
+                          : "Kişinin toplamı tek istekte yeniden istenir.");
+        return ("Birden çok ödeme isteği", WithOtherRowNote(message, prompt));
     }
+
+    private static string WithOtherRowNote(string message, PaymentPrompt prompt)
+        => prompt.RefundsToOtherRow
+            ? message + " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
+              "iade o hesaba döner, bu istekte kullanılmaz."
+            : message;
 
     /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim (rapordaki kişi toplamı, kargo notu):
     /// iki kuruş hanesi + "TL".</summary>

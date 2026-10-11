@@ -64,7 +64,7 @@ public enum PersonScopePromptKind
     Resend,
 
     /// <summary>Bu kişi ve kapsam için birden çok istek var (biri para taşıyor ya da teslim edilmiş) ya
-    /// da uzlaştırma bekleyen teslim edilmiş miras isteği var — tek istekte birleştirilsin mi? (Önceki
+    /// da iade edilecek teslim edilmiş miras isteği var — tek istekte birleştirilsin mi? (Varsa önceki
     /// düşümler iade edilir, kişinin toplamı yeniden istenir.)</summary>
     Merge,
 }
@@ -81,17 +81,25 @@ public enum PersonScopePromptKind
 ///
 /// <para><b>Bu kapsamın miras işleri</b> (asıl kapsamı bu olan, <see cref="PaymentJob.PriorScopeKey"/>)
 /// kalan iş olamaz — zaten indirilmişlerdir. Açık olanlar (<see cref="PendingLegacies"/>: taşımanın
-/// indirdiği ya da geri alması kesinleşmemiş kaybeden) bu tıklamada geri alınır ya da benimsenir;
-/// müşteriye gitmişse (teslim edilmiş) birleştirme sorusunu tetikler — taşımanın indirdiği teslim
-/// edilmiş istek sorusuz yeniden gönderilmesin, iadesi de sessiz olmasın. Gitmemiş açık miras
-/// (müşteri o düşümü hiç görmedi) eskisi gibi sorusuz uzlaşır. Kapalı ama teslim edilmiş olanlar
-/// yalnız "istek gitti" bilgisidir (taşıma teslim edilmiş parasız kopya işini kapatır — iz kaybolmasın).</para>
+/// indirdiği ya da geri alması kesinleşmemiş kaybeden) bu tıklamada geri alınır ya da benimsenir
+/// (<see cref="AdoptedLegacy"/>); iade edilecek olan müşteriye gitmişse (teslim edilmiş) birleştirme
+/// sorusunu tetikler — iadesi sessiz olmasın. Benimsenecek olanın düşümü kalan işte sürer: isteği
+/// gitmişse soru tekrar göndermedir (aynı istek yeniden gider, iade yok). Gitmemiş açık miras (müşteri
+/// o düşümü hiç görmedi) eskisi gibi sorusuz uzlaşır. Kapalı ama teslim edilmiş olanlar yalnız "istek
+/// gitti" bilgisidir (taşıma teslim edilmiş parasız kopya işini kapatır — iz kaybolmasın).</para>
 ///
-/// <para><b>Ne zaman sorulur:</b> kaybedenlerden biri para taşıyor ya da teslim edilmişse, ya da açık
-/// miras işlerden biri teslim edilmişse birleştirme (<see cref="PersonScopePromptKind.Merge"/>); yoksa
-/// ama herhangi bir iş (miras dahil) teslim edilmişse tekrar gönderme
+/// <para><b>Ne zaman sorulur:</b> kaybedenlerden biri para taşıyor ya da teslim edilmişse, ya da iade
+/// edilecek açık miras işlerden biri teslim edilmişse birleştirme (<see cref="PersonScopePromptKind.Merge"/>);
+/// yoksa ama herhangi bir iş (miras dahil) teslim edilmişse tekrar gönderme
 /// (<see cref="PersonScopePromptKind.Resend"/>). Parasız ve teslim edilmemiş kaybedenler sorusuz
 /// indirilir.</para>
+///
+/// <para><b>Yarım kalmış istek sorulmaz</b> (<see cref="Resumes"/>): kalan iş belirsiz ya da geri alma
+/// bekliyorsa (<c>apply_uncertain</c>/<c>reverse_pending</c>) önceki bir tıklama para adımını başlatmış
+/// ve mesaj göndermeden durmuştur (BalanceUncertain — "tekrar deneyin"). Teslim edilmiş işte o tıklama
+/// zaten sorulup onaylanmıştı; akış kaldığı yerden sürer (önceki sürüm gibi). Yeniden "tekrar
+/// gönderilsin mi?" sormak geçersizleşmiş eski tutarı "istendi" diye gösterirdi; "Hayır" da yarım
+/// birleştirmenin iadelerini yeni istek olmadan bırakırdı. Birleştirme sorusu (yeni kaybeden) yine sorulur.</para>
 /// </summary>
 public sealed class PersonScopePlan
 {
@@ -99,7 +107,7 @@ public sealed class PersonScopePlan
     {
         var ordered = jobs
             .OrderByDescending(j => j.CarriesMoney)
-            .ThenByDescending(j => j.DeliveredAt ?? long.MinValue)
+            .ThenByDescending(DeliveryRank)
             .ThenByDescending(j => string.Equals(j.CustomerId, ownerId, StringComparison.Ordinal))
             .ThenBy(j => j.CreatedAt)
             .ThenBy(j => j.Id, StringComparer.Ordinal)
@@ -110,14 +118,34 @@ public sealed class PersonScopePlan
         Losers = ordered.Skip(1).ToList();
         PendingLegacies = Legacies.Where(l => l.ClosedAt is null).ToList();
 
-        var settled = Losers.Concat(PendingLegacies).ToList();
-        IsLoudMerge = Losers.Any(j => j.CarriesMoney || j.IsDelivered) || PendingLegacies.Any(j => j.IsDelivered);
-        NeedsConfirmation = IsLoudMerge || jobs.Concat(legacies).Any(j => j.IsDelivered);
+        // Servisin benimseme kuralı (PaymentRequestService, miras adımı): hedef iş taze (kalan iş taze ya da
+        // yok — onayda sahip satırda taze açılır), miras aynı sahip satırda; açık miraslar en yeniden
+        // eskiye taranır, ilk uyan benimsenir.
         var survivorRow = Survivor?.CustomerId ?? ownerId;
+        AdoptedLegacy = Survivor is null or { State: PaymentJobState.Created, ApplyKey: null }
+            ? PendingLegacies
+                .Where(l => string.Equals(l.CustomerId, survivorRow, StringComparison.Ordinal))
+                .OrderByDescending(l => l.CreatedAt)
+                .ThenByDescending(l => l.Id, StringComparer.Ordinal)
+                .FirstOrDefault()
+            : null;
+        var refundedLegacies = PendingLegacies
+            .Where(l => !string.Equals(l.Id, AdoptedLegacy?.Id, StringComparison.Ordinal)).ToList();
+
+        var settled = Losers.Concat(refundedLegacies).ToList();
+        IsLoudMerge = Losers.Any(j => j.CarriesMoney || j.IsDelivered) || refundedLegacies.Any(j => j.IsDelivered);
+        Resumes = Survivor is { State: PaymentJobState.ApplyUncertain or PaymentJobState.ReversePending };
+        NeedsConfirmation = IsLoudMerge || (!Resumes && jobs.Concat(legacies).Any(j => j.IsDelivered));
+        RefundsDeductions = settled.Any(j => j.CarriesMoney);
         RefundsToOtherRow = IsLoudMerge && settled.Any(j =>
             j.CarriesMoney && !string.Equals(j.CustomerId, survivorRow, StringComparison.Ordinal));
         Token = TokenOf(jobs.Concat(legacies));
     }
+
+    /// <summary>Teslim sırası: sonucu yazılamamış gönderim en sonuncusudur (anı bilinmez); yoksa son
+    /// teslim (önceki sürümün teslimi dahil — <see cref="PaymentJob.LastDeliveredAt"/>).</summary>
+    private static long DeliveryRank(PaymentJob j)
+        => j.HasUnconfirmedSend ? long.MaxValue : j.LastDeliveredAt ?? long.MinValue;
 
     private static List<PaymentJob> Oldest(IEnumerable<PaymentJob> jobs)
         => jobs.OrderBy(j => j.CreatedAt).ThenBy(j => j.Id, StringComparer.Ordinal).ToList();
@@ -131,17 +159,30 @@ public sealed class PersonScopePlan
     /// <summary>Uzlaştırma bekleyen (açık) miras işler: onaylı tıklama onları geri alır ya da benimser.</summary>
     public IReadOnlyList<PaymentJob> PendingLegacies { get; }
 
+    /// <summary>Kalan işe benimsenecek açık miras iş (düşümü kalan işte sürer — iade edilmez); yoksa
+    /// <c>null</c>. Asıl kapsamı bilinmeyen (047 öncesi) miras işler plana girmediği için servis nadiren
+    /// başka birini benimseyebilir; o zaman bu iş iade edilir ve soru tekrar gönderme olarak kalır.</summary>
+    public PaymentJob? AdoptedLegacy { get; }
+
+    /// <summary>Kalan işin para adımı yarım kalmış (<c>apply_uncertain</c>/<c>reverse_pending</c>): akış
+    /// kaldığı yerden sürer, tekrar gönderme sorulmaz (sınıf belgesi).</summary>
+    public bool Resumes { get; }
+
     /// <summary>Kalan iş; kapsamın işi yoksa <c>null</c> (onayda sahip satırda açılır).</summary>
     public PaymentJob? Survivor { get; }
 
     /// <summary>İndirilecek işler.</summary>
     public IReadOnlyList<PaymentJob> Losers { get; }
 
-    /// <summary>Kaybedenlerden biri para taşıyor ya da teslim edilmiş, ya da açık miras işlerden biri
-    /// teslim edilmiş — birleştirme sessiz olamaz.</summary>
+    /// <summary>Kaybedenlerden biri para taşıyor ya da teslim edilmiş, ya da iade edilecek açık miras
+    /// işlerden biri teslim edilmiş — birleştirme sessiz olamaz.</summary>
     public bool IsLoudMerge { get; }
 
     public bool NeedsConfirmation { get; }
+
+    /// <summary>Birleştirme bir düşümü iade ediyor (kaybedenlerden ya da iade edilecek miras işlerden biri
+    /// para taşıyor). Yoksa soru "önceki düşümler iade edilir" demez.</summary>
+    public bool RefundsDeductions { get; }
 
     /// <summary>Birleştirme, kalan işin satırından BAŞKA bir satırdan yapılmış düşümü iade ediyor.
     /// Bakiye satır başına tutulur: iade o satıra döner, kalan işin revizyonu onu kullanamaz. İki ayrı
@@ -150,12 +191,13 @@ public sealed class PersonScopePlan
 
     public PersonScopePromptKind Kind => IsLoudMerge ? PersonScopePromptKind.Merge : PersonScopePromptKind.Resend;
 
-    /// <summary>Soruda "gitmiş" diye gösterilecek istekler — yalnız TESLİM edilmişler, teslim sırasıyla.
-    /// Birleştirmede kapsamın işleri ve açık miras işler (uzlaşmış miras isteği kalan işin mesajıyla
-    /// geçersizleşmiştir); tekrar göndermede bunlara ek olarak kapalı miras işler (en sonuncusu sorulur).</summary>
+    /// <summary>Soruda "gitmiş" diye gösterilecek istekler — yalnız TESLİM edilmişler (ya da gitmiş
+    /// olabilecekler), teslim sırasıyla. Birleştirmede kapsamın işleri ve açık miras işler (uzlaşmış miras
+    /// isteği kalan işin mesajıyla geçersizleşmiştir); tekrar göndermede bunlara ek olarak kapalı miras
+    /// işler (en sonuncusu sorulur).</summary>
     public IReadOnlyList<PaymentJob> PromptJobs => (IsLoudMerge ? Jobs.Concat(PendingLegacies) : Jobs.Concat(Legacies))
         .Where(j => j.IsDelivered)
-        .OrderBy(j => j.DeliveredAt)
+        .OrderBy(DeliveryRank)
         .ThenBy(j => j.Id, StringComparer.Ordinal)
         .ToList();
 
@@ -166,8 +208,8 @@ public sealed class PersonScopePlan
         : 0;
 
     /// <summary>Durumun parmak izi: onay bu belirteçle verilir. Soru ile onay arasında herhangi bir iş
-    /// değişirse (başka pencere gönderdi — teslim sayısı artar —, revizyon, indirme) belirteç tutmaz ve
-    /// yeniden sorulur.</summary>
+    /// değişirse (başka pencere gönderdi — gönderim denemesi ağdan ÖNCE sayılır, sonucu yazılamasa da —,
+    /// revizyon, indirme) belirteç tutmaz ve yeniden sorulur.</summary>
     public string Token { get; }
 
     /// <param name="jobs">Kişi × kapsamın işleri (boş olabilir; o zaman <paramref name="legacies"/> dolu).</param>
@@ -194,7 +236,8 @@ public sealed class PersonScopePlan
                 j.ProductTotal.ToString(CultureInfo.InvariantCulture),
                 j.ClosedAt?.ToString(CultureInfo.InvariantCulture) ?? "-",
                 j.Deliveries.ToString(CultureInfo.InvariantCulture),
-                j.DeliveredAt?.ToString(CultureInfo.InvariantCulture) ?? "-")));
+                j.DeliveredAt?.ToString(CultureInfo.InvariantCulture) ?? "-",
+                j.SendAttempts.ToString(CultureInfo.InvariantCulture))));
 
     /// <summary>Kaybedeni miras kapsamına indirirken yazılacak kayıt (<see cref="PaymentJobSql.DemoteToLegacy"/>
     /// ile aynı karar: para taşıyan açık kalır).</summary>

@@ -71,9 +71,15 @@ public enum PaymentRequestResult
 /// <param name="RefundsToOtherRow">Birleştirmenin iade edeceği düşümlerden biri başka bir satırın
 /// bakiyesinden yapılmış: bakiye satır başına tutulduğu için iade o satırda kalır, bu istekte
 /// kullanılmaz (ayrı kartken ayrı ürünler için yapılmış meşru düşüm de olabilir).</param>
+/// <param name="RefundsDeductions">Birleştirme bir düşümü iade ediyor; değilse (parasız istekler
+/// birleşiyor) soru "önceki düşümler iade edilir" demez.</param>
+/// <param name="RemoteDeductions">Kişi düzeyindeki kapsam uzlaştırmasının (R4-03) sunucuda bulduğu
+/// ayrı düşümlerin tutarları (eskiden yeniye). Sunucu teslim bilgisini bilmez: bunlar "gitmiş istek"
+/// değildir, ayrı anlatılır (<see cref="Requests"/> boştur).</param>
 public sealed record PaymentPrompt(
     PersonScopePromptKind Kind, string ScopeKey, IReadOnlyList<PriorPaymentRequest> Requests, string Token,
-    int UnsentDeductions = 0, bool RefundsToOtherRow = false);
+    int UnsentDeductions = 0, bool RefundsToOtherRow = false, bool RefundsDeductions = true,
+    IReadOnlyList<decimal>? RemoteDeductions = null);
 
 /// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.</summary>
 public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At);
@@ -513,9 +519,18 @@ public sealed class PaymentRequestService
 
         var message = _messageBuilder.BuildMessage(settings.Payment.WhatsAppMessageTemplate, ctx);
 
+        // Gönderim denemesi ağ/WhatsApp adımından ÖNCE iş satırına yazılır (onay belirtecine girer).
+        // Sonucu yazılamasa da (süreç düştü, teslim yazımı hata verdi) iş "gitmiş olabilir" görünür:
+        // öbür pencerede bekleyen eski onay tutmaz, sıradaki tıklama "tekrar gönderilsin mi?" diye
+        // sorar. Yazılamazsa mesaj gönderilmez — sonucu hiç kaydedilemeyecek bir gönderim sorusuz
+        // ikinci kez gidebilirdi. Bakiye sonucu kesin; operatörün tekrar denemesi çift düşüm yapmaz.
+        if (deliveryJob is not null && !TryBeginSend(deliveryJob))
+            return Done(PaymentRequestResult.BalanceUncertain);
+
         // Cloud API açıksa doğrudan gönder. Başarısızsa (pencere kapalı, hesap
         // yok, ağ hatası) sessizce wa.me'ye düşeriz — yayıncı elle gönderir,
         // yani en kötü ihtimalde eski davranış.
+        var cloudMayHaveSent = false;
         if (settings.Payment.UseCloudApi)
         {
             switch (await TrySendViaCloudApiAsync(
@@ -525,9 +540,15 @@ public sealed class PaymentRequestService
                     MarkDelivered(deliveryJob, totalAmount);
                     return Done(PaymentRequestResult.Sent);
                 case CloudSendOutcome.Pending:
-                    // Sonuç bilinmiyor — iş açık kalır, bir sonraki deneme aynı
-                    // anahtarı yeniden kullanır (R2-01).
+                    // Sonuç bilinmiyor: mesaj gitmiş olabilir — teslim kaydı yazılır, sıradaki tıklama
+                    // (bu pencerede ya da öbüründe) "tekrar gönderilsin mi?" diye sorar; bildirim de
+                    // doğrulayıp gerekirse tekrar denemeyi söylüyor. Bakiye sonucu zaten kesin: sonraki
+                    // deneme aynı anahtarı yeniden kullanır (R2-01).
+                    MarkDelivered(deliveryJob, totalAmount);
                     return Done(PaymentRequestResult.SendPending);
+                case CloudSendOutcome.FallBackUnknown:
+                    cloudMayHaveSent = true;
+                    break;
             }
         }
 
@@ -536,21 +557,53 @@ public sealed class PaymentRequestService
         try
         {
             _launcher.Launch(link);
-            MarkDelivered(deliveryJob, totalAmount);
-            return Done(PaymentRequestResult.Opened);
         }
         catch
         {
             // İş açık kalır: operatörün ikinci tıklaması aynı anahtarı bulur,
-            // bakiye ikinci kez düşmez (R2-01).
+            // bakiye ikinci kez düşmez (R2-01). wa.me açılmadı — mesaj gitmedi: deneme geri alınır,
+            // sıradaki tıklama sorusuz yeniden dener. Cloud API sonucu bilinmeden düşüldüyse deneme
+            // kalır: o gönderim ulaşmış olabilir.
+            if (!cloudMayHaveSent) AbandonSend(deliveryJob);
             return Done(PaymentRequestResult.LaunchFailed);
+        }
+        MarkDelivered(deliveryJob, totalAmount);
+        return Done(PaymentRequestResult.Opened);
+    }
+
+    /// <summary>Gönderim denemesini yazar (<see cref="IPaymentJobStore.BeginSend"/>); yazılamazsa
+    /// false — çağıran mesajı göndermez.</summary>
+    private bool TryBeginSend(PaymentJob job)
+    {
+        try
+        {
+            _jobs.BeginSend(job.Id);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log?.LogError(ex, "Gönderim denemesi yazılamadı — mesaj engellendi (job={JobId})", job.Id);
+            return false;
         }
     }
 
-    /// <summary>Mesaj müşteriye ulaştı — teslim kaydı yazılır (her teslimde: tekrar paylaşımda da),
-    /// sonucu kesin iş kapanır (<see cref="IPaymentJobStore.MarkDelivered"/>). Disk hatası akışı
-    /// düşürmemeli: mesaj zaten gitti; en kötü iş açık kalır ve bir sonraki
-    /// deneme sonucu diskten/replay'den yeniden bulur.</summary>
+    /// <summary>wa.me açılamadı: deneme geri alınır (<see cref="IPaymentJobStore.AbandonSend"/>). Hata
+    /// yutulur — en kötü sıradaki tıklama gereksiz yere "tekrar gönderilsin mi?" diye sorar.</summary>
+    private void AbandonSend(PaymentJob? job)
+    {
+        if (job is null) return;
+        try { _jobs.AbandonSend(job.Id); }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Ödeme işinin gönderim denemesi geri alınamadı (job={JobId})", job.Id);
+        }
+    }
+
+    /// <summary>Mesaj müşteriye ulaştı (ya da sonucu bilinmiyor — SendPending) — teslim kaydı yazılır
+    /// (her teslimde: tekrar paylaşımda da), sonucu kesin iş kapanır
+    /// (<see cref="IPaymentJobStore.MarkDelivered"/>). Disk hatası akışı düşürmemeli: mesaj zaten gitti;
+    /// gönderim denemesi ağdan önce yazıldığı için iş yine "gitmiş olabilir" görünür, sıradaki tıklama
+    /// sorar ve öbür pencerenin bekleyen onayı tutmaz.</summary>
     private void MarkDelivered(PaymentJob? job, decimal requestedNet)
     {
         if (job is null) return;
@@ -704,11 +757,12 @@ public sealed class PaymentRequestService
     private static PaymentPrompt PromptOf(PersonScopePlan plan, string scopeKey)
         => new(plan.Kind, scopeKey,
             plan.PromptJobs.Select(j => new PriorPaymentRequest(
-                j.LastRequestedNet,
-                j.DeliveredAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null)).ToList(),
+                j.PromptNet,
+                j.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null)).ToList(),
             plan.Token,
             plan.UnsentDeductions,
-            plan.RefundsToOtherRow);
+            plan.RefundsToOtherRow,
+            plan.RefundsDeductions);
 
     /// <summary>Kişi × kapsamın işini (<paramref name="job"/>) kesinleştirir. Sunucuya giden BÜTÜN
     /// çağrılar (replay, kapsam, önizleme, apply) işin SAHİP satırının Id'siyle yapılır — tıklanan
@@ -1064,13 +1118,14 @@ public sealed class PaymentRequestService
         {
             var token = "uzak:" + string.Join(";", traces
                 .Select(t => t.Scope.TransactionId.ToString("N")).OrderBy(x => x, StringComparer.Ordinal));
-            // İzler tanım gereği farklı üyelerde: iade edilen düşüm kendi satırına döner.
+            // İzler tanım gereği farklı üyelerde: iade edilen düşüm kendi satırına döner. Sunucu teslim
+            // bilgisini bilmez — izler "gitmiş istek" diye değil, bulunan bakiye düşümleri diye anlatılır
+            // (biri gönderilememiş de olabilir; eski sürüm bilgisayarın LaunchFailed/SendPending'i).
             if (confirmedTokens?.Contains(token) != true)
                 return new(job, new PaymentPrompt(PersonScopePromptKind.Merge, job.ScopeKey,
-                    traces.OrderBy(t => t.Scope.CreatedAt)
-                        .Select(t => new PriorPaymentRequest(t.Scope.ProductTotal - t.Scope.AppliedAmount, t.Scope.CreatedAt))
-                        .ToList(),
-                    token, RefundsToOtherRow: true));
+                    Array.Empty<PriorPaymentRequest>(), token, RefundsToOtherRow: true,
+                    RemoteDeductions: traces.OrderBy(t => t.Scope.CreatedAt)
+                        .Select(t => t.Scope.AppliedAmount).ToList()));
 
             // Onaylandı: en eski düşüm kalır (sunucu teslim bilgisini bilmez); fazlası iade edilir.
             var keep = traces.OrderBy(t => t.Scope.CreatedAt).ThenBy(t => candidates.IndexOf(t.MemberId)).First();
@@ -1385,7 +1440,7 @@ public sealed class PaymentRequestService
         }
     }
 
-    /// <summary>Cloud API denemesinin üç ayrı sonucu. bool yetmiyor: "gönderildi"
+    /// <summary>Cloud API denemesinin ayrı sonuçları. bool yetmiyor: "gönderildi"
     /// ile "sonucu bilmiyoruz" ikisi de wa.me'yi açtırmıyor ama operatöre
     /// söylenecek şey taban tabana zıt.</summary>
     private enum CloudSendOutcome
@@ -1393,9 +1448,14 @@ public sealed class PaymentRequestService
         /// <summary>Sunucu gönderimi onayladı.</summary>
         Sent,
 
-        /// <summary>Çağıran wa.me'ye düşmeli (hesap bağlı değil, pencere kapalı,
-        /// lisans çözülemedi, ağ hatası).</summary>
+        /// <summary>Çağıran wa.me'ye düşmeli; Cloud API mesajı GÖNDERMEDİ (hesap bağlı değil,
+        /// pencere kapalı, lisans çözülemedi — sunucu reddetti ya da istek hiç gitmedi).</summary>
         FallBack,
+
+        /// <summary>Çağıran wa.me'ye düşmeli ama Cloud API'nin mesajı gönderip göndermediği
+        /// bilinmiyor (zaman aşımı, ağ/sunucu hatası) — wa.me de açılamazsa gönderim denemesi
+        /// geri alınmaz.</summary>
+        FallBackUnknown,
 
         /// <summary>Aynı gönderim sunucuda hâlâ işleniyor — sonuç bilinmiyor.</summary>
         Pending
@@ -1498,13 +1558,13 @@ public sealed class PaymentRequestService
             // gönderim sunucu tarafında izlenebilsin.
             _log?.LogWarning(
                 "WhatsApp Cloud API zaman aşımı — wa.me'ye düşülüyor (key={Key})", idempotencyKey);
-            return CloudSendOutcome.FallBack;
+            return CloudSendOutcome.FallBackUnknown;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log?.LogWarning(ex,
                 "WhatsApp Cloud API gönderimi hata verdi — wa.me'ye düşülüyor (key={Key})", idempotencyKey);
-            return CloudSendOutcome.FallBack;
+            return CloudSendOutcome.FallBackUnknown;
         }
     }
 

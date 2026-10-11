@@ -69,4 +69,46 @@ public sealed class PaymentResultPresenterTests
                          "iade o hesaba döner, bu istekte kullanılmaz.")
             .And.NotContain("Fazladan");
     }
+
+    [Fact] // İnceleme turu 2: iade edilecek düşüm yoksa (parasız istekler birleşiyor) iade cümlesi kurulmaz
+    public void Birlestirme_iade_yoksa_iade_edilir_demez()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            new[] { Istek(250m, 60), Istek(300m) }, "t", RefundsDeductions: false);
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        message.Should().Be("Bu kişiye bu yayın için 2 istek gitmiş (250,00 TL, 300,00 TL); " +
+                            "tek istekte birleştirilsin mi? Kişinin toplamı tek istekte yeniden istenir.");
+    }
+
+    // İnceleme turu 2: sunucunun bulduğu ayrı düşümler (kişi düzeyinde R4-03) "gitmiş istek" değildir —
+    // sunucu teslimi bilmez; biri eski sürüm bilgisayarda gönderilememiş bir düşüm olabilir.
+    [Fact]
+    public void Uzak_dusumler_gitmis_istek_diye_anlatilmaz()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Merge, "session:s1",
+            Array.Empty<PriorPaymentRequest>(), "t", RefundsToOtherRow: true,
+            RemoteDeductions: new[] { 40m, 210m });
+
+        var (title, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        title.Should().Be("Birden çok ödeme isteği");
+        message.Should().StartWith(
+                "Sunucuda bu kişinin bu yayın için 2 ayrı bakiye düşümü bulundu (40,00 TL, 210,00 TL); " +
+                "müşteriye gidip gitmedikleri bilinmiyor. Tek istekte birleştirilsin mi? " +
+                "En eski düşüm kalır, ötekiler iade edilir")
+            .And.EndWith("iade o hesaba döner, bu istekte kullanılmaz.")
+            .And.NotContain("istek gitmiş");
+    }
+
+    [Fact] // Sonucu yazılamamış gönderimin anı bilinmez — saat yazılmaz
+    public void Tekrar_gonderme_ani_bilinmeyen_istekte_saat_yazmaz()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "session:s1",
+            new[] { new PriorPaymentRequest(150m, null) }, "t");
+
+        PaymentResultPresenter.PromptText(prompt, Simdi).Message
+            .Should().Be("150,00 TL istendi, tekrar gönderilsin mi?");
+    }
 }

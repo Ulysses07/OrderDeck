@@ -32,14 +32,32 @@ internal static class PaymentJobSql
     ///   KAPALI işi kapalı bırakıyordu; miras taraması yalnız açık işlere baktığı için o düşüm hiç
     ///   geri alınmıyordu.</item>
     /// <item>Gerisi (parasız) kapanır: geri alınacak bir şey yok.</item>
-    /// <item>Teslim kaydına (<c>DeliveredAt</c>/<c>DeliveredNet</c>/<c>Deliveries</c>) DOKUNULMAZ:
-    ///   indirilen işin isteği müşteriye gitmişse kapsamın sıradaki tıklaması bunu görüp sorar.</item>
+    /// <item>Teslim kaydı (<c>DeliveredAt</c>/<c>DeliveredNet</c>/<c>Deliveries</c>/<c>SendAttempts</c>)
+    ///   SİLİNMEZ: indirilen işin isteği müşteriye gitmişse kapsamın sıradaki tıklaması bunu görüp sorar.
+    ///   Önceki sürümün (geri dönüş) yalnız ClosedAt'la bıraktığı teslim (<see cref="ClosedByLaterDelivery"/>)
+    ///   teslim kaydına geçirilir: miras kapsamında ClosedAt artık teslim sayılmaz, para taşıyan iş için
+    ///   de az sonra silinir.</item>
     /// </list>
+    /// SQLite UPDATE'in bütün atamaları satırın ESKİ değerlerini okur — koşuldaki kapsam indirme öncesidir.
     /// </summary>
     public const string DemoteToLegacy =
         "UPDATE PaymentJob SET " +
         "PriorScopeKey = COALESCE(PriorScopeKey, ScopeKey), " +
         "ScopeKey = 'legacy:' || COALESCE(ApplyKey, Id) || ':' || Id, " +
         "ClosedAt = CASE WHEN " + CarriesMoney + " THEN NULL ELSE COALESCE(ClosedAt, @now) END, " +
+        "DeliveredAt = CASE WHEN " + ClosedByLaterDelivery + " THEN ClosedAt ELSE DeliveredAt END, " +
+        "DeliveredNet = CASE WHEN " + ClosedByLaterDelivery + " THEN NULL ELSE DeliveredNet END, " +
         "UpdatedAt = @now ";
+
+    /// <summary>Önceki sürümün teslimi (koşul, satırın kendi kolonları üzerinde). C# karşılığı
+    /// <c>PaymentJob.LastDeliveredAt</c>'in kuralı — ikisi aynı kalmalı.
+    ///
+    /// <para>Önceki sürüm (Velopack geri dönüşü; göç 047 kolonları durur) teslimde teslim kaydı yazmaz,
+    /// yalnız ClosedAt'ı doldurur. Legacy olmayan kapsamda ClosedAt'ı iki sürümde de yalnız teslim yazar;
+    /// bu sürümün teslimi ClosedAt'ı teslim anından sonraya hiç taşımaz. Yani ClosedAt teslim kaydından
+    /// yeniyse (ya da teslim kaydı yoksa) o kapanış önceki sürümün teslimidir ve en sonuncusudur — net
+    /// tutar işin alanlarındadır (kapalı işte alanlar gönderilen mesajın alanlarıdır).</para></summary>
+    public const string ClosedByLaterDelivery =
+        "(ClosedAt IS NOT NULL AND (DeliveredAt IS NULL OR ClosedAt > DeliveredAt) " +
+        "AND ScopeKey <> 'legacy' AND ScopeKey NOT LIKE 'legacy:%')";
 }

@@ -540,11 +540,19 @@ public partial class PaymentRequestServiceTests
                 : id == G(b) ? ScopeJsonAt(txB, 40m, 250m, t0.AddHours(1))
                 : null;
 
-            (await sut.OpenWhatsAppAsync(a, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.MergeRequired);
+            var soru = await sut.RequestPaymentAsync(a, _ => 250m, T, "session:s1");
+            soru.Result.Should().Be(PaymentRequestResult.MergeRequired);
+            // İnceleme turu 2: sunucu teslim bilgisini bilmez — izler "gitmiş istek" sayılmaz.
+            soru.Prompt!.Requests.Should().BeEmpty("sunucudaki düşümün müşteriye gidip gitmediği bilinmiyor");
+            soru.Prompt.RemoteDeductions.Should().Equal(40m, 40m);
             handler.ReverseCalls.Should().BeEmpty("onaydan önce geri alma yok");
             _launcher.LaunchedUrls.Should().BeEmpty();
 
-            (await EvetAsync(sut, a, 250m, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            var dialogs = new FakeDialogService();
+            (await EvetAsync(sut, a, 250m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
+            dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
+                .StartWith("Sunucuda bu kişinin bu yayın için 2 ayrı bakiye düşümü bulundu (40,00 TL, 40,00 TL)")
+                .And.NotContain("istek gitmiş");
 
             handler.ReverseCalls.Should().ContainSingle().Which.Should().Be(txB, "en eski düşüm kalır, fazlası iade");
             handler.AppliedBalanceBodies.Should().BeEmpty();
@@ -570,7 +578,9 @@ public partial class PaymentRequestServiceTests
         var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
         (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
         var ilkTeslim = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();   // ilk istek bir saat önce gitmiş
-        _jobs.Seed(_jobs.Snapshot.Single() with { DeliveredAt = ilkTeslim });
+        // Teslim işi o anda kapattı (ClosedAt teslim anından sonra olamaz — olsaydı önceki sürümün sonraki
+        // teslimi sayılırdı).
+        _jobs.Seed(_jobs.Snapshot.Single() with { DeliveredAt = ilkTeslim, ClosedAt = ilkTeslim });
 
         Task<PaymentRequestOutcome> Iste(IReadOnlySet<string>? tokens = null)
             => sut.RequestPaymentAsync(customer, _ => 250m, T, "session:s1", tokens);
@@ -726,6 +736,10 @@ public partial class PaymentRequestServiceTests
     // kayıttaki aynı kapsamın işi taze (anahtarsız). Eskiden plan yalnız taze işi görüyor, miras
     // benimseniyor ve aynı mesaj müşteriye SORUSUZ ikinci kez gidiyordu. Teslim izi (DeliveredAt)
     // indirmede korunur; kapsamın tıklaması önce sorar.
+    //
+    // İnceleme turu 2: miras aynı sahipte ve taze işe BENİMSENİR — hiçbir şey iade edilmez, aynı istek
+    // yeniden gider. Bu bir tekrar göndermedir: soru "birleştirilsin mi? önceki düşümler iade edilir"
+    // değil, "HH:mm 150,00 TL istendi, tekrar gönderilsin mi?" olmalı (operatör iade olacağını sanmasın).
     [Fact]
     public async Task Tasinan_teslim_edilmis_kopya_isi_sorulmadan_yeniden_gonderilmez()
     {
@@ -745,13 +759,15 @@ public partial class PaymentRequestServiceTests
             miras.IsDelivered.Should().BeTrue("teslim izi indirmede kaybolmaz");
 
             (await sut.OpenWhatsAppAsync(canonical, 250m, T, "session:s1"))
-                .Should().Be(PaymentRequestResult.MergeRequired, "istek müşteriye gitmişti");
+                .Should().Be(PaymentRequestResult.AlreadyRequested, "istek müşteriye gitmişti — benimseme tekrar göndermedir");
             _launcher.LaunchedUrls.Should().ContainSingle("sorusuz ikinci mesaj yok");
 
             var dialogs = new FakeDialogService();
             (await EvetAsync(sut, canonical, 250m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
-            dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
-                .Contain("bu yayın için 1 istek gitmiş (150,00 TL)");
+            var soru = dialogs.Confirmations.Should().ContainSingle().Subject;
+            soru.Title.Should().Be("Ödeme isteği zaten gönderildi");
+            soru.Message.Should().EndWith("150,00 TL istendi, tekrar gönderilsin mi?")
+                .And.NotContain("iade", "hiçbir düşüm iade edilmiyor");
             var job = Isler(db, "session:s1").Should().ContainSingle().Subject;
             job.ApplyKey.Should().Be(copyKey, "aynı kapsamın mirası taze işe benimsendi — ikinci düşüm yok");
             handler.AppliedBalanceBodies.Select(AppliedKey).Should().OnlyContain(k => k == copyKey);
@@ -759,5 +775,183 @@ public partial class PaymentRequestServiceTests
             _launcher.LaunchedUrls.Should().HaveCount(2).And.OnlyContain(u => u.Contains("150%2C00"));
         }
         finally { Drop(db); }
+    }
+
+    // ── İnceleme turu 2 ──────────────────────────────────────────────────────
+
+    private const string InProgressJson =
+        """{"ok":false,"errorCode":"in_progress","errorMessage":"işleniyor","messageId":null}""";
+
+    private static HashSet<string> Onay(PaymentRequestOutcome soru) => new(StringComparer.Ordinal) { soru.Prompt!.Token };
+
+    // Eşzamanlılık incelemesi: iki pencerede aynı "tekrar gönderilsin mi?" sorusu (aynı belirteç). Birinin
+    // "Evet"i Cloud API'den in_progress aldı (SendPending — mesaj gitmiş olabilir). Eskiden iş satırı hiç
+    // değişmiyordu: öbür pencerenin "Evet"i bekleyen eski belirteçle sorusuz ikinci mesajı gönderiyordu.
+    [Fact]
+    public async Task SendPending_sonrasi_obur_pencerenin_bekleyen_onayi_yeniden_sorulur()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Sent);
+
+        Task<PaymentRequestOutcome> Iste(IReadOnlySet<string>? tokens = null)
+            => sut.RequestPaymentAsync(customer, _ => 250m, T, "session:s1", tokens);
+        var musteriler = await Iste();
+        var rapor = await Iste();
+        rapor.Prompt!.Token.Should().Be(musteriler.Prompt!.Token, "iki soru aynı durumu gösteriyor");
+
+        handler.SendResponseJson = InProgressJson;
+        (await Iste(Onay(musteriler))).Result.Should().Be(PaymentRequestResult.SendPending);
+        var gonderimler = handler.SentBodies.Count;
+
+        var bayat = await Iste(Onay(rapor));
+
+        bayat.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "öbür pencerenin gönderimi sonucu bilinmese de durumu değiştirdi");
+        handler.SentBodies.Should().HaveCount(gonderimler, "bayat onayla Cloud API ikinci kez çağrılmaz");
+        _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    // Eşzamanlılık incelemesi: mesaj gitti ama teslim kaydı yazılamadı (SQLITE_BUSY — hata yutulur). Gönderim
+    // denemesi ağdan ÖNCE yazıldığı için iş yine "gitmiş olabilir" görünür: sıradaki tıklama sorar, öbür
+    // pencerede bekleyen eski onay tutmaz. Eskiden iş teslim edilmemiş sayılıyordu: ikinci mesaj sorusuz.
+    [Fact]
+    public async Task Teslim_yazilamasa_da_gonderim_denemesi_sonraki_tiklamayi_ve_bekleyen_onayi_sordurur()
+    {
+        var depo = new TeslimYazimiDusenDepo(_jobs);
+        var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: depo);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        Task<PaymentRequestOutcome> Iste(IReadOnlySet<string>? tokens = null)
+            => sut.RequestPaymentAsync(customer, _ => 250m, T, "session:s1", tokens);
+
+        depo.TeslimDussun = true;
+        (await Iste()).Result.Should().Be(PaymentRequestResult.Opened, "mesaj gitti; teslim yazımı akışı düşürmez");
+        _jobs.Snapshot.Single().HasUnconfirmedSend.Should().BeTrue();
+
+        var soru = await Iste();
+        soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "mesaj gitmiş olabilir — sorusuz ikinci mesaj yok");
+        soru.Prompt!.Requests.Should().ContainSingle().Which.Should().Be(new PriorPaymentRequest(150m, null),
+            "gönderilen net 250 − 100; anı yazılamadı");
+        _launcher.LaunchedUrls.Should().ContainSingle();
+
+        // İki pencere aynı soruyu gösteriyor; birinin "Evet"i gönderdi, teslim yine yazılamadı.
+        var obur = await Iste();
+        obur.Prompt!.Token.Should().Be(soru.Prompt.Token);
+        (await Iste(Onay(soru))).Result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().HaveCount(2);
+
+        (await Iste(Onay(obur))).Result.Should().Be(PaymentRequestResult.AlreadyRequested,
+            "öbür pencerenin onayı gönderimden önceki duruma verildi");
+        _launcher.LaunchedUrls.Should().HaveCount(2);
+        handler.AppliedBalanceBodies.Should().ContainSingle();
+    }
+
+    // wa.me açılamadıysa mesaj gitmedi: deneme geri alınır (sıradaki tıklama sorusuz dener — A2). Ama Cloud
+    // API sonucu bilinmeden (zaman aşımı) wa.me'ye düşüldüyse o gönderim ulaşmış olabilir: deneme kalır.
+    [Fact]
+    public async Task CloudAPI_zaman_asimi_ve_wame_acilamazsa_sonraki_tiklama_sorar()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        handler.ThrowTimeoutOnSend = true;
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.LaunchFailed);
+        _launcher.ThrowOnLaunch = null;
+        handler.ThrowTimeoutOnSend = false;
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.AlreadyRequested, "Cloud API gönderimi ulaşmış olabilir");
+        handler.SentBodies.Should().BeEmpty();
+    }
+
+    // Para incelemesi: onaylı birleştirmede kaybeden iade edilip kapandı, kalan işin geri alması düştü
+    // (reverse_pending). Eskiden sıradaki tıklama bunu düz "tekrar gönderilsin mi?" diye soruyordu — kalan
+    // işin geçersizleşmiş eski tutarını "istendi" diye göstererek; "Hayır" iadeleri yeni istek olmadan
+    // bırakıyordu. Yarım kalan istek önceki sürüm gibi sorulmadan sürer.
+    [Fact]
+    public async Task Birlesmede_kalan_isin_geri_almasi_kalirsa_sonraki_tiklama_sormadan_surer()
+    {
+        var db = FileDb();
+        try
+        {
+            var a = Uye(db, "kisi.a");
+            var c = Uye(db, "kisi.c");
+            var (sut, handler) = KisiSut(db);
+            handler.RowBalances = new() { [G(a)] = 50m, [G(c)] = 50m };
+            (await sut.OpenWhatsAppAsync(a, 100m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            (await sut.OpenWhatsAppAsync(c, 200m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            Kisi(db, a, c);
+
+            // İlk geri alma (kaybeden) geçer, sonrakiler (kalan işin revizyonu, iki deneme) düşer.
+            var tersler = 0;
+            handler.OnReverse = _ =>
+            {
+                if (Interlocked.Increment(ref tersler) >= 2) throw new System.Net.Http.HttpRequestException("stub");
+            };
+            (await EvetAsync(sut, a, 300m, "session:s1")).Should().Be(PaymentRequestResult.BalanceUncertain);
+            handler.OnReverse = null;
+            var kalan = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            kalan.State.Should().Be(PaymentJobState.ReversePending);
+            db.Jobs.GetOpenLegacies(new[] { a.Id, c.Id }).Should().BeEmpty("kaybeden iade edilip kapandı");
+            var mesajlar = _launcher.LaunchedUrls.Count;
+
+            var hayir = new FakeDialogService();
+            var outcome = await PaymentResultPresenter.RequestConfirmedAsync(hayir, t =>
+                sut.RequestPaymentAsync(a, _ => 300m, T, "session:s1", t));
+
+            outcome.Result.Should().Be(PaymentRequestResult.Opened);
+            hayir.Confirmations.Should().BeEmpty("birleştirme zaten onaylanmıştı; yarım kalan istek sorulmadan sürer");
+            Isler(db, "session:s1").Single().ProductTotal.Should().Be(300m);
+            _launcher.LaunchedUrls.Should().HaveCount(mesajlar + 1);
+            _launcher.LaunchedUrls[^1].Should().Contain("250%2C00", "300 − 50: birleşik istek");
+        }
+        finally { Drop(db); }
+    }
+
+    /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
+    private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
+    {
+        public bool TeslimDussun { get; set; }
+
+        public void MarkDelivered(string id, decimal requestedNet)
+        {
+            if (TeslimDussun) throw new InvalidOperationException("database is locked");
+            inner.MarkDelivered(id, requestedNet);
+        }
+
+        public PaymentJob FindOrCreate(string customerId, string scopeKey, decimal productTotal)
+            => inner.FindOrCreate(customerId, scopeKey, productTotal);
+        public PersonJob FindOrCreateForPerson(PersonJobRequest request) => inner.FindOrCreateForPerson(request);
+        public PaymentJob? Get(string id) => inner.Get(id);
+        public IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId) => inner.GetOpenLegacies(customerId);
+        public IReadOnlyList<PaymentJob> GetOpenLegacies(IReadOnlyCollection<string> customerIds)
+            => inner.GetOpenLegacies(customerIds);
+        public bool ReassignOwner(string id, string newCustomerId) => inner.ReassignOwner(id, newCustomerId);
+        public bool BeginApply(string id, Guid applyKey) => inner.BeginApply(id, applyKey);
+        public bool MarkApplied(string id, Guid expectedKey, int expectedRevision, decimal appliedAmount)
+            => inner.MarkApplied(id, expectedKey, expectedRevision, appliedAmount);
+        public bool MarkNoBalance(string id, Guid? expectedKey, int expectedRevision)
+            => inner.MarkNoBalance(id, expectedKey, expectedRevision);
+        public bool MarkUncertain(string id, Guid? expectedKey, int expectedRevision)
+            => inner.MarkUncertain(id, expectedKey, expectedRevision);
+        public void Close(string id) => inner.Close(id);
+        public void BeginSend(string id) => inner.BeginSend(id);
+        public void AbandonSend(string id) => inner.AbandonSend(id);
+        public bool BeginRevision(string id, decimal newProductTotal, Guid newApplyKey, int expectedRevision)
+            => inner.BeginRevision(id, newProductTotal, newApplyKey, expectedRevision);
+        public bool BeginReversal(string id, int expectedRevision, Guid expectedKey, decimal targetTotal)
+            => inner.BeginReversal(id, expectedRevision, expectedKey, targetTotal);
+        public bool CompleteReversal(string id, int expectedRevision, Guid expectedKey)
+            => inner.CompleteReversal(id, expectedRevision, expectedKey);
+        public void AdoptLegacyResult(string targetId, string legacyId) => inner.AdoptLegacyResult(targetId, legacyId);
+        public bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal)
+            => inner.AdoptRemoteResult(id, transactionId, appliedAmount, productTotal);
+        public bool AdoptExternalReversal(string id, Guid expectedKey, int expectedRevision)
+            => inner.AdoptExternalReversal(id, expectedKey, expectedRevision);
     }
 }
