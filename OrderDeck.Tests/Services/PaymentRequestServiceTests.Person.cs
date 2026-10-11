@@ -945,6 +945,31 @@ public partial class PaymentRequestServiceTests
         _launcher.LaunchedUrls.Should().BeEmpty();
     }
 
+    // Sonucu yazılamamış deneme sonraki onaylı teslimle kapanır. Eskiden fark kalıcıydı: iş hep "sonucu
+    // bilinmeyen gönderim" sayılıyor, sahip kararı 2'nin sorusunda {saat} bir daha görünmüyordu.
+    [Fact]
+    public async Task Yetim_denemeden_sonra_onayli_teslim_soruya_saati_geri_getirir()
+    {
+        var depo = new TeslimYazimiDusenDepo(_jobs);
+        var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: depo);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        depo.TeslimDussun = true;
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+        depo.TeslimDussun = false;
+
+        (await EvetAsync(sut, customer, 250m, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+        var job = _jobs.Snapshot.Single();
+        job.HasUnconfirmedSend.Should().BeFalse("onaylı teslim yetim denemeyi karşılar");
+
+        var soru = await sut.RequestPaymentAsync(customer, _ => 250m, T, "session:s1");
+
+        soru.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        soru.Prompt!.Requests.Should().ContainSingle().Which.At.Should()
+            .Be(DateTimeOffset.FromUnixTimeSeconds(job.DeliveredAt!.Value), "son teslimin saati soruda görünür");
+        _launcher.LaunchedUrls.Should().HaveCount(2);
+    }
+
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
     {

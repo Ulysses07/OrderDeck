@@ -706,6 +706,38 @@ public abstract class PaymentJobStoreContractTests
         soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired, "istek gitmişti — sorusuz yeniden gönderilmez");
         soru.Plan!.PromptJobs.Single().PromptNet.Should().Be(200m, "300 ya da 400 değil");
     }
+
+    // Sonucu yazılamamış deneme (yetim) sonraki onaylı teslimle kapanmalı. Eskiden MarkDelivered
+    // SendAttempts'i MAX(SendAttempts, Deliveries+1) yapıyordu: yeni deneme sayacı bir artırdığı için fark
+    // hiç kapanmıyor, iş kalıcı olarak "sonucu bilinmeyen gönderim" kalıyordu — soruda saat bir daha
+    // görünmüyor, teslim sırası long.MaxValue olduğu için iş her birleştirmede "en son teslim" sayılıyordu.
+    [Fact]
+    public void Onayli_teslim_yetim_denemeyi_kapatir_saat_ve_teslim_sirasi_geri_gelir()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        var job = store.FindOrCreate(person.OwnerId!, "session:s1", 300m);
+        store.MarkNoBalance(job.Id, null, 0).Should().BeTrue();
+        store.BeginSend(job.Id);                                   // gönderim başladı, süreç düştü
+        store.Get(job.Id)!.HasUnconfirmedSend.Should().BeTrue();
+
+        store.BeginSend(job.Id);                                   // operatör onayladı, yeniden gönderildi
+        store.MarkDelivered(job.Id, 300m);
+
+        var teslim = store.Get(job.Id)!;
+        teslim.Deliveries.Should().Be(1);
+        teslim.SendAttempts.Should().Be(1, "teslim o ana kadarki bütün denemeleri karşılar");
+        teslim.HasUnconfirmedSend.Should().BeFalse();
+        teslim.PromptAt.Should().Be(teslim.DeliveredAt, "soruda son teslimin saati yeniden görünür");
+
+        // Teslim sırası olağan: bu işten SONRA teslim edilmiş iş birleştirmede kalan iş olur.
+        var sonra = teslim with
+        {
+            Id = "zz" + teslim.Id, CustomerId = NotOwner(person), DeliveredAt = teslim.DeliveredAt + 60,
+            SendAttempts = 1, Deliveries = 1,
+        };
+        PersonScopePlan.For(new[] { teslim, sonra }, person.OwnerId).Survivor!.Id.Should().Be(sonra.Id);
+    }
 }
 
 public sealed class SqlitePaymentJobStoreContractTests : PaymentJobStoreContractTests

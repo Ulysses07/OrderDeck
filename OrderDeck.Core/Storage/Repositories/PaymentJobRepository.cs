@@ -209,8 +209,13 @@ public interface IPaymentJobStore
     /// gönderilsin mi?" sorusu SON gönderimi gösterir, eski onay belirteci tutmaz). Sonucu kesin iş
     /// (applied / no_balance) ayrıca kapanır (ilk kapanış zamanı korunur). Çevrimdışı gönderilen
     /// taze (created) iş AÇIK kalır: kapalı işe anahtar yazılmaz (U8), onaylı sonraki tıklama onu
-    /// çevrimiçi düşümle sürdürür. SendAttempts teslim sayısının altına düşmez (deneme yazılmadan
-    /// gelen teslim de bir denemedir).</summary>
+    /// çevrimiçi düşümle sürdürür.
+    ///
+    /// <para>Teslim o ana kadarki BÜTÜN gönderim denemelerini karşılar: SendAttempts = yeni Deliveries.
+    /// Daha önce sonucu yazılamamış bir deneme varsa sıradaki tıklama onu operatöre "gitmiş olabilir"
+    /// diye sormuş, operatör onaylamıştır; kişi kilidi denemeleri sıraya soktuğu için bu teslim en son
+    /// denemenin teslimidir. Fark kapanmasaydı iş kalıcı olarak "sonucu bilinmeyen gönderim" sayılırdı:
+    /// soruda saat hiç görünmez, iş her birleştirmede "en son teslim edilen" sayılırdı.</para></summary>
     void MarkDelivered(string id, decimal requestedNet);
 
     /// <summary>Gönderim denemesi başlıyor: SendAttempts + 1 — mesaj ağa/WhatsApp'a çıkmadan ÖNCE.
@@ -540,7 +545,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         conn.Execute(
             @"UPDATE PaymentJob
               SET DeliveredAt=@now, DeliveredNet=@net, Deliveries=Deliveries+1, UpdatedAt=@now,
-                  SendAttempts=MAX(SendAttempts, Deliveries+1),
+                  SendAttempts=Deliveries+1,
                   ClosedAt=CASE WHEN State IN (@applied, @noBalance) THEN COALESCE(ClosedAt,@now) ELSE ClosedAt END
               WHERE Id=@id",
             new

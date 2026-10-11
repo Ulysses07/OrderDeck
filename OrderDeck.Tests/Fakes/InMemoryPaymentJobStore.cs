@@ -227,7 +227,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
                 DeliveredAt = now,
                 DeliveredNet = requestedNet,
                 Deliveries = j.Deliveries + 1,
-                SendAttempts = Math.Max(j.SendAttempts, j.Deliveries + 1),
+                SendAttempts = j.Deliveries + 1,      // teslim bütün denemeleri karşılar (gerçek depo gibi)
                 ClosedAt = settled ? j.ClosedAt ?? now : j.ClosedAt,
                 UpdatedAt = now,
             };
