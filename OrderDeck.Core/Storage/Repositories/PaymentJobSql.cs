@@ -35,19 +35,53 @@ internal static class PaymentJobSql
     /// <item>Teslim kaydı (<c>DeliveredAt</c>/<c>DeliveredNet</c>/<c>Deliveries</c>/<c>SendAttempts</c>)
     ///   SİLİNMEZ: indirilen işin isteği müşteriye gitmişse kapsamın sıradaki tıklaması bunu görüp sorar.
     ///   Önceki sürümün (geri dönüş) yalnız ClosedAt'la bıraktığı teslim (<see cref="ClosedByLaterDelivery"/>)
-    ///   teslim kaydına geçirilir: miras kapsamında ClosedAt artık teslim sayılmaz, para taşıyan iş için
-    ///   de az sonra silinir.</item>
+    ///   netiyle birlikte teslim kaydına geçirilir (<see cref="FreezeDelivery"/>): miras kapsamında ClosedAt
+    ///   artık teslim sayılmaz, para taşıyan iş için de az sonra silinir.</item>
     /// </list>
     /// SQLite UPDATE'in bütün atamaları satırın ESKİ değerlerini okur — koşuldaki kapsam indirme öncesidir.
     /// </summary>
     public const string DemoteToLegacy =
-        "UPDATE PaymentJob SET " +
+        "UPDATE PaymentJob SET " + FreezeDelivery +
         "PriorScopeKey = COALESCE(PriorScopeKey, ScopeKey), " +
         "ScopeKey = 'legacy:' || COALESCE(ApplyKey, Id) || ':' || Id, " +
         "ClosedAt = CASE WHEN " + CarriesMoney + " THEN NULL ELSE COALESCE(ClosedAt, @now) END, " +
-        "DeliveredAt = CASE WHEN " + ClosedByLaterDelivery + " THEN ClosedAt ELSE DeliveredAt END, " +
-        "DeliveredNet = CASE WHEN " + ClosedByLaterDelivery + " THEN NULL ELSE DeliveredNet END, " +
         "UpdatedAt = @now ";
+
+    /// <summary>
+    /// Teslim kaydını DONDURUR — işi yeniden açan (ClosedAt'ı silen) ya da tutar alanlarını
+    /// (ProductTotal/AppliedAmount) değiştiren HER yazımın SET listesine eklenir (sonunda virgül var).
+    /// C# karşılığı <see cref="PaymentJob.FreezeDelivery"/> (taklit depo) — ikisi aynı kalmalı.
+    /// <list type="bullet">
+    /// <item>Önceki sürümün teslimi (<see cref="ClosedByLaterDelivery"/>): kapanış teslim kaydına geçer
+    ///   (DeliveredAt = ClosedAt). Yeniden açma ClosedAt'ı siler; geçmeseydi iz tümden kaybolur, sıradaki
+    ///   tıklama sorusuz yeniden gönderirdi.</item>
+    /// <item>Net: önceki sürümün teslimiyse ya da teslim kaydı var ama neti yoksa, işin O ANKİ
+    ///   alanlarından (<c>od_payment_net</c>, kayıpsız). Kapalı işte alanlar gönderilen mesajın
+    ///   alanlarıdır; yazım onları değiştirdikten sonra okuyucu teslim netini türetemez — soru müşteriden
+    ///   hiç istenmemiş bir tutarı "istendi" diye gösterirdi.</item>
+    /// </list>
+    /// SQLite atamaları satırın ESKİ değerlerini okur: net, yazımın değiştirdiği alanlardan ÖNCEKİdir.
+    /// </summary>
+    public const string FreezeDelivery =
+        "DeliveredAt = CASE WHEN " + ClosedByLaterDelivery + " THEN ClosedAt ELSE DeliveredAt END, " +
+        "DeliveredNet = CASE WHEN " + ClosedByLaterDelivery + " OR (DeliveredAt IS NOT NULL AND DeliveredNet IS NULL) " +
+        "THEN od_payment_net(ProductTotal, AppliedAmount) ELSE DeliveredNet END, ";
+
+    /// <summary><c>od_payment_net</c> (<see cref="SqliteSearchFunctions"/>): ProductTotal − AppliedAmount,
+    /// ondalık metin olarak (<c>PaymentJob.RequestedNet</c> ve depo yazımlarıyla aynı biçim — invariant
+    /// <see cref="decimal"/>). Okunamayan tutar NULL döner: göçü ya da yazımı düşürmek yerine okuyucu işin
+    /// alanlarına düşer.</summary>
+    internal static string? NetText(string? productTotal, string? appliedAmount)
+    {
+        if (!TryDec(productTotal, out var total)) return null;
+        var applied = 0m;
+        if (appliedAmount is not null && !TryDec(appliedAmount, out applied)) return null;
+        return (total - applied).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static bool TryDec(string? text, out decimal value)
+        => decimal.TryParse(text, System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture, out value);
 
     /// <summary>Önceki sürümün teslimi (koşul, satırın kendi kolonları üzerinde). C# karşılığı
     /// <c>PaymentJob.LastDeliveredAt</c>'in kuralı — ikisi aynı kalmalı.

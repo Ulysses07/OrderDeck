@@ -654,8 +654,57 @@ public abstract class PaymentJobStoreContractTests
         miras.DeliveredAt.Should().Be(kapanis, "önceki sürümün teslimi teslim kaydına geçti");
         miras.IsDelivered.Should().BeTrue();
         miras.LastRequestedNet.Should().Be(280m);
+        miras.DeliveredNet.Should().Be(280m, "net teslim kaydıyla birlikte dondurulur");
         store.FindOrCreateForPerson(Req(person)).Plan!.Kind.Should().Be(PersonScopePromptKind.Merge,
             "açık ve teslim edilmiş miras iade edilecek — sessiz değil");
+    }
+
+    // ── Son inceleme ─────────────────────────────────────────────────────────
+
+    public enum Reopen { DisIade, GeriAlma, Revizyon }
+
+    // RV3: teslim neti okurken işin GÜNCEL alanlarından türetilmemeli. Önceki sürümün teslimi (yalnız
+    // ClosedAt) iş yeniden açılınca (panel iadesi → dış iade benimsemesi, geri alma, revizyon) ClosedAt ile
+    // birlikte silinip sıradaki tıklama sorusuz yeniden gönderiyordu; teslim kaydında neti boş kalan iş de
+    // alanları değişince soruda müşteriden hiç istenmemiş tutarı gösteriyordu. Yeniden açan / tutarı
+    // değiştiren her yazım önce teslim kaydını dondurur.
+    [Theory]
+    [InlineData(Reopen.DisIade)]
+    [InlineData(Reopen.GeriAlma)]
+    [InlineData(Reopen.Revizyon)]
+    public void Yeniden_acan_yazim_onceki_teslimi_netiyle_dondurur(Reopen reopen)
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 100m, delivered: false);
+        store.Close(job.Id);                                       // önceki sürümün teslimi: 300 − 100 istendi
+        var kapanis = store.Get(job.Id)!.ClosedAt;
+        var ilk = store.FindOrCreateForPerson(Req(person));
+        ilk.Plan!.PromptJobs.Single().PromptNet.Should().Be(200m);
+
+        switch (reopen)
+        {
+            case Reopen.DisIade:
+                store.AdoptExternalReversal(job.Id, job.ApplyKey!.Value, job.Revision).Should().BeTrue();
+                break;
+            case Reopen.GeriAlma:
+                store.BeginReversal(job.Id, job.Revision, job.ApplyKey!.Value, targetTotal: 400m).Should().BeTrue();
+                store.CompleteReversal(job.Id, job.Revision, job.ApplyKey!.Value).Should().BeTrue();
+                break;
+            case Reopen.Revizyon:
+                store.BeginRevision(job.Id, 400m, Guid.NewGuid(), job.Revision).Should().BeTrue();
+                break;
+        }
+
+        var acik = store.Get(job.Id)!;
+        acik.ClosedAt.Should().BeNull("iş yeniden açıldı");
+        acik.DeliveredAt.Should().Be(kapanis, "önceki sürümün teslimi teslim kaydına geçti — iz kaybolmaz");
+        acik.DeliveredNet.Should().Be(200m);
+        acik.LastRequestedNet.Should().Be(200m, "işin yeni alanları müşteriden istenen tutar değil");
+        if (reopen == Reopen.Revizyon) return;                     // yarım kalan revizyon sorulmadan sürer
+        var soru = store.FindOrCreateForPerson(Req(person));
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired, "istek gitmişti — sorusuz yeniden gönderilmez");
+        soru.Plan!.PromptJobs.Single().PromptNet.Should().Be(200m, "300 ya da 400 değil");
     }
 }
 

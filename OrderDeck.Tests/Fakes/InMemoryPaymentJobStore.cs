@@ -84,17 +84,13 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             var demoted = new List<DemotedJob>();
             foreach (var l in plan!.Losers)
             {
-                // Gerçek deponun PaymentJobSql.DemoteToLegacy metniyle aynı karar — önceki sürümün
-                // teslimi (ClosedByLaterDelivery) teslim kaydına geçer.
-                var oncekiSurumTeslimi = !IsLegacyScope(l.ScopeKey) && l.ClosedAt is long closed
-                    && (l.DeliveredAt is not long delivered || closed > delivered);
-                _jobs[l.Id] = l with
+                // Gerçek deponun PaymentJobSql.DemoteToLegacy metniyle aynı karar — teslim kaydı
+                // dondurulur (önceki sürümün teslimi netiyle teslim kaydına geçer).
+                _jobs[l.Id] = l.FreezeDelivery() with
                 {
                     PriorScopeKey = l.PriorScopeKey ?? l.ScopeKey,
                     ScopeKey = $"legacy:{l.ApplyKey?.ToString("N") ?? l.Id}:{l.Id}",
                     ClosedAt = l.CarriesMoney ? null : l.ClosedAt ?? now,
-                    DeliveredAt = oncekiSurumTeslimi ? l.ClosedAt : l.DeliveredAt,
-                    DeliveredNet = oncekiSurumTeslimi ? null : l.DeliveredNet,
                     UpdatedAt = now,
                 };
                 demoted.Add(PersonScopePlan.Demotion(l));
@@ -169,7 +165,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         {
             var j = _jobs[id];
             if (Bayat(j, expectedKey, expectedRevision) || GeriAlmaBekliyor(j)) return false;
-            _jobs[id] = j with
+            _jobs[id] = j.FreezeDelivery() with
             {
                 State = PaymentJobState.Applied,
                 AppliedAmount = appliedAmount,
@@ -185,7 +181,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         {
             var j = _jobs[id];
             if (Bayat(j, expectedKey, expectedRevision) || GeriAlmaBekliyor(j)) return false;
-            _jobs[id] = j with
+            _jobs[id] = j.FreezeDelivery() with
             {
                 State = PaymentJobState.NoBalance,
                 AppliedAmount = 0m,
@@ -262,7 +258,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         {
             var j = _jobs[id];
             if (j.Revision != expectedRevision) return false;
-            _jobs[id] = j with
+            _jobs[id] = j.FreezeDelivery() with
             {
                 ProductTotal = newProductTotal,
                 Revision = j.Revision + 1,
@@ -299,7 +295,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             var j = _jobs[id];
             if (Bayat(j, expectedKey, expectedRevision)) return false;
             if (j.State != PaymentJobState.ReversePending) return false;
-            _jobs[id] = j with
+            _jobs[id] = j.FreezeDelivery() with
             {
                 ProductTotal = j.PendingTotal ?? j.ProductTotal,
                 Revision = j.Revision + 1,
@@ -325,7 +321,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             if (target.CustomerId != legacy.CustomerId) return;
             if (legacy.PriorScopeKey is not null && legacy.PriorScopeKey != target.ScopeKey) return;
             if (target.ApplyKey is null && target.State == PaymentJobState.Created)
-                _jobs[targetId] = target with
+                _jobs[targetId] = target.FreezeDelivery() with
                 {
                     ProductTotal = legacy.ProductTotal,
                     ApplyKey = legacy.ApplyKey,
@@ -344,7 +340,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             var j = _jobs[id];
             if (Bayat(j, expectedKey, expectedRevision)) return false;
             if (j.State != PaymentJobState.Applied) return false;
-            _jobs[id] = j with
+            _jobs[id] = j.FreezeDelivery() with
             {
                 Revision = j.Revision + 1,
                 ApplyKey = null,
@@ -365,7 +361,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         {
             var j = _jobs[id];
             if (j.ApplyKey is not null || j.State != PaymentJobState.Created) return false;
-            _jobs[id] = j with
+            _jobs[id] = j.FreezeDelivery() with
             {
                 ApplyKey = transactionId,
                 AppliedAmount = appliedAmount,

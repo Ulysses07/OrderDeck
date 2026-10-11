@@ -60,8 +60,9 @@ public sealed record PaymentJob(
     /// <summary>Göç 047: SON teslimin anı — <see cref="IPaymentJobStore.MarkDelivered"/> yazar, hiçbir
     /// yol silmez (revizyon, geri alma, indirme ClosedAt'ı siler; bunu değil).</summary>
     long? DeliveredAt = null,
-    /// <summary>Göç 047: son teslim edilen mesajdaki net tutar. Göç öncesi teslimlerde boş
-    /// (<see cref="LastRequestedNet"/> işin alanlarından hesaplar).</summary>
+    /// <summary>Göç 047: son teslim edilen mesajdaki net tutar — DONMUŞ: göç öncesi teslimlerde 047
+    /// işin alanlarından doldurur; işi yeniden açan ya da tutarını değiştiren her yazım önce dondurur
+    /// (<see cref="PaymentJobSql.FreezeDelivery"/>).</summary>
     decimal? DeliveredNet = null,
     /// <summary>Göç 047: teslim sayısı — onay belirtecine girer (aynı saniyedeki iki gönderimi de ayırır).</summary>
     int Deliveries = 0,
@@ -100,10 +101,19 @@ public sealed record PaymentJob(
     /// <summary>Müşteriden istenen net tutar (kargo dahil toplam − düşülen bakiye).</summary>
     public decimal RequestedNet => ProductTotal - (AppliedAmount ?? 0m);
 
-    /// <summary>Son teslim edilen mesajın net tutarı; göç öncesi ya da önceki sürümün teslimiyse işin
-    /// alanlarından (kapalı işte alanlar gönderilen mesajın alanlarıdır — revizyon teslim kaydını değil
-    /// ClosedAt'ı siler).</summary>
+    /// <summary>Son teslim edilen mesajın net tutarı — donmuş teslim neti. Önceki sürümün henüz
+    /// dondurulmamış teslimi (<see cref="ClosedByLaterDelivery"/>) iş kapalıyken okunur: kapalı işte alanlar
+    /// gönderilen mesajın alanlarıdır, işi açan ya da alanlarını değiştiren her yazım önce dondurur.</summary>
     public decimal LastRequestedNet => ClosedByLaterDelivery ? RequestedNet : DeliveredNet ?? RequestedNet;
+
+    /// <summary><see cref="PaymentJobSql.FreezeDelivery"/>'nin C# karşılığı (taklit depo; ikisi aynı
+    /// kalmalı): önceki sürümün teslimi teslim kaydına geçer, neti eksik teslim kaydının neti işin şu anki
+    /// alanlarından yazılır — yazım alanları değiştirmeden ÖNCE çağrılır.</summary>
+    public PaymentJob FreezeDelivery()
+    {
+        if (ClosedByLaterDelivery) return this with { DeliveredAt = ClosedAt, DeliveredNet = RequestedNet };
+        return DeliveredAt is not null && DeliveredNet is null ? this with { DeliveredNet = RequestedNet } : this;
+    }
 
     /// <summary>Soruda "son istek" olarak gösterilecek an: sonucu yazılamamış gönderim varsa o en
     /// sonuncusudur ve anı bilinmez (null); yoksa son teslim.</summary>
@@ -470,7 +480,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + ResultGuard,
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + "State=@state, AppliedAmount=@amt, UpdatedAt=@now" + ResultGuard,
             new
             {
                 id,
@@ -487,7 +497,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + ResultGuard,
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + "State=@state, AppliedAmount=@amt, UpdatedAt=@now" + ResultGuard,
             new
             {
                 id,
@@ -562,8 +572,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            @"UPDATE PaymentJob
-              SET ProductTotal=@total, Revision=Revision+1, ApplyKey=@key,
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
+                  ProductTotal=@total, Revision=Revision+1, ApplyKey=@key,
                   AppliedAmount=NULL, State=@state, UpdatedAt=@now, ClosedAt=NULL
               WHERE Id=@id AND Revision=@expectedRevision",
             new
@@ -600,8 +610,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         // ama boş olsaydı ProductTotal'ı NULL'lamak satırı okunamaz hâle
         // getirirdi — eski toplamda kalmak tek güvenli düşüştür.
         return conn.Execute(
-            @"UPDATE PaymentJob
-              SET ProductTotal=COALESCE(PendingTotal, ProductTotal), Revision=Revision+1,
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
+                  ProductTotal=COALESCE(PendingTotal, ProductTotal), Revision=Revision+1,
                   ApplyKey=NULL, AppliedAmount=NULL, State=@state,
                   PendingTotal=NULL, ClosedAt=NULL, UpdatedAt=@now
               WHERE Id=@id AND Revision=@rev AND ApplyKey IS @key AND State=@pending",
@@ -631,7 +641,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             new { targetId, legacyId }, tx) == 1;
         if (!adoptable) return;
         conn.Execute(
-            @"UPDATE PaymentJob SET
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
                   ProductTotal  = (SELECT ProductTotal  FROM PaymentJob WHERE Id=@legacyId),
                   ApplyKey      = (SELECT ApplyKey      FROM PaymentJob WHERE Id=@legacyId),
                   AppliedAmount = (SELECT AppliedAmount FROM PaymentJob WHERE Id=@legacyId),
@@ -656,8 +666,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         // sonucu yerele taşıyor. Artırmak, uçuştaki bir cevabı bayatlatırdı —
         // oysa koşul zaten "hiç deneme yok" (ApplyKey IS NULL) diyor.
         return conn.Execute(
-            @"UPDATE PaymentJob
-              SET ApplyKey=@key, AppliedAmount=@amt, ProductTotal=@total,
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
+                  ApplyKey=@key, AppliedAmount=@amt, ProductTotal=@total,
                   State=@state, UpdatedAt=@now
               WHERE Id=@id AND ApplyKey IS NULL AND State=@created",
             new
@@ -678,8 +688,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         // ProductTotal korunur: dış iade "toplam değişti" demek değildir —
         // sıradaki tıklama aynı toplamla taze apply yapar (karar operatörün).
         return conn.Execute(
-            @"UPDATE PaymentJob
-              SET Revision=Revision+1, ApplyKey=NULL, AppliedAmount=NULL,
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
+                  Revision=Revision+1, ApplyKey=NULL, AppliedAmount=NULL,
                   State=@created, PendingTotal=NULL, ClosedAt=NULL, UpdatedAt=@now
               WHERE Id=@id AND Revision=@rev AND ApplyKey IS @key AND State=@applied",
             new

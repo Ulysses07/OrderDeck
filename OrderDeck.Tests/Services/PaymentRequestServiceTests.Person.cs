@@ -913,6 +913,38 @@ public partial class PaymentRequestServiceTests
         finally { Drop(db); }
     }
 
+    // ── Son inceleme ─────────────────────────────────────────────────────────
+
+    // RV3: önceki sürümün teslimi (yalnız ClosedAt; 300 − 100 = 200 istendi), sonra panel iadesi. İlk soru
+    // 200 der; "Evet" → R6-02 dış iade benimsemesi işi yeniden açar ve akış durur. Sıradaki soru da 200
+    // demeli: eskiden iz ClosedAt'la birlikte silinip istek sorusuz yeniden gidiyordu (göç edilmiş işte de
+    // soru işin yeni alanlarını — 300 — "istendi" diye gösteriyordu).
+    [Fact]
+    public async Task Dis_iadeden_sonra_soru_istenen_neti_gosterir_isin_yeni_alanlarini_degil()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        var job = _jobs.FindOrCreate(customer.Id, "session:s1", 300m);
+        var key = Guid.NewGuid();
+        _jobs.BeginApply(job.Id, key).Should().BeTrue();
+        _jobs.MarkApplied(job.Id, key, 0, 100m).Should().BeTrue();
+        _jobs.Close(job.Id);                                        // önceki sürümün teslimi
+        handler.TxStatusResponseJson = $$"""{"transactionId":"{{key}}","appliedAmount":100,"reversed":true}""";
+
+        var dialogs = new FakeDialogService();
+        (await EvetAsync(sut, customer, 300m, "session:s1", dialogs))
+            .Should().Be(PaymentRequestResult.BalanceUncertain, "dış iade benimsendi, akış durdu (R6-02)");
+        dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
+            .EndWith("200,00 TL istendi, tekrar gönderilsin mi?");
+
+        var sonraki = await sut.RequestPaymentAsync(customer, _ => 300m, T, "session:s1");
+
+        sonraki.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "istek gitmişti — iz yeniden açmada silinmez");
+        sonraki.Prompt!.Requests.Should().ContainSingle().Which.Amount.Should().Be(200m, "müşteriden istenen; 300 değil");
+        _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
     /// <summary>Teslim kaydı yazımı düşen depo (SQLITE_BUSY taklidi) — geri kalanı asıl depoya geçer.</summary>
     private sealed class TeslimYazimiDusenDepo(IPaymentJobStore inner) : IPaymentJobStore
     {

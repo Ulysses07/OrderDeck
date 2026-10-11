@@ -25,14 +25,17 @@
 --
 -- Nullable, varsayılansız (Deliveries/SendAttempts 0): eski satırlarda asıl kapsam bilinmiyor. Eski
 -- teslim edilmiş işler (legacy olmayan kapsamda ClosedAt dolu = mesaj ulaşmıştı; o kapsamda
--- ClosedAt'ı yalnız teslim yazar) DeliveredAt = ClosedAt ile işaretlenir; net tutarı okuyucu işin
--- kendi alanlarından hesaplar (kapalı işte o alanlar gönderilen mesajın alanlarıdır).
+-- ClosedAt'ı yalnız teslim yazar) DeliveredAt = ClosedAt ile işaretlenir ve net tutar ŞİMDİ
+-- dondurulur: kapalı işte alanlar gönderilen mesajın alanlarıdır, ama iş sonra yeniden açılabilir
+-- (revizyon, geri alma, dış iade) ve alanları değişir — okuyucu türetseydi "tekrar gönderilsin mi?"
+-- sorusu müşteriden hiç istenmemiş bir tutarı gösterirdi. Tutarlar TEXT ondalık: SQL aritmetiği
+-- REAL'e çevirip yuvarlardı; od_payment_net (SqliteSearchFunctions, C#) kayıpsız hesaplar.
 --
 -- Geri dönüş (Velopack ile önceki sürüm): önceki sürüm kolonları tanımaz ama SELECT'leri kolon adıyla
 -- okuduğu için etkilenmez; teslimde yalnız ClosedAt yazar. Bu sürüme dönünce okuyucu aynı kuralla
 -- (legacy olmayan kapsamda ClosedAt = teslim; teslim kaydından yeniyse en son teslim odur) o
--- teslimleri görür (PaymentJob.LastDeliveredAt); indirme (PaymentJobSql.DemoteToLegacy) bu izi teslim
--- kaydına geçirir — miras kapsamında kural artık geçmez.
+-- teslimleri görür (PaymentJob.LastDeliveredAt); işi yeniden açan, tutarını değiştiren ya da indiren
+-- her yazım (PaymentJobSql.FreezeDelivery) bu izi netiyle teslim kaydına geçirir.
 
 ALTER TABLE PaymentJob ADD COLUMN PriorScopeKey TEXT;
 ALTER TABLE PaymentJob ADD COLUMN DeliveredAt INTEGER;
@@ -40,7 +43,8 @@ ALTER TABLE PaymentJob ADD COLUMN DeliveredNet TEXT;
 ALTER TABLE PaymentJob ADD COLUMN Deliveries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE PaymentJob ADD COLUMN SendAttempts INTEGER NOT NULL DEFAULT 0;
 
-UPDATE PaymentJob SET DeliveredAt = ClosedAt, Deliveries = 1, SendAttempts = 1
+UPDATE PaymentJob SET DeliveredAt = ClosedAt, DeliveredNet = od_payment_net(ProductTotal, AppliedAmount),
+                      Deliveries = 1, SendAttempts = 1
  WHERE ClosedAt IS NOT NULL AND ScopeKey <> 'legacy' AND ScopeKey NOT LIKE 'legacy:%';
 
 UPDATE _meta SET SchemaVersion = 47 WHERE Id = 1;
