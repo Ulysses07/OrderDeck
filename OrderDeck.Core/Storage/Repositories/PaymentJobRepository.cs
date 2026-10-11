@@ -34,7 +34,8 @@ public static class PaymentJobState
 
 /// <summary>Bir "Ödeme iste" satışının kalıcı kimliği ve düşüm sonucu.
 /// Fiziksel anahtar: (CustomerId, ScopeKey) — "session:{id}" | "cumulative" | "legacy".
-/// İşler ASLA silinmez; teslimatta ClosedAt dolar.
+/// İşler ASLA silinmez; teslimatta teslim kaydı (<see cref="DeliveredAt"/>) yazılır ve sonucu
+/// kesin iş kapanır (ClosedAt).
 ///
 /// <para>Mantıksal kimlik (kişi, ScopeKey)'dir: iş, sahip satırının (<see cref="CustomerId"/> — para
 /// anahtarı, sunucuya giden WpfCustomerId) kişisindeki bütün üyeler taranarak bulunur
@@ -55,7 +56,15 @@ public sealed record PaymentJob(
     /// durumunda dolu — geri alma kesinleşince geçilecek toplam.</summary>
     decimal? PendingTotal = null,
     /// <summary>Göç 047: iş miras kapsamına indirildiyse ASIL kapsamı (<see cref="PaymentJobSql.DemoteToLegacy"/>).</summary>
-    string? PriorScopeKey = null)
+    string? PriorScopeKey = null,
+    /// <summary>Göç 047: SON teslimin anı — <see cref="IPaymentJobStore.MarkDelivered"/> yazar, hiçbir
+    /// yol silmez (revizyon, geri alma, indirme ClosedAt'ı siler; bunu değil).</summary>
+    long? DeliveredAt = null,
+    /// <summary>Göç 047: son teslim edilen mesajdaki net tutar. Göç öncesi teslimlerde boş
+    /// (<see cref="LastRequestedNet"/> işin alanlarından hesaplar).</summary>
+    decimal? DeliveredNet = null,
+    /// <summary>Göç 047: teslim sayısı — onay belirtecine girer (aynı saniyedeki iki gönderimi de ayırır).</summary>
+    int Deliveries = 0)
 {
     /// <summary>İş para taşıyor mu — <see cref="PaymentJobSql.CarriesMoney"/>'nin C# karşılığı
     /// (ikisi aynı kalmalı).</summary>
@@ -63,11 +72,15 @@ public sealed record PaymentJob(
         State is PaymentJobState.ApplyUncertain or PaymentJobState.ReversePending
         || (State == PaymentJobState.Applied && (AppliedAmount is null || AppliedAmount > 0m));
 
-    /// <summary>Mesaj müşteriye ulaştı (teslim edildi).</summary>
-    public bool IsDelivered => ClosedAt is not null;
+    /// <summary>Bu iş için müşteriye en az bir mesaj ulaştı (teslim edildi).</summary>
+    public bool IsDelivered => DeliveredAt is not null;
 
     /// <summary>Müşteriden istenen net tutar (kargo dahil toplam − düşülen bakiye).</summary>
     public decimal RequestedNet => ProductTotal - (AppliedAmount ?? 0m);
+
+    /// <summary>Son teslim edilen mesajın net tutarı; göç öncesi teslimde işin alanlarından (o işte
+    /// alanlar gönderilen mesajın alanlarıdır — revizyon teslim kaydını değil ClosedAt'ı siler).</summary>
+    public decimal LastRequestedNet => DeliveredNet ?? RequestedNet;
 }
 
 /// <summary>R2-01..04: ödeme işi yaşam döngüsünün disk katmanı. Tüm geçişler
@@ -87,10 +100,12 @@ public interface IPaymentJobStore
     /// <item>Üye kümesi işlemin İÇİNDE <see cref="PersonJobRequest.LeasedId"/>'den yeniden okunur;
     ///   anahtar tutmazsa <see cref="PersonJobStatus.MembershipChanged"/> (hiçbir şey yazılmaz).</item>
     /// <item>Üyelerin bu kapsamdaki işleri okunur — kapalılar dahil (tekrar paylaşım), miras kapsamları
-    ///   hariç. İş yoksa sahip satırda açılır.</item>
-    /// <item>İş varsa <see cref="PersonScopePlan"/>: bir kalır, ötekiler ortak
-    ///   <see cref="PaymentJobSql.DemoteToLegacy"/> ile indirilir. Soru gerekiyorsa
-    ///   (<see cref="PersonScopePlan.NeedsConfirmation"/>) ve belirteci onaylanmamışsa
+    ///   hariç. Ayrıca asıl kapsamı bu kapsam olan miras işler (<see cref="PaymentJob.PriorScopeKey"/>):
+    ///   açık olanlar (uzlaştırma bekliyor) ve teslim edilmiş olanlar — kalan iş olamazlar, yalnız
+    ///   sorunun kararına ve metnine girerler.</item>
+    /// <item><see cref="PersonScopePlan"/>: bir iş kalır, ötekiler ortak
+    ///   <see cref="PaymentJobSql.DemoteToLegacy"/> ile indirilir; hiç iş yoksa sahip satırda açılır.
+    ///   Soru gerekiyorsa (<see cref="PersonScopePlan.NeedsConfirmation"/>) ve belirteci onaylanmamışsa
     ///   <see cref="PersonJobStatus.ConfirmationRequired"/> — hiçbir şey yazılmaz.</item>
     /// </list>
     /// Sunucu çağrısı yok; kararlar yerel. Kalan iş sahibini korur (para anahtarı değişmez).
@@ -144,8 +159,17 @@ public interface IPaymentJobStore
     /// güncel bir sonucu "bilinmiyor"a düşürmesi de aynı sınıftan hatadır.</summary>
     bool MarkUncertain(string id, Guid? expectedKey, int expectedRevision);
 
-    /// <summary>Mesaj müşteriye ulaştı — iş kapanır. Idempotent (ilk zaman korunur).</summary>
+    /// <summary>İşi kapatır (miras uzlaştırması, GUID olmayan miras). Idempotent (ilk zaman korunur).
+    /// Teslim kaydı YAZMAZ — mesaj teslimi <see cref="MarkDelivered"/>'dır.</summary>
     void Close(string id);
+
+    /// <summary>Mesaj müşteriye ulaştı: teslim kaydı her teslimde yenilenir — DeliveredAt = şimdi,
+    /// DeliveredNet = <paramref name="requestedNet"/>, Deliveries + 1 (tekrar paylaşımda da: "tekrar
+    /// gönderilsin mi?" sorusu SON gönderimi gösterir, eski onay belirteci tutmaz). Sonucu kesin iş
+    /// (applied / no_balance) ayrıca kapanır (ilk kapanış zamanı korunur). Çevrimdışı gönderilen
+    /// taze (created) iş AÇIK kalır: kapalı işe anahtar yazılmaz (U8), onaylı sonraki tıklama onu
+    /// çevrimiçi düşümle sürdürür.</summary>
+    void MarkDelivered(string id, decimal requestedNet);
 
     /// <summary>Revizyon: yeni toplam + yeni anahtar + Revision+1, eski sonuç
     /// sıfırlanır, durum apply_uncertain. Yalnız Revision == expectedRevision
@@ -185,7 +209,10 @@ public interface IPaymentJobStore
     ///
     /// <para>İkinci kat koruma: iki iş AYNI sahip satıra (CustomerId) ait değilse hiçbir şey yazılmaz.
     /// Başka satıra ait düşüm benimsenseydi sunucuya o anahtarla başka WpfCustomerId gider (içerik
-    /// çakışması — iş kalıcı belirsiz kalır) ve legacy kapatıldığı için düşüm hiç geri alınmazdı.</para></summary>
+    /// çakışması — iş kalıcı belirsiz kalır) ve legacy kapatıldığı için düşüm hiç geri alınmazdı.
+    /// Asıl kapsamı bilinen (<see cref="PaymentJob.PriorScopeKey"/>) miras iş de yalnız AYNI kapsamın
+    /// işine benimsenir: başka yayının düşümü bu satışa taşınıp revizyonla geri alınsaydı o yayının
+    /// ürünleri için kullanılan bakiye iade edilip burada yeniden harcanırdı.</para></summary>
     void AdoptLegacyResult(string targetId, string legacyId);
 
     /// <summary>R4-03: sunucuda bu kapsam için duran düşümü TAZE işe benimsetir
@@ -267,7 +294,16 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 SelectSql + " WHERE CustomerId IN @ids AND ScopeKey=@scopeKey",
                 new { ids, scopeKey = request.ScopeKey }, tx)
             .Select(Map).ToList();
+        var legacies = conn.Query<Row>(
+                SelectSql + " WHERE CustomerId IN @ids AND " + ScopeLegacyCondition,
+                new { ids, scopeKey = request.ScopeKey }, tx)
+            .Select(Map).ToList();
         var now = Now();
+
+        var plan = jobs.Count + legacies.Count == 0 ? null : PersonScopePlan.For(jobs, legacies, request.OwnerId);
+        if (plan is { NeedsConfirmation: true } && request.ConfirmedTokens?.Contains(plan.Token) != true)
+            return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
+                Array.Empty<DemotedJob>(), plan);                      // Dispose: hiçbir şey yazılmadı
 
         if (jobs.Count == 0)
         {
@@ -287,20 +323,22 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             return PersonJob.Ready(created, Array.Empty<DemotedJob>());
         }
 
-        var plan = PersonScopePlan.For(jobs, request.OwnerId);
-        if (plan.NeedsConfirmation && request.ConfirmedTokens?.Contains(plan.Token) != true)
-            return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
-                Array.Empty<DemotedJob>(), plan);                  // Dispose: hiçbir şey yazılmadı
-
-        var demoted = new List<DemotedJob>(plan.Losers.Count);
+        var demoted = new List<DemotedJob>(plan!.Losers.Count);
         foreach (var loser in plan.Losers)
         {
             conn.Execute(PaymentJobSql.DemoteToLegacy + " WHERE Id=@id", new { id = loser.Id, now }, tx);
             demoted.Add(PersonScopePlan.Demotion(loser));
         }
         write.Commit();
-        return PersonJob.Ready(plan.Survivor, demoted);
+        return PersonJob.Ready(plan.Survivor!, demoted);
     }
+
+    /// <summary>Asıl kapsamı <c>@scopeKey</c> olan miras işler: açık olanlar (uzlaştırma bekliyor) ve
+    /// teslim edilmiş olanlar (bu kapsama istek gitmiş). Kapalı ve teslim edilmemiş miras işin söyleyecek
+    /// bir şeyi yok.</summary>
+    private const string ScopeLegacyCondition =
+        "PriorScopeKey=@scopeKey AND (ScopeKey='legacy' OR ScopeKey LIKE 'legacy:%') " +
+        "AND (ClosedAt IS NULL OR DeliveredAt IS NOT NULL)";
 
     private const string InsertSql =
         @"INSERT OR IGNORE INTO PaymentJob
@@ -444,6 +482,24 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             new { id, now = Now() });
     }
 
+    public void MarkDelivered(string id, decimal requestedNet)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            @"UPDATE PaymentJob
+              SET DeliveredAt=@now, DeliveredNet=@net, Deliveries=Deliveries+1, UpdatedAt=@now,
+                  ClosedAt=CASE WHEN State IN (@applied, @noBalance) THEN COALESCE(ClosedAt,@now) ELSE ClosedAt END
+              WHERE Id=@id",
+            new
+            {
+                id,
+                net = Dec(requestedNet),
+                now = Now(),
+                applied = PaymentJobState.Applied,
+                noBalance = PaymentJobState.NoBalance,
+            });
+    }
+
     public bool BeginRevision(string id, decimal newProductTotal, Guid newApplyKey, int expectedRevision)
     {
         using var conn = _factory.Open();
@@ -507,13 +563,15 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
         var now = Now();
-        // İkinci kat koruma (servis zaten yalnız aynı sahipte çağırır): başka satıra ait düşüm
-        // benimsenmez ve legacy de KAPATILMAZ — kapatmak geri alınmamış düşümü gömerdi.
-        var sameOwner = conn.ExecuteScalar<long>(
+        // İkinci kat koruma (servis zaten yalnız aynı sahipte ve aynı kapsamda çağırır): başka satıra
+        // ya da başka kapsama ait düşüm benimsenmez ve legacy de KAPATILMAZ — kapatmak geri alınmamış
+        // düşümü gömerdi.
+        var adoptable = conn.ExecuteScalar<long>(
             @"SELECT COUNT(*) FROM PaymentJob t JOIN PaymentJob l ON l.Id=@legacyId
-              WHERE t.Id=@targetId AND t.CustomerId=l.CustomerId",
+              WHERE t.Id=@targetId AND t.CustomerId=l.CustomerId
+                AND (l.PriorScopeKey IS NULL OR l.PriorScopeKey=t.ScopeKey)",
             new { targetId, legacyId }, tx) == 1;
-        if (!sameOwner) return;
+        if (!adoptable) return;
         conn.Execute(
             @"UPDATE PaymentJob SET
                   ProductTotal  = (SELECT ProductTotal  FROM PaymentJob WHERE Id=@legacyId),
@@ -579,7 +637,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
 
     private const string SelectSql =
         @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
-                 AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey
+                 AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey,
+                 DeliveredAt, DeliveredNet, Deliveries
           FROM PaymentJob";
 
     private static PaymentJob Map(Row r) => new(
@@ -599,7 +658,10 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         r.PendingTotal is null
             ? null
             : decimal.Parse(r.PendingTotal, CultureInfo.InvariantCulture),
-        r.PriorScopeKey);
+        r.PriorScopeKey,
+        r.DeliveredAt,
+        r.DeliveredNet is null ? null : decimal.Parse(r.DeliveredNet, CultureInfo.InvariantCulture),
+        r.Deliveries);
 
     private sealed class Row
     {
@@ -616,5 +678,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         public long? ClosedAt { get; init; }
         public string? PendingTotal { get; init; }
         public string? PriorScopeKey { get; init; }
+        public long? DeliveredAt { get; init; }
+        public string? DeliveredNet { get; init; }
+        public int Deliveries { get; init; }
     }
 }

@@ -186,7 +186,7 @@ public abstract class PaymentJobStoreContractTests
         var key = Guid.NewGuid();
         store.BeginApply(job.Id, key).Should().BeTrue();
         store.MarkApplied(job.Id, key, 0, applied).Should().BeTrue();
-        if (delivered) store.Close(job.Id);
+        if (delivered) store.MarkDelivered(job.Id, 300m - applied);
         return store.Get(job.Id)!;
     }
 
@@ -248,10 +248,52 @@ public abstract class PaymentJobStoreContractTests
         var token = store.FindOrCreateForPerson(Req(person)).Plan!.Token;
 
         store.BeginRevision(job.Id, 120m, Guid.NewGuid(), job.Revision).Should().BeTrue();
-        store.Close(job.Id);
+        store.MarkDelivered(job.Id, 120m);
 
         store.FindOrCreateForPerson(Req(person, token: token)).Status
             .Should().Be(PersonJobStatus.ConfirmationRequired, "operatör bu durumu görmedi");
+    }
+
+    // Eşzamanlılık incelemesi: tekrar paylaşım (aynı tutar) finansal hiçbir şey yazmaz — eskiden işin
+    // parmak izi değişmiyordu (Close ilk ClosedAt'ı korur) ve teslimden ÖNCE alınmış ikinci onay hâlâ
+    // tutuyordu: iki çekmeceden iki "Evet" aynı soruyla iki ücretli mesaj daha gönderiyordu. Her teslim
+    // teslim kaydını yeniler; aynı saniyedeki iki teslimi de sayaç ayırır.
+    [Fact]
+    public void FindOrCreateForPerson_tekrar_paylasimdan_once_alinan_belirtec_tutmaz()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 1);
+        var job = Applied(store, person.LeasedId, 40m, delivered: true);
+        var ilkTeslim = store.Get(job.Id)!;
+        var token = store.FindOrCreateForPerson(Req(person)).Plan!.Token;
+        store.FindOrCreateForPerson(Req(person)).Plan!.Token.Should().Be(token, "durum değişmedikçe belirteç aynı");
+
+        store.MarkDelivered(job.Id, 260m);                     // öbür çekmecenin onayıyla tekrar gönderildi
+
+        var sonra = store.Get(job.Id)!;
+        sonra.Deliveries.Should().Be(ilkTeslim.Deliveries + 1);
+        sonra.DeliveredAt.Should().BeGreaterThanOrEqualTo(ilkTeslim.DeliveredAt!.Value, "soru SON gönderimi gösterir");
+        sonra.ClosedAt.Should().Be(ilkTeslim.ClosedAt, "bakiye yaşam döngüsünün kapanışı değişmez");
+        var soru = store.FindOrCreateForPerson(Req(person, token: token));
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired, "bayat onay ikinci bir gönderime izin vermez");
+        soru.Plan!.Token.Should().NotBe(token);
+    }
+
+    // Çevrimdışı gönderilen taze iş: teslim kaydı yazılır ama iş AÇIK kalır — kapalı işe anahtar
+    // yazılmaz (U8); onaylı sonraki tıklama çevrimiçi düşümle sürdürür.
+    [Fact]
+    public void MarkDelivered_taze_isi_kapatmaz_teslimi_yazar()
+    {
+        var store = CreateStore();
+        var job = store.FindOrCreate("c1", "session:s1", 250m);
+
+        store.MarkDelivered(job.Id, 250m);
+
+        var sonra = store.Get(job.Id)!;
+        sonra.IsDelivered.Should().BeTrue();
+        sonra.DeliveredNet.Should().Be(250m);
+        sonra.ClosedAt.Should().BeNull("taze iş açık kalır");
+        store.BeginApply(job.Id, Guid.NewGuid()).Should().BeTrue("onaylı sonraki tıklama düşüm yapabilir");
     }
 
     [Fact] // Kalan iş: para taşıyan önce — sahibin el değmemiş işi tercih edilmez; parasız kaybeden sessizce kapanır
@@ -304,7 +346,10 @@ public abstract class PaymentJobStoreContractTests
 
         soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
         soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Merge);
-        soru.Plan.PromptJobs.Select(j => j.Id).Should().BeEquivalentTo(new[] { eski.Id, belirsiz.Id });
+        soru.Plan.PromptJobs.Select(j => j.Id).Should().Equal(new[] { eski.Id },
+            "yalnız teslim edilmiş istek 'gitmiş' sayılır");
+        soru.Plan.UnsentDeductions.Should().Be(1, "belirsiz düşüm gönderilmedi — ayrıca söylenir");
+        soru.Plan.RefundsToOtherRow.Should().BeTrue("kaybedenin düşümü kalan işin satırında değil");
         store.GetOpenLegacies(person.MemberIds).Should().BeEmpty("onaydan önce indirme yok");
 
         var onay = store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token));
@@ -418,6 +463,90 @@ public abstract class PaymentJobStoreContractTests
 
         store.Get(hedef.Id)!.ApplyKey.Should().BeNull("başka satırın anahtarı benimsenmez");
         store.Get(b.Id)!.ClosedAt.Should().BeNull("geri alınmamış düşüm gömülmez");
+    }
+
+    /// <summary>Kişi birleştirmesiyle <paramref name="kaybeden"/>'i miras kapsamına indirir (onaylı).
+    /// Kalan iş sahibinin teslim edilmiş, para taşıyan işi.</summary>
+    private static PaymentJob Indir(IPaymentJobStore store, PaymentPerson person)
+    {
+        var plan = store.FindOrCreateForPerson(Req(person)).Plan!;
+        var r = store.FindOrCreateForPerson(Req(person, token: plan.Token));
+        r.Status.Should().Be(PersonJobStatus.Ready);
+        return store.Get(r.Demoted.Single().JobId)!;
+    }
+
+    // Para incelemesi (kritik): asıl kapsamı bilinen miras iş yalnız KENDİ kapsamının işine benimsenir —
+    // başka yayının düşümü bu satışa taşınıp revizyonla geri alınsaydı o yayının ürünleri için
+    // kullanılan bakiye iade edilip burada yeniden harcanırdı.
+    [Fact]
+    public void AdoptLegacyResult_baska_kapsamin_isine_benimsenmez_kendi_kapsaminda_benimsenir()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        Applied(store, person.OwnerId!, 10m, delivered: true);
+        Applied(store, NotOwner(person), 20m, delivered: false);
+        var miras = Indir(store, person);
+        miras.PriorScopeKey.Should().Be("session:s1");
+
+        var baskaYayin = store.FindOrCreate(miras.CustomerId, "session:s2", 100m);
+        store.AdoptLegacyResult(baskaYayin.Id, miras.Id);
+        store.Get(baskaYayin.Id)!.ApplyKey.Should().BeNull("başka yayının düşümü bu satışa taşınmaz");
+        store.Get(miras.Id)!.ClosedAt.Should().BeNull("geri alınmamış düşüm gömülmez");
+
+        var ayniYayin = store.FindOrCreate(miras.CustomerId, "session:s1", 100m);
+        store.AdoptLegacyResult(ayniYayin.Id, miras.Id);
+        store.Get(ayniYayin.Id)!.ApplyKey.Should().Be(miras.ApplyKey, "kendi kapsamının taze işine benimsenir");
+        store.Get(miras.Id)!.ClosedAt.Should().NotBeNull();
+    }
+
+    // Test/arayüz incelemesi: indirilen işin teslim izi korunur. Kapalı ama teslim edilmiş miras iş
+    // (parasız kaybeden) kapsamın sıradaki tıklamasında "istek gitti" bilgisidir — kalan iş hiç teslim
+    // edilmemiş olsa da tekrar göndermeden önce sorulur.
+    [Fact]
+    public void FindOrCreateForPerson_kapsamin_teslim_edilmis_miras_isi_tekrar_gondermeyi_sordurur()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        Applied(store, person.OwnerId!, 10m, delivered: false);          // kalan: para taşıyor, gitmedi
+        var parasiz = store.FindOrCreate(NotOwner(person), "session:s1", 100m);
+        store.MarkNoBalance(parasiz.Id, null, 0).Should().BeTrue();
+        store.MarkDelivered(parasiz.Id, 100m);                          // gitti, parasız → kapanarak iner
+        var miras = Indir(store, person);
+        miras.Id.Should().Be(parasiz.Id);
+        miras.ClosedAt.Should().NotBeNull();
+        miras.IsDelivered.Should().BeTrue("teslim izi indirmede korunur");
+
+        var soru = store.FindOrCreateForPerson(Req(person));
+
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Resend);
+        soru.Plan.PromptJobs.Should().ContainSingle().Which.Id.Should().Be(miras.Id);
+        store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token)).Status.Should().Be(PersonJobStatus.Ready);
+        store.FindOrCreateForPerson(Req(person, scope: "session:s2")).Status
+            .Should().Be(PersonJobStatus.Ready, "başka kapsamın mirası bu kapsamda sorulmaz");
+    }
+
+    // Uzlaşmamış (açık) ve müşteriye gitmiş miras iş kapsamın tıklamasında birleştirme sorusunu tetikler
+    // (geri alınacak); gitmemiş açık miras sorusuz uzlaşır.
+    [Fact]
+    public void FindOrCreateForPerson_acik_teslim_edilmis_miras_birlestirme_sordurur()
+    {
+        var store = CreateStore();
+        var person = NewPerson(store, 2);
+        Applied(store, person.OwnerId!, 10m, delivered: true);
+        Applied(store, NotOwner(person), 20m, delivered: true);
+        var miras = Indir(store, person);
+        miras.ClosedAt.Should().BeNull("para taşıyan kaybeden açık kalır");
+
+        var soru = store.FindOrCreateForPerson(Req(person));
+
+        soru.Status.Should().Be(PersonJobStatus.ConfirmationRequired);
+        soru.Plan!.Kind.Should().Be(PersonScopePromptKind.Merge);
+        soru.Plan.PendingLegacies.Should().ContainSingle().Which.Id.Should().Be(miras.Id);
+        soru.Plan.PromptJobs.Should().HaveCount(2, "iki istek de müşteriye gitti");
+        var onay = store.FindOrCreateForPerson(Req(person, token: soru.Plan.Token));
+        onay.Status.Should().Be(PersonJobStatus.Ready);
+        onay.Demoted.Should().BeEmpty("miras iş yeniden indirilmez; uzlaştırma servisin işi");
     }
 }
 

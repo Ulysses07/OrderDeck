@@ -24,12 +24,16 @@ internal static class PaymentJobSql
     ///   kılar (UX_PaymentJob_Scope çakışmaz). Adı hiçbir yol ayrıştırmaz (miras taraması
     ///   <c>LIKE 'legacy:%'</c>, yeniden oynatma <c>ApplyKey</c> kolonunu okur).</item>
     /// <item><c>PriorScopeKey</c> (göç 047): indirilen işin ASIL kapsamı — banka beklentisi (W2)
-    ///   kaybeden işin beklentisini bununla iptal eder. İlk indirme korunur.</item>
+    ///   kaybeden işin beklentisini bununla iptal eder; miras uzlaştırması onu yalnız bu kapsamın
+    ///   tıklamasında ele alır. İlk indirme korunur.</item>
     /// <item>Para taşıyan iş AÇIK bırakılır (<c>ClosedAt = NULL</c>, kapalı olsa bile): miras
-    ///   uzlaştırması (<c>PaymentRequestService</c>) onu kendi müşteri Id'siyle kesinleştirir ve
-    ///   fazla düşümü geri alır. Eskiden taşıma anahtarlı ama KAPALI işi kapalı bırakıyordu; miras
-    ///   taraması yalnız açık işlere baktığı için o düşüm hiç geri alınmıyordu.</item>
+    ///   uzlaştırması (<c>PaymentRequestService</c>) onu asıl kapsamının sıradaki onaylı tıklamasında
+    ///   kendi müşteri Id'siyle kesinleştirir ve fazla düşümü geri alır. Eskiden taşıma anahtarlı ama
+    ///   KAPALI işi kapalı bırakıyordu; miras taraması yalnız açık işlere baktığı için o düşüm hiç
+    ///   geri alınmıyordu.</item>
     /// <item>Gerisi (parasız) kapanır: geri alınacak bir şey yok.</item>
+    /// <item>Teslim kaydına (<c>DeliveredAt</c>/<c>DeliveredNet</c>/<c>Deliveries</c>) DOKUNULMAZ:
+    ///   indirilen işin isteği müşteriye gitmişse kapsamın sıradaki tıklaması bunu görüp sorar.</item>
     /// </list>
     /// </summary>
     public const string DemoteToLegacy =

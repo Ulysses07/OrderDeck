@@ -127,6 +127,12 @@ public partial class PaymentRequestServiceTests
     // birleşince birleştirme SESSİZ olamaz. Bir kez sorulur; ret → hiçbir şey değişmez. Onayda kaybeden
     // kendi sahip satırıyla tekrar oynatılıp geri alınır, kalan iş kişi toplamına revize edilir; kişiye
     // tek düzeltilmiş mesaj gider.
+    //
+    // Bakiye SATIR BAŞINA (sunucu gibi): a'da 50, c'de 50. Ayrı kartken iki istek kendi ürünleri içindi
+    // (50 + 150 = 200 istendi, iki bakiye de kullanıldı). Birleştirme kaybedenin düşümünü KENDİ satırına
+    // iade eder; kalan işin revizyonu onu kullanamaz → 300 − 50 = 250 istenir, 50 a'da kalır. Bu, kabul
+    // edilmiş tasarımın sonucu (kişi düzeyinde bakiye sunucu kararı); soru metni bunu "fazladan düşülen"
+    // diye gizlemez, iadenin başka hesaba döndüğünü söyler — kararı operatör verir.
     [Fact]
     public async Task Birlesen_kisinin_parali_iki_isi_sorulur_onayda_kaybeden_iade_edilir_kalan_revize_edilir()
     {
@@ -136,8 +142,7 @@ public partial class PaymentRequestServiceTests
             var a = Uye(db, "kisi.a");
             var c = Uye(db, "kisi.c");
             var (sut, handler) = KisiSut(db);
-            handler.PreviewBalance = 50m;
-            handler.CapAppliedToRequest = true;
+            handler.RowBalances = new() { [G(a)] = 50m, [G(c)] = 50m };
 
             (await sut.OpenWhatsAppAsync(a, 100m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
             (await sut.OpenWhatsAppAsync(c, 200m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
@@ -153,8 +158,11 @@ public partial class PaymentRequestServiceTests
                 sut.RequestPaymentAsync(a, _ => 300m, T, "session:s1", t));
             red.Result.Should().Be(PaymentRequestResult.MergeRequired);
             hayir.Confirmations.Should().ContainSingle().Which.Message.Should()
-                .MatchRegex(@"bu yayın için 2 istek gitmiş \((50 ₺, 150 ₺|150 ₺, 50 ₺)\)", "istenen netler: 100 − 50, 200 − 50")
-                .And.Contain("Fazladan düşülen bakiye iade edilir");
+                .MatchRegex(@"bu yayın için 2 istek gitmiş \((50,00 TL, 150,00 TL|150,00 TL, 50,00 TL)\)",
+                    "istenen netler: 100 − 50, 200 − 50")
+                .And.Contain("Önceki düşümler iade edilir")
+                .And.Contain("iade o hesaba döner, bu istekte kullanılmaz", "düşümler farklı satırlarda")
+                .And.NotContain("Fazladan", "ayrı ürünler için yapılmış düşüm fazla değildir");
             Isler(db, "session:s1").Should().HaveCount(2);
             handler.ReverseCalls.Should().BeEmpty();
             handler.AppliedBalanceBodies.Should().HaveCount(applySayisi);
@@ -186,7 +194,11 @@ public partial class PaymentRequestServiceTests
                 "kaybedenin düşümü iade edildi; kalanın eski düşümü revizyonla geri alındı");
 
             _launcher.LaunchedUrls.Should().HaveCount(mesajlar + 1, "kişiye tek düzeltilmiş mesaj");
-            _launcher.LaunchedUrls[^1].Should().Contain("250%2C00", "300 − 50");
+            _launcher.LaunchedUrls[^1].Should().Contain("250%2C00",
+                "300 − 50: kalan iş yalnız kendi satırının bakiyesini kullanabilir");
+            handler.RowBalances[Guid.ParseExact(kaybeden.CustomerId, "N")].Should().Be(50m,
+                "kaybedenin iadesi kendi satırında kalır (soruda söylenen)");
+            handler.RowBalances[Guid.ParseExact(kalan.CustomerId, "N")].Should().Be(0m);
         }
         finally { Drop(db); }
     }
@@ -539,6 +551,212 @@ public partial class PaymentRequestServiceTests
             var job = Isler(db, "session:s1").Should().ContainSingle().Subject;
             job.CustomerId.Should().Be(a.Id);
             job.ApplyKey.Should().Be(txA);
+        }
+        finally { Drop(db); }
+    }
+
+    // ── İnceleme turu 1 ──────────────────────────────────────────────────────
+
+    // Eşzamanlılık: çekmeceler modal değil — aynı kişiye iki girişten (arama çekmecesi, rapor) aynı
+    // "tekrar gönderilsin mi?" sorusu açılabilir, ikisi de aynı belirteci taşır. Birine "Evet" denip
+    // tekrar gönderildikten sonra öbürünün "Evet"i ESKİ duruma verilmiş onaydır: yeniden sorulur, soru
+    // son gönderimin saatini gösterir, mesaj gitmez. Eskiden tekrar paylaşım işin parmak izini
+    // değiştirmiyordu (finansal yazım yok, Close ilk ClosedAt'ı koruyordu) → üçüncü ücretli mesaj.
+    [Fact]
+    public async Task Tekrar_paylasimdan_once_alinan_ikinci_onay_yeniden_sorulur_son_gonderimi_gosterir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+        var ilkTeslim = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();   // ilk istek bir saat önce gitmiş
+        _jobs.Seed(_jobs.Snapshot.Single() with { DeliveredAt = ilkTeslim });
+
+        Task<PaymentRequestOutcome> Iste(IReadOnlySet<string>? tokens = null)
+            => sut.RequestPaymentAsync(customer, _ => 250m, T, "session:s1", tokens);
+        var cekmece = await Iste();
+        var rapor = await Iste();
+        cekmece.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        rapor.Prompt!.Token.Should().Be(cekmece.Prompt!.Token, "iki soru aynı durumu gösteriyor");
+        cekmece.Prompt.Requests.Single().At.Should().Be(DateTimeOffset.FromUnixTimeSeconds(ilkTeslim));
+
+        (await Iste(new HashSet<string> { rapor.Prompt.Token })).Result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().HaveCount(2);
+
+        var bayatOnay = await Iste(new HashSet<string> { cekmece.Prompt.Token });
+
+        bayatOnay.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "onay tekrar gönderimden önceki duruma verildi");
+        bayatOnay.Prompt!.Token.Should().NotBe(cekmece.Prompt.Token);
+        bayatOnay.Prompt.Requests.Single().At.Should().BeAfter(DateTimeOffset.FromUnixTimeSeconds(ilkTeslim).AddMinutes(30),
+            "soru SON gönderimin saatini gösterir");
+        _launcher.LaunchedUrls.Should().HaveCount(2, "bayat onayla mesaj gitmez");
+        handler.AppliedBalanceBodies.Should().ContainSingle();
+    }
+
+    // Çevrimdışı (lisans çözülemiyor) gönderilen istek de teslim edilmiştir: iş taze (created) kalır ama
+    // teslim kaydı yazılır. İkinci tıklama "tekrar gönderilsin mi?" diye sorar — çevrimdışıyken de,
+    // sunucu döndükten sonra da. Eskiden iş açık ve "teslim edilmemiş" kalıyordu: ikinci mesaj sorusuz
+    // ve sunucu döndüyse düşümlü (farklı tutarla) gidiyordu.
+    [Fact]
+    public async Task Cevrimdisi_gonderilen_istek_sonraki_tiklamada_sorulur_cevrimiciye_donuste_de()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        handler.ThrowTimeoutOnLicenses = true;
+        var customer = MakeCustomer(Telefon, id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+        var job = _jobs.Snapshot.Single();
+        job.State.Should().Be(PaymentJobState.Created);
+        job.IsDelivered.Should().BeTrue("mesaj müşteriye ulaştı");
+        job.ClosedAt.Should().BeNull("taze iş açık kalır — onaylı sonraki tıklama düşüm yapabilmeli");
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.AlreadyRequested, "çevrimdışı ikinci tıklama");
+
+        handler.ThrowTimeoutOnLicenses = false;
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.AlreadyRequested, "sunucu döndü — yine sorulur");
+        _launcher.LaunchedUrls.Should().ContainSingle();
+        handler.AppliedBalanceBodies.Should().BeEmpty();
+
+        var dialogs = new FakeDialogService();
+        (await EvetAsync(sut, customer, 250m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle().Which.Message.Should().Contain("250,00 TL istendi");
+        handler.AppliedBalanceBodies.Should().ContainSingle("onaylı çevrimiçi tıklama düşümü yapar");
+        _launcher.LaunchedUrls.Should().HaveCount(2);
+        _launcher.LaunchedUrls[^1].Should().Contain("150%2C00", "250 − 100");
+    }
+
+    // Para incelemesi (kritik), yol 1: S1'de aynı insan iki satırda — x (kopya) 100 ₺ bakiyeyle
+    // ödendi (mesaj 0 ₺), y (asıl) bakiyesiz 200 ₺. Taşıma x'in teslim edilmiş işini açık mirasa
+    // indiriyor (asıl kapsamı S1). S2'deki tıklama o düşümü ELLEMEMELİ: eskiden S2'nin taze işine
+    // benimsenip revizyonla geri alınıyor, S1 ürünlerinin bakiye ödemesi iade edilip S2'de yeniden
+    // harcanıyordu (yayıncı 100 ₺ kaybı). Mirası kendi kapsamının tıklaması uzlaştırır: önce sorar
+    // (istek müşteriye gitmişti), sonra geri alır ve kalan işi kişinin S1 toplamına revize eder.
+    [Fact]
+    public async Task Tasinan_teslim_edilmis_S1_dususmu_S2_tiklamasinda_ellenmez_S1_tiklamasinda_uzlasir()
+    {
+        var db = FileDb();
+        try
+        {
+            var x = Uye(db, "kisi.x");                      // kopya (başka platform yazımı)
+            var y = Uye(db, "Kisi.X");                      // asıl kayıt
+            var (sut, handler) = KisiSut(db);
+            handler.RowBalances = new() { [G(y)] = 100m };
+            handler.CanonicalOf = id => id == G(x) ? G(y) : id;   // sunucu x'i y'nin kopyası biliyor (A5b)
+
+            (await sut.OpenWhatsAppAsync(x, 100m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            (await sut.OpenWhatsAppAsync(y, 200m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            var copyKey = Isler(db, "session:s1").Single(j => j.CustomerId == x.Id).ApplyKey!.Value;
+            db.Sync.RekeyToLocal(x.Id, y.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var miras = db.Jobs.GetOpenLegacies(y.Id).Should().ContainSingle().Subject;
+            miras.PriorScopeKey.Should().Be("session:s1");
+
+            // S2: başka yayının düşümü ne bloklar ne benimsenir ne geri alınır.
+            (await sut.OpenWhatsAppAsync(y, 150m, T, "session:s2")).Should().Be(PaymentRequestResult.Opened);
+            handler.ReverseCalls.Should().BeEmpty("S1'in düşümü S2'de iade edilmez");
+            handler.AppliedBalanceBodies.Select(AppliedKey).Should().ContainSingle(k => k == copyKey,
+                "S2 tıklaması S1 mirasını oynatmaz");
+            Isler(db, "session:s2").Single().ApplyKey.Should().NotBe(copyKey);
+            db.Jobs.GetOpenLegacies(y.Id).Should().ContainSingle().Which.Id.Should().Be(miras.Id);
+            _launcher.LaunchedUrls[^1].Should().Contain("150%2C00", "S1 ürünlerinin bakiyesi S2'de harcanmaz");
+            handler.RowBalances[G(y)].Should().Be(0m);
+
+            // S1: miras istek müşteriye gitmişti — önce sorulur; onayda geri alınır, kalan iş 300'e revize.
+            var dialogs = new FakeDialogService();
+            (await EvetAsync(sut, y, 300m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
+            dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
+                .MatchRegex(@"bu yayın için 2 istek gitmiş \((0,00 TL, 200,00 TL|200,00 TL, 0,00 TL)\)",
+                    "x'e 100 − 100, y'ye 200 istendi")
+                .And.NotContain("başka bir hesabının", "taşımadan sonra iki düşüm de aynı asıl kayıtta");
+            handler.ReverseCalls.Should().Equal(new[] { copyKey }, "S1 mirası kendi kapsamında geri alındı");
+            db.Jobs.GetOpenLegacies(y.Id).Should().BeEmpty();
+            var s1 = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            s1.CustomerId.Should().Be(y.Id);
+            s1.ProductTotal.Should().Be(300m);
+            _launcher.LaunchedUrls[^1].Should().Contain("200%2C00", "300 − 100: S1 için toplam tahsilat değişmedi");
+        }
+        finally { Drop(db); }
+    }
+
+    // Para incelemesi (kritik), yol 2: ayrı kartken S1 düşümleri yapıldı, birleştirme onaylandı ama
+    // kaybedenin geri alması kesinleşmedi (açık miras, asıl kapsamı S1). S2 tıklaması onu ellemez;
+    // S1'in sıradaki tıklaması yeniden sorar ve tamamlar.
+    [Fact]
+    public async Task Birlesme_kaybedeninin_geri_almasi_kalirsa_S2_ellemez_S1_tamamlar()
+    {
+        var db = FileDb();
+        try
+        {
+            var a = Uye(db, "kisi.a");
+            var c = Uye(db, "kisi.c");
+            var (sut, handler) = KisiSut(db);
+            handler.RowBalances = new() { [G(a)] = 50m, [G(c)] = 50m };
+            (await sut.OpenWhatsAppAsync(a, 100m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            (await sut.OpenWhatsAppAsync(c, 200m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            Kisi(db, a, c);
+
+            handler.ThrowTimeoutOnReverse = true;
+            (await EvetAsync(sut, a, 300m, "session:s1")).Should().Be(PaymentRequestResult.BalanceUncertain);
+            handler.ThrowTimeoutOnReverse = false;
+            var kaybeden = db.Jobs.GetOpenLegacies(new[] { a.Id, c.Id }).Should().ContainSingle().Subject;
+            kaybeden.PriorScopeKey.Should().Be("session:s1");
+            var tersSayisi = handler.ReverseCalls.Count;
+            var mesajlar = _launcher.LaunchedUrls.Count;
+
+            (await sut.OpenWhatsAppAsync(a, 80m, T, "session:s2")).Should().Be(PaymentRequestResult.Opened);
+            handler.ReverseCalls.Should().HaveCount(tersSayisi, "S1 kaybedeni S2'de geri alınmaz");
+            Isler(db, "session:s2").Single().ApplyKey.Should().NotBe(kaybeden.ApplyKey!.Value, "S2'ye benimsenmez");
+            db.Jobs.GetOpenLegacies(new[] { a.Id, c.Id }).Should().ContainSingle().Which.Id.Should().Be(kaybeden.Id);
+            _launcher.LaunchedUrls.Should().HaveCount(mesajlar + 1);
+
+            var dialogs = new FakeDialogService();
+            (await EvetAsync(sut, a, 300m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
+            dialogs.Confirmations.Should().ContainSingle("kaybedenin isteği müşteriye gitmişti — tamamlamadan önce yeniden sorulur");
+            handler.ReverseCalls.Skip(tersSayisi).Should().Contain(kaybeden.ApplyKey!.Value);
+            db.Jobs.GetOpenLegacies(new[] { a.Id, c.Id }).Should().BeEmpty();
+            Isler(db, "session:s1").Should().ContainSingle().Which.ProductTotal.Should().Be(300m);
+        }
+        finally { Drop(db); }
+    }
+
+    // Test/arayüz incelemesi: taşıma teslim edilmiş (para taşıyan) kopya işini mirasa indirdi; asıl
+    // kayıttaki aynı kapsamın işi taze (anahtarsız). Eskiden plan yalnız taze işi görüyor, miras
+    // benimseniyor ve aynı mesaj müşteriye SORUSUZ ikinci kez gidiyordu. Teslim izi (DeliveredAt)
+    // indirmede korunur; kapsamın tıklaması önce sorar.
+    [Fact]
+    public async Task Tasinan_teslim_edilmis_kopya_isi_sorulmadan_yeniden_gonderilmez()
+    {
+        var db = FileDb();
+        try
+        {
+            var copy = Uye(db, "kisi.d");
+            var canonical = Uye(db, "Kisi.D");
+            var (sut, handler) = KisiSut(db);
+            handler.PreviewBalance = 100m;
+            (await sut.OpenWhatsAppAsync(copy, 250m, T, "session:s1")).Should().Be(PaymentRequestResult.Opened);
+            var copyKey = AppliedKey(handler.AppliedBalanceBodies.Single());
+            db.Jobs.FindOrCreate(canonical.Id, "session:s1", 250m);   // asıl kayıtta taze iş (ör. önizleme düşmüştü)
+            db.Sync.RekeyToLocal(copy.Id, canonical.Id, pushedThroughSeq: long.MaxValue, nowUnix: SyncNow)
+                .Should().Be(RekeyResult.Rekeyed);
+            var miras = db.Jobs.GetOpenLegacies(canonical.Id).Should().ContainSingle().Subject;
+            miras.IsDelivered.Should().BeTrue("teslim izi indirmede kaybolmaz");
+
+            (await sut.OpenWhatsAppAsync(canonical, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.MergeRequired, "istek müşteriye gitmişti");
+            _launcher.LaunchedUrls.Should().ContainSingle("sorusuz ikinci mesaj yok");
+
+            var dialogs = new FakeDialogService();
+            (await EvetAsync(sut, canonical, 250m, "session:s1", dialogs)).Should().Be(PaymentRequestResult.Opened);
+            dialogs.Confirmations.Should().ContainSingle().Which.Message.Should()
+                .Contain("bu yayın için 1 istek gitmiş (150,00 TL)");
+            var job = Isler(db, "session:s1").Should().ContainSingle().Subject;
+            job.ApplyKey.Should().Be(copyKey, "aynı kapsamın mirası taze işe benimsendi — ikinci düşüm yok");
+            handler.AppliedBalanceBodies.Select(AppliedKey).Should().OnlyContain(k => k == copyKey);
+            handler.ReverseCalls.Should().BeEmpty();
+            _launcher.LaunchedUrls.Should().HaveCount(2).And.OnlyContain(u => u.Contains("150%2C00"));
         }
         finally { Drop(db); }
     }

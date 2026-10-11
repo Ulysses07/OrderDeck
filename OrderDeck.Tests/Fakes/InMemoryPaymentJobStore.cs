@@ -59,7 +59,18 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             var jobs = _jobs.Values
                 .Where(j => memberSet.Contains(j.CustomerId) && j.ScopeKey == request.ScopeKey)
                 .ToList();
+            // Gerçek deponun ScopeLegacyCondition'ı: asıl kapsamı bu olan açık ya da teslim edilmiş miras.
+            var legacies = _jobs.Values
+                .Where(j => memberSet.Contains(j.CustomerId) && j.PriorScopeKey == request.ScopeKey
+                            && IsLegacyScope(j.ScopeKey) && (j.ClosedAt is null || j.DeliveredAt is not null))
+                .ToList();
             var now = Now();
+
+            var plan = jobs.Count + legacies.Count == 0 ? null : PersonScopePlan.For(jobs, legacies, request.OwnerId);
+            if (plan is { NeedsConfirmation: true } && request.ConfirmedTokens?.Contains(plan.Token) != true)
+                return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
+                    Array.Empty<DemotedJob>(), plan);
+
             if (jobs.Count == 0)
             {
                 var job = new PaymentJob(
@@ -69,13 +80,8 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
                 return PersonJob.Ready(job, Array.Empty<DemotedJob>());
             }
 
-            var plan = PersonScopePlan.For(jobs, request.OwnerId);
-            if (plan.NeedsConfirmation && request.ConfirmedTokens?.Contains(plan.Token) != true)
-                return new PersonJob(PersonJobStatus.ConfirmationRequired, plan.Survivor,
-                    Array.Empty<DemotedJob>(), plan);
-
             var demoted = new List<DemotedJob>();
-            foreach (var l in plan.Losers)
+            foreach (var l in plan!.Losers)
             {
                 // Gerçek deponun PaymentJobSql.DemoteToLegacy metniyle aynı karar.
                 _jobs[l.Id] = l with
@@ -87,9 +93,12 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
                 };
                 demoted.Add(PersonScopePlan.Demotion(l));
             }
-            return PersonJob.Ready(plan.Survivor, demoted);
+            return PersonJob.Ready(plan.Survivor!, demoted);
         }
     }
+
+    private static bool IsLegacyScope(string scopeKey)
+        => scopeKey == "legacy" || scopeKey.StartsWith("legacy:", StringComparison.Ordinal);
 
     public PaymentJob? Get(string id)
     {
@@ -103,8 +112,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
     {
         lock (_gate)
             return _jobs.Values
-                .Where(j => customerIds.Contains(j.CustomerId) && j.ClosedAt is null
-                            && (j.ScopeKey == "legacy" || j.ScopeKey.StartsWith("legacy:", StringComparison.Ordinal)))
+                .Where(j => customerIds.Contains(j.CustomerId) && j.ClosedAt is null && IsLegacyScope(j.ScopeKey))
                 .OrderByDescending(j => j.CreatedAt).ThenByDescending(j => j.Id, StringComparer.Ordinal)
                 .ToList();
     }
@@ -205,6 +213,24 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         }
     }
 
+    public void MarkDelivered(string id, decimal requestedNet)
+    {
+        lock (_gate)
+        {
+            var j = _jobs[id];
+            var now = Now();
+            var settled = j.State is PaymentJobState.Applied or PaymentJobState.NoBalance;
+            _jobs[id] = j with
+            {
+                DeliveredAt = now,
+                DeliveredNet = requestedNet,
+                Deliveries = j.Deliveries + 1,
+                ClosedAt = settled ? j.ClosedAt ?? now : j.ClosedAt,
+                UpdatedAt = now,
+            };
+        }
+    }
+
     public bool BeginRevision(string id, decimal newProductTotal, Guid newApplyKey, int expectedRevision)
     {
         lock (_gate)
@@ -269,8 +295,10 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         {
             var target = _jobs[targetId];
             var legacy = _jobs[legacyId];
-            // Gerçek depoyla aynı ikinci kat koruma: başka sahip satırın düşümü benimsenmez, legacy kapanmaz.
+            // Gerçek depoyla aynı ikinci kat koruma: başka sahip satırın ya da başka kapsamın düşümü
+            // benimsenmez, legacy kapanmaz.
             if (target.CustomerId != legacy.CustomerId) return;
+            if (legacy.PriorScopeKey is not null && legacy.PriorScopeKey != target.ScopeKey) return;
             if (target.ApplyKey is null && target.State == PaymentJobState.Created)
                 _jobs[targetId] = target with
                 {

@@ -200,10 +200,14 @@ public partial class PaymentRequestServiceTests : IDisposable
 
             if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
             {
-                lock (_sync) PreviewCustomerIds.Add(WpfCustomerIdOf(request));
+                var previewed = WpfCustomerIdOf(request);
+                lock (_sync) PreviewCustomerIds.Add(previewed);
                 if (OnPreviewAsync is not null) await OnPreviewAsync();
+                decimal balance;
+                lock (_sync)
+                    balance = RowBalances is { } rows ? rows.GetValueOrDefault(CanonicalOf(previewed)) : PreviewBalance;
                 return Json($$"""
-                    {"wpfCustomerId":"{{Guid.Empty}}","balance":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+                    {"wpfCustomerId":"{{Guid.Empty}}","balance":{{balance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
                      "updatedAt":"2030-01-01T00:00:00+00:00"}
                     """);
             }
@@ -219,9 +223,32 @@ public partial class PaymentRequestServiceTests : IDisposable
                     sira = ++_applyCount;
                 }
                 if (OnApplyAsync is not null) await OnApplyAsync(sira);
-                var applied = CapAppliedToRequest
-                    ? Math.Min(PreviewBalance, AppliedAmountRequested(body))
-                    : PreviewBalance;
+                decimal applied;
+                if (RowBalances is { } rowBalances && ApplyProblemTitle is null)
+                {
+                    // Satır başına defter (gerçek sunucu): anahtar biliniyorsa tarihsel sonuç (replay —
+                    // ikinci düşüm yok), yoksa asıl kaydın bakiyesinden min(istenen, bakiye).
+                    var rowKey = IdempotencyKeyOf(body)!.Value;
+                    lock (_sync)
+                    {
+                        if (_rowLedger.TryGetValue(rowKey, out var prior)) applied = prior.Amount;
+                        else
+                        {
+                            var row = CanonicalOf(WpfCustomerIdOf(body));
+                            var balance = rowBalances.GetValueOrDefault(row);
+                            if (balance <= 0m) return Problem("no-balance");
+                            applied = Math.Min(balance, AppliedAmountRequested(body));
+                            rowBalances[row] = balance - applied;
+                            _rowLedger[rowKey] = (row, applied, false);
+                        }
+                    }
+                }
+                else
+                {
+                    applied = CapAppliedToRequest
+                        ? Math.Min(PreviewBalance, AppliedAmountRequested(body))
+                        : PreviewBalance;
+                }
                 // Zaman aşımında bile deftere işlenir — istek tele çıktı, sunucu
                 // işlemiş olabilir. 409 (problem) ise sunucu REDDETTİ: işlenmez.
                 if (ApplyProblemTitle is null && IdempotencyKeyOf(body) is { } key)
@@ -272,6 +299,14 @@ public partial class PaymentRequestServiceTests : IDisposable
                 OnReverse?.Invoke(transactionId);
                 if (ThrowTimeoutOnReverse) throw new TaskCanceledException("stub timeout");
                 if (ReverseProblemTitle is not null) return Problem(ReverseProblemTitle);
+                // Satır başına defter: iade düşümün YAPILDIĞI asıl kayda döner (bir kez).
+                lock (_sync)
+                    if (RowBalances is { } rowBalances
+                        && _rowLedger.TryGetValue(transactionId, out var entry) && !entry.Reversed)
+                    {
+                        rowBalances[entry.Row] = rowBalances.GetValueOrDefault(entry.Row) + entry.Amount;
+                        _rowLedger[transactionId] = entry with { Reversed = true };
+                    }
                 return Json("{}");
             }
 
@@ -281,6 +316,18 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// <summary>Kişi düzeyindeki R4-03: kapsam ucunun müşteri başına cevabı (WpfCustomerId →
         /// gövde; null → 204). Doluysa <see cref="ScopeResponseJson"/>'ın yerine geçer.</summary>
         public Func<Guid, string?>? ScopeResponseFor { get; set; }
+
+        /// <summary>Satır başına bakiye (asıl kayıt → bakiye) — gerçek sunucu gibi (controller:84-88,
+        /// 271-273). Doluysa önizleme, düşüm ve geri alma bu defterle çalışır ve
+        /// <see cref="PreviewBalance"/>/<see cref="CapAppliedToRequest"/> kullanılmaz: düşüm asıl
+        /// kaydın bakiyesinden min(istenen, bakiye), replay tarihsel sonucu döner, iade düşümün yapıldığı
+        /// asıl kayda gider. Tek genel bakiye satırlar arası iadeyi göremezdi.</summary>
+        public Dictionary<Guid, decimal>? RowBalances { get; set; }
+
+        /// <summary>Sunucunun kopya → asıl kayıt çözümü (A5b). Varsayılan: her Id kendi asıl kaydı.</summary>
+        public Func<Guid, Guid> CanonicalOf { get; set; } = id => id;
+
+        private readonly Dictionary<Guid, (Guid Row, decimal Amount, bool Reversed)> _rowLedger = new();
 
         /// <summary>Önizleme ucuna sorulan WpfCustomerId'ler (sahip anahtarı testleri).</summary>
         public List<Guid> PreviewCustomerIds { get; } = new();

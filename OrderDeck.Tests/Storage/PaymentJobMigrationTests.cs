@@ -121,4 +121,37 @@ public sealed class PaymentJobMigrationTests
         act.Should().Throw<Microsoft.Data.Sqlite.SqliteException>()
            .Which.SqliteErrorCode.Should().Be(19); // SQLITE_CONSTRAINT
     }
+
+    // 047: göç öncesi teslim edilmiş istekler de "tekrar gönderilsin mi?" sorusunu tetiklemeli. Legacy
+    // olmayan kapsamda ClosedAt'ı yalnız teslim yazar → DeliveredAt = ClosedAt; miras kapsamında kapanış
+    // uzlaştırmadır, teslim sayılmaz.
+    [Fact]
+    public void Migration047_eski_teslimleri_teslim_kaydina_tasir()
+    {
+        var fx = new InMemorySqlite();
+        new MigrationRunner(fx, EmbeddedScriptsUpTo(46)).Run();
+        using (var seed = fx.Open())
+            foreach (var (id, scope, closedAt) in new (string, string, long?)[]
+                     {
+                         ("teslim", "session:s1", 500), ("acik", "session:s2", null),
+                         ("miras", "legacy:k:miras", 600), ("eski-miras", "legacy", 700),
+                     })
+                seed.Execute(
+                    @"INSERT INTO PaymentJob (Id, CustomerId, ScopeKey, ProductTotal, Revision, State,
+                                              CreatedAt, UpdatedAt, ClosedAt)
+                      VALUES (@id, 'c1', @scope, '10', 0, 'no_balance', 1, 1, @closedAt)",
+                    new { id, scope, closedAt });
+
+        new MigrationRunner(fx).Run();
+
+        using var conn = fx.Open();
+        var rows = conn.Query<(string Id, long? DeliveredAt, long Deliveries, string? DeliveredNet)>(
+                "SELECT Id, DeliveredAt, Deliveries, DeliveredNet FROM PaymentJob")
+            .ToDictionary(r => r.Id);
+        rows["teslim"].Should().Be(("teslim", (long?)500, 1L, (string?)null), "net tutarı okuyucu işten hesaplar");
+        rows["acik"].DeliveredAt.Should().BeNull();
+        rows["acik"].Deliveries.Should().Be(0);
+        rows["miras"].DeliveredAt.Should().BeNull("miras kapanışı uzlaştırmadır");
+        rows["eski-miras"].DeliveredAt.Should().BeNull();
+    }
 }

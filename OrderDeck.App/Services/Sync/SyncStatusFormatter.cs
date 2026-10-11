@@ -27,7 +27,8 @@ namespace OrderDeck.App.Services.Sync;
 ///
 /// <para><b>Kalıcı uyarılar</b> (D1) her durumun arkasına eklenir ve satırı sağlıksız (sarı)
 /// gösterir: atlanan akış öğesinin kaydı aynı Id'nin sonraki başarılı değişikliğinde silinir
-/// (U10); miras ödeme işi o müşterinin "Ödeme iste"siyle kapanır (U8).</para>
+/// (U10); miras ödeme işi o müşterinin, işin ait olduğu yayındaki (ya da genel toplamdaki)
+/// "Ödeme iste"siyle kapanır (U8).</para>
 ///
 /// <para><b>Gönderim (I-3):</b> çekme iyiyken bekleyen kayıt varsa ve kayıtlı gönderim
 /// servislerinden biri üç dakikadır başarılı tur yazmadıysa (hiç yazmadıysa izlemenin başından
@@ -90,7 +91,8 @@ public static class SyncStatusFormatter
             lines.Add("Diğer bilgisayarlardan gelen bazı müşteri değişiklikleri bu bilgisayara uygulanamadı; " +
                       "uyarı geçmezse destekle iletişime geç.");
         if (attention.OpenLegacyPaymentJobs > 0)
-            lines.Add("Bekleyen ödeme işleri, ilgili müşteriye internet varken \"Ödeme iste\" denince tamamlanır; " +
+            lines.Add("Bekleyen ödeme işleri, ilgili müşteriye internet varken işin ait olduğu yayından " +
+                      "(ya da genel toplamdan) \"Ödeme iste\" denince tamamlanır; " +
                       "hangi müşteri olduğunu bilmiyorsan destekle iletişime geç.");
         return string.Join("\n", lines);
     }

@@ -50,9 +50,10 @@ public enum PaymentRequestResult
     /// (PhoneRequired deseni). "Hayır" → hiçbir şey yapılmaz.</summary>
     AlreadyRequested,
 
-    /// <summary>Sahip kararı 4: bu kişiye bu kapsam için birden çok istek gitmiş (biri para taşıyor ya
-    /// da teslim edilmiş) — tek istekte birleştirilsin mi? Onaydan önce indirme, geri alma, ağ çağrısı
-    /// ve mesaj YOK; onay gelirse fazladan düşülen bakiye iade edilir.</summary>
+    /// <summary>Sahip kararı 4: bu kişiye bu kapsam için birden çok istek var (biri para taşıyor ya
+    /// da teslim edilmiş) ya da uzlaştırma bekleyen teslim edilmiş miras isteği var — tek istekte
+    /// birleştirilsin mi? Onaydan önce indirme, geri alma, ağ çağrısı ve mesaj YOK; onay gelirse
+    /// önceki düşümler iade edilir ve kişinin toplamı yeniden istenir.</summary>
     MergeRequired,
 
     /// <summary>Bu kişi için başka bir ödeme akışı sürüyor (öbür pencere) ve süresi sınırlı bekleme
@@ -62,13 +63,19 @@ public enum PaymentRequestResult
 
 /// <summary>Operatöre sorulacak soru (<see cref="PaymentRequestResult.AlreadyRequested"/> /
 /// <see cref="PaymentRequestResult.MergeRequired"/>). Metni <see cref="PaymentResultPresenter"/> kurar.</summary>
-/// <param name="Requests">Daha önce gitmiş istekler (eskiden yeniye).</param>
+/// <param name="Requests">Müşteriye gitmiş istekler (teslim sırasıyla; tekrar göndermede en sonuncusu sorulur).</param>
 /// <param name="Token">Onay belirteci: "Evet" gelince yeniden çağrıya verilir. Soru ile onay arasında
 /// durum değiştiyse belirteç tutmaz ve yeniden sorulur.</param>
+/// <param name="UnsentDeductions">Birleştirmede para taşıyan ama müşteriye hiç gitmemiş istek sayısı
+/// ("gitmiş" sayılmaz, ayrıca söylenir).</param>
+/// <param name="RefundsToOtherRow">Birleştirmenin iade edeceği düşümlerden biri başka bir satırın
+/// bakiyesinden yapılmış: bakiye satır başına tutulduğu için iade o satırda kalır, bu istekte
+/// kullanılmaz (ayrı kartken ayrı ürünler için yapılmış meşru düşüm de olabilir).</param>
 public sealed record PaymentPrompt(
-    PersonScopePromptKind Kind, string ScopeKey, IReadOnlyList<PriorPaymentRequest> Requests, string Token);
+    PersonScopePromptKind Kind, string ScopeKey, IReadOnlyList<PriorPaymentRequest> Requests, string Token,
+    int UnsentDeductions = 0, bool RefundsToOtherRow = false);
 
-/// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve teslim anı.</summary>
+/// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.</summary>
 public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At);
 
 /// <summary>"Ödeme iste"nin sonucu.
@@ -458,7 +465,7 @@ public sealed class PaymentRequestService
         // tutarlı" ihtimali, "operatör bir kez daha tıklar" maliyetinden ağır.
         decimal appliedBalance = 0m;
         var totalBeforeBalance = totalAmount;
-        PaymentJob? deliveryJob = null;   // mesaj müşteriye ulaşınca kapatılacak iş
+        PaymentJob? deliveryJob = null;   // mesaj müşteriye ulaşınca teslim kaydı yazılacak iş
         // W2: beklentinin sahibi — iş varsa onun sahip satırı, işsiz yolda kişinin belirlenimli sahibi.
         var ownerId = person.OwnerId;
         IReadOnlyList<DemotedJob> demoted = Array.Empty<DemotedJob>();
@@ -515,7 +522,7 @@ public sealed class PaymentRequestService
                 customer.Phone!, message, BuildTemplateRef(settings, ctx), "wpf-payment", ct))
             {
                 case CloudSendOutcome.Sent:
-                    CloseJob(deliveryJob);
+                    MarkDelivered(deliveryJob, totalAmount);
                     return Done(PaymentRequestResult.Sent);
                 case CloudSendOutcome.Pending:
                     // Sonuç bilinmiyor — iş açık kalır, bir sonraki deneme aynı
@@ -529,7 +536,7 @@ public sealed class PaymentRequestService
         try
         {
             _launcher.Launch(link);
-            CloseJob(deliveryJob);
+            MarkDelivered(deliveryJob, totalAmount);
             return Done(PaymentRequestResult.Opened);
         }
         catch
@@ -540,16 +547,17 @@ public sealed class PaymentRequestService
         }
     }
 
-    /// <summary>Mesaj müşteriye ulaştı — iş kapanır. Disk hatası akışı
+    /// <summary>Mesaj müşteriye ulaştı — teslim kaydı yazılır (her teslimde: tekrar paylaşımda da),
+    /// sonucu kesin iş kapanır (<see cref="IPaymentJobStore.MarkDelivered"/>). Disk hatası akışı
     /// düşürmemeli: mesaj zaten gitti; en kötü iş açık kalır ve bir sonraki
     /// deneme sonucu diskten/replay'den yeniden bulur.</summary>
-    private void CloseJob(PaymentJob? job)
+    private void MarkDelivered(PaymentJob? job, decimal requestedNet)
     {
         if (job is null) return;
-        try { _jobs.Close(job.Id); }
+        try { _jobs.MarkDelivered(job.Id, requestedNet); }
         catch (Exception ex)
         {
-            _log?.LogWarning(ex, "Ödeme işi kapatılamadı (job={JobId})", job.Id);
+            _log?.LogWarning(ex, "Ödeme işinin teslimi yazılamadı (job={JobId})", job.Id);
         }
     }
 
@@ -584,15 +592,18 @@ public sealed class PaymentRequestService
     private BalanceOutcome OfflineOutcome(PaymentPerson person, PaymentJob job, decimal totalAmount)
     {
         // Açık miras (033→034, taşıma ya da kişi birleştirmesi) iş: anahtarı var, sonucu
-        // bilinmiyor. Hangi satışa ait olduğu da belirsiz — kesinleştirmeden devam edilemez.
-        // Kişinin BÜTÜN üyeleri taranır.
-        if (ReconcilableLegacies(person).Count > 0)
+        // bilinmiyor — kesinleştirmeden devam edilemez. Kişinin BÜTÜN üyeleri taranır; asıl
+        // kapsamı BAŞKA olan miras bu satışı bloklamaz (o kapsamın tıklaması uzlaştırır).
+        if (ReconcilableLegacies(person, job.ScopeKey).Count > 0)
             return new(Uncertain: true, 0m, null);
 
         // created = BeginApply hiç çalışmamış (anahtar yazımı ile durum aynı
-        // UPDATE'te değişir) → bu satış için hiç para hareketi yok.
+        // UPDATE'te değişir) → bu satış için hiç para hareketi yok. İş yine döner: mesaj ulaşınca
+        // teslim kaydı yazılır (iş created ve AÇIK kalır) — sıradaki tıklama "tekrar gönderilsin
+        // mi?" diye sorar; sormasaydı aynı borç için sorusuz ikinci (çevrimiçiyse düşümlü, farklı
+        // tutarlı) mesaj giderdi.
         if (job.State == PaymentJobState.Created)
-            return new(Uncertain: false, 0m, null);
+            return new(Uncertain: false, 0m, job);
 
         if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
         {
@@ -609,26 +620,40 @@ public sealed class PaymentRequestService
         return new(Uncertain: true, 0m, job);
     }
 
-    /// <summary>Kişinin bütün üyelerindeki açık miras işleri — en yeniden eskiye. Sahibi GUID
-    /// OLMAYAN miras iş uyarı günlüğüyle KAPATILIR, akışı bloklamaz: sunucu GUID olmayan Id'ye
-    /// düşüm yazamaz (uzlaştırılacak bir şey yok); bloklasaydı miras tarama bütün üyelerde ve her
-    /// kapsamdan önce koştuğu için kişi kalıcı olarak bloklanırdı.</summary>
-    private IReadOnlyList<PaymentJob> ReconcilableLegacies(PaymentPerson person)
+    /// <summary>Kişinin bütün üyelerindeki, BU tıklamanın uzlaştıracağı açık miras işleri — en yeniden
+    /// eskiye. Sahibi GUID OLMAYAN miras iş uyarı günlüğüyle KAPATILIR, akışı bloklamaz: sunucu GUID
+    /// olmayan Id'ye düşüm yazamaz (uzlaştırılacak bir şey yok); bloklasaydı miras tarama bütün
+    /// üyelerde ve her kapsamdan önce koştuğu için kişi kalıcı olarak bloklanırdı.
+    ///
+    /// <para><b>Kapsam:</b> asıl kapsamı bilinen miras iş (<see cref="PaymentJob.PriorScopeKey"/> —
+    /// taşıma ya da kişi birleştirmesi indirdi) yalnız O kapsamın tıklamasında uzlaşır; asıl kapsamı
+    /// bilinmeyen (033→034 göçü, 047 öncesi indirme) her tıklamada. Başka kapsamın düşümü o yayının
+    /// ürünleri için yapılmıştır: burada benimsenip revizyonla geri alınsaydı ya da doğrudan geri
+    /// alınsaydı o ürünlerin bakiye ödemesi iade edilip bu satışta yeniden harcanırdı (yayıncı o tutarı
+    /// kaybeder), kendi kapsamında kalan iş de kişi toplamına hiç revize edilmezdi. Kendi kapsamının
+    /// tıklaması onu kalan işin revizyonuyla aynı tıklamada uzlaştırır (miras istek müşteriye
+    /// gitmişse önce sorulur — <see cref="PersonScopePlan.PendingLegacies"/>).</para></summary>
+    private IReadOnlyList<PaymentJob> ReconcilableLegacies(PaymentPerson person, string scopeKey)
     {
         var result = new List<PaymentJob>();
         foreach (var l in _jobs.GetOpenLegacies(person.MemberIds))
         {
-            if (PaymentOwnerRule.IsOwnerCapable(l.CustomerId))
+            if (!PaymentOwnerRule.IsOwnerCapable(l.CustomerId))
             {
-                result.Add(l);
+                _log?.LogWarning(
+                    "GUID olmayan satırın miras ödeme işi kapatıldı — sunucu bu Id'ye düşüm yazamaz (job={JobId})", l.Id);
+                _jobs.Close(l.Id);
                 continue;
             }
-            _log?.LogWarning(
-                "GUID olmayan satırın miras ödeme işi kapatıldı — sunucu bu Id'ye düşüm yazamaz (job={JobId})", l.Id);
-            _jobs.Close(l.Id);
+            if (BelongsToScope(l, scopeKey)) result.Add(l);
         }
         return result;
     }
+
+    /// <summary>Miras iş bu kapsamın tıklamasında uzlaşır mı: asıl kapsamı bilinmiyorsa her kapsamda,
+    /// biliniyorsa yalnız kendi kapsamında.</summary>
+    private static bool BelongsToScope(PaymentJob legacy, string scopeKey)
+        => legacy.PriorScopeKey is null || string.Equals(legacy.PriorScopeKey, scopeKey, StringComparison.Ordinal);
 
     /// <summary>Satışın bakiye sonucunu kesinleştirir. Dönüşte ya sonuç
     /// kesindir (Uncertain=false; AppliedBalance mesaja yazılabilir) ya da
@@ -679,9 +704,11 @@ public sealed class PaymentRequestService
     private static PaymentPrompt PromptOf(PersonScopePlan plan, string scopeKey)
         => new(plan.Kind, scopeKey,
             plan.PromptJobs.Select(j => new PriorPaymentRequest(
-                j.RequestedNet,
-                j.ClosedAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null)).ToList(),
-            plan.Token);
+                j.LastRequestedNet,
+                j.DeliveredAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null)).ToList(),
+            plan.Token,
+            plan.UnsentDeductions,
+            plan.RefundsToOtherRow);
 
     /// <summary>Kişi × kapsamın işini (<paramref name="job"/>) kesinleştirir. Sunucuya giden BÜTÜN
     /// çağrılar (replay, kapsam, önizleme, apply) işin SAHİP satırının Id'siyle yapılır — tıklanan
@@ -703,8 +730,9 @@ public sealed class PaymentRequestService
         //
         // Kişinin BÜTÜN üyeleri taranır ve her miras iş KENDİ sahip satırının Id'siyle yeniden
         // oynatılır (eskiden tıklanan satırın Id'siyle — başka satırın anahtarı içerik çakışmasıyla
-        // kalıcı belirsiz kalırdı).
-        var legacies = ReconcilableLegacies(person);
+        // kalıcı belirsiz kalırdı). Asıl kapsamı başka olan miras iş bu tıklamada ele alınmaz
+        // (ReconcilableLegacies — başka yayının düşümü bu satışta geri alınıp yeniden harcanmaz).
+        var legacies = ReconcilableLegacies(person, job.ScopeKey);
 
         // R6-02: işin sunucu sonucu BU tıklama içinde sunucudan GÜNCEL
         // geçerlilik taşıyan bir cevapla öğrenildiyse true — 6. adımdaki
@@ -735,10 +763,14 @@ public sealed class PaymentRequestService
             // tek bir anahtar taşır. Yalnız AYNI sahip satırın miras işi
             // devralınabilir (sunucu anahtarı o asıl kayıtla tanır); onlardan
             // en yenisi seçilir — 033 akışında bu satışa en yakın olan odur.
-            // Kalanlar (başka satırınkiler dahil) artık düşüm sayılır.
+            // Asıl kapsamı bilinen miras yalnız kendi kapsamının işine (liste zaten
+            // süzülü; depo da ikinci kat olarak denetler). Kalanlar (başka
+            // satırınkiler dahil) artık düşüm sayılır.
             var adoptTarget = job;
             var adopted = adoptTarget.State == PaymentJobState.Created && adoptTarget.ApplyKey is null
-                ? resolved.FirstOrDefault(r => string.Equals(r.CustomerId, adoptTarget.CustomerId, StringComparison.Ordinal))
+                ? resolved.FirstOrDefault(r =>
+                    string.Equals(r.CustomerId, adoptTarget.CustomerId, StringComparison.Ordinal)
+                    && BelongsToScope(r, adoptTarget.ScopeKey))
                 : null;
             if (adopted is not null)
             {
@@ -1032,12 +1064,13 @@ public sealed class PaymentRequestService
         {
             var token = "uzak:" + string.Join(";", traces
                 .Select(t => t.Scope.TransactionId.ToString("N")).OrderBy(x => x, StringComparer.Ordinal));
+            // İzler tanım gereği farklı üyelerde: iade edilen düşüm kendi satırına döner.
             if (confirmedTokens?.Contains(token) != true)
                 return new(job, new PaymentPrompt(PersonScopePromptKind.Merge, job.ScopeKey,
                     traces.OrderBy(t => t.Scope.CreatedAt)
                         .Select(t => new PriorPaymentRequest(t.Scope.ProductTotal - t.Scope.AppliedAmount, t.Scope.CreatedAt))
                         .ToList(),
-                    token));
+                    token, RefundsToOtherRow: true));
 
             // Onaylandı: en eski düşüm kalır (sunucu teslim bilgisini bilmez); fazlası iade edilir.
             var keep = traces.OrderBy(t => t.Scope.CreatedAt).ThenBy(t => candidates.IndexOf(t.MemberId)).First();

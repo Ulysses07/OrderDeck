@@ -117,7 +117,13 @@ public static class PaymentResultPresenter
 
     private static readonly CultureInfo Tr = CultureInfo.GetCultureInfo("tr-TR");
 
-    /// <summary>Sorunun başlığı ve metni (sahip kararlarındaki metinler).</summary>
+    /// <summary>Sorunun başlığı ve metni (sahip kararlarındaki metinler).
+    ///
+    /// <para>Birleştirmede yalnız TESLİM edilmiş istekler "gitmiş" sayılır; para taşıyan ama hiç
+    /// gönderilmemiş istek ayrıca söylenir (operatöre gitmemiş bir isteği gitmiş diye göstermemek
+    /// için). "Fazladan düşülen" denmez: iki ayrı kartken ayrı ürünler için yapılmış düşümler de
+    /// birleşir — iade edilen her zaman fazla değildir. İade başka bir satırın bakiyesine dönüyorsa
+    /// (bakiye satır başına) bu da söylenir: o tutar bu istekte kullanılmaz.</para></summary>
     public static (string Title, string Message) PromptText(PaymentPrompt prompt, DateTimeOffset now)
     {
         if (prompt.Kind == PersonScopePromptKind.Resend)
@@ -131,13 +137,31 @@ public static class PaymentResultPresenter
         var scope = prompt.ScopeKey.StartsWith("session:", StringComparison.Ordinal)
             ? "bu yayın için"
             : "genel toplam için";
-        var amounts = string.Join(", ", prompt.Requests.Select(r => Money(r.Amount)));
-        return ("Birden çok ödeme isteği",
-            $"Bu kişiye {scope} {prompt.Requests.Count} istek gitmiş ({amounts}); tek istekte birleştirilsin mi? " +
-            "Fazladan düşülen bakiye iade edilir.");
+        var sent = prompt.Requests.Count;
+        var unsent = prompt.UnsentDeductions;
+        string lead;
+        if (sent > 0)
+        {
+            var amounts = string.Join(", ", prompt.Requests.Select(r => Money(r.Amount)));
+            lead = $"Bu kişiye {scope} {sent} istek gitmiş ({amounts})";
+            if (unsent > 0) lead += $"; ayrıca {unsent} gönderilmemiş bakiye düşümü var";
+        }
+        else
+        {
+            lead = $"Bu kişinin {scope} {unsent} gönderilmemiş bakiye düşümü var";
+        }
+
+        var message = lead + "; tek istekte birleştirilsin mi? " +
+                      "Önceki düşümler iade edilir, kişinin toplamı tek istekte yeniden istenir.";
+        if (prompt.RefundsToOtherRow)
+            message += " Not: düşümlerden biri kişinin başka bir hesabının bakiyesinden yapılmış; " +
+                       "iade o hesaba döner, bu istekte kullanılmaz.";
+        return ("Birden çok ödeme isteği", message);
     }
 
-    private static string Money(decimal amount) => amount.ToString("#,##0.##", Tr) + " ₺";
+    /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim (rapordaki kişi toplamı, kargo notu):
+    /// iki kuruş hanesi + "TL".</summary>
+    private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
 
     private static string WhenText(DateTimeOffset at, DateTimeOffset now)
     {
