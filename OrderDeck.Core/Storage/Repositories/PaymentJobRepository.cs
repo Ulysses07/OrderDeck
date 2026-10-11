@@ -179,9 +179,12 @@ public interface IPaymentJobStore
     IReadOnlyList<PaymentJob> GetOpenLegacies(IReadOnlyCollection<string> customerIds);
 
     /// <summary>Taze işin sahip satırını değiştirir — yalnız iş hiç denenmemişse (created + anahtarsız
-    /// + açık) ve hedefte aynı kapsamlı iş yoksa. Kişi düzeyindeki kapsam uzlaştırması (R4-03) sunucuda
-    /// bu kapsamdaki düşümü BAŞKA bir üyede bulduğunda iş o üyeye geçer: sunucu anahtarı farklı asıl
-    /// kayıtla oynatmayı içerik çakışması sayar. false = koşul tutmadı; yeniden oku.</summary>
+    /// + açık), hiç istek gönderilmemiş ya da denenmemişse (Deliveries = 0 ve SendAttempts = 0) ve hedefte
+    /// aynı kapsamlı iş yoksa. Kişi düzeyindeki kapsam uzlaştırması (R4-03) sunucuda bu kapsamdaki düşümü
+    /// BAŞKA bir üyede bulduğunda iş o üyeye geçer: sunucu anahtarı farklı asıl kayıtla oynatmayı içerik
+    /// çakışması sayar. Gönderilmiş (çevrimdışı teslim edilmiş) iş taşınmaz: banka beklentisi (W2)
+    /// teslimde eski sahibin (CustomerId, ScopeKey) anahtarına yazılır — taşınsaydı sahipsiz kalır, aynı
+    /// kişide iki açık beklenti oluşurdu. false = koşul tutmadı; yeniden oku.</summary>
     bool ReassignOwner(string id, string newCustomerId);
 
     /// <summary>Anahtarı diske indirir ve işi apply_uncertain'e geçirir —
@@ -462,6 +465,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         return conn.Execute(
             @"UPDATE PaymentJob SET CustomerId=@newCustomerId, UpdatedAt=@now
               WHERE Id=@id AND State=@created AND ApplyKey IS NULL AND ClosedAt IS NULL
+                AND Deliveries = 0 AND SendAttempts = 0
                 AND NOT EXISTS (SELECT 1 FROM PaymentJob t
                                 WHERE t.CustomerId=@newCustomerId AND t.ScopeKey=PaymentJob.ScopeKey)",
             new { id, newCustomerId, created = PaymentJobState.Created, now = Now() }) == 1;
