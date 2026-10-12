@@ -457,7 +457,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         Delivered(l.CustomerId, "session:s1", 250m);
         Delivered(l.CustomerId, "cumulative", 250m);
         var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, Sut(), "s1", new[] { l.Id },
-            OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null,
+            DateTime.Now, inFlight: () => null,
             applied: _ => { }, reprint: _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
         vm.NewPriceText = "205";
 
@@ -476,7 +476,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         _labels.MarkPrintedAndRecord(new[] { l.Id });
         Delivered(l.CustomerId, "session:s1", 250m);
         var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, payments,
-            "s1", new[] { l.Id }, OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now,
+            "s1", new[] { l.Id }, DateTime.Now,
             inFlight: () => null, applied: _ => { }, reprint: _ => Task.FromResult<string?>(null),
             cloudApiEnabled: true);
         vm.NewPriceText = "205";
@@ -566,7 +566,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var payments = Sut((customer, _, _, _, _) =>
             Task.FromResult(new PaymentRequestOutcome(byCustomer[customer.Id])));
         var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, payments, "s1", new[] { labels[0].Id },
-            OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null,
+            DateTime.Now, inFlight: () => null,
             applied: _ => { }, reprint: _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
         var reports = new List<string>();
         vm.WorkFinished = reports.Add;

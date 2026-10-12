@@ -294,7 +294,7 @@ public class MainShellViewCompositionTests
         var ids = new[] { 250m, 250m, 300m }.Select(p => service.Add("s1",
             new OrderDeck.Core.Chat.ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "alice", "alice",
                 null, "alıyorum", 1000, Array.Empty<string>()), p, "A12").Id).ToList();
-        return new PriceCorrectionViewModel(service, payments: null, "s1", ids, PriceCorrectionMode.Printed,
+        return new PriceCorrectionViewModel(service, payments: null, "s1", ids,
             DateTime.Now, () => null, _ => { }, _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
     }
 

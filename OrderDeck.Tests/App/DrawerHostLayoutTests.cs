@@ -108,7 +108,7 @@ public class DrawerHostLayoutTests
             svc.MarkPrintedAndRecord(new[] { a.Id });
             var gate = new System.Threading.Tasks.TaskCompletionSource<string?>();
             var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(svc, payments: null, "s1", new[] { a.Id },
-                OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, System.DateTime.Now, inFlight: () => null,
+                System.DateTime.Now, inFlight: () => null,
                 applied: _ => { }, reprint: _ => gate.Task, cloudApiEnabled: true);
             var stack = new DrawerStack();
             stack.ShowAsync("Fiyatı Düzelt", d =>

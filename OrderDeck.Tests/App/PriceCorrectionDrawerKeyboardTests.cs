@@ -41,7 +41,7 @@ public class PriceCorrectionDrawerKeyboardTests
             svc.MarkPrintedAndRecord(new[] { a.Id });
             var reprints = 0;
             var vm = new PriceCorrectionViewModel(svc, payments: null, "s1", new[] { a.Id },
-                PriceCorrectionMode.Printed, System.DateTime.Now, inFlight: () => null, applied: _ => { },
+                System.DateTime.Now, inFlight: () => null, applied: _ => { },
                 reprint: _ =>
                 {
                     reprints++;

@@ -11,18 +11,6 @@ using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.ViewModels;
 
-/// <summary>Düzeltmenin nereden açıldığı: kuyruk (K4), "Basılanlar" sekmesi ya da FİYAT kutusundaki fiyat
-/// değişikliği (F2). Yeniden baskı sorusu kipe değil sonuca bağlıdır: kodun basılmış etiketi düzeldiyse her
-/// kipte sorulur.</summary>
-public enum PriceCorrectionMode
-{
-    Queue,
-    Printed,
-
-    /// <summary>FİYAT kutusunda etiketi olan kodun fiyatı değiştirildi, şeritte "Evet" denildi (F2).</summary>
-    Code,
-}
-
 /// <summary>Düzeltmede bir kod (sahip kararı F3): kodun yayındaki BÜTÜN düzeltilebilir etiketleri, mevcut
 /// fiyat(lar)ı ve adediyle. Operatör düzelteceği kodları işaretler; fiyat grubu işaretleme (kısmi düzeltme)
 /// YOK — bir yayında bir kodun tek fiyatı vardır.</summary>
@@ -146,18 +134,17 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// penceresi açılacağı söylenir.</param>
     public PriceCorrectionViewModel(
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId,
-        IReadOnlyList<string> labelIds, PriceCorrectionMode mode, DateTime streamDate,
+        IReadOnlyList<string> labelIds, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
         : this(labels, payments, sessionId, () => labels.PlanCodeCorrection(sessionId, labelIds),
-            labelIds.ToHashSet(StringComparer.Ordinal), mode, streamDate, inFlight, applied, reprint, cloudApiEnabled)
+            labelIds.ToHashSet(StringComparer.Ordinal), streamDate, inFlight, applied, reprint, cloudApiEnabled)
     {
     }
 
     private PriceCorrectionViewModel(
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId,
-        Func<IReadOnlyList<CodeCorrectionPlan>> planner, IReadOnlySet<string> selection,
-        PriceCorrectionMode mode, DateTime streamDate,
+        Func<IReadOnlyList<CodeCorrectionPlan>> planner, IReadOnlySet<string> selection, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
     {
@@ -166,7 +153,6 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         _sessionId = sessionId;
         _planner = planner;
         _selection = selection;
-        Mode = mode;
         _streamDate = streamDate;
         _inFlight = inFlight;
         _applied = applied;
@@ -184,10 +170,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
         => new(labels, payments, sessionId, () => new[] { labels.PlanCodeCorrection(sessionId, code) },
-            new HashSet<string>(StringComparer.Ordinal), PriceCorrectionMode.Code, streamDate, inFlight, applied,
+            new HashSet<string>(StringComparer.Ordinal), streamDate, inFlight, applied,
             reprint, cloudApiEnabled);
-
-    public PriceCorrectionMode Mode { get; }
 
     /// <summary>Çekmeceyi (ya da FİYAT kutusunun altındaki satır içi sonucu) kapatır; testte boş.</summary>
     public Action? Close { get; set; }
@@ -450,8 +434,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                       string.Join(", ", result.Shipped.Select(l => l.DisplayName ?? l.Username).Distinct().Take(10)));
         ResultText = string.Join("\n", lines);
 
-        // Soru kipe değil sonuca bağlı (K5: "basılmış etiket varsa"): kodun basılmış etiketi düzeldiyse her kipte
-        // sorulur — kâğıtlarında eski fiyat kalır.
+        // Soru nereden açıldığına (kuyruk, "Basılanlar", FİYAT şeridi) değil sonuca bağlı (K5: "basılmış etiket
+        // varsa"): kodun basılmış etiketi düzeldiyse her yerde sorulur — kâğıtlarında eski fiyat kalır.
         _correctedPrinted = result.CorrectedPrinted;
         if (_correctedPrinted.Count > 0)
         {

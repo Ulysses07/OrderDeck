@@ -45,10 +45,6 @@ public sealed class PriceCorrectionPlan
 
     public IReadOnlyList<PriceGroup> PriceGroups { get; }
 
-    /// <summary>Durumun parmak izi: onay anında yeniden okunan plan bununla karşılaştırılır — arada
-    /// bir etiket basıldı, iptal edildi ya da fiyatı değiştiyse operatör eski özeti onaylamış olurdu.</summary>
-    public string Fingerprint => FingerprintOf(Correctable.Concat(Shipped).Select(l => l.Id), Correctable.Concat(Shipped));
-
     /// <summary>Verilen etiketlerin (<paramref name="ids"/>) <paramref name="labels"/> içindeki durumunun parmak
     /// izi; listede olmayan Id "yok" diye girer (arada iptal edildi). Kod düzeyindeki düzeltme bununla operatörün
     /// GÖRDÜĞÜ etiketlerin değişip değişmediğine bakar — arada yazılan yeni etiket kodun etiketidir, düzeltmeye

@@ -46,8 +46,8 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         => _labels.Add("s1", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, user, user, null,
             "aldım", 1000, Array.Empty<string>()), price, code);
 
-    private PriceCorrectionViewModel Vm(IEnumerable<Label> labels, PriceCorrectionMode mode = PriceCorrectionMode.Printed)
-        => new(_labels, payments: null, "s1", labels.Select(l => l.Id).ToList(), mode, DateTime.Now,
+    private PriceCorrectionViewModel Vm(IEnumerable<Label> labels)
+        => new(_labels, payments: null, "s1", labels.Select(l => l.Id).ToList(), DateTime.Now,
             inFlight: () => _inFlight,
             applied: r => _applied.Add(r),
             reprint: ids => { _reprints.Add(ids); return Task.FromResult<string?>(null); },
@@ -148,7 +148,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         // Onlar da kodun etiketi: düzeltmeye girer; gösterilen etiketler değişmediği için yeniden onay istenmez —
         // istenseydi her yeni yorumda onay bayatlar, düzeltme hiç tutmazdı.
         var a = Add("@a", 250m);
-        var vm = Vm(new[] { a }, PriceCorrectionMode.Queue);
+        var vm = Vm(new[] { a });
         var late = Add("@gec", 250m);
 
         vm.NewPriceText = "205";
@@ -164,7 +164,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     {
         var a = Add("@a", 250m);
         var b = Add("@b", 250m);
-        var vm = Vm(new[] { a }, PriceCorrectionMode.Queue);
+        var vm = Vm(new[] { a });
         _inFlight = new HashSet<string> { b.Id };
 
         vm.NewPriceText = "205";
@@ -208,7 +208,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     public void Correction_is_refused_while_a_selected_label_is_on_the_printer()
     {
         var l = Add("@a", 250m);
-        var vm = Vm(new[] { l }, PriceCorrectionMode.Queue);
+        var vm = Vm(new[] { l });
         _inFlight = new HashSet<string> { l.Id };
 
         vm.NewPriceText = "205";
@@ -228,7 +228,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     {
         // Çekmece açıkken kuyruk basıldı: özet "1 kuyrukta" diyordu, artık basılmış.
         var l = Add("@a", 250m);
-        var vm = Vm(new[] { l }, PriceCorrectionMode.Queue);
+        var vm = Vm(new[] { l });
         vm.Summary.Should().Contain("1 kuyrukta, 0 basılmış");
         _labels.MarkPrintedAndRecord(new[] { l.Id });
 
@@ -268,7 +268,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         // olarak düzeltir — kâğıtta eski fiyat kalır, yeniden baskı sorulmalı (K5).
         var a = Add("@a", 250m);
         var b = Add("@b", 250m);
-        var vm = Vm(new[] { a, b }, PriceCorrectionMode.Queue);
+        var vm = Vm(new[] { a, b });
         _labels.MarkPrintedAndRecord(new[] { a.Id, b.Id });
         vm.NewPriceText = "205";
         vm.ConfirmCommand.Execute(null);
@@ -288,7 +288,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         var a = Add("@a", 250m);
         _labels.MarkPrintedAndRecord(new[] { a.Id });
         var vm = new PriceCorrectionViewModel(_labels, payments: null, "s1", new[] { a.Id },
-            PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null, applied: _ => { },
+            DateTime.Now, inFlight: () => null, applied: _ => { },
             reprint: _ => Task.FromResult<string?>("Başka bir baskı sürüyor; bitince tekrar dene."),
             cloudApiEnabled: true);
         vm.NewPriceText = "205";
@@ -310,7 +310,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         _labels.MarkPrintedAndRecord(new[] { a.Id });
         var gate = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var vm = new PriceCorrectionViewModel(_labels, payments: null, "s1", new[] { a.Id },
-            PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null, applied: _ => { },
+            DateTime.Now, inFlight: () => null, applied: _ => { },
             reprint: _ => gate.Task, cloudApiEnabled: true);
         var reports = new List<string>();
         vm.WorkFinished = reports.Add;
@@ -373,7 +373,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     public void Queue_correction_has_no_reprint_step()
     {
         var q = Add("@a", 250m);
-        var vm = Vm(new[] { q }, PriceCorrectionMode.Queue);
+        var vm = Vm(new[] { q });
 
         vm.NewPriceText = "205";
         vm.ConfirmCommand.Execute(null);

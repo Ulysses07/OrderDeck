@@ -103,7 +103,7 @@ public sealed partial class MainShellViewModel
         if (session is null || SelectedQueueItems.Count == 0) return Task.CompletedTask;
         // Kuyruk ekleme sırasıyla; seçim sırası değil.
         var ids = PrintQueue.Where(SelectedQueueItems.Contains).Select(vm => vm.Id).ToList();
-        return OpenPriceCorrectionAsync(session.Id, ids, PriceCorrectionMode.Queue, DateTime.Now);
+        return OpenPriceCorrectionAsync(session.Id, ids, DateTime.Now);
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
@@ -112,16 +112,16 @@ public sealed partial class MainShellViewModel
         var sessionId = PrintedLabels.SessionId;
         var ids = PrintedLabels.SelectedIds;
         if (sessionId is null || ids.Count == 0) return Task.CompletedTask;
-        return OpenPriceCorrectionAsync(sessionId, ids, PriceCorrectionMode.Printed, PrintedStreamDate);
+        return OpenPriceCorrectionAsync(sessionId, ids, PrintedStreamDate);
     }
 
     private async Task OpenPriceCorrectionAsync(
-        string sessionId, IReadOnlyList<string> ids, PriceCorrectionMode mode, DateTime streamDate)
+        string sessionId, IReadOnlyList<string> ids, DateTime streamDate)
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
         var vm = WireCorrection(new PriceCorrectionViewModel(
-            _labels, _paymentFollowUp, sessionId, ids, mode, streamDate,
+            _labels, _paymentFollowUp, sessionId, ids, streamDate,
             inFlight: () => _printInFlightIds,
             applied: ApplyPriceCorrection,
             reprint: ReprintAsync,
