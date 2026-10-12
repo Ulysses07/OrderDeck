@@ -73,6 +73,7 @@
             <RowDefinition Height="Auto"/>   <!-- arama -->
             <RowDefinition Height="Auto"/>   <!-- seçim araç çubuğu -->
             <RowDefinition Height="Auto"/>   <!-- satır içi sonuç -->
+            <RowDefinition Height="Auto"/>   <!-- arka plan işlerinin kalıcı sonuç şeridi -->
             <RowDefinition Height="*"/>      <!-- liste -->
         </Grid.RowDefinitions>
 
@@ -144,7 +145,47 @@
                    TextWrapping="Wrap"
                    Visibility="{Binding PrintedLabels.Message, Converter={StaticResource NullToCollapsedConverter}}"/>
 
-        <Grid Grid.Row="4">
+        <!-- Arka planda biten işlerin sonuçları (fiyat düzeltmesinin yeniden baskısı, düzeltilmiş istek
+             gönderimi): KALICI şerit, satır içi (pop-up değil). Üstteki uçucu ileti satırının tersine seçim,
+             başka ileti, iptal ya da tazeleme silmez; yalnız "Tamam" kapatır — "elle bakılmalı" adları ve
+             sebepleri okunmadan kaybolmasın. Sonuçlar geliş sırasıyla eklenir. -->
+        <Border Grid.Row="4"
+                Margin="{StaticResource OD.Pad.X5}"
+                Padding="{StaticResource OD.Pad.3}"
+                Background="{StaticResource OD.Brush.AmberTint}"
+                BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                BorderThickness="1"
+                CornerRadius="{StaticResource OD.Radius.Md}"
+                Visibility="{Binding PrintedLabels.HasOutcomes, Converter={StaticResource BoolToVisibleConverter}}">
+            <DockPanel LastChildFill="True">
+                <DockPanel DockPanel.Dock="Top" LastChildFill="True">
+                    <Button x:Name="DismissOutcomesButton"
+                            DockPanel.Dock="Right"
+                            Content="Tamam"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            FontSize="{StaticResource OD.Font.F0}"
+                            Command="{Binding PrintedLabels.DismissOutcomesCommand}"/>
+                    <TextBlock Text="Arka planda biten işler"
+                               Style="{StaticResource OD.Text.Label}"
+                               Foreground="{StaticResource OD.Brush.Text}"
+                               VerticalAlignment="Center"
+                               Margin="0"/>
+                </DockPanel>
+                <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl x:Name="OutcomeList" ItemsSource="{Binding PrintedLabels.Outcomes}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}"
+                                           Style="{StaticResource OD.Text.Hint}"
+                                           Foreground="{StaticResource OD.Brush.Text}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+        <Grid Grid.Row="5">
             <ListBox x:Name="PrintedList"
                      Style="{StaticResource OD.ListBox}"
                      ItemContainerStyle="{StaticResource PrintedRow}"

@@ -515,6 +515,38 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public void Late_progress_callback_does_not_overwrite_the_final_resend_summary()
+    {
+        // Toplu gönderim baştan sona senkron bitebiliyor (her aday beklemeden döner: telefon gerekli, liste bayat,
+        // müşteri kaydı yok). İlerleme bildirimi dispatcher'a postalanıyor, özetten SONRA koşup çekmecedeki notu
+        // "Gönderiliyor… 1/1" yapıyordu: iş bitmişken "gönderiliyor" görünüyor, özet ("elle bakılmalı") görünmüyordu.
+        var error = OrderDeck.Tests.App.ThemeTestHost.RunOnSta(() =>
+        {
+            var previous = System.Threading.SynchronizationContext.Current;
+            System.Threading.SynchronizationContext.SetSynchronizationContext(
+                new System.Windows.Threading.DispatcherSynchronizationContext(
+                    System.Windows.Threading.Dispatcher.CurrentDispatcher));
+            try
+            {
+                var vm = CorrectedWithOneResendRow("@elle", Sut((_, _, _, _, _) =>
+                    Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.PhoneRequired))));
+
+                var sending = vm.ResendCommand.ExecuteAsync(null);
+                sending.IsCompleted.Should().BeTrue("her istek beklemeden döndü: gönderim senkron bitti");
+                OrderDeck.Tests.App.ThemeTestHost.Pump();   // postalanmış ilerleme bildirimleri koşar
+
+                vm.ResendNote.Should().Be("1 istek elle bakılmalı.");
+            }
+            finally
+            {
+                System.Threading.SynchronizationContext.SetSynchronizationContext(previous);
+            }
+        });
+
+        error.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Esc_closes_the_drawer_while_corrected_requests_are_sent()
     {
         var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -126,12 +126,13 @@ public sealed partial class MainShellViewModel
             cloudApiEnabled: SafeCloudApiEnabled());
         // Yeniden baskı ve toplu gönderim çekmeceye bağlı DEĞİL: çekmece iş sürerken de kapatılabilir (askıda
         // kalan yazıcı ya da yavaş ağ yayında kod/fiyat kutusunu ve kuyruğu örtmesin), iş arka planda sürer.
-        // Sonucu (baskı hatası, "elle bakılmalı" adları ve sebepleri) iş BİTİNCE "Basılanlar" ileti satırına
-        // yazılır — çekmece açık ya da kapalı. Tazelemeden SONRA: seçim değişirse tazeleme satırı temizler.
+        // Sonucu (baskı hatası, "elle bakılmalı" adları ve sebepleri) iş BİTİNCE "Basılanlar"daki kalıcı sonuç
+        // şeridine EKLENİR — çekmece açık ya da kapalı. Uçucu ileti satırına değil: seçim, başka bir ileti,
+        // iptal ya da tazeleme onu silerdi; şerit yalnız operatör kapatınca gider.
         vm.WorkFinished = report =>
         {
             RefreshPrintedLabels();
-            PrintedLabels.Message = report;
+            PrintedLabels.AddOutcome(report);
         };
         ActivePriceCorrection = vm;
         try

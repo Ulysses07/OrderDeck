@@ -225,4 +225,66 @@ public class PrintedLabelsPanelLayoutTests
 
         error.Should().BeNull();
     }
+
+    [Fact]
+    public void Outcome_banner_lists_background_outcomes_and_tamam_dismisses_it()
+    {
+        // Arka plan işlerinin sonuç şeridi gerçek görünümde: sonuçlar listelenir (elle bakılmalı adı ve sebebi
+        // dahil), başka bir ileti gelse de durur, "Tamam" kapatır.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var vm = new PrintedLabelsViewModel(new LabelRepository(db));
+            vm.Load("s1");
+            var panel = new PrintedLabelsPanel { DataContext = new Holder(vm) };
+            var window = new Window
+            {
+                Content = panel, Width = 400, Height = 600, Left = -10000, Top = -10000,
+                ShowInTaskbar = false, ShowActivated = false, WindowStyle = WindowStyle.None,
+            };
+            window.Show();
+            try
+            {
+                ThemeTestHost.Pump();
+                var dismiss = (Button)panel.FindName("DismissOutcomesButton");
+                dismiss.IsVisible.Should().BeFalse("sonuç yokken şerit gizli");
+
+                vm.AddOutcome("Fiyat düzeltmesi: Düzeltilmiş istek: 1 istek elle bakılmalı.\n• @a (WhatsApp numarası gerekli)");
+                vm.Message = "başka bir eylemin iletisi";
+                ThemeTestHost.Pump();
+
+                var list = (ItemsControl)panel.FindName("OutcomeList");
+                list.Items.Count.Should().Be(1);
+                Descendants(list).OfType<TextBlock>().Select(t => t.Text)
+                    .Should().ContainSingle(t => t.Contains("@a (WhatsApp numarası gerekli)"));
+                dismiss.IsVisible.Should().BeTrue();
+
+                dismiss.Command.Should().NotBeNull();
+                dismiss.Command.Execute(dismiss.CommandParameter);
+                ThemeTestHost.Pump();
+
+                vm.Outcomes.Should().BeEmpty();
+                dismiss.IsVisible.Should().BeFalse("Tamam şeridi kapatır");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void Outcome_banner_keeps_the_latest_outcomes()
+    {
+        using var db = new InMemorySqlite();
+        var vm = new PrintedLabelsViewModel(new LabelRepository(db));
+        for (var i = 1; i <= PrintedLabelsViewModel.MaxOutcomes + 2; i++) vm.AddOutcome($"iş {i}");
+
+        vm.Outcomes.Should().HaveCount(PrintedLabelsViewModel.MaxOutcomes);
+        vm.Outcomes[0].Should().EndWith("iş 3", "en eski düşer");
+        vm.Outcomes[^1].Should().EndWith($"iş {PrintedLabelsViewModel.MaxOutcomes + 2}", "en yeni sonda");
+    }
 }

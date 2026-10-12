@@ -130,25 +130,12 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <summary>Çekmeceyi kapatır (fabrika bağlar); testte boş.</summary>
     public Action? Close { get; set; }
 
-    /// <summary>Yeniden baskı ya da toplu gönderim BİTTİ; argüman <see cref="OutcomeReport"/>. Çekmece iş
+    /// <summary>Yeniden baskı ya da toplu gönderim BİTTİ; argüman o işin sonucu ("Fiyat düzeltmesi: …" —
+    /// baskı hatası, "elle bakılmalı" adları ve sebepleri). Her iş kendi sonucunu bir kez bildirir. Çekmece iş
     /// sürerken de kapatılabilir (yayında kod/fiyat kutusunu ve kuyruğu örtmesin) — iş arka planda sürer, kabuk
-    /// sonucu bitince "Basılanlar" ileti satırına yazar: baskı hatası ve "elle bakılmalı" listesi çekmece
-    /// kapandıysa da operatöre ulaşır. Testte boş.</summary>
+    /// sonucu bitince "Basılanlar"daki kalıcı sonuç şeridine ekler: çekmece kapandıysa da operatöre ulaşır.
+    /// Testte boş.</summary>
     public Action<string>? WorkFinished { get; set; }
-
-    /// <summary>Yeniden baskının ve toplu gönderimin son sonucu (ikisi birlikte) — kabuk iş bitince
-    /// "Basılanlar" ileti satırına yazar (<see cref="WorkFinished"/>). Hiçbiri koşmadıysa null.</summary>
-    public string? OutcomeReport
-    {
-        get
-        {
-            var parts = new[] { _reprintReport, _resendReport }.Where(p => p is not null).ToList();
-            return parts.Count == 0 ? null : "Fiyat düzeltmesi: " + string.Join(" ", parts);
-        }
-    }
-
-    private string? _reprintReport;
-    private string? _resendReport;
 
     /// <summary>Düzeltmenin yazımı (test dikişi; varsayılan <see cref="LabelService.CorrectPrices"/>) —
     /// paket içindeki çakışma (<see cref="PriceCorrectionConflictException"/>) testte başka türlü
@@ -413,12 +400,10 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         IsReprintAsked = false;
         ReprintResult = "Yeniden basılıyor…";
         var error = await _reprint(_correctedPrinted.Select(c => c.Before.Id).ToList());
-        ReprintResult = error is null
-            ? $"{_correctedPrinted.Count} etiket \"DÜZELTME\" işaretiyle yeniden basıldı."
-            : error;
+        var outcome = error ?? $"{_correctedPrinted.Count} etiket \"DÜZELTME\" işaretiyle yeniden basıldı.";
+        ReprintResult = outcome;
         if (error is not null) IsReprintAsked = true;
-        _reprintReport = ReprintResult;
-        ReportWorkFinished();
+        ReportWorkFinished(outcome);
     }
 
     [RelayCommand]
@@ -445,11 +430,23 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         }
         IsSending = true;
         IsResendAvailable = false;
+        string report;
         try
         {
             var rows = ResendRows.ToList();
-            var progress = new Progress<int>(n => ResendNote = $"Gönderiliyor… {n}/{rows.Count}");
+            // İlerleme bildirimi (Progress) bağlama POSTALANIR: gönderim baştan sona senkron bittiyse (her aday
+            // beklemeden döndü — telefon gerekli, liste bayat, müşteri kaydı yok) son bildirim özetten SONRA
+            // koşup notu "Gönderiliyor… n/n"e çevirirdi. Bittikten sonra gelen bildirim yok sayılır (kilit:
+            // bağlam yoksa bildirim iş parçacığı havuzundan gelir).
+            var progressGate = new object();
+            var finished = false;
+            var progress = new Progress<int>(n =>
+            {
+                lock (progressGate)
+                    if (!finished) ResendNote = $"Gönderiliyor… {n}/{rows.Count}";
+            });
             var outcomes = await _payments.ResendAsync(_sessionId, _streamDate, rows.Select(r => r.Candidate).ToList(), progress);
+            lock (progressGate) finished = true;
             for (var i = 0; i < outcomes.Count; i++)
             {
                 var o = outcomes[i];
@@ -458,23 +455,19 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             }
             var summary = OutcomeSummary(outcomes);
             ResendNote = summary;
+            // Her "elle bakılmalı" kişi adı ve sebebiyle ayrı satırda: şeritte okunup tek tek ele alınır.
             var manual = outcomes.Where(o => o.Status == ResendStatus.Manual)
-                .Select(o => $"{o.Candidate.Display} ({o.Note})").ToList();
-            // ResendNote'tan değil: ilerleme bildirimi (Progress) sonradan gelip onu "Gönderiliyor… n/n" yapabilir.
-            _resendReport = "Düzeltilmiş istek: " + summary
-                + (manual.Count > 0 ? " Elle bakılmalı: " + string.Join(", ", manual) + "." : "");
+                .Select(o => $"\n• {o.Candidate.Display} ({o.Note})");
+            report = "Düzeltilmiş istek: " + summary + string.Concat(manual);
         }
         finally
         {
             IsSending = false;
         }
-        ReportWorkFinished();
+        ReportWorkFinished(report);
     }
 
-    private void ReportWorkFinished()
-    {
-        if (OutcomeReport is { } report) WorkFinished?.Invoke(report);
-    }
+    private void ReportWorkFinished(string outcome) => WorkFinished?.Invoke("Fiyat düzeltmesi: " + outcome);
 
     /// <summary>Toplu gönderimin özeti — sonuçlar AYRI sayılır: WhatsApp penceresi açılan istek gitmiş
     /// değildir (operatör gönder tuşuna basmadan kapatırsa müşteride eski tutarlı mesaj kalır), sonucu

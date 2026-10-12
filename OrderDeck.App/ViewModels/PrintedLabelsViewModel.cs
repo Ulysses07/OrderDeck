@@ -162,6 +162,34 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     /// <summary>Seçim değişince önceki işlemin satır içi sonucu kalkar.</summary>
     partial void OnSelectedCountChanged(int value) => Message = null;
 
+    /// <summary>Şeritte tutulan en çok sonuç sayısı; fazlası en eskiden düşer.</summary>
+    internal const int MaxOutcomes = 10;
+
+    /// <summary>Arka planda biten işlerin sonuçları (fiyat düzeltmesinin yeniden baskısı ve düzeltilmiş istek
+    /// gönderimi), geliş sırasıyla — kalıcı sonuç şeridi. Uçucu <see cref="Message"/>'ın tersine seçim, başka
+    /// ileti, iptal ve tazeleme bunları SİLMEZ; yalnız operatör kapatır (<see cref="DismissOutcomesCommand"/>).
+    /// Sonuç dakikalar sonra, operatör başka iş yaparken gelebilir: "elle bakılmalı" adları ve sebepleri
+    /// okunmadan kaybolursa o kişilerde eski tutarlı istek kalır ve kime bakılacağı bilinmez.</summary>
+    public ObservableCollection<string> Outcomes { get; } = new();
+
+    public bool HasOutcomes => Outcomes.Count > 0;
+
+    /// <summary>Şeride bir sonuç ekler (saatiyle); en çok <see cref="MaxOutcomes"/> tutulur.</summary>
+    public void AddOutcome(string outcome)
+    {
+        Outcomes.Add($"{DateTime.Now.ToString("HH:mm", Tr)} — {outcome}");
+        while (Outcomes.Count > MaxOutcomes) Outcomes.RemoveAt(0);
+        OnPropertyChanged(nameof(HasOutcomes));
+    }
+
+    /// <summary>Operatör şeridi kapattı ("Tamam").</summary>
+    [RelayCommand]
+    private void DismissOutcomes()
+    {
+        Outcomes.Clear();
+        OnPropertyChanged(nameof(HasOutcomes));
+    }
+
     public bool HasSelection => SelectedCount > 0;
 
     public string SelectionText => $"{SelectedCount} seçili";

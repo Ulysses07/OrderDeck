@@ -395,7 +395,8 @@ public class MainShellPrintedLabelsTests
 
         await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
 
-        h.Vm.PrintedLabels.Message.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle()
+            .Which.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
     }
 
     /// <summary>Basılmış iki etiket, Basılanlar'da seçili; yeniden baskı yazıcıda bekler
@@ -432,12 +433,13 @@ public class MainShellPrintedLabelsTests
         var (h, printer, reprinting) = await CloseDrawerWhileReprintRuns();
         using var __ = h;
         h.Vm.ActivePriceCorrection.Should().BeNull("çekmece kapandı");
-        h.Vm.PrintedLabels.Message.Should().BeNull("baskı henüz bitmedi");
+        h.Vm.PrintedLabels.Outcomes.Should().BeEmpty("baskı henüz bitmedi");
 
         printer.Release.Set();
         await reprinting;
 
-        h.Vm.PrintedLabels.Message.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle()
+            .Which.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
     }
 
     [Fact]
@@ -457,8 +459,8 @@ public class MainShellPrintedLabelsTests
             printer.Release.Set();
             await reprinting;
         }
-        h.Vm.PrintedLabels.Message.Should().Contain("\"DÜZELTME\" işaretiyle yeniden basıldı",
-            "ilk işin sonucu bitince yazılır");
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle().Which.Should().Contain(
+            "\"DÜZELTME\" işaretiyle yeniden basıldı", "ilk işin sonucu bitince şeride yazılır");
     }
 
     [Fact]
@@ -493,14 +495,96 @@ public class MainShellPrintedLabelsTests
         };
 
         await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
-        h.Vm.PrintedLabels.Message.Should().BeNull("gönderim henüz bitmedi");
+        h.Vm.PrintedLabels.Outcomes.Should().BeEmpty("gönderim henüz bitmedi");
 
         gate.SetResult(new OrderDeck.App.Services.PaymentRequestOutcome(
             OrderDeck.App.Services.PaymentRequestResult.PhoneRequired));
         await sending!;
 
-        h.Vm.PrintedLabels.Message.Should().Contain("elle bakılmalı").And.Contain("@a")
-            .And.Contain("WhatsApp numarası gerekli");
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle().Which.Should().Contain("elle bakılmalı")
+            .And.Contain("@a").And.Contain("WhatsApp numarası gerekli");
+    }
+
+    [Fact]
+    public async Task Background_outcome_stays_until_dismissed_through_selection_messages_cancels_and_refreshes()
+    {
+        // Sonuç ("elle bakılmalı" adları ve sebepleri) uçucu ileti satırındaydı: bir sonraki satır tıklaması,
+        // başka bir eylemin iletisi ya da iptal onu siliyordu. Gönderim dakikalar sonra, operatör başka iş
+        // yaparken bitebilir: liste okunmadan kaybolur, o kişilerde eski tutarlı istek kalırdı.
+        var drawers = new ScriptedDrawers();
+        using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
+            new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
+                () => new OrderDeck.Core.Settings.AppSettings(),
+                (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
+                    OrderDeck.App.Services.PaymentRequestResult.PhoneRequired))));
+        drawers.Vm = h.Vm;
+        var a = Enqueue(h, "@a", 250m);
+        Enqueue(h, "@b", 250m);
+        var c = Enqueue(h, "@c", 250m);
+        await PrintAsync(h);
+        var jobs = new PaymentJobRepository(h.Db);
+        var job = jobs.FindOrCreate(a.Label.CustomerId, CorrectedPaymentRequests.SessionScope(h.Sessions.GetActive()!.Id), 250m);
+        jobs.MarkNoBalance(job.Id, null, job.Revision).Should().BeTrue();
+        jobs.MarkDelivered(job.Id, 250m);                    // @a'dan 250 TL istendi
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.VisibleRows.Single(r => r.Display == "@a").IsSelected = true;
+        drawers.OnPriceCorrection = async pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            pc.SkipReprintCommand.Execute(null);
+            await pc.ResendCommand.ExecuteAsync(null);
+        };
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+        var outcome = h.Vm.PrintedLabels.Outcomes.Should().ContainSingle().Subject;
+        outcome.Should().Contain("@a").And.Contain("WhatsApp numarası gerekli");
+
+        // Seçim değişti.
+        foreach (var r in h.Vm.PrintedLabels.VisibleRows) r.IsSelected = r.Display == "@b";
+        // Başka bir eylemin iletisi.
+        await h.Vm.ReprintPrintedCommand.ExecuteAsync(null);
+        h.Vm.PrintedLabels.Message.Should().Be("1 etiket yeniden basıldı.");
+        // İptal.
+        h.Vm.CancelLabels(new[] { c.Id }, CancelReasonCodes.Customer);
+        // Tazeleme (sekme değişimi, "bu yayına dön").
+        h.Vm.IsPrintedTabActive = false;
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.ShowActiveSessionInPrintedTabCommand.Execute(null);
+
+        h.Vm.PrintedLabels.Outcomes.Should().Equal(outcome);
+        h.Vm.PrintedLabels.HasOutcomes.Should().BeTrue();
+
+        h.Vm.PrintedLabels.DismissOutcomesCommand.Execute(null);
+
+        h.Vm.PrintedLabels.Outcomes.Should().BeEmpty();
+        h.Vm.PrintedLabels.HasOutcomes.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Background_outcomes_are_appended_not_replaced()
+    {
+        // İkinci işin sonucu (ör. başka bir düzeltmenin reddedilen yeniden baskısı) ilkini eziyordu.
+        var (h, drawers) = Build();
+        using var __ = h;
+        Enqueue(h, "@a", 250m);
+        Enqueue(h, "@b", 300m);
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        drawers.OnPriceCorrection = async pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            await pc.ReprintCommand.ExecuteAsync(null);
+        };
+        h.Vm.PrintedLabels.VisibleRows.Single(r => r.Display == "@a").IsSelected = true;
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+        h.Vm.PrintedLabels.ClearSelectionCommand.Execute(null);
+        h.Vm.PrintedLabels.VisibleRows.Single(r => r.Display == "@b").IsSelected = true;
+
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+
+        h.Vm.PrintedLabels.Outcomes.Should().HaveCount(2)
+            .And.OnlyContain(o => o.Contains("1 etiket \"DÜZELTME\" işaretiyle yeniden basıldı"));
     }
 
     [Fact]
