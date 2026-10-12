@@ -4,9 +4,10 @@
     <!-- Fiyat düzeltmesinin SONUÇ görünümü (sahip kararları K5, F2): "yeniden
          basılsın mı?" (varsayılan Evet), eski tutarla istek gitmiş kişiler
          ("düzeltilmiş isteği gönder"), ödemesi alınmışlar. İki yerde aynı
-         görünüm: "Fiyatı düzelt" çekmecesi ve FİYAT kutusunun altı (kutuda
-         etiketi olan kodun fiyatı değiştirilip şeritte "Evet" denince —
-         çekmece açılmaz, kod/fiyat kutusu ve kuyruk örtülmez).
+         görünüm: "Fiyatı düzelt" çekmecesi ve kuyruğun üstündeki satır içi
+         sonuç (kutuda etiketi olan kodun fiyatı değiştirilip şeritte "Evet"
+         denince — çekmece açılmaz, kod/fiyat kutusu ve kuyruk örtülmez;
+         Shell/CodePriceResultPanel).
          DataContext: PriceCorrectionViewModel. -->
     <StackPanel>
         <TextBlock Text="{Binding ResultText}" TextWrapping="Wrap"
@@ -101,7 +102,10 @@
                        Style="{StaticResource OD.Text.Hint}"/>
         </StackPanel>
 
-        <Button Content="Kapat"
+        <!-- FİYAT değişikliğinin satır içi sonucunda gizli (ShowsDoneButton=False): orada "Kapat" kaydırılan
+             alanın dışında, başlık satırında (Shell/CodePriceResultPanel). -->
+        <Button x:Name="DoneButton"
+                Content="Kapat"
                 Style="{StaticResource OD.Button.Ghost}"
                 HorizontalContentAlignment="Center"
                 Margin="{StaticResource OD.Pad.Top5}"

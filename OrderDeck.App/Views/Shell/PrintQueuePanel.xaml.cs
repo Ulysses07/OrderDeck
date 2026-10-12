@@ -8,6 +8,12 @@ public partial class PrintQueuePanel : UserControl
 {
     public PrintQueuePanel() => InitializeComponent();
 
+    /// <summary>Kuyruğun vazgeçilmez yüksekliği: çerçeve + sekme başlığı + listenin asgarisi
+    /// (<c>OD.Layout.QueueMinHeight</c>). FİYAT değişikliğinin satır içi sonucu bu paya girmez
+    /// (<see cref="MainShellView"/>); sekme başlığı ilk ölçümden sonra belli olur.</summary>
+    internal double ReservedHeight
+        => Frame.BorderThickness.Top + Frame.BorderThickness.Bottom + TabHeader.ActualHeight + QueueList.MinHeight;
+
     // MainShellView.xaml.cs'ten taşındı — gövde değişmedi. Eski görünüm
     // Görev 15'te sökülene kadar oradaki kopya da duruyor (MainShellView.xaml
     // hâlâ kendi QueueList'iyle o handler'a bağlı).

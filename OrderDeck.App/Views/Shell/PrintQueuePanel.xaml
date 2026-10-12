@@ -12,7 +12,7 @@
             <Setter Property="Margin" Value="{StaticResource OD.Pad.X2}"/>
         </Style>
     </UserControl.Resources>
-    <Border Style="{StaticResource OD.Panel}">
+    <Border x:Name="Frame" Style="{StaticResource OD.Panel}">
         <Grid>
             <!-- Eskiden üçüncü bir satır daha vardı: Yazdır/Sil/Temizle şeridi.
                  PrintSlot'a taşındı, çünkü çekmece bu paneli örtüyor ve
@@ -25,7 +25,7 @@
             <!-- ── Başlık şeridi: iki sekme + adet hapları ───────────────────
                  "Yazdırılacak Etiketler" başlığı Kuyruk sekmesine döndü; yanına
                  "Basılanlar" geldi (o yayının basılmış etiketleri, K1). -->
-            <Border Grid.Row="0" Padding="{StaticResource OD.Pad.3}"
+            <Border x:Name="TabHeader" Grid.Row="0" Padding="{StaticResource OD.Pad.3}"
                     BorderBrush="{StaticResource OD.Brush.Border}"
                     BorderThickness="0,0,0,1">
                 <DockPanel LastChildFill="False">

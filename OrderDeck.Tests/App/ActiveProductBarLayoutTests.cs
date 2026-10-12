@@ -11,8 +11,8 @@ using OrderDeck.Core.Storage.Repositories;
 namespace OrderDeck.Tests.App;
 
 /// <summary>FİYAT kutusunun satır içi şeridi (sahip kararı F2) gerçek WPF bağlarında: soru görünür, "Evet"
-/// kodun bütün etiketlerini yeni fiyata geçirir, sonuç kutunun altında satır içi (çekmece değil) ve "Kapat"la
-/// kalkar.</summary>
+/// kodun bütün etiketlerini yeni fiyata geçirir, sonuç satır içi (çekmece değil — kuyruğun üstünde,
+/// <see cref="CodePriceResultPanel"/>) ve "Kapat"la kalkar.</summary>
 public class ActiveProductBarLayoutTests
 {
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
@@ -50,6 +50,9 @@ public class ActiveProductBarLayoutTests
             var bar = new ActiveProductBar { DataContext = h.Vm };
             bar.Measure(new Size(360, 900));
             bar.Arrange(new Rect(0, 0, 360, 900));
+            var panel = new CodePriceResultPanel { DataContext = h.Vm };
+            panel.Measure(new Size(360, 900));
+            panel.Arrange(new Rect(0, 0, 360, 900));
             ThemeTestHost.Pump();
             var strip = (Border)bar.FindName("CodePriceStrip");
             strip.Visibility.Should().Be(Visibility.Collapsed);
@@ -67,15 +70,19 @@ public class ActiveProductBarLayoutTests
             strip.Visibility.Should().Be(Visibility.Collapsed);
             var labels = new LabelRepository(h.Db);
             h.Vm.PrintQueue.Select(q => labels.GetById(q.Id)!.Price).Should().OnlyContain(p => p == 200m);
-            var result = (FrameworkElement)bar.FindName("CodePriceResult");
-            ((FrameworkElement)result.Parent).Visibility.Should().Be(Visibility.Visible, "sonuç kutunun altında");
-            Descendants(result).OfType<TextBlock>().Select(t => t.Text)
+            var frame = (FrameworkElement)panel.FindName("Frame");
+            frame.Visibility.Should().Be(Visibility.Visible, "sonuç satır içi");
+            Descendants(frame).OfType<TextBlock>().Select(t => t.Text)
                 .Should().Contain(t => t.StartsWith("A1: 2 etiket 200,00 TL'ye düzeltildi"));
+            Descendants((DependencyObject)panel.FindName("Result")).OfType<Button>()
+                .Where(b => Equals(b.Content, "Kapat")).Should().ContainSingle().Which.Visibility.Should()
+                .Be(Visibility.Collapsed,
+                    "görünümün alttaki \"Kapat\"ı gizli — sınırlı yükseklikte kaydırılan alanın dibinde kalırdı");
 
-            Click(ButtonIn(result, "Kapat"));
+            Click((Button)panel.FindName("CloseButton"));
             ThemeTestHost.Pump();
 
-            ((FrameworkElement)result.Parent).Visibility.Should().Be(Visibility.Collapsed);
+            frame.Visibility.Should().Be(Visibility.Collapsed);
         });
 
         error.Should().BeNull();

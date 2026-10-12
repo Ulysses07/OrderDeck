@@ -105,6 +105,16 @@ public partial class MainShellView : UserControl
         vm.IsShort = e.NewSize.Height < ShortHeight;
     }
 
+    /// <summary>FİYAT değişikliğinin satır içi sonucunun yeri: kuyrukla paylaştığı hücrenin en çok yarısı ve
+    /// kuyruğun vazgeçilmez payı (<see cref="Shell.PrintQueuePanel.ReservedHeight"/> — sekme başlığı + bir satır)
+    /// hiç verilmez; sığmayan içerik sonucun içinde kaydırılır, "Kapat" başlıkta kalır. Yayında kuyruk sürekli
+    /// kullanılıyor, sonuç bir kerelik: büyük ekranda uzun bir liste kuyruğu tek satıra indirmesin. Hücrenin boyu
+    /// sonuca bağlı değil (yıldız satır) — döngü yok; kuyruğun boyu değişince de yeniden hesaplanır (sekme
+    /// başlığı ilk ölçümde belli olur).</summary>
+    private void OnQueueAreaSizeChanged(object sender, SizeChangedEventArgs e)
+        => CodePriceResult.Room = Math.Min(
+            QueueArea.ActualHeight / 2, QueueArea.ActualHeight - QueuePanel.ReservedHeight);
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         // Phase 4c: trial just started this session — show banner once

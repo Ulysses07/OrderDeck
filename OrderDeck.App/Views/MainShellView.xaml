@@ -61,8 +61,25 @@
                         <shell:ActiveProductBar Grid.Row="0" x:Name="ProductBar"/>
                         <shell:ProductCard      Grid.Row="1"
                                                 Margin="{StaticResource OD.Pad.Top5}"/>
-                        <shell:PrintQueuePanel  Grid.Row="2"
-                                                Margin="{StaticResource OD.Pad.Top5}"/>
+                        <!-- FİYAT değişikliğinin satır içi sonucu kuyrukla AYNI
+                             hücrede, üstünde. Hücre yıldız satır: boyu sonuca
+                             bağlı değil, sonuç kuyruğun vazgeçilmez payına
+                             (sekme başlığı + en az QueueMinHeight liste)
+                             girmez — fazlası sonucun içinde kaydırılır
+                             (OnQueueAreaSizeChanged). Sonuç Auto satırdaki ürün
+                             çubuğundayken sınırsızdı: kuyruğu 0 piksele
+                             indiriyor, "Kapat"ı pencerenin dışına itiyordu. -->
+                        <Grid Grid.Row="2" x:Name="QueueArea"
+                              Margin="{StaticResource OD.Pad.Top5}"
+                              SizeChanged="OnQueueAreaSizeChanged">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <shell:CodePriceResultPanel Grid.Row="0" x:Name="CodePriceResult"/>
+                            <shell:PrintQueuePanel      Grid.Row="1" x:Name="QueuePanel"
+                                                        SizeChanged="OnQueueAreaSizeChanged"/>
+                        </Grid>
                     </Grid>
 
                     <!-- Çekmece katmanı YALNIZ üst satırı örter. Yazdır yuvası

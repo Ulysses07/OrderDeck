@@ -1,7 +1,6 @@
 <UserControl x:Class="OrderDeck.App.Views.Shell.ActiveProductBar"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:drawers="clr-namespace:OrderDeck.App.Views.Drawers">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <!-- Sağ sütunun tepesi: kod ve fiyat DİKEY yığılır (yerleşim kararı
          2026-08-08). Eskiden tam genişlikte bir şerittiler; şerit kalkınca
          sohbet paneli o yüksekliği kazandı. Şeritteki ürün adı burada
@@ -136,20 +135,10 @@
                            TextWrapping="Wrap"/>
             </DockPanel>
 
-            <!-- Şeritte "Evet"in sonucu: "Fiyatı düzelt" çekmecesindekiyle aynı
-                 görünüm (yeniden baskı sorusu, düzeltilmiş istek listesi). Çekmece
-                 AÇILMAZ — yayında kod/fiyat kutusu ve kuyruk örtülmesin. "Kapat"la
-                 kalkar; yeniden baskı/gönderim sürerken de kapatılabilir, sonucu
-                 "Basılanlar"daki şeride düşer. -->
-            <Border Margin="{StaticResource OD.Pad.Top3}"
-                    Padding="{StaticResource OD.Pad.3}"
-                    BorderBrush="{StaticResource OD.Brush.Border}"
-                    BorderThickness="1"
-                    CornerRadius="{StaticResource OD.Radius.Md}"
-                    Visibility="{Binding CodePriceCorrection, Converter={StaticResource NullToCollapsedConverter}}">
-                <drawers:PriceCorrectionResultView x:Name="CodePriceResult"
-                                                   DataContext="{Binding CodePriceCorrection}"/>
-            </Border>
+            <!-- Şeritte "Evet"in sonucu burada DEĞİL, kuyruğun üstünde
+                 (CodePriceResultPanel): bu çubuk Auto satırda, boyu sınırsız —
+                 sonucun listesi kuyruğu 0 piksele indiriyor, "Kapat"ı pencerenin
+                 dışına itiyordu. -->
 
             <!-- 0 TL satır içi onayı: soru açıkken tıklanan yorumlar sırayla
                  bekletilir, "Evet" hepsini 0 TL ile yazar; aynı kutu metni ve
