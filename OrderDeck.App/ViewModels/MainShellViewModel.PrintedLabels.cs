@@ -157,10 +157,12 @@ public sealed partial class MainShellViewModel
 
     /// <summary>Düzeltme yazıldı: kuyruktaki etkilenen satırlar YERİNDE güncel etiketle değiştirilir
     /// (seçim ve sıra korunur). Yapılmasaydı kâğıda eski fiyat basılır, ciro yeni fiyatla yazılırdı —
-    /// baskı veritabanını değil satırın kopyasını basıyor.</summary>
+    /// baskı veritabanını değil satırın kopyasını basıyor. FİYAT kutusunun kod belleği de yeni fiyatı alır
+    /// (<see cref="RememberCorrectedPrices"/>): yanlış dediğin fiyat o koda dönüşte geri gelmez.</summary>
     internal void ApplyPriceCorrection(PriceCorrectionResult result)
     {
         RefreshQueueRows(result.Corrected.Select(c => c.Before.Id));
+        RememberCorrectedPrices(result);
         RefreshHeroStats();
         RefreshPrintedLabels();
     }

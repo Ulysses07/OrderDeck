@@ -46,10 +46,11 @@
                 </TextBox.Style>
             </TextBox>
 
-            <!-- FİYAT. Kod değişince katalog fiyatıyla dolar; katalogda fiyat
-                 yoksa ve kutudaki fiyat önceki ürün için girildiyse kutu sarı
-                 çerçeveyle vurgulanır (sahip kararı K8). Operatör fiyata
-                 dokununca vurgu kalkar. -->
+            <!-- FİYAT. Kod değişince operatörün o kod için bu yayında yazdığı
+                 fiyatla, yoksa katalog fiyatıyla dolar; ikisi de yoksa ve
+                 kutudaki fiyat başka ürün için girildiyse kutu sarı çerçeveyle
+                 vurgulanır (sahip kararı K8). Operatör fiyata dokununca vurgu
+                 kalkar. -->
             <TextBlock Text="FİYAT" Style="{StaticResource OD.Text.Micro}"
                        Margin="{StaticResource OD.Pad.Top5}"/>
             <TextBox x:Name="PriceBox"
