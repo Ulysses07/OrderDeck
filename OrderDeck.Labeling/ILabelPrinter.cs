@@ -12,7 +12,11 @@ public interface ILabelPrinter
     /// "ALICI ÖDEMELİ" kırmızı yazı render edilecek label id'leri. Null/boş =
     /// hiçbir etikette mark yok (geriye uyumlu çağrılar default davranışı korur).
     /// Caller müşterinin RecipientPaysActive bayrağından bu set'i oluşturur.</param>
-    void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null);
+    /// <param name="correctionLabelIds">Fiyat düzeltme (K5, 2026-10-12): fiyatı düzeltilmiş ve
+    /// YENİDEN basılan etiketler — kâğıtta küçük "DÜZELTME" işareti, eski (yanlış fiyatlı) kâğıtla
+    /// karışmasın. Null/boş = işaret yok.</param>
+    void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+        IReadOnlySet<string>? correctionLabelIds = null);
 
     /// <summary>Çekiliş kazananları için etiket basar. Normal satış etiketinden
     /// farkı: fiyat yerine "HEDİYE" yazar (bu etiketler satış değil). İçerik =

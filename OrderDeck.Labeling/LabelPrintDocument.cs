@@ -122,10 +122,14 @@ public static class LabelPrintDocument
     /// set'inde olan label'lar etikette "ALICI ÖDEMELİ" kırmızı yazı + kargo ücreti
     /// (settings.Shipping.ShippingFee, varsa) render eder.
     /// </summary>
+    /// <summary>Fiyatı düzeltilmiş etiketin yeniden baskısındaki küçük işaret (K5). Eski kâğıt da
+    /// pakette durabilir; operatör ikisini tek bakışta ayırsın.</summary>
+    public const string CorrectionMark = "DÜZELTME";
+
     [SupportedOSPlatform("windows")]
     public static PrintDocument Build(IReadOnlyList<Label> labels, AppSettings settings,
         string? printerName, IReadOnlySet<string>? recipientPaysLabelIds = null,
-        bool giftMode = false)
+        bool giftMode = false, IReadOnlySet<string>? correctionLabelIds = null)
     {
         var doc = new PrintDocument
         {
@@ -208,6 +212,7 @@ public static class LabelPrintDocument
             // label's customer is in RecipientPays mode. Vendor depo personeli
             // etiketi tek bakışta görüp kargo şirketine "alıcıdan tahsil et"
             // notuyla teslim etmeli.
+            float? rpTop = null;
             if (recipientPaysLabelIds is not null && recipientPaysLabelIds.Contains(label.Id))
             {
                 using var rpFont = new Font(settings.LabelFontFamily,
@@ -220,6 +225,25 @@ public static class LabelPrintDocument
                 float rpX = (pageWidth - rpSize.Width) / 2;
                 using var rpBrush = new SolidBrush(Color.Red);
                 e.Graphics.DrawString(rpText, rpFont, rpBrush, rpX, rpY);
+                rpTop = rpY;
+            }
+
+            // "DÜZELTME" — fiyatı düzeltilmiş etiketin yeniden baskısı (K5). Küçük, kutulu,
+            // sağ-alt köşe: üstteki iki köşe platform ve Y rozetinde, alt orta ALICI ÖDEMELİ
+            // şeridinde. Şerit varsa işaret onun hemen üstüne çıkar (çakışmasın).
+            if (correctionLabelIds is not null && correctionLabelIds.Contains(label.Id))
+            {
+                using var markFont = new Font(settings.LabelFontFamily,
+                    settings.LabelMessageFontSize * 0.6f, FontStyle.Bold);
+                var markSize = e.Graphics.MeasureString(CorrectionMark, markFont);
+                float padX = 3f, padY = 1f;
+                float boxW = markSize.Width + padX * 2;
+                float boxH = markSize.Height + padY * 2;
+                float boxX = pageWidth - boxW - 6f;
+                float boxY = rpTop is float top ? top - boxH - 2f : heightHundredths - boxH - 4f;
+                using var markPen = new Pen(Brushes.Black, 1f);
+                e.Graphics.DrawRectangle(markPen, boxX, boxY, boxW, boxH);
+                e.Graphics.DrawString(CorrectionMark, markFont, Brushes.Black, boxX + padX, boxY + padY);
             }
 
             // "Y" badge for backup-promoted labels — small, top-right corner.

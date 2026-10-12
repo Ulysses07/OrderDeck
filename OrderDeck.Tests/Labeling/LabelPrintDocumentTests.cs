@@ -159,4 +159,50 @@ public class LabelPrintDocumentTests
         var label = MakeLabel("UCxxx", "  Örnek Müşteri  ");
         LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Örnek Müşteri");
     }
+
+    // ── "DÜZELTME" işareti (K5, 2026-10-12) ────────────────────────────
+    // Fiyatı düzeltilmiş etiketin yeniden baskısında küçük kutulu işaret: eski (yanlış fiyatlı) kâğıt da
+    // pakette durabilir. Sayfa gerçek yazıcı olmadan bir bit eşleme çizilir; işaretli ve işaretsiz baskı
+    // karşılaştırılır.
+
+    private static System.Drawing.Bitmap RenderFirstPage(Label label, IReadOnlySet<string>? corrections)
+    {
+        var settings = new AppSettings();
+        using var doc = LabelPrintDocument.Build(new[] { label }, settings, printerName: null,
+            correctionLabelIds: corrections);
+        var w = LabelPrintDocument.MmToHundredths(settings.LabelWidthMm);
+        var h = LabelPrintDocument.MmToHundredths(settings.LabelHeightMm);
+        var bmp = new System.Drawing.Bitmap(w, h);
+        using var g = System.Drawing.Graphics.FromImage(bmp);
+        g.Clear(System.Drawing.Color.White);
+        var bounds = new System.Drawing.Rectangle(0, 0, w, h);
+        var args = new System.Drawing.Printing.PrintPageEventArgs(g, bounds, bounds,
+            new System.Drawing.Printing.PageSettings());
+        typeof(System.Drawing.Printing.PrintDocument)
+            .GetMethod("OnPrintPage", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(doc, new object[] { args });
+        return bmp;
+    }
+
+    [Fact]
+    public void Correction_mark_is_drawn_only_for_corrected_labels_in_the_lower_right()
+    {
+        var label = new Label("l1", "s1", "c1", "instagram", "@ayse", "aldım", "A12", 205m, 1000L, 1000L);
+
+        using var plain = RenderFirstPage(label, null);
+        using var marked = RenderFirstPage(label, new HashSet<string> { "l1" });
+        using var other = RenderFirstPage(label, new HashSet<string> { "baska" });
+
+        var diff = new List<(int X, int Y)>();
+        for (var y = 0; y < plain.Height; y++)
+            for (var x = 0; x < plain.Width; x++)
+            {
+                plain.GetPixel(x, y).Should().Be(other.GetPixel(x, y), "işaret yalnız düzeltilen etikete");
+                if (plain.GetPixel(x, y) != marked.GetPixel(x, y)) diff.Add((x, y));
+            }
+
+        diff.Should().NotBeEmpty("düzeltilen etiketin kâğıdında işaret var");
+        diff.Should().OnlyContain(p => p.X > plain.Width / 2 && p.Y > plain.Height / 2,
+            "işaret sağ-alt köşede — ad, mesaj ve fiyatla çakışmaz");
+    }
 }

@@ -29,7 +29,8 @@ public sealed class LabelPrinter : ILabelPrinter
     /// label'lar etikette "ALICI ÖDEMELİ" kırmızı yazı + kargo ücreti
     /// (settings.Shipping.ShippingFee) render eder.
     /// </summary>
-    public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+    public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+        IReadOnlySet<string>? correctionLabelIds = null)
     {
         if (labels.Count == 0)
         {
@@ -38,11 +39,11 @@ public sealed class LabelPrinter : ILabelPrinter
         }
 
         using var doc = LabelPrintDocument.Build(labels, _settings, _settings.PrinterName,
-            recipientPaysLabelIds);
+            recipientPaysLabelIds, correctionLabelIds: correctionLabelIds);
         _log.LogInformation(
-            "Printing {Count} label(s) on '{Printer}' (RecipientPays marks: {MarkCount})",
+            "Printing {Count} label(s) on '{Printer}' (RecipientPays marks: {MarkCount}, correction marks: {CorrectionCount})",
             labels.Count, doc.PrinterSettings.PrinterName,
-            recipientPaysLabelIds?.Count ?? 0);
+            recipientPaysLabelIds?.Count ?? 0, correctionLabelIds?.Count ?? 0);
 
         // UI freeze fix (2026-05-13): süre ölç. Print 10 sn+ sürerse yazıcı
         // problem yaşıyor olabilir — log'a WARN bırak ki ileri analizde
