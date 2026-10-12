@@ -682,8 +682,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Sync.SyncStatusTracker? syncStatus = null,
         Services.Sync.SyncPendingCounter? pendingCounter = null,
         ILogger<MainShellViewModel>? log = null,
-        Services.Sync.CustomerChangesPullService? customerPull = null)
+        Services.Sync.CustomerChangesPullService? customerPull = null,
+        Services.PriceCorrection.CorrectedPaymentRequests? paymentFollowUp = null,
+        Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null)
     {
+        _paymentFollowUp = paymentFollowUp;
+        _printedNavigator = printedNavigator;
+        PrintedLabels = new PrintedLabelsViewModel(labelRepo,
+            paymentFollowUp is null ? null : paymentFollowUp.CustomersWithDeliveredRequest);
+        if (_printedNavigator is not null) _printedNavigator.Requested += OnPrintedLabelsRequested;
         _dialogs = dialogs;
         _drawers = drawers;
         _pages = pages;
@@ -738,6 +745,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             OnPropertyChanged(nameof(PrintButtonLabel));
             OnPropertyChanged(nameof(DeleteButtonLabel));
+            OnPropertyChanged(nameof(HasQueueSelection));
+            OnPropertyChanged(nameof(ShowQueueFixPrice));
         };
 
         OpenAccountCommand = new AsyncRelayCommand(OpenAccountAsync);
@@ -747,6 +756,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+        RefreshPrintedLabels();
 
         // Kuyruk her değiştiğinde (ekleme, silme, iptal, yazdırma) hero
         // sayaçları tazelenir — tek yerden, çağrı noktalarını serpiştirmeden.
@@ -1037,6 +1047,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         (AddChatSenderToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
         (AddQueueRowToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
         (DeleteSelectedFromQueueViaShortcutCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        FixQueuePriceCommand.NotifyCanExecuteChanged();
+        FixPrintedPriceCommand.NotifyCanExecuteChanged();
+        ReprintPrintedCommand.NotifyCanExecuteChanged();
+        CancelPrintedCommand.NotifyCanExecuteChanged();
     }
 
     private void OnIntakeSubmissionsSynced(object? sender, int count)
@@ -1168,6 +1182,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+        ShowActiveSessionInPrintedTab();
 
         // R7-04 (PO-02): kuyruk yalnız AKTİF oturumdan yüklenir; önceki
         // yayından basılmadan kalan etiketler veride durur ama ekranda
@@ -1269,6 +1284,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ViewerCountVisible = false;
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
+        // Yayın bitti: "Basılanlar" boşalır; o yayının listesi rapordan açılır (K6).
+        ShowActiveSessionInPrintedTab();
 
         // Yayın bitince rapor kendiliğinden açılır. Sayfa await EDİLMİYOR:
         // burası yayını bitiren akışın sonu, rapor kapanınca yapılacak iş
@@ -1569,14 +1586,27 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             : PrintQueue.ToList();
         if (snapshot.Count == 0) return true;
 
+        return await RunPrinterJobAsync(snapshot.Select(vm => vm.Id).ToHashSet(),
+            () => PrintCoreAsync(snapshot));
+    }
+
+    /// <summary>Yazıcıya giden HER iş (kuyruk baskısı, yeniden baskı) bu kapıdan geçer: aynı anda tek iş,
+    /// uçuştaki etiketler <see cref="_printInFlightIds"/>'te (iptal uyarısı, fiyat düzeltme reddi), EndStream
+    /// <see cref="_printTask"/>'ı bekler. Kapı R8-02A sırasıyla kapanır: önce alanlar, en son görev.
+    /// Başka iş sürüyorsa false.</summary>
+    private async Task<bool> RunPrinterJobAsync(
+        System.Collections.Generic.IReadOnlySet<string> ids, Func<Task<bool>> job)
+    {
+        if (_printTask is not null) return false;
+
         var gate = new System.Threading.Tasks.TaskCompletionSource<bool>(
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
-        _printInFlightIds = snapshot.Select(vm => vm.Id).ToHashSet();
+        _printInFlightIds = ids;
         _printTask = gate.Task;
         var ok = false;
         try
         {
-            ok = await PrintCoreAsync(snapshot);
+            ok = await job();
             return ok;
         }
         finally
@@ -1630,6 +1660,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             if (printedIds.Contains(PrintQueue[i].Id))
                 PrintQueue.RemoveAt(i);
         SelectedQueueItems.Clear();
+        // Basılan etiketler "Basılanlar"a düştü (yeni basış grubu en üstte).
+        RefreshPrintedLabels();
         return true;
     }
 
@@ -2115,8 +2147,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _ => Views.Drawers.CustomerSearchDrawer.Create(vm));
     }
 
+    /// <summary>Delete kısayolu yalnız Kuyruk sekmesinde: "Basılanlar" açıkken kuyruğun görünmeyen
+    /// seçimini iptal etmek operatörün kastı olamaz.</summary>
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void DeleteSelectedFromQueueViaShortcut() => RemoveSelectedFromQueue();
+    private void DeleteSelectedFromQueueViaShortcut()
+    {
+        if (IsPrintedTabActive) return;
+        RemoveSelectedFromQueue();
+    }
 
     [RelayCommand]
     private async Task OpenShortcutHelpAsync()
@@ -2188,6 +2226,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.StatusChanged -= OnLicenseStatusChanged;
         _licenseService.HeartbeatStateChanged -= OnHeartbeatStateChanged;
         Banner.AutoDrawRequested -= OnBannerAutoDrawRequested;
+        if (_printedNavigator is not null) _printedNavigator.Requested -= OnPrintedLabelsRequested;
 
         Banner.Dispose();
         _busSubscription.Dispose();

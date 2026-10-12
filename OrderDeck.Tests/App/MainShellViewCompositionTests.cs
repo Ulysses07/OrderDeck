@@ -151,6 +151,12 @@ public class MainShellViewCompositionTests
                 d => BuildBackupTransferDrawer(d));
             Assert.IsType<BackupTransferDrawer>(backups.Top!.Content);
 
+            // Basılanlar (K1–K5): sekme paneli ve fiyat düzeltme çekmecesi.
+            Assert.IsType<UserControl>(new PrintedLabelsPanel(), exactMatch: false);
+            var correction = new DrawerStack();
+            correction.ShowAsync("Fiyatı Düzelt", _ => PriceCorrectionDrawer.Create(BuildPriceCorrectionViewModel()));
+            Assert.IsType<PriceCorrectionDrawer>(correction.Top!.Content);
+
             // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
             // derlemede değil açılışta patlar. Sayfa fabrikaları Page
             // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
@@ -270,6 +276,26 @@ public class MainShellViewCompositionTests
             MakeLabel("l3", "youtube", "mehmet", "ALC-1", 275m, isBackup: true),
         };
         return BackupTransferDrawer.Create(drawer, service, parent, backups);
+    }
+
+    /// <summary>Fiyat düzeltme çekmecesinin ViewModel'i — gerçek veritabanında iki fiyatlı seçim ve
+    /// sonuç görünümü de kurulsun diye onaylanmış hâli değil, düzenleme hâli.</summary>
+    private static PriceCorrectionViewModel BuildPriceCorrectionViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var labels = new LabelRepository(db);
+        var sessions = new SessionRepository(db);
+        sessions.Insert(new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
+        var customers = new CustomerRepository(db);
+        var clock = new SystemClock();
+        var service = new LabelService(
+            labels, new CustomerService(customers, sessions, labels, clock), db, clock);
+        var ids = new[] { 250m, 250m, 300m }.Select(p => service.Add("s1",
+            new OrderDeck.Core.Chat.ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "alice", "alice",
+                null, "alıyorum", 1000, Array.Empty<string>()), p, "A12").Id).ToList();
+        return new PriceCorrectionViewModel(service, payments: null, "s1", ids, PriceCorrectionMode.Printed,
+            DateTime.Now, () => null, _ => { }, _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
     }
 
     private static OrderDeck.Core.Sales.Label MakeLabel(

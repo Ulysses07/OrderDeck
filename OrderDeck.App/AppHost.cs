@@ -360,6 +360,17 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<PaymentRequestService>();
         services.AddSingleton<IDialogService, WpfDialogService>();
 
+        // Basılanlar sekmesi + fiyat düzeltme (K1–K7, 2026-10-12): düzeltmenin ödeme tarafı (teslim
+        // edilmiş isteği değişen kişiler, düzeltilmiş isteği gönder) ve rapordan sekmeye geçiş.
+        services.AddSingleton<Services.PriceCorrection.CorrectedPaymentRequests>(sp =>
+            new Services.PriceCorrection.CorrectedPaymentRequests(
+                sp.GetRequiredService<CustomerRepository>(),
+                sp.GetRequiredService<LabelRepository>(),
+                sp.GetRequiredService<IPaymentJobStore>(),
+                sp.GetRequiredService<SettingsStore>(),
+                sp.GetRequiredService<PaymentRequestService>()));
+        services.AddSingleton<Services.PriceCorrection.PrintedLabelsNavigator>();
+
         // Faz 2 — çekmece altyapısı. TEK örnek iki rolde: DrawerHost'un
         // bağlandığı yığın ve ViewModel'lere verilen servis. İki ayrı kayıt
         // olsaydı host boş bir yığına bakardı.

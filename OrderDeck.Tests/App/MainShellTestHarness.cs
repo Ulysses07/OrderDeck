@@ -102,7 +102,9 @@ internal static class MainShellTestHarness
         OrderDeck.App.Services.Sync.SyncPendingCounter? pendingCounter = null,
         bool licensed = true,
         Microsoft.Extensions.Logging.ILogger<MainShellViewModel>? log = null,
-        OrderDeck.App.Services.Sync.CustomerChangesPullService? customerPull = null)
+        OrderDeck.App.Services.Sync.CustomerChangesPullService? customerPull = null,
+        OrderDeck.App.Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
+        OrderDeck.App.Services.Pages.IPageService? pages = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -160,8 +162,8 @@ internal static class MainShellTestHarness
             bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
-            drawers: drawers, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
-            customerPull: customerPull);
+            drawers: drawers, pages: pages, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
+            customerPull: customerPull, printedNavigator: printedNavigator);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }

@@ -148,6 +148,13 @@
         <StackPanel Grid.Row="6" Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Margin="{StaticResource OD.Pad.Top5}">
+            <!-- K6: bu yayının "Basılanlar" görünümü — rapor kapanır, sağ paneldeki
+                 sekme bu yayına açılır (fiyatı düzelt, yeniden bas, iptal). -->
+            <Button Content="Basılan etiketler"
+                    Style="{StaticResource OD.Button.Secondary}"
+                    Margin="{StaticResource OD.Pad.X2}"
+                    Command="{Binding ShowPrintedLabelsCommand}"
+                    ToolTip="Bu yayında basılmış etiketler: fiyatı düzelt, yeniden bas, iptal et"/>
             <Button Content="Excel'e Aktar"
                     Style="{StaticResource OD.Button.Primary}"
                     Command="{Binding ExportToExcelCommand}"/>

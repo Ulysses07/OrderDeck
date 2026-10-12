@@ -46,11 +46,39 @@ public partial class BackupTransferDrawer : UserControl
             Rows.Add(new BackupRowViewModel(b));
     }
 
+    /// <summary>Toplu iptal (K3, "Basılanlar"): birden çok etiketin yedekleri TEK çekmecede — her etiket
+    /// için ayrı çekmece açılmaz. Her yedek kartının üstünde hangi etiketin yedeği olduğu yazar.</summary>
+    private BackupTransferDrawer(
+        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups)
+    {
+        InitializeComponent();
+        _drawer = drawer;
+        _labels = labels;
+        BackupsList.ItemsSource = Rows;
+
+        Subtitle.Text =
+            $"İptal edilen {groups.Count} etiketin yedekleri. Bir yedek için fiyatı düzenleyip " +
+            "onaylayabilir, ya da kapatıp daha sonra müşteri detayından dönebilirsin.";
+
+        foreach (var (parent, backups) in groups)
+        {
+            var header = $"'{parent.DisplayName ?? parent.Username}' etiketinin yedeği — orijinal fiyat " +
+                         $"{parent.Price.ToString("N2", CultureInfo.CurrentCulture)} TL";
+            foreach (var b in backups)
+                Rows.Add(new BackupRowViewModel(b) { GroupHeader = header });
+        }
+    }
+
     /// <summary>Çekmece başlığı çağıranda kuruluyor (yedek sayısı orada
     /// biliniyor), gövde yalnız listeyi ve açıklamayı taşıyor.</summary>
     public static BackupTransferDrawer Create(
         Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups)
         => new(drawer, labels, parentLabel, backups);
+
+    /// <summary>Toplu iptalin yedek çekmecesi: birden çok etiketin yedekleri tek listede.</summary>
+    public static BackupTransferDrawer Create(
+        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups)
+        => new(drawer, labels, groups);
 
     private void OnPromote(object sender, RoutedEventArgs e)
     {
@@ -93,6 +121,9 @@ public sealed partial class BackupRowViewModel : ObservableObject
     [ObservableProperty] private bool _isActionable = true;
     [ObservableProperty] private string _actionButtonText = "Onayla";
     [ObservableProperty] private string? _errorText;
+
+    /// <summary>Toplu iptalde kartın hangi etiketin yedeği olduğu; tek etiketli çekmecede null.</summary>
+    public string? GroupHeader { get; init; }
 
     public string DisplayName => Backup.Username;
     public string MessageText => string.IsNullOrEmpty(Backup.MessageText) ? "—" : Backup.MessageText;

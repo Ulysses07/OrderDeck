@@ -10,7 +10,10 @@ namespace OrderDeck.App.ViewModels;
 /// </summary>
 public sealed partial class LabelViewModel : ObservableObject
 {
-    public Label Label { get; }
+    /// <summary>Etiketin ekrandaki kopyası. Baskı kâğıdı BUNDAN basılır (veritabanı yeniden
+    /// okunmaz) — fiyat düzeltmesi (K4/K5) kuyruktaki satırı <see cref="Replace"/> ile YERİNDE
+    /// günceller: satır nesnesi aynı kaldığı için seçim ve sıra korunur, kâğıda eski fiyat basılmaz.</summary>
+    public Label Label { get; private set; }
 
     [ObservableProperty] private bool _isCustomerBlacklisted;
 
@@ -40,5 +43,19 @@ public sealed partial class LabelViewModel : ObservableObject
         Label = label;
         IsCustomerBlacklisted = isCustomerBlacklisted;
         BackupCount = backupCount;
+    }
+
+    /// <summary>Aynı etiketin güncel hâlini yerine koyar (fiyat düzeltmesi). Başka bir etiketle
+    /// çağrılmaz — kimlik değişmez.</summary>
+    public void Replace(Label updated)
+    {
+        if (!string.Equals(updated.Id, Label.Id, System.StringComparison.Ordinal))
+            throw new System.ArgumentException("Satır başka bir etiketle değiştirilemez.", nameof(updated));
+        Label = updated;
+        OnPropertyChanged(nameof(Label));
+        OnPropertyChanged(nameof(Price));
+        OnPropertyChanged(nameof(MessageText));
+        OnPropertyChanged(nameof(Display));
+        OnPropertyChanged(nameof(Username));
     }
 }

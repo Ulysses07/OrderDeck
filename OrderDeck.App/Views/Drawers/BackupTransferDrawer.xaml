@@ -49,6 +49,12 @@
                         <DataTemplate>
                             <Border Style="{StaticResource BackupCard}">
                                 <StackPanel>
+                                    <!-- Toplu iptal (K3): hangi etiketin yedeği. -->
+                                    <TextBlock Text="{Binding GroupHeader}"
+                                               Style="{StaticResource OD.Text.Hint}"
+                                               TextWrapping="Wrap"
+                                               Margin="{StaticResource OD.Pad.Bottom3}"
+                                               Visibility="{Binding GroupHeader, Converter={StaticResource NullToCollapsedConverter}}"/>
                                     <!-- Kimlik: resmi platform ikonu + kullanıcı adı -->
                                     <StackPanel Orientation="Horizontal">
                                         <ContentControl VerticalAlignment="Center">

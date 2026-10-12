@@ -1,0 +1,226 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.PrintedLabelsPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- "Basılanlar" sekmesi (sahip kararları K1/K2/K3/K6/K7, 2026-10-12).
+         DataContext MainShellViewModel: eylemler (fiyatı düzelt, yeniden bas,
+         iptal) kabuğun — çekmece ve yazıcı onun; liste ve seçim
+         PrintedLabels'ta. Gruplar "Yazdır" basışı: en yeni basış en üstte,
+         grubun içi kâğıdın çıktığı sırada. -->
+    <UserControl.Resources>
+        <!-- Gruplama görünümde: VM düz (aramaya süzülmüş) satır listesi verir,
+             grup = satırın Batch'i (basış; aynı basışın satırları aynı nesne). -->
+        <CollectionViewSource x:Key="PrintedRowsSource" Source="{Binding PrintedLabels.VisibleRows}">
+            <CollectionViewSource.GroupDescriptions>
+                <PropertyGroupDescription PropertyName="Batch"/>
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
+
+        <!-- Seçim VM'de tutulur (bu baskıyı seç / bu kodu seç programla seçer):
+             satırın IsSelected'ı iki yönlü bağlı. OD.ListBoxItem'in görünümü
+             korunuyor. Gruplamada sanallaştırma kapalı (WPF varsayılanı) —
+             bağ her satırda canlı. -->
+        <Style x:Key="PrintedRow" TargetType="ListBoxItem" BasedOn="{StaticResource OD.ListBoxItem}">
+            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+        </Style>
+
+        <!-- Durum rozeti: kargoda (mavi), ödendi (yeşil), yedek (sönük),
+             ödeme istendi (sarı). Platform rengi token'ı YOK, kullanılmıyor. -->
+        <Style x:Key="StatusBadge" TargetType="Border">
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="{StaticResource OD.Radius.Full}"/>
+            <Setter Property="Padding" Value="{StaticResource OD.Pad.X2}"/>
+            <Setter Property="Margin" Value="{StaticResource OD.Pad.X2}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.BorderStrong}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding HasStatus}" Value="False">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Shipped">
+                    <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Info}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Paid">
+                    <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Success}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="PaymentRequested">
+                    <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Amber}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- yayın + not -->
+            <RowDefinition Height="Auto"/>   <!-- arama -->
+            <RowDefinition Height="Auto"/>   <!-- seçim araç çubuğu -->
+            <RowDefinition Height="Auto"/>   <!-- satır içi sonuç -->
+            <RowDefinition Height="*"/>      <!-- liste -->
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="{StaticResource OD.Pad.X5}">
+            <!-- K6: rapordan açılmış, aktif olmayan yayın. -->
+            <DockPanel LastChildFill="True"
+                       Visibility="{Binding PrintedLabels.IsOtherSession, Converter={StaticResource BoolToVisibleConverter}}">
+                <Button DockPanel.Dock="Right" Content="Bu yayına dön"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        FontSize="{StaticResource OD.Font.F0}"
+                        Command="{Binding ShowActiveSessionInPrintedTabCommand}"/>
+                <TextBlock Text="{Binding PrintedLabels.OtherSessionTitle}"
+                           Style="{StaticResource OD.Text.Label}"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+            <!-- K7: etiketler yalnız onları yazan bilgisayarda. -->
+            <TextBlock Text="Yalnız bu bilgisayarda basılan etiketler görünür."
+                       Style="{StaticResource OD.Text.Hint}"/>
+        </StackPanel>
+
+        <TextBox Grid.Row="1"
+                 Style="{StaticResource OD.TextBox}"
+                 Margin="{StaticResource OD.Pad.X5}"
+                 Tag="Ürün kodu ya da kullanıcı adı ara…"
+                 ToolTip="Ürün kodu ya da kullanıcı adı ara"
+                 Text="{Binding PrintedLabels.SearchText, UpdateSourceTrigger=PropertyChanged}"/>
+
+        <!-- Seçim araç çubuğu (K3): yalnız seçim varken. -->
+        <Border Grid.Row="2"
+                Margin="{StaticResource OD.Pad.X5}"
+                Padding="{StaticResource OD.Pad.3}"
+                Visibility="{Binding PrintedLabels.HasSelection, Converter={StaticResource BoolToVisibleConverter}}">
+            <WrapPanel>
+                <TextBlock Text="{Binding PrintedLabels.SelectionText}"
+                           Style="{StaticResource OD.Text.Label}"
+                           VerticalAlignment="Center"
+                           Margin="{StaticResource OD.Pad.X2}"/>
+                <Button Content="Fiyatı düzelt"
+                        Style="{StaticResource OD.Button.Secondary}"
+                        Margin="{StaticResource OD.Pad.X2}"
+                        Command="{Binding FixPrintedPriceCommand}"/>
+                <Button Content="Yeniden bas"
+                        Style="{StaticResource OD.Button.Secondary}"
+                        Margin="{StaticResource OD.Pad.X2}"
+                        Command="{Binding ReprintPrintedCommand}"/>
+                <Button Content="İptal et"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Foreground="{StaticResource OD.Brush.Accent}"
+                        Margin="{StaticResource OD.Pad.X2}"
+                        Command="{Binding CancelPrintedCommand}"/>
+                <Button Content="Bu kodu seç"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Margin="{StaticResource OD.Pad.X2}"
+                        ToolTip="Seçili satırların ürün kodundaki bütün basılmış etiketleri seç (gruplar arası)"
+                        Command="{Binding PrintedLabels.SelectCodeOfSelectionCommand}"/>
+                <Button Content="Seçimi temizle"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Margin="{StaticResource OD.Pad.X2}"
+                        Command="{Binding PrintedLabels.ClearSelectionCommand}"/>
+            </WrapPanel>
+        </Border>
+
+        <TextBlock Grid.Row="3"
+                   Text="{Binding PrintedLabels.Message}"
+                   Style="{StaticResource OD.Text.Hint}"
+                   Foreground="{StaticResource OD.Brush.Text}"
+                   Margin="{StaticResource OD.Pad.X5}"
+                   TextWrapping="Wrap"
+                   Visibility="{Binding PrintedLabels.Message, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+        <Grid Grid.Row="4">
+            <ListBox x:Name="PrintedList"
+                     Style="{StaticResource OD.ListBox}"
+                     ItemContainerStyle="{StaticResource PrintedRow}"
+                     ItemsSource="{Binding Source={StaticResource PrintedRowsSource}}"
+                     SelectionMode="Extended"
+                     Padding="{StaticResource OD.Pad.2}">
+                <ListBox.GroupStyle>
+                    <GroupStyle>
+                        <GroupStyle.HeaderTemplate>
+                            <!-- Grup: Name = PrintBatchViewModel (basış), ItemCount = görünen satır. -->
+                            <DataTemplate>
+                                <DockPanel LastChildFill="True" Margin="{StaticResource OD.Pad.Top3}">
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Bu baskıyı seç"
+                                            Style="{StaticResource OD.Button.Ghost}"
+                                            FontSize="{StaticResource OD.Font.F0}"
+                                            Command="{Binding DataContext.PrintedLabels.SelectBatchCommand,
+                                                              RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                            CommandParameter="{Binding Name}"/>
+                                    <TextBlock Style="{StaticResource OD.Text.Micro}" VerticalAlignment="Center">
+                                        <Run Text="{Binding Name.Title, Mode=OneWay}"/>
+                                        <Run Text="—"/>
+                                        <Run Text="{Binding ItemCount, Mode=OneWay}"/>
+                                        <Run Text="etiket"/>
+                                    </TextBlock>
+                                </DockPanel>
+                            </DataTemplate>
+                        </GroupStyle.HeaderTemplate>
+                    </GroupStyle>
+                </ListBox.GroupStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>   <!-- sıra -->
+                                <ColumnDefinition Width="*"/>      <!-- ad -->
+                                <ColumnDefinition Width="Auto"/>   <!-- kod -->
+                                <ColumnDefinition Width="Auto"/>   <!-- fiyat -->
+                                <ColumnDefinition Width="Auto"/>   <!-- rozet -->
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding Seq}"
+                                       Style="{StaticResource OD.Text.Mono}"
+                                       Foreground="{StaticResource OD.Brush.TextMute}"
+                                       MinWidth="{StaticResource OD.Icon.Xl}"/>
+                            <TextBlock Grid.Column="1" Text="{Binding Display}"
+                                       FontWeight="Bold" TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding Label.MessageText}"/>
+                            <TextBlock Grid.Column="2" Text="{Binding CodeText}"
+                                       Style="{StaticResource OD.Text.Mono}"
+                                       Foreground="{StaticResource OD.Brush.TextDim}"
+                                       Margin="{StaticResource OD.Pad.X2}"/>
+                            <TextBlock Grid.Column="3" Text="{Binding PriceText}"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource OD.Brush.Amber}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource OD.Text.Mono}">
+                                        <Style.Triggers>
+                                            <!-- Fiyatı "Fiyatı düzelt" ile değişmiş etiket. -->
+                                            <DataTrigger Binding="{Binding IsCorrected}" Value="True">
+                                                <Setter Property="FontStyle" Value="Italic"/>
+                                                <Setter Property="ToolTip" Value="Fiyatı düzeltildi"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <Border Grid.Column="4" Style="{StaticResource StatusBadge}">
+                                <TextBlock Text="{Binding StatusText}"
+                                           FontSize="{StaticResource OD.Font.F0}"
+                                           Foreground="{StaticResource OD.Brush.TextDim}"/>
+                            </Border>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Bu kodu seç"
+                                  Command="{Binding PlacementTarget.DataContext.PrintedLabels.SelectCodeCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                        <MenuItem Header="Müşteri Detayı"
+                                  Command="{Binding PlacementTarget.DataContext.OpenCustomerDetailFromPrintedCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                    </ContextMenu>
+                </ListBox.ContextMenu>
+            </ListBox>
+
+            <TextBlock Text="Bu yayında henüz basılmış etiket yok."
+                       Style="{StaticResource OD.Text.Hint}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Visibility="{Binding PrintedLabels.TotalCount, Converter={StaticResource CountToCollapsedConverter}}"/>
+        </Grid>
+    </Grid>
+</UserControl>
