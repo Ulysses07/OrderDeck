@@ -19,8 +19,26 @@
              satırın IsSelected'ı iki yönlü bağlı. OD.ListBoxItem'in görünümü
              korunuyor. Gruplamada sanallaştırma kapalı (WPF varsayılanı) —
              bağ her satırda canlı. -->
+        <!-- Satır menüsü SATIRIN kendisinde: parametre sağ tıklanan satır.
+             ListBox'ın menüsü SelectedItem'ı alıyordu — çoklu seçimde seçili bir
+             satıra sağ tık seçimi değiştirmez, SelectedItem ilk seçilen satır
+             kalır ve "Bu kodu seç" / "Müşteri Detayı" başka satıra uygulanırdı.
+             Menü ayrı bir ağaçta açılır: kabuğun VM'i satırın Tag'inden gelir. -->
+        <ContextMenu x:Key="PrintedRowMenu" x:Shared="False">
+            <MenuItem Header="Bu kodu seç"
+                      Command="{Binding PlacementTarget.Tag.PrintedLabels.SelectCodeCommand,
+                                        RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                      CommandParameter="{Binding}"/>
+            <MenuItem Header="Müşteri Detayı"
+                      Command="{Binding PlacementTarget.Tag.OpenCustomerDetailFromPrintedCommand,
+                                        RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                      CommandParameter="{Binding}"/>
+        </ContextMenu>
+
         <Style x:Key="PrintedRow" TargetType="ListBoxItem" BasedOn="{StaticResource OD.ListBoxItem}">
             <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+            <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ListBox}}"/>
+            <Setter Property="ContextMenu" Value="{StaticResource PrintedRowMenu}"/>
         </Style>
 
         <!-- Durum rozeti: kargoda (mavi), ödendi (yeşil), yedek (sönük),
@@ -201,20 +219,6 @@
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
-                <ListBox.ContextMenu>
-                    <ContextMenu>
-                        <MenuItem Header="Bu kodu seç"
-                                  Command="{Binding PlacementTarget.DataContext.PrintedLabels.SelectCodeCommand,
-                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
-                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                        <MenuItem Header="Müşteri Detayı"
-                                  Command="{Binding PlacementTarget.DataContext.OpenCustomerDetailFromPrintedCommand,
-                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
-                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                    </ContextMenu>
-                </ListBox.ContextMenu>
             </ListBox>
 
             <TextBlock Text="Bu yayında henüz basılmış etiket yok."

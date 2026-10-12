@@ -86,18 +86,8 @@ public partial class BackupTransferDrawer : UserControl
         if (btn.DataContext is not BackupRowViewModel row) return;
 
         // Hata artık MessageBox değil, kartın kendi satırı — spec §6:
-        // hiçbir şey pop-up değil. Okuma FİYAT kutusuyla AYNI yardımcıdan
-        // (K8): eskiden burada Türkçe biçim önce deneniyordu, kutuda ise tersi —
-        // aynı metin iki ekranda iki farklı fiyattı.
-        var parsed = PriceInput.Parse(row.PriceText);
-        if (!parsed.IsOk)
-        {
-            row.ErrorText = parsed.Status == PriceInputStatus.Negative
-                ? "Fiyat eksi olamaz."
-                : "Geçerli bir fiyat gir (örn: 250 veya 250,00).";
-            return;
-        }
-        var price = parsed.Value;
+        // hiçbir şey pop-up değil.
+        if (row.ReadPrice() is not { } price) return;
 
         try
         {
@@ -136,6 +126,41 @@ public sealed partial class BackupRowViewModel : ObservableObject
     {
         Backup = backup;
         _priceText = backup.Price.ToString("N2", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>0 TL ikinci "Onayla"yı bekliyor (düğme "Evet, 0 TL" olur).</summary>
+    private bool _zeroConfirmPending;
+
+    /// <summary>Kartın fiyatı — FİYAT kutusuyla AYNI kural (K8; eskiden burada Türkçe biçim önce
+    /// deneniyordu, kutuda ise tersi — aynı metin iki ekranda iki farklı fiyattı). Eksi ya da okunamayan
+    /// fiyat satır içi reddedilir; 0 TL, kutudaki gibi satır içi onaylanır: ilk tıklama sorar, ikincisi
+    /// yazar. Yazılacak fiyat ya da (hata/onay bekleniyor) null.</summary>
+    public decimal? ReadPrice()
+    {
+        var parsed = PriceInput.Parse(PriceText);
+        if (!parsed.IsOk)
+        {
+            ErrorText = parsed.Status == PriceInputStatus.Negative
+                ? "Fiyat eksi olamaz."
+                : "Geçerli bir fiyat gir (örn: 250 veya 250,00).";
+            return null;
+        }
+        if (parsed.Value == 0m && !_zeroConfirmPending)
+        {
+            _zeroConfirmPending = true;
+            ErrorText = "Fiyat 0 TL — doğruysa tekrar onayla.";
+            ActionButtonText = "Evet, 0 TL";
+            return null;
+        }
+        return parsed.Value;
+    }
+
+    partial void OnPriceTextChanged(string value)
+    {
+        if (!_zeroConfirmPending) return;
+        _zeroConfirmPending = false;
+        ErrorText = null;
+        ActionButtonText = "Onayla";
     }
 
     public void MarkPromoted()

@@ -7,6 +7,7 @@ using System.Linq;
 
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using OrderDeck.App.Services.PriceCorrection;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Storage.Repositories;
 
@@ -67,6 +68,13 @@ public sealed partial class PrintedLabelRowViewModel : ObservableObject
         IsCorrected = row.PriceCorrectedAt is not null;
     }
 
+    /// <summary>Satır verilen hâli zaten gösteriyor mu — yeniden kurmada aynı satır nesnesi korunur
+    /// (görünüm kabını yeniden üretmez). Senkron alanları (SyncedAt, Revision) görünmez; sayılmaz.</summary>
+    internal bool Shows(PrintedLabelRow row, PrintBatchViewModel batch, int seq, PrintedLabelStatus status)
+        => ReferenceEquals(Batch, batch) && Seq == seq && Status == status
+           && IsCorrected == (row.PriceCorrectedAt is not null)
+           && Label with { SyncedAt = null, Revision = 0 } == row.Label with { SyncedAt = null, Revision = 0 };
+
     public Label Label { get; }
     public PrintBatchViewModel Batch { get; }
     public int Seq { get; }
@@ -109,17 +117,18 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     private static readonly CultureInfo Tr = CultureInfo.GetCultureInfo("tr-TR");
 
     private readonly LabelRepository _labels;
-    private readonly Func<string, IReadOnlyCollection<string>, IReadOnlySet<string>>? _requestedCustomers;
+    private readonly Func<string, IReadOnlyCollection<Label>, PaymentBadges>? _paymentBadges;
     private bool _suppressSelectionCount;
 
-    /// <param name="requestedCustomers">(yayın, müşteri Id'leri) → teslim edilmiş ödeme isteği olan
-    /// müşteriler ("ödeme istendi" rozeti). Null = rozet hesaplanmaz.</param>
+    /// <param name="paymentBadges">(yayın, etiketler) → ödeme rozetleri ("ödeme istendi", bakiyeden
+    /// "ödendi" — <see cref="CorrectedPaymentRequests.Badges"/>, fiyat düzeltmesinin ödeme listesiyle aynı
+    /// tanım). Null = ödeme rozeti hesaplanmaz.</param>
     public PrintedLabelsViewModel(
         LabelRepository labels,
-        Func<string, IReadOnlyCollection<string>, IReadOnlySet<string>>? requestedCustomers = null)
+        Func<string, IReadOnlyCollection<Label>, PaymentBadges>? paymentBadges = null)
     {
         _labels = labels;
-        _requestedCustomers = requestedCustomers;
+        _paymentBadges = paymentBadges;
     }
 
     public ObservableCollection<PrintedLabelRowViewModel> Rows { get; } = new();
@@ -184,80 +193,118 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     private static bool Contains(string? haystack, string needle)
         => haystack is not null && Tr.CompareInfo.IndexOf(haystack, needle, CompareOptions.IgnoreCase) >= 0;
 
-    /// <summary>Verilen yayının listesini (yeniden) kurar; seçim Id'ye göre korunur.</summary>
-    /// <param name="withPaymentStatus">"ödeme istendi" rozeti için kişi başına ödeme işi taranır mı. Sekme
-    /// kapalıyken her "Yazdır"dan sonra yalnız liste kurulur (tek sorgu).</param>
+    /// <summary>Verilen yayının listesini kurar ya da günceller; seçim Id'ye göre korunur.
+    ///
+    /// <para><b>Silip baştan kurmaz</b> (aynı yayında): satırı değişmeyen satır nesnesi (ve basışı) korunur,
+    /// yalnız yeni/değişen satırlar eklenir, kalkanlar çıkarılır. Liste gruplu ve sanallaştırmasız; her
+    /// "Yazdır"dan sonra yayının bütün satırlarını yeniden eklemek UI iş parçacığını yüzlerce etikette
+    /// saniyeye yakın kilitliyordu — yeni basış grubu başa eklenir, gerisi yerinde kalır.</para></summary>
+    /// <param name="withPaymentStatus">Ödeme rozetleri için kişi başına ödeme işi taranır mı.</param>
     public void Load(string? sessionId, bool withPaymentStatus = true)
     {
-        var keepSelected = string.Equals(sessionId, SessionId, StringComparison.Ordinal)
+        var sameSession = string.Equals(sessionId, SessionId, StringComparison.Ordinal);
+        var keepSelected = sameSession
             ? Rows.Where(r => r.IsSelected).Select(r => r.Id).ToHashSet(StringComparer.Ordinal)
             : new HashSet<string>(StringComparer.Ordinal);
+        var oldRows = sameSession
+            ? Rows.ToDictionary(r => r.Id, StringComparer.Ordinal)
+            : new Dictionary<string, PrintedLabelRowViewModel>(StringComparer.Ordinal);
+        var oldBatches = new Dictionary<string, PrintBatchViewModel>(StringComparer.Ordinal);
+        foreach (var r in oldRows.Values) oldBatches[r.Batch.Key] = r.Batch;
         SessionId = sessionId;
 
-        foreach (var r in Rows) r.PropertyChanged -= OnRowChanged;
-        Rows.Clear();
-        VisibleRows.Clear();
-        if (sessionId is null)
+        var desired = new List<PrintedLabelRowViewModel>();
+        if (sessionId is not null)
         {
-            TotalCount = 0;
-            UpdateSelectedCount();
-            return;
-        }
+            var rows = _labels.GetPrintedBySession(sessionId);
+            var badges = (withPaymentStatus ? _paymentBadges : null)?.Invoke(sessionId,
+                    rows.Select(r => r.Label).ToList())
+                ?? PaymentBadges.None;
 
-        var rows = _labels.GetPrintedBySession(sessionId);
-        var requested = (withPaymentStatus ? _requestedCustomers : null)?.Invoke(sessionId,
-                rows.Select(r => r.Label.CustomerId).Distinct(StringComparer.Ordinal).ToList())
-            ?? new HashSet<string>();
+            // Grup: basış kimliği (048 öncesi: aynı PrintedAt). En yeni basış önce — kimlik basış sırasıyla
+            // artar (LabelService.NewPrintBatchId), aynı saniyedeki iki basış da doğru sıralanır. Grubun içi
+            // kâğıt sırası (048 öncesi: AddedAt, Id).
+            var groups = rows
+                .GroupBy(r => r.BatchKey, StringComparer.Ordinal)
+                .Select(g => (Key: g.Key, PrintedAt: g.Min(r => r.Label.PrintedAt!.Value), Items: g
+                    .OrderBy(r => r.PrintSeq ?? int.MaxValue)
+                    .ThenBy(r => r.Label.AddedAt)
+                    .ThenBy(r => r.Label.Id, StringComparer.Ordinal)
+                    .ToList()))
+                .OrderByDescending(g => g.PrintedAt)
+                .ThenByDescending(g => g.Key, StringComparer.Ordinal);
 
-        // Grup: basış kimliği (048 öncesi: aynı PrintedAt). En yeni basış önce; grubun içi kâğıt sırası
-        // (048 öncesi: AddedAt, Id).
-        var groups = rows
-            .GroupBy(r => r.BatchKey, StringComparer.Ordinal)
-            .Select(g => (Key: g.Key, PrintedAt: g.Min(r => r.Label.PrintedAt!.Value), Items: g
-                .OrderBy(r => r.PrintSeq ?? int.MaxValue)
-                .ThenBy(r => r.Label.AddedAt)
-                .ThenBy(r => r.Label.Id, StringComparer.Ordinal)
-                .ToList()))
-            .OrderByDescending(g => g.PrintedAt)
-            .ThenByDescending(g => g.Key, StringComparer.Ordinal);
-
-        _suppressSelectionCount = true;
-        foreach (var g in groups)
-        {
-            var batch = new PrintBatchViewModel(g.Key, g.PrintedAt);
-            for (var i = 0; i < g.Items.Count; i++)
+            foreach (var g in groups)
             {
-                var row = g.Items[i];
-                var vm = new PrintedLabelRowViewModel(row, batch, row.PrintSeq ?? i + 1, StatusOf(row, requested))
+                var batch = oldBatches.TryGetValue(g.Key, out var known) && known.PrintedAt == g.PrintedAt
+                    ? known
+                    : new PrintBatchViewModel(g.Key, g.PrintedAt);
+                for (var i = 0; i < g.Items.Count; i++)
                 {
-                    IsSelected = keepSelected.Contains(row.Label.Id),
-                };
-                vm.PropertyChanged += OnRowChanged;
-                Rows.Add(vm);
+                    var row = g.Items[i];
+                    var seq = row.PrintSeq ?? i + 1;
+                    var status = StatusOf(row, badges);
+                    if (oldRows.TryGetValue(row.Label.Id, out var old) && old.Shows(row, batch, seq, status))
+                    {
+                        desired.Add(old);
+                        continue;
+                    }
+                    desired.Add(new PrintedLabelRowViewModel(row, batch, seq, status)
+                    {
+                        IsSelected = keepSelected.Contains(row.Label.Id),
+                    });
+                }
             }
         }
+
+        _suppressSelectionCount = true;
+        var kept = desired.ToHashSet();
+        foreach (var r in Rows)
+            if (!kept.Contains(r)) r.PropertyChanged -= OnRowChanged;
+        var existing = Rows.ToHashSet();
+        foreach (var r in desired)
+            if (!existing.Contains(r)) r.PropertyChanged += OnRowChanged;
+        SyncTo(Rows, desired);
         _suppressSelectionCount = false;
         TotalCount = Rows.Count;
         RebuildVisible();
         UpdateSelectedCount();
     }
 
-    private void RebuildVisible()
+    /// <summary>Sekme kapalıyken: liste kurulmaz (görünüm kapları gizli listede de üretilir), yalnız sekme
+    /// başlığındaki sayı güncellenir. Sekme açılınca <see cref="Load"/>.</summary>
+    public void UpdateCount(string? sessionId)
+        => TotalCount = sessionId is null ? 0 : _labels.CountPrintedBySession(sessionId);
+
+    private void RebuildVisible() => SyncTo(VisibleRows, Rows.Where(Matches).ToList());
+
+    /// <summary><paramref name="target"/>'ı <paramref name="desired"/>'a en az değişiklikle getirir (nesne
+    /// kimliğiyle): kalkanlar çıkarılır, yeniler yerine eklenir, kalanlar yerinde durur.</summary>
+    private static void SyncTo<T>(ObservableCollection<T> target, IReadOnlyList<T> desired) where T : class
     {
-        VisibleRows.Clear();
-        foreach (var r in Rows)
-            if (Matches(r)) VisibleRows.Add(r);
+        var want = desired.ToHashSet();
+        for (var i = target.Count - 1; i >= 0; i--)
+            if (!want.Contains(target[i])) target.RemoveAt(i);
+        var present = target.ToHashSet();
+        for (var i = 0; i < desired.Count; i++)
+        {
+            if (i < target.Count && ReferenceEquals(target[i], desired[i])) continue;
+            if (present.Contains(desired[i])) target.Move(target.IndexOf(desired[i]), i);
+            else target.Insert(i, desired[i]);
+        }
     }
 
     public void Refresh() => Load(SessionId);
 
-    private static PrintedLabelStatus StatusOf(PrintedLabelRow row, IReadOnlySet<string> requested)
+    private static PrintedLabelStatus StatusOf(PrintedLabelRow row, PaymentBadges badges)
     {
         if (row.ShipmentStatus == ShipmentStatus.Shipped) return PrintedLabelStatus.Shipped;
-        // Dekont kaydedilince etiket açık kargo dosyasına bağlanır (DekontEkleViewModel): ödendi.
-        if (row.Label.ShipmentId is not null) return PrintedLabelStatus.Paid;
+        // Dekont kaydedilince etiket açık kargo dosyasına bağlanır (DekontEkleViewModel): ödendi. Etiketi
+        // içeren isteğin tamamı bakiyeden düşüldüyse de ödendi — fiyat düzeltme çekmecesiyle aynı tanım.
+        if (row.Label.ShipmentId is not null || badges.BalancePaidLabels.Contains(row.Label.Id))
+            return PrintedLabelStatus.Paid;
         if (row.Label.IsTentativeBackup) return PrintedLabelStatus.Backup;
-        if (requested.Contains(row.Label.CustomerId)) return PrintedLabelStatus.PaymentRequested;
+        if (badges.RequestedCustomers.Contains(row.Label.CustomerId)) return PrintedLabelStatus.PaymentRequested;
         return PrintedLabelStatus.None;
     }
 

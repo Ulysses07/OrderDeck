@@ -11,8 +11,9 @@ using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.ViewModels;
 
-/// <summary>Düzeltmenin nereden açıldığı: kuyruk (basılmamış satırlar — yeniden baskı adımı yok, K4) ya da
-/// "Basılanlar" sekmesi.</summary>
+/// <summary>Düzeltmenin nereden açıldığı: kuyruk (basılmamış satırlar, K4) ya da "Basılanlar" sekmesi. Yeniden
+/// baskı sorusu kipe değil sonuca bağlıdır: kuyruk kipinde de çekmece açıkken basılan satır düzeldiyse
+/// sorulur.</summary>
 public enum PriceCorrectionMode
 {
     Queue,
@@ -48,7 +49,10 @@ public sealed partial class ResendRowViewModel : ObservableObject
         {
             var c = Candidate;
             var scope = c.IsSessionScope ? "yayın isteği" : "genel istek";
-            var at = c.PriorAt is { } t ? t.ToLocalTime().ToString("HH:mm", Tr) + Services.PaymentResultPresenter.Locative(t) + " " : "";
+            // Genel istek günler önce gitmiş olabilir: bugün değilse tarihli (ödeme sorusuyla aynı kural).
+            var at = c.PriorAt is { } t
+                ? Services.PaymentResultPresenter.WhenText(t, DateTimeOffset.Now) + Services.PaymentResultPresenter.Locative(t) + " "
+                : "";
             var was = c.PriorUnconfirmed ? "istenmiş olabilir" : "istendi";
             return $"{c.Display} — {scope}: {at}{c.PriorAmount.ToString("N2", Tr)} TL {was}; yeni tutar {c.NewTotal.ToString("N2", Tr)} TL";
         }
@@ -121,6 +125,11 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <summary>Çekmeceyi kapatır (fabrika bağlar); testte boş.</summary>
     public Action? Close { get; set; }
 
+    /// <summary>Düzeltmenin yazımı (test dikişi; varsayılan <see cref="LabelService.CorrectPrices"/>) —
+    /// paket içindeki çakışma (<see cref="PriceCorrectionConflictException"/>) testte başka türlü
+    /// üretilemiyor.</summary>
+    internal Func<IReadOnlyCollection<string>, decimal, PriceCorrectionResult>? CorrectPricesSeam { get; set; }
+
     public ObservableCollection<PriceGroupOption> PriceGroups { get; } = new();
 
     public bool HasMultiplePrices => PriceGroups.Count > 1;
@@ -182,6 +191,18 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         }
         OnPropertyChanged(nameof(HasMultiplePrices));
         OnPropertyChanged(nameof(HasCorrectable));
+    }
+
+    /// <summary>Planı yeniden okunmuş hâliyle değiştirir; operatörün işaretleri fiyata göre korunur —
+    /// bilerek kaldırdığı fiyat grubu (ör. pazarlıklı satış) yeniden onayda sessizce düzelmesin. Arada
+    /// beliren yeni fiyat grubu işaretsiz gelir (operatör onu hiç görmedi).</summary>
+    private void ReloadPlan(PriceCorrectionPlan fresh)
+    {
+        var checkedPrices = PriceGroups.Where(g => g.IsChecked).Select(g => g.Price).ToHashSet();
+        _plan = fresh;
+        LoadGroups();
+        foreach (var g in PriceGroups) g.IsChecked = checkedPrices.Contains(g.Price);
+        RecomputeSummary();
     }
 
     private void OnGroupChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -254,11 +275,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         var fresh = _labels.PlanPriceCorrection(_labelIds);
         if (!string.Equals(fresh.Fingerprint, _shownFingerprint, StringComparison.Ordinal))
         {
-            _plan = fresh;
-            var checkedPrices = PriceGroups.Where(g => g.IsChecked).Select(g => g.Price).ToHashSet();
-            LoadGroups();
-            foreach (var g in PriceGroups) g.IsChecked = checkedPrices.Contains(g.Price);
-            RecomputeSummary();
+            ReloadPlan(fresh);
             BlockingMessage = "Etiketler bu arada değişti (basıldı, iptal edildi ya da fiyatı değişti). " +
                               "Özeti kontrol edip yeniden onayla.";
             return;
@@ -281,13 +298,12 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         PriceCorrectionResult result;
         try
         {
-            result = _labels.CorrectPrices(targets.Select(l => l.Id).ToList(), parsed.Value);
+            var ids = targets.Select(l => l.Id).ToList();
+            result = CorrectPricesSeam?.Invoke(ids, parsed.Value) ?? _labels.CorrectPrices(ids, parsed.Value);
         }
         catch (PriceCorrectionConflictException ex)
         {
-            _plan = _labels.PlanPriceCorrection(_labelIds);
-            LoadGroups();
-            RecomputeSummary();
+            ReloadPlan(_labels.PlanPriceCorrection(_labelIds));
             BlockingMessage = ex.Message + " Özeti kontrol edip yeniden onayla.";
             return;
         }
@@ -310,16 +326,23 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         {
             result.Corrected.Count == 0
                 ? "Seçilen etiketler zaten bu fiyatta; hiçbir şey değişmedi."
-                : $"{result.Corrected.Count} etiket düzeltildi" +
-                  (queued > 0 ? $" ({queued} kuyrukta — yeni fiyatla basılacak" + (printed > 0 ? $", {printed} basılmış)" : ")") : "."),
+                : $"{result.Corrected.Count} etiket düzeltildi" + (queued, printed) switch
+                {
+                    (> 0, > 0) => $" ({queued} kuyrukta — yeni fiyatla basılacak, {printed} basılmış)",
+                    (> 0, _) => $" ({queued} kuyrukta — yeni fiyatla basılacak)",
+                    // Kuyruk kipinde de olur: çekmece açıkken satırlar basıldı.
+                    _ => $" ({printed} basılmış — kâğıtlarında eski fiyat yazıyor).",
+                },
         };
         if (result.Shipped.Count > 0)
             lines.Add($"{result.Shipped.Count} etiket kargoya verildi, değişmedi: " +
                       string.Join(", ", result.Shipped.Select(l => l.DisplayName ?? l.Username).Distinct().Take(10)));
         ResultText = string.Join("\n", lines);
 
+        // Soru kipe değil sonuca bağlı (K5: "basılmış etiket varsa"): kuyruk kipinde açılan çekmece, açıkken
+        // basılan satırları basılmış olarak düzeltir — kâğıtlarında eski fiyat kalır.
         _correctedPrinted = result.CorrectedPrinted;
-        if (Mode == PriceCorrectionMode.Printed && _correctedPrinted.Count > 0)
+        if (_correctedPrinted.Count > 0)
         {
             IsReprintAsked = true;
             ReprintQuestion = $"{_correctedPrinted.Count} basılmış etiket düzeltildi — yeniden basılsın mı?";
@@ -335,15 +358,20 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             OnPropertyChanged(nameof(HasResendRows));
             OnPropertyChanged(nameof(HasPaidRows));
             IsResendAvailable = ResendRows.Count > 0;
+            // Aynı kişiye yayın ve genel istek için iki mesaj gidebilir: sayı mesajları da söyler.
             var persons = ResendRows.Select(r => r.Candidate.CustomerId).Distinct(StringComparer.Ordinal).Count();
-            ResendButtonText = $"Düzeltilmiş isteği gönder ({persons} kişi)";
+            ResendButtonText = ResendRows.Count == persons
+                ? $"Düzeltilmiş isteği gönder ({persons} kişi)"
+                : $"Düzeltilmiş isteği gönder ({persons} kişi, {ResendRows.Count} istek)";
             if (!_cloudApi && ResendRows.Count > 0)
                 ResendNote = "WhatsApp Cloud API kapalı: her kişi için WhatsApp penceresi açılır, gönder tuşuna sen basarsın.";
         }
     }
 
     /// <summary>"Yeniden basılsın mı?" → Evet. Kâğıtta "DÜZELTME" işareti; ciro ve ilk baskı anı
-    /// değişmez.</summary>
+    /// değişmez. Basılamazsa (başka baskı sürüyor, yazıcı hatası) soru hata metniyle geri gelir —
+    /// "tekrar dene" düğmesi yerinde kalır; yoksa düzeltilen satırları Basılanlar'da yeniden seçmek
+    /// gerekirdi.</summary>
     [RelayCommand]
     private async Task ReprintAsync()
     {
@@ -354,6 +382,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         ReprintResult = error is null
             ? $"{_correctedPrinted.Count} etiket \"DÜZELTME\" işaretiyle yeniden basıldı."
             : error;
+        if (error is not null) IsReprintAsked = true;
     }
 
     [RelayCommand]

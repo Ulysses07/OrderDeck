@@ -213,6 +213,7 @@ public static class LabelPrintDocument
             // etiketi tek bakışta görüp kargo şirketine "alıcıdan tahsil et"
             // notuyla teslim etmeli.
             float? rpTop = null;
+            RectangleF? rpRect = null;
             if (recipientPaysLabelIds is not null && recipientPaysLabelIds.Contains(label.Id))
             {
                 using var rpFont = new Font(settings.LabelFontFamily,
@@ -226,24 +227,49 @@ public static class LabelPrintDocument
                 using var rpBrush = new SolidBrush(Color.Red);
                 e.Graphics.DrawString(rpText, rpFont, rpBrush, rpX, rpY);
                 rpTop = rpY;
+                rpRect = new RectangleF(rpX, rpY, rpSize.Width, rpSize.Height);
             }
 
             // "DÜZELTME" — fiyatı düzeltilmiş etiketin yeniden baskısı (K5). Küçük, kutulu,
-            // sağ-alt köşe: üstteki iki köşe platform ve Y rozetinde, alt orta ALICI ÖDEMELİ
-            // şeridinde. Şerit varsa işaret onun hemen üstüne çıkar (çakışmasın).
+            // sağda. Yeri ÖLÇÜLEREK seçilir: ad satırı (üst köşelerdeki platform ve Y rozetleri
+            // dahil), mesaj/fiyat satırı ve ALICI ÖDEMELİ şeridiyle kesişmeyen ilk yer — önce alt
+            // köşe (şerit varsa onun üstü), sığmazsa ad ile mesaj satırı arasındaki boşluk; ikisi
+            // de sığmazsa işaret küçülür. Sabit konum büyük mesaj yazısında fiyatın üstüne biniyordu.
             if (correctionLabelIds is not null && correctionLabelIds.Contains(label.Id))
             {
-                using var markFont = new Font(settings.LabelFontFamily,
-                    settings.LabelMessageFontSize * 0.6f, FontStyle.Bold);
-                var markSize = e.Graphics.MeasureString(CorrectionMark, markFont);
-                float padX = 3f, padY = 1f;
-                float boxW = markSize.Width + padX * 2;
-                float boxH = markSize.Height + padY * 2;
-                float boxX = pageWidth - boxW - 6f;
-                float boxY = rpTop is float top ? top - boxH - 2f : heightHundredths - boxH - 4f;
-                using var markPen = new Pen(Brushes.Black, 1f);
-                e.Graphics.DrawRectangle(markPen, boxX, boxY, boxW, boxH);
-                e.Graphics.DrawString(CorrectionMark, markFont, Brushes.Black, boxX + padX, boxY + padY);
+                var occupied = new List<RectangleF>
+                {
+                    new(0, 0, pageWidth, userY + userSize.Height),
+                    new(msgX, msgY, msgSize.Width, msgSize.Height),
+                };
+                if (rpRect is { } rp) occupied.Add(rp);
+                float userBottom = userY + userSize.Height;
+                bool Fits(RectangleF r) => r.Top >= 0 && r.Bottom <= heightHundredths
+                                           && !occupied.Any(o => o.IntersectsWith(r));
+
+                Font? markFont = null;
+                RectangleF box = default;
+                foreach (var scale in new[] { 0.6f, 0.5f, 0.4f })
+                {
+                    markFont?.Dispose();
+                    markFont = new Font(settings.LabelFontFamily,
+                        settings.LabelMessageFontSize * scale, FontStyle.Bold);
+                    var markSize = e.Graphics.MeasureString(CorrectionMark, markFont);
+                    float boxW = markSize.Width + 6f, boxH = markSize.Height + 2f;
+                    float boxX = pageWidth - boxW - 6f;
+                    var bottomCorner = new RectangleF(boxX,
+                        rpTop is float top ? top - boxH - 2f : heightHundredths - boxH - 4f, boxW, boxH);
+                    var betweenLines = new RectangleF(boxX, userBottom + (msgY - userBottom - boxH) / 2, boxW, boxH);
+                    // Hiçbir yere sığmazsa (çok büyük yazı) en küçük boyutta alt köşe — işaret yine görünsün.
+                    box = Fits(bottomCorner) ? bottomCorner : Fits(betweenLines) ? betweenLines : bottomCorner;
+                    if (Fits(box)) break;
+                }
+                using (markFont)
+                using (var markPen = new Pen(Brushes.Black, 1f))
+                {
+                    e.Graphics.DrawRectangle(markPen, box.X, box.Y, box.Width, box.Height);
+                    e.Graphics.DrawString(CorrectionMark, markFont!, Brushes.Black, box.X + 3f, box.Y + 1f);
+                }
             }
 
             // "Y" badge for backup-promoted labels — small, top-right corner.

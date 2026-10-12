@@ -78,8 +78,9 @@
                        Margin="{StaticResource OD.Pad.Top3}"
                        Visibility="{Binding PriceError, Converter={StaticResource NullToCollapsedConverter}}"/>
 
-            <!-- 0 TL satır içi onayı: yorum bekletilir, "Evet" ile 0 TL yazılır;
-                 aynı kutu metniyle sonraki yorumlar yeniden sorulmaz. -->
+            <!-- 0 TL satır içi onayı: soru açıkken tıklanan yorumlar sırayla
+                 bekletilir, "Evet" hepsini 0 TL ile yazar; aynı kutu metni ve
+                 aynı ürünle sonraki yorumlar yeniden sorulmaz. -->
             <Border Margin="{StaticResource OD.Pad.Top3}"
                     Padding="{StaticResource OD.Pad.3}"
                     Background="{StaticResource OD.Brush.AmberTint}"
@@ -103,6 +104,22 @@
                     </StackPanel>
                 </StackPanel>
             </Border>
+
+            <!-- 0 TL sorusu yanıtlanmadan fiyat ya da kod değişti: bekleyen
+                 yorumlar yazılmadı. Sessizce kaybolmasınlar — adlarıyla
+                 söylenir, operatör yeniden tıklar; yazılan ad listeden düşer. -->
+            <DockPanel Margin="{StaticResource OD.Pad.Top3}" LastChildFill="True"
+                       Visibility="{Binding ZeroPriceDropped, Converter={StaticResource NullToCollapsedConverter}}">
+                <Button DockPanel.Dock="Right"
+                        Content="Tamam"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        FontSize="{StaticResource OD.Font.F0}"
+                        Command="{Binding DismissZeroPriceDroppedCommand}"/>
+                <TextBlock Text="{Binding ZeroPriceDropped}"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Foreground="{StaticResource OD.Brush.Amber}"
+                           TextWrapping="Wrap"/>
+            </DockPanel>
         </StackPanel>
     </Border>
 </UserControl>

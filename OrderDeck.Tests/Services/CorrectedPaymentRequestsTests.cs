@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Dapper;
 using FluentAssertions;
 using Moq;
 using OrderDeck.App.Services;
@@ -33,18 +34,21 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     private readonly PaymentJobRepository _jobs;
     private readonly ShipmentRepository _shipments;
 
+    /// <summary>Etiketlerin saati (basılma anı). Ödeme işlerinin teslim anı gerçek saattir: varsayılan
+    /// 1000 ile her teslim basılmadan SONRA sayılır.</summary>
+    private readonly Mock<IClock> _clock = new();
+
     public CorrectedPaymentRequestsTests()
     {
         new MigrationRunner(_db).Run();
-        var clock = new Mock<IClock>();
-        clock.Setup(c => c.UnixNow()).Returns(1000L);
+        _clock.Setup(c => c.UnixNow()).Returns(1000L);
         new SessionRepository(_db).Insert(new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
         _customers = new CustomerRepository(_db);
         _labelRepo = new LabelRepository(_db);
         _shipments = new ShipmentRepository(_db);
         _jobs = new PaymentJobRepository(_db);
         _labels = new LabelService(_labelRepo,
-            new CustomerService(_customers, new SessionRepository(_db), _labelRepo, clock.Object), _db, clock.Object,
+            new CustomerService(_customers, new SessionRepository(_db), _labelRepo, _clock.Object), _db, _clock.Object,
             _shipments);
     }
 
@@ -67,6 +71,30 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         _jobs.MarkDelivered(job.Id, net);
         return _jobs.Get(job.Id)!;
     }
+
+    /// <summary>Teslim edilmiş istek, düşümün bir kısmı ya da tamamı bakiyeden: müşteriden
+    /// <c>total − applied</c> istendi.</summary>
+    private PaymentJob AppliedAndDelivered(string ownerId, string scope, decimal total, decimal applied)
+    {
+        var job = _jobs.FindOrCreate(ownerId, scope, total);
+        var key = Guid.NewGuid();
+        _jobs.BeginApply(job.Id, key).Should().BeTrue();
+        _jobs.MarkApplied(job.Id, key, job.Revision, applied).Should().BeTrue();
+        _jobs.MarkDelivered(job.Id, total - applied);
+        return _jobs.Get(job.Id)!;
+    }
+
+    /// <summary>İşin teslimini geçmişe taşır (günler önceki istek).</summary>
+    private void DeliveredLongAgo(string jobId)
+    {
+        var at = DateTimeOffset.UtcNow.AddDays(-11).ToUnixTimeSeconds();
+        using var conn = _db.Open();
+        conn.Execute("UPDATE PaymentJob SET DeliveredAt=@at, ClosedAt=@at, UpdatedAt=@at WHERE Id=@jobId",
+            new { at, jobId });
+    }
+
+    /// <summary>Etiketler gerçek saatle basılsın (teslimler onlardan önce ya da sonra olabilsin).</summary>
+    private void PrintClockIsNow() => _clock.Setup(c => c.UnixNow()).Returns(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
     private (Label A1, Label A2, Label B, PaymentPerson Person) GroupedPersonWithRequest()
     {
@@ -142,32 +170,143 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
-    public void Balance_paid_person_gets_nothing_automatic()
+    public void Person_whose_request_was_fully_paid_from_balance_gets_nothing_automatic()
     {
         var l = Add("instagram", "@bakiye", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
-        var job = _jobs.FindOrCreate(l.CustomerId, "session:s1", 250m);
-        var key = Guid.NewGuid();
-        _jobs.BeginApply(job.Id, key).Should().BeTrue();
-        _jobs.MarkApplied(job.Id, key, job.Revision, 50m).Should().BeTrue();
-        _jobs.MarkDelivered(job.Id, 200m);
+        AppliedAndDelivered(l.CustomerId, "session:s1", 250m, applied: 250m);   // müşteriden 0 TL istendi
         var result = _labels.CorrectPrices(new[] { l.Id }, 205m);
 
         var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
 
         plan.ToResend.Should().BeEmpty();
-        plan.Paid.Should().ContainSingle().Which.ByBalance.Should().BeTrue();
+        var paid = plan.Paid.Should().ContainSingle().Subject;
+        paid.ByBalance.Should().BeTrue();
+        paid.Delta.Should().Be(-45m);
     }
 
     [Fact]
-    public void Customers_with_delivered_request_are_flagged_person_wide()
+    public void Partial_balance_deduction_is_not_paid_and_the_request_is_listed()
+    {
+        // 250 istendi, 50'si bakiyeden: müşteriden 200 istendi, ödenmedi. "Ödendi (bakiye)" demek yanlış
+        // tutarlı isteği geçerli bırakırdı.
+        var l = Add("instagram", "@kismi", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        AppliedAndDelivered(l.CustomerId, "session:s1", 250m, applied: 50m);
+        var result = _labels.CorrectPrices(new[] { l.Id }, 205m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        plan.Paid.Should().BeEmpty();
+        plan.RequestedPersons.Should().Be(1);
+        var row = plan.ToResend.Should().ContainSingle().Subject;
+        row.PriorAmount.Should().Be(200m, "soruda 'istendi' denen tutar — mesajdaki net");
+        row.NewTotal.Should().Be(205m);
+    }
+
+    [Fact]
+    public void Old_balance_deduction_in_another_scope_does_not_mark_todays_request_paid()
+    {
+        // 01.10'da genel istek: 500 istendi, 30'u bakiyeden düşüldü (iş kapandı). Bugün bu yayında 250 TL'lik
+        // etiket basıldı ve bakiyesiz yayın isteği gitti. Eski düşüm bugünkü isteği ödenmiş yapmaz.
+        PrintClockIsNow();
+        var l = Add("instagram", "@x", 250m);
+        var old = AppliedAndDelivered(l.CustomerId, "cumulative", 500m, applied: 30m);
+        DeliveredLongAgo(old.Id);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        Delivered(l.CustomerId, "session:s1", 250m);
+        var result = _labels.CorrectPrices(new[] { l.Id }, 205m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        plan.Paid.Should().BeEmpty("bugünkü 250 TL'lik istek ödenmedi");
+        var row = plan.ToResend.Should().ContainSingle().Subject;
+        row.ScopeKey.Should().Be("session:s1");
+        row.PriorAmount.Should().Be(250m);
+        row.NewTotal.Should().Be(205m);
+    }
+
+    [Fact]
+    public void Request_sent_before_the_labels_were_printed_is_not_listed()
+    {
+        // Genel istek günler önce gitti (1000 TL); yanlış fiyatlı etiket bugün basıldı, bugün istek yok. O
+        // istek yanlış fiyatı hiç içermedi — "eski tutarla istek gitmiş" değil.
+        PrintClockIsNow();
+        var l = Add("instagram", "@eski", 250m);
+        var old = _jobs.FindOrCreate(l.CustomerId, "cumulative", 1000m);
+        _jobs.MarkNoBalance(old.Id, null, old.Revision).Should().BeTrue();
+        _jobs.MarkDelivered(old.Id, 1000m);
+        DeliveredLongAgo(old.Id);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        var result = _labels.CorrectPrices(new[] { l.Id }, 205m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        plan.RequestedPersons.Should().Be(0);
+        plan.ToResend.Should().BeEmpty();
+        plan.Paid.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Correcting_only_queued_labels_does_not_count_a_request()
+    {
+        // Kişinin önceki ürün için isteği var; düzeltilen etiket kuyrukta (basılmamış) — hiçbir istekte yok.
+        var (_, _, _, person) = GroupedPersonWithRequest();
+        var queued = Add("instagram", "@ayse", 250m);
+        _customers.GetPaymentPerson(queued.CustomerId).MemberKey.Should().Be(person.MemberKey);
+        var result = _labels.CorrectPrices(new[] { queued.Id }, 205m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        plan.RequestedPersons.Should().Be(0, "özetteki 'eski tutarla istek gitmiş' sayısı");
+        plan.ToResend.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Badges_flag_requested_persons_and_fully_balance_paid_labels()
     {
         var (a1, _, b, _) = GroupedPersonWithRequest();
         var other = Add("instagram", "@baska", 100m);
+        var paidByBalance = Add("instagram", "@bakiye", 250m);
+        var partial = Add("instagram", "@kismi", 250m);
+        _labels.MarkPrintedAndRecord(new[] { other.Id, paidByBalance.Id, partial.Id });
+        AppliedAndDelivered(paidByBalance.CustomerId, "session:s1", 250m, applied: 250m);
+        AppliedAndDelivered(partial.CustomerId, "session:s1", 250m, applied: 50m);
 
-        var flagged = Sut().CustomersWithDeliveredRequest("s1", new[] { a1.CustomerId, b.CustomerId, other.CustomerId });
+        var badges = Sut().Badges("s1",
+            _labelRepo.GetByIds(new[] { a1.Id, b.Id, other.Id, paidByBalance.Id, partial.Id }));
 
-        flagged.Should().BeEquivalentTo(new[] { a1.CustomerId, b.CustomerId });
+        badges.RequestedCustomers.Should().BeEquivalentTo(new[]
+        {
+            a1.CustomerId, b.CustomerId, paidByBalance.CustomerId, partial.CustomerId,
+        }, "kişi düzeyi (#506)");
+        badges.BalancePaidLabels.Should().Equal(new[] { paidByBalance.Id }, "kısmi düşüm ödendi sayılmaz");
+
+        // "Basılanlar" rozeti fiyat düzeltme çekmecesiyle AYNI tanımı kullanır.
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(_labelRepo, Sut().Badges);
+        printed.Load("s1");
+        printed.Rows.Single(r => r.Id == paidByBalance.Id).StatusText.Should().Be("ödendi");
+        printed.Rows.Single(r => r.Id == partial.Id).StatusText.Should().Be("ödeme istendi");
+        printed.Rows.Single(r => r.Id == other.Id).StatusText.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Resend_button_counts_messages_when_one_person_has_two_requests()
+    {
+        // Aynı kişiye yayın ve genel istek için iki mesaj gider; düğme "(1 kişi)" diyordu.
+        var l = Add("instagram", "@iki", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        Delivered(l.CustomerId, "session:s1", 250m);
+        Delivered(l.CustomerId, "cumulative", 250m);
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, Sut(), "s1", new[] { l.Id },
+            OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null,
+            applied: _ => { }, reprint: _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
+        vm.NewPriceText = "205";
+
+        vm.ConfirmCommand.Execute(null);
+
+        vm.ResendRows.Should().HaveCount(2);
+        vm.ResendButtonText.Should().Be("Düzeltilmiş isteği gönder (1 kişi, 2 istek)");
     }
 
     // ── Düzeltilmiş isteği gönder ─────────────────────────────────────
@@ -223,6 +362,28 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
 
         outcomes.Should().ContainSingle().Which.Status.Should().Be(ResendStatus.Manual, "elle bakılmalı");
         calls.Should().Be(1, "ek soru onaylanmaz — ikinci çağrı yok");
+    }
+
+    [Fact]
+    public async Task Resend_skips_everyone_while_the_balance_server_is_unreachable()
+    {
+        // Çevrimdışıyken akış bakiyeyi denemeden tam tutarı isteyebilir (K5: çevrimdışı atlanır).
+        var (_, _, _, person) = GroupedPersonWithRequest();
+        var calls = 0;
+        var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, () => new AppSettings(),
+            (_, _, _, _, _) =>
+            {
+                calls++;
+                return Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.Sent));
+            },
+            balanceOffline: () => Task.FromResult(true));
+
+        var outcomes = await sut.ResendAsync("s1", DateTime.Now, new[] { Candidate(person.LeasedId) });
+
+        calls.Should().Be(0);
+        var o = outcomes.Should().ContainSingle().Subject;
+        o.Status.Should().Be(ResendStatus.Manual);
+        o.Note.Should().Contain("çevrimdışı");
     }
 
     [Fact]

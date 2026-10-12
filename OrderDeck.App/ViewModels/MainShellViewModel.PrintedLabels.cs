@@ -55,14 +55,18 @@ public sealed partial class MainShellViewModel
     /// <summary>Rapordan açılmış yayın (K6); null = aktif yayın gösterilir.</summary>
     private PrintedLabelsRequest? _otherSession;
 
-    /// <summary>Sekmeyi yeniden kurar. Sekme açık değilse rozetsiz (tek sorgu) — her "Yazdır"dan sonra
-    /// çağrılıyor, kişi başına ödeme işi taraması sekme açılınca yapılır.</summary>
+    /// <summary>Sekmeyi tazeler — her "Yazdır"dan sonra da çağrılıyor. Sekme kapalıyken liste KURULMAZ,
+    /// yalnız başlıktaki sayı güncellenir (sayım sorgusu); liste ve ödeme rozetleri sekme açılınca
+    /// (<see cref="OnIsPrintedTabActiveChanged"/>). Açıkken liste yerinde güncellenir
+    /// (<see cref="PrintedLabelsViewModel.Load"/>): gruplu, sanallaştırmasız listeyi her baskıda baştan
+    /// kurmak UI'ı yüzlerce etikette saniyeye yakın kilitliyordu.</summary>
     private void RefreshPrintedLabels()
     {
         var sessionId = _otherSession?.SessionId ?? _sessions.GetActive()?.Id;
         PrintedLabels.IsOtherSession = _otherSession is not null;
         PrintedLabels.OtherSessionTitle = _otherSession?.Title ?? "";
-        PrintedLabels.Load(sessionId, withPaymentStatus: IsPrintedTabActive);
+        if (IsPrintedTabActive) PrintedLabels.Load(sessionId);
+        else PrintedLabels.UpdateCount(sessionId);
     }
 
     /// <summary>Yayın başladı/bitti ya da operatör "bu yayına dön" dedi: sekme aktif yayına döner.</summary>
@@ -146,15 +150,22 @@ public sealed partial class MainShellViewModel
     /// baskı veritabanını değil satırın kopyasını basıyor.</summary>
     internal void ApplyPriceCorrection(PriceCorrectionResult result)
     {
-        var ids = result.Corrected.Select(c => c.Before.Id).ToHashSet(StringComparer.Ordinal);
-        if (ids.Count > 0)
-        {
-            var fresh = _labelRepo.GetByIds(ids.ToList()).ToDictionary(l => l.Id, StringComparer.Ordinal);
-            foreach (var vm in PrintQueue)
-                if (fresh.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
-        }
+        RefreshQueueRows(result.Corrected.Select(c => c.Before.Id));
         RefreshHeroStats();
         RefreshPrintedLabels();
+    }
+
+    /// <summary>Kuyruktaki verilen etiketlerin ekrandaki kopyasını veritabanındaki güncel hâliyle YERİNDE
+    /// değiştirir (seçim ve sıra korunur). Baskı kopyayı basar, ciro veritabanından yazılır: veritabanını
+    /// değiştiren her akış (fiyat düzeltme, yedek onayı) kuyruktaki kopyayı da güncellemeli.</summary>
+    private void RefreshQueueRows(IEnumerable<string> labelIds)
+    {
+        var ids = labelIds.ToHashSet(StringComparer.Ordinal);
+        var inQueue = PrintQueue.Where(vm => ids.Contains(vm.Id)).Select(vm => vm.Id).ToList();
+        if (inQueue.Count == 0) return;
+        var fresh = _labelRepo.GetByIds(inQueue).ToDictionary(l => l.Id, StringComparer.Ordinal);
+        foreach (var vm in PrintQueue)
+            if (fresh.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
     }
 
     // ─── Yeniden bas (K3/K5) ────────────────────────────────────────────────
@@ -194,7 +205,7 @@ public sealed partial class MainShellViewModel
                 error = $"Yeniden basılamadı: {ex.Message}. Yazıcıyı kontrol edip tekrar dene.";
                 return false;
             }
-        });
+        }, isQueue: false);
         if (!ran && error is null) error = "Başka bir baskı sürüyor; bitince tekrar dene.";
         return error;
     }
@@ -227,13 +238,21 @@ public sealed partial class MainShellViewModel
             d => view = Views.Drawers.CancelLabelDrawer.Create(d));
         if (!ok || view?.SelectedReasonCode is not { Length: > 0 } reason) return;
 
+        await CancelAndTransferBackupsAsync(ids, reason);
+    }
+
+    /// <summary>İptal + yedek çekmecesi. Çekmecede onaylanan yedeğin fiyatı değişmiş olabilir
+    /// (<see cref="LabelService.ConfirmBackup"/> yalnız veritabanını yazar): yedek hâlâ kuyruktaysa
+    /// ekrandaki kopyası yerinde güncellenir — yoksa kâğıda eski fiyat basılır, ciroya yeni fiyat yazılırdı.</summary>
+    internal async Task CancelAndTransferBackupsAsync(IReadOnlyList<string> ids, string reason)
+    {
         var withBackups = CancelLabels(ids, reason);
-        if (withBackups.Count > 0)
-        {
-            await _drawers.ShowAsync($"İptal edilen etiketlerin yedekleri ({withBackups.Sum(g => g.Backups.Count)})",
-                d => Views.Drawers.BackupTransferDrawer.Create(d, _labels, withBackups));
-            RefreshPrintedLabels();
-        }
+        if (withBackups.Count == 0 || _drawers is null) return;
+        await _drawers.ShowAsync($"İptal edilen etiketlerin yedekleri ({withBackups.Sum(g => g.Backups.Count)})",
+            d => Views.Drawers.BackupTransferDrawer.Create(d, _labels, withBackups));
+        RefreshQueueRows(withBackups.SelectMany(g => g.Backups).Select(b => b.Id));
+        RefreshPrintedLabels();
+        RefreshHeroStats();
     }
 
     /// <summary>Toplu iptalin çekirdeği: iptal + liste tazeleme; geçici yedeği olan etiketleri (yedek

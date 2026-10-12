@@ -71,6 +71,72 @@ public class PrintedLabelsPanelLayoutTests
     }
 
     [Fact]
+    public void Row_menu_acts_on_the_right_clicked_row_not_the_first_selected()
+    {
+        // Çoklu seçimde seçili bir satıra sağ tık seçimi değiştirmez; ListBox'ın menüsü SelectedItem'ı (ilk
+        // seçilen satır) alıyordu — "Bu kodu seç" başka satırın koduna uygulanırdı.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var clock = new Mock<IClock>();
+            clock.Setup(c => c.UnixNow()).Returns(1000L);
+            new SessionRepository(db).Insert(new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
+            var labels = new LabelRepository(db);
+            var svc = new LabelService(labels,
+                new CustomerService(new CustomerRepository(db), new SessionRepository(db), labels, clock.Object),
+                db, clock.Object);
+            OrderDeck.Core.Sales.Label Add(string user, string code) => svc.Add("s1", new ChatMessage(
+                System.Guid.NewGuid().ToString("N"), "instagram", null, user, user, null, "aldım", 1000,
+                System.Array.Empty<string>()), 250m, code);
+            var a = Add("@a", "A12");
+            var b = Add("@b", "B7");
+            svc.MarkPrintedAndRecord(new[] { a.Id, b.Id });
+
+            var vm = new PrintedLabelsViewModel(labels);
+            vm.Load("s1");
+            var panel = new PrintedLabelsPanel { DataContext = new Holder(vm) };
+            var window = new Window
+            {
+                Content = panel, Width = 400, Height = 600, Left = -10000, Top = -10000,
+                ShowInTaskbar = false, ShowActivated = false, WindowStyle = WindowStyle.None,
+            };
+            window.Show();
+            try
+            {
+                ThemeTestHost.Pump();
+                var list = (ListBox)panel.FindName("PrintedList");
+                var rowA = vm.VisibleRows.Single(r => r.Id == a.Id);
+                var rowB = vm.VisibleRows.Single(r => r.Id == b.Id);
+                rowA.IsSelected = true;
+                rowB.IsSelected = true;
+                ThemeTestHost.Pump();
+                list.SelectedItem.Should().BeSameAs(rowA, "ilk seçilen satır");
+
+                var container = (ListBoxItem)list.ItemContainerGenerator.ContainerFromItem(rowB);
+                var menu = container.ContextMenu;
+                menu.Should().NotBeNull("menü satırın kendisinde");
+                menu!.PlacementTarget = container;
+                menu.IsOpen = true;
+                ThemeTestHost.Pump();
+                var selectCode = menu.Items.OfType<MenuItem>().Single(m => (string)m.Header == "Bu kodu seç");
+                selectCode.CommandParameter.Should().BeSameAs(rowB);
+                selectCode.Command.Should().NotBeNull();
+                selectCode.Command.Execute(selectCode.CommandParameter);
+                menu.IsOpen = false;
+
+                vm.SearchText.Should().Be("B7", "sağ tıklanan satırın kodu");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+
+        error.Should().BeNull();
+    }
+
+    [Fact]
     public void Tab_buttons_switch_lists_and_a_second_panel_does_not_reset_the_tab()
     {
         // Sekme radyolarında süreç geneli GroupName olsaydı ikinci bir panel (testte ya da ileride ikinci

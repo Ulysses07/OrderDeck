@@ -275,6 +275,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     partial void OnActiveCodeChanged(string value)
     {
+        // 0 TL onayı ürüne bağlı: başka ürün için verilmiş onay yeni ürüne geçmez, bekleyen soru da
+        // (yorumlar ÖNCEKİ ürün için tıklandı) yeni kodla yazılmaz.
+        _zeroPriceConfirmed = false;
+        DropZeroPricePending();
         ProductCard.Load(value);
         ApplyCatalogPrice();
         RefreshHeroStats();
@@ -287,8 +291,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     // kullanılmıyordu ve kutu "99,50"yi 9950 okuyordu (PriceInput).
 
     /// <summary>Kutudaki fiyatın sahibi olan kod: operatör fiyatı yazdığında ya da katalogdan
-    /// dolduğunda o anki kod. Boş = fiyat bir ürüne ait değil (açılış "0"ı, kod yokken yazılmış
-    /// fiyat) — o zaman "önceki üründen kaldı" denmez.</summary>
+    /// dolduğunda o anki kod. Boş = fiyat henüz bir ürüne ait değil (açılış "0"ı, kod yokken yazılmış
+    /// fiyat) — o zaman "önceki üründen kaldı" denmez. Böyle bir fiyat ilk etikete yazıldığında o
+    /// etiketin kodu sahip olur (<see cref="WriteOrder"/>): fiyat artık o ürünün fiyatıdır, sonraki
+    /// ürüne geçişte vurgulanır.</summary>
     private string? _priceOwnerCode;
 
     /// <summary>Kutu programla dolduruluyor (katalog fiyatı) — değişiklik operatörün düzenlemesi
@@ -302,23 +308,29 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// <summary>Kutunun altındaki satır içi hata (geçersiz/eksi fiyat). Pop-up değil.</summary>
     [ObservableProperty] private string? _priceError;
 
-    /// <summary>0 TL onayı bekleyen yorumun satır içi sorusu; null = soru yok.</summary>
+    /// <summary>0 TL onayı bekleyen yorumların satır içi sorusu; null = soru yok.</summary>
     [ObservableProperty] private string? _zeroPricePrompt;
 
-    private ChatMessageViewModel? _zeroPricePending;
+    /// <summary>0 TL sorusu yanıtlanmadan fiyat ya da kod değişti ve bekleyen yorumlar YAZILMADI:
+    /// adlarıyla söylenir (operatör yeniden tıklar). Yazılan yorum listeden düşer; null = yok.</summary>
+    [ObservableProperty] private string? _zeroPriceDropped;
 
-    /// <summary>Operatör bu kutu metni için 0 TL'yi onayladı; metin değişince düşer.</summary>
+    /// <summary>0 TL sorusu açıkken tıklanan yorumlar, tıklama sırasıyla ("ilk yazan alır"): soru
+    /// hepsini birlikte sorar, "Evet" hepsini bu sırayla yazar. Sonraki tıklama öncekini EZMEZ.</summary>
+    private readonly List<ChatMessageViewModel> _zeroPricePending = new();
+
+    /// <summary>Yazılmadan düşen yorumlar (<see cref="ZeroPriceDropped"/>).</summary>
+    private readonly List<ChatMessageViewModel> _zeroPriceDroppedItems = new();
+
+    /// <summary>Operatör bu kutu metni ve bu ürün için 0 TL'yi onayladı; metin ya da kod değişince
+    /// düşer.</summary>
     private bool _zeroPriceConfirmed;
 
     partial void OnActivePriceTextChanged(string value)
     {
         PriceError = null;
         _zeroPriceConfirmed = false;
-        if (_zeroPricePending is not null && PriceInput.Parse(value) is not { IsOk: true, Value: 0m })
-        {
-            _zeroPricePending = null;
-            ZeroPricePrompt = null;
-        }
+        if (PriceInput.Parse(value) is not { IsOk: true, Value: 0m }) DropZeroPricePending();
         if (_settingPriceFromCatalog) return;
         IsPriceCarriedOver = false;
         _priceOwnerCode = EffectiveCode;
@@ -346,25 +358,63 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             && PriceInput.Parse(ActivePriceText).IsOk;
     }
 
-    /// <summary>0 TL sorusunun "Evet"i: bekleyen yorum 0 TL ile yazılır; aynı kutu metniyle
-    /// sonraki yorumlar yeniden sorulmaz.</summary>
+    /// <summary>0 TL sorusunun "Evet"i: bekleyen yorumlar tıklama sırasıyla 0 TL ile yazılır; aynı
+    /// kutu metni ve aynı ürünle sonraki yorumlar yeniden sorulmaz.</summary>
     [RelayCommand]
     private async Task ConfirmZeroPriceAsync()
     {
-        var pending = _zeroPricePending;
-        _zeroPricePending = null;
+        var pending = _zeroPricePending.ToList();
+        _zeroPricePending.Clear();
         ZeroPricePrompt = null;
-        if (pending is null) return;
+        if (pending.Count == 0) return;
         _zeroPriceConfirmed = true;
-        await AddChatToQueueAsync(pending);
+        foreach (var message in pending) await AddChatToQueueAsync(message);
     }
 
+    /// <summary>"Vazgeç": operatörün kararı — bekleyen yorumlar yazılmaz.</summary>
     [RelayCommand]
     private void CancelZeroPrice()
     {
-        _zeroPricePending = null;
+        _zeroPricePending.Clear();
         ZeroPricePrompt = null;
     }
+
+    [RelayCommand]
+    private void DismissZeroPriceDropped()
+    {
+        _zeroPriceDroppedItems.Clear();
+        ZeroPriceDropped = null;
+    }
+
+    /// <summary>Soru yanıtlanmadan fiyat ya da kod değişti: bekleyen yorumlar YAZILMAZ (soru 0 TL'yi ve
+    /// tıklandığı ürünü soruyordu) ama sessizce de kaybolmaz — adlarıyla gösterilir.</summary>
+    private void DropZeroPricePending()
+    {
+        if (_zeroPricePending.Count == 0) return;
+        foreach (var m in _zeroPricePending)
+            if (!_zeroPriceDroppedItems.Contains(m)) _zeroPriceDroppedItems.Add(m);
+        _zeroPricePending.Clear();
+        ZeroPricePrompt = null;
+        UpdateZeroPriceDropped();
+    }
+
+    private void UpdateZeroPriceDropped()
+        => ZeroPriceDropped = _zeroPriceDroppedItems.Count == 0
+            ? null
+            : $"0 TL sorusu yanıtlanmadan fiyat/kod değişti; yazılmadı: {NameList(_zeroPriceDroppedItems)} — " +
+              "gerekirse yeniden tıkla.";
+
+    private static string NameList(IReadOnlyList<ChatMessageViewModel> messages)
+    {
+        const int Shown = 8;
+        var names = string.Join(", ", messages.Take(Shown).Select(m => m.Display));
+        return messages.Count > Shown ? $"{names} ve {messages.Count - Shown} yorum daha" : names;
+    }
+
+    private string ZeroPriceQuestion()
+        => _zeroPricePending.Count == 1
+            ? $"Fiyat 0 TL. '{_zeroPricePending[0].Display}' etiketi 0 TL ile yazılsın mı?"
+            : $"Fiyat 0 TL. {_zeroPricePending.Count} yorum 0 TL ile yazılsın mı? {NameList(_zeroPricePending)}";
 
     private DispatcherTimer? _heroTimer;
 
@@ -689,7 +739,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
         PrintedLabels = new PrintedLabelsViewModel(labelRepo,
-            paymentFollowUp is null ? null : paymentFollowUp.CustomersWithDeliveredRequest);
+            paymentFollowUp is null ? null : paymentFollowUp.Badges);
         if (_printedNavigator is not null) _printedNavigator.Requested += OnPrintedLabelsRequested;
         _dialogs = dialogs;
         _drawers = drawers;
@@ -1256,6 +1306,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             // istemediği örtük bir ikinci baskı denemesi; başarıda ise devam
             // sırasına göre bayat _printTask alanını görüp yanlış
             // "basılamadı" uyarısıyla yayını açık bırakmaktı.
+            //
+            // Uçuştaki iş YENİDEN BASKIYSA (Basılanlar, fiyat düzeltme) sonucu kuyruğun sonucu değil:
+            // yalnız biter beklenir, sonra kuyruk basılır. Sonucunu kuyruğunki saymak, yeniden baskı
+            // hatasında hiç denenmemiş kuyruk için "basılamadı" derdi, başarısında soruyu boşuna
+            // yinelerdi.
+            while (_printTask is { } other && !_printTaskIsQueue) await other;
             bool basildi;
             if (_printTask is { } inFlight)
             {
@@ -1334,8 +1390,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var price = parsed.Value;
         if (price == 0m && !_zeroPriceConfirmed)
         {
-            _zeroPricePending = messageVm;
-            ZeroPricePrompt = $"Fiyat 0 TL. '{messageVm.Display}' etiketi 0 TL ile yazılsın mı?";
+            if (!_zeroPricePending.Contains(messageVm)) _zeroPricePending.Add(messageVm);
+            ZeroPricePrompt = ZeroPriceQuestion();
             return;
         }
         PriceError = null;
@@ -1407,6 +1463,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             productId: resolution?.Product.Id,
             productVariantId: resolution?.ResolveVariantId(viewerAxisValue));
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
+
+        // Kod yokken yazılmış (sahipsiz) fiyat ilk etiketiyle o ürünün fiyatı olur: sonraki ürüne
+        // geçişte "önceki üründen kaldı" vurgusu çıksın (K8).
+        _priceOwnerCode ??= code;
+        if (_zeroPriceDroppedItems.Remove(messageVm)) UpdateZeroPriceDropped();
 
         // Etiket yazmanın tek dar boğazı burası; bakiye senkron turunu
         // beklemeden düşsün. İPTAL yolu burada DEĞİL: iptal edilen adet
@@ -1562,6 +1623,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// kesişimden hesaplanır. Baskı yokken null.</summary>
     private System.Collections.Generic.IReadOnlySet<string>? _printInFlightIds;
 
+    /// <summary>Uçuştaki iş kuyruk baskısı mı (<see cref="PrintGuardedAsync"/>) — değilse yeniden baskı.
+    /// EndStream yalnız kuyruk baskısının sonucunu kuyruğun sonucu sayar.</summary>
+    private bool _printTaskIsQueue;
+
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private Task Print() => PrintGuardedAsync();
 
@@ -1587,7 +1652,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (snapshot.Count == 0) return true;
 
         return await RunPrinterJobAsync(snapshot.Select(vm => vm.Id).ToHashSet(),
-            () => PrintCoreAsync(snapshot));
+            () => PrintCoreAsync(snapshot), isQueue: true);
     }
 
     /// <summary>Yazıcıya giden HER iş (kuyruk baskısı, yeniden baskı) bu kapıdan geçer: aynı anda tek iş,
@@ -1595,13 +1660,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// <see cref="_printTask"/>'ı bekler. Kapı R8-02A sırasıyla kapanır: önce alanlar, en son görev.
     /// Başka iş sürüyorsa false.</summary>
     private async Task<bool> RunPrinterJobAsync(
-        System.Collections.Generic.IReadOnlySet<string> ids, Func<Task<bool>> job)
+        System.Collections.Generic.IReadOnlySet<string> ids, Func<Task<bool>> job, bool isQueue)
     {
         if (_printTask is not null) return false;
 
         var gate = new System.Threading.Tasks.TaskCompletionSource<bool>(
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
         _printInFlightIds = ids;
+        _printTaskIsQueue = isQueue;
         _printTask = gate.Task;
         var ok = false;
         try

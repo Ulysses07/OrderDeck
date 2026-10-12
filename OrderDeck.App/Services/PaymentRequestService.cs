@@ -162,6 +162,13 @@ public sealed class PaymentRequestService
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
 
+    /// <summary>Bakiye özelliği açık (lisans anahtarı var) ama lisans kimliği çözülemiyor — sunucuya
+    /// ulaşılamıyor. Akış bu durumda bakiyeyi DENEMEDEN gönderebilir (iş henüz uygulanmamışsa —
+    /// <see cref="OfflineOutcome"/>); fiyat düzeltmesinin toplu gönderimi bunu "çevrimdışı" diye atlar (K5).
+    /// Anahtar yoksa bakiye özelliği zaten kapalı: çevrimdışı sayılmaz.</summary>
+    public async Task<bool> IsBalanceOfflineAsync(CancellationToken ct = default)
+        => !string.IsNullOrEmpty(_currentLicense.CurrentLicenseKey) && await ResolveLicenseIdAsync(ct) is null;
+
     private async Task<Guid?> ResolveLicenseIdAsync(CancellationToken ct)
     {
         var key = _currentLicense.CurrentLicenseKey;

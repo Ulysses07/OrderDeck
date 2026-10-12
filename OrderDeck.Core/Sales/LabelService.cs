@@ -197,6 +197,25 @@ public sealed class LabelService
         write.Commit();
     }
 
+    private static long _lastPrintBatchTicks;
+
+    /// <summary>Basış kimliği: basış SIRASIYLA artar (sıralı metin karşılaştırmasında da). "Basılanlar"
+    /// grupları önce PrintedAt'e (saniye) göre sıralar; aynı saniyedeki iki "Yazdır"ın sırasını bu kimlik
+    /// verir — rastgele kimlikte eskisi yarı yarıya üstte çıkardı (K1: en yeni basış en üstte). Önek UTC
+    /// tik sayısı (sabit 16 onaltılık hane; süreç içinde her çağrıda en az bir artar), sonek rastgele.</summary>
+    internal static string NewPrintBatchId()
+    {
+        long ticks;
+        while (true)
+        {
+            var last = System.Threading.Interlocked.Read(ref _lastPrintBatchTicks);
+            ticks = Math.Max(DateTime.UtcNow.Ticks, last + 1);
+            if (System.Threading.Interlocked.CompareExchange(ref _lastPrintBatchTicks, ticks, last) == last) break;
+        }
+        return ticks.ToString("x16", System.Globalization.CultureInfo.InvariantCulture) +
+               Guid.NewGuid().ToString("N")[..16];
+    }
+
     /// <summary>
     /// Marks the given labels as printed and increments customer aggregates per-customer.
     /// Tentative backup labels still get PrintedAt set (they physically come out of
@@ -248,7 +267,7 @@ public sealed class LabelService
         // ilkel gerekiyordu. Pakete alınca o ilkele hiç gerek kalmıyor:
         // yazılmamış bir UPDATE'i geri almak gerekmez.
         using var write = DbWrite.Begin(_factory);
-        _labels.MarkPrintedBatch(idsToPrint, _clock.UnixNow(), Guid.NewGuid().ToString("N"), write);
+        _labels.MarkPrintedBatch(idsToPrint, _clock.UnixNow(), NewPrintBatchId(), write);
         foreach (var (customerId, agg) in groupedAmounts)
             _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
         write.Commit();

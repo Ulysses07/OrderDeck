@@ -221,7 +221,7 @@ public static class PaymentResultPresenter
         return "'" + suffix;
     }
 
-    private static string WhenText(DateTimeOffset at, DateTimeOffset now)
+    internal static string WhenText(DateTimeOffset at, DateTimeOffset now)
     {
         var local = at.ToLocalTime();
         return local.Date == now.ToLocalTime().Date

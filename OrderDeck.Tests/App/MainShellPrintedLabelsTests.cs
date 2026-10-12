@@ -30,6 +30,9 @@ public class MainShellPrintedLabelsTests
     {
         public MainShellViewModel? Vm { get; set; }
         public Func<PriceCorrectionViewModel, Task>? OnPriceCorrection { get; set; }
+
+        /// <summary>Öbür çekmeceler (ör. yedek çekmecesi): operatörün çekmecede yaptığı işi taklit eder.</summary>
+        public Func<string, Task>? OnOther { get; set; }
         public List<string> Titles { get; } = new();
 
         public async Task<bool> ShowAsync(string title, Func<Drawer, object> buildContent)
@@ -38,6 +41,11 @@ public class MainShellPrintedLabelsTests
             if (Vm?.ActivePriceCorrection is { } pc && OnPriceCorrection is not null)
             {
                 await OnPriceCorrection(pc);
+                return true;
+            }
+            if (OnOther is not null)
+            {
+                await OnOther(title);
                 return true;
             }
             return false;
@@ -174,6 +182,71 @@ public class MainShellPrintedLabelsTests
     }
 
     [Fact]
+    public async Task Presses_in_the_same_second_are_listed_newest_first()
+    {
+        // PrintedAt saniyelik; aynı saniyedeki basışların sırası rastgele kimliğe kalıyordu (K1: en yeni üstte).
+        var (h, _) = Build();
+        using var __ = h;
+        var ids = new List<string>();
+        for (var i = 0; i < 5; i++)
+        {
+            var row = Enqueue(h, $"@k{i}", 100m);
+            await PrintAsync(h, row);                     // saat sabit: hepsi aynı saniye
+            ids.Add(row.Id);
+        }
+
+        h.Vm.IsPrintedTabActive = true;
+
+        h.Vm.PrintedLabels.VisibleRows.Select(r => r.Id).Should().Equal(Enumerable.Reverse(ids));
+    }
+
+    [Fact]
+    public async Task Hidden_printed_tab_is_not_rebuilt_after_each_print()
+    {
+        // Gruplu, sanallaştırmasız liste her Yazdır'dan sonra (sekme gizliyken de) baştan kuruluyordu:
+        // yüzlerce etikette UI yarım saniyeden fazla kilitleniyordu.
+        var (h, _) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+
+        await PrintAsync(h, a);
+
+        h.Vm.PrintedLabels.TotalCount.Should().Be(1, "sekme başlığındaki sayı güncel");
+        h.Vm.PrintedLabels.Rows.Should().BeEmpty("sekme kapalıyken liste kurulmaz");
+
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.VisibleRows.Should().ContainSingle().Which.Id.Should().Be(a.Id);
+    }
+
+    [Fact]
+    public async Task Open_printed_tab_adds_the_new_press_on_top_without_rebuilding()
+    {
+        var (h, _) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        var b = Enqueue(h, "@b", 250m);
+        await PrintAsync(h, a, b);
+        h.Vm.IsPrintedTabActive = true;
+        var before = h.Vm.PrintedLabels.VisibleRows.ToList();
+        var removals = 0;
+        h.Vm.PrintedLabels.VisibleRows.CollectionChanged += (_, e) =>
+        {
+            if (e.Action is System.Collections.Specialized.NotifyCollectionChangedAction.Remove
+                or System.Collections.Specialized.NotifyCollectionChangedAction.Reset) removals++;
+        };
+        var c = Enqueue(h, "@c", 250m);
+        h.Clock.Setup(x => x.UnixNow()).Returns(2000L);
+
+        await PrintAsync(h, c);
+
+        var rows = h.Vm.PrintedLabels.VisibleRows;
+        rows.Select(r => r.Id).Should().Equal(c.Id, a.Id, b.Id);
+        rows[1].Should().BeSameAs(before[0], "değişmeyen satır yerinde kalır");
+        rows[2].Should().BeSameAs(before[1]);
+        removals.Should().Be(0, "liste silinip baştan kurulmaz");
+    }
+
+    [Fact]
     public async Task Select_batch_and_select_code_across_batches()
     {
         var (h, _) = Build();
@@ -285,6 +358,81 @@ public class MainShellPrintedLabelsTests
         h.CustomerRepo.FindByPlatformAndUsername("instagram", "@b")!.TotalAmount.Should().Be(0m);
         h.Vm.PrintedLabels.VisibleRows.Select(r => r.Display).Should().Equal("@yedek");
         new LabelRepository(h.Db).GetById(a.Id)!.CancelReason.Should().Be(CancelReasonCodes.WrongProduct);
+    }
+
+    [Fact]
+    public async Task Backup_confirmed_at_a_new_price_updates_its_queue_row()
+    {
+        // Ana etiket basıldı, yedeği kuyrukta (basılmamış). Toplu iptalin yedek çekmecesinde yedek 200'e
+        // onaylandı: kuyruk kopyası 250'de kalıyor, kâğıda 250 basılıp ciroya 200 yazılıyordu.
+        var (h, drawers) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        h.Vm.BeginAddBackupCommand.Execute(a);
+        h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@yedek", "ben de"));
+        var backup = h.Vm.PrintQueue[^1];
+        await PrintAsync(h, a);
+        drawers.OnOther = _ =>
+        {
+            h.Labels.ConfirmBackup(backup.Id, newPrice: 200m);
+            return Task.CompletedTask;
+        };
+
+        await h.Vm.CancelAndTransferBackupsAsync(new[] { a.Id }, CancelReasonCodes.Customer);
+
+        h.Vm.PrintQueue.Should().ContainSingle().Which.Should().BeSameAs(backup, "satır yerinde güncellenir");
+        backup.Price.Should().Be(200m);
+        backup.Label.IsTentativeBackup.Should().BeFalse();
+
+        await PrintAsync(h);
+        h.Printer.Calls[^1].Single().Price.Should().Be(200m, "kâğıt ekrandaki kopyadan basılır");
+        h.CustomerRepo.FindByPlatformAndUsername("instagram", "@yedek")!.TotalAmount.Should().Be(200m);
+    }
+
+    private sealed class ReprintFailsPrinter : ILabelPrinter
+    {
+        private int _calls;
+        public List<List<Label>> Calls { get; } = new();
+        public TaskCompletionSource ReprintEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
+        {
+            lock (Calls) Calls.Add(labels.ToList());
+            if (Interlocked.Increment(ref _calls) != 2) return;   // 2. çağrı: yeniden baskı
+            ReprintEntered.TrySetResult();
+            Release.Wait(TimeSpan.FromSeconds(10));
+            throw new InvalidOperationException("yazıcı arızası (test)");
+        }
+
+        public void PrintGiftLabels(IReadOnlyList<Label> labels) { }
+    }
+
+    [Fact]
+    public async Task End_stream_waits_for_an_in_flight_reprint_and_still_prints_the_queue()
+    {
+        // Yeniden baskı uçuştayken "Yayını Bitir → hepsini bas": yeniden baskının sonucu kuyruğun sonucu
+        // sayılıyordu — hata verince hiç denenmemiş kuyruk için "basılamadı; yayın açık bırakıldı".
+        var printer = new ReprintFailsPrinter();
+        var (h, _) = Build(printer);
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        await PrintAsync(h, a);
+        var b = Enqueue(h, "@b", 100m);
+        var reprint = h.Vm.ReprintAsync(new[] { a.Id });
+        await printer.ReprintEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        h.Dialogs.ThreeWayResult = _ => true;   // Evet: hepsini bas ve bitir
+
+        var end = h.Vm.EndStreamCommand.ExecuteAsync(null);
+        printer.Release.Set();
+
+        (await reprint).Should().Contain("Yeniden basılamadı");
+        await end;
+        printer.Calls.Should().HaveCount(3);
+        printer.Calls[2].Single().Id.Should().Be(b.Id, "kuyruk yeniden baskıdan sonra basıldı");
+        h.Sessions.GetActive().Should().BeNull("kuyruk basıldı, yayın kapandı");
+        h.Dialogs.Shown.Should().NotContain(x => x.Message.Contains("açık bırakıldı"));
     }
 
     [Fact]

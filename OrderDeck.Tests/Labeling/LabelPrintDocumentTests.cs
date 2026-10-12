@@ -165,11 +165,12 @@ public class LabelPrintDocumentTests
     // pakette durabilir. Sayfa gerçek yazıcı olmadan bir bit eşleme çizilir; işaretli ve işaretsiz baskı
     // karşılaştırılır.
 
-    private static System.Drawing.Bitmap RenderFirstPage(Label label, IReadOnlySet<string>? corrections)
+    private static System.Drawing.Bitmap RenderFirstPage(Label label, IReadOnlySet<string>? corrections,
+        AppSettings? settings = null, IReadOnlySet<string>? recipientPays = null)
     {
-        var settings = new AppSettings();
+        settings ??= new AppSettings();
         using var doc = LabelPrintDocument.Build(new[] { label }, settings, printerName: null,
-            correctionLabelIds: corrections);
+            recipientPaysLabelIds: recipientPays, correctionLabelIds: corrections);
         var w = LabelPrintDocument.MmToHundredths(settings.LabelWidthMm);
         var h = LabelPrintDocument.MmToHundredths(settings.LabelHeightMm);
         var bmp = new System.Drawing.Bitmap(w, h);
@@ -204,5 +205,41 @@ public class LabelPrintDocumentTests
         diff.Should().NotBeEmpty("düzeltilen etiketin kâğıdında işaret var");
         diff.Should().OnlyContain(p => p.X > plain.Width / 2 && p.Y > plain.Height / 2,
             "işaret sağ-alt köşede — ad, mesaj ve fiyatla çakışmaz");
+    }
+
+    [Theory]
+    [InlineData(12, false)]
+    [InlineData(12, true)]
+    [InlineData(14, true)]
+    [InlineData(16, true)]
+    [InlineData(16, false)]
+    public void Correction_mark_never_covers_the_printed_text(int messageFontSize, bool recipientPays)
+    {
+        // Mesaj yazısı büyüyünce (ayarda 6–72) ve ALICI ÖDEMELİ şeridi varken sabit konumlu işaret fiyatın
+        // ("… 1205 TL") üstüne biniyordu.
+        var settings = new AppSettings { LabelMessageFontSize = messageFontSize };
+        var label = new Label("l1", "s1", "c1", "instagram", "@ayse", "kırmızı olanı alıyorum lütfen ayırın",
+            "A12", 1205m, 1000L, 1000L);
+        var rp = recipientPays ? new HashSet<string> { "l1" } : null;
+
+        using var plain = RenderFirstPage(label, null, settings, rp);
+        using var marked = RenderFirstPage(label, new HashSet<string> { "l1" }, settings, rp);
+
+        int minX = int.MaxValue, minY = int.MaxValue, maxX = -1, maxY = -1;
+        for (var y = 0; y < plain.Height; y++)
+            for (var x = 0; x < plain.Width; x++)
+                if (plain.GetPixel(x, y) != marked.GetPixel(x, y))
+                {
+                    minX = Math.Min(minX, x); minY = Math.Min(minY, y);
+                    maxX = Math.Max(maxX, x); maxY = Math.Max(maxY, y);
+                }
+        maxX.Should().BeGreaterThan(-1, "işaret basıldı");
+
+        var white = System.Drawing.Color.White.ToArgb();
+        var covered = 0;
+        for (var y = Math.Max(0, minY - 1); y <= Math.Min(plain.Height - 1, maxY + 1); y++)
+            for (var x = Math.Max(0, minX - 1); x <= Math.Min(plain.Width - 1, maxX + 1); x++)
+                if (plain.GetPixel(x, y).ToArgb() != white) covered++;
+        covered.Should().Be(0, "işaretin kutusu ad, mesaj/fiyat ya da şerit mürekkebine değmez");
     }
 }

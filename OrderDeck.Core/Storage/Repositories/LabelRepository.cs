@@ -268,6 +268,16 @@ public sealed class LabelRepository
             .ToList();
     }
 
+    /// <summary><see cref="GetPrintedBySession"/>'ın satır sayısı — sekme kapalıyken başlıktaki sayı (liste
+    /// kurulmaz).</summary>
+    public int CountPrintedBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM Label WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL AND CancelledAt IS NULL",
+            new { sessionId });
+    }
+
     /// <summary>Verilen etiketler, verilen sırayla (eksik olanlar atlanır).</summary>
     public IReadOnlyList<Label> GetByIds(IReadOnlyList<string> ids)
     {

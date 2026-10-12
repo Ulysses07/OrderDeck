@@ -170,6 +170,80 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Queue_correction_asks_to_reprint_labels_printed_while_the_drawer_was_open()
+    {
+        // Kuyruk kipinde açıldı; çekmece açıkken satırlar basıldı (eski fiyatla). Onay onları basılmış
+        // olarak düzeltir — kâğıtta eski fiyat kalır, yeniden baskı sorulmalı (K5).
+        var a = Add("@a", 250m);
+        var b = Add("@b", 250m);
+        var vm = Vm(new[] { a, b }, PriceCorrectionMode.Queue);
+        _labels.MarkPrintedAndRecord(new[] { a.Id, b.Id });
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+        vm.BlockingMessage.Should().Contain("değişti");
+
+        vm.ConfirmCommand.Execute(null);
+
+        vm.IsDone.Should().BeTrue();
+        vm.ResultText.Should().Contain("2 basılmış");
+        vm.IsReprintAsked.Should().BeTrue();
+        vm.ReprintQuestion.Should().Be("2 basılmış etiket düzeltildi — yeniden basılsın mı?");
+    }
+
+    [Fact]
+    public async Task Failed_reprint_keeps_the_question_with_the_error()
+    {
+        var a = Add("@a", 250m);
+        _labels.MarkPrintedAndRecord(new[] { a.Id });
+        var vm = new PriceCorrectionViewModel(_labels, payments: null, "s1", new[] { a.Id },
+            PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null, applied: _ => { },
+            reprint: _ => Task.FromResult<string?>("Başka bir baskı sürüyor; bitince tekrar dene."),
+            cloudApiEnabled: true);
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        await vm.ReprintCommand.ExecuteAsync(null);
+
+        vm.ReprintResult.Should().Contain("Başka bir baskı sürüyor");
+        vm.IsReprintAsked.Should().BeTrue("'tekrar dene' düğmesi yerinde kalır");
+    }
+
+    [Fact]
+    public void Conflict_on_write_keeps_the_operators_unchecked_price_groups()
+    {
+        // 300 TL'lik (pazarlıklı) grup bilerek işaretten çıkarıldı; yazım çakışma verdi, operatör yeniden
+        // onayladı: 300'lük etiketler sessizce 205'e düşüyordu.
+        var labels = new[] { Add("@a", 250m), Add("@b", 250m), Add("@c", 300m) };
+        var vm = Vm(labels);
+        vm.PriceGroups.Single(g => g.Price == 300m).IsChecked = false;
+        var conflicts = 1;
+        vm.CorrectPricesSeam = (ids, price) =>
+        {
+            if (conflicts-- > 0) throw new PriceCorrectionConflictException("Etiketlerden biri bu arada değişti.");
+            return _labels.CorrectPrices(ids, price);
+        };
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+        vm.BlockingMessage.Should().Contain("bu arada değişti");
+
+        vm.PriceGroups.Single(g => g.Price == 300m).IsChecked.Should().BeFalse();
+        vm.ConfirmCommand.Execute(null);
+
+        _labelRepo.GetById(labels[2].Id)!.Price.Should().Be(300m, "işaretsiz grup değişmez");
+        _labelRepo.GetById(labels[0].Id)!.Price.Should().Be(205m);
+    }
+
+    [Fact]
+    public void Resend_row_shows_the_date_of_a_request_from_another_day()
+    {
+        var at = DateTimeOffset.Now.AddDays(-3);
+        var row = new ResendRowViewModel(new OrderDeck.App.Services.PriceCorrection.CorrectedRequestCandidate(
+            "c1", "Ayşe", "cumulative", 250m, at, false, 205m));
+
+        row.Text.Should().Contain(at.ToLocalTime().ToString("dd.MM.yyyy HH:mm", System.Globalization.CultureInfo.GetCultureInfo("tr-TR")), "genel istek günler önce gitmiş olabilir");
+    }
+
+    [Fact]
     public void Queue_correction_has_no_reprint_step()
     {
         var q = Add("@a", 250m);

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using FluentAssertions;
 using OrderDeck.Core.Catalog;
@@ -71,6 +72,85 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
+    public async Task Zero_price_confirmation_does_not_carry_over_to_another_product()
+    {
+        // Açılış "0"ı; A1 (katalogda fiyat yok) için 0 TL onaylandı. Kod B2'ye (fiyatsız) çevrildi, fiyat
+        // yazılmadı: B2 yorumu sorusuz 0 TL yazılıyordu.
+        using var h = MainShellTestHarness.Build();
+        h.Vm.ActiveCode = "A1";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@hediye", "aldım"));
+        await h.Vm.ConfirmZeroPriceCommand.ExecuteAsync(null);
+        h.Vm.PrintQueue.Should().ContainSingle();
+
+        h.Vm.ActiveCode = "B2";
+        h.Vm.IsPriceCarriedOver.Should().BeTrue("0 TL A1'in fiyatıydı — B2'ye önceki üründen kaldı");
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b2", "aldım"));
+
+        h.Vm.PrintQueue.Should().ContainSingle("onay ürüne bağlı: B2 için yeniden sorulur");
+        h.Vm.ZeroPricePrompt.Should().Contain("@b2");
+    }
+
+    [Fact]
+    public async Task Comments_clicked_while_the_zero_question_is_open_are_kept_in_click_order()
+    {
+        using var h = MainShellTestHarness.Build();
+        h.Vm.ActivePriceText = "0";
+
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@bir", "aldım"));
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@iki", "aldım"));
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@uc", "aldım"));
+
+        h.Vm.ZeroPricePrompt.Should().Contain("3 yorum").And.Contain("@bir").And.Contain("@iki").And.Contain("@uc");
+        h.Vm.PrintQueue.Should().BeEmpty();
+
+        await h.Vm.ConfirmZeroPriceCommand.ExecuteAsync(null);
+
+        h.Vm.PrintQueue.Select(q => q.Username).Should().Equal(new[] { "@bir", "@iki", "@uc" },
+            "ilk yazan alır — sonraki tıklama öncekini ezmez");
+    }
+
+    [Fact]
+    public async Task Typing_a_price_instead_of_answering_names_the_unwritten_comments()
+    {
+        using var h = MainShellTestHarness.Build();
+        h.Vm.ActivePriceText = "0";
+        var bir = MainShellTestHarness.ChatVm("@bir", "aldım");
+        await h.Vm.AddChatToQueueAsync(bir);
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@iki", "aldım"));
+
+        h.Vm.ActivePriceText = "2";
+        h.Vm.ActivePriceText = "25";
+        h.Vm.ActivePriceText = "250";
+
+        h.Vm.ZeroPricePrompt.Should().BeNull();
+        h.Vm.PrintQueue.Should().BeEmpty("soru 0 TL'yi soruyordu; yorumlar başka fiyatla sessizce yazılmaz");
+        h.Vm.ZeroPriceDropped.Should().Contain("@bir").And.Contain("@iki");
+
+        await h.Vm.AddChatToQueueAsync(bir);   // operatör yeniden tıkladı
+        h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(250m);
+        h.Vm.ZeroPriceDropped.Should().NotContain("@bir", "yazılan ad listeden düşer").And.Contain("@iki");
+
+        h.Vm.DismissZeroPriceDroppedCommand.Execute(null);
+        h.Vm.ZeroPriceDropped.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Pending_zero_question_is_not_answered_for_another_product()
+    {
+        // Soru açıkken kod değişti: "Evet" A yorumunu B koduyla 0 TL yazardı.
+        using var h = MainShellTestHarness.Build();
+        h.Vm.ActiveCode = "A1";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "aldım"));
+
+        h.Vm.ActiveCode = "B2";
+        await h.Vm.ConfirmZeroPriceCommand.ExecuteAsync(null);
+
+        h.Vm.PrintQueue.Should().BeEmpty();
+        h.Vm.ZeroPricePrompt.Should().BeNull();
+        h.Vm.ZeroPriceDropped.Should().Contain("@a");
+    }
+
+    [Fact]
     public async Task Zero_price_cancel_writes_nothing()
     {
         using var h = MainShellTestHarness.Build();
@@ -128,6 +208,23 @@ public class MainShellPriceBoxTests
 
         h.Vm.ActivePriceText = "120";
         h.Vm.IsPriceCarriedOver.Should().BeFalse("operatör fiyata dokununca vurgu kalkar");
+    }
+
+    [Fact]
+    public async Task Price_typed_before_the_code_belongs_to_the_first_product_it_is_written_for()
+    {
+        // FİYAT önce yazıldı (kod boş), sonra katalogda fiyatı olmayan A12 — etiketler 250. Kod B7 (fiyatsız)
+        // olunca kutu 250'de kalıyor; vurgu çıkmıyordu (sahip hiç atanmamıştı).
+        using var h = MainShellTestHarness.Build();
+        h.Vm.ActivePriceText = "250";
+        h.Vm.ActiveCode = "A12";
+        h.Vm.IsPriceCarriedOver.Should().BeFalse("ilk ürün: fiyat henüz hiçbir ürüne ait değil");
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@alici", "aldım"));
+
+        h.Vm.ActiveCode = "B7";
+
+        h.Vm.ActivePriceText.Should().Be("250");
+        h.Vm.IsPriceCarriedOver.Should().BeTrue("250 A12'nin fiyatı olarak basıldı — B7'ye önceki üründen kaldı");
     }
 
     [Fact]

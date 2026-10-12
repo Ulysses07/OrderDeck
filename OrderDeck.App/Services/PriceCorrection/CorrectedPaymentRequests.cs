@@ -22,16 +22,27 @@ public sealed record CorrectedRequestCandidate(
     public bool IsSessionScope => ScopeKey.StartsWith("session:", StringComparison.Ordinal);
 }
 
-/// <summary>Ödemesi alınmış kişi (dekont kaydedilmiş ya da bakiyeden düşülmüş): OTOMATİK bir şey gitmez,
+/// <summary>Ödemesi alınmış kişi (dekont kaydedilmiş ya da düzeltilen etiketleri içeren isteğin tamamı
+/// bakiyeden düşülmüş): OTOMATİK bir şey gitmez,
 /// "ödendi, fark ±X TL" olarak gösterilir (K5). <see cref="Delta"/> kişinin düzeltilen basılmış ve onaylı
 /// etiketlerinin fark toplamı.</summary>
 public sealed record PaidPerson(string Display, decimal Delta, bool ByDekont, bool ByBalance);
 
 /// <summary>Düzeltmeden etkilenen kişilerin ödeme durumu.</summary>
-/// <param name="RequestedPersons">Teslim edilmiş isteği olan, ödemesi alınmamış kişi sayısı.</param>
+/// <param name="RequestedPersons">Düzeltilen etiketleri içeren teslim edilmiş isteği olan, ödemesi
+/// alınmamış kişi sayısı.</param>
 /// <param name="ToResend">Bunlardan isteğinin tutarı yeni toplamdan farklı olan kişi × kapsamlar.</param>
 public sealed record PaymentFollowUpPlan(
     int RequestedPersons, IReadOnlyList<CorrectedRequestCandidate> ToResend, IReadOnlyList<PaidPerson> Paid);
+
+/// <summary>"Basılanlar" rozetlerinin ödeme tarafı (<see cref="CorrectedPaymentRequests.Badges"/>).</summary>
+/// <param name="RequestedCustomers">Kişisine istek gitmiş müşteriler ("ödeme istendi").</param>
+/// <param name="BalancePaidLabels">İçeren son isteğin tamamı bakiyeden düşülmüş etiketler ("ödendi").</param>
+public sealed record PaymentBadges(IReadOnlySet<string> RequestedCustomers, IReadOnlySet<string> BalancePaidLabels)
+{
+    public static readonly PaymentBadges None =
+        new(new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
+}
 
 public enum ResendStatus
 {
@@ -56,8 +67,10 @@ public sealed record ResendOutcome(CorrectedRequestCandidate Candidate, ResendSt
 /// "istendi" denen tutar listede de aynı. Yeni toplam ödeme akışının isteyeceği tutardır (kişinin yayın
 /// toplamı ya da üyelerinin toplamı + kargo).</para>
 ///
-/// <para><b>Ödemesi alınmış</b> (etiketi dekontla kargo dosyasına bağlanmış ya da bu kapsamlarda bakiyeden
-/// düşülmüş) kişiye otomatik bir şey gitmez: dekont ve bakiyeye dokunulmaz, fark yalnız gösterilir.</para>
+/// <para><b>Ödemesi alınmış</b> (etiketi dekontla kargo dosyasına bağlanmış ya da düzeltilen etiketleri
+/// içeren isteğin tamamı bakiyeden düşülmüş) kişiye otomatik bir şey gitmez: dekont ve bakiyeye
+/// dokunulmaz, fark yalnız gösterilir. Yalnız düzeltilen etiketleri içeren istekler sayılır
+/// (<see cref="Plan"/>).</para>
 ///
 /// <para><b>Gönderim:</b> her kişi mevcut <see cref="PaymentRequestService.RequestPaymentAsync"/> yolundan
 /// geçer (kişi kilidi, revizyon, iade). Operatörün TEK onayı listedeki "tekrar gönder" sorusunun cevabıdır —
@@ -75,16 +88,20 @@ public sealed class CorrectedPaymentRequests
     private readonly IPaymentJobStore _jobs;
     private readonly Func<AppSettings> _settings;
     private readonly RequestPayment _request;
+    private readonly Func<Task<bool>>? _balanceOffline;
 
+    /// <param name="balanceOffline">Bakiye sunucusuna ulaşılamıyor mu
+    /// (<see cref="PaymentRequestService.IsBalanceOfflineAsync"/>); null = denetlenmez.</param>
     public CorrectedPaymentRequests(
         CustomerRepository customers, LabelRepository labels, IPaymentJobStore jobs,
-        Func<AppSettings> settings, RequestPayment request)
+        Func<AppSettings> settings, RequestPayment request, Func<Task<bool>>? balanceOffline = null)
     {
         _customers = customers;
         _labels = labels;
         _jobs = jobs;
         _settings = settings;
         _request = request;
+        _balanceOffline = balanceOffline;
     }
 
     /// <summary>DI kurucusu: gönderim gerçek ödeme servisinden.</summary>
@@ -92,7 +109,8 @@ public sealed class CorrectedPaymentRequests
         CustomerRepository customers, LabelRepository labels, IPaymentJobStore jobs,
         SettingsStore settings, PaymentRequestService payments)
         : this(customers, labels, jobs, settings.Load,
-            (c, total, date, scope, tokens) => payments.RequestPaymentAsync(c, total, date, scope, tokens))
+            (c, total, date, scope, tokens) => payments.RequestPaymentAsync(c, total, date, scope, tokens),
+            () => payments.IsBalanceOfflineAsync())
     {
     }
 
@@ -102,7 +120,18 @@ public sealed class CorrectedPaymentRequests
 
     /// <summary>Etkilenen etiketlerin kişilerinin ödeme durumu. Düzeltmeden ÖNCE çağrılırsa sayılar
     /// özet içindir (yeni toplam henüz yazılmadı); SONRA çağrılırsa <see cref="PaymentFollowUpPlan.ToResend"/>
-    /// güncel toplamlarla kurulur.</summary>
+    /// güncel toplamlarla kurulur.
+    ///
+    /// <para><b>Yalnız düzeltilen etiketleri İÇEREN istek sayılır</b> (<see cref="Covers"/>): kapsamın son
+    /// teslim edilmiş isteği, kişinin düzeltilen basılmış ve onaylı etiketlerinden en erkeninin basılmasından
+    /// SONRA gitmiş olmalı. Etiketlerden önce gitmiş istek (ör. günler önceki genel istek) yanlış fiyatı hiç
+    /// içermedi: ne "eski tutarla istek gitmiş" listesine girer ne de "ödendi" kararını verir. Kuyruktaki
+    /// etiket henüz hiçbir istekte yok, geçici yedek toplamlara girmez — ikisi de isteği etkilemez.</para>
+    ///
+    /// <para><b>"Bakiyeden ödendi" kapsam başına</b> (<see cref="IsPaidByBalance"/>): o kapsamın etiketleri
+    /// içeren son isteğinin tamamı bakiyeden düşülmüş (müşteriden 0 TL istenmiş) olmalı. Kısmi düşüm
+    /// ödendi sayılmaz — müşteriden kalan tutar istenmişti, o istek listeye girer (soru önceki düşümü
+    /// zaten söyler). Bir kapsamdaki düşüm öbür kapsamın isteğini listeden düşürmez.</para></summary>
     /// <param name="affected">Düzeltilen (ya da düzeltilecek) etiketler ve fark.</param>
     public PaymentFollowUpPlan Plan(string sessionId, IEnumerable<(Label Label, decimal Delta)> affected)
     {
@@ -117,7 +146,6 @@ public sealed class CorrectedPaymentRequests
         }
 
         var settings = _settings();
-        var scopes = new[] { SessionScope(sessionId), CumulativeScope };
         var toResend = new List<CorrectedRequestCandidate>();
         var paid = new List<PaidPerson>();
         var requestedPersons = 0;
@@ -125,25 +153,28 @@ public sealed class CorrectedPaymentRequests
         foreach (var (person, items) in persons.Values)
         {
             var display = DisplayOf(items[0].Label);
-            var byDekont = items.Any(i => i.Label.ShipmentId is not null);
-            var byBalance = false;
-            var delivered = new List<(string Scope, PaymentJob Last)>();
-            foreach (var scope in scopes)
+            // İsteklerin tutarına giren etiketler: basılmış ve onaylı (müşteri toplamı ve yayın toplamı
+            // yalnız bunlardan beslenir).
+            var counted = items.Where(i => i.Label.PrintedAt.HasValue && !i.Label.IsTentativeBackup).ToList();
+            var delta = counted.Sum(i => i.Delta);
+            if (items.Any(i => i.Label.ShipmentId is not null))
             {
-                var (jobs, legacies) = _jobs.GetPersonScopeJobs(person.MemberIds, scope);
-                if (jobs.Count + legacies.Count == 0) continue;
-                if (jobs.Any(j => j.State == PaymentJobState.Applied && j.AppliedAmount is > 0m)) byBalance = true;
-                var prompts = PersonScopePlan.For(jobs, legacies, person.OwnerId).PromptJobs;
-                if (prompts.Count > 0) delivered.Add((scope, prompts[^1]));
-            }
-
-            if (byDekont || byBalance)
-            {
-                var delta = items.Where(i => i.Label.PrintedAt.HasValue && !i.Label.IsTentativeBackup)
-                    .Sum(i => i.Delta);
-                paid.Add(new PaidPerson(display, delta, byDekont, byBalance));
+                paid.Add(new PaidPerson(display, delta, ByDekont: true, ByBalance: false));
                 continue;
             }
+            if (counted.Count == 0) continue;
+            var earliestPrint = counted.Min(i => i.Label.PrintedAt!.Value);
+
+            var byBalance = false;
+            var delivered = new List<(string Scope, PaymentJob Last)>();
+            foreach (var (scope, last) in LastDeliveredRequests(sessionId, person))
+            {
+                if (!Covers(last, earliestPrint)) continue;
+                if (IsPaidByBalance(last)) byBalance = true;
+                else delivered.Add((scope, last));
+            }
+
+            if (byBalance) paid.Add(new PaidPerson(display, delta, ByDekont: false, ByBalance: true));
             if (delivered.Count == 0) continue;
             requestedPersons++;
 
@@ -165,38 +196,61 @@ public sealed class CorrectedPaymentRequests
         return new PaymentFollowUpPlan(requestedPersons, toResend, paid);
     }
 
-    /// <summary>"Basılanlar" rozeti ("ödeme istendi"): verilen müşterilerden KİŞİSİNE bu yayın ya da genel
-    /// toplam için istek gitmiş (ya da gitmiş olabilir) olanlar — soruyla aynı tanım
-    /// (<see cref="PersonScopePlan.PromptJobs"/>).</summary>
-    public IReadOnlySet<string> CustomersWithDeliveredRequest(string sessionId, IReadOnlyCollection<string> customerIds)
+    /// <summary>Kişinin yayın ve genel kapsamdaki SON teslim edilmiş (ya da gitmiş olabilecek) isteği —
+    /// ödeme sorusuyla aynı plan (<see cref="PersonScopePlan.PromptJobs"/>): soruda "istendi" denen istek.</summary>
+    private IEnumerable<(string Scope, PaymentJob Last)> LastDeliveredRequests(string sessionId, PaymentPerson person)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        var byPerson = new Dictionary<string, bool>(StringComparer.Ordinal);
-        var scopes = new[] { SessionScope(sessionId), CumulativeScope };
-        foreach (var id in customerIds)
+        foreach (var scope in new[] { SessionScope(sessionId), CumulativeScope })
         {
-            var person = _customers.GetPaymentPerson(id);
-            if (!byPerson.TryGetValue(person.MemberKey, out var requested))
-            {
-                requested = scopes.Any(scope =>
-                {
-                    var (jobs, legacies) = _jobs.GetPersonScopeJobs(person.MemberIds, scope);
-                    return jobs.Count + legacies.Count > 0
-                           && PersonScopePlan.For(jobs, legacies, person.OwnerId).PromptJobs.Count > 0;
-                });
-                byPerson[person.MemberKey] = requested;
-            }
-            if (requested) result.Add(id);
+            var (jobs, legacies) = _jobs.GetPersonScopeJobs(person.MemberIds, scope);
+            if (jobs.Count + legacies.Count == 0) continue;
+            var prompts = PersonScopePlan.For(jobs, legacies, person.OwnerId).PromptJobs;
+            if (prompts.Count > 0) yield return (scope, prompts[^1]);
         }
-        return result;
+    }
+
+    /// <summary>İstek, <paramref name="printedAt"/>'te basılmış etiketi içeriyor mu: etiket basıldıktan sonra
+    /// (aynı saniye dahil) gitti. Anı bilinmeyen gönderim temkinle içeriyor sayılır.</summary>
+    internal static bool Covers(PaymentJob request, long printedAt)
+        => request.PromptAt is not long at || at >= printedAt;
+
+    /// <summary>İsteğin tamamı bakiyeden düşüldü — müşteriden hiçbir şey istenmedi. Kısmi düşüm değil.</summary>
+    internal static bool IsPaidByBalance(PaymentJob request)
+        => request.State == PaymentJobState.Applied && request.AppliedAmount is > 0m && request.PromptNet <= 0m;
+
+    /// <summary>"Basılanlar" rozetleri (<see cref="Plan"/> ile AYNI tanımlar): "ödeme istendi" — kişisine bu
+    /// yayın ya da genel toplam için istek gitmiş (ya da gitmiş olabilir) müşteriler; "ödendi" (bakiye) —
+    /// etiketi içeren son isteğin tamamı bakiyeden düşülmüş etiketler.</summary>
+    public PaymentBadges Badges(string sessionId, IReadOnlyCollection<Label> labels)
+    {
+        var requested = new HashSet<string>(StringComparer.Ordinal);
+        var balancePaid = new HashSet<string>(StringComparer.Ordinal);
+        var byPerson = new Dictionary<string, IReadOnlyList<(string Scope, PaymentJob Last)>>(StringComparer.Ordinal);
+        foreach (var label in labels)
+        {
+            var person = _customers.GetPaymentPerson(label.CustomerId);
+            if (!byPerson.TryGetValue(person.MemberKey, out var lasts))
+                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person).ToList();
+            if (lasts.Count == 0) continue;
+            requested.Add(label.CustomerId);
+            if (label.PrintedAt is long printedAt && !label.IsTentativeBackup
+                && lasts.Any(r => Covers(r.Last, printedAt) && IsPaidByBalance(r.Last)))
+                balancePaid.Add(label.Id);
+        }
+        return new PaymentBadges(requested, balancePaid);
     }
 
     /// <summary>Listedekilere düzeltilmiş isteği gönderir — sırayla, her biri ödeme akışından. Ek soru
-    /// gerektiren atlanır (<see cref="ResendStatus.Manual"/>).</summary>
+    /// gerektiren atlanır (<see cref="ResendStatus.Manual"/>). Bakiye sunucusuna ulaşılamıyorsa
+    /// (çevrimdışı) HİÇBİRİ gönderilmez: akış bu durumda bakiyeyi denemeden tam tutarı isteyebilirdi.</summary>
     public async Task<IReadOnlyList<ResendOutcome>> ResendAsync(
         string sessionId, DateTime streamDate, IReadOnlyList<CorrectedRequestCandidate> candidates,
         IProgress<int>? progress = null)
     {
+        if (_balanceOffline is not null && candidates.Count > 0 && await _balanceOffline())
+            return candidates.Select(c => new ResendOutcome(c, ResendStatus.Manual,
+                "çevrimdışı — sunucuya ulaşılamıyor, bakiye denenemez")).ToList();
+
         var outcomes = new List<ResendOutcome>(candidates.Count);
         foreach (var c in candidates)
         {
