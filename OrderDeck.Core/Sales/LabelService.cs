@@ -282,8 +282,62 @@ public sealed class LabelService
     /// <summary>Seçilen etiketleri sınıflar (yazma yok): düzeltilebilir / kargoya verilmiş (değişmez) /
     /// konu dışı (iptal, kargo ücreti). Bulunamayan Id atlanır.</summary>
     public PriceCorrectionPlan PlanPriceCorrection(IReadOnlyCollection<string> labelIds)
+        => Classify(_labels.GetByIds(labelIds.ToList()));
+
+    /// <summary>Bir yayında bir kodun fiyatı (sahip kararı F1: bir yayında bir kodun TEK fiyatı vardır). Kaynak o
+    /// yayındaki o kodun iptal edilmemiş etiketleri; null = kodun bu yayında etiketi yok. FİYAT kutusu kod
+    /// değişince bunu gösterir — uygulama yeniden açılınca da aynı sonuç.</summary>
+    public CodePrice? GetCodePrice(string sessionId, string code)
     {
-        var labels = _labels.GetByIds(labelIds.ToList());
+        if (string.IsNullOrWhiteSpace(code)) return null;
+        var labels = _labels.GetActiveBySessionAndCode(sessionId, code.Trim());
+        if (labels.Count == 0) return null;
+        var plan = Classify(labels);
+        var source = plan.Correctable.Count > 0 ? plan.Correctable : plan.Shipped;
+        if (source.Count == 0) return null;
+        // En çok tekrarlanan fiyat; eşitlikte en son yazılanınki (liste yazılış sırasında).
+        var price = source.Select((l, i) => (l.Price, Order: i))
+            .GroupBy(x => x.Price)
+            .OrderByDescending(g => g.Count())
+            .ThenByDescending(g => g.Max(x => x.Order))
+            .First().Key;
+        return new CodePrice(price, plan.Correctable.Count, plan.PriceGroups, plan.Shipped.Count);
+    }
+
+    /// <summary>Kod düzeyinde düzeltmenin planı (sahip kararı F3): seçimdeki etiketlerin KODLARI, her biri için
+    /// kodun yayındaki BÜTÜN etiketleri (artı seçimde o koddan olanlar — ör. önceki yayından kuyruğa taşınmış
+    /// satır), sınıflanmış. Kodsuz seçilen etiketler tek grupta, yalnız kendileri (genişletilecek kod yok). Sıra:
+    /// kodların seçimde ilk görüldüğü sıra. Yazma yok.</summary>
+    public IReadOnlyList<CodeCorrectionPlan> PlanCodeCorrection(string sessionId, IReadOnlyCollection<string> selectedIds)
+    {
+        var selected = _labels.GetByIds(selectedIds.ToList());
+        var plans = new List<CodeCorrectionPlan>();
+        foreach (var group in selected.GroupBy(l => CodeKey(l.Code), StringComparer.OrdinalIgnoreCase))
+        {
+            var code = group.Key.Length == 0 ? null : group.First().Code!.Trim();
+            plans.Add(code is null
+                ? new CodeCorrectionPlan(null, Classify(group.ToList()))
+                : CodePlan(sessionId, code, group));
+        }
+        return plans;
+    }
+
+    /// <summary>Tek kodun planı (FİYAT kutusundaki fiyat değişikliği, F2): kodun yayındaki bütün etiketleri.</summary>
+    public CodeCorrectionPlan PlanCodeCorrection(string sessionId, string code)
+        => CodePlan(sessionId, code.Trim(), Array.Empty<Label>());
+
+    private CodeCorrectionPlan CodePlan(string sessionId, string code, IEnumerable<Label> alsoSelected)
+    {
+        var labels = _labels.GetActiveBySessionAndCode(sessionId, code).ToList();
+        var known = labels.Select(l => l.Id).ToHashSet(StringComparer.Ordinal);
+        labels.AddRange(alsoSelected.Where(l => known.Add(l.Id)));
+        return new CodeCorrectionPlan(code, Classify(labels));
+    }
+
+    private static string CodeKey(string? code) => code?.Trim() ?? "";
+
+    private PriceCorrectionPlan Classify(IReadOnlyList<Label> labels)
+    {
         var shipmentStatus = new Dictionary<string, ShipmentStatus?>(StringComparer.Ordinal);
         foreach (var sid in labels.Select(l => l.ShipmentId).OfType<string>().Distinct(StringComparer.Ordinal))
             shipmentStatus[sid] = _shipments.GetById(sid)?.Status;

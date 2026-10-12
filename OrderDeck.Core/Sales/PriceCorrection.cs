@@ -47,10 +47,41 @@ public sealed class PriceCorrectionPlan
 
     /// <summary>Durumun parmak izi: onay anında yeniden okunan plan bununla karşılaştırılır — arada
     /// bir etiket basıldı, iptal edildi ya da fiyatı değiştiyse operatör eski özeti onaylamış olurdu.</summary>
-    public string Fingerprint => string.Join(";",
-        Correctable.Concat(Shipped).OrderBy(l => l.Id, StringComparer.Ordinal).Select(l => string.Join("/",
-            l.Id, l.Price.ToString(CultureInfo.InvariantCulture), l.PrintedAt.HasValue ? "p" : "q",
-            l.IsTentativeBackup ? "t" : "c", l.ShipmentId ?? "-", l.CustomerId)));
+    public string Fingerprint => FingerprintOf(Correctable.Concat(Shipped).Select(l => l.Id), Correctable.Concat(Shipped));
+
+    /// <summary>Verilen etiketlerin (<paramref name="ids"/>) <paramref name="labels"/> içindeki durumunun parmak
+    /// izi; listede olmayan Id "yok" diye girer (arada iptal edildi). Kod düzeyindeki düzeltme bununla operatörün
+    /// GÖRDÜĞÜ etiketlerin değişip değişmediğine bakar — arada yazılan yeni etiket kodun etiketidir, düzeltmeye
+    /// girer ama gösterilen özeti bayatlatmaz (yayında yorum yağarken onay hiç tutmazdı).</summary>
+    public static string FingerprintOf(IEnumerable<string> ids, IEnumerable<Label> labels)
+    {
+        var byId = new Dictionary<string, Label>(StringComparer.Ordinal);
+        foreach (var l in labels) byId[l.Id] = l;
+        return string.Join(";", ids.Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal)
+            .Select(id => byId.TryGetValue(id, out var l)
+                ? string.Join("/", l.Id, l.Price.ToString(CultureInfo.InvariantCulture), l.PrintedAt.HasValue ? "p" : "q",
+                    l.IsTentativeBackup ? "t" : "c", l.ShipmentId ?? "-", l.CustomerId)
+                : id + "/yok"));
+    }
+}
+
+/// <summary>Kod düzeyinde fiyat düzeltmesinin bir kodu (sahip kararı F3): kodun yayındaki BÜTÜN etiketleri
+/// (artı seçimde o koddan olanlar), sınıflanmış. <see cref="Code"/> null = kodsuz etiketler — genişletilecek kod
+/// yok, yalnız seçilenler.</summary>
+public sealed record CodeCorrectionPlan(string? Code, PriceCorrectionPlan Plan);
+
+/// <summary>Bir yayında bir kodun fiyatı (sahip kararı F1): kaynağı o yayındaki o kodun iptal edilmemiş
+/// etiketleri — ayrı bir fiyat belleği yok.</summary>
+/// <param name="Price">Kodun fiyatı: düzeltilebilir etiketlerin en çok tekrarlanan fiyatı (eşitlikte en son
+/// yazılanınki). Düzeltilebilir etiket yoksa kargoya verilmiş dosyadakilerin.</param>
+/// <param name="Correctable">Düzeltilebilir etiket sayısı (kuyruk, basılmış, yedek; kargoya verilmiş dosya
+/// hariç).</param>
+/// <param name="Groups">Düzeltilebilir etiketlerin fiyat grupları; birden çoksa kodda karışık fiyat var (eski
+/// veri ya da pazarlıklı yedek).</param>
+/// <param name="Shipped">Kargoya verilmiş dosyadaki — değişmeyen — etiket sayısı.</param>
+public sealed record CodePrice(decimal Price, int Correctable, IReadOnlyList<PriceGroup> Groups, int Shipped)
+{
+    public bool IsMixed => Groups.Count > 1;
 }
 
 /// <summary>Bir etiketin düzeltmesi: önceki hâli ve yeni fiyatı.</summary>

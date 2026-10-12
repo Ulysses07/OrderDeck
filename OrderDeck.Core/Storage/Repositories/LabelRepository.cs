@@ -271,6 +271,24 @@ public sealed class LabelRepository
             .ToList();
     }
 
+    /// <summary>Bir yayında bir kodun iptal edilmemiş etiketleri (kargo ücreti hariç; kuyruk, basılmış ve
+    /// yedekler dahil), yazılış sırasıyla. "Bir yayında bir kodun TEK fiyatı" kuralının kaynağı (sahip kararı
+    /// F1–F3): FİYAT kutusu kodun fiyatını buradan okur, kod düzeyinde düzeltme bu etiketleri değiştirir. Kod
+    /// eşleşmesi "BU ÜRÜNDEN" sayacıyla (<see cref="CountSessionLabelsByCode"/>) aynı: harf duyarsız.</summary>
+    public IReadOnlyList<Label> GetActiveBySessionAndCode(string sessionId, string code)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
+              FROM Label
+              WHERE SessionId=@sessionId AND Code IS NOT NULL AND Code = @code COLLATE NOCASE
+                AND CancelledAt IS NULL AND IsShippingFee = 0
+              ORDER BY AddedAt, rowid",
+            new { sessionId, code }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
     /// <summary><see cref="GetPrintedBySession"/>'ın satır sayısı — sekme kapalıyken başlıktaki sayı (liste
     /// kurulmaz).</summary>
     public int CountPrintedBySession(string sessionId)

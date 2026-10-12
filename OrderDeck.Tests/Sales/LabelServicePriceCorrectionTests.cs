@@ -285,4 +285,93 @@ public class LabelServicePriceCorrectionTests
         after[plain.Id].BatchKey.Should().Be(before[plain.Id].BatchKey, "yeniden baskı grubu değiştirmez");
         fx.Labels.GetSessionTotals("s1").TotalAmount.Should().Be(455m, "ciro ikinci kez artmaz");
     }
+
+    // ── Bir yayında bir kodun TEK fiyatı (sahip kararı F1/F3) ──────────
+
+    private static Label AddIn(Fx fx, string sessionId, string user, decimal price, string? code)
+        => fx.Svc.Add(sessionId, Msg(user), price, code);
+
+    [Fact]
+    public void Code_price_is_read_from_the_sessions_uncancelled_labels_of_that_code()
+    {
+        using var fx = Build();
+        new SessionRepository(fx.Db).Insert(new StreamSession("s2", null, 900, null, new[] { "instagram" }, null));
+        fx.Svc.GetCodePrice("s1", "A1").Should().BeNull("kodun bu yayında etiketi yok");
+        AddIn(fx, "s2", "@eski", 999m, "A1");                  // başka yayın
+        var cancelled = AddIn(fx, "s1", "@iptal", 500m, "A1");
+        fx.Svc.Cancel(new[] { cancelled.Id }, CancelReasonCodes.Customer);
+        AddIn(fx, "s1", "@b7", 80m, "B7");                     // başka kod
+        AddIn(fx, "s1", "@a", 250m, "A1");
+        AddIn(fx, "s1", "@b", 250m, "A1");
+
+        var price = fx.Svc.GetCodePrice("s1", "a1 ");
+
+        price.Should().NotBeNull("kod harf duyarsız, kırpılmış");
+        price!.Price.Should().Be(250m, "başka yayın, iptal edilmiş etiket ve başka kod sayılmaz");
+        price.Correctable.Should().Be(2);
+        price.IsMixed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Code_price_of_mixed_labels_is_the_most_common_one_then_the_latest_written()
+    {
+        using var fx = Build();
+        AddIn(fx, "s1", "@a", 250m, "A1");
+        AddIn(fx, "s1", "@b", 230m, "A1");                     // ör. pazarlıklı yedek
+
+        fx.Svc.GetCodePrice("s1", "A1")!.Price.Should().Be(230m, "eşitlikte en son yazılanınki");
+
+        AddIn(fx, "s1", "@c", 250m, "A1");
+        var price = fx.Svc.GetCodePrice("s1", "A1")!;
+        price.Price.Should().Be(250m, "en çok tekrarlanan fiyat");
+        price.IsMixed.Should().BeTrue();
+        price.Groups.Should().Equal(new PriceGroup(250m, 2), new PriceGroup(230m, 1));
+    }
+
+    [Fact]
+    public void Code_price_counts_labels_in_a_shipped_file_as_unchangeable()
+    {
+        using var fx = Build();
+        var shippedLabel = AddIn(fx, "s1", "@a", 250m, "A1");
+        fx.Svc.MarkPrintedAndRecord(new[] { shippedLabel.Id });
+        var shipmentSvc = new ShipmentService(fx.Shipments, fx.Labels, () => new OrderDeck.Core.Settings.AppSettings());
+        var gone = shipmentSvc.GetOrCreateOpenShipment(shippedLabel.CustomerId);
+        shipmentSvc.AttachLabels(gone.Id, new[] { shippedLabel.Id });
+        shipmentSvc.ApplyDecision(gone.Id, ShipmentDecision.ShipNow);
+
+        var onlyShipped = fx.Svc.GetCodePrice("s1", "A1")!;
+        onlyShipped.Price.Should().Be(250m, "kodun bu yayındaki fiyatı — değiştirilemese de");
+        onlyShipped.Correctable.Should().Be(0, "kargoya verilmiş etiket düzelmez");
+        onlyShipped.Shipped.Should().Be(1);
+
+        AddIn(fx, "s1", "@b", 200m, "A1");
+        var mixed = fx.Svc.GetCodePrice("s1", "A1")!;
+        mixed.Price.Should().Be(200m, "düzeltilebilir etiketlerin fiyatı kargoya verilmişlerden önce gelir");
+        mixed.Correctable.Should().Be(1);
+    }
+
+    [Fact]
+    public void Code_plan_covers_every_label_of_the_selected_codes_in_the_session()
+    {
+        using var fx = Build();
+        new SessionRepository(fx.Db).Insert(new StreamSession("s2", null, 900, null, new[] { "instagram" }, null));
+        var a = AddIn(fx, "s1", "@a", 250m, "A1");
+        var b = AddIn(fx, "s1", "@b", 250m, "A1");
+        var other = AddIn(fx, "s1", "@c", 80m, "B7");
+        var carried = AddIn(fx, "s2", "@d", 250m, "a1");       // önceki yayından kuyruğa taşınmış, seçili
+        var codeless1 = AddIn(fx, "s1", "@e", 40m, null);
+        AddIn(fx, "s1", "@f", 40m, null);                      // kodsuz, seçilmedi
+
+        var plans = fx.Svc.PlanCodeCorrection("s1", new[] { a.Id, codeless1.Id, carried.Id });
+
+        plans.Select(p => p.Code).Should().Equal("A1", null);
+        plans[0].Plan.Correctable.Select(l => l.Id).Should().BeEquivalentTo(new[] { a.Id, b.Id, carried.Id },
+            "kodun yayındaki BÜTÜN etiketleri + seçimde o koddan olanlar; başka kod girmez");
+        plans[1].Plan.Correctable.Select(l => l.Id).Should().Equal(new[] { codeless1.Id },
+            "kodsuz etikette genişletilecek kod yok: yalnız seçilen");
+        plans.SelectMany(p => p.Plan.Correctable).Should().NotContain(l => l.Id == other.Id);
+
+        fx.Svc.PlanCodeCorrection("s1", "a1").Plan.Correctable.Select(l => l.Id)
+            .Should().BeEquivalentTo(new[] { a.Id, b.Id });
+    }
 }
