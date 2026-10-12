@@ -87,4 +87,46 @@ public class ActiveProductBarLayoutTests
 
         error.Should().BeNull();
     }
+
+    /// <summary>Bağın görünür hâli: <paramref name="text"/> metinli TextBlock, kendisi ve ebeveynleri görünür
+    /// (pencere yok — IsVisible kullanılamaz, Visibility zinciri denetlenir).</summary>
+    private static bool Shows(FrameworkElement root, string text)
+    {
+        var block = Descendants(root).OfType<TextBlock>().SingleOrDefault(t => t.Text == text);
+        for (DependencyObject? d = block; d is not null && !ReferenceEquals(d, root); d = LogicalTreeHelper.GetParent(d))
+            if (d is UIElement { Visibility: not Visibility.Visible }) return false;
+        return block is not null;
+    }
+
+    [Fact]
+    public void Source_blocked_names_and_strip_error_are_shown_by_the_bar()
+    {
+        // Kutunun altındaki kaynak ("bu yayındaki fiyatı"), şerit beklerken yazılmayan yorumlar ve şeridin hata
+        // satırı VM'de doğru olsa da bağ koparsa operatör görmez: etiket sessizce yazılmamış olur.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var h = MainShellTestHarness.Build();
+            h.Vm.ActiveCode = "A1";
+            MainShellTestHarness.EnqueueLabel(h.Vm, "@a", 250m);
+            var bar = new ActiveProductBar { DataContext = h.Vm };
+            bar.Measure(new Size(360, 900));
+            bar.Arrange(new Rect(0, 0, 360, 900));
+            ThemeTestHost.Pump();
+            Shows(bar, "bu yayındaki fiyatı").Should().BeTrue("kutunun kaynağı");
+
+            h.Vm.ActivePriceText = "200";
+            h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@gec", "A1 aldım")).GetAwaiter().GetResult();
+            ThemeTestHost.Pump();
+            Shows(bar, "Önce fiyat değişikliğini onayla — yazılmadı: @gec").Should().BeTrue();
+
+            // Şerit açıkken kodun etiketi başka yoldan iptal edildi: "Evet"in uygulanacağı etiket yok.
+            h.Labels.Cancel(new[] { h.Vm.PrintQueue[0].Id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
+            Click(ButtonIn((Border)bar.FindName("CodePriceStrip"), "Evet"));
+            ThemeTestHost.Pump();
+            h.Vm.CodePriceError.Should().NotBeNull();
+            Shows(bar, h.Vm.CodePriceError!).Should().BeTrue("şeridin hata satırı");
+        });
+
+        error.Should().BeNull();
+    }
 }

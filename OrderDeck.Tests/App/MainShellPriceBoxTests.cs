@@ -638,6 +638,106 @@ public class MainShellPriceBoxTests
         h.Vm.ActivePriceText.Should().Be("200");
     }
 
+    [Fact]
+    public async Task Yes_to_zero_applies_and_the_next_comment_is_not_asked_again()
+    {
+        // Şeridin sorusu yeni fiyatı adıyla sordu ("Hepsi 0,00 TL olsun mu?"): "Evet" ikinci bir 0 TL onayı
+        // istemeden uygulanır, sonraki yorum da 0 TL sorusuna takılmaz.
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a");
+        var id = h.Vm.PrintQueue[0].Id;
+        h.Vm.ActivePriceText = "0";
+        h.Vm.CodePriceQuestion.Should().Be("A1 kodunun 1 etiketi 250,00 TL. Hepsi 0,00 TL olsun mu?");
+
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.CodePriceError.Should().BeNull();
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        DbPrice(h, id).Should().Be(0m);
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "A1 aldım"));
+        h.Vm.ZeroPricePrompt.Should().BeNull("0 TL şeritte onaylandı");
+        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(0m, 0m);
+    }
+
+    /// <summary>A1 için <paramref name="user"/> 250 TL'den yazılıp basılır, kargo dosyası kargoya verilir.</summary>
+    private static async Task<string> ShippedLabel(MainShellTestHarness.Harness h, string user)
+    {
+        await WithCodeLabels(h, 250m, user);
+        var row = h.Vm.PrintQueue.Single(r => r.Username == user);
+        h.Vm.SelectedQueueItems.Clear();
+        h.Vm.SelectedQueueItems.Add(row);
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        var shipments = new OrderDeck.Core.Sales.ShipmentService(new ShipmentRepository(h.Db), new LabelRepository(h.Db),
+            () => new OrderDeck.Core.Settings.AppSettings());
+        var file = shipments.GetOrCreateOpenShipment(row.Label.CustomerId);
+        shipments.AttachLabels(file.Id, new[] { row.Id });
+        shipments.ApplyDecision(file.Id, OrderDeck.Core.Sales.ShipmentDecision.ShipNow);
+        return row.Id;
+    }
+
+    [Fact]
+    public async Task Code_whose_only_labels_are_shipped_asks_nothing()
+    {
+        // Kargoya verilmiş etiket değişmez: değiştirilecek etiket yokken şerit "A1 kodunun 0 etiketi…" diye
+        // açılmamalı.
+        using var h = MainShellTestHarness.Build();
+        var shipped = await ShippedLabel(h, "@gitti");
+
+        h.Vm.ActivePriceText = "200";
+
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@yeni", "A1 aldım"));
+        h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(200m);
+        DbPrice(h, shipped).Should().Be(250m);
+    }
+
+    [Fact]
+    public async Task Question_says_shipped_labels_do_not_change()
+    {
+        using var h = MainShellTestHarness.Build();
+        await ShippedLabel(h, "@gitti");
+        await WithCodeLabels(h, 250m, "@a");
+
+        h.Vm.ActivePriceText = "200";
+
+        h.Vm.CodePriceQuestion.Should().Be(
+            "A1 kodunun 1 etiketi 250,00 TL. Hepsi 200,00 TL olsun mu? Kargoya verilmiş 1 etiket değişmez.");
+    }
+
+    [Fact]
+    public async Task Correction_of_another_streams_code_leaves_the_box_and_the_pending_question()
+    {
+        // Rapordan (K6) önceki yayının A1'i düzeltildi; bu yayında da A1 var, kutuda 280 yazılmış, şerit bekliyor.
+        // Başka yayının düzeltmesi bu yayının kutusuna ve şeridine dokunmaz.
+        using var h = MainShellTestHarness.Build();
+        var oldSession = h.Sessions.GetActive()!.Id;
+        var old = h.Labels.Add(oldSession, MainShellTestHarness.ChatVm("@eski", "A1").Message, 250m, "A1");
+        h.Sessions.End(oldSession);
+        h.Sessions.Start("Yeni Yayın", new[] { "instagram" });
+        await WithCodeLabels(h, 300m, "@a");
+        h.Vm.ActivePriceText = "280";
+        h.Vm.CodePriceQuestion.Should().NotBeNull();
+
+        h.Vm.ApplyPriceCorrection(h.Labels.CorrectPrices(new[] { old.Id }, 200m));
+
+        DbPrice(h, old.Id).Should().Be(200m);
+        h.Vm.CodePriceQuestion.Should().NotBeNull("başka yayının düzeltmesi bu yayının sorusunu kapatmaz");
+        h.Vm.ActivePriceText.Should().Be("280");
+    }
+
+    [Fact]
+    public void Yes_follows_the_license_state()
+    {
+        using var h = MainShellTestHarness.Build();
+        var raised = 0;
+        h.Vm.ConfirmCodePriceCommand.CanExecuteChanged += (_, _) => raised++;
+
+        h.Vm.IsLicenseWritable = false;
+
+        raised.Should().BeGreaterThan(0, "lisans yazılamaz olunca \"Evet\" devre dışı kalır");
+        h.Vm.ConfirmCodePriceCommand.CanExecute(null).Should().BeFalse();
+    }
+
     private sealed class GatedPrinter : OrderDeck.Labeling.ILabelPrinter
     {
         public System.Threading.ManualResetEventSlim Release { get; } = new(false);
