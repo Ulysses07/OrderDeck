@@ -54,7 +54,12 @@ public sealed partial class ResendRowViewModel : ObservableObject
                 ? Services.PaymentResultPresenter.WhenText(t, DateTimeOffset.Now) + Services.PaymentResultPresenter.Locative(t) + " "
                 : "";
             var was = c.PriorUnconfirmed ? "istenmiş olabilir" : "istendi";
-            return $"{c.Display} — {scope}: {at}{c.PriorAmount.ToString("N2", Tr)} TL {was}; yeni tutar {c.NewTotal.ToString("N2", Tr)} TL";
+            // Önceki istekten bakiye düşülmüştü: istenen net bakiye SONRASI, yeni toplam bakiye ÖNCESİ —
+            // ödeme sorusuyla aynı ifade; yoksa düşüş artış gibi görünürdü ("200 istendi; yeni 205").
+            var now = c.PriorHadBalance
+                ? $"yeni toplam {c.NewTotal.ToString("N2", Tr)} TL (bakiye düşülmeden önce)"
+                : $"yeni tutar {c.NewTotal.ToString("N2", Tr)} TL";
+            return $"{c.Display} — {scope}: {at}{c.PriorAmount.ToString("N2", Tr)} TL {was}; {now}";
         }
     }
 
@@ -353,8 +358,16 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             var follow = _payments.Plan(_sessionId, result.Corrected.Select(c => (c.Before, c.Delta)));
             foreach (var c in follow.ToResend) ResendRows.Add(new ResendRowViewModel(c));
             foreach (var p in follow.Paid)
-                PaidRows.Add($"{p.Display} — ödendi ({(p.ByDekont ? "dekont" : "bakiye")}), fark " +
+            {
+                var how = (p.ByDekont, p.ByBalance) switch
+                {
+                    (true, true) => "dekont + bakiye",
+                    (true, _) => "dekont",
+                    _ => "bakiye",
+                };
+                PaidRows.Add($"{p.Display} — ödendi ({how}), fark " +
                              $"{(p.Delta >= 0 ? "+" : "−")}{Math.Abs(p.Delta).ToString("N2", Tr)} TL");
+            }
             OnPropertyChanged(nameof(HasResendRows));
             OnPropertyChanged(nameof(HasPaidRows));
             IsResendAvailable = ResendRows.Count > 0;
@@ -412,16 +425,28 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                 rows[i].NeedsManual = o.Status == ResendStatus.Manual;
                 rows[i].OutcomeText = o.Status == ResendStatus.Manual ? "elle bakılmalı: " + o.Note : o.Note;
             }
-            var sent = outcomes.Count(o => o.Status != ResendStatus.Manual);
-            var manual = outcomes.Count - sent;
-            ResendNote = manual == 0
-                ? $"{sent} istek gönderildi."
-                : $"{sent} istek gönderildi, {manual} istek elle bakılmalı.";
+            ResendNote = OutcomeSummary(outcomes);
         }
         finally
         {
             IsSending = false;
         }
+    }
+
+    /// <summary>Toplu gönderimin özeti — sonuçlar AYRI sayılır: WhatsApp penceresi açılan istek gitmiş
+    /// değildir (operatör gönder tuşuna basmadan kapatırsa müşteride eski tutarlı mesaj kalır), sonucu
+    /// belirsiz olan WhatsApp'ta doğrulanmalı. Hepsini "gönderildi" saymak satırlardaki "gönder tuşuna
+    /// bas" ile çelişiyordu.</summary>
+    internal static string OutcomeSummary(IReadOnlyCollection<ResendOutcome> outcomes)
+    {
+        int Count(ResendStatus s) => outcomes.Count(o => o.Status == s);
+        var parts = new List<string>();
+        if (Count(ResendStatus.Sent) is > 0 and var sent) parts.Add($"{sent} istek gönderildi");
+        if (Count(ResendStatus.Opened) is > 0 and var opened)
+            parts.Add($"{opened} WhatsApp penceresi açıldı — her birinde gönder tuşuna bas");
+        if (Count(ResendStatus.Pending) is > 0 and var pending) parts.Add($"{pending} istek WhatsApp'ta doğrulanmalı");
+        if (Count(ResendStatus.Manual) is > 0 and var manual) parts.Add($"{manual} istek elle bakılmalı");
+        return parts.Count == 0 ? "Gönderilecek istek yok." : string.Join("; ", parts) + ".";
     }
 
     [RelayCommand]

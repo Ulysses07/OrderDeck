@@ -91,7 +91,9 @@
                            FontSize="{StaticResource OD.Font.F2}"
                            Foreground="{StaticResource OD.Brush.Text}"/>
 
-                <!-- Yeniden baskı sorusu: varsayılan EVET (Enter da Evet). -->
+                <!-- Yeniden baskı sorusu: varsayılan EVET — soru açılınca odak Evet'e geçer, Enter Evet
+                     demek. IsDefault KULLANILMAZ: çekmece modal değil, IsDefault Enter'ı bütün pencereye
+                     kaydeder; sohbet aramasında basılan Enter etiketleri yeniden basardı (kod arkada). -->
                 <Border Margin="{StaticResource OD.Pad.Top4}"
                         Padding="{StaticResource OD.Pad.3}"
                         Background="{StaticResource OD.Brush.InfoTint}"
@@ -105,9 +107,9 @@
                         <TextBlock Text="Yeni kâğıtta küçük &quot;DÜZELTME&quot; işareti olur; ciro ikinci kez artmaz."
                                    Style="{StaticResource OD.Text.Hint}"/>
                         <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top3}">
-                            <Button Content="Evet, yeniden bas"
+                            <Button x:Name="ReprintYesButton"
+                                    Content="Evet, yeniden bas"
                                     Style="{StaticResource OD.Button.Primary}"
-                                    IsDefault="True"
                                     Command="{Binding ReprintCommand}"/>
                             <Button Content="Hayır"
                                     Style="{StaticResource OD.Button.Ghost}"

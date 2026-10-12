@@ -304,7 +304,9 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
         if (row.Label.ShipmentId is not null || badges.BalancePaidLabels.Contains(row.Label.Id))
             return PrintedLabelStatus.Paid;
         if (row.Label.IsTentativeBackup) return PrintedLabelStatus.Backup;
-        if (badges.RequestedCustomers.Contains(row.Label.CustomerId)) return PrintedLabelStatus.PaymentRequested;
+        // Etiket düzeyinde: kişinin isteği bu etiketi İÇERİYORSA (basıldıktan sonra gitti) — çekmecenin
+        // "istek gitmiş" tanımı. Kişi düzeyinde olsaydı istekten sonra basılan etiket de rozet alırdı.
+        if (badges.RequestedLabels.Contains(row.Label.Id)) return PrintedLabelStatus.PaymentRequested;
         return PrintedLabelStatus.None;
     }
 
@@ -325,14 +327,19 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     }
 
     /// <summary>"Bu kodu seç": yayındaki aynı koddaki BÜTÜN basılmış etiketler, gruplar arası. Arama kutusu
-    /// koda ayarlanır — seçilenlerin hepsi görünür olsun.</summary>
+    /// koda ayarlanır — seçilenlerin hepsi görünür olsun. Seçim bu kodun satırlarıyla DEĞİŞTİRİLİR (eklenmez):
+    /// arama alt dize eşleşmesi yaptığı için "A1" aramasında A12 satırları da görünür kalır, önceden seçiliyse
+    /// seçili kalır — "yalnız A1" sanılan düzeltme A12'lere de uygulanırdı.</summary>
     [RelayCommand]
     private void SelectCode(PrintedLabelRowViewModel? row)
     {
         var code = row?.Label.Code;
         if (string.IsNullOrWhiteSpace(code)) return;
         SearchText = code;
-        SetSelected(Rows.Where(r => string.Equals(r.Label.Code, code, StringComparison.OrdinalIgnoreCase)));
+        _suppressSelectionCount = true;
+        foreach (var r in Rows) r.IsSelected = string.Equals(r.Label.Code, code, StringComparison.OrdinalIgnoreCase);
+        _suppressSelectionCount = false;
+        UpdateSelectedCount();
     }
 
     /// <summary>Araç çubuğundaki "Bu kodu seç": seçili satırların kod(lar)ındaki bütün basılmış etiketler.

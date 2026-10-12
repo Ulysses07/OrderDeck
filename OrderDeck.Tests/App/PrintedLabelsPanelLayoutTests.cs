@@ -71,6 +71,71 @@ public class PrintedLabelsPanelLayoutTests
     }
 
     [Fact]
+    public void Batch_header_button_selects_that_press()
+    {
+        // Grup başlığındaki "Bu baskıyı seç": bağ (ListBox'ın DataContext'i üzerinden) ve parametre (grubun
+        // adı = basış) gerçek görünümde.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var db = new InMemorySqlite();
+            new MigrationRunner(db).Run();
+            var clock = new Mock<IClock>();
+            clock.Setup(c => c.UnixNow()).Returns(1000L);
+            new SessionRepository(db).Insert(new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
+            var labels = new LabelRepository(db);
+            var svc = new LabelService(labels,
+                new CustomerService(new CustomerRepository(db), new SessionRepository(db), labels, clock.Object),
+                db, clock.Object);
+            OrderDeck.Core.Sales.Label Add(string user) => svc.Add("s1", new ChatMessage(System.Guid.NewGuid().ToString("N"), "instagram",
+                null, user, user, null, "aldım", 1000, System.Array.Empty<string>()), 250m, "A12");
+            var a = Add("@a");
+            var b = Add("@b");
+            var c = Add("@c");
+            svc.MarkPrintedAndRecord(new[] { a.Id });
+            clock.Setup(x => x.UnixNow()).Returns(2000L);
+            svc.MarkPrintedAndRecord(new[] { b.Id, c.Id });
+
+            var vm = new PrintedLabelsViewModel(labels);
+            vm.Load("s1");
+            var panel = new PrintedLabelsPanel { DataContext = new Holder(vm) };
+            var window = new Window
+            {
+                Content = panel, Width = 400, Height = 600, Left = -10000, Top = -10000,
+                ShowInTaskbar = false, ShowActivated = false, WindowStyle = WindowStyle.None,
+            };
+            window.Show();
+            try
+            {
+                ThemeTestHost.Pump();
+                var buttons = Descendants(panel).OfType<Button>()
+                    .Where(x => x.Content as string == "Bu baskıyı seç").ToList();
+                buttons.Should().HaveCount(2, "her basışın başlığında bir düğme");
+                buttons[0].Command.Should().NotBeNull();
+
+                buttons[0].Command.Execute(buttons[0].CommandParameter);
+
+                vm.SelectedIds.Should().BeEquivalentTo(new[] { b.Id, c.Id }, "en üstteki (en yeni) basış");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+
+        error.Should().BeNull();
+    }
+
+    private static System.Collections.Generic.IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var d in Descendants(child)) yield return d;
+        }
+    }
+
+    [Fact]
     public void Row_menu_acts_on_the_right_clicked_row_not_the_first_selected()
     {
         // Çoklu seçimde seçili bir satıra sağ tık seçimi değiştirmez; ListBox'ın menüsü SelectedItem'ı (ilk

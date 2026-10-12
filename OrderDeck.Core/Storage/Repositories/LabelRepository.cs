@@ -213,13 +213,16 @@ public sealed class LabelRepository
     /// hesaplandı, değişmiş bir satıra uygulanamaz.
     ///
     /// <para><see cref="UpdatePrice"/> gibi: SyncedAt=NULL (yeni fiyat mevcut senkronla sunucuya gider),
-    /// Revision+1, StockSyncedAt'e DOKUNULMAZ (fiyat stok-ilgili değil). PriceCorrectedAt damgalanır
-    /// (yeniden baskıdaki "DÜZELTME" işareti).</para></summary>
+    /// Revision+1, StockSyncedAt'e DOKUNULMAZ (fiyat stok-ilgili değil). PriceCorrectedAt (yeniden
+    /// baskıdaki "DÜZELTME" işareti) YALNIZ basılmış etikette damgalanır: işaret "yığında eski fiyatlı
+    /// bir kâğıt var" demek. Kuyrukta düzeltilen etiketin ilk kâğıdı zaten yeni fiyatla çıkar — onu
+    /// işaretlemek paketleyene ortada olmayan yanlış kâğıdı aratırdı.</para></summary>
     public int UpdatePriceForCorrection(
         string id, decimal expectedPrice, bool expectPrinted, bool expectTentative,
         decimal newPrice, long correctedAt, DbWrite write)
         => write.Connection.Execute(
-            @"UPDATE Label SET Price=@newPrice, PriceCorrectedAt=@correctedAt,
+            @"UPDATE Label SET Price=@newPrice,
+                     PriceCorrectedAt = CASE WHEN PrintedAt IS NOT NULL THEN @correctedAt ELSE PriceCorrectedAt END,
                      SyncedAt=NULL, Revision = Revision + 1
               WHERE Id=@id AND abs(Price - @expectedPrice) < 0.00001 AND CancelledAt IS NULL
                 AND (PrintedAt IS NOT NULL) = @expectPrinted

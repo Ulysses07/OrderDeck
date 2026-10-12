@@ -1572,10 +1572,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
            "İptal işlemi yazıcıyı durdurmaz; bu etiketlerden çıkan veya " +
            "sonradan çıkacak kağıtları imha et.";
 
-    [RelayCommand(CanExecute = nameof(CanWrite))]
+    /// <summary>"Basılanlar" açıkken kuyruğun seçimi görünmüyor: alttaki yuvadaki "Seçilenleri Sil" (ve Delete
+    /// kısayolu) onu sessizce iptal ederdi — uçuşta etiket yoksa onay da sorulmuyor. Düğme o sekmede
+    /// devre dışı.</summary>
+    private bool CanRemoveSelectedFromQueue() => CanWrite() && !IsPrintedTabActive;
+
+    [RelayCommand(CanExecute = nameof(CanRemoveSelectedFromQueue))]
     private void RemoveSelectedFromQueue()
     {
-        if (SelectedQueueItems.Count == 0) return;
+        if (IsPrintedTabActive || SelectedQueueItems.Count == 0) return;
 
         // Kesişim yoksa eskisi gibi onaysız (hızlı akış bozulmasın).
         var inFlight = CountInFlight(SelectedQueueItems);
@@ -1627,7 +1632,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// EndStream yalnız kuyruk baskısının sonucunu kuyruğun sonucu sayar.</summary>
     private bool _printTaskIsQueue;
 
-    [RelayCommand(CanExecute = nameof(CanWrite))]
+    /// <summary>Yazdır yalnız yazıcı boşken: yeniden baskı da aynı kapıyı tutar (<see cref="RunPrinterJobAsync"/>).
+    /// Düğme etkin kalsaydı yeniden baskı sürerken tıklama sessizce hiçbir şey yapmazdı — ne baskı ne
+    /// mesaj, yeni etiketler kuyrukta kalırdı. Kapı açılıp kapandıkça bildirilir.</summary>
+    private bool CanPrint() => CanWrite() && _printTask is null;
+
+    [RelayCommand(CanExecute = nameof(CanPrint))]
     private Task Print() => PrintGuardedAsync();
 
     /// <summary>true = basılacak iş kalmadı (başarıyla basıldı ya da kuyruk
@@ -1669,6 +1679,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _printInFlightIds = ids;
         _printTaskIsQueue = isQueue;
         _printTask = gate.Task;
+        PrintCommand.NotifyCanExecuteChanged();
         var ok = false;
         try
         {
@@ -1680,6 +1691,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             // Sıra önemli: önce alanlar temizlenir, kapı EN SON kapanır.
             _printTask = null;
             _printInFlightIds = null;
+            PrintCommand.NotifyCanExecuteChanged();
             gate.TrySetResult(ok);
         }
     }
@@ -2231,19 +2243,40 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _ => Views.Pages.ShortcutHelpPage.Create(registry));
     }
 
-    /// <summary>Müşteri detay çekmecesini açar. Yükleme BURADA, view'da değil
-    /// (Faz 3 kuralı); müşteri bulunamazsa çekmece hiç açılmıyor.</summary>
+    /// <summary>Müşteri detay çekmecesini açar — sohbetten, kuyruktan ya da "Basılanlar"dan. Kapanınca
+    /// "Basılanlar" (liste, rozetler, sekme sayısı) HER yoldan tazelenir: detayda iptal/geri alma, dekont,
+    /// kargoya verme yapılmış olabilir; yalnız Basılanlar'dan açılan yolda tazelenirken öbür yollarda
+    /// liste bayat kalıyor, iptal edilmiş satır yeniden basılmak üzere seçilebiliyordu.</summary>
     private async Task ShowCustomerDetailAsync(string customerId)
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+        try
+        {
+            if (CustomerDetailSeam is not null) await CustomerDetailSeam(customerId);
+            else await OpenCustomerDetailDrawerAsync(customerId);
+        }
+        finally
+        {
+            RefreshPrintedLabels();
+        }
+    }
 
+    /// <summary>Müşteri detayının açılışı (test dikişi): testte App.Host yok; verilirse DI'daki görünüm
+    /// modeli yerine bu koşar.</summary>
+    internal Func<string, Task>? CustomerDetailSeam { get; set; }
+
+    /// <summary>Yükleme BURADA, view'da değil (Faz 3 kuralı); müşteri bulunamazsa çekmece hiç açılmıyor.</summary>
+    private async Task OpenCustomerDetailDrawerAsync(string customerId)
+    {
         var vm = App.Host.Services.GetRequiredService<CustomerDetailViewModel>();
         if (!vm.Load(customerId))
         {
             _dialogs.Show("Müşteri kaydı bulunamadı.", "Müşteri Detayı");
             return;
         }
-        await _drawers.ShowAsync("Müşteri Detayı",
+        // Detaydaki yedek çekmecesinde onaylanan yedek kuyruktaysa ekrandaki kopyası HEMEN güncellenir.
+        vm.BackupConfirmed = OnBackupConfirmed;
+        await _drawers!.ShowAsync("Müşteri Detayı",
             _ => Views.Drawers.CustomerDetailDrawer.Create(vm));
     }
 

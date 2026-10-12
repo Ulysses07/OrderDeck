@@ -29,6 +29,7 @@ public sealed partial class MainShellViewModel
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsQueueTabActive))]
     [NotifyPropertyChangedFor(nameof(ShowQueueFixPrice))]
+    [NotifyCanExecuteChangedFor(nameof(RemoveSelectedFromQueueCommand))]
     private bool _isPrintedTabActive;
 
     /// <summary>Kuyruk sekmesindeki "Fiyatı düzelt" (K4): sekme açık ve seçim var.</summary>
@@ -175,8 +176,10 @@ public sealed partial class MainShellViewModel
     {
         var ids = PrintedLabels.SelectedIds;
         if (ids.Count == 0) return;
-        var error = await ReprintAsync(ids);
-        PrintedLabels.Message = error ?? $"{ids.Count} etiket yeniden basıldı.";
+        // Sayı BASILANLARIN sayısı, seçilenlerin değil: arada iptal edilmiş satır basılmaz
+        // (PrepareReprint süzer) — "3 basıldı" denip 2 kâğıt çıkıyordu.
+        var (printed, error) = await ReprintCoreAsync(ids);
+        PrintedLabels.Message = error ?? $"{printed} etiket yeniden basıldı.";
     }
 
     /// <summary>
@@ -185,11 +188,14 @@ public sealed partial class MainShellViewModel
     /// kâğıdında "DÜZELTME" işareti. Kuyruk baskısıyla aynı yazıcı kapısından geçer
     /// (<see cref="RunPrinterJobAsync"/>). Hata metni döner (pop-up yok), başarıda null.
     /// </summary>
-    internal async Task<string?> ReprintAsync(IReadOnlyList<string> ids)
+    internal async Task<string?> ReprintAsync(IReadOnlyList<string> ids) => (await ReprintCoreAsync(ids)).Error;
+
+    /// <summary><see cref="ReprintAsync"/> + basılan etiket sayısı (yalnız basılmış, iptal edilmemiş olanlar).</summary>
+    private async Task<(int Printed, string? Error)> ReprintCoreAsync(IReadOnlyList<string> ids)
     {
-        if (_printTask is not null) return "Başka bir baskı sürüyor; bitince tekrar dene.";
+        if (_printTask is not null) return (0, "Başka bir baskı sürüyor; bitince tekrar dene.");
         var reprint = _labels.PrepareReprint(ids);
-        if (reprint.Labels.Count == 0) return "Yeniden basılacak etiket yok (iptal edilmiş olabilir).";
+        if (reprint.Labels.Count == 0) return (0, "Yeniden basılacak etiket yok (iptal edilmiş olabilir).");
 
         string? error = null;
         var ran = await RunPrinterJobAsync(reprint.Labels.Select(l => l.Id).ToHashSet(StringComparer.Ordinal), async () =>
@@ -207,15 +213,15 @@ public sealed partial class MainShellViewModel
             }
         }, isQueue: false);
         if (!ran && error is null) error = "Başka bir baskı sürüyor; bitince tekrar dene.";
-        return error;
+        return (error is null ? reprint.Labels.Count : 0, error);
     }
 
+    /// <summary>Kapanınca liste tazelenir (<see cref="ShowCustomerDetailAsync"/> — her yoldan).</summary>
     [RelayCommand]
     private async Task OpenCustomerDetailFromPrintedAsync(PrintedLabelRowViewModel? row)
     {
         if (row is null) return;
         await ShowCustomerDetailAsync(row.CustomerId);
-        RefreshPrintedLabels();   // müşteri detayından iptal/geri alma yapılmış olabilir
     }
 
     // ─── Toplu iptal (K3) ───────────────────────────────────────────────────
@@ -243,23 +249,34 @@ public sealed partial class MainShellViewModel
 
     /// <summary>İptal + yedek çekmecesi. Çekmecede onaylanan yedeğin fiyatı değişmiş olabilir
     /// (<see cref="LabelService.ConfirmBackup"/> yalnız veritabanını yazar): yedek hâlâ kuyruktaysa
-    /// ekrandaki kopyası yerinde güncellenir — yoksa kâğıda eski fiyat basılır, ciroya yeni fiyat yazılırdı.</summary>
+    /// ekrandaki kopyası ONAYDA güncellenir (<see cref="OnBackupConfirmed"/>) — yoksa kâğıda eski fiyat
+    /// basılır, ciroya yeni fiyat yazılırdı.</summary>
     internal async Task CancelAndTransferBackupsAsync(IReadOnlyList<string> ids, string reason)
     {
         var withBackups = CancelLabels(ids, reason);
         if (withBackups.Count == 0 || _drawers is null) return;
         await _drawers.ShowAsync($"İptal edilen etiketlerin yedekleri ({withBackups.Sum(g => g.Backups.Count)})",
-            d => Views.Drawers.BackupTransferDrawer.Create(d, _labels, withBackups));
+            d => Views.Drawers.BackupTransferDrawer.Create(d, _labels, withBackups, onConfirmed: OnBackupConfirmed));
         RefreshQueueRows(withBackups.SelectMany(g => g.Backups).Select(b => b.Id));
         RefreshPrintedLabels();
         RefreshHeroStats();
     }
+
+    /// <summary>Yedek çekmecesinde (toplu iptal ya da müşteri detayı) bir yedek onaylandı: kuyruktaysa
+    /// ekrandaki kopyası HEMEN güncellenir — çekmece kapanmayı beklemez. Çekmece sağ panelin üstünü örtüyor
+    /// ama alttaki yazdır yuvası açık: onaydan sonra çekmece açıkken "Yazdır"a basılırsa kâğıda eski fiyat
+    /// basılır, ciroya (veritabanından) yeni fiyat yazılırdı.</summary>
+    internal void OnBackupConfirmed(string backupId) => RefreshQueueRows(new[] { backupId });
 
     /// <summary>Toplu iptalin çekirdeği: iptal + liste tazeleme; geçici yedeği olan etiketleri (yedek
     /// aktarımı için) döner.</summary>
     internal IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> CancelLabels(
         IReadOnlyList<string> ids, string reason)
     {
+        // R7-04 Soru B (kuyruk iptaliyle aynı): uçuştaki işle (kuyruk baskısı ya da yeniden baskı) kesişen
+        // etiketler. İptal yazıcıyı durdurmaz — o kâğıtlar ("DÜZELTME" işaretli yeniden baskı dahil) yine
+        // çıkar; operatöre imha etmesi söylenir (satır içi, pop-up yok).
+        var inFlight = _printInFlightIds is { } flying ? ids.Count(flying.Contains) : 0;
         _labels.Cancel(ids, reason);
         var withBackups = new List<(Label Parent, IReadOnlyList<Label> Backups)>();
         foreach (var id in ids)
@@ -270,7 +287,10 @@ public sealed partial class MainShellViewModel
         }
         RefreshPrintedLabels();
         RefreshHeroStats();
-        PrintedLabels.Message = $"{ids.Count} etiket iptal edildi.";
+        PrintedLabels.Message = $"{ids.Count} etiket iptal edildi." + (inFlight > 0
+            ? $" {inFlight} tanesi devam eden baskı işinde: iptal yazıcıyı durdurmaz — bu etiketlerden çıkan " +
+              "ya da sonradan çıkacak kâğıtları imha et."
+            : "");
         return withBackups;
     }
 }

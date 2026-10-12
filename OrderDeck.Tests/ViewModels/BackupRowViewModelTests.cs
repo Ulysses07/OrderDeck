@@ -52,6 +52,26 @@ public sealed class BackupRowViewModelTests
     }
 
     [Fact]
+    public void Promote_notifies_the_shell_only_after_the_backup_is_confirmed()
+    {
+        // Kabuk bildirimle kuyruktaki kopyayı HEMEN günceller (çekmece açıkken de Yazdır'a basılabiliyor);
+        // onay patlarsa bildirim gitmez, hata kartın kendi satırında.
+        var row = Row();
+        string? notified = null;
+
+        row.Promote((_, _) => throw new System.InvalidOperationException("çakışma"), id => notified = id);
+        notified.Should().BeNull();
+        row.ErrorText.Should().Contain("Yedek onaylanamadı");
+        row.IsActionable.Should().BeTrue();
+
+        (string Id, decimal Price)? confirmed = null;
+        row.Promote((id, price) => confirmed = (id, price), id => notified = id);
+        confirmed.Should().Be(("b1", 250m));
+        notified.Should().Be("b1");
+        row.ActionButtonText.Should().Be("Onaylandı");
+    }
+
+    [Fact]
     public void Negative_price_is_rejected_inline()
     {
         var row = Row();

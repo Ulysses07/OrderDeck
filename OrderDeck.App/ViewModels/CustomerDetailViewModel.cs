@@ -36,6 +36,11 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     /// testlerin çoğu vermez — uyarı o zaman hiç gösterilmez.</summary>
     private readonly ShipmentRepository? _shipments;
 
+    /// <summary>Yedek çekmecesinde bir yedek onaylandı (Id) — kabuk, yedek kuyruktaysa ekrandaki kopyasını
+    /// HEMEN günceller (çekmece açıkken de "Yazdır"a basılabiliyor; kâğıt kopyadan basılır, ciro
+    /// veritabanından yazılır). Null = bildirilmez.</summary>
+    public Action<string>? BackupConfirmed { get; set; }
+
     private string? _customerId;
 
     [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))][NotifyPropertyChangedFor(nameof(HeaderName))] private string _username = "";
@@ -342,7 +347,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
                 await _drawers.ShowAsync(
                     $"'{parent.Username}' yedekleri ({backups.Count})",
                     d => Views.Drawers.BackupTransferDrawer.Create(
-                        d, _labelService, parent, backups));
+                        d, _labelService, parent, backups, BackupConfirmed));
             }
         }
         catch (Exception ex)

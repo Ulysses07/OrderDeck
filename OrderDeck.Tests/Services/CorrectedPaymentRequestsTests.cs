@@ -202,6 +202,76 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var row = plan.ToResend.Should().ContainSingle().Subject;
         row.PriorAmount.Should().Be(200m, "soruda 'istendi' denen tutar — mesajdaki net");
         row.NewTotal.Should().Be(205m);
+        // Net bakiye SONRASI, yeni toplam bakiye ÖNCESİ: satır bunu söyler, yoksa 250→205 düşüşü
+        // "200 istendi; yeni tutar 205" diye artış gibi görünürdü (ödeme sorusuyla aynı ifade).
+        row.PriorHadBalance.Should().BeTrue();
+        new OrderDeck.App.ViewModels.ResendRowViewModel(row).Text
+            .Should().Contain("200,00 TL istendi; yeni toplam 205,00 TL (bakiye düşülmeden önce)");
+    }
+
+    [Fact]
+    public void Unchanged_total_with_a_balance_deduction_is_not_listed()
+    {
+        // 250 + 300 = 550 istendi, 100'ü bakiyeden: müşteriden 450 istendi. İkisi 275'e düzeltildi — toplam yine
+        // 550. Net (450) brüt yeni toplamla (550) karşılaştırılıyordu: kişi listeye giriyor, "düzeltilmiş
+        // isteği gönder" aynı 450 TL'lik isteği müşteriye ikinci kez gönderiyordu.
+        var x = Add("instagram", "@denk", 250m);
+        var y = Add("instagram", "@denk", 300m, "B7");
+        _labels.MarkPrintedAndRecord(new[] { x.Id, y.Id });
+        AppliedAndDelivered(x.CustomerId, "session:s1", 550m, applied: 100m);
+        var result = _labels.CorrectPrices(new[] { x.Id, y.Id }, 275m);
+        result.Corrected.Sum(c => c.Delta).Should().Be(0m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        plan.RequestedPersons.Should().Be(1);
+        plan.ToResend.Should().BeEmpty("isteğin bakiye öncesi toplamı (450 + 100) yeni toplama eşit");
+    }
+
+    [Fact]
+    public void Dekont_difference_includes_queued_labels_attached_to_the_file()
+    {
+        // Dekont kaydı kuyruktaki etiketi de açık dosyaya bağlar; düzeltme dosya toplamını 500'den 455'e
+        // indirir. Çekmece "ödendi (dekont), fark +0,00 TL" diyordu: fark yalnız basılmış etiketlerden.
+        var printed = Add("instagram", "@q", 250m);
+        _labels.MarkPrintedAndRecord(new[] { printed.Id });
+        var queued = Add("instagram", "@q", 250m);
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var open = shipmentSvc.GetOrCreateOpenShipment(printed.CustomerId);
+        shipmentSvc.AttachLabels(open.Id, new[] { printed.Id, queued.Id });
+        var result = _labels.CorrectPrices(new[] { queued.Id }, 205m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        var paid = plan.Paid.Should().ContainSingle().Subject;
+        paid.ByDekont.Should().BeTrue();
+        paid.Delta.Should().Be(-45m, "dosya toplamına yazılan farkla aynı");
+        _shipments.GetById(open.Id)!.CumulativeAmount.Should().Be(455m);
+    }
+
+    [Fact]
+    public void Request_for_an_unattached_label_is_listed_beside_a_dekont_paid_one()
+    {
+        // Aynı kişinin iki etiketi: biri dekontla dosyaya bağlı (ödendi), öbürü için eski tutarla istek gitmiş,
+        // ödenmemiş. İkisi birlikte düzeltilince kişi yalnız "ödendi"ye giriyordu; ikinci istek
+        // "düzeltilmiş isteği gönder" listesine hiç girmiyordu.
+        var paidOne = Add("instagram", "@iki", 250m);
+        var unpaid = Add("instagram", "@iki", 250m);
+        _labels.MarkPrintedAndRecord(new[] { paidOne.Id, unpaid.Id });
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(paidOne.CustomerId).Id, new[] { paidOne.Id });
+        Delivered(paidOne.CustomerId, "session:s1", 500m);
+        var result = _labels.CorrectPrices(new[] { paidOne.Id, unpaid.Id }, 205m);
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        var paid = plan.Paid.Should().ContainSingle().Subject;
+        paid.ByDekont.Should().BeTrue();
+        paid.Delta.Should().Be(-45m, "yalnız dosyaya bağlı etiketin farkı");
+        plan.RequestedPersons.Should().Be(1);
+        var row = plan.ToResend.Should().ContainSingle().Subject;
+        row.PriorAmount.Should().Be(500m);
+        row.NewTotal.Should().Be(410m);
     }
 
     [Fact]
@@ -263,7 +333,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
-    public void Badges_flag_requested_persons_and_fully_balance_paid_labels()
+    public void Badges_flag_covered_labels_and_fully_balance_paid_labels()
     {
         var (a1, _, b, _) = GroupedPersonWithRequest();
         var other = Add("instagram", "@baska", 100m);
@@ -276,10 +346,8 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var badges = Sut().Badges("s1",
             _labelRepo.GetByIds(new[] { a1.Id, b.Id, other.Id, paidByBalance.Id, partial.Id }));
 
-        badges.RequestedCustomers.Should().BeEquivalentTo(new[]
-        {
-            a1.CustomerId, b.CustomerId, paidByBalance.CustomerId, partial.CustomerId,
-        }, "kişi düzeyi (#506)");
+        badges.RequestedLabels.Should().BeEquivalentTo(new[] { a1.Id, b.Id, partial.Id },
+            "istek kişinin (#506: b öbür satırda) ama rozet etiket düzeyinde; tamamı bakiyeden düşülmüş istek 'ödendi'");
         badges.BalancePaidLabels.Should().Equal(new[] { paidByBalance.Id }, "kısmi düşüm ödendi sayılmaz");
 
         // "Basılanlar" rozeti fiyat düzeltme çekmecesiyle AYNI tanımı kullanır.
@@ -288,6 +356,96 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         printed.Rows.Single(r => r.Id == paidByBalance.Id).StatusText.Should().Be("ödendi");
         printed.Rows.Single(r => r.Id == partial.Id).StatusText.Should().Be("ödeme istendi");
         printed.Rows.Single(r => r.Id == other.Id).StatusText.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Request_badge_is_only_on_labels_the_request_covers()
+    {
+        // @ali A'yı aldı, A basıldı; yayın isteği gitti; sonra B'yi aldı, B basıldı. B hiçbir istekte yok —
+        // fiyat düzeltme çekmecesi "istek gitmemiş" diyor, Basılanlar "ödeme istendi" diyordu.
+        var a = Add("instagram", "@ali", 250m);
+        _labels.MarkPrintedAndRecord(new[] { a.Id });                       // saat 1000: istekten önce
+        Delivered(a.CustomerId, "session:s1", 250m);                        // teslim gerçek saatle
+        _clock.Setup(c => c.UnixNow()).Returns(DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
+        var b = Add("instagram", "@ali", 300m, "B7");
+        _labels.MarkPrintedAndRecord(new[] { b.Id });
+
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(_labelRepo, Sut().Badges);
+        printed.Load("s1");
+
+        printed.Rows.Single(r => r.Id == a.Id).StatusText.Should().Be("ödeme istendi");
+        printed.Rows.Single(r => r.Id == b.Id).StatusText.Should().BeEmpty("istek B basılmadan önce gitti");
+        Sut().Plan("s1", new[] { (_labelRepo.GetById(b.Id)!, 0m) }).RequestedPersons
+            .Should().Be(0, "çekmeceyle aynı tanım");
+    }
+
+    [Fact]
+    public void Old_general_request_does_not_badge_a_label_printed_today()
+    {
+        // Genel istek 11 gün önce gitti; bugün basılan etiket "ödeme istendi" görünüyordu — genel istek almış
+        // her müşteride kalıcı olarak (teslim edilmiş iş silinmez).
+        PrintClockIsNow();
+        var l = Add("instagram", "@eski", 250m);
+        var old = Delivered(l.CustomerId, "cumulative", 1000m);
+        DeliveredLongAgo(old.Id);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(_labelRepo, Sut().Badges);
+        printed.Load("s1");
+
+        printed.Rows.Single().StatusText.Should().BeEmpty("istek etiketi içermiyor");
+    }
+
+    [Fact]
+    public void Shipped_and_dekont_attached_labels_show_their_badges()
+    {
+        var shippedLabel = Add("instagram", "@kargo", 250m);
+        var dekont = Add("instagram", "@dekont", 250m);
+        _labels.MarkPrintedAndRecord(new[] { shippedLabel.Id, dekont.Id });
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipped = shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(shippedLabel.CustomerId).Id,
+            new[] { shippedLabel.Id });
+        shipmentSvc.ApplyDecision(shipped.Id, ShipmentDecision.ShipNow);
+        shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(dekont.CustomerId).Id, new[] { dekont.Id });
+
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(_labelRepo, Sut().Badges);
+        printed.Load("s1");
+
+        printed.Rows.Single(r => r.Id == shippedLabel.Id).StatusText.Should().Be("kargoda");
+        printed.Rows.Single(r => r.Id == dekont.Id).StatusText.Should().Be("ödendi", "dekont kaydı dosyaya bağlar");
+    }
+
+    [Fact]
+    public async Task Opened_whatsapp_window_is_not_reported_as_sent()
+    {
+        // Cloud API kapalı: wa.me penceresi açılır, gönder tuşuna operatör basar. "Gönderildi" sayılıyordu —
+        // özet "15 istek gönderildi" derken penceresi göndermeden kapatılan kişi gitmiş sanılırdı.
+        var (_, _, _, person) = GroupedPersonWithRequest();
+        var sut = Sut((_, _, _, _, _) => Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.Opened)));
+
+        var outcomes = await sut.ResendAsync("s1", DateTime.Now, new[] { Candidate(person.LeasedId) });
+
+        outcomes.Should().ContainSingle().Which.Status.Should().Be(ResendStatus.Opened);
+    }
+
+    [Fact]
+    public void Resend_summary_counts_each_outcome_separately()
+    {
+        var c = Candidate("c1");
+        var outcomes = new[]
+        {
+            new ResendOutcome(c, ResendStatus.Sent, ""),
+            new ResendOutcome(c, ResendStatus.Opened, ""),
+            new ResendOutcome(c, ResendStatus.Opened, ""),
+            new ResendOutcome(c, ResendStatus.Pending, ""),
+            new ResendOutcome(c, ResendStatus.Manual, ""),
+        };
+
+        OrderDeck.App.ViewModels.PriceCorrectionViewModel.OutcomeSummary(outcomes).Should().Be(
+            "1 istek gönderildi; 2 WhatsApp penceresi açıldı — her birinde gönder tuşuna bas; " +
+            "1 istek WhatsApp'ta doğrulanmalı; 1 istek elle bakılmalı.");
+        OrderDeck.App.ViewModels.PriceCorrectionViewModel.OutcomeSummary(outcomes.Take(1).ToList())
+            .Should().Be("1 istek gönderildi.");
     }
 
     [Fact]
@@ -427,7 +585,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
             var outcomes = await sut.ResendAsync("s1", DateTime.Now,
                 new[] { new CorrectedRequestCandidate(l.CustomerId, "Uçtan", "session:s1", 250m, null, false, 205m) });
 
-            outcomes.Single().Status.Should().Be(ResendStatus.Sent);
+            outcomes.Single().Status.Should().Be(ResendStatus.Opened, "wa.me penceresi açıldı — gönderen operatör");
             launcher.LaunchedUrls.Should().ContainSingle().Which.Should().Contain("205");
         }
         finally

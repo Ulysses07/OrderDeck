@@ -25,15 +25,18 @@ public partial class BackupTransferDrawer : UserControl
 {
     private readonly LabelService _labels;
     private readonly Drawer _drawer;
+    private readonly System.Action<string>? _onConfirmed;
 
     public ObservableCollection<BackupRowViewModel> Rows { get; } = new();
 
     private BackupTransferDrawer(
-        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups)
+        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups,
+        System.Action<string>? onConfirmed)
     {
         InitializeComponent();
         _drawer = drawer;
         _labels = labels;
+        _onConfirmed = onConfirmed;
         BackupsList.ItemsSource = Rows;
 
         Subtitle.Text =
@@ -49,11 +52,13 @@ public partial class BackupTransferDrawer : UserControl
     /// <summary>Toplu iptal (K3, "Basılanlar"): birden çok etiketin yedekleri TEK çekmecede — her etiket
     /// için ayrı çekmece açılmaz. Her yedek kartının üstünde hangi etiketin yedeği olduğu yazar.</summary>
     private BackupTransferDrawer(
-        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups)
+        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups,
+        System.Action<string>? onConfirmed)
     {
         InitializeComponent();
         _drawer = drawer;
         _labels = labels;
+        _onConfirmed = onConfirmed;
         BackupsList.ItemsSource = Rows;
 
         Subtitle.Text =
@@ -71,33 +76,24 @@ public partial class BackupTransferDrawer : UserControl
 
     /// <summary>Çekmece başlığı çağıranda kuruluyor (yedek sayısı orada
     /// biliniyor), gövde yalnız listeyi ve açıklamayı taşıyor.</summary>
+    /// <param name="onConfirmed">Yedek onaylandı (Id) — kabuk kuyruktaki kopyayı hemen günceller.</param>
     public static BackupTransferDrawer Create(
-        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups)
-        => new(drawer, labels, parentLabel, backups);
+        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups,
+        System.Action<string>? onConfirmed = null)
+        => new(drawer, labels, parentLabel, backups, onConfirmed);
 
     /// <summary>Toplu iptalin yedek çekmecesi: birden çok etiketin yedekleri tek listede.</summary>
+    /// <param name="onConfirmed">Yedek onaylandı (Id) — kabuk kuyruktaki kopyayı hemen günceller.</param>
     public static BackupTransferDrawer Create(
-        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups)
-        => new(drawer, labels, groups);
+        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups,
+        System.Action<string>? onConfirmed = null)
+        => new(drawer, labels, groups, onConfirmed);
 
     private void OnPromote(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn) return;
         if (btn.DataContext is not BackupRowViewModel row) return;
-
-        // Hata artık MessageBox değil, kartın kendi satırı — spec §6:
-        // hiçbir şey pop-up değil.
-        if (row.ReadPrice() is not { } price) return;
-
-        try
-        {
-            _labels.ConfirmBackup(row.Backup.Id, newPrice: price);
-            row.MarkPromoted();
-        }
-        catch (System.Exception ex)
-        {
-            row.ErrorText = $"Yedek onaylanamadı: {ex.Message}";
-        }
+        row.Promote((id, price) => _labels.ConfirmBackup(id, newPrice: price), _onConfirmed);
     }
 }
 
@@ -168,5 +164,26 @@ public sealed partial class BackupRowViewModel : ObservableObject
         IsActionable = false;
         ActionButtonText = "Onaylandı";
         ErrorText = null;
+    }
+
+    /// <summary>Kartın "Onayla"sı: fiyat okunur (<see cref="ReadPrice"/>), yedek onaylanır
+    /// (<paramref name="confirm"/>), sonra <paramref name="confirmed"/> bildirilir — kabuk yedeğin
+    /// kuyruktaki kopyasını HEMEN günceller. Çekmece açıkken de "Yazdır"a basılabiliyor; kopya çekmece
+    /// kapanınca güncellenseydi arada kâğıda eski fiyat basılır, ciroya yeni fiyat yazılırdı. Hata
+    /// MessageBox değil, kartın kendi satırı (spec §6: hiçbir şey pop-up değil).</summary>
+    public void Promote(System.Action<string, decimal> confirm, System.Action<string>? confirmed)
+    {
+        if (ReadPrice() is not { } price) return;
+        try
+        {
+            confirm(Backup.Id, price);
+        }
+        catch (System.Exception ex)
+        {
+            ErrorText = $"Yedek onaylanamadı: {ex.Message}";
+            return;
+        }
+        MarkPromoted();
+        confirmed?.Invoke(Backup.Id);
     }
 }

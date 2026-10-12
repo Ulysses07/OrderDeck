@@ -274,6 +274,62 @@ public class MainShellPrintedLabelsTests
     }
 
     [Fact]
+    public async Task Select_code_replaces_the_selection_even_when_the_search_matches_longer_codes()
+    {
+        // "A1" araması A12 satırlarını da gösterir (alt dize); önceden seçili A12'ler seçili kalıyordu —
+        // "yalnız A1" sanılan düzeltme onlara da uygulanırdı.
+        var (h, _) = Build();
+        using var __ = h;
+        var a12 = Enqueue(h, "@a", 250m, "A12");
+        var a1 = Enqueue(h, "@b", 100m, "A1");
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        var p = h.Vm.PrintedLabels;
+        p.SelectCodeCommand.Execute(p.VisibleRows.Single(r => r.Id == a12.Id));
+        p.SelectedIds.Should().Equal(a12.Id);
+
+        p.SelectCodeCommand.Execute(p.Rows.Single(r => r.Id == a1.Id));   // ör. sağ tık menüsünden
+
+        p.SearchText.Should().Be("A1");
+        p.VisibleRows.Select(r => r.Id).Should().Contain(a12.Id, "alt dize araması A12'yi de gösterir");
+        p.SelectedIds.Should().Equal(new[] { a1.Id }, "seçim kodun satırlarıyla değişir, eklenmez");
+    }
+
+    [Fact]
+    public async Task Toolbar_select_code_with_one_code_narrows_the_search_to_it()
+    {
+        var (h, _) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m, "A12");
+        var b = Enqueue(h, "@b", 100m, "B7");
+        await PrintAsync(h, a, b);
+        var c = Enqueue(h, "@c", 250m, "A12");
+        h.Clock.Setup(x => x.UnixNow()).Returns(2000L);
+        await PrintAsync(h, c);
+        h.Vm.IsPrintedTabActive = true;
+        var p = h.Vm.PrintedLabels;
+        p.VisibleRows.Single(r => r.Id == c.Id).IsSelected = true;
+
+        p.SelectCodeOfSelectionCommand.Execute(null);
+
+        p.SearchText.Should().Be("A12");
+        p.SelectedIds.Should().BeEquivalentTo(new[] { c.Id, a.Id }, "aynı kod, basışlar arası");
+    }
+
+    [Fact]
+    public void Queue_fix_price_button_is_hidden_on_the_printed_tab()
+    {
+        var (h, _) = Build();
+        using var __ = h;
+        h.Vm.SelectedQueueItems.Add(Enqueue(h, "@a", 250m));
+        h.Vm.ShowQueueFixPrice.Should().BeTrue();
+
+        h.Vm.IsPrintedTabActive = true;
+
+        h.Vm.ShowQueueFixPrice.Should().BeFalse("Basılanlar'da kuyruğun seçimi görünmüyor");
+    }
+
+    [Fact]
     public async Task Status_badges_show_backup()
     {
         var (h, _) = Build();
@@ -320,6 +376,152 @@ public class MainShellPrintedLabelsTests
     }
 
     [Fact]
+    public async Task Queue_corrected_label_reprint_has_no_correction_mark()
+    {
+        // Kuyrukta düzeltilen etiketin ilk kâğıdı zaten yeni fiyatla çıktı; yeniden baskısı yine "DÜZELTME"
+        // alıyordu — paketleyen ortada olmayan eski fiyatlı kâğıdı arıyordu.
+        var (h, drawers) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        h.Vm.SelectedQueueItems.Add(a);
+        drawers.OnPriceCorrection = pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            return Task.CompletedTask;
+        };
+        await h.Vm.FixQueuePriceCommand.ExecuteAsync(null);
+        await PrintAsync(h, a);
+        h.Printer.Calls[0].Single().Price.Should().Be(205m);
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.VisibleRows.Single().IsCorrected.Should().BeFalse();
+        h.Vm.PrintedLabels.VisibleRows[0].IsSelected = true;
+
+        await h.Vm.ReprintPrintedCommand.ExecuteAsync(null);
+
+        h.Printer.Calls.Should().HaveCount(2);
+        h.Printer.CorrectionCalls[1].Should().BeEmpty("hiç yanlış fiyatlı kâğıt çıkmadı");
+    }
+
+    [Fact]
+    public async Task Reprint_message_counts_the_labels_actually_printed()
+    {
+        // Seçimdeki bir etiket başka yoldan iptal edildi (liste henüz bayat): basılmaz ama ileti seçili sayıyı
+        // yazıyordu — "2 etiket yeniden basıldı", çıkan kâğıt 1.
+        var (h, _) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        var b = Enqueue(h, "@b", 250m);
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        foreach (var r in h.Vm.PrintedLabels.VisibleRows) r.IsSelected = true;
+        h.Labels.Cancel(new[] { a.Id }, CancelReasonCodes.Customer);
+
+        await h.Vm.ReprintPrintedCommand.ExecuteAsync(null);
+
+        h.Printer.Calls[^1].Select(l => l.Id).Should().Equal(b.Id);
+        h.Vm.PrintedLabels.Message.Should().Be("1 etiket yeniden basıldı.");
+    }
+
+    [Fact]
+    public async Task Printed_tab_is_refreshed_after_customer_detail_opened_from_chat()
+    {
+        // Sohbetten açılan müşteri detayında bir etiket iptal edildi. Basılanlar yalnız kendi satırından
+        // açılan detaydan sonra tazeleniyordu: iptalli satır listede, sayı yanlış kalıyordu.
+        var (h, _) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        var b = Enqueue(h, "@b", 250m);
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.CustomerDetailSeam = _ =>
+        {
+            h.Labels.Cancel(new[] { a.Id }, CancelReasonCodes.Customer);   // operatör detayda iptal etti
+            return Task.CompletedTask;
+        };
+
+        await h.Vm.OpenCustomerDetailFromChatCommand.ExecuteAsync(MainShellTestHarness.ChatVm("@a", "merhaba"));
+
+        h.Vm.PrintedLabels.VisibleRows.Select(r => r.Id).Should().Equal(b.Id);
+        h.Vm.PrintedLabels.TotalCount.Should().Be(1);
+    }
+
+    private sealed class SecondCallGatedPrinter : ILabelPrinter
+    {
+        private int _calls;
+        public List<List<Label>> Calls { get; } = new();
+        public TaskCompletionSource SecondEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
+        {
+            lock (Calls) Calls.Add(labels.ToList());
+            if (Interlocked.Increment(ref _calls) != 2) return;   // 2. çağrı: yeniden baskı, yazıcıda bekler
+            SecondEntered.TrySetResult();
+            Release.Wait(TimeSpan.FromSeconds(10));
+        }
+
+        public void PrintGiftLabels(IReadOnlyList<Label> labels) { }
+    }
+
+    [Fact]
+    public async Task Print_is_disabled_while_a_reprint_holds_the_printer()
+    {
+        // Yeniden baskı yazıcı kapısını tutarken "Yazdır" etkin görünüyor, tıklama sessizce hiçbir şey
+        // yapmıyordu: yeni etiketler kuyrukta kalıyor, uyarı çıkmıyordu.
+        var printer = new SecondCallGatedPrinter();
+        var (h, _) = Build(printer);
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        await PrintAsync(h, a);
+        Enqueue(h, "@b", 100m);
+        h.Vm.PrintCommand.CanExecute(null).Should().BeTrue();
+        var reprint = h.Vm.ReprintAsync(new[] { a.Id });
+        try
+        {
+            await printer.SecondEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            h.Vm.PrintCommand.CanExecute(null).Should().BeFalse("yazıcı yeniden baskıda");
+        }
+        finally
+        {
+            printer.Release.Set();
+            (await reprint).Should().BeNull();
+        }
+        h.Vm.PrintCommand.CanExecute(null).Should().BeTrue("kapı açıldı");
+    }
+
+    [Fact]
+    public async Task Bulk_cancel_warns_when_a_label_is_in_the_running_reprint()
+    {
+        // Kuyruk iptali uçuştaki baskıyla kesişimi söylüyor (R7-04 Soru B); Basılanlar'daki toplu iptal
+        // yeniden baskı kümesine hiç bakmıyordu — "DÜZELTME" işaretli kâğıtlar çıkıyor, imha edilmeleri
+        // söylenmiyordu.
+        var printer = new SecondCallGatedPrinter();
+        var (h, _) = Build(printer);
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        var b = Enqueue(h, "@b", 250m);
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        var reprint = h.Vm.ReprintAsync(new[] { a.Id, b.Id });
+        try
+        {
+            await printer.SecondEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            h.Vm.CancelLabels(new[] { a.Id }, CancelReasonCodes.WrongProduct);
+
+            h.Vm.PrintedLabels.Message.Should().StartWith("1 etiket iptal edildi.")
+                .And.Contain("1 tanesi devam eden baskı işinde").And.Contain("imha et");
+        }
+        finally
+        {
+            printer.Release.Set();
+            await reprint;
+        }
+    }
+
+    [Fact]
     public async Task Plain_reprint_has_no_correction_mark()
     {
         var (h, _) = Build();
@@ -358,6 +560,55 @@ public class MainShellPrintedLabelsTests
         h.CustomerRepo.FindByPlatformAndUsername("instagram", "@b")!.TotalAmount.Should().Be(0m);
         h.Vm.PrintedLabels.VisibleRows.Select(r => r.Display).Should().Equal("@yedek");
         new LabelRepository(h.Db).GetById(a.Id)!.CancelReason.Should().Be(CancelReasonCodes.WrongProduct);
+    }
+
+    [Fact]
+    public async Task Bulk_cancel_lists_backups_of_several_labels_in_one_drawer()
+    {
+        // K3: "25 ayrı pencere değil" — iki ana etiketin yedekleri TEK yedek çekmecesinde.
+        var (h, drawers) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        var b = Enqueue(h, "@b", 250m);
+        h.Vm.BeginAddBackupCommand.Execute(a);
+        h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@y1", "ben de"));
+        h.Vm.BeginAddBackupCommand.Execute(b);
+        h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@y2", "ben de"));
+        await PrintAsync(h);
+        drawers.OnOther = _ => Task.CompletedTask;
+
+        await h.Vm.CancelAndTransferBackupsAsync(new[] { a.Id, b.Id }, CancelReasonCodes.WrongProduct);
+
+        drawers.Titles.Should().Equal("İptal edilen etiketlerin yedekleri (2)");
+    }
+
+    [Fact]
+    public async Task Backup_confirmed_in_the_open_drawer_prints_at_the_new_price()
+    {
+        // Yedek çekmecesi açıkken (alttaki yazdır yuvası açık) yedek 200'e onaylandı ve "Yazdır"a basıldı:
+        // kuyruk kopyası ancak çekmece kapanınca güncelleniyordu — kâğıda 250 basılıp ciroya 200 yazılıyordu.
+        var (h, drawers) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        h.Vm.BeginAddBackupCommand.Execute(a);
+        h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@yedek", "ben de"));
+        var backup = h.Vm.PrintQueue[^1];
+        await PrintAsync(h, a);
+        drawers.OnOther = async _ =>
+        {
+            // Çekmecedeki kartın "Onayla"sı (BackupTransferDrawer.OnPromote ile aynı çağrı).
+            var card = new OrderDeck.App.Views.Drawers.BackupRowViewModel(new LabelRepository(h.Db).GetById(backup.Id)!)
+            {
+                PriceText = "200",
+            };
+            card.Promote((id, price) => h.Labels.ConfirmBackup(id, newPrice: price), h.Vm.OnBackupConfirmed);
+            await PrintAsync(h);   // çekmece hâlâ açık
+        };
+
+        await h.Vm.CancelAndTransferBackupsAsync(new[] { a.Id }, CancelReasonCodes.Customer);
+
+        h.Printer.Calls[^1].Single().Price.Should().Be(200m, "kâğıt ekrandaki kopyadan basılır");
+        h.CustomerRepo.FindByPlatformAndUsername("instagram", "@yedek")!.TotalAmount.Should().Be(200m);
     }
 
     [Fact]
@@ -433,6 +684,26 @@ public class MainShellPrintedLabelsTests
         printer.Calls[2].Single().Id.Should().Be(b.Id, "kuyruk yeniden baskıdan sonra basıldı");
         h.Sessions.GetActive().Should().BeNull("kuyruk basıldı, yayın kapandı");
         h.Dialogs.Shown.Should().NotContain(x => x.Message.Contains("açık bırakıldı"));
+    }
+
+    [Fact]
+    public void Delete_button_does_not_cancel_hidden_queue_selection_on_printed_tab()
+    {
+        // Alttaki yuvadaki "Seçilenleri Sil" Basılanlar açıkken de etkindi: görünmeyen kuyruk seçimini
+        // sessizce iptal ediyordu (uçuşta etiket yoksa onay da sormadan).
+        var (h, _) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        h.Vm.SelectedQueueItems.Add(a);
+        h.Vm.IsPrintedTabActive = true;
+
+        h.Vm.RemoveSelectedFromQueueCommand.CanExecute(null).Should().BeFalse("düğme Basılanlar'da devre dışı");
+        h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        h.Vm.PrintQueue.Should().ContainSingle();
+        new LabelRepository(h.Db).GetById(a.Id)!.CancelledAt.Should().BeNull();
+        h.Vm.IsPrintedTabActive = false;
+        h.Vm.RemoveSelectedFromQueueCommand.CanExecute(null).Should().BeTrue();
     }
 
     [Fact]
