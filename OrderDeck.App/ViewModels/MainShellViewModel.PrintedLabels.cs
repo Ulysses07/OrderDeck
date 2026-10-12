@@ -153,11 +153,17 @@ public sealed partial class MainShellViewModel
         vm.WorkFinished = report =>
         {
             RefreshPrintedLabels();
-            PrintedLabels.AddOutcome(report);
-            // Sekme açıksa şerit görünüyor; kapalıysa başlıkta okunmamış işareti kalır (F5).
-            if (IsPrintedTabActive) PrintedLabels.MarkOutcomesRead();
+            AddPrintedOutcome(report);
         };
         return vm;
+    }
+
+    /// <summary>"Basılanlar"daki kalıcı sonuç şeridine bir kayıt ekler. Sekme açıksa şerit görünüyor; kapalıysa
+    /// başlıkta okunmamış işareti kalır (F5).</summary>
+    private void AddPrintedOutcome(string outcome)
+    {
+        PrintedLabels.AddOutcome(outcome);
+        if (IsPrintedTabActive) PrintedLabels.MarkOutcomesRead();
     }
 
     private bool SafeCloudApiEnabled()

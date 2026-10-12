@@ -133,6 +133,12 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     private string _shownFingerprint = "";
     private IReadOnlyList<CorrectedLabel> _correctedPrinted = Array.Empty<CorrectedLabel>();
 
+    /// <summary>Sonucun kodları ("A1", "A1, B2") — <see cref="UnansweredWork"/> metninin başı.</summary>
+    private string _resultCodes = "";
+
+    /// <summary>Ödemesi alınmış kişilerin adları (<see cref="PaidRows"/>'un farksız hâli).</summary>
+    private readonly List<string> _paidNames = new();
+
     /// <summary>Seçimden açılan düzeltme (kuyruk ya da "Basılanlar"): <paramref name="labelIds"/> seçili
     /// etiketler — düzeltme onların KODLARI üzerinden çalışır.</summary>
     /// <param name="reprint">Kabuğun yeniden baskı yolu (yazıcı kapısı paylaşılır); hata metni ya da null.</param>
@@ -426,7 +432,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         var printed = result.Corrected.Count - queued;
         var codes = result.Corrected.Select(c => c.Before.Code?.Trim()).OfType<string>()
             .Where(c => c.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var head = codes.Count == 0 ? "" : string.Join(", ", codes) + ": ";
+        _resultCodes = string.Join(", ", codes);
+        var head = codes.Count == 0 ? "" : _resultCodes + ": ";
         var lines = new List<string>
         {
             result.Corrected.Count == 0
@@ -466,6 +473,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                 };
                 PaidRows.Add($"{p.Display} — ödendi ({how}), fark " +
                              $"{(p.Delta >= 0 ? "+" : "−")}{Math.Abs(p.Delta).ToString("N2", Tr)} TL");
+                _paidNames.Add(p.Display);
             }
             OnPropertyChanged(nameof(HasResendRows));
             OnPropertyChanged(nameof(HasPaidRows));
@@ -557,6 +565,39 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     }
 
     private void ReportWorkFinished(string outcome) => WorkFinished?.Invoke("Fiyat düzeltmesi: " + outcome);
+
+    /// <summary>Düzeltme bu kodu kapsıyor mu (harf duyarsız, kod kutusuyla aynı kural).</summary>
+    internal bool CoversCode(string code)
+        => Codes.Any(c => string.Equals(c.Key, code.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Sonuçta CEVAPLANMADAN kalan işler, adlarıyla: yanıtlanmamış yeniden baskı sorusu, gönderilmemiş düzeltilmiş
+    /// istekler, ödemesi alınmış kişiler (fark müşteriyle çözülecek). Yoksa null. Süren yeniden baskı ya da gönderim
+    /// sayılmaz — o iş bitince sonucunu zaten bildirir (<see cref="WorkFinished"/>).
+    ///
+    /// <para>Kabuk FİYAT kutusunun altındaki sonucu operatör kapatmadan başka bir kodun sonucuyla değiştirirken bunu
+    /// "Basılanlar"daki kalıcı sonuç şeridine yazar: bekleyen kâğıt ve para işi sessizce kaybolmasın. Tutar
+    /// YAZILMAZ — sonraki bir düzeltme kişinin toplamını yeniden değiştirmiş olabilir; güncel eski/yeni tutarı
+    /// müşteri kartındaki ödeme sorusu söyler.</para>
+    /// </summary>
+    internal string? UnansweredWork()
+    {
+        static string Names(IEnumerable<string> names)
+            => string.Concat(names.Distinct(StringComparer.Ordinal).Select(n => $"\n• {n}"));
+
+        var text = "";
+        if (IsReprintAsked)
+            text += $"\n{_correctedPrinted.Count} basılmış etiket yeniden basılmadı — kâğıtlarında eski fiyat var " +
+                    "(\"Basılanlar\"dan seçip \"Yeniden bas\").";
+        if (IsResendAvailable && ResendRows.Count > 0)
+            text += "\nEski tutarla istek gitmiş, düzeltilmiş istek gönderilmedi (müşteri kartından gönder):" +
+                    Names(ResendRows.Select(r => r.Candidate.Display));
+        if (_paidNames.Count > 0)
+            text += "\nÖdemesi alınmış — farkı müşteriyle çöz:" + Names(_paidNames);
+        if (text.Length == 0) return null;
+        var codes = _resultCodes.Length == 0 ? "" : $" ({_resultCodes})";
+        return $"Fiyat düzeltmesi{codes}: sonuç kapatılmadan başka bir kodun fiyatı değiştirildi; cevaplanmayanlar:{text}";
+    }
 
     /// <summary>Sonuç şeridi için ele alınması gereken kişiler, adı ve sebebiyle ayrı satırda: "elle bakılmalı"
     /// olanlar ve WhatsApp'ta doğrulanması gerekenler (sahip kararı F5 — pencere açıldı ama gönder tuşuna basıldı

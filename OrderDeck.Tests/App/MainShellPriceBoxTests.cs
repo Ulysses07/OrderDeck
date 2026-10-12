@@ -704,6 +704,115 @@ public class MainShellPriceBoxTests
         drawers.Count.Should().Be(0, "çekmece açılmaz — kod/fiyat kutusu ve kuyruk örtülmez");
     }
 
+    private static MainShellTestHarness.Harness BuildWithPayments(OrderDeck.App.Services.Drawers.IDrawerService? drawers = null)
+        => MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
+            new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,
+                new PaymentJobRepository(db), () => new OrderDeck.Core.Settings.AppSettings(),
+                (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
+                    OrderDeck.App.Services.PaymentRequestResult.Sent))));
+
+    private static string StreamScope(MainShellTestHarness.Harness h)
+        => OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests.SessionScope(h.Sessions.GetActive()!.Id);
+
+    /// <summary>Kişiye bu yayında <paramref name="net"/> TL'lik istek teslim edilmiş (bakiye yok).</summary>
+    private static void DeliveredRequest(MainShellTestHarness.Harness h, string customerId, decimal net)
+    {
+        var jobs = new PaymentJobRepository(h.Db);
+        var job = jobs.FindOrCreate(customerId, StreamScope(h), net);
+        jobs.MarkNoBalance(job.Id, null, job.Revision).Should().BeTrue();
+        jobs.MarkDelivered(job.Id, net);
+    }
+
+    /// <summary>Kişinin bu yayındaki isteğinin tamamı bakiyeden düşülmüş — ödendi.</summary>
+    private static void PaidByBalance(MainShellTestHarness.Harness h, string customerId, decimal total)
+    {
+        var jobs = new PaymentJobRepository(h.Db);
+        var job = jobs.FindOrCreate(customerId, StreamScope(h), total);
+        var key = Guid.NewGuid();
+        jobs.BeginApply(job.Id, key).Should().BeTrue();
+        jobs.MarkApplied(job.Id, key, job.Revision, total).Should().BeTrue();
+        jobs.MarkDelivered(job.Id, 0m);
+    }
+
+    [Fact]
+    public async Task Another_codes_yes_moves_the_unanswered_result_to_the_printed_outcome_strip()
+    {
+        // FİYAT kutusunun altındaki sonuç tek yuva. A1 250 → 200 dendi, yeniden baskı sorusu ve "düzeltilmiş isteği
+        // gönder" cevaplanmadan operatör B2'ye geçip onu da düzeltti: A1'in sonucu iz bırakmadan eziliyordu —
+        // kâğıtlarda 250 kalıyor, @a'ya 200'lük düzeltilmiş istek hiç gitmiyor, @odendi'nin farkı unutuluyordu.
+        using var h = BuildWithPayments();
+        await WithCodeLabels(h, 250m, "@a", "@odendi");
+        var rows = h.Vm.PrintQueue.ToList();
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        DeliveredRequest(h, rows[0].Label.CustomerId, 250m);
+        PaidByBalance(h, rows[1].Label.CustomerId, 250m);
+        h.Vm.ActivePriceText = "200";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+        var first = h.Vm.CodePriceCorrection!;
+        first.IsReprintAsked.Should().BeTrue();
+        first.ResendRows.Should().ContainSingle();
+        first.PaidRows.Should().ContainSingle();
+
+        h.Vm.ActiveCode = "B2";
+        h.Vm.ActivePriceText = "100";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "B2 aldım"));
+        h.Vm.ActivePriceText = "90";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.CodePriceCorrection.Should().NotBeNull().And.NotBeSameAs(first);
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle().Which.Should()
+            .Contain("(A1)")
+            .And.Contain("2 basılmış etiket yeniden basılmadı")
+            .And.Contain("düzeltilmiş istek gönderilmedi").And.Contain("• @a")
+            .And.Contain("Ödemesi alınmış").And.Contain("• @odendi");
+        h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeTrue("sekme kapalı: başlıkta okunmamış işareti");
+    }
+
+    [Fact]
+    public async Task Answered_result_replaced_by_another_code_leaves_no_outcome()
+    {
+        using var h = BuildWithPayments();
+        await WithCodeLabels(h, 250m, "@a");
+        var row = h.Vm.PrintQueue[0];
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        DeliveredRequest(h, row.Label.CustomerId, 250m);
+        h.Vm.ActivePriceText = "200";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+        var first = h.Vm.CodePriceCorrection!;
+        first.SkipReprintCommand.Execute(null);   // "Hayır" — operatörün kararı
+        await first.ResendCommand.ExecuteAsync(null);
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle("gönderimin kendi sonucu");
+
+        h.Vm.ActiveCode = "B2";
+        h.Vm.ActivePriceText = "100";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "B2 aldım"));
+        h.Vm.ActivePriceText = "90";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle("cevaplanmamış iş yok — yeni kayıt düşmez");
+    }
+
+    [Fact]
+    public async Task Same_codes_second_yes_rebuilds_the_result_with_current_amounts()
+    {
+        // Aynı kodda ikinci "Evet": yeni sonuç aynı basılmış etiketler ve kişiler için soruyu ve listeyi güncel
+        // tutarla yeniden kurar — şeride ayrıca bayat bir kayıt düşmez.
+        using var h = BuildWithPayments();
+        await WithCodeLabels(h, 250m, "@a");
+        var row = h.Vm.PrintQueue[0];
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        DeliveredRequest(h, row.Label.CustomerId, 250m);
+        h.Vm.ActivePriceText = "200";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.ActivePriceText = "190";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.PrintedLabels.Outcomes.Should().BeEmpty();
+        h.Vm.CodePriceCorrection!.IsReprintAsked.Should().BeTrue();
+        h.Vm.CodePriceCorrection.ResendRows.Should().ContainSingle().Which.Candidate.NewTotal.Should().Be(190m);
+    }
+
     private sealed class CountingDrawers : OrderDeck.App.Services.Drawers.IDrawerService
     {
         public int Count { get; private set; }

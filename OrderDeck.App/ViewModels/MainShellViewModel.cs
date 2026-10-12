@@ -368,7 +368,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly List<ChatMessageViewModel> _codePriceBlockedItems = new();
 
     /// <summary>Şeritte "Evet" denilen düzeltmenin satır içi sonucu (yeniden baskı sorusu, düzeltilmiş istek
-    /// listesi — çekmecedekiyle aynı görünüm); null = yok. "Kapat"la kalkar.</summary>
+    /// listesi — çekmecedekiyle aynı görünüm); null = yok. "Kapat"la kalkar; başka bir kodun sonucu yerine geçerse
+    /// cevaplanmamış işi "Basılanlar"daki kalıcı sonuç şeridine düşer (<see cref="ConfirmCodePrice"/>).</summary>
     [ObservableProperty] private PriceCorrectionViewModel? _codePriceCorrection;
 
     partial void OnActivePriceTextChanged(string value)
@@ -538,6 +539,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             if (ReferenceEquals(CodePriceCorrection, vm)) CodePriceCorrection = null;
         };
+        // Yuva tek: önceki sonuç operatör "Kapat" demeden yerini bu sonuca bırakıyor. Başka bir kodunsa
+        // cevaplanmamış işi (yeniden baskı sorusu, gönderilmemiş düzeltilmiş istek, ödenmişlerin farkı) adlarıyla
+        // kalıcı sonuç şeridine yazılır — iz bırakmadan ezilince kâğıtlarda eski fiyat kalıyor, eski tutarla
+        // istenmiş kişiye düzeltilmiş istek hiç gitmiyordu. Aynı kodsa yeni sonuç aynı etiketler ve kişiler için
+        // soruyu ve listeyi güncel tutarlarla yeniden kurar.
+        if (CodePriceCorrection is { } previous && !previous.CoversCode(pending.Code)
+            && previous.UnansweredWork() is { } unanswered)
+            AddPrintedOutcome(unanswered);
         CodePriceCorrection = vm;
     }
 
