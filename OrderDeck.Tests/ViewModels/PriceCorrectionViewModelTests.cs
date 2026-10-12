@@ -17,8 +17,8 @@ using Xunit;
 
 namespace OrderDeck.Tests.ViewModels;
 
-/// <summary>"Fiyatı düzelt" çekmecesinin akışı (K5): fiyat grupları, özet, satır içi onaylar, uçuştaki
-/// baskı reddi, arada değişen etiketler.</summary>
+/// <summary>"Fiyatı düzelt" çekmecesinin akışı (K5, F3): seçimin KODLARI (kodun yayındaki bütün etiketleri),
+/// özet, satır içi onaylar, uçuştaki baskı reddi, arada değişen etiketler.</summary>
 public sealed class PriceCorrectionViewModelTests : IDisposable
 {
     private readonly InMemorySqlite _db = new();
@@ -42,9 +42,9 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private Label Add(string user, decimal price)
+    private Label Add(string user, decimal price, string? code = "A12")
         => _labels.Add("s1", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, user, user, null,
-            "aldım", 1000, Array.Empty<string>()), price, "A12");
+            "aldım", 1000, Array.Empty<string>()), price, code);
 
     private PriceCorrectionViewModel Vm(IEnumerable<Label> labels, PriceCorrectionMode mode = PriceCorrectionMode.Printed)
         => new(_labels, payments: null, "s1", labels.Select(l => l.Id).ToList(), mode, DateTime.Now,
@@ -54,32 +54,124 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
             cloudApiEnabled: true);
 
     [Fact]
-    public void Price_groups_are_listed_all_checked_with_a_warning_when_mixed()
+    public void Correction_covers_every_label_of_the_selected_code_not_only_the_selection()
     {
-        var labels = new[] { Add("@a", 250m), Add("@b", 250m), Add("@c", 300m) };
+        // Sabit fiyat modeli (F3): A12'nin fiyatı 250 → 205 ise A12'nin yayındaki BÜTÜN etiketleri 205 olur —
+        // yalnız seçilen satır değil. Başka kod değişmez.
+        var a = Add("@a", 250m);
+        var b = Add("@b", 250m);
+        var c = Add("@c", 250m);
+        var other = Add("@d", 300m, "B7");
 
-        var vm = Vm(labels);
+        var vm = Vm(new[] { a });
 
-        vm.PriceGroups.Select(g => g.Text).Should().Equal("250,00 TL × 2", "300,00 TL × 1");
-        vm.PriceGroups.Should().OnlyContain(g => g.IsChecked);
-        vm.HasMultiplePrices.Should().BeTrue();
-    }
-
-    [Fact]
-    public void Only_checked_price_groups_are_corrected()
-    {
-        var labels = new[] { Add("@a", 250m), Add("@b", 250m), Add("@c", 300m) };
-        var vm = Vm(labels);
-        vm.PriceGroups.Single(g => g.Price == 300m).IsChecked = false;
-
-        vm.Summary.Should().Contain("2 etiket / 2 müşteri").And.Contain(s => s.Contains("işaretsiz"));
+        var option = vm.Codes.Should().ContainSingle().Subject;
+        option.Title.Should().Be("A12");
+        option.Text.Should().Be("250,00 TL × 3");
+        option.IsChecked.Should().BeTrue("tek kod işaretli gelir");
+        vm.Summary.Should().Contain("3 etiket / 3 müşteri")
+            .And.Contain("2 etiket seçimde değil ama aynı kodda — onlar da düzelir");
         vm.NewPriceText = "205";
         vm.ConfirmCommand.Execute(null);
 
-        _labelRepo.GetById(labels[0].Id)!.Price.Should().Be(205m);
-        _labelRepo.GetById(labels[2].Id)!.Price.Should().Be(300m, "işaretsiz fiyat grubu değişmez");
+        new[] { a, b, c }.Select(l => _labelRepo.GetById(l.Id)!.Price).Should().OnlyContain(p => p == 205m);
+        _labelRepo.GetById(other.Id)!.Price.Should().Be(300m, "başka kod değişmez");
         _applied.Should().ContainSingle();
         vm.IsDone.Should().BeTrue();
+        vm.ResultText.Should().StartWith("A12: 3 etiket 205,00 TL'ye düzeltildi");
+    }
+
+    [Fact]
+    public void Mixed_prices_in_a_code_all_go_to_the_new_price_and_the_summary_says_so()
+    {
+        // Fiyat grubu işaretleme (kısmi düzeltme) kaldırıldı: kodda karışık fiyat varsa (eski veri, pazarlıklı
+        // yedek) hepsi yeni fiyata geçer.
+        var labels = new[] { Add("@a", 250m), Add("@b", 250m), Add("@c", 300m) };
+
+        var vm = Vm(labels.Take(1));
+
+        vm.Codes.Should().ContainSingle().Which.Text.Should().Be("250,00 TL × 2, 300,00 TL × 1 — karışık");
+        vm.Summary.Should().Contain("A12: karışık fiyat (250,00 TL × 2, 300,00 TL × 1) — hepsi yeni fiyata geçer");
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        labels.Select(l => _labelRepo.GetById(l.Id)!.Price).Should().OnlyContain(p => p == 205m);
+    }
+
+    [Fact]
+    public void Several_codes_are_listed_unchecked_and_only_the_checked_code_changes()
+    {
+        // Bir baskıda farklı ürünler olur: yeni fiyat hepsine yanlışlıkla uygulanmasın — operatör kodu seçer.
+        var a = Add("@a", 250m);
+        var a2 = Add("@a2", 250m);
+        var b = Add("@b", 80m, "B7");
+        var vm = Vm(new[] { b, a });
+
+        vm.Codes.Select(o => (o.Title, o.Text, o.IsChecked)).Should().Equal(
+            ("B7", "80,00 TL × 1", false), ("A12", "250,00 TL × 2", false));
+        vm.HasMultipleCodes.Should().BeTrue();
+        vm.Summary.Should().Contain("Düzelteceğin kodu işaretle.");
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+        vm.BlockingMessage.Should().Contain("en az bir kodu işaretle");
+        _labelRepo.GetById(a.Id)!.Price.Should().Be(250m);
+
+        vm.Codes.Single(o => o.Title == "A12").IsChecked = true;
+        vm.Summary.Should().Contain("2 etiket / 2 müşteri").And.Contain("1 kod işaretsiz, değişmeyecek");
+        vm.ConfirmCommand.Execute(null);
+
+        _labelRepo.GetById(a.Id)!.Price.Should().Be(205m);
+        _labelRepo.GetById(a2.Id)!.Price.Should().Be(205m);
+        _labelRepo.GetById(b.Id)!.Price.Should().Be(80m, "işaretsiz kod değişmez");
+    }
+
+    [Fact]
+    public void Codeless_selected_labels_are_corrected_alone()
+    {
+        // Kodsuz etikette genişletilecek kod yok: yalnız seçilenler (yoksa kodsuz yazılmış her satır düzelirdi).
+        var x = Add("@x", 40m, null);
+        var y = Add("@y", 40m, null);
+        var vm = Vm(new[] { x });
+
+        vm.Codes.Should().ContainSingle().Which.Title.Should().Be("Kodsuz (yalnız seçilenler)");
+        vm.NewPriceText = "45";
+        vm.ConfirmCommand.Execute(null);
+
+        _labelRepo.GetById(x.Id)!.Price.Should().Be(45m);
+        _labelRepo.GetById(y.Id)!.Price.Should().Be(40m);
+    }
+
+    [Fact]
+    public void Label_written_for_the_code_while_the_drawer_is_open_is_corrected_without_a_new_confirmation()
+    {
+        // Yayında yorumlar yağarken kodun yeni etiketleri yazılmaya devam eder (kutu henüz eski fiyatı gösteriyor).
+        // Onlar da kodun etiketi: düzeltmeye girer; gösterilen etiketler değişmediği için yeniden onay istenmez —
+        // istenseydi her yeni yorumda onay bayatlar, düzeltme hiç tutmazdı.
+        var a = Add("@a", 250m);
+        var vm = Vm(new[] { a }, PriceCorrectionMode.Queue);
+        var late = Add("@gec", 250m);
+
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        vm.BlockingMessage.Should().BeNull();
+        vm.IsDone.Should().BeTrue();
+        _labelRepo.GetById(late.Id)!.Price.Should().Be(205m);
+    }
+
+    [Fact]
+    public void Label_of_the_code_on_the_printer_refuses_the_correction_even_if_not_selected()
+    {
+        var a = Add("@a", 250m);
+        var b = Add("@b", 250m);
+        var vm = Vm(new[] { a }, PriceCorrectionMode.Queue);
+        _inFlight = new HashSet<string> { b.Id };
+
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        vm.BlockingMessage.Should().Contain("Baskı bitince tekrar deneyin");
+        _labelRepo.GetById(a.Id)!.Price.Should().Be(250m);
     }
 
     [Fact]
@@ -242,13 +334,13 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Conflict_on_write_keeps_the_operators_unchecked_price_groups()
+    public void Conflict_on_write_keeps_the_operators_code_choice()
     {
-        // 300 TL'lik (pazarlıklı) grup bilerek işaretten çıkarıldı; yazım çakışma verdi, operatör yeniden
-        // onayladı: 300'lük etiketler sessizce 205'e düşüyordu.
-        var labels = new[] { Add("@a", 250m), Add("@b", 250m), Add("@c", 300m) };
-        var vm = Vm(labels);
-        vm.PriceGroups.Single(g => g.Price == 300m).IsChecked = false;
+        // B7 bilerek işaretsiz bırakıldı; yazım çakışma verdi, operatör yeniden onayladı: işaret korunmalı.
+        var a = Add("@a", 250m);
+        var b = Add("@b", 80m, "B7");
+        var vm = Vm(new[] { a, b });
+        vm.Codes.Single(o => o.Title == "A12").IsChecked = true;
         var conflicts = 1;
         vm.CorrectPricesSeam = (ids, price) =>
         {
@@ -259,11 +351,12 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         vm.ConfirmCommand.Execute(null);
         vm.BlockingMessage.Should().Contain("bu arada değişti");
 
-        vm.PriceGroups.Single(g => g.Price == 300m).IsChecked.Should().BeFalse();
+        vm.Codes.Single(o => o.Title == "B7").IsChecked.Should().BeFalse();
+        vm.Codes.Single(o => o.Title == "A12").IsChecked.Should().BeTrue();
         vm.ConfirmCommand.Execute(null);
 
-        _labelRepo.GetById(labels[2].Id)!.Price.Should().Be(300m, "işaretsiz grup değişmez");
-        _labelRepo.GetById(labels[0].Id)!.Price.Should().Be(205m);
+        _labelRepo.GetById(b.Id)!.Price.Should().Be(80m, "işaretsiz kod değişmez");
+        _labelRepo.GetById(a.Id)!.Price.Should().Be(205m);
     }
 
     [Fact]
@@ -299,6 +392,28 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         var vm = Vm(new[] { keep, cancelled });
 
         vm.Summary.Should().Contain(s => s.Contains("1 etiket (iptal ya da kargo ücreti) düzeltmeye girmez"));
-        vm.PriceGroups.Should().ContainSingle().Which.Group.Count.Should().Be(1);
+        vm.Codes.Should().ContainSingle().Which.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public void Labels_of_the_code_in_a_shipped_file_stay_and_are_listed_as_unchanged()
+    {
+        var shipped = Add("@gitti", 250m);
+        var open = Add("@a", 250m);
+        _labels.MarkPrintedAndRecord(new[] { shipped.Id, open.Id });
+        var shipments = new ShipmentService(new ShipmentRepository(_db), _labelRepo,
+            () => new OrderDeck.Core.Settings.AppSettings());
+        var file = shipments.GetOrCreateOpenShipment(shipped.CustomerId);
+        shipments.AttachLabels(file.Id, new[] { shipped.Id });
+        shipments.ApplyDecision(file.Id, ShipmentDecision.ShipNow);
+        var vm = Vm(new[] { open });
+
+        vm.Summary.Should().Contain("1 etiket / 1 müşteri").And.Contain("1 etiket kargoya verildi, değişmeyecek");
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        _labelRepo.GetById(shipped.Id)!.Price.Should().Be(250m);
+        _labelRepo.GetById(open.Id)!.Price.Should().Be(205m);
+        vm.ResultText.Should().Contain("1 etiket kargoya verildi, değişmedi: @gitti");
     }
 }

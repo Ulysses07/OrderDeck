@@ -100,7 +100,7 @@ public class MainShellPrintedLabelsTests
         using var _ = h;
         var a = Enqueue(h, "@a", 250m);
         var b = Enqueue(h, "@b", 250m);
-        var c = Enqueue(h, "@c", 300m);
+        var c = Enqueue(h, "@c", 300m, "B7");               // başka kod: düzeltmeye girmez
         h.Vm.SelectedQueueItems.Add(a);
         h.Vm.SelectedQueueItems.Add(b);
         drawers.OnPriceCorrection = pc =>
@@ -567,7 +567,7 @@ public class MainShellPrintedLabelsTests
         var (h, drawers) = Build();
         using var __ = h;
         Enqueue(h, "@a", 250m);
-        Enqueue(h, "@b", 300m);
+        Enqueue(h, "@b", 300m, "B7");
         await PrintAsync(h);
         h.Vm.IsPrintedTabActive = true;
         drawers.OnPriceCorrection = async pc =>

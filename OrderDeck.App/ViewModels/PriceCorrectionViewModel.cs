@@ -11,27 +11,49 @@ using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.ViewModels;
 
-/// <summary>Düzeltmenin nereden açıldığı: kuyruk (basılmamış satırlar, K4) ya da "Basılanlar" sekmesi. Yeniden
-/// baskı sorusu kipe değil sonuca bağlıdır: kuyruk kipinde de çekmece açıkken basılan satır düzeldiyse
-/// sorulur.</summary>
+/// <summary>Düzeltmenin nereden açıldığı: kuyruk (K4), "Basılanlar" sekmesi ya da FİYAT kutusundaki fiyat
+/// değişikliği (F2). Yeniden baskı sorusu kipe değil sonuca bağlıdır: kodun basılmış etiketi düzeldiyse her
+/// kipte sorulur.</summary>
 public enum PriceCorrectionMode
 {
     Queue,
     Printed,
+
+    /// <summary>FİYAT kutusunda etiketi olan kodun fiyatı değiştirildi, şeritte "Evet" denildi (F2).</summary>
+    Code,
 }
 
-/// <summary>Seçimdeki bir fiyat grubu — operatör hangilerinin düzeleceğini işaretler.</summary>
-public sealed partial class PriceGroupOption : ObservableObject
+/// <summary>Düzeltmede bir kod (sahip kararı F3): kodun yayındaki BÜTÜN düzeltilebilir etiketleri, mevcut
+/// fiyat(lar)ı ve adediyle. Operatör düzelteceği kodları işaretler; fiyat grubu işaretleme (kısmi düzeltme)
+/// YOK — bir yayında bir kodun tek fiyatı vardır.</summary>
+public sealed partial class CodeOption : ObservableObject
 {
     private static readonly CultureInfo Tr = CultureInfo.GetCultureInfo("tr-TR");
 
-    public PriceGroupOption(PriceGroup group) => Group = group;
+    public CodeOption(CodeCorrectionPlan plan, bool isChecked)
+    {
+        Plan = plan;
+        _isChecked = isChecked;
+    }
 
-    public PriceGroup Group { get; }
-    public decimal Price => Group.Price;
-    public string Text => $"{Group.Price.ToString("N2", Tr)} TL × {Group.Count}";
+    public CodeCorrectionPlan Plan { get; }
 
-    [ObservableProperty] private bool _isChecked = true;
+    /// <summary>Eşleştirme anahtarı (harf duyarsız karşılaştırılır); kodsuz grup boş.</summary>
+    internal string Key => Plan.Code ?? "";
+
+    public string Title => Plan.Code ?? "Kodsuz (yalnız seçilenler)";
+
+    public int Count => Plan.Plan.Correctable.Count;
+
+    public bool IsMixed => Plan.Plan.PriceGroups.Count > 1;
+
+    /// <summary>"250,00 TL × 18"; karışıksa her fiyat ayrı ("250,00 TL × 17, 230,00 TL × 1").</summary>
+    public string Text => PricesText(Plan.Plan.PriceGroups) + (IsMixed ? " — karışık" : "");
+
+    internal static string PricesText(IEnumerable<PriceGroup> groups)
+        => string.Join(", ", groups.Select(g => $"{g.Price.ToString("N2", Tr)} TL × {g.Count}"));
+
+    [ObservableProperty] private bool _isChecked;
 }
 
 /// <summary>Düzeltilmiş isteği gönder listesinin satırı.</summary>
@@ -69,18 +91,27 @@ public sealed partial class ResendRowViewModel : ObservableObject
 }
 
 /// <summary>
-/// "Fiyatı düzelt" çekmecesi (sahip kararları K4/K5) — pop-up YOK: form çekmecede, onaylar satır içi.
+/// "Fiyatı düzelt" (sahip kararları K4/K5, F2/F3) — pop-up YOK: form çekmecede, onaylar satır içi.
 ///
-/// <para>Akış: seçimdeki fiyat grupları gösterilir (varsayılan hepsi işaretli; birden çok fiyat varsa
-/// uyarı), operatör yeni fiyatı yazar, özet görünür (N etiket / M müşteri, kuyruk/basılmış, eski tutarla
-/// istek gitmiş K kişi, ödemesi alınmış P kişi, kargoya verilmiş S etiket — değişmez). Onay tek pakette
-/// yazar (<see cref="LabelService.CorrectPrices"/>); kabuk kuyruktaki satırları yerinde günceller. Sonra:
-/// basılmış etiket varsa "yeniden basılsın mı?" (varsayılan Evet), teslim edilmiş isteği değişen kişiler
-/// için "düzeltilmiş isteği gönder".</para>
+/// <para><b>Kod düzeyinde</b> (F3, "açık artırma değil, sabit fiyat"): bir yayında bir kodun TEK fiyatı vardır.
+/// Seçimin KODLARI listelenir (her biri mevcut fiyatı ve adediyle); operatör düzelteceği kodları işaretler (tek
+/// kod varsa işaretli gelir) ve yeni fiyatı yazar. İşaretli kodun yayındaki BÜTÜN düzeltilebilir etiketleri
+/// değişir — yalnız seçilenler değil; kuyruk, basılmış ve yedekler dahil, iptal edilmiş ve kargoya verilmiş
+/// dosyadakiler hariç. Kodda karışık fiyat varsa (eski veri, pazarlıklı yedek) hepsi yeni fiyata geçer; özet
+/// söyler. Kodsuz seçilen etiketlerde genişletilecek kod yok: yalnız onlar.</para>
 ///
-/// <para><b>Uçuştaki baskı:</b> seçimde o an yazıcıda olan etiket varsa düzeltme reddedilir — kâğıda
-/// eski fiyat çıkar, ciro yeni fiyatla yazılırdı. Onay anında yeniden denetlenir (çekmece açıkken baskı
-/// başlamış olabilir).</para>
+/// <para>Özet (onaydan önce): N etiket / M müşteri, kuyruk/basılmış, seçimde olmayıp düzelecekler, eski tutarla
+/// istek gitmiş K kişi, ödemesi alınmış P kişi, kargoya verilmiş S etiket (değişmez). Onay tek pakette yazar
+/// (<see cref="LabelService.CorrectPrices"/>); kabuk kuyruktaki satırları yerinde günceller. Sonra: basılmış
+/// etiket düzeldiyse "yeniden basılsın mı?" (varsayılan Evet), teslim edilmiş isteği değişen kişiler için
+/// "düzeltilmiş isteği gönder". Aynı akış FİYAT kutusundaki fiyat değişikliğinin şeridinden de koşar
+/// (<see cref="ForCode"/>): sonuç görünümü orada satır içi.</para>
+///
+/// <para><b>Uçuştaki baskı:</b> düzelecek etiketlerden biri o an yazıcıdaysa düzeltme reddedilir — kâğıda
+/// eski fiyat çıkar, ciro yeni fiyatla yazılırdı. Onay anında yeniden denetlenir. <b>Arada değişen
+/// etiketler:</b> operatörün GÖRDÜĞÜ etiketlerden biri basıldı, iptal edildi ya da fiyatı değiştiyse özet
+/// yenilenir, yeniden onay istenir. Arada yazılan YENİ etiket kodun etiketidir: özeti bayatlatmadan düzeltmeye
+/// girer — yayında yorumlar yağarken onay hiç tutmazdı.</para>
 /// </summary>
 public sealed partial class PriceCorrectionViewModel : ObservableObject
 {
@@ -89,17 +120,21 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     private readonly LabelService _labels;
     private readonly CorrectedPaymentRequests? _payments;
     private readonly string _sessionId;
-    private readonly IReadOnlyList<string> _labelIds;
+    private readonly Func<IReadOnlyList<CodeCorrectionPlan>> _planner;
+    private readonly IReadOnlySet<string> _selection;
     private readonly DateTime _streamDate;
     private readonly Func<IReadOnlySet<string>?> _inFlight;
     private readonly Action<PriceCorrectionResult> _applied;
     private readonly Func<IReadOnlyList<string>, Task<string?>> _reprint;
     private readonly bool _cloudApi;
 
-    private PriceCorrectionPlan _plan;
+    private IReadOnlyList<CodeCorrectionPlan> _plans = Array.Empty<CodeCorrectionPlan>();
+    private IReadOnlySet<string> _shownIds = new HashSet<string>();
     private string _shownFingerprint = "";
     private IReadOnlyList<CorrectedLabel> _correctedPrinted = Array.Empty<CorrectedLabel>();
 
+    /// <summary>Seçimden açılan düzeltme (kuyruk ya da "Basılanlar"): <paramref name="labelIds"/> seçili
+    /// etiketler — düzeltme onların KODLARI üzerinden çalışır.</summary>
     /// <param name="reprint">Kabuğun yeniden baskı yolu (yazıcı kapısı paylaşılır); hata metni ya da null.</param>
     /// <param name="cloudApiEnabled">WhatsApp Cloud API açık mı — kapalıysa her kişi için WhatsApp
     /// penceresi açılacağı söylenir.</param>
@@ -108,11 +143,23 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         IReadOnlyList<string> labelIds, PriceCorrectionMode mode, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
+        : this(labels, payments, sessionId, () => labels.PlanCodeCorrection(sessionId, labelIds),
+            labelIds.ToHashSet(StringComparer.Ordinal), mode, streamDate, inFlight, applied, reprint, cloudApiEnabled)
+    {
+    }
+
+    private PriceCorrectionViewModel(
+        LabelService labels, CorrectedPaymentRequests? payments, string sessionId,
+        Func<IReadOnlyList<CodeCorrectionPlan>> planner, IReadOnlySet<string> selection,
+        PriceCorrectionMode mode, DateTime streamDate,
+        Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
+        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
     {
         _labels = labels;
         _payments = payments;
         _sessionId = sessionId;
-        _labelIds = labelIds;
+        _planner = planner;
+        _selection = selection;
         Mode = mode;
         _streamDate = streamDate;
         _inFlight = inFlight;
@@ -120,21 +167,30 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         _reprint = reprint;
         _cloudApi = cloudApiEnabled;
 
-        _plan = _labels.PlanPriceCorrection(labelIds);
-        LoadGroups();
+        LoadCodes(_planner(), checkedKeys: null);
         RecomputeSummary();
     }
 
+    /// <summary>FİYAT kutusundaki fiyat değişikliğinin düzeltmesi (F2): tek kod, işaretli — kodun yayındaki
+    /// bütün düzeltilebilir etiketleri.</summary>
+    public static PriceCorrectionViewModel ForCode(
+        LabelService labels, CorrectedPaymentRequests? payments, string sessionId, string code, DateTime streamDate,
+        Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
+        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
+        => new(labels, payments, sessionId, () => new[] { labels.PlanCodeCorrection(sessionId, code) },
+            new HashSet<string>(StringComparer.Ordinal), PriceCorrectionMode.Code, streamDate, inFlight, applied,
+            reprint, cloudApiEnabled);
+
     public PriceCorrectionMode Mode { get; }
 
-    /// <summary>Çekmeceyi kapatır (fabrika bağlar); testte boş.</summary>
+    /// <summary>Çekmeceyi (ya da FİYAT kutusunun altındaki satır içi sonucu) kapatır; testte boş.</summary>
     public Action? Close { get; set; }
 
     /// <summary>Yeniden baskı ya da toplu gönderim BİTTİ; argüman o işin sonucu ("Fiyat düzeltmesi: …" —
-    /// baskı hatası, "elle bakılmalı" adları ve sebepleri). Her iş kendi sonucunu bir kez bildirir. Çekmece iş
-    /// sürerken de kapatılabilir (yayında kod/fiyat kutusunu ve kuyruğu örtmesin) — iş arka planda sürer, kabuk
-    /// sonucu bitince "Basılanlar"daki kalıcı sonuç şeridine ekler: çekmece kapandıysa da operatöre ulaşır.
-    /// Testte boş.</summary>
+    /// baskı hatası, "elle bakılmalı" ve "WhatsApp'ta doğrulanmalı" adları). Her iş kendi sonucunu bir kez
+    /// bildirir. Çekmece iş sürerken de kapatılabilir (yayında kod/fiyat kutusunu ve kuyruğu örtmesin) — iş arka
+    /// planda sürer, kabuk sonucu bitince "Basılanlar"daki kalıcı sonuç şeridine ekler: çekmece kapandıysa da
+    /// operatöre ulaşır. Testte boş.</summary>
     public Action<string>? WorkFinished { get; set; }
 
     /// <summary>Düzeltmenin yazımı (test dikişi; varsayılan <see cref="LabelService.CorrectPrices"/>) —
@@ -142,11 +198,12 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// üretilemiyor.</summary>
     internal Func<IReadOnlyCollection<string>, decimal, PriceCorrectionResult>? CorrectPricesSeam { get; set; }
 
-    public ObservableCollection<PriceGroupOption> PriceGroups { get; } = new();
+    /// <summary>Seçimin kodları (düzeltilebilir etiketi olanlar).</summary>
+    public ObservableCollection<CodeOption> Codes { get; } = new();
 
-    public bool HasMultiplePrices => PriceGroups.Count > 1;
+    public bool HasMultipleCodes => Codes.Count > 1;
 
-    public bool HasCorrectable => PriceGroups.Count > 0;
+    public bool HasCorrectable => Codes.Count > 0;
 
     [ObservableProperty] private string _newPriceText = "";
     [ObservableProperty] private string? _newPriceError;
@@ -160,7 +217,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <summary>Satır içi uyarı: uçuştaki baskı, arada değişen etiketler, hata.</summary>
     [ObservableProperty] private string? _blockingMessage;
 
-    /// <summary>Onaylandı: çekmece sonuç görünümüne geçti.</summary>
+    /// <summary>Onaylandı: sonuç görünümüne geçildi.</summary>
     [ObservableProperty] private bool _isDone;
 
     [ObservableProperty] private string _resultText = "";
@@ -191,73 +248,98 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         IsZeroConfirmPending = false;
     }
 
-    private void LoadGroups()
+    /// <summary>Kod seçeneklerini kurar. <paramref name="checkedKeys"/> null = ilk açılış: tek kod varsa işaretli,
+    /// birden çoksa hiçbiri (operatör seçer — bir baskıda farklı ürünler olur, yeni fiyat hepsine yanlışlıkla
+    /// uygulanmasın). Doluysa operatörün işaretleri koda göre korunur.</summary>
+    private void LoadCodes(IReadOnlyList<CodeCorrectionPlan> plans, IReadOnlySet<string>? checkedKeys)
     {
-        foreach (var g in PriceGroups) g.PropertyChanged -= OnGroupChanged;
-        PriceGroups.Clear();
-        foreach (var g in _plan.PriceGroups)
+        foreach (var c in Codes) c.PropertyChanged -= OnCodeChanged;
+        Codes.Clear();
+        _plans = plans;
+        var options = plans.Where(p => p.Plan.Correctable.Count > 0).ToList();
+        foreach (var p in options)
         {
-            var option = new PriceGroupOption(g);
-            option.PropertyChanged += OnGroupChanged;
-            PriceGroups.Add(option);
+            var option = new CodeOption(p, checkedKeys is null ? options.Count == 1 : checkedKeys.Contains(p.Code ?? ""));
+            option.PropertyChanged += OnCodeChanged;
+            Codes.Add(option);
         }
-        OnPropertyChanged(nameof(HasMultiplePrices));
+        OnPropertyChanged(nameof(HasMultipleCodes));
         OnPropertyChanged(nameof(HasCorrectable));
     }
 
-    /// <summary>Planı yeniden okunmuş hâliyle değiştirir; operatörün işaretleri fiyata göre korunur —
-    /// bilerek kaldırdığı fiyat grubu (ör. pazarlıklı satış) yeniden onayda sessizce düzelmesin. Arada
-    /// beliren yeni fiyat grubu işaretsiz gelir (operatör onu hiç görmedi).</summary>
-    private void ReloadPlan(PriceCorrectionPlan fresh)
+    private IReadOnlySet<string> CheckedKeys()
+        => Codes.Where(c => c.IsChecked).Select(c => c.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Planı yeniden okunmuş hâliyle değiştirir; operatörün işaretleri koda göre korunur.</summary>
+    private void ReloadPlan(IReadOnlyList<CodeCorrectionPlan> fresh)
     {
-        var checkedPrices = PriceGroups.Where(g => g.IsChecked).Select(g => g.Price).ToHashSet();
-        _plan = fresh;
-        LoadGroups();
-        foreach (var g in PriceGroups) g.IsChecked = checkedPrices.Contains(g.Price);
+        LoadCodes(fresh, CheckedKeys());
         RecomputeSummary();
     }
 
-    private void OnGroupChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    private void OnCodeChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(PriceGroupOption.IsChecked)) RecomputeSummary();
+        if (e.PropertyName == nameof(CodeOption.IsChecked)) RecomputeSummary();
     }
 
-    /// <summary>İşaretli fiyat gruplarındaki düzeltilebilir etiketler.</summary>
-    private IReadOnlyList<Label> Targets()
+    /// <summary>İşaretli kodların planları (<paramref name="plans"/> içinden).</summary>
+    private static List<CodeCorrectionPlan> Chosen(IEnumerable<CodeCorrectionPlan> plans, IReadOnlySet<string> keys)
+        => plans.Where(p => keys.Contains(p.Code ?? "")).ToList();
+
+    private static List<Label> DistinctLabels(IEnumerable<Label> labels)
     {
-        var prices = PriceGroups.Where(g => g.IsChecked).Select(g => g.Price).ToHashSet();
-        return _plan.Correctable.Where(l => prices.Contains(l.Price)).ToList();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return labels.Where(l => seen.Add(l.Id)).ToList();
     }
 
     private void RecomputeSummary()
     {
-        _shownFingerprint = _plan.Fingerprint;
+        var chosen = Chosen(_plans, CheckedKeys());
+        var targets = DistinctLabels(chosen.SelectMany(p => p.Plan.Correctable));
+        var shipped = DistinctLabels(chosen.Concat(_plans.Where(p => p.Plan.Correctable.Count == 0))
+            .SelectMany(p => p.Plan.Shipped));
+        var shown = targets.Concat(DistinctLabels(chosen.SelectMany(p => p.Plan.Shipped))).ToList();
+        _shownIds = shown.Select(l => l.Id).ToHashSet(StringComparer.Ordinal);
+        _shownFingerprint = PriceCorrectionPlan.FingerprintOf(_shownIds, shown);
+
         Summary.Clear();
-        var targets = Targets();
-        var customers = targets.Select(l => l.CustomerId).Distinct(StringComparer.Ordinal).Count();
-        var queued = targets.Count(l => !l.PrintedAt.HasValue);
-        var printed = targets.Count - queued;
-        Summary.Add($"{targets.Count} etiket / {customers} müşteri");
-        Summary.Add($"{queued} kuyrukta, {printed} basılmış");
-        if (_payments is not null && targets.Count > 0)
+        if (targets.Count == 0 && HasMultipleCodes)
         {
-            var follow = _payments.Plan(_sessionId, targets.Select(l => (l, 0m)));
-            if (follow.RequestedPersons > 0)
-                Summary.Add($"{follow.RequestedPersons} kişiye eski tutarla ödeme isteği gitmiş");
-            if (follow.Paid.Count > 0)
-                Summary.Add($"{follow.Paid.Count} kişinin ödemesi alınmış (dekont/bakiye) — onlara otomatik bir şey gitmez");
+            Summary.Add("Düzelteceğin kodu işaretle.");
         }
-        if (_plan.Shipped.Count > 0)
-            Summary.Add($"{_plan.Shipped.Count} etiket kargoya verildi, değişmeyecek");
-        if (_plan.Excluded.Count > 0)
-            Summary.Add($"{_plan.Excluded.Count} etiket (iptal ya da kargo ücreti) düzeltmeye girmez");
-        var unchecked_ = PriceGroups.Where(g => !g.IsChecked).Sum(g => g.Group.Count);
-        if (unchecked_ > 0)
-            Summary.Add($"{unchecked_} etiket işaretsiz fiyatta, değişmeyecek");
+        else
+        {
+            var customers = targets.Select(l => l.CustomerId).Distinct(StringComparer.Ordinal).Count();
+            var queued = targets.Count(l => !l.PrintedAt.HasValue);
+            Summary.Add($"{targets.Count} etiket / {customers} müşteri");
+            Summary.Add($"{queued} kuyrukta, {targets.Count - queued} basılmış");
+            var notSelected = _selection.Count == 0 ? 0 : targets.Count(l => !_selection.Contains(l.Id));
+            if (notSelected > 0)
+                Summary.Add($"{notSelected} etiket seçimde değil ama aynı kodda — onlar da düzelir");
+            foreach (var mixed in Codes.Where(c => c.IsChecked && c.IsMixed))
+                Summary.Add($"{mixed.Title}: karışık fiyat ({CodeOption.PricesText(mixed.Plan.Plan.PriceGroups)}) — " +
+                            "hepsi yeni fiyata geçer");
+            if (_payments is not null && targets.Count > 0)
+            {
+                var follow = _payments.Plan(_sessionId, targets.Select(l => (l, 0m)));
+                if (follow.RequestedPersons > 0)
+                    Summary.Add($"{follow.RequestedPersons} kişiye eski tutarla ödeme isteği gitmiş");
+                if (follow.Paid.Count > 0)
+                    Summary.Add($"{follow.Paid.Count} kişinin ödemesi alınmış (dekont/bakiye) — onlara otomatik bir şey gitmez");
+            }
+        }
+        if (shipped.Count > 0)
+            Summary.Add($"{shipped.Count} etiket kargoya verildi, değişmeyecek");
+        var excluded = DistinctLabels(_plans.SelectMany(p => p.Plan.Excluded)).Count;
+        if (excluded > 0)
+            Summary.Add($"{excluded} etiket (iptal ya da kargo ücreti) düzeltmeye girmez");
+        var uncheckedCodes = Codes.Count(c => !c.IsChecked);
+        if (uncheckedCodes > 0 && targets.Count > 0)
+            Summary.Add($"{uncheckedCodes} kod işaretsiz, değişmeyecek");
     }
 
     /// <summary>Onay. Yeni fiyat okunur (FİYAT kutusuyla aynı kural); 0 TL ikinci tıklamayla onaylanır.
-    /// Uçuştaki baskı ya da arada değişen etiketler düzeltmeyi durdurur (satır içi).</summary>
+    /// Uçuştaki baskı ya da gösterilen etiketlerin arada değişmesi düzeltmeyi durdurur (satır içi).</summary>
     [RelayCommand]
     private void Confirm()
     {
@@ -282,10 +364,13 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             return;
         }
 
-        // Çekmece açıkken baskı başlamış/bitmiş olabilir: plan yeniden okunur; özet değiştiyse operatör
-        // yeni özeti görüp yeniden onaylar.
-        var fresh = _labels.PlanPriceCorrection(_labelIds);
-        if (!string.Equals(fresh.Fingerprint, _shownFingerprint, StringComparison.Ordinal))
+        // Çekmece açıkken baskı başlamış/bitmiş olabilir: plan yeniden okunur; gösterilen etiketlerden biri
+        // değiştiyse operatör yeni özeti görüp yeniden onaylar. Arada yazılmış yeni etiket kodun etiketidir —
+        // gösterilenleri değiştirmez, düzeltmeye girer.
+        var fresh = _planner();
+        var freshLabels = fresh.SelectMany(p => p.Plan.Correctable.Concat(p.Plan.Shipped));
+        if (!string.Equals(PriceCorrectionPlan.FingerprintOf(_shownIds, freshLabels), _shownFingerprint,
+                StringComparison.Ordinal))
         {
             ReloadPlan(fresh);
             BlockingMessage = "Etiketler bu arada değişti (basıldı, iptal edildi ya da fiyatı değişti). " +
@@ -293,29 +378,34 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             return;
         }
 
-        var targets = Targets();
+        var chosen = Chosen(fresh, CheckedKeys());
+        var targets = DistinctLabels(chosen.SelectMany(p => p.Plan.Correctable));
         if (targets.Count == 0)
         {
-            BlockingMessage = "Düzeltilecek etiket yok — en az bir fiyat grubunu işaretle.";
+            BlockingMessage = HasMultipleCodes
+                ? "Düzeltilecek etiket yok — en az bir kodu işaretle."
+                : "Düzeltilecek etiket yok.";
             return;
         }
 
         var inFlight = _inFlight();
         if (inFlight is not null && targets.Any(l => inFlight.Contains(l.Id)))
         {
-            BlockingMessage = "Seçimdeki etiketlerden bazıları şu an yazıcıda. Baskı bitince tekrar deneyin.";
+            BlockingMessage = "Düzelecek etiketlerden bazıları şu an yazıcıda. Baskı bitince tekrar deneyin.";
             return;
         }
 
         PriceCorrectionResult result;
         try
         {
-            var ids = targets.Select(l => l.Id).ToList();
+            // Kargoya verilmiş olanlar da verilir: servis onlara dokunmaz, sonuçta "değişmedi" diye döner.
+            var ids = targets.Concat(chosen.SelectMany(p => p.Plan.Shipped)).Select(l => l.Id)
+                .Distinct(StringComparer.Ordinal).ToList();
             result = CorrectPricesSeam?.Invoke(ids, parsed.Value) ?? _labels.CorrectPrices(ids, parsed.Value);
         }
         catch (PriceCorrectionConflictException ex)
         {
-            ReloadPlan(_labels.PlanPriceCorrection(_labelIds));
+            ReloadPlan(_planner());
             BlockingMessage = ex.Message + " Özeti kontrol edip yeniden onayla.";
             return;
         }
@@ -326,23 +416,25 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         }
 
         _applied(result);
-        ShowResult(result);
+        ShowResult(result, parsed.Value);
     }
 
-    private void ShowResult(PriceCorrectionResult result)
+    private void ShowResult(PriceCorrectionResult result, decimal newPrice)
     {
         IsDone = true;
         var queued = result.Corrected.Count(c => !c.WasPrinted);
         var printed = result.Corrected.Count - queued;
+        var codes = result.Corrected.Select(c => c.Before.Code?.Trim()).OfType<string>()
+            .Where(c => c.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var head = codes.Count == 0 ? "" : string.Join(", ", codes) + ": ";
         var lines = new List<string>
         {
             result.Corrected.Count == 0
-                ? "Seçilen etiketler zaten bu fiyatta; hiçbir şey değişmedi."
-                : $"{result.Corrected.Count} etiket düzeltildi" + (queued, printed) switch
+                ? "Etiketler zaten bu fiyatta; hiçbir şey değişmedi."
+                : $"{head}{result.Corrected.Count} etiket {newPrice.ToString("N2", Tr)} TL'ye düzeltildi" + (queued, printed) switch
                 {
                     (> 0, > 0) => $" ({queued} kuyrukta — yeni fiyatla basılacak, {printed} basılmış)",
                     (> 0, _) => $" ({queued} kuyrukta — yeni fiyatla basılacak)",
-                    // Kuyruk kipinde de olur: çekmece açıkken satırlar basıldı.
                     _ => $" ({printed} basılmış — kâğıtlarında eski fiyat yazıyor).",
                 },
         };
@@ -351,8 +443,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                       string.Join(", ", result.Shipped.Select(l => l.DisplayName ?? l.Username).Distinct().Take(10)));
         ResultText = string.Join("\n", lines);
 
-        // Soru kipe değil sonuca bağlı (K5: "basılmış etiket varsa"): kuyruk kipinde açılan çekmece, açıkken
-        // basılan satırları basılmış olarak düzeltir — kâğıtlarında eski fiyat kalır.
+        // Soru kipe değil sonuca bağlı (K5: "basılmış etiket varsa"): kodun basılmış etiketi düzeldiyse her kipte
+        // sorulur — kâğıtlarında eski fiyat kalır.
         _correctedPrinted = result.CorrectedPrinted;
         if (_correctedPrinted.Count > 0)
         {
