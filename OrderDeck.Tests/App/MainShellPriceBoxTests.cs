@@ -639,6 +639,30 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
+    public async Task Turkish_letter_case_is_one_code_for_the_box_the_question_and_the_correction()
+    {
+        // Katalogda olmayan "çanta1" yazılıp 250'den satıldı, kod kutusu "Çanta1" yapıldı. Kabuk (harf duyarsız)
+        // ikisini aynı kod sayıyor, fiyat kaynağı (SQLite NOCASE yalnız ASCII katlar) ayrı sayıyordu: 200 yazılınca
+        // şerit açılmıyor, aynı ürüne iki fiyat yazılıyordu.
+        using var h = MainShellTestHarness.Build();
+        h.Vm.ActiveCode = "çanta1";
+        h.Vm.ActivePriceText = "250";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "aldım"));
+        h.Vm.ActiveCode = "Çanta1";
+        h.Vm.ActivePriceText.Should().Be("250");
+
+        h.Vm.ActivePriceText = "200";
+
+        h.Vm.CodePriceQuestion.Should().Be("Çanta1 kodunun 1 etiketi 250,00 TL. Hepsi 200,00 TL olsun mu?");
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "aldım"));
+        h.Vm.PrintQueue.Should().ContainSingle("şerit beklerken o kod için etiket yazılmaz");
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+        DbPrice(h, h.Vm.PrintQueue[0].Id).Should().Be(200m, "düzeltme öbür yazımı da kapsar");
+        h.Vm.RefreshHeroStats();
+        h.Vm.ProductOrderCount.Should().Be(1, "BU ÜRÜNDEN sayacı da aynı kural");
+    }
+
+    [Fact]
     public async Task Yes_to_zero_applies_and_the_next_comment_is_not_asked_again()
     {
         // Şeridin sorusu yeni fiyatı adıyla sordu ("Hepsi 0,00 TL olsun mu?"): "Evet" ikinci bir 0 TL onayı

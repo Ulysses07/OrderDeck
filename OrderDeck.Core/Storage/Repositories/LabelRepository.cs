@@ -274,7 +274,7 @@ public sealed class LabelRepository
     /// <summary>Bir yayında bir kodun iptal edilmemiş etiketleri (kargo ücreti hariç; kuyruk, basılmış ve
     /// yedekler dahil), yazılış sırasıyla. "Bir yayında bir kodun TEK fiyatı" kuralının kaynağı (sahip kararı
     /// F1–F3): FİYAT kutusu kodun fiyatını buradan okur, kod düzeyinde düzeltme bu etiketleri değiştirir. Kod
-    /// eşleşmesi "BU ÜRÜNDEN" sayacıyla (<see cref="CountSessionLabelsByCode"/>) aynı: harf duyarsız.</summary>
+    /// eşleşmesi <see cref="SameCode"/> — "BU ÜRÜNDEN" sayacıyla (<see cref="CountSessionLabelsByCode"/>) aynı.</summary>
     public IReadOnlyList<Label> GetActiveBySessionAndCode(string sessionId, string code)
     {
         using var conn = _factory.Open();
@@ -282,12 +282,22 @@ public sealed class LabelRepository
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
                      Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
-              WHERE SessionId=@sessionId AND Code IS NOT NULL AND Code = @code COLLATE NOCASE
+              WHERE SessionId=@sessionId AND Code IS NOT NULL AND length(Code) = length(@code)
                 AND CancelledAt IS NULL AND IsShippingFee = 0
               ORDER BY AddedAt, rowid",
             new { sessionId, code }).ToList();
-        return rows.Select(Map).ToList();
+        return rows.Where(r => SameCode(r.Code, code)).Select(Map).ToList();
     }
+
+    /// <summary>
+    /// İki etiket kodu aynı ürün mü: harf duyarsız, Türkçe harfler dahil (<see cref="StringComparison.OrdinalIgnoreCase"/>
+    /// — kod kutusunun etkin kod karşılaştırması ve düzeltmenin kod gruplaması da bu). SQLite'ın NOCASE harmanı
+    /// yalnız ASCII katlar: "çanta1" ile "Çanta1"i kabuk aynı kod sayarken fiyat kaynağı ayrı sayıyordu — şerit
+    /// açılmadan aynı ürüne iki fiyat yazılıyor, "Fiyatı düzelt" öbür yazımı atlıyordu. Bu yüzden eşleşme
+    /// SQL'de değil burada; SQL adayları uzunlukla süzer (harf katlama uzunluğu değiştirmez).
+    /// </summary>
+    public static bool SameCode(string? a, string b)
+        => a is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     /// <summary><see cref="GetPrintedBySession"/>'ın satır sayısı — sekme kapalıyken başlıktaki sayı (liste
     /// kurulmaz).</summary>
@@ -391,25 +401,26 @@ public sealed class LabelRepository
     /// GetSessionTotals'tan iki farkı var, ikisi de bilinçli:
     ///  * PrintedAt filtresi YOK — operatör siparişi kuyruğa düştüğü anda
     ///    saymak istiyor, yazdırmayı beklemek sayacı geciktirirdi.
-    ///  * Kod eşleşmesi harf duyarsız; hero girişi büyük harfe zorluyor ama
-    ///    eski satırlar karışık olabilir.
+    ///  * Kod eşleşmesi harf duyarsız (<see cref="SameCode"/> — Türkçe harfler
+    ///    dahil; FİYAT kutusunun kaynağıyla aynı kural); kod kutusu büyük harfe
+    ///    zorlamıyor, eski satırlar karışık olabilir.
     /// İptal ve onaylanmamış yedek dışlaması ise AYNI — iki sayaç birbirini
     /// tutmalı.
     /// </summary>
     public int CountSessionLabelsByCode(string sessionId, string code)
     {
         using var conn = _factory.Open();
-        return conn.ExecuteScalar<int>(
+        return conn.Query<string>(
             """
-            SELECT COUNT(*)
+            SELECT Code
             FROM Label
             WHERE SessionId = @sessionId
               AND Code IS NOT NULL
-              AND Code = @code COLLATE NOCASE
+              AND length(Code) = length(@code)
               AND CancelledAt IS NULL
               AND IsTentativeBackup = 0
             """,
-            new { sessionId, code });
+            new { sessionId, code }).Count(c => SameCode(c, code));
     }
 
     /// <summary>
