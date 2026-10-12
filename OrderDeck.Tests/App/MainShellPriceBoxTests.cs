@@ -227,6 +227,87 @@ public class MainShellPriceBoxTests
         h.Vm.IsPriceCarriedOver.Should().BeTrue("250 A12'nin fiyatı olarak basıldı — B7'ye önceki üründen kaldı");
     }
 
+    /// <summary>Kod kutusu her tuşta değişir: <paramref name="code"/>'u harf harf yazar.</summary>
+    private static void TypeCode(MainShellTestHarness.Harness h, string code)
+    {
+        for (var i = 1; i <= code.Length; i++) h.Vm.ActiveCode = code[..i];
+    }
+
+    [Fact]
+    public async Task Catalog_price_of_a_code_passed_while_typing_does_not_stick()
+    {
+        // "A12" yazılırken kod "A1"den geçer: A1'in katalog fiyatı kutuya yazılıp kalıyordu — katalogda fiyatı
+        // olmayan A12'nin etiketleri A1'in fiyatıyla çıkardı.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m));
+        h.Vm.ActiveCode = "Z9";
+        h.Vm.ActivePriceText = "300";        // operatör Z9 için 300 yazdı
+
+        h.Vm.ActiveCode = "A";
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText.Should().Be("100", "A1'in katalog fiyatı (geçici dolum)");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        h.Vm.ActiveCode = "A12";
+
+        h.Vm.ActivePriceText.Should().Be("300", "dolum A12'nin fiyatı değil: operatörün fiyatı geri gelir");
+        h.Vm.IsPriceCarriedOver.Should().BeTrue("300 Z9 için yazıldı — önceki üründen kaldı");
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@alici", "A12 aldım"));
+        h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(300m, "etiket kutuda görünen fiyatla yazılır");
+    }
+
+    [Fact]
+    public void Typed_code_with_its_own_catalog_price_ends_with_that_price()
+    {
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "A12", 250m));
+        h.Vm.ActiveCode = "Z9";
+        h.Vm.ActivePriceText = "300";
+
+        TypeCode(h, "A12");
+
+        h.Vm.ActivePriceText.Should().Be("250");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Operator_edit_after_a_catalog_fill_is_kept_as_the_operators_price()
+    {
+        // Operatör dolumun üstüne yazdı: o değer onun fiyatı (sahibi o anki kod) — sonraki geçici dolumdan
+        // sonra geri gelen fiyat budur, eskisi (300) değil.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 80m));
+        h.Vm.ActiveCode = "Z9";
+        h.Vm.ActivePriceText = "300";
+        h.Vm.ActiveCode = "A1";              // dolum 100
+        h.Vm.ActivePriceText = "120";        // operatör A1 için 120 yazdı
+
+        h.Vm.ActiveCode = "A12";
+        h.Vm.ActivePriceText.Should().Be("120", "operatörün düzenlemesi korunur");
+        h.Vm.IsPriceCarriedOver.Should().BeTrue("120 A1 için yazıldı");
+
+        h.Vm.ActiveCode = "";
+        TypeCode(h, "B5");                    // "B"de geçici dolum 80
+
+        h.Vm.ActivePriceText.Should().Be("120");
+        h.Vm.IsPriceCarriedOver.Should().BeTrue("120 A1'in fiyatı — B5'e önceki üründen kaldı");
+    }
+
+    [Fact]
+    public async Task Catalog_price_used_for_a_label_stays_flagged_on_the_next_product()
+    {
+        // Dolumla etiket yazıldı: fiyat o ürün için KULLANILDI, artık geçici değil — sonraki fiyatsız üründe kutu
+        // kalır ve vurgulanır (K8 "kutu kalır ama önceki üründen kaldı").
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m));
+        h.Vm.ActiveCode = "A1";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@alici", "A1 aldım"));
+
+        h.Vm.ActiveCode = "B7";
+
+        h.Vm.ActivePriceText.Should().Be("100");
+        h.Vm.IsPriceCarriedOver.Should().BeTrue();
+    }
+
     [Fact]
     public void Startup_price_is_not_flagged_as_carried_over()
     {

@@ -290,16 +290,26 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     // ürünün fiyatı sessizce yeni ürüne taşınıyordu, katalog fiyatı hiç
     // kullanılmıyordu ve kutu "99,50"yi 9950 okuyordu (PriceInput).
 
-    /// <summary>Kutudaki fiyatın sahibi olan kod: operatör fiyatı yazdığında ya da katalogdan
-    /// dolduğunda o anki kod. Boş = fiyat henüz bir ürüne ait değil (açılış "0"ı, kod yokken yazılmış
-    /// fiyat) — o zaman "önceki üründen kaldı" denmez. Böyle bir fiyat ilk etikete yazıldığında o
-    /// etiketin kodu sahip olur (<see cref="WriteOrder"/>): fiyat artık o ürünün fiyatıdır, sonraki
-    /// ürüne geçişte vurgulanır.</summary>
-    private string? _priceOwnerCode;
+    /// <summary>Operatörün kendi fiyatı: kutuya en son ELLE yazdığı metin (açılışta "0"). Katalog dolumu
+    /// bunu EZMEZ — dolum geçicidir: kod kutusu her tuşta değişiyor ("A12" yazılırken "A1"den geçer);
+    /// "A1"in katalog fiyatı kutuya yazılıp kalsaydı katalogda fiyatı olmayan A12'ye A1'in fiyatı
+    /// taşınırdı. Dolumu olmayan koda geçişte kutu buna döner.</summary>
+    private string _operatorPriceText = "0";
 
-    /// <summary>Kutu programla dolduruluyor (katalog fiyatı) — değişiklik operatörün düzenlemesi
-    /// sayılmaz.</summary>
-    private bool _settingPriceFromCatalog;
+    /// <summary><see cref="_operatorPriceText"/>'in sahibi olan kod: operatör fiyatı yazdığında o anki kod.
+    /// Boş = fiyat henüz bir ürüne ait değil (açılış "0"ı, kod yokken yazılmış fiyat) — o zaman "önceki
+    /// üründen kaldı" denmez. Böyle bir fiyat ilk etikete yazıldığında o etiketin kodu sahip olur
+    /// (<see cref="WriteOrder"/>): fiyat artık o ürünün fiyatıdır, sonraki ürüne geçişte vurgulanır.</summary>
+    private string? _operatorPriceOwner;
+
+    /// <summary>Kutu, operatörün dokunmadığı bir katalog dolumunu gösteriyor: dolumun kodu (sahibi).
+    /// Null = kutu operatörün fiyatını gösteriyor. Operatör kutuya yazınca ya da dolumla etiket
+    /// yazılınca (fiyat o ürün için kullanıldı) dolum operatörün fiyatı olur.</summary>
+    private string? _catalogFillCode;
+
+    /// <summary>Kutu programla dolduruluyor (katalog dolumu ya da operatörün fiyatına dönüş) —
+    /// değişiklik operatörün düzenlemesi sayılmaz.</summary>
+    private bool _settingPriceProgrammatically;
 
     /// <summary>"önceki üründen kaldı": kod değişti, katalogda fiyat yok, kutudaki fiyat başka
     /// ürün için girilmişti. Kutu vurgulanır; operatör fiyata dokununca kalkar.</summary>
@@ -331,31 +341,48 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PriceError = null;
         _zeroPriceConfirmed = false;
         if (PriceInput.Parse(value) is not { IsOk: true, Value: 0m }) DropZeroPricePending();
-        if (_settingPriceFromCatalog) return;
+        if (_settingPriceProgrammatically) return;
+        // Operatörün düzenlemesi: kutudaki değer (dolumun üstüne yazılmış olsa da) artık onun fiyatı,
+        // sahibi şimdiki kod.
+        _operatorPriceText = value;
+        _operatorPriceOwner = EffectiveCode;
+        _catalogFillCode = null;
         IsPriceCarriedOver = false;
-        _priceOwnerCode = EffectiveCode;
     }
 
-    /// <summary>Kod değişince: katalogda ürünün fiyatı varsa kutu onunla dolar; yoksa kutu
-    /// kalır ama başka ürün için girilmişse vurgulanır (sahip kararı K8).</summary>
+    /// <summary>Kod değişince (her tuşta): katalogda ürünün fiyatı varsa kutu onunla dolar (geçici
+    /// dolum); yoksa kutu operatörün fiyatını gösterir — dokunulmamış bir dolum duruyorsa operatörün
+    /// fiyatına döner — ve fiyat başka ürün için girilmişse vurgulanır (sahip kararı K8). Etiket her
+    /// zaman kutuda GÖRÜNEN fiyatla yazılır; gizli bir değer yok.</summary>
     private void ApplyCatalogPrice()
     {
+        var code = EffectiveCode;
         var catalogPrice = ProductCard.Resolution?.Product.DefaultPrice ?? 0m;
-        if (catalogPrice > 0m)
+        if (catalogPrice > 0m && code is not null)
         {
-            _settingPriceFromCatalog = true;
-            try { ActivePriceText = PriceInput.Format(catalogPrice); }
-            finally { _settingPriceFromCatalog = false; }
-            _priceOwnerCode = EffectiveCode;
-            IsPriceCarriedOver = false;
-            return;
+            SetPriceTextProgrammatically(PriceInput.Format(catalogPrice));
+            _catalogFillCode = code;
+        }
+        else if (_catalogFillCode is not null)
+        {
+            // Dokunulmamış dolum (ör. "A12" yazılırken "A1"in fiyatı): bu kodun fiyatı değil.
+            SetPriceTextProgrammatically(_operatorPriceText);
+            _catalogFillCode = null;
         }
 
-        var code = EffectiveCode;
+        // Değer programla değişti: vurgu değerden SONRA yeniden hesaplanır.
+        var owner = _catalogFillCode ?? _operatorPriceOwner;
         IsPriceCarriedOver = code is not null
-            && _priceOwnerCode is not null
-            && !string.Equals(_priceOwnerCode, code, StringComparison.OrdinalIgnoreCase)
+            && owner is not null
+            && !string.Equals(owner, code, StringComparison.OrdinalIgnoreCase)
             && PriceInput.Parse(ActivePriceText).IsOk;
+    }
+
+    private void SetPriceTextProgrammatically(string text)
+    {
+        _settingPriceProgrammatically = true;
+        try { ActivePriceText = text; }
+        finally { _settingPriceProgrammatically = false; }
     }
 
     /// <summary>0 TL sorusunun "Evet"i: bekleyen yorumlar tıklama sırasıyla 0 TL ile yazılır; aynı
@@ -1464,9 +1491,22 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             productVariantId: resolution?.ResolveVariantId(viewerAxisValue));
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
 
-        // Kod yokken yazılmış (sahipsiz) fiyat ilk etiketiyle o ürünün fiyatı olur: sonraki ürüne
-        // geçişte "önceki üründen kaldı" vurgusu çıksın (K8).
-        _priceOwnerCode ??= code;
+        // Fiyat bu ürün için KULLANILDI (K8): katalog dolumuyla yazıldıysa dolum artık geçici değil,
+        // operatörün fiyatı olur; kod yokken yazılmış (sahipsiz) fiyat o ürünün fiyatı olur. İkisinde de
+        // sonraki ürüne geçişte kutu kalır ve "önceki üründen kaldı" diye vurgulanır.
+        if (_catalogFillCode is not null)
+        {
+            if (string.Equals(_catalogFillCode, code, StringComparison.OrdinalIgnoreCase))
+            {
+                _operatorPriceText = ActivePriceText;
+                _operatorPriceOwner = _catalogFillCode;
+                _catalogFillCode = null;
+            }
+        }
+        else
+        {
+            _operatorPriceOwner ??= code;
+        }
         if (_zeroPriceDroppedItems.Remove(messageVm)) UpdateZeroPriceDropped();
 
         // Etiket yazmanın tek dar boğazı burası; bakiye senkron turunu
