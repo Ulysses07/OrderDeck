@@ -467,43 +467,99 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         vm.ResendButtonText.Should().Be("Düzeltilmiş isteği gönder (1 kişi, 2 istek)");
     }
 
-    [Fact]
-    public async Task Drawer_stays_open_while_corrected_requests_are_sent_and_the_manual_list_outlives_it()
+    /// <summary>Basılmış, 250 TL istenmiş bir etiketin 205'e düzeltildiği çekmece; "düzeltilmiş isteği gönder"
+    /// listesinde tek kişi.</summary>
+    private OrderDeck.App.ViewModels.PriceCorrectionViewModel CorrectedWithOneResendRow(
+        string user, CorrectedPaymentRequests payments)
     {
-        // "Düzeltilmiş isteği gönder" sürerken çekmece kapatılabiliyordu (Kapat, çarpı, ESC): "elle bakılmalı"
-        // listesi operatöre hiç ulaşmıyordu.
-        var l = Add("instagram", "@elle", 250m);
+        var l = Add("instagram", user, 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
         Delivered(l.CustomerId, "session:s1", 250m);
-        var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, Sut((_, _, _, _, _) => gate.Task),
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, payments,
             "s1", new[] { l.Id }, OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now,
             inFlight: () => null, applied: _ => { }, reprint: _ => Task.FromResult<string?>(null),
             cloudApiEnabled: true);
-        var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
-        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.AttachTo(d); return new object(); });
         vm.NewPriceText = "205";
         vm.ConfirmCommand.Execute(null);
         vm.SkipReprintCommand.Execute(null);
         vm.ResendRows.Should().ContainSingle();
+        return vm;
+    }
 
+    [Fact]
+    public async Task Close_works_while_corrected_requests_are_sent_and_the_manual_list_is_reported_when_done()
+    {
+        // "Düzeltilmiş isteği gönder" sürerken çekmece kilitleniyordu (Kapat ve çarpı pasif, ESC etkisiz): yavaş
+        // ağda dakikalarca kod/fiyat kutusu ve kuyruk örtülü kalırdı. Kapanır; gönderim arka planda sürer,
+        // "elle bakılmalı" adları ve sebepleri bitince kabuğa bildirilir.
+        var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = CorrectedWithOneResendRow("@elle", Sut((_, _, _, _, _) => gate.Task));
+        var reports = new List<string>();
+        vm.WorkFinished = reports.Add;
+        var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
+        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.Close = () => d.Close(true); return new object(); });
         var sending = vm.ResendCommand.ExecuteAsync(null);
 
-        vm.DoneCommand.CanExecute(null).Should().BeFalse("Kapat düğmesi pasif");
-        vm.DoneCommand.Execute(null);
-        stack.Top!.CanClose.Should().BeFalse("başlıktaki çarpı pasif");
-        stack.CloseTop().Should().BeTrue("ESC tüketilir");
-        stack.IsOpen.Should().BeTrue("gönderim sürerken çekmece kapanmaz");
+        vm.DoneCommand.Execute(null);                     // "Kapat"
+
+        stack.IsOpen.Should().BeFalse("gönderim sürerken de kapanır");
+        (await closed).Should().BeTrue();
+        reports.Should().BeEmpty("gönderim henüz bitmedi");
 
         gate.SetResult(new PaymentRequestOutcome(PaymentRequestResult.PhoneRequired));
         await sending;
 
-        vm.CanClose.Should().BeTrue();
-        vm.OutcomeReport.Should().Contain("elle bakılmalı")
+        reports.Should().ContainSingle().Which.Should().Contain("elle bakılmalı")
             .And.Contain(vm.ResendRows[0].Candidate.Display)
-            .And.Contain("WhatsApp numarası gerekli", "kabuk bunu Basılanlar ileti satırına yazar");
-        vm.DoneCommand.Execute(null);
-        (await closed).Should().BeTrue();
+            .And.Contain("WhatsApp numarası gerekli");
+    }
+
+    [Fact]
+    public async Task Esc_closes_the_drawer_while_corrected_requests_are_sent()
+    {
+        var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = CorrectedWithOneResendRow("@elle", Sut((_, _, _, _, _) => gate.Task));
+        var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
+        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.Close = () => d.Close(true); return new object(); });
+        var sending = vm.ResendCommand.ExecuteAsync(null);
+
+        stack.CloseTop().Should().BeTrue();
+
+        stack.IsOpen.Should().BeFalse();
+        (await closed).Should().BeFalse();
+        gate.SetResult(new PaymentRequestOutcome(PaymentRequestResult.Sent));
+        await sending;
+        vm.ResendRows[0].OutcomeText.Should().Be("gönderildi", "gönderim çekmece kapandıktan sonra da sürdü");
+    }
+
+    [Fact]
+    public async Task Second_resend_is_refused_inline_while_another_corrections_resend_runs()
+    {
+        // İlk düzeltmenin çekmecesi gönderim sürerken kapatıldı; ikinci düzeltmeden "gönder" aynı anda ikinci bir
+        // toplu gönderim başlatmamalı (aynı kişiye iki istek gidebilir) — satır içi reddedilir, düğme yerinde kalır.
+        var first = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var payments = Sut((_, _, _, _, _) =>
+            ++calls == 1 ? first.Task : Task.FromResult(new PaymentRequestOutcome(PaymentRequestResult.Sent)));
+        var vm1 = CorrectedWithOneResendRow("@bir", payments);
+        var vm2 = CorrectedWithOneResendRow("@iki", payments);
+        var sending = vm1.ResendCommand.ExecuteAsync(null);
+        payments.IsResending.Should().BeTrue();
+
+        await vm2.ResendCommand.ExecuteAsync(null);
+
+        calls.Should().Be(1, "ikinci gönderim başlamadı");
+        vm2.ResendNote.Should().Contain("gönderimi sürüyor").And.Contain("bitince tekrar dene");
+        vm2.IsResendAvailable.Should().BeTrue("düğme yerinde: bitince tekrar denenir");
+        vm2.ResendRows[0].OutcomeText.Should().BeNull();
+
+        first.SetResult(new PaymentRequestOutcome(PaymentRequestResult.Sent));
+        await sending;
+        payments.IsResending.Should().BeFalse();
+
+        await vm2.ResendCommand.ExecuteAsync(null);
+        calls.Should().Be(2);
+        vm2.ResendRows[0].OutcomeText.Should().Be("gönderildi");
     }
 
     // ── Düzeltilmiş isteği gönder ─────────────────────────────────────

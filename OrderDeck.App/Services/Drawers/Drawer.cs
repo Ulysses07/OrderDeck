@@ -23,7 +23,6 @@ public sealed class Drawer : INotifyPropertyChanged
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private bool _isTop = true;
-    private bool _canClose = true;
     private bool _closed;
 
     internal Drawer(string title) => Title = title;
@@ -49,21 +48,6 @@ public sealed class Drawer : INotifyPropertyChanged
         {
             if (_isTop == value) return;
             _isTop = value;
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Operatör kapatabilir mi (başlıktaki çarpı ve ESC). İçerik, sonucu yalnız çekmecede
-    /// görünen bir iş yürütürken false yapar (ör. fiyat düzeltmede toplu gönderim ve yeniden baskı):
-    /// kapanırsa "elle bakılmalı" listesi ve baskı hatası operatöre hiç ulaşmaz. Yalnız operatörün iptal
-    /// yollarını keser — <see cref="Close"/> (içeriğin kendi kapanışı, yığının toparlaması) etkilenmez.</summary>
-    public bool CanClose
-    {
-        get => _canClose;
-        set
-        {
-            if (_canClose == value) return;
-            _canClose = value;
             OnPropertyChanged();
         }
     }

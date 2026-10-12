@@ -276,24 +276,41 @@ public sealed class CorrectedPaymentRequests
         return new PaymentBadges(requested, balancePaid);
     }
 
+    /// <summary>Toplu gönderim sürüyor mu. Aynı anda TEK toplu gönderim: fiyat düzeltme çekmecesi gönderim
+    /// sürerken kapatılabilir (iş arka planda sürer); başka bir düzeltmeden başlatılan gönderim çekmecede satır
+    /// içi reddedilir — aynı kişiye iki düzeltilmiş istek gitmesin.</summary>
+    public bool IsResending => Volatile.Read(ref _resending) != 0;
+
+    private int _resending;
+
     /// <summary>Listedekilere düzeltilmiş isteği gönderir — sırayla, her biri ödeme akışından. Ek soru
     /// gerektiren atlanır (<see cref="ResendStatus.Manual"/>). Bakiye sunucusuna ulaşılamıyorsa
-    /// (çevrimdışı) HİÇBİRİ gönderilmez: akış bu durumda bakiyeyi denemeden tam tutarı isteyebilirdi.</summary>
+    /// (çevrimdışı) HİÇBİRİ gönderilmez: akış bu durumda bakiyeyi denemeden tam tutarı isteyebilirdi.
+    /// Başka bir toplu gönderim sürüyorsa (<see cref="IsResending"/>) <see cref="InvalidOperationException"/>.</summary>
     public async Task<IReadOnlyList<ResendOutcome>> ResendAsync(
         string sessionId, DateTime streamDate, IReadOnlyList<CorrectedRequestCandidate> candidates,
         IProgress<int>? progress = null)
     {
-        if (_balanceOffline is not null && candidates.Count > 0 && await _balanceOffline())
-            return candidates.Select(c => new ResendOutcome(c, ResendStatus.Manual,
-                "çevrimdışı — sunucuya ulaşılamıyor, bakiye denenemez")).ToList();
-
-        var outcomes = new List<ResendOutcome>(candidates.Count);
-        foreach (var c in candidates)
+        if (Interlocked.CompareExchange(ref _resending, 1, 0) != 0)
+            throw new InvalidOperationException("Başka bir düzeltilmiş istek gönderimi sürüyor.");
+        try
         {
-            outcomes.Add(await ResendOneAsync(sessionId, streamDate, c));
-            progress?.Report(outcomes.Count);
+            if (_balanceOffline is not null && candidates.Count > 0 && await _balanceOffline())
+                return candidates.Select(c => new ResendOutcome(c, ResendStatus.Manual,
+                    "çevrimdışı — sunucuya ulaşılamıyor, bakiye denenemez")).ToList();
+
+            var outcomes = new List<ResendOutcome>(candidates.Count);
+            foreach (var c in candidates)
+            {
+                outcomes.Add(await ResendOneAsync(sessionId, streamDate, c));
+                progress?.Report(outcomes.Count);
+            }
+            return outcomes;
         }
-        return outcomes;
+        finally
+        {
+            Volatile.Write(ref _resending, 0);
+        }
     }
 
     private async Task<ResendOutcome> ResendOneAsync(string sessionId, DateTime streamDate, CorrectedRequestCandidate c)

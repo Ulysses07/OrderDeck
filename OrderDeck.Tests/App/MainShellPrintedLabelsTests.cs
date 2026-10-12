@@ -398,6 +398,111 @@ public class MainShellPrintedLabelsTests
         h.Vm.PrintedLabels.Message.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
     }
 
+    /// <summary>Basılmış iki etiket, Basılanlar'da seçili; yeniden baskı yazıcıda bekler
+    /// (<see cref="SecondCallGatedPrinter"/>). Çekmece yeniden baskı sürerken KAPATILDI.</summary>
+    private static async Task<(MainShellTestHarness.Harness H, SecondCallGatedPrinter Printer, Task Reprinting)>
+        CloseDrawerWhileReprintRuns()
+    {
+        var printer = new SecondCallGatedPrinter();
+        var (h, drawers) = Build(printer);
+        Enqueue(h, "@a", 250m);
+        Enqueue(h, "@b", 250m);
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.SelectBatchCommand.Execute(h.Vm.PrintedLabels.VisibleRows[0].Batch);
+        Task? reprinting = null;
+        drawers.OnPriceCorrection = pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            reprinting = pc.ReprintCommand.ExecuteAsync(null);
+            return Task.CompletedTask;                       // operatör çekmeceyi kapattı, baskı sürüyor
+        };
+
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+        await printer.SecondEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        return (h, printer, reprinting!);
+    }
+
+    [Fact]
+    public async Task Drawer_closed_mid_reprint_reports_the_outcome_when_the_reprint_finishes()
+    {
+        // Çekmece yeniden baskı sürerken kilitleniyordu (askıda kalan yazıcıda kod/fiyat kutusu ve kuyruk yayının
+        // geri kalanında örtülü kalırdı). Artık kapanır, baskı arka planda sürer; sonuç bitince ileti satırında.
+        var (h, printer, reprinting) = await CloseDrawerWhileReprintRuns();
+        using var __ = h;
+        h.Vm.ActivePriceCorrection.Should().BeNull("çekmece kapandı");
+        h.Vm.PrintedLabels.Message.Should().BeNull("baskı henüz bitmedi");
+
+        printer.Release.Set();
+        await reprinting;
+
+        h.Vm.PrintedLabels.Message.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
+    }
+
+    [Fact]
+    public async Task Second_reprint_is_refused_inline_while_the_corrections_reprint_runs()
+    {
+        var (h, printer, reprinting) = await CloseDrawerWhileReprintRuns();
+        using var __ = h;
+        try
+        {
+            await h.Vm.ReprintPrintedCommand.ExecuteAsync(null);
+
+            h.Vm.PrintedLabels.Message.Should().Be("Başka bir baskı sürüyor; bitince tekrar dene.");
+            printer.Calls.Should().HaveCount(2, "ikinci yeniden baskı yazıcıya gitmez");
+        }
+        finally
+        {
+            printer.Release.Set();
+            await reprinting;
+        }
+        h.Vm.PrintedLabels.Message.Should().Contain("\"DÜZELTME\" işaretiyle yeniden basıldı",
+            "ilk işin sonucu bitince yazılır");
+    }
+
+    [Fact]
+    public async Task Drawer_closed_mid_resend_reports_each_manual_name_and_reason_when_sending_finishes()
+    {
+        // "Düzeltilmiş isteği gönder" sürerken çekmece kilitleniyordu (yavaş ağda dakikalarca). Artık kapanır,
+        // gönderim arka planda sürer; "elle bakılmalı" adları ve sebepleri bitince ileti satırında.
+        var gate = new TaskCompletionSource<OrderDeck.App.Services.PaymentRequestOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var drawers = new ScriptedDrawers();
+        using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
+            new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
+                () => new OrderDeck.Core.Settings.AppSettings(), (_, _, _, _, _) => gate.Task));
+        drawers.Vm = h.Vm;
+        var a = Enqueue(h, "@a", 250m);
+        await PrintAsync(h);
+        var jobs = new PaymentJobRepository(h.Db);
+        var job = jobs.FindOrCreate(a.Label.CustomerId, CorrectedPaymentRequests.SessionScope(h.Sessions.GetActive()!.Id), 250m);
+        jobs.MarkNoBalance(job.Id, null, job.Revision).Should().BeTrue();
+        jobs.MarkDelivered(job.Id, 250m);                    // 250 TL istendi
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.SelectBatchCommand.Execute(h.Vm.PrintedLabels.VisibleRows[0].Batch);
+        Task? sending = null;
+        drawers.OnPriceCorrection = pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            pc.SkipReprintCommand.Execute(null);
+            pc.ResendRows.Should().ContainSingle();
+            sending = pc.ResendCommand.ExecuteAsync(null);
+            return Task.CompletedTask;                       // operatör çekmeceyi kapattı, gönderim sürüyor
+        };
+
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+        h.Vm.PrintedLabels.Message.Should().BeNull("gönderim henüz bitmedi");
+
+        gate.SetResult(new OrderDeck.App.Services.PaymentRequestOutcome(
+            OrderDeck.App.Services.PaymentRequestResult.PhoneRequired));
+        await sending!;
+
+        h.Vm.PrintedLabels.Message.Should().Contain("elle bakılmalı").And.Contain("@a")
+            .And.Contain("WhatsApp numarası gerekli");
+    }
+
     [Fact]
     public async Task Queue_corrected_label_reprint_has_no_correction_mark()
     {

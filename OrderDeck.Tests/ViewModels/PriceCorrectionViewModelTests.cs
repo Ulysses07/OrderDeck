@@ -209,37 +209,36 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Drawer_stays_open_while_the_reprint_runs_and_its_error_outlives_it()
+    public async Task Esc_closes_the_drawer_while_the_reprint_runs_and_the_error_is_reported_when_it_ends()
     {
-        // Yeniden baskı sürerken çekmece kapatılabiliyordu (Kapat, çarpı, ESC): baskı hatası operatöre hiç
-        // ulaşmıyordu — kâğıtlarda eski fiyat kalırdı.
+        // Çekmece yeniden baskı sürerken kilitleniyordu (Kapat ve çarpı pasif, ESC etkisiz): askıda kalan yazıcıda
+        // kod/fiyat kutusu ve kuyruk yayının geri kalanında örtülü kalırdı. Kapanır; baskı arka planda sürer,
+        // sonucu (hata dahil) bitince kabuğa bildirilir.
         var a = Add("@a", 250m);
         _labels.MarkPrintedAndRecord(new[] { a.Id });
         var gate = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var vm = new PriceCorrectionViewModel(_labels, payments: null, "s1", new[] { a.Id },
             PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null, applied: _ => { },
             reprint: _ => gate.Task, cloudApiEnabled: true);
+        var reports = new List<string>();
+        vm.WorkFinished = reports.Add;
         var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
-        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.AttachTo(d); return new object(); });
+        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.Close = () => d.Close(true); return new object(); });
         vm.NewPriceText = "205";
         vm.ConfirmCommand.Execute(null);
-
         var reprinting = vm.ReprintCommand.ExecuteAsync(null);
 
-        vm.DoneCommand.CanExecute(null).Should().BeFalse("Kapat düğmesi pasif");
-        vm.DoneCommand.Execute(null);
-        stack.Top!.CanClose.Should().BeFalse("başlıktaki çarpı pasif");
-        stack.CloseTop().Should().BeTrue("ESC tüketilir");
-        stack.IsOpen.Should().BeTrue("yeniden baskı sürerken çekmece kapanmaz");
+        stack.CloseTop().Should().BeTrue();
+
+        stack.IsOpen.Should().BeFalse("ESC yeniden baskı sürerken de kapatır");
+        (await closed).Should().BeFalse();
+        reports.Should().BeEmpty("baskı henüz bitmedi");
 
         gate.SetResult("Yeniden basılamadı: kâğıt bitti. Yazıcıyı kontrol edip tekrar dene.");
         await reprinting;
 
-        vm.CanClose.Should().BeTrue();
-        stack.Top!.CanClose.Should().BeTrue();
-        vm.OutcomeReport.Should().Contain("kâğıt bitti", "kabuk bunu Basılanlar ileti satırına yazar");
-        stack.CloseTop().Should().BeTrue();
-        (await closed).Should().BeFalse();
+        reports.Should().ContainSingle().Which.Should().Contain("kâğıt bitti");
+        vm.ReprintResult.Should().Contain("kâğıt bitti", "çekmece açık olsaydı orada da görünürdü");
     }
 
     [Fact]

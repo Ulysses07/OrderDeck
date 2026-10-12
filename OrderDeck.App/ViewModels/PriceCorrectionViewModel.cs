@@ -6,7 +6,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.Services.PriceCorrection;
 using OrderDeck.Core.Sales;
 
@@ -131,30 +130,14 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <summary>Çekmeceyi kapatır (fabrika bağlar); testte boş.</summary>
     public Action? Close { get; set; }
 
-    /// <summary>Çekmeceye bağlar: "Kapat" çekmeceyi kapatır; iş sürerken başlıktaki çarpı ve ESC
-    /// kapatamaz (<see cref="CanClose"/>).</summary>
-    public void AttachTo(Drawer drawer)
-    {
-        Close = () => drawer.Close(true);
-        drawer.CanClose = CanClose;
-        PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(CanClose)) drawer.CanClose = CanClose;
-        };
-    }
+    /// <summary>Yeniden baskı ya da toplu gönderim BİTTİ; argüman <see cref="OutcomeReport"/>. Çekmece iş
+    /// sürerken de kapatılabilir (yayında kod/fiyat kutusunu ve kuyruğu örtmesin) — iş arka planda sürer, kabuk
+    /// sonucu bitince "Basılanlar" ileti satırına yazar: baskı hatası ve "elle bakılmalı" listesi çekmece
+    /// kapandıysa da operatöre ulaşır. Testte boş.</summary>
+    public Action<string>? WorkFinished { get; set; }
 
-    /// <summary>Çekmece kapatılabilir mi: "düzeltilmiş isteği gönder" ya da yeniden baskı sürerken
-    /// HAYIR — kapanırsa "elle bakılmalı" listesi ve baskı hatası operatöre hiç ulaşmaz.</summary>
-    public bool CanClose => !IsSending && !IsReprinting;
-
-    /// <summary>Yeniden baskı sürüyor.</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanClose))]
-    [NotifyCanExecuteChangedFor(nameof(DoneCommand))]
-    private bool _isReprinting;
-
-    /// <summary>Yeniden baskının ve toplu gönderimin son sonucu, çekmece kapandıktan sonra da kalsın diye
-    /// kabuk "Basılanlar" ileti satırına yazar. Hiçbiri koşmadıysa null.</summary>
+    /// <summary>Yeniden baskının ve toplu gönderimin son sonucu (ikisi birlikte) — kabuk iş bitince
+    /// "Basılanlar" ileti satırına yazar (<see cref="WorkFinished"/>). Hiçbiri koşmadıysa null.</summary>
     public string? OutcomeReport
     {
         get
@@ -209,11 +192,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     [ObservableProperty] private bool _isResendAvailable;
     [ObservableProperty] private string _resendButtonText = "";
     [ObservableProperty] private string? _resendNote;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanClose))]
-    [NotifyCanExecuteChangedFor(nameof(DoneCommand))]
-    private bool _isSending;
+    [ObservableProperty] private bool _isSending;
 
     public string ConfirmButtonText => IsZeroConfirmPending ? "Evet, 0 TL yap" : "Fiyatı düzelt";
 
@@ -425,27 +404,21 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <summary>"Yeniden basılsın mı?" → Evet. Kâğıtta "DÜZELTME" işareti; ciro ve ilk baskı anı
     /// değişmez. Basılamazsa (başka baskı sürüyor, yazıcı hatası) soru hata metniyle geri gelir —
     /// "tekrar dene" düğmesi yerinde kalır; yoksa düzeltilen satırları Basılanlar'da yeniden seçmek
-    /// gerekirdi.</summary>
+    /// gerekirdi. Çekmece baskı sürerken kapatılabilir: sonuç bitince kabuğa da bildirilir
+    /// (<see cref="WorkFinished"/>).</summary>
     [RelayCommand]
     private async Task ReprintAsync()
     {
-        if (!IsReprintAsked || IsReprinting) return;
+        if (!IsReprintAsked) return;
         IsReprintAsked = false;
-        IsReprinting = true;
         ReprintResult = "Yeniden basılıyor…";
-        try
-        {
-            var error = await _reprint(_correctedPrinted.Select(c => c.Before.Id).ToList());
-            ReprintResult = error is null
-                ? $"{_correctedPrinted.Count} etiket \"DÜZELTME\" işaretiyle yeniden basıldı."
-                : error;
-            _reprintReport = ReprintResult;
-            if (error is not null) IsReprintAsked = true;
-        }
-        finally
-        {
-            IsReprinting = false;
-        }
+        var error = await _reprint(_correctedPrinted.Select(c => c.Before.Id).ToList());
+        ReprintResult = error is null
+            ? $"{_correctedPrinted.Count} etiket \"DÜZELTME\" işaretiyle yeniden basıldı."
+            : error;
+        if (error is not null) IsReprintAsked = true;
+        _reprintReport = ReprintResult;
+        ReportWorkFinished();
     }
 
     [RelayCommand]
@@ -457,11 +430,19 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                         "(kâğıtta \"DÜZELTME\" işareti olur).";
     }
 
-    /// <summary>TEK onay: listedekilere düzeltilmiş isteği gönderir; ek soru gerektiren atlanır.</summary>
+    /// <summary>TEK onay: listedekilere düzeltilmiş isteği gönderir; ek soru gerektiren atlanır. Çekmece
+    /// gönderim sürerken kapatılabilir: sonuç bitince kabuğa da bildirilir (<see cref="WorkFinished"/>).</summary>
     [RelayCommand]
     private async Task ResendAsync()
     {
         if (_payments is null || !IsResendAvailable || IsSending) return;
+        // Başka bir düzeltmenin gönderimi sürüyor (çekmecesi kapatılmış olabilir): aynı kişiye iki istek gitmesin.
+        // Düğme yerinde kalır; bitince tekrar denenir.
+        if (_payments.IsResending)
+        {
+            ResendNote = "Önceki bir fiyat düzeltmesinin düzeltilmiş istek gönderimi sürüyor; bitince tekrar dene.";
+            return;
+        }
         IsSending = true;
         IsResendAvailable = false;
         try
@@ -475,16 +456,24 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                 rows[i].NeedsManual = o.Status == ResendStatus.Manual;
                 rows[i].OutcomeText = o.Status == ResendStatus.Manual ? "elle bakılmalı: " + o.Note : o.Note;
             }
-            ResendNote = OutcomeSummary(outcomes);
+            var summary = OutcomeSummary(outcomes);
+            ResendNote = summary;
             var manual = outcomes.Where(o => o.Status == ResendStatus.Manual)
                 .Select(o => $"{o.Candidate.Display} ({o.Note})").ToList();
-            _resendReport = "Düzeltilmiş istek: " + ResendNote
+            // ResendNote'tan değil: ilerleme bildirimi (Progress) sonradan gelip onu "Gönderiliyor… n/n" yapabilir.
+            _resendReport = "Düzeltilmiş istek: " + summary
                 + (manual.Count > 0 ? " Elle bakılmalı: " + string.Join(", ", manual) + "." : "");
         }
         finally
         {
             IsSending = false;
         }
+        ReportWorkFinished();
+    }
+
+    private void ReportWorkFinished()
+    {
+        if (OutcomeReport is { } report) WorkFinished?.Invoke(report);
     }
 
     /// <summary>Toplu gönderimin özeti — sonuçlar AYRI sayılır: WhatsApp penceresi açılan istek gitmiş
@@ -503,9 +492,6 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         return parts.Count == 0 ? "Gönderilecek istek yok." : string.Join("; ", parts) + ".";
     }
 
-    [RelayCommand(CanExecute = nameof(CanClose))]
-    private void Done()
-    {
-        if (CanClose) Close?.Invoke();
-    }
+    [RelayCommand]
+    private void Done() => Close?.Invoke();
 }

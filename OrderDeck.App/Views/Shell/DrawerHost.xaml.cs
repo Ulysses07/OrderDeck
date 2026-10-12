@@ -21,7 +21,7 @@ public partial class DrawerHost : UserControl
 
     private void OnCloseClick(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is Drawer { CanClose: true } drawer)
+        if ((sender as FrameworkElement)?.DataContext is Drawer drawer)
             drawer.Close(false);
     }
 
