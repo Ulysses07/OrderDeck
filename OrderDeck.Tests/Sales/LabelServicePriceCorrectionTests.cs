@@ -242,12 +242,12 @@ public class LabelServicePriceCorrectionTests
         using var write = DbWrite.Begin(fx.Db);
 
         fx.Labels.UpdatePriceForCorrection(l.Id, expectedPrice: 300m, expectPrinted: false,
-            expectTentative: false, newPrice: 205m, correctedAt: 1000, write).Should().Be(0);
+            expectTentative: false, paidFromBalance: false, newPrice: 205m, correctedAt: 1000, write).Should().Be(0);
         fx.Labels.UpdatePriceForCorrection(l.Id, expectedPrice: 250m, expectPrinted: true,
-            expectTentative: false, newPrice: 205m, correctedAt: 1000, write).Should().Be(0,
+            expectTentative: false, paidFromBalance: false, newPrice: 205m, correctedAt: 1000, write).Should().Be(0,
             "basılmışlık durumu da değişmiş sayılır");
         fx.Labels.UpdatePriceForCorrection(l.Id, expectedPrice: 250m, expectPrinted: false,
-            expectTentative: false, newPrice: 205m, correctedAt: 1000, write).Should().Be(1);
+            expectTentative: false, paidFromBalance: false, newPrice: 205m, correctedAt: 1000, write).Should().Be(1);
     }
 
     [Fact]

@@ -218,17 +218,19 @@ public sealed class LabelRepository
     /// bir kâğıt var" demek. Kuyrukta düzeltilen etiketin ilk kâğıdı zaten yeni fiyatla çıkar — onu
     /// işaretlemek paketleyene ortada olmayan yanlış kâğıdı aratırdı.</para>
     ///
-    /// <para>PaidPrice (göç 048): etiket bir kargo dosyasına bağlıysa (dekontla ödendi) ve bağlıyken ilk kez
-    /// düzeltiliyorsa düzeltmeden ÖNCEKİ fiyatı — ödendiği fiyat — yazılır; sonraki düzeltmeler dokunmaz.
-    /// "Ödendi, fark" bununla mutlak hesaplanır (<see cref="GetPaidDifferenceOnOpenFiles"/>). SQLite atamanın sağ
-    /// tarafını satırın ESKİ değerleriyle değerlendirir: <c>Price</c> burada eski fiyat.</para></summary>
+    /// <para>PaidPrice (göç 048): etiket ÖDENMİŞSE — bir kargo dosyasına bağlı (dekont kaydı bağlar) ya da
+    /// <paramref name="paidFromBalance"/> (onu içeren teslim edilmiş istek tamamen bakiyeden düşülmüş) — ve ödenmişken
+    /// ilk kez düzeltiliyorsa düzeltmeden ÖNCEKİ fiyatı, yani ödendiği fiyat yazılır; sonraki düzeltmeler dokunmaz.
+    /// "Ödendi, fark" bununla hesaplanır (<see cref="GetPaidPrices"/>). SQLite atamanın sağ tarafını satırın ESKİ
+    /// değerleriyle değerlendirir: <c>Price</c> burada eski fiyat.</para></summary>
     public int UpdatePriceForCorrection(
-        string id, decimal expectedPrice, bool expectPrinted, bool expectTentative,
+        string id, decimal expectedPrice, bool expectPrinted, bool expectTentative, bool paidFromBalance,
         decimal newPrice, long correctedAt, DbWrite write)
         => write.Connection.Execute(
             @"UPDATE Label SET Price=@newPrice,
                      PriceCorrectedAt = CASE WHEN PrintedAt IS NOT NULL THEN @correctedAt ELSE PriceCorrectedAt END,
-                     PaidPrice = CASE WHEN PaidPrice IS NULL AND ShipmentId IS NOT NULL THEN Price ELSE PaidPrice END,
+                     PaidPrice = CASE WHEN PaidPrice IS NULL AND (ShipmentId IS NOT NULL OR @paidFromBalance = 1)
+                                      THEN Price ELSE PaidPrice END,
                      SyncedAt=NULL, Revision = Revision + 1
               WHERE Id=@id AND abs(Price - @expectedPrice) < 0.00001 AND CancelledAt IS NULL
                 AND (PrintedAt IS NOT NULL) = @expectPrinted
@@ -238,6 +240,7 @@ public sealed class LabelRepository
                 id, expectedPrice, newPrice, correctedAt,
                 expectPrinted = expectPrinted ? 1 : 0,
                 expectTentative = expectTentative ? 1 : 0,
+                paidFromBalance = paidFromBalance ? 1 : 0,
             }, write.Transaction);
 
     /// <summary>Verilen etiketlerden fiyatı "Fiyatı düzelt" ile değiştirilmiş olanlar (göç 048) —
@@ -252,23 +255,17 @@ public sealed class LabelRepository
             .ToHashSet(System.StringComparer.Ordinal);
     }
 
-    /// <summary>Dekontla ödenmiş etiketlerde ödenenle bugünkü fiyat arasındaki fark (göç 048, PaidPrice): verilen
-    /// satırların kargoya VERİLMEMİŞ dosyalara bağlı, iptal edilmemiş, bağlıyken düzeltilmiş etiketlerinin
-    /// <c>Price − PaidPrice</c> toplamı. Bağlıyken hiç düzeltilmemiş etiketin farkı yok. Kaç düzeltme olursa olsun
-    /// müşterinin ödediğine göre GERÇEK farktır (250 → 200 → 190: −60) — yalnız son düzeltmenin farkı değil.
-    /// Toplama C#'ta (decimal) yapılır: REAL toplamı kuruş kaydırabilir.</summary>
-    public decimal GetPaidDifferenceOnOpenFiles(IReadOnlyCollection<string> customerIds)
+    /// <summary>Verilen etiketlerden ödenmişken düzeltilmiş olanların ÖDENDİĞİ fiyatı (göç 048, PaidPrice — ilk
+    /// düzeltme yazar, <see cref="UpdatePriceForCorrection"/>). Listede olmayan etiket ödenmişken hiç düzeltilmedi:
+    /// ödendiği fiyat düzeltmeden önceki fiyatıdır.</summary>
+    public IReadOnlyDictionary<string, decimal> GetPaidPrices(IReadOnlyCollection<string> ids)
     {
-        if (customerIds.Count == 0) return 0m;
+        if (ids.Count == 0) return new Dictionary<string, decimal>(System.StringComparer.Ordinal);
         using var conn = _factory.Open();
-        return conn.Query<(decimal Price, decimal PaidPrice)>(
-                @"SELECT l.Price, l.PaidPrice
-                  FROM Label l
-                  JOIN Shipment s ON s.Id = l.ShipmentId
-                  WHERE l.CustomerId IN @customerIds AND l.PaidPrice IS NOT NULL
-                    AND l.CancelledAt IS NULL AND l.IsShippingFee = 0 AND s.Status <> 'Shipped'",
-                new { customerIds = customerIds.ToArray() })
-            .Sum(r => r.Price - r.PaidPrice);
+        return conn.Query<(string Id, decimal PaidPrice)>(
+                "SELECT Id, PaidPrice FROM Label WHERE Id IN @ids AND PaidPrice IS NOT NULL",
+                new { ids = ids.ToArray() })
+            .ToDictionary(r => r.Id, r => r.PaidPrice, System.StringComparer.Ordinal);
     }
 
     /// <summary>"Basılanlar" sekmesi (K1): yayının basılmış, iptal edilmemiş etiketleri, bağlı kargo

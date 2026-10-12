@@ -359,8 +359,9 @@ public sealed class LabelService
     /// deseni): etiket fiyatları (Revision+1, SyncedAt=NULL — sunucuya mevcut senkronla gider; stok
     /// DEĞİŞMEZ), basılmış ve onaylı (geçici yedek olmayan) etiketler için müşteri toplamı fark kadar
     /// (<see cref="CustomerService.RecordPrintedLabels"/>, adet 0), kargoya verilmemiş bağlı dosyanın
-    /// toplamı fark kadar. Dosyaya bağlı (dekontla ödenmiş) etiketin ödendiği fiyat bağlıyken ilk düzeltmede
-    /// saklanır (<see cref="LabelRepository.UpdatePriceForCorrection"/>) — "ödendi, fark" mutlak hesaplansın.
+    /// toplamı fark kadar. Ödenmiş etiketin — dosyaya bağlı (dekont) ya da <paramref name="paidFromBalance"/>'ta —
+    /// ödendiği fiyat ödenmişken ilk düzeltmede saklanır (<see cref="LabelRepository.UpdatePriceForCorrection"/>):
+    /// "ödendi, fark" aynı etiketin sonraki düzeltmelerinde de ödenene göre hesaplansın.
     ///
     /// <para>Değişmeyenler: iptal edilmiş etiket, kargo ücreti satırı, kargoya verilmiş dosyadaki etiket
     /// (sonuçta ayrıca döner), zaten bu fiyattaki etiket. Kuyruktaki etiketin ekrandaki kopyasını
@@ -370,7 +371,10 @@ public sealed class LabelService
     /// arasında satır değiştiyse <see cref="PriceCorrectionConflictException"/> — paket geri sarılır,
     /// hiçbir şey yazılmaz.</para>
     /// </summary>
-    public PriceCorrectionResult CorrectPrices(IReadOnlyCollection<string> labelIds, decimal newPrice)
+    /// <param name="paidFromBalance">Onları içeren teslim edilmiş istek tamamen bakiyeden düşülmüş etiketler
+    /// (ödeme tarafı belirler — paket açılmadan önce okunur); null = yok.</param>
+    public PriceCorrectionResult CorrectPrices(
+        IReadOnlyCollection<string> labelIds, decimal newPrice, IReadOnlySet<string>? paidFromBalance = null)
     {
         if (newPrice < 0m) throw new ArgumentOutOfRangeException(nameof(newPrice), "Fiyat eksi olamaz.");
 
@@ -400,7 +404,8 @@ public sealed class LabelService
             {
                 var l = c.Before;
                 if (_labels.UpdatePriceForCorrection(
-                        l.Id, l.Price, l.PrintedAt.HasValue, l.IsTentativeBackup, newPrice, now, write) != 1)
+                        l.Id, l.Price, l.PrintedAt.HasValue, l.IsTentativeBackup,
+                        paidFromBalance?.Contains(l.Id) == true, newPrice, now, write) != 1)
                     throw new PriceCorrectionConflictException(
                         "Etiketlerden biri bu arada değişti (basıldı, iptal edildi ya da fiyatı değişti); hiçbir şey yazılmadı.");
             }

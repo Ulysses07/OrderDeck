@@ -1289,7 +1289,8 @@ public class MainShellPriceBoxTests
     {
         // A1 250'den basıldı, @odendi'nin isteği tamamen bakiyeden düşüldü. 200'e "Evet": "fark −50". Operatör yanlış
         // girdiğini fark edip 190'a yine "Evet" dedi (ilk sonucu kapatarak ya da açıkken): ikinci sonuç "fark −10"
-        // diyordu, −50 iz bırakmadan gidiyordu. Müşteri 250 ödedi, yeni toplam 190: fark −60.
+        // diyordu, −50 iz bırakmadan gidiyordu. Müşteri 250 ödedi, yeni fiyat 190: fark −60; bu düzeltmenin kendi
+        // farkı (−10) yanında.
         using var h = BuildWithPayments();
         await WithCodeLabels(h, 250m, "@odendi");
         var row = h.Vm.PrintQueue[0];
@@ -1303,7 +1304,8 @@ public class MainShellPriceBoxTests
         h.Vm.ActivePriceText = "190";
         h.Vm.ConfirmCodePriceCommand.Execute(null);
 
-        h.Vm.CodePriceCorrection!.PaidRows.Should().Equal("@odendi — ödendi (bakiye), fark −60,00 TL");
+        h.Vm.CodePriceCorrection!.PaidRows.Should().Equal(
+            "@odendi — ödendi (bakiye), fark −60,00 TL (bu düzeltmede −10,00 TL)");
         DbPrice(h, row.Id).Should().Be(190m);
     }
 

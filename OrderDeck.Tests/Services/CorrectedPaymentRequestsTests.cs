@@ -58,6 +58,14 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         => _labels.Add("s1", new ChatMessage(Guid.NewGuid().ToString("N"), platform, null, user, user, null,
             $"{user} aldım", 1000, Array.Empty<string>()), price, code);
 
+    /// <summary>Fiyat düzeltme çekmecesinin yolu: bakiyeden ödenmiş etiketler yazımdan önce okunur, ödendikleri
+    /// fiyat ilk düzeltmede saklanır.</summary>
+    private PriceCorrectionResult Correct(string id, decimal price)
+        => _labels.CorrectPrices(new[] { id }, price, Sut().BalancePaidLabels("s1", _labelRepo.GetByIds(new[] { id })));
+
+    private PaidPerson? PaidOf(PriceCorrectionResult result)
+        => Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta))).Paid.SingleOrDefault();
+
     private CorrectedPaymentRequests Sut(CorrectedPaymentRequests.RequestPayment? request = null)
         => new(_customers, _labelRepo, _jobs, () => new AppSettings(),
             request ?? ((_, _, _, _, _) => throw new InvalidOperationException("gönderim beklenmiyordu")));
@@ -284,16 +292,17 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         _labels.MarkPrintedAndRecord(new[] { l.Id });
         AppliedAndDelivered(l.CustomerId, "session:s1", 250m, applied: 250m);
 
-        var first = _labels.CorrectPrices(new[] { l.Id }, 200m);
-        Sut().Plan("s1", first.Corrected.Select(c => (c.Before, c.Delta)))
-            .Paid.Should().ContainSingle().Which.Delta.Should().Be(-50m, "tek düzeltme");
-        var second = _labels.CorrectPrices(new[] { l.Id }, 190m);
+        var first = PaidOf(Correct(l.Id, 200m))!;
+        first.Delta.Should().Be(-50m, "tek düzeltme");
+        first.StepDelta.Should().Be(-50m);
+        _labelRepo.GetPaidPrices(new[] { l.Id }).Should().ContainKey(l.Id).WhoseValue.Should().Be(250m,
+            "bakiyeden ödenmiş etiketin ödendiği fiyat ilk düzeltmede saklanır");
 
-        var paid = Sut().Plan("s1", second.Corrected.Select(c => (c.Before, c.Delta)))
-            .Paid.Should().ContainSingle().Subject;
+        var paid = PaidOf(Correct(l.Id, 190m))!;
 
         paid.ByBalance.Should().BeTrue();
-        paid.Delta.Should().Be(-60m, "ödenen 250, yeni toplam 190");
+        paid.Delta.Should().Be(-60m, "ödenen 250, yeni fiyat 190");
+        paid.StepDelta.Should().Be(-10m, "bu düzeltmenin kendi farkı");
     }
 
     [Fact]
@@ -316,6 +325,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
 
         paid.ByDekont.Should().BeTrue();
         paid.Delta.Should().Be(-60m, "ödenen 250, yeni fiyat 190");
+        paid.StepDelta.Should().Be(-10m);
     }
 
     [Fact]
@@ -334,6 +344,142 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
             .Paid.Should().ContainSingle().Subject;
 
         paid.Delta.Should().Be(-10m);
+    }
+
+    [Fact]
+    public void Balance_paid_price_is_the_price_the_label_had_when_the_request_was_paid()
+    {
+        // 250 → 200 istekten ÖNCE düzeltildi (ödenmemişti), 200'lük istek tamamen bakiyeden düşüldü, sonra 190: ödenen
+        // 200, fark −10.
+        var l = Add("instagram", "@sonra", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        PaidOf(Correct(l.Id, 200m)).Should().BeNull("istek yok — ödenmedi");
+        AppliedAndDelivered(l.CustomerId, "session:s1", 200m, applied: 200m);
+
+        var paid = PaidOf(Correct(l.Id, 190m))!;
+
+        paid.Delta.Should().Be(-10m);
+        paid.StepDelta.Should().Be(-10m);
+    }
+
+    /// <summary>Bundan sonra basılan etiketler teslim edilmiş isteklerden SONRA basılmış olur.</summary>
+    private void PrintClockAfterRequests()
+        => _clock.Setup(c => c.UnixNow()).Returns(DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
+
+    [Fact]
+    public void Balance_paid_difference_leaves_out_a_purchase_made_after_the_request()
+    {
+        // @x'in 250'lik A1 isteği tamamen bakiyeden düşüldü; sonra B2'yi 100'e aldı (istenmedi, ödenmedi). A1 250 → 200:
+        // fark kişinin bugünkü toplamından (300) hesaplanınca "+50" çıkıyordu — müşteriye 50 iade gerekirken.
+        var a1 = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id });
+        AppliedAndDelivered(a1.CustomerId, "session:s1", 250m, applied: 250m);
+        PrintClockAfterRequests();
+        var b2 = Add("instagram", "@x", 100m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { b2.Id });
+
+        var paid = PaidOf(Correct(a1.Id, 200m))!;
+
+        paid.ByBalance.Should().BeTrue();
+        paid.Delta.Should().Be(-50m, "yalnız düzeltilen ödenmiş etiket: 200 − 250");
+        paid.StepDelta.Should().Be(-50m);
+    }
+
+    [Fact]
+    public void Balance_paid_difference_in_the_cumulative_scope_leaves_out_later_streams()
+    {
+        // Genel istek (250) yayın dışında tamamen bakiyeden düşüldü; sonraki yayında @x 1000'lik ürün aldı. Yayın
+        // Raporu → "Basılan etiketler"den A1 250 → 200: fark genel toplamdan hesaplanınca "+950" çıkıyordu.
+        var a1 = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id });
+        AppliedAndDelivered(a1.CustomerId, "cumulative", 250m, applied: 250m);
+        new SessionRepository(_db).Insert(new StreamSession("s2", null, 2000, null, new[] { "instagram" }, null));
+        PrintClockAfterRequests();
+        var big = _labels.Add("s2", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "@x", "@x", null,
+            "@x aldım", 1000, Array.Empty<string>()), 1000m, "Z9");
+        _labels.MarkPrintedAndRecord(new[] { big.Id });
+        _customers.GetPaymentPerson(a1.CustomerId).Members.Sum(m => m.TotalAmount)
+            .Should().Be(1250m, "genel toplam sonraki yayının alımını da içeriyor");
+
+        var paid = PaidOf(Correct(a1.Id, 200m))!;
+
+        paid.ByBalance.Should().BeTrue();
+        paid.Delta.Should().Be(-50m);
+    }
+
+    [Fact]
+    public void Dekont_difference_of_a_correction_leaves_out_an_earlier_corrections_settled_difference()
+    {
+        // A1 200 + B2 100 dekontla ödendi (ikisi açık dosyada). A1 200 → 250: "+50"; operatör 50'yi aldı, ikinci
+        // dekontu kaydetti. Sonra B2 100 → 90: kişinin bütün açık dosyasından hesaplanınca "+40" çıkıyordu — gerçek −10.
+        var a1 = Add("instagram", "@x", 200m, "A1");
+        var b2 = Add("instagram", "@x", 100m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id, b2.Id });
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var open = shipmentSvc.GetOrCreateOpenShipment(a1.CustomerId);
+        shipmentSvc.AttachLabels(open.Id, new[] { a1.Id, b2.Id });
+        PaidOf(Correct(a1.Id, 250m))!.Delta.Should().Be(50m);
+        shipmentSvc.AttachLabels(open.Id, new[] { a1.Id, b2.Id });   // ikinci dekont: bağlı etiketler atlanır
+
+        var paid = PaidOf(Correct(b2.Id, 90m))!;
+
+        paid.ByDekont.Should().BeTrue();
+        paid.Delta.Should().Be(-10m);
+        paid.StepDelta.Should().Be(-10m);
+    }
+
+    [Fact]
+    public void Balance_difference_of_a_correction_leaves_out_an_earlier_corrections_settled_difference()
+    {
+        // A1 250 + B2 100 için 350'lik istek tamamen bakiyeden düşüldü. A1 → 200: "−50"; operatör 50'yi bakiyeye iade
+        // etti. Sonra B2 → 90: kapsam toplamından hesaplanınca "−60" çıkıyordu (110 iade) — gerçek −10.
+        var a1 = Add("instagram", "@x", 250m, "A1");
+        var b2 = Add("instagram", "@x", 100m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id, b2.Id });
+        AppliedAndDelivered(a1.CustomerId, "session:s1", 350m, applied: 350m);
+        PaidOf(Correct(a1.Id, 200m))!.Delta.Should().Be(-50m);
+
+        var paid = PaidOf(Correct(b2.Id, 90m))!;
+
+        paid.ByBalance.Should().BeTrue();
+        paid.Delta.Should().Be(-10m);
+        paid.StepDelta.Should().Be(-10m);
+    }
+
+    [Fact]
+    public void Only_the_labels_a_balance_paid_request_covers_are_paid()
+    {
+        // Aynı kodun iki etiketi: biri bakiyeden ödenmiş isteğin içinde, öbürü istekten sonra basıldı (ödenmedi).
+        // İkisi birlikte 250 → 200: ödenen yalnız ilki.
+        var covered = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { covered.Id });
+        AppliedAndDelivered(covered.CustomerId, "session:s1", 250m, applied: 250m);
+        PrintClockAfterRequests();
+        var later = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { later.Id });
+        var ids = new[] { covered.Id, later.Id };
+
+        var paid = PaidOf(_labels.CorrectPrices(ids, 200m, Sut().BalancePaidLabels("s1", _labelRepo.GetByIds(ids))))!;
+
+        paid.Delta.Should().Be(-50m);
+        paid.StepDelta.Should().Be(-50m);
+        _labelRepo.GetPaidPrices(ids).Keys.Should().Equal(new[] { covered.Id }, "ödenmemiş etiketin fiyatı saklanmaz");
+    }
+
+    [Fact]
+    public void Unpaid_label_of_a_balance_paid_person_shows_no_paid_row()
+    {
+        var a1 = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id });
+        AppliedAndDelivered(a1.CustomerId, "session:s1", 250m, applied: 250m);
+        PrintClockAfterRequests();
+        var b2 = Add("instagram", "@x", 100m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { b2.Id });
+
+        var plan = Sut().Plan("s1", Correct(b2.Id, 90m).Corrected.Select(c => (c.Before, c.Delta)));
+
+        plan.Paid.Should().BeEmpty("B2 hiçbir istekte yok — ödenmedi");
+        _labelRepo.GetPaidPrices(new[] { b2.Id }).Should().BeEmpty();
     }
 
     [Fact]

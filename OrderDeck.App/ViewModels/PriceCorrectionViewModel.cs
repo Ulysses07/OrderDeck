@@ -278,6 +278,10 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     private static List<CodeCorrectionPlan> Chosen(IEnumerable<CodeCorrectionPlan> plans, IReadOnlySet<string> keys)
         => plans.Where(p => keys.Contains(p.Code ?? "")).ToList();
 
+    /// <summary>"+45,00" / "−60,00" (tutar farkı).</summary>
+    private static string Signed(decimal amount)
+        => $"{(amount >= 0 ? "+" : "−")}{Math.Abs(amount).ToString("N2", Tr)}";
+
     private static List<Label> DistinctLabels(IEnumerable<Label> labels)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -393,7 +397,9 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             // Kargoya verilmiş olanlar da verilir: servis onlara dokunmaz, sonuçta "değişmedi" diye döner.
             var ids = targets.Concat(chosen.SelectMany(p => p.Plan.Shipped)).Select(l => l.Id)
                 .Distinct(StringComparer.Ordinal).ToList();
-            result = CorrectPricesSeam?.Invoke(ids, parsed.Value) ?? _labels.CorrectPrices(ids, parsed.Value);
+            // Bakiyeden ödenmiş etiketler yazımdan ÖNCE okunur: ödendikleri fiyat ilk düzeltmede saklanır.
+            result = CorrectPricesSeam?.Invoke(ids, parsed.Value)
+                     ?? _labels.CorrectPrices(ids, parsed.Value, _payments?.BalancePaidLabels(_sessionId, targets));
         }
         catch (PriceCorrectionConflictException ex)
         {
@@ -457,8 +463,10 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
                     (true, _) => "dekont",
                     _ => "bakiye",
                 };
-                PaidRows.Add($"{p.Display} — ödendi ({how}), fark " +
-                             $"{(p.Delta >= 0 ? "+" : "−")}{Math.Abs(p.Delta).ToString("N2", Tr)} TL");
+                // Ödenene göre fark; bu düzeltmenin kendi farkı ondan ayrıysa (aynı etiket ikinci kez düzeltildi)
+                // o da yazılır.
+                PaidRows.Add($"{p.Display} — ödendi ({how}), fark {Signed(p.Delta)} TL" +
+                             (p.StepDelta != p.Delta ? $" (bu düzeltmede {Signed(p.StepDelta)} TL)" : ""));
                 _paidNames.Add(p.Display);
             }
             OnPropertyChanged(nameof(HasResendRows));
