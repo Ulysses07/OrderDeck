@@ -889,6 +889,31 @@ public class MainShellPrintedLabelsTests
         h.CustomerRepo.FindByPlatformAndUsername("instagram", "@yedek")!.TotalAmount.Should().Be(200m);
     }
 
+    [Fact]
+    public async Task Backup_confirmed_at_another_price_makes_the_box_ask_about_the_codes_price()
+    {
+        // Ana etiket iptal edildi, kodun kalan tek etiketi olan yedek 200'e onaylandı; kutu hâlâ 250 ve "bu yayındaki
+        // fiyatı" diyordu — sonraki yorum 250'den yazılıp aynı kodda iki fiyat oluşurdu. Bir yayında bir kodun tek
+        // fiyatı: kutu artık kodun fiyatı değil, F2 şeridi sorar (kutu sessizce değişmez).
+        var (h, drawers) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        h.Vm.BeginAddBackupCommand.Execute(a);
+        h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@yedek", "ben de"));
+        var backup = h.Vm.PrintQueue[^1];
+        await PrintAsync(h, a);
+        drawers.OnOther = _ =>
+        {
+            h.Labels.ConfirmBackup(backup.Id, newPrice: 200m);
+            return Task.CompletedTask;
+        };
+
+        await h.Vm.CancelAndTransferBackupsAsync(new[] { a.Id }, CancelReasonCodes.Customer);
+
+        h.Vm.ActivePriceText.Should().Be("250");
+        h.Vm.CodePriceQuestion.Should().Be("A12 kodunun 1 etiketi 200,00 TL. Hepsi 250,00 TL olsun mu?");
+    }
+
     private sealed class ReprintFailsPrinter : ILabelPrinter
     {
         private int _calls;

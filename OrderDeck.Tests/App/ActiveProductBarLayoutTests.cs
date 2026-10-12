@@ -99,6 +99,38 @@ public class ActiveProductBarLayoutTests
     }
 
     [Fact]
+    public void Carried_over_hint_says_why_the_box_is_suspect()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var h = MainShellTestHarness.Build();
+            h.Vm.ActiveCode = "A1";
+            MainShellTestHarness.EnqueueLabel(h.Vm, "@a", 250m);
+            var bar = new ActiveProductBar { DataContext = h.Vm };
+            bar.Measure(new Size(360, 900));
+            bar.Arrange(new Rect(0, 0, 360, 900));
+            ThemeTestHost.Pump();
+
+            h.Vm.ActiveCode = "B7";
+            ThemeTestHost.Pump();
+            Shows(bar, "önceki üründen kaldı — bu ürünün fiyatı mı?").Should().BeTrue();
+
+            h.Vm.ActiveCode = "A1";
+            h.Vm.ClearQueueCommand.CanExecute(null).Should().BeTrue();
+            h.Dialogs.ConfirmResult = _ => true;
+            h.Vm.ClearQueueCommand.Execute(null);
+            ThemeTestHost.Pump();
+            Shows(bar, "bu yayında artık etiketi yok — bu fiyat doğru mu?").Should().BeTrue();
+
+            h.Vm.ActiveCode = "B7";
+            ThemeTestHost.Pump();
+            Shows(bar, "önceki üründen kaldı — bu ürünün fiyatı mı?").Should().BeTrue("metin nedene göre değişir");
+        });
+
+        error.Should().BeNull();
+    }
+
+    [Fact]
     public void Source_blocked_names_and_strip_error_are_shown_by_the_bar()
     {
         // Kutunun altındaki kaynak ("bu yayındaki fiyatı"), şerit beklerken yazılmayan yorumlar ve şeridin hata

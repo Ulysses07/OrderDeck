@@ -50,8 +50,10 @@
                  fiyatı var, kaynağı o yayındaki etiketleri. Kod değişince kodun
                  bu yayındaki fiyatıyla, yoksa katalog fiyatıyla dolar (kaynak
                  kutunun altında yazar); ikisi de yoksa ve kutudaki fiyat başka
-                 ürün için girildiyse kutu sarı çerçeveyle vurgulanır. Operatör
-                 fiyata dokununca vurgu kalkar. -->
+                 ürün için girildiyse kutu sarı çerçeveyle vurgulanır. Kutu "bu
+                 yayındaki fiyatı"yken yayın biter ya da kodun etiketleri iptal
+                 edilirse de vurgulanır — kutu sessizce değişmez, sarı metin
+                 nedenini söyler. Operatör fiyata dokununca vurgu kalkar. -->
             <TextBlock Text="FİYAT" Style="{StaticResource OD.Text.Micro}"
                        Margin="{StaticResource OD.Pad.Top5}"/>
             <TextBox x:Name="PriceBox"
@@ -72,7 +74,8 @@
                        Style="{StaticResource OD.Text.Hint}"
                        Margin="{StaticResource OD.Pad.Top3}"
                        Visibility="{Binding PriceSourceText, Converter={StaticResource NullToCollapsedConverter}}"/>
-            <TextBlock Text="önceki üründen kaldı — bu ürünün fiyatı mı?"
+            <TextBlock Text="{Binding PriceCarriedOverText}"
+                       TextWrapping="Wrap"
                        Style="{StaticResource OD.Text.Hint}"
                        Foreground="{StaticResource OD.Brush.Amber}"
                        Margin="{StaticResource OD.Pad.Top3}"

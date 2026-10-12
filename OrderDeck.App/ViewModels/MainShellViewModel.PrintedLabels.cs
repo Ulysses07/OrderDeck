@@ -288,6 +288,7 @@ public sealed partial class MainShellViewModel
         RefreshQueueRows(withBackups.SelectMany(g => g.Backups).Select(b => b.Id));
         RefreshPrintedLabels();
         RefreshHeroStats();
+        AfterLabelsCancelled();   // onaylanan yedeğin fiyatı değişmiş olabilir
     }
 
     /// <summary>Yedek çekmecesinde (toplu iptal ya da müşteri detayı) bir yedek onaylandı: kuyruktaysa
@@ -315,6 +316,7 @@ public sealed partial class MainShellViewModel
         }
         RefreshPrintedLabels();
         RefreshHeroStats();
+        AfterLabelsCancelled();
         PrintedLabels.Message = $"{ids.Count} etiket iptal edildi." + (inFlight > 0
             ? $" {inFlight} tanesi devam eden baskı işinde: iptal yazıcıyı durdurmaz — bu etiketlerden çıkan " +
               "ya da sonradan çıkacak kâğıtları imha et."

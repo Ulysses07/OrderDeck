@@ -470,6 +470,122 @@ public class MainShellPriceBoxTests
         h.Vm.ActivePriceText.Should().Be("100", "önceki yayının fiyatı bu yayına taşınmaz: katalog fiyatı");
     }
 
+    [Fact]
+    public async Task Box_kept_into_a_new_stream_is_flagged_as_the_previous_streams_price()
+    {
+        // Yayın bitti, uygulama açık, yeni yayın başladı; kod kutusunda hâlâ A1. Kutu dünkü 250'yi gösteriyor,
+        // kaynak ipucu boş, vurgu yoktu: ilk yorum 250'den yazılıp bu yayının fiyatı oluyordu. Koddan çıkıp dönen
+        // operatör ise 300 (katalog) görürdü — aynı kod, gezinmeye göre iki fiyat.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 300m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = "250";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        h.Dialogs.ConfirmResult = _ => true;     // "Yayını bitirmek istediğinden emin misin?"
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Sessions.GetActive().Should().NotBeNull();
+        h.Vm.ActivePriceText.Should().Be("250", "kutu sessizce değişmez");
+        h.Vm.PriceSourceText.Should().BeNull();
+        h.Vm.IsPriceCarriedOver.Should().BeTrue();
+        h.Vm.PriceCarriedOverText.Should().Be("önceki yayından kaldı — bu yayının fiyatı mı?");
+
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "A1 aldım"));
+        h.Vm.IsPriceCarriedOver.Should().BeFalse("etiket yazıldı: artık bu yayının fiyatı");
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
+    }
+
+    [Fact]
+    public async Task Stream_price_equal_to_the_catalog_is_named_as_the_catalog_price_in_the_next_stream()
+    {
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 300m));
+        h.Vm.ActiveCode = "A1";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        h.Dialogs.ConfirmResult = _ => true;
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+        h.Vm.StartStreamCommand.Execute(null);
+
+        h.Vm.ActivePriceText.Should().Be("300");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        h.Vm.PriceSourceText.Should().Be("katalog fiyatı");
+    }
+
+    [Fact]
+    public async Task Cancelling_every_label_of_the_code_flags_the_box_instead_of_a_stale_stream_source()
+    {
+        // A1'in bu yayındaki bütün etiketleri iptal edildi: kutu "bu yayındaki fiyatı" demeye devam ediyordu, oysa
+        // kodun bu yayında artık fiyatı yok — koddan çıkıp dönen operatör katalog fiyatını (300) görürdü.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 300m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = "250";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "A1 aldım"));
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
+        foreach (var row in h.Vm.PrintQueue) h.Vm.SelectedQueueItems.Add(row);
+
+        h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        h.Vm.ActivePriceText.Should().Be("250", "kutu sessizce değişmez");
+        h.Vm.PriceSourceText.Should().BeNull();
+        h.Vm.IsPriceCarriedOver.Should().BeTrue();
+        h.Vm.PriceCarriedOverText.Should().Be("bu yayında artık etiketi yok — bu fiyat doğru mu?");
+    }
+
+    [Fact]
+    public async Task Cancelling_in_the_customer_detail_rechecks_the_box_source()
+    {
+        // Müşteri detayında iptal kabuğun dışında olur; detay kapanınca kutunun kaynağı yeniden okunur.
+        using var h = MainShellTestHarness.Build(new CountingDrawers());
+        await WithCodeLabels(h, 250m, "@a");
+        var row = h.Vm.PrintQueue[0];
+        h.Vm.CustomerDetailSeam = _ =>
+        {
+            h.Labels.Cancel(new[] { row.Id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
+            return Task.CompletedTask;
+        };
+
+        await h.Vm.OpenCustomerDetailFromQueueCommand.ExecuteAsync(row);
+
+        h.Vm.PriceSourceText.Should().BeNull();
+        h.Vm.IsPriceCarriedOver.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Bulk_cancel_of_the_printed_labels_rechecks_the_box_source()
+    {
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a");
+        var id = h.Vm.PrintQueue[0].Id;
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+
+        h.Vm.CancelLabels(new[] { id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
+
+        h.Vm.PriceSourceText.Should().BeNull();
+        h.Vm.IsPriceCarriedOver.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Cancelling_the_labels_behind_the_boxs_price_asks_about_the_code_s_remaining_price()
+    {
+        // Kodda başka fiyatlı etiket kaldı (230): kutudaki 250 artık kodun fiyatı değil. Bir yayında bir kodun tek
+        // fiyatı — sonraki yorum sessizce 250 yazılırsa kodda iki fiyat olurdu: şerit sorar.
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a", "@b");
+        h.Labels.Add(h.Sessions.GetActive()!.Id, MainShellTestHarness.ChatVm("@yedek", "A1").Message, 230m, "A1");
+        foreach (var row in h.Vm.PrintQueue.Where(r => r.Price == 250m).ToList()) h.Vm.SelectedQueueItems.Add(row);
+
+        h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        h.Vm.ActivePriceText.Should().Be("250");
+        h.Vm.CodePriceQuestion.Should().Be("A1 kodunun 1 etiketi 230,00 TL. Hepsi 250,00 TL olsun mu?");
+    }
+
     // ── F2: etiketi olan kodun fiyatı kutuda değişince satır içi şerit ─────
 
     /// <summary>A1 için <paramref name="count"/> etiket <paramref name="price"/> TL ile kuyrukta.</summary>

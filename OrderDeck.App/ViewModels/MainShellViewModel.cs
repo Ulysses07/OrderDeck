@@ -302,6 +302,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     //     fiyatına döndürür. Şerit beklerken o kod için etiket YAZILMAZ; başka koda geçilirse şerit kapanır,
     //     değişiklik uygulanmaz.
     //   - Düzeltmeden sonra etkin kod düzeltilen kodsa kutu yeni fiyatı gösterir (F4).
+    //   - Kutu "bu yayındaki fiyatı"yken kaynak elden gider (yayın biter/başlar, kodun etiketleri iptal edilir) →
+    //     kutu DEĞİŞMEZ, kaynağı yeniden okunur: katalog fiyatıysa öyle söylenir, değilse kutu nedeniyle
+    //     vurgulanır ("önceki yayından kaldı", "bu yayında artık etiketi yok").
     // Etiket her zaman kutuda GÖRÜNEN fiyatla yazılır; gizli bir değer yok.
 
     private const string SessionPriceSource = "bu yayındaki fiyatı";
@@ -321,8 +324,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private bool _settingPriceProgrammatically;
 
     /// <summary>"önceki üründen kaldı": kod değişti, kodun ne bu yayında etiketi ne katalogda fiyatı var,
-    /// kutudaki fiyat başka ürün için girilmişti. Kutu vurgulanır; operatör fiyata dokununca kalkar.</summary>
+    /// kutudaki fiyat başka ürün için girilmişti. Kutu vurgulanır; operatör fiyata dokununca, kod değişince ya da
+    /// etiket yazılınca kalkar. Aynı vurgu kutu "bu yayındaki fiyatı" iken kaynak elden gidince de yanar
+    /// (<see cref="ReconcilePriceSource"/>): yayın bitti ya da kodun etiketleri iptal edildi. Metni
+    /// <see cref="PriceCarriedOverText"/>.</summary>
     [ObservableProperty] private bool _isPriceCarriedOver;
+
+    private const string ProductCarryHint = "önceki üründen kaldı — bu ürünün fiyatı mı?";
+    private const string StreamCarryHint = "önceki yayından kaldı — bu yayının fiyatı mı?";
+    private const string NoLabelsLeftHint = "bu yayında artık etiketi yok — bu fiyat doğru mu?";
+
+    /// <summary>Vurgunun metni (kutunun altında, sarı): neden kutudaki fiyattan şüphelenilmeli.</summary>
+    [ObservableProperty] private string _priceCarriedOverText = ProductCarryHint;
 
     /// <summary>Kutudaki fiyatın kaynağı (kutunun altında): "bu yayındaki fiyatı" ya da "katalog fiyatı";
     /// null = operatörün yazdığı (ya da kaynağı yok).</summary>
@@ -425,11 +438,49 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         else
         {
             PriceSourceText = null;
-            IsPriceCarriedOver = code is not null
+            var carried = code is not null
                 && _priceOwner is not null
                 && !string.Equals(_priceOwner, code, StringComparison.OrdinalIgnoreCase)
                 && PriceInput.Parse(ActivePriceText).IsOk;
+            if (carried) PriceCarriedOverText = ProductCarryHint;
+            IsPriceCarriedOver = carried;
         }
+    }
+
+    /// <summary>
+    /// Kutu "bu yayındaki fiyatı" diyor ama kaynağı elden gitmiş olabilir — yayın bitti ya da başladı, kodun
+    /// etiketleri iptal edildi: kaynak yeniden okunur. Kutunun DEĞERİ değişmez (sessiz değişiklik yok); yalnız
+    /// söylediği düzelir. Kodun bu yayında hâlâ etiketi varsa ve fiyatı kutudakinden başkaysa kutu artık kodun
+    /// fiyatı değildir: F2 şeridi sorar (bir yayında bir kodun tek fiyatı). Etiketi kalmadıysa katalog fiyatıysa
+    /// kaynak "katalog fiyatı", değilse kutu <paramref name="hint"/> ile vurgulanır — eskiden kaynak "bu yayındaki
+    /// fiyatı" kalıyor (iptal) ya da hiçbir şey söylenmiyordu (yeni yayın): aynı kod, operatörün koddan çıkıp
+    /// dönmesine göre iki ayrı fiyat gösteriyordu.
+    /// </summary>
+    private void ReconcilePriceSource(string hint)
+    {
+        if (!string.Equals(PriceSourceText, SessionPriceSource, StringComparison.Ordinal)) return;
+        var code = EffectiveCode;
+        var parsed = PriceInput.Parse(ActivePriceText);
+        if (code is null || !parsed.IsOk)
+        {
+            PriceSourceText = null;
+            return;
+        }
+        if (ActiveCodePrice(code, out _) is { } info)
+        {
+            if (parsed.Value == info.Price) return;
+            PriceSourceText = null;
+            EvaluateCodePriceChange();
+            return;
+        }
+        if (ProductCard.Resolution?.Product.DefaultPrice is > 0m and var catalog && parsed.Value == catalog)
+        {
+            PriceSourceText = CatalogPriceSource;
+            return;
+        }
+        PriceSourceText = null;
+        PriceCarriedOverText = hint;
+        IsPriceCarriedOver = true;
     }
 
     /// <summary>Kutuyu programla doldurur; değerin sahibi <paramref name="owner"/>, kaynağı
@@ -574,12 +625,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     /// <summary>Yayın başladı ya da bitti: kodun fiyatı yayına özel. Bekleyen fiyat değişikliği eski yayının
     /// sorusuydu — kapanır; kutu olduğu gibi kalır (kutu sessizce değişmez) ama kaynağı artık "bu yayındaki
-    /// fiyatı" değil.</summary>
+    /// fiyatı" değil: katalog fiyatıysa öyle söylenir, değilse "önceki yayından kaldı" diye vurgulanır — yeni
+    /// yayının ilk yorumu dünkü fiyatla işaretsiz yazılmasın (<see cref="ReconcilePriceSource"/>).</summary>
     private void ForgetStreamPrice()
     {
         ClosePendingCodePrice();
-        PriceSourceText = null;
+        ReconcilePriceSource(StreamCarryHint);
     }
+
+    /// <summary>Etiketler kabuğun bir yolundan iptal edildi (kuyruktan çıkarma, toplu iptal, müşteri detayı, yedek
+    /// aktarımı): etkin kodun kaynağı yeniden okunur (<see cref="ReconcilePriceSource"/>).</summary>
+    private void AfterLabelsCancelled() => ReconcilePriceSource(NoLabelsLeftHint);
 
     /// <summary>Düzeltme yazıldı (çekmece ya da şerit): etkin kod düzeltilen kodsa kutu kodun yeni fiyatını
     /// gösterir (F4) — kod veritabanından okunur, ayrı bellek yok. Başka yayının düzeltmesi (rapordan) kutuya
@@ -1850,6 +1906,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             CancelReasonCodes.QueueRemoved);
         foreach (var vm in snapshot) PrintQueue.Remove(vm);
         SelectedQueueItems.Clear();
+        AfterLabelsCancelled();
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
@@ -1868,6 +1925,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _labels.Cancel(PrintQueue.Select(i => i.Id).ToList(),
             CancelReasonCodes.QueueRemoved);
         PrintQueue.Clear();
+        AfterLabelsCancelled();
     }
 
     /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.
@@ -2522,6 +2580,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         finally
         {
             RefreshPrintedLabels();
+            AfterLabelsCancelled();
         }
     }
 
