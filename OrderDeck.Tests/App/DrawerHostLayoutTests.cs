@@ -86,6 +86,33 @@ public class DrawerHostLayoutTests
     }
 
     [Fact]
+    public void Close_button_does_not_close_a_drawer_whose_work_is_running()
+    {
+        // Fiyat düzeltmede toplu gönderim/yeniden baskı sürerken çarpı çekmeceyi kapatıyordu: sonuç
+        // ("elle bakılmalı", baskı hatası) operatöre ulaşmıyordu.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var stack = new DrawerStack();
+            stack.ShowAsync("Fiyatı Düzelt", _ => new TextBlock { Text = "içerik" });
+            var drawer = stack.Top!;
+            drawer.CanClose = false;
+            var host = Arrange(stack);
+            var close = FindChild<Button>(host)!;
+
+            Assert.False(close.IsEnabled);
+            close.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent, close));
+            Assert.True(stack.IsOpen);
+
+            drawer.CanClose = true;
+            Assert.True(close.IsEnabled);
+            close.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent, close));
+            Assert.False(stack.IsOpen);
+        });
+
+        Assert.Null(error);
+    }
+
+    [Fact]
     public void Nested_drawer_covers_the_one_below_it()
     {
         var error = ThemeTestHost.RunOnSta(() =>

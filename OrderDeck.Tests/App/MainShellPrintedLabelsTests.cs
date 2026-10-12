@@ -376,6 +376,29 @@ public class MainShellPrintedLabelsTests
     }
 
     [Fact]
+    public async Task Correction_reprint_outcome_stays_on_the_printed_tab_after_the_drawer_closes()
+    {
+        // Yeniden baskının sonucu yalnız çekmecedeydi: çekmece kapanınca (baskı hatası dahil) kayboluyordu.
+        var (h, drawers) = Build();
+        using var __ = h;
+        Enqueue(h, "@a", 250m);
+        Enqueue(h, "@b", 250m);
+        await PrintAsync(h);
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.SelectBatchCommand.Execute(h.Vm.PrintedLabels.VisibleRows[0].Batch);
+        drawers.OnPriceCorrection = async pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            await pc.ReprintCommand.ExecuteAsync(null);
+        };
+
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+
+        h.Vm.PrintedLabels.Message.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
+    }
+
+    [Fact]
     public async Task Queue_corrected_label_reprint_has_no_correction_mark()
     {
         // Kuyrukta düzeltilen etiketin ilk kâğıdı zaten yeni fiyatla çıktı; yeniden baskısı yine "DÜZELTME"

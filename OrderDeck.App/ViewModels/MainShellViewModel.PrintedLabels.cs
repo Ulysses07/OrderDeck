@@ -129,7 +129,7 @@ public sealed partial class MainShellViewModel
         {
             await _drawers.ShowAsync("Fiyatı Düzelt", d =>
             {
-                vm.Close = () => d.Close(true);
+                vm.AttachTo(d);
                 return Views.Drawers.PriceCorrectionDrawer.Create(vm);
             });
         }
@@ -137,6 +137,10 @@ public sealed partial class MainShellViewModel
         {
             ActivePriceCorrection = null;
             RefreshPrintedLabels();
+            // Yeniden baskının ve toplu gönderimin sonucu (baskı hatası, "elle bakılmalı" listesi) çekmece
+            // kapanınca kaybolmasın: "Basılanlar" ileti satırında kalır. Tazelemeden SONRA — seçim değişirse
+            // tazeleme satırı temizler.
+            if (vm.OutcomeReport is { } report) PrintedLabels.Message = report;
         }
     }
 

@@ -43,7 +43,9 @@ public sealed class DrawerStack : IDrawerService, INotifyPropertyChanged
     {
         var top = Top;
         if (top is null) return false;
-        top.Close(false);
+        // Kapatılamayan çekmece (iş sürüyor) açık kalır; ESC yine tüketilir — altındaki katman
+        // (sayfa, yedek seçim modu) kapanmasın.
+        if (top.CanClose) top.Close(false);
         return true;
     }
 

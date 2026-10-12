@@ -43,9 +43,13 @@
                                 BorderBrush="{StaticResource OD.Brush.Border}"
                                 BorderThickness="0,0,0,1">
                             <DockPanel>
-                                <Button DockPanel.Dock="Right"
+                                <!-- İçerik iş yürütürken (CanClose=false) kapatılamaz:
+                                     sonucu yalnız çekmecede görünür. -->
+                                <Button x:Name="CloseButton"
+                                        DockPanel.Dock="Right"
                                         Style="{StaticResource OD.Button.Ghost}"
                                         Padding="{StaticResource OD.Pad.3}"
+                                        IsEnabled="{Binding CanClose}"
                                         Click="OnCloseClick"
                                         ToolTip="Kapat (ESC)">
                                     <Path Style="{StaticResource OD.IconPath}"

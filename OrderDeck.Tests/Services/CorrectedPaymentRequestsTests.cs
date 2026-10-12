@@ -467,6 +467,45 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         vm.ResendButtonText.Should().Be("Düzeltilmiş isteği gönder (1 kişi, 2 istek)");
     }
 
+    [Fact]
+    public async Task Drawer_stays_open_while_corrected_requests_are_sent_and_the_manual_list_outlives_it()
+    {
+        // "Düzeltilmiş isteği gönder" sürerken çekmece kapatılabiliyordu (Kapat, çarpı, ESC): "elle bakılmalı"
+        // listesi operatöre hiç ulaşmıyordu.
+        var l = Add("instagram", "@elle", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        Delivered(l.CustomerId, "session:s1", 250m);
+        var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, Sut((_, _, _, _, _) => gate.Task),
+            "s1", new[] { l.Id }, OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now,
+            inFlight: () => null, applied: _ => { }, reprint: _ => Task.FromResult<string?>(null),
+            cloudApiEnabled: true);
+        var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
+        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.AttachTo(d); return new object(); });
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+        vm.SkipReprintCommand.Execute(null);
+        vm.ResendRows.Should().ContainSingle();
+
+        var sending = vm.ResendCommand.ExecuteAsync(null);
+
+        vm.DoneCommand.CanExecute(null).Should().BeFalse("Kapat düğmesi pasif");
+        vm.DoneCommand.Execute(null);
+        stack.Top!.CanClose.Should().BeFalse("başlıktaki çarpı pasif");
+        stack.CloseTop().Should().BeTrue("ESC tüketilir");
+        stack.IsOpen.Should().BeTrue("gönderim sürerken çekmece kapanmaz");
+
+        gate.SetResult(new PaymentRequestOutcome(PaymentRequestResult.PhoneRequired));
+        await sending;
+
+        vm.CanClose.Should().BeTrue();
+        vm.OutcomeReport.Should().Contain("elle bakılmalı")
+            .And.Contain(vm.ResendRows[0].Candidate.Display)
+            .And.Contain("WhatsApp numarası gerekli", "kabuk bunu Basılanlar ileti satırına yazar");
+        vm.DoneCommand.Execute(null);
+        (await closed).Should().BeTrue();
+    }
+
     // ── Düzeltilmiş isteği gönder ─────────────────────────────────────
 
     private static CorrectedRequestCandidate Candidate(string customerId, decimal prior = 600m)

@@ -23,7 +23,8 @@ public interface IDrawerService
     /// <summary>
     /// En üstteki çekmeceyi iptal ederek kapatır. Açık çekmece yoksa false
     /// döner — ESC işleyicisi tuşu tüketmesin, altındaki davranışa (yedek
-    /// seçim modundan çıkış) yol versin.
+    /// seçim modundan çıkış) yol versin. En üstteki kapatılamıyorsa
+    /// (<see cref="Drawer.CanClose"/> false — iş sürüyor) açık kalır, true döner.
     /// </summary>
     bool CloseTop();
 }

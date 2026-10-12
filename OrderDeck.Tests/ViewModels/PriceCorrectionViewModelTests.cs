@@ -209,6 +209,40 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Drawer_stays_open_while_the_reprint_runs_and_its_error_outlives_it()
+    {
+        // Yeniden baskı sürerken çekmece kapatılabiliyordu (Kapat, çarpı, ESC): baskı hatası operatöre hiç
+        // ulaşmıyordu — kâğıtlarda eski fiyat kalırdı.
+        var a = Add("@a", 250m);
+        _labels.MarkPrintedAndRecord(new[] { a.Id });
+        var gate = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = new PriceCorrectionViewModel(_labels, payments: null, "s1", new[] { a.Id },
+            PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null, applied: _ => { },
+            reprint: _ => gate.Task, cloudApiEnabled: true);
+        var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
+        var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.AttachTo(d); return new object(); });
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        var reprinting = vm.ReprintCommand.ExecuteAsync(null);
+
+        vm.DoneCommand.CanExecute(null).Should().BeFalse("Kapat düğmesi pasif");
+        vm.DoneCommand.Execute(null);
+        stack.Top!.CanClose.Should().BeFalse("başlıktaki çarpı pasif");
+        stack.CloseTop().Should().BeTrue("ESC tüketilir");
+        stack.IsOpen.Should().BeTrue("yeniden baskı sürerken çekmece kapanmaz");
+
+        gate.SetResult("Yeniden basılamadı: kâğıt bitti. Yazıcıyı kontrol edip tekrar dene.");
+        await reprinting;
+
+        vm.CanClose.Should().BeTrue();
+        stack.Top!.CanClose.Should().BeTrue();
+        vm.OutcomeReport.Should().Contain("kâğıt bitti", "kabuk bunu Basılanlar ileti satırına yazar");
+        stack.CloseTop().Should().BeTrue();
+        (await closed).Should().BeFalse();
+    }
+
+    [Fact]
     public void Conflict_on_write_keeps_the_operators_unchecked_price_groups()
     {
         // 300 TL'lik (pazarlıklı) grup bilerek işaretten çıkarıldı; yazım çakışma verdi, operatör yeniden
