@@ -550,21 +550,28 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
 
     private void ReportWorkFinished(string outcome) => WorkFinished?.Invoke("Fiyat düzeltmesi: " + outcome);
 
-    /// <summary>Düzeltme bu kodu kapsıyor mu (harf duyarsız, kod kutusuyla aynı kural).</summary>
-    internal bool CoversCode(string code)
-        => Codes.Any(c => string.Equals(c.Key, code.Trim(), StringComparison.OrdinalIgnoreCase));
+    /// <summary>Düzeltmenin yayını.</summary>
+    internal string SessionId => _sessionId;
+
+    /// <summary>Düzeltme bu yayındaki bu kodu kapsıyor mu (kod harf duyarsız, kod kutusuyla aynı kural). Kodlar
+    /// her yayında yeniden kullanılıyor ("A1"): yalnız koda bakmak önceki yayının A1 sonucunu bu yayının A1'iyle
+    /// kapsanmış sayıyordu — oysa yeni sonuç önceki yayının etiketlerini ve kişilerini içermez.</summary>
+    internal bool Covers(string sessionId, string code)
+        => string.Equals(_sessionId, sessionId, StringComparison.Ordinal)
+           && Codes.Any(c => string.Equals(c.Key, code.Trim(), StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Sonuçta CEVAPLANMADAN kalan işler, adlarıyla: yanıtlanmamış yeniden baskı sorusu, gönderilmemiş düzeltilmiş
     /// istekler, ödemesi alınmış kişiler (fark müşteriyle çözülecek). Yoksa null. Süren yeniden baskı ya da gönderim
     /// sayılmaz — o iş bitince sonucunu zaten bildirir (<see cref="WorkFinished"/>).
     ///
-    /// <para>Kabuk FİYAT kutusunun altındaki sonucu operatör kapatmadan başka bir kodun sonucuyla değiştirirken bunu
-    /// "Basılanlar"daki kalıcı sonuç şeridine yazar: bekleyen kâğıt ve para işi sessizce kaybolmasın. Tutar
-    /// YAZILMAZ — sonraki bir düzeltme kişinin toplamını yeniden değiştirmiş olabilir; güncel eski/yeni tutarı
-    /// müşteri kartındaki ödeme sorusu söyler.</para>
+    /// <para>Kabuk FİYAT kutusunun altındaki sonucu operatör kapatmadan kaldırırken (yerine başka bir kodun ya da başka
+    /// bir yayının sonucu geçiyor, yayın değişti) bunu "Basılanlar"daki kalıcı sonuç şeridine yazar: bekleyen kâğıt
+    /// ve para işi sessizce kaybolmasın. <paramref name="reason"/> neden kaldırıldığını söyler. Tutar YAZILMAZ —
+    /// sonraki bir düzeltme kişinin toplamını yeniden değiştirmiş olabilir; güncel eski/yeni tutarı müşteri
+    /// kartındaki ödeme sorusu söyler.</para>
     /// </summary>
-    internal string? UnansweredWork()
+    internal string? UnansweredWork(string reason)
     {
         static string Names(IEnumerable<string> names)
             => string.Concat(names.Distinct(StringComparer.Ordinal).Select(n => $"\n• {n}"));
@@ -580,7 +587,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             text += "\nÖdemesi alınmış — farkı müşteriyle çöz:" + Names(_paidNames);
         if (text.Length == 0) return null;
         var codes = _resultCodes.Length == 0 ? "" : $" ({_resultCodes})";
-        return $"Fiyat düzeltmesi{codes}: sonuç kapatılmadan başka bir kodun fiyatı değiştirildi; cevaplanmayanlar:{text}";
+        return $"Fiyat düzeltmesi{codes}: {reason}; cevaplanmayanlar:{text}";
     }
 
     /// <summary>Sonuç şeridi için ele alınması gereken kişiler, adı ve sebebiyle ayrı satırda: "elle bakılmalı"

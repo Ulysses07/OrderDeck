@@ -890,11 +890,13 @@ public class MainShellPrintedLabelsTests
     }
 
     [Fact]
-    public async Task Backup_confirmed_at_another_price_makes_the_box_ask_about_the_codes_price()
+    public async Task Backup_confirmed_at_another_price_hints_without_blocking_the_code()
     {
-        // Ana etiket iptal edildi, kodun kalan tek etiketi olan yedek 200'e onaylandı; kutu hâlâ 250 ve "bu yayındaki
-        // fiyatı" diyordu — sonraki yorum 250'den yazılıp aynı kodda iki fiyat oluşurdu. Bir yayında bir kodun tek
-        // fiyatı: kutu artık kodun fiyatı değil, F2 şeridi sorar (kutu sessizce değişmez).
+        // Ana etiket iptal edildi, kodun kalan tek etiketi olan yedek 200'e onaylandı; kutu hâlâ 250. Kutu artık
+        // "bu yayındaki fiyatı" demez (kodun etiketi 200). Ama operatör fiyatı değiştirmedi: şerit kendiliğinden
+        // AÇILMAZ — açılıyor ve yanıtlanana kadar o kod için etiket yazılmıyordu (sahip: yayında operatörün
+        // başlatmadığı hiçbir şey etiketlemeyi durdurmaz). Kutunun altında engellemeyen ipucu; kutu sessizce
+        // değişmez, sonraki yorum kutudaki fiyatla yazılır.
         var (h, drawers) = Build();
         using var __ = h;
         var a = Enqueue(h, "@a", 250m);
@@ -911,7 +913,16 @@ public class MainShellPrintedLabelsTests
         await h.Vm.CancelAndTransferBackupsAsync(new[] { a.Id }, CancelReasonCodes.Customer);
 
         h.Vm.ActivePriceText.Should().Be("250");
-        h.Vm.CodePriceQuestion.Should().Be("A12 kodunun 1 etiketi 200,00 TL. Hepsi 250,00 TL olsun mu?");
+        h.Vm.PriceSourceText.Should().BeNull("kutudaki 250 artık kodun bu yayındaki fiyatı değil");
+        h.Vm.CodePriceQuestion.Should().BeNull("operatör fiyatı değiştirmedi — şerit kendiliğinden açılmaz");
+        h.Vm.CodePriceHint.Should().StartWith("A12 kodunda farklı fiyatlı 1 etiket var — ");
+        h.Dialogs.Shown.Should().BeEmpty("pop-up yok");
+
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@yeni", "A12 aldım"));
+
+        h.Vm.PrintQueue.Should().Contain(r => r.Username == "@yeni" && r.Price == 250m,
+            "yazım durmaz, kutudaki fiyatla");
+        h.Vm.CodePriceBlocked.Should().BeNull();
     }
 
     private sealed class ReprintFailsPrinter : ILabelPrinter

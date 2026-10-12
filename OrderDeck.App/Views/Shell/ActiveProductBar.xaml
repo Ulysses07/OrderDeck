@@ -80,6 +80,15 @@
                        Foreground="{StaticResource OD.Brush.Amber}"
                        Margin="{StaticResource OD.Pad.Top3}"
                        Visibility="{Binding IsPriceCarriedOver, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <!-- Kodda kutudakinden farklı fiyatlı etiket var ve operatör fiyatı
+                 değiştirmedi (eski veri, iptal, yedek onayı): ENGELLEMEYEN ipucu.
+                 Şerit yalnız operatör fiyatı değiştirince açılır; yazım sürer. -->
+            <TextBlock Text="{Binding CodePriceHint}"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Amber}"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding CodePriceHint, Converter={StaticResource NullToCollapsedConverter}}"/>
             <TextBlock Text="{Binding PriceError}"
                        Style="{StaticResource OD.Text.Hint}"
                        Foreground="{StaticResource OD.Brush.Accent}"

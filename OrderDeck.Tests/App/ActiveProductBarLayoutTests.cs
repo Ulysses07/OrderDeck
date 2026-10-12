@@ -137,7 +137,8 @@ public class ActiveProductBarLayoutTests
         // satırı VM'de doğru olsa da bağ koparsa operatör görmez: etiket sessizce yazılmamış olur.
         var error = ThemeTestHost.RunOnSta(() =>
         {
-            using var h = MainShellTestHarness.Build();
+            var printer = new GatedPrinter();
+            using var h = MainShellTestHarness.Build(printerOverride: printer);
             h.Vm.ActiveCode = "A1";
             MainShellTestHarness.EnqueueLabel(h.Vm, "@a", 250m);
             var bar = new ActiveProductBar { DataContext = h.Vm };
@@ -151,14 +152,61 @@ public class ActiveProductBarLayoutTests
             ThemeTestHost.Pump();
             Shows(bar, "Önce fiyat değişikliğini onayla — yazılmadı: @gec").Should().BeTrue();
 
-            // Şerit açıkken kodun etiketi başka yoldan iptal edildi: "Evet"in uygulanacağı etiket yok.
-            h.Labels.Cancel(new[] { h.Vm.PrintQueue[0].Id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
-            Click(ButtonIn((Border)bar.FindName("CodePriceStrip"), "Evet"));
-            ThemeTestHost.Pump();
-            h.Vm.CodePriceError.Should().NotBeNull();
-            Shows(bar, h.Vm.CodePriceError!).Should().BeTrue("şeridin hata satırı");
+            // Şerit açıkken kodun etiketi yazıcıda: "Evet" uygulanamaz, sebep şeridin hata satırında. (Bayat şerit —
+            // kodun etiketi kalmadı — artık hata vermeden kapanıyor; hata satırını o yol göstermez.)
+            var printing = h.Vm.PrintCommand.ExecuteAsync(null);
+            try
+            {
+                Click(ButtonIn((Border)bar.FindName("CodePriceStrip"), "Evet"));
+                ThemeTestHost.Pump();
+                h.Vm.CodePriceError.Should().Contain("Baskı bitince tekrar deneyin");
+                Shows(bar, h.Vm.CodePriceError!).Should().BeTrue("şeridin hata satırı");
+            }
+            finally
+            {
+                printer.Release.Set();
+                printing.GetAwaiter().GetResult();
+            }
         });
 
         error.Should().BeNull();
+    }
+
+    [Fact]
+    public void Code_price_hint_is_shown_by_the_bar()
+    {
+        // Kodda kutudakinden farklı fiyatlı etiket var, operatör fiyatı değiştirmedi: şerit yok, engellemeyen ipucu
+        // kutunun altında. Bağ koparsa operatör farklı fiyatlı etiketleri hiç duymaz.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var h = MainShellTestHarness.Build();
+            var sessionId = h.Sessions.GetActive()!.Id;
+            foreach (var p in new[] { 250m, 250m, 230m })
+                h.Labels.Add(sessionId, MainShellTestHarness.ChatVm("@x", "A1").Message, p, "A1");
+            var bar = new ActiveProductBar { DataContext = h.Vm };
+            bar.Measure(new Size(360, 900));
+            bar.Arrange(new Rect(0, 0, 360, 900));
+            ThemeTestHost.Pump();
+
+            h.Vm.ActiveCode = "A1";
+            ThemeTestHost.Pump();
+
+            h.Vm.CodePriceHint.Should().NotBeNull();
+            Shows(bar, h.Vm.CodePriceHint!).Should().BeTrue("kutunun altındaki ipucu");
+            ((Border)bar.FindName("CodePriceStrip")).Visibility.Should().Be(Visibility.Collapsed, "şerit açılmaz");
+        });
+
+        error.Should().BeNull();
+    }
+
+    private sealed class GatedPrinter : OrderDeck.Labeling.ILabelPrinter
+    {
+        public System.Threading.ManualResetEventSlim Release { get; } = new(false);
+
+        public void Print(IReadOnlyList<OrderDeck.Core.Sales.Label> labels,
+            IReadOnlySet<string>? recipientPaysLabelIds = null, IReadOnlySet<string>? correctionLabelIds = null)
+            => Release.Wait(System.TimeSpan.FromSeconds(10));
+
+        public void PrintGiftLabels(IReadOnlyList<OrderDeck.Core.Sales.Label> labels) { }
     }
 }
