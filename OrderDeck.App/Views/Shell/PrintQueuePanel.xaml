@@ -61,13 +61,14 @@
                             </Border>
                         </StackPanel>
                     </RadioButton>
-                    <!-- K4: kuyrukta seçili (basılmamış) satırların fiyatı — aynı
-                         çekmece, yeniden baskı adımı yok. -->
+                    <!-- K4/F3: kuyrukta seçili satırların KODLARI — aynı çekmece. Kodun
+                         yayındaki bütün etiketleri düzelir; basılmış olanı da varsa
+                         yeniden baskı sorulur. -->
                     <Button DockPanel.Dock="Right" Content="Fiyatı düzelt"
                             Style="{StaticResource OD.Button.Ghost}"
                             FontSize="{StaticResource OD.Font.F0}"
                             Command="{Binding FixQueuePriceCommand}"
-                            ToolTip="Seçili etiketlerin fiyatını düzelt"
+                            ToolTip="Seçili etiketlerin kodunun fiyatını düzelt (kodun bu yayındaki bütün etiketleri)"
                             Visibility="{Binding ShowQueueFixPrice, Converter={StaticResource BoolToVisibleConverter}}"/>
                 </DockPanel>
             </Border>
