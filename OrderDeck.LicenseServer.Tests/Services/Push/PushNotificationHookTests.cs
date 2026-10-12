@@ -224,6 +224,40 @@ public class PushNotificationHookTests : IClassFixture<ApiFactory>
         n.Data!["count"].Should().Be("2");
     }
 
+    // K6 (2026-10-12): masaüstündeki "Fiyatı düzelt" aynı sipariş kimliğiyle yeni fiyatı gönderir. Sunucu
+    // yerinde günceller; müşteriye/yayıncıya ikinci bir "yeni sipariş" bildirimi GİTMEMELİ.
+    [Fact]
+    public async Task OrderSync_price_correction_of_existing_order_does_not_notify()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        object Order(decimal price) => new
+        {
+            id, sessionId = (Guid?)null,
+            customerId = "cust1", platform = "youtube",
+            username = "u1", displayName = (string?)null,
+            messageText = "A12 aldım", code = "A12", price,
+            addedAt = now, printedAt = (DateTimeOffset?)now,
+            cancelledAt = (DateTimeOffset?)null, cancelReason = (string?)null,
+            isShippingFee = false, isBackupPromoted = false,
+            isTentativeBackup = false
+        };
+
+        (await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/orders/sync",
+            new { orders = new[] { Order(250m) } })).EnsureSuccessStatusCode();
+        _factory.Push.Sent.Should().HaveCount(1, "ilk basılmış sipariş bildirilir");
+        _factory.Push.Clear();
+
+        (await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/orders/sync",
+            new { orders = new[] { Order(205m) } })).EnsureSuccessStatusCode();
+
+        _factory.Push.Sent.Should().BeEmpty("fiyat düzeltmesi yeni sipariş değil");
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Orders.SingleAsync(o => o.Id == id)).Price.Should().Be(205m);
+    }
+
     [Fact]
     public async Task OrderSync_unprinted_or_cancelled_orders_do_not_notify()
     {
