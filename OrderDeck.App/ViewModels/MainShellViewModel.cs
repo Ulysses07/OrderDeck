@@ -1679,21 +1679,30 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _printInFlightIds = ids;
         _printTaskIsQueue = isQueue;
         _printTask = gate.Task;
-        PrintCommand.NotifyCanExecuteChanged();
         var ok = false;
         try
         {
+            NotifyPrintGateChanged();
             ok = await job();
             return ok;
         }
         finally
         {
-            // Sıra önemli: önce alanlar temizlenir, kapı EN SON kapanır.
+            // Sıra önemli: önce alanlar temizlenir, kapı EN SON kapanır — bildirim patlasa bile.
             _printTask = null;
             _printInFlightIds = null;
-            PrintCommand.NotifyCanExecuteChanged();
-            gate.TrySetResult(ok);
+            try { NotifyPrintGateChanged(); }
+            finally { gate.TrySetResult(ok); }
         }
+    }
+
+    /// <summary>Yazdır'ın etkinliği kapıyla değişir (<see cref="CanPrint"/>). Kapının kapanışı işin
+    /// devamında koşar; o devam VM'in iş parçacığında olmayabilir (bağlı düğme yabancı iş parçacığından
+    /// gelen bildirimde patlar) — bildirim VM'in dispatcher'ına taşınır.</summary>
+    private void NotifyPrintGateChanged()
+    {
+        if (_dispatcher.CheckAccess()) PrintCommand.NotifyCanExecuteChanged();
+        else _dispatcher.BeginInvoke(() => PrintCommand.NotifyCanExecuteChanged());
     }
 
     private async Task<bool> PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
