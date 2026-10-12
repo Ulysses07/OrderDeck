@@ -76,10 +76,15 @@ public enum PaymentRequestResult
 /// <param name="RemoteDeductions">Kişi düzeyindeki kapsam uzlaştırmasının (R4-03) sunucuda bulduğu
 /// ayrı düşümlerin tutarları (eskiden yeniye). Sunucu teslim bilgisini bilmez: bunlar "gitmiş istek"
 /// değildir, ayrı anlatılır (<see cref="Requests"/> boştur).</param>
+/// <param name="NewTotal">Tekrar göndermede (K5, 2026-10-12): istenecek toplam son istenenden FARKLIYSA
+/// yeni toplam (kargo dahil, bakiye düşülmeden önce) — soru ikisini birlikte gösterir ("250 TL istendi;
+/// yeni tutar 205 TL"). Aynıysa null: soru eskisi gibi.</param>
+/// <param name="PriorHadBalance">Son isteğin netinden bakiye düşülmüştü: yeni toplam bakiye düşülmeden
+/// önceki tutardır, soru bunu söyler (net ancak düşüm yeniden uygulanınca belli olur).</param>
 public sealed record PaymentPrompt(
     PersonScopePromptKind Kind, string ScopeKey, IReadOnlyList<PriorPaymentRequest> Requests, string Token,
     int UnsentDeductions = 0, bool RefundsToOtherRow = false, bool RefundsDeductions = true,
-    IReadOnlyList<decimal>? RemoteDeductions = null);
+    IReadOnlyList<decimal>? RemoteDeductions = null, decimal? NewTotal = null, bool PriorHadBalance = false);
 
 /// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.
 /// <see cref="Unconfirmed"/> = gönderim başladı ama sonucu yazılamadı: istek GİTMİŞ OLABİLİR (kesin
@@ -736,7 +741,7 @@ public sealed class PaymentRequestService
                 case PersonJobStatus.MembershipChanged:
                     return new(true, 0m, null) { MembershipChanged = true };
                 case PersonJobStatus.ConfirmationRequired:
-                    return new(true, 0m, pj.Job) { Prompt = PromptOf(pj.Plan!, scopeKey) };
+                    return new(true, 0m, pj.Job) { Prompt = PromptOf(pj.Plan!, scopeKey, totalAmount) };
             }
             foreach (var d in pj.Demoted)
                 _log?.LogWarning(
@@ -756,16 +761,29 @@ public sealed class PaymentRequestService
         }
     }
 
-    private static PaymentPrompt PromptOf(PersonScopePlan plan, string scopeKey)
-        => new(plan.Kind, scopeKey,
-            plan.PromptJobs.Select(j => new PriorPaymentRequest(
+    /// <param name="totalAmount">Bu tıklamada istenecek toplam (kargo dahil, bakiye öncesi) — son
+    /// istenenden farklıysa soruya yeni tutar olarak girer (K5).</param>
+    private static PaymentPrompt PromptOf(PersonScopePlan plan, string scopeKey, decimal totalAmount)
+    {
+        var prompts = plan.PromptJobs;
+        var last = prompts.Count > 0 ? prompts[^1] : null;
+        // Son isteğin bakiye öncesi toplamı: mesajdaki net + (hâlâ duran) düşüm. Düşüm sonradan geri
+        // alındıysa net tek başına kalır — fark yine "tutar değişti" olarak görünür.
+        var priorBalance = last?.AppliedAmount is > 0m ? last.AppliedAmount.Value : 0m;
+        var changed = plan.Kind == PersonScopePromptKind.Resend && last is not null
+                      && last.PromptNet + priorBalance != totalAmount;
+        return new(plan.Kind, scopeKey,
+            prompts.Select(j => new PriorPaymentRequest(
                 j.PromptNet,
                 j.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null,
                 j.HasUnconfirmedSend)).ToList(),
             plan.Token,
             plan.UnsentDeductions,
             plan.RefundsToOtherRow,
-            plan.RefundsDeductions);
+            plan.RefundsDeductions,
+            NewTotal: changed ? totalAmount : null,
+            PriorHadBalance: changed && priorBalance > 0m);
+    }
 
     /// <summary>Kişi × kapsamın işini (<paramref name="job"/>) kesinleştirir. Sunucuya giden BÜTÜN
     /// çağrılar (replay, kapsam, önizleme, apply) işin SAHİP satırının Id'siyle yapılır — tıklanan

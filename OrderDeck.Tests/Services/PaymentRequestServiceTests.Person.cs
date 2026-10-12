@@ -1058,8 +1058,10 @@ public partial class PaymentRequestServiceTests
             "geri alınan 250'lik denemenin değil, yetim 150'lik denemenin anı");
         var soru = dialogs.Confirmations.Should().ContainSingle().Subject;
         soru.Title.Should().Be("Ödeme isteği gönderilmiş olabilir");
+        // K5: tutar değiştiyse (250 → 350) soru yeni toplamı da gösterir.
         soru.Message.Should().EndWith(Saat(deneme) +
-            " 150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
+            " 150,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi); " +
+            "yeni toplam 350,00 TL (bakiye düşülmeden önce). Düzeltilmiş istek gönderilsin mi?");
     }
 
     // RV1 (son inceleme): yarım kalan istek yalnız onaylı tıklamanın gördüğü izler için sorusuz sürer.
@@ -1096,7 +1098,8 @@ public partial class PaymentRequestServiceTests
                 sut.RequestPaymentAsync(y, _ => 300m, T, "session:s1", t));
 
             red.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "kişi × kapsama istek gitmişti — sahip kararı 2");
-            hayir.Confirmations.Should().ContainSingle().Which.Message.Should().EndWith("100,00 TL istendi, tekrar gönderilsin mi?");
+            hayir.Confirmations.Should().ContainSingle().Which.Message.Should()
+                .EndWith("100,00 TL istendi; yeni tutar 300,00 TL. Düzeltilmiş istek gönderilsin mi?", "K5: tutar değişti");
             _launcher.LaunchedUrls.Should().HaveCount(mesajlar, "sorusuz ikinci istek yok");
             Isler(db, "session:s1").Single().State.Should().Be(PaymentJobState.ApplyUncertain, "ret: hiçbir şey değişmedi");
 
@@ -1238,7 +1241,8 @@ public partial class PaymentRequestServiceTests
             var yetimAni = DateTimeOffset.FromUnixTimeSeconds(nDeneme);
             yetimSoru.Prompt!.Requests[^1].Should().Be(new PriorPaymentRequest(100m, yetimAni, Unconfirmed: true));
             PaymentResultPresenter.PromptText(yetimSoru.Prompt, DateTimeOffset.Now).Message.Should().EndWith(Saat(yetimAni) +
-                " 100,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), tekrar gönderilsin mi?");
+                " 100,00 TL tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi); yeni tutar 400,00 TL. " +
+                "Düzeltilmiş istek gönderilsin mi?");
 
             // Onaylı tekrar gönderim teslim edildi: sıradaki soru O teslimi gösterir, mirastaki eski yetimi değil.
             (await EvetAsync(sut, o, 400m, "session:s1")).Should().Be(PaymentRequestResult.Opened);
@@ -1277,6 +1281,8 @@ public partial class PaymentRequestServiceTests
         public PaymentJob FindOrCreate(string customerId, string scopeKey, decimal productTotal)
             => inner.FindOrCreate(customerId, scopeKey, productTotal);
         public PersonJob FindOrCreateForPerson(PersonJobRequest request) => inner.FindOrCreateForPerson(request);
+        public (IReadOnlyList<PaymentJob> Jobs, IReadOnlyList<PaymentJob> Legacies) GetPersonScopeJobs(
+            IReadOnlyCollection<string> memberIds, string scopeKey) => inner.GetPersonScopeJobs(memberIds, scopeKey);
         public PaymentJob? Get(string id) => inner.Get(id);
         public IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId) => inner.GetOpenLegacies(customerId);
         public IReadOnlyList<PaymentJob> GetOpenLegacies(IReadOnlyCollection<string> customerIds)
