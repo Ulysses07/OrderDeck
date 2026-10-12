@@ -290,7 +290,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     // ürünün fiyatı sessizce yeni ürüne taşınıyordu, katalog fiyatı hiç
     // kullanılmıyordu ve kutu "99,50"yi 9950 okuyordu (PriceInput).
 
-    /// <summary>Operatörün kendi fiyatı: kutuya en son ELLE yazdığı metin (açılışta "0"). Katalog dolumu
+    /// <summary>Kutunun taşıdığı fiyat: operatörün kutuya en son ELLE yazdığı metin ya da etikete kullanılmış
+    /// katalog dolumu (açılışta "0"; ürüne ait kendi fiyatı için bkz. <see cref="_ownPriceText"/>). Katalog dolumu
     /// bunu EZMEZ — dolum geçicidir: kod kutusu her tuşta değişiyor ("A12" yazılırken "A1"den geçer);
     /// "A1"in katalog fiyatı kutuya yazılıp kalsaydı katalogda fiyatı olmayan A12'ye A1'in fiyatı
     /// taşınırdı. Dolumu olmayan koda geçişte kutu buna döner.</summary>
@@ -306,6 +307,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// Null = kutu operatörün fiyatını gösteriyor. Operatör kutuya yazınca ya da dolumla etiket
     /// yazılınca (fiyat o ürün için kullanıldı) dolum operatörün fiyatı olur.</summary>
     private string? _catalogFillCode;
+
+    /// <summary>Operatörün ELLE yazdığı son fiyat ve yazdığı kod (kod yokken yazıldıysa ilk yazıldığı
+    /// etiketin kodu). Aynı koda dönüşte katalog fiyatından ÖNCE gelir: operatörün o ürün için yazdığı fiyat
+    /// sessizce ezilmez. <see cref="_operatorPriceText"/>'tan farkı: katalog dolumuyla etiket yazılması bunu
+    /// değiştirmez — A1 için 120 yazıp B'de katalog fiyatıyla etiket basan operatör A1'e dönünce 120'yi görür.</summary>
+    private string _ownPriceText = "0";
+
+    /// <summary><see cref="_ownPriceText"/>'in kodu; null = henüz bir ürüne ait değil.</summary>
+    private string? _ownPriceCode;
+
+    /// <summary>Fiyat kurallarının en son uygulandığı etkin kod (<see cref="EffectiveCode"/>). Kutudaki metin
+    /// değişse de etkin kod aynı kaldıysa ("A1 ", aynı ürünün barkodu, aynı kodun yeniden seçilmesi) hiçbir şey
+    /// yeniden uygulanmaz.</summary>
+    private string? _pricedCode;
 
     /// <summary>Kutu programla dolduruluyor (katalog dolumu ya da operatörün fiyatına dönüş) —
     /// değişiklik operatörün düzenlemesi sayılmaz.</summary>
@@ -346,19 +361,34 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // sahibi şimdiki kod.
         _operatorPriceText = value;
         _operatorPriceOwner = EffectiveCode;
+        _ownPriceText = value;
+        _ownPriceCode = EffectiveCode;
         _catalogFillCode = null;
         IsPriceCarriedOver = false;
     }
 
-    /// <summary>Kod değişince (her tuşta): katalogda ürünün fiyatı varsa kutu onunla dolar (geçici
-    /// dolum); yoksa kutu operatörün fiyatını gösterir — dokunulmamış bir dolum duruyorsa operatörün
-    /// fiyatına döner — ve fiyat başka ürün için girilmişse vurgulanır (sahip kararı K8). Etiket her
-    /// zaman kutuda GÖRÜNEN fiyatla yazılır; gizli bir değer yok.</summary>
+    /// <summary>Etkin kod değişince (her tuşta): operatör bu ürün için kendi fiyatını yazmışsa kutu onu
+    /// gösterir — katalog fiyatı operatörün fiyatını sessizce EZMEZ. Yoksa katalogda ürünün fiyatı varsa kutu
+    /// onunla dolar (geçici dolum); o da yoksa kutu operatörün fiyatını gösterir — dokunulmamış bir dolum
+    /// duruyorsa operatörün fiyatına döner — ve fiyat başka ürün için girilmişse vurgulanır (sahip kararı K8).
+    /// Etkin kod aynıysa hiçbir şey yeniden uygulanmaz. Etiket her zaman kutuda GÖRÜNEN fiyatla yazılır;
+    /// gizli bir değer yok.</summary>
     private void ApplyCatalogPrice()
     {
         var code = EffectiveCode;
+        if (string.Equals(code, _pricedCode, StringComparison.OrdinalIgnoreCase)) return;
+        _pricedCode = code;
+
         var catalogPrice = ProductCard.Resolution?.Product.DefaultPrice ?? 0m;
-        if (catalogPrice > 0m && code is not null)
+        if (code is not null && string.Equals(_ownPriceCode, code, StringComparison.OrdinalIgnoreCase))
+        {
+            // Operatör bu ürün için kendi fiyatını yazmıştı (ör. yayına özel 120; arada başka ürüne bakıldı).
+            SetPriceTextProgrammatically(_ownPriceText);
+            _operatorPriceText = _ownPriceText;
+            _operatorPriceOwner = _ownPriceCode;
+            _catalogFillCode = null;
+        }
+        else if (catalogPrice > 0m && code is not null)
         {
             SetPriceTextProgrammatically(PriceInput.Format(catalogPrice));
             _catalogFillCode = code;
@@ -1503,9 +1533,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 _catalogFillCode = null;
             }
         }
-        else
+        else if (_operatorPriceOwner is null)
         {
-            _operatorPriceOwner ??= code;
+            // Sahipsiz fiyat yalnız operatörün elle yazdığı (ya da açılış) fiyatı olabilir: kendi fiyatı da
+            // bu ürünün olur.
+            _operatorPriceOwner = code;
+            _ownPriceCode ??= code;
         }
         if (_zeroPriceDroppedItems.Remove(messageVm)) UpdateZeroPriceDropped();
 

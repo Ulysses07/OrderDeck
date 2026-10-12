@@ -174,10 +174,13 @@ public class MainShellPriceBoxTests
             rows[i] = new CatalogProduct(id, null, "SK" + i, "SK" + i, "Ürün " + code, price, null,
                 null, null, null, null, null, 0);
             codes[i] = new CatalogBroadcastCode(id, null, code, SearchNormalizer.Normalize(code), 0, 0);
-            variants[i] = new CatalogVariant("v" + id, id, null, null, null, true, 0);
+            variants[i] = new CatalogVariant("v" + id, id, null, null, Barcode(i), true, 0);
         }
         new CatalogReplicaRepository(h.Db).Replace(rows, variants, Array.Empty<CatalogCategory>(), codes);
     }
+
+    /// <summary><see cref="SeedCatalog"/>'daki <paramref name="index"/>. ürünün (tek varyantının) barkodu.</summary>
+    private static string Barcode(int index) => (8690000000000L + index).ToString();
 
     [Fact]
     public void Code_change_fills_price_from_catalog_and_card_shows_it()
@@ -306,6 +309,100 @@ public class MainShellPriceBoxTests
 
         h.Vm.ActivePriceText.Should().Be("100");
         h.Vm.IsPriceCarriedOver.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Operators_price_for_a_code_beats_its_catalog_price_when_the_operator_comes_back()
+    {
+        // A1 için yayına özel 120 yazıldı, stoğa bakmak için B'ye geçildi, A1'e dönüldü: kutu katalog fiyatına
+        // (100) dönüyor, vurgu çıkmıyordu — etiket sessizce 100 TL yazılıyordu.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = "120";
+
+        h.Vm.ActiveCode = "B";
+        h.Vm.ActivePriceText.Should().Be("300", "operatörün B için fiyatı yok: katalog fiyatı");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+
+        h.Vm.ActiveCode = "A1";
+
+        h.Vm.ActivePriceText.Should().Be("120", "operatörün A1 için yazdığı fiyat katalogdan önce gelir");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse("120 A1'in kendi fiyatı");
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@alici", "A1 aldım"));
+        h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(120m);
+    }
+
+    [Fact]
+    public void Operators_price_comes_back_when_the_code_is_typed_again_letter_by_letter()
+    {
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = "120";
+        h.Vm.ActiveCode = "B";
+
+        TypeCode(h, "A1");
+
+        h.Vm.ActivePriceText.Should().Be("120");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Operators_price_survives_labels_written_with_another_products_catalog_price()
+    {
+        // B'de katalog fiyatıyla etiket yazılması (dolum "kullanıldı") operatörün A1 için yazdığı fiyatı silmez.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = "120";
+        h.Vm.ActiveCode = "B";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "B aldım"));
+
+        h.Vm.ActiveCode = "A1";
+
+        h.Vm.ActivePriceText.Should().Be("120");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
+        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(300m, 120m);
+    }
+
+    [Theory]
+    [InlineData("A1 ")]
+    [InlineData("a1")]
+    [InlineData("barcode")]
+    public async Task Same_product_entered_again_keeps_the_operators_price(string sameProduct)
+    {
+        // Kod kutusuna sonda boşluk, küçük harf ya da aynı ürünün barkodu: etkin kod aynı (A1) ama katalog fiyatı
+        // yeniden uygulanıp operatörün 120'si sessizce 100'e dönüyordu.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = "120";
+
+        h.Vm.ActiveCode = sameProduct == "barcode" ? Barcode(0) : sameProduct;
+
+        h.Vm.ProductCard.Code.Should().Be("A1");
+        h.Vm.ActivePriceText.Should().Be("120");
+        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@alici", "A1 aldım"));
+        h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(120m);
+    }
+
+    [Fact]
+    public void Same_effective_code_reapplies_nothing()
+    {
+        // Etkin kod değişmediyse kutuya hiçbir şey yeniden uygulanmaz — arada katalog fiyatı değişmiş olsa da.
+        // Kutu yalnız ürün değişince değişir; etiket kutuda görünenle yazılır.
+        using var h = MainShellTestHarness.Build();
+        SeedCatalog(h, ("p1", "A1", 100m));
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText.Should().Be("100");
+        SeedCatalog(h, ("p1", "A1", 110m));    // katalog senkronu
+
+        h.Vm.ActiveCode = Barcode(0);
+
+        h.Vm.ActivePriceText.Should().Be("100");
     }
 
     [Fact]
