@@ -660,8 +660,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         };
         // Yuva tek: önceki sonuç operatör "Kapat" demeden yerini bu sonuca bırakıyor. Yalnız AYNI yayının AYNI
         // kodunun sonucuysa yeni sonuç aynı etiketler ve kişiler için soruyu ve listeyi güncel tutarlarla yeniden
-        // kurar — ödenmişlerin "fark"ı da mutlaktır (ödenen − yeni toplam, CorrectedPaymentRequests.Plan): önceki
-        // sonucun farkı yenisinin içinde, 250 → 200 → 190'da −60. Değilse (başka kod ya da başka yayın — kodlar
+        // kurar — ödenmişlerin "fark"ı etiketin ödendiği fiyata göredir (Label.PaidPrice, CorrectedPaymentRequests.Plan):
+        // önceki sonucun farkı yenisinin içinde, 250 → 200 → 190'da −60 (bu düzeltmede −10). Değilse (başka kod ya da başka yayın — kodlar
         // her yayında yeniden kullanılıyor) cevaplanmamış işi kalıcı sonuç şeridine yazılır: iz bırakmadan ezilince
         // kâğıtlarda eski fiyat kalıyor, eski tutarla istenmiş kişiye düzeltilmiş istek hiç gitmiyordu.
         if (CodePriceCorrection is { } previous && !previous.Covers(pending.SessionId, pending.Code))
