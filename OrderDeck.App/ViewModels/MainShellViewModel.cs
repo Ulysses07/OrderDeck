@@ -305,8 +305,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     //     hiçbir şey etiketlemeyi durdurmaz). İptal, yedek onayı, tazeleme, eski veriden kalan karışık fiyat şeridi
     //     açmaz: kodda kutudakinden farklı fiyatlı etiket varsa kutunun altında ENGELLEMEYEN bir ipucu yazar
     //     (CodePriceHint), etiket kutudaki fiyatla yazılmaya devam eder.
-    //   - Açık şerit bayatlarsa (kodun düzeltilebilir etiketi kalmadı: hepsi iptal edildi ya da kargoya verildi)
-    //     kendiliğinden kapanır, o kod için yazım açılır; kutu operatörün yazdığı değeri korur.
+    //   - Açık şerit bayatlarsa (kodun değişecek etiketi kalmadı: hepsi iptal edildi, kargoya verildi ya da zaten
+    //     yazılan fiyatta) kendiliğinden kapanır, o kod için yazım açılır; kutu operatörün yazdığı değeri korur.
+    //     Başka hiçbir şey onu kapatmaz — kodun çoğunluk fiyatı yazılan fiyata dönse de operatör cevap verene
+    //     kadar sorar.
     //   - Düzeltmeden sonra etkin kod düzeltilen kodsa kutu yeni fiyatı gösterir (F4).
     //   - Kutu "bu yayındaki fiyatı"yken kaynak elden gider (yayın biter/başlar, kodun etiketleri iptal edilir) →
     //     kutu DEĞİŞMEZ, kaynağı yeniden okunur: katalog fiyatıysa öyle söylenir, değilse kutu nedeniyle
@@ -526,10 +528,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// F2 şeridinin TEK karar noktası. <paramref name="operatorEdit"/>: operatör kutudaki fiyatı değiştirdi — etkin
     /// kodun bu yayında düzeltilebilir etiketi varsa ve yazılan fiyat kodun fiyatından farklıysa şerit açılır (ya da
     /// metni güncellenir). Şerit YALNIZ böyle açılır. Operatörün düzenlemesi değilse (kodun etiketleri kutunun
-    /// dışında değişti, ya da şeridin beklettiği yazım/onay anı) yalnız AÇIK şerit yeniden denetlenir: hâlâ
-    /// geçerliyse metni güncellenir; bayatsa (kodun düzeltilebilir etiketi kalmadı — hepsi iptal edildi ya da
-    /// kargoya verildi —, yazılan fiyat artık kodun fiyatı, yayın değişti) kapanır ve o kod için yazım açılır.
-    /// Kutunun değeri hiçbir durumda değişmez. Uygulama YOK — yalnız soru.
+    /// dışında değişti, ya da şeridin beklettiği yazım/onay anı) yalnız AÇIK şerit yeniden denetlenir: değişecek
+    /// etiket kaldıkça (yazılan fiyattan farklı fiyatlı düzeltilebilir etiket) operatör cevap verene kadar açık
+    /// kalır, metni güncellenir. Kodun çoğunluk fiyatı yazılan fiyata dönse de (ör. eski fiyatlı etiketlerin bir
+    /// kısmı iptal edildi) kalır: operatörün başlattığı "Hepsi X olsun mu?" kendisi cevap vermeden düşüyor, eski
+    /// fiyatlı etiketler eski fiyatta kalıyordu. Yalnız bayatsa kapanır ve o kod için yazım açılır: kodun
+    /// değişecek etiketi kalmadı (hepsi iptal edildi, kargoya verildi ya da zaten yazılan fiyatta) ya da yayın
+    /// değişti. Kutunun değeri hiçbir durumda değişmez. Uygulama YOK — yalnız soru.
     /// </summary>
     private void EvaluateCodePriceChange(bool operatorEdit)
     {
@@ -537,7 +542,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var code = EffectiveCode;
         var parsed = PriceInput.Parse(ActivePriceText);
         var info = ActiveCodePrice(code, out var sessionId);
-        var asks = info is { Correctable: > 0 } && sessionId is not null && parsed.IsOk && parsed.Value != info.Price;
+        var asks = info is { Correctable: > 0 } && sessionId is not null && parsed.IsOk
+            && (operatorEdit
+                ? parsed.Value != info.Price
+                : info.Groups.Any(g => g.Price != parsed.Value));
         var mayAsk = operatorEdit
             || (_pendingCodePrice is { } open && string.Equals(open.SessionId, sessionId, StringComparison.Ordinal));
         if (asks && mayAsk)
@@ -652,9 +660,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         };
         // Yuva tek: önceki sonuç operatör "Kapat" demeden yerini bu sonuca bırakıyor. Yalnız AYNI yayının AYNI
         // kodunun sonucuysa yeni sonuç aynı etiketler ve kişiler için soruyu ve listeyi güncel tutarlarla yeniden
-        // kurar. Değilse (başka kod ya da başka yayın — kodlar her yayında yeniden kullanılıyor) cevaplanmamış işi
-        // kalıcı sonuç şeridine yazılır: iz bırakmadan ezilince kâğıtlarda eski fiyat kalıyor, eski tutarla
-        // istenmiş kişiye düzeltilmiş istek hiç gitmiyordu.
+        // kurar — ödenmişlerin "fark"ı da mutlaktır (ödenen − yeni toplam, CorrectedPaymentRequests.Plan): önceki
+        // sonucun farkı yenisinin içinde, 250 → 200 → 190'da −60. Değilse (başka kod ya da başka yayın — kodlar
+        // her yayında yeniden kullanılıyor) cevaplanmamış işi kalıcı sonuç şeridine yazılır: iz bırakmadan ezilince
+        // kâğıtlarda eski fiyat kalıyor, eski tutarla istenmiş kişiye düzeltilmiş istek hiç gitmiyordu.
         if (CodePriceCorrection is { } previous && !previous.Covers(pending.SessionId, pending.Code))
             RetireCodePriceCorrection(string.Equals(previous.SessionId, pending.SessionId, StringComparison.Ordinal)
                 ? "sonuç kapatılmadan başka bir kodun fiyatı değiştirildi"
@@ -673,7 +682,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         if (CodePriceCorrection is not { } previous) return;
         CodePriceCorrection = null;
-        if (previous.UnansweredWork(reason) is { } unanswered) AddPrintedOutcome(unanswered);
+        if (previous.UnansweredWork(reason) is { } unanswered) AddPrintedOutcome(unanswered, needsAction: true);
     }
 
     /// <summary>Şeridin "Vazgeç"i (F2): değişiklik uygulanmaz, kutu kodun bu yayındaki fiyatına döner.</summary>

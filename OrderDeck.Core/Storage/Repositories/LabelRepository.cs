@@ -216,13 +216,19 @@ public sealed class LabelRepository
     /// Revision+1, StockSyncedAt'e DOKUNULMAZ (fiyat stok-ilgili değil). PriceCorrectedAt (yeniden
     /// baskıdaki "DÜZELTME" işareti) YALNIZ basılmış etikette damgalanır: işaret "yığında eski fiyatlı
     /// bir kâğıt var" demek. Kuyrukta düzeltilen etiketin ilk kâğıdı zaten yeni fiyatla çıkar — onu
-    /// işaretlemek paketleyene ortada olmayan yanlış kâğıdı aratırdı.</para></summary>
+    /// işaretlemek paketleyene ortada olmayan yanlış kâğıdı aratırdı.</para>
+    ///
+    /// <para>PaidPrice (göç 048): etiket bir kargo dosyasına bağlıysa (dekontla ödendi) ve bağlıyken ilk kez
+    /// düzeltiliyorsa düzeltmeden ÖNCEKİ fiyatı — ödendiği fiyat — yazılır; sonraki düzeltmeler dokunmaz.
+    /// "Ödendi, fark" bununla mutlak hesaplanır (<see cref="GetPaidDifferenceOnOpenFiles"/>). SQLite atamanın sağ
+    /// tarafını satırın ESKİ değerleriyle değerlendirir: <c>Price</c> burada eski fiyat.</para></summary>
     public int UpdatePriceForCorrection(
         string id, decimal expectedPrice, bool expectPrinted, bool expectTentative,
         decimal newPrice, long correctedAt, DbWrite write)
         => write.Connection.Execute(
             @"UPDATE Label SET Price=@newPrice,
                      PriceCorrectedAt = CASE WHEN PrintedAt IS NOT NULL THEN @correctedAt ELSE PriceCorrectedAt END,
+                     PaidPrice = CASE WHEN PaidPrice IS NULL AND ShipmentId IS NOT NULL THEN Price ELSE PaidPrice END,
                      SyncedAt=NULL, Revision = Revision + 1
               WHERE Id=@id AND abs(Price - @expectedPrice) < 0.00001 AND CancelledAt IS NULL
                 AND (PrintedAt IS NOT NULL) = @expectPrinted
@@ -244,6 +250,25 @@ public sealed class LabelRepository
                 "SELECT Id FROM Label WHERE Id IN @ids AND PriceCorrectedAt IS NOT NULL",
                 new { ids = ids.ToArray() })
             .ToHashSet(System.StringComparer.Ordinal);
+    }
+
+    /// <summary>Dekontla ödenmiş etiketlerde ödenenle bugünkü fiyat arasındaki fark (göç 048, PaidPrice): verilen
+    /// satırların kargoya VERİLMEMİŞ dosyalara bağlı, iptal edilmemiş, bağlıyken düzeltilmiş etiketlerinin
+    /// <c>Price − PaidPrice</c> toplamı. Bağlıyken hiç düzeltilmemiş etiketin farkı yok. Kaç düzeltme olursa olsun
+    /// müşterinin ödediğine göre GERÇEK farktır (250 → 200 → 190: −60) — yalnız son düzeltmenin farkı değil.
+    /// Toplama C#'ta (decimal) yapılır: REAL toplamı kuruş kaydırabilir.</summary>
+    public decimal GetPaidDifferenceOnOpenFiles(IReadOnlyCollection<string> customerIds)
+    {
+        if (customerIds.Count == 0) return 0m;
+        using var conn = _factory.Open();
+        return conn.Query<(decimal Price, decimal PaidPrice)>(
+                @"SELECT l.Price, l.PaidPrice
+                  FROM Label l
+                  JOIN Shipment s ON s.Id = l.ShipmentId
+                  WHERE l.CustomerId IN @customerIds AND l.PaidPrice IS NOT NULL
+                    AND l.CancelledAt IS NULL AND l.IsShippingFee = 0 AND s.Status <> 'Shipped'",
+                new { customerIds = customerIds.ToArray() })
+            .Sum(r => r.Price - r.PaidPrice);
     }
 
     /// <summary>"Basılanlar" sekmesi (K1): yayının basılmış, iptal edilmemiş etiketleri, bağlı kargo

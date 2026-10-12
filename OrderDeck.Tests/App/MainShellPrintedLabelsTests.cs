@@ -539,6 +539,44 @@ public class MainShellPrintedLabelsTests
     }
 
     [Fact]
+    public async Task Outcome_naming_people_to_check_by_hand_is_not_dropped_by_the_cap()
+    {
+        // Şerit en çok MaxOutcomes kayıt tutuyor; "elle bakılmalı" adlarını taşıyan kayıt da en eski olunca düşüyordu —
+        // o kişilerde eski tutarlı istek kalır, kime bakılacağı bilinmezdi. Yalnız bilgi kayıtları düşer.
+        var drawers = new ScriptedDrawers();
+        using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
+            new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
+                () => new OrderDeck.Core.Settings.AppSettings(),
+                (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
+                    OrderDeck.App.Services.PaymentRequestResult.PhoneRequired))));
+        drawers.Vm = h.Vm;
+        var a = Enqueue(h, "@a", 250m);
+        await PrintAsync(h);
+        var jobs = new PaymentJobRepository(h.Db);
+        var job = jobs.FindOrCreate(a.Label.CustomerId, CorrectedPaymentRequests.SessionScope(h.Sessions.GetActive()!.Id), 250m);
+        jobs.MarkNoBalance(job.Id, null, job.Revision).Should().BeTrue();
+        jobs.MarkDelivered(job.Id, 250m);                    // @a'dan 250 TL istendi
+        h.Vm.IsPrintedTabActive = true;
+        h.Vm.PrintedLabels.VisibleRows.Single(r => r.Display == "@a").IsSelected = true;
+        drawers.OnPriceCorrection = async pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            pc.SkipReprintCommand.Execute(null);
+            await pc.ResendCommand.ExecuteAsync(null);
+        };
+        await h.Vm.FixPrintedPriceCommand.ExecuteAsync(null);
+        var manual = h.Vm.PrintedLabels.Outcomes.Should().ContainSingle().Subject;
+        manual.Should().Contain("elle bakılmalı").And.Contain("@a");
+
+        for (var i = 1; i <= PrintedLabelsViewModel.MaxOutcomes + 2; i++)
+            h.Vm.PrintedLabels.AddOutcome($"Fiyat düzeltmesi: {i} etiket \"DÜZELTME\" işaretiyle yeniden basıldı.");
+
+        h.Vm.PrintedLabels.Outcomes.Should().HaveCount(PrintedLabelsViewModel.MaxOutcomes);
+        h.Vm.PrintedLabels.Outcomes[0].Should().Be(manual);
+    }
+
+    [Fact]
     public async Task Background_outcome_stays_until_dismissed_through_selection_messages_cancels_and_refreshes()
     {
         // Sonuç ("elle bakılmalı" adları ve sebepleri) uçucu ileti satırındaydı: bir sonraki satır tıklaması,

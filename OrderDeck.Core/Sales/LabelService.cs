@@ -359,7 +359,8 @@ public sealed class LabelService
     /// deseni): etiket fiyatları (Revision+1, SyncedAt=NULL — sunucuya mevcut senkronla gider; stok
     /// DEĞİŞMEZ), basılmış ve onaylı (geçici yedek olmayan) etiketler için müşteri toplamı fark kadar
     /// (<see cref="CustomerService.RecordPrintedLabels"/>, adet 0), kargoya verilmemiş bağlı dosyanın
-    /// toplamı fark kadar.
+    /// toplamı fark kadar. Dosyaya bağlı (dekontla ödenmiş) etiketin ödendiği fiyat bağlıyken ilk düzeltmede
+    /// saklanır (<see cref="LabelRepository.UpdatePriceForCorrection"/>) — "ödendi, fark" mutlak hesaplansın.
     ///
     /// <para>Değişmeyenler: iptal edilmiş etiket, kargo ücreti satırı, kargoya verilmiş dosyadaki etiket
     /// (sonuçta ayrıca döner), zaten bu fiyattaki etiket. Kuyruktaki etiketin ekrandaki kopyasını

@@ -162,8 +162,12 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     /// <summary>Seçim değişince önceki işlemin satır içi sonucu kalkar.</summary>
     partial void OnSelectedCountChanged(int value) => Message = null;
 
-    /// <summary>Şeritte tutulan en çok sonuç sayısı; fazlası en eskiden düşer.</summary>
+    /// <summary>Şeritte tutulan en çok sonuç sayısı; fazlası en eski BİLGİ kaydından düşer — iş bekleyen kayıt
+    /// (<see cref="AddOutcome"/>) hiç düşmez, şerit o yüzden sınırı aşabilir.</summary>
     internal const int MaxOutcomes = 10;
+
+    /// <summary><see cref="Outcomes"/> ile aynı sırada: kayıt operatörün yapacağı işi taşıyor mu.</summary>
+    private readonly List<bool> _outcomeNeedsAction = new();
 
     /// <summary>Arka planda biten işlerin sonuçları (fiyat düzeltmesinin yeniden baskısı ve düzeltilmiş istek
     /// gönderimi), geliş sırasıyla — kalıcı sonuç şeridi. Uçucu <see cref="Message"/>'ın tersine seçim, başka
@@ -179,12 +183,26 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     /// operatör Kuyruk sekmesindeyken gelebilir — işaret olmasa şerit hiç görülmeyebilirdi.</summary>
     [ObservableProperty] private bool _hasUnreadOutcomes;
 
-    /// <summary>Şeride bir sonuç ekler (saatiyle); en çok <see cref="MaxOutcomes"/> tutulur. Okunmadı işareti
-    /// konur.</summary>
-    public void AddOutcome(string outcome)
+    /// <summary>Şeride bir sonuç ekler (saatiyle). Okunmadı işareti konur.
+    ///
+    /// <para><paramref name="needsAction"/>: kayıt operatörün yapacağı işi taşıyor — cevaplanmamış yeniden baskı
+    /// sorusu, gönderilmemiş düzeltilmiş istek, ödenmişlerin farkı, "elle bakılmalı"/"WhatsApp'ta doğrulanmalı"
+    /// adları, basılamamış etiketler. Böyle kayıt sınırla ASLA düşmez: şerit en çok <see cref="MaxOutcomes"/>
+    /// kayıtta tutulurken yalnız bilgi kayıtları (biten iş) en eskiden düşer — en yenisi hariç, yeni gelen kayıt
+    /// görünmeden silinmesin. Eskiden en eski kayıt hangisiyse o düşüyordu: okunup "Tamam" denmeden açık bırakılan
+    /// şeritte yeni sonuçlar biriktikçe cevaplanmamış iş iz bırakmadan siliniyordu. Şerit yalnız operatörün
+    /// "Tamam"ıyla boşalır.</para></summary>
+    public void AddOutcome(string outcome, bool needsAction = false)
     {
         Outcomes.Add($"{DateTime.Now.ToString("HH:mm", Tr)} — {outcome}");
-        while (Outcomes.Count > MaxOutcomes) Outcomes.RemoveAt(0);
+        _outcomeNeedsAction.Add(needsAction);
+        while (Outcomes.Count > MaxOutcomes)
+        {
+            var oldestInfo = _outcomeNeedsAction.FindIndex(0, Outcomes.Count - 1, a => !a);
+            if (oldestInfo < 0) break;
+            Outcomes.RemoveAt(oldestInfo);
+            _outcomeNeedsAction.RemoveAt(oldestInfo);
+        }
         OnPropertyChanged(nameof(HasOutcomes));
         HasUnreadOutcomes = true;
     }
@@ -197,6 +215,7 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     private void DismissOutcomes()
     {
         Outcomes.Clear();
+        _outcomeNeedsAction.Clear();
         OnPropertyChanged(nameof(HasOutcomes));
         HasUnreadOutcomes = false;
     }

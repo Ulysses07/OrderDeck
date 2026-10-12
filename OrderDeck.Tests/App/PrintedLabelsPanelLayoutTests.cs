@@ -289,6 +289,41 @@ public class PrintedLabelsPanelLayoutTests
     }
 
     [Fact]
+    public void Outcome_banner_never_drops_an_entry_that_leaves_work_to_do()
+    {
+        // Sınır en eski kaydı düşürüyordu, hangisi olursa: okunup "Tamam" denmeden açık bırakılan şeritte yeni sonuçlar
+        // biriktikçe cevaplanmamış iş (yeniden basılmamış kâğıt, gitmemiş düzeltilmiş istek) iz bırakmadan siliniyordu.
+        // Yalnız bilgi kayıtları en eskiden düşer; iş bekleyen kayıt hiç düşmez, şerit sınırı aşabilir.
+        const int max = PrintedLabelsViewModel.MaxOutcomes;
+        using var db = new InMemorySqlite();
+        var vm = new PrintedLabelsViewModel(new LabelRepository(db));
+        vm.AddOutcome("iş 1", needsAction: true);
+        for (var i = 1; i <= max + 2; i++) vm.AddOutcome($"bilgi {i}");
+        vm.AddOutcome("iş 2", needsAction: true);
+
+        vm.Outcomes.Should().HaveCount(max);
+        vm.Outcomes[0].Should().EndWith("iş 1", "en eski olsa da iş bekleyen kayıt düşmez");
+        vm.Outcomes[1].Should().EndWith("bilgi 5", "bilgi kayıtları en eskiden düşer");
+        vm.Outcomes[^1].Should().EndWith("iş 2");
+
+        for (var i = 3; i <= max + 3; i++) vm.AddOutcome($"iş {i}", needsAction: true);
+
+        vm.Outcomes.Should().HaveCount(max + 3, "iş bekleyen kayıtlar sınırı aşar")
+            .And.OnlyContain(o => o.Contains(" — iş "));
+
+        vm.AddOutcome("bilgi son");
+
+        vm.Outcomes.Should().HaveCount(max + 4);
+        vm.Outcomes[^1].Should().EndWith("bilgi son", "yeni gelen kayıt görünmeden düşmez");
+
+        vm.DismissOutcomesCommand.Execute(null);
+        for (var i = 1; i <= max + 1; i++) vm.AddOutcome($"yeni {i}");
+
+        vm.Outcomes.Should().HaveCount(max, "\"Tamam\" şeridi boşalttı; sınır yeniden bilgi kayıtlarına işler");
+        vm.Outcomes[0].Should().EndWith("yeni 2");
+    }
+
+    [Fact]
     public void Printed_tab_header_shows_an_unread_mark_until_the_tab_is_opened()
     {
         // F5: sonuç şeridine yeni kayıt düşünce "Basılanlar" sekme başlığında işaret; sekme açılınca kalkar.

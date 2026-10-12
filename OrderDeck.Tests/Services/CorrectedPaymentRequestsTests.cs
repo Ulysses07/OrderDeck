@@ -275,6 +275,68 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public void Balance_paid_difference_is_against_what_was_paid_not_only_the_last_correction()
+    {
+        // 250 TL'lik istek tamamen bakiyeden düşüldü; fiyat 200'e, sonra 190'a düzeltildi. "Fark" yalnız o düzeltmenin
+        // farkıydı: ikinci düzeltme −10 diyordu, ilkinin −50'si hiçbir yerde kalmıyordu. Müşteri 250 ödedi, yeni
+        // toplamı 190: fark −60.
+        var l = Add("instagram", "@bakiye", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        AppliedAndDelivered(l.CustomerId, "session:s1", 250m, applied: 250m);
+
+        var first = _labels.CorrectPrices(new[] { l.Id }, 200m);
+        Sut().Plan("s1", first.Corrected.Select(c => (c.Before, c.Delta)))
+            .Paid.Should().ContainSingle().Which.Delta.Should().Be(-50m, "tek düzeltme");
+        var second = _labels.CorrectPrices(new[] { l.Id }, 190m);
+
+        var paid = Sut().Plan("s1", second.Corrected.Select(c => (c.Before, c.Delta)))
+            .Paid.Should().ContainSingle().Subject;
+
+        paid.ByBalance.Should().BeTrue();
+        paid.Delta.Should().Be(-60m, "ödenen 250, yeni toplam 190");
+    }
+
+    [Fact]
+    public void Dekont_paid_difference_is_against_the_paid_price_not_only_the_last_correction()
+    {
+        // Dekontla ödenmiş (dosyaya bağlı) etiket 250 → 200 → 190: ikinci sonuç −10 diyordu. Dekont tutarı etikete ya
+        // da dosyaya bağlı saklanmıyor; ödenen fiyatı ilk düzeltme yazar.
+        var l = Add("instagram", "@dekont", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(l.CustomerId).Id, new[] { l.Id });
+
+        var first = _labels.CorrectPrices(new[] { l.Id }, 200m);
+        Sut().Plan("s1", first.Corrected.Select(c => (c.Before, c.Delta)))
+            .Paid.Should().ContainSingle().Which.Delta.Should().Be(-50m, "tek düzeltme");
+        var second = _labels.CorrectPrices(new[] { l.Id }, 190m);
+
+        var paid = Sut().Plan("s1", second.Corrected.Select(c => (c.Before, c.Delta)))
+            .Paid.Should().ContainSingle().Subject;
+
+        paid.ByDekont.Should().BeTrue();
+        paid.Delta.Should().Be(-60m, "ödenen 250, yeni fiyat 190");
+    }
+
+    [Fact]
+    public void Dekont_paid_price_is_the_price_the_label_had_when_the_dekont_attached_it()
+    {
+        // 250 → 200 dekonttan ÖNCE düzeltildi, müşteri 200 ödedi (dekont kaydı etiketi dosyaya bağladı), sonra
+        // 190'a düzeltildi: ödenen 200, fark −10 — dosyaya bağlanmadan önceki düzeltme ödenenin parçası değil.
+        var l = Add("instagram", "@sonra", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        _labels.CorrectPrices(new[] { l.Id }, 200m);
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(l.CustomerId).Id, new[] { l.Id });
+
+        var result = _labels.CorrectPrices(new[] { l.Id }, 190m);
+        var paid = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)))
+            .Paid.Should().ContainSingle().Subject;
+
+        paid.Delta.Should().Be(-10m);
+    }
+
+    [Fact]
     public void Old_balance_deduction_in_another_scope_does_not_mark_todays_request_paid()
     {
         // 01.10'da genel istek: 500 istendi, 30'u bakiyeden düşüldü (iş kapandı). Bugün bu yayında 250 TL'lik
@@ -495,7 +557,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
         var vm = CorrectedWithOneResendRow("@elle", Sut((_, _, _, _, _) => gate.Task));
         var reports = new List<string>();
-        vm.WorkFinished = reports.Add;
+        vm.WorkFinished = (report, _) => reports.Add(report);
         var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
         var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.Close = () => d.Close(true); return new object(); });
         var sending = vm.ResendCommand.ExecuteAsync(null);
@@ -512,6 +574,26 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         reports.Should().ContainSingle().Which.Should().Contain("elle bakılmalı")
             .And.Contain(vm.ResendRows[0].Candidate.Display)
             .And.Contain("WhatsApp numarası gerekli");
+    }
+
+    [Theory]
+    [InlineData(PaymentRequestResult.Sent, false)]
+    [InlineData(PaymentRequestResult.Opened, true)]
+    [InlineData(PaymentRequestResult.SendPending, true)]
+    [InlineData(PaymentRequestResult.PhoneRequired, true)]
+    public async Task Resend_report_says_whether_it_leaves_work_for_the_operator(
+        PaymentRequestResult result, bool leavesWork)
+    {
+        // Kalıcı sonuç şeridi sınırda yalnız bilgi kayıtlarını düşürür: gönderilmiş sayılmayan istek (elle bakılmalı,
+        // WhatsApp'ta doğrulanmalı) operatöre iş bırakır, kaydı düşmemeli.
+        var vm = CorrectedWithOneResendRow("@k", Sut((_, _, _, _, _) =>
+            Task.FromResult(new PaymentRequestOutcome(result))));
+        var flags = new List<bool>();
+        vm.WorkFinished = (_, needsAction) => flags.Add(needsAction);
+
+        await vm.ResendCommand.ExecuteAsync(null);
+
+        flags.Should().Equal(leavesWork);
     }
 
     [Fact]
@@ -569,7 +651,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
             DateTime.Now, inFlight: () => null,
             applied: _ => { }, reprint: _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
         var reports = new List<string>();
-        vm.WorkFinished = reports.Add;
+        vm.WorkFinished = (report, _) => reports.Add(report);
         vm.NewPriceText = "205";
         vm.ConfirmCommand.Execute(null);
         vm.ResendRows.Should().HaveCount(4, "kodun bütün etiketleri düzeldi — dört kişi");

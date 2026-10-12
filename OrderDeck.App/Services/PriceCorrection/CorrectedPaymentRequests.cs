@@ -28,8 +28,10 @@ public sealed record CorrectedRequestCandidate(
 
 /// <summary>Ödemesi alınmış kişi (dekont kaydedilmiş ya da düzeltilen etiketleri içeren isteğin tamamı
 /// bakiyeden düşülmüş): OTOMATİK bir şey gitmez,
-/// "ödendi, fark ±X TL" olarak gösterilir (K5). <see cref="Delta"/> kişinin düzeltilen basılmış ve onaylı
-/// etiketlerinin fark toplamı.</summary>
+/// "ödendi, fark ±X TL" olarak gösterilir (K5). <see cref="Delta"/> MUTLAK fark: kişinin ödediğiyle (bakiyeden
+/// düşülen isteğin toplamı, dekontla ödenmiş etiketlerin ödendiği fiyat) yeni toplamı arasındaki fark — yalnız bu
+/// düzeltmenin farkı değil. 250 → 200 → 190'da ikinci düzeltme −10 değil −60 der; önceki sonuç kapatılmış ya da
+/// yerine bu geçmiş olsa da (<see cref="CorrectedPaymentRequests.Plan"/>).</summary>
 public sealed record PaidPerson(string Display, decimal Delta, bool ByDekont, bool ByBalance);
 
 /// <summary>Düzeltmeden etkilenen kişilerin ödeme durumu.</summary>
@@ -145,10 +147,17 @@ public sealed class CorrectedPaymentRequests
     /// zaten söyler). Bir kapsamdaki düşüm öbür kapsamın isteğini listeden düşürmez.</para>
     ///
     /// <para><b>"Dekontla ödendi" etiket başına:</b> dekont kaydı etiketleri (kuyruktakiler dahil) açık
-    /// kargo dosyasına bağlar. Dosyaya bağlı etiketlerin farkı dosya toplamına yazılan farktır
-    /// (<see cref="LabelService.CorrectPrices"/>) — "ödendi, fark" o. Kişinin bağlı OLMAYAN basılmış
-    /// etiketleri istek denetiminden ayrıca geçer: tek etiketi dekontla ödenmiş kişinin öbür etiketi için
-    /// eski tutarla gitmiş istek listeden düşmez.</para>
+    /// kargo dosyasına bağlar. Kişinin bağlı OLMAYAN basılmış etiketleri istek denetiminden ayrıca geçer: tek
+    /// etiketi dekontla ödenmiş kişinin öbür etiketi için eski tutarla gitmiş istek listeden düşmez.</para>
+    ///
+    /// <para><b>"Ödendi, fark" MUTLAK:</b> kişinin ödediğiyle yeni toplamı arasındaki fark — yalnız bu düzeltmenin
+    /// farkı değil. Aynı kod iki kez düzeltilince (250 → 200 → 190) ikinci sonuç −10 diyor, ilk sonucun −50'si
+    /// (kapatılmış ya da yerine yenisi geçmiş) hiçbir yerde kalmıyordu; müşterinin gerçek farkı −60. Bakiyeden
+    /// ödenmiş kapsamda: yeni toplam (istek listesindekiyle aynı tanım, kargo dahil) − bakiyeden düşülen isteğin
+    /// bakiye öncesi toplamı; iki kapsam da öyleyse en son istek. Dekontla ödenmiş etiketlerde: kişinin kargoya
+    /// verilmemiş dosyalarındaki etiketlerin ödendikleri fiyattan farkı
+    /// (<see cref="LabelRepository.GetPaidDifferenceOnOpenFiles"/>) — dekont tutarı etikete ya da dosyaya bağlı
+    /// saklanmıyor, ödenen fiyatı ilk düzeltme yazar.</para>
     ///
     /// <para><b>Tutar değişti mi</b> ödeme sorusuyla AYNI karşılaştırmayla (PaymentRequestService.PromptOf):
     /// son isteğin bakiye ÖNCESİ toplamı (mesajdaki net + düşüm) yeni toplamla. Net (bakiye sonrası)
@@ -175,17 +184,15 @@ public sealed class CorrectedPaymentRequests
         foreach (var (person, items) in persons.Values)
         {
             var display = DisplayOf(items[0].Label);
-            // Dekontla ödenmiş etiketler: dosyaya bağlı (kuyruktakiler dahil) — fark, dosya toplamına
-            // yazılan farkla aynı.
+            // Dekontla ödenmiş etiketler: dosyaya bağlı (kuyruktakiler dahil).
             var attached = items.Where(i => i.Label.ShipmentId is not null).ToList();
-            var paidDelta = attached.Sum(i => i.Delta);
             // İsteklerin tutarına giren, dekontla ödenmemiş etiketler: basılmış ve onaylı (müşteri toplamı
             // ve yayın toplamı yalnız bunlardan beslenir).
             var counted = items
                 .Where(i => i.Label.ShipmentId is null && i.Label.PrintedAt.HasValue && !i.Label.IsTentativeBackup)
                 .ToList();
 
-            var byBalance = false;
+            var balancePaid = new List<(string Scope, PaymentJob Last)>();
             var delivered = new List<(string Scope, PaymentJob Last)>();
             if (counted.Count > 0)
             {
@@ -193,27 +200,46 @@ public sealed class CorrectedPaymentRequests
                 foreach (var (scope, last) in LastDeliveredRequests(sessionId, person))
                 {
                     if (!Covers(last, earliestPrint)) continue;
-                    if (IsPaidByBalance(last)) byBalance = true;
+                    if (IsPaidByBalance(last)) balancePaid.Add((scope, last));
                     else delivered.Add((scope, last));
                 }
             }
 
-            if (byBalance) paidDelta += counted.Sum(i => i.Delta);
+            var contact = _customers.GetById(person.LeasedId);
+            if (contact is not null) contact = contact with { RecipientPaysActive = person.RecipientPaysActive };
+            // Ödeme akışının şimdi isteyeceği toplam (kargo dahil, bakiye düşülmeden önce).
+            decimal NewTotal(string scope)
+            {
+                var productTotal = ProductTotal(sessionId, scope, person);
+                return contact is null
+                    ? productTotal
+                    : PaymentRequestService.ComputeShipping(contact, productTotal, settings).Total;
+            }
+
+            var byBalance = balancePaid.Count > 0;
             if (attached.Count > 0 || byBalance)
+            {
+                // MUTLAK fark (ödenen − yeni toplam), bu düzeltmenin farkı değil.
+                var paidDelta = attached.Count > 0
+                    ? _labels.GetPaidDifferenceOnOpenFiles(person.MemberIds.ToList())
+                    : 0m;
+                if (byBalance)
+                {
+                    var (scope, last) = balancePaid.OrderBy(b => b.Last.PromptAt ?? long.MaxValue).Last();
+                    paidDelta += NewTotal(scope) - PriorTotal(last);
+                }
                 paid.Add(new PaidPerson(display, paidDelta, ByDekont: attached.Count > 0, ByBalance: byBalance));
+            }
             if (delivered.Count == 0) continue;
             requestedPersons++;
 
-            var contact = _customers.GetById(person.LeasedId);
             if (contact is null) continue;
-            contact = contact with { RecipientPaysActive = person.RecipientPaysActive };
             foreach (var (scope, last) in delivered)
             {
-                var productTotal = ProductTotal(sessionId, scope, person);
-                var newTotal = PaymentRequestService.ComputeShipping(contact, productTotal, settings).Total;
+                var newTotal = NewTotal(scope);
                 // Son isteğin bakiye öncesi toplamı (ödeme sorusuyla aynı): net + hâlâ duran düşüm.
                 var priorBalance = last.AppliedAmount is > 0m ? last.AppliedAmount.Value : 0m;
-                if (newTotal == last.PromptNet + priorBalance) continue;
+                if (newTotal == PriorTotal(last)) continue;
                 toResend.Add(new CorrectedRequestCandidate(
                     person.LeasedId, display, scope, last.PromptNet,
                     last.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null,
@@ -245,6 +271,11 @@ public sealed class CorrectedPaymentRequests
     /// <summary>İsteğin tamamı bakiyeden düşüldü — müşteriden hiçbir şey istenmedi. Kısmi düşüm değil.</summary>
     internal static bool IsPaidByBalance(PaymentJob request)
         => request.State == PaymentJobState.Applied && request.AppliedAmount is > 0m && request.PromptNet <= 0m;
+
+    /// <summary>İsteğin bakiye ÖNCESİ toplamı (ödeme sorusuyla aynı — PaymentRequestService.PromptOf): mesajdaki
+    /// net + hâlâ duran düşüm. Tamamı bakiyeden düşülmüş istekte bu, müşterinin bakiyeden ödediği tutardır.</summary>
+    private static decimal PriorTotal(PaymentJob request)
+        => request.PromptNet + (request.AppliedAmount is > 0m ? request.AppliedAmount.Value : 0m);
 
     /// <summary>"Basılanlar" rozetleri — <see cref="Plan"/> ile AYNI tanımlar, ETİKET düzeyinde: istek kişinin
     /// son isteğidir (#506, kişi düzeyi) ama rozeti yalnız o isteğin İÇERDİĞİ (etiket basıldıktan sonra

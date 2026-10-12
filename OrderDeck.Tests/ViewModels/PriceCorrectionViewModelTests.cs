@@ -300,6 +300,28 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         vm.IsReprintAsked.Should().BeTrue("'tekrar dene' düğmesi yerinde kalır");
     }
 
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("Yeniden basılamadı: kâğıt bitti. Yazıcıyı kontrol edip tekrar dene.", true)]
+    public async Task Reprint_report_says_whether_it_leaves_work_for_the_operator(string? error, bool leavesWork)
+    {
+        // Kalıcı sonuç şeridi sınırda yalnız bilgi kayıtlarını düşürür: basılamayan etiketlerin kâğıdında eski fiyat
+        // kaldı — operatöre iş bırakır, kaydı düşmemeli.
+        var a = Add("@a", 250m);
+        _labels.MarkPrintedAndRecord(new[] { a.Id });
+        var vm = new PriceCorrectionViewModel(_labels, payments: null, "s1", new[] { a.Id },
+            DateTime.Now, inFlight: () => null, applied: _ => { },
+            reprint: _ => Task.FromResult(error), cloudApiEnabled: true);
+        var flags = new List<bool>();
+        vm.WorkFinished = (_, needsAction) => flags.Add(needsAction);
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        await vm.ReprintCommand.ExecuteAsync(null);
+
+        flags.Should().Equal(leavesWork);
+    }
+
     [Fact]
     public async Task Esc_closes_the_drawer_while_the_reprint_runs_and_the_error_is_reported_when_it_ends()
     {
@@ -313,7 +335,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
             DateTime.Now, inFlight: () => null, applied: _ => { },
             reprint: _ => gate.Task, cloudApiEnabled: true);
         var reports = new List<string>();
-        vm.WorkFinished = reports.Add;
+        vm.WorkFinished = (report, _) => reports.Add(report);
         var stack = new OrderDeck.App.Services.Drawers.DrawerStack();
         var closed = stack.ShowAsync("Fiyatı Düzelt", d => { vm.Close = () => d.Close(true); return new object(); });
         vm.NewPriceText = "205";

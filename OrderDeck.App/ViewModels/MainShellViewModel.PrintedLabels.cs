@@ -150,19 +150,20 @@ public sealed partial class MainShellViewModel
     /// kapatınca gider.</summary>
     private PriceCorrectionViewModel WireCorrection(PriceCorrectionViewModel vm)
     {
-        vm.WorkFinished = report =>
+        vm.WorkFinished = (report, needsAction) =>
         {
             RefreshPrintedLabels();
-            AddPrintedOutcome(report);
+            AddPrintedOutcome(report, needsAction);
         };
         return vm;
     }
 
     /// <summary>"Basılanlar"daki kalıcı sonuç şeridine bir kayıt ekler. Sekme açıksa şerit görünüyor; kapalıysa
-    /// başlıkta okunmamış işareti kalır (F5).</summary>
-    private void AddPrintedOutcome(string outcome)
+    /// başlıkta okunmamış işareti kalır (F5). <paramref name="needsAction"/>: kayıt operatörün yapacağı işi taşıyor
+    /// — şeridin sınırıyla düşmez (<see cref="PrintedLabelsViewModel.AddOutcome"/>).</summary>
+    private void AddPrintedOutcome(string outcome, bool needsAction)
     {
-        PrintedLabels.AddOutcome(outcome);
+        PrintedLabels.AddOutcome(outcome, needsAction);
         if (IsPrintedTabActive) PrintedLabels.MarkOutcomesRead();
     }
 

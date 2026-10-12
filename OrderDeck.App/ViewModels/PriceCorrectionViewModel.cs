@@ -176,12 +176,14 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <summary>Çekmeceyi (ya da FİYAT kutusunun altındaki satır içi sonucu) kapatır; testte boş.</summary>
     public Action? Close { get; set; }
 
-    /// <summary>Yeniden baskı ya da toplu gönderim BİTTİ; argüman o işin sonucu ("Fiyat düzeltmesi: …" —
-    /// baskı hatası, "elle bakılmalı" ve "WhatsApp'ta doğrulanmalı" adları). Her iş kendi sonucunu bir kez
+    /// <summary>Yeniden baskı ya da toplu gönderim BİTTİ; argümanlar o işin sonucu ("Fiyat düzeltmesi: …" —
+    /// baskı hatası, "elle bakılmalı" ve "WhatsApp'ta doğrulanmalı" adları) ve sonucun operatöre iş bırakıp
+    /// bırakmadığı (baskı hatası; gönderilmiş sayılmayan istek) — iş bırakan kayıt kalıcı şeritten sınırla
+    /// düşmez (<see cref="PrintedLabelsViewModel.AddOutcome"/>). Her iş kendi sonucunu bir kez
     /// bildirir. Çekmece iş sürerken de kapatılabilir (yayında kod/fiyat kutusunu ve kuyruğu örtmesin) — iş arka
     /// planda sürer, kabuk sonucu bitince "Basılanlar"daki kalıcı sonuç şeridine ekler: çekmece kapandıysa da
     /// operatöre ulaşır. Testte boş.</summary>
-    public Action<string>? WorkFinished { get; set; }
+    public Action<string, bool>? WorkFinished { get; set; }
 
     /// <summary>Düzeltmenin yazımı (test dikişi; varsayılan <see cref="LabelService.CorrectPrices"/>) —
     /// paket içindeki çakışma (<see cref="PriceCorrectionConflictException"/>) testte başka türlü
@@ -487,7 +489,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         var outcome = error ?? $"{_correctedPrinted.Count} etiket \"DÜZELTME\" işaretiyle yeniden basıldı.";
         ReprintResult = outcome;
         if (error is not null) IsReprintAsked = true;
-        ReportWorkFinished(outcome);
+        ReportWorkFinished(outcome, needsAction: error is not null);
     }
 
     [RelayCommand]
@@ -515,6 +517,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         IsSending = true;
         IsResendAvailable = false;
         string report;
+        bool needsAction;
         try
         {
             var rows = ResendRows.ToList();
@@ -540,15 +543,17 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             var summary = OutcomeSummary(outcomes);
             ResendNote = summary;
             report = "Düzeltilmiş istek: " + summary + OutcomeNames(outcomes);
+            needsAction = outcomes.Any(o => o.Status != ResendStatus.Sent);
         }
         finally
         {
             IsSending = false;
         }
-        ReportWorkFinished(report);
+        ReportWorkFinished(report, needsAction);
     }
 
-    private void ReportWorkFinished(string outcome) => WorkFinished?.Invoke("Fiyat düzeltmesi: " + outcome);
+    private void ReportWorkFinished(string outcome, bool needsAction)
+        => WorkFinished?.Invoke("Fiyat düzeltmesi: " + outcome, needsAction);
 
     /// <summary>Düzeltmenin yayını.</summary>
     internal string SessionId => _sessionId;

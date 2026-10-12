@@ -650,6 +650,88 @@ public class MainShellPriceBoxTests
         h.Vm.CodePriceBlocked.Should().BeNull();
     }
 
+    /// <summary>A1: @a, @b, @c 250 TL'den kuyrukta; @d, @e 200 TL'den (eski veri / pazarlıklı yedek). Operatör kutuya
+    /// 200 yazdı, şerit soruyor.</summary>
+    private static async Task<string> StripOverMixedA1(MainShellTestHarness.Harness h)
+    {
+        await WithCodeLabels(h, 250m, "@a", "@b", "@c");
+        var sessionId = h.Sessions.GetActive()!.Id;
+        foreach (var u in new[] { "@d", "@e" })
+            h.Labels.Add(sessionId, MainShellTestHarness.ChatVm(u, "A1").Message, 200m, "A1");
+        h.Vm.ActivePriceText = "200";
+        h.Vm.CodePriceQuestion.Should().Be(
+            "A1 kodunun 5 etiketi: 250,00 TL × 3, 200,00 TL × 2. Hepsi 200,00 TL olsun mu?");
+        return sessionId;
+    }
+
+    [Fact]
+    public async Task Strip_stays_when_a_cancel_makes_the_typed_price_the_codes_majority()
+    {
+        // Operatör cevap vermeden @a'yı kuyruktan çıkardı: 250 × 2, 200 × 2 — eşitlikte en son yazılan, kodun fiyatı
+        // artık 200. Şerit "yazılan fiyat kodun fiyatı" diye kendiliğinden kapanıyordu: @b ve @c 250'de kalıyor,
+        // sonraki yorumlar 200'den yazılıyordu. Operatörün başlattığı değişiklik onun cevabını bekler; şerit yalnız
+        // kodun değişecek etiketi kalmayınca kendiliğinden kapanır.
+        using var h = MainShellTestHarness.Build();
+        var sessionId = await StripOverMixedA1(h);
+        h.Vm.SelectedQueueItems.Add(h.Vm.PrintQueue.Single(r => r.Username == "@a"));
+
+        h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        h.Labels.GetCodePrice(sessionId, "A1")!.Price.Should().Be(200m, "eşitlikte en son yazılanın fiyatı");
+        h.Vm.CodePriceQuestion.Should().Be(
+            "A1 kodunun 4 etiketi: 200,00 TL × 2, 250,00 TL × 2. Hepsi 200,00 TL olsun mu?");
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@f", "A1 aldım"));
+        h.Vm.CodePriceBlocked.Should().Be("Önce fiyat değişikliğini onayla — yazılmadı: @f");
+
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        new[] { "@b", "@c" }.Select(u => DbPrice(h, h.Vm.PrintQueue.Single(r => r.Username == u).Id))
+            .Should().OnlyContain(p => p == 200m);
+        h.Vm.CodePriceQuestion.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Yes_applies_when_a_change_outside_the_shell_made_the_typed_price_the_codes_majority()
+    {
+        // Aynı durum kabuğun görmediği bir yoldan: "Evet" hiçbir şey uygulamadan, hata yazmadan şeridi kapatıyordu;
+        // 250'lik etiketler 250'de kalıyordu.
+        using var h = MainShellTestHarness.Build();
+        await StripOverMixedA1(h);
+        h.Labels.Cancel(new[] { h.Vm.PrintQueue.Single(r => r.Username == "@a").Id },
+            OrderDeck.Core.Sales.CancelReasonCodes.Customer);
+
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        new[] { "@b", "@c" }.Select(u => DbPrice(h, h.Vm.PrintQueue.Single(r => r.Username == u).Id))
+            .Should().OnlyContain(p => p == 200m);
+        h.Vm.CodePriceError.Should().BeNull();
+        h.Vm.CodePriceCorrection.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Mixed_price_hint_does_not_survive_into_a_new_stream_where_the_code_has_no_labels()
+    {
+        // Kodun fiyatı yayına özel: biten yayının "A1 kodunda farklı fiyatlı 1 etiket var" ipucu, yayın bitince ve yeni
+        // yayında A1'in hiç etiketi yokken kutunun altında kalıyordu.
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a", "@b");
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        var other = h.Labels.Add(h.Sessions.GetActive()!.Id, MainShellTestHarness.ChatVm("@c", "A1").Message, 230m, "A1");
+        h.Labels.MarkPrintedAndRecord(new[] { other.Id });
+        h.Vm.ActiveCode = "B7";
+        h.Vm.ActiveCode = "A1";
+        h.Vm.CodePriceHint.Should().StartWith("A1 kodunda farklı fiyatlı 1 etiket var — ");
+        h.Dialogs.ConfirmResult = _ => true;     // "Yayını bitirmek istediğinden emin misin?" (mevcut akış)
+
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        h.Sessions.GetActive().Should().BeNull();
+        h.Vm.CodePriceHint.Should().BeNull("yayın bitti");
+        h.Vm.StartStreamCommand.Execute(null);
+        h.Sessions.GetActive().Should().NotBeNull();
+        h.Vm.CodePriceHint.Should().BeNull("yeni yayında A1'in etiketi yok");
+    }
+
     // ── F2: etiketi olan kodun fiyatı kutuda değişince satır içi şerit ─────
 
     /// <summary>A1 için <paramref name="count"/> etiket <paramref name="price"/> TL ile kuyrukta.</summary>
@@ -1033,6 +1115,38 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
+    public async Task Strip_error_stays_when_a_comment_rechecks_the_strip_and_goes_on_a_price_edit()
+    {
+        // "Evet" yazıcıdaki etiket yüzünden reddedildi, sebep şeritte. Şerit beklerken tıklanan yorum şeridi yeniden
+        // denetler — sebep hâlâ geçerli, hata satırı kalmalı. Operatör fiyata dokununca yeni soru: eski hata kalkar.
+        var printer = new GatedPrinter();
+        using var h = MainShellTestHarness.Build(printerOverride: printer);
+        await WithCodeLabels(h, 250m, "@a");
+        var printing = h.Vm.PrintCommand.ExecuteAsync(null);   // baskı uçuşta
+        try
+        {
+            h.Vm.ActivePriceText = "200";
+            h.Vm.ConfirmCodePriceCommand.Execute(null);
+            h.Vm.CodePriceError.Should().Contain("Baskı bitince tekrar deneyin");
+
+            await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "A1 aldım"));
+
+            h.Vm.CodePriceBlocked.Should().Be("Önce fiyat değişikliğini onayla — yazılmadı: @b");
+            h.Vm.CodePriceError.Should().Contain("Baskı bitince tekrar deneyin", "yorum tıklaması hatayı silmez");
+
+            h.Vm.ActivePriceText = "190";
+
+            h.Vm.CodePriceQuestion.Should().NotBeNull();
+            h.Vm.CodePriceError.Should().BeNull("operatör fiyatı değiştirdi");
+        }
+        finally
+        {
+            printer.Release.Set();
+            await printing;
+        }
+    }
+
+    [Fact]
     public async Task Yes_lists_people_who_were_asked_the_old_amount_inline()
     {
         // K5 paketinin ödeme tarafı şeritten de çalışır: 250 TL istenmiş kişi "düzeltilmiş isteği gönder"
@@ -1168,6 +1282,31 @@ public class MainShellPriceBoxTests
         h.Vm.CodePriceCorrection.ResendRows.Should().ContainSingle().Which.Candidate.NewTotal.Should().Be(190m);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Paid_persons_difference_after_a_second_yes_is_against_what_was_paid(bool firstResultClosed)
+    {
+        // A1 250'den basıldı, @odendi'nin isteği tamamen bakiyeden düşüldü. 200'e "Evet": "fark −50". Operatör yanlış
+        // girdiğini fark edip 190'a yine "Evet" dedi (ilk sonucu kapatarak ya da açıkken): ikinci sonuç "fark −10"
+        // diyordu, −50 iz bırakmadan gidiyordu. Müşteri 250 ödedi, yeni toplam 190: fark −60.
+        using var h = BuildWithPayments();
+        await WithCodeLabels(h, 250m, "@odendi");
+        var row = h.Vm.PrintQueue[0];
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        PaidByBalance(h, row.Label.CustomerId, 250m);
+        h.Vm.ActivePriceText = "200";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+        h.Vm.CodePriceCorrection!.PaidRows.Should().Equal("@odendi — ödendi (bakiye), fark −50,00 TL");
+        if (firstResultClosed) h.Vm.CodePriceCorrection.DoneCommand.Execute(null);
+
+        h.Vm.ActivePriceText = "190";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.CodePriceCorrection!.PaidRows.Should().Equal("@odendi — ödendi (bakiye), fark −60,00 TL");
+        DbPrice(h, row.Id).Should().Be(190m);
+    }
+
     /// <summary>A1 250'den yazılıp basıldı, @a'ya 250 TL istek teslim edildi, şeritte 200'e "Evet" dendi: satır
     /// içi sonuçta yanıtlanmamış yeniden baskı sorusu ve @a için düzeltilmiş istek satırı var.</summary>
     private static async Task<(OrderDeck.App.ViewModels.PriceCorrectionViewModel Result, string LabelId)> UnansweredA1Result(
@@ -1231,6 +1370,25 @@ public class MainShellPriceBoxTests
             .And.Contain("1 basılmış etiket yeniden basılmadı")
             .And.Contain("• @a");
         h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Unanswered_work_on_the_printed_outcome_strip_is_not_dropped_by_the_cap()
+    {
+        // Kalıcı sonuç şeridi en çok MaxOutcomes kayıt tutuyor, fazlası en eskiden düşüyordu: okunup "Tamam" denmeden
+        // açık bırakılan şeritte sonraki düzeltmelerin sonuçları biriktikçe A1'in cevaplanmamış işi (kâğıt yeniden
+        // basılmadı, @a'ya düzeltilmiş istek gitmedi) iz bırakmadan siliniyordu. Yalnız bilgi kayıtları düşer.
+        using var h = BuildWithPayments();
+        await UnansweredA1Result(h);
+        h.Dialogs.ConfirmResult = _ => true;     // "Yayını bitirmek istediğinden emin misin?" (mevcut akış)
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+        var unanswered = h.Vm.PrintedLabels.Outcomes.Should().ContainSingle().Subject;
+
+        for (var i = 1; i <= OrderDeck.App.ViewModels.PrintedLabelsViewModel.MaxOutcomes + 2; i++)
+            h.Vm.PrintedLabels.AddOutcome($"Fiyat düzeltmesi: {i} etiket \"DÜZELTME\" işaretiyle yeniden basıldı.");
+
+        h.Vm.PrintedLabels.Outcomes.Should().HaveCount(OrderDeck.App.ViewModels.PrintedLabelsViewModel.MaxOutcomes);
+        h.Vm.PrintedLabels.Outcomes[0].Should().Be(unanswered);
     }
 
     private sealed class CountingDrawers : OrderDeck.App.Services.Drawers.IDrawerService
