@@ -1,6 +1,7 @@
 <UserControl x:Class="OrderDeck.App.Views.Shell.ActiveProductBar"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:drawers="clr-namespace:OrderDeck.App.Views.Drawers">
     <!-- Sağ sütunun tepesi: kod ve fiyat DİKEY yığılır (yerleşim kararı
          2026-08-08). Eskiden tam genişlikte bir şerittiler; şerit kalkınca
          sohbet paneli o yüksekliği kazandı. Şeritteki ürün adı burada
@@ -46,11 +47,12 @@
                 </TextBox.Style>
             </TextBox>
 
-            <!-- FİYAT. Kod değişince operatörün o kod için bu yayında yazdığı
-                 fiyatla, yoksa katalog fiyatıyla dolar; ikisi de yoksa ve
-                 kutudaki fiyat başka ürün için girildiyse kutu sarı çerçeveyle
-                 vurgulanır (sahip kararı K8). Operatör fiyata dokununca vurgu
-                 kalkar. -->
+            <!-- FİYAT (sahip kararları K8, F1/F2). Bir yayında bir kodun TEK
+                 fiyatı var, kaynağı o yayındaki etiketleri. Kod değişince kodun
+                 bu yayındaki fiyatıyla, yoksa katalog fiyatıyla dolar (kaynak
+                 kutunun altında yazar); ikisi de yoksa ve kutudaki fiyat başka
+                 ürün için girildiyse kutu sarı çerçeveyle vurgulanır. Operatör
+                 fiyata dokununca vurgu kalkar. -->
             <TextBlock Text="FİYAT" Style="{StaticResource OD.Text.Micro}"
                        Margin="{StaticResource OD.Pad.Top5}"/>
             <TextBox x:Name="PriceBox"
@@ -67,6 +69,10 @@
                     </Style>
                 </TextBox.Style>
             </TextBox>
+            <TextBlock Text="{Binding PriceSourceText}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding PriceSourceText, Converter={StaticResource NullToCollapsedConverter}}"/>
             <TextBlock Text="önceki üründen kaldı — bu ürünün fiyatı mı?"
                        Style="{StaticResource OD.Text.Hint}"
                        Foreground="{StaticResource OD.Brush.Amber}"
@@ -78,6 +84,72 @@
                        TextWrapping="Wrap"
                        Margin="{StaticResource OD.Pad.Top3}"
                        Visibility="{Binding PriceError, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+            <!-- F2: etiketi olan kodun fiyatı kutuda değiştirildi. Tuş vuruşunda
+                 değil, TEK onayla uygulanır: "Evet" kodun bütün düzeltilebilir
+                 etiketlerini yeni fiyata geçirir (fiyat düzeltme paketi),
+                 "Vazgeç" kutuyu kodun fiyatına döndürür. Şerit beklerken o kod
+                 için etiket yazılmaz; başka koda geçilirse şerit kapanır. -->
+            <Border x:Name="CodePriceStrip"
+                    Margin="{StaticResource OD.Pad.Top3}"
+                    Padding="{StaticResource OD.Pad.3}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OD.Radius.Md}"
+                    Visibility="{Binding CodePriceQuestion, Converter={StaticResource NullToCollapsedConverter}}">
+                <StackPanel>
+                    <TextBlock Text="{Binding CodePriceQuestion}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Text}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding CodePriceError}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Accent}"
+                               TextWrapping="Wrap"
+                               Margin="{StaticResource OD.Pad.Top3}"
+                               Visibility="{Binding CodePriceError, Converter={StaticResource NullToCollapsedConverter}}"/>
+                    <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top3}">
+                        <Button Content="Evet"
+                                Style="{StaticResource OD.Button.Secondary}"
+                                Command="{Binding ConfirmCodePriceCommand}"/>
+                        <Button Content="Vazgeç"
+                                Style="{StaticResource OD.Button.Ghost}"
+                                Margin="{StaticResource OD.Pad.X2}"
+                                Command="{Binding CancelCodePriceCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Şerit beklerken tıklanan yorumlar YAZILMADI: adlarıyla söylenir,
+                 operatör onaydan sonra yeniden tıklar; yazılan ad listeden düşer. -->
+            <DockPanel Margin="{StaticResource OD.Pad.Top3}" LastChildFill="True"
+                       Visibility="{Binding CodePriceBlocked, Converter={StaticResource NullToCollapsedConverter}}">
+                <Button DockPanel.Dock="Right"
+                        Content="Tamam"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        FontSize="{StaticResource OD.Font.F0}"
+                        Command="{Binding DismissCodePriceBlockedCommand}"/>
+                <TextBlock Text="{Binding CodePriceBlocked}"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Foreground="{StaticResource OD.Brush.Amber}"
+                           TextWrapping="Wrap"/>
+            </DockPanel>
+
+            <!-- Şeritte "Evet"in sonucu: "Fiyatı düzelt" çekmecesindekiyle aynı
+                 görünüm (yeniden baskı sorusu, düzeltilmiş istek listesi). Çekmece
+                 AÇILMAZ — yayında kod/fiyat kutusu ve kuyruk örtülmesin. "Kapat"la
+                 kalkar; yeniden baskı/gönderim sürerken de kapatılabilir, sonucu
+                 "Basılanlar"daki şeride düşer. -->
+            <Border Margin="{StaticResource OD.Pad.Top3}"
+                    Padding="{StaticResource OD.Pad.3}"
+                    BorderBrush="{StaticResource OD.Brush.Border}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OD.Radius.Md}"
+                    Visibility="{Binding CodePriceCorrection, Converter={StaticResource NullToCollapsedConverter}}">
+                <drawers:PriceCorrectionResultView x:Name="CodePriceResult"
+                                                   DataContext="{Binding CodePriceCorrection}"/>
+            </Border>
 
             <!-- 0 TL satır içi onayı: soru açıkken tıklanan yorumlar sırayla
                  bekletilir, "Evet" hepsini 0 TL ile yazar; aynı kutu metni ve

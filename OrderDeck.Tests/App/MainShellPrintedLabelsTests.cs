@@ -687,7 +687,7 @@ public class MainShellPrintedLabelsTests
         using var __ = h;
         var a = Enqueue(h, "@a", 250m);
         await PrintAsync(h, a);
-        Enqueue(h, "@b", 100m);
+        Enqueue(h, "@b", 100m, "B7");
         h.Vm.PrintCommand.CanExecute(null).Should().BeTrue();
         var reprint = h.Vm.ReprintAsync(new[] { a.Id });
         try
@@ -882,7 +882,7 @@ public class MainShellPrintedLabelsTests
         using var __ = h;
         var a = Enqueue(h, "@a", 250m);
         await PrintAsync(h, a);
-        var b = Enqueue(h, "@b", 100m);
+        var b = Enqueue(h, "@b", 100m, "B7");
         var reprint = h.Vm.ReprintAsync(new[] { a.Id });
         await printer.ReprintEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         h.Dialogs.ThreeWayResult = _ => true;   // Evet: hepsini bas ve bitir

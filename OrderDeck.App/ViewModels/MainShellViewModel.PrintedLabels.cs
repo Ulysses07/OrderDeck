@@ -118,22 +118,12 @@ public sealed partial class MainShellViewModel
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
-        var vm = new PriceCorrectionViewModel(
+        var vm = WireCorrection(new PriceCorrectionViewModel(
             _labels, _paymentFollowUp, sessionId, ids, mode, streamDate,
             inFlight: () => _printInFlightIds,
             applied: ApplyPriceCorrection,
             reprint: ReprintAsync,
-            cloudApiEnabled: SafeCloudApiEnabled());
-        // Yeniden baskı ve toplu gönderim çekmeceye bağlı DEĞİL: çekmece iş sürerken de kapatılabilir (askıda
-        // kalan yazıcı ya da yavaş ağ yayında kod/fiyat kutusunu ve kuyruğu örtmesin), iş arka planda sürer.
-        // Sonucu (baskı hatası, "elle bakılmalı" adları ve sebepleri) iş BİTİNCE "Basılanlar"daki kalıcı sonuç
-        // şeridine EKLENİR — çekmece açık ya da kapalı. Uçucu ileti satırına değil: seçim, başka bir ileti,
-        // iptal ya da tazeleme onu silerdi; şerit yalnız operatör kapatınca gider.
-        vm.WorkFinished = report =>
-        {
-            RefreshPrintedLabels();
-            PrintedLabels.AddOutcome(report);
-        };
+            cloudApiEnabled: SafeCloudApiEnabled()));
         ActivePriceCorrection = vm;
         try
         {
@@ -150,6 +140,22 @@ public sealed partial class MainShellViewModel
         }
     }
 
+    /// <summary>Düzeltmenin arka plan işleri (yeniden baskı, toplu gönderim) çekmeceye ya da FİYAT kutusunun
+    /// satır içi sonucuna bağlı DEĞİL: çekmece/sonuç iş sürerken de kapatılabilir (askıda kalan yazıcı ya da
+    /// yavaş ağ yayında kod/fiyat kutusunu ve kuyruğu örtmesin), iş arka planda sürer. Sonucu (baskı hatası,
+    /// "elle bakılmalı" adları ve sebepleri) iş BİTİNCE "Basılanlar"daki kalıcı sonuç şeridine EKLENİR. Uçucu
+    /// ileti satırına değil: seçim, başka bir ileti, iptal ya da tazeleme onu silerdi; şerit yalnız operatör
+    /// kapatınca gider.</summary>
+    private PriceCorrectionViewModel WireCorrection(PriceCorrectionViewModel vm)
+    {
+        vm.WorkFinished = report =>
+        {
+            RefreshPrintedLabels();
+            PrintedLabels.AddOutcome(report);
+        };
+        return vm;
+    }
+
     private bool SafeCloudApiEnabled()
     {
         try { return _settingsStore.Load().Payment.UseCloudApi; }
@@ -158,12 +164,12 @@ public sealed partial class MainShellViewModel
 
     /// <summary>Düzeltme yazıldı: kuyruktaki etkilenen satırlar YERİNDE güncel etiketle değiştirilir
     /// (seçim ve sıra korunur). Yapılmasaydı kâğıda eski fiyat basılır, ciro yeni fiyatla yazılırdı —
-    /// baskı veritabanını değil satırın kopyasını basıyor. FİYAT kutusunun kod belleği de yeni fiyatı alır
-    /// (<see cref="RememberCorrectedPrices"/>): yanlış dediğin fiyat o koda dönüşte geri gelmez.</summary>
+    /// baskı veritabanını değil satırın kopyasını basıyor. Etkin kod düzeltilen kodsa FİYAT kutusu kodun yeni
+    /// fiyatını gösterir (F4, <see cref="ShowCorrectedCodePrice"/>): sonraki yorum eski fiyatla yazılmasın.</summary>
     internal void ApplyPriceCorrection(PriceCorrectionResult result)
     {
         RefreshQueueRows(result.Corrected.Select(c => c.Before.Id));
-        RememberCorrectedPrices(result);
+        ShowCorrectedCodePrice(result);
         RefreshHeroStats();
         RefreshPrintedLabels();
     }

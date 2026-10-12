@@ -10,11 +10,11 @@ using Xunit;
 namespace OrderDeck.Tests.App;
 
 /// <summary>
-/// FİYAT kutusu (sahip kararı K8): yanlış fiyatlı etiketi baştan önleyen kurallar. Okuma tek
-/// yardımcıdan (PriceInput), eksi fiyat ve geçersiz metin satır içi reddedilir, 0 TL satır içi
-/// sorulur. Kod değişince TEK kural (kod başına fiyat belleği, yayına özel): operatörün o kod için
-/// elle yazdığı son fiyat; yoksa katalog fiyatı (belleğe yazılmaz); o da yoksa kutu kalır ve başka
-/// ürünün fiyatıysa vurgulanır. "Fiyatı düzelt" düzeltilen kodun belleğini yeni fiyat yapar.
+/// FİYAT kutusu (sahip kararları K8, F1/F2/F4): yanlış fiyatlı etiketi baştan önleyen kurallar. Okuma tek
+/// yardımcıdan (PriceInput), eksi fiyat ve geçersiz metin satır içi reddedilir, 0 TL satır içi sorulur. Bir
+/// yayında bir kodun TEK fiyatı var, kaynağı o yayındaki etiketleri (ayrı bellek yok): kod değişince kodun bu
+/// yayındaki fiyatı; yoksa katalog fiyatı; o da yoksa kutu kalır ve başka ürünün fiyatıysa vurgulanır. Etiketi
+/// olan kodun fiyatı kutuda değişince satır içi şerit sorar; "Evet" kodun bütün etiketlerini yeni fiyata geçirir.
 /// </summary>
 public class MainShellPriceBoxTests
 {
@@ -195,6 +195,7 @@ public class MainShellPriceBoxTests
 
         h.Vm.ActivePriceText.Should().Be("250");
         h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        h.Vm.PriceSourceText.Should().Be("katalog fiyatı");
         h.Vm.ProductCard.CatalogPriceText.Should().Contain("250");
     }
 
@@ -276,37 +277,40 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
-    public void Operator_edit_after_a_catalog_fill_is_kept_as_the_operators_price()
+    public void Price_typed_for_a_code_without_labels_is_not_remembered_after_leaving_it()
     {
-        // Operatör dolumun üstüne yazdı: o değer onun A1 fiyatı — sonraki ürünlerde (geçici dolumlar dahil)
-        // gezindikten sonra A1'e dönünce gelen fiyat budur, katalogdaki (100) değil.
+        // F1: RAM'de ayrı fiyat belleği YOK. A1 için 120 yazıldı ama etiket yazılmadı: A1'e dönüşte kutu kodun
+        // kaynağından dolar — etiketi yok, katalog fiyatı (100). Yazılan değer gittiği yerde "önceki üründen
+        // kaldı" diye vurgulanır.
         using var h = MainShellTestHarness.Build();
         SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 80m));
         h.Vm.ActiveCode = "Z9";
         h.Vm.ActivePriceText = "300";
-        h.Vm.ActiveCode = "A1";              // dolum 100
-        h.Vm.ActivePriceText = "120";        // operatör A1 için 120 yazdı
+        h.Vm.ActiveCode = "A1";              // katalog 100
+        h.Vm.ActivePriceText = "120";        // A1'in etiketi yok: soru yok, değer operatörün
 
+        h.Vm.CodePriceQuestion.Should().BeNull("kodun bu yayında etiketi yok — değiştirilecek bir şey yok");
         h.Vm.ActiveCode = "A12";
-        h.Vm.ActivePriceText.Should().Be("120", "operatörün düzenlemesi korunur");
+        h.Vm.ActivePriceText.Should().Be("120", "fiyatsız koda geçişte kutu kalır");
         h.Vm.IsPriceCarriedOver.Should().BeTrue("120 A1 için yazıldı");
 
         h.Vm.ActiveCode = "";
-        TypeCode(h, "B5");                    // "B"de geçici dolum 80
+        TypeCode(h, "B5");                    // "B"de katalog dolumu 80
         h.Vm.ActivePriceText.Should().Be("80");
         h.Vm.IsPriceCarriedOver.Should().BeTrue("80 B'nin katalog fiyatı — B5'e önceki üründen kaldı");
 
         h.Vm.ActiveCode = "A1";
 
-        h.Vm.ActivePriceText.Should().Be("120");
+        h.Vm.ActivePriceText.Should().Be("100", "yazılan ama kullanılmayan fiyat bellekte tutulmaz");
+        h.Vm.PriceSourceText.Should().Be("katalog fiyatı");
         h.Vm.IsPriceCarriedOver.Should().BeFalse();
     }
 
     [Fact]
     public async Task Catalog_price_used_for_a_label_stays_flagged_on_the_next_product()
     {
-        // Dolumla etiket yazıldı: fiyat o ürün için KULLANILDI, artık geçici değil — sonraki fiyatsız üründe kutu
-        // kalır ve vurgulanır (K8 "kutu kalır ama önceki üründen kaldı").
+        // Dolumla etiket yazıldı: fiyat o ürün için KULLANILDI — sonraki fiyatsız üründe kutu kalır ve vurgulanır
+        // (K8 "kutu kalır ama önceki üründen kaldı").
         using var h = MainShellTestHarness.Build();
         SeedCatalog(h, ("p1", "A1", 100m));
         h.Vm.ActiveCode = "A1";
@@ -319,59 +323,45 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
-    public async Task Operators_price_for_a_code_beats_its_catalog_price_when_the_operator_comes_back()
+    public async Task Code_with_labels_in_this_stream_shows_their_price_before_the_catalog_price()
     {
-        // A1 için yayına özel 120 yazıldı, stoğa bakmak için B'ye geçildi, A1'e dönüldü: kutu katalog fiyatına
-        // (100) dönüyor, vurgu çıkmıyordu — etiket sessizce 100 TL yazılıyordu.
+        // A1'in bu yayındaki fiyatı 120 (etiketleri 120). Stoğa bakmak için B'ye geçildi, A1'e dönüldü: kutu
+        // katalog fiyatına (100) dönerse etiket sessizce 100 TL yazılırdı.
         using var h = MainShellTestHarness.Build();
         SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
         h.Vm.ActiveCode = "A1";
         h.Vm.ActivePriceText = "120";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ilk", "A1 aldım"));
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı", "etiket yazıldı: fiyat artık kodun bu yayındaki fiyatı");
 
         h.Vm.ActiveCode = "B";
-        h.Vm.ActivePriceText.Should().Be("300", "operatörün B için fiyatı yok: katalog fiyatı");
-        h.Vm.IsPriceCarriedOver.Should().BeFalse();
-
-        h.Vm.ActiveCode = "A1";
-
-        h.Vm.ActivePriceText.Should().Be("120", "operatörün A1 için yazdığı fiyat katalogdan önce gelir");
-        h.Vm.IsPriceCarriedOver.Should().BeFalse("120 A1'in kendi fiyatı");
-        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@alici", "A1 aldım"));
-        h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(120m);
-    }
-
-    [Fact]
-    public void Operators_price_comes_back_when_the_code_is_typed_again_letter_by_letter()
-    {
-        using var h = MainShellTestHarness.Build();
-        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
-        h.Vm.ActiveCode = "A1";
-        h.Vm.ActivePriceText = "120";
-        h.Vm.ActiveCode = "B";
+        h.Vm.ActivePriceText.Should().Be("300", "B'nin bu yayında etiketi yok: katalog fiyatı");
+        h.Vm.PriceSourceText.Should().Be("katalog fiyatı");
 
         TypeCode(h, "A1");
 
-        h.Vm.ActivePriceText.Should().Be("120");
+        h.Vm.ActivePriceText.Should().Be("120", "kodun bu yayındaki fiyatı katalogdan önce gelir");
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
         h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ikinci", "A1 aldım"));
+        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(120m, 120m);
     }
 
     [Fact]
-    public async Task Operators_price_survives_labels_written_with_another_products_catalog_price()
+    public void Code_price_is_read_from_the_streams_labels_not_from_memory()
     {
-        // B'de katalog fiyatıyla etiket yazılması (dolum "kullanıldı") operatörün A1 için yazdığı fiyatı silmez.
+        // "Uygulama yeniden açılınca da aynı sonuç": kabuk bu etiketleri hiç görmedi (başka yoldan, ör. önceki
+        // açılışta yazıldılar). Kutu veritabanından okur — katalog fiyatı (100) değil, yayındaki fiyat (120).
         using var h = MainShellTestHarness.Build();
-        SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
-        h.Vm.ActiveCode = "A1";
-        h.Vm.ActivePriceText = "120";
-        h.Vm.ActiveCode = "B";
-        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "B aldım"));
+        SeedCatalog(h, ("p1", "A1", 100m));
+        var sessionId = h.Sessions.GetActive()!.Id;
+        h.Labels.Add(sessionId, MainShellTestHarness.ChatVm("@a", "A1 aldım").Message, 120m, "A1");
+        h.Labels.Add(sessionId, MainShellTestHarness.ChatVm("@b", "A1 aldım").Message, 120m, "A1");
 
-        h.Vm.ActiveCode = "A1";
+        h.Vm.ActiveCode = "a1";
 
         h.Vm.ActivePriceText.Should().Be("120");
-        h.Vm.IsPriceCarriedOver.Should().BeFalse();
-        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
-        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(300m, 120m);
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
     }
 
     [Theory]
@@ -424,34 +414,32 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
-    public async Task Each_code_keeps_the_price_the_operator_typed_for_it()
+    public async Task Each_code_shows_its_own_stream_price()
     {
-        // Operatörün fiyatı TEK yuvadaydı: B için 150 yazılınca A1'in 120'si unutuluyordu; A1'e dönüşte kutu
-        // sessizce katalog fiyatına (100) dönüyor, etiket 100 TL yazılıyordu.
         using var h = MainShellTestHarness.Build();
         SeedCatalog(h, ("p1", "A1", 100m), ("p2", "B", 300m));
         h.Vm.ActiveCode = "A1";
         h.Vm.ActivePriceText = "120";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
         h.Vm.ActiveCode = "B";
         h.Vm.ActivePriceText = "150";
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "B aldım"));
 
         h.Vm.ActiveCode = "A1";
         h.Vm.ActivePriceText.Should().Be("120");
-        h.Vm.IsPriceCarriedOver.Should().BeFalse();
-        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
-
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a2", "A1 aldım"));
         h.Vm.ActiveCode = "B";
         h.Vm.ActivePriceText.Should().Be("150");
-        h.Vm.IsPriceCarriedOver.Should().BeFalse();
-        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "B aldım"));
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b2", "B aldım"));
 
-        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(120m, 150m);
+        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(120m, 150m, 120m, 150m);
     }
 
     [Fact]
-    public async Task Catalog_price_used_for_labels_is_not_remembered_as_the_operators_price()
+    public async Task Stream_price_of_a_code_beats_a_changed_catalog_price()
     {
-        // Katalog fiyatı etikette kullanıldı diye operatörün fiyatı olmaz: A1'e dönüşte GÜNCEL katalog fiyatı gelir.
+        // Bir yayında bir kodun TEK fiyatı var: A1 bu yayında 100'den satıldı; katalog arada 110 oldu. A1'e dönüşte
+        // kutu 110 gösterseydi aynı yayında iki fiyat olurdu.
         using var h = MainShellTestHarness.Build();
         SeedCatalog(h, ("p1", "A1", 100m));
         h.Vm.ActiveCode = "A1";
@@ -461,17 +449,18 @@ public class MainShellPriceBoxTests
 
         h.Vm.ActiveCode = "A1";
 
-        h.Vm.ActivePriceText.Should().Be("110");
-        h.Vm.IsPriceCarriedOver.Should().BeFalse();
+        h.Vm.ActivePriceText.Should().Be("100");
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
     }
 
     [Fact]
-    public void A_new_stream_forgets_the_operators_prices()
+    public async Task A_new_stream_starts_from_the_catalog_price()
     {
         using var h = MainShellTestHarness.Build();
         SeedCatalog(h, ("p1", "A1", 100m));
         h.Vm.ActiveCode = "A1";
         h.Vm.ActivePriceText = "120";            // yayına özel fiyat
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
         h.Vm.ActiveCode = "B7";
         h.Sessions.End(h.Sessions.GetActive()!.Id);
         h.Sessions.Start("Yeni Yayın", new[] { "instagram" });
@@ -480,6 +469,255 @@ public class MainShellPriceBoxTests
 
         h.Vm.ActivePriceText.Should().Be("100", "önceki yayının fiyatı bu yayına taşınmaz: katalog fiyatı");
     }
+
+    // ── F2: etiketi olan kodun fiyatı kutuda değişince satır içi şerit ─────
+
+    /// <summary>A1 için <paramref name="count"/> etiket <paramref name="price"/> TL ile kuyrukta.</summary>
+    private static async Task<MainShellTestHarness.Harness> WithCodeLabels(
+        MainShellTestHarness.Harness h, decimal price, params string[] users)
+    {
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText = PriceText(price);
+        foreach (var u in users) await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm(u, "A1 aldım"));
+        return h;
+    }
+
+    private static string PriceText(decimal price) => price.ToString("0.##", System.Globalization.CultureInfo.GetCultureInfo("tr-TR"));
+
+    private static decimal DbPrice(MainShellTestHarness.Harness h, string labelId)
+        => new LabelRepository(h.Db).GetById(labelId)!.Price;
+
+    [Fact]
+    public async Task Changing_the_price_of_a_code_with_labels_asks_once_and_yes_moves_every_label()
+    {
+        // Sahip: "A1 kodlu ürünün fiyatı 250 diyelim, ben bunu 200 yaparsam zaten tüm etiketler 200 olarak
+        // çıkmalı." Kuyruktaki, basılmış etiketler hepsi; iptal edilmiş değişmez. Tuş vuruşunda değil, onayla.
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a", "@b", "@c", "@iptal");
+        var rows = h.Vm.PrintQueue.ToList();
+        h.Labels.Cancel(new[] { rows[3].Id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
+        h.Vm.SelectedQueueItems.Add(rows[0]);
+        await h.Vm.PrintCommand.ExecuteAsync(null);         // @a basıldı (ciro 250)
+        var queueRow = h.Vm.PrintQueue.Single(r => r.Username == "@b");
+
+        h.Vm.ActivePriceText = "2";
+        h.Vm.ActivePriceText = "20";
+        h.Vm.ActivePriceText = "200";
+
+        h.Vm.CodePriceQuestion.Should().Be("A1 kodunun 3 etiketi 250,00 TL. Hepsi 200,00 TL olsun mu?");
+        rows.Take(3).Select(r => DbPrice(h, r.Id)).Should().OnlyContain(p => p == 250m, "tuş vuruşunda uygulanmaz");
+
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        rows.Take(3).Select(r => DbPrice(h, r.Id)).Should().OnlyContain(p => p == 200m);
+        DbPrice(h, rows[3].Id).Should().Be(250m, "iptal edilmiş etiket değişmez");
+        h.Vm.PrintQueue.Should().Contain(queueRow, "kuyruk satırı yerinde");
+        queueRow.Price.Should().Be(200m, "kâğıda yeni fiyat basılır");
+        h.CustomerRepo.FindByPlatformAndUsername("instagram", "@a")!.TotalAmount.Should().Be(200m,
+            "basılmış etiketin müşteri toplamı fark kadar düzelir");
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        h.Vm.ActivePriceText.Should().Be("200");
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
+        var result = h.Vm.CodePriceCorrection!;
+        result.Should().NotBeNull("sonuç kutunun altında satır içi");
+        result.ResultText.Should().StartWith("A1: 3 etiket 200,00 TL'ye düzeltildi");
+        result.IsReprintAsked.Should().BeTrue("basılmış etiket düzeldi — yeniden baskı sorulur");
+        h.Dialogs.Shown.Should().BeEmpty("pop-up yok");
+
+        result.DoneCommand.Execute(null);
+        h.Vm.CodePriceCorrection.Should().BeNull("Kapat");
+    }
+
+    [Fact]
+    public async Task Pending_price_change_writes_no_label_for_that_code_until_answered()
+    {
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a");
+        h.Vm.ActivePriceText = "200";
+        var late = MainShellTestHarness.ChatVm("@gec", "A1 aldım");
+
+        await h.Vm.AddChatToQueueAsync(late);
+
+        h.Vm.PrintQueue.Should().ContainSingle("şerit beklerken o kod için etiket yazılmaz");
+        h.Vm.CodePriceBlocked.Should().Be("Önce fiyat değişikliğini onayla — yazılmadı: @gec");
+
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+        h.Vm.CodePriceBlocked.Should().Contain("yazılmadı: @gec").And.Contain("yeniden tıkla",
+            "onaydan sonra da adı kalır — sessizce kaybolmaz");
+        await h.Vm.AddChatToQueueAsync(late);              // operatör yeniden tıkladı
+
+        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(200m, 200m);
+        h.Vm.CodePriceBlocked.Should().BeNull("yazılan ad listeden düşer");
+    }
+
+    [Fact]
+    public async Task Cancel_returns_the_box_to_the_codes_price_and_changes_nothing()
+    {
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a");
+        h.Vm.ActivePriceText = "200";
+
+        h.Vm.CancelCodePriceCommand.Execute(null);
+
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        h.Vm.ActivePriceText.Should().Be("250");
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
+        DbPrice(h, h.Vm.PrintQueue[0].Id).Should().Be(250m);
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "A1 aldım"));
+        h.Vm.PrintQueue.Select(q => q.Price).Should().Equal(250m, 250m);
+    }
+
+    [Fact]
+    public async Task Switching_to_another_code_closes_the_strip_without_applying()
+    {
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a");
+        h.Vm.ActivePriceText = "200";
+        h.Vm.CodePriceQuestion.Should().NotBeNull();
+
+        h.Vm.ActiveCode = "B7";
+
+        h.Vm.CodePriceQuestion.Should().BeNull("başka koda geçilince şerit kapanır");
+        DbPrice(h, h.Vm.PrintQueue[0].Id).Should().Be(250m, "değişiklik uygulanmaz");
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText.Should().Be("250", "kod kendi fiyatıyla döner");
+    }
+
+    [Fact]
+    public async Task Typing_the_codes_own_price_asks_nothing()
+    {
+        using var h = MainShellTestHarness.Build();
+        await WithCodeLabels(h, 250m, "@a");
+
+        h.Vm.ActivePriceText = "25";
+        h.Vm.CodePriceQuestion.Should().NotBeNull();
+        h.Vm.ActivePriceText = "250";
+
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@b", "A1 aldım"));
+        h.Vm.PrintQueue.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void Mixed_prices_of_a_code_are_named_in_the_question_and_all_move()
+    {
+        using var h = MainShellTestHarness.Build();
+        var sessionId = h.Sessions.GetActive()!.Id;
+        var ids = new[] { 250m, 250m, 230m }
+            .Select(p => h.Labels.Add(sessionId, MainShellTestHarness.ChatVm("@x", "A1").Message, p, "A1").Id)
+            .ToList();
+        h.Vm.ActiveCode = "A1";
+        h.Vm.ActivePriceText.Should().Be("250", "en çok tekrarlanan fiyat");
+
+        h.Vm.ActivePriceText = "200";
+        h.Vm.CodePriceQuestion.Should().Be(
+            "A1 kodunun 3 etiketi: 250,00 TL × 2, 230,00 TL × 1. Hepsi 200,00 TL olsun mu?");
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        ids.Select(id => DbPrice(h, id)).Should().OnlyContain(p => p == 200m);
+    }
+
+    [Fact]
+    public async Task Ending_the_stream_closes_the_pending_question_and_the_stale_source()
+    {
+        // Kodun fiyatı yayına özel: biten yayının "250 → 200 olsun mu?" sorusu ve "bu yayındaki fiyatı" kaynağı
+        // kalmamalı. Kutu sessizce değişmez.
+        using var h = MainShellTestHarness.Build();
+        h.Labels.Add(h.Sessions.GetActive()!.Id, MainShellTestHarness.ChatVm("@a", "A1").Message, 250m, "A1");
+        h.Vm.ActiveCode = "A1";
+        h.Vm.PriceSourceText.Should().Be("bu yayındaki fiyatı");
+        h.Vm.ActivePriceText = "200";
+        h.Vm.CodePriceQuestion.Should().NotBeNull();
+        h.Dialogs.ConfirmResult = _ => true;      // "Yayını bitirmek istediğinden emin misin?" (mevcut akış)
+
+        await h.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        h.Sessions.GetActive().Should().BeNull();
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        h.Vm.PriceSourceText.Should().BeNull();
+        h.Vm.ActivePriceText.Should().Be("200");
+    }
+
+    private sealed class GatedPrinter : OrderDeck.Labeling.ILabelPrinter
+    {
+        public System.Threading.ManualResetEventSlim Release { get; } = new(false);
+
+        public void Print(System.Collections.Generic.IReadOnlyList<OrderDeck.Core.Sales.Label> labels,
+            System.Collections.Generic.IReadOnlySet<string>? recipientPaysLabelIds = null,
+            System.Collections.Generic.IReadOnlySet<string>? correctionLabelIds = null)
+            => Release.Wait(TimeSpan.FromSeconds(10));
+
+        public void PrintGiftLabels(System.Collections.Generic.IReadOnlyList<OrderDeck.Core.Sales.Label> labels) { }
+    }
+
+    [Fact]
+    public async Task Yes_is_refused_while_a_label_of_the_code_is_on_the_printer()
+    {
+        var printer = new GatedPrinter();
+        using var h = MainShellTestHarness.Build(printerOverride: printer);
+        await WithCodeLabels(h, 250m, "@a");
+        var id = h.Vm.PrintQueue[0].Id;
+        var printing = h.Vm.PrintCommand.ExecuteAsync(null);   // baskı uçuşta
+        try
+        {
+            h.Vm.ActivePriceText = "200";
+
+            h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+            h.Vm.CodePriceError.Should().Contain("Baskı bitince tekrar deneyin");
+            h.Vm.CodePriceQuestion.Should().NotBeNull("şerit açık kalır");
+            DbPrice(h, id).Should().Be(250m);
+        }
+        finally
+        {
+            printer.Release.Set();
+            await printing;
+        }
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+        DbPrice(h, id).Should().Be(200m, "baskı bitince Evet tutar");
+    }
+
+    [Fact]
+    public async Task Yes_lists_people_who_were_asked_the_old_amount_inline()
+    {
+        // K5 paketinin ödeme tarafı şeritten de çalışır: 250 TL istenmiş kişi "düzeltilmiş isteği gönder"
+        // listesinde, kutunun altında (çekmece açılmaz).
+        var drawers = new CountingDrawers();
+        using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
+            new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,
+                new PaymentJobRepository(db), () => new OrderDeck.Core.Settings.AppSettings(),
+                (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
+                    OrderDeck.App.Services.PaymentRequestResult.Sent))));
+        await WithCodeLabels(h, 250m, "@a");
+        var row = h.Vm.PrintQueue[0];
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        var jobs = new PaymentJobRepository(h.Db);
+        var job = jobs.FindOrCreate(row.Label.CustomerId,
+            OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests.SessionScope(h.Sessions.GetActive()!.Id), 250m);
+        jobs.MarkNoBalance(job.Id, null, job.Revision).Should().BeTrue();
+        jobs.MarkDelivered(job.Id, 250m);
+
+        h.Vm.ActivePriceText = "200";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.CodePriceCorrection!.ResendRows.Should().ContainSingle().Which.Candidate.NewTotal.Should().Be(200m);
+        drawers.Count.Should().Be(0, "çekmece açılmaz — kod/fiyat kutusu ve kuyruk örtülmez");
+    }
+
+    private sealed class CountingDrawers : OrderDeck.App.Services.Drawers.IDrawerService
+    {
+        public int Count { get; private set; }
+
+        public Task<bool> ShowAsync(string title, Func<OrderDeck.App.Services.Drawers.Drawer, object> buildContent)
+        {
+            Count++;
+            return Task.FromResult(false);
+        }
+
+        public bool CloseTop() => false;
+    }
+
+    // ── F4: düzeltmeden sonra kutu ───────────────────────────────────────
 
     /// <summary>Fiyat düzeltme çekmecesi: yeni fiyatı yazar, onaylar, yeniden baskıyı atlar.</summary>
     private sealed class CorrectingDrawers(string newPrice) : OrderDeck.App.Services.Drawers.IDrawerService
@@ -510,7 +748,7 @@ public class MainShellPriceBoxTests
     public async Task Price_declared_wrong_by_a_correction_does_not_come_back_for_that_code()
     {
         // A1 için yanlışlıkla 250 yazıldı, etiketler basıldı, "Fiyatı düzelt" ile 205 yapıldı. Başka ürüne bakıp
-        // A1'e dönünce kutu yine 250 (operatörün yazdığı yanlış fiyat) gösteriyor, yeni etiket 250 yazılıyordu.
+        // A1'e dönünce kutu yine 250 gösterseydi yeni etiket 250 yazılırdı.
         using var h = BuildCorrecting("205");
         SeedCatalog(h, ("p1", "A1", 199m), ("p2", "B", 300m));
         h.Vm.ActiveCode = "A1";
@@ -527,7 +765,7 @@ public class MainShellPriceBoxTests
 
         h.Vm.ActiveCode = "A1";
 
-        h.Vm.ActivePriceText.Should().Be("205", "düzeltmenin fiyatı — ne yanlış 250 ne katalogdaki 199");
+        h.Vm.ActivePriceText.Should().Be("205", "kodun bu yayındaki fiyatı — ne yanlış 250 ne katalogdaki 199");
         h.Vm.IsPriceCarriedOver.Should().BeFalse();
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@c", "A1 aldım"));
         h.Vm.PrintQueue.Should().ContainSingle().Which.Price.Should().Be(205m);
@@ -552,18 +790,21 @@ public class MainShellPriceBoxTests
     }
 
     [Fact]
-    public async Task Correction_leaves_a_box_that_does_not_show_the_old_price()
+    public async Task Correction_of_the_active_code_closes_a_pending_change_and_shows_the_corrected_price()
     {
-        // Kutu düzeltilen fiyatı göstermiyorsa (operatör A1 için zaten başka fiyat yazdı) kutuya dokunulmaz.
+        // F4: kutuda A1 için 260 yazılmış, şerit bekliyor; çekmeceden A1 205'e düzeltildi. Kod artık 205 — şeridin
+        // "250 → 260" sorusu bayat, kutu kodun fiyatını gösterir.
         using var h = BuildCorrecting("205");
         h.Vm.ActiveCode = "A1";
         h.Vm.ActivePriceText = "250";
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@a", "A1 aldım"));
         h.Vm.SelectedQueueItems.Add(h.Vm.PrintQueue[0]);
         h.Vm.ActivePriceText = "260";
+        h.Vm.CodePriceQuestion.Should().NotBeNull();
 
         await h.Vm.FixQueuePriceCommand.ExecuteAsync(null);
 
-        h.Vm.ActivePriceText.Should().Be("260");
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        h.Vm.ActivePriceText.Should().Be("205");
     }
 }

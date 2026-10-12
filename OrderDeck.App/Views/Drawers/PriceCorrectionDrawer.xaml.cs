@@ -38,7 +38,7 @@ public partial class PriceCorrectionDrawer : UserControl
         // Soru kutusu bağ güncellenince görünür olur; odak ondan sonra.
         Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
         {
-            if (_vm.IsReprintAsked) ReprintYesButton.Focus();
+            if (_vm.IsReprintAsked) ResultView.ReprintYesButton.Focus();
         });
     }
 }

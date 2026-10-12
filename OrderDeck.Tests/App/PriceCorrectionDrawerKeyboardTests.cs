@@ -70,7 +70,7 @@ public class PriceCorrectionDrawerKeyboardTests
                 vm.IsReprintAsked.Should().BeTrue();
                 PumpAll();
 
-                var yes = (Button)drawer.FindName("ReprintYesButton");
+                var yes = drawer.ResultView.ReprintYesButton;   // sonuç görünümü çekmece ile FİYAT kutusunda ortak
                 yes.IsFocused.Should().BeTrue("varsayılan Evet: soru açılınca odak Evet'te");
 
                 // Operatör yayına döndü: sohbet aramasında Enter.
