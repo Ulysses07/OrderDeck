@@ -174,13 +174,23 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
 
     public bool HasOutcomes => Outcomes.Count > 0;
 
-    /// <summary>Şeride bir sonuç ekler (saatiyle); en çok <see cref="MaxOutcomes"/> tutulur.</summary>
+    /// <summary>Şeride operatörün henüz görmediği sonuç eklendi (sahip kararı F5): "Basılanlar" sekme başlığında
+    /// işaret. Sekme açılınca (<see cref="MarkOutcomesRead"/>) ya da "Tamam"la kalkar. Sonuç dakikalar sonra,
+    /// operatör Kuyruk sekmesindeyken gelebilir — işaret olmasa şerit hiç görülmeyebilirdi.</summary>
+    [ObservableProperty] private bool _hasUnreadOutcomes;
+
+    /// <summary>Şeride bir sonuç ekler (saatiyle); en çok <see cref="MaxOutcomes"/> tutulur. Okunmadı işareti
+    /// konur.</summary>
     public void AddOutcome(string outcome)
     {
         Outcomes.Add($"{DateTime.Now.ToString("HH:mm", Tr)} — {outcome}");
         while (Outcomes.Count > MaxOutcomes) Outcomes.RemoveAt(0);
         OnPropertyChanged(nameof(HasOutcomes));
+        HasUnreadOutcomes = true;
     }
+
+    /// <summary>Operatör sekmeyi açtı: şerit görünüyor, işaret kalkar.</summary>
+    public void MarkOutcomesRead() => HasUnreadOutcomes = false;
 
     /// <summary>Operatör şeridi kapattı ("Tamam").</summary>
     [RelayCommand]
@@ -188,6 +198,7 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
     {
         Outcomes.Clear();
         OnPropertyChanged(nameof(HasOutcomes));
+        HasUnreadOutcomes = false;
     }
 
     public bool HasSelection => SelectedCount > 0;

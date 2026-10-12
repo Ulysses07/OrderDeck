@@ -287,4 +287,29 @@ public class PrintedLabelsPanelLayoutTests
         vm.Outcomes[0].Should().EndWith("iş 3", "en eski düşer");
         vm.Outcomes[^1].Should().EndWith($"iş {PrintedLabelsViewModel.MaxOutcomes + 2}", "en yeni sonda");
     }
+
+    [Fact]
+    public void Printed_tab_header_shows_an_unread_mark_until_the_tab_is_opened()
+    {
+        // F5: sonuç şeridine yeni kayıt düşünce "Basılanlar" sekme başlığında işaret; sekme açılınca kalkar.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var h = MainShellTestHarness.Build();
+            var panel = new PrintQueuePanel { DataContext = h.Vm };
+            panel.Measure(new Size(400, 400));
+            ThemeTestHost.Pump();
+            var dot = (FrameworkElement)panel.FindName("UnreadOutcomesDot");
+            dot.Visibility.Should().Be(Visibility.Collapsed);
+
+            h.Vm.PrintedLabels.AddOutcome("Fiyat düzeltmesi: 2 etiket yeniden basıldı.");
+            ThemeTestHost.Pump();
+            dot.Visibility.Should().Be(Visibility.Visible);
+
+            h.Vm.IsPrintedTabActive = true;
+            ThemeTestHost.Pump();
+            dot.Visibility.Should().Be(Visibility.Collapsed);
+        });
+
+        error.Should().BeNull();
+    }
 }

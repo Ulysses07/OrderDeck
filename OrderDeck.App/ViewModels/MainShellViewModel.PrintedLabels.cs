@@ -44,7 +44,9 @@ public sealed partial class MainShellViewModel
 
     partial void OnIsPrintedTabActiveChanged(bool value)
     {
-        if (value) RefreshPrintedLabels();
+        if (!value) return;
+        RefreshPrintedLabels();
+        PrintedLabels.MarkOutcomesRead();
     }
 
     /// <summary>Kuyrukta seçili satır var mı — Kuyruk sekmesindeki "Fiyatı düzelt".</summary>
@@ -152,6 +154,8 @@ public sealed partial class MainShellViewModel
         {
             RefreshPrintedLabels();
             PrintedLabels.AddOutcome(report);
+            // Sekme açıksa şerit görünüyor; kapalıysa başlıkta okunmamış işareti kalır (F5).
+            if (IsPrintedTabActive) PrintedLabels.MarkOutcomesRead();
         };
         return vm;
     }

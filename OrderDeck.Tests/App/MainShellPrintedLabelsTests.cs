@@ -397,6 +397,39 @@ public class MainShellPrintedLabelsTests
 
         h.Vm.PrintedLabels.Outcomes.Should().ContainSingle()
             .Which.Should().Contain("2 etiket \"DÜZELTME\" işaretiyle yeniden basıldı");
+        h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeFalse("sekme açık — şerit görünüyor, işaret gerekmez");
+    }
+
+    [Fact]
+    public async Task Outcome_arriving_on_the_queue_tab_marks_the_printed_tab_until_it_is_opened()
+    {
+        // F5: sonuç (yeniden baskı) operatör Kuyruk sekmesindeyken geldi; şerit Basılanlar'da — başlıkta işaret
+        // olmasa hiç görülmeyebilirdi. Sekme açılınca kalkar.
+        var (h, drawers) = Build();
+        using var __ = h;
+        var a = Enqueue(h, "@a", 250m);
+        await PrintAsync(h, a);                              // @a basıldı
+        var b = Enqueue(h, "@b", 250m);
+        h.Vm.SelectedQueueItems.Clear();
+        h.Vm.SelectedQueueItems.Add(b);
+        drawers.OnPriceCorrection = async pc =>
+        {
+            pc.NewPriceText = "205";
+            pc.ConfirmCommand.Execute(null);
+            pc.IsReprintAsked.Should().BeTrue("kodun basılmış etiketi de düzeldi");
+            await pc.ReprintCommand.ExecuteAsync(null);
+        };
+
+        await h.Vm.FixQueuePriceCommand.ExecuteAsync(null);
+
+        h.Vm.IsPrintedTabActive.Should().BeFalse();
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle();
+        h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeTrue();
+
+        h.Vm.IsPrintedTabActive = true;
+
+        h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeFalse("sekme açıldı");
+        h.Vm.PrintedLabels.Outcomes.Should().ContainSingle("şerit yerinde — yalnız işaret kalkar");
     }
 
     /// <summary>Basılmış iki etiket, Basılanlar'da seçili; yeniden baskı yazıcıda bekler
@@ -554,10 +587,14 @@ public class MainShellPrintedLabelsTests
         h.Vm.PrintedLabels.Outcomes.Should().Equal(outcome);
         h.Vm.PrintedLabels.HasOutcomes.Should().BeTrue();
 
+        h.Vm.PrintedLabels.AddOutcome("başka bir iş");      // ör. kapanmış çekmecenin işi, sekme açıkken
+        h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeTrue();
+
         h.Vm.PrintedLabels.DismissOutcomesCommand.Execute(null);
 
         h.Vm.PrintedLabels.Outcomes.Should().BeEmpty();
         h.Vm.PrintedLabels.HasOutcomes.Should().BeFalse();
+        h.Vm.PrintedLabels.HasUnreadOutcomes.Should().BeFalse("\"Tamam\" işareti de kaldırır");
     }
 
     [Fact]

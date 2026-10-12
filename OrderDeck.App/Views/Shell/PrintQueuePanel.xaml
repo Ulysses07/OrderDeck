@@ -59,6 +59,15 @@
                                            Style="{StaticResource OD.Text.Mono}"
                                            FontSize="{StaticResource OD.Font.F0}"/>
                             </Border>
+                            <!-- F5: sonuç şeridine okunmamış kayıt düştü (yeniden baskı,
+                                 düzeltilmiş istek gönderimi). Sekme açılınca ya da şeridin
+                                 "Tamam"ıyla kalkar. -->
+                            <Ellipse x:Name="UnreadOutcomesDot"
+                                     Width="8" Height="8"
+                                     VerticalAlignment="Center"
+                                     Fill="{StaticResource OD.Brush.Amber}"
+                                     ToolTip="Yeni sonuç var — sekmeyi aç"
+                                     Visibility="{Binding PrintedLabels.HasUnreadOutcomes, Converter={StaticResource BoolToVisibleConverter}}"/>
                         </StackPanel>
                     </RadioButton>
                     <!-- K4/F3: kuyrukta seçili satırların KODLARI — aynı çekmece. Kodun

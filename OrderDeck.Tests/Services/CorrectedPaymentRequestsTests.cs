@@ -547,6 +547,44 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public async Task Outcome_report_names_people_to_check_by_hand_and_to_verify_in_whatsapp()
+    {
+        // F5: sonuç şeridinde "WhatsApp'ta doğrulanmalı" kişiler de adıyla — pencere açıldı ama gönder tuşuna
+        // basıldı mı bilinmiyor (Opened) ya da gönderim sonucu belirsiz (Pending). Yalnız sayı yazıyordu:
+        // kime bakılacağı bilinmiyordu.
+        var labels = new[] { Add("instagram", "@acildi", 250m), Add("instagram", "@belirsiz", 250m),
+            Add("instagram", "@elle", 250m), Add("instagram", "@gitti", 250m) };
+        _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
+        foreach (var l in labels) Delivered(l.CustomerId, "session:s1", 250m);
+        var byCustomer = new Dictionary<string, PaymentRequestResult>
+        {
+            [labels[0].CustomerId] = PaymentRequestResult.Opened,
+            [labels[1].CustomerId] = PaymentRequestResult.SendPending,
+            [labels[2].CustomerId] = PaymentRequestResult.PhoneRequired,
+            [labels[3].CustomerId] = PaymentRequestResult.Sent,
+        };
+        var payments = Sut((customer, _, _, _, _) =>
+            Task.FromResult(new PaymentRequestOutcome(byCustomer[customer.Id])));
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, payments, "s1", new[] { labels[0].Id },
+            OrderDeck.App.ViewModels.PriceCorrectionMode.Printed, DateTime.Now, inFlight: () => null,
+            applied: _ => { }, reprint: _ => Task.FromResult<string?>(null), cloudApiEnabled: true);
+        var reports = new List<string>();
+        vm.WorkFinished = reports.Add;
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+        vm.ResendRows.Should().HaveCount(4, "kodun bütün etiketleri düzeldi — dört kişi");
+
+        await vm.ResendCommand.ExecuteAsync(null);
+
+        var report = reports.Should().ContainSingle().Subject;
+        report.Should().Contain("\nElle bakılmalı:\n• @elle (WhatsApp numarası gerekli)");
+        report.Should().Contain("\nWhatsApp'ta doğrulanmalı:")
+            .And.Contain("• @acildi (WhatsApp'ta açıldı — gönder tuşuna bas)")
+            .And.Contain("• @belirsiz (gönderim işleniyor — WhatsApp'ta ulaştığını doğrula)");
+        report.Should().NotContain("• @gitti", "gönderilen kişi listelenmez");
+    }
+
+    [Fact]
     public async Task Esc_closes_the_drawer_while_corrected_requests_are_sent()
     {
         var gate = new TaskCompletionSource<PaymentRequestOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);

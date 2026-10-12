@@ -547,10 +547,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             }
             var summary = OutcomeSummary(outcomes);
             ResendNote = summary;
-            // Her "elle bakılmalı" kişi adı ve sebebiyle ayrı satırda: şeritte okunup tek tek ele alınır.
-            var manual = outcomes.Where(o => o.Status == ResendStatus.Manual)
-                .Select(o => $"\n• {o.Candidate.Display} ({o.Note})");
-            report = "Düzeltilmiş istek: " + summary + string.Concat(manual);
+            report = "Düzeltilmiş istek: " + summary + OutcomeNames(outcomes);
         }
         finally
         {
@@ -560,6 +557,22 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     }
 
     private void ReportWorkFinished(string outcome) => WorkFinished?.Invoke("Fiyat düzeltmesi: " + outcome);
+
+    /// <summary>Sonuç şeridi için ele alınması gereken kişiler, adı ve sebebiyle ayrı satırda: "elle bakılmalı"
+    /// olanlar ve WhatsApp'ta doğrulanması gerekenler (sahip kararı F5 — pencere açıldı ama gönder tuşuna basıldı
+    /// mı bilinmiyor ya da gönderimin sonucu belirsiz). Sayı yetmez: kime bakılacağı bilinmezse o kişilerde eski
+    /// tutarlı istek kalır.</summary>
+    internal static string OutcomeNames(IReadOnlyCollection<ResendOutcome> outcomes)
+    {
+        static string Lines(IEnumerable<ResendOutcome> group)
+            => string.Concat(group.Select(o => $"\n• {o.Candidate.Display} ({o.Note})"));
+        var manual = outcomes.Where(o => o.Status == ResendStatus.Manual).ToList();
+        var verify = outcomes.Where(o => o.Status is ResendStatus.Opened or ResendStatus.Pending).ToList();
+        var text = "";
+        if (manual.Count > 0) text += "\nElle bakılmalı:" + Lines(manual);
+        if (verify.Count > 0) text += "\nWhatsApp'ta doğrulanmalı:" + Lines(verify);
+        return text;
+    }
 
     /// <summary>Toplu gönderimin özeti — sonuçlar AYRI sayılır: WhatsApp penceresi açılan istek gitmiş
     /// değildir (operatör gönder tuşuna basmadan kapatırsa müşteride eski tutarlı mesaj kalır), sonucu
