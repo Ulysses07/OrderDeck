@@ -122,9 +122,21 @@
                            RenderOptions.BitmapScalingMode="HighQuality"/>
                 </Border>
 
-                <TextBlock Text="{Binding Code}"
-                           Style="{StaticResource OD.Text.Mono}"
-                           Margin="{StaticResource OD.Pad.Top5}"/>
+                <!-- Kod + katalog fiyatı (K8): FİYAT kutusu kod değişince bu
+                     fiyatla dolar; kartta da görünsün ki operatör kutudakinin
+                     kaynağını görsün. Katalogda fiyat yoksa sağ taraf boş. -->
+                <Grid Margin="{StaticResource OD.Pad.Top5}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding Code}"
+                               Style="{StaticResource OD.Text.Mono}"/>
+                    <TextBlock Grid.Column="1" Text="{Binding CatalogPriceText}"
+                               Style="{StaticResource OD.Text.Mono}"
+                               Foreground="{StaticResource OD.Brush.Amber}"
+                               ToolTip="Katalog fiyatı"/>
+                </Grid>
 
                 <!-- İki Run: satıcı ekseni değeri sönük renkte yazılıyor. Tek
                      bir Text bağı olsaydı ad ile son eki birleştirmek için

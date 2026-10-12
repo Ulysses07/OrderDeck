@@ -43,12 +43,10 @@ public class MainShellViewModelQueueTests
         h.Vm.PrintQueue.Should().BeEmpty(
             "an unparseable price should keep the chat message out of the queue");
 
-        // Uyarı IDialogService'ten geçmeli. Doğrudan MessageBox.Show olsaydı
-        // burada gerçek bir modal pencere açılır, koşu kilitlenir ve kutunun
-        // kendi mesaj döngüsü alakasız dispatcher işlerini pompalayarak
-        // rastgele hatalar üretirdi — bu test tam olarak öyle çakıyordu.
-        h.Dialogs.Shown.Should().ContainSingle()
-            .Which.Title.Should().Be("Geçersiz fiyat");
+        // K8 (2026-10-12): uyarı artık kutunun altında satır içi — pop-up yok.
+        // (Eskiden IDialogService.Show, yani MessageBox'tı.)
+        h.Vm.PriceError.Should().NotBeNull();
+        h.Dialogs.Shown.Should().BeEmpty();
     }
 
     [Fact]

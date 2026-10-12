@@ -58,15 +58,18 @@ public partial class BackupTransferDrawer : UserControl
         if (btn.DataContext is not BackupRowViewModel row) return;
 
         // Hata artık MessageBox değil, kartın kendi satırı — spec §6:
-        // hiçbir şey pop-up değil.
-        if (!decimal.TryParse(row.PriceText, NumberStyles.Number,
-                CultureInfo.CurrentCulture, out var price)
-            && !decimal.TryParse(row.PriceText, NumberStyles.Number,
-                CultureInfo.InvariantCulture, out price))
+        // hiçbir şey pop-up değil. Okuma FİYAT kutusuyla AYNI yardımcıdan
+        // (K8): eskiden burada Türkçe biçim önce deneniyordu, kutuda ise tersi —
+        // aynı metin iki ekranda iki farklı fiyattı.
+        var parsed = PriceInput.Parse(row.PriceText);
+        if (!parsed.IsOk)
         {
-            row.ErrorText = "Geçerli bir fiyat gir (örn: 250 veya 250,00).";
+            row.ErrorText = parsed.Status == PriceInputStatus.Negative
+                ? "Fiyat eksi olamaz."
+                : "Geçerli bir fiyat gir (örn: 250 veya 250,00).";
             return;
         }
+        var price = parsed.Value;
 
         try
         {

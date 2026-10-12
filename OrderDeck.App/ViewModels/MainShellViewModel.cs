@@ -276,8 +276,94 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     partial void OnActiveCodeChanged(string value)
     {
         ProductCard.Load(value);
+        ApplyCatalogPrice();
         RefreshHeroStats();
         ChatView.Refresh();
+    }
+
+    // ─── FİYAT kutusu (K8, 2026-10-12) ──────────────────────────────────────
+    // Yanlış fiyatlı etiketin üç kaynağı burada kapanıyor: kod değişince önceki
+    // ürünün fiyatı sessizce yeni ürüne taşınıyordu, katalog fiyatı hiç
+    // kullanılmıyordu ve kutu "99,50"yi 9950 okuyordu (PriceInput).
+
+    /// <summary>Kutudaki fiyatın sahibi olan kod: operatör fiyatı yazdığında ya da katalogdan
+    /// dolduğunda o anki kod. Boş = fiyat bir ürüne ait değil (açılış "0"ı, kod yokken yazılmış
+    /// fiyat) — o zaman "önceki üründen kaldı" denmez.</summary>
+    private string? _priceOwnerCode;
+
+    /// <summary>Kutu programla dolduruluyor (katalog fiyatı) — değişiklik operatörün düzenlemesi
+    /// sayılmaz.</summary>
+    private bool _settingPriceFromCatalog;
+
+    /// <summary>"önceki üründen kaldı": kod değişti, katalogda fiyat yok, kutudaki fiyat başka
+    /// ürün için girilmişti. Kutu vurgulanır; operatör fiyata dokununca kalkar.</summary>
+    [ObservableProperty] private bool _isPriceCarriedOver;
+
+    /// <summary>Kutunun altındaki satır içi hata (geçersiz/eksi fiyat). Pop-up değil.</summary>
+    [ObservableProperty] private string? _priceError;
+
+    /// <summary>0 TL onayı bekleyen yorumun satır içi sorusu; null = soru yok.</summary>
+    [ObservableProperty] private string? _zeroPricePrompt;
+
+    private ChatMessageViewModel? _zeroPricePending;
+
+    /// <summary>Operatör bu kutu metni için 0 TL'yi onayladı; metin değişince düşer.</summary>
+    private bool _zeroPriceConfirmed;
+
+    partial void OnActivePriceTextChanged(string value)
+    {
+        PriceError = null;
+        _zeroPriceConfirmed = false;
+        if (_zeroPricePending is not null && PriceInput.Parse(value) is not { IsOk: true, Value: 0m })
+        {
+            _zeroPricePending = null;
+            ZeroPricePrompt = null;
+        }
+        if (_settingPriceFromCatalog) return;
+        IsPriceCarriedOver = false;
+        _priceOwnerCode = EffectiveCode;
+    }
+
+    /// <summary>Kod değişince: katalogda ürünün fiyatı varsa kutu onunla dolar; yoksa kutu
+    /// kalır ama başka ürün için girilmişse vurgulanır (sahip kararı K8).</summary>
+    private void ApplyCatalogPrice()
+    {
+        var catalogPrice = ProductCard.Resolution?.Product.DefaultPrice ?? 0m;
+        if (catalogPrice > 0m)
+        {
+            _settingPriceFromCatalog = true;
+            try { ActivePriceText = PriceInput.Format(catalogPrice); }
+            finally { _settingPriceFromCatalog = false; }
+            _priceOwnerCode = EffectiveCode;
+            IsPriceCarriedOver = false;
+            return;
+        }
+
+        var code = EffectiveCode;
+        IsPriceCarriedOver = code is not null
+            && _priceOwnerCode is not null
+            && !string.Equals(_priceOwnerCode, code, StringComparison.OrdinalIgnoreCase)
+            && PriceInput.Parse(ActivePriceText).IsOk;
+    }
+
+    /// <summary>0 TL sorusunun "Evet"i: bekleyen yorum 0 TL ile yazılır; aynı kutu metniyle
+    /// sonraki yorumlar yeniden sorulmaz.</summary>
+    [RelayCommand]
+    private async Task ConfirmZeroPriceAsync()
+    {
+        var pending = _zeroPricePending;
+        _zeroPricePending = null;
+        ZeroPricePrompt = null;
+        if (pending is null) return;
+        _zeroPriceConfirmed = true;
+        await AddChatToQueueAsync(pending);
+    }
+
+    [RelayCommand]
+    private void CancelZeroPrice()
+    {
+        _zeroPricePending = null;
+        ZeroPricePrompt = null;
     }
 
     private DispatcherTimer? _heroTimer;
@@ -1218,12 +1304,24 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        if (!TryParsePrice(ActivePriceText, out var price))
+        // Satır içi: geçersiz/eksi fiyat kutunun altında yazılır, 0 TL satır içi sorulur
+        // (sahip kararı K8 — pop-up yok).
+        var parsed = PriceInput.Parse(ActivePriceText);
+        if (!parsed.IsOk)
         {
-            _dialogs.Show("Geçerli bir fiyat gir (örn: 100 veya 99.50).",
-                "Geçersiz fiyat", DialogSeverity.Warning);
+            PriceError = parsed.Status == PriceInputStatus.Negative
+                ? "Fiyat eksi olamaz."
+                : "Geçerli bir fiyat gir (örn: 250 veya 99,50).";
             return;
         }
+        var price = parsed.Value;
+        if (price == 0m && !_zeroPriceConfirmed)
+        {
+            _zeroPricePending = messageVm;
+            ZeroPricePrompt = $"Fiyat 0 TL. '{messageVm.Display}' etiketi 0 TL ile yazılsın mı?";
+            return;
+        }
+        PriceError = null;
 
         var code = EffectiveCode;
         var resolution = ProductCard.Resolution;
@@ -2056,12 +2154,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             var c = _customerRepo.GetById(vm.CustomerId);
             vm.IsCustomerBlacklisted = c?.IsBlacklisted ?? false;
         }
-    }
-
-    private static bool TryParsePrice(string text, out decimal price)
-    {
-        return decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out price)
-            || decimal.TryParse(text, NumberStyles.Any, Formatting.TrFormats.TR, out price);
     }
 
     private void OnBannerAutoDrawRequested() => DrawGiveawayNowCommand.Execute(null);

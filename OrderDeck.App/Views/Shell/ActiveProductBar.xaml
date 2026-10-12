@@ -46,13 +46,63 @@
                 </TextBox.Style>
             </TextBox>
 
-            <!-- FİYAT -->
+            <!-- FİYAT. Kod değişince katalog fiyatıyla dolar; katalogda fiyat
+                 yoksa ve kutudaki fiyat önceki ürün için girildiyse kutu sarı
+                 çerçeveyle vurgulanır (sahip kararı K8). Operatör fiyata
+                 dokununca vurgu kalkar. -->
             <TextBlock Text="FİYAT" Style="{StaticResource OD.Text.Micro}"
                        Margin="{StaticResource OD.Pad.Top5}"/>
-            <TextBox Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
-                     Style="{StaticResource OD.TextBox}"
+            <TextBox x:Name="PriceBox"
+                     Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
                      FontFamily="{StaticResource OD.Font.Mono}"
-                     FontSize="{StaticResource OD.Font.F3}"/>
+                     FontSize="{StaticResource OD.Font.F3}">
+                <TextBox.Style>
+                    <Style TargetType="TextBox" BasedOn="{StaticResource OD.TextBox}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsPriceCarriedOver}" Value="True">
+                                <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Amber}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
+            <TextBlock Text="önceki üründen kaldı — bu ürünün fiyatı mı?"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Amber}"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding IsPriceCarriedOver, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <TextBlock Text="{Binding PriceError}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Accent}"
+                       TextWrapping="Wrap"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding PriceError, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+            <!-- 0 TL satır içi onayı: yorum bekletilir, "Evet" ile 0 TL yazılır;
+                 aynı kutu metniyle sonraki yorumlar yeniden sorulmaz. -->
+            <Border Margin="{StaticResource OD.Pad.Top3}"
+                    Padding="{StaticResource OD.Pad.3}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OD.Radius.Md}"
+                    Visibility="{Binding ZeroPricePrompt, Converter={StaticResource NullToCollapsedConverter}}">
+                <StackPanel>
+                    <TextBlock Text="{Binding ZeroPricePrompt}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Text}"
+                               TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top3}">
+                        <Button Content="Evet, 0 TL yaz"
+                                Style="{StaticResource OD.Button.Secondary}"
+                                Command="{Binding ConfirmZeroPriceCommand}"/>
+                        <Button Content="Vazgeç"
+                                Style="{StaticResource OD.Button.Ghost}"
+                                Margin="{StaticResource OD.Pad.X2}"
+                                Command="{Binding CancelZeroPriceCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </StackPanel>
     </Border>
 </UserControl>
