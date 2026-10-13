@@ -1,6 +1,6 @@
 # Yayın ve Etiket Senkronu (Çoklu Bilgisayar, Faz 2) — Tasarım
 
-**Tarih:** 2026-10-13 · **Durum:** sahip kararları alındı (§11), tasarım incelemesinin bütün aşıları ve ölümcül bulguları işlendi (§14), uygulama planı bekliyor · **İlgili:** `2026-10-05-coklu-bilgisayar-senkron-design.md` (dal `docs/coklu-bilgisayar-senkron`; bu belge onun "Faz 2" satırının ve kargo kısmının yerini alır), `2026-10-11-ortak-bakiye-design.md`, `2026-10-10-banka-havale-onay-design.md`, PR #506 (ödeme isteği kişi anahtarı), PR #508 (Basılanlar, kod başına tek fiyat)
+**Tarih:** 2026-10-13 · **Durum:** sahip kararları alındı (§11), tasarım incelemesinin bütün aşıları ve ölümcül bulguları işlendi (§14), ikinci incelemenin 37 bulgusu işlendi (§15), uygulama planı bekliyor · **İlgili:** `2026-10-05-coklu-bilgisayar-senkron-design.md` (dal `docs/coklu-bilgisayar-senkron`; bu belge onun "Faz 2" satırının ve kargo kısmının yerini alır), `2026-10-11-ortak-bakiye-design.md`, `2026-10-10-banka-havale-onay-design.md`, PR #506 (ödeme isteği kişi anahtarı), PR #508 (Basılanlar, kod başına tek fiyat)
 
 Kaynaklar: LiveDeck `origin/master` a126ff26. Kod ağacı 04f2b3d1 ile aynı, fark yalnız web sürüm bump'ı; #506 ve #508 dahil. Satır numaraları bu kesite göredir. Sahada v0.9.10 (yerel şema 48). Üç aday tasarım iki hakemle karşılaştırıldı. Hakem 1 "kapanan yayın sunucuya devredilir" (D3, 8,2) tasarımını, hakem 2 "yayın sahipliği + sunucuda doğrulanan komutlar" (D2, 7,5) tasarımını seçti. İkisi aynı mimarinin iki varyantı: canlı yayın sahibinde yerel, bitince sunucuya geçer, sonrası komutla değişir. Bu belge ikisini birleştirir. D1 (çok yazıcılı, istemci saatli birim damgası) elendi. İki hakemin bütün aşıları ve ölümcül bulguları §14'te tek tek eşlendi.
 
@@ -10,7 +10,7 @@ Kaynaklar: LiveDeck `origin/master` a126ff26. Kod ağacı 04f2b3d1 ile aynı, fa
 - Yayın ve etiket yalnız gönderiliyor, başka bilgisayara inmiyor (`OrderDeck.App/Services/Sync/SessionOrderSyncService.cs:15-17` "Push-only"). Sunucuda Orders ve StreamSessions için çekme ucu yok.
 - Sunucu sipariş satırını bütünüyle eziyor, son gelen kazanıyor (`OrderDeck.LicenseServer/Controllers/Licenses/LicensesSessionsSyncController.cs:271-294`; oturumda `:89-96`). Bayat bir tam satır başka bilgisayarın iptalini geri getirir ve stok defterini de geri sarar. Bayat oturum gönderimi `EndedAt`'i NULL'layıp yayını yeniden "açar" (`:92`).
 - Katalog bilmeyen eski istemcinin güncellemesi `ProductId`'yi NULL'luyor (`:285-286`).
-- `ParentLabelId`, `ShipmentId`, `PrintBatchId`, `PrintSeq`, `PriceCorrectedAt` ve `PaidPrice` yalnız yerelde duruyor (`OrderDeck.Core/Storage/Migrations/048_label_print_batch.sql:28`). Başka bilgisayar yedek ilişkisini, "dekontla ödendi" bilgisini ve kâğıt grubunu bilemez.
+- `ParentLabelId`, `ShipmentId`, `PrintBatchId`, `PrintSeq`, `PriceCorrectedAt` ve `PaidPrice` yalnız yerelde duruyor. 048'in dört kolonu için `OrderDeck.Core/Storage/Migrations/048_label_print_batch.sql:28`; ParentLabelId ve ShipmentId için gönderim eşlemesi (`SessionOrderSyncService.cs:121-142`) ve sunucunun `SyncOrderItem`'ı (`LicensesSessionsSyncController.cs:156`), ikisinde de bu alanlar yok. Başka bilgisayar yedek ilişkisini, "dekontla ödendi" bilgisini ve kâğıt grubunu bilemez.
 - Müşteri toplamları bilgisayar başına tutulan fark sayaçları (`OrderDeck.Core/Storage/Repositories/CustomerRepository.cs:311-321`). Sunucudan inen müşteri 0/0 ile açılıyor (`CustomerSyncRepository.cs:561`).
 - Kargo dosyasının tutarı da WPF'te fark sayacı. Dosyaya bağlandıktan sonra iptal edilen etiket tutarda kalıyor: `LabelService.Cancel` dosyaya dokunmuyor (`OrderDeck.Core/Sales/LabelService.cs:125-162`), `ShipmentService.AttachLabels` yalnız ekliyor (`ShipmentService.cs:73-102`).
 - Ödeme isteğinde bilgisayarlar arası koruma yalnız bakiye tarafında. Kişi kilidi süreç içi (`OrderDeck.Core/Customers/PaymentPersonGate.cs:30-44`), teslim kaydı yerel. Kargo ücreti ve eşiği bilgisayarın kendi ayarı (`OrderDeck.Core/Settings/AppSettings.cs:50`, `:261-274`).
@@ -30,22 +30,23 @@ Kaynaklar: LiveDeck `origin/master` a126ff26. Kod ağacı 04f2b3d1 ile aynı, fa
 - Panel ve Shopper istemci değişikliği. Sözleşme aynı; yeni alanları yok sayarlar. Panel `GET sessions` toplamının `PrintedAt`'e bakmaması ve Shopper süzgeçleri ayrı iş.
 - Kargo dosyasından elle etiket çıkarma arayüzü. Bağ çözme yalnız kurallarla olur (§7.2).
 - Yayın başlığı ve notu düzenleme (bugün de yolu yok).
-- Mod Off'ta (geçiş dönemi) sahip kararı Y5'in yerel yolda uygulanması (§7.4).
 
 ## 2. Kavramlar
 
 - **Kopya kimliği (`ReplicaId`):** yerel veritabanına bağlı GUID (`_meta.ReplicaId`, göç 049). `AppSettings.InstallationId` (`AppSettings.cs:124`) kullanılmaz: o ayar dosyasına bağlı; sahiplik ise canlı kuyruğu tutan veritabanı dosyasını izlemeli. Yedekten geri yüklemede yenilenir (§8.7).
-- **Yayın hâlleri** (sunucu satırına göre). Her hâlin **tek** yazıcısı vardır (DM1):
+- **Yayın hâlleri** (sunucu satırına göre). Mod On'da her hâlde birim alanlarının (fiyat, iptal, yedek, kargo bağı) tek yazıcısı vardır (DM1):
 
-  | Hâl | Sunucu | Yazıcı | Başka bilgisayarda |
+  | Hâl | Sunucu | Birim yazıcısı | Başka bilgisayarda |
   |---|---|---|---|
   | Canlı | `EndedAt IS NULL` | yalnız sahip kopya (push) | yalnız başlık: "PC-A'da canlı" |
   | Devrediliyor | `EndedAt` dolu, `ReleasedAt IS NULL` | yalnız sahip kopya (push) | başlık: "PC-A'da yayın bitti, etiketler gönderiliyor" |
   | Devredilmiş | `ReleasedAt` dolu | yalnız sunucu komutu (sahip dahil herkes) | tam satırlar, akıştan |
 
+  Bilinçli istisnalar: devredilmiş yayına push'tan **ekleme** ve **baskı doldurma** (K3) kabul edilir; force-end ile kapanmış yayında sahibin push'u K2'ye göre yargılanır (K5 istisnası, §4.2). Mod Off'ta tablo geçerli değildir: her bilgisayar kendi yayınlarını bugünkü gibi push'la yazar.
+
 - **Sahip:** yayını açan kopya (`StreamSessions.OwnerReplicaId`). NULL, yayının eski sürümde açıldığı anlamına gelir (miras).
 - **Devir (release):** sunucunun yayını sahipten alması. İki yolla olur. (a) Sahibin `Release=true` taşıyan kapanış gönderimi; bu yalnız yayının etiket kuyruğu boşken gönderilir (§5.2). (b) `force-end` komutu (§4.6). Devir tek işlemde `ReleasedAt` yazar ve yayının bütün siparişlerine `SessionReleasedAt` basar; siparişler değişiklik akışına o anda girer.
-- **Yerel otorite (`StreamSession.Authority`):** `local` ise satırı bu bilgisayar yazar. `server` ise yalnız komut yanıtı ve akış yazar; yerel yazım tetikleyiciyle ABORT edilir. Kendi yayını ancak devir sunucudan **görülünce** `server` olur: ya kapanış yanıtında ya da akışta `ReleasedAt` gelince. O ana kadar yereldir (§5.2).
+- **Yerel otorite (`StreamSession.Authority`):** `local` ise satırı bu bilgisayar yazar. `server` ise yalnız komut yanıtı ve akış yazar; yerel yazım tetikleyiciyle ABORT edilir. Kendi yayını ancak **mod On'dayken** (`SalesSyncState.Mode = 1`) devir sunucudan **görülünce** `server` olur: ya kapanış yanıtında ya da akışta `ReleasedAt` gelince. O ana kadar yereldir (§5.2). Mod Off'ta yalnız `ReleasedAt` saklanır, `Authority` hep `local` kalır; mod On'a geçişte §8.4 adım 3 çevirir. Yerelde hâlâ açık (aktif) kendi yayını force-end görse de operatör bitirene kadar `local` kalır (§5.4).
 - **Komut:** devredilmiş yayının etiketini ya da kargo dosyasını değiştiren istek (§4.6). Sunucuda doğrulanır, tek işlemde uygulanır, `CommandId` ile idempotenttir. Beklenen satır sürümlerini taşır (iyimser eşzamanlılık). Sonuç yanıtla bu bilgisayara, akışla öbürlerine iner.
 - **Birim ve sunucu damgası:** birlikte yazılan alanlar. Birimler:
   - fiyat {Price, PriceCorrectedAt, PaidPrice}
@@ -54,17 +55,18 @@ Kaynaklar: LiveDeck `origin/master` a126ff26. Kod ağacı 04f2b3d1 ile aynı, fa
   - kargo bağı {ShipmentId}
   - baskı {PrintedAt, PrintBatchId, PrintSeq}
 
-  Komutun değiştirdiği birime sunucu saatiyle `PriceSetAt`, `CancelSetAt`, `BackupSetAt` ya da `ShipmentSetAt` basılır. Damgalı birimi hiçbir push değiştiremez (§4.2 K2). İstemci saati hiçbir çakışma kararında kullanılmaz.
+  Komutun değiştirdiği birime sunucu saatiyle `PriceSetAt`, `CancelSetAt`, `BackupSetAt` ya da `ShipmentSetAt` basılır. Damgalı birimi bayat push değiştiremez (§4.2 K2). Tek istisna, satırın güncel sürümünü gördüğünü kanıtlayan v2 push'udur (`baseVersion = Version`): o istemci komutun sonucunu görmüş ve yeni bir karar vermiştir. İstemci saati hiçbir çakışma kararında kullanılmaz.
 - **Oluşum alanları:** SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, AddedAt, IsShippingFee, IsBackupPromoted, ProductId, ProductVariantId, ParentOrderId. Yalnız eklemede yazılırlar; her biçimde ve her kipte. CustomerId'yi yalnız sunucudaki birleştirici taşır.
 - **Mod kapısı (`Licenses.SalesSyncMode`):** lisans başına Off ya da On.
-  - Off: bugünkü davranış. Ws yalnız yeni alanları gönderir ve geçmişi doldurur.
+  - Off: bugünkü davranış. Ws ek olarak yeni alanları gönderir, satış ve ödeme geçmişini doldurur, ödeme kayıtlarını kirasız yazar ve Y5'i yerel yolda uygular (§7.4).
   - On: akış, komutlar, kargonun sunucuya geçmesi, lisans geneli kargo ayarı ve ödeme kirası birlikte açılır.
   - Yalnız CLI açar; koşullar §4.10'da. Açıkken eski sürümün yazımı sessizce değil görünür biçimde reddedilir.
-- **PersonKey:** sunucunun kişi anahtarı. `a`, sahip satırın asıl kaydıdır (`CustomerIdResolver.cs:49`). `a`'nın `GroupId`'si boş değilse anahtar `g:{GroupId}` (ham değer, ordinal karşılaştırma), boşsa `c:{a hex}`. Bu, yereldeki `CustomerGroup.PersonKey` ile aynı sınıflamadır (`OrderDeck.Core/Customers/CustomerGroup.cs:21-22`; önekler orada `grp:`/`id:`). Ortak bakiye §2'deki `S(a)` ile aynı kişiyi gösterir.
-- **PersonKey kirası:** kişi×kapsam başına, bilgisayarlar arası ödeme isteği kirası (`payment-requests/begin|finish`, §6.4). Yerel `PaymentPersonGate`'in sunucu ikizidir. Anahtar PersonKey'dir; ayrıca üye kümesi kesişimi de denetlenir. Böylece grup senkronu gecikse bile iki bilgisayar aynı kişiyi bulur.
-- **Ön gönderim:** sunucu toplamıyla karşılaştırmadan ya da sunucuda satır seçen bir komuttan önce bu bilgisayarın ilgili gönderim kuyruklarının (müşteri, yayın ve etiket) sınırlı sürede boşaltılması. Deseni `SyncFlushService.cs:81-97`.
+- **PersonKey:** sunucunun kişi anahtarı. `a`, sahip satırın asıl kaydıdır (`CustomerIdResolver.cs:49`). `a`'nın `GroupId`'si boş değilse anahtar `g:{GroupId}` (ham değer, ordinal karşılaştırma), boşsa `c:{a hex}`. Sahip GUID'siz bir yerel kimlikse (projeksiyonu yok, §6.4) `r:{ham Id}`. Bu, yereldeki `CustomerGroup.PersonKey` ile aynı sınıflamadır (`OrderDeck.Core/Customers/CustomerGroup.cs:21-22`; önekler orada `grp:`/`id:`). Ortak bakiye §2'deki `S(a)` ile aynı kişiyi gösterir. SQL karşılaştırması harf ve sondaki boşluk farkını yutabildiği için indeks ve kilit anahtarın SHA-256 özetiyle (`PersonKeyHash binary(32)`) çalışır; metin yalnız bellekte ordinal yeniden denetim içindir (§3.1).
+- **PersonKey kirası:** kişi×kapsam başına, bilgisayarlar arası ödeme isteği kirası (`payment-requests/begin|finish`, §6.4). Yerel `PaymentPersonGate`'in sunucu ikizidir. Anahtar PersonKey'dir; canlı kira (d) ve önceki istek (e) aramalarında ayrıca üye kümesi kesişimi denetlenir ve istemcinin üye kümesi sunucudaki grubu kapsamıyorsa istek reddedilir (`members-stale`). Böylece grup senkronu gecikse bile iki bilgisayar aynı kişiyi bulur.
+- **Ön gönderim:** sunucu toplamıyla karşılaştırmadan ya da sunucuda satır seçen bir komuttan önce bu bilgisayarın ilgili gönderim kuyruklarının (bekleyen komutlar, müşteri, yayın ve etiket) sınırlı sürede boşaltılması. Deseni `SyncFlushService.cs:81-97`. Zaman aşımı tek başına engel değildir; karar sunucu karşılaştırmasınındır (§6.4).
 - **Bekleyen komut:** çevrimdışı kuyruğa yalnız iki komut girer: devredilmiş yayından kalan kuyruk etiketinin iptali ve ilk baskısı (§5.5). Yerel okuyucular bunları uygulanmış sayar (örtü).
-- **Ws:** bu spec'in WPF değişikliklerini taşıyan ilk Velopack sürümü (öneri v0.9.11, yerel şema 49). Sunucudaki karşılığı `SalesSync:MinClientVersion`.
+- **Ws:** bu spec'in WPF değişikliklerini (W1, W2 ve W3'ün **hepsini**) taşıyan ilk Velopack sürümü (öneri v0.9.11, yerel şema 49). Sunucudaki karşılığı `SalesSync:MinClientVersion`; Ws yayımlanınca Burak yazar (§8.1). Boşsa mod açılamaz ve mod On'da komut ve kira uçları 409 `client-update-required` döner (fail-closed). İkinci kilit: `hello`'daki `featureLevel` yalnız W3'ü içeren derlemede 3'tür; mod kapısı her kopyada 3 ister (§4.10-2).
+- **Görülen kip (`SeenMode`):** Ws'nin her v2 isteği o anda uyguladığı kipi (0/1) taşır; sunucu bunu `WpfReplicas.SeenMode`'a yazar. Mod geçişlerinde iki yönde kullanılır: açılış penceresinde Off kurallarıyla verilmiş kargo kararlarının kaybolmaması (§8.4) ve eski sürüme dönüşten önce PC'nin Off geçişini bitirdiğinin kanıtı (§8.6).
 
 ## 3. Veri modeli
 
@@ -80,14 +82,15 @@ Kaynaklar: LiveDeck `origin/master` a126ff26. Kod ağacı 04f2b3d1 ile aynı, fa
 | `Orders` | `TextScrubbedAt datetimeoffset NULL` | S1 | KVKK (§9). |
 | `Orders` | `ChangeSeq rowversion` + `(LicenseId, ChangeSeq)`; filtreli `(LicenseId, ShipmentId)` WHERE `[ShipmentId] IS NOT NULL` | S1 | Akış; dosya türetme. |
 | `Orders` | `SyncVersion` (`LicenseDbContext.cs:488`) değişmez, telde `Version` adıyla açılır | S1 | Komutların beklenen sürümü. |
-| `Shipments` | `ChangeSeq rowversion` + indeks; `Version int` jeton; `AmountDerivedAt datetimeoffset NULL`; `CommandedAt datetimeoffset NULL` | S1 | `AmountDerivedAt` doluysa tutar bağlı siparişlerden türetilir (DM7). |
-| `Licenses` | `SalesSyncMode tinyint NOT NULL DEFAULT 0`, `SalesSyncModeChangedAt`, `LastLegacySalesPushAt` | S1 | Mod kapısı; protokolsüz istek izi. S1 okur, CLI S3'te gelir. |
-| `LicenseShippingSettings` (yeni) | `LicenseId` PK, `FreeShippingThreshold decimal(18,2) NULL`, `ShippingFee decimal(18,2) NULL`, `Version int` jeton, `UpdatedAt`, `UpdatedByReplicaId` | S2 | Sahip kararı Y4: tek, lisans geneli ayar (§6.2). |
-| `WpfReplicas` (yeni) | `ReplicaId` PK, `LicenseId`, `MachineName`, `HardwareFingerprint`, `ClientVersion nvarchar(32)`, `Protocol tinyint`, `PreviousReplicaId`, `FirstSeenAt`, `LastSeenAt`, `BackfillCompletedAt`, `ReportedThreshold`/`ReportedFee decimal NULL`; indeks `(LicenseId, LastSeenAt)` | S1 | Kalp atışı (sahip sessizliği, §4.6), mod kapısı (§4.10), kopya veritabanı tespiti (§8.7). |
+| `Shipments` | `ChangeSeq rowversion` + indeks; `Version int` jeton; `AmountDerivedAt datetimeoffset NULL`; `CommandedAt datetimeoffset NULL`; `OriginReplicaId uniqueidentifier NULL` | S1 | `AmountDerivedAt` doluysa tutar bağlı siparişlerden türetilir (DM7). `OriginReplicaId` dosyayı açan kopyadır: v2 `shipments/sync`, `sales/backfill` ve dosya açan `attach-shipment` boşsa yazar. Mod kapısı (§4.10-6) ve `disable` temizliği (§8.5) bunu okur. |
+| `Licenses` | `SalesSyncMode tinyint NOT NULL DEFAULT 0`, `SalesSyncModeChangedAt`, `LastLegacySalesPushAt` | S1 | Mod kapısı; protokolsüz istek izi (iki kipte yazılır, §4.0). S1 okur, CLI S3'te gelir. |
+| `LicenseShippingSettings` (yeni) | `LicenseId` PK, `FreeShippingThreshold decimal(18,2) NULL`, `ShippingFee decimal(18,2) NULL`, `Version int` jeton, `UpdatedAt`, `UpdatedBy nvarchar(64)` (`cli` ya da ReplicaId) | S2 | Sahip kararı Y4: tek, lisans geneli ayar (§6.2). |
+| `WpfReplicas` (yeni) | PK `(LicenseId, ReplicaId)`, `MachineName`, `HardwareFingerprint`, `ClientVersion nvarchar(32)`, `Protocol tinyint`, `FeatureLevel tinyint`, `SeenMode tinyint NULL`, `SeenModeAt`, `PreviousReplicaId`, `FirstSeenAt`, `LastSeenAt`, `BackfillCompletedAt`, `PaymentHistoryCompletedAt`, `ReportedThreshold`/`ReportedFee decimal NULL`; indeks `(LicenseId, LastSeenAt)` | S1 | Kalp atışı (sahip sessizliği, §4.6), mod kapısı (§4.10), kopya veritabanı tespiti (§8.7), kip geçişi kanıtı (§8.4, §8.6). PK lisans başına: lisans değiştiren PC yeni lisansta yeni satır açar, eski lisanstaki sessizlik denetimi bozulmaz. |
 | `SalesCommandLogs` (yeni) | `CommandId` PK, `LicenseId`, `ReplicaId`, `Kind nvarchar(32)`, `RequestHash binary(32)`, `Status`, `ResultJson`, `CreatedAt` | S2 | İdempotency ve denetim izi. `ResultJson` yalnız Id, sürüm ve tutar taşır; ad ya da mesaj metni **taşımaz** (§9). 90 gün. |
-| `PaymentRequestRecords` (yeni) | `Id` PK (istemcinin `recordId`'si), `LicenseId`, `PersonKey nvarchar(80)`, `ScopeKey nvarchar(128)`, `OwnerWpfCustomerId`, `ReplicaId`, `MachineName`, `State tinyint {Sending, Delivered, Unconfirmed, Abandoned}`, `ProductTotal`, `TotalBeforeBalance`, `NetAmount`, `AppliedAmount`, `FullyFromBalance`, `ShippingSettingsVersion`, `StartedAt`, `LeaseUntil`, `FinishedAt`, `Version int` jeton | S3 | Kira ve bilgisayarlar arası teslim kaydı (§6.4). |
-| `PaymentRequestRecords` | Filtreli **tekil** `(LicenseId, PersonKey, ScopeKey)` WHERE `[State] = 0` (Sending); `(LicenseId, PersonKey, ScopeKey, StartedAt)` | S3 | DM6: kişi×kapsamda tek canlı kira. Yarışın hakemi indeks. |
-| `PaymentRequestMembers` (yeni) | `(RecordId, WpfCustomerId)` PK, `LicenseId`, `ScopeKey`; indeks `(LicenseId, WpfCustomerId, ScopeKey)` | S3 | Üye kesişimi denetimi (§6.4-c). |
+| `PaymentRequestRecords` (yeni) | `Id` PK (istemcinin `recordId`'si), `LicenseId`, `PersonKey nvarchar(80)` (`Latin1_General_100_BIN2`), `PersonKeyHash binary(32)`, `ScopeKey nvarchar(128)`, `OwnerWpfCustomerId nvarchar(64)` (GUID'siz sahip için ham Id), `ReplicaId`, `MachineName`, `Kind tinyint {Lease, Record}`, `State tinyint {Sending, Delivered, Unconfirmed, Abandoned}`, `ProductTotal`, `TotalBeforeBalance`, `NetAmount`, `AppliedAmount`, `FullyFromBalance`, `ShippingSettingsVersion`, `RequestHash binary(32)`, `StartedAt`, `LeaseUntil`, `FinishedAt`, `Version int` jeton | S3 | Kira ve bilgisayarlar arası teslim kaydı (§6.4). `Record`: kirasız, sonradan yazılan kayıt (ödeme geçmişi geri doldurması ve mod Off, §6.4). |
+| `PaymentRequestRecords` | Filtreli **tekil** `(LicenseId, PersonKeyHash, ScopeKey)` WHERE `[State] = 0` (Sending); `(LicenseId, PersonKeyHash, ScopeKey, StartedAt)` | S3 | DM6: kişi×kapsamda tek canlı kira. Yarışın hakemi indeks; özet üzerinde olduğu için harman ve sondaki boşluk karşılaştırmayı bozmaz. Tekil ihlal 409 `in-progress-elsewhere`'e çevrilir. |
+| `PaymentRequestMembers` (yeni) | `(RecordId, WpfCustomerId)` PK, `LicenseId`, `ScopeKey`; indeks `(LicenseId, WpfCustomerId, ScopeKey)` | S3 | Üye kesişimi denetimi (§6.4-d, e). `WpfCustomerId` ham Id'dir (GUID'siz üyeler dahil). |
+| `PaymentRequestRecordOrders` (yeni) | `(RecordId, OrderId)` PK, `LicenseId` | S3 | İsteğin kapsadığı siparişler. "Bu istek bu etiketi içeriyor mu" sorusu (`Covers`) uzak kayıtta saat karşılaştırması yerine bununla cevaplanır (§6.4). |
 
 Göç notları
 - `rowversion` eklemek tablonun her satırını yazar. Prod SQL Server Express'te `ONLINE` indeks işlemi yok (ortak bakiye §3.1). S1'den önce Burak prod'da Orders, StreamSessions ve Shipments satır sayılarını salt okunur bir sorguyla alır; süre `restore-verify` kopyasında ölçülür. `/ready` 60 sn sınırına yakınsa `rowversion` ve indeksler ayrı bir göçe ayrılır ve o göç yayın penceresi dışında, bakım deploy'unda çıkar.
@@ -99,7 +102,7 @@ Göç notları
 Kurallar
 - Göç yalnız ekleyicidir. Tetikleyiciler yalnız yerleşik SQL kullanır (`045_customer_unit_stamps.sql:61-70` ve 048 kuralı).
 - Önceki sürüm kolonları adla okuduğu için şema 49'da çalışır. Prova: `Migration049RehearsalTests`, `Migration045RehearsalTests` deseninde.
-- **Mod Off'ta 049'un ABORT tetikleyicilerinin hiçbiri etkili olmaz:** `Authority` hep `local` kalır, `SalesSyncState.Mode` 0'dır. Davranıştaki tek fark kuyruğa alma tetikleyicisidir.
+- **Mod Off'ta 049'un ABORT tetikleyicilerinin hiçbiri etkili olmaz:** `Authority` hep `local` kalır (devir görülse de; §2, §5.2), `SalesSyncState.Mode` 0'dır. Davranıştaki farklar kuyruğa alma tetikleyicisi ve Y5'in yerel yolu (§7.4).
 
 Kolonlar ve tablolar
 - `_meta.ReplicaId TEXT`. Göç `lower(hex(randomblob(16)))` ile tohumlar.
@@ -107,9 +110,11 @@ Kolonlar ve tablolar
   - `Origin TEXT NOT NULL DEFAULT 'local'` (`local` ya da `remote`; `remote` = akıştan indi)
   - `Authority TEXT NOT NULL DEFAULT 'local'` (`local` ya da `server`)
   - `OwnerMachineName TEXT`, `ReleasedAt INTEGER`
-- `Label.ServerVersion INTEGER` ve `Shipment.ServerVersion INTEGER`: sunucunun `Version`'ı, komutun beklenen sürümü.
+- `Label.ServerVersion INTEGER` ve `Shipment.ServerVersion INTEGER`: sunucunun `Version`'ı, komutun beklenen sürümü ve v2 push'unun `baseVersion`'ı.
+- `Shipment.OriginReplicaId TEXT`: sunucudaki karşılığının aynası; yerelde açılan dosyada bu kopya.
 - `RemoteLiveSession(Id TEXT PK, Title, StartedAt, EndedAt, OwnerMachineName, OwnerLastSeenAt, State)`: başka bilgisayarın canlı ya da devrediliyor yayını. Bu satırlar `StreamSession`'a **hiç girmez**. Böylece `GetActive` (`SessionRepository.cs:67-74`, koşulu "`EndedAt IS NULL` olan herhangi bir satır") ve eski sürüme dönüşte `StartStream` ile açılıştaki kurtarma ekranı (`StartupFlow.cs:102-118`) yanılmaz.
-- `SalesSyncState(Id=1, Mode, ModeSeenAt, ShippingVersion, FreeShippingThreshold, ShippingFee, FirstCatchUpAt, AggregatesDerivedAt)`.
+- `SalesSyncState(Id=1, Mode, ModeSeenAt, ShippingVersion, FreeShippingThreshold, ShippingFee, ScrubOrderText, FirstCatchUpAt, AggregatesDerivedAt, PaymentHistorySentAt)`.
+- `PendingPaymentRecord(RecordId TEXT PK, Kind TEXT, PayloadJson, CreatedAt, Attempts, LastError)`: gönderilemeyen `finish` ve mod Off kayıtları (§6.4). İmleç `SyncCursor('payment-history-out', LicenseKey)`.
 - `PendingSalesCommand(CommandId TEXT PK, Kind TEXT, PayloadJson, CreatedAt, Attempts, LastError)` ve `PendingSalesCommandLabel(LabelId, CommandId, PK(LabelId, CommandId))`. `Kind` yalnız `cancel` ya da `mark-printed` olabilir (§5.5).
 - `SalesFeedFailure(Kind, ItemId, Attempts, LastError, SkippedAt)`: `CustomerFeedFailure`'ın ikizi (U10).
 - `SalesConflictLog(Id, At, LabelId, Kind, Reason)`: yalnız Id taşır, kişisel veri taşımaz.
@@ -134,19 +139,19 @@ Notlar
 - **ABORT tetikleyicileri** unutulmuş bir yazma yolunu sessiz ayrışma yerine görünür hataya çevirir.
 - **Canlı bilgisayarın yolları kırılmaz.**
   - Kendi canlı oturumu `Authority = 'local'`.
-  - Mod On'da canlı bilgisayar kargo dosyasına yazmaz. `CorrectPrices` dosya bloğunu (`LabelService.cs:414-421`) atlar, dekontun kargo adımı komuttur (§5.1, §5.3).
+  - Mod On'da canlı bilgisayar kargo dosyasına yazmaz. `CorrectPrices` dosya bloğunu (`LabelService.cs:414-421`) ve `Cancel`/`Uncancel`'ın Y5 dosya bloğunu (§7.4) atlar, dekontun kargo adımı komuttur (§5.1, §5.3).
   - CustomerId tetikleyicilerin dışında tutulur. Yerel yeniden anahtarlama (`CustomerSyncRepository.cs:477-499`) her durumda yazabilir.
 - **Şema koruma testi:** Label, Shipment ve StreamSession'a yazan her SQL bir listede tutulur. Liste dışı bir yazım testte yakalanır (`CustomerSyncRepositoryTests.cs:650` deseni).
 
 ### 3.3 Değişmezler (DM)
 
-- **DM1.** Bir yayının her hâlinin tek yazıcısı vardır (§2 tablosu).
+- **DM1.** Mod On'da bir yayının her hâlinde birim alanlarının (fiyat, iptal, yedek, kargo bağı) tek yazıcısı vardır (§2 tablosu). İstisnalar yazılıdır: devredilmiş yayına ekleme, K3 baskı doldurması ve force-end sonrası sahibin K2 ile yargılanan push'u.
 - **DM2.** Damgalı birim yalnız komutla değişir.
 - **DM3.** Devredilmiş yayının siparişi akıştan kaçmaz. `SessionReleasedAt` ya devir anında ya da eklemede dolar; onarım işi kalanları kapatır.
 - **DM4.** Oluşum alanları eklemeden sonra değişmez.
 - **DM5.** Bir yayında bir kodun kargoya verilmemiş, iptal edilmemiş, kargo ücreti olmayan etiketlerinin tek fiyatı vardır (#508 F1). Devredilmiş yayında bunu sunucu denetler.
 - **DM6.** Kişi×kapsamda aynı anda en çok bir `Sending` kira olur. Mod On'da bir müşteri satırı×kapsamda yeni yazımla en çok bir geri alınmamış düşüm oluşur.
-- **DM7.** `AmountDerivedAt` dolu ve Shipped olmayan dosyanın tutarı, bağlı, iptal edilmemiş ve geçici yedek olmayan siparişlerin fiyat toplamıdır.
+- **DM7.** `AmountDerivedAt` dolu ve Shipped olmayan dosyanın tutarı, bağlı, iptal edilmemiş ve geçici yedek olmayan siparişlerin fiyat toplamıdır. İptal bağı çözmez; tutardan düşürür. Shipped dosyanın tutarı kargoya verildiği anda donar.
 - **DM8.** Akış öğesini uygulamak yerel gönderim kuyruğuna dokunmaz: `SyncedAt` ve `Revision` değişmez. F05'in karşılaştır-ve-yaz onayı (`LabelRepository.cs:386-391`) bozulmaz, yankı oluşmaz.
 
 ## 4. Sunucu
@@ -154,9 +159,9 @@ Notlar
 ### 4.0 Ortak
 
 - Bütün uçlar bugünkü desende `Bearer-Customer` ve lisans sahipliği denetimiyle çalışır (`LicensesSessionsSyncController.cs:68-71`).
-- v2 isteği `ReplicaId` ve `Protocol = 2` taşır. Sunucu her v2 isteğinde `WpfReplicas.LastSeenAt`'i ilerletir; bu kalp atışıdır.
+- v2 isteği `ReplicaId`, `Protocol = 2` ve `SeenMode` taşır. Sunucu her v2 isteğinde `WpfReplicas.LastSeenAt`'i ilerletir (kalp atışı) ve `SeenMode`'u yazar. Kopya satırı lisans başınadır (§3.1).
 - İstemci sürümü `User-Agent`'tan okunur. Ayrıştırıcı `LicensesController.cs:126-135`'ten ortak bir `ClientVersion` yardımcısına taşınır; karşılaştırma `System.Version` ile yapılır. Ortak bakiye §7.2 aynı yardımcıyı kullanacak; bu PR önce çıktığı için yardımcıyı bu PR getirir.
-- Protokolsüz istek (≤0.9.10) mod On'da `LastLegacySalesPushAt` yazar ve günlüğe uyarı düşer.
+- Protokolsüz satış isteği (≤0.9.10) **iki kipte de** `LastLegacySalesPushAt` yazar; bu yalnız bir zaman damgasıdır, davranışı değiştirmez. Mod kapısının "7 gün eski sürüm izi yok" koşulu (§4.10-3) ancak böyle ölçülebilir. Günlük uyarısı yalnız mod On'da düşer.
 - İş kuralları ortak kodda durur (§4.11). Elle tutulan bir "sunucu ikizi" yazılmaz.
 
 ### 4.1 `POST sessions/sync` (`LicensesSessionsSyncController.cs:64-152`) — S1
@@ -176,29 +181,30 @@ v2 öğesinde ek alanlar: `Release` (bool) ve `MachineName`.
 
 ### 4.2 `POST orders/sync` (`LicensesSessionsSyncController.cs:202-446`) — S1
 
-v2 ek alanları: `Format = 2`, ParentOrderId, PrintBatchId, PrintSeq, PriceCorrectedAt, PaidPrice. ShipmentId de gönderilir ama yalnız mod Off'ta okunur.
+v2 ek alanları: `Format = 2`, `baseVersion` (satırın istemcideki `ServerVersion`'ı; yeni satırda boş), ParentOrderId, PrintBatchId, PrintSeq, PriceCorrectedAt, PaidPrice. ShipmentId de gönderilir; okunduğu durumlar K4'te.
 
 **Ekleme dalı (`LicensesSessionsSyncController.cs:295-333`):** bugünkü gibi; ek olarak yeni alanlar ve `OriginReplicaId` yazılır.
 - `SessionReleasedAt` oturumdan kopyalanır (DM3). Devirden sonra gelen ekleme hemen akışa girer. Bu durum force-end sonrasındaki gerçek satışları ve devredilmiş ebeveyne eklenen yedeği kapsar.
 - v2'de başka kopyanın **canlı** oturumuna ekleme satır başına reddedilir: `rejected: session-owned-elsewhere`.
+- KVKK: `ScrubOrderTextOnPurge` açıksa ve asıl projeksiyonun `PurgedAt`'i doluysa DisplayName ve MessageText boş yazılır, `TextScrubbedAt` basılır (§9). Silmeden sonra gelen geç ekleme metni geri getirmez.
 
-**Güncelleme dalı (`LicensesSessionsSyncController.cs:271-294`) — birim kuralı.** S1'den itibaren her biçimde ve iki kipte geçerli:
+**Güncelleme dalı (`LicensesSessionsSyncController.cs:271-294`) — birim kuralı.** K1–K3 S1'den itibaren her biçimde ve iki kipte geçerli; K4–K7'nin kip ve koşulu satırında yazılı:
 
 | # | Birim | Kural |
 |---|---|---|
 | K1 | Oluşum alanları | Güncellemede hiç yazılmaz. `LicensesSessionsSyncController.cs:275-277` (SessionId, MessageText, Code) ve `:285-286` (ProductId, ProductVariantId) kalkar; eski istemcinin ProductId'yi NULL'laması **mod beklenmeden** kapanır. ParentOrderId yalnız boşsa doldurulur. |
-| K2 | Fiyat, iptal, yedek | İlgili `*SetAt` NULL ise yazılır; bu bugünkü son-gelen-kazanır davranışıdır. Doluysa yazılmaz ve yanıtta `ignored[{id, unit}]` döner. Yedek tek yönlüdür: IsTentativeBackup yalnız 1'den 0'a gider. |
-| K3 | Baskı | Sunucuda PrintedAt NULL ise üç alan birlikte alınır. Doluysa yalnız boş PrintBatchId ve PrintSeq doldurulur. PrintedAt hiçbir yoldan silinmez (`048_label_print_batch.sql:8-9`: yeniden baskı dokunmaz). |
-| K4 | Kargo bağı | Mod Off: `ShipmentSetAt` NULL ve sunucudaki değer boşsa push'tan doldurulur. Mod On: push'tan hiç alınmaz, birim sunucunundur. |
-| K5 | Devredilmiş oturum, mod On | v2 ve v1 push'undaki K2 değişiklikleri reddedilir: v2'ye `rejected[{id, reason: session-released, current}]` döner, v1 için yalnız iz yazılır. K3 doldurma ve ekleme kabul edilir. |
-| K6 | Kargoya verilmiş dosya, mod On | Bağlı olduğu dosya Shipped olan siparişin fiyat ve iptal değişikliği reddedilir: `rejected: shipment-shipped`. |
-| K7 | Türetilmiş dosya | Kabul edilen fiyat, iptal ya da yedek değişikliği, aynı SaveChanges'te bağlı dosyanın tutarını yeniden türetir. İptal, Shipped olmayan dosyada bağı da çözer (§7.2). |
+| K2 | Fiyat, iptal, yedek | İlgili `*SetAt` NULL ise yazılır; bu bugünkü son-gelen-kazanır davranışıdır. Doluysa yalnız v2 push'unun `baseVersion`'ı sunucudaki `Version`'a eşitse yazılır (istemci komutun sonucunu görüp yeni karar verdi; damga kalır). Aksi hâlde yazılmaz ve yanıtta `ignored[{id, unit}]` ile `current` döner. v1 damgalı birimi hiç yazamaz. Yedek tek yönlüdür: IsTentativeBackup yalnız 1'den 0'a gider. |
+| K3 | Baskı | Sunucuda PrintedAt NULL ise üç alan birlikte alınır; ancak sipariş komutla iptal edilmişse (`CancelSetAt` dolu) alınmaz ve v2'ye `ignoredUnits: [print]`, reason `cancelled-elsewhere` döner; istemci "kâğıdı imha et" uyarısı gösterir (`mark-printed` ile aynı kural). Doluysa yalnız boş PrintBatchId ve PrintSeq doldurulur. PrintedAt hiçbir yoldan silinmez (`048_label_print_batch.sql:8-9`: yeniden baskı dokunmaz). |
+| K4 | Kargo bağı | Mod Off: v2'de `ShipmentSetAt` NULL ise push'taki değer (boşaltma dahil) yazılır; v1 dokunmaz. Mod On: push'tan alınmaz, birim sunucunundur. Tek istisna açılış penceresi: `SeenMode = 0` bildiren v2 push'u, `ShipmentSetAt` NULL ve sunucudaki değer boşsa doldurur (§8.4). |
+| K5 | Devredilmiş oturum, mod On | v2 ve v1 push'undaki K2 değişiklikleri reddedilir: v2'ye `rejected[{id, reason: session-released, current}]` döner, v1 için yalnız iz yazılır. K3 doldurma ve ekleme kabul edilir. **İstisnalar** (push reddedilmez, yalnız K2 ile yargılanır: komutun damgaladığı birim kazanır ve `ignored` döner, damgasız birim push'tan alınır): (i) oturum force-end ile kapandıysa (`EndedByReplicaId ≠ OwnerReplicaId`) sahibin v2 push'u; (ii) modu henüz görmemiş (`SeenMode = 0`) v2 push'u, yani açılış penceresi (§8.4). |
+| K6 | Kargoya verilmiş dosya, mod On | Bağlı olduğu dosya Shipped olan siparişin **fiyat** değişikliği reddedilir: `rejected: shipment-shipped`. İptal ve iptali geri alma iki yolda da §7.2 tablosuna göre işler. |
+| K7 | Türetilmiş dosya, mod On | Kabul edilen fiyat, iptal ya da yedek değişikliği, aynı SaveChanges'te bağlı dosyanın tutarını yeniden türetir. Yalnız `AmountDerivedAt` dolu ve Shipped olmayan dosyada; bağ değişmez (§7.2). |
 
 - `SyncVersion++` bugünkü gibi her işlenen satırda artar (`LicensesSessionsSyncController.cs:293`). Defter kilidi gerekçesi aynen geçerli (`Order.cs:70-91`). Canlı oturum siparişleri akışta olmadığı için yankı trafiği doğmaz.
 - **Stok defteri (`LicensesSessionsSyncController.cs:340-367`)** ham paketten değil, birleştirilmiş varlık durumundan beslenir. Bugün paket alanları doğrudan deftere giriyor (`LicensesSessionsSyncController.cs:355-364`). Reddedilen ya da yok sayılan birim deftere bayat bir durum taşımaz.
 - Bildirimler (`LicensesSessionsSyncController.cs:395-431`) değişmez; yalnız ekleme dalında tetiklenirler.
 - **Yanıt:**
-  - `Format = 2` için öğe başına `{id, version, shipmentId, sessionReleasedAt, status: applied|ignored|rejected, ignoredUnits[], reason, current?}`. `current`, akış öğesi biçimindeki sunucu satırıdır.
+  - `Format = 2` için öğe başına `{id, version, shipmentId, sessionReleasedAt, status: applied|ignored|rejected, ignoredUnits[], reason, current?}`. `current`, akış öğesi biçimindeki sunucu satırıdır; `ignored` ve `rejected`'da her zaman dolar.
   - v1 için bugünkü `SyncedOrderDto` listesi (`LicensesSessionsSyncController.cs:433-445`).
 
 ### 4.3 `POST sales/backfill` — S1
@@ -206,8 +212,8 @@ v2 ek alanları: `Format = 2`, ParentOrderId, PrintBatchId, PrintSeq, PriceCorre
 Ws'nin ilk açılışında geçmişi tamamlar (§8.2). Gövde `{sessions[], orders[], shipments[{id, labelIds[]}]}`, 200'lük parti.
 - **Yalnız boşu doldurur.** Sunucuda dolu bir alan ya da damgalı bir birim asla yazılmaz.
 - **Oturum:** `OwnerReplicaId` boşsa çağıran yazılır. Sunucuda `EndedAt` NULL, yerelde doluysa yazılır. Devir yalnız öğe `Release = true` taşıyorsa uygulanır; istemci bunu §5.2'deki kuyruk boşluğu kuralıyla hesaplar. Kaçmış kapanışlar böyle kapanır; sunucuda sonsuza kadar açık kalan oturum sorunu budur (`PanelProductsController.cs:636-648`).
-- **Sipariş:** satır yoksa eklenir; oturum denetimi aynıdır (`LicensesSessionsSyncController.cs:233-247`). Yeni alanlar (ParentOrderId, PrintBatchId, PrintSeq, PriceCorrectedAt, PaidPrice, OriginReplicaId, ShipmentId) yalnız boşsa doldurulur.
-- **Dosya bağları:** `shipments[].labelIds` ile, `Orders.ShipmentId` boşsa yazılır. Bugün her bağ yalnız etiketin kendi bilgisayarında kurulabildiği için çakışma beklenmez.
+- **Sipariş:** satır yoksa eklenir; oturum denetimi aynıdır (`LicensesSessionsSyncController.cs:233-247`). Yeni alanlar (ParentOrderId, PrintBatchId, PrintSeq, PriceCorrectedAt, PaidPrice, OriginReplicaId, ShipmentId) yalnız boşsa doldurulur. Eklemede KVKK kuralı §4.2 ile aynıdır.
+- **Dosya bağları:** `shipments[].labelIds` ile, `Orders.ShipmentId` boşsa yazılır. Bugün her bağ yalnız etiketin kendi bilgisayarında kurulabildiği için çakışma beklenmez. Dosyanın `OriginReplicaId`'si boşsa çağıran yazılır.
 - **Bildirim yok:** push, WhatsApp `OrderReceived` etiket kuralı ve shopper push üretilmez (D1'in Replay deseni). Testle sabitlenir (§10.2).
 - Stok defteri eklemede bugünkü gibi çalışır (CatalogAware).
 - Moddan bağımsızdır ve idempotenttir.
@@ -222,30 +228,31 @@ Desen `LicensesWpfCustomersPullController.cs:204-270`.
   - Shipments (yalnız mod On)
 
   Üç liste birleştirilip sıralanır, ilk `take` öğe döner; `next` son öğenin seq'idir.
-- **Yan liste (imleci etkilemez):** sayfadaki siparişlerin oturum satırları (güncel hâliyle) ve müşteri taslakları `{Id (asıl kayıt), Platform, Username, DisplayName, PurgedAt}`.
+- **Yan liste (imleci etkilemez):** sayfadaki siparişlerin oturum satırları (güncel hâliyle) ve müşteri taslakları `{Id (asıl kayıt), Platform, Username, DisplayName, PurgedAt}`. CustomerId'si GUID olmayan siparişin projeksiyonu yoktur (WPF projeksiyon gönderiminde atlanır, `WpfCustomerProjectionSyncService.cs:195-199`; sunucu ham değeri saklar, `LicensesSessionsSyncController.cs:258-268`); onun taslağı siparişin kendi Platform, Username ve DisplayName'inden kurulur, Id ham değerdir.
   - rowversion yalnız satırın son hâlini gösterdiği için oturum, siparişlerinden sonra gelebilir. Yan liste FK sırasını (`002_pivot_to_labels.sql:25-26`) sayfa içinde sağlar.
   - Eksik müşteri öğeyi zehirlemez. 2026-08-14 dersi: tek satır bütün akışı tutmamalı.
 - **Öğe:** sipariş satırının tamamı, `Version`, ShipmentId, yeni alanlar ve bilgi amaçlı birim damgaları.
 - **KVKK:** asıl projeksiyonu PurgedAt dolu müşterinin siparişinde okuma anında `DisplayName = null`, `MessageText = ""` (§9).
-- Mod Off'ta da çalışır; istemci bu modda uygulamaz.
+- Mod Off'ta da çalışır; istemci bu modda uygulamaz. Tek istisna `disable`'dan sonraki son uygulama turudur (§8.5).
 
 ### 4.5 `GET sales/state` ve `POST sales/hello` — S1
 
 - **`GET sales/state`** her turda (30 sn) çağrılır ve kalp atışı sayılır. Yanıt:
   - `mode`, `modeChangedAt`, `minClientVersion`
   - `liveSessions: [{id, title, startedAt, endedAt, ownerMachineName, ownerLastSeenAt, state: live|handing-over}]` (`ReleasedAt` NULL olanlar)
-  - `shipping: {version, freeShippingThreshold, fee}` (mod On)
+  - `shipping: {version, freeShippingThreshold, fee}` (iki kipte; istemci mod On'da kullanır, `disable` turunda yerele kopyalar, §8.5)
+  - `scrubOrderTextOnPurge` (§9)
   - `legacyMachines: [{machineName, appVersion, lastSeenAt}]`
 
   `ownerLastSeenAt`, sahip kopyanın `WpfReplicas.LastSeenAt` değeridir. StreamSessions satırına yazılmaz; böylece her kalp atışında oturumun rowversion'ı ve akış ilerlemez.
-- **`POST sales/hello`:** `{replicaId, previousReplicaId?, machineName, hardwareFingerprint, protocol, reportedShipping: {threshold, fee}, backfillCompleted?}`.
+- **`POST sales/hello`:** `{replicaId, previousReplicaId?, machineName, hardwareFingerprint, protocol, featureLevel, seenMode, reportedShipping: {threshold, fee}, backfillCompleted?, paymentHistoryCompleted?}`.
 
 ### 4.6 `POST sales/commands` — S2
 
 Zarf: `{commandId, replicaId, kind, payload, expected: [{orderId, version}]}`.
 
 İşleme sırası:
-1. Lisans sahipliği denetlenir. Mod Off ise 409 `mode-off`. İstemci sürümü `MinClientVersion`'dan eskiyse 409 `client-update-required`.
+1. Lisans sahipliği denetlenir. Mod Off ise 409 `mode-off`. `MinClientVersion` boşsa ya da istemci sürümü ondan eskiyse 409 `client-update-required` (fail-closed).
 2. **Yeniden oynatma:** `SalesCommandLogs`'ta CommandId varsa ve RequestHash aynıysa, kayıtlı durum ve **güncel** satırlar döner. Hash farklıysa 409 `content-conflict` (A11 deseni).
 3. **Görünürlük:** dokunulan her siparişin oturumu devredilmiş olmalı. Değilse 409 `session-live {machine, ownerLastSeenAt}`. `attach-shipment`'ta aday kümesi, çağıranın görebildiği siparişlerle sınırlanır: devredilmiş oturumlar ve çağıranın kendi oturumları.
 4. **Beklenen sürüm:** `expected` ile güncel `Version` uyuşmazsa 409 `stale {current}` döner; hiçbir şey yazılmaz.
@@ -259,68 +266,76 @@ Zarf: `{commandId, replicaId, kind, payload, expected: [{orderId, version}]}`.
 
 | Tür | Yük | Doğrulama | Etki | Yerel ayna |
 |---|---|---|---|---|
-| `cancel` | items, reason | zaten iptal olan atlanır | `CancelledAt` (sunucu saati), `CancelReason`, `CancelSetAt`; Shipped olmayan dosyada bağ çözülür (`ShipmentId = NULL`, `ShipmentSetAt`) ve dosya türetilir; defter | `LabelService.cs:125-162` |
-| `uncancel` | items | iptal edilmemiş olan atlanır | iptal alanları NULL; dosyası Shipped ise bağ çözülür (§7.2); defter | `LabelService.cs:166-198` |
+| `cancel` | items, reason | zaten iptal olan atlanır | `CancelledAt` (sunucu saati), `CancelReason`, `CancelSetAt`; bağ **kalır**; Shipped olmayan dosya türetilir (tutar ve havuz düşer, §7.2); defter | `LabelService.cs:125-162` |
+| `uncancel` | items | iptal edilmemiş olan atlanır | iptal alanları NULL; bağ kalır; Shipped olmayan dosya türetilir (tutar eski hâline döner); defter | `LabelService.cs:166-198` |
 | `set-code-price` | sessionId, code (null ise selectedIds), alsoSelectedIds, newPrice ≥ 0, paidFromBalanceIds | Planı sunucu kendisi kurar: oturum×kod (`SameCode`) ∪ alsoSelected, ardından `Classify` (Shipped dosyadaki etiket değişmez). Plan kümesi `expected`'den farklıysa 409 `plan-stale` | Düzeltilebilir ∧ fiyatı farklı olanlarda `Price = new`. `PriceCorrectedAt = now` yalnız basılmış satırda. `PaidPrice = eski fiyat` yalnız NULL ∧ (ShipmentId dolu ∨ id ∈ paidFromBalanceIds). `PriceSetAt` basılır, dosya türetilir | `CorrectPrices` `LabelService.cs:376-426`, `UpdatePriceForCorrection` `LabelRepository.cs:226-244`, `PlanCodeCorrection` `LabelService.cs:311-335` |
 | `confirm-backup` | backupOrderId, newPrice? | `IsTentativeBackup = 1` değilse etkisiz | fiyat (verildiyse), `IsTentativeBackup = 0`, `BackupSetAt` (fiyat değiştiyse `PriceSetAt` de); defter | `ConfirmBackup` `LabelService.cs:520-553` |
-| `add-backup` | newOrderId, parentOrderId, müşteri {id, platform, username, displayName}, messageText, price?, code? | ebeveyn devredilmiş oturumda; müşteri asıl kayda çözülür | ebeveynin oturumuna IsTentativeBackup = 1, IsBackupPromoted = 1, ParentOrderId; `SessionReleasedAt` kopyalanır; ProductId ve varyant ebeveynden | `AddBackup` `LabelService.cs:453-481` |
+| `add-backup` | newOrderId, parentOrderId, müşteri {id, platform, username, displayName}, messageText, price?, code? | ebeveyn devredilmiş oturumda; müşteri asıl kayda çözülür | ebeveynin oturumuna IsTentativeBackup = 1, IsBackupPromoted = 1, ParentOrderId; `SessionReleasedAt` kopyalanır; ProductId ve varyant **boş** (yerel `AddBackup` bugün de `Add`'i ürünsüz çağırıyor, `LabelService.cs:473-480`; iki yol stok defterinde ayrışmasın diye aynı) | `AddBackup` `LabelService.cs:453-481` |
 | `mark-printed` | batchId, items [{orderId, seq}] | yalnız PrintedAt NULL ∧ iptal edilmemiş; ilk yazan kazanır | PrintedAt (sunucu saati), PrintBatchId, PrintSeq. Sonuç: `marked[]`, `alreadyPrinted[]`, `cancelled[]` | `MarkPrintedAndRecord` `LabelService.cs:230-274` (R7-04, `LabelService.cs:252`) |
 | `reprint` | orderIds | yazma yok | güncel satırlar ve `correctionIds` | `PrepareReprint` `LabelService.cs:432-438` |
-| `attach-shipment` | customerId, proposedShipmentId, expected (istemcinin gördüğü bağlanmamış küme) | `sp_getapplock('ship:{lisans}:{asıl müşteri}')`. Adaylar: asıl müşterinin ShipmentId NULL, iptal edilmemiş, geçici yedek olmayan ve görünür siparişleri. Aday kümesi ≠ `expected` ise 409 `stale` | En yeni Pending/Held dosya seçilir; yoksa `proposedShipmentId` ile açılır (`AmountDerivedAt = now`). Siparişler bağlanır (`ShipmentSetAt`), tutar türetilir. Yanıt havuzu da döner: kişinin bütün Pending/Held dosyalarının toplamı | `GetOrCreateOpenShipment` `ShipmentService.cs:50-65`, `AttachLabels` `:73-102`, `GetUnattachedByCustomer` `LabelRepository.cs:639-654` |
-| `shipment-decision` | shipmentId, decision, expectedVersion | dosya Shipped ise 409 | `Decide` aynası. Hedef Pending/Held ise kişinin öbür açık dosyaları da aynı karara uyar (U12). `ShipmentStatusChanged` etiket kuralı tetiklenir (`LicensesShipmentsSyncController.cs:153-154` ile eşlik) | `ApplyDecision` `ShipmentService.cs:177-207` |
+| `attach-shipment` | customerId, proposedShipmentId, expected (istemcinin gördüğü bağlanmamış küme) | `sp_getapplock('ship:{lisans}:{asıl müşteri}')`. Adaylar: asıl müşterinin ShipmentId NULL, iptal edilmemiş, geçici yedek olmayan ve görünür siparişleri. Aday kümesi ≠ `expected` ise 409 `stale` | En yeni Pending/Held dosya seçilir; yoksa `proposedShipmentId` ile açılır (`AmountDerivedAt = now`, `OriginReplicaId` = çağıran). Siparişler bağlanır (`ShipmentSetAt`), tutar türetilir. Yanıt havuzu da döner: kişinin bütün Pending/Held dosyalarının toplamı | `GetOrCreateOpenShipment` `ShipmentService.cs:50-65`, `AttachLabels` `:73-102`, `GetUnattachedByCustomer` `LabelRepository.cs:639-654` |
+| `shipment-decision` | shipmentId, decision, expectedVersion | dosya Shipped ise 409 | `Decide` aynası. Hedef Pending/Held ise kişinin öbür açık dosyaları da aynı karara uyar (U12). Kargoya verilen her dosyada bağlı ve **iptal edilmiş** siparişlerin bağı çözülür (`ShipmentId = NULL`, `ShipmentSetAt`): ürün kolide değil, tutar onlarsız donar (§7.2). `ShipmentStatusChanged` etiket kuralı tetiklenir (`LicensesShipmentsSyncController.cs:153-154` ile eşlik) | `ApplyDecision` `ShipmentService.cs:177-207` |
 | `force-end` | sessionId, confirm = true | oturum devredilmemiş olmalı; sahibin `LastSeenAt`'i ≤ şimdi − 15 dk olmalı (`SalesSync:ForceEndSilenceMinutes`, Y7). Değilse 409 `owner-active {lastSeenAt}` | `EndedAt ??= now`, `EndedByReplicaId`, devir (§4.1) | — |
 
-Ayrı bir "dosyadan çıkar" (detach) komutu yok. Bağ çözme, `cancel`, `uncancel` ve push'tan kabul edilen iptalin sunucu etkisidir (§7.2).
+Ayrı bir "dosyadan çıkar" (detach) komutu yok. İptal ve iptali geri alma bağa dokunmaz; tutarı türetme değiştirir. Bağ yalnız dosya kargoya verilirken, o anda iptal edilmiş siparişlerden çözülür (§7.2).
 
 ### 4.7 Ödeme uçları — S3
 
 - `POST payment-requests/begin`, `POST payment-requests/{id}/finish`, `GET payment-requests?scopeKey&memberIds`. Ayrıntı §6.4'te.
+- `POST payment-requests/backfill`: kirasız kayıt (`Kind = Record`) ekler; `recordId` ile idempotent, aynı Id'ye farklı içerik 409 `content-conflict`. Moddan bağımsızdır. Ws'nin ödeme geçmişi geri doldurması ve mod Off'taki her istek bunu kullanır (§6.4).
 - `customer-balance/apply` (`LicensesCustomerBalanceApplyController.cs:224`): mod On'a özgü kapsam kuralı (§6.6).
 - `preview` (`:74`) ve `apply`: mod On'da istemci `MinClientVersion`'dan eskiyse 409 `client-update-required` (§6.5).
 
 ### 4.8 `GET/PUT shipping-settings` — S2
 
-- PUT gövdesi `{expectedVersion, freeShippingThreshold, fee}`. Kabul edilirse `Version + 1`. Sürüm eskiyse 409 `stale`.
+- PUT gövdesi `{expectedVersion, freeShippingThreshold, fee}`. Kabul edilirse `Version + 1`, `UpdatedBy` = çağıran ReplicaId. Sürüm eskiyse 409 `stale`. WPF ayar ekranı bunu yalnız mod On'da çağırır.
 - Doğrulama `ShippingSettings.IsEnabled` kuralıyla aynı (`AppSettings.cs:272-273`): ya ikisi de boş (kapalı) ya ikisi de > 0.
-- Mod Off'ta da yazılabilir; bu mod açılmadan önceki hazırlıktır. İstemciler değeri yalnız mod On'da okur (§6.2).
+- Mod Off'ta değeri Burak CLI ile yazar: `sales-sync shipping set --license <id> --threshold <t> --fee <f> [--apply]` (kuru koşu varsayılan, `UpdatedBy = 'cli'`). Bu mod açılmadan önceki hazırlıktır. İstemciler değeri mod On'da kullanır; `disable` turunda yerel ayara kopyalar (§6.2, §8.5).
 
 ### 4.9 Hangfire işleri
 
 - **`sales-release-repair`:** açılışta bir kez kuyruğa alınır, ayrıca günde bir koşar (04:50 UTC, yayın penceresi dışında). Emsal: `identity-key-repair` (`Program.cs:1018-1024`).
   - (a) `EndedAt` dolu ∧ `ReleasedAt` NULL ∧ `OwnerReplicaId IS NULL` olan miras oturumlar devredilir.
   - (b) Oturumu devredilmiş ama `SessionReleasedAt`'i NULL kalmış siparişler (eski imajın geri alma penceresinde eklediği satırlar) 5 bin'lik partilerle damgalanır.
-  - (c) Mod On'da: `AmountDerivedAt` dolu bir dosyanın tutarı türetilmiş değerden farklıysa yeniden türetilir ve günlüğe yazılır.
+  - (c) Mod On'da: `AmountDerivedAt` dolu ve **Shipped olmayan** bir dosyanın tutarı türetilmiş değerden farklıysa yeniden türetilir ve günlüğe yazılır. Shipped dosyanın donmuş tutarına dokunulmaz (§7.2); bunu bir test sabitler.
   - İdempotent. Sayılar günlüğe yazılır; ad yazılmaz.
   - v2 oturumlarını bu iş **devretmez**. Devrediliyor hâlindeki bir v2 oturumunu devretmek "etiket kuyruğu boşalmadan devir yok" kuralını bozardı. Geri alma penceresinde kaybolan v2 kapanışını istemci kendisi yeniden gönderir (§5.2).
 - **`sales-command-log-retention`:** günde bir; 90 günden eski kayıtları siler.
 - Kira süresi için ayrı iş yok. `begin`, süresi dolmuş `Sending` kaydını aynı işlemde `Unconfirmed` yapar (§6.4).
 
-### 4.10 Mod yönetimi ve denetim CLI'ları — S3
+### 4.10 Mod yönetimi ve denetim CLI'ları — S1 (`sales-audit`) / S3 (`sales-sync`)
 
-- `sales-sync status|enable|disable --license <id> [--apply]` ve `sales-sync force-end --session <id> [--apply]`. Desen `Program.cs:38-55`; varsayılan kuru koşudur. `force-end` CLI'ı, sahip kopyası hiç kalmamış eski açık oturumlar içindir ve Burak'ın onayıyla koşulur.
+- `sales-sync status|enable|disable --license <id> [--apply]`, `sales-sync force-end --session <id> [--apply]` ve `sales-sync shipping set` (§4.8). Desen `Program.cs:38-55`; varsayılan kuru koşudur. `force-end` CLI'ı, sahip kopyası hiç kalmamış eski açık oturumlar içindir ve Burak'ın onayıyla koşulur. `status` her kopya için sürümü, `featureLevel`'ı, `SeenMode`'u ve son görülme zamanını gösterir.
 - `sales-audit --license <id>`: salt okunur rapor. İçeriği:
   - 24 saatten eski canlı ya da devrediliyor oturumlar
   - SessionId NULL siparişler
-  - projeksiyonu olmayan CustomerId'ler
+  - projeksiyonu olmayan CustomerId'ler; ayrıca CustomerId'si GUID olmayan sipariş sayısı (kural §6.4: toplamda ham Id ile eşlenir)
   - `SessionReleasedAt`'i eksik siparişler
   - kopyaların bildirdiği farklı kargo ayarları
   - tek fiyat ihlalleri (DM5)
   - kapsam başına birden çok geri alınmamış düşüm
   - aynı ReplicaId'ye iki parmak izi
+  - `OriginReplicaId`'si boş ya da bağsız (tutarı > 0, bağlı siparişi yok) Shipped olmayan dosyalar
+  - force-end sonrası sahipten kabul edilen birim değişikliği sayısı (K5 istisnası)
 
   Yalnız sayı ve Id basar.
 
 **`enable` ön koşulları.** Kuru koşu her birini sayı olarak basar; biri tutmazsa `--apply` reddeder.
-1. Son 14 günde görülmüş ve devre dışı bırakılmamış her etkinleştirmenin `AppVersion`'ı ≥ `SalesSync:MinClientVersion` (`Activation.cs:16-20`). AppVersion yoksa eski sayılır.
-2. Son 14 günde görülmüş her `WpfReplicas` satırında `Protocol = 2` ve `BackfillCompletedAt` dolu. Aynı ReplicaId'ye bağlı iki farklı donanım parmak izi yok.
-3. Son 7 günde `LastLegacySalesPushAt` yok.
-4. `LicenseShippingSettings` satırı var; değeri Burak seçmiş (§6.2).
+1. `SalesSync:MinClientVersion` dolu. Son 14 günde görülmüş ve devre dışı bırakılmamış her etkinleştirmenin `AppVersion`'ı ≥ bu değer (`Activation.cs:16-20`). AppVersion yoksa eski sayılır.
+2. Son 14 günde görülmüş her `WpfReplicas` satırında `Protocol = 2`, `FeatureLevel = 3`, `BackfillCompletedAt` ve `PaymentHistoryCompletedAt` dolu. Aynı ReplicaId'ye bağlı iki farklı donanım parmak izi yok.
+3. Son 7 günde `LastLegacySalesPushAt` yok (iz iki kipte yazılır, §4.0).
+4. `LicenseShippingSettings` satırı var ve `UpdatedBy` dolu (§4.8, §6.2).
 5. `sales-audit`'te devredilmemiş ve 24 saatten eski oturum 0; `SessionReleasedAt`'i eksik sipariş 0.
-6. Rapor (koşul değil, bilgi): Shipped olmayan dosyalardan türetilmiş tutarı saklanandan farklı olanların sayısı, toplam farkı ve eşiği aşan ya da altına inen dosya sayısı. Sahip kararı Y5'in açılış günündeki etkisi budur (§7.4).
+6. **Kargo bağları tam.** Bugün sunucuda etiket–dosya bağı yok (`shipments/sync` etiket taşımıyor, `LicensesShipmentsSyncController.cs:43-50`); bağları yalnız Ws geri doldurması getirir. Bu yüzden 14 gün penceresinden bağımsız olarak: Shipped olmayan her dosyanın `OriginReplicaId`'si dolu ve o kopyanın `BackfillCompletedAt`'i dolu. Ayrıca her dosya için fark `saklanan − türetilmiş` hesaplanır ve ikiye ayrılır:
+   - **açıklanan (Y5):** 0 ≤ fark ≤ bağlı ve iptal edilmiş siparişlerin fiyat toplamı
+   - **açıklanamayan:** geri kalan her durum, ayrıca tutarı > 0 olup hiç bağlı siparişi olmayan dosya
 
-**`enable --apply`:** `SalesSyncMode = 1`, `SalesSyncModeChangedAt` yazılır. Ardından Shipped olmayan dosyalar partilerle türetilir (`AmountDerivedAt = now`). Verilmiş kararlar değiştirilmez.
+   Açıklanamayan dosya sayısı 0 değilse `--apply` reddeder. Burak, dosyayı açan PC'de baktıktan sonra tek tek `--accept-shipment <id>` ile kabul edebilir.
+7. Rapor (koşul değil, bilgi): açıklanan farkı olan dosya sayısı, toplam fark ve eşiği aşan ya da altına inen dosya sayısı. Sahip kararı Y5'in açılış günündeki etkisi budur (§7.4).
 
-**`disable`:** acil kapatma anahtarıdır (§8.5). Damgalar komutla değişmiş birimleri korumaya devam eder.
+**`enable --apply`:** `SalesSyncMode = 1`, `SalesSyncModeChangedAt` yazılır. Ardından Shipped olmayan dosyalar partilerle türetilir (`AmountDerivedAt = now`). Verilmiş kararlar değiştirilmez. Kopyalar modu ilk turlarında görür; o ana kadarki kargo gönderimleri kaybolmaz (§8.4).
+
+**`disable`:** acil kapatma anahtarıdır. Sunucu yalnız modu 0 yapar; damgalar kalır ve bayat push'a karşı komut kararını korumaya devam eder (K2). İstemci tarafı §8.5'te.
 
 ### 4.11 Ortak kurallar — `OrderDeck.Shared/Sales/LabelRules.cs`
 
@@ -346,31 +361,31 @@ Bir JSON test vektörü dosyası iki test projesinde birden koşar. Kod eşleşm
 - yayını bitirme (`EndStream`, `:1642-1745`)
 
 Mod On'daki farklar:
-- (a) `CorrectPrices`, kargo dosyası bloğunu (`LabelService.cs:414-421`) atlar; dosya tutarını sunucu türetir (K7). Bu yolu D3'ün Shipment ABORT tetikleyicisi kırıyordu. `Classify` yerel aynadaki Shipped durumunu okumaya devam eder; sunucu son sözü K6 ile söyler.
+- (a) `CorrectPrices`, kargo dosyası bloğunu (`LabelService.cs:414-421`) atlar; `Cancel` ve `Uncancel` da mod Off'taki Y5 dosya bloğunu (§7.4) atlar. Dosya tutarını sunucu türetir (K7). Bu yolu D3'ün Shipment ABORT tetikleyicisi kırıyordu. `Classify` yerel aynadaki Shipped durumunu okumaya devam eder; sunucu son sözü K6 ile söyler.
 - (b) Önceki yayınlardan kalan kuyruk etiketleri yönlendiriciden geçer (§5.3, §5.5).
 - (c) Baskıdan hemen önce satırlar veritabanından yeniden okunur (§5.6).
 
 ### 5.2 Gönderim ve devir (`SessionOrderSyncService`)
 
-- **v2 gövde:** ReplicaId, Protocol ve Format = 2 alanları. `CatalogAware: true` (`SessionOrderSyncService.cs:148`) aynen kalır.
+- **v2 gövde:** ReplicaId, Protocol, SeenMode ve Format = 2 alanları; her etikette `baseVersion = ServerVersion`. `CatalogAware: true` (`SessionOrderSyncService.cs:148`) aynen kalır.
 - **Gönderim kapısı.** `SyncOnceAsync` dört yerden eşzamanlı çağrılabiliyor: 60 sn servisi (`SessionOrderSyncHostedService.cs:20`), kapanış (`SyncFlushService.cs:90-94`), satış turu ve ödeme ön gönderimi. Bu yüzden tek bir `SemaphoreSlim` ile sıraya alınır.
 - **Kapanış sırası.** Bugün önce oturumlar, sonra etiketler gidiyor (`SessionOrderSyncService.cs:68-70`). Bitmiş ve `Authority = 'local'` olan kendi oturumu için:
   - `Release = NOT EXISTS (Label WHERE SessionId = @id AND SyncedAt IS NULL)`, devir kapısı altında hesaplanır.
   - Oturum satırı, devir sunucudan görülene kadar `MarkSynced` **edilmez**. Kuyrukta kalır ve her turda yeniden gider. Böylece geri alma penceresinde kapanış kaybolmaz (hakem 2'nin D2 karşı örneği 2).
   - Etiketler gittikten sonra oturum aynı turda bir kez daha gönderilir.
   - Bekletilen (`Release = false`) oturumun yeniden gönderimi "gönderilen kayıt" sayılmaz. Kapanıştaki boşaltma döngüsü (`SyncFlushService.cs:90-94`, tur bir şey gönderdikçe yineliyor) bu yüzden boşuna dönmez.
-  - Yanıtta `ReleasedAt` gelirse tek bir SyncApplyScope işleminde `Authority = 'server'`, `ReleasedAt` ve `MarkSynced` yazılır.
+  - Yanıtta `ReleasedAt` gelirse tek bir SyncApplyScope işleminde `ReleasedAt` ve `MarkSynced` yazılır; `Authority = 'server'` **yalnız `SalesSyncState.Mode = 1` iken** yazılır. Mod Off'ta oturum `local` kalır ve bugünkü gibi düzenlenir; mod On'a geçişte §8.4 adım 3 onu çevirir.
   - Yanıtta `Protocol = 2` yoksa sunucu eski sürümdür; bugünkü gibi `MarkSynced` yapılır.
 - **Devir kapısı.** Süreç içi ve oturum başına bir kilit. Tur, "kuyruk boş mu" okumasından kapanış yanıtının uygulanmasına kadar kilidi tutar. Yönlendiricinin yerel yolu, kendi bitmiş ama devredilmemiş oturumuna yazmadan önce kilidi 0 bekleme ile almaya çalışır. Alamazsa operatöre "Yayın sunucuya devrediliyor; birkaç saniye sonra tekrar dene." der. Kilit olmasaydı "boş" okuması ile devir arasında yapılan yerel düzenleme sunucuda K5 ile reddedilirdi.
 - **Yanıtın işlenmesi.** Bugün yanıt atılıyor (`SessionOrderSyncService.cs:148`).
   - `applied`: `MarkSynced(id, now, revision)` karşılaştır-ve-yaz (F05, `LabelRepository.cs:386-391`) ve `ServerVersion`. Mod On'da sunucudaki ShipmentId farklıysa guard altında yazılır.
-  - `ignored`: kayıt `SalesConflictLog`'a düşer, `MarkSynced` yapılır. Gerçek değer akışla gelir.
-  - `rejected`: `current` guard altında zorla yazılır, toplamlar yeniden türetilir, `MarkSynced` yapılır. Operatöre liste gösterilir: "N değişiklik uygulanamadı: yayın PC-B'den bitirildi" ya da "…: kargoya verilmiş dosya".
+  - `ignored`: kayıt `SalesConflictLog`'a düşer. Yok sayılan birimler `current`'tan guard altında yazılır, toplamlar yeniden türetilir, `MarkSynced` yapılır; hepsi aynı F05 koşuluyla (satır gönderimden sonra yeniden değiştiyse dokunulmaz, yeni değişiklik yine gider). Akışın uygulanmadığı mod Off'ta da yerel değer böylece sunucuyla ayrışık kalmaz. Baskı birimi `cancelled-elsewhere` ile yok sayıldıysa (K3) operatöre "kâğıdı imha et" denir.
+  - `rejected`: `current` guard altında zorla yazılır, toplamlar yeniden türetilir, `MarkSynced` yapılır. Operatöre liste gösterilir: "N değişiklik uygulanamadı: yayın sunucuya devredilmişti" ya da "…: kargoya verilmiş dosya".
 - **Geri doldurma** (§8.2) kendi imleciyle yürür ve `SyncedAt`/`Revision`'a dokunmaz.
 
 ### 5.3 Düzenleme yönlendiricisi (`ILabelEditor`)
 
-Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bugünkü `LabelService`/`ShipmentService`, `server` ise `SalesCommandClient` kullanılır. Karışık seçim (müşteri kartı, kalıntı kuyruk) bölünür. Mod On'da kargo işlemleri her zaman komuttur, çünkü dosya sunucunundur.
+Karar tek yerde verilir. Mod Off'ta her zaman bugünkü `LabelService`/`ShipmentService` kullanılır. Mod On'da hedef etiketin oturumunun `Authority`'si `local` ise yerel servis, `server` ise `SalesCommandClient` kullanılır. Karışık seçim (müşteri kartı, kalıntı kuyruk) bölünür. Mod On'da kargo işlemleri her zaman komuttur, çünkü dosya sunucunundur.
 
 | Çağıran | Yer | İşlem |
 |---|---|---|
@@ -392,12 +407,16 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
   - cancel, uncancel ve mark-printed'da niyet idempotent olduğu için taze sürümlerle bir kez kendiliğinden yeniden denenir.
   - Fiyat, yedek ve kargoda sessiz yeniden deneme yoktur: "Bu arada PC-X'te değişti; plan yenilendi." denir ve plan yeniden gösterilir.
 - `session-live`: "Bu yayın PC-A'da canlı (son sinyal SS:DD)".
-- `mode-off` ve 404: düzenleme kapalı, "Sunucu güncelleniyor; biraz sonra tekrar dene."
+- `owner-active {lastSeenAt}` (force-end): "PC-A hâlâ sinyal veriyor (son SS:DD); yayın buradan bitirilemez."
+- `client-update-required`: "Bu işlem için uygulamayı güncelle." Velopack güncelleme sorusu açılır.
+- `content-conflict`: aynı CommandId'ye farklı içerik, yani istemci hatası. Yeniden denenmez; `SalesConflictLog`'a yazılır, bekleyen komutsa kuyruktan düşer ve örtüsü kalkar. Metin: "İşlem kaydedilemedi (iç hata); tekrar dene."
+- `mode-off`: istemci modu yanlış biliyor demektir. Hemen `sales/state` okunur ve Off geçişi (§8.5) başlar. Metin: "Senkron kapatıldı; ekran yenileniyor."
+- 404: düzenleme kapalı, "Sunucu güncelleniyor; biraz sonra tekrar dene."
 
 ### 5.4 Akış uygulaması (`SalesChangesPullService` + `SalesFeedRepository.ApplyItem`)
 
 **Servis**
-- `AppHost`'ta kaydedilir (`AppHost.cs:523`, `:535`, `:561` yanına) ve başlatma döngüsüne de eklenir (`OrderDeck.App/Startup/WpfStartupEnvironment.cs:189-200`). CLAUDE.md kuralı: kayıt tek başına servisi başlatmaz.
+- `AppHost`'ta kaydedilir (`AppHost.cs:523`, `:535`, `:561` yanına). Genel başlatma döngüsü kayıtlı bütün `IHostedService`'leri başlatır (`OrderDeck.App/Startup/WpfStartupEnvironment.cs:189-197`, CLAUDE.md'deki PR #89 kuralının bugünkü karşılığı); DI testi kaydı ve başlatılmayı birlikte sabitler (§10.3).
 - 30 sn'de bir; açılışta hemen.
 - Tur sırası:
   1. `sales/state` çağrılır; mod ve başlıklar okunur.
@@ -417,7 +436,8 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
 **`ApplyItem`.** Öğe başına bir SyncApplyScope açılır. Kilit sırası U17: önce `CustomerBusySet`, sonra SQLite.
 - **Oturum:**
   - Yerelde yoksa `Origin = 'remote'`, `Authority = 'server'` ile eklenir.
-  - Yerelde varsa (kendi oturumu): `EndedAt` boşsa yazılır (force-end durumu); `Authority = 'server'` ve `ReleasedAt` yazılır. Aktif oturumsa `SessionEndedRemotely` olayı çıkar.
+  - Yerelde varsa (kendi oturumu) ve yerelde bitmişse: `ReleasedAt` ve (mod On'da) `Authority = 'server'` yazılır.
+  - Yerelde varsa ve hâlâ **aktifse** (force-end; PC-A aslında yayında): `EndedAt` yazılmaz, `Authority` `local` kalır, yalnız `ReleasedAt` saklanır ve `SessionEndedRemotely` olayı bandı açar (§5.7). Sohbetten etiket yazma, FİYAT kutusu ve baskı kesilmez; sunucu bu eklemeleri ve damgasız birim değişikliklerini kabul eder (K5 istisnası). Operatör yayını bitirince normal kapanış koşar; sunucuda oturum zaten devredilmiş olduğu için yanıt `ReleasedAt`'i döner ve oturum o anda `server` olur.
   - `RemoteLiveSession` satırı silinir.
 - **Sipariş:**
   - Önce yan listedeki oturum ve müşteri sağlanır.
@@ -426,15 +446,16 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
   - Değilse bütün birimler, ShipmentId ve `ServerVersion` yazılır. Oluşum alanlarına ve CustomerId'ye dokunulmaz; bunlar yalnız eklemede, `CustomerIdSql.Resolve` ile yazılır.
   - Yeni satırda `SyncedAt = now`. `StockSyncedAt` boşsa `SyncedAt`'in değeriyle doldurulur. NULL kalırsa aynı etiket stoktan ikinci kez düşer (`LabelRepository.cs:699-717`).
   - Etkilenen müşterilerin (eski ve yeni CustomerId) toplamları aynı işlemde yeniden türetilir (§6.1).
-- **Dosya:** mod On'da yerel aynaya upsert edilir.
-- **KVKK:** yerel müşteri silinmişse DisplayName ve MessageText boşaltılmış olarak yazılır.
+- **Dosya:** mod On'da yerel aynaya upsert edilir (`OriginReplicaId` dahil).
+- **KVKK:** yerel müşteri silinmişse DisplayName ve MessageText boşaltılmış olarak yazılır. Bu, inen satır içindir ve ayardan bağımsızdır; mevcut yerel satırların boşaltılması ayara bağlıdır (§9).
 
 ### 5.5 Kalıntı kuyruk ve bekleyen komutlar
 
 - `GetUnprintedOutsideSession` (`LabelRepository.cs:96-107`) yalnız `Origin = 'local'` oturumlara bakar. Başka bilgisayarın basılmamış kuyruğu bu bilgisayara teklif edilmez (`MainShellViewModel.cs:1631-1639`).
 - Bu bilgisayarın devredilmiş oturumlarından kalan etiketler kuyruğa eklenebilir. Bu etiketlerin iptali ve ilk baskısı komutla yapılır. Hakem 1'in D2 ölümcül bulgusu tam bu yoldu: yerel iptal sunucudan reddedilip geri dönüyordu.
 - **Çevrimdışı:** iki işlem `PendingSalesCommand`'a yazılır (sabit CommandId, idempotent). Örtü kuralı: bekleyen iptal ya da basım örtüsündeki etiketi `GetUnprintedBySession` (`LabelRepository.cs:71-87`) ve `GetUnprintedOutsideSession` dışarıda bırakır. Aynı kâğıt ikinci kez teklif edilmez; D3'teki bekleyen baskı açığı (çift kâğıt) böyle kapanır. Müşteri toplamı onaydan sonra değişir.
-- **Gönderim:** her turda, akıştan önce. Sonuç akış öğesi gibi uygulanır ve örtü kalkar.
+- **Gönderim:** her turda, akıştan önce; ayrıca ödeme isteğinin ön gönderiminde ilk sırada (§6.4). Sonuç akış öğesi gibi uygulanır ve örtü kalkar.
+- **Mod Off'a dönüşte** gönderilemezler (komut ucu 409 `mode-off`). Bekleyen komutlar yalnız bu bilgisayarın kendi oturumlarındaki kalıntı etiketlere ait olduğu ve o oturumlar `local`'e döndüğü için yerel yazıma çevrilir: `cancel` → `LabelService.Cancel`, `mark-printed` → aynı batch Id ve sırayla `MarkPrintedAndRecord`. Basılmış kâğıt bu yüzden yeniden teklif edilmez (§8.5).
   - Sunucu `cancelled` ya da `alreadyPrinted` dönerse operatöre bildirim gider: "kâğıdı imha et".
   - 409 `stale` olursa satırlar tazelenir ve bir kez yeniden denenir.
   - Kalıcı ret `SalesConflictLog`'a yazılır ve uyarı gösterilir.
@@ -456,15 +477,16 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
 |---|---|---|
 | Başka bilgisayarda canlı | üst çubuk çipi (`RemoteLiveSession`) | "PC-A'da canlı · son sinyal 21:14" |
 | Başka bilgisayarda devrediliyor | çip | "PC-A'da yayın bitti, etiketler gönderiliyor" |
-| Sahip ≥ 15 dk sessiz | çip ve "Yayını bitir…" eylemi | Onay: "PC-A 17 dakikadır sessiz. Yayın gerçekten bitti mi? Bitirirsen PC-A'nın bundan sonraki fiyat ve iptal değişiklikleri uygulanmaz; yeni etiketleri yine kaydedilir." |
-| Kendi yayını uzaktan bitirildi | MainShell bandı | "Bu yayın PC-B'den bitirildi (SS:DD). Kuyruktaki etiketler basılabilir; yeni etiket için yeni yayın başlat." |
+| Sahip ≥ 15 dk sessiz | çip ve "Yayını bitir…" eylemi | Onay: "PC-A 17 dakikadır sessiz. Yayın gerçekten bitti mi? Bitirirsen yayın buradan düzenlenebilir olur. PC-A aslında çalışıyorsa, bağlantısı gelince gönderdiği yeni etiketler ve değişiklikler de işlenir; aynı etikette burada yaptığın değişiklik önceliklidir." |
+| Kendi yayını uzaktan bitirildi (yayın hâlâ açık) | MainShell bandı | "Bu yayın PC-B'den bitirildi olarak işaretlendi (SS:DD). Yayına devam edebilirsin; bitirdiğinde değişiklikler eşitlenir. PC-B'nin aynı etikette yaptığı değişiklik önceliklidir." |
 | Kendi yayını devrediliyor | durum satırı | "Yayın sunucuya devrediliyor…" |
 | Devredilmiş yayın, çevrimdışı | düğmeler pasif, araç ipucu | "Bu değişiklik için sunucu bağlantısı gerekli" |
 | Komut ucu yok (404) | araç ipucu | "Sunucu güncelleniyor; biraz sonra tekrar dene" |
+| Diğer 409'lar | satır içi | §5.3 listesi |
 | 409 stale | satır içi | "Bu arada PC-X'te değişti; plan yenilendi." |
 | Reddedilen push | uyarı listesi | §5.2 |
 | Akış | durum satırı | "Satış: güncel ✓ (SS:DD)", "yetişiyor", "N öğe bekliyor", "M öğe atlandı", "Yayın X devredilemedi: N etiket gönderilemiyor". Dikkat sayacına (`SyncOutboxRepository.cs:44-50`) SalesFeedFailure ve devredilemeyen oturum eklenir. |
-| Mod Off | — | bugünkü gibi |
+| Mod Off | — | bugünkü gibi (`disable`'dan sonra uzak satır kalmaz, §8.5) |
 
 - Rapor ve geçmiş ekranları başka bilgisayarın yayınını makine adıyla gösterir (`OwnerMachineName`).
 - Faz 0 yetişme denetimi (`MainShellViewModel.cs:1610-1617`) mod On'da satış akışının ilk yetişmesini de bekler.
@@ -478,7 +500,7 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
 | Kalıntı kuyruk etiketinin iptali ya da ilk baskısı | bekleyen komut (§5.5) |
 | Devredilmiş yayında fiyat, iptal (kart ya da Basılanlar), yedek, kargo | düğmeler pasif |
 | Dekont kaydı | çalışır. Kargo adımı atlanır ve uyarı gösterilir. Bir sonraki dekont ya da bağlama bütün bağlanmamış etiketleri alır; bugünkü "bir sonraki dekontta tekrar denenir" sözleşmesi bu (`DekontEkleViewModel.cs:467-473`) |
-| Ödeme isteği | GUID'li sahibi olan kişide engellenir; bugün de önizleme yüzünden engelleniyor (`PaymentRequestService.cs:1062-1066`). GUID'siz kişide bugünkü gibi yerel |
+| Ödeme isteği | GUID'li üyesi olan kişide engellenir; bugün de önizleme yüzünden engelleniyor (`PaymentRequestService.cs:1062-1066`). Mod On'da kapsamına uzak etiket giren kişide de engellenir (kira zorunlu, §6.5). Yalnız kendi etiketleri olan GUID'siz kişide bugünkü gibi yerel; kayıt bağlantı gelince yazılır |
 | Yeniden baskı | önbellekten, notla |
 
 ### 5.9 `GetActive` ve okuyucular
@@ -492,6 +514,7 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
 - Müşteri toplamları W1 ile etiketlerden türetilir (`CustomerAggregateSql`); yerel olay, akış uygulaması ve yeniden anahtarlama aynı fonksiyonu çağırır (§6.1).
 - Ödeme tutarı W3 ile sayaçtan değil etiketlerden okunur (`GetPrintedTotal`) ve sunucu toplamıyla doğrulanır (§6.3, §6.4).
 - Kargo eşiği ve ücreti mod On'da lisans geneli ayardan okunur (§6.2).
+- Kargo dosyası tutarı mod Off'ta Ws'nin yerel yolunda iptal ve iptali geri almayla düşer ve geri gelir (Y5, §7.4); mod On'da sunucu türetir.
 
 ## 6. Toplamlar ve ödeme
 
@@ -511,14 +534,16 @@ Karar tek yerde verilir: hedef etiketin oturumunun `Authority`'si `local` ise bu
 
 - Tek kaynak `LicenseShippingSettings` (§3.1, §4.8).
 - Mod On'da yeni `ShippingSettingsProvider` sunucu değerini döner (yerel önbellek: `SalesSyncState`). Mod Off'ta `AppSettings.Shipping` döner.
+- `ComputeShipping` (`PaymentRequestService.cs:1640-1663`) bugün `AppSettings`'i alıp `settings.Shipping`'i okuyor. İmzası `ShippingSettings` alacak biçimde değişir; değeri her çağıran `ShippingSettingsProvider`'dan alır. Böylece yerel ayarın yanlışlıkla okunduğu bir yol derlenmez.
 - Okuyucular:
-  - `ComputeShipping` (`PaymentRequestService.cs:1640-1663`)
+  - `ComputeShipping`'in çağıranları: `OpenWhatsApp` (`PaymentRequestService.cs:208`), istek akışı (`:480`) ve #508 planı (`CorrectedPaymentRequests.cs:228`, bugün `_settings()` yerel AppSettings)
   - `EvaluateAfterPayment` (`ShipmentService.cs:132`)
   - `PaymentMatcherService.Match` (`PaymentMatcherService.cs:59`)
   - dekont ekranındaki eşik gösterimi (`DekontEkleViewModel.cs:282`)
-  - ayar ekranı (`SettingsViewModel.cs:456-457`, `:589-590`). Mod On'da kaydet PUT yapar ve bağlantı ister.
-- `begin` isteği `shippingSettingsVersion` taşır. Sürüm eskiyse 409 `settings-stale` döner; istemci önbelleği yeniler, tutarı yeniden hesaplar ve bir kez daha dener. Aynı kişiye iki bilgisayarın farklı kargo tutarı istemesi böyle kapanır.
-- **Geçiş:** Ws, `hello`'da kendi yerel değerini bildirir. `sales-sync status` farklı değerleri gösterir. Burak tek değeri seçer (WPF ayar ekranından PUT). Bu, modu açmanın koşuludur (§4.10-4).
+  - ayar ekranı (`SettingsViewModel.cs:456-457`, `:589-590`). Mod On'da kaydet PUT yapar ve bağlantı ister; mod Off'ta yerel ayarı yazar.
+- `begin` isteği `shippingSettingsVersion` ve `recipientPays` taşır. Sürüm eskiyse 409 `settings-stale` döner; istemci önbelleği yeniler, tutarı yeniden hesaplar ve bir kez daha dener. Sürüm doğruysa sunucu ayrıca `totalBeforeBalance = productTotal + kargo` eşitliğini lisans ayarıyla denetler (alıcı ödemeli ya da eşik üstü ya da ayar kapalı ise kargo 0); tutmazsa 409 `settings-stale`. Yerel ayarla hesaplanmış bir tutar doğru sürüm numarasıyla geçemez. Aynı kişiye iki bilgisayarın farklı kargo tutarı istemesi böyle kapanır.
+- **Geçiş:** Ws, `hello`'da kendi yerel değerini bildirir. `sales-sync status` farklı değerleri gösterir. Burak tek değeri `sales-sync shipping set` ile yazar (§4.8). Bu, modu açmanın koşuludur (§4.10-4).
+- **`disable`'da** sunucu değeri her PC'nin yerel `AppSettings.Shipping`'ine yazılır (§8.5). PC'ler Off'a döndüklerinde farklı yerel değerlerle farklı kargo tutarı istemez.
 
 ### 6.3 Tutarın kaynağı
 
@@ -534,49 +559,59 @@ Kapsam anahtarları değişmez: `session:{id}` ve `cumulative` (`CustomerSearchV
 
 Kira, `RequestPaymentAsync` (`PaymentRequestService.cs:286-363`) içinde şu noktaya girer: kişi kiralandıktan (`EnterPersonAsync`, `:314`) ve tutar okunduktan (`:336`) sonra, bakiye adımından (`:501-517`) önce.
 
-**İstemci tarafı**
-1. **Ön gönderim:** müşteri, oturum ve etiket kuyrukları, en çok 5 sn. Başarısız olursa ve kişinin GUID'li sahibi varsa sonuç `BalanceUncertain`; mesaj gitmez.
-2. Tutar yeniden okunur; ön gönderim sırasında basılmış etiketler de girer.
-3. `POST payment-requests/begin` gönderilir: `{recordId, replicaId, ownerId, memberIds, scopeKey, productTotal, totalBeforeBalance, shippingSettingsVersion, confirmedPriorIds}`. `memberIds` GUID'li üyelerdir, süzgeç `PaymentRequestService.cs:1121`'deki gibi.
+**İstemci tarafı** (mod On; mod Off için aşağıdaki "Ödeme geçmişi")
+1. **Ön gönderim:** önce bekleyen komutlar (§5.5), sonra müşteri, oturum ve etiket kuyrukları; en çok 5 sn. Zaman aşımı ya da ilgisiz bir kuyruktaki takılma tek başına isteği engellemez: eksik gönderim kişinin toplamını etkiliyorsa sunucu karşılaştırması (f) yakalar. Tek doğrudan engel bekleyen komuttur. Bu kişinin bu kapsamdaki bir etiketine ait bekleyen komut (örtü) gönderilemediyse istek engellenir: "Bekleyen baskı ya da iptal onayı gönderilemedi; bağlantı gelince tekrar dene." Yerel toplam onaylanmamış baskıyı saymadığı (§5.5) ve sunucu da onu bilmediği için iki toplam eşit çıkar; engel olmasa kâğıdı basılmış ürün istenmezdi.
+2. Tutar yeniden okunur; ön gönderim sırasında basılmış etiketler de girer. Toplama giren siparişlerin Id'leri (`orderIds`) birlikte toplanır.
+3. `POST payment-requests/begin` gönderilir: `{recordId, replicaId, ownerId, memberIds, scopeKey, orderIds, productTotal, totalBeforeBalance, recipientPays, shippingSettingsVersion, confirmedPriorIds}`. `memberIds` kişinin **bütün** üyeleridir (GUID'siz olanlar dahil, ham Id), çünkü yerel tutar da bütün üyelerden okunuyor (`CustomerSearchViewModel.cs:337`, `StreamReportViewModel.cs:272`). `PaymentRequestService.cs:1121`'deki GUID süzgeci yalnız bakiye uçlarında kalır.
 
-**Sunucu tarafı.** Tek işlem içinde, `sp_getapplock('payreq:{lisans}:{personKey}:{kapsam}')` ile. Ayrıca her asıl üye için `payreq-m:{lisans}:{üye}:{kapsam}` kilidi sıralı alınır (sıra ölü kilitlenmeyi önler). Böylece iki bilgisayar grup senkronu gecikmesi yüzünden farklı PersonKey hesaplasa bile, ortak üyeleri varsa aynı anda geçemez.
-- a. PersonKey hesaplanır ve üyeler asıl kayda çözülür.
-- b. Süresi dolmuş `Sending` kayıtları `Unconfirmed` yapılır.
-- c. Başka kopyanın `Sending` kaydı varsa (PersonKey'den ya da üye kümesi kesişiminden, aynı kapsamda) 409 `in-progress-elsewhere {machine, since}`.
-- d. `confirmedPriorIds` dışında bir `Delivered` ya da `Unconfirmed` kayıt varsa 409 `already-requested {priors: [{id, machine, netAmount, at, unconfirmed}]}`.
-- e. **Sunucu toplamı:** üyelerin siparişlerinin `Contribution` toplamı; `session:{id}` için o yayın, `cumulative` için bütün yayınlar. İstemcininkinden farklıysa 409 `stale-total {serverTotal, liveElsewhere}`. `liveElsewhere`, farkı başka kopyanın devredilmemiş yayınındaki siparişler açıklıyorsa doludur.
-- f. Kargo ayarı sürümü eskiyse 409 `settings-stale`.
-- g. `Sending` kaydı ve üyeleri yazılır; `LeaseUntil = now + 120 sn`. Eşzamanlı ikinci kaydı filtreli tekil indeks reddeder.
+**Sunucu tarafı.** Tek işlem içinde, `sp_getapplock('payreq:{lisans}:{PersonKeyHash}:{kapsam}')` ile. Ayrıca her üye için `payreq-m:{lisans}:{üye}:{kapsam}` kilidi sıralı alınır (sıra ölü kilitlenmeyi önler). Böylece iki bilgisayar grup senkronu gecikmesi yüzünden farklı PersonKey hesaplasa bile, ortak üyeleri varsa aynı anda geçemez.
+- a. **Yeniden oynatma:** aynı `recordId` varsa ve `RequestHash` aynıysa kayıtlı sonuç döner; farklıysa 409 `content-conflict`. Yanıtı kaybolan `begin` böylece güvenle yinelenir.
+- b. PersonKey hesaplanır; GUID'li üyeler asıl kayda çözülür, GUID'siz üyeler ham Id ile kalır. Sunucu PersonKey'in grubundaki asıl üyeleri de bulur. İstemcinin `memberIds`'i bunları kapsamıyorsa 409 `members-stale {members}`.
+- c. Süresi dolmuş `Sending` kayıtları `Unconfirmed` yapılır. Aynı kopyanın aynı kişi×kapsamdaki başka `Sending` kaydı da `Unconfirmed` yapılır: süreç çöküp yeniden açılmıştır, mesaj gitmiş olabilir.
+- d. Başka kopyanın `Sending` kaydı varsa (PersonKey'den ya da üye kümesi kesişiminden, aynı kapsamda) 409 `in-progress-elsewhere {machine, since}`.
+- e. `confirmedPriorIds` dışında bir `Delivered` ya da `Unconfirmed` kayıt varsa (yine PersonKey'den **ya da üye kümesi kesişiminden**) 409 `already-requested {priors: [{id, machine, netAmount, at, unconfirmed}]}`.
+- f. **Sunucu toplamı:** üyelerin siparişlerinden `Contribution` verenlerin kümesi ve toplamı; `session:{id}` için o yayın, `cumulative` için bütün yayınlar. GUID'li üye asıl kayda, GUID'siz üye ham `CustomerId`'ye eşlenir (sunucu GUID olmayan değeri aynen saklıyor, `LicensesSessionsSyncController.cs:258-268`). Küme `orderIds`'ten ya da toplam istemcininkinden farklıysa 409 `stale-total {serverTotal, liveElsewhere}`. Küme karşılaştırması, toplamı eşit iki farklı kümeyi de (biri iptal, biri yeni etiket) yakalar. `liveElsewhere`, farkı başka kopyanın devredilmemiş yayınındaki siparişler açıklıyorsa doludur.
+- g. Kargo ayarı sürümü eskiyse ya da tutar lisans ayarıyla tutmuyorsa 409 `settings-stale` (§6.2).
+- h. `Sending` kaydı, üyeleri ve `orderIds` (`PaymentRequestRecordOrders`) yazılır; `LeaseUntil = now + 120 sn`. Eşzamanlı ikinci kaydı filtreli tekil indeks reddeder; tekil ihlal 500 değil 409 `in-progress-elsewhere` olur.
 
 **409'ların istemcideki karşılığı**
 - `in-progress-elsewhere` → mevcut `PaymentInProgress` sonucu (`PaymentRequestService.cs:61`), metin "PC-A'da bu kişiye ödeme isteniyor".
 - `already-requested` → mevcut `AlreadyRequested` sorusu (sahip kararı 2, #506), makine adıyla. Onay belirteci uzak kayıt Id'lerini de kapsar.
+- `members-stale` → bir müşteri akışı turu, kişi yeniden kurulur, bir kez yeniden denenir. Sürerse istek engellenir: "Müşteri grupları eşitleniyor; biraz sonra tekrar dene."
 - `stale-total` → bir akış turu ve bir kez yeniden deneme. Fark sürerse istek engellenir: "Bu bilgisayar güncel değil (sunucu X ₺, burada Y ₺)". `liveElsewhere` doluysa metin: "Bu kişinin PC-A'da süren yayında etiketi var; istek yayın bitip devredilince yapılabilir."
 - `settings-stale` → önbellek yenilenir, bir kez yeniden denenir.
+- `content-conflict` → istemci hatası; günlüğe yazılır, istek engellenir.
 
-**Akışın sonu.** Her sonuçta `finish` çağrılır: `{delivered | unconfirmed | abandoned, netAmount, appliedAmount, fullyFromBalance}`. Bağlandığı yerler bugünkü `TryBeginSend`, `MarkDelivered` ve `AbandonSend` noktaları (`PaymentRequestService.cs:541`, `:553-562`). `finish` gönderilemezse yerelde bekletilir ve yeniden denenir.
+**Kapsam uzlaştırması.** `ReconcilePersonScopeAsync`'in adayları bugün yerel `person.Members`'tan geliyor (`PaymentRequestService.cs:1121`). Mod On'da bunlar `begin` yanıtındaki sunucu üyeleriyle birleştirilir. Grup senkronu gecikmiş bir bilgisayar, başka üyeye yazılmış düşümü böyle görür ve kendi çapasından ikinci düşüm yazmaz. §6.6 kuralı çapa düzeyinde kalır; bu katman onu kişi düzeyinde tamamlar.
+
+**Akışın sonu.** Her sonuçta `finish` çağrılır: `{delivered | unconfirmed | abandoned, netAmount, appliedAmount, fullyFromBalance}`. Bağlandığı yerler bugünkü `TryBeginSend`, `MarkDelivered` ve `AbandonSend` noktaları (`PaymentRequestService.cs:541`, `:553-562`). `finish` gönderilemezse `PendingPaymentRecord`'da bekletilir ve yeniden denenir.
 
 **Teslim kaydı olmadan dolan kira.** Kayıt "gitmiş olabilir" anlamında `Unconfirmed` olur ve öbür bilgisayarın sorusunda görünür (hakem 2 aşısı). Bunun yerel karşılığı "SendAttempts > Deliveries" mantığıdır.
 
-**Teslim kayıtlarının okunması.** `GET payment-requests?scopeKey&memberIds` yanıtı yerel işlerle birleştirilir. Okuyanlar: `CorrectedPaymentRequests.Badges` (`CorrectedPaymentRequests.cs:303`) ve `BalancePaidLabels` (`:274`) (Delivered ∧ FullyFromBalance), "zaten istendi" sorusu ve #508'in "ödendi, fark" planı (`:168`). Cloud API'nin idempotency anahtarı her çağrıda yeni (`PaymentRequestService.cs:1572-1583`) ve wa.me yolunda sunucu hiç yok. Bu yüzden sıralı ikinci isteği yalnız bu soru durdurabilir; artık bilgisayarlar arasında da durdurur.
+**Ödeme geçmişi (mod Off'ta da).** Kayıtlar yalnız mod On'da yazılsaydı, Ws ile açılış arasındaki istekler (en az 7 gün) ve öncekiler sunucuda hiç görünmezdi. Mod On'da başka bilgisayar aynı kapsamı "zaten istendi" sorusu çıkmadan yeniden isterdi; rozetler ve #508'in "ödendi, fark" planı da yanlış çıkardı.
+- Ws'nin ilk açılışında (§8.2) yerel `PaymentJob`'lardan, "zaten istendi" sorusuna giren her iş için (`PersonScopePlan.PromptJobs`, miras işler dahil) bir `Record` kaydı `payment-requests/backfill`'e gider. Kayıt şunları taşır: kapsam, sahip, üyeler, `PromptNet`, düşüm, `FullyFromBalance`, `Unconfirmed` (= `HasUnconfirmedSend`), zaman ve kapsadığı siparişler. Kapsanan küme bugünkü `Covers` kuralıyla yerelde hesaplanır (`PrintedAt ≤ PromptAt`; ikisi de aynı bilgisayarın saati). Kayıt Id'si iş Id'si ile teslim sayısından türetilir, yineleme zararsızdır. Bitince `hello {paymentHistoryCompleted: true}` gider.
+- Mod Off'ta her teslim ya da belirsiz gönderimden sonra aynı uca kirasız bir kayıt kuyruğa alınır (`PendingPaymentRecord`). Gönderim isteği bekletmez; bugünkü çevrimdışı davranış değişmez.
+- Mod kapısı her kopyada `PaymentHistoryCompletedAt` ister (§4.10-2). Mod On'un ilk turu bu kuyruğu da boşaltır (§8.4).
+
+**Teslim kayıtlarının okunması.** `GET payment-requests?scopeKey&memberIds` yanıtı yerel işlerle birleştirilir. Bu kopyanın (ve `PreviousReplicaId` zincirinin) kayıtları yerel işle zaten temsil edilir; birleştirmeye yalnız başka kopyaların kayıtları girer. Sıralama sunucu saatiyle (`FinishedAt`) yapılır; henüz gönderilmemiş yerel kayıt en yeni sayılır. "Bu istek bu etiketi içeriyor mu" sorusu (`Covers`; bugün isteğin `PromptAt`'i etiketin `PrintedAt`'iyle karşılaştırılıyor) uzak kayıtta `PaymentRequestRecordOrders` üyeliğiyle cevaplanır. İki bilgisayarın saati hiç karşılaştırılmaz. Okuyanlar: `CorrectedPaymentRequests.Badges` (`CorrectedPaymentRequests.cs:303`) ve `BalancePaidLabels` (`:274`) (Delivered ∧ FullyFromBalance), "zaten istendi" sorusu ve #508'in "ödendi, fark" planı (`:168`). Cloud API'nin idempotency anahtarı her çağrıda yeni (`PaymentRequestService.cs:1572-1583`) ve wa.me yolunda sunucu hiç yok. Bu yüzden sıralı ikinci isteği yalnız bu soru durdurabilir; artık bilgisayarlar arasında da durdurur.
 
 **Gecikme.** Canlı yayın sırasındaki ödeme isteğine bir sunucu çağrısı (`begin`) ve çoğu zaman boş geçen bir ön gönderim eklenir. Bugün de aynı akışta `/scope`, önizleme ve apply çağrıları var.
 
 ### 6.5 Kümülatif çift istek penceresi (hakem 1, D3 ölümcül bulgusu)
 
 D3'te R1 sürümü uzak etiketleri toplama katıyordu ama kirayı R2'ye bırakıyordu. Bu yüzden iki bilgisayar aynı kişiden kümülatif **tam** tutarı isteyebilirdi. Bu tasarımda bu pencere yok:
-1. Akış uygulaması, uzak etiketler, kira ve `stale-total` aynı mod kapısıyla, birlikte açılır. Mod Off'ta Ws'nin yerel tablosunda uzak etiket yoktur; kümülatif toplam bugünkü gibi yalnız bu bilgisayarın etiketlerinden çıkar.
-2. Mod On'da kira zorunludur ve **fail-closed** çalışır: `begin`'e ulaşılamazsa GUID'li kişide mesaj gitmez. S3 imajı otomatik geri alınıp kira ucu 404 dönse de durum aynıdır. Akıştan inen her müşterinin GUID'i var; bu yüzden uzak etiketi olan hiçbir kişi kirayı atlayamaz.
+1. Akış uygulaması, uzak etiketler, kira ve `stale-total` aynı mod kapısıyla, birlikte açılır ve birlikte kapanır. Mod Off'ta Ws'nin yerel tablosunda uzak etiket yoktur: mod hiç açılmadıysa hiç inmemiştir, `disable`'dan sonra ise ilk Off turu onları siler (§8.5). Kümülatif toplam bugünkü gibi yalnız bu bilgisayarın etiketlerinden çıkar.
+2. Mod On'da kira zorunludur ve **fail-closed** çalışır: `begin`'e ulaşılamazsa GUID'li üyesi olan ya da kapsamına uzak etiket giren kişide mesaj gitmez. S3 imajı otomatik geri alınıp kira ucu 404 dönse de durum aynıdır. Akıştan GUID'siz Id'li müşteri de inebilir (taslak sipariş satırından, §4.4); kural bu yüzden GUID'e değil uzak etikete de bakar ve uzak etiketi olan hiçbir kişi kirayı atlayamaz. Yalnız kendi etiketleri olan GUID'siz kişide bugünkü gibi yerel devam edilir (çevrimdışı canlı yayın, Y3).
 3. Mod On'da eski sürümün `preview` ve `apply` çağrıları 409 `client-update-required` alır (§4.7). GUID'li kişide eski bilgisayarın mesajı engellenir (`PaymentRequestService.cs:1062-1066`).
 
 ### 6.6 Kapsam başına tek geçerli düşüm (S3)
 
-- **Koşul:** `apply` (`LicensesCustomerBalanceApplyController.cs:224`) çağrısında mod On ∧ SaleScope dolu ∧ `legacy:` ile başlamıyor ∧ anahtar yeni.
-- **Kural:** `sp_getapplock('bal:{lisans}:{asıl kayıt}:{kapsam}')` alınır; sonra `/scope` ucuyla aynı yüklem çalıştırılır (`:143-147`: aynı asıl kayıt, aynı kapsam, `purchase-deduction`, geri alınmamış). Böyle bir düşüm varsa 409 `scope-has-deduction {transactionId, appliedAmount, productTotal}`.
-- **İstemci:** düşümü `AdoptRemoteResult` (`PaymentRequestService.cs:1196`) ile benimser ve revizyon adımına döner.
-- **Kapanan yol:** bayat bir B revizyonundan KA ile KB2 iki ayrı düşüm olarak kalıyordu. Bugün `/scope` yalnız `Created` ve anahtarsız işte soruluyor (`:938`) ve `(LicenseId, WpfCustomerId, SaleScope)` indeksi tekil değil (`LicenseDbContext.cs:887-890`).
+- **Koşul:** `apply` (`LicensesCustomerBalanceApplyController.cs:224`) çağrısında mod On ∧ SaleScope dolu ∧ anahtar yeni. `legacy:` öneki ayırt edici değildir: miras işin replay'i asıl kapsamla gider (`SaleScopeOf`, `PaymentRequestService.cs:1396-1397`), kural ona da uygulanır.
+- **Kural:** `sp_getapplock('bal:{lisans}:{asıl kayıt}:{kapsam}')` alınır; sonra `/scope` ucuyla aynı yüklem çalıştırılır (`LicensesCustomerBalanceApplyController.cs:143-147`: aynı asıl kayıt, aynı kapsam, `purchase-deduction`, geri alınmamış). Böyle bir düşüm varsa 409 `scope-has-deduction {transactionId, appliedAmount, productTotal}`.
+- **İstemci:** düşümü `AdoptRemoteResult` (`PaymentRequestService.cs:1196`) ile benimser ve revizyon adımına döner. **Miras işte** (`IsLegacyScope`) benimseme yapılmaz: düşüm büyük olasılıkla başka bir yerel işindir ve iki iş aynı düşümü sahiplenirdi. İş #506'nın birleştirme sorusuna (`ReconcilePersonScopeAsync`'in çok izli sonucu) düşer.
+- **Kapanan yol:** bayat bir B revizyonundan KA ile KB2 iki ayrı düşüm olarak kalıyordu. Bugün `/scope` yalnız `Created` ve anahtarsız işte soruluyor (`PaymentRequestService.cs:938`) ve `(LicenseId, WpfCustomerId, SaleScope)` indeksi tekil değil (`LicenseDbContext.cs:887-890`).
 - **Ayrı tablo yok.** D3'ün `ActiveSaleScopes` tablosu, sunucu imajı geri alınınca bayat aktiflik satırı bırakıyordu (hakem 2 ölümcül bulgusu). Bu kural defterin kendisini okur: geri alma penceresinde yazılan düşümler sonradan yine görünür, bayat durum kalmaz.
-- **Satır (çapa) düzeyinde kalır.** Farklı üyelerdeki izler #506'nın birleştirme sorusuna düşer (`ReconcilePersonScopeAsync`, `PaymentRequestService.cs:1117`). Ortak bakiye M10 ile uyumludur. Ortak bakiye ekibi aynı kişinin başka satırındaki çapayı da 409 yapmayı #506'nın meşru çok izli akışını bozduğu için reddetmişti (ortak bakiye §13 sonuç notu).
+- **Satır (çapa) düzeyinde kalır.** Farklı üyelerdeki izler #506'nın birleştirme sorusuna düşer (`ReconcilePersonScopeAsync`, `PaymentRequestService.cs:1117`). Grup senkronu gecikmesinde başka üyedeki izin görülmesini kira sağlar: `members-stale`, (e) adımının üye kesişimi ve sunucu üyeleriyle yapılan uzlaştırma (§6.4). Ortak bakiye M10 ile uyumludur. Ortak bakiye ekibi aynı kişinin başka satırındaki çapayı da 409 yapmayı #506'nın meşru çok izli akışını bozduğu için reddetmişti (ortak bakiye §13 sonuç notu).
 - Mod Off'ta kural yok; bugünkü davranış.
 
 ### 6.7 #506 ve ortak bakiye ile etkileşim
@@ -613,17 +648,21 @@ Bugünkü davranışta 10:00'da iki bilgisayar da mesaj gönderirdi: PC-A 550 �
 - Dekont ekranı `attach-shipment` ve `shipment-decision` komutlarını kullanır. Eşik, `EvaluateAfterPayment` (`ShipmentService.cs:121-153`) mantığıyla, yanıttaki sunucu havuzu üzerinden değerlendirilir.
 - Havuz, asıl müşteri satırının bütün Pending/Held dosyalarıdır. Bugünkü gibi satır bazlıdır (`ShipmentRepository.cs:71-94`); kişi (grup) bazına çıkarılmaz.
 - Mod On'da `ShipmentSyncService` (`ShipmentSyncService.cs:128-163`) gönderim yapmaz. `/since` çekmesi zaten uygulanmıyordu; o da kalkar. Dosyalar akışla iner.
+- Sunucu mod On'da `shipments/sync`'i yok sayar. Tek istisna, modu henüz görmemiş (`SeenMode = 0`) kopyanın v2 gönderimidir (açılış penceresi, §8.4). Bu durumda dosya Shipped değilse ve `CommandedAt` boşsa karar alanları (Status, HeldAt, ShippedAt) alınır (Shipped'e geçişte iptalli bağlar §7.2'deki gibi çözülür), yeni dosya eklenir. Tutar push'tan değil bağlardan türetilir.
 
 ### 7.2 Sahip kararı Y5: bağlandıktan sonra iptal edilen etiket
 
-Tutar türetilir (DM7). Bağ şöyle değişir:
+İptal **bağı çözmez**; tutarı ve havuzu türetme düşürür (DM7). Bağın kalması iki nedenle şart:
+- Kodda `ShipmentId`, "dekontla ödendi"nin tek işaretidir: `CorrectedPaymentRequests.cs:187-193` (`attached`), Basılanlar'daki "Ödendi" rozeti (`PrintedLabelsViewModel.cs:360-363`) ve `PaidPrice`'ın saklanma koşulu (`LabelRepository.cs:232`). Bağ çözülseydi yanlışlıkla iptal edilip geri alınan etiket "ödenmedi" görünür, sonraki fiyat düzeltmesi `PaidPrice` yazmaz ve #508 planı iade yerine yeniden istek önerirdi.
+- Geri alma etiketi kendiliğinden aynı dosyaya geri katar; dosya Shipped olduysa aynı tutar iki dosyada sayılmaz.
 
 | Olay | Dosya durumu | Etki |
 |---|---|---|
-| İptal (komut ya da kabul edilen push) | Pending, Held, RecipientPays | Bağ çözülür (`ShipmentId = NULL`, `ShipmentSetAt`); tutar ve havuz düşer |
-| İptal | Shipped | Bağ kalır, tutar donar (karar verilmiş; iade ayrı iş) |
-| İptali geri alma | — (bağ çözülmüştü) | Etiket bağlanmamış durumdadır; sonraki dekont ya da bağlama onu alır |
-| İptali geri alma | Shipped (bağ kalmıştı) | Bağ çözülür; etiket bağlanmamış olur, yeni dosyaya girer |
+| İptal (komut ya da kabul edilen push) | Pending, Held, RecipientPays | Bağ kalır; tutar ve havuz etiketin fiyatı kadar düşer |
+| İptal | Shipped | Bağ kalır, tutar donmuştur (karar verilmiş; iade ayrı iş) |
+| İptali geri alma | Pending, Held, RecipientPays | Bağ kalır; tutar ve havuz eski hâline döner, "Ödendi" rozeti yerinde |
+| İptali geri alma | Shipped | Bağ kalır, tutar donmuştur. Etiket iptalden önce koliye girmişti |
+| Dosya kargoya verilir (`shipment-decision`) | Pending/Held → Shipped | O anda iptal edilmiş bağlı siparişlerin bağı çözülür: ürün kolide değil, tutar onlarsız donar. Sonradan geri alınırsa etiket bağlanmamış olur ve sonraki dosyaya girer |
 | `set-code-price` | açık | Tutar yeniden türetilir; bugünkü `CorrectPrices` farkının (`LabelService.cs:414-421`) karşılığı |
 | `confirm-backup` | — | Geçici yedek hiç bağlanmamıştı (`GetUnattachedByCustomer` süzgeci, `LabelRepository.cs:639-654`); değişiklik yok |
 
@@ -632,17 +671,20 @@ Tutar türetilir (DM7). Bağ şöyle değişir:
 2. S2'de K5 250 ₺ basıldı; dekont geldi. `attach-shipment` ile F1 = 550 ≥ 500. Çekmece "ücretsiz kargo" teklif eder; operatör kararı sonraya bırakır.
 3. Müşteri K5'i istemez ve PC-B K5'i iptal eder.
    - **Bugün:** F1 550'de kalır. Kargo yanlışlıkla ücretsiz görünür, panelde de 550 yazar.
-   - **Yeni:** K5'in bağı çözülür ve F1 = 300 olur. Havuz 300, eşiğe 200 ₺ kalır. Eşiğin altına inildiği için "ücretsiz kargo kazandın" mesajı (`PaymentRequestService.cs:1457`, tutarı havuzdan okur) artık teklif edilmez.
-4. F1 iptalden önce Shipped olsaydı F1 550'de donar ve K5 bağlı kalırdı. K5 sonradan geri alınırsa bağı çözülür ve bir sonraki dosyaya girer.
+   - **Yeni:** K5 F1'e bağlı kalır, F1 = 300 olur. Havuz 300, eşiğe 200 ₺ kalır. Eşiğin altına inildiği için "ücretsiz kargo kazandın" mesajı (`PaymentRequestService.cs:1457`, tutarı havuzdan okur) artık teklif edilmez.
+4. İptal yanlışlıkla yapılmıştı; PC-B geri alır. F1 yeniden 550, havuz 550, K5 Basılanlar'da yine "Ödendi". Yeni dekont beklenmez.
+5. F1 iptalden önce Shipped olsaydı F1 550'de donar ve K5 bağlı kalırdı; geri alma da hiçbir şeyi değiştirmezdi. F1, K5 iptalliyken kargoya verilseydi K5'in bağı o anda çözülür ve F1 300'de donardı; K5 sonradan geri alınırsa bir sonraki dosyaya girer.
 
 ### 7.3 Karar
 
-`shipment-decision`, `ApplyDecision` (`ShipmentService.cs:177-207`) mantığıyla çalışır. Hedef Pending ya da Held ise kişinin öbür açık dosyaları da aynı karara uyar (U12). `ShipmentStatusChanged` etiket kuralı sunucuda tetiklenir.
+`shipment-decision`, `ApplyDecision` (`ShipmentService.cs:177-207`) mantığıyla çalışır. Hedef Pending ya da Held ise kişinin öbür açık dosyaları da aynı karara uyar (U12). Kargoya verilen her dosyada iptalli bağlar çözülür (§7.2). `ShipmentStatusChanged` etiket kuralı sunucuda tetiklenir.
 
 ### 7.4 Geçiş
 
-- Mod Off'ta bugünkü yerel davranış sürer: iptal tutardan düşmez. Gerekçe: o dönemde dosyanın yazıcısı yerel bilgisayar, sahada eski sürümler var. Kuralı yalnız bir yolda uygulamak iki yazıcı arasında farklı tutar üretirdi. Kural mod On ile birlikte, tek yazıcıda devreye girer.
-- Mod açılırken Shipped olmayan dosyalar türetilir. Fark raporu `enable` kuru koşusunda gösterilir (§4.10-6). Verilmiş kararlar değiştirilmez.
+- **Mod Off'ta Y5 Ws'nin yerel yolunda uygulanır (W1).** O dönemde her dosyanın ve bağlı etiketlerinin tek yazıcısı dosyayı açan bilgisayardır: dosyalar inmez, uzak etiket yoktur (§6.5-1). İki yazıcının farklı tutar üretmesi bu yüzden söz konusu değildir. `LabelService.Cancel` ve `Uncancel`, `CorrectPrices`'ın dosya bloğuyla aynı biçimde aynı yazma paketinde çalışır. Etiket bir dosyaya bağlıysa, geçici yedek değilse ve dosya Shipped değilse dosya tutarından fiyatı düşülür ya da geri eklenir; tutar `AttachLabels`'ın kattığı fiyatla aynıdır (`ShipmentService.cs:73-102`). Bağ değişmez. Shipment tetikleyicisi değişikliği kuyruğa alır ve `shipments/sync` gönderir. Mod On'da bu blok atlanır, sunucu türetir (§5.1-a).
+- Mod Off'ta "kargoya verilirken iptalli bağı çöz" kuralı uygulanmaz: o kural türetilmiş tutara dayanır. Ws öncesi iptallerde tutar o etiketi hâlâ içerebilir; bu nadir sıra (iptal, kargo, geri alma) bugünkü gibi kalır.
+- Eski sürüm (≤0.9.10) bilgisayarda bugünkü davranış sürer; Ws'ye güncellenince yeni iptaller düşer.
+- Mod açılırken Shipped olmayan dosyalar türetilir. Fark raporu `enable` kuru koşusunda gösterilir; açıklanamayan fark açılışı engeller (§4.10-6, -7). Verilmiş kararlar değiştirilmez.
 
 ## 8. Geçiş
 
@@ -653,21 +695,23 @@ Tutar türetilir (DM7). Bağ şöyle değişir:
 | 0 | Spec onayı. Burak prod'da Orders, StreamSessions ve Shipments satır sayısını salt okunur sorguyla alır; `rowversion` ekleme süresi `restore-verify` kopyasında ölçülür. | Prod'a yazım yok. Sınıra yakınsa göç bölünür (§3.1). |
 | 1 | **S1** merge ve otomatik deploy | Yayın penceresi dışında (Paz/Pzt/Çar/Per 20:00–01:00 TR değil). EndedAt tekdüze, K1 (ProductId düzeltmesi), K2 (damga yok, son-gelen-kazanır), K3, v1 kapanışında devir. Onarım işi eski bitmiş oturumları devreder. Doğrulama gerçek etkiden: dolu `Orders.SessionReleasedAt` sayısı, `sales/changes` ilk sayfası. |
 | 2 | **S2** merge ve deploy | Komutlar mod Off'ta 409 `mode-off`. Davranış değişmez. |
-| 3 | **S3** merge ve deploy | Kira ucu ve kapsam kuralı yalnız mod On'da etkili. CLI'lar gelir. |
-| 4 | **W1 → W2 → W3** sırayla master'a; Ws Velopack sürümü; PC'ler sırayla güncellenir | Her PC'nin ilk açılışı §8.2. Mod Off'ta davranış bugünküyle aynı (§8.5). |
-| 5 | `sales-sync status` (kuru); Burak lisans geneli kargo ayarını seçer | Kopyaların bildirdiği değerler yan yana gösterilir. |
-| 6 | 7 gün boyunca eski sürüm izi yok → `sales-sync enable --license <id>` kuru → rapor sahibe → `--apply` | Yayın penceresi dışında, Burak'ın onayıyla. |
-| 7 | Her PC'nin mod On'daki ilk turu (§8.4) | Durum satırı "yetişiyor", ardından "güncel ✓". |
-| 8 | Saha kontrolleri (§10.4) | Gerçek etkiden. |
-| 9 | **S4** daraltma | Mod On'dan ≥ 2 hafta sonra. |
+| 3 | **S3** merge ve deploy | Kira ucu ve kapsam kuralı yalnız mod On'da etkili; `payment-requests/backfill` her kipte açık. CLI'lar gelir. |
+| 4 | **W1 → W2 → W3** sırayla master'a | **Sürüm kuralı:** W1'in merge'ünden W3'ün merge'üne kadar master'dan plansız Velopack sürümü çıkmaz; acil düzeltme sahadaki sürümün etiket dalından çıkar. Bilinçli bir ara sürüm (asgari değer S1 + W1, §13) çıkarılabilir. Asıl kilit `featureLevel`'dır: 3 yalnız W3'ü içeren derlemede bildirilir. Yarım bir derleme sahaya inse bile mod kapısını geçemez (§4.10-2). |
+| 5 | Ws Velopack sürümü; Burak `SalesSync__MinClientVersion`'ı compose ortamına Ws sürümüyle yazar (sunucudaki `.env`, ortak bakiye §7.2'deki karşılığıyla aynı yol); PC'ler sırayla güncellenir | Her PC'nin ilk açılışı §8.2. Mod Off'ta davranış bugünküyle aynı, artı Y5'in yerel yolu (§7.4, §8.5). Değer boşken mod açılamaz (§4.10-1). |
+| 6 | `sales-sync status` (kuru); Burak `sales-sync shipping set` ile lisans geneli kargo ayarını yazar | Kopyaların bildirdiği değerler yan yana gösterilir (§6.2). |
+| 7 | 7 gün boyunca eski sürüm izi yok → `sales-sync enable --license <id>` kuru → rapor sahibe → `--apply` | Yayın penceresi dışında, Burak'ın onayıyla. Açıklanamayan kargo farkı varsa önce o dosyalar çözülür (§4.10-6). |
+| 8 | Her PC'nin mod On'daki ilk turu (§8.4) | Durum satırı "yetişiyor", ardından "güncel ✓". `sales-sync status`'ta her kopyanın `SeenMode`'u 1. |
+| 9 | Saha kontrolleri (§10.4) | Gerçek etkiden. |
+| 10 | **S4** daraltma | Mod On'dan ≥ 2 hafta sonra. |
 
 ### 8.2 Ws'nin ilk açılışı (mod Off)
 
-1. Göç 049 koşar ve ReplicaId üretilir. `hello` gönderilir; yerel kargo ayarı bildirilir.
+1. Göç 049 koşar ve ReplicaId üretilir. `hello` gönderilir; yerel kargo ayarı, `featureLevel` ve `seenMode = 0` bildirilir.
 2. Normal giden kuyruklar boşaltılır.
-3. Geri doldurma `sales-backfill-out` imleciyle (rowid) yapılır: önce bütün yerel oturumlar, sonra etiketler, sonra dosya bağları; `sales/backfill`'e, 200'lük partilerle. `SyncedAt` ve `Revision`'a dokunulmaz (F05). Sunucu yalnız boşu doldurur ve bildirim üretmez (§4.3). Kaçmış kapanışlar bu adımda kapanır.
+3. Geri doldurma `sales-backfill-out` imleciyle (rowid) yapılır: önce bütün yerel oturumlar, sonra etiketler, sonra dosya bağları (dosyanın `OriginReplicaId`'si bu kopya olarak); `sales/backfill`'e, 200'lük partilerle. `SyncedAt` ve `Revision`'a dokunulmaz (F05). Sunucu yalnız boşu doldurur ve bildirim üretmez (§4.3). Kaçmış kapanışlar bu adımda kapanır.
 4. `hello {backfillCompleted: true}` gönderilir.
-5. Müşteri toplamları yerel etiketlerden bir kez türetilir; değişen satır sayısı günlüğe yazılır.
+5. Ödeme geçmişi `payment-history-out` imleciyle `payment-requests/backfill`'e gönderilir (§6.4); bitince `hello {paymentHistoryCompleted: true}`.
+6. Müşteri toplamları yerel etiketlerden bir kez türetilir; değişen satır sayısı günlüğe yazılır.
 
 Geri doldurma idempotenttir. Yarıda kesilmesi, yeniden denenmesi ya da `cursorReset` zararsızdır.
 
@@ -679,15 +723,17 @@ Koşullar §4.10'da. Kapı neden dinamik değil? Dinamik kapı her istekte "büt
 |---|---|
 | Yeni etiket ekleme ve baskı doldurma | Kabul edilir (gerçek satış). |
 | Devredilmiş yayında fiyat, iptal ya da yedek değişikliği | Yok sayılır; `LastLegacySalesPushAt` yazılır, uyarı düşer (K5). Damgalı birimler her durumda korunur (K2). |
-| `shipments/sync` | Yok sayılır, iz yazılır. |
+| `shipments/sync` | Yok sayılır, iz yazılır. (Modu henüz görmemiş Ws'nin v2 gönderimi bu satıra girmez; §7.1, §8.4.) |
 | Önizleme ve apply | 409 `client-update-required`. GUID'li kişide mesaj engellenir. |
 | Başkalarının değişikliklerini görmek | Göremez. Güncellenene kadar bayat görünüm; para yolları yukarıdaki satırlarla korunur. |
 
 ### 8.4 Mod On'daki ilk tur (her PC)
 
-1. Bütün giden kuyruklar boşaltılır: müşteri, oturum ve etiket, kargo, dekont.
-2. `sales/state` okunur, kargo ayarı önbelleğe alınır.
-3. Akış 0'dan çekilir. Kendi bitmiş oturumları devredilmiş olarak gelir ve `Authority = 'server'` olur. Uzak yayınlar eklenir. Yerel `Shipment` tablosu sunucu satırlarıyla değiştirilir (guard altında).
+Sunucuda `enable --apply` ile her PC'nin modu ilk görmesi arasında 30 sn'ye kadar bir pencere var. O pencerede verilen kargo kararı ve kurulan bağ Off kurallarıyla kuyruğa girer. Bu yüzden istemci modu **ancak kuyruklarını boşalttıktan sonra** yerelde açar ve o ana kadar her isteğinde `SeenMode = 0` bildirir. Sunucu da `SeenMode = 0` gönderimlerini Off kurallarıyla alır: kargoda §7.1, etiket bağında K4 istisnası, birimlerde K5 istisnası (ii). Damgalı birim ve `CommandedAt`'li dosya her durumda korunur.
+
+1. `sales/state` modu 1 gösterir. Bütün giden kuyruklar boşaltılır (`SeenMode = 0` ile): bekleyen ödeme kayıtları, müşteri, oturum ve etiket, kargo, dekont. Biri boşalmazsa yerel mod 0 kalır ve bir sonraki turda yeniden denenir. Durum satırı "Senkron açılıyor; bekleyen gönderim var" der.
+2. Kargo ayarı önbelleğe alınır. Tek işlemde `SalesSyncState.Mode = 1` yazılır; bundan sonraki istekler `SeenMode = 1` taşır.
+3. Akış 0'dan çekilir. Kendi bitmiş oturumları devredilmiş olarak gelir ve `Authority = 'server'` olur. Uzak yayınlar eklenir. Yerel `Shipment` tablosu sunucu satırlarıyla değiştirilir (guard altında). Değiştirmeden önce `SyncedAt IS NULL` yerel dosya kalmışsa adım durur, uyarı gösterilir ve bir sonraki turda 1. adımdan yeniden denenir; gönderilmemiş bir karar sessizce silinmez.
 4. Ufka ulaşılınca (boş sayfa ve bekleyen öğe yok) toplamlar tek işlemde türetilir; `FirstCatchUpAt` yazılır.
 
 O anda canlı bir yayın varsa yerel kalır ve normal yoldan devreder.
@@ -696,11 +742,21 @@ O anda canlı bir yayın varsa yerel kalır ve normal yoldan devreder.
 
 | Durum | Davranış |
 |---|---|
-| Mod Off, Ws ile eski sürüm yan yana | Bütün bilgisayarlar bugünkü gibi. Ws ek olarak yeni alanları gönderir, kapanışı kuyruk boşalınca devreder, AttachLabel'dan sonra etiketi kuyruğa alır (tetikleyici), toplamları türetir. Sunucu: K1, K3, tekdüze EndedAt; damga yok. |
+| Mod Off, Ws ile eski sürüm yan yana | Bütün bilgisayarlar bugünkü gibi. Ws ek olarak yeni alanları gönderir, kapanışı kuyruk boşalınca devreder (`Authority` yine `local` kalır), AttachLabel'dan sonra etiketi kuyruğa alır (tetikleyici), toplamları türetir, Y5'i yerel yolda uygular (§7.4) ve ödeme kayıtlarını kirasız yazar (§6.4). Sunucu: K1, K3, tekdüze EndedAt, protokolsüz istek izi; damga yok. |
 | Mod On, bütün PC'ler Ws | Tam tasarım. |
 | Mod On, eski PC döner | §8.3 tablosu. Admin'e uyarı. Mod kendiliğinden kapanmaz. |
-| On → Off (`disable`) | İlk turda her PC sırayla: (1) bekleyen komutları göndermeyi dener, gitmeyenleri iptal edip operatöre listeler; (2) akışı son kez boş sayfaya kadar uygular, sunucunun son hâlini alır; (3) kendi oturumlarını `Authority = 'local'` yapar, uzak oturumlar salt okunur önbellek olarak kalır; (4) yerel kargo tablosu yerel otoriteye döner (tetikleyicide `Mode = 0`); (5) bundan sonra bugünkü davranış. Damgalı birime gelen push etkisizdir; yanıt `ignored` olur, kayıt ve uyarı düşer. |
+| On → Off (`disable`) | Aşağıda. |
 | Off → On (yeniden) | §8.4 baştan. |
+
+**On → Off (`disable`).** Sunucu yalnız modu 0 yapar; damgalar kalır. Her Ws, `sales/state`'te ya da bir `mode-off` yanıtında Off'u görünce şu turu koşar. Tur bitene kadar `SeenMode = 1` bildirir; bu yüzden sürüm düşürmeden önce turun bittiği sunucudan görülür (§8.6).
+1. Akış son kez boş sayfaya kadar uygulanır (akış Off'ta da çalışır, §4.4). Kendi satırlarının `ServerVersion`'ı güncellenir; sonraki yerel düzenleme damgalı birimde bile `baseVersion` eşitliğiyle kabul edilir (K2).
+2. Tek SyncApplyScope işleminde:
+   - `Mode = 0` olur, kendi oturumları `Authority = 'local'` olur.
+   - `Origin = 'remote'` oturum ve etiketler ile `RemoteLiveSession` silinir; lisans değişimi temizliğinin aynısıdır (§5.4). Müşteri toplamları yeniden türetilir. Off'ta uzak etiket kalmaz; kira olmadan kümülatif çift tam istek penceresi (R1) yeniden açılmaz ve bayat önbellekten tutar istenmez (§6.5-1).
+   - Yerel `Shipment` tablosunda `OriginReplicaId`'si bu kopya olmayan ve Shipped olmayan satırlar silinir; kalanlar yerel otoriteye döner. Her açık dosyanın tek yazıcısı yeniden onu açan bilgisayardır; `shipments/sync`'in son-gelen-kazanır'ı iki bilgisayarın tutarını birbirine ezdiremez. Başka bilgisayarın dosyasına bağlı kendi etiketleri bağlı sayılır. O etiketin iptali o dosyanın tutarına yansımaz; acil kapatmadan sonraki bu nadir durum bugünkü davranıştır.
+   - Lisans geneli kargo ayarı yerel `AppSettings.Shipping`'e yazılır (§6.2).
+3. Bekleyen komutlar, guard dışında ve normal yerel yazım olarak çevrilir (§5.5): kuyruğa girer ve push'la gider. Basılmış kâğıt yeniden teklif edilmez. Örtü, yerel yazım işlenene kadar kalkmaz.
+4. Bundan sonra bugünkü davranış. Push'a dönen `ignored` yalnız gerçekten bayat gönderimde olur ve istemci `current`'ı uygular (§5.2).
 
 ### 8.6 Geri dönüş kuralları
 
@@ -711,11 +767,12 @@ O anda canlı bir yayın varsa yerel kalır ve normal yoldan devreder.
   - canlı yayın sürer
   - kapanışlar istemcinin yeniden göndermesiyle devreder (§5.2); onarım işi kalanları kapatır (§4.9)
 - **YASAK — mod On bir lisans varken S1 öncesi imaja elle sabitlemek.** Eski kod damgalara uymaz: bayat push komut kararını geri alır, ProductId yine NULL'lanır, devir yazılmaz. Tespit: `SELECT COUNT(*) FROM Licenses WHERE SalesSyncMode = 1` > 0. `deploy/README.md`'ye ortak bakiye §7.4 biçiminde bir uyarı eklenir. Etiketin kaynağında `git cat-file -e <sha>:OrderDeck.Shared/Sales/LabelRules.cs` başarısızsa o imaj S1 öncesidir.
-- **WPF'in ≤0.9.10'a dönmesi (Velopack, istisnai destek eylemi):** önce lisans Off yapılır (§8.5).
-  - 049 kalır. Eski kod `RemoteLiveSession`'ı görmez; uzak oturumların `EndedAt`'i hep dolu. Eski `GetActive`, `StartStream` ve kurtarma ekranı bu yüzden etkilenmez.
-  - Eski kodun `Authority = 'server'` satıra yazma denemesi ABORT ile görünür biçimde düşer.
-  - Uzak etiket satırlarında `SyncedAt` dolu olduğu için eski kod onları göndermez.
-  - Sürüm notu: dönen sürümde açılışta "Önceki yayınlardan basılmamış etiket var" sorulursa "Hayır" denmeli; eski kod bu soruda başka bilgisayarın kuyruğunu da teklif eder (`LabelRepository.cs:96-107`).
+- **WPF'in ≤0.9.10'a dönmesi (Velopack, istisnai destek eylemi).** Eski ikili 049'un tetikleyicilerini bilmez ve `Mode = 1` ya da `Authority = 'server'` durumundan çıkamaz: `TR_Shipment_ServerOwned_*` ve `TR_Label_ShipmentLink` dekontun kargo adımını ABORT eder (dekont ekranı hatayı sessizce yutar, `DekontEkleViewModel.cs:467-473`); kendi geçmiş yayınlarında iptal ve düzeltme de düşer.
+  - **Ön koşul:** lisans Off yapılmış (§8.5) **ve** o PC Off turunu bitirmiş olmalı. Kanıt, `sales-sync status`'ta o kopyanın `SeenMode = 0`'ı (§2).
+  - **Ws hiç açılamıyorsa** (dönüşün en olası nedeni) tur koşamaz. Destek için `deploy/README.md`'ye, eski sürüm kurulmadan önce yerel veritabanında koşulacak bağımsız bir sıfırlama betiği yazılır. Betik §8.5 adım 2'nin SQL karşılığıdır: `UPDATE SalesSyncState SET Mode = 0`; `UPDATE StreamSession SET Authority = 'local' WHERE Origin = 'local'`; uzak etiket, oturum ve `RemoteLiveSession` silme; `OriginReplicaId`'si `_meta.ReplicaId` olmayan Shipped olmayan dosyaları silme. Bekleyen komut varsa betik durur ve Burak'a listeler.
+  - 049 kalır. Eski kod `RemoteLiveSession`'ı görmez; uzak oturum zaten kalmaz. Eski `GetActive`, `StartStream` ve kurtarma ekranı bu yüzden etkilenmez.
+  - Sürüm notu: Off turu uzak etiketleri sildiği için eski kodun "Önceki yayınlardan basılmamış etiket var" sorusu (`LabelRepository.cs:96-107`) yalnız bu bilgisayarın kuyruğunu teklif eder.
+  - `Migration049RehearsalTests` ayrıca `Mode = 1` ve `Authority = 'server'` durumundaki bir veritabanını önceki sürümün SQL'iyle açar: sıfırlama betiğinden önce ABORT'un görünür olduğunu, sonra dekont kargo adımının ve iptalin çalıştığını sabitler.
 
 ### 8.7 Kopya veritabanı ve yedekten geri yükleme
 
@@ -727,14 +784,14 @@ O anda canlı bir yayın varsa yerel kalır ve normal yoldan devreder.
 
 ## 9. KVKK
 
-- **Akışta, okuma anında (S1):** asıl projeksiyonu silinmiş müşterinin siparişi `DisplayName = null`, `MessageText = ""` ile iner.
-- **Sunucuda kalıcı:** projeksiyonu silen tek yol `ShopperPurgeService` (`ShopperPurgeService.cs:171-221`, `MarkPurged` `:221`). Aynı işlemde o asıl kayda bağlı Orders satırlarında `DisplayName = null`, `MessageText = ""` ve `TextScrubbedAt = now` yazılır. ChangeSeq ilerlediği için silme bütün PC'lere iner.
+- **Akışta, okuma anında (S1, her zaman):** asıl projeksiyonu silinmiş müşterinin siparişi `DisplayName = null`, `MessageText = ""` ile iner. Bu hiçbir şeyi silmez; yalnız metnin yeni bilgisayarlara yayılmasını önler.
+- **Kalıcı boşaltma tek bir ayara bağlıdır:** `SalesSync:ScrubOrderTextOnPurge`, **varsayılan kapalı**. Kapalıyken bugünkü politika sürer: yerel silme yalnız Customer satırını boşaltıyor (`CustomerRepository.cs:1496-1530`), Label satırlarına dokunmuyor; sunucu da Orders metnini saklıyor. Geri dönüşsüz bir silme olduğu için açılması sahip kararıdır (§11). Açılırsa yalnız ayar değişir; aşağıdaki kodun hepsi S1 ve W2 ile gelir ve ayara bakar.
+- **Ayar açıkken sunucuda:** projeksiyonu silen tek yol `ShopperPurgeService` (`ShopperPurgeService.cs:171-221`, `MarkPurged` `:221`). Aynı işlemde o asıl kayda bağlı Orders satırlarında `DisplayName = null`, `MessageText = ""` ve `TextScrubbedAt = now` yazılır. ChangeSeq ilerlediği için silme bütün PC'lere iner. Silmeden sonra gelen ekleme (çevrimdışı PC'nin geç push'u ya da geri doldurma) da metni boş yazar (§4.2, §4.3).
   - Username, Code ve Price mali kayıt olarak kalır. Yerel politikayla aynı (`CustomerRepository.cs:1496-1500`).
-  - Ayar anahtarı `SalesSync:ScrubOrderTextOnPurge`, varsayılan açık. Sahip onayı açık maddede (§11).
-- **Yerelde:** müşteri akışından gelen silme o kişinin bütün yerel Label satırlarında (kendi ve uzak) DisplayName ve MessageText'i guard altında boşaltır. Satır, CustomerId, kod ve fiyat kalır. `TwoPcConvergenceTests.cs:572-598` sözleşmesi ("satış kaydı silmeden etkilenmez") korunur.
+- **Ayar açıkken yerelde:** `sales/state` ayarı bildirir (`SalesSyncState.ScrubOrderText`). Müşteri akışından gelen silme, o kişinin bütün yerel Label satırlarında (kendi ve uzak) DisplayName ve MessageText'i guard altında boşaltır. Satır, CustomerId, kod ve fiyat kalır. `TwoPcConvergenceTests.cs:572-598` sözleşmesi ("satış kaydı silmeden etkilenmez") korunur.
 - Akıştan inen müşteri taslağı mezar taşı boşaltmasından geçer (`CustomerSyncRepository.cs:570`). Etiket inişi silinmiş bir kimliği diriltmez.
 - `SalesCommandLogs`, `PaymentRequestRecords`, `SalesConflictLog` ve günlükler kişisel metin saklamaz; yalnız Id, tutar ve makine adı tutarlar.
-- Yayılım: etiket metni artık daha çok bilgisayarda duruyor (§12). Silme, yukarıdaki yolla hepsine ulaşır.
+- Yayılım: etiket metni artık daha çok bilgisayarda duruyor (§12). Silinmiş müşterinin metni yeni bilgisayara hiç inmez; daha önce inmiş metin ancak ayar açıkken silinir.
 
 ## 10. Doğrulama
 
@@ -756,11 +813,19 @@ InMemory'nin eşzamanlılık semantiği yok; bu yüzden bu testler gerçek SQL S
 13. Mod On'da protokolsüz push komut sonucunu geri alamaz; iz yazılır.
 14. v1 güncellemesi ProductId'yi NULL'lamaz ve stoğu geri sarmaz (defter birleştirilmiş durumdan beslenir).
 15. Kira süresi dolup `finish` gelmezse kayıt `Unconfirmed` olur ve öbür kopyanın `begin`'inde `already-requested` olarak döner.
+16. `begin` yeniden oynatma: aynı `recordId` ve içerik kayıtlı sonucu döner; aynı kopyanın eski `Sending`'i `Unconfirmed` olur; tekil ihlal 409'a çevrilir. PersonKey'leri yalnız harf ya da sondaki boşlukla ayrılan iki kişi birbirini engellemez (özet indeksi).
+17. `members-stale`: sunucu grubunun üyesini içermeyen `memberIds` reddedilir; (e) adımı başka üyedeki teslim kaydını üye kesişimiyle bulur.
+18. `stale-total` küme karşılaştırması: toplamı eşit ama kümesi farklı istek reddedilir; GUID'siz üyenin siparişi ham `CustomerId` ile sayılır.
+19. Kargoya verme iptalli bağları çözer; `uncancel` bağı ve "ödendi" bilgisini korur; onarım işinin (c) adımı Shipped dosyaya dokunmaz.
+20. K2 `baseVersion`: güncel sürümü gören v2 push'u damgalı birimi yazar, bayat olan yazamaz. K5 istisnaları: force-end sonrası sahibin ve `SeenMode = 0`'ın push'u K2 ile yargılanır.
+21. Mod On'da `SeenMode = 0` kopyanın `shipments/sync` kararı alınır, tutar türetilir; `CommandedAt`'li dosyaya dokunulmaz.
+22. KVKK ayarı açıkken silmeden sonra gelen geç ekleme metni boş yazar; kapalıyken metin kalır, akışta yine maskelenir.
 
 ### 10.2 InMemory ve birim
 
 - Ortak kural vektörleri (JSON) hem sunucu hem istemci test projesinde koşar: `SameCode`, `Classify`, `CodePrice`, `Contribution`, `PaidPriceOnCorrection`, K1–K7.
-- Komut doğrulamaları ve 409 sınıfları. CLI `enable` koşulları ve kuru rapor.
+- Komut doğrulamaları ve 409 sınıfları. CLI `enable` koşulları ve kuru rapor: açıklanan ve açıklanamayan kargo farkı, `OriginReplicaId`'siz açık dosya, `--accept-shipment`, boş `MinClientVersion`, `featureLevel < 3`.
+- `payment-requests/backfill` idempotent; aynı Id'ye farklı içerik 409.
 - **Bildirim bastırma:** `sales/backfill` ile eklenen basılmış sipariş push, WhatsApp `OrderReceived` kuralı ve shopper push üretmez. Komutlar bildirim üretmez; tek istisna `shipment-decision`'ın etiket kuralı.
 - Akış sayfası kurulumu: yan liste, KVKK boşaltması, `cursorReset`.
 
@@ -770,18 +835,24 @@ InMemory'nin eşzamanlılık semantiği yok; bu yüzden bu testler gerçek SQL S
   - A yayın yapar, bitirir, B görür
   - B iptal eder; A bunu görür, kâğıt çıkmaz
   - B iptal eder, ardından A'nın geç push'u gelir (`ignored`)
-  - force-end ve A'nın geri dönüşü (`rejected` listesi)
+  - force-end, A aslında canlı: A sohbetten etiket yazmaya devam eder; A'nın damgasız değişiklikleri kabul edilir, B'nin damgaladıkları kazanır; A bitirince oturum `server` olur
   - kalıntı kuyruk etiketinin çevrimdışı iptali ve ilk baskısı (bekleyen komut, tek kâğıt)
   - yedekten dönüş
   - `cursorReset`
-  - On → Off → On geçişleri
-  - kira: in-progress, already-requested, Unconfirmed
+  - On → Off → On geçişleri. Off'tan sonra: uzak satır yok, yalnız kendi açık dosyaları, bekleyen komutlar yerel yazıma çevrilmiş (kâğıt yeniden teklif edilmez), `ignored`'daki `current` uygulanmış, kargo ayarı iki PC'de aynı
+  - açılış penceresi: modu henüz görmemiş PC'nin kargo kararı kaybolmaz
+  - mod Off'ta devredilmiş kendi yayınında iptal, fiyat düzeltme ve kalıntı baskı bugünkü yerel yoldan çalışır
+  - iptal → geri al: dosya tutarı, havuz ve "Ödendi" rozeti eski hâline döner (mod On komut yolu ve mod Off Y5 yolu)
+  - kira: in-progress, already-requested, Unconfirmed, members-stale
+  - ödeme geçmişi: PC-A'nın açılıştan önceki isteği mod On'da PC-B'nin sorusunda ve rozetlerinde görünür
+  - ön gönderim: bekleyen komut isteği engeller, ilgisiz takılı kuyruk engellemez
+  - miras iş `scope-has-deduction` aldığında benimsemez, birleştirme sorusuna düşer
 - Tetikleyici şema testi: Label, Shipment ve StreamSession'a yazan her SQL listede. ABORT'un canlı yolları kırmadığı (CorrectPrices, AttachLabel mod Off'ta) ayrıca test edilir.
-- `Migration049RehearsalTests`: önceki sürüm şema 49'da yayın açar, etiket yazar, basar ve iptal eder.
+- `Migration049RehearsalTests`: önceki sürüm şema 49'da yayın açar, etiket yazar, basar ve iptal eder. Ayrıca `Mode = 1` durumundaki veritabanı ve sıfırlama betiği (§8.6).
 - Aynı akış öğesini iki kez uygulamak toplamda sıfır fark üretir. `StockSyncedAt` dolu kalır; stok iki kez düşmez.
 - Devir kapısı: "boşaldı" okuması ile kapanış arasında yerel düzenleme reddedilir; kapanış kuyruk boşalmadan `Release = true` göndermez.
 - Baskıdan önce yeniden okuma: başka bilgisayarda iptal edilen kalıntı etiket basılmaz.
-- DI testi: hosted service hem kayıtlı hem başlatılıyor (`WpfStartupEnvironment.cs:189-200`).
+- DI testi: hosted service hem kayıtlı hem başlatılıyor (`WpfStartupEnvironment.cs:189-197`).
 - Testlerde sabit kimlik bilgisi yazılmaz; `TestPhone` gibi üreteçler kullanılır (CLAUDE.md).
 
 ### 10.4 Saha kontrolleri (gerçek etkiden; deploy doğrulama dersi)
@@ -789,15 +860,16 @@ InMemory'nin eşzamanlılık semantiği yok; bu yüzden bu testler gerçek SQL S
 1. PC-A'da yayın, bitir: PC-B'de ≤ 60 sn içinde görünür. DB'de `ReleasedAt`, `SessionReleasedAt` ve sayılar.
 2. PC-B'de iptal ve kod fiyatı: PC-A'da ≤ 30 sn. DB'de `CancelSetAt`, `PriceSetAt`, `SalesCommandLogs`.
 3. PC-A'nın bayat push'u PC-B'nin iptalini geri almaz (`ignored` kaydı).
-4. PC-B'de dekont, bağla, eşik; ardından iptal: dosya tutarı düşer (§7.2 örneği).
+4. PC-B'de dekont, bağla, eşik; ardından iptal: dosya tutarı düşer; geri alınca eski hâline döner ve "Ödendi" rozeti kalır (§7.2 örneği).
 5. Aynı kişiye iki bilgisayardan aynı anda istek: biri `in-progress-elsewhere`, ardından `already-requested` sorusu. `PaymentRequestRecords` satırları.
 6. Stok: aynı etiket bir kez düşer (panel bakiyesi).
 7. Son 3 yayının toplamı her PC'de panelle aynı.
 8. Kalıntı kuyruk etiketi çevrimdışı iptal edilir, bağlantı gelince sunucuda iptal olur.
+9. Mod açılmadan önce PC-A'dan ödeme istenen bir kişi, açılıştan sonra PC-B'de "zaten istendi" sorusuyla gelir. `PaymentRequestRecords`'ta `Kind = Record` satırı.
 
 ### 10.5 Gözlem
 
-Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, `ignored` sayısı, `in-progress-elsewhere` ve `stale-total` sayıları, onarım işinin düzelttiği satırlar, protokolsüz istek izi. Ad ya da metin yazılmaz.
+Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, K5 istisnasıyla alınan birimler, `ignored` sayısı, `in-progress-elsewhere`, `members-stale` ve `stale-total` sayıları, onarım işinin düzelttiği satırlar, `SeenMode = 0` ile alınan kargo gönderimleri, protokolsüz istek izi. Ad ya da metin yazılmaz.
 
 ## 11. Sahip kararları
 
@@ -809,7 +881,7 @@ Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, `ignore
 | Y2 | Yayınlar hep aynı PC'den mi açılıyor? | Evet, aynı PC'den. | Sadeleştirme: canlı yayının etiketleri hiç inmez; force-end ve eşzamanlı canlı yayın nadir durumlar. Doğruluk korunur: sahiplik yayın başına, her PC yayın açabilir (§2). |
 | Y3 | Yayın sonrası düzenleme internet istesin mi? | Kabul. Canlı PC çevrimdışı çalışmayı sürdürür. | §5.8; kalıntı kuyruk için bekleyen komut (§5.5) |
 | Y4 | Kargo ücreti ve eşik tek bir lisans geneli ayar mı olsun? | Evet. | `LicenseShippingSettings` (§3.1, §4.8, §6.2) |
-| Y5 | Kargo dosyasına bağlandıktan sonra iptal edilen etiket tutardan ve eşikten düşsün mü? | Evet. | §7.2 (mod On'da) |
+| Y5 | Kargo dosyasına bağlandıktan sonra iptal edilen etiket tutardan ve eşikten düşsün mü? | Evet. | §7.2 (mod On, sunucu türetir) ve §7.4 (mod Off, Ws'nin yerel yolu). İptal bağı çözmez, geri alma tutarı ve "ödendi" bilgisini geri getirir. |
 | Y6 | Fatura ve e-Arşiv dökümü tek PC'den mi alınıyor? | Evet, tek PC'den. | Raporlar bütün PC'lerin satışlarını içerir (§5.9). Teknik kilit eklenmez (§12). |
 | Y7 | Sahip PC yayın ortasında susarsa başka PC onaylı "yayını bitir" yapabilsin mi? | Evet, ≥ 15 dk sessizlikten sonra. | `force-end` (§4.6), çip ve onay (§5.7) |
 
@@ -819,7 +891,7 @@ Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, `ignore
 
 | # | Karar | Gerekçe |
 |---|---|---|
-| M1 | Lisans başına statik mod kapısı (CLI). Açılış ön koşulları: bütün aktif PC'ler Ws+, geri doldurma tamam, 7 gün protokolsüz iz yok. Çalışma anında eski sürüme karşı korumalar (§8.3). | Dinamik kapının güvenli dönüş tarafı yok (§8.3). |
+| M1 | Lisans başına statik mod kapısı (CLI). Açılış ön koşulları: `MinClientVersion` dolu, bütün aktif PC'ler Ws+ ve `featureLevel = 3`, geri doldurma ve ödeme geçmişi tamam, kargo bağları tam, 7 gün protokolsüz iz yok. Çalışma anında eski sürüme karşı korumalar (§8.3). | Dinamik kapının güvenli dönüş tarafı yok (§8.3). |
 | M2 | Kapanış ancak yayının etiket kuyruğu boşken devreder. Oturum satırı devir görülene kadar kuyrukta kalır. | D3'teki "kapanış etiketlerden önce" açığı; geri alma penceresinde kayıp kapanış. |
 | M3 | Birim damgaları sunucu saatiyle ve yalnız komutla basılır; push damgalı birimi değiştiremez (K2, S1'den itibaren). | İstemci saati kararda yok. Off, geri alma ve eski sürüm pencerelerinde komut kararı korunur. |
 | M4 | Oluşum alanları yalnız eklemede yazılır; defter birleştirilmiş durumdan beslenir (S1, iki kipte). | ProductId'nin NULL'lanması moddan bağımsız kapanır. |
@@ -830,11 +902,16 @@ Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, `ignore
 | M9 | Kira fail-closed: mod On'da `begin` yoksa GUID'li kişide mesaj gitmez. | R1 benzeri pencereyi geri alma anında da kapatır. |
 | M10 | Bilgisayarlar arası kira PersonKey ile, ayrıca üye kesişimiyle. | Grup senkronu gecikse de aynı kişi bulunur. |
 | M11 | Sunucu toplamı farklıysa istek engellenir (uyarıyla devam yok); karşılaştırmadan önce ön gönderim. | Eksik ya da fazla tutar istenmez. |
-| M12 | Y5 yalnız mod On'da; mod Off'ta yerel yol değişmez. | Geçişte iki yazıcının farklı tutar üretmemesi için. |
-| M13 | Bağ çözme ayrı komut değil, iptal ve geri alma kuralının etkisi. | Arayüz eklenmeden Y5 karşılanır. |
+| M12 | Y5 iki kipte: mod On'da sunucu türetir, mod Off'ta Ws'nin yerel yolu fark olarak uygular. İptal bağı çözmez. | Mod Off'ta her dosyanın tek yazıcısı açan PC'dir (§7.4). Bağ "dekontla ödendi"nin tek işareti (§7.2). |
+| M13 | Ayrı "dosyadan çıkar" komutu yok. Bağ yalnız dosya kargoya verilirken iptalli siparişlerden çözülür. | Arayüz eklenmeden Y5 karşılanır; kolide olmayan ürün sonraki dosyaya girer. |
+| M14 | K2'de `baseVersion` eşitliği: güncel sürümü gören v2 push'u damgalı birimi yazabilir. | Off'a dönüşte ve force-end sonrasında bilinçli yeni karar kilitlenmez; bayat push yine geri alamaz. |
+| M15 | `disable` turu uzak satırları ve başka PC'nin açık dosyalarını siler, bekleyen komutları yerel yazıma çevirir, kargo ayarını yerele kopyalar. | Off'ta kira yok; uzak satır kalırsa R1 penceresi geri açılırdı. |
+| M16 | Her v2 isteği `SeenMode` taşır; modu görmemiş kopyanın gönderimi Off kurallarıyla alınır. | Açılış penceresinde verilen karar sessizce kaybolmaz; sürüm düşürmenin ön koşulu ölçülebilir olur. |
+| M17 | Ödeme kayıtları mod Off'ta da (kirasız) yazılır, geçmiş geri doldurulur; uzak `Covers` sipariş kümesiyle. | Açılıştan önceki istekler mod On'da görünmezdi; iki bilgisayarın saati karşılaştırılmaz. |
+| M18 | Force-end, aktif sahipte yerel yayını kesmez. | Yayın ortasında sohbetten etiket yazılamaz hâle gelmez; damgalı birimde komut kazanır. |
 
 **Açık kalanlar**
-- **KVKK metin boşaltması (sahip onayı bekliyor).** Silmede sunucudaki ve bütün PC'lerdeki etiket metinleri (takma ad, yorum) boşaltılsın mı? Tasarımın varsayılanı **evet** (`SalesSync:ScrubOrderTextOnPurge = true`). Sahip "hayır" derse yalnız ayar değişir. Akıştaki okuma anı boşaltması her durumda kalır.
+- **KVKK metin boşaltması (sahip onayı bekliyor).** Silmede sunucudaki ve bütün PC'lerdeki etiket metinleri (takma ad, yorum) kalıcı olarak boşaltılsın mı? İki hakem de bunu sahip onayına bağlamıştı. Geri dönüşsüz olduğu için varsayılan **hayır**, bugünkü politika (`SalesSync:ScrubOrderTextOnPurge = false`). Sahip "evet" derse yalnız ayar değişir: sunucu ve yerel boşaltma aynı ayara bakar (§9). Akıştaki okuma anı maskelemesi her durumda kalır; silinmiş müşterinin metni yeni bilgisayara inmez.
 - Eski, sahibi hiç kalmamış açık oturumların toplu kapatılması: `sales-sync force-end` CLI'ı var. Her kapatma sahibin onayıyla, `sales-audit` listesinden yapılır.
 
 ## 12. Riskler ve bilerek yapılmayanlar
@@ -844,16 +921,17 @@ Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, `ignore
 2. **Kurallar iki tarafta çalışıyor.** Önlem: `OrderDeck.Shared` ortak kodu ve ortak test vektörleri (§4.11).
 3. **Bağlantı bağımlılığı.** Yayın sonrası düzenleme internet ister (Y3 ile kabul).
 4. **Devir takılabilir.** Bir etiket kalıcı olarak gönderilemiyorsa (ör. `unknown-session` 400, `LicensesSessionsSyncController.cs:233-247`) yayın devredilmez. Durum satırı bunu gösterir, `sales-audit` sayar. Çözüm: hatalı satırın düzeltilmesi ya da `force-end`.
-5. **Yanlış force-end.** Ağ bölünmesinde sahip yalnız çevrimdışıyken yayını başka PC bitirebilir. Sahibin sonraki fiyat ve iptal değişiklikleri reddedilir, ama listelenir. Yeni etiketler kabul edilir; o durumda tek fiyat ihlali (DM5) olabilir, `sales-audit` sayar ve bir sonraki `set-code-price` onu da kapsar.
+5. **Yanlış force-end.** Ağ bölünmesinde sahip yalnız çevrimdışıyken yayını başka PC bitirebilir. Sahip yayına devam eder (M18); bağlantı gelince yeni etiketleri ve damgasız değişiklikleri kabul edilir. Aynı etiketi PC-B de komutla değiştirdiyse PC-B'ninki kazanır ve sahibe `ignored` listesi gösterilir. PC-B kodun fiyatını değiştirdikten sonra sahip aynı koda eski FİYAT'la yeni etiket yazarsa tek fiyat ihlali (DM5) olabilir; `sales-audit` sayar ve bir sonraki `set-code-price` onu da kapsar.
 6. **Toplamlar görünür biçimde değişir.** Türetilmiş toplamlar kaymış sayaçlardan farklı çıkabilir. Mod açılınca dosya tutarları türetilir; Y5 açık dosyalarda geçmişe dönük etki eder. Sayılar raporlanır, verilmiş kararlar değiştirilmez.
 7. **Raporlar bütün PC'leri içerir.** Fatura dökümü iki PC'den alınırsa aynı satış iki kez faturalanır. Y6 ile operasyonel kural; teknik kilit yok.
 8. **Kopya veritabanı.** Önlem: parmak izi denetimi ve mod kapısı (§8.7).
 9. **Hız sınırı.** Aynı NAT arkasındaki PC'ler 100 istek/dk/IP bütçesini paylaşır. İlk yetişme birkaç tur sürebilir; tur başına sayfa sınırı var.
 10. **Eski PC dönerse.** Bayat görüntü; para yolu korunur (§8.3). Kesin çözüm PC'yi güncellemek.
-11. **KVKK yayılımı.** Mesaj metni daha çok bilgisayarda duruyor. Silme bütün kopyalara iner (§9).
-12. **Kişi anahtarı ayrışması.** Grup senkronu gecikmesinde üye kesişimi yakalar. Hiç kesişmeyen üye kümelerinde #506'nın birleştirme sorusu kalır.
+11. **KVKK yayılımı.** Mesaj metni daha çok bilgisayarda duruyor. Silinmiş müşterinin metni yeni bilgisayara inmez; daha önce inmiş metnin silinmesi sahip kararına bağlı ayardadır (§9, §11).
+12. **Kişi anahtarı ayrışması.** Grup senkronu gecikmesinde üye kesişimi ve `members-stale` yakalar. Grubu sunucunun da henüz bilmediği, hiç kesişmeyen üye kümelerinde #506'nın birleştirme sorusu kalır.
 13. **Bildirim boşluğu.** Basılmadan gönderilip sonra basılan etiketin bildirim üretmemesi (`LicensesSessionsSyncController.cs:324-332`) aynen sürer; komutlar da üretmez.
 14. **İş büyüklüğü.** En riskli PR W2'dir (yönlendirici ve akış). W3, `PaymentRequestService`'in yalnız girişine ve çıkışına sarılır; durum makinesi (`PaymentJobRepository`) değişmez.
+15. **Acil kapatma sonrası.** `disable`'dan sonra başka PC'nin dosyasına bağlı etiketin iptali o dosyanın tutarına yansımaz (§8.5). Acil kapatma nadir bir eylemdir; mod yeniden açılınca dosyalar türetilir.
 
 **Bilerek yapılmayanlar**
 - Başka PC'nin canlı yayınını düzenlemek ya da canlıyken izlemek (Y1).
@@ -862,7 +940,7 @@ Günlük sayılar: devir süresi (kapanıştan devre), K5 ve K6 retleri, `ignore
 - D3'ün R1/R2 iki aşamalı WPF sürümü; tek mod kapısı onun yerini alır.
 - Dinamik mod kapısı ve modun kendiliğinden kapanması.
 - Elle "dosyadan çıkar" arayüzü (M13).
-- Mod Off'ta Y5 (M12).
+- `add-backup`'ın ebeveynden ProductId kopyalaması: yerel `AddBackup` bugün ürünsüz ekliyor, komut da öyle (§4.6). Stoğa düşen yedek ayrı bir ürün kararıdır.
 - Çekilişler, PaymentJob senkronu, dekont inişi.
 - Panel ve Shopper istemci değişikliği.
 - Fatura dökümüne teknik kilit (Y6).
@@ -874,28 +952,30 @@ Her PR ayrı açılır; bir sonraki ancak öncekinin master'a girmesinden sonra 
 
 | PR | Repo | İçerik | Efor (gün) |
 |---|---|---|---|
-| **S1** `feat(sales-sync): sahiplik, devir, birim kuralı ve satış akışı` | LiveDeck (sunucu) | Göç (§3.1, S1 satırları; `ONLINE` yok). `sessions/sync` (tekdüze EndedAt, devir, `Release`). `orders/sync` K1–K7 (S1'de K2 damgasız, K4 mod Off), birleştirilmiş durumdan defter, v2 yanıtı. `sales/backfill` (bildirimsiz). `sales/changes` (yan liste, KVKK, cursorReset). `sales/state` ve `hello`. `sales-release-repair` işi. `sales-audit`. `ClientVersion` yardımcısı. `OrderDeck.Shared/Sales/LabelRules.cs` ve vektörler. `deploy/README` uyarısı. Testcontainers 1–3, 12, 14. | 5 |
-| **S2** `feat(sales-sync): kapanmış yayın komutları ve sunucuya ait kargo` | LiveDeck (sunucu) | `SalesCommandLogs`. On komut türü (§4.6): görünürlük, beklenen sürüm, applock, damgalar, defter, dosya türetme (DM7, Y5). `shipment-decision` etiket kuralı. `force-end`. `shipping-settings`. Mod On'da `shipments/sync` iz kuralı. Testcontainers 4–7, 11, 13. | 5 |
-| **S3** `feat(payment-request): bilgisayarlar arası kira ve kapsam başına tek düşüm` | LiveDeck (sunucu) | `PaymentRequestRecords` ve `PaymentRequestMembers`. `begin`, `finish` ve liste uçları (PersonKey, üye kesişimi, stale-total, settings-stale, Unconfirmed). Apply kapsam kuralı (applock, defter yüklemi). Mod On'da `client-update-required`. `sales-sync` CLI'ları. Testcontainers 8–10, 15. | 3 |
-| **W1** `feat(sales-sync): 049, v2 gönderim, devir ve geri doldurma` | LiveDeck (WPF) | Göç 049 (kolonlar, tablolar, tetikleyiciler). ReplicaId ve `hello`. v2 DTO'ları. Gönderim kapısı, kapanış sırası ve devir kapısı. Yanıt işleme (applied/ignored/rejected). `sales-backfill-out`. Türetilmiş toplamlar (`CustomerAggregateSql`). `GetActive` ve `GetUnprintedOutsideSession` süzgeçleri. Baskıdan önce yeniden okuma. Şema ve prova testleri. | 4,5 |
-| **W2** `feat(sales-sync): akış uygulaması ve kapanmış yayında düzenleme` | LiveDeck (WPF) | `SalesChangesPullService` (kayıt ve başlatma). `ApplyItem` (taslak müşteri, U5, StockSyncedAt). `RemoteLiveSession` ve çip. `ILabelEditor` ve `SalesCommandClient`. `PendingSalesCommand` ve örtü. Kargo aynası ve dekont adımı. Force-end arayüzü. Arayüz durumları (§5.7). Kip geçişleri (§8.4, §8.5). `TwoPcSalesConvergenceTests`. | 7,5 |
-| **W3** `feat(payment-request): kira, sunucu toplamı ve lisans geneli kargo ayarı` | LiveDeck (WPF) | Ön gönderim, `begin`/`finish` sarmalı ve 409 eşlemeleri. `GetPrintedTotal`. Uzak kayıtlar soruda, rozetlerde ve #508 planında. `scope-has-deduction` benimsemesi. `ShippingSettingsProvider` ve ayar ekranı. Testler. | 3,5 |
-| — | Velopack Ws, PC'ler sırayla, mod açılışı, saha kontrolleri | 2 |
+| **S1** `feat(sales-sync): sahiplik, devir, birim kuralı ve satış akışı` | LiveDeck (sunucu) | Göç (§3.1, S1 satırları; `ONLINE` yok; `Shipments.OriginReplicaId`, `WpfReplicas` lisans başına PK ve `SeenMode`). `sessions/sync` (tekdüze EndedAt, devir, `Release`). `orders/sync` K1–K7 (S1'de K2 damgasız ama `baseVersion` okunur, K3 iptal kuralı, K4 mod Off, K6 yalnız fiyat), birleştirilmiş durumdan defter, v2 yanıtı (`ignored`'da `current`), eklemede KVKK ayarı. `sales/backfill` (bildirimsiz, dosya kaynağı). `sales/changes` (yan liste, GUID'siz taslak, KVKK, cursorReset). `sales/state` ve `hello` (`featureLevel`, `seenMode`). Protokolsüz istek izi iki kipte. `sales-release-repair` işi (c: Shipped hariç). `sales-audit`. `ClientVersion` yardımcısı. `OrderDeck.Shared/Sales/LabelRules.cs` ve vektörler. `deploy/README` uyarısı. Testcontainers 1–3, 12, 14, 20, 22. | 5,5 |
+| **S2** `feat(sales-sync): kapanmış yayın komutları ve sunucuya ait kargo` | LiveDeck (sunucu) | `SalesCommandLogs`. On komut türü (§4.6): görünürlük, beklenen sürüm, applock, damgalar, defter, dosya türetme (DM7, Y5: iptal bağı çözmez), kargoya verirken iptalli bağın çözülmesi. `shipment-decision` etiket kuralı. `force-end` (`EndedByReplicaId`; K5 istisnasının kendisi S1'in `orders/sync`'inde). `shipping-settings` ve `sales-sync shipping set`. Mod On'da `shipments/sync` iz kuralı ve `SeenMode = 0` istisnası. Testcontainers 4–7, 11, 13, 19, 21. | 5,5 |
+| **S3** `feat(payment-request): bilgisayarlar arası kira ve kapsam başına tek düşüm` | LiveDeck (sunucu) | `PaymentRequestRecords` (özet anahtar), `PaymentRequestMembers`, `PaymentRequestRecordOrders`. `begin` (yeniden oynatma, `members-stale`, üye kesişimi c ve e, küme karşılaştırması, kargo tutarı denetimi), `finish`, liste ve `backfill` uçları. Apply kapsam kuralı (applock, defter yüklemi, miras replay dahil). Mod On'da ve boş `MinClientVersion`'da `client-update-required`. `sales-sync` CLI'ları (açıklanamayan kargo farkı, `--accept-shipment`). Testcontainers 8–10, 15–18. | 4 |
+| **W1** `feat(sales-sync): 049, v2 gönderim, devir ve geri doldurma` | LiveDeck (WPF) | Göç 049 (kolonlar, tablolar, tetikleyiciler). ReplicaId ve `hello`. v2 DTO'ları (`baseVersion`, `SeenMode`). Gönderim kapısı, kapanış sırası ve devir kapısı (mod Off'ta `Authority` yazılmaz). Yanıt işleme (applied/ignored+current/rejected). `sales-backfill-out`. Türetilmiş toplamlar (`CustomerAggregateSql`). Y5'in mod Off yerel yolu (`Cancel`/`Uncancel` dosya bloğu). `GetActive` ve `GetUnprintedOutsideSession` süzgeçleri. Baskıdan önce yeniden okuma. Şema ve prova testleri (sıfırlama betiği dahil). | 5 |
+| **W2** `feat(sales-sync): akış uygulaması ve kapanmış yayında düzenleme` | LiveDeck (WPF) | `SalesChangesPullService` (kayıt ve başlatma). `ApplyItem` (taslak müşteri, U5, StockSyncedAt, force-end'de aktif yayın yerel kalır). `RemoteLiveSession` ve çip. `ILabelEditor` (mod Off'ta hep yerel) ve `SalesCommandClient`. `PendingSalesCommand` ve örtü. Kargo aynası ve dekont adımı. Force-end arayüzü. Arayüz durumları ve 409 eşlemeleri (§5.3, §5.7). Kip geçişleri: açılış penceresi (§8.4), `disable` turu (§8.5). KVKK yerel boşaltma (ayara bağlı). `TwoPcSalesConvergenceTests`. | 8,5 |
+| **W3** `feat(payment-request): kira, sunucu toplamı ve lisans geneli kargo ayarı` | LiveDeck (WPF) | Ön gönderim (bekleyen komut önce), `begin`/`finish` sarmalı ve 409 eşlemeleri (`members-stale` dahil). Ödeme geçmişi geri doldurması ve mod Off kayıtları (`PendingPaymentRecord`). `GetPrintedTotal`. Uzak kayıtlar soruda, rozetlerde ve #508 planında (sipariş kümesiyle `Covers`). Uzlaştırmada sunucu üyeleri. `scope-has-deduction` benimsemesi (miras işte değil). `ShippingSettingsProvider`, `ComputeShipping(ShippingSettings)` ve ayar ekranı. `featureLevel = 3`. Testler. | 4,5 |
+| — | Velopack Ws, `MinClientVersion`, PC'ler sırayla, mod açılışı, saha kontrolleri | | 2 |
 | **S4** `chore(sales-sync): daraltma` | LiveDeck (sunucu) | Mod On'dan ≥ 2 hafta sonra. Mod On'da protokolsüz sipariş güncellemesi sessizce yok sayılmak yerine 409 `client-update-required` alır. Ölü kod (`ShipmentRepository.GetByStatus`/`GetLabelIds`, `LabelService.AddShippingFee`, `RemoveBackup`, `LabelRepository.MarkPrinted`) ayrı bir karar olarak listelenir. | 1 |
+| **D-ortak-bakiye** `docs(balance): satış senkronu bağımlılıkları` | LiveDeck (docs) | Ortak bakiye spec'ine: §4.2 `DrawAsync`'e `scope-has-deduction` kuralı (çapa düzeyi, §6.6); §12 S2'den "UA ayrıştırıcının ortak yardımcıya taşınması" adımının çıkarılması (yardımcıyı bu spec'in S1'i getiriyor); §7.1'e "bu spec'in S3'ünden sonra" sırası. S3 ile aynı hafta açılır. | 0,5 |
+| **D-banka** `docs(bank): satış senkronu dayanakları` | LiveDeck (docs) | Aşağıdaki (a)–(c) önerilerinin banka spec'ine yansıtılması. Ortak bakiyeden sonra. | 0,5 |
 | — | OrderDeck-Mobile, OrderDeck-Shopper | Değişiklik yok. | 0 |
 
-**Toplam ≈ 31,5 iş günü.** Kazanan tasarımların tahmini 23–23,5 gündü. Fark aşılardan geliyor: lisans geneli kargo ayarı, Y5 kuralı, `add-backup`, bekleyen komut ve örtü, kira kayıtları ve Unconfirmed, KVKK boşaltması, onarım işi, baskıdan önce yeniden okuma, kip geçişleri ve force-end arayüzü. Asgari ilk değer S1 + W1'dir (≈ 9,5 gün): ProductId düzeltmesi, tekdüze EndedAt, kaçmış kapanışların kapanması ve geçmişin sunucuda tamamlanması. Görünürlük ve değiştirebilme mod On ile gelir.
+**Toplam ≈ 37 iş günü** (iki docs PR'ı dahil). Kazanan tasarımların tahmini 23–23,5 gündü. Fark aşılardan ve ikinci incelemeden geliyor: lisans geneli kargo ayarı, Y5 kuralı (iki kipte), `add-backup`, bekleyen komut ve örtü, kira kayıtları ve Unconfirmed, ödeme geçmişi geri doldurması, KVKK ayarı, onarım işi, baskıdan önce yeniden okuma, kip geçişleri (açılış penceresi ve `disable` turu) ve force-end arayüzü. Asgari ilk değer S1 + W1'dir (≈ 10,5 gün): ProductId düzeltmesi, tekdüze EndedAt, kaçmış kapanışların kapanması, geçmişin sunucuda tamamlanması ve Y5'in yerel yolu. Görünürlük ve değiştirebilme mod On ile gelir.
 
 **Diğer iki işe göre sıra ve bağımlılıklar** (sahip sırası: önce bu senkron, sonra ortak bakiye, sonra banka havalesi)
 
-1. **Bu spec:** S1 → S2 → S3 → W1 → W2 → W3 → Ws → mod On → S4.
-2. **Ortak bakiye** (`2026-10-11-ortak-bakiye-design.md`), bu spec'in S3'ü master'a girdikten sonra başlar.
+1. **Bu spec:** S1 → S2 → S3 (+ D-ortak-bakiye) → W1 → W2 → W3 → Ws → mod On → S4.
+2. **Ortak bakiye** (`2026-10-11-ortak-bakiye-design.md`), bu spec'in S3'ü master'a girdikten sonra başlar. Aşağıdaki zorunluluklar bugün yalnız bu belgede duruyor; D-ortak-bakiye docs PR'ı onları ortak bakiye spec'ine taşır.
    - Aynı denetleyiciye dokunuyorlar (`LicensesCustomerBalanceApplyController`): ortak bakiye S1 scope, transactions ve reverse'i, S2 apply'ı yeniden yazıyor.
    - Ortak bakiye S2'nin `DrawAsync`'i §6.6 kuralını çapa düzeyinde korumalıdır.
-   - S1'in `ClientVersion` yardımcısı kullanılır; `PersonBalance:MinClientVersion` ve `SalesSync:MinClientVersion` aynı karşılaştırmayı paylaşır.
+   - S1'in `ClientVersion` yardımcısı kullanılır; `PersonBalance:MinClientVersion` ve `SalesSync:MinClientVersion` aynı karşılaştırmayı paylaşır. Ortak bakiye §12 S2'deki "UA ayrıştırıcının ortak yardımcıya taşınması" adımı bu yüzden düşer.
    - Wh ⊇ Ws olmalı: havuz kipinin kapısı bütün PC'leri Wh+ ister; böylece hepsi satış senkronunu da taşır.
    - Bu spec ortak bakiyeye bağımlı değildir. PersonKey, BIN2 harmanı gelmeden de bellekte ordinal hesaplanır (§6.7).
-3. **Banka havalesi** (`2026-10-10-banka-havale-onay-design.md`), ortak bakiyeden sonra gelir (onun K6'sı havuza bağlı). Bu spec bankaya üç dayanak sağlar. Bunlar öneridir; banka spec'ine yansıtılması ayrı bir docs PR'ı ister:
+3. **Banka havalesi** (`2026-10-10-banka-havale-onay-design.md`), ortak bakiyeden sonra gelir (onun K6'sı havuza bağlı). Bu spec bankaya üç dayanak sağlar. Bunlar öneridir; banka spec'ine yansıtılması D-banka docs PR'ını ister:
    - (a) Banka §9 "karışık sürüm" kuralı bütün PC'lerin Ws+ olmasını da istemelidir. Mod On'un koşulu bunu zaten sağlar.
    - (b) Banka W2'nin beklenti üretim noktası, kendi kuyruğu yerine bu spec'in `payment-requests/{id}/finish(delivered)` kaydından sunucuda türetilebilir. Bu kayıt sahip satırını (`OwnerWpfCustomerId`), kapsamı ve net tutarı zaten taşıyor; banka'nın `(WpfCustomerId, ScopeKey)` anahtarına doğrudan eşlenir.
    - (c) Havale onayındaki kargo yönergesi, S2'nin sunucu kargo servisiyle sunucuda uygulanabilir. Banka §8 W3'teki "yönerge sunucudan gelir" bu servise dayanır. Lisans geneli eşik (§6.2) de sunucuda okunabilir.
@@ -910,7 +990,7 @@ Kaynak: 2026-10-13 tasarım karşılaştırması (üç aday, iki hakem). "H1" ha
 | 2 | H1 aşı (D2) | Önemli | Ortak iş kuralları `OrderDeck.Shared`'da | İşlendi §4.11, §10.2 |
 | 3 | H1 aşı (D2) | Önemli | Kapanış yalnız etiketler gönderildikten sonra | İşlendi §4.1 (`Release`), §5.2, M2 |
 | 4 | H1 aşı (D2) | Önemli | Force-end sahibin son sinyaline (15 dk) bağlı; başlıkta "PC-X'te canlı (son sinyal)" | İşlendi §4.5, §4.6, §5.7, Y7 |
-| 5 | H1 aşı (D2+D3) | Önemli | PersonKey `g:`/`c:` + üye kümesi kesişimi | İşlendi §2, §6.4-c, M10 |
+| 5 | H1 aşı (D2+D3) | Önemli | PersonKey `g:`/`c:` + üye kümesi kesişimi | İşlendi §2, §6.4-d ve -e, M10 |
 | 6 | H1 aşı (D1) | Önemli | Tetikleyiciyle kuyruğa alma; `AttachLabel` kuyruğa almıyor | İşlendi §3.2 (`TR_Label_Enqueue`), §5.1, M7 |
 | 7 | H1 aşı (D1) | Önemli | Baskıdan hemen önce yeniden okuma | İşlendi §5.6 |
 | 8 | H1 aşı (D1), H2 aşı | Önemli | Oluşum alanları yalnız eklemede; ProductId NULL'lanması mod beklenmeden | İşlendi §4.2 K1, defter birleştirilmiş durumdan, M4; test §10.1-14 |
@@ -947,3 +1027,57 @@ Kaynak: 2026-10-13 tasarım karşılaştırması (üç aday, iki hakem). "H1" ha
 - 14: D3 için önerilen "R1'de kümülatif isteği kapat" yerine kira, akışla aynı kapı altında ve fail-closed.
 - 21: damga kuralı S2'de değil S1'de geliyor; böylece her geri alma, damgaya uyan bir imaja döner.
 - 24: onarım işi v2 oturumlarını devretmiyor; devri istemcinin yeniden gönderimi tamamlıyor. Böylece "kuyruk boşalmadan devir yok" kuralı onarım işinde de korunuyor.
+
+## 15. Spec incelemesi (2026-10-13) — bulgu tablosu
+
+Kaynak: bu belgenin üç mercekle incelenmesi: para ve toplamlar, kod ve iç tutarlılık, eksiklik ve karar. Her bulgu kod kesitinde (a126ff26) ve belgede doğrulandı; hiçbiri gerçek dışı çıkmadı. Aynı sorunu farklı merceklerden bulanlar birleşik işlendi.
+
+| # | Mercek | Önem | Bulgu | İşlem |
+|---|---|---|---|---|
+| 1 | para-toplam | Kritik | İptal bağı çözüyordu. Kodda `ShipmentId` "dekontla ödendi"nin tek işareti (`CorrectedPaymentRequests.cs:187-193`, `PrintedLabelsViewModel.cs:360-363`, `LabelRepository.cs:232`): yanlış iptal edilip geri alınan etiket ödenmemiş görünüyor, Shipped dosyada tutar iki kez sayılıyordu | İşlendi. İptal ve geri alma bağa dokunmaz, tutarı türetme düşürür (DM7, K7, §4.6, §7.2, M12, M13). Bağ yalnız dosya kargoya verilirken iptalli siparişlerden çözülür. Önerilen "`CancelSetAt < ShippedAt`" karşılaştırması yerine bu yol seçildi: push'tan gelen iptalde damga yok ve istemci saati kararda kullanılmıyor. Test §10.1-19, §10.3, saha §10.4-4 |
+| 2 | para-toplam | Kritik | Ödeme kayıtları yalnız mod On'da yazılıyordu; açılıştan önceki istekler başka PC'de görünmüyor, aynı kapsam yeniden isteniyordu | İşlendi. `payment-requests/backfill`, Ws ilk açılışında ödeme geçmişi, mod Off'ta kirasız kayıt, mod kapısında `PaymentHistoryCompletedAt` (§4.7, §6.4, §8.2, §4.10-2, M17). Uzak `Covers`, önerilen `CoveredPrintedAt` yerine sipariş kümesiyle (`PaymentRequestRecordOrders`): iki bilgisayarın saati hiç karşılaştırılmaz. Saha §10.4-9 |
+| 3 | para-toplam | Önemli | `disable` uzak etiketleri önbellekte bırakıyordu: kirasız Off'ta R1 çift tam istek penceresi geri açılıyor, her PC bütün açık dosyaları tutup `shipments/sync`'te birbirini eziyordu | İşlendi. Off turu uzak satırları siler, toplamları türetir, yalnız kendi açık dosyalarını tutar (`Shipments.OriginReplicaId`) (§8.5, §6.5-1, M15). Test §10.3 |
+| 4 | para-toplam | Önemli | Force-end sonrası sahibin iptal ve fiyat değişiklikleri toptan reddedilip yeni etiketleri kabul ediliyordu (DM5'i spec'in kuralı üretiyordu); `GetActive` null dönüp sohbetten etiket yazılamıyordu | İşlendi. K5 istisnası (i): sahibin push'u yalnız K2 ile yargılanır (komutun damgaladığı birim kazanır). Aktif yayın yerelde açık kalır (§4.2, §5.4, §5.7, M18, risk 5). PC-B için ayrı "geç gelen değişiklikler" listesi yapılmadı: değişiklikler akışla iner, sayısı `sales-audit` ve gözlemde (§4.10, §10.5) |
+| 5 | para-toplam | Önemli | Sunucuda etiket–dosya bağı yalnız Ws geri doldurmasıyla geliyor; 14 günden uzun kapalı PC'nin açık dosyaları açılışta 0'a türetiliyordu | İşlendi. Mod kapısı koşulu 6: her açık dosyada `OriginReplicaId` ve o kopyanın geri doldurması, 14 gün sınırı olmadan. Fark açıklanan (Y5) ve açıklanamayan diye ayrıldı; açıklanamayan > 0 ise `--apply` reddeder, `--accept-shipment` ile tek tek kabul (§4.10) |
+| 6 | para-toplam | Önemli | Grup senkronu gecikince ikinci PC başka çapadan ikinci düşüm yazabiliyordu; (d) üye kesişimiyle aranmıyordu | İşlendi. `members-stale`, (e) adımında üye kesişimi, uzlaştırmada sunucu üyeleri (§2, §6.4, §6.6). Test §10.1-17 |
+| 7 | para-toplam | Küçük | `ComputeShipping` yerel ayarı okuyabiliyordu; `begin` tutarı ayarla denetlemiyordu | İşlendi. `ComputeShipping(ShippingSettings)`, okuyuculara `OpenWhatsApp` ve `CorrectedPaymentRequests.cs:228`; `begin` kargo tutarını lisans ayarıyla denetler (§6.2) |
+| 8 | para-toplam | Küçük | Onarım işinin (c) adımı ve K7 Shipped dosyanın donmuş tutarını düzeltiyordu | İşlendi §4.9-c, K7; test §10.1-19 |
+| 9 | para-toplam | Küçük | Ön gönderim bekleyen komutları kapsamıyordu; ön gönderimin zaman aşımı tek başına isteği engelliyordu | İşlendi. Önce bekleyen komutlar; zaman aşımı engel değil, karar `stale-total`'ın; bu kişinin bekleyen komutu kalırsa açık engel (§2, §5.5, §6.4-1). Test §10.3 |
+| 10 | para-toplam | Küçük | `begin` yalnız GUID'li üyeleri taşıyordu; GUID'siz üyesi olan kişide `stale-total` kalıcıydı, akışta taslağı yoktu | İşlendi. `memberIds` bütün üyeler, sunucu ham `CustomerId` ile eşler; GUID'siz taslak sipariş satırından (§4.4, §6.4). §6.5-2'deki "her müşterinin GUID'i var" iddiası düzeltildi: kira uzak etiketi olan her kişide zorunlu. `sales-audit` sayar. Mod kapısına koşul eklenmedi: açık kural var |
+| 11 | kod-tutarlılığı | Kritik | §5.2 devri görünce kipe bakmadan `Authority = 'server'` yazıyordu; mod Off boyunca bitmiş yayınlar kilitleniyordu | İşlendi. `Authority = 'server'` yalnız mod On'da; mod Off'ta yalnız `ReleasedAt`; yönlendirici mod Off'ta hep yerel (§2, §3.2, §5.2, §5.3, §5.4). Test §10.3 |
+| 12 | kod-tutarlılığı | Önemli | `disable` uzak satırları bırakıyordu (3 ile aynı) | Birleşik: 3 |
+| 13 | kod-tutarlılığı | Önemli | ≤0.9.10'a dönüş, PC'nin Off turunu bitirmiş olmasına sessizce dayanıyordu; eski ikili `Mode = 1`'de dekont kargo adımını sessizce kaybediyordu | İşlendi. Ön koşul `SeenMode = 0` (`sales-sync status`'ta kopya başına), `deploy/README`'de bağımsız sıfırlama betiği, prova testi (§2, §8.6, §10.3) |
+| 14 | kod-tutarlılığı | Önemli | `enable --apply` ile ilk tur arasındaki pencerede verilen kargo kararı ve bağ sessizce geri dönüyordu | İşlendi, önerilen (a) yolu: her v2 isteği `SeenMode` taşır, sunucu modu görmemiş kopyanın gönderimini Off kurallarıyla alır (§7.1, K4, K5-ii). İstemci modu kuyruk boşalınca açar; §8.4-3 gönderilmemiş dosya varken durur (§8.4, M16). Test §10.1-21, §10.3 |
+| 15 | kod-tutarlılığı | Önemli | Shipped dosyada iptal push'ta reddediliyor (K6), komutta kabul ediliyordu; K3 komutla iptal edilmiş siparişe baskı dolduruyordu | İşlendi. K6 yalnız fiyat; iptal iki yolda §7.2'ye göre. K3, `CancelSetAt` doluysa baskı almaz ve "kâğıdı imha et" der (`mark-printed` ile aynı). Koşul birleşik durumdaki iptale değil komut damgasına bağlandı: aynı push'ta "basıldı, sonra iptal edildi" satırının PrintedAt'i bugünkü gibi kalır |
+| 16 | kod-tutarlılığı | Küçük | Mod Off'ta lisans geneli kargo ayarını yazacak yol yoktu | İşlendi. `sales-sync shipping set` CLI'ı (kuru koşu varsayılan), `UpdatedBy` (§4.8, §4.10-4, §6.2, §8.1-6) |
+| 17 | kod-tutarlılığı | Küçük | `add-backup` ProductId'yi ebeveynden kopyalıyor, yerel `AddBackup` kopyalamıyordu | İşlendi: komut da ürünsüz ekler (bugünkü davranış). Kopyalama ayrı ürün kararı olarak "bilerek yapılmayanlar"da (§4.6, §12) |
+| 18 | kod-tutarlılığı | Küçük | `legacy:` öneki miras replay'i ayırmıyordu; miras iş 409'da yanlış düşümü benimseyebilirdi | İşlendi §6.6: önek koşuldan çıktı, kural miras replay'e de uygulanır; miras iş benimsemez, #506'nın birleştirme sorusuna düşer. Test §10.3 |
+| 19 | kod-tutarlılığı | Küçük | `LastLegacySalesPushAt` yalnız mod On'da yazıldığı için "7 gün iz yok" koşulu ölçülemiyordu | İşlendi: iz iki kipte, uyarı yalnız On'da (§3.1, §4.0, §4.10-3) |
+| 20 | kod-tutarlılığı | Küçük | `PersonKey` harmanı belirsizdi; indeks harf ve sondaki boşluk farkını yutuyordu | İşlendi. İndeks ve kilit `PersonKeyHash binary(32)` üzerinde, metin BIN2 ve bellekte ordinal; tekil ihlal 409 (§2, §3.1, §6.4). Test §10.1-16 |
+| 21 | kod-tutarlılığı | Küçük | `begin` idempotent değildi; yinelenen ya da çökme sonrası `begin` 500'e düşüyordu | İşlendi §6.4-a, -c, -h. Test §10.1-16 |
+| 22 | kod-tutarlılığı | Küçük | Yerel metin boşaltması koşulsuzdu; silmeden sonra gelen geç ekleme metni geri yazıyordu | İşlendi. Yerel boşaltma da aynı ayara bağlı (`sales/state`), eklemede ve geri doldurmada boşaltma (§4.2, §4.3, §4.5, §9). Test §10.1-22 |
+| 23 | kod-tutarlılığı | Küçük | `WpfReplicas` PK yalnız `ReplicaId`; lisans değiştiren PC eski lisanstaki sessizlik denetimini bozuyordu | İşlendi: PK `(LicenseId, ReplicaId)` (§3.1, §4.0) |
+| 24 | kod-tutarlılığı | Küçük | Üç atıf kayması: 048:28, `:938`'in dosyası, hosted service başlatma iddiası | İşlendi §1, §6.6, §5.4, §10.3 |
+| 25 | eksiklik-karar | Kritik | Kendi yayınının `server` olması moda bağlı değildi (11 ile aynı) | Birleşik: 11 |
+| 26 | eksiklik-karar | Önemli | `disable` R1'i açıyor; Off'ta `ignored` kalıcı ayrışma bırakıyor; düşen bekleyen baskı çift kâğıt doğuruyordu | Birleşik: 3. Ek olarak `ignored`'da `current` uygulanır (§5.2); K2'nin `baseVersion` eşitliği Off'taki bilinçli yeni kararı kilitlemez (M14); bekleyen komutlar yerel yazıma çevrilir (§5.5, §8.5) |
+| 27 | eksiklik-karar | Önemli | Sürüm düşürme Off turuna dayanıyordu (13 ile aynı) | Birleşik: 13 |
+| 28 | eksiklik-karar | Önemli | Y4 geçişi uygulanamıyordu; `disable`'dan sonra PC'ler farklı yerel değerlere dönüyordu | Birleşik: 16. Ek olarak `disable` turu sunucu değerini yerel `AppSettings.Shipping`'e yazar (§6.2, §8.5). Açılışta kopya gerekmez: mod On'da sağlayıcı sunucu değerini okur |
+| 29 | eksiklik-karar | Önemli | `MinClientVersion`'ın yayın adımı ve boş davranışı tanımsızdı; yarım bir hotfix derlemesi kapıyı geçebilirdi | İşlendi. Compose ortamı adımı, boşsa açılış reddedilir ve uçlar fail-closed, `featureLevel = 3` yalnız W3 derlemesinde, plansız ara sürüm kuralı (§2, §4.6-1, §4.10-1, -2, §8.1-4, -5) |
+| 30 | eksiklik-karar | Önemli | Geri dönüşsüz KVKK boşaltması sahip onayı olmadan varsayılan açıktı | İşlendi. Varsayılan kapalı (bugünkü politika); sunucu ve yerel aynı ayara bakar; sahip kararı açık madde (§9, §11) |
+| 31 | eksiklik-karar | Küçük | Y5 mod On'a yanlış gerekçeyle erteleniyordu | İşlendi. Y5 mod Off'ta Ws'nin yerel yolunda da (§7.4, M12); "kapsam dışı" ve "bilerek yapılmayanlar"dan çıkarıldı |
+| 32 | eksiklik-karar | Küçük | K6/K7/§7.2 tutarsızlığı; Shipped'de geri alma çift sayım; K7'nin kip koşulu | Birleşik: 1, 8, 15 |
+| 33 | eksiklik-karar | Küçük | Force-end onay metni kaybı küçük gösteriyordu | Birleşik: 4. K5 istisnası sahibin force-end'den önce gönderemediği düzenlemeleri de kabul ediyor; onay metni gerçek davranışa göre yeniden yazıldı (§5.7) |
+| 34 | eksiklik-karar | Küçük | `client-update-required`, `content-conflict`, `owner-active` istemcide eşlenmemişti; Off'taki metin yanıltıcıydı | İşlendi §5.3, §5.7 |
+| 35 | eksiklik-karar | Küçük | PersonKey harmanı (20 ile aynı) | Birleşik: 20 |
+| 36 | eksiklik-karar | Küçük | Ortak bakiyeye yüklenen zorunluluklar yalnız bu belgede duruyordu | İşlendi §13: D-ortak-bakiye docs PR'ı ve bağımlılık notu. Ortak bakiye spec'i bu dalda değiştirilmedi |
+| 37 | eksiklik-karar | Küçük | DM1 metindeki istisnalarla çelişiyordu; §4.10 başlığı `sales-audit`'i S3'e koyuyordu | İşlendi §2, §3.3, §4.10 |
+
+**Sonuç.** 37 bulgunun hiçbiri reddedilmedi; 8'i başka bir bulguyla birleşik işlendi. Önerilenden farklı çözülenler:
+- 1: saat karşılaştırması yerine "kargoya verirken iptalli bağı çöz".
+- 2: `CoveredPrintedAt` yerine sipariş kümesi.
+- 4: PC-B'ye ayrı liste yerine akış, `sales-audit` ve gözlem.
+- 10: mod kapısı koşulu yerine açık eşleme kuralı ve rapor.
+- 14: önerilen iki yoldan (a).
+- 17: tercih edilen yol bugünkü davranış (ürünsüz).
+
+Sahip kararı gerektiren tek açık madde KVKK metin boşaltmasıdır (§11).
