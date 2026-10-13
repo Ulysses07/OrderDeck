@@ -1,0 +1,236 @@
+@*
+    Gizlilik Politikası — kayıt formundaki "Gizlilik Politikası" kutusunun
+    (IntakeForm.cshtml, details.policy) içeriği.
+
+    web/app/(tr)/gizlilik-politikasi/page.tsx'in sunucudaki kopyası: İKİSİ
+    AYNI TUTULMALI. Birini değiştiren diğerini de aynı değişiklikle günceller
+    ve KvkkNotice.TextVersion'ı artırır (kural KvkkNotice.cs'te): müşteri onay
+    kutusunda bu metni okuduğunu beyan ediyor, kayıt onaylanan metnin sürümünü
+    taşıyor. IntakeFormKvkkTests.Metin_degisirse_surum_de_degismeli iki
+    dosyanın özetini de sürüme bağlıyor;
+    Formdaki_politika_kutusu_web_sayfasiyla_ayni_metni_gosterir iki kopyanın
+    metnini ve bağlantı adreslerini blok blok karşılaştırıyor.
+
+    Kaynaktan bilinçli farklar yalnız bağlantılarda: göreli /veri-silme tam
+    adres (form başka alan adında), web adresleri yeni sekmede, her bağlantı
+    .keep-draft taşıyor (uygulama içi tarayıcı aynı görünümde açarsa geri
+    dönen müşteri formunu dolu bulsun). At-işareti &#64; ile yazılı: a[href]
+    tag helper hedefi, orada at-işareti kaçışı bozuk derleniyor (PR #361).
+*@
+<p class="policy-date">Yürürlük tarihi: 2026-09-04</p>
+<p>
+    Bu gizlilik politikası, <strong>OrderDeck</strong> Windows masaüstü uygulamasının
+    ve <strong>orderdeckapp.com</strong> web sitesinin kişisel verileri nasıl topladığını,
+    işlediğini, sakladığını ve paylaştığını açıklar.
+</p>
+<p>
+    <strong>Veri sorumlusu:</strong> Musa Sevinç (şahıs). İletişim:
+    <a class="keep-draft" href="mailto:support&#64;orderdeckapp.com">support&#64;orderdeckapp.com</a>
+</p>
+
+<h2>1. Toplanan veriler</h2>
+<p>
+    OrderDeck masaüstü uygulaması iki tür veri ile çalışır:
+</p>
+
+<h3>1.1. Lisans ve hesap verileri</h3>
+<ul>
+    <li>E-posta adresi (kayıt ve lisans yönetimi için)</li>
+    <li>Lisans anahtarı, makine kimliği (parmak izi)</li>
+    <li>Ödeme tutarı, lisans ve güncelleme paketi durumu (ödeme bilgisi <em>sadece ödeme sağlayıcılarda</em> tutulur, biz saklamayız)</li>
+    <li>IP adresi ve giriş zamanı (güvenlik kayıtları için, 90 gün içinde silinir)</li>
+</ul>
+
+<h3>1.2. Canlı yayın chat verileri</h3>
+<p>
+    Uygulama, bağlanan platformların (Instagram, TikTok, Facebook, YouTube) canlı
+    yayın chat'lerini okur. Bu mesajlar:
+</p>
+<ul>
+    <li><strong>Sadece kullanıcının kendi bilgisayarında</strong> bellek tamponunda tutulur (en fazla son 500 mesaj)</li>
+    <li>Uygulama kapatıldığında <strong>tamamen silinir</strong></li>
+    <li><strong>OrderDeck sunucularına gönderilmez</strong>, üçüncü kişilerle paylaşılmaz</li>
+</ul>
+<p>
+    <strong>Tek istisna:</strong> yayıncının <strong>siparişe/etikete
+    dönüştürdüğü</strong> yorumlar. Sipariş kaydına dönüşen yorumun metni,
+    yayıncının işini yürütebilmesi (sipariş, kargo, itiraz takibi) için
+    sipariş kaydının bir parçası olarak yayıncının bilgisayarında saklanır
+    ve sipariş verisiyle birlikte OrderDeck sunucularına aktarılır. Ham chat
+    akışının kendisi hiçbir zaman toplu olarak sunucuya gönderilmez.
+    Ayrıntı için <a class="keep-draft" href="https://orderdeckapp.com/veri-silme/" target="_blank" rel="noopener">Veri Silme</a> sayfasına bakın.
+</p>
+
+<h3>1.3. Kayıt formu ile toplanan alıcı bilgileri</h3>
+<p>
+    Yayıncılar, izleyicilerinin sipariş, kargo ve fatura işlemleri için kişisel bir
+    kayıt linki (web formu) oluşturabilir. Bu formu dolduran alıcılardan toplanan
+    bilgiler:
+</p>
+<ul>
+    <li>Platform kullanıcı adları (Instagram, YouTube, Facebook, TikTok — alıcının bildirdiği)</li>
+    <li>
+        Alıcı formdaki opsiyonel "Google ile bağla" veya "Facebook ile
+        bağla" butonunu kullanırsa: kendi hesabının doğrulanmış kimliği — YouTube
+        için kanal adı, handle ve kanal kimliği; Facebook için görünen ad (YouTube
+        akışının ayrıntıları için Bölüm 2)
+    </li>
+    <li>Ad soyad, e-posta, telefon (WhatsApp) numarası ve kargo adresi</li>
+    <li>Fatura için opsiyonel T.C. Kimlik Numarası (yalnızca alıcı girmek isterse)</li>
+    <li>WhatsApp ve/veya SMS ile bilgilendirme mesajı almaya dair açık rıza (onay kutuları)</li>
+</ul>
+<p>
+    Bu veriler yalnızca ilgili yayıncının sipariş, kargo ve fatura süreçleri için
+    işlenir; üçüncü kişilerle pazarlama amacıyla paylaşılmaz veya satılmaz. Mesaj
+    gönderimi yalnızca alıcının açıkça onay verdiği kanallardan yapılır; alıcı bu
+    onayı dilediği an geri çekebilir. Bu verilerin veri sorumlusu, formu oluşturan
+    yayıncıdır; OrderDeck verileri yayıncı adına barındırır ve yayıncının uygulamasına
+    iletir.
+</p>
+
+<h2>2. YouTube API kullanımı</h2>
+<p>
+    OrderDeck, YouTube Data API v3'ü iki ayrı akışta kullanır.
+    Google API Hizmetleri Kullanıcı Verileri Politikası (Google API Services User Data Policy)
+    ve <strong>Limited Use</strong> gerekliliklerine uygunluk taahhüt edilir.
+</p>
+
+<h3>2.1. Masaüstü uygulaması (yayıncının kendi hesabı)</h3>
+<p>İstenen OAuth izinleri (kapsamlar):</p>
+<ul>
+    <li>
+        <code>https://www.googleapis.com/auth/youtube</code> — Kanal bilgisi (görünen ad, profil resmi)
+        ve canlı yayın chat mesajlarını okumak için
+    </li>
+    <li>
+        <code>https://www.googleapis.com/auth/youtube.force-ssl</code> — Kullanıcının uygulama içinde
+        açıkça tıkladığı an, tek tek mesaj silme veya kullanıcı banlama işlemleri için
+    </li>
+</ul>
+<p>Masaüstü akışında YouTube API üzerinden alınan veriler:</p>
+<ul>
+    <li>Sadece kullanıcının kendi makinesinde işlenir</li>
+    <li>OrderDeck sunucularına aktarılmaz</li>
+    <li>Reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz</li>
+    <li>Üçüncü kişilere satılmaz veya devredilmez</li>
+</ul>
+<p>
+    OAuth refresh token'ı kullanıcının makinesinde Windows Data Protection API (DPAPI)
+    ile şifreli olarak saklanır. Kullanıcı dilediği an
+    <a class="keep-draft" href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">https://myaccount.google.com/permissions</a>
+    adresinden izni iptal edebilir.
+</p>
+
+<h3>2.2. Kayıt formunda "Google ile bağla" (alıcının kendi kanalı)</h3>
+<p>
+    Alıcı kayıt formunda (Bölüm 1.3) alıcı, YouTube kullanıcı adını elle yazmak
+    yerine dilerse "Google ile bağla" butonunu kullanabilir. Bu akışta tek
+    bir OAuth kapsamı istenir:
+</p>
+<ul>
+    <li>
+        <code>https://www.googleapis.com/auth/youtube.readonly</code> — Sunucu tarafında
+        tek bir <code>channels.list(mine=true)</code> çağrısıyla yalnızca alıcının
+        <strong>kendi</strong> kanalının adı, handle'ı (customUrl) ve kanal kimliği
+        okunur. Abonelikler, oynatma listeleri, videolar, analitik veya başka hiçbir
+        veri okunmaz; hiçbir şey yazılmaz, değiştirilmez veya silinmez.
+    </li>
+</ul>
+<p>Bu akışta:</p>
+<ul>
+    <li>
+        OAuth erişim token'ı sunucuda bir kez kullanılır ve hemen atılır — erişim veya
+        yenileme token'ı <strong>saklanmaz</strong>
+    </li>
+    <li>
+        Alınan kanal adı, handle ve kanal kimliği yalnızca alıcının kendi kaydının bir
+        parçası olarak saklanır ve yalnızca alıcının kayıt olduğu yayıncıya görünür
+        (saklama süresi: Bölüm 5, "Kayıt formu ile toplanan alıcı bilgileri")
+    </li>
+    <li>Bu veri reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz; üçüncü kişilere satılmaz veya devredilmez</li>
+    <li>
+        Alıcı dilediği an
+        <a class="keep-draft" href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">https://myaccount.google.com/permissions</a>
+        adresinden uygulamanın erişimini iptal edebilir ve Bölüm 6'daki yolla kaydının
+        silinmesini isteyebilir
+    </li>
+</ul>
+<p>
+    OrderDeck YouTube Data API Hizmetleri'ni kullanır. Google'ın kullanıcı verilerini
+    işlemesi, <strong>Google Gizlilik Politikası'na</strong>
+    (<a class="keep-draft" href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">http://www.google.com/policies/privacy</a>) tabidir.
+</p>
+
+<h2>3. Tarayıcı eklentisi (yalnızca TikTok)</h2>
+<p>
+    YouTube, Instagram ve Facebook canlı yayın chat'leri platformların resmi
+    API'leri üzerinden okunur. TikTok resmi bir açık API sunmadığından yalnızca
+    TikTok için OrderDeck Chrome/Edge tarayıcı eklentisi kullanılır. Eklenti
+    yalnızca:
+</p>
+<ul>
+    <li>Kullanıcının açtığı canlı yayın sayfasındaki chat mesajlarını okur</li>
+    <li>Mesajları yerel WebSocket bağlantısı ile masaüstü uygulamasına iletir</li>
+    <li>Hiçbir veriyi başka bir adrese göndermez</li>
+</ul>
+
+<h2>4. Çerezler ve site analitiği</h2>
+<p>
+    <strong>orderdeckapp.com</strong> web sitesi şu an üçüncü taraf analitik veya reklam
+    çerezi kullanmıyor. Yalnızca Caddy reverse proxy'nin standart sunucu logları
+    (IP adresi, istek yolu, kullanıcı ajanı) tutulur ve 30 gün içinde silinir.
+</p>
+
+<h2>5. Veri saklama süreleri</h2>
+<ul>
+    <li>Hesap verileri (e-posta, lisans): hesap silinene kadar</li>
+    <li>Kayıt formu ile toplanan alıcı bilgileri: ilgili yayıncı silene kadar</li>
+    <li>Sunucu erişim logları: 30 gün</li>
+    <li>Güvenlik kayıtları: 90 gün</li>
+    <li>
+        Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece
+        (siparişe/etikete dönüştürülen yorumların metni hariç — o metin,
+        sipariş kaydının parçası olarak sipariş kaydıyla aynı süre saklanır)
+    </li>
+    <li>OAuth token: kullanıcı izni iptal edene kadar (kullanıcının makinesinde)</li>
+</ul>
+
+<h2>6. Kullanıcı hakları</h2>
+<p>KVKK ve GDPR çerçevesinde aşağıdaki haklara sahipsiniz:</p>
+<ul>
+    <li>Verilerinize erişme</li>
+    <li>Düzeltme isteme</li>
+    <li>Silme isteme (hesabı tamamen kapatma)</li>
+    <li>İşlemeye itiraz etme</li>
+    <li>Veri taşınabilirliği</li>
+</ul>
+<p>
+    Bu haklarınızı kullanmak için <a class="keep-draft" href="mailto:support&#64;orderdeckapp.com">support&#64;orderdeckapp.com</a>
+    adresine yazabilirsiniz. Talepleriniz 30 gün içinde yanıtlanır.
+</p>
+
+<h2>7. Veri güvenliği</h2>
+<p>
+    Sunucularımızda iletim TLS 1.2+ ile şifrelenir. Yedekler AES-256-GCM ile şifreli
+    tutulur. JWT token'ları güvenli bir secret ile imzalanır. Yine de internet üzerinden
+    veri iletiminin %100 güvenli olduğu garanti edilemez; siz de hesap şifrenizi gizli
+    tutmakla yükümlüsünüz.
+</p>
+
+<h2>8. Çocuklar</h2>
+<p>
+    OrderDeck 18 yaş altı kullanıcılar için tasarlanmamıştır. Bilerek 18 yaş altı bir
+    kişiden veri toplamayız.
+</p>
+
+<h2>9. Politika değişiklikleri</h2>
+<p>
+    Bu politikayı güncellediğimizde, üst kısımdaki "Yürürlük tarihi" güncellenir.
+    Önemli değişikliklerde kayıtlı kullanıcılara e-posta ile bilgi veririz.
+</p>
+
+<h2>10. İletişim</h2>
+<p>
+    Gizlilik ile ilgili her tür soru için:
+    <a class="keep-draft" href="mailto:support&#64;orderdeckapp.com">support&#64;orderdeckapp.com</a>
+</p>

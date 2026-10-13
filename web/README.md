@@ -83,6 +83,8 @@ web/
 
 Yasal sayfalar `app/(tr)/gizlilik-politikasi/page.tsx` ve `app/(en)/en/privacy-policy/page.tsx` (terms için karşılıkları). Her güncelleme sonrası `EFFECTIVE_DATE` sabitini değiştir; önemli içerik değişiminde kayıtlı kullanıcılara e-posta git.
 
+Türkçe Gizlilik Politikası'nın bir kopyası kayıt formunda gösteriliyor: `OrderDeck.LicenseServer/Pages/Public/_GizlilikPolitikasi.cshtml`. TR sayfayı değiştiren o kopyayı da aynı değişiklikle günceller ve `KvkkNotice.TextVersion`'ı artırır; `IntakeFormKvkkTests` iki kopyayı karşılaştırıyor, biri unutulursa kırmızı yanar.
+
 ## YouTube API audit hazırlık
 
 OAuth verification için Google'a aşağıdaki URL'ler gönderiliyor:

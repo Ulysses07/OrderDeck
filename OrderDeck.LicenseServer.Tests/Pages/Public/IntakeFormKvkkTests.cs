@@ -29,7 +29,9 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     private const string VersionField = "Input.KvkkTextVersion";
     private const string RequiredMessage = "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
     private const string OutdatedMessage = "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
-    private const string PolicyUrl = "https://orderdeckapp.com/gizlilik-politikasi/";
+    /// <summary>Politikanın web sayfası. Form artık oraya gitmiyor; metin
+    /// formun içindeki kutuda (sahip kararı 2026-10-13).</summary>
+    private const string PolicyPagePath = "orderdeckapp.com/gizlilik-politikasi";
 
     private readonly ApiFactory _factory;
     public IntakeFormKvkkTests(ApiFactory factory) => _factory = factory;
@@ -474,7 +476,7 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     // ─── Görünüm ────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Sayfa_zorunlu_kutuyu_ve_politika_baglantisini_paragrafin_hemen_altinda_cizer()
+    public async Task Sayfa_zorunlu_kutuyu_paragraf_ve_politika_kutusunun_hemen_altinda_cizer()
     {
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
@@ -490,19 +492,19 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         text.Should().Be("Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. *");
         label.Should().Contain("<span class=\"req\">*</span>", "zorunluluk diğer alanlarla aynı işaretle görünür");
 
-        var link = Tag(label, "<a [^>]*>Gizlilik Politikası</a>");
-        link.Should().Contain($"href=\"{PolicyUrl}\"");
-        link.Should().Contain("target=\"_blank\"");
-        link.Should().Contain("rel=\"noopener\"");
-
-        // Yer: aydınlatma paragrafından hemen sonra, bal küpü ve gönder
-        // butonundan önce.
+        // Yer: aydınlatma paragrafı → Gizlilik Politikası kutusu → onay; bal
+        // küpü ve gönder butonundan önce. Müşteri "okudum" beyanına iki metni
+        // de geçtikten sonra varır.
         var paragraphEnd = html.IndexOf("</p>", html.IndexOf("<p class=\"kvkk\">", StringComparison.Ordinal),
             StringComparison.Ordinal);
+        var detailsAt = html.IndexOf("<details class=\"policy\">", StringComparison.Ordinal);
+        var detailsEnd = html.IndexOf("</details>", detailsAt, StringComparison.Ordinal) + "</details>".Length;
         var labelAt = html.IndexOf(label, StringComparison.Ordinal);
         paragraphEnd.Should().BePositive();
-        labelAt.Should().BeGreaterThan(paragraphEnd);
-        html[(paragraphEnd + 4)..labelAt].Trim().Should().BeEmpty("araya başka öğe girmemeli");
+        detailsAt.Should().BeGreaterThan(paragraphEnd);
+        labelAt.Should().BeGreaterThan(detailsEnd);
+        html[(paragraphEnd + 4)..detailsAt].Trim().Should().BeEmpty("paragraf ile politika kutusu arasına başka öğe girmemeli");
+        html[detailsEnd..labelAt].Trim().Should().BeEmpty("politika kutusu ile onay arasına başka öğe girmemeli");
         labelAt.Should().BeLessThan(html.IndexOf("name=\"website\"", StringComparison.Ordinal));
         labelAt.Should().BeLessThan(html.IndexOf("class=\"btn\"", StringComparison.Ordinal));
 
@@ -513,20 +515,76 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Uygulama içi tarayıcı (Android WebView varsayılanı) <c>target="_blank"</c>
-    /// bağlantıyı aynı görünümde açabiliyor. Sayfa no-store geldiği için geri
-    /// dönüşte yeniden çekiliyor ve alanlar boşalıyor; politika bağlantısına
-    /// dokunan müşteri formunu kaybetmesin diye o tıklama da OAuth butonları
-    /// gibi taslağı yazmalı. Taslak gönderimde silinmeli: bağlantı normal
-    /// tarayıcıda yeni sekmede açıldığında sayfa hiç ayrılmıyor, taslak
-    /// tüketilmiyor ve onay ekranından sonra aynı sekmede açılan form önceki
-    /// kişinin bilgileriyle dolardı.
+    /// Gizlilik Politikası formun içinde açılır kutuda okunur (sahip kararı
+    /// 2026-10-13): yeni sekme yok, orderdeckapp.com'daki politika sayfasına
+    /// bağlantı yok. Yerel details/summary — JS'siz açılıp kapanıyor.
+    /// Başlık onay etiketinin DIŞINDA: etiketin içindeki dokunuş kutuyu da
+    /// işaretlerdi, onay müşterinin bilinçli eylemi olmalı.
+    /// </summary>
+    [Fact]
+    public async Task Gizlilik_politikasi_formun_icinde_acilir_kutuda_yeni_sekme_yok()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        var doc = await BrowsingContext.New(AngleSharp.Configuration.Default).OpenAsync(r => r.Content(html));
+
+        var checkbox = doc.QuerySelector("input[type='checkbox'][name='Input.KvkkAcknowledged']");
+        checkbox.Should().NotBeNull();
+        var label = checkbox!.Closest("label");
+        label.Should().NotBeNull();
+        label!.QuerySelectorAll("a, button, details, summary").Should()
+            .BeEmpty("etiketin içinde etkileşimli öğe yok; etikete dokunmak yalnız kutuyu işaretler");
+
+        var details = doc.QuerySelectorAll("details.policy").Should().ContainSingle().Subject;
+        details.Closest("label").Should().BeNull("başlık etiketin içinde olsaydı dokunuş onay kutusunu da değiştirirdi");
+        details.Closest("form").Should().BeSameAs(checkbox.Closest("form"));
+        details.HasAttribute("open").Should().BeFalse("kutu kapalı gelir, müşteri dokununca açılır");
+
+        var summary = details.FirstElementChild;
+        summary.Should().NotBeNull();
+        summary!.LocalName.Should().Be("summary", "details'in ilk çocuğu başlık olmalı, yoksa tarayıcı kendi 'Ayrıntılar' başlığını basar");
+        summary.TextContent.Trim().Should().Be("Gizlilik Politikası");
+        summary.Children.Should().BeEmpty("başlık düz metin; bağlantı değil, sayfadan ayrılmıyor");
+
+        // Metnin tamamı kutuda: ilk bölüm, form verisini anlatan bölüm, son bölüm.
+        var box = details.QuerySelector(".policy-box");
+        box.Should().NotBeNull();
+        var boxText = Regex.Replace(box!.TextContent, "\\s+", " ");
+        boxText.Should().Contain("1. Toplanan veriler")
+            .And.Contain("1.3. Kayıt formu ile toplanan alıcı bilgileri")
+            .And.Contain("10. İletişim");
+        boxText.Should().Contain("support@orderdeckapp.com", "at-işareti &#64; ile yazılı, tarayıcıda @ görünmeli");
+
+        // Eski davranış geri gelmesin.
+        html.Should().NotContain(PolicyPagePath, "politika sayfasına giden bağlantı kalmadı");
+        doc.QuerySelectorAll("a[target]").Where(a => a.Closest("details.policy") is null)
+            .Should().BeEmpty("kutunun dışında yeni sekmede açılan bağlantı yok");
+
+        // Yer: aydınlatma paragrafı ile onay ARASINDA. Etiketteki "Gizlilik
+        // Politikası" düz metin, ona dokunmak kutuyu işaretler; politika
+        // onayın altında kalsaydı müşteri onu "okudum"dan sonra keşfederdi.
+        // Bitişiklik (araya metin girmemesi) yukarıdaki görünüm testinde.
+        doc.QuerySelector("p.kvkk")!.NextElementSibling.Should().BeSameAs(details,
+            "politika aydınlatma paragrafının hemen ardından gelir");
+        details.NextElementSibling.Should().BeSameAs(label, "onay politikanın hemen ardından gelir");
+    }
+
+    /// <summary>
+    /// Kutunun kendisi sayfadan ayrılmadığı için taslak yazmıyor. Kutunun
+    /// İÇİNDEKİ bağlantılar (Veri Silme, Google izinleri…) ise sayfadan
+    /// çıkabilir: yeni sekmede açılıyorlar, ama uygulama içi tarayıcı (Android
+    /// WebView varsayılanı) <c>target="_blank"</c>'i aynı görünümde açabiliyor;
+    /// sayfa no-store, geri dönüşte alanlar boşalırdı. Bu yüzden OAuth
+    /// butonları gibi taslağı yazıyorlar. Taslak gönderimde silinmeli: bağlantı
+    /// normal tarayıcıda yeni sekmede açıldığında taslak tüketilmiyor ve onay
+    /// ekranından sonra aynı sekmede açılan form önceki kişinin bilgileriyle
+    /// dolardı.
     ///
     /// JS motoru yok; test, taslağı yazan tıklama dinleyicisinin seçicisini
     /// betikten okuyup çizilen DOM'a uyguluyor.
     /// </summary>
     [Fact]
-    public async Task Politika_baglantisi_taslagi_kaydeder_gonderim_taslagi_siler()
+    public async Task Politika_kutusundaki_baglantilar_taslagi_kaydeder_gonderim_taslagi_siler()
     {
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
@@ -536,13 +594,26 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         var selectors = Regex.Matches(html[..saveAt], "querySelectorAll\\('([^']+)'\\)");
         selectors.Should().NotBeEmpty();
         var draftSelector = selectors[^1].Groups[1].Value;
+        draftSelector.Split(',').Select(s => s.Trim()).Should()
+            .Contain(".link-start", "OAuth butonlarının taslağı yerinde kalmalı");
 
         var doc = await BrowsingContext.New(AngleSharp.Configuration.Default).OpenAsync(r => r.Content(html));
-        var policy = doc.QuerySelector($"a[href='{PolicyUrl}']");
-        policy.Should().NotBeNull();
-        doc.QuerySelectorAll(draftSelector).Should().Contain(policy!,
-            $"politika bağlantısı taslağı yazan seçiciye ({draftSelector}) girmeli");
-        policy!.ClassList.Should().NotContain("link-start", ".link-start buton stili taşıyor");
+        var drafted = doc.QuerySelectorAll(draftSelector);
+        drafted.Should().NotContain(doc.QuerySelector("details.policy > summary")!,
+            "kutuyu açmak sayfadan ayrılmıyor");
+
+        var links = doc.QuerySelectorAll("details.policy a[href]");
+        links.Should().NotBeEmpty();
+        foreach (var a in links)
+        {
+            var href = a.GetAttribute("href")!;
+            drafted.Should().Contain(a, $"kutudaki bağlantı ({href}) taslağı yazan seçiciye ({draftSelector}) girmeli");
+            a.ClassList.Should().NotContain("link-start", ".link-start buton stili taşıyor");
+            if (href.StartsWith("mailto:", StringComparison.Ordinal)) continue;
+            href.Should().StartWith("https://", "form başka alan adında; göreli adres lisans sunucusuna gider");
+            a.GetAttribute("target").Should().Be("_blank", $"{href} formu terk ettirmemeli");
+            a.GetAttribute("rel").Should().MatchRegex("noopener|noreferrer");
+        }
 
         var submitAt = html.IndexOf("form.addEventListener('submit'", StringComparison.Ordinal);
         submitAt.Should().BePositive();
@@ -585,21 +656,31 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     /// <summary>
     /// Kayıtlar onaylanan metnin SÜRÜMÜNÜ taşıyor; metin değişip sürüm aynı
     /// kalırsa eski ve yeni metne verilen onaylar ayırt edilemez. Bu test
-    /// onaylanan iki metnin özetini sürüme bağlıyor: formdaki paragraf + etiket
-    /// (bağlantı adresi dahil) ve etiketin "okudum" dediği Gizlilik
-    /// Politikası'nın kaynağı (aynı repoda, <c>web/app/(tr)/…/page.tsx</c>).
-    /// Kırmızıysa: değişiklik anlamı etkiliyorsa
-    /// <see cref="KvkkNotice.TextVersion"/>'ı artır (kural orada); her durumda
-    /// aşağıdaki sabitleri birlikte güncelle. Politika özeti boşlukları
+    /// onaylanan metinlerin özetini sürüme bağlıyor:
+    /// <list type="bullet">
+    /// <item>formdaki aydınlatma paragrafı + onay etiketi;</item>
+    /// <item>etiketin "okudum" dediği, formda açılan Gizlilik Politikası kutusu
+    /// (<c>Pages/Public/_GizlilikPolitikasi.cshtml</c>), çizildiği hâliyle —
+    /// metin ve bağlantı adresleri;</item>
+    /// <item>kutunun kopyası olduğu web sayfasının kaynağı
+    /// (<c>web/app/(tr)/gizlilik-politikasi/page.tsx</c>): web metni değişip
+    /// form kopyası unutulmasın diye.</item>
+    /// </list>
+    /// İki kopyanın birbirine eşitliğini bu özetler değil
+    /// <see cref="Formdaki_politika_kutusu_web_sayfasiyla_ayni_metni_gosterir"/>
+    /// denetliyor. Kırmızıysa: politikanın iki kopyasını aynı tut; değişiklik anlamı
+    /// etkiliyorsa <see cref="KvkkNotice.TextVersion"/>'ı artır (kural orada);
+    /// her durumda aşağıdaki sabitleri birlikte güncelle. Özetler boşlukları
     /// tek boşluğa indirerek alınıyor: CRLF/LF ve yeniden biçimlendirme
     /// kırmızı yakmaz, metin ya da işaretleme değişikliği yakar.
     /// </summary>
     [Fact]
     public async Task Metin_degisirse_surum_de_degismeli()
     {
-        const string ExpectedVersion = "kvkk-2026-10-13";
-        const string ExpectedFormSha256 = "3CFE27445DE1E17C2F6BEF050AF49BF016F62EC945D531785F95DBFF4452A40C";
-        const string ExpectedPolicySha256 = "EBE83D6EED6FF8153901F568A8404D79BFF9E45C36D5A45ACDA482B2046DA7E0";
+        const string ExpectedVersion = "kvkk-2026-10-14";
+        const string ExpectedFormSha256 = "380EBEF1FE07D50042955D5BC34266E69600FBF89B481E831F4A008FCF9909B1";
+        const string ExpectedPolicyBoxSha256 = "6C795F2F85DC3E6B3E9DCE91040D093636DC1FEAC7DFE07782C16932E6FEC79B";
+        const string ExpectedPolicySourceSha256 = "CC7EB34EC20CA1F14C5AA63A3776793ABC922E2FF68BDA29BABCBB2788089BED";
 
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
@@ -610,22 +691,194 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 
         var paragraph = Tag(html, "<p class=\"kvkk\">.*?</p>");
         var label = Tag(html, "<label class=\"check\">\\s*<input[^>]*name=\"Input\\.KvkkAcknowledged\".*?</label>");
-        var href = Regex.Match(label, "href=\"([^\"]+)\"").Groups[1].Value;
-        var canonical = Text(paragraph) + "\n" + Text(label) + "\n" + href;
-        var formSha = Sha(canonical);
+        var formCanonical = Text(paragraph) + "\n" + Text(label);
+        var formSha = Sha(formCanonical);
 
-        // Bağlantının gittiği sayfanın kaynağı: adresin yolu, Next.js'teki
-        // (tr) rota grubundaki klasör adı.
-        var policyPath = FindPolicySource(new Uri(href).AbsolutePath.Trim('/'));
-        var policy = Regex.Replace(await File.ReadAllTextAsync(policyPath), "\\s+", " ").Trim();
-        var policySha = Sha(policy);
+        var details = Tag(html, "<details class=\"policy\">.*?</details>");
+        var hrefs = Regex.Matches(details, "href=\"([^\"]+)\"")
+            .Select(m => WebUtility.HtmlDecode(m.Groups[1].Value));
+        var boxCanonical = Text(details) + "\n" + string.Join("\n", hrefs);
+        var boxSha = Sha(boxCanonical);
+
+        var policyPath = FindRepoFile(PolicySourcePath);
+        var policySha = Sha(Regex.Replace(await File.ReadAllTextAsync(policyPath), "\\s+", " ").Trim());
 
         KvkkNotice.TextVersion.Should().Be(ExpectedVersion,
             "sürüm değiştiyse bu testteki özetleri de yeni metne göre güncelle");
         formSha.Should().Be(ExpectedFormSha256,
-            $"aydınlatma metni ya da onay etiketi değişti; anlam değiştiyse KvkkNotice.TextVersion'ı artır. Yeni özet {formSha}, metin:\n{canonical}");
-        policySha.Should().Be(ExpectedPolicySha256,
-            $"Gizlilik Politikası değişti ({policyPath}); form verisini etkiliyorsa KvkkNotice.TextVersion'ı artır. Yeni özet {policySha}");
+            $"aydınlatma metni ya da onay etiketi değişti; anlam değiştiyse KvkkNotice.TextVersion'ı artır. Yeni özet {formSha}, metin:\n{formCanonical}");
+        boxSha.Should().Be(ExpectedPolicyBoxSha256,
+            "formdaki Gizlilik Politikası kutusu (Pages/Public/_GizlilikPolitikasi.cshtml) değişti; " +
+            "web sayfasıyla (web/app/(tr)/gizlilik-politikasi/page.tsx) aynı tutulmalı, anlam değiştiyse " +
+            $"KvkkNotice.TextVersion'ı artır. Yeni özet {boxSha}");
+        policySha.Should().Be(ExpectedPolicySourceSha256,
+            $"web Gizlilik Politikası değişti ({policyPath}); formdaki kopyayı " +
+            "(Pages/Public/_GizlilikPolitikasi.cshtml) aynı değişiklikle güncelle, anlam değiştiyse " +
+            $"KvkkNotice.TextVersion'ı artır. Yeni özet {policySha}");
+    }
+
+    // ─── İki kopya: web sayfası ↔ formdaki kutu ─────────────────────────────
+
+    private const string PolicySourcePath = "web/app/(tr)/gizlilik-politikasi/page.tsx";
+    private const string WebConstantsPath = "web/lib/i18n.ts";
+    /// <summary>Web sitesinin kökü: sayfadaki göreli bağlantılar buraya çözülür
+    /// (form başka alan adında, kutudaki kopyada tam adres yazılı).</summary>
+    private const string WebOrigin = "https://orderdeckapp.com";
+
+    private sealed record PolicyBlock(string Tag, string Text);
+
+    /// <summary>
+    /// Formdaki kutu web sayfasının birebir kopyası olmalı. Yukarıdaki özet
+    /// testi iki kopyayı AYRI AYRI sürüme bağlıyor, birbirine bağlamıyor: biri
+    /// güncellenip özeti yenilenir, öbürü unutulursa o test yeşile döner ve
+    /// form eski metni gösterirken kayıtlar yeni sürümü taşır. Bu test web
+    /// kaynağını React'in çizeceği metne çeviriyor (JSX boşluk kuralı;
+    /// <c>{BRAND}</c>, <c>{LEGAL_NAME}</c>, <c>{CONTACT_EMAIL}</c> web/lib/i18n.ts'teki
+    /// değerleriyle; <c>&amp;quot;</c>/<c>&amp;apos;</c> çözülmüş) ve kutunun
+    /// çizilmiş hâliyle başlık/paragraf/madde sırasıyla karşılaştırıyor;
+    /// bağlantı adresleri de (göreli adres <see cref="WebOrigin"/>'e çözülerek)
+    /// aynı olmalı. Vurgu biçimi (strong/em/code) karşılaştırılmıyor.
+    /// </summary>
+    [Fact]
+    public async Task Formdaki_politika_kutusu_web_sayfasiyla_ayni_metni_gosterir()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        var context = BrowsingContext.New(AngleSharp.Configuration.Default);
+        var formDoc = await context.OpenAsync(r => r.Content(html));
+        var box = formDoc.QuerySelector("details.policy .policy-box");
+        box.Should().NotBeNull();
+
+        var webHtml = "<div id=\"web\">" + await RenderWebPolicyAsHtmlAsync() + "</div>";
+        var webDoc = await context.OpenAsync(r => r.Content(webHtml));
+        var web = webDoc.GetElementById("web")!;
+
+        var boxBlocks = Blocks(box!);
+        var webBlocks = Blocks(web);
+        webBlocks.Count.Should().BeGreaterThan(50, "web kaynağı çözümlenemediyse karşılaştırma boşa döner");
+        for (var i = 0; i < Math.Max(boxBlocks.Count, webBlocks.Count); i++)
+        {
+            var inBox = i < boxBlocks.Count ? boxBlocks[i] : null;
+            var onWeb = i < webBlocks.Count ? webBlocks[i] : null;
+            // Gerekçe metninde süslü parantez olmasın: FluentAssertions onu
+            // biçim dizesi olarak okuyor (record'un ToString'i parantezli).
+            inBox.Should().Be(onWeb,
+                $"{i}. blok iki kopyada farklı — form: «{Show(inBox)}», web: «{Show(onWeb)}». " +
+                $"Pages/Public/_GizlilikPolitikasi.cshtml ile {PolicySourcePath} aynı tutulmalı; " +
+                "metin değiştiyse KvkkNotice.TextVersion'ı artır");
+        }
+
+        Links(box!).Should().Equal(Links(web),
+            "kutudaki bağlantılar web sayfasındakilerle aynı adrese gitmeli (göreli adres tam yazılır)");
+
+        static List<PolicyBlock> Blocks(AngleSharp.Dom.IElement root)
+            => root.QuerySelectorAll("h2, h3, p, li")
+                .Select(e => new PolicyBlock(e.LocalName, Regex.Replace(e.TextContent, "\\s+", " ").Trim()))
+                .ToList();
+
+        static string Show(PolicyBlock? b) => b is null ? "(yok)" : $"<{b.Tag}> {b.Text}";
+
+        static List<string> Links(AngleSharp.Dom.IElement root)
+            => root.QuerySelectorAll("a[href]")
+                .Select(a => a.GetAttribute("href")!)
+                .Select(h => (h.StartsWith('/') ? WebOrigin + h : h).TrimEnd('/'))
+                .ToList();
+    }
+
+    /// <summary>
+    /// <see cref="PolicySourcePath"/>'teki <c>LegalLayout</c> gövdesini düz
+    /// HTML'e çevirir: React'in çizeceği metin, etiketlerden yalnız adı ve
+    /// <c>href</c>. Başa <c>LegalLayout</c>'un bastığı yürürlük tarihi satırı
+    /// eklenir (kutudaki kopyada ilk paragraf). Tanımadığı bir JSX ifadesinde
+    /// patlıyor: yanlış çözülmüş bir kaynakla yeşil kalmaktansa testin
+    /// güncellenmesi istensin.
+    /// </summary>
+    private static async Task<string> RenderWebPolicyAsHtmlAsync()
+    {
+        var source = await File.ReadAllTextAsync(FindRepoFile(PolicySourcePath));
+        var constants = Regex.Matches(await File.ReadAllTextAsync(FindRepoFile(WebConstantsPath)),
+                "export const (BRAND|LEGAL_NAME|CONTACT_EMAIL) = '([^']*)';")
+            .ToDictionary(m => m.Groups[1].Value, m => m.Groups[2].Value);
+        constants.Keys.Should().BeEquivalentTo(new[] { "BRAND", "LEGAL_NAME", "CONTACT_EMAIL" },
+            $"{WebConstantsPath} içindeki sabitler bulunamadı");
+
+        var effectiveDate = Regex.Match(source, "const EFFECTIVE_DATE = '([^']+)'");
+        effectiveDate.Success.Should().BeTrue($"{PolicySourcePath} içinde EFFECTIVE_DATE yok");
+        var body = Regex.Match(source, "<LegalLayout\\b[^>]*>(.*)</LegalLayout>", RegexOptions.Singleline);
+        body.Success.Should().BeTrue($"{PolicySourcePath} içinde LegalLayout gövdesi yok");
+
+        // LegalLayout.tsx: "Yürürlük tarihi: {effectiveDate}".
+        var sb = new StringBuilder($"<p>Yürürlük tarihi: {effectiveDate.Groups[1].Value}</p>");
+        var text = body.Groups[1].Value;
+        var at = 0;
+        foreach (Match token in Regex.Matches(text, "<[^>]+>|\\{[^{}]*\\}"))
+        {
+            sb.Append(CleanJsxText(text[at..token.Index]));
+            sb.Append(token.Value[0] == '<' ? JsxTagToHtml(token.Value) : JsxExpression(token.Value));
+            at = token.Index + token.Length;
+        }
+        sb.Append(CleanJsxText(text[at..]));
+        return sb.ToString();
+
+        string JsxExpression(string expr)
+        {
+            var inner = expr[1..^1].Trim();
+            if (inner is "' '" or "\" \"") return " ";
+            if (Regex.IsMatch(inner, "^/\\*.*\\*/$", RegexOptions.Singleline)) return "";
+            if (constants.TryGetValue(inner, out var value)) return WebUtility.HtmlEncode(value);
+            throw new InvalidOperationException(
+                $"{PolicySourcePath} içinde bu testin tanımadığı JSX ifadesi: {expr}. Çözümünü " +
+                $"{nameof(RenderWebPolicyAsHtmlAsync)}'e ekle; testi silme.");
+        }
+
+        string JsxTagToHtml(string tag)
+        {
+            var name = Regex.Match(tag, "^<(/?)([A-Za-z][A-Za-z0-9]*)");
+            if (!name.Success)
+                throw new InvalidOperationException($"{PolicySourcePath} içinde çözülemeyen etiket: {tag}");
+            if (name.Groups[1].Value == "/") return $"</{name.Groups[2].Value}>";
+
+            var href = Regex.Match(tag, "\\shref=(?:\"([^\"]*)\"|\\{`([^`]*)`\\})");
+            if (!href.Success)
+            {
+                if (Regex.IsMatch(tag, "\\shref="))
+                    throw new InvalidOperationException($"{PolicySourcePath} içinde çözülemeyen href: {tag}");
+                return $"<{name.Groups[2].Value}>";
+            }
+            var url = href.Groups[1].Success
+                ? href.Groups[1].Value
+                : Regex.Replace(href.Groups[2].Value, "\\$\\{([A-Z_]+)\\}", m => constants.TryGetValue(m.Groups[1].Value, out var v)
+                    ? v
+                    : throw new InvalidOperationException($"{PolicySourcePath} içinde çözülemeyen href: {tag}"));
+            return $"<{name.Groups[2].Value} href=\"{WebUtility.HtmlEncode(url)}\">";
+        }
+    }
+
+    /// <summary>
+    /// JSX metin düğümünün çizilen hâli — Babel'in
+    /// <c>cleanJSXElementLiteralChild</c> kuralı (SWC aynısını uyguluyor):
+    /// satır sonuna değen boşluklar atılır, boş satırlar düşer, kalan satırlar
+    /// tek boşlukla birleşir. <c>&lt;/a&gt;) tabidir</c> gibi yerlerde araya
+    /// boşluk girip girmemesi buna bağlı.
+    /// </summary>
+    private static string CleanJsxText(string raw)
+    {
+        var lines = Regex.Split(raw, "\r\n|\n|\r");
+        var lastNonEmpty = 0;
+        for (var i = 0; i < lines.Length; i++)
+            if (Regex.IsMatch(lines[i], "[^ \t]")) lastNonEmpty = i;
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Replace('\t', ' ');
+            if (i != 0) line = line.TrimStart(' ');
+            if (i != lines.Length - 1) line = line.TrimEnd(' ');
+            if (line.Length == 0) continue;
+            sb.Append(line);
+            if (i != lastNonEmpty) sb.Append(' ');
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -633,16 +886,17 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     /// Bulunamazsa sessizce geçmek yerine patlıyor: dosyası bulunamadığı için
     /// yeşil kalan bir bekçi, bekçinin hiç olmamasından beter.
     /// </summary>
-    private static string FindPolicySource(string route)
+    private static string FindRepoFile(string relativePath)
     {
+        var parts = relativePath.Split('/');
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
-            var candidate = Path.Combine(dir.FullName, "web", "app", "(tr)", route, "page.tsx");
+            var candidate = Path.Combine(dir.FullName, Path.Combine(parts));
             if (File.Exists(candidate)) return candidate;
         }
 
         throw new FileNotFoundException(
-            $"web/app/(tr)/{route}/page.tsx bulunamadı ({AppContext.BaseDirectory} klasöründen yukarı " +
-            "arandı). Politika taşındıysa ya da bağlantı değiştiyse bu testi güncelle; testi silme.");
+            $"{relativePath} bulunamadı ({AppContext.BaseDirectory} klasöründen yukarı arandı). " +
+            "Dosya taşındıysa bu testi güncelle; testi silme.");
     }
 }

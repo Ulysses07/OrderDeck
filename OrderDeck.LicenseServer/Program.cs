@@ -78,7 +78,9 @@ public class Program
             builder.Configuration.GetSection("Audit:Retention"));
         // 90 gün — gizlilik politikasındaki "Güvenlik kayıtları: 90 gün" ile
         // bağlı. Bu değeri değiştiren web/app/(tr)/gizlilik-politikasi ve
-        // (en)/privacy-policy metinlerini de değiştirmek zorunda.
+        // (en)/privacy-policy metinlerini de, kayıt formundaki kopyayı
+        // (Pages/Public/_GizlilikPolitikasi.cshtml) da değiştirmek zorunda;
+        // form kopyası değişince KvkkNotice.TextVersion da artar.
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionOptions>(
             builder.Configuration.GetSection("Audit:SecurityRetention"));
 
