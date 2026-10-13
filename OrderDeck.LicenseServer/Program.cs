@@ -146,6 +146,8 @@ public class Program
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>(
             builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section));
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReplicaService>();
+        // Yayının devri (§4.1): sessions/sync, sales/backfill ve onarım işi aynı yazıcıyı kullanır.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SessionReleaser>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();

@@ -28,6 +28,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private readonly LabelRuleApplier _labels;
     private readonly CustomerIdResolver _customerIds;
     private readonly SalesReplicaService _replicas;
+    private readonly SessionReleaser _releaser;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
     public LicensesSessionsSyncController(
@@ -37,6 +38,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         LabelRuleApplier labels,
         CustomerIdResolver customerIds,
         SalesReplicaService replicas,
+        SessionReleaser releaser,
         ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
@@ -45,18 +47,28 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         _labels = labels;
         _customerIds = customerIds;
         _replicas = replicas;
+        _releaser = releaser;
         _log = log;
     }
 
     // ─── Session sync ─────────────────────────────────────────────────
 
+    /// <param name="Release">v2, sahip (spec 2026-10-13 §4.1, M2): yayın bitti ve etiket kuyruğu boş — yayını
+    /// sunucuya devret. v1'de okunmaz.</param>
+    /// <param name="MachineName">v2: gönderen bilgisayarın adı; eklemede ve devralmada
+    /// <c>OwnerMachineName</c> olur.</param>
+    /// <param name="UnsentLabelCount">v2, sahip, <c>Release = false</c>: bitmiş yayının gönderilmemiş etiket
+    /// sayısı; devrediliyor çipi ve CLI gösterir.</param>
     public sealed record SyncSessionItem(
         Guid Id,
         string? Title,
         DateTimeOffset StartedAt,
         DateTimeOffset? EndedAt,
         string Platforms,
-        string? Notes);
+        string? Notes,
+        bool Release = false,
+        string? MachineName = null,
+        int? UnsentLabelCount = null);
 
     /// <param name="ReplicaId">v2 zarfı (spec 2026-10-13 §4.0); <see cref="ISalesEnvelopeFields"/>. Bugünkü
     /// istemci zarf alanlarını göndermez (v1).</param>
@@ -66,11 +78,40 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         int? Protocol = null,
         int? SeenMode = null) : ISalesEnvelopeFields;
 
+    /// <summary>Oturum yanıtı: sunucudaki satır (bugünkü alanlar) + sahiplik ve devir (spec 2026-10-13 §4.1).
+    /// Eski istemci yanıtı atar; yeni alanlar onun için zararsız.</summary>
+    /// <param name="Protocol">Sunucunun konuştuğu protokol (2). Yoksa sunucu eski sürümdür (§5.2).</param>
+    /// <param name="Status"><c>applied</c> ya da <c>ignored</c> (gönderimin bir kısmı yok sayıldı).</param>
+    /// <param name="Reason"><c>ignored</c>'da neden: <c>session-owned-elsewhere</c> (sahip olmayanın EndedAt'i)
+    /// ya da <c>session-released</c> (devredilmiş oturumun başlık, platform ya da notu).</param>
     public sealed record SyncedSessionDto(
         Guid Id, string? Title,
         DateTimeOffset StartedAt, DateTimeOffset? EndedAt,
         string Platforms, string? Notes,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        Guid? OwnerReplicaId,
+        DateTimeOffset? ReleasedAt,
+        int Protocol,
+        string Status,
+        string? Reason);
+
+    private const string StatusApplied = "applied";
+    private const string StatusIgnored = "ignored";
+    private const string ReasonOwnedElsewhere = "session-owned-elsewhere";
+    private const string ReasonReleased = "session-released";
+
+    /// <summary>Bir oturum öğesinin gönderenle ilişkisi (spec 2026-10-13 §4.1).</summary>
+    private enum SessionRole
+    {
+        /// <summary>Protokolsüz istek (≤0.9.10): EndedAt dolu gelmesi devre yeter.</summary>
+        Legacy,
+        /// <summary>v2, ama oturum eski sürümde açılmış (sahibi boş): miras yol, Legacy gibi.</summary>
+        Unowned,
+        /// <summary>v2, çağıran sahip (ya da önceki kopyasından devraldı, §8.7).</summary>
+        Owner,
+        /// <summary>v2, oturum başka kopyanın: EndedAt yok sayılır, devir yok.</summary>
+        NonOwner,
+    }
 
     [HttpPost("sessions/sync")]
     public async Task<IActionResult> SyncSessions(
@@ -83,7 +124,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
         if (!SalesEnvelope.TryRead(req, out var envelope, out var envelopeError))
             return Problem(title: "invalid-envelope", detail: envelopeError, statusCode: 400);
-        await _replicas.AcceptAsync(
+        var context = await _replicas.AcceptAsync(
             licenseId, envelope, Request.Headers.UserAgent.ToString(), "sessions/sync", ct);
 
         if (req?.Sessions is null || req.Sessions.Count == 0)
@@ -92,31 +133,90 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         if (req.Sessions.Count > 200)
             return Problem(title: "batch-too-large", detail: "Max 200 session per batch.", statusCode: 400);
 
+        // v2 öğe alanları: kolon sınırını aşan ad ya da negatif sayı sessizce kırpılmaz ya da 500'e düşmez.
+        if (req.Sessions.FirstOrDefault(s =>
+                s.MachineName is { Length: > 128 } || s.UnsentLabelCount is < 0) is { } invalid)
+            return Problem(
+                title: "invalid-session",
+                detail: $"Oturum {invalid.Id}: machineName en çok 128 karakter, unsentLabelCount negatif olamaz.",
+                statusCode: 400);
+
         var now = DateTimeOffset.UtcNow;
+        var caller = envelope.ReplicaId;
         var ids = req.Sessions.Select(s => s.Id).ToList();
         var existing = await _db.StreamSessions
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
             .ToDictionaryAsync(s => s.Id, ct);
 
         var newLiveSessions = new List<(string? Title, string Platforms)>();
+        var ignored = new Dictionary<Guid, string>();
+        var toRelease = new List<Guid>();
+        var legacyRelease = new HashSet<Guid>();
+        // Geri yüklenmiş kopyanın devralabileceği önceki kopyalar (§8.7); gerekirse ve istek başına bir kez okunur.
+        IReadOnlySet<Guid>? predecessors = null;
+
+        SessionRole RoleOf(StreamSession s) =>
+            !context.IsV2 ? SessionRole.Legacy
+            : s.OwnerReplicaId is null ? SessionRole.Unowned
+            : s.OwnerReplicaId == caller ? SessionRole.Owner
+            : SessionRole.NonOwner;
 
         foreach (var item in req.Sessions)
         {
+            StreamSession session;
+            SessionRole role;
+
             if (existing.TryGetValue(item.Id, out var current))
             {
+                session = current;
+
+                // Devredilmiş oturum (§2): birim yazıcısı artık sunucu. Başlık, platform ve not yok sayılır; EndedAt
+                // zaten dolu ve tekdüze. Satıra hiç yazılmaz — her yeniden gönderim (W1 devri görene kadar oturumu
+                // yeniden yollar) oturumun rowversion'ını ve akışı boşuna ilerletirdi.
+                if (current.ReleasedAt is not null)
+                {
+                    if (current.Title != item.Title || current.Platforms != item.Platforms || current.Notes != item.Notes)
+                        ignored[item.Id] = ReasonReleased;
+                    continue;
+                }
+
+                role = RoleOf(current);
+                if (role == SessionRole.NonOwner && current.OwnerReplicaId is { } owner)
+                {
+                    predecessors ??= await _replicas.SilentPredecessorsAsync(
+                        licenseId, caller, context.ReplicaBefore, ct);
+                    if (predecessors.Contains(owner))
+                    {
+                        // §8.7: önceki veritabanı bu kopyanın ilk görüldüğü andan beri susuyor — yayının kuyruğu
+                        // artık bu kopyada. Sahiplik geçer; çağıran sahip olarak yargılanır.
+                        current.OwnerReplicaId = caller;
+                        current.OwnerMachineName = item.MachineName ?? current.OwnerMachineName;
+                        role = SessionRole.Owner;
+                        _log.LogInformation(
+                            "sessions/sync: oturum {SessionId} sahipliği önceki kopya {PreviousReplicaId} → geri "
+                            + "yüklenmiş kopya {ReplicaId} (license={LicenseId})",
+                            current.Id, owner, caller, licenseId);
+                    }
+                }
+
                 current.Title = item.Title;
+                current.Platforms = item.Platforms;
+                current.Notes = item.Notes;
                 // EndedAt tekdüze (spec 2026-10-13 §4.1, her biçimde): dolu
                 // değer NULL'a ya da başka bir değere dönmez. Bayat gönderim
                 // (yayın sürerken kuyruğa girmiş satır) bitmiş yayını yeniden
-                // "açıyordu".
-                current.EndedAt ??= item.EndedAt;
-                current.Platforms = item.Platforms;
-                current.Notes = item.Notes;
+                // "açıyordu". Sahip olmayan v2 kopyası yayını kapatamaz; tek
+                // başka yol force-end (§4.6).
+                if (role != SessionRole.NonOwner)
+                    current.EndedAt ??= item.EndedAt;
+                else if (current.EndedAt is null && item.EndedAt is not null)
+                    ignored[item.Id] = ReasonOwnedElsewhere;
                 current.UpdatedAt = now;
             }
             else
             {
-                _db.StreamSessions.Add(new StreamSession
+                // v2 eklemesinde çağıran sahip olur; v1'de sahip boş kalır (miras, §2).
+                session = new StreamSession
                 {
                     Id = item.Id,
                     LicenseId = licenseId,
@@ -125,15 +225,56 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     EndedAt = item.EndedAt,
                     Platforms = item.Platforms,
                     Notes = item.Notes,
-                    UpdatedAt = now
-                });
+                    UpdatedAt = now,
+                    OwnerReplicaId = context.IsV2 ? caller : null,
+                    OwnerMachineName = context.IsV2 ? item.MachineName : null,
+                };
+                _db.StreamSessions.Add(session);
+                role = context.IsV2 ? SessionRole.Owner : SessionRole.Legacy;
                 // Sadece henüz bitmemiş (canlı) yeni session için notify.
                 if (item.EndedAt is null)
                     newLiveSessions.Add((item.Title, item.Platforms));
             }
+
+            // Devir (§4.1): bitmiş ∧ devredilmemiş ∧ (v2 sahibinin Release'i ∨ v1 ∨ sahipsiz oturum). Sahibin
+            // Release = false kapanışı yayını "devrediliyor" bırakır: etiketleri sahipte bekliyor (M2).
+            if (session.EndedAt is null) continue;
+            switch (role)
+            {
+                case SessionRole.Legacy or SessionRole.Unowned:
+                    toRelease.Add(session.Id);
+                    legacyRelease.Add(session.Id);
+                    break;
+                case SessionRole.Owner when item.Release:
+                    toRelease.Add(session.Id);
+                    break;
+                case SessionRole.Owner:
+                    session.UnsentLabelCount = item.UnsentLabelCount;
+                    break;
+            }
         }
 
-        await _db.SaveChangesAsync(ct);
+        // Kapanış ile devir tek işlemde: devir düşerse kapanış da yazılmaz, istemcinin yeniden gönderimi ikisini
+        // birlikte yapar (oturum satırı devir görülene kadar kuyrukta kalır, §5.2).
+        IReadOnlyList<Guid> released = Array.Empty<Guid>();
+        await using (var transaction = toRelease.Count > 0 && _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(ct)
+            : null)
+        {
+            await _db.SaveChangesAsync(ct);
+            if (toRelease.Count > 0)
+                released = await _releaser.ReleaseAsync(licenseId, toRelease, now, ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+        }
+
+        // Mod On'da miras yoldan (protokolsüz istek ya da sahipsiz oturum) devir bir izdir (§4.1): eski sürüm
+        // bilgisayar dönmüş ya da eski sürümde açılmış yayın kapanıyor. Yalnız kimlik ve sayı.
+        var legacyReleased = released.Where(legacyRelease.Contains).ToList();
+        if (legacyReleased.Count > 0 && context.Mode == SalesSyncMode.On)
+            _log.LogInformation(
+                "sessions/sync: mod On'da {Count} oturum miras yoldan devredildi (protokolsüz istek ya da sahipsiz "
+                + "oturum; license={LicenseId}): {SessionIds}",
+                legacyReleased.Count, licenseId, string.Join(",", legacyReleased));
 
         if (newLiveSessions.Count > 0)
         {
@@ -162,13 +303,24 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             }
         }
 
-        var echoed = await _db.StreamSessions
+        // İzdüşüm (izlenmeyen) — devir koşullu UPDATE ile yazıldıysa izlenen varlık onu görmez; değerler
+        // veritabanından okunur.
+        var rows = await _db.StreamSessions
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
-            .Select(s => new SyncedSessionDto(
-                s.Id, s.Title, s.StartedAt, s.EndedAt, s.Platforms, s.Notes, s.UpdatedAt))
+            .Select(s => new
+            {
+                s.Id, s.Title, s.StartedAt, s.EndedAt, s.Platforms, s.Notes, s.UpdatedAt,
+                s.OwnerReplicaId, s.ReleasedAt,
+            })
             .ToListAsync(ct);
 
-        return Ok(echoed);
+        return Ok(rows.Select(s => new SyncedSessionDto(
+            s.Id, s.Title, s.StartedAt, s.EndedAt, s.Platforms, s.Notes, s.UpdatedAt,
+            s.OwnerReplicaId,
+            s.ReleasedAt,
+            SalesEnvelope.V2,
+            ignored.ContainsKey(s.Id) ? StatusIgnored : StatusApplied,
+            ignored.GetValueOrDefault(s.Id))).ToList());
     }
 
     // ─── Order (Label) sync ───────────────────────────────────────────

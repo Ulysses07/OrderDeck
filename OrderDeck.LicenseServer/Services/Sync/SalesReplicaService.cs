@@ -139,6 +139,45 @@ public sealed class SalesReplicaService
                 hello.Envelope.ReplicaId, licenseId);
     }
 
+    /// <summary>Geri yükleme zincirinde izlenen en çok halka; döngüye ya da bozuk veriye karşı sınır.</summary>
+    public const int MaxLineageDepth = 16;
+
+    /// <summary>
+    /// Geri yüklenmiş kopyanın devralabileceği önceki kopyalar (spec 2026-10-13 §8.7): çağıranın
+    /// <c>PreviousReplicaId</c> zinciri boyunca, çağıranın bu lisansta ilk görüldüğü andan
+    /// (<see cref="ReplicaHistory.FirstSeenAt"/>) sonra hiç istek göndermemiş kopyalar.
+    ///
+    /// <para>Zincir ilk konuşan ya da bu lisansta hiç görülmemiş halkada kesilir. Konuşan halka hâlâ açık bir
+    /// veritabanıdır: kendi oturumları ve ondan daha eskilerinin oturumları onundur, en yeniye geçmez (iki veritabanı
+    /// birden açıksa sahiplik kimseye kendiliğinden geçmez; sahibi dönmeyecek yayını CLI kapatır, §4.10). Görülmemiş
+    /// halkanın sessizliği kanıtlanamaz; oturum sahibi zaten her zaman görülmüş bir kopyadır (v2 eklemesi kopya
+    /// satırını önce açar).</para>
+    /// </summary>
+    /// <param name="callerId">Çağıran kopya; zincirde yeniden görünürse döngüdür.</param>
+    /// <param name="caller">Çağıranın bu istekten önceki hâli; null = kopya bu istekle doğdu (önceki kimliği yok).</param>
+    public async Task<IReadOnlySet<Guid>> SilentPredecessorsAsync(
+        Guid licenseId, Guid callerId, ReplicaHistory? caller, CancellationToken ct)
+    {
+        var silent = new HashSet<Guid>();
+        if (caller?.PreviousReplicaId is not { } next) return silent;
+
+        var visited = new HashSet<Guid> { callerId };
+        for (var depth = 0; depth < MaxLineageDepth && visited.Add(next); depth++)
+        {
+            var link = await _db.WpfReplicas.AsNoTracking()
+                .Where(r => r.LicenseId == licenseId && r.ReplicaId == next)
+                .Select(r => new { r.LastSeenAt, r.PreviousReplicaId })
+                .SingleOrDefaultAsync(ct);
+            if (link is null || link.LastSeenAt > caller.FirstSeenAt) break;
+
+            silent.Add(next);
+            if (link.PreviousReplicaId is not { } previous) break;
+            next = previous;
+        }
+
+        return silent;
+    }
+
     private async Task<LicenseMode> ReadModeAsync(Guid licenseId, CancellationToken ct) =>
         await _db.Licenses.AsNoTracking()
             .Where(l => l.Id == licenseId)
