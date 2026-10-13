@@ -82,6 +82,29 @@
         .check { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; font-size:13.5px; color:var(--od-ink); }
         .check input { width:18px; height:18px; margin-top:1px; accent-color:var(--od-red); flex:0 0 auto; }
         .kvkk { font-size:11.5px; color:var(--od-muted); margin:14px 0 4px; }
+        /* Gizlilik Politikası sayfa içinde açılır kutu (details/summary): JS
+           yok, uygulama içi tarayıcıda da JS kapalıyken de açılıp kapanıyor.
+           Başlık onay etiketinin metniyle hizalı (18px kutu + 10px boşluk),
+           metin kutusu tam genişlik ve kendi içinde kayıyor. */
+        .policy { margin:0 0 6px; }
+        .policy > summary { display:inline-block; margin-left:28px; font-size:13.5px; font-weight:600;
+                            color:var(--od-red); text-decoration:underline; cursor:pointer; list-style:none; }
+        .policy > summary::-webkit-details-marker { display:none; }
+        .policy > summary::after { content:"\25B8"; display:inline-block; margin-left:4px; text-decoration:none; }
+        .policy[open] > summary::after { content:"\25BE"; }
+        .policy > summary:focus-visible { outline:2px solid var(--od-red); outline-offset:2px; border-radius:4px; }
+        .policy-box:focus-visible { outline:2px solid var(--od-red); outline-offset:2px; }
+        .policy-box { margin-top:8px; max-height:50vh; overflow:auto; -webkit-overflow-scrolling:touch;
+                      padding:12px 14px; border:1px solid var(--od-line); border-radius:10px; background:#fafafa;
+                      font-size:12.5px; line-height:1.55; color:var(--od-ink); }
+        .policy-box h2 { font-size:14px; font-weight:700; margin:16px 0 6px; }
+        .policy-box h3 { font-size:13px; font-weight:700; margin:12px 0 4px; }
+        .policy-box p, .policy-box ul { margin:0 0 8px; }
+        .policy-box ul { padding-left:18px; }
+        .policy-box li { margin-bottom:3px; }
+        .policy-box code { font-size:11.5px; word-break:break-all; }
+        .policy-box a { color:var(--od-red); overflow-wrap:anywhere; }
+        .policy-box .policy-date { color:var(--od-muted); font-size:12px; }
         .btn { width:100%; padding:14px; font-size:16px; font-weight:700; color:#fff; background:var(--od-red);
                border:0; border-radius:12px; cursor:pointer; margin-top:16px;
                transition:background .15s, transform .05s; }
@@ -394,9 +417,10 @@ else
                 </label>
             }
 
-            @* Bu paragrafın ya da alttaki onay kutusu etiketinin ANLAMINI
-               değiştirirsen KvkkNotice.TextVersion'ı artır (kural orada yazılı):
-               her kayıt okuduğunu onayladığı metnin sürümünü taşıyor. *@
+            @* Bu paragrafın, alttaki onay kutusu etiketinin ya da politika
+               kutusunun (_GizlilikPolitikasi.cshtml) ANLAMINI değiştirirsen
+               KvkkNotice.TextVersion'ı artır (kural orada yazılı): her kayıt
+               okuduğunu onayladığı metnin sürümünü taşıyor. *@
             <p class="kvkk">
                 Gönderdiğin bilgiler yalnızca sipariş, kargo ve fatura işlemlerin için yayıncı tarafından
                 kullanılır. Üçüncü kişilerle pazarlama amacıyla paylaşılmaz. İzin verdiğin kanallardan iletişim kurulabilir.
@@ -412,18 +436,29 @@ else
             @* ZORUNLU aydınlatma onayı. `required` JS kapalıyken de tarayıcıda
                durduruyor; yetkili kapı yine sunucu (RequireKvkkAcknowledgement).
                "Bağlantıyı kaldır" butonları formnovalidate taşıdığı için bu kutu
-               onları bloklamaz. Bağlantı kutuyu işaretlemez (etiket içindeki
-               etkileşimli öğe); yeni sekmede açılıyor ki form yarıda kalmasın.
-               Uygulama içi tarayıcı (Android WebView varsayılanı) onu yine de
-               aynı görünümde açabiliyor: .keep-draft tıklamada taslağı yazıyor
-               (aşağıdaki JS), geri dönen müşteri formunu dolu buluyor.
+               onları bloklamaz. Etikette bağlantı YOK: politika sayfadan
+               ayrılmadan, alttaki açılır kutuda okunuyor.
                Özniteliklerde at-işareti YOK — tag helper'lı öğede o kaçış bozuk
                derleniyor (bkz. e-posta alanı notu). *@
             <label class="check">
                 <input asp-for="Input.KvkkAcknowledged" type="checkbox" required />
-                <span>Bu aydınlatma metnini ve <a class="keep-draft" href="https://orderdeckapp.com/gizlilik-politikasi/" target="_blank" rel="noopener">Gizlilik Politikası</a>'nı okudum. <span class="req">*</span></span>
+                <span>Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. <span class="req">*</span></span>
             </label>
             <span class="err" id="kvkkErr" asp-validation-for="Input.KvkkAcknowledged"></span>
+            @* Gizlilik Politikası sayfa içinde: okumak için yeni sekme ya da
+               orderdeckapp.com'a gidiş yok (sahip kararı 2026-10-13). Yerel
+               details/summary — JS gerekmiyor, CSP'ye dokunmuyor, uygulama içi
+               tarayıcıda da açılıp kapanıyor. Etiketin DIŞINDA durmalı:
+               etiketin içindeki dokunuş onay kutusunu da işaretlerdi, details
+               de etikete giremez (etiketin içeriği yalnız satır içi öğe). Metin
+               _GizlilikPolitikasi.cshtml'de, web sayfasıyla aynı tutuluyor.
+               tabindex: kayan metin kutusu klavyeyle de kaydırılabilsin. *@
+            <details class="policy">
+                <summary>Gizlilik Politikası</summary>
+                <div class="policy-box" tabindex="0" role="region" aria-label="Gizlilik Politikası metni">
+                    <partial name="_GizlilikPolitikasi" />
+                </div>
+            </details>
             @* Müşterinin GÖRDÜĞÜ metnin sürümü. Sunucu onayı yalnız bu değer
                güncel KvkkNotice.TextVersion'a eşitse kabul ediyor: deploy'dan
                önce açılmış sayfadan gelen onay yeni sürümle kaydedilmesin.
@@ -1010,10 +1045,12 @@ else
 
     function fieldByName(n) { return document.getElementsByName(n)[0]; }
 
-    // .keep-draft: Gizlilik Politikası bağlantısı. Yeni sekmede açılması
-    // gerekiyor ama uygulama içi tarayıcı aynı görünümde açabiliyor; sayfa
-    // no-store, geri dönüşte boş gelirdi. Yeni sekmede açıldığında sayfa
-    // ayrılmıyor ve taslak tüketilmiyor: gönderimde siliniyor (aşağıda).
+    // .keep-draft: politika kutusunun İÇİNDEKİ bağlantılar (Veri Silme,
+    // Google izinleri…). Kutunun kendisi sayfadan ayrılmıyor, taslağa gerek
+    // yok. Bu bağlantılar yeni sekmede açılmalı ama uygulama içi tarayıcı aynı
+    // görünümde açabiliyor; sayfa no-store, geri dönüşte boş gelirdi. Yeni
+    // sekmede açıldığında sayfa ayrılmıyor ve taslak tüketilmiyor: gönderimde
+    // siliniyor (aşağıda).
     Array.prototype.forEach.call(document.querySelectorAll('.link-start, .keep-draft'), function (a) {
         a.addEventListener('click', function () {
             var d = {};
@@ -1053,7 +1090,7 @@ else
     // zaten durduruyor; aşağıdaki kapı yalnız tarayıcı doğrulaması devre
     // dışıyken Türkçe mesajla uyarıyor. Karar yine sunucuda.
     // Taslağa (DRAFT_FIELDS) BİLEREK girmiyor: onay gönderim anına ait,
-    // OAuth ya da politika gidiş-dönüşünden sonra yeniden işaretlenmeli.
+    // OAuth ya da bağlantı gidiş-dönüşünden sonra yeniden işaretlenmeli.
     var kvkk = document.getElementById('Input_KvkkAcknowledged');
     var kvkkErr = document.getElementById('kvkkErr');
     if (kvkk && kvkkErr) {
@@ -1175,7 +1212,7 @@ else
         }
         formErr.textContent = '';
 
-        // Gönderim gidiyor; taslak artık bayat. Politika bağlantısı yeni sekmede
+        // Gönderim gidiyor; taslak artık bayat. Kutudaki bir bağlantı yeni sekmede
         // açıldıysa yazılan taslak tüketilmedi: onay ekranında bu betik koşmuyor,
         // bırakılırsa aynı sekmede yeniden açılan form önceki kişinin
         // bilgileriyle dolar. Sunucu reddederse postalanan değerler zaten geri gelir.

@@ -7,6 +7,12 @@ export const metadata: Metadata = {
   description: `${BRAND} kişisel verileri nasıl işliyor — kapsam, saklama, paylaşım, kullanıcı hakları.`,
 };
 
+// Bu metnin bir kopyası kayıt formunda, onay kutusunun altındaki açılır
+// kutuda gösteriliyor: OrderDeck.LicenseServer/Pages/Public/_GizlilikPolitikasi.cshtml.
+// İKİSİ AYNI TUTULMALI — birini değiştiren diğerini de aynı değişiklikle
+// günceller ve KvkkNotice.TextVersion'ı artırır (kural
+// OrderDeck.LicenseServer/Services/IntakeForm/KvkkNotice.cs'te). Müşteri formda
+// bu metni okuduğunu onaylıyor; IntakeFormKvkkTests bu dosyanın özetini tutuyor.
 const EFFECTIVE_DATE = '2026-09-04';
 
 export default function PrivacyTr() {
