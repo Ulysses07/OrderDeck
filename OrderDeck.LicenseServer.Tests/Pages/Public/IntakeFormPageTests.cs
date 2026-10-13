@@ -2,6 +2,7 @@ using System.Net;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.Instagram;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -139,6 +140,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "ornekmusteri",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -236,6 +238,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "ornekmusteri",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -250,6 +253,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -389,6 +393,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Bilal",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Adres",
@@ -426,6 +431,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "https://www.instagram.com/ornekmusteri/?igsh=MWx5",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -465,6 +471,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.TikTokUsername"] = "https://www.tiktok.com/@ikincimusteri/video/7412345678901234567",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "İkinci Müşteri",
             ["Input.Email"] = "eda@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -507,6 +514,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "https://www.instagram.com/p/Cxyz123",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -552,6 +560,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.TikTokUsername"] = longUrl,
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "İkinci Müşteri",
             ["Input.Email"] = "eda@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -596,6 +605,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.YouTubeUsername"] = "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -640,6 +650,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             // Instagram adresi TikTok kutusuna yapıştırıldı.
             ["Input.TikTokUsername"] = "https://www.instagram.com/ornekmusteri",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -683,6 +694,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.FacebookUsername"] = "Örnek Müşteri",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -728,6 +740,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.FacebookUsername"] = "https://www.instagram.com/ornekmusteri",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",

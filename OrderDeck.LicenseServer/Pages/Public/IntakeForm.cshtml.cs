@@ -191,11 +191,30 @@ public class IntakeFormModel : PageModel
         /// işe yaramaz (false da bir değer).
         /// </summary>
         public bool KvkkAcknowledged { get; set; }
+
+        /// <summary>
+        /// Onayın verildiği metnin sürümü — müşterinin ekranda GÖRDÜĞÜ metin.
+        /// Sayfa gizli alana o anki <see cref="KvkkNotice.TextVersion"/>'ı
+        /// basıyor; sunucu güncel sürümle karşılaştırır, tutmazsa onay sayılmaz.
+        ///
+        /// Neden gerekli: kutu yalnız "işaretlendi" diyor. Metin değişip sürüm
+        /// artarken açık kalmış bir sekmede eski metni okuyup deploy'dan sonra
+        /// gönderen müşteri, bu alan olmadan YENİ sürümle kaydedilirdi — hiç
+        /// görmediği metni onaylamış görünürdü (<see cref="YouTubeConfirmedChannelId"/>
+        /// ile aynı desen).
+        ///
+        /// Bilerek [StringLength] YOK: uzunluk hatasının ekranda kutusu yok,
+        /// sayfa sessizce geri dönerdi. Uyuşmayan değer zaten "metin güncellendi"
+        /// hatasına düşüyor.
+        /// </summary>
+        public string? KvkkTextVersion { get; set; }
     }
 
     private const string KvkkKey = "Input.KvkkAcknowledged";
     private const string KvkkRequiredMessage =
         "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
+    private const string KvkkOutdatedMessage =
+        "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
     {
@@ -513,8 +532,9 @@ public class IntakeFormModel : PageModel
             youTubeChannelId: resolvedChannelId,
             city: Input.City,
             district: Input.District,
-            // Buraya yalnız geçerli ModelState ile gelinir, o da onayı içerir.
-            kvkkTextVersion: KvkkNotice.TextVersion);
+            // Buraya yalnız geçerli ModelState ile gelinir, o da onayı ve
+            // sayfanın gösterdiği sürümün güncel sürüme eşit olduğunu içerir.
+            kvkkTextVersion: Input.KvkkTextVersion);
 
         // Kimlik tek gönderimlik: bırakılsaydı aynı tarayıcıdan ikinci kayıt
         // (örn. aile üyesi) öncekinin kanalıyla açılırdı.
@@ -610,6 +630,12 @@ public class IntakeFormModel : PageModel
     /// checkbox tag helper o değeri bool'a çevirmeye çalışıp patlıyor
     /// (FormatException → 500). Girdiyi silip işaretsiz sayıyoruz: sonuç eksik
     /// alanla aynı — kendi mesajımız, veri kaybı yok.
+    ///
+    /// İşaretli onay, sayfanın gösterdiği sürüm (<see cref="IntakeFormInput.KvkkTextVersion"/>)
+    /// güncel sürüme eşit değilse — ya da hiç gelmediyse — düşer: kutu
+    /// işaretsiz, güncel metinle yeniden çizilir. ModelState girdisi silinmeli;
+    /// yoksa tag helper postalanan "true"yu geri basar ve müşteri yeni metni
+    /// okumadan tek tıkla göndermiş olur.
     /// </summary>
     private void RequireKvkkAcknowledgement()
     {
@@ -620,7 +646,17 @@ public class IntakeFormModel : PageModel
         }
 
         if (!Input.KvkkAcknowledged)
+        {
             ModelState.AddModelError(KvkkKey, KvkkRequiredMessage);
+            return;
+        }
+
+        if (!string.Equals(Input.KvkkTextVersion, KvkkNotice.TextVersion, StringComparison.Ordinal))
+        {
+            ModelState.Remove(KvkkKey);
+            Input.KvkkAcknowledged = false;
+            ModelState.AddModelError(KvkkKey, KvkkOutdatedMessage);
+        }
     }
 
     private void LoadLinkedIdentities()

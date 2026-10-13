@@ -414,13 +414,22 @@ else
                "Bağlantıyı kaldır" butonları formnovalidate taşıdığı için bu kutu
                onları bloklamaz. Bağlantı kutuyu işaretlemez (etiket içindeki
                etkileşimli öğe); yeni sekmede açılıyor ki form yarıda kalmasın.
+               Uygulama içi tarayıcı (Android WebView varsayılanı) onu yine de
+               aynı görünümde açabiliyor: .keep-draft tıklamada taslağı yazıyor
+               (aşağıdaki JS), geri dönen müşteri formunu dolu buluyor.
                Özniteliklerde at-işareti YOK — tag helper'lı öğede o kaçış bozuk
                derleniyor (bkz. e-posta alanı notu). *@
             <label class="check">
                 <input asp-for="Input.KvkkAcknowledged" type="checkbox" required />
-                <span>Bu aydınlatma metnini ve <a href="https://orderdeckapp.com/gizlilik-politikasi/" target="_blank" rel="noopener">Gizlilik Politikası</a>'nı okudum. <span class="req">*</span></span>
+                <span>Bu aydınlatma metnini ve <a class="keep-draft" href="https://orderdeckapp.com/gizlilik-politikasi/" target="_blank" rel="noopener">Gizlilik Politikası</a>'nı okudum. <span class="req">*</span></span>
             </label>
             <span class="err" id="kvkkErr" asp-validation-for="Input.KvkkAcknowledged"></span>
+            @* Müşterinin GÖRDÜĞÜ metnin sürümü. Sunucu onayı yalnız bu değer
+               güncel KvkkNotice.TextVersion'a eşitse kabul ediyor: deploy'dan
+               önce açılmış sayfadan gelen onay yeni sürümle kaydedilmesin.
+               Bilerek düz input (asp-for yok): değer hep o anki sabit, postalanan
+               eski değer yeniden çizimde geri basılmıyor. *@
+            <input type="hidden" name="Input.KvkkTextVersion" value="@KvkkNotice.TextVersion" />
 
             <input type="text" name="website" tabindex="-1" autocomplete="off" class="hidden-hp" />
 
@@ -1001,7 +1010,11 @@ else
 
     function fieldByName(n) { return document.getElementsByName(n)[0]; }
 
-    Array.prototype.forEach.call(document.querySelectorAll('.link-start'), function (a) {
+    // .keep-draft: Gizlilik Politikası bağlantısı. Yeni sekmede açılması
+    // gerekiyor ama uygulama içi tarayıcı aynı görünümde açabiliyor; sayfa
+    // no-store, geri dönüşte boş gelirdi. Yeni sekmede açıldığında sayfa
+    // ayrılmıyor ve taslak tüketilmiyor: gönderimde siliniyor (aşağıda).
+    Array.prototype.forEach.call(document.querySelectorAll('.link-start, .keep-draft'), function (a) {
         a.addEventListener('click', function () {
             var d = {};
             DRAFT_FIELDS.forEach(function (n) {
@@ -1040,7 +1053,7 @@ else
     // zaten durduruyor; aşağıdaki kapı yalnız tarayıcı doğrulaması devre
     // dışıyken Türkçe mesajla uyarıyor. Karar yine sunucuda.
     // Taslağa (DRAFT_FIELDS) BİLEREK girmiyor: onay gönderim anına ait,
-    // OAuth gidiş-dönüşünden sonra yeniden işaretlenmeli.
+    // OAuth ya da politika gidiş-dönüşünden sonra yeniden işaretlenmeli.
     var kvkk = document.getElementById('Input_KvkkAcknowledged');
     var kvkkErr = document.getElementById('kvkkErr');
     if (kvkk && kvkkErr) {
@@ -1161,6 +1174,12 @@ else
             return;
         }
         formErr.textContent = '';
+
+        // Gönderim gidiyor; taslak artık bayat. Politika bağlantısı yeni sekmede
+        // açıldıysa yazılan taslak tüketilmedi: onay ekranında bu betik koşmuyor,
+        // bırakılırsa aynı sekmede yeniden açılan form önceki kişinin
+        // bilgileriyle dolar. Sunucu reddederse postalanan değerler zaten geri gelir.
+        try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) { }
     });
 })();
 </script>

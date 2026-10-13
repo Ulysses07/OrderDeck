@@ -63,10 +63,10 @@ public sealed class IntakeFormSubmission
     /// öncesi satırlarda null: o tarihten önce kutu yoktu.</summary>
     public DateTimeOffset? KvkkAcknowledgedAt { get; set; }
 
-    /// <summary>Onaylanan metnin sürümü —
-    /// <see cref="Services.IntakeForm.KvkkNotice.TextVersion"/>. "Hangi metni
-    /// okudu" sorusunun cevabı; metnin kendisi git geçmişinde o sürümün
-    /// commit'inde. <see cref="KvkkAcknowledgedAt"/> ile birlikte dolu ya da
+    /// <summary>Onaylanan metnin sürümü: sayfanın müşteriye gösterdiği
+    /// <see cref="Services.IntakeForm.KvkkNotice.TextVersion"/> (gizli alandan
+    /// gelir, yalnız o anki sabite eşitse kabul edilir). "Hangi metni okudu"
+    /// sorusunun cevabı; metnin kendisi git geçmişinde o sürümün commit'inde. <see cref="KvkkAcknowledgedAt"/> ile birlikte dolu ya da
     /// birlikte null.</summary>
     public string? KvkkTextVersion { get; set; }
 

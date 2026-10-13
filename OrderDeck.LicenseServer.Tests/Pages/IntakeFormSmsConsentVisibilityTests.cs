@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -137,6 +138,7 @@ public sealed class IntakeFormSmsConsentVisibilityTests : IClassFixture<ApiFacto
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "kutu",
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Ad Soyad",
             ["Input.Email"] = "a@example.com",
             ["Input.Address"] = "Adres",

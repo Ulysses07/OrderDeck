@@ -105,6 +105,7 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",

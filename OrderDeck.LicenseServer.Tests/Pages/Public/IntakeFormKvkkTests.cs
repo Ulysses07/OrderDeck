@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using AngleSharp;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -25,7 +26,9 @@ namespace OrderDeck.LicenseServer.Tests.Pages.Public;
 public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 {
     private const string KvkkField = "Input.KvkkAcknowledged";
+    private const string VersionField = "Input.KvkkTextVersion";
     private const string RequiredMessage = "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
+    private const string OutdatedMessage = "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
     private const string PolicyUrl = "https://orderdeckapp.com/gizlilik-politikasi/";
 
     private readonly ApiFactory _factory;
@@ -99,9 +102,17 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     /// Liste, sözlük değil: tarayıcı işaretli kutu için AYNI ada iki değer
     /// gönderiyor ("true" + tag helper'ın gizli "false"u). <paramref name="kvkk"/>
     /// tam olarak o alan için giden değerler; boşsa alan hiç gönderilmez.
+    /// Metin sürümü güncel sayfanın bastığı değer; eski sekmeyi taklit eden
+    /// testler <see cref="FormWithVersion"/>'ı kullanıyor.
     /// </summary>
     private static FormUrlEncodedContent Form(
         string token, string slug, Entered e, params string[] kvkk)
+        => FormWithVersion(token, slug, e, KvkkNotice.TextVersion, kvkk);
+
+    /// <param name="version">Sayfanın gizli alanından giden metin sürümü;
+    /// null ise alan hiç gönderilmez.</param>
+    private static FormUrlEncodedContent FormWithVersion(
+        string token, string slug, Entered e, string? version, params string[] kvkk)
     {
         var fields = new List<KeyValuePair<string, string>>
         {
@@ -119,6 +130,7 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
             new("Input.WhatsAppConsent", "false"),
         };
         fields.AddRange(kvkk.Select(v => new KeyValuePair<string, string>(KvkkField, v)));
+        if (version is not null) fields.Add(new(VersionField, version));
         return new FormUrlEncodedContent(fields);
     }
 
@@ -140,6 +152,9 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 
     private static string KvkkInputTag(string html)
         => Tag(html, "<input[^>]*type=\"checkbox\"[^>]*name=\"Input\\.KvkkAcknowledged\"[^>]*>");
+
+    private static string VersionInputTag(string html)
+        => Tag(html, "<input[^>]*name=\"Input\\.KvkkTextVersion\"[^>]*>");
 
     /// <summary>Sunucunun KVKK alanına yazdığı hata. Sayfanın tamamında aramak
     /// yanıltır: aynı cümle istemci tarafı kapının JS'inde de duruyor.</summary>
@@ -330,6 +345,75 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         (await RowsAsync(customerId)).Should().BeEmpty();
     }
 
+    // ─── Metin sürümü: müşterinin GÖRDÜĞÜ metin ─────────────────────────────
+
+    /// <summary>
+    /// Sayfa açıkken metin değişip sürüm artarsa (deploy arası), eski sayfadan
+    /// gelen onay YENİ sürümle kaydedilmemeli: müşteri o metni hiç görmedi.
+    /// Sunucu sayfanın bastığı sürümü güncel sürümle karşılaştırıyor; tutmazsa
+    /// onay düşer, kutu işaretsiz ve güncel sürümle yeniden çizilir, veri kalır.
+    /// </summary>
+    [Fact]
+    public async Task Eski_surumlu_sayfadan_gelen_onay_reddedilir_ve_guncel_metinle_yeniden_sorulur()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, $"/r/{slug}");
+        var entered = Entered.New();
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
+            FormWithVersion(token, slug, entered, "kvkk-2000-01-01", "true", "false"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, "normal satır içi doğrulama hatası");
+        var html = WebUtility.HtmlDecode(await resp.Content.ReadAsStringAsync());
+        KvkkError(html).Should().Be(OutdatedMessage);
+        KvkkInputTag(html).Should().NotContain("checked", "onay yeni metin için yeniden verilmeli");
+        VersionInputTag(html).Should().Contain($"value=\"{KvkkNotice.TextVersion}\"",
+            "yeniden çizilen sayfa güncel metni ve sürümünü taşır");
+        Tag(html, "<input[^>]*id=\"Input_FullName\"[^>]*>").Should().Contain($"value=\"{entered.FullName}\"");
+        Tag(html, "<input[^>]*id=\"Input_Phone\"[^>]*>").Should().Contain($"value=\"{entered.Phone}\"");
+        (await RowsAsync(customerId)).Should().BeEmpty();
+
+        // Güncel sayfadan yeniden işaretleyip gönderen müşteri kabul edilir.
+        var again = await client.PostAsync($"/r/{slug}?handler=Submit",
+            Form(AdminLoginHelper.ExtractAntiForgeryToken(html), slug, entered, "true", "false"));
+        again.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await RowsAsync(customerId)).Should().ContainSingle()
+            .Which.KvkkTextVersion.Should().Be(KvkkNotice.TextVersion);
+    }
+
+    /// <summary>Sürüm alanı gelmeyen onay: hangi metnin görüldüğü bilinmiyor,
+    /// kanıt kurulamaz, onay sayılmaz.</summary>
+    [Fact]
+    public async Task Surum_alani_gelmezse_onay_sayilmaz()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, $"/r/{slug}");
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
+            FormWithVersion(token, slug, Entered.New(), null, "true", "false"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = WebUtility.HtmlDecode(await resp.Content.ReadAsStringAsync());
+        KvkkError(html).Should().Be(OutdatedMessage);
+        KvkkInputTag(html).Should().NotContain("checked");
+        (await RowsAsync(customerId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Sayfa_gosterdigi_metnin_surumunu_formun_icinde_tasir()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+
+        var tag = VersionInputTag(html);
+        tag.Should().Contain("type=\"hidden\"");
+        tag.Should().Contain($"value=\"{KvkkNotice.TextVersion}\"");
+        html.IndexOf(tag, StringComparison.Ordinal).Should()
+            .BeLessThan(html.IndexOf("</form>", StringComparison.Ordinal), "gönderimle birlikte gitmeli");
+    }
+
     // ─── Diğer giriş yolları ────────────────────────────────────────────────
 
     /// <summary>
@@ -429,6 +513,44 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// Uygulama içi tarayıcı (Android WebView varsayılanı) <c>target="_blank"</c>
+    /// bağlantıyı aynı görünümde açabiliyor. Sayfa no-store geldiği için geri
+    /// dönüşte yeniden çekiliyor ve alanlar boşalıyor; politika bağlantısına
+    /// dokunan müşteri formunu kaybetmesin diye o tıklama da OAuth butonları
+    /// gibi taslağı yazmalı. Taslak gönderimde silinmeli: bağlantı normal
+    /// tarayıcıda yeni sekmede açıldığında sayfa hiç ayrılmıyor, taslak
+    /// tüketilmiyor ve onay ekranından sonra aynı sekmede açılan form önceki
+    /// kişinin bilgileriyle dolardı.
+    ///
+    /// JS motoru yok; test, taslağı yazan tıklama dinleyicisinin seçicisini
+    /// betikten okuyup çizilen DOM'a uyguluyor.
+    /// </summary>
+    [Fact]
+    public async Task Politika_baglantisi_taslagi_kaydeder_gonderim_taslagi_siler()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+
+        var saveAt = html.IndexOf("sessionStorage.setItem(DRAFT_KEY", StringComparison.Ordinal);
+        saveAt.Should().BePositive("taslak kaydı sayfada olmalı");
+        var selectors = Regex.Matches(html[..saveAt], "querySelectorAll\\('([^']+)'\\)");
+        selectors.Should().NotBeEmpty();
+        var draftSelector = selectors[^1].Groups[1].Value;
+
+        var doc = await BrowsingContext.New(AngleSharp.Configuration.Default).OpenAsync(r => r.Content(html));
+        var policy = doc.QuerySelector($"a[href='{PolicyUrl}']");
+        policy.Should().NotBeNull();
+        doc.QuerySelectorAll(draftSelector).Should().Contain(policy!,
+            $"politika bağlantısı taslağı yazan seçiciye ({draftSelector}) girmeli");
+        policy!.ClassList.Should().NotContain("link-start", ".link-start buton stili taşıyor");
+
+        var submitAt = html.IndexOf("form.addEventListener('submit'", StringComparison.Ordinal);
+        submitAt.Should().BePositive();
+        html.IndexOf("sessionStorage.removeItem(DRAFT_KEY)", submitAt, StringComparison.Ordinal)
+            .Should().BePositive("geçen gönderim taslağı silmeli");
+    }
+
+    /// <summary>
     /// Formun CSP'si (deploy/Caddyfile): <c>default-src 'self'</c>, dış kaynak
     /// yalnız YouTube avatarı, <c>form-action 'self'</c>. Yeni kutu bunlardan
     /// hiçbirine dokunmamalı: dış adres yalnız gezinme bağlantısı
@@ -463,31 +585,64 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     /// <summary>
     /// Kayıtlar onaylanan metnin SÜRÜMÜNÜ taşıyor; metin değişip sürüm aynı
     /// kalırsa eski ve yeni metne verilen onaylar ayırt edilemez. Bu test
-    /// metnin özetini sürüme bağlıyor. Kırmızıysa: metni bilerek değiştirdiysen
-    /// <see cref="KvkkNotice.TextVersion"/>'ı artır (kural orada) ve aşağıdaki
-    /// iki sabiti birlikte güncelle.
+    /// onaylanan iki metnin özetini sürüme bağlıyor: formdaki paragraf + etiket
+    /// (bağlantı adresi dahil) ve etiketin "okudum" dediği Gizlilik
+    /// Politikası'nın kaynağı (aynı repoda, <c>web/app/(tr)/…/page.tsx</c>).
+    /// Kırmızıysa: değişiklik anlamı etkiliyorsa
+    /// <see cref="KvkkNotice.TextVersion"/>'ı artır (kural orada); her durumda
+    /// aşağıdaki sabitleri birlikte güncelle. Politika özeti boşlukları
+    /// tek boşluğa indirerek alınıyor: CRLF/LF ve yeniden biçimlendirme
+    /// kırmızı yakmaz, metin ya da işaretleme değişikliği yakar.
     /// </summary>
     [Fact]
     public async Task Metin_degisirse_surum_de_degismeli()
     {
         const string ExpectedVersion = "kvkk-2026-10-13";
-        const string ExpectedSha256 = "3CFE27445DE1E17C2F6BEF050AF49BF016F62EC945D531785F95DBFF4452A40C";
+        const string ExpectedFormSha256 = "3CFE27445DE1E17C2F6BEF050AF49BF016F62EC945D531785F95DBFF4452A40C";
+        const string ExpectedPolicySha256 = "EBE83D6EED6FF8153901F568A8404D79BFF9E45C36D5A45ACDA482B2046DA7E0";
 
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
 
         static string Text(string fragment)
             => Regex.Replace(WebUtility.HtmlDecode(Regex.Replace(fragment, "<[^>]+>", " ")), "\\s+", " ").Trim();
+        static string Sha(string s) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
 
         var paragraph = Tag(html, "<p class=\"kvkk\">.*?</p>");
         var label = Tag(html, "<label class=\"check\">\\s*<input[^>]*name=\"Input\\.KvkkAcknowledged\".*?</label>");
         var href = Regex.Match(label, "href=\"([^\"]+)\"").Groups[1].Value;
         var canonical = Text(paragraph) + "\n" + Text(label) + "\n" + href;
-        var sha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+        var formSha = Sha(canonical);
+
+        // Bağlantının gittiği sayfanın kaynağı: adresin yolu, Next.js'teki
+        // (tr) rota grubundaki klasör adı.
+        var policyPath = FindPolicySource(new Uri(href).AbsolutePath.Trim('/'));
+        var policy = Regex.Replace(await File.ReadAllTextAsync(policyPath), "\\s+", " ").Trim();
+        var policySha = Sha(policy);
 
         KvkkNotice.TextVersion.Should().Be(ExpectedVersion,
-            "sürüm değiştiyse bu testteki özeti de yeni metne göre güncelle");
-        sha.Should().Be(ExpectedSha256,
-            $"aydınlatma metni ya da onay etiketi değişti; KvkkNotice.TextVersion'ı artır. Yeni özet {sha}, metin:\n{canonical}");
+            "sürüm değiştiyse bu testteki özetleri de yeni metne göre güncelle");
+        formSha.Should().Be(ExpectedFormSha256,
+            $"aydınlatma metni ya da onay etiketi değişti; anlam değiştiyse KvkkNotice.TextVersion'ı artır. Yeni özet {formSha}, metin:\n{canonical}");
+        policySha.Should().Be(ExpectedPolicySha256,
+            $"Gizlilik Politikası değişti ({policyPath}); form verisini etkiliyorsa KvkkNotice.TextVersion'ı artır. Yeni özet {policySha}");
+    }
+
+    /// <summary>
+    /// Testler bin klasöründen koşuyor; repo kökünü yukarı yürüyerek buluyoruz.
+    /// Bulunamazsa sessizce geçmek yerine patlıyor: dosyası bulunamadığı için
+    /// yeşil kalan bir bekçi, bekçinin hiç olmamasından beter.
+    /// </summary>
+    private static string FindPolicySource(string route)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "web", "app", "(tr)", route, "page.tsx");
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException(
+            $"web/app/(tr)/{route}/page.tsx bulunamadı ({AppContext.BaseDirectory} klasöründen yukarı " +
+            "arandı). Politika taşındıysa ya da bağlantı değiştiyse bu testi güncelle; testi silme.");
     }
 }

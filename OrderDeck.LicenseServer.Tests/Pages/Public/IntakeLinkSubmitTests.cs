@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.IntakeForm.Login;
 using OrderDeck.LicenseServer.Tests.Controllers;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -94,6 +95,7 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
             ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
