@@ -91,7 +91,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             if (existing.TryGetValue(item.Id, out var current))
             {
                 current.Title = item.Title;
-                current.EndedAt = item.EndedAt;
+                // EndedAt tekdüze (spec 2026-10-13 §4.1, her biçimde): dolu
+                // değer NULL'a ya da başka bir değere dönmez. Bayat gönderim
+                // (yayın sürerken kuyruğa girmiş satır) bitmiş yayını yeniden
+                // "açıyordu".
+                current.EndedAt ??= item.EndedAt;
                 current.Platforms = item.Platforms;
                 current.Notes = item.Notes;
                 current.UpdatedAt = now;

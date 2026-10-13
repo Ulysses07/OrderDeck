@@ -31,13 +31,16 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly LabelRuleApplier _labels;
     private readonly CustomerIdResolver _customerIds;
+    private readonly ILogger<LicensesShipmentsSyncController> _log;
 
     public LicensesShipmentsSyncController(
-        LicenseDbContext db, LabelRuleApplier labels, CustomerIdResolver customerIds)
+        LicenseDbContext db, LabelRuleApplier labels, CustomerIdResolver customerIds,
+        ILogger<LicensesShipmentsSyncController> log)
     {
         _db = db;
         _labels = labels;
         _customerIds = customerIds;
+        _log = log;
     }
 
     public sealed record SyncShipmentItem(
@@ -62,8 +65,9 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         DateTimeOffset UpdatedAt);
 
     /// <summary>
-    /// Batch upsert from WPF outbox. WPF authoritative — server tüm field'ları
-    /// kabul eder. Mobile Panel sadece okur (Payment.Approve gibi mutation
+    /// Batch upsert from WPF outbox. WPF authoritative — server field'ları
+    /// kabul eder; tek istisna kargoya verilmiş dosya (Shipped tek yönlü, spec
+    /// 2026-10-13 §7.1). Mobile Panel sadece okur (Payment.Approve gibi mutation
     /// endpoint'i yok, çünkü Shipment kararını WPF veriyor).
     /// </summary>
     [HttpPost("sync")]
@@ -89,6 +93,7 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         // satırı değişmeden tekrar gönderebiliyor; "her sync = olay" deseydik
         // sohbet her turda yeniden etiketlenmeye çalışılırdı.
         var statusChangedCustomers = new List<string>();
+        var ignoredShipped = 0;
 
         var ids = req.Shipments.Select(s => s.Id).ToList();
         var existing = await _db.Shipments
@@ -113,6 +118,28 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
 
             if (existing.TryGetValue(item.Id, out var current))
             {
+                // Shipped tek yönlü (spec 2026-10-13 §7.1, M19; her kipte, v1
+                // dahil): kargoya verilmiş dosyanın kararı ve tutarı donmuştur.
+                // Yerelde de Shipped son durum; buraya gelen farklı bir değer
+                // ancak bayat bir yerel aynadır ve dosyayı yeniden açıp yeni
+                // etiketi ona bağlatırdı. Yalnız CustomerId kanonikleştirmesi
+                // sürer. Durum değişmediği için olay yok; yanıt sunucunun
+                // satırını döner.
+                if (current.Status == ShipmentStatus.Shipped)
+                {
+                    if (status != current.Status
+                        || item.CumulativeAmount != current.CumulativeAmount
+                        || item.HeldAt != current.HeldAt
+                        || item.ShippedAt != current.ShippedAt)
+                        ignoredShipped++;
+                    if (current.CustomerId != customerHex)
+                    {
+                        current.CustomerId = customerHex;
+                        current.UpdatedAt = now;
+                    }
+                    continue;
+                }
+
                 if (current.Status != status && !string.IsNullOrWhiteSpace(customerHex))
                     statusChangedCustomers.Add(customerHex);
 
@@ -149,6 +176,11 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
+
+        if (ignoredShipped > 0)
+            _log.LogInformation(
+                "shipments/sync: kargolanmış {Count} dosyaya gelen değişiklik yok sayıldı (license={LicenseId})",
+                ignoredShipped, licenseId);
 
         await _labels.TryApplyAndSaveByWpfCustomersAsync(
             licenseId, WaLabelEvent.ShipmentStatusChanged, statusChangedCustomers, ct);

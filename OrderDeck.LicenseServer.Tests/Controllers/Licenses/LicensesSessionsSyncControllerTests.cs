@@ -106,6 +106,54 @@ public class LicensesSessionsSyncControllerTests : IClassFixture<ApiFactory>
         stored.EndedAt.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// Spec 2026-10-13 §4.1: EndedAt tekdüzedir. Bayat bir oturum gönderimi (yayın sürerken kuyruğa girmiş satır)
+    /// bitmiş yayını NULL'layıp yeniden "açıyordu"; panel onu canlı gösteriyor, sunucu sonsuza kadar açık
+    /// sanıyordu.
+    /// </summary>
+    [Fact]
+    public async Task SyncSessions_bos_EndedAt_bitmis_yayini_yeniden_acmaz()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var sid = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow.AddHours(-3);
+        var endedAt = startedAt.AddHours(2);
+
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/sessions/sync",
+            new { sessions = new[] { new { id = sid, title = "Yayın 1", startedAt,
+                endedAt = (DateTimeOffset?)endedAt, platforms = "instagram", notes = (string?)null } }});
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/sessions/sync",
+            new { sessions = new[] { new { id = sid, title = "Yayın 1", startedAt,
+                endedAt = (DateTimeOffset?)null, platforms = "instagram", notes = (string?)null } }});
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<List<SyncedSessionDto>>())!.Single().EndedAt.Should().Be(endedAt);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.StreamSessions.SingleAsync(s => s.Id == sid)).EndedAt.Should().Be(endedAt);
+    }
+
+    /// <summary>§4.1: dolu EndedAt başka bir değere de dönmez; ilk kapanış anı kalır.</summary>
+    [Fact]
+    public async Task SyncSessions_EndedAt_ilk_kapanis_aninda_kalir()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var sid = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow.AddHours(-3);
+        var endedAt = startedAt.AddHours(2);
+
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/sessions/sync",
+            new { sessions = new[] { new { id = sid, title = "Yayın 1", startedAt,
+                endedAt = (DateTimeOffset?)endedAt, platforms = "instagram", notes = (string?)null } }});
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/sessions/sync",
+            new { sessions = new[] { new { id = sid, title = "Yayın 1", startedAt,
+                endedAt = (DateTimeOffset?)endedAt.AddMinutes(40), platforms = "instagram", notes = (string?)null } }});
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.StreamSessions.SingleAsync(s => s.Id == sid)).EndedAt.Should().Be(endedAt);
+    }
+
     [Fact]
     public async Task SyncOrders_inserts_order_with_session_reference()
     {
