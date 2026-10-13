@@ -17,6 +17,8 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 ///   <item><c>POST sales/hello</c> — kopyanın kimliği, yetenek düzeyi, bildirdiği kargo ayarı ve geçiş bayrakları.</item>
 ///   <item><c>GET sales/state</c> — her turda (30 sn) okunan lisans durumu; <c>replicaId</c> ve <c>seenMode</c>
 ///   verilirse kalp atışı sayılır.</item>
+///   <item><c>GET sales/changes</c> — değişiklik akışı (§4.4, <see cref="SalesChangesFeed"/>); kalp atışı state ile
+///   aynı.</item>
 /// </list>
 /// </summary>
 [ApiController]
@@ -31,13 +33,18 @@ public sealed class LicensesSalesController : ControllerBase
 
     private readonly LicenseDbContext _db;
     private readonly SalesReplicaService _replicas;
+    private readonly SalesChangesFeed _feed;
     private readonly SalesSyncOptions _options;
 
     public LicensesSalesController(
-        LicenseDbContext db, SalesReplicaService replicas, IOptions<SalesSyncOptions> options)
+        LicenseDbContext db,
+        SalesReplicaService replicas,
+        SalesChangesFeed feed,
+        IOptions<SalesSyncOptions> options)
     {
         _db = db;
         _replicas = replicas;
+        _feed = feed;
         _options = options.Value;
     }
 
@@ -145,14 +152,7 @@ public sealed class LicensesSalesController : ControllerBase
         Guid licenseId, [FromQuery] Guid? replicaId, [FromQuery] int? seenMode, CancellationToken ct)
     {
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
-
-        if (replicaId is not null || seenMode is not null)
-        {
-            if (!SalesEnvelope.TryRead(replicaId, SalesEnvelope.V2, seenMode, out var envelope, out var error))
-                return Problem(title: "invalid-envelope", detail: error, statusCode: 400);
-            await _replicas.AcceptAsync(
-                licenseId, envelope, Request.Headers.UserAgent.ToString(), "sales/state", ct);
-        }
+        if (await HeartbeatAsync(licenseId, replicaId, seenMode, "sales/state", ct) is { } invalid) return invalid;
 
         var license = await _db.Licenses.AsNoTracking()
             .Where(l => l.Id == licenseId)
@@ -187,6 +187,44 @@ public sealed class LicensesSalesController : ControllerBase
             Shipping: null,
             _options.ScrubOrderTextOnPurge,
             await LegacyMachinesAsync(licenseId, ct)));
+    }
+
+    // ─── changes ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Değişiklik akışı (§4.4): devredilmiş yayınlar, siparişleri ve kargo dosyaları ChangeSeq sırasıyla; yan listede
+    /// sayfadaki siparişlerin oturumları ve müşteri taslakları. Mod Off'ta da çalışır. Ayrıntı
+    /// <see cref="SalesChangesFeed"/>'te.
+    /// </summary>
+    /// <param name="take">Sayfa boyu; 1–500 aralığına kırpılır.</param>
+    /// <param name="replicaId">Verilirse (<paramref name="seenMode"/> ile) kalp atışı sayılır, state ile aynı.</param>
+    [HttpGet("changes")]
+    public async Task<IActionResult> Changes(
+        Guid licenseId,
+        [FromQuery] long afterSeq = 0,
+        [FromQuery] int take = SalesChangesFeed.MaxTake,
+        [FromQuery] Guid? replicaId = null,
+        [FromQuery] int? seenMode = null,
+        CancellationToken ct = default)
+    {
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        if (await HeartbeatAsync(licenseId, replicaId, seenMode, "sales/changes", ct) is { } invalid) return invalid;
+
+        return Ok(await _feed.ReadAsync(licenseId, afterSeq, take, ct));
+    }
+
+    /// <summary>
+    /// Okuma uçlarının kalp atışı: <c>replicaId</c> ya da <c>seenMode</c> verildiyse ikisi birlikte v2 zarfıdır ve
+    /// kopya satırına yazılır; hiçbiri yoksa hiçbir şey yazılmaz (protokolsüz okuma iz bırakmaz). Yarım zarf 400.
+    /// </summary>
+    private async Task<IActionResult?> HeartbeatAsync(
+        Guid licenseId, Guid? replicaId, int? seenMode, string endpoint, CancellationToken ct)
+    {
+        if (replicaId is null && seenMode is null) return null;
+        if (!SalesEnvelope.TryRead(replicaId, SalesEnvelope.V2, seenMode, out var envelope, out var error))
+            return Problem(title: "invalid-envelope", detail: error, statusCode: 400);
+        await _replicas.AcceptAsync(licenseId, envelope, Request.Headers.UserAgent.ToString(), endpoint, ct);
+        return null;
     }
 
     /// <summary>

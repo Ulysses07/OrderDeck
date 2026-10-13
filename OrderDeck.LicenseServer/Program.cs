@@ -148,6 +148,8 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReplicaService>();
         // Yayının devri (§4.1): sessions/sync, sales/backfill ve onarım işi aynı yazıcıyı kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SessionReleaser>();
+        // Satış değişiklik akışı (§4.4, GET sales/changes).
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesChangesFeed>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
