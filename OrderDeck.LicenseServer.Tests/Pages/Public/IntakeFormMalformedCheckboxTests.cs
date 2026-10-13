@@ -68,10 +68,10 @@ public sealed class IntakeFormMalformedCheckboxTests : IClassFixture<YouTubeIden
     {
         var (slug, customerId) = await SeedConfigAsync();
         var client = NewClient();
-        var token = await TokenAsync(client, slug);
+        var page = await OpenFormAsync(client, slug);
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
-            Form(token, slug, ("Input.Phone", ""), (field, value)));
+            Form(page, slug, ("Input.Phone", ""), (field, value)));
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK, "normal satır içi doğrulama yanıtı");
         var raw = await resp.Content.ReadAsStringAsync();
@@ -99,10 +99,10 @@ public sealed class IntakeFormMalformedCheckboxTests : IClassFixture<YouTubeIden
     {
         var (slug, customerId) = await SeedConfigAsync();
         var client = NewClient();
-        var token = await TokenAsync(client, slug);
+        var page = await OpenFormAsync(client, slug);
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
-            Form(token, slug, (field, value)));
+            Form(page, slug, (field, value)));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         var row = (await RowsAsync(customerId)).Should().ContainSingle().Subject;
@@ -119,10 +119,10 @@ public sealed class IntakeFormMalformedCheckboxTests : IClassFixture<YouTubeIden
     {
         var (slug, customerId) = await SeedConfigAsync(smsEnabled: false);
         var client = NewClient();
-        var token = await TokenAsync(client, slug);
+        var page = await OpenFormAsync(client, slug);
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
-            Form(token, slug, ("Input.SmsConsent", "on")));
+            Form(page, slug, ("Input.SmsConsent", "on")));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         (await RowsAsync(customerId)).Should().ContainSingle()
@@ -136,10 +136,10 @@ public sealed class IntakeFormMalformedCheckboxTests : IClassFixture<YouTubeIden
     {
         var (slug, customerId) = await SeedConfigAsync();
         var client = NewClient();
-        var token = await TokenAsync(client, slug);
+        var page = await OpenFormAsync(client, slug);
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
-            Form(token, slug, ("website", "http://spam.example"), ("Input.WhatsAppConsent", "on")));
+            Form(page, slug, ("website", "http://spam.example"), ("Input.WhatsAppConsent", "on")));
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await RowsAsync(customerId)).Should().BeEmpty();
@@ -210,19 +210,36 @@ public sealed class IntakeFormMalformedCheckboxTests : IClassFixture<YouTubeIden
         HandleCookies = true
     });
 
-    private static async Task<string> TokenAsync(HttpClient client, string slug)
-        => AdminLoginHelper.ExtractAntiForgeryToken(
-            await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync());
+    /// <summary>Formun gönderimde geri yolladığı sayfa değerleri.
+    /// <see cref="KvkkTextVersion"/>: zorunlu KVKK onayının (PR #511) sayfaya
+    /// bastığı metin sürümü; o sürüm yoksa null.</summary>
+    private sealed record FormPage(string Token, string? KvkkTextVersion);
+
+    private static async Task<FormPage> OpenFormAsync(HttpClient client, string slug)
+    {
+        var html = await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync();
+        var kvkk = System.Text.RegularExpressions.Regex.Match(
+            html, "name=\"Input.KvkkTextVersion\" value=\"([^\"]*)\"");
+        return new FormPage(AdminLoginHelper.ExtractAntiForgeryToken(html),
+            kvkk.Success ? kvkk.Groups[1].Value : null);
+    }
 
     /// <summary>Geçerli bir gönderim; <paramref name="overrides"/> alanı ezer
     /// ya da ekler. YouTube bilerek boş: kanal çözülmeyince onay kutusunun
-    /// kendi kuralı devreye girmiyor, kutu yine de sayfada çiziliyor.</summary>
-    private static FormUrlEncodedContent Form(string token, string slug, params (string Key, string Value)[] overrides)
+    /// kendi kuralı devreye girmiyor, kutu yine de sayfada çiziliyor.
+    ///
+    /// KVKK onayı tarayıcının yaptığı gibi gönderiliyor: kutu işaretli, sürüm
+    /// sayfanın gizli alanından. Bu dosya PR #511'den bağımsız yazıldı; o PR
+    /// birleşince "geçerli form" onay ister, birleşmeden önce iki alan da
+    /// bağlayıcıda karşılığı olmadığı için yok sayılır — birleşme sırası ne
+    /// olursa olsun testler aynı şeyi ölçer.</summary>
+    private static FormUrlEncodedContent Form(FormPage page, string slug, params (string Key, string Value)[] overrides)
     {
         var d = new Dictionary<string, string>
         {
-            ["__RequestVerificationToken"] = token,
+            ["__RequestVerificationToken"] = page.Token,
             ["Slug"] = slug,
+            ["Input.KvkkAcknowledged"] = "true",
             ["Input.InstagramUsername"] = $"ig_{Guid.NewGuid():N}"[..16],
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = $"m-{Guid.NewGuid():N}@example.com",
@@ -231,6 +248,7 @@ public sealed class IntakeFormMalformedCheckboxTests : IClassFixture<YouTubeIden
             ["Input.District"] = "Kadıköy",
             ["Input.Phone"] = TestPhone.NewNational()
         };
+        if (page.KvkkTextVersion is not null) d["Input.KvkkTextVersion"] = page.KvkkTextVersion;
         foreach (var (k, v) in overrides) d[k] = v;
         return new FormUrlEncodedContent(d);
     }
