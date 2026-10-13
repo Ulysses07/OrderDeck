@@ -14,8 +14,9 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
-/// <c>sessions/sync</c>'te yayın sahipliği ve devir — spec 2026-10-13 §2, §4.1, §8.7, M2. InMemory: devrin koşullu
-/// yazımı burada izlenen varlıklarla yürür.
+/// <c>sessions/sync</c>'te yayın sahipliği ve devir — spec 2026-10-13 §2, §4.1, §8.7, M2. InMemory: devrin siparişleri
+/// damgalaması burada izlenen varlıklarla yürür; aynı işlem ve rowversion sırası
+/// <see cref="SessionReleaseRelationalTests"/>'te gerçek SQL Server'da.
 /// </summary>
 public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSyncTests.LogApiFactory>
 {
@@ -84,14 +85,20 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
         (await SessionAsync(sessionId)).UnsentLabelCount.Should().Be(1);
     }
 
-    /// <summary>§4.1: kuyruğu boşalmış sahibin <c>Release = true</c> kapanışı yayını devreder.</summary>
+    /// <summary>§4.1, DM3: kuyruğu boşalmış sahibin <c>Release = true</c> kapanışı yayını devreder ve yayının bütün
+    /// siparişlerine aynı devir anını basar.</summary>
     [Fact]
-    public async Task Sahibin_Release_true_kapanisi_devreder()
+    public async Task Sahibin_Release_true_kapanisi_devreder_ve_siparisleri_damgalar()
     {
         var (client, licenseId) = await SetupAsync();
         var replicaId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
         await PushSessionsAsync(client, licenseId, V2Body(replicaId, V2Session(sessionId)));
+        var first = await PushOrderAsync(client, licenseId, sessionId);
+        var second = await PushOrderAsync(client, licenseId, sessionId);
+        var otherSession = Guid.NewGuid();
+        await PushSessionsAsync(client, licenseId, V2Body(replicaId, V2Session(otherSession)));
+        var unrelated = await PushOrderAsync(client, licenseId, otherSession);
         var before = DateTimeOffset.UtcNow;
 
         var echo = (await PushSessionsAsync(client, licenseId,
@@ -99,7 +106,11 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
 
         echo.ReleasedAt.Should().NotBeNull().And.BeOnOrAfter(before);
         echo.Status.Should().Be("applied");
-        (await SessionAsync(sessionId)).ReleasedAt.Should().Be(echo.ReleasedAt);
+        var stored = await SessionAsync(sessionId);
+        stored.ReleasedAt.Should().Be(echo.ReleasedAt);
+        (await OrderAsync(first)).SessionReleasedAt.Should().Be(stored.ReleasedAt);
+        (await OrderAsync(second)).SessionReleasedAt.Should().Be(stored.ReleasedAt);
+        (await OrderAsync(unrelated)).SessionReleasedAt.Should().BeNull("başka yayının siparişi damgalanmaz");
     }
 
     /// <summary>v2 eklemesi kapanmış ve kuyruğu boş yayını da (çevrimdışı açılıp kapanmış) tek gönderimde devreder:
@@ -146,19 +157,21 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
 
     // ── Miras yol: v1 ve sahipsiz oturum ──────────────────────────────────────
 
-    /// <summary>§4.1: protokolsüz kapanış bugünkü sırayla devreder (EndedAt dolu gelmesi yeter). Kapanmış yayının
-    /// v1 eklemesi de devredilir.</summary>
+    /// <summary>§4.1: protokolsüz kapanış bugünkü sırayla devreder (EndedAt dolu gelmesi yeter); siparişler
+    /// damgalanır. Kapanmış yayının v1 eklemesi de devredilir.</summary>
     [Fact]
     public async Task V1_kapanisi_devreder()
     {
         var (client, licenseId) = await SetupAsync();
         var sessionId = Guid.NewGuid();
         await PushSessionsAsync(client, licenseId, V1Body(V1Session(sessionId)));
+        var orderId = await PushOrderAsync(client, licenseId, sessionId);
 
         var echo = (await PushSessionsAsync(client, licenseId, V1Body(V1Session(sessionId, EndedAt)))).Single();
 
         echo.ReleasedAt.Should().NotBeNull();
         (await SessionAsync(sessionId)).ReleasedAt.Should().Be(echo.ReleasedAt);
+        (await OrderAsync(orderId)).SessionReleasedAt.Should().Be(echo.ReleasedAt);
 
         var endedOnInsert = Guid.NewGuid();
         (await PushSessionsAsync(client, licenseId, V1Body(V1Session(endedOnInsert, EndedAt))))
@@ -323,6 +336,31 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
         await PushSessionsAsync(client, licenseId, V2Body(restored, V2Session(sessionId, EndedAt, release: true)));
 
         (await SessionAsync(sessionId)).OwnerReplicaId.Should().Be(previous);
+    }
+
+    // ── Sipariş ekleme (DM3) ──────────────────────────────────────────────────
+
+    /// <summary>DM3: devirden sonra gelen sipariş eklemesi (force-end sonrası satış, geç gönderim) oturumun devir
+    /// anını kopyalar ve hemen akışa girer — v1'de de v2 zarfında da. Devredilmemiş oturumun eklemesi boş kalır.</summary>
+    [Fact]
+    public async Task Devirden_sonra_eklenen_siparis_devir_anini_kopyalar()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var replicaId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var liveSession = Guid.NewGuid();
+        await PushSessionsAsync(client, licenseId, V2Body(replicaId, V2Session(sessionId, EndedAt, release: true)));
+        await PushSessionsAsync(client, licenseId, V2Body(replicaId, V2Session(liveSession)));
+        var releasedAt = (await SessionAsync(sessionId)).ReleasedAt;
+        releasedAt.Should().NotBeNull();
+
+        var v1Order = await PushOrderAsync(client, licenseId, sessionId);
+        var v2Order = await PushOrderAsync(client, licenseId, sessionId, replicaId);
+        var liveOrder = await PushOrderAsync(client, licenseId, liveSession, replicaId);
+
+        (await OrderAsync(v1Order)).SessionReleasedAt.Should().Be(releasedAt);
+        (await OrderAsync(v2Order)).SessionReleasedAt.Should().Be(releasedAt);
+        (await OrderAsync(liveOrder)).SessionReleasedAt.Should().BeNull();
     }
 
     // ── Bildirim ──────────────────────────────────────────────────────────────

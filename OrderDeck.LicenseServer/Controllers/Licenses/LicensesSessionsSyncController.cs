@@ -418,11 +418,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             .Select(o => o.SessionId!.Value)
             .Distinct()
             .ToList();
+        // Oturum başına devir anı: ekleme onu kopyalar (DM3).
+        var sessionReleasedAt = new Dictionary<Guid, DateTimeOffset?>();
         if (sessionIds.Count > 0)
         {
-            var ownedSessionCount = await _db.StreamSessions
-                .CountAsync(s => sessionIds.Contains(s.Id) && s.LicenseId == licenseId, ct);
-            if (ownedSessionCount != sessionIds.Count)
+            sessionReleasedAt = await _db.StreamSessions
+                .Where(s => sessionIds.Contains(s.Id) && s.LicenseId == licenseId)
+                .Select(s => new { s.Id, s.ReleasedAt })
+                .ToDictionaryAsync(s => s.Id, s => s.ReleasedAt, ct);
+            if (sessionReleasedAt.Count != sessionIds.Count)
                 return Problem(
                     title: "unknown-session",
                     detail: "Pakette bu lisansa ait olmayan SessionId var.",
@@ -514,7 +518,10 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     IsTentativeBackup = item.IsTentativeBackup,
                     ProductId = item.ProductId,
                     ProductVariantId = item.ProductVariantId,
-                    UpdatedAt = now
+                    UpdatedAt = now,
+                    // DM3 (her biçimde): devredilmiş oturuma sonradan gelen ekleme (force-end sonrası satış, geç
+                    // gönderim, yedek) devir anını kopyalar ve hemen akışa girer; devir onu bir daha damgalamaz.
+                    SessionReleasedAt = item.SessionId is { } sid ? sessionReleasedAt[sid] : null,
                 };
                 _db.Orders.Add(order);
                 rows.Add(order);

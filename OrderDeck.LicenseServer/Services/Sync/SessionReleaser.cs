@@ -4,13 +4,23 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Services.Sync;
 
 /// <summary>
-/// Yayının devri (release) — spec 2026-10-13 §2, §4.1. Devir, yayının birim yazıcısını sahip kopyadan sunucuya
-/// geçirir: <c>ReleasedAt</c> sunucu saatiyle yazılır ve bir daha değişmez. Tek yazım yolu budur; <c>sessions/sync</c>,
-/// <c>sales/backfill</c> ve onarım işi (§4.9) aynı kodu çağırır.
+/// Yayının devri (release) — spec 2026-10-13 §2, §4.1, DM3. Devir, yayının birim yazıcısını sahip kopyadan sunucuya
+/// geçirir: <c>ReleasedAt</c> sunucu saatiyle yazılır ve bir daha değişmez; aynı işlemde yayının bütün siparişlerine
+/// <c>SessionReleasedAt</c> olarak aynı an basılır ve siparişler değişiklik akışına o anda girer. Tek yazım yolu
+/// budur; <c>sessions/sync</c>, <c>sales/backfill</c> ve onarım işi (§4.9) aynı kodu çağırır.
 ///
 /// <para><b>Koşul veritabanında.</b> Oturum yalnız bitmişse (<c>EndedAt</c> dolu) ve henüz devredilmemişse yazılır.
 /// İlişkisel sağlayıcıda bu tek bir koşullu UPDATE'tir: aynı yayını aynı anda devretmeye çalışan iki istekten ikincisi
-/// birincinin işlemini bekler, sonra satırı devredilmiş bulur ve yazmaz — devir anı ilk yazandır.</para>
+/// birincinin işlemini bekler, sonra satırı devredilmiş bulur ve yazmaz — devir anı ilk yazandır, siparişleri de o
+/// damgalar.</para>
+///
+/// <para><b>Sıra önemli.</b> Önce oturum, sonra siparişler: siparişlerin rowversion'ı (<c>ChangeSeq</c>) oturumunkinden
+/// büyük olur, akış oturumu siparişlerinden önce görür (§4.4). Damga siparişin birimine dokunmaz: <c>SyncVersion</c>
+/// (telde <c>Version</c>, komutların beklenen sürümü) ilerlemez; koşullu UPDATE jetonu atladığı için eşzamanlı bir
+/// <c>orders/sync</c> güncellemesiyle de çakışmaz (o yol <c>SessionReleasedAt</c> yazmaz).</para>
+///
+/// <para><b>Kalan pencere.</b> Devirle yarışan bir sipariş eklemesi oturumu devredilmemiş okuyup damgasız
+/// eklenebilir; onu onarım işi kapatır (§4.9-b, DM3).</para>
 ///
 /// <para><b>İşlem.</b> Çağıranın açık işlemi varsa onun içinde koşar (uç, kendi yazımlarıyla devri tek işlemde
 /// tutar); yoksa kendi işlemini açar. InMemory'de ne işlem ne <c>ExecuteUpdate</c> var: aynı kural izlenen
@@ -44,7 +54,12 @@ public sealed class SessionReleaser
             var updated = await _db.StreamSessions
                 .Where(s => s.LicenseId == licenseId && s.Id == id && s.EndedAt != null && s.ReleasedAt == null)
                 .ExecuteUpdateAsync(u => u.SetProperty(s => s.ReleasedAt, releasedAt), ct);
-            if (updated > 0) released.Add(id);
+            if (updated == 0) continue;
+
+            released.Add(id);
+            await _db.Orders
+                .Where(o => o.LicenseId == licenseId && o.SessionId == id && o.SessionReleasedAt == null)
+                .ExecuteUpdateAsync(u => u.SetProperty(o => o.SessionReleasedAt, releasedAt), ct);
         }
 
         if (ownTransaction is not null) await ownTransaction.CommitAsync(ct);
@@ -64,8 +79,16 @@ public sealed class SessionReleaser
             session.ReleasedAt = releasedAt;
             released.Add(session.Id);
         }
+        if (released.Count == 0) return released;
 
-        if (released.Count > 0) await _db.SaveChangesAsync(ct);
+        var orders = await _db.Orders
+            .Where(o => o.LicenseId == licenseId
+                && o.SessionId != null && released.Contains(o.SessionId.Value)
+                && o.SessionReleasedAt == null)
+            .ToListAsync(ct);
+        foreach (var order in orders) order.SessionReleasedAt = releasedAt;
+
+        await _db.SaveChangesAsync(ct);
         return released;
     }
 }
