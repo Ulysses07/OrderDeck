@@ -108,6 +108,31 @@ public sealed class SalesReplicaServiceTests
         (await db.WpfReplicas.AnyAsync()).Should().BeFalse();
     }
 
+    /// <summary>
+    /// Disk klonu (§8.7): aynı ReplicaId farklı bir donanım parmak iziyle hello gönderir. İlk parmak izi korunur ve
+    /// uyarı düşer; uyarıda yalnız kimlikler var — parmak izi ve makine adı günlüğe yazılmaz. Aynı parmak iziyle
+    /// tekrar hello olağandır.
+    /// </summary>
+    [Fact]
+    public async Task Hello_farkli_parmak_izi_klon_uyarisi_yazar_ilk_izi_korur()
+    {
+        var licenseId = await SeedLicenseAsync(SalesSyncMode.Off);
+        var replicaId = Guid.NewGuid();
+        var original = $"fp-{Guid.NewGuid():N}";
+        var clone = $"fp-{Guid.NewGuid():N}";
+
+        (await HelloAsync(licenseId, replicaId, original)).Entries.Should().BeEmpty();
+        (await HelloAsync(licenseId, replicaId, original)).Entries.Should().BeEmpty("aynı makinenin yeniden hello'su");
+
+        var cloneLog = await HelloAsync(licenseId, replicaId, clone);
+
+        var warning = cloneLog.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning).Subject;
+        warning.Message.Should().Contain(replicaId.ToString()).And.Contain(licenseId.ToString());
+        warning.Message.Should().NotContain(original).And.NotContain(clone).And.NotContain("PC-KLON");
+        await using var db = Db();
+        (await db.WpfReplicas.SingleAsync(r => r.ReplicaId == replicaId)).HardwareFingerprint.Should().Be(original);
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
     private async Task<(SalesRequestContext Context, LogRecorder<SalesReplicaService> Log)> AcceptAsync(
@@ -119,6 +144,19 @@ public sealed class SalesReplicaServiceTests
             .AcceptAsync(licenseId, envelope, "OrderDeck-WPF/0.9.11", endpoint, CancellationToken.None);
         db.ChangeTracker.Entries().Should().BeEmpty("kalp atışı ucun değişiklik izleyicisinde kalmaz");
         return (ctx, log);
+    }
+
+    private async Task<LogRecorder<SalesReplicaService>> HelloAsync(Guid licenseId, Guid replicaId, string fingerprint)
+    {
+        await using var db = Db();
+        var log = new LogRecorder<SalesReplicaService>();
+        await new SalesReplicaService(db, log).HelloAsync(
+            licenseId,
+            new ReplicaHello(V2(replicaId, SalesSyncMode.Off), null, "PC-KLON", fingerprint, 3,
+                ReportsShipping: false, null, null, BackfillCompleted: false, PaymentHistoryCompleted: false),
+            "OrderDeck-WPF/0.9.11",
+            CancellationToken.None);
+        return log;
     }
 
     private async Task<Guid> SeedLicenseAsync(SalesSyncMode mode)

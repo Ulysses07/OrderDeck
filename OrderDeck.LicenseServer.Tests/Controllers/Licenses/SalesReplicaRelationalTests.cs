@@ -104,12 +104,62 @@ public sealed class SalesReplicaRelationalTests : IAsyncLifetime
         (await TraceAsync()).Trace.Should().BeOnOrAfter(beforeStale);
     }
 
+    /// <summary>
+    /// <c>sales/state</c> her 30 sn'de bir kalp atışıdır ve kopya satırına yazılır; sahip olduğu oturumun satırına
+    /// yazmaz. Oturumun ChangeSeq'i (rowversion, akış imleci §4.4) bu yüzden ilerlemez. Sorgu gerçek SQL Server'da
+    /// filtreli indeksle ve kopya satırına bağlı alt sorguyla koşar.
+    /// </summary>
+    [Fact]
+    public async Task State_kalp_atisi_oturumun_ChangeSeq_ini_ilerletmez()
+    {
+        var replicaId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfReplicas.Add(new WpfReplica
+            {
+                LicenseId = _licenseId, ReplicaId = replicaId, Protocol = 2,
+                FirstSeenAt = DateTimeOffset.UtcNow.AddDays(-1), LastSeenAt = DateTimeOffset.UtcNow.AddHours(-1),
+            });
+            db.StreamSessions.Add(new StreamSession
+            {
+                Id = sessionId, LicenseId = _licenseId, Title = "Yayın", StartedAt = DateTimeOffset.UtcNow.AddHours(-1),
+                Platforms = "youtube", UpdatedAt = DateTimeOffset.UtcNow, OwnerReplicaId = replicaId,
+                OwnerMachineName = "PC-A",
+            });
+            await db.SaveChangesAsync();
+        }
+        var seqBefore = await SessionSeqAsync(sessionId);
+        var before = DateTimeOffset.UtcNow;
+
+        var resp = await _client.GetAsync($"/api/v1/licenses/{_licenseId}/sales/state?replicaId={replicaId}&seenMode=0");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        (await SessionSeqAsync(sessionId)).Should().Be(seqBefore);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.WpfReplicas.AsNoTracking().SingleAsync(r => r.ReplicaId == replicaId))
+                .LastSeenAt.Should().BeOnOrAfter(before);
+        }
+        var json = await resp.Content.ReadAsStringAsync();
+        json.Should().Contain(sessionId.ToString()).And.Contain("\"state\":\"live\"");
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
     private string Url(string endpoint) => $"/api/v1/licenses/{_licenseId}/{endpoint}";
 
     private static object V2(Guid replicaId, int seenMode) =>
         new { sessions = Array.Empty<object>(), orders = Array.Empty<object>(), replicaId, protocol = 2, seenMode };
+
+    private async Task<long> SessionSeqAsync(Guid sessionId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.StreamSessions.AsNoTracking().Where(s => s.Id == sessionId).Select(s => s.ChangeSeq).SingleAsync();
+    }
 
     private async Task<(DateTimeOffset? Trace, byte[] RowVersion)> TraceAsync()
     {
