@@ -10,40 +10,128 @@ namespace OrderDeck.Shared.Sales;
 /// girdi ve çıktı tiplerinde hiç yoklar (yapısal kural: çağıran onları güncellemede yazamaz). Tek istisna
 /// <see cref="OrderUnitValues.ParentOrderId"/>: yalnız boşsa doldurulur.</para>
 ///
+/// <para><b>K2 — fiyat, iptal, yedek.</b> Birimin damgası (<c>*SetAt</c>) boşsa push'taki değer yazılır: bugünkü
+/// son-gelen-kazanır. Damga doluysa birimi yalnız satırın güncel sürümünü gördüğünü kanıtlayan v2 push'u
+/// (<see cref="OrderPush.BaseVersion"/> = <see cref="OrderServerRow.Version"/>) yazar; v1 damgalı birimi hiç yazamaz.
+/// Yedek tek yönlüdür: <see cref="OrderUnitValues.IsTentativeBackup"/> yalnız 1'den 0'a gider.</para>
+///
+/// <para><b>K3 — baskı.</b> Sunucuda <see cref="OrderUnitValues.PrintedAt"/> boşsa baskı push'tan alınır (v2'de grup
+/// alanlarıyla birlikte); ancak sipariş şu anda komutla iptal edilmişse (iptal birimi birleştirildikten sonra
+/// <c>CancelledAt</c> dolu ∧ <c>CancelSetAt</c> dolu) alınmaz: <see cref="ReasonCancelledElsewhere"/>, istemci kâğıdı
+/// imha eder. Sunucuda PrintedAt doluysa hiçbir yoldan silinmez ve değişmez; v2 yalnız boş grup alanlarını
+/// doldurur.</para>
+///
+/// <para><b>Yok sayma.</b> Bir birim, push o birimde sunucunun yazdığından farklı bir değer taşıdıysa yok sayılmış
+/// sayılır; aynı değeri taşıyan push uygulanmış sayılır. Zaman damgaları saniyeye göre karşılaştırılır: masaüstü
+/// zamanı Unix saniyesi olarak saklar (<c>FromUnixTimeSeconds</c>), sunucunun komutla bastığı saniye altı kesir
+/// masaüstüne geri dönünce kaybolur — bu fark yeni bir değer değildir. Yazılan değer ise her zaman olduğu gibi
+/// yazılır.</para>
+///
 /// <para><b>Biçim.</b> v1 (≤0.9.10) yalnız <see cref="OrderUnitValues.Price"/>, iptal alanları,
 /// <see cref="OrderUnitValues.IsTentativeBackup"/> ve <see cref="OrderUnitValues.PrintedAt"/> taşır; öbür alanlar
 /// v1'de "gönderilmedi" demektir ve sunucudaki değer korunur (NULL'lanmaz).</para>
 /// </summary>
 public static class OrderUnitMerge
 {
+    /// <summary>K2: damgalı birim, satırın güncel sürümünü görmemiş push'tan yazılmaz.</summary>
+    public const string ReasonUnitStamped = "unit-stamped";
+
+    /// <summary>K2: geçici yedek bayrağı 0'dan 1'e dönmez.</summary>
+    public const string ReasonBackupOneWay = "backup-one-way";
+
+    /// <summary>K3: sipariş şu anda komutla iptal edilmiş; baskı alınmaz, kâğıt imha edilmeli.</summary>
+    public const string ReasonCancelledElsewhere = "cancelled-elsewhere";
+
+    /// <summary>K3: sunucudaki baskı kalır (silinmez, kaymaz, dolu grup değişmez).</summary>
+    public const string ReasonAlreadyPrinted = "already-printed";
+
     /// <summary>Sunucu satırı ile push'u birleştirir.</summary>
     /// <param name="server">Sunucudaki satırın güncel hâli.</param>
     /// <param name="push">Gelen push'un değerleri.</param>
-    /// <param name="context">Push'un biçimi ve koşulları. K1'in okuduğu tek alan
+    /// <param name="context">Push'un biçimi ve koşulları. K1–K3'ün okuduğu tek alan
     /// <see cref="OrderMergeContext.Format"/>.</param>
     public static OrderMergeResult Merge(OrderServerRow server, OrderPush push, OrderMergeContext context)
     {
         var s = server.Values;
         var p = push.Values;
         var v2 = context.Format == OrderPushFormat.V2;
+        var merged = s;
+        var ignored = new List<IgnoredOrderUnit>();
 
-        var merged = s with
+        // K2: damgasız birim → son gelen kazanır; damgalı birim yalnız güncel sürümü görmüş v2'den.
+        bool Writable(DateTimeOffset? setAt) => setAt is null || (v2 && push.BaseVersion == server.Version);
+
+        // Fiyat {Price, PriceCorrectedAt, PaidPrice}; v1 yalnız Price taşır.
+        var pushCorrectedAt = v2 ? p.PriceCorrectedAt : s.PriceCorrectedAt;
+        var pushPaidPrice = v2 ? p.PaidPrice : s.PaidPrice;
+        if (Writable(server.PriceSetAt))
+            merged = merged with { Price = p.Price, PriceCorrectedAt = pushCorrectedAt, PaidPrice = pushPaidPrice };
+        else if (p.Price != s.Price
+                 || !SameSecond(pushCorrectedAt, s.PriceCorrectedAt)
+                 || pushPaidPrice != s.PaidPrice)
+            ignored.Add(new IgnoredOrderUnit(OrderUnit.Price, ReasonUnitStamped));
+
+        // İptal {CancelledAt, CancelReason}.
+        if (Writable(server.CancelSetAt))
+            merged = merged with { CancelledAt = p.CancelledAt, CancelReason = p.CancelReason };
+        else if (!SameSecond(p.CancelledAt, s.CancelledAt)
+                 || !string.Equals(p.CancelReason, s.CancelReason, StringComparison.Ordinal))
+            ignored.Add(new IgnoredOrderUnit(OrderUnit.Cancel, ReasonUnitStamped));
+
+        // Yedek {IsTentativeBackup}: yalnız 1 → 0.
+        if (p.IsTentativeBackup != s.IsTentativeBackup)
         {
-            Price = p.Price,
-            PriceCorrectedAt = v2 ? p.PriceCorrectedAt : s.PriceCorrectedAt,
-            PaidPrice = v2 ? p.PaidPrice : s.PaidPrice,
-            CancelledAt = p.CancelledAt,
-            CancelReason = p.CancelReason,
-            IsTentativeBackup = p.IsTentativeBackup,
-            PrintedAt = p.PrintedAt,
-            PrintBatchId = v2 ? p.PrintBatchId : s.PrintBatchId,
-            PrintSeq = v2 ? p.PrintSeq : s.PrintSeq,
-            // K1: ebeveyn yalnız boşsa doldurulur.
-            ParentOrderId = s.ParentOrderId ?? (v2 ? p.ParentOrderId : null),
-        };
+            if (p.IsTentativeBackup)
+                ignored.Add(new IgnoredOrderUnit(OrderUnit.Backup, ReasonBackupOneWay));
+            else if (Writable(server.BackupSetAt))
+                merged = merged with { IsTentativeBackup = false };
+            else
+                ignored.Add(new IgnoredOrderUnit(OrderUnit.Backup, ReasonUnitStamped));
+        }
 
-        return new OrderMergeResult(merged, ChangedUnits(s, merged), Array.Empty<IgnoredOrderUnit>());
+        // Kargo bağı (K4) bu sürümde push'tan alınmaz: sunucudaki değer kalır.
+
+        // Baskı {PrintedAt, PrintBatchId, PrintSeq} (K3). İptal kararı yukarıda verildi; "şu anda komutla iptal"
+        // birleşik iptale ve damgaya bakar.
+        if (s.PrintedAt is null)
+        {
+            if (p.PrintedAt is not null)
+            {
+                if (merged.CancelledAt is not null && server.CancelSetAt is not null)
+                    ignored.Add(new IgnoredOrderUnit(OrderUnit.Print, ReasonCancelledElsewhere));
+                else
+                    merged = merged with
+                    {
+                        PrintedAt = p.PrintedAt,
+                        PrintBatchId = v2 ? p.PrintBatchId : s.PrintBatchId,
+                        PrintSeq = v2 ? p.PrintSeq : s.PrintSeq,
+                    };
+            }
+        }
+        else
+        {
+            if (v2)
+                merged = merged with
+                {
+                    PrintBatchId = s.PrintBatchId ?? p.PrintBatchId,
+                    PrintSeq = s.PrintSeq ?? p.PrintSeq,
+                };
+            if (!SameSecond(p.PrintedAt, s.PrintedAt)
+                || (v2 && (!string.Equals(p.PrintBatchId, merged.PrintBatchId, StringComparison.Ordinal)
+                           || p.PrintSeq != merged.PrintSeq)))
+                ignored.Add(new IgnoredOrderUnit(OrderUnit.Print, ReasonAlreadyPrinted));
+        }
+
+        // K1: ebeveyn yalnız boşsa doldurulur.
+        if (v2 && s.ParentOrderId is null)
+            merged = merged with { ParentOrderId = p.ParentOrderId };
+
+        return new OrderMergeResult(merged, ChangedUnits(s, merged), ignored);
     }
+
+    /// <summary>Aynı Unix saniyesi mi (ikisi de boşsa da aynı).</summary>
+    private static bool SameSecond(DateTimeOffset? a, DateTimeOffset? b)
+        => a is null || b is null ? a is null && b is null : a.Value.ToUnixTimeSeconds() == b.Value.ToUnixTimeSeconds();
 
     private static IReadOnlyList<OrderUnit> ChangedUnits(OrderUnitValues before, OrderUnitValues after)
     {
@@ -203,6 +291,14 @@ public sealed record OrderMergeResult(
 {
     public OrderMergeStatus Status => Ignored.Count == 0 ? OrderMergeStatus.Applied : OrderMergeStatus.Ignored;
 
-    /// <summary>Satırın nedeni: yok sayılan ilk birimin nedeni; hiçbiri yoksa null.</summary>
-    public string? Reason => Ignored.Count == 0 ? null : Ignored[0].Reason;
+    /// <summary>
+    /// Satırın nedeni; hiçbir birim yok sayılmadıysa null. İstemcide eylem isteyen neden önce gelir:
+    /// <see cref="OrderUnitMerge.ReasonCancelledElsewhere"/> "kâğıdı imha et" uyarısını açar. Yoksa yok sayılan ilk
+    /// birimin nedeni.
+    /// </summary>
+    public string? Reason => Ignored.Count == 0
+        ? null
+        : Ignored.Any(i => i.Reason == OrderUnitMerge.ReasonCancelledElsewhere)
+            ? OrderUnitMerge.ReasonCancelledElsewhere
+            : Ignored[0].Reason;
 }

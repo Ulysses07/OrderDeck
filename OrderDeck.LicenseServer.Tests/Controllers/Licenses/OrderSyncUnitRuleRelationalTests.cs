@@ -87,7 +87,41 @@ public sealed class OrderSyncUnitRuleRelationalTests : IAsyncLifetime
         movements.Sum(m => m.Quantity).Should().Be(-1);
     }
 
+    /// <summary>(c) Komutla iptal edilmiş (CancelSetAt ∧ CancelledAt) siparişi v1 gönderimi geri alamaz (K2) ve
+    /// defter yerinde kalır: birleştirilmiş satır iptalli olduğu için satış yeniden düşülmez.</summary>
+    [Fact]
+    public async Task Komutla_iptal_edilmis_siparisi_v1_geri_alamaz_defter_yerinde()
+    {
+        var orderId = Guid.NewGuid();
+        var sold = Item(orderId, _productId, _variantId);
+        (await PushAsync(sold, catalogAware: true)).StatusCode.Should().Be(HttpStatusCode.OK);
+        var cancelledAt = SoldAt.AddDays(1);
+        (await PushAsync(sold with { CancelledAt = cancelledAt, CancelReason = "iade" }, catalogAware: true))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        await StampCancelAsync(orderId);
+        (await MovementsAsync(orderId)).Sum(m => m.Quantity).Should().Be(0, "ön koşul: satış ve telafi");
+
+        (await PushAsync(sold, catalogAware: true)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var saved = await LoadAsync(orderId);
+        saved.CancelledAt.Should().Be(cancelledAt);
+        saved.CancelReason.Should().Be("iade");
+        var movements = await MovementsAsync(orderId);
+        movements.Should().HaveCount(2, "satış (−1) ve telafi (+1); yeniden düşüm yazılmamalı");
+        movements.Sum(m => m.Quantity).Should().Be(0);
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    /// <summary>İptal birimine komut damgası basar (S2'nin <c>cancel</c> komutu gibi).</summary>
+    private async Task StampCancelAsync(Guid orderId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var order = await db.Orders.SingleAsync(o => o.Id == orderId);
+        order.CancelSetAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+    }
 
     private sealed record V1Item(
         Guid Id,

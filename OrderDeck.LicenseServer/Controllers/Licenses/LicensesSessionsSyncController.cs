@@ -274,22 +274,32 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // varlıklar). Defter paketten değil bunlardan beslenir: yazılmayan bir
         // alan deftere bayat durum taşımasın (spec 2026-10-13 §4.2, M4).
         var rows = new List<Order>(orders.Count);
+        var ignoredRows = 0;
 
         foreach (var item in orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
             {
-                // Birim kuralı (spec 2026-10-13 §4.2) ortak koddan: oluşum
-                // alanları (SessionId, MessageText, Code, IsShippingFee,
-                // IsBackupPromoted, ProductId, ProductVariantId; CustomerId ve
-                // görünen ad zaten yazılmıyordu) yalnız eklemede yazılır (K1).
-                // Katalog bilmeyen istemcinin ProductId'yi NULL'laması böyle
-                // kapanır — moddan bağımsız.
+                // Birim kuralı (spec 2026-10-13 §4.2) ortak koddan, moddan
+                // bağımsız:
+                // - K1: oluşum alanları (SessionId, MessageText, Code,
+                //   IsShippingFee, IsBackupPromoted, ProductId,
+                //   ProductVariantId; CustomerId ve görünen ad zaten
+                //   yazılmıyordu) yalnız eklemede yazılır. Katalog bilmeyen
+                //   istemcinin ProductId'yi NULL'laması böyle kapanır.
+                // - K2: komutun damgaladığı fiyat, iptal ve yedeği v1 yazamaz;
+                //   damgasız birimde bugünkü son-gelen-kazanır sürer. Yedek
+                //   yalnız 1'den 0'a gider.
+                // - K3: PrintedAt silinmez ve kaymaz; şu anda komutla iptal
+                //   edilmiş siparişe baskı alınmaz.
+                // v1 yanıtı değişmez: yok sayılan birim de yanıtta sunucunun
+                // satırıyla döner.
                 var merge = OrderUnitMerge.Merge(
                     current.ToServerRow(),
                     PushOf(item),
                     new OrderMergeContext { Format = OrderPushFormat.V1 });
                 current.ApplyUnits(merge.Merged);
+                if (merge.Status == OrderMergeStatus.Ignored) ignoredRows++;
                 current.UpdatedAt = now;
                 // Eşzamanlılık jetonunu ilerlet (bkz. Order.SyncVersion).
                 // Sipariş alanları değişmemiş olsa bile artırıyoruz: paketin
@@ -404,6 +414,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 detail: "Bu siparişler eşzamanlı başka bir istekle yazıldı; paketi yeniden gönderin.",
                 statusCode: 409);
         }
+
+        if (ignoredRows > 0)
+            _log.LogInformation(
+                "orders/sync: {Count} siparişte birim yok sayıldı (license={LicenseId})",
+                ignoredRows, licenseId);
 
         // Etiket olayı, push bildiriminin kullandığı listeyi paylaşıyor:
         // "yeni + basılmış + iptal değil + kargo ücreti değil + geçici yedek

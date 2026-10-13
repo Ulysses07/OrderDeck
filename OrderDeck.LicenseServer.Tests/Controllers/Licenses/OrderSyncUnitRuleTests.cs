@@ -74,7 +74,128 @@ public sealed class OrderSyncUnitRuleTests : IClassFixture<ApiFactory>
         saved.Price.Should().Be(150m, "fiyat birimi damgasız: son gelen kazanır");
     }
 
+    /// <summary>
+    /// K3: PrintedAt hiçbir yoldan silinmez (yerelde de: 048 yeniden baskısı dokunmaz). Bugün baskısız bayat bir
+    /// gönderim basılmış siparişi kuyruğa geri döndürüyordu. v1 baskı grubunu taşımaz; sunucudaki grup da kalır.
+    /// </summary>
+    [Fact]
+    public async Task Baski_bos_gonderimle_silinmez()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var printedAt = AddedAt.AddMinutes(5);
+        var item = NewItem(null) with { PrintedAt = printedAt };
+        (await PushAsync(client, licenseId, item)).StatusCode.Should().Be(HttpStatusCode.OK);
+        await SeedAsync(item.Id, o => { o.PrintBatchId = "b-" + Guid.NewGuid().ToString("N")[..8]; o.PrintSeq = 3; });
+        var seeded = await LoadAsync(item.Id);
+
+        (await PushAsync(client, licenseId, item with { PrintedAt = null }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var saved = await LoadAsync(item.Id);
+        saved.PrintedAt.Should().Be(printedAt);
+        saved.PrintBatchId.Should().Be(seeded.PrintBatchId);
+        saved.PrintSeq.Should().Be(3);
+    }
+
+    /// <summary>K3: basılmış siparişin PrintedAt'i sonraki bir değerle kaymaz; ilk baskı anı kalır.</summary>
+    [Fact]
+    public async Task Baski_sonraki_degerle_kaymaz()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var printedAt = AddedAt.AddMinutes(5);
+        var item = NewItem(null) with { PrintedAt = printedAt };
+        (await PushAsync(client, licenseId, item)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await PushAsync(client, licenseId, item with { PrintedAt = printedAt.AddHours(2) }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await LoadAsync(item.Id)).PrintedAt.Should().Be(printedAt);
+    }
+
+    /// <summary>
+    /// K2: yedek birimi tek yönlüdür — IsTentativeBackup yalnız 1'den 0'a gider (onay). Masaüstünde 0'dan 1'e
+    /// giden güncelleme yok; böyle bir gönderim ancak bayattır ve onaylanmış yedeği toplamlardan düşürürdü.
+    /// </summary>
+    [Fact]
+    public async Task Gecici_yedek_bayragi_yalniz_birden_sifira_gider()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var confirmed = NewItem(null);
+        var tentative = NewItem(null) with { IsTentativeBackup = true };
+        (await PushAsync(client, licenseId, confirmed, tentative)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await PushAsync(client, licenseId,
+                confirmed with { IsTentativeBackup = true },
+                tentative with { IsTentativeBackup = false }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await LoadAsync(confirmed.Id)).IsTentativeBackup.Should().BeFalse("0'dan 1'e dönüş yok sayılır");
+        (await LoadAsync(tentative.Id)).IsTentativeBackup.Should().BeFalse("onay (1'den 0'a) yazılır");
+    }
+
+    /// <summary>
+    /// K2: komutun damgaladığı birimi v1 gönderimi değiştiremez (damgasız birimde bugünkü son-gelen-kazanır sürer;
+    /// bkz. <see cref="Guncelleme_olusum_alanlarini_yazmaz"/>). Damga S2'nin komutlarıyla gelir; burada elle
+    /// basılır.
+    /// </summary>
+    [Fact]
+    public async Task Damgali_fiyati_v1_gonderimi_degistiremez()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var item = NewItem(null) with { PrintedAt = AddedAt.AddMinutes(5) };
+        (await PushAsync(client, licenseId, item)).StatusCode.Should().Be(HttpStatusCode.OK);
+        await SeedAsync(item.Id, o => { o.Price = 80m; o.PriceSetAt = DateTimeOffset.UtcNow; });
+
+        (await PushAsync(client, licenseId, item with { Price = 100m }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await LoadAsync(item.Id)).Price.Should().Be(80m);
+    }
+
+    /// <summary>
+    /// K3: şu anda komutla iptal edilmiş siparişe (CancelledAt ∧ CancelSetAt) push'tan baskı alınmaz — kâğıt imha
+    /// edilmeli (<c>mark-printed</c>'ın "iptal edilmemiş" koşuluyla aynı sonuç). Komutla iptal edilip komutla geri
+    /// alınmış siparişin (CancelSetAt dolu, CancelledAt boş) baskısı alınır; aksi hâlde etiket hiç basılmış
+    /// sayılmaz, kuyruğa döner ve döngü bitmezdi (§15-40).
+    /// </summary>
+    [Fact]
+    public async Task Komutla_iptal_edilmis_siparise_baski_alinmaz_geri_alinmisa_alinir()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var cancelled = NewItem(null);
+        var uncancelled = NewItem(null);
+        (await PushAsync(client, licenseId, cancelled, uncancelled)).StatusCode.Should().Be(HttpStatusCode.OK);
+        var commandAt = DateTimeOffset.UtcNow;
+        await SeedAsync(cancelled.Id, o =>
+        {
+            o.CancelledAt = commandAt;
+            o.CancelReason = "komut";
+            o.CancelSetAt = commandAt;
+        });
+        await SeedAsync(uncancelled.Id, o => o.CancelSetAt = commandAt);
+
+        var printedAt = AddedAt.AddMinutes(5);
+        (await PushAsync(client, licenseId,
+                cancelled with { PrintedAt = printedAt },
+                uncancelled with { PrintedAt = printedAt }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var a = await LoadAsync(cancelled.Id);
+        a.PrintedAt.Should().BeNull("şu anda komutla iptal edilmiş");
+        a.CancelledAt.Should().Be(commandAt, "damgalı iptali v1 geri alamaz");
+        (await LoadAsync(uncancelled.Id)).PrintedAt.Should().Be(printedAt, "komutla geri alınmış");
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    /// <summary>Sunucu satırını elle değiştirir (komutların S2'de basacağı damgalar gibi).</summary>
+    private async Task SeedAsync(Guid orderId, Action<Order> change)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        change(await db.Orders.SingleAsync(o => o.Id == orderId));
+        await db.SaveChangesAsync();
+    }
 
     /// <summary>v1 (≤0.9.10) sipariş öğesi; telde camelCase.</summary>
     private sealed record V1Item(

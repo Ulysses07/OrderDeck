@@ -259,6 +259,234 @@
       "server": {},
       "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
       "expected": {}
+    },
+
+    {
+      "name": "k2_damgasiz_fiyat_son_gelen_kazanir",
+      "context": { "format": 1 },
+      "server": { "price": 100 },
+      "push": { "price": 120 },
+      "expected": { "merged": { "price": 120 }, "changed": ["price"] }
+    },
+    {
+      "name": "k2_damgasiz_iptal_son_gelen_kazanir",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" },
+      "expected": { "merged": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" }, "changed": ["cancel"] }
+    },
+    {
+      "name": "k2_damgasiz_iptal_geri_alinir",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" },
+      "push": { "cancelledAt": null, "cancelReason": null },
+      "expected": { "merged": { "cancelledAt": null, "cancelReason": null }, "changed": ["cancel"] }
+    },
+    {
+      "name": "k2_damgali_fiyati_v1_yazamaz",
+      "context": { "format": 1 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00.123Z", "version": 4 },
+      "push": { "price": 100 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_damgali_iptali_v1_geri_alamaz",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00.5Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00.5Z" },
+      "push": { "cancelledAt": null, "cancelReason": null },
+      "expected": { "ignored": [{ "unit": "cancel", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_damgali_birime_ayni_deger_yok_sayilmaz",
+      "context": { "format": 1 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z" },
+      "push": { "price": 80.00 },
+      "expected": {}
+    },
+    {
+      "name": "k2_saniye_alti_fark_ayni_deger_sayilir",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00.5Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00.5Z" },
+      "push": { "cancelledAt": "2026-10-02T10:00:00Z" },
+      "expected": {}
+    },
+    {
+      "name": "k2_v2_guncel_surum_damgali_birimi_yazar",
+      "context": { "format": 2 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z", "version": 7 },
+      "push": { "baseVersion": 7, "price": 90, "cancelledAt": null, "cancelReason": null },
+      "expected": { "merged": { "price": 90, "cancelledAt": null, "cancelReason": null }, "changed": ["price", "cancel"] }
+    },
+    {
+      "name": "k2_v2_bayat_surum_damgali_birimi_yazamaz",
+      "context": { "format": 2 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 7 },
+      "push": { "baseVersion": 6, "price": 90 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_v2_surumsuz_push_damgali_birimi_yazamaz",
+      "context": { "format": 2 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 7 },
+      "push": { "price": 90 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_v1_surum_esitligi_istisnasi_yok",
+      "context": { "format": 1 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 7 },
+      "push": { "baseVersion": 7, "price": 90 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_v2_damgasiz_fiyat_birimi_uc_alan_birlikte",
+      "context": { "format": 2 },
+      "server": { "price": 100, "priceCorrectedAt": "2026-10-02T09:00:00Z", "paidPrice": 120 },
+      "push": { "price": 110, "priceCorrectedAt": null, "paidPrice": null },
+      "expected": { "merged": { "price": 110, "priceCorrectedAt": null, "paidPrice": null }, "changed": ["price"] }
+    },
+    {
+      "name": "k2_v1_duzeltme_damgasini_ve_odenen_fiyati_silmez",
+      "context": { "format": 1 },
+      "server": { "price": 100, "priceCorrectedAt": "2026-10-02T09:00:00Z", "paidPrice": 120 },
+      "push": { "price": 110, "priceCorrectedAt": null, "paidPrice": null },
+      "expected": { "merged": { "price": 110 }, "changed": ["price"] }
+    },
+    {
+      "name": "k2_v2_damgali_fiyat_biriminin_her_alani_korunur",
+      "context": { "format": 2 },
+      "server": { "price": 100, "priceCorrectedAt": "2026-10-02T09:00:00Z", "paidPrice": 120, "priceSetAt": "2026-10-02T09:00:00Z", "version": 3 },
+      "push": { "baseVersion": 2, "paidPrice": null },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_yedek_onayi_birden_sifira_yazilir",
+      "context": { "format": 1 },
+      "server": { "tentative": true },
+      "push": { "tentative": false },
+      "expected": { "merged": { "tentative": false }, "changed": ["backup"] }
+    },
+    {
+      "name": "k2_yedek_sifirdan_bire_donmez",
+      "context": { "format": 1 },
+      "server": { "tentative": false },
+      "push": { "tentative": true },
+      "expected": { "ignored": [{ "unit": "backup", "reason": "backup-one-way" }], "reason": "backup-one-way" }
+    },
+    {
+      "name": "k2_yedek_v2_guncel_surumle_de_sifirdan_bire_donmez",
+      "context": { "format": 2 },
+      "server": { "tentative": false, "backupSetAt": "2026-10-02T09:00:00Z", "version": 2 },
+      "push": { "baseVersion": 2, "tentative": true },
+      "expected": { "ignored": [{ "unit": "backup", "reason": "backup-one-way" }], "reason": "backup-one-way" }
+    },
+
+    {
+      "name": "k3_basilmamis_satira_baski_alinir",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "printedAt": "2026-10-01T20:00:00Z" },
+      "expected": { "merged": { "printedAt": "2026-10-01T20:00:00Z" }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_baski_bos_gonderimle_silinmez",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z" },
+      "push": { "printedAt": null },
+      "expected": { "ignored": [{ "unit": "print", "reason": "already-printed" }], "reason": "already-printed" }
+    },
+    {
+      "name": "k3_baski_sonraki_degerle_kaymaz",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z" },
+      "push": { "printedAt": "2026-10-01T22:00:00Z" },
+      "expected": { "ignored": [{ "unit": "print", "reason": "already-printed" }], "reason": "already-printed" }
+    },
+    {
+      "name": "k3_ayni_baski_saniye_alti_farkla_yok_sayilmaz",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00.7Z" },
+      "push": { "printedAt": "2026-10-01T20:00:00Z" },
+      "expected": {}
+    },
+    {
+      "name": "k3_komutla_iptal_edilmis_siparise_baski_alinmaz",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": { "ignored": [{ "unit": "print", "reason": "cancelled-elsewhere" }], "reason": "cancelled-elsewhere" }
+    },
+    {
+      "name": "k3_iptali_bilmeyen_bayat_baski_iki_birim_yok_sayilir",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "cancelledAt": null, "cancelReason": null, "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": {
+        "ignored": [{ "unit": "cancel", "reason": "unit-stamped" }, { "unit": "print", "reason": "cancelled-elsewhere" }],
+        "reason": "cancelled-elsewhere"
+      }
+    },
+    {
+      "name": "k3_komutla_geri_alinmis_siparise_baski_alinir",
+      "context": { "format": 1 },
+      "server": { "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": { "merged": { "printedAt": "2026-10-02T11:00:00Z" }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_ayni_pushta_basildi_sonra_iptal_damgasiz",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "printedAt": "2026-10-02T11:00:00Z", "cancelledAt": "2026-10-02T11:05:00Z", "cancelReason": "vazgecti" },
+      "expected": {
+        "merged": { "printedAt": "2026-10-02T11:00:00Z", "cancelledAt": "2026-10-02T11:05:00Z", "cancelReason": "vazgecti" },
+        "changed": ["cancel", "print"]
+      }
+    },
+    {
+      "name": "k3_v2_guncel_surumle_iptali_geri_alip_basar",
+      "context": { "format": 2 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z", "version": 5 },
+      "push": { "baseVersion": 5, "cancelledAt": null, "cancelReason": null, "printedAt": "2026-10-02T11:00:00Z", "printBatchId": "b9", "printSeq": 1 },
+      "expected": {
+        "merged": { "cancelledAt": null, "cancelReason": null, "printedAt": "2026-10-02T11:00:00Z", "printBatchId": "b9", "printSeq": 1 },
+        "changed": ["cancel", "print"]
+      }
+    },
+    {
+      "name": "k3_v2_baski_uc_alan_birlikte",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 },
+      "expected": { "merged": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_v1_baski_grubuna_dokunmaz",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 },
+      "push": { "printBatchId": null, "printSeq": null },
+      "expected": {}
+    },
+    {
+      "name": "k3_v2_basilmis_satirda_bos_grup_doldurulur",
+      "context": { "format": 2 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z" },
+      "push": { "printBatchId": "b1", "printSeq": 4 },
+      "expected": { "merged": { "printBatchId": "b1", "printSeq": 4 }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_v2_dolu_grup_degismez",
+      "context": { "format": 2 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 },
+      "push": { "printBatchId": "b2", "printSeq": 7 },
+      "expected": { "ignored": [{ "unit": "print", "reason": "already-printed" }], "reason": "already-printed" }
+    },
+    {
+      "name": "k3_v2_baskisiz_push_grup_yazmaz",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "printBatchId": "b1", "printSeq": 4 },
+      "expected": {}
     }
   ]
 }
