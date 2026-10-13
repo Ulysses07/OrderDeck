@@ -57,6 +57,19 @@ public sealed class IntakeFormSubmission
     public bool WhatsAppConsent { get; set; }
     public bool SmsConsent { get; set; }
 
+    /// <summary>KVKK aydınlatma metninin okunduğu beyanının sunucu saati (UTC)
+    /// — açık rıza DEĞİL, "okudum" onayı. Formda zorunlu; değer gönderimin
+    /// kabul edildiği an (<see cref="SubmittedAt"/> ile aynı damga). 2026-10-13
+    /// öncesi satırlarda null: o tarihten önce kutu yoktu.</summary>
+    public DateTimeOffset? KvkkAcknowledgedAt { get; set; }
+
+    /// <summary>Onaylanan metnin sürümü: sayfanın müşteriye gösterdiği
+    /// <see cref="Services.IntakeForm.KvkkNotice.TextVersion"/> (gizli alandan
+    /// gelir, yalnız o anki sabite eşitse kabul edilir). "Hangi metni okudu"
+    /// sorusunun cevabı; metnin kendisi git geçmişinde o sürümün commit'inde. <see cref="KvkkAcknowledgedAt"/> ile birlikte dolu ya da
+    /// birlikte null.</summary>
+    public string? KvkkTextVersion { get; set; }
+
     public DateTimeOffset SubmittedAt { get; set; }
     public string? IpAddress { get; set; }
     public string? UserAgent { get; set; }

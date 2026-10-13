@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -65,6 +66,8 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "ornekmusteri",
+            ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",

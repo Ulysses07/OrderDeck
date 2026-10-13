@@ -181,7 +181,40 @@ public class IntakeFormModel : PageModel
         // Mesaj izinleri (onay kutuları)
         public bool WhatsAppConsent { get; set; }
         public bool SmsConsent { get; set; }
+
+        /// <summary>
+        /// "Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum." — ZORUNLU.
+        /// Açık rıza değil, aydınlatmanın yapıldığının beyanı (sahip kararı
+        /// 2026-10-13). WhatsApp/SMS izinlerinden farkı tam bu: onlar
+        /// isteğe bağlı rıza, bu her kayıtta şart. Doğrulaması
+        /// <see cref="RequireKvkkAcknowledgement"/>'ta; [Required] bool'da
+        /// işe yaramaz (false da bir değer).
+        /// </summary>
+        public bool KvkkAcknowledged { get; set; }
+
+        /// <summary>
+        /// Onayın verildiği metnin sürümü — müşterinin ekranda GÖRDÜĞÜ metin.
+        /// Sayfa gizli alana o anki <see cref="KvkkNotice.TextVersion"/>'ı
+        /// basıyor; sunucu güncel sürümle karşılaştırır, tutmazsa onay sayılmaz.
+        ///
+        /// Neden gerekli: kutu yalnız "işaretlendi" diyor. Metin değişip sürüm
+        /// artarken açık kalmış bir sekmede eski metni okuyup deploy'dan sonra
+        /// gönderen müşteri, bu alan olmadan YENİ sürümle kaydedilirdi — hiç
+        /// görmediği metni onaylamış görünürdü (<see cref="YouTubeConfirmedChannelId"/>
+        /// ile aynı desen).
+        ///
+        /// Bilerek [StringLength] YOK: uzunluk hatasının ekranda kutusu yok,
+        /// sayfa sessizce geri dönerdi. Uyuşmayan değer zaten "metin güncellendi"
+        /// hatasına düşüyor.
+        /// </summary>
+        public string? KvkkTextVersion { get; set; }
     }
+
+    private const string KvkkKey = "Input.KvkkAcknowledged";
+    private const string KvkkRequiredMessage =
+        "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
+    private const string KvkkOutdatedMessage =
+        "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
     {
@@ -260,6 +293,12 @@ public class IntakeFormModel : PageModel
         // istemciyi bağlar, alan elle eklenebilir. Marka yokken yazılan onay
         // İYS'ye bildirilemez ve üç iş günü sonra hukuken geçersiz olur.
         if (!SmsConsentAvailable) Input.SmsConsent = false;
+
+        // KVKK aydınlatma onayı. Kayıt açan TEK yol bu handler (OAuth dönüşü,
+        // ?ig= DM linki ve taslak geri yükleme yalnız formu doldurur; onay
+        // ekranı GET'tir), yani kural burada durunca her yolu kapsıyor.
+        // Hata diğer alan hatalarıyla birlikte toplanıyor, girilen veri korunuyor.
+        RequireKvkkAcknowledgement();
 
         LoadLinkedIdentities();
 
@@ -492,7 +531,10 @@ public class IntakeFormModel : PageModel
             ct: ct,
             youTubeChannelId: resolvedChannelId,
             city: Input.City,
-            district: Input.District);
+            district: Input.District,
+            // Buraya yalnız geçerli ModelState ile gelinir, o da onayı ve
+            // sayfanın gösterdiği sürümün güncel sürüme eşit olduğunu içerir.
+            kvkkTextVersion: Input.KvkkTextVersion);
 
         // Kimlik tek gönderimlik: bırakılsaydı aynı tarayıcıdan ikinci kayıt
         // (örn. aile üyesi) öncekinin kanalıyla açılırdı.
@@ -575,6 +617,46 @@ public class IntakeFormModel : PageModel
         if (!string.IsNullOrEmpty(nonce) && platform is "youtube" or "facebook" or "instagram")
             _linkStore.RemoveIdentity(nonce, platform);
         return LocalRedirect(Request.Path.Value ?? $"/musteri-kayit/{Slug}");
+    }
+
+    /// <summary>
+    /// Aydınlatma onayı yoksa alan hatası ekler. Kutu işaretliyken tarayıcı
+    /// "true" gönderir (+ tag helper'ın gizli "false"u; bağlayıcı ilkini alır);
+    /// işaretsizken yalnız "false" gelir. Alanın hiç gelmemesi (eski sekme,
+    /// elle kurulmuş istek) varsayılan false'a düşer.
+    ///
+    /// Bozuk değer ("on", "1"…) ayrı ele alınıyor: bağlayıcı onu hata olarak
+    /// işaretleyip HAM değeri ModelState'te bırakıyor; sayfa yeniden çizilirken
+    /// checkbox tag helper o değeri bool'a çevirmeye çalışıp patlıyor
+    /// (FormatException → 500). Girdiyi silip işaretsiz sayıyoruz: sonuç eksik
+    /// alanla aynı — kendi mesajımız, veri kaybı yok.
+    ///
+    /// İşaretli onay, sayfanın gösterdiği sürüm (<see cref="IntakeFormInput.KvkkTextVersion"/>)
+    /// güncel sürüme eşit değilse — ya da hiç gelmediyse — düşer: kutu
+    /// işaretsiz, güncel metinle yeniden çizilir. ModelState girdisi silinmeli;
+    /// yoksa tag helper postalanan "true"yu geri basar ve müşteri yeni metni
+    /// okumadan tek tıkla göndermiş olur.
+    /// </summary>
+    private void RequireKvkkAcknowledgement()
+    {
+        if (ModelState.TryGetValue(KvkkKey, out var entry) && entry.Errors.Count > 0)
+        {
+            ModelState.Remove(KvkkKey);
+            Input.KvkkAcknowledged = false;
+        }
+
+        if (!Input.KvkkAcknowledged)
+        {
+            ModelState.AddModelError(KvkkKey, KvkkRequiredMessage);
+            return;
+        }
+
+        if (!string.Equals(Input.KvkkTextVersion, KvkkNotice.TextVersion, StringComparison.Ordinal))
+        {
+            ModelState.Remove(KvkkKey);
+            Input.KvkkAcknowledged = false;
+            ModelState.AddModelError(KvkkKey, KvkkOutdatedMessage);
+        }
     }
 
     private void LoadLinkedIdentities()

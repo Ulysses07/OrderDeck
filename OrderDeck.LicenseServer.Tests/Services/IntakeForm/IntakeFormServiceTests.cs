@@ -167,6 +167,49 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         stored.Should().NotBeNull();
     }
 
+    /// <summary>KVKK kanıtı ikili: sürüm ve zaman birlikte yazılır, zaman
+    /// gönderim damgasıyla aynı okumadan gelir.</summary>
+    [Fact]
+    public async Task SaveSubmissionAsync_kvkk_surumu_verilince_onay_zamani_gonderim_damgasiyla_yazilir()
+    {
+        var customer = await SeedCustomerAsync();
+        var cfg = await SeedConfigAsync(customer.Id);
+        using var scope = _factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
+
+        var submission = await svc.SaveSubmissionAsync(
+            cfg.Id,
+            youTubeUsername: null, instagramUsername: "kvkkservis",
+            facebookUsername: null, tikTokUsername: null,
+            legacyUsername: "kvkkservis", fullName: "Full Name", address: "Address",
+            phone: null, email: null, tckn: null, whatsAppConsent: false, smsConsent: false,
+            ipAddress: null, userAgent: null,
+            kvkkTextVersion: KvkkNotice.TextVersion);
+
+        using var s2 = _factory.Services.CreateScope();
+        var stored = await s2.ServiceProvider.GetRequiredService<LicenseDbContext>()
+            .IntakeFormSubmissions.AsNoTracking().SingleAsync(s => s.Id == submission.Id);
+        stored.KvkkTextVersion.Should().Be(KvkkNotice.TextVersion);
+        stored.KvkkAcknowledgedAt.Should().Be(stored.SubmittedAt);
+    }
+
+    /// <summary>Sürüm verilmeyen çağrı (eski aşırı yüklemeler) onay UYDURMAZ:
+    /// iki alan da boş kalır.</summary>
+    [Fact]
+    public async Task SaveSubmissionAsync_kvkk_surumu_yoksa_iki_alan_da_bos_kalir()
+    {
+        var customer = await SeedCustomerAsync();
+        var cfg = await SeedConfigAsync(customer.Id);
+        using var scope = _factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
+
+        var submission = await svc.SaveSubmissionAsync(
+            cfg.Id, "uname", "Full Name", "Address", null, null, default);
+
+        submission.KvkkTextVersion.Should().BeNull();
+        submission.KvkkAcknowledgedAt.Should().BeNull();
+    }
+
     /// <summary>
     /// <c>SaveSubmissionAsync</c> damgayı kendi koyuyor (hep "şimdi"), o yüzden
     /// imleç testleri satırları doğrudan DB'ye yazıyor: hem damga hem Id kontrol

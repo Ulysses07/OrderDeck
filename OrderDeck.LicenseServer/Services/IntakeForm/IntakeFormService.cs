@@ -134,7 +134,14 @@ public sealed class IntakeFormService
 
     /// <summary>Multi-platform gönderim: platform kullanıcı adları + email/TC +
     /// mesaj izinleri. <paramref name="legacyUsername"/> eski WPF sync'i için
-    /// ilk dolu platform adına set edilir.</summary>
+    /// ilk dolu platform adına set edilir.
+    ///
+    /// <paramref name="kvkkTextVersion"/>: müşterinin okuduğunu onayladığı
+    /// aydınlatma metninin sürümü (<see cref="KvkkNotice.TextVersion"/>).
+    /// Onay ZAMANI burada, gönderim damgasıyla aynı okumadan yazılır — ikisi
+    /// ayrı parametre olsaydı biri dolu diğeri boş bir satır mümkün olurdu.
+    /// Onayın zorunluluğu formun kapısında (IntakeForm.cshtml.cs); bu
+    /// metod yalnız kanıtı yazar.</summary>
     public async Task<IntakeFormSubmission> SaveSubmissionAsync(
         Guid configId,
         string? youTubeUsername, string? instagramUsername,
@@ -143,8 +150,10 @@ public sealed class IntakeFormService
         string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
         string? ipAddress, string? userAgent, CancellationToken ct = default,
         string? youTubeChannelId = null,
-        string? city = null, string? district = null)
+        string? city = null, string? district = null,
+        string? kvkkTextVersion = null)
     {
+        var now = DateTimeOffset.UtcNow;
         var sub = new IntakeFormSubmission
         {
             Id = Guid.NewGuid(),
@@ -170,7 +179,9 @@ public sealed class IntakeFormService
             TcknProtected = _tckn.Protect(tckn),
             WhatsAppConsent = whatsAppConsent,
             SmsConsent = smsConsent,
-            SubmittedAt = DateTimeOffset.UtcNow,
+            KvkkTextVersion = kvkkTextVersion,
+            KvkkAcknowledgedAt = kvkkTextVersion is null ? null : now,
+            SubmittedAt = now,
             IpAddress = ipAddress,
             UserAgent = userAgent
         };

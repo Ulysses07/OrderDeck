@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.IntakeForm.Login;
 using OrderDeck.LicenseServer.Tests.Controllers;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -93,6 +94,8 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
         {
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
+            ["Input.KvkkAcknowledged"] = "true",
+            ["Input.KvkkTextVersion"] = KvkkNotice.TextVersion,
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",
@@ -170,6 +173,28 @@ public sealed class IntakeLinkSubmitTests : IClassFixture<IntakeLinkFactory>
         // Görünen ad HandleValidator'dan GEÇMEZ: boşluk/Türkçe karakter serbest.
         // Chat satırı da görünen adla düşüyor — eşleşme bunun üzerinden.
         (await LatestAsync(customerId))!.FacebookUsername.Should().Be("Deneme Alıcı");
+    }
+
+    /// <summary>OAuth dönüşü yalnız kimliği bağlar; kayıt yine formun kapısından
+    /// geçer ve KVKK aydınlatma onayı olmadan açılmaz. Ret kimliği tüketmez.</summary>
+    [Fact]
+    public async Task Bagli_kimlikle_de_kvkk_onayi_olmadan_kayit_acilmaz()
+    {
+        var (slug, customerId) = await SeedAsync();
+        var client = await LinkAsync("youtube", slug, new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Bilal Kanal", "@bilalkanal", "UCsubmit0004")));
+
+        var resp = await client.PostAsync($"/musteri-kayit/{slug}?handler=Submit",
+            Form(await TokenAsync(client, slug), slug, ("Input.KvkkAcknowledged", "false")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = WebUtility.HtmlDecode(await resp.Content.ReadAsStringAsync());
+        // Hata kutusunun içinde aranıyor: aynı cümle istemci kapısının JS'inde de var.
+        System.Text.RegularExpressions.Regex.Match(html, "<span[^>]*id=\"kvkkErr\"[^>]*>([^<]*)</span>")
+            .Groups[1].Value.Trim()
+            .Should().Be("Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.");
+        html.Should().Contain("linked-chip", "ret bağlı kimliği tüketmemeli");
+        (await LatestAsync(customerId)).Should().BeNull();
     }
 
     [Fact]

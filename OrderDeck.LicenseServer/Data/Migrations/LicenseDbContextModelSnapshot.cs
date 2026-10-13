@@ -1086,6 +1086,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
+                    b.Property<DateTimeOffset?>("KvkkAcknowledgedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("KvkkTextVersion")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
                     b.Property<string>("Phone")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
