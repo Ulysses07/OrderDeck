@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
@@ -14,17 +15,23 @@ public sealed class LabelService
     private readonly CustomerService _customers;
     private readonly IDbConnectionFactory _factory;
     private readonly IClock _clock;
+    private readonly ShipmentRepository _shipments;
 
+    /// <param name="shipments">Fiyat düzeltmesi bağlı kargo dosyasının toplamını aynı pakette düzeltir.
+    /// DI tekil örneği verir; verilmezse (testler) aynı bağlantı fabrikası üstünde kurulur — depo
+    /// durumsuzdur.</param>
     public LabelService(
         LabelRepository labels,
         CustomerService customers,
         IDbConnectionFactory factory,
-        IClock clock)
+        IClock clock,
+        ShipmentRepository? shipments = null)
     {
         _labels = labels;
         _customers = customers;
         _factory = factory;
         _clock = clock;
+        _shipments = shipments ?? new ShipmentRepository(factory);
     }
 
     /// <summary>
@@ -190,21 +197,47 @@ public sealed class LabelService
         write.Commit();
     }
 
+    private static long _lastPrintBatchTicks;
+
+    /// <summary>Basış kimliği: basış SIRASIYLA artar (sıralı metin karşılaştırmasında da). "Basılanlar"
+    /// grupları önce PrintedAt'e (saniye) göre sıralar; aynı saniyedeki iki "Yazdır"ın sırasını bu kimlik
+    /// verir — rastgele kimlikte eskisi yarı yarıya üstte çıkardı (K1: en yeni basış en üstte). Önek UTC
+    /// tik sayısı (sabit 16 onaltılık hane; süreç içinde her çağrıda en az bir artar), sonek rastgele.</summary>
+    internal static string NewPrintBatchId()
+    {
+        long ticks;
+        while (true)
+        {
+            var last = System.Threading.Interlocked.Read(ref _lastPrintBatchTicks);
+            ticks = Math.Max(DateTime.UtcNow.Ticks, last + 1);
+            if (System.Threading.Interlocked.CompareExchange(ref _lastPrintBatchTicks, ticks, last) == last) break;
+        }
+        return ticks.ToString("x16", System.Globalization.CultureInfo.InvariantCulture) +
+               Guid.NewGuid().ToString("N")[..16];
+    }
+
     /// <summary>
     /// Marks the given labels as printed and increments customer aggregates per-customer.
     /// Tentative backup labels still get PrintedAt set (they physically come out of
     /// the printer) but DO NOT contribute to customer aggregates — the sale isn't
     /// real until the operator confirms the backup via <see cref="ConfirmBackup"/>.
+    ///
+    /// <para>Göç 048: <paramref name="labelIds"/> KÂĞIT SIRASIDIR (yazıcıya giden liste). Çağrı bir
+    /// "Yazdır" basışıdır: satırlar yeni bir basış kimliği ve kâğıttaki konumlarıyla (1'den)
+    /// damgalanır — "Basılanlar" sekmesi bunlarla gruplar ve sıralar. Atlanan satır (zaten basılmış
+    /// ya da iptal) konumunu korur: kâğıt yığınındaki yeri değişmez.</para>
     /// </summary>
     public void MarkPrintedAndRecord(IReadOnlyList<string> labelIds)
     {
         if (labelIds.Count == 0) return;
 
         var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
-        var idsToPrint = new List<string>(labelIds.Count);
+        var idsToPrint = new List<(string Id, int Seq)>(labelIds.Count);
+        var seq = 0;
 
         foreach (var id in labelIds)
         {
+            seq++;
             var lbl = _labels.GetById(id);
             if (lbl is null) continue;
 
@@ -218,7 +251,7 @@ public sealed class LabelService
             // sonuçlanmışsa paketin geri kalanı bundan etkilenmez.
             if (lbl.PrintedAt.HasValue || lbl.CancelledAt.HasValue) continue;
 
-            idsToPrint.Add(id);
+            idsToPrint.Add((id, seq));
             if (lbl.IsTentativeBackup) continue; // tentative rows: print only, no aggregate
             if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
                 groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
@@ -234,10 +267,174 @@ public sealed class LabelService
         // ilkel gerekiyordu. Pakete alınca o ilkele hiç gerek kalmıyor:
         // yazılmamış bir UPDATE'i geri almak gerekmez.
         using var write = DbWrite.Begin(_factory);
-        _labels.MarkPrinted(idsToPrint, _clock.UnixNow(), write);
+        _labels.MarkPrintedBatch(idsToPrint, _clock.UnixNow(), NewPrintBatchId(), write);
         foreach (var (customerId, agg) in groupedAmounts)
             _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
         write.Commit();
+    }
+
+    // ─── Fiyat düzeltme (sahip kararları K4/K5, 2026-10-12) ──────────────────
+    // Fiyat etiket yazılırken her etikete kopyalanıyor (Add); yanlış girilmiş
+    // fiyatı sonradan değiştiren tek akış bu. Etiketin kimliği aynı kalır —
+    // iptal + yeniden yazma yolunun ürettiği ikinci "yeni sipariş", Shopper'daki
+    // iptal satırları ve kargo dosyasındaki çift sayım oluşmaz.
+
+    /// <summary>Seçilen etiketleri sınıflar (yazma yok): düzeltilebilir / kargoya verilmiş (değişmez) /
+    /// konu dışı (iptal, kargo ücreti). Bulunamayan Id atlanır.</summary>
+    public PriceCorrectionPlan PlanPriceCorrection(IReadOnlyCollection<string> labelIds)
+        => Classify(_labels.GetByIds(labelIds.ToList()));
+
+    /// <summary>Bir yayında bir kodun fiyatı (sahip kararı F1: bir yayında bir kodun TEK fiyatı vardır). Kaynak o
+    /// yayındaki o kodun iptal edilmemiş etiketleri; null = kodun bu yayında etiketi yok. FİYAT kutusu kod
+    /// değişince bunu gösterir — uygulama yeniden açılınca da aynı sonuç.</summary>
+    public CodePrice? GetCodePrice(string sessionId, string code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return null;
+        var labels = _labels.GetActiveBySessionAndCode(sessionId, code.Trim());
+        if (labels.Count == 0) return null;
+        var plan = Classify(labels);
+        var source = plan.Correctable.Count > 0 ? plan.Correctable : plan.Shipped;
+        if (source.Count == 0) return null;
+        // En çok tekrarlanan fiyat; eşitlikte en son yazılanınki (liste yazılış sırasında).
+        var price = source.Select((l, i) => (l.Price, Order: i))
+            .GroupBy(x => x.Price)
+            .OrderByDescending(g => g.Count())
+            .ThenByDescending(g => g.Max(x => x.Order))
+            .First().Key;
+        return new CodePrice(price, plan.Correctable.Count, plan.PriceGroups, plan.Shipped.Count);
+    }
+
+    /// <summary>Kod düzeyinde düzeltmenin planı (sahip kararı F3): seçimdeki etiketlerin KODLARI, her biri için
+    /// kodun yayındaki BÜTÜN etiketleri (artı seçimde o koddan olanlar — ör. önceki yayından kuyruğa taşınmış
+    /// satır), sınıflanmış. Kodsuz seçilen etiketler tek grupta, yalnız kendileri (genişletilecek kod yok). Sıra:
+    /// kodların seçimde ilk görüldüğü sıra. Yazma yok.</summary>
+    public IReadOnlyList<CodeCorrectionPlan> PlanCodeCorrection(string sessionId, IReadOnlyCollection<string> selectedIds)
+    {
+        var selected = _labels.GetByIds(selectedIds.ToList());
+        var plans = new List<CodeCorrectionPlan>();
+        foreach (var group in selected.GroupBy(l => CodeKey(l.Code), StringComparer.OrdinalIgnoreCase))
+        {
+            var code = group.Key.Length == 0 ? null : group.First().Code!.Trim();
+            plans.Add(code is null
+                ? new CodeCorrectionPlan(null, Classify(group.ToList()))
+                : CodePlan(sessionId, code, group));
+        }
+        return plans;
+    }
+
+    /// <summary>Tek kodun planı (FİYAT kutusundaki fiyat değişikliği, F2): kodun yayındaki bütün etiketleri.</summary>
+    public CodeCorrectionPlan PlanCodeCorrection(string sessionId, string code)
+        => CodePlan(sessionId, code.Trim(), Array.Empty<Label>());
+
+    private CodeCorrectionPlan CodePlan(string sessionId, string code, IEnumerable<Label> alsoSelected)
+    {
+        var labels = _labels.GetActiveBySessionAndCode(sessionId, code).ToList();
+        var known = labels.Select(l => l.Id).ToHashSet(StringComparer.Ordinal);
+        labels.AddRange(alsoSelected.Where(l => known.Add(l.Id)));
+        return new CodeCorrectionPlan(code, Classify(labels));
+    }
+
+    private static string CodeKey(string? code) => code?.Trim() ?? "";
+
+    private PriceCorrectionPlan Classify(IReadOnlyList<Label> labels)
+    {
+        var shipmentStatus = new Dictionary<string, ShipmentStatus?>(StringComparer.Ordinal);
+        foreach (var sid in labels.Select(l => l.ShipmentId).OfType<string>().Distinct(StringComparer.Ordinal))
+            shipmentStatus[sid] = _shipments.GetById(sid)?.Status;
+
+        var correctable = new List<Label>();
+        var shipped = new List<Label>();
+        var excluded = new List<Label>();
+        foreach (var l in labels)
+        {
+            if (l.CancelledAt.HasValue || l.IsShippingFee) excluded.Add(l);
+            else if (l.ShipmentId is { } sid && shipmentStatus[sid] == ShipmentStatus.Shipped) shipped.Add(l);
+            else correctable.Add(l);
+        }
+        return new PriceCorrectionPlan(correctable, shipped, excluded);
+    }
+
+    /// <summary>
+    /// Seçilen etiketlerin fiyatını <paramref name="newPrice"/> yapar — TEK paket (<see cref="ConfirmBackup"/>
+    /// deseni): etiket fiyatları (Revision+1, SyncedAt=NULL — sunucuya mevcut senkronla gider; stok
+    /// DEĞİŞMEZ), basılmış ve onaylı (geçici yedek olmayan) etiketler için müşteri toplamı fark kadar
+    /// (<see cref="CustomerService.RecordPrintedLabels"/>, adet 0), kargoya verilmemiş bağlı dosyanın
+    /// toplamı fark kadar. Ödenmiş etiketin — dosyaya bağlı (dekont) ya da <paramref name="paidFromBalance"/>'ta —
+    /// ödendiği fiyat ödenmişken ilk düzeltmede saklanır (<see cref="LabelRepository.UpdatePriceForCorrection"/>):
+    /// "ödendi, fark" aynı etiketin sonraki düzeltmelerinde de ödenene göre hesaplansın.
+    ///
+    /// <para>Değişmeyenler: iptal edilmiş etiket, kargo ücreti satırı, kargoya verilmiş dosyadaki etiket
+    /// (sonuçta ayrıca döner), zaten bu fiyattaki etiket. Kuyruktaki etiketin ekrandaki kopyasını
+    /// güncellemek çağıranın işidir — yoksa kâğıda eski fiyat basılır.</para>
+    ///
+    /// <para>Okumalar paket açılmadan önce; paket içinde her satır KOŞULLU yazılır. Okuma ile yazma
+    /// arasında satır değiştiyse <see cref="PriceCorrectionConflictException"/> — paket geri sarılır,
+    /// hiçbir şey yazılmaz.</para>
+    /// </summary>
+    /// <param name="paidFromBalance">Onları içeren teslim edilmiş istek tamamen bakiyeden düşülmüş etiketler
+    /// (ödeme tarafı belirler — paket açılmadan önce okunur); null = yok.</param>
+    public PriceCorrectionResult CorrectPrices(
+        IReadOnlyCollection<string> labelIds, decimal newPrice, IReadOnlySet<string>? paidFromBalance = null)
+    {
+        if (newPrice < 0m) throw new ArgumentOutOfRangeException(nameof(newPrice), "Fiyat eksi olamaz.");
+
+        var plan = PlanPriceCorrection(labelIds);
+        var targets = plan.Correctable.Where(l => l.Price != newPrice).ToList();
+        var corrected = targets.Select(l => new CorrectedLabel(l, newPrice)).ToList();
+
+        var customerDeltas = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var shipmentDeltas = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var c in corrected)
+        {
+            // Müşteri toplamı yalnız basılmış ve onaylı satırlardan beslenir (MarkPrintedAndRecord,
+            // Cancel ile aynı kural): kuyruktaki satır basılınca zaten yeni fiyatla yazılır, geçici
+            // yedek ancak onaylanınca (ConfirmBackup) yeni fiyatıyla yazılır.
+            if (c.WasPrinted && !c.Before.IsTentativeBackup)
+                customerDeltas[c.Before.CustomerId] = customerDeltas.GetValueOrDefault(c.Before.CustomerId) + c.Delta;
+            // Dosya toplamı bağlanan etiketlerin fiyat toplamıdır (AttachLabels) — bağlı her etiket.
+            if (c.Before.ShipmentId is { } sid)
+                shipmentDeltas[sid] = shipmentDeltas.GetValueOrDefault(sid) + c.Delta;
+        }
+
+        if (corrected.Count > 0)
+        {
+            using var write = DbWrite.Begin(_factory);
+            var now = _clock.UnixNow();
+            foreach (var c in corrected)
+            {
+                var l = c.Before;
+                if (_labels.UpdatePriceForCorrection(
+                        l.Id, l.Price, l.PrintedAt.HasValue, l.IsTentativeBackup,
+                        paidFromBalance?.Contains(l.Id) == true, newPrice, now, write) != 1)
+                    throw new PriceCorrectionConflictException(
+                        "Etiketlerden biri bu arada değişti (basıldı, iptal edildi ya da fiyatı değişti); hiçbir şey yazılmadı.");
+            }
+            foreach (var (customerId, delta) in customerDeltas)
+                if (delta != 0m) _customers.RecordPrintedLabels(customerId, 0, delta, write);
+            foreach (var (shipmentId, delta) in shipmentDeltas)
+            {
+                var s = _shipments.GetById(shipmentId, write);
+                if (s is null || s.Status == ShipmentStatus.Shipped)
+                    throw new PriceCorrectionConflictException(
+                        "Bir kargo dosyası bu arada kargoya verildi; hiçbir şey yazılmadı.");
+                if (delta != 0m) _shipments.Update(s with { CumulativeAmount = s.CumulativeAmount + delta }, write);
+            }
+            write.Commit();
+        }
+
+        return new PriceCorrectionResult(corrected, plan.Shipped, customerDeltas, shipmentDeltas);
+    }
+
+    /// <summary>Yeniden baskı (K3/K5) için etiketlerin GÜNCEL hâli — verilen sırayla, yalnız basılmış ve
+    /// iptal edilmemiş olanlar. Yazma YOK: yeniden baskı ciroyu ikinci kez artırmaz, ilk PrintedAt'i ve
+    /// basış grubunu bozmaz. <see cref="Reprint.CorrectionIds"/> fiyatı düzeltilmiş olanlar ("DÜZELTME"
+    /// işareti).</summary>
+    public Reprint PrepareReprint(IReadOnlyList<string> labelIds)
+    {
+        var labels = _labels.GetByIds(labelIds)
+            .Where(l => l.PrintedAt.HasValue && !l.CancelledAt.HasValue)
+            .ToList();
+        return new Reprint(labels, _labels.GetPriceCorrectedIds(labels.Select(l => l.Id).ToList()));
     }
 
     // ─── Backup buyers ──────────────────────────────────────────────────────

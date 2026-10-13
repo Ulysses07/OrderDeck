@@ -39,13 +39,18 @@ public sealed partial class StreamReportViewModel : ViewModelBase
     private string? _sessionId;
     private DateTime _currentSessionDate;
 
+    private readonly Services.PriceCorrection.PrintedLabelsNavigator? _printedNavigator;
+
+    /// <param name="printedNavigator">K6: "Basılan etiketler" düğmesi. DI verir; null = düğme bir şey
+    /// yapmaz (testler).</param>
     public StreamReportViewModel(
         LabelRepository labels,
         SessionRepository sessions,
         GiveawayRepository giveaways,
         CustomerRepository customers,
         PaymentRequestService paymentService,
-        IDialogService dialogService)
+        IDialogService dialogService,
+        Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -53,6 +58,17 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         _customers = customers;
         _paymentService = paymentService;
         _dialogService = dialogService;
+        _printedNavigator = printedNavigator;
+    }
+
+    /// <summary>K6: bu yayının "Basılanlar" görünümü. Rapor bir sayfa ve sayfa çekmeceleri örtüyor;
+    /// kabuk sayfayı kapatıp sağ paneldeki sekmeyi bu yayına açar.</summary>
+    [RelayCommand]
+    private void ShowPrintedLabels()
+    {
+        if (_sessionId is null || _printedNavigator is null) return;
+        var title = $"{_currentSessionDate.ToString("dd.MM.yyyy", System.Globalization.CultureInfo.GetCultureInfo("tr-TR"))} yayını";
+        _printedNavigator.Request(new Services.PriceCorrection.PrintedLabelsRequest(_sessionId, title, _currentSessionDate));
     }
 
     public void Load(string sessionId)

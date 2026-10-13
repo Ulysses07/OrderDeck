@@ -105,6 +105,22 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
     private static bool IsLegacyScope(string scopeKey)
         => scopeKey == "legacy" || scopeKey.StartsWith("legacy:", StringComparison.Ordinal);
 
+    public (IReadOnlyList<PaymentJob> Jobs, IReadOnlyList<PaymentJob> Legacies) GetPersonScopeJobs(
+        IReadOnlyCollection<string> memberIds, string scopeKey)
+    {
+        lock (_gate)
+        {
+            var memberSet = memberIds.ToHashSet(StringComparer.Ordinal);
+            var jobs = _jobs.Values
+                .Where(j => memberSet.Contains(j.CustomerId) && j.ScopeKey == scopeKey).ToList();
+            var legacies = _jobs.Values
+                .Where(j => memberSet.Contains(j.CustomerId) && j.PriorScopeKey == scopeKey
+                            && IsLegacyScope(j.ScopeKey) && (j.ClosedAt is null || j.IsDelivered))
+                .ToList();
+            return (jobs, legacies);
+        }
+    }
+
     public PaymentJob? Get(string id)
     {
         lock (_gate) return _jobs.GetValueOrDefault(id);

@@ -30,6 +30,43 @@ public sealed class PaymentResultPresenterTests
             "SON gönderim sorulur; '149,5 ₺' değil");
     }
 
+    // K5 (2026-10-12): tutar değiştiyse (fiyat düzeltmesi) soru eski ve yeni tutarı BİRLİKTE gösterir —
+    // "tekrar gönder" aynı isteği değil düzeltilmiş isteği gönderir.
+    [Fact]
+    public void Tekrar_gonderme_tutar_degistiyse_eski_ve_yeni_tutari_birlikte_gosterir()
+    {
+        var at = new DateTimeOffset(2026, 10, 11, 21, 14, 0, TimeSpan.FromHours(3));
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "session:s1",
+            new[] { new PriorPaymentRequest(250m, at) }, "t", NewTotal: 205m);
+
+        var (_, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        var saat = at.ToLocalTime().ToString("HH:mm", CultureInfo.GetCultureInfo("tr-TR"));
+        message.Should().Be(
+            $"{saat}{PaymentResultPresenter.Locative(at)} 250,00 TL istendi; yeni tutar 205,00 TL. Düzeltilmiş istek gönderilsin mi?");
+    }
+
+    [Fact]
+    public void Tekrar_gonderme_bakiye_dusulmus_istekte_yeni_toplamin_bakiye_oncesi_oldugunu_soyler()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "session:s1",
+            new[] { Istek(200m) }, "t", NewTotal: 205m, PriorHadBalance: true);
+
+        PaymentResultPresenter.PromptText(prompt, Simdi).Message
+            .Should().Contain("200,00 TL istendi; yeni toplam 205,00 TL (bakiye düşülmeden önce)");
+    }
+
+    [Theory]
+    [InlineData(21, 14, "'te")]
+    [InlineData(21, 30, "'da")]
+    [InlineData(21, 0, "'de")]
+    [InlineData(20, 40, "'ta")]
+    [InlineData(10, 0, "'da")]
+    [InlineData(9, 6, "'da")]
+    public void Saat_eki_okunusa_uyar(int hour, int minute, string expected)
+        => PaymentResultPresenter.Locative(new DateTimeOffset(2026, 10, 11, hour, minute, 0, TimeZoneInfo.Local.GetUtcOffset(new DateTime(2026, 10, 11))))
+            .Should().Be(expected);
+
     [Fact] // Yalnız teslim edilmiş istekler "gitmiş" sayılır; gönderilmemiş düşüm ayrıca söylenir
     public void Birlestirme_gonderilmemis_dusumu_gitmis_saymaz()
     {

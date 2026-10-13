@@ -69,6 +69,11 @@ internal static class ThemeTestHost
                     {
                         var app = new OrderDeck.App.App();
                         app.InitializeComponent();
+                        // Pencere açan testler (gerçek klavye/menü yolu) için: Application'ı yaratan
+                        // thread'de açılıp kapanan pencere uygulamanın "son penceresi" sayılır ve
+                        // varsayılan OnLastWindowClose uygulamayı kapatırdı — sonraki WPF testleri
+                        // kapanmış bir uygulamayla koşar, sıraya bağlı rastgele kırmızı verirdi.
+                        app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                     }
 
                     body();

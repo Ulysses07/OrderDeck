@@ -191,6 +191,160 @@ public sealed class LabelRepository
             new { printedAt, ids = ids.ToArray() });
     }
 
+    /// <summary>Göç 048: bir "Yazdır" basışını damgalar — <see cref="MarkPrinted"/>'ın aynısı, ek olarak
+    /// her satıra basışın kimliği (<paramref name="batchId"/>) ve kâğıttaki konumu (1'den) yazılır.
+    /// "Basılanlar" sekmesi bu ikisiyle gruplar ve sıralar.</summary>
+    /// <param name="write"><inheritdoc cref="MarkCancelled" path="/param[@name='write']"/></param>
+    public void MarkPrintedBatch(
+        IReadOnlyList<(string Id, int Seq)> items, long printedAt, string batchId, DbWrite? write = null)
+    {
+        if (items.Count == 0) return;
+        // StockSyncedAt'e dokunulmaz — MarkPrinted ile aynı gerekçe.
+        _factory.Execute(write,
+            @"UPDATE Label SET PrintedAt=@printedAt, PrintBatchId=@batchId, PrintSeq=@seq,
+                     SyncedAt=NULL, Revision = Revision + 1
+              WHERE Id=@id",
+            items.Select(i => new { printedAt, batchId, seq = i.Seq, id = i.Id }).ToArray());
+    }
+
+    /// <summary>Fiyat düzeltmesinin (LabelService.CorrectPrices) satır yazımı — KOŞULLU: yalnız satır
+    /// hâlâ okunduğu hâldeyse (aynı eski fiyat, iptal edilmemiş, basılmışlık ve onay durumu aynı)
+    /// yazar. 0 dönerse çağıran paketi geri sarar: müşteri toplamı ve kargo farkı okunan hâle göre
+    /// hesaplandı, değişmiş bir satıra uygulanamaz.
+    ///
+    /// <para><see cref="UpdatePrice"/> gibi: SyncedAt=NULL (yeni fiyat mevcut senkronla sunucuya gider),
+    /// Revision+1, StockSyncedAt'e DOKUNULMAZ (fiyat stok-ilgili değil). PriceCorrectedAt (yeniden
+    /// baskıdaki "DÜZELTME" işareti) YALNIZ basılmış etikette damgalanır: işaret "yığında eski fiyatlı
+    /// bir kâğıt var" demek. Kuyrukta düzeltilen etiketin ilk kâğıdı zaten yeni fiyatla çıkar — onu
+    /// işaretlemek paketleyene ortada olmayan yanlış kâğıdı aratırdı.</para>
+    ///
+    /// <para>PaidPrice (göç 048): etiket ÖDENMİŞSE — bir kargo dosyasına bağlı (dekont kaydı bağlar) ya da
+    /// <paramref name="paidFromBalance"/> (onu içeren teslim edilmiş istek tamamen bakiyeden düşülmüş) — ve ödenmişken
+    /// ilk kez düzeltiliyorsa düzeltmeden ÖNCEKİ fiyatı, yani ödendiği fiyat yazılır; sonraki düzeltmeler dokunmaz.
+    /// "Ödendi, fark" bununla hesaplanır (<see cref="GetPaidPrices"/>). SQLite atamanın sağ tarafını satırın ESKİ
+    /// değerleriyle değerlendirir: <c>Price</c> burada eski fiyat.</para></summary>
+    public int UpdatePriceForCorrection(
+        string id, decimal expectedPrice, bool expectPrinted, bool expectTentative, bool paidFromBalance,
+        decimal newPrice, long correctedAt, DbWrite write)
+        => write.Connection.Execute(
+            @"UPDATE Label SET Price=@newPrice,
+                     PriceCorrectedAt = CASE WHEN PrintedAt IS NOT NULL THEN @correctedAt ELSE PriceCorrectedAt END,
+                     PaidPrice = CASE WHEN PaidPrice IS NULL AND (ShipmentId IS NOT NULL OR @paidFromBalance = 1)
+                                      THEN Price ELSE PaidPrice END,
+                     SyncedAt=NULL, Revision = Revision + 1
+              WHERE Id=@id AND abs(Price - @expectedPrice) < 0.00001 AND CancelledAt IS NULL
+                AND (PrintedAt IS NOT NULL) = @expectPrinted
+                AND IsTentativeBackup = @expectTentative",
+            new
+            {
+                id, expectedPrice, newPrice, correctedAt,
+                expectPrinted = expectPrinted ? 1 : 0,
+                expectTentative = expectTentative ? 1 : 0,
+                paidFromBalance = paidFromBalance ? 1 : 0,
+            }, write.Transaction);
+
+    /// <summary>Verilen etiketlerden fiyatı "Fiyatı düzelt" ile değiştirilmiş olanlar (göç 048) —
+    /// yeniden baskının "DÜZELTME" işareti.</summary>
+    public IReadOnlySet<string> GetPriceCorrectedIds(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0) return new HashSet<string>();
+        using var conn = _factory.Open();
+        return conn.Query<string>(
+                "SELECT Id FROM Label WHERE Id IN @ids AND PriceCorrectedAt IS NOT NULL",
+                new { ids = ids.ToArray() })
+            .ToHashSet(System.StringComparer.Ordinal);
+    }
+
+    /// <summary>Verilen etiketlerden ödenmişken düzeltilmiş olanların ÖDENDİĞİ fiyatı (göç 048, PaidPrice — ilk
+    /// düzeltme yazar, <see cref="UpdatePriceForCorrection"/>). Listede olmayan etiket ödenmişken hiç düzeltilmedi:
+    /// ödendiği fiyat düzeltmeden önceki fiyatıdır.</summary>
+    public IReadOnlyDictionary<string, decimal> GetPaidPrices(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0) return new Dictionary<string, decimal>(System.StringComparer.Ordinal);
+        using var conn = _factory.Open();
+        return conn.Query<(string Id, decimal PaidPrice)>(
+                "SELECT Id, PaidPrice FROM Label WHERE Id IN @ids AND PaidPrice IS NOT NULL",
+                new { ids = ids.ToArray() })
+            .ToDictionary(r => r.Id, r => r.PaidPrice, System.StringComparer.Ordinal);
+    }
+
+    /// <summary>"Basılanlar" sekmesi (K1): yayının basılmış, iptal edilmemiş etiketleri, bağlı kargo
+    /// dosyasının durumuyla. Gruplama ve sıralama çağıranda (<see cref="PrintedLabelRow.BatchKey"/>);
+    /// burada yalnız en yeni basış önce gelir. Geçici yedekler ve kargo ücreti satırları dahildir —
+    /// kâğıtları da yığında.</summary>
+    public IReadOnlyList<PrintedLabelRow> GetPrintedBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<PrintedRow>(
+            @"SELECT l.Id, l.SessionId, l.CustomerId, l.Platform, l.Username, l.DisplayName, l.MessageText, l.Code,
+                     l.Price, l.AddedAt, l.PrintedAt, l.CancelledAt, l.CancelReason, l.IsBackupPromoted, l.ParentLabelId,
+                     l.IsTentativeBackup, l.IsShippingFee, l.ShipmentId, l.SyncedAt, l.ProductId, l.ProductVariantId,
+                     l.Revision, l.PrintBatchId, l.PrintSeq, l.PriceCorrectedAt, s.Status AS ShipmentStatus
+              FROM Label l
+              LEFT JOIN Shipment s ON s.Id = l.ShipmentId
+              WHERE l.SessionId=@sessionId AND l.PrintedAt IS NOT NULL AND l.CancelledAt IS NULL
+              ORDER BY l.PrintedAt DESC, l.PrintBatchId, l.PrintSeq, l.AddedAt, l.Id",
+            new { sessionId }).ToList();
+        return rows.Select(r => new PrintedLabelRow(
+                Map(r), r.PrintBatchId, r.PrintSeq is long seq ? (int)seq : null, r.PriceCorrectedAt,
+                r.ShipmentStatus is { } st && System.Enum.TryParse<ShipmentStatus>(st, out var parsed)
+                    ? parsed
+                    : null))
+            .ToList();
+    }
+
+    /// <summary>Bir yayında bir kodun iptal edilmemiş etiketleri (kargo ücreti hariç; kuyruk, basılmış ve
+    /// yedekler dahil), yazılış sırasıyla. "Bir yayında bir kodun TEK fiyatı" kuralının kaynağı (sahip kararı
+    /// F1–F3): FİYAT kutusu kodun fiyatını buradan okur, kod düzeyinde düzeltme bu etiketleri değiştirir. Kod
+    /// eşleşmesi <see cref="SameCode"/> — "BU ÜRÜNDEN" sayacıyla (<see cref="CountSessionLabelsByCode"/>) aynı.</summary>
+    public IReadOnlyList<Label> GetActiveBySessionAndCode(string sessionId, string code)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
+              FROM Label
+              WHERE SessionId=@sessionId AND Code IS NOT NULL AND length(Code) = length(@code)
+                AND CancelledAt IS NULL AND IsShippingFee = 0
+              ORDER BY AddedAt, rowid",
+            new { sessionId, code }).ToList();
+        return rows.Where(r => SameCode(r.Code, code)).Select(Map).ToList();
+    }
+
+    /// <summary>
+    /// İki etiket kodu aynı ürün mü: harf duyarsız, Türkçe harfler dahil (<see cref="StringComparison.OrdinalIgnoreCase"/>
+    /// — kod kutusunun etkin kod karşılaştırması ve düzeltmenin kod gruplaması da bu). SQLite'ın NOCASE harmanı
+    /// yalnız ASCII katlar: "çanta1" ile "Çanta1"i kabuk aynı kod sayarken fiyat kaynağı ayrı sayıyordu — şerit
+    /// açılmadan aynı ürüne iki fiyat yazılıyor, "Fiyatı düzelt" öbür yazımı atlıyordu. Bu yüzden eşleşme
+    /// SQL'de değil burada; SQL adayları uzunlukla süzer (harf katlama uzunluğu değiştirmez).
+    /// </summary>
+    public static bool SameCode(string? a, string b)
+        => a is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary><see cref="GetPrintedBySession"/>'ın satır sayısı — sekme kapalıyken başlıktaki sayı (liste
+    /// kurulmaz).</summary>
+    public int CountPrintedBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM Label WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL AND CancelledAt IS NULL",
+            new { sessionId });
+    }
+
+    /// <summary>Verilen etiketler, verilen sırayla (eksik olanlar atlanır).</summary>
+    public IReadOnlyList<Label> GetByIds(IReadOnlyList<string> ids)
+    {
+        if (ids.Count == 0) return System.Array.Empty<Label>();
+        using var conn = _factory.Open();
+        var byId = conn.Query<Row>(
+                @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                         Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
+                  FROM Label WHERE Id IN @ids",
+                new { ids = ids.Distinct().ToArray() })
+            .ToDictionary(r => r.Id, Map, System.StringComparer.Ordinal);
+        return ids.Distinct().Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+    }
+
     /// <summary>Updates the Price of a single label. Used by
     /// <c>LabelService.ConfirmBackup</c> when the operator negotiates a
     /// different number while promoting a tentative backup.</summary>
@@ -269,25 +423,26 @@ public sealed class LabelRepository
     /// GetSessionTotals'tan iki farkı var, ikisi de bilinçli:
     ///  * PrintedAt filtresi YOK — operatör siparişi kuyruğa düştüğü anda
     ///    saymak istiyor, yazdırmayı beklemek sayacı geciktirirdi.
-    ///  * Kod eşleşmesi harf duyarsız; hero girişi büyük harfe zorluyor ama
-    ///    eski satırlar karışık olabilir.
+    ///  * Kod eşleşmesi harf duyarsız (<see cref="SameCode"/> — Türkçe harfler
+    ///    dahil; FİYAT kutusunun kaynağıyla aynı kural); kod kutusu büyük harfe
+    ///    zorlamıyor, eski satırlar karışık olabilir.
     /// İptal ve onaylanmamış yedek dışlaması ise AYNI — iki sayaç birbirini
     /// tutmalı.
     /// </summary>
     public int CountSessionLabelsByCode(string sessionId, string code)
     {
         using var conn = _factory.Open();
-        return conn.ExecuteScalar<int>(
+        return conn.Query<string>(
             """
-            SELECT COUNT(*)
+            SELECT Code
             FROM Label
             WHERE SessionId = @sessionId
               AND Code IS NOT NULL
-              AND Code = @code COLLATE NOCASE
+              AND length(Code) = length(@code)
               AND CancelledAt IS NULL
               AND IsTentativeBackup = 0
             """,
-            new { sessionId, code });
+            new { sessionId, code }).Count(c => SameCode(c, code));
     }
 
     /// <summary>
@@ -582,7 +737,15 @@ public sealed class LabelRepository
             ProductVariantId: r.ProductVariantId,
             Revision: r.Revision);
 
-    private sealed class Row
+    private sealed class PrintedRow : Row
+    {
+        public string? PrintBatchId { get; init; }
+        public long? PrintSeq { get; init; }
+        public long? PriceCorrectedAt { get; init; }
+        public string? ShipmentStatus { get; init; }
+    }
+
+    private class Row
     {
         public string Id { get; init; } = "";
         public string SessionId { get; init; } = "";
@@ -657,6 +820,15 @@ public sealed class LabelRepository
 }
 
 public sealed record SessionTotals(int PrintedCount, decimal TotalAmount, int UniqueCustomers);
+
+/// <summary>"Basılanlar" sekmesinin satırı (göç 048). <see cref="BatchKey"/> grubun anahtarıdır:
+/// basışın kimliği, 048 öncesi basılmış etiketlerde aynı PrintedAt'i taşıyanlar tek grup.
+/// <see cref="ShipmentStatus"/> bağlı kargo dosyasının durumu (bağlı değilse null).</summary>
+public sealed record PrintedLabelRow(
+    Label Label, string? PrintBatchId, int? PrintSeq, long? PriceCorrectedAt, ShipmentStatus? ShipmentStatus)
+{
+    public string BatchKey => PrintBatchId ?? "t:" + Label.PrintedAt!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+}
 
 /// <summary>
 /// Yayın raporundaki platform kırılımı satırı (IG/TikTok/FB/YT başına

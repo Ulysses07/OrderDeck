@@ -25,15 +25,18 @@ public partial class BackupTransferDrawer : UserControl
 {
     private readonly LabelService _labels;
     private readonly Drawer _drawer;
+    private readonly System.Action<string>? _onConfirmed;
 
     public ObservableCollection<BackupRowViewModel> Rows { get; } = new();
 
     private BackupTransferDrawer(
-        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups)
+        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups,
+        System.Action<string>? onConfirmed)
     {
         InitializeComponent();
         _drawer = drawer;
         _labels = labels;
+        _onConfirmed = onConfirmed;
         BackupsList.ItemsSource = Rows;
 
         Subtitle.Text =
@@ -46,37 +49,51 @@ public partial class BackupTransferDrawer : UserControl
             Rows.Add(new BackupRowViewModel(b));
     }
 
+    /// <summary>Toplu iptal (K3, "Basılanlar"): birden çok etiketin yedekleri TEK çekmecede — her etiket
+    /// için ayrı çekmece açılmaz. Her yedek kartının üstünde hangi etiketin yedeği olduğu yazar.</summary>
+    private BackupTransferDrawer(
+        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups,
+        System.Action<string>? onConfirmed)
+    {
+        InitializeComponent();
+        _drawer = drawer;
+        _labels = labels;
+        _onConfirmed = onConfirmed;
+        BackupsList.ItemsSource = Rows;
+
+        Subtitle.Text =
+            $"İptal edilen {groups.Count} etiketin yedekleri. Bir yedek için fiyatı düzenleyip " +
+            "onaylayabilir, ya da kapatıp daha sonra müşteri detayından dönebilirsin.";
+
+        foreach (var (parent, backups) in groups)
+        {
+            var header = $"'{parent.DisplayName ?? parent.Username}' etiketinin yedeği — orijinal fiyat " +
+                         $"{parent.Price.ToString("N2", CultureInfo.CurrentCulture)} TL";
+            foreach (var b in backups)
+                Rows.Add(new BackupRowViewModel(b) { GroupHeader = header });
+        }
+    }
+
     /// <summary>Çekmece başlığı çağıranda kuruluyor (yedek sayısı orada
     /// biliniyor), gövde yalnız listeyi ve açıklamayı taşıyor.</summary>
+    /// <param name="onConfirmed">Yedek onaylandı (Id) — kabuk kuyruktaki kopyayı hemen günceller.</param>
     public static BackupTransferDrawer Create(
-        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups)
-        => new(drawer, labels, parentLabel, backups);
+        Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups,
+        System.Action<string>? onConfirmed = null)
+        => new(drawer, labels, parentLabel, backups, onConfirmed);
+
+    /// <summary>Toplu iptalin yedek çekmecesi: birden çok etiketin yedekleri tek listede.</summary>
+    /// <param name="onConfirmed">Yedek onaylandı (Id) — kabuk kuyruktaki kopyayı hemen günceller.</param>
+    public static BackupTransferDrawer Create(
+        Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups,
+        System.Action<string>? onConfirmed = null)
+        => new(drawer, labels, groups, onConfirmed);
 
     private void OnPromote(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn) return;
         if (btn.DataContext is not BackupRowViewModel row) return;
-
-        // Hata artık MessageBox değil, kartın kendi satırı — spec §6:
-        // hiçbir şey pop-up değil.
-        if (!decimal.TryParse(row.PriceText, NumberStyles.Number,
-                CultureInfo.CurrentCulture, out var price)
-            && !decimal.TryParse(row.PriceText, NumberStyles.Number,
-                CultureInfo.InvariantCulture, out price))
-        {
-            row.ErrorText = "Geçerli bir fiyat gir (örn: 250 veya 250,00).";
-            return;
-        }
-
-        try
-        {
-            _labels.ConfirmBackup(row.Backup.Id, newPrice: price);
-            row.MarkPromoted();
-        }
-        catch (System.Exception ex)
-        {
-            row.ErrorText = $"Yedek onaylanamadı: {ex.Message}";
-        }
+        row.Promote((id, price) => _labels.ConfirmBackup(id, newPrice: price), _onConfirmed);
     }
 }
 
@@ -91,6 +108,9 @@ public sealed partial class BackupRowViewModel : ObservableObject
     [ObservableProperty] private string _actionButtonText = "Onayla";
     [ObservableProperty] private string? _errorText;
 
+    /// <summary>Toplu iptalde kartın hangi etiketin yedeği olduğu; tek etiketli çekmecede null.</summary>
+    public string? GroupHeader { get; init; }
+
     public string DisplayName => Backup.Username;
     public string MessageText => string.IsNullOrEmpty(Backup.MessageText) ? "—" : Backup.MessageText;
 
@@ -104,10 +124,66 @@ public sealed partial class BackupRowViewModel : ObservableObject
         _priceText = backup.Price.ToString("N2", CultureInfo.CurrentCulture);
     }
 
+    /// <summary>0 TL ikinci "Onayla"yı bekliyor (düğme "Evet, 0 TL" olur).</summary>
+    private bool _zeroConfirmPending;
+
+    /// <summary>Kartın fiyatı — FİYAT kutusuyla AYNI kural (K8; eskiden burada Türkçe biçim önce
+    /// deneniyordu, kutuda ise tersi — aynı metin iki ekranda iki farklı fiyattı). Eksi ya da okunamayan
+    /// fiyat satır içi reddedilir; 0 TL, kutudaki gibi satır içi onaylanır: ilk tıklama sorar, ikincisi
+    /// yazar. Yazılacak fiyat ya da (hata/onay bekleniyor) null.</summary>
+    public decimal? ReadPrice()
+    {
+        var parsed = PriceInput.Parse(PriceText);
+        if (!parsed.IsOk)
+        {
+            ErrorText = parsed.Status == PriceInputStatus.Negative
+                ? "Fiyat eksi olamaz."
+                : "Geçerli bir fiyat gir (örn: 250 veya 250,00).";
+            return null;
+        }
+        if (parsed.Value == 0m && !_zeroConfirmPending)
+        {
+            _zeroConfirmPending = true;
+            ErrorText = "Fiyat 0 TL — doğruysa tekrar onayla.";
+            ActionButtonText = "Evet, 0 TL";
+            return null;
+        }
+        return parsed.Value;
+    }
+
+    partial void OnPriceTextChanged(string value)
+    {
+        if (!_zeroConfirmPending) return;
+        _zeroConfirmPending = false;
+        ErrorText = null;
+        ActionButtonText = "Onayla";
+    }
+
     public void MarkPromoted()
     {
         IsActionable = false;
         ActionButtonText = "Onaylandı";
         ErrorText = null;
+    }
+
+    /// <summary>Kartın "Onayla"sı: fiyat okunur (<see cref="ReadPrice"/>), yedek onaylanır
+    /// (<paramref name="confirm"/>), sonra <paramref name="confirmed"/> bildirilir — kabuk yedeğin
+    /// kuyruktaki kopyasını HEMEN günceller. Çekmece açıkken de "Yazdır"a basılabiliyor; kopya çekmece
+    /// kapanınca güncellenseydi arada kâğıda eski fiyat basılır, ciroya yeni fiyat yazılırdı. Hata
+    /// MessageBox değil, kartın kendi satırı (spec §6: hiçbir şey pop-up değil).</summary>
+    public void Promote(System.Action<string, decimal> confirm, System.Action<string>? confirmed)
+    {
+        if (ReadPrice() is not { } price) return;
+        try
+        {
+            confirm(Backup.Id, price);
+        }
+        catch (System.Exception ex)
+        {
+            ErrorText = $"Yedek onaylanamadı: {ex.Message}";
+            return;
+        }
+        MarkPromoted();
+        confirmed?.Invoke(Backup.Id);
     }
 }

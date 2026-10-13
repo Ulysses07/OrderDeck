@@ -288,6 +288,41 @@ public sealed class SessionOrderSyncServiceTests
         fx.Labels.GetById(lid)!.SyncedAt.Should().NotBeNull();
     }
 
+    // ── Fiyat düzeltme (K5, 2026-10-12) ─────────────────────────────────
+    // Düzeltilen fiyat sunucuya MEVCUT senkronla gider: etiket gönderilmiş olsa da düzeltme onu
+    // yeniden bekleyen yapar, sıradaki tur aynı sipariş kimliğiyle yeni fiyatı yollar (sunucu yerinde
+    // günceller — yeni sipariş ve bildirim oluşmaz).
+
+    [Fact]
+    public async Task Duzeltilen_fiyat_ayni_siparis_kimligiyle_sunucuya_gider()
+    {
+        var fx = Build();
+        using var _d = fx.Db;
+
+        var sid = Guid.NewGuid().ToString("N");
+        fx.Sessions.Insert(new StreamSession(sid, "S1", 1700000000L, null,
+            new[] { "instagram" }, null));
+        var lid = Guid.NewGuid().ToString("N");
+        fx.Labels.Insert(new Label(lid, sid, "c1hex", "instagram", "@alice",
+            "ürün", "A12", 250m, 1700000200L, 1700000300L, DisplayName: "Alice"));
+
+        await fx.Svc.SyncOnceAsync();
+        fx.Labels.GetById(lid)!.SyncedAt.Should().NotBeNull();
+
+        var clock = new FakeClock();
+        var customers = new CustomerRepository(fx.Db);
+        var labelSvc = new LabelService(fx.Labels,
+            new CustomerService(customers, fx.Sessions, fx.Labels, clock), fx.Db, clock);
+        labelSvc.CorrectPrices(new[] { lid }, 205m);
+
+        var r2 = await fx.Svc.SyncOnceAsync();
+        r2.OrdersPushed.Should().Be(1);
+        using var doc = System.Text.Json.JsonDocument.Parse(fx.OrdersJson[^1]);
+        var order = doc.RootElement.GetProperty("orders")[0];
+        order.GetProperty("id").GetGuid().Should().Be(Guid.Parse(lid));
+        order.GetProperty("price").GetDecimal().Should().Be(205m);
+    }
+
     [Fact]
     public async Task Ucustaki_push_sirasinda_yayin_kapatma_onay_tarafindan_ezilmez()
     {

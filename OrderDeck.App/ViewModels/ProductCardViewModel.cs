@@ -105,6 +105,9 @@ public sealed partial class ProductCardViewModel : ObservableObject
 
     public ObservableCollection<CatalogVariantViewModel> Variants { get; } = new();
 
+    private static readonly System.Globalization.CultureInfo TrCulture =
+        System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+
     // IsUnknown Code'u okuyor: doğrudan bir Code ataması haber vermeseydi
     // "katalogda yok" bloğunun görünürlüğü bayat kalırdı.
     [ObservableProperty]
@@ -118,6 +121,12 @@ public sealed partial class ProductCardViewModel : ObservableObject
     // türüyor, birbirinden ya da çözümlemeden ayrışmaları imkânsız.
     public bool HasProduct => _resolution is not null;
     public bool IsUnknown => Code.Length > 0 && _resolution is null;
+
+    /// <summary>Katalogdaki satış fiyatı ("250,00 TL"); ürün yoksa ya da katalogda fiyat girilmemişse
+    /// boş. Kod değişince FİYAT kutusu bununla dolar (K8) — kartta da görünür ki operatör kutudakinin
+    /// nereden geldiğini görsün.</summary>
+    [ObservableProperty]
+    private string _catalogPriceText = string.Empty;
 
     /// <summary>Kartta ürün adının ardına eklenen " · Siyah" son eki; yoksa boş.</summary>
     [ObservableProperty]
@@ -210,6 +219,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
         {
             Name = string.Empty;
             SellerAxisSuffix = string.Empty;
+            CatalogPriceText = string.Empty;
             CoverPhotoKey = null;
             Variants.Clear();
         }
@@ -220,6 +230,9 @@ public sealed partial class ProductCardViewModel : ObservableObject
                 ? string.Empty
                 : $" · {_resolution.SellerAxisValue!.Trim()}";
             CoverPhotoKey = _resolution.Product.CoverPhotoKey;
+            CatalogPriceText = _resolution.Product.DefaultPrice > 0m
+                ? _resolution.Product.DefaultPrice.ToString("N2", TrCulture) + " TL"
+                : string.Empty;
 
             Variants.Clear();
             // Süzme ve pasif eleme çözümleyicide yapıldı; kart yalnız gösteriyor.

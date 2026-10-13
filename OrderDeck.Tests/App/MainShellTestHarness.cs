@@ -49,10 +49,15 @@ internal static class MainShellTestHarness
         public List<List<Label>> Calls { get; } = new();
         public List<IReadOnlySet<string>?> RecipientPaysCalls { get; } = new();
         public List<List<Label>> GiftCalls { get; } = new();
-        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+
+        /// <summary>Her çağrının "DÜZELTME" işareti kümesi (yeniden baskı).</summary>
+        public List<IReadOnlySet<string>?> CorrectionCalls { get; } = new();
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
         {
             Calls.Add(labels.ToList());
             RecipientPaysCalls.Add(recipientPaysLabelIds);
+            CorrectionCalls.Add(correctionLabelIds);
         }
         public void PrintGiftLabels(IReadOnlyList<Label> labels) => GiftCalls.Add(labels.ToList());
     }
@@ -90,6 +95,8 @@ internal static class MainShellTestHarness
     /// (<see cref="Harness.LicenseKey"/> null) — StartupFlow'un lisanssız kabul ettiği hâl.</param>
     /// <param name="log">VM'in günlüğü (durum satırı hata uyarısı); null = yazılmaz.</param>
     /// <param name="customerPull">Müşteri akışı (D5b destek eylemi); null = eylem kapalı.</param>
+    /// <param name="paymentFollowUp">Fiyat düzeltmesinin ödeme tarafı (düzeltilmiş istek gönderimi), harness'in
+    /// veritabanı ve depolarıyla kurulur; null = yok.</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
         ILabelPrinter? printerOverride = null,
@@ -97,7 +104,11 @@ internal static class MainShellTestHarness
         OrderDeck.App.Services.Sync.SyncPendingCounter? pendingCounter = null,
         bool licensed = true,
         Microsoft.Extensions.Logging.ILogger<MainShellViewModel>? log = null,
-        OrderDeck.App.Services.Sync.CustomerChangesPullService? customerPull = null)
+        OrderDeck.App.Services.Sync.CustomerChangesPullService? customerPull = null,
+        OrderDeck.App.Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
+        OrderDeck.App.Services.Pages.IPageService? pages = null,
+        Func<InMemorySqlite, CustomerRepository, LabelRepository,
+            OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>? paymentFollowUp = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -155,8 +166,9 @@ internal static class MainShellTestHarness
             bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
-            drawers: drawers, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
-            customerPull: customerPull);
+            drawers: drawers, pages: pages, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
+            customerPull: customerPull, printedNavigator: printedNavigator,
+            paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo));
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }

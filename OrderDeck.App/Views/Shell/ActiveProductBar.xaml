@@ -46,13 +46,154 @@
                 </TextBox.Style>
             </TextBox>
 
-            <!-- FİYAT -->
+            <!-- FİYAT (sahip kararları K8, F1/F2). Bir yayında bir kodun TEK
+                 fiyatı var, kaynağı o yayındaki etiketleri. Kod değişince kodun
+                 bu yayındaki fiyatıyla, yoksa katalog fiyatıyla dolar (kaynak
+                 kutunun altında yazar); ikisi de yoksa ve kutudaki fiyat başka
+                 ürün için girildiyse kutu sarı çerçeveyle vurgulanır. Kutu "bu
+                 yayındaki fiyatı"yken yayın biter ya da kodun etiketleri iptal
+                 edilirse de vurgulanır — kutu sessizce değişmez, sarı metin
+                 nedenini söyler. Operatör fiyata dokununca vurgu kalkar. -->
             <TextBlock Text="FİYAT" Style="{StaticResource OD.Text.Micro}"
                        Margin="{StaticResource OD.Pad.Top5}"/>
-            <TextBox Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
-                     Style="{StaticResource OD.TextBox}"
+            <TextBox x:Name="PriceBox"
+                     Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
                      FontFamily="{StaticResource OD.Font.Mono}"
-                     FontSize="{StaticResource OD.Font.F3}"/>
+                     FontSize="{StaticResource OD.Font.F3}">
+                <TextBox.Style>
+                    <Style TargetType="TextBox" BasedOn="{StaticResource OD.TextBox}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsPriceCarriedOver}" Value="True">
+                                <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Amber}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
+            <TextBlock Text="{Binding PriceSourceText}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding PriceSourceText, Converter={StaticResource NullToCollapsedConverter}}"/>
+            <TextBlock Text="{Binding PriceCarriedOverText}"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Amber}"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding IsPriceCarriedOver, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <!-- Kodda kutudakinden farklı fiyatlı etiket var ve operatör fiyatı
+                 değiştirmedi (eski veri, iptal, yedek onayı): ENGELLEMEYEN ipucu.
+                 Şerit yalnız operatör fiyatı değiştirince açılır; yazım sürer. -->
+            <TextBlock Text="{Binding CodePriceHint}"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Amber}"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding CodePriceHint, Converter={StaticResource NullToCollapsedConverter}}"/>
+            <TextBlock Text="{Binding PriceError}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Accent}"
+                       TextWrapping="Wrap"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Visibility="{Binding PriceError, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+            <!-- F2: etiketi olan kodun fiyatı kutuda değiştirildi. Tuş vuruşunda
+                 değil, TEK onayla uygulanır: "Evet" kodun bütün düzeltilebilir
+                 etiketlerini yeni fiyata geçirir (fiyat düzeltme paketi),
+                 "Vazgeç" kutuyu kodun fiyatına döndürür. Şerit beklerken o kod
+                 için etiket yazılmaz; başka koda geçilirse şerit kapanır. -->
+            <Border x:Name="CodePriceStrip"
+                    Margin="{StaticResource OD.Pad.Top3}"
+                    Padding="{StaticResource OD.Pad.3}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OD.Radius.Md}"
+                    Visibility="{Binding CodePriceQuestion, Converter={StaticResource NullToCollapsedConverter}}">
+                <StackPanel>
+                    <TextBlock Text="{Binding CodePriceQuestion}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Text}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding CodePriceError}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Accent}"
+                               TextWrapping="Wrap"
+                               Margin="{StaticResource OD.Pad.Top3}"
+                               Visibility="{Binding CodePriceError, Converter={StaticResource NullToCollapsedConverter}}"/>
+                    <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top3}">
+                        <Button Content="Evet"
+                                Style="{StaticResource OD.Button.Secondary}"
+                                Command="{Binding ConfirmCodePriceCommand}"/>
+                        <Button Content="Vazgeç"
+                                Style="{StaticResource OD.Button.Ghost}"
+                                Margin="{StaticResource OD.Pad.X2}"
+                                Command="{Binding CancelCodePriceCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Şerit beklerken tıklanan yorumlar YAZILMADI: adlarıyla söylenir,
+                 operatör onaydan sonra yeniden tıklar; yazılan ad listeden düşer. -->
+            <DockPanel Margin="{StaticResource OD.Pad.Top3}" LastChildFill="True"
+                       Visibility="{Binding CodePriceBlocked, Converter={StaticResource NullToCollapsedConverter}}">
+                <Button DockPanel.Dock="Right"
+                        Content="Tamam"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        FontSize="{StaticResource OD.Font.F0}"
+                        Command="{Binding DismissCodePriceBlockedCommand}"/>
+                <TextBlock Text="{Binding CodePriceBlocked}"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Foreground="{StaticResource OD.Brush.Amber}"
+                           TextWrapping="Wrap"/>
+            </DockPanel>
+
+            <!-- Şeritte "Evet"in sonucu burada DEĞİL, kuyruğun üstünde
+                 (CodePriceResultPanel): bu çubuk Auto satırda, boyu sınırsız —
+                 sonucun listesi kuyruğu 0 piksele indiriyor, "Kapat"ı pencerenin
+                 dışına itiyordu. -->
+
+            <!-- 0 TL satır içi onayı: soru açıkken tıklanan yorumlar sırayla
+                 bekletilir, "Evet" hepsini 0 TL ile yazar; aynı kutu metni ve
+                 aynı ürünle sonraki yorumlar yeniden sorulmaz. -->
+            <Border Margin="{StaticResource OD.Pad.Top3}"
+                    Padding="{StaticResource OD.Pad.3}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OD.Radius.Md}"
+                    Visibility="{Binding ZeroPricePrompt, Converter={StaticResource NullToCollapsedConverter}}">
+                <StackPanel>
+                    <TextBlock Text="{Binding ZeroPricePrompt}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Text}"
+                               TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top3}">
+                        <Button Content="Evet, 0 TL yaz"
+                                Style="{StaticResource OD.Button.Secondary}"
+                                Command="{Binding ConfirmZeroPriceCommand}"/>
+                        <Button Content="Vazgeç"
+                                Style="{StaticResource OD.Button.Ghost}"
+                                Margin="{StaticResource OD.Pad.X2}"
+                                Command="{Binding CancelZeroPriceCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- 0 TL sorusu yanıtlanmadan fiyat ya da kod değişti: bekleyen
+                 yorumlar yazılmadı. Sessizce kaybolmasınlar — adlarıyla
+                 söylenir, operatör yeniden tıklar; yazılan ad listeden düşer. -->
+            <DockPanel Margin="{StaticResource OD.Pad.Top3}" LastChildFill="True"
+                       Visibility="{Binding ZeroPriceDropped, Converter={StaticResource NullToCollapsedConverter}}">
+                <Button DockPanel.Dock="Right"
+                        Content="Tamam"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        FontSize="{StaticResource OD.Font.F0}"
+                        Command="{Binding DismissZeroPriceDroppedCommand}"/>
+                <TextBlock Text="{Binding ZeroPriceDropped}"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Foreground="{StaticResource OD.Brush.Amber}"
+                           TextWrapping="Wrap"/>
+            </DockPanel>
         </StackPanel>
     </Border>
 </UserControl>

@@ -275,10 +275,532 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     partial void OnActiveCodeChanged(string value)
     {
+        // 0 TL onayı ürüne bağlı: başka ürün için verilmiş onay yeni ürüne geçmez, bekleyen soru da
+        // (yorumlar ÖNCEKİ ürün için tıklandı) yeni kodla yazılmaz.
+        _zeroPriceConfirmed = false;
+        DropZeroPricePending();
         ProductCard.Load(value);
+        ApplyCodePrice();
         RefreshHeroStats();
         ChatView.Refresh();
     }
+
+    // ─── FİYAT kutusu (K8 + sahip kararı F1/F2/F4, 2026-10-12) ──────────────
+    // Yanlış fiyatlı etiketin kaynakları burada kapanıyor: kod değişince önceki ürünün fiyatı sessizce yeni
+    // ürüne taşınıyordu, katalog fiyatı hiç kullanılmıyordu ve kutu "99,50"yi 9950 okuyordu (PriceInput).
+    //
+    // Mezat modeli SABİT fiyat ("açık artırma değil"): bir yayında bir kodun TEK fiyatı vardır ve kaynağı o
+    // yayındaki o kodun (iptal edilmemiş) etiketleridir — RAM'de ayrı bir fiyat belleği YOK; uygulama yeniden
+    // açılınca da aynı sonuç (veritabanından, LabelService.GetCodePrice). Kurallar:
+    //   - Etkin kod değişir → kodun bu yayında etiketi varsa kutu o fiyatı gösterir ("bu yayındaki fiyatı");
+    //     yoksa katalogda fiyat varsa onu ("katalog fiyatı"); o da yoksa kutu kalır, değer başka ürünün ise
+    //     "önceki üründen kaldı" vurgulanır.
+    //   - Etkin kod aynı kalır ("A1 ", "a1", aynı ürünün barkodu) → hiçbir şey yeniden uygulanmaz.
+    //   - Etiketi olan kodun fiyatı kutuda değiştirilir → satır içi şerit (F2): "A1 kodunun N etiketi 250,00 TL.
+    //     Hepsi 200,00 TL olsun mu?". Tuş vuruşunda değil, TEK onayla uygulanır: "Evet" kodun bütün
+    //     düzeltilebilir etiketlerini fiyat düzeltme paketiyle yeni fiyata geçirir; "Vazgeç" kutuyu kodun
+    //     fiyatına döndürür. Şerit beklerken o kod için etiket YAZILMAZ; başka koda geçilirse şerit kapanır,
+    //     değişiklik uygulanmaz.
+    //   - Şerit YALNIZ operatör kutudaki fiyatı değiştirince açılır (sahip: yayında operatörün kendisi başlatmadığı
+    //     hiçbir şey etiketlemeyi durdurmaz). İptal, yedek onayı, tazeleme, eski veriden kalan karışık fiyat şeridi
+    //     açmaz: kodda kutudakinden farklı fiyatlı etiket varsa kutunun altında ENGELLEMEYEN bir ipucu yazar
+    //     (CodePriceHint), etiket kutudaki fiyatla yazılmaya devam eder.
+    //   - Açık şerit bayatlarsa (kodun değişecek etiketi kalmadı: hepsi iptal edildi, kargoya verildi ya da zaten
+    //     yazılan fiyatta) kendiliğinden kapanır, o kod için yazım açılır; kutu operatörün yazdığı değeri korur.
+    //     Başka hiçbir şey onu kapatmaz — kodun çoğunluk fiyatı yazılan fiyata dönse de operatör cevap verene
+    //     kadar sorar.
+    //   - Düzeltmeden sonra etkin kod düzeltilen kodsa kutu yeni fiyatı gösterir (F4).
+    //   - Kutu "bu yayındaki fiyatı"yken kaynak elden gider (yayın biter/başlar, kodun etiketleri iptal edilir) →
+    //     kutu DEĞİŞMEZ, kaynağı yeniden okunur: katalog fiyatıysa öyle söylenir, değilse kutu nedeniyle
+    //     vurgulanır ("önceki yayından kaldı", "bu yayında artık etiketi yok").
+    // Etiket her zaman kutuda GÖRÜNEN fiyatla yazılır; gizli bir değer yok.
+
+    private const string SessionPriceSource = "bu yayındaki fiyatı";
+    private const string CatalogPriceSource = "katalog fiyatı";
+
+    /// <summary>Kutudaki değerin sahibi olan kod: operatör yazdığında o anki kod, kodun etiketlerinden ya da
+    /// katalogdan dolunca o kod, değerle etiket yazılınca etiketin kodu. Null = hiçbir ürüne ait değil (açılış
+    /// "0"ı, kod yokken yazılmış fiyat) — o zaman "önceki üründen kaldı" denmez.</summary>
+    private string? _priceOwner;
+
+    /// <summary>Fiyat kurallarının en son uygulandığı etkin kod (<see cref="EffectiveCode"/>). Kod kutusundaki
+    /// metin değişse de etkin kod aynı kaldıysa hiçbir şey yeniden uygulanmaz.</summary>
+    private string? _pricedCode;
+
+    /// <summary>Kutu programla dolduruluyor (kodun fiyatı, katalog, düzeltme) — değişiklik operatörün
+    /// düzenlemesi sayılmaz.</summary>
+    private bool _settingPriceProgrammatically;
+
+    /// <summary>"önceki üründen kaldı": kod değişti, kodun ne bu yayında etiketi ne katalogda fiyatı var,
+    /// kutudaki fiyat başka ürün için girilmişti. Kutu vurgulanır; operatör fiyata dokununca, kod değişince ya da
+    /// etiket yazılınca kalkar. Aynı vurgu kutu "bu yayındaki fiyatı" iken kaynak elden gidince de yanar
+    /// (<see cref="ReconcilePriceSource"/>): yayın bitti ya da kodun etiketleri iptal edildi. Metni
+    /// <see cref="PriceCarriedOverText"/>.</summary>
+    [ObservableProperty] private bool _isPriceCarriedOver;
+
+    private const string ProductCarryHint = "önceki üründen kaldı — bu ürünün fiyatı mı?";
+    private const string StreamCarryHint = "önceki yayından kaldı — bu yayının fiyatı mı?";
+    private const string NoLabelsLeftHint = "bu yayında artık etiketi yok — bu fiyat doğru mu?";
+
+    /// <summary>Vurgunun metni (kutunun altında, sarı): neden kutudaki fiyattan şüphelenilmeli.</summary>
+    [ObservableProperty] private string _priceCarriedOverText = ProductCarryHint;
+
+    /// <summary>Kutudaki fiyatın kaynağı (kutunun altında): "bu yayındaki fiyatı" ya da "katalog fiyatı";
+    /// null = operatörün yazdığı (ya da kaynağı yok).</summary>
+    [ObservableProperty] private string? _priceSourceText;
+
+    /// <summary>Kutunun altındaki satır içi hata (geçersiz/eksi fiyat). Pop-up değil.</summary>
+    [ObservableProperty] private string? _priceError;
+
+    /// <summary>0 TL onayı bekleyen yorumların satır içi sorusu; null = soru yok.</summary>
+    [ObservableProperty] private string? _zeroPricePrompt;
+
+    /// <summary>0 TL sorusu yanıtlanmadan fiyat ya da kod değişti ve bekleyen yorumlar YAZILMADI:
+    /// adlarıyla söylenir (operatör yeniden tıklar). Yazılan yorum listeden düşer; null = yok.</summary>
+    [ObservableProperty] private string? _zeroPriceDropped;
+
+    /// <summary>0 TL sorusu açıkken tıklanan yorumlar, tıklama sırasıyla ("ilk yazan alır"): soru
+    /// hepsini birlikte sorar, "Evet" hepsini bu sırayla yazar. Sonraki tıklama öncekini EZMEZ.</summary>
+    private readonly List<ChatMessageViewModel> _zeroPricePending = new();
+
+    /// <summary>Yazılmadan düşen yorumlar (<see cref="ZeroPriceDropped"/>).</summary>
+    private readonly List<ChatMessageViewModel> _zeroPriceDroppedItems = new();
+
+    /// <summary>Operatör bu kutu metni ve bu ürün için 0 TL'yi onayladı; metin ya da kod değişince
+    /// düşer.</summary>
+    private bool _zeroPriceConfirmed;
+
+    /// <summary>Şeridin beklettiği fiyat değişikliği (F2): hangi yayında, hangi kod, hangi fiyat.</summary>
+    private sealed record PendingCodePrice(string SessionId, string Code, decimal NewPrice);
+
+    private PendingCodePrice? _pendingCodePrice;
+
+    /// <summary>F2 şeridinin sorusu ("A1 kodunun 18 etiketi 250,00 TL. Hepsi 200,00 TL olsun mu?");
+    /// null = şerit kapalı.</summary>
+    [ObservableProperty] private string? _codePriceQuestion;
+
+    /// <summary>Şeridin "Evet"i uygulanamadı (ör. etiket yazıcıda): satır içi, şerit açık kalır.</summary>
+    [ObservableProperty] private string? _codePriceError;
+
+    /// <summary>Kutunun altında ENGELLEMEYEN ipucu: etkin kodun bu yayında kutudakinden farklı fiyatlı etiketleri
+    /// var ve operatör fiyatı değiştirmedi (eski veriden kalan karışık fiyat, iptal ya da yedek onayı sonrası) —
+    /// "A1 kodunda farklı fiyatlı 2 etiket var — …". Şerit gibi sormaz, yazımı durdurmaz; etiket kutudaki fiyatla
+    /// yazılır. Şerit açıkken null (şerit zaten söylüyor).</summary>
+    [ObservableProperty] private string? _codePriceHint;
+
+    /// <summary>Şerit beklerken tıklanan, YAZILMAYAN yorumlar (adlarıyla — operatör onaydan sonra yeniden
+    /// tıklar). Yazılan yorum listeden düşer; operatör "Tamam"la kapatır.</summary>
+    [ObservableProperty] private string? _codePriceBlocked;
+
+    private readonly List<ChatMessageViewModel> _codePriceBlockedItems = new();
+
+    /// <summary>Şeritte "Evet" denilen düzeltmenin satır içi sonucu (yeniden baskı sorusu, düzeltilmiş istek
+    /// listesi — çekmecedekiyle aynı görünüm); null = yok. "Kapat"la kalkar. Yerine başka bir (yayın, kod) sonucu
+    /// geçerse ya da yayın değişirse cevaplanmamış işi "Basılanlar"daki kalıcı sonuç şeridine düşer
+    /// (<see cref="RetireCodePriceCorrection"/>).</summary>
+    [ObservableProperty] private PriceCorrectionViewModel? _codePriceCorrection;
+
+    partial void OnActivePriceTextChanged(string value)
+    {
+        PriceError = null;
+        _zeroPriceConfirmed = false;
+        if (PriceInput.Parse(value) is not { IsOk: true, Value: 0m }) DropZeroPricePending();
+        if (_settingPriceProgrammatically) return;
+        // Operatörün düzenlemesi: kutudaki değer artık şimdiki kodun fiyatı (henüz etikete yazılmadı).
+        _priceOwner = EffectiveCode;
+        IsPriceCarriedOver = false;
+        PriceSourceText = null;
+        EvaluateCodePriceChange(operatorEdit: true);
+    }
+
+    /// <summary>Aktif yayında kodun fiyatı (<see cref="LabelService.GetCodePrice"/>); yayın yoksa ya da
+    /// okunamazsa null — kutu katalog/eldeki değerle sürer.</summary>
+    private CodePrice? ActiveCodePrice(string? code, out string? sessionId)
+    {
+        sessionId = null;
+        if (code is null) return null;
+        try
+        {
+            sessionId = _sessions.GetActive()?.Id;
+            return sessionId is null ? null : _labels.GetCodePrice(sessionId, code);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Kodun bu yayındaki fiyatı okunamadı");
+            return null;
+        }
+    }
+
+    /// <summary>Etkin kod değişince (her tuşta): kodun bu yayındaki fiyatı, yoksa katalog fiyatı, o da yoksa kutu
+    /// kalır ve değer başka ürünün ise vurgulanır (F1). Etkin kod aynıysa hiçbir şey yeniden uygulanmaz. Bekleyen
+    /// fiyat değişikliği (F2) başka koda geçince kapanır, uygulanmaz.</summary>
+    private void ApplyCodePrice()
+    {
+        var code = EffectiveCode;
+        if (string.Equals(code, _pricedCode, StringComparison.OrdinalIgnoreCase)) return;
+        _pricedCode = code;
+        ClosePendingCodePrice();
+
+        var catalogPrice = ProductCard.Resolution?.Product.DefaultPrice ?? 0m;
+        var sessionPrice = ActiveCodePrice(code, out _);
+        if (code is not null && sessionPrice is not null)
+        {
+            ShowPrice(PriceInput.Format(sessionPrice.Price), code, SessionPriceSource);
+        }
+        else if (code is not null && catalogPrice > 0m)
+        {
+            ShowPrice(PriceInput.Format(catalogPrice), code, CatalogPriceSource);
+        }
+        else
+        {
+            PriceSourceText = null;
+            var carried = code is not null
+                && _priceOwner is not null
+                && !string.Equals(_priceOwner, code, StringComparison.OrdinalIgnoreCase)
+                && PriceInput.Parse(ActivePriceText).IsOk;
+            if (carried) PriceCarriedOverText = ProductCarryHint;
+            IsPriceCarriedOver = carried;
+        }
+        UpdateCodePriceHint(code, sessionPrice);
+    }
+
+    /// <summary>
+    /// Kutu "bu yayındaki fiyatı" diyor ama kaynağı elden gitmiş olabilir — yayın bitti ya da başladı, kodun
+    /// etiketleri iptal edildi, yedek başka fiyata onaylandı: kaynak yeniden okunur. Kutunun DEĞERİ değişmez (sessiz
+    /// değişiklik yok); yalnız söylediği düzelir. Kodun bu yayında hâlâ etiketi varsa ve fiyatı kutudakinden
+    /// başkaysa kutu artık kodun fiyatı değildir: kaynak kalkar, şerit AÇILMAZ — operatör fiyatı değiştirmedi;
+    /// kutunun altındaki ipucu farklı fiyatlı etiketleri söyler (<see cref="UpdateCodePriceHint"/>), yazım kutudaki
+    /// fiyatla sürer. Eskiden şerit kendiliğinden açılıyor ve yanıtlanana kadar o kod için etiket yazılmıyordu.
+    /// Etiketi kalmadıysa katalog fiyatıysa kaynak "katalog fiyatı", değilse kutu <paramref name="hint"/> ile
+    /// vurgulanır — eskiden kaynak "bu yayındaki fiyatı" kalıyor (iptal) ya da hiçbir şey söylenmiyordu (yeni
+    /// yayın): aynı kod, operatörün koddan çıkıp dönmesine göre iki ayrı fiyat gösteriyordu.
+    /// </summary>
+    private void ReconcilePriceSource(string hint)
+    {
+        if (!string.Equals(PriceSourceText, SessionPriceSource, StringComparison.Ordinal)) return;
+        var code = EffectiveCode;
+        var parsed = PriceInput.Parse(ActivePriceText);
+        if (code is null || !parsed.IsOk)
+        {
+            PriceSourceText = null;
+            return;
+        }
+        if (ActiveCodePrice(code, out _) is { } info)
+        {
+            if (parsed.Value != info.Price) PriceSourceText = null;
+            return;
+        }
+        if (ProductCard.Resolution?.Product.DefaultPrice is > 0m and var catalog && parsed.Value == catalog)
+        {
+            PriceSourceText = CatalogPriceSource;
+            return;
+        }
+        PriceSourceText = null;
+        PriceCarriedOverText = hint;
+        IsPriceCarriedOver = true;
+    }
+
+    /// <summary>Kutuyu programla doldurur; değerin sahibi <paramref name="owner"/>, kaynağı
+    /// <paramref name="source"/>. Vurgu kalkar.</summary>
+    private void ShowPrice(string text, string owner, string source)
+    {
+        _settingPriceProgrammatically = true;
+        try { ActivePriceText = text; }
+        finally { _settingPriceProgrammatically = false; }
+        _priceOwner = owner;
+        PriceSourceText = source;
+        IsPriceCarriedOver = false;
+    }
+
+    /// <summary>Kutu etkin kodun bu yayındaki fiyatını gösterir (F2 "Vazgeç", F4 düzeltme sonrası); kodun etiketi
+    /// yoksa kutuya dokunulmaz. Bekleyen fiyat değişikliği kapanır.</summary>
+    private void ShowActiveCodePrice()
+    {
+        ClosePendingCodePrice();
+        var code = EffectiveCode;
+        var price = ActiveCodePrice(code, out _);
+        if (price is not null)
+            ShowPrice(PriceInput.Format(price.Price), code!, SessionPriceSource);
+        UpdateCodePriceHint(code, price);
+    }
+
+    /// <summary>
+    /// F2 şeridinin TEK karar noktası. <paramref name="operatorEdit"/>: operatör kutudaki fiyatı değiştirdi — etkin
+    /// kodun bu yayında düzeltilebilir etiketi varsa ve yazılan fiyat kodun fiyatından farklıysa şerit açılır (ya da
+    /// metni güncellenir). Şerit YALNIZ böyle açılır. Operatörün düzenlemesi değilse (kodun etiketleri kutunun
+    /// dışında değişti, ya da şeridin beklettiği yazım/onay anı) yalnız AÇIK şerit yeniden denetlenir: değişecek
+    /// etiket kaldıkça (yazılan fiyattan farklı fiyatlı düzeltilebilir etiket) operatör cevap verene kadar açık
+    /// kalır, metni güncellenir. Kodun çoğunluk fiyatı yazılan fiyata dönse de (ör. eski fiyatlı etiketlerin bir
+    /// kısmı iptal edildi) kalır: operatörün başlattığı "Hepsi X olsun mu?" kendisi cevap vermeden düşüyor, eski
+    /// fiyatlı etiketler eski fiyatta kalıyordu. Yalnız bayatsa kapanır ve o kod için yazım açılır: kodun
+    /// değişecek etiketi kalmadı (hepsi iptal edildi, kargoya verildi ya da zaten yazılan fiyatta) ya da yayın
+    /// değişti. Kutunun değeri hiçbir durumda değişmez. Uygulama YOK — yalnız soru.
+    /// </summary>
+    private void EvaluateCodePriceChange(bool operatorEdit)
+    {
+        if (operatorEdit) CodePriceError = null;
+        var code = EffectiveCode;
+        var parsed = PriceInput.Parse(ActivePriceText);
+        var info = ActiveCodePrice(code, out var sessionId);
+        var asks = info is { Correctable: > 0 } && sessionId is not null && parsed.IsOk
+            && (operatorEdit
+                ? parsed.Value != info.Price
+                : info.Groups.Any(g => g.Price != parsed.Value));
+        var mayAsk = operatorEdit
+            || (_pendingCodePrice is { } open && string.Equals(open.SessionId, sessionId, StringComparison.Ordinal));
+        if (asks && mayAsk)
+        {
+            _pendingCodePrice = new PendingCodePrice(sessionId!, code!, parsed.Value);
+            CodePriceQuestion = CodePriceQuestionText(code!, info!, parsed.Value);
+            UpdateCodePriceBlocked();
+            CodePriceHint = null;
+            return;
+        }
+        ClosePendingCodePrice();
+        // Kodun fiyatına geri yazıldı: soracak bir şey yok.
+        if (info is { Correctable: > 0 } && parsed.IsOk && parsed.Value == info.Price)
+            PriceSourceText = SessionPriceSource;
+        UpdateCodePriceHint(code, info);
+    }
+
+    /// <summary>Kodun etiketleri kutunun dışında değişti (iptal, yedek onayı): açık şerit yeniden denetlenir
+    /// (bayatsa kapanır), ipucu tazelenir. Kapalı şerit AÇILMAZ — operatör fiyatı değiştirmedi.</summary>
+    private void RecheckCodePrice()
+    {
+        if (_pendingCodePrice is not null)
+        {
+            EvaluateCodePriceChange(operatorEdit: false);
+            return;
+        }
+        var code = EffectiveCode;
+        UpdateCodePriceHint(code, ActiveCodePrice(code, out _));
+    }
+
+    /// <summary>
+    /// <see cref="CodePriceHint"/>: kodun bu yayındaki düzeltilebilir etiketlerinden kutudaki fiyattan farklı
+    /// olanların sayısı (eski veriden kalan karışık fiyat, iptal ya da başka fiyata onaylanmış yedek). Şerit açıkken
+    /// yazılmaz (şerit söylüyor). Sormaz, yazımı durdurmaz — düzeltmek operatörün kararı: "Fiyatı düzelt" kodun
+    /// bütün etiketlerini tek fiyata geçirir (F3).
+    /// </summary>
+    private void UpdateCodePriceHint(string? code, CodePrice? info)
+    {
+        var parsed = PriceInput.Parse(ActivePriceText);
+        var differing = _pendingCodePrice is null && code is not null && info is not null && parsed.IsOk
+            ? info.Groups.Where(g => g.Price != parsed.Value).Sum(g => g.Count)
+            : 0;
+        CodePriceHint = differing == 0
+            ? null
+            : $"{code} kodunda farklı fiyatlı {differing} etiket var — Basılanlar'dan ya da kuyruktan " +
+              "\"Fiyatı düzelt\"le düzeltebilirsin.";
+    }
+
+    private static string CodePriceQuestionText(string code, CodePrice info, decimal newPrice)
+    {
+        var tr = CultureInfo.GetCultureInfo("tr-TR");
+        var now = info.IsMixed
+            ? $"{code} kodunun {info.Correctable} etiketi: {CodeOption.PricesText(info.Groups)}."
+            : $"{code} kodunun {info.Correctable} etiketi {info.Price.ToString("N2", tr)} TL.";
+        var shipped = info.Shipped > 0 ? $" Kargoya verilmiş {info.Shipped} etiket değişmez." : "";
+        return $"{now} Hepsi {newPrice.ToString("N2", tr)} TL olsun mu?{shipped}";
+    }
+
+    private void ClosePendingCodePrice()
+    {
+        if (_pendingCodePrice is null && CodePriceQuestion is null) return;
+        _pendingCodePrice = null;
+        CodePriceQuestion = null;
+        CodePriceError = null;
+        UpdateCodePriceBlocked();
+    }
+
+    /// <summary>Şeridin "Evet"i (F2): kodun bu yayındaki BÜTÜN düzeltilebilir etiketleri (kuyruk, basılmış,
+    /// yedekler; iptal ve kargoya verilmiş dosyadakiler hariç) yeni fiyata — "Fiyatı düzelt"in paketiyle
+    /// (toplamlar, açık kargo dosyası, senkron; uçuştaki baskı reddi). Sonuç (yeniden baskı sorusu, düzeltilmiş
+    /// istek listesi) kutunun altında satır içi. Uygulanamazsa (ör. etiket yazıcıda) şerit açık kalır, sebep
+    /// şeritte yazar. Şerit bayatsa (kodun düzeltilebilir etiketi kalmadı) hata vermeden kapanır.</summary>
+    [RelayCommand(CanExecute = nameof(CanWrite))]
+    private void ConfirmCodePrice()
+    {
+        if (_pendingCodePrice is not { } asked) return;
+        if (!string.Equals(_sessions.GetActive()?.Id, asked.SessionId, StringComparison.Ordinal)
+            || !string.Equals(EffectiveCode, asked.Code, StringComparison.OrdinalIgnoreCase))
+        {
+            // Yayın ya da kod değişti: soru artık geçerli değil.
+            ClosePendingCodePrice();
+            return;
+        }
+        // Soru sorulduktan sonra kodun etiketleri kabuğun görmediği bir yoldan değişmiş olabilir (ör. kargoya
+        // verildi): şerit bayatsa kapanır — "Düzeltilecek etiket yok." deyip açık kalması o kodun yazımını
+        // kilitliyordu.
+        EvaluateCodePriceChange(operatorEdit: false);
+        if (_pendingCodePrice is not { } pending) return;
+
+        var vm = WireCorrection(PriceCorrectionViewModel.ForCode(
+            _labels, _paymentFollowUp, pending.SessionId, pending.Code, DateTime.Now,
+            inFlight: () => _printInFlightIds,
+            applied: ApplyPriceCorrection,
+            reprint: ReprintAsync,
+            cloudApiEnabled: SafeCloudApiEnabled()));
+        vm.NewPriceText = PriceInput.Format(pending.NewPrice);
+        // Şeridin sorusu yeni fiyatı adıyla sordu: 0 TL için ikinci onay istenmez.
+        if (pending.NewPrice == 0m) vm.IsZeroConfirmPending = true;
+        vm.ConfirmCommand.Execute(null);
+        if (!vm.IsDone)
+        {
+            CodePriceError = vm.BlockingMessage ?? vm.NewPriceError ?? "Fiyat değiştirilemedi.";
+            return;
+        }
+
+        // Düzeltme uygulandı; kutu (F4, ApplyPriceCorrection) kodun yeni fiyatını gösteriyor.
+        ClosePendingCodePrice();
+        if (pending.NewPrice == 0m) _zeroPriceConfirmed = true;
+        vm.Close = () =>
+        {
+            if (ReferenceEquals(CodePriceCorrection, vm)) CodePriceCorrection = null;
+        };
+        // Yuva tek: önceki sonuç operatör "Kapat" demeden yerini bu sonuca bırakıyor. Yalnız AYNI yayının AYNI
+        // kodunun sonucuysa yeni sonuç aynı etiketler ve kişiler için soruyu ve listeyi güncel tutarlarla yeniden
+        // kurar — ödenmişlerin "fark"ı etiketin ödendiği fiyata göredir (Label.PaidPrice, CorrectedPaymentRequests.Plan):
+        // önceki sonucun farkı yenisinin içinde, 250 → 200 → 190'da −60 (bu düzeltmede −10). Değilse (başka kod ya da başka yayın — kodlar
+        // her yayında yeniden kullanılıyor) cevaplanmamış işi kalıcı sonuç şeridine yazılır: iz bırakmadan ezilince
+        // kâğıtlarda eski fiyat kalıyor, eski tutarla istenmiş kişiye düzeltilmiş istek hiç gitmiyordu.
+        if (CodePriceCorrection is { } previous && !previous.Covers(pending.SessionId, pending.Code))
+            RetireCodePriceCorrection(string.Equals(previous.SessionId, pending.SessionId, StringComparison.Ordinal)
+                ? "sonuç kapatılmadan başka bir kodun fiyatı değiştirildi"
+                : StreamChangedOutcomeReason);
+        CodePriceCorrection = vm;
+    }
+
+    private const string StreamChangedOutcomeReason =
+        "sonuç kapatılmadan yayın değişti — etiketler önceki yayında (Yayın Raporu → \"Basılan etiketler\")";
+
+    /// <summary>FİYAT kutusunun altındaki satır içi sonucu kaldırır; cevaplanmamış işi (yanıtlanmamış yeniden baskı
+    /// sorusu, gönderilmemiş düzeltilmiş istek, ödenmişlerin farkı) adlarıyla "Basılanlar"daki kalıcı sonuç şeridine
+    /// yazılır, başlıkta okunmamış işareti yanar. Süren iş (yeniden baskı, gönderim) bitince sonucunu zaten oraya
+    /// yazar (<see cref="WireCorrection"/>).</summary>
+    private void RetireCodePriceCorrection(string reason)
+    {
+        if (CodePriceCorrection is not { } previous) return;
+        CodePriceCorrection = null;
+        if (previous.UnansweredWork(reason) is { } unanswered) AddPrintedOutcome(unanswered, needsAction: true);
+    }
+
+    /// <summary>Şeridin "Vazgeç"i (F2): değişiklik uygulanmaz, kutu kodun bu yayındaki fiyatına döner.</summary>
+    [RelayCommand]
+    private void CancelCodePrice()
+    {
+        if (_pendingCodePrice is null) return;
+        ShowActiveCodePrice();
+    }
+
+    [RelayCommand]
+    private void DismissCodePriceBlocked()
+    {
+        _codePriceBlockedItems.Clear();
+        CodePriceBlocked = null;
+    }
+
+    private void UpdateCodePriceBlocked()
+        => CodePriceBlocked = _codePriceBlockedItems.Count == 0
+            ? null
+            : _pendingCodePrice is not null
+                ? $"Önce fiyat değişikliğini onayla — yazılmadı: {NameList(_codePriceBlockedItems)}"
+                : $"Fiyat onayı beklerken yazılmadı: {NameList(_codePriceBlockedItems)} — gerekirse yeniden tıkla.";
+
+    /// <summary>Yayın başladı ya da bitti: kodun fiyatı yayına özel. Bekleyen fiyat değişikliği eski yayının
+    /// sorusuydu — kapanır; kutu olduğu gibi kalır (kutu sessizce değişmez) ama kaynağı artık "bu yayındaki
+    /// fiyatı" değil: katalog fiyatıysa öyle söylenir, değilse "önceki yayından kaldı" diye vurgulanır — yeni
+    /// yayının ilk yorumu dünkü fiyatla işaretsiz yazılmasın (<see cref="ReconcilePriceSource"/>). Kutunun altındaki
+    /// satır içi sonuç önceki yayının: kaldırılır, cevaplanmamış işi kalıcı sonuç şeridine düşer — yeni yayında
+    /// kuyruğun üstünde kalıp sonra başka bir sonuçla iz bırakmadan ezilmesin.</summary>
+    private void ForgetStreamPrice()
+    {
+        ClosePendingCodePrice();
+        RetireCodePriceCorrection(StreamChangedOutcomeReason);
+        ReconcilePriceSource(StreamCarryHint);
+        RecheckCodePrice();
+    }
+
+    /// <summary>Etiketler kabuğun bir yolundan iptal edildi (kuyruktan çıkarma, toplu iptal, müşteri detayı, yedek
+    /// aktarımı): etkin kodun kaynağı yeniden okunur (<see cref="ReconcilePriceSource"/>), açık şerit yeniden
+    /// denetlenir (bayatsa kapanır), ipucu tazelenir (<see cref="RecheckCodePrice"/>).</summary>
+    private void AfterLabelsCancelled()
+    {
+        ReconcilePriceSource(NoLabelsLeftHint);
+        RecheckCodePrice();
+    }
+
+    /// <summary>Düzeltme yazıldı (çekmece ya da şerit): etkin kod düzeltilen kodsa kutu kodun yeni fiyatını
+    /// gösterir (F4) — kod veritabanından okunur, ayrı bellek yok. Başka yayının düzeltmesi (rapordan) kutuya
+    /// dokunmaz.</summary>
+    private void ShowCorrectedCodePrice(PriceCorrectionResult result)
+    {
+        var code = EffectiveCode;
+        if (code is null) return;
+        var sessionId = _sessions.GetActive()?.Id;
+        if (result.Corrected.Any(c =>
+                string.Equals(c.Before.SessionId, sessionId, StringComparison.Ordinal)
+                && string.Equals(c.Before.Code?.Trim(), code, StringComparison.OrdinalIgnoreCase)))
+            ShowActiveCodePrice();
+    }
+
+    /// <summary>0 TL sorusunun "Evet"i: bekleyen yorumlar tıklama sırasıyla 0 TL ile yazılır; aynı
+    /// kutu metni ve aynı ürünle sonraki yorumlar yeniden sorulmaz.</summary>
+    [RelayCommand]
+    private async Task ConfirmZeroPriceAsync()
+    {
+        var pending = _zeroPricePending.ToList();
+        _zeroPricePending.Clear();
+        ZeroPricePrompt = null;
+        if (pending.Count == 0) return;
+        _zeroPriceConfirmed = true;
+        foreach (var message in pending) await AddChatToQueueAsync(message);
+    }
+
+    /// <summary>"Vazgeç": operatörün kararı — bekleyen yorumlar yazılmaz.</summary>
+    [RelayCommand]
+    private void CancelZeroPrice()
+    {
+        _zeroPricePending.Clear();
+        ZeroPricePrompt = null;
+    }
+
+    [RelayCommand]
+    private void DismissZeroPriceDropped()
+    {
+        _zeroPriceDroppedItems.Clear();
+        ZeroPriceDropped = null;
+    }
+
+    /// <summary>Soru yanıtlanmadan fiyat ya da kod değişti: bekleyen yorumlar YAZILMAZ (soru 0 TL'yi ve
+    /// tıklandığı ürünü soruyordu) ama sessizce de kaybolmaz — adlarıyla gösterilir.</summary>
+    private void DropZeroPricePending()
+    {
+        if (_zeroPricePending.Count == 0) return;
+        foreach (var m in _zeroPricePending)
+            if (!_zeroPriceDroppedItems.Contains(m)) _zeroPriceDroppedItems.Add(m);
+        _zeroPricePending.Clear();
+        ZeroPricePrompt = null;
+        UpdateZeroPriceDropped();
+    }
+
+    private void UpdateZeroPriceDropped()
+        => ZeroPriceDropped = _zeroPriceDroppedItems.Count == 0
+            ? null
+            : $"0 TL sorusu yanıtlanmadan fiyat/kod değişti; yazılmadı: {NameList(_zeroPriceDroppedItems)} — " +
+              "gerekirse yeniden tıkla.";
+
+    private static string NameList(IReadOnlyList<ChatMessageViewModel> messages)
+    {
+        const int Shown = 8;
+        var names = string.Join(", ", messages.Take(Shown).Select(m => m.Display));
+        return messages.Count > Shown ? $"{names} ve {messages.Count - Shown} yorum daha" : names;
+    }
+
+    private string ZeroPriceQuestion()
+        => _zeroPricePending.Count == 1
+            ? $"Fiyat 0 TL. '{_zeroPricePending[0].Display}' etiketi 0 TL ile yazılsın mı?"
+            : $"Fiyat 0 TL. {_zeroPricePending.Count} yorum 0 TL ile yazılsın mı? {NameList(_zeroPricePending)}";
 
     private DispatcherTimer? _heroTimer;
 
@@ -596,8 +1118,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Sync.SyncStatusTracker? syncStatus = null,
         Services.Sync.SyncPendingCounter? pendingCounter = null,
         ILogger<MainShellViewModel>? log = null,
-        Services.Sync.CustomerChangesPullService? customerPull = null)
+        Services.Sync.CustomerChangesPullService? customerPull = null,
+        Services.PriceCorrection.CorrectedPaymentRequests? paymentFollowUp = null,
+        Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null)
     {
+        _paymentFollowUp = paymentFollowUp;
+        _printedNavigator = printedNavigator;
+        PrintedLabels = new PrintedLabelsViewModel(labelRepo,
+            paymentFollowUp is null ? null : paymentFollowUp.Badges);
+        if (_printedNavigator is not null) _printedNavigator.Requested += OnPrintedLabelsRequested;
         _dialogs = dialogs;
         _drawers = drawers;
         _pages = pages;
@@ -652,6 +1181,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             OnPropertyChanged(nameof(PrintButtonLabel));
             OnPropertyChanged(nameof(DeleteButtonLabel));
+            OnPropertyChanged(nameof(HasQueueSelection));
+            OnPropertyChanged(nameof(ShowQueueFixPrice));
         };
 
         OpenAccountCommand = new AsyncRelayCommand(OpenAccountAsync);
@@ -661,6 +1192,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+        RefreshPrintedLabels();
 
         // Kuyruk her değiştiğinde (ekleme, silme, iptal, yazdırma) hero
         // sayaçları tazelenir — tek yerden, çağrı noktalarını serpiştirmeden.
@@ -951,6 +1483,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         (AddChatSenderToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
         (AddQueueRowToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
         (DeleteSelectedFromQueueViaShortcutCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        FixQueuePriceCommand.NotifyCanExecuteChanged();
+        ConfirmCodePriceCommand.NotifyCanExecuteChanged();
+        FixPrintedPriceCommand.NotifyCanExecuteChanged();
+        ReprintPrintedCommand.NotifyCanExecuteChanged();
+        CancelPrintedCommand.NotifyCanExecuteChanged();
     }
 
     private void OnIntakeSubmissionsSynced(object? sender, int count)
@@ -1082,6 +1619,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+        ShowActiveSessionInPrintedTab();
+        ForgetStreamPrice();
 
         // R7-04 (PO-02): kuyruk yalnız AKTİF oturumdan yüklenir; önceki
         // yayından basılmadan kalan etiketler veride durur ama ekranda
@@ -1155,6 +1694,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             // istemediği örtük bir ikinci baskı denemesi; başarıda ise devam
             // sırasına göre bayat _printTask alanını görüp yanlış
             // "basılamadı" uyarısıyla yayını açık bırakmaktı.
+            //
+            // Uçuştaki iş YENİDEN BASKIYSA (Basılanlar, fiyat düzeltme) sonucu kuyruğun sonucu değil:
+            // yalnız biter beklenir, sonra kuyruk basılır. Sonucunu kuyruğunki saymak, yeniden baskı
+            // hatasında hiç denenmemiş kuyruk için "basılamadı" derdi, başarısında soruyu boşuna
+            // yinelerdi.
+            while (_printTask is { } other && !_printTaskIsQueue) await other;
             bool basildi;
             if (_printTask is { } inFlight)
             {
@@ -1183,6 +1728,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ViewerCountVisible = false;
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
+        // Yayın bitti: "Basılanlar" boşalır; o yayının listesi rapordan açılır (K6).
+        ShowActiveSessionInPrintedTab();
+        ForgetStreamPrice();
 
         // Yayın bitince rapor kendiliğinden açılır. Sayfa await EDİLMİYOR:
         // burası yayını bitiren akışın sonu, rapor kapanınca yapılacak iş
@@ -1218,12 +1766,36 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        if (!TryParsePrice(ActivePriceText, out var price))
+        // F2: kodun fiyat değişikliği onay bekliyor — o kod için etiket YAZILMAZ (kutudaki fiyat henüz kodun
+        // fiyatı değil). Yorum adıyla söylenir; operatör onaylayınca yeniden tıklar. Önce şerit yeniden denetlenir:
+        // kodun düzeltilebilir etiketi kalmadıysa (kabuğun görmediği bir yoldan kargoya verildi) soru bayattır —
+        // kapanır, yazım kutudaki fiyatla sürer.
+        if (_pendingCodePrice is not null) EvaluateCodePriceChange(operatorEdit: false);
+        if (_pendingCodePrice is not null)
         {
-            _dialogs.Show("Geçerli bir fiyat gir (örn: 100 veya 99.50).",
-                "Geçersiz fiyat", DialogSeverity.Warning);
+            if (!_codePriceBlockedItems.Contains(messageVm)) _codePriceBlockedItems.Add(messageVm);
+            UpdateCodePriceBlocked();
             return;
         }
+
+        // Satır içi: geçersiz/eksi fiyat kutunun altında yazılır, 0 TL satır içi sorulur
+        // (sahip kararı K8 — pop-up yok).
+        var parsed = PriceInput.Parse(ActivePriceText);
+        if (!parsed.IsOk)
+        {
+            PriceError = parsed.Status == PriceInputStatus.Negative
+                ? "Fiyat eksi olamaz."
+                : "Geçerli bir fiyat gir (örn: 250 veya 99,50).";
+            return;
+        }
+        var price = parsed.Value;
+        if (price == 0m && !_zeroPriceConfirmed)
+        {
+            if (!_zeroPricePending.Contains(messageVm)) _zeroPricePending.Add(messageVm);
+            ZeroPricePrompt = ZeroPriceQuestion();
+            return;
+        }
+        PriceError = null;
 
         var code = EffectiveCode;
         var resolution = ProductCard.Resolution;
@@ -1292,6 +1864,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             productId: resolution?.Product.Id,
             productVariantId: resolution?.ResolveVariantId(viewerAxisValue));
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
+
+        // Fiyat bu ürün için KULLANILDI: artık kodun bu yayındaki fiyatı (F1 — kaynağı etiketler). Sonraki
+        // fiyatsız ürüne geçişte kutu kalırsa "önceki üründen kaldı" diye vurgulanır (K8).
+        if (code is not null)
+        {
+            _priceOwner = code;
+            IsPriceCarriedOver = false;
+            PriceSourceText = SessionPriceSource;
+        }
+        if (_zeroPriceDroppedItems.Remove(messageVm)) UpdateZeroPriceDropped();
+        if (_codePriceBlockedItems.Remove(messageVm)) UpdateCodePriceBlocked();
 
         // Etiket yazmanın tek dar boğazı burası; bakiye senkron turunu
         // beklemeden düşsün. İPTAL yolu burada DEĞİL: iptal edilen adet
@@ -1396,10 +1979,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
            "İptal işlemi yazıcıyı durdurmaz; bu etiketlerden çıkan veya " +
            "sonradan çıkacak kağıtları imha et.";
 
-    [RelayCommand(CanExecute = nameof(CanWrite))]
+    /// <summary>"Basılanlar" açıkken kuyruğun seçimi görünmüyor: alttaki yuvadaki "Seçilenleri Sil" (ve Delete
+    /// kısayolu) onu sessizce iptal ederdi — uçuşta etiket yoksa onay da sorulmuyor. Düğme o sekmede
+    /// devre dışı.</summary>
+    private bool CanRemoveSelectedFromQueue() => CanWrite() && !IsPrintedTabActive;
+
+    [RelayCommand(CanExecute = nameof(CanRemoveSelectedFromQueue))]
     private void RemoveSelectedFromQueue()
     {
-        if (SelectedQueueItems.Count == 0) return;
+        if (IsPrintedTabActive || SelectedQueueItems.Count == 0) return;
 
         // Kesişim yoksa eskisi gibi onaysız (hızlı akış bozulmasın).
         var inFlight = CountInFlight(SelectedQueueItems);
@@ -1414,6 +2002,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             CancelReasonCodes.QueueRemoved);
         foreach (var vm in snapshot) PrintQueue.Remove(vm);
         SelectedQueueItems.Clear();
+        AfterLabelsCancelled();
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
@@ -1432,6 +2021,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _labels.Cancel(PrintQueue.Select(i => i.Id).ToList(),
             CancelReasonCodes.QueueRemoved);
         PrintQueue.Clear();
+        AfterLabelsCancelled();
     }
 
     /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.
@@ -1447,7 +2037,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// kesişimden hesaplanır. Baskı yokken null.</summary>
     private System.Collections.Generic.IReadOnlySet<string>? _printInFlightIds;
 
-    [RelayCommand(CanExecute = nameof(CanWrite))]
+    /// <summary>Uçuştaki iş kuyruk baskısı mı (<see cref="PrintGuardedAsync"/>) — değilse yeniden baskı.
+    /// EndStream yalnız kuyruk baskısının sonucunu kuyruğun sonucu sayar.</summary>
+    private bool _printTaskIsQueue;
+
+    /// <summary>Yazdır yalnız yazıcı boşken: yeniden baskı da aynı kapıyı tutar (<see cref="RunPrinterJobAsync"/>).
+    /// Düğme etkin kalsaydı yeniden baskı sürerken tıklama sessizce hiçbir şey yapmazdı — ne baskı ne
+    /// mesaj, yeni etiketler kuyrukta kalırdı. Kapı açılıp kapandıkça bildirilir.</summary>
+    private bool CanPrint() => CanWrite() && _printTask is null;
+
+    [RelayCommand(CanExecute = nameof(CanPrint))]
     private Task Print() => PrintGuardedAsync();
 
     /// <summary>true = basılacak iş kalmadı (başarıyla basıldı ya da kuyruk
@@ -1471,23 +2070,48 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             : PrintQueue.ToList();
         if (snapshot.Count == 0) return true;
 
+        return await RunPrinterJobAsync(snapshot.Select(vm => vm.Id).ToHashSet(),
+            () => PrintCoreAsync(snapshot), isQueue: true);
+    }
+
+    /// <summary>Yazıcıya giden HER iş (kuyruk baskısı, yeniden baskı) bu kapıdan geçer: aynı anda tek iş,
+    /// uçuştaki etiketler <see cref="_printInFlightIds"/>'te (iptal uyarısı, fiyat düzeltme reddi), EndStream
+    /// <see cref="_printTask"/>'ı bekler. Kapı R8-02A sırasıyla kapanır: önce alanlar, en son görev.
+    /// Başka iş sürüyorsa false.</summary>
+    private async Task<bool> RunPrinterJobAsync(
+        System.Collections.Generic.IReadOnlySet<string> ids, Func<Task<bool>> job, bool isQueue)
+    {
+        if (_printTask is not null) return false;
+
         var gate = new System.Threading.Tasks.TaskCompletionSource<bool>(
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
-        _printInFlightIds = snapshot.Select(vm => vm.Id).ToHashSet();
+        _printInFlightIds = ids;
+        _printTaskIsQueue = isQueue;
         _printTask = gate.Task;
         var ok = false;
         try
         {
-            ok = await PrintCoreAsync(snapshot);
+            NotifyPrintGateChanged();
+            ok = await job();
             return ok;
         }
         finally
         {
-            // Sıra önemli: önce alanlar temizlenir, kapı EN SON kapanır.
+            // Sıra önemli: önce alanlar temizlenir, kapı EN SON kapanır — bildirim patlasa bile.
             _printTask = null;
             _printInFlightIds = null;
-            gate.TrySetResult(ok);
+            try { NotifyPrintGateChanged(); }
+            finally { gate.TrySetResult(ok); }
         }
+    }
+
+    /// <summary>Yazdır'ın etkinliği kapıyla değişir (<see cref="CanPrint"/>). Kapının kapanışı işin
+    /// devamında koşar; o devam VM'in iş parçacığında olmayabilir (bağlı düğme yabancı iş parçacığından
+    /// gelen bildirimde patlar) — bildirim VM'in dispatcher'ına taşınır.</summary>
+    private void NotifyPrintGateChanged()
+    {
+        if (_dispatcher.CheckAccess()) PrintCommand.NotifyCanExecuteChanged();
+        else _dispatcher.BeginInvoke(() => PrintCommand.NotifyCanExecuteChanged());
     }
 
     private async Task<bool> PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
@@ -1532,6 +2156,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             if (printedIds.Contains(PrintQueue[i].Id))
                 PrintQueue.RemoveAt(i);
         SelectedQueueItems.Clear();
+        // Basılan etiketler "Basılanlar"a düştü (yeni basış grubu en üstte).
+        RefreshPrintedLabels();
         return true;
     }
 
@@ -2017,8 +2643,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _ => Views.Drawers.CustomerSearchDrawer.Create(vm));
     }
 
+    /// <summary>Delete kısayolu yalnız Kuyruk sekmesinde: "Basılanlar" açıkken kuyruğun görünmeyen
+    /// seçimini iptal etmek operatörün kastı olamaz.</summary>
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void DeleteSelectedFromQueueViaShortcut() => RemoveSelectedFromQueue();
+    private void DeleteSelectedFromQueueViaShortcut()
+    {
+        if (IsPrintedTabActive) return;
+        RemoveSelectedFromQueue();
+    }
 
     [RelayCommand]
     private async Task OpenShortcutHelpAsync()
@@ -2029,19 +2661,41 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _ => Views.Pages.ShortcutHelpPage.Create(registry));
     }
 
-    /// <summary>Müşteri detay çekmecesini açar. Yükleme BURADA, view'da değil
-    /// (Faz 3 kuralı); müşteri bulunamazsa çekmece hiç açılmıyor.</summary>
+    /// <summary>Müşteri detay çekmecesini açar — sohbetten, kuyruktan ya da "Basılanlar"dan. Kapanınca
+    /// "Basılanlar" (liste, rozetler, sekme sayısı) HER yoldan tazelenir: detayda iptal/geri alma, dekont,
+    /// kargoya verme yapılmış olabilir; yalnız Basılanlar'dan açılan yolda tazelenirken öbür yollarda
+    /// liste bayat kalıyor, iptal edilmiş satır yeniden basılmak üzere seçilebiliyordu.</summary>
     private async Task ShowCustomerDetailAsync(string customerId)
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+        try
+        {
+            if (CustomerDetailSeam is not null) await CustomerDetailSeam(customerId);
+            else await OpenCustomerDetailDrawerAsync(customerId);
+        }
+        finally
+        {
+            RefreshPrintedLabels();
+            AfterLabelsCancelled();
+        }
+    }
 
+    /// <summary>Müşteri detayının açılışı (test dikişi): testte App.Host yok; verilirse DI'daki görünüm
+    /// modeli yerine bu koşar.</summary>
+    internal Func<string, Task>? CustomerDetailSeam { get; set; }
+
+    /// <summary>Yükleme BURADA, view'da değil (Faz 3 kuralı); müşteri bulunamazsa çekmece hiç açılmıyor.</summary>
+    private async Task OpenCustomerDetailDrawerAsync(string customerId)
+    {
         var vm = App.Host.Services.GetRequiredService<CustomerDetailViewModel>();
         if (!vm.Load(customerId))
         {
             _dialogs.Show("Müşteri kaydı bulunamadı.", "Müşteri Detayı");
             return;
         }
-        await _drawers.ShowAsync("Müşteri Detayı",
+        // Detaydaki yedek çekmecesinde onaylanan yedek kuyruktaysa ekrandaki kopyası HEMEN güncellenir.
+        vm.BackupConfirmed = OnBackupConfirmed;
+        await _drawers!.ShowAsync("Müşteri Detayı",
             _ => Views.Drawers.CustomerDetailDrawer.Create(vm));
     }
 
@@ -2056,12 +2710,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             var c = _customerRepo.GetById(vm.CustomerId);
             vm.IsCustomerBlacklisted = c?.IsBlacklisted ?? false;
         }
-    }
-
-    private static bool TryParsePrice(string text, out decimal price)
-    {
-        return decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out price)
-            || decimal.TryParse(text, NumberStyles.Any, Formatting.TrFormats.TR, out price);
     }
 
     private void OnBannerAutoDrawRequested() => DrawGiveawayNowCommand.Execute(null);
@@ -2096,6 +2744,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.StatusChanged -= OnLicenseStatusChanged;
         _licenseService.HeartbeatStateChanged -= OnHeartbeatStateChanged;
         Banner.AutoDrawRequested -= OnBannerAutoDrawRequested;
+        if (_printedNavigator is not null) _printedNavigator.Requested -= OnPrintedLabelsRequested;
 
         Banner.Dispose();
         _busSubscription.Dispose();

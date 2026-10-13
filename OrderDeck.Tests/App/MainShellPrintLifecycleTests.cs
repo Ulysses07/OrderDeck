@@ -69,7 +69,8 @@ public sealed class MainShellPrintLifecycleTests
         public ManualResetEventSlim Release { get; } = new(false);
         public bool ThrowAfterRelease { get; set; }
 
-        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
         {
             Interlocked.Increment(ref _calls);
             lock (PrintedIds) PrintedIds.AddRange(labels.Select(l => l.Id));

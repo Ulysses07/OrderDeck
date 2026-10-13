@@ -173,6 +173,14 @@ public interface IPaymentJobStore
     /// </summary>
     PersonJob FindOrCreateForPerson(PersonJobRequest request);
 
+    /// <summary>SALT OKUMA: <see cref="FindOrCreateForPerson"/>'ın baktığı küme — üyelerin bu kapsamdaki
+    /// işleri (kapalılar dahil, miras kapsamları hariç) ve asıl kapsamı bu olan miras işler (açık ya da
+    /// teslim edilmiş). Yazma, kilit, üye doğrulaması YOK. Fiyat düzeltmesi (K5) "bu kişiye istek gitti
+    /// mi, ne kadar, bakiyeden düşüldü mü" sorusunu ödeme sorusuyla AYNI planla
+    /// (<see cref="PersonScopePlan"/>) yanıtlar.</summary>
+    (IReadOnlyList<PaymentJob> Jobs, IReadOnlyList<PaymentJob> Legacies) GetPersonScopeJobs(
+        IReadOnlyCollection<string> memberIds, string scopeKey);
+
     PaymentJob? Get(string id);
 
     /// <summary>033'ten taşınan, henüz kapanmamış TÜM miras işleri — en yeniden
@@ -444,6 +452,19 @@ public sealed class PaymentJobRepository : IPaymentJobStore
            AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt)
           VALUES (@id, @customerId, @scopeKey, @total, 0, NULL,
                   NULL, @state, @now, @now, NULL)";
+
+    public (IReadOnlyList<PaymentJob> Jobs, IReadOnlyList<PaymentJob> Legacies) GetPersonScopeJobs(
+        IReadOnlyCollection<string> memberIds, string scopeKey)
+    {
+        if (memberIds.Count == 0) return (Array.Empty<PaymentJob>(), Array.Empty<PaymentJob>());
+        using var conn = _factory.Open();
+        var ids = memberIds.ToArray();
+        var jobs = conn.Query<Row>(SelectSql + " WHERE CustomerId IN @ids AND ScopeKey=@scopeKey",
+            new { ids, scopeKey }).Select(Map).ToList();
+        var legacies = conn.Query<Row>(SelectSql + " WHERE CustomerId IN @ids AND " + ScopeLegacyCondition,
+            new { ids, scopeKey }).Select(Map).ToList();
+        return (jobs, legacies);
+    }
 
     public PaymentJob? Get(string id)
     {

@@ -1,3 +1,4 @@
+using System.Linq;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -86,6 +87,25 @@ public class LabelRepositoryProductCountTests
         repo.Insert(Row("l1", "A12"));
 
         repo.CountSessionLabelsByCode("s1", "a12").Should().Be(1);
+    }
+
+    [Fact]
+    public void Turkish_letters_match_case_insensitively_like_the_price_box()
+    {
+        // NOCASE yalnız ASCII katlıyordu: kabuk "çanta1" ile "Çanta1"i aynı kod sayarken sayaç ve FİYAT kutusunun
+        // kaynağı (GetActiveBySessionAndCode) ayrı sayıyordu.
+        var (db, repo) = Fx();
+        using var _ = db;
+
+        repo.Insert(Row("l1", "çanta1"));
+        repo.Insert(Row("l2", "ÇANTA1"));
+        repo.Insert(Row("l3", "şal"));
+        repo.Insert(Row("l4", "Çanta2"));
+
+        repo.CountSessionLabelsByCode("s1", "Çanta1").Should().Be(2);
+        repo.GetActiveBySessionAndCode("s1", "Çanta1").Select(l => l.Id).Should().Equal("l1", "l2");
+        repo.CountSessionLabelsByCode("s1", "ŞAL").Should().Be(1);
+        repo.CountSessionLabelsByCode("s1", "çanta").Should().Be(0, "ön ek aynı kod değil");
     }
 
     [Fact]

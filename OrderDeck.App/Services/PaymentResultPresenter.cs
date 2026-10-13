@@ -138,12 +138,23 @@ public static class PaymentResultPresenter
         {
             var last = prompt.Requests.LastOrDefault();
             var at = last?.At is { } t ? WhenText(t, now) + " " : "";
+            var atte = last?.At is { } t2 ? WhenText(t2, now) + Locative(t2) + " " : "";
+            // K5 (2026-10-12): tutar değiştiyse (ör. fiyat düzeltmesi) eski ve yeni tutar BİRLİKTE —
+            // operatör "tekrar gönder"in aynı tutarı mı yoksa düzeltilmiş isteği mi göndereceğini görsün.
+            var newText = prompt.NewTotal is { } nt
+                ? (prompt.PriorHadBalance
+                    ? $"yeni toplam {Money(nt)} (bakiye düşülmeden önce)"
+                    : $"yeni tutar {Money(nt)}")
+                : null;
             if (last is { Unconfirmed: true })
-                return ("Ödeme isteği gönderilmiş olabilir",
-                    $"{at}{Money(last.Amount)} tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), " +
-                    "tekrar gönderilsin mi?");
-            return ("Ödeme isteği zaten gönderildi",
-                $"{at}{Money(last?.Amount ?? 0m)} istendi, tekrar gönderilsin mi?");
+                return ("Ödeme isteği gönderilmiş olabilir", newText is null
+                    ? $"{at}{Money(last.Amount)} tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), " +
+                      "tekrar gönderilsin mi?"
+                    : $"{at}{Money(last.Amount)} tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi); " +
+                      $"{newText}. Düzeltilmiş istek gönderilsin mi?");
+            return ("Ödeme isteği zaten gönderildi", newText is null
+                ? $"{at}{Money(last?.Amount ?? 0m)} istendi, tekrar gönderilsin mi?"
+                : $"{atte}{Money(last?.Amount ?? 0m)} istendi; {newText}. Düzeltilmiş istek gönderilsin mi?");
         }
 
         var scope = prompt.ScopeKey.StartsWith("session:", StringComparison.Ordinal)
@@ -192,7 +203,25 @@ public static class PaymentResultPresenter
     /// iki kuruş hanesi + "TL".</summary>
     private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
 
-    private static string WhenText(DateTimeOffset at, DateTimeOffset now)
+    /// <summary>Saatin bulunma eki ("21:14'te", "21:30'da", "21:00'de") — saatin okunuşunun son
+    /// sözcüğüne göre (dakika sıfırsa saat okunur: "yirmi bir").</summary>
+    internal static string Locative(DateTimeOffset at)
+    {
+        var local = at.ToLocalTime();
+        var n = local.Minute != 0 ? local.Minute : local.Hour;
+        var word = n % 10 != 0 ? n % 10 : n;   // son okunan sözcük: birler, yoksa onlar
+        var suffix = word switch
+        {
+            1 or 2 or 7 or 8 or 20 or 50 => "de",     // bir, iki, yedi, sekiz, yirmi, elli
+            3 or 4 or 5 => "te",                      // üç, dört, beş
+            40 => "ta",                               // kırk
+            6 or 9 or 10 or 30 or 0 => "da",          // altı, dokuz, on, otuz, sıfır
+            _ => "de",
+        };
+        return "'" + suffix;
+    }
+
+    internal static string WhenText(DateTimeOffset at, DateTimeOffset now)
     {
         var local = at.ToLocalTime();
         return local.Date == now.ToLocalTime().Date

@@ -86,6 +86,53 @@ public class DrawerHostLayoutTests
     }
 
     [Fact]
+    public void Close_button_closes_the_price_correction_drawer_while_its_reprint_runs()
+    {
+        // Fiyat düzeltmede yeniden baskı sürerken çarpı pasifti: askıda kalan yazıcıda çekmece kod/fiyat kutusunu
+        // ve kuyruğu yayının geri kalanında örtüyordu. Çekmece her zaman kapanır; iş arka planda sürer.
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            using var db = new OrderDeck.Tests.TestHelpers.InMemorySqlite();
+            new OrderDeck.Core.Storage.MigrationRunner(db).Run();
+            var clock = new Moq.Mock<OrderDeck.Core.Time.IClock>();
+            clock.Setup(c => c.UnixNow()).Returns(1000L);
+            var sessions = new OrderDeck.Core.Storage.Repositories.SessionRepository(db);
+            sessions.Insert(new OrderDeck.Core.Sessions.StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
+            var labels = new OrderDeck.Core.Storage.Repositories.LabelRepository(db);
+            var svc = new OrderDeck.Core.Sales.LabelService(labels,
+                new OrderDeck.Core.Customers.CustomerService(
+                    new OrderDeck.Core.Storage.Repositories.CustomerRepository(db), sessions, labels, clock.Object),
+                db, clock.Object);
+            var a = svc.Add("s1", new OrderDeck.Core.Chat.ChatMessage(System.Guid.NewGuid().ToString("N"), "instagram",
+                null, "@a", "@a", null, "aldım", 1000, System.Array.Empty<string>()), 250m, "A12");
+            svc.MarkPrintedAndRecord(new[] { a.Id });
+            var gate = new System.Threading.Tasks.TaskCompletionSource<string?>();
+            var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(svc, payments: null, "s1", new[] { a.Id },
+                System.DateTime.Now, inFlight: () => null,
+                applied: _ => { }, reprint: _ => gate.Task, cloudApiEnabled: true);
+            var stack = new DrawerStack();
+            stack.ShowAsync("Fiyatı Düzelt", d =>
+            {
+                vm.Close = () => d.Close(true);
+                return PriceCorrectionDrawer.Create(vm);
+            });
+            vm.NewPriceText = "205";
+            vm.ConfirmCommand.Execute(null);
+            vm.ReprintCommand.Execute(null);              // yazıcıda bekliyor
+            Assert.Equal("Yeniden basılıyor…", vm.ReprintResult);
+            var host = Arrange(stack);
+            var close = FindChild<Button>(host)!;
+
+            Assert.True(close.IsEnabled);
+            close.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent, close));
+
+            Assert.False(stack.IsOpen);
+        });
+
+        Assert.Null(error);
+    }
+
+    [Fact]
     public void Nested_drawer_covers_the_one_below_it()
     {
         var error = ThemeTestHost.RunOnSta(() =>

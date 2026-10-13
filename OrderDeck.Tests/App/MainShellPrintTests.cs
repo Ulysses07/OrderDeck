@@ -41,7 +41,8 @@ public class MainShellPrintTests
         public List<List<Label>> Calls { get; } = new();
         public List<IReadOnlySet<string>?> RecipientPaysCalls { get; } = new();
         public List<List<Label>> GiftCalls { get; } = new();
-        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
         {
             Calls.Add(labels.ToList());
             RecipientPaysCalls.Add(recipientPaysLabelIds);
@@ -136,7 +137,8 @@ public class MainShellPrintTests
         public System.Threading.ManualResetEventSlim Entered { get; } = new(false);
         public List<List<Label>> Calls { get; } = new();
 
-        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
         {
             lock (Calls) Calls.Add(labels.ToList());
             Entered.Set();
@@ -447,7 +449,8 @@ public class MainShellPrintTests
     // operatör tekrar dener ya da "basmadan bitir"i seçer.
     private sealed class ThrowingLabelPrinter : ILabelPrinter
     {
-        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null,
+            IReadOnlySet<string>? correctionLabelIds = null)
             => throw new InvalidOperationException("yazıcı yok");
         public void PrintGiftLabels(IReadOnlyList<Label> labels) { }
     }
