@@ -21,6 +21,7 @@ public sealed class LabelRulesVectorTests
     public static IEnumerable<object[]> CodePriceNames() => Names("codePrice");
     public static IEnumerable<object[]> ContributionNames() => Names("contribution");
     public static IEnumerable<object[]> PaidPriceNames() => Names("paidPriceOnCorrection");
+    public static IEnumerable<object[]> OrderUnitMergeNames() => Names("orderUnitMerge");
 
     private static IEnumerable<object[]> Names(string section)
         => LabelRulesVectors.Names(section).Select(n => new object[] { n });
@@ -89,6 +90,19 @@ public sealed class LabelRulesVectorTests
         var c = LabelRulesVectors.PaidPriceOnCorrection().Single(v => v.Name == name);
         LabelRules.PaidPriceOnCorrection(c.PaidPrice, c.PriceBefore, c.LinkedToShipment, c.PaidFromBalance)
             .Should().Be(c.Expected, $"vektör {name}");
+    }
+
+    [Theory]
+    [MemberData(nameof(OrderUnitMergeNames))]
+    public void OrderUnitMerge(string name)
+    {
+        var c = LabelRulesVectors.OrderUnitMerge().Single(v => v.Name == name);
+        var result = Shared.Sales.OrderUnitMerge.Merge(c.Server, c.Push, c.Context);
+
+        result.Merged.Should().Be(c.ExpectedMerged, $"vektör {name}: yazılacak değerler");
+        result.ChangedUnits.Should().Equal(c.ExpectedChanged, $"vektör {name}: değişen birimler");
+        result.Ignored.Should().Equal(c.ExpectedIgnored, $"vektör {name}: yok sayılan birimler");
+        result.Reason.Should().Be(c.ExpectedReason, $"vektör {name}: neden");
     }
 
     [Fact]

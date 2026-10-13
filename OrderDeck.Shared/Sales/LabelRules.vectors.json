@@ -212,5 +212,53 @@
     { "name": "sonraki_duzeltme_dokunmaz", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": true, "paidFromBalance": false, "expected": 250 },
     { "name": "sonraki_duzeltme_bakiyede_de_dokunmaz", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": false, "paidFromBalance": true, "expected": 250 },
     { "name": "bag_cozulmus_olsa_da_saklanan_kalir", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": false, "paidFromBalance": false, "expected": 250 }
+  ],
+
+  "_orderUnitMerge": "OrderUnitMerge (OrderDeck.Shared/Sales/OrderUnitMerge.cs), spec 2026-10-13 §4.2 K1–K7. 'context.format' 1 (v1, ≤0.9.10) ya da 2. 'server': satırın değerleri, birim damgaları (priceSetAt, cancelSetAt, backupSetAt, shipmentSetAt) ve version; yazılmayan değer null/false, price 100, version 1. 'push': yazılmayan değer sunucudakinin aynısıdır; baseVersion yoksa null. Değer alanları: price, priceCorrectedAt, paidPrice, cancelledAt, cancelReason, tentative, shipmentId, printedAt, printBatchId, printSeq, parentOrderId. 'expected.merged': yazılmayan alan sunucudaki değeri taşır. 'expected.changed' (birim adları: price, cancel, backup, shipment, print) ve 'expected.ignored' ([{unit, reason}]) yoksa boş; 'expected.reason' yoksa null.",
+
+  "orderUnitMerge": [
+    {
+      "name": "k1_v1_tasimadigi_alanlari_bosaltmaz",
+      "context": { "format": 1 },
+      "server": {
+        "price": 120, "priceCorrectedAt": "2026-10-01T10:00:00Z", "paidPrice": 100,
+        "shipmentId": "00000000-0000-0000-0000-0000000000a1",
+        "printedAt": "2026-09-30T20:00:00Z", "printBatchId": "b1", "printSeq": 3,
+        "parentOrderId": "00000000-0000-0000-0000-0000000000b1"
+      },
+      "push": {
+        "priceCorrectedAt": null, "paidPrice": null, "shipmentId": null,
+        "printBatchId": null, "printSeq": null, "parentOrderId": null
+      },
+      "expected": {}
+    },
+    {
+      "name": "k1_v2_ebeveyn_bossa_doldurulur",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "expected": { "merged": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" } }
+    },
+    {
+      "name": "k1_v2_dolu_ebeveyn_degismez",
+      "context": { "format": 2 },
+      "server": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b2" },
+      "expected": {}
+    },
+    {
+      "name": "k1_v2_dolu_ebeveyn_bosaltilmaz",
+      "context": { "format": 2 },
+      "server": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "push": { "parentOrderId": null },
+      "expected": {}
+    },
+    {
+      "name": "k1_v1_ebeveyn_doldurmaz",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "expected": {}
+    }
   ]
 }

@@ -4,7 +4,9 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Push;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.Shared.Sales;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -219,8 +221,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // Paketi sipariş id'sine göre TEKİLLEŞTİR. Aynı id iki kez gelirse
         // aşağıdaki döngü aynı yeni siparişi iki kez Add eder → EF izleme
         // istisnası → 500. Son giriş kazanır: payload sırası istemcinin niyet
-        // sırasıdır. Bu liste hem sipariş yazma döngüsünde hem defter çağrısında
-        // kullanılır — iki yol aynı veriyi görmeli.
+        // sırasıdır. Defter de bu döngünün ürettiği satırlardan beslenir — iki
+        // yol aynı siparişleri görmeli.
         var orders = req.Orders.GroupBy(o => o.Id).Select(g => g.Last()).ToList();
 
         // SessionId'ler bu lisansa ait mi? FK yalnız oturumun VAR olduğunu
@@ -268,22 +270,26 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             licenseId, orders.Select(o => o.CustomerId), ct);
         string CanonicalHex(string hex) => canonicalHex.GetValueOrDefault(hex, hex);
 
+        // Paketin satırları, birleştirildikten sonraki hâlleriyle (izlenen
+        // varlıklar). Defter paketten değil bunlardan beslenir: yazılmayan bir
+        // alan deftere bayat durum taşımasın (spec 2026-10-13 §4.2, M4).
+        var rows = new List<Order>(orders.Count);
+
         foreach (var item in orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
             {
-                current.SessionId = item.SessionId;
-                current.MessageText = item.MessageText;
-                current.Code = item.Code;
-                current.Price = item.Price;
-                current.PrintedAt = item.PrintedAt;
-                current.CancelledAt = item.CancelledAt;
-                current.CancelReason = item.CancelReason;
-                current.IsShippingFee = item.IsShippingFee;
-                current.IsBackupPromoted = item.IsBackupPromoted;
-                current.IsTentativeBackup = item.IsTentativeBackup;
-                current.ProductId = item.ProductId;
-                current.ProductVariantId = item.ProductVariantId;
+                // Birim kuralı (spec 2026-10-13 §4.2) ortak koddan: oluşum
+                // alanları (SessionId, MessageText, Code, IsShippingFee,
+                // IsBackupPromoted, ProductId, ProductVariantId; CustomerId ve
+                // görünen ad zaten yazılmıyordu) yalnız eklemede yazılır (K1).
+                // Katalog bilmeyen istemcinin ProductId'yi NULL'laması böyle
+                // kapanır — moddan bağımsız.
+                var merge = OrderUnitMerge.Merge(
+                    current.ToServerRow(),
+                    PushOf(item),
+                    new OrderMergeContext { Format = OrderPushFormat.V1 });
+                current.ApplyUnits(merge.Merged);
                 current.UpdatedAt = now;
                 // Eşzamanlılık jetonunu ilerlet (bkz. Order.SyncVersion).
                 // Sipariş alanları değişmemiş olsa bile artırıyoruz: paketin
@@ -291,11 +297,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 // aynı siparişe paralel giren ikinci isteğin görmesi gereken
                 // tam da bu.
                 current.SyncVersion++;
+                rows.Add(current);
             }
             else
             {
                 var customerHex = CanonicalHex(item.CustomerId);
-                _db.Orders.Add(new Order
+                var order = new Order
                 {
                     Id = item.Id,
                     LicenseId = licenseId,
@@ -317,7 +324,9 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     ProductId = item.ProductId,
                     ProductVariantId = item.ProductVariantId,
                     UpdatedAt = now
-                });
+                };
+                _db.Orders.Add(order);
+                rows.Add(order);
                 // Sadece basılmış (printed), iptal değil, kargo ücreti değil,
                 // backup değil order'ları gerçek satış olarak say. Chat akışı
                 // üst limit basma operasyonu — sayım yeterli, push'ı spam'lemez.
@@ -350,9 +359,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             // onların damgası imleç sütunu değil.
             var ledgerNow = DateTimeOffset.UtcNow;
 
+            // Birleştirilmiş satırdan (spec §4.2): güncellemede yazılmayan ürün
+            // bağı, yok sayılan iptal ya da yedek deftere paketteki hâliyle
+            // girseydi defter satırın gerçek durumundan ayrışır, satışı geri
+            // sarardı.
             await _ledger.ApplyAsync(
                 licenseId,
-                orders.Select(o => new Services.Stock.LedgerOrderInput(
+                rows.Select(o => new Services.Stock.LedgerOrderInput(
                     new Services.Stock.LedgerOrderState(
                         o.Id,
                         o.ProductId,
@@ -444,6 +457,21 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
         return Ok(echoed);
     }
+
+    /// <summary>v1 öğesinin birim kuralına giren hâli. v1'in taşımadığı alanlar
+    /// (düzeltme damgası, ödenen fiyat, baskı grubu, kargo bağı, ebeveyn) boş
+    /// kalır; <see cref="OrderPushFormat.V1"/> onları "gönderilmedi" sayar.</summary>
+    private static OrderPush PushOf(SyncOrderItem item) => new()
+    {
+        Values = new OrderUnitValues
+        {
+            Price = item.Price,
+            CancelledAt = item.CancelledAt,
+            CancelReason = item.CancelReason,
+            IsTentativeBackup = item.IsTentativeBackup,
+            PrintedAt = item.PrintedAt,
+        },
+    };
 
     /// <summary>
     /// Order batch notification metni. Spam'i azaltmak için her zaman
