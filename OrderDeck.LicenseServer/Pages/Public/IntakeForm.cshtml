@@ -174,7 +174,8 @@ else
                 {
                     <div class="linked-chip">
                         <span>✓ &#64;@Model.LinkedInstagram.Handle</span>
-                        <button type="submit" class="unlink" formnovalidate
+                        @* form="unlinkForm": neden ayrı form, aşağıda #unlinkForm'un notunda. *@
+                        <button type="submit" class="unlink" form="unlinkForm" formnovalidate
                                 asp-page-handler="Unlink" asp-route-platform="instagram">Bağlantıyı kaldır</button>
                     </div>
                 }
@@ -195,10 +196,12 @@ else
                 {
                     <div class="linked-chip">
                         <span>✓ @Model.LinkedYouTube.DisplayName@(string.IsNullOrEmpty(Model.LinkedYouTube.Handle) ? "" : $" ({Model.LinkedYouTube.Handle})")</span>
-                        @* Ayrı handler'a giden submit; e.submitter guard'ı JS'te —
-                           yoksa form doğrulama kapılarına takılır. formnovalidate:
-                           tarayıcının required kontrolü de atlanmalı. *@
-                        <button type="submit" class="unlink" formnovalidate
+                        @* Ayrı handler'a giden submit, sahibi #unlinkForm (bkz.
+                           oradaki not). formnovalidate + JS'teki e.submitter
+                           guard'ı yalnız form="" özniteliğini tanımayan eski
+                           tarayıcı için: orada buton yine bu formun submit'i
+                           olur ve required/doğrulama kapılarına takılmamalı. *@
+                        <button type="submit" class="unlink" form="unlinkForm" formnovalidate
                                 asp-page-handler="Unlink" asp-route-platform="youtube">Bağlantıyı kaldır</button>
                     </div>
                 }
@@ -263,7 +266,7 @@ else
                 {
                     <div class="linked-chip">
                         <span>✓ @Model.LinkedFacebook.DisplayName</span>
-                        <button type="submit" class="unlink" formnovalidate
+                        <button type="submit" class="unlink" form="unlinkForm" formnovalidate
                                 asp-page-handler="Unlink" asp-route-platform="facebook">Bağlantıyı kaldır</button>
                     </div>
                 }
@@ -411,6 +414,21 @@ else
             <div class="err" id="formErr"></div>
             <button type="submit" class="btn">Tamamla ve WhatsApp'tan Gönder</button>
         </form>
+
+        @if (Model.LinkedYouTube is not null || Model.LinkedFacebook is not null || Model.LinkedInstagram is not null)
+        {
+            @* "Bağlantıyı kaldır" butonlarının sahibi bu boş form (butonlardaki
+               form="unlinkForm"). Metin kutusunda Enter / mobil klavyede "Git",
+               formu VARSAYILAN butonuna tıklanmış gibi gönderir; varsayılan
+               buton, sahibi o form olan ilk submit butonudur (ağaç sırasıyla).
+               Çipler formun en üstünde: butonlar #intakeForm'a ait olsaydı Enter
+               kaydı göndermek yerine bağlantıyı kaldırırdı. Sahibi başka form
+               olunca butonlar o sırada hiç sayılmıyor; JS'e bağlı değil, CSP'ye
+               dokunmuyor. Form iç içe olamayacağı için #intakeForm'un dışında.
+               Anti-forgery token'ı tag helper buraya da basıyor; dönüş yine
+               OnPostUnlinkAsync'in yerel yönlendirmesi. *@
+            <form id="unlinkForm" method="post" asp-page-handler="Unlink"></form>
+        }
 }
     </div>
 </div>
@@ -1032,8 +1050,10 @@ else
     }
 
     form.addEventListener('submit', function (e) {
-        // "Bağlantıyı kaldır" da bu formun submit'i — doğrulama kapılarına
-        // takılırsa müşteri bağlantıyı hiç kaldıramaz.
+        // "Bağlantıyı kaldır" #unlinkForm'a ait, bu olay onu görmez. Guard
+        // form="" özniteliğini tanımayan eski tarayıcı için: orada buton bu
+        // formun submit'i olur ve doğrulama kapılarına takılırsa müşteri
+        // bağlantıyı hiç kaldıramaz.
         if (e.submitter && e.submitter.classList.contains('unlink')) return;
 
         var fields = Array.prototype.slice.call(document.querySelectorAll('.uname'));
