@@ -1,0 +1,216 @@
+{
+  "_aciklama": "LabelRules (OrderDeck.Shared/Sales/LabelRules.cs) ortak test vektörleri. Bu dosya OrderDeck.Tests ve OrderDeck.LicenseServer.Tests'e bağlantılı içerik olarak kopyalanır ve iki projede de aynı koşucuyla koşar; OrderDeck.Tests ayrıca masaüstünün BUGÜNKÜ kodunu (LabelRepository, LabelService) aynı vektörlerle yoklar (eşlik testi). Her kuralın kendi bölümü var; yeni bir kural (ör. OrderUnitMerge K1–K7) kendi bölümünü ekler. Koşucu bilmediği bölümde kırmızı yanar: bölüm eklemek iki projeye de koşucu eklemeyi gerektirir. Etiket alanları: id, code (null = kodsuz), price; printed/cancelled/tentative/shippingFee yoksa false; shipmentId yoksa null. 'shipments' dosya Id → durum (Pending|Held|RecipientPays|Shipped); haritada olmayan dosya 'bilinmiyor' demektir. Etiket sırası yazılış sırasıdır.",
+
+  "sameCode": [
+    { "name": "ascii_harf_buyuklugu", "a": "a12", "b": "A12", "expected": true },
+    { "name": "ayni_kod", "a": "A12", "b": "A12", "expected": true },
+    { "name": "farkli_kod", "a": "A12", "b": "A13", "expected": false },
+    { "name": "c_cedilla_kucuk_buyuk", "a": "çanta1", "b": "Çanta1", "expected": true },
+    { "name": "turkce_harfler_tamamen_buyuk", "a": "ÇANTA", "b": "çanta", "expected": true },
+    { "name": "g_s_o_u_kucuk_buyuk", "a": "ğşöü9", "b": "ĞŞÖÜ9", "expected": true },
+    { "name": "ascii_i_ve_I_ayni", "a": "i1", "b": "I1", "expected": true },
+    { "name": "noktali_buyuk_I_kucuk_i_degil", "a": "İ1", "b": "i1", "expected": false },
+    { "name": "noktasiz_kucuk_i_buyuk_I_degil", "a": "ı1", "b": "I1", "expected": false },
+    { "name": "noktali_buyuk_I_ascii_I_degil", "a": "İ1", "b": "I1", "expected": false },
+    { "name": "noktasiz_i_ascii_i_degil", "a": "ı1", "b": "i1", "expected": false },
+    { "name": "noktali_I_kendisiyle_ayni", "a": "İ1", "b": "İ1", "expected": true },
+    { "name": "ascii_katlamasi_yok", "a": "çanta1", "b": "canta1", "expected": false },
+    { "name": "sondaki_bosluk_kirpilmaz", "a": "A12 ", "b": "A12", "expected": false },
+    { "name": "bastaki_bosluk_kirpilmaz", "a": " A12", "b": "A12", "expected": false },
+    { "name": "kodsuz_etiket_eslesmez", "a": null, "b": "A12", "expected": false },
+    { "name": "bos_kod_bos_kodla_ayni", "a": "", "b": "", "expected": true }
+  ],
+
+  "codeKey": [
+    { "name": "kodsuz", "code": null, "expected": "" },
+    { "name": "bos", "code": "", "expected": "" },
+    { "name": "yalniz_bosluk", "code": "   ", "expected": "" },
+    { "name": "iki_yandan_kirpilir", "code": " A12 ", "expected": "A12" },
+    { "name": "sekme_ve_satir_sonu_kirpilir", "code": "\tA12\n", "expected": "A12" },
+    { "name": "harf_katlanmaz", "code": "çanta1", "expected": "çanta1" },
+    { "name": "ortadaki_bosluk_kalir", "code": " A 12 ", "expected": "A 12" }
+  ],
+
+  "classify": [
+    {
+      "name": "her_sinif",
+      "shipments": { "k_gitti": "Shipped", "k_beklet": "Held", "k_yeni": "Pending", "k_alici": "RecipientPays" },
+      "labels": [
+        { "id": "kuyruk", "code": "A1", "price": 100, "expected": "correctable" },
+        { "id": "basilmis", "code": "A1", "price": 100, "printed": true, "expected": "correctable" },
+        { "id": "gecici_yedek", "code": "A1", "price": 90, "tentative": true, "expected": "correctable" },
+        { "id": "kodsuz", "code": null, "price": 50, "expected": "correctable" },
+        { "id": "iptal", "code": "A1", "price": 100, "printed": true, "cancelled": true, "expected": "excluded" },
+        { "id": "kargo_ucreti", "code": null, "price": 60, "shippingFee": true, "expected": "excluded" },
+        { "id": "kargoya_verilmis", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti", "expected": "shipped" },
+        { "id": "bekletilen_dosya", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_beklet", "expected": "correctable" },
+        { "id": "yeni_dosya", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_yeni", "expected": "correctable" },
+        { "id": "alici_odemeli_dosya", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_alici", "expected": "correctable" }
+      ]
+    },
+    {
+      "name": "iptal_ve_kargo_ucreti_kargoya_verilmisi_yener",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "iptal_gitti", "code": "A1", "price": 100, "printed": true, "cancelled": true, "shipmentId": "k_gitti", "expected": "excluded" },
+        { "id": "ucret_gitti", "code": null, "price": 60, "printed": true, "shippingFee": true, "shipmentId": "k_gitti", "expected": "excluded" },
+        { "id": "gitti", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti", "expected": "shipped" }
+      ]
+    },
+    {
+      "name": "bilinmeyen_dosya_bugun_duzeltilebilir",
+      "shipments": {},
+      "labels": [
+        { "id": "bilinmeyen", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_yok", "expected": "correctable" }
+      ]
+    }
+  ],
+
+  "codePrice": [
+    { "name": "kodun_etiketi_yok", "code": "A1", "labels": [], "expected": null },
+    {
+      "name": "tek_fiyat", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100 },
+        { "id": "l2", "code": "A1", "price": 100, "printed": true }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "en_cok_tekrarlanan", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 250 },
+        { "id": "l2", "code": "A1", "price": 230 },
+        { "id": "l3", "code": "A1", "price": 250 }
+      ],
+      "expected": 250
+    },
+    {
+      "name": "esitlikte_en_son_yazilan", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 250 },
+        { "id": "l2", "code": "A1", "price": 230 }
+      ],
+      "expected": 230
+    },
+    {
+      "name": "esitlikte_grubun_en_son_yazilani_belirler", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 230 },
+        { "id": "l2", "code": "A1", "price": 250 },
+        { "id": "l3", "code": "A1", "price": 250 },
+        { "id": "l4", "code": "A1", "price": 230 }
+      ],
+      "expected": 230
+    },
+    {
+      "name": "iptal_ve_kargo_ucreti_sayilmaz", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "cancelled": true },
+        { "id": "l2", "code": "A1", "price": 100, "printed": true, "cancelled": true },
+        { "id": "l3", "code": "A1", "price": 60, "shippingFee": true },
+        { "id": "l4", "code": "A1", "price": 120 }
+      ],
+      "expected": 120
+    },
+    {
+      "name": "hepsi_iptal", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "cancelled": true }
+      ],
+      "expected": null
+    },
+    {
+      "name": "duzeltilebilir_varken_kargoya_verilmis_sayilmaz", "code": "A1",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti" },
+        { "id": "l2", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti" },
+        { "id": "l3", "code": "A1", "price": 120 }
+      ],
+      "expected": 120
+    },
+    {
+      "name": "yalniz_kargoya_verilmis", "code": "A1",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti" },
+        { "id": "l2", "code": "A1", "price": 90, "printed": true, "shipmentId": "k_gitti" }
+      ],
+      "expected": 90
+    },
+    {
+      "name": "bilinmeyen_dosyadaki_etiket_duzeltilebilir_sayilir", "code": "A1",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_yok" },
+        { "id": "l2", "code": "A1", "price": 90, "printed": true, "shipmentId": "k_gitti" }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "acik_dosyadaki_etiket_duzeltilebilir_sayilir", "code": "A1",
+      "shipments": { "k_beklet": "Held", "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 110, "printed": true, "shipmentId": "k_beklet" },
+        { "id": "l2", "code": "A1", "price": 90, "printed": true, "shipmentId": "k_gitti" }
+      ],
+      "expected": 110
+    },
+    {
+      "name": "basilmis_kuyruk_ve_yedek_birlikte_sayilir", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true },
+        { "id": "l2", "code": "A1", "price": 80, "tentative": true },
+        { "id": "l3", "code": "A1", "price": 80 }
+      ],
+      "expected": 80
+    },
+    {
+      "name": "turkce_harf_buyuklugu_ayni_kod", "code": "Çanta1",
+      "labels": [
+        { "id": "l1", "code": "çanta1", "price": 100 },
+        { "id": "l2", "code": "ÇANTA1", "price": 100 },
+        { "id": "l3", "code": "Çanta1", "price": 80 }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "sorgu_kodu_kirpilir", "code": " a1 ",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 75 }
+      ],
+      "expected": 75
+    },
+    {
+      "name": "kurus_fiyat", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 249.90 },
+        { "id": "l2", "code": "A1", "price": 249.90 },
+        { "id": "l3", "code": "A1", "price": 250 }
+      ],
+      "expected": 249.90
+    }
+  ],
+
+  "contribution": [
+    { "name": "basilmis", "label": { "id": "l", "code": "A1", "price": 250, "printed": true }, "expected": { "count": 1, "amount": 250 } },
+    { "name": "kuyrukta", "label": { "id": "l", "code": "A1", "price": 250 }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "basilmis_iptal", "label": { "id": "l", "code": "A1", "price": 250, "printed": true, "cancelled": true }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "kuyrukta_iptal", "label": { "id": "l", "code": "A1", "price": 250, "cancelled": true }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "basilmis_gecici_yedek", "label": { "id": "l", "code": "A1", "price": 250, "printed": true, "tentative": true }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "basilmis_kargo_ucreti_bugun_sayilir", "label": { "id": "l", "code": null, "price": 60, "printed": true, "shippingFee": true }, "expected": { "count": 1, "amount": 60 } },
+    { "name": "kargoya_verilmis_dosyada_basilmis", "label": { "id": "l", "code": "A1", "price": 250, "printed": true, "shipmentId": "k" }, "expected": { "count": 1, "amount": 250 } },
+    { "name": "sifir_fiyatli_basilmis", "label": { "id": "l", "code": "A1", "price": 0, "printed": true }, "expected": { "count": 1, "amount": 0 } }
+  ],
+
+  "paidPriceOnCorrection": [
+    { "name": "odenmemis_kalir", "paidPrice": null, "priceBefore": 250, "linkedToShipment": false, "paidFromBalance": false, "expected": null },
+    { "name": "dosyaya_bagli_ilk_duzeltme_odenen_fiyati_saklar", "paidPrice": null, "priceBefore": 250, "linkedToShipment": true, "paidFromBalance": false, "expected": 250 },
+    { "name": "bakiyeden_odenmis_ilk_duzeltme_odenen_fiyati_saklar", "paidPrice": null, "priceBefore": 250, "linkedToShipment": false, "paidFromBalance": true, "expected": 250 },
+    { "name": "dosyaya_bagli_ve_bakiyeden", "paidPrice": null, "priceBefore": 199.90, "linkedToShipment": true, "paidFromBalance": true, "expected": 199.90 },
+    { "name": "sonraki_duzeltme_dokunmaz", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": true, "paidFromBalance": false, "expected": 250 },
+    { "name": "sonraki_duzeltme_bakiyede_de_dokunmaz", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": false, "paidFromBalance": true, "expected": 250 },
+    { "name": "bag_cozulmus_olsa_da_saklanan_kalir", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": false, "paidFromBalance": false, "expected": 250 }
+  ]
+}

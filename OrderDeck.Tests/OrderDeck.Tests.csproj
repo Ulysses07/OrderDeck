@@ -28,6 +28,8 @@
   <ItemGroup>
     <!-- Sahip kuralının ortak test vektörleri (sunucu ileride aynı dosyayı koşturabilsin). -->
     <None Update="Customers\PaymentOwnerRuleVectors.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Ortak etiket kurallarının vektörleri (LabelRules): sunucu testleri de aynı dosyayı koşar. -->
+    <None Include="..\OrderDeck.Shared\Sales\LabelRules.vectors.json" Link="Sales\LabelRules.vectors.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

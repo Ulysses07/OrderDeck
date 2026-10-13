@@ -26,4 +26,13 @@
   <ItemGroup>
     <ProjectReference Include="..\OrderDeck.LicenseServer\OrderDeck.LicenseServer.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ortak etiket kuralları (OrderDeck.Shared/Sales/LabelRules.cs): masaüstü testleriyle AYNI vektör
+         dosyası ve AYNI koşucu. Koşucu OrderDeck.Tests'te durur ve buraya bağlanır; iki ayrı okuyucu
+         kuralın kendisi gibi sessizce ayrışabilirdi. -->
+    <None Include="..\OrderDeck.Shared\Sales\LabelRules.vectors.json" Link="Sales\LabelRules.vectors.json" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="..\OrderDeck.Tests\Sales\Rules\LabelRulesVectors.cs" Link="Sales\Rules\LabelRulesVectors.cs" />
+    <Compile Include="..\OrderDeck.Tests\Sales\Rules\LabelRulesVectorTests.cs" Link="Sales\Rules\LabelRulesVectorTests.cs" />
+  </ItemGroup>
 </Project>
