@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Services.Licensing;
 using OrderDeck.LicenseServer.Services.Observability;
+using OrderDeck.LicenseServer.Services.Sync;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -120,19 +121,10 @@ public sealed class LicensesController : ControllerBase
         });
     }
 
-    /// <summary>User-Agent'tan uygulama sürümünü çeker ("OrderDeck-WPF/0.9.5"
-    /// → "0.9.5"). Desen tutmazsa null — eski istemciler UA göndermiyor ve
-    /// alan null kalmalı, tarayıcı UA'sı gibi başka bir şey yazılmamalı.</summary>
+    /// <summary>User-Agent'tan uygulama sürümünün ham metni ("OrderDeck-WPF/0.9.5"
+    /// → "0.9.5"); desen tutmazsa null. Ayrıştırıcı ortak: <see cref="ClientVersion"/>.</summary>
     private string? ClientAppVersion()
-    {
-        var ua = Request.Headers.UserAgent.ToString();
-        var m = AppVersionPattern.Match(ua);
-        return m.Success ? m.Groups[1].Value : null;
-    }
-
-    private static readonly System.Text.RegularExpressions.Regex AppVersionPattern =
-        new(@"\bOrderDeck-WPF/([0-9A-Za-z.\-]{1,32})",
-            System.Text.RegularExpressions.RegexOptions.Compiled);
+        => ClientVersion.RawFromUserAgent(Request.Headers.UserAgent.ToString());
 
     private Guid GetCustomerId()
     {
