@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Reflection;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Controllers;
 using OrderDeck.LicenseServer.Domain;
@@ -276,6 +277,10 @@ public class IntakeFormModel : PageModel
 
     public async Task<IActionResult> OnPostSubmitAsync(CancellationToken ct)
     {
+        // İlk iş: bozuk onay kutusu değeri aşağıdaki hiçbir Page() dönüşünü
+        // (honeypot dahil) çökertmesin. Neden en başta: DropMalformedCheckboxes.
+        DropMalformedCheckboxes();
+
         // Honeypot — bot doldurursa silent 200, persist YOK, redirect YOK
         if (!string.IsNullOrEmpty(Request.Form["website"]))
         {
@@ -575,6 +580,46 @@ public class IntakeFormModel : PageModel
         // (/musteri-kayit/{slug} ve eski /r/{slug}) ve müşteriyi geldiği
         // adreste tutuyoruz.
         return LocalRedirect(Request.Path.Value ?? $"/musteri-kayit/{Slug}");
+    }
+
+    /// <summary>
+    /// Formdaki onay kutuları (bool alanlar). Elle listelenmiyor: yeni eklenen
+    /// kutunun <see cref="DropMalformedCheckboxes"/> korumasını unutması mümkün
+    /// olmasın.
+    /// </summary>
+    private static readonly PropertyInfo[] CheckboxProperties = typeof(IntakeFormInput)
+        .GetProperties()
+        .Where(p => p.PropertyType == typeof(bool))
+        .ToArray();
+
+    /// <summary>
+    /// Onay kutusuna "true"/"false" dışında gelen değeri ("on", "1", "evet", "")
+    /// işaretsiz sayar. Tarayıcı işaretli kutuda tag helper'ın bastığı "true"yu
+    /// gönderir; bu yola yalnız bot ya da elle kurulmuş istek düşer.
+    ///
+    /// Bağlayıcı bozuk değeri hata olarak işaretleyip HAM değeri ModelState'te
+    /// bırakıyor; sayfa yeniden çizilirken checkbox tag helper onu bool'a
+    /// çevirmeye çalışıp patlıyor (FormatException → 500). Kutu çizilmiyorsa
+    /// (SMS kapalı, YouTube OAuth modu) çökme yok ama sayfa hiçbir hata
+    /// göstermeden geri dönüyor. Girdiyi silip false yazmak ikisini de kapatıyor:
+    /// sonuç alanın hiç gelmemesiyle aynı — izin verilmemiş sayılır, kutunun
+    /// kendi kuralı varsa (YouTube onayı) o işler.
+    ///
+    /// Handler'ın EN BAŞINDA koşmalı: o anda bu anahtarlardaki hatalar yalnız
+    /// bağlayıcınındır. Sonra koşsaydı kendi doğrulamamızın aynı anahtara
+    /// yazdığı hatayı da silerdi.
+    /// </summary>
+    private void DropMalformedCheckboxes()
+    {
+        foreach (var p in CheckboxProperties)
+        {
+            var key = $"{nameof(Input)}.{p.Name}";
+            if (ModelState.TryGetValue(key, out var entry) && entry.Errors.Count > 0)
+            {
+                ModelState.Remove(key);
+                p.SetValue(Input, false);
+            }
+        }
     }
 
     /// <summary>
