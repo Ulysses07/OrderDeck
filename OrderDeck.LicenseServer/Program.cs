@@ -141,6 +141,11 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Privacy.TcknProtector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdResolver>();
+        // Yayın ve etiket senkronu (spec 2026-10-13): kopya kaydı ve protokolsüz istek izi; ayarlar compose
+        // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge).
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>(
+            builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section));
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReplicaService>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();

@@ -27,6 +27,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private readonly Services.Stock.StockLedgerWriter _ledger;
     private readonly LabelRuleApplier _labels;
     private readonly CustomerIdResolver _customerIds;
+    private readonly SalesReplicaService _replicas;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
     public LicensesSessionsSyncController(
@@ -35,6 +36,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         Services.Stock.StockLedgerWriter ledger,
         LabelRuleApplier labels,
         CustomerIdResolver customerIds,
+        SalesReplicaService replicas,
         ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
@@ -42,6 +44,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         _ledger = ledger;
         _labels = labels;
         _customerIds = customerIds;
+        _replicas = replicas;
         _log = log;
     }
 
@@ -55,7 +58,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         string Platforms,
         string? Notes);
 
-    public sealed record SyncSessionsRequest(List<SyncSessionItem> Sessions);
+    /// <param name="ReplicaId">v2 zarfı (spec 2026-10-13 §4.0); <see cref="ISalesEnvelopeFields"/>. Bugünkü
+    /// istemci zarf alanlarını göndermez (v1).</param>
+    public sealed record SyncSessionsRequest(
+        List<SyncSessionItem> Sessions,
+        Guid? ReplicaId = null,
+        int? Protocol = null,
+        int? SeenMode = null) : ISalesEnvelopeFields;
 
     public sealed record SyncedSessionDto(
         Guid Id, string? Title,
@@ -71,6 +80,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var ownsLicense = await _db.Licenses
             .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
         if (!ownsLicense) return NotFound();
+
+        if (!SalesEnvelope.TryRead(req, out var envelope, out var envelopeError))
+            return Problem(title: "invalid-envelope", detail: envelopeError, statusCode: 400);
+        await _replicas.AcceptAsync(
+            licenseId, envelope, Request.Headers.UserAgent.ToString(), "sessions/sync", ct);
 
         if (req?.Sessions is null || req.Sessions.Count == 0)
             return Ok(Array.Empty<SyncedSessionDto>());
@@ -193,7 +207,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     /// StockLedgerReconciler'ın "istenmeyen anahtarı sıfırla" dalı daha önce
     /// yazılmış satışı geri sarar ve stok sessizce şişer.
     /// </param>
-    public sealed record SyncOrdersRequest(List<SyncOrderItem> Orders, bool CatalogAware = false);
+    /// <param name="ReplicaId">v2 zarfı (spec 2026-10-13 §4.0); <see cref="ISalesEnvelopeFields"/>.</param>
+    public sealed record SyncOrdersRequest(
+        List<SyncOrderItem> Orders,
+        bool CatalogAware = false,
+        Guid? ReplicaId = null,
+        int? Protocol = null,
+        int? SeenMode = null) : ISalesEnvelopeFields;
 
     public sealed record SyncedOrderDto(
         Guid Id, Guid? SessionId, string CustomerId,
@@ -213,6 +233,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var ownsLicense = await _db.Licenses
             .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
         if (!ownsLicense) return NotFound();
+
+        if (!SalesEnvelope.TryRead(req, out var envelope, out var envelopeError))
+            return Problem(title: "invalid-envelope", detail: envelopeError, statusCode: 400);
+        await _replicas.AcceptAsync(
+            licenseId, envelope, Request.Headers.UserAgent.ToString(), "orders/sync", ct);
 
         if (req?.Orders is null || req.Orders.Count == 0)
             return Ok(Array.Empty<SyncedOrderDto>());

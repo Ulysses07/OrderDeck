@@ -31,15 +31,17 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly LabelRuleApplier _labels;
     private readonly CustomerIdResolver _customerIds;
+    private readonly SalesReplicaService _replicas;
     private readonly ILogger<LicensesShipmentsSyncController> _log;
 
     public LicensesShipmentsSyncController(
         LicenseDbContext db, LabelRuleApplier labels, CustomerIdResolver customerIds,
-        ILogger<LicensesShipmentsSyncController> log)
+        SalesReplicaService replicas, ILogger<LicensesShipmentsSyncController> log)
     {
         _db = db;
         _labels = labels;
         _customerIds = customerIds;
+        _replicas = replicas;
         _log = log;
     }
 
@@ -52,7 +54,12 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         DateTimeOffset? HeldAt,
         DateTimeOffset? ShippedAt);
 
-    public sealed record SyncRequest(List<SyncShipmentItem> Shipments);
+    /// <param name="ReplicaId">v2 zarfı (spec 2026-10-13 §4.0); <see cref="ISalesEnvelopeFields"/>.</param>
+    public sealed record SyncRequest(
+        List<SyncShipmentItem> Shipments,
+        Guid? ReplicaId = null,
+        int? Protocol = null,
+        int? SeenMode = null) : ISalesEnvelopeFields;
 
     public sealed record SyncedShipmentDto(
         Guid Id,
@@ -80,6 +87,11 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         var ownsLicense = await _db.Licenses
             .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
         if (!ownsLicense) return NotFound();
+
+        if (!SalesEnvelope.TryRead(req, out var envelope, out var envelopeError))
+            return Problem(title: "invalid-envelope", detail: envelopeError, statusCode: 400);
+        await _replicas.AcceptAsync(
+            licenseId, envelope, Request.Headers.UserAgent.ToString(), "shipments/sync", ct);
 
         if (req?.Shipments is null || req.Shipments.Count == 0)
             return Ok(Array.Empty<SyncedShipmentDto>());

@@ -1,0 +1,157 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
+
+/// <summary>
+/// Kopya kaydı ve protokolsüz istek izi, gerçek SQL Server'da — spec 2026-10-13 §4.0. InMemory'de ne birincil
+/// anahtar yarışı ne de koşullu <c>ExecuteUpdate</c> var: yeni bir kopyanın eşzamanlı iki ilk isteği ve izin
+/// veritabanındaki saatlik koşulu ancak burada kanıtlanır.
+/// </summary>
+[Collection(SqlServerCollection.Name)]
+public sealed class SalesReplicaRelationalTests : IAsyncLifetime
+{
+    private readonly SqlServerContainerFixture _sql;
+    private HookedRelationalApiFactory _factory = null!;
+    private HttpClient _client = null!;
+    private Guid _licenseId;
+
+    public SalesReplicaRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
+
+    public async Task InitializeAsync()
+    {
+        _factory = new HookedRelationalApiFactory(await _sql.CreateDatabaseAsync());
+        var (_, customerId, jwt) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        _client = _factory.CreateClient();
+        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("OrderDeck-WPF/0.9.11");
+        _licenseId = await SeedLicenseAsync(customerId);
+    }
+
+    public Task DisposeAsync()
+    {
+        _factory.Hook.Reset();
+        _client.Dispose();
+        _factory.Dispose();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Yeni kopyanın iki isteği aynı anda: ikisi de satırı yok görür ve ekler. Sıra kancayla kurulur (zamanlamayla
+    /// değil): birinci isteğin eklemesi diske inmeden ikinci istek baştan sona koşar ve satırı ekler; birinci istek
+    /// birincil anahtara çarpar. Beklenen: ikisi de 200, tek satır, ikinci dokunuş kazananın satırına işlendi.
+    /// </summary>
+    [Fact]
+    public async Task Yeni_kopyanin_eszamanli_iki_ilk_istegi_tek_satir_acar_ikisi_de_200()
+    {
+        var replicaId = Guid.NewGuid();
+        HttpResponseMessage? rival = null;
+        _factory.Hook.BeforeSave = async () =>
+        {
+            _factory.Hook.BeforeSave = null;
+            rival = await _client.PostAsJsonAsync(Url("orders/sync"), V2(replicaId, seenMode: 1));
+        };
+
+        var first = await _client.PostAsJsonAsync(Url("sessions/sync"), V2(replicaId, seenMode: 0));
+
+        rival.Should().NotBeNull("kanca ikinci isteği birincinin eklemesinden önce koşturmalı");
+        rival!.StatusCode.Should().Be(HttpStatusCode.OK);
+        first.StatusCode.Should().Be(HttpStatusCode.OK, await first.Content.ReadAsStringAsync());
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var rows = await db.WpfReplicas.AsNoTracking().Where(r => r.LicenseId == _licenseId).ToListAsync();
+        rows.Should().ContainSingle();
+        var row = rows[0];
+        row.ReplicaId.Should().Be(replicaId);
+        row.SeenMode.Should().Be(SalesSyncMode.Off, "birinci istek kazananın satırını güncelledi");
+        row.SeenModeOnAt.Should().NotBeNull("kazananın (ikinci istek) 1 bildirimi korunur");
+        row.LastSeenAt.Should().BeOnOrAfter(row.FirstSeenAt);
+    }
+
+    /// <summary>
+    /// Protokolsüz istek izi ilişkisel yolda tek bir koşullu UPDATE: ilk istek yazar, pencere içindeki istek
+    /// yazmaz, pencere dışındaki yeniden yazar. Licenses'ın RowVersion'ı yalnız gerçekten yazıldığında ilerler —
+    /// pencere içindeki istek etkinleştirmelerle yarışmaz.
+    /// </summary>
+    [Fact]
+    public async Task Protokolsuz_istek_izi_kosullu_update_ile_saatte_bir()
+    {
+        var before = DateTimeOffset.UtcNow;
+        (await _client.PostAsJsonAsync(Url("orders/sync"), new { orders = Array.Empty<object>() }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var (firstTrace, firstVersion) = await TraceAsync();
+        firstTrace.Should().BeOnOrAfter(before);
+
+        (await _client.PostAsJsonAsync(Url("shipments/sync"), new { shipments = Array.Empty<object>() }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var (secondTrace, secondVersion) = await TraceAsync();
+        secondTrace.Should().Be(firstTrace);
+        secondVersion.Should().Equal(firstVersion, "pencere içinde Licenses satırına yazılmaz");
+
+        await SetTraceAsync(DateTimeOffset.UtcNow.AddMinutes(-61));
+        var beforeStale = DateTimeOffset.UtcNow;
+        (await _client.PostAsJsonAsync(Url("sessions/sync"), new { sessions = Array.Empty<object>() }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await TraceAsync()).Trace.Should().BeOnOrAfter(beforeStale);
+    }
+
+    // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    private string Url(string endpoint) => $"/api/v1/licenses/{_licenseId}/{endpoint}";
+
+    private static object V2(Guid replicaId, int seenMode) =>
+        new { sessions = Array.Empty<object>(), orders = Array.Empty<object>(), replicaId, protocol = 2, seenMode };
+
+    private async Task<(DateTimeOffset? Trace, byte[] RowVersion)> TraceAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var license = await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == _licenseId);
+        return (license.LastLegacySalesPushAt, license.RowVersion);
+    }
+
+    private async Task SetTraceAsync(DateTimeOffset value)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        await db.Licenses.Where(l => l.Id == _licenseId)
+            .ExecuteUpdateAsync(s => s.SetProperty(l => l.LastLegacySalesPushAt, value));
+    }
+
+    private async Task<Guid> SeedLicenseAsync(Guid customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var license = new License
+        {
+            Id = Guid.NewGuid(),
+            LicenseKey = "key-" + Guid.NewGuid().ToString("N"),
+            CustomerId = customerId,
+            SkuCode = "STD",
+            ActivationSlots = 2,
+            IssuedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddYears(1),
+        };
+        db.Licenses.Add(license);
+        await db.SaveChangesAsync();
+        return license.Id;
+    }
+
+    /// <summary><see cref="RelationalApiFactory"/> + paylaşılan kaydetme kancası (<see cref="HookedApiFactory"/>'nin
+    /// gerçek SQL Server'lı hâli).</summary>
+    private sealed class HookedRelationalApiFactory(string connectionString) : RelationalApiFactory(connectionString)
+    {
+        public SaveHookInterceptor Hook { get; } = new();
+
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Hook);
+    }
+}
