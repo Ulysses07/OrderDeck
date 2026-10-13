@@ -2,12 +2,14 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -19,6 +21,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.Shoppers;
 /// eşleştiricisi, telafi taraması, dekont bağdaştırması, admin kararı) ona yazarsa boşaltmanın UPDATE'i 0 satır etkiler ve
 /// bütün silme geri alınır. Silme eşleşmeleri tazeleyip boşaltmayı bir kez yeniden uygular. InMemory'de SaveChanges işlem
 /// değildir (çakışmadan önceki yazılar kalır, yeniden deneme onlara takılır); geri almanın kendisi burada gerçek.
+/// Aynısı, <c>SalesSync:ScrubOrderTextOnPurge</c> açıkken sipariş metninin boşaltması için: <see cref="Order.SyncVersion"/>
+/// jetonu eşzamanlı bir <c>orders/sync</c> güncellemesiyle çakışır (spec 2026-10-13 §9).
 /// Testcontainers kullanır; CI ubuntu işinde koşar.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
@@ -100,6 +104,69 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Evidence.Should().Be(s.Marker);
     }
 
+    /// <summary>Sipariş satırını değiştiren ilk SaveChanges'ten hemen önce öteki bağlamın yazısını koşturur.</summary>
+    private sealed class BeforeOrderUpdate(Func<Task> interleave) : SaveChangesInterceptor
+    {
+        public int Fired { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Fired == 0 && eventData.Context!.ChangeTracker.Entries<Order>().Any(e => e.State == EntityState.Modified))
+            {
+                Fired++;
+                await interleave();
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Ayar açıkken silme, okuduğu siparişe eşzamanlı bir <c>orders/sync</c> güncellemesi (birim + jeton) yazıldıktan
+    /// sonra kaydederse jeton çakışır. Silme 500 ile geri alınmaz: satır tazelenir, eşzamanlı yazanın birimi korunur,
+    /// metin yine boşaltılır ve silmenin geri kalanı yazılır.
+    /// </summary>
+    [Fact]
+    public async Task Eszamanli_siparis_gonderimiyle_carpisan_metin_bosaltmasi_tazeleyip_yine_bosaltir()
+    {
+        var s = await SeedAsync();
+        var orderId = Guid.NewGuid();
+        await using (var seed = NewDb(interceptor: null))
+        {
+            seed.Orders.Add(new Order
+            {
+                Id = orderId, LicenseId = s.LicenseId, CustomerId = s.WpfCustomerId.ToString("N"),
+                Platform = "instagram", Username = "ornek_m", DisplayName = "Takma ad", MessageText = "A1 alırım",
+                Code = "A1", Price = 150m, AddedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await seed.SaveChangesAsync();
+        }
+        var cancelledAt = DateTimeOffset.UtcNow;
+        var push = new BeforeOrderUpdate(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            var o = await other.Orders.SingleAsync(x => x.Id == orderId);
+            o.CancelledAt = cancelledAt;
+            o.SyncVersion++;
+            await other.SaveChangesAsync();
+        });
+        await using var db = NewDb(push);
+
+        var result = await Service(db, scrubOrderText: true).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        push.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        var row = await verify.Orders.AsNoTracking().SingleAsync(o => o.Id == orderId);
+        row.DisplayName.Should().BeNull();
+        row.MessageText.Should().BeEmpty();
+        row.TextScrubbedAt.Should().NotBeNull();
+        row.CancelledAt.Should().Be(cancelledAt, "eşzamanlı yazanın birimi ezilmez");
+        row.SyncVersion.Should().Be(1);
+        (await verify.Shoppers.AsNoTracking().SingleAsync(x => x.Id == s.ShopperId)).FullName.Should().Be("[Silindi]");
+        (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Evidence.Should().BeNull();
+    }
+
     /// <summary>Dekont onayının bağdaştırması gibi: satırı ayrı bir bağlamda müşteriye bağlar, jetonu ilerletir.</summary>
     private async Task LinkConcurrentlyAsync(Seeded s, Guid paymentId)
     {
@@ -166,8 +233,10 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         return new Seeded(shopper.Id, license.Id, wpf.Id, match.Id, marker);
     }
 
-    private static ShopperPurgeService Service(LicenseDbContext db)
-        => new(db, new StubShopperPaymentStorage(), NullLogger<ShopperPurgeService>.Instance);
+    private static ShopperPurgeService Service(LicenseDbContext db, bool scrubOrderText = false)
+        => new(db, new StubShopperPaymentStorage(),
+            Options.Create(new SalesSyncOptions { ScrubOrderTextOnPurge = scrubOrderText }),
+            NullLogger<ShopperPurgeService>.Instance);
 
     private LicenseDbContext NewDb(IInterceptor? interceptor)
     {

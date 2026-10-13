@@ -1,12 +1,14 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Shoppers;
@@ -63,14 +65,19 @@ public sealed class ShopperPurgeServiceTests
         return license;
     }
 
-    private static (ShopperPurgeService Service, StubShopperPaymentStorage Storage) Build(LicenseDbContext db)
+    /// <param name="scrubOrderText"><c>SalesSync:ScrubOrderTextOnPurge</c>; varsayılan kapalı (§9).</param>
+    private static (ShopperPurgeService Service, StubShopperPaymentStorage Storage) Build(
+        LicenseDbContext db, bool scrubOrderText = false)
     {
         var storage = new StubShopperPaymentStorage();
-        return (new ShopperPurgeService(db, storage, NullLogger<ShopperPurgeService>.Instance), storage);
+        return (Build(db, storage, scrubOrderText), storage);
     }
 
-    private static ShopperPurgeService Build(LicenseDbContext db, IShopperPaymentStorage storage)
-        => new(db, storage, NullLogger<ShopperPurgeService>.Instance);
+    private static ShopperPurgeService Build(
+        LicenseDbContext db, IShopperPaymentStorage storage, bool scrubOrderText = false)
+        => new(db, storage,
+            Options.Create(new SalesSyncOptions { ScrubOrderTextOnPurge = scrubOrderText }),
+            NullLogger<ShopperPurgeService>.Instance);
 
     private static Payment SeedPayment(
         LicenseDbContext db, Shopper shopper, License license, string objectKey)
@@ -399,6 +406,122 @@ public sealed class ShopperPurgeServiceTests
         // veriyi geri yazardı.
         projection.PurgedAt.Should().NotBeNull();
         result!.ProjectionsScrubbed.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Spec 2026-10-13 §9, ayar KAPALI (varsayılan, bugünkü politika): silme sipariş satırlarının metnine dokunmaz.
+    /// Akış metni okuma anında maskeler; kalıcı boşaltma sahip kararıdır (§11).
+    /// </summary>
+    [Fact]
+    public async Task Ayar_kapaliyken_siparis_metni_kalir()
+    {
+        using var db = NewDb();
+        var seed = SeedPurgeTarget(db);
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        await service.PurgeAsync(seed.ShopperId, default);
+
+        var orders = await db.Orders.AsNoTracking().ToListAsync();
+        orders.Should().OnlyContain(o => o.DisplayName == "Takma ad" && o.MessageText == "A1 alırım"
+            && o.TextScrubbedAt == null);
+    }
+
+    /// <summary>
+    /// Spec 2026-10-13 §9, ayar AÇIK: silinen asıl kayda ve kopyalarına (eski Id'yle kalmış geç sipariş) bağlı
+    /// sipariş satırlarında takma ad ve yorum aynı kayıtta boşaltılır, <c>TextScrubbedAt</c> basılır. Kullanıcı adı,
+    /// kod ve fiyat mali kayıt olarak kalır; sürüm (komutların beklenen sürümü) ilerlemez. Başka müşterinin ve başka
+    /// lisansın satırı etkilenmez. Tekrarlanan silme ilk boşaltma anını korur.
+    /// </summary>
+    [Fact]
+    public async Task Ayar_acikken_asil_kayit_ve_kopyalarinin_siparis_metni_bosaltilir()
+    {
+        using var db = NewDb();
+        var seed = SeedPurgeTarget(db);
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db, scrubOrderText: true);
+        await service.PurgeAsync(seed.ShopperId, default);
+
+        var orders = await db.Orders.AsNoTracking().ToDictionaryAsync(o => o.Id);
+        foreach (var id in new[] { seed.OnCanonical, seed.OnCopy, seed.OnCopyOfCopy })
+        {
+            var o = orders[id];
+            o.DisplayName.Should().BeNull();
+            o.MessageText.Should().BeEmpty();
+            o.TextScrubbedAt.Should().NotBeNull();
+            o.Username.Should().Be("ornek_m");
+            o.Code.Should().Be("A1");
+            o.Price.Should().Be(150m);
+            o.SyncVersion.Should().Be(7, "metin birim değil; komutların beklenen sürümü ilerlemez");
+        }
+        foreach (var id in new[] { seed.OtherCustomer, seed.OtherLicense })
+        {
+            orders[id].DisplayName.Should().Be("Takma ad");
+            orders[id].MessageText.Should().Be("A1 alırım");
+            orders[id].TextScrubbedAt.Should().BeNull();
+        }
+
+        var firstScrub = orders[seed.OnCanonical].TextScrubbedAt;
+        await service.PurgeAsync(seed.ShopperId, default);
+        (await db.Orders.AsNoTracking().SingleAsync(o => o.Id == seed.OnCanonical))
+            .TextScrubbedAt.Should().Be(firstScrub, "tekrarlanan silme ilk boşaltma anını korur");
+    }
+
+    private sealed record PurgeTarget(
+        Guid ShopperId, Guid OnCanonical, Guid OnCopy, Guid OnCopyOfCopy, Guid OtherCustomer, Guid OtherLicense);
+
+    /// <summary>Bağlı asıl kayıt, iki halkalı kopya zinciri ve her birinde bir sipariş; ayrıca başka müşterinin ve
+    /// başka lisansın (aynı hex'le) siparişi.</summary>
+    private static PurgeTarget SeedPurgeTarget(LicenseDbContext db)
+    {
+        var shopper = SeedShopper(db);
+        var license = SeedLicense(db);
+        var otherLicense = SeedLicense(db);
+        var canonicalId = Guid.NewGuid();
+        var copyId = Guid.NewGuid();
+        var copyOfCopyId = Guid.NewGuid();
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id,
+            Platform = "instagram", Username = "ornek_m", WpfCustomerId = canonicalId, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.WpfCustomerProjections.AddRange(
+            new WpfCustomerProjection
+            {
+                Id = canonicalId, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m",
+                DisplayName = "Takma ad", UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            new WpfCustomerProjection
+            {
+                Id = copyId, LicenseId = license.Id, Platform = "instagram", Username = "ornek_eski",
+                MergedIntoId = canonicalId, UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            new WpfCustomerProjection
+            {
+                Id = copyOfCopyId, LicenseId = license.Id, Platform = "instagram", Username = "ornek_daha_eski",
+                MergedIntoId = copyId, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+        Order OrderOf(License l, string customerHex)
+        {
+            var order = new Order
+            {
+                Id = Guid.NewGuid(), LicenseId = l.Id, CustomerId = customerHex, Platform = "instagram",
+                Username = "ornek_m", DisplayName = "Takma ad", MessageText = "A1 alırım", Code = "A1",
+                Price = 150m, AddedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow, SyncVersion = 7,
+            };
+            db.Orders.Add(order);
+            return order;
+        }
+
+        return new PurgeTarget(
+            shopper.Id,
+            OrderOf(license, canonicalId.ToString("N")).Id,
+            OrderOf(license, copyId.ToString("N")).Id,
+            OrderOf(license, copyOfCopyId.ToString("N")).Id,
+            OrderOf(license, Guid.NewGuid().ToString("N")).Id,
+            OrderOf(otherLicense, canonicalId.ToString("N")).Id);
     }
 
     /// <summary>

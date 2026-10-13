@@ -206,6 +206,46 @@ public sealed class SalesChangesPageBuilderTests
         page.CustomerDrafts.Should().ContainSingle().Which.PurgedAt.Should().Be(purgedAt);
     }
 
+    // ── KVKK okuma maskesi (§9) ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Asıl projeksiyonu silinmiş müşterinin siparişi okuma anında metinsiz iner: <c>DisplayName = null</c>,
+    /// <c>MessageText = ""</c>. Bu bir yazım değildir (<c>TextScrubbedAt</c> boş kalır, satır değişmez); mali kayıt
+    /// alanları (kullanıcı adı, kod, fiyat) kalır. Kopyanın Id'siyle kalmış sipariş de asıl kayda göre maskelenir;
+    /// taslak, projeksiyonda takma ad kalmış olsa bile takma adsız gider. Silinmemiş müşterinin metni aynen gider.
+    /// </summary>
+    [Fact]
+    public void Silinmis_musterinin_siparisi_metinsiz_iner()
+    {
+        var purgedAt = T0.AddDays(-1);
+        var purged = Projection("youtube", "silinen", "Kalmış takma ad") with { PurgedAt = purgedAt };
+        var copy = Projection("youtube", "eski", null) with { MergedIntoId = purged.Id };
+        var alive = Projection("youtube", "yasayan", "Yaşayan");
+        var session = Session(seq: 1);
+        var direct = Order(session, seq: 2, customerId: Hex(purged.Id));
+        var viaCopy = Order(session, seq: 3, customerId: Hex(copy.Id));
+        var kept = Order(session, seq: 4, customerId: Hex(alive.Id));
+
+        var page = Build(0, [], [direct, viaCopy, kept], [], take: 500,
+            customers: new SalesCustomerDirectory([purged, copy, alive]));
+
+        var items = page.Items.Select(i => i.Order!).ToDictionary(o => o.Id);
+        foreach (var masked in new[] { items[direct.Id], items[viaCopy.Id] })
+        {
+            masked.DisplayName.Should().BeNull();
+            masked.MessageText.Should().BeEmpty();
+            masked.TextScrubbedAt.Should().BeNull("okuma anı maskesi satıra yazmaz");
+            masked.Username.Should().NotBeNullOrEmpty();
+            masked.Code.Should().Be("A1");
+            masked.Price.Should().Be(100m);
+        }
+        direct.DisplayName.Should().Be("Takma ad", "sunucu satırı değişmez");
+        items[kept.Id].DisplayName.Should().Be("Takma ad");
+        items[kept.Id].MessageText.Should().Be("A1");
+        page.CustomerDrafts.Single(d => d.Id == Hex(purged.Id)).DisplayName.Should().BeNull();
+        page.CustomerDrafts.Single(d => d.Id == Hex(alive.Id)).DisplayName.Should().Be("Yaşayan");
+    }
+
     // ── Asıl kayıt çözümü ─────────────────────────────────────────────────────
 
     /// <summary>Asıl kayıt Id'si değişmiyorsa ham yazım korunur (CustomerIdResolver ile aynı); zincir en çok

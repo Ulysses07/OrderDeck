@@ -1,4 +1,5 @@
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Sync;
 
@@ -76,9 +77,13 @@ public static class SalesChangesPageBuilder
                     && orderSessions.TryGetValue(sessionId, out var orderSession))
                     sideSessions.Add(SalesSessionItem.From(orderSession));
 
+                // Silinmiş asıl kaydın taslağı takma adsız: projeksiyon silmede zaten boşaltılır, maske savunma
+                // amaçlı (siparişin okuma maskesiyle aynı kural, §9).
                 drafts[customer.Id] = customer.Canonical is { } canonical
                     ? new SalesCustomerDraft(
-                        customer.Id, canonical.Platform, canonical.Username, canonical.DisplayName, canonical.PurgedAt)
+                        customer.Id, canonical.Platform, canonical.Username,
+                        OrderTextScrub.MasksOnRead(canonical.PurgedAt) ? null : canonical.DisplayName,
+                        canonical.PurgedAt)
                     : new SalesCustomerDraft(customer.Id, order.Platform, order.Username, order.DisplayName, null);
             }
             else if (row.Shipment is { } shipment)

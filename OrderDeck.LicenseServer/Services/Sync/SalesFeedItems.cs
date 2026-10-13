@@ -1,4 +1,5 @@
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Sync;
 
@@ -74,18 +75,25 @@ public sealed record SalesOrderItem(
     long ChangeSeq)
 {
     /// <summary>
-    /// Sunucu satırını akış biçimine çevirir. Müşteri çözümü ZORUNLU parametre: sipariş, asıl kaydın Id'siyle gider.
+    /// Sunucu satırını akış biçimine çevirir. Müşteri çözümü ZORUNLU parametre: sipariş, asıl kaydın Id'siyle gider
+    /// ve KVKK okuma maskesi her zaman uygulanır — asıl kaydı silinmiş müşterinin siparişi <c>DisplayName = null</c>,
+    /// <c>MessageText = ""</c> ile gider (§9, <see cref="OrderTextScrub.MasksOnRead"/>). Maske bir yazım değildir:
+    /// sunucu satırı ve <c>TextScrubbedAt</c> değişmez.
     /// </summary>
-    public static SalesOrderItem From(Order o, SalesCustomerResolution customer) => new(
-        o.Id, o.SessionId, customer.Id, o.Platform, o.Username,
-        o.DisplayName, o.MessageText,
-        o.Code, o.Price, o.AddedAt, o.PrintedAt, o.CancelledAt, o.CancelReason,
-        o.IsShippingFee, o.IsBackupPromoted, o.IsTentativeBackup, o.ProductId, o.ProductVariantId,
-        o.UpdatedAt, o.SyncVersion,
-        o.ParentOrderId, o.ShipmentId, o.OriginReplicaId, o.PrintBatchId, o.PrintSeq,
-        o.PriceCorrectedAt, o.PaidPrice, o.SessionReleasedAt,
-        o.PriceSetAt, o.CancelSetAt, o.BackupSetAt, o.ShipmentSetAt, o.TextScrubbedAt,
-        o.ChangeSeq);
+    public static SalesOrderItem From(Order o, SalesCustomerResolution customer)
+    {
+        var masked = OrderTextScrub.MasksOnRead(customer.Canonical?.PurgedAt);
+        return new(
+            o.Id, o.SessionId, customer.Id, o.Platform, o.Username,
+            masked ? null : o.DisplayName, masked ? "" : o.MessageText,
+            o.Code, o.Price, o.AddedAt, o.PrintedAt, o.CancelledAt, o.CancelReason,
+            o.IsShippingFee, o.IsBackupPromoted, o.IsTentativeBackup, o.ProductId, o.ProductVariantId,
+            o.UpdatedAt, o.SyncVersion,
+            o.ParentOrderId, o.ShipmentId, o.OriginReplicaId, o.PrintBatchId, o.PrintSeq,
+            o.PriceCorrectedAt, o.PaidPrice, o.SessionReleasedAt,
+            o.PriceSetAt, o.CancelSetAt, o.BackupSetAt, o.ShipmentSetAt, o.TextScrubbedAt,
+            o.ChangeSeq);
+    }
 }
 
 /// <summary>Kargo dosyası öğesi. Akış dosyaları iki kipte verir; istemci yalnız mod On'da ve <c>disable</c> turunda
