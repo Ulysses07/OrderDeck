@@ -24,4 +24,28 @@ public sealed class StreamSession
 
     /// <summary>Server-side last update — reverse-sync cursor için.</summary>
     public DateTimeOffset UpdatedAt { get; set; }
+
+    // ── Sahiplik ve devir (yayın ve etiket senkronu, spec 2026-10-13 §2, §3.1).
+
+    /// <summary>Yayını açan kopya (<see cref="WpfReplica.ReplicaId"/>). NULL =
+    /// yayın eski sürümde açıldı (miras).</summary>
+    public Guid? OwnerReplicaId { get; set; }
+    public string? OwnerMachineName { get; set; }
+
+    /// <summary>Zorla bitirmeyi yapan: <c>cli</c> ya da ReplicaId. Yalnız
+    /// zorla bitirme yazar.</summary>
+    public string? ForceEndedBy { get; set; }
+
+    /// <summary>Devir anı (sunucu saati). NULL ve <see cref="EndedAt"/> NULL =
+    /// canlı; NULL ve EndedAt dolu = devrediliyor; dolu = devredilmiş (§2).</summary>
+    public DateTimeOffset? ReleasedAt { get; set; }
+
+    /// <summary>Sahibin <c>Release = false</c> kapanış gönderiminin bildirdiği
+    /// gönderilmemiş etiket sayısı (§4.1).</summary>
+    public int? UnsentLabelCount { get; set; }
+
+    /// <summary>SQL Server rowversion — değişiklik akışının imleci (§4.4).
+    /// Eşzamanlılık jetonu DEĞİL. InMemory sağlayıcısında hep 0 kalır; bkz.
+    /// <see cref="WpfCustomerProjection.ChangeSeq"/>.</summary>
+    public long ChangeSeq { get; set; }
 }

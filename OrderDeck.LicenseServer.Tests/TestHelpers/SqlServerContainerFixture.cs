@@ -22,13 +22,20 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 /// <c>MsSqlBuilder</c> yerine <c>PostgreSqlBuilder</c> kullanılacak ve testler
 /// göçün güvenlik ağı olacak.
 /// </summary>
-public sealed class SqlServerContainerFixture : IAsyncLifetime
+public class SqlServerContainerFixture : IAsyncLifetime
 {
     // İmaj sabitleniyor: parametresiz kurucu artık kullanımdan kalktı ve
     // "latest" etiketi CI'ı bizden habersiz kırabilir.
     private const string Image = "mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04";
 
-    private readonly MsSqlContainer _container = new MsSqlBuilder(Image).Build();
+    private readonly MsSqlContainer _container;
+
+    public SqlServerContainerFixture() : this(builder => builder) { }
+
+    /// <summary>Aynı imajın başka bir yapılandırması için (bkz.
+    /// <see cref="SqlServerExpressContainerFixture"/>).</summary>
+    protected SqlServerContainerFixture(Func<MsSqlBuilder, MsSqlBuilder> configure) =>
+        _container = configure(new MsSqlBuilder(Image)).Build();
 
     public async Task InitializeAsync() => await _container.StartAsync();
 
@@ -58,6 +65,18 @@ public sealed class SqlServerContainerFixture : IAsyncLifetime
             InitialCatalog = dbName,
         }.ConnectionString;
     }
+}
+
+/// <summary>
+/// Prod'un sürümü SQL Server Express: ONLINE indeks işlemi yok, tampon havuzu
+/// sınırlı. Yalnız prod sürümüne özgü bir davranışı kanıtlayan test kullanır
+/// (göçün Express'te koşması, spec 2026-10-13 §10.1-12) — ayrı bir container
+/// başlattığı için genel koleksiyona girmez.
+/// </summary>
+public sealed class SqlServerExpressContainerFixture : SqlServerContainerFixture
+{
+    public SqlServerExpressContainerFixture()
+        : base(builder => builder.WithEnvironment("MSSQL_PID", "Express")) { }
 }
 
 /// <summary>

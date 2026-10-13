@@ -86,7 +86,58 @@ public sealed class Order
     ///
     /// Neden <c>rowversion</c> değil: o sütun tipi SQL Server'a özgü,
     /// planlanan Postgres göçünde karşılığı yok. Sayacı kendimiz artırınca
-    /// davranış sağlayıcıdan bağımsız kalıyor.
+    /// davranış sağlayıcıdan bağımsız kalıyor. (Akış imleci
+    /// <see cref="ChangeSeq"/> rowversion'dır ve bu bağımlılığı bilerek alır,
+    /// müşteri projeksiyonu gibi; Postgres göçü ikisini birlikte çözer. Jeton
+    /// bu sütun olarak kalır; satış senkronunda telde <c>Version</c> adıyla
+    /// açılır — spec 2026-10-13 §3.1.)
     /// </summary>
     public int SyncVersion { get; set; }
+
+    // ── Yayın ve etiket senkronu (spec 2026-10-13 §2, §3.1). Hepsi boş
+    //    olabilir: S1 öncesi satırlarda ve S1 öncesi imajın yazdığı satırlarda
+    //    NULL kalırlar; göç geri doldurmaz (onarım işi, §4.9).
+
+    /// <summary>Yedeğin ebeveyni (yerel <c>Label.ParentLabelId</c>). FK değil —
+    /// <see cref="ProductId"/> ile aynı gerekçe.</summary>
+    public Guid? ParentOrderId { get; set; }
+
+    /// <summary>Bağlı kargo dosyası. FK değil — <see cref="ProductId"/> ile aynı
+    /// gerekçe; bağı bilinmeyen sipariş için bkz. <see cref="OriginReplicaId"/>.</summary>
+    public Guid? ShipmentId { get; set; }
+
+    /// <summary>Siparişi gönderen kopya. Boşsa kargo bağı bilinmiyor demektir
+    /// (Ws geri doldurması hiç gelmedi) ve sipariş <c>attach-shipment</c>
+    /// adayı olmaz (M22).</summary>
+    public Guid? OriginReplicaId { get; set; }
+
+    /// <summary>Basış grubu ve kâğıttaki sıra (yerel 048).</summary>
+    public string? PrintBatchId { get; set; }
+    public int? PrintSeq { get; set; }
+
+    /// <summary>"Fiyatı düzelt" damgası (yerel 048).</summary>
+    public DateTimeOffset? PriceCorrectedAt { get; set; }
+
+    /// <summary>Ödenmiş etiketin ödendiği fiyat; NULL = ödenmişken hiç
+    /// düzeltilmedi (yerel 048).</summary>
+    public decimal? PaidPrice { get; set; }
+
+    /// <summary>Oturumun devir anının kopyası: devirde ya da eklemede dolar;
+    /// akış süzgeci (DM3).</summary>
+    public DateTimeOffset? SessionReleasedAt { get; set; }
+
+    /// <summary>Birim damgaları (sunucu saati, yalnız komut basar, hiçbir yol
+    /// silmez). Damgalı birimi bayat push değiştiremez (K2, M3).</summary>
+    public DateTimeOffset? PriceSetAt { get; set; }
+    public DateTimeOffset? CancelSetAt { get; set; }
+    public DateTimeOffset? BackupSetAt { get; set; }
+    public DateTimeOffset? ShipmentSetAt { get; set; }
+
+    /// <summary>KVKK metin boşaltmasının anı (§9).</summary>
+    public DateTimeOffset? TextScrubbedAt { get; set; }
+
+    /// <summary>SQL Server rowversion — değişiklik akışının imleci (§4.4).
+    /// Eşzamanlılık jetonu DEĞİL (jeton <see cref="SyncVersion"/>). InMemory
+    /// sağlayıcısında hep 0 kalır; bkz. <see cref="WpfCustomerProjection.ChangeSeq"/>.</summary>
+    public long ChangeSeq { get; set; }
 }

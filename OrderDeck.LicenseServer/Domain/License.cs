@@ -38,4 +38,16 @@ public sealed class License
     public string? PaymentIban { get; set; }
     public string? PaymentAccountHolder { get; set; }
     public bool ShopperAppEnabled { get; set; }
+
+    // Yayın ve etiket senkronu (spec 2026-10-13 §2, §3.1). Kolon DEFAULT 0:
+    // S1 öncesi imaj bu kolonu tanımaz, açtığı lisans Off doğar.
+
+    /// <summary>Satış senkronu kipi. Yalnız CLI değiştirir (§4.10).</summary>
+    public SalesSyncMode SalesSyncMode { get; set; }
+    public DateTimeOffset? SalesSyncModeChangedAt { get; set; }
+
+    /// <summary>Protokolsüz (≤0.9.10) satış isteğinin son anı. İki kipte de
+    /// yazılır, davranışı değiştirmez; mod kapısının "7 gün eski sürüm izi
+    /// yok" koşulu bununla ölçülür (§4.0, §4.10-3).</summary>
+    public DateTimeOffset? LastLegacySalesPushAt { get; set; }
 }

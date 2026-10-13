@@ -57,38 +57,43 @@ public sealed class CustomerProjectionUniqueIdentityMigrationTests
         var target = all.Single(m => m.EndsWith("_CustomerProjectionUniqueIdentity"));
         await migrator.MigrateAsync(all[all.IndexOf(target) - 1]);
 
-        // B1 kolon eklemiyor (yalnız indeks): bugünkü model eski şemaya yazabilir.
-        var licenseId = await NewLicenseAsync(db);
+        // B1 kolon eklemiyor (yalnız indeks) ve sonraki göçler
+        // WpfCustomerProjections'a kolon eklemedi: bugünkü model o tabloya eski
+        // şemada da yazabilir. Licenses'a ise sonraki göç (SalesSyncS1) kolon
+        // ekledi; lisans o yüzden B1 dönemi kolonlarıyla, SQL'le açılır.
+        var licenseId = await NewLicenseAsync(cs);
         return new PreviousSchema
         {
             ConnectionString = cs, Db = db, Migrator = migrator, Target = target, LicenseId = licenseId,
         };
     }
 
-    private static async Task<Guid> NewLicenseAsync(LicenseDbContext db)
+    /// <summary>Müşteri ve lisansı B1 dönemi şemasının kolonlarıyla açar —
+    /// bugünkü modelle değil, çünkü sonraki göçler Licenses'a kolon ekliyor
+    /// (<see cref="CustomerProjectionFullSyncMigrationTests"/> ile aynı yol).</summary>
+    private static async Task<Guid> NewLicenseAsync(string connectionString)
     {
-        var customer = new Customer
-        {
-            Id = Guid.NewGuid(),
-            Email = $"musteri-{Guid.NewGuid():N}@example.test",
-            Name = "B1 Göç Testi",
-            PasswordHash = $"h-{Guid.NewGuid():N}",
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        var license = new License
-        {
-            Id = Guid.NewGuid(),
-            CustomerId = customer.Id,
-            LicenseKey = "b1m-" + Guid.NewGuid().ToString("N")[..12],
-            SkuCode = "STD",
-            ActivationSlots = 1,
-            IssuedAt = DateTimeOffset.UtcNow,
-            ExpiresAt = DateTimeOffset.UtcNow.AddYears(1),
-        };
-        db.Customers.Add(customer);
-        db.Licenses.Add(license);
-        await db.SaveChangesAsync();
-        return license.Id;
+        var customerId = Guid.NewGuid();
+        var licenseId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO Customers (Id, Email, Name, PasswordHash, AuthVersion, CreatedAt, Unsubscribed)
+            VALUES (@customerId, @email, N'B1 Göç Testi', @ozet, 0, @now, 0);
+            INSERT INTO Licenses (Id, LicenseKey, CustomerId, SkuCode, ActivationSlots, IssuedAt, ExpiresAt, ShopperAppEnabled)
+            VALUES (@licenseId, @licenseKey, @customerId, 'STD', 1, @now, @expiresAt, 0);
+            """;
+        cmd.Parameters.AddWithValue("@customerId", customerId);
+        cmd.Parameters.AddWithValue("@email", $"musteri-{Guid.NewGuid():N}@example.test");
+        cmd.Parameters.AddWithValue("@ozet", $"h-{Guid.NewGuid():N}");
+        cmd.Parameters.AddWithValue("@now", now);
+        cmd.Parameters.AddWithValue("@licenseId", licenseId);
+        cmd.Parameters.AddWithValue("@licenseKey", "b1m-" + Guid.NewGuid().ToString("N")[..12]);
+        cmd.Parameters.AddWithValue("@expiresAt", now.AddYears(1));
+        await cmd.ExecuteNonQueryAsync();
+        return licenseId;
     }
 
     private static WpfCustomerProjection Row(
@@ -102,7 +107,7 @@ public sealed class CustomerProjectionUniqueIdentityMigrationTests
     public async Task Kopyasiz_veriyle_gecer_ve_kurali_veritabani_koyar()
     {
         await using var s = await PreviousSchemaAsync();
-        var otherLicense = await NewLicenseAsync(s.Db);
+        var otherLicense = await NewLicenseAsync(s.ConnectionString);
         var head = Row(s.LicenseId, "ayse");
         s.Db.WpfCustomerProjections.AddRange(
             head,
@@ -177,6 +182,11 @@ public sealed class CustomerProjectionUniqueIdentityMigrationTests
         await s.Migrator.MigrateAsync(s.Target);
 
         (await s.Db.Database.GetAppliedMigrationsAsync()).Should().Contain(s.Target);
+        // Açılıştaki Migrate() zincirin tamamını uygular, onarım ondan sonra
+        // koşar: uygulama kodu (birleştirici Orders/Shipments'ı bugünkü modelle
+        // yükler) yalnız en son şemada çalışır. Sonraki göçler bu tablonun
+        // anahtarlarına dokunmaz.
+        await s.Migrator.MigrateAsync();
         s.Db.ChangeTracker.Clear();
         var merge = new CustomerIdentityMergeJob(s.Db, new CustomerIdentityMerger(s.Db));
         var repaired = await new IdentityKeyRepairJob(s.Db, merge, NullLogger<IdentityKeyRepairJob>.Instance)
