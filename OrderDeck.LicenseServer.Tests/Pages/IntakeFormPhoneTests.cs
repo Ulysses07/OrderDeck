@@ -65,6 +65,7 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "ornekmusteri",
+            ["Input.KvkkAcknowledged"] = "true",
             ["Input.FullName"] = "Örnek Müşteri",
             ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12",

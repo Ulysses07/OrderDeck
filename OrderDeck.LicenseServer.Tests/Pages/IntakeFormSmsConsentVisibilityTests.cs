@@ -136,6 +136,7 @@ public sealed class IntakeFormSmsConsentVisibilityTests : IClassFixture<ApiFacto
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
             ["Input.InstagramUsername"] = "kutu",
+            ["Input.KvkkAcknowledged"] = "true",
             ["Input.FullName"] = "Ad Soyad",
             ["Input.Email"] = "a@example.com",
             ["Input.Address"] = "Adres",

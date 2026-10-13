@@ -394,6 +394,9 @@ else
                 </label>
             }
 
+            @* Bu paragrafın ya da alttaki onay kutusu etiketinin ANLAMINI
+               değiştirirsen KvkkNotice.TextVersion'ı artır (kural orada yazılı):
+               her kayıt okuduğunu onayladığı metnin sürümünü taşıyor. *@
             <p class="kvkk">
                 Gönderdiğin bilgiler yalnızca sipariş, kargo ve fatura işlemlerin için yayıncı tarafından
                 kullanılır. Üçüncü kişilerle pazarlama amacıyla paylaşılmaz. İzin verdiğin kanallardan iletişim kurulabilir.
@@ -405,6 +408,19 @@ else
                 izin işlemlerine ait ispat kayıtları ise mevzuat gereği (6563 sayılı Kanun,
                 m.13) ayrılıştan itibaren 3 yıl saklanır ve süre sonunda imha edilir.
             </p>
+
+            @* ZORUNLU aydınlatma onayı. `required` JS kapalıyken de tarayıcıda
+               durduruyor; yetkili kapı yine sunucu (RequireKvkkAcknowledgement).
+               "Bağlantıyı kaldır" butonları formnovalidate taşıdığı için bu kutu
+               onları bloklamaz. Bağlantı kutuyu işaretlemez (etiket içindeki
+               etkileşimli öğe); yeni sekmede açılıyor ki form yarıda kalmasın.
+               Özniteliklerde at-işareti YOK — tag helper'lı öğede o kaçış bozuk
+               derleniyor (bkz. e-posta alanı notu). *@
+            <label class="check">
+                <input asp-for="Input.KvkkAcknowledged" type="checkbox" required />
+                <span>Bu aydınlatma metnini ve <a href="https://orderdeckapp.com/gizlilik-politikasi/" target="_blank" rel="noopener">Gizlilik Politikası</a>'nı okudum. <span class="req">*</span></span>
+            </label>
+            <span class="err" id="kvkkErr" asp-validation-for="Input.KvkkAcknowledged"></span>
 
             <input type="text" name="website" tabindex="-1" autocomplete="off" class="hidden-hp" />
 
@@ -1020,6 +1036,19 @@ else
     });
     districtSel.addEventListener('change', function () { showError(districtSel, ''); });
 
+    // (f) KVKK aydınlatma onayı — zorunlu. Kutudaki `required` tarayıcıda
+    // zaten durduruyor; aşağıdaki kapı yalnız tarayıcı doğrulaması devre
+    // dışıyken Türkçe mesajla uyarıyor. Karar yine sunucuda.
+    // Taslağa (DRAFT_FIELDS) BİLEREK girmiyor: onay gönderim anına ait,
+    // OAuth gidiş-dönüşünden sonra yeniden işaretlenmeli.
+    var kvkk = document.getElementById('Input_KvkkAcknowledged');
+    var kvkkErr = document.getElementById('kvkkErr');
+    if (kvkk && kvkkErr) {
+        kvkk.addEventListener('change', function () {
+            if (kvkk.checked) kvkkErr.textContent = '';
+        });
+    }
+
     // En az bir platform kullanıcı adı zorunlu (client-side ön kontrol).
     var form = document.getElementById('intakeForm');
     var unameErr = document.getElementById('unameErr');
@@ -1119,6 +1148,16 @@ else
             formErr.textContent = 'Şu alanlar hatalı: ' + bad.join(', ')
                                 + '. Düzeltip tekrar dene.';
             firstBad.focus();
+            return;
+        }
+
+        if (kvkk && !kvkk.checked) {
+            e.preventDefault();
+            if (kvkkErr) kvkkErr.textContent =
+                'Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.';
+            formErr.textContent = 'Formu tamamlayamadık: aydınlatma metnini '
+                                + 'okuduğunu onaylaman gerekli.';
+            kvkk.focus();
             return;
         }
         formErr.textContent = '';

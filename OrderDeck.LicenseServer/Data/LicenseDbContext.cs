@@ -353,6 +353,7 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.TcknProtected).HasColumnName("Tckn").HasMaxLength(Services.Privacy.TcknProtector.ProtectedMaxLength);
             b.Property(s => s.IpAddress).HasMaxLength(64);
             b.Property(s => s.UserAgent).HasMaxLength(500);
+            b.Property(s => s.KvkkTextVersion).HasMaxLength(32);
             b.HasIndex(s => new { s.IntakeFormConfigId, s.SubmittedAt });
         });
 
