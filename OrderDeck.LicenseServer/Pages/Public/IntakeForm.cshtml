@@ -84,10 +84,10 @@
         .kvkk { font-size:11.5px; color:var(--od-muted); margin:14px 0 4px; }
         /* Gizlilik Politikası sayfa içinde açılır kutu (details/summary): JS
            yok, uygulama içi tarayıcıda da JS kapalıyken de açılıp kapanıyor.
-           Başlık onay etiketinin metniyle hizalı (18px kutu + 10px boşluk),
-           metin kutusu tam genişlik ve kendi içinde kayıyor. */
-        .policy { margin:0 0 6px; }
-        .policy > summary { display:inline-block; margin-left:28px; font-size:13.5px; font-weight:600;
+           Aydınlatma paragrafının altında, onay kutusunun üstünde; metin
+           kutusu tam genişlik ve kendi içinde kayıyor. */
+        .policy { margin:0 0 12px; }
+        .policy > summary { display:inline-block; font-size:13.5px; font-weight:600;
                             color:var(--od-red); text-decoration:underline; cursor:pointer; list-style:none; }
         .policy > summary::-webkit-details-marker { display:none; }
         .policy > summary::after { content:"\25B8"; display:inline-block; margin-left:4px; text-decoration:none; }
@@ -432,19 +432,6 @@ else
                 izin işlemlerine ait ispat kayıtları ise mevzuat gereği (6563 sayılı Kanun,
                 m.13) ayrılıştan itibaren 3 yıl saklanır ve süre sonunda imha edilir.
             </p>
-
-            @* ZORUNLU aydınlatma onayı. `required` JS kapalıyken de tarayıcıda
-               durduruyor; yetkili kapı yine sunucu (RequireKvkkAcknowledgement).
-               "Bağlantıyı kaldır" butonları formnovalidate taşıdığı için bu kutu
-               onları bloklamaz. Etikette bağlantı YOK: politika sayfadan
-               ayrılmadan, alttaki açılır kutuda okunuyor.
-               Özniteliklerde at-işareti YOK — tag helper'lı öğede o kaçış bozuk
-               derleniyor (bkz. e-posta alanı notu). *@
-            <label class="check">
-                <input asp-for="Input.KvkkAcknowledged" type="checkbox" required />
-                <span>Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. <span class="req">*</span></span>
-            </label>
-            <span class="err" id="kvkkErr" asp-validation-for="Input.KvkkAcknowledged"></span>
             @* Gizlilik Politikası sayfa içinde: okumak için yeni sekme ya da
                orderdeckapp.com'a gidiş yok (sahip kararı 2026-10-13). Yerel
                details/summary — JS gerekmiyor, CSP'ye dokunmuyor, uygulama içi
@@ -452,6 +439,10 @@ else
                etiketin içindeki dokunuş onay kutusunu da işaretlerdi, details
                de etikete giremez (etiketin içeriği yalnız satır içi öğe). Metin
                _GizlilikPolitikasi.cshtml'de, web sayfasıyla aynı tutuluyor.
+               Yer: aydınlatma paragrafı ile onay ARASINDA. Sıra metin →
+               politika → "okudum"; etiketteki "Gizlilik Politikası" düz metin
+               ve ona dokunmak kutuyu işaretler — politika onaydan sonra
+               keşfedilmesin.
                tabindex: kayan metin kutusu klavyeyle de kaydırılabilsin. *@
             <details class="policy">
                 <summary>Gizlilik Politikası</summary>
@@ -459,6 +450,19 @@ else
                     <partial name="_GizlilikPolitikasi" />
                 </div>
             </details>
+
+            @* ZORUNLU aydınlatma onayı. `required` JS kapalıyken de tarayıcıda
+               durduruyor; yetkili kapı yine sunucu (RequireKvkkAcknowledgement).
+               "Bağlantıyı kaldır" butonları formnovalidate taşıdığı için bu kutu
+               onları bloklamaz. Etikette bağlantı YOK: politika sayfadan
+               ayrılmadan, üstteki açılır kutuda okunuyor.
+               Özniteliklerde at-işareti YOK — tag helper'lı öğede o kaçış bozuk
+               derleniyor (bkz. e-posta alanı notu). *@
+            <label class="check">
+                <input asp-for="Input.KvkkAcknowledged" type="checkbox" required />
+                <span>Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. <span class="req">*</span></span>
+            </label>
+            <span class="err" id="kvkkErr" asp-validation-for="Input.KvkkAcknowledged"></span>
             @* Müşterinin GÖRDÜĞÜ metnin sürümü. Sunucu onayı yalnız bu değer
                güncel KvkkNotice.TextVersion'a eşitse kabul ediyor: deploy'dan
                önce açılmış sayfadan gelen onay yeni sürümle kaydedilmesin.
