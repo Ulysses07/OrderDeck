@@ -217,6 +217,7 @@ internal static class SalesSyncS1MigrationScenario
         new("ReplicaId", "uniqueidentifier", false),
         new("MachineName", "nvarchar(128)", true),
         new("HardwareFingerprint", "nvarchar(128)", true),
+        new("HardwareFingerprintConflictAt", "datetimeoffset", true),
         new("ClientVersion", "nvarchar(32)", true),
         new("Protocol", "tinyint", false),
         new("FeatureLevel", "tinyint", false),

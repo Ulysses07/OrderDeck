@@ -10,15 +10,16 @@ namespace OrderDeck.LicenseServer.Services.Sync;
 /// <param name="FirstSeenAt">Kopyanın bu lisansta ilk görüldüğü an.</param>
 /// <param name="PreviousReplicaId">Doluysa kopya yedekten geri yüklenmiştir (§8.7).</param>
 /// <param name="SeenModeOnAt">Kopyanın kipi 1 bildirdiği ilk an (mod son açıldıktan sonra yeniden yazılır).</param>
-/// <param name="FingerprintConflict">Aynı ReplicaId'ye ikinci bir donanım parmak izi görüldü mü (disk klonu).</param>
+/// <param name="FingerprintConflict">Aynı ReplicaId'ye ikinci bir donanım parmak izi görüldü mü (disk klonu;
+/// <see cref="WpfReplica.HardwareFingerprintConflictAt"/>).</param>
 public sealed record ReplicaHistory(
     DateTimeOffset FirstSeenAt,
     Guid? PreviousReplicaId,
     DateTimeOffset? SeenModeOnAt,
     bool FingerprintConflict)
 {
-    public static ReplicaHistory Of(WpfReplica row, bool fingerprintConflict) =>
-        new(row.FirstSeenAt, row.PreviousReplicaId, row.SeenModeOnAt, fingerprintConflict);
+    public static ReplicaHistory Of(WpfReplica row) =>
+        new(row.FirstSeenAt, row.PreviousReplicaId, row.SeenModeOnAt, row.HardwareFingerprintConflictAt is not null);
 }
 
 /// <summary>

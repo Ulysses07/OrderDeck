@@ -14,11 +14,11 @@ namespace OrderDeck.LicenseServer.Services.Sync;
 /// GUID olmayan (yerel, ham) <c>CustomerId</c>'ler de yalnız sayılır, çünkü ham değerin içeriği bilinmiyor. Kargo ayarı
 /// tutar olduğu için yazılır.</para>
 ///
-/// <para><b>Veritabanından ölçülemeyenler.</b> Üç kalem bugün kalıcı bir iz bırakmıyor, yalnız günlüğe düşüyor; rapor
-/// onları sayı yerine günlük satırının başlığıyla gösterir (<see cref="LogOnlyItems"/>): aynı ReplicaId'ye ikinci
-/// donanım parmak izi (<see cref="SalesReplicaService.HelloAsync"/> ilk parmak izini korur, ikincisini saklamaz), force-end
-/// sonrası K5 istisnasıyla alınan birimler ve açılış penceresi dışında On kurallarıyla yargılanan <c>SeenMode = 0</c>
-/// istekleri (ikisi de <c>orders/sync</c> ve kopya kaydının sayım günlükleri).</para>
+/// <para><b>Veritabanından ölçülemeyenler.</b> İki kalem bugün kalıcı bir iz bırakmıyor, yalnız günlüğe düşüyor; rapor
+/// onları sayı yerine günlük satırının başlığıyla gösterir (<see cref="LogOnlyItems"/>): force-end sonrası K5
+/// istisnasıyla alınan birimler ve açılış penceresi dışında On kurallarıyla yargılanan <c>SeenMode = 0</c> istekleri
+/// (ikisi de <c>orders/sync</c> ve kopya kaydının sayım günlükleri). Aynı ReplicaId'ye ikinci donanım parmak izi ise
+/// kopya satırında kalıcıdır (<see cref="WpfReplica.HardwareFingerprintConflictAt"/>) ve sayılır.</para>
 /// </summary>
 public static class SalesAuditReport
 {
@@ -34,7 +34,6 @@ public static class SalesAuditReport
     /// <summary>Veritabanında izi olmayan, yalnız günlükte görülen kalemler: başlık ve aranacak günlük metni.</summary>
     public static readonly IReadOnlyList<(string Item, string LogText)> LogOnlyItems =
     [
-        ("Aynı ReplicaId'ye iki donanım parmak izi", "disk klonu şüphesi"),
         ("Force-end sonrası K5 istisnasıyla alınan birim", "K5 istisnasıyla"),
         ("Açılış penceresi dışında On kurallarıyla yargılanan SeenMode = 0", "açılış penceresi dışında"),
     ];
@@ -70,6 +69,8 @@ public static class SalesAuditReport
     /// <c>attach-shipment</c> adayı olurlardı (M22).</param>
     /// <param name="UnknownLinkCandidateAmount">O siparişlerin fiyat toplamı.</param>
     /// <param name="BackfillDivergence">Geri doldurma birim ayrışması olan kopyalar (§4.3).</param>
+    /// <param name="FingerprintConflicts">Aynı ReplicaId'ye iki donanım parmak izi görülmüş kopyalar (disk klonu,
+    /// §8.7); mod kapısı bunları reddeder (§4.10-2).</param>
     public sealed record Result(
         IReadOnlyList<StaleSession> StaleSessions,
         int OrdersWithoutSession,
@@ -86,7 +87,8 @@ public static class SalesAuditReport
         int OrdersWithUnknownLink,
         int UnknownLinkCandidates,
         decimal UnknownLinkCandidateAmount,
-        IReadOnlyList<ReplicaDivergence> BackfillDivergence)
+        IReadOnlyList<ReplicaDivergence> BackfillDivergence,
+        IReadOnlyList<Guid> FingerprintConflicts)
     {
         /// <summary>Bildirilen farklı kargo ayarı sayısı; 1'den büyükse kopyalar ayrışıyor (§6.2).</summary>
         public int DistinctReportedShipping => ReportedShipping.Select(r => (r.Threshold, r.Fee)).Distinct().Count();
@@ -127,6 +129,7 @@ public static class SalesAuditReport
             .Select(r => new
             {
                 r.ReplicaId, r.ReportedThreshold, r.ReportedFee, r.BackfillDivergedLocal, r.BackfillDivergedServer,
+                r.HardwareFingerprintConflictAt,
             })
             .ToListAsync(ct);
         var reportedShipping = replicas
@@ -136,6 +139,10 @@ public static class SalesAuditReport
         var divergence = replicas
             .Where(r => r.BackfillDivergedLocal > 0 || r.BackfillDivergedServer > 0)
             .Select(r => new ReplicaDivergence(r.ReplicaId, r.BackfillDivergedLocal, r.BackfillDivergedServer))
+            .ToList();
+        var fingerprintConflicts = replicas
+            .Where(r => r.HardwareFingerprintConflictAt is not null)
+            .Select(r => r.ReplicaId)
             .ToList();
 
         var priceViolations = await PriceViolationsAsync(db, licenseId, ct);
@@ -177,7 +184,8 @@ public static class SalesAuditReport
             unknownLink,
             candidateCount,
             candidateAmount,
-            divergence);
+            divergence,
+            fingerprintConflicts);
     }
 
     /// <summary>

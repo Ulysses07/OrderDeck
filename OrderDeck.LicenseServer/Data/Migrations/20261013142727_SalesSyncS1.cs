@@ -231,6 +231,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     ReplicaId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     MachineName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
                     HardwareFingerprint = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    HardwareFingerprintConflictAt = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
                     ClientVersion = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
                     Protocol = table.Column<byte>(type: "tinyint", nullable: false),
                     FeatureLevel = table.Column<byte>(type: "tinyint", nullable: false),

@@ -24,8 +24,15 @@ public sealed class WpfReplica
     public string? MachineName { get; set; }
 
     /// <summary>İstemcinin bildirdiği donanım parmak izi. Aynı ReplicaId'nin
-    /// farklı parmak iziyle görünmesi disk klonudur (§8.7).</summary>
+    /// farklı parmak iziyle görünmesi disk klonudur (§8.7). İlk yazan kazanır.</summary>
     public string? HardwareFingerprint { get; set; }
+
+    /// <summary>Aynı ReplicaId'nin <see cref="HardwareFingerprint"/>'ten farklı
+    /// bir parmak iziyle ilk görüldüğü an (disk klonu, §8.7). Bir kez yazılır,
+    /// hiç silinmez: hangi makinenin özgün olduğu bilinemediği için o andan
+    /// sonra kopya ne açılış penceresine girer (§4.0) ne de geri doldurmada
+    /// yerel kazanır (§4.3); mod kapısı (§4.10-2) ve <c>sales-audit</c> okur.</summary>
+    public DateTimeOffset? HardwareFingerprintConflictAt { get; set; }
 
     /// <summary>User-Agent'tan okunan istemci sürümü (§4.0).</summary>
     public string? ClientVersion { get; set; }

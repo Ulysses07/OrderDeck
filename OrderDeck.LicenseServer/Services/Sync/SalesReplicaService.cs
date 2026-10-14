@@ -98,8 +98,9 @@ public sealed class SalesReplicaService
     /// <summary>
     /// <c>sales/hello</c> (§4.5): kalp atışına ek olarak kopyanın kimlik ve durum alanları. Makine adı, yetenek
     /// düzeyi ve bildirilen kargo ayarı her hello'da güncellenir. <c>PreviousReplicaId</c> bir kez yazılır.
-    /// Donanım parmak izinde ilk yazan kazanır; farklı bir parmak izi disk klonu uyarısıdır (§8.7). Geri doldurma
-    /// ve ödeme geçmişi bayrakları ilk <c>true</c>'da damgalanır, hiç silinmez.
+    /// Donanım parmak izinde ilk yazan kazanır; farklı bir parmak izi disk klonudur (§8.7): uyarı düşer ve
+    /// <see cref="WpfReplica.HardwareFingerprintConflictAt"/> bir kez yazılır, hiç silinmez. Geri doldurma ve ödeme
+    /// geçmişi bayrakları ilk <c>true</c>'da damgalanır, hiç silinmez.
     /// </summary>
     public async Task HelloAsync(Guid licenseId, ReplicaHello hello, string? userAgent, CancellationToken ct)
     {
@@ -116,7 +117,10 @@ public sealed class SalesReplicaService
                 if (row.HardwareFingerprint is null)
                     row.HardwareFingerprint = hello.HardwareFingerprint;
                 else if (!string.Equals(row.HardwareFingerprint, hello.HardwareFingerprint, StringComparison.Ordinal))
+                {
                     fingerprintConflict = true;
+                    row.HardwareFingerprintConflictAt ??= now;
+                }
             }
             row.FeatureLevel = hello.FeatureLevel;
             if (row.PreviousReplicaId is null && hello.PreviousReplicaId is { } previous)
@@ -130,12 +134,13 @@ public sealed class SalesReplicaService
             if (hello.PaymentHistoryCompleted) row.PaymentHistoryCompletedAt ??= now;
         }, ct);
 
-        // Disk klonu (§8.7): aynı veritabanı dosyası iki makinede. İlk parmak izi korunur; makine adı ve parmak
-        // izi günlüğe yazılmaz (yalnız kimlikler).
+        // Disk klonu (§8.7): aynı veritabanı dosyası iki makinede. İlk parmak izi korunur, iz kopya satırında kalır;
+        // makine adı ve parmak izi günlüğe yazılmaz (yalnız kimlikler).
         if (fingerprintConflict)
             _log.LogWarning(
                 "sales/hello: kopya {ReplicaId} farklı bir donanım parmak iziyle görüldü — disk klonu şüphesi "
-                + "(license={LicenseId}); ilk parmak izi korundu",
+                + "(license={LicenseId}); ilk parmak izi korundu, kopya artık açılış penceresine girmez ve geri "
+                + "doldurmada yerel kazanmaz",
                 hello.Envelope.ReplicaId, licenseId);
     }
 
@@ -286,13 +291,8 @@ public sealed class SalesReplicaService
     private Task<WpfReplica?> FindAsync(Guid licenseId, Guid replicaId, CancellationToken ct) =>
         _db.WpfReplicas.SingleOrDefaultAsync(r => r.LicenseId == licenseId && r.ReplicaId == replicaId, ct);
 
-    /// <summary>
-    /// Pencere yargısı için kopya geçmişi. İkinci parmak izi bugün kalıcı olarak saklanmıyor: WpfReplicas'ta tek
-    /// parmak izi kolonu var ve uyuşmazlık yalnız hello anında görülüp günlüğe yazılıyor. Bu yüzden burada
-    /// <c>false</c>; S1'de mod açılamadığı için (CLI S3'te) pencerenin bu koşulu henüz hiçbir kararı etkilemez.
-    /// Mod kapısından (§4.10-2) önce uyuşmazlığın kalıcı bir izi gerekir.
-    /// </summary>
-    private static ReplicaHistory HistoryOf(WpfReplica row) => ReplicaHistory.Of(row, fingerprintConflict: false);
+    /// <summary>Pencere ve yerel kazanır yargısı için kopya geçmişi (klon izi dahil, §4.0, §4.3).</summary>
+    private static ReplicaHistory HistoryOf(WpfReplica row) => ReplicaHistory.Of(row);
 
     private static void Heartbeat(
         WpfReplica row, SalesEnvelope envelope, string? clientVersion, LicenseMode license, DateTimeOffset now)

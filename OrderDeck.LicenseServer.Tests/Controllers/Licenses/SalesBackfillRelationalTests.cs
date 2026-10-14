@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 using BackfillResult = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesBackfillTests.BackfillResult;
@@ -112,6 +113,46 @@ public sealed class SalesBackfillRelationalTests
     }
 
     /// <summary>
+    /// Disk klonu (§4.3, §8.7): aynı ReplicaId farklı bir donanım parmak iziyle hello gönderince hangi makinenin
+    /// özgün olduğu bilinemez. Klondan önce mod Off'taki ayrışmada yerel kazanır (kontrol); klondan sonra aynı satırda
+    /// sunucu kazanır ve iz kopya satırında kalıcıdır. Mod On'da mod açılmadan önce var olan kopyanın açılış penceresi
+    /// de klondan sonra kapanır (§4.0 koşul 3).
+    /// </summary>
+    [Fact]
+    public async Task Disk_klonundan_sonra_yerel_kazanmaz_ve_acilis_penceresi_kapanir()
+    {
+        await using var off = await Context.CreateAsync(_sql);
+        var original = $"fp-{Guid.NewGuid():N}";
+        await off.HelloAsync(off.ReplicaId, fingerprint: original);
+        var item = OrderSyncV2Tests.NewItem(null);
+        await off.PushV2Async(off.ReplicaId, item);
+        var local = item with { CancelledAt = At, CancelReason = "vazgeçti" };
+
+        (await off.BackfillAsync(off.ReplicaId, local)).Diverged.Single().LocalWins.Should().BeTrue("kontrol");
+
+        await off.HelloAsync(off.ReplicaId, fingerprint: $"fp-{Guid.NewGuid():N}");
+        await off.HelloAsync(off.ReplicaId, fingerprint: original);
+
+        (await off.BackfillAsync(off.ReplicaId, local)).Diverged.Single().LocalWins.Should()
+            .BeFalse("klonu görülmüş kopyada yerel değer bayat olabilir");
+        var replica = await off.ReplicaAsync(off.ReplicaId);
+        replica.HardwareFingerprintConflictAt.Should().NotBeNull();
+        replica.HardwareFingerprint.Should().Be(original);
+        replica.BackfillDivergedLocal.Should().Be(1);
+        replica.BackfillDivergedServer.Should().Be(1);
+        (await off.OrdersAsync(item.Id)).Single().CancelledAt.Should().BeNull();
+
+        await using var on = await Context.CreateAsync(_sql, SalesSyncMode.On);
+        await on.SeedReplicaAsync(on.ReplicaId, firstSeenAt: DateTimeOffset.UtcNow.AddDays(-2));
+        await on.HelloAsync(on.ReplicaId, fingerprint: original);
+        (await on.AcceptAsync(on.ReplicaId, SalesSyncMode.Off)).OpeningWindow.Should().BeTrue("kontrol");
+
+        await on.HelloAsync(on.ReplicaId, fingerprint: $"fp-{Guid.NewGuid():N}");
+
+        (await on.AcceptAsync(on.ReplicaId, SalesSyncMode.Off)).OpeningWindow.Should().BeFalse();
+    }
+
+    /// <summary>
     /// Lisans değiştiren PC (§3.1, §4.3): aynı yayıncının eski lisansı L1'de oturum ve siparişler var; PC yeni lisans
     /// L2'ye geçer ve Ws ilk açılışta bütün yerel geçmişi L2'ye geri doldurur. StreamSessions ve Orders'ın birincil
     /// anahtarı yalnız Id olduğu için L1'deki Id'yi eklemek birincil anahtara çarpardı (500, parti her denemede aynı
@@ -202,14 +243,37 @@ public sealed class SalesBackfillRelationalTests
 
         private string Url(string path) => $"/api/v1/licenses/{LicenseId}/{path}";
 
-        public async Task HelloAsync(Guid replicaId, Guid? previousReplicaId = null)
+        public async Task HelloAsync(Guid replicaId, Guid? previousReplicaId = null, string? fingerprint = null)
         {
             var resp = await _client.PostAsJsonAsync(Url("sales/hello"), new
             {
-                replicaId, previousReplicaId, machineName = "PC-A", hardwareFingerprint = $"fp-{Guid.NewGuid():N}",
+                replicaId, previousReplicaId, machineName = "PC-A",
+                hardwareFingerprint = fingerprint ?? $"fp-{Guid.NewGuid():N}",
                 protocol = 2, featureLevel = 1, seenMode = 0,
             });
             resp.StatusCode.Should().Be(HttpStatusCode.NoContent, await resp.Content.ReadAsStringAsync());
+        }
+
+        /// <summary>Mod açılmadan önce görülmüş, modu görmemiş kopya satırı (açılış penceresinin adayı).</summary>
+        public async Task SeedReplicaAsync(Guid replicaId, DateTimeOffset firstSeenAt)
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfReplicas.Add(new WpfReplica
+            {
+                LicenseId = LicenseId, ReplicaId = replicaId, Protocol = 2, SeenMode = SalesSyncMode.Off,
+                FirstSeenAt = firstSeenAt, LastSeenAt = firstSeenAt,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        /// <summary>Uçların kullandığı bağlam (açılış penceresi yargısı dahil), gerçek SQL Server'da.</summary>
+        public async Task<SalesRequestContext> AcceptAsync(Guid replicaId, SalesSyncMode seenMode)
+        {
+            using var scope = _factory.Services.CreateScope();
+            return await scope.ServiceProvider.GetRequiredService<SalesReplicaService>().AcceptAsync(
+                LicenseId, new SalesEnvelope(SalesEnvelope.V2, replicaId, seenMode), "OrderDeck-WPF/0.9.11",
+                "orders/sync", CancellationToken.None);
         }
 
         public async Task PushV2Async(Guid replicaId, params Item[] items)

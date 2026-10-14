@@ -130,7 +130,39 @@ public sealed class SalesReplicaServiceTests
         warning.Message.Should().Contain(replicaId.ToString()).And.Contain(licenseId.ToString());
         warning.Message.Should().NotContain(original).And.NotContain(clone).And.NotContain("PC-KLON");
         await using var db = Db();
-        (await db.WpfReplicas.SingleAsync(r => r.ReplicaId == replicaId)).HardwareFingerprint.Should().Be(original);
+        var row = await db.WpfReplicas.AsNoTracking().SingleAsync(r => r.ReplicaId == replicaId);
+        row.HardwareFingerprint.Should().Be(original);
+        row.HardwareFingerprintConflictAt.Should().NotBeNull("uyuşmazlık kalıcı iz bırakır, yalnız günlüğe düşmez");
+
+        // İz bir kez yazılır, hiç silinmez: özgün makinenin sonraki hello'su onu temizlemez ya da ilerletmez.
+        await HelloAsync(licenseId, replicaId, original);
+        await HelloAsync(licenseId, replicaId, clone);
+        (await db.WpfReplicas.AsNoTracking().SingleAsync(r => r.ReplicaId == replicaId))
+            .HardwareFingerprintConflictAt.Should().Be(row.HardwareFingerprintConflictAt);
+    }
+
+    /// <summary>
+    /// Disk klonu açılış penceresini kapatır (§4.0 koşul 3, §8.7): mod açılmadan önce var olan, modu görmemiş kopya
+    /// pencerededir; aynı ReplicaId farklı parmak iziyle hello gönderdikten sonra hiçbir isteği pencere değildir ve
+    /// uca verilen geçmiş klonu taşır (geri doldurmadaki yerel kazanır kararı da bunu okur, §4.3).
+    /// </summary>
+    [Fact]
+    public async Task Klon_izi_pencereyi_kapatir_ve_gecmise_tasinir()
+    {
+        var licenseId = await SeedLicenseAsync(SalesSyncMode.On);
+        var replicaId = Guid.NewGuid();
+        await SeedReplicaAsync(licenseId, replicaId, firstSeenAt: ModeChangedAt.AddDays(-2));
+        await HelloAsync(licenseId, replicaId, $"fp-{Guid.NewGuid():N}");
+
+        var (beforeClone, _) = await AcceptAsync(licenseId, V2(replicaId, SalesSyncMode.Off));
+        beforeClone.OpeningWindow.Should().BeTrue("kontrol: klon görülmeden kopya pencerededir");
+        beforeClone.ReplicaBefore!.FingerprintConflict.Should().BeFalse();
+
+        await HelloAsync(licenseId, replicaId, $"fp-{Guid.NewGuid():N}");
+
+        var (afterClone, _) = await AcceptAsync(licenseId, V2(replicaId, SalesSyncMode.Off));
+        afterClone.ReplicaBefore!.FingerprintConflict.Should().BeTrue();
+        afterClone.OpeningWindow.Should().BeFalse("hangi makinenin özgün olduğu bilinemez");
     }
 
     // ── Yardımcılar ───────────────────────────────────────────────────────────

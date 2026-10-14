@@ -92,6 +92,7 @@ public sealed class SalesAuditRelationalTests : IAsyncLifetime
             new SalesAuditReport.ReplicaDivergence(seed.ReplicaA, 2, 0),
             new SalesAuditReport.ReplicaDivergence(seed.ReplicaB, 0, 1),
         });
+        r.FingerprintConflicts.Should().Equal(seed.ReplicaB);
     }
 
     [Fact]
@@ -122,7 +123,11 @@ public sealed class SalesAuditRelationalTests : IAsyncLifetime
             .And.Contain("tutarı > 0 ve bağlı siparişi olmayan dosya: 1");
         output.Should().Contain("sipariş: 4;").And.Contain(": 1, tutar 70.00");
         output.Should().Contain("10. Geri doldurma birim ayrışması: yerel kazanan 2, sunucu kazanan 1");
-        output.Should().Contain("disk klonu şüphesi").And.Contain("K5 istisnasıyla").And.Contain("açılış penceresi dışında");
+        output.Should().Contain("11. Aynı ReplicaId'ye iki donanım parmak izi (disk klonu): 1")
+            .And.Contain($"   {seed.ReplicaB}");
+        output.Should().NotContain("disk klonu şüphesi", "klon izi veritabanında; günlüğe yönlendirilmez");
+        output.Should().Contain("12. ").And.Contain("K5 istisnasıyla")
+            .And.Contain("13. ").And.Contain("açılış penceresi dışında");
 
         foreach (var text in _personal)
             output.Should().NotContain(text, "çıktıda kişisel veri yok: yalnız sayı, tutar ve Id");
@@ -194,9 +199,9 @@ public sealed class SalesAuditRelationalTests : IAsyncLifetime
             db.WpfCustomerProjections.AddRange(head, copy);
             db.WpfReplicas.AddRange(
                 NewReplica(licenseId, replicaA, 500m, 60m, local: 2, server: 0, now),
-                NewReplica(licenseId, replicaB, 400m, 60m, local: 0, server: 1, now),
+                NewReplica(licenseId, replicaB, 400m, 60m, local: 0, server: 1, now, cloneSeenAt: now.AddHours(-3)),
                 NewReplica(licenseId, replicaC, null, null, local: 0, server: 0, now),
-                NewReplica(otherLicenseId, Guid.NewGuid(), 999m, 1m, local: 5, server: 5, now));
+                NewReplica(otherLicenseId, Guid.NewGuid(), 999m, 1m, local: 5, server: 5, now, cloneSeenAt: now));
 
             db.StreamSessions.AddRange(
                 NewSession(licenseId, staleLive, now.AddHours(-30), endedAt: null, owner: null),
@@ -296,12 +301,14 @@ public sealed class SalesAuditRelationalTests : IAsyncLifetime
     };
 
     private static WpfReplica NewReplica(
-        Guid licenseId, Guid replicaId, decimal? threshold, decimal? fee, int local, int server, DateTimeOffset now)
+        Guid licenseId, Guid replicaId, decimal? threshold, decimal? fee, int local, int server, DateTimeOffset now,
+        DateTimeOffset? cloneSeenAt = null)
         => new()
         {
             LicenseId = licenseId, ReplicaId = replicaId, Protocol = 2, FeatureLevel = 1, FirstSeenAt = now,
             LastSeenAt = now, ReportedThreshold = threshold, ReportedFee = fee,
             BackfillDivergedLocal = local, BackfillDivergedServer = server,
+            HardwareFingerprint = $"fp-{Guid.NewGuid():N}", HardwareFingerprintConflictAt = cloneSeenAt,
         };
 
     private static CustomerBalanceTransaction NewDeduction(

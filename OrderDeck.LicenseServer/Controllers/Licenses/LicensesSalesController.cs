@@ -484,7 +484,8 @@ public sealed class LicensesSalesController : ControllerBase
             : SalesCustomerDirectory.Empty;
 
         // Yerel kazanır (§4.3, M20): yalnız mod Off'ta ve özgün kopyada — geri yüklenmemiş (PreviousReplicaId boş),
-        // klonu görülmemiş. Kopya satırı bu istekle doğduysa (hello'suz ilk istek) geçmişi bilinmez: sunucu kazanır.
+        // klonu görülmemiş (HardwareFingerprintConflictAt boş; hello'da yazılır, hiç silinmez). Kopya satırı bu
+        // istekle doğduysa (hello'suz ilk istek) geçmişi bilinmez: sunucu kazanır.
         var localWinsAllowed = !modeOn
             && context.ReplicaBefore is { PreviousReplicaId: null, FingerprintConflict: false };
 

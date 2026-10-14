@@ -3541,6 +3541,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
+                    b.Property<DateTimeOffset?>("HardwareFingerprintConflictAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<DateTimeOffset>("LastSeenAt")
                         .HasColumnType("datetimeoffset");
 

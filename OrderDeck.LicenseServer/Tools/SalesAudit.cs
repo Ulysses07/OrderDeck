@@ -146,7 +146,11 @@ public static class SalesAudit
         foreach (var d in r.BackfillDivergence)
             o.WriteLine($"   {d.ReplicaId} yerel={d.Local} sunucu={d.Server}");
 
-        var n = 11;
+        o.WriteLine($"11. Aynı ReplicaId'ye iki donanım parmak izi (disk klonu): {r.FingerprintConflicts.Count}");
+        foreach (var id in r.FingerprintConflicts)
+            o.WriteLine($"   {id}");
+
+        var n = 12;
         foreach (var (item, logText) in SalesAuditReport.LogOnlyItems)
             o.WriteLine($"{n++}. {item}: veritabanında iz yok, ölçülmüyor — sunucu günlüğünde \"{logText}\" satırları");
 
