@@ -33,6 +33,18 @@ public static class OrderUnitMapping
         Version = order.SyncVersion,
     };
 
+    /// <summary>Birimin teldeki adı (<c>orders/sync</c> v2 yanıtının <c>ignoredUnits</c>'i, <c>sales/backfill</c>'in
+    /// <c>diverged.units</c>'i).</summary>
+    public static string WireName(this OrderUnit unit) => unit switch
+    {
+        OrderUnit.Price => "price",
+        OrderUnit.Cancel => "cancel",
+        OrderUnit.Backup => "backup",
+        OrderUnit.Shipment => "shipment",
+        OrderUnit.Print => "print",
+        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, null),
+    };
+
     /// <summary>
     /// Ortak para kurallarının (<see cref="LabelRules"/>) girdisi. Id'ler masaüstüyle aynı "N" biçiminde metin.
     /// </summary>

@@ -139,6 +139,40 @@ public sealed class SalesReplicaService
                 hello.Envelope.ReplicaId, licenseId);
     }
 
+    /// <summary>
+    /// Geri doldurmadaki birim ayrışması sayılarını kopya satırına ekler (spec 2026-10-13 §4.3, M20): yerel kazanan
+    /// ve sunucu kazanan satırlar. <c>sales-audit</c>, <c>sales-sync status</c> ve <c>enable</c> kuru koşusu gösterir.
+    /// Birikimli sayaçtır: aynı partinin yeniden gönderimi yeniden sayılır (satır başına iz tutulmaz; sayı tanı
+    /// amaçlıdır, karar vermez).
+    ///
+    /// <para>İlişkisel sağlayıcıda tek bir artırım UPDATE'i (<c>X = X + @n</c>): aynı kopyanın eşzamanlı iki partisi
+    /// birbirinin artışını ezmez. Çağıranın açık işlemi varsa ona katılır — partinin yazımı geri alınırsa sayı da
+    /// geri alınır. InMemory'de izlenen varlıkla aynı kural (<see cref="TraceLegacyAsync"/> deseni). Kopya satırı
+    /// yoksa (kalp atışı yazılmadan çağrıldı) hiçbir şey yazılmaz.</para>
+    /// </summary>
+    public async Task AddBackfillDivergenceAsync(
+        Guid licenseId, Guid replicaId, int localWins, int serverWins, CancellationToken ct)
+    {
+        if (localWins == 0 && serverWins == 0) return;
+
+        if (_db.Database.IsRelational())
+        {
+            await _db.WpfReplicas
+                .Where(r => r.LicenseId == licenseId && r.ReplicaId == replicaId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.BackfillDivergedLocal, r => r.BackfillDivergedLocal + localWins)
+                    .SetProperty(r => r.BackfillDivergedServer, r => r.BackfillDivergedServer + serverWins), ct);
+            return;
+        }
+
+        var row = await FindAsync(licenseId, replicaId, ct);
+        if (row is null) return;
+        row.BackfillDivergedLocal += localWins;
+        row.BackfillDivergedServer += serverWins;
+        await _db.SaveChangesAsync(ct);
+        _db.Entry(row).State = EntityState.Detached;
+    }
+
     /// <summary>Geri yükleme zincirinde izlenen en çok halka; döngüye ya da bozuk veriye karşı sınır.</summary>
     public const int MaxLineageDepth = 16;
 

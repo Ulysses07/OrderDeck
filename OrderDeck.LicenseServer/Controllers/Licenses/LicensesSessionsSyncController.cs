@@ -105,7 +105,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
     private const string StatusApplied = "applied";
     private const string StatusIgnored = "ignored";
-    private const string ReasonOwnedElsewhere = "session-owned-elsewhere";
+    internal const string ReasonOwnedElsewhere = "session-owned-elsewhere";
     private const string ReasonReleased = "session-released";
 
     /// <summary>Bir oturum öğesinin gönderenle ilişkisi (spec 2026-10-13 §4.1).</summary>
@@ -363,7 +363,61 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         int? PrintSeq = null,
         DateTimeOffset? PriceCorrectedAt = null,
         decimal? PaidPrice = null,
-        Guid? ShipmentId = null);
+        Guid? ShipmentId = null)
+    {
+        /// <summary>Öğenin birim kuralına giren değerleri. Bütün alanlar taşınır; v1'in taşımadığı alanları (düzeltme
+        /// damgası, ödenen fiyat, baskı grubu, kargo bağı, ebeveyn) birim kuralı <see cref="OrderPushFormat.V1"/>'de
+        /// "gönderilmedi" sayar ve sunucudaki değeri korur.</summary>
+        public OrderUnitValues ToUnitValues() => new()
+        {
+            Price = Price,
+            PriceCorrectedAt = PriceCorrectedAt,
+            PaidPrice = PaidPrice,
+            CancelledAt = CancelledAt,
+            CancelReason = CancelReason,
+            IsTentativeBackup = IsTentativeBackup,
+            ShipmentId = ShipmentId,
+            PrintedAt = PrintedAt,
+            PrintBatchId = PrintBatchId,
+            PrintSeq = PrintSeq,
+            ParentOrderId = ParentOrderId,
+        };
+
+        /// <summary>
+        /// Eklenecek satır (spec 2026-10-13 §4.2 ekleme dalı; <c>sales/backfill</c> §4.3 aynı yoldan): oluşum
+        /// alanları ve birimler öğeden. v2 alanları (048 alanları, ebeveyn) yalnız <paramref name="v2"/>'de yazılır,
+        /// v1 satırında boş kalır. Kaynak kopya, kargo bağı (K4), devir anı (DM3) ve KVKK boşaltması çağıranındır.
+        /// </summary>
+        /// <param name="customerHex">Asıl kayda çözülmüş müşteri Id'si (A5b).</param>
+        public Order ToNewOrder(Guid licenseId, string customerHex, bool v2, DateTimeOffset now) => new()
+        {
+            Id = Id,
+            LicenseId = licenseId,
+            SessionId = SessionId,
+            CustomerId = customerHex,
+            Platform = Platform,
+            Username = Username,
+            DisplayName = DisplayName,
+            MessageText = MessageText,
+            Code = Code,
+            Price = Price,
+            AddedAt = AddedAt,
+            PrintedAt = PrintedAt,
+            CancelledAt = CancelledAt,
+            CancelReason = CancelReason,
+            IsShippingFee = IsShippingFee,
+            IsBackupPromoted = IsBackupPromoted,
+            IsTentativeBackup = IsTentativeBackup,
+            ProductId = ProductId,
+            ProductVariantId = ProductVariantId,
+            UpdatedAt = now,
+            ParentOrderId = v2 ? ParentOrderId : null,
+            PrintBatchId = v2 ? PrintBatchId : null,
+            PrintSeq = v2 ? PrintSeq : null,
+            PriceCorrectedAt = v2 ? PriceCorrectedAt : null,
+            PaidPrice = v2 ? PaidPrice : null,
+        };
+    }
 
     /// <param name="CatalogAware">
     /// İstemcinin katalog kimliklerini (<c>ProductId</c>/<c>ProductVariantId</c>)
@@ -416,7 +470,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private const string StatusRejected = "rejected";
 
     /// <summary><c>Orders.PrintBatchId</c> kolonunun uzunluğu (<c>LicenseDbContext</c>).</summary>
-    private const int PrintBatchIdMaxLength = 40;
+    internal const int PrintBatchIdMaxLength = 40;
 
     public sealed record SyncedOrderDto(
         Guid Id, Guid? SessionId, string CustomerId,
@@ -643,40 +697,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 }
 
                 var customerHex = CanonicalHex(item.CustomerId);
-                var order = new Order
-                {
-                    Id = item.Id,
-                    LicenseId = licenseId,
-                    SessionId = item.SessionId,
-                    CustomerId = customerHex,
-                    Platform = item.Platform,
-                    Username = item.Username,
-                    DisplayName = item.DisplayName,
-                    MessageText = item.MessageText,
-                    Code = item.Code,
-                    Price = item.Price,
-                    AddedAt = item.AddedAt,
-                    PrintedAt = item.PrintedAt,
-                    CancelledAt = item.CancelledAt,
-                    CancelReason = item.CancelReason,
-                    IsShippingFee = item.IsShippingFee,
-                    IsBackupPromoted = item.IsBackupPromoted,
-                    IsTentativeBackup = item.IsTentativeBackup,
-                    ProductId = item.ProductId,
-                    ProductVariantId = item.ProductVariantId,
-                    UpdatedAt = now,
-                    // DM3 (her biçimde): devredilmiş oturuma sonradan gelen ekleme (force-end sonrası satış, geç
-                    // gönderim, yedek) devir anını kopyalar ve hemen akışa girer; devir onu bir daha damgalamaz.
-                    SessionReleasedAt = session?.ReleasedAt,
-                    // v2 (§4.2, §3.1): yerelde kalan 048 alanları, yedek bağı ve gönderen kopya. Kaynak kopya kargo
-                    // bağının bilindiğini söyler (M22); v1 satırında boş kalır.
-                    ParentOrderId = v2 ? item.ParentOrderId : null,
-                    PrintBatchId = v2 ? item.PrintBatchId : null,
-                    PrintSeq = v2 ? item.PrintSeq : null,
-                    PriceCorrectedAt = v2 ? item.PriceCorrectedAt : null,
-                    PaidPrice = v2 ? item.PaidPrice : null,
-                    OriginReplicaId = v2 ? caller : null,
-                };
+                // v2 (§4.2, §3.1): yerelde kalan 048 alanları ve yedek bağı öğeden.
+                var order = item.ToNewOrder(licenseId, customerHex, v2, now);
+                // DM3 (her biçimde): devredilmiş oturuma sonradan gelen ekleme (force-end sonrası satış, geç
+                // gönderim, yedek) devir anını kopyalar ve hemen akışa girer; devir onu bir daha damgalamaz.
+                order.SessionReleasedAt = session?.ReleasedAt;
+                // Gönderen kopya kargo bağının bilindiğini söyler (M22); v1 satırında boş kalır.
+                order.OriginReplicaId = v2 ? caller : null;
                 // K4 eklemede: mod Off'ta v2'nin bağı, mod On'da yalnız açılış penceresindeki kopyanınki; aksi hâlde
                 // bağ yazılmaz ve satır yok sayılmış döner (istemci sunucunun boş bağını uygular).
                 var insert = OrderUnitMerge.MergeInsert(PushOf(item), new OrderMergeContext
@@ -934,42 +961,17 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             return new SyncedOrderV2Dto(
                 row.Id, row.SyncVersion, row.ShipmentId, row.SessionReleasedAt,
                 merge.Status == OrderMergeStatus.Rejected ? StatusRejected : StatusIgnored,
-                merge.Ignored.Select(i => UnitName(i.Unit)).Distinct().ToList(),
+                merge.Ignored.Select(i => i.Unit.WireName()).Distinct().ToList(),
                 merge.Reason,
                 SalesOrderItem.From(row, customers.Resolve(row.CustomerId)));
         }).ToList();
     }
 
-    /// <summary>Birimin teldeki adı.</summary>
-    private static string UnitName(OrderUnit unit) => unit switch
-    {
-        OrderUnit.Price => "price",
-        OrderUnit.Cancel => "cancel",
-        OrderUnit.Backup => "backup",
-        OrderUnit.Shipment => "shipment",
-        OrderUnit.Print => "print",
-        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, null),
-    };
-
-    /// <summary>Öğenin birim kuralına giren hâli. Bütün alanlar taşınır; v1'in taşımadığı alanları (düzeltme
-    /// damgası, ödenen fiyat, baskı grubu, kargo bağı, ebeveyn, <c>baseVersion</c>) birim kuralı
-    /// <see cref="OrderPushFormat.V1"/>'de "gönderilmedi" sayar ve sunucudaki değeri korur.</summary>
+    /// <summary>Öğenin birim kuralına giren hâli (<see cref="SyncOrderItem.ToUnitValues"/>) ve
+    /// <c>baseVersion</c>.</summary>
     private static OrderPush PushOf(SyncOrderItem item) => new()
     {
-        Values = new OrderUnitValues
-        {
-            Price = item.Price,
-            PriceCorrectedAt = item.PriceCorrectedAt,
-            PaidPrice = item.PaidPrice,
-            CancelledAt = item.CancelledAt,
-            CancelReason = item.CancelReason,
-            IsTentativeBackup = item.IsTentativeBackup,
-            ShipmentId = item.ShipmentId,
-            PrintedAt = item.PrintedAt,
-            PrintBatchId = item.PrintBatchId,
-            PrintSeq = item.PrintSeq,
-            ParentOrderId = item.ParentOrderId,
-        },
+        Values = item.ToUnitValues(),
         BaseVersion = item.BaseVersion,
     };
 
