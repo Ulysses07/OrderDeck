@@ -598,9 +598,14 @@ public class LicenseDbContext : DbContext
             b.HasIndex(s => new { s.LicenseId, s.CustomerId });
             // Reverse sync cursor.
             b.HasIndex(s => new { s.LicenseId, s.UpdatedAt });
-            // Yayın ve etiket senkronu (spec 2026-10-13 §3.1). Version yalnız
-            // kolon; NOT NULL ekleme göçte DEFAULT 0 alır, S1 öncesi imajın
-            // INSERT'i ona düşer.
+            // Yayın ve etiket senkronu (spec 2026-10-13 §3.1). Version
+            // eşzamanlılık jetonu: sunucunun her dosya yazımı (shipments/sync,
+            // K7 türetmesi) onu artırır, aynı dosyaya eşzamanlı ikinci yazım
+            // DbUpdateConcurrencyException alır ve uç 409 döner. Jeton yalnız
+            // modelde; kolon değişmez (NOT NULL, göçte DEFAULT 0 — S1 öncesi
+            // imajın INSERT'i ona düşer, o imaj sürümü artırmaz ama jetonu da
+            // okumaz).
+            b.Property(s => s.Version).IsConcurrencyToken();
             ConfigureChangeSeq(b.Property(s => s.ChangeSeq));
             b.HasIndex(s => new { s.LicenseId, s.ChangeSeq });
         });

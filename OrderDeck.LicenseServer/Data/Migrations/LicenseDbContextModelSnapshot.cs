@@ -2260,6 +2260,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.Property<int>("Version")
+                        .IsConcurrencyToken()
                         .HasColumnType("int");
 
                     b.HasKey("Id");

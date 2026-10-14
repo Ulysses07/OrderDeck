@@ -76,6 +76,13 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     /// kabul eder; tek istisna kargoya verilmiş dosya (Shipped tek yönlü, spec
     /// 2026-10-13 §7.1). Mobile Panel sadece okur (Payment.Approve gibi mutation
     /// endpoint'i yok, çünkü Shipment kararını WPF veriyor).
+    ///
+    /// <para>Satış senkronu (spec 2026-10-13 §3.1, §7.1): sunucunun her dosya
+    /// yazımı <see cref="Shipment.Version"/>'ı artırır; sürüm jetondur, eşzamanlı
+    /// yazım (başka bir parti, K7 türetmesi) 409 <c>sync-conflict</c> alır. v2
+    /// isteği boş <see cref="Shipment.OriginReplicaId"/>'yi çağıranla doldurur
+    /// (mod Off'ta dosyanın tek yazıcısı) ve dosya başına sunucunun güncel
+    /// satırını alır (<see cref="SalesShipmentItem"/>); v1 yanıtı değişmez.</para>
     /// </summary>
     [HttpPost("sync")]
     public async Task<IActionResult> Sync(
@@ -92,9 +99,10 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
             return Problem(title: "invalid-envelope", detail: envelopeError, statusCode: 400);
         await _replicas.AcceptAsync(
             licenseId, envelope, Request.Headers.UserAgent.ToString(), "shipments/sync", ct);
+        var v2 = envelope.IsV2;
 
         if (req?.Shipments is null || req.Shipments.Count == 0)
-            return Ok(Array.Empty<SyncedShipmentDto>());
+            return v2 ? Ok(Array.Empty<SalesShipmentItem>()) : Ok(Array.Empty<SyncedShipmentDto>());
 
         if (req.Shipments.Count > 200)
             return Problem(title: "batch-too-large", detail: "Max 200 shipment per batch.", statusCode: 400);
@@ -144,10 +152,23 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
                         || item.HeldAt != current.HeldAt
                         || item.ShippedAt != current.ShippedAt)
                         ignoredShipped++;
+                    var wrote = false;
                     if (current.CustomerId != customerHex)
                     {
                         current.CustomerId = customerHex;
+                        wrote = true;
+                    }
+                    if (v2 && current.OriginReplicaId is null)
+                    {
+                        current.OriginReplicaId = envelope.ReplicaId;
+                        wrote = true;
+                    }
+                    // Değişmeyen satır yazılmaz: sürüm ve akış imleci boşuna
+                    // ilerlemesin (Ws Shipped dosyayı yeniden gönderebilir).
+                    if (wrote)
+                    {
                         current.UpdatedAt = now;
+                        current.Version++;
                     }
                     continue;
                 }
@@ -163,6 +184,10 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
                 current.ShippedAt = item.ShippedAt;
                 current.UpdatedAt = now;
                 // CreatedAt değişmez (WPF tarafında oluşturulduğu an)
+                // Dosya kaynağı yalnız boşsa dolar: dolu değeri disable turu
+                // (§4.10) bağlı etiketlerin sahibine göre yazar, gönderen değil.
+                if (v2) current.OriginReplicaId ??= envelope.ReplicaId;
+                current.Version++;
             }
             else
             {
@@ -182,12 +207,33 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
                     CreatedAt = item.CreatedAt,
                     HeldAt = item.HeldAt,
                     ShippedAt = item.ShippedAt,
-                    UpdatedAt = now
+                    UpdatedAt = now,
+                    // v2: dosyanın mod Off'taki tek yazıcısı (§3.1); v1'de kaynak
+                    // bilinmez kalır.
+                    OriginReplicaId = v2 ? envelope.ReplicaId : null,
                 });
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Sürüm jetonu (spec 2026-10-13 §3.1): dosyayı biz okuduktan sonra
+            // başka bir yazım (eşzamanlı parti, K7 türetmesi) yazdı. İşlem
+            // tümüyle geri sarıldı; 409 diyoruz, WPF'in outbox'ı partiyi
+            // işaretlemediği için bir sonraki turda yeniden gönderir (sipariş
+            // partisinin deseni).
+            _log.LogInformation(
+                "Shipment sync çakışması, istemci yeniden denemeli (license={LicenseId}, count={Count})",
+                licenseId, req.Shipments.Count);
+            return Problem(
+                title: "sync-conflict",
+                detail: "Bu kargo dosyaları eşzamanlı başka bir istekle yazıldı; paketi yeniden gönderin.",
+                statusCode: 409);
+        }
 
         if (ignoredShipped > 0)
             _log.LogInformation(
@@ -196,6 +242,15 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
 
         await _labels.TryApplyAndSaveByWpfCustomersAsync(
             licenseId, WaLabelEvent.ShipmentStatusChanged, statusChangedCustomers, ct);
+
+        if (v2)
+        {
+            // Ws güncel satırı guard altında yerel aynaya yazar (§7.1); istek sırasıyla.
+            var saved = await _db.Shipments.AsNoTracking()
+                .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
+                .ToDictionaryAsync(s => s.Id, ct);
+            return Ok(ids.Distinct().Where(saved.ContainsKey).Select(id => SalesShipmentItem.From(saved[id])).ToList());
+        }
 
         var echoed = await _db.Shipments
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))

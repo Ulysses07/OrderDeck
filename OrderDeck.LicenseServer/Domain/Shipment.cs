@@ -60,8 +60,10 @@ public sealed class Shipment
     /// Eşzamanlılık jetonu DEĞİL; bkz. <see cref="WpfCustomerProjection.ChangeSeq"/>.</summary>
     public long ChangeSeq { get; set; }
 
-    /// <summary>Komutların beklenen sürümü. Kolon DEFAULT 0: S1 öncesi imaj
-    /// bu kolonu tanımaz, açtığı dosya 0 doğar.</summary>
+    /// <summary>Komutların beklenen sürümü ve eşzamanlılık jetonu: sunucunun
+    /// her dosya yazımı (<c>shipments/sync</c>, K7 türetmesi) bir artırır,
+    /// eşzamanlı ikinci yazım 409 alır. Kolon DEFAULT 0: S1 öncesi imaj bu
+    /// kolonu tanımaz, açtığı dosya 0 doğar.</summary>
     public int Version { get; set; }
 
     /// <summary>Doluysa tutar bağlı siparişlerden türetilir (DM7).</summary>
