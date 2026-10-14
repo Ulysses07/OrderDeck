@@ -53,6 +53,12 @@ public class Program
             Environment.Exit(exit);
             return;
         }
+        if (args.Length > 0 && args[0] == "sales-audit")
+        {
+            var exit = await OrderDeck.LicenseServer.Tools.SalesAudit.RunAsync(args);
+            Environment.Exit(exit);
+            return;
+        }
 
         var builder = WebApplication.CreateBuilder(args);
 
