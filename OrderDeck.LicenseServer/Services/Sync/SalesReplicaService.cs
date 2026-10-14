@@ -54,10 +54,10 @@ public sealed record ReplicaHello(
 /// <see cref="SalesLegacyTrace"/> satırını yazar (mod kapısının "7 gün eski sürüm izi yok" koşulu, §4.10-3). İz
 /// Licenses satırında DEĞİL: Licenses'ın RowVersion'ı eşzamanlılık jetonudur ve satıra yapılan her UPDATE —
 /// izlenmeyen ExecuteUpdate dahil — onu ilerletir; License'ı okuyup kaydeden ve çakışmayı yakalamayan bugünkü
-/// yollar (payment-account, shopper-code) eski sürümün push'uyla yarışıp 500 alırdı. İlişkisel sağlayıcıda
-/// olağan yol tek bir koşullu UPDATE, saatte en çok bir kez (koşul veritabanında, yarışta da tek yazım); lisansın
-/// ilk izi bir eklemedir. InMemory'de ExecuteUpdate olmadığı için aynı kural izlenen varlığa uygulanır
-/// (SecurityDataRetentionJob, WhatsAppInboundJob deseni).</para>
+/// yollar (payment-account, shopper-code) eski sürümün push'uyla yarışıp 500 alırdı. İlişkisel sağlayıcıda tek
+/// bir koşullu <c>MERGE</c>, saatte en çok bir yazım (koşul veritabanında, yarışta da tek yazım; SaveChanges'e
+/// girmez). InMemory'de ham SQL olmadığı için aynı kural izlenen varlığa uygulanır (SecurityDataRetentionJob,
+/// WhatsAppInboundJob deseni).</para>
 /// </summary>
 public sealed class SalesReplicaService
 {
@@ -318,12 +318,17 @@ public sealed class SalesReplicaService
 
         if (_db.Database.IsRelational())
         {
-            // Olağan yol tek koşullu UPDATE: eşik içindeyse satır yazılmaz.
-            written = await _db.SalesLegacyTraces
-                .Where(t => t.LicenseId == licenseId && t.LastLegacySalesPushAt < staleBefore)
-                .ExecuteUpdateAsync(s => s.SetProperty(t => t.LastLegacySalesPushAt, now), ct) > 0;
-            if (!written && !await _db.SalesLegacyTraces.AnyAsync(t => t.LicenseId == licenseId, ct))
-                written = await InsertLegacyTraceAsync(licenseId, now, ct);
+            // Tek deyim, koşul veritabanında: satır yoksa eklenir, eşikten eskiyse güncellenir, yoksa dokunulmaz.
+            // HOLDLOCK aynı lisansın iki eski PC'sinin eşzamanlı ilk izini sıraya sokar (birincil anahtar yarışı
+            // yok). SaveChanges'e girmez: ucun değişiklik izleyicisine ve kaydetme kancalarına dokunmaz.
+            written = await _db.Database.ExecuteSqlInterpolatedAsync($"""
+                MERGE SalesLegacyTraces WITH (HOLDLOCK) AS t
+                USING (VALUES ({licenseId})) AS s (LicenseId) ON t.LicenseId = s.LicenseId
+                WHEN MATCHED AND t.LastLegacySalesPushAt < {staleBefore} THEN
+                    UPDATE SET LastLegacySalesPushAt = {now}
+                WHEN NOT MATCHED THEN
+                    INSERT (LicenseId, LastLegacySalesPushAt) VALUES ({licenseId}, {now});
+                """, ct) > 0;
         }
         else
         {
@@ -346,31 +351,5 @@ public sealed class SalesReplicaService
                 "{Endpoint}: mod On'da protokolsüz (≤0.9.10) satış isteği (license={LicenseId}); eski sürüm bir "
                 + "bilgisayar dönmüş olabilir",
                 endpoint, licenseId);
-    }
-
-    /// <summary>
-    /// Lisansın ilk izi. Aynı lisansın iki eski PC'si ilk izi aynı anda yazarsa ikincisi birincil anahtara çarpar;
-    /// hata "şimdi bakınca satır var mı" diye sınıflandırılır (<see cref="TouchAsync"/> deseni): varsa iz zaten yazıldı
-    /// (bu istek yazmadı), yoksa hata olduğu gibi yukarı gider.
-    /// </summary>
-    private async Task<bool> InsertLegacyTraceAsync(Guid licenseId, DateTimeOffset now, CancellationToken ct)
-    {
-        var trace = new SalesLegacyTrace { LicenseId = licenseId, LastLegacySalesPushAt = now };
-        _db.SalesLegacyTraces.Add(trace);
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-            return true;
-        }
-        catch (DbUpdateException)
-        {
-            _db.Entry(trace).State = EntityState.Detached;
-            if (await _db.SalesLegacyTraces.AnyAsync(t => t.LicenseId == licenseId, ct)) return false;
-            throw;
-        }
-        finally
-        {
-            _db.Entry(trace).State = EntityState.Detached;
-        }
     }
 }
