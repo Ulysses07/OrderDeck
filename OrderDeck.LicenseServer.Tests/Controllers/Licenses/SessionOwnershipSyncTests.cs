@@ -302,7 +302,9 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
 
     /// <summary>§8.7: geri yüklenmiş kopya, önceki kopyanın devredilmemiş oturumunu devralır — önceki kopya,
     /// yenisinin ilk görüldüğü andan beri hiç konuşmadıysa. Sahiplik geçer, geçiş günlüğe yazılır ve çağıran sahip
-    /// olarak yargılanır.</summary>
+    /// olarak yargılanır. Oturum canlı, parmak izi bilinmiyor ve önceki kopya 15 dakikadan uzun sessiz: S2'de gelecek
+    /// Y8 kuralında da (§11) devralınan durum. Devrediliyor oturum ve 15 dakikadan kısa sessizlik o kuralın
+    /// testleridir.</summary>
     [Fact]
     public async Task Geri_yuklenmis_kopya_sessiz_onceki_kopyanin_oturumunu_devralir()
     {

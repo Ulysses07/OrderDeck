@@ -192,6 +192,11 @@ public sealed class SalesReplicaService
     /// birden açıksa sahiplik kimseye kendiliğinden geçmez; sahibi dönmeyecek yayını CLI kapatır, §4.10). Görülmemiş
     /// halkanın sessizliği kanıtlanamaz; oturum sahibi zaten her zaman görülmüş bir kopyadır (v2 eklemesi kopya
     /// satırını önce açar).</para>
+    ///
+    /// <para><b>Eksik koşul (spec §8.7, §11, Y8).</b> Parmak izi, sessizlik süresi ve oturum hâli aranmaz. Başka
+    /// makineye geri yüklenen kopya devrediliyor oturumu devralmamalı, canlı oturumu yalnız
+    /// <c>ForceEndSilenceMinutes</c> sessizlikten sonra devralmalı. Kural S2'de gelir; S1'de v2 istemci olmadığı
+    /// için bu yol hiçbir isteği etkilemez. W1 ondan önce açılmaz.</para>
     /// </summary>
     /// <param name="callerId">Çağıran kopya; zincirde yeniden görünürse döngüdür.</param>
     /// <param name="caller">Çağıranın bu istekten önceki hâli; null = kopya bu istekle doğdu (önceki kimliği yok).</param>
