@@ -285,8 +285,9 @@ public sealed class LicensesSalesController : ControllerBase
     /// <summary>Mevcut siparişte yerel değeri sunucudakinden farklı birimler (§4.3); sunucu yazmadı.</summary>
     /// <param name="Units"><c>price</c>, <c>cancel</c>, <c>backup</c>, <c>print</c>.</param>
     /// <param name="LocalWins">Yerel değer doğru sayılır: istemci satırı olağan kuyruğa yeniden alır ve v2 push'uyla
-    /// gönderir (§8.2-4). Yalnız mod Off'ta, geri yüklenmemiş ve kopyalanmamış kopyada ve ayrışan hiçbir birim
-    /// damgalı değilse; aksi hâlde sunucu kazanır, istemci yalnız kaydeder.</param>
+    /// gönderir (§8.2-4). Yalnız mod Off'ta, geri yüklenmemiş ve kopyalanmamış kopyada ve ayrışan her birimi push
+    /// yazabiliyorsa (damgasız; baskıda sunucu satırı basılmamış ve komutla iptal edilmemiş, K3); aksi hâlde sunucu
+    /// kazanır, istemci yalnız kaydeder.</param>
     public sealed record BackfillDivergedDto(Guid Id, IReadOnlyList<string> Units, bool LocalWins);
 
     public sealed record BackfillResponse(
@@ -525,7 +526,7 @@ public sealed class LicensesSalesController : ControllerBase
                     diverged.Add(new BackfillDivergedDto(
                         item.Id,
                         rule.Diverged.Select(u => u.WireName()).ToList(),
-                        localWinsAllowed && !rule.DivergedStamped));
+                        localWinsAllowed && !rule.DivergedLocked));
                 continue;
             }
 

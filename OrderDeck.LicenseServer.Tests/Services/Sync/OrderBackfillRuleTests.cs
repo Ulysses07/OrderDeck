@@ -41,7 +41,7 @@ public sealed class OrderBackfillRuleTests
 
         result.Values.Should().Be(local, "boş alanların hepsi yerelden dolar");
         result.Diverged.Should().BeEmpty();
-        result.DivergedStamped.Should().BeFalse();
+        result.DivergedLocked.Should().BeFalse();
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public sealed class OrderBackfillRuleTests
         result.Values.PaidPrice.Should().BeNull();
         result.Values.Price.Should().Be(100m, "birim yazılmaz");
         result.Diverged.Should().Equal(OrderUnit.Price);
-        result.DivergedStamped.Should().BeFalse();
+        result.DivergedLocked.Should().BeFalse();
     }
 
     [Fact]
@@ -99,7 +99,7 @@ public sealed class OrderBackfillRuleTests
         result.Values.PriceCorrectedAt.Should().BeNull();
         result.Values.PaidPrice.Should().BeNull();
         result.Diverged.Should().Equal(OrderUnit.Price);
-        result.DivergedStamped.Should().BeTrue();
+        result.DivergedLocked.Should().BeTrue();
     }
 
     /// <summary>K3'ün kuralı: baskı grubu yalnız sunucuda basılmış satıra dolar. Sunucuda basılmamış, yerelde basılmış
@@ -134,16 +134,46 @@ public sealed class OrderBackfillRuleTests
 
         var unstamped = OrderBackfillRule.Apply(Row(Server()), local);
         unstamped.Diverged.Should().Equal(OrderUnit.Cancel);
-        unstamped.DivergedStamped.Should().BeFalse();
+        unstamped.DivergedLocked.Should().BeFalse();
         unstamped.Values.CancelledAt.Should().BeNull("birim yazılmaz");
 
         var stamped = OrderBackfillRule.Apply(Row(Server()) with { CancelSetAt = At.AddHours(2) }, local);
-        stamped.DivergedStamped.Should().BeTrue();
+        stamped.DivergedLocked.Should().BeTrue();
 
         var backup = OrderBackfillRule.Apply(
             Row(Server() with { IsTentativeBackup = true }) with { BackupSetAt = At }, Server());
         backup.Diverged.Should().Equal(OrderUnit.Backup);
-        backup.DivergedStamped.Should().BeTrue();
+        backup.DivergedLocked.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Yerel kazanır ancak push gerçekten yazabiliyorsa anlamlıdır (§4.3, §8.2-4/-5). K3 sunucuda basılmış satırın
+    /// baskısını hiçbir push'la değiştirmez ve şu anda komutla iptal edilmiş satıra baskı almaz
+    /// (<c>already-printed</c> / <c>cancelled-elsewhere</c>); yeniden kuyruğa alınan satır hiç <c>applied</c> olmaz
+    /// ve <c>backfillCompleted</c> takılırdı. Böyle baskı ayrışması damgalı birim gibi kilitlidir. Sunucuda
+    /// basılmamış, iptal edilmemiş satırın baskısını K3 push'tan alır: kilitli değil.
+    /// </summary>
+    [Fact]
+    public void Basilmis_ya_da_komutla_iptal_edilmis_satirin_baski_ayrismasi_kilitli()
+    {
+        var reprinted = Server() with { PrintedAt = At.AddMinutes(3) };
+
+        var printed = OrderBackfillRule.Apply(Row(Server()), reprinted);
+        printed.Diverged.Should().Equal(OrderUnit.Print);
+        printed.DivergedLocked.Should().BeTrue("K3: sunucuda basılmış satırın baskısı push'la değişmez");
+
+        var unprinted = OrderBackfillRule.Apply(Row(Server() with { PrintedAt = null }), reprinted);
+        unprinted.Diverged.Should().Equal(OrderUnit.Print);
+        unprinted.DivergedLocked.Should().BeFalse("K3 basılmamış satırın baskısını push'tan alır");
+
+        var cancelled = Server() with { PrintedAt = null, CancelledAt = At, CancelReason = "vazgeçti" };
+        var commandCancelled = OrderBackfillRule.Apply(
+            Row(cancelled) with { CancelSetAt = At }, cancelled with { PrintedAt = At.AddMinutes(3) });
+        commandCancelled.Diverged.Should().Equal(OrderUnit.Print);
+        commandCancelled.DivergedLocked.Should().BeTrue("K3: şu anda komutla iptal edilmiş satıra baskı alınmaz");
+
+        OrderBackfillRule.Apply(Row(cancelled), cancelled with { PrintedAt = At.AddMinutes(3) })
+            .DivergedLocked.Should().BeFalse("damgasız iptal: K3 baskıyı alır");
     }
 
     /// <summary>Damga yalnız ayrışan birime bakar: başka birimin damgası ayrışmayı damgalı yapmaz.</summary>
@@ -155,7 +185,7 @@ public sealed class OrderBackfillRuleTests
         var result = OrderBackfillRule.Apply(Row(Server()) with { PriceSetAt = At }, local);
 
         result.Diverged.Should().Equal(OrderUnit.Cancel);
-        result.DivergedStamped.Should().BeFalse();
+        result.DivergedLocked.Should().BeFalse();
     }
 
     /// <summary>Masaüstü zamanı Unix saniyesi olarak saklar; sunucunun saniye altı kesri ayrışma değildir
