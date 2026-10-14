@@ -168,6 +168,13 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesChangesFeed>();
         // Türetilmiş kargo dosyası (K7, DM7): orders/sync, sales/backfill ve komutlar aynı türetmeyi kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.ShipmentAmountDeriver>();
+        // Satış komutları (§4.6, POST sales/commands): işleme hattı ve tür başına bir işleyici. Kayıtlı olmayan tür
+        // 400 unknown-kind alır.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.SalesCommandService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.CancelCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.UncancelCommandHandler>();
         // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
