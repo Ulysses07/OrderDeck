@@ -464,17 +464,15 @@ public sealed class SalesBackfillTests
         (await SessionAsync(_factory, sessions[0].Id)).Should().BeNull();
     }
 
-    /// <summary>orders/sync'in oturum denetimi (F01): başka lisansın oturumuna bağlı sipariş paketin tamamını 400
-    /// <c>unknown-session</c> ile düşürür; aynı istekteki oturum bilinen sayılır.</summary>
+    /// <summary>orders/sync'in oturum denetimi (F01): hiçbir lisansta olmayan oturuma bağlı sipariş paketin tamamını
+    /// 400 <c>unknown-session</c> ile düşürür; aynı istekteki oturum bilinen sayılır.</summary>
     [Fact]
-    public async Task Baska_lisansin_oturumu_400_hicbir_sey_yazilmaz()
+    public async Task Hicbir_lisansta_olmayan_oturum_400_hicbir_sey_yazilmaz()
     {
         var ctx = await SetupAsync(_factory);
-        var stranger = await SetupAsync(_factory);
-        var foreignSession = await SeedSessionAsync(_factory, stranger.LicenseId, owner: null, endedAt: null);
         var session = NewSession(EndedAt);
         var good = OrderSyncV2Tests.NewItem(session.Id);
-        var bad = OrderSyncV2Tests.NewItem(foreignSession);
+        var bad = OrderSyncV2Tests.NewItem(Guid.NewGuid());
 
         var resp = await ctx.Client.PostAsJsonAsync(Url(ctx, "sales/backfill"),
             Body(Guid.NewGuid(), [session], [good, bad], []));
@@ -484,6 +482,55 @@ public sealed class SalesBackfillTests
         (await OrderAsync(_factory, good.Id)).Should().BeNull();
         (await OrderAsync(_factory, bad.Id)).Should().BeNull();
         (await SessionAsync(_factory, session.Id)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// Lisans değiştiren PC (§3.1, §4.3): yerel geçmişte eski lisansın oturum ve siparişleri durur ve Ws ilk açılışta
+    /// hepsini yeni lisansa gönderir. Başka lisansta var olan oturum ya da sipariş Id'si satır başına
+    /// <c>rejected: foreign-license</c> alır; böyle bir oturuma bağlı yeni siparişler de (oturum istekte olsun ya da
+    /// olmasın). Parti 200 döner, öbür satırlar yazılır, öbür lisansın satırları değişmez.
+    /// </summary>
+    [Fact]
+    public async Task Baska_lisansta_var_olan_Idler_satir_basina_reddedilir()
+    {
+        var ctx = await SetupAsync(_factory);
+        var previous = await SetupAsync(_factory);
+        var oldSession = await SeedSessionAsync(_factory, previous.LicenseId, owner: null, endedAt: EndedAt);
+        var oldOrder = OrderSyncV2Tests.NewItem(oldSession);
+        await PushV1Async(previous, oldOrder);
+        var replicaId = Guid.NewGuid();
+        var oldSessionItem = NewSession(EndedAt, release: true) with { Id = oldSession };
+        var newSession = NewSession(EndedAt);
+        var newOrderInOldSession = OrderSyncV2Tests.NewItem(oldSession);
+        var oldOrderInNewSession = oldOrder with { SessionId = newSession.Id };
+        var good = OrderSyncV2Tests.NewItem(newSession.Id);
+
+        var result = await BackfillAsync(ctx, replicaId,
+            sessions: [oldSessionItem, newSession],
+            orders: [newOrderInOldSession, oldOrderInNewSession, good]);
+
+        result.Sessions.Single(s => s.Id == oldSession).Should()
+            .BeEquivalentTo(new { Reason = "foreign-license", OwnerReplicaId = (Guid?)null });
+        result.Sessions.Single(s => s.Id == newSession.Id).Should()
+            .BeEquivalentTo(new { Reason = (string?)null, OwnerReplicaId = (Guid?)replicaId });
+        foreach (var id in new[] { newOrderInOldSession.Id, oldOrder.Id })
+            result.Orders.Single(o => o.Id == id).Should()
+                .BeEquivalentTo(new { Status = "rejected", Reason = "foreign-license", Version = (int?)null });
+        result.Orders.Single(o => o.Id == good.Id).Status.Should().Be("inserted");
+        (await OrderAsync(_factory, newOrderInOldSession.Id)).Should().BeNull();
+
+        var stillOld = await SessionAsync(_factory, oldSession);
+        stillOld!.LicenseId.Should().Be(previous.LicenseId);
+        stillOld.OwnerReplicaId.Should().BeNull();
+        stillOld.ReleasedAt.Should().BeNull("başka lisansın oturumu devredilmez");
+        var stillOldOrder = await OrderAsync(_factory, oldOrder.Id);
+        stillOldOrder!.LicenseId.Should().Be(previous.LicenseId);
+        stillOldOrder.SessionId.Should().Be(oldSession);
+        stillOldOrder.OriginReplicaId.Should().BeNull();
+
+        // Sonraki sipariş partisi oturumları taşımaz: eski lisansın oturumu "bilinmeyen" sayılıp partiyi düşürmez.
+        var later = await BackfillAsync(ctx, replicaId, orders: [oldOrder, OrderSyncV2Tests.NewItem(oldSession)]);
+        later.Orders.Should().OnlyContain(o => o.Status == "rejected" && o.Reason == "foreign-license");
     }
 
     /// <summary>Başka yayıncının lisansı 404 (sahiplik zarftan önce); geri doldurma çağıranı bilmek zorunda olduğu için
@@ -519,7 +566,8 @@ public sealed class SalesBackfillTests
 
     internal sealed record LinkItem(Guid Id, Guid[] LabelIds);
 
-    internal sealed record SessionResult(Guid Id, Guid? OwnerReplicaId, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt);
+    internal sealed record SessionResult(
+        Guid Id, Guid? OwnerReplicaId, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt, string? Reason = null);
 
     internal sealed record OrderResult(Guid Id, int? Version, string Status, string? Reason);
 

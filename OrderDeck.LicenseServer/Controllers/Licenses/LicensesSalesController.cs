@@ -246,6 +246,10 @@ public sealed class LicensesSalesController : ControllerBase
     private const string BackfillUnchanged = "unchanged";
     private const string BackfillRejected = "rejected";
 
+    /// <summary>Geri doldurma öğesinin Id'si (ya da siparişin oturumu) sunucuda başka bir lisansa ait (§4.3): lisans
+    /// değiştiren PC'nin eski lisans geçmişi. Satır yazılmaz; son durumdur, istemci yeniden göndermez.</summary>
+    public const string ReasonForeignLicense = "foreign-license";
+
     /// <summary>Bir kargo dosyası ve bu kopyada ona bağlı etiketler (§4.3 dosya bağları).</summary>
     public sealed record BackfillShipmentDto(Guid Id, List<Guid>? LabelIds);
 
@@ -266,13 +270,16 @@ public sealed class LicensesSalesController : ControllerBase
 
     /// <summary>Oturumun yazımdan sonraki sahiplik ve devir hâli.</summary>
     /// <param name="ReleasedAt">Devir anı (bu çağrıda ya da önceden). Mod Off'ta istemci yalnız bunu saklar (§5.2).</param>
+    /// <param name="Reason">Doluysa öğe reddedildi ve hiçbir şey yazılmadı (<c>foreign-license</c>: Id başka bir lisansın
+    /// oturumu); öbür alanlar boştur.</param>
     public sealed record BackfillSessionResultDto(
-        Guid Id, Guid? OwnerReplicaId, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt);
+        Guid Id, Guid? OwnerReplicaId, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt, string? Reason = null);
 
     /// <param name="Version">Satırın sürümü (<see cref="Order.SyncVersion"/>, v2 push'unun <c>baseVersion</c>'ı);
     /// reddedilen eklemede satır yoktur: null.</param>
     /// <param name="Status"><c>inserted</c>, <c>filled</c> (boş alanlar doldu), <c>unchanged</c> ya da <c>rejected</c>
-    /// (<c>session-owned-elsewhere</c>: başka kopyanın canlı yayını).</param>
+    /// (<c>session-owned-elsewhere</c>: başka kopyanın canlı yayını; <c>foreign-license</c>: siparişin ya da oturumunun
+    /// Id'si başka bir lisansın).</param>
     public sealed record BackfillOrderResultDto(Guid Id, int? Version, string Status, string? Reason);
 
     /// <summary>Mevcut siparişte yerel değeri sunucudakinden farklı birimler (§4.3); sunucu yazmadı.</summary>
@@ -301,6 +308,10 @@ public sealed class LicensesSalesController : ControllerBase
     ///   yazılmaz, fark <c>diverged</c> döner ve kopya satırına sayılır. Sürüm yalnız satır değiştiyse artar.</item>
     ///   <item><b>Dosya bağları:</b> sipariş yalnız <c>ShipmentId</c> ve <c>ShipmentSetAt</c> boşsa bağlanır; dosyanın
     ///   boş kaynağı çağıranla dolar. Mod On'da yazılan bağ türetilmiş dosyayı aynı yazımda türetir (K7).</item>
+    ///   <item><b>Başka lisansın Id'si:</b> oturum ya da sipariş Id'si sunucuda başka bir lisansa aitse (lisans
+    ///   değiştiren PC'nin eski geçmişi; birincil anahtar yalnız Id) satır yazılmaz, satır başına
+    ///   <c>foreign-license</c> döner; o oturuma bağlı siparişler de. Parti düşmez. Hiçbir lisansta olmayan oturuma
+    ///   bağlı sipariş ise orders/sync gibi partinin tamamını 400 <c>unknown-session</c> ile düşürür.</item>
     /// </list>
     /// <b>Bildirim yok:</b> yayıncıya push, WhatsApp <c>OrderReceived</c> etiket kuralı, shopper push ve "Yayın
     /// başladı" üretilmez — geçmiş yeniden oynatılmaz (D1'in Replay deseni, §10.2). Stok defteri yalnız eklemede ve
@@ -354,7 +365,9 @@ public sealed class LicensesSalesController : ControllerBase
             ct);
 
         // Oturum denetimi orders/sync ile aynı (F01): siparişin oturumu bu lisansın olmalı — sunucuda ya da bu
-        // partide (eksik oturum aynı partide eklenir). Paketin tamamı reddedilir, hiçbir şey yazılmaz.
+        // partide (eksik oturum aynı partide eklenir). Hiçbir lisansta olmayan oturum paketin tamamını reddeder,
+        // hiçbir şey yazılmaz. Başka lisansta var olan oturum ise satır başına reddedilir (aşağıda): StreamSessions'ın
+        // birincil anahtarı yalnız Id; onu "eksik" sanıp eklemek 500 olurdu ve parti her denemede aynı yerde düşerdi.
         var requestSessionIds = sessions.Select(s => s.Id).ToHashSet();
         var sessionKeys = requestSessionIds
             .Concat(orders.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value))
@@ -365,7 +378,10 @@ public sealed class LicensesSalesController : ControllerBase
             : await _db.StreamSessions
                 .Where(s => s.LicenseId == licenseId && sessionKeys.Contains(s.Id))
                 .ToDictionaryAsync(s => s.Id, ct);
-        if (orders.Any(o => o.SessionId is { } sid && !serverSessions.ContainsKey(sid) && !requestSessionIds.Contains(sid)))
+        var foreignSessions = await ForeignIdsAsync(
+            _db.StreamSessions.Where(s => s.LicenseId != licenseId).Select(s => s.Id), sessionKeys, ct);
+        if (orders.Any(o => o.SessionId is { } sid && !serverSessions.ContainsKey(sid)
+                && !requestSessionIds.Contains(sid) && !foreignSessions.Contains(sid)))
             return Problem(
                 title: "unknown-session",
                 detail: "Pakette bu lisansa ait olmayan SessionId var.",
@@ -376,6 +392,9 @@ public sealed class LicensesSalesController : ControllerBase
         var sessionsOwnedElsewhere = 0;
         foreach (var item in sessions)
         {
+            // Başka lisansın oturumu: yazılmaz, yanıtta reddedilir (ve siparişleri de).
+            if (foreignSessions.Contains(item.Id)) continue;
+
             if (!serverSessions.TryGetValue(item.Id, out var session))
             {
                 // Bildirimsiz ekleme: "Yayın başladı" yalnız sessions/sync'in canlı eklemesinde.
@@ -441,8 +460,20 @@ public sealed class LicensesSalesController : ControllerBase
             : await _db.Orders
                 .Where(o => o.LicenseId == licenseId && lookupIds.Contains(o.Id))
                 .ToDictionaryAsync(o => o.Id, ct);
+        // Orders'ın da birincil anahtarı yalnız Id: başka lisansta var olan sipariş "yeni" sanılıp eklenmez.
+        var foreignOrders = await ForeignIdsAsync(
+            _db.Orders.Where(o => o.LicenseId != licenseId).Select(o => o.Id), orders.Select(o => o.Id).ToList(), ct);
+        // Satır başına ret nedeni; yalnız ekleme adaylarında (mevcut satırın oturumu bu lisansındır).
+        var rejected = new Dictionary<Guid, string>();
+        foreach (var item in orders.Where(o => !serverOrders.ContainsKey(o.Id)))
+        {
+            if (foreignOrders.Contains(item.Id) || (item.SessionId is { } sid && foreignSessions.Contains(sid)))
+                rejected[item.Id] = ReasonForeignLicense;
+        }
 
-        var insertItems = orders.Where(o => !serverOrders.ContainsKey(o.Id)).ToList();
+        var insertItems = orders
+            .Where(o => !serverOrders.ContainsKey(o.Id) && !rejected.ContainsKey(o.Id))
+            .ToList();
         // A5b: eski sürüm birleştirmeden sonra da kopyanın Id'sini taşır; ekleme asıl kaydın hex'iyle yazılır.
         var canonicalHex = insertItems.Count == 0
             ? new Dictionary<string, string>()
@@ -465,12 +496,13 @@ public sealed class LicensesSalesController : ControllerBase
         }
 
         var inserted = new Dictionary<Guid, Order>();
-        var rejected = new HashSet<Guid>();
         var changedOrders = new HashSet<Guid>();
         var diverged = new List<BackfillDivergedDto>();
         var affectedShipments = new List<Guid>();
         foreach (var item in orders)
         {
+            if (rejected.ContainsKey(item.Id)) continue;
+
             if (serverOrders.TryGetValue(item.Id, out var current))
             {
                 var server = current.ToServerRow();
@@ -502,7 +534,7 @@ public sealed class LicensesSalesController : ControllerBase
             if (session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller
                 && !await IsSilentPredecessorAsync(owner))
             {
-                rejected.Add(item.Id);
+                rejected[item.Id] = LicensesSessionsSyncController.ReasonOwnedElsewhere;
                 continue;
             }
 
@@ -614,28 +646,35 @@ public sealed class LicensesSalesController : ControllerBase
         }
 
         // Gözlem (§10.5): yalnız sayı ve kimlik; ad ya da metin yazılmaz.
+        var foreignSessionItems = sessions.Count(s => foreignSessions.Contains(s.Id));
         _log.LogInformation(
-            "sales/backfill: {Inserted} sipariş eklendi, {Filled} siparişte boş alan doldu, {Rejected} ekleme reddedildi; "
-            + "ayrışma {LocalWins} yerel / {ServerWins} sunucu kazanır; {Released} oturum devredildi, {OwnedElsewhere} "
-            + "oturum başka kopyanın; {LinkConflicts} bağ çakışması, {UnknownLabels} bilinmeyen etiket, {Derived} dosya "
-            + "türetildi (license={LicenseId}, replica={ReplicaId})",
-            inserted.Count, changedOrders.Count, rejected.Count, localWins, serverWins, released.Count,
-            sessionsOwnedElsewhere, linkConflicts, unknownLabels, derivedShipments.Count, licenseId, caller);
+            "sales/backfill: {Inserted} sipariş eklendi, {Filled} siparişte boş alan doldu, {Rejected} ekleme reddedildi "
+            + "({ForeignOrders} başka lisansın); ayrışma {LocalWins} yerel / {ServerWins} sunucu kazanır; {Released} oturum "
+            + "devredildi, {OwnedElsewhere} oturum başka kopyanın, {ForeignSessions} oturum başka lisansın; "
+            + "{LinkConflicts} bağ çakışması, {UnknownLabels} bilinmeyen etiket, {Derived} dosya türetildi "
+            + "(license={LicenseId}, replica={ReplicaId})",
+            inserted.Count, changedOrders.Count, rejected.Count, rejected.Values.Count(r => r == ReasonForeignLicense),
+            localWins, serverWins, released.Count, sessionsOwnedElsewhere, foreignSessionItems, linkConflicts,
+            unknownLabels, derivedShipments.Count, licenseId, caller);
 
         // Devir koşullu UPDATE ile yazıldıysa izlenen oturum onu görmez: değerler veritabanından.
         var sessionRows = requestSessionIds.Count == 0
             ? new Dictionary<Guid, BackfillSessionResultDto>()
             : await _db.StreamSessions.AsNoTracking()
                 .Where(s => s.LicenseId == licenseId && requestSessionIds.Contains(s.Id))
-                .Select(s => new BackfillSessionResultDto(s.Id, s.OwnerReplicaId, s.EndedAt, s.ReleasedAt))
+                .Select(s => new BackfillSessionResultDto(s.Id, s.OwnerReplicaId, s.EndedAt, s.ReleasedAt, null))
                 .ToDictionaryAsync(s => s.Id, ct);
 
         return Ok(new BackfillResponse(
-            sessions.Where(s => sessionRows.ContainsKey(s.Id)).Select(s => sessionRows[s.Id]).ToList(),
+            sessions
+                .Select(s => foreignSessions.Contains(s.Id)
+                    ? new BackfillSessionResultDto(s.Id, null, null, null, ReasonForeignLicense)
+                    : sessionRows.GetValueOrDefault(s.Id))
+                .OfType<BackfillSessionResultDto>()
+                .ToList(),
             orders.Select(item =>
-                rejected.Contains(item.Id)
-                    ? new BackfillOrderResultDto(
-                        item.Id, null, BackfillRejected, LicensesSessionsSyncController.ReasonOwnedElsewhere)
+                rejected.TryGetValue(item.Id, out var reason)
+                    ? new BackfillOrderResultDto(item.Id, null, BackfillRejected, reason)
                     : inserted.TryGetValue(item.Id, out var added)
                         ? new BackfillOrderResultDto(item.Id, added.SyncVersion, BackfillInserted, null)
                         : new BackfillOrderResultDto(
@@ -646,6 +685,16 @@ public sealed class LicensesSalesController : ControllerBase
                 .ToList(),
             diverged));
     }
+
+    /// <summary>
+    /// <paramref name="ids"/>'ten başka lisansta var olanlar (yalnız Id; satırlar izlenmez, içerikleri okunmaz).
+    /// <paramref name="foreignIds"/> çağıranın lisansı dışındaki satırların Id sorgusudur.
+    /// </summary>
+    private static async Task<IReadOnlySet<Guid>> ForeignIdsAsync(
+        IQueryable<Guid> foreignIds, List<Guid> ids, CancellationToken ct) =>
+        ids.Count == 0
+            ? new HashSet<Guid>()
+            : (await foreignIds.Where(id => ids.Contains(id)).ToListAsync(ct)).ToHashSet();
 
     /// <summary>
     /// Okuma uçlarının kalp atışı: <c>replicaId</c> ya da <c>seenMode</c> verildiyse ikisi birlikte v2 zarfıdır ve
