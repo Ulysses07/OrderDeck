@@ -311,6 +311,13 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > (`SalesSyncS1MigrationTests`), S1'in ilk deploy'unda hiçbir lisans mod On
 > değildir (modu S3'ün `sales-sync enable`'ı açar) ve eski imajın pencerede
 > kaçırdığı devir damgalarını sonradan `sales-release-repair` işi kapatır.
+> Bir kalıntı daha var: eski imaj, v0.9.10'un bayat oturum gönderimiyle
+> devredilmiş bir yayının `EndedAt`'ini NULL'layabilir (S1'in kapattığı hata).
+> İstemci o oturumu bir daha göndermez; yayın panelde canlı görünür. Bunu da
+> aynı iş kapatır: (d) adımı `EndedAt`'i devir anıyla doldurur. İş S1 imajı
+> geri gelince açılışta bir kez ve her gün 04:50 UTC'de koşar. Eski imajda
+> kalındıkça (mod Off'ta elle sabitleme dahil) kalıntı birikir, ilk S1 koşusu
+> hepsini kapatır.
 > S1 ve sonrası imajlar arasında dönüş bu açıdan güvenli: hepsi damgalara
 > uyar. Mod On bir lisans varken S1 öncesine dönmek gerçekten gerekirse önce
 > o lisansları `sales-sync disable` ile kapat ve bilgisayarların Off turunu

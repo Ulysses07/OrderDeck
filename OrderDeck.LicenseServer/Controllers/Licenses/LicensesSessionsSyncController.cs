@@ -179,12 +179,20 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 session = current;
 
                 // Devredilmiş oturum (§2): birim yazıcısı artık sunucu. Başlık, platform ve not yok sayılır; EndedAt
-                // zaten dolu ve tekdüze. Satıra hiç yazılmaz — her yeniden gönderim (W1 devri görene kadar oturumu
-                // yeniden yollar) oturumun rowversion'ını ve akışı boşuna ilerletirdi.
+                // zaten dolu ve tekdüze. Satıra yazılmaz — her yeniden gönderim (W1 devri görene kadar oturumu
+                // yeniden yollar) oturumun rowversion'ını ve akışı boşuna ilerletirdi. Tek istisna S1 öncesi imaja
+                // dönüş kalıntısı: eski kod devredilmiş oturumun EndedAt'ini bayat gönderimle NULL'layabilir. Dolu
+                // değer gelirse boş alan doldurulur (tekdüze: yalnız boşsa); gelmezse onarım işi devir anını yazar
+                // (sales-release-repair, d).
                 if (current.ReleasedAt is not null)
                 {
                     if (current.Title != item.Title || current.Platforms != item.Platforms || current.Notes != item.Notes)
                         ignored[item.Id] = ReasonReleased;
+                    if (current.EndedAt is null && item.EndedAt is not null)
+                    {
+                        current.EndedAt = item.EndedAt;
+                        current.UpdatedAt = now;
+                    }
                     continue;
                 }
 

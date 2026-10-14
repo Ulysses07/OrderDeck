@@ -90,7 +90,8 @@ public sealed class SalesReleaseRepairJobTests : IAsyncLifetime
         var report = await RunJobAsync();
 
         report.Should().Be(new SalesReleaseRepairJob.Report(
-            SessionsReleased: 1, OrdersStamped: 1, OrderBatches: 1, ShipmentsRederived: 0, ShipmentsConflicted: 0));
+            SessionsReleased: 1, OrdersStamped: 1, OrderBatches: 1, ShipmentsRederived: 0, ShipmentsConflicted: 0,
+            ReleasedEndedAtFilled: 0));
 
         var legacy = await SessionAsync(legacyEnded);
         legacy.ReleasedAt.Should().NotBeNull("miras oturum EndedAt dolu ve sahipsiz: devredilir (§4.9-a)");
@@ -117,7 +118,52 @@ public sealed class SalesReleaseRepairJobTests : IAsyncLifetime
 
         var second = await RunJobAsync();
 
-        second.Should().Be(new SalesReleaseRepairJob.Report(0, 0, 0, 0, 0), "iş idempotent");
+        second.Should().Be(new SalesReleaseRepairJob.Report(0, 0, 0, 0, 0, 0), "iş idempotent");
+        (await ChangeSeqsAsync()).Should().Equal(after, "ikinci koşu hiçbir satırı yazmaz");
+    }
+
+    /// <summary>
+    /// (d), S1 öncesi imaja dönüş kalıntısı (deploy/README): eski imajın oturum güncellemesi
+    /// (<c>current.EndedAt = item.EndedAt</c>) v0.9.10'un bayat gönderimiyle devredilmiş oturumun EndedAt'ini
+    /// NULL'lar; istemci satırı senkron saydığı için o oturumu bir daha göndermez. İş EndedAt'i devir anıyla
+    /// doldurur (devir yalnız EndedAt doluyken yazılır; elde kalan en yakın sunucu bilgisi) ve satır akışta
+    /// ilerler. Devir anına, canlı oturuma ve sağlam devredilmiş oturuma dokunulmaz; ikinci koşu etkisiz.
+    /// </summary>
+    [Fact]
+    public async Task Devredilmis_oturumun_eski_imajin_NULLladigi_EndedAt_i_devir_aniyla_doldurulur()
+    {
+        var licenseId = await SeedLicenseAsync(SalesSyncMode.Off);
+        var cleared = Guid.NewGuid();
+        await InsertPreS1SessionAsync(licenseId, cleared, endedAt: T0.AddHours(2));
+        var releasedAt = T0.AddHours(2).AddMinutes(1);
+        await ReleaseAsync(licenseId, cleared, releasedAt);
+        // Eski imajın güncellemesi: yalnız bildiği kolonlar, bayat gönderimin boş EndedAt'i.
+        await ExecAsync("UPDATE StreamSessions SET EndedAt = NULL, UpdatedAt = @at WHERE Id = @id",
+            ("@at", T0.AddHours(3)), ("@id", cleared));
+
+        var intact = Guid.NewGuid();
+        await InsertPreS1SessionAsync(licenseId, intact, endedAt: T0.AddHours(1));
+        await ReleaseAsync(licenseId, intact, T0.AddHours(1).AddMinutes(1));
+        var live = Guid.NewGuid();
+        await InsertPreS1SessionAsync(licenseId, live, endedAt: null);
+        var before = await ChangeSeqsAsync();
+
+        var report = await RunJobAsync();
+
+        report.Should().Be(new SalesReleaseRepairJob.Report(
+            SessionsReleased: 0, OrdersStamped: 0, OrderBatches: 0, ShipmentsRederived: 0, ShipmentsConflicted: 0,
+            ReleasedEndedAtFilled: 1));
+        var repaired = await SessionAsync(cleared);
+        repaired.EndedAt.Should().Be(releasedAt);
+        repaired.ReleasedAt.Should().Be(releasedAt, "devir anı değişmez");
+        repaired.ChangeSeq.Should().BeGreaterThan(before[cleared], "düzeltme akışla öbür bilgisayarlara iner");
+        (await SessionAsync(intact)).EndedAt.Should().Be(T0.AddHours(1), "dolu EndedAt'e dokunulmaz");
+        (await SessionAsync(live)).EndedAt.Should().BeNull("canlı oturum devredilmemiştir, bitirilmez");
+        var after = await ChangeSeqsAsync();
+        after[intact].Should().Be(before[intact]);
+        after[live].Should().Be(before[live]);
+
+        (await RunJobAsync()).Should().Be(new SalesReleaseRepairJob.Report(0, 0, 0, 0, 0, 0), "iş idempotent");
         (await ChangeSeqsAsync()).Should().Equal(after, "ikinci koşu hiçbir satırı yazmaz");
     }
 

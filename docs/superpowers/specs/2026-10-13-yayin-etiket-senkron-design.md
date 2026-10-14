@@ -320,6 +320,7 @@ Ayrı bir "dosyadan çıkar" (detach) komutu yok. İptal ve iptali geri alma ba�
   - (a) `EndedAt` dolu ∧ `ReleasedAt` NULL ∧ `OwnerReplicaId IS NULL` olan miras oturumlar devredilir.
   - (b) Oturumu devredilmiş ama `SessionReleasedAt`'i NULL kalmış siparişler (eski imajın geri alma penceresinde eklediği satırlar) 5 bin'lik partilerle damgalanır.
   - (c) Mod On'da: `AmountDerivedAt` dolu ve **Shipped olmayan** bir dosyanın tutarı türetilmiş değerden farklıysa yeniden türetilir ve günlüğe yazılır. Shipped dosyanın donmuş tutarına dokunulmaz (§7.2); bunu bir test sabitler.
+  - (d) `ReleasedAt` dolu ∧ `EndedAt` NULL olan oturumlarda `EndedAt = ReleasedAt`. S1 ve sonrası bu hâli yazmaz; yalnız S1 öncesi imaja dönüşte kalır: eski kod v0.9.10'un bayat gönderimiyle devredilmiş oturumun `EndedAt`'ini NULL'lar, istemci o oturumu bir daha göndermez. Asıl kapanış anı kaybolmuştur; devir anı onu izleyen ilk sunucu anıdır. `sessions/sync` de devredilmiş oturumun boş `EndedAt`'ini dolu gönderimle doldurur (§4.1'in tekdüzeliği: yalnız boşsa).
   - İdempotent. Sayılar günlüğe yazılır; ad yazılmaz.
   - v2 oturumlarını bu iş **devretmez**. Devrediliyor hâlindeki bir v2 oturumunu devretmek "etiket kuyruğu boşalmadan devir yok" kuralını bozardı. Geri alma penceresinde kaybolan v2 kapanışını istemci kendisi yeniden gönderir (§5.2).
 - **`sales-command-log-retention`:** günde bir; 90 günden eski kayıtları siler.
@@ -805,7 +806,7 @@ O anda canlı bir yayın varsa yerel kalır ve normal yoldan devreder.
 
 ### 8.6 Geri dönüş kuralları
 
-- **S1 otomatik geri alınırsa** (`/ready`): imaj S1 öncesine döner, göçler kalır. O sırada v2 konuşan istemci yok, çünkü Ws S3'ten sonra çıkar.
+- **S1 otomatik geri alınırsa** (`/ready`): imaj S1 öncesine döner, göçler kalır. O sırada v2 konuşan istemci yok, çünkü Ws S3'ten sonra çıkar. Pencerede eski kod kaçan devir damgaları ve, v0.9.10'un bayat oturum gönderimiyle, devredilmiş yayının boş `EndedAt`'ini bırakabilir; S1 geri gelince onarım işi ikisini de kapatır (§4.9 b ve d).
 - **S2 ya da S3 otomatik geri alınırsa:** bir önceki imaj birim damgalarına zaten uyar (K2 S1'de). Komut ve kira uçları 404 döner:
   - istemcide devredilmiş yayın düzenlemesi kapanır
   - ödeme isteği GUID'li kişide engellenir (fail-closed, §6.5)

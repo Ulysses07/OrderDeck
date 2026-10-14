@@ -9,7 +9,7 @@ namespace OrderDeck.LicenseServer.Services.Sync;
 /// <summary>
 /// <c>sales-release-repair</c> — spec 2026-10-13 §4.9, DM3, DM7. Göç veri geri doldurmaz (§3.1); devrin ve
 /// türetilmiş dosyanın kaçırdığı satırları bu iş kapatır. Açılışta bir kez kuyruğa alınır ve günde bir koşar
-/// (04:50 UTC, yayın penceresi dışında; <see cref="Program.ScheduleSalesSyncJobs"/>). Üç adım, bu sırayla:
+/// (04:50 UTC, yayın penceresi dışında; <see cref="Program.ScheduleSalesSyncJobs"/>). Dört adım, bu sırayla:
 /// <list type="number">
 ///   <item><b>(a) Miras oturumların devri.</b> <c>EndedAt</c> dolu ∧ <c>ReleasedAt</c> NULL ∧
 ///   <c>OwnerReplicaId</c> NULL olan oturumlar <see cref="SessionReleaser.ReleaseUnownedAsync"/> ile devredilir:
@@ -30,6 +30,13 @@ namespace OrderDeck.LicenseServer.Services.Sync;
 ///   verildiği anda donmuştur (§7.2), <c>--accept-shipment</c> ile kabul edilmiş dosya (<c>AmountDerivedAt</c>
 ///   NULL) saklanan tutarıyla kalır: ikisine de dokunulmaz. Mod Off'ta tutarın yazıcısı dosyanın kopyasıdır
 ///   (§7.4); iş o lisanslara bakmaz.</item>
+///   <item><b>(d) Devredilmiş oturumun boş EndedAt'i.</b> <c>ReleasedAt</c> dolu ∧ <c>EndedAt</c> NULL olan
+///   oturumlarda <c>EndedAt = ReleasedAt</c>, <c>UpdatedAt</c> ilerler. S1 ve sonrası bu hâli hiç yazmaz (devir
+///   yalnız EndedAt doluyken, EndedAt tekdüze); yalnız S1 öncesi imaja dönüşte kalır: eski kodun oturum
+///   güncellemesi v0.9.10'un bayat gönderimiyle (EndedAt boş) devredilmiş oturumun EndedAt'ini NULL'lar ve istemci
+///   satırı senkron saydığı için o oturumu bir daha göndermez. Yayın panelde sürekli canlı görünür, akış onu boş
+///   EndedAt'le öbür bilgisayarlara taşırdı. Asıl kapanış anı kaybolmuştur; devir anı onu izleyen ilk sunucu
+///   anıdır. Asıl değer sonradan gelirse <c>sessions/sync</c> onu ancak bu adımdan önce alır.</item>
 /// </list>
 ///
 /// <para><b>İdempotent.</b> Her adım yalnız eksik olanı yazar: ikinci koşu hiçbir satırı (ve <c>ChangeSeq</c>'i)
@@ -80,8 +87,10 @@ public sealed class SalesReleaseRepairJob
     /// <param name="OrderBatches">(b) satır yazan parti sayısı.</param>
     /// <param name="ShipmentsRederived">(c) tutarı düzeltilen dosya.</param>
     /// <param name="ShipmentsConflicted">(c) eşzamanlı yazım yüzünden bu koşuda atlanan dosya.</param>
+    /// <param name="ReleasedEndedAtFilled">(d) EndedAt'i devir anıyla doldurulan devredilmiş oturum.</param>
     public sealed record Report(
-        int SessionsReleased, int OrdersStamped, int OrderBatches, int ShipmentsRederived, int ShipmentsConflicted);
+        int SessionsReleased, int OrdersStamped, int OrderBatches, int ShipmentsRederived, int ShipmentsConflicted,
+        int ReleasedEndedAtFilled);
 
     public async Task<Report> RunAsync(CancellationToken ct)
     {
@@ -90,14 +99,16 @@ public sealed class SalesReleaseRepairJob
         var released = await ReleaseLegacySessionsAsync(now, ct);
         var (stamped, batches) = await StampMissedOrdersAsync(ct);
         var (rederived, conflicted, licenses) = await RederiveShipmentsAsync(now, ct);
+        var endedAtFilled = await FillReleasedEndedAtAsync(now, ct);
 
-        var report = new Report(released, stamped, batches, rederived, conflicted);
-        if (released > 0 || stamped > 0 || rederived > 0 || conflicted > 0)
+        var report = new Report(released, stamped, batches, rederived, conflicted, endedAtFilled);
+        if (released > 0 || stamped > 0 || rederived > 0 || conflicted > 0 || endedAtFilled > 0)
             _log.LogWarning(
                 "sales-release-repair: {Sessions} miras oturum devredildi, {Orders} siparişe devir damgası basıldı "
                 + "({Batches} parti), {Shipments} türetilmiş dosyanın tutarı düzeltildi ({Licenses} lisans, mod On), "
-                + "{Conflicts} dosya eşzamanlı yazım yüzünden atlandı",
-                released, stamped, batches, rederived, licenses, conflicted);
+                + "{Conflicts} dosya eşzamanlı yazım yüzünden atlandı, {EndedAtFilled} devredilmiş oturumun boş "
+                + "EndedAt'i devir anıyla dolduruldu (S1 öncesi imaja dönüş kalıntısı)",
+                released, stamped, batches, rederived, licenses, conflicted, endedAtFilled);
         else
             _log.LogInformation("sales-release-repair: düzeltilecek satır yok");
         return report;
@@ -145,6 +156,16 @@ public sealed class SalesReleaseRepairJob
         }
         return (stamped, batches);
     }
+
+    /// <summary>(d) Devredilmiş oturumun boş EndedAt'i; bkz. sınıf dokümanı. Tek koşullu deyim: koşul veritabanında,
+    /// satır ancak hâlâ boşsa yazılır (eşzamanlı bir <c>sessions/sync</c> asıl değeri önce yazdıysa dokunulmaz). Aday
+    /// yalnız geri dönüş kalıntısı olduğu için parti gerekmez.</summary>
+    private Task<int> FillReleasedEndedAtAsync(DateTimeOffset now, CancellationToken ct) =>
+        _db.StreamSessions
+            .Where(s => s.ReleasedAt != null && s.EndedAt == null)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.EndedAt, s => s.ReleasedAt)
+                .SetProperty(s => s.UpdatedAt, now), ct);
 
     /// <summary>(c) Türetilmiş dosyalar, yalnız mod On; bkz. sınıf dokümanı.</summary>
     private async Task<(int Rederived, int Conflicted, int Licenses)> RederiveShipmentsAsync(

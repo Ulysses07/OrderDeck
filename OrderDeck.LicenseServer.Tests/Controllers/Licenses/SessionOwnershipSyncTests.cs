@@ -267,6 +267,37 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
             .Single().Status.Should().Be("applied");
     }
 
+    /// <summary>
+    /// S1 öncesi imaja dönüş kalıntısı (deploy/README, §8.6): eski kod (<c>current.EndedAt = item.EndedAt</c>)
+    /// v0.9.10'un bayat gönderimiyle devredilmiş oturumun EndedAt'ini NULL'layabilir. Dolu EndedAt yeniden gelirse
+    /// devredilmiş oturum onu da alır — tekdüzelik: yalnız boş doldurulur, sonra kaymaz. Boş gelen gönderim satıra
+    /// yazmaz; devir anı değişmez.
+    /// </summary>
+    [Fact]
+    public async Task Devredilmis_oturumun_bos_EndedAt_i_dolu_gonderimle_onarilir()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var releasedAt = EndedAt.AddMinutes(1);
+        var sessionId = await SeedSessionAsync(licenseId, owner: null, machineName: null, releasedAt: releasedAt);
+        var seeded = await SessionAsync(sessionId);
+
+        var empty = (await PushSessionsAsync(client, licenseId, V1Body(V1Session(sessionId)))).Single();
+
+        empty.EndedAt.Should().BeNull();
+        (await SessionAsync(sessionId)).UpdatedAt.Should().Be(seeded.UpdatedAt, "boş gönderim yazmaz");
+
+        var echo = (await PushSessionsAsync(client, licenseId, V1Body(V1Session(sessionId, EndedAt)))).Single();
+
+        echo.Status.Should().Be("applied");
+        echo.EndedAt.Should().Be(EndedAt);
+        var stored = await SessionAsync(sessionId);
+        stored.EndedAt.Should().Be(EndedAt);
+        stored.ReleasedAt.Should().Be(releasedAt, "devir anı değişmez");
+
+        await PushSessionsAsync(client, licenseId, V1Body(V1Session(sessionId, EndedAt.AddMinutes(40))));
+        (await SessionAsync(sessionId)).EndedAt.Should().Be(EndedAt, "doldurulan EndedAt da tekdüze");
+    }
+
     // ── Geri yüklenmiş kopya (§8.7) ───────────────────────────────────────────
 
     /// <summary>§8.7: geri yüklenmiş kopya, önceki kopyanın devredilmemiş oturumunu devralır — önceki kopya,
@@ -528,8 +559,8 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
 
     private async Task<Guid> SeedSessionAsync(
         Guid licenseId,
-        Guid owner,
-        string machineName,
+        Guid? owner,
+        string? machineName,
         DateTimeOffset? endedAt = null,
         DateTimeOffset? releasedAt = null)
     {
