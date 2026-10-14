@@ -59,6 +59,12 @@ public class Program
             Environment.Exit(exit);
             return;
         }
+        if (args.Length > 0 && args[0] == "sales-sync")
+        {
+            var exit = await OrderDeck.LicenseServer.Tools.SalesSync.RunAsync(args);
+            Environment.Exit(exit);
+            return;
+        }
 
         var builder = WebApplication.CreateBuilder(args);
 
