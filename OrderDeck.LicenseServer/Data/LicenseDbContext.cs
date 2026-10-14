@@ -72,6 +72,7 @@ public class LicenseDbContext : DbContext
     public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
     public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<LicenseShippingSettings> LicenseShippingSettings => Set<LicenseShippingSettings>();
+    public DbSet<SalesCommandLog> SalesCommandLogs => Set<SalesCommandLog>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
@@ -654,6 +655,25 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.ShippingFee).HasPrecision(18, 2);
             b.Property(s => s.Version).IsConcurrencyToken();
             b.Property(s => s.UpdatedBy).HasMaxLength(64);
+        });
+
+        // Satış komutu günlüğü (yayın ve etiket senkronu S2, spec 2026-10-13 §3.1,
+        // §4.6): idempotency ve denetim izi. Birincil anahtar istemcinin CommandId'si
+        // — lisans sınırı yok, aynı Id başka lisansta görülürse content-conflict.
+        // Lisans silinince günlük de gider: cascade, WpfReplicas ile aynı gerekçe
+        // (lisansı silen bugünkü yol ve S2 öncesi imaj bu tabloyu bilmez). İndeks
+        // lisansın denetim sorgusu ve saklama süresi için (LicenseId, CreatedAt).
+        mb.Entity<SalesCommandLog>(b =>
+        {
+            b.HasKey(c => c.CommandId);
+            b.Property(c => c.CommandId).ValueGeneratedNever();
+            b.HasOne(c => c.License).WithMany()
+                .HasForeignKey(c => c.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.Kind).HasMaxLength(SalesCommandLog.KindMaxLength).IsRequired();
+            b.Property(c => c.RequestHash).HasMaxLength(SalesCommandLog.RequestHashLength).IsFixedLength().IsRequired();
+            b.Property(c => c.Status).HasMaxLength(SalesCommandLog.StatusMaxLength).IsRequired();
+            b.Property(c => c.ResultJson).IsRequired();
+            b.HasIndex(c => new { c.LicenseId, c.CreatedAt });
         });
 
         mb.Entity<Shopper>(b =>
