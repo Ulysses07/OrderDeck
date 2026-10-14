@@ -13,7 +13,7 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// <summary>
 /// Satış gönderim uçlarının (<c>sessions/sync</c>, <c>orders/sync</c>, <c>shipments/sync</c>) istek düzeyindeki
 /// zarfı — spec 2026-10-13 §4.0. v2 isteği kopya satırını açar ya da kalp atışını ilerletir; protokolsüz (v1)
-/// istek kopya açmaz, iki kipte de <c>LastLegacySalesPushAt</c> izini saatte en çok bir kez yazar. InMemory: iz
+/// istek kopya açmaz, iki kipte de lisansın <c>SalesLegacyTraces</c> izini saatte en çok bir kez yazar. InMemory: iz
 /// burada izlenen varlıkla yazılıyor; ilişkisel koşullu UPDATE yolu <see cref="SalesReplicaRelationalTests"/>'te.
 /// </summary>
 public sealed class SalesReplicaTouchTests : IClassFixture<ApiFactory>
@@ -72,7 +72,7 @@ public sealed class SalesReplicaTouchTests : IClassFixture<ApiFactory>
         touched!.FirstSeenAt.Should().Be(firstSeen, "ilk görülme yalnız eklemede yazılır");
         touched.LastSeenAt.Should().BeOnOrAfter(startedAt, "her v2 isteği kalp atışıdır");
         touched.ClientVersion.Should().Be("0.9.12");
-        (await LicenseAsync(licenseId)).LastLegacySalesPushAt.Should().BeNull("v2 isteği protokolsüz iz değildir");
+        (await LegacyTraceAsync(licenseId)).Should().BeNull("v2 isteği protokolsüz iz değildir");
     }
 
     /// <summary>Zarf istek düzeyinde ek alan; paketin kendisi bugünkü gibi işlenir.</summary>
@@ -113,7 +113,7 @@ public sealed class SalesReplicaTouchTests : IClassFixture<ApiFactory>
         (await PushAsync(client, licenseId, endpoint, V1(endpoint), userAgent: null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
 
-        (await LicenseAsync(licenseId)).LastLegacySalesPushAt.Should().BeOnOrAfter(before);
+        (await LegacyTraceAsync(licenseId)).Should().BeOnOrAfter(before);
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.WpfReplicas.AnyAsync(r => r.LicenseId == licenseId)).Should().BeFalse();
@@ -127,25 +127,25 @@ public sealed class SalesReplicaTouchTests : IClassFixture<ApiFactory>
         var (client, licenseId) = await SetupAsync();
         (await PushAsync(client, licenseId, "orders/sync", V1("orders/sync"), userAgent: null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        var first = (await LicenseAsync(licenseId)).LastLegacySalesPushAt;
+        var first = (await LegacyTraceAsync(licenseId));
         first.Should().NotBeNull();
 
         (await PushAsync(client, licenseId, "orders/sync", V1("orders/sync"), userAgent: null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        (await LicenseAsync(licenseId)).LastLegacySalesPushAt.Should().Be(first, "pencere içinde yeniden yazılmaz");
+        (await LegacyTraceAsync(licenseId)).Should().Be(first, "pencere içinde yeniden yazılmaz");
 
         var recent = DateTimeOffset.UtcNow.AddMinutes(-50);
-        await UpdateLicenseAsync(licenseId, l => l.LastLegacySalesPushAt = recent);
+        await SetLegacyTraceAsync(licenseId, recent);
         (await PushAsync(client, licenseId, "shipments/sync", V1("shipments/sync"), userAgent: null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        (await LicenseAsync(licenseId)).LastLegacySalesPushAt.Should().Be(recent);
+        (await LegacyTraceAsync(licenseId)).Should().Be(recent);
 
         var stale = DateTimeOffset.UtcNow.AddMinutes(-61);
-        await UpdateLicenseAsync(licenseId, l => l.LastLegacySalesPushAt = stale);
+        await SetLegacyTraceAsync(licenseId, stale);
         var beforePush = DateTimeOffset.UtcNow;
         (await PushAsync(client, licenseId, "sessions/sync", V1("sessions/sync"), userAgent: null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        (await LicenseAsync(licenseId)).LastLegacySalesPushAt.Should().BeOnOrAfter(beforePush);
+        (await LegacyTraceAsync(licenseId)).Should().BeOnOrAfter(beforePush);
     }
 
     /// <summary>
@@ -207,7 +207,7 @@ public sealed class SalesReplicaTouchTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await resp.Content.ReadAsStringAsync()).Should().Contain("invalid-envelope");
-        (await LicenseAsync(licenseId)).LastLegacySalesPushAt.Should().BeNull();
+        (await LegacyTraceAsync(licenseId)).Should().BeNull();
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.WpfReplicas.AnyAsync(r => r.LicenseId == licenseId)).Should().BeFalse();
@@ -272,11 +272,23 @@ public sealed class SalesReplicaTouchTests : IClassFixture<ApiFactory>
         await db.SaveChangesAsync();
     }
 
-    private async Task<License> LicenseAsync(Guid licenseId)
+    /// <summary>Lisansın protokolsüz istek izi; satır yoksa null.</summary>
+    private async Task<DateTimeOffset?> LegacyTraceAsync(Guid licenseId)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        return await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == licenseId);
+        return await db.SalesLegacyTraces.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId)
+            .Select(t => (DateTimeOffset?)t.LastLegacySalesPushAt)
+            .SingleOrDefaultAsync();
+    }
+
+    private async Task SetLegacyTraceAsync(Guid licenseId, DateTimeOffset value)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.SalesLegacyTraces.SingleAsync(t => t.LicenseId == licenseId)).LastLegacySalesPushAt = value;
+        await db.SaveChangesAsync();
     }
 
     private async Task UpdateLicenseAsync(Guid licenseId, Action<License> change)

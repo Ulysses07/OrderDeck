@@ -104,7 +104,7 @@ public sealed class SalesReplicaServiceTests
         var (_, offLog) = await AcceptAsync(offLicense, SalesEnvelope.Legacy, "orders/sync");
         offLog.Entries.Should().BeEmpty();
         await using var db = Db();
-        (await db.Licenses.SingleAsync(l => l.Id == offLicense)).LastLegacySalesPushAt.Should().NotBeNull();
+        (await db.SalesLegacyTraces.SingleAsync(t => t.LicenseId == offLicense)).LastLegacySalesPushAt.Should().BeAfter(DateTimeOffset.MinValue);
         (await db.WpfReplicas.AnyAsync()).Should().BeFalse();
     }
 

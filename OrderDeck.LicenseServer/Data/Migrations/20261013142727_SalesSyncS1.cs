@@ -8,7 +8,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
     /// <summary>
     /// Yayın ve etiket senkronu S1 (spec 2026-10-13 §3.1, yalnız S1 satırları):
     /// sahiplik ve devir kolonları, birim damgaları, akış imleci (ChangeSeq),
-    /// mod kapısı ve kopya izi (WpfReplicas).
+    /// mod kapısı, kopya izi (WpfReplicas) ve protokolsüz istek izi
+    /// (SalesLegacyTraces).
     ///
     /// <para><b>Yalnız ekleyici (genişlet/daralt).</b> Master'a merge otomatik
     /// deploy'dur ve /ready 60 sn'de gelmezse imaj S1 öncesine döner ama bu göç
@@ -202,12 +203,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 type: "datetimeoffset",
                 nullable: true);
 
-            migrationBuilder.AddColumn<DateTimeOffset>(
-                name: "LastLegacySalesPushAt",
-                table: "Licenses",
-                type: "datetimeoffset",
-                nullable: true);
-
             // DEFAULT 0 (Off) kalıcı bir kısıtlama: var olan ve S1 öncesi
             // imajın açtığı lisans mod Off doğar.
             migrationBuilder.AddColumn<byte>(
@@ -259,6 +254,27 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
+            // Protokolsüz satış isteği izi (§4.0) Licenses satırında değil:
+            // oraya yapılan her UPDATE Licenses.RowVersion'ı ilerletir ve
+            // License'ı kaydeden bugünkü yollarla yarışırdı (SalesLegacyTrace).
+            migrationBuilder.CreateTable(
+                name: "SalesLegacyTraces",
+                columns: table => new
+                {
+                    LicenseId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    LastLegacySalesPushAt = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_SalesLegacyTraces", x => x.LicenseId);
+                    table.ForeignKey(
+                        name: "FK_SalesLegacyTraces_Licenses_LicenseId",
+                        column: x => x.LicenseId,
+                        principalTable: "Licenses",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
             migrationBuilder.CreateIndex(
                 name: "IX_StreamSessions_LicenseId_ChangeSeq",
                 table: "StreamSessions",
@@ -295,6 +311,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropTable(
+                name: "SalesLegacyTraces");
+
             migrationBuilder.DropTable(
                 name: "WpfReplicas");
 
@@ -417,10 +436,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             migrationBuilder.DropColumn(
                 name: "TextScrubbedAt",
                 table: "Orders");
-
-            migrationBuilder.DropColumn(
-                name: "LastLegacySalesPushAt",
-                table: "Licenses");
 
             migrationBuilder.DropColumn(
                 name: "SalesSyncMode",

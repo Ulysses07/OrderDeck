@@ -50,13 +50,14 @@ public sealed record ReplicaHello(
 /// (ShopperPaymentSubmissionService deseni): varsa güncellemeye dönülür, yoksa hata olduğu gibi yukarı gider —
 /// bilinmeyen bir yazma hatası yarış diye yutulmaz.</para>
 ///
-/// <para><b>Protokolsüz istek (≤0.9.10)</b> kopya satırı açmaz; iki kipte de <c>Licenses.LastLegacySalesPushAt</c>
-/// yazar (mod kapısının "7 gün eski sürüm izi yok" koşulu, §4.10-3). İz izlenen bir License varlığıyla
-/// YAZILMAZ: Licenses'ın RowVersion jetonu var ve ActivationManager onun çakışmasında yeniden deniyor; izlenen
-/// yazım hem push'u o çakışmayla 500'e düşürebilir hem de her push'ta etkinleştirmelerle yarışırdı. İlişkisel
-/// sağlayıcıda tek bir koşullu UPDATE, saatte en çok bir kez (koşul veritabanında, yarışta da tek yazım).
-/// InMemory'de ExecuteUpdate olmadığı için aynı kural izlenen varlığa uygulanır (SecurityDataRetentionJob,
-/// WhatsAppInboundJob deseni).</para>
+/// <para><b>Protokolsüz istek (≤0.9.10)</b> kopya satırı açmaz; iki kipte de lisansın
+/// <see cref="SalesLegacyTrace"/> satırını yazar (mod kapısının "7 gün eski sürüm izi yok" koşulu, §4.10-3). İz
+/// Licenses satırında DEĞİL: Licenses'ın RowVersion'ı eşzamanlılık jetonudur ve satıra yapılan her UPDATE —
+/// izlenmeyen ExecuteUpdate dahil — onu ilerletir; License'ı okuyup kaydeden ve çakışmayı yakalamayan bugünkü
+/// yollar (payment-account, shopper-code) eski sürümün push'uyla yarışıp 500 alırdı. İlişkisel sağlayıcıda
+/// olağan yol tek bir koşullu UPDATE, saatte en çok bir kez (koşul veritabanında, yarışta da tek yazım); lisansın
+/// ilk izi bir eklemedir. InMemory'de ExecuteUpdate olmadığı için aynı kural izlenen varlığa uygulanır
+/// (SecurityDataRetentionJob, WhatsAppInboundJob deseni).</para>
 /// </summary>
 public sealed class SalesReplicaService
 {
@@ -317,21 +318,25 @@ public sealed class SalesReplicaService
 
         if (_db.Database.IsRelational())
         {
-            written = await _db.Licenses
-                .Where(l => l.Id == licenseId
-                    && (l.LastLegacySalesPushAt == null || l.LastLegacySalesPushAt < staleBefore))
-                .ExecuteUpdateAsync(s => s.SetProperty(l => l.LastLegacySalesPushAt, now), ct) > 0;
+            // Olağan yol tek koşullu UPDATE: eşik içindeyse satır yazılmaz.
+            written = await _db.SalesLegacyTraces
+                .Where(t => t.LicenseId == licenseId && t.LastLegacySalesPushAt < staleBefore)
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.LastLegacySalesPushAt, now), ct) > 0;
+            if (!written && !await _db.SalesLegacyTraces.AnyAsync(t => t.LicenseId == licenseId, ct))
+                written = await InsertLegacyTraceAsync(licenseId, now, ct);
         }
         else
         {
-            var license = await _db.Licenses.SingleAsync(l => l.Id == licenseId, ct);
-            written = license.LastLegacySalesPushAt is null || license.LastLegacySalesPushAt < staleBefore;
+            var trace = await _db.SalesLegacyTraces.SingleOrDefaultAsync(t => t.LicenseId == licenseId, ct);
+            written = trace is null || trace.LastLegacySalesPushAt < staleBefore;
+            if (trace is null)
+                _db.SalesLegacyTraces.Add(trace = new SalesLegacyTrace { LicenseId = licenseId });
             if (written)
             {
-                license.LastLegacySalesPushAt = now;
+                trace.LastLegacySalesPushAt = now;
                 await _db.SaveChangesAsync(ct);
             }
-            _db.Entry(license).State = EntityState.Detached;
+            _db.Entry(trace).State = EntityState.Detached;
         }
 
         // Uyarı yalnız mod On'da (§4.0) ve izle aynı sıklıkta: eski sürüm her 30–60 sn'de push'luyor, her istekte
@@ -341,5 +346,31 @@ public sealed class SalesReplicaService
                 "{Endpoint}: mod On'da protokolsüz (≤0.9.10) satış isteği (license={LicenseId}); eski sürüm bir "
                 + "bilgisayar dönmüş olabilir",
                 endpoint, licenseId);
+    }
+
+    /// <summary>
+    /// Lisansın ilk izi. Aynı lisansın iki eski PC'si ilk izi aynı anda yazarsa ikincisi birincil anahtara çarpar;
+    /// hata "şimdi bakınca satır var mı" diye sınıflandırılır (<see cref="TouchAsync"/> deseni): varsa iz zaten yazıldı
+    /// (bu istek yazmadı), yoksa hata olduğu gibi yukarı gider.
+    /// </summary>
+    private async Task<bool> InsertLegacyTraceAsync(Guid licenseId, DateTimeOffset now, CancellationToken ct)
+    {
+        var trace = new SalesLegacyTrace { LicenseId = licenseId, LastLegacySalesPushAt = now };
+        _db.SalesLegacyTraces.Add(trace);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+        catch (DbUpdateException)
+        {
+            _db.Entry(trace).State = EntityState.Detached;
+            if (await _db.SalesLegacyTraces.AnyAsync(t => t.LicenseId == licenseId, ct)) return false;
+            throw;
+        }
+        finally
+        {
+            _db.Entry(trace).State = EntityState.Detached;
+        }
     }
 }

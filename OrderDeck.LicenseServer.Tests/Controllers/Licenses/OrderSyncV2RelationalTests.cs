@@ -106,14 +106,14 @@ public sealed class OrderSyncV2RelationalTests
         (await ctx.PushV2AsAsync(ctx.ReplicaId, 1, item with { PrintedAt = printedAt, PrintBatchId = "b1", PrintSeq = 1 }))
             .Single().Status.Should().Be("applied", "K3 doldurma kabul edilir");
 
-        (await ctx.LicenseAsync()).LastLegacySalesPushAt.Should().BeNull("ön koşul: protokolsüz istek yok");
+        (await ctx.LegacyTraceAsync()).Should().BeNull("ön koşul: protokolsüz istek yok");
         (await ctx.PushV1Async(item with { Price = 90m, PrintedAt = printedAt })).StatusCode.Should().Be(HttpStatusCode.OK);
         var saved = await ctx.OrderAsync(item.Id);
         saved.Price.Should().Be(100m);
         saved.CancelledAt.Should().BeNull();
         saved.PrintedAt.Should().Be(printedAt);
         saved.PrintBatchId.Should().Be("b1");
-        (await ctx.LicenseAsync()).LastLegacySalesPushAt.Should().NotBeNull("v1 için yalnız iz yazılır");
+        (await ctx.LegacyTraceAsync()).Should().NotBeNull("v1 için yalnız iz yazılır");
     }
 
     /// <summary>
@@ -384,11 +384,15 @@ public sealed class OrderSyncV2RelationalTests
             return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == id);
         }
 
-        public async Task<License> LicenseAsync()
+        /// <summary>Lisansın protokolsüz istek izi; satır yoksa null.</summary>
+        public async Task<DateTimeOffset?> LegacyTraceAsync()
         {
             using var scope = _factory.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            return await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == LicenseId);
+            return await db.SalesLegacyTraces.AsNoTracking()
+                .Where(t => t.LicenseId == LicenseId)
+                .Select(t => (DateTimeOffset?)t.LastLegacySalesPushAt)
+                .SingleOrDefaultAsync();
         }
 
         /// <summary>Asıl kaydı KVKK ile silinmiş bir müşteri ve onun birleştirilmiş kopyası (hex Id'ler).</summary>

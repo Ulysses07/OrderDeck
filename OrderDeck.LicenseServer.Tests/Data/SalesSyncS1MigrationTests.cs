@@ -207,9 +207,15 @@ internal static class SalesSyncS1MigrationScenario
         [
             new("SalesSyncMode", "tinyint", false),
             new("SalesSyncModeChangedAt", "datetimeoffset", true),
-            new("LastLegacySalesPushAt", "datetimeoffset", true),
         ],
     };
+
+    /// <summary>Protokolsüz istek izi Licenses satırında değil, ayrı tabloda: Licenses.RowVersion'a dokunmaz.</summary>
+    private static readonly Col[] ExpectedSalesLegacyTraceColumns =
+    [
+        new("LicenseId", "uniqueidentifier", false),
+        new("LastLegacySalesPushAt", "datetimeoffset", false),
+    ];
 
     private static readonly Col[] ExpectedWpfReplicaColumns =
     [
@@ -256,6 +262,7 @@ internal static class SalesSyncS1MigrationScenario
 
         var before = await ColumnsAsync(conn, ExpectedNewColumns.Keys);
         (await ColumnsAsync(conn, ["WpfReplicas"]))["WpfReplicas"].Should().BeEmpty("göç öncesi tablo yok");
+        (await ColumnsAsync(conn, ["SalesLegacyTraces"]))["SalesLegacyTraces"].Should().BeEmpty("göç öncesi tablo yok");
         AssertPreS1ListsMatchSchema(before);
 
         var seed = await SeedPreS1Async(conn);
@@ -279,6 +286,8 @@ internal static class SalesSyncS1MigrationScenario
                 $"{table}: S1 kolonları spec §3.1 ile aynı");
         }
         (await ColumnsAsync(conn, ["WpfReplicas"]))["WpfReplicas"].Should().BeEquivalentTo(ExpectedWpfReplicaColumns);
+        (await ColumnsAsync(conn, ["SalesLegacyTraces"]))["SalesLegacyTraces"]
+            .Should().BeEquivalentTo(ExpectedSalesLegacyTraceColumns);
 
         // 2. ChangeSeq: motor her var olan satıra kendi değerini verir — sıfır
         //    değil ve satır başına benzersiz (rowversion veritabanı genelinde
@@ -310,7 +319,7 @@ internal static class SalesSyncS1MigrationScenario
         var license = await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == seed.LicenseId);
         license.SalesSyncMode.Should().Be(SalesSyncMode.Off);
         license.SalesSyncModeChangedAt.Should().BeNull();
-        license.LastLegacySalesPushAt.Should().BeNull();
+        (await db.SalesLegacyTraces.AsNoTracking().AnyAsync()).Should().BeFalse("göç iz yazmaz");
 
         var sessions = await db.StreamSessions.AsNoTracking().Where(s => s.LicenseId == seed.LicenseId).ToListAsync();
         sessions.Should().HaveCount(2).And.OnlyContain(s =>
@@ -347,6 +356,12 @@ internal static class SalesSyncS1MigrationScenario
         (await ScalarAsync<string>(conn, """
             SELECT delete_referential_action_desc FROM sys.foreign_keys
             WHERE parent_object_id = OBJECT_ID('WpfReplicas') AND referenced_object_id = OBJECT_ID('Licenses')
+            """)).Should().Be("CASCADE");
+        (await IndexAsync(conn, "SalesLegacyTraces", "PK_SalesLegacyTraces"))
+            .Should().Be(new IndexInfo("LicenseId", null, true), "lisans başına tek iz satırı");
+        (await ScalarAsync<string>(conn, """
+            SELECT delete_referential_action_desc FROM sys.foreign_keys
+            WHERE parent_object_id = OBJECT_ID('SalesLegacyTraces') AND referenced_object_id = OBJECT_ID('Licenses')
             """)).Should().Be("CASCADE");
 
         // 6. WpfReplicas sayaçları DEFAULT 0: kolonları vermeyen INSERT'te 0.

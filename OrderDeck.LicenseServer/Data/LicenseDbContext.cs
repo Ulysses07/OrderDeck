@@ -70,6 +70,7 @@ public class LicenseDbContext : DbContext
     public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
     public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
     public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
+    public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
@@ -626,6 +627,15 @@ public class LicenseDbContext : DbContext
             b.Property(r => r.ReportedFee).HasPrecision(18, 2);
             // Sahip sessizliği ve "son 14 günde görülen kopyalar" (§4.6, §4.10).
             b.HasIndex(r => new { r.LicenseId, r.LastSeenAt });
+        });
+
+        // Protokolsüz satış isteği izi (§4.0): lisans başına tek satır, Licenses'ın
+        // RowVersion'ına dokunmamak için ayrı tabloda (SalesLegacyTrace).
+        mb.Entity<SalesLegacyTrace>(b =>
+        {
+            b.HasKey(t => t.LicenseId);
+            b.HasOne(t => t.License).WithOne()
+                .HasForeignKey<SalesLegacyTrace>(t => t.LicenseId).OnDelete(DeleteBehavior.Cascade);
         });
 
         mb.Entity<Shopper>(b =>

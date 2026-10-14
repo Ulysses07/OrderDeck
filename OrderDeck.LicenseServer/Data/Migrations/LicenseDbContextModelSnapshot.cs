@@ -1315,9 +1315,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset?>("LastActivationAt")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<DateTimeOffset?>("LastLegacySalesPushAt")
-                        .HasColumnType("datetimeoffset");
-
                     b.Property<string>("LicenseKey")
                         .IsRequired()
                         .HasMaxLength(40)
@@ -2210,6 +2207,19 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("CustomerId", "RevokedAt");
 
                     b.ToTable("RefreshTokens");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("LastLegacySalesPushAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("LicenseId");
+
+                    b.ToTable("SalesLegacyTraces");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Shipment", b =>
@@ -3962,6 +3972,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithOne()
+                        .HasForeignKey("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", "LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Shipment", b =>

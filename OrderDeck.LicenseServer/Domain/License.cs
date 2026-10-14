@@ -46,8 +46,7 @@ public sealed class License
     public SalesSyncMode SalesSyncMode { get; set; }
     public DateTimeOffset? SalesSyncModeChangedAt { get; set; }
 
-    /// <summary>Protokolsüz (≤0.9.10) satış isteğinin son anı. İki kipte de
-    /// yazılır, davranışı değiştirmez; mod kapısının "7 gün eski sürüm izi
-    /// yok" koşulu bununla ölçülür (§4.0, §4.10-3).</summary>
-    public DateTimeOffset? LastLegacySalesPushAt { get; set; }
+    // Protokolsüz satış isteği izi bu satırda DEĞİL, SalesLegacyTrace'te:
+    // her UPDATE RowVersion'ı ilerletir ve izlenen License'ı kaydeden yollar
+    // (payment-account, shopper-code) o çakışmayı yakalamıyor.
 }

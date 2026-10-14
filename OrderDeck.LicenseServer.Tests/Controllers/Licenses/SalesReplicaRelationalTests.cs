@@ -78,30 +78,60 @@ public sealed class SalesReplicaRelationalTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Protokolsüz istek izi ilişkisel yolda tek bir koşullu UPDATE: ilk istek yazar, pencere içindeki istek
-    /// yazmaz, pencere dışındaki yeniden yazar. Licenses'ın RowVersion'ı yalnız gerçekten yazıldığında ilerler —
-    /// pencere içindeki istek etkinleştirmelerle yarışmaz.
+    /// Protokolsüz istek izi ilişkisel yolda: ilk istek lisansın iz satırını ekler, pencere içindeki istek yazmaz,
+    /// pencere dışındaki tek bir koşullu UPDATE ile yeniden yazar. İz Licenses satırına hiç dokunmaz: Licenses'ın
+    /// RowVersion'ı (eşzamanlılık jetonu) üç istekte de değişmez, License yazımlarıyla yarışmaz.
     /// </summary>
     [Fact]
     public async Task Protokolsuz_istek_izi_kosullu_update_ile_saatte_bir()
     {
+        var licenseVersion = await LicenseVersionAsync();
         var before = DateTimeOffset.UtcNow;
         (await _client.PostAsJsonAsync(Url("orders/sync"), new { orders = Array.Empty<object>() }))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        var (firstTrace, firstVersion) = await TraceAsync();
+        var firstTrace = await TraceAsync();
         firstTrace.Should().BeOnOrAfter(before);
 
         (await _client.PostAsJsonAsync(Url("shipments/sync"), new { shipments = Array.Empty<object>() }))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        var (secondTrace, secondVersion) = await TraceAsync();
-        secondTrace.Should().Be(firstTrace);
-        secondVersion.Should().Equal(firstVersion, "pencere içinde Licenses satırına yazılmaz");
+        (await TraceAsync()).Should().Be(firstTrace, "pencere içinde yeniden yazılmaz");
 
         await SetTraceAsync(DateTimeOffset.UtcNow.AddMinutes(-61));
         var beforeStale = DateTimeOffset.UtcNow;
         (await _client.PostAsJsonAsync(Url("sessions/sync"), new { sessions = Array.Empty<object>() }))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        (await TraceAsync()).Trace.Should().BeOnOrAfter(beforeStale);
+        (await TraceAsync()).Should().BeOnOrAfter(beforeStale);
+
+        (await LicenseVersionAsync()).Should().Equal(licenseVersion, "iz Licenses satırına yazılmaz");
+    }
+
+    /// <summary>
+    /// Protokolsüz istek izi bugünkü istemcilerin License yazımlarıyla yarışmaz (§4.0; S1 v0.9.10'un davranışını
+    /// değiştirmemeli). Licenses.RowVersion eşzamanlılık jetonudur ve izlenen License'ı okuyup kaydeden yollar
+    /// (WPF'in payment-account'u, panelin shopper-code'u) çakışmayı yakalamıyor. Sıra kancayla kurulur: payment-account
+    /// License'ı okudu; kaydetmeden hemen önce aynı lisansın v0.9.10 push'u izi yazar. Beklenen: 204 ve yazım indi,
+    /// iz de yazıldı.
+    /// </summary>
+    [Fact]
+    public async Task Protokolsuz_istek_izi_payment_account_kaydiyla_yarismaz()
+    {
+        var holder = $"Hesap-{Guid.NewGuid():N}";
+        HttpResponseMessage? legacyPush = null;
+        _factory.Hook.BeforeSave = async () =>
+        {
+            _factory.Hook.BeforeSave = null;
+            legacyPush = await _client.PostAsJsonAsync(Url("orders/sync"), new { orders = Array.Empty<object>() });
+        };
+
+        var resp = await _client.PostAsJsonAsync(Url("payment-account"), new { iban = (string?)null, accountHolder = holder });
+
+        legacyPush.Should().NotBeNull("kanca push'u payment-account'un kaydından önce koşturmalı");
+        legacyPush!.StatusCode.Should().Be(HttpStatusCode.OK);
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent, await resp.Content.ReadAsStringAsync());
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == _licenseId)).PaymentAccountHolder.Should().Be(holder);
+        (await TraceAsync()).Should().NotBeNull("iz yine yazılır");
     }
 
     /// <summary>
@@ -161,20 +191,30 @@ public sealed class SalesReplicaRelationalTests : IAsyncLifetime
         return await db.StreamSessions.AsNoTracking().Where(s => s.Id == sessionId).Select(s => s.ChangeSeq).SingleAsync();
     }
 
-    private async Task<(DateTimeOffset? Trace, byte[] RowVersion)> TraceAsync()
+    /// <summary>Lisansın protokolsüz istek izi; satır yoksa null.</summary>
+    private async Task<DateTimeOffset?> TraceAsync()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var license = await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == _licenseId);
-        return (license.LastLegacySalesPushAt, license.RowVersion);
+        return await db.SalesLegacyTraces.AsNoTracking()
+            .Where(t => t.LicenseId == _licenseId)
+            .Select(t => (DateTimeOffset?)t.LastLegacySalesPushAt)
+            .SingleOrDefaultAsync();
+    }
+
+    private async Task<byte[]> LicenseVersionAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.Licenses.AsNoTracking().Where(l => l.Id == _licenseId).Select(l => l.RowVersion).SingleAsync();
     }
 
     private async Task SetTraceAsync(DateTimeOffset value)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        await db.Licenses.Where(l => l.Id == _licenseId)
-            .ExecuteUpdateAsync(s => s.SetProperty(l => l.LastLegacySalesPushAt, value));
+        await db.SalesLegacyTraces.Where(t => t.LicenseId == _licenseId)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.LastLegacySalesPushAt, value));
     }
 
     private async Task<Guid> SeedLicenseAsync(Guid customerId)
