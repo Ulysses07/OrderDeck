@@ -345,7 +345,7 @@ public sealed class SalesReleaseRepairJobTests : IAsyncLifetime
         Program.ScheduleSalesSyncJobs(new RecurringJobManager(storage), new BackgroundJobClient(storage));
 
         using var connection = storage.GetConnection();
-        var job = connection.GetRecurringJobs().Should().ContainSingle().Subject;
+        var job = connection.GetRecurringJobs().Should().ContainSingle(j => j.Id == "sales-release-repair").Subject;
         (job.Id, job.Cron, job.TimeZoneId).Should().Be(("sales-release-repair", "50 4 * * *", "UTC"));
         job.Job.Type.Should().Be(typeof(SalesReleaseRepairJob));
         storage.GetMonitoringApi().EnqueuedCount("default").Should().Be(1);

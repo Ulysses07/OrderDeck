@@ -177,6 +177,8 @@ public class Program
             OrderDeck.LicenseServer.Services.Sync.Commands.UncancelCommandHandler>();
         // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();
+        // Komut günlüğünün 90 günlük saklaması (§4.9); takvim ScheduleSalesSyncJobs'ta.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
@@ -1270,6 +1272,8 @@ public class Program
     /// Ayrıca açılışta bir kez kuyruğa alınır (<c>identity-key-repair</c> emsali): deploy'dan sonra S1 öncesinde
     /// bitmiş yayınlar ve geri alma penceresinin satırları bir gün beklemesin. Kuyruğa almak yalnız bir kayıttır;
     /// iş arka planda koşar, açılışı ve <c>/ready</c>'yi bekletmez.
+    /// <c>sales-command-log-retention</c> günde bir, 04:54'te: yine ızgara dışında ve o dakikada başka iş yok (04:52
+    /// İYS, 04:55 ızgara işleri). Açılışta kuyruğa alınmaz: 90 günlük sınır bir günlük gecikmeye duyarsız.
     /// </summary>
     public static void ScheduleSalesSyncJobs(IRecurringJobManager manager, IBackgroundJobClient jobs)
     {
@@ -1278,6 +1282,10 @@ public class Program
             j => j.RunAsync(CancellationToken.None),
             OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob.Cron);
         jobs.Enqueue<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>(j => j.RunAsync(CancellationToken.None));
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob>(
+            OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob.JobId,
+            j => j.RunAsync(CancellationToken.None),
+            OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob.Cron);
     }
 
     /// <summary>
