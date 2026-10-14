@@ -2,8 +2,9 @@ namespace OrderDeck.Shared.Sales;
 
 /// <summary>
 /// Sipariş güncellemesinin birim kuralı (spec 2026-10-13 §4.2, §4.11): sunucudaki satırın hâlinden ve gelen
-/// push'tan, satıra <b>hangi değerlerin yazılacağını</b> ve hangi birimin yok sayıldığını çıkaran SAF fonksiyon.
-/// Veritabanı, saat ya da istek bilmez; <c>orders/sync</c> ve sonraki yazıcılar aynı kararı buradan alır.
+/// push'tan, satıra <b>hangi değerlerin yazılacağını</b> ve hangi birimin yok sayıldığını ya da reddedildiğini
+/// çıkaran SAF fonksiyon. Veritabanı, saat ya da istek bilmez; <c>orders/sync</c> ve sonraki yazıcılar aynı kararı
+/// buradan alır.
 ///
 /// <para><b>K1 — oluşum alanları.</b> SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
 /// AddedAt, IsShippingFee, IsBackupPromoted, ProductId ve ProductVariantId yalnız eklemede yazılır; bu yüzden
@@ -21,11 +22,30 @@ namespace OrderDeck.Shared.Sales;
 /// imha eder. Sunucuda PrintedAt doluysa hiçbir yoldan silinmez ve değişmez; v2 yalnız boş grup alanlarını
 /// doldurur.</para>
 ///
-/// <para><b>Yok sayma.</b> Bir birim, push o birimde sunucunun yazdığından farklı bir değer taşıdıysa yok sayılmış
-/// sayılır; aynı değeri taşıyan push uygulanmış sayılır. Zaman damgaları saniyeye göre karşılaştırılır: masaüstü
-/// zamanı Unix saniyesi olarak saklar (<c>FromUnixTimeSeconds</c>), sunucunun komutla bastığı saniye altı kesir
-/// masaüstüne geri dönünce kaybolur — bu fark yeni bir değer değildir. Yazılan değer ise her zaman olduğu gibi
-/// yazılır.</para>
+/// <para><b>K4 — kargo bağı.</b> v1 taşımaz, hiç dokunmaz. Mod Off: v2'nin değeri (boşaltma dahil) K2'nin yazılabilirlik
+/// kuralıyla yazılır (<c>ShipmentSetAt</c> boş ya da <c>baseVersion = Version</c>), aksi hâlde
+/// <see cref="ReasonUnitStamped"/>. Mod On: birim her oturum hâlinde sunucunundur, push'tan alınmaz
+/// (<see cref="ReasonShipmentServerOwned"/>); tek istisna açılış penceresindeki kopyanın v2 push'udur — sunucudaki
+/// değer ve <c>ShipmentSetAt</c> boşsa doldurur (boşaltmaz, değiştirmez).</para>
+///
+/// <para><b>K5 — devredilmiş oturum, mod On.</b> Fiyat, iptal ve yedek değişiklikleri reddedilir
+/// (<see cref="ReasonSessionReleased"/>; v1'de de, yazılmaz). K3 doldurma kabul edilir. İstisnalar — push
+/// reddedilmez, yalnız K2 ile yargılanır (damgalı birim kazanır, damgasız birim push'tan alınır): (i) oturum zorla
+/// bitirildiyse sahibin v2 push'u; (ii) açılış penceresindeki kopyanın v2 push'u.</para>
+///
+/// <para><b>K6 — kargoya verilmiş dosya, mod On.</b> Bağlı olduğu dosya Shipped olan siparişin fiyat değişikliği
+/// reddedilir (<see cref="ReasonShipmentShipped"/>). İptal ve iptali geri alma §7.2'ye göre işler (bağ kalır, tutar
+/// donmuştur). K6 açılış penceresinde ve K5 istisnalarında da geçerlidir: o kopyalar yalnız K4 ve K5 açısından Off
+/// kurallarıyla yargılanır (§4.0), donmuş tutar her durumda korunur. K7 (türetilmiş dosya) bu fonksiyonun dışında,
+/// çağıranın işidir; girdisi <see cref="OrderMergeResult.ChangedUnits"/>.</para>
+///
+/// <para><b>Yok sayma ve ret.</b> Bir birim, push o birimde sunucunun yazdığından farklı bir değer taşıdıysa yok
+/// sayılmış ya da reddedilmiş sayılır; aynı değeri taşıyan push uygulanmış sayılır. Ret
+/// (<see cref="IsRejection"/>) push'un o birimi değiştirmeye yetkisi olmadığı demektir; yok sayma bayat bir değerdir.
+/// Zaman damgaları saniyeye göre karşılaştırılır: masaüstü zamanı Unix saniyesi olarak saklar
+/// (<c>FromUnixTimeSeconds</c>), sunucunun komutla bastığı saniye altı kesir masaüstüne geri dönünce kaybolur — bu
+/// fark yeni bir değer değildir. Yazılan değer ise her zaman olduğu gibi yazılır; reddedilen birimde hiçbir şey
+/// yazılmaz.</para>
 ///
 /// <para><b>Biçim.</b> v1 (≤0.9.10) yalnız <see cref="OrderUnitValues.Price"/>, iptal alanları,
 /// <see cref="OrderUnitValues.IsTentativeBackup"/> ve <see cref="OrderUnitValues.PrintedAt"/> taşır; öbür alanlar
@@ -33,7 +53,7 @@ namespace OrderDeck.Shared.Sales;
 /// </summary>
 public static class OrderUnitMerge
 {
-    /// <summary>K2: damgalı birim, satırın güncel sürümünü görmemiş push'tan yazılmaz.</summary>
+    /// <summary>K2/K4: damgalı birim, satırın güncel sürümünü görmemiş push'tan yazılmaz.</summary>
     public const string ReasonUnitStamped = "unit-stamped";
 
     /// <summary>K2: geçici yedek bayrağı 0'dan 1'e dönmez.</summary>
@@ -45,11 +65,36 @@ public static class OrderUnitMerge
     /// <summary>K3: sunucudaki baskı kalır (silinmez, kaymaz, dolu grup değişmez).</summary>
     public const string ReasonAlreadyPrinted = "already-printed";
 
+    /// <summary>K4, mod On: kargo bağı sunucunun; push'tan alınmaz.</summary>
+    public const string ReasonShipmentServerOwned = "shipment-server-owned";
+
+    /// <summary>K5 (ret): devredilmiş oturumda fiyat, iptal ve yedek yalnız komutla değişir.</summary>
+    public const string ReasonSessionReleased = "session-released";
+
+    /// <summary>K6 (ret): kargoya verilmiş dosyaya bağlı siparişin fiyatı değişmez.</summary>
+    public const string ReasonShipmentShipped = "shipment-shipped";
+
+    /// <summary>Neden bir ret mi (push'un o birimi değiştirme yetkisi yok), yoksa bayat değerin yok sayılması mı.</summary>
+    public static bool IsRejection(string reason)
+        => reason is ReasonSessionReleased or ReasonShipmentShipped;
+
+    /// <summary>
+    /// K5 bu push'a uygulanır mı: mod On, oturum devredilmiş ve push istisna değil. İstisnalar yalnız v2'dedir:
+    /// (i) zorla bitirilmiş oturumun sahibi, (ii) açılış penceresindeki kopya.
+    /// </summary>
+    public static bool LocksReleasedSession(OrderMergeContext context)
+    {
+        if (!context.ModeOn || context.SessionPhase != OrderSessionPhase.Released) return false;
+        var v2 = context.Format == OrderPushFormat.V2;
+        var forceEndedOwner = v2 && context.SessionForceEnded && context.CallerOwnsSession;
+        var openingWindow = v2 && context.OpeningWindow;
+        return !(forceEndedOwner || openingWindow);
+    }
+
     /// <summary>Sunucu satırı ile push'u birleştirir.</summary>
     /// <param name="server">Sunucudaki satırın güncel hâli.</param>
     /// <param name="push">Gelen push'un değerleri.</param>
-    /// <param name="context">Push'un biçimi ve koşulları. K1–K3'ün okuduğu tek alan
-    /// <see cref="OrderMergeContext.Format"/>.</param>
+    /// <param name="context">Push'un biçimi ve koşulları.</param>
     public static OrderMergeResult Merge(OrderServerRow server, OrderPush push, OrderMergeContext context)
     {
         var s = server.Values;
@@ -57,39 +102,70 @@ public static class OrderUnitMerge
         var v2 = context.Format == OrderPushFormat.V2;
         var merged = s;
         var ignored = new List<IgnoredOrderUnit>();
+        var releasedLock = LocksReleasedSession(context);
 
         // K2: damgasız birim → son gelen kazanır; damgalı birim yalnız güncel sürümü görmüş v2'den.
         bool Writable(DateTimeOffset? setAt) => setAt is null || (v2 && push.BaseVersion == server.Version);
 
-        // Fiyat {Price, PriceCorrectedAt, PaidPrice}; v1 yalnız Price taşır.
+        // Fiyat {Price, PriceCorrectedAt, PaidPrice}; v1 yalnız Price taşır. K5 ve K6 reddeder.
         var pushCorrectedAt = v2 ? p.PriceCorrectedAt : s.PriceCorrectedAt;
         var pushPaidPrice = v2 ? p.PaidPrice : s.PaidPrice;
-        if (Writable(server.PriceSetAt))
+        var priceDiffers = p.Price != s.Price
+                           || !SameSecond(pushCorrectedAt, s.PriceCorrectedAt)
+                           || pushPaidPrice != s.PaidPrice;
+        if (releasedLock)
+        {
+            if (priceDiffers) ignored.Add(new IgnoredOrderUnit(OrderUnit.Price, ReasonSessionReleased));
+        }
+        else if (context.ModeOn && context.LinkedShipmentShipped)
+        {
+            if (priceDiffers) ignored.Add(new IgnoredOrderUnit(OrderUnit.Price, ReasonShipmentShipped));
+        }
+        else if (Writable(server.PriceSetAt))
             merged = merged with { Price = p.Price, PriceCorrectedAt = pushCorrectedAt, PaidPrice = pushPaidPrice };
-        else if (p.Price != s.Price
-                 || !SameSecond(pushCorrectedAt, s.PriceCorrectedAt)
-                 || pushPaidPrice != s.PaidPrice)
+        else if (priceDiffers)
             ignored.Add(new IgnoredOrderUnit(OrderUnit.Price, ReasonUnitStamped));
 
-        // İptal {CancelledAt, CancelReason}.
-        if (Writable(server.CancelSetAt))
+        // İptal {CancelledAt, CancelReason}. K5 reddeder; K6 iptale dokunmaz (§7.2).
+        var cancelDiffers = !SameSecond(p.CancelledAt, s.CancelledAt)
+                            || !string.Equals(p.CancelReason, s.CancelReason, StringComparison.Ordinal);
+        if (releasedLock)
+        {
+            if (cancelDiffers) ignored.Add(new IgnoredOrderUnit(OrderUnit.Cancel, ReasonSessionReleased));
+        }
+        else if (Writable(server.CancelSetAt))
             merged = merged with { CancelledAt = p.CancelledAt, CancelReason = p.CancelReason };
-        else if (!SameSecond(p.CancelledAt, s.CancelledAt)
-                 || !string.Equals(p.CancelReason, s.CancelReason, StringComparison.Ordinal))
+        else if (cancelDiffers)
             ignored.Add(new IgnoredOrderUnit(OrderUnit.Cancel, ReasonUnitStamped));
 
-        // Yedek {IsTentativeBackup}: yalnız 1 → 0.
+        // Yedek {IsTentativeBackup}: yalnız 1 → 0. Tek yön K5'ten önce gelir: 0'dan 1'e dönüş her durumda bayattır.
         if (p.IsTentativeBackup != s.IsTentativeBackup)
         {
             if (p.IsTentativeBackup)
                 ignored.Add(new IgnoredOrderUnit(OrderUnit.Backup, ReasonBackupOneWay));
+            else if (releasedLock)
+                ignored.Add(new IgnoredOrderUnit(OrderUnit.Backup, ReasonSessionReleased));
             else if (Writable(server.BackupSetAt))
                 merged = merged with { IsTentativeBackup = false };
             else
                 ignored.Add(new IgnoredOrderUnit(OrderUnit.Backup, ReasonUnitStamped));
         }
 
-        // Kargo bağı (K4) bu sürümde push'tan alınmaz: sunucudaki değer kalır.
+        // Kargo bağı {ShipmentId} (K4): yalnız v2 taşır.
+        if (v2 && p.ShipmentId != s.ShipmentId)
+        {
+            if (!context.ModeOn)
+            {
+                if (Writable(server.ShipmentSetAt))
+                    merged = merged with { ShipmentId = p.ShipmentId };
+                else
+                    ignored.Add(new IgnoredOrderUnit(OrderUnit.Shipment, ReasonUnitStamped));
+            }
+            else if (context.OpeningWindow && s.ShipmentId is null && server.ShipmentSetAt is null)
+                merged = merged with { ShipmentId = p.ShipmentId };
+            else
+                ignored.Add(new IgnoredOrderUnit(OrderUnit.Shipment, ReasonShipmentServerOwned));
+        }
 
         // Baskı {PrintedAt, PrintBatchId, PrintSeq} (K3). İptal kararı yukarıda verildi; "şu anda komutla iptal"
         // birleşik iptale ve damgaya bakar.
@@ -128,6 +204,19 @@ public static class OrderUnitMerge
 
         return new OrderMergeResult(merged, ChangedUnits(s, merged), ignored);
     }
+
+    /// <summary>
+    /// Eklemenin birim kararı (§4.2 ekleme dalı). Oluşum alanları ve birimler push'tan yazılır (çağıran kurar); bu
+    /// fonksiyon yalnız kargo bağını K4'e göre verir: sunucuda satır yokmuş gibi, değer ve damga boş bir satıra
+    /// birleştirir. Mod Off'ta v2'nin bağı yazılır; mod On'da yalnız açılış penceresindeki kopyanınki; v1 taşımaz.
+    /// Öbür birimler push'la aynı olduğu için yok sayılmaz ya da reddedilmez (devredilmiş oturuma ekleme kabul
+    /// edilir, K5).
+    /// </summary>
+    public static OrderMergeResult MergeInsert(OrderPush push, OrderMergeContext context)
+        => Merge(
+            new OrderServerRow { Values = push.Values with { ShipmentId = null } },
+            push,
+            context);
 
     /// <summary>Aynı Unix saniyesi mi (ikisi de boşsa da aynı).</summary>
     private static bool SameSecond(DateTimeOffset? a, DateTimeOffset? b)
@@ -232,6 +321,9 @@ public sealed record OrderMergeContext
 
     /// <summary>Çağıran kopya açılış penceresinde (spec §4.0).</summary>
     public bool OpeningWindow { get; init; }
+
+    /// <summary>Sunucu satırının bağlı olduğu kargo dosyası Shipped (K6).</summary>
+    public bool LinkedShipmentShipped { get; init; }
 }
 
 /// <summary>Push biçimi: v1 ≤0.9.10'un satırı, v2 satış senkronunu bilen istemcinin satırı.</summary>
@@ -268,7 +360,12 @@ public enum OrderUnit
 }
 
 /// <summary>Push'un değiştirmek istediği ama yazılmayan birim ve nedeni.</summary>
-public sealed record IgnoredOrderUnit(OrderUnit Unit, string Reason);
+public sealed record IgnoredOrderUnit(OrderUnit Unit, string Reason)
+{
+    /// <summary>Ret mi (push'un bu birimi değiştirme yetkisi yok), yoksa bayat değerin yok sayılması mı
+    /// (<see cref="OrderUnitMerge.IsRejection"/>).</summary>
+    public bool Rejected => OrderUnitMerge.IsRejection(Reason);
+}
 
 /// <summary>Satır başına sonuç.</summary>
 public enum OrderMergeStatus
@@ -278,27 +375,33 @@ public enum OrderMergeStatus
 
     /// <summary>En az bir birim yazılmadı; istemci sunucunun güncel satırını uygulamalı.</summary>
     Ignored,
+
+    /// <summary>Kural en az bir birimi reddetti (K5, K6); istemci sunucunun güncel satırını uygulamalı.</summary>
+    Rejected,
 }
 
 /// <summary>Birleştirmenin sonucu.</summary>
 /// <param name="Merged">Satıra yazılacak değerler (yazılmayan alan sunucudaki değeri taşır).</param>
 /// <param name="ChangedUnits">Değeri sunucudakinden farklı olan birimler — yazılanlar.</param>
-/// <param name="Ignored">Push'un farklı değer taşıdığı ama yazılmayan birimler.</param>
+/// <param name="Ignored">Push'un farklı değer taşıdığı ama yazılmayan birimler (yok sayılan ya da reddedilen).</param>
 public sealed record OrderMergeResult(
     OrderUnitValues Merged,
     IReadOnlyList<OrderUnit> ChangedUnits,
     IReadOnlyList<IgnoredOrderUnit> Ignored)
 {
-    public OrderMergeStatus Status => Ignored.Count == 0 ? OrderMergeStatus.Applied : OrderMergeStatus.Ignored;
+    public OrderMergeStatus Status => Ignored.Count == 0 ? OrderMergeStatus.Applied
+        : Ignored.Any(i => i.Rejected) ? OrderMergeStatus.Rejected
+        : OrderMergeStatus.Ignored;
 
     /// <summary>
-    /// Satırın nedeni; hiçbir birim yok sayılmadıysa null. İstemcide eylem isteyen neden önce gelir:
-    /// <see cref="OrderUnitMerge.ReasonCancelledElsewhere"/> "kâğıdı imha et" uyarısını açar. Yoksa yok sayılan ilk
-    /// birimin nedeni.
+    /// Satırın nedeni; push'un her birimi yazıldıysa null. Önce ret nedeni (satırın durumu onu söyler), sonra
+    /// istemcide eylem isteyen neden: <see cref="OrderUnitMerge.ReasonCancelledElsewhere"/> "kâğıdı imha et"
+    /// uyarısını açar. Yoksa yok sayılan ilk birimin nedeni.
     /// </summary>
     public string? Reason => Ignored.Count == 0
         ? null
-        : Ignored.Any(i => i.Reason == OrderUnitMerge.ReasonCancelledElsewhere)
-            ? OrderUnitMerge.ReasonCancelledElsewhere
-            : Ignored[0].Reason;
+        : Ignored.FirstOrDefault(i => i.Rejected)?.Reason
+          ?? (Ignored.Any(i => i.Reason == OrderUnitMerge.ReasonCancelledElsewhere)
+              ? OrderUnitMerge.ReasonCancelledElsewhere
+              : Ignored[0].Reason);
 }

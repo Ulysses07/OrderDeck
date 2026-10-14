@@ -20,6 +20,7 @@ public static class LabelRulesVectors
     public static readonly IReadOnlyList<string> KnownSections = new[]
     {
         "sameCode", "codeKey", "classify", "codePrice", "contribution", "paidPriceOnCorrection", "orderUnitMerge",
+        "shipmentAmount",
     };
 
     public sealed record SameCodeCase(string Name, string? A, string B, bool Expected);
@@ -41,10 +42,14 @@ public static class LabelRulesVectors
         string Name, decimal? PaidPrice, decimal PriceBefore, bool LinkedToShipment, bool PaidFromBalance,
         decimal? Expected);
 
+    /// <param name="ExpectedStatus">Vektör yazmadıysa null (denetlenmez).</param>
     public sealed record OrderUnitMergeCase(
         string Name, OrderServerRow Server, OrderPush Push, OrderMergeContext Context,
         OrderUnitValues ExpectedMerged, IReadOnlyList<OrderUnit> ExpectedChanged,
-        IReadOnlyList<IgnoredOrderUnit> ExpectedIgnored, string? ExpectedReason);
+        IReadOnlyList<IgnoredOrderUnit> ExpectedIgnored, string? ExpectedReason, OrderMergeStatus? ExpectedStatus);
+
+    public sealed record ShipmentAmountCase(
+        string Name, string ShipmentId, IReadOnlyList<LabelFacts> Labels, decimal Expected);
 
     private static readonly Lazy<string> Json = new(() =>
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Sales", "LabelRules.vectors.json")));
@@ -120,9 +125,17 @@ public static class LabelRulesVectors
             Values = UnitValues(pushJson, server.Values),
             BaseVersion = Opt(pushJson, "baseVersion", null, e => (int?)e.GetInt32()),
         };
+        var contextJson = v.GetProperty("context");
         var context = new OrderMergeContext
         {
-            Format = (OrderPushFormat)v.GetProperty("context").GetProperty("format").GetInt32(),
+            Format = (OrderPushFormat)contextJson.GetProperty("format").GetInt32(),
+            ModeOn = Flag(contextJson, "modeOn"),
+            SessionPhase = Opt(contextJson, "sessionPhase", OrderSessionPhase.None,
+                p => Enum.Parse<OrderSessionPhase>(p.GetString()!, ignoreCase: true)),
+            CallerOwnsSession = Flag(contextJson, "callerOwnsSession"),
+            SessionForceEnded = Flag(contextJson, "sessionForceEnded"),
+            OpeningWindow = Flag(contextJson, "openingWindow"),
+            LinkedShipmentShipped = Flag(contextJson, "linkedShipmentShipped"),
         };
         var expected = v.GetProperty("expected");
         return new OrderUnitMergeCase(
@@ -132,8 +145,17 @@ public static class LabelRulesVectors
             Opt(expected, "ignored", Array.Empty<IgnoredOrderUnit>(), e => e.EnumerateArray()
                 .Select(i => new IgnoredOrderUnit(Unit(i.GetProperty("unit")), i.GetProperty("reason").GetString()!))
                 .ToArray()),
-            NullableString(expected, "reason"));
+            NullableString(expected, "reason"),
+            Opt(expected, "status", null,
+                e => (OrderMergeStatus?)Enum.Parse<OrderMergeStatus>(e.GetString()!, ignoreCase: true)));
     });
+
+    /// <summary><c>shipmentAmount</c> bölümü (DM7).</summary>
+    public static IReadOnlyList<ShipmentAmountCase> ShipmentAmount() => Read("shipmentAmount", v =>
+        new ShipmentAmountCase(
+            Name(v), v.GetProperty("shipmentId").GetString()!,
+            v.GetProperty("labels").EnumerateArray().Select(Facts).ToList(),
+            v.GetProperty("expected").GetDecimal()));
 
     /// <summary>Vektörün dosya haritasından durum sorgusu: haritada olmayan dosya "bilinmiyor" (null).</summary>
     public static Func<string, SalesShipmentStatus?> StatusOf(IReadOnlyDictionary<string, SalesShipmentStatus> map)

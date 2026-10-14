@@ -22,6 +22,7 @@ public sealed class LabelRulesVectorTests
     public static IEnumerable<object[]> ContributionNames() => Names("contribution");
     public static IEnumerable<object[]> PaidPriceNames() => Names("paidPriceOnCorrection");
     public static IEnumerable<object[]> OrderUnitMergeNames() => Names("orderUnitMerge");
+    public static IEnumerable<object[]> ShipmentAmountNames() => Names("shipmentAmount");
 
     private static IEnumerable<object[]> Names(string section)
         => LabelRulesVectors.Names(section).Select(n => new object[] { n });
@@ -103,6 +104,16 @@ public sealed class LabelRulesVectorTests
         result.ChangedUnits.Should().Equal(c.ExpectedChanged, $"vektör {name}: değişen birimler");
         result.Ignored.Should().Equal(c.ExpectedIgnored, $"vektör {name}: yok sayılan birimler");
         result.Reason.Should().Be(c.ExpectedReason, $"vektör {name}: neden");
+        if (c.ExpectedStatus is { } status)
+            result.Status.Should().Be(status, $"vektör {name}: satırın durumu");
+    }
+
+    [Theory]
+    [MemberData(nameof(ShipmentAmountNames))]
+    public void ShipmentAmount(string name)
+    {
+        var c = LabelRulesVectors.ShipmentAmount().Single(v => v.Name == name);
+        LabelRules.DerivedShipmentAmount(c.ShipmentId, c.Labels).Should().Be(c.Expected, $"vektör {name}");
     }
 
     [Fact]

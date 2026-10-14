@@ -31,6 +31,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private readonly CustomerIdResolver _customerIds;
     private readonly SalesReplicaService _replicas;
     private readonly SessionReleaser _releaser;
+    private readonly ShipmentAmountDeriver _shipmentAmounts;
     private readonly SalesSyncOptions _salesSync;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
@@ -42,6 +43,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         CustomerIdResolver customerIds,
         SalesReplicaService replicas,
         SessionReleaser releaser,
+        ShipmentAmountDeriver shipmentAmounts,
         IOptions<SalesSyncOptions> salesSync,
         ILogger<LicensesSessionsSyncController> log)
     {
@@ -52,6 +54,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         _customerIds = customerIds;
         _replicas = replicas;
         _releaser = releaser;
+        _shipmentAmounts = shipmentAmounts;
         _salesSync = salesSync.Value;
         _log = log;
     }
@@ -477,26 +480,30 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             .Select(o => o.SessionId!.Value)
             .Distinct()
             .ToList();
-        // Oturum başına devir anı (ekleme onu kopyalar, DM3) ve sahiplik (başka kopyanın canlı yayınına v2
-        // eklemesi reddedilir, §4.2).
-        var sessions = new Dictionary<Guid, SessionFacts>();
-        if (sessionIds.Count > 0)
-        {
-            sessions = await _db.StreamSessions
-                .Where(s => sessionIds.Contains(s.Id) && s.LicenseId == licenseId)
-                .Select(s => new SessionFacts(s.Id, s.EndedAt, s.ReleasedAt, s.OwnerReplicaId, s.ForceEndedBy))
-                .ToDictionaryAsync(s => s.Id, ct);
-            if (sessions.Count != sessionIds.Count)
-                return Problem(
-                    title: "unknown-session",
-                    detail: "Pakette bu lisansa ait olmayan SessionId var.",
-                    statusCode: 400);
-        }
 
         var ids = orders.Select(o => o.Id).ToList();
         var existing = await _db.Orders
             .Where(o => o.LicenseId == licenseId && ids.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, ct);
+
+        // Oturum başına devir anı (ekleme onu kopyalar, DM3), sahiplik (başka kopyanın canlı yayınına v2 eklemesi
+        // reddedilir) ve hâl (K5). Güncellenen siparişin oturumu sunucu satırınınkidir — SessionId güncellemede
+        // yazılmaz (K1); paketteki değer bayat olabilir.
+        var sessionKeys = sessionIds
+            .Concat(existing.Values.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value))
+            .Distinct()
+            .ToList();
+        var sessions = sessionKeys.Count == 0
+            ? new Dictionary<Guid, SessionFacts>()
+            : await _db.StreamSessions
+                .Where(s => sessionKeys.Contains(s.Id) && s.LicenseId == licenseId)
+                .Select(s => new SessionFacts(s.Id, s.EndedAt, s.ReleasedAt, s.OwnerReplicaId, s.ForceEndedBy))
+                .ToDictionaryAsync(s => s.Id, ct);
+        if (sessionIds.Any(id => !sessions.ContainsKey(id)))
+            return Problem(
+                title: "unknown-session",
+                detail: "Pakette bu lisansa ait olmayan SessionId var.",
+                statusCode: 400);
 
         var newPrintedOrders = new List<decimal>();
         // (CustomerId-hex, Price) for new printed orders — used after Save to
@@ -525,21 +532,41 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 purgeDirectory = await SalesCustomerDirectory.LoadAsync(_db, licenseId, insertCustomers, ct);
         }
 
+        // K6 ve K7 (mod On): siparişlerin bağlı olduğu ve v2 push'unun bağladığı dosyalar. Türetmenin okuduğu bağlı
+        // siparişlerden ÖNCE yüklenir (sıra ve jeton gerekçesi ShipmentAmountDeriver'da).
+        var modeOn = context.Mode == SalesSyncMode.On;
+        var shipments = modeOn
+            ? await _shipmentAmounts.LoadAsync(
+                licenseId,
+                existing.Values.Where(o => o.ShipmentId != null).Select(o => o.ShipmentId!.Value)
+                    .Concat(orders.Where(o => v2 && o.ShipmentId != null).Select(o => o.ShipmentId!.Value)),
+                ct)
+            : new Dictionary<Guid, Shipment>();
+        var affectedShipments = new List<Guid>();
+
         // Paketin satırları, birleştirildikten sonraki hâlleriyle (izlenen
         // varlıklar). Defter paketten değil bunlardan beslenir: yazılmayan bir
         // alan deftere bayat durum taşımasın (spec 2026-10-13 §4.2, M4).
         var rows = new List<Order>(orders.Count);
         var merges = new Dictionary<Guid, OrderMergeResult>();
         var rejectedInserts = new HashSet<Guid>();
-        // Geri yüklenmiş kopyanın sahiplendiği önceki kopyalar (§8.7); gerekirse ve istek başına bir kez okunur.
+        var k5ExceptionAccepted = 0;
+
+        // Geri yüklenmiş kopyanın önceki kopyaları (§8.7): ilk görüldüğünden beri susan önceki veritabanının yayınları
+        // artık bu kopyadadır. Gerekirse ve istek başına bir kez okunur.
         IReadOnlySet<Guid>? predecessors = null;
+        async Task<bool> IsSilentPredecessorAsync(Guid owner)
+        {
+            predecessors ??= await _replicas.SilentPredecessorsAsync(licenseId, caller, context.ReplicaBefore, ct);
+            return predecessors.Contains(owner);
+        }
 
         foreach (var item in orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
             {
-                // Birim kuralı (spec 2026-10-13 §4.2) ortak koddan, moddan
-                // bağımsız:
+                // Birim kuralı (spec 2026-10-13 §4.2) ortak koddan. K1–K3
+                // moddan bağımsız:
                 // - K1: oluşum alanları (SessionId, MessageText, Code,
                 //   IsShippingFee, IsBackupPromoted, ProductId,
                 //   ProductVariantId; CustomerId ve görünen ad zaten
@@ -551,14 +578,47 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 //   son-gelen-kazanır sürer. Yedek yalnız 1'den 0'a gider.
                 // - K3: PrintedAt silinmez ve kaymaz; şu anda komutla iptal
                 //   edilmiş siparişe baskı alınmaz.
-                // v1 yanıtı değişmez: yok sayılan birim de yanıtta sunucunun
-                // satırıyla döner.
-                var merge = OrderUnitMerge.Merge(
-                    current.ToServerRow(),
-                    PushOf(item),
-                    new OrderMergeContext { Format = format });
+                // K4–K6 kipe bağlı:
+                // - K4: kargo bağını v1 taşımaz; mod Off'ta v2 K2'nin kuralıyla
+                //   yazar, mod On'da yalnız açılış penceresindeki kopya boş bağı
+                //   doldurur.
+                // - K5 (mod On): devredilmiş oturumda fiyat, iptal ve yedek
+                //   reddedilir; zorla bitirilmiş oturumun sahibi ve açılış
+                //   penceresi K2 ile yargılanır.
+                // - K6 (mod On): kargoya verilmiş dosyadaki siparişin fiyatı
+                //   değişmez.
+                // v1 yanıtı değişmez: yok sayılan ya da reddedilen birim de
+                // yanıtta sunucunun satırıyla döner.
+                var session = current.SessionId is { } sessionId ? sessions.GetValueOrDefault(sessionId) : null;
+                var mergeContext = new OrderMergeContext
+                {
+                    Format = format,
+                    ModeOn = modeOn,
+                    SessionPhase = PhaseOf(session),
+                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur.
+                    CallerOwnsSession = v2 && session?.OwnerReplicaId is { } owner
+                        && (owner == caller
+                            || (modeOn && session.ReleasedAt is not null && session.ForceEndedBy is not null
+                                && await IsSilentPredecessorAsync(owner))),
+                    SessionForceEnded = session?.ForceEndedBy is not null,
+                    OpeningWindow = context.OpeningWindow,
+                    LinkedShipmentShipped = current.ShipmentId is { } linkedId
+                        && shipments.TryGetValue(linkedId, out var linked)
+                        && linked.Status == ShipmentStatus.Shipped,
+                };
+                var shipmentBefore = current.ShipmentId;
+                var merge = OrderUnitMerge.Merge(current.ToServerRow(), PushOf(item), mergeContext);
                 current.ApplyUnits(merge.Merged);
                 merges[item.Id] = merge;
+                if (modeOn)
+                {
+                    affectedShipments.AddRange(ShipmentAmountDeriver.AffectedBy(
+                        shipmentBefore, merge.Merged.ShipmentId, merge.ChangedUnits));
+                    if (mergeContext.SessionPhase == OrderSessionPhase.Released
+                        && !OrderUnitMerge.LocksReleasedSession(mergeContext)
+                        && merge.ChangedUnits.Any(u => u is OrderUnit.Price or OrderUnit.Cancel or OrderUnit.Backup))
+                        k5ExceptionAccepted++;
+                }
                 current.UpdatedAt = now;
                 // Eşzamanlılık jetonunu ilerlet (bkz. Order.SyncVersion).
                 // Sipariş alanları değişmemiş olsa bile artırıyoruz: paketin
@@ -575,15 +635,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 // §4.2 ekleme dalı: v2'de başka kopyanın CANLI oturumuna ekleme satır başına reddedilir — canlı yayın
                 // yalnız sahibinde yazılır (Y1). Önceki kopyası susan geri yüklenmiş kopya o yayının kuyruğunu taşır
                 // (§8.7). Protokolsüz istekte çağıran bilinmez; devrediliyor ve miras (sahipsiz) oturum reddedilmez.
-                if (v2 && session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller)
+                if (v2 && session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller
+                    && !await IsSilentPredecessorAsync(owner))
                 {
-                    predecessors ??= await _replicas.SilentPredecessorsAsync(
-                        licenseId, caller, context.ReplicaBefore, ct);
-                    if (!predecessors.Contains(owner))
-                    {
-                        rejectedInserts.Add(item.Id);
-                        continue;
-                    }
+                    rejectedInserts.Add(item.Id);
+                    continue;
                 }
 
                 var customerHex = CanonicalHex(item.CustomerId);
@@ -621,6 +677,19 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     PaidPrice = v2 ? item.PaidPrice : null,
                     OriginReplicaId = v2 ? caller : null,
                 };
+                // K4 eklemede: mod Off'ta v2'nin bağı, mod On'da yalnız açılış penceresindeki kopyanınki; aksi hâlde
+                // bağ yazılmaz ve satır yok sayılmış döner (istemci sunucunun boş bağını uygular).
+                var insert = OrderUnitMerge.MergeInsert(PushOf(item), new OrderMergeContext
+                {
+                    Format = format,
+                    ModeOn = modeOn,
+                    OpeningWindow = context.OpeningWindow,
+                });
+                order.ShipmentId = insert.Merged.ShipmentId;
+                merges[item.Id] = insert;
+                if (modeOn)
+                    affectedShipments.AddRange(ShipmentAmountDeriver.AffectedBy(
+                        null, order.ShipmentId, insert.ChangedUnits));
                 if (OrderTextScrub.AppliesOnInsert(
                         _salesSync.ScrubOrderTextOnPurge, purgeDirectory.Resolve(item.CustomerId).Canonical?.PurgedAt))
                     OrderTextScrub.Apply(order, now);
@@ -640,6 +709,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 }
             }
         }
+
+        // K7 (mod On): kabul edilen fiyat, iptal, yedek ve bağ değişikliği ilgili türetilmiş dosyaları aynı
+        // SaveChanges'te yeniden türetir — izlenen birleşik siparişlerden, bağ değiştiyse eski ve yeni dosya.
+        var derivedShipments = modeOn
+            ? await _shipmentAmounts.DeriveAsync(licenseId, shipments, affectedShipments, rows, now, ct)
+            : Array.Empty<Guid>();
 
         // Katalog bilmeyen istemcinin paketi deftere HİÇ girmez: siparişler her
         // zamanki gibi kaydediliyor, yalnız mutabakat atlanıyor. Ayrım şart,
@@ -710,6 +785,18 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             _log.LogInformation(
                 "orders/sync: {Count} siparişte birim yok sayıldı (license={LicenseId})",
                 ignoredRows, licenseId);
+        var k5Rejected = merges.Values.Count(m => m.Ignored.Any(i => i.Reason == OrderUnitMerge.ReasonSessionReleased));
+        var k6Rejected = merges.Values.Count(m => m.Ignored.Any(i => i.Reason == OrderUnitMerge.ReasonShipmentShipped));
+        if (k5Rejected > 0 || k6Rejected > 0 || k5ExceptionAccepted > 0)
+            _log.LogInformation(
+                "orders/sync: devredilmiş oturumda {K5Rejected} satır reddedildi (K5), kargolanmış dosyada {K6Rejected} "
+                + "fiyat reddedildi (K6), K5 istisnasıyla {K5Exception} satırda birim alındı (license={LicenseId}, "
+                + "protocol={Protocol})",
+                k5Rejected, k6Rejected, k5ExceptionAccepted, licenseId, envelope.Protocol);
+        if (derivedShipments.Count > 0)
+            _log.LogInformation(
+                "orders/sync: {Count} kargo dosyası yeniden türetildi (K7, license={LicenseId})",
+                derivedShipments.Count, licenseId);
         if (rejectedInserts.Count > 0)
             _log.LogInformation(
                 "orders/sync: başka kopyanın canlı yayınına {Count} ekleme reddedildi (license={LicenseId})",
@@ -775,6 +862,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private sealed record SessionFacts(
         Guid Id, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt, Guid? OwnerReplicaId, string? ForceEndedBy);
 
+    /// <summary>Oturumun hâli (spec §2 tablosu).</summary>
+    private static OrderSessionPhase PhaseOf(SessionFacts? session) => session switch
+    {
+        null => OrderSessionPhase.None,
+        { ReleasedAt: not null } => OrderSessionPhase.Released,
+        { EndedAt: not null } => OrderSessionPhase.HandingOver,
+        _ => OrderSessionPhase.Live,
+    };
+
     /// <summary>
     /// <c>format</c> alanı (§4.2): yok ya da 1 → v1, 2 → v2. v2 biçimi, kaynak kopyayı ve satır başına kararları
     /// çağırana bağladığı için v2 zarfı ister; zarfsız v2 satırı sessizce v1 sayılmaz (§1 amaç 5).
@@ -837,7 +933,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
             return new SyncedOrderV2Dto(
                 row.Id, row.SyncVersion, row.ShipmentId, row.SessionReleasedAt,
-                StatusIgnored,
+                merge.Status == OrderMergeStatus.Rejected ? StatusRejected : StatusIgnored,
                 merge.Ignored.Select(i => UnitName(i.Unit)).Distinct().ToList(),
                 merge.Reason,
                 SalesOrderItem.From(row, customers.Resolve(row.CustomerId)));

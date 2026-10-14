@@ -101,6 +101,23 @@ public static class LabelRules
     public static decimal? PaidPriceOnCorrection(
         decimal? paidPrice, decimal priceBefore, bool linkedToShipment, bool paidFromBalance)
         => paidPrice is null && (linkedToShipment || paidFromBalance) ? priceBefore : paidPrice;
+
+    /// <summary>
+    /// Türetilmiş kargo dosyasının tutarı (DM7, spec 2026-10-13 §3.3, §7.2): dosyaya bağlı, iptal edilmemiş ve geçici
+    /// yedek olmayan etiketlerin fiyat toplamı. İptal bağı çözmez, tutardan düşürür; iptali geri almak tutarı eski
+    /// hâline döndürür. Kargo ücreti satırı ve basılmamış etiket dahildir — <c>ShipmentService.AttachLabels</c> bugün
+    /// de onları katıyor (bağlanmamış etiket süzgeci yalnız iptal ve geçici yedeği dışarıda bırakır,
+    /// <c>LabelRepository.GetUnattachedByCustomer</c>). Dosyanın durumu çağıranın işidir: Shipped dosyanın tutarı
+    /// donmuştur ve yeniden türetilmez.
+    /// </summary>
+    /// <param name="shipmentId">Dosyanın Id'si (<see cref="LabelFacts.ShipmentId"/> ile aynı biçim, ordinal).</param>
+    /// <param name="labels">Aday etiketler; yalnız bu dosyaya bağlı olanlar sayılır.</param>
+    public static decimal DerivedShipmentAmount(string shipmentId, IEnumerable<LabelFacts> labels)
+        => labels
+            .Where(l => string.Equals(l.ShipmentId, shipmentId, StringComparison.Ordinal)
+                        && !l.Cancelled
+                        && !l.Tentative)
+            .Sum(l => l.Price);
 }
 
 /// <summary>

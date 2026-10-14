@@ -77,6 +77,116 @@ public sealed class OrderSyncV2RelationalTests
         saved.SyncVersion.Should().Be(fresh.Version!.Value);
     }
 
+    // ── §10.1-20: K5 ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// K5 (mod On): devredilmiş oturumda fiyat ve iptal değişikliği reddedilir — v2'ye <c>rejected</c>,
+    /// <c>session-released</c> ve güncel satır; v1 yazamaz, yalnız protokolsüz istek izi düşer. Devredilmiş oturuma
+    /// ekleme ve baskı doldurma kabul edilir.
+    /// </summary>
+    [Fact]
+    public async Task K5_devredilmis_oturumda_v2_reddedilir_v1_yazamaz_iz_duser()
+    {
+        await using var ctx = await Context.CreateAsync(_sql, mode: SalesSyncMode.On);
+        var sessionId = await ctx.SeedSessionAsync(
+            owner: ctx.ReplicaId, endedAt: StartedAt.AddHours(2), releasedAt: StartedAt.AddHours(2));
+        var item = OrderSyncV2Tests.NewItem(sessionId);
+        (await ctx.PushV2Async(item, 1)).Single().Status.Should().Be("applied", "ekleme kabul edilir");
+
+        var rejected = (await ctx.PushV2AsAsync(ctx.ReplicaId, 1,
+            item with { Price = 90m, CancelledAt = StartedAt.AddHours(3), CancelReason = "iade", BaseVersion = 0 }))
+            .Single();
+        rejected.Status.Should().Be("rejected");
+        rejected.Reason.Should().Be("session-released");
+        rejected.IgnoredUnits.Should().BeEquivalentTo("price", "cancel");
+        rejected.Current!.Price.Should().Be(100m);
+        rejected.Current.CancelledAt.Should().BeNull();
+
+        var printedAt = StartedAt.AddHours(4);
+        (await ctx.PushV2AsAsync(ctx.ReplicaId, 1, item with { PrintedAt = printedAt, PrintBatchId = "b1", PrintSeq = 1 }))
+            .Single().Status.Should().Be("applied", "K3 doldurma kabul edilir");
+
+        (await ctx.LicenseAsync()).LastLegacySalesPushAt.Should().BeNull("ön koşul: protokolsüz istek yok");
+        (await ctx.PushV1Async(item with { Price = 90m, PrintedAt = printedAt })).StatusCode.Should().Be(HttpStatusCode.OK);
+        var saved = await ctx.OrderAsync(item.Id);
+        saved.Price.Should().Be(100m);
+        saved.CancelledAt.Should().BeNull();
+        saved.PrintedAt.Should().Be(printedAt);
+        saved.PrintBatchId.Should().Be("b1");
+        (await ctx.LicenseAsync()).LastLegacySalesPushAt.Should().NotBeNull("v1 için yalnız iz yazılır");
+    }
+
+    /// <summary>
+    /// K5 istisnası (i): zorla bitirilmiş oturumda sahibin v2 push'u reddedilmez, K2 ile yargılanır — komutun
+    /// damgaladığı fiyat kazanır (<c>ignored</c>), damgasız iptal push'tan alınır. Sahip olmayanın push'u reddedilir.
+    /// </summary>
+    [Fact]
+    public async Task K5_istisna_i_zorla_bitirilmis_oturumda_sahip_K2_ile_yargilanir()
+    {
+        await using var ctx = await Context.CreateAsync(_sql, mode: SalesSyncMode.On);
+        var sessionId = await ctx.SeedSessionAsync(
+            owner: ctx.ReplicaId, endedAt: StartedAt.AddHours(2), releasedAt: StartedAt.AddHours(2),
+            forceEndedBy: "cli");
+        var owned = OrderSyncV2Tests.NewItem(sessionId);
+        var foreign = OrderSyncV2Tests.NewItem(sessionId);
+        await ctx.PushV2Async(owned, foreign);
+        await ctx.SeedAsync(owned.Id, o => { o.Price = 80m; o.PriceSetAt = DateTimeOffset.UtcNow; o.SyncVersion = 5; });
+        var cancelledAt = StartedAt.AddHours(3);
+
+        var result = (await ctx.PushV2AsAsync(ctx.ReplicaId, 1,
+            owned with { Price = 100m, CancelledAt = cancelledAt, CancelReason = "vazgeçti", BaseVersion = 0 }))
+            .Single();
+        result.Status.Should().Be("ignored");
+        result.IgnoredUnits.Should().Equal("price");
+        result.Reason.Should().Be("unit-stamped");
+        var saved = await ctx.OrderAsync(owned.Id);
+        saved.Price.Should().Be(80m, "komutun damgaladığı birim kazanır");
+        saved.CancelledAt.Should().Be(cancelledAt, "damgasız birim sahibin push'undan alınır");
+
+        var other = (await ctx.PushV2AsAsync(Guid.NewGuid(), 1, foreign with { CancelledAt = cancelledAt })).Single();
+        other.Status.Should().Be("rejected");
+        other.Reason.Should().Be("session-released");
+        (await ctx.OrderAsync(foreign.Id)).CancelledAt.Should().BeNull();
+    }
+
+    /// <summary>
+    /// K5 istisnası (ii), §4.0, M21: mod açılmadan önce var olan, geri yüklenmemiş ve modu görmemiş kopyanın
+    /// <c>SeenMode = 0</c> push'u K2 ile yargılanır (damgasız iptal alınır). Yedekten geri yüklenmiş
+    /// (<c>PreviousReplicaId</c>) ya da modu bu dönemde görmüş (<c>SeenModeOnAt ≥ ModeChangedAt</c>) kopyanın 0'ı On
+    /// kurallarıyla yargılanır: reddedilir.
+    /// </summary>
+    [Fact]
+    public async Task K5_istisna_ii_acilis_penceresi_K2_ile_gecmisi_tutmayan_reddedilir()
+    {
+        var modeChangedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        await using var ctx = await Context.CreateAsync(_sql, mode: SalesSyncMode.On, modeChangedAt: modeChangedAt);
+        var before = modeChangedAt.AddDays(-2);
+        var window = Guid.NewGuid();
+        var restored = Guid.NewGuid();
+        var sawMode = Guid.NewGuid();
+        await ctx.SeedReplicaAsync(window, before);
+        await ctx.SeedReplicaAsync(restored, before, previousReplicaId: Guid.NewGuid());
+        await ctx.SeedReplicaAsync(sawMode, before, seenModeOnAt: modeChangedAt.AddMinutes(5));
+        var sessionId = await ctx.SeedSessionAsync(
+            owner: Guid.NewGuid(), endedAt: StartedAt.AddHours(2), releasedAt: StartedAt.AddHours(2));
+        var a = OrderSyncV2Tests.NewItem(sessionId);
+        var b = OrderSyncV2Tests.NewItem(sessionId);
+        var c = OrderSyncV2Tests.NewItem(sessionId);
+        (await ctx.PushV1Async(a, b, c)).StatusCode.Should().Be(HttpStatusCode.OK);
+        var cancelledAt = StartedAt.AddHours(3);
+
+        (await ctx.PushV2AsAsync(window, 0, a with { CancelledAt = cancelledAt })).Single().Status
+            .Should().Be("applied");
+        (await ctx.PushV2AsAsync(restored, 0, b with { CancelledAt = cancelledAt })).Single().Reason
+            .Should().Be("session-released");
+        (await ctx.PushV2AsAsync(sawMode, 0, c with { CancelledAt = cancelledAt })).Single().Reason
+            .Should().Be("session-released");
+
+        (await ctx.OrderAsync(a.Id)).CancelledAt.Should().Be(cancelledAt);
+        (await ctx.OrderAsync(b.Id)).CancelledAt.Should().BeNull();
+        (await ctx.OrderAsync(c.Id)).CancelledAt.Should().BeNull();
+    }
+
     // ── §10.1-22: eklemede KVKK ──────────────────────────────────────────────
 
     /// <summary>
@@ -241,6 +351,8 @@ public sealed class OrderSyncV2RelationalTests
             _client.PostAsJsonAsync(Url("orders/sync"), new { orders = items });
 
         public Task<List<V2Result>> PushV2Async(params Item[] items) => PushV2AsAsync(ReplicaId, 0, items);
+
+        public Task<List<V2Result>> PushV2Async(Item item, int seenMode) => PushV2AsAsync(ReplicaId, seenMode, item);
 
         public async Task<List<V2Result>> PushV2AsAsync(Guid replicaId, int seenMode, params Item[] items)
         {

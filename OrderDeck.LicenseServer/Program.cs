@@ -150,6 +150,8 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SessionReleaser>();
         // Satış değişiklik akışı (§4.4, GET sales/changes).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesChangesFeed>();
+        // Türetilmiş kargo dosyası (K7, DM7): orders/sync, sales/backfill ve komutlar aynı türetmeyi kullanır.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.ShipmentAmountDeriver>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();

@@ -34,6 +34,19 @@ public static class OrderUnitMapping
     };
 
     /// <summary>
+    /// Ortak para kurallarının (<see cref="LabelRules"/>) girdisi. Id'ler masaüstüyle aynı "N" biçiminde metin.
+    /// </summary>
+    public static LabelFacts ToLabelFacts(this Order order) => new(
+        Id: order.Id.ToString("N"),
+        Code: order.Code,
+        Price: order.Price,
+        Printed: order.PrintedAt is not null,
+        Cancelled: order.CancelledAt is not null,
+        Tentative: order.IsTentativeBackup,
+        ShippingFee: order.IsShippingFee,
+        ShipmentId: order.ShipmentId?.ToString("N"));
+
+    /// <summary>
     /// Birleştirmenin sonucunu satıra yazar. Yalnız birimleri ve <see cref="Order.ParentOrderId"/>'yi yazar; oluşum
     /// alanlarına (K1) ve damgalara dokunmaz. Değeri değişmeyen alan EF'te değişiklik üretmez.
     /// </summary>
