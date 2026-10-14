@@ -1341,6 +1341,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("rowversion");
 
+                    b.Property<byte>("SalesSyncMode")
+                        .HasColumnType("tinyint");
+
+                    b.Property<DateTimeOffset?>("SalesSyncModeChangedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<bool>("ShopperAppEnabled")
                         .HasColumnType("bit");
 
@@ -1524,12 +1530,23 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("AddedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("BackupSetAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("CancelReason")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<DateTimeOffset?>("CancelSetAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<DateTimeOffset?>("CancelledAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<byte[]>("ChangeSeq")
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
 
                     b.Property<string>("Code")
                         .HasMaxLength(64)
@@ -1561,6 +1578,16 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
+                    b.Property<Guid?>("OriginReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal?>("PaidPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<Guid?>("ParentOrderId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Platform")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -1569,6 +1596,19 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<decimal>("Price")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset?>("PriceCorrectedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("PriceSetAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("PrintBatchId")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<int?>("PrintSeq")
+                        .HasColumnType("int");
 
                     b.Property<DateTimeOffset?>("PrintedAt")
                         .HasColumnType("datetimeoffset");
@@ -1582,9 +1622,21 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<Guid?>("SessionId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTimeOffset?>("SessionReleasedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("ShipmentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ShipmentSetAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<int>("SyncVersion")
                         .IsConcurrencyToken()
                         .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("TextScrubbedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
@@ -1598,9 +1650,14 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.HasIndex("SessionId");
 
+                    b.HasIndex("LicenseId", "ChangeSeq");
+
                     b.HasIndex("LicenseId", "CustomerId");
 
                     b.HasIndex("LicenseId", "ProductId");
+
+                    b.HasIndex("LicenseId", "ShipmentId")
+                        .HasFilter("[ShipmentId] IS NOT NULL");
 
                     b.HasIndex("LicenseId", "UpdatedAt");
 
@@ -2152,11 +2209,35 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("RefreshTokens");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("LastLegacySalesPushAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("LicenseId");
+
+                    b.ToTable("SalesLegacyTraces");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Shipment", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("AmountDerivedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<byte[]>("ChangeSeq")
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTimeOffset?>("CommandedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
@@ -2176,6 +2257,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<Guid>("LicenseId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid?>("OriginReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTimeOffset?>("ShippedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -2185,7 +2269,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("LicenseId", "ChangeSeq");
 
                     b.HasIndex("LicenseId", "CustomerId");
 
@@ -2716,8 +2806,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<byte[]>("ChangeSeq")
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
                     b.Property<DateTimeOffset?>("EndedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ForceEndedBy")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<Guid>("LicenseId")
                         .HasColumnType("uniqueidentifier");
@@ -2726,10 +2825,20 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
+                    b.Property<string>("OwnerMachineName")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid?>("OwnerReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Platforms")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("ReleasedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<DateTimeOffset>("StartedAt")
                         .HasColumnType("datetimeoffset");
@@ -2738,10 +2847,19 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<int?>("UnsentLabelCount")
+                        .HasColumnType("int");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("LicenseId")
+                        .HasDatabaseName("IX_StreamSessions_LicenseId_Unreleased")
+                        .HasFilter("[ReleasedAt] IS NULL");
+
+                    b.HasIndex("LicenseId", "ChangeSeq");
 
                     b.HasIndex("LicenseId", "StartedAt");
 
@@ -3403,6 +3521,84 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("WpfCustomerProjections");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.WpfReplica", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("BackfillCompletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("BackfillDivergedLocal")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<int>("BackfillDivergedServer")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("ClientVersion")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<byte>("FeatureLevel")
+                        .HasColumnType("tinyint");
+
+                    b.Property<DateTimeOffset>("FirstSeenAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("HardwareFingerprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset?>("HardwareFingerprintConflictAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("LastSeenAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("MachineName")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset?>("PaymentHistoryCompletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("PreviousReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte>("Protocol")
+                        .HasColumnType("tinyint");
+
+                    b.Property<decimal?>("ReportedFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ReportedThreshold")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<byte?>("SeenMode")
+                        .HasColumnType("tinyint");
+
+                    b.Property<DateTimeOffset?>("SeenModeAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("SeenModeOnAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("LicenseId", "ReplicaId");
+
+                    b.HasIndex("LicenseId", "LastSeenAt");
+
+                    b.ToTable("WpfReplicas");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Activation", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
@@ -3778,6 +3974,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("Customer");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithOne()
+                        .HasForeignKey("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", "LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Shipment", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
@@ -4065,6 +4272,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.WpfCustomerProjection", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.WpfReplica", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
                         .WithMany()

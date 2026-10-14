@@ -119,26 +119,40 @@ public class OrderProductLinkSyncTests : IClassFixture<ApiFactory>
         saved.ProductVariantId.Should().BeNull();
     }
 
+    /// <summary>
+    /// K1 (spec 2026-10-13 §4.2): ProductId ve ProductVariantId oluşum alanıdır, güncellemede yazılmaz; yeniden
+    /// gönderim ürünü ya da varyantı değiştiremez ve defter yerinde kalır. Masaüstü bu iki alanı eklemeden sonra
+    /// hiç güncellemiyor: OrderDeck.Core'daki bütün <c>UPDATE Label</c> cümleleri (yedek onayı, iptal, iptali geri
+    /// alma, baskı, fiyat, eşitleme onayı, kargo bağı; <c>LabelRepository</c>, <c>ShipmentRepository</c>) ürün
+    /// kimliğine dokunmuyor. Yani "yeniden gönderimle varyant bağlama" meşru bir yol değildi; açık kaldıkça yalnız
+    /// bayat ya da katalog bilmeyen gönderimin bağı değiştirip defteri geri sarmasına yarıyordu.
+    /// </summary>
     [Fact]
-    public async Task Repushing_the_same_order_can_rebind_the_variant()
+    public async Task Repushing_the_same_order_does_not_rebind_the_variant()
     {
         var (client, licenseId, productId, variantId) = await SeedAsync();
         var orderId = Guid.NewGuid();
 
-        await client.PostAsJsonAsync(
+        (await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/orders/sync",
-            new { orders = new[] { OrderPayload(orderId, productId, null) } });
+            new { orders = new[] { OrderPayload(orderId, productId, null) }, catalogAware = true }))
+            .EnsureSuccessStatusCode();
 
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/orders/sync",
-            new { orders = new[] { OrderPayload(orderId, productId, variantId) } });
+            new { orders = new[] { OrderPayload(orderId, productId, variantId) }, catalogAware = true });
 
         resp.EnsureSuccessStatusCode();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var saved = await db.Orders.SingleAsync(o => o.Id == orderId);
-        saved.ProductVariantId.Should().Be(variantId);
+        saved.ProductId.Should().Be(productId);
+        saved.ProductVariantId.Should().BeNull("varyant eklemede bağlanmadıysa sonradan bağlanmaz");
+        var movements = await db.StockMovements.Where(m => m.OrderId == orderId).ToListAsync();
+        movements.Should().ContainSingle("defter ilk gönderimin ürün düzeyi düşümünde kalır")
+            .Which.ProductVariantId.Should().BeNull();
+        movements.Sum(m => m.Quantity).Should().Be(-1);
     }
 
     /// <summary>

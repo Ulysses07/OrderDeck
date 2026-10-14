@@ -1,0 +1,816 @@
+{
+  "_aciklama": "LabelRules (OrderDeck.Shared/Sales/LabelRules.cs) ortak test vektörleri. Bu dosya OrderDeck.Tests ve OrderDeck.LicenseServer.Tests'e bağlantılı içerik olarak kopyalanır ve iki projede de aynı koşucuyla koşar; OrderDeck.Tests ayrıca masaüstünün BUGÜNKÜ kodunu (LabelRepository, LabelService) aynı vektörlerle yoklar (eşlik testi). Her kuralın kendi bölümü var; yeni bir kural (ör. OrderUnitMerge K1–K7) kendi bölümünü ekler. Koşucu bilmediği bölümde kırmızı yanar: bölüm eklemek iki projeye de koşucu eklemeyi gerektirir. Etiket alanları: id, code (null = kodsuz), price; printed/cancelled/tentative/shippingFee yoksa false; shipmentId yoksa null. 'shipments' dosya Id → durum (Pending|Held|RecipientPays|Shipped); haritada olmayan dosya 'bilinmiyor' demektir. Etiket sırası yazılış sırasıdır.",
+
+  "sameCode": [
+    { "name": "ascii_harf_buyuklugu", "a": "a12", "b": "A12", "expected": true },
+    { "name": "ayni_kod", "a": "A12", "b": "A12", "expected": true },
+    { "name": "farkli_kod", "a": "A12", "b": "A13", "expected": false },
+    { "name": "c_cedilla_kucuk_buyuk", "a": "çanta1", "b": "Çanta1", "expected": true },
+    { "name": "turkce_harfler_tamamen_buyuk", "a": "ÇANTA", "b": "çanta", "expected": true },
+    { "name": "g_s_o_u_kucuk_buyuk", "a": "ğşöü9", "b": "ĞŞÖÜ9", "expected": true },
+    { "name": "ascii_i_ve_I_ayni", "a": "i1", "b": "I1", "expected": true },
+    { "name": "noktali_buyuk_I_kucuk_i_degil", "a": "İ1", "b": "i1", "expected": false },
+    { "name": "noktasiz_kucuk_i_buyuk_I_degil", "a": "ı1", "b": "I1", "expected": false },
+    { "name": "noktali_buyuk_I_ascii_I_degil", "a": "İ1", "b": "I1", "expected": false },
+    { "name": "noktasiz_i_ascii_i_degil", "a": "ı1", "b": "i1", "expected": false },
+    { "name": "noktali_I_kendisiyle_ayni", "a": "İ1", "b": "İ1", "expected": true },
+    { "name": "ascii_katlamasi_yok", "a": "çanta1", "b": "canta1", "expected": false },
+    { "name": "sondaki_bosluk_kirpilmaz", "a": "A12 ", "b": "A12", "expected": false },
+    { "name": "bastaki_bosluk_kirpilmaz", "a": " A12", "b": "A12", "expected": false },
+    { "name": "kodsuz_etiket_eslesmez", "a": null, "b": "A12", "expected": false },
+    { "name": "bos_kod_bos_kodla_ayni", "a": "", "b": "", "expected": true }
+  ],
+
+  "codeKey": [
+    { "name": "kodsuz", "code": null, "expected": "" },
+    { "name": "bos", "code": "", "expected": "" },
+    { "name": "yalniz_bosluk", "code": "   ", "expected": "" },
+    { "name": "iki_yandan_kirpilir", "code": " A12 ", "expected": "A12" },
+    { "name": "sekme_ve_satir_sonu_kirpilir", "code": "\tA12\n", "expected": "A12" },
+    { "name": "harf_katlanmaz", "code": "çanta1", "expected": "çanta1" },
+    { "name": "ortadaki_bosluk_kalir", "code": " A 12 ", "expected": "A 12" }
+  ],
+
+  "classify": [
+    {
+      "name": "her_sinif",
+      "shipments": { "k_gitti": "Shipped", "k_beklet": "Held", "k_yeni": "Pending", "k_alici": "RecipientPays" },
+      "labels": [
+        { "id": "kuyruk", "code": "A1", "price": 100, "expected": "correctable" },
+        { "id": "basilmis", "code": "A1", "price": 100, "printed": true, "expected": "correctable" },
+        { "id": "gecici_yedek", "code": "A1", "price": 90, "tentative": true, "expected": "correctable" },
+        { "id": "kodsuz", "code": null, "price": 50, "expected": "correctable" },
+        { "id": "iptal", "code": "A1", "price": 100, "printed": true, "cancelled": true, "expected": "excluded" },
+        { "id": "kargo_ucreti", "code": null, "price": 60, "shippingFee": true, "expected": "excluded" },
+        { "id": "kargoya_verilmis", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti", "expected": "shipped" },
+        { "id": "bekletilen_dosya", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_beklet", "expected": "correctable" },
+        { "id": "yeni_dosya", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_yeni", "expected": "correctable" },
+        { "id": "alici_odemeli_dosya", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_alici", "expected": "correctable" }
+      ]
+    },
+    {
+      "name": "iptal_ve_kargo_ucreti_kargoya_verilmisi_yener",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "iptal_gitti", "code": "A1", "price": 100, "printed": true, "cancelled": true, "shipmentId": "k_gitti", "expected": "excluded" },
+        { "id": "ucret_gitti", "code": null, "price": 60, "printed": true, "shippingFee": true, "shipmentId": "k_gitti", "expected": "excluded" },
+        { "id": "gitti", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti", "expected": "shipped" }
+      ]
+    },
+    {
+      "name": "bilinmeyen_dosya_bugun_duzeltilebilir",
+      "shipments": {},
+      "labels": [
+        { "id": "bilinmeyen", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_yok", "expected": "correctable" }
+      ]
+    }
+  ],
+
+  "codePrice": [
+    { "name": "kodun_etiketi_yok", "code": "A1", "labels": [], "expected": null },
+    {
+      "name": "tek_fiyat", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100 },
+        { "id": "l2", "code": "A1", "price": 100, "printed": true }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "en_cok_tekrarlanan", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 250 },
+        { "id": "l2", "code": "A1", "price": 230 },
+        { "id": "l3", "code": "A1", "price": 250 }
+      ],
+      "expected": 250
+    },
+    {
+      "name": "esitlikte_en_son_yazilan", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 250 },
+        { "id": "l2", "code": "A1", "price": 230 }
+      ],
+      "expected": 230
+    },
+    {
+      "name": "esitlikte_grubun_en_son_yazilani_belirler", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 230 },
+        { "id": "l2", "code": "A1", "price": 250 },
+        { "id": "l3", "code": "A1", "price": 250 },
+        { "id": "l4", "code": "A1", "price": 230 }
+      ],
+      "expected": 230
+    },
+    {
+      "name": "iptal_ve_kargo_ucreti_sayilmaz", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "cancelled": true },
+        { "id": "l2", "code": "A1", "price": 100, "printed": true, "cancelled": true },
+        { "id": "l3", "code": "A1", "price": 60, "shippingFee": true },
+        { "id": "l4", "code": "A1", "price": 120 }
+      ],
+      "expected": 120
+    },
+    {
+      "name": "hepsi_iptal", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "cancelled": true }
+      ],
+      "expected": null
+    },
+    {
+      "name": "duzeltilebilir_varken_kargoya_verilmis_sayilmaz", "code": "A1",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti" },
+        { "id": "l2", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti" },
+        { "id": "l3", "code": "A1", "price": 120 }
+      ],
+      "expected": 120
+    },
+    {
+      "name": "yalniz_kargoya_verilmis", "code": "A1",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_gitti" },
+        { "id": "l2", "code": "A1", "price": 90, "printed": true, "shipmentId": "k_gitti" }
+      ],
+      "expected": 90
+    },
+    {
+      "name": "bilinmeyen_dosyadaki_etiket_duzeltilebilir_sayilir", "code": "A1",
+      "shipments": { "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true, "shipmentId": "k_yok" },
+        { "id": "l2", "code": "A1", "price": 90, "printed": true, "shipmentId": "k_gitti" }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "acik_dosyadaki_etiket_duzeltilebilir_sayilir", "code": "A1",
+      "shipments": { "k_beklet": "Held", "k_gitti": "Shipped" },
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 110, "printed": true, "shipmentId": "k_beklet" },
+        { "id": "l2", "code": "A1", "price": 90, "printed": true, "shipmentId": "k_gitti" }
+      ],
+      "expected": 110
+    },
+    {
+      "name": "basilmis_kuyruk_ve_yedek_birlikte_sayilir", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 100, "printed": true },
+        { "id": "l2", "code": "A1", "price": 80, "tentative": true },
+        { "id": "l3", "code": "A1", "price": 80 }
+      ],
+      "expected": 80
+    },
+    {
+      "name": "turkce_harf_buyuklugu_ayni_kod", "code": "Çanta1",
+      "labels": [
+        { "id": "l1", "code": "çanta1", "price": 100 },
+        { "id": "l2", "code": "ÇANTA1", "price": 100 },
+        { "id": "l3", "code": "Çanta1", "price": 80 }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "sorgu_kodu_kirpilir", "code": " a1 ",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 75 }
+      ],
+      "expected": 75
+    },
+    {
+      "name": "kurus_fiyat", "code": "A1",
+      "labels": [
+        { "id": "l1", "code": "A1", "price": 249.90 },
+        { "id": "l2", "code": "A1", "price": 249.90 },
+        { "id": "l3", "code": "A1", "price": 250 }
+      ],
+      "expected": 249.90
+    }
+  ],
+
+  "contribution": [
+    { "name": "basilmis", "label": { "id": "l", "code": "A1", "price": 250, "printed": true }, "expected": { "count": 1, "amount": 250 } },
+    { "name": "kuyrukta", "label": { "id": "l", "code": "A1", "price": 250 }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "basilmis_iptal", "label": { "id": "l", "code": "A1", "price": 250, "printed": true, "cancelled": true }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "kuyrukta_iptal", "label": { "id": "l", "code": "A1", "price": 250, "cancelled": true }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "basilmis_gecici_yedek", "label": { "id": "l", "code": "A1", "price": 250, "printed": true, "tentative": true }, "expected": { "count": 0, "amount": 0 } },
+    { "name": "basilmis_kargo_ucreti_bugun_sayilir", "label": { "id": "l", "code": null, "price": 60, "printed": true, "shippingFee": true }, "expected": { "count": 1, "amount": 60 } },
+    { "name": "kargoya_verilmis_dosyada_basilmis", "label": { "id": "l", "code": "A1", "price": 250, "printed": true, "shipmentId": "k" }, "expected": { "count": 1, "amount": 250 } },
+    { "name": "sifir_fiyatli_basilmis", "label": { "id": "l", "code": "A1", "price": 0, "printed": true }, "expected": { "count": 1, "amount": 0 } }
+  ],
+
+  "paidPriceOnCorrection": [
+    { "name": "odenmemis_kalir", "paidPrice": null, "priceBefore": 250, "linkedToShipment": false, "paidFromBalance": false, "expected": null },
+    { "name": "dosyaya_bagli_ilk_duzeltme_odenen_fiyati_saklar", "paidPrice": null, "priceBefore": 250, "linkedToShipment": true, "paidFromBalance": false, "expected": 250 },
+    { "name": "bakiyeden_odenmis_ilk_duzeltme_odenen_fiyati_saklar", "paidPrice": null, "priceBefore": 250, "linkedToShipment": false, "paidFromBalance": true, "expected": 250 },
+    { "name": "dosyaya_bagli_ve_bakiyeden", "paidPrice": null, "priceBefore": 199.90, "linkedToShipment": true, "paidFromBalance": true, "expected": 199.90 },
+    { "name": "sonraki_duzeltme_dokunmaz", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": true, "paidFromBalance": false, "expected": 250 },
+    { "name": "sonraki_duzeltme_bakiyede_de_dokunmaz", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": false, "paidFromBalance": true, "expected": 250 },
+    { "name": "bag_cozulmus_olsa_da_saklanan_kalir", "paidPrice": 250, "priceBefore": 205, "linkedToShipment": false, "paidFromBalance": false, "expected": 250 }
+  ],
+
+  "_orderUnitMerge": "OrderUnitMerge (OrderDeck.Shared/Sales/OrderUnitMerge.cs), spec 2026-10-13 §4.2 K1–K7. 'context.format' 1 (v1, ≤0.9.10) ya da 2. 'server': satırın değerleri, birim damgaları (priceSetAt, cancelSetAt, backupSetAt, shipmentSetAt) ve version; yazılmayan değer null/false, price 100, version 1. 'push': yazılmayan değer sunucudakinin aynısıdır; baseVersion yoksa null. Değer alanları: price, priceCorrectedAt, paidPrice, cancelledAt, cancelReason, tentative, shipmentId, printedAt, printBatchId, printSeq, parentOrderId. 'expected.merged': yazılmayan alan sunucudaki değeri taşır. 'expected.changed' (birim adları: price, cancel, backup, shipment, print) ve 'expected.ignored' ([{unit, reason}]) yoksa boş; 'expected.reason' yoksa null; 'expected.status' (applied|ignored|rejected) yoksa denetlenmez. 'context' ayrıca modeOn, sessionPhase (none|live|handingOver|released), callerOwnsSession, sessionForceEnded, openingWindow, linkedShipmentShipped taşıyabilir; yoksa false/none. Ret nedenleri (session-released, shipment-shipped) satırı 'rejected' yapar. K7 (türetilmiş dosya) bu fonksiyonun dışında; tutar kuralı 'shipmentAmount' bölümünde.",
+
+  "orderUnitMerge": [
+    {
+      "name": "k1_v1_tasimadigi_alanlari_bosaltmaz",
+      "context": { "format": 1 },
+      "server": {
+        "price": 120, "priceCorrectedAt": "2026-10-01T10:00:00Z", "paidPrice": 100,
+        "shipmentId": "00000000-0000-0000-0000-0000000000a1",
+        "printedAt": "2026-09-30T20:00:00Z", "printBatchId": "b1", "printSeq": 3,
+        "parentOrderId": "00000000-0000-0000-0000-0000000000b1"
+      },
+      "push": {
+        "priceCorrectedAt": null, "paidPrice": null, "shipmentId": null,
+        "printBatchId": null, "printSeq": null, "parentOrderId": null
+      },
+      "expected": {}
+    },
+    {
+      "name": "k1_v2_ebeveyn_bossa_doldurulur",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "expected": { "merged": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" } }
+    },
+    {
+      "name": "k1_v2_dolu_ebeveyn_degismez",
+      "context": { "format": 2 },
+      "server": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b2" },
+      "expected": {}
+    },
+    {
+      "name": "k1_v2_dolu_ebeveyn_bosaltilmaz",
+      "context": { "format": 2 },
+      "server": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "push": { "parentOrderId": null },
+      "expected": {}
+    },
+    {
+      "name": "k1_v1_ebeveyn_doldurmaz",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "parentOrderId": "00000000-0000-0000-0000-0000000000b1" },
+      "expected": {}
+    },
+
+    {
+      "name": "k2_damgasiz_fiyat_son_gelen_kazanir",
+      "context": { "format": 1 },
+      "server": { "price": 100 },
+      "push": { "price": 120 },
+      "expected": { "merged": { "price": 120 }, "changed": ["price"] }
+    },
+    {
+      "name": "k2_damgasiz_iptal_son_gelen_kazanir",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" },
+      "expected": { "merged": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" }, "changed": ["cancel"] }
+    },
+    {
+      "name": "k2_damgasiz_iptal_geri_alinir",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" },
+      "push": { "cancelledAt": null, "cancelReason": null },
+      "expected": { "merged": { "cancelledAt": null, "cancelReason": null }, "changed": ["cancel"] }
+    },
+    {
+      "name": "k2_damgali_fiyati_v1_yazamaz",
+      "context": { "format": 1 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00.123Z", "version": 4 },
+      "push": { "price": 100 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_damgali_iptali_v1_geri_alamaz",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00.5Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00.5Z" },
+      "push": { "cancelledAt": null, "cancelReason": null },
+      "expected": { "ignored": [{ "unit": "cancel", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_damgali_birime_ayni_deger_yok_sayilmaz",
+      "context": { "format": 1 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z" },
+      "push": { "price": 80.00 },
+      "expected": {}
+    },
+    {
+      "name": "k2_saniye_alti_fark_ayni_deger_sayilir",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00.5Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00.5Z" },
+      "push": { "cancelledAt": "2026-10-02T10:00:00Z" },
+      "expected": {}
+    },
+    {
+      "name": "k2_v2_guncel_surum_damgali_birimi_yazar",
+      "context": { "format": 2 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z", "version": 7 },
+      "push": { "baseVersion": 7, "price": 90, "cancelledAt": null, "cancelReason": null },
+      "expected": { "merged": { "price": 90, "cancelledAt": null, "cancelReason": null }, "changed": ["price", "cancel"] }
+    },
+    {
+      "name": "k2_v2_bayat_surum_damgali_birimi_yazamaz",
+      "context": { "format": 2 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 7 },
+      "push": { "baseVersion": 6, "price": 90 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_v2_surumsuz_push_damgali_birimi_yazamaz",
+      "context": { "format": 2 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 7 },
+      "push": { "price": 90 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_v1_surum_esitligi_istisnasi_yok",
+      "context": { "format": 1 },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 7 },
+      "push": { "baseVersion": 7, "price": 90 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_v2_damgasiz_fiyat_birimi_uc_alan_birlikte",
+      "context": { "format": 2 },
+      "server": { "price": 100, "priceCorrectedAt": "2026-10-02T09:00:00Z", "paidPrice": 120 },
+      "push": { "price": 110, "priceCorrectedAt": null, "paidPrice": null },
+      "expected": { "merged": { "price": 110, "priceCorrectedAt": null, "paidPrice": null }, "changed": ["price"] }
+    },
+    {
+      "name": "k2_v1_duzeltme_damgasini_ve_odenen_fiyati_silmez",
+      "context": { "format": 1 },
+      "server": { "price": 100, "priceCorrectedAt": "2026-10-02T09:00:00Z", "paidPrice": 120 },
+      "push": { "price": 110, "priceCorrectedAt": null, "paidPrice": null },
+      "expected": { "merged": { "price": 110 }, "changed": ["price"] }
+    },
+    {
+      "name": "k2_v2_damgali_fiyat_biriminin_her_alani_korunur",
+      "context": { "format": 2 },
+      "server": { "price": 100, "priceCorrectedAt": "2026-10-02T09:00:00Z", "paidPrice": 120, "priceSetAt": "2026-10-02T09:00:00Z", "version": 3 },
+      "push": { "baseVersion": 2, "paidPrice": null },
+      "expected": { "ignored": [{ "unit": "price", "reason": "unit-stamped" }], "reason": "unit-stamped" }
+    },
+    {
+      "name": "k2_yedek_onayi_birden_sifira_yazilir",
+      "context": { "format": 1 },
+      "server": { "tentative": true },
+      "push": { "tentative": false },
+      "expected": { "merged": { "tentative": false }, "changed": ["backup"] }
+    },
+    {
+      "name": "k2_yedek_sifirdan_bire_donmez",
+      "context": { "format": 1 },
+      "server": { "tentative": false },
+      "push": { "tentative": true },
+      "expected": { "ignored": [{ "unit": "backup", "reason": "backup-one-way" }], "reason": "backup-one-way" }
+    },
+    {
+      "name": "k2_yedek_v2_guncel_surumle_de_sifirdan_bire_donmez",
+      "context": { "format": 2 },
+      "server": { "tentative": false, "backupSetAt": "2026-10-02T09:00:00Z", "version": 2 },
+      "push": { "baseVersion": 2, "tentative": true },
+      "expected": { "ignored": [{ "unit": "backup", "reason": "backup-one-way" }], "reason": "backup-one-way" }
+    },
+
+    {
+      "name": "k3_basilmamis_satira_baski_alinir",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "printedAt": "2026-10-01T20:00:00Z" },
+      "expected": { "merged": { "printedAt": "2026-10-01T20:00:00Z" }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_baski_bos_gonderimle_silinmez",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z" },
+      "push": { "printedAt": null },
+      "expected": { "ignored": [{ "unit": "print", "reason": "already-printed" }], "reason": "already-printed" }
+    },
+    {
+      "name": "k3_baski_sonraki_degerle_kaymaz",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z" },
+      "push": { "printedAt": "2026-10-01T22:00:00Z" },
+      "expected": { "ignored": [{ "unit": "print", "reason": "already-printed" }], "reason": "already-printed" }
+    },
+    {
+      "name": "k3_ayni_baski_saniye_alti_farkla_yok_sayilmaz",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00.7Z" },
+      "push": { "printedAt": "2026-10-01T20:00:00Z" },
+      "expected": {}
+    },
+    {
+      "name": "k3_komutla_iptal_edilmis_siparise_baski_alinmaz",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": { "ignored": [{ "unit": "print", "reason": "cancelled-elsewhere" }], "reason": "cancelled-elsewhere" }
+    },
+    {
+      "name": "k3_iptali_bilmeyen_bayat_baski_iki_birim_yok_sayilir",
+      "context": { "format": 1 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "cancelledAt": null, "cancelReason": null, "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": {
+        "ignored": [{ "unit": "cancel", "reason": "unit-stamped" }, { "unit": "print", "reason": "cancelled-elsewhere" }],
+        "reason": "cancelled-elsewhere"
+      }
+    },
+    {
+      "name": "k3_komutla_geri_alinmis_siparise_baski_alinir",
+      "context": { "format": 1 },
+      "server": { "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": { "merged": { "printedAt": "2026-10-02T11:00:00Z" }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_ayni_pushta_basildi_sonra_iptal_damgasiz",
+      "context": { "format": 1 },
+      "server": {},
+      "push": { "printedAt": "2026-10-02T11:00:00Z", "cancelledAt": "2026-10-02T11:05:00Z", "cancelReason": "vazgecti" },
+      "expected": {
+        "merged": { "printedAt": "2026-10-02T11:00:00Z", "cancelledAt": "2026-10-02T11:05:00Z", "cancelReason": "vazgecti" },
+        "changed": ["cancel", "print"]
+      }
+    },
+    {
+      "name": "k3_v2_guncel_surumle_iptali_geri_alip_basar",
+      "context": { "format": 2 },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z", "version": 5 },
+      "push": { "baseVersion": 5, "cancelledAt": null, "cancelReason": null, "printedAt": "2026-10-02T11:00:00Z", "printBatchId": "b9", "printSeq": 1 },
+      "expected": {
+        "merged": { "cancelledAt": null, "cancelReason": null, "printedAt": "2026-10-02T11:00:00Z", "printBatchId": "b9", "printSeq": 1 },
+        "changed": ["cancel", "print"]
+      }
+    },
+    {
+      "name": "k3_v2_baski_uc_alan_birlikte",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 },
+      "expected": { "merged": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_v1_baski_grubuna_dokunmaz",
+      "context": { "format": 1 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 },
+      "push": { "printBatchId": null, "printSeq": null },
+      "expected": {}
+    },
+    {
+      "name": "k3_v2_basilmis_satirda_bos_grup_doldurulur",
+      "context": { "format": 2 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z" },
+      "push": { "printBatchId": "b1", "printSeq": 4 },
+      "expected": { "merged": { "printBatchId": "b1", "printSeq": 4 }, "changed": ["print"] }
+    },
+    {
+      "name": "k3_v2_dolu_grup_degismez",
+      "context": { "format": 2 },
+      "server": { "printedAt": "2026-10-01T20:00:00Z", "printBatchId": "b1", "printSeq": 4 },
+      "push": { "printBatchId": "b2", "printSeq": 7 },
+      "expected": { "ignored": [{ "unit": "print", "reason": "already-printed" }], "reason": "already-printed" }
+    },
+    {
+      "name": "k3_v2_baskisiz_push_grup_yazmaz",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "printBatchId": "b1", "printSeq": 4 },
+      "expected": {}
+    },
+    {
+      "name": "k4_v1_bagi_tasimaz",
+      "context": { "format": 1 },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "shipmentId": null },
+      "expected": {}
+    },
+    {
+      "name": "k4_off_v2_damgasiz_bag_yazilir",
+      "context": { "format": 2 },
+      "server": {},
+      "push": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "expected": { "merged": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" }, "changed": ["shipment"], "status": "applied" }
+    },
+    {
+      "name": "k4_off_v2_damgasiz_bag_bosaltilir",
+      "context": { "format": 2 },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "shipmentId": null },
+      "expected": { "merged": { "shipmentId": null }, "changed": ["shipment"] }
+    },
+    {
+      "name": "k4_off_v2_damgali_bag_bayat_surumle_yok_sayilir",
+      "context": { "format": 2 },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1", "shipmentSetAt": "2026-10-02T09:00:00Z", "version": 5 },
+      "push": { "baseVersion": 4, "shipmentId": "00000000-0000-0000-0000-0000000000a2" },
+      "expected": { "ignored": [{ "unit": "shipment", "reason": "unit-stamped" }], "reason": "unit-stamped", "status": "ignored" }
+    },
+    {
+      "name": "k4_off_v2_damgali_bag_guncel_surumle_yazilir",
+      "context": { "format": 2 },
+      "server": { "shipmentId": null, "shipmentSetAt": "2026-10-02T09:00:00Z", "version": 5 },
+      "push": { "baseVersion": 5, "shipmentId": "00000000-0000-0000-0000-0000000000a2" },
+      "expected": { "merged": { "shipmentId": "00000000-0000-0000-0000-0000000000a2" }, "changed": ["shipment"] }
+    },
+    {
+      "name": "k4_on_v2_bag_alinmaz",
+      "context": { "format": 2, "modeOn": true },
+      "server": {},
+      "push": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "expected": { "ignored": [{ "unit": "shipment", "reason": "shipment-server-owned" }], "reason": "shipment-server-owned", "status": "ignored" }
+    },
+    {
+      "name": "k4_on_v2_guncel_surumle_de_bag_alinmaz",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "live", "callerOwnsSession": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1", "version": 3 },
+      "push": { "baseVersion": 3, "shipmentId": null },
+      "expected": { "ignored": [{ "unit": "shipment", "reason": "shipment-server-owned" }], "reason": "shipment-server-owned" }
+    },
+    {
+      "name": "k4_on_pencere_bos_bagi_doldurur",
+      "context": { "format": 2, "modeOn": true, "openingWindow": true },
+      "server": {},
+      "push": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "expected": { "merged": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" }, "changed": ["shipment"] }
+    },
+    {
+      "name": "k4_on_pencere_dolu_bagi_degistirmez",
+      "context": { "format": 2, "modeOn": true, "openingWindow": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "shipmentId": "00000000-0000-0000-0000-0000000000a2" },
+      "expected": { "ignored": [{ "unit": "shipment", "reason": "shipment-server-owned" }], "reason": "shipment-server-owned" }
+    },
+    {
+      "name": "k4_on_pencere_bagi_bosaltmaz",
+      "context": { "format": 2, "modeOn": true, "openingWindow": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "shipmentId": null },
+      "expected": { "ignored": [{ "unit": "shipment", "reason": "shipment-server-owned" }], "reason": "shipment-server-owned" }
+    },
+    {
+      "name": "k4_on_pencere_komutla_cozulmus_bagi_doldurmaz",
+      "context": { "format": 2, "modeOn": true, "openingWindow": true },
+      "server": { "shipmentSetAt": "2026-10-02T09:00:00Z" },
+      "push": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "expected": { "ignored": [{ "unit": "shipment", "reason": "shipment-server-owned" }], "reason": "shipment-server-owned" }
+    },
+    {
+      "name": "k4_on_v1_dokunmaz",
+      "context": { "format": 1, "modeOn": true, "openingWindow": true },
+      "server": {},
+      "push": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "expected": {}
+    },
+
+    {
+      "name": "k5_devredilmis_v2_fiyat_iptal_yedek_reddedilir",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released" },
+      "server": { "tentative": true, "version": 4 },
+      "push": { "baseVersion": 4, "price": 120, "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade", "tentative": false },
+      "expected": {
+        "ignored": [
+          { "unit": "price", "reason": "session-released" },
+          { "unit": "cancel", "reason": "session-released" },
+          { "unit": "backup", "reason": "session-released" }
+        ],
+        "reason": "session-released",
+        "status": "rejected"
+      }
+    },
+    {
+      "name": "k5_devredilmis_v1_reddedilir",
+      "context": { "format": 1, "modeOn": true, "sessionPhase": "released" },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" },
+      "push": { "cancelledAt": null, "cancelReason": null },
+      "expected": { "ignored": [{ "unit": "cancel", "reason": "session-released" }], "reason": "session-released", "status": "rejected" }
+    },
+    {
+      "name": "k5_devredilmis_baski_doldurma_kabul",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released" },
+      "server": {},
+      "push": { "printedAt": "2026-10-02T11:00:00Z", "printBatchId": "b1", "printSeq": 2 },
+      "expected": { "merged": { "printedAt": "2026-10-02T11:00:00Z", "printBatchId": "b1", "printSeq": 2 }, "changed": ["print"], "status": "applied" }
+    },
+    {
+      "name": "k5_devredilmis_baski_alinir_fiyat_reddedilir",
+      "context": { "format": 1, "modeOn": true, "sessionPhase": "released" },
+      "server": {},
+      "push": { "price": 90, "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": {
+        "merged": { "printedAt": "2026-10-02T11:00:00Z" },
+        "changed": ["print"],
+        "ignored": [{ "unit": "price", "reason": "session-released" }],
+        "reason": "session-released",
+        "status": "rejected"
+      }
+    },
+    {
+      "name": "k5_devredilmis_ayni_deger_reddedilmez",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released" },
+      "server": { "price": 80, "cancelledAt": "2026-10-02T10:00:00.4Z", "cancelReason": "iade" },
+      "push": { "cancelledAt": "2026-10-02T10:00:00Z" },
+      "expected": { "status": "applied" }
+    },
+    {
+      "name": "k5_devredilmis_yedek_tek_yonu_once_gelir",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released" },
+      "server": { "tentative": false },
+      "push": { "tentative": true },
+      "expected": { "ignored": [{ "unit": "backup", "reason": "backup-one-way" }], "reason": "backup-one-way", "status": "ignored" }
+    },
+    {
+      "name": "k5_mod_off_devredilmis_oturumda_kural_yok",
+      "context": { "format": 1, "sessionPhase": "released" },
+      "server": {},
+      "push": { "price": 120 },
+      "expected": { "merged": { "price": 120 }, "changed": ["price"] }
+    },
+    {
+      "name": "k5_devrediliyor_oturumda_kural_yok",
+      "context": { "format": 1, "modeOn": true, "sessionPhase": "handingOver" },
+      "server": {},
+      "push": { "price": 120 },
+      "expected": { "merged": { "price": 120 }, "changed": ["price"] }
+    },
+    {
+      "name": "k5_istisna_i_force_end_sahibi_K2_ile_yargilanir",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released", "sessionForceEnded": true, "callerOwnsSession": true },
+      "server": { "price": 80, "priceSetAt": "2026-10-02T09:00:00Z", "version": 3 },
+      "push": { "baseVersion": 2, "price": 100, "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "vazgecti" },
+      "expected": {
+        "merged": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "vazgecti" },
+        "changed": ["cancel"],
+        "ignored": [{ "unit": "price", "reason": "unit-stamped" }],
+        "reason": "unit-stamped",
+        "status": "ignored"
+      }
+    },
+    {
+      "name": "k5_istisna_i_sahip_olmayan_reddedilir",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released", "sessionForceEnded": true },
+      "server": {},
+      "push": { "price": 120 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "session-released" }], "reason": "session-released", "status": "rejected" }
+    },
+    {
+      "name": "k5_istisna_i_zorla_bitirilmemis_oturumda_sahip_reddedilir",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released", "callerOwnsSession": true },
+      "server": {},
+      "push": { "price": 120 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "session-released" }], "reason": "session-released", "status": "rejected" }
+    },
+    {
+      "name": "k5_istisna_i_v1de_yok",
+      "context": { "format": 1, "modeOn": true, "sessionPhase": "released", "sessionForceEnded": true, "callerOwnsSession": true },
+      "server": {},
+      "push": { "price": 120 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "session-released" }], "reason": "session-released", "status": "rejected" }
+    },
+    {
+      "name": "k5_istisna_ii_acilis_penceresi_K2_ile_yargilanir",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released", "openingWindow": true },
+      "server": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z", "version": 6 },
+      "push": { "baseVersion": 5, "price": 110, "cancelledAt": null, "cancelReason": null },
+      "expected": {
+        "merged": { "price": 110 },
+        "changed": ["price"],
+        "ignored": [{ "unit": "cancel", "reason": "unit-stamped" }],
+        "reason": "unit-stamped",
+        "status": "ignored"
+      }
+    },
+    {
+      "name": "k5_istisna_ii_v1de_yok",
+      "context": { "format": 1, "modeOn": true, "sessionPhase": "released", "openingWindow": true },
+      "server": {},
+      "push": { "price": 110 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "session-released" }], "reason": "session-released", "status": "rejected" }
+    },
+
+    {
+      "name": "k6_kargolanmis_dosyada_fiyat_reddedilir",
+      "context": { "format": 2, "modeOn": true, "linkedShipmentShipped": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1", "version": 2 },
+      "push": { "baseVersion": 2, "price": 120, "paidPrice": 100 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "shipment-shipped" }], "reason": "shipment-shipped", "status": "rejected" }
+    },
+    {
+      "name": "k6_kargolanmis_dosyada_iptal_ve_geri_alma_gecer",
+      "context": { "format": 1, "modeOn": true, "linkedShipmentShipped": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" },
+      "expected": { "merged": { "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "iade" }, "changed": ["cancel"], "status": "applied" }
+    },
+    {
+      "name": "k6_mod_off_kural_yok",
+      "context": { "format": 1, "linkedShipmentShipped": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "price": 120 },
+      "expected": { "merged": { "price": 120 }, "changed": ["price"] }
+    },
+    {
+      "name": "k6_acilis_penceresinde_de_gecerli",
+      "context": { "format": 2, "modeOn": true, "openingWindow": true, "linkedShipmentShipped": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "price": 120 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "shipment-shipped" }], "reason": "shipment-shipped", "status": "rejected" }
+    },
+    {
+      "name": "k5_ve_k6_birlikte_devir_nedeni_doner",
+      "context": { "format": 2, "modeOn": true, "sessionPhase": "released", "linkedShipmentShipped": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1" },
+      "push": { "price": 120 },
+      "expected": { "ignored": [{ "unit": "price", "reason": "session-released" }], "reason": "session-released", "status": "rejected" }
+    },
+    {
+      "name": "ret_nedeni_iptal_baskisindan_once_gelir",
+      "context": { "format": 1, "modeOn": true, "linkedShipmentShipped": true },
+      "server": { "shipmentId": "00000000-0000-0000-0000-0000000000a1", "cancelledAt": "2026-10-02T10:00:00Z", "cancelReason": "komut", "cancelSetAt": "2026-10-02T10:00:00Z" },
+      "push": { "price": 120, "printedAt": "2026-10-02T11:00:00Z" },
+      "expected": {
+        "ignored": [{ "unit": "price", "reason": "shipment-shipped" }, { "unit": "print", "reason": "cancelled-elsewhere" }],
+        "reason": "shipment-shipped",
+        "status": "rejected"
+      }
+    }
+  ],
+
+  "_shipmentAmount": "LabelRules.DerivedShipmentAmount (DM7, spec 2026-10-13 §3.3, §7.2): türetilmiş kargo dosyasının tutarı. 'shipmentId' dosya; 'labels' aday etiketler (etiket alanları yukarıdaki gibi); 'expected' tutar. Dosya durumu (Shipped tutarı donmuş) çağıranın işidir.",
+
+  "shipmentAmount": [
+    {
+      "name": "bagli_etiketlerin_toplami",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "basilmis", "code": "A1", "price": 100, "printed": true, "shipmentId": "k1" },
+        { "id": "basilmamis", "code": "B2", "price": 50, "shipmentId": "k1" },
+        { "id": "baska_dosya", "code": "A1", "price": 70, "printed": true, "shipmentId": "k2" },
+        { "id": "bagsiz", "code": "A1", "price": 40, "printed": true }
+      ],
+      "expected": 150
+    },
+    {
+      "name": "iptal_bagi_cozmez_tutardan_duser",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "kalan", "code": "A1", "price": 300, "printed": true, "shipmentId": "k1" },
+        { "id": "iptal", "code": "K5", "price": 250, "printed": true, "cancelled": true, "shipmentId": "k1" }
+      ],
+      "expected": 300
+    },
+    {
+      "name": "iptali_geri_alinmis_tutara_doner",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "kalan", "code": "A1", "price": 300, "printed": true, "shipmentId": "k1" },
+        { "id": "geri_alinmis", "code": "K5", "price": 250, "printed": true, "shipmentId": "k1" }
+      ],
+      "expected": 550
+    },
+    {
+      "name": "gecici_yedek_sayilmaz",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "asil", "code": "A1", "price": 100, "printed": true, "shipmentId": "k1" },
+        { "id": "yedek", "code": "A1", "price": 100, "tentative": true, "shipmentId": "k1" }
+      ],
+      "expected": 100
+    },
+    {
+      "name": "kargo_ucreti_satiri_dahil",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "urun", "code": "A1", "price": 100, "printed": true, "shipmentId": "k1" },
+        { "id": "ucret", "code": null, "price": 60, "shippingFee": true, "shipmentId": "k1" }
+      ],
+      "expected": 160
+    },
+    {
+      "name": "bagli_etiket_yoksa_sifir",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "baska", "code": "A1", "price": 100, "printed": true, "shipmentId": "k2" }
+      ],
+      "expected": 0
+    },
+    {
+      "name": "dosya_kimligi_ordinal_karsilastirilir",
+      "shipmentId": "k1",
+      "labels": [
+        { "id": "buyuk_harf", "code": "A1", "price": 100, "printed": true, "shipmentId": "K1" }
+      ],
+      "expected": 0
+    }
+  ]
+}

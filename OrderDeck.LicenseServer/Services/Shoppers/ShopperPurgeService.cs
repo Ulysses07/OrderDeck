@@ -1,9 +1,12 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
+using OrderDeck.LicenseServer.Services.Sync;
 
 namespace OrderDeck.LicenseServer.Services.Shoppers;
 
@@ -56,15 +59,18 @@ public sealed class ShopperPurgeService
 {
     private readonly LicenseDbContext _db;
     private readonly IShopperPaymentStorage _storage;
+    private readonly SalesSyncOptions _salesSync;
     private readonly ILogger<ShopperPurgeService> _log;
 
     public ShopperPurgeService(
         LicenseDbContext db,
         IShopperPaymentStorage storage,
+        IOptions<SalesSyncOptions> salesSync,
         ILogger<ShopperPurgeService> log)
     {
         _db = db;
         _storage = storage;
+        _salesSync = salesSync.Value;
         _log = log;
     }
 
@@ -221,6 +227,19 @@ public sealed class ShopperPurgeService
             c.MarkPurged(now);
         }
 
+        // 3a. Satış kayıtlarındaki metin (yayın ve etiket senkronu, spec 2026-10-13 §9). Ayar KAPALIYKEN (varsayılan,
+        //     bugünkü politika) sipariş satırlarına dokunulmaz; akış asıl kaydı silinmiş müşterinin siparişini okuma
+        //     anında maskeler. AÇIKKEN silinen asıl kayda ve kopyalarına (eski Id'yle kalmış geç sipariş) bağlı
+        //     siparişlerde takma ad ve yorum aynı kayıtta boşaltılır; rowversion ilerlediği için boşaltma bütün
+        //     bilgisayarlara iner. Kullanıcı adı, kod ve fiyat mali kayıt olarak kalır.
+        var scrubbedOrders = _salesSync.ScrubOrderTextOnPurge
+            ? await OrdersWithTextAsync(projections, ct)
+            : new List<Order>();
+        foreach (var o in scrubbedOrders) ScrubOrderText(o, now);
+        if (scrubbedOrders.Count > 0)
+            _log.LogInformation("[ShopperPurge] {Count} siparişin metni boşaltıldı (ScrubOrderTextOnPurge)",
+                scrubbedOrders.Count);
+
         // 3b. Gölge banka eşleştirmesinin izi (Obifin). IBAN hafızası "bu IBAN bu
         //     kişinin" bağıdır: silinir. Eşleşme satırı ölçüm kaydıdır, kalır
         //     (kişiyi yalnız Id'yle gösterir); kanıt metni kullanıcı adı anahtarı
@@ -304,7 +323,7 @@ public sealed class ShopperPurgeService
         shopper.DeletedAt ??= now;
         shopper.UpdatedAt = now;
 
-        await SaveAsync(scrubbedMatches, now, ct);
+        await SaveAsync(scrubbedMatches, scrubbedOrders, now, ct);
 
         return new ShopperPurgeResult(
             PaymentsScrubbed: payments.Count,
@@ -325,22 +344,32 @@ public sealed class ShopperPurgeService
     /// (eşzamanlı yazanın değerleri kalır), kanıt yeniden boşaltılır ve BİR kez
     /// daha kaydedilir; ikinci çakışma yukarı gider. Başka bir varlığın çakışması
     /// eskisi gibi doğrudan yukarı gider.
+    ///
+    /// <para>Aynısı sipariş metni boşaltması için (ayar açıkken, adım 3a):
+    /// <see cref="Order.SyncVersion"/> jetondur ve eşzamanlı bir
+    /// <c>orders/sync</c> güncellemesi onu ilerletir. Sipariş tazelenir (eşzamanlı
+    /// yazanın birimleri kalır; o yol metne dokunmaz), metin yeniden boşaltılır.
+    /// Çakışan girdiler eşleşme ya da sipariş olabilir; ikisi de her zaman
+    /// birlikte tazelenir.</para>
     /// </summary>
     private async Task SaveAsync(
-        IReadOnlyCollection<PaymentMatch> scrubbedMatches, DateTimeOffset now, CancellationToken ct)
+        IReadOnlyCollection<PaymentMatch> scrubbedMatches,
+        IReadOnlyCollection<Order> scrubbedOrders,
+        DateTimeOffset now,
+        CancellationToken ct)
     {
         try
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateConcurrencyException ex) when (scrubbedMatches.Count > 0
-            && ex.Entries.Count > 0
-            && ex.Entries.All(e => e.Entity is PaymentMatch))
+        catch (DbUpdateConcurrencyException ex) when (ex.Entries.Count > 0
+            && ex.Entries.All(e => (e.Entity is PaymentMatch && scrubbedMatches.Count > 0)
+                || (e.Entity is Order && scrubbedOrders.Count > 0)))
         {
             _log.LogInformation(
-                "[ShopperPurge] Eşleşme kanıtı boşaltılırken eşzamanlı bir gölge eşleştirme yazısıyla çakıştı; "
-                + "eşleşmeler tazelenip bir kez yeniden deneniyor");
-            // Yalnız bildirilen girdi değil, boşaltılan her eşleşme tazelenir:
+                "[ShopperPurge] Eşleşme kanıtı ya da sipariş metni boşaltılırken eşzamanlı bir yazıyla çakıştı; "
+                + "satırlar tazelenip bir kez yeniden deneniyor");
+            // Yalnız bildirilen girdi değil, boşaltılan her satır tazelenir:
             // SQL Server'da EF ilk çakışan komutta durur, sonraki çakışan satırı
             // bildirmez. Küme tek kişinin satırları, küçük.
             foreach (var m in scrubbedMatches)
@@ -353,7 +382,65 @@ public sealed class ShopperPurgeService
                 m.Evidence = null;
                 m.UpdatedAt = now;
             }
+            foreach (var o in scrubbedOrders)
+            {
+                var entry = _db.Entry(o);
+                await entry.ReloadAsync(ct);
+                if (entry.State == EntityState.Detached) continue;
+                ScrubOrderText(o, now);
+            }
             await _db.SaveChangesAsync(ct);
         }
+    }
+
+    /// <summary>
+    /// Silinen asıl kayıtlara ve kopyalarına bağlı, metni henüz boşaltılmamış
+    /// siparişler (adım 3a). Kopyalar varsayılan sorgulardan gizli; burada açıkça
+    /// istenir ve zincir <see cref="SalesCustomerDirectory.MaxHops"/> adım geriye
+    /// izlenir (CustomerIdResolver'ın ileri yönde izlediği kadar). Zaten
+    /// boşaltılmış satır yeniden yazılmaz: tekrarlanan silme rowversion'ı ve akışı
+    /// boşuna ilerletmez.
+    /// </summary>
+    private async Task<List<Order>> OrdersWithTextAsync(
+        IReadOnlyCollection<WpfCustomerProjection> purged, CancellationToken ct)
+    {
+        var orders = new List<Order>();
+        foreach (var group in purged.GroupBy(p => p.LicenseId))
+        {
+            var licenseId = group.Key;
+            var ids = group.Select(p => p.Id).ToHashSet();
+            var frontier = ids.ToList();
+            for (var hop = 0; hop < SalesCustomerDirectory.MaxHops && frontier.Count > 0; hop++)
+            {
+                var targets = frontier;
+                var copies = await _db.WpfCustomerProjections
+                    .IgnoreQueryFilters()
+                    .Where(p => p.LicenseId == licenseId
+                        && p.MergedIntoId != null
+                        && targets.Contains(p.MergedIntoId.Value))
+                    .Select(p => p.Id)
+                    .ToListAsync(ct);
+                frontier = copies.Where(ids.Add).ToList();
+            }
+
+            var hexes = ids.Select(id => id.ToString("N")).ToList();
+            orders.AddRange(await _db.Orders
+                .Where(o => o.LicenseId == licenseId
+                    && hexes.Contains(o.CustomerId)
+                    && (o.DisplayName != null || o.MessageText != "" || o.TextScrubbedAt == null))
+                .ToListAsync(ct));
+        }
+        return orders;
+    }
+
+    /// <summary>Sipariş metnini boşaltır (<see cref="OrderTextScrub.Apply"/>);
+    /// satır değiştiği için <see cref="Order.UpdatedAt"/> ilerler.
+    /// <see cref="Order.SyncVersion"/> ilerlemez: metin birim değil, komutların
+    /// beklenen sürümü değişmemeli (CustomerIdentityMerger'ın CustomerId
+    /// taşımasıyla aynı gerekçe).</summary>
+    private static void ScrubOrderText(Order order, DateTimeOffset now)
+    {
+        OrderTextScrub.Apply(order, now);
+        order.UpdatedAt = now;
     }
 }

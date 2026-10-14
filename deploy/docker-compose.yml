@@ -202,6 +202,15 @@ services:
       # kalır (açılışta tek uyarı, banka işleri zamanlanmaz). `:?` eksik satırda
       # CI'ın `config -q` kapısını düşürüp HER deploy'u kilitlerdi.
       OrderDeck__Bank__HashKey: "${OrderDeck__Bank__HashKey:-}"
+      # Yayın ve etiket senkronu (spec 2026-10-13 §2, §8.1, §9). MinClientVersion
+      # Ws yayımlanana kadar BOŞ: boşken mod açılamaz, mod On'da komut ve kira
+      # uçları kapalı-hata (409). `:?` DEĞİL `:-`: eksik satır `config -q`
+      # kapısını düşürüp her deploy'u kilitlemesin. ScrubOrderTextOnPurge
+      # varsayılanı "false" ZORUNLU, boş string DEĞİL: .NET config binder'ı boş
+      # string'i bool'a çeviremez (IntakeLogin bayraklarındaki 2026-09-04 dersi).
+      # Açmak (true) geri dönüşsüz metin boşaltması, sahip kararı.
+      SalesSync__MinClientVersion: "${SalesSync__MinClientVersion:-}"
+      SalesSync__ScrubOrderTextOnPurge: "${SalesSync__ScrubOrderTextOnPurge:-false}"
       # Kayıt formu "hesabınla bağlan" (PR #360, karanlık deploy). Bayraklar
       # yazılmadıkça uçlar 404 — Google doğrulaması ONAYLANMADAN
       # IntakeLogin__YouTubeEnabled açılmaz. Facebook için AYRI Consumer app

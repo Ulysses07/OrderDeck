@@ -148,4 +148,35 @@ public class ShipmentSyncLabelTests : IClassFixture<ApiFactory>
         (await LabelCountAsync(s.ConversationId)).Should().Be(
             1, "aynı durumun tekrarı olay değildir");
     }
+
+    /// <summary>
+    /// Spec 2026-10-13 §7.1: kargoya verilmiş dosya tek yönlüdür; bayat bir gönderim onu Held'e çeviremez. Durum
+    /// değişmediği için olay da yoktur — yoksa sohbet, olmayan bir durum değişikliğiyle etiketlenirdi.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_push_to_a_shipped_file_is_not_an_event()
+    {
+        var s = await SeedAsync();
+        var shipmentId = Guid.NewGuid();
+        await s.Client.PostAsJsonAsync(
+            $"/api/v1/licenses/{s.LicenseId}/shipments/sync",
+            Body(shipmentId, s.WpfCustomerId, "shipped"));
+        await ClearLabelsAsync(s.ConversationId);
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/v1/licenses/{s.LicenseId}/shipments/sync",
+            Body(shipmentId, s.WpfCustomerId, "held"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await LabelCountAsync(s.ConversationId)).Should().Be(0, "kargolanmış dosyanın durumu değişmedi");
+    }
+
+    private async Task ClearLabelsAsync(Guid conversationId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WaConversationLabels.RemoveRange(
+            await db.WaConversationLabels.Where(x => x.ConversationId == conversationId).ToListAsync());
+        await db.SaveChangesAsync();
+    }
 }

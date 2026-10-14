@@ -38,4 +38,15 @@ public sealed class License
     public string? PaymentIban { get; set; }
     public string? PaymentAccountHolder { get; set; }
     public bool ShopperAppEnabled { get; set; }
+
+    // Yayın ve etiket senkronu (spec 2026-10-13 §2, §3.1). Kolon DEFAULT 0:
+    // S1 öncesi imaj bu kolonu tanımaz, açtığı lisans Off doğar.
+
+    /// <summary>Satış senkronu kipi. Yalnız CLI değiştirir (§4.10).</summary>
+    public SalesSyncMode SalesSyncMode { get; set; }
+    public DateTimeOffset? SalesSyncModeChangedAt { get; set; }
+
+    // Protokolsüz satış isteği izi bu satırda DEĞİL, SalesLegacyTrace'te:
+    // her UPDATE RowVersion'ı ilerletir ve izlenen License'ı kaydeden yollar
+    // (payment-account, shopper-code) o çakışmayı yakalamıyor.
 }

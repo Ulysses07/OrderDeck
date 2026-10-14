@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
@@ -68,6 +69,8 @@ public class LicenseDbContext : DbContext
     public DbSet<Shopper> Shoppers => Set<Shopper>();
     public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
     public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
+    public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
+    public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
@@ -211,6 +214,22 @@ public class LicenseDbContext : DbContext
         StampPaymentMatchVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
+
+    /// <summary>
+    /// Değişiklik akışı imleci <c>ChangeSeq</c>'in TEK eşlemesi (müşteri
+    /// projeksiyonu, yayın, sipariş, kargo dosyası). rowversion: değer üreteci
+    /// SQL Server, her yazımda ilerler. NumberToBytesConverter büyük-endian:
+    /// ikili karşılaştırma sayısal sırayla aynı, bu yüzden LINQ'taki &gt; / &lt;
+    /// doğru çevrilir. Eşzamanlılık jetonu DEĞİL — bugünkü yazıcıların
+    /// davranışı değişmesin; jetonu olan tablo kendi jetonunu ayrıca tanımlar.
+    /// Göçte DEFAULT verilmez: rowversion kolonunda DEFAULT yasak, motor var
+    /// olan satırları kendisi doldurur.
+    /// </summary>
+    private static void ConfigureChangeSeq(PropertyBuilder<long> property) =>
+        property
+            .HasColumnType("rowversion")
+            .HasConversion<byte[]>()
+            .ValueGeneratedOnAddOrUpdate();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -470,6 +489,17 @@ public class LicenseDbContext : DbContext
             // Mobile "yayın listesi" en yeni başta.
             b.HasIndex(s => new { s.LicenseId, s.StartedAt });
             b.HasIndex(s => new { s.LicenseId, s.UpdatedAt }); // reverse-sync cursor
+            // Sahiplik ve devir (yayın ve etiket senkronu, spec 2026-10-13 §2, §3.1).
+            b.Property(s => s.OwnerMachineName).HasMaxLength(128);
+            b.Property(s => s.ForceEndedBy).HasMaxLength(64);
+            ConfigureChangeSeq(b.Property(s => s.ChangeSeq));
+            b.HasIndex(s => new { s.LicenseId, s.ChangeSeq });
+            // Canlı ve devrediliyor yayınlar (§4.5): devredilmemiş satırlar
+            // lisansın yayınlarının küçük bir kısmı. Ad açık, çünkü filtreli tek
+            // kolonlu bir "IX_..._LicenseId" genel bir indeks sanılırdı.
+            b.HasIndex(s => s.LicenseId)
+                .HasFilter("[ReleasedAt] IS NULL")
+                .HasDatabaseName("IX_StreamSessions_LicenseId_Unreleased");
         });
 
         mb.Entity<Order>(b =>
@@ -503,6 +533,15 @@ public class LicenseDbContext : DbContext
             // Ürün silinmeden önce "bu ürüne bağlı sipariş var mı" sorusu ve
             // panel ürün-bazlı sipariş listesi bu indeksi okur. FK yok, indeks var.
             b.HasIndex(o => new { o.LicenseId, o.ProductId });
+            // Yayın ve etiket senkronu (spec 2026-10-13 §3.1). ParentOrderId ve
+            // ShipmentId FK DEĞİL — ProductId ile aynı gerekçe (Order.ProductId).
+            b.Property(o => o.PrintBatchId).HasMaxLength(40);
+            b.Property(o => o.PaidPrice).HasPrecision(18, 2);
+            ConfigureChangeSeq(b.Property(o => o.ChangeSeq));
+            b.HasIndex(o => new { o.LicenseId, o.ChangeSeq });
+            // Dosya türetmesi (DM7): bağlı siparişler; bağsızlar indekste yok.
+            b.HasIndex(o => new { o.LicenseId, o.ShipmentId })
+                .HasFilter("[ShipmentId] IS NOT NULL");
         });
 
         // WhatsApp template sync (PR 2026-05-15): WPF PaymentSettings replikası.
@@ -560,6 +599,43 @@ public class LicenseDbContext : DbContext
             b.HasIndex(s => new { s.LicenseId, s.CustomerId });
             // Reverse sync cursor.
             b.HasIndex(s => new { s.LicenseId, s.UpdatedAt });
+            // Yayın ve etiket senkronu (spec 2026-10-13 §3.1). Version
+            // eşzamanlılık jetonu: sunucunun her dosya yazımı (shipments/sync,
+            // K7 türetmesi) onu artırır, aynı dosyaya eşzamanlı ikinci yazım
+            // DbUpdateConcurrencyException alır ve uç 409 döner. Jeton yalnız
+            // modelde; kolon değişmez (NOT NULL, göçte DEFAULT 0 — S1 öncesi
+            // imajın INSERT'i ona düşer, o imaj sürümü artırmaz ama jetonu da
+            // okumaz).
+            b.Property(s => s.Version).IsConcurrencyToken();
+            ConfigureChangeSeq(b.Property(s => s.ChangeSeq));
+            b.HasIndex(s => new { s.LicenseId, s.ChangeSeq });
+        });
+
+        // Kopya izi (yayın ve etiket senkronu, spec 2026-10-13 §3.1). Anahtar
+        // lisans başına; lisans silinince izi de gider.
+        mb.Entity<WpfReplica>(b =>
+        {
+            b.HasKey(r => new { r.LicenseId, r.ReplicaId });
+            b.HasOne(r => r.License).WithMany()
+                .HasForeignKey(r => r.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(r => r.MachineName).HasMaxLength(128);
+            b.Property(r => r.HardwareFingerprint).HasMaxLength(128);
+            b.Property(r => r.ClientVersion).HasMaxLength(32);
+            b.Property(r => r.BackfillDivergedLocal).HasDefaultValue(0);
+            b.Property(r => r.BackfillDivergedServer).HasDefaultValue(0);
+            b.Property(r => r.ReportedThreshold).HasPrecision(18, 2);
+            b.Property(r => r.ReportedFee).HasPrecision(18, 2);
+            // Sahip sessizliği ve "son 14 günde görülen kopyalar" (§4.6, §4.10).
+            b.HasIndex(r => new { r.LicenseId, r.LastSeenAt });
+        });
+
+        // Protokolsüz satış isteği izi (§4.0): lisans başına tek satır, Licenses'ın
+        // RowVersion'ına dokunmamak için ayrı tabloda (SalesLegacyTrace).
+        mb.Entity<SalesLegacyTrace>(b =>
+        {
+            b.HasKey(t => t.LicenseId);
+            b.HasOne(t => t.License).WithOne()
+                .HasForeignKey<SalesLegacyTrace>(t => t.LicenseId).OnDelete(DeleteBehavior.Cascade);
         });
 
         mb.Entity<Shopper>(b =>
@@ -702,14 +778,9 @@ public class LicenseDbContext : DbContext
             b.Property(c => c.Notes).HasMaxLength(2000);
             b.Property(c => c.BlacklistReason).HasMaxLength(500);
             b.Property(c => c.PurgedAt).IsConcurrencyToken();
-            // rowversion: değer üreteci SQL Server. Eşzamanlılık jetonu DEĞİL —
-            // bugünkü yazıcıların davranışını değiştirmemek için (jeton yalnız
-            // PurgedAt). NumberToBytesConverter büyük-endian: ikili karşılaştırma
-            // sayısal sırayla aynı, bu yüzden LINQ'taki > / < doğru çevrilir.
-            b.Property(c => c.ChangeSeq)
-             .HasColumnType("rowversion")
-             .HasConversion<byte[]>()
-             .ValueGeneratedOnAddOrUpdate();
+            // Eşzamanlılık jetonu DEĞİL — bugünkü yazıcıların davranışını
+            // değiştirmemek için (jeton yalnız PurgedAt).
+            ConfigureChangeSeq(b.Property(c => c.ChangeSeq));
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
             // Kişi başına TEK asıl kayıt. Kopyalar (MergedIntoId dolu) aynı
             // kimliği taşır, filtre onları dışarıda bırakır; boş anahtar
