@@ -85,6 +85,31 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
         (await SessionAsync(sessionId)).UnsentLabelCount.Should().Be(1);
     }
 
+    /// <summary>§4.1: devrediliyor hâlinde EndedAt tekdüze. Sahibin kuyruğundaki bayat oturum satırı (EndedAt boş
+    /// ya da farklı) kapanışı silmez ya da kaydırmaz; oturum devrediliyor kalır, sayı tazelenir.</summary>
+    [Fact]
+    public async Task Devrediliyor_oturumda_sahibin_bayat_gonderimi_EndedAt_i_degistirmez()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var replicaId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await PushSessionsAsync(client, licenseId, V2Body(replicaId, V2Session(sessionId)));
+        await PushSessionsAsync(client, licenseId,
+            V2Body(replicaId, V2Session(sessionId, EndedAt, release: false, unsent: 3)));
+
+        var cleared = (await PushSessionsAsync(client, licenseId,
+            V2Body(replicaId, V2Session(sessionId, endedAt: null, release: false, unsent: 2)))).Single();
+        var shifted = (await PushSessionsAsync(client, licenseId,
+            V2Body(replicaId, V2Session(sessionId, EndedAt.AddMinutes(40), release: false, unsent: 1)))).Single();
+
+        cleared.EndedAt.Should().Be(EndedAt, "boş EndedAt kapanışı silmez");
+        shifted.EndedAt.Should().Be(EndedAt, "farklı EndedAt kapanışı kaydırmaz");
+        var stored = await SessionAsync(sessionId);
+        stored.EndedAt.Should().Be(EndedAt);
+        stored.ReleasedAt.Should().BeNull("Release = false: devrediliyor kalır (M2)");
+        stored.UnsentLabelCount.Should().Be(1, "sahip hâlâ sahip; sayı her kapanış gönderiminde tazelenir");
+    }
+
     /// <summary>§4.1, DM3: kuyruğu boşalmış sahibin <c>Release = true</c> kapanışı yayını devreder ve yayının bütün
     /// siparişlerine aynı devir anını basar.</summary>
     [Fact]

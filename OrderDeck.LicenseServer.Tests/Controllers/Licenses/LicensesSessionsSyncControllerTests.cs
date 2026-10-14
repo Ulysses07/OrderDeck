@@ -154,6 +154,46 @@ public class LicensesSessionsSyncControllerTests : IClassFixture<ApiFactory>
         (await db.StreamSessions.SingleAsync(s => s.Id == sid)).EndedAt.Should().Be(endedAt);
     }
 
+    /// <summary>
+    /// §4.1: tekdüzelik devredilmemiş bitmiş oturumda da geçerli. Yukarıdaki iki test v1 kapanışını kullanır; o
+    /// kapanış yayını aynı istekte devrettiği için ikinci gönderim devredilmiş oturum dalına düşer ve tekdüzelik
+    /// kuralına hiç ulaşmaz. Burada oturum S1 deploy'undan önce bitmiş ama henüz devredilmemiş (onarım işi
+    /// koşmadan; sahip ve devir boş) miras oturumdur: v0.9.10'un bayat gönderimi EndedAt'i NULL'lamaz ya da
+    /// kaydırmaz, devir ilk kapanış anıyla yapılır.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(40)]
+    public async Task SyncSessions_devredilmemis_bitmis_oturumda_EndedAt_ilk_kapanis_aninda_kalir(int? shiftMinutes)
+    {
+        var (client, licenseId) = await SetupAsync();
+        var sid = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow.AddHours(-3);
+        var endedAt = startedAt.AddHours(2);
+        using (var seed = _factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.StreamSessions.Add(new StreamSession
+            {
+                Id = sid, LicenseId = licenseId, Title = "Yayın 1", StartedAt = startedAt, EndedAt = endedAt,
+                Platforms = "instagram", UpdatedAt = endedAt,
+            });
+            await db.SaveChangesAsync();
+        }
+        DateTimeOffset? stale = shiftMinutes is { } m ? endedAt.AddMinutes(m) : null;
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/sessions/sync",
+            new { sessions = new[] { new { id = sid, title = "Yayın 1", startedAt,
+                endedAt = stale, platforms = "instagram", notes = (string?)null } }});
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var scope = _factory.Services.CreateScope();
+        var stored = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>()
+            .StreamSessions.AsNoTracking().SingleAsync(s => s.Id == sid);
+        stored.EndedAt.Should().Be(endedAt, "dolu EndedAt NULL'a ya da başka değere dönmez");
+        stored.ReleasedAt.Should().NotBeNull("bitmiş miras oturum ilk kapanış anıyla devredilir (§4.1)");
+    }
+
     [Fact]
     public async Task SyncOrders_inserts_order_with_session_reference()
     {
