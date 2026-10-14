@@ -151,6 +151,18 @@ OrderDeck__BroadcastMedia__Provider=r2
 # listeli — orada olmayan anahtar container'a girmez.
 OrderDeck__Bank__HashKey=
 
+# Yayın ve etiket senkronu (spec 2026-10-13). İkisi de docker-compose.yml'de
+# listeli.
+# Ws'nin (spec'in WPF değişikliklerini taşıyan ilk Velopack sürümü) numarası.
+# Ws yayımlanana kadar BOŞ kalır: boşken satış senkronu modu açılamaz, mod On'da
+# komut ve kira uçları 409 client-update-required döner (kapalı-hata). Ws
+# yayımlanınca sürümü yaz ve `docker compose up -d license-server` (§8.1 adım 5).
+SalesSync__MinClientVersion=
+# Silinen müşterinin sipariş metinlerini (görünen ad, yorum) sunucuda ve bütün
+# bilgisayarlarda kalıcı olarak boşalt. Geri dönüşsüz; açmak sahip kararı
+# (§9, §11). Kapalıyken de akış silinmiş müşterinin metnini okurken maskeler.
+SalesSync__ScrubOrderTextOnPurge=false
+
 # Optional: SMTP (set to real values when email features needed)
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
@@ -278,6 +290,31 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > onları yeniden dağıtmasın) — bu yalnız hasarı küçültür, sınırı kaldırmaz:
 > geri dönmek gerekirse ileri düzelt ya da yalnız `CustomerIdResolver.cs`'yi
 > içeren imajlara dön.
+
+> **UYARI — Satış senkronu S1 tabanı (yayın ve etiket senkronu, spec
+> 2026-10-13 §8.6).** `OrderDeck.Shared/Sales/LabelRules.cs` dosyasını
+> İÇERMEYEN (S1 öncesi) bir imaja (etiketin kaynağında
+> `git cat-file -e <sha>:OrderDeck.Shared/Sales/LabelRules.cs` başarısızsa o
+> imaj S1 öncesidir), satış senkronu modu açık bir lisans varken bu elle
+> yoldan ASLA geçme. Kontrol: `SELECT COUNT(*) FROM Licenses WHERE SalesSyncMode = 1`
+> sıfırdan büyükse yasak. S1 öncesi kod birim damgalarına uymaz:
+> - bayat bir gönderim sunucu komutunun verdiği kararı (iptal, kod fiyatı,
+>   yedek onayı, kargo bağı) sessizce geri alır;
+> - eski masaüstünün sipariş güncellemesi `ProductId`'yi yine NULL'lar ve
+>   stok defterini geri sarar;
+> - yayın kapanışında devir yazılmaz (`ReleasedAt`, `SessionReleasedAt`):
+>   bitmiş yayınlar öbür bilgisayarlara inmez;
+> - kargolanmış dosya yeniden Held'e ya da başka tutara çevrilebilir.
+>
+> Otomatik geri alma (yukarıdaki workflow, deploy anında BİR ÖNCEKİ imaja)
+> güvenli: S1 göçü yalnız ekleyici, eski imaj yeni şemada yazmayı sürdürür
+> (`SalesSyncS1MigrationTests`), S1'in ilk deploy'unda hiçbir lisans mod On
+> değildir (modu S3'ün `sales-sync enable`'ı açar) ve eski imajın pencerede
+> kaçırdığı devir damgalarını sonradan `sales-release-repair` işi kapatır.
+> S1 ve sonrası imajlar arasında dönüş bu açıdan güvenli: hepsi damgalara
+> uyar. Mod On bir lisans varken S1 öncesine dönmek gerçekten gerekirse önce
+> o lisansları `sales-sync disable` ile kapat ve bilgisayarların Off turunu
+> bitirdiğini `sales-sync status`'ta gör; yoksa ileri düzelt.
 
 ## EF migration history bootstrap (one-time, before first Migrate() deploy)
 
