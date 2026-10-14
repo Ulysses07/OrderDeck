@@ -160,8 +160,6 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var ignored = new Dictionary<Guid, string>();
         var toRelease = new List<Guid>();
         var legacyRelease = new HashSet<Guid>();
-        // Geri yüklenmiş kopyanın devralabileceği önceki kopyalar (§8.7); gerekirse ve istek başına bir kez okunur.
-        IReadOnlySet<Guid>? predecessors = null;
 
         SessionRole RoleOf(StreamSession s) =>
             !context.IsV2 ? SessionRole.Legacy
@@ -199,12 +197,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 role = RoleOf(current);
                 if (role == SessionRole.NonOwner && current.OwnerReplicaId is { } owner)
                 {
-                    predecessors ??= await _replicas.SilentPredecessorsAsync(
-                        licenseId, caller, context.ReplicaBefore, ct);
-                    if (predecessors.Contains(owner))
+                    // §8.7, Y8: hâl bu push'tan ÖNCEKİ sunucu satırından — gönderimin kendi EndedAt'i canlı oturumu
+                    // "devrediliyor" gösterip başka makinenin devralmasını kendi kendine kapatmasın ya da açmasın.
+                    var phase = current.EndedAt is null ? TakeoverPhase.Live : TakeoverPhase.HandingOver;
+                    if (await _replicas.CanInheritAsync(
+                            licenseId, caller, context.ReplicaBefore, current.Id, owner, phase, now, ct))
                     {
-                        // §8.7: önceki veritabanı bu kopyanın ilk görüldüğü andan beri susuyor — yayının kuyruğu
-                        // artık bu kopyada. Sahiplik geçer; çağıran sahip olarak yargılanır.
+                        // §8.7: önceki veritabanı bu kopyanın ilk görüldüğü andan beri susuyor ve Y8 izin veriyor
+                        // (aynı makine ya da sahibi yeterince susmuş canlı yayın) — yayının kuyruğu artık bu kopyada.
+                        // Sahiplik geçer; çağıran sahip olarak yargılanır.
                         current.OwnerReplicaId = caller;
                         current.OwnerMachineName = item.MachineName ?? current.OwnerMachineName;
                         role = SessionRole.Owner;
@@ -221,11 +222,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 // EndedAt tekdüze (spec 2026-10-13 §4.1, her biçimde): dolu
                 // değer NULL'a ya da başka bir değere dönmez. Bayat gönderim
                 // (yayın sürerken kuyruğa girmiş satır) bitmiş yayını yeniden
-                // "açıyordu". Sahip olmayan v2 kopyası yayını kapatamaz; tek
-                // başka yol force-end (§4.6).
+                // "açıyordu". Sahip olmayan v2 kopyası yayını kapatamaz ve
+                // devredemez; tek başka yol force-end (§4.6). Yok sayılan
+                // kapanış ya da devir isteği yanıtta görünür (Y8: devralamayan
+                // geri yüklenmiş kopya "devredildi" sanmasın).
                 if (role != SessionRole.NonOwner)
                     current.EndedAt ??= item.EndedAt;
-                else if (current.EndedAt is null && item.EndedAt is not null)
+                else if ((current.EndedAt is null && item.EndedAt is not null) || item.Release)
                     ignored[item.Id] = ReasonOwnedElsewhere;
                 current.UpdatedAt = now;
             }
@@ -614,14 +617,10 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var rejectedInserts = new HashSet<Guid>();
         var k5ExceptionAccepted = 0;
 
-        // Geri yüklenmiş kopyanın önceki kopyaları (§8.7): ilk görüldüğünden beri susan önceki veritabanının yayınları
-        // artık bu kopyadadır. Gerekirse ve istek başına bir kez okunur.
-        IReadOnlySet<Guid>? predecessors = null;
-        async Task<bool> IsSilentPredecessorAsync(Guid owner)
-        {
-            predecessors ??= await _replicas.SilentPredecessorsAsync(licenseId, caller, context.ReplicaBefore, ct);
-            return predecessors.Contains(owner);
-        }
+        // Geri yüklenmiş kopya önceki kopyasının yayınını devralabilir mi (§8.7, Y8)? sessions/sync ve sales/backfill
+        // ile aynı yol; önceki kopyalar istek başına bir kez okunur.
+        Task<bool> CanInheritAsync(Guid sessionId, Guid owner, TakeoverPhase phase) =>
+            _replicas.CanInheritAsync(licenseId, caller, context.ReplicaBefore, sessionId, owner, phase, now, ct);
 
         foreach (var item in orders)
         {
@@ -657,11 +656,13 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     Format = format,
                     ModeOn = modeOn,
                     SessionPhase = PhaseOf(session),
-                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur.
+                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur. Oturum zorla bitirildiğinde
+                    // canlıydı (M18): başka makinedeki geri yüklenmiş kopya ancak sahip ForceEndSilenceMinutes
+                    // sustuysa sahip sayılır (Y8, canlı dalı).
                     CallerOwnsSession = v2 && session?.OwnerReplicaId is { } owner
                         && (owner == caller
                             || (modeOn && session.ReleasedAt is not null && session.ForceEndedBy is not null
-                                && await IsSilentPredecessorAsync(owner))),
+                                && await CanInheritAsync(session.Id, owner, TakeoverPhase.Live))),
                     SessionForceEnded = session?.ForceEndedBy is not null,
                     OpeningWindow = context.OpeningWindow,
                     LinkedShipmentShipped = current.ShipmentId is { } linkedId
@@ -695,10 +696,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 var session = item.SessionId is { } sid ? sessions[sid] : null;
 
                 // §4.2 ekleme dalı: v2'de başka kopyanın CANLI oturumuna ekleme satır başına reddedilir — canlı yayın
-                // yalnız sahibinde yazılır (Y1). Önceki kopyası susan geri yüklenmiş kopya o yayının kuyruğunu taşır
-                // (§8.7). Protokolsüz istekte çağıran bilinmez; devrediliyor ve miras (sahipsiz) oturum reddedilmez.
+                // yalnız sahibinde yazılır (Y1). Önceki kopyası susan geri yüklenmiş kopya, Y8 izin veriyorsa (aynı
+                // makine ya da sahibi ForceEndSilenceMinutes susmuş), o yayının kuyruğunu taşır (§8.7). Protokolsüz
+                // istekte çağıran bilinmez; devrediliyor ve miras (sahipsiz) oturum reddedilmez.
                 if (v2 && session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller
-                    && !await IsSilentPredecessorAsync(owner))
+                    && !await CanInheritAsync(session.Id, owner, TakeoverPhase.Live))
                 {
                     rejectedInserts.Add(item.Id);
                     continue;

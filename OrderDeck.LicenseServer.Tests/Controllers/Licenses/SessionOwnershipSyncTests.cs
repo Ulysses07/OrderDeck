@@ -302,9 +302,9 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
 
     /// <summary>§8.7: geri yüklenmiş kopya, önceki kopyanın devredilmemiş oturumunu devralır — önceki kopya,
     /// yenisinin ilk görüldüğü andan beri hiç konuşmadıysa. Sahiplik geçer, geçiş günlüğe yazılır ve çağıran sahip
-    /// olarak yargılanır. Oturum canlı, parmak izi bilinmiyor ve önceki kopya 15 dakikadan uzun sessiz: S2'de gelecek
-    /// Y8 kuralında da (§11) devralınan durum. Devrediliyor oturum ve 15 dakikadan kısa sessizlik o kuralın
-    /// testleridir.</summary>
+    /// olarak yargılanır. Oturum canlı, parmak izi bilinmiyor ve önceki kopya 15 dakikadan uzun sessiz: Y8 kuralında
+    /// da (§11) devralınan durum. Devrediliyor oturum, 15 dakikadan kısa sessizlik ve aynı makine aşağıdaki makine
+    /// kuralı testlerinde.</summary>
     [Fact]
     public async Task Geri_yuklenmis_kopya_sessiz_onceki_kopyanin_oturumunu_devralir()
     {
@@ -394,6 +394,123 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
         await PushSessionsAsync(client, licenseId, V2Body(restored, V2Session(sessionId, EndedAt, release: true)));
 
         (await SessionAsync(sessionId)).OwnerReplicaId.Should().Be(previous);
+    }
+
+    // ── Geri yüklenmiş kopya: makine kuralı (§8.7, §11 Y7, Y8) ────────────────
+
+    /// <summary>
+    /// Y8: başka ya da bilinmeyen makineye geri yüklenen kopya (parmak izi farklı ya da iki taraftan birinde yok),
+    /// önceki kopya iki saattir sussa da devrediliyor oturumu devralmaz — yayının etiketleri sahipte bekliyor. Kapanış
+    /// gönderimi (<c>Release = true</c>) yok sayılır ve görünür döner; sahip, makine adı ve devir değişmez. Engel
+    /// günlüğe yalnız kimliklerle düşer.
+    /// </summary>
+    [Theory]
+    [InlineData("A", "B")]
+    [InlineData(null, "B")]
+    [InlineData("A", null)]
+    [InlineData(null, null)]
+    public async Task Baska_makineye_geri_yuklenen_kopya_devrediliyor_oturumu_devralmaz(
+        string? previousMachine, string? restoredMachine)
+    {
+        var (client, licenseId) = await SetupAsync();
+        var (previous, restored) = await SeedRestoredAsync(
+            licenseId, TimeSpan.FromHours(2), Fingerprint(previousMachine), Fingerprint(restoredMachine));
+        var sessionId = await SeedSessionAsync(licenseId, owner: previous, machineName: "PC-ESKI", endedAt: EndedAt);
+
+        var echo = (await PushSessionsAsync(client, licenseId,
+            V2Body(restored, V2Session(sessionId, EndedAt, release: true, machineName: "PC-YENI")))).Single();
+
+        echo.Status.Should().Be("ignored");
+        echo.Reason.Should().Be("session-owned-elsewhere");
+        echo.OwnerReplicaId.Should().Be(previous);
+        echo.ReleasedAt.Should().BeNull();
+        var stored = await SessionAsync(sessionId);
+        stored.OwnerReplicaId.Should().Be(previous);
+        stored.OwnerMachineName.Should().Be("PC-ESKI");
+        stored.EndedAt.Should().Be(EndedAt);
+        stored.ReleasedAt.Should().BeNull("devrediliyor kalır; sahip dönmeyecekse CLI kapatır");
+        var lines = _factory.Log.Messages.Where(m => m.Contains(sessionId.ToString())).ToList();
+        lines.Should().ContainSingle(m => m.StartsWith("Y8") && m.Contains(previous.ToString())
+            && m.Contains(restored.ToString()));
+        lines.Should().NotContain(m => m.Contains("PC-ESKI") || m.Contains("PC-YENI"));
+    }
+
+    /// <summary>
+    /// Y7, Y8: başka makineye geri yüklenen kopya canlı oturumu yalnız önceki kopya
+    /// <c>SalesSync:ForceEndSilenceMinutes</c> (varsayılan 15) sustuktan sonra devralır. Önce sahip olmayan
+    /// kopyadır: kapanışı yok sayılır, yayın açık kalır.
+    /// </summary>
+    [Theory]
+    [InlineData(5, false)]
+    [InlineData(20, true)]
+    public async Task Baska_makineye_geri_yuklenen_kopya_canli_oturumu_sessizlik_esiginden_sonra_devralir(
+        int silentMinutes, bool inherits)
+    {
+        var (client, licenseId) = await SetupAsync();
+        var (previous, restored) = await SeedRestoredAsync(
+            licenseId, TimeSpan.FromMinutes(silentMinutes), Fingerprint("A"), Fingerprint("B"));
+        var sessionId = await SeedSessionAsync(licenseId, owner: previous, machineName: "PC-ESKI");
+
+        var echo = (await PushSessionsAsync(client, licenseId,
+            V2Body(restored, V2Session(sessionId, EndedAt, release: true, machineName: "PC-YENI")))).Single();
+
+        echo.Status.Should().Be(inherits ? "applied" : "ignored");
+        echo.OwnerReplicaId.Should().Be(inherits ? restored : previous);
+        var stored = await SessionAsync(sessionId);
+        stored.OwnerReplicaId.Should().Be(inherits ? restored : previous);
+        stored.EndedAt.Should().Be(inherits ? EndedAt : null);
+        (stored.ReleasedAt is not null).Should().Be(inherits);
+    }
+
+    /// <summary>
+    /// Sahip kararı (2026-10-14, §11): aynı makinede (aynı parmak izi) geri yüklenen kopya, önceki kopya bir dakika
+    /// önce sussa da hemen devralır — devrediliyor oturumu da canlı oturumu da. Kapanışı devreder, geçiş günlüğe
+    /// yazılır.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Ayni_makineye_geri_yuklenen_kopya_hemen_devralir(bool handingOver)
+    {
+        var (client, licenseId) = await SetupAsync();
+        var fingerprint = Fingerprint("A");
+        var (previous, restored) = await SeedRestoredAsync(licenseId, TimeSpan.FromMinutes(1), fingerprint, fingerprint);
+        var sessionId = await SeedSessionAsync(licenseId, owner: previous, machineName: "PC-ESKI",
+            endedAt: handingOver ? EndedAt : null);
+
+        var echo = (await PushSessionsAsync(client, licenseId,
+            V2Body(restored, V2Session(sessionId, EndedAt, release: true, machineName: "PC-YENI")))).Single();
+
+        echo.Status.Should().Be("applied");
+        echo.OwnerReplicaId.Should().Be(restored);
+        echo.ReleasedAt.Should().NotBeNull();
+        var stored = await SessionAsync(sessionId);
+        stored.OwnerReplicaId.Should().Be(restored);
+        stored.OwnerMachineName.Should().Be("PC-YENI");
+        stored.EndedAt.Should().Be(EndedAt);
+        _factory.Log.Messages.Should().Contain(m => m.Contains(sessionId.ToString())
+            && m.Contains(previous.ToString()) && m.Contains(restored.ToString()) && m.Contains("sahipliği"));
+    }
+
+    /// <summary>§8.7: aynı parmak izini taşıyan ama klon izi olan kopya (aynı ReplicaId ikinci makinede görüldü)
+    /// başka makine sayılır — hangi makinenin özgün olduğu bilinemez; devrediliyor oturumu devralmaz.</summary>
+    [Fact]
+    public async Task Klon_izi_olan_kopya_ayni_parmak_iziyle_de_devrediliyor_oturumu_devralmaz()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var fingerprint = Fingerprint("A");
+        var (previous, restored) = await SeedRestoredAsync(
+            licenseId, TimeSpan.FromMinutes(1), fingerprint, fingerprint, restoredCloned: true);
+        var sessionId = await SeedSessionAsync(licenseId, owner: previous, machineName: "PC-ESKI", endedAt: EndedAt);
+
+        var echo = (await PushSessionsAsync(client, licenseId,
+            V2Body(restored, V2Session(sessionId, EndedAt, release: true)))).Single();
+
+        echo.Status.Should().Be("ignored");
+        echo.OwnerReplicaId.Should().Be(previous);
+        var stored = await SessionAsync(sessionId);
+        stored.OwnerReplicaId.Should().Be(previous);
+        stored.ReleasedAt.Should().BeNull();
     }
 
     // ── Sipariş ekleme (DM3) ──────────────────────────────────────────────────
@@ -542,7 +659,9 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
         Guid replicaId,
         DateTimeOffset? firstSeenAt = null,
         DateTimeOffset? lastSeenAt = null,
-        Guid? previousReplicaId = null)
+        Guid? previousReplicaId = null,
+        string? fingerprint = null,
+        DateTimeOffset? conflictAt = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -555,8 +674,42 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
             FirstSeenAt = first,
             LastSeenAt = lastSeenAt ?? first,
             PreviousReplicaId = previousReplicaId,
+            HardwareFingerprint = fingerprint,
+            HardwareFingerprintConflictAt = conflictAt,
         });
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>Geri yüklenmiş kopya ve önceki kopyası: önceki kopya <paramref name="silence"/> önce son kez konuştu,
+    /// yeni kopya ondan sonra ilk kez görüldü (§8.7'nin "sustu" koşulu tutar). Parmak izi null = bilinmiyor.</summary>
+    private async Task<(Guid Previous, Guid Restored)> SeedRestoredAsync(
+        Guid licenseId,
+        TimeSpan silence,
+        string? previousFingerprint,
+        string? restoredFingerprint,
+        bool restoredCloned = false)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var previous = Guid.NewGuid();
+        var restored = Guid.NewGuid();
+        var previousLastSeen = now - silence;
+        var restoredFirstSeen = previousLastSeen + silence / 2;
+        await SeedReplicaAsync(licenseId, previous, firstSeenAt: now.AddDays(-3), lastSeenAt: previousLastSeen,
+            fingerprint: previousFingerprint);
+        await SeedReplicaAsync(licenseId, restored, firstSeenAt: restoredFirstSeen, previousReplicaId: previous,
+            fingerprint: restoredFingerprint, conflictAt: restoredCloned ? restoredFirstSeen : null);
+        return (previous, restored);
+    }
+
+    // Makine harfi → bu testin parmak izi (üretilmiş; null = bilinmiyor).
+    private readonly Dictionary<string, string> _fingerprints = new();
+
+    private string? Fingerprint(string? machine)
+    {
+        if (machine is null) return null;
+        if (!_fingerprints.TryGetValue(machine, out var fingerprint))
+            _fingerprints[machine] = fingerprint = $"fp-{Guid.NewGuid():N}";
+        return fingerprint;
     }
 
     private async Task<Guid> SeedSessionAsync(

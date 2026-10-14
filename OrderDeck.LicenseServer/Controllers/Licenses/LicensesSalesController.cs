@@ -490,13 +490,6 @@ public sealed class LicensesSalesController : ControllerBase
         var localWinsAllowed = !modeOn
             && context.ReplicaBefore is { PreviousReplicaId: null, FingerprintConflict: false };
 
-        IReadOnlySet<Guid>? predecessors = null;
-        async Task<bool> IsSilentPredecessorAsync(Guid owner)
-        {
-            predecessors ??= await _replicas.SilentPredecessorsAsync(licenseId, caller, context.ReplicaBefore, ct);
-            return predecessors.Contains(owner);
-        }
-
         var inserted = new Dictionary<Guid, Order>();
         var changedOrders = new HashSet<Guid>();
         var diverged = new List<BackfillDivergedDto>();
@@ -532,9 +525,11 @@ public sealed class LicensesSalesController : ControllerBase
 
             var session = item.SessionId is { } sessionId ? serverSessions[sessionId] : null;
             // §4.2 ekleme dalı (Y1): başka kopyanın CANLI yayınına ekleme reddedilir; önceki kopyası susan geri
-            // yüklenmiş kopya o yayının kuyruğunu taşır (§8.7).
+            // yüklenmiş kopya, Y8 izin veriyorsa (aynı makine ya da sahibi ForceEndSilenceMinutes susmuş), o yayının
+            // kuyruğunu taşır (§8.7; sessions/sync ve orders/sync ile aynı yol).
             if (session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller
-                && !await IsSilentPredecessorAsync(owner))
+                && !await _replicas.CanInheritAsync(
+                    licenseId, caller, context.ReplicaBefore, session.Id, owner, TakeoverPhase.Live, now, ct))
             {
                 rejected[item.Id] = LicensesSessionsSyncController.ReasonOwnedElsewhere;
                 continue;

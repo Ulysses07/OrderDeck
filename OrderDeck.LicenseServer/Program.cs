@@ -148,9 +148,13 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdResolver>();
         // Yayın ve etiket senkronu (spec 2026-10-13): kopya kaydı ve protokolsüz istek izi; ayarlar compose
-        // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge).
-        builder.Services.Configure<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>(
-            builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section));
+        // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge,
+        // SalesSync__ForceEndSilenceMinutes). Sessizlik eşiği açılışta doğrulanır: 0 ya da eksi değer başka
+        // makinedeki kopyaya canlı yayını beklemeden devrettirirdi (Y7, Y8); sunucu açılmaz, deploy geri alınır.
+        builder.Services.AddOptions<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>()
+            .Bind(builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section))
+            .Validate(o => o.ForceEndSilenceMinutes > 0, "SalesSync:ForceEndSilenceMinutes 0'dan büyük olmalı.")
+            .ValidateOnStart();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReplicaService>();
         // Yayının devri (§4.1): sessions/sync, sales/backfill ve onarım işi aynı yazıcıyı kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SessionReleaser>();

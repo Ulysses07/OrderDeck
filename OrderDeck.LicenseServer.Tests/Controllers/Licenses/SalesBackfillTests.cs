@@ -344,6 +344,31 @@ public sealed class SalesBackfillTests
         result.Orders.Single(o => o.Id == accepted.Id).Status.Should().Be("inserted");
     }
 
+    /// <summary>
+    /// §8.7, Y7, Y8 (orders/sync ile aynı yol): geri yüklenmiş kopyanın, önceki kopyasının canlı yayınına eklemesi
+    /// başka makinede yalnız önceki kopya <c>ForceEndSilenceMinutes</c> (15) sustuktan sonra kabul edilir; öncesinde
+    /// <c>session-owned-elsewhere</c>. Aynı makinede hemen kabul edilir.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 5, true)]
+    [InlineData(false, 20, false)]
+    [InlineData(true, 1, false)]
+    public async Task Geri_yuklenmis_kopyanin_canli_oturuma_eklemesi_makine_kuralina_gore(
+        bool sameMachine, int silentMinutes, bool rejected)
+    {
+        var ctx = await SetupAsync(_factory);
+        var (previous, restored) = await SeedRestoredAsync(_factory, ctx.LicenseId, silentMinutes, sameMachine);
+        var live = await SeedSessionAsync(_factory, ctx.LicenseId, owner: previous, endedAt: null);
+        var item = OrderSyncV2Tests.NewItem(live);
+
+        var result = await BackfillAsync(ctx, restored, orders: [item]);
+
+        var row = result.Orders.Single(o => o.Id == item.Id);
+        row.Status.Should().Be(rejected ? "rejected" : "inserted");
+        row.Reason.Should().Be(rejected ? "session-owned-elsewhere" : null);
+        (await OrderAsync(_factory, item.Id) is null).Should().Be(rejected);
+    }
+
     // ── Kargo dosyası bağları ─────────────────────────────────────────────────
 
     /// <summary>
@@ -785,6 +810,34 @@ public sealed class SalesBackfillTests
             PreviousReplicaId = previousReplicaId,
         });
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>Geri yüklenmiş kopya ve önceki kopyası: önceki kopya <paramref name="silentMinutes"/> önce son kez
+    /// konuştu, yeni kopya ondan sonra ilk kez görüldü (§8.7'nin "sustu" koşulu tutar). Parmak izleri aynı makine ise
+    /// eşit, değilse farklı (üretilmiş).</summary>
+    private static async Task<(Guid Previous, Guid Restored)> SeedRestoredAsync(
+        ApiFactory factory, Guid licenseId, int silentMinutes, bool sameMachine)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var previousLastSeen = now.AddMinutes(-silentMinutes);
+        var previousFingerprint = $"fp-{Guid.NewGuid():N}";
+        var previous = new WpfReplica
+        {
+            LicenseId = licenseId, ReplicaId = Guid.NewGuid(), Protocol = 2, FirstSeenAt = now.AddDays(-3),
+            LastSeenAt = previousLastSeen, HardwareFingerprint = previousFingerprint,
+        };
+        var restoredFirstSeen = previousLastSeen.AddSeconds(silentMinutes * 30);
+        var restored = new WpfReplica
+        {
+            LicenseId = licenseId, ReplicaId = Guid.NewGuid(), Protocol = 2, FirstSeenAt = restoredFirstSeen,
+            LastSeenAt = restoredFirstSeen, PreviousReplicaId = previous.ReplicaId,
+            HardwareFingerprint = sameMachine ? previousFingerprint : $"fp-{Guid.NewGuid():N}",
+        };
+        db.WpfReplicas.AddRange(previous, restored);
+        await db.SaveChangesAsync();
+        return (previous.ReplicaId, restored.ReplicaId);
     }
 
     private static async Task SeedOrderAsync(ApiFactory factory, Guid orderId, Action<Order> change)

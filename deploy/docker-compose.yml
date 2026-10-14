@@ -209,8 +209,12 @@ services:
       # varsayılanı "false" ZORUNLU, boş string DEĞİL: .NET config binder'ı boş
       # string'i bool'a çeviremez (IntakeLogin bayraklarındaki 2026-09-04 dersi).
       # Açmak (true) geri dönüşsüz metin boşaltması, sahip kararı.
+      # ForceEndSilenceMinutes: canlı yayının sahibi bu kadar dakika susunca
+      # başka makine devralabilir (Y7, Y8). Varsayılan "15" ZORUNLU, boş string
+      # DEĞİL: int binder'ı boşu ayrıştıramaz; 0 ya da eksi değerle sunucu açılmaz.
       SalesSync__MinClientVersion: "${SalesSync__MinClientVersion:-}"
       SalesSync__ScrubOrderTextOnPurge: "${SalesSync__ScrubOrderTextOnPurge:-false}"
+      SalesSync__ForceEndSilenceMinutes: "${SalesSync__ForceEndSilenceMinutes:-15}"
       # Kayıt formu "hesabınla bağlan" (PR #360, karanlık deploy). Bayraklar
       # yazılmadıkça uçlar 404 — Google doğrulaması ONAYLANMADAN
       # IntakeLogin__YouTubeEnabled açılmaz. Facebook için AYRI Consumer app
