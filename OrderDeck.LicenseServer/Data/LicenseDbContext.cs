@@ -71,6 +71,7 @@ public class LicenseDbContext : DbContext
     public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
     public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
     public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
+    public DbSet<LicenseShippingSettings> LicenseShippingSettings => Set<LicenseShippingSettings>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
@@ -636,6 +637,23 @@ public class LicenseDbContext : DbContext
             b.HasKey(t => t.LicenseId);
             b.HasOne(t => t.License).WithOne()
                 .HasForeignKey<SalesLegacyTrace>(t => t.LicenseId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Lisans geneli kargo ayarı (yayın ve etiket senkronu S2, spec 2026-10-13
+        // §3.1, §4.8; sahip kararı Y4). Lisans başına tek satır; lisans silinince
+        // ayar da gider — cascade, çünkü lisansı silen bugünkü yol
+        // (AdminCustomersController) ve S2 öncesi imaj bu tabloyu bilmez. Version
+        // eşzamanlılık jetonu: aynı sürümü bekleyen eşzamanlı iki yazımdan biri
+        // DbUpdateConcurrencyException alır (uç 409 stale).
+        mb.Entity<LicenseShippingSettings>(b =>
+        {
+            b.HasKey(s => s.LicenseId);
+            b.HasOne(s => s.License).WithOne()
+                .HasForeignKey<LicenseShippingSettings>(s => s.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(s => s.FreeShippingThreshold).HasPrecision(18, 2);
+            b.Property(s => s.ShippingFee).HasPrecision(18, 2);
+            b.Property(s => s.Version).IsConcurrencyToken();
+            b.Property(s => s.UpdatedBy).HasMaxLength(64);
         });
 
         mb.Entity<Shopper>(b =>

@@ -149,7 +149,9 @@ public sealed class LicensesSalesController : ControllerBase
         string State,
         int? UnsentLabelCount);
 
-    /// <summary>Lisans geneli kargo ayarı (§6.2). Tablo S2'de gelir; S1'de alan hep null.</summary>
+    /// <summary>Lisans geneli kargo ayarı (§6.2, <see cref="LicenseShippingSettings"/>). İki kipte satırdan dolar:
+    /// istemci mod On'da kullanır, <c>disable</c> turunda yerele kopyalar (§8.5). Satır yoksa (ayar hiç yazılmadı)
+    /// <see cref="SalesStateDto.Shipping"/> null.</summary>
     public sealed record ShippingSettingsDto(int Version, decimal? FreeShippingThreshold, decimal? Fee);
 
     public sealed record LegacyMachineDto(string? MachineName, string? AppVersion, DateTimeOffset LastSeenAt);
@@ -201,13 +203,17 @@ public sealed class LicensesSalesController : ControllerBase
             .ToListAsync(ct);
 
         var minClientVersion = _options.ParseMinClientVersion() is null ? null : _options.MinClientVersion!.Trim();
+        var shipping = await _db.LicenseShippingSettings.AsNoTracking()
+            .Where(s => s.LicenseId == licenseId)
+            .Select(s => new ShippingSettingsDto(s.Version, s.FreeShippingThreshold, s.ShippingFee))
+            .SingleOrDefaultAsync(ct);
 
         return Ok(new SalesStateDto(
             (int)license.SalesSyncMode,
             license.SalesSyncModeChangedAt,
             minClientVersion,
             liveSessions,
-            Shipping: null,
+            shipping,
             _options.ScrubOrderTextOnPurge,
             await LegacyMachinesAsync(licenseId, ct)));
     }

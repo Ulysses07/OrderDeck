@@ -1377,6 +1377,35 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("Licenses");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal?>("FreeShippingThreshold")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ShippingFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("LicenseId");
+
+                    b.ToTable("LicenseShippingSettings");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.NetgsmAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3837,6 +3866,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("Customer");
 
                     b.Navigation("Sku");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithOne()
+                        .HasForeignKey("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", "LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.NetgsmAccount", b =>

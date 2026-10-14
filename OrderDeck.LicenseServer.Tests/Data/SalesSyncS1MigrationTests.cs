@@ -157,7 +157,7 @@ internal static class SalesSyncS1MigrationScenario
         ["Id", "LicenseId", "CustomerId", "Status", "CumulativeAmount", "CreatedAt", "HeldAt", "ShippedAt", "UpdatedAt"];
 
     // RowVersion (rowversion) INSERT'te verilemez; motor üretir.
-    private static readonly string[] PreS1LicenseColumns =
+    internal static readonly string[] PreS1LicenseColumns =
     [
         "Id", "LicenseKey", "CustomerId", "SkuCode", "ActivationSlots", "IssuedAt", "ExpiresAt",
         "RevokedAt", "RevokeReason", "LastActivationAt", "ShopperCode", "ShopperCodeUpdatedAt",

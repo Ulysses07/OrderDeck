@@ -214,7 +214,7 @@ public sealed class LicensesSalesControllerTests
         state.ModeChangedAt.Should().BeNull();
         state.MinClientVersion.Should().Be(SalesSyncConfiguredApiFactory.MinClientVersion);
         state.ScrubOrderTextOnPurge.Should().BeTrue();
-        state.Shipping.Should().BeNull("lisans geneli kargo ayarı S2'de gelir");
+        state.Shipping.Should().BeNull("lisans geneli kargo ayarı hiç yazılmadı (satır yok); dolu hâli ShippingSettingsTests'te");
         state.LiveSessions.Should().BeEmpty();
         state.LegacyMachines.Should().BeEmpty();
     }
