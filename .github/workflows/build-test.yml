@@ -97,8 +97,9 @@ jobs:
     # 25 dk sınırdaydı: master 2ae551a1'in koşusu (38406132099) test adımında
     # 23 dk 26 sn sürdü; satış senkronu S1 ayrı bir Express konteyneri ve iki
     # kez 30 bin satırlık göç tohumu ekliyor. Yavaş bir runner merge kapısını
-    # kararsız biçimde kırmızıya çevirmesin.
-    timeout-minutes: 35
+    # kararsız biçimde kırmızıya çevirmesin. Yerel tam koşu S1 ile 37–44 dk
+    # sürdü (yük altında); CI daha hızlı ama pay bırakıldı.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
