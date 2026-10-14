@@ -35,14 +35,32 @@ public sealed class SessionReleaser
     /// <summary>Verilen oturumları devreder.</summary>
     /// <returns>Bu çağrının devrettiği oturumlar; zaten devredilmiş, bitmemiş ya da başka lisansın oturumu
     /// dönmez.</returns>
-    public async Task<IReadOnlyList<Guid>> ReleaseAsync(
+    public Task<IReadOnlyList<Guid>> ReleaseAsync(
         Guid licenseId, IReadOnlyCollection<Guid> sessionIds, DateTimeOffset releasedAt, CancellationToken ct)
+        => ReleaseCoreAsync(licenseId, sessionIds, releasedAt, unownedOnly: false, ct);
+
+    /// <summary>
+    /// Yalnız <b>miras</b> oturumları devreder (<c>OwnerReplicaId IS NULL</c>, §4.9-a): sahipsizlik koşulu da
+    /// veritabanındaki koşullu UPDATE'in içindedir. Onarım işi adayları okuduktan sonra bir Ws geri doldurması
+    /// (<c>sales/backfill</c>) aynı oturuma sahip yazabilir; o andan sonra oturum bir v2 oturumudur ve yalnız
+    /// sahibinin <c>Release = true</c> kapanışıyla devredilir (M2: etiket kuyruğu boşalmadan devir yok). Koşul
+    /// yalnız okumada olsaydı iş o oturumu sahibinin kuyruğu boşalmadan devrederdi.
+    /// </summary>
+    /// <returns>Bu çağrının devrettiği oturumlar; sahipli, zaten devredilmiş, bitmemiş ya da başka lisansın oturumu
+    /// dönmez.</returns>
+    public Task<IReadOnlyList<Guid>> ReleaseUnownedAsync(
+        Guid licenseId, IReadOnlyCollection<Guid> sessionIds, DateTimeOffset releasedAt, CancellationToken ct)
+        => ReleaseCoreAsync(licenseId, sessionIds, releasedAt, unownedOnly: true, ct);
+
+    private async Task<IReadOnlyList<Guid>> ReleaseCoreAsync(
+        Guid licenseId, IReadOnlyCollection<Guid> sessionIds, DateTimeOffset releasedAt, bool unownedOnly,
+        CancellationToken ct)
     {
         var ids = sessionIds.Distinct().ToList();
         if (ids.Count == 0) return Array.Empty<Guid>();
 
         if (!_db.Database.IsRelational())
-            return await ReleaseTrackedAsync(licenseId, ids, releasedAt, ct);
+            return await ReleaseTrackedAsync(licenseId, ids, releasedAt, unownedOnly, ct);
 
         await using var ownTransaction = _db.Database.CurrentTransaction is null
             ? await _db.Database.BeginTransactionAsync(ct)
@@ -52,7 +70,8 @@ public sealed class SessionReleaser
         foreach (var id in ids)
         {
             var updated = await _db.StreamSessions
-                .Where(s => s.LicenseId == licenseId && s.Id == id && s.EndedAt != null && s.ReleasedAt == null)
+                .Where(s => s.LicenseId == licenseId && s.Id == id && s.EndedAt != null && s.ReleasedAt == null
+                    && (!unownedOnly || s.OwnerReplicaId == null))
                 .ExecuteUpdateAsync(u => u.SetProperty(s => s.ReleasedAt, releasedAt), ct);
             if (updated == 0) continue;
 
@@ -67,14 +86,15 @@ public sealed class SessionReleaser
     }
 
     private async Task<IReadOnlyList<Guid>> ReleaseTrackedAsync(
-        Guid licenseId, List<Guid> ids, DateTimeOffset releasedAt, CancellationToken ct)
+        Guid licenseId, List<Guid> ids, DateTimeOffset releasedAt, bool unownedOnly, CancellationToken ct)
     {
         var sessions = await _db.StreamSessions
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
             .ToListAsync(ct);
 
         var released = new List<Guid>(sessions.Count);
-        foreach (var session in sessions.Where(s => s.EndedAt != null && s.ReleasedAt == null))
+        foreach (var session in sessions.Where(s => s.EndedAt != null && s.ReleasedAt == null
+                     && (!unownedOnly || s.OwnerReplicaId == null)))
         {
             session.ReleasedAt = releasedAt;
             released.Add(session.Id);

@@ -140,10 +140,12 @@ internal static class SalesSyncS1MigrationScenario
     // S1 öncesi imajın (EF modelinin) bu tablolara yazdığı TAM kolon
     // listeleri. Testin kendisi bunları göç öncesi şemayla karşılaştırır:
     // liste eksik kalırsa "eski imaj yazabiliyor" iddiası boşa düşerdi.
-    private static readonly string[] PreS1StreamSessionColumns =
+    // Onarım işinin testleri (SalesReleaseRepairJobTests) geri alma
+    // penceresindeki eski imaj yazımını aynı listelerle taklit eder.
+    internal static readonly string[] PreS1StreamSessionColumns =
         ["Id", "LicenseId", "Title", "StartedAt", "EndedAt", "Platforms", "Notes", "UpdatedAt"];
 
-    private static readonly string[] PreS1OrderColumns =
+    internal static readonly string[] PreS1OrderColumns =
     [
         "Id", "LicenseId", "SessionId", "CustomerId", "Platform", "Username", "DisplayName",
         "MessageText", "Code", "Price", "AddedAt", "PrintedAt", "CancelledAt", "CancelReason",
@@ -151,7 +153,7 @@ internal static class SalesSyncS1MigrationScenario
         "UpdatedAt", "SyncVersion",
     ];
 
-    private static readonly string[] PreS1ShipmentColumns =
+    internal static readonly string[] PreS1ShipmentColumns =
         ["Id", "LicenseId", "CustomerId", "Status", "CumulativeAmount", "CreatedAt", "HeldAt", "ShippedAt", "UpdatedAt"];
 
     // RowVersion (rowversion) INSERT'te verilemez; motor üretir.

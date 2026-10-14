@@ -152,6 +152,8 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesChangesFeed>();
         // Türetilmiş kargo dosyası (K7, DM7): orders/sync, sales/backfill ve komutlar aynı türetmeyi kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.ShipmentAmountDeriver>();
+        // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
@@ -1036,6 +1038,10 @@ public class Program
                 .Enqueue<OrderDeck.LicenseServer.Services.CustomerSync.IdentityKeyRepairJob>(
                     j => j.RunAsync(CancellationToken.None));
 
+            // Yayın ve etiket senkronu onarımı (04:50 UTC + açılışta bir kez): takvim ve gerekçe
+            // ScheduleSalesSyncJobs'ta.
+            ScheduleSalesSyncJobs(manager, scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>());
+
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen
             // dosyalar DB'ye hiç yazılmıyor, lisans cascade'i o uçtan geçmiyor.
@@ -1232,6 +1238,23 @@ public class Program
         options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.Parse("127.0.0.0"), 8));
         options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.IPv6Loopback, 128));
         return options;
+    }
+
+    /// <summary>
+    /// Yayın ve etiket senkronunun Hangfire takvimi (spec 2026-10-13 §4.9; saatler UTC).
+    /// <c>sales-release-repair</c> günde bir, 04:50'de: yayın penceresi (TR 20:00–01:00) dışında, 04:45 kimlik
+    /// anahtarı onarımından sonra ve 5 dakikalık ızgaranın DIŞINDA (04:47 ve 04:52 İYS işleri, 04:57 banka saklama).
+    /// Ayrıca açılışta bir kez kuyruğa alınır (<c>identity-key-repair</c> emsali): deploy'dan sonra S1 öncesinde
+    /// bitmiş yayınlar ve geri alma penceresinin satırları bir gün beklemesin. Kuyruğa almak yalnız bir kayıttır;
+    /// iş arka planda koşar, açılışı ve <c>/ready</c>'yi bekletmez.
+    /// </summary>
+    public static void ScheduleSalesSyncJobs(IRecurringJobManager manager, IBackgroundJobClient jobs)
+    {
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>(
+            OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob.JobId,
+            j => j.RunAsync(CancellationToken.None),
+            OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob.Cron);
+        jobs.Enqueue<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>(j => j.RunAsync(CancellationToken.None));
     }
 
     /// <summary>
