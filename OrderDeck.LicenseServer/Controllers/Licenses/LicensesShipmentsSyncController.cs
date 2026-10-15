@@ -83,6 +83,13 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     /// isteği boş <see cref="Shipment.OriginReplicaId"/>'yi çağıranla doldurur
     /// (mod Off'ta dosyanın tek yazıcısı) ve dosya başına sunucunun güncel
     /// satırını alır (<see cref="SalesShipmentItem"/>); v1 yanıtı değişmez.</para>
+    ///
+    /// <para><b>Mod On</b> (spec 2026-10-13 §7.1, §8.3): dosya ve etiket–dosya
+    /// bağı yalnız sunucuda yazılır; gönderim hiçbir şey yazmaz (ne güncelleme
+    /// ne ekleme) ve yanıt sunucunun güncel satırlarıdır — v1'e bugünkü DTO,
+    /// v2'ye akış öğesi. Protokolsüz isteğin izini kalp atışı zaten yazdı
+    /// (<see cref="SalesReplicaService.AcceptAsync"/>); yok sayılan sayı günlüğe
+    /// düşer.</para>
     /// </summary>
     [HttpPost("sync")]
     public async Task<IActionResult> Sync(
@@ -97,7 +104,7 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
 
         if (!SalesEnvelope.TryRead(req, out var envelope, out var envelopeError))
             return Problem(title: "invalid-envelope", detail: envelopeError, statusCode: 400);
-        await _replicas.AcceptAsync(
+        var context = await _replicas.AcceptAsync(
             licenseId, envelope, Request.Headers.UserAgent.ToString(), "shipments/sync", ct);
         var v2 = envelope.IsV2;
 
@@ -106,6 +113,9 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
 
         if (req.Shipments.Count > 200)
             return Problem(title: "batch-too-large", detail: "Max 200 shipment per batch.", statusCode: 400);
+
+        if (context.Mode == SalesSyncMode.On)
+            return await IgnoreInModeOnAsync(licenseId, req.Shipments, envelope, ct);
 
         var now = DateTimeOffset.UtcNow;
 
@@ -243,9 +253,59 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         await _labels.TryApplyAndSaveByWpfCustomersAsync(
             licenseId, WaLabelEvent.ShipmentStatusChanged, statusChangedCustomers, ct);
 
+        return await CurrentRowsAsync(licenseId, ids, v2, ct);
+    }
+
+    /// <summary>
+    /// Mod On'da açılış penceresi dışındaki gönderim (spec 2026-10-13 §7.1, §8.3, §4.0): protokolsüz istek (eski
+    /// sürüm), modu görmüş ya da mod açıldıktan sonra doğmuş kopya, yedekten geri yüklenmiş kopya (§8.7) ve disk klonu.
+    /// Hiçbir şey yazılmaz — Shipped olmayan dosyanın kararı ve tutarı da, kaynağı ve müşterisi de, yeni dosya Id'si de.
+    /// Geri yüklenmiş veritabanının kuyruğu yedek anındaki bayat değerlerdir; Off kurallarıyla alınsalar sonradan
+    /// verilmiş komut kararlarını geri alırlardı. Durum değişmediği için etiket kuralı da yok. Sayılar günlüğe yazılır
+    /// (§10.5; ad ya da metin yok).
+    /// </summary>
+    private async Task<IActionResult> IgnoreInModeOnAsync(
+        Guid licenseId, IReadOnlyList<SyncShipmentItem> items, SalesEnvelope envelope, CancellationToken ct)
+    {
+        var ids = items.Select(s => s.Id).ToList();
+        var existing = await _db.Shipments.AsNoTracking()
+            .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
+            .ToDictionaryAsync(s => s.Id, ct);
+        var changed = items.Count(i => existing.TryGetValue(i.Id, out var s) && Differs(i, s));
+        var inserts = ids.Distinct().Count(id => !existing.ContainsKey(id));
+
+        if (envelope.IsV2)
+            _log.LogInformation(
+                "shipments/sync: mod On'da v2 gönderimi On kurallarıyla yargılandı (açılış penceresi dışında, "
+                + "seenMode={SeenMode}) — {Count} dosya satırı yok sayıldı: {Changed} değişiklik ve {Inserts} yeni "
+                + "dosya yazılmadı (license={LicenseId}, replica={ReplicaId})",
+                (int)envelope.SeenMode, items.Count, changed, inserts, licenseId, envelope.ReplicaId);
+        else
+            _log.LogInformation(
+                "shipments/sync: mod On'da protokolsüz gönderim yok sayıldı — {Count} dosya satırı: {Changed} "
+                + "değişiklik ve {Inserts} yeni dosya yazılmadı (license={LicenseId})",
+                items.Count, changed, inserts, licenseId);
+
+        return await CurrentRowsAsync(licenseId, ids, envelope.IsV2, ct);
+    }
+
+    /// <summary>Gönderilen satır sunucudakinden karar ya da tutarda farklı mı?</summary>
+    private static bool Differs(SyncShipmentItem item, Shipment current) =>
+        ParseStatus(item.Status) != current.Status
+        || item.CumulativeAmount != current.CumulativeAmount
+        || item.HeldAt != current.HeldAt
+        || item.ShippedAt != current.ShippedAt;
+
+    /// <summary>
+    /// Yanıt: dosyaların veritabanındaki güncel hâli. v2'ye istek sırasıyla akış öğesi (Ws onu guard altında yerel
+    /// aynaya yazar, §7.1); v1'e bugünkü <see cref="SyncedShipmentDto"/> (eski istemci yanıtı atar). Sunucuda olmayan
+    /// Id yanıtta yoktur.
+    /// </summary>
+    private async Task<IActionResult> CurrentRowsAsync(
+        Guid licenseId, IReadOnlyList<Guid> ids, bool v2, CancellationToken ct)
+    {
         if (v2)
         {
-            // Ws güncel satırı guard altında yerel aynaya yazar (§7.1); istek sırasıyla.
             var saved = await _db.Shipments.AsNoTracking()
                 .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
                 .ToDictionaryAsync(s => s.Id, ct);

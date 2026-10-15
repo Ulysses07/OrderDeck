@@ -61,10 +61,12 @@ public sealed class ShipmentVersionTokenRelationalTests : IAsyncLifetime
     }
 
     /// <summary><c>shipments/sync</c> okuduktan sonra dosyayı başka bir yazıcı (komut, türetme) yazdı: istek 409
-    /// <c>sync-conflict</c> alır, öbür yazım kalır.</summary>
+    /// <c>sync-conflict</c> alır, öbür yazım kalır. Mod Off'ta (mod On'da protokolsüz gönderim hiçbir şey yazmaz,
+    /// §7.1).</summary>
     [Fact]
     public async Task Shipments_sync_eszamanli_yazimla_cakisirsa_409_ve_yazmaz()
     {
+        await SetModeAsync(SalesSyncMode.Off);
         var shipment = await SeedShipmentAsync(derived: false);
         _factory.Hook.BeforeSave = async () =>
         {
@@ -143,6 +145,16 @@ public sealed class ShipmentVersionTokenRelationalTests : IAsyncLifetime
     }
 
     // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    private async Task SetModeAsync(SalesSyncMode mode)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var license = await db.Licenses.SingleAsync(l => l.Id == _licenseId);
+        license.SalesSyncMode = mode;
+        license.SalesSyncModeChangedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+    }
 
     /// <summary>Başka bir bağlamdan dosyaya yazar (komut ya da başka bir isteğin türetmesi gibi): sürüm ilerler.</summary>
     private async Task WriteElsewhereAsync(Guid shipmentId, decimal amount)

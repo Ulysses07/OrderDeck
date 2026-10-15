@@ -18,7 +18,7 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// biçiminde), dosya kaynağı (<c>OriginReplicaId</c>: mod Off'ta dosyanın tek yazıcısı) yalnız v2'de ve boşsa dolar;
 /// sunucunun her yazımı dosyanın sürümünü ilerletir ve sürüm eşzamanlılık jetonudur — çakışan yazım 409
 /// <c>sync-conflict</c> alır (sipariş partisinin deseni). Mod On'da <c>shipments/sync</c>'in yok sayılması ve açılış
-/// penceresi istisnası S2'de.
+/// penceresi istisnası <see cref="ShipmentSyncModeOnTests"/>'te.
 /// </summary>
 public sealed class ShipmentSyncV2Tests : IClassFixture<ApiFactory>
 {
@@ -108,6 +108,8 @@ public sealed class ShipmentSyncV2Tests : IClassFixture<ApiFactory>
     /// Sürüm jetonu (§3.1, notlar #6): dosyaya yazan istek kaydederken başka bir yazımla çakışırsa (jeton) işlem
     /// tümüyle geri alınır ve 409 <c>sync-conflict</c> döner — 500 değil; istemci partiyi yeniden gönderir. Gerçek
     /// jetonun SQL Server kanıtı <see cref="ShipmentVersionTokenRelationalTests"/>'te; burada yalnız eşleme.
+    /// <c>shipments/sync</c> mod Off'ta yazar (mod On'da yalnız açılış penceresindeki kopya yazar, onun eşlemesi
+    /// <see cref="ShipmentSyncModeOnTests"/>'te); K7 türetmesi mod On ister — lisans iki gönderim arasında açılır.
     /// </summary>
     [Fact]
     public async Task Dosya_yazim_cakismasi_409_sync_conflict()
@@ -122,7 +124,6 @@ public sealed class ShipmentSyncV2Tests : IClassFixture<ApiFactory>
             {
                 Id = licenseId, LicenseKey = $"cakisma-{Guid.NewGuid():N}", CustomerId = customerId, SkuCode = "STD",
                 ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
-                SalesSyncMode = SalesSyncMode.On, SalesSyncModeChangedAt = DateTimeOffset.UtcNow.AddDays(-1),
             });
             var shipment = new Shipment
             {
@@ -151,6 +152,14 @@ public sealed class ShipmentSyncV2Tests : IClassFixture<ApiFactory>
 
         var shipmentPush = await client.PostAsJsonAsync(Url(licenseId),
             new { shipments = new[] { ItemOf(seeded) with { Status = "held" } } });
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var license = await db.Licenses.SingleAsync(l => l.Id == licenseId);
+            license.SalesSyncMode = SalesSyncMode.On;
+            license.SalesSyncModeChangedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync();
+        }
         var orderPush = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/orders/sync", new
         {
             orders = new[]
