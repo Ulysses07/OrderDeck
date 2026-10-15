@@ -14,17 +14,28 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 public sealed class SalesCommandScope
 {
     private readonly LicenseDbContext _db;
+    private readonly ShipmentAmountDeriver _shipmentAmounts;
     private readonly IReadOnlyDictionary<Guid, int> _expected;
     private readonly Dictionary<Guid, Order> _orders = new();
     private readonly Dictionary<Guid, Guid?> _shipmentBefore = new();
     private readonly Dictionary<Guid, HashSet<OrderUnit>> _changes = new();
     private readonly List<Guid> _changeOrder = new();
     private readonly HashSet<Guid> _inserted = new();
+    private readonly Dictionary<Guid, Shipment> _shipments = new();
+    private readonly HashSet<Guid> _touchedShipments = new();
+    private readonly List<Guid> _derivedShipments = new();
+    private readonly HashSet<Guid> _insertedShipments = new();
 
     internal SalesCommandScope(
-        LicenseDbContext db, Guid licenseId, Guid replicaId, DateTimeOffset now, IReadOnlyList<SalesCommandExpected> expected)
+        LicenseDbContext db,
+        ShipmentAmountDeriver shipmentAmounts,
+        Guid licenseId,
+        Guid replicaId,
+        DateTimeOffset now,
+        IReadOnlyList<SalesCommandExpected> expected)
     {
         _db = db;
+        _shipmentAmounts = shipmentAmounts;
         LicenseId = licenseId;
         ReplicaId = replicaId;
         Now = now;
@@ -224,10 +235,141 @@ public sealed class SalesCommandScope
     {
         var ids = shipmentIds.Distinct().ToList();
         if (ids.Count == 0) return new Dictionary<Guid, Shipment>();
-        return await _db.Shipments
+        var loaded = await _db.Shipments
             .Where(s => s.LicenseId == LicenseId && ids.Contains(s.Id))
             .ToDictionaryAsync(s => s.Id, ct);
+        foreach (var shipment in loaded.Values) _shipments.TryAdd(shipment.Id, shipment);
+        return loaded;
     }
+
+    // ── Kargo dosyası komutları (attach-shipment, shipment-decision; §4.6, §7) ─────────────────────────
+
+    /// <summary>
+    /// Bir müşterinin açık (Pending ya da Held) dosyalarını İZLEYEREK yükler; en yenisi başta — masaüstündeki
+    /// <c>ShipmentRepository.GetAllOpenByCustomer</c> sırası (<c>CreatedAt</c> azalan, sonra "N" biçimli Id azalan,
+    /// ordinal). Müşteri Id'si çağıranın çözdüğü asıl kayıttır; birleştirici dosyaları asıl kayda taşır
+    /// (<c>CustomerIdentityMerger</c>), <paramref name="alsoCustomerId"/> taşınmamış bir kopya yazımı içindir.
+    /// Dosyalar bağlı siparişlerden ÖNCE yüklenmeli (<see cref="LoadShipmentsAsync"/>'in sıra gerekçesi).
+    /// </summary>
+    public async Task<IReadOnlyList<Shipment>> LoadOpenShipmentsAsync(
+        string customerId, string? alsoCustomerId, CancellationToken ct)
+    {
+        var customers = new[] { customerId, alsoCustomerId ?? customerId }.Distinct().ToList();
+        var open = await _db.Shipments
+            .Where(s => s.LicenseId == LicenseId && customers.Contains(s.CustomerId)
+                        && (s.Status == ShipmentStatus.Pending || s.Status == ShipmentStatus.Held))
+            .ToListAsync(ct);
+        foreach (var shipment in open) _shipments.TryAdd(shipment.Id, shipment);
+        return NewestFirst(open);
+    }
+
+    /// <summary>Dosyalar en yenisi başta: <c>CreatedAt</c> azalan, sonra "N" biçimli Id azalan (ordinal) — masaüstündeki
+    /// açık dosya sırası; sunucu GUID sıralaması (SQL Server'ın bayt sırası) yerel aynayla ayrışırdı.</summary>
+    public static IReadOnlyList<Shipment> NewestFirst(IEnumerable<Shipment> shipments) =>
+        shipments
+            .OrderByDescending(s => s.CreatedAt)
+            .ThenByDescending(s => s.Id.ToString("N"), StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// <c>attach-shipment</c>'ın adayları (§4.6, M22), İZLEYEREK: müşterinin bu lisanstaki, kargo bağı olmayan, iptal
+    /// edilmemiş, geçici yedek olmayan ve kargo bağı bilinen (<c>OriginReplicaId</c> dolu) siparişleri; yayını
+    /// devredilmiş ya da çağıranın kendi yayını (sahibi çağıran kopya; canlı olsa da) olanlar. Başka kopyanın canlı ya
+    /// da devrediliyor yayını görünmez (Y1, Y8) ve yayınsız sipariş aday değildir. Kargo ücreti satırı adaydır
+    /// (yerel <c>AttachLabels</c> gibi). Sipariş Id'sine göre sıralı.
+    /// </summary>
+    public async Task<IReadOnlyList<Order>> LoadAttachCandidatesAsync(string customerId, CancellationToken ct)
+    {
+        var licenseId = LicenseId;
+        var caller = ReplicaId;
+        var sessions = _db.StreamSessions;
+        var candidates = await _db.Orders
+            .Where(o => o.LicenseId == licenseId && o.CustomerId == customerId
+                        && o.ShipmentId == null && o.CancelledAt == null && !o.IsTentativeBackup
+                        && o.OriginReplicaId != null && o.SessionId != null
+                        && sessions.Any(s => s.LicenseId == licenseId && s.Id == o.SessionId
+                                             && (s.ReleasedAt != null || s.OwnerReplicaId == caller)))
+            .ToListAsync(ct);
+        foreach (var order in candidates) Track(order);
+        return candidates.OrderBy(o => o.Id).ToList();
+    }
+
+    private void Track(Order order)
+    {
+        if (_orders.TryAdd(order.Id, order)) _shipmentBefore[order.Id] = order.ShipmentId;
+    }
+
+    /// <summary>Dosya Id'si sunucuda HERHANGİ bir lisansta var mı (Shipments'ın birincil anahtarı yalnız Id)? Yalnız
+    /// varlık döner; başka lisansın satırı okunmaz.</summary>
+    public Task<bool> ShipmentIdTakenAsync(Guid shipmentId, CancellationToken ct) =>
+        _db.Shipments.AsNoTracking().AnyAsync(s => s.Id == shipmentId, ct);
+
+    /// <summary>
+    /// Komutun açtığı yeni dosyayı kaydeder (<c>attach-shipment</c>): bu lisansa ait olmalı. Kaydetmedeki eşzamanlı Id
+    /// çakışmasını servis <c>content-conflict</c>'e çevirir (<see cref="InsertedShipmentIds"/>).
+    /// </summary>
+    public void AddShipment(Shipment shipment)
+    {
+        if (shipment.LicenseId != LicenseId)
+            throw new InvalidOperationException("Komut yalnız kendi lisansına dosya açar.");
+        if (!_insertedShipments.Add(shipment.Id) || _shipments.ContainsKey(shipment.Id))
+            throw new InvalidOperationException("Dosya kapsamda zaten var.");
+
+        _db.Shipments.Add(shipment);
+        _shipments[shipment.Id] = shipment;
+    }
+
+    /// <summary>
+    /// Dosyaları şimdi, bu kapsamın izlediği siparişlerin birleşik hâliyle yeniden türetir
+    /// (<see cref="ShipmentAmountDeriver.DeriveAsync"/>): yalnız türetilmiş (<c>AmountDerivedAt</c> dolu) ve Shipped
+    /// olmayanlar; <c>Version</c> bir artar, <c>UpdatedAt</c> = <see cref="Now"/>. İşleyici dosyanın bağlı siparişlerine
+    /// son değişikliğini yaptıktan SONRA çağırır: servisin K7 adımı burada türetilen dosyayı yeniden türetmez (sürüm
+    /// komut başına bir kez ilerler). Kargoya verilecek dosya, durumu değişmeden önce türetilir — Shipped dosya
+    /// türetilmez, tutarı o anda donar (DM7).
+    /// </summary>
+    /// <returns>Türetilen dosyalar.</returns>
+    public async Task<IReadOnlyList<Guid>> DeriveShipmentsAsync(IEnumerable<Shipment> shipments, CancellationToken ct)
+    {
+        var map = new Dictionary<Guid, Shipment>();
+        foreach (var shipment in shipments)
+        {
+            if (!_shipments.TryGetValue(shipment.Id, out var tracked) || !ReferenceEquals(tracked, shipment))
+                throw new InvalidOperationException("Yalnız kapsamın yüklediği ya da açtığı dosya türetilir.");
+            map[shipment.Id] = shipment;
+        }
+
+        var derived = await _shipmentAmounts.DeriveAsync(LicenseId, map, map.Keys, _orders.Values, Now, ct);
+        foreach (var id in derived)
+        {
+            _touchedShipments.Add(id);
+            if (!_derivedShipments.Contains(id)) _derivedShipments.Add(id);
+        }
+        return derived;
+    }
+
+    /// <summary>
+    /// Dosyanın bu komutla değiştiğini bildirir: komut başına ilk dokunuşta <c>Version</c> bir artar (bu komutta
+    /// türetildiyse türetme artırmıştır); <c>UpdatedAt</c> = <see cref="Now"/>.
+    /// </summary>
+    public void MarkShipmentChanged(Shipment shipment)
+    {
+        if (!_shipments.TryGetValue(shipment.Id, out var tracked) || !ReferenceEquals(tracked, shipment))
+            throw new InvalidOperationException("Yalnız kapsamın yüklediği ya da açtığı dosya değişmiş bildirilir.");
+        if (_touchedShipments.Add(shipment.Id)) shipment.Version++;
+        shipment.UpdatedAt = Now;
+    }
+
+    /// <summary>Kapsamın yüklediği ya da açtığı dosyalar (değişenler bellekteki hâlleriyle).</summary>
+    internal IReadOnlyDictionary<Guid, Shipment> TrackedShipments => _shipments;
+
+    /// <summary>İşleyicinin bu komutta türettiği dosyalar (<see cref="DeriveShipmentsAsync"/>), türetme sırasıyla.</summary>
+    internal IReadOnlyList<Guid> DerivedShipmentIds => _derivedShipments;
+
+    /// <summary>Komutun açtığı dosyalar (<see cref="AddShipment"/>).</summary>
+    internal IReadOnlyCollection<Guid> InsertedShipmentIds => _insertedShipments;
+
+    /// <summary>Komut en az bir dosyayı açtı, türetti ya da değiştirdi.</summary>
+    internal bool ShipmentsChanged => _touchedShipments.Count > 0 || _insertedShipments.Count > 0;
 
     /// <summary>
     /// Siparişin bu komutla değiştiğini bildirir: ilk bildirimde <c>SyncVersion</c> bir artar (jeton; komutun beklenen

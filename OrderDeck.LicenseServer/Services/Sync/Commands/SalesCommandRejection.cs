@@ -56,6 +56,31 @@ public sealed class SalesCommandRejection : Exception
         new(StatusCodes.Status409Conflict, CodeStale, detail, new Dictionary<string, object?>(), withCurrent: true);
 
     /// <summary>
+    /// 409 <c>stale</c> (<c>attach-shipment</c>, §4.6): sunucunun aday kümesi (bağlanmamış siparişler ve sürümleri)
+    /// istemcinin gördüğü kümeden (<c>expected</c>) farklı. Yanıt güncel kümeyi (<c>candidates</c>, sipariş Id'sine göre
+    /// sıralı) ve adayların ve istemcinin beklediği siparişlerin güncel hâlini (<c>current</c>) taşır; hiçbir şey
+    /// yazılmaz. İstemci güncel satırları uygulayıp kümeyi yeniden kurar.
+    /// </summary>
+    public static SalesCommandRejection CandidatesStale(
+        IReadOnlyList<SalesCommandExpected> candidates, IReadOnlyList<Guid> currentOrderIds) =>
+        new(StatusCodes.Status409Conflict, CodeStale,
+            "Müşterinin bağlanmamış etiketleri bu arada değişti; güncel kümeyle yeniden deneyin.",
+            new Dictionary<string, object?> { ["candidates"] = candidates },
+            withCurrent: true,
+            currentOrderIds);
+
+    /// <summary>
+    /// 409 <c>content-conflict</c> (<c>attach-shipment</c>, §4.6): açılacak dosyanın Id'si (<c>proposedShipmentId</c>)
+    /// sunucuda zaten var — bu lisansta (ör. kabul edilmiş ya da kargoya verilmiş bir dosya) ya da başka bir lisansta
+    /// (Shipments'ın birincil anahtarı yalnız Id). Ret satır taşımaz: Id başka lisansın olabilir. İstemci hatasıdır;
+    /// istemci yeni bir Id üretir.
+    /// </summary>
+    public static SalesCommandRejection ShipmentContentConflict(Guid shipmentId) =>
+        new(StatusCodes.Status409Conflict, CodeContentConflict, "Bu kargo dosyası Id'si sunucuda zaten kullanılıyor.",
+            new Dictionary<string, object?> { ["shipmentId"] = shipmentId },
+            withCurrent: false);
+
+    /// <summary>
     /// 409 <c>session-live</c> (§4.6 adım 3): fiyat, iptal ya da yedek birimine dokunulan siparişin yayını devredilmemiş
     /// (canlı ya da devrediliyor) ya da siparişin yayını yok. Canlı yayın yalnız sahibinde yazılır (Y1, DM1).
     /// </summary>

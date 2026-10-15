@@ -79,8 +79,8 @@ public sealed class SalesCommandTestKit
 
     public enum Phase { Live, HandingOver, Released }
 
-    /// <summary>Sahibi <see cref="OwnerReplicaId"/> (PC-A) olan bir yayın.</summary>
-    public async Task<Guid> SeedSessionAsync(Phase phase, string? forceEndedBy = null)
+    /// <summary>Sahibi <see cref="OwnerReplicaId"/> (PC-A) — ya da verilen kopya — olan bir yayın.</summary>
+    public async Task<Guid> SeedSessionAsync(Phase phase, string? forceEndedBy = null, Guid? owner = null)
     {
         var session = new StreamSession
         {
@@ -92,7 +92,7 @@ public sealed class SalesCommandTestKit
             ReleasedAt = phase == Phase.Released ? StartedAt.AddHours(2) : null,
             Platforms = "youtube",
             UpdatedAt = StartedAt,
-            OwnerReplicaId = OwnerReplicaId,
+            OwnerReplicaId = owner ?? OwnerReplicaId,
             OwnerMachineName = "PC-A",
             ForceEndedBy = forceEndedBy,
         };
@@ -137,7 +137,8 @@ public sealed class SalesCommandTestKit
     }
 
     public async Task<Shipment> SeedShipmentAsync(
-        string customerId, ShipmentStatus status, decimal amount, bool derived, int version = 1)
+        string customerId, ShipmentStatus status, decimal amount, bool derived, int version = 1,
+        DateTimeOffset? createdAt = null)
     {
         var shipment = new Shipment
         {
@@ -146,7 +147,7 @@ public sealed class SalesCommandTestKit
             CustomerId = customerId,
             Status = status,
             CumulativeAmount = amount,
-            CreatedAt = StartedAt.AddHours(3),
+            CreatedAt = createdAt ?? StartedAt.AddHours(3),
             ShippedAt = status == ShipmentStatus.Shipped ? StartedAt.AddHours(4) : null,
             UpdatedAt = StartedAt.AddHours(3),
             Version = version,
@@ -313,6 +314,13 @@ public sealed class SalesCommandTestKit
             new { batchId, items = orders.Select((o, i) => new { orderId = o.Id, seq = i + 1 }).ToArray() },
             orders.Select(o => (o.Id, o.SyncVersion)));
 
+    /// <summary><c>attach-shipment</c>; <c>expected</c> istemcinin gördüğü bağlanmamış aday kümesi (satırlardan).</summary>
+    public object AttachShipment(
+        Guid commandId, string customerId, Guid proposedShipmentId, IEnumerable<Order> candidates,
+        Guid? replicaId = null) =>
+        Body(commandId, "attach-shipment", new { customerId, proposedShipmentId },
+            candidates.Select(o => (o.Id, o.SyncVersion)), replicaId);
+
     /// <summary><c>reprint</c>; yazmadığı için <c>expected</c> boş.</summary>
     public object Reprint(Guid commandId, IEnumerable<Guid> orderIds, Guid? replicaId = null) =>
         Body(commandId, "reprint", new { orderIds = orderIds.ToArray() }, [], replicaId);
@@ -357,6 +365,19 @@ public sealed class SalesCommandTestKit
 
     public async Task<Shipment> ShipmentAsync(Guid id) =>
         await ReadDbAsync(db => db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id));
+
+    /// <summary>Müşterinin bu lisanstaki bütün dosyaları.</summary>
+    public async Task<List<Shipment>> ShipmentsOfAsync(string customerId) =>
+        await ReadDbAsync(db => db.Shipments.AsNoTracking()
+            .Where(s => s.LicenseId == LicenseId && s.CustomerId == customerId).ToListAsync());
+
+    /// <summary>DM7, veritabanından: dosyaya bağlı, iptal edilmemiş, geçici yedek olmayan siparişlerin fiyat toplamı.</summary>
+    public async Task<decimal> DerivedAmountInDbAsync(Guid shipmentId) =>
+        await ReadDbAsync(async db => (await db.Orders.AsNoTracking()
+                .Where(o => o.ShipmentId == shipmentId && o.CancelledAt == null && !o.IsTentativeBackup)
+                .Select(o => o.Price)
+                .ToListAsync())
+            .Sum());
 
     public async Task<List<SalesCommandLog>> LogsAsync() =>
         await ReadDbAsync(db => db.SalesCommandLogs.AsNoTracking().Where(c => c.LicenseId == LicenseId).ToListAsync());

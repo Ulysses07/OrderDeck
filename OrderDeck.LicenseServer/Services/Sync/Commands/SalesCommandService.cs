@@ -11,9 +11,9 @@ using OrderDeck.LicenseServer.Services.Stock;
 namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
 /// <summary>
-/// <c>POST sales/commands</c>'ın işleme hattı — spec 2026-10-13 §4.6. Devredilmiş yayının etiketini (ve S2'nin sonraki
-/// görevlerinde kargo dosyasını) değiştiren her komut buradan geçer; türün kuralını <see cref="ISalesCommandHandler"/>
-/// uygular. Sıra:
+/// <c>POST sales/commands</c>'ın işleme hattı — spec 2026-10-13 §4.6. Devredilmiş yayının etiketini ya da kargo dosyasını
+/// (<c>attach-shipment</c>; S2'nin sonraki görevinde <c>shipment-decision</c>) değiştiren her komut buradan geçer;
+/// türün kuralını <see cref="ISalesCommandHandler"/> uygular. Sıra:
 /// <list type="number">
 ///   <item><b>İstek.</b> v2 zarfı (aksi 400 <c>invalid-envelope</c>), <c>commandId</c>, kayıtlı bir tür (aksi 400
 ///   <c>unknown-kind</c>), beklenen sürümler ve türün yükü (400). Lisans sahipliğini uç denetler (404).</item>
@@ -125,11 +125,11 @@ public sealed class SalesCommandService
         var now = DateTimeOffset.UtcNow;
         string status;
         string resultJson;
-        IReadOnlyList<Guid> derived;
+        SalesCommandResult result;
         IDbContextTransaction? transaction = _db.Database.IsRelational()
             ? await _db.Database.BeginTransactionAsync(ct)
             : null;
-        var scope = new SalesCommandScope(_db, licenseId, replicaId, now, expected);
+        var scope = new SalesCommandScope(_db, _shipmentAmounts, licenseId, replicaId, now, expected);
         try
         {
             var outcome = await command.ExecuteAsync(scope, ct);
@@ -137,13 +137,18 @@ public sealed class SalesCommandService
 
             // K7: değişen birimin bağlı türetilmiş dosyaları aynı yazımda. Dosyalar türetmenin okuduğu bağlı
             // siparişlerden ÖNCE yüklenir (sıra ve jeton gerekçesi ShipmentAmountDeriver'da); hedef siparişler zaten
-            // kendi jetonları altında.
+            // kendi jetonları altında. İşleyicinin bu komutta kendisi türettiği dosya (kargo komutları) yeniden
+            // türetilmez: son bağ değişikliğinden sonra türetildi, sürümü komut başına bir kez ilerler.
             var affected = changes
                 .SelectMany(c => ShipmentAmountDeriver.AffectedBy(c.ShipmentBefore, c.Order.ShipmentId, c.Units))
+                .Except(scope.DerivedShipmentIds)
                 .Distinct()
                 .ToList();
             var shipments = await _shipmentAmounts.LoadAsync(licenseId, affected, ct);
-            derived = await _shipmentAmounts.DeriveAsync(licenseId, shipments, affected, scope.TrackedOrders, now, ct);
+            foreach (var (id, tracked) in scope.TrackedShipments) shipments.TryAdd(id, tracked);
+            var derivedHere = await _shipmentAmounts.DeriveAsync(
+                licenseId, shipments, affected, scope.TrackedOrders, now, ct);
+            var derived = scope.DerivedShipmentIds.Concat(derivedHere).Distinct().ToList();
 
             // Defter birleşik durumdan ve siparişlerle aynı SaveChanges'te (orders/sync'in gerekçesi): ürünü bilinmeyen
             // siparişin defterde satırı yoktur.
@@ -160,21 +165,30 @@ public sealed class SalesCommandService
             if (ledgerRows.Count > 0)
                 await _ledger.ApplyAsync(licenseId, ledgerRows, DateTimeOffset.UtcNow, ct);
 
-            var result = new SalesCommandResult(
+            SalesCommandShipmentAmount AmountOf(Guid id)
+            {
+                var s = shipments[id];
+                return new SalesCommandShipmentAmount(s.Id, s.Version, s.CumulativeAmount);
+            }
+
+            result = new SalesCommandResult(
                 outcome.Changed,
                 outcome.Skipped,
                 changes.Select(c => new SalesCommandOrderVersion(c.Order.Id, c.Order.SyncVersion)).ToList(),
-                derived.Select(id => shipments[id])
-                    .Select(s => new SalesCommandShipmentAmount(s.Id, s.Version, s.CumulativeAmount))
-                    .ToList())
+                derived.Select(AmountOf).ToList())
             {
                 Marked = outcome.Marked,
                 AlreadyPrinted = outcome.AlreadyPrinted,
                 Cancelled = outcome.Cancelled,
                 ReprintIds = outcome.ReprintIds,
                 CorrectionIds = outcome.CorrectionIds,
+                ShipmentId = outcome.ShipmentId,
+                Pool = outcome.Pool,
+                PoolShipmentIds = outcome.PoolShipmentIds,
             };
-            status = changes.Count > 0 ? SalesCommandLog.StatusApplied : SalesCommandLog.StatusUnchanged;
+            status = changes.Count > 0 || scope.ShipmentsChanged
+                ? SalesCommandLog.StatusApplied
+                : SalesCommandLog.StatusUnchanged;
             resultJson = JsonSerializer.Serialize(result, ResultJsonOptions);
             _db.SalesCommandLogs.Add(new SalesCommandLog
             {
@@ -204,7 +218,7 @@ public sealed class SalesCommandService
                 "sales/commands: {Kind} reddedildi: {Code} (license={LicenseId}, replica={ReplicaId}, "
                 + "command={CommandId})",
                 kind, rejection.Code, licenseId, replicaId, commandId);
-            return await RejectedAsync(licenseId, rejection, command.OrderIds, ct);
+            return await RejectedAsync(licenseId, rejection, command, ct);
         }
         catch (DbUpdateException ex)
         {
@@ -228,8 +242,23 @@ public sealed class SalesCommandService
                     "sales/commands: {Kind} eklediği sipariş Id'si eşzamanlı alındı, 409 content-conflict "
                     + "(license={LicenseId}, replica={ReplicaId}, command={CommandId})",
                     kind, licenseId, replicaId, commandId);
+                return await RejectedAsync(licenseId, SalesCommandRejection.ContentConflict(taken), command, ct);
+            }
+
+            // Açılan dosyanın Id'si için aynı gerekçe (attach-shipment'ın proposedShipmentId'si).
+            var insertedShipments = scope.InsertedShipmentIds.ToList();
+            if (insertedShipments.Count > 0
+                && await _db.Shipments.AsNoTracking()
+                    .Where(s => insertedShipments.Contains(s.Id))
+                    .Select(s => (Guid?)s.Id)
+                    .FirstOrDefaultAsync(ct) is { } takenShipment)
+            {
+                _log.LogInformation(
+                    "sales/commands: {Kind} açtığı dosyanın Id'si eşzamanlı alındı, 409 content-conflict "
+                    + "(license={LicenseId}, replica={ReplicaId}, command={CommandId})",
+                    kind, licenseId, replicaId, commandId);
                 return await RejectedAsync(
-                    licenseId, SalesCommandRejection.ContentConflict(taken), command.OrderIds, ct);
+                    licenseId, SalesCommandRejection.ShipmentContentConflict(takenShipment), command, ct);
             }
             if (ex is not DbUpdateConcurrencyException) throw;
 
@@ -240,7 +269,7 @@ public sealed class SalesCommandService
             return await RejectedAsync(
                 licenseId,
                 SalesCommandRejection.Stale("Satırlar eşzamanlı başka bir istekle yazıldı; güncel sürümlerle yeniden deneyin."),
-                command.OrderIds,
+                command,
                 ct);
         }
         finally
@@ -248,7 +277,7 @@ public sealed class SalesCommandService
             if (transaction is not null) await transaction.DisposeAsync();
         }
 
-        return await SucceededAsync(licenseId, status, resultJson, command.OrderIds, derived, ct);
+        return await SucceededAsync(licenseId, status, resultJson, command, result, ct);
     }
 
     /// <summary>
@@ -272,19 +301,23 @@ public sealed class SalesCommandService
         _log.LogInformation(
             "sales/commands: command {CommandId} yeniden oynatıldı ({Kind}, license={LicenseId})",
             commandId, logged.Kind, licenseId);
-        return await SucceededAsync(
-            licenseId, logged.Status, logged.ResultJson, command.OrderIds,
-            result?.Shipments.Select(s => s.Id).ToList() ?? [], ct);
+        return await SucceededAsync(licenseId, logged.Status, logged.ResultJson, command, result, ct);
     }
 
+    /// <summary>
+    /// Başarı yanıtı (uygulama ve yeniden oynatma aynı yoldan): siparişler komutunkiler ve ardından komutun yazdığı
+    /// öbürleri, dosyalar sonucun dosyaları (türetilenler, havuz) — hepsi güncel hâlleriyle.
+    /// </summary>
     private async Task<SalesCommandReply> SucceededAsync(
         Guid licenseId,
         string status,
         string resultJson,
-        IReadOnlyList<Guid> orderIds,
-        IReadOnlyList<Guid> shipmentIds,
+        ISalesCommand command,
+        SalesCommandResult? result,
         CancellationToken ct)
     {
+        var orderIds = command.OrderIds.Concat(result?.Changed ?? []).Distinct().ToList();
+        var shipmentIds = result?.ResponseShipmentIds() ?? [];
         var (orders, shipments, sessions) = await CurrentRowsAsync(licenseId, orderIds, shipmentIds, ct);
         using var document = JsonDocument.Parse(resultJson);
         return new SalesCommandSucceeded(
@@ -294,12 +327,12 @@ public sealed class SalesCommandService
     /// <summary>Ret yanıtı; <c>stale</c> ve <c>plan-stale</c> komutun (ya da retin verdiği) siparişlerin taze hâlini
     /// <c>current</c> olarak taşır.</summary>
     private async Task<SalesCommandReply> RejectedAsync(
-        Guid licenseId, SalesCommandRejection rejection, IReadOnlyList<Guid> orderIds, CancellationToken ct)
+        Guid licenseId, SalesCommandRejection rejection, ISalesCommand command, CancellationToken ct)
     {
         var extensions = new Dictionary<string, object?>(rejection.Extensions);
         if (rejection.WithCurrentOrders)
             extensions["current"] =
-                (await CurrentRowsAsync(licenseId, rejection.CurrentOrderIds ?? orderIds, [], ct)).Orders;
+                (await CurrentRowsAsync(licenseId, rejection.CurrentOrderIds ?? command.OrderIds, [], ct)).Orders;
         return new SalesCommandFailed(rejection.StatusCode, rejection.Code, rejection.Message, extensions);
     }
 

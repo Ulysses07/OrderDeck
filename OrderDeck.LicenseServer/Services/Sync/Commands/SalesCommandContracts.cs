@@ -86,6 +86,31 @@ public sealed record SalesCommandResult(
     /// <summary><c>reprint</c>: yeniden basılacaklardan fiyatı düzeltilmiş olanlar (kâğıtta "DÜZELTME" işareti).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Guid>? CorrectionIds { get; init; }
+
+    /// <summary><c>attach-shipment</c>: siparişlerin bağlandığı dosya (seçilen ya da açılan); bağlanacak aday yoksa
+    /// yazılmaz (dosya açılmadı).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? ShipmentId { get; init; }
+
+    /// <summary>
+    /// <c>attach-shipment</c>: müşterinin havuzu — bütün Pending/Held dosyalarının tutar toplamı, komuttan sonra
+    /// (türetilmiş dosyalar türetilmiş tutarla, kabul edilmiş dosya saklanan tutarıyla, §4.10-6). İstemci eşiği bununla
+    /// değerlendirir (§7.1, <c>EvaluateAfterPayment</c>).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? Pool { get; init; }
+
+    /// <summary><c>attach-shipment</c>: havuzun dosyaları, en yenisi başta; yanıtın <c>shipments</c>'ında güncel
+    /// hâlleriyle döner.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? PoolShipmentIds { get; init; }
+
+    /// <summary>Yanıtta güncel hâliyle dönen dosyalar: türetilenler ve havuz.</summary>
+    public IReadOnlyList<Guid> ResponseShipmentIds() =>
+        Shipments.Select(s => s.Id)
+            .Concat(PoolShipmentIds ?? [])
+            .Distinct()
+            .ToList();
 }
 
 /// <summary>Komut ucunun sonucu: başarı ya da ProblemDetails'e çevrilen ret.</summary>

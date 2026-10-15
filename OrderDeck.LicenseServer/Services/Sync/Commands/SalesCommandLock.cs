@@ -39,6 +39,15 @@ public static class SalesCommandLock
         $"sales-session:{licenseId:N}:{sessionId:N}";
 
     /// <summary>
+    /// Bir müşterinin kargo dosyalarının kilit adı (§4.6 <c>ship:{lisans}:{asıl müşteri}</c>): müşterinin havuzunu
+    /// okuyup ona göre dosya açan ya da karar veren komutlar (<c>attach-shipment</c>, <c>shipment-decision</c>) bunu
+    /// alır. Müşteri asıl kaydın Id'sidir (<c>CustomerIdResolver</c>); GUID'siz yerel Id ham değeriyle girer
+    /// (<c>Orders.CustomerId</c> en çok 64 karakter, ad sınırın altında kalır).
+    /// </summary>
+    public static string ShipmentResource(Guid licenseId, string customerId) =>
+        $"ship:{licenseId:N}:{customerId}";
+
+    /// <summary>
     /// Kilidi açık işlemde alır. İşlem yoksa (ilişkisel sağlayıcıda) programlama hatasıdır: kilit bir şeyi korumazdı.
     /// </summary>
     /// <exception cref="SalesCommandRejection">Zaman aşımı, iptal ya da kilitlenme: 409 <c>stale</c>.</exception>

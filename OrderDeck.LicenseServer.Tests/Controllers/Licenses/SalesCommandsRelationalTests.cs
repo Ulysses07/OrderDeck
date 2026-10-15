@@ -29,7 +29,7 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
-public sealed class SalesCommandsRelationalTests : IAsyncLifetime
+public sealed partial class SalesCommandsRelationalTests : IAsyncLifetime
 {
     private readonly SqlServerContainerFixture _sql;
     private string _connectionString = null!;

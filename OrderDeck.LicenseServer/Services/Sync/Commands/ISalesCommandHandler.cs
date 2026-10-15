@@ -35,7 +35,8 @@ public interface ISalesCommand
     /// <summary>İstek özetine giren kanonik yük (<see cref="SalesCommandHash"/>); tipli, normalleştirilmiş.</summary>
     object CanonicalPayload { get; }
 
-    /// <summary>Yanıtta (ve yeniden oynatmada) güncel hâliyle dönen siparişler, bu sırayla.</summary>
+    /// <summary>Yanıtta (ve yeniden oynatmada) güncel hâliyle dönen siparişler, bu sırayla. Komutun yazdığı başka
+    /// siparişler (<see cref="SalesCommandOutcome.Changed"/>) ardından eklenir.</summary>
     IReadOnlyList<Guid> OrderIds { get; }
 
     /// <summary>
@@ -66,4 +67,13 @@ public sealed record SalesCommandOutcome(IReadOnlyList<Guid> Changed, IReadOnlyL
 
     /// <inheritdoc cref="SalesCommandResult.CorrectionIds"/>
     public IReadOnlyList<Guid>? CorrectionIds { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.ShipmentId"/>
+    public Guid? ShipmentId { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.Pool"/>
+    public decimal? Pool { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.PoolShipmentIds"/>
+    public IReadOnlyList<Guid>? PoolShipmentIds { get; init; }
 }
