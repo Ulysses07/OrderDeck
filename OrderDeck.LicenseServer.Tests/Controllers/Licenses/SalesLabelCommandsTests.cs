@@ -1,10 +1,12 @@
 using System.Net;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
+using Item = OrderDeck.LicenseServer.Tests.Controllers.Licenses.OrderSyncV2Tests.Item;
 using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesCommandTestKit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
@@ -19,8 +21,9 @@ public sealed class SalesSyncNoScrubApiFactory : ApiFactory
 }
 
 /// <summary>
-/// Etiket yaşam döngüsü komutları — spec 2026-10-13 §4.6 (<c>add-backup</c>), §2 "Oluşum alanları", DM3, DM4, §9
-/// (InMemory). Akışa giriş ve eşzamanlı aynı Id gerçek SQL Server'da (<see cref="SalesCommandsRelationalTests"/>).
+/// Etiket yaşam döngüsü komutları — spec 2026-10-13 §4.6 (<c>add-backup</c>, <c>mark-printed</c>), §2 "Oluşum
+/// alanları", DM3, DM4, K3, §9 (InMemory). <c>add-backup</c>'ın akışa girişi ve eşzamanlı aynı Id gerçek SQL Server'da
+/// (<see cref="SalesCommandsRelationalTests"/>).
 /// </summary>
 public sealed class SalesLabelCommandsTests
     : IClassFixture<SalesSyncConfiguredApiFactory>, IClassFixture<SalesSyncNoScrubApiFactory>
@@ -284,21 +287,222 @@ public sealed class SalesLabelCommandsTests
         (await kit.OrdersWithIdAsync(newId)).Should().BeEmpty();
     }
 
+    // ── mark-printed ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Karışık parti (§4.6, <c>MarkPrintedAndRecord</c> aynası): basılmamış ve iptal edilmemiş sipariş (geçici yedek
+    /// dahil) sunucu saatiyle basılır, basış kimliği ve kâğıttaki sırası yazılır, sürüm bir artar → <c>marked</c>; zaten
+    /// basılmış sipariş hiç değişmez → <c>alreadyPrinted</c>; iptal edilmiş sipariş basılmaz → <c>cancelled</c>. Baskı
+    /// için birim damgası yok.
+    /// </summary>
+    [Fact]
+    public async Task MarkPrinted_karisik_parti_marked_alreadyPrinted_cancelled()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var fresh = await kit.SeedOrderAsync(session, o => o.PrintedAt = null);
+        var printed = await kit.SeedOrderAsync(session, o =>
+        {
+            o.PrintBatchId = "eski-parti";
+            o.PrintSeq = 3;
+        });
+        var cancelled = await kit.SeedOrderAsync(session, o =>
+        {
+            o.PrintedAt = null;
+            o.CancelledAt = Kit.StartedAt.AddMinutes(20);
+            o.CancelReason = "customer";
+        });
+        var tentative = await kit.SeedOrderAsync(session, o =>
+        {
+            o.PrintedAt = null;
+            o.IsTentativeBackup = true;
+        });
+        var batchId = Guid.NewGuid().ToString("N");
+        var before = DateTimeOffset.UtcNow;
+
+        var resp = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), batchId, fresh, printed, cancelled, tentative));
+
+        var after = DateTimeOffset.UtcNow;
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var body = await Kit.ReadAsync(resp);
+        body.Status.Should().Be("applied");
+        Guids(body.Result, "marked").Should().BeEquivalentTo(new[] { fresh.Id, tentative.Id });
+        Guids(body.Result, "alreadyPrinted").Should().Equal(printed.Id);
+        Guids(body.Result, "cancelled").Should().Equal(cancelled.Id);
+        body.Orders.Select(o => o.Id).Should().BeEquivalentTo(new[] { fresh.Id, printed.Id, cancelled.Id, tentative.Id });
+
+        foreach (var (order, seq) in new[] { (fresh, 1), (tentative, 4) })
+        {
+            var saved = await kit.OrderAsync(order.Id);
+            saved.PrintedAt.Should().NotBeNull().And.BeOnOrAfter(before).And.BeOnOrBefore(after);
+            saved.Should().BeEquivalentTo(new
+            {
+                PrintBatchId = batchId, PrintSeq = (int?)seq, SyncVersion = 2, IsTentativeBackup = order.IsTentativeBackup,
+                CancelledAt = (DateTimeOffset?)null, PriceSetAt = (DateTimeOffset?)null,
+                CancelSetAt = (DateTimeOffset?)null, BackupSetAt = (DateTimeOffset?)null,
+                ShipmentSetAt = (DateTimeOffset?)null,
+            });
+        }
+        (await kit.OrderAsync(printed.Id)).Should().BeEquivalentTo(new
+        {
+            printed.PrintedAt, PrintBatchId = "eski-parti", PrintSeq = (int?)3, SyncVersion = 1,
+        });
+        (await kit.OrderAsync(cancelled.Id)).Should().BeEquivalentTo(new
+        {
+            PrintedAt = (DateTimeOffset?)null, PrintBatchId = (string?)null, PrintSeq = (int?)null, SyncVersion = 1,
+        });
+    }
+
+    /// <summary>
+    /// İlk yazan kazanır: aynı parti yeni bir CommandId ve güncel sürümlerle yeniden gönderilirse hepsi
+    /// <c>alreadyPrinted</c>, durum <c>unchanged</c>, hiçbir satır değişmez. Eski (baskı öncesi) sürümlerle gönderim 409
+    /// <c>stale</c> ve güncel satırlar (istemci taze sürümlerle bir kez yeniden dener, §5.3).
+    /// </summary>
+    [Fact]
+    public async Task MarkPrinted_ayni_parti_yeniden_hepsi_alreadyPrinted_bayat_surum_409_stale()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var a = await kit.SeedOrderAsync(session, o => o.PrintedAt = null);
+        var b = await kit.SeedOrderAsync(session, o => o.PrintedAt = null);
+        var batchId = Guid.NewGuid().ToString("N");
+        (await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), batchId, a, b))).StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstA = await kit.OrderAsync(a.Id);
+        var firstB = await kit.OrderAsync(b.Id);
+
+        var again = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), Guid.NewGuid().ToString("N"), firstA, firstB));
+        var stale = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), batchId, a, b));
+
+        again.StatusCode.Should().Be(HttpStatusCode.OK, await again.Content.ReadAsStringAsync());
+        var body = await Kit.ReadAsync(again);
+        body.Status.Should().Be("unchanged");
+        Guids(body.Result, "alreadyPrinted").Should().BeEquivalentTo(new[] { a.Id, b.Id });
+        Guids(body.Result, "marked").Should().BeEmpty();
+        Guids(body.Result, "cancelled").Should().BeEmpty();
+        stale.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await Kit.ProblemAsync(stale);
+        problem.GetProperty("title").GetString().Should().Be("stale");
+        problem.GetProperty("current").EnumerateArray().Should().HaveCount(2);
+        (await kit.OrderAsync(a.Id)).Should().BeEquivalentTo(firstA);
+        (await kit.OrderAsync(b.Id)).Should().BeEquivalentTo(firstB);
+    }
+
+    /// <summary>
+    /// K3 (S1): komutun yazdığı baskıyı sonraki bir push silemez ve kaydıramaz — sahibin v2 push'u (baskısız ya da başka
+    /// bir basışla) ve protokolsüz push (başka bir baskı anıyla). İlk baskı anı, basış kimliği ve sıra kalır.
+    /// </summary>
+    [Fact]
+    public async Task MarkPrinted_sonrasi_push_baskiyi_silemez_kaydiramaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var order = await kit.SeedOrderAsync(await kit.SeedSessionAsync(Kit.Phase.Released), o => o.PrintedAt = null);
+        var batchId = Guid.NewGuid().ToString("N");
+        (await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), batchId, order))).StatusCode.Should().Be(HttpStatusCode.OK);
+        var marked = await kit.OrderAsync(order.Id);
+
+        var v2 = await kit.SendToAsync(OrdersUrl(kit), new
+        {
+            orders = new[] { ItemOf(marked) with { PrintedAt = null, PrintBatchId = "baska-parti", PrintSeq = 9 } },
+            format = 2, replicaId = kit.OwnerReplicaId, protocol = 2, seenMode = 1,
+        });
+        var v1 = await kit.SendToAsync(
+            OrdersUrl(kit), new { orders = new[] { ItemOf(marked) with { PrintedAt = marked.PrintedAt!.Value.AddHours(1) } } },
+            userAgent: null);
+
+        v2.StatusCode.Should().Be(HttpStatusCode.OK, await v2.Content.ReadAsStringAsync());
+        v1.StatusCode.Should().Be(HttpStatusCode.OK, await v1.Content.ReadAsStringAsync());
+        (await kit.OrderAsync(order.Id)).Should().BeEquivalentTo(new
+        {
+            marked.PrintedAt, PrintBatchId = batchId, PrintSeq = (int?)1,
+        });
+    }
+
+    /// <summary>Devredilmemiş yayında 409 <c>session-live</c>: canlı yayının baskısını yalnız sahibi yazar (§2 tablosu);
+    /// hiçbir şey yazılmaz.</summary>
+    [Theory]
+    [InlineData(Kit.Phase.Live)]
+    [InlineData(Kit.Phase.HandingOver)]
+    public async Task MarkPrinted_devredilmemis_yayinda_409_session_live(Kit.Phase phase)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var order = await kit.SeedOrderAsync(await kit.SeedSessionAsync(phase), o => o.PrintedAt = null);
+
+        var resp = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), Guid.NewGuid().ToString("N"), order));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await Kit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("session-live");
+        (await kit.OrderAsync(order.Id)).Should().BeEquivalentTo(new
+        {
+            PrintedAt = (DateTimeOffset?)null, PrintBatchId = (string?)null, SyncVersion = 1,
+        });
+        (await kit.LogsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>Yük doğrulaması 400 <c>invalid-payload</c>: 41 karakterlik ya da boş <c>batchId</c> (kolon 40), 1'den
+    /// küçük sıra, iki kez verilen sipariş, öğeyi kapsamayan <c>expected</c>. 40 karakterlik <c>batchId</c> geçer.</summary>
+    [Fact]
+    public async Task MarkPrinted_gecersiz_yuk_400_batchId_en_cok_40()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var order = await kit.SeedOrderAsync(session, o => o.PrintedAt = null);
+        var other = await kit.SeedOrderAsync(session, o => o.PrintedAt = null);
+
+        var invalid = new[]
+        {
+            kit.MarkPrinted(Guid.NewGuid(), new string('b', 41), order),
+            kit.MarkPrinted(Guid.NewGuid(), " ", order),
+            kit.Body(Guid.NewGuid(), "mark-printed",
+                new { batchId = "parti", items = new[] { new { orderId = order.Id, seq = 0 } } },
+                [(order.Id, order.SyncVersion)]),
+            kit.Body(Guid.NewGuid(), "mark-printed",
+                new
+                {
+                    batchId = "parti",
+                    items = new[] { new { orderId = order.Id, seq = 1 }, new { orderId = order.Id, seq = 2 } },
+                },
+                [(order.Id, order.SyncVersion)]),
+            kit.Body(Guid.NewGuid(), "mark-printed",
+                new { batchId = "parti", items = new[] { new { orderId = order.Id, seq = 1 } } },
+                [(other.Id, other.SyncVersion)]),
+        };
+        foreach (var body in invalid)
+        {
+            var resp = await kit.SendAsync(body);
+            resp.StatusCode.Should().Be(HttpStatusCode.BadRequest, await resp.Content.ReadAsStringAsync());
+            (await Kit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("invalid-payload");
+        }
+        (await kit.OrderAsync(order.Id)).PrintedAt.Should().BeNull();
+
+        var longest = new string('b', 40);
+        var ok = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), longest, order));
+        ok.StatusCode.Should().Be(HttpStatusCode.OK, await ok.Content.ReadAsStringAsync());
+        (await kit.OrderAsync(order.Id)).PrintBatchId.Should().Be(longest);
+    }
+
     // ── Bildirim ─────────────────────────────────────────────────────────────
 
     /// <summary>§10.2, risk 13: etiket komutları bildirim üretmez — yayıncıya ve alıcıya push yok, WhatsApp
-    /// <c>OrderReceived</c> etiket kuralı uygulanmaz.</summary>
+    /// <c>OrderReceived</c> etiket kuralı uygulanmaz. Basılmadan gönderilip sonra komutla basılan etiket de (bugün
+    /// push'la basılan gibi) bildirim üretmez.</summary>
     [Fact]
     public async Task Etiket_komutlari_bildirim_uretmez()
     {
         var kit = await Kit.CreateAsync(_factory);
         var (wpfCustomerId, conversationId, shopperId) = await SeedNotifiableCustomerAsync(kit);
-        var parent = await kit.SeedOrderAsync(
-            await kit.SeedSessionAsync(Kit.Phase.Released), o => o.CustomerId = wpfCustomerId.ToString("N"));
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var parent = await kit.SeedOrderAsync(session, o => o.CustomerId = wpfCustomerId.ToString("N"));
+        var unprinted = await kit.SeedOrderAsync(session, o =>
+        {
+            o.CustomerId = wpfCustomerId.ToString("N");
+            o.PrintedAt = null;
+        });
 
         var backup = await kit.SendAsync(kit.AddBackup(
             Guid.NewGuid(), Guid.NewGuid(), parent.Id, Kit.BackupCustomer.New(wpfCustomerId.ToString("N")), null));
         backup.StatusCode.Should().Be(HttpStatusCode.OK, await backup.Content.ReadAsStringAsync());
+        var print = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), Guid.NewGuid().ToString("N"), unprinted));
+        print.StatusCode.Should().Be(HttpStatusCode.OK, await print.Content.ReadAsStringAsync());
 
         _factory.Push.Sent.Where(n => n.CustomerId == kit.CustomerId).Should().BeEmpty();
         _factory.Push.SentToShoppers.Where(n => n.ShopperIds.Contains(shopperId)).Should().BeEmpty();
@@ -353,4 +557,31 @@ public sealed class SalesLabelCommandsTests
         });
         return (wpfCustomerId, conversationId, shopperId);
     }
+
+    private static List<Guid> Guids(JsonElement result, string property) =>
+        result.GetProperty(property).EnumerateArray().Select(e => e.GetGuid()).ToList();
+
+    /// <summary>Siparişin push öğesi; <c>baseVersion</c> satırın şimdiki sürümü.</summary>
+    private static Item ItemOf(Order o) => new(
+        Id: o.Id,
+        SessionId: o.SessionId,
+        CustomerId: o.CustomerId,
+        Platform: o.Platform,
+        Username: o.Username,
+        DisplayName: o.DisplayName,
+        MessageText: o.MessageText,
+        Code: o.Code,
+        Price: o.Price,
+        AddedAt: o.AddedAt,
+        PrintedAt: o.PrintedAt,
+        CancelledAt: o.CancelledAt,
+        CancelReason: o.CancelReason,
+        IsShippingFee: o.IsShippingFee,
+        IsBackupPromoted: o.IsBackupPromoted,
+        IsTentativeBackup: o.IsTentativeBackup,
+        BaseVersion: o.SyncVersion,
+        PrintBatchId: o.PrintBatchId,
+        PrintSeq: o.PrintSeq);
+
+    private static string OrdersUrl(Kit kit) => $"/api/v1/licenses/{kit.LicenseId}/orders/sync";
 }

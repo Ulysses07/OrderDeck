@@ -46,5 +46,18 @@ public interface ISalesCommand
     Task<SalesCommandOutcome> ExecuteAsync(SalesCommandScope scope, CancellationToken ct);
 }
 
-/// <summary>İşleyicinin sonucu: yazılan ve atlanan siparişler (<see cref="SalesCommandResult"/>'a girer).</summary>
-public sealed record SalesCommandOutcome(IReadOnlyList<Guid> Changed, IReadOnlyList<Guid> Skipped);
+/// <summary>
+/// İşleyicinin sonucu: yazılan ve atlanan siparişler ve türe özgü listeler (<see cref="SalesCommandResult"/>'a aynen
+/// girer; boş bırakılan liste sonuçta yazılmaz).
+/// </summary>
+public sealed record SalesCommandOutcome(IReadOnlyList<Guid> Changed, IReadOnlyList<Guid> Skipped)
+{
+    /// <inheritdoc cref="SalesCommandResult.Marked"/>
+    public IReadOnlyList<Guid>? Marked { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.AlreadyPrinted"/>
+    public IReadOnlyList<Guid>? AlreadyPrinted { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.Cancelled"/>
+    public IReadOnlyList<Guid>? Cancelled { get; init; }
+}

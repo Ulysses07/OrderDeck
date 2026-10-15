@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
@@ -53,7 +54,7 @@ public sealed record SalesCommandShipmentAmount(Guid Id, int Version, decimal Am
 
 /// <summary>
 /// <c>SalesCommandLogs.ResultJson</c>'un biçimi (§3.1, §9): yalnız Id, sürüm, tutar ve sonuç Id listeleri — ad, yorum
-/// ve iptal nedeni yok.
+/// ve iptal nedeni yok. Türe özgü listeler yalnız o türde yazılır (öbür türlerde alan yok).
 /// </summary>
 /// <param name="Changed">Komutun yazdığı siparişler.</param>
 /// <param name="Skipped">İstenip yazacak bir şeyi olmayan siparişler (ör. zaten iptal); sürümleri ilerlemedi.</param>
@@ -63,7 +64,20 @@ public sealed record SalesCommandResult(
     IReadOnlyList<Guid> Changed,
     IReadOnlyList<Guid> Skipped,
     IReadOnlyList<SalesCommandOrderVersion> Orders,
-    IReadOnlyList<SalesCommandShipmentAmount> Shipments);
+    IReadOnlyList<SalesCommandShipmentAmount> Shipments)
+{
+    /// <summary><c>mark-printed</c>: bu komutla basılmış işaretlenenler.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? Marked { get; init; }
+
+    /// <summary><c>mark-printed</c>: zaten basılmış olanlar (ilk yazan kazandı, değişmedi).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? AlreadyPrinted { get; init; }
+
+    /// <summary><c>mark-printed</c>: iptal edilmiş olanlar — basılmaz; istemci "kâğıdı imha et" der (§5.6).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? Cancelled { get; init; }
+}
 
 /// <summary>Komut ucunun sonucu: başarı ya da ProblemDetails'e çevrilen ret.</summary>
 public abstract record SalesCommandReply;

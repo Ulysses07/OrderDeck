@@ -166,7 +166,12 @@ public sealed class SalesCommandService
                 changes.Select(c => new SalesCommandOrderVersion(c.Order.Id, c.Order.SyncVersion)).ToList(),
                 derived.Select(id => shipments[id])
                     .Select(s => new SalesCommandShipmentAmount(s.Id, s.Version, s.CumulativeAmount))
-                    .ToList());
+                    .ToList())
+            {
+                Marked = outcome.Marked,
+                AlreadyPrinted = outcome.AlreadyPrinted,
+                Cancelled = outcome.Cancelled,
+            };
             status = changes.Count > 0 ? SalesCommandLog.StatusApplied : SalesCommandLog.StatusUnchanged;
             resultJson = JsonSerializer.Serialize(result, ResultJsonOptions);
             _db.SalesCommandLogs.Add(new SalesCommandLog

@@ -307,6 +307,12 @@ public sealed class SalesCommandTestKit
         Body(commandId, "add-backup",
             new { newOrderId, parentOrderId, customer, messageText, price, code }, [], replicaId);
 
+    /// <summary><c>mark-printed</c>; kâğıttaki sıra verilen sıradır (1'den), beklenen sürümler satırlardan.</summary>
+    public object MarkPrinted(Guid commandId, string batchId, params Order[] orders) =>
+        Body(commandId, "mark-printed",
+            new { batchId, items = orders.Select((o, i) => new { orderId = o.Id, seq = i + 1 }).ToArray() },
+            orders.Select(o => (o.Id, o.SyncVersion)));
+
     public Task<HttpResponseMessage> SendAsync(object body, string? userAgent = WpfUserAgent) =>
         SendToAsync(Url, body, userAgent);
 
