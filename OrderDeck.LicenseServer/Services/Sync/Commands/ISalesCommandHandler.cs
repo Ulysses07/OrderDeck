@@ -60,4 +60,10 @@ public sealed record SalesCommandOutcome(IReadOnlyList<Guid> Changed, IReadOnlyL
 
     /// <inheritdoc cref="SalesCommandResult.Cancelled"/>
     public IReadOnlyList<Guid>? Cancelled { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.ReprintIds"/>
+    public IReadOnlyList<Guid>? ReprintIds { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.CorrectionIds"/>
+    public IReadOnlyList<Guid>? CorrectionIds { get; init; }
 }

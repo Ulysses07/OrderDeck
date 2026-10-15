@@ -77,6 +77,15 @@ public sealed record SalesCommandResult(
     /// <summary><c>mark-printed</c>: iptal edilmiş olanlar — basılmaz; istemci "kâğıdı imha et" der (§5.6).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Guid>? Cancelled { get; init; }
+
+    /// <summary><c>reprint</c>: yeniden basılacaklar, istenen (kâğıt) sırayla — basılmış ve iptal edilmemiş olanlar
+    /// (yerel <c>PrepareReprint</c>).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? ReprintIds { get; init; }
+
+    /// <summary><c>reprint</c>: yeniden basılacaklardan fiyatı düzeltilmiş olanlar (kâğıtta "DÜZELTME" işareti).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? CorrectionIds { get; init; }
 }
 
 /// <summary>Komut ucunun sonucu: başarı ya da ProblemDetails'e çevrilen ret.</summary>

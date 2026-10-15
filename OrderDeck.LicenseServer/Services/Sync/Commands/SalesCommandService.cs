@@ -171,6 +171,8 @@ public sealed class SalesCommandService
                 Marked = outcome.Marked,
                 AlreadyPrinted = outcome.AlreadyPrinted,
                 Cancelled = outcome.Cancelled,
+                ReprintIds = outcome.ReprintIds,
+                CorrectionIds = outcome.CorrectionIds,
             };
             status = changes.Count > 0 ? SalesCommandLog.StatusApplied : SalesCommandLog.StatusUnchanged;
             resultJson = JsonSerializer.Serialize(result, ResultJsonOptions);

@@ -71,7 +71,19 @@ public sealed class SalesCommandScope
     /// birimlerini yalnız sahibi yazar; devrediliyor yayının etiketleri sahipte bekliyor olabilir (Y8). Ret, ilk
     /// görünmez siparişin yayınının sahibini ve sahibin son kalp atışını taşır. Kargo bağı bu denetime girmez (K4).
     /// </summary>
-    public async Task EnsureReleasedAsync(IEnumerable<Order> orders, CancellationToken ct)
+    public Task EnsureReleasedAsync(IEnumerable<Order> orders, CancellationToken ct) =>
+        EnsureSessionsAsync(orders, allowCallerOwned: false, ct);
+
+    /// <summary>
+    /// Okuma görünürlüğü (yazmayan komut, ör. <c>reprint</c>): her siparişin yayını devredilmiş ya da çağıranın kendi
+    /// yayını (sahibi çağıran kopya) olmalı — §4.6 adım 3'teki "çağıranın görebildiği siparişler". Başka kopyanın canlı
+    /// ya da devrediliyor yayını (Y1, Y8) ve yayınsız sipariş 409 <c>session-live</c>
+    /// (<see cref="EnsureReleasedAsync"/> ile aynı ret).
+    /// </summary>
+    public Task EnsureVisibleAsync(IEnumerable<Order> orders, CancellationToken ct) =>
+        EnsureSessionsAsync(orders, allowCallerOwned: true, ct);
+
+    private async Task EnsureSessionsAsync(IEnumerable<Order> orders, bool allowCallerOwned, CancellationToken ct)
     {
         var list = orders.ToList();
         var sessionIds = list.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value).Distinct().ToList();
@@ -83,6 +95,7 @@ public sealed class SalesCommandScope
                 throw SalesCommandRejection.SessionLive(null, null, null);
             var session = sessions.GetValueOrDefault(sessionId);
             if (session?.ReleasedAt is not null) continue;
+            if (allowCallerOwned && session?.OwnerReplicaId == ReplicaId) continue;
             throw await SessionLiveAsync(sessionId, session, ct);
         }
     }

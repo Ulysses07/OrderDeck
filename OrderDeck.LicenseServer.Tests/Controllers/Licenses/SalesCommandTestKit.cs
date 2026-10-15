@@ -313,6 +313,10 @@ public sealed class SalesCommandTestKit
             new { batchId, items = orders.Select((o, i) => new { orderId = o.Id, seq = i + 1 }).ToArray() },
             orders.Select(o => (o.Id, o.SyncVersion)));
 
+    /// <summary><c>reprint</c>; yazmadığı için <c>expected</c> boş.</summary>
+    public object Reprint(Guid commandId, IEnumerable<Guid> orderIds, Guid? replicaId = null) =>
+        Body(commandId, "reprint", new { orderIds = orderIds.ToArray() }, [], replicaId);
+
     public Task<HttpResponseMessage> SendAsync(object body, string? userAgent = WpfUserAgent) =>
         SendToAsync(Url, body, userAgent);
 

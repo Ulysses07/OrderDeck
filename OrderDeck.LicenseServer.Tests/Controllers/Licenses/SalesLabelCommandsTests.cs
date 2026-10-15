@@ -21,8 +21,8 @@ public sealed class SalesSyncNoScrubApiFactory : ApiFactory
 }
 
 /// <summary>
-/// Etiket yaşam döngüsü komutları — spec 2026-10-13 §4.6 (<c>add-backup</c>, <c>mark-printed</c>), §2 "Oluşum
-/// alanları", DM3, DM4, K3, §9 (InMemory). <c>add-backup</c>'ın akışa girişi ve eşzamanlı aynı Id gerçek SQL Server'da
+/// Etiket yaşam döngüsü komutları — spec 2026-10-13 §4.6 (<c>add-backup</c>, <c>mark-printed</c>, <c>reprint</c>), §2
+/// "Oluşum alanları", DM3, DM4, K3, §5.6, §9 (InMemory). <c>add-backup</c>'ın akışa girişi ve eşzamanlı aynı Id gerçek SQL Server'da
 /// (<see cref="SalesCommandsRelationalTests"/>).
 /// </summary>
 public sealed class SalesLabelCommandsTests
@@ -478,6 +478,105 @@ public sealed class SalesLabelCommandsTests
         var ok = await kit.SendAsync(kit.MarkPrinted(Guid.NewGuid(), longest, order));
         ok.StatusCode.Should().Be(HttpStatusCode.OK, await ok.Content.ReadAsStringAsync());
         (await kit.OrderAsync(order.Id)).PrintBatchId.Should().Be(longest);
+    }
+
+    // ── reprint ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Yeniden baskı (§4.6, <c>PrepareReprint</c> aynası): istenen siparişlerin güncel satırları istenen sırayla döner;
+    /// <c>reprintIds</c> basılmış ve iptal edilmemiş olanlardır (kâğıt sırasıyla), <c>correctionIds</c> bunlardan fiyatı
+    /// düzeltilmiş olan. Yazma yok: sürüm, baskı anı ve basış grubu değişmez, durum <c>unchanged</c>; denetim için
+    /// günlüğe satır düşer.
+    /// </summary>
+    [Fact]
+    public async Task Reprint_guncel_satirlari_ve_correctionIds_doner_hicbir_sey_yazmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var plain = await kit.SeedOrderAsync(session, o => o.PrintBatchId = "parti");
+        var corrected = await kit.SeedOrderAsync(session, o =>
+        {
+            o.Price = 120m;
+            o.PriceCorrectedAt = Kit.StartedAt.AddHours(3);
+            o.PaidPrice = 100m;
+        });
+        var cancelled = await kit.SeedOrderAsync(session, o => o.CancelledAt = Kit.StartedAt.AddMinutes(30));
+        var unprinted = await kit.SeedOrderAsync(session, o => o.PrintedAt = null);
+        var requested = new[] { corrected.Id, cancelled.Id, plain.Id, unprinted.Id };
+
+        var resp = await kit.SendAsync(kit.Reprint(Guid.NewGuid(), requested));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var body = await Kit.ReadAsync(resp);
+        body.Status.Should().Be("unchanged");
+        Guids(body.Result, "reprintIds").Should().Equal(corrected.Id, plain.Id);
+        Guids(body.Result, "correctionIds").Should().Equal(corrected.Id);
+        body.Orders.Select(o => o.Id).Should().Equal(requested);
+        body.Orders[0].Price.Should().Be(120m, "kâğıda güncel fiyat basılır");
+        body.Sessions.Select(s => s.Id).Should().Equal(session);
+
+        foreach (var order in new[] { plain, corrected, cancelled, unprinted })
+            (await kit.OrderAsync(order.Id)).Should().BeEquivalentTo(new
+            {
+                order.PrintedAt, order.PrintBatchId, order.CancelledAt, order.Price, SyncVersion = 1,
+            });
+        var log = (await kit.LogsAsync()).Should().ContainSingle().Subject;
+        log.Kind.Should().Be("reprint");
+        log.Status.Should().Be("unchanged");
+    }
+
+    /// <summary>
+    /// Görünürlük: başka kopyanın canlı ya da devrediliyor yayınındaki sipariş 409 <c>session-live</c> (o yayının
+    /// satırları başka bilgisayara inmez, Y1); çağıranın kendi canlı yayınındaki sipariş yeniden basılabilir.
+    /// </summary>
+    [Fact]
+    public async Task Reprint_baska_kopyanin_canli_yayininda_409_session_live_kendi_canli_yayini_serbest()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var live = await kit.SeedOrderAsync(await kit.SeedSessionAsync(Kit.Phase.Live));
+        var handingOver = await kit.SeedOrderAsync(await kit.SeedSessionAsync(Kit.Phase.HandingOver));
+
+        var otherCopy = await kit.SendAsync(kit.Reprint(Guid.NewGuid(), [live.Id]));
+        var otherCopyHandingOver = await kit.SendAsync(kit.Reprint(Guid.NewGuid(), [handingOver.Id]));
+        var owner = await kit.SendAsync(kit.Reprint(Guid.NewGuid(), [live.Id], replicaId: kit.OwnerReplicaId));
+
+        foreach (var resp in new[] { otherCopy, otherCopyHandingOver })
+        {
+            resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+            var problem = await Kit.ProblemAsync(resp);
+            problem.GetProperty("title").GetString().Should().Be("session-live");
+            problem.GetProperty("machine").GetString().Should().Be("PC-A");
+        }
+        owner.StatusCode.Should().Be(HttpStatusCode.OK, await owner.Content.ReadAsStringAsync());
+        Guids((await Kit.ReadAsync(owner)).Result, "reprintIds").Should().Equal(live.Id);
+        (await kit.OrderAsync(live.Id)).SyncVersion.Should().Be(1);
+    }
+
+    /// <summary>Yük doğrulaması 400 <c>invalid-payload</c>: boş liste, boş Id, boş olmayan <c>expected</c> (yazmayan
+    /// komutun beklenen sürümü yok). Bilinmeyen sipariş 400 <c>unknown-order</c>.</summary>
+    [Fact]
+    public async Task Reprint_gecersiz_yuk_400()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var order = await kit.SeedOrderAsync(await kit.SeedSessionAsync(Kit.Phase.Released));
+
+        var invalid = new[]
+        {
+            kit.Reprint(Guid.NewGuid(), []),
+            kit.Reprint(Guid.NewGuid(), [order.Id, Guid.Empty]),
+            kit.Body(Guid.NewGuid(), "reprint", new { orderIds = new[] { order.Id } }, [(order.Id, order.SyncVersion)]),
+        };
+        foreach (var body in invalid)
+        {
+            var resp = await kit.SendAsync(body);
+            resp.StatusCode.Should().Be(HttpStatusCode.BadRequest, await resp.Content.ReadAsStringAsync());
+            (await Kit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("invalid-payload");
+        }
+
+        var unknown = await kit.SendAsync(kit.Reprint(Guid.NewGuid(), [order.Id, Guid.NewGuid()]));
+        unknown.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await Kit.ProblemAsync(unknown)).GetProperty("title").GetString().Should().Be("unknown-order");
+        (await kit.LogsAsync()).Should().BeEmpty();
     }
 
     // ── Bildirim ─────────────────────────────────────────────────────────────
