@@ -688,13 +688,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     Format = format,
                     ModeOn = modeOn,
                     SessionPhase = PhaseOf(session),
-                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur. Oturum zorla bitirildiğinde
-                    // canlıydı (M18): başka makinedeki geri yüklenmiş kopya ancak sahip ForceEndSilenceMinutes
-                    // sustuysa sahip sayılır (Y8, canlı dalı).
+                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur. Devralma yargısı oturumun zorla
+                    // bitirildiği andaki hâline göre (SalesReplicaService.PhaseAtForceEnd): canlıyken bitirildiyse
+                    // (force-end komutu, M18) başka makinedeki geri yüklenmiş kopya ancak sahip ForceEndSilenceMinutes
+                    // sustuysa sahip sayılır (Y7); devrediliyorken bitirildiyse (CLI, §4.10) hiç sayılmaz (Y8).
                     CallerOwnsSession = v2 && session?.OwnerReplicaId is { } owner
                         && (owner == caller
                             || (modeOn && session.ReleasedAt is not null && session.ForceEndedBy is not null
-                                && await CanInheritAsync(session.Id, owner, TakeoverPhase.Live))),
+                                && await CanInheritAsync(session.Id, owner,
+                                    SalesReplicaService.PhaseAtForceEnd(session.EndedAt, session.ReleasedAt)))),
                     SessionForceEnded = session?.ForceEndedBy is not null,
                     OpeningWindow = context.OpeningWindow,
                     LinkedShipmentShipped = current.ShipmentId is { } linkedId

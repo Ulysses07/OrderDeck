@@ -312,6 +312,37 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
         (await LoadAsync(item.Id)).CancelledAt.Should().Be(judgedByK2 ? cancelledAt : null);
     }
 
+    /// <summary>
+    /// K5 istisnası (i), §8.7, Y8, §4.10 (CLI <c>force-end</c>): oturum devrediliyor hâlindeyken zorla bitirildiyse
+    /// (sahibin kapanışı <c>EndedAt</c>'i önce yazmıştı; devir anı ondan farklı) devralma yargısı canlı oturumun değil,
+    /// devrediliyor oturumunkidir. Başka makinedeki geri yüklenmiş kopya önceki kopya ne kadar sessiz olursa olsun sahip
+    /// sayılmaz: yedeğindeki bayat damgasız değişiklik K5 ile reddedilir. Aynı makinede kopya hemen sahiptir.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 60, false)]
+    [InlineData(true, 1, true)]
+    public async Task K5_istisna_i_devrediliyorken_zorla_bitirilmis_oturumu_baska_makine_devralmaz(
+        bool sameMachine, int silentMinutes, bool judgedByK2)
+    {
+        var (client, licenseId) = await SetupAsync(SalesSyncMode.On);
+        var (previous, restored) = await SeedRestoredAsync(licenseId, silentMinutes, sameMachine);
+        var ownerEndedAt = StartedAt.AddHours(2);
+        var forceEnded = await SeedSessionAsync(licenseId, previous, endedAt: ownerEndedAt,
+            releasedAt: ownerEndedAt.AddDays(1), forceEndedBy: "cli");
+        var item = NewItem(forceEnded);
+        var inserted = (await PushV2SeenAsync(client, licenseId, restored, seenMode: 1, item)).Single();
+        inserted.Status.Should().Be("applied", "devredilmiş oturuma ekleme kabul edilir");
+        var cancelledAt = StartedAt.AddHours(3);
+
+        var result = (await PushV2SeenAsync(client, licenseId, restored, seenMode: 1,
+            item with { CancelledAt = cancelledAt, CancelReason = "vazgeçti", BaseVersion = inserted.Version }))
+            .Single();
+
+        result.Status.Should().Be(judgedByK2 ? "applied" : "rejected");
+        result.Reason.Should().Be(judgedByK2 ? null : "session-released");
+        (await LoadAsync(item.Id)).CancelledAt.Should().Be(judgedByK2 ? cancelledAt : null);
+    }
+
     // ── Doğrulama ─────────────────────────────────────────────────────────────
 
     /// <summary>Biçim ve öğe alanları görünür 400 alır, hiçbir şey yazılmaz: v2 zarfsız <c>format = 2</c> (çağıranı

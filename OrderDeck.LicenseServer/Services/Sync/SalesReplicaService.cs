@@ -206,6 +206,20 @@ public sealed class SalesReplicaService
     public const int MaxLineageDepth = 16;
 
     /// <summary>
+    /// Zorla bitirilmiş oturumun bitirildiği andaki hâli — K5 istisnası (i)'de geri yüklenmiş kopyanın sahip sayılıp
+    /// sayılmayacağının yargısı (spec 2026-10-13 §8.7, Y7, Y8). Zorla bitirme devri bitirmeyle aynı anla yazar: canlı
+    /// oturumda <c>EndedAt</c> = <c>ReleasedAt</c> (<c>force-end</c> komutu; CLI de canlı oturumda aynı anı yazar,
+    /// §4.10). Devrediliyor oturumu yalnız CLI bitirir ve <c>EndedAt</c>'e dokunmaz: o sahibin kapanış anıdır, devir
+    /// anından farklıdır. İkisi farklıysa oturum bitirilirken devrediliyordu — başka makinedeki kopya onu hiç devralmaz
+    /// (Y8); eşitse canlıydı (M18) — yalnız sahip yeterince sustuysa devralır (Y7). Ayrı bir kolon gerekmez; tekdüze
+    /// <c>EndedAt</c> (§4.1) ve hiç değişmeyen <c>ReleasedAt</c> bu bilgiyi korur.
+    /// </summary>
+    public static TakeoverPhase PhaseAtForceEnd(DateTimeOffset? endedAt, DateTimeOffset? releasedAt) =>
+        endedAt is { } ended && releasedAt is { } released && ended != released
+            ? TakeoverPhase.HandingOver
+            : TakeoverPhase.Live;
+
+    /// <summary>
     /// Geri yüklenmiş kopya, başka kopyanın devredilmemiş oturumunu devralabilir mi (spec 2026-10-13 §8.7, §11 Y7,
     /// Y8)? <c>sessions/sync</c> (sahiplik geçer), <c>orders/sync</c> (başka kopyanın canlı yayınına ekleme ve K5
     /// istisnası i) ve <c>sales/backfill</c> (canlı yayına ekleme) bu tek yoldan yargılar.

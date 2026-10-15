@@ -66,6 +66,8 @@ public sealed partial class SalesCommandsRelationalTests
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
         var saved = await _kit.SessionAsync(session);
+        saved.ReleasedAt.Should().Be(saved.EndedAt,
+            "canlı yayının zorla bitirilmesi devri aynı anla yazar; K5 istisnası (i) hâli buradan okur (PhaseAtForceEnd)");
         var page = await ChangesAsync(cursor);
         var sessionItem = page.Items.Should().ContainSingle(i => i.Kind == "session").Subject;
         sessionItem.Session!.Should().BeEquivalentTo(new
