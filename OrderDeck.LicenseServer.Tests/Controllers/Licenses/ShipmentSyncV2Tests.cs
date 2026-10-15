@@ -257,7 +257,7 @@ public sealed class ShipmentSyncV2Tests : IClassFixture<ApiFactory>
 
     /// <summary>Kurulduktan sonra (<see cref="Armed"/>) değişmiş bir <see cref="Shipment"/> taşıyan her kaydetmede
     /// eşzamanlılık çakışması fırlatır — jetonun yakaladığı yarışın uçtaki karşılığı.</summary>
-    private sealed class ShipmentConflictFactory : ApiFactory
+    internal sealed class ShipmentConflictFactory : ApiFactory
     {
         private int _thrown;
 

@@ -115,11 +115,9 @@ public sealed class ShipmentDecisionCommandHandler : ISalesCommandHandler
             var unlinked = new List<Guid>();
             if (payload.Decision == ShipNow)
             {
-                foreach (var order in await scope.LoadLinkedOrdersAsync(decided.Select(s => s.Id).ToList(), ct))
+                var linked = await scope.LoadLinkedOrdersAsync(decided.Select(s => s.Id).ToList(), ct);
+                foreach (var order in ShipmentShipping.UnlinkCancelled(linked, scope.Now))
                 {
-                    if (order.CancelledAt is null) continue;
-                    order.ShipmentId = null;
-                    order.ShipmentSetAt = scope.Now;
                     scope.MarkChanged(order, OrderUnit.Shipment);
                     unlinked.Add(order.Id);
                 }
