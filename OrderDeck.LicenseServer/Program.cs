@@ -192,6 +192,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
             OrderDeck.LicenseServer.Services.Sync.Commands.ForceEndCommandHandler>();
         // Ödeme isteği kirası (§6.4, POST payment-requests/begin): kişi×kapsamda bilgisayarlar arası tek istek.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.PaymentRequests.PaymentPersonResolver>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.PaymentRequests.PaymentRequestLeaseService>();
         // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();

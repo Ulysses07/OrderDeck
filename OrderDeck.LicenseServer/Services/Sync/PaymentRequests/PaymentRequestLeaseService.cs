@@ -8,6 +8,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Sync.Commands;
 using OrderDeck.Shared.Sales;
+using static OrderDeck.LicenseServer.Services.Sync.PaymentRequests.PaymentRequestRules;
 
 namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 
@@ -50,37 +51,8 @@ public sealed class PaymentRequestLeaseService
     /// <summary>Kira süresi (§6.4-h): <c>LeaseUntil = StartedAt + 120 sn</c>.</summary>
     public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(120);
 
-    /// <summary>Bir isteğin en çok üye sayısı.</summary>
-    public const int MaxMembers = 100;
-
-    /// <summary>Bir isteğin en çok sipariş sayısı; küme eşitliği isteyen komutların tavanıyla aynı (§4.6).</summary>
-    public const int MaxOrders = SalesCommandService.MaxSetOrders;
-
     /// <summary>Onaylanmış önceki kayıtların en çok sayısı.</summary>
     public const int MaxConfirmedPriors = 500;
-
-    /// <summary>decimal(18,2)'ye sığan en büyük tutar.</summary>
-    public const decimal MaxAmount = 9_999_999_999_999_999.99m;
-
-    public const string CumulativeScope = "cumulative";
-    public const string SessionScopePrefix = "session:";
-
-    public const string CodeInvalidEnvelope = "invalid-envelope";
-    public const string CodeInvalidRecord = "invalid-record";
-    public const string CodeInvalidMembers = "invalid-members";
-    public const string CodeInvalidScope = "invalid-scope";
-    public const string CodeInvalidOrders = "invalid-orders";
-    public const string CodeInvalidAmount = "invalid-amount";
-    public const string CodeInvalidShipping = "invalid-shipping";
-    public const string CodeInvalidConfirmedPriors = "invalid-confirmed-priors";
-    public const string CodeModeOff = "mode-off";
-    public const string CodeClientUpdateRequired = "client-update-required";
-    public const string CodeContentConflict = "content-conflict";
-    public const string CodeMembersStale = "members-stale";
-    public const string CodeInProgressElsewhere = "in-progress-elsewhere";
-    public const string CodeAlreadyRequested = "already-requested";
-    public const string CodeStaleTotal = "stale-total";
-    public const string CodeSettingsStale = "settings-stale";
 
     /// <summary>Kayıt tablosunun birincil anahtarının adı: eşzamanlı aynı <c>recordId</c> bununla tanınır.</summary>
     private const string RecordKeyName = "PK_PaymentRequestRecords";
@@ -90,6 +62,7 @@ public sealed class PaymentRequestLeaseService
     private readonly LicenseDbContext _db;
     private readonly SalesReplicaService _replicas;
     private readonly CustomerIdResolver _customerIds;
+    private readonly PaymentPersonResolver _people;
     private readonly SalesSyncOptions _options;
     private readonly ILogger<PaymentRequestLeaseService> _log;
 
@@ -97,12 +70,14 @@ public sealed class PaymentRequestLeaseService
         LicenseDbContext db,
         SalesReplicaService replicas,
         CustomerIdResolver customerIds,
+        PaymentPersonResolver people,
         IOptions<SalesSyncOptions> options,
         ILogger<PaymentRequestLeaseService> log)
     {
         _db = db;
         _replicas = replicas;
         _customerIds = customerIds;
+        _people = people;
         _options = options.Value;
         _log = log;
     }
@@ -124,18 +99,6 @@ public sealed class PaymentRequestLeaseService
     {
         public Guid ReplicaId => Envelope.ReplicaId;
     }
-
-    /// <summary>İsteğin kişisi (§6.4-b).</summary>
-    /// <param name="OwnerWpfCustomerId">Asıl kayda çözülmüş sahip ("N" hex) ya da GUID'siz sahibin ham Id'si.</param>
-    /// <param name="GroupId">Sahibin asıl kaydı gruplu ise ham <c>GroupId</c>'si; değilse null.</param>
-    /// <param name="Members">İstemcinin üyeleri: GUID'liler asıl kayda çözülmüş "N" hex, GUID'sizler ham; ordinal tekil ve
-    /// sıralı.</param>
-    private sealed record Person(
-        string PersonKey,
-        byte[] PersonKeyHash,
-        string OwnerWpfCustomerId,
-        string? GroupId,
-        IReadOnlyList<string> Members);
 
     /// <summary>Kişi×kapsamın bir kaydı, kararın okuduğu alanlarla.</summary>
     private sealed record Related(
@@ -179,14 +142,15 @@ public sealed class PaymentRequestLeaseService
         // (a) kilitsiz: yanıtı kaybolmuş isteğin yeniden gönderimi kilit beklemeden döner.
         if (await ReplayAsync(licenseId, begin, ct) is { } replay) return replay;
 
-        var person = await ResolvePersonAsync(licenseId, begin, ct);
+        // Kişi (§6.4-b): kilit adı anahtara bağlı olduğu için kilitten önce kurulur.
+        var person = await _people.ResolveAsync(licenseId, begin.OwnerId, begin.MemberIds, ct);
         return await BeginLockedAsync(licenseId, begin, person, ct);
     }
 
     /// <summary>Kilitler ve kilit altındaki adımlar (a–h) tek işlemde; ilişkisel olmayan sağlayıcıda (testler) işlem ve
     /// kilit yoktur.</summary>
     private async Task<PaymentRequestReply> BeginLockedAsync(
-        Guid licenseId, BeginInput begin, Person person, CancellationToken ct)
+        Guid licenseId, BeginInput begin, PaymentPerson person, CancellationToken ct)
     {
         await using var transaction = _db.Database.IsRelational()
             ? await _db.Database.BeginTransactionAsync(ct)
@@ -239,14 +203,14 @@ public sealed class PaymentRequestLeaseService
 
     /// <summary>Kilit altındaki karar: (a), (b), (c), (d), (e), (f), (g), (h).</summary>
     private async Task<PaymentRequestReply> DecideAsync(
-        Guid licenseId, BeginInput begin, Person person, CancellationToken ct)
+        Guid licenseId, BeginInput begin, PaymentPerson person, CancellationToken ct)
     {
         // (a) kilit altında yeniden: eşzamanlı aynı istek bizden önce yazdıysa.
         if (await ReplayAsync(licenseId, begin, ct) is { } replay) return replay;
 
         // (b) Sunucunun grubu istemcinin üye kümesinde olmalı: aksi hâlde istemci kişiyi eksik kurmuştur (grup senkronu
         // gecikmesi) ve başka üyeye yazılmış istekleri göremezdi.
-        var group = await ServerGroupAsync(licenseId, person.GroupId, ct);
+        var group = await _people.ServerGroupAsync(licenseId, person.GroupId, ct);
         var clientMembers = person.Members.ToHashSet(StringComparer.Ordinal);
         var missing = group.Where(id => !clientMembers.Contains(id)).ToList();
         if (missing.Count > 0)
@@ -324,7 +288,7 @@ public sealed class PaymentRequestLeaseService
         if (await CheckShippingAsync(licenseId, begin, expired, ct) is { } settingsStale) return settingsStale;
 
         // (h) Kira: kayıt, üyeleri ve kapsadığı siparişler tek SaveChanges'te.
-        var stored = StorableMembers(members);
+        var stored = PaymentPersonResolver.StorableMembers(members);
         var machine = await _db.WpfReplicas.AsNoTracking()
             .Where(r => r.LicenseId == licenseId && r.ReplicaId == begin.ReplicaId)
             .Select(r => r.MachineName)
@@ -404,64 +368,6 @@ public sealed class PaymentRequestLeaseService
             begin.RecordId, PaymentRequestWire.State(existing.State), existing.LeaseUntil, members));
     }
 
-    // ── (b) kişi ve üyeler ─────────────────────────────────────────────────
-
-    /// <summary>
-    /// Kişi (§2 PersonKey, §6.4-b): GUID'li üyeler ve sahip asıl kayda çözülür (<see cref="CustomerIdResolver"/>), GUID'siz
-    /// üyeler ham kalır. Anahtar sahibin asıl kaydının ham <c>GroupId</c>'sinden (<see cref="PaymentPersonKey"/>). Kilit adı
-    /// anahtara bağlı olduğu için kilitten önce okunur.
-    /// </summary>
-    private async Task<Person> ResolvePersonAsync(Guid licenseId, BeginInput begin, CancellationToken ct)
-    {
-        var guids = begin.MemberIds
-            .Select(m => PaymentPersonKey.TryParseGuid(m, out var id) ? id : (Guid?)null)
-            .OfType<Guid>()
-            .ToList();
-        var canonical = await _customerIds.CanonicalOfAsync(licenseId, guids, ct);
-        var members = begin.MemberIds
-            .Select(m => PaymentPersonKey.TryParseGuid(m, out var id) ? canonical[id].ToString("N") : m)
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToList();
-
-        if (!PaymentPersonKey.TryParseGuid(begin.OwnerId, out var ownerGuid))
-        {
-            var rawKey = PaymentPersonKey.ForRaw(begin.OwnerId);
-            return new Person(rawKey, PaymentPersonKey.Hash(rawKey), begin.OwnerId, null, members);
-        }
-
-        var owner = canonical[ownerGuid];
-        var groupId = await _db.WpfCustomerProjections.AsNoTracking()
-            .Where(p => p.LicenseId == licenseId && p.Id == owner)
-            .Select(p => p.GroupId)
-            .FirstOrDefaultAsync(ct);
-        var key = PaymentPersonKey.ForCanonical(owner, groupId);
-        return new Person(
-            key, PaymentPersonKey.Hash(key), owner.ToString("N"),
-            PaymentPersonKey.IsGrouped(groupId) ? groupId : null, members);
-    }
-
-    /// <summary>
-    /// Sahibin grubundaki asıl kayıtlar ("N" hex, ordinal sıralı): lisansın kopya olmayan projeksiyonlarından
-    /// <c>GroupId</c>'si sahibinkiyle ORDINAL eşit olanlar. SQL harf duyarsız ve sondaki boşluğu yok sayarak getirir; eşitlik
-    /// bellekte denetlenir (ortak bakiye §4.13'ün yöntemi; <c>GroupId</c> BIN2'ye geçtikten sonra da doğru kalır).
-    /// Gruplanmamış sahipte boş.
-    /// </summary>
-    private async Task<IReadOnlyList<string>> ServerGroupAsync(Guid licenseId, string? groupId, CancellationToken ct)
-    {
-        if (groupId is null) return [];
-        var rows = await _db.WpfCustomerProjections.AsNoTracking()
-            .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null && p.GroupId == groupId)
-            .Select(p => new { p.Id, p.GroupId })
-            .ToListAsync(ct);
-        return rows
-            .Where(r => string.Equals(r.GroupId, groupId, StringComparison.Ordinal))
-            .Select(r => r.Id.ToString("N"))
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToList();
-    }
-
     // ── (c–e) kişi×kapsamın kayıtları ───────────────────────────────────────
 
     /// <summary>
@@ -469,7 +375,7 @@ public sealed class PaymentRequestLeaseService
     /// aynı kapsamda üye kesişimiyle (SQL harf duyarsız getirir, üye bellekte ordinal eşleşir).
     /// </summary>
     private async Task<IReadOnlyList<Related>> RelatedAsync(
-        Guid licenseId, Person person, string scopeKey, IReadOnlyList<string> members, CancellationToken ct)
+        Guid licenseId, PaymentPerson person, string scopeKey, IReadOnlyList<string> members, CancellationToken ct)
     {
         var hash = person.PersonKeyHash;
         var byKey = (await _db.PaymentRequestRecords.AsNoTracking()
@@ -543,7 +449,7 @@ public sealed class PaymentRequestLeaseService
 
     /// <summary>Tekil indeks ihlalinden sonra kişi×kapsamın kazanan <c>Sending</c> kaydı; bulunamazsa null.</summary>
     private async Task<Related?> SendingWinnerAsync(
-        Guid licenseId, Person person, string scopeKey, CancellationToken ct)
+        Guid licenseId, PaymentPerson person, string scopeKey, CancellationToken ct)
     {
         var hash = person.PersonKeyHash;
         return (await _db.PaymentRequestRecords.AsNoTracking()
@@ -667,12 +573,6 @@ public sealed class PaymentRequestLeaseService
             .ToList();
     }
 
-    /// <summary><c>session:{"N" hex}</c> kapsamının yayını; <c>cumulative</c> için null. Kapsam doğrulanmış olmalı.</summary>
-    private static Guid? SessionOf(string scopeKey) =>
-        scopeKey.StartsWith(SessionScopePrefix, StringComparison.Ordinal)
-            ? Guid.ParseExact(scopeKey.AsSpan(SessionScopePrefix.Length), "N")
-            : null;
-
     // ── (g) kargo ayarı ────────────────────────────────────────────────────
 
     /// <summary>
@@ -717,21 +617,6 @@ public sealed class PaymentRequestLeaseService
         return productTotal >= threshold ? 0m : fee;
     }
 
-    // ── (h) kiranın yazımı ─────────────────────────────────────────────────
-
-    /// <summary>
-    /// Saklanacak üye satırları. Birincil anahtar <c>(RecordId, WpfCustomerId)</c> varsayılan (harf duyarsız) harmanda:
-    /// ordinal farklı ama SQL'de eşit iki GUID'siz ham Id (yalnız harf ya da sondaki boşlukla ayrılan) aynı kayda iki satır
-    /// olarak yazılamaz — 500 yerine her çiftin ordinal ilki saklanır. GUID'li üyeler küçük harf "N" hex olduğundan
-    /// etkilenmez.
-    /// </summary>
-    private static List<string> StorableMembers(IEnumerable<string> members) =>
-        members
-            .GroupBy(m => m.TrimEnd(' ').ToUpperInvariant(), StringComparer.Ordinal)
-            .Select(g => g.Order(StringComparer.Ordinal).First())
-            .Order(StringComparer.Ordinal)
-            .ToList();
-
     // ── Kilit adları ──────────────────────────────────────────────────────
 
     /// <summary>Kişi×kapsamın kilidi: <c>payreq:{lisans}:{PersonKeyHash hex}:{kapsam, küçük harf}</c>.</summary>
@@ -761,14 +646,14 @@ public sealed class PaymentRequestLeaseService
 
         if (request.MemberIds is not { Count: > 0 } rawMembers || rawMembers.Count > MaxMembers)
             return Invalid(CodeInvalidMembers, $"memberIds 1–{MaxMembers} üye taşır.", out failure);
-        if (rawMembers.Any(m => string.IsNullOrWhiteSpace(m) || m.Length > PaymentRequestRecord.WpfCustomerIdMaxLength))
+        if (rawMembers.Any(m => !IsMemberId(m)))
             return Invalid(CodeInvalidMembers,
                 $"Üye Id'si boş olamaz, en çok {PaymentRequestRecord.WpfCustomerIdMaxLength} karakter.", out failure);
         var members = rawMembers.Select(m => m!).Distinct(StringComparer.Ordinal).ToList();
         if (request.OwnerId is not { } ownerId || !members.Contains(ownerId, StringComparer.Ordinal))
             return Invalid(CodeInvalidMembers, "ownerId memberIds'te olmalı.", out failure);
 
-        if (!IsValidScope(request.ScopeKey))
+        if (!IsLeaseScope(request.ScopeKey))
             return Invalid(CodeInvalidScope, "scopeKey 'cumulative' ya da 'session:{id}' olmalı.", out failure);
         var scopeKey = request.ScopeKey!;
 
@@ -809,18 +694,6 @@ public sealed class PaymentRequestLeaseService
                 shippingVersion));
         return true;
     }
-
-    /// <summary>Kapsam anahtarı (§6.3): <c>cumulative</c> ya da <c>session:</c> + yayının "N" hex Id'si (WPF'in
-    /// yazımı).</summary>
-    private static bool IsValidScope(string? scopeKey) =>
-        scopeKey is not null
-        && scopeKey.Length <= PaymentRequestRecord.ScopeKeyMaxLength
-        && (string.Equals(scopeKey, CumulativeScope, StringComparison.Ordinal)
-            || (scopeKey.StartsWith(SessionScopePrefix, StringComparison.Ordinal)
-                && Guid.TryParseExact(scopeKey.AsSpan(SessionScopePrefix.Length), "N", out _)));
-
-    private static bool IsMoney(decimal? value) =>
-        value is { } v && v >= 0 && v <= MaxAmount && decimal.Round(v, 2) == v;
 
     private static bool Invalid(string code, string detail, out PaymentRequestFailed failure)
     {
