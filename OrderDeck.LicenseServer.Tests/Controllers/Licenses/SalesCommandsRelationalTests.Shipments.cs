@@ -1,15 +1,17 @@
 using System.Net;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync;
 using Xunit;
 using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesCommandTestKit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
-/// Sunucuya ait kargo komutları gerçek SQL Server'da — spec 2026-10-13 §10.1-6, -7, -27: müşteri kilidi
-/// (<c>ship:{lisans}:{müşteri}</c>), sipariş ve dosya jetonları. InMemory işlem, kilit ve jeton uygulamadığı için
-/// yarışın hakemi burada kanıtlanır.
+/// Sunucuya ait kargo komutları gerçek SQL Server'da — spec 2026-10-13 §10.1-6, -7, -19, -27: müşteri kilidi
+/// (<c>ship:{lisans}:{müşteri}</c>), sipariş ve dosya jetonları, kargoya verirken iptalli bağın çözülmesi ve onarım işinin
+/// (c) adımı. InMemory işlem, kilit ve jeton uygulamadığı için yarışın hakemi burada kanıtlanır.
 /// </summary>
 public sealed partial class SalesCommandsRelationalTests
 {
@@ -101,6 +103,72 @@ public sealed partial class SalesCommandsRelationalTests
         order.SyncVersion.Should().Be(2, "yalnız kazanan yazdı");
         (await _kit.ShipmentsOfAsync(customer)).Should().ContainSingle();
         (await _kit.LogsAsync()).Should().ContainSingle();
+    }
+
+    // ── §10.1-19: kargoya verme, iptal ve geri alma, onarım işi ──────────────
+
+    /// <summary>
+    /// §10.1-19, §7.2 (Y5): Shipped olmayan dosyada iptal ve geri alma bağı ve ödenen fiyatı korur, tutar düşer ve
+    /// döner. Etiket iptalliyken dosya kargoya verilirse bağı çözülür ve dosya onsuz donar; iptal sonra geri alınınca
+    /// sipariş bağsız kalır ve sonraki <c>attach-shipment</c> onu YENİ bir dosyaya koyar. Kargolanmış dosyaya bağlı
+    /// siparişin sonradan iptali donmuş tutarı değiştirmez; <c>sales-release-repair</c>'ın (c) adımı da ona dokunmaz.
+    /// </summary>
+    [Fact]
+    public async Task Kargoya_verme_iptalli_bagi_cozer_geri_alma_yeni_dosyaya_gider_onarim_donmus_tutara_dokunmaz()
+    {
+        var customer = Guid.NewGuid().ToString("N");
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var file = await _kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 550m, derived: true);
+        var k1 = await _kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = file.Id; o.Price = 300m; });
+        var k5 = await _kit.SeedOrderAsync(session, o =>
+        {
+            o.CustomerId = customer;
+            o.ShipmentId = file.Id;
+            o.Price = 250m;
+            o.PaidPrice = 250m;
+        });
+
+        await SendOkAsync(_kit.Cancel(Guid.NewGuid(), "customer", await _kit.OrderAsync(k5.Id)));
+        (await _kit.ShipmentAsync(file.Id)).CumulativeAmount.Should().Be(300m);
+        await SendOkAsync(_kit.Uncancel(Guid.NewGuid(), await _kit.OrderAsync(k5.Id)));
+        (await _kit.ShipmentAsync(file.Id)).CumulativeAmount.Should().Be(550m);
+        (await _kit.OrderAsync(k5.Id)).Should().BeEquivalentTo(
+            new { ShipmentId = (Guid?)file.Id, PaidPrice = (decimal?)250m }, "geri alma bağı ve ödendi bilgisini korur");
+
+        await SendOkAsync(_kit.Cancel(Guid.NewGuid(), "customer", await _kit.OrderAsync(k5.Id)));
+        await SendOkAsync(_kit.ShipmentDecision(
+            Guid.NewGuid(), file.Id, "ship-now", (await _kit.ShipmentAsync(file.Id)).Version));
+
+        var shipped = await _kit.ShipmentAsync(file.Id);
+        shipped.Status.Should().Be(ShipmentStatus.Shipped);
+        shipped.CumulativeAmount.Should().Be(300m, "iptalli etiket kolide değil, tutar onsuz donar");
+        (await _kit.OrderAsync(k5.Id)).Should().BeEquivalentTo(
+            new { ShipmentId = (Guid?)null, ShipmentSetAt = shipped.CommandedAt });
+        (await _kit.OrderAsync(k1.Id)).ShipmentId.Should().Be(file.Id);
+
+        await SendOkAsync(_kit.Uncancel(Guid.NewGuid(), await _kit.OrderAsync(k5.Id)));
+        (await _kit.OrderAsync(k5.Id)).ShipmentId.Should().BeNull("geri alma bağı geri getirmez");
+        (await _kit.ShipmentAsync(file.Id)).CumulativeAmount.Should().Be(300m);
+
+        var next = Guid.NewGuid();
+        var attach = await Kit.ReadAsync(
+            await SendOkAsync(_kit.AttachShipment(Guid.NewGuid(), customer, next, [await _kit.OrderAsync(k5.Id)])));
+        attach.Result.GetProperty("shipmentId").GetGuid().Should().Be(next);
+        (await _kit.OrderAsync(k5.Id)).ShipmentId.Should().Be(next);
+        (await _kit.ShipmentAsync(next)).Should().BeEquivalentTo(
+            new { Status = ShipmentStatus.Pending, CumulativeAmount = 250m });
+
+        await SendOkAsync(_kit.Cancel(Guid.NewGuid(), "customer", await _kit.OrderAsync(k1.Id)));
+        var frozen = await _kit.ShipmentAsync(file.Id);
+        frozen.CumulativeAmount.Should().Be(300m, "kargolanmış dosyanın tutarı donmuştur");
+        (await _kit.DerivedAmountInDbAsync(file.Id)).Should().Be(0m, "ön koşul: türetilen değer farklı");
+
+        using (var scope = _factory.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<SalesReleaseRepairJob>().RunAsync(default);
+
+        (await _kit.ShipmentAsync(file.Id)).Should().BeEquivalentTo(
+            new { CumulativeAmount = 300m, frozen.Version, Status = ShipmentStatus.Shipped });
+        (await _kit.ShipmentAsync(next)).CumulativeAmount.Should().Be(250m);
     }
 
     // ── §10.1-27: kargo bağı bilinmeyen sipariş ve kabul edilmiş dosya ───────

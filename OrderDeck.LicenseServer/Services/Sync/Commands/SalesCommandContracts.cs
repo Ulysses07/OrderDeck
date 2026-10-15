@@ -105,10 +105,16 @@ public sealed record SalesCommandResult(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Guid>? PoolShipmentIds { get; init; }
 
-    /// <summary>Yanıtta güncel hâliyle dönen dosyalar: türetilenler ve havuz.</summary>
+    /// <summary><c>shipment-decision</c>: kararın uygulandığı dosyaların komuttan sonraki sürüm ve tutarları (kargoya
+    /// verilen dosyada donmuş tutar).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<SalesCommandShipmentAmount>? Decided { get; init; }
+
+    /// <summary>Yanıtta güncel hâliyle dönen dosyalar: türetilenler, havuz ve kararın dosyaları.</summary>
     public IReadOnlyList<Guid> ResponseShipmentIds() =>
         Shipments.Select(s => s.Id)
             .Concat(PoolShipmentIds ?? [])
+            .Concat(Decided?.Select(s => s.Id) ?? [])
             .Distinct()
             .ToList();
 }

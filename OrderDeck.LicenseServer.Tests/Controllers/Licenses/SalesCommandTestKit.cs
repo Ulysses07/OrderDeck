@@ -321,6 +321,12 @@ public sealed class SalesCommandTestKit
         Body(commandId, "attach-shipment", new { customerId, proposedShipmentId },
             candidates.Select(o => (o.Id, o.SyncVersion)), replicaId);
 
+    /// <summary><c>shipment-decision</c>; karar teldeki adıyla (<c>ship-now</c>, <c>hold</c>, <c>recipient-pays</c>),
+    /// sipariş sürümü yok.</summary>
+    public object ShipmentDecision(
+        Guid commandId, Guid shipmentId, string decision, int expectedVersion, Guid? replicaId = null) =>
+        Body(commandId, "shipment-decision", new { shipmentId, decision, expectedVersion }, [], replicaId);
+
     /// <summary><c>reprint</c>; yazmadığı için <c>expected</c> boş.</summary>
     public object Reprint(Guid commandId, IEnumerable<Guid> orderIds, Guid? replicaId = null) =>
         Body(commandId, "reprint", new { orderIds = orderIds.ToArray() }, [], replicaId);

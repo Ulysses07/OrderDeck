@@ -294,9 +294,39 @@ public sealed class SalesCommandScope
         return candidates.OrderBy(o => o.Id).ToList();
     }
 
+    /// <summary>
+    /// Verilen dosyalara bağlı siparişleri İZLEYEREK yükler (yayınından bağımsız: kargo bağı her oturum hâlinde
+    /// sunucunundur, K4). Dosyalar bu okumadan ÖNCE yüklenmiş olmalı.
+    /// </summary>
+    public async Task<IReadOnlyList<Order>> LoadLinkedOrdersAsync(IReadOnlyCollection<Guid> shipmentIds, CancellationToken ct)
+    {
+        if (shipmentIds.Count == 0) return [];
+        var licenseId = LicenseId;
+        var ids = shipmentIds.Distinct().ToList();
+        var linked = await _db.Orders
+            .Where(o => o.LicenseId == licenseId && o.ShipmentId != null && ids.Contains(o.ShipmentId.Value))
+            .ToListAsync(ct);
+        foreach (var order in linked) Track(order);
+        return linked.OrderBy(o => o.Id).ToList();
+    }
+
     private void Track(Order order)
     {
         if (_orders.TryAdd(order.Id, order)) _shipmentBefore[order.Id] = order.ShipmentId;
+    }
+
+    /// <summary>
+    /// Dosyanın müşterisini İZLEMEDEN okur — kilit adı için ön okuma; dosyanın kendisi kilitten sonra
+    /// <see cref="LoadShipmentsAsync"/> ile taze ve izlenerek okunmalı. Bu lisansta yoksa 400 <c>unknown-shipment</c>.
+    /// </summary>
+    public async Task<string> PeekShipmentCustomerAsync(Guid shipmentId, CancellationToken ct)
+    {
+        var licenseId = LicenseId;
+        return await _db.Shipments.AsNoTracking()
+                   .Where(s => s.LicenseId == licenseId && s.Id == shipmentId)
+                   .Select(s => s.CustomerId)
+                   .SingleOrDefaultAsync(ct)
+               ?? throw SalesCommandRejection.UnknownShipment(shipmentId);
     }
 
     /// <summary>Dosya Id'si sunucuda HERHANGİ bir lisansta var mı (Shipments'ın birincil anahtarı yalnız Id)? Yalnız

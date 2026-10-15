@@ -39,6 +39,10 @@ public interface ISalesCommand
     /// siparişler (<see cref="SalesCommandOutcome.Changed"/>) ardından eklenir.</summary>
     IReadOnlyList<Guid> OrderIds { get; }
 
+    /// <summary>Komutun hedef kargo dosyaları (<c>shipment-decision</c>): yanıtta ve <c>stale</c> retinde
+    /// (<c>currentShipments</c>) güncel hâlleriyle döner. Çoğu tür için boş.</summary>
+    IReadOnlyList<Guid> ShipmentIds => [];
+
     /// <summary>
     /// Türün kuralını uygular: <paramref name="scope"/> ile siparişleri yükler, görünürlüğü ve beklenen sürümü denetler,
     /// alanları ve birim damgalarını yazar, değişen siparişi <see cref="SalesCommandScope.MarkChanged"/> ile bildirir.
@@ -76,4 +80,15 @@ public sealed record SalesCommandOutcome(IReadOnlyList<Guid> Changed, IReadOnlyL
 
     /// <inheritdoc cref="SalesCommandResult.PoolShipmentIds"/>
     public IReadOnlyList<Guid>? PoolShipmentIds { get; init; }
+
+    /// <summary><c>shipment-decision</c>: kararın uygulandığı dosyalar (hedef ve U12 ile öbür açık dosyalar); servis
+    /// sonuca sürüm ve tutarlarıyla yazar (<see cref="SalesCommandResult.Decided"/>).</summary>
+    public IReadOnlyList<Guid>? DecidedShipmentIds { get; init; }
+
+    /// <summary>
+    /// Kargo durumu GERÇEKTEN değişen müşteriler (<c>shipment-decision</c>): servis işlem commit edildikten sonra
+    /// <c>ShipmentStatusChanged</c> WhatsApp etiket kuralını bunlara uygular (<c>shipments/sync</c> ile eşlik, §4.6).
+    /// Sonuca yazılmaz; yeniden oynatmada tetiklenmez.
+    /// </summary>
+    public IReadOnlyList<string>? ShipmentStatusChangedCustomers { get; init; }
 }

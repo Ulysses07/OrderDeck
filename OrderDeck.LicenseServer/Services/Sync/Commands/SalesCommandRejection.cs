@@ -16,6 +16,7 @@ public sealed class SalesCommandRejection : Exception
     public const string CodeUnknownSession = "unknown-session";
     public const string CodeShipmentShipped = "shipment-shipped";
     public const string CodeContentConflict = "content-conflict";
+    public const string CodeUnknownShipment = "unknown-shipment";
 
     private SalesCommandRejection(
         int statusCode,
@@ -23,7 +24,8 @@ public sealed class SalesCommandRejection : Exception
         string detail,
         IReadOnlyDictionary<string, object?> extensions,
         bool withCurrent,
-        IReadOnlyList<Guid>? currentOrderIds = null)
+        IReadOnlyList<Guid>? currentOrderIds = null,
+        IReadOnlyList<Guid>? currentShipmentIds = null)
         : base(detail)
     {
         StatusCode = statusCode;
@@ -31,6 +33,7 @@ public sealed class SalesCommandRejection : Exception
         Extensions = extensions;
         WithCurrentOrders = withCurrent;
         CurrentOrderIds = currentOrderIds;
+        CurrentShipmentIds = currentShipmentIds;
     }
 
     public int StatusCode { get; }
@@ -46,6 +49,12 @@ public sealed class SalesCommandRejection : Exception
     /// <summary><see cref="WithCurrentOrders"/>'ın siparişleri komutunkilerden (<c>ISalesCommand.OrderIds</c>) farklıysa
     /// onlar; null = komutunkiler.</summary>
     public IReadOnlyList<Guid>? CurrentOrderIds { get; }
+
+    /// <summary>
+    /// Ret, bu dosyaların güncel hâlini <c>currentShipments</c> olarak taşır (akış öğesi biçiminde); null =
+    /// <see cref="WithCurrentOrders"/> ise komutun dosyaları (<c>ISalesCommand.ShipmentIds</c>), değilse hiçbiri.
+    /// </summary>
+    public IReadOnlyList<Guid>? CurrentShipmentIds { get; }
 
     /// <summary>
     /// 409 <c>stale</c> (§4.6 adım 4, 6): istemcinin gördüğü sürüm güncel değil ya da eşzamanlı bir yazım (jeton, kilit
@@ -68,6 +77,35 @@ public sealed class SalesCommandRejection : Exception
             new Dictionary<string, object?> { ["candidates"] = candidates },
             withCurrent: true,
             currentOrderIds);
+
+    /// <summary>
+    /// 409 <c>stale</c> (<c>shipment-decision</c>, §4.6 adım 4): dosyanın istemcinin gördüğü sürümü
+    /// (<c>expectedVersion</c>) güncel değil. Yanıt dosyanın güncel hâlini (<c>currentShipments</c>) taşır; hiçbir şey
+    /// yazılmaz.
+    /// </summary>
+    public static SalesCommandRejection ShipmentStale(Guid shipmentId) =>
+        new(StatusCodes.Status409Conflict, CodeStale,
+            "Kargo dosyası bu arada değişti; güncel sürümle yeniden deneyin.",
+            new Dictionary<string, object?> { ["shipmentId"] = shipmentId },
+            withCurrent: true,
+            currentShipmentIds: [shipmentId]);
+
+    /// <summary>400 <c>unknown-shipment</c>: komutun kargo dosyası bu lisansta yok (istemci hatası).</summary>
+    public static SalesCommandRejection UnknownShipment(Guid shipmentId) =>
+        new(StatusCodes.Status400BadRequest, CodeUnknownShipment, "Komutun kargo dosyası bu lisansta yok.",
+            new Dictionary<string, object?> { ["shipmentId"] = shipmentId },
+            withCurrent: false);
+
+    /// <summary>
+    /// 409 <c>shipment-shipped</c> (<c>shipment-decision</c>, §4.6, §7.1): dosya zaten kargoya verilmiş — Shipped son
+    /// durumdur, yeni karar alınmaz. Ret dosyanın güncel hâlini (<c>currentShipments</c>) taşır.
+    /// </summary>
+    public static SalesCommandRejection ShipmentAlreadyShipped(Guid shipmentId) =>
+        new(StatusCodes.Status409Conflict, CodeShipmentShipped,
+            "Kargo dosyası zaten kargoya verilmiş; karar değişmez.",
+            new Dictionary<string, object?> { ["shipmentId"] = shipmentId },
+            withCurrent: true,
+            currentShipmentIds: [shipmentId]);
 
     /// <summary>
     /// 409 <c>content-conflict</c> (<c>attach-shipment</c>, §4.6): açılacak dosyanın Id'si (<c>proposedShipmentId</c>)

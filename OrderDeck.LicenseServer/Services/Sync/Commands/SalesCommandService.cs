@@ -7,13 +7,14 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Stock;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 
 namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
 /// <summary>
 /// <c>POST sales/commands</c>'ın işleme hattı — spec 2026-10-13 §4.6. Devredilmiş yayının etiketini ya da kargo dosyasını
-/// (<c>attach-shipment</c>; S2'nin sonraki görevinde <c>shipment-decision</c>) değiştiren her komut buradan geçer;
-/// türün kuralını <see cref="ISalesCommandHandler"/> uygular. Sıra:
+/// (<c>attach-shipment</c>, <c>shipment-decision</c>) değiştiren her komut buradan geçer; türün kuralını
+/// <see cref="ISalesCommandHandler"/> uygular. Sıra:
 /// <list type="number">
 ///   <item><b>İstek.</b> v2 zarfı (aksi 400 <c>invalid-envelope</c>), <c>commandId</c>, kayıtlı bir tür (aksi 400
 ///   <c>unknown-kind</c>), beklenen sürümler ve türün yükü (400). Lisans sahipliğini uç denetler (404).</item>
@@ -35,8 +36,10 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   Komutun eklediği siparişin Id'sini eşzamanlı başka bir istek aldıysa (<c>add-backup</c>; birincil anahtar ihlali)
 ///   409 <c>content-conflict</c>.</item>
 /// </list>
-/// <b>Bildirim yok:</b> komutlar push, WhatsApp etiket kuralı ya da shopper bildirimi üretmez (§10.2; tek istisna
-/// sonraki bir görevin <c>shipment-decision</c>'ı). Günlüğe yalnız sayı ve kimlik yazılır.
+/// <b>Bildirim yok:</b> komutlar push, WhatsApp etiket kuralı ya da shopper bildirimi üretmez (§10.2). Tek istisna
+/// <c>shipment-decision</c>: bir dosyanın durumu gerçekten değiştiyse işlem commit edildikten sonra
+/// <c>ShipmentStatusChanged</c> etiket kuralı uygulanır (<c>shipments/sync</c> ile eşlik; hata yutulur, yeniden
+/// oynatmada tetiklenmez). Günlüğe yalnız sayı ve kimlik yazılır.
 /// </summary>
 public sealed class SalesCommandService
 {
@@ -59,6 +62,7 @@ public sealed class SalesCommandService
     private readonly ShipmentAmountDeriver _shipmentAmounts;
     private readonly StockLedgerWriter _ledger;
     private readonly IReadOnlyDictionary<string, ISalesCommandHandler> _handlers;
+    private readonly LabelRuleApplier _labels;
     private readonly SalesSyncOptions _options;
     private readonly ILogger<SalesCommandService> _log;
 
@@ -68,6 +72,7 @@ public sealed class SalesCommandService
         ShipmentAmountDeriver shipmentAmounts,
         StockLedgerWriter ledger,
         IEnumerable<ISalesCommandHandler> handlers,
+        LabelRuleApplier labels,
         IOptions<SalesSyncOptions> options,
         ILogger<SalesCommandService> log)
     {
@@ -76,6 +81,7 @@ public sealed class SalesCommandService
         _shipmentAmounts = shipmentAmounts;
         _ledger = ledger;
         _handlers = handlers.ToDictionary(h => h.Kind, StringComparer.Ordinal);
+        _labels = labels;
         _options = options.Value;
         _log = log;
     }
@@ -126,6 +132,7 @@ public sealed class SalesCommandService
         string status;
         string resultJson;
         SalesCommandResult result;
+        IReadOnlyList<string> statusChangedCustomers;
         IDbContextTransaction? transaction = _db.Database.IsRelational()
             ? await _db.Database.BeginTransactionAsync(ct)
             : null;
@@ -185,7 +192,9 @@ public sealed class SalesCommandService
                 ShipmentId = outcome.ShipmentId,
                 Pool = outcome.Pool,
                 PoolShipmentIds = outcome.PoolShipmentIds,
+                Decided = outcome.DecidedShipmentIds?.Select(AmountOf).ToList(),
             };
+            statusChangedCustomers = outcome.ShipmentStatusChangedCustomers ?? [];
             status = changes.Count > 0 || scope.ShipmentsChanged
                 ? SalesCommandLog.StatusApplied
                 : SalesCommandLog.StatusUnchanged;
@@ -277,6 +286,12 @@ public sealed class SalesCommandService
             if (transaction is not null) await transaction.DisposeAsync();
         }
 
+        // İş kaydı commit edildi; etiket kuralı ondan sonra ve hatası yutularak (LabelRuleApplier'ın kuralı: karar
+        // etiket yazılamadı diye geri alınmaz).
+        if (statusChangedCustomers.Count > 0)
+            await _labels.TryApplyAndSaveByWpfCustomersAsync(
+                licenseId, WaLabelEvent.ShipmentStatusChanged, statusChangedCustomers, ct);
+
         return await SucceededAsync(licenseId, status, resultJson, command, result, ct);
     }
 
@@ -306,7 +321,8 @@ public sealed class SalesCommandService
 
     /// <summary>
     /// Başarı yanıtı (uygulama ve yeniden oynatma aynı yoldan): siparişler komutunkiler ve ardından komutun yazdığı
-    /// öbürleri, dosyalar sonucun dosyaları (türetilenler, havuz) — hepsi güncel hâlleriyle.
+    /// öbürleri (ör. kargoya verilirken bağı çözülenler), dosyalar komutunkiler ve sonucun dosyaları (türetilenler,
+    /// havuz, kararın dosyaları) — hepsi güncel hâlleriyle.
     /// </summary>
     private async Task<SalesCommandReply> SucceededAsync(
         Guid licenseId,
@@ -317,7 +333,7 @@ public sealed class SalesCommandService
         CancellationToken ct)
     {
         var orderIds = command.OrderIds.Concat(result?.Changed ?? []).Distinct().ToList();
-        var shipmentIds = result?.ResponseShipmentIds() ?? [];
+        var shipmentIds = command.ShipmentIds.Concat(result?.ResponseShipmentIds() ?? []).Distinct().ToList();
         var (orders, shipments, sessions) = await CurrentRowsAsync(licenseId, orderIds, shipmentIds, ct);
         using var document = JsonDocument.Parse(resultJson);
         return new SalesCommandSucceeded(
@@ -325,14 +341,21 @@ public sealed class SalesCommandService
     }
 
     /// <summary>Ret yanıtı; <c>stale</c> ve <c>plan-stale</c> komutun (ya da retin verdiği) siparişlerin taze hâlini
-    /// <c>current</c> olarak taşır.</summary>
+    /// <c>current</c> olarak, komutun (ya da retin verdiği) dosyalarınkini <c>currentShipments</c> olarak taşır.</summary>
     private async Task<SalesCommandReply> RejectedAsync(
         Guid licenseId, SalesCommandRejection rejection, ISalesCommand command, CancellationToken ct)
     {
         var extensions = new Dictionary<string, object?>(rejection.Extensions);
-        if (rejection.WithCurrentOrders)
-            extensions["current"] =
-                (await CurrentRowsAsync(licenseId, rejection.CurrentOrderIds ?? command.OrderIds, [], ct)).Orders;
+        var shipmentIds = rejection.CurrentShipmentIds ?? (rejection.WithCurrentOrders ? command.ShipmentIds : []);
+        if (rejection.WithCurrentOrders || shipmentIds.Count > 0)
+        {
+            var rows = await CurrentRowsAsync(
+                licenseId, rejection.WithCurrentOrders ? rejection.CurrentOrderIds ?? command.OrderIds : [],
+                shipmentIds, ct);
+            if (rejection.WithCurrentOrders) extensions["current"] = rows.Orders;
+            if (shipmentIds.Count > 0)
+                extensions["currentShipments"] = rows.Shipments.Where(s => shipmentIds.Contains(s.Id)).ToList();
+        }
         return new SalesCommandFailed(rejection.StatusCode, rejection.Code, rejection.Message, extensions);
     }
 
