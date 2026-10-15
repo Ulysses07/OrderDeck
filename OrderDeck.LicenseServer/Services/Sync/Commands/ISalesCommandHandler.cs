@@ -48,6 +48,14 @@ public interface ISalesCommand
     IReadOnlyList<Guid> SessionIds => [];
 
     /// <summary>
+    /// Hiçbir şey yazmayan komut (<c>reprint</c>): yeniden oynatmada sonuç günlükteki kayıttan değil, komut yeniden
+    /// (yazmadan) çalıştırılarak güncel satırlardan kurulur — kayıtlı liste arada değişen satırları bayat gösterirdi
+    /// (§5.6: çevrimiçiyken güncel sunucu satırları basılır). Günlük satırı yalnız denetim izidir. Varsayılan
+    /// <c>false</c>: yazan komut bir kez uygulanır, yeniden oynatma kayıtlı sonucu döner (§4.6 adım 2).
+    /// </summary>
+    bool RecomputesOnReplay => false;
+
+    /// <summary>
     /// Türün kuralını uygular: <paramref name="scope"/> ile siparişleri yükler, görünürlüğü ve beklenen sürümü denetler,
     /// alanları ve birim damgalarını yazar, değişen siparişi <see cref="SalesCommandScope.MarkChanged"/> ile bildirir.
     /// Kaydetmez. Ret <see cref="SalesCommandRejection"/> atar; servis işlemi geri alır.

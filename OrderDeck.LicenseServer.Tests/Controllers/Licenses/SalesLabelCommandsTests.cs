@@ -526,6 +526,43 @@ public sealed class SalesLabelCommandsTests
     }
 
     /// <summary>
+    /// §5.6 "çevrimiçiyken güncel sunucu satırları basılır", §4.6 adım 2: yanıtı kaybolan <c>reprint</c> aynı
+    /// <c>CommandId</c> ile yeniden gönderilince <c>reprintIds</c> ve <c>correctionIds</c> günlükteki ilk sonuçtan değil
+    /// güncel satırlardan kurulur — arada başka bilgisayarda iptal edilen etiket basılacaklar listesinde dönmez (kâğıdı
+    /// koliye girerdi), arada düzeltilen fiyat "DÜZELTME" alır. Yazma yok; yeniden oynatma günlüğe ikinci satır eklemez.
+    /// </summary>
+    [Fact]
+    public async Task Reprint_yeniden_oynatmada_sonucu_guncel_satirlardan_kurar()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var kept = await kit.SeedOrderAsync(session);
+        var cancelledLater = await kit.SeedOrderAsync(session, o => o.Code = "B2");
+        var body = kit.Reprint(Guid.NewGuid(), [kept.Id, cancelledLater.Id]);
+        var first = await Kit.ReadAsync(await kit.SendAsync(body));
+        Guids(first.Result, "reprintIds").Should().Equal(kept.Id, cancelledLater.Id);
+
+        (await kit.SendAsync(kit.Body(Guid.NewGuid(), "cancel",
+                new { items = new[] { cancelledLater.Id }, reason = "customer" },
+                [(cancelledLater.Id, cancelledLater.SyncVersion)], replicaId: Guid.NewGuid())))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await kit.SendAsync(kit.SetCodePrice(Guid.NewGuid(), session, "A1", 120m, [kept], replicaId: Guid.NewGuid())))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var replay = await kit.SendAsync(body);
+
+        replay.StatusCode.Should().Be(HttpStatusCode.OK, await replay.Content.ReadAsStringAsync());
+        var replayed = await Kit.ReadAsync(replay);
+        replayed.Status.Should().Be("unchanged");
+        Guids(replayed.Result, "reprintIds").Should().Equal([kept.Id], "arada iptal edilen etiket basılmaz");
+        Guids(replayed.Result, "correctionIds").Should().Equal([kept.Id], "arada düzeltilen fiyat işaretlenir");
+        replayed.Orders.Select(o => (o.Id, o.Price, Cancelled: o.CancelledAt is not null)).Should().Equal(
+            (kept.Id, 120m, false), (cancelledLater.Id, 100m, true));
+        (await kit.LogsAsync()).Count(l => l.Kind == "reprint").Should().Be(1, "yeniden oynatma günlüğe yazmaz");
+        (await kit.OrderAsync(kept.Id)).SyncVersion.Should().Be(2, "yalnız fiyat düzeltmesi yazdı");
+    }
+
+    /// <summary>
     /// Görünürlük: başka kopyanın canlı ya da devrediliyor yayınındaki sipariş 409 <c>session-live</c> (o yayının
     /// satırları başka bilgisayara inmez, Y1); çağıranın kendi canlı yayınındaki sipariş yeniden basılabilir.
     /// </summary>

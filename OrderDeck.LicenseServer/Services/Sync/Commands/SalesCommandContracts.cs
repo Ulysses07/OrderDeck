@@ -39,7 +39,8 @@ public sealed record SalesCommandRequest(
 /// <param name="Sessions">Siparişlerin oturumları (akışın yan listesi gibi) ve komutun hedef yayınları
 /// (<c>force-end</c>), güncel hâlleriyle.</param>
 /// <param name="Result">Komutun kayıtlı sonucu (<c>SalesCommandLogs.ResultJson</c>); yeniden oynatmada ilk
-/// uygulamanınkiyle aynı.</param>
+/// uygulamanınkiyle aynı. Tek istisna yazmayan komut (<c>reprint</c>): sonucu yeniden oynatmada güncel satırlardan
+/// kurulur (<see cref="ISalesCommand.RecomputesOnReplay"/>).</param>
 public sealed record SalesCommandResponse(
     string Status,
     IReadOnlyList<SalesOrderItem> Orders,

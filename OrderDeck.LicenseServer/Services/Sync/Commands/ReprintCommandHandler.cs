@@ -19,6 +19,9 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   <c>session-live</c> — o yayının satırları başka bilgisayara inmez (Y1).</item>
 ///   <item>Denetim izi: her yeniden baskı günlüğe bir satır yazar (<c>SalesCommandLogs</c>; yalnız Id).
 ///   <c>expected</c> boş olmalı: yazmayan komutun beklenen sürümü yoktur.</item>
+///   <item><b>Yeniden oynatma</b> (aynı <c>CommandId</c>, yanıtı kaybolan istek): sonuç kayıttan dönmez, komut güncel
+///   satırlarla yeniden (yazmadan) çalışır (<see cref="ISalesCommand.RecomputesOnReplay"/>). Arada başka bilgisayarda
+///   iptal edilen etiket <c>reprintIds</c>'te dönmez — kâğıdı basılıp koliye girerdi; günlüğe ikinci satır düşmez.</item>
 /// </list>
 /// </summary>
 public sealed class ReprintCommandHandler : ISalesCommandHandler
@@ -61,6 +64,8 @@ public sealed class ReprintCommandHandler : ISalesCommandHandler
         public object CanonicalPayload => payload;
 
         public IReadOnlyList<Guid> OrderIds => payload.OrderIds;
+
+        public bool RecomputesOnReplay => true;
 
         public async Task<SalesCommandOutcome> ExecuteAsync(SalesCommandScope scope, CancellationToken ct)
         {

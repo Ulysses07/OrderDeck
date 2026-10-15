@@ -24,8 +24,10 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   (<c>SalesSync:MinClientVersion</c>) tanımsız ya da ayrıştırılamıyorsa, ya da istemcinin <c>User-Agent</c>'taki sürümü
 ///   yok ya da eskiyse 409 <c>client-update-required</c> (kapalı-hata).</item>
 ///   <item><b>Yeniden oynatma.</b> <c>CommandId</c> günlükte varsa ve kanonik isteğin özeti aynıysa komut yeniden
-///   uygulanmaz: kayıtlı durum ve sonuç, satırların GÜNCEL hâliyle döner. Özet farklıysa ya da Id başka lisansın
-///   günlüğündeyse 409 <c>content-conflict</c>.</item>
+///   uygulanmaz: kayıtlı durum ve sonuç, satırların GÜNCEL hâliyle döner. Yazmayan komutun (<c>reprint</c>) sonucu
+///   kayıttan değil, komut yazmadan yeniden çalıştırılarak güncel satırlardan kurulur
+///   (<see cref="ISalesCommand.RecomputesOnReplay"/>). Özet farklıysa ya da Id başka lisansın günlüğündeyse 409
+///   <c>content-conflict</c>.</item>
 ///   <item><b>Uygulama</b>, tek işlemde ve tek SaveChanges'te: işleyici görünürlüğü (409 <c>session-live</c>) ve
 ///   beklenen sürümü (409 <c>stale</c>) denetler, alanları ve birim damgalarını sunucu saatiyle yazar; hat değişen
 ///   siparişlerin bağlı türetilmiş dosyalarını yeniden türetir (K7; dosyalar bağlı siparişlerden önce yüklenir), stok
@@ -117,7 +119,7 @@ public sealed class SalesCommandService
 
         var hash = SalesCommandHash.Compute(handler.Kind, envelope.ReplicaId, command.CanonicalPayload, expected);
         if (await FindLogAsync(commandId, ct) is { } logged)
-            return await ReplayAsync(licenseId, commandId, logged, hash, command, ct);
+            return await ReplayAsync(licenseId, commandId, logged, hash, expected, command, ct);
 
         return await ApplyAsync(licenseId, commandId, envelope.ReplicaId, handler.Kind, hash, expected, command, ct);
     }
@@ -182,23 +184,7 @@ public sealed class SalesCommandService
                 return new SalesCommandShipmentAmount(s.Id, s.Version, s.CumulativeAmount);
             }
 
-            result = new SalesCommandResult(
-                outcome.Changed,
-                outcome.Skipped,
-                changes.Select(c => new SalesCommandOrderVersion(c.Order.Id, c.Order.SyncVersion)).ToList(),
-                derived.Select(AmountOf).ToList())
-            {
-                Marked = outcome.Marked,
-                AlreadyPrinted = outcome.AlreadyPrinted,
-                Cancelled = outcome.Cancelled,
-                ReprintIds = outcome.ReprintIds,
-                CorrectionIds = outcome.CorrectionIds,
-                ShipmentId = outcome.ShipmentId,
-                Pool = outcome.Pool,
-                PoolShipmentIds = outcome.PoolShipmentIds,
-                Decided = outcome.DecidedShipmentIds?.Select(AmountOf).ToList(),
-                AlreadyReleased = outcome.AlreadyReleased,
-            };
+            result = ResultOf(outcome, changes, derived, AmountOf);
             statusChangedCustomers = outcome.ShipmentStatusChangedCustomers ?? [];
             status = changes.Count > 0 || scope.ShipmentsChanged || scope.EndedSessionIds.Count > 0
                 ? SalesCommandLog.StatusApplied
@@ -242,7 +228,7 @@ public sealed class SalesCommandService
             // Aynı CommandId'nin eşzamanlı kopyası bizden önce kaydetti mi (jeton ya da günlüğün birincil anahtarı)?
             // Kaydettiyse komut bir kez uygulandı: kayıtlı sonuç oynatılır.
             if (await FindLogAsync(commandId, ct) is { } winner)
-                return await ReplayAsync(licenseId, commandId, winner, hash, command, ct);
+                return await ReplayAsync(licenseId, commandId, winner, hash, expected, command, ct);
 
             // Eklenen siparişin Id'sini ön denetimden sonra eşzamanlı başka bir istek (başka bir komut, push ya da
             // başka lisans) aldıysa birincil anahtar ihlali 500 değil, ön denetimin vereceği 409 content-conflict olur.
@@ -303,10 +289,18 @@ public sealed class SalesCommandService
 
     /// <summary>
     /// Yeniden oynatma (§4.6 adım 2, A11 deseni): aynı lisans ve aynı özet → kayıtlı durum ve sonuç, satırların güncel
-    /// hâliyle; hiçbir şey yazılmaz. Aksi hâlde 409 <c>content-conflict</c> (istemci hatası; yeniden denenmez).
+    /// hâliyle; hiçbir şey yazılmaz. Aksi hâlde 409 <c>content-conflict</c> (istemci hatası; yeniden denenmez). Yazmayan
+    /// komutun (<see cref="ISalesCommand.RecomputesOnReplay"/>) sonucu kayıttan değil güncel satırlardan kurulur
+    /// (<see cref="RecomputeAsync"/>).
     /// </summary>
     private async Task<SalesCommandReply> ReplayAsync(
-        Guid licenseId, Guid commandId, SalesCommandLog logged, byte[] hash, ISalesCommand command, CancellationToken ct)
+        Guid licenseId,
+        Guid commandId,
+        SalesCommandLog logged,
+        byte[] hash,
+        IReadOnlyList<SalesCommandExpected> expected,
+        ISalesCommand command,
+        CancellationToken ct)
     {
         if (logged.LicenseId != licenseId || !logged.RequestHash.AsSpan().SequenceEqual(hash))
         {
@@ -318,12 +312,79 @@ public sealed class SalesCommandService
                 "Bu commandId farklı bir içerikle zaten kullanıldı.");
         }
 
-        var result = JsonSerializer.Deserialize<SalesCommandResult>(logged.ResultJson, ResultJsonOptions);
         _log.LogInformation(
             "sales/commands: command {CommandId} yeniden oynatıldı ({Kind}, license={LicenseId})",
             commandId, logged.Kind, licenseId);
+        if (command.RecomputesOnReplay)
+            return await RecomputeAsync(licenseId, logged, expected, command, ct);
+
+        var result = JsonSerializer.Deserialize<SalesCommandResult>(logged.ResultJson, ResultJsonOptions);
         return await SucceededAsync(licenseId, logged.Status, logged.ResultJson, command, result, ct);
     }
+
+    /// <summary>
+    /// Yazmayan komutun yeniden oynatması (<c>reprint</c>, §5.6): komut, günlükteki kopyanın adına, işlemsiz ve
+    /// kaydetmeden yeniden çalışır; sonuç güncel satırlardan kurulur, kayıtlı durumla döner. Günlüğe ikinci satır
+    /// yazılmaz (ilk satır denetim izidir). Görünürlük reddi ilk uygulamadaki gibi döner. Komut bir şey yazmaya
+    /// kalkarsa programlama hatasıdır.
+    /// </summary>
+    private async Task<SalesCommandReply> RecomputeAsync(
+        Guid licenseId,
+        SalesCommandLog logged,
+        IReadOnlyList<SalesCommandExpected> expected,
+        ISalesCommand command,
+        CancellationToken ct)
+    {
+        var scope = new SalesCommandScope(
+            _db, _shipmentAmounts, _releaser, licenseId, logged.ReplicaId, DateTimeOffset.UtcNow, expected);
+        SalesCommandOutcome outcome;
+        try
+        {
+            outcome = await command.ExecuteAsync(scope, ct);
+        }
+        catch (SalesCommandRejection rejection)
+        {
+            return await RejectedAsync(licenseId, rejection, command, ct);
+        }
+        finally
+        {
+            // Yalnız okudu; izleyici boşalır, sonraki okumalar veritabanını görür.
+            _db.ChangeTracker.Clear();
+        }
+
+        if (scope.Changes.Count > 0 || scope.ShipmentsChanged || scope.EndedSessionIds.Count > 0)
+            throw new InvalidOperationException("Yeniden oynatmada yeniden çalışan komut yazmamalı.");
+
+        var result = ResultOf(outcome, [], [], id => throw new InvalidOperationException(
+            $"Yazmayan komutun sonucunda dosya ({id}) olamaz."));
+        return await SucceededAsync(
+            licenseId, logged.Status, JsonSerializer.Serialize(result, ResultJsonOptions), command, result, ct);
+    }
+
+    /// <summary>Komutun sonucu (<see cref="SalesCommandResult"/>): yazılan ve atlanan siparişler, yazılanların yeni
+    /// sürümleri, türetilen dosyalar ve türe özgü listeler.</summary>
+    private static SalesCommandResult ResultOf(
+        SalesCommandOutcome outcome,
+        IReadOnlyList<SalesCommandChange> changes,
+        IReadOnlyList<Guid> derived,
+        Func<Guid, SalesCommandShipmentAmount> amountOf) =>
+        new(
+            outcome.Changed,
+            outcome.Skipped,
+            changes.Select(c => new SalesCommandOrderVersion(c.Order.Id, c.Order.SyncVersion)).ToList(),
+            derived.Select(amountOf).ToList())
+        {
+            Marked = outcome.Marked,
+            AlreadyPrinted = outcome.AlreadyPrinted,
+            Cancelled = outcome.Cancelled,
+            ReprintIds = outcome.ReprintIds,
+            CorrectionIds = outcome.CorrectionIds,
+            ShipmentId = outcome.ShipmentId,
+            Pool = outcome.Pool,
+            PoolShipmentIds = outcome.PoolShipmentIds,
+            Decided = outcome.DecidedShipmentIds?.Select(amountOf).ToList(),
+            AlreadyReleased = outcome.AlreadyReleased,
+        };
 
     /// <summary>
     /// Başarı yanıtı (uygulama ve yeniden oynatma aynı yoldan): siparişler komutunkiler ve ardından komutun yazdığı
