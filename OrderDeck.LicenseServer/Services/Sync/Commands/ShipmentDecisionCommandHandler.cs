@@ -20,11 +20,12 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   <item><b>Karar</b> (<c>Decide</c> aynası): ship-now → Shipped ve <c>ShippedAt</c>; hold → Held ve <c>HeldAt</c>
 ///   yalnız ilk bekletmede; recipient-pays → RecipientPays. Hedef karardan önce açıksa (Pending/Held) müşterinin öbür
 ///   açık dosyaları da aynı karara uyar (U12, tek havuz).</item>
-///   <item><b>Kargoya verilen her dosyada</b> (§7.2) bağlı ve ŞU ANDA iptal edilmiş siparişlerin bağı çözülür
-///   (<c>ShipmentId</c> boş, damga <c>ShipmentSetAt</c>, sürüm bir artar) — yayını canlı olsa da (kargo bağı her oturum
-///   hâlinde sunucunundur, K4; canlı sahibin aynası devirde akıştan alır). Ürün kolide değildir; sonradan iptali geri
-///   alınırsa bağsız kalır ve sonraki dosyaya girer. Ardından dosya, türetilmişse, bir kez türetilir ve tutarı o anda
-///   donar (DM7); kabul edilmiş dosya saklanan tutarıyla kalır.</item>
+///   <item><b>Kargoya verilen her türetilmiş dosyada</b> (§7.2) bağlı ve ŞU ANDA iptal edilmiş siparişlerin bağı
+///   çözülür (<c>ShipmentId</c> boş, damga <c>ShipmentSetAt</c>, sürüm bir artar) — yayını canlı olsa da (kargo bağı her
+///   oturum hâlinde sunucunundur, K4; canlı sahibin aynası devirde akıştan alır). Ürün kolide değildir; sonradan iptali
+///   geri alınırsa bağsız kalır ve sonraki dosyaya girer. Ardından dosya bir kez türetilir ve tutarı o anda donar
+///   (DM7). Kabul edilmiş dosya saklanan tutarıyla donar ve bağları kalır: tutarı iptalle düşmediği için iptalli
+///   siparişi de içerir (<see cref="ShipmentShipping"/>).</item>
 ///   <item>Kararın uygulandığı her dosyada sürüm bir artar (durum değişmese de, yerel <c>ApplyDecision</c> gibi),
 ///   <c>CommandedAt</c> ve <c>UpdatedAt</c> sunucu saatidir.</item>
 /// </list>
@@ -116,7 +117,7 @@ public sealed class ShipmentDecisionCommandHandler : ISalesCommandHandler
             if (payload.Decision == ShipNow)
             {
                 var linked = await scope.LoadLinkedOrdersAsync(decided.Select(s => s.Id).ToList(), ct);
-                foreach (var order in ShipmentShipping.UnlinkCancelled(linked, scope.Now))
+                foreach (var order in ShipmentShipping.UnlinkCancelled(linked, decided, scope.Now))
                 {
                     scope.MarkChanged(order, OrderUnit.Shipment);
                     unlinked.Add(order.Id);

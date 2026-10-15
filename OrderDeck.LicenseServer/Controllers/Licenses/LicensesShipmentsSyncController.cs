@@ -282,9 +282,9 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     ///   (DM7; yeni dosyada çoğu zaman 0 — kargo gönderimi etiket gönderiminden sık koştuğu için dosya bağlarından önce
     ///   gelir, bağlar sonra <c>orders/sync</c>'in K4 istisnasıyla gelince K7 dosyayı yeniden türetir); kabul edilmiş
     ///   (türetilmemiş) dosya saklanan tutarıyla kalır.</item>
-    ///   <item><b>Kargoya geçişte</b> (§7.2) o anda iptal edilmiş bağlı siparişlerin bağı çözülür
-    ///   (<see cref="ShipmentShipping.UnlinkCancelled"/>, <c>shipment-decision</c> ile aynı kural), sonra dosya
-    ///   türetilir ve tutarı donar.</item>
+    ///   <item><b>Kargoya geçişte</b> (§7.2) türetilmiş dosyada o anda iptal edilmiş bağlı siparişlerin bağı çözülür
+    ///   (<see cref="ShipmentShipping.UnlinkCancelled"/>, <c>shipment-decision</c> ile aynı kural; kabul edilmiş dosyada
+    ///   bağ kalır), sonra dosya türetilir ve tutarı donar.</item>
     /// </list>
     /// Sürüm jetonu ve 409 <c>sync-conflict</c> Off yolundaki gibidir. Durum gerçekten değiştiyse etiket kuralı
     /// tetiklenir (yeni dosyada Pending dışında doğduysa). Yanıt güncel satırlardır.
@@ -357,15 +357,17 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
             }
         }
 
-        // Kargoya geçiş (§7.2): o anda iptal edilmiş bağlar çözülür; bağ değişikliği siparişin bir yazımıdır (jeton).
+        // Kargoya geçiş (§7.2): türetilmiş dosyada o anda iptal edilmiş bağlar çözülür (kabul edilmiş dosyada bağ kalır);
+        // bağ değişikliği siparişin bir yazımıdır (jeton).
         IReadOnlyList<Order> unlinked = Array.Empty<Order>();
-        var shipping = decisions.Where(d => d.Status == ShipmentStatus.Shipped).Select(d => d.Shipment.Id).ToList();
+        var shipping = decisions.Where(d => d.Status == ShipmentStatus.Shipped).Select(d => d.Shipment).ToList();
         if (shipping.Count > 0)
         {
+            var shippingIds = shipping.Select(s => s.Id).ToList();
             var linked = await _db.Orders
-                .Where(o => o.LicenseId == licenseId && o.ShipmentId != null && shipping.Contains(o.ShipmentId.Value))
+                .Where(o => o.LicenseId == licenseId && o.ShipmentId != null && shippingIds.Contains(o.ShipmentId.Value))
                 .ToListAsync(ct);
-            unlinked = ShipmentShipping.UnlinkCancelled(linked, now);
+            unlinked = ShipmentShipping.UnlinkCancelled(linked, shipping, now);
             foreach (var order in unlinked)
             {
                 order.UpdatedAt = now;

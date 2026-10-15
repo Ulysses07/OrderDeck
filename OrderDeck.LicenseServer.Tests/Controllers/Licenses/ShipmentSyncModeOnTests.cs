@@ -266,6 +266,36 @@ public sealed class ShipmentSyncModeOnTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// Pencerede kabul edilmiş (türetilmemiş, §4.10-6) dosyanın kargoya geçişi: iptalli bağ çözülmez — saklanan tutar
+    /// iptalle düşmediği için o siparişi içerir; bağı çözülseydi geri alınınca sonraki dosyaya girer ve aynı tutar iki
+    /// dosyada sayılırdı (§7.2). Tutar saklanan değeriyle donar, push'taki değer alınmaz.
+    /// </summary>
+    [Fact]
+    public async Task Pencere_kabul_edilmis_dosyayi_kargolarken_iptalli_bagi_cozmez()
+    {
+        var (client, licenseId, window) = await SetupWindowAsync();
+        var accepted = await SeedShipmentAsync(licenseId, s =>
+        {
+            s.AmountDerivedAt = null; s.Status = ShipmentStatus.Held; s.HeldAt = CreatedAt.AddHours(1);
+            s.CumulativeAmount = 550m;
+        });
+        var cancelled = await SeedOrderAsync(licenseId, o =>
+        {
+            o.ShipmentId = accepted.Id; o.Price = 250m; o.CancelledAt = CreatedAt.AddHours(2); o.SyncVersion = 2;
+        });
+
+        var row = (await PushV2Async(client, licenseId, window, seenMode: 0,
+            ItemOf(accepted) with { Status = "shipped", ShippedAt = CreatedAt.AddDays(1), CumulativeAmount = 9999m }))
+            .Single();
+
+        row.Should().BeEquivalentTo(new { Status = "shipped", CumulativeAmount = 550m });
+        var kept = await OrderAsync(cancelled.Id);
+        kept.ShipmentId.Should().Be(accepted.Id, "kabul edilmiş dosyanın tutarı bu siparişi içeriyor");
+        kept.ShipmentSetAt.Should().BeNull();
+        kept.SyncVersion.Should().Be(2);
+    }
+
+    /// <summary>
     /// Pencerede yeni dosya Id'si eklenir (§7.1): türetilmiş (<c>AmountDerivedAt</c> dolu), kaynağı çağıran kopya,
     /// tutarı o anda bağlı siparişlerden — push'tan değil. Bağı henüz olmayan dosya 0 ile doğar; kararı alınır.
     /// </summary>

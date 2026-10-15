@@ -560,6 +560,57 @@ public sealed class SalesShipmentCommandsTests : IClassFixture<SalesSyncConfigur
     }
 
     /// <summary>
+    /// §7.2, §4.10-6: kargoya verirken iptalli bağ yalnız TÜRETİLMİŞ dosyada çözülür. Kabul edilmiş (türetilmemiş,
+    /// <c>--accept-shipment</c>) dosyanın saklanan tutarı iptalle düşmez, o siparişi de içerir; bağı çözülseydi sipariş
+    /// iptali geri alınınca bağsız kalır, sonraki dosyaya girer ve aynı tutar iki dosyada sayılırdı. Kabul edilmiş
+    /// dosyada bağ kalır ve tutar saklanan değeriyle donar; aynı kararda (U12) kargolanan türetilmiş dosyanın iptalli
+    /// bağı yine çözülür.
+    /// </summary>
+    [Fact]
+    public async Task Decision_ship_now_kabul_edilmis_dosyada_iptalli_bagi_cozmez()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var customer = NewCustomer();
+        var released = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var accepted = await kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 550m, derived: false,
+            createdAt: StartedAt.AddHours(5));
+        var derived = await kit.SeedShipmentAsync(customer, ShipmentStatus.Pending, 80m, derived: true);
+        var cancelledAccepted = await kit.SeedOrderAsync(released, o =>
+        {
+            o.CustomerId = customer;
+            o.ShipmentId = accepted.Id;
+            o.Price = 250m;
+            o.CancelledAt = StartedAt.AddHours(4);
+            o.CancelSetAt = StartedAt.AddHours(4);
+        });
+        var cancelledDerived = await kit.SeedOrderAsync(released, o =>
+        {
+            o.CustomerId = customer;
+            o.ShipmentId = derived.Id;
+            o.Price = 80m;
+            o.CancelledAt = StartedAt.AddHours(4);
+        });
+
+        var resp = await kit.SendAsync(kit.ShipmentDecision(Guid.NewGuid(), accepted.Id, "ship-now", 1));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        Guids((await Kit.ReadAsync(resp)).Result, "changed").Should().Equal(cancelledDerived.Id);
+        (await kit.ShipmentAsync(accepted.Id)).Should().BeEquivalentTo(new
+        {
+            Status = ShipmentStatus.Shipped,
+            CumulativeAmount = 550m,
+            AmountDerivedAt = (DateTimeOffset?)null,
+        }, "kabul edilmiş dosya saklanan tutarıyla donar");
+        (await kit.OrderAsync(cancelledAccepted.Id)).Should().BeEquivalentTo(
+            new { ShipmentId = (Guid?)accepted.Id, SyncVersion = 1, ShipmentSetAt = (DateTimeOffset?)null },
+            "kabul edilmiş dosyanın tutarı bu siparişi içeriyor; bağ kalır");
+        (await kit.OrderAsync(cancelledDerived.Id)).Should().BeEquivalentTo(
+            new { ShipmentId = (Guid?)null, SyncVersion = 2 }, "türetilmiş dosyada iptalli bağ çözülür");
+        (await kit.ShipmentAsync(derived.Id)).Should().BeEquivalentTo(
+            new { Status = ShipmentStatus.Shipped, CumulativeAmount = 0m });
+    }
+
+    /// <summary>
     /// §10.2, §4.6: <c>ShipmentStatusChanged</c> etiket kuralı yalnız bir dosyanın durumu GERÇEKTEN değişen kararda,
     /// çağrı başına bir kez uygulanır (U12 ile iki dosya değişse de tek etiket); hiçbir dosyanın durumunu değiştirmeyen
     /// karar (iki Held dosyada bekletme; sürüm yine ilerler) kuralı tetiklemez. Push yok.
