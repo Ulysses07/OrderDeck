@@ -14,6 +14,7 @@ public sealed class SalesCommandRejection : Exception
     public const string CodeUnknownOrder = "unknown-order";
     public const string CodePlanStale = "plan-stale";
     public const string CodeUnknownSession = "unknown-session";
+    public const string CodeShipmentShipped = "shipment-shipped";
 
     private SalesCommandRejection(
         int statusCode,
@@ -99,4 +100,14 @@ public sealed class SalesCommandRejection : Exception
         new(StatusCodes.Status400BadRequest, CodeUnknownSession, "Komutun yayını bu lisansta yok.",
             new Dictionary<string, object?> { ["sessionId"] = sessionId },
             withCurrent: false);
+
+    /// <summary>
+    /// 409 <c>shipment-shipped</c> (K6): kargoya verilmiş dosyaya bağlı siparişin fiyatı değişmez — dosyanın tutarı
+    /// kargoya verildiği anda donmuştur. Ret güncel satırı taşır.
+    /// </summary>
+    public static SalesCommandRejection ShipmentShipped(Guid orderId, Guid shipmentId) =>
+        new(StatusCodes.Status409Conflict, CodeShipmentShipped,
+            "Sipariş kargoya verilmiş bir dosyada; fiyatı değişmez.",
+            new Dictionary<string, object?> { ["orderId"] = orderId, ["shipmentId"] = shipmentId },
+            withCurrent: true);
 }

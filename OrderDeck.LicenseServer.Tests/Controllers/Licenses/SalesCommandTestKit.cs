@@ -282,6 +282,11 @@ public sealed class SalesCommandTestKit
             plan,
             replicaId);
 
+    /// <summary><c>confirm-backup</c>; beklenen sürüm yedeğin satırından.</summary>
+    public object ConfirmBackup(Guid commandId, Order backup, decimal? newPrice = null) =>
+        Body(commandId, "confirm-backup", new { backupOrderId = backup.Id, newPrice },
+            [(backup.Id, backup.SyncVersion)]);
+
     public Task<HttpResponseMessage> SendAsync(object body, string? userAgent = WpfUserAgent) =>
         SendToAsync(Url, body, userAgent);
 
