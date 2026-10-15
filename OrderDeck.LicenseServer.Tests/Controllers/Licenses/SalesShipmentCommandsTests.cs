@@ -276,6 +276,45 @@ public sealed class SalesShipmentCommandsTests : IClassFixture<SalesSyncConfigur
     }
 
     /// <summary>
+    /// §7.1 (eşik havuzdan değerlendirilir), §4.6 adım 2: yanıttaki havuz günlükteki değerden değil, yanıt anındaki
+    /// güncel dosyalardan hesaplanır ve yanıtın <c>shipments</c>'ıyla tutarlıdır. Yanıtı kaybolan komut yeniden
+    /// gönderilince, arada başka bilgisayarın iptaliyle yeniden türetilen öbür açık dosya havuza güncel tutarıyla girer
+    /// — kayıttaki bayat havuz yanlış "ücretsiz kargo" teklif ettirirdi.
+    /// </summary>
+    [Fact]
+    public async Task Attach_havuzu_yanit_anindaki_guncel_dosyalardan_hesaplar_yeniden_oynatmada_da()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var customer = NewCustomer();
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var older = await kit.SeedShipmentAsync(customer, ShipmentStatus.Pending, 250m, derived: true,
+            createdAt: StartedAt.AddHours(3));
+        var k5 = await kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = older.Id; o.Price = 250m; });
+        var newest = await kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 300m, derived: true,
+            createdAt: StartedAt.AddHours(5));
+        await kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = newest.Id; o.Price = 300m; });
+        var k6 = await kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.Price = 100m; });
+        var body = kit.AttachShipment(Guid.NewGuid(), customer, Guid.NewGuid(), [k6]);
+
+        var first = await Kit.ReadAsync(await kit.SendAsync(body));
+        first.Result.GetProperty("shipmentId").GetGuid().Should().Be(newest.Id);
+        first.Result.GetProperty("pool").GetDecimal().Should().Be(400m + 250m);
+
+        (await kit.SendAsync(kit.Body(Guid.NewGuid(), "cancel", new { items = new[] { k5.Id }, reason = "customer" },
+                [(k5.Id, k5.SyncVersion)], replicaId: Guid.NewGuid())))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var replay = await kit.SendAsync(body);
+
+        replay.StatusCode.Should().Be(HttpStatusCode.OK, await replay.Content.ReadAsStringAsync());
+        var replayed = await Kit.ReadAsync(replay);
+        replayed.Result.GetProperty("pool").GetDecimal().Should().Be(400m, "öbür dosya iptalle 0'a türetildi");
+        replayed.Shipments.Where(s => s.Status is "pending" or "held").Sum(s => s.CumulativeAmount)
+            .Should().Be(400m, "havuz yanıtın dosyalarıyla tutarlı");
+        (await kit.LogsAsync()).Count(l => l.Kind == "attach-shipment").Should().Be(1);
+    }
+
+    /// <summary>
     /// Birleştirilmiş kopyanın Id'siyle gelen komut asıl kayda çözülür (<c>CustomerIdResolver</c>): asıl kaydın dosyası
     /// ve siparişleri kullanılır; açılan ya da seçilen dosyanın müşterisi asıl kayıttır.
     /// </summary>

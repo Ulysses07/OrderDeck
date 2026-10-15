@@ -54,6 +54,43 @@ public sealed partial class SalesCommandsRelationalTests
         (await _kit.LogsAsync()).Should().ContainSingle();
     }
 
+    /// <summary>
+    /// §7.1: havuz, hedef dışındaki açık dosyaların komutun okuduğu andaki tutarlarından hesaplanmaz. <c>attach-shipment</c>
+    /// dosyaları ve adayları okuduktan sonra, kaydetmesi diske inmeden hemen önce başka bir kopyanın <c>cancel</c>'ı öbür
+    /// açık dosyaya bağlı K5'i iptal eder ve o dosyayı 0'a türetip commit olur — iptal müşteri kilidini almaz, attach o
+    /// dosyaya yazmadığı için jetona da çarpmaz; ikisi de 200. Yanıttaki havuz commit'ten sonraki güncel dosyalardandır:
+    /// 400, bayat 650 değil.
+    /// </summary>
+    [Fact]
+    public async Task Attach_okuduktan_sonra_obur_dosyayi_turetilen_iptal_havuza_yansir()
+    {
+        var customer = Guid.NewGuid().ToString("N");
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var older = await _kit.SeedShipmentAsync(customer, ShipmentStatus.Pending, 250m, derived: true,
+            createdAt: Kit.StartedAt.AddHours(3));
+        var k5 = await _kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = older.Id; o.Price = 250m; });
+        var newest = await _kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 300m, derived: true,
+            createdAt: Kit.StartedAt.AddHours(5));
+        await _kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = newest.Id; o.Price = 300m; });
+        var k6 = await _kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.Price = 100m; });
+        HttpResponseMessage? cancel = null;
+        _factory.Hook.When = db => db.ChangeTracker.Entries<SalesCommandLog>().Any();
+        _factory.Hook.Before = async () => cancel = await _kit.SendAsync(_kit.Body(
+            Guid.NewGuid(), "cancel", new { items = new[] { k5.Id }, reason = "customer" },
+            [(k5.Id, k5.SyncVersion)], replicaId: Guid.NewGuid()));
+
+        var attach = await _kit.SendAsync(_kit.AttachShipment(Guid.NewGuid(), customer, Guid.NewGuid(), [k6]));
+
+        cancel.Should().NotBeNull("kanca iptali attach'ın yazımından önce koşturmalı");
+        cancel!.StatusCode.Should().Be(HttpStatusCode.OK, await cancel.Content.ReadAsStringAsync());
+        attach.StatusCode.Should().Be(HttpStatusCode.OK, await attach.Content.ReadAsStringAsync());
+        var reply = await Kit.ReadAsync(attach);
+        reply.Result.GetProperty("shipmentId").GetGuid().Should().Be(newest.Id);
+        reply.Result.GetProperty("pool").GetDecimal().Should().Be(400m, "öbür dosya eşzamanlı iptalle 0'a türetildi");
+        (await _kit.ShipmentAsync(older.Id)).CumulativeAmount.Should().Be(0m);
+        (await _kit.ShipmentAsync(newest.Id)).CumulativeAmount.Should().Be(400m);
+    }
+
     // ── §10.1-7: aynı siparişe eşzamanlı cancel ve attach-shipment ───────────
 
     /// <summary>

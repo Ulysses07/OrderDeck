@@ -39,8 +39,9 @@ public sealed record SalesCommandRequest(
 /// <param name="Sessions">Siparişlerin oturumları (akışın yan listesi gibi) ve komutun hedef yayınları
 /// (<c>force-end</c>), güncel hâlleriyle.</param>
 /// <param name="Result">Komutun kayıtlı sonucu (<c>SalesCommandLogs.ResultJson</c>); yeniden oynatmada ilk
-/// uygulamanınkiyle aynı. Tek istisna yazmayan komut (<c>reprint</c>): sonucu yeniden oynatmada güncel satırlardan
-/// kurulur (<see cref="ISalesCommand.RecomputesOnReplay"/>).</param>
+/// uygulamanınkiyle aynı. İstisnalar: yazmayan komutun (<c>reprint</c>) sonucu yeniden oynatmada güncel satırlardan
+/// kurulur (<see cref="ISalesCommand.RecomputesOnReplay"/>); <c>attach-shipment</c>'ın havuzu
+/// (<see cref="SalesCommandResult.Pool"/>) her yanıtta güncel dosyalardandır.</param>
 public sealed record SalesCommandResponse(
     string Status,
     IReadOnlyList<SalesOrderItem> Orders,
@@ -95,9 +96,12 @@ public sealed record SalesCommandResult(
     public Guid? ShipmentId { get; init; }
 
     /// <summary>
-    /// <c>attach-shipment</c>: müşterinin havuzu — bütün Pending/Held dosyalarının tutar toplamı, komuttan sonra
-    /// (türetilmiş dosyalar türetilmiş tutarla, kabul edilmiş dosya saklanan tutarıyla, §4.10-6). İstemci eşiği bununla
-    /// değerlendirir (§7.1, <c>EvaluateAfterPayment</c>).
+    /// <c>attach-shipment</c>: müşterinin havuzu — Pending/Held dosyalarının tutar toplamı (türetilmiş dosyalar
+    /// türetilmiş tutarla, kabul edilmiş dosya saklanan tutarıyla, §4.10-6). İstemci eşiği bununla değerlendirir (§7.1,
+    /// <c>EvaluateAfterPayment</c>). Yanıttaki değer yanıt anında, commit'ten sonra okunan güncel dosyalardandır
+    /// (<see cref="PoolShipmentIds"/>'ten hâlâ açık olanlar; yanıtın <c>shipments</c>'ıyla aynı satırlar) — yeniden
+    /// oynatmada da. Günlükteki değer komut anınındır (denetim izi): hedef dışındaki açık dosyayı eşzamanlı bir yazıcı
+    /// (ör. <c>cancel</c>'ın K7 türetmesi) ship kilidi almadan değiştirebilir.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? Pool { get; init; }

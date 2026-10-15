@@ -404,6 +404,21 @@ public sealed class SalesCommandService
         var shipmentIds = command.ShipmentIds.Concat(result?.ResponseShipmentIds() ?? []).Distinct().ToList();
         var (orders, shipments, sessions) =
             await CurrentRowsAsync(licenseId, orderIds, shipmentIds, command.SessionIds, ct);
+
+        // Havuz (attach-shipment, §7.1): komut anında okunan tutarlardan değil, yanıtın güncel dosyalarından — commit'ten
+        // (ve yeniden oynatmada ilk uygulamadan) sonra. Hedef dışındaki açık dosyayı ship kilidini almayan bir yazıcı
+        // (cancel komutu, sahibin push'u, K7) komutla eşzamanlı türetebilir; kayıttaki değer o zaman hiç var olmamış bir
+        // havuzdur ve eşik kararı onunla verilirdi. Günlükteki değer komut anının denetim izi olarak kalır.
+        if (result is { PoolShipmentIds: { } poolIds })
+        {
+            var pool = shipments.Where(s => poolIds.Contains(s.Id) && IsOpen(s)).Sum(s => s.CumulativeAmount);
+            if (pool != result.Pool)
+            {
+                result = result with { Pool = pool };
+                resultJson = JsonSerializer.Serialize(result, ResultJsonOptions);
+            }
+        }
+
         using var document = JsonDocument.Parse(resultJson);
         return new SalesCommandSucceeded(
             new SalesCommandResponse(status, orders, shipments, sessions, document.RootElement.Clone()));
@@ -476,6 +491,11 @@ public sealed class SalesCommandService
             shipmentKeys.Where(shipments.ContainsKey).Select(id => SalesShipmentItem.From(shipments[id])).ToList(),
             sessionKeys.Where(sessions.ContainsKey).Select(id => SalesSessionItem.From(sessions[id])).ToList());
     }
+
+    /// <summary>Havuza giren açık dosya (§7.1): Pending ya da Held.</summary>
+    private static bool IsOpen(SalesShipmentItem shipment) =>
+        Enum.TryParse<ShipmentStatus>(shipment.Status, ignoreCase: true, out var status)
+        && status is ShipmentStatus.Pending or ShipmentStatus.Held;
 
     private Task<SalesCommandLog?> FindLogAsync(Guid commandId, CancellationToken ct) =>
         _db.SalesCommandLogs.AsNoTracking().SingleOrDefaultAsync(c => c.CommandId == commandId, ct);

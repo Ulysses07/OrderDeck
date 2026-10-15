@@ -33,7 +33,9 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   <c>CommandedAt</c> basılır.</item>
 /// </list>
 /// Sonuç: <c>shipmentId</c> ve havuz — müşterinin bütün Pending/Held dosyalarının toplamı (kabul edilmiş dosya saklanan
-/// tutarıyla); yanıtın <c>shipments</c>'ı havuzun dosyalarıdır. Bildirim yok (durum değişmez).
+/// tutarıyla); yanıtın <c>shipments</c>'ı havuzun dosyalarıdır. Yanıttaki havuzu servis commit'ten sonra bu güncel
+/// dosyalardan yeniden hesaplar (<see cref="SalesCommandResult.Pool"/>): hedef dışındaki açık dosya ship kilidi
+/// almayan bir yazıcıyla (<c>cancel</c>, sahibin push'u; K7) eşzamanlı türetilebilir. Bildirim yok (durum değişmez).
 /// </summary>
 public sealed class AttachShipmentCommandHandler : ISalesCommandHandler
 {
