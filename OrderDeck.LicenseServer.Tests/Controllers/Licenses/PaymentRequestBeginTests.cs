@@ -1,0 +1,576 @@
+using System.Net;
+using System.Text.Json;
+using FluentAssertions;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.PaymentRequestTestKit;
+using SalesKit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesCommandTestKit;
+
+namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
+
+/// <summary>
+/// <c>POST payment-requests/begin</c> — spec 2026-10-13 §4.7, §6.4 (a–e, h), §6.5-2, §15-21, §15-54 (InMemory). Kapılar
+/// (sahiplik, 400, mod Off, alt sürüm), kiranın yazımı, yeniden oynatma ve 409 sınıfları. Eşzamanlılık (tekil indeks,
+/// kilitler) ve SQL harmanı gerçek SQL Server'da (<see cref="PaymentRequestBeginRelationalTests"/>).
+/// </summary>
+public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfiguredApiFactory>, IClassFixture<ApiFactory>
+{
+    private readonly SalesSyncConfiguredApiFactory _factory;
+    private readonly ApiFactory _withoutMinimum;
+
+    public PaymentRequestBeginTests(SalesSyncConfiguredApiFactory factory, ApiFactory withoutMinimum)
+    {
+        _factory = factory;
+        _withoutMinimum = withoutMinimum;
+    }
+
+    // ── Kapılar ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Baska_yayincinin_lisansi_404_hicbir_sey_yazilmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var stranger = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+
+        var resp = await stranger.Sales.SendToAsync(kit.BeginUrl, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    public static TheoryData<string, string> InvalidBodies => new()
+    {
+        { "protokolsuz", "invalid-envelope" },
+        { "protokol-1", "invalid-envelope" },
+        { "replicaId-yok", "invalid-envelope" },
+        { "seenMode-yok", "invalid-envelope" },
+        { "recordId-yok", "invalid-record" },
+        { "recordId-bos", "invalid-record" },
+        { "uyeler-yok", "invalid-members" },
+        { "uyeler-bos", "invalid-members" },
+        { "uyeler-101", "invalid-members" },
+        { "uye-bos-metin", "invalid-members" },
+        { "uye-65-karakter", "invalid-members" },
+        { "sahip-uyelerde-yok", "invalid-members" },
+        { "sahip-yok", "invalid-members" },
+        { "kapsam-yok", "invalid-scope" },
+        { "kapsam-buyuk-harf", "invalid-scope" },
+        { "kapsam-tireli-guid", "invalid-scope" },
+        { "kapsam-bozuk", "invalid-scope" },
+        { "kapsam-legacy", "invalid-scope" },
+        { "siparisler-yok", "invalid-orders" },
+        { "siparis-bos-guid", "invalid-orders" },
+        { "siparisler-10001", "invalid-orders" },
+        { "urun-toplami-eksi", "invalid-amount" },
+        { "urun-toplami-3-ondalik", "invalid-amount" },
+        { "bakiye-oncesi-yok", "invalid-amount" },
+        { "bakiye-oncesi-eksi", "invalid-amount" },
+        { "alici-oder-yok", "invalid-shipping" },
+        { "kargo-surumu-yok", "invalid-shipping" },
+        { "kargo-surumu-eksi", "invalid-shipping" },
+        { "onaylananlar-501", "invalid-confirmed-priors" },
+        { "onaylanan-bos-guid", "invalid-confirmed-priors" },
+    };
+
+    /// <summary>Her 400 sınıfı: hiçbir şey yazılmaz.</summary>
+    [Theory]
+    [MemberData(nameof(InvalidBodies))]
+    public async Task Gecersiz_istek_400_kodlu_hicbir_sey_yazilmaz(string @case, string code)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var body = Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner, Kit.NewId()], orderIds: [Guid.NewGuid()]);
+        Corrupt(body, @case, owner);
+
+        var resp = await kit.BeginAsync(body);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest, await resp.Content.ReadAsStringAsync());
+        (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be(code, @case);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    private static void Corrupt(Dictionary<string, object?> body, string @case, string owner)
+    {
+        switch (@case)
+        {
+            case "protokolsuz": body.Remove("protocol"); break;
+            case "protokol-1": body["protocol"] = 1; break;
+            case "replicaId-yok": body.Remove("replicaId"); break;
+            case "seenMode-yok": body.Remove("seenMode"); break;
+            case "recordId-yok": body.Remove("recordId"); break;
+            case "recordId-bos": body["recordId"] = Guid.Empty; break;
+            case "uyeler-yok": body.Remove("memberIds"); break;
+            case "uyeler-bos": body["memberIds"] = Array.Empty<string>(); break;
+            case "uyeler-101":
+                body["memberIds"] = Enumerable.Range(0, 100).Select(_ => Kit.NewId()).Append(owner).ToArray();
+                break;
+            case "uye-bos-metin": body["memberIds"] = new[] { owner, " " }; break;
+            case "uye-65-karakter": body["memberIds"] = new[] { owner, new string('a', 65) }; break;
+            case "sahip-uyelerde-yok": body["ownerId"] = Kit.NewId(); break;
+            case "sahip-yok": body.Remove("ownerId"); break;
+            case "kapsam-yok": body.Remove("scopeKey"); break;
+            case "kapsam-buyuk-harf": body["scopeKey"] = "Cumulative"; break;
+            case "kapsam-tireli-guid": body["scopeKey"] = $"session:{Guid.NewGuid():D}"; break;
+            case "kapsam-bozuk": body["scopeKey"] = "session:yayin-1"; break;
+            case "kapsam-legacy": body["scopeKey"] = "legacy"; break;
+            case "siparisler-yok": body.Remove("orderIds"); break;
+            case "siparis-bos-guid": body["orderIds"] = new[] { Guid.NewGuid(), Guid.Empty }; break;
+            case "siparisler-10001":
+                body["orderIds"] = Enumerable.Range(0, 10_001).Select(_ => Guid.NewGuid()).ToArray();
+                break;
+            case "urun-toplami-eksi": body["productTotal"] = -1m; break;
+            case "urun-toplami-3-ondalik": body["productTotal"] = 10.005m; break;
+            case "bakiye-oncesi-yok": body.Remove("totalBeforeBalance"); break;
+            case "bakiye-oncesi-eksi": body["totalBeforeBalance"] = -0.01m; break;
+            case "alici-oder-yok": body.Remove("recipientPays"); break;
+            case "kargo-surumu-yok": body.Remove("shippingSettingsVersion"); break;
+            case "kargo-surumu-eksi": body["shippingSettingsVersion"] = -1; break;
+            case "onaylananlar-501":
+                body["confirmedPriorIds"] = Enumerable.Range(0, 501).Select(_ => Guid.NewGuid()).ToArray();
+                break;
+            case "onaylanan-bos-guid": body["confirmedPriorIds"] = new[] { Guid.Empty }; break;
+            default: throw new ArgumentOutOfRangeException(nameof(@case), @case, null);
+        }
+    }
+
+    /// <summary>
+    /// §4.7, §15-54: mod Off'ta <c>begin</c> 409 <c>mode-off</c>, kira denetimi yapmadan başarı dönmez ve kayıt yazılmaz.
+    /// İstek yine kopyanın kalp atışıdır.
+    /// </summary>
+    [Fact]
+    public async Task Mod_Off_409_mode_off_kayit_yok_kalp_atisi_yazilir()
+    {
+        var kit = await Kit.CreateAsync(_factory, SalesSyncMode.Off);
+        var replica = Guid.NewGuid();
+        var owner = Kit.NewId();
+        var before = DateTimeOffset.UtcNow;
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("mode-off");
+        (await kit.RecordsAsync()).Should().BeEmpty();
+        var heartbeat = await kit.Sales.ReplicaAsync(replica);
+        heartbeat.Should().NotBeNull("istek kopyanın kalp atışıdır");
+        heartbeat!.LastSeenAt.Should().BeOnOrAfter(before);
+    }
+
+    /// <summary>§6.5-2, M9: mod On'da eski, sürümsüz istemci 409 <c>client-update-required</c>; kayıt yazılmaz.</summary>
+    [Theory]
+    [InlineData("OrderDeck-WPF/0.9.10")]
+    [InlineData(null)]
+    [InlineData("Mozilla/5.0")]
+    public async Task Eski_ya_da_surumsuz_istemci_409_client_update_required(string? userAgent)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]), userAgent);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("client-update-required");
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>§2 "Ws": <c>SalesSync:MinClientVersion</c> boşken uç kapalı-hata çalışır, güncel istemci de geçemez.</summary>
+    [Fact]
+    public async Task Alt_surum_tanimsizken_409_client_update_required()
+    {
+        var kit = await Kit.CreateAsync(_withoutMinimum);
+        var owner = Kit.NewId();
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("client-update-required");
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    // ── (h) kiranın yazımı ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// §6.4-b, h: sahip gruplu (PersonKey <c>g:</c> + ham GroupId). İstemci grubun bir üyesini kopyasının Id'siyle
+    /// gönderir (eski birleştirme), ayrıca GUID'siz bir üye. Üyeler asıl kayda çözülür; sunucu grubu kapsandığı için kira
+    /// yazılır: Sending, üyeler (istemcinin kümesi ∪ sunucu grubu), siparişler, <c>LeaseUntil = StartedAt + 120 sn</c>,
+    /// makine adı kopya satırından.
+    /// </summary>
+    [Fact]
+    public async Task Kira_yazilir_uyeler_asil_kayda_cozulur_siparisler_ve_120_sn()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var group = $"grp-{Guid.NewGuid():N}";
+        var owner = await kit.SeedProjectionAsync(group);
+        var sibling = await kit.SeedProjectionAsync(group);
+        var siblingCopy = await kit.SeedProjectionAsync(group, mergedInto: Guid.ParseExact(sibling, "N"));
+        var raw = $"yerel-{Guid.NewGuid():N}";
+        var replica = Guid.NewGuid();
+        await kit.SeedReplicaAsync(replica, "PC-A");
+        var recordId = Guid.NewGuid();
+        var orders = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var before = DateTimeOffset.UtcNow;
+
+        var resp = await kit.BeginAsync(Kit.Body(
+            recordId, replica, owner, [owner, siblingCopy, raw, owner], orderIds: [.. orders, orders[0]],
+            productTotal: 490m, totalBeforeBalance: 550m, shippingSettingsVersion: 4));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var expectedMembers = new[] { owner, sibling, raw }.Order(StringComparer.Ordinal).ToList();
+        var body = await Kit.ReadAsync(resp);
+        body.RecordId.Should().Be(recordId);
+        body.State.Should().Be("sending");
+        body.Members.Should().Equal(expectedMembers);
+
+        var record = (await kit.RecordsAsync()).Should().ContainSingle().Subject;
+        record.Should().BeEquivalentTo(new
+        {
+            Id = recordId,
+            PersonKey = "g:" + group,
+            OwnerWpfCustomerId = owner,
+            ScopeKey = Kit.Cumulative,
+            ReplicaId = replica,
+            MachineName = "PC-A",
+            Kind = PaymentRequestKind.Lease,
+            State = PaymentRequestState.Sending,
+            ProductTotal = (decimal?)490m,
+            TotalBeforeBalance = (decimal?)550m,
+            NetAmount = (decimal?)null,
+            ShippingSettingsVersion = (int?)4,
+            FinishedAt = (DateTimeOffset?)null,
+            Version = 0,
+        });
+        record.PersonKeyHash.Should().Equal(PaymentPersonKey.Hash("g:" + group));
+        record.StartedAt.Should().BeOnOrAfter(before);
+        record.LeaseUntil.Should().Be(record.StartedAt.AddSeconds(120));
+        body.LeaseUntil.Should().Be(record.LeaseUntil);
+        record.Members.Select(m => m.WpfCustomerId).Should().BeEquivalentTo(expectedMembers);
+        record.Members.Should().AllSatisfy(m =>
+        {
+            m.LicenseId.Should().Be(kit.LicenseId);
+            m.ScopeKey.Should().Be(Kit.Cumulative);
+        });
+        record.RecordOrders.Select(o => o.OrderId).Should().BeEquivalentTo(orders);
+        record.RecordOrders.Should().AllSatisfy(o => o.LicenseId.Should().Be(kit.LicenseId));
+    }
+
+    /// <summary>§2 PersonKey: gruplanmamış GUID'li sahip <c>c:</c>, GUID'siz sahip <c>r:</c> (ham Id).</summary>
+    [Fact]
+    public async Task Gruplanmamis_ve_GUIDsiz_sahibin_kisi_anahtari()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var lone = await kit.SeedProjectionAsync("   ");
+        var raw = $"Yerel-{Guid.NewGuid():N}";
+        var loneRecord = Guid.NewGuid();
+        var rawRecord = Guid.NewGuid();
+
+        (await kit.BeginAsync(Kit.Body(loneRecord, Guid.NewGuid(), lone, [lone]))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await kit.BeginAsync(Kit.Body(rawRecord, Guid.NewGuid(), raw, [raw]))).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await kit.RecordAsync(loneRecord))!.PersonKey.Should().Be("c:" + lone);
+        var rawSaved = await kit.RecordAsync(rawRecord);
+        rawSaved!.PersonKey.Should().Be("r:" + raw);
+        rawSaved.OwnerWpfCustomerId.Should().Be(raw);
+    }
+
+    // ── (a) yeniden oynatma ──────────────────────────────────────────────────
+
+    /// <summary>§6.4-a, §15-21: yanıtı kaybolan <c>begin</c> aynı gövdeyle yinelenir — kayıtlı sonuç, ikinci satır yok.
+    /// Üyelerin sırası ve tutarın yazımı özeti değiştirmez; <c>seenMode</c> ve <c>confirmedPriorIds</c> özete girmez.</summary>
+    [Fact]
+    public async Task Ayni_govde_yeniden_oynatilir_ikinci_satir_yok()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var other = Kit.NewId();
+        var recordId = Guid.NewGuid();
+        var replica = Guid.NewGuid();
+        var first = await kit.BeginAsync(Kit.Body(recordId, replica, owner, [owner, other], productTotal: 100m));
+        first.StatusCode.Should().Be(HttpStatusCode.OK, await first.Content.ReadAsStringAsync());
+
+        var again = Kit.Body(recordId, replica, owner, [other, owner], productTotal: 100.00m,
+            confirmedPriorIds: [Guid.NewGuid()]);
+        again["seenMode"] = 0;
+        var second = await kit.BeginAsync(again);
+
+        second.StatusCode.Should().Be(HttpStatusCode.OK, await second.Content.ReadAsStringAsync());
+        (await Kit.ReadAsync(second)).Should().BeEquivalentTo(await Kit.ReadAsync(first));
+        (await kit.RecordsAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>§6.4-a: yeniden oynatma kaydın GÜNCEL hâlini döner.</summary>
+    [Fact]
+    public async Task Yeniden_oynatma_kaydin_guncel_durumunu_doner()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var body = Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]);
+        (await kit.BeginAsync(body)).StatusCode.Should().Be(HttpStatusCode.OK);
+        await kit.Sales.WithDbAsync(async db =>
+        {
+            var row = await db.PaymentRequestRecords.FindAsync((Guid)body["recordId"]!);
+            row!.State = PaymentRequestState.Delivered;
+        });
+
+        var replay = await kit.BeginAsync(body);
+
+        replay.StatusCode.Should().Be(HttpStatusCode.OK, await replay.Content.ReadAsStringAsync());
+        (await Kit.ReadAsync(replay)).State.Should().Be("delivered");
+    }
+
+    /// <summary>§6.4-a: aynı <c>recordId</c> farklı içerikle (tutar, kapsam, kopya) — 409 <c>content-conflict</c>; kayıt
+    /// değişmez.</summary>
+    [Theory]
+    [InlineData("tutar")]
+    [InlineData("kapsam")]
+    [InlineData("kopya")]
+    [InlineData("siparis")]
+    public async Task Ayni_Id_farkli_icerik_409_content_conflict(string change)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var recordId = Guid.NewGuid();
+        var replica = Guid.NewGuid();
+        (await kit.BeginAsync(Kit.Body(recordId, replica, owner, [owner]))).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var changed = change switch
+        {
+            "tutar" => Kit.Body(recordId, replica, owner, [owner], productTotal: 551m),
+            "kapsam" => Kit.Body(recordId, replica, owner, [owner], scopeKey: Kit.SessionScope(Guid.NewGuid())),
+            "kopya" => Kit.Body(recordId, Guid.NewGuid(), owner, [owner]),
+            "siparis" => Kit.Body(recordId, replica, owner, [owner], orderIds: [Guid.NewGuid()]),
+            _ => throw new ArgumentOutOfRangeException(nameof(change)),
+        };
+        var resp = await kit.BeginAsync(changed);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("content-conflict");
+        var record = (await kit.RecordsAsync()).Should().ContainSingle().Subject;
+        record.ProductTotal.Should().Be(550m);
+        record.ReplicaId.Should().Be(replica);
+    }
+
+    /// <summary>§6.4-a: Id kirasız bir kaydın (<c>Record</c>) ya da başka lisansın — 409 <c>content-conflict</c>.</summary>
+    [Fact]
+    public async Task Id_kirasiz_kaydin_ya_da_baska_lisansin_ise_409_content_conflict()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var other = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var record = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record,
+            PaymentRequestState.Delivered, DateTimeOffset.UtcNow.AddHours(-1));
+        var foreign = await other.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Sending, DateTimeOffset.UtcNow);
+
+        foreach (var id in new[] { record.Id, foreign.Id })
+        {
+            var resp = await kit.BeginAsync(Kit.Body(id, Guid.NewGuid(), owner, [owner]));
+
+            resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+            (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("content-conflict");
+        }
+        (await kit.RecordsAsync()).Should().ContainSingle().Which.Id.Should().Be(record.Id);
+    }
+
+    // ── (b) members-stale ────────────────────────────────────────────────────
+
+    /// <summary>§6.4-b, §10.1-17: istemcinin üye kümesi sunucu grubunu kapsamıyor (grup senkronu gecikmiş) — 409
+    /// <c>members-stale</c>, sunucunun grubuyla; kira yazılmaz.</summary>
+    [Fact]
+    public async Task Sunucu_grubunun_uyesi_eksikse_409_members_stale()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var group = $"grp-{Guid.NewGuid():N}";
+        var owner = await kit.SeedProjectionAsync(group);
+        var missing = await kit.SeedProjectionAsync(group);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("members-stale");
+        problem.GetProperty("members").EnumerateArray().Select(m => m.GetString())
+            .Should().BeEquivalentTo([owner, missing]);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    // ── (d) in-progress-elsewhere ────────────────────────────────────────────
+
+    /// <summary>§6.4-d: başka kopyanın canlı kirası — 409 <c>in-progress-elsewhere {machine, since, recordId}</c>; ikinci
+    /// satır yazılmaz, öbür kira değişmez.</summary>
+    [Fact]
+    public async Task Baska_kopyanin_canli_kirasi_409_in_progress_elsewhere()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var pcA = Guid.NewGuid();
+        await kit.SeedReplicaAsync(pcA, "PC-A");
+        var first = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), pcA, owner, [owner]));
+        var lease = await Kit.ReadAsync(first);
+        var saved = await kit.RecordAsync(lease.RecordId);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("in-progress-elsewhere");
+        problem.GetProperty("machine").GetString().Should().Be("PC-A");
+        problem.GetProperty("since").GetDateTimeOffset().Should().Be(saved!.StartedAt);
+        problem.GetProperty("recordId").GetGuid().Should().Be(lease.RecordId);
+        var records = await kit.RecordsAsync();
+        records.Should().ContainSingle().Which.Should().BeEquivalentTo(
+            new { State = PaymentRequestState.Sending, Version = 0, FinishedAt = (DateTimeOffset?)null });
+    }
+
+    // ── (e) already-requested ────────────────────────────────────────────────
+
+    /// <summary>
+    /// §6.4-e: onaylanmamış teslim edilmiş ve sonucu bilinmeyen kayıtlar, iki türden de — 409 <c>already-requested</c>.
+    /// Kira için an kapanıştır (yoksa başlangıç), kayıt için başlangıç. Vazgeçilmiş kayıt ve başka kapsamın kaydı
+    /// girmez. Üye kesişimiyle bulunan (başka PersonKey) kayıt da girer. Hepsi onaylanınca kira yazılır.
+    /// </summary>
+    [Fact]
+    public async Task Onceki_istekler_409_already_requested_onaylaninca_200()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var shared = Kit.NewId();
+        var key = "c:" + owner;
+        var t0 = DateTimeOffset.UtcNow.AddDays(-2);
+        var deliveredLease = await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Delivered, t0, finishedAt: t0.AddSeconds(30), netAmount: 300m, machineName: "PC-A");
+        var unconfirmedLease = await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Unconfirmed, t0.AddHours(1), netAmount: 120m);
+        var deliveredRecord = await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Record,
+            PaymentRequestState.Delivered, t0.AddHours(2), finishedAt: t0.AddHours(5), netAmount: 80m);
+        var viaMember = await kit.SeedRecordAsync("c:" + Kit.NewId(), [Kit.NewId(), shared], PaymentRequestKind.Record,
+            PaymentRequestState.Unconfirmed, t0.AddHours(3), netAmount: 60m, machineName: null);
+        await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease, PaymentRequestState.Abandoned, t0.AddHours(4),
+            finishedAt: t0.AddHours(4));
+        await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease, PaymentRequestState.Delivered, t0.AddHours(4),
+            finishedAt: t0.AddHours(4), scopeKey: Kit.SessionScope(Guid.NewGuid()));
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner, shared]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("already-requested");
+        Priors(problem).Should().Equal(
+            new Prior(deliveredLease.Id, "PC-A", 300m, t0.AddSeconds(30), false),
+            new Prior(unconfirmedLease.Id, "PC-X", 120m, t0.AddHours(1), true),
+            new Prior(deliveredRecord.Id, "PC-X", 80m, t0.AddHours(2), false),
+            new Prior(viaMember.Id, null, 60m, t0.AddHours(3), true));
+        (await kit.RecordsAsync()).Should().HaveCount(6, "ret kira yazmaz");
+
+        var confirmed = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner, shared],
+            confirmedPriorIds: [deliveredLease.Id, unconfirmedLease.Id, deliveredRecord.Id, viaMember.Id]));
+
+        confirmed.StatusCode.Should().Be(HttpStatusCode.OK, await confirmed.Content.ReadAsStringAsync());
+        (await kit.RecordsAsync()).Should().HaveCount(7);
+    }
+
+    /// <summary>
+    /// §6.4-e: kayıt yalnız PersonKey'den bulunur — üye kümesi ayrık (öbür bilgisayar grubun yalnız ondaki GUID'siz bir
+    /// üyesini yazmış). Özet aynı kişi×kapsamı bulur.
+    /// </summary>
+    [Fact]
+    public async Task Uye_kumesi_ayrik_kayit_PersonKey_ile_bulunur()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var group = $"grp-{Guid.NewGuid():N}";
+        var owner = await kit.SeedProjectionAsync(group);
+        var prior = await kit.SeedRecordAsync("g:" + group, [$"yerel-{Guid.NewGuid():N}"], PaymentRequestKind.Record,
+            PaymentRequestState.Delivered, DateTimeOffset.UtcNow.AddHours(-1), netAmount: 40m);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        Priors(await SalesKit.ProblemAsync(resp)).Select(p => p.Id).Should().Equal(prior.Id);
+    }
+
+    /// <summary>Kısmi onay yetmez: onaylanmamış kalan kayıt yine sorulur.</summary>
+    [Fact]
+    public async Task Kismi_onayda_kalan_kayit_yine_sorulur()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-1);
+        var first = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record,
+            PaymentRequestState.Delivered, t0, netAmount: 10m);
+        var second = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record,
+            PaymentRequestState.Delivered, t0.AddHours(1), netAmount: 20m);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            confirmedPriorIds: [first.Id]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        Priors(await SalesKit.ProblemAsync(resp)).Select(p => p.Id).Should().Equal(second.Id);
+    }
+
+    // ── (c) süre dolumu ──────────────────────────────────────────────────────
+
+    /// <summary>§6.4-c, §10.1-15: başka kopyanın kirası teslim kaydı olmadan doldu — kayıt Unconfirmed olur (FinishedAt,
+    /// Version + 1) ve <c>already-requested</c>'da sonucu bilinmeyen olarak döner; yazım retten sonra da kalır.</summary>
+    [Fact]
+    public async Task Suresi_dolmus_kira_Unconfirmed_olur_already_requested_unconfirmed()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var expired = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Sending, DateTimeOffset.UtcNow.AddMinutes(-3), machineName: "PC-A");
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("already-requested");
+        var saved = await kit.RecordAsync(expired.Id);
+        saved!.State.Should().Be(PaymentRequestState.Unconfirmed);
+        saved.Version.Should().Be(1);
+        saved.FinishedAt.Should().NotBeNull();
+        Priors(problem).Should().Equal(new Prior(expired.Id, "PC-A", null, saved.FinishedAt!.Value, true));
+    }
+
+    /// <summary>
+    /// §6.4-c, §10.1-16: aynı kopya aynı kişi×kapsamda yeni bir <c>recordId</c> ile başlar (süreç çöktü, mesaj gitmiş
+    /// olabilir) — eski canlı kirası Unconfirmed olur, <c>already-requested</c> sorulur; onaylanınca yeni kira yazılır.
+    /// </summary>
+    [Fact]
+    public async Task Ayni_kopyanin_yeni_istegi_eski_kirayi_Unconfirmed_yapar_onaylaninca_200()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var replica = Guid.NewGuid();
+        var old = await Kit.ReadAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner])));
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("already-requested");
+        Priors(problem).Should().ContainSingle().Which.Should().BeEquivalentTo(new { Id = old.RecordId, Unconfirmed = true });
+        (await kit.RecordAsync(old.RecordId))!.State.Should().Be(PaymentRequestState.Unconfirmed);
+
+        var confirmed = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner],
+            confirmedPriorIds: [old.RecordId]));
+
+        confirmed.StatusCode.Should().Be(HttpStatusCode.OK, await confirmed.Content.ReadAsStringAsync());
+        (await kit.RecordsAsync()).Where(r => r.State == PaymentRequestState.Sending).Should().ContainSingle()
+            .Which.Id.Should().Be((await Kit.ReadAsync(confirmed)).RecordId);
+    }
+
+    // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    private sealed record Prior(Guid Id, string? Machine, decimal? NetAmount, DateTimeOffset At, bool Unconfirmed);
+
+    private static List<Prior> Priors(JsonElement problem) =>
+        problem.GetProperty("priors").EnumerateArray()
+            .Select(p => new Prior(
+                p.GetProperty("id").GetGuid(),
+                p.GetProperty("machine").ValueKind == JsonValueKind.Null ? null : p.GetProperty("machine").GetString(),
+                p.GetProperty("netAmount").ValueKind == JsonValueKind.Null ? null : p.GetProperty("netAmount").GetDecimal(),
+                p.GetProperty("at").GetDateTimeOffset(),
+                p.GetProperty("unconfirmed").GetBoolean()))
+            .ToList();
+}
