@@ -1876,6 +1876,144 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("Payments");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestMember", b =>
+                {
+                    b.Property<Guid>("RecordId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("WpfCustomerId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("RecordId", "WpfCustomerId");
+
+                    b.HasIndex("LicenseId", "WpfCustomerId", "ScopeKey");
+
+                    b.ToTable("PaymentRequestMembers");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal?>("AppliedAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset?>("FinishedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool?>("FullyFromBalance")
+                        .HasColumnType("bit");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<DateTimeOffset?>("LeaseUntil")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("MachineName")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<decimal?>("NetAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("OwnerWpfCustomerId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("PersonKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<byte[]>("PersonKeyHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("binary(32)")
+                        .IsFixedLength();
+
+                    b.Property<decimal?>("ProductTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<Guid>("ReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("binary(32)")
+                        .IsFixedLength();
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int?>("ShippingSettingsVersion")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("tinyint");
+
+                    b.Property<decimal?>("TotalBeforeBalance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId", "PersonKeyHash", "ScopeKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_PaymentRequestRecords_Sending")
+                        .HasFilter("[State] = 0");
+
+                    b.HasIndex("LicenseId", "PersonKeyHash", "ScopeKey", "StartedAt");
+
+                    b.ToTable("PaymentRequestRecords");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestRecordOrder", b =>
+                {
+                    b.Property<Guid>("RecordId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("RecordId", "OrderId");
+
+                    b.ToTable("PaymentRequestRecordOrders");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentSubmissionAudit", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3982,6 +4120,39 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("License");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestMember", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.PaymentRequestRecord", "Record")
+                        .WithMany("Members")
+                        .HasForeignKey("RecordId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Record");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestRecord", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestRecordOrder", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.PaymentRequestRecord", "Record")
+                        .WithMany("RecordOrders")
+                        .HasForeignKey("RecordId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Record");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.Category", "Category")
@@ -4393,6 +4564,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.License", b =>
                 {
                     b.Navigation("Activations");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PaymentRequestRecord", b =>
+                {
+                    b.Navigation("Members");
+
+                    b.Navigation("RecordOrders");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>
