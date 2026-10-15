@@ -17,6 +17,8 @@ public sealed class SalesCommandRejection : Exception
     public const string CodeShipmentShipped = "shipment-shipped";
     public const string CodeContentConflict = "content-conflict";
     public const string CodeUnknownShipment = "unknown-shipment";
+    public const string CodeHandingOver = "handing-over";
+    public const string CodeOwnerActive = "owner-active";
 
     private SalesCommandRejection(
         int statusCode,
@@ -132,6 +134,47 @@ public sealed class SalesCommandRejection : Exception
                 ["machine"] = machine,
                 ["ownerLastSeenAt"] = ownerLastSeenAt,
                 ["sessionId"] = sessionId,
+            },
+            withCurrent: false);
+
+    /// <summary>
+    /// 409 <c>handing-over</c> (<c>force-end</c>, §4.6, sahip kararı Y8, §15-43): yayın bitti ama devredilmedi — sahibin
+    /// etiketleri gönderilmeyi bekliyor. Başka bilgisayar onu sahip ne kadar sessiz olursa olsun bitiremez; devralma
+    /// eksik etiketle ödeme isteği ve koli üretirdi. Sahip hiç dönmeyecekse kapatma Burak'ın CLI'ıyladır (§4.10). Ret,
+    /// çipin ve istemci metninin (§5.3) gösterdiği sayıyı, makineyi ve son sinyali taşır.
+    /// </summary>
+    /// <param name="unsentLabelCount">Sahibin <c>Release = false</c> kapanışının bildirdiği gönderilmemiş etiket sayısı
+    /// (<c>StreamSessions.UnsentLabelCount</c>); bilinmiyorsa null.</param>
+    /// <param name="machine">Yayının sahibi bilgisayarın adı; bilinmiyorsa null.</param>
+    /// <param name="ownerLastSeenAt">Sahip kopyanın son kalp atışı; bilinmiyorsa null.</param>
+    public static SalesCommandRejection HandingOver(
+        Guid sessionId, int? unsentLabelCount, string? machine, DateTimeOffset? ownerLastSeenAt) =>
+        new(StatusCodes.Status409Conflict, CodeHandingOver,
+            "Yayın bitti ama etiketleri henüz gönderilmedi; yayın bilgisayarı bağlanınca yayın düzenlenebilir olur.",
+            new Dictionary<string, object?>
+            {
+                ["sessionId"] = sessionId,
+                ["unsentLabelCount"] = unsentLabelCount,
+                ["machine"] = machine,
+                ["ownerLastSeenAt"] = ownerLastSeenAt,
+            },
+            withCurrent: false);
+
+    /// <summary>
+    /// 409 <c>owner-active</c> (<c>force-end</c>, §4.6, sahip kararı Y7): canlı yayının sahibi
+    /// <c>SalesSync:ForceEndSilenceMinutes</c> içinde sinyal verdi — yayın başka bilgisayardan bitirilemez. Sahibi
+    /// olmayan (eski sürümde açılmış) yayında sessizlik ölçülemez; ret <paramref name="lastSeenAt"/> boş olarak döner.
+    /// </summary>
+    /// <param name="machine">Yayının sahibi bilgisayarın adı; bilinmiyorsa null.</param>
+    /// <param name="lastSeenAt">Sahip kopyanın son kalp atışı (<c>WpfReplicas.LastSeenAt</c>); bilinmiyorsa null.</param>
+    public static SalesCommandRejection OwnerActive(Guid sessionId, string? machine, DateTimeOffset? lastSeenAt) =>
+        new(StatusCodes.Status409Conflict, CodeOwnerActive,
+            "Yayın bilgisayarı hâlâ sinyal veriyor; yayın buradan bitirilemez.",
+            new Dictionary<string, object?>
+            {
+                ["sessionId"] = sessionId,
+                ["machine"] = machine,
+                ["lastSeenAt"] = lastSeenAt,
             },
             withCurrent: false);
 

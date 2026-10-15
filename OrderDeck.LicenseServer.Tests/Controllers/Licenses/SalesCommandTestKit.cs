@@ -79,8 +79,10 @@ public sealed class SalesCommandTestKit
 
     public enum Phase { Live, HandingOver, Released }
 
-    /// <summary>Sahibi <see cref="OwnerReplicaId"/> (PC-A) — ya da verilen kopya — olan bir yayın.</summary>
-    public async Task<Guid> SeedSessionAsync(Phase phase, string? forceEndedBy = null, Guid? owner = null)
+    /// <summary>Sahibi <see cref="OwnerReplicaId"/> (PC-A) — ya da verilen kopya — olan bir yayın; devrediliyor hâlinde
+    /// sahibin bildirdiği gönderilmemiş etiket sayısıyla (<paramref name="unsentLabelCount"/>).</summary>
+    public async Task<Guid> SeedSessionAsync(
+        Phase phase, string? forceEndedBy = null, Guid? owner = null, int? unsentLabelCount = null)
     {
         var session = new StreamSession
         {
@@ -95,6 +97,7 @@ public sealed class SalesCommandTestKit
             OwnerReplicaId = owner ?? OwnerReplicaId,
             OwnerMachineName = "PC-A",
             ForceEndedBy = forceEndedBy,
+            UnsentLabelCount = unsentLabelCount,
         };
         await WithDbAsync(db =>
         {
@@ -331,6 +334,31 @@ public sealed class SalesCommandTestKit
     public object Reprint(Guid commandId, IEnumerable<Guid> orderIds, Guid? replicaId = null) =>
         Body(commandId, "reprint", new { orderIds = orderIds.ToArray() }, [], replicaId);
 
+    /// <summary><c>force-end</c>; onay teldeki gibi (<c>confirm</c>), sipariş sürümü yok.</summary>
+    public object ForceEnd(Guid commandId, Guid sessionId, bool? confirm = true, Guid? replicaId = null) =>
+        Body(commandId, "force-end", new { sessionId, confirm }, [], replicaId);
+
+    public string SessionsUrl => $"/api/v1/licenses/{LicenseId}/sessions/sync";
+
+    /// <summary>Yayın sahibinin (varsayılan PC-A) v2 kapanış gönderimi (<c>sessions/sync</c>, §4.1, §5.2):
+    /// <paramref name="release"/> etiket kuyruğunun boş olduğunu söyler; değilse gönderilmemiş sayı taşır.</summary>
+    public object OwnerClose(
+        Guid sessionId, DateTimeOffset endedAt, bool release, int? unsentLabelCount = null, Guid? replicaId = null) =>
+        new
+        {
+            sessions = new[]
+            {
+                new
+                {
+                    id = sessionId, title = "Akşam yayını", startedAt = StartedAt, endedAt = (DateTimeOffset?)endedAt,
+                    platforms = "youtube", notes = (string?)null, release, machineName = "PC-A", unsentLabelCount,
+                },
+            },
+            replicaId = replicaId ?? OwnerReplicaId,
+            protocol = 2,
+            seenMode = 1,
+        };
+
     public Task<HttpResponseMessage> SendAsync(object body, string? userAgent = WpfUserAgent) =>
         SendToAsync(Url, body, userAgent);
 
@@ -348,6 +376,9 @@ public sealed class SalesCommandTestKit
 
     public async Task<Order> OrderAsync(Guid id) =>
         await ReadDbAsync(db => db.Orders.AsNoTracking().SingleAsync(o => o.Id == id));
+
+    public async Task<StreamSession> SessionAsync(Guid id) =>
+        await ReadDbAsync(db => db.StreamSessions.AsNoTracking().SingleAsync(s => s.Id == id));
 
     /// <summary>Id'li siparişler, lisanstan bağımsız (Orders'ın birincil anahtarı yalnız Id).</summary>
     public async Task<List<Order>> OrdersWithIdAsync(Guid id) =>

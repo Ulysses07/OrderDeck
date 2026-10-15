@@ -15,6 +15,7 @@ public sealed class SalesCommandScope
 {
     private readonly LicenseDbContext _db;
     private readonly ShipmentAmountDeriver _shipmentAmounts;
+    private readonly SessionReleaser _releaser;
     private readonly IReadOnlyDictionary<Guid, int> _expected;
     private readonly Dictionary<Guid, Order> _orders = new();
     private readonly Dictionary<Guid, Guid?> _shipmentBefore = new();
@@ -25,10 +26,12 @@ public sealed class SalesCommandScope
     private readonly HashSet<Guid> _touchedShipments = new();
     private readonly List<Guid> _derivedShipments = new();
     private readonly HashSet<Guid> _insertedShipments = new();
+    private readonly HashSet<Guid> _endedSessions = new();
 
     internal SalesCommandScope(
         LicenseDbContext db,
         ShipmentAmountDeriver shipmentAmounts,
+        SessionReleaser releaser,
         Guid licenseId,
         Guid replicaId,
         DateTimeOffset now,
@@ -36,6 +39,7 @@ public sealed class SalesCommandScope
     {
         _db = db;
         _shipmentAmounts = shipmentAmounts;
+        _releaser = releaser;
         LicenseId = licenseId;
         ReplicaId = replicaId;
         Now = now;
@@ -138,14 +142,81 @@ public sealed class SalesCommandScope
     private async Task<SalesCommandRejection> SessionLiveAsync(
         Guid sessionId, SessionVisibility? session, CancellationToken ct)
     {
-        DateTimeOffset? ownerLastSeenAt = session?.OwnerReplicaId is { } owner
-            ? await _db.WpfReplicas.AsNoTracking()
-                .Where(r => r.LicenseId == LicenseId && r.ReplicaId == owner)
-                .Select(r => (DateTimeOffset?)r.LastSeenAt)
-                .SingleOrDefaultAsync(ct)
-            : null;
+        var ownerLastSeenAt = session?.OwnerReplicaId is { } owner ? await ReadLastSeenAsync(owner, ct) : null;
         return SalesCommandRejection.SessionLive(sessionId, session?.OwnerMachineName, ownerLastSeenAt);
     }
+
+    /// <summary>Bir kopyanın bu lisanstaki son kalp atışı (<c>WpfReplicas.LastSeenAt</c>, §4.0); kopya satırı yoksa
+    /// (hiç v2 isteği göndermemiş) null.</summary>
+    public Task<DateTimeOffset?> ReadLastSeenAsync(Guid replicaId, CancellationToken ct) =>
+        _db.WpfReplicas.AsNoTracking()
+            .Where(r => r.LicenseId == LicenseId && r.ReplicaId == replicaId)
+            .Select(r => (DateTimeOffset?)r.LastSeenAt)
+            .SingleOrDefaultAsync(ct);
+
+    // ── Yayın komutu (force-end; §2 Devir b, §4.6, Y7, Y8) ──────────────────────────────────────────
+
+    /// <summary>
+    /// Bir yayının şimdiki hâli, İZLEMEDEN (§2 tablosu: canlı, devrediliyor, devredilmiş). Bu lisansta yoksa (hiç yok ya
+    /// da başka lisansın) 400 <c>unknown-session</c>.
+    /// </summary>
+    public async Task<SessionSnapshot> ReadSessionAsync(Guid sessionId, CancellationToken ct) =>
+        await _db.StreamSessions.AsNoTracking()
+            .Where(s => s.LicenseId == LicenseId && s.Id == sessionId)
+            .Select(s => new SessionSnapshot(
+                s.Id, s.EndedAt, s.ReleasedAt, s.OwnerReplicaId, s.OwnerMachineName, s.UnsentLabelCount))
+            .SingleOrDefaultAsync(ct)
+        ?? throw SalesCommandRejection.UnknownSession(sessionId);
+
+    /// <summary>
+    /// Canlı yayını zorla bitirir ve aynı işlemde devreder (§2 "Devir" b, §4.1): <c>EndedAt</c> = <see cref="Now"/>,
+    /// <c>ForceEndedBy</c> = çağıran kopya, <c>UpdatedAt</c>; ardından <see cref="SessionReleaser"/> <c>ReleasedAt</c>'i
+    /// aynı anla yazar ve yayının bütün siparişlerine <c>SessionReleasedAt</c> basar (DM3; birimlerine ve sürümlerine
+    /// dokunmaz). Hepsi servisin açtığı işlemde.
+    ///
+    /// <para><b>Koşul veritabanında.</b> Bitirme tek bir koşullu UPDATE'tir (<c>EndedAt IS NULL ∧ ReleasedAt IS
+    /// NULL</c>): sahibin eşzamanlı kapanışı (<c>sessions/sync</c>) önce commit olduysa satır bitmiş bulunur ve hiçbir şey
+    /// yazılmaz — kapanışın <c>EndedAt</c>'i ezilmez (§4.1 tekdüzelik, §10.1-11). Okumadaki hâl yarışın hakemi değildir.
+    /// InMemory'de <c>ExecuteUpdate</c> olmadığı için aynı kural izlenen satıra uygulanır.</para>
+    /// </summary>
+    /// <returns><c>true</c>: bu çağrı bitirdi ve devretti. <c>false</c>: yayın bu arada bitirildi ya da devredildi;
+    /// hiçbir şey yazılmadı, çağıran hâli yeniden okur.</returns>
+    public async Task<bool> ForceEndAsync(Guid sessionId, CancellationToken ct)
+    {
+        var licenseId = LicenseId;
+        var now = Now;
+        var endedBy = ReplicaId.ToString();
+        if (_db.Database.IsRelational())
+        {
+            var updated = await _db.StreamSessions
+                .Where(s => s.LicenseId == licenseId && s.Id == sessionId
+                            && s.EndedAt == null && s.ReleasedAt == null)
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(s => s.EndedAt, now)
+                    .SetProperty(s => s.ForceEndedBy, endedBy)
+                    .SetProperty(s => s.UpdatedAt, now), ct);
+            if (updated == 0) return false;
+        }
+        else
+        {
+            var tracked = await _db.StreamSessions
+                .SingleOrDefaultAsync(s => s.LicenseId == licenseId && s.Id == sessionId, ct);
+            if (tracked is null || tracked.EndedAt is not null || tracked.ReleasedAt is not null) return false;
+            tracked.EndedAt = now;
+            tracked.ForceEndedBy = endedBy;
+            tracked.UpdatedAt = now;
+        }
+
+        // Aynı işlemde az önce bitirilen ve devredilmemiş satır: devir onu bulmalı.
+        var released = await _releaser.ReleaseAsync(licenseId, [sessionId], now, ct);
+        if (!released.Contains(sessionId))
+            throw new InvalidOperationException("Zorla bitirilen yayın aynı işlemde devredilemedi.");
+        _endedSessions.Add(sessionId);
+        return true;
+    }
+
+    /// <summary>Komutun bitirip devrettiği yayınlar (<see cref="ForceEndAsync"/>).</summary>
+    internal IReadOnlyCollection<Guid> EndedSessionIds => _endedSessions;
 
     /// <summary>
     /// Beklenen sürüm (§4.6 adım 4): verilen her siparişin istemcinin gördüğü sürümü (<c>expected</c>) güncel
@@ -476,3 +547,13 @@ internal sealed record SalesCommandChange(Order Order, Guid? ShipmentBefore, IRe
 
 /// <summary>Bir siparişin izlenmeden okunan yayını ve kargo bağı (<see cref="SalesCommandScope.PeekOrdersAsync"/>).</summary>
 public sealed record OrderPeek(Guid Id, Guid? SessionId, Guid? ShipmentId);
+
+/// <summary>Bir yayının izlenmeden okunan hâli (<see cref="SalesCommandScope.ReadSessionAsync"/>): <c>EndedAt</c> boş =
+/// canlı; dolu ve <c>ReleasedAt</c> boş = devrediliyor; <c>ReleasedAt</c> dolu = devredilmiş (§2).</summary>
+public sealed record SessionSnapshot(
+    Guid Id,
+    DateTimeOffset? EndedAt,
+    DateTimeOffset? ReleasedAt,
+    Guid? OwnerReplicaId,
+    string? OwnerMachineName,
+    int? UnsentLabelCount);

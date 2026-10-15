@@ -36,7 +36,8 @@ public sealed record SalesCommandRequest(
 /// <param name="Status"><c>applied</c> (en az bir satır yazıldı) ya da <c>unchanged</c>.</param>
 /// <param name="Orders">Komutun hedef siparişleri, GÜNCEL hâlleriyle (yeniden oynatmada da).</param>
 /// <param name="Shipments">Bu siparişlerin bağlı olduğu ve komutun türettiği dosyalar, güncel hâlleriyle.</param>
-/// <param name="Sessions">Siparişlerin oturumları, güncel hâlleriyle (akışın yan listesi gibi).</param>
+/// <param name="Sessions">Siparişlerin oturumları (akışın yan listesi gibi) ve komutun hedef yayınları
+/// (<c>force-end</c>), güncel hâlleriyle.</param>
 /// <param name="Result">Komutun kayıtlı sonucu (<c>SalesCommandLogs.ResultJson</c>); yeniden oynatmada ilk
 /// uygulamanınkiyle aynı.</param>
 public sealed record SalesCommandResponse(
@@ -109,6 +110,11 @@ public sealed record SalesCommandResult(
     /// verilen dosyada donmuş tutar).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<SalesCommandShipmentAmount>? Decided { get; init; }
+
+    /// <summary><c>force-end</c>: yayın zaten devredilmişti — komut etkisiz (<c>unchanged</c>); <c>ForceEndedBy</c> ve
+    /// devir anı değişmedi. Yayın yanıtın <c>sessions</c>'ında güncel hâliyle döner.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AlreadyReleased { get; init; }
 
     /// <summary>Yanıtta güncel hâliyle dönen dosyalar: türetilenler, havuz ve kararın dosyaları.</summary>
     public IReadOnlyList<Guid> ResponseShipmentIds() =>

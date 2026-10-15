@@ -13,7 +13,8 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 
 /// <summary>
 /// <c>POST sales/commands</c>'ın işleme hattı — spec 2026-10-13 §4.6. Devredilmiş yayının etiketini ya da kargo dosyasını
-/// (<c>attach-shipment</c>, <c>shipment-decision</c>) değiştiren her komut buradan geçer; türün kuralını
+/// (<c>attach-shipment</c>, <c>shipment-decision</c>) değiştiren ve sahibi susmuş canlı yayını bitiren
+/// (<c>force-end</c>) her komut buradan geçer; türün kuralını
 /// <see cref="ISalesCommandHandler"/> uygular. Sıra:
 /// <list type="number">
 ///   <item><b>İstek.</b> v2 zarfı (aksi 400 <c>invalid-envelope</c>), <c>commandId</c>, kayıtlı bir tür (aksi 400
@@ -60,6 +61,7 @@ public sealed class SalesCommandService
     private readonly LicenseDbContext _db;
     private readonly SalesReplicaService _replicas;
     private readonly ShipmentAmountDeriver _shipmentAmounts;
+    private readonly SessionReleaser _releaser;
     private readonly StockLedgerWriter _ledger;
     private readonly IReadOnlyDictionary<string, ISalesCommandHandler> _handlers;
     private readonly LabelRuleApplier _labels;
@@ -70,6 +72,7 @@ public sealed class SalesCommandService
         LicenseDbContext db,
         SalesReplicaService replicas,
         ShipmentAmountDeriver shipmentAmounts,
+        SessionReleaser releaser,
         StockLedgerWriter ledger,
         IEnumerable<ISalesCommandHandler> handlers,
         LabelRuleApplier labels,
@@ -79,6 +82,7 @@ public sealed class SalesCommandService
         _db = db;
         _replicas = replicas;
         _shipmentAmounts = shipmentAmounts;
+        _releaser = releaser;
         _ledger = ledger;
         _handlers = handlers.ToDictionary(h => h.Kind, StringComparer.Ordinal);
         _labels = labels;
@@ -136,7 +140,7 @@ public sealed class SalesCommandService
         IDbContextTransaction? transaction = _db.Database.IsRelational()
             ? await _db.Database.BeginTransactionAsync(ct)
             : null;
-        var scope = new SalesCommandScope(_db, _shipmentAmounts, licenseId, replicaId, now, expected);
+        var scope = new SalesCommandScope(_db, _shipmentAmounts, _releaser, licenseId, replicaId, now, expected);
         try
         {
             var outcome = await command.ExecuteAsync(scope, ct);
@@ -193,9 +197,10 @@ public sealed class SalesCommandService
                 Pool = outcome.Pool,
                 PoolShipmentIds = outcome.PoolShipmentIds,
                 Decided = outcome.DecidedShipmentIds?.Select(AmountOf).ToList(),
+                AlreadyReleased = outcome.AlreadyReleased,
             };
             statusChangedCustomers = outcome.ShipmentStatusChangedCustomers ?? [];
-            status = changes.Count > 0 || scope.ShipmentsChanged
+            status = changes.Count > 0 || scope.ShipmentsChanged || scope.EndedSessionIds.Count > 0
                 ? SalesCommandLog.StatusApplied
                 : SalesCommandLog.StatusUnchanged;
             resultJson = JsonSerializer.Serialize(result, ResultJsonOptions);
@@ -216,9 +221,10 @@ public sealed class SalesCommandService
 
             _log.LogInformation(
                 "sales/commands: {Kind} {Status} — {Changed} sipariş yazıldı, {Skipped} atlandı, {Derived} dosya "
-                + "türetildi, {Ledger} sipariş deftere (license={LicenseId}, replica={ReplicaId}, command={CommandId})",
+                + "türetildi, {Ledger} sipariş deftere, {Ended} yayın bitirilip devredildi (license={LicenseId}, "
+                + "replica={ReplicaId}, command={CommandId})",
                 kind, status, outcome.Changed.Count, outcome.Skipped.Count, derived.Count, ledgerRows.Count,
-                licenseId, replicaId, commandId);
+                scope.EndedSessionIds.Count, licenseId, replicaId, commandId);
         }
         catch (SalesCommandRejection rejection)
         {
@@ -322,7 +328,8 @@ public sealed class SalesCommandService
     /// <summary>
     /// Başarı yanıtı (uygulama ve yeniden oynatma aynı yoldan): siparişler komutunkiler ve ardından komutun yazdığı
     /// öbürleri (ör. kargoya verilirken bağı çözülenler), dosyalar komutunkiler ve sonucun dosyaları (türetilenler,
-    /// havuz, kararın dosyaları) — hepsi güncel hâlleriyle.
+    /// havuz, kararın dosyaları), yayınlar siparişlerinkiler ve komutunkiler (<c>force-end</c>) — hepsi güncel
+    /// hâlleriyle.
     /// </summary>
     private async Task<SalesCommandReply> SucceededAsync(
         Guid licenseId,
@@ -334,7 +341,8 @@ public sealed class SalesCommandService
     {
         var orderIds = command.OrderIds.Concat(result?.Changed ?? []).Distinct().ToList();
         var shipmentIds = command.ShipmentIds.Concat(result?.ResponseShipmentIds() ?? []).Distinct().ToList();
-        var (orders, shipments, sessions) = await CurrentRowsAsync(licenseId, orderIds, shipmentIds, ct);
+        var (orders, shipments, sessions) =
+            await CurrentRowsAsync(licenseId, orderIds, shipmentIds, command.SessionIds, ct);
         using var document = JsonDocument.Parse(resultJson);
         return new SalesCommandSucceeded(
             new SalesCommandResponse(status, orders, shipments, sessions, document.RootElement.Clone()));
@@ -351,7 +359,7 @@ public sealed class SalesCommandService
         {
             var rows = await CurrentRowsAsync(
                 licenseId, rejection.WithCurrentOrders ? rejection.CurrentOrderIds ?? command.OrderIds : [],
-                shipmentIds, ct);
+                shipmentIds, [], ct);
             if (rejection.WithCurrentOrders) extensions["current"] = rows.Orders;
             if (shipmentIds.Count > 0)
                 extensions["currentShipments"] = rows.Shipments.Where(s => shipmentIds.Contains(s.Id)).ToList();
@@ -362,11 +370,15 @@ public sealed class SalesCommandService
     /// <summary>
     /// Yanıtın satırları, veritabanındaki güncel hâlleriyle ve akış öğesi biçiminde: siparişler istenen sırayla (asıl
     /// kaydın Id'si ve KVKK okuma maskesiyle, <see cref="SalesOrderItem.From"/>), bağlı oldukları ve verilen dosyalar,
-    /// siparişlerin oturumları.
+    /// siparişlerin oturumları ve verilen oturumlar.
     /// </summary>
     private async Task<(IReadOnlyList<SalesOrderItem> Orders, IReadOnlyList<SalesShipmentItem> Shipments,
         IReadOnlyList<SalesSessionItem> Sessions)> CurrentRowsAsync(
-        Guid licenseId, IReadOnlyList<Guid> orderIds, IReadOnlyList<Guid> shipmentIds, CancellationToken ct)
+        Guid licenseId,
+        IReadOnlyList<Guid> orderIds,
+        IReadOnlyList<Guid> shipmentIds,
+        IReadOnlyList<Guid> sessionIds,
+        CancellationToken ct)
     {
         var rows = orderIds.Count == 0
             ? new Dictionary<Guid, Order>()
@@ -388,7 +400,10 @@ public sealed class SalesCommandService
                 .Where(s => s.LicenseId == licenseId && shipmentKeys.Contains(s.Id))
                 .ToDictionaryAsync(s => s.Id, ct);
 
-        var sessionKeys = orders.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value).Distinct().ToList();
+        var sessionKeys = orders.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value)
+            .Concat(sessionIds)
+            .Distinct()
+            .ToList();
         var sessions = sessionKeys.Count == 0
             ? new Dictionary<Guid, StreamSession>()
             : await _db.StreamSessions.AsNoTracking()

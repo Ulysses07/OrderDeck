@@ -43,6 +43,10 @@ public interface ISalesCommand
     /// (<c>currentShipments</c>) güncel hâlleriyle döner. Çoğu tür için boş.</summary>
     IReadOnlyList<Guid> ShipmentIds => [];
 
+    /// <summary>Komutun hedef yayınları (<c>force-end</c>): yanıtta (ve yeniden oynatmada) siparişlerin yayınlarıyla
+    /// birlikte güncel hâlleriyle döner. Çoğu tür için boş.</summary>
+    IReadOnlyList<Guid> SessionIds => [];
+
     /// <summary>
     /// Türün kuralını uygular: <paramref name="scope"/> ile siparişleri yükler, görünürlüğü ve beklenen sürümü denetler,
     /// alanları ve birim damgalarını yazar, değişen siparişi <see cref="SalesCommandScope.MarkChanged"/> ile bildirir.
@@ -80,6 +84,9 @@ public sealed record SalesCommandOutcome(IReadOnlyList<Guid> Changed, IReadOnlyL
 
     /// <inheritdoc cref="SalesCommandResult.PoolShipmentIds"/>
     public IReadOnlyList<Guid>? PoolShipmentIds { get; init; }
+
+    /// <inheritdoc cref="SalesCommandResult.AlreadyReleased"/>
+    public bool? AlreadyReleased { get; init; }
 
     /// <summary><c>shipment-decision</c>: kararın uygulandığı dosyalar (hedef ve U12 ile öbür açık dosyalar); servis
     /// sonuca sürüm ve tutarlarıyla yazar (<see cref="SalesCommandResult.Decided"/>).</summary>

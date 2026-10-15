@@ -50,6 +50,7 @@ public sealed partial class SalesCommandsRelationalTests : IAsyncLifetime
         _factory.Hook.Before = null;
         _factory.Barrier.Disarm();
         _factory.Queries.Disarm();
+        _factory.NonQueries.Disarm();
         _kit.Client.Dispose();
         _factory.Dispose();
         return Task.CompletedTask;
@@ -618,12 +619,14 @@ public sealed partial class SalesCommandsRelationalTests : IAsyncLifetime
 
         public QueryHook Queries { get; } = new();
 
+        public NonQueryHook NonQueries { get; } = new();
+
         protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
         {
             ["SalesSync:MinClientVersion"] = SalesSyncConfiguredApiFactory.MinClientVersion,
         };
 
         protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) =>
-            opt.AddInterceptors(Hook, Barrier, Queries);
+            opt.AddInterceptors(Hook, Barrier, Queries, NonQueries);
     }
 }
