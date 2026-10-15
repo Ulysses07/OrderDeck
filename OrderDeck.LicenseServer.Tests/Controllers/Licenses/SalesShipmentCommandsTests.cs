@@ -3,6 +3,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync.Commands;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -273,6 +274,45 @@ public sealed class SalesShipmentCommandsTests : IClassFixture<SalesSyncConfigur
         (await kit.ShipmentsOfAsync(customer)).Select(s => s.Id).Should().Equal(accepted.Id);
         (await kit.ShipmentAsync(accepted.Id)).Version.Should().Be(accepted.Version);
         (await kit.LogsAsync()).Should().ContainSingle().Which.Status.Should().Be("unchanged");
+    }
+
+    /// <summary>
+    /// Küme eşitliği isteyen komutun beklenen küme tavanı (§4.6): aday kümesi 500'ü aşan müşteri (aylarca dekontsuz
+    /// ödenmiş etiketler; Ws geri doldurması geçmişi aday yapar) bağlanabilir — küme eksiksiz gönderilir, komut kalıcı
+    /// bir 400/409 döngüsüne girmez. Sunucunun kümesi tavanı da aşarsa ayrı ve yeniden denenmeyen 409
+    /// <c>too-many-candidates</c> döner (sayı ve tavanla, satır taşımadan); hiçbir şey yazılmaz.
+    /// </summary>
+    [Fact]
+    public async Task Attach_500u_asan_aday_kumesini_baglar_tavani_asan_kumede_409_too_many_candidates()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var customer = NewCustomer();
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var candidates = await kit.SeedOrdersAsync(session, 600, o => { o.CustomerId = customer; o.Price = 10m; });
+        var proposed = Guid.NewGuid();
+
+        var resp = await kit.SendAsync(kit.AttachShipment(Guid.NewGuid(), customer, proposed, candidates));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var reply = await Kit.ReadAsync(resp);
+        reply.Result.GetProperty("shipmentId").GetGuid().Should().Be(proposed);
+        Guids(reply.Result, "changed").Should().HaveCount(600);
+        (await kit.ShipmentAsync(proposed)).CumulativeAmount.Should().Be(6000m);
+
+        var crowded = NewCustomer();
+        var max = SalesCommandService.MaxSetOrders;
+        var many = await kit.SeedOrdersAsync(session, max + 1, o => o.CustomerId = crowded);
+
+        var tooMany = await kit.SendAsync(kit.AttachShipment(Guid.NewGuid(), crowded, Guid.NewGuid(), many.Take(max)));
+
+        tooMany.StatusCode.Should().Be(HttpStatusCode.Conflict, await tooMany.Content.ReadAsStringAsync());
+        var problem = await Kit.ProblemAsync(tooMany);
+        problem.GetProperty("title").GetString().Should().Be("too-many-candidates");
+        problem.GetProperty("count").GetInt32().Should().Be(max + 1);
+        problem.GetProperty("max").GetInt32().Should().Be(max);
+        problem.TryGetProperty("current", out _).Should().BeFalse("küme satır taşımayacak kadar büyük");
+        (await kit.ShipmentsOfAsync(crowded)).Should().BeEmpty();
+        (await kit.OrderAsync(many[0].Id)).Should().BeEquivalentTo(new { ShipmentId = (Guid?)null, SyncVersion = 1 });
     }
 
     /// <summary>

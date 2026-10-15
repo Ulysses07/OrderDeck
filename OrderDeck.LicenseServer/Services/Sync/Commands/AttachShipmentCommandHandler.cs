@@ -21,8 +21,9 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   <item><b>Adaylar</b> (<see cref="SalesCommandScope.LoadAttachCandidatesAsync"/>): bağsız, iptal edilmemiş, geçici
 ///   yedek olmayan, kargo bağı bilinen (<c>OriginReplicaId</c> dolu, M22) siparişler; yayını devredilmiş ya da
 ///   çağıranın kendisinin. Kargo ücreti satırı dahil. Aday kümesi (Id ve sürüm) <c>expected</c>'den farklıysa 409
-///   <c>stale</c> ve güncel küme; hiçbir şey yazılmaz. Aday yoksa (ve <c>expected</c> boşsa) komut etkisizdir: dosya
-///   açılmaz.</item>
+///   <c>stale</c> ve güncel küme; hiçbir şey yazılmaz. Küme <see cref="SalesCommandService.MaxSetOrders"/>'ı aşarsa
+///   (istemci onu eksiksiz gönderemez) kalıcı 409 <c>too-many-candidates</c>. Aday yoksa (ve <c>expected</c> boşsa)
+///   komut etkisizdir: dosya açılmaz.</item>
 ///   <item><b>Hedef</b>: en yeni (<see cref="SalesCommandScope.NewestFirst"/>) türetilmiş (<c>AmountDerivedAt</c> dolu)
 ///   Pending/Held dosya. <c>--accept-shipment</c> ile kabul edilmiş (türetilmemiş) dosya hiç seçilmez (§4.10-6). Yoksa
 ///   <c>proposedShipmentId</c> ile açılır: Pending, sunucu saatiyle <c>CreatedAt</c> ve <c>AmountDerivedAt</c>,
@@ -49,6 +50,9 @@ public sealed class AttachShipmentCommandHandler : ISalesCommandHandler
     public AttachShipmentCommandHandler(CustomerIdResolver customerIds) => _customerIds = customerIds;
 
     public string Kind => KindName;
+
+    /// <summary><c>expected</c> aday kümesinin tamamıdır: tavan <see cref="SalesCommandService.MaxSetOrders"/>.</summary>
+    public int MaxExpected => SalesCommandService.MaxSetOrders;
 
     /// <summary>Kanonik yük: müşteri Id'si verildiği gibi (asıl kayda uygulamada çözülür) ve önerilen dosya Id'si.</summary>
     public sealed record Payload(string CustomerId, Guid ProposedShipmentId);
@@ -96,6 +100,8 @@ public sealed class AttachShipmentCommandHandler : ISalesCommandHandler
             // Dosyalar adaylardan ve bağlı siparişlerden ÖNCE (jeton sırası).
             var open = (await scope.LoadOpenShipmentsAsync(customer, null, ct)).ToList();
             var candidates = await scope.LoadAttachCandidatesAsync(customer, ct);
+            if (candidates.Count > SalesCommandService.MaxSetOrders)
+                throw SalesCommandRejection.TooManyCandidates(candidates.Count, SalesCommandService.MaxSetOrders);
             if (!scope.MatchesExpected(candidates))
                 throw SalesCommandRejection.CandidatesStale(
                     candidates.Select(o => new SalesCommandExpected(o.Id, o.SyncVersion)).ToList(),

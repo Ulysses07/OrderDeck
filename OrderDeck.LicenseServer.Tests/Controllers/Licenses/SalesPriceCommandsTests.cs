@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Sync;
+using OrderDeck.LicenseServer.Services.Sync.Commands;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 using Item = OrderDeck.LicenseServer.Tests.Controllers.Licenses.OrderSyncV2Tests.Item;
@@ -431,6 +432,37 @@ public sealed class SalesPriceCommandsTests : IClassFixture<SalesSyncConfiguredA
         (await Kit.ProblemAsync(conflict)).GetProperty("title").GetString().Should().Be("content-conflict");
         (await kit.OrderAsync(order.Id)).Should().BeEquivalentTo(new { Price = 120m, SyncVersion = 2 });
         (await kit.LogsAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Küme eşitliği isteyen komutun beklenen küme tavanı (§4.6): yayında aynı kodun 500'ü aşan düzeltilebilir etiketi
+    /// varsa plan eksiksiz gönderilir ve uygulanır — komut kalıcı bir <c>plan-stale</c> döngüsüne girmez. Sunucunun
+    /// planı tavanı da aşarsa 409 <c>too-many-candidates</c> (yeniden denenmez); hiçbir şey yazılmaz.
+    /// </summary>
+    [Fact]
+    public async Task SetCodePrice_500u_asan_plani_uygular_tavani_asan_planda_409_too_many_candidates()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var session = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var plan = await kit.SeedOrdersAsync(session, 600);
+
+        var resp = await kit.SendAsync(kit.SetCodePrice(Guid.NewGuid(), session, "A1", 120m, plan));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        Guids((await Kit.ReadAsync(resp)).Result, "changed").Should().HaveCount(600);
+        (await kit.CorrectableCodePricesAsync(session, "A1")).Should().Equal(120m);
+
+        var crowded = await kit.SeedSessionAsync(Kit.Phase.Released);
+        var max = SalesCommandService.MaxSetOrders;
+        var many = await kit.SeedOrdersAsync(crowded, max + 1);
+
+        var tooMany = await kit.SendAsync(kit.SetCodePrice(Guid.NewGuid(), crowded, "A1", 120m, many.Take(max)));
+
+        tooMany.StatusCode.Should().Be(HttpStatusCode.Conflict, await tooMany.Content.ReadAsStringAsync());
+        var problem = await Kit.ProblemAsync(tooMany);
+        problem.GetProperty("title").GetString().Should().Be("too-many-candidates");
+        problem.GetProperty("count").GetInt32().Should().Be(max + 1);
+        (await kit.CorrectableCodePricesAsync(crowded, "A1")).Should().Equal(100m);
     }
 
     // ── set-code-price: sonraki push ─────────────────────────────────────────

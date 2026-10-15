@@ -18,6 +18,15 @@ public interface ISalesCommandHandler
     string Kind { get; }
 
     /// <summary>
+    /// <c>expected</c>'in en çok öğe sayısı; aşan istek 400 <c>invalid-expected</c>. Varsayılan
+    /// <see cref="SalesCommandService.MaxOrders"/> (öğe listesiyle aynı tavan). Kümeyi sunucunun kurduğu ve
+    /// <c>expected</c>'in onun tamamını taşıması gereken türlerde (<c>attach-shipment</c>, <c>set-code-price</c>)
+    /// <see cref="SalesCommandService.MaxSetOrders"/>: küçük tavan, kümesi onu aşan müşteriyi ya da kodu kalıcı olarak
+    /// kilitlerdi.
+    /// </summary>
+    int MaxExpected => SalesCommandService.MaxOrders;
+
+    /// <summary>
     /// Yükü tipli okur, doğrular ve normalleştirir. Başarısızsa <paramref name="error"/> 400 <c>invalid-payload</c>'ın
     /// açıklamasıdır. Beklenen sürümlerin kapsamı türe özgüdür ve burada denetlenir.
     /// </summary>

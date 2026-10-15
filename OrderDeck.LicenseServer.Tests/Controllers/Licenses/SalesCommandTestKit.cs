@@ -108,9 +108,13 @@ public sealed class SalesCommandTestKit
     }
 
     /// <summary>Basılmış bir sipariş; yayın devredilmişse devir anı kopyalanır (DM3).</summary>
-    public async Task<Order> SeedOrderAsync(Guid? sessionId, Action<Order>? shape = null)
+    public async Task<Order> SeedOrderAsync(Guid? sessionId, Action<Order>? shape = null) =>
+        (await SeedOrdersAsync(sessionId, 1, shape)).Single();
+
+    /// <summary>Çok sayıda basılmış sipariş, tek kaydetmede (<see cref="SeedOrderAsync"/> biçiminde).</summary>
+    public async Task<List<Order>> SeedOrdersAsync(Guid? sessionId, int count, Action<Order>? shape = null)
     {
-        var order = new Order
+        var orders = Enumerable.Range(0, count).Select(_ => new Order
         {
             Id = Guid.NewGuid(),
             LicenseId = LicenseId,
@@ -127,16 +131,20 @@ public sealed class SalesCommandTestKit
             UpdatedAt = StartedAt.AddMinutes(11),
             SyncVersion = 1,
             OriginReplicaId = OwnerReplicaId,
-        };
+        }).ToList();
         await WithDbAsync(async db =>
         {
-            if (sessionId is { } sid)
-                order.SessionReleasedAt = await db.StreamSessions
-                    .Where(s => s.Id == sid).Select(s => s.ReleasedAt).SingleAsync();
-            shape?.Invoke(order);
-            db.Orders.Add(order);
+            var releasedAt = sessionId is { } sid
+                ? await db.StreamSessions.Where(s => s.Id == sid).Select(s => s.ReleasedAt).SingleAsync()
+                : null;
+            foreach (var order in orders)
+            {
+                order.SessionReleasedAt = releasedAt;
+                shape?.Invoke(order);
+            }
+            db.Orders.AddRange(orders);
         });
-        return order;
+        return orders;
     }
 
     public async Task<Shipment> SeedShipmentAsync(

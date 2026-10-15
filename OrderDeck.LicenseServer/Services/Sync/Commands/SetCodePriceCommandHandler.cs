@@ -19,7 +19,8 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 /// <para><b>Beklenen sürüm planın kendisidir.</b> <c>expected</c>, istemcinin gösterdiği planın satırları ve sürümleridir;
 /// sunucunun planı satır ya da sürümce farklıysa (satır eklendi, çıktı, değişti) 409 <c>plan-stale</c>: güncel plan ve
 /// güncel satırlar döner, hiçbir şey yazılmaz. Bu türde her uyuşmazlık <c>plan-stale</c>'dir (<c>stale</c> değil): istemci
-/// sessizce yeniden denemez, yeni planı gösterir (§5.3).</para>
+/// sessizce yeniden denemez, yeni planı gösterir (§5.3). Plan <see cref="SalesCommandService.MaxSetOrders"/>'ı aşarsa
+/// (istemci onu eksiksiz gönderemez) kalıcı 409 <c>too-many-candidates</c>.</para>
 ///
 /// <para><b>Kilit.</b> Plan, işlem kapsamlı yayın kilitleri (<see cref="SalesCommandLock.SessionResource"/>; komutun ve
 /// seçilen siparişlerin yayınları, sıralı) alındıktan SONRA kurulur. Aynı yayında eşzamanlı ikinci komut ilki bitene
@@ -44,6 +45,9 @@ public sealed class SetCodePriceCommandHandler : ISalesCommandHandler
     public const int MaxCodeLength = 64;
 
     public string Kind => KindName;
+
+    /// <summary><c>expected</c> planın tamamıdır: tavan <see cref="SalesCommandService.MaxSetOrders"/>.</summary>
+    public int MaxExpected => SalesCommandService.MaxSetOrders;
 
     /// <summary>
     /// Kanonik yük: kırpılmış kod (kodsuz seçimde null), tekil ve sıralı Id listeleri, iki ondalıklı fiyat.
@@ -156,6 +160,8 @@ public sealed class SetCodePriceCommandHandler : ISalesCommandHandler
                 .ToList();
 
             await scope.EnsureReleasedAsync(plan, ct);
+            if (plan.Count > SalesCommandService.MaxSetOrders)
+                throw SalesCommandRejection.TooManyCandidates(plan.Count, SalesCommandService.MaxSetOrders);
             if (!scope.MatchesExpected(plan))
                 throw SalesCommandRejection.PlanStale(
                     plan.Select(o => new SalesCommandExpected(o.Id, o.SyncVersion)).ToList(),

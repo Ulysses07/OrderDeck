@@ -49,6 +49,12 @@ public sealed class SalesCommandService
     /// <summary>Bir komutun en çok sipariş sayısı (öğeler ve beklenen sürümler).</summary>
     public const int MaxOrders = 500;
 
+    /// <summary>
+    /// Küme eşitliği isteyen türlerin (<c>attach-shipment</c>'ın aday kümesi, <c>set-code-price</c>'ın planı) beklenen
+    /// küme tavanı. Kümeyi istemci değil sunucu kurar ve <c>expected</c> onun tamamını taşımak zorundadır.
+    /// </summary>
+    public const int MaxSetOrders = 10_000;
+
     public const string CodeInvalidEnvelope = "invalid-envelope";
     public const string CodeInvalidCommand = "invalid-command";
     public const string CodeUnknownKind = "unknown-kind";
@@ -104,7 +110,7 @@ public sealed class SalesCommandService
             return Fail(StatusCodes.Status400BadRequest, CodeInvalidCommand, "commandId boş olamaz.");
         if (request.Kind is null || !_handlers.TryGetValue(request.Kind, out var handler))
             return Fail(StatusCodes.Status400BadRequest, CodeUnknownKind, "Bu sunucu bu komut türünü tanımıyor.");
-        if (!TryReadExpected(request.Expected, out var expected, out var expectedError))
+        if (!TryReadExpected(request.Expected, handler.MaxExpected, out var expected, out var expectedError))
             return Fail(StatusCodes.Status400BadRequest, CodeInvalidExpected, expectedError);
         if (!handler.TryParse(request.Payload ?? default, expected, out var command, out var payloadError))
             return Fail(StatusCodes.Status400BadRequest, CodeInvalidPayload, payloadError);
@@ -508,18 +514,20 @@ public sealed class SalesCommandService
         _db.ChangeTracker.Clear();
     }
 
-    /// <summary>Beklenen sürümler: sipariş Id'si dolu ve tekil, sürüm ≥ 0, en çok <see cref="MaxOrders"/>.</summary>
+    /// <summary>Beklenen sürümler: sipariş Id'si dolu ve tekil, sürüm ≥ 0, en çok <paramref name="max"/> (türün
+    /// tavanı, <see cref="ISalesCommandHandler.MaxExpected"/>).</summary>
     private static bool TryReadExpected(
         List<SalesCommandExpectedDto>? raw,
+        int max,
         out IReadOnlyList<SalesCommandExpected> expected,
         [NotNullWhen(false)] out string? error)
     {
         expected = [];
         error = null;
         if (raw is null) return true;
-        if (raw.Count > MaxOrders)
+        if (raw.Count > max)
         {
-            error = $"expected en çok {MaxOrders} öğe taşır.";
+            error = $"expected en çok {max} öğe taşır.";
             return false;
         }
 

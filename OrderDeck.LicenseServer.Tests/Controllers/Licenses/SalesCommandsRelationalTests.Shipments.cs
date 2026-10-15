@@ -1,5 +1,6 @@
 using System.Net;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Sync;
@@ -89,6 +90,28 @@ public sealed partial class SalesCommandsRelationalTests
         reply.Result.GetProperty("pool").GetDecimal().Should().Be(400m, "öbür dosya eşzamanlı iptalle 0'a türetildi");
         (await _kit.ShipmentAsync(older.Id)).CumulativeAmount.Should().Be(0m);
         (await _kit.ShipmentAsync(newest.Id)).CumulativeAmount.Should().Be(400m);
+    }
+
+    /// <summary>
+    /// Beklenen küme tavanı gerçek SQL Server'da (§4.6): aday kümesi hem eski 500 sınırını hem SQL Server'ın 2100
+    /// parametre sınırını aşan müşteri bağlanır — kümeyi okuyan, yazan ve yanıtın güncel satırlarını okuyan sorgular
+    /// çok büyük Id listesinde de çalışır. Bütün adaylar dosyaya bağlanır, tutar onlardan türetilir.
+    /// </summary>
+    [Fact]
+    public async Task Attach_2100u_asan_aday_kumesini_baglar()
+    {
+        const int count = 2500;
+        var customer = Guid.NewGuid().ToString("N");
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var candidates = await _kit.SeedOrdersAsync(session, count, o => { o.CustomerId = customer; o.Price = 10m; });
+        var proposed = Guid.NewGuid();
+
+        var resp = await SendOkAsync(_kit.AttachShipment(Guid.NewGuid(), customer, proposed, candidates));
+
+        var reply = await Kit.ReadAsync(resp);
+        reply.Orders.Should().HaveCount(count).And.OnlyContain(o => o.ShipmentId == proposed && o.Version == 2);
+        (await _kit.ShipmentAsync(proposed)).CumulativeAmount.Should().Be(count * 10m);
+        (await _kit.ReadDbAsync(db => db.Orders.CountAsync(o => o.ShipmentId == proposed))).Should().Be(count);
     }
 
     // ── §10.1-7: aynı siparişe eşzamanlı cancel ve attach-shipment ───────────

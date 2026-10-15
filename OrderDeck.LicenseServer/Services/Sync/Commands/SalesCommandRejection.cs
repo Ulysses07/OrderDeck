@@ -19,6 +19,7 @@ public sealed class SalesCommandRejection : Exception
     public const string CodeUnknownShipment = "unknown-shipment";
     public const string CodeHandingOver = "handing-over";
     public const string CodeOwnerActive = "owner-active";
+    public const string CodeTooManyCandidates = "too-many-candidates";
 
     private SalesCommandRejection(
         int statusCode,
@@ -79,6 +80,18 @@ public sealed class SalesCommandRejection : Exception
             new Dictionary<string, object?> { ["candidates"] = candidates },
             withCurrent: true,
             currentOrderIds);
+
+    /// <summary>
+    /// 409 <c>too-many-candidates</c> (<c>attach-shipment</c>, <c>set-code-price</c>; §4.6): sunucunun kurduğu küme
+    /// (aday kümesi ya da plan) beklenen kümenin taşıyabileceğinden (<see cref="SalesCommandService.MaxSetOrders"/>)
+    /// büyük — istemci kümeyi eksiksiz gönderemez, her deneme aynı sonucu verirdi. Kalıcıdır, yeniden denenmez; ret
+    /// satır taşımaz (küme çok büyük), yalnız sayıyı ve tavanı. Hiçbir şey yazılmaz.
+    /// </summary>
+    public static SalesCommandRejection TooManyCandidates(int count, int max) =>
+        new(StatusCodes.Status409Conflict, CodeTooManyCandidates,
+            "Bu işlemin kapsadığı etiket sayısı tek komutun sınırını aşıyor.",
+            new Dictionary<string, object?> { ["count"] = count, ["max"] = max },
+            withCurrent: false);
 
     /// <summary>
     /// 409 <c>stale</c> (<c>shipment-decision</c>, §4.6 adım 4): dosyanın istemcinin gördüğü sürümü
