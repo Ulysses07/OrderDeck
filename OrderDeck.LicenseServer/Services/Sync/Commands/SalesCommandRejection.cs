@@ -15,6 +15,7 @@ public sealed class SalesCommandRejection : Exception
     public const string CodePlanStale = "plan-stale";
     public const string CodeUnknownSession = "unknown-session";
     public const string CodeShipmentShipped = "shipment-shipped";
+    public const string CodeContentConflict = "content-conflict";
 
     private SalesCommandRejection(
         int statusCode,
@@ -99,6 +100,17 @@ public sealed class SalesCommandRejection : Exception
     public static SalesCommandRejection UnknownSession(Guid sessionId) =>
         new(StatusCodes.Status400BadRequest, CodeUnknownSession, "Komutun yayını bu lisansta yok.",
             new Dictionary<string, object?> { ["sessionId"] = sessionId },
+            withCurrent: false);
+
+    /// <summary>
+    /// 409 <c>content-conflict</c> (<c>add-backup</c>, §4.6): eklenecek siparişin Id'si sunucuda zaten var — bu lisansta
+    /// başka bir istekle ya da başka bir lisansta (Orders'ın birincil anahtarı yalnız Id). Aynı komutun yeniden
+    /// gönderimi buraya gelmez, kayıtlı sonucu alır (yeniden oynatma). İstemci hatasıdır, yeniden denenmez (§5.3). Ret
+    /// satırı taşımaz: Id başka lisansın olabilir.
+    /// </summary>
+    public static SalesCommandRejection ContentConflict(Guid orderId) =>
+        new(StatusCodes.Status409Conflict, CodeContentConflict, "Bu sipariş Id'si sunucuda zaten kullanılıyor.",
+            new Dictionary<string, object?> { ["orderId"] = orderId },
             withCurrent: false);
 
     /// <summary>

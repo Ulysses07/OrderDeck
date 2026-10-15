@@ -287,6 +287,26 @@ public sealed class SalesCommandTestKit
         Body(commandId, "confirm-backup", new { backupOrderId = backup.Id, newPrice },
             [(backup.Id, backup.SyncVersion)]);
 
+    /// <summary><c>add-backup</c>'ın müşterisi; kişisel alanlar üretilir.</summary>
+    public sealed record BackupCustomer(string Id, string Platform, string Username, string? DisplayName)
+    {
+        public static BackupCustomer New(string? id = null) =>
+            new(id ?? Guid.NewGuid().ToString("N"), "youtube", $"u-{Guid.NewGuid():N}", $"ad-{Guid.NewGuid():N}");
+    }
+
+    /// <summary><c>add-backup</c>; komut var olan satır yazmadığı için <c>expected</c> boş.</summary>
+    public object AddBackup(
+        Guid commandId,
+        Guid newOrderId,
+        Guid parentOrderId,
+        BackupCustomer customer,
+        string? messageText,
+        decimal? price = null,
+        string? code = null,
+        Guid? replicaId = null) =>
+        Body(commandId, "add-backup",
+            new { newOrderId, parentOrderId, customer, messageText, price, code }, [], replicaId);
+
     public Task<HttpResponseMessage> SendAsync(object body, string? userAgent = WpfUserAgent) =>
         SendToAsync(Url, body, userAgent);
 
@@ -304,6 +324,26 @@ public sealed class SalesCommandTestKit
 
     public async Task<Order> OrderAsync(Guid id) =>
         await ReadDbAsync(db => db.Orders.AsNoTracking().SingleAsync(o => o.Id == id));
+
+    /// <summary>Id'li siparişler, lisanstan bağımsız (Orders'ın birincil anahtarı yalnız Id).</summary>
+    public async Task<List<Order>> OrdersWithIdAsync(Guid id) =>
+        await ReadDbAsync(db => db.Orders.AsNoTracking().Where(o => o.Id == id).ToListAsync());
+
+    /// <summary>Bir müşteri projeksiyonu; <paramref name="mergedInto"/> doluysa kopya, <paramref name="purged"/> ise
+    /// KVKK ile silinmiş.</summary>
+    public async Task SeedProjectionAsync(Guid id, Guid? mergedInto = null, bool purged = false)
+    {
+        await WithDbAsync(db =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = id, LicenseId = LicenseId, Platform = "youtube", Username = $"p-{Guid.NewGuid():N}",
+                UpdatedAt = now, MergedIntoId = mergedInto, PurgedAt = purged ? now.AddMinutes(-5) : null,
+            });
+            return Task.CompletedTask;
+        });
+    }
 
     public async Task<Shipment> ShipmentAsync(Guid id) =>
         await ReadDbAsync(db => db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id));

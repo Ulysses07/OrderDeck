@@ -31,7 +31,9 @@ namespace OrderDeck.LicenseServer.Services.Sync.Commands;
 ///   uygulama kilidi alabilir (<see cref="SalesCommandScope.AcquireLockAsync"/>).</item>
 ///   <item><b>Yarış.</b> Jeton çakışması (<see cref="DbUpdateConcurrencyException"/>) işlemi tümüyle geri alır, 409
 ///   <c>stale</c> ve taze satırlar döner. Aynı <c>CommandId</c>'nin eşzamanlı ikinci kopyası (jeton ya da günlüğün
-///   birincil anahtarı) günlük yeniden okunarak oynatılır: komut bir kez uygulanır, iki istek de aynı sonucu alır.</item>
+///   birincil anahtarı) günlük yeniden okunarak oynatılır: komut bir kez uygulanır, iki istek de aynı sonucu alır.
+///   Komutun eklediği siparişin Id'sini eşzamanlı başka bir istek aldıysa (<c>add-backup</c>; birincil anahtar ihlali)
+///   409 <c>content-conflict</c>.</item>
 /// </list>
 /// <b>Bildirim yok:</b> komutlar push, WhatsApp etiket kuralı ya da shopper bildirimi üretmez (§10.2; tek istisna
 /// sonraki bir görevin <c>shipment-decision</c>'ı). Günlüğe yalnız sayı ve kimlik yazılır.
@@ -127,9 +129,9 @@ public sealed class SalesCommandService
         IDbContextTransaction? transaction = _db.Database.IsRelational()
             ? await _db.Database.BeginTransactionAsync(ct)
             : null;
+        var scope = new SalesCommandScope(_db, licenseId, replicaId, now, expected);
         try
         {
-            var scope = new SalesCommandScope(_db, licenseId, replicaId, now, expected);
             var outcome = await command.ExecuteAsync(scope, ct);
             var changes = scope.Changes;
 
@@ -205,6 +207,23 @@ public sealed class SalesCommandService
             // Kaydettiyse komut bir kez uygulandı: kayıtlı sonuç oynatılır.
             if (await FindLogAsync(commandId, ct) is { } winner)
                 return await ReplayAsync(licenseId, commandId, winner, hash, command, ct);
+
+            // Eklenen siparişin Id'sini ön denetimden sonra eşzamanlı başka bir istek (başka bir komut, push ya da
+            // başka lisans) aldıysa birincil anahtar ihlali 500 değil, ön denetimin vereceği 409 content-conflict olur.
+            var inserted = scope.InsertedOrderIds.ToList();
+            if (inserted.Count > 0
+                && await _db.Orders.AsNoTracking()
+                    .Where(o => inserted.Contains(o.Id))
+                    .Select(o => (Guid?)o.Id)
+                    .FirstOrDefaultAsync(ct) is { } taken)
+            {
+                _log.LogInformation(
+                    "sales/commands: {Kind} eklediği sipariş Id'si eşzamanlı alındı, 409 content-conflict "
+                    + "(license={LicenseId}, replica={ReplicaId}, command={CommandId})",
+                    kind, licenseId, replicaId, commandId);
+                return await RejectedAsync(
+                    licenseId, SalesCommandRejection.ContentConflict(taken), command.OrderIds, ct);
+            }
             if (ex is not DbUpdateConcurrencyException) throw;
 
             _log.LogInformation(

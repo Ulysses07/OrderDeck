@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Services.Sync.Commands;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -389,7 +390,74 @@ public sealed class SalesCommandsRelationalTests : IAsyncLifetime
         await withoutTransaction.Should().ThrowAsync<InvalidOperationException>();
     }
 
+    // ── add-backup: akış ve eşzamanlı aynı Id ────────────────────────────────
+
+    /// <summary>
+    /// DM3 (§4.6 <c>add-backup</c>, §14-23): devredilmiş yayına eklenen yedek devir anını kopyalar ve akışın bir sonraki
+    /// sayfasında iner — devir siparişi bir daha damgalamaz; damgasız eklenseydi akıştan kaçardı.
+    /// </summary>
+    [Fact]
+    public async Task AddBackup_eklenen_yedek_akisin_sonraki_sayfasinda_iner()
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var parent = await _kit.SeedOrderAsync(session);
+        var cursor = (await ChangesAsync(afterSeq: 0)).NextAfterSeq;
+        var newId = Guid.NewGuid();
+
+        var resp = await _kit.SendAsync(_kit.AddBackup(
+            Guid.NewGuid(), newId, parent.Id, Kit.BackupCustomer.New(), $"yorum-{Guid.NewGuid():N}"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var page = await ChangesAsync(cursor);
+        var item = page.Items.Should().ContainSingle().Subject;
+        item.Kind.Should().Be("order");
+        item.Order!.Id.Should().Be(newId);
+        item.Order.IsTentativeBackup.Should().BeTrue();
+        item.Order.ParentOrderId.Should().Be(parent.Id);
+        item.Order.SessionReleasedAt.Should().Be(Kit.StartedAt.AddHours(2));
+        page.SideSessions.Select(s => s.Id).Should().Equal(session);
+    }
+
+    /// <summary>
+    /// Aynı yeni Id'yle iki farklı <c>add-backup</c> eşzamanlı: ikisi de ön denetimi geçer, ilkinin yazımı diske inmeden
+    /// hemen önce öbürü baştan sona koşar ve ekler. İlkinin eklemesi birincil anahtara çarpar — 500 değil 409
+    /// <c>content-conflict</c>; işlemi tümüyle geri alınır (günlük satırı yok). Tek satır kalır.
+    /// </summary>
+    [Fact]
+    public async Task AddBackup_ayni_yeni_Id_ile_eszamanli_iki_komut_biri_409_content_conflict()
+    {
+        var parent = await _kit.SeedOrderAsync(await _kit.SeedSessionAsync(Kit.Phase.Released));
+        var newId = Guid.NewGuid();
+        var customer = Kit.BackupCustomer.New();
+        var winnerCommand = Guid.NewGuid();
+        HttpResponseMessage? winner = null;
+        _factory.Hook.When = db => db.ChangeTracker.Entries<SalesCommandLog>().Any();
+        _factory.Hook.Before = async () => winner = await _kit.SendAsync(
+            _kit.AddBackup(winnerCommand, newId, parent.Id, customer, "kazanan"));
+
+        var loser = await _kit.SendAsync(_kit.AddBackup(Guid.NewGuid(), newId, parent.Id, customer, "kaybeden"));
+
+        winner.Should().NotBeNull("kanca öbür komutu ilkinin yazımından önce koşturmalı");
+        winner!.StatusCode.Should().Be(HttpStatusCode.OK, await winner.Content.ReadAsStringAsync());
+        loser.StatusCode.Should().Be(HttpStatusCode.Conflict, await loser.Content.ReadAsStringAsync());
+        var problem = await Kit.ProblemAsync(loser);
+        problem.GetProperty("title").GetString().Should().Be("content-conflict");
+        problem.GetProperty("orderId").GetGuid().Should().Be(newId);
+        (await _kit.OrdersWithIdAsync(newId)).Should().ContainSingle().Which.MessageText.Should().Be("kazanan");
+        (await _kit.LogsAsync()).Should().ContainSingle().Which.CommandId.Should().Be(winnerCommand);
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    private async Task<SalesChangesPage> ChangesAsync(long afterSeq)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1/licenses/{_kit.LicenseId}/sales/changes?afterSeq={afterSeq}&take=500");
+        request.Headers.UserAgent.ParseAdd(Kit.WpfUserAgent);
+        var resp = await _kit.Client.SendAsync(request);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        return (await resp.Content.ReadFromJsonAsync<SalesChangesPage>())!;
+    }
 
     private string OrdersUrl => $"/api/v1/licenses/{_kit.LicenseId}/orders/sync";
 

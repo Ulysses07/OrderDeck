@@ -179,6 +179,8 @@ public class Program
             OrderDeck.LicenseServer.Services.Sync.Commands.SetCodePriceCommandHandler>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
             OrderDeck.LicenseServer.Services.Sync.Commands.ConfirmBackupCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.AddBackupCommandHandler>();
         // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();
         // Komut günlüğünün 90 günlük saklaması (§4.9); takvim ScheduleSalesSyncJobs'ta.

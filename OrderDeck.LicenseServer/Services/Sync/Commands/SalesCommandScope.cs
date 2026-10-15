@@ -19,6 +19,7 @@ public sealed class SalesCommandScope
     private readonly Dictionary<Guid, Guid?> _shipmentBefore = new();
     private readonly Dictionary<Guid, HashSet<OrderUnit>> _changes = new();
     private readonly List<Guid> _changeOrder = new();
+    private readonly HashSet<Guid> _inserted = new();
 
     internal SalesCommandScope(
         LicenseDbContext db, Guid licenseId, Guid replicaId, DateTimeOffset now, IReadOnlyList<SalesCommandExpected> expected)
@@ -92,11 +93,12 @@ public sealed class SalesCommandScope
     /// ile aynı ret). Devredilmemiş yayının siparişleri sunucuda eksik olabilir — canlı yayının etiketleri sahipte,
     /// devrediliyor yayınınkiler gönderilmeyi bekliyor (Y1, Y8) — ve o yayından sunucunun kurduğu plan eksik kalırdı.
     /// </summary>
-    public async Task EnsureSessionReleasedAsync(Guid sessionId, CancellationToken ct)
+    /// <returns>Yayının devir anı (<c>ReleasedAt</c>): devredilmiş yayına eklenen sipariş onu kopyalar (DM3).</returns>
+    public async Task<DateTimeOffset> EnsureSessionReleasedAsync(Guid sessionId, CancellationToken ct)
     {
         var session = (await ReadVisibilityAsync([sessionId], ct)).GetValueOrDefault(sessionId)
             ?? throw SalesCommandRejection.UnknownSession(sessionId);
-        if (session.ReleasedAt is null) throw await SessionLiveAsync(sessionId, session, ct);
+        return session.ReleasedAt ?? throw await SessionLiveAsync(sessionId, session, ct);
     }
 
     private async Task<Dictionary<Guid, SessionVisibility>> ReadVisibilityAsync(
@@ -232,6 +234,46 @@ public sealed class SalesCommandScope
         }
         set.UnionWith(units);
     }
+
+    /// <summary>
+    /// Sipariş Id'si sunucuda HERHANGİ bir lisansta var mı? Orders'ın birincil anahtarı yalnız Id'dir: başka lisansın
+    /// satırıyla aynı Id'yi eklemek kaydetmede birincil anahtar ihlali olurdu. Yalnız varlık döner; başka lisansın
+    /// satırı okunmaz.
+    /// </summary>
+    public Task<bool> OrderIdTakenAsync(Guid orderId, CancellationToken ct) =>
+        _db.Orders.AsNoTracking().AnyAsync(o => o.Id == orderId, ct);
+
+    /// <summary>
+    /// Müşteri Id'lerinin asıl kayıt projeksiyonları (<see cref="SalesCustomerDirectory"/>; KVKK ekleme kuralı için
+    /// <c>PurgedAt</c>). Yalnız bu lisanstan.
+    /// </summary>
+    public Task<SalesCustomerDirectory> LoadCustomersAsync(IEnumerable<string> rawCustomerIds, CancellationToken ct) =>
+        SalesCustomerDirectory.LoadAsync(_db, LicenseId, rawCustomerIds, ct);
+
+    /// <summary>
+    /// Komutun eklediği yeni siparişi kaydeder (<c>add-backup</c>): bu lisansa ait olmalı. Eklenen satır komutun
+    /// değişikliğidir — <c>UpdatedAt</c> = <see cref="Now"/>, sürüm ilk değerinde kalır (<c>orders/sync</c>'in ekleme
+    /// dalı gibi: sürüm yalnız güncellemede ilerler) ve sonuçta döner. Yüklemeden önce bağı yoktur (K7'de eski dosya
+    /// yok). Id'nin boş olduğunu çağıran <see cref="OrderIdTakenAsync"/> ile denetler; kaydetmedeki eşzamanlı çakışmayı
+    /// servis <c>content-conflict</c>'e çevirir (<see cref="InsertedOrderIds"/>).
+    /// </summary>
+    public void AddOrder(Order order, params OrderUnit[] units)
+    {
+        if (order.LicenseId != LicenseId)
+            throw new InvalidOperationException("Komut yalnız kendi lisansına sipariş ekler.");
+        if (!_inserted.Add(order.Id) || _orders.ContainsKey(order.Id))
+            throw new InvalidOperationException("Sipariş kapsamda zaten var.");
+
+        order.UpdatedAt = Now;
+        _db.Orders.Add(order);
+        _orders[order.Id] = order;
+        _shipmentBefore[order.Id] = null;
+        _changes[order.Id] = new HashSet<OrderUnit>(units);
+        _changeOrder.Add(order.Id);
+    }
+
+    /// <summary>Komutun eklediği siparişler (<see cref="AddOrder"/>).</summary>
+    internal IReadOnlyCollection<Guid> InsertedOrderIds => _inserted;
 
     /// <summary>Kapsamın izlediği siparişler (değişenler bellekteki hâlleriyle).</summary>
     internal IReadOnlyCollection<Order> TrackedOrders => _orders.Values;
