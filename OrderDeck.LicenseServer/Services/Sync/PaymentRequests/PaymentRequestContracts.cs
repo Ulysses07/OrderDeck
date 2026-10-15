@@ -13,7 +13,10 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 /// <param name="OwnerId">Sahip satırın Id'si ("N" hex ya da GUID'siz ham Id); <paramref name="MemberIds"/>'te olmalı.</param>
 /// <param name="MemberIds">Kişinin BÜTÜN üyeleri, GUID'siz olanlar dahil (ham Id).</param>
 /// <param name="ScopeKey"><c>cumulative</c> ya da <c>session:{"N" hex}</c>.</param>
-/// <param name="OrderIds">Toplama giren siparişler (istemcinin kümesi).</param>
+/// <param name="OrderIds">Toplama giren siparişler (istemcinin kümesi); sunucunun kümesiyle eşit olmalı (§6.4-f).</param>
+/// <param name="ProductTotal">Siparişlerin toplamı; sunucu toplamıyla kuruşu kuruşuna eşit olmalı (§6.4-f).</param>
+/// <param name="TotalBeforeBalance"><paramref name="ProductTotal"/> + lisans ayarıyla kargo (§6.2, §6.4-g).</param>
+/// <param name="ShippingSettingsVersion">Tutarın hesaplandığı lisans kargo ayarı sürümü (satır yoksa 0).</param>
 /// <param name="ConfirmedPriorIds">Kullanıcının "tekrar gönderilsin mi?" sorusunda onayladığı önceki kayıtlar; saklanmaz,
 /// özete girmez.</param>
 public sealed record PaymentRequestBeginRequest(
@@ -54,6 +57,13 @@ public sealed record PaymentRequestPrior(
     decimal? NetAmount,
     DateTimeOffset At,
     bool Unconfirmed);
+
+/// <summary>
+/// <c>stale-total</c>'ın <c>liveElsewhere</c> öğesi (§6.4-f): sunucu toplamıyla istemcininki arasındaki farkı açıklayan,
+/// başka kopyanın devredilmemiş (canlı ya da devrediliyor) yayını.
+/// </summary>
+/// <param name="Machine">Yayının sahibi bilgisayar (<c>OwnerMachineName</c>); bilinmiyorsa null.</param>
+public sealed record PaymentRequestLiveSession(Guid SessionId, string? Machine);
 
 /// <summary>Bir ödeme isteği ucunun sonucu; uç ProblemDetails'e ya da 200'e çevirir.</summary>
 public abstract record PaymentRequestReply;

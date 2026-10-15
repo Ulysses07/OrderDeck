@@ -11,9 +11,10 @@ using SalesKit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesCommand
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
-/// <c>POST payment-requests/begin</c> — spec 2026-10-13 §4.7, §6.4 (a–e, h), §6.5-2, §15-21, §15-54 (InMemory). Kapılar
-/// (sahiplik, 400, mod Off, alt sürüm), kiranın yazımı, yeniden oynatma ve 409 sınıfları. Eşzamanlılık (tekil indeks,
-/// kilitler) ve SQL harmanı gerçek SQL Server'da (<see cref="PaymentRequestBeginRelationalTests"/>).
+/// <c>POST payment-requests/begin</c> — spec 2026-10-13 §4.7, §6.2, §6.4 (a–h), §6.5-2, §15-21, §15-54 (InMemory).
+/// Kapılar (sahiplik, 400, mod Off, alt sürüm), kiranın yazımı, yeniden oynatma, 409 sınıfları, sunucu toplamı
+/// (<c>stale-total</c>) ve kargo ayarı (<c>settings-stale</c>). Eşzamanlılık (tekil indeks, kilitler) ve SQL harmanı
+/// gerçek SQL Server'da (<see cref="PaymentRequestBeginRelationalTests"/>).
 /// </summary>
 public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfiguredApiFactory>, IClassFixture<ApiFactory>
 {
@@ -192,10 +193,11 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
     // ── (h) kiranın yazımı ───────────────────────────────────────────────────
 
     /// <summary>
-    /// §6.4-b, h: sahip gruplu (PersonKey <c>g:</c> + ham GroupId). İstemci grubun bir üyesini kopyasının Id'siyle
-    /// gönderir (eski birleştirme), ayrıca GUID'siz bir üye. Üyeler asıl kayda çözülür; sunucu grubu kapsandığı için kira
-    /// yazılır: Sending, üyeler (istemcinin kümesi ∪ sunucu grubu), siparişler, <c>LeaseUntil = StartedAt + 120 sn</c>,
-    /// makine adı kopya satırından.
+    /// §6.4-b, f, g, h: sahip gruplu (PersonKey <c>g:</c> + ham GroupId). İstemci grubun bir üyesini kopyasının Id'siyle
+    /// gönderir (eski birleştirme), ayrıca GUID'siz bir üye. Üyeler asıl kayda çözülür; sunucu grubu kapsandığı, küme ve
+    /// toplam sunucununkiyle, kargo lisans ayarıyla (eşik 500, ücret 60, sürüm 4) tuttuğu için kira yazılır: Sending,
+    /// üyeler (istemcinin kümesi ∪ sunucu grubu), siparişler, <c>LeaseUntil = StartedAt + 120 sn</c>, makine adı kopya
+    /// satırından.
     /// </summary>
     [Fact]
     public async Task Kira_yazilir_uyeler_asil_kayda_cozulur_siparisler_ve_120_sn()
@@ -208,8 +210,9 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         var raw = $"yerel-{Guid.NewGuid():N}";
         var replica = Guid.NewGuid();
         await kit.SeedReplicaAsync(replica, "PC-A");
+        await kit.SeedShippingAsync(4, threshold: 500m, fee: 60m);
         var recordId = Guid.NewGuid();
-        var orders = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var orders = new[] { (await kit.SeedOrderAsync(owner, 290m)).Id, (await kit.SeedOrderAsync(raw, 200m)).Id };
         var before = DateTimeOffset.UtcNow;
 
         var resp = await kit.BeginAsync(Kit.Body(
@@ -286,10 +289,12 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         var other = Kit.NewId();
         var recordId = Guid.NewGuid();
         var replica = Guid.NewGuid();
-        var first = await kit.BeginAsync(Kit.Body(recordId, replica, owner, [owner, other], productTotal: 100m));
+        var order = await kit.SeedOrderAsync(owner, 100m);
+        var first = await kit.BeginAsync(Kit.Body(recordId, replica, owner, [owner, other], orderIds: [order.Id],
+            productTotal: 100m));
         first.StatusCode.Should().Be(HttpStatusCode.OK, await first.Content.ReadAsStringAsync());
 
-        var again = Kit.Body(recordId, replica, owner, [other, owner], productTotal: 100.00m,
+        var again = Kit.Body(recordId, replica, owner, [other, owner], orderIds: [order.Id], productTotal: 100.00m,
             confirmedPriorIds: [Guid.NewGuid()]);
         again["seenMode"] = 0;
         var second = await kit.BeginAsync(again);
@@ -347,7 +352,7 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
         (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be("content-conflict");
         var record = (await kit.RecordsAsync()).Should().ContainSingle().Subject;
-        record.ProductTotal.Should().Be(550m);
+        record.ProductTotal.Should().Be(0m);
         record.ReplicaId.Should().Be(replica);
     }
 
@@ -560,9 +565,371 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
             .Which.Id.Should().Be((await Kit.ReadAsync(confirmed)).RecordId);
     }
 
+    // ── (f) sunucu toplamı ───────────────────────────────────────────────────
+
+    /// <summary>§6.4-f, M11: küme aynı, toplam farklı (bir etiketin fiyatı bu bilgisayarda eski) — 409 <c>stale-total</c>
+    /// sunucu toplamıyla; fark başka kopyanın yayınında değil, <c>liveElsewhere</c> boş. Kira yazılmaz.</summary>
+    [Fact]
+    public async Task Farkli_toplam_409_stale_total_sunucu_toplamiyla()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var first = await kit.SeedOrderAsync(owner, 100m);
+        var second = await kit.SeedOrderAsync(owner, 150m);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [first.Id, second.Id], productTotal: 200m));
+
+        var problem = await StaleTotalAsync(resp, 250m);
+        LiveElsewhere(problem).Should().BeNull();
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>§6.4-f, §10.1-18: toplamlar eşit, kümeler farklı — istemcinin saydığı etiket sunucuda iptal edilmiş,
+    /// sunucuda istemcinin görmediği yeni bir etiket var. Küme karşılaştırması bunu yakalar: 409
+    /// <c>stale-total</c>.</summary>
+    [Fact]
+    public async Task Esit_toplam_farkli_kume_409_stale_total()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var kept = await kit.SeedOrderAsync(owner, 100m);
+        var cancelled = await kit.SeedOrderAsync(owner, 100m, shape: o => o.CancelledAt = SalesKit.StartedAt.AddHours(1));
+        await kit.SeedOrderAsync(owner, 100m);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [kept.Id, cancelled.Id], productTotal: 200m));
+
+        await StaleTotalAsync(resp, 200m);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>§4.11 <c>Contribution</c>: basılmamış, iptal edilmiş ve geçici yedek etiket sunucu toplamına girmez —
+    /// onları sayan istek 409 <c>stale-total</c>, saymayan 200.</summary>
+    [Fact]
+    public async Task Basilmamis_iptal_ve_gecici_yedek_sayilmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var printed = await kit.SeedOrderAsync(owner, 100m);
+        var unprinted = await kit.SeedOrderAsync(owner, 50m, shape: o => o.PrintedAt = null);
+        var cancelled = await kit.SeedOrderAsync(owner, 30m, shape: o => o.CancelledAt = SalesKit.StartedAt.AddHours(1));
+        var tentative = await kit.SeedOrderAsync(owner, 20m, shape: o => o.IsTentativeBackup = true);
+
+        var all = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [printed.Id, unprinted.Id, cancelled.Id, tentative.Id], productTotal: 200m));
+        await StaleTotalAsync(all, 100m);
+
+        var lease = await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [printed.Id], productTotal: 100m));
+        (await kit.RecordAsync(lease.RecordId))!.RecordOrders.Select(o => o.OrderId).Should().Equal(printed.Id);
+    }
+
+    /// <summary>§6.4-f, §6.3: <c>session:{id}</c> yalnız o yayının siparişlerini sayar; <c>cumulative</c> bütün
+    /// yayınlarınkini.</summary>
+    [Fact]
+    public async Task Yayin_kapsami_baska_yayini_saymaz_kumulatif_sayar()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var s1 = await kit.SeedReleasedSessionAsync();
+        var inS1 = await kit.SeedOrderAsync(owner, 100m, s1);
+        var inS2 = await kit.SeedOrderAsync(owner, 50m);
+        var session = Kit.SessionScope(s1);
+
+        await StaleTotalAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner], session,
+            orderIds: [inS1.Id, inS2.Id], productTotal: 150m)), 100m);
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner], session,
+            orderIds: [inS1.Id], productTotal: 100m));
+
+        await StaleTotalAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [inS1.Id], productTotal: 100m)), 150m);
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [inS1.Id, inS2.Id], productTotal: 150m));
+    }
+
+    /// <summary>§6.4-f: birleştirmeden önce kopyanın (ve kopyanın kopyasının) Id'siyle saklanmış siparişler asıl kayıt
+    /// üzerinden sayılır.</summary>
+    [Fact]
+    public async Task Kopya_Idsiyle_saklanan_siparis_asil_kayitla_sayilir()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = await kit.SeedProjectionAsync(null);
+        var copy = await kit.SeedProjectionAsync(null, mergedInto: Guid.ParseExact(owner, "N"));
+        var copyOfCopy = await kit.SeedProjectionAsync(null, mergedInto: Guid.ParseExact(copy, "N"));
+        var viaCopy = await kit.SeedOrderAsync(copy, 80m);
+        var viaChain = await kit.SeedOrderAsync(copyOfCopy, 20m);
+
+        await StaleTotalAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])), 100m);
+
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [viaCopy.Id, viaChain.Id], productTotal: 100m));
+    }
+
+    /// <summary>§6.4-f: yayınsız (<c>SessionId</c> NULL) sipariş hiçbir istemciye inmez; sayılsaydı <c>stale-total</c>
+    /// kalıcı olurdu. Sayılmaz.</summary>
+    [Fact]
+    public async Task Yayinsiz_siparis_sayilmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var inSession = await kit.SeedOrderAsync(owner, 40m);
+        var orphan = await kit.Sales.SeedOrderAsync(null, o =>
+        {
+            o.CustomerId = owner;
+            o.Price = 100m;
+        });
+
+        await StaleTotalAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [orphan.Id, inSession.Id], productTotal: 140m)), 40m);
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [inSession.Id], productTotal: 40m));
+    }
+
+    /// <summary>
+    /// §6.4-f, §6.8: fark başka kopyanın devredilmemiş (canlı ya da devrediliyor) yayınındaki siparişten — PC-B'nin
+    /// kümülatif isteği 350 ₺ görür, sunucu 470 ₺. 409 <c>stale-total {470, liveElsewhere: [{yayın, PC-A}]}</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(SalesKit.Phase.Live)]
+    [InlineData(SalesKit.Phase.HandingOver)]
+    public async Task Fark_baska_kopyanin_devredilmemis_yayinindaysa_liveElsewhere_dolu(SalesKit.Phase phase)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var seen = await kit.SeedOrderAsync(owner, 350m);
+        var live = await kit.Sales.SeedSessionAsync(phase);
+        await kit.SeedOrderAsync(owner, 120m, live);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [seen.Id], productTotal: 350m));
+
+        var problem = await StaleTotalAsync(resp, 470m);
+        LiveElsewhere(problem).Should().Equal(new LiveSession(live, "PC-A"));
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// §6.4-f: <c>liveElsewhere</c> yalnız farkın TAMAMI başka kopyanın devredilmemiş yayınındaysa dolar. Fark devredilmiş
+    /// bir yayında, çağıranın kendi canlı yayınında ya da kısmen devredilmiş yayındaysa boş: istemci bir akış turuyla
+    /// yetişebilir.
+    /// </summary>
+    [Theory]
+    [InlineData("devredilmis")]
+    [InlineData("kendi-canli-yayini")]
+    [InlineData("karisik")]
+    public async Task Fark_devredilmis_ya_da_kendi_yayinindaysa_liveElsewhere_bos(string @case)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var caller = Guid.NewGuid();
+        var seen = await kit.SeedOrderAsync(owner, 350m);
+        switch (@case)
+        {
+            case "devredilmis":
+                await kit.SeedOrderAsync(owner, 120m);
+                break;
+            case "kendi-canli-yayini":
+                await kit.SeedOrderAsync(owner, 120m, await kit.Sales.SeedSessionAsync(SalesKit.Phase.Live, owner: caller));
+                break;
+            case "karisik":
+                await kit.SeedOrderAsync(owner, 70m, await kit.Sales.SeedSessionAsync(SalesKit.Phase.Live));
+                await kit.SeedOrderAsync(owner, 50m);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(@case), @case, null);
+        }
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), caller, owner, [owner],
+            orderIds: [seen.Id], productTotal: 350m));
+
+        LiveElsewhere(await StaleTotalAsync(resp, 470m)).Should().BeNull();
+    }
+
+    // ── (g) kargo ayarı ──────────────────────────────────────────────────────
+
+    /// <summary>§6.2, §6.4-g: istemcinin kargo ayarı sürümü güncel değil (ya da ayar hiç yazılmamışken sürüm 0 değil) —
+    /// 409 <c>settings-stale</c>, güncel ayarla; kira yazılmaz.</summary>
+    [Fact]
+    public async Task Kargo_ayari_surumu_eskiyse_409_settings_stale_guncel_ayarla()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        await kit.SeedShippingAsync(3, threshold: 500m, fee: 60m);
+        var owner = Kit.NewId();
+        var order = await kit.SeedOrderAsync(owner, 490m);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [order.Id], productTotal: 490m, totalBeforeBalance: 550m, shippingSettingsVersion: 2));
+
+        var current = (await SettingsStaleAsync(resp)).GetProperty("current");
+        current.GetProperty("version").GetInt32().Should().Be(3);
+        current.GetProperty("freeShippingThreshold").GetDecimal().Should().Be(500m);
+        current.GetProperty("fee").GetDecimal().Should().Be(60m);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+
+        var unset = await Kit.CreateAsync(_factory);
+        var missing = await unset.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            shippingSettingsVersion: 1));
+        var none = (await SettingsStaleAsync(missing)).GetProperty("current");
+        none.GetProperty("version").GetInt32().Should().Be(0);
+        none.GetProperty("fee").ValueKind.Should().Be(JsonValueKind.Null);
+        (await unset.RecordsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>Kargo testlerinin durumları: ayar açıksa (eşik 500, ücret 60) sürüm 2 ile yazılır; kapalıysa satır yok,
+    /// sürüm 0.</summary>
+    public static TheoryData<string, bool, decimal, decimal, bool> WrongShippingTotals => new()
+    {
+        { "esik-alti-kargosuz", true, 490m, 490m, false },
+        { "esikte-kargolu", true, 500m, 560m, false },
+        { "esik-ustu-kargolu", true, 550m, 610m, false },
+        { "alici-oder-kargolu", true, 490m, 550m, true },
+        { "ayar-kapali-kargolu", false, 490m, 550m, false },
+    };
+
+    /// <summary>§6.2, §6.4-g: sürüm doğru ama <c>totalBeforeBalance ≠ productTotal + kargo</c> (yerel ayarla
+    /// hesaplanmış tutar) — 409 <c>settings-stale</c>, güncel ayarla; kira yazılmaz.</summary>
+    [Theory]
+    [MemberData(nameof(WrongShippingTotals))]
+    public async Task Kargo_tutari_ayarla_tutmuyorsa_409_settings_stale(
+        string @case, bool shippingOn, decimal productTotal, decimal totalBeforeBalance, bool recipientPays)
+    {
+        var (kit, owner, order, version) = await ShippingCaseAsync(shippingOn, productTotal);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [order], productTotal: productTotal, totalBeforeBalance: totalBeforeBalance,
+            recipientPays: recipientPays, shippingSettingsVersion: version));
+
+        (await SettingsStaleAsync(resp)).GetProperty("current").GetProperty("version").GetInt32()
+            .Should().Be(version, @case);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    public static TheoryData<string, bool, decimal, decimal, bool> RightShippingTotals => new()
+    {
+        { "esik-alti-kargolu", true, 490m, 550m, false },
+        { "esikte-ucretsiz", true, 500m, 500m, false },
+        { "esik-ustu-ucretsiz", true, 550m, 550m, false },
+        { "alici-oder-kargosuz", true, 490m, 490m, true },
+        { "ayar-kapali", false, 490m, 490m, false },
+    };
+
+    /// <summary>§6.2, §6.4-g: kargo <c>ComputeShipping</c> kuralıyla — alıcı ödemeli, ayar kapalı ya da eşik ve üstü
+    /// ise 0, değilse ücret. Tutan tutar 200 alır.</summary>
+    [Theory]
+    [MemberData(nameof(RightShippingTotals))]
+    public async Task Kargo_tutari_ayarla_tutuyorsa_200(
+        string @case, bool shippingOn, decimal productTotal, decimal totalBeforeBalance, bool recipientPays)
+    {
+        var (kit, owner, order, version) = await ShippingCaseAsync(shippingOn, productTotal);
+
+        var lease = await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            orderIds: [order], productTotal: productTotal, totalBeforeBalance: totalBeforeBalance,
+            recipientPays: recipientPays, shippingSettingsVersion: version));
+
+        var record = await kit.RecordAsync(lease.RecordId);
+        record!.TotalBeforeBalance.Should().Be(totalBeforeBalance, @case);
+        record.ShippingSettingsVersion.Should().Be(version);
+    }
+
+    // ── Denetim sırası ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// §6.4 sırası b, c, d, e, f, g, h: toplam da kargo ayarı da yanlışken önceki adımın reddi döner —
+    /// <c>members-stale</c>, <c>in-progress-elsewhere</c> ve <c>already-requested</c> <c>stale-total</c>'dan,
+    /// <c>stale-total</c> <c>settings-stale</c>'dan önce gelir. İstek kira yazmaz.
+    /// </summary>
+    [Theory]
+    [InlineData("members-stale")]
+    [InlineData("in-progress-elsewhere")]
+    [InlineData("already-requested")]
+    [InlineData("stale-total")]
+    public async Task Onceki_adimin_reddi_toplam_denetiminden_once_gelir(string expected)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var group = $"grp-{Guid.NewGuid():N}";
+        var owner = await kit.SeedProjectionAsync(expected == "members-stale" ? group : null);
+        await kit.SeedShippingAsync(2, threshold: 500m, fee: 60m);
+        await kit.SeedOrderAsync(owner, 100m);
+        switch (expected)
+        {
+            case "members-stale":
+                await kit.SeedProjectionAsync(group);
+                break;
+            case "in-progress-elsewhere":
+                await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease, PaymentRequestState.Sending,
+                    DateTimeOffset.UtcNow);
+                break;
+            case "already-requested":
+                await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record, PaymentRequestState.Delivered,
+                    DateTimeOffset.UtcNow.AddHours(-1), netAmount: 100m);
+                break;
+        }
+        var recordId = Guid.NewGuid();
+
+        // Sipariş kümesi boş ve toplam 0 (sunucu: bir sipariş, 100), kargo ayarı sürümü 1 (güncel: 2).
+        var resp = await kit.BeginAsync(Kit.Body(recordId, Guid.NewGuid(), owner, [owner], shippingSettingsVersion: 1));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        (await SalesKit.ProblemAsync(resp)).GetProperty("title").GetString().Should().Be(expected);
+        (await kit.RecordAsync(recordId)).Should().BeNull();
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
     private sealed record Prior(Guid Id, string? Machine, decimal? NetAmount, DateTimeOffset At, bool Unconfirmed);
+
+    private sealed record LiveSession(Guid SessionId, string? Machine);
+
+    private static async Task<Kit.BeginResponse> BeginOkAsync(Kit kit, object body)
+    {
+        var resp = await kit.BeginAsync(body);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        return await Kit.ReadAsync(resp);
+    }
+
+    /// <summary>409 <c>stale-total</c>, verilen sunucu toplamıyla; ProblemDetails gövdesi.</summary>
+    private static async Task<JsonElement> StaleTotalAsync(HttpResponseMessage resp, decimal serverTotal)
+    {
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("stale-total");
+        problem.GetProperty("serverTotal").GetDecimal().Should().Be(serverTotal);
+        return problem;
+    }
+
+    /// <summary>409 <c>settings-stale</c>; ProblemDetails gövdesi.</summary>
+    private static async Task<JsonElement> SettingsStaleAsync(HttpResponseMessage resp)
+    {
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("settings-stale");
+        return problem;
+    }
+
+    private static List<LiveSession>? LiveElsewhere(JsonElement problem)
+    {
+        var value = problem.GetProperty("liveElsewhere");
+        return value.ValueKind == JsonValueKind.Null
+            ? null
+            : value.EnumerateArray()
+                .Select(s => new LiveSession(
+                    s.GetProperty("sessionId").GetGuid(),
+                    s.GetProperty("machine").ValueKind == JsonValueKind.Null ? null : s.GetProperty("machine").GetString()))
+                .ToList();
+    }
+
+    /// <summary>Kargo testlerinin kurulumu: ayar açıksa sürüm 2 (eşik 500, ücret 60), değilse satır yok (sürüm 0);
+    /// sahibin toplamı <paramref name="productTotal"/> olan tek sipariş.</summary>
+    private async Task<(Kit Kit, string Owner, Guid Order, int Version)> ShippingCaseAsync(
+        bool shippingOn, decimal productTotal)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        if (shippingOn) await kit.SeedShippingAsync(2, threshold: 500m, fee: 60m);
+        var owner = Kit.NewId();
+        var order = await kit.SeedOrderAsync(owner, productTotal);
+        return (kit, owner, order.Id, shippingOn ? 2 : 0);
+    }
 
     private static List<Prior> Priors(JsonElement problem) =>
         problem.GetProperty("priors").EnumerateArray()

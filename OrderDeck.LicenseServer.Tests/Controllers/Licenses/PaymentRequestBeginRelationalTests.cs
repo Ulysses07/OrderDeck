@@ -16,8 +16,8 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
 /// <c>POST payment-requests/begin</c>'in eşzamanlılık ve harman sözleşmesi gerçek SQL Server'da — spec 2026-10-13 §6.4,
-/// DM6, M10, §10.1-8, -15, -16, -17, -28 (begin). Kişi×kapsam ve üye×kapsam uygulama kilitleri, filtreli tekil indeks
-/// (yarışın hakemi) ve SQL'in harf duyarsız, sondaki boşluğu yok sayan karşılaştırması InMemory'de yoktur.
+/// DM6, M10, §10.1-8, -15, -16, -17, -18, -28 (begin). Kişi×kapsam ve üye×kapsam uygulama kilitleri, filtreli tekil
+/// indeks (yarışın hakemi) ve SQL'in harf duyarsız, sondaki boşluğu yok sayan karşılaştırması InMemory'de yoktur.
 ///
 /// <para>Yarış sırayla kurulur (zamanlamayla değil): bir isteğin kira kaydı diske inmeden hemen önce kanca rakip isteği
 /// BAŞLATIR ama sonunu beklemez — rakip ilk isteğin kilidinde bekliyor olabilir. Kanca rakip de kira yazımına gelene
@@ -140,7 +140,8 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
     public async Task Yeniden_oynatma_kayitli_sonucu_doner()
     {
         var owner = Kit.NewId();
-        var body = Kit.Body(Guid.NewGuid(), _pcA, owner, [owner], orderIds: [Guid.NewGuid()]);
+        var order = await _kit.SeedOrderAsync(owner, 100m);
+        var body = Kit.Body(Guid.NewGuid(), _pcA, owner, [owner], orderIds: [order.Id], productTotal: 100m);
         var first = await BeginOkAsync(body);
 
         var again = await BeginOkAsync(body);
@@ -186,9 +187,11 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
         var owner = Kit.NewId();
         var recordId = Guid.NewGuid();
         var injected = Guid.NewGuid();
+        var order = await _kit.SeedOrderAsync(owner, 100m);
         _factory.Hook.ArmInjection(() => InsertSendingAsync(injected, "c:" + owner, Kit.Cumulative, "PC-X"));
 
-        var resp = await _kit.BeginAsync(Kit.Body(recordId, _pcA, owner, [owner], orderIds: [Guid.NewGuid()]));
+        var resp = await _kit.BeginAsync(Kit.Body(recordId, _pcA, owner, [owner], orderIds: [order.Id],
+            productTotal: 100m));
 
         _factory.Hook.Injected.Should().BeTrue("kanca satırı kira yazımından önce eklemeli");
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
@@ -335,6 +338,63 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
         var asked = await SalesKit.ProblemAsync(delivered);
         asked.GetProperty("title").GetString().Should().Be("already-requested");
         asked.GetProperty("priors").EnumerateArray().Select(p => p.GetProperty("id").GetGuid()).Should().Equal(sending.Id);
+    }
+
+    // ── §10.1-18: stale-total küme karşılaştırması ve üye eşlemesi ──────────
+
+    /// <summary>
+    /// §10.1-18, §6.4-f: toplamlar eşit, kümeler farklı — istemcinin saydığı etiket sunucuda iptal, sunucuda istemcinin
+    /// görmediği yeni etiket var. 409 <c>stale-total</c> (sunucu toplamı aynı, <c>liveElsewhere</c> boş); kira yok.
+    /// </summary>
+    [Fact]
+    public async Task Esit_toplam_farkli_kume_409_stale_total()
+    {
+        var owner = Kit.NewId();
+        var kept = await _kit.SeedOrderAsync(owner, 100m);
+        var cancelled = await _kit.SeedOrderAsync(owner, 100m, shape: o => o.CancelledAt = SalesKit.StartedAt.AddHours(1));
+        await _kit.SeedOrderAsync(owner, 100m);
+
+        var resp = await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner],
+            orderIds: [kept.Id, cancelled.Id], productTotal: 200m));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("stale-total");
+        problem.GetProperty("serverTotal").GetDecimal().Should().Be(200m);
+        problem.GetProperty("liveElsewhere").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+        (await _kit.RecordsAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// §10.1-18, §6.4-f, §15-10: GUID'siz üyenin siparişi ham <c>CustomerId</c> ile sayılır; ham Id'si yalnız harfle ya
+    /// da sondaki boşlukla ayrılan sipariş (SQL'in harmanında eşit) sayılmaz. GUID'li sahibin kopyasının Id'siyle
+    /// saklanmış sipariş asıl kayıt üzerinden sayılır (kopya araması SQL'e çevrilir). Onları sayan istek 409
+    /// <c>stale-total</c>, saymayan 200.
+    /// </summary>
+    [Fact]
+    public async Task GUIDsiz_uyenin_siparisi_ham_Idyle_sayilir_harfi_ya_da_boslugu_farkli_sayilmaz()
+    {
+        var prefix = Guid.NewGuid().ToString("N");
+        var owner = await _kit.SeedProjectionAsync(null);
+        var copy = await _kit.SeedProjectionAsync(null, mergedInto: Guid.ParseExact(owner, "N"));
+        var raw = $"{prefix}-Ab";
+        var counted = await _kit.SeedOrderAsync(raw, 70m);
+        var viaCopy = await _kit.SeedOrderAsync(copy, 50m);
+        var otherCase = await _kit.SeedOrderAsync($"{prefix}-ab", 30m);
+        var trailing = await _kit.SeedOrderAsync($"{prefix}-Ab ", 20m);
+
+        var resp = await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner, raw],
+            orderIds: [counted.Id, viaCopy.Id, otherCase.Id, trailing.Id], productTotal: 170m));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("stale-total");
+        problem.GetProperty("serverTotal").GetDecimal().Should().Be(120m);
+
+        var lease = await BeginOkAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner, raw],
+            orderIds: [counted.Id, viaCopy.Id], productTotal: 120m));
+        (await _kit.RecordAsync(lease.RecordId))!.RecordOrders.Select(o => o.OrderId)
+            .Should().BeEquivalentTo([counted.Id, viaCopy.Id]);
     }
 
     // ── §10.1-28 (begin): mod Off ─────────────────────────────────────────────

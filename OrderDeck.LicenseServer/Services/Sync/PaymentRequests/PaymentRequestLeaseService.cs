@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Sync.Commands;
+using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 
@@ -28,8 +29,9 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 ///   <c>in-progress-elsewhere</c> (makine bilinmiyor).</item>
 ///   <item>Kilit altında: (a) yeniden, (b) üyeler (409 <c>members-stale</c>), (c) süresi dolmuş ve bu kopyanın önceki
 ///   <c>Sending</c> kaydının <c>Unconfirmed</c> yapılması, (d) başka kopyanın canlı kirası (409
-///   <c>in-progress-elsewhere</c>), (e) onaylanmamış önceki istek (409 <c>already-requested</c>), [(f) sunucu toplamı ve
-///   (g) kargo ayarı — sonraki adım], (h) kiranın yazılması. (c)'nin yazımı (d) ve (e) retlerinde de kalır.</item>
+///   <c>in-progress-elsewhere</c>), (e) onaylanmamış önceki istek (409 <c>already-requested</c>), (f) sunucu toplamı
+///   (409 <c>stale-total</c>), (g) kargo ayarı (409 <c>settings-stale</c>), (h) kiranın yazılması. (c)'nin yazımı (d)–(g)
+///   retlerinde de kalır; (f) ve (g) hiçbir şey yazmaz.</item>
 /// </list>
 ///
 /// <para><b>Eşleme.</b> Kişi×kapsamın kayıtları iki yoldan bulunur: PersonKey özeti (indeks; metin bellekte ordinal yeniden
@@ -77,6 +79,8 @@ public sealed class PaymentRequestLeaseService
     public const string CodeMembersStale = "members-stale";
     public const string CodeInProgressElsewhere = "in-progress-elsewhere";
     public const string CodeAlreadyRequested = "already-requested";
+    public const string CodeStaleTotal = "stale-total";
+    public const string CodeSettingsStale = "settings-stale";
 
     /// <summary>Kayıt tablosunun birincil anahtarının adı: eşzamanlı aynı <c>recordId</c> bununla tanınır.</summary>
     private const string RecordKeyName = "PK_PaymentRequestRecords";
@@ -179,7 +183,7 @@ public sealed class PaymentRequestLeaseService
         return await BeginLockedAsync(licenseId, begin, person, ct);
     }
 
-    /// <summary>Kilitler ve kilit altındaki adımlar (a–e, h) tek işlemde; ilişkisel olmayan sağlayıcıda (testler) işlem ve
+    /// <summary>Kilitler ve kilit altındaki adımlar (a–h) tek işlemde; ilişkisel olmayan sağlayıcıda (testler) işlem ve
     /// kilit yoktur.</summary>
     private async Task<PaymentRequestReply> BeginLockedAsync(
         Guid licenseId, BeginInput begin, Person person, CancellationToken ct)
@@ -197,8 +201,8 @@ public sealed class PaymentRequestLeaseService
                     _db, MemberResource(licenseId, member, begin.ScopeKey), SalesCommandLock.DefaultTimeout, ct);
 
             var reply = await DecideAsync(licenseId, begin, person, ct);
-            // Retler de commit edilir: (c)'nin Unconfirmed yazımı (d) ve (e) retlerinde kalmalı (§4.9 "kira süresi için ayrı
-            // iş yok"). (a) ve (b) hiçbir şey yazmaz.
+            // Retler de commit edilir: (c)'nin Unconfirmed yazımı (d)–(g) retlerinde kalmalı (§4.9 "kira süresi için ayrı
+            // iş yok"). (a), (b), (f) ve (g) hiçbir şey yazmaz.
             if (transaction is not null) await transaction.CommitAsync(ct);
             return reply;
         }
@@ -233,7 +237,7 @@ public sealed class PaymentRequestLeaseService
         }
     }
 
-    /// <summary>Kilit altındaki karar: (a), (b), (c), (d), (e), [(f), (g)], (h).</summary>
+    /// <summary>Kilit altındaki karar: (a), (b), (c), (d), (e), (f), (g), (h).</summary>
     private async Task<PaymentRequestReply> DecideAsync(
         Guid licenseId, BeginInput begin, Person person, CancellationToken ct)
     {
@@ -313,8 +317,11 @@ public sealed class PaymentRequestLeaseService
                 new Dictionary<string, object?> { ["priors"] = priors });
         }
 
-        // (f) Sunucu toplamı (stale-total) ve (g) kargo ayarı (settings-stale) bu noktada, (h)'den önce denetlenir; sıra b,
-        // c, d, e, (f, g), h. Bu adımlar sonraki değişiklikte gelir.
+        // (f) Sunucu toplamı: istemcinin sipariş kümesi ve ürün toplamı sunucununkiyle aynı olmalı (M11).
+        if (await CheckServerTotalAsync(licenseId, begin, members, expired, ct) is { } staleTotal) return staleTotal;
+
+        // (g) Kargo ayarı: tutar lisansın güncel ayarıyla hesaplanmış olmalı (§6.2).
+        if (await CheckShippingAsync(licenseId, begin, expired, ct) is { } settingsStale) return settingsStale;
 
         // (h) Kira: kayıt, üyeleri ve kapsadığı siparişler tek SaveChanges'te.
         var stored = StorableMembers(members);
@@ -550,6 +557,167 @@ public sealed class PaymentRequestLeaseService
             .ThenBy(r => r.Id)
             .FirstOrDefault();
     }
+
+    // ── (f) sunucu toplamı ─────────────────────────────────────────────────
+
+    /// <summary>Sunucu kümesinin bir siparişi, kararın okuduğu alanlarla.</summary>
+    private sealed record CountedOrder(Guid Id, decimal Price, Guid SessionId);
+
+    /// <summary>
+    /// (f) Sunucu toplamı (§6.4-f, M11): kişinin kapsamdaki, toplama giren siparişlerinin kümesi
+    /// (<see cref="ServerOrdersAsync"/>) istemcinin <c>orderIds</c>'ine, fiyat toplamı <c>productTotal</c>'a kuruşu
+    /// kuruşuna eşit olmalı; aksi hâlde 409 <c>stale-total {serverTotal, liveElsewhere}</c>. Küme karşılaştırması toplamı
+    /// eşit iki farklı kümeyi de (biri iptal, biri yeni etiket) yakalar. Hiçbir şey yazmaz.
+    /// </summary>
+    /// <returns>Ret; tutuyorsa null.</returns>
+    private async Task<PaymentRequestFailed?> CheckServerTotalAsync(
+        Guid licenseId, BeginInput begin, IReadOnlyList<string> members, int expired, CancellationToken ct)
+    {
+        var counted = await ServerOrdersAsync(licenseId, begin.ScopeKey, members, ct);
+        var serverTotal = counted.Sum(o => o.Price);
+        var serverIds = counted.Select(o => o.Id).ToHashSet();
+        if (serverTotal == begin.ProductTotal && serverIds.SetEquals(begin.OrderIds)) return null;
+
+        var clientIds = begin.OrderIds.ToHashSet();
+        var serverOnly = counted.Where(o => !clientIds.Contains(o.Id)).ToList();
+        var clientOnly = clientIds.Count(id => !serverIds.Contains(id));
+        var liveElsewhere = await LiveElsewhereAsync(licenseId, begin.ReplicaId, serverOnly, ct);
+        _log.LogInformation(
+            "payment-requests/begin: sunucu toplamı istemcininkiyle tutmuyor, 409 stale-total — sunucuda {ServerOrders}, "
+            + "istemcide {ClientOrders} sipariş; yalnız sunucuda {ServerOnly}, yalnız istemcide {ClientOnly}; başka "
+            + "kopyanın devredilmemiş yayını {LiveElsewhere}; {Expired} kira Unconfirmed yapıldı (license={LicenseId}, "
+            + "replica={ReplicaId}, record={RecordId})",
+            counted.Count, clientIds.Count, serverOnly.Count, clientOnly, liveElsewhere?.Count ?? 0, expired, licenseId,
+            begin.ReplicaId, begin.RecordId);
+        return Fail(StatusCodes.Status409Conflict, CodeStaleTotal,
+            "Bu bilgisayardaki toplam sunucununkiyle tutmuyor; satışlar eşitlenip yeniden denenmeli.",
+            new Dictionary<string, object?> { ["serverTotal"] = serverTotal, ["liveElsewhere"] = liveElsewhere });
+    }
+
+    /// <summary>
+    /// Kişinin kapsamdaki, toplama giren siparişleri (§6.4-f):
+    /// <list type="bullet">
+    ///   <item>Yayını olan (<c>SessionId</c> dolu). Yayınsız sipariş hiçbir istemciye inmez; sayılsaydı
+    ///   <c>stale-total</c> kalıcı olurdu.</item>
+    ///   <item>Kapsam: <c>session:{id}</c> o yayının; <c>cumulative</c> bütün yayınların, canlı ve devredilmemiş
+    ///   olanlar dahil.</item>
+    ///   <item>Müşterisi üyelerden. GUID'li üye asıl kaydın "N" hex'iyle eşleşir: siparişin <c>CustomerId</c>'si
+    ///   <see cref="CustomerIdResolver.CanonicalHexOfAsync"/> ile asıl kayda çözülür, kopyanın Id'siyle saklanmış sipariş
+    ///   de sayılır. GUID'siz üye ham <c>CustomerId</c>'yle ORDINAL eşleşir (sunucu GUID olmayan değeri aynen saklıyor).
+    ///   SQL harf duyarsız ve sondaki boşluğu yok sayarak getirir; eşitlik bellekte.</item>
+    ///   <item>Toplama katkısı var (<see cref="LabelRules.Contribution"/>): basılmış, iptal edilmemiş, geçici yedek
+    ///   değil.</item>
+    /// </list>
+    /// </summary>
+    private async Task<IReadOnlyList<CountedOrder>> ServerOrdersAsync(
+        Guid licenseId, string scopeKey, IReadOnlyList<string> members, CancellationToken ct)
+    {
+        var guidMembers = new HashSet<Guid>();
+        var rawMembers = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var member in members)
+        {
+            if (PaymentPersonKey.TryParseGuid(member, out var id)) guidMembers.Add(id);
+            else rawMembers.Add(member);
+        }
+
+        var copies = await _customerIds.CopiesOfAsync(licenseId, guidMembers, ct);
+        var candidates = members
+            .Concat(copies.Select(c => c.ToString("N")))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var query = _db.Orders.AsNoTracking()
+            .Where(o => o.LicenseId == licenseId && o.SessionId != null && candidates.Contains(o.CustomerId));
+        if (SessionOf(scopeKey) is { } sessionId) query = query.Where(o => o.SessionId == sessionId);
+        var orders = await query.ToListAsync(ct);
+
+        var canonical = await _customerIds.CanonicalHexOfAsync(licenseId, orders.Select(o => o.CustomerId), ct);
+        return orders
+            .Where(o => IsMember(canonical[o.CustomerId]) && LabelRules.Contribution(o.ToLabelFacts()).Count == 1)
+            .Select(o => new CountedOrder(o.Id, o.Price, o.SessionId!.Value))
+            .ToList();
+
+        bool IsMember(string customerId) =>
+            PaymentPersonKey.TryParseGuid(customerId, out var id)
+                ? guidMembers.Contains(id)
+                : rawMembers.Contains(customerId);
+    }
+
+    /// <summary>
+    /// <c>liveElsewhere</c> (§6.4-f): yalnız sunucuda olan siparişlerin HEPSİ başka kopyanın devredilmemiş (canlı ya da
+    /// devrediliyor: <c>ReleasedAt</c> NULL, sahibi çağıran değil) yayınındaysa o yayınlar ve sahip makineleri; istemci
+    /// yayın bitip devredilene kadar bekler. Aksi hâlde null: yalnız sunucuda olan sipariş yok (fark yalnız istemcide ya
+    /// da fiyatta), ya da bir kısmı devredilmiş yayında ya da çağıranın kendi yayınında — istemci bir akış turuyla
+    /// yetişebilir.
+    /// </summary>
+    private async Task<IReadOnlyList<PaymentRequestLiveSession>?> LiveElsewhereAsync(
+        Guid licenseId, Guid callerReplicaId, IReadOnlyList<CountedOrder> serverOnly, CancellationToken ct)
+    {
+        if (serverOnly.Count == 0) return null;
+        var ids = serverOnly.Select(o => o.SessionId).Distinct().ToList();
+        var sessions = await _db.StreamSessions.AsNoTracking()
+            .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
+            .Select(s => new { s.Id, s.ReleasedAt, s.OwnerReplicaId, s.OwnerMachineName })
+            .ToListAsync(ct);
+        if (sessions.Count != ids.Count
+            || sessions.Any(s => s.ReleasedAt is not null || s.OwnerReplicaId == callerReplicaId))
+            return null;
+        return sessions
+            .OrderBy(s => s.Id)
+            .Select(s => new PaymentRequestLiveSession(s.Id, s.OwnerMachineName))
+            .ToList();
+    }
+
+    /// <summary><c>session:{"N" hex}</c> kapsamının yayını; <c>cumulative</c> için null. Kapsam doğrulanmış olmalı.</summary>
+    private static Guid? SessionOf(string scopeKey) =>
+        scopeKey.StartsWith(SessionScopePrefix, StringComparison.Ordinal)
+            ? Guid.ParseExact(scopeKey.AsSpan(SessionScopePrefix.Length), "N")
+            : null;
+
+    // ── (g) kargo ayarı ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// (g) Kargo ayarı (§6.2, §6.4-g): tutarın hesaplandığı ayar sürümü lisansın güncel sürümü olmalı (satır yoksa 0) ve
+    /// <c>totalBeforeBalance = productTotal + kargo</c> lisans ayarıyla tutmalı (<see cref="ShippingFee"/>); aksi hâlde
+    /// 409 <c>settings-stale {current}</c>. Yerel ayarla hesaplanmış tutar doğru sürüm numarasıyla da geçemez: aynı kişiye
+    /// iki bilgisayarın farklı kargo istemesi böyle kapanır. Hiçbir şey yazmaz.
+    /// </summary>
+    /// <returns>Ret; tutuyorsa null.</returns>
+    private async Task<PaymentRequestFailed?> CheckShippingAsync(
+        Guid licenseId, BeginInput begin, int expired, CancellationToken ct)
+    {
+        var current = await LicenseShippingSettingsStore.ReadAsync(_db, licenseId, ct);
+        var versionMatches = begin.ShippingSettingsVersion == current.Version;
+        if (versionMatches
+            && begin.TotalBeforeBalance == begin.ProductTotal + ShippingFee(current, begin.ProductTotal, begin.RecipientPays))
+            return null;
+
+        _log.LogInformation(
+            "payment-requests/begin: kargo ayarı tutmuyor, 409 settings-stale — istemcinin sürümü {ClientVersion}, güncel "
+            + "{CurrentVersion}, sürüm eşit {VersionMatches}; {Expired} kira Unconfirmed yapıldı (license={LicenseId}, "
+            + "replica={ReplicaId}, record={RecordId})",
+            begin.ShippingSettingsVersion, current.Version, versionMatches, expired, licenseId, begin.ReplicaId,
+            begin.RecordId);
+        return Fail(StatusCodes.Status409Conflict, CodeSettingsStale,
+            "Kargo ayarı değişti; tutar güncel ayarla yeniden hesaplanmalı.",
+            new Dictionary<string, object?> { ["current"] = current });
+    }
+
+    /// <summary>
+    /// İstenecek kargo — WPF <c>PaymentRequestService.ComputeShipping</c>'in kuralı: alıcı ödemeliyse, ayar kapalıysa
+    /// (<c>ShippingSettings.IsEnabled</c>: eşik ve ücret ikisi de &gt; 0 değil) ya da ürün toplamı eşik ve üstündeyse 0;
+    /// değilse ücret.
+    /// </summary>
+    private static decimal ShippingFee(
+        LicenseShippingSettingsStore.Snapshot settings, decimal productTotal, bool recipientPays)
+    {
+        if (recipientPays) return 0m;
+        if (settings.FreeShippingThreshold is not { } threshold || threshold <= 0
+            || settings.Fee is not { } fee || fee <= 0)
+            return 0m;
+        return productTotal >= threshold ? 0m : fee;
+    }
+
+    // ── (h) kiranın yazımı ─────────────────────────────────────────────────
 
     /// <summary>
     /// Saklanacak üye satırları. Birincil anahtar <c>(RecordId, WpfCustomerId)</c> varsayılan (harf duyarsız) harmanda:

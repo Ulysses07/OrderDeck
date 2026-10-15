@@ -35,7 +35,11 @@ public sealed class PaymentRequestTestKit
 
     // ── İstek ─────────────────────────────────────────────────────────────────
 
-    /// <summary><c>begin</c> gövdesi (v2, <c>seenMode = 1</c>). Sözlük: 400 testleri alanı siler ya da bozar.</summary>
+    /// <summary>
+    /// <c>begin</c> gövdesi (v2, <c>seenMode = 1</c>). Sözlük: 400 testleri alanı siler ya da bozar. Varsayılanlar boş
+    /// bir sunucu kümesine ve yazılmamış kargo ayarına uyar (§6.4-f, g): sipariş yok, ürün toplamı 0, ayar sürümü 0,
+    /// <paramref name="totalBeforeBalance"/> verilmezse ürün toplamı (kargo yok).
+    /// </summary>
     public static Dictionary<string, object?> Body(
         Guid recordId,
         Guid replicaId,
@@ -43,10 +47,10 @@ public sealed class PaymentRequestTestKit
         IEnumerable<string> memberIds,
         string scopeKey = Cumulative,
         IEnumerable<Guid>? orderIds = null,
-        decimal productTotal = 550m,
-        decimal totalBeforeBalance = 550m,
+        decimal productTotal = 0m,
+        decimal? totalBeforeBalance = null,
         bool recipientPays = false,
-        int shippingSettingsVersion = 1,
+        int shippingSettingsVersion = 0,
         IEnumerable<Guid>? confirmedPriorIds = null) => new()
     {
         ["recordId"] = recordId,
@@ -58,7 +62,7 @@ public sealed class PaymentRequestTestKit
         ["scopeKey"] = scopeKey,
         ["orderIds"] = (orderIds ?? []).ToArray(),
         ["productTotal"] = productTotal,
-        ["totalBeforeBalance"] = totalBeforeBalance,
+        ["totalBeforeBalance"] = totalBeforeBalance ?? productTotal,
         ["recipientPays"] = recipientPays,
         ["shippingSettingsVersion"] = shippingSettingsVersion,
         ["confirmedPriorIds"] = (confirmedPriorIds ?? []).ToArray(),
@@ -94,6 +98,43 @@ public sealed class PaymentRequestTestKit
             return Task.CompletedTask;
         });
         return id.ToString("N");
+    }
+
+    /// <summary>Devredilmiş bir yayın (sahibi <see cref="SalesCommandTestKit.OwnerReplicaId"/>).</summary>
+    public Task<Guid> SeedReleasedSessionAsync() => Sales.SeedSessionAsync(SalesKit.Phase.Released);
+
+    /// <summary>
+    /// Verilen müşteriye basılmış bir sipariş (toplama girer); yayın verilmezse yeni, devredilmiş bir yayında.
+    /// <paramref name="shape"/> onu toplamın dışına itebilir (basılmamış, iptal, geçici yedek).
+    /// </summary>
+    public async Task<Order> SeedOrderAsync(
+        string customerId, decimal price, Guid? sessionId = null, Action<Order>? shape = null)
+    {
+        var session = sessionId ?? await SeedReleasedSessionAsync();
+        return await Sales.SeedOrderAsync(session, o =>
+        {
+            o.CustomerId = customerId;
+            o.Price = price;
+            shape?.Invoke(o);
+        });
+    }
+
+    /// <summary>Lisans geneli kargo ayarı, verilen sürümle (CLI'ın yazdığı gibi).</summary>
+    public async Task SeedShippingAsync(int version, decimal? threshold, decimal? fee)
+    {
+        await Sales.WithDbAsync(db =>
+        {
+            db.LicenseShippingSettings.Add(new LicenseShippingSettings
+            {
+                LicenseId = LicenseId,
+                FreeShippingThreshold = threshold,
+                ShippingFee = fee,
+                Version = version,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                UpdatedBy = LicenseShippingSettings.UpdatedByCli,
+            });
+            return Task.CompletedTask;
+        });
     }
 
     /// <summary>Makine adı bilinen bir kopya (<c>sales/hello</c>'nun yazdığı gibi).</summary>
