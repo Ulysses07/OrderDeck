@@ -265,13 +265,15 @@ public sealed class SalesCommandService
             new SalesCommandResponse(status, orders, shipments, sessions, document.RootElement.Clone()));
     }
 
-    /// <summary>Ret yanıtı; <c>stale</c> komutun siparişlerinin taze hâlini <c>current</c> olarak taşır.</summary>
+    /// <summary>Ret yanıtı; <c>stale</c> ve <c>plan-stale</c> komutun (ya da retin verdiği) siparişlerin taze hâlini
+    /// <c>current</c> olarak taşır.</summary>
     private async Task<SalesCommandReply> RejectedAsync(
         Guid licenseId, SalesCommandRejection rejection, IReadOnlyList<Guid> orderIds, CancellationToken ct)
     {
         var extensions = new Dictionary<string, object?>(rejection.Extensions);
         if (rejection.WithCurrentOrders)
-            extensions["current"] = (await CurrentRowsAsync(licenseId, orderIds, [], ct)).Orders;
+            extensions["current"] =
+                (await CurrentRowsAsync(licenseId, rejection.CurrentOrderIds ?? orderIds, [], ct)).Orders;
         return new SalesCommandFailed(rejection.StatusCode, rejection.Code, rejection.Message, extensions);
     }
 

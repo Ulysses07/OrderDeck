@@ -12,15 +12,23 @@ public sealed class SalesCommandRejection : Exception
     public const string CodeStale = "stale";
     public const string CodeSessionLive = "session-live";
     public const string CodeUnknownOrder = "unknown-order";
+    public const string CodePlanStale = "plan-stale";
+    public const string CodeUnknownSession = "unknown-session";
 
     private SalesCommandRejection(
-        int statusCode, string code, string detail, IReadOnlyDictionary<string, object?> extensions, bool withCurrent)
+        int statusCode,
+        string code,
+        string detail,
+        IReadOnlyDictionary<string, object?> extensions,
+        bool withCurrent,
+        IReadOnlyList<Guid>? currentOrderIds = null)
         : base(detail)
     {
         StatusCode = statusCode;
         Code = code;
         Extensions = extensions;
         WithCurrentOrders = withCurrent;
+        CurrentOrderIds = currentOrderIds;
     }
 
     public int StatusCode { get; }
@@ -32,6 +40,10 @@ public sealed class SalesCommandRejection : Exception
     /// <summary>Ret, komutun siparişlerinin güncel hâlini (<c>current</c>) taşır; servis işlem geri alındıktan sonra
     /// taze okur.</summary>
     public bool WithCurrentOrders { get; }
+
+    /// <summary><see cref="WithCurrentOrders"/>'ın siparişleri komutunkilerden (<c>ISalesCommand.OrderIds</c>) farklıysa
+    /// onlar; null = komutunkiler.</summary>
+    public IReadOnlyList<Guid>? CurrentOrderIds { get; }
 
     /// <summary>
     /// 409 <c>stale</c> (§4.6 adım 4, 6): istemcinin gördüğü sürüm güncel değil ya da eşzamanlı bir yazım (jeton, kilit
@@ -63,5 +75,28 @@ public sealed class SalesCommandRejection : Exception
     public static SalesCommandRejection UnknownOrders(IReadOnlyList<Guid> orderIds) =>
         new(StatusCodes.Status400BadRequest, CodeUnknownOrder, "Komutun siparişlerinden bazıları bu lisansta yok.",
             new Dictionary<string, object?> { ["orderIds"] = orderIds },
+            withCurrent: false);
+
+    /// <summary>
+    /// 409 <c>plan-stale</c> (§4.6 <c>set-code-price</c>, §10.1-4): sunucunun kurduğu plan (düzeltilebilir satırlar ve
+    /// sürümleri) istemcinin gördüğü plandan (<c>expected</c>) farklı — bir satır eklendi, çıktı ya da sürümü ilerledi.
+    /// Bu türde <c>expected</c> planın kendisidir; her uyuşmazlık plan-stale'dir. Yanıt güncel planı (<c>plan</c>) ve
+    /// planın, istemcinin beklediği ve seçtiği satırların güncel hâlini (<c>current</c>) taşır. Fiyatta sessiz yeniden
+    /// deneme yoktur: istemci planı yeniden gösterir (§5.3).
+    /// </summary>
+    /// <param name="plan">Sunucunun güncel planı, sipariş Id'sine göre sıralı.</param>
+    /// <param name="currentOrderIds">Taze hâli dönecek siparişler.</param>
+    public static SalesCommandRejection PlanStale(
+        IReadOnlyList<SalesCommandExpected> plan, IReadOnlyList<Guid> currentOrderIds) =>
+        new(StatusCodes.Status409Conflict, CodePlanStale,
+            "Bu arada başka bir bilgisayarda değişti; plan yenilendi.",
+            new Dictionary<string, object?> { ["plan"] = plan },
+            withCurrent: true,
+            currentOrderIds);
+
+    /// <summary>400 <c>unknown-session</c>: komutun yayını bu lisansta yok (istemci hatası).</summary>
+    public static SalesCommandRejection UnknownSession(Guid sessionId) =>
+        new(StatusCodes.Status400BadRequest, CodeUnknownSession, "Komutun yayını bu lisansta yok.",
+            new Dictionary<string, object?> { ["sessionId"] = sessionId },
             withCurrent: false);
 }

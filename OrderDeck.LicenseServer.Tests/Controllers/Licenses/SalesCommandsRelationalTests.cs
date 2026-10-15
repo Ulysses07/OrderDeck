@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
@@ -16,9 +17,9 @@ using V2Result = OrderDeck.LicenseServer.Tests.Controllers.Licenses.OrderSyncV2T
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
-/// <c>POST sales/commands</c>'ın eşzamanlılık sözleşmesi gerçek SQL Server'da — spec 2026-10-13 §4.6 adım 5–6, §10.1-5,
-/// §10.1-13. Komut siparişi <c>SyncVersion</c> jetonu altında ve tek işlemde yazar; InMemory jetonu ve işlemi
-/// uygulamadığı için yarışın hakemi ancak burada kanıtlanır.
+/// <c>POST sales/commands</c>'ın eşzamanlılık sözleşmesi gerçek SQL Server'da — spec 2026-10-13 §4.6 adım 5–6, §10.1-4,
+/// §10.1-5, §10.1-13. Komut siparişi <c>SyncVersion</c> jetonu altında ve tek işlemde yazar, planı kuran komut yayın
+/// kilidini alır; InMemory jetonu, işlemi ve kilidi uygulamadığı için yarışın hakemi ancak burada kanıtlanır.
 ///
 /// <para>Yarış sırayla kurulur (zamanlamayla değil): bir isteğin asıl kaydetmesi diske inmeden hemen önce kanca öbür
 /// isteği baştan sona koşturur (<see cref="ShippingSettingsRelationalTests"/> deseni). Kanca yalnız seçilen kaydetmede
@@ -46,6 +47,8 @@ public sealed class SalesCommandsRelationalTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _factory.Hook.Before = null;
+        _factory.Barrier.Disarm();
+        _factory.Queries.Disarm();
         _kit.Client.Dispose();
         _factory.Dispose();
         return Task.CompletedTask;
@@ -201,6 +204,161 @@ public sealed class SalesCommandsRelationalTests : IAsyncLifetime
         (await _kit.OrderAsync(order.Id)).SyncVersion.Should().Be(alreadyCancelled ? 1 : 2, "komut bir kez uygulanır");
     }
 
+    // ── §10.1-4: aynı yayın×koda eşzamanlı iki set-code-price ────────────────
+
+    /// <summary>
+    /// §10.1-4, DM5: aynı yayın×koda iki kopyadan, farklı fiyatlarla, aynı planı görmüş eşzamanlı iki
+    /// <c>set-code-price</c>. Engel: komutun kaydetmesi öbür istek de kaydetmeye gelene kadar (en çok 1,5 sn — kilit
+    /// bekleme sınırının altında) bekler; iki istek de planını öbürünün yazımından önce kurabilseydi ikisi de engele gelir.
+    /// Yayın kilidi bunu önler: ikinci istek kilitte bekler, planı birincinin yazımından SONRA kurar ve 409
+    /// <c>plan-stale</c> (güncel plan, güncel satırlar) alır — bayat planla jetona çarpıp <c>stale</c> almaz. Tam olarak
+    /// biri 200; veritabanında kodun düzeltilebilir her etiketi kazananın fiyatındadır.
+    /// </summary>
+    [Fact]
+    public async Task Ayni_yayin_koduna_eszamanli_iki_set_code_price_biri_200_obur_409_plan_stale_DM5_korunur()
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var plan = new List<Order>();
+        foreach (var code in new[] { "A1", "a1", "A1" })
+            plan.Add(await _kit.SeedOrderAsync(session, o => o.Code = code));
+        var other = await _kit.SeedOrderAsync(session, o => o.Code = "B2");
+        _factory.Barrier.Arm(db => db.ChangeTracker.Entries<SalesCommandLog>().Any(), TimeSpan.FromSeconds(1.5));
+
+        var responses = await Task.WhenAll(
+            _kit.SendAsync(_kit.SetCodePrice(Guid.NewGuid(), session, "A1", 120m, plan, replicaId: Guid.NewGuid())),
+            _kit.SendAsync(_kit.SetCodePrice(Guid.NewGuid(), session, "a1", 130m, plan, replicaId: Guid.NewGuid())));
+
+        var bodies = await Task.WhenAll(responses.Select(r => r.Content.ReadAsStringAsync()));
+        responses.Select(r => r.StatusCode).Should().BeEquivalentTo(
+            [HttpStatusCode.OK, HttpStatusCode.Conflict], string.Join(" | ", bodies));
+        var winnerPrice = responses[0].StatusCode == HttpStatusCode.OK ? 120m : 130m;
+        var loser = responses.Single(r => r.StatusCode == HttpStatusCode.Conflict);
+        var problem = await Kit.ProblemAsync(loser);
+        problem.GetProperty("title").GetString().Should().Be("plan-stale", "kilit planı yazımdan sonra kurdurur");
+        problem.GetProperty("plan").EnumerateArray()
+            .Select(p => (p.GetProperty("orderId").GetGuid(), p.GetProperty("version").GetInt32()))
+            .Should().BeEquivalentTo(plan.Select(o => (o.Id, 2)));
+        problem.GetProperty("current").EnumerateArray().Select(o => o.GetProperty("price").GetDecimal())
+            .Should().AllSatisfy(p => p.Should().Be(winnerPrice));
+
+        (await _kit.CorrectableCodePricesAsync(session, "A1")).Should().Equal(winnerPrice);
+        foreach (var order in plan)
+            (await _kit.OrderAsync(order.Id)).SyncVersion.Should().Be(2, "yalnız kazanan yazdı");
+        (await _kit.OrderAsync(other.Id)).Should().BeEquivalentTo(new { Price = 100m, SyncVersion = 1 });
+        (await _kit.LogsAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// §4.11 gerçek SQL Server'da: kod eşleşmesi sunucu harmanına bırakılmaz. Harf duyarsız harman sondaki boşluğu yok
+    /// sayar (<c>'A1 ' = 'A1'</c>, <c>LEN</c> da saymaz) ve Türkçe I'ları ortak koddan farklı katlar; plan yine
+    /// <c>LabelRules.SameCode</c>'un seçtiği satırlardır — boşluklu kod ve noktalı/noktasız I ayrı üründür.
+    /// </summary>
+    [Fact]
+    public async Task SetCodePrice_kod_eslesmesi_SQL_Server_harmanina_birakilmaz()
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var cases = new (string Query, string[] Matching, string[] NotMatching)[]
+        {
+            (" Çanta1 ", ["çanta1", "ÇANTA1"], ["Çanta1 ", "Çanta1  ", " Çanta1", "canta1"]),
+            ("i1", ["i1", "I1"], ["İ1", "ı1", "i1 "]),
+        };
+        var untouched = new List<Order>();
+        foreach (var (query, matching, notMatching) in cases)
+        {
+            var plan = new List<Order>();
+            foreach (var stored in matching) plan.Add(await _kit.SeedOrderAsync(session, o => o.Code = stored));
+            foreach (var stored in notMatching) untouched.Add(await _kit.SeedOrderAsync(session, o => o.Code = stored));
+
+            var resp = await _kit.SendAsync(_kit.SetCodePrice(Guid.NewGuid(), session, query, 120m, plan));
+
+            resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+            foreach (var order in plan)
+                (await _kit.OrderAsync(order.Id)).Price.Should().Be(120m, $"'{order.Code}' '{query}' koduna eşleşir");
+        }
+        foreach (var order in untouched)
+            (await _kit.OrderAsync(order.Id)).Should().BeEquivalentTo(
+                new { Price = 100m, SyncVersion = 1 }, $"'{order.Code}' ayrı üründür");
+    }
+
+    /// <summary>
+    /// §4.6 adım 6, DM7: <c>set-code-price</c> planındaki, fiyatı zaten yeni fiyat olan (yazmadığı) bir sipariş, komut
+    /// siparişleri okuduktan sonra eşzamanlı bir <c>cancel</c> ile iptal edilir; aynı dosyaya bağlı başka bir plan
+    /// siparişinin fiyatı değişir, komut dosyayı yeniden türetir. Dosya siparişlerden ÖNCE yüklendiği için komutun bayat
+    /// okuması dosya jetonunda yakalanır: komut 409 <c>stale</c>, iptal kazanır, dosyanın tutarı iptal edilen siparişi
+    /// içermez.
+    /// </summary>
+    [Fact]
+    public async Task SetCodePrice_okumasindan_sonraki_eszamanli_iptal_dosya_tutarini_bozamaz()
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var customer = Guid.NewGuid().ToString("N");
+        var shipment = await _kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 220m, derived: true);
+        var corrected = await _kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = shipment.Id; });
+        var samePrice = await _kit.SeedOrderAsync(session, o =>
+        {
+            o.CustomerId = customer;
+            o.ShipmentId = shipment.Id;
+            o.Price = 120m;
+        });
+        HttpResponseMessage? cancel = null;
+        _factory.Queries.Arm(
+            after: sql => sql.Contains("FROM [Orders]") && sql.Contains("[MessageText]"),
+            when: sql => sql.Contains("FROM [Shipments]"),
+            before: async () => cancel = await _kit.SendAsync(_kit.Body(
+                Guid.NewGuid(), "cancel", new { items = new[] { samePrice.Id }, reason = "customer" },
+                [(samePrice.Id, samePrice.SyncVersion)], replicaId: Guid.NewGuid())));
+
+        var command = await _kit.SendAsync(
+            _kit.SetCodePrice(Guid.NewGuid(), session, "A1", 120m, [corrected, samePrice]));
+
+        cancel.Should().NotBeNull("kanca iptali komutun sipariş okumasından sonra koşturmalı");
+        cancel!.StatusCode.Should().Be(HttpStatusCode.OK, await cancel.Content.ReadAsStringAsync());
+        command.StatusCode.Should().Be(HttpStatusCode.Conflict, await command.Content.ReadAsStringAsync());
+        (await Kit.ProblemAsync(command)).GetProperty("title").GetString().Should().Be("stale");
+        (await _kit.OrderAsync(corrected.Id)).Should().BeEquivalentTo(
+            new { Price = 100m, SyncVersion = 1, PriceSetAt = (DateTimeOffset?)null }, "komutun yazımı geri alındı");
+        (await _kit.OrderAsync(samePrice.Id)).CancelledAt.Should().NotBeNull();
+        (await _kit.ShipmentAsync(shipment.Id)).CumulativeAmount
+            .Should().Be(100m, "DM7: bağlı, iptal edilmemiş siparişlerin toplamı");
+    }
+
+    /// <summary>
+    /// Plan kurulurken (ön okumadan sonra) eşzamanlı bir yazıcı (ör. geri doldurma) plan siparişini kargoya verilmiş bir
+    /// dosyaya bağlar ve sürümünü ilerletir. Sipariş o dosyanın durumuyla sınıflanır (K6, <c>Classify</c>): planın
+    /// dışındadır — <c>plan-stale</c>'in planı onu düzeltilebilir göstermez — ve hiçbir şey yazılmaz.
+    /// </summary>
+    [Fact]
+    public async Task SetCodePrice_plan_kurulurken_kargolanmis_dosyaya_baglanan_siparis_planda_yer_almaz()
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Released);
+        var customer = Guid.NewGuid().ToString("N");
+        var open = await _kit.SeedShipmentAsync(customer, ShipmentStatus.Held, 100m, derived: true);
+        var shipped = await _kit.SeedShipmentAsync(customer, ShipmentStatus.Shipped, 90m, derived: true);
+        var linked = await _kit.SeedOrderAsync(session, o => { o.CustomerId = customer; o.ShipmentId = open.Id; });
+        var linkedLate = await _kit.SeedOrderAsync(session, o => o.CustomerId = customer);
+        _factory.Queries.Arm(
+            after: sql => sql.Contains("FROM [Orders]") && sql.Contains("[ShipmentId]") && !sql.Contains("[MessageText]"),
+            when: sql => sql.Contains("FROM [Shipments]"),
+            before: () => _kit.WithDbAsync(async db =>
+            {
+                var row = await db.Orders.SingleAsync(o => o.Id == linkedLate.Id);
+                row.ShipmentId = shipped.Id;
+                row.SyncVersion++;
+            }));
+
+        var command = await _kit.SendAsync(
+            _kit.SetCodePrice(Guid.NewGuid(), session, "A1", 120m, [linked, linkedLate]));
+
+        command.StatusCode.Should().Be(HttpStatusCode.Conflict, await command.Content.ReadAsStringAsync());
+        var problem = await Kit.ProblemAsync(command);
+        problem.GetProperty("title").GetString().Should().Be("plan-stale");
+        problem.GetProperty("plan").EnumerateArray()
+            .Select(p => (p.GetProperty("orderId").GetGuid(), p.GetProperty("version").GetInt32()))
+            .Should().Equal([(linked.Id, 1)], "kargolanmış dosyadaki sipariş düzeltilebilir değildir");
+        (await _kit.OrderAsync(linked.Id)).Price.Should().Be(100m);
+        (await _kit.OrderAsync(linkedLate.Id)).Should().BeEquivalentTo(new { Price = 100m, SyncVersion = 2 });
+    }
+
     // ── Uygulama kilidi ──────────────────────────────────────────────────────
 
     /// <summary>
@@ -303,15 +461,101 @@ public sealed class SalesCommandsRelationalTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// İki taraflı engel: <c>When</c>'i tutan kaydetme, ikinci bir kaydetme de gelene ya da süre dolana kadar bekler.
+    /// Süre dolması "öbür istek gelmedi" demektir (ör. kilitte bekliyor); bekleyen istek o zaman yoluna devam eder.
+    /// </summary>
+    private sealed class BarrierSaveHook : SaveChangesInterceptor
+    {
+        private Func<DbContext, bool>? _when;
+        private TimeSpan _timeout;
+        private int _arrived;
+        private TaskCompletionSource _both = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Arm(Func<DbContext, bool> when, TimeSpan timeout)
+        {
+            _arrived = 0;
+            _timeout = timeout;
+            _both = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _when = when;
+        }
+
+        public void Disarm() => _when = null;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (_when is { } when && when(eventData.Context!))
+            {
+                if (Interlocked.Increment(ref _arrived) >= 2) _both.TrySetResult();
+                await Task.WhenAny(_both.Task, Task.Delay(_timeout, cancellationToken));
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Sorgu kancası: <c>after</c>'ı tutan bir sorgu görüldükten sonra, <c>when</c>'i tutan ilk sorgunun hemen öncesinde
+    /// <c>before</c>'u bir kez koşturur — bir isteğin iki okuması arasına eşzamanlı bir yazımı sırayla yerleştirir.
+    /// Yeniden girmez (kanca gövdesinin sorguları onu tetiklemez).
+    /// </summary>
+    private sealed class QueryHook : DbCommandInterceptor
+    {
+        private Func<string, bool>? _after;
+        private Func<string, bool>? _when;
+        private Func<Task>? _before;
+        private bool _afterSeen;
+        private bool _running;
+
+        public void Arm(Func<string, bool> after, Func<string, bool> when, Func<Task> before)
+        {
+            _afterSeen = false;
+            _after = after;
+            _when = when;
+            _before = before;
+        }
+
+        public void Disarm() => _before = null;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (_before is { } hook && !_running)
+            {
+                var sql = command.CommandText;
+                if (_afterSeen && _when!(sql))
+                {
+                    _before = null;
+                    _running = true;
+                    try { await hook(); }
+                    finally { _running = false; }
+                }
+                else if (_after!(sql))
+                {
+                    _afterSeen = true;
+                }
+            }
+            return result;
+        }
+    }
+
     private sealed class CommandHookFactory(string connectionString) : RelationalApiFactory(connectionString)
     {
         public PredicateSaveHook Hook { get; } = new();
+
+        public BarrierSaveHook Barrier { get; } = new();
+
+        public QueryHook Queries { get; } = new();
 
         protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
         {
             ["SalesSync:MinClientVersion"] = SalesSyncConfiguredApiFactory.MinClientVersion,
         };
 
-        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Hook);
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) =>
+            opt.AddInterceptors(Hook, Barrier, Queries);
     }
 }

@@ -74,12 +74,7 @@ public sealed class SalesCommandScope
     {
         var list = orders.ToList();
         var sessionIds = list.Where(o => o.SessionId != null).Select(o => o.SessionId!.Value).Distinct().ToList();
-        var sessions = sessionIds.Count == 0
-            ? new Dictionary<Guid, SessionVisibility>()
-            : await _db.StreamSessions.AsNoTracking()
-                .Where(s => s.LicenseId == LicenseId && sessionIds.Contains(s.Id))
-                .Select(s => new SessionVisibility(s.Id, s.ReleasedAt, s.OwnerReplicaId, s.OwnerMachineName))
-                .ToDictionaryAsync(s => s.Id, ct);
+        var sessions = await ReadVisibilityAsync(sessionIds, ct);
 
         foreach (var order in list)
         {
@@ -87,15 +82,43 @@ public sealed class SalesCommandScope
                 throw SalesCommandRejection.SessionLive(null, null, null);
             var session = sessions.GetValueOrDefault(sessionId);
             if (session?.ReleasedAt is not null) continue;
-
-            DateTimeOffset? ownerLastSeenAt = session?.OwnerReplicaId is { } owner
-                ? await _db.WpfReplicas.AsNoTracking()
-                    .Where(r => r.LicenseId == LicenseId && r.ReplicaId == owner)
-                    .Select(r => (DateTimeOffset?)r.LastSeenAt)
-                    .SingleOrDefaultAsync(ct)
-                : null;
-            throw SalesCommandRejection.SessionLive(sessionId, session?.OwnerMachineName, ownerLastSeenAt);
+            throw await SessionLiveAsync(sessionId, session, ct);
         }
+    }
+
+    /// <summary>
+    /// Komutun hedef yayını (ör. <c>set-code-price</c>'ın <c>sessionId</c>'si) bu lisansta olmalı (yoksa 400
+    /// <c>unknown-session</c>) ve devredilmiş olmalı (yoksa 409 <c>session-live</c>, <see cref="EnsureReleasedAsync"/>
+    /// ile aynı ret). Devredilmemiş yayının siparişleri sunucuda eksik olabilir — canlı yayının etiketleri sahipte,
+    /// devrediliyor yayınınkiler gönderilmeyi bekliyor (Y1, Y8) — ve o yayından sunucunun kurduğu plan eksik kalırdı.
+    /// </summary>
+    public async Task EnsureSessionReleasedAsync(Guid sessionId, CancellationToken ct)
+    {
+        var session = (await ReadVisibilityAsync([sessionId], ct)).GetValueOrDefault(sessionId)
+            ?? throw SalesCommandRejection.UnknownSession(sessionId);
+        if (session.ReleasedAt is null) throw await SessionLiveAsync(sessionId, session, ct);
+    }
+
+    private async Task<Dictionary<Guid, SessionVisibility>> ReadVisibilityAsync(
+        IReadOnlyCollection<Guid> sessionIds, CancellationToken ct) =>
+        sessionIds.Count == 0
+            ? new Dictionary<Guid, SessionVisibility>()
+            : await _db.StreamSessions.AsNoTracking()
+                .Where(s => s.LicenseId == LicenseId && sessionIds.Contains(s.Id))
+                .Select(s => new SessionVisibility(s.Id, s.ReleasedAt, s.OwnerReplicaId, s.OwnerMachineName))
+                .ToDictionaryAsync(s => s.Id, ct);
+
+    /// <summary>409 <c>session-live</c>: yayının sahibi bilgisayar ve sahip kopyanın son kalp atışıyla.</summary>
+    private async Task<SalesCommandRejection> SessionLiveAsync(
+        Guid sessionId, SessionVisibility? session, CancellationToken ct)
+    {
+        DateTimeOffset? ownerLastSeenAt = session?.OwnerReplicaId is { } owner
+            ? await _db.WpfReplicas.AsNoTracking()
+                .Where(r => r.LicenseId == LicenseId && r.ReplicaId == owner)
+                .Select(r => (DateTimeOffset?)r.LastSeenAt)
+                .SingleOrDefaultAsync(ct)
+            : null;
+        return SalesCommandRejection.SessionLive(sessionId, session?.OwnerMachineName, ownerLastSeenAt);
     }
 
     /// <summary>
@@ -111,9 +134,85 @@ public sealed class SalesCommandScope
         }
     }
 
+    /// <summary>
+    /// Plan karşılaştırması (<c>set-code-price</c>, §4.6): <c>expected</c> tam olarak planın satırlarını ve güncel
+    /// sürümlerini taşımalı — eksik, fazla ya da farklı sürümlü satır uyuşmazlıktır.
+    /// </summary>
+    public bool MatchesExpected(IReadOnlyCollection<Order> plan) =>
+        plan.Count == _expected.Count
+        && plan.All(o => _expected.TryGetValue(o.Id, out var version) && version == o.SyncVersion);
+
     /// <summary>İşlem kapsamlı uygulama kilidi (<see cref="SalesCommandLock"/>); zaman aşımı 409 <c>stale</c>.</summary>
     public Task AcquireLockAsync(string resource, CancellationToken ct) =>
         SalesCommandLock.AcquireAsync(_db, resource, SalesCommandLock.DefaultTimeout, ct);
+
+    /// <summary>
+    /// Yayın kilitlerini (<see cref="SalesCommandLock.SessionResource"/>) tekil ve sıralı alır: aynı yayınları isteyen
+    /// iki komut kilitleri aynı sırayla ister, birbirini kilitlenmeye sokmaz.
+    /// </summary>
+    public async Task AcquireSessionLocksAsync(IEnumerable<Guid> sessionIds, CancellationToken ct)
+    {
+        foreach (var sessionId in sessionIds.Distinct().Order())
+            await AcquireLockAsync(SalesCommandLock.SessionResource(LicenseId, sessionId), ct);
+    }
+
+    /// <summary>
+    /// Siparişlerin yayınını ve kargo bağını İZLEMEDEN okur — kilit ya da dosya yüklemesi için ön okuma. Yayın oluşum
+    /// alanıdır (K1, DM4), sonra da aynıdır; bağ ise değişebilir ve satırın kendisi sonra <see cref="LoadOrdersAsync"/>
+    /// ile izlenerek okunmalı (izlenen bir satırı ikinci okuma yenilemezdi). Bulunamayan sipariş 400
+    /// <c>unknown-order</c>.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, OrderPeek>> PeekOrdersAsync(
+        IReadOnlyCollection<Guid> orderIds, CancellationToken ct)
+    {
+        var ids = orderIds.Distinct().ToList();
+        if (ids.Count == 0) return new Dictionary<Guid, OrderPeek>();
+        var peeks = await _db.Orders.AsNoTracking()
+            .Where(o => o.LicenseId == LicenseId && ids.Contains(o.Id))
+            .Select(o => new OrderPeek(o.Id, o.SessionId, o.ShipmentId))
+            .ToDictionaryAsync(o => o.Id, ct);
+
+        var unknown = ids.Where(id => !peeks.ContainsKey(id)).ToList();
+        if (unknown.Count > 0) throw SalesCommandRejection.UnknownOrders(unknown);
+        return peeks;
+    }
+
+    /// <summary>
+    /// Bir yayında bir kodun siparişleri (§4.11): kod eşleşmesi SQL'de değil bellekte, <see cref="LabelRules.SameCode"/>
+    /// ile — SQL Server harmanı Türkçe harfleri ortak koddaki gibi katlamaz ve sondaki boşluğu yok sayar; iki taraf
+    /// aynı kodu ayrı ürün sayardı. Saklanan kod kırpılmaz; <paramref name="code"/>'u çağıran kırpar. SQL adayları
+    /// yalnız uzunlukla süzer (masaüstündeki <c>GetActiveBySessionAndCode</c> gibi): harf katlama uzunluğu
+    /// değiştirmez. SQL Server'ın <c>LEN</c>'i sondaki boşluğu saymaz, ama kırpılmış koda eşleşen kodun sonunda boşluk
+    /// olamaz: süzgeç eşleşeni dışarıda bırakmaz, boşluklu adayı <see cref="LabelRules.SameCode"/> eler. İzlemeden okur
+    /// (Id'ler; satırlar sonra <see cref="LoadOrdersAsync"/> ile).
+    /// </summary>
+    public async Task<IReadOnlyList<Guid>> FindSessionCodeOrdersAsync(Guid sessionId, string code, CancellationToken ct)
+    {
+        var candidates = await _db.Orders.AsNoTracking()
+            .Where(o => o.LicenseId == LicenseId && o.SessionId == sessionId && o.Code != null
+                        && o.Code.Length == code.Length)
+            .Select(o => new { o.Id, o.Code })
+            .ToListAsync(ct);
+        return candidates.Where(o => LabelRules.SameCode(o.Code, code)).Select(o => o.Id).ToList();
+    }
+
+    /// <summary>
+    /// Bu lisansın verilen dosyalarını İZLEYEREK yükler (başka lisansın ya da var olmayan dosya dönmez). Kurala (ör.
+    /// <see cref="LabelRules.Classify"/>) giren dosya durumu böylece türetmenin yazdığı satırla aynıdır: dosya türetme
+    /// (K7) aynı izlenen satırı yazar ve jetonu (<see cref="Shipment.Version"/>) bu okumadan sonraki eşzamanlı bir
+    /// kararı (ör. kargoya verme) yakalar. Türetilecek dosya, bağlı siparişlerden ÖNCE yüklenmeli
+    /// (<see cref="ShipmentAmountDeriver"/>'ın sıra gerekçesi): sonra yüklenirse, arada bağlı bir siparişi değiştirip
+    /// dosyayı türeten eşzamanlı yazıcı jetonla yakalanmaz.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, Shipment>> LoadShipmentsAsync(
+        IEnumerable<Guid> shipmentIds, CancellationToken ct)
+    {
+        var ids = shipmentIds.Distinct().ToList();
+        if (ids.Count == 0) return new Dictionary<Guid, Shipment>();
+        return await _db.Shipments
+            .Where(s => s.LicenseId == LicenseId && ids.Contains(s.Id))
+            .ToDictionaryAsync(s => s.Id, ct);
+    }
 
     /// <summary>
     /// Siparişin bu komutla değiştiğini bildirir: ilk bildirimde <c>SyncVersion</c> bir artar (jeton; komutun beklenen
@@ -147,3 +246,6 @@ public sealed class SalesCommandScope
 
 /// <summary>Kapsamın kaydettiği bir sipariş değişikliği.</summary>
 internal sealed record SalesCommandChange(Order Order, Guid? ShipmentBefore, IReadOnlyCollection<OrderUnit> Units);
+
+/// <summary>Bir siparişin izlenmeden okunan yayını ve kargo bağı (<see cref="SalesCommandScope.PeekOrdersAsync"/>).</summary>
+public sealed record OrderPeek(Guid Id, Guid? SessionId, Guid? ShipmentId);

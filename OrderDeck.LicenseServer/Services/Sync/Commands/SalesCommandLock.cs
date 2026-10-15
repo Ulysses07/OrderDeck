@@ -29,6 +29,16 @@ public static class SalesCommandLock
     public const int MaxResourceLength = 255;
 
     /// <summary>
+    /// Bir yayının kilit adı: o yayında bir kodun planını kurup ona göre fiyat yazan komutlar (<c>set-code-price</c>)
+    /// bunu alır. Anahtar koda değil yayına bağlıdır: kod harf duyarsız eşleşir (<c>LabelRules.SameCode</c>) ve kod
+    /// başına bir kilit adı ancak bir harf katlamasıyla kurulabilirdi — <c>sp_getapplock</c> adları ikili karşılaştırır,
+    /// iki yazımı aynı ürün sayan katlama kilitte ayrı ad üretmemeli. Birden çok yayın kilidi alan komut sıralı alır
+    /// (<see cref="Guid"/> sırası), iki komut birbirini kilitlenmeye sokmaz.
+    /// </summary>
+    public static string SessionResource(Guid licenseId, Guid sessionId) =>
+        $"sales-session:{licenseId:N}:{sessionId:N}";
+
+    /// <summary>
     /// Kilidi açık işlemde alır. İşlem yoksa (ilişkisel sağlayıcıda) programlama hatasıdır: kilit bir şeyi korumazdı.
     /// </summary>
     /// <exception cref="SalesCommandRejection">Zaman aşımı, iptal ya da kilitlenme: 409 <c>stale</c>.</exception>

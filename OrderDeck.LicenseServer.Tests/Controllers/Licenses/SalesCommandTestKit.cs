@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.Shared.Sales;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
@@ -246,6 +247,41 @@ public sealed class SalesCommandTestKit
         Body(commandId, "uncancel", new { items = orders.Select(o => o.Id).ToArray() },
             orders.Select(o => (o.Id, o.SyncVersion)));
 
+    /// <summary><c>set-code-price</c>; beklenen sürümler istemcinin gördüğü plan satırlarından.</summary>
+    public object SetCodePrice(
+        Guid commandId,
+        Guid sessionId,
+        string? code,
+        decimal newPrice,
+        IEnumerable<Order> plan,
+        IEnumerable<Guid>? alsoSelected = null,
+        IEnumerable<Guid>? paidFromBalance = null,
+        Guid? replicaId = null) =>
+        SetCodePrice(commandId, sessionId, code, newPrice, plan.Select(o => (o.Id, o.SyncVersion)), alsoSelected,
+            paidFromBalance, replicaId);
+
+    /// <summary><c>set-code-price</c>; istemcinin gördüğü plan Id ve sürüm olarak.</summary>
+    public object SetCodePrice(
+        Guid commandId,
+        Guid sessionId,
+        string? code,
+        decimal newPrice,
+        IEnumerable<(Guid Id, int Version)> plan,
+        IEnumerable<Guid>? alsoSelected = null,
+        IEnumerable<Guid>? paidFromBalance = null,
+        Guid? replicaId = null) =>
+        Body(commandId, "set-code-price",
+            new
+            {
+                sessionId,
+                code,
+                alsoSelectedIds = (alsoSelected ?? []).ToArray(),
+                newPrice,
+                paidFromBalanceIds = (paidFromBalance ?? []).ToArray(),
+            },
+            plan,
+            replicaId);
+
     public Task<HttpResponseMessage> SendAsync(object body, string? userAgent = WpfUserAgent) =>
         SendToAsync(Url, body, userAgent);
 
@@ -273,6 +309,29 @@ public sealed class SalesCommandTestKit
     public async Task<List<StockMovement>> MovementsAsync(Guid orderId) =>
         await ReadDbAsync(db => db.StockMovements.AsNoTracking()
             .Where(m => m.OrderId == orderId).OrderBy(m => m.CreatedAt).ToListAsync());
+
+    /// <summary>
+    /// DM5 denetimi: yayında koda (<see cref="LabelRules.SameCode"/>, bellekte) eşleşen ve <see cref="LabelRules.Classify"/>'ın
+    /// düzeltilebilir saydığı siparişlerin farklı fiyatları. Tek fiyat kuralı tutuyorsa en çok bir değer.
+    /// </summary>
+    public async Task<List<decimal>> CorrectableCodePricesAsync(Guid sessionId, string code) =>
+        await ReadDbAsync(async db =>
+        {
+            var orders = await db.Orders.AsNoTracking()
+                .Where(o => o.LicenseId == LicenseId && o.SessionId == sessionId)
+                .ToListAsync();
+            var statuses = await db.Shipments.AsNoTracking()
+                .Where(s => s.LicenseId == LicenseId)
+                .ToDictionaryAsync(s => s.Id.ToString("N"), s => (SalesShipmentStatus)(int)s.Status);
+            return orders
+                .Select(o => o.ToLabelFacts())
+                .Where(f => LabelRules.SameCode(f.Code, code)
+                            && LabelRules.Classify(f, sid => statuses.TryGetValue(sid, out var s) ? s : null)
+                            == LabelPriceClass.Correctable)
+                .Select(f => f.Price)
+                .Distinct()
+                .ToList();
+        });
 
     public async Task<WpfReplica?> ReplicaAsync(Guid replicaId) =>
         await ReadDbAsync(db => db.WpfReplicas.AsNoTracking()
