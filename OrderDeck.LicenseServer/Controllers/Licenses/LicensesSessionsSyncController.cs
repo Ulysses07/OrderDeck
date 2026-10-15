@@ -161,6 +161,23 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var toRelease = new List<Guid>();
         var legacyRelease = new HashSet<Guid>();
 
+        // EndedAt tekdüze (§4.1), yarışta da: ilişkisel sağlayıcıda boş EndedAt izlenen satırın koşulsuz SET'iyle değil,
+        // kaydetmeden sonra aynı işlemde koşullu bir UPDATE ile (yalnız hâlâ boşsa) doldurulur. Okumadan sonra commit
+        // olan bir force-end'in EndedAt'ini (ve devrini) kapanış böylece ezemez; kazanan ilk commit edendir (§4.6,
+        // §10.1-11). Title, Platforms ve Notes bugünkü gibi yazılır. InMemory'de ExecuteUpdate yok: aynı kural izlenen
+        // satıra uygulanır. Paket içi okumalar bekleyen dolumu da görür (EndedAtOf): aynı oturumun ikinci öğesi bugünkü
+        // gibi ilkinin kapanışını görür.
+        var relational = _db.Database.IsRelational();
+        var endedAtFills = new Dictionary<Guid, DateTimeOffset>();
+        DateTimeOffset? EndedAtOf(StreamSession s) =>
+            s.EndedAt ?? (endedAtFills.TryGetValue(s.Id, out var pending) ? pending : null);
+        void FillEndedAt(StreamSession s, DateTimeOffset? value)
+        {
+            if (value is not { } endedAt || EndedAtOf(s) is not null) return;
+            if (relational) endedAtFills[s.Id] = endedAt;
+            else s.EndedAt = endedAt;
+        }
+
         SessionRole RoleOf(StreamSession s) =>
             !context.IsV2 ? SessionRole.Legacy
             : s.OwnerReplicaId is null ? SessionRole.Unowned
@@ -186,9 +203,9 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 {
                     if (current.Title != item.Title || current.Platforms != item.Platforms || current.Notes != item.Notes)
                         ignored[item.Id] = ReasonReleased;
-                    if (current.EndedAt is null && item.EndedAt is not null)
+                    if (EndedAtOf(current) is null && item.EndedAt is not null)
                     {
-                        current.EndedAt = item.EndedAt;
+                        FillEndedAt(current, item.EndedAt);
                         current.UpdatedAt = now;
                     }
                     continue;
@@ -199,7 +216,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 {
                     // §8.7, Y8: hâl bu push'tan ÖNCEKİ sunucu satırından — gönderimin kendi EndedAt'i canlı oturumu
                     // "devrediliyor" gösterip başka makinenin devralmasını kendi kendine kapatmasın ya da açmasın.
-                    var phase = current.EndedAt is null ? TakeoverPhase.Live : TakeoverPhase.HandingOver;
+                    var phase = EndedAtOf(current) is null ? TakeoverPhase.Live : TakeoverPhase.HandingOver;
                     if (await _replicas.CanInheritAsync(
                             licenseId, caller, context.ReplicaBefore, current.Id, owner, phase, now, ct))
                     {
@@ -220,15 +237,17 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 current.Platforms = item.Platforms;
                 current.Notes = item.Notes;
                 // EndedAt tekdüze (spec 2026-10-13 §4.1, her biçimde): dolu
-                // değer NULL'a ya da başka bir değere dönmez. Bayat gönderim
-                // (yayın sürerken kuyruğa girmiş satır) bitmiş yayını yeniden
-                // "açıyordu". Sahip olmayan v2 kopyası yayını kapatamaz ve
-                // devredemez; tek başka yol force-end (§4.6). Yok sayılan
-                // kapanış ya da devir isteği yanıtta görünür (Y8: devralamayan
-                // geri yüklenmiş kopya "devredildi" sanmasın).
+                // değer NULL'a ya da başka bir değere dönmez — yalnız boşsa
+                // doldurulur (FillEndedAt; ilişkisel sağlayıcıda koşullu
+                // UPDATE). Bayat gönderim (yayın sürerken kuyruğa girmiş satır)
+                // bitmiş yayını yeniden "açıyordu". Sahip olmayan v2 kopyası
+                // yayını kapatamaz ve devredemez; tek başka yol force-end
+                // (§4.6). Yok sayılan kapanış ya da devir isteği yanıtta
+                // görünür (Y8: devralamayan geri yüklenmiş kopya "devredildi"
+                // sanmasın).
                 if (role != SessionRole.NonOwner)
-                    current.EndedAt ??= item.EndedAt;
-                else if ((current.EndedAt is null && item.EndedAt is not null) || item.Release)
+                    FillEndedAt(current, item.EndedAt);
+                else if ((EndedAtOf(current) is null && item.EndedAt is not null) || item.Release)
                     ignored[item.Id] = ReasonOwnedElsewhere;
                 current.UpdatedAt = now;
             }
@@ -257,7 +276,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
             // Devir (§4.1): bitmiş ∧ devredilmemiş ∧ (v2 sahibinin Release'i ∨ v1 ∨ sahipsiz oturum). Sahibin
             // Release = false kapanışı yayını "devrediliyor" bırakır: etiketleri sahipte bekliyor (M2).
-            if (session.EndedAt is null) continue;
+            if (EndedAtOf(session) is null) continue;
             switch (role)
             {
                 case SessionRole.Legacy or SessionRole.Unowned:
@@ -276,11 +295,22 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // Kapanış ile devir tek işlemde: devir düşerse kapanış da yazılmaz, istemcinin yeniden gönderimi ikisini
         // birlikte yapar (oturum satırı devir görülene kadar kuyrukta kalır, §5.2).
         IReadOnlyList<Guid> released = Array.Empty<Guid>();
-        await using (var transaction = toRelease.Count > 0 && _db.Database.IsRelational()
+        await using (var transaction = (toRelease.Count > 0 || endedAtFills.Count > 0) && relational
             ? await _db.Database.BeginTransactionAsync(ct)
             : null)
         {
             await _db.SaveChangesAsync(ct);
+            foreach (var (sessionId, endedAt) in endedAtFills)
+            {
+                var filled = await _db.StreamSessions
+                    .Where(s => s.LicenseId == licenseId && s.Id == sessionId && s.EndedAt == null)
+                    .ExecuteUpdateAsync(u => u.SetProperty(s => s.EndedAt, endedAt), ct);
+                if (filled == 0)
+                    _log.LogInformation(
+                        "sessions/sync: oturum {SessionId} kapanışı yazılmadı, EndedAt bu arada dolmuş (force-end) "
+                        + "(license={LicenseId})",
+                        sessionId, licenseId);
+            }
             if (toRelease.Count > 0)
                 released = await _releaser.ReleaseAsync(licenseId, toRelease, now, ct);
             if (transaction is not null) await transaction.CommitAsync(ct);

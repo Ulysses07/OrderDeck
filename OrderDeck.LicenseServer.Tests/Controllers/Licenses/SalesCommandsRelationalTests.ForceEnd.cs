@@ -1,7 +1,10 @@
 using System.Data.Common;
 using System.Net;
+using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using OrderDeck.LicenseServer.Domain;
 using Xunit;
 using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesCommandTestKit;
 
@@ -128,6 +131,71 @@ public sealed partial class SalesCommandsRelationalTests
             (await _kit.OrderAsync(order.Id)).SessionReleasedAt.Should().BeNull();
             (await _kit.LogsAsync()).Should().BeEmpty();
         }
+    }
+
+    /// <summary>
+    /// §10.1-11 (öbür yön), §4.1 tekdüzelik: zorla bitirme sahibin sessizliğini okuduktan sonra sahibin kapanışı başlar
+    /// (kalp atışı artık bu okumadan sonra) ve yayını CANLI okur; kapanışın kaydetmesi diske inmeden hemen önce zorla
+    /// bitirme yazar, devreder ve commit olur. İlk commit eden zorla bitirmedir: kapanış <c>EndedAt</c>'i yalnız hâlâ
+    /// boşsa yazar, onu ezmez — tek devir anı ve <c>EndedAt</c> zorla bitirmeninkidir. Kapanışın yanıtı devri görür
+    /// (devretmek istesin ya da etiketleri beklesin).
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Sahibin_kapanisi_okuduktan_sonra_commit_olan_zorla_bitirmenin_EndedAtini_ezmez(bool release)
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Live);
+        await _kit.SeedReplicaAsync(_kit.OwnerReplicaId, DateTimeOffset.UtcNow.AddMinutes(-20));
+        var order = await _kit.SeedOrderAsync(session);
+        var ownerEndedAt = Kit.StartedAt.AddHours(2);
+        var ownerAtSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<HttpResponseMessage>? close = null;
+        _factory.Hook.When = db =>
+            db.ChangeTracker.Entries<StreamSession>().Any(e => e.State == EntityState.Modified);
+        _factory.Hook.Before = async () =>
+        {
+            ownerAtSave.TrySetResult();
+            await proceed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        };
+        _factory.NonQueries.Arm(
+            when: sql => sql.Contains("[ForceEndedBy]"),
+            before: async () =>
+            {
+                close = _kit.SendToAsync(
+                    _kit.SessionsUrl, _kit.OwnerClose(session, ownerEndedAt, release, release ? null : 2));
+                await ownerAtSave.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            });
+
+        HttpResponseMessage forceEnd;
+        try
+        {
+            forceEnd = await _kit.SendAsync(_kit.ForceEnd(Guid.NewGuid(), session));
+        }
+        finally
+        {
+            proceed.TrySetResult();
+        }
+
+        close.Should().NotBeNull("kanca kapanışı zorla bitirmenin yazımından önce başlatmalı");
+        var closed = await close!;
+        forceEnd.StatusCode.Should().Be(HttpStatusCode.OK, await forceEnd.Content.ReadAsStringAsync());
+        closed.StatusCode.Should().Be(HttpStatusCode.OK, await closed.Content.ReadAsStringAsync());
+        var ended = (await Kit.ReadAsync(forceEnd)).Sessions.Should().ContainSingle().Subject;
+        ended.EndedAt.Should().NotBe(ownerEndedAt);
+
+        var saved = await _kit.SessionAsync(session);
+        saved.Should().BeEquivalentTo(new
+        {
+            ended.EndedAt,
+            ended.ReleasedAt,
+            ForceEndedBy = _kit.ReplicaId.ToString(),
+        }, "ilk commit eden zorla bitirme; kapanış EndedAt'i ezmez");
+        (await _kit.OrderAsync(order.Id)).SessionReleasedAt.Should().Be(ended.ReleasedAt, "tek devir anı");
+        (await closed.Content.ReadFromJsonAsync<List<SalesForceEndCommandTests.SessionReply>>())!
+            .Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new { Id = session, ended.EndedAt, ended.ReleasedAt });
     }
 
     /// <summary>
