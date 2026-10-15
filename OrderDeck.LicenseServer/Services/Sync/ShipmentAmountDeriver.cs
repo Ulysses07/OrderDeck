@@ -63,17 +63,61 @@ public sealed class ShipmentAmountDeriver
     /// <param name="affected">Etkilenen dosya Id'leri; yüklenmemiş ya da başka lisansın dosyası atlanır.</param>
     /// <param name="tracked">Bu isteğin izlediği siparişler (güncellenen ve eklenen), birleşik hâlleriyle.</param>
     /// <returns>Türetilen dosyalar.</returns>
-    public async Task<IReadOnlyList<Guid>> DeriveAsync(
+    public Task<IReadOnlyList<Guid>> DeriveAsync(
         Guid licenseId,
         IReadOnlyDictionary<Guid, Shipment> shipments,
         IEnumerable<Guid> affected,
         IEnumerable<Order> tracked,
         DateTimeOffset now,
         CancellationToken ct)
+        => DeriveCoreAsync(
+            licenseId, shipments, affected, tracked, now, s => s.Status != ShipmentStatus.Shipped, ct);
+
+    /// <summary>
+    /// Dosya açılış penceresindeki bu kopyanın kararıyla mı kargolandı (spec 2026-10-13 §7.1, §4.0)? Shipped,
+    /// türetilmiş (<c>AmountDerivedAt</c> dolu), hiçbir komut dokunmamış (<c>CommandedAt</c> boş) ve kaynağı
+    /// <paramref name="replicaId"/>. Türetilmiş bir dosyayı komutsuz kargoya veren tek yol pencerenin
+    /// <c>shipments/sync</c>'idir: mod Off'taki gönderim türetmez, <c>enable --apply</c> yalnız Shipped olmayan dosyayı
+    /// türetir, <c>attach-shipment</c> ve <c>shipment-decision</c> <c>CommandedAt</c> basar.
+    /// </summary>
+    public static bool ShippedInWindowBy(Shipment shipment, Guid replicaId) =>
+        shipment is { Status: ShipmentStatus.Shipped, AmountDerivedAt: not null, CommandedAt: null }
+        && shipment.OriginReplicaId == replicaId;
+
+    /// <summary>
+    /// Açılış penceresinde kargolanmış dosyaya geç gelen bağ (spec 2026-10-13 §7.1, §10.1-21): pencerenin kargo
+    /// gönderimi çoğu zaman bağlarından önce gelir (kargo 30 sn'de, etiket 60 sn'de bir), dosya o anda sunucudaki eksik
+    /// bağlarla türetilip donar. Karar yerelde o bağlarla verilmişti ve yerelde kargolanmış dosyaya bağ kurulamaz
+    /// (<c>ShipmentService.AttachLabels</c>): aynı kopyanın sonradan K4 istisnasıyla kurduğu bağ kararın dayandığı
+    /// bağdır. Bu yüzden <see cref="ShippedInWindowBy"/>'ı tutan dosya o bağlarla bir kez daha türetilir — Shipped
+    /// olsa da. Donmuş tutarın başka bir yazımla değişmesine yol açmaz: K7 ve onarım işi Shipped dosyayı yine atlar.
+    /// Kaydetmez; <c>UpdatedAt</c> ve <c>Version</c> ilerler.
+    /// </summary>
+    /// <param name="shipped">Pencerenin K4 bağının hedefi olan dosyalar; kuralı tutmayan atlanır.</param>
+    /// <param name="replicaId">Bağı kuran, açılış penceresindeki kopya.</param>
+    /// <returns>Türetilen dosyalar.</returns>
+    public Task<IReadOnlyList<Guid>> DeriveShippedInWindowAsync(
+        Guid licenseId,
+        IReadOnlyDictionary<Guid, Shipment> shipments,
+        IEnumerable<Guid> shipped,
+        Guid replicaId,
+        IEnumerable<Order> tracked,
+        DateTimeOffset now,
+        CancellationToken ct)
+        => DeriveCoreAsync(licenseId, shipments, shipped, tracked, now, s => ShippedInWindowBy(s, replicaId), ct);
+
+    private async Task<IReadOnlyList<Guid>> DeriveCoreAsync(
+        Guid licenseId,
+        IReadOnlyDictionary<Guid, Shipment> shipments,
+        IEnumerable<Guid> affected,
+        IEnumerable<Order> tracked,
+        DateTimeOffset now,
+        Func<Shipment, bool> eligible,
+        CancellationToken ct)
     {
         var targets = affected.Distinct()
             .Select(id => shipments.GetValueOrDefault(id))
-            .Where(s => s is { AmountDerivedAt: not null } && s.Status != ShipmentStatus.Shipped)
+            .Where(s => s is { AmountDerivedAt: not null } && eligible(s))
             .Select(s => s!)
             .ToList();
         if (targets.Count == 0) return Array.Empty<Guid>();

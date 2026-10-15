@@ -280,8 +280,10 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     ///   <c>AmountDerivedAt</c> = şimdi.</item>
     ///   <item><b>Tutar</b> hiçbir zaman gönderimden alınmaz: türetilmiş dosya bağlı siparişlerden yeniden türetilir
     ///   (DM7; yeni dosyada çoğu zaman 0 — kargo gönderimi etiket gönderiminden sık koştuğu için dosya bağlarından önce
-    ///   gelir, bağlar sonra <c>orders/sync</c>'in K4 istisnasıyla gelince K7 dosyayı yeniden türetir); kabul edilmiş
-    ///   (türetilmemiş) dosya saklanan tutarıyla kalır.</item>
+    ///   gelir, bağlar sonra <c>orders/sync</c>'in K4 istisnasıyla gelince K7 dosyayı yeniden türetir; burada kargoya
+    ///   verilen dosyayı da aynı kopyanın geç bağı bir kez daha türetir,
+    ///   <see cref="ShipmentAmountDeriver.DeriveShippedInWindowAsync"/>); kabul edilmiş (türetilmemiş) dosya saklanan
+    ///   tutarıyla kalır.</item>
     ///   <item><b>Kargoya geçişte</b> (§7.2) türetilmiş dosyada o anda iptal edilmiş bağlı siparişlerin bağı çözülür
     ///   (<see cref="ShipmentShipping.UnlinkCancelled"/>, <c>shipment-decision</c> ile aynı kural; kabul edilmiş dosyada
     ///   bağ kalır), sonra dosya türetilir ve tutarı donar.</item>

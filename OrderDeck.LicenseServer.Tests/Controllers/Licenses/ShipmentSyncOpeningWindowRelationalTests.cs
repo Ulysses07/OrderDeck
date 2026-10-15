@@ -115,6 +115,59 @@ public sealed class ShipmentSyncOpeningWindowRelationalTests : IAsyncLifetime
         saved.Version.Should().Be(first.Version + 1, "K7 türetmesi aynı kayıtta");
     }
 
+    /// <summary>
+    /// §7.1, §10.1-21, kargoya geçiş bağlarından önce: pencerede kargoya verilen dosya — yeni ya da kopyanın var olan
+    /// türetilmiş dosyası — bağları sunucuya gelmeden kargolanır ve eksik bağlarla türetilip donar (yeni dosya 0). Karar
+    /// yerelde o bağlarla verilmişti: aynı kopyanın sonraki <c>orders/sync</c> gönderimi bağları K4 istisnasıyla kurunca
+    /// dosya (Shipped, türetilmiş, komutsuz, kaynağı bu kopya) o bağlarla bir kez daha türetilir. Komutla kargolanmış
+    /// dosyanın donmuş tutarına gelen bağ dokunmaz.
+    /// </summary>
+    [Fact]
+    public async Task Pencerede_kargolanan_dosya_baglarindan_once_gelirse_gec_K4_bagi_tutarini_kurar()
+    {
+        var (licenseId, window, _) = await SetupAsync();
+        var customer = Guid.NewGuid().ToString("N");
+        var shippedAt = CreatedAt.AddDays(1);
+        var newFile = new ShipmentItem(Guid.NewGuid(), customer, "shipped", 9999m, CreatedAt, null, shippedAt);
+        var held = await SeedShipmentAsync(licenseId, s =>
+        {
+            s.CustomerId = customer; s.Status = ShipmentStatus.Held; s.HeldAt = CreatedAt.AddHours(1);
+            s.CumulativeAmount = 60m; s.OriginReplicaId = window;
+        });
+        await SeedOrderAsync(licenseId, o => { o.CustomerId = customer; o.ShipmentId = held.Id; o.Price = 60m; });
+        var commanded = await SeedShipmentAsync(licenseId, s =>
+        {
+            s.CustomerId = customer; s.Status = ShipmentStatus.Shipped; s.ShippedAt = CreatedAt.AddHours(2);
+            s.CommandedAt = CreatedAt.AddHours(2); s.CumulativeAmount = 40m; s.OriginReplicaId = window;
+        });
+
+        var rows = await PushShipmentsAsync(licenseId, window,
+            newFile, Item(held) with { Status = "shipped", ShippedAt = shippedAt, CumulativeAmount = 9999m });
+
+        rows.Select(r => (r.Id, r.Status, r.CumulativeAmount)).Should().Equal(
+            [(newFile.Id, "shipped", 0m), (held.Id, "shipped", 60m)], "bağlar henüz gelmedi");
+        var existing = await SeedOrderAsync(licenseId, o => { o.CustomerId = customer; o.Price = 45m; });
+        var lateToHeld = await SeedOrderAsync(licenseId, o => { o.CustomerId = customer; o.Price = 25m; });
+        var toCommanded = await SeedOrderAsync(licenseId, o => { o.CustomerId = customer; o.Price = 15m; });
+        var insert = OrderSyncV2Tests.NewItem(null) with { CustomerId = customer, Price = 80m, ShipmentId = newFile.Id };
+
+        var results = await PushOrdersAsync(licenseId, window,
+            insert,
+            OrderItemOf(existing) with { ShipmentId = newFile.Id },
+            OrderItemOf(lateToHeld) with { ShipmentId = held.Id },
+            OrderItemOf(toCommanded) with { ShipmentId = commanded.Id });
+
+        results.Select(r => r.Status).Should().AllBe("applied");
+        var savedNew = await ShipmentAsync(newFile.Id);
+        savedNew.Should().BeEquivalentTo(new { Status = ShipmentStatus.Shipped, CumulativeAmount = 125m },
+            "kararın dayandığı bağlar: 80 + 45");
+        savedNew.Version.Should().Be(rows[0].Version + 1);
+        (await ShipmentAsync(held.Id)).Should().BeEquivalentTo(
+            new { Status = ShipmentStatus.Shipped, CumulativeAmount = 85m }, "60 + geç gelen 25");
+        (await ShipmentAsync(commanded.Id)).Should().BeEquivalentTo(
+            new { CumulativeAmount = 40m, commanded.Version }, "komutla kargolanmış dosyanın tutarı donmuştur");
+    }
+
     public static TheoryData<string> OutsideWindow => new() { "geri-yuklenmis", "modu-gormus" };
 
     /// <summary>

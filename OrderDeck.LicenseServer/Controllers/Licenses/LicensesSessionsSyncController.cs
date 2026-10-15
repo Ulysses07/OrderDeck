@@ -638,6 +638,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 ct)
             : new Dictionary<Guid, Shipment>();
         var affectedShipments = new List<Guid>();
+        // Açılış penceresinin K4 istisnasıyla kurulan bağların hedefleri (mod On'da bağ birimi yalnız o yoldan değişir).
+        var windowLinks = new List<Guid>();
 
         // Paketin satırları, birleştirildikten sonraki hâlleriyle (izlenen
         // varlıklar). Defter paketten değil bunlardan beslenir: yazılmayan bir
@@ -707,6 +709,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 {
                     affectedShipments.AddRange(ShipmentAmountDeriver.AffectedBy(
                         shipmentBefore, merge.Merged.ShipmentId, merge.ChangedUnits));
+                    if (merge.ChangedUnits.Contains(OrderUnit.Shipment) && merge.Merged.ShipmentId is { } windowLink)
+                        windowLinks.Add(windowLink);
                     if (mergeContext.SessionPhase == OrderSessionPhase.Released
                         && !OrderUnitMerge.LocksReleasedSession(mergeContext)
                         && merge.ChangedUnits.Any(u => u is OrderUnit.Price or OrderUnit.Cancel or OrderUnit.Backup))
@@ -755,8 +759,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 order.ShipmentId = insert.Merged.ShipmentId;
                 merges[item.Id] = insert;
                 if (modeOn)
+                {
                     affectedShipments.AddRange(ShipmentAmountDeriver.AffectedBy(
                         null, order.ShipmentId, insert.ChangedUnits));
+                    if (insert.ChangedUnits.Contains(OrderUnit.Shipment) && order.ShipmentId is { } windowLink)
+                        windowLinks.Add(windowLink);
+                }
                 if (OrderTextScrub.AppliesOnInsert(
                         _salesSync.ScrubOrderTextOnPurge, purgeDirectory.Resolve(item.CustomerId).Canonical?.PurgedAt))
                     OrderTextScrub.Apply(order, now);
@@ -781,6 +789,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // SaveChanges'te yeniden türetir — izlenen birleşik siparişlerden, bağ değiştiyse eski ve yeni dosya.
         var derivedShipments = modeOn
             ? await _shipmentAmounts.DeriveAsync(licenseId, shipments, affectedShipments, rows, now, ct)
+            : Array.Empty<Guid>();
+        // Açılış penceresinde kargolanmış dosyaya geç gelen K4 bağı (§7.1, §10.1-21): kargo gönderimi bağlarından önce
+        // geldiyse dosya eksik bağlarla türetilip donmuştu; karar yerelde bu bağlarla verilmişti, dosya onlarla bir kez
+        // daha türetilir. Shipped olmayan dosyayı yukarıdaki K7 türetti; ikisi aynı dosyaya dokunmaz.
+        var windowShipped = windowLinks.Count > 0
+            ? await _shipmentAmounts.DeriveShippedInWindowAsync(licenseId, shipments, windowLinks, caller, rows, now, ct)
             : Array.Empty<Guid>();
 
         // Katalog bilmeyen istemcinin paketi deftere HİÇ girmez: siparişler her
@@ -864,6 +878,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             _log.LogInformation(
                 "orders/sync: {Count} kargo dosyası yeniden türetildi (K7, license={LicenseId})",
                 derivedShipments.Count, licenseId);
+        if (windowShipped.Count > 0)
+            _log.LogInformation(
+                "orders/sync: açılış penceresinde kargolanmış {Count} dosya geç gelen K4 bağıyla yeniden türetildi "
+                + "(license={LicenseId}, replica={ReplicaId})",
+                windowShipped.Count, licenseId, caller);
         if (rejectedInserts.Count > 0)
             _log.LogInformation(
                 "orders/sync: başka kopyanın canlı yayınına {Count} ekleme reddedildi (license={LicenseId})",
