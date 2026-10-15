@@ -158,6 +158,9 @@ public sealed class LicensesSalesController : ControllerBase
 
     /// <param name="Mode">0 = Off, 1 = On (<see cref="SalesSyncMode"/>).</param>
     /// <param name="MinClientVersion">Tanımsız ya da ayrıştırılamıyorsa null (kapı kapalı).</param>
+    /// <param name="ForceEndSilenceMinutes">Sunucunun <c>force-end</c> ve Y8 devralma kararında kullandığı sahip
+    /// sessizliği eşiği (<c>SalesSync:ForceEndSilenceMinutes</c>). İstemci "Yayını bitir…" eylemini bu değere göre
+    /// açar (§5.7); sabit 15 yazılırsa ayar değiştiğinde çip ile sunucu ayrışır.</param>
     public sealed record SalesStateDto(
         int Mode,
         DateTimeOffset? ModeChangedAt,
@@ -165,6 +168,7 @@ public sealed class LicensesSalesController : ControllerBase
         IReadOnlyList<LiveSessionDto> LiveSessions,
         ShippingSettingsDto? Shipping,
         bool ScrubOrderTextOnPurge,
+        int ForceEndSilenceMinutes,
         IReadOnlyList<LegacyMachineDto> LegacyMachines);
 
     /// <summary>
@@ -215,6 +219,7 @@ public sealed class LicensesSalesController : ControllerBase
             liveSessions,
             shipping,
             _options.ScrubOrderTextOnPurge,
+            _options.ForceEndSilenceMinutes,
             await LegacyMachinesAsync(licenseId, ct)));
     }
 

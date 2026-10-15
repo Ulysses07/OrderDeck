@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -55,6 +56,18 @@ public sealed class ForceEndSilenceOptionsTests : IClassFixture<ForceEndSilenceO
         var stored = await db.StreamSessions.AsNoTracking().SingleAsync(s => s.Id == sessionId);
         stored.OwnerReplicaId.Should().Be(inherits ? restored : previous);
         (stored.ReleasedAt is not null).Should().Be(inherits);
+    }
+
+    /// <summary>§5.7: istemcinin "Yayını bitir…" eylemi sunucunun kararıyla aynı eşiği kullanmalı; eşik
+    /// <c>sales/state</c>'te ayardan döner, istemciye sabit 15 yazdırılmaz.</summary>
+    [Fact]
+    public async Task Esik_sales_state_ile_istemciye_acilir()
+    {
+        var (client, licenseId) = await SetupAsync();
+
+        var state = await client.GetFromJsonAsync<JsonElement>($"/api/v1/licenses/{licenseId}/sales/state");
+
+        state.GetProperty("forceEndSilenceMinutes").GetInt32().Should().Be(30);
     }
 
     [Theory]

@@ -263,6 +263,7 @@ Desen `LicensesWpfCustomersPullController.cs:204-270`.
   - `liveSessions: [{id, title, startedAt, endedAt, ownerMachineName, ownerLastSeenAt, state: live|handing-over, unsentLabelCount}]` (`ReleasedAt` NULL olanlar)
   - `shipping: {version, freeShippingThreshold, fee}` (iki kipte; istemci mod On'da kullanır, `disable` turunda yerele kopyalar, §8.5)
   - `scrubOrderTextOnPurge` (§9)
+  - `forceEndSilenceMinutes` (S2): sunucunun `force-end` ve Y8 devralma kararındaki sahip sessizliği eşiği (`SalesSync:ForceEndSilenceMinutes`, varsayılan 15). §5.7'deki "≥ 15 dk sessiz" satırları ve onay metni bu değeri kullanır; istemci 15'i sabit yazmaz, yoksa ayar değişince çip ile sunucu ayrışır.
   - `legacyMachines: [{machineName, appVersion, lastSeenAt}]`
 
   `ownerLastSeenAt`, sahip kopyanın `WpfReplicas.LastSeenAt` değeridir. StreamSessions satırına yazılmaz; böylece her kalp atışında oturumun rowversion'ı ve akış ilerlemez.
