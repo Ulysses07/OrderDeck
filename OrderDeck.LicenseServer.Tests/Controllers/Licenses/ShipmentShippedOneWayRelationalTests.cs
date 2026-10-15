@@ -64,11 +64,13 @@ public sealed class ShipmentShippedOneWayRelationalTests : IAsyncLifetime
     public async Task Kargolanmis_dosya_v1_gonderimiyle_geri_donmez(
         SalesSyncMode mode, string status, decimal amount, DateTimeOffset? heldAt, DateTimeOffset? shippedAt)
     {
-        var licenseId = await SeedLicenseAsync(mode);
+        // Dosya mod Off'ta gönderimle açılır (mod On'da gönderim dosya açmaz, §7.1), sonra lisans kipine geçer.
+        var licenseId = await SeedLicenseAsync(SalesSyncMode.Off);
         var shipmentId = Guid.NewGuid();
         var customerHex = Guid.NewGuid().ToString("N");
         (await PushAsync(licenseId, shipmentId, customerHex, "shipped", ShippedAmount, null, ShippedAt))
             .StatusCode.Should().Be(HttpStatusCode.OK, "ön koşul: dosya kargoya verildi");
+        await SetModeAsync(licenseId, mode);
 
         var resp = await PushAsync(licenseId, shipmentId, customerHex, status, amount, heldAt, shippedAt);
 
@@ -89,14 +91,15 @@ public sealed class ShipmentShippedOneWayRelationalTests : IAsyncLifetime
     /// <summary>
     /// v2 (§7.1, §3.1): bayat v2 gönderimi de kargolanmış dosyayı geri çeviremez; yanıt dosyanın güncel satırıdır
     /// (Shipped, donmuş tutar). Dosya kaynağı yalnız v2'de ve boşsa dolar: v1 gönderimi dosyayı kaynağı bilinmez
-    /// bırakır.
+    /// bırakır. Mod On'da açılış penceresi dışındaki v2 gönderimi hiçbir şey yazmaz (kaynak da boş kalır).
     /// </summary>
     [Theory]
     [InlineData(SalesSyncMode.Off)]
     [InlineData(SalesSyncMode.On)]
     public async Task Kargolanmis_dosyaya_v2_gonderimi_guncel_satiri_doner_kaynak_yalniz_v2de_dolar(SalesSyncMode mode)
     {
-        var licenseId = await SeedLicenseAsync(mode);
+        // Dosya mod Off'ta gönderimle açılır (mod On'da gönderim dosya açmaz, §7.1), sonra lisans kipine geçer.
+        var licenseId = await SeedLicenseAsync(SalesSyncMode.Off);
         var shipmentId = Guid.NewGuid();
         var customerHex = Guid.NewGuid().ToString("N");
         (await PushAsync(licenseId, shipmentId, customerHex, "shipped", ShippedAmount, null, ShippedAt))
@@ -104,11 +107,14 @@ public sealed class ShipmentShippedOneWayRelationalTests : IAsyncLifetime
         (await PushAsync(licenseId, shipmentId, customerHex, "held", ShippedAmount, CreatedAt.AddDays(1), null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
         (await StoredAsync(shipmentId)).OriginReplicaId.Should().BeNull("v1 dosya kaynağı yazmaz");
+        await SetModeAsync(licenseId, mode);
 
         var replicaId = Guid.NewGuid();
         var resp = await PushAsync(licenseId, shipmentId, customerHex, "held", ShippedAmount + 150m,
             CreatedAt.AddDays(1), null, replicaId);
 
+        // Mod On'da kopya mod açıldıktan sonra doğdu: açılış penceresinde değil, gönderim yok sayılır.
+        var expectedOrigin = mode == SalesSyncMode.Off ? replicaId : (Guid?)null;
         resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
         var current = (await resp.Content.ReadFromJsonAsync<List<SalesShipmentItem>>())!.Single();
         current.Id.Should().Be(shipmentId);
@@ -116,15 +122,25 @@ public sealed class ShipmentShippedOneWayRelationalTests : IAsyncLifetime
         current.CumulativeAmount.Should().Be(ShippedAmount);
         current.ShippedAt.Should().Be(ShippedAt);
         current.HeldAt.Should().BeNull();
-        current.OriginReplicaId.Should().Be(replicaId);
+        current.OriginReplicaId.Should().Be(expectedOrigin);
         var stored = await StoredAsync(shipmentId);
         stored.Status.Should().Be(ShipmentStatus.Shipped);
         stored.CumulativeAmount.Should().Be(ShippedAmount);
-        stored.OriginReplicaId.Should().Be(replicaId);
+        stored.OriginReplicaId.Should().Be(expectedOrigin);
         current.Version.Should().Be(stored.Version);
     }
 
     // ── Yardımcılar ───────────────────────────────────────────────────────────
+
+    private async Task SetModeAsync(Guid licenseId, SalesSyncMode mode)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var license = await db.Licenses.SingleAsync(l => l.Id == licenseId);
+        license.SalesSyncMode = mode;
+        license.SalesSyncModeChangedAt = mode == SalesSyncMode.On ? DateTimeOffset.UtcNow : null;
+        await db.SaveChangesAsync();
+    }
 
     private async Task<Shipment> StoredAsync(Guid shipmentId)
     {

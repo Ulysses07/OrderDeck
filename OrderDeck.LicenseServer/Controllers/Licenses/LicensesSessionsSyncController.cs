@@ -160,8 +160,23 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var ignored = new Dictionary<Guid, string>();
         var toRelease = new List<Guid>();
         var legacyRelease = new HashSet<Guid>();
-        // Geri yüklenmiş kopyanın devralabileceği önceki kopyalar (§8.7); gerekirse ve istek başına bir kez okunur.
-        IReadOnlySet<Guid>? predecessors = null;
+
+        // EndedAt tekdüze (§4.1), yarışta da: ilişkisel sağlayıcıda boş EndedAt izlenen satırın koşulsuz SET'iyle değil,
+        // kaydetmeden sonra aynı işlemde koşullu bir UPDATE ile (yalnız hâlâ boşsa) doldurulur. Okumadan sonra commit
+        // olan bir force-end'in EndedAt'ini (ve devrini) kapanış böylece ezemez; kazanan ilk commit edendir (§4.6,
+        // §10.1-11). Title, Platforms ve Notes bugünkü gibi yazılır. InMemory'de ExecuteUpdate yok: aynı kural izlenen
+        // satıra uygulanır. Paket içi okumalar bekleyen dolumu da görür (EndedAtOf): aynı oturumun ikinci öğesi bugünkü
+        // gibi ilkinin kapanışını görür.
+        var relational = _db.Database.IsRelational();
+        var endedAtFills = new Dictionary<Guid, DateTimeOffset>();
+        DateTimeOffset? EndedAtOf(StreamSession s) =>
+            s.EndedAt ?? (endedAtFills.TryGetValue(s.Id, out var pending) ? pending : null);
+        void FillEndedAt(StreamSession s, DateTimeOffset? value)
+        {
+            if (value is not { } endedAt || EndedAtOf(s) is not null) return;
+            if (relational) endedAtFills[s.Id] = endedAt;
+            else s.EndedAt = endedAt;
+        }
 
         SessionRole RoleOf(StreamSession s) =>
             !context.IsV2 ? SessionRole.Legacy
@@ -188,9 +203,9 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 {
                     if (current.Title != item.Title || current.Platforms != item.Platforms || current.Notes != item.Notes)
                         ignored[item.Id] = ReasonReleased;
-                    if (current.EndedAt is null && item.EndedAt is not null)
+                    if (EndedAtOf(current) is null && item.EndedAt is not null)
                     {
-                        current.EndedAt = item.EndedAt;
+                        FillEndedAt(current, item.EndedAt);
                         current.UpdatedAt = now;
                     }
                     continue;
@@ -199,12 +214,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 role = RoleOf(current);
                 if (role == SessionRole.NonOwner && current.OwnerReplicaId is { } owner)
                 {
-                    predecessors ??= await _replicas.SilentPredecessorsAsync(
-                        licenseId, caller, context.ReplicaBefore, ct);
-                    if (predecessors.Contains(owner))
+                    // §8.7, Y8: hâl bu push'tan ÖNCEKİ sunucu satırından — gönderimin kendi EndedAt'i canlı oturumu
+                    // "devrediliyor" gösterip başka makinenin devralmasını kendi kendine kapatmasın ya da açmasın.
+                    var phase = EndedAtOf(current) is null ? TakeoverPhase.Live : TakeoverPhase.HandingOver;
+                    if (await _replicas.CanInheritAsync(
+                            licenseId, caller, context.ReplicaBefore, current.Id, owner, phase, now, ct))
                     {
-                        // §8.7: önceki veritabanı bu kopyanın ilk görüldüğü andan beri susuyor — yayının kuyruğu
-                        // artık bu kopyada. Sahiplik geçer; çağıran sahip olarak yargılanır.
+                        // §8.7: önceki veritabanı bu kopyanın ilk görüldüğü andan beri susuyor ve Y8 izin veriyor
+                        // (aynı makine ya da sahibi yeterince susmuş canlı yayın) — yayının kuyruğu artık bu kopyada.
+                        // Sahiplik geçer; çağıran sahip olarak yargılanır.
                         current.OwnerReplicaId = caller;
                         current.OwnerMachineName = item.MachineName ?? current.OwnerMachineName;
                         role = SessionRole.Owner;
@@ -219,13 +237,17 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 current.Platforms = item.Platforms;
                 current.Notes = item.Notes;
                 // EndedAt tekdüze (spec 2026-10-13 §4.1, her biçimde): dolu
-                // değer NULL'a ya da başka bir değere dönmez. Bayat gönderim
-                // (yayın sürerken kuyruğa girmiş satır) bitmiş yayını yeniden
-                // "açıyordu". Sahip olmayan v2 kopyası yayını kapatamaz; tek
-                // başka yol force-end (§4.6).
+                // değer NULL'a ya da başka bir değere dönmez — yalnız boşsa
+                // doldurulur (FillEndedAt; ilişkisel sağlayıcıda koşullu
+                // UPDATE). Bayat gönderim (yayın sürerken kuyruğa girmiş satır)
+                // bitmiş yayını yeniden "açıyordu". Sahip olmayan v2 kopyası
+                // yayını kapatamaz ve devredemez; tek başka yol force-end
+                // (§4.6). Yok sayılan kapanış ya da devir isteği yanıtta
+                // görünür (Y8: devralamayan geri yüklenmiş kopya "devredildi"
+                // sanmasın).
                 if (role != SessionRole.NonOwner)
-                    current.EndedAt ??= item.EndedAt;
-                else if (current.EndedAt is null && item.EndedAt is not null)
+                    FillEndedAt(current, item.EndedAt);
+                else if ((EndedAtOf(current) is null && item.EndedAt is not null) || item.Release)
                     ignored[item.Id] = ReasonOwnedElsewhere;
                 current.UpdatedAt = now;
             }
@@ -254,7 +276,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
             // Devir (§4.1): bitmiş ∧ devredilmemiş ∧ (v2 sahibinin Release'i ∨ v1 ∨ sahipsiz oturum). Sahibin
             // Release = false kapanışı yayını "devrediliyor" bırakır: etiketleri sahipte bekliyor (M2).
-            if (session.EndedAt is null) continue;
+            if (EndedAtOf(session) is null) continue;
             switch (role)
             {
                 case SessionRole.Legacy or SessionRole.Unowned:
@@ -273,11 +295,22 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // Kapanış ile devir tek işlemde: devir düşerse kapanış da yazılmaz, istemcinin yeniden gönderimi ikisini
         // birlikte yapar (oturum satırı devir görülene kadar kuyrukta kalır, §5.2).
         IReadOnlyList<Guid> released = Array.Empty<Guid>();
-        await using (var transaction = toRelease.Count > 0 && _db.Database.IsRelational()
+        await using (var transaction = (toRelease.Count > 0 || endedAtFills.Count > 0) && relational
             ? await _db.Database.BeginTransactionAsync(ct)
             : null)
         {
             await _db.SaveChangesAsync(ct);
+            foreach (var (sessionId, endedAt) in endedAtFills)
+            {
+                var filled = await _db.StreamSessions
+                    .Where(s => s.LicenseId == licenseId && s.Id == sessionId && s.EndedAt == null)
+                    .ExecuteUpdateAsync(u => u.SetProperty(s => s.EndedAt, endedAt), ct);
+                if (filled == 0)
+                    _log.LogInformation(
+                        "sessions/sync: oturum {SessionId} kapanışı yazılmadı, EndedAt bu arada dolmuş (force-end) "
+                        + "(license={LicenseId})",
+                        sessionId, licenseId);
+            }
             if (toRelease.Count > 0)
                 released = await _releaser.ReleaseAsync(licenseId, toRelease, now, ct);
             if (transaction is not null) await transaction.CommitAsync(ct);
@@ -605,6 +638,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 ct)
             : new Dictionary<Guid, Shipment>();
         var affectedShipments = new List<Guid>();
+        // Açılış penceresinin K4 istisnasıyla kurulan bağların hedefleri (mod On'da bağ birimi yalnız o yoldan değişir).
+        var windowLinks = new List<Guid>();
 
         // Paketin satırları, birleştirildikten sonraki hâlleriyle (izlenen
         // varlıklar). Defter paketten değil bunlardan beslenir: yazılmayan bir
@@ -614,14 +649,10 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var rejectedInserts = new HashSet<Guid>();
         var k5ExceptionAccepted = 0;
 
-        // Geri yüklenmiş kopyanın önceki kopyaları (§8.7): ilk görüldüğünden beri susan önceki veritabanının yayınları
-        // artık bu kopyadadır. Gerekirse ve istek başına bir kez okunur.
-        IReadOnlySet<Guid>? predecessors = null;
-        async Task<bool> IsSilentPredecessorAsync(Guid owner)
-        {
-            predecessors ??= await _replicas.SilentPredecessorsAsync(licenseId, caller, context.ReplicaBefore, ct);
-            return predecessors.Contains(owner);
-        }
+        // Geri yüklenmiş kopya önceki kopyasının yayınını devralabilir mi (§8.7, Y8)? sessions/sync ve sales/backfill
+        // ile aynı yol; önceki kopyalar istek başına bir kez okunur.
+        Task<bool> CanInheritAsync(Guid sessionId, Guid owner, TakeoverPhase phase) =>
+            _replicas.CanInheritAsync(licenseId, caller, context.ReplicaBefore, sessionId, owner, phase, now, ct);
 
         foreach (var item in orders)
         {
@@ -657,11 +688,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     Format = format,
                     ModeOn = modeOn,
                     SessionPhase = PhaseOf(session),
-                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur.
+                    // Önceki kopya zinciri yalnız K5 istisnası (i) için okunur. Devralma yargısı oturumun zorla
+                    // bitirildiği andaki hâline göre (SalesReplicaService.PhaseAtForceEnd): canlıyken bitirildiyse
+                    // (force-end komutu, M18) başka makinedeki geri yüklenmiş kopya ancak sahip ForceEndSilenceMinutes
+                    // sustuysa sahip sayılır (Y7); devrediliyorken bitirildiyse (CLI, §4.10) hiç sayılmaz (Y8).
                     CallerOwnsSession = v2 && session?.OwnerReplicaId is { } owner
                         && (owner == caller
                             || (modeOn && session.ReleasedAt is not null && session.ForceEndedBy is not null
-                                && await IsSilentPredecessorAsync(owner))),
+                                && await CanInheritAsync(session.Id, owner,
+                                    SalesReplicaService.PhaseAtForceEnd(session.EndedAt, session.ReleasedAt)))),
                     SessionForceEnded = session?.ForceEndedBy is not null,
                     OpeningWindow = context.OpeningWindow,
                     LinkedShipmentShipped = current.ShipmentId is { } linkedId
@@ -676,6 +711,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 {
                     affectedShipments.AddRange(ShipmentAmountDeriver.AffectedBy(
                         shipmentBefore, merge.Merged.ShipmentId, merge.ChangedUnits));
+                    if (merge.ChangedUnits.Contains(OrderUnit.Shipment) && merge.Merged.ShipmentId is { } windowLink)
+                        windowLinks.Add(windowLink);
                     if (mergeContext.SessionPhase == OrderSessionPhase.Released
                         && !OrderUnitMerge.LocksReleasedSession(mergeContext)
                         && merge.ChangedUnits.Any(u => u is OrderUnit.Price or OrderUnit.Cancel or OrderUnit.Backup))
@@ -695,10 +732,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 var session = item.SessionId is { } sid ? sessions[sid] : null;
 
                 // §4.2 ekleme dalı: v2'de başka kopyanın CANLI oturumuna ekleme satır başına reddedilir — canlı yayın
-                // yalnız sahibinde yazılır (Y1). Önceki kopyası susan geri yüklenmiş kopya o yayının kuyruğunu taşır
-                // (§8.7). Protokolsüz istekte çağıran bilinmez; devrediliyor ve miras (sahipsiz) oturum reddedilmez.
+                // yalnız sahibinde yazılır (Y1). Önceki kopyası susan geri yüklenmiş kopya, Y8 izin veriyorsa (aynı
+                // makine ya da sahibi ForceEndSilenceMinutes susmuş), o yayının kuyruğunu taşır (§8.7). Protokolsüz
+                // istekte çağıran bilinmez; devrediliyor ve miras (sahipsiz) oturum reddedilmez.
                 if (v2 && session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller
-                    && !await IsSilentPredecessorAsync(owner))
+                    && !await CanInheritAsync(session.Id, owner, TakeoverPhase.Live))
                 {
                     rejectedInserts.Add(item.Id);
                     continue;
@@ -723,8 +761,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 order.ShipmentId = insert.Merged.ShipmentId;
                 merges[item.Id] = insert;
                 if (modeOn)
+                {
                     affectedShipments.AddRange(ShipmentAmountDeriver.AffectedBy(
                         null, order.ShipmentId, insert.ChangedUnits));
+                    if (insert.ChangedUnits.Contains(OrderUnit.Shipment) && order.ShipmentId is { } windowLink)
+                        windowLinks.Add(windowLink);
+                }
                 if (OrderTextScrub.AppliesOnInsert(
                         _salesSync.ScrubOrderTextOnPurge, purgeDirectory.Resolve(item.CustomerId).Canonical?.PurgedAt))
                     OrderTextScrub.Apply(order, now);
@@ -749,6 +791,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // SaveChanges'te yeniden türetir — izlenen birleşik siparişlerden, bağ değiştiyse eski ve yeni dosya.
         var derivedShipments = modeOn
             ? await _shipmentAmounts.DeriveAsync(licenseId, shipments, affectedShipments, rows, now, ct)
+            : Array.Empty<Guid>();
+        // Açılış penceresinde kargolanmış dosyaya geç gelen K4 bağı (§7.1, §10.1-21): kargo gönderimi bağlarından önce
+        // geldiyse dosya eksik bağlarla türetilip donmuştu; karar yerelde bu bağlarla verilmişti, dosya onlarla bir kez
+        // daha türetilir. Shipped olmayan dosyayı yukarıdaki K7 türetti; ikisi aynı dosyaya dokunmaz.
+        var windowShipped = windowLinks.Count > 0
+            ? await _shipmentAmounts.DeriveShippedInWindowAsync(licenseId, shipments, windowLinks, caller, rows, now, ct)
             : Array.Empty<Guid>();
 
         // Katalog bilmeyen istemcinin paketi deftere HİÇ girmez: siparişler her
@@ -832,6 +880,11 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             _log.LogInformation(
                 "orders/sync: {Count} kargo dosyası yeniden türetildi (K7, license={LicenseId})",
                 derivedShipments.Count, licenseId);
+        if (windowShipped.Count > 0)
+            _log.LogInformation(
+                "orders/sync: açılış penceresinde kargolanmış {Count} dosya geç gelen K4 bağıyla yeniden türetildi "
+                + "(license={LicenseId}, replica={ReplicaId})",
+                windowShipped.Count, licenseId, caller);
         if (rejectedInserts.Count > 0)
             _log.LogInformation(
                 "orders/sync: başka kopyanın canlı yayınına {Count} ekleme reddedildi (license={LicenseId})",

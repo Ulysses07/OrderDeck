@@ -1377,6 +1377,35 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("Licenses");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal?>("FreeShippingThreshold")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ShippingFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("LicenseId");
+
+                    b.ToTable("LicenseShippingSettings");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.NetgsmAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2207,6 +2236,47 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("CustomerId", "RevokedAt");
 
                     b.ToTable("RefreshTokens");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesCommandLog", b =>
+                {
+                    b.Property<Guid>("CommandId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ReplicaId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("binary(32)")
+                        .IsFixedLength();
+
+                    b.Property<string>("ResultJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("CommandId");
+
+                    b.HasIndex("LicenseId", "CreatedAt");
+
+                    b.ToTable("SalesCommandLogs");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", b =>
@@ -3839,6 +3909,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("Sku");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithOne()
+                        .HasForeignKey("OrderDeck.LicenseServer.Domain.LicenseShippingSettings", "LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.NetgsmAccount", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
@@ -3972,6 +4053,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesCommandLog", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.SalesLegacyTrace", b =>

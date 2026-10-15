@@ -256,6 +256,93 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
         (await ExistsAsync(item.Id)).Should().BeTrue();
     }
 
+    /// <summary>
+    /// §4.2 ekleme dalı, §8.7, Y7, Y8: geri yüklenmiş kopyanın, önceki kopyasının canlı yayınına eklemesi başka makinede
+    /// yalnız önceki kopya <c>ForceEndSilenceMinutes</c> (15) sustuktan sonra kabul edilir; öncesinde
+    /// <c>session-owned-elsewhere</c> ile reddedilir. Aynı makinede (aynı parmak izi) hemen kabul edilir.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 5, true)]
+    [InlineData(false, 20, false)]
+    [InlineData(true, 1, false)]
+    public async Task Geri_yuklenmis_kopyanin_canli_oturuma_eklemesi_makine_kuralina_gore(
+        bool sameMachine, int silentMinutes, bool rejected)
+    {
+        var (client, licenseId) = await SetupAsync();
+        var (previous, restored) = await SeedRestoredAsync(licenseId, silentMinutes, sameMachine);
+        var live = await SeedSessionAsync(licenseId, previous);
+        var item = NewItem(live);
+
+        var result = (await PushV2Async(client, licenseId, restored, item)).Single();
+
+        result.Status.Should().Be(rejected ? "rejected" : "applied");
+        result.Reason.Should().Be(rejected ? "session-owned-elsewhere" : null);
+        (await ExistsAsync(item.Id)).Should().Be(!rejected);
+    }
+
+    /// <summary>
+    /// K5 istisnası (i), §8.7, Y8 (mod On): zorla bitirilmiş ve devredilmiş oturumda geri yüklenmiş kopyanın push'u
+    /// ancak sahibin yerine geçebiliyorsa K2 ile yargılanır (damgasız iptal alınır). Oturum zorla bitirildiğinde
+    /// canlıydı (M18), kural canlı oturumunki: başka makinedeki kopya önceki kopya 15 dk susmadan sahip sayılmaz,
+    /// push'u <c>session-released</c> ile reddedilir; aynı makinede hemen sahip sayılır.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 5, false)]
+    [InlineData(false, 20, true)]
+    [InlineData(true, 1, true)]
+    public async Task K5_istisna_i_geri_yuklenmis_kopyada_makine_kuralina_gore(
+        bool sameMachine, int silentMinutes, bool judgedByK2)
+    {
+        var (client, licenseId) = await SetupAsync(SalesSyncMode.On);
+        var (previous, restored) = await SeedRestoredAsync(licenseId, silentMinutes, sameMachine);
+        var endedAt = StartedAt.AddHours(2);
+        var forceEnded = await SeedSessionAsync(licenseId, previous, endedAt: endedAt, releasedAt: endedAt,
+            forceEndedBy: "cli");
+        var item = NewItem(forceEnded);
+        var inserted = (await PushV2SeenAsync(client, licenseId, restored, seenMode: 1, item)).Single();
+        inserted.Status.Should().Be("applied", "devredilmiş oturuma ekleme kabul edilir");
+        var cancelledAt = StartedAt.AddHours(3);
+
+        var result = (await PushV2SeenAsync(client, licenseId, restored, seenMode: 1,
+            item with { CancelledAt = cancelledAt, CancelReason = "vazgeçti", BaseVersion = inserted.Version }))
+            .Single();
+
+        result.Status.Should().Be(judgedByK2 ? "applied" : "rejected");
+        result.Reason.Should().Be(judgedByK2 ? null : "session-released");
+        (await LoadAsync(item.Id)).CancelledAt.Should().Be(judgedByK2 ? cancelledAt : null);
+    }
+
+    /// <summary>
+    /// K5 istisnası (i), §8.7, Y8, §4.10 (CLI <c>force-end</c>): oturum devrediliyor hâlindeyken zorla bitirildiyse
+    /// (sahibin kapanışı <c>EndedAt</c>'i önce yazmıştı; devir anı ondan farklı) devralma yargısı canlı oturumun değil,
+    /// devrediliyor oturumunkidir. Başka makinedeki geri yüklenmiş kopya önceki kopya ne kadar sessiz olursa olsun sahip
+    /// sayılmaz: yedeğindeki bayat damgasız değişiklik K5 ile reddedilir. Aynı makinede kopya hemen sahiptir.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 60, false)]
+    [InlineData(true, 1, true)]
+    public async Task K5_istisna_i_devrediliyorken_zorla_bitirilmis_oturumu_baska_makine_devralmaz(
+        bool sameMachine, int silentMinutes, bool judgedByK2)
+    {
+        var (client, licenseId) = await SetupAsync(SalesSyncMode.On);
+        var (previous, restored) = await SeedRestoredAsync(licenseId, silentMinutes, sameMachine);
+        var ownerEndedAt = StartedAt.AddHours(2);
+        var forceEnded = await SeedSessionAsync(licenseId, previous, endedAt: ownerEndedAt,
+            releasedAt: ownerEndedAt.AddDays(1), forceEndedBy: "cli");
+        var item = NewItem(forceEnded);
+        var inserted = (await PushV2SeenAsync(client, licenseId, restored, seenMode: 1, item)).Single();
+        inserted.Status.Should().Be("applied", "devredilmiş oturuma ekleme kabul edilir");
+        var cancelledAt = StartedAt.AddHours(3);
+
+        var result = (await PushV2SeenAsync(client, licenseId, restored, seenMode: 1,
+            item with { CancelledAt = cancelledAt, CancelReason = "vazgeçti", BaseVersion = inserted.Version }))
+            .Single();
+
+        result.Status.Should().Be(judgedByK2 ? "applied" : "rejected");
+        result.Reason.Should().Be(judgedByK2 ? null : "session-released");
+        (await LoadAsync(item.Id)).CancelledAt.Should().Be(judgedByK2 ? cancelledAt : null);
+    }
+
     // ── Doğrulama ─────────────────────────────────────────────────────────────
 
     /// <summary>Biçim ve öğe alanları görünür 400 alır, hiçbir şey yazılmaz: v2 zarfsız <c>format = 2</c> (çağıranı
@@ -343,11 +430,15 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
 
     private static string Url(Guid licenseId) => $"/api/v1/licenses/{licenseId}/orders/sync";
 
-    private static async Task<List<V2Result>> PushV2Async(
-        HttpClient client, Guid licenseId, Guid replicaId, params Item[] items)
+    private static Task<List<V2Result>> PushV2Async(
+        HttpClient client, Guid licenseId, Guid replicaId, params Item[] items) =>
+        PushV2SeenAsync(client, licenseId, replicaId, seenMode: 0, items);
+
+    private static async Task<List<V2Result>> PushV2SeenAsync(
+        HttpClient client, Guid licenseId, Guid replicaId, int seenMode, params Item[] items)
     {
         var resp = await client.PostAsJsonAsync(Url(licenseId),
-            new { orders = items, format = 2, replicaId, protocol = 2, seenMode = 0 });
+            new { orders = items, format = 2, replicaId, protocol = 2, seenMode });
         resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
         return (await resp.Content.ReadFromJsonAsync<List<V2Result>>())!;
     }
@@ -376,7 +467,7 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
 
     private async Task SeedReplicaAsync(
         Guid licenseId, Guid replicaId, DateTimeOffset firstSeenAt, DateTimeOffset? lastSeenAt = null,
-        Guid? previousReplicaId = null)
+        Guid? previousReplicaId = null, string? fingerprint = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -388,11 +479,33 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
             FirstSeenAt = firstSeenAt,
             LastSeenAt = lastSeenAt ?? firstSeenAt,
             PreviousReplicaId = previousReplicaId,
+            HardwareFingerprint = fingerprint,
         });
         await db.SaveChangesAsync();
     }
 
-    private async Task<Guid> SeedSessionAsync(Guid licenseId, Guid? owner, DateTimeOffset? endedAt = null)
+    /// <summary>Geri yüklenmiş kopya ve önceki kopyası: önceki kopya <paramref name="silentMinutes"/> önce son kez
+    /// konuştu, yeni kopya ondan sonra ilk kez görüldü (§8.7'nin "sustu" koşulu tutar). Parmak izleri aynı makine ise
+    /// eşit, değilse farklı (üretilmiş).</summary>
+    private async Task<(Guid Previous, Guid Restored)> SeedRestoredAsync(
+        Guid licenseId, int silentMinutes, bool sameMachine)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var previous = Guid.NewGuid();
+        var restored = Guid.NewGuid();
+        var previousLastSeen = now.AddMinutes(-silentMinutes);
+        var previousFingerprint = $"fp-{Guid.NewGuid():N}";
+        await SeedReplicaAsync(licenseId, previous, firstSeenAt: now.AddDays(-3), lastSeenAt: previousLastSeen,
+            fingerprint: previousFingerprint);
+        await SeedReplicaAsync(licenseId, restored, firstSeenAt: previousLastSeen.AddSeconds(silentMinutes * 30),
+            previousReplicaId: previous,
+            fingerprint: sameMachine ? previousFingerprint : $"fp-{Guid.NewGuid():N}");
+        return (previous, restored);
+    }
+
+    private async Task<Guid> SeedSessionAsync(
+        Guid licenseId, Guid? owner, DateTimeOffset? endedAt = null, DateTimeOffset? releasedAt = null,
+        string? forceEndedBy = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -407,13 +520,15 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
             UpdatedAt = StartedAt,
             OwnerReplicaId = owner,
             OwnerMachineName = owner is null ? null : "PC",
+            ReleasedAt = releasedAt,
+            ForceEndedBy = forceEndedBy,
         };
         db.StreamSessions.Add(session);
         await db.SaveChangesAsync();
         return session.Id;
     }
 
-    private async Task<(HttpClient Client, Guid LicenseId)> SetupAsync()
+    private async Task<(HttpClient Client, Guid LicenseId)> SetupAsync(SalesSyncMode mode = SalesSyncMode.Off)
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         using var scope = _factory.Services.CreateScope();
@@ -427,6 +542,8 @@ public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.L
             ActivationSlots = 2,
             IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+            SalesSyncMode = mode,
+            SalesSyncModeChangedAt = mode == SalesSyncMode.On ? DateTimeOffset.UtcNow.AddDays(-1) : null,
         };
         db.Licenses.Add(license);
         await db.SaveChangesAsync();

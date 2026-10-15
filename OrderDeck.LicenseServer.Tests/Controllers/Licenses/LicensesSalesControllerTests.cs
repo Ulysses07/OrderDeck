@@ -214,7 +214,8 @@ public sealed class LicensesSalesControllerTests
         state.ModeChangedAt.Should().BeNull();
         state.MinClientVersion.Should().Be(SalesSyncConfiguredApiFactory.MinClientVersion);
         state.ScrubOrderTextOnPurge.Should().BeTrue();
-        state.Shipping.Should().BeNull("lisans geneli kargo ayarı S2'de gelir");
+        state.ForceEndSilenceMinutes.Should().Be(15, "ayar verilmedi: varsayılan Y7 eşiği");
+        state.Shipping.Should().BeNull("lisans geneli kargo ayarı hiç yazılmadı (satır yok); dolu hâli ShippingSettingsTests'te");
         state.LiveSessions.Should().BeEmpty();
         state.LegacyMachines.Should().BeEmpty();
     }
@@ -429,6 +430,7 @@ public sealed class LicensesSalesControllerTests
         List<LiveSessionBody> LiveSessions,
         object? Shipping,
         bool ScrubOrderTextOnPurge,
+        int ForceEndSilenceMinutes,
         List<LegacyMachineBody> LegacyMachines);
 
     private sealed record LiveSessionBody(

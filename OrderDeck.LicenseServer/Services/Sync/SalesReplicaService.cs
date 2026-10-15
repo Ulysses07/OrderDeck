@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 
@@ -21,6 +22,18 @@ public sealed record SalesRequestContext(
     bool OpeningWindow)
 {
     public bool IsV2 => Envelope.IsV2;
+}
+
+/// <summary>Devralınmak istenen oturumun bu push'tan önceki sunucu hâli (spec 2026-10-13 §2 tablosu, §8.7). Devredilmiş
+/// oturum devralınmaz; birim yazıcısı artık sunucu.</summary>
+public enum TakeoverPhase
+{
+    /// <summary><c>EndedAt</c> boş: canlı yayın. Başka makinedeki kopya yalnız sahip yeterince sustuysa devralır (Y7).</summary>
+    Live,
+
+    /// <summary><c>EndedAt</c> dolu, <c>ReleasedAt</c> boş: etiketleri sahipte bekliyor. Başka makinedeki kopya
+    /// devralmaz (Y8).</summary>
+    HandingOver,
 }
 
 /// <summary><c>sales/hello</c>'nun kopya satırına yazdığı alanlar (spec 2026-10-13 §4.5).</summary>
@@ -66,11 +79,21 @@ public sealed class SalesReplicaService
     public static readonly TimeSpan LegacyTraceInterval = TimeSpan.FromHours(1);
 
     private readonly LicenseDbContext _db;
+    private readonly SalesSyncOptions _options;
     private readonly ILogger<SalesReplicaService> _log;
 
-    public SalesReplicaService(LicenseDbContext db, ILogger<SalesReplicaService> log)
+    // Devralma yargısının istek içi belleği (servis istek kapsamlı, Program.cs): çağıranın sessiz önceki kopyaları
+    // istek başına bir kez okunur; Y8 engeli oturum başına bir kez günlüğe düşer (200 satırlık paket 200 satır
+    // yazmasın).
+    private readonly Dictionary<(Guid LicenseId, Guid CallerId), IReadOnlyDictionary<Guid, SilentPredecessor>>
+        _lineages = new();
+    private readonly HashSet<(Guid LicenseId, Guid SessionId)> _loggedTakeoverBlocks = new();
+
+    public SalesReplicaService(
+        LicenseDbContext db, IOptions<SalesSyncOptions> options, ILogger<SalesReplicaService> log)
     {
         _db = db;
+        _options = options.Value;
         _log = log;
     }
 
@@ -183,43 +206,122 @@ public sealed class SalesReplicaService
     public const int MaxLineageDepth = 16;
 
     /// <summary>
-    /// Geri yüklenmiş kopyanın devralabileceği önceki kopyalar (spec 2026-10-13 §8.7): çağıranın
-    /// <c>PreviousReplicaId</c> zinciri boyunca, çağıranın bu lisansta ilk görüldüğü andan
-    /// (<see cref="ReplicaHistory.FirstSeenAt"/>) sonra hiç istek göndermemiş kopyalar.
+    /// Zorla bitirilmiş oturumun bitirildiği andaki hâli — K5 istisnası (i)'de geri yüklenmiş kopyanın sahip sayılıp
+    /// sayılmayacağının yargısı (spec 2026-10-13 §8.7, Y7, Y8). Zorla bitirme devri bitirmeyle aynı anla yazar: canlı
+    /// oturumda <c>EndedAt</c> = <c>ReleasedAt</c> (<c>force-end</c> komutu; CLI de canlı oturumda aynı anı yazar,
+    /// §4.10). Devrediliyor oturumu yalnız CLI bitirir ve <c>EndedAt</c>'e dokunmaz: o sahibin kapanış anıdır, devir
+    /// anından farklıdır. İkisi farklıysa oturum bitirilirken devrediliyordu — başka makinedeki kopya onu hiç devralmaz
+    /// (Y8); eşitse canlıydı (M18) — yalnız sahip yeterince sustuysa devralır (Y7). Ayrı bir kolon gerekmez; tekdüze
+    /// <c>EndedAt</c> (§4.1) ve hiç değişmeyen <c>ReleasedAt</c> bu bilgiyi korur.
+    /// </summary>
+    public static TakeoverPhase PhaseAtForceEnd(DateTimeOffset? endedAt, DateTimeOffset? releasedAt) =>
+        endedAt is { } ended && releasedAt is { } released && ended != released
+            ? TakeoverPhase.HandingOver
+            : TakeoverPhase.Live;
+
+    /// <summary>
+    /// Geri yüklenmiş kopya, başka kopyanın devredilmemiş oturumunu devralabilir mi (spec 2026-10-13 §8.7, §11 Y7,
+    /// Y8)? <c>sessions/sync</c> (sahiplik geçer), <c>orders/sync</c> (başka kopyanın canlı yayınına ekleme ve K5
+    /// istisnası i) ve <c>sales/backfill</c> (canlı yayına ekleme) bu tek yoldan yargılar.
     ///
-    /// <para>Zincir ilk konuşan ya da bu lisansta hiç görülmemiş halkada kesilir. Konuşan halka hâlâ açık bir
-    /// veritabanıdır: kendi oturumları ve ondan daha eskilerinin oturumları onundur, en yeniye geçmez (iki veritabanı
-    /// birden açıksa sahiplik kimseye kendiliğinden geçmez; sahibi dönmeyecek yayını CLI kapatır, §4.10). Görülmemiş
-    /// halkanın sessizliği kanıtlanamaz; oturum sahibi zaten her zaman görülmüş bir kopyadır (v2 eklemesi kopya
-    /// satırını önce açar).</para>
+    /// <para><b>1. Sessiz önceki kopya (S1).</b> Sahip, çağıranın <c>PreviousReplicaId</c> zincirinde ve çağıranın
+    /// bu lisansta ilk görüldüğü andan (<see cref="ReplicaHistory.FirstSeenAt"/>) beri hiç istek göndermemiş olmalı.
+    /// Zincir ilk konuşan ya da bu lisansta hiç görülmemiş halkada kesilir. Konuşan halka hâlâ açık bir veritabanıdır:
+    /// kendi oturumları ve ondan daha eskilerinin oturumları onundur, en yeniye geçmez (iki veritabanı birden açıksa
+    /// sahiplik kimseye kendiliğinden geçmez; sahibi dönmeyecek yayını CLI kapatır, §4.10). Görülmemiş halkanın
+    /// sessizliği kanıtlanamaz; oturum sahibi zaten her zaman görülmüş bir kopyadır (v2 eklemesi kopya satırını önce
+    /// açar).</para>
     ///
-    /// <para><b>Eksik koşul (spec §8.7, §11, Y8).</b> Parmak izi, sessizlik süresi ve oturum hâli aranmaz. Başka
-    /// makineye geri yüklenen kopya devrediliyor oturumu devralmamalı, canlı oturumu yalnız
-    /// <c>ForceEndSilenceMinutes</c> sessizlikten sonra devralmalı. Kural S2'de gelir; S1'de v2 istemci olmadığı
-    /// için bu yol hiçbir isteği etkilemez. W1 ondan önce açılmaz.</para>
+    /// <para><b>2. Makine (Y8, sahip kararı 2026-10-14).</b> Çağıranın ve sahibin donanım parmak izi ikisi de
+    /// biliniyor ve ordinal eşitse, ikisinde de klon izi yoksa geri yükleme <b>aynı makinededir</b>: önceki veritabanı
+    /// dosyası artık yoktur, kopya her hâlde hemen devralır. Aksi hâlde (farklı ya da bilinmeyen parmak izi, klon izi)
+    /// çağıran <b>öbür bilgisayardır</b>: canlı oturumu yalnız sahip <see cref="SalesSyncOptions.ForceEndSilenceMinutes"/>
+    /// susmuşsa devralır (Y7: yayın ortasında çöken bilgisayar); devrediliyor oturumu hiç devralmaz — yayının
+    /// etiketleri sahipte bekliyor, devralma eksik etiketle ödeme isteği ve koli üretirdi (Y8). Sahip hiç dönmeyecekse
+    /// yayını Burak'ın CLI'ı kapatır (§4.10). Sahipteki klon izi spec'in "aynı makine" tanımına ek bir koşuldur: o
+    /// zaman yayının hangi makinede açıldığı bilinemez ve belirsizlikte Y8 korunur (§8.7).</para>
+    ///
+    /// <para>Engellenen devralma oturum başına bir kez günlüğe yazılır (yalnız kimlikler; makine adı ve parmak izi
+    /// yazılmaz). Sessiz önceki kopyalar istek başına bir kez okunur.</para>
     /// </summary>
     /// <param name="callerId">Çağıran kopya; zincirde yeniden görünürse döngüdür.</param>
     /// <param name="caller">Çağıranın bu istekten önceki hâli; null = kopya bu istekle doğdu (önceki kimliği yok).</param>
-    public async Task<IReadOnlySet<Guid>> SilentPredecessorsAsync(
-        Guid licenseId, Guid callerId, ReplicaHistory? caller, CancellationToken ct)
+    /// <param name="sessionId">Devralınmak istenen oturum (yalnız günlük için).</param>
+    /// <param name="owner">Oturumun sunucudaki sahibi.</param>
+    /// <param name="phase">Oturumun bu push'tan ÖNCEKİ sunucu hâli.</param>
+    /// <param name="now">İsteğin sunucu anı; sessizlik buna göre ölçülür.</param>
+    public async Task<bool> CanInheritAsync(
+        Guid licenseId,
+        Guid callerId,
+        ReplicaHistory? caller,
+        Guid sessionId,
+        Guid owner,
+        TakeoverPhase phase,
+        DateTimeOffset now,
+        CancellationToken ct)
     {
-        var silent = new HashSet<Guid>();
-        if (caller?.PreviousReplicaId is not { } next) return silent;
+        if (caller is null) return false;
+        var lineage = await SilentLineageAsync(licenseId, callerId, caller, ct);
+        if (!lineage.TryGetValue(owner, out var predecessor)) return false;
 
-        var visited = new HashSet<Guid> { callerId };
-        for (var depth = 0; depth < MaxLineageDepth && visited.Add(next); depth++)
+        if (SameMachine(caller, predecessor)) return true;
+        if (phase == TakeoverPhase.Live && predecessor.LastSeenAt <= now - _options.ForceEndSilence) return true;
+
+        if (_loggedTakeoverBlocks.Add((licenseId, sessionId)))
+            _log.LogInformation(
+                "Y8: geri yüklenmiş kopya {ReplicaId}, önceki kopya {PreviousReplicaId}'in oturumu {SessionId}'i "
+                + "devralmadı — başka ya da bilinmeyen makine, oturum {Phase} (canlı oturum için sessizlik eşiği "
+                + "{SilenceMinutes} dk; license={LicenseId})",
+                callerId, owner, sessionId, phase, _options.ForceEndSilenceMinutes, licenseId);
+        return false;
+    }
+
+    /// <summary>Sessiz önceki kopyanın devralma yargısına giren hâli.</summary>
+    private sealed record SilentPredecessor(
+        DateTimeOffset LastSeenAt, string? HardwareFingerprint, bool FingerprintConflict);
+
+    /// <summary>Aynı makinede geri yükleme: iki parmak izi de biliniyor, ordinal eşit, iki tarafta da klon izi yok.</summary>
+    private static bool SameMachine(ReplicaHistory caller, SilentPredecessor owner) =>
+        !caller.FingerprintConflict
+        && !owner.FingerprintConflict
+        && !string.IsNullOrEmpty(caller.HardwareFingerprint)
+        && !string.IsNullOrEmpty(owner.HardwareFingerprint)
+        && string.Equals(caller.HardwareFingerprint, owner.HardwareFingerprint, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Çağıranın <c>PreviousReplicaId</c> zinciri boyunca, çağıranın ilk görüldüğü andan sonra hiç istek göndermemiş
+    /// kopyalar (koşul 1, <see cref="CanInheritAsync"/>); istek başına bir kez okunur.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<Guid, SilentPredecessor>> SilentLineageAsync(
+        Guid licenseId, Guid callerId, ReplicaHistory caller, CancellationToken ct)
+    {
+        if (_lineages.TryGetValue((licenseId, callerId), out var cached)) return cached;
+
+        var silent = new Dictionary<Guid, SilentPredecessor>();
+        if (caller.PreviousReplicaId is { } next)
         {
-            var link = await _db.WpfReplicas.AsNoTracking()
-                .Where(r => r.LicenseId == licenseId && r.ReplicaId == next)
-                .Select(r => new { r.LastSeenAt, r.PreviousReplicaId })
-                .SingleOrDefaultAsync(ct);
-            if (link is null || link.LastSeenAt > caller.FirstSeenAt) break;
+            var visited = new HashSet<Guid> { callerId };
+            for (var depth = 0; depth < MaxLineageDepth && visited.Add(next); depth++)
+            {
+                var link = await _db.WpfReplicas.AsNoTracking()
+                    .Where(r => r.LicenseId == licenseId && r.ReplicaId == next)
+                    .Select(r => new
+                    {
+                        r.LastSeenAt,
+                        r.PreviousReplicaId,
+                        r.HardwareFingerprint,
+                        Conflict = r.HardwareFingerprintConflictAt != null,
+                    })
+                    .SingleOrDefaultAsync(ct);
+                if (link is null || link.LastSeenAt > caller.FirstSeenAt) break;
 
-            silent.Add(next);
-            if (link.PreviousReplicaId is not { } previous) break;
-            next = previous;
+                silent[next] = new SilentPredecessor(link.LastSeenAt, link.HardwareFingerprint, link.Conflict);
+                if (link.PreviousReplicaId is not { } previous) break;
+                next = previous;
+            }
         }
 
+        _lineages[(licenseId, callerId)] = silent;
         return silent;
     }
 

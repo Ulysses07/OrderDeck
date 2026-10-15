@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Sync;
@@ -165,6 +166,113 @@ public sealed class SalesReplicaServiceTests
         afterClone.OpeningWindow.Should().BeFalse("hangi makinenin özgün olduğu bilinemez");
     }
 
+    // ── Geri yüklenmiş kopyanın devralması (§8.7, §11 Y7, Y8) ─────────────────
+
+    /// <summary>
+    /// Y8: başka ya da bilinmeyen makineye geri yüklenen kopya, sahibi iki saattir sussa da devrediliyor oturumu
+    /// devralmaz — yayının etiketleri sahipte bekliyor. Parmak izi her iki taraftan da bilinmeyebilir (hello'suz
+    /// kopya). Engel oturum başına bir kez günlüğe düşer; günlükte yalnız kimlikler var, parmak izi yok.
+    /// </summary>
+    [Theory]
+    [InlineData("A", "B")]
+    [InlineData(null, "B")]
+    [InlineData("A", null)]
+    [InlineData(null, null)]
+    public async Task Baska_ya_da_bilinmeyen_makinede_devrediliyor_oturum_devralinmaz(
+        string? previousMachine, string? restoredMachine)
+    {
+        var lineage = await SeedLineageAsync(
+            silence: TimeSpan.FromHours(2), Fingerprint(previousMachine), Fingerprint(restoredMachine));
+        var sessionId = Guid.NewGuid();
+        var log = new LogRecorder<SalesReplicaService>();
+        await using var db = Db();
+        var service = Service(db, log);
+
+        (await lineage.CanInheritAsync(service, TakeoverPhase.HandingOver, sessionId)).Should().BeFalse();
+        (await lineage.CanInheritAsync(service, TakeoverPhase.HandingOver, sessionId)).Should().BeFalse();
+
+        var entry = log.Entries.Should().ContainSingle("aynı oturumun engeli istek başına bir kez yazılır").Subject;
+        entry.Level.Should().Be(LogLevel.Information);
+        entry.Message.Should().Contain(sessionId.ToString())
+            .And.Contain(lineage.Previous.ToString())
+            .And.Contain(lineage.Restored.ToString());
+        foreach (var fingerprint in new[] { lineage.PreviousFingerprint, lineage.RestoredFingerprint })
+            if (fingerprint is not null) entry.Message.Should().NotContain(fingerprint);
+    }
+
+    /// <summary>
+    /// Y7, Y8: başka makinedeki kopya canlı oturumu yalnız sahip <c>ForceEndSilenceMinutes</c> (varsayılan 15)
+    /// sustuktan sonra devralır; eşik ayardan okunur.
+    /// </summary>
+    [Theory]
+    [InlineData(5, null, false)]
+    [InlineData(14, null, false)]
+    [InlineData(20, null, true)]
+    [InlineData(20, 30, false)]
+    [InlineData(40, 30, true)]
+    public async Task Baska_makinede_canli_oturum_yalniz_sessizlik_esiginden_sonra_devralinir(
+        int silentMinutes, int? thresholdMinutes, bool inherits)
+    {
+        var lineage = await SeedLineageAsync(TimeSpan.FromMinutes(silentMinutes), Fingerprint("A"), Fingerprint("B"));
+        var options = new SalesSyncOptions();
+        if (thresholdMinutes is { } minutes) options.ForceEndSilenceMinutes = minutes;
+        await using var db = Db();
+
+        (await lineage.CanInheritAsync(Service(db, options: options), TakeoverPhase.Live, Guid.NewGuid()))
+            .Should().Be(inherits);
+    }
+
+    /// <summary>Sahip kararı (2026-10-14): aynı makinede geri yüklenen kopya her hâlde hemen devralır — önceki
+    /// veritabanı dosyası artık yok.</summary>
+    [Theory]
+    [InlineData(TakeoverPhase.Live)]
+    [InlineData(TakeoverPhase.HandingOver)]
+    public async Task Ayni_makinede_hemen_devralir(TakeoverPhase phase)
+    {
+        var fingerprint = Fingerprint("A");
+        var lineage = await SeedLineageAsync(TimeSpan.FromMinutes(1), fingerprint, fingerprint);
+        await using var db = Db();
+
+        (await lineage.CanInheritAsync(Service(db), phase, Guid.NewGuid())).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Klon izi (§8.7): aynı parmak izi taşısa da kopyalardan birinde ikinci parmak izi görülmüşse hangi makinenin
+    /// özgün olduğu bilinemez — çağıran başka makine sayılır: devrediliyor oturumu ve kısa süre susan sahibin canlı
+    /// oturumunu devralmaz.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false, TakeoverPhase.HandingOver)]
+    [InlineData(true, false, TakeoverPhase.Live)]
+    [InlineData(false, true, TakeoverPhase.HandingOver)]
+    [InlineData(false, true, TakeoverPhase.Live)]
+    public async Task Klon_izi_varsa_ayni_parmak_izi_baska_makine_sayilir(
+        bool restoredCloned, bool previousCloned, TakeoverPhase phase)
+    {
+        var fingerprint = Fingerprint("A");
+        var lineage = await SeedLineageAsync(TimeSpan.FromMinutes(1), fingerprint, fingerprint,
+            previousCloned: previousCloned, restoredCloned: restoredCloned);
+        await using var db = Db();
+
+        (await lineage.CanInheritAsync(Service(db), phase, Guid.NewGuid())).Should().BeFalse();
+    }
+
+    /// <summary>S1'in koşulu önce gelir: önceki kopya yenisinin ilk görüldüğü andan sonra konuştuysa aynı makinede ve
+    /// uzun sessizlikte de devralma yok; önceki kimliği olmayan kopya hiçbir şey devralmaz.</summary>
+    [Fact]
+    public async Task Konusan_onceki_kopyanin_ve_onceki_kimligi_olmayanin_devralmasi_yok()
+    {
+        var fingerprint = Fingerprint("A");
+        var lineage = await SeedLineageAsync(TimeSpan.FromHours(2), fingerprint, fingerprint, previousSpokeLater: true);
+        await using var db = Db();
+        var service = Service(db);
+
+        (await lineage.CanInheritAsync(service, TakeoverPhase.Live, Guid.NewGuid())).Should().BeFalse();
+        (await lineage.CanInheritAsync(service, TakeoverPhase.HandingOver, Guid.NewGuid())).Should().BeFalse();
+        (await service.CanInheritAsync(lineage.LicenseId, Guid.NewGuid(), caller: null, Guid.NewGuid(),
+            lineage.Previous, TakeoverPhase.Live, DateTimeOffset.UtcNow, CancellationToken.None)).Should().BeFalse();
+    }
+
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
     private async Task<(SalesRequestContext Context, LogRecorder<SalesReplicaService> Log)> AcceptAsync(
@@ -172,7 +280,7 @@ public sealed class SalesReplicaServiceTests
     {
         await using var db = Db();
         var log = new LogRecorder<SalesReplicaService>();
-        var ctx = await new SalesReplicaService(db, log)
+        var ctx = await Service(db, log)
             .AcceptAsync(licenseId, envelope, "OrderDeck-WPF/0.9.11", endpoint, CancellationToken.None);
         db.ChangeTracker.Entries().Should().BeEmpty("kalp atışı ucun değişiklik izleyicisinde kalmaz");
         return (ctx, log);
@@ -182,13 +290,71 @@ public sealed class SalesReplicaServiceTests
     {
         await using var db = Db();
         var log = new LogRecorder<SalesReplicaService>();
-        await new SalesReplicaService(db, log).HelloAsync(
+        await Service(db, log).HelloAsync(
             licenseId,
             new ReplicaHello(V2(replicaId, SalesSyncMode.Off), null, "PC-KLON", fingerprint, 3,
                 ReportsShipping: false, null, null, BackfillCompleted: false, PaymentHistoryCompleted: false),
             "OrderDeck-WPF/0.9.11",
             CancellationToken.None);
         return log;
+    }
+
+    private static SalesReplicaService Service(
+        LicenseDbContext db, LogRecorder<SalesReplicaService>? log = null, SalesSyncOptions? options = null) =>
+        new(db, Options.Create(options ?? new SalesSyncOptions()), log ?? new LogRecorder<SalesReplicaService>());
+
+    // Makine harfi → bu testin parmak izi (üretilmiş; null = bilinmiyor).
+    private readonly Dictionary<string, string> _fingerprints = new();
+
+    private string? Fingerprint(string? machine)
+    {
+        if (machine is null) return null;
+        if (!_fingerprints.TryGetValue(machine, out var fingerprint))
+            _fingerprints[machine] = fingerprint = $"fp-{Guid.NewGuid():N}";
+        return fingerprint;
+    }
+
+    /// <summary>Geri yüklenmiş kopya ve önceki kopyası. Önceki kopya <paramref name="silence"/> kadar önce son kez
+    /// konuştu; yeni kopya ondan sonra ilk kez görüldü (S1'in "sustu" koşulu tutar), ya da
+    /// <paramref name="previousSpokeLater"/> ile ondan önce görüldü (önceki kopya ondan sonra konuştu).</summary>
+    private async Task<Lineage> SeedLineageAsync(
+        TimeSpan silence,
+        string? previousFingerprint,
+        string? restoredFingerprint,
+        bool previousCloned = false,
+        bool restoredCloned = false,
+        bool previousSpokeLater = false)
+    {
+        var licenseId = await SeedLicenseAsync(SalesSyncMode.Off);
+        var now = DateTimeOffset.UtcNow;
+        var previous = Guid.NewGuid();
+        var restored = Guid.NewGuid();
+        var previousLastSeen = now - silence;
+        var restoredFirstSeen = previousSpokeLater
+            ? previousLastSeen.AddMinutes(-1)
+            : previousLastSeen + (now - previousLastSeen) / 2;
+        await SeedReplicaAsync(licenseId, previous, firstSeenAt: now.AddDays(-3), lastSeenAt: previousLastSeen,
+            fingerprint: previousFingerprint, conflictAt: previousCloned ? now.AddDays(-2) : null);
+        await SeedReplicaAsync(licenseId, restored, firstSeenAt: restoredFirstSeen, previousReplicaId: previous,
+            fingerprint: restoredFingerprint, conflictAt: restoredCloned ? restoredFirstSeen : null);
+        await using var db = Db();
+        var caller = ReplicaHistory.Of(await db.WpfReplicas.AsNoTracking()
+            .SingleAsync(r => r.LicenseId == licenseId && r.ReplicaId == restored));
+        return new Lineage(licenseId, previous, restored, caller, previousFingerprint, restoredFingerprint);
+    }
+
+    private sealed record Lineage(
+        Guid LicenseId,
+        Guid Previous,
+        Guid Restored,
+        ReplicaHistory Caller,
+        string? PreviousFingerprint,
+        string? RestoredFingerprint)
+    {
+        /// <summary>Geri yüklenmiş kopya, önceki kopyanın oturumunu devralabilir mi?</summary>
+        public Task<bool> CanInheritAsync(SalesReplicaService service, TakeoverPhase phase, Guid sessionId) =>
+            service.CanInheritAsync(LicenseId, Restored, Caller, sessionId, Previous, phase, DateTimeOffset.UtcNow,
+                CancellationToken.None);
     }
 
     private async Task<Guid> SeedLicenseAsync(SalesSyncMode mode)
@@ -212,7 +378,13 @@ public sealed class SalesReplicaServiceTests
     }
 
     private async Task SeedReplicaAsync(
-        Guid licenseId, Guid replicaId, DateTimeOffset firstSeenAt, Guid? previousReplicaId = null)
+        Guid licenseId,
+        Guid replicaId,
+        DateTimeOffset firstSeenAt,
+        Guid? previousReplicaId = null,
+        DateTimeOffset? lastSeenAt = null,
+        string? fingerprint = null,
+        DateTimeOffset? conflictAt = null)
     {
         await using var db = Db();
         db.WpfReplicas.Add(new WpfReplica
@@ -222,8 +394,10 @@ public sealed class SalesReplicaServiceTests
             Protocol = 2,
             SeenMode = SalesSyncMode.Off,
             FirstSeenAt = firstSeenAt,
-            LastSeenAt = firstSeenAt,
+            LastSeenAt = lastSeenAt ?? firstSeenAt,
             PreviousReplicaId = previousReplicaId,
+            HardwareFingerprint = fingerprint,
+            HardwareFingerprintConflictAt = conflictAt,
         });
         await db.SaveChangesAsync();
     }

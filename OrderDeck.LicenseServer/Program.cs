@@ -59,6 +59,12 @@ public class Program
             Environment.Exit(exit);
             return;
         }
+        if (args.Length > 0 && args[0] == "sales-sync")
+        {
+            var exit = await OrderDeck.LicenseServer.Tools.SalesSync.RunAsync(args);
+            Environment.Exit(exit);
+            return;
+        }
 
         var builder = WebApplication.CreateBuilder(args);
 
@@ -148,9 +154,13 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdResolver>();
         // Yayın ve etiket senkronu (spec 2026-10-13): kopya kaydı ve protokolsüz istek izi; ayarlar compose
-        // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge).
-        builder.Services.Configure<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>(
-            builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section));
+        // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge,
+        // SalesSync__ForceEndSilenceMinutes). Sessizlik eşiği açılışta doğrulanır: 0 ya da eksi değer başka
+        // makinedeki kopyaya canlı yayını beklemeden devrettirirdi (Y7, Y8); sunucu açılmaz, deploy geri alınır.
+        builder.Services.AddOptions<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>()
+            .Bind(builder.Configuration.GetSection(OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions.Section))
+            .Validate(o => o.ForceEndSilenceMinutes > 0, "SalesSync:ForceEndSilenceMinutes 0'dan büyük olmalı.")
+            .ValidateOnStart();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReplicaService>();
         // Yayının devri (§4.1): sessions/sync, sales/backfill ve onarım işi aynı yazıcıyı kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SessionReleaser>();
@@ -158,8 +168,33 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesChangesFeed>();
         // Türetilmiş kargo dosyası (K7, DM7): orders/sync, sales/backfill ve komutlar aynı türetmeyi kullanır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.ShipmentAmountDeriver>();
+        // Satış komutları (§4.6, POST sales/commands): işleme hattı ve tür başına bir işleyici. Kayıtlı olmayan tür
+        // 400 unknown-kind alır.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.SalesCommandService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.CancelCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.UncancelCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.SetCodePriceCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.ConfirmBackupCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.AddBackupCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.MarkPrintedCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.ReprintCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.AttachShipmentCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.ShipmentDecisionCommandHandler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
+            OrderDeck.LicenseServer.Services.Sync.Commands.ForceEndCommandHandler>();
         // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();
+        // Komut günlüğünün 90 günlük saklaması (§4.9); takvim ScheduleSalesSyncJobs'ta.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob>();
         // Kimlik anahtarı onarımının B1 çakışma politikası çağırır (CLI
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
@@ -1253,6 +1288,8 @@ public class Program
     /// Ayrıca açılışta bir kez kuyruğa alınır (<c>identity-key-repair</c> emsali): deploy'dan sonra S1 öncesinde
     /// bitmiş yayınlar ve geri alma penceresinin satırları bir gün beklemesin. Kuyruğa almak yalnız bir kayıttır;
     /// iş arka planda koşar, açılışı ve <c>/ready</c>'yi bekletmez.
+    /// <c>sales-command-log-retention</c> günde bir, 04:54'te: yine ızgara dışında ve o dakikada başka iş yok (04:52
+    /// İYS, 04:55 ızgara işleri). Açılışta kuyruğa alınmaz: 90 günlük sınır bir günlük gecikmeye duyarsız.
     /// </summary>
     public static void ScheduleSalesSyncJobs(IRecurringJobManager manager, IBackgroundJobClient jobs)
     {
@@ -1261,6 +1298,10 @@ public class Program
             j => j.RunAsync(CancellationToken.None),
             OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob.Cron);
         jobs.Enqueue<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>(j => j.RunAsync(CancellationToken.None));
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob>(
+            OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob.JobId,
+            j => j.RunAsync(CancellationToken.None),
+            OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob.Cron);
     }
 
     /// <summary>

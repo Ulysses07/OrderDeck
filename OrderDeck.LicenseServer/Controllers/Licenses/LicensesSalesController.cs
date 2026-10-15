@@ -149,13 +149,18 @@ public sealed class LicensesSalesController : ControllerBase
         string State,
         int? UnsentLabelCount);
 
-    /// <summary>Lisans geneli kargo ayarı (§6.2). Tablo S2'de gelir; S1'de alan hep null.</summary>
+    /// <summary>Lisans geneli kargo ayarı (§6.2, <see cref="LicenseShippingSettings"/>). İki kipte satırdan dolar:
+    /// istemci mod On'da kullanır, <c>disable</c> turunda yerele kopyalar (§8.5). Satır yoksa (ayar hiç yazılmadı)
+    /// <see cref="SalesStateDto.Shipping"/> null.</summary>
     public sealed record ShippingSettingsDto(int Version, decimal? FreeShippingThreshold, decimal? Fee);
 
     public sealed record LegacyMachineDto(string? MachineName, string? AppVersion, DateTimeOffset LastSeenAt);
 
     /// <param name="Mode">0 = Off, 1 = On (<see cref="SalesSyncMode"/>).</param>
     /// <param name="MinClientVersion">Tanımsız ya da ayrıştırılamıyorsa null (kapı kapalı).</param>
+    /// <param name="ForceEndSilenceMinutes">Sunucunun <c>force-end</c> ve Y8 devralma kararında kullandığı sahip
+    /// sessizliği eşiği (<c>SalesSync:ForceEndSilenceMinutes</c>). İstemci "Yayını bitir…" eylemini bu değere göre
+    /// açar (§5.7); sabit 15 yazılırsa ayar değiştiğinde çip ile sunucu ayrışır.</param>
     public sealed record SalesStateDto(
         int Mode,
         DateTimeOffset? ModeChangedAt,
@@ -163,6 +168,7 @@ public sealed class LicensesSalesController : ControllerBase
         IReadOnlyList<LiveSessionDto> LiveSessions,
         ShippingSettingsDto? Shipping,
         bool ScrubOrderTextOnPurge,
+        int ForceEndSilenceMinutes,
         IReadOnlyList<LegacyMachineDto> LegacyMachines);
 
     /// <summary>
@@ -201,14 +207,19 @@ public sealed class LicensesSalesController : ControllerBase
             .ToListAsync(ct);
 
         var minClientVersion = _options.ParseMinClientVersion() is null ? null : _options.MinClientVersion!.Trim();
+        var shipping = await _db.LicenseShippingSettings.AsNoTracking()
+            .Where(s => s.LicenseId == licenseId)
+            .Select(s => new ShippingSettingsDto(s.Version, s.FreeShippingThreshold, s.ShippingFee))
+            .SingleOrDefaultAsync(ct);
 
         return Ok(new SalesStateDto(
             (int)license.SalesSyncMode,
             license.SalesSyncModeChangedAt,
             minClientVersion,
             liveSessions,
-            Shipping: null,
+            shipping,
             _options.ScrubOrderTextOnPurge,
+            _options.ForceEndSilenceMinutes,
             await LegacyMachinesAsync(licenseId, ct)));
     }
 
@@ -391,6 +402,16 @@ public sealed class LicensesSalesController : ControllerBase
         // ── Oturumlar ──
         var toRelease = new List<Guid>();
         var sessionsOwnedElsewhere = 0;
+
+        // EndedAt tekdüze (§4.1), yarışta da — sessions/sync'in kuralı: ilişkisel sağlayıcıda boş EndedAt izlenen satırın
+        // koşulsuz SET'iyle değil, kaydetmeden sonra aynı işlemde koşullu bir UPDATE ile (yalnız hâlâ boşsa) doldurulur.
+        // Okumadan sonra commit olan bir force-end'in EndedAt'ini (ve devrini) geri doldurma böylece ezemez; kazanan ilk
+        // commit edendir (§4.6, §10.1-11). InMemory'de ExecuteUpdate yok: aynı kural izlenen satıra uygulanır. Devir
+        // kararı bekleyen dolumu görür (EndedAtOf); devri SessionReleaser yine veritabanındaki koşulla yazar.
+        var relational = _db.Database.IsRelational();
+        var endedAtFills = new Dictionary<Guid, DateTimeOffset>();
+        DateTimeOffset? EndedAtOf(StreamSession s) =>
+            s.EndedAt ?? (endedAtFills.TryGetValue(s.Id, out var pending) ? pending : null);
         foreach (var item in sessions)
         {
             // Başka lisansın oturumu: yazılmaz, yanıtta reddedilir (ve siparişleri de).
@@ -437,17 +458,19 @@ public sealed class LicensesSalesController : ControllerBase
                     session.OwnerMachineName = item.MachineName;
                     changed = true;
                 }
-                // Kaçmış kapanış: sunucuda açık kalmış, yerelde bitmiş yayın. Dolu EndedAt değişmez (tekdüze).
-                if (session.EndedAt is null && item.EndedAt is not null)
+                // Kaçmış kapanış: sunucuda açık kalmış, yerelde bitmiş yayın. Dolu EndedAt değişmez (tekdüze); boşsa
+                // ilişkisel sağlayıcıda koşullu UPDATE ile dolar (yukarıda).
+                if (EndedAtOf(session) is null && item.EndedAt is { } endedAt)
                 {
-                    session.EndedAt = item.EndedAt;
+                    if (relational) endedAtFills[session.Id] = endedAt;
+                    else session.EndedAt = endedAt;
                     changed = true;
                 }
                 if (changed) session.UpdatedAt = now;
             }
 
             // Devir yalnız bayrakla (M2: istemci onu yayının etiket kuyruğu boşken gönderir).
-            if (item.Release && session.EndedAt is not null && session.ReleasedAt is null)
+            if (item.Release && EndedAtOf(session) is not null && session.ReleasedAt is null)
                 toRelease.Add(session.Id);
         }
 
@@ -490,13 +513,6 @@ public sealed class LicensesSalesController : ControllerBase
         var localWinsAllowed = !modeOn
             && context.ReplicaBefore is { PreviousReplicaId: null, FingerprintConflict: false };
 
-        IReadOnlySet<Guid>? predecessors = null;
-        async Task<bool> IsSilentPredecessorAsync(Guid owner)
-        {
-            predecessors ??= await _replicas.SilentPredecessorsAsync(licenseId, caller, context.ReplicaBefore, ct);
-            return predecessors.Contains(owner);
-        }
-
         var inserted = new Dictionary<Guid, Order>();
         var changedOrders = new HashSet<Guid>();
         var diverged = new List<BackfillDivergedDto>();
@@ -532,9 +548,11 @@ public sealed class LicensesSalesController : ControllerBase
 
             var session = item.SessionId is { } sessionId ? serverSessions[sessionId] : null;
             // §4.2 ekleme dalı (Y1): başka kopyanın CANLI yayınına ekleme reddedilir; önceki kopyası susan geri
-            // yüklenmiş kopya o yayının kuyruğunu taşır (§8.7).
+            // yüklenmiş kopya, Y8 izin veriyorsa (aynı makine ya da sahibi ForceEndSilenceMinutes susmuş), o yayının
+            // kuyruğunu taşır (§8.7; sessions/sync ve orders/sync ile aynı yol).
             if (session is { EndedAt: null, OwnerReplicaId: { } owner } && owner != caller
-                && !await IsSilentPredecessorAsync(owner))
+                && !await _replicas.CanInheritAsync(
+                    licenseId, caller, context.ReplicaBefore, session.Id, owner, TakeoverPhase.Live, now, ct))
             {
                 rejected[item.Id] = LicensesSessionsSyncController.ReasonOwnedElsewhere;
                 continue;
@@ -625,10 +643,21 @@ public sealed class LicensesSalesController : ControllerBase
         {
             // Yazım, devir ve ayrışma sayısı tek işlemde: biri düşerse hiçbiri yazılmaz, istemci partiyi yeniden
             // gönderir (geri doldurma idempotent).
-            await using var transaction = _db.Database.IsRelational()
+            await using var transaction = relational
                 ? await _db.Database.BeginTransactionAsync(ct)
                 : null;
             await _db.SaveChangesAsync(ct);
+            foreach (var (sessionId, endedAt) in endedAtFills)
+            {
+                var filled = await _db.StreamSessions
+                    .Where(s => s.LicenseId == licenseId && s.Id == sessionId && s.EndedAt == null)
+                    .ExecuteUpdateAsync(u => u.SetProperty(s => s.EndedAt, endedAt), ct);
+                if (filled == 0)
+                    _log.LogInformation(
+                        "sales/backfill: oturum {SessionId} kapanışı yazılmadı, EndedAt bu arada dolmuş (force-end) "
+                        + "(license={LicenseId})",
+                        sessionId, licenseId);
+            }
             if (toRelease.Count > 0)
                 released = await _releaser.ReleaseAsync(licenseId, toRelease, now, ct);
             await _replicas.AddBackfillDivergenceAsync(licenseId, caller, localWins, serverWins, ct);

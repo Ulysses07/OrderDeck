@@ -151,7 +151,7 @@ OrderDeck__BroadcastMedia__Provider=r2
 # listeli — orada olmayan anahtar container'a girmez.
 OrderDeck__Bank__HashKey=
 
-# Yayın ve etiket senkronu (spec 2026-10-13). İkisi de docker-compose.yml'de
+# Yayın ve etiket senkronu (spec 2026-10-13). Hepsi docker-compose.yml'de
 # listeli.
 # Ws'nin (spec'in WPF değişikliklerini taşıyan ilk Velopack sürümü) numarası.
 # Ws yayımlanana kadar BOŞ kalır: boşken satış senkronu modu açılamaz, mod On'da
@@ -162,6 +162,10 @@ SalesSync__MinClientVersion=
 # bilgisayarlarda kalıcı olarak boşalt. Geri dönüşsüz; açmak sahip kararı
 # (§9, §11). Kapalıyken de akış silinmiş müşterinin metnini okurken maskeler.
 SalesSync__ScrubOrderTextOnPurge=false
+# Canlı yayının sahibi kaç dakika susunca başka makinedeki (geri yüklenmiş) kopya
+# yayını devralabilir (Y7, Y8; devrediliyor yayın hiç devralınmaz). 0'dan büyük
+# olmalı; 0 ya da eksi değerle sunucu açılmaz.
+SalesSync__ForceEndSilenceMinutes=15
 
 # Optional: SMTP (set to real values when email features needed)
 SMTP_HOST=smtp.example.com
