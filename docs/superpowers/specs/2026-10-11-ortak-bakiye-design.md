@@ -1,6 +1,6 @@
 # Ortak Bakiye (Kişi Havuzu) — Tasarım
 
-**Tarih:** 2026-10-11 (inceleme 2026-10-12) · **Durum:** sahip kararları alındı (§10), tasarım incelemesi (§13) ve spec incelemesi (§14) işlendi, bir sahip kararı açık (§10), uygulama planı bekliyor · **İlgili:** `2026-10-10-banka-havale-onay-design.md` (+ PR #505 §2 "Kişi"), PR #506 (WPF ödeme isteği kişi anahtarı)
+**Tarih:** 2026-10-11 (inceleme 2026-10-12) · **Durum:** sahip kararları alındı (§10), tasarım incelemesi (§13) ve spec incelemesi (§14) işlendi, bir sahip kararı açık (§10), satış senkronu bağımlılıkları işlendi (2026-10-16, §15), uygulama planı bekliyor · **İlgili:** `2026-10-10-banka-havale-onay-design.md` (+ PR #505 §2 "Kişi"), PR #506 (WPF ödeme isteği kişi anahtarı), `2026-10-13-yayin-etiket-senkron-design.md` (çok bilgisayarlı yayın/etiket senkronu; bu spec ondan **sonra** uygulanır, §15)
 
 Kaynaklar: LiveDeck `origin/master` 7f8d1efa + PR #506 (`fix/odeme-istegi-kisi` 71c2f079; PR #506 sunucu dosyalarına dokunmuyor, sunucu satırları master'la aynı), OrderDeck-Mobile `origin/main` 76fcf8f, OrderDeck-Shopper `origin/master` 1261aef. Satır numaraları bu kesite göredir. Sahadaki v0.9.9'a ait satırlar ayrıca "master" diye belirtilir. Üç aday tasarım iki hakemle karşılaştırıldı; kazanan "satır defteri aynen kalır, havuz okumada toplanır, düşüm çok bacaklı yazılır" modelidir. Hakemlerin aşıları ve ölümcül bulguları §13'te tek tek eşlendi.
 
@@ -131,7 +131,7 @@ Yeni servis `Services/CustomerSync/PersonBalance.cs` (scoped):
    - `S∖W`'de kalan canlı üyelerin bakiyesi kural 3b gereği `≤ 0`'dır. Bunlar ya operatörün ayırdığı ama henüz gönderilmemiş, ya da başka PC'nin eklediği ama bu PC'nin henüz görmediği satırlardır; para onlardan çekilmez. Sıfır olanlar yok sayılır. **Eksi** olanlar havuza sayılır ve kilitlenir (§4.13): çekimin havuzu `Σ = Σ_P + Σ_{S∖P, Balance < 0}`'dır. Bu PC'nin henüz görmediği bir borç havuzu açmaz (D3).
    - Silinmiş üyeler `W`'den değil `S`'den alınır. WPF silinmiş satırı göndermiyor (`WpfCustomerProjectionSyncService.cs:190-194`) ve akıştan gelen silinmiş öğeyi yalnız silme kararı olarak uyguluyor (`CustomerChangesPullService.cs:426-427`). Bu yüzden silinmiş satırın yerel grup numarası bilgisayarlar arasında ayrışabilir. Sunucuda ise silinmiş üye canlı üyelerin numara değişimini izler (§4.12). Böylece apply, preview, panel, kart, Shopper ve Ayır onayı aynı silinmiş üyeleri görür (K3).
 
-**Sürüm denetimi (havuz kipi).** Havuz kipinde `memberIds` zorunludur; yoksa 400 `member-ids-required`. İstemci sürümü `User-Agent`'tan okunur; ayrıştırıcı `LicensesController.cs:126-135`'ten ortak bir yardımcıya taşınır. Sürüm `PersonBalance:MinClientVersion`'dan (Wh, §7.2) eskiyse, ayrıştırılamıyorsa ya da hiç yoksa preview ve yeni yazım yapacak apply **409 `client-update-required`** döner. Gerekçe §7.2'de. Yeniden oynatma (anahtar sunucuda kayıtlı) bu denetimden önce çalışır ve hiç engellenmez.
+**Sürüm denetimi (havuz kipi).** Havuz kipinde `memberIds` zorunludur; yoksa 400 `member-ids-required`. İstemci sürümü `User-Agent`'tan okunur, satış senkronunun S1'inin getirdiği ortak yardımcıyla (`Services/Sync/ClientVersion.cs`: `FromUserAgent`, `IsAtLeast`; `LicensesController` de onu kullanıyor). Bu spec ayrıştırıcıyı taşımaz, yeni bir ayrıştırıcı da yazmaz: `PersonBalance:MinClientVersion` ve `SalesSync:MinClientVersion` aynı karşılaştırmayı paylaşır (§15). Sürüm `PersonBalance:MinClientVersion`'dan (Wh, §7.2) eskiyse, ayrıştırılamıyorsa ya da hiç yoksa preview ve yeni yazım yapacak apply **409 `client-update-required`** döner. Gerekçe §7.2'de. Yeniden oynatma (anahtar sunucuda kayıtlı) bu denetimden önce çalışır ve hiç engellenmez.
 
 **Panel, Shopper ve kart okumaları** WPF üye listesi taşımaz; hepsi `S(a)` üzerinden okur. Senkron penceresinde kartın gösterdiği havuz ile apply'ın çektiği küme kısa süre farklı olabilir (§11).
 
@@ -148,7 +148,16 @@ Yeni servis `Services/CustomerSync/PersonBalance.cs` (scoped):
 
 ### 4.2 `POST apply` (`:224-362`)
 
-Doğrulamalar (`:230-251`), sahiplik (`:253`), asıl kayda çözme (`:257`) ve **yeniden oynatma** (`:261-269`) önce, bugünkü sırayla çalışır. Satır kipinde akış değişmez. Havuz kipinde:
+Doğrulamalar (`:230-251`), sahiplik (`:253`), asıl kayda çözme (`:257`) ve **yeniden oynatma** (`:261-269`) önce, bugünkü sırayla çalışır. Satır kipinde akış değişmez; aşağıdaki kapsam kuralı iki kipte de geçerlidir.
+
+**Kapsam başına tek düşüm (satış senkronu §6.6, iki bakiye kipinde).** Kural bu spec'ten önce, satış senkronunun S3'üyle bugünkü apply'a gelir. Bu spec'in S2'si apply'ı `DrawAsync` olarak yeniden yazarken onu korur.
+- **Koşul:** lisansın satış senkronu modu On ∧ `SaleScope` dolu ∧ anahtar yeni (yeniden oynatmadan sonra). `legacy:` öneki ayırt edici değildir: miras işin replay'i asıl kapsamla gelir, kural ona da uygulanır. Mod Off'ta kural yok.
+- **Kural:** `sp_getapplock('bal:{lisans}:{asıl kayıt}:{kapsam}')` alınır; ardından `/scope` ucunun yüklemi (§4.3) çalışır: aynı asıl kayıt, aynı kapsam, `purchase-deduction`, geri alınmamış. Böyle bir çapa varsa 409 `scope-has-deduction {transactionId, appliedAmount, productTotal}`. Kilit, yüklem ve yazım aynı işlemdedir.
+- **Çapa düzeyinde kalır.** Bacaklar `SaleScope` taşımadığı için yüklem yalnız çapada tutar (Örnek 1: `scope(I, session:42)` → 204). Aynı kişinin başka satırındaki çapayı 409 yapmak #506'nın meşru çok izli akışını bozardı (§13 sonuç notu); o iz #506'nın birleştirme sorusuna düşer. Başka üyedeki izi grup senkronu gecikmesinde görünür kılan, satış senkronunun ödeme kirasıdır (`members-stale`, üye kesişimi).
+- **Her denemede.** Kilit işlem kapsamlıdır. Adım 6'nın denemeleri ayrı işlemlerse kilit aralarında bırakılır ve araya aynı kapsamda başka anahtarlı bir düşüm girebilir. Bu yüzden yüklem her denemede `LookupAsync`'ten sonra yeniden çalışır; ikinci deneme `no-balance` değil `scope-has-deduction` döner.
+- **Havuz kipinde tutar grubun toplamıdır.** 409'daki `appliedAmount` çapanın `Amount`'u değil `−Σ(grup)`'tur (`transactions/{id}` ile aynı, §4.4). Çapanın kendi payı 0 olabilir (Örnek 1'de K = 0,00); çapa tutarı dönseydi WPF'in benimsediği düşüm (`AdoptRemoteResult`) 0 ₺ görünür, revizyon adımı müşteriden parayı ikinci kez isterdi.
+
+Havuz kipinde:
 
 1. Sürüm denetimi, ardından `P` (§4.0). Para yalnız `P`'den çekilir. `S∖P`'nin eksi satırları okunur ve kilitlenir, çekilmez.
 2. `P`'nin ve `S∖P`'nin eksi üyelerinin bakiye satırları izlenen nesneler olarak yüklenir. **Ardından üyelik yeniden okunur:** `S(a)` ve bu satırların `GroupId`'leri. Fark varsa plan adım 1'den kurulur. Böylece üyelik okuması ile bakiye yüklemesi arasında kaydedilen bir ayırma da görülür; ikinci okumadan sonra kaydedilen ayırmayı kanca yakalar (§4.11). `Σ ≤ 0` ise **409 `no-balance`** (bugünkü başlık; WPF bunu kesin "bakiye yok" sayar, `PaymentRequestService.cs:1341-1347`).
@@ -317,6 +326,7 @@ Değişmez: artı hareket rota satırına yazılır (`ApplyTransactionAsync`, `:
 | Yazım | Dokunduğu jetonlar | Hakem | Çakışmada |
 |---|---|---|---|
 | WPF apply (havuz) | `P`'nin bakiye satırı olan **bütün** üyeleri, `S∖P`'nin eksi üyeleri, çapa satırı (yoksa açılır) | `UpdatedAt` jetonu; PK = anahtar; üyeliğin ikinci okuması | Her denemede önce `LookupAsync`; planı baştan kur, 3 deneme, sonra 503 `balance-busy`; PK ihlalinde oynat |
+| WPF apply, satış senkronu mod On ∧ kapsam dolu ∧ anahtar yeni (iki kipte) | Yukarıdakiler (havuz) ya da çapa satırı (satır kipi) | `sp_getapplock('bal:{lisans}:{asıl kayıt}:{kapsam}')` + `/scope` yüklemi, kilit ve yazım aynı işlemde (§4.2) | 409 `scope-has-deduction`, tutarı `−Σ(grup)`; her denemede Lookup'tan sonra yeniden |
 | Panel eksi işlemler (K5, havuz) | `S`'nin bakiye satırı olan bütün üyeleri | `UpdatedAt`; iptalde N01 | Baştan kur, 3 deneme; N01'de 409 `already-reversed` |
 | Grup geri alması (WPF ve panel) | Bacakların **güncel** satırları | `UpdatedAt` jetonu; N01 (bacak başına) | `ChangeTracker.Clear`, bacaklar ve satırlar taze okunur, grup baştan kurulur, 3 deneme; N01'de bütün grup geri alınır → 409 `already-reversed` |
 | Artı hareketler (iade, artı ayar) | Rota satırı | `UpdatedAt` | Bugünkü döngü (`PanelCustomerBalanceController.cs:320-338`) |
@@ -468,6 +478,8 @@ Satır kipindeki lisanslarda v0.9.9 bugünkü gibi çalışır.
 
 ### 7.1 Sıra
 
+**Satış senkronundan sonra** (sahip sırası: önce yayın/etiket senkronu, sonra ortak bakiye, sonra banka havalesi). Bu spec'in S1'i, satış senkronunun S3'ü (`2026-10-13-yayin-etiket-senkron-design.md` §13) master'a girdikten sonra başlar. İkisi aynı denetleyiciyi (`LicensesCustomerBalanceApplyController`) değiştiriyor; S3 apply'a kapsam kuralını ekler, bu spec'in S1'i scope/transactions/reverse'i, S2'si apply'ı yeniden yazar (§4.2). Ayrıntı §15.
+
 | Adım | Ne | Koşul ve doğrulama |
 |---|---|---|
 | 0 | Bu spec onayı; PR #505 merge; prod'da iki tablonun salt okunur satır sayımı (`SELECT COUNT(*)` `WpfCustomerProjections` ve `CustomerBalanceTransactions`, Burak koşar) | Prod'a yazım yok. Göç süresi kestirimi; sınıra yakınsa indeksler ayrı göçe (§3.1) |
@@ -484,16 +496,19 @@ Satır kipindeki lisanslarda v0.9.9 bugünkü gibi çalışır.
 
 S2 ile Wh'nin sırası serbesttir: Wh, S1'e ve kipi kapalı S2'ye karşı da doğru çalışır. Kapı (adım 7) ikisini de ister.
 
+**Wh ⊇ Ws.** Wh, satış senkronunun WPF değişikliklerini (Ws: W1–W3) de taşır; yani Ws'den önce yayımlanmaz. Havuz kipinin kapısı bütün PC'leri Wh+ istediği için hepsi satış senkronunu da taşır. Bu, `enable`'ın ön koşuluyla mekanik olarak sağlanır (§7.2-4).
+
 ### 7.2 Kapı — lisans başına yönetici anahtarı + istemci alt sınırı (mühendislik kararı M1)
 
 - **Anahtar:** `License.PersonBalancePoolSince`. Yalnız CLI yazar: `person-balance enable|disable --license <id> [--apply]`. Kalıp `merge-customer-identities` ve `group-customers` ile aynı (`Program.cs:44-55`), varsayılan kuru koşu.
 - **Alt sınırın kaynağı:** `PersonBalance:MinClientVersion` yapılandırma anahtarı. Ortam değişkeni `PersonBalance__MinClientVersion`, `deploy/docker-compose.yml`'nin ortam bloğuna öbür anahtarlar gibi `${…:-}` ile eklenir (`:163-196` kalıbı); değer compose'un yanındaki `.env`'de durur, sır değil. Wh yayımlanınca Burak sürüm numarasını yazar. Wh'nin numarası S2 yazılırken bilinmediği için koda gömülmez; alt sınır ileride yükseltilebilir.
-  - Karşılaştırma metin sırasıyla değil `System.Version` ile yapılır ("0.9.10" > "0.9.9"). Sürüm `OrderDeck-WPF/x.y.z`'den ayrıştırılır (`LicensesController.cs:126-135`); `-` sonrası ek atılır. Ayrıştırılamayan ya da olmayan sürüm eski sayılır. `Activation.AppVersion` (`Activation.cs:19-20`) metin olarak kalır, karşılaştırma aynı yardımcıyla yapılır.
+  - Karşılaştırma metin sırasıyla değil `System.Version` ile yapılır ("0.9.10" > "0.9.9"). Sürüm `OrderDeck-WPF/x.y.z`'den satış senkronunun ortak yardımcısıyla ayrıştırılır (`ClientVersion.FromUserAgent` ve `IsAtLeast`, §15). Yardımcının ek kuralı geçerlidir: `+` sonrası atılır; `-` sonrası ön sürüm eki aynı numaranın yayımlanmış sürümünden önce gelir ("0.9.11-rc1" "0.9.11" alt sınırını geçmez), iki farklı ek sıralanmaz (kapalı hata). Ayrıştırılamayan ya da olmayan sürüm eski sayılır. `Activation.AppVersion` (`Activation.cs:19-20`) metin olarak kalır, karşılaştırma aynı yardımcıyla yapılır.
   - Anahtar boşsa ya da ayrıştırılamıyorsa `enable --apply` reddeder. Havuz kipindeki bir lisansta anahtar boş bulunursa yeni yazımlar 409 `client-update-required` alır ve günlüğe hata yazılır (fail-closed). Açılışta anahtar boşken havuz kipinde lisans varsa uyarı günlüğe yazılır.
 - **`enable` ön koşulları** (kuru koşu durumlarını sayı olarak basar; biri tutmazsa `--apply` reddedilir):
   1. Son `PersonBalance:ActivePcWindowDays` (varsayılan 14) gün içinde görülmüş ve devre dışı bırakılmamış **her** etkinleştirmenin `AppVersion`'ı ≥ `PersonBalance:MinClientVersion` (`Activation.cs:13-20`; `AppVersion` yoksa eski sayılır). Banka spec'i §5-5 ile aynı ölçüt.
   2. Lisansta `verify`'ın D4, D5, D6, yetim bacak ve kırpma farkı (§7.3-5) sayıları 0.
   3. Lisansın taban satırlarının hepsi sahipçe incelenmiş (`ReviewedAt` dolu, §7.3) ve tabana göre yeni sapma yok (yeni eksi satır, daha da eksiye inen satır, yeni ya da değişen D1 farkı, yeni kopya satır; §8.1).
+  4. **Wh ⊇ Ws** (§7.1, §15): `SalesSync:MinClientVersion` dolu ve `PersonBalance:MinClientVersion` ≥ `SalesSync:MinClientVersion` (aynı `ClientVersion.IsAtLeast` karşılaştırması). Böylece 1. koşulu geçen her PC satış senkronunu da taşır. Kuru koşu iki değeri yan yana basar.
 - **Çalışma anı koruması:** havuz kipinde alt sınırdan eski istemcinin yeni yazımı 409 `client-update-required` alır (§4.0). Kapı açıldıktan sonra haftalarca kapalı kalmış eski bir PC dönerse para yolunda fail-closed olur ve günlüğe lisans ile sürüm yazılır.
 - **`disable`** (kill switch) lisansı satır kipine indirir. Çok bacaklı geçmiş doğru okunmaya ve geri alınmaya devam eder (S1 okuyucuları). Panelde çekim grubunun iptali satır kipinde de grubun herhangi bir satırından açılabilir (§4.9).
 
@@ -573,6 +588,7 @@ InMemory tekil indeks ve jeton yarışını uygulamaz. Bu yüzden şunlar gerçe
 12. Kanca: senkronun `GroupId` değişikliği bakiye jetonunu ilerletir, apply çakışır. (S1)
 13. Silinmiş üyenin numara izlemesi: iki grup senkronla birleşince (üyeler ayrı partilerde de gelse) silinmiş üye yeni numaraya geçer; Ayır'da eski numarada kalır; `group-customers` ve `--at-twins` sonrası silinmiş üye hedefte (§4.11). (S1)
 14. Var olan dört eşzamanlılık testi (`CustomerBalanceConcurrencyTests.cs:43`, `:85`, `:112`, `:194`) satır kipinde yeşil kalır; havuz kipinde de koşturulur. (S2)
+15. Satış senkronu mod On, havuz kipi: aynı çapa ve kapsam için farklı anahtarlı iki paralel apply. Tek çapa grubu yazılır, öbürü 409 `scope-has-deduction` alır ve tutarı `−Σ(grup)`'tur (çapanın payı 0 olan plan dahil). Satış senkronu S3'ünün satır kipi testi `DrawAsync`'e taşındıktan sonra da yeşil kalır (§4.2, §15). (S2)
 
 ### 8.3 InMemory ve birim
 
@@ -707,14 +723,14 @@ Bu PR banka spec'ini **değiştirmez**. Aşağıdaki düzeltmeler #505 birleşti
 | PR | Repo | İçerik | Efor |
 |---|---|---|---|
 | **S1** | LiveDeck (sunucu) | Göç (§3.1; taban tablosu dahil, `ONLINE` yok); `PersonBalance` okuyucuları (ordinal süzgeçli kişi sorgusu); `scope`, `transactions/{id}`, Lookup `−Σ`; grup geri alması (WPF ve panel; çakışmada baştan kurma; tek bacaklıda `DrawGroupId = NULL`); panel reverse'inde `DrawGroupId` dolu hedefler (iki kipte üyelik, grup geri alma ya da `not-reversible`); toplanmış listeler (panel, Shopper); panel `Members[]`; `PersonPool = false` alanları; `CustomerBalance` → `StampVersions`; `GroupId` kancası, silinmiş üyenin numara izlemesi ve convention testi; birleştiricinin sıfır bakiyede de damgalaması; `person-balance verify` (taban, inceleme işareti, yeni kalemler) ve günlük iş; `deploy/README` uyarısı; Testcontainers 3, 4, 5, 11, 12, 13. Para davranışı değişmez. | 3,75 gün |
-| **S2** | LiveDeck (sunucu) | Kip bayrağı; `ResolveDrawSetAsync` (`memberIds`, kural 1–4: kesin `no-balance`, 3a/3b, silinmiş üyeler `S`'den, `S∖P` eksileri); sürüm denetimi (`PersonBalance:MinClientVersion`, `System.Version`, UA ayrıştırıcının ortak yardımcıya taşınması, compose ortam satırı); `PlanDraw` ve `DrawAsync` (üyeliğin ikinci okuması, her denemede Lookup, çapanın bakiye satırı); havuzlu preview ve apply; panel ve Shopper havuz okumaları ve `Reason` maskesi; K5 (elle eksi, iade iptali, havuz kipi üyelik koşulu); eski `reversal` → `not-reversible` (havuz kipi); `person-balance enable/disable`; metrikler; Testcontainers 1, 2, 6–10, 14. | 4 gün |
+| **S2** | LiveDeck (sunucu) | Kip bayrağı; `ResolveDrawSetAsync` (`memberIds`, kural 1–4: kesin `no-balance`, 3a/3b, silinmiş üyeler `S`'den, `S∖P` eksileri); sürüm denetimi (`PersonBalance:MinClientVersion`, satış senkronunun `ClientVersion` yardımcısı — taşıma yok, §15 — ve compose ortam satırı); `PlanDraw` ve `DrawAsync` (üyeliğin ikinci okuması, her denemede Lookup, çapanın bakiye satırı, §6.6 `scope-has-deduction` kuralının çapa düzeyinde korunması ve tutarın `−Σ(grup)` olması, §4.2); `enable`'ın Wh ⊇ Ws koşulu (§7.2-4); havuzlu preview ve apply; panel ve Shopper havuz okumaları ve `Reason` maskesi; K5 (elle eksi, iade iptali, havuz kipi üyelik koşulu); eski `reversal` → `not-reversible` (havuz kipi); `person-balance enable/disable`; metrikler; Testcontainers 1, 2, 6–10, 14, 15. | 4 gün |
 | **W-havuz** | LiveDeck (WPF, #506'nın üstüne) | `memberIds`; `BalanceNotSynced`, `PullOnceAsync` tetikleme ve 5 dakika metni; sahip kuralı (`IsServerAcceptable` Core'a, `PaymentPersonMember`'a Platform/Username); üç durumlu not (yerel planda `null`); Ayır onayı; kart sahip yedeği; `PersonJob` yorumu; testler. Wh Velopack sürümüyle birlikte. | 1,75 gün |
 | **D-banka** | LiveDeck (docs) | §9'daki dokuz düzeltme. #505'ten sonra. | 0,25 gün |
 | — | OrderDeck-Mobile, OrderDeck-Shopper | Değişiklik yok | 0 |
 
 **Toplam ≈ 9,75 gün.** Kazanan tasarımın tahmini 7 gündü; fark aşılardan (K2 üye listesi, kapı ve CLI, K5, Ayır onayı, kanca, collation göçü, günlük `verify`) ve ikinci incelemeden (silinmiş üyenin numara izlemesi, taban çizgisi, grup geri almanın yeniden kurulması, kural 3b, sahip kuralı) geliyor.
 
-**Akış:** satır sayımı → S1 → `verify` raporu ve taban → (≥ 1 gün gözlem) → sahip tabanı inceler → S2 → W-havuz + Wh (S2'den önce de çıkabilir) → PC'ler Wh+, `MinClientVersion` yazılır → karışık filo denemesi → pilot `enable` → saha kontrolü → öbür lisanslar. D-banka, #505 birleşince, banka PR5'ten önce. Her merge yayın penceresi dışında.
+**Akış:** satış senkronu S3 master'da (§15) → satır sayımı → S1 → `verify` raporu ve taban → (≥ 1 gün gözlem) → sahip tabanı inceler → S2 → W-havuz + Wh (S2'den önce de çıkabilir) → PC'ler Wh+, `MinClientVersion` yazılır → karışık filo denemesi → pilot `enable` → saha kontrolü → öbür lisanslar. D-banka, #505 birleşince, banka PR5'ten önce. Her merge yayın penceresi dışında.
 
 ## 13. Tasarım incelemesi — bulgu kararları
 
@@ -780,3 +796,17 @@ Mercekler: **para** = para güvenliği, **kod** = kod tutarlılığı, **karar**
 | 27 | karar | Küçük | `disable` sonrası panel grup iptali 404 | İşlendi (birleşik: 16) |
 | 28 | karar | Küçük | `PersonPool` önbelleği `enable`/`disable` sonrası bayat; §7.5 iddiası | İşlendi §6.1-d (yerel planda önbellek yok, hep `null` nötr metin; sunucu izlerinde aynı akışın `scope` yanıtı), §7.5, §8.4 (birleşik: 19) |
 | 29 | karar | Küçük | Hakem 2'nin v0.9.9 elle doğrulama aşısı §8.5'te yok, §13 tümünü işlendi sayıyor | İşlendi §8.5 (karışık filo denemesi: v0.9.9 ve yalnız #506), §6.2, §7.1 adım 7, §13 sonuç notu |
+
+## 15. Satış senkronu bağımlılıkları (2026-10-16)
+
+Kaynak: `2026-10-13-yayin-etiket-senkron-design.md` §6.6, §6.7 ve §13 madde 2. O spec bu zorunlulukları "D-ortak-bakiye docs PR'ı" ile buraya taşımayı öngörüyordu; bu bölüm odur. Satış senkronu ortak bakiyeye bağımlı değildir; bağımlılık tek yönlüdür.
+
+| # | Zorunluluk | Bu spec'te |
+|---|---|---|
+| 1 | **Sıra.** Ortak bakiye, satış senkronunun S3'ü master'a girdikten sonra başlar. İkisi `LicensesCustomerBalanceApplyController`'a dokunuyor: S3 apply'a kapsam kuralını ve mod On'da preview/apply için `client-update-required`'ı ekler; bu spec'in S1'i scope, transactions ve reverse'i, S2'si apply'ı yeniden yazar. | §7.1 (giriş notu), §12 akış |
+| 2 | **Kapsam başına tek düşüm** (§6.6 orada). S2'nin `DrawAsync`'i kuralı **çapa** düzeyinde korur; aynı kişinin başka satırındaki çapa 409 olmaz (#506'nın çok izli akışı). Havuz kipinde 409'un tutarı `−Σ(grup)`'tur. | §4.2, §4.13, §8.2-15, §12 S2 |
+| 3 | **Ortak sürüm yardımcısı.** Satış senkronunun S1'i `ClientVersion`'ı getirdi (`Services/Sync/ClientVersion.cs`; `LicensesController` de kullanıyor). `PersonBalance:MinClientVersion` ve `SalesSync:MinClientVersion` aynı karşılaştırmayı paylaşır. Eski S2 adımı "UA ayrıştırıcının ortak yardımcıya taşınması" bu yüzden düşer. | §4.0, §7.2, §12 S2 |
+| 4 | **Wh ⊇ Ws.** Havuz kipinin kapısı bütün PC'leri Wh+ ister; böylece hepsi satış senkronunu da taşır. `enable`, `PersonBalance:MinClientVersion` ≥ `SalesSync:MinClientVersion` değilse reddeder. | §7.1, §7.2-4 |
+| 5 | **Aynı üye kümesi.** Havuz kipinin `memberIds`'i ile satış senkronunun ödeme kirasınınki (`payment-requests/begin`) aynı kaynaktan gelir (kişinin bütün üyeleri). PersonKey bu spec'in `S(a)` kişisidir; S1'in BIN2 göçü gelene kadar satış senkronu ham `GroupId`'yi bellekte ordinal karşılaştırır (§4.13'ün yöntemi), BIN2'den sonra da doğru kalır. | §4.0, §4.13 |
+
+**Kira ve havuz bağımsızdır.** Havuz kipi düşülen tutarı değiştirir; kira (kişi×kapsamda tek `Sending`, "zaten istendi" sorusu) ve kapsam kuralı ondan bağımsız çalışır. Kira kişi düzeyindedir, kapsam kuralı çapa düzeyinde; grup senkronu gecikmesinde başka üyedeki izi kira görünür kılar (`members-stale`, üye kesişimi, sunucu üyeleriyle uzlaştırma).
