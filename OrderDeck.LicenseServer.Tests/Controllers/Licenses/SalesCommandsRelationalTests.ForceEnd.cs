@@ -199,6 +199,77 @@ public sealed partial class SalesCommandsRelationalTests
     }
 
     /// <summary>
+    /// §10.1-11, §4.1 tekdüzelik, üçüncü yazıcı (<c>sales/backfill</c>, §4.3): zorla bitirme sahibin sessizliğini
+    /// okuduktan sonra sahibin geri doldurması başlar (kaçmış kapanış, <c>Release = true</c>) ve yayını CANLI okur;
+    /// kaydetmesi diske inmeden hemen önce zorla bitirme yazar, devreder ve commit olur. Geri doldurma <c>EndedAt</c>'i
+    /// yalnız hâlâ boşsa yazar: <c>EndedAt</c> ve tek devir anı zorla bitirmeninkidir, geri doldurmanın yanıtı onları
+    /// gösterir.
+    /// </summary>
+    [Fact]
+    public async Task Geri_doldurma_okuduktan_sonra_commit_olan_zorla_bitirmenin_EndedAtini_ezmez()
+    {
+        var session = await _kit.SeedSessionAsync(Kit.Phase.Live);
+        await _kit.SeedReplicaAsync(_kit.OwnerReplicaId, DateTimeOffset.UtcNow.AddMinutes(-20));
+        var order = await _kit.SeedOrderAsync(session);
+        var ownerEndedAt = Kit.StartedAt.AddHours(2);
+        var backfillBody = SalesBackfillTests.Body(
+            _kit.OwnerReplicaId,
+            [
+                new SalesBackfillTests.SessionItem(
+                    session, "Akşam yayını", Kit.StartedAt, ownerEndedAt, "youtube", null, Release: true,
+                    MachineName: "PC-A"),
+            ],
+            [],
+            [],
+            seenMode: 1);
+        var ownerAtSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<HttpResponseMessage>? backfill = null;
+        _factory.Hook.When = db =>
+            db.ChangeTracker.Entries<StreamSession>().Any(e => e.State == EntityState.Modified);
+        _factory.Hook.Before = async () =>
+        {
+            ownerAtSave.TrySetResult();
+            await proceed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        };
+        _factory.NonQueries.Arm(
+            when: sql => sql.Contains("[ForceEndedBy]"),
+            before: async () =>
+            {
+                backfill = _kit.SendToAsync($"/api/v1/licenses/{_kit.LicenseId}/sales/backfill", backfillBody);
+                await ownerAtSave.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            });
+
+        HttpResponseMessage forceEnd;
+        try
+        {
+            forceEnd = await _kit.SendAsync(_kit.ForceEnd(Guid.NewGuid(), session));
+        }
+        finally
+        {
+            proceed.TrySetResult();
+        }
+
+        backfill.Should().NotBeNull("kanca geri doldurmayı zorla bitirmenin yazımından önce başlatmalı");
+        var filled = await backfill!;
+        forceEnd.StatusCode.Should().Be(HttpStatusCode.OK, await forceEnd.Content.ReadAsStringAsync());
+        filled.StatusCode.Should().Be(HttpStatusCode.OK, await filled.Content.ReadAsStringAsync());
+        var ended = (await Kit.ReadAsync(forceEnd)).Sessions.Should().ContainSingle().Subject;
+        ended.EndedAt.Should().NotBe(ownerEndedAt);
+
+        (await _kit.SessionAsync(session)).Should().BeEquivalentTo(new
+        {
+            ended.EndedAt,
+            ended.ReleasedAt,
+            ForceEndedBy = _kit.ReplicaId.ToString(),
+        }, "ilk commit eden zorla bitirme; geri doldurma EndedAt'i ezmez");
+        (await _kit.OrderAsync(order.Id)).SessionReleasedAt.Should().Be(ended.ReleasedAt, "tek devir anı");
+        (await filled.Content.ReadFromJsonAsync<SalesBackfillTests.BackfillResult>())!.Sessions
+            .Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new { Id = session, ended.EndedAt, ended.ReleasedAt });
+    }
+
+    /// <summary>
     /// Okuyucusuz komut kancası (<c>ExecuteUpdate</c>, <c>ExecuteDelete</c>): <c>when</c>'i tutan ilk komutun hemen
     /// öncesinde <c>before</c>'u bir kez koşturur. Yeniden girmez (kanca gövdesinin komutları onu tetiklemez).
     /// </summary>

@@ -397,6 +397,16 @@ public sealed class LicensesSalesController : ControllerBase
         // ── Oturumlar ──
         var toRelease = new List<Guid>();
         var sessionsOwnedElsewhere = 0;
+
+        // EndedAt tekdüze (§4.1), yarışta da — sessions/sync'in kuralı: ilişkisel sağlayıcıda boş EndedAt izlenen satırın
+        // koşulsuz SET'iyle değil, kaydetmeden sonra aynı işlemde koşullu bir UPDATE ile (yalnız hâlâ boşsa) doldurulur.
+        // Okumadan sonra commit olan bir force-end'in EndedAt'ini (ve devrini) geri doldurma böylece ezemez; kazanan ilk
+        // commit edendir (§4.6, §10.1-11). InMemory'de ExecuteUpdate yok: aynı kural izlenen satıra uygulanır. Devir
+        // kararı bekleyen dolumu görür (EndedAtOf); devri SessionReleaser yine veritabanındaki koşulla yazar.
+        var relational = _db.Database.IsRelational();
+        var endedAtFills = new Dictionary<Guid, DateTimeOffset>();
+        DateTimeOffset? EndedAtOf(StreamSession s) =>
+            s.EndedAt ?? (endedAtFills.TryGetValue(s.Id, out var pending) ? pending : null);
         foreach (var item in sessions)
         {
             // Başka lisansın oturumu: yazılmaz, yanıtta reddedilir (ve siparişleri de).
@@ -443,17 +453,19 @@ public sealed class LicensesSalesController : ControllerBase
                     session.OwnerMachineName = item.MachineName;
                     changed = true;
                 }
-                // Kaçmış kapanış: sunucuda açık kalmış, yerelde bitmiş yayın. Dolu EndedAt değişmez (tekdüze).
-                if (session.EndedAt is null && item.EndedAt is not null)
+                // Kaçmış kapanış: sunucuda açık kalmış, yerelde bitmiş yayın. Dolu EndedAt değişmez (tekdüze); boşsa
+                // ilişkisel sağlayıcıda koşullu UPDATE ile dolar (yukarıda).
+                if (EndedAtOf(session) is null && item.EndedAt is { } endedAt)
                 {
-                    session.EndedAt = item.EndedAt;
+                    if (relational) endedAtFills[session.Id] = endedAt;
+                    else session.EndedAt = endedAt;
                     changed = true;
                 }
                 if (changed) session.UpdatedAt = now;
             }
 
             // Devir yalnız bayrakla (M2: istemci onu yayının etiket kuyruğu boşken gönderir).
-            if (item.Release && session.EndedAt is not null && session.ReleasedAt is null)
+            if (item.Release && EndedAtOf(session) is not null && session.ReleasedAt is null)
                 toRelease.Add(session.Id);
         }
 
@@ -626,10 +638,21 @@ public sealed class LicensesSalesController : ControllerBase
         {
             // Yazım, devir ve ayrışma sayısı tek işlemde: biri düşerse hiçbiri yazılmaz, istemci partiyi yeniden
             // gönderir (geri doldurma idempotent).
-            await using var transaction = _db.Database.IsRelational()
+            await using var transaction = relational
                 ? await _db.Database.BeginTransactionAsync(ct)
                 : null;
             await _db.SaveChangesAsync(ct);
+            foreach (var (sessionId, endedAt) in endedAtFills)
+            {
+                var filled = await _db.StreamSessions
+                    .Where(s => s.LicenseId == licenseId && s.Id == sessionId && s.EndedAt == null)
+                    .ExecuteUpdateAsync(u => u.SetProperty(s => s.EndedAt, endedAt), ct);
+                if (filled == 0)
+                    _log.LogInformation(
+                        "sales/backfill: oturum {SessionId} kapanışı yazılmadı, EndedAt bu arada dolmuş (force-end) "
+                        + "(license={LicenseId})",
+                        sessionId, licenseId);
+            }
             if (toRelease.Count > 0)
                 released = await _releaser.ReleaseAsync(licenseId, toRelease, now, ct);
             await _replicas.AddBackfillDivergenceAsync(licenseId, caller, localWins, serverWins, ct);
