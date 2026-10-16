@@ -32,9 +32,13 @@ public sealed class StreamSession
     public Guid? OwnerReplicaId { get; set; }
     public string? OwnerMachineName { get; set; }
 
-    /// <summary>Zorla bitirmeyi yapan: <c>cli</c> ya da ReplicaId. Yalnız
-    /// zorla bitirme yazar.</summary>
+    /// <summary>Zorla bitirmeyi yapan: <see cref="ForceEndedByCli"/> ya da
+    /// ReplicaId. Yalnız zorla bitirme yazar.</summary>
     public string? ForceEndedBy { get; set; }
+
+    /// <summary><see cref="ForceEndedBy"/>'ın <c>sales-sync force-end</c>
+    /// CLI'ıyla bitirilen yayındaki değeri (§4.10).</summary>
+    public const string ForceEndedByCli = "cli";
 
     /// <summary>Devir anı (sunucu saati). NULL ve <see cref="EndedAt"/> NULL =
     /// canlı; NULL ve EndedAt dolu = devrediliyor; dolu = devredilmiş (§2).</summary>

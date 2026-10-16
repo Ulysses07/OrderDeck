@@ -6,8 +6,8 @@ namespace OrderDeck.LicenseServer.Tests.Tools;
 
 /// <summary>
 /// <c>sales-sync</c> CLI'nin argüman ayrıştırması — veritabanı istemez (spec 2026-10-13 §4.8, §4.10). Alt komutlar:
-/// <c>status</c>, <c>shipping set</c> ve <c>adopt-orders</c>. Kullanım hataları (tanınmayan alt komut dahil) 2 döner ve
-/// yapılandırmaya/veritabanına HİÇ dokunmadan döner. Gövdeler gerçek SQL Server'da
+/// <c>status</c>, <c>shipping set</c>, <c>force-end</c> ve <c>adopt-orders</c>. Kullanım hataları (tanınmayan alt
+/// komut dahil) 2 döner ve yapılandırmaya/veritabanına HİÇ dokunmadan döner. Gövdeler gerçek SQL Server'da
 /// <see cref="SalesSyncRelationalTests"/>'te.
 /// </summary>
 public sealed class SalesSyncTests
@@ -79,6 +79,20 @@ public sealed class SalesSyncTests
             new[] { "sales-sync", "status", "--license", license, "--apply" },
             new[] { "sales-sync", "status", "--license", license, "--session", license },
             new[] { "sales-sync", "status", "--license", license, "evet" },
+
+            // ── force-end ──
+            new[] { "sales-sync", "force-end" },
+            new[] { "sales-sync", "force-end", "--apply" },
+            new[] { "sales-sync", "force-end", "--session" },
+            new[] { "sales-sync", "force-end", "--session", "--apply" },
+            new[] { "sales-sync", "force-end", "--session", "yayin-degil" },
+            new[] { "sales-sync", "force-end", "--session", order, "--session", order },
+            new[] { "sales-sync", "force-end", "--session", order, "--apply", "--apply" },
+            // Yayın Id'si lisanslar arasında tekildir: --license tanınmaz, karışıklık yaratmasın.
+            new[] { "sales-sync", "force-end", "--license", license },
+            new[] { "sales-sync", "force-end", "--session", order, "--license", license },
+            new[] { "sales-sync", "force-end", "--session", order, "--aply" },
+            new[] { "sales-sync", "force-end", "--session", order, "evet" },
 
             // ── adopt-orders ──
             // Her zorunlu seçenek eksik.
@@ -169,6 +183,20 @@ public sealed class SalesSyncTests
             .Should().BeTrue();
 
         parsed.Should().Be(new SalesSync.StatusArgs(license));
+    }
+
+    [Fact]
+    public void Force_end_yayin_alir_kuru_kosu_varsayilan()
+    {
+        var session = Guid.NewGuid();
+
+        SalesSync.TryParseArgs(["sales-sync", "force-end", "--session", session.ToString()], out var dry)
+            .Should().BeTrue();
+        dry.Should().Be(new SalesSync.ForceEndArgs(session, Apply: false));
+
+        SalesSync.TryParseArgs(["sales-sync", "force-end", "--apply", "--session", session.ToString("N")], out var apply)
+            .Should().BeTrue();
+        apply.Should().Be(new SalesSync.ForceEndArgs(session, Apply: true));
     }
 
     /// <summary>Sipariş listesi virgülle ayrılır; tekrarlar ilk görüldükleri sırada bir kez kalır, biçim (D, N)

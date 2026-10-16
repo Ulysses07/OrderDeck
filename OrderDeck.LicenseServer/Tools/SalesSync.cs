@@ -17,17 +17,20 @@ namespace OrderDeck.LicenseServer.Tools;
 ///   lisansın bütün kopyaları (§4.10, §6.2, §8.6). Gövdesi <c>SalesSync.Status.cs</c>'te.</item>
 ///   <item><c>shipping set --license &lt;guid&gt; (--threshold &lt;tutar&gt; --fee &lt;tutar&gt; | --off) [--apply]</c> —
 ///   lisans geneli kargo ayarı (§4.8, §6.2, sahip kararı Y4). Aşağıda.</item>
+///   <item><c>force-end --session &lt;guid&gt; [--apply]</c> — sahibi hiç dönmeyecek canlı ya da devrediliyor yayını
+///   bitirir ve devreder (§2 "Devir" b, §4.10, Y7, Y8, risk 4). Gövdesi <c>SalesSync.ForceEnd.cs</c>'te.</item>
 ///   <item><c>adopt-orders --license &lt;guid&gt; --orders &lt;guid,…&gt; --replica &lt;guid&gt; [--apply]</c> — kargo bağı
 ///   bilinmeyen siparişi <c>attach-shipment</c> adayı yapar (§4.6, M22, §15-44). Gövdesi
 ///   <c>SalesSync.AdoptOrders.cs</c>'te.</item>
 /// </list>
-/// <c>enable</c>, <c>disable</c> ve <c>force-end</c> S3'ün sonraki adımlarında gelir; şimdilik kullanım hatasıdır.
+/// <c>enable</c> ve <c>disable</c> (mod kapısı) S3'ün sonraki adımında gelir; şimdilik kullanım hatasıdır.
 ///
 /// <para><b>Kuru koşu varsayılan.</b> Yazan alt komutlar <c>--apply</c> olmadan hiçbir şey yazmaz; yazılacak olanı
 /// basar. <c>status</c> hiç yazmaz; ona <c>--apply</c> vermek kullanım hatasıdır.</para>
 ///
-/// <para>Çıkış kodları: 0 tamam (rapor, kuru koşu ya da yazıldı); 1 eşzamanlı bir değişiklik kazandı, hiçbir şey
-/// yazılmadı — yeniden çalıştır; 2 kullanım, yapılandırma ya da bilinmeyen lisans veya kopya.</para>
+/// <para>Çıkış kodları: 0 tamam (rapor, kuru koşu, yazıldı ya da yapılacak bir şey yok); 1 eşzamanlı bir değişiklik
+/// kazandı, hiçbir şey yazılmadı — yeniden çalıştır; 2 kullanım, yapılandırma ya da bilinmeyen lisans, yayın veya
+/// kopya.</para>
 ///
 /// <para>Argümanlar katı (<see cref="GroupCustomers"/>, <see cref="SalesAudit"/> deseni): tanınmayan alt komut ya da
 /// argüman, değeri eksik ya da değer yerine seçenek, ikinci kez verilen seçenek (bayrak dahil), GUID olmayan Id,
@@ -54,6 +57,7 @@ public static partial class SalesSync
         "Kullanım:\n"
         + "  sales-sync status --license <guid>\n"
         + "  sales-sync shipping set --license <guid> (--threshold <tutar> --fee <tutar> | --off) [--apply]\n"
+        + "  sales-sync force-end --session <guid> [--apply]\n"
         + "  sales-sync adopt-orders --license <guid> --orders <guid,…> --replica <guid> [--apply]";
 
     /// <summary>Kopyaların bildirdiği değerlerin penceresi: mod kapısının "son 14 günde görülen" kopyaları (§4.10-2).</summary>
@@ -100,6 +104,7 @@ public static partial class SalesSync
         {
             ShippingSetArgs shipping => await RunAsync(db, shipping, output, error, ct),
             StatusArgs status => await RunAsync(db, status, salesSync, output, error, ct),
+            ForceEndArgs forceEnd => await RunAsync(db, forceEnd, output, error, ct),
             AdoptOrdersArgs adopt => await RunAsync(db, adopt, output, error, ct),
             _ => throw new InvalidOperationException($"Bilinmeyen alt komut: {parsed.GetType().Name}"),
         };
@@ -177,6 +182,7 @@ public static partial class SalesSync
         {
             "shipping" => args.Length >= 3 && args[2] == "set" && TryParseShippingSet(args, 3, out parsed),
             "status" => TryParseStatus(args, 2, out parsed),
+            "force-end" => TryParseForceEnd(args, 2, out parsed),
             "adopt-orders" => TryParseAdoptOrders(args, 2, out parsed),
             _ => false,
         };
