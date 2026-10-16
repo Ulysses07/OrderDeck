@@ -6,7 +6,7 @@ namespace OrderDeck.LicenseServer.Tests.Tools;
 
 /// <summary>
 /// <c>sales-sync</c> CLI'nin argüman ayrıştırması — veritabanı istemez (spec 2026-10-13 §4.8, §4.10). Alt komutlar:
-/// <c>status</c>, <c>shipping set</c>, <c>force-end</c>, <c>adopt-orders</c> ve <c>enable</c>. Kullanım hataları (tanınmayan alt
+/// <c>status</c>, <c>shipping set</c>, <c>force-end</c>, <c>adopt-orders</c>, <c>enable</c> ve <c>disable</c>. Kullanım hataları (tanınmayan alt
 /// komut dahil) 2 döner ve yapılandırmaya/veritabanına HİÇ dokunmadan döner. Gövdeler gerçek SQL Server'da
 /// <see cref="SalesSyncRelationalTests"/>'te.
 /// </summary>
@@ -22,11 +22,11 @@ public sealed class SalesSyncTests
         var overLimit = string.Join(",", Enumerable.Range(0, SalesSync.MaxAdoptOrders + 1).Select(_ => Guid.NewGuid()));
         return new TheoryData<string[]>
         {
-            // Alt komut yok ya da bilinmeyen alt komut (disable henüz yok).
+            // Alt komut yok ya da bilinmeyen alt komut.
             new[] { "sales-sync" },
             new[] { "sales-sync", "statu", "--license", license },
             new[] { "sales-sync", "enabled", "--license", license },
-            new[] { "sales-sync", "disable", "--license", license, "--apply" },
+            new[] { "sales-sync", "disabled", "--license", license, "--apply" },
             new[] { "sales-sync", "shipping" },
             new[] { "sales-sync", "shipping", "get", "--license", license },
             new[] { "sales-sync", "shipping", "--license", license, "--off" },
@@ -146,6 +146,24 @@ public sealed class SalesSyncTests
             new[] { "sales-sync", "enable", "--license", license, "--accept", shipment },
             new[] { "sales-sync", "enable", "--license", license, "--session", order },
             new[] { "sales-sync", "enable", "--license", license, "evet" },
+
+            // ── disable ──
+            // Lisans eksik, bozuk, değersiz ya da iki kez.
+            new[] { "sales-sync", "disable" },
+            new[] { "sales-sync", "disable", "--apply" },
+            new[] { "sales-sync", "disable", "--license" },
+            new[] { "sales-sync", "disable", "--license", "--apply" },
+            new[] { "sales-sync", "disable", "--license", "lisans-degil" },
+            new[] { "sales-sync", "disable", "--license", license, "--license", license },
+            new[] { "sales-sync", "disable", "--license", license, "--license", license, "--apply" },
+            // İki kez --apply, tanınmayan argüman (--aply yazım hatası kuru koşu sanılmasın).
+            new[] { "sales-sync", "disable", "--license", license, "--apply", "--apply" },
+            new[] { "sales-sync", "disable", "--license", license, "--aply" },
+            new[] { "sales-sync", "disable", "--license", license, "evet" },
+            // enable'ın seçenekleri ve yayın Id'si disable'da tanınmaz.
+            new[] { "sales-sync", "disable", "--license", license, "--accept-shipment", shipment },
+            new[] { "sales-sync", "disable", "--license", license, "--session", order },
+            new[] { "sales-sync", "disable", "--session", order, "--apply" },
         };
     }
 
@@ -277,6 +295,21 @@ public sealed class SalesSyncTests
         SalesSync.TryParseArgs(["sales-sync", "enable", "--apply", "--license", license.ToString("N")], out var apply)
             .Should().BeTrue();
         apply.Should().Be(new SalesSync.EnableArgs(license, [], Apply: true));
+    }
+
+    /// <summary><c>disable</c>: yalnız <c>--license</c> ve <c>--apply</c>; kuru koşu varsayılan, seçenek sırası serbest.</summary>
+    [Fact]
+    public void Disable_lisans_alir_kuru_kosu_varsayilan()
+    {
+        var license = Guid.NewGuid();
+
+        SalesSync.TryParseArgs(["sales-sync", "disable", "--license", license.ToString()], out var dry)
+            .Should().BeTrue();
+        dry.Should().Be(new SalesSync.DisableArgs(license, Apply: false));
+
+        SalesSync.TryParseArgs(["sales-sync", "disable", "--apply", "--license", license.ToString("N")], out var apply)
+            .Should().BeTrue();
+        apply.Should().Be(new SalesSync.DisableArgs(license, Apply: true));
     }
 
     /// <summary><c>--accept-shipment</c> tekrarlanabilir (her biri tek GUID, biçim serbest); tekrarlar ilk
