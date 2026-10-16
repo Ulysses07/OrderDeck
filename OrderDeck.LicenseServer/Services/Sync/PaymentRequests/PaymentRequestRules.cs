@@ -19,11 +19,24 @@ public static class PaymentRequestRules
     /// <summary>decimal(18,2)'ye sığan en büyük tutar.</summary>
     public const decimal MaxAmount = 9_999_999_999_999_999.99m;
 
+    /// <summary>Bir geri doldurma partisinin en çok kayıt sayısı (risk 9: 100 istek/dk/IP bütçesi).</summary>
+    public const int MaxBackfillBatch = 200;
+
+    /// <summary>Listenin en çok kayıt sayısı: en yeni 200.</summary>
+    public const int MaxListRecords = 200;
+
     public const string CumulativeScope = "cumulative";
     public const string SessionScopePrefix = "session:";
+    public const string LegacyScope = "legacy";
+    public const string LegacyScopePrefix = "legacy:";
 
     public const string CodeInvalidEnvelope = "invalid-envelope";
+    public const string CodeInvalidBatch = "invalid-batch";
     public const string CodeInvalidRecord = "invalid-record";
+    public const string CodeInvalidOutcome = "invalid-outcome";
+    public const string CodeInvalidState = "invalid-state";
+    public const string CodeInvalidAt = "invalid-at";
+    public const string CodeRecordNotFound = "record-not-found";
     public const string CodeInvalidMembers = "invalid-members";
     public const string CodeInvalidScope = "invalid-scope";
     public const string CodeInvalidOrders = "invalid-orders";
@@ -47,6 +60,19 @@ public static class PaymentRequestRules
         && (string.Equals(scopeKey, CumulativeScope, StringComparison.Ordinal)
             || (scopeKey.StartsWith(SessionScopePrefix, StringComparison.Ordinal)
                 && Guid.TryParseExact(scopeKey.AsSpan(SessionScopePrefix.Length), "N", out _)));
+
+    /// <summary>
+    /// Kayıt kapsamı (geri doldurma ve liste): kira kapsamı (<see cref="IsLeaseScope"/>) ya da yerel <c>PaymentJob</c>'un
+    /// miras kapsamı — <c>legacy</c> ya da <c>legacy:{anahtar}</c> (<c>PaymentJob.IsLegacyScope</c>; anahtar boş olamaz).
+    /// Ordinal, en çok <see cref="PaymentRequestRecord.ScopeKeyMaxLength"/> karakter.
+    /// </summary>
+    public static bool IsRecordScope(string? scopeKey) =>
+        IsLeaseScope(scopeKey)
+        || (scopeKey is not null
+            && scopeKey.Length <= PaymentRequestRecord.ScopeKeyMaxLength
+            && (string.Equals(scopeKey, LegacyScope, StringComparison.Ordinal)
+                || (scopeKey.StartsWith(LegacyScopePrefix, StringComparison.Ordinal)
+                    && scopeKey.Length > LegacyScopePrefix.Length)));
 
     /// <summary><c>session:{"N" hex}</c> kapsamının yayını; başka kapsam için null. Kapsam doğrulanmış olmalı.</summary>
     public static Guid? SessionOf(string scopeKey) =>

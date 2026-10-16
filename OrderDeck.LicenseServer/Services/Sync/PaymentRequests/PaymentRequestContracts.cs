@@ -65,11 +65,92 @@ public sealed record PaymentRequestPrior(
 /// <param name="Machine">Yayının sahibi bilgisayar (<c>OwnerMachineName</c>); bilinmiyorsa null.</param>
 public sealed record PaymentRequestLiveSession(Guid SessionId, string? Machine);
 
+/// <summary>
+/// <c>POST payment-requests/{id}/finish</c> gövdesi — spec 2026-10-13 §6.4 "Akışın sonu". v2 zarfı ve kiranın sonucu.
+/// </summary>
+/// <param name="Outcome"><c>delivered</c>, <c>unconfirmed</c> ya da <c>abandoned</c> (ordinal).</param>
+/// <param name="NetAmount">İstenen net tutar.</param>
+/// <param name="AppliedAmount">Bakiyeden düşülen tutar; bilinmiyorsa null.</param>
+/// <param name="FullyFromBalance">Tutarın tamamı bakiyeden karşılandı.</param>
+public sealed record PaymentRequestFinishRequest(
+    string? Outcome,
+    decimal? NetAmount,
+    decimal? AppliedAmount,
+    bool? FullyFromBalance,
+    Guid? ReplicaId = null,
+    int? Protocol = null,
+    int? SeenMode = null) : ISalesEnvelopeFields;
+
+/// <summary><c>finish</c>'in 200 yanıtı (ilk yazım ve yeniden oynatma): kaydın GÜNCEL hâli.</summary>
+public sealed record PaymentRequestFinishResponse(Guid RecordId, string State, DateTimeOffset? FinishedAt);
+
+/// <summary>
+/// <c>GET payment-requests</c>'in bir öğesi — spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması". Süresi dolmuş canlı
+/// kira <c>unconfirmed</c> olarak, <paramref name="FinishedAt"/> = kiranın dolduğu an ile bildirilir (satır yazılmaz).
+/// </summary>
+/// <param name="Kind"><c>lease</c> ya da <c>record</c> (<see cref="PaymentRequestWire.Kind"/>).</param>
+/// <param name="OrderIds">Kaydın kapsadığı siparişler, sıralı: uzak kayıtta "bu istek bu etiketi içeriyor mu" sorusu
+/// (<c>Covers</c>) bununla cevaplanır, iki bilgisayarın saati karşılaştırılmaz.</param>
+public sealed record PaymentRequestListItem(
+    Guid Id,
+    Guid ReplicaId,
+    string? Machine,
+    string Kind,
+    string State,
+    decimal? NetAmount,
+    decimal? AppliedAmount,
+    bool? FullyFromBalance,
+    decimal? ProductTotal,
+    decimal? TotalBeforeBalance,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? FinishedAt,
+    IReadOnlyList<Guid> OrderIds);
+
+/// <summary><c>GET payment-requests</c>'in 200 yanıtı: kapanış anına, eşitlikte başlangıca göre eskiden yeniye.</summary>
+public sealed record PaymentRequestListResponse(IReadOnlyList<PaymentRequestListItem> Records);
+
+/// <summary>
+/// <c>POST payment-requests/backfill</c>'in bir öğesi — spec 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)": yerel
+/// <c>PaymentJob</c>'un kirasız kaydı. Alanların hepsi telde isteğe bağlıdır; eksik zorunlu alan partinin 400'üdür.
+/// </summary>
+/// <param name="RecordId">İş Id'si ile teslim sayısından türetilmiş kayıt Id'si; yineleme zararsız.</param>
+/// <param name="OwnerId">Sahip satır ("N" hex ya da GUID'siz ham Id); <paramref name="MemberIds"/>'te olmalı.</param>
+/// <param name="ScopeKey"><c>cumulative</c>, <c>session:{"N" hex}</c>, <c>legacy</c> ya da <c>legacy:{anahtar}</c>.</param>
+/// <param name="OrderIds">Yerelde <c>Covers</c> kuralıyla hesaplanmış, kaydın kapsadığı siparişler.</param>
+/// <param name="State"><c>delivered</c> ya da <c>unconfirmed</c> (<c>HasUnconfirmedSend</c>).</param>
+/// <param name="At">Kaydın yerel anı (istemci saati); bilgi ve gösterim içindir, sıralama sunucu saatiyle.</param>
+public sealed record PaymentRequestBackfillItem(
+    Guid? RecordId,
+    string? OwnerId,
+    List<string?>? MemberIds,
+    string? ScopeKey,
+    List<Guid>? OrderIds,
+    string? State,
+    decimal? NetAmount,
+    decimal? AppliedAmount,
+    bool? FullyFromBalance,
+    DateTimeOffset? At);
+
+/// <summary><c>POST payment-requests/backfill</c> gövdesi: v2 zarfı ve en çok 200 kayıt.</summary>
+public sealed record PaymentRequestBackfillRequest(
+    List<PaymentRequestBackfillItem?>? Records,
+    Guid? ReplicaId = null,
+    int? Protocol = null,
+    int? SeenMode = null) : ISalesEnvelopeFields;
+
+/// <summary>Geri doldurmanın öğe sonucu.</summary>
+/// <param name="Status"><c>applied</c> (yazıldı), <c>unchanged</c> (aynı içerik zaten kayıtlı; yeni üyeler eklenir) ya da
+/// <c>content-conflict</c> (aynı Id'de başka içerik, başka lisansın ya da kiranın Id'si).</param>
+public sealed record PaymentRequestBackfillResult(Guid RecordId, string Status);
+
+/// <summary><c>backfill</c>'in 200 yanıtı: istekteki sırayla, öğe başına bir sonuç.</summary>
+public sealed record PaymentRequestBackfillResponse(IReadOnlyList<PaymentRequestBackfillResult> Records);
+
 /// <summary>Bir ödeme isteği ucunun sonucu; uç ProblemDetails'e ya da 200'e çevirir.</summary>
 public abstract record PaymentRequestReply;
 
-/// <summary>200.</summary>
-public sealed record PaymentRequestSucceeded(PaymentRequestBeginResponse Response) : PaymentRequestReply;
+/// <summary>200; <paramref name="Response"/> ucun yanıt gövdesi.</summary>
+public sealed record PaymentRequestSucceeded(object Response) : PaymentRequestReply;
 
 /// <summary>Ret: <c>title</c> = <paramref name="Code"/>, ek üyeler <paramref name="Extensions"/>.</summary>
 public sealed record PaymentRequestFailed(
@@ -86,6 +167,27 @@ public static class PaymentRequestWire
         PaymentRequestState.Abandoned => "abandoned",
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, null),
     };
+
+    public static string Kind(PaymentRequestKind kind) => kind switch
+    {
+        PaymentRequestKind.Lease => "lease",
+        PaymentRequestKind.Record => "record",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+
+    /// <summary>Bir kapanış durumunun teldeki adı (ordinal): <c>delivered</c>, <c>unconfirmed</c>, <c>abandoned</c>.
+    /// <c>sending</c> kapanış değildir.</summary>
+    public static bool TryParseOutcome(string? value, out PaymentRequestState state)
+    {
+        state = value switch
+        {
+            "delivered" => PaymentRequestState.Delivered,
+            "unconfirmed" => PaymentRequestState.Unconfirmed,
+            "abandoned" => PaymentRequestState.Abandoned,
+            _ => PaymentRequestState.Sending,
+        };
+        return state != PaymentRequestState.Sending;
+    }
 }
 
 /// <summary>
@@ -132,6 +234,47 @@ public static class PaymentRequestHash
             writer.WriteString("totalBeforeBalance", Money(totalBeforeBalance));
             writer.WriteBoolean("recipientPays", recipientPays);
             writer.WriteNumber("shippingSettingsVersion", shippingSettingsVersion);
+            writer.WriteEndObject();
+        }
+
+        return SHA256.HashData(buffer.ToArray());
+    }
+
+    /// <summary>
+    /// Geri doldurulan kirasız kaydın özeti (<c>payment-requests/backfill</c>, §6.4 "Ödeme geçmişi"): asıl kayda
+    /// çözülmüş sahip, kapsam, durum, tutarlar ve sıralı siparişler. Aynı normalleştirme (tekil, ordinal sıralı, iki
+    /// ondalık).
+    ///
+    /// <para>Özete girmeyenler: üyeler (grup senkronu iki deneme arasında onları değiştirebilir; yeniden oynatmada yeni
+    /// üyeler birleştirilir), kopya (geri yüklenmiş kopya aynı geçmişi yeniden gönderebilir; Id iş Id'sinden türer) ve
+    /// yerel an (<c>at</c>: bilgi ve gösterim içindir). Sahip asıl kayda çözülmüş girer: iki veritabanı kopyasından biri
+    /// aradaki yerel birleştirmeyle aynı işi başka bir kopya Id'siyle gönderse de aynı kayıttır.</para>
+    /// </summary>
+    public static byte[] ComputeRecord(
+        string canonicalOwnerId,
+        string scopeKey,
+        PaymentRequestState state,
+        decimal netAmount,
+        decimal? appliedAmount,
+        bool fullyFromBalance,
+        IEnumerable<Guid> orderIds)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", PaymentRequestWire.Kind(PaymentRequestKind.Record));
+            writer.WriteString("ownerId", canonicalOwnerId);
+            writer.WriteString("scopeKey", scopeKey);
+            writer.WriteString("state", PaymentRequestWire.State(state));
+            writer.WriteString("netAmount", Money(netAmount));
+            if (appliedAmount is { } applied) writer.WriteString("appliedAmount", Money(applied));
+            else writer.WriteNull("appliedAmount");
+            writer.WriteBoolean("fullyFromBalance", fullyFromBalance);
+            writer.WriteStartArray("orderIds");
+            foreach (var order in orderIds.Distinct().Order())
+                writer.WriteStringValue(order.ToString("N"));
+            writer.WriteEndArray();
             writer.WriteEndObject();
         }
 

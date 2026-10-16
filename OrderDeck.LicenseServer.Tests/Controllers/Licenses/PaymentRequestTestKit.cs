@@ -77,6 +77,119 @@ public sealed class PaymentRequestTestKit
     public static async Task<BeginResponse> ReadAsync(HttpResponseMessage response) =>
         (await response.Content.ReadFromJsonAsync<BeginResponse>())!;
 
+    // ── finish ────────────────────────────────────────────────────────────────
+
+    public string FinishUrl(Guid recordId) => $"/api/v1/licenses/{LicenseId}/payment-requests/{recordId}/finish";
+
+    /// <summary><c>finish</c> gövdesi (v2, <c>seenMode = 1</c>). Sözlük: 400 testleri alanı siler ya da bozar.</summary>
+    public static Dictionary<string, object?> FinishBody(
+        Guid replicaId,
+        string outcome,
+        decimal netAmount = 0m,
+        decimal? appliedAmount = 0m,
+        bool fullyFromBalance = false) => new()
+    {
+        ["replicaId"] = replicaId,
+        ["protocol"] = 2,
+        ["seenMode"] = 1,
+        ["outcome"] = outcome,
+        ["netAmount"] = netAmount,
+        ["appliedAmount"] = appliedAmount,
+        ["fullyFromBalance"] = fullyFromBalance,
+    };
+
+    public Task<HttpResponseMessage> FinishAsync(Guid recordId, object body, string? userAgent = SalesKit.WpfUserAgent) =>
+        Sales.SendToAsync(FinishUrl(recordId), body, userAgent);
+
+    /// <summary><c>finish</c>'in 200 yanıtı (<see cref="PaymentRequestFinishResponse"/>).</summary>
+    public sealed record FinishResponse(Guid RecordId, string State, DateTimeOffset? FinishedAt);
+
+    public static async Task<FinishResponse> ReadFinishAsync(HttpResponseMessage response) =>
+        (await response.Content.ReadFromJsonAsync<FinishResponse>())!;
+
+    // ── liste ─────────────────────────────────────────────────────────────────
+
+    /// <summary><c>GET payment-requests?scopeKey&amp;memberIds</c>; üyeler yinelenen anahtarla.</summary>
+    public string ListUrl(string? scopeKey, IEnumerable<string> memberIds)
+    {
+        var query = new List<string>();
+        if (scopeKey is not null) query.Add("scopeKey=" + Uri.EscapeDataString(scopeKey));
+        query.AddRange(memberIds.Select(m => "memberIds=" + Uri.EscapeDataString(m)));
+        return $"/api/v1/licenses/{LicenseId}/payment-requests?{string.Join('&', query)}";
+    }
+
+    public Task<HttpResponseMessage> ListAsync(string? scopeKey, IEnumerable<string> memberIds) =>
+        Sales.Client.GetAsync(ListUrl(scopeKey, memberIds));
+
+    /// <summary>Liste öğesi (<see cref="PaymentRequestListItem"/>).</summary>
+    public sealed record ListItem(
+        Guid Id,
+        Guid ReplicaId,
+        string? Machine,
+        string Kind,
+        string State,
+        decimal? NetAmount,
+        decimal? AppliedAmount,
+        bool? FullyFromBalance,
+        decimal? ProductTotal,
+        decimal? TotalBeforeBalance,
+        DateTimeOffset StartedAt,
+        DateTimeOffset? FinishedAt,
+        List<Guid> OrderIds);
+
+    public sealed record ListResponse(List<ListItem> Records);
+
+    public static async Task<ListResponse> ReadListAsync(HttpResponseMessage response) =>
+        (await response.Content.ReadFromJsonAsync<ListResponse>())!;
+
+    // ── backfill ──────────────────────────────────────────────────────────────
+
+    public string BackfillUrl => $"/api/v1/licenses/{LicenseId}/payment-requests/backfill";
+
+    /// <summary>Geri doldurma öğesi. Sözlük: 400 testleri alanı siler ya da bozar.</summary>
+    public static Dictionary<string, object?> BackfillItem(
+        Guid recordId,
+        string ownerId,
+        IEnumerable<string> memberIds,
+        DateTimeOffset at,
+        string scopeKey = Cumulative,
+        IEnumerable<Guid>? orderIds = null,
+        string state = "delivered",
+        decimal netAmount = 0m,
+        decimal? appliedAmount = 0m,
+        bool fullyFromBalance = false) => new()
+    {
+        ["recordId"] = recordId,
+        ["ownerId"] = ownerId,
+        ["memberIds"] = memberIds.ToArray(),
+        ["scopeKey"] = scopeKey,
+        ["orderIds"] = (orderIds ?? []).ToArray(),
+        ["state"] = state,
+        ["netAmount"] = netAmount,
+        ["appliedAmount"] = appliedAmount,
+        ["fullyFromBalance"] = fullyFromBalance,
+        ["at"] = at,
+    };
+
+    /// <summary>Geri doldurma partisi (v2, <c>seenMode = 0</c>: mod Off'taki Ws'nin ilk açılışı).</summary>
+    public static Dictionary<string, object?> BackfillBody(Guid replicaId, params object?[] records) => new()
+    {
+        ["replicaId"] = replicaId,
+        ["protocol"] = 2,
+        ["seenMode"] = 0,
+        ["records"] = records,
+    };
+
+    public Task<HttpResponseMessage> BackfillAsync(object body, string? userAgent = SalesKit.WpfUserAgent) =>
+        Sales.SendToAsync(BackfillUrl, body, userAgent);
+
+    public sealed record BackfillResult(Guid RecordId, string Status);
+
+    public sealed record BackfillResponse(List<BackfillResult> Records);
+
+    public static async Task<BackfillResponse> ReadBackfillAsync(HttpResponseMessage response) =>
+        (await response.Content.ReadFromJsonAsync<BackfillResponse>())!;
+
     // ── Kurulum ───────────────────────────────────────────────────────────────
 
     /// <summary>Bir müşteri projeksiyonu; <paramref name="mergedInto"/> doluysa kopya. Id üretilir.</summary>
@@ -137,8 +250,9 @@ public sealed class PaymentRequestTestKit
         });
     }
 
-    /// <summary>Makine adı bilinen bir kopya (<c>sales/hello</c>'nun yazdığı gibi).</summary>
-    public async Task SeedReplicaAsync(Guid replicaId, string machineName)
+    /// <summary>Makine adı bilinen bir kopya (<c>sales/hello</c>'nun yazdığı gibi); <paramref name="previousReplicaId"/>
+    /// doluysa yedekten geri yüklenmiş kopya (§8.7).</summary>
+    public async Task SeedReplicaAsync(Guid replicaId, string machineName, Guid? previousReplicaId = null)
     {
         await Sales.WithDbAsync(db =>
         {
@@ -150,6 +264,7 @@ public sealed class PaymentRequestTestKit
                 MachineName = machineName,
                 Protocol = 2,
                 FeatureLevel = 3,
+                PreviousReplicaId = previousReplicaId,
                 FirstSeenAt = now.AddDays(-3),
                 LastSeenAt = now.AddMinutes(-1),
             });
@@ -171,7 +286,13 @@ public sealed class PaymentRequestTestKit
         Guid? replicaId = null,
         string? machineName = "PC-X",
         Guid? licenseId = null,
-        Guid? id = null)
+        Guid? id = null,
+        IEnumerable<Guid>? orderIds = null,
+        decimal? appliedAmount = null,
+        bool? fullyFromBalance = null,
+        decimal? productTotal = null,
+        decimal? totalBeforeBalance = null,
+        int version = 0)
     {
         var license = licenseId ?? LicenseId;
         var recordId = id ?? Guid.NewGuid();
@@ -187,13 +308,21 @@ public sealed class PaymentRequestTestKit
             MachineName = machineName,
             Kind = kind,
             State = state,
+            ProductTotal = productTotal,
+            TotalBeforeBalance = totalBeforeBalance,
             NetAmount = netAmount,
+            AppliedAmount = appliedAmount,
+            FullyFromBalance = fullyFromBalance,
             RequestHash = PaymentPersonKey.Hash($"istek-{recordId:N}"),
             StartedAt = startedAt,
             LeaseUntil = kind == PaymentRequestKind.Lease ? startedAt.AddSeconds(120) : null,
             FinishedAt = finishedAt,
+            Version = version,
             Members = members
                 .Select(m => new PaymentRequestMember { LicenseId = license, WpfCustomerId = m, ScopeKey = scopeKey })
+                .ToList(),
+            RecordOrders = (orderIds ?? [])
+                .Select(o => new PaymentRequestRecordOrder { LicenseId = license, OrderId = o })
                 .ToList(),
         };
         await Sales.WithDbAsync(db =>
