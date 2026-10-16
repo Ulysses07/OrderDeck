@@ -324,6 +324,35 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         (await Kit.ReadAsync(replay)).State.Should().Be("delivered");
     }
 
+    /// <summary>
+    /// §6.4-a: süresi dolmuş kiranın yeniden oynatması kira değildir. Yanıtı kaybolan begin'i kira dolduktan sonra
+    /// yineleyen kopya <c>sending</c> görseydi, kiranın geçerli olup olmadığını yalnız kendi saatiyle anlayabilirdi.
+    /// Durum, liste ucundaki gibi sunucu saatiyle <c>unconfirmed</c> bildirilir; yeniden oynatma kilitsizdir ve satırı
+    /// yazmaz (yazımı sonraki begin'in c adımı yapar).
+    /// </summary>
+    [Fact]
+    public async Task Suresi_dolmus_kiranin_yeniden_oynatmasi_unconfirmed_doner_satir_yazilmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var body = Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]);
+        var recordId = (Guid)body["recordId"]!;
+        (await kit.BeginAsync(body)).StatusCode.Should().Be(HttpStatusCode.OK);
+        await kit.Sales.WithDbAsync(async db =>
+        {
+            var row = await db.PaymentRequestRecords.FindAsync(recordId);
+            row!.LeaseUntil = DateTimeOffset.UtcNow.AddSeconds(-1);
+        });
+
+        var replay = await kit.BeginAsync(body);
+
+        replay.StatusCode.Should().Be(HttpStatusCode.OK, await replay.Content.ReadAsStringAsync());
+        (await Kit.ReadAsync(replay)).State.Should().Be("unconfirmed");
+        var saved = await kit.RecordAsync(recordId);
+        saved!.State.Should().Be(PaymentRequestState.Sending);
+        saved.Version.Should().Be(0);
+    }
+
     /// <summary>§6.4-a: aynı <c>recordId</c> farklı içerikle (tutar, kapsam, kopya) — 409 <c>content-conflict</c>; kayıt
     /// değişmez.</summary>
     [Theory]

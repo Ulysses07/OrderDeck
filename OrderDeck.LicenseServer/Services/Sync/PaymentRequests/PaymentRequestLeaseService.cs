@@ -345,6 +345,12 @@ public sealed class PaymentRequestLeaseService
     /// (a) Aynı <c>recordId</c> varsa: aynı lisansın kirası ve aynı özet → kaydın GÜNCEL hâli (durum, kira sonu, üyeler),
     /// hiçbir şey yazılmaz. Özet farklı, başka lisansın Id'si ya da kirasız kayıt (<c>Record</c>) → 409
     /// <c>content-conflict</c> (istemci hatası). Kayıt yoksa null.
+    ///
+    /// <para>Yalnız <c>sending</c> durumu kiradır (W3 sözleşmesi). Kayıt artık canlı değilse 200 başka bir durumla döner.
+    /// Süresi dolmuş <c>Sending</c> kira, liste ucundaki gibi sunucu saatiyle <c>unconfirmed</c> bildirilir
+    /// (<see cref="PaymentRequestRules.IsExpiredLease"/>). Yoksa yanıtı kaybolan begin'i kira dolduktan sonra yineleyen
+    /// kopya <c>sending</c> görür ve kiranın geçerli olup olmadığını ancak kendi saatiyle anlayabilirdi; bu arada başka bir
+    /// kopya kirayı Unconfirmed yapıp kendi isteğini açmış olabilir.</para>
     /// </summary>
     private async Task<PaymentRequestReply?> ReplayAsync(Guid licenseId, BeginInput begin, CancellationToken ct)
     {
@@ -371,11 +377,15 @@ public sealed class PaymentRequestLeaseService
                 .ToListAsync(ct))
             .Order(StringComparer.Ordinal)
             .ToList();
+        var state = IsExpiredLease(existing.State, existing.LeaseUntil, DateTimeOffset.UtcNow)
+            ? PaymentRequestState.Unconfirmed
+            : existing.State;
         _log.LogInformation(
-            "payment-requests/begin: record {RecordId} yeniden oynatıldı (license={LicenseId}, replica={ReplicaId})",
-            begin.RecordId, licenseId, begin.ReplicaId);
+            "payment-requests/begin: record {RecordId} yeniden oynatıldı, durum {State} (license={LicenseId}, "
+            + "replica={ReplicaId})",
+            begin.RecordId, state, licenseId, begin.ReplicaId);
         return new PaymentRequestSucceeded(new PaymentRequestBeginResponse(
-            begin.RecordId, PaymentRequestWire.State(existing.State), existing.LeaseUntil, members));
+            begin.RecordId, PaymentRequestWire.State(state), existing.LeaseUntil, members));
     }
 
     // ── (c–e) kişi×kapsamın kayıtları ───────────────────────────────────────

@@ -289,7 +289,7 @@ public sealed class PaymentRequestRecordService
     /// <c>Unconfirmed</c>, kapanış anı kiranın dolduğu an; başka her kayıt olduğu gibi.
     /// </summary>
     private static EffectiveRecord Effective(PaymentRequestRecord record, DateTimeOffset now) =>
-        record.State == PaymentRequestState.Sending && (record.LeaseUntil is null || record.LeaseUntil <= now)
+        IsExpiredLease(record.State, record.LeaseUntil, now)
             ? new EffectiveRecord(record, PaymentRequestState.Unconfirmed, record.LeaseUntil ?? record.StartedAt)
             : new EffectiveRecord(record, record.State, record.FinishedAt);
 

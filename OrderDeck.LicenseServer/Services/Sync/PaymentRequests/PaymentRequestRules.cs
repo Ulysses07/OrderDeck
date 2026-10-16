@@ -86,6 +86,14 @@ public static class PaymentRequestRules
     public static bool IsMemberId(string? id) =>
         !string.IsNullOrWhiteSpace(id) && id.Length <= PaymentRequestRecord.WpfCustomerIdMaxLength;
 
+    /// <summary>
+    /// Süresi dolmuş canlı kira (§6.4-c, "Teslim kaydı olmadan dolan kira"): <c>Sending</c> ve <c>LeaseUntil ≤ şimdi</c>
+    /// (sunucu saati). Satırı yazılmamış olsa da okuyucuya <c>unconfirmed</c> görünür: liste ucu ve <c>begin</c>'in
+    /// yeniden oynatması aynı kuralı kullanır, yazımı <c>begin</c>'in c adımı yapar.
+    /// </summary>
+    public static bool IsExpiredLease(PaymentRequestState state, DateTimeOffset? leaseUntil, DateTimeOffset now) =>
+        state == PaymentRequestState.Sending && (leaseUntil is null || leaseUntil <= now);
+
     /// <summary>Tutar: 0 ya da daha büyük, en çok iki ondalıklı, decimal(18,2)'ye sığar.</summary>
     public static bool IsMoney(decimal? value) =>
         value is { } v && v >= 0 && v <= MaxAmount && decimal.Round(v, 2) == v;
