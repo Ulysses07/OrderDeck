@@ -47,11 +47,15 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// kipi sahiplik denetimiyle birlikte okunur. Mod Off'ta hiçbir şey değişmez:
 /// kapı yok, işlem ve kilit yok. Mod On'da:
 /// <list type="bullet">
-///   <item>preview ve apply, istemci <c>SalesSync:MinClientVersion</c>'dan
-///   eskiyse ya da alt sürüm tanımsızsa bakiyeye dokunmadan 409
-///   <c>client-update-required</c> döner (kapalı-hata). Eski sürüm GUID'li
-///   kişide mesajı bu yüzden göndermez; kira ve sunucu toplamı onu
-///   kapsamazdı.</item>
+///   <item>preview, <c>/scope</c>, <c>reverse</c> ve apply, istemci
+///   <c>SalesSync:MinClientVersion</c>'dan eskiyse ya da alt sürüm tanımsızsa
+///   bakiyeye dokunmadan 409 <c>client-update-required</c> döner
+///   (kapalı-hata). Eski sürüm GUID'li kişide mesajı bu yüzden göndermez;
+///   kira ve sunucu toplamı onu kapsamazdı. <c>/scope</c> ve <c>reverse</c>
+///   eski sürümün önizlemeden önce girdiği para yollarıdır.
+///   <c>transactions/{id}</c> kapısızdır: eski sürüm onun hatasında diskteki
+///   sonuçla devam eder (R6-02), kapı yalnız panel iadesini görmesini
+///   engellerdi.</item>
 ///   <item>Kapsamlı ve anahtarı yeni apply, asıl kayıt×kapsam uygulama kilidi
 ///   altında <c>/scope</c>'un yüklemini koşar: geri alınmamış düşüm varsa 409
 ///   <c>scope-has-deduction</c> (DM6, M8). Ayrı tablo yok; kural defterin
@@ -146,6 +150,12 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// <para>Kayıt yoksa <b>204</b> — istemci bugünkü akışta kalır. Bu, alanın
     /// yeni olmasından ötürü kapsamsız yazılmış geçmiş satırlar için de geçerli
     /// ve <b>zararsız</b>: davranış R4-03 öncesine düşer.</para>
+    ///
+    /// <para>Mod On'da preview ve apply ile aynı sürüm kapısı (§6.5-3). Bu uç
+    /// salt okunur, ama v0.9.10 anahtarsız işte önce burayı sorar ve bulduğu
+    /// düşümü benimser. Toplam aynıysa önizleme ve apply hiç çağrılmaz; kapı
+    /// olmasa başka bilgisayarın teslim ettiği istek ikinci kez giderdi.
+    /// v0.9.10 bu ucun hatasında mesajı engeller (R6-01).</para>
     /// </summary>
     [HttpGet("scope")]
     public async Task<IActionResult> Scope(
@@ -160,7 +170,12 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
                     + "karakteri aşamaz.");
 
-        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        var mode = await OwnedLicenseModeAsync(licenseId, ct);
+        if (mode is null) return NotFound();
+        // v0.9.10 bulduğu düşümü benimser ve toplam aynıysa önizleme ile
+        // apply'ı hiç çağırmadan mesajı gönderir; kapı burada da olmalı.
+        if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
+            return ClientUpdateRequired(licenseId, "scope");
 
         // Düşüm asıl kayıtta (A5b: hareketler birleştirmede taşınır, yenileri
         // çözülmüş Id'yle yazılır).
@@ -578,12 +593,20 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// ikizi — ama kapsamı dar: yalnız BU lisansın purchase-deduction satırı.
     /// Hakem N01 filtered-unique index (ReversesTransactionId): yarışan ikinci
     /// reverse SaveChanges'te unique ihlali alır → 409 already-reversed.
-    /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).</summary>
+    /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).
+    ///
+    /// <para>Mod On'da sürüm kapısı (§6.5-3): eski sürümün revizyonu başka
+    /// bilgisayarın teslim edilmiş düşümünü geri alırdı, ardından yeniden
+    /// apply'ı 409 alır. v0.9.10 bu 409'u başarısızlık sayar, geri alma niyeti
+    /// diskte kalır ve mesaj gitmez.</para></summary>
     [HttpPost("transactions/{transactionId:guid}/reverse")]
     public async Task<IActionResult> Reverse(
         Guid licenseId, Guid transactionId, CancellationToken ct)
     {
-        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        var mode = await OwnedLicenseModeAsync(licenseId, ct);
+        if (mode is null) return NotFound();
+        if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
+            return ClientUpdateRequired(licenseId, "reverse");
 
         var original = await _db.CustomerBalanceTransactions
             .AsNoTracking()

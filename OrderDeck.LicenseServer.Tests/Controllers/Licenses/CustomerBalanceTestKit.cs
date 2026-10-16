@@ -93,6 +93,11 @@ public sealed class CustomerBalanceTestKit
     public Task<HttpResponseMessage> PreviewAsync(string? userAgent = WsUserAgent) =>
         SendAsync(HttpMethod.Get, $"{BaseUrl}/preview?wpfCustomerId={WpfCustomerId}", userAgent);
 
+    /// <summary><c>GET scope</c>.</summary>
+    public Task<HttpResponseMessage> ScopeAsync(string saleScope, string? userAgent = WsUserAgent) =>
+        SendAsync(HttpMethod.Get,
+            $"{BaseUrl}/scope?wpfCustomerId={WpfCustomerId}&saleScope={Uri.EscapeDataString(saleScope)}", userAgent);
+
     /// <summary><c>POST transactions/{id}/reverse</c>.</summary>
     public Task<HttpResponseMessage> ReverseAsync(Guid transactionId, string? userAgent = WsUserAgent) =>
         SendAsync(HttpMethod.Post, $"{BaseUrl}/transactions/{transactionId}/reverse", userAgent);

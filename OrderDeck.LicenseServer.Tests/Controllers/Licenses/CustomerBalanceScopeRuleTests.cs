@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -13,8 +15,8 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// §8.3 "Önizleme ve apply", DM6, M8, §15-18.
 /// <list type="bullet">
 ///   <item>Mod Off: bugünkü davranış. Kapı yok, kapsam kuralı yok; aynı kapsama yeni anahtarla ikinci düşüm yazılır.</item>
-///   <item>Mod On: istemci <c>SalesSync:MinClientVersion</c>'dan eskiyse ya da alt sürüm tanımsızsa preview ve apply 409
-///   <c>client-update-required</c>; bakiyeye dokunulmaz.</item>
+///   <item>Mod On: istemci <c>SalesSync:MinClientVersion</c>'dan eskiyse ya da alt sürüm tanımsızsa preview,
+///   <c>/scope</c>, <c>reverse</c> ve apply 409 <c>client-update-required</c>; bakiyeye dokunulmaz.</item>
 ///   <item>Mod On, kapsam dolu, anahtar yeni: aynı asıl kayıt×kapsamda geri alınmamış düşüm varsa 409
 ///   <c>scope-has-deduction {transactionId, appliedAmount, productTotal}</c>. <c>legacy:</c> kapsamı muaf değildir;
 ///   aynı anahtarın tekrarı oynatılır.</item>
@@ -133,6 +135,84 @@ public sealed class CustomerBalanceScopeRuleTests
         var apply = await kit.ApplyAsync(100m, 2100m, Guid.NewGuid(), saleScope: null, Kit.OldUserAgent);
 
         await ShouldBeClientUpdateRequiredAsync(apply);
+        (await kit.BalanceAsync()).Should().Be(500m);
+    }
+
+    /// <summary>
+    /// Mod On'da eski sürüm <c>/scope</c> ve <c>reverse</c>'te de 409 <c>client-update-required</c> alır; defter ve bakiye
+    /// değişmez. v0.9.10 anahtarsız işte önizlemeden önce <c>/scope</c>'u sorar ve bulduğu düşümü benimser. Toplam
+    /// aynıysa önizleme ve apply çağrılmadan mesaj gider. Toplam farklıysa revizyon, başka bilgisayarın teslim edilmiş
+    /// düşümünü geri alır, ardından önizleme 409 alır.
+    /// </summary>
+    [Theory]
+    [InlineData(Kit.OldUserAgent)]
+    [InlineData(null)]
+    public async Task Mod_On_eski_istemci_scope_ve_reverse_409_client_update_required(string? userAgent)
+    {
+        var kit = await Kit.CreateAsync(_configured, SalesSyncMode.On, 500m);
+        var key = Guid.NewGuid();
+        (await kit.ApplyAsync(100m, 550m, key, Kit.Cumulative)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var scope = await kit.ScopeAsync(Kit.Cumulative, userAgent);
+        var reverse = await kit.ReverseAsync(key, userAgent);
+
+        await ShouldBeClientUpdateRequiredAsync(scope);
+        await ShouldBeClientUpdateRequiredAsync(reverse);
+        (await kit.UnreversedDeductionIdsAsync()).Should().Equal(key);
+        (await kit.BalanceAsync()).Should().Be(400m);
+    }
+
+    /// <summary>Alt sürüm tanımsızken mod On'da <c>/scope</c> ve <c>reverse</c> da kapalı-hata: güncel istemci de 409
+    /// alır (bilinmeyen işlem için bile 404'ten önce).</summary>
+    [Fact]
+    public async Task Mod_On_alt_surum_tanimsizken_scope_ve_reverse_409_client_update_required()
+    {
+        var kit = await Kit.CreateAsync(_unconfigured, SalesSyncMode.On, 500m);
+
+        var scope = await kit.ScopeAsync(Kit.Cumulative);
+        var reverse = await kit.ReverseAsync(Guid.NewGuid());
+
+        await ShouldBeClientUpdateRequiredAsync(scope);
+        await ShouldBeClientUpdateRequiredAsync(reverse);
+        (await kit.BalanceAsync()).Should().Be(500m);
+    }
+
+    /// <summary>Ws kapıyı geçer: mod On'da <c>/scope</c> düşümü döner, <c>reverse</c> onu geri alır. Revizyon yolu
+    /// bozulmaz.</summary>
+    [Fact]
+    public async Task Mod_On_guncel_istemci_scope_ve_reverse_bugunku_gibi()
+    {
+        var kit = await Kit.CreateAsync(_configured, SalesSyncMode.On, 500m);
+        var key = Guid.NewGuid();
+        (await kit.ApplyAsync(100m, 550m, key, Kit.Cumulative)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var scope = await kit.ScopeAsync(Kit.Cumulative);
+        var reverse = await kit.ReverseAsync(key);
+
+        scope.StatusCode.Should().Be(HttpStatusCode.OK, await scope.Content.ReadAsStringAsync());
+        (await scope.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("transactionId").GetGuid().Should().Be(key);
+        reverse.StatusCode.Should().Be(HttpStatusCode.OK, await reverse.Content.ReadAsStringAsync());
+        (await kit.UnreversedDeductionIdsAsync()).Should().BeEmpty();
+        (await kit.BalanceAsync()).Should().Be(500m);
+    }
+
+    /// <summary>Mod Off'ta <c>/scope</c> ve <c>reverse</c>'te kapı yok: eski istemci, alt sürüm tanımsızken de bugünkü
+    /// gibi kullanır.</summary>
+    [Theory]
+    [InlineData(Kit.OldUserAgent)]
+    [InlineData(null)]
+    public async Task Mod_Off_eski_istemci_scope_ve_reverse_bugunku_gibi(string? userAgent)
+    {
+        var kit = await Kit.CreateAsync(_unconfigured, SalesSyncMode.Off, 500m);
+        var key = Guid.NewGuid();
+        (await kit.ApplyAsync(100m, 550m, key, Kit.Cumulative, userAgent)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var scope = await kit.ScopeAsync(Kit.Cumulative, userAgent);
+        var reverse = await kit.ReverseAsync(key, userAgent);
+
+        scope.StatusCode.Should().Be(HttpStatusCode.OK, await scope.Content.ReadAsStringAsync());
+        (await scope.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("transactionId").GetGuid().Should().Be(key);
+        reverse.StatusCode.Should().Be(HttpStatusCode.OK, await reverse.Content.ReadAsStringAsync());
         (await kit.BalanceAsync()).Should().Be(500m);
     }
 
