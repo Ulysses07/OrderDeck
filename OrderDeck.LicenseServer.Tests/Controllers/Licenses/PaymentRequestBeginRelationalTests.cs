@@ -20,16 +20,19 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// indeks (yarışın hakemi) ve SQL'in harf duyarsız, sondaki boşluğu yok sayan karşılaştırması InMemory'de yoktur.
 ///
 /// <para>Yarış sırayla kurulur (zamanlamayla değil): bir isteğin kira kaydı diske inmeden hemen önce kanca rakip isteği
-/// BAŞLATIR ama sonunu beklemez — rakip ilk isteğin kilidinde bekliyor olabilir. Kanca rakip de kira yazımına gelene
-/// ya da kısa süre (kilit bekleme sınırının altında) dolana kadar bekler: süre dolması "rakip kilitte bekliyor"
-/// demektir. Kilit olmasaydı rakip ilk isteğin yazımından önce bütün denetimlerini geçerdi.</para>
+/// BAŞLATIR ama sonunu beklemez — rakip ilk isteğin kilidinde bekliyor olabilir. Kanca rakip kira yazımına gelene, ya da
+/// rakibin kilitte beklediği SQL Server'da görülene (<see cref="AppLockWaiterProbe"/>) kadar bekler; üst sınır kilit
+/// bekleme sınırının altındadır. Bekleme sabit bir süreyle varsayılsaydı tam paketin yükü altında rakip kilit sınırını
+/// aşıp zaman aşımı yolunu koşardı. Kilit olmasaydı rakip ilk isteğin yazımından önce bütün denetimlerini geçerdi.</para>
 /// Canlı yayın sırasında ÇALIŞTIRILMAZ.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
 public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
 {
-    private static readonly TimeSpan RivalWait = TimeSpan.FromSeconds(1.5);
+    /// <summary>Kancanın rakibi bekleme üst sınırı; kilit bekleme sınırının (<see cref="SalesCommandLock.DefaultTimeout"/>,
+    /// 5 sn) altında. Olağan durumda kanca rakibin kilitte beklediğini görür görmez bırakır.</summary>
+    private static readonly TimeSpan RivalWait = TimeSpan.FromSeconds(4);
 
     private readonly SqlServerContainerFixture _sql;
     private string _connectionString = null!;
@@ -541,10 +544,10 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
 
     /// <summary>
     /// Kira yazımı kancası: yalnız kurulduğunda ve yalnız kira kaydı ekleyen kaydetmede tetiklenir. İlk tetiklenişte
-    /// ya rakip isteği başlatır (sonunu beklemez) ve rakip de kira yazımına gelene ya da süre dolana kadar bekler, ya da
-    /// verilen yazımı (ör. doğrudan SQL) koşturur.
+    /// ya rakip isteği başlatır (sonunu beklemez) ve rakip kira yazımına gelene, kilitte beklediği görülene ya da süre
+    /// dolana kadar bekler, ya da verilen yazımı (ör. doğrudan SQL) koşturur.
     /// </summary>
-    private sealed class RivalHook : SaveChangesInterceptor
+    private sealed class RivalHook(string connectionString) : SaveChangesInterceptor
     {
         private readonly object _gate = new();
         private bool _armed;
@@ -623,7 +626,9 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
             }
             else if (rival is not null)
             {
-                await Task.WhenAny(_rivalArrived.Task, Task.Delay(_wait, cancellationToken));
+                await Task.WhenAny(
+                    _rivalArrived.Task,
+                    AppLockWaiterProbe.WaitForWaiterAsync(connectionString, _wait, cancellationToken));
             }
             else if (arrival == 2)
             {
@@ -635,7 +640,7 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
 
     private sealed class HookFactory(string connectionString) : RelationalApiFactory(connectionString)
     {
-        public RivalHook Hook { get; } = new();
+        public RivalHook Hook { get; } = new(connectionString);
 
         protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
         {
