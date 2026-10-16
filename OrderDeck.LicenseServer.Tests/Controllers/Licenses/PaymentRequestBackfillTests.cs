@@ -147,8 +147,8 @@ public sealed class PaymentRequestBackfillTests : IClassFixture<ApiFactory>, ICl
     /// <summary>
     /// §10.2: aynı Id ve aynı içerik <c>unchanged</c>, hiçbir şey yazılmaz. İçerik özeti normalleştirilmiştir: tutarın
     /// yazımı (<c>140.5</c> / <c>140.50</c>), siparişlerin sırası ve tekrarı, istemcinin anı ve kopya özete girmez —
-    /// geri yüklenmiş kopya aynı geçmişi yeniden gönderebilir. Sahip asıl kayda çözülmüş girer: kopyanın Id'siyle
-    /// gelen aynı iş aynı kayıttır.
+    /// geri yüklenmiş kopya aynı geçmişi yeniden gönderebilir. Sahip özete girmez, asıl kayıt düzeyinde denetlenir:
+    /// kopyanın Id'siyle gelen aynı iş aynı kayıttır.
     /// </summary>
     [Fact]
     public async Task Ayni_icerik_unchanged_yazim_yok()
@@ -242,6 +242,71 @@ public sealed class PaymentRequestBackfillTests : IClassFixture<ApiFactory>, ICl
         var saved = await kit.RecordAsync(recordId);
         saved!.Members.Select(m => m.WpfCustomerId).Should().BeEquivalentTo([owner, joined, raw]);
         saved.Members.Should().OnlyContain(m => m.ScopeKey == Kit.Cumulative && m.LicenseId == kit.LicenseId);
+    }
+
+    /// <summary>
+    /// Sahip özete girmez; asıl kayıt düzeyinde ayrıca denetlenir (bakiye apply'ın A5b deseni). Kayıt t1 sahibiyle yazılır,
+    /// sonra t1 t2'ye birleştirilir (kimlik onarımı ya da "@" ikizi). Aynı iş yeniden gönderilir: yanıtı kaybolmuş parti ya
+    /// da yedekten dönen kopyanın geçmişi. İstemci t1'i ya da yerel birleştirmeden sonra t2'yi taşıyabilir; ikisi de bugün
+    /// aynı asıl kayıttır. Sonuç <c>unchanged</c>, yeniden gönderimin yeni üyeleri eklenir, kayıt yazıldığı andaki sahibi
+    /// taşımaya devam eder. Sahip özete girseydi özet zamana bağlı olurdu ve <c>content-conflict</c> dönerdi; bu son
+    /// durumdur, istemci öğeyi bir daha göndermez.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Sahip_birlestirildikten_sonra_ayni_is_unchanged_yeni_uyeler_eklenir(bool sentAsSurvivor)
+    {
+        var kit = await Kit.CreateAsync(_factory, SalesSyncMode.Off);
+        var t1 = await kit.SeedProjectionAsync(null);
+        var t2 = await kit.SeedProjectionAsync(null);
+        var recordId = Guid.NewGuid();
+        var order = Guid.NewGuid();
+        (await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+                Kit.BackfillItem(recordId, t1, [t1], At, orderIds: [order], netAmount: 10m, appliedAmount: 2m))))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var first = await kit.RecordAsync(recordId);
+        await kit.MergeAsync(t1, t2);
+        var raw = $"yerel-{Guid.NewGuid():N}";
+        var owner = sentAsSurvivor ? t2 : t1;
+
+        var resp = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+            Kit.BackfillItem(recordId, owner, [owner, raw], At, orderIds: [order], netAmount: 10m, appliedAmount: 2m)));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        (await Kit.ReadBackfillAsync(resp)).Records.Should().Equal(new Kit.BackfillResult(recordId, "unchanged"));
+        var saved = await kit.RecordAsync(recordId);
+        saved!.OwnerWpfCustomerId.Should().Be(t1, "kayıt yazıldığı andaki asıl kaydı taşır; birleştirme yeniden anahtarlamaz");
+        saved.PersonKey.Should().Be(first!.PersonKey);
+        saved.RequestHash.Should().Equal(first.RequestHash);
+        saved.Members.Select(m => m.WpfCustomerId).Should().BeEquivalentTo([t1, t2, raw]);
+        (await kit.RecordsAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Sahip denetimi birleştirmeden sonra da gevşemez: kaydın sahibi t1 t2'ye birleştirildi; aynı Id'yi bu kişiyle ilgisi
+    /// olmayan bir sahiple getiren öğe <c>content-conflict</c>, kayda üye eklenmez.
+    /// </summary>
+    [Fact]
+    public async Task Sahip_birlestirildikten_sonra_baska_kisi_content_conflict()
+    {
+        var kit = await Kit.CreateAsync(_factory, SalesSyncMode.Off);
+        var t1 = await kit.SeedProjectionAsync(null);
+        var t2 = await kit.SeedProjectionAsync(null);
+        var stranger = await kit.SeedProjectionAsync(null);
+        var recordId = Guid.NewGuid();
+        (await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+                Kit.BackfillItem(recordId, t1, [t1], At, netAmount: 10m))))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var first = await kit.RecordAsync(recordId);
+        await kit.MergeAsync(t1, t2);
+
+        var resp = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+            Kit.BackfillItem(recordId, stranger, [stranger, t2], At, netAmount: 10m)));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        (await Kit.ReadBackfillAsync(resp)).Records.Should().Equal(new Kit.BackfillResult(recordId, "content-conflict"));
+        Snapshot((await kit.RecordAsync(recordId))!).Should().Be(Snapshot(first!));
     }
 
     /// <summary>Başka lisansın Id'si ve kiranın Id'si öğe başına <c>content-conflict</c>; o kayıtlar değişmez.</summary>

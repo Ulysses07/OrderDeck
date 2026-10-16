@@ -253,17 +253,17 @@ public static class PaymentRequestHash
     }
 
     /// <summary>
-    /// Geri doldurulan kirasız kaydın özeti (<c>payment-requests/backfill</c>, §6.4 "Ödeme geçmişi"): asıl kayda
-    /// çözülmüş sahip, kapsam, durum, tutarlar ve sıralı siparişler. Aynı normalleştirme (tekil, ordinal sıralı, iki
-    /// ondalık).
+    /// Geri doldurulan kirasız kaydın özeti (<c>payment-requests/backfill</c>, §6.4 "Ödeme geçmişi"): kapsam, durum,
+    /// tutarlar ve sıralı siparişler. Aynı normalleştirme (tekil, ordinal sıralı, iki ondalık).
     ///
     /// <para>Özete girmeyenler: üyeler (grup senkronu iki deneme arasında onları değiştirebilir; yeniden oynatmada yeni
-    /// üyeler birleştirilir), kopya (geri yüklenmiş kopya aynı geçmişi yeniden gönderebilir; Id iş Id'sinden türer) ve
-    /// yerel an (<c>at</c>: bilgi ve gösterim içindir). Sahip asıl kayda çözülmüş girer: iki veritabanı kopyasından biri
-    /// aradaki yerel birleştirmeyle aynı işi başka bir kopya Id'siyle gönderse de aynı kayıttır.</para>
+    /// üyeler birleştirilir), kopya (geri yüklenmiş kopya aynı geçmişi yeniden gönderebilir; Id iş Id'sinden türer),
+    /// yerel an (<c>at</c>: bilgi ve gösterim içindir) ve sahip. Sahip zamana bağlıdır: asıl kayda çözülmüş sahip, kayıt
+    /// yazıldıktan sonraki bir birleştirmeyle (kimlik onarımı, "@" ikizi) değişir ve aynı işin yeniden gönderimi başka
+    /// bir özet verirdi. Sahibi yeniden oynatma ayrıca, iki tarafı da bugünkü asıl kayda çözerek denetler
+    /// (<see cref="PaymentPersonResolver.IsSameOwnerAsync"/>; bakiye apply'ın A5b deseni).</para>
     /// </summary>
     public static byte[] ComputeRecord(
-        string canonicalOwnerId,
         string scopeKey,
         PaymentRequestState state,
         decimal netAmount,
@@ -276,7 +276,6 @@ public static class PaymentRequestHash
         {
             writer.WriteStartObject();
             writer.WriteString("kind", PaymentRequestWire.Kind(PaymentRequestKind.Record));
-            writer.WriteString("ownerId", canonicalOwnerId);
             writer.WriteString("scopeKey", scopeKey);
             writer.WriteString("state", PaymentRequestWire.State(state));
             writer.WriteString("netAmount", Money(netAmount));

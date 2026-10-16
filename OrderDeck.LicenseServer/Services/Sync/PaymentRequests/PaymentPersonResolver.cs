@@ -124,6 +124,24 @@ public sealed class PaymentPersonResolver
     }
 
     /// <summary>
+    /// Kaydın sahibi bugün isteğin sahibiyle aynı kişi mi (geri doldurmanın yeniden oynatması; bakiye apply'ın A5b
+    /// deseni). <paramref name="storedOwner"/> kaydın yazıldığı andaki asıl kayıttır ve birleştirme onu yeniden
+    /// anahtarlamaz; bu yüzden ikisi de BUGÜNKÜ asıl kayda çözülerek karşılaştırılır. GUID'siz sahip yalnız ordinal
+    /// eşitlikle aynıdır.
+    /// </summary>
+    /// <param name="storedOwner">Kaydın <c>OwnerWpfCustomerId</c>'si.</param>
+    /// <param name="canonicalOwner">İsteğin asıl kayda çözülmüş sahibi (<see cref="PaymentPerson.OwnerWpfCustomerId"/>).</param>
+    public async Task<bool> IsSameOwnerAsync(
+        Guid licenseId, string storedOwner, string canonicalOwner, CancellationToken ct)
+    {
+        if (string.Equals(storedOwner, canonicalOwner, StringComparison.Ordinal)) return true;
+        if (!PaymentPersonKey.TryParseGuid(storedOwner, out var stored)
+            || !PaymentPersonKey.TryParseGuid(canonicalOwner, out var owner))
+            return false;
+        return await _customerIds.CanonicalOfAsync(licenseId, stored, ct) == owner;
+    }
+
+    /// <summary>
     /// Saklanacak üye satırları. Birincil anahtar <c>(RecordId, WpfCustomerId)</c> varsayılan (harf duyarsız) harmanda:
     /// ordinal farklı ama SQL'de eşit iki GUID'siz ham Id (yalnız harf ya da sondaki boşlukla ayrılan) aynı kayda iki satır
     /// olarak yazılamaz — 500 yerine her çiftin ordinal ilki saklanır (<see cref="StorageKey"/>). GUID'li üyeler küçük harf

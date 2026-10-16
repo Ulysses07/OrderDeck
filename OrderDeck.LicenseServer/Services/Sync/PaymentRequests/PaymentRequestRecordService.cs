@@ -321,10 +321,11 @@ public sealed class PaymentRequestRecordService
     ///   değil.</item>
     ///   <item>Anlar: <c>StartedAt</c> istemcinin <c>at</c>'i, şimdiye kırpılmış (bilgi ve gösterim); <c>FinishedAt</c>
     ///   sunucunun alış anı — sıralama sunucu saatiyle kalır, iki bilgisayarın saati karşılaştırılmaz.</item>
-    ///   <item>Idempotent (<c>recordId</c>; özet <see cref="PaymentRequestHash.ComputeRecord"/>): aynı içerik
-    ///   <c>unchanged</c> ve yeni üyeler eklenir (grup senkronu denemeler arasında üyeleri değiştirebilir); farklı içerik,
-    ///   başka lisansın ya da kiranın Id'si öğe başına <c>content-conflict</c>, hiçbir şey yazılmaz. Aynı partide aynı
-    ///   Id ikinci kez gelirse ilkiyle karşılaştırılır.</item>
+    ///   <item>Idempotent (<c>recordId</c>; özet <see cref="PaymentRequestHash.ComputeRecord"/>, sahip ayrıca
+    ///   <see cref="PaymentPersonResolver.IsSameOwnerAsync"/> ile bugünkü asıl kayıt düzeyinde): aynı içerik
+    ///   <c>unchanged</c> ve yeni üyeler eklenir (grup senkronu ya da bir birleştirme denemeler arasında üyeleri
+    ///   değiştirebilir); farklı içerik, başka lisansın ya da kiranın Id'si öğe başına <c>content-conflict</c>, hiçbir
+    ///   şey yazılmaz. Aynı partide aynı Id ikinci kez gelirse ilkiyle karşılaştırılır.</item>
     ///   <item>Parti tek <c>SaveChanges</c>'tir. Aynı Id'nin eşzamanlı eklemesi (birincil anahtar) partiyi bir kez
     ///   baştan değerlendirir: kazananın satırı artık vardır.</item>
     /// </list>
@@ -382,13 +383,16 @@ public sealed class PaymentRequestRecordService
             var group = await _people.ServerGroupAsync(licenseId, person.GroupId, ct);
             var members = PaymentPersonResolver.StorableMembers(person.Members.Union(group, StringComparer.Ordinal));
             var hash = PaymentRequestHash.ComputeRecord(
-                person.OwnerWpfCustomerId, item.ScopeKey, item.State, item.NetAmount, item.AppliedAmount,
-                item.FullyFromBalance, item.OrderIds);
+                item.ScopeKey, item.State, item.NetAmount, item.AppliedAmount, item.FullyFromBalance, item.OrderIds);
 
             if (records.TryGetValue(item.RecordId, out var existing))
             {
+                // Sahip özetin dışında, bugünkü asıl kayıt düzeyinde: kayıt yazıldıktan sonraki bir birleştirme aynı işin
+                // yeniden gönderimini çakışmaya çevirmez.
                 if (existing.LicenseId != licenseId || existing.Kind != PaymentRequestKind.Record
-                    || !existing.RequestHash.AsSpan().SequenceEqual(hash))
+                    || !existing.RequestHash.AsSpan().SequenceEqual(hash)
+                    || !await _people.IsSameOwnerAsync(
+                        licenseId, existing.OwnerWpfCustomerId, person.OwnerWpfCustomerId, ct))
                 {
                     conflicts.Add(item.RecordId);
                     results.Add(new PaymentRequestBackfillResult(item.RecordId, StatusContentConflict));
