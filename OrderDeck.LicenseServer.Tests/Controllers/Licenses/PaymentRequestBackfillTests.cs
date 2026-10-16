@@ -101,12 +101,18 @@ public sealed class PaymentRequestBackfillTests : IClassFixture<ApiFactory>, ICl
         (await kit.Sales.ReplicaAsync(replica))!.LastSeenAt.Should().BeOnOrAfter(before, "istek kalp atışıdır");
     }
 
-    /// <summary>Miras kapsamı ve yayın kapsamı da yazılır; GUID'siz sahibin anahtarı <c>r:</c> + ham Id.</summary>
+    /// <summary>
+    /// Kapsam sözleşmesi (§6.4 "Ödeme geçmişi"). Asıl kapsamı bilinen miras iş (<c>PriorScopeKey</c>) asıl kapsamıyla
+    /// gönderilir (<c>SaleScopeOf</c>) ve o kapsamın kaydı olur; çapraz denetim testi bunu kümülatifte gösterir.
+    /// <c>legacy</c> ve <c>legacy:{anahtar}</c> yalnız asıl kapsamı bilinmeyen iş içindir. Sunucu onu kabul edip aynen
+    /// saklar, ama kayıt kira kapsamlarının (<c>cumulative</c>, <c>session:</c>) listesine ve sorusuna girmez; yerelde de o
+    /// iş hiçbir kapsamın sorusuna girmez. Yayın kapsamı da yazılır. GUID'siz sahibin anahtarı <c>r:</c> + ham Id.
+    /// </summary>
     [Theory]
     [InlineData("legacy")]
     [InlineData("legacy:anahtar-1:9")]
     [InlineData("session")]
-    public async Task Miras_ve_yayin_kapsami_GUIDsiz_sahip(string scope)
+    public async Task Kapsamsiz_miras_bicimi_ve_yayin_kapsami_yazilir_kumulatif_okumaz(string scope)
     {
         var kit = await Kit.CreateAsync(_factory, SalesSyncMode.Off);
         var scopeKey = scope == "session" ? Kit.SessionScope(Guid.NewGuid()) : scope;
@@ -122,6 +128,10 @@ public sealed class PaymentRequestBackfillTests : IClassFixture<ApiFactory>, ICl
         saved.PersonKey.Should().Be("r:" + raw);
         saved.OwnerWpfCustomerId.Should().Be(raw);
         saved.Members.Should().ContainSingle().Which.ScopeKey.Should().Be(scopeKey);
+        (await Kit.ReadListAsync(await kit.ListAsync(scopeKey, [raw]))).Records.Select(r => r.Id)
+            .Should().Equal(recordId);
+        (await Kit.ReadListAsync(await kit.ListAsync(Kit.Cumulative, [raw]))).Records
+            .Should().BeEmpty("kaydı yalnız kendi kapsamı okur");
     }
 
     /// <summary>İstemcinin anı gelecekteyse şimdiye kırpılır (bilgi ve gösterim; sıralama sunucu saatiyle).</summary>

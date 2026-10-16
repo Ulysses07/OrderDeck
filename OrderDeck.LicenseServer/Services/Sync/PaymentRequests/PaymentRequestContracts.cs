@@ -127,7 +127,11 @@ public sealed record PaymentRequestListResponse(IReadOnlyList<PaymentRequestList
 /// </summary>
 /// <param name="RecordId">İş Id'si ile teslim sayısından türetilmiş kayıt Id'si; yineleme zararsız.</param>
 /// <param name="OwnerId">Sahip satır ("N" hex ya da GUID'siz ham Id); <paramref name="MemberIds"/>'te olmalı.</param>
-/// <param name="ScopeKey"><c>cumulative</c>, <c>session:{"N" hex}</c>, <c>legacy</c> ya da <c>legacy:{anahtar}</c>.</param>
+/// <param name="ScopeKey"><c>cumulative</c>, <c>session:{"N" hex}</c>, <c>legacy</c> ya da <c>legacy:{anahtar}</c>. İşin
+/// ASIL kapsamıdır: <c>PriorScopeKey</c>'i olan miras iş asıl kapsamıyla gider (<c>SaleScopeOf</c>, apply'ın
+/// <c>SaleScope</c>'u ile aynı eşleme); <c>begin</c>'in (e) adımı ve yerel soru onu o kapsamda arar. <c>legacy</c> biçimi
+/// yalnız asıl kapsamı bilinmeyen iş içindir: yerelde hiçbir kapsamın sorusuna girmez, sunucuda da yalnız kendi
+/// kapsamının listesi onu okur.</param>
 /// <param name="OrderIds">Yerelde <c>Covers</c> kuralıyla hesaplanmış, kaydın kapsadığı siparişler.</param>
 /// <param name="State"><c>delivered</c> ya da <c>unconfirmed</c> (<c>HasUnconfirmedSend</c>).</param>
 /// <param name="At">Kaydın yerel anı (istemci saati); bilgi ve gösterim içindir, sıralama sunucu saatiyle.</param>

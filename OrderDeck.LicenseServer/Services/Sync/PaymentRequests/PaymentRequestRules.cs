@@ -64,7 +64,9 @@ public static class PaymentRequestRules
     /// <summary>
     /// Kayıt kapsamı (geri doldurma ve liste): kira kapsamı (<see cref="IsLeaseScope"/>) ya da yerel <c>PaymentJob</c>'un
     /// miras kapsamı — <c>legacy</c> ya da <c>legacy:{anahtar}</c> (<c>PaymentJob.IsLegacyScope</c>; anahtar boş olamaz).
-    /// Ordinal, en çok <see cref="PaymentRequestRecord.ScopeKeyMaxLength"/> karakter.
+    /// Miras biçimi yalnız asıl kapsamı bilinmeyen iş içindir; asıl kapsamı bilinen miras iş kira kapsamıyla gelir
+    /// (<see cref="PaymentRequestBackfillItem"/>). Ordinal, en çok <see cref="PaymentRequestRecord.ScopeKeyMaxLength"/>
+    /// karakter.
     /// </summary>
     public static bool IsRecordScope(string? scopeKey) =>
         IsLeaseScope(scopeKey)
