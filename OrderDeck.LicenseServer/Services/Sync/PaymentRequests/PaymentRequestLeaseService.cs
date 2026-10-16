@@ -110,6 +110,7 @@ public sealed class PaymentRequestLeaseService
         PaymentRequestKind Kind,
         PaymentRequestState State,
         decimal? NetAmount,
+        decimal? TotalBeforeBalance,
         DateTimeOffset StartedAt,
         DateTimeOffset? LeaseUntil,
         DateTimeOffset? FinishedAt);
@@ -260,7 +261,9 @@ public sealed class PaymentRequestLeaseService
             return InProgressElsewhere(elsewhere);
         }
 
-        // (e) Onaylanmamış önceki istek: teslim edilmiş ya da sonucu bilinmeyen, iki türden de.
+        // (e) Onaylanmamış önceki istek: teslim edilmiş ya da sonucu bilinmeyen, iki türden de. Sıra liste ucununki:
+        // kapanış anı (sunucu saati), eşitlikte istek anı, sonra Id. Kirasız kaydın istek anı istemcinin saatidir; sıranın
+        // ilk anahtarı olsaydı iki bilgisayarın saati karşılaştırılırdı.
         var priors = related
             .Where(r => r.State is PaymentRequestState.Delivered or PaymentRequestState.Unconfirmed
                 && !begin.ConfirmedPriorIds.Contains(r.Id))
@@ -268,9 +271,13 @@ public sealed class PaymentRequestLeaseService
                 r.Id,
                 r.MachineName,
                 r.NetAmount,
-                r.Kind == PaymentRequestKind.Lease ? r.FinishedAt ?? r.StartedAt : r.StartedAt,
+                r.TotalBeforeBalance,
+                r.StartedAt,
+                r.FinishedAt,
                 r.State == PaymentRequestState.Unconfirmed))
-            .OrderBy(p => p.At)
+            .OrderBy(p => p.FinishedAt is null)
+            .ThenBy(p => p.FinishedAt)
+            .ThenBy(p => p.At)
             .ThenBy(p => p.Id)
             .ToList();
         if (priors.Count > 0)
@@ -389,8 +396,8 @@ public sealed class PaymentRequestLeaseService
                 {
                     r.PersonKey,
                     Row = new Related(
-                        r.Id, r.ReplicaId, r.MachineName, r.Kind, r.State, r.NetAmount, r.StartedAt, r.LeaseUntil,
-                        r.FinishedAt),
+                        r.Id, r.ReplicaId, r.MachineName, r.Kind, r.State, r.NetAmount, r.TotalBeforeBalance, r.StartedAt,
+                        r.LeaseUntil, r.FinishedAt),
                 })
                 .ToListAsync(ct))
             .Where(x => string.Equals(x.PersonKey, person.PersonKey, StringComparison.Ordinal))
@@ -412,16 +419,22 @@ public sealed class PaymentRequestLeaseService
         var byMember = await _db.PaymentRequestRecords.AsNoTracking()
             .Where(r => r.LicenseId == licenseId && memberRecordIds.Contains(r.Id))
             .Select(r => new Related(
-                r.Id, r.ReplicaId, r.MachineName, r.Kind, r.State, r.NetAmount, r.StartedAt, r.LeaseUntil, r.FinishedAt))
+                r.Id, r.ReplicaId, r.MachineName, r.Kind, r.State, r.NetAmount, r.TotalBeforeBalance, r.StartedAt,
+                r.LeaseUntil, r.FinishedAt))
             .ToListAsync(ct);
         return byKey.Concat(byMember).ToList();
     }
 
     /// <summary>
-    /// (c) Verilen <c>Sending</c> kayıtları <c>Unconfirmed</c> yapar: <c>FinishedAt = now</c>, <c>Version + 1</c>. Koşul
-    /// yazımın içinde yeniden denetlenir (hâlâ Sending ve süresi dolmuş ya da çağıranın): eşzamanlı bir kapanış ezilmez.
-    /// İlişkisel sağlayıcıda tek koşullu UPDATE, açık işlemin içinde; InMemory'de aynı kural izlenen varlıklara
-    /// (<see cref="SessionReleaser"/> deseni).
+    /// (c) Verilen <c>Sending</c> kayıtları <c>Unconfirmed</c> yapar, <c>Version + 1</c>. Koşul yazımın içinde yeniden
+    /// denetlenir (hâlâ Sending ve süresi dolmuş ya da çağıranın): eşzamanlı bir kapanış ezilmez. İlişkisel sağlayıcıda
+    /// tek koşullu UPDATE, açık işlemin içinde; InMemory'de aynı kural izlenen varlıklara (<see cref="SessionReleaser"/>
+    /// deseni).
+    ///
+    /// <para><c>FinishedAt</c>: süresi dolmuş kirada kira sonu (<c>LeaseUntil ?? StartedAt</c>), liste ucunun satır
+    /// yazılmadan bildirdiği an (<see cref="PaymentRequestRecordService"/>). Kaydın sırası ve sorudaki anı, başka bir
+    /// kopyanın begin'i ne zaman çağırdığına göre kaymaz. Süresi dolmamış kira (aynı kopya yeniden başladı) bu anda
+    /// kapanır: <c>now</c>.</para>
     /// </summary>
     /// <returns>Unconfirmed yapılan kayıt sayısı.</returns>
     private async Task<int> ExpireAsync(
@@ -433,7 +446,9 @@ public sealed class PaymentRequestLeaseService
                     && (r.LeaseUntil == null || r.LeaseUntil <= now || r.ReplicaId == callerReplicaId))
                 .ExecuteUpdateAsync(u => u
                     .SetProperty(r => r.State, PaymentRequestState.Unconfirmed)
-                    .SetProperty(r => r.FinishedAt, now)
+                    .SetProperty(r => r.FinishedAt, r => r.LeaseUntil == null || r.LeaseUntil <= now
+                        ? r.LeaseUntil ?? r.StartedAt
+                        : now)
                     .SetProperty(r => r.Version, r => r.Version + 1), ct);
 
         var rows = await _db.PaymentRequestRecords
@@ -445,7 +460,7 @@ public sealed class PaymentRequestLeaseService
         foreach (var row in expired)
         {
             row.State = PaymentRequestState.Unconfirmed;
-            row.FinishedAt = now;
+            row.FinishedAt = row.LeaseUntil is null || row.LeaseUntil <= now ? row.LeaseUntil ?? row.StartedAt : now;
             row.Version++;
         }
         if (expired.Count > 0) await _db.SaveChangesAsync(ct);
@@ -461,8 +476,8 @@ public sealed class PaymentRequestLeaseService
                 .Where(r => r.LicenseId == licenseId && r.PersonKeyHash == hash && r.ScopeKey == scopeKey
                     && r.State == PaymentRequestState.Sending)
                 .Select(r => new Related(
-                    r.Id, r.ReplicaId, r.MachineName, r.Kind, r.State, r.NetAmount, r.StartedAt, r.LeaseUntil,
-                    r.FinishedAt))
+                    r.Id, r.ReplicaId, r.MachineName, r.Kind, r.State, r.NetAmount, r.TotalBeforeBalance, r.StartedAt,
+                    r.LeaseUntil, r.FinishedAt))
                 .ToListAsync(ct))
             .OrderBy(r => r.StartedAt)
             .ThenBy(r => r.Id)

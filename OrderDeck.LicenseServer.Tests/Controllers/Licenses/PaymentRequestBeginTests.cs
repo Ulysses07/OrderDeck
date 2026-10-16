@@ -432,8 +432,10 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
 
     /// <summary>
     /// §6.4-e: onaylanmamış teslim edilmiş ve sonucu bilinmeyen kayıtlar, iki türden de — 409 <c>already-requested</c>.
-    /// Kira için an kapanıştır (yoksa başlangıç), kayıt için başlangıç. Vazgeçilmiş kayıt ve başka kapsamın kaydı
-    /// girmez. Üye kesişimiyle bulunan (başka PersonKey) kayıt da girer. Hepsi onaylanınca kira yazılır.
+    /// <c>at</c> istek anıdır (kira: sunucunun başlangıç anı; kayıt: istemcinin anı, yalnız gösterim). Sıra, listedeki
+    /// gibi sunucunun kapanış anına (<c>finishedAt</c>) göredir; iki bilgisayarın saati karşılaştırılmaz. Öncül kiranın
+    /// istenen tutarını (<c>totalBeforeBalance</c>) da taşır. Vazgeçilmiş kayıt ve başka kapsamın kaydı girmez. Üye
+    /// kesişimiyle bulunan (başka PersonKey) kayıt da girer. Hepsi onaylanınca kira yazılır.
     /// </summary>
     [Fact]
     public async Task Onceki_istekler_409_already_requested_onaylaninca_200()
@@ -444,13 +446,17 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         var key = "c:" + owner;
         var t0 = DateTimeOffset.UtcNow.AddDays(-2);
         var deliveredLease = await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease,
-            PaymentRequestState.Delivered, t0, finishedAt: t0.AddSeconds(30), netAmount: 300m, machineName: "PC-A");
+            PaymentRequestState.Delivered, t0, finishedAt: t0.AddSeconds(30), netAmount: 300m, machineName: "PC-A",
+            productTotal: 300m, totalBeforeBalance: 360m);
         var unconfirmedLease = await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease,
-            PaymentRequestState.Unconfirmed, t0.AddHours(1), netAmount: 120m);
+            PaymentRequestState.Unconfirmed, t0.AddHours(1), finishedAt: t0.AddHours(1).AddMinutes(2), netAmount: 120m,
+            productTotal: 120m, totalBeforeBalance: 120m);
+        // İstemcinin anı t0 + 2 sa; sunucu kaydı t0 + 5 sa'te aldı (geri doldurma): sırada üye kaydından sonra gelir.
         var deliveredRecord = await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Record,
             PaymentRequestState.Delivered, t0.AddHours(2), finishedAt: t0.AddHours(5), netAmount: 80m);
         var viaMember = await kit.SeedRecordAsync("c:" + Kit.NewId(), [Kit.NewId(), shared], PaymentRequestKind.Record,
-            PaymentRequestState.Unconfirmed, t0.AddHours(3), netAmount: 60m, machineName: null);
+            PaymentRequestState.Unconfirmed, t0.AddHours(3), finishedAt: t0.AddHours(4), netAmount: 60m,
+            machineName: null);
         await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease, PaymentRequestState.Abandoned, t0.AddHours(4),
             finishedAt: t0.AddHours(4));
         await kit.SeedRecordAsync(key, [owner], PaymentRequestKind.Lease, PaymentRequestState.Delivered, t0.AddHours(4),
@@ -462,10 +468,10 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         var problem = await SalesKit.ProblemAsync(resp);
         problem.GetProperty("title").GetString().Should().Be("already-requested");
         Priors(problem).Should().Equal(
-            new Prior(deliveredLease.Id, "PC-A", 300m, t0.AddSeconds(30), false),
-            new Prior(unconfirmedLease.Id, "PC-X", 120m, t0.AddHours(1), true),
-            new Prior(deliveredRecord.Id, "PC-X", 80m, t0.AddHours(2), false),
-            new Prior(viaMember.Id, null, 60m, t0.AddHours(3), true));
+            new Prior(deliveredLease.Id, "PC-A", 300m, 360m, t0, t0.AddSeconds(30), false),
+            new Prior(unconfirmedLease.Id, "PC-X", 120m, 120m, t0.AddHours(1), t0.AddHours(1).AddMinutes(2), true),
+            new Prior(viaMember.Id, null, 60m, null, t0.AddHours(3), t0.AddHours(4), true),
+            new Prior(deliveredRecord.Id, "PC-X", 80m, null, t0.AddHours(2), t0.AddHours(5), false));
         (await kit.RecordsAsync()).Should().HaveCount(6, "ret kira yazmaz");
 
         var confirmed = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner, shared],
@@ -565,15 +571,20 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
 
     // ── (c) süre dolumu ──────────────────────────────────────────────────────
 
-    /// <summary>§6.4-c, §10.1-15: başka kopyanın kirası teslim kaydı olmadan doldu — kayıt Unconfirmed olur (FinishedAt,
-    /// Version + 1) ve <c>already-requested</c>'da sonucu bilinmeyen olarak döner; yazım retten sonra da kalır.</summary>
+    /// <summary>
+    /// §6.4-c, §10.1-15: başka kopyanın kirası teslim kaydı olmadan doldu — kayıt Unconfirmed olur (Version + 1) ve
+    /// <c>already-requested</c>'da sonucu bilinmeyen olarak döner; yazım retten sonra da kalır. Kapanış anı kiranın
+    /// dolduğu andır (listenin bildirdiği an), onu yazan begin'in anı değil. Öncül istek anını ve istenen tutarı taşır
+    /// (§6.8: "PC-A'dan 550 ₺ istenmiş olabilir"); finish gelmediği için <c>netAmount</c> yok.
+    /// </summary>
     [Fact]
     public async Task Suresi_dolmus_kira_Unconfirmed_olur_already_requested_unconfirmed()
     {
         var kit = await Kit.CreateAsync(_factory);
         var owner = Kit.NewId();
         var expired = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
-            PaymentRequestState.Sending, DateTimeOffset.UtcNow.AddMinutes(-3), machineName: "PC-A");
+            PaymentRequestState.Sending, DateTimeOffset.UtcNow.AddMinutes(-30), machineName: "PC-A",
+            productTotal: 550m, totalBeforeBalance: 550m);
 
         var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
 
@@ -583,8 +594,33 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         var saved = await kit.RecordAsync(expired.Id);
         saved!.State.Should().Be(PaymentRequestState.Unconfirmed);
         saved.Version.Should().Be(1);
-        saved.FinishedAt.Should().NotBeNull();
-        Priors(problem).Should().Equal(new Prior(expired.Id, "PC-A", null, saved.FinishedAt!.Value, true));
+        saved.FinishedAt.Should().Be(expired.LeaseUntil);
+        Priors(problem).Should().Equal(
+            new Prior(expired.Id, "PC-A", null, 550m, expired.StartedAt, expired.LeaseUntil, true));
+    }
+
+    /// <summary>
+    /// Süresi dolmuş kiranın kapanış anı, satır yazılmadan önce ve sonra aynıdır: liste onu kira sonuyla bildirir,
+    /// başka kopyanın begin'i (c) satırı aynı anla yazar. Kaydın sırası, begin'in ne zaman çağrıldığına göre kaymaz.
+    /// </summary>
+    [Fact]
+    public async Task Suresi_dolmus_kiranin_kapanis_ani_yazimdan_once_ve_sonra_ayni()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var expired = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Sending, DateTimeOffset.UtcNow.AddMinutes(-30), machineName: "PC-A");
+        var before = (await Kit.ReadListAsync(await kit.ListAsync(Kit.Cumulative, [owner]))).Records.Single();
+
+        (await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])))
+            .StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var after = (await Kit.ReadListAsync(await kit.ListAsync(Kit.Cumulative, [owner]))).Records.Single();
+
+        (await kit.RecordAsync(expired.Id))!.State.Should().Be(PaymentRequestState.Unconfirmed);
+        before.State.Should().Be("unconfirmed");
+        before.FinishedAt.Should().Be(expired.LeaseUntil);
+        after.State.Should().Be("unconfirmed");
+        after.FinishedAt.Should().Be(before.FinishedAt);
     }
 
     /// <summary>
@@ -605,7 +641,9 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         var problem = await SalesKit.ProblemAsync(resp);
         problem.GetProperty("title").GetString().Should().Be("already-requested");
         Priors(problem).Should().ContainSingle().Which.Should().BeEquivalentTo(new { Id = old.RecordId, Unconfirmed = true });
-        (await kit.RecordAsync(old.RecordId))!.State.Should().Be(PaymentRequestState.Unconfirmed);
+        var closed = await kit.RecordAsync(old.RecordId);
+        closed!.State.Should().Be(PaymentRequestState.Unconfirmed);
+        closed.FinishedAt.Should().BeBefore(closed.LeaseUntil!.Value, "süresi dolmamış kira yeniden başlama anında kapanır");
 
         var confirmed = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner],
             confirmedPriorIds: [old.RecordId]));
@@ -927,7 +965,14 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
 
     // ── Yardımcılar ───────────────────────────────────────────────────────────
 
-    private sealed record Prior(Guid Id, string? Machine, decimal? NetAmount, DateTimeOffset At, bool Unconfirmed);
+    private sealed record Prior(
+        Guid Id,
+        string? Machine,
+        decimal? NetAmount,
+        decimal? TotalBeforeBalance,
+        DateTimeOffset At,
+        DateTimeOffset? FinishedAt,
+        bool Unconfirmed);
 
     private sealed record LiveSession(Guid SessionId, string? Machine);
 
@@ -987,7 +1032,13 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
                 p.GetProperty("id").GetGuid(),
                 p.GetProperty("machine").ValueKind == JsonValueKind.Null ? null : p.GetProperty("machine").GetString(),
                 p.GetProperty("netAmount").ValueKind == JsonValueKind.Null ? null : p.GetProperty("netAmount").GetDecimal(),
+                p.GetProperty("totalBeforeBalance").ValueKind == JsonValueKind.Null
+                    ? null
+                    : p.GetProperty("totalBeforeBalance").GetDecimal(),
                 p.GetProperty("at").GetDateTimeOffset(),
+                p.GetProperty("finishedAt").ValueKind == JsonValueKind.Null
+                    ? null
+                    : p.GetProperty("finishedAt").GetDateTimeOffset(),
                 p.GetProperty("unconfirmed").GetBoolean()))
             .ToList();
 }

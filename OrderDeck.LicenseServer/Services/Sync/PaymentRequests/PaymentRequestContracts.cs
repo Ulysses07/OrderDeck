@@ -47,15 +47,27 @@ public sealed record PaymentRequestBeginResponse(
     DateTimeOffset? LeaseUntil,
     IReadOnlyList<string> Members);
 
-/// <summary><c>already-requested</c>'ın bir öncül kaydı (§6.4-e).</summary>
+/// <summary>
+/// <c>already-requested</c>'ın bir öncül kaydı (§6.4-e). Öncüller <paramref name="FinishedAt"/>'e (sunucu saati), eşitlikte
+/// <paramref name="At"/>'e, sonra Id'ye göre eskiden yeniye sıralıdır: liste ucunun sırası, iki bilgisayarın saati
+/// karşılaştırılmaz.
+/// </summary>
 /// <param name="Machine">Kaydı yazan bilgisayarın adı; bilinmiyorsa null.</param>
-/// <param name="At">Kira için kapanış anı (yoksa başlangıç), kayıt için başlangıç.</param>
+/// <param name="NetAmount">İstenen net tutar (<c>finish</c> ya da geri doldurma); teslim kaydı olmadan dolan kirada
+/// null.</param>
+/// <param name="TotalBeforeBalance">Kiranın istediği bakiyeden önceki tutar (<c>begin</c>'in); kirasız kayıtta null.
+/// <paramref name="NetAmount"/> null iken sorunun gösterebileceği tutar budur ("550 ₺ istenmiş olabilir").</param>
+/// <param name="At">İsteğin anı, gösterim için: kirada sunucunun başlangıç anı, kirasız kayıtta istemcinin anı.</param>
+/// <param name="FinishedAt">Kaydın kapanış anı, sunucu saati: <c>finish</c>, süresi dolmuş kirada kira sonu, kirasız
+/// kayıtta sunucunun alış anı.</param>
 /// <param name="Unconfirmed">Mesaj gitmiş olabilir, sonucu bilinmiyor.</param>
 public sealed record PaymentRequestPrior(
     Guid Id,
     string? Machine,
     decimal? NetAmount,
+    decimal? TotalBeforeBalance,
     DateTimeOffset At,
+    DateTimeOffset? FinishedAt,
     bool Unconfirmed);
 
 /// <summary>

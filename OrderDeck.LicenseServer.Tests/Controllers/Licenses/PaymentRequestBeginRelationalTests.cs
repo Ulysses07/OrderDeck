@@ -104,17 +104,20 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
 
     /// <summary>
     /// §10.1-15: kira doldu (LeaseUntil SQL ile geçmişe alındı), <c>finish</c> gelmedi. Öbür kopyanın <c>begin</c>'i kaydı
-    /// Unconfirmed yapar (Version + 1, FinishedAt) ve <c>already-requested</c>'ı sonucu bilinmeyen olarak alır; yazım
-    /// retten sonra da kalır.
+    /// Unconfirmed yapar (Version + 1, FinishedAt = kira sonu, koşullu UPDATE'te) ve <c>already-requested</c>'ı sonucu
+    /// bilinmeyen olarak alır: istek anı ve istenen tutarla. Yazım retten sonra da kalır.
     /// </summary>
     [Fact]
     public async Task Suresi_dolan_kira_obur_kopyanin_begininde_Unconfirmed_ve_already_requested()
     {
         var owner = Kit.NewId();
-        var lease = await BeginOkAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner]));
+        var order = await _kit.SeedOrderAsync(owner, 550m);
+        var lease = await BeginOkAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner], orderIds: [order.Id],
+            productTotal: 550m));
+        var until = DateTimeOffset.UtcNow.AddMinutes(-1);
         await _kit.Sales.ReadDbAsync(db => db.PaymentRequestRecords
             .Where(r => r.Id == lease.RecordId)
-            .ExecuteUpdateAsync(u => u.SetProperty(r => r.LeaseUntil, DateTimeOffset.UtcNow.AddMinutes(-1))));
+            .ExecuteUpdateAsync(u => u.SetProperty(r => r.LeaseUntil, until)));
 
         var resp = await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcB, owner, [owner]));
 
@@ -128,8 +131,11 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
         var saved = await _kit.RecordAsync(lease.RecordId);
         saved!.State.Should().Be(PaymentRequestState.Unconfirmed);
         saved.Version.Should().Be(1);
-        saved.FinishedAt.Should().NotBeNull();
-        prior.GetProperty("at").GetDateTimeOffset().Should().Be(saved.FinishedAt!.Value);
+        saved.FinishedAt.Should().Be(until);
+        prior.GetProperty("at").GetDateTimeOffset().Should().Be(saved.StartedAt);
+        prior.GetProperty("finishedAt").GetDateTimeOffset().Should().Be(until);
+        prior.GetProperty("totalBeforeBalance").GetDecimal().Should().Be(550m);
+        prior.GetProperty("netAmount").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
         (await _kit.RecordsAsync()).Should().ContainSingle("ret kira yazmaz");
     }
 
@@ -167,7 +173,9 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
         problem.GetProperty("title").GetString().Should().Be("already-requested");
         problem.GetProperty("priors").EnumerateArray().Select(p => p.GetProperty("id").GetGuid())
             .Should().Equal(old.RecordId);
-        (await _kit.RecordAsync(old.RecordId))!.State.Should().Be(PaymentRequestState.Unconfirmed);
+        var closed = await _kit.RecordAsync(old.RecordId);
+        closed!.State.Should().Be(PaymentRequestState.Unconfirmed);
+        closed.FinishedAt.Should().BeBefore(closed.LeaseUntil!.Value, "süresi dolmamış kira yeniden başlama anında kapanır");
 
         var renewed = await BeginOkAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner], confirmedPriorIds: [old.RecordId]));
 
