@@ -116,6 +116,35 @@ public sealed class PaymentRequestRecordRelationalTests : IAsyncLifetime
         saved.RecordOrders.Should().ContainSingle();
     }
 
+    /// <summary>
+    /// §6.4 "Teslim kayıtlarının okunması": liste ucunda kapsam eşitliği ordinaldir. SQL'in varsayılan harmanı yalnız
+    /// harfle ayrılan iki kapsamı (<c>legacy:Abc</c>, <c>legacy:abc</c>) eşit sayar ve ikisinin üye satırlarını da
+    /// getirir; liste her isteği yalnız kendi kapsamının kaydıyla yanıtlar, rozetler ve <c>Covers</c> başka işin kaydına
+    /// bağlanmaz. Süzgeç bellektedir; InMemory SQL'in harf katlamasını taklit etmediği için yalnız burada sınanır.
+    /// </summary>
+    [Fact]
+    public async Task Liste_yalniz_harfle_ayrilan_kapsamlari_ayri_sayar()
+    {
+        var owner = Kit.NewId();
+        var at = DateTimeOffset.UtcNow.AddDays(-2);
+        var upper = Guid.NewGuid();
+        var lower = Guid.NewGuid();
+        var backfill = await _kit.BackfillAsync(Kit.BackfillBody(_pcA,
+            Kit.BackfillItem(upper, owner, [owner], at, scopeKey: "legacy:Abc", netAmount: 10m),
+            Kit.BackfillItem(lower, owner, [owner], at, scopeKey: "legacy:abc", netAmount: 20m)));
+        backfill.StatusCode.Should().Be(HttpStatusCode.OK, await backfill.Content.ReadAsStringAsync());
+        (await Kit.ReadBackfillAsync(backfill)).Records.Should().Equal(
+            new Kit.BackfillResult(upper, "applied"), new Kit.BackfillResult(lower, "applied"));
+
+        foreach (var (scope, expected) in new[] { ("legacy:abc", lower), ("legacy:Abc", upper) })
+        {
+            var list = await _kit.ListAsync(scope, [owner]);
+
+            list.StatusCode.Should().Be(HttpStatusCode.OK, await list.Content.ReadAsStringAsync());
+            (await Kit.ReadListAsync(list)).Records.Select(r => r.Id).Should().Equal([expected], scope);
+        }
+    }
+
     // ── Kurulum ───────────────────────────────────────────────────────────────
 
     /// <summary>

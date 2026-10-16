@@ -393,6 +393,11 @@ public sealed class PaymentRequestLeaseService
     /// <summary>
     /// Kişi×kapsamın bütün kayıtları (her tür ve durum): PersonKey özetiyle (metin bellekte ordinal yeniden denetlenir) ya da
     /// aynı kapsamda üye kesişimiyle (SQL harf duyarsız getirir, üye bellekte ordinal eşleşir).
+    ///
+    /// <para>Kapsam, liste ucunun aksine bellekte ordinal yeniden denetlenmez; bilerek kabadır. <c>begin</c>'in kapsamı
+    /// yalnız <c>cumulative</c> ya da <c>session:{GUID}</c>'dir ve yalnız harfle ayrılan iki <c>session:</c> aynı yayındır.
+    /// Kilit adı (küçük harfe katlanmış) ve tekil <c>Sending</c> indeksi de onları aynı sayar. İnceltmek, aynı yayının
+    /// önceki isteğini <c>already-requested</c> sorusundan düşürürdü.</para>
     /// </summary>
     /// <param name="members">Üyeler ve GUID'li üyelerin kopyaları (<see cref="PaymentPersonResolver.WithCopiesAsync"/>):
     /// birleştirmeden önce yazılmış kayıt, kopyaya dönmüş Id'yle saklanır.</param>
