@@ -272,6 +272,35 @@ public sealed class PaymentRequestBackfillTests : IClassFixture<ApiFactory>, ICl
         (await kit.RecordsAsync()).Select(r => r.Id).Should().BeEquivalentTo([lease.Id, fresh]);
     }
 
+    /// <summary>
+    /// §4.3: lisans değiştiren bilgisayar eski geçmişini yeni lisansa da gönderir. <c>recordId</c> deterministiktir (iş
+    /// Id'si ve teslim sayısı). Sahip, projeksiyonu olmayan lisansta kendisine çözülür. Bu yüzden öğe öbür lisansta
+    /// AYNI özetle kayıtlıdır ve başka kiracının kaydına karşı tek koruma lisans denetimidir: <c>content-conflict</c>.
+    /// Öbür lisansın kaydına üye eklenmez, bu lisansa kayıt yazılmaz.
+    /// </summary>
+    [Fact]
+    public async Task Baska_lisansta_ayni_ozetle_kayitli_Id_content_conflict_uye_eklenmez()
+    {
+        var kit = await Kit.CreateAsync(_factory, SalesSyncMode.Off);
+        var second = await kit.SecondLicenseAsync(SalesSyncMode.Off);
+        var owner = Kit.NewId();
+        var extra = Kit.NewId();
+        var recordId = Guid.NewGuid();
+        var foreign = await second.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+            Kit.BackfillItem(recordId, owner, [owner], At, netAmount: 10m)));
+        (await Kit.ReadBackfillAsync(foreign)).Records.Should().Equal(new Kit.BackfillResult(recordId, "applied"));
+
+        var resp = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+            Kit.BackfillItem(recordId, owner, [owner, extra], At, netAmount: 10m)));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        (await Kit.ReadBackfillAsync(resp)).Records.Should().Equal(new Kit.BackfillResult(recordId, "content-conflict"));
+        var stored = await kit.RecordAsync(recordId);
+        stored!.LicenseId.Should().Be(second.LicenseId);
+        stored.Members.Select(m => m.WpfCustomerId).Should().Equal(owner);
+        (await kit.RecordsAsync()).Should().BeEmpty();
+    }
+
     /// <summary>Aynı partide aynı Id iki kez: ikincisi ilkiyle karşılaştırılır (aynı içerik <c>unchanged</c>, farklısı
     /// <c>content-conflict</c>); tek satır yazılır.</summary>
     [Fact]
