@@ -22,15 +22,18 @@ namespace OrderDeck.LicenseServer.Tools;
 ///   <item><c>adopt-orders --license &lt;guid&gt; --orders &lt;guid,…&gt; --replica &lt;guid&gt; [--apply]</c> — kargo bağı
 ///   bilinmeyen siparişi <c>attach-shipment</c> adayı yapar (§4.6, M22, §15-44). Gövdesi
 ///   <c>SalesSync.AdoptOrders.cs</c>'te.</item>
+///   <item><c>enable --license &lt;guid&gt; [--accept-shipment &lt;guid&gt;]… [--apply]</c> — mod kapısı: ön koşullar
+///   1–6, bilgi raporu 7, kabul edilen kargo dosyası ve açılışta dosyaların türetilmesi (§4.10, M1). Gövdesi
+///   <c>SalesSync.Enable.cs</c>'te; koşullar <see cref="SalesModeGate"/>'te.</item>
 /// </list>
-/// <c>enable</c> ve <c>disable</c> (mod kapısı) S3'ün sonraki adımında gelir; şimdilik kullanım hatasıdır.
+/// <c>disable</c> S3'ün sonraki adımında gelir; şimdilik kullanım hatasıdır.
 ///
 /// <para><b>Kuru koşu varsayılan.</b> Yazan alt komutlar <c>--apply</c> olmadan hiçbir şey yazmaz; yazılacak olanı
 /// basar. <c>status</c> hiç yazmaz; ona <c>--apply</c> vermek kullanım hatasıdır.</para>
 ///
 /// <para>Çıkış kodları: 0 tamam (rapor, kuru koşu, yazıldı ya da yapılacak bir şey yok); 1 eşzamanlı bir değişiklik
-/// kazandı, hiçbir şey yazılmadı — yeniden çalıştır; 2 kullanım, yapılandırma ya da bilinmeyen lisans, yayın veya
-/// kopya.</para>
+/// kazandı ya da (<c>enable --apply</c>) mod kapısının bir koşulu tutmuyor, hiçbir şey yazılmadı; 2 kullanım,
+/// yapılandırma ya da bilinmeyen lisans, yayın, kopya veya kabul edilen dosya.</para>
 ///
 /// <para>Argümanlar katı (<see cref="GroupCustomers"/>, <see cref="SalesAudit"/> deseni): tanınmayan alt komut ya da
 /// argüman, değeri eksik ya da değer yerine seçenek, ikinci kez verilen seçenek (bayrak dahil), GUID olmayan Id,
@@ -58,10 +61,11 @@ public static partial class SalesSync
         + "  sales-sync status --license <guid>\n"
         + "  sales-sync shipping set --license <guid> (--threshold <tutar> --fee <tutar> | --off) [--apply]\n"
         + "  sales-sync force-end --session <guid> [--apply]\n"
-        + "  sales-sync adopt-orders --license <guid> --orders <guid,…> --replica <guid> [--apply]";
+        + "  sales-sync adopt-orders --license <guid> --orders <guid,…> --replica <guid> [--apply]\n"
+        + "  sales-sync enable --license <guid> [--accept-shipment <guid>]... [--apply]";
 
     /// <summary>Kopyaların bildirdiği değerlerin penceresi: mod kapısının "son 14 günde görülen" kopyaları (§4.10-2).</summary>
-    public static readonly TimeSpan RecentWindow = TimeSpan.FromDays(14);
+    public static readonly TimeSpan RecentWindow = SalesModeGate.RecentWindow;
 
     /// <summary>Ayrıştırılmış alt komut.</summary>
     public abstract record SalesSyncArgs;
@@ -106,6 +110,7 @@ public static partial class SalesSync
             StatusArgs status => await RunAsync(db, status, salesSync, output, error, ct),
             ForceEndArgs forceEnd => await RunAsync(db, forceEnd, output, error, ct),
             AdoptOrdersArgs adopt => await RunAsync(db, adopt, output, error, ct),
+            EnableArgs enable => await RunAsync(db, enable, salesSync, output, error, ct),
             _ => throw new InvalidOperationException($"Bilinmeyen alt komut: {parsed.GetType().Name}"),
         };
     }
@@ -184,6 +189,7 @@ public static partial class SalesSync
             "status" => TryParseStatus(args, 2, out parsed),
             "force-end" => TryParseForceEnd(args, 2, out parsed),
             "adopt-orders" => TryParseAdoptOrders(args, 2, out parsed),
+            "enable" => TryParseEnable(args, 2, out parsed),
             _ => false,
         };
     }

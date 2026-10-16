@@ -8,7 +8,7 @@ namespace OrderDeck.LicenseServer.Services.Sync;
 /// <summary>
 /// <c>sales-audit</c>'in salt okunur raporu — spec 2026-10-13 §4.10. Bir lisansın satış senkronu sağlığını sayılar ve
 /// Id'lerle verir; hiçbir şey yazmaz (bütün sorgular izlemesiz, <c>SaveChanges</c> yok). Mod kapısının (S3,
-/// <c>sales-sync enable</c>) kuru koşusu aynı sayıları okuyacak (koşul 5 ve 7).
+/// <c>sales-sync enable</c>) <see cref="SalesModeGate"/>'i aynı raporu okur (koşul 5 ve rapor 7).
 ///
 /// <para><b>Kişisel veri yok.</b> Rapor kullanıcı adı, görünen ad, mesaj metni, ürün kodu ya da makine adı taşımaz;
 /// GUID olmayan (yerel, ham) <c>CustomerId</c>'ler de yalnız sayılır, çünkü ham değerin içeriği bilinmiyor. Kargo ayarı
