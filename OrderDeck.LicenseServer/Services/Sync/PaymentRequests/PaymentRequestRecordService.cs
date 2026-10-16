@@ -199,8 +199,9 @@ public sealed class PaymentRequestRecordService
     /// sahipliği çağıran uçta denetlenmiş olmalı.
     /// <list type="bullet">
     ///   <item>Lisansın, aynı kapsamdaki (ordinal), üyeleri istenen üyelerle kesişen kayıtları. İstenen GUID'li üyeler
-    ///   asıl kayda çözülür (kayıtların üyeleri asıl kayıttır, §6.4-b); SQL harf duyarsız getirir, üye ve kapsam
-    ///   eşitliği bellekte ordinal.</item>
+    ///   asıl kayda çözülür (kayıtların üyeleri yazıldıkları andaki asıl kayıttır, §6.4-b) ve kopyalarıyla genişletilir:
+    ///   birleştirme kayıtları yeniden anahtarlamaz (<see cref="PaymentPersonResolver.WithCopiesAsync"/>). SQL harf
+    ///   duyarsız getirir, üye ve kapsam eşitliği bellekte ordinal.</item>
     ///   <item>Vazgeçilmiş (<c>Abandoned</c>) kayıt girmez. Süresi dolmuş <c>Sending</c> kira yazılmadan
     ///   <c>unconfirmed</c> olarak, kapanış anı kiranın dolduğu an ile bildirilir (§6.4 "Teslim kaydı olmadan dolan
     ///   kira"; yazımı <c>begin</c>'in c adımı yapar). Canlı kiranın kapanış anı yoktur, en yeni sayılır.</item>
@@ -222,8 +223,11 @@ public sealed class PaymentRequestRecordService
                 + $"{PaymentRequestRecord.WpfCustomerIdMaxLength} karakter.");
         var scope = scopeKey!;
 
-        var members = await _people.CanonicalMembersAsync(
-            licenseId, memberIds.Select(m => m!).Distinct(StringComparer.Ordinal), ct);
+        // Kopyalar da: birleştirmeden önce yazılmış kayıt, kopyaya dönmüş Id'yle saklanır.
+        var members = await _people.WithCopiesAsync(
+            licenseId,
+            await _people.CanonicalMembersAsync(licenseId, memberIds.Select(m => m!).Distinct(StringComparer.Ordinal), ct),
+            ct);
         var memberSet = members.ToHashSet(StringComparer.Ordinal);
         var recordIds = (await _db.PaymentRequestMembers.AsNoTracking()
                 .Where(m => m.LicenseId == licenseId && m.ScopeKey == scope && members.Contains(m.WpfCustomerId))

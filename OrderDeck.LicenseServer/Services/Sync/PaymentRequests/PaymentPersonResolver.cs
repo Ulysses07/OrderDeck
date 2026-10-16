@@ -98,6 +98,32 @@ public sealed class PaymentPersonResolver
     }
 
     /// <summary>
+    /// Kayıt aramasının üye kümesi: verilen üyeler ve GUID'li üyelerin kopyaları ("N" hex), ordinal tekil.
+    ///
+    /// <para>Kayıt üyeleri yazıldıkları andaki asıl kayıtla saklanır ve birleştirme onları yeniden anahtarlamaz
+    /// (<see cref="CustomerIdentityMerger"/> ödeme isteği kayıtlarına dokunmaz). t1'e yazılmış kayıt, t1 t2'ye
+    /// birleştirildikten sonra t2'nin kopyalarıyla bulunur. Kayıt sahibini daima üye olarak taşıdığı için PersonKey'i
+    /// <c>c:{t1}</c> olan kayıt da üye kesişimiyle bulunur. Yeniden anahtarlamak yerine okuma genişletilir: tekil
+    /// <c>Sending</c> indeksi ve birincil anahtar birleştirmede çakışabilirdi.</para>
+    /// </summary>
+    /// <param name="members">Asıl kayda çözülmüş üyeler (<see cref="CanonicalMembersAsync"/>, <see cref="ResolveAsync"/>).</param>
+    public async Task<IReadOnlyList<string>> WithCopiesAsync(
+        Guid licenseId, IReadOnlyList<string> members, CancellationToken ct)
+    {
+        var guids = members
+            .Select(m => PaymentPersonKey.TryParseGuid(m, out var id) ? id : (Guid?)null)
+            .OfType<Guid>()
+            .ToList();
+        if (guids.Count == 0) return members;
+        var copies = await _customerIds.CopiesOfAsync(licenseId, guids, ct);
+        if (copies.Count == 0) return members;
+        return members
+            .Concat(copies.Select(c => c.ToString("N")))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
     /// Saklanacak üye satırları. Birincil anahtar <c>(RecordId, WpfCustomerId)</c> varsayılan (harf duyarsız) harmanda:
     /// ordinal farklı ama SQL'de eşit iki GUID'siz ham Id (yalnız harf ya da sondaki boşlukla ayrılan) aynı kayda iki satır
     /// olarak yazılamaz — 500 yerine her çiftin ordinal ilki saklanır (<see cref="StorageKey"/>). GUID'li üyeler küçük harf

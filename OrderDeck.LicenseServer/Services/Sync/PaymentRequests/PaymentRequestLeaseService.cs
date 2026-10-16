@@ -37,7 +37,9 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 ///
 /// <para><b>Eşleme.</b> Kişi×kapsamın kayıtları iki yoldan bulunur: PersonKey özeti (indeks; metin bellekte ordinal yeniden
 /// denetlenir) ya da aynı kapsamdaki üye kesişimi (<c>PaymentRequestMembers</c>; SQL harf duyarsız getirir, üye eşitliği
-/// bellekte ordinal). SQL'in harf ve sondaki boşluk katlaması iki ayrı kişiyi birbirine bağlamaz.</para>
+/// bellekte ordinal). SQL'in harf ve sondaki boşluk katlaması iki ayrı kişiyi birbirine bağlamaz. Üye kesişimi GUID'li
+/// üyelerin kopyalarını da arar: birleştirme kayıtları yeniden anahtarlamaz, birleştirmeden önce yazılmış kayıt kopyaya
+/// dönmüş Id'yle saklanır (<see cref="PaymentPersonResolver.WithCopiesAsync"/>).</para>
 ///
 /// <para><b>Yarışın hakemi</b> filtreli tekil indekstir (DM6). Tekil ihlal 500 değil 409 <c>in-progress-elsewhere</c>
 /// olur; işlem tümüyle geri alınır, yarım üye ya da sipariş satırı kalmaz. Aynı <c>recordId</c>'nin eşzamanlı ikinci
@@ -225,11 +227,12 @@ public sealed class PaymentRequestLeaseService
         }
 
         var members = person.Members.Union(group, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var lookupMembers = await _people.WithCopiesAsync(licenseId, members, ct);
         var now = DateTimeOffset.UtcNow;
 
         // (c) Süresi dolmuş kiralar ve bu kopyanın aynı kişi×kapsamdaki önceki kirası (süreç çöküp yeniden açılmış; mesaj
         // gitmiş olabilir) Unconfirmed olur.
-        var related = await RelatedAsync(licenseId, person, begin.ScopeKey, members, ct);
+        var related = await RelatedAsync(licenseId, person, begin.ScopeKey, lookupMembers, ct);
         var stale = related
             .Where(r => r.State == PaymentRequestState.Sending
                 && (r.LeaseUntil is null || r.LeaseUntil <= now || r.ReplicaId == begin.ReplicaId))
@@ -239,7 +242,7 @@ public sealed class PaymentRequestLeaseService
         if (stale.Count > 0)
         {
             expired = await ExpireAsync(licenseId, stale, begin.ReplicaId, now, ct);
-            related = await RelatedAsync(licenseId, person, begin.ScopeKey, members, ct);
+            related = await RelatedAsync(licenseId, person, begin.ScopeKey, lookupMembers, ct);
         }
 
         // (d) Başka kopyanın canlı kirası.
@@ -374,6 +377,8 @@ public sealed class PaymentRequestLeaseService
     /// Kişi×kapsamın bütün kayıtları (her tür ve durum): PersonKey özetiyle (metin bellekte ordinal yeniden denetlenir) ya da
     /// aynı kapsamda üye kesişimiyle (SQL harf duyarsız getirir, üye bellekte ordinal eşleşir).
     /// </summary>
+    /// <param name="members">Üyeler ve GUID'li üyelerin kopyaları (<see cref="PaymentPersonResolver.WithCopiesAsync"/>):
+    /// birleştirmeden önce yazılmış kayıt, kopyaya dönmüş Id'yle saklanır.</param>
     private async Task<IReadOnlyList<Related>> RelatedAsync(
         Guid licenseId, PaymentPerson person, string scopeKey, IReadOnlyList<string> members, CancellationToken ct)
     {

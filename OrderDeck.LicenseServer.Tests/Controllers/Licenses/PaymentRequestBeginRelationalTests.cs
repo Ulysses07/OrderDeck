@@ -312,6 +312,33 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// §6.4-e: birleştirmeden önce yazılmış teslim kaydı (PersonKey <c>c:t1</c>, üye <c>t1</c>) t1 t2'ye
+    /// birleştirildikten sonra SQL Server'da da bulunur: t2 ile gelen begin 409 <c>already-requested</c>, liste kaydı
+    /// döner.
+    /// </summary>
+    [Fact]
+    public async Task Birlesmeden_once_yazilmis_kayit_asil_kayitla_bulunur()
+    {
+        var t1 = await _kit.SeedProjectionAsync(groupId: null);
+        var t2 = await _kit.SeedProjectionAsync(groupId: null);
+        var delivered = await _kit.SeedRecordAsync("c:" + t1, [t1], PaymentRequestKind.Lease,
+            PaymentRequestState.Delivered, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddMinutes(-59),
+            netAmount: 550m, machineName: "PC-A");
+        await _kit.MergeAsync(t1, into: t2);
+
+        var resp = await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcB, t2, [t2]));
+        var list = await _kit.ListAsync(Kit.Cumulative, [t2]);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("already-requested");
+        problem.GetProperty("priors").EnumerateArray().Select(p => p.GetProperty("id").GetGuid())
+            .Should().Equal(delivered.Id);
+        list.StatusCode.Should().Be(HttpStatusCode.OK, await list.Content.ReadAsStringAsync());
+        (await Kit.ReadListAsync(list)).Records.Select(r => r.Id).Should().Equal(delivered.Id);
+    }
+
+    /// <summary>
     /// §6.4-d, e: kayıtlar SQL Server'da PersonKey özetiyle de bulunur (üye kümesi ayrık): canlı kira 409
     /// <c>in-progress-elsewhere</c>, teslim kaydı 409 <c>already-requested</c>.
     /// </summary>

@@ -513,6 +513,56 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         Priors(await SalesKit.ProblemAsync(resp)).Select(p => p.Id).Should().Equal(second.Id);
     }
 
+    /// <summary>
+    /// §6.4-e: kayıt, yazıldığı andaki asıl kaydın Id'siyle saklanır (PersonKey <c>c:t1</c>, üye <c>t1</c>); birleştirme
+    /// onu yeniden anahtarlamaz. t1 t2'ye birleştirildikten sonra PC-B'nin begin'i kaydı yine bulur ve 409
+    /// <c>already-requested</c> alır. İstek t2 ile ya da hâlâ t1 ile gelebilir (t1 t2'ye çözülür).
+    /// </summary>
+    [Fact]
+    public async Task Birlesmeden_once_teslim_edilmis_istek_asil_kayitla_sorulur()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var t1 = await kit.SeedProjectionAsync(groupId: null);
+        var t2 = await kit.SeedProjectionAsync(groupId: null);
+        var pcA = Guid.NewGuid();
+        var lease = await Kit.ReadAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), pcA, t1, [t1])));
+        var finish = await kit.FinishAsync(lease.RecordId, Kit.FinishBody(pcA, "delivered", netAmount: 550m));
+        finish.StatusCode.Should().Be(HttpStatusCode.OK, await finish.Content.ReadAsStringAsync());
+        await kit.MergeAsync(t1, into: t2);
+
+        var viaCanonical = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), t2, [t2]));
+        var viaCopy = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), t1, [t1]));
+
+        foreach (var resp in new[] { viaCanonical, viaCopy })
+        {
+            resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+            var problem = await SalesKit.ProblemAsync(resp);
+            problem.GetProperty("title").GetString().Should().Be("already-requested");
+            Priors(problem).Select(p => p.Id).Should().Equal(lease.RecordId);
+        }
+        (await kit.RecordsAsync()).Should().ContainSingle("ret kira yazmaz");
+    }
+
+    /// <summary>§6.4-d: birleştirmeden önce açılmış canlı kira, asıl kayıtla gelen başka kopyanın begin'inde 409
+    /// <c>in-progress-elsewhere</c> olur.</summary>
+    [Fact]
+    public async Task Birlesmeden_once_acilmis_canli_kira_asil_kayitla_in_progress_elsewhere()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var t1 = await kit.SeedProjectionAsync(groupId: null);
+        var t2 = await kit.SeedProjectionAsync(groupId: null);
+        var lease = await Kit.ReadAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), t1, [t1])));
+        await kit.MergeAsync(t1, into: t2);
+
+        var resp = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), t2, [t2]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("in-progress-elsewhere");
+        problem.GetProperty("recordId").GetGuid().Should().Be(lease.RecordId);
+        (await kit.RecordsAsync()).Should().ContainSingle();
+    }
+
     // ── (c) süre dolumu ──────────────────────────────────────────────────────
 
     /// <summary>§6.4-c, §10.1-15: başka kopyanın kirası teslim kaydı olmadan doldu — kayıt Unconfirmed olur (FinishedAt,

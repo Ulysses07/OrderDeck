@@ -213,6 +213,24 @@ public sealed class PaymentRequestTestKit
         return id.ToString("N");
     }
 
+    /// <summary>
+    /// Bir kaydı başka bir kayda birleştirir (<c>MergedIntoId</c>), kimlik onarımının ya da devralmanın yazdığı gibi.
+    /// Ödeme isteği kayıtlarına dokunulmaz: birleştirme onları yeniden anahtarlamaz.
+    /// </summary>
+    public Task MergeAsync(string copy, string into) =>
+        Sales.WithDbAsync(async db =>
+        {
+            var copyId = Guid.ParseExact(copy, "N");
+            var row = await db.WpfCustomerProjections.IgnoreQueryFilters()
+                .SingleAsync(p => p.LicenseId == LicenseId && p.Id == copyId);
+            row.MergedIntoId = Guid.ParseExact(into, "N");
+            row.UpdatedAt = DateTimeOffset.UtcNow;
+        });
+
+    /// <summary>Aynı yayıncının (aynı istemci ve kiracı) ikinci bir lisansı.</summary>
+    public async Task<PaymentRequestTestKit> SecondLicenseAsync(SalesSyncMode mode) =>
+        new(await Sales.SecondLicenseAsync(mode));
+
     /// <summary>Devredilmiş bir yayın (sahibi <see cref="SalesCommandTestKit.OwnerReplicaId"/>).</summary>
     public Task<Guid> SeedReleasedSessionAsync() => Sales.SeedSessionAsync(SalesKit.Phase.Released);
 

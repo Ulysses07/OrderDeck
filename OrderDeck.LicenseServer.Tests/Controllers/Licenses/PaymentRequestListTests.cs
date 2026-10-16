@@ -69,6 +69,29 @@ public sealed class PaymentRequestListTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// Kayıt, yazıldığı andaki asıl kaydın Id'siyle saklanır; birleştirme onu yeniden anahtarlamaz. t1'e yazılmış kayıt,
+    /// t1 t2'ye birleştirildikten sonra t2 ile de, hâlâ t1 ile de listelenir (rozetler, <c>Covers</c>).
+    /// </summary>
+    [Fact]
+    public async Task Birlesmeden_once_yazilmis_kayit_asil_kayitla_listelenir()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var t1 = await kit.SeedProjectionAsync(groupId: null);
+        var t2 = await kit.SeedProjectionAsync(groupId: null);
+        var record = await kit.SeedRecordAsync("c:" + t1, [t1], PaymentRequestKind.Lease, PaymentRequestState.Delivered,
+            T0, finishedAt: T0.AddMinutes(1), netAmount: 550m);
+        await kit.MergeAsync(t1, into: t2);
+
+        foreach (var member in new[] { t2, t1 })
+        {
+            var resp = await kit.ListAsync(Kit.Cumulative, [member]);
+
+            resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+            (await Kit.ReadListAsync(resp)).Records.Select(r => r.Id).Should().Equal(record.Id);
+        }
+    }
+
+    /// <summary>
     /// §6.4 "Teslim kaydı olmadan dolan kira": süresi dolmuş canlı kira sonucu bilinmeyen olarak bildirilir, an kiranın
     /// dolduğu an; satır YAZILMAZ (sürüm ve durum aynı). Süresi dolmamış kira canlı (<c>sending</c>) döner ve en yeni
     /// sayılır.
