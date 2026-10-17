@@ -425,6 +425,31 @@ public sealed class DisableRoundTests : IDisposable
         _server.Faults.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Ucuncu_adimin_yazimi_surec_icinde_duserse_sonraki_turun_basinda_cevrilir_gorulen_kip_0()
+    {
+        ServerModeOn();
+        var a = NewPc();
+        var customer = a.Customer();
+        var session = a.EndedSession();
+        var cancel = a.Label(session, customer, 40m, printed: false);
+        await OpenAsync(a);
+        a.Enqueue(new SalesCancelPayload([G(cancel)], "musteri-vazgecti"), [cancel]);
+        a.Exec("CREATE TRIGGER TestFailCancel BEFORE UPDATE OF CancelledAt ON Label BEGIN SELECT RAISE(ABORT, 'test'); END");
+        _server.Disable(DisabledAt);
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.Disabled);
+        a.PendingCount.Should().Be(1, "ön koşul: 3. adım yarıda kaldı");
+
+        a.Exec("DROP TRIGGER TestFailCancel");                // yazımı düşüren geçici sebep geçti; süreç aynı
+
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.ModeOff);
+
+        a.PendingCount.Should().Be(0, "turun başı 3. adımı yeniden koştu — yeniden başlatma beklenmez");
+        _server.States[^1].SeenMode.Should().Be("0", "aynı turun state'i görülen kip 0 taşır");
+        new LabelRepository(a.Db).GetById(cancel)!.CancelledAt.Should().NotBeNull();
+        _server.Faults.Should().BeEmpty();
+    }
+
     // ── komut ucunun mode-off'u ───────────────────────────────────────────
 
     [Fact]

@@ -140,6 +140,35 @@ public sealed class PendingSalesCommandSenderTests : IDisposable
     }
 
     [Fact]
+    public async Task Stale_sonrasi_taze_denemenin_yaniti_kaybolursa_sonraki_tur_son_gonderileni_yeniden_oynatir()
+    {
+        _bed.ModeOn();
+        var (_, _, labels) = _bed.OwnResidual();
+        var intent = QueueCancel(labels);                                       // beklenen sürüm 1
+        _bed.Server.MutateOrder(Guid.ParseExact(labels[0], "N"), o => o with { Price = 175m });   // sunucuda sürüm 2
+        var calls = 0;
+        // Taze sürümle yeniden deneme sunucuda uygulanır ama yanıtı kaybolur.
+        _bed.Server.DuringPush = endpoint =>
+        {
+            if (endpoint == FakeSalesServer.SalesCommands && Interlocked.Increment(ref calls) == 2)
+                _bed.Server.LoseNextResponse(FakeSalesServer.Commands);
+        };
+
+        (await _bed.Sender.FlushAsync(CancellationToken.None)).Kept.Should().Be(1);
+        _bed.Server.DuringPush = null;
+        (await _bed.Sender.FlushAsync(CancellationToken.None)).Sent.Should().Be(1);
+
+        _bed.Server.CommandCalls.Select(c => c.Command.Expected!.Single()!.Version).Should().Equal([1, 2, 2],
+            "saklı niyet son gönderilendir: taze sürüm aynen yinelenir");
+        var log = _bed.Server.CommandLog(intent.CommandId)!;
+        log.Applications.Should().Be(1);
+        log.Replays.Should().Be(1, "aynı içerik: yeniden oynatma — eski niyet saklansaydı content-conflict ve sahte uyarı");
+        _bed.Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog").Should().Be(0);
+        _bed.Settled.SelectMany(s => s.Warnings).Should().BeEmpty();
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Iki_kez_bayat_kalirsa_satir_kuyrukta_kalir_sonraki_gonderim_taze_surumle()
     {
         _bed.ModeOn();
