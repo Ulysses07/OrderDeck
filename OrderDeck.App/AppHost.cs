@@ -643,6 +643,13 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<PendingSalesCommandRepository>();
         services.AddSingleton<Services.Sync.PendingSalesCommandSender>();
 
+        // W2-11 (spec 2026-10-13 §8.5): disable turunun yerel adımları — kip adımı isteğe bağlı parametreyle alır
+        // (CustomerSyncDiTests denetler). Kargo ayarının kopyası CANLI AppSettings örneğine ve diske (Update) yazılır;
+        // bekleyen komutlar aynı LabelService ile yerel yazıma çevrilir. Yarıda kalan 3. adım açılışta, gönderimlerden
+        // önce yeniden koşar (aşağıda, göçten sonra). Satış akışı turu komut istemcisinin mode-off'unu isteğe bağlı
+        // parametreyle dinler.
+        services.AddSingleton<Services.Sync.SalesModeOffRound>();
+
         // W2-05 (spec 2026-10-13 §5.3): düzenleme yönlendiricisi — müşteri kartı, Basılanlar (toplu iptal, yeniden
         // bas) ve yedek çekmecesi bunun üzerinden yazar. Mod Off'ta bugünkü LabelService çağrısı (kapı ve ağ yok).
         // Devir kapısı TEK örnek: kapanış gönderimiyle aynı kilitler. Bağlantı ölçüsü son sales/state'ten (satış akışı
@@ -828,6 +835,19 @@ public sealed class AppHost : IDisposable
             Services.GetRequiredService<IDbConnectionFactory>(),
             Services.GetRequiredService<IClock>().UnixNow(),
             Services.GetRequiredService<ILogger<AppHost>>());
+
+        // Spec 2026-10-13 §8.5 (W2-11): disable turu 2. ile 3. adım arasında kesildiyse (yerel kip 0, bekleyen satış
+        // komutu dolu) 3. adım burada, hiçbir gönderimden önce yeniden koşar: bekleyen iptal ve baskı onayı olağan yerel
+        // yazıma çevrilir. O ana kadar hello ve state görülen kip 1 bildirir. Hata açılışı durdurmaz (her tur yeniden dener).
+        try
+        {
+            Services.GetRequiredService<Services.Sync.SalesModeOffRound>().Resume();
+        }
+        catch (Exception ex)
+        {
+            Services.GetRequiredService<ILogger<AppHost>>().LogWarning(ex,
+                "Satış senkronu Off turunun bekleyen komutları açılışta yerel yazıma çevrilemedi; satış akışı turu yeniden dener");
+        }
 
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).

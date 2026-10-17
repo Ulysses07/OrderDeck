@@ -227,6 +227,19 @@ public static class SalesCommandMessages
         return $"{count.ToString(CultureInfo.InvariantCulture)} etiketin {what} sunucuda işlenemedi: {text}";
     }
 
+    /// <summary>
+    /// Mod Off'a dönüşte (§8.5-3) bekleyen komutun kaydı okunamadı; yerel yazıma çevrilemeden kuyruktan düştü, örtüsü
+    /// kalktı: "2 etiketin bekleyen iptali bu bilgisayara yazılamadı (iç hata); etiketleri kontrol et."
+    /// </summary>
+    public static string PendingNotConverted(string kind, int count)
+    {
+        var what = kind == global::OrderDeck.Licensing.Api.Models.SalesCommandKinds.MarkPrinted
+            ? "bekleyen baskı onayı"
+            : "bekleyen iptali";
+        return $"{count.ToString(CultureInfo.InvariantCulture)} etiketin {what} bu bilgisayara yazılamadı (iç hata); " +
+               "etiketleri kontrol et.";
+    }
+
     /// <summary>Basılan kâğıdın sunucu satırı (başka bilgisayarın yayını; bekleyen komuta girmez, §5.5) işaretlenemedi:
     /// "1 etiketin baskısı sunucuya işlenemedi: …".</summary>
     public static string PrintNotRecorded(int count, string? reason)

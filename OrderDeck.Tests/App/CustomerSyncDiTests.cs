@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using Xunit;
 
@@ -352,6 +354,23 @@ public sealed class CustomerSyncDiTests
         typeof(global::OrderDeck.App.ViewModels.MainShellViewModel).GetConstructors().Single().GetParameters()
             .Should().ContainSingle(p => p.IsOptional
                 && p.ParameterType == typeof(global::OrderDeck.App.ViewModels.RemoteSessionsViewModel));
+    }
+
+    [Fact]
+    public void Off_turunun_yerel_adimlari_canli_ayar_ornegine_ve_ayni_etiket_servisine_baglidir()
+    {
+        // W2-11 (spec 2026-10-13 §8.5, §6.2): kargo ayarının kopyası CANLI AppSettings örneğine yazılmalı — başka bir
+        // örneğe yazılsaydı dekont eşiği ve ödeme isteği yeniden açılışa dek eski yerel değeri okurdu. Bekleyen komutlar
+        // tekil LabelService ile yerel yazıma çevrilir.
+        using var host = new global::OrderDeck.App.AppHost();
+        var round = host.Services.GetRequiredService<SalesModeOffRound>();
+
+        host.Services.GetRequiredService<SalesModeOffRound>().Should().BeSameAs(round);
+        PrivateField<AppSettings>(round, "_liveSettings").Should().BeSameAs(host.Services.GetRequiredService<AppSettings>());
+        PrivateField<SettingsStore>(round, "_settingsStore").Should().BeSameAs(host.Services.GetRequiredService<SettingsStore>());
+        PrivateField<LabelService>(round, "_labelService").Should().BeSameAs(host.Services.GetRequiredService<LabelService>());
+        PrivateField<SalesFeedRepository>(round, "_feed").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesFeedRepository>(), "akışla aynı CustomerBusySet (U13)");
     }
 
     [Fact]
