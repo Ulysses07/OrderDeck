@@ -67,7 +67,10 @@ namespace OrderDeck.Tests.Sync;
 /// <c>expected</c>'le birebir; en yeni türetilmiş açık dosya ya da önerilen Id'yle yeni dosya; tutar türetilir; havuz
 /// yanıt anındaki açık dosyalardan) ve <c>shipment-decision</c> (U12, kargoya verirken türetilmiş dosyada iptalli bağ
 /// çözülür, 409 <c>shipment-shipped</c>/<c>stale</c> + <c>currentShipments</c>); <c>ShipmentSetAt</c>,
-/// <c>AmountDerivedAt</c> ve <c>CommandedAt</c> damgaları.
+/// <c>AmountDerivedAt</c> ve <c>CommandedAt</c> damgaları. W2-09: <c>force-end</c> (<see cref="ForceEndSession"/>:
+/// yalnız canlı yayın, sessizlik eşiği <see cref="ForceEndSilenceMinutes"/>, <c>handing-over</c>, <c>owner-active</c>,
+/// devredilmişte etkisiz başarı); sahibin sessizliği <see cref="SetReplicaLastSeen"/> ile kurulur,
+/// <see cref="DeriveLiveSessions"/> state'in canlı yayın listesini sunucunun devredilmemiş oturumlarından türetir.
 /// <see cref="LoseNextResponse"/> yanıtı kaybolan komutu taklit eder.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
@@ -448,8 +451,20 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
         StateBody state;
         lock (_gate)
-            state = new StateBody(Mode, ModeChangedAt, MinClientVersion, LiveSessions.ToList(), Shipping,
+        {
+            var live = LiveSessions.ToList();
+            if (DeriveLiveSessions)
+                live.AddRange(_serverSessions.Values
+                    .Where(s => s.LicenseId == licenseId && s.ReleasedAt is null)
+                    .OrderBy(s => s.StartedAt)
+                    .Select(s => new LiveSessionBody(s.Id, s.Title, s.StartedAt, s.EndedAt, s.OwnerMachineName,
+                        s.OwnerReplicaId is { } owner && _replicas.TryGetValue((licenseId, owner), out var r)
+                            ? r.LastSeenAt
+                            : null,
+                        s.EndedAt is null ? "live" : "handing-over", s.UnsentLabelCount)));
+            state = new StateBody(Mode, ModeChangedAt, MinClientVersion, live, Shipping,
                 ScrubOrderTextOnPurge, ForceEndSilenceMinutes, LegacyMachines.ToList());
+        }
         return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(state, Web));
     }
 
@@ -718,6 +733,39 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             CommitSession(s, before);
         }
     }
+
+    /// <summary>Bir kopyanın son kalp atışını (<c>WpfReplicas.LastSeenAt</c>) yazar; satır yoksa açar. Başka bilgisayarın
+    /// (hiç istek atmayan) sahip kopyasının sessizliği <c>force-end</c> (§4.6, Y7) ve türetilen canlı yayın listesi
+    /// (<see cref="DeriveLiveSessions"/>) bunu okur.</summary>
+    public void SetReplicaLastSeen(Guid replicaId, DateTimeOffset lastSeenAt, Guid? licenseId = null)
+    {
+        lock (_gate)
+        {
+            var key = (licenseId ?? LicenseId, replicaId);
+            if (!_replicas.TryGetValue(key, out var row))
+                _replicas[key] = row = new Replica { ReplicaId = replicaId, FirstSeenAt = lastSeenAt };
+            row.LastSeenAt = lastSeenAt;
+        }
+    }
+
+    /// <summary>Sahibin <c>Release = false</c> kapanışının bildirdiği gönderilmemiş etiket sayısı (§4.1): devrediliyor
+    /// yayının <c>handing-over</c>'ı ve çipi bunu taşır.</summary>
+    public void SetUnsentLabelCount(Guid sessionId, int? count)
+    {
+        lock (_gate)
+        {
+            var s = _serverSessions[sessionId];
+            var before = s.Stamp();
+            s.UnsentLabelCount = count;
+            CommitSession(s, before);
+        }
+    }
+
+    /// <summary>true: <c>sales/state</c>'in <c>liveSessions</c>'ı elle verilen <see cref="LiveSessions"/>'a ek olarak
+    /// sunucunun devredilmemiş oturumlarından da kurulur (<c>LicensesSalesController.State</c>'in aynası: bitmemiş =
+    /// <c>live</c>, bitmiş = <c>handing-over</c>, son sinyal sahip kopyanın kalp atışı). false (varsayılan): yalnız elle
+    /// verilen liste — eski testlerin beklediği.</summary>
+    public bool DeriveLiveSessions { get; set; }
 
     /// <summary>Oturumun sahibini başka bir kopya yapar (§8.7: devralamayan geri yüklenmiş kopya).</summary>
     public void SetSessionOwner(Guid id, Guid ownerReplicaId)
@@ -1342,18 +1390,18 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     private static readonly string[] KnownCommandKinds =
         ["cancel", "uncancel", "mark-printed", "reprint", "confirm-backup", "set-code-price", "add-backup",
-         "attach-shipment", "shipment-decision"];
+         "attach-shipment", "shipment-decision", "force-end"];
 
     /// <summary><c>attach-shipment</c>'ın aday tavanı (<c>SalesCommandService.MaxSetOrders</c>); testte küçültülür
     /// (<c>too-many-candidates</c>).</summary>
     public int MaxAttachCandidates { get; set; } = MaxSetOrders;
 
     /// <summary>
-    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), şimdilik dokuz tür: <c>cancel</c>,
+    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), on tür: <c>cancel</c>,
     /// <c>uncancel</c>, <c>mark-printed</c>, <c>reprint</c>, <c>confirm-backup</c>, <c>set-code-price</c> (plan sunucuda
     /// kurulur, <see cref="SetCodePrice"/>), <c>add-backup</c> (<see cref="AddBackup"/>), <c>attach-shipment</c>
-    /// (<see cref="AttachShipment"/>) ve <c>shipment-decision</c> (<see cref="DecideShipment"/>); <c>force-end</c>
-    /// sonraki görevin.
+    /// (<see cref="AttachShipment"/>), <c>shipment-decision</c> (<see cref="DecideShipment"/>) ve <c>force-end</c>
+    /// (<see cref="ForceEndSession"/>; W2-09).
     /// Sıra: zarf (v2) → commandId → beklenen sürümler → türün yükü (400'ler <see cref="Faults"/>'a yazılır: istemci
     /// geçersiz gövde göndermemeli) → kalp atışı → mod Off 409 <c>mode-off</c> → alt sürüm 409
     /// <c>client-update-required</c> (UA'daki "OrderDeck-WPF/x" ile <see cref="MinClientVersion"/>; ikisinden biri yoksa
@@ -1402,7 +1450,24 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 }
                 if (command.Kind is "attach-shipment" or "shipment-decision")
                     return ShipmentCommandSucceeded(licenseId, logged.Status, logged.ResultJson, command);
+                if (command.Kind == "force-end")
+                    return CommandSucceeded(licenseId, logged.Status, logged.ResultJson, [],
+                        sessionIds: [command.SessionId!.Value]);
                 return CommandSucceeded(licenseId, logged.Status, logged.ResultJson, command.OrderIds);
+            }
+
+            // force-end (§4.6, Y7, Y8): sipariş taşımaz; yayının hâline ve sahibin sessizliğine bakar.
+            if (command.Kind == "force-end")
+            {
+                if (!ForceEndSession(licenseId, replicaId, command, DateTimeOffset.UtcNow, out var endStatus,
+                        out var endResult, out var endRejected))
+                    return endRejected!;
+                _commandLog[commandId] = new CommandLogEntry
+                {
+                    CommandId = commandId, LicenseId = licenseId, ReplicaId = replicaId, Kind = command.Kind, Hash = hash,
+                    Status = endStatus, ResultJson = endResult, Applications = 1,
+                };
+                return CommandSucceeded(licenseId, endStatus, endResult, [], sessionIds: [command.SessionId!.Value]);
             }
 
             // Kargo komutları (§4.6): yayın görünürlüğü yerine kendi süzgeçleri — kargo bağı her oturum hâlinde
@@ -1498,6 +1563,78 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 });
         }
         return null;
+    }
+
+    /// <summary>
+    /// <c>force-end</c> — <c>ForceEndCommandHandler</c>'ın aynası (§4.6, Y7, Y8, M18): yayın bu lisansta yoksa 400
+    /// <c>unknown-session</c>; devredilmişse etkisiz başarı (<c>unchanged</c>, <c>alreadyReleased = true</c>; devir anı ve
+    /// <c>ForceEndedBy</c> değişmez); devrediliyorsa (bitmiş, devredilmemiş) sahip ne kadar sessiz olursa olsun 409
+    /// <c>handing-over</c> (sahibin bildirdiği gönderilmemiş etiket sayısı, makine ve son sinyal); sahipsiz (miras) canlı
+    /// yayında 409 <c>owner-active</c> ve boş son sinyal; sahibin son kalp atışı <see cref="ForceEndSilenceMinutes"/>'ten
+    /// yeniyse 409 <c>owner-active</c>. Kopya satırı hiç olmayan sahip sessiz sayılır. Etki: <c>EndedAt</c> = şimdi,
+    /// <c>ForceEndedBy</c> = çağıran, devir (yayının siparişlerine <c>SessionReleasedAt</c>, yeni seq).
+    /// </summary>
+    private bool ForceEndSession(Guid licenseId, Guid replicaId, ParsedCommand command, DateTimeOffset now,
+        out string status, out string resultJson, out HttpResponseMessage? rejected)
+    {
+        status = "";
+        resultJson = "";
+        rejected = null;
+        var sessionId = command.SessionId!.Value;
+        if (!_serverSessions.TryGetValue(sessionId, out var session) || session.LicenseId != licenseId)
+        {
+            rejected = InvalidCommand("unknown-session", "Yayın bu lisansta yok.",
+                new Dictionary<string, object?> { ["sessionId"] = sessionId });
+            return false;
+        }
+
+        DateTimeOffset? LastSeenOf(Guid? owner) =>
+            owner is { } o && _replicas.TryGetValue((licenseId, o), out var r) ? r.LastSeenAt : null;
+
+        if (session.ReleasedAt is not null)
+        {
+            status = "unchanged";
+            resultJson = JsonSerializer.Serialize(new CommandResultBody([], [], [], []) { AlreadyReleased = true }, Web);
+            return true;
+        }
+        if (session.EndedAt is not null)
+        {
+            rejected = ProblemResponse(409, "handing-over",
+                "Yayın bitti ama etiketleri henüz gönderilmedi; yayın bilgisayarı bağlanınca yayın düzenlenebilir olur.",
+                new Dictionary<string, object?>
+                {
+                    ["sessionId"] = sessionId, ["unsentLabelCount"] = session.UnsentLabelCount,
+                    ["machine"] = session.OwnerMachineName, ["ownerLastSeenAt"] = LastSeenOf(session.OwnerReplicaId),
+                });
+            return false;
+        }
+        if (session.OwnerReplicaId is not { } owner)
+        {
+            rejected = ProblemResponse(409, "owner-active", "Yayın bilgisayarı hâlâ sinyal veriyor; yayın buradan bitirilemez.",
+                new Dictionary<string, object?>
+                {
+                    ["sessionId"] = sessionId, ["machine"] = session.OwnerMachineName, ["lastSeenAt"] = null,
+                });
+            return false;
+        }
+        if (LastSeenOf(owner) is { } lastSeen && lastSeen > now - TimeSpan.FromMinutes(ForceEndSilenceMinutes))
+        {
+            rejected = ProblemResponse(409, "owner-active", "Yayın bilgisayarı hâlâ sinyal veriyor; yayın buradan bitirilemez.",
+                new Dictionary<string, object?>
+                {
+                    ["sessionId"] = sessionId, ["machine"] = session.OwnerMachineName, ["lastSeenAt"] = lastSeen,
+                });
+            return false;
+        }
+
+        var before = session.Stamp();
+        session.EndedAt = now;
+        session.ReleasedAt = now;
+        session.ForceEndedBy = replicaId.ToString();
+        CommitSession(session, before);
+        status = "applied";
+        resultJson = JsonSerializer.Serialize(new CommandResultBody([], [], [], []), Web);
+        return true;
     }
 
     /// <summary>Yazan dört türün uygulaması (<c>cancel</c>, <c>uncancel</c>, <c>mark-printed</c>, <c>confirm-backup</c>).
@@ -2017,9 +2154,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     }
 
     /// <summary>Başarı yanıtı: siparişler (istenen sırayla, güncel, asıl kayıt + KVKK maskesi), bağlı dosyaları ve
-    /// verilen dosyalar, siparişlerin oturumları.</summary>
+    /// verilen dosyalar, siparişlerin oturumları ve verilen oturumlar (<c>force-end</c>).</summary>
     private HttpResponseMessage CommandSucceeded(Guid licenseId, string status, string resultJson, IReadOnlyList<Guid> orderIds,
-        IReadOnlyList<Guid>? shipmentIds = null)
+        IReadOnlyList<Guid>? shipmentIds = null, IReadOnlyList<Guid>? sessionIds = null)
     {
         var orders = orderIds.Where(id => _orders.TryGetValue(id, out var o) && o.LicenseId == licenseId)
             .Select(id => _orders[id]).ToList();
@@ -2027,7 +2164,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             .Concat(orders.Where(o => o.Row.ShipmentId is not null).Select(o => o.Row.ShipmentId!.Value)).Distinct()
             .Where(id => _shipments.TryGetValue(id, out var s) && s.LicenseId == licenseId)
             .Select(id => _shipments[id].ToFeedItem()).ToList();
-        var sessions = orders.Where(o => o.Row.SessionId is not null).Select(o => o.Row.SessionId!.Value).Distinct()
+        var sessions = orders.Where(o => o.Row.SessionId is not null).Select(o => o.Row.SessionId!.Value)
+            .Concat(sessionIds ?? []).Distinct()
             .Where(id => _serverSessions.TryGetValue(id, out var s) && s.LicenseId == licenseId)
             .Select(id => _serverSessions[id].ToFeedItem()).ToList();
         using var result = JsonDocument.Parse(resultJson);
@@ -2328,6 +2466,28 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     {
                         ShipmentId = shipmentId, Decision = b.Decision, ExpectedVersion = expectedVersion,
                     };
+                    return true;
+                }
+                case "force-end":
+                {
+                    // ForceEndCommandHandler.TryParse: onay her zaman true olmalı; sipariş sürümü taşımaz.
+                    var b = p.Deserialize<ForceEndBody>(Web);
+                    if (b?.SessionId is not { } sessionId || sessionId == Guid.Empty)
+                    {
+                        error = "sessionId boş olamaz.";
+                        return false;
+                    }
+                    if (b.Confirm is not true)
+                    {
+                        error = "confirm true olmalı: yayını bitirmek operatörün onayını ister.";
+                        return false;
+                    }
+                    if (expected.Count > 0)
+                    {
+                        error = "force-end sipariş sürümü taşımaz; expected boş olmalı.";
+                        return false;
+                    }
+                    command = new ParsedCommand(kind, [], $"session={sessionId:N}") { SessionId = sessionId };
                     return true;
                 }
             }
@@ -2820,6 +2980,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary><c>ShipmentDecisionCommandHandler.Body</c>.</summary>
     private sealed record ShipmentDecisionBody(Guid? ShipmentId, string? Decision, int? ExpectedVersion);
 
+    /// <summary><c>ForceEndCommandHandler.Body</c>.</summary>
+    private sealed record ForceEndBody(Guid? SessionId, bool? Confirm);
+
     /// <summary>Doğrulanmış komut: tür, siparişler, kanonik yük (özet için) ve türün alanları.</summary>
     private sealed record ParsedCommand(string Kind, IReadOnlyList<Guid> OrderIds, string Canonical)
     {
@@ -2898,6 +3061,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
         [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         public IReadOnlyList<Guid>? CorrectionIds { get; init; }
+
+        /// <summary><c>force-end</c>: yayın zaten devredilmişti; komut etkisiz.</summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public bool? AlreadyReleased { get; init; }
     }
 
     /// <summary><c>SalesCommandOrderVersion</c>.</summary>
