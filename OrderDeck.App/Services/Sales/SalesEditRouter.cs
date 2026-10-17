@@ -45,9 +45,15 @@ public sealed class SalesEditRouter : ILabelEditor
     private readonly SalesSyncStateRepository _state;
     private readonly HandoverGate _handover;
     private readonly SalesCommandClient _commands;
+    private readonly PendingSalesCommandSender _pending;
     private readonly SalesConnectivity _connectivity;
     private readonly Func<DateTimeOffset?> _lastFeedSyncAt;
     private readonly ILogger<SalesEditRouter> _log;
+
+    /// <summary>Bekleyen komutun anlık gönderiminin (kuyruk iptali, kâğıdın <c>mark-printed</c>'i) en çok beklenme süresi
+    /// (§5.6-2'nin baskı öncesi turuyla aynı). Süre dolunca beklenmez; gönderim arka planda biter, sonucu
+    /// <see cref="PendingSalesCommandSender.Settled"/> ile gelir, komut zaten kalıcı kuyrukta.</summary>
+    internal static readonly TimeSpan ImmediateSendBudget = TimeSpan.FromSeconds(3);
 
     /// <param name="lastFeedSyncAt">Satış akışının bu süreçte son yetiştiği an (çevrimdışı yeniden baskının notu).</param>
     public SalesEditRouter(
@@ -57,6 +63,7 @@ public sealed class SalesEditRouter : ILabelEditor
         SalesSyncStateRepository state,
         HandoverGate handover,
         SalesCommandClient commands,
+        PendingSalesCommandSender pending,
         SalesConnectivity connectivity,
         Func<DateTimeOffset?> lastFeedSyncAt,
         ILogger<SalesEditRouter> log)
@@ -67,6 +74,7 @@ public sealed class SalesEditRouter : ILabelEditor
         _state = state;
         _handover = handover;
         _commands = commands;
+        _pending = pending;
         _connectivity = connectivity;
         _lastFeedSyncAt = lastFeedSyncAt;
         _log = log;
@@ -271,6 +279,245 @@ public sealed class SalesEditRouter : ILabelEditor
         {
             foreach (var lease in leases) lease.Dispose();
         }
+    }
+
+    // ── kuyruk: kalıntı etiketler (§5.5) ───────────────────────────────────
+
+    public Task<SalesEditResult> CancelQueueAsync(IReadOnlyList<string> labelIds, string reason, CancellationToken ct = default)
+    {
+        if (labelIds.Count == 0) return Task.FromResult(SalesEditResult.Empty);
+        // Mod Off: bugünkü çağrı, beklemeden.
+        if (Decide(labelIds) is not { } decisions)
+        {
+            _labels.Cancel(labelIds, reason);
+            return Task.FromResult(SalesEditResult.AllLocal(labelIds));
+        }
+        return CancelQueueModeOnAsync(decisions, reason, ct);
+    }
+
+    /// <summary>
+    /// Mod On'un kuyruk iptali: kapalı etiketler sorun; yerel ve kapılı etiketler TEK yerel yazımda; devredilmiş KENDİ
+    /// yayınının kalıntıları sabit kimlikli <c>cancel</c> ile — önce bekleyen komut (kalıcı, örtülü), çevrimiçiyse hemen
+    /// gönderilir (en çok <see cref="ImmediateSendBudget"/> beklenir). Başka bilgisayarın yayını bekleyen komuta girmez:
+    /// bugünkü komut yolu (çevrimdışıyken sorun).
+    /// </summary>
+    private async Task<SalesEditResult> CancelQueueModeOnAsync(
+        IReadOnlyList<SalesEditDecision> decisions, string reason, CancellationToken ct)
+    {
+        var result = new ResultBuilder();
+        foreach (var d in decisions.Where(d => d.Route == SalesEditRoute.Blocked))
+            result.Problem(d.Reason ?? SalesCommandMessages.Failed, d.LabelId);
+
+        var local = decisions.Where(d => d.Route is SalesEditRoute.Local or SalesEditRoute.LocalGated).ToList();
+        var written = WriteLocal(local, ids => _labels.Cancel(ids, reason), result);
+
+        var (own, remote) = SplitServerLabels(decisions);
+        var online = decisions.Any(d => d.Route == SalesEditRoute.Command);
+
+        if (remote.Count > 0)
+        {
+            if (!online)
+                result.Problem(decisions.First(d => d.Route == SalesEditRoute.Unavailable).Reason ?? SalesCommandMessages.Offline,
+                    remote);
+            else
+            {
+                var outcome = await _commands.SendAsync(_commands.Cancel(remote, reason), ct).ConfigureAwait(false);
+                _connectivity.Report(outcome.Status);
+                result.Changed(outcome.LabelIds);
+                if (outcome.IsApplied) result.Applied(remote);
+                else result.Problem(outcome.Message ?? SalesCommandMessages.Failed, remote);
+            }
+        }
+
+        if (own.Count > 0)
+        {
+            var settled = await QueueAndSendAsync(_commands.Cancel(own, reason), own, online, ct).ConfigureAwait(false);
+            switch (settled.State)
+            {
+                case PendingState.Applied:
+                    result.Applied(own);
+                    break;
+                case PendingState.Pending:
+                    result.Pending(own);
+                    break;
+                case PendingState.Dropped:
+                    result.Notice(settled.Flush!.Settled.Warnings);
+                    break;
+                default:
+                    result.Problem(SalesCommandMessages.ModeOff, own);
+                    break;
+            }
+            if (settled.Flush is { } flush) result.Changed(flush.Settled.ChangedLabelIds);
+        }
+
+        _log.LogInformation(
+            "Kuyruk iptali: {Local} yerel, {Own} kalıntı (komut; {Pending} bekliyor), {Remote} başka bilgisayarın; {Problems} etiket uygulanamadı",
+            written, own.Count, result.PendingCount, remote.Count, result.ProblemCount);
+        return result.Build();
+    }
+
+    public Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default)
+    {
+        if (paperOrder.Count == 0) return Task.FromResult(SalesPrintMarkResult.Empty);
+        // Mod Off: bugünkü çağrı, beklemeden.
+        if (Decide(paperOrder) is not { } decisions)
+        {
+            _labels.MarkPrintedAndRecord(paperOrder);
+            return Task.FromResult(SalesPrintMarkResult.AllLocal(paperOrder));
+        }
+        return MarkPrintedModeOnAsync(paperOrder, decisions, ct);
+    }
+
+    /// <summary>
+    /// Mod On'un kâğıt işaretlemesi (§5.6-4): TEK basış kimliği, kâğıt sırası kesintisiz. Kendi bitmiş ama devredilmemiş
+    /// yayınlarının kilidi (kapanış gönderimi o an "kuyruk boş mu" kararındaysa) beklenerek alınır ve karar kilit altında
+    /// yeniden verilir: devir arada görüldüyse o satırlar da sunucu yoluna geçer. Kâğıt zaten basıldığı için kapalı
+    /// (ilk yetişme) satır da yerelde damgalanır — sunucu devredilmiş yayına baskı doldurmayı kabul eder (K3). Kendi
+    /// devredilmiş yayınının satırları bekleyen <c>mark-printed</c> (kalıcı önce), başka bilgisayarınkiler doğrudan komut.
+    /// </summary>
+    private async Task<SalesPrintMarkResult> MarkPrintedModeOnAsync(
+        IReadOnlyList<string> paperOrder, IReadOnlyList<SalesEditDecision> first, CancellationToken ct)
+    {
+        var batchId = LabelService.NewPrintBatchId();
+        var seqOf = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < paperOrder.Count; i++) seqOf.TryAdd(paperOrder[i], i + 1);
+
+        var gated = first.Where(d => d.Route is SalesEditRoute.LocalGated or SalesEditRoute.Blocked)
+            .Select(d => d.SessionId!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var leases = new List<IDisposable>();
+        IReadOnlyList<SalesEditDecision> decisions;
+        List<string> local;
+        try
+        {
+            foreach (var sessionId in gated)
+                leases.Add(await _handover.EnterAsync(sessionId, ct).ConfigureAwait(false));
+            decisions = gated.Count == 0 ? first : Decide(paperOrder) ?? AllLocal(paperOrder);
+            local = decisions
+                .Where(d => d.Route is SalesEditRoute.Local or SalesEditRoute.LocalGated or SalesEditRoute.Blocked)
+                .Select(d => d.LabelId).ToList();
+            if (local.Count > 0)
+                _labels.MarkPrintedAndRecord(local, batchId, local.Select(id => seqOf[id]).ToList());
+        }
+        finally
+        {
+            foreach (var lease in leases) lease.Dispose();
+        }
+
+        var marked = new List<string>(local);
+        var pending = new List<string>();
+        var discard = new HashSet<string>(StringComparer.Ordinal);
+        var notices = new List<string>();
+        var changed = new HashSet<string>(local, StringComparer.Ordinal);
+        var (own, remote) = SplitServerLabels(decisions);
+        var online = decisions.Any(d => d.Route == SalesEditRoute.Command);
+
+        if (own.Count > 0)
+        {
+            var intent = _commands.MarkPrinted(batchId, own.Select(id => (id, seqOf[id])).ToList());
+            var settled = await QueueAndSendAsync(intent, own, online, ct).ConfigureAwait(false);
+            switch (settled.State)
+            {
+                case PendingState.Applied:
+                    marked.AddRange(own);
+                    break;
+                case PendingState.Pending:
+                    pending.AddRange(own);
+                    break;
+                case PendingState.Dropped:
+                    notices.AddRange(settled.Flush!.Settled.Warnings);
+                    break;
+                default:
+                    notices.Add(SalesCommandMessages.PrintNotRecorded(own.Count, SalesCommandMessages.ModeOff));
+                    break;
+            }
+            if (settled.Flush is { } flush)
+            {
+                discard.UnionWith(flush.Settled.DiscardLabelIds);
+                changed.UnionWith(flush.Settled.ChangedLabelIds);
+            }
+        }
+
+        if (remote.Count > 0)
+        {
+            if (!online)
+                notices.Add(SalesCommandMessages.PrintNotRecorded(remote.Count,
+                    decisions.First(d => d.Route == SalesEditRoute.Unavailable).Reason));
+            else
+            {
+                var outcome = await _commands.SendAsync(
+                        _commands.MarkPrinted(batchId, remote.Select(id => (id, seqOf[id])).ToList()), ct)
+                    .ConfigureAwait(false);
+                _connectivity.Report(outcome.Status);
+                changed.UnionWith(outcome.LabelIds);
+                if (outcome.IsApplied)
+                {
+                    marked.AddRange(remote);
+                    var asked = remote.ToHashSet(StringComparer.Ordinal);
+                    discard.UnionWith((outcome.Result?.Cancelled ?? []).Concat(outcome.Result?.AlreadyPrinted ?? [])
+                        .Select(id => id.ToString("N")).Where(asked.Contains));
+                }
+                else notices.Add(SalesCommandMessages.PrintNotRecorded(remote.Count, outcome.Message));
+            }
+        }
+
+        _log.LogInformation(
+            "Kuyruk baskısı {BatchId}: {Local} yerel, {Own} kalıntı (komut; {Pending} bekliyor), {Remote} başka bilgisayarın; {Discard} kâğıt imha edilecek",
+            batchId, local.Count, own.Count, pending.Count, remote.Count, discard.Count);
+        return new SalesPrintMarkResult(marked, pending, discard.ToList(), notices, changed.ToList());
+    }
+
+    private enum PendingState { Applied, Pending, Dropped, NotQueued }
+
+    private readonly record struct PendingSettlement(PendingState State, PendingSalesCommandFlush? Flush);
+
+    /// <summary>
+    /// Kalıntının komutu: önce bekleyen komut olarak kalıcı yazılır (örtü — kâğıt ya da iptal artık yeniden teklif
+    /// edilmez), çevrimiçiyse hemen gönderilir. Gönderim <see cref="ImmediateSendBudget"/> içinde bitmezse beklenmez:
+    /// sonucu arka planda işlenir (<see cref="PendingSalesCommandSender.Settled"/>), sonucu bilinmeyen komut zaten kuyrukta.
+    /// </summary>
+    private async Task<PendingSettlement> QueueAndSendAsync(
+        SalesCommandIntent intent, IReadOnlyList<string> labelIds, bool online, CancellationToken ct)
+    {
+        if (!_pending.Enqueue(intent, labelIds)) return new(PendingState.NotQueued, null);
+        if (!online) return new(PendingState.Pending, null);
+
+        var send = _pending.SendNowAsync(intent.CommandId, CancellationToken.None);
+        _ = send.ContinueWith(t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+        if (await Task.WhenAny(send, Task.Delay(ImmediateSendBudget, ct)).ConfigureAwait(false) != send)
+        {
+            _log.LogInformation("Bekleyen satış komutu {Kind} {CommandId}: anlık gönderim süresinde bitmedi; arka planda sürüyor",
+                intent.Kind, intent.CommandId);
+            return new(PendingState.Pending, null);
+        }
+        PendingSalesCommandFlush flush;
+        try { flush = await send.ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Bekleyen satış komutu {Kind} {CommandId}: anlık gönderim düştü; kuyrukta kaldı",
+                intent.Kind, intent.CommandId);
+            return new(PendingState.Pending, null);
+        }
+        var state = flush.Sent > 0 ? PendingState.Applied
+            : flush.Dropped > 0 ? PendingState.Dropped
+            : PendingState.Pending;
+        return new(state, flush);
+    }
+
+    /// <summary>Sunucu yolundaki etiketler (komut ya da bağlantısız): bu bilgisayarın yayınları (kalıntı; bekleyen
+    /// komuta girebilir) ve başka bilgisayarınkiler.</summary>
+    private (List<string> Own, List<string> Remote) SplitServerLabels(IReadOnlyList<SalesEditDecision> decisions)
+    {
+        var own = new List<string>();
+        var remote = new List<string>();
+        var origin = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var d in decisions.Where(d => d.Route is SalesEditRoute.Command or SalesEditRoute.Unavailable))
+        {
+            if (!origin.TryGetValue(d.SessionId!, out var o))
+                origin[d.SessionId!] = o = _sessions.GetById(d.SessionId!)?.Origin;
+            (o == StreamSessionOrigin.Local ? own : remote).Add(d.LabelId);
+        }
+        return (own, remote);
     }
 
     // ── yeniden baskı ──────────────────────────────────────────────────────
@@ -580,12 +827,24 @@ public sealed class SalesEditRouter : ILabelEditor
     private sealed class ResultBuilder
     {
         private readonly List<string> _applied = new();
+        private readonly List<string> _pending = new();
+        private readonly List<string> _notices = new();
         private readonly HashSet<string> _changed = new(StringComparer.Ordinal);
         private readonly List<(string Message, List<string> Ids)> _problems = new();
 
         public int ProblemCount => _problems.Sum(p => p.Ids.Count);
 
+        public int PendingCount => _pending.Count;
+
         public void Applied(IEnumerable<string> ids) => _applied.AddRange(ids);
+
+        public void Pending(IEnumerable<string> ids) => _pending.AddRange(ids);
+
+        public void Notice(IEnumerable<string> texts)
+        {
+            foreach (var text in texts)
+                if (!_notices.Contains(text)) _notices.Add(text);
+        }
 
         public void Changed(IEnumerable<string> ids) => _changed.UnionWith(ids);
 
@@ -601,6 +860,8 @@ public sealed class SalesEditRouter : ILabelEditor
         public SalesEditResult Build() => new(
             _applied.ToList(),
             _problems.Select(p => new SalesEditProblem(p.Message, p.Ids)).ToList(),
-            _changed.ToList());
+            _changed.ToList(),
+            _pending.Count == 0 ? null : _pending.ToList(),
+            _notices.Count == 0 ? null : _notices.ToList());
     }
 }

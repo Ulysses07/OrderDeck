@@ -645,6 +645,7 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<SalesSyncStateRepository>(),
             sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
             sp.GetRequiredService<Services.Sync.SalesCommandClient>(),
+            sp.GetRequiredService<Services.Sync.PendingSalesCommandSender>(),
             sp.GetRequiredService<Services.Sales.SalesConnectivity>(),
             () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().Status.LastCaughtUpAt,
             sp.GetRequiredService<ILogger<Services.Sales.SalesEditRouter>>()));

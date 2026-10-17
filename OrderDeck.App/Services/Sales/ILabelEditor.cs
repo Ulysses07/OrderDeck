@@ -44,12 +44,24 @@ public sealed record SalesEditProblem(string Message, IReadOnlyList<string> Labe
 /// <param name="Problems">Uygulanamayanlar, sebebe göre gruplu.</param>
 /// <param name="ChangedLabelIds">Yerelde değeri değişmiş olabilecek etiketler (yerel yazım ve komut yanıtının
 /// satırları, 409'un güncel satırları dahil); ekran bunları tazeler.</param>
+/// <param name="Pending">Kuyruk iptalinde (§5.5) bekleyen komuta giren kalıntı etiketler: sunucuya henüz işlenmedi ama
+/// yerel okuyucular uygulanmış sayar (örtü) — kuyruktan çıkarlar. Öbür düzenlemelerde boş.</param>
+/// <param name="Notices">Bekleyen komutun anlık gönderiminde kalıcı ret gibi, belirli bir etiket grubuna bağlı olmayan
+/// satır içi uyarılar (<see cref="SalesCommandMessages.PendingRejected"/>); yoksa boş.</param>
 public sealed record SalesEditResult(
     IReadOnlyList<string> Applied,
     IReadOnlyList<SalesEditProblem> Problems,
-    IReadOnlyList<string> ChangedLabelIds)
+    IReadOnlyList<string> ChangedLabelIds,
+    IReadOnlyList<string>? Pending = null,
+    IReadOnlyList<string>? Notices = null)
 {
     public static SalesEditResult Empty { get; } = new([], [], []);
+
+    /// <summary>Bekleyen komuta giren etiketler (örtülü); yoksa boş.</summary>
+    public IReadOnlyList<string> PendingLabelIds => Pending ?? [];
+
+    /// <summary>Satır içi uyarılar; yoksa boş.</summary>
+    public IReadOnlyList<string> NoticeTexts => Notices ?? [];
 
     /// <summary>Bugünkü yol: hepsi yerelde yazıldı.</summary>
     public static SalesEditResult AllLocal(IReadOnlyList<string> labelIds) => new(labelIds, [], labelIds);
@@ -72,6 +84,26 @@ public sealed record SalesEditResult(
         var t = text.Trim();
         return t.EndsWith('.') || t.EndsWith('!') || t.EndsWith('?') ? t : t + ".";
     }
+}
+
+/// <summary>Kuyruk baskısının işaretlenmesi (spec 2026-10-13 §5.6-4, §5.5): kâğıt basıldıktan sonra.</summary>
+/// <param name="Marked">Basılmış işaretlenen etiketler (yerel yazım ya da uygulanan komut; zaten basılmış olan dahil).</param>
+/// <param name="Pending">Kâğıdı basılan ama sunucuya henüz işlenmeyen kalıntı etiketler: bekleyen <c>mark-printed</c>'de,
+/// örtülü — yeniden açılışta da teklif edilmez.</param>
+/// <param name="DiscardLabelIds">Sunucunun <c>cancelled[]</c> ve <c>alreadyPrinted[]</c>'i: "kâğıtları imha et".</param>
+/// <param name="Notices">Satır içi uyarılar (işaretlenemeyen sunucu satırı, kalıcı ret); yoksa boş.</param>
+/// <param name="ChangedLabelIds">Yerelde değeri değişmiş olabilecek etiketler.</param>
+public sealed record SalesPrintMarkResult(
+    IReadOnlyList<string> Marked,
+    IReadOnlyList<string> Pending,
+    IReadOnlyList<string> DiscardLabelIds,
+    IReadOnlyList<string> Notices,
+    IReadOnlyList<string> ChangedLabelIds)
+{
+    public static SalesPrintMarkResult Empty { get; } = new([], [], [], [], []);
+
+    /// <summary>Bugünkü yol: hepsi yerelde damgalandı.</summary>
+    public static SalesPrintMarkResult AllLocal(IReadOnlyList<string> labelIds) => new(labelIds, [], [], [], labelIds);
 }
 
 /// <summary>Yeniden baskının planı (§5.6): basılacak satırlar (istenen sırayla, basılmış ve iptal edilmemiş),
@@ -183,6 +215,25 @@ public interface ILabelEditor
 
     /// <summary>İptal (<see cref="LabelService.Cancel"/> ya da <c>cancel</c> komutu).</summary>
     Task<SalesEditResult> CancelAsync(IReadOnlyList<string> labelIds, string reason, CancellationToken ct = default);
+
+    /// <summary>
+    /// Kuyruktan çıkarma ve kuyruğu temizleme (spec 2026-10-13 §5.3 "Kuyruktan çıkar", "Kuyruğu temizle"; §5.5). Mod
+    /// Off'ta bugünkü <see cref="LabelService.Cancel"/>, beklemeden. Mod On'da canlı ve yerel yayınların etiketleri
+    /// yerelde; devredilmiş KENDİ yayınının kalıntı etiketleri sabit kimlikli <c>cancel</c> komutuyla — önce bekleyen
+    /// komut olarak kalıcı yazılır (örtü), çevrimiçiyse hemen gönderilir; çevrimdışıyken ya da komut ucu yokken kuyrukta
+    /// bekler (<see cref="SalesEditResult.PendingLabelIds"/>). Başka bilgisayarın yayını bekleyen komuta girmez.
+    /// </summary>
+    Task<SalesEditResult> CancelQueueAsync(IReadOnlyList<string> labelIds, string reason, CancellationToken ct = default);
+
+    /// <summary>
+    /// Kuyruk baskısının işaretlenmesi, kâğıt basıldıktan SONRA (§5.6-4). Mod Off'ta bugünkü
+    /// <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string})"/>, beklemeden. Mod On'da tek basış kimliği ve
+    /// kâğıt sırası: yerel satırlar <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string}, string, IReadOnlyList{int})"/>
+    /// ile, devredilmiş kendi yayınının satırları bekleyen <c>mark-printed</c> komutuyla (kalıcı önce; çevrimiçiyse hemen
+    /// gönderilir).
+    /// </summary>
+    /// <param name="paperOrder">Basılan etiketler, kâğıt sırasıyla.</param>
+    Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default);
 
     /// <summary>İptali geri alma (<see cref="LabelService.Uncancel"/> ya da <c>uncancel</c> komutu).</summary>
     Task<SalesEditResult> UncancelAsync(IReadOnlyList<string> labelIds, CancellationToken ct = default);

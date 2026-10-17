@@ -113,7 +113,7 @@ internal sealed class SalesEditTestBed : IDisposable
         Sender = new PendingSalesCommandSender(Pending, Commands, new SalesConflictLogRepository(Db), stateRepo,
             Connectivity, new Clock(this), NullLogger<PendingSalesCommandSender>.Instance);
         Sender.Settled += (_, e) => { lock (Settled) Settled.Add(e); };
-        Router = new SalesEditRouter(Labels, LabelRepo, Sessions, stateRepo, Gate, Commands, Connectivity,
+        Router = new SalesEditRouter(Labels, LabelRepo, Sessions, stateRepo, Gate, Commands, Sender, Connectivity,
             () => LastFeedSyncAt, NullLogger<SalesEditRouter>.Instance);
     }
 

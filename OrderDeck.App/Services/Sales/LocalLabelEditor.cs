@@ -24,6 +24,16 @@ public sealed class LocalLabelEditor(LabelService labels) : ILabelEditor
         return Task.FromResult(SalesEditResult.AllLocal(labelIds));
     }
 
+    public Task<SalesEditResult> CancelQueueAsync(IReadOnlyList<string> labelIds, string reason, CancellationToken ct = default) =>
+        CancelAsync(labelIds, reason, ct);
+
+    public Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default)
+    {
+        if (paperOrder.Count == 0) return Task.FromResult(SalesPrintMarkResult.Empty);
+        labels.MarkPrintedAndRecord(paperOrder);
+        return Task.FromResult(SalesPrintMarkResult.AllLocal(paperOrder));
+    }
+
     public Task<SalesEditResult> UncancelAsync(IReadOnlyList<string> labelIds, CancellationToken ct = default)
     {
         if (labelIds.Count == 0) return Task.FromResult(SalesEditResult.Empty);
