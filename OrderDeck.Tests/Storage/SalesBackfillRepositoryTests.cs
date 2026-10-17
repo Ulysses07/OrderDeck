@@ -89,28 +89,39 @@ public sealed class SalesBackfillRepositoryTests : IDisposable
     // ── okuma ──────────────────────────────────────────────────────────────
 
     [Fact]
-    public void Okuma_yalniz_yerel_ve_onayli_satirlari_rowid_sirasiyla_partiler()
+    public void Okuma_yalniz_yerel_ve_onayli_satirlari_rowid_sirasiyla_partiler_imlec_bekleyen_satiri_gecmez()
     {
         var a = AddSession();
         var pending = AddSession(synced: false);
         var remote = AddSession(origin: "remote");
         var b = AddSession(endedAt: null);
         var la1 = AddLabel(a);
-        AddLabel(a, synced: false);
+        var pendingLabel = AddLabel(a, synced: false);
         AddLabel(remote);
         var lb1 = AddLabel(b);
         var la2 = AddLabel(a);
 
-        _repo.GetSessionsAfter(0, 10).Select(r => r.Session.Id).Should().Equal(a, b);
-        var first = _repo.GetSessionsAfter(0, 1).Single();
+        // Oturumlar: sayfa ilk bekleyen yerel oturumda biter; uzak oturum tutmaz ve gitmez.
+        var first = _repo.GetSessionsAfter(0, 10).Should().ContainSingle().Subject;
         first.Session.Id.Should().Be(a);
-        _repo.GetSessionsAfter(first.RowId, 10).Select(r => r.Session.Id).Should().Equal(b);
-        _ = pending;
+        _repo.GetSessionsAfter(first.RowId, 10).Should().BeEmpty("imleç bekleyen oturumu geçmez");
+        _repo.GetSessionWait(first.RowId).Should().Be(new BackfillWait(pending, 1));
+        Exec("UPDATE StreamSession SET SyncedAt = @at WHERE Id = @pending", new { at = T0 + 20, pending });
+        var rest = _repo.GetSessionsAfter(first.RowId, 10);
+        rest.Select(r => r.Session.Id).Should().Equal(pending, b);
+        _repo.GetSessionWait(rest[^1].RowId).Should().BeNull("imleçten sonra yerel oturum yok: aşama bitti");
 
+        // Etiketler: aynı kural; parti sınırı.
         var labels = _repo.GetLabelsAfter(0, 10);
-        labels.Select(r => r.Label.Id).Should().Equal(la1, lb1, la2);
-        labels.Select(r => r.RowId).Should().BeInAscendingOrder();
-        _repo.GetLabelsAfter(labels[0].RowId, 1).Select(r => r.Label.Id).Should().Equal(lb1);
+        labels.Select(r => r.Label.Id).Should().Equal(la1);
+        _repo.GetLabelsAfter(labels[0].RowId, 10).Should().BeEmpty();
+        _repo.GetLabelWait(labels[0].RowId).Should().Be(new BackfillWait(pendingLabel, 1));
+        Exec("UPDATE Label SET SyncedAt = @at WHERE Id = @pendingLabel", new { at = T0 + 20, pendingLabel });
+        var after = _repo.GetLabelsAfter(labels[0].RowId, 10);
+        after.Select(r => r.Label.Id).Should().Equal(pendingLabel, lb1, la2);
+        after.Select(r => r.RowId).Should().BeInAscendingOrder();
+        _repo.GetLabelsAfter(labels[0].RowId, 1).Select(r => r.Label.Id).Should().Equal(pendingLabel);
+        _repo.GetLabelWait(after[^1].RowId).Should().BeNull();
     }
 
     [Fact]

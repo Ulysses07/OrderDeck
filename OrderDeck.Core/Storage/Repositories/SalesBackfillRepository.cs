@@ -18,6 +18,17 @@ public sealed record BackfillLabelRow(long RowId, LabelPushRow Label);
 /// <summary>Bir kargo dosyası, <c>rowid</c>'i ve ona bağlı yerel etiketler.</summary>
 public sealed record BackfillShipmentRow(long RowId, string ShipmentId, IReadOnlyList<string> LabelIds);
 
+/// <summary>
+/// Geri doldurma imleci neden duruyor (§8.2-3): imleçten sonra yerel satır var ama ilki gönderilmeyi bekliyor.
+/// Bekleyen satır sunucuda v1 döneminden zaten olabilir; olağan push onu güncelleme dalında yazar ve kaynak kopyayı
+/// (<c>Orders.OriginReplicaId</c>) ya da sahibi (<c>OwnerReplicaId</c>) doldurmaz — onları yalnız geri doldurma
+/// doldurur. İmleç bu yüzden satırı geçmez; push onaylayınca satır geri doldurmaya girer.
+/// </summary>
+/// <param name="PendingId">İmleçten sonraki ilk bekleyen satır; sayfa okumasından beri onaylandıysa <c>null</c>
+/// (sonraki tur sürer).</param>
+/// <param name="Pending">İmleçten sonraki bekleyen satır sayısı.</param>
+public sealed record BackfillWait(string? PendingId, int Pending);
+
 /// <summary>Bir ServerVersion yazımı: yalnız satır okunduğundan beri değişmediyse (<paramref name="Revision"/>).</summary>
 public readonly record struct BackfillVersion(string LabelId, long Revision, int Version);
 
@@ -49,9 +60,12 @@ public readonly record struct BackfillCompletionState(int AwaitingPush, int NotA
 /// <c>sales/backfill</c>'in (spec 2026-10-13 §4.3, §8.2-3/-4/-5; W1-09) yerel okuma ve yazımları.
 ///
 /// <para><b>Okuma:</b> yalnız bu bilgisayarın satırları (<c>Origin = 'local'</c> oturumlar ve etiketleri) ve yalnız
-/// onaylı (<c>SyncedAt</c> dolu) oturum ve etiketler, <c>rowid</c> sırasıyla. Gönderilmeyi bekleyen satırı olağan
-/// push zaten bütün birimleriyle götürür; geri doldurma onu sunucuya bildirimsiz eklese push güncelleme dalına düşer
-/// ve canlı yayının "Yayın başladı" ve sipariş bildirimleri hiç çıkmazdı (§4.2 bildirimler yalnız eklemede).</para>
+/// onaylı (<c>SyncedAt</c> dolu) oturum ve etiketler, <c>rowid</c> sırasıyla. Gönderilmeyi bekleyen satır
+/// gönderilmez: geri doldurma onu sunucuya bildirimsiz eklese push güncelleme dalına düşer ve canlı yayının "Yayın
+/// başladı" ve sipariş bildirimleri hiç çıkmazdı (§4.2 bildirimler yalnız eklemede). Ama imleç onu <b>geçmez</b>
+/// (<see cref="BackfillWait"/>): sayfa imleçten sonraki ilk bekleyen satırda biter. v1 döneminden sunucuda zaten
+/// olan bekleyen satırı push güncelleme dalında yazar ve kaynak kopyasını ya da sahibini doldurmaz; onaylanınca
+/// geri doldurma onu kaldığı yerden götürür.</para>
 ///
 /// <para><b>Yazım:</b> geri doldurma <c>SyncedAt</c> ve <c>Revision</c>'a dokunmaz (§5.2, F05) — iki istisna
 /// dışında: birim ayrışmasının onarımı (<see cref="Requeue"/>, §8.2-4) ve devri sunucuda gerçekleşmeyen bitmiş
@@ -66,7 +80,8 @@ public sealed class SalesBackfillRepository
 
     public SalesBackfillRepository(IDbConnectionFactory factory) => _factory = factory;
 
-    /// <summary>Yerel, onaylı oturumlar; <paramref name="afterRowId"/>'den sonra, rowid sırasıyla.</summary>
+    /// <summary>Yerel, onaylı oturumlar; <paramref name="afterRowId"/>'den sonra, rowid sırasıyla ve imleçten sonraki
+    /// ilk bekleyen oturumdan önce (imleç onu geçmez). Boşsa <see cref="GetSessionWait"/> nedenini söyler.</summary>
     public IReadOnlyList<BackfillSessionRow> GetSessionsAfter(long afterRowId, int limit)
     {
         using var conn = _factory.Open();
@@ -75,6 +90,9 @@ public sealed class SalesBackfillRepository
                          ReleasedAt, Authority
                   FROM StreamSession
                   WHERE rowid > @afterRowId AND Origin = 'local' AND SyncedAt IS NOT NULL
+                    AND rowid < IFNULL((SELECT MIN(rowid) FROM StreamSession
+                                        WHERE SyncedAt IS NULL AND rowid > @afterRowId AND Origin = 'local'),
+                                       9223372036854775807)
                   ORDER BY rowid
                   LIMIT @limit",
                 new { afterRowId, limit })
@@ -85,7 +103,9 @@ public sealed class SalesBackfillRepository
             .ToList();
     }
 
-    /// <summary>Yerel oturumların onaylı etiketleri; <paramref name="afterRowId"/>'den sonra, rowid sırasıyla.</summary>
+    /// <summary>Yerel oturumların onaylı etiketleri; <paramref name="afterRowId"/>'den sonra, rowid sırasıyla ve
+    /// imleçten sonraki ilk bekleyen etiketten önce (imleç onu geçmez). Boşsa <see cref="GetLabelWait"/> nedenini
+    /// söyler.</summary>
     public IReadOnlyList<BackfillLabelRow> GetLabelsAfter(long afterRowId, int limit)
     {
         using var conn = _factory.Open();
@@ -98,6 +118,10 @@ public sealed class SalesBackfillRepository
                   FROM Label l
                   JOIN StreamSession s ON s.Id = l.SessionId
                   WHERE l.rowid > @afterRowId AND s.Origin = 'local' AND l.SyncedAt IS NOT NULL
+                    AND l.rowid < IFNULL((SELECT MIN(p.rowid) FROM Label p
+                                          JOIN StreamSession ps ON ps.Id = p.SessionId
+                                          WHERE p.SyncedAt IS NULL AND p.rowid > @afterRowId AND ps.Origin = 'local'),
+                                         9223372036854775807)
                   ORDER BY l.rowid
                   LIMIT @limit",
                 new { afterRowId, limit })
@@ -110,6 +134,42 @@ public sealed class SalesBackfillRepository
                 r.ProductId, r.ProductVariantId, r.ParentLabelId, r.ShipmentId,
                 r.PrintBatchId, r.PrintSeq, r.PriceCorrectedAt, r.PaidPrice, r.ServerVersion, r.Revision)))
             .ToList();
+    }
+
+    /// <summary>
+    /// <see cref="GetSessionsAfter"/> boş döndüğünde: aşama bitti mi (<c>null</c>: imleçten sonra yerel oturum yok)
+    /// yoksa imleç bekleyen bir oturumda mı duruyor. Tek ifade, tek anlık görüntü: sayfa okumasıyla bu okuma
+    /// arasında onaylanan satır "aşama bitti" sanılmaz.
+    /// </summary>
+    public BackfillWait? GetSessionWait(long afterRowId)
+    {
+        using var conn = _factory.Open();
+        var row = conn.QuerySingle<WaitRow>(
+            @"SELECT EXISTS(SELECT 1 FROM StreamSession WHERE rowid > @afterRowId AND Origin = 'local') AS AnyAfter,
+                     (SELECT Id FROM StreamSession
+                      WHERE SyncedAt IS NULL AND rowid > @afterRowId AND Origin = 'local'
+                      ORDER BY rowid LIMIT 1) AS PendingId,
+                     (SELECT COUNT(*) FROM StreamSession
+                      WHERE SyncedAt IS NULL AND rowid > @afterRowId AND Origin = 'local') AS Pending",
+            new { afterRowId });
+        return row.AnyAfter == 0 ? null : new BackfillWait(row.PendingId, (int)row.Pending);
+    }
+
+    /// <summary><see cref="GetLabelsAfter"/> boş döndüğünde: aşama bitti mi (<c>null</c>) yoksa imleç bekleyen bir
+    /// etikette mi duruyor (<see cref="GetSessionWait"/> ile aynı kural).</summary>
+    public BackfillWait? GetLabelWait(long afterRowId)
+    {
+        using var conn = _factory.Open();
+        var row = conn.QuerySingle<WaitRow>(
+            @"SELECT EXISTS(SELECT 1 FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+                            WHERE l.rowid > @afterRowId AND s.Origin = 'local') AS AnyAfter,
+                     (SELECT l.Id FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+                      WHERE l.SyncedAt IS NULL AND l.rowid > @afterRowId AND s.Origin = 'local'
+                      ORDER BY l.rowid LIMIT 1) AS PendingId,
+                     (SELECT COUNT(*) FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+                      WHERE l.SyncedAt IS NULL AND l.rowid > @afterRowId AND s.Origin = 'local') AS Pending",
+            new { afterRowId });
+        return row.AnyAfter == 0 ? null : new BackfillWait(row.PendingId, (int)row.Pending);
     }
 
     /// <summary>Kargo dosyaları ve bağlı yerel etiketleri; <paramref name="afterRowId"/>'den sonra, rowid sırasıyla.
@@ -313,6 +373,13 @@ public sealed class SalesBackfillRepository
     private sealed class SyncedRow
     {
         public long? SyncedAt { get; init; }
+    }
+
+    private sealed class WaitRow
+    {
+        public long AnyAfter { get; init; }
+        public string? PendingId { get; init; }
+        public long Pending { get; init; }
     }
 
     private sealed class CompletionRow

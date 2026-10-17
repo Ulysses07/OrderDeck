@@ -365,9 +365,10 @@ public sealed class SalesBackfillServiceTests : IDisposable
             new { lost }).Should().Be("units=cancel,print");
         CompletionHellos.Should().BeEmpty("yeniden kuyruğa alınan satır henüz applied olmadı");
 
-        // Aynı parti yeniden (imleç satırı silindi → baştan): satır ikinci kez kuyruğa alınmaz.
+        // Baştan yeniden (imleç satırı silindi): yeniden kuyruğa alınan satır imleci tutar, ikinci kez kuyruğa
+        // alınmaz.
         Exec("DELETE FROM SyncCursor WHERE Name = @name", new { name = SalesBackfillCursor.Name });
-        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingRepair);
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush);
         _labels.GetById(lost)!.Revision.Should().Be(before.Revision + 1, "bir kez kuyruğa alınır");
         Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog WHERE LabelId = @lost", new { lost }).Should().Be(1);
         CompletionHellos.Should().BeEmpty();
@@ -656,7 +657,7 @@ public sealed class SalesBackfillServiceTests : IDisposable
 
         await Ws.HelloAsync();
         var before = _sessions.GetById(session)!;
-        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush, "gönderilmemiş etiket imleci tutar");
 
         var item = _server.BackfillCalls.Select(c => c.Backfill).SelectMany(x => x.Sessions ?? new()).Single();
         item.Release.Should().BeFalse("yayının gönderilmemiş etiketi var (M2)");
@@ -673,6 +674,8 @@ public sealed class SalesBackfillServiceTests : IDisposable
         var released = _sessions.GetById(session)!;
         released.ReleasedAt.Should().NotBeNull();
         released.Authority.Should().Be(StreamSessionAuthority.Local, "mod Off");
+
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed, "onaylanan etiketle sürer");
     }
 
     [Fact]
@@ -724,7 +727,7 @@ public sealed class SalesBackfillServiceTests : IDisposable
         };
 
         await Ws.HelloAsync();
-        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush, "bekleyen canlı oturum imleci tutar");
         drainedFirst.Should().BeTrue("§8.2-2: olağan kuyruk geri doldurmadan önce boşaltılır");
         _server.BackfillInserted.Should().NotContain(Guid.Parse(early));
 
@@ -734,7 +737,81 @@ public sealed class SalesBackfillServiceTests : IDisposable
 
         await Ws.Push.SyncOnceAsync();
         _server.Order(Guid.Parse(fresh!)).Should().NotBeNull("olağan push ekler (bildirimli ekleme dalı)");
+        _server.Session(Guid.Parse(live!))!.OwnerReplicaId.Should().Be(ReplicaId);
+
+        // Onaylanınca geri doldurma onları da götürür; eklemez (zaten sunucuda).
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
         _server.BackfillInserted.Should().NotContain(Guid.Parse(fresh!));
+        _server.Session(Guid.Parse(live!))!.EndedAt.Should().BeNull("canlı oturum geri doldurmayla bitmez");
+    }
+
+    // ── bekleyen satır imleci tutar (v1 döneminden sunucuda olan satır) ────
+
+    [Fact]
+    public async Task Bekleyen_eski_etiket_imleci_tutar_onaylaninca_geri_doldurulur_kaynak_kopyasi_dolar()
+    {
+        var session = AddSession(T0, T0 + 3600);
+        var labels = AddLabels(session, 4, printedAt: T0 + 3000);
+        var edited = labels[1];
+        SeedServerSession(session, T0, T0 + 3600, releasedAt: T0 + 3700);
+        SeedServerCopies(labels);                                         // v1 dönemi: kaynak kopya boş
+        var armed = true;
+        _server.DuringPush = endpoint =>
+        {
+            // Oturum partisi uçarken operatör eski etiketin fiyatını düzeltir: tetikleyici onu kuyruğa alır.
+            if (endpoint != FakeSalesServer.SalesBackfill || !armed) return;
+            armed = false;
+            Exec("UPDATE Label SET Price = 150 WHERE Id = @edited", new { edited });
+        };
+
+        await Ws.HelloAsync();
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush);
+
+        N(_server.BackfillCalls.SelectMany(c => c.Backfill.Orders ?? new()).Select(o => o.Id))
+            .Should().BeEquivalentTo(new[] { labels[0] }, "imleç bekleyen satırı geçmez");
+        Cursor()!.Seq.Should().Be(new SalesBackfillCursor(SalesBackfillPhase.Labels,
+            Scalar<long>("SELECT rowid FROM Label WHERE Id = @id", new { id = labels[0] })).Encode());
+        CompletionHellos.Should().BeEmpty();
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush);
+        Ws.Log.Entries.Count(e => e.Message.Contains("gönderilmeyi bekliyor")).Should().Be(1,
+            "bekleme değişmedikçe bir kez yazılır");
+
+        // Olağan push satırı sunucunun güncelleme dalında yazar: kaynak kopya orada dolmaz (§4.3).
+        (await Ws.Push.SyncOnceAsync()).OrdersPushed.Should().Be(1);
+        _server.Order(Guid.Parse(edited))!.OriginReplicaId.Should().BeNull();
+
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
+        labels.Should().OnlyContain(id => _server.Order(Guid.Parse(id))!.OriginReplicaId == ReplicaId,
+            "onaylanan satır kaldığı yerden geri doldurulur");
+        _server.Order(Guid.Parse(edited))!.Row.Price.Should().Be(150m);
+        CompletionHellos.Should().ContainSingle();
+        _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Bekleyen_eski_oturum_imleci_tutar_onaylaninca_geri_doldurulur_sahibi_yazilir()
+    {
+        var first = AddSession(T0, T0 + 3600);
+        var pending = AddSession(T0 + 86_400, T0 + 90_000, synced: false);
+        var last = AddSession(T0 + 172_800, T0 + 180_000);
+        SeedServerSession(first, T0, T0 + 3600, releasedAt: T0 + 3700);
+        SeedServerSession(pending, T0 + 86_400, T0 + 90_000, releasedAt: T0 + 90_100);   // v1 dönemi: sahipsiz
+        SeedServerSession(last, T0 + 172_800, T0 + 180_000, releasedAt: T0 + 180_100);
+        _server.EnqueueStatus(FakeSalesServer.SessionsSync, 503);         // boşaltmada oturum gidemez
+
+        await Ws.HelloAsync();
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush);
+        N(_server.BackfillCalls.SelectMany(c => c.Backfill.Sessions ?? new()).Select(s => s.Id))
+            .Should().BeEquivalentTo(new[] { first }, "imleç bekleyen oturumu geçmez");
+        _server.BackfillCalls.Should().OnlyContain(c => (c.Backfill.Orders ?? new()).Count == 0,
+            "oturum aşaması bitmeden etiketlere geçilmez");
+
+        (await Ws.Push.SyncOnceAsync()).SessionsPushed.Should().Be(1);
+        _server.Session(Guid.Parse(pending))!.OwnerReplicaId.Should().BeNull("sessions/sync sahipsiz oturuma sahip yazmaz");
+
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
+        new[] { first, pending, last }.Should().OnlyContain(id => _server.Session(Guid.Parse(id))!.OwnerReplicaId == ReplicaId);
+        CompletionHellos.Should().ContainSingle();
     }
 
     // ── hello, lisans ve kopya ─────────────────────────────────────────────

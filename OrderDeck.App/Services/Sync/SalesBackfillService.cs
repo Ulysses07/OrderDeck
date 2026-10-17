@@ -21,6 +21,9 @@ public enum SalesBackfillTourOutcome
     AlreadyCompleted,
     /// <summary>Partiler gitti; tur bütçesi doldu ya da bir parti sonraki tura kaldı.</summary>
     InProgress,
+    /// <summary>İmleçten sonraki ilk yerel satır gönderilmeyi bekliyor: imleç onu geçmez, olağan push onaylayınca
+    /// sonraki tur kaldığı yerden sürer (§8.2-3).</summary>
+    AwaitingPush,
     /// <summary>Üç aşama bitti; yeniden kuyruğa alınan satırların <c>applied</c> onayı bekleniyor (§8.2-5).</summary>
     AwaitingRepair,
     /// <summary>Bu turda <c>hello {backfillCompleted: true}</c> gitti ve tamamlanma işaretlendi.</summary>
@@ -45,7 +48,10 @@ public enum SalesBackfillTourOutcome
 /// <see cref="SalesBackfillCursor"/>'da. Sırayla oturumlar, etiketler ve dosya bağları, rowid'e göre; listede en çok
 /// <see cref="MaxBatch"/> öğe, turda en çok <see cref="MaxRequestsPerTour"/> istek (hız sınırı 100 istek/dk/IP,
 /// §12 risk 9), tur 60 sn'de bir. İmleç her partinin yanıtı uygulandıktan sonra yazılır: kesilen tur kaldığı
-/// partiden sürer, tekrarlanan parti zararsızdır. Gönderim kapısı partiler boyunca TUTULMAZ: canlı yayının ≈5 sn'lik
+/// partiden sürer, tekrarlanan parti zararsızdır. Yalnız onaylı satırlar gider ve imleç gönderilmeyi bekleyen satırı
+/// geçmez (<see cref="BackfillWait"/>, <see cref="SalesBackfillTourOutcome.AwaitingPush"/>): v1 döneminden sunucuda
+/// olan bekleyen satırı push güncelleme dalında yazar ve kaynak kopyasını ya da sahibini doldurmaz; onaylanınca geri
+/// doldurma onu kaldığı yerden götürür. Gönderim kapısı partiler boyunca TUTULMAZ: canlı yayının ≈5 sn'lik
 /// push'u sürer. Bitmiş, yerel ve devri bilinmeyen oturumun <c>Release</c>'i ve <c>UnsentLabelCount</c>'u
 /// <see cref="HandoverGate"/> altında, §5.2'deki gibi hesaplanır; kilit yanıt uygulanana kadar tutulur.</item>
 /// <item><b>Yanıt:</b> oturumda yalnız <c>ReleasedAt</c> saklanır (mod Off'ta <c>SyncedAt</c>, <c>Revision</c> ve
@@ -101,6 +107,7 @@ public sealed class SalesBackfillService
     private (string LicenseKey, Guid ReplicaId)? _drainedFor;
     private (string LicenseKey, Guid ReplicaId)? _restartLoggedFor;
     private BackfillCompletionState? _lastLoggedRepair;
+    private (SalesBackfillPhase Phase, string? PendingId)? _lastLoggedWait;
     private int _failures;
     private DateTimeOffset? _lastFailureWarnAt;
 
@@ -172,13 +179,19 @@ public sealed class SalesBackfillService
 
         while (cursor.Phase < SalesBackfillPhase.Done)
         {
-            var batch = cursor.Phase switch
+            var read = cursor.Phase switch
             {
                 SalesBackfillPhase.Sessions => ReadSessions(cursor),
                 SalesBackfillPhase.Labels => ReadLabels(cursor),
                 _ => ReadShipments(cursor),
             };
-            if (batch is null)
+            if (read.Wait is { } wait)
+            {
+                // İmleç bekleyen satırı geçmez (§8.2-3): push onaylayınca sonraki tur kaldığı yerden sürer.
+                LogWaiting(cursor.Phase, wait, replicaId);
+                return SalesBackfillTourOutcome.AwaitingPush;
+            }
+            if (read.Send is not { } batch)
             {
                 // Aşama bitti: istek yok, sonraki aşama.
                 cursor = cursor.NextPhase();
@@ -222,6 +235,15 @@ public sealed class SalesBackfillService
     /// <summary>Bir partinin gönderimi: yanıt uygulanınca imlecin yeni değeri, sonraki tura kalınca <c>null</c>.</summary>
     private delegate Task<SalesBackfillCursor?> Batch(Guid licenseId, Guid replicaId, CancellationToken ct);
 
+    /// <summary>Bir aşamanın okuması: gönderilecek parti (<see cref="Send"/>), imleci tutan bekleyen satır
+    /// (<see cref="Wait"/>) ya da ikisi de yoksa aşamanın sonu.</summary>
+    private readonly record struct BatchRead(Batch? Send, BackfillWait? Wait)
+    {
+        public static BatchRead Of(Batch send) => new(send, null);
+
+        public static BatchRead Empty(BackfillWait? wait) => new(null, wait);
+    }
+
     // ── boşaltma (§8.2-2) ────────────────────────────────────────────────
 
     private async Task DrainOutgoingAsync(CancellationToken ct)
@@ -240,11 +262,11 @@ public sealed class SalesBackfillService
     private static bool IsHandoverCandidate(StreamSession s) =>
         s.EndedAt is not null && s.Authority == StreamSessionAuthority.Local && s.ReleasedAt is null;
 
-    private Batch? ReadSessions(SalesBackfillCursor cursor)
+    private BatchRead ReadSessions(SalesBackfillCursor cursor)
     {
         var rows = _repo.GetSessionsAfter(cursor.RowId, MaxBatch);
-        if (rows.Count == 0) return null;
-        return (licenseId, replicaId, ct) => SendSessionsAsync(licenseId, replicaId, cursor, rows, ct);
+        if (rows.Count == 0) return BatchRead.Empty(_repo.GetSessionWait(cursor.RowId));
+        return BatchRead.Of((licenseId, replicaId, ct) => SendSessionsAsync(licenseId, replicaId, cursor, rows, ct));
     }
 
     private async Task<SalesBackfillCursor?> SendSessionsAsync(
@@ -326,11 +348,11 @@ public sealed class SalesBackfillService
 
     // ── etiketler ────────────────────────────────────────────────────────
 
-    private Batch? ReadLabels(SalesBackfillCursor cursor)
+    private BatchRead ReadLabels(SalesBackfillCursor cursor)
     {
         var rows = _repo.GetLabelsAfter(cursor.RowId, MaxBatch);
-        if (rows.Count == 0) return null;
-        return (licenseId, replicaId, ct) => SendLabelsAsync(licenseId, replicaId, cursor, rows, ct);
+        if (rows.Count == 0) return BatchRead.Empty(_repo.GetLabelWait(cursor.RowId));
+        return BatchRead.Of((licenseId, replicaId, ct) => SendLabelsAsync(licenseId, replicaId, cursor, rows, ct));
     }
 
     private async Task<SalesBackfillCursor?> SendLabelsAsync(
@@ -407,11 +429,11 @@ public sealed class SalesBackfillService
 
     // ── dosya bağları ────────────────────────────────────────────────────
 
-    private Batch? ReadShipments(SalesBackfillCursor cursor)
+    private BatchRead ReadShipments(SalesBackfillCursor cursor)
     {
         var rows = _repo.GetShipmentLinksAfter(cursor.RowId, MaxBatch);
-        if (rows.Count == 0) return null;
-        return async (licenseId, replicaId, ct) =>
+        if (rows.Count == 0) return BatchRead.Empty(null);
+        return BatchRead.Of(async (licenseId, replicaId, ct) =>
         {
             var items = rows
                 .Where(r => Guid.TryParse(r.ShipmentId, out _))
@@ -422,7 +444,7 @@ public sealed class SalesBackfillService
                 .ToList();
             var response = await PostAsync(licenseId, replicaId, [], [], items, "dosya bağı", ct).ConfigureAwait(false);
             return response is null ? null : cursor.After(rows[^1].RowId);
-        };
+        });
     }
 
     // ── istek ────────────────────────────────────────────────────────────
@@ -485,6 +507,18 @@ public sealed class SalesBackfillService
             seq: cursor.Encode(), updatedAt: DateTimeOffset.UtcNow, lastId: replicaId);
 
     // ── yardımcılar ──────────────────────────────────────────────────────
+
+    /// <summary>İmleci tutan bekleyen satır: bekleyen satır değiştikçe bir kez yazılır (60 sn'lik tur her seferinde
+    /// yinelemesin). Yalnız kimlik ve sayı.</summary>
+    private void LogWaiting(SalesBackfillPhase phase, BackfillWait wait, Guid replicaId)
+    {
+        if (_lastLoggedWait == (phase, wait.PendingId)) return;
+        _lastLoggedWait = (phase, wait.PendingId);
+        _log.LogInformation(
+            "Geri doldurma: imleçten sonraki ilk {Phase} gönderilmeyi bekliyor; olağan gönderim onaylayınca kaldığı "
+          + "yerden sürecek (ilk={PendingId}, bekleyen={Pending}, replica={ReplicaId})",
+            phase == SalesBackfillPhase.Sessions ? "oturum" : "etiket", wait.PendingId, wait.Pending, replicaId);
+    }
 
     /// <summary>Tamamlanmayı bekleten satırlar: durum değiştikçe bir kez yazılır (60 sn'lik tur her seferinde
     /// yinelemesin).</summary>
