@@ -60,12 +60,18 @@ public static class PendingSalesCommandCodec
 /// <param name="DiscardLabelIds"><c>mark-printed</c>'in <c>cancelled[]</c> ve <c>alreadyPrinted[]</c>'i: kâğıdı basılmış ama
 /// sunucuda iptal edilmiş ya da başka yerde basılmış etiketler — "kâğıtları imha et" (§5.5, §5.6-5).</param>
 /// <param name="Warnings">Kalıcı retlerin satır içi metni (§5.5).</param>
+/// <param name="AlreadyPrintedIds"><see cref="DiscardLabelIds"/>'in <c>alreadyPrinted[]</c>'ten gelen (iptal edilmemiş,
+/// başka yerde zaten basılmış) kısmı: şerit sebebi doğru söylesin ("zaten basılmıştı", "iptal edilmişti" değil).</param>
 public sealed record PendingSalesCommandsSettled(
     IReadOnlyList<string> ChangedLabelIds,
     IReadOnlyList<string> DiscardLabelIds,
-    IReadOnlyList<string> Warnings)
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string>? AlreadyPrintedIds = null)
 {
     public static PendingSalesCommandsSettled None { get; } = new([], [], []);
+
+    /// <summary><see cref="DiscardLabelIds"/>'in başka yerde zaten basılmış kısmı (boşsa hepsi iptal).</summary>
+    public IReadOnlyList<string> AlreadyPrintedLabelIds => AlreadyPrintedIds ?? [];
 
     public bool NeedsAttention => DiscardLabelIds.Count > 0 || Warnings.Count > 0;
 }
@@ -197,6 +203,7 @@ public sealed class PendingSalesCommandSender
 
         var changed = new HashSet<string>(StringComparer.Ordinal);
         var discard = new HashSet<string>(StringComparer.Ordinal);
+        var alreadyPrinted = new HashSet<string>(StringComparer.Ordinal);
         var warnings = new List<string>();
         int sent = 0, kept = 0, dropped = 0;
 
@@ -227,8 +234,13 @@ public sealed class PendingSalesCommandSender
                     if (intent.Kind == SalesCommandKinds.MarkPrinted && outcome.Result is { } result)
                     {
                         var covered = row.LabelIds.ToHashSet(StringComparer.Ordinal);
-                        discard.UnionWith((result.Cancelled ?? []).Concat(result.AlreadyPrinted ?? [])
-                            .Select(id => id.ToString("N")).Where(covered.Contains));
+                        var cancelled = (result.Cancelled ?? []).Select(id => id.ToString("N"))
+                            .Where(covered.Contains).ToHashSet(StringComparer.Ordinal);
+                        var duplicate = (result.AlreadyPrinted ?? []).Select(id => id.ToString("N"))
+                            .Where(id => covered.Contains(id) && !cancelled.Contains(id));
+                        discard.UnionWith(cancelled);
+                        foreach (var id in duplicate)
+                            if (discard.Add(id)) alreadyPrinted.Add(id);
                     }
                     sent++;
                     _log.LogInformation(
@@ -261,7 +273,8 @@ public sealed class PendingSalesCommandSender
             if (disposition is Disposition.KeepAndStop or Disposition.Stop) break;
         }
 
-        var settled = new PendingSalesCommandsSettled(changed.ToList(), discard.ToList(), warnings);
+        var settled = new PendingSalesCommandsSettled(changed.ToList(), discard.ToList(), warnings,
+            alreadyPrinted.ToList());
         if (sent + dropped > 0) RaiseSettled(settled);
         return new PendingSalesCommandFlush(sent, kept, dropped, rows.Count - sent - dropped, settled);
     }

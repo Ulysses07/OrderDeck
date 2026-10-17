@@ -432,6 +432,7 @@ public sealed class SalesEditRouter : ILabelEditor
         var marked = new List<string>(local);
         var pending = new List<string>();
         var discard = new HashSet<string>(StringComparer.Ordinal);
+        var alreadyPrinted = new HashSet<string>(StringComparer.Ordinal);
         var notices = new List<string>();
         var changed = new HashSet<string>(local, StringComparer.Ordinal);
         var (own, remote) = SplitServerLabels(decisions);
@@ -463,6 +464,7 @@ public sealed class SalesEditRouter : ILabelEditor
             if (settled.Flush is { } flush)
             {
                 discard.UnionWith(flush.Settled.DiscardLabelIds);
+                alreadyPrinted.UnionWith(flush.Settled.AlreadyPrintedLabelIds);
                 changed.UnionWith(flush.Settled.ChangedLabelIds);
             }
         }
@@ -483,8 +485,11 @@ public sealed class SalesEditRouter : ILabelEditor
                 {
                     marked.AddRange(remote);
                     var asked = remote.ToHashSet(StringComparer.Ordinal);
-                    discard.UnionWith((outcome.Result?.Cancelled ?? []).Concat(outcome.Result?.AlreadyPrinted ?? [])
-                        .Select(id => id.ToString("N")).Where(asked.Contains));
+                    discard.UnionWith((outcome.Result?.Cancelled ?? []).Select(id => id.ToString("N"))
+                        .Where(asked.Contains));
+                    foreach (var id in (outcome.Result?.AlreadyPrinted ?? []).Select(id => id.ToString("N"))
+                                 .Where(asked.Contains))
+                        if (discard.Add(id)) alreadyPrinted.Add(id);
                 }
                 else notices.Add(SalesCommandMessages.PrintNotRecorded(remote.Count, outcome.Message));
             }
@@ -493,7 +498,8 @@ public sealed class SalesEditRouter : ILabelEditor
         _log.LogInformation(
             "Kuyruk baskısı {BatchId}: {Local} yerel, {Own} kalıntı (komut; {Pending} bekliyor), {Remote} başka bilgisayarın; {Discard} kâğıt imha edilecek",
             batchId, local.Count, own.Count, pending.Count, remote.Count, discard.Count);
-        return new SalesPrintMarkResult(marked, pending, discard.ToList(), notices, changed.ToList());
+        return new SalesPrintMarkResult(marked, pending, discard.ToList(), notices, changed.ToList(),
+            alreadyPrinted.ToList());
     }
 
     /// <summary>Kâğıdın yerel yoldaki satırları.</summary>

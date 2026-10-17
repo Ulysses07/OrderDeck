@@ -94,14 +94,20 @@ public sealed record SalesEditResult(
 /// <param name="DiscardLabelIds">Sunucunun <c>cancelled[]</c> ve <c>alreadyPrinted[]</c>'i: "kâğıtları imha et".</param>
 /// <param name="Notices">Satır içi uyarılar (işaretlenemeyen sunucu satırı, kalıcı ret); yoksa boş.</param>
 /// <param name="ChangedLabelIds">Yerelde değeri değişmiş olabilecek etiketler.</param>
+/// <param name="AlreadyPrintedIds"><see cref="DiscardLabelIds"/>'in <c>alreadyPrinted[]</c>'ten gelen (iptal edilmemiş)
+/// kısmı: şerit "zaten basılmıştı" der.</param>
 public sealed record SalesPrintMarkResult(
     IReadOnlyList<string> Marked,
     IReadOnlyList<string> Pending,
     IReadOnlyList<string> DiscardLabelIds,
     IReadOnlyList<string> Notices,
-    IReadOnlyList<string> ChangedLabelIds)
+    IReadOnlyList<string> ChangedLabelIds,
+    IReadOnlyList<string>? AlreadyPrintedIds = null)
 {
     public static SalesPrintMarkResult Empty { get; } = new([], [], [], [], []);
+
+    /// <summary><see cref="DiscardLabelIds"/>'in başka yerde zaten basılmış kısmı (boşsa hepsi iptal).</summary>
+    public IReadOnlyList<string> AlreadyPrintedLabelIds => AlreadyPrintedIds ?? [];
 
     /// <summary>Bugünkü yol: hepsi yerelde damgalandı.</summary>
     public static SalesPrintMarkResult AllLocal(IReadOnlyList<string> labelIds) => new(labelIds, [], [], [], labelIds);

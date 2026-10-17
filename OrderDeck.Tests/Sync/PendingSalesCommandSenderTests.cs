@@ -313,6 +313,7 @@ public sealed class PendingSalesCommandSenderTests : IDisposable
 
         flush.Sent.Should().Be(1);
         flush.Settled.DiscardLabelIds.Should().BeEquivalentTo([labels[0], labels[1]]);
+        flush.Settled.AlreadyPrintedLabelIds.Should().Equal([labels[1]], "şerit sebebi ayrı söyler: zaten basılmış, iptal değil");
         _bed.Settled.Should().ContainSingle().Which.NeedsAttention.Should().BeTrue();
         _bed.Local(labels[2]).Should().NotBeNull();
         _bed.LabelRepo.GetById(labels[2])!.PrintedAt.Should().NotBeNull("üçüncüsü bu komutla basıldı");

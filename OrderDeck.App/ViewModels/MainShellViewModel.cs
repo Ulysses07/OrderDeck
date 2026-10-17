@@ -2314,7 +2314,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Sunucunun cancelled[]/alreadyPrinted[]'i "kâğıtları imha et" (§5.6-5), işlenemeyen satır uyarı.
         var mark = await _editor.MarkPrintedAsync(labels.Select(l => l.Id).ToList());
         if (mark.DiscardLabelIds.Count > 0 || mark.Notices.Count > 0)
-            ShowSalesNotice(mark.DiscardLabelIds, mark.Notices);
+            ShowSalesNotice(mark.DiscardLabelIds, mark.Notices, mark.AlreadyPrintedLabelIds);
 
         // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan
         // seçimsizler korunur). R8-02B: uzlaştırma referansla değil ETİKET

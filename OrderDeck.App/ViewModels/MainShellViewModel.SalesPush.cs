@@ -17,8 +17,9 @@ namespace OrderDeck.App.ViewModels;
 // sayılmaz (uçuşta değişip sonraki turda yeniden reddedilen satır).
 //
 // W2-07 (§5.5, §5.6-5): kalıntı kuyruğun komutları da aynı şeridi kullanır — kâğıdın mark-printed'inde sunucunun
-// cancelled[]/alreadyPrinted[]'i aynı "kâğıtları imha et" sayısına girer; kuyruk iptalinin uygulanamayan satırları ve
-// bekleyen komutun kalıcı reddi metin olarak eklenir.
+// cancelled[]'i "… iptal edilmişti; kâğıtları imha et", alreadyPrinted[]'i "… zaten basılmıştı; kâğıtları imha et"
+// olur (sebep ayrı söylenir); kuyruk iptalinin uygulanamayan satırları ve bekleyen komutun kalıcı reddi metin olarak
+// eklenir.
 public sealed partial class MainShellViewModel
 {
     private readonly SessionOrderSyncService? _orderSync;
@@ -28,6 +29,10 @@ public sealed partial class MainShellViewModel
 
     /// <summary>Şerit kapatılana kadar biriken imha edilecek kâğıtların etiketleri.</summary>
     private readonly HashSet<string> _pendingDiscard = new(System.StringComparer.Ordinal);
+
+    /// <summary><see cref="_pendingDiscard"/>'ın başka yerde zaten basılmış (iptal edilmemiş) kısmı: mark-printed'in
+    /// <c>alreadyPrinted[]</c>'i. Metin sebebi ayrı söyler.</summary>
+    private readonly HashSet<string> _pendingDuplicate = new(System.StringComparer.Ordinal);
 
     /// <summary>Şerit kapatılana kadar biriken satış uyarıları (W2-07, §5.5): kuyruk iptalinin ya da kâğıdın sunucuya
     /// işlenemeyen satırları, bekleyen komutun kalıcı reddi. Aynı metin bir kez.</summary>
@@ -58,9 +63,12 @@ public sealed partial class MainShellViewModel
     /// ile arka plandaki sonucu (<see cref="SalesChangesPullService.PendingCommandsSettled"/>) aynı şeyi iki kez söylemez.
     /// UI iş parçacığında.
     /// </summary>
-    internal void ShowSalesNotice(IEnumerable<string> discardLabelIds, IEnumerable<string> notes)
+    /// <param name="alreadyPrintedLabelIds"><paramref name="discardLabelIds"/>'in başka yerde zaten basılmış kısmı.</param>
+    internal void ShowSalesNotice(IEnumerable<string> discardLabelIds, IEnumerable<string> notes,
+        IEnumerable<string>? alreadyPrintedLabelIds = null)
     {
         foreach (var id in discardLabelIds) _pendingDiscard.Add(id);
+        foreach (var id in alreadyPrintedLabelIds ?? []) _pendingDuplicate.Add(id);
         foreach (var note in notes)
             if (!_pendingNotes.Contains(note)) _pendingNotes.Add(note);
         RenderSalesPushWarning();
@@ -73,7 +81,8 @@ public sealed partial class MainShellViewModel
         {
             try
             {
-                if (settled.NeedsAttention) ShowSalesNotice(settled.DiscardLabelIds, settled.Warnings);
+                if (settled.NeedsAttention)
+                    ShowSalesNotice(settled.DiscardLabelIds, settled.Warnings, settled.AlreadyPrintedLabelIds);
                 RefreshPrintedLabels();
                 RefreshHeroStats();
             }
@@ -92,7 +101,9 @@ public sealed partial class MainShellViewModel
         var byReason = _pendingRejected.Values
             .GroupBy(r => r, System.StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), System.StringComparer.Ordinal);
-        SalesPushWarning = SalesPushWarningText(byReason, _pendingDiscard.Count, _pendingNotes);
+        // Bir kâğıt hem iptal hem "zaten basılmış" sayıldıysa (iki farklı sonuç) iptal sebebi kazanır.
+        var duplicate = _pendingDuplicate.Count(_pendingDiscard.Contains);
+        SalesPushWarning = SalesPushWarningText(byReason, _pendingDiscard.Count - duplicate, _pendingNotes, duplicate);
     }
 
     [RelayCommand]
@@ -100,16 +111,18 @@ public sealed partial class MainShellViewModel
     {
         _pendingRejected.Clear();
         _pendingDiscard.Clear();
+        _pendingDuplicate.Clear();
         _pendingNotes.Clear();
         SalesPushWarning = null;
     }
 
     /// <summary>Şeridin metni; uyarılacak bir şey yoksa null.</summary>
     /// <param name="rejectedByReason">Sunucunun nedeni → reddedilen etiket sayısı.</param>
-    /// <param name="discard">İmha edilecek kâğıt sayısı.</param>
+    /// <param name="discard">İmha edilecek kâğıt sayısı: etiketi başka bilgisayarda iptal edilmiş.</param>
     /// <param name="notes">Satış uyarıları (W2-07), sırasıyla; yoksa null.</param>
+    /// <param name="alreadyPrinted">İmha edilecek kâğıt sayısı: etiket başka yerde zaten basılmış (iptal değil).</param>
     internal static string? SalesPushWarningText(IReadOnlyDictionary<string, int> rejectedByReason, int discard,
-        IReadOnlyList<string>? notes = null)
+        IReadOnlyList<string>? notes = null, int alreadyPrinted = 0)
     {
         var parts = new List<string>(2);
         var rejected = rejectedByReason.Values.Sum();
@@ -125,6 +138,8 @@ public sealed partial class MainShellViewModel
         }
         if (discard > 0)
             parts.Add($"{discard} etiket başka bilgisayarda iptal edilmişti; kâğıtları imha et.");
+        if (alreadyPrinted > 0)
+            parts.Add($"{alreadyPrinted} etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.");
         if (notes is not null) parts.AddRange(notes);
         return parts.Count == 0 ? null : string.Join(" ", parts);
     }
