@@ -332,7 +332,7 @@ public sealed class SessionOrderSyncCadenceTests : IDisposable
         var sw = Stopwatch.StartNew();
         while (!condition())
         {
-            sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "koşul süresinde gerçekleşmedi");
+            sw.Elapsed.Should().BeLessThan(TestPatience.Upper, "koşul süresinde gerçekleşmedi");
             await Task.Delay(20);
         }
     }

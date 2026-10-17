@@ -548,7 +548,7 @@ public sealed class SalesBackfillServiceTests : IDisposable
         using var cts = new CancellationTokenSource();
         var tour = Ws.TourAsync(cts.Token);
         await WaitUntil(() => hold is not null);
-        await hold!.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold!.Arrived.WaitAsync(TestPatience.Upper);
         await cts.CancelAsync();
         await FluentActions.Awaiting(() => tour).Should().ThrowAsync<OperationCanceledException>();
 
@@ -606,7 +606,7 @@ public sealed class SalesBackfillServiceTests : IDisposable
         var live = AddSession(T0 + 500_000, null, synced: false);
         var hold = _server.Hold(FakeSalesServer.SalesBackfill);
         var tour = Ws.TourAsync();
-        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold.Arrived.WaitAsync(TestPatience.Upper);
         var label = AddLabel(live, synced: false);
         using (var cts = new CancellationTokenSource(SessionOrderSyncHostedService.LiveInterval))
             await Ws.Push.SyncOnceAsync(liveCadence: true, cts.Token);
@@ -713,7 +713,7 @@ public sealed class SalesBackfillServiceTests : IDisposable
 
         var hold = _server.Hold(FakeSalesServer.SalesBackfill);
         lease.Dispose();
-        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold.Arrived.WaitAsync(TestPatience.Upper);
         Ws.Gate.TryEnter(session, out _).Should().BeFalse("kilit sayımdan yanıtın uygulanmasına kadar tutulur");
         hold.Release();
 
@@ -967,10 +967,11 @@ public sealed class SalesBackfillServiceTests : IDisposable
 
     private static async Task WaitUntil(Func<bool> condition)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var deadline = DateTime.UtcNow + TestPatience.Upper;
         while (!condition())
         {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException("koşul 10 sn'de sağlanmadı");
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"koşul {TestPatience.Upper.TotalSeconds} sn'de sağlanmadı");
             await Task.Delay(10);
         }
     }

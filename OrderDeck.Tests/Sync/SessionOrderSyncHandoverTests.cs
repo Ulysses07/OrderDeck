@@ -294,11 +294,11 @@ public sealed class SessionOrderSyncHandoverTests : IDisposable
         var live = NewSession();                                     // aynı partide, aktif
         var other = NewSession(endedAt: 1_760_000_800L, synced: true);  // kuyrukta değil
         var hold = _server.Hold(FakeSalesServer.SessionsSync);
-        using var fallback = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var fallback = new CancellationTokenSource(TestPatience.Upper);
         fallback.Token.Register(hold.Release);
 
         var tour = Task.Run(() => _svc.SyncOnceAsync());
-        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold.Arrived.WaitAsync(TestPatience.Upper);
 
         SessionItems(_server.Calls(FakeSalesServer.SessionsSync).Single()).Select(s => s.Id.ToString("N"))
             .Should().BeEquivalentTo(new[] { ended, live }, "ön koşul: istek iki oturumu taşıyor");
@@ -310,7 +310,7 @@ public sealed class SessionOrderSyncHandoverTests : IDisposable
         otherLease!.Dispose();
 
         hold.Release();
-        await tour.WaitAsync(TimeSpan.FromSeconds(10));
+        await tour.WaitAsync(TestPatience.Upper);
 
         _sessions.GetById(ended)!.ReleasedAt.Should().NotBeNull("ön koşul: yanıt uygulandı");
         _gate.TryEnter(ended, out var opened).Should().BeTrue("yanıt uygulandıktan sonra kapı açık");

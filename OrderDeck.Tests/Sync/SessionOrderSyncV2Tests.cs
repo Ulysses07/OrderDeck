@@ -396,12 +396,12 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         var hold = _server.Hold(FakeSalesServer.OrdersSync);
 
         var tours = Enumerable.Range(0, 3).Select(_ => Task.Run(() => _svc.SyncOnceAsync())).ToList();
-        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold.Arrived.WaitAsync(TestPatience.Upper);
         await Task.Delay(300);
         _server.Calls(FakeSalesServer.OrdersSync).Should().ContainSingle("öbür turlar kapıda bekler");
 
         hold.Release();
-        await Task.WhenAll(tours).WaitAsync(TimeSpan.FromSeconds(30));
+        await Task.WhenAll(tours).WaitAsync(TestPatience.Upper);
 
         _server.MaxInFlight(FakeSalesServer.OrdersSync).Should().Be(1);
         var sent = _server.Calls(FakeSalesServer.OrdersSync)
@@ -436,7 +436,7 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         AddLabel();
         var hold = _server.Hold(FakeSalesServer.OrdersSync);
         var tour = Task.Run(() => _svc.SyncOnceAsync());
-        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold.Arrived.WaitAsync(TestPatience.Upper);
         var lateLabel = AddLabel(150m, "B2");                                  // kapanışın göndereceği
 
         var flush = new SyncFlushService(new[]
@@ -448,11 +448,11 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
             })),
         });
         var sw = Stopwatch.StartNew();
-        await flush.FlushAsync(TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10));
+        await flush.FlushAsync(TimeSpan.FromSeconds(1)).WaitAsync(TestPatience.Upper);
         sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3), "kapanış bütçesi kesin");
 
         hold.Release();
-        await tour.WaitAsync(TimeSpan.FromSeconds(10));
+        await tour.WaitAsync(TestPatience.Upper);
         await Task.Delay(200);
         Local(lateLabel).SyncedAt.Should().BeNull(
             "kapanışın turu kapıyı beklerken belirteci dinler: bütçe dolunca vazgeçer, sonradan gönderim yapmaz");
@@ -469,12 +469,12 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         var toPrint = AddLabel(175m, "C3");
         await _svc.SyncOnceAsync();
         var hold = _server.Hold(FakeSalesServer.OrdersSync);
-        using var fallback = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        fallback.Token.Register(hold.Release);                     // sunucu en çok 10 sn tutar
+        using var fallback = new CancellationTokenSource(TestPatience.Upper);
+        fallback.Token.Register(hold.Release);                     // sunucu en çok üst sınır kadar tutar
 
         var flying = AddLabel(200m, "D4");                         // uçacak satır
         var tour = Task.Run(() => _svc.SyncOnceAsync());
-        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        await hold.Arrived.WaitAsync(TestPatience.Upper);
 
         var labelService = new LabelService(_labels,
             new CustomerService(new CustomerRepository(_db), _sessions, _labels, _clock), _db, _clock);
@@ -495,7 +495,7 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         cancelMs.Should().BeLessThan(1000);
 
         hold.Release();
-        await tour.WaitAsync(TimeSpan.FromSeconds(10));
+        await tour.WaitAsync(TestPatience.Upper);
         Local(flying).SyncedAt.Should().BeNull("uçuşta basılan satır onayla ezilmez (F05)");
 
         await _svc.SyncOnceAsync();

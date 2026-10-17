@@ -514,7 +514,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
 
     /// <summary>Üst sınır, bekleme süresi değil: koşul sağlanınca hemen döner. Tam paket yükünde iş havuzu geç
     /// büyür; arka plan işinin ilk turu 10 sn'yi aşabiliyordu.</summary>
-    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan Patience = TestPatience.Upper;
 
     private static async Task WaitUntil(Func<bool> condition)
     {

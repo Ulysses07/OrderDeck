@@ -3,6 +3,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Sessions;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.Sync;
@@ -43,7 +44,7 @@ public sealed class HandoverGateTests
         (await gate.EnterAsync("s2")).Dispose();
 
         held.Dispose();
-        using var acquired = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+        using var acquired = await waiting.WaitAsync(TestPatience.Upper);
         gate.TryEnter("s1", out _).Should().BeFalse();
     }
 
