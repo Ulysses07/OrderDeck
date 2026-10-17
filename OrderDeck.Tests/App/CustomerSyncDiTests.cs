@@ -295,6 +295,24 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void SalesCommandClient_tekil_akisla_ayni_depo_zarf_ve_guncelleme_sorusunu_alir()
+    {
+        // W2-04 (spec 2026-10-13 §4.6 adım 7, §5.3): komut yanıtı akışla AYNI depodan (aynı CustomerBusySet, U13)
+        // yazılır; zarf hello kararını tutan tekil örnek; güncelleme sorusu açılıştakiyle aynı.
+        using var host = new global::OrderDeck.App.AppHost();
+        var client = host.Services.GetRequiredService<SalesCommandClient>();
+
+        host.Services.GetRequiredService<SalesCommandClient>().Should().BeSameAs(client);
+        PrivateField<SalesFeedRepository>(client, "_feed").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesFeedRepository>());
+        PrivateField<SalesSyncEnvelope>(client, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>());
+        PrivateField<global::OrderDeck.App.Services.IAppUpdatePrompt>(client, "_updatePrompt").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>());
+        PrivateField<SalesConflictLogRepository>(client, "_conflicts").Should().NotBeNull();
+    }
+
+    [Fact]
     public void Guncelleme_sorusu_tekil_Velopack_ornegi()
     {
         // W2-04 (spec 2026-10-13 §5.3): açılış ve satış komutunun client-update-required'ı AYNI soruyu açar —

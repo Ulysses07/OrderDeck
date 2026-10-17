@@ -620,6 +620,11 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.SalesChangesPullService>();
         services.AddHostedService<Services.Sync.SalesChangesPullHostedService>();
 
+        // W2-04 (spec 2026-10-13 §4.6, §5.3): satış komutlarının istemcisi. Yanıtları akışla AYNI depoyla (aynı
+        // CustomerBusySet) yazar; zarf ve güncelleme sorusu tekil örnekler.
+        services.AddSingleton<SalesConflictLogRepository>();
+        services.AddSingleton<Services.Sync.SalesCommandClient>();
+
         // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
         // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
         // null olurdu (CustomerSyncDiTests denetler).

@@ -57,6 +57,12 @@ namespace OrderDeck.Tests.Sync;
 /// kaydı silinmiş müşterinin siparişi ve taslağı takma adsız/metinsiz. Ufuk sıradaki seq (<see cref="HorizonOverride"/>);
 /// imleç eksi ya da ufkun üstündeyse sayfa baştan ve <c>cursorReset</c>; boş sayfada <c>nextAfterSeq = afterSeq</c>.
 /// Kalp atışı state ile aynı. <see cref="OnChanges"/> sayfa kurulmadan önce koşar (arıza enjeksiyonu).</para>
+///
+/// <para><b>Komutlar</b> (W2-04): <c>POST sales/commands</c> (<see cref="HandleCommand"/>) — zarf, mod Off, UA'dan alt
+/// sürüm, CommandId + kanonik içerikle yeniden oynatma (<see cref="CommandLog"/>), content-conflict, beklenen sürüm
+/// (<c>stale</c> + <c>current</c>), görünürlük (<c>session-live</c>) ve beş tür sunucunun kuralıyla (damga, sürüm +1).
+/// Siparişler komutun damgalarını (<c>PriceSetAt</c>, <c>CancelSetAt</c>, <c>BackupSetAt</c>) taşır.
+/// <see cref="LoseNextResponse"/> yanıtı kaybolan komutu taklit eder.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
 {
@@ -77,6 +83,13 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     /// <summary><c>sales/backfill</c>: <see cref="Hold"/>, <see cref="DuringPush"/> ve <see cref="BackfillCalls"/> için.</summary>
     public const string SalesBackfill = "sales/backfill";
+
+    /// <summary><c>POST sales/commands</c>'ın uç adı (<see cref="EnqueueStatus"/>, <see cref="EnqueueProblem(string, int, string)"/>,
+    /// <see cref="LoseNextResponse"/>).</summary>
+    public const string Commands = "commands";
+
+    /// <summary><c>sales/commands</c>: <see cref="DuringPush"/> ve <see cref="CommandCalls"/> için.</summary>
+    public const string SalesCommands = "sales/commands";
 
     /// <summary>Sunucunun <c>orders/sync</c> parti tavanı ve <c>Orders.PrintBatchId</c> uzunluğu.</summary>
     private const int MaxPushBatch = 200;
@@ -223,6 +236,20 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         lock (_gate) Script(endpoint).Enqueue(() => FakeHttpMessageHandler.Problem(status, title));
     }
 
+    /// <summary>Sıradaki yanıt ek üyeli ProblemDetails (ASP.NET biçimi: ek üyeler köke yazılır, <c>traceId</c> dahil).</summary>
+    public void EnqueueProblem(string endpoint, int status, string title, IReadOnlyDictionary<string, object?> extensions)
+    {
+        lock (_gate) Script(endpoint).Enqueue(() => ProblemResponse(status, title, "fake", extensions));
+    }
+
+    /// <summary>Bu uca gelen sıradaki istek NORMAL işlenir (komut uygulanır, günlüğe yazılır), ama yanıt istemciye
+    /// varmaz: HttpClient zaman aşımı (<see cref="TaskCanceledException"/>). Yanıtı kaybolan komut.</summary>
+    public void LoseNextResponse(string endpoint)
+    {
+        lock (_gate) _lostResponses.Add(endpoint);
+    }
+    private readonly HashSet<string> _lostResponses = new();
+
     /// <summary>HttpClient zaman aşımı: iptal edilmemiş belirteçle <see cref="TaskCanceledException"/>.</summary>
     public void EnqueueTimeout(string endpoint)
     {
@@ -322,6 +349,18 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     if (scripted is not null) return scripted();
                     DuringPush?.Invoke(SalesBackfill);
                     return HandleBackfill(licenseId, raw);
+                }
+                case Commands when req.Method == HttpMethod.Post:
+                {
+                    var raw = await req.Content!.ReadAsStringAsync(ct);
+                    lock (_gate) _commandCalls.Add(new PushCall(SalesCommands, licenseId, raw));
+                    if (scripted is not null) return scripted();
+                    DuringPush?.Invoke(SalesCommands);
+                    var reply = HandleCommand(licenseId, raw, req.Headers.UserAgent.ToString());
+                    bool lose;
+                    lock (_gate) lose = _lostResponses.Remove(Commands);
+                    if (lose) throw new TaskCanceledException("fake timeout after commit");
+                    return reply;
                 }
             }
 
@@ -1205,7 +1244,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             masked ? "" : r.MessageText, r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason,
             r.IsShippingFee, r.IsBackupPromoted, r.IsTentativeBackup, r.ProductId, r.ProductVariantId, o.UpdatedAt,
             o.Version, r.ParentOrderId, r.ShipmentId, o.OriginReplicaId, r.PrintBatchId, r.PrintSeq, r.PriceCorrectedAt,
-            r.PaidPrice, o.SessionReleasedAt, null, null, null, null, null, o.ChangeSeq);
+            r.PaidPrice, o.SessionReleasedAt, o.PriceSetAt, o.CancelSetAt, o.BackupSetAt, null, null, o.ChangeSeq);
     }
 
     /// <summary><c>wpf-customers/sync</c>: projeksiyonları kaydeder (Id, platform, kullanıcı adı, takma ad). Silinmiş
@@ -1260,6 +1299,479 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     {
         var m = Regex.Match(query, $@"[?&]{name}=([^&]*)");
         return m.Success ? Uri.UnescapeDataString(m.Groups[1].Value) : null;
+    }
+
+    // ── komutlar (W2-04) ───────────────────────────────────────────────────
+
+    /// <summary><c>sales/commands</c> istekleri (geçersizler ve kasıtlı arızalar dahil), ham gövdeyle.</summary>
+    public IReadOnlyList<PushCall> CommandCalls { get { lock (_gate) return _commandCalls.ToList(); } }
+    private readonly List<PushCall> _commandCalls = new();
+
+    /// <summary>Komut günlüğü satırı (<c>SalesCommandLogs</c>); yoksa null. <see cref="CommandLogEntry.Applications"/>
+    /// komutun kaç kez UYGULANDIĞINI (hep 1), <see cref="CommandLogEntry.Replays"/> kaç kez yeniden oynatıldığını sayar.</summary>
+    public CommandLogEntry? CommandLog(Guid commandId)
+    {
+        lock (_gate) return _commandLog.TryGetValue(commandId, out var e) ? e.Clone() : null;
+    }
+    private readonly Dictionary<Guid, CommandLogEntry> _commandLog = new();
+
+    /// <summary>Komutun en çok sipariş/beklenen sürüm sayısı (<c>SalesCommandService.MaxOrders</c>).</summary>
+    private const int MaxCommandOrders = 500;
+
+    private static readonly string[] KnownCommandKinds = ["cancel", "uncancel", "mark-printed", "reprint", "confirm-backup"];
+
+    /// <summary>
+    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), şimdilik beş tür: <c>cancel</c>,
+    /// <c>uncancel</c>, <c>mark-printed</c>, <c>reprint</c>, <c>confirm-backup</c> (sonraki görevler kalanları ekler).
+    /// Sıra: zarf (v2) → commandId → beklenen sürümler → türün yükü (400'ler <see cref="Faults"/>'a yazılır: istemci
+    /// geçersiz gövde göndermemeli) → kalp atışı → mod Off 409 <c>mode-off</c> → alt sürüm 409
+    /// <c>client-update-required</c> (UA'daki "OrderDeck-WPF/x" ile <see cref="MinClientVersion"/>; ikisinden biri yoksa
+    /// kapalı) → yeniden oynatma (aynı kimlik + aynı kanonik içerik → kayıtlı durum ve sonuç GÜNCEL satırlarla; içerik
+    /// farklı ya da başka lisans 409 <c>content-conflict</c>; <c>reprint</c> sonucu güncel satırlardan yeniden kurulur)
+    /// → bilinmeyen sipariş 400 <c>unknown-order</c> → görünürlük 409 <c>session-live</c> (devredilmemiş yayın;
+    /// <c>reprint</c> çağıranın kendi yayınını görür) → beklenen sürüm 409 <c>stale</c> + <c>current</c> → uygulama:
+    /// alanlar, damga sunucu saatiyle, değişen satırda sürüm +1 (yeni seq). K7 dosya türetmesi ve stok defteri yok.
+    /// </summary>
+    private HttpResponseMessage HandleCommand(Guid licenseId, string raw, string? userAgent)
+    {
+        CommandBody? body;
+        try { body = JsonSerializer.Deserialize<CommandBody>(raw, Web); }
+        catch (JsonException ex) { return Invalid($"komut gövdesi okunamadı: {ex.Message}"); }
+        if (body is null) return Invalid("komut gövdesi yok");
+        if (!TryEnvelope(body.ReplicaId, body.Protocol, body.SeenMode, out var replicaId, out var seenMode, out var envError))
+            return Invalid(envError!);
+        if (body.CommandId is not { } commandId || commandId == Guid.Empty)
+            return InvalidCommand("invalid-command", "commandId boş olamaz.");
+        if (!TryReadExpected(body.Expected, out var expected, out var expectedError))
+            return InvalidCommand("invalid-expected", expectedError!);
+        if (!TryParseCommand(body.Kind, body.Payload, expected, out var command, out var code, out var error))
+            return InvalidCommand(code!, error!);
+
+        lock (_gate)
+        {
+            Touch(licenseId, replicaId, seenMode);
+            if (Mode != 1)
+                return ProblemResponse(409, "mode-off", "Satış senkronu bu lisansta kapalı.");
+            if (!ClientAtLeast(userAgent, MinClientVersion))
+                return ProblemResponse(409, "client-update-required", "Bu işlem için uygulamanın güncel sürümü gerekiyor.");
+
+            var hash = string.Join("|", command.Kind, replicaId.ToString("N"), command.Canonical,
+                string.Join(",", expected.OrderBy(e => e.OrderId).Select(e => $"{e.OrderId:N}:{e.Version}")));
+            if (_commandLog.TryGetValue(commandId, out var logged))
+            {
+                if (logged.LicenseId != licenseId || logged.Hash != hash)
+                    return ProblemResponse(409, "content-conflict", "Bu commandId farklı bir içerikle zaten kullanıldı.");
+                logged.Replays++;
+                if (command.Kind == "reprint")
+                {
+                    if (Visibility(licenseId, logged.ReplicaId, command) is { } hidden) return hidden;
+                    return CommandSucceeded(licenseId, logged.Status, Reprint(command), command.OrderIds);
+                }
+                return CommandSucceeded(licenseId, logged.Status, logged.ResultJson, command.OrderIds);
+            }
+
+            var unknown = command.OrderIds
+                .Where(id => !_orders.TryGetValue(id, out var o) || o.LicenseId != licenseId)
+                .ToList();
+            if (unknown.Count > 0)
+                return InvalidCommand("unknown-order", "Komutun siparişlerinden bazıları bu lisansta yok.",
+                    new Dictionary<string, object?> { ["orderIds"] = unknown });
+            if (Visibility(licenseId, replicaId, command) is { } live) return live;
+            var expectedById = expected.ToDictionary(e => e.OrderId, e => e.Version);
+            if (command.Kind != "reprint"
+                && command.OrderIds.Any(id => expectedById.GetValueOrDefault(id, -1) != _orders[id].Version))
+                return ProblemResponse(409, "stale", "Satırlar bu arada değişti; güncel sürümlerle yeniden deneyin.",
+                    new Dictionary<string, object?> { ["current"] = CurrentOrderItems(licenseId, command.OrderIds) });
+
+            string resultJson;
+            if (command.Kind == "reprint")
+            {
+                resultJson = Reprint(command);
+            }
+            else if (!TryApplyCommand(licenseId, command, DateTimeOffset.UtcNow, out resultJson, out var rejected))
+            {
+                return rejected!;
+            }
+            var result = JsonSerializer.Deserialize<CommandResultBody>(resultJson, Web)!;
+            var status = result.Changed.Count > 0 ? "applied" : "unchanged";
+            _commandLog[commandId] = new CommandLogEntry
+            {
+                CommandId = commandId, LicenseId = licenseId, ReplicaId = replicaId, Kind = command.Kind, Hash = hash,
+                Status = status, ResultJson = resultJson, Applications = 1,
+            };
+            return CommandSucceeded(licenseId, status, resultJson, command.OrderIds.Concat(result.Changed).Distinct().ToList());
+        }
+    }
+
+    /// <summary>Görünürlük (§4.6 adım 3): her siparişin yayını devredilmiş olmalı; <c>reprint</c> çağıranın kendi
+    /// yayınını da görür. Değilse 409 <c>session-live</c> (sahip makine ve sahibin son kalp atışı).</summary>
+    private HttpResponseMessage? Visibility(Guid licenseId, Guid replicaId, ParsedCommand command)
+    {
+        foreach (var id in command.OrderIds)
+        {
+            var order = _orders[id];
+            ServerSession? session = null;
+            if (order.Row.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var s) && s.LicenseId == licenseId)
+                session = s;
+            if (session?.ReleasedAt is not null) continue;
+            if (command.Kind == "reprint" && session?.OwnerReplicaId == replicaId) continue;
+            DateTimeOffset? lastSeen = session?.OwnerReplicaId is { } owner && _replicas.TryGetValue((licenseId, owner), out var r)
+                ? r.LastSeenAt
+                : null;
+            return ProblemResponse(409, "session-live",
+                "Bu yayın henüz sunucuya devredilmedi; yalnız onu açan bilgisayar değiştirebilir.",
+                new Dictionary<string, object?>
+                {
+                    ["machine"] = session?.OwnerMachineName, ["ownerLastSeenAt"] = lastSeen, ["sessionId"] = session?.Id,
+                });
+        }
+        return null;
+    }
+
+    /// <summary>Yazan dört türün uygulaması (<c>cancel</c>, <c>uncancel</c>, <c>mark-printed</c>, <c>confirm-backup</c>).
+    /// Ret (yalnız <c>confirm-backup</c>'ın K6'sı) hiçbir şey yazmaz.</summary>
+    private bool TryApplyCommand(Guid licenseId, ParsedCommand command, DateTimeOffset now, out string resultJson,
+        out HttpResponseMessage? rejected)
+    {
+        resultJson = "";
+        rejected = null;
+        var changed = new List<Guid>();
+        var skipped = new List<Guid>();
+        List<Guid>? marked = null, alreadyPrinted = null, cancelled = null;
+        var writes = new List<ServerOrder>();
+        switch (command.Kind)
+        {
+            case "cancel":
+                foreach (var id in command.OrderIds)
+                {
+                    var o = _orders[id];
+                    if (o.Row.CancelledAt is not null) { skipped.Add(id); continue; }
+                    writes.Add(o with
+                    {
+                        Row = o.Row with { CancelledAt = now, CancelReason = command.Reason }, CancelSetAt = now,
+                    });
+                    changed.Add(id);
+                }
+                break;
+            case "uncancel":
+                foreach (var id in command.OrderIds)
+                {
+                    var o = _orders[id];
+                    if (o.Row.CancelledAt is null) { skipped.Add(id); continue; }
+                    writes.Add(o with { Row = o.Row with { CancelledAt = null, CancelReason = null }, CancelSetAt = now });
+                    changed.Add(id);
+                }
+                break;
+            case "mark-printed":
+                marked = new List<Guid>();
+                alreadyPrinted = new List<Guid>();
+                cancelled = new List<Guid>();
+                foreach (var id in command.OrderIds)
+                {
+                    var o = _orders[id];
+                    if (o.Row.PrintedAt is not null) { alreadyPrinted.Add(id); continue; }
+                    if (o.Row.CancelledAt is not null) { cancelled.Add(id); continue; }
+                    writes.Add(o with
+                    {
+                        Row = o.Row with { PrintedAt = now, PrintBatchId = command.BatchId, PrintSeq = command.Seqs![id] },
+                    });
+                    marked.Add(id);
+                }
+                changed.AddRange(marked);
+                skipped.AddRange(alreadyPrinted.Concat(cancelled));
+                break;
+            case "confirm-backup":
+            {
+                var id = command.OrderIds[0];
+                var o = _orders[id];
+                if (!o.Row.IsTentativeBackup) { skipped.Add(id); break; }
+                var priceChanges = command.NewPrice is { } price && price != o.Row.Price;
+                if (priceChanges && o.Row.ShipmentId is { } shipmentId && _shipments.TryGetValue(shipmentId, out var shipment)
+                    && shipment.Row.Status == "shipped")
+                {
+                    rejected = ProblemResponse(409, "shipment-shipped", "Sipariş kargoya verilmiş bir dosyada; fiyatı değişmez.",
+                        new Dictionary<string, object?>
+                        {
+                            ["orderId"] = id, ["shipmentId"] = shipmentId,
+                            ["current"] = CurrentOrderItems(licenseId, command.OrderIds),
+                        });
+                    return false;
+                }
+                writes.Add(o with
+                {
+                    Row = o.Row with { IsTentativeBackup = false, Price = priceChanges ? command.NewPrice!.Value : o.Row.Price },
+                    BackupSetAt = now,
+                    PriceSetAt = priceChanges ? now : o.PriceSetAt,
+                });
+                changed.Add(id);
+                break;
+            }
+        }
+
+        var versions = new List<VersionBody>();
+        foreach (var w in writes)
+        {
+            var row = PutOrder(licenseId, w with { Version = w.Version + 1, UpdatedAt = now });
+            versions.Add(new VersionBody(row.Row.Id, row.Version));
+        }
+        resultJson = JsonSerializer.Serialize(new CommandResultBody(changed, skipped, versions, [])
+        {
+            Marked = marked, AlreadyPrinted = alreadyPrinted, Cancelled = cancelled,
+        }, Web);
+        return true;
+    }
+
+    /// <summary><c>reprint</c>: yazma yok; basılmış ve iptal edilmemiş olanlar istenen sırayla, düzeltilmiş olanlar.</summary>
+    private string Reprint(ParsedCommand command)
+    {
+        var reprint = command.OrderIds
+            .Where(id => _orders[id].Row.PrintedAt is not null && _orders[id].Row.CancelledAt is null)
+            .ToList();
+        return JsonSerializer.Serialize(new CommandResultBody([], command.OrderIds, [], [])
+        {
+            ReprintIds = reprint,
+            CorrectionIds = reprint.Where(id => _orders[id].Row.PriceCorrectedAt is not null).ToList(),
+        }, Web);
+    }
+
+    /// <summary>Başarı yanıtı: siparişler (istenen sırayla, güncel, asıl kayıt + KVKK maskesi), bağlı dosyaları ve
+    /// oturumları.</summary>
+    private HttpResponseMessage CommandSucceeded(Guid licenseId, string status, string resultJson, IReadOnlyList<Guid> orderIds)
+    {
+        var orders = orderIds.Where(id => _orders.TryGetValue(id, out var o) && o.LicenseId == licenseId)
+            .Select(id => _orders[id]).ToList();
+        var shipments = orders.Where(o => o.Row.ShipmentId is not null).Select(o => o.Row.ShipmentId!.Value).Distinct()
+            .Where(_shipments.ContainsKey).Select(id => _shipments[id].ToFeedItem()).ToList();
+        var sessions = orders.Where(o => o.Row.SessionId is not null).Select(o => o.Row.SessionId!.Value).Distinct()
+            .Where(id => _serverSessions.TryGetValue(id, out var s) && s.LicenseId == licenseId)
+            .Select(id => _serverSessions[id].ToFeedItem()).ToList();
+        using var result = JsonDocument.Parse(resultJson);
+        var response = new CommandResponseBody(status, CurrentOrderItems(licenseId, orderIds), shipments, sessions,
+            result.RootElement.Clone());
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(response, Web));
+    }
+
+    /// <summary>Siparişlerin güncel akış öğeleri (<c>current</c>, yanıtın <c>orders</c>'ı).</summary>
+    private List<OrderItemBody> CurrentOrderItems(Guid licenseId, IEnumerable<Guid> orderIds) =>
+        orderIds.Where(id => _orders.TryGetValue(id, out var o) && o.LicenseId == licenseId)
+            .Select(id =>
+            {
+                var order = _orders[id];
+                var (customerId, canonical) = ResolveCustomer(order.Row.CustomerId);
+                return FeedOrderOf(order, customerId, canonical?.PurgedAt is not null);
+            })
+            .ToList();
+
+    /// <summary><c>SalesCommandService.TryReadExpected</c>: Id dolu ve tekil, sürüm ≥ 0, en çok 500.</summary>
+    private static bool TryReadExpected(List<ExpectedBody?>? raw, out List<(Guid OrderId, int Version)> expected,
+        out string? error)
+    {
+        expected = new();
+        error = null;
+        if (raw is null) return true;
+        if (raw.Count > MaxCommandOrders) { error = $"expected en çok {MaxCommandOrders} öğe taşır."; return false; }
+        var seen = new HashSet<Guid>();
+        foreach (var item in raw)
+        {
+            if (item?.OrderId is not { } id || id == Guid.Empty || item.Version is not { } version || version < 0)
+            {
+                error = "expected öğesi orderId ve 0 ya da daha büyük bir version taşımalı.";
+                return false;
+            }
+            if (!seen.Add(id)) { error = "expected bir siparişi iki kez taşıyamaz."; return false; }
+            expected.Add((id, version));
+        }
+        return true;
+    }
+
+    /// <summary>Türün yükü — işleyicilerin <c>TryParse</c>'ının aynası; kanonik biçim özet içindir (sıra ve yazım
+    /// farkı aynı özeti verir).</summary>
+    private static bool TryParseCommand(string? kind, JsonElement? payload, List<(Guid OrderId, int Version)> expected,
+        out ParsedCommand command, out string? code, out string? error)
+    {
+        command = null!;
+        code = "invalid-payload";
+        error = null;
+        if (kind is null || !KnownCommandKinds.Contains(kind))
+        {
+            code = "unknown-kind";
+            error = $"Bu sahte sunucu '{kind}' türünü (henüz) tanımıyor.";
+            return false;
+        }
+        if (payload is not { ValueKind: JsonValueKind.Object } p) { error = "payload bir nesne olmalı."; return false; }
+
+        static bool Items(List<Guid>? raw, out List<Guid> items, out string? error)
+        {
+            items = new();
+            error = null;
+            if (raw is null || raw.Count == 0 || raw.Count > MaxCommandOrders || raw.Contains(Guid.Empty))
+            {
+                error = $"liste en az bir, en çok {MaxCommandOrders} dolu Id taşır.";
+                return false;
+            }
+            items = raw.Distinct().Order().ToList();
+            return true;
+        }
+
+        try
+        {
+            switch (kind)
+            {
+                case "cancel":
+                {
+                    var b = p.Deserialize<CancelBody>(Web);
+                    if (!Items(b?.Items, out var items, out error)) return false;
+                    if (string.IsNullOrWhiteSpace(b!.Reason) || b.Reason.Length > 500)
+                    {
+                        error = "reason boş olamaz, en çok 500 karakter.";
+                        return false;
+                    }
+                    command = new ParsedCommand(kind, items, $"items={string.Join(",", items.Select(i => i.ToString("N")))};reason={b.Reason}")
+                    {
+                        Reason = b.Reason,
+                    };
+                    break;
+                }
+                case "uncancel":
+                {
+                    var b = p.Deserialize<ItemsBody>(Web);
+                    if (!Items(b?.Items, out var items, out error)) return false;
+                    command = new ParsedCommand(kind, items, $"items={string.Join(",", items.Select(i => i.ToString("N")))}");
+                    break;
+                }
+                case "mark-printed":
+                {
+                    var b = p.Deserialize<MarkPrintedBody>(Web);
+                    if (string.IsNullOrWhiteSpace(b?.BatchId) || b.BatchId.Length > PrintBatchIdMaxLength)
+                    {
+                        error = $"batchId boş olamaz, en çok {PrintBatchIdMaxLength} karakter.";
+                        return false;
+                    }
+                    if (b.Items is null || b.Items.Count == 0 || b.Items.Count > MaxCommandOrders
+                        || b.Items.Any(i => i?.OrderId is not { } id || id == Guid.Empty || i.Seq is not >= 1))
+                    {
+                        error = "items öğesi orderId ve 1 ya da daha büyük bir seq taşımalı.";
+                        return false;
+                    }
+                    var seqs = new Dictionary<Guid, int>();
+                    foreach (var i in b.Items)
+                        if (!seqs.TryAdd(i!.OrderId!.Value, i.Seq!.Value)) { error = "items bir siparişi iki kez taşıyamaz."; return false; }
+                    var items = seqs.Keys.Order().ToList();
+                    command = new ParsedCommand(kind, items,
+                        $"batch={b.BatchId};items={string.Join(",", items.Select(i => $"{i:N}:{seqs[i]}"))}")
+                    {
+                        BatchId = b.BatchId, Seqs = seqs,
+                    };
+                    break;
+                }
+                case "reprint":
+                {
+                    var b = p.Deserialize<ReprintBody>(Web);
+                    if (b?.OrderIds is null || b.OrderIds.Count == 0 || b.OrderIds.Count > MaxCommandOrders
+                        || b.OrderIds.Contains(Guid.Empty))
+                    {
+                        error = $"orderIds en az bir, en çok {MaxCommandOrders} dolu Id taşır.";
+                        return false;
+                    }
+                    if (expected.Count > 0) { error = "reprint yazmaz; expected boş olmalı."; return false; }
+                    var ids = b.OrderIds.Distinct().ToList();                    // kâğıt sırası: sıralanmaz
+                    command = new ParsedCommand(kind, ids, $"orderIds={string.Join(",", ids.Select(i => i.ToString("N")))}");
+                    return true;
+                }
+                case "confirm-backup":
+                {
+                    var b = p.Deserialize<ConfirmBackupBody>(Web);
+                    if (b?.BackupOrderId is not { } id || id == Guid.Empty) { error = "backupOrderId boş olamaz."; return false; }
+                    if (b.NewPrice is { } price && (price < 0m || decimal.Round(price, 2) != price))
+                    {
+                        error = "newPrice 0 ya da daha büyük, en çok iki ondalıklı bir tutar olmalı.";
+                        return false;
+                    }
+                    var canonicalPrice = b.NewPrice is { } np
+                        ? (decimal.Round(np, 2) + 0.00m).ToString("F2", CultureInfo.InvariantCulture)
+                        : "null";
+                    command = new ParsedCommand(kind, [id], $"backup={id:N};price={canonicalPrice}")
+                    {
+                        NewPrice = b.NewPrice is { } n ? decimal.Round(n, 2) : null,
+                    };
+                    break;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            error = "payload okunamadı.";
+            return false;
+        }
+
+        // İşleyicilerin TryMatchExpected'i: beklenen sürümler tam olarak öğeleri kapsamalı.
+        if (expected.Count != command.OrderIds.Count || !expected.Select(e => e.OrderId).ToHashSet().SetEquals(command.OrderIds))
+        {
+            error = "expected her öğe için tam bir sürüm taşımalı (ne eksik ne fazla).";
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary><c>ClientVersion.IsAtLeast</c>: UA'daki "OrderDeck-WPF/x" alt sınırı karşılıyor mu; biri yoksa ya da
+    /// ayrıştırılamıyorsa hayır (kapalı-hata). Aynı numarada ön sürüm eki yalnız aynı ekle geçer.</summary>
+    private static bool ClientAtLeast(string? userAgent, string? min)
+    {
+        var m = Regex.Match(userAgent ?? "", @"\bOrderDeck-WPF/([0-9A-Za-z.\-]{1,32})");
+        var client = ParseClientVersion(m.Success ? m.Groups[1].Value : null);
+        var floor = ParseClientVersion(min);
+        if (client is null || floor is null) return false;
+        var byNumber = client.Value.Number.CompareTo(floor.Value.Number);
+        if (byNumber != 0) return byNumber > 0;
+        return client.Value.Pre is null || string.Equals(client.Value.Pre, floor.Value.Pre, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (Version Number, string? Pre)? ParseClientVersion(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var text = raw.Trim();
+        var plus = text.IndexOf('+');
+        if (plus >= 0) text = text[..plus];
+        string? pre = null;
+        var dash = text.IndexOf('-');
+        if (dash >= 0)
+        {
+            pre = text[(dash + 1)..];
+            text = text[..dash];
+            if (pre.Length == 0) return null;
+        }
+        if (!Version.TryParse(text, out var v)) return null;
+        return (new Version(v.Major, v.Minor, Math.Max(v.Build, 0), Math.Max(v.Revision, 0)), pre);
+    }
+
+    /// <summary>İstemci hatası sayılan 400 (başlıklı); <see cref="Faults"/>'a yazılır.</summary>
+    private HttpResponseMessage InvalidCommand(string code, string error, IReadOnlyDictionary<string, object?>? extensions = null)
+    {
+        _faults.Enqueue($"geçersiz komut ({code}): {error}");
+        return ProblemResponse(400, code, error, extensions);
+    }
+
+    /// <summary>ASP.NET ProblemDetails biçimi: <c>type</c>, <c>title</c> (kod), <c>status</c>, <c>detail</c>, ek üyeler
+    /// köke, <c>traceId</c>.</summary>
+    private static HttpResponseMessage ProblemResponse(
+        int status, string code, string detail, IReadOnlyDictionary<string, object?>? extensions = null)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["type"] = "https://tools.ietf.org/html/rfc9110",
+            ["title"] = code,
+            ["status"] = status,
+            ["detail"] = detail,
+        };
+        if (extensions is not null)
+            foreach (var (key, value) in extensions)
+                body[key] = value;
+        body["traceId"] = "00-fake-trace";
+        return new HttpResponseMessage((HttpStatusCode)status)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(body, Web), System.Text.Encoding.UTF8,
+                "application/problem+json"),
+        };
     }
 
     // ── kayıtlar ve tel biçimi ─────────────────────────────────────────────
@@ -1356,6 +1868,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         public SessionsBody Sessions => JsonSerializer.Deserialize<SessionsBody>(RawJson, Web)!;
         public ShipmentsBody Shipments => JsonSerializer.Deserialize<ShipmentsBody>(RawJson, Web)!;
         public BackfillBody Backfill => JsonSerializer.Deserialize<BackfillBody>(RawJson, Web)!;
+        public CommandBody Command => JsonSerializer.Deserialize<CommandBody>(RawJson, Web)!;
     }
 
     /// <summary><c>LicensesSalesController.BackfillRequest</c>.</summary>
@@ -1446,13 +1959,20 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         /// <summary>Akış süzgeci (DM3): devirde ya da devredilmiş oturuma eklemede dolar.</summary>
         public DateTimeOffset? SessionReleasedAt { get; init; }
 
-        /// <summary>Akış öğesi (<c>SalesOrderItem</c>); damga yok (mod Off, komut yok).</summary>
+        /// <summary>Birim damgaları (§2): yalnız komut basar (W2-04), sunucu saati; hiçbir yol silmez.</summary>
+        public DateTimeOffset? PriceSetAt { get; init; }
+
+        public DateTimeOffset? CancelSetAt { get; init; }
+
+        public DateTimeOffset? BackupSetAt { get; init; }
+
+        /// <summary>Akış öğesi (<c>SalesOrderItem</c>); damgalar komutların bastığı.</summary>
         public OrderItemBody ToItem() => new(
             Row.Id, Row.SessionId, Row.CustomerId, Row.Platform, Row.Username, Row.DisplayName, Row.MessageText,
             Row.Code, Row.Price, Row.AddedAt, Row.PrintedAt, Row.CancelledAt, Row.CancelReason, Row.IsShippingFee,
             Row.IsBackupPromoted, Row.IsTentativeBackup, Row.ProductId, Row.ProductVariantId, UpdatedAt, Version,
             Row.ParentOrderId, Row.ShipmentId, OriginReplicaId, Row.PrintBatchId, Row.PrintSeq, Row.PriceCorrectedAt,
-            Row.PaidPrice, null, null, null, null, null, null, Version);
+            Row.PaidPrice, null, PriceSetAt, CancelSetAt, BackupSetAt, null, null, Version);
 
         public V1OrderBody ToV1() => new(
             Row.Id, Row.SessionId, Row.CustomerId, Row.Platform, Row.Username, Row.DisplayName, Row.MessageText,
@@ -1609,4 +2129,85 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     internal sealed record V1ShipmentBody(
         Guid Id, string CustomerId, string Status, decimal CumulativeAmount, DateTimeOffset CreatedAt,
         DateTimeOffset? HeldAt, DateTimeOffset? ShippedAt, DateTimeOffset UpdatedAt);
+
+    // ── komutların kayıtları ve tel biçimi (W2-04) ─────────────────────────
+
+    /// <summary><c>SalesCommandContracts.SalesCommandRequest</c>.</summary>
+    internal sealed record CommandBody(
+        Guid? CommandId, string? Kind, JsonElement? Payload, List<ExpectedBody?>? Expected, Guid? ReplicaId,
+        int? Protocol, int? SeenMode);
+
+    /// <summary><c>SalesCommandContracts.SalesCommandExpectedDto</c>.</summary>
+    internal sealed record ExpectedBody(Guid? OrderId, int? Version);
+
+    /// <summary><c>CancelCommandHandler.Body</c>.</summary>
+    private sealed record CancelBody(List<Guid>? Items, string? Reason);
+
+    /// <summary><c>UncancelCommandHandler.Body</c>.</summary>
+    private sealed record ItemsBody(List<Guid>? Items);
+
+    /// <summary><c>MarkPrintedCommandHandler.Body</c>.</summary>
+    private sealed record MarkPrintedBody(string? BatchId, List<MarkPrintedItemBody?>? Items);
+
+    private sealed record MarkPrintedItemBody(Guid? OrderId, int? Seq);
+
+    /// <summary><c>ReprintCommandHandler.Body</c>.</summary>
+    private sealed record ReprintBody(List<Guid>? OrderIds);
+
+    /// <summary><c>ConfirmBackupCommandHandler.Body</c>.</summary>
+    private sealed record ConfirmBackupBody(Guid? BackupOrderId, decimal? NewPrice);
+
+    /// <summary>Doğrulanmış komut: tür, siparişler, kanonik yük (özet için) ve türün alanları.</summary>
+    private sealed record ParsedCommand(string Kind, IReadOnlyList<Guid> OrderIds, string Canonical)
+    {
+        public string? Reason { get; init; }
+        public string? BatchId { get; init; }
+        public IReadOnlyDictionary<Guid, int>? Seqs { get; init; }
+        public decimal? NewPrice { get; init; }
+    }
+
+    /// <summary><c>SalesCommandLogs</c> satırı (kanonik içerik özeti dahil).</summary>
+    internal sealed class CommandLogEntry
+    {
+        public Guid CommandId;
+        public Guid LicenseId;
+        public Guid ReplicaId;
+        public string Kind = "";
+        public string Hash = "";
+        public string Status = "";
+        public string ResultJson = "";
+        public int Applications;
+        public int Replays;
+
+        public CommandLogEntry Clone() => (CommandLogEntry)MemberwiseClone();
+    }
+
+    /// <summary><c>SalesCommandResult</c> (türe özgü listeler yalnız o türde yazılır).</summary>
+    internal sealed record CommandResultBody(
+        IReadOnlyList<Guid> Changed, IReadOnlyList<Guid> Skipped, IReadOnlyList<VersionBody> Orders,
+        IReadOnlyList<VersionBody> Shipments)
+    {
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<Guid>? Marked { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<Guid>? AlreadyPrinted { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<Guid>? Cancelled { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<Guid>? ReprintIds { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<Guid>? CorrectionIds { get; init; }
+    }
+
+    /// <summary><c>SalesCommandOrderVersion</c>.</summary>
+    internal sealed record VersionBody(Guid Id, int Version);
+
+    /// <summary><c>SalesCommandContracts.SalesCommandResponse</c>.</summary>
+    internal sealed record CommandResponseBody(
+        string Status, IReadOnlyList<OrderItemBody> Orders, IReadOnlyList<ShipmentItemBody> Shipments,
+        IReadOnlyList<SessionItemBody> Sessions, JsonElement Result);
 }
