@@ -63,7 +63,11 @@ namespace OrderDeck.Tests.Sync;
 /// (<c>stale</c> + <c>current</c>), görünürlük (<c>session-live</c>) ve beş tür sunucunun kuralıyla (damga, sürüm +1).
 /// W2-06: <c>set-code-price</c> (planı sunucu kurar; <c>plan-stale</c> + <c>plan</c> + <c>current</c>) ve
 /// <c>add-backup</c> (yeni geçici yedek satırı). Siparişler komutun damgalarını (<c>PriceSetAt</c>, <c>CancelSetAt</c>,
-/// <c>BackupSetAt</c>) taşır.
+/// <c>BackupSetAt</c>) taşır. W2-08: <c>attach-shipment</c> (aday kümesi — kargo bağı bilinen, görünür siparişler —
+/// <c>expected</c>'le birebir; en yeni türetilmiş açık dosya ya da önerilen Id'yle yeni dosya; tutar türetilir; havuz
+/// yanıt anındaki açık dosyalardan) ve <c>shipment-decision</c> (U12, kargoya verirken türetilmiş dosyada iptalli bağ
+/// çözülür, 409 <c>shipment-shipped</c>/<c>stale</c> + <c>currentShipments</c>); <c>ShipmentSetAt</c>,
+/// <c>AmountDerivedAt</c> ve <c>CommandedAt</c> damgaları.
 /// <see cref="LoseNextResponse"/> yanıtı kaybolan komutu taklit eder.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
@@ -843,9 +847,14 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     /// <summary>Sunucuya önceden var olan bir kargo dosyası koyar.</summary>
     /// <param name="licenseId">Satırın lisansı; verilmezse birinci lisans (<see cref="LicenseId"/>).</param>
-    public void SeedShipment(ShipmentBody row, Guid? origin = null, Guid? licenseId = null)
+    /// <param name="derived">Tutarı bağlardan türetilen dosya (<c>AmountDerivedAt</c> dolu; mod On'da açılmış ya da
+    /// <c>enable --apply</c>'ın türettiği). <c>attach-shipment</c> yalnız böyle bir dosyayı hedef seçer.</param>
+    public void SeedShipment(ShipmentBody row, Guid? origin = null, Guid? licenseId = null, bool derived = false)
     {
-        lock (_gate) PutShipment(licenseId ?? LicenseId, new ServerShipment(row, 0, origin, DateTimeOffset.UtcNow));
+        var now = DateTimeOffset.UtcNow;
+        lock (_gate)
+            PutShipment(licenseId ?? LicenseId,
+                new ServerShipment(row, 0, origin, now) { AmountDerivedAt = derived ? now : null });
     }
 
     /// <summary>
@@ -1253,7 +1262,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             masked ? "" : r.MessageText, r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason,
             r.IsShippingFee, r.IsBackupPromoted, r.IsTentativeBackup, r.ProductId, r.ProductVariantId, o.UpdatedAt,
             o.Version, r.ParentOrderId, r.ShipmentId, o.OriginReplicaId, r.PrintBatchId, r.PrintSeq, r.PriceCorrectedAt,
-            r.PaidPrice, o.SessionReleasedAt, o.PriceSetAt, o.CancelSetAt, o.BackupSetAt, null, null, o.ChangeSeq);
+            r.PaidPrice, o.SessionReleasedAt, o.PriceSetAt, o.CancelSetAt, o.BackupSetAt, o.ShipmentSetAt, null, o.ChangeSeq);
     }
 
     /// <summary><c>wpf-customers/sync</c>: projeksiyonları kaydeder (Id, platform, kullanıcı adı, takma ad). Silinmiş
@@ -1332,13 +1341,19 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     private const int MaxSetOrders = 10_000;
 
     private static readonly string[] KnownCommandKinds =
-        ["cancel", "uncancel", "mark-printed", "reprint", "confirm-backup", "set-code-price", "add-backup"];
+        ["cancel", "uncancel", "mark-printed", "reprint", "confirm-backup", "set-code-price", "add-backup",
+         "attach-shipment", "shipment-decision"];
+
+    /// <summary><c>attach-shipment</c>'ın aday tavanı (<c>SalesCommandService.MaxSetOrders</c>); testte küçültülür
+    /// (<c>too-many-candidates</c>).</summary>
+    public int MaxAttachCandidates { get; set; } = MaxSetOrders;
 
     /// <summary>
-    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), şimdilik yedi tür: <c>cancel</c>,
+    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), şimdilik dokuz tür: <c>cancel</c>,
     /// <c>uncancel</c>, <c>mark-printed</c>, <c>reprint</c>, <c>confirm-backup</c>, <c>set-code-price</c> (plan sunucuda
-    /// kurulur, <see cref="SetCodePrice"/>) ve <c>add-backup</c> (<see cref="AddBackup"/>); sonraki görevler kalanları
-    /// ekler.
+    /// kurulur, <see cref="SetCodePrice"/>), <c>add-backup</c> (<see cref="AddBackup"/>), <c>attach-shipment</c>
+    /// (<see cref="AttachShipment"/>) ve <c>shipment-decision</c> (<see cref="DecideShipment"/>); <c>force-end</c>
+    /// sonraki görevin.
     /// Sıra: zarf (v2) → commandId → beklenen sürümler → türün yükü (400'ler <see cref="Faults"/>'a yazılır: istemci
     /// geçersiz gövde göndermemeli) → kalp atışı → mod Off 409 <c>mode-off</c> → alt sürüm 409
     /// <c>client-update-required</c> (UA'daki "OrderDeck-WPF/x" ile <see cref="MinClientVersion"/>; ikisinden biri yoksa
@@ -1358,7 +1373,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             return Invalid(envError!);
         if (body.CommandId is not { } commandId || commandId == Guid.Empty)
             return InvalidCommand("invalid-command", "commandId boş olamaz.");
-        if (!TryReadExpected(body.Expected, body.Kind == "set-code-price" ? MaxSetOrders : MaxCommandOrders,
+        if (!TryReadExpected(body.Expected,
+                body.Kind is "set-code-price" or "attach-shipment" ? MaxSetOrders : MaxCommandOrders,
                 out var expected, out var expectedError))
             return InvalidCommand("invalid-expected", expectedError!);
         if (!TryParseCommand(body.Kind, body.Payload, expected, out var command, out var code, out var error))
@@ -1384,7 +1400,28 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     if (Visibility(licenseId, logged.ReplicaId, command) is { } hidden) return hidden;
                     return CommandSucceeded(licenseId, logged.Status, Reprint(command), command.OrderIds);
                 }
+                if (command.Kind is "attach-shipment" or "shipment-decision")
+                    return ShipmentCommandSucceeded(licenseId, logged.Status, logged.ResultJson, command);
                 return CommandSucceeded(licenseId, logged.Status, logged.ResultJson, command.OrderIds);
+            }
+
+            // Kargo komutları (§4.6): yayın görünürlüğü yerine kendi süzgeçleri — kargo bağı her oturum hâlinde
+            // sunucunun (K4).
+            if (command.Kind is "attach-shipment" or "shipment-decision")
+            {
+                var now = DateTimeOffset.UtcNow;
+                var ok = command.Kind == "attach-shipment"
+                    ? AttachShipment(licenseId, replicaId, command, expected, now, out var shipResult, out var shipRejected)
+                    : DecideShipment(licenseId, command, now, out shipResult, out shipRejected);
+                if (!ok) return shipRejected!;
+                var shipBody = JsonSerializer.Deserialize<CommandResultBody>(shipResult, Web)!;
+                var shipStatus = shipBody.Changed.Count > 0 || shipBody.Decided is { Count: > 0 } ? "applied" : "unchanged";
+                _commandLog[commandId] = new CommandLogEntry
+                {
+                    CommandId = commandId, LicenseId = licenseId, ReplicaId = replicaId, Kind = command.Kind, Hash = hash,
+                    Status = shipStatus, ResultJson = shipResult, Applications = 1,
+                };
+                return ShipmentCommandSucceeded(licenseId, shipStatus, shipResult, command);
             }
 
             // Kümeyi sunucunun kurduğu / yeni satır ekleyen türler kendi denetimlerini yapar (§4.6 tablosu).
@@ -1743,14 +1780,253 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         return true;
     }
 
+    // ── kargo komutları (W2-08) ────────────────────────────────────────────
+
+    private static bool IsOpen(ServerShipment s) => s.Row.Status is "pending" or "held";
+
+    /// <summary><c>LoadOpenShipmentsAsync</c> + <c>NewestFirst</c>: asıl müşterinin açık (Pending/Held) dosyaları, en
+    /// yenisi başta (CreatedAt azalan, sonra "N" Id azalan, ordinal).</summary>
+    private List<ServerShipment> OpenShipments(Guid licenseId, string customer) =>
+        _shipments.Values
+            .Where(s => s.LicenseId == licenseId && IsOpen(s) && ResolveCustomer(s.Row.CustomerId).Id == customer)
+            .OrderByDescending(s => s.Row.CreatedAt)
+            .ThenByDescending(s => s.Row.Id.ToString("N"), StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>DM7: dosyanın tutarı bağlı, iptal edilmemiş, geçici yedek olmayan siparişlerin fiyat toplamı; sürüm +1.</summary>
+    private ServerShipment Derive(ServerShipment shipment, DateTimeOffset now)
+    {
+        var amount = _orders.Values
+            .Where(o => o.LicenseId == shipment.LicenseId && o.Row.ShipmentId == shipment.Row.Id
+                        && o.Row.CancelledAt is null && !o.Row.IsTentativeBackup)
+            .Sum(o => o.Row.Price);
+        return shipment with
+        {
+            Row = shipment.Row with { CumulativeAmount = amount }, Version = shipment.Version + 1, UpdatedAt = now,
+        };
+    }
+
+    /// <summary>
+    /// <c>attach-shipment</c> — <c>AttachShipmentCommandHandler</c>'ın aynası (§4.6, §7.1, M22). Müşteri asıl kayda
+    /// çözülür. Adaylar: asıl müşterinin bağsız, iptal edilmemiş, geçici yedek olmayan, kargo bağı bilinen
+    /// (<c>OriginReplicaId</c> dolu) ve görünür (yayını devredilmiş ya da çağıranın kendi yayını) siparişleri, Id
+    /// sırasıyla. Tavanı aşan küme 409 <c>too-many-candidates</c>; küme (Id ve sürüm) <c>expected</c>'den farklıysa 409
+    /// <c>stale</c> + <c>candidates</c> + <c>current</c> (adaylar ∪ beklenenler), hiçbir şey yazılmaz. Aday yoksa
+    /// etkisiz (dosya açılmaz). Hedef en yeni türetilmiş Pending/Held dosya; yoksa <c>proposedShipmentId</c> ile açılır
+    /// (Pending, <c>AmountDerivedAt</c>, kaynak çağıran; Id sunucuda varsa 409 <c>content-conflict</c>). Bağlama:
+    /// <c>ShipmentId</c>, <c>ShipmentSetAt</c>, sürüm +1; hedef türetilir (DM7), <c>CommandedAt</c>. Sonuç:
+    /// <c>shipmentId</c>, havuz (açık dosyaların toplamı) ve havuzun dosyaları.
+    /// </summary>
+    private bool AttachShipment(Guid licenseId, Guid replicaId, ParsedCommand command,
+        List<(Guid OrderId, int Version)> expected, DateTimeOffset now, out string resultJson,
+        out HttpResponseMessage? rejected)
+    {
+        resultJson = "";
+        rejected = null;
+        var (customer, _) = ResolveCustomer(command.CustomerId!);
+        var open = OpenShipments(licenseId, customer);
+        var candidates = _orders.Values
+            .Where(o => o.LicenseId == licenseId && ResolveCustomer(o.Row.CustomerId).Id == customer
+                        && o.Row.ShipmentId is null && o.Row.CancelledAt is null && !o.Row.IsTentativeBackup
+                        && o.OriginReplicaId is not null
+                        && o.Row.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var session)
+                        && session.LicenseId == licenseId
+                        && (session.ReleasedAt is not null || session.OwnerReplicaId == replicaId))
+            .OrderBy(o => o.Row.Id)
+            .ToList();
+        if (candidates.Count > MaxAttachCandidates)
+        {
+            rejected = ProblemResponse(409, "too-many-candidates",
+                "Bu işlemin kapsadığı etiket sayısı tek komutun sınırını aşıyor.",
+                new Dictionary<string, object?> { ["count"] = candidates.Count, ["max"] = MaxAttachCandidates });
+            return false;
+        }
+        var expectedById = expected.ToDictionary(e => e.OrderId, e => e.Version);
+        if (candidates.Count != expected.Count
+            || candidates.Any(c => !expectedById.TryGetValue(c.Row.Id, out var v) || v != c.Version))
+        {
+            rejected = ProblemResponse(409, "stale",
+                "Müşterinin bağlanmamış etiketleri bu arada değişti; güncel kümeyle yeniden deneyin.",
+                new Dictionary<string, object?>
+                {
+                    ["candidates"] = candidates.Select(c => new ExpectedBody(c.Row.Id, c.Version)).ToList(),
+                    ["current"] = CurrentOrderItems(licenseId,
+                        candidates.Select(c => c.Row.Id).Concat(expected.Select(e => e.OrderId)).Distinct()),
+                });
+            return false;
+        }
+
+        ServerShipment? target = null;
+        if (candidates.Count > 0)
+        {
+            target = open.FirstOrDefault(s => s.AmountDerivedAt is not null);
+            if (target is null)
+            {
+                var proposed = command.ProposedShipmentId!.Value;
+                if (_shipments.ContainsKey(proposed))
+                {
+                    rejected = ProblemResponse(409, "content-conflict", "Bu kargo dosyası Id'si sunucuda zaten kullanılıyor.",
+                        new Dictionary<string, object?> { ["shipmentId"] = proposed });
+                    return false;
+                }
+                target = PutShipment(licenseId,
+                    new ServerShipment(new ShipmentBody(proposed, customer, "pending", 0m, now, null, null), 0, replicaId, now)
+                    {
+                        AmountDerivedAt = now,
+                    });
+                open.Insert(0, target);
+            }
+
+            var versions = new List<VersionBody>();
+            foreach (var c in candidates)
+            {
+                var linked = PutOrder(licenseId, c with
+                {
+                    Row = c.Row with { ShipmentId = target.Row.Id }, ShipmentSetAt = now, Version = c.Version + 1,
+                    UpdatedAt = now,
+                });
+                versions.Add(new VersionBody(linked.Row.Id, linked.Version));
+            }
+            target = PutShipment(licenseId, Derive(_shipments[target.Row.Id], now) with { CommandedAt = now });
+            var pool = open.Select(s => _shipments[s.Row.Id]).Where(IsOpen).ToList();
+            resultJson = JsonSerializer.Serialize(new CommandResultBody(candidates.Select(c => c.Row.Id).ToList(), [],
+                versions, [new ShipmentAmountBody(target.Row.Id, target.Version, target.Row.CumulativeAmount)])
+            {
+                ShipmentId = target.Row.Id,
+                Pool = pool.Sum(s => s.Row.CumulativeAmount),
+                PoolShipmentIds = pool.Select(s => s.Row.Id).ToList(),
+            }, Web);
+            return true;
+        }
+
+        resultJson = JsonSerializer.Serialize(new CommandResultBody([], [], [], [])
+        {
+            Pool = open.Sum(s => s.Row.CumulativeAmount),
+            PoolShipmentIds = open.Select(s => s.Row.Id).ToList(),
+        }, Web);
+        return true;
+    }
+
+    /// <summary>
+    /// <c>shipment-decision</c> — <c>ShipmentDecisionCommandHandler</c>'ın aynası (§4.6, §7.2, §7.3, U12). Dosya bu
+    /// lisansta (400 <c>unknown-shipment</c>), Shipped değil (409 <c>shipment-shipped</c> + <c>currentShipments</c>) ve
+    /// sürümü <c>expectedVersion</c> (409 <c>stale</c> + <c>currentShipments</c>) olmalı. Hedef açıksa müşterinin öbür
+    /// açık dosyaları da aynı karara uyar (U12). Kargoya verilen her türetilmiş dosyada bağlı ve şu anda iptal edilmiş
+    /// siparişlerin bağı çözülür (<c>ShipmentId</c> boş, <c>ShipmentSetAt</c>, sürüm +1) ve tutar türetilip donar;
+    /// kabul edilmiş (türetilmemiş) dosya saklanan tutarıyla, bağlarıyla donar. Her dosyada karar, <c>CommandedAt</c>,
+    /// sürüm +1. Sonuç: çözülen siparişler ve <c>decided</c> (dosya, sürüm, tutar).
+    /// </summary>
+    private bool DecideShipment(Guid licenseId, ParsedCommand command, DateTimeOffset now, out string resultJson,
+        out HttpResponseMessage? rejected)
+    {
+        resultJson = "";
+        rejected = null;
+        var id = command.ShipmentId!.Value;
+        if (!_shipments.TryGetValue(id, out var target) || target.LicenseId != licenseId)
+        {
+            rejected = InvalidCommand("unknown-shipment", "Komutun kargo dosyası bu lisansta yok.",
+                new Dictionary<string, object?> { ["shipmentId"] = id });
+            return false;
+        }
+        if (target.Row.Status == "shipped" || target.Version != command.ExpectedVersion)
+        {
+            var shipped = target.Row.Status == "shipped";
+            rejected = ProblemResponse(409, shipped ? "shipment-shipped" : "stale",
+                shipped ? "Kargo dosyası zaten kargoya verilmiş; karar değişmez."
+                    : "Kargo dosyası bu arada değişti; güncel sürümle yeniden deneyin.",
+                new Dictionary<string, object?> { ["shipmentId"] = id, ["currentShipments"] = new[] { target.ToFeedItem() } });
+            return false;
+        }
+
+        var decided = new List<Guid> { id };
+        if (IsOpen(target))
+            decided.AddRange(OpenShipments(licenseId, ResolveCustomer(target.Row.CustomerId).Id)
+                .Select(s => s.Row.Id).Where(s => s != id));
+
+        var unlinked = new List<VersionBody>();
+        if (command.Decision == "ship-now")
+        {
+            foreach (var shipmentId in decided.Where(s => _shipments[s].AmountDerivedAt is not null))
+            {
+                foreach (var order in _orders.Values
+                             .Where(o => o.LicenseId == licenseId && o.Row.ShipmentId == shipmentId
+                                         && o.Row.CancelledAt is not null)
+                             .OrderBy(o => o.Row.Id).ToList())
+                {
+                    var freed = PutOrder(licenseId, order with
+                    {
+                        Row = order.Row with { ShipmentId = null }, ShipmentSetAt = now, Version = order.Version + 1,
+                        UpdatedAt = now,
+                    });
+                    unlinked.Add(new VersionBody(freed.Row.Id, freed.Version));
+                }
+                PutShipment(licenseId, Derive(_shipments[shipmentId], now));
+            }
+        }
+
+        var amounts = new List<ShipmentAmountBody>();
+        foreach (var shipmentId in decided)
+        {
+            var s = _shipments[shipmentId];
+            var row = command.Decision switch
+            {
+                "ship-now" => s.Row with { Status = "shipped", ShippedAt = now },
+                "hold" => s.Row with { Status = "held", HeldAt = s.Row.HeldAt ?? now },
+                _ => s.Row with { Status = "recipientpays" },
+            };
+            var written = PutShipment(licenseId, s with
+            {
+                Row = row, Version = s.Version + 1, CommandedAt = now, UpdatedAt = now,
+            });
+            amounts.Add(new ShipmentAmountBody(written.Row.Id, written.Version, written.Row.CumulativeAmount));
+        }
+
+        resultJson = JsonSerializer.Serialize(new CommandResultBody(unlinked.Select(u => u.Id).ToList(), [],
+            unlinked, [])
+        {
+            Decided = amounts,
+        }, Web);
+        return true;
+    }
+
+    /// <summary>Kargo komutunun başarı yanıtı (<c>SalesCommandService.SucceededAsync</c>): siparişler komutunkiler ve
+    /// sonucun yazdıkları; dosyalar komutunki, türetilenler, havuz ve kararın dosyaları (güncel). Havuz yanıt anında
+    /// güncel dosyalardan yeniden hesaplanır — yeniden oynatmada da.</summary>
+    private HttpResponseMessage ShipmentCommandSucceeded(Guid licenseId, string status, string resultJson,
+        ParsedCommand command)
+    {
+        var result = JsonSerializer.Deserialize<CommandResultBody>(resultJson, Web)!;
+        if (result.PoolShipmentIds is { } poolIds)
+        {
+            var pool = poolIds.Where(id => _shipments.TryGetValue(id, out var s) && IsOpen(s))
+                .Sum(id => _shipments[id].Row.CumulativeAmount);
+            if (pool != result.Pool)
+            {
+                result = result with { Pool = pool };
+                resultJson = JsonSerializer.Serialize(result, Web);
+            }
+        }
+        var shipmentIds = (command.ShipmentId is { } own ? new[] { own } : [])
+            .Concat(result.Shipments.Select(s => s.Id))
+            .Concat(result.PoolShipmentIds ?? [])
+            .Concat(result.Decided?.Select(d => d.Id) ?? [])
+            .Distinct()
+            .ToList();
+        return CommandSucceeded(licenseId, status, resultJson, command.OrderIds.Concat(result.Changed).Distinct().ToList(),
+            shipmentIds);
+    }
+
     /// <summary>Başarı yanıtı: siparişler (istenen sırayla, güncel, asıl kayıt + KVKK maskesi), bağlı dosyaları ve
-    /// oturumları.</summary>
-    private HttpResponseMessage CommandSucceeded(Guid licenseId, string status, string resultJson, IReadOnlyList<Guid> orderIds)
+    /// verilen dosyalar, siparişlerin oturumları.</summary>
+    private HttpResponseMessage CommandSucceeded(Guid licenseId, string status, string resultJson, IReadOnlyList<Guid> orderIds,
+        IReadOnlyList<Guid>? shipmentIds = null)
     {
         var orders = orderIds.Where(id => _orders.TryGetValue(id, out var o) && o.LicenseId == licenseId)
             .Select(id => _orders[id]).ToList();
-        var shipments = orders.Where(o => o.Row.ShipmentId is not null).Select(o => o.Row.ShipmentId!.Value).Distinct()
-            .Where(_shipments.ContainsKey).Select(id => _shipments[id].ToFeedItem()).ToList();
+        var shipments = (shipmentIds ?? [])
+            .Concat(orders.Where(o => o.Row.ShipmentId is not null).Select(o => o.Row.ShipmentId!.Value)).Distinct()
+            .Where(id => _shipments.TryGetValue(id, out var s) && s.LicenseId == licenseId)
+            .Select(id => _shipments[id].ToFeedItem()).ToList();
         var sessions = orders.Where(o => o.Row.SessionId is not null).Select(o => o.Row.SessionId!.Value).Distinct()
             .Where(id => _serverSessions.TryGetValue(id, out var s) && s.LicenseId == licenseId)
             .Select(id => _serverSessions[id].ToFeedItem()).ToList();
@@ -1999,6 +2275,58 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     {
                         ParentOrderId = parentId, Customer = customer, MessageText = b.MessageText ?? "",
                         NewPrice = b.Price is { } np ? decimal.Round(np, 2) : null, Code = b.Code,
+                    };
+                    return true;
+                }
+                case "attach-shipment":
+                {
+                    // AttachShipmentCommandHandler.TryParse; expected aday kümesinin tamamıdır (öğelerle eşleşmez).
+                    var b = p.Deserialize<AttachShipmentBody>(Web);
+                    if (string.IsNullOrWhiteSpace(b?.CustomerId) || b.CustomerId.Length > 64)
+                    {
+                        error = "customerId boş olamaz, en çok 64 karakter.";
+                        return false;
+                    }
+                    if (b.ProposedShipmentId is not { } proposed || proposed == Guid.Empty)
+                    {
+                        error = "proposedShipmentId boş olamaz.";
+                        return false;
+                    }
+                    command = new ParsedCommand(kind, expected.Select(e => e.OrderId).Order().ToList(),
+                        $"customer={b.CustomerId};proposed={proposed:N}")
+                    {
+                        CustomerId = b.CustomerId, ProposedShipmentId = proposed,
+                    };
+                    return true;
+                }
+                case "shipment-decision":
+                {
+                    // ShipmentDecisionCommandHandler.TryParse; dosyanın sürümü yükte, expected boş olmalı.
+                    var b = p.Deserialize<ShipmentDecisionBody>(Web);
+                    if (b?.ShipmentId is not { } shipmentId || shipmentId == Guid.Empty)
+                    {
+                        error = "shipmentId boş olamaz.";
+                        return false;
+                    }
+                    if (b.Decision is not ("ship-now" or "hold" or "recipient-pays"))
+                    {
+                        error = "decision ship-now, hold ya da recipient-pays olmalı.";
+                        return false;
+                    }
+                    if (b.ExpectedVersion is not { } expectedVersion || expectedVersion < 0)
+                    {
+                        error = "expectedVersion 0 ya da daha büyük olmalı.";
+                        return false;
+                    }
+                    if (expected.Count > 0)
+                    {
+                        error = "shipment-decision sipariş sürümü taşımaz; expected boş olmalı.";
+                        return false;
+                    }
+                    command = new ParsedCommand(kind, [],
+                        $"shipment={shipmentId:N};decision={b.Decision};version={expectedVersion.ToString(CultureInfo.InvariantCulture)}")
+                    {
+                        ShipmentId = shipmentId, Decision = b.Decision, ExpectedVersion = expectedVersion,
                     };
                     return true;
                 }
@@ -2272,13 +2600,17 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
         public DateTimeOffset? BackupSetAt { get; init; }
 
+        /// <summary>Kargo bağının damgası (W2-08): <c>attach-shipment</c> ve kargoya verirken bağı çözen
+        /// <c>shipment-decision</c> basar.</summary>
+        public DateTimeOffset? ShipmentSetAt { get; init; }
+
         /// <summary>Akış öğesi (<c>SalesOrderItem</c>); damgalar komutların bastığı.</summary>
         public OrderItemBody ToItem() => new(
             Row.Id, Row.SessionId, Row.CustomerId, Row.Platform, Row.Username, Row.DisplayName, Row.MessageText,
             Row.Code, Row.Price, Row.AddedAt, Row.PrintedAt, Row.CancelledAt, Row.CancelReason, Row.IsShippingFee,
             Row.IsBackupPromoted, Row.IsTentativeBackup, Row.ProductId, Row.ProductVariantId, UpdatedAt, Version,
             Row.ParentOrderId, Row.ShipmentId, OriginReplicaId, Row.PrintBatchId, Row.PrintSeq, Row.PriceCorrectedAt,
-            Row.PaidPrice, null, PriceSetAt, CancelSetAt, BackupSetAt, null, null, Version);
+            Row.PaidPrice, null, PriceSetAt, CancelSetAt, BackupSetAt, ShipmentSetAt, null, Version);
 
         public V1OrderBody ToV1() => new(
             Row.Id, Row.SessionId, Row.CustomerId, Row.Platform, Row.Username, Row.DisplayName, Row.MessageText,
@@ -2411,14 +2743,21 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         /// <summary>rowversion (W2-03).</summary>
         public long ChangeSeq { get; init; }
 
+        /// <summary>Doluysa tutar bağlı siparişlerden türetilir (DM7; W2-08: <c>attach-shipment</c>'ın açtığı dosya,
+        /// <see cref="SeedShipment"/>'in <c>derived</c>'i).</summary>
+        public DateTimeOffset? AmountDerivedAt { get; init; }
+
+        /// <summary>Dosyaya sunucu komutu dokundu (W2-08).</summary>
+        public DateTimeOffset? CommandedAt { get; init; }
+
         /// <summary><c>SalesShipmentItem.From</c> (akış).</summary>
         public ShipmentItemBody ToFeedItem() => new(
             Row.Id, Row.CustomerId, Row.Status, Row.CumulativeAmount, Row.CreatedAt, Row.HeldAt, Row.ShippedAt,
-            UpdatedAt, Version, null, null, OriginReplicaId, ChangeSeq);
+            UpdatedAt, Version, AmountDerivedAt, CommandedAt, OriginReplicaId, ChangeSeq);
 
         public ShipmentItemBody ToItem() => new(
             Row.Id, Row.CustomerId, Row.Status, Row.CumulativeAmount, Row.CreatedAt, Row.HeldAt, Row.ShippedAt,
-            UpdatedAt, Version, null, null, OriginReplicaId, Version);
+            UpdatedAt, Version, AmountDerivedAt, CommandedAt, OriginReplicaId, Version);
 
         public V1ShipmentBody ToV1() => new(
             Row.Id, Row.CustomerId, Row.Status, Row.CumulativeAmount, Row.CreatedAt, Row.HeldAt, Row.ShippedAt,
@@ -2475,9 +2814,24 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         Guid? NewOrderId, Guid? ParentOrderId, AddBackupCustomerBody? Customer, string? MessageText, decimal? Price,
         string? Code);
 
+    /// <summary><c>AttachShipmentCommandHandler.Body</c>.</summary>
+    private sealed record AttachShipmentBody(string? CustomerId, Guid? ProposedShipmentId);
+
+    /// <summary><c>ShipmentDecisionCommandHandler.Body</c>.</summary>
+    private sealed record ShipmentDecisionBody(Guid? ShipmentId, string? Decision, int? ExpectedVersion);
+
     /// <summary>Doğrulanmış komut: tür, siparişler, kanonik yük (özet için) ve türün alanları.</summary>
     private sealed record ParsedCommand(string Kind, IReadOnlyList<Guid> OrderIds, string Canonical)
     {
+        /// <summary><c>attach-shipment</c>: müşteri (verildiği gibi; asıl kayda uygulamada çözülür) ve önerilen dosya.</summary>
+        public string? CustomerId { get; init; }
+        public Guid? ProposedShipmentId { get; init; }
+
+        /// <summary><c>shipment-decision</c>: dosya, karar ve dosyanın beklenen sürümü.</summary>
+        public Guid? ShipmentId { get; init; }
+        public string? Decision { get; init; }
+        public int? ExpectedVersion { get; init; }
+
         public string? Reason { get; init; }
         public string? BatchId { get; init; }
         public IReadOnlyDictionary<Guid, int>? Seqs { get; init; }
@@ -2516,8 +2870,20 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary><c>SalesCommandResult</c> (türe özgü listeler yalnız o türde yazılır).</summary>
     internal sealed record CommandResultBody(
         IReadOnlyList<Guid> Changed, IReadOnlyList<Guid> Skipped, IReadOnlyList<VersionBody> Orders,
-        IReadOnlyList<VersionBody> Shipments)
+        IReadOnlyList<ShipmentAmountBody> Shipments)
     {
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public Guid? ShipmentId { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public decimal? Pool { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<Guid>? PoolShipmentIds { get; init; }
+
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<ShipmentAmountBody>? Decided { get; init; }
+
         [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         public IReadOnlyList<Guid>? Marked { get; init; }
 
@@ -2536,6 +2902,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     /// <summary><c>SalesCommandOrderVersion</c>.</summary>
     internal sealed record VersionBody(Guid Id, int Version);
+
+    /// <summary><c>SalesCommandShipmentAmount</c>.</summary>
+    internal sealed record ShipmentAmountBody(Guid Id, int Version, decimal Amount);
 
     /// <summary><c>SalesCommandContracts.SalesCommandResponse</c>.</summary>
     internal sealed record CommandResponseBody(
