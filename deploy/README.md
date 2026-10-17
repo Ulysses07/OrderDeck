@@ -327,6 +327,65 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > o lisansları `sales-sync disable` ile kapat ve bilgisayarların Off turunu
 > bitirdiğini `sales-sync status`'ta gör; yoksa ileri düzelt.
 
+## Masaüstü: satış senkronunu yerelde sıfırlama (≤0.9.10'a dönüş)
+
+Spec 2026-10-13 §8.6. Masaüstü uygulamasını Velopack'le satış senkronundan
+önceki bir sürüme (≤0.9.10, yerel şema 48) döndürmek **istisnai bir destek
+eylemidir**. Göç 049 yerel veritabanında kalır; eski ikili onun
+tetikleyicilerini bilmez ve `Mode = 1` ya da `Authority = 'server'`
+durumundan çıkamaz: dekontun kargo adımı, kendi geçmiş yayınlarındaki iptal ve
+fiyat düzeltmesi görünür hatayla düşer (dekont ekranı kargo hatasını sessizce
+yutar).
+
+**Olağan yol betik değil.** Önce lisansı `sales-sync disable --license <id>
+--apply` ile Off yap; Ws'nin her PC'de Off turunu bitirdiğini `sales-sync
+status`'ta o kopyanın `SeenMode = 0`'ından gör, ancak sonra eski sürümü kur.
+Off turu uzak satırları siler, dosya sahipliğini sunucudan alır ve bekleyen
+komutları yerel yazıma çevirir; betik bunların yalnız bir kısmını yapabilir.
+
+**Betik ne zaman:** Ws o PC'de **hiç açılamıyor** (dönüşün en olası nedeni),
+lisans sunucuda zaten Off ve dönüş gerekiyor. Betik:
+`deploy/scripts/wpf-sales-sync-reset.sql`. §8.5 adım 2'nin SQL karşılığıdır
+(uzak etiket, oturum ve `RemoteLiveSession` silinir, kendi oturumları
+`Authority = 'local'`, `SalesSyncState.Mode = 0`, müşteri toplamları kalan
+etiketlerden yeniden türetilir); kargo dosyalarında sunucunun `disable`
+kuralını yerel veriyle uygular. Yalnız yerleşik SQL, tek işlem, idempotent.
+
+1. **Uygulamayı kapat** (görev yöneticisinde `OrderDeck.App` kalmasın).
+2. **Önce kopyala:** `%USERPROFILE%\Documents\OrderDeck\data\orderdeck.db` ve
+   (varsa) `orderdeck.db-wal` dosyasını AYRI AYRI tarihli bir klasöre kopyala.
+   `-wal` dosyası işlenmemiş son yazımları taşır; yalnız `.db`'yi kopyalamak
+   yırtık bir yedek verir. Kopya kişisel veri taşır: işin bitince sil.
+3. Betiği, bulunduğu klasörden koş (sqlite3 komut satırı; `-bail` ilk hatada
+   durdurur):
+
+   ```bat
+   sqlite3 -bail "%USERPROFILE%\Documents\OrderDeck\data\orderdeck.db" ".read wpf-sales-sync-reset.sql"
+   ```
+
+   İlk liste **engeller**dir, ikincisi **plan** (yalnız Id ve sayı, ad yok).
+   Engel varsa betik `CHECK constraint failed: bekleyen_satis_komutu_var_betik_durdu`
+   ya da `…karisik_kargo_dosyasi_var_betik_durdu` ile durur ve **hiçbir satır
+   değişmez**:
+   - `bekleyen-satis-komutu`: devredilmiş yayından kalan etiketin iptali ya da
+     ilk baskısı sunucuya hiç gitmedi. Ws açılabiliyorsa Off turu onu yerel
+     yazıma çevirir; açılamıyorsa satırları Burak tek tek değerlendirir.
+   - `karisik-kargo-dosyasi`: açık dosya hem bu PC'nin hem başka PC'nin
+     etiketlerini taşıyor (iki PC'den yayın açılmış). Sunucu `disable`'da onu
+     bağlı tutarı büyük olan kopyaya verir; yerelde karar verilmez. Kararı
+     (kargola, alıcı ödesin) önce mod On'dayken ver ya da dosyayı Burak elle
+     çözer.
+4. Eski sürümü kur ve aç.
+5. **Sonra kontrol:** betikte akış yok, yerel kargo aynası son mod On
+   turundaki hâlinde kalır; eski ikilinin `shipments/sync`'i açık dosyaların
+   tutarını ve durumunu sunucuya yazabilir (kargolanmış dosyayı sunucu yeniden
+   açmaz, Shipped tek yönlü). `sales-audit --license <id>` ile o kopyanın açık
+   dosyalarını kontrol et.
+
+Betiği aynı veritabanında ikinci kez koşmak hiçbir şeyi değiştirmez. Prova
+testi: `Migration049RehearsalTests` (eski sürümün SQL'i betikten önce görünür
+biçimde düşer, sonra çalışır).
+
 ## EF migration history bootstrap (one-time, before first Migrate() deploy)
 
 The original deploy used `EnsureCreated()` so the DB has all the schema but no
