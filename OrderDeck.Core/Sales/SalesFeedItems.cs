@@ -108,7 +108,12 @@ public sealed record SalesFeedItem(
 /// <param name="CountCatchUpOverwrite">Mod On'un ilk yetişmesi (§8.4): kendi etiketinde farklı birim yazılmadan
 /// önce <see cref="SalesConflictLog.CatchUpOverwrite"/> izi düşer. İz ayrıca işlem içinde okunan
 /// <c>FirstCatchUpAt</c> boşken düşer; komut yanıtı ve <c>disable</c> turu bayrağı vermez.</param>
-public sealed record SalesFeedApplyOptions(bool ApplyShipments, bool CountCatchUpOverwrite);
+/// <param name="OwnRowsOnly"><c>disable</c> turunun son akışı (§8.5-1, W2-11): yalnız bu bilgisayarın kendi
+/// (<c>Origin = 'local'</c>) oturumları ve etiketleri yazılır; yerelde olmayan oturum ve kendi oturumunda olmayan
+/// etiket öğesi <see cref="SalesFeedApplyStatus.Ignored"/> döner. Uzak satırlar turun 2. adımında zaten silinir; mod On
+/// dönemini hiç görmemiş kopyada (yerel kip 0) bu sayede yerel tabloya uzak etiket hiç inmez (§6.5-1). Dosya öğeleri
+/// bundan etkilenmez.</param>
+public sealed record SalesFeedApplyOptions(bool ApplyShipments, bool CountCatchUpOverwrite, bool OwnRowsOnly = false);
 
 /// <summary><see cref="SalesFeedRepository.ApplyItem"/>'in sonucu.</summary>
 public enum SalesFeedApplyStatus
@@ -119,7 +124,8 @@ public enum SalesFeedApplyStatus
     /// <summary>Öğe uygulandı ama hiçbir değer değişmedi (aynı öğe ikinci kez) ya da öğe yereldeki sürümden eski.</summary>
     Unchanged,
 
-    /// <summary>Dosya öğesi ve <see cref="SalesFeedApplyOptions.ApplyShipments"/> kapalı: hiçbir şey yazılmadı.</summary>
+    /// <summary>Dosya öğesi ve <see cref="SalesFeedApplyOptions.ApplyShipments"/> kapalı, ya da
+    /// <see cref="SalesFeedApplyOptions.OwnRowsOnly"/> açık ve öğe bu bilgisayarın satırı değil: hiçbir şey yazılmadı.</summary>
     Ignored,
 
     /// <summary>Yerel satırda gönderilmemiş değişiklik var (U5): hiçbir şey yazılmadı. Deneme sayılmaz; tur önce

@@ -47,6 +47,10 @@ namespace OrderDeck.Core.Storage.Repositories;
 ///
 /// <para><b>Dosya.</b> Yalnız <see cref="SalesFeedApplyOptions.ApplyShipments"/> iken yerel aynaya upsert edilir
 /// (<c>OriginReplicaId</c>, <c>ServerVersion</c>, karar alanları, tutar; <c>SyncedAt = now</c>).</para>
+///
+/// <para><b><c>disable</c> turu</b> (<see cref="SalesFeedApplyOptions.OwnRowsOnly"/>, §8.5-1): yalnız kendi
+/// (<c>Origin = 'local'</c>) oturum ve etiketleri yazılır — başka bilgisayarın komutlarının sonucu kendi satırına iner;
+/// uzak oturum ve etiket eklenmez ya da tazelenmez (2. adım siler). Dosyalar her zamanki gibi.</para>
 /// </summary>
 public sealed class SalesFeedRepository
 {
@@ -81,7 +85,7 @@ public sealed class SalesFeedRepository
         switch (item.Kind)
         {
             case SalesFeedItemKind.Session:
-                return ApplySession(item.Session ?? throw Missing(item), now);
+                return ApplySession(item.Session ?? throw Missing(item), options, now);
             case SalesFeedItemKind.Order:
                 return ApplyOrder(item.Order ?? throw Missing(item), sideSessions, drafts, options, now);
             case SalesFeedItemKind.Shipment:
@@ -99,9 +103,11 @@ public sealed class SalesFeedRepository
 
     // ── oturum ───────────────────────────────────────────────────────────
 
-    private SalesFeedApplyResult ApplySession(SalesFeedSession session, long now) => Locked(_ =>
+    private SalesFeedApplyResult ApplySession(SalesFeedSession session, SalesFeedApplyOptions options, long now) => Locked(_ =>
     {
         using var scope = SyncApplyScope.Begin(_factory);
+        if (options.OwnRowsOnly && !IsOwnSession(scope.Connection, scope.Transaction, session.Id))
+            return SalesFeedApplyResult.Of(SalesFeedApplyStatus.Ignored);                  // Dispose geri alır
         var write = EnsureSession(scope.Connection, scope.Transaction, session, now);
         scope.Commit();
         return new SalesFeedApplyResult(
@@ -255,6 +261,10 @@ public sealed class SalesFeedRepository
 
             // BEGIN IMMEDIATE: yazma kilidi okumadan önce alındı — okunan satır yazılana kadar değişemez.
             var local = conn.QuerySingleOrDefault<LabelRow>(ReadLabelSql, new { id = order.Id }, tx);
+            if (options.OwnRowsOnly && !(local is not null
+                    ? local.SessionOrigin == StreamSessionOrigin.Local
+                    : IsOwnSession(conn, tx, sessionId)))
+                return SalesFeedApplyResult.Of(SalesFeedApplyStatus.Ignored);               // disable turu: uzak satır inmez
             if (local is not null && local.SyncedAt is null)
                 return SalesFeedApplyResult.Of(SalesFeedApplyStatus.Stalled);           // U5; Dispose geri alır
             if (local?.ServerVersion is { } known && order.Version < known)
@@ -344,6 +354,12 @@ public sealed class SalesFeedRepository
             throw new SalesFeedContractException($"Siparişin oturumu yan listede yok: {orderId}.");
         return new SessionWrite(Changed: false, EndedRemotely: false);
     }
+
+    /// <summary>Oturum yerelde var ve bu bilgisayarda açılmış (<c>Origin = 'local'</c>).</summary>
+    private static bool IsOwnSession(IDbConnection conn, IDbTransaction tx, string sessionId) =>
+        conn.ExecuteScalar<long>(
+            "SELECT EXISTS(SELECT 1 FROM StreamSession WHERE Id = @sessionId AND Origin = 'local')",
+            new { sessionId }, tx) != 0;
 
     private static bool CustomerExists(IDbConnection conn, IDbTransaction tx, string customerId) =>
         conn.ExecuteScalar<long>(
