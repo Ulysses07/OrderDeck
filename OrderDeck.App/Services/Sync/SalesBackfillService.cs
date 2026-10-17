@@ -42,8 +42,8 @@ public enum SalesBackfillTourOutcome
 /// <item><b>Bekleme:</b> bu (lisans, kopya) için W1-02'nin hello'su başarılı olana kadar hiçbir istek yok — sunucu
 /// hello'suz doğan kopyada yerel kazanmayı kapatır, geri yüklenmiş kopya önce önceki kimliğini bildirmeli (§8.7).</item>
 /// <item><b>Boşaltma (§8.2-2):</b> süreç başına bir kez, oturum ve etiket kuyruğu gönderim kapısından boşaltılır
-/// (<see cref="SyncFlushService.Drain"/>), ardından bir kargo turu. Bu gönderimler olağan push'tur; tur bütçesine
-/// girmez.</item>
+/// (<see cref="SyncFlushService.Drain"/>; tur dolu parti gönderdikçe yinelenir, canlı yayının yeni etiketlerini
+/// kovalamaz), ardından bir kargo turu. Bu gönderimler olağan push'tur; tur bütçesine girmez.</item>
 /// <item><b>Geri doldurma (§8.2-3):</b> imleç <c>SyncCursor('sales-backfill-out', LicenseKey)</c> — kodlaması
 /// <see cref="SalesBackfillCursor"/>'da. Sırayla oturumlar, etiketler ve dosya bağları, rowid'e göre; listede en çok
 /// <see cref="MaxBatch"/> öğe, turda en çok <see cref="MaxRequestsPerTour"/> istek (hız sınırı 100 istek/dk/IP,
@@ -246,12 +246,19 @@ public sealed class SalesBackfillService
 
     // ── boşaltma (§8.2-2) ────────────────────────────────────────────────
 
+    /// <summary>
+    /// Açılıştaki kuyruğun boşaltılması (§8.2-2). Tur yalnız dolu parti gönderdikçe yinelenir: o an canlı yayın
+    /// sürüyorsa her tur yeni etiket bulur; boşaltma onları turlar arasında beklemeden kovalasaydı birkaç saniyede
+    /// onlarca istek müşteri ve durum servisleriyle paylaşılan hız sınırını (§12 risk 9) tüketirdi. Yeni etiketleri
+    /// ≈5 sn'lik gönderim götürür; bekletilen oturum canlı ritimdeki gibi seyreltilir.
+    /// </summary>
     private async Task DrainOutgoingAsync(CancellationToken ct)
     {
         await SyncFlushService.Drain(async c =>
         {
-            var r = await _push.SyncOnceAsync(c).ConfigureAwait(false);
-            return r.SessionsPushed + r.OrdersPushed;
+            var r = await _push.SyncOnceAsync(liveCadence: true, c).ConfigureAwait(false);
+            return r.OrdersPushed >= SessionOrderSyncService.OrderBatchSize
+                || r.SessionsPushed >= SessionOrderSyncService.SessionBatchSize ? 1 : 0;
         })(ct).ConfigureAwait(false);
         await _shipments.SyncOnceAsync(ct).ConfigureAwait(false);
     }

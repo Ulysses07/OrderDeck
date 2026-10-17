@@ -745,6 +745,30 @@ public sealed class SalesBackfillServiceTests : IDisposable
         _server.Session(Guid.Parse(live!))!.EndedAt.Should().BeNull("canlı oturum geri doldurmayla bitmez");
     }
 
+    // ── boşaltma canlı yayını kovalamaz ────────────────────────────────────
+
+    [Fact]
+    public async Task Bosaltma_acilistaki_kuyrukla_sinirli_canli_yayinin_yeni_etiketlerini_kovalamaz()
+    {
+        var live = AddSession(T0 + 500_000, null, synced: false);
+        AddLabels(live, 150, synced: false);                              // açılışta kuyrukta: iki parti
+        var drainRounds = 0;
+        _server.DuringPush = endpoint =>
+        {
+            // Geri doldurmadan önce, boşaltma sürerken canlı yayın her turda yeni etiket yazar.
+            if (endpoint != FakeSalesServer.OrdersSync || _server.BackfillCalls.Count > 0) return;
+            drainRounds++;
+            AddLabel(live, synced: false);
+        };
+
+        await Ws.HelloAsync();
+        await Ws.TourAsync();
+
+        drainRounds.Should().Be(2, "dolu parti gittikçe yinelenir, ilk eksik partide durur: yeni etiketi ≈5 sn'lik "
+            + "gönderim götürür, boşaltma onu kovalayıp hız sınırını tüketmez");
+        _server.Calls(FakeSalesServer.SessionsSync).Should().ContainSingle();
+    }
+
     // ── bekleyen satır imleci tutar (v1 döneminden sunucuda olan satır) ────
 
     [Fact]

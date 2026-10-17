@@ -62,7 +62,8 @@ namespace OrderDeck.App.Services.Sync;
 /// </summary>
 public sealed class SessionOrderSyncService
 {
-    private const int SessionBatchSize = 50;
+    /// <summary>Turdaki en çok oturum.</summary>
+    internal const int SessionBatchSize = 50;
 
     /// <summary>Turdaki en çok etiket (sunucunun tavanı 200).</summary>
     internal const int OrderBatchSize = 100;
