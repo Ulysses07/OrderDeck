@@ -64,12 +64,17 @@ public sealed class SessionRepository
             new { id, syncedAt, revision });
     }
 
+    /// <summary>Bu bilgisayarın canlı yayını: açık (EndedAt NULL) ve bu bilgisayarın yazdığı
+    /// (Authority = 'local') en yeni oturum. Authority koşulu savunma katmanıdır (§5.9): uzak oturum
+    /// hiçbir zaman EndedAt NULL olarak inmez, başka bilgisayarın canlı yayını ayrı tabloda durur
+    /// (RemoteLiveSession, M5). 'server' bir satır yine de "aktif" sayılsaydı sohbet etiketi o
+    /// oturuma yazılmaya çalışılır, 049'un ABORT tetikleyicisi canlı yolu kırardı.</summary>
     public StreamSession? GetActive()
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
             "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision " +
-            "FROM StreamSession WHERE EndedAt IS NULL ORDER BY StartedAt DESC LIMIT 1");
+            "FROM StreamSession WHERE EndedAt IS NULL AND Authority = 'local' ORDER BY StartedAt DESC LIMIT 1");
         return row is null ? null : Map(row);
     }
 

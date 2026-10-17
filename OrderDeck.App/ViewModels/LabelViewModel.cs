@@ -10,9 +10,10 @@ namespace OrderDeck.App.ViewModels;
 /// </summary>
 public sealed partial class LabelViewModel : ObservableObject
 {
-    /// <summary>Etiketin ekrandaki kopyası. Baskı kâğıdı BUNDAN basılır (veritabanı yeniden
-    /// okunmaz) — fiyat düzeltmesi (K4/K5) kuyruktaki satırı <see cref="Replace"/> ile YERİNDE
-    /// günceller: satır nesnesi aynı kaldığı için seçim ve sıra korunur, kâğıda eski fiyat basılmaz.</summary>
+    /// <summary>Etiketin ekrandaki kopyası. Kâğıt bundan basılmaz: kuyruk baskısı satırı baskıdan hemen
+    /// önce veritabanından yeniden okur ve bu kopyayı <see cref="Replace"/> ile tazeler (§5.6). Fiyat
+    /// düzeltmesi (K4/K5) de satırı YERİNDE günceller: satır nesnesi aynı kaldığı için seçim ve sıra
+    /// korunur, ekranda eski fiyat kalmaz.</summary>
     public Label Label { get; private set; }
 
     [ObservableProperty] private bool _isCustomerBlacklisted;

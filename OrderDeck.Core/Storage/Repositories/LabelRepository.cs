@@ -92,7 +92,11 @@ public sealed class LabelRepository
     /// StartStream bunları operatöre sorar ve isterse yeni kuyruğa taşır
     /// (SessionId DEĞİŞMEZ: satış hâlâ eski yayının; taşınan yalnız
     /// görünürlük). Geçici yedekler dahil:
-    /// <see cref="GetUnprintedBySession"/> ile aynı seçim kuralı.</summary>
+    /// <see cref="GetUnprintedBySession"/> ile aynı seçim kuralı.
+    /// <para>Yalnız bu bilgisayarda açılmış oturumlar (<c>Origin = 'local'</c>, §5.5): başka
+    /// bilgisayarın basılmamış kuyruğu akışla inse de burada teklif edilmez — aynı satış iki yazıcıdan
+    /// çıkabilirdi. Oturum birincil anahtarıyla bulunur; Label.SessionId yabancı anahtar olduğu için
+    /// oturumsuz etiket yoktur, süzgeç bugünkü (hepsi yerel) veride hiçbir satırı düşürmez.</para></summary>
     public IReadOnlyList<Label> GetUnprintedOutsideSession(string sessionId)
     {
         using var conn = _factory.Open();
@@ -101,6 +105,7 @@ public sealed class LabelRepository
                      Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE SessionId<>@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
+                AND EXISTS (SELECT 1 FROM StreamSession s WHERE s.Id = Label.SessionId AND s.Origin = 'local')
               ORDER BY AddedAt",
             new { sessionId }).ToList();
         return rows.Select(Map).ToList();

@@ -174,8 +174,8 @@ public sealed partial class MainShellViewModel
     }
 
     /// <summary>Düzeltme yazıldı: kuyruktaki etkilenen satırlar YERİNDE güncel etiketle değiştirilir
-    /// (seçim ve sıra korunur). Yapılmasaydı kâğıda eski fiyat basılır, ciro yeni fiyatla yazılırdı —
-    /// baskı veritabanını değil satırın kopyasını basıyor. Etkin kod düzeltilen kodsa FİYAT kutusu kodun yeni
+    /// (seçim ve sıra korunur). Yapılmasaydı kuyrukta eski fiyat görünürdü; kâğıt ise baskıdan hemen önce
+    /// veritabanından yeniden okunur (§5.6). Etkin kod düzeltilen kodsa FİYAT kutusu kodun yeni
     /// fiyatını gösterir (F4, <see cref="ShowCorrectedCodePrice"/>): sonraki yorum eski fiyatla yazılmasın.</summary>
     internal void ApplyPriceCorrection(PriceCorrectionResult result)
     {
@@ -186,8 +186,9 @@ public sealed partial class MainShellViewModel
     }
 
     /// <summary>Kuyruktaki verilen etiketlerin ekrandaki kopyasını veritabanındaki güncel hâliyle YERİNDE
-    /// değiştirir (seçim ve sıra korunur). Baskı kopyayı basar, ciro veritabanından yazılır: veritabanını
-    /// değiştiren her akış (fiyat düzeltme, yedek onayı) kuyruktaki kopyayı da güncellemeli.</summary>
+    /// değiştirir (seçim ve sıra korunur). Kopya ekranda görünen hâldir: veritabanını değiştiren her akış
+    /// (fiyat düzeltme, yedek onayı) kuyruktaki kopyayı da güncellemeli. Baskı ayrıca kendisi yeniden
+    /// okur (§5.6), bayat kopya kâğıda gitmez.</summary>
     private void RefreshQueueRows(IEnumerable<string> labelIds)
     {
         var ids = labelIds.ToHashSet(StringComparer.Ordinal);

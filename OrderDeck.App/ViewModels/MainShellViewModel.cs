@@ -2116,8 +2116,35 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private async Task<bool> PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
     {
+        // §5.6: kâğıt ekrandaki kopyadan değil, veritabanındaki güncel satırdan basılır. Kopya bayat
+        // olabilir: satır VM'e haber verilmeden başka bir yoldan (müşteri detayı, Basılanlar, ileride
+        // başka bilgisayarın komutu) iptal edilmiş, basılmış ya da fiyatı düzeltilmiş olabilir. Tek
+        // birincil anahtar SELECT'i; GetByIds verilen sırayı korur, kâğıt sırası değişmez.
+        var fresh = _labelRepo.GetByIds(snapshot.Select(vm => vm.Id).ToList());
+        var labels = fresh.Where(l => l.PrintedAt is null && l.CancelledAt is null).ToList();
+        var current = labels.ToDictionary(l => l.Id, StringComparer.Ordinal);
 
-        var labels = snapshot.Select(vm => vm.Label).ToList();
+        // Yok, iptal edilmiş ya da basılmış satır kâğıda gitmez ve kuyruktan düşer (kimlikle, R8-02B).
+        // Kuyrukta kalsaydı EndStream "kuyrukta N etiket var" sorusunu boşuna yinelerdi.
+        var dropped = snapshot.Select(vm => vm.Id).Where(id => !current.ContainsKey(id))
+            .ToHashSet(StringComparer.Ordinal);
+        if (dropped.Count > 0)
+        {
+            RemoveQueueRows(dropped);
+            _log.LogInformation(
+                "Baskıdan önce yeniden okuma: {Dropped} kuyruk satırı kâğıda gitmedi (iptal edilmiş, basılmış ya da yok)",
+                dropped.Count);
+        }
+        // Kalanların kopyası tazelenir: ekrandaki fiyat ve ad kâğıttakiyle aynı olsun.
+        foreach (var vm in PrintQueue)
+            if (current.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
+
+        // Basılacak iş kalmadı: yazıcı çağrılmaz, başarı döner — EndStream kapanabilir.
+        if (labels.Count == 0)
+        {
+            SelectedQueueItems.Clear();
+            return true;
+        }
 
         // Kargo PR F: customer'ı RecipientPaysActive olan label'ların id'lerini
         // toplayıp print pass'a geçir → etikette "ALICI ÖDEMELİ" kırmızı yazı.
@@ -2151,14 +2178,23 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // YENİ bir VM nesnesi olarak kuyruğa koyar; referans eşitliği o
         // klonu görmez, basılmış etiket kuyrukta hayalet kalır ve ikinci
         // kez yazıcıya giderdi.
-        var printedIds = labels.Select(l => l.Id).ToHashSet();
-        for (var i = PrintQueue.Count - 1; i >= 0; i--)
-            if (printedIds.Contains(PrintQueue[i].Id))
-                PrintQueue.RemoveAt(i);
+        RemoveQueueRows(labels.Select(l => l.Id).ToHashSet(StringComparer.Ordinal));
         SelectedQueueItems.Clear();
         // Basılan etiketler "Basılanlar"a düştü (yeni basış grubu en üstte).
         RefreshPrintedLabels();
         return true;
+    }
+
+    /// <summary>Verilen kimlikli satırları kuyruktan ve seçimden çıkarır — referansla değil kimlikle
+    /// (R8-02B: taşınmış klon da çıkar).</summary>
+    private void RemoveQueueRows(System.Collections.Generic.IReadOnlySet<string> ids)
+    {
+        for (var i = PrintQueue.Count - 1; i >= 0; i--)
+            if (ids.Contains(PrintQueue[i].Id))
+                PrintQueue.RemoveAt(i);
+        for (var i = SelectedQueueItems.Count - 1; i >= 0; i--)
+            if (ids.Contains(SelectedQueueItems[i].Id))
+                SelectedQueueItems.RemoveAt(i);
     }
 
     /// <summary>Kargo PR F: print'lenecek label'lar arasında müşterisi

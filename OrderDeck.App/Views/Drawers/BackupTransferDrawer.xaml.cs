@@ -168,8 +168,8 @@ public sealed partial class BackupRowViewModel : ObservableObject
 
     /// <summary>Kartın "Onayla"sı: fiyat okunur (<see cref="ReadPrice"/>), yedek onaylanır
     /// (<paramref name="confirm"/>), sonra <paramref name="confirmed"/> bildirilir — kabuk yedeğin
-    /// kuyruktaki kopyasını HEMEN günceller. Çekmece açıkken de "Yazdır"a basılabiliyor; kopya çekmece
-    /// kapanınca güncellenseydi arada kâğıda eski fiyat basılır, ciroya yeni fiyat yazılırdı. Hata
+    /// kuyruktaki kopyasını HEMEN günceller. Çekmece açıkken de kuyruk görünüyor; kopya çekmece kapanınca
+    /// güncellenseydi arada eski fiyat görünürdü (kâğıt baskıdan hemen önce veritabanından okunur, §5.6). Hata
     /// MessageBox değil, kartın kendi satırı (spec §6: hiçbir şey pop-up değil).</summary>
     public void Promote(System.Action<string, decimal> confirm, System.Action<string>? confirmed)
     {
