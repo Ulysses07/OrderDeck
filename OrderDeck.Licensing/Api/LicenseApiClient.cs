@@ -191,6 +191,36 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         => PostJsonExpectingJsonAsync<SyncOrdersRequest, List<SyncedOrderDto>>(
             $"/api/v1/licenses/{licenseId}/orders/sync", req, ct);
 
+    // ─── Satış senkronu: kopya uçları (spec 2026-10-13 §4.5) ─────────────
+
+    /// <summary>
+    /// <c>POST sales/hello</c>: kopyanın kimliği, yetenek düzeyi, görülen kipi, bildirdiği kargo ayarı ve
+    /// (geri yüklemeden sonra) önceki kimliği. Sunucu 204 döner; başarısız kod fırlatılır.
+    /// </summary>
+    public async Task PostSalesHelloAsync(Guid licenseId, SalesHelloRequest req, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post, $"/api/v1/licenses/{licenseId}/sales/hello", req, ct);
+        if (resp.IsSuccessStatusCode) return;
+        await ThrowMappedAsync(resp);
+    }
+
+    /// <summary>
+    /// <c>GET sales/state</c>: lisansın satış senkronu durumu. <paramref name="replicaId"/> ve
+    /// <paramref name="seenMode"/> ile çağrı kopyanın kalp atışı sayılır (§4.0). Bozuk gövde (200 +
+    /// <c>null</c>) fırlatılır: "durum yok" diye bir cevap yok.
+    /// </summary>
+    public async Task<SalesStateDto> GetSalesStateAsync(
+        Guid licenseId, Guid replicaId, int seenMode, CancellationToken ct = default)
+    {
+        if (seenMode is not (0 or 1))
+            throw new ArgumentOutOfRangeException(nameof(seenMode), seenMode, "seenMode 0 ya da 1 olmalı.");
+
+        var qs = $"?replicaId={replicaId:D}&seenMode={seenMode.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        var state = await GetExpectingJsonAsync<SalesStateDto?>($"/api/v1/licenses/{licenseId}/sales/state{qs}", ct);
+        return state ?? throw new LicenseApiUnknownException(200,
+            "Satış durumu yanıtı bozuk geldi (gövde null).");
+    }
+
     // ─── WhatsApp template sync (Faz 2, 2026-05-15) ───────────────────────
 
     /// <summary>PaymentSettings'in WhatsApp template'lerini server'a push'lar.

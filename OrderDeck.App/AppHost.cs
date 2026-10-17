@@ -534,6 +534,23 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.SessionOrderSyncHostedService>();
 
+        // Yayın ve etiket senkronu (spec 2026-10-13, W1): kopya kimliği (_meta.ReplicaId), yerel
+        // satış durumu ve v2 zarfı TEK örnek — hello'nun başarısını zarf tutar, gönderim servisleri
+        // aynı örnekten IsReadyForPush okur. Kalp atışı 30 sn; açılışta hemen hello + state.
+        services.AddSingleton<ReplicaIdentityRepository>();
+        services.AddSingleton<SalesSyncStateRepository>();
+        services.AddSingleton<Services.Sync.SalesSyncEnvelope>();
+        services.AddSingleton<Services.Sync.SalesSyncStateService>(sp =>
+            new Services.Sync.SalesSyncStateService(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<ReplicaIdentityRepository>(),
+                sp.GetRequiredService<SalesSyncStateRepository>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<ILogger<Services.Sync.SalesSyncStateService>>()));
+        services.AddHostedService<Services.Sync.SalesSyncStateHostedService>();
+
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save
         // tetiklediğinde server'a PUT'lar. Periyodik değil, on-demand.
         services.AddSingleton<Services.Sync.WhatsAppTemplateSyncService>();

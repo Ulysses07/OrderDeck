@@ -147,6 +147,36 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Satis_durumu_servisleri_tekil_ve_arka_plan_isi_genel_dongude_baslatilir()
+    {
+        // Yayın ve etiket senkronu W1-02 (spec 2026-10-13 §5.4 Servis maddesi, §10.3 DI testi).
+        using var host = new global::OrderDeck.App.AppHost();
+        var envelope = host.Services.GetRequiredService<SalesSyncEnvelope>();
+        var service = host.Services.GetRequiredService<SalesSyncStateService>();
+        var identity = host.Services.GetRequiredService<ReplicaIdentityRepository>();
+        var state = host.Services.GetRequiredService<SalesSyncStateRepository>();
+
+        host.Services.GetRequiredService<SalesSyncEnvelope>().Should().BeSameAs(envelope);
+        host.Services.GetRequiredService<SalesSyncStateService>().Should().BeSameAs(service);
+        host.Services.GetRequiredService<ReplicaIdentityRepository>().Should().BeSameAs(identity);
+        host.Services.GetRequiredService<SalesSyncStateRepository>().Should().BeSameAs(state);
+        PrivateField<SalesSyncEnvelope>(service, "_envelope").Should().BeSameAs(envelope,
+            "hello'nun başarısını zarf tutar; gönderim servisleri IsReadyForPush'u AYNI örnekten okumalı");
+        PrivateField<ReplicaIdentityRepository>(service, "_identity").Should().BeSameAs(identity);
+        PrivateField<SalesSyncStateRepository>(service, "_state").Should().BeSameAs(state);
+        PrivateField<ICurrentLicenseProvider>(envelope, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+        envelope.ReplicaId.Should().NotBeNull("açılış göçü (049) kopya kimliğini tohumlar");
+
+        // App.xaml.cs'e elle başlatma gerekmiyor: WpfStartupEnvironment kayıtlı bütün IHostedService'leri
+        // başlatır (CLAUDE.md, PR #89; WpfStartupEnvironment.StartBackgroundServicesAsync).
+        var hosted = host.Services.GetServices<IHostedService>().ToList();
+        hosted.Should().ContainSingle(h => h is SalesSyncStateHostedService);
+        PrivateField<SalesSyncStateService>(hosted.OfType<SalesSyncStateHostedService>().Single(), "_service")
+            .Should().BeSameAs(service);
+    }
+
+    [Fact]
     public void Kabugun_istege_bagli_senkron_parametreleri_DIda_kayitli()
     {
         // Kabuk ViewModel'i kurulmadan (22 servis, zamanlayıcılar) türleriyle sınanır: kayıt eksikse
