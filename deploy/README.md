@@ -337,19 +337,30 @@ durumundan çıkamaz: dekontun kargo adımı, kendi geçmiş yayınlarındaki ip
 fiyat düzeltmesi görünür hatayla düşer (dekont ekranı kargo hatasını sessizce
 yutar).
 
-**Olağan yol betik değil.** Önce lisansı `sales-sync disable --license <id>
+**Mod On'da olağan yol Off turu.** Önce lisansı `sales-sync disable --license <id>
 --apply` ile Off yap; Ws'nin her PC'de Off turunu bitirdiğini `sales-sync
 status`'ta o kopyanın `SeenMode = 0`'ından gör, ancak sonra eski sürümü kur.
 Off turu uzak satırları siler, dosya sahipliğini sunucudan alır ve bekleyen
 komutları yerel yazıma çevirir; betik bunların yalnız bir kısmını yapabilir.
 
-**Betik ne zaman:** Ws o PC'de **hiç açılamıyor** (dönüşün en olası nedeni),
-lisans sunucuda zaten Off ve dönüş gerekiyor. Betik:
-`deploy/scripts/wpf-sales-sync-reset.sql`. §8.5 adım 2'nin SQL karşılığıdır
-(uzak etiket, oturum ve `RemoteLiveSession` silinir, kendi oturumları
-`Authority = 'local'`, `SalesSyncState.Mode = 0`, müşteri toplamları kalan
-etiketlerden yeniden türetilir); kargo dosyalarında sunucunun `disable`
-kuralını yerel veriyle uygular. Yalnız yerleşik SQL, tek işlem, idempotent.
+**Betik her dönüşte, eski sürümü kurmadan önce koşulur** — lisans hiç açılmadıysa
+(mod Off) ya da Off turu bittiyse de. Eski ikili Y5'in yerel yolunu bilmez: onun
+döneminde iptal edilen bağlı etiket dosya tutarında kalır. Betik Ws'nin türetme
+damgalarını (`SalesSyncState.ShipmentsDerivedAt`, `AggregatesDerivedAt`) ve geri
+doldurma imlecini (`SyncCursor` `sales-backfill-out`) siler; PC sonra yeniden
+Ws'ye güncellenince dosya tutarları ve müşteri toplamları yeniden türetilir,
+geçmiş baştan (idempotent) geri doldurulur. Betik koşulmazsa Ws dosyaları yeniden
+türetmez; eski sürümde iptal edilip Ws'de geri alınan etiket dosyaya ikinci kez
+eklenir (yanlış "ücretsiz kargo"). Mod Off'ta silinecek uzak satır ve bekleyen
+komut yoktur.
+
+**Ws açılamıyorsa** (dönüşün en olası nedeni) Off turu koşamaz; lisans sunucuda
+zaten Off olmalı. Betik: `deploy/scripts/wpf-sales-sync-reset.sql`. §8.5 adım
+2'nin SQL karşılığıdır (uzak etiket, oturum ve `RemoteLiveSession` silinir,
+kendi oturumları `Authority = 'local'`, `SalesSyncState.Mode = 0`, müşteri
+toplamları kalan etiketlerden yeniden türetilir); kargo dosyalarında sunucunun
+`disable` kuralını yerel veriyle uygular. Yalnız yerleşik SQL, tek işlem,
+idempotent.
 
 1. **Uygulamayı kapat** (görev yöneticisinde `OrderDeck.App` kalmasın).
 2. **Önce kopyala:** `%USERPROFILE%\Documents\OrderDeck\data\orderdeck.db` ve
@@ -384,7 +395,8 @@ kuralını yerel veriyle uygular. Yalnız yerleşik SQL, tek işlem, idempotent.
 
 Betiği aynı veritabanında ikinci kez koşmak hiçbir şeyi değiştirmez. Prova
 testi: `Migration049RehearsalTests` (eski sürümün SQL'i betikten önce görünür
-biçimde düşer, sonra çalışır).
+biçimde düşer, sonra çalışır; Ws → eski sürüm → Ws gidiş dönüşünde dosya yeniden
+türetilir).
 
 ## EF migration history bootstrap (one-time, before first Migrate() deploy)
 

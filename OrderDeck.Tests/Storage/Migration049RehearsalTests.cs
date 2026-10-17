@@ -367,6 +367,67 @@ public sealed class Migration049RehearsalTests(ITestOutputHelper output)
         finally { Drop(path); }
     }
 
+    [Fact]
+    public void Sifirlama_betigi_turetme_damgalarini_ve_geri_doldurma_imlecini_siler_Wsye_donuste_dosya_yeniden_turetilir()
+    {
+        // Ws → (destek eylemi) v0.9.10 → yeniden Ws, mod Off. Eski ikili Y5'in yerel yolunu bilmez: onun döneminde
+        // iptal edilen bağlı etiket dosya tutarında kalır. Damga dolu kalsaydı Ws yeniden türetmez, sonraki geri alma
+        // aynı tutarı ikinci kez eklerdi (§7.4); imleç tamamlandı kalsaydı eski ikilinin v1 gönderimleri kaynak
+        // kopyasız kalırdı.
+        var path = TempDb();
+        var factory = new SqliteConnectionFactory(path);
+        var license = $"lisans-{Guid.NewGuid():N}";
+        try
+        {
+            new MigrationRunner(factory).Run();
+            using (var c = factory.Open())
+            {
+                c.Execute(SeedCustomerSql, new { Id = "m1", Username = "@alici.bir" });
+                c.Execute("INSERT INTO StreamSession (Id, StartedAt, EndedAt, SyncedAt) VALUES ('yayin', 100, 200, 210)");
+                c.Execute("INSERT INTO Shipment (Id, CustomerId, Status, CreatedAt, CumulativeAmount) VALUES ('dosya', 'm1', 'Held', 300, 0)");
+                c.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Code, Price, AddedAt,
+                                               PrintedAt, ShipmentId, SyncedAt, StockSyncedAt)
+                            VALUES ('k1', 'yayin', 'm1', 'instagram', 'kullanici', 'A1', 'A1', 250, 110, 120, 'dosya', 220, 220),
+                                   ('k2', 'yayin', 'm1', 'instagram', 'kullanici', 'A2', 'A2', 150, 111, 120, 'dosya', 220, 220)");
+            }
+            var log = new CapturingLogger<OrderDeck.App.AppHost>();
+            var cursors = new OrderDeck.Core.Storage.Repositories.SyncCursorRepository(factory);
+
+            // Ws'nin ilk açılışı: dosya türetilir, geri doldurma tamamlanır.
+            OrderDeck.App.Services.ShipmentAmountsBoot.Run(factory, nowUnix: 9000, log).Should().NotBeNull();
+            OrderDeck.App.Services.CustomerAggregatesBoot.Run(factory, nowUnix: 9000, log);
+            cursors.Upsert("sales-backfill-out", license, seq: 4_000_000_000_000L, lastId: Guid.NewGuid());
+            cursors.Upsert("customer-changes", license, seq: 42);
+            ShipmentAmount(factory).Should().Be(400m);
+
+            // Eski sürüm K2'yi iptal eder; dosyaya dokunmaz.
+            using (var old = PreviousReleaseConnection(path))
+                old.Execute(V0910.MarkCancelled, new { cancelledAt = 9100L, reason = "customer", ids = new[] { "k2" } })
+                    .Should().Be(1);
+            ShipmentAmount(factory).Should().Be(400m, "ön koşul: eski ikili Y5'i bilmez");
+
+            RunResetScript(path).Blockers.Should().BeEmpty();
+
+            using (var c = factory.Open())
+                c.QuerySingle<(long? Shipments, long? Aggregates)>(
+                        "SELECT ShipmentsDerivedAt, AggregatesDerivedAt FROM SalesSyncState WHERE Id = 1")
+                    .Should().Be(((long?)null, (long?)null));
+            cursors.Get("sales-backfill-out", license).Should().BeNull("geri doldurma Ws'de baştan koşar (idempotent)");
+            cursors.Get("customer-changes", license)!.Seq.Should().Be(42, "öbür imleçlere dokunulmaz");
+
+            // Yeniden Ws: dosya bağlardan yeniden türetilir.
+            OrderDeck.App.Services.ShipmentAmountsBoot.Run(factory, nowUnix: 9500, log).Should().NotBeNull();
+            ShipmentAmount(factory).Should().Be(250m, "eski sürümün iptali dosyadan düştü");
+        }
+        finally { Drop(path); }
+    }
+
+    private static decimal ShipmentAmount(IDbConnectionFactory factory)
+    {
+        using var c = factory.Open();
+        return c.ExecuteScalar<decimal>("SELECT CumulativeAmount FROM Shipment WHERE Id = 'dosya'");
+    }
+
     // ── tohumlar ───────────────────────────────────────────────────────
 
     private sealed record ModeOnWorld(

@@ -41,6 +41,12 @@
 --   4) SalesSyncState.Mode = 0.
 --   5) Müşteri toplamları kalan etiketlerden yeniden türetilir: LabelRules.Contribution — basılmış ∧
 --      iptal edilmemiş ∧ geçici yedek değil → (1, Price). Kargo ücreti satırı dahil (bugünkü kural).
+--   6) Ws'ye geri dönüş için: türetme damgaları (SalesSyncState.ShipmentsDerivedAt, AggregatesDerivedAt)
+--      ve geri doldurma imleci (SyncCursor 'sales-backfill-out') silinir. Eski ikili Y5'in yerel yolunu
+--      bilmez: onun döneminde iptal edilen bağlı etiket dosya tutarında kalır. Damga dolu kalsaydı Ws
+--      dosyaları yeniden türetmez, sonraki geri alma aynı tutarı ikinci kez eklerdi (§7.4); imleç
+--      "tamamlandı" kalsaydı eski ikilinin v1 gönderimleri kaynak kopyasız kalırdı. Ws açılışta ikisini
+--      de yeniden yapar (ikisi de idempotent). Mod Off'ta da koşulur (deploy/README.md).
 --
 -- Kalan bayatlık (bilerek): betikte akış yok, yerel ayna son mod On turundaki hâlinde kalır.
 -- Kargolanmış dosyanın yeniden açılmasını sunucu önler (Shipped tek yönlü); açık dosyaların tutarı ve
@@ -155,6 +161,17 @@ UPDATE Customer
         OR TotalAmount IS NOT (SELECT COALESCE(SUM(l.Price), 0.0) FROM Label l
                                 WHERE l.CustomerId = Customer.Id AND l.PrintedAt IS NOT NULL
                                   AND l.CancelledAt IS NULL AND l.IsTentativeBackup = 0));
+
+-- 6) Ws'ye geri dönüşte yeniden türetme ve geri doldurma. Bu kolonlar ve SyncCursor hiçbir tetikleyicinin
+-- listesinde değil.
+UPDATE SalesSyncState
+   SET ShipmentsDerivedAt = NULL, AggregatesDerivedAt = NULL
+ WHERE EXISTS (SELECT 1 FROM temp.reset_guard)
+   AND Id = 1 AND (ShipmentsDerivedAt IS NOT NULL OR AggregatesDerivedAt IS NOT NULL);
+
+DELETE FROM SyncCursor
+ WHERE EXISTS (SELECT 1 FROM temp.reset_guard)
+   AND Name = 'sales-backfill-out';
 
 DROP TABLE IF EXISTS temp.reset_guard;
 DROP TABLE IF EXISTS temp.reset_shipment;
