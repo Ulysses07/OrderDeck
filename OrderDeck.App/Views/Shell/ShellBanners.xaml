@@ -33,8 +33,10 @@
         </Border>
 
         <!-- Etiket gönderiminin sonucu (W1-08): reddedilen değişiklik ya da
-             başka bilgisayarda iptal edilmiş basılı kâğıt. Yalnız sayı; açılır
-             pencere yok, "Tamam" kapatır. -->
+             başka bilgisayarda iptal edilmiş basılı kâğıt. W2-07: kalıntı
+             kuyruğun komutları (imha edilecek kâğıt, uygulanamayan iptal,
+             bekleyen komutun kalıcı reddi) da burada. Açılır pencere yok,
+             "Tamam" kapatır. -->
         <Border CornerRadius="{StaticResource OD.Radius.Md}"
                 Background="{StaticResource OD.Brush.AmberTint}"
                 BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"

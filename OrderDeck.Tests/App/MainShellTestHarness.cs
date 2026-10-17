@@ -169,6 +169,9 @@ internal static class MainShellTestHarness
         // Confirm varsayılanı false — test yıkıcı bir dala kazara girmesin.
         var dialogs = new FakeDialogService();
 
+        // Düzenleyici akış servisinden ÖNCE kurulur: W2-07 testleri ikisini aynı yatakla (aynı gönderici) kurar.
+        var editor = labelEditor?.Invoke(db, labelSvc);
+
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
@@ -177,7 +180,7 @@ internal static class MainShellTestHarness
             customerPull: customerPull, printedNavigator: printedNavigator,
             paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo),
             orderSync: orderSync?.Invoke(db), salesPull: salesPull?.Invoke(db),
-            labelEditor: labelEditor?.Invoke(db, labelSvc));
+            labelEditor: editor);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }
