@@ -26,7 +26,11 @@ public sealed record Shipment(
     long? SyncedAt = null,
     /// <summary>F05: her SyncedAt-düşüren mutasyonda +1; MarkSynced yalnız
     /// Revision değişmemişse yazar (bkz. <see cref="Label"/>).</summary>
-    long Revision = 0);
+    long Revision = 0,
+    /// <summary>Göç 049 (spec 2026-10-13 §3.2): sunucudaki dosyanın sürümü (<c>Shipments.Version</c>) —
+    /// <c>shipment-decision</c> komutunun <c>expectedVersion</c>'ı (§4.6). Yalnız sunucudan inen ya da sunucunun
+    /// onayladığı dosyada dolu; yalnız okunur, yerel yazımlar ona dokunmaz.</summary>
+    long? ServerVersion = null);
 
 /// <summary>
 /// Shipment yaşam döngüsü. Geçişler:

@@ -51,7 +51,7 @@ public sealed class ShipmentRepository
     public Shipment? GetById(string id, DbWrite? write = null)
     {
         var row = _factory.QueryFirstOrDefault<Row>(write,
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -76,7 +76,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC, Id DESC
@@ -91,7 +91,7 @@ public sealed class ShipmentRepository
     /// <param name="write"><inheritdoc cref="GetById" path="/param[@name='write']"/></param>
     public IReadOnlyList<Shipment> GetAllOpenByCustomer(string customerId, DbWrite? write = null)
         => _factory.Query<Row>(write,
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC, Id DESC",
@@ -116,7 +116,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE Status=@status
               ORDER BY CreatedAt",
@@ -157,7 +157,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE SyncedAt IS NULL
               ORDER BY CreatedAt
@@ -205,10 +205,12 @@ public sealed class ShipmentRepository
             r.CreatedAt, r.HeldAt, r.ShippedAt,
             (decimal)r.CumulativeAmount,
             r.SyncedAt,
-            r.Revision);
+            r.Revision,
+            r.ServerVersion);
 
     private sealed class Row
     {
+        public long? ServerVersion { get; init; }
         public string Id { get; init; } = "";
         public string CustomerId { get; init; } = "";
         public string Status { get; init; } = "Pending";

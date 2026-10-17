@@ -352,6 +352,22 @@ public sealed class LabelRepository
         return ids.Distinct().Where(byId.ContainsKey).Select(id => byId[id]).ToList();
     }
 
+    /// <summary>
+    /// Verilen etiketlerin sunucudaki sürümü (<c>ServerVersion</c>, göç 049): satış komutunun beklenen sürümü (spec
+    /// 2026-10-13 §4.6 adım 4; <c>expected</c>). Yerelde olmayan etiket sözlükte yoktur; sürümü hiç bilinmeyen etiket
+    /// (onaylanmamış ya da eski sunucunun sürümsüz onayı) null değerle döner.
+    /// </summary>
+    public IReadOnlyDictionary<string, int?> GetServerVersions(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0) return new Dictionary<string, int?>(System.StringComparer.Ordinal);
+        using var conn = _factory.Open();
+        return conn.Query<(string Id, long? ServerVersion)>(
+                "SELECT Id, ServerVersion FROM Label WHERE Id IN @ids",
+                new { ids = ids.Distinct().ToArray() })
+            .ToDictionary(r => r.Id, r => r.ServerVersion is { } v ? (int?)checked((int)v) : null,
+                System.StringComparer.Ordinal);
+    }
+
     /// <summary>Updates the Price of a single label. Used by
     /// <c>LabelService.ConfirmBackup</c> when the operator negotiates a
     /// different number while promoting a tentative backup.</summary>
