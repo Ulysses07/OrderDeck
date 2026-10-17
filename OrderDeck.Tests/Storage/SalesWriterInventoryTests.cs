@@ -22,6 +22,11 @@ namespace OrderDeck.Tests.Storage;
 /// tetikleyiciye takılacağını ve canlı yolu kırıp kırmayacağını yazan düşünmeli. W1'in sonraki her
 /// görevi (v2 yanıtı, geri doldurma, Y5'in yerel yolu …) bu listeyi günceller.</para>
 ///
+/// <para>W2-07: bekleyen satış komutu tabloları (<c>PendingSalesCommand</c>, <c>PendingSalesCommandLabel</c>) da
+/// listededir. Tetikleyicileri yok, ama satırları örtüyü (kuyruk ve kalıntı teklifi) ve görülen kipi
+/// (<c>GetSeenMode</c>) belirler: mod Off'ta satır doğuran ya da örtüyü komut sonuçlanmadan kaldıran yeni bir yazım
+/// burada görünmeli.</para>
+///
 /// <para>Tarama OrderDeck.Core ve OrderDeck.App'teki .cs dosyalarında BÜYÜK harfli SQL fiillerini arar
 /// (depodaki SQL büyük harfle yazılır; küçük harfli düzyazı yorumlar eşleşmez). Yalnız yorum
 /// satırları atlanır. Dinamik tablo adı (<c>UPDATE {table}</c>) hangi tabloya yazdığı bilinmediği
@@ -41,6 +46,7 @@ public sealed class SalesWriterInventoryTests
     private const string BackfillRepo = "OrderDeck.Core/Storage/Repositories/SalesBackfillRepository.cs";
     private const string FeedRepo = "OrderDeck.Core/Storage/Repositories/SalesFeedRepository.cs";
     private const string CustomerRepo = "OrderDeck.Core/Storage/Repositories/CustomerRepository.cs";
+    private const string PendingRepo = "OrderDeck.Core/Storage/Repositories/PendingSalesCommandRepository.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -124,12 +130,22 @@ public sealed class SalesWriterInventoryTests
             "KVKK metin boşaltması (W2-02, §9): müşteri akışından inen silme (RecordPurge) kimliğin bütün etiketlerinde DisplayName = NULL, MessageText = '' yazar — yalnız aynı işlemde okunan SalesSyncState.ScrubOrderText = 1 iken (varsayılan 0: bugünkü politika). Silmenin SyncApplyScope işleminde: TR_Label_ServerAuthority_U Authority='server' oturumda ABORT etmez. DisplayName ve MessageText TR_Label_Enqueue listesinde değil: SyncedAt, StockSyncedAt, Revision ve ServerVersion değişmez, gönderilmez (sunucu kendisi boşaltır). Kipten bağımsız."),
         new(CustomerSyncRepo, "MoveReferences", "UPDATE {table}", 1, [],
             "Yeniden anahtarlama: CustomerId'yi Label ve Shipment dahil taşır. CustomerId hiçbir tetikleyici listesinde değil: her kipte ve her oturumda yazar, kuyruğa almaz (sunucu kopyayı kendisi taşır, S18)."),
+        new(PendingRepo, "Enqueue", "INSERT INTO PendingSalesCommand", 1, [],
+            "Bekleyen komut (W2-07, §5.5): yalnız aynı işlemde okunan SalesSyncState.Mode = 1 iken (mod Off'ta satır doğmaz); aynı CommandId ikinci kez yazılmaz. Etiket satırına dokunulmaz."),
+        new(PendingRepo, "Enqueue", "INSERT INTO PendingSalesCommandLabel", 1, [],
+            "Örtü bağları, komutla aynı işlemde: örtülen etiket kuyrukta, kalıntı teklifinde ve baskı okumasında görünmez."),
+        new(PendingRepo, "RecordAttempt", "UPDATE PendingSalesCommand", 1, [],
+            "Sonucu alınamayan gönderim: Attempts + 1, neden ve son gönderilen niyet (yanıtı kaybolan yeniden denemenin içeriği aynen yinelensin)."),
+        new(PendingRepo, "Delete", "DELETE FROM PendingSalesCommandLabel", 1, [],
+            "Örtünün kalkması: yalnız komut uygulanınca ya da kalıcı retle düşünce (gönderici), komutla aynı işlemde."),
+        new(PendingRepo, "Delete", "DELETE FROM PendingSalesCommand", 1, [],
+            "Komutun kuyruktan düşmesi; bağlarla aynı işlemde (şemadaki ON DELETE CASCADE'e ek olarak açıkça)."),
     ];
 
     /// <summary>Fiil + tablo; tablo adı tırnaklı olabilir (<c>"Label"</c>, <c>\"Label\"</c>, <c>[Label]</c>).
     /// Tablo adından sonra harf/rakam gelmez (LabelBackup, Labels eşleşmez).</summary>
     private static readonly Regex WriteSql = new(
-        @"\b(?<verb>UPDATE|INSERT\s+(?:OR\s+[A-Z]+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+[\\""\[`]*(?<table>Label|Shipment|StreamSession|\{\w+\})[\\""\]`]*(?!\w)",
+        @"\b(?<verb>UPDATE|INSERT\s+(?:OR\s+[A-Z]+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+[\\""\[`]*(?<table>Label|Shipment|StreamSession|PendingSalesCommandLabel|PendingSalesCommand|\{\w+\})[\\""\]`]*(?!\w)",
         RegexOptions.Compiled);
 
     private static readonly Regex MemberDeclaration = new(
@@ -151,11 +167,14 @@ public sealed class SalesWriterInventoryTests
             public void F() { Execute(""INSERT INTO \""Label\"" (Id) VALUES (1)""); }
             public void G() { Execute(""UPDATE LabelBackup SET X = 1; INSERT INTO Labels (Id) VALUES (1)""); }
             public void H() { Execute(""INSERT INTO Customer (Id) VALUES (1) ON CONFLICT(Id) DO UPDATE SET X = 1""); }
+            public void I() { Execute(""INSERT OR IGNORE INTO PendingSalesCommandLabel (LabelId) VALUES (1)""); }
+            public void J() { Execute(""DELETE FROM PendingSalesCommand WHERE CommandId = 1""); }
             // UPDATE Label SET yorumdaki SQL sayılmaz
             ")
             .Select(w => $"{w.Member}:{w.Statement}")
             .Should().Equal("A:UPDATE Label", "B:INSERT INTO Shipment", "C:REPLACE INTO StreamSession",
-                "D:DELETE FROM Label", "E:UPDATE {table}", "F:INSERT INTO Label");
+                "D:DELETE FROM Label", "E:UPDATE {table}", "F:INSERT INTO Label",
+                "I:INSERT INTO PendingSalesCommandLabel", "J:DELETE FROM PendingSalesCommand");
 
         // 2) Envanterin andığı her tetikleyici şemada var; 049'un bu üç tablodaki her tetikleyicisi en az
         //    bir yazımı yönetir (yoksa ya tetikleyici gereksiz ya envanter eksik).
