@@ -335,6 +335,18 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             if (customers.Success && req.Method == HttpMethod.Post)
                 return await HandleCustomerPushAsync(req, Guid.Parse(customers.Groups[1].Value), ct);
 
+            // Müşteri akışı: hep boş sayfa (birleştirme ve yönlendirme FakeCustomerServer'ın işi). Satış akışının
+            // "müşteri akışı yetişti" gözlemi için (bekleyen müşterinin sınırı, §5.4).
+            if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/wpf-customers/changes$")
+                && req.Method == HttpMethod.Get)
+            {
+                var afterSeq = Regex.Match(req.RequestUri!.Query, @"afterSeq=(\d+)") is { Success: true } m
+                    ? long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)
+                    : 0L;
+                return FakeHttpMessageHandler.Json(200,
+                    $"{{\"items\":[],\"nextAfterSeq\":{afterSeq.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"cursorReset\":false}}");
+            }
+
             var match = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/sales/([a-z-]+)$");
             if (!match.Success)
             {

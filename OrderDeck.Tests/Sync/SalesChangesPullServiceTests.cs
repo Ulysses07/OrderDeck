@@ -70,6 +70,7 @@ public sealed class SalesChangesPullServiceTests : IDisposable
         public FaultyFactory FeedDb { get; }
         public SalesSyncEnvelope Envelope { get; }
         public SalesChangesPullService Pull { get; }
+        public CustomerChangesPullService CustomerPull { get; }
         public CustomerBusySet Busy { get; } = new();
         public CapturingLogger<SalesChangesPullService> Log { get; } = new();
         public List<SalesChangedEventArgs> Changes { get; } = new();
@@ -95,8 +96,8 @@ public sealed class SalesChangesPullServiceTests : IDisposable
                 Envelope, new HandoverGate(), new SalesPushApply(db), clock, NullLogger<SessionOrderSyncService>.Instance);
             var customerPush = new WpfCustomerProjectionSyncService(api, customerSync, cursors, License, clock,
                 NullLogger<WpfCustomerProjectionSyncService>.Instance);
-            var customerPull = new CustomerChangesPullService(api, new CustomerRepository(db), customerSync, cursors,
-                customerPush, License, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
+            var customerPull = CustomerPull = new CustomerChangesPullService(api, new CustomerRepository(db), customerSync,
+                cursors, customerPush, License, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
             Pull = new SalesChangesPullService(api, state, stateRepo, Envelope, new SalesFeedRepository(FeedDb, Busy),
                 new SalesFeedFailureRepository(db), new RemoteLiveSessionRepository(db), cursors, new LabelRepository(db),
                 customerPush, salesPush, customerPull, License, clock, Log);
@@ -531,6 +532,43 @@ public sealed class SalesChangesPullServiceTests : IDisposable
         Scalar<int>("SELECT COUNT(*) FROM SalesFeedFailure").Should().Be(0, "bekleyen müşteri deneme sayılmaz, atlanmaz");
         new SessionRepository(_db).GetById(session.ToString("N")).Should().NotBeNull("öndeki oturum öğesi uygulandı");
         pc.Pull.Status.WaitingItems.Should().Be(1);
+        NoFaults();
+    }
+
+    [Fact]
+    public async Task Projeksiyonsuz_taslagin_kimligi_yerelde_baska_Idde_ise_musteri_akisi_yetistikce_sayilir_sinirda_atlanir_akis_surer()
+    {
+        // Sunucuya hiç gönderilmemiş müşteri (ör. silinmiş kişinin başka bilgisayarda yeniden açılan satırı): müşteri
+        // akışı bu Id'ye hiçbir zaman yönlendirme getirmez. Bekleme sınırsız olsaydı bütün satış akışı dururdu.
+        LocalCustomer("ayni_kisi");                                         // aynı kimlik, başka Id
+        var session = RemoteSession();
+        var stuck = Guid.NewGuid();
+        _server.SeedOrder(OrderRow(stuck, session, Guid.NewGuid().ToString("N"), username: "ayni_kisi"), version: 1,
+            origin: _otherReplica);
+        var behind = RemoteOrder(session, RemoteCustomer("baska_alici"), username: "baska_alici");
+        var pc = NewPc();
+        ModeOn();
+
+        for (var i = 0; i < 3; i++)
+            (await pc.TourAsync()).Should().Be(SalesPullOutcome.PendingCustomer);
+        Scalar<int>("SELECT COUNT(*) FROM SalesFeedFailure").Should().Be(0, "müşteri akışı yetişmedikçe deneme sayılmaz");
+
+        for (var attempt = 1; attempt < SalesChangesPullService.MaxAttemptsBeforeSkip; attempt++)
+        {
+            (await pc.CustomerPull.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+            (await pc.TourAsync()).Should().Be(SalesPullOutcome.PendingCustomer);
+            (await pc.TourAsync()).Should().Be(SalesPullOutcome.PendingCustomer, "müşteri akışının tek yetişmesi bir deneme");
+            Scalar<int>("SELECT Attempts FROM SalesFeedFailure WHERE ItemId = @id", new { id = stuck.ToString("N") })
+                .Should().Be(attempt);
+        }
+        (await pc.CustomerPull.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        (await pc.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp, "öğe atlandı, akış sürdü");
+        LabelExists(stuck).Should().BeFalse("yerel yönlendirme yazılmaz: aynı kimlik başka kişi olabilir");
+        LabelExists(behind).Should().BeTrue("arkadaki öğeler iner");
+        new SalesFeedFailureRepository(_db).CountSkipped().Should().Be(1, "durum satırı ve dikkat sayacı");
+        pc.Pull.Status.WaitingItems.Should().Be(0);
+        pc.Log.Entries.Select(e => e.Full).Should().NotContain(m => m.Contains("ayni_kisi"), "günlükte yalnız kimlik");
         NoFaults();
     }
 

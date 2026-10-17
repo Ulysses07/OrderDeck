@@ -24,7 +24,8 @@ public enum SalesPullOutcome
     /// gönderim onu götüremedi. İmleç o öğede; deneme sayılmadı.</summary>
     Stalled,
     /// <summary>Etiketin müşterisi yerelde yok, kimliği başka Id'de: yönlendirmeyi müşteri akışı getirecek. İmleç o
-    /// öğede; deneme sayılmadı.</summary>
+    /// öğede. Deneme yalnız müşteri akışı öğeden sonra yetiştikçe sayılır; sınırda öğe atlanır (projeksiyonu olmayan
+    /// Id'ye yönlendirme hiç gelmez).</summary>
     PendingCustomer,
     /// <summary>Etiketin müşterisi ödeme akışında (U13) ya da lisans değişimi temizliği müşterisi meşgul olduğu için
     /// bekliyor. İmleç o öğede; deneme sayılmadı.</summary>
@@ -123,7 +124,10 @@ public sealed record SalesFirstCatchUp(int CatchUpOverwrites, int AggregateRows)
 /// <para><b>Bekleyen öğe:</b> U5 (gönderilmemiş yerel etiket; yerel kip 0'daki <c>disable</c> turunda gönderilmemiş
 /// yerel dosya da) durdurur: etikette oturum ve etiket, dosyada kargo bir kez daha gönderilir; duran satır onaylandıysa
 /// (gönderim filigranı ilerledi) akış aynı turda bir kez daha denenir, değilse tur biter.
-/// Bekleyen müşteri ve ödeme akışındaki müşteri o öğede durur. Hiçbiri deneme sayılmaz, öğe kendiliğinden atlanmaz.</para>
+/// Bekleyen müşteri ve ödeme akışındaki müşteri o öğede durur. U5 ve ödeme akışı deneme sayılmaz, öğe kendiliğinden
+/// atlanmaz. Bekleyen müşteri, müşteri akışı öğeden sonra takılmadan yetiştiği her turda bir deneme sayılır ve
+/// <see cref="MaxAttemptsBeforeSkip"/>'te atlanır (<see cref="PendingCustomerExhausted"/>): projeksiyonu olmayan Id'ye
+/// yönlendirme hiç gelmez, tek öğe bütün akışı tutmamalı.</para>
 ///
 /// <para><b>Uygulanamayan öğe (U10):</b> <see cref="SalesFeedFailureRepository"/>'de kalıcı sayılır;
 /// <see cref="MaxAttemptsBeforeSkip"/> turdan sonra atlanır (durum satırı "M öğe atlandı", dikkat sayacı). Ortam
@@ -211,6 +215,13 @@ public sealed class SalesChangesPullService
 
     private readonly record struct PassResult(
         SalesPullOutcome Outcome, string? BlockedItemId = null, int Waiting = 0, string? BlockedKind = null);
+
+    /// <summary><see cref="SalesFeedFailureRepository"/>'deki bekleyen müşteri denemesinin hata metni (kişisel veri yok).</summary>
+    internal const string PendingCustomerError = "PendingCustomer";
+
+    /// <summary>Bekleyen müşteride duran öğe ve o an müşteri akışının yetişme sayısı (tur kilidi altında).</summary>
+    private readonly record struct PendingCustomerWatch(SalesFeedItemKey Key, long ChangeSeq, long CustomerRounds);
+    private PendingCustomerWatch? _pendingCustomer;
 
     /// <summary>Bir turun birikimi: değişen kimlikler ve sayılar.</summary>
     private sealed class TourTally
@@ -672,6 +683,14 @@ public sealed class SalesChangesPullService
                             tally.Skipped++;
                         }
 
+                        if (result is { Status: SalesFeedApplyStatus.PendingCustomer }
+                            && PendingCustomerExhausted(key, wire.ChangeSeq, now))
+                        {
+                            tally.Skipped++;
+                            after = wire.ChangeSeq;
+                            continue;
+                        }
+
                         if (result is { Status: SalesFeedApplyStatus.Stalled or SalesFeedApplyStatus.PendingCustomer
                                 or SalesFeedApplyStatus.Busy })
                         {
@@ -720,6 +739,47 @@ public sealed class SalesChangesPullService
             return new(SalesPullOutcome.Failed);
         }
         return new(SalesPullOutcome.CaughtUp);
+    }
+
+    /// <summary>
+    /// Bekleyen müşterinin sınırı (spec 2026-10-13 §5.4 "kalıcı park yok", §4.4 "tek satır bütün akışı tutmamalı"):
+    /// öğe, kimliği yerelde başka Id'de duran bir müşteriye ait ve yönlendirmeyi müşteri akışının getirmesi bekleniyor.
+    /// Projeksiyonu olmayan Id'ye (sunucuya hiç gönderilmemiş müşteri: GUID'siz eski Id, gönderilmeden silinmiş ya da
+    /// sunucunun kabul etmediği satır) müşteri akışı HİÇ yönlendirme getirmez; sınırsız bekleme bütün satış akışını
+    /// durdururdu. Öğenin ilk görüldüğü andan sonra müşteri akışı her takılmadan yetiştiğinde
+    /// (<see cref="CustomerChangesPullService.CaughtUpRounds"/>) bir deneme sayılır — müşteri akışı gerideyken hiç
+    /// sayılmaz; <see cref="MaxAttemptsBeforeSkip"/> denemede öğe U10 gibi atlanır (durum satırı "M öğe atlandı",
+    /// dikkat sayacı; satırın yeni bir değişikliği gelirse yeniden denenir). Yerel yönlendirme yazılmaz: aynı
+    /// (platform, kullanıcı adı) farklı kişiler olabilir (ör. boş kullanıcı adı), parayı yanlış kişiye bağlamaktansa
+    /// atlanır.
+    /// </summary>
+    /// <returns>Öğe şimdi atlandı.</returns>
+    private bool PendingCustomerExhausted(SalesFeedItemKey key, long changeSeq, long now)
+    {
+        var rounds = _customerPull.CaughtUpRounds;
+        if (_pendingCustomer is not { } watch || watch.Key != key || watch.ChangeSeq != changeSeq)
+        {
+            _pendingCustomer = new PendingCustomerWatch(key, changeSeq, rounds);
+            return false;
+        }
+        if (rounds <= watch.CustomerRounds) return false;                  // müşteri akışı o zamandan beri yetişmedi
+        _pendingCustomer = watch with { CustomerRounds = rounds };
+
+        var attempts = _failures.Record(key.Kind, key.ItemId, changeSeq, PendingCustomerError, now);
+        if (attempts < MaxAttemptsBeforeSkip)
+        {
+            if (attempts == 1)
+                _log.LogWarning(
+                    "Satış akışı öğesi {Kind} {ItemId} (seq {Seq}): müşterisinin yönlendirmesi müşteri akışı yetiştiği hâlde gelmedi — deneme {Attempts}/{Max}",
+                    key.Kind, key.ItemId, changeSeq, attempts, MaxAttemptsBeforeSkip);
+            return false;
+        }
+        _failures.MarkSkipped(key.Kind, key.ItemId, now);
+        _pendingCustomer = null;
+        _log.LogError(
+            "Satış akışı öğesi {Kind} {ItemId} (seq {Seq}): müşterisi {Max} müşteri akışı turunda çözülmedi (kimlik yerelde başka Id'de, yönlendirme yok) — ATLANDI; durum satırı uyarı gösterir",
+            key.Kind, key.ItemId, changeSeq, MaxAttemptsBeforeSkip);
+        return true;
     }
 
     /// <summary>Uygulanamayan öğenin anahtarı: tür ve satırın Id'si; satırsız öğede seq.</summary>

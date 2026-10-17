@@ -12,8 +12,9 @@ public readonly record struct SalesFeedItemKey(string Kind, string ItemId);
 /// <summary>
 /// Uygulanamayan satış akışı öğesinin kalıcı deneme sayacı (göç 049 <c>SalesFeedFailure</c>; spec 2026-10-13 §3.2,
 /// §5.4, U10) — <see cref="CustomerSyncRepository.RecordFeedFailure"/> ve kardeşlerinin ikizi. Akış servisi beş turda
-/// uygulanamayan öğeyi atlar (<see cref="MarkSkipped"/>); ortam hataları ve "bekliyor" durumları (U5, bekleyen müşteri,
-/// ödeme akışı) deneme sayılmaz, buraya hiç yazılmaz.
+/// uygulanamayan öğeyi atlar (<see cref="MarkSkipped"/>); ortam hataları ve "bekliyor" durumları (U5, ödeme akışı)
+/// deneme sayılmaz, buraya hiç yazılmaz. Bekleyen müşteri yalnız müşteri akışı öğeden sonra yetiştikçe sayılır (hata
+/// metni <c>PendingCustomer</c>): projeksiyonu olmayan Id'ye yönlendirme hiç gelmez.
 ///
 /// <para>Hata metni kişisel veri taşımamalı (çağıranın sorumluluğu: yalnız tür ve Id); 500 karakterde kesilir.</para>
 /// </summary>

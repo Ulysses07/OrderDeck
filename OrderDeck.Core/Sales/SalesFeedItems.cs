@@ -133,7 +133,8 @@ public enum SalesFeedApplyStatus
     Stalled,
 
     /// <summary>Müşteri yerelde yok ve aynı (Platform, Username) başka Id'de: yönlendirmeyi müşteri akışı getirecek.
-    /// Hiçbir şey yazılmadı, deneme sayılmaz.</summary>
+    /// Hiçbir şey yazılmadı. Akış turu bunu ancak müşteri akışı yetiştikçe deneme sayar ve sınırda atlar
+    /// (projeksiyonu olmayan Id'ye yönlendirme hiç gelmez).</summary>
     PendingCustomer,
 
     /// <summary>Etiketin müşterisi ödeme akışında (U13): hiçbir şey yazılmadı, sonraki turda yeniden.</summary>

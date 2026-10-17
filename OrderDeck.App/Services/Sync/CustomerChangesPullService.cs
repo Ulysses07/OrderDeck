@@ -138,6 +138,12 @@ public sealed class CustomerChangesPullService
     private bool _offlineLogged;
     private bool _environmentErrorLogged;
     private bool _reentrancyLogged;
+    private long _caughtUpRounds;
+
+    /// <summary>Bu süreçte akışın boş sayfaya kadar uygulandığı (takılmadan yetiştiği) tur sayısı. Satış akışı, bekleyen
+    /// müşterinin yönlendirmesini ancak bu sayı ilerledikçe "gelmedi" sayar (spec 2026-10-13 §5.4; projeksiyonu olmayan
+    /// Id'ye müşteri akışı hiç yönlendirme getirmez).</summary>
+    internal long CaughtUpRounds => Interlocked.Read(ref _caughtUpRounds);
 
     private BlockKey? _block;
     private int _blockRounds;
@@ -282,6 +288,7 @@ public sealed class CustomerChangesPullService
         _environmentErrorLogged = false;                      // N-2: ortam hatası serisi bitti
         if (outcome == CustomerPullOutcome.CaughtUp)
         {
+            Interlocked.Increment(ref _caughtUpRounds);
             _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, licenseKey);
             LogLegacyPaymentJobs();
         }
