@@ -45,11 +45,29 @@ namespace OrderDeck.Tests.Sync;
 /// bildirimsiz ekler (<see cref="BackfillInserted"/>), mevcut siparişte birim ayrışmasını <c>diverged</c> ile döner;
 /// <see cref="ForeignSessions"/> ve <see cref="ForeignOrders"/> başka lisansın Id'lerini, <see cref="SeedSession"/>,
 /// <see cref="SeedOrder"/> ve <see cref="SeedShipment"/> v1 döneminden kalan sunucu satırlarını kurar.</para>
+///
+/// <para><b>Değişiklik akışı</b> (W2-03): <c>GET sales/changes</c> (<see cref="HandleChanges"/>) depodan BAĞIMSIZ kurulur —
+/// <c>SalesChangesFeed</c> ve <c>SalesChangesPageBuilder</c>'ın aynası, istemcinin DTO'larını değil tel biçiminin kendi
+/// kopyalarını yazar. Her satır yazımı depo geneli bir rowversion (<c>ChangeSeq</c>) alır; aynı değer yeniden yazılırsa
+/// almaz (EF yalnız değişeni yazar). Devir oturuma <c>ReleasedAt</c>, ardından siparişlerine <c>SessionReleasedAt</c>
+/// basar (siparişlerin seq'i oturumunkinden büyük); devredilmiş oturuma eklenen sipariş damgayı eklemede alır. Kaynaklar:
+/// devredilmiş oturumlar, <c>SessionReleasedAt</c>'i dolu siparişler, dosyalar (iki kipte), lisans başına. Yan liste:
+/// sayfadaki siparişlerin oturumları (güncel) ve müşteri taslakları — projeksiyonu bilinen müşteri asıl kayda (en çok üç
+/// adım) çözülür, bilinmeyen ya da GUID olmayan müşterinin taslağı siparişin kendi alanlarından, ham Id'yle. KVKK: asıl
+/// kaydı silinmiş müşterinin siparişi ve taslağı takma adsız/metinsiz. Ufuk sıradaki seq (<see cref="HorizonOverride"/>);
+/// imleç eksi ya da ufkun üstündeyse sayfa baştan ve <c>cursorReset</c>; boş sayfada <c>nextAfterSeq = afterSeq</c>.
+/// Kalp atışı state ile aynı. <see cref="OnChanges"/> sayfa kurulmadan önce koşar (arıza enjeksiyonu).</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
 {
     public const string Hello = "hello";
     public const string State = "state";
+
+    /// <summary><c>GET sales/changes</c>'in uç adı (<see cref="EnqueueStatus"/>, <see cref="HangEndpoint"/>).</summary>
+    public const string Changes = "changes";
+
+    /// <summary>Sunucunun <c>SalesChangesFeed.MaxTake</c>'i.</summary>
+    private const int MaxChangesTake = 500;
     public const string SessionsSync = "sessions/sync";
     public const string OrdersSync = "orders/sync";
     public const string ShipmentsSync = "shipments/sync";
@@ -100,6 +118,14 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     public IReadOnlyList<HelloCall> Hellos { get { lock (_gate) return _hellos.ToList(); } }
 
     public IReadOnlyList<StateCall> States { get { lock (_gate) return _states.ToList(); } }
+
+    /// <summary><c>sales/changes</c> istekleri (kasıtlı arızalar dahil): lisans ve sorgu.</summary>
+    public IReadOnlyList<StateCall> ChangesCalls { get { lock (_gate) return _changesCalls.ToList(); } }
+    private readonly List<StateCall> _changesCalls = new();
+
+    /// <summary><c>wpf-customers/sync</c> istekleri (ham gövde).</summary>
+    public IReadOnlyList<PushCall> CustomerPushCalls { get { lock (_gate) return _customerPushCalls.ToList(); } }
+    private readonly List<PushCall> _customerPushCalls = new();
 
     /// <summary><c>/sales/</c> altına gelen bütün istekler (kasıtlı arızalar dahil).</summary>
     public int SalesRequestCount { get { lock (_gate) return _salesRequests; } }
@@ -228,6 +254,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/shipments/since$") && req.Method == HttpMethod.Get)
                 return FakeHttpMessageHandler.Json(200, "[]");
 
+            // Satış akışı turunun ön gönderimi (W2-03): müşteri projeksiyonları. Birleştirme kuralı taklit edilmez
+            // (FakeCustomerServer'ın işi); yalnız projeksiyon kaydı — akışın müşteri taslağı onu çözer.
+            var customers = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/wpf-customers/sync$");
+            if (customers.Success && req.Method == HttpMethod.Post)
+                return await HandleCustomerPushAsync(req, Guid.Parse(customers.Groups[1].Value), ct);
+
             var match = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/sales/([a-z-]+)$");
             if (!match.Success)
             {
@@ -270,6 +302,15 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     lock (_gate) _states.Add(new StateCall(licenseId, query));
                     if (scripted is not null) return scripted();
                     return HandleState(licenseId, query);
+                }
+                case Changes when req.Method == HttpMethod.Get:
+                {
+                    var query = req.RequestUri.Query;
+                    lock (_gate) _changesCalls.Add(new StateCall(licenseId, query));
+                    if (scripted is not null) return scripted();
+                    var page = HandleChanges(licenseId, query);
+                    ct.ThrowIfCancellationRequested();             // OnChanges'in iptali: yanıt istemciye varmaz
+                    return page;
                 }
                 case Backfill when req.Method == HttpMethod.Post:
                 {
@@ -452,7 +493,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                         item = truth(item);
                         current = current! with { Row = current.Row.WithUnits(item) };
                     }
-                    if (current is not null) _orders[order.Id] = current;
+                    if (current is not null) current = PutOrder(licenseId, current);
                     results.Add(new OrderResultBody(order.Id, current?.Version, current?.Row.ShipmentId, null,
                         verdict.Status, verdict.Units, verdict.Reason, item));
                     if (current is not null) echoed.Add(current);
@@ -473,7 +514,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                         Version = current.Version + 1,
                         UpdatedAt = now,
                     };
-                _orders[order.Id] = row;
+                row = PutOrder(licenseId, row);
                 echoed.Add(row);
                 results.Add(new OrderResultBody(order.Id, row.Version, row.Row.ShipmentId, null, "applied",
                     Array.Empty<string>(), null, null));
@@ -528,6 +569,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             {
                 string? reason = null;
                 SessionRole role;
+                var before = _serverSessions.TryGetValue(item.Id, out var existing) ? existing.Stamp() : null;
                 if (_serverSessions.TryGetValue(item.Id, out var current))
                 {
                     if (current.ReleasedAt is not null)
@@ -535,6 +577,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                         if (current.Title != item.Title || current.Platforms != item.Platforms || current.Notes != item.Notes)
                             reason = "session-released";
                         current.EndedAt ??= item.EndedAt;
+                        CommitSession(current, before);
                         results.Add(current.ToResult(now, reason));
                         continue;
                     }
@@ -553,8 +596,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 {
                     current = new ServerSession
                     {
-                        Id = item.Id, Title = item.Title, StartedAt = item.StartedAt, EndedAt = item.EndedAt,
-                        Platforms = item.Platforms, Notes = item.Notes,
+                        Id = item.Id, LicenseId = licenseId, Title = item.Title, StartedAt = item.StartedAt,
+                        EndedAt = item.EndedAt, Platforms = item.Platforms, Notes = item.Notes,
                         OwnerReplicaId = envelope?.ReplicaId,
                         OwnerMachineName = envelope is null ? null : item.MachineName,
                     };
@@ -577,6 +620,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                             break;
                     }
                 }
+                CommitSession(current, before);
                 results.Add(current.ToResult(now, reason));
             }
         }
@@ -614,17 +658,60 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         lock (_gate)
         {
             var s = _serverSessions[id];
+            var before = s.Stamp();
             var now = DateTimeOffset.UtcNow;
             s.EndedAt ??= now;
             s.ReleasedAt = now;
             s.ForceEndedBy = Guid.NewGuid().ToString();
+            CommitSession(s, before);
         }
     }
 
     /// <summary>Oturumun sahibini başka bir kopya yapar (§8.7: devralamayan geri yüklenmiş kopya).</summary>
     public void SetSessionOwner(Guid id, Guid ownerReplicaId)
     {
-        lock (_gate) _serverSessions[id].OwnerReplicaId = ownerReplicaId;
+        lock (_gate)
+        {
+            var s = _serverSessions[id];
+            var before = s.Stamp();
+            s.OwnerReplicaId = ownerReplicaId;
+            CommitSession(s, before);
+        }
+    }
+
+    /// <summary>Başka bilgisayarın kapanışı (W2-03): oturum biter ve devredilir; siparişleri akışa girer.</summary>
+    public void ReleaseSession(Guid id, string? ownerMachineName = null)
+    {
+        lock (_gate)
+        {
+            var s = _serverSessions[id];
+            var before = s.Stamp();
+            var now = DateTimeOffset.UtcNow;
+            s.EndedAt ??= now;
+            s.ReleasedAt ??= now;
+            s.OwnerMachineName ??= ownerMachineName;
+            CommitSession(s, before);
+        }
+    }
+
+    /// <summary>Sunucuda bir siparişin birimlerini değiştirir (başka bilgisayarın komutu gibi): sürüm +1, yeni seq.</summary>
+    public void MutateOrder(Guid id, Func<OrderBody, OrderBody> change)
+    {
+        lock (_gate)
+        {
+            var o = _orders[id];
+            PutOrder(o.LicenseId, o with { Row = change(o.Row), Version = o.Version + 1, UpdatedAt = DateTimeOffset.UtcNow });
+        }
+    }
+
+    /// <summary>Sunucudaki bir kargo dosyasını değiştirir (başka bilgisayarın kararı gibi): sürüm +1, yeni seq.</summary>
+    public void MutateShipment(Guid id, Func<ShipmentBody, ShipmentBody> change)
+    {
+        lock (_gate)
+        {
+            var s = _shipments[id];
+            PutShipment(s.LicenseId, s with { Row = change(s.Row), Version = s.Version + 1, UpdatedAt = DateTimeOffset.UtcNow });
+        }
     }
 
     /// <summary><c>shipments/sync</c> — v2 boş <c>OriginReplicaId</c>'yi çağıranla doldurur; Shipped tek yönlü (§7.1).
@@ -654,8 +741,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                         OriginReplicaId = current.OriginReplicaId ?? envelope?.ReplicaId,
                         UpdatedAt = now,
                     };
-                _shipments[s.Id] = row;
-                rows.Add(row);
+                rows.Add(PutShipment(licenseId, row));
             }
         }
 
@@ -682,27 +768,36 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     private readonly HashSet<Guid> _backfillInserted = new();
 
     /// <summary>Sunucuya önceden var olan bir oturum koyar (ör. v1 döneminde gönderilmiş, sahipsiz).</summary>
+    /// <param name="licenseId">Satırın lisansı; verilmezse birinci lisans (<see cref="LicenseId"/>).</param>
     public void SeedSession(Guid id, DateTimeOffset startedAt, DateTimeOffset? endedAt, Guid? owner = null,
-        DateTimeOffset? releasedAt = null, string? title = null, string platforms = "tiktok")
+        DateTimeOffset? releasedAt = null, string? title = null, string platforms = "tiktok",
+        string? ownerMachineName = null, Guid? licenseId = null)
     {
         lock (_gate)
-            _serverSessions[id] = new ServerSession
+        {
+            var s = _serverSessions[id] = new ServerSession
             {
-                Id = id, Title = title, StartedAt = startedAt, EndedAt = endedAt, Platforms = platforms,
-                OwnerReplicaId = owner, ReleasedAt = releasedAt,
+                Id = id, LicenseId = licenseId ?? LicenseId, Title = title, StartedAt = startedAt, EndedAt = endedAt,
+                Platforms = platforms, OwnerReplicaId = owner, ReleasedAt = releasedAt, OwnerMachineName = ownerMachineName,
             };
+            CommitSession(s, before: null);
+        }
     }
 
     /// <summary>Sunucuya önceden var olan bir sipariş koyar.</summary>
-    public void SeedOrder(OrderBody row, int version = 0, Guid? origin = null)
+    /// <param name="licenseId">Satırın lisansı; verilmezse birinci lisans (<see cref="LicenseId"/>).</param>
+    public void SeedOrder(OrderBody row, int version = 0, Guid? origin = null, Guid? licenseId = null)
     {
-        lock (_gate) _orders[row.Id] = new ServerOrder(row with { BaseVersion = null }, version, origin, DateTimeOffset.UtcNow);
+        lock (_gate)
+            PutOrder(licenseId ?? LicenseId,
+                new ServerOrder(row with { BaseVersion = null }, version, origin, DateTimeOffset.UtcNow));
     }
 
     /// <summary>Sunucuya önceden var olan bir kargo dosyası koyar.</summary>
-    public void SeedShipment(ShipmentBody row, Guid? origin = null)
+    /// <param name="licenseId">Satırın lisansı; verilmezse birinci lisans (<see cref="LicenseId"/>).</param>
+    public void SeedShipment(ShipmentBody row, Guid? origin = null, Guid? licenseId = null)
     {
-        lock (_gate) _shipments[row.Id] = new ServerShipment(row, 0, origin, DateTimeOffset.UtcNow);
+        lock (_gate) PutShipment(licenseId ?? LicenseId, new ServerShipment(row, 0, origin, DateTimeOffset.UtcNow));
     }
 
     /// <summary>
@@ -757,12 +852,13 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     sessionResults.Add(new BackfillSessionResultBody(item.Id, null, null, null, "foreign-license"));
                     continue;
                 }
+                var sessionBefore = _serverSessions.TryGetValue(item.Id, out var known) ? known.Stamp() : null;
                 if (!_serverSessions.TryGetValue(item.Id, out var session))
                 {
                     session = new ServerSession
                     {
-                        Id = item.Id, Title = item.Title, StartedAt = item.StartedAt, EndedAt = item.EndedAt,
-                        Platforms = item.Platforms, Notes = item.Notes, OwnerReplicaId = caller,
+                        Id = item.Id, LicenseId = licenseId, Title = item.Title, StartedAt = item.StartedAt,
+                        EndedAt = item.EndedAt, Platforms = item.Platforms, Notes = item.Notes, OwnerReplicaId = caller,
                         OwnerMachineName = item.MachineName,
                     };
                     _serverSessions[item.Id] = session;
@@ -779,6 +875,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 if (session.OwnerReplicaId == caller && item.Release && session.EndedAt is not null
                     && session.ReleasedAt is null && !WithheldReleases.ContainsKey(item.Id))
                     session.ReleasedAt = now;
+                CommitSession(session, sessionBefore);
                 sessionResults.Add(new BackfillSessionResultBody(
                     session.Id, session.OwnerReplicaId, session.EndedAt, session.ReleasedAt, null));
             }
@@ -800,7 +897,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                         next = next with { OriginReplicaId = caller };
                         changed.Add(item.Id);
                     }
-                    _orders[item.Id] = next;
+                    PutOrder(licenseId, next);
                     if (units.Count > 0) diverged.Add(new BackfillDivergedBody(item.Id, units, localWinsAllowed && !locked));
                     statuses[item.Id] = ("unchanged", null);
                     continue;
@@ -816,7 +913,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     statuses[item.Id] = ("rejected", "session-owned-elsewhere");
                     continue;
                 }
-                _orders[item.Id] = new ServerOrder(local, 0, caller, now);
+                PutOrder(licenseId, new ServerOrder(local, 0, caller, now));
                 inserted.Add(item.Id);
                 _backfillInserted.Add(item.Id);
                 statuses[item.Id] = ("inserted", null);
@@ -829,17 +926,17 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     if (!_orders.TryGetValue(labelId, out var order) || statuses.GetValueOrDefault(labelId).Status == "rejected")
                         continue;
                     if (order.Row.ShipmentId == link.Id || order.Row.ShipmentId is not null) continue;
-                    _orders[labelId] = order with { Row = order.Row with { ShipmentId = link.Id } };
+                    PutOrder(licenseId, order with { Row = order.Row with { ShipmentId = link.Id } });
                     if (!inserted.Contains(labelId)) changed.Add(labelId);
                 }
                 if (_shipments.TryGetValue(link.Id, out var shipment) && shipment.OriginReplicaId is null)
-                    _shipments[link.Id] = shipment with { OriginReplicaId = caller, Version = shipment.Version + 1 };
+                    PutShipment(licenseId, shipment with { OriginReplicaId = caller, Version = shipment.Version + 1 });
             }
 
             foreach (var id in changed)
             {
                 var order = _orders[id];
-                _orders[id] = order with { Version = order.Version + 1, UpdatedAt = now };
+                PutOrder(licenseId, order with { Version = order.Version + 1, UpdatedAt = now });
                 if (statuses.TryGetValue(id, out var s) && s.Status == "unchanged") statuses[id] = ("filled", null);
             }
 
@@ -917,6 +1014,229 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         if (seenMode is not (0 or 1)) { error = "v2 isteği seenMode (0 ya da 1) taşımalı."; return false; }
         replica = id; seen = seenMode.Value;
         return true;
+    }
+
+    // ── değişiklik akışı (W2-03) ───────────────────────────────────────────
+
+    /// <summary>Depo geneli rowversion: her satır yazımı sıradakini alır (<c>_gate</c> altında).</summary>
+    private long _seq;
+
+    /// <summary>Ufku elle verir (<c>MIN_ACTIVE_ROWVERSION</c>; ör. commit edilmemiş işlem). Boşsa sıradaki seq.</summary>
+    public long? HorizonOverride { get; set; }
+
+    /// <summary>Şu ana kadar verilen en büyük seq.</summary>
+    public long LastSeq { get { lock (_gate) return _seq; } }
+
+    /// <summary><c>sales/changes</c> sayfası kurulmadan önce koşar; parametre istemcinin imleci (arıza enjeksiyonu).</summary>
+    public Action<long>? OnChanges { get; set; }
+
+    /// <summary>Sayfa başına en çok öğe (istemcinin <c>take</c>'inden küçükse). Sunucu <c>take</c>'ten az da
+    /// döndürebilir; dolu olmayan sayfa son sayılmaz — çok sayfalı yetişmeyi küçük veriyle sınar.</summary>
+    public int? PageLimit { get; set; }
+
+    private readonly Dictionary<Guid, CustomerProjection> _customers = new();
+
+    /// <summary>Sunucudaki müşteri projeksiyonu (taslağın kaynağı, §4.4). <paramref name="mergedInto"/> doluysa kopya.</summary>
+    public void SeedCustomer(Guid id, string platform, string username, string? displayName,
+        DateTimeOffset? purgedAt = null, Guid? mergedInto = null)
+    {
+        lock (_gate) _customers[id] = new CustomerProjection(id, platform, username, displayName, purgedAt, mergedInto);
+    }
+
+    /// <summary>Asıl kaydın KVKK silmesi: projeksiyon boşaltılır, siparişler OKUMA ANINDA maskelenir (§9).</summary>
+    public void PurgeCustomer(Guid id, DateTimeOffset at)
+    {
+        lock (_gate)
+            _customers[id] = _customers[id] with { DisplayName = null, PurgedAt = at };
+    }
+
+    /// <summary>Siparişi yazar: içerik değişmediyse hiçbir şey (EF yalnız değişeni yazar), değiştiyse yeni seq;
+    /// devredilmiş oturumun siparişi <c>SessionReleasedAt</c>'i eklemede alır (DM3). Lisans eklemede belirlenir.</summary>
+    private ServerOrder PutOrder(Guid licenseId, ServerOrder order)
+    {
+        var id = order.Row.Id;
+        if (_orders.TryGetValue(id, out var old))
+        {
+            order = order with { LicenseId = old.LicenseId, SessionReleasedAt = order.SessionReleasedAt ?? old.SessionReleasedAt };
+            if (old with { ChangeSeq = 0 } == order with { ChangeSeq = 0 }) return old;
+        }
+        else
+        {
+            order = order with { LicenseId = licenseId };
+        }
+        if (order.SessionReleasedAt is null && order.Row.SessionId is { } sid
+            && _serverSessions.TryGetValue(sid, out var session) && session.ReleasedAt is { } released)
+            order = order with { SessionReleasedAt = released };
+        return _orders[id] = order with { ChangeSeq = ++_seq };
+    }
+
+    /// <summary>Dosyayı yazar: değişmediyse hiçbir şey, değiştiyse yeni seq. Lisans eklemede belirlenir.</summary>
+    private ServerShipment PutShipment(Guid licenseId, ServerShipment shipment)
+    {
+        var id = shipment.Row.Id;
+        if (_shipments.TryGetValue(id, out var old))
+        {
+            shipment = shipment with { LicenseId = old.LicenseId };
+            if (old with { ChangeSeq = 0 } == shipment with { ChangeSeq = 0 }) return old;
+        }
+        else
+        {
+            shipment = shipment with { LicenseId = licenseId };
+        }
+        return _shipments[id] = shipment with { ChangeSeq = ++_seq };
+    }
+
+    /// <summary>Oturum yazımının sonu: satır değiştiyse yeni seq; devir bu yazımda olduysa ardından siparişlerine
+    /// <c>SessionReleasedAt</c> basılır (<c>SessionReleaser</c>: önce oturum, sonra siparişler — siparişlerin seq'i
+    /// büyük).</summary>
+    private void CommitSession(ServerSession s, SessionStamp? before)
+    {
+        if (before == s.Stamp()) return;
+        s.ChangeSeq = ++_seq;
+        if (s.ReleasedAt is not { } released || before?.ReleasedAt is not null) return;
+        foreach (var order in _orders.Values.Where(o => o.Row.SessionId == s.Id && o.SessionReleasedAt is null)
+                     .OrderBy(o => o.ChangeSeq).ToList())
+            PutOrder(order.LicenseId, order with { SessionReleasedAt = released });
+    }
+
+    /// <summary>
+    /// <c>GET sales/changes</c> — <c>LicensesSalesController.Changes</c> + <c>SalesChangesFeed.ReadAsync</c> +
+    /// <c>SalesChangesPageBuilder</c>'ın aynası (§4.4). Bkz. sınıf özeti.
+    /// </summary>
+    private HttpResponseMessage HandleChanges(Guid licenseId, string query)
+    {
+        var replicaRaw = QueryValue(query, "replicaId");
+        var seenRaw = QueryValue(query, "seenMode");
+        if (replicaRaw is not null || seenRaw is not null)
+        {
+            Guid? replica = Guid.TryParse(replicaRaw, out var r) ? r : null;
+            int? seen = int.TryParse(seenRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var m) ? m : null;
+            if (!TryEnvelope(replica, 2, seen, out var replicaId, out var seenMode, out var error))
+                return Invalid(error!);
+            lock (_gate) Touch(licenseId, replicaId, seenMode);
+        }
+        if (!long.TryParse(QueryValue(query, "afterSeq") ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture,
+                out var afterSeq))
+            return Invalid("afterSeq sayı değil");
+        if (!int.TryParse(QueryValue(query, "take") ?? MaxChangesTake.ToString(CultureInfo.InvariantCulture),
+                NumberStyles.Integer, CultureInfo.InvariantCulture, out var take) || take is < 1 or > MaxChangesTake)
+            return Invalid($"take 1..{MaxChangesTake} dışında: istemci sunucunun kırpmasına güvenmemeli");
+
+        OnChanges?.Invoke(afterSeq);
+        if (PageLimit is { } limit) take = Math.Min(take, limit);
+
+        ChangesPageBody page;
+        lock (_gate)
+        {
+            var horizon = HorizonOverride ?? _seq + 1;
+            var cursorReset = afterSeq < 0 || afterSeq >= horizon;
+            if (cursorReset) afterSeq = 0;
+            bool InRange(long seq) => seq > afterSeq && seq < horizon;
+
+            var rows = _serverSessions.Values
+                    .Where(s => s.LicenseId == licenseId && s.ReleasedAt is not null && InRange(s.ChangeSeq))
+                    .Select(s => (Seq: s.ChangeSeq, Session: (ServerSession?)s, Order: (ServerOrder?)null,
+                        Shipment: (ServerShipment?)null))
+                .Concat(_orders.Values
+                    .Where(o => o.LicenseId == licenseId && o.SessionReleasedAt is not null && o.Row.SessionId is not null
+                                && InRange(o.ChangeSeq))
+                    .Select(o => (Seq: o.ChangeSeq, Session: (ServerSession?)null, Order: (ServerOrder?)o,
+                        Shipment: (ServerShipment?)null)))
+                .Concat(_shipments.Values
+                    .Where(s => s.LicenseId == licenseId && InRange(s.ChangeSeq))
+                    .Select(s => (Seq: s.ChangeSeq, Session: (ServerSession?)null, Order: (ServerOrder?)null,
+                        Shipment: (ServerShipment?)s)))
+                .OrderBy(x => x.Seq)
+                .Take(take)
+                .ToList();
+
+            var items = new List<ChangeItemBody>(rows.Count);
+            var side = new List<SessionItemBody>();
+            var seenSessions = new HashSet<Guid>();
+            var drafts = new Dictionary<string, CustomerDraftBody>(StringComparer.Ordinal);
+            foreach (var row in rows)
+            {
+                if (row.Session is { } session)
+                {
+                    items.Add(new ChangeItemBody("session", row.Seq, session.ToFeedItem(), null, null));
+                }
+                else if (row.Order is { } order)
+                {
+                    var (customerId, canonical) = ResolveCustomer(order.Row.CustomerId);
+                    var masked = canonical?.PurgedAt is not null;
+                    items.Add(new ChangeItemBody("order", row.Seq, null, FeedOrderOf(order, customerId, masked), null));
+                    var sid = order.Row.SessionId!.Value;
+                    if (seenSessions.Add(sid) && _serverSessions.TryGetValue(sid, out var orderSession)
+                        && orderSession.LicenseId == licenseId)
+                        side.Add(orderSession.ToFeedItem());
+                    drafts[customerId] = canonical is { } c
+                        ? new CustomerDraftBody(customerId, c.Platform, c.Username, masked ? null : c.DisplayName, c.PurgedAt)
+                        : new CustomerDraftBody(customerId, order.Row.Platform, order.Row.Username, order.Row.DisplayName, null);
+                }
+                else if (row.Shipment is { } shipment)
+                {
+                    items.Add(new ChangeItemBody("shipment", row.Seq, null, null, shipment.ToFeedItem()));
+                }
+            }
+            page = new ChangesPageBody(items, items.Count == 0 ? afterSeq : items[^1].ChangeSeq, cursorReset, side,
+                drafts.Values.ToList());
+        }
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(page, Web));
+    }
+
+    /// <summary><c>SalesCustomerDirectory.Resolve</c>: "N" biçimli GUID kopya zinciri boyunca (en çok üç adım) asıl kayda;
+    /// asıl kayıt Id'si değişmediyse ham yazım korunur. GUID olmayan ya da projeksiyonu olmayan müşteri ham değerle,
+    /// projeksiyonsuz. Projeksiyonlar bu ikizde lisans başına ayrılmaz (Id'ler GUID; testler çakıştırmaz).</summary>
+    private (string Id, CustomerProjection? Canonical) ResolveCustomer(string raw)
+    {
+        if (!Guid.TryParseExact(raw, "N", out var id)) return (raw, null);
+        var current = id;
+        for (var hop = 0; hop < 3 && _customers.TryGetValue(current, out var p) && p.MergedInto is { } target; hop++)
+            current = target;
+        return (current == id ? raw : current.ToString("N"), _customers.GetValueOrDefault(current));
+    }
+
+    /// <summary><c>SalesOrderItem.From(order, customer)</c>: asıl kaydın Id'si, KVKK okuma maskesi.</summary>
+    private static OrderItemBody FeedOrderOf(ServerOrder o, string customerId, bool masked)
+    {
+        var r = o.Row;
+        return new OrderItemBody(
+            r.Id, r.SessionId, customerId, r.Platform, r.Username, masked ? null : r.DisplayName,
+            masked ? "" : r.MessageText, r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason,
+            r.IsShippingFee, r.IsBackupPromoted, r.IsTentativeBackup, r.ProductId, r.ProductVariantId, o.UpdatedAt,
+            o.Version, r.ParentOrderId, r.ShipmentId, o.OriginReplicaId, r.PrintBatchId, r.PrintSeq, r.PriceCorrectedAt,
+            r.PaidPrice, o.SessionReleasedAt, null, null, null, null, null, o.ChangeSeq);
+    }
+
+    /// <summary><c>wpf-customers/sync</c>: projeksiyonları kaydeder (Id, platform, kullanıcı adı, takma ad). Silinmiş
+    /// projeksiyona yazılmaz. Yanıt <c>{synced, retroactiveMatches, redirects}</c>.</summary>
+    private async Task<HttpResponseMessage> HandleCustomerPushAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
+    {
+        const string endpoint = "wpf-customers/sync";
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _customerPushCalls.Add(new PushCall(endpoint, licenseId, raw));
+            if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        if (scripted is not null) return scripted();
+
+        using var doc = JsonDocument.Parse(raw);
+        var synced = 0;
+        lock (_gate)
+            foreach (var c in doc.RootElement.GetProperty("customers").EnumerateArray())
+            {
+                var id = c.GetProperty("id").GetGuid();
+                if (_customers.TryGetValue(id, out var known) && known.PurgedAt is not null) continue;
+                _customers[id] = new CustomerProjection(id, c.GetProperty("platform").GetString()!,
+                    c.GetProperty("username").GetString()!,
+                    c.TryGetProperty("displayName", out var dn) && dn.ValueKind == JsonValueKind.String ? dn.GetString() : null,
+                    null, known?.MergedInto);
+                synced++;
+            }
+        return FakeHttpMessageHandler.Json(200,
+            $"{{\"synced\":{synced.ToString(CultureInfo.InvariantCulture)},\"retroactiveMatches\":0,\"redirects\":[]}}");
     }
 
     private Replica Touch(Guid licenseId, Guid replicaId, int seenMode)
@@ -1117,6 +1437,15 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary>Sunucudaki sipariş: son yazılan öğe, sürüm (<c>Order.SyncVersion</c>) ve kaynak kopya.</summary>
     internal sealed record ServerOrder(OrderBody Row, int Version, Guid? OriginReplicaId, DateTimeOffset UpdatedAt)
     {
+        /// <summary>Satırın lisansı (eklemede yazılır).</summary>
+        public Guid LicenseId { get; init; }
+
+        /// <summary>rowversion (W2-03).</summary>
+        public long ChangeSeq { get; init; }
+
+        /// <summary>Akış süzgeci (DM3): devirde ya da devredilmiş oturuma eklemede dolar.</summary>
+        public DateTimeOffset? SessionReleasedAt { get; init; }
+
         /// <summary>Akış öğesi (<c>SalesOrderItem</c>); damga yok (mod Off, komut yok).</summary>
         public OrderItemBody ToItem() => new(
             Row.Id, Row.SessionId, Row.CustomerId, Row.Platform, Row.Username, Row.DisplayName, Row.MessageText,
@@ -1166,6 +1495,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     private sealed class ServerSession
     {
         public Guid Id;
+        public Guid LicenseId;
+        public long ChangeSeq;
         public string? Title;
         public DateTimeOffset StartedAt;
         public DateTimeOffset? EndedAt;
@@ -1183,7 +1514,45 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
         public ServerSessionView View() => new(
             Id, Title, EndedAt, OwnerReplicaId, OwnerMachineName, ReleasedAt, UnsentLabelCount, ForceEndedBy);
+
+        /// <summary>Satırın değeri (seq hariç): yazım bir şeyi değiştirdi mi.</summary>
+        public SessionStamp Stamp() => new(
+            Title, StartedAt, EndedAt, Platforms, Notes, OwnerReplicaId, OwnerMachineName, ReleasedAt, UnsentLabelCount,
+            ForceEndedBy);
+
+        /// <summary><c>SalesSessionItem.From</c>.</summary>
+        public SessionItemBody ToFeedItem() => new(
+            Id, Title, StartedAt, EndedAt, Platforms, Notes, ReleasedAt ?? StartedAt, OwnerReplicaId, OwnerMachineName,
+            ForceEndedBy, ReleasedAt, UnsentLabelCount, ChangeSeq);
     }
+
+    private sealed record SessionStamp(
+        string? Title, DateTimeOffset StartedAt, DateTimeOffset? EndedAt, string Platforms, string? Notes,
+        Guid? OwnerReplicaId, string? OwnerMachineName, DateTimeOffset? ReleasedAt, int? UnsentLabelCount,
+        string? ForceEndedBy);
+
+    /// <summary>Sunucudaki <c>WpfCustomerProjection</c>'ın akışa giren kısmı.</summary>
+    private sealed record CustomerProjection(
+        Guid Id, string Platform, string Username, string? DisplayName, DateTimeOffset? PurgedAt, Guid? MergedInto);
+
+    /// <summary><c>SalesSessionItem</c> (sunucu).</summary>
+    internal sealed record SessionItemBody(
+        Guid Id, string? Title, DateTimeOffset StartedAt, DateTimeOffset? EndedAt, string Platforms, string? Notes,
+        DateTimeOffset UpdatedAt, Guid? OwnerReplicaId, string? OwnerMachineName, string? ForceEndedBy,
+        DateTimeOffset? ReleasedAt, int? UnsentLabelCount, long ChangeSeq);
+
+    /// <summary><c>SalesCustomerDraft</c> (sunucu).</summary>
+    internal sealed record CustomerDraftBody(
+        string Id, string Platform, string Username, string? DisplayName, DateTimeOffset? PurgedAt);
+
+    /// <summary><c>SalesChangeItem</c> (sunucu).</summary>
+    internal sealed record ChangeItemBody(
+        string Kind, long ChangeSeq, SessionItemBody? Session, OrderItemBody? Order, ShipmentItemBody? Shipment);
+
+    /// <summary><c>SalesChangesPage</c> (sunucu).</summary>
+    internal sealed record ChangesPageBody(
+        IReadOnlyList<ChangeItemBody> Items, long NextAfterSeq, bool CursorReset, IReadOnlyList<SessionItemBody> SideSessions,
+        IReadOnlyList<CustomerDraftBody> CustomerDrafts);
 
     internal sealed record ServerSessionView(
         Guid Id, string? Title, DateTimeOffset? EndedAt, Guid? OwnerReplicaId, string? OwnerMachineName,
@@ -1210,6 +1579,17 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     internal sealed record ServerShipment(ShipmentBody Row, int Version, Guid? OriginReplicaId, DateTimeOffset UpdatedAt)
     {
+        /// <summary>Satırın lisansı (eklemede yazılır).</summary>
+        public Guid LicenseId { get; init; }
+
+        /// <summary>rowversion (W2-03).</summary>
+        public long ChangeSeq { get; init; }
+
+        /// <summary><c>SalesShipmentItem.From</c> (akış).</summary>
+        public ShipmentItemBody ToFeedItem() => new(
+            Row.Id, Row.CustomerId, Row.Status, Row.CumulativeAmount, Row.CreatedAt, Row.HeldAt, Row.ShippedAt,
+            UpdatedAt, Version, null, null, OriginReplicaId, ChangeSeq);
+
         public ShipmentItemBody ToItem() => new(
             Row.Id, Row.CustomerId, Row.Status, Row.CumulativeAmount, Row.CreatedAt, Row.HeldAt, Row.ShippedAt,
             UpdatedAt, Version, null, null, OriginReplicaId, Version);

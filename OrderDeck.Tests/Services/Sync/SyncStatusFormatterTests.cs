@@ -62,6 +62,18 @@ public sealed class SyncStatusFormatterTests
         => SyncStatusFormatter.Format(3, Now.AddSeconds(-20), Now, new SyncAttention(1, 2))
             .Text.Should().Be("Gönderiliyor (3) · 1 müşteri değişikliği uygulanamadı · 2 ödeme işi tamamlanmayı bekliyor");
 
+    [Fact] public void Atlanan_satis_akisi_ogesi_kalici_uyari_ve_ipucu()
+    {
+        // Spec 2026-10-13 §5.7: dikkat sayacına SalesFeedFailure'ın atlananları eklenir.
+        var attention = new SyncAttention(0, 0, 2);
+        var s = SyncStatusFormatter.Format(0, Now.AddSeconds(-20), Now, attention);
+
+        s.Text.Should().StartWith("Güncel ✓").And.EndWith(" · 2 satış değişikliği uygulanamadı");
+        s.Healthy.Should().BeFalse();
+        SyncStatusFormatter.Tooltip(s, attention).Split('\n').Should().HaveCount(2)
+            .And.Subject.Last().Should().Contain("satış değişiklikleri").And.Contain("destek");
+    }
+
     // ── sınırlar (M-7) ve geri giden saat (M-4) ─────────────────────────
 
     [Fact] public void Tam_esikte_hala_guncel_esigin_otesinde_cevrimdisi()

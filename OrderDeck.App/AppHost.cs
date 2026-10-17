@@ -546,7 +546,8 @@ public sealed class AppHost : IDisposable
 
         // Yayın ve etiket senkronu (spec 2026-10-13, W1): kopya kimliği (_meta.ReplicaId), yerel
         // satış durumu ve v2 zarfı TEK örnek — hello'nun başarısını zarf tutar, gönderim servisleri
-        // aynı örnekten IsReadyForPush okur. Kalp atışı 30 sn; açılışta hemen hello + state.
+        // aynı örnekten IsReadyForPush okur. Kalp atışını (hello + state, 30 sn, açılışta hemen) W2'den
+        // beri satış akışı turu sürer (aşağıda SalesChangesPullHostedService): ayrı state zamanlayıcısı yok.
         services.AddSingleton<ReplicaIdentityRepository>();
         services.AddSingleton<SalesSyncStateRepository>();
         services.AddSingleton<Services.Sync.SalesSyncEnvelope>();
@@ -559,7 +560,6 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SalesSyncStateService>>()));
-        services.AddHostedService<Services.Sync.SalesSyncStateHostedService>();
 
         // W1-09 (§8.2): Ws'nin ilk açılışındaki geri doldurma ve birim ayrışması onarımı. Zarf, devir kapısı,
         // gönderim ve hello AYNI örnekler: boşaltma gönderim kapısından geçer, Release kararı kapanış gönderimiyle
@@ -605,6 +605,16 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.SyncStatusTracker>();
         services.AddSingleton<Services.Sync.CustomerChangesPullService>();
         services.AddHostedService<Services.Sync.CustomerChangesPullHostedService>();
+
+        // Yayın ve etiket senkronu W2 (spec 2026-10-13 §5.4): satış değişiklik akışı. TEK 30 sn'lik sürücü — turun
+        // ilk adımı sales/state kalp atışı (her kipte); mod On'da uzak canlı yayın aynası, ön gönderim (müşteri, oturum
+        // ve etiket) ve akış. Akış deposu ödeme akışıyla AYNI CustomerBusySet'i alır (U13); sayfalar müşteri akışının
+        // tur kilidi altında uygulanır (aynı CustomerChangesPullService örneği). Açılışta hemen bir tur.
+        services.AddSingleton<SalesFeedRepository>();
+        services.AddSingleton<SalesFeedFailureRepository>();
+        services.AddSingleton<RemoteLiveSessionRepository>();
+        services.AddSingleton<Services.Sync.SalesChangesPullService>();
+        services.AddHostedService<Services.Sync.SalesChangesPullHostedService>();
 
         // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
         // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce

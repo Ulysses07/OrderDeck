@@ -5,7 +5,6 @@ using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
@@ -536,42 +535,9 @@ public sealed class SalesSyncStateServiceTests : IDisposable
             "makine adı günlüğe yazılmaz (sunucudaki kuralla aynı)");
     }
 
-    // ── arka plan işi ─────────────────────────────────────────────────────
+    // Arka plan işi (açılışta hemen tur, sonra 30 sn): W2-03'ten beri kalp atışını satış akışı turu sürer —
+    // SalesChangesPullServiceTests.Arka_plan_isi_acilista_hemen_tur_atar_sonra_ritimle_surer_tek_state_surucusu.
 
-    [Fact]
-    public async Task Arka_plan_isi_acilista_hemen_tur_atar_sonra_ritimle_surer()
-    {
-        var pc = NewPc();
-        using (var once = new SalesSyncStateHostedService(pc.Service,
-                   NullLogger<SalesSyncStateHostedService>.Instance, TimeSpan.FromHours(1)))
-        {
-            await once.StartAsync(CancellationToken.None);
-            await WaitUntil(() => _server.States.Count >= 1);
-            await once.StopAsync(CancellationToken.None);
-        }
-        _server.Hellos.Should().ContainSingle("açılışta 30 sn beklenmez: hello + kalp atışı hemen");
-        _server.States.Should().ContainSingle();
-
-        using var cadence = new SalesSyncStateHostedService(pc.Service,
-            NullLogger<SalesSyncStateHostedService>.Instance, TimeSpan.FromMilliseconds(50));
-        await cadence.StartAsync(CancellationToken.None);
-        await WaitUntil(() => _server.States.Count >= 4);
-        await cadence.StopAsync(CancellationToken.None);
-        _server.Hellos.Should().ContainSingle("aynı servis örneği: süreç başına bir hello");
-        SalesSyncStateHostedService.DefaultCadence.Should().Be(TimeSpan.FromSeconds(30));
-    }
-
-    /// <summary>Üst sınır, bekleme süresi değil: koşul sağlanınca hemen döner. Tam paket yükünde iş havuzu geç
-    /// büyür; arka plan işinin ilk turu 10 sn'yi aşabiliyordu.</summary>
+    /// <summary>Üst sınır, bekleme süresi değil: koşul sağlanınca hemen döner.</summary>
     private static readonly TimeSpan Patience = TestPatience.Upper;
-
-    private static async Task WaitUntil(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow + Patience;
-        while (!condition())
-        {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException($"koşul {Patience.TotalSeconds} sn'de sağlanmadı");
-            await Task.Delay(20);
-        }
-    }
 }

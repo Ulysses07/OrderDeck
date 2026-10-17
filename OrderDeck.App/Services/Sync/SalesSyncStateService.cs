@@ -38,7 +38,8 @@ public sealed record SalesStateSnapshot(
 
 /// <summary>
 /// Satış senkronunun kopya turu (spec 2026-10-13 §4.5, §8.2-1, §8.7): <c>sales/hello</c> ve her turda
-/// <c>sales/state</c> (kalp atışı). Tur 30 sn'de bir ve açılışta hemen (<see cref="SalesSyncStateHostedService"/>).
+/// <c>sales/state</c> (kalp atışı). Tur 30 sn'de bir ve açılışta hemen; sürücüsü satış akışı turudur, onun ilk adımı
+/// (<see cref="SalesChangesPullService"/>, <see cref="SalesChangesPullHostedService"/>; W2): turda tam bir state.
 ///
 /// <para><b>hello:</b> süreç başına (lisans, kopya) çifti için bir kez; lisans değişince, kimlik dönünce ya da yerel
 /// kargo ayarı son başarılı hello'nun bildirdiğinden farklılaşınca yeniden (<see cref="HelloIsCurrent"/>). Gövde: kimlik, protokol 2, yetenek düzeyi, görülen kip, makine adı, donanım parmak izi, yerel kargo

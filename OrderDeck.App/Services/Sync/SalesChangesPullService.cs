@@ -1,0 +1,610 @@
+using Microsoft.Extensions.Logging;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
+
+namespace OrderDeck.App.Services.Sync;
+
+/// <summary>Bir satış akışı turunun sonucu (<see cref="SalesChangesPullService.TourOnceAsync"/>).</summary>
+public enum SalesPullOutcome
+{
+    /// <summary>Lisans yok ya da çözülemedi: hiçbir istek gitmedi.</summary>
+    NoLicense,
+    /// <summary>Yerel kip Off: tur yalnız <c>sales/state</c> kalp atışıydı; akış istenmedi, hiçbir şey yazılmadı.</summary>
+    ModeOff,
+    /// <summary><c>sales/state</c> başarısız (ağ, sunucu, kimlik), sayfa/ağ hatası (429 dahil), uygulanamayan öğe
+    /// (atlanana kadar), yerel ortam hatası ya da temizlik yazılamadı. İmleç son uygulanan öğede.</summary>
+    Failed,
+    /// <summary>Gönderilmemiş yerel etiket (U5) ve durmadan sonraki gönderim onu götüremedi. İmleç o öğede; deneme
+    /// sayılmadı.</summary>
+    Stalled,
+    /// <summary>Etiketin müşterisi yerelde yok, kimliği başka Id'de: yönlendirmeyi müşteri akışı getirecek. İmleç o
+    /// öğede; deneme sayılmadı.</summary>
+    PendingCustomer,
+    /// <summary>Etiketin müşterisi ödeme akışında (U13) ya da lisans değişimi temizliği müşterisi meşgul olduğu için
+    /// bekliyor. İmleç o öğede; deneme sayılmadı.</summary>
+    Busy,
+    /// <summary>Tur başına sayfa sınırına ulaşıldı (<see cref="SalesChangesPullService.MaxPagesPerTour"/>); akış sonraki
+    /// turda kaldığı yerden sürer.</summary>
+    MorePending,
+    /// <summary>Akış boş sayfaya kadar uygulandı.</summary>
+    CaughtUp,
+}
+
+/// <summary>Akıştan inen ve arayüzün tazeleyeceği satırlar (<see cref="SalesChangesPullService.SalesChanged"/>; §5.4-6).
+/// Lisans değişimi temizliğinde listeler boş olabilir: uzak satırlar silindi, ekranlar baştan okunmalı.</summary>
+public sealed class SalesChangedEventArgs(
+    IReadOnlyList<string> labelIds, IReadOnlyList<string> sessionIds, IReadOnlyList<string> shipmentIds) : EventArgs
+{
+    public IReadOnlyList<string> LabelIds { get; } = labelIds;
+    public IReadOnlyList<string> SessionIds { get; } = sessionIds;
+    public IReadOnlyList<string> ShipmentIds { get; } = shipmentIds;
+}
+
+/// <summary>Satış akışının durum satırı girdisi (§5.7 "Akış"); yalnız mod On'da gösterilir.</summary>
+/// <param name="ModeOn">Yerel kip On ve lisans var: satır görünür.</param>
+/// <param name="LastCaughtUpAt">Bu süreçte akışın boş sayfaya kadar uygulandığı son an.</param>
+/// <param name="CatchingUp">Son tur sayfa sınırında kaldı ya da hiç yetişilmedi.</param>
+/// <param name="WaitingItems">Akış bir öğede bekliyor (U5, bekleyen müşteri, ödeme akışı): o sayfada bekleyen öğe
+/// sayısı (en az; arkasındaki sayfalar sayılmaz).</param>
+public sealed record SalesFeedStatus(bool ModeOn, DateTimeOffset? LastCaughtUpAt, bool CatchingUp, int WaitingItems)
+{
+    public static SalesFeedStatus Off { get; } = new(false, null, false, 0);
+}
+
+/// <summary>
+/// Satış değişiklik akışının turu (spec 2026-10-13 §5.4 Servis, §4.4, §4.5, §3.2/M5, §5.7, §12 risk 9). Diğer
+/// bilgisayarların DEVREDİLMİŞ yayınlarını ve etiketlerini, komutların sonuçlarını ve kargo dosyalarını yerele indirir
+/// (<see cref="SalesFeedRepository.ApplyItem"/>). Tek 30 sn'lik sürücüdür: <c>sales/state</c> kalp atışı da bu turun
+/// ilk adımıdır (<see cref="SalesChangesPullHostedService"/>; ayrı bir state zamanlayıcısı yok).
+///
+/// <para><b>Tur</b> (kendi tur kilidi altında):
+/// <list type="number">
+///   <item><c>sales/state</c> — turda TAM BİR kez (<see cref="SalesSyncStateService.TourOnceAsync"/>), her kipte:
+///   kalp atışı kesilirse başka bilgisayar bu bilgisayarın canlı yayınını sahibi susmuş sanıp bitirebilirdi (Y7).
+///   Lisans değişimi temizliği (yerel). Yerel <c>SalesSyncState.Mode</c> 1 değilse tur burada biter: mod Off'ta
+///   (bugün her lisans) akış istenmez ve hiçbir şey yazılmaz. Mod On'da <c>liveSessions</c>
+///   <c>RemoteLiveSession</c>'a aynalanır (<see cref="RemoteLiveSessionRepository.Mirror"/>; kendi oturumunun Id'si
+///   alınmaz, <c>StreamSession</c>'a hiç yazılmaz).</item>
+///   <item>Ön gönderim: müşteri (<see cref="WpfCustomerProjectionSyncService"/>), ardından oturum ve etiket
+///   (<see cref="SessionOrderSyncService.SyncOnceAsync(CancellationToken)"/>). Gönderilmemiş yerel etiket akışı
+///   durdururdu (U5); önce gitsin.</item>
+///   <item>Sayfalar <see cref="PageSize"/>'lık, turda en çok <see cref="MaxPagesPerTour"/> (müşteri akışıyla paylaşılan
+///   100 istek/dk/IP bütçesi). Her sayfa müşteri akışının tur kilidi altında uygulanır
+///   (<see cref="CustomerChangesPullService.EnterTourGateAsync"/>); kilit HİÇBİR HTTP isteği boyunca tutulmaz. Kilit
+///   sırası: önce bu servisin kilidi, sonra müşterininki.</item>
+///   <item>İmleç <c>SyncCursor(</c><see cref="CursorName"/><c>, LicenseKey)</c> her sayfadan sonra ve iptalde
+///   kaydedilir. <c>cursorReset</c> imleci 0'a çeker, akış baştan uygulanır (idempotent).</item>
+///   <item>Değişen satırlar <see cref="SalesChanged"/> ile bildirilir (arka plan iş parçacığında; dinleyici
+///   dispatcher'a taşır).</item>
+/// </list></para>
+///
+/// <para><b>Bekleyen öğe:</b> U5 (gönderilmemiş yerel etiket) durdurur: oturum ve etiket bir kez daha gönderilir;
+/// duran etiket onaylandıysa (gönderim filigranı ilerledi) akış aynı turda bir kez daha denenir, değilse tur biter.
+/// Bekleyen müşteri ve ödeme akışındaki müşteri o öğede durur. Hiçbiri deneme sayılmaz, öğe kendiliğinden atlanmaz.</para>
+///
+/// <para><b>Uygulanamayan öğe (U10):</b> <see cref="SalesFeedFailureRepository"/>'de kalıcı sayılır;
+/// <see cref="MaxAttemptsBeforeSkip"/> turdan sonra atlanır (durum satırı "M öğe atlandı", dikkat sayacı). Ortam
+/// hataları sayılmaz: SQLITE_BUSY/LOCKED ve öbür yerel ortam hataları, sızmış kilit satırı (müşteri akışının tur
+/// başı temizliği kaldırır), kilit yeniden girişi, ağ hatası, 429.</para>
+///
+/// <para><b>Lisans değişimi:</b> süreç içinde lisans anahtarı değişince ya da başka bir lisansa ait akış imleci bulunca
+/// (süreçler arası) <c>Origin = 'remote'</c> oturum ve etiketler ile <c>RemoteLiveSession</c> silinir, etkilenen
+/// müşterilerin toplamları türetilir (<see cref="SalesFeedRepository.PurgeRemoteRows"/>), akış hata kayıtları silinir,
+/// geçerli lisansın akışı baştan alınır ve öbür lisansların imleçleri silinir. Yerel satırlara dokunulmaz. Temizlik
+/// bitmeden yeni lisansın akışı uygulanmaz (müşterisi ödeme akışındaysa sonraki tura kalır).</para>
+///
+/// <para><b>Canlı yol beklemez:</b> her <c>await</c> <c>ConfigureAwait(false)</c>; öğe uygulaması
+/// <c>CustomerBusySet</c> kilidini eşzamanlı bekler, arayüz iş parçacığında koşmamalı. Hiçbir SQLite bağlantısı ağ
+/// isteğini beklemez. Günlük yalnız kimlik ve sayı taşır.</para>
+/// </summary>
+public sealed class SalesChangesPullService
+{
+    public const string CursorName = "sales-changes-in";
+
+    /// <summary>Sayfa boyu (sunucunun <c>SalesChangesFeed.MaxTake</c>'i).</summary>
+    internal const int PageSize = 500;
+
+    /// <summary>§12 risk 9: tur başına en çok sayfa (5.000 öğe); kalanı sonraki tur.</summary>
+    internal const int MaxPagesPerTour = 10;
+
+    /// <summary>U10: bu kadar başarısız turdan sonra öğe atlanır (30 sn ritimde ~2,5 dk).</summary>
+    internal const int MaxAttemptsBeforeSkip = 5;
+
+    /// <summary>Mod On'un olağan turu: dosyalar uygulanır, ilk yetişmede kendi satırının üzerine yazım izlenir (§8.4;
+    /// iz yalnız <c>FirstCatchUpAt</c> boşken düşer).</summary>
+    private static readonly SalesFeedApplyOptions ModeOnOptions = new(ApplyShipments: true, CountCatchUpOverwrite: true);
+
+    private readonly LicenseApiClient _api;
+    private readonly SalesSyncStateService _state;
+    private readonly SalesSyncStateRepository _stateRepo;
+    private readonly SalesSyncEnvelope _envelope;
+    private readonly SalesFeedRepository _feed;
+    private readonly SalesFeedFailureRepository _failures;
+    private readonly RemoteLiveSessionRepository _liveSessions;
+    private readonly SyncCursorRepository _cursors;
+    private readonly LabelRepository _labels;
+    private readonly WpfCustomerProjectionSyncService _customerPush;
+    private readonly SessionOrderSyncService _salesPush;
+    private readonly CustomerChangesPullService _customerPull;
+    private readonly ICurrentLicenseProvider _licenseProvider;
+    private readonly IClock _clock;
+    private readonly ILogger<SalesChangesPullService> _log;
+
+    /// <summary>Tek tur kuralı: zamanlayıcının turu ile ileride elle tetiklenen tur (baskı öncesi 3 sn'lik tur, §5.6)
+    /// üst üste binmez; imleç yazımları sıralı kalır.</summary>
+    private readonly SemaphoreSlim _tourGate = new(1, 1);
+
+    private Guid? _cachedLicenseId;
+    private string? _cachedLicenseKey;
+    private string? _lastLicenseKey;
+    private bool _cleanupPending;
+    private int _pagesThisTour;
+    private bool _offlineLogged;
+    private bool _environmentErrorLogged;
+    private volatile SalesFeedStatus _status = SalesFeedStatus.Off;
+
+    private readonly record struct PassResult(SalesPullOutcome Outcome, string? BlockedItemId = null, int Waiting = 0);
+
+    /// <summary>Bir turun birikimi: değişen kimlikler ve sayılar.</summary>
+    private sealed class TourTally
+    {
+        public readonly HashSet<string> Labels = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Shipments = new(StringComparer.Ordinal);
+        public int Applied, Unchanged, Ignored, Skipped, CatchUpOverwrites, AggregateRows;
+        public bool Any => Labels.Count + Sessions.Count + Shipments.Count > 0;
+    }
+
+    public SalesChangesPullService(
+        LicenseApiClient api,
+        SalesSyncStateService state,
+        SalesSyncStateRepository stateRepo,
+        SalesSyncEnvelope envelope,
+        SalesFeedRepository feed,
+        SalesFeedFailureRepository failures,
+        RemoteLiveSessionRepository liveSessions,
+        SyncCursorRepository cursors,
+        LabelRepository labels,
+        WpfCustomerProjectionSyncService customerPush,
+        SessionOrderSyncService salesPush,
+        CustomerChangesPullService customerPull,
+        ICurrentLicenseProvider licenseProvider,
+        IClock clock,
+        ILogger<SalesChangesPullService> log)
+    {
+        _api = api;
+        _state = state;
+        _stateRepo = stateRepo;
+        _envelope = envelope;
+        _feed = feed;
+        _failures = failures;
+        _liveSessions = liveSessions;
+        _cursors = cursors;
+        _labels = labels;
+        _customerPush = customerPush;
+        _salesPush = salesPush;
+        _customerPull = customerPull;
+        _licenseProvider = licenseProvider;
+        _clock = clock;
+        _log = log;
+    }
+
+    /// <summary>Akıştan inen satırlar (§5.4-6). Turun iş parçacığında çağrılır; dinleyici arayüzü dispatcher'a taşımalı.
+    /// Dinleyicinin hatası turu düşürmez.</summary>
+    public event EventHandler<SalesChangedEventArgs>? SalesChanged;
+
+    /// <summary>Durum satırının girdisi (§5.7); mod Off'ta <see cref="SalesFeedStatus.ModeOn"/> false.</summary>
+    public SalesFeedStatus Status => _status;
+
+    public async Task<SalesPullOutcome> TourOnceAsync(CancellationToken ct)
+    {
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        try { return await TourCoreAsync(ct).ConfigureAwait(false); }
+        finally { _tourGate.Release(); }
+    }
+
+    private async Task<SalesPullOutcome> TourCoreAsync(CancellationToken ct)
+    {
+        var licenseKey = _licenseProvider.CurrentLicenseKey;
+        if (string.IsNullOrWhiteSpace(licenseKey))
+        {
+            _status = SalesFeedStatus.Off;
+            return SalesPullOutcome.NoLicense;                         // lisanssız: hiçbir istek yok
+        }
+
+        // 1) Kalp atışı — turda tam bir kez, her kipte.
+        var stateOutcome = await _state.TourOnceAsync(ct).ConfigureAwait(false);
+        if (stateOutcome == SalesStateTourOutcome.NoLicense)
+        {
+            _status = SalesFeedStatus.Off;
+            return SalesPullOutcome.NoLicense;
+        }
+
+        // Lisans değişimi temizliği (yerel): yeni lisansın akışı eski lisansın uzak satırlarının üstüne inmesin.
+        var cleanup = CleanUpAfterLicenseChange(licenseKey);
+
+        int mode;
+        try { mode = _stateRepo.GetMode(); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış akışı: yerel kip okunamadı; tur akışsız bitti");
+            return SalesPullOutcome.Failed;
+        }
+        if (mode != 1)
+        {
+            _status = SalesFeedStatus.Off;
+            return stateOutcome == SalesStateTourOutcome.Ok ? SalesPullOutcome.ModeOff : SalesPullOutcome.Failed;
+        }
+
+        _status = _status with { ModeOn = true };
+        if (stateOutcome != SalesStateTourOutcome.Ok) return SalesPullOutcome.Failed;
+        if (cleanup is { } blocked) return blocked;
+
+        MirrorLiveSessions(licenseKey);
+
+        // 2) Ön gönderim: müşteri, ardından oturum ve etiket.
+        await TryPushCustomersAsync(ct).ConfigureAwait(false);
+        await TryPushSalesAsync(ct).ConfigureAwait(false);
+
+        // 3–5) Akış.
+        var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
+        if (licenseId is null || _envelope.ReplicaId is not { } replicaId) return SalesPullOutcome.Failed;
+        var seenMode = _envelope.SeenMode;
+
+        _pagesThisTour = 0;
+        var tally = new TourTally();
+        var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ct).ConfigureAwait(false);
+        if (pass.Outcome == SalesPullOutcome.Stalled && pass.BlockedItemId is { } stalledId
+            && await PushForStallAsync(stalledId, ct).ConfigureAwait(false))
+            pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ct).ConfigureAwait(false);
+
+        LogTally(tally);
+        UpdateStatus(pass);
+        if (pass.Outcome is SalesPullOutcome.CaughtUp or SalesPullOutcome.MorePending) _environmentErrorLogged = false;
+
+        // 6) Arayüz.
+        if (tally.Any) RaiseSalesChanged(tally.Labels.ToList(), tally.Sessions.ToList(), tally.Shipments.ToList());
+        return pass.Outcome;
+    }
+
+    // ── akış ───────────────────────────────────────────────────────────────
+
+    private async Task<PassResult> PullPassAsync(
+        string licenseKey, Guid licenseId, Guid replicaId, int seenMode, TourTally tally, CancellationToken ct)
+    {
+        var after = _cursors.Get(CursorName, licenseKey)?.Seq ?? 0L;
+        try
+        {
+            var failing = _failures.GetIds();
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (_pagesThisTour >= MaxPagesPerTour) return new(SalesPullOutcome.MorePending);
+                var page = await _api.GetSalesChangesAsync(licenseId, after, PageSize, replicaId, seenMode, ct)
+                    .ConfigureAwait(false);
+                _pagesThisTour++;
+                _offlineLogged = false;                                  // sunucuya ulaşıldı
+
+                if (page.CursorReset)
+                {
+                    // Sunucu imleci geçersiz buldu (sunucu veritabanı yedekten döndü ya da kopyalandı): sayfa zaten
+                    // baştan; uygulama idempotent.
+                    _log.LogWarning("Satış akışı imleci sunucuda geçersiz (seq {After}); akış baştan uygulanıyor", after);
+                    after = 0;
+                    _cursors.Upsert(CursorName, licenseKey, seq: 0);
+                }
+
+                var items = page.Items!;
+                if (items.Count == 0) break;
+
+                var sideSessions = SalesFeedMapper.SideSessions(page);
+                var drafts = SalesFeedMapper.Drafts(page);
+                var now = _clock.UnixNow();
+                using (await _customerPull.EnterTourGateAsync(ct).ConfigureAwait(false))
+                {
+                    for (var i = 0; i < items.Count; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var wire = items[i];
+                        var key = KeyOf(wire);
+                        SalesFeedApplyResult? result = null;
+                        try
+                        {
+                            result = _feed.ApplyItem(SalesFeedMapper.ToCore(wire), sideSessions, drafts, ModeOnOptions, now);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException
+                                                   && !CustomerChangesPullService.IsNotItemSpecific(ex))
+                        {
+                            // U10: öğeye özgü hata (sözleşme dışı öğe, bozuk tel, kısıt). Deneme kalıcı sayılır.
+                            var attempts = _failures.Record(key.Kind, key.ItemId, wire.ChangeSeq,
+                                $"{ex.GetType().Name}: {ex.Message}", now);
+                            if (attempts < MaxAttemptsBeforeSkip)
+                            {
+                                _cursors.Upsert(CursorName, licenseKey, seq: after);
+                                if (attempts == 1)
+                                    _log.LogWarning(ex,
+                                        "Satış akışı öğesi {Kind} {ItemId} (seq {Seq}) uygulanamadı — deneme {Attempts}/{Max}, sonraki turda yeniden",
+                                        key.Kind, key.ItemId, wire.ChangeSeq, attempts, MaxAttemptsBeforeSkip);
+                                else
+                                    _log.LogWarning(
+                                        "Satış akışı öğesi {Kind} {ItemId} (seq {Seq}) yine uygulanamadı ({Error}) — deneme {Attempts}/{Max}",
+                                        key.Kind, key.ItemId, wire.ChangeSeq, ex.GetType().Name, attempts, MaxAttemptsBeforeSkip);
+                                return new(SalesPullOutcome.Failed);
+                            }
+                            _failures.MarkSkipped(key.Kind, key.ItemId, now);
+                            _log.LogError(
+                                "Satış akışı öğesi {Kind} {ItemId} (seq {Seq}) {Max} turda uygulanamadı ({Error}) — ATLANDI; durum satırı uyarı gösterir",
+                                key.Kind, key.ItemId, wire.ChangeSeq, MaxAttemptsBeforeSkip, ex.GetType().Name);
+                            tally.Skipped++;
+                        }
+
+                        if (result is { Status: SalesFeedApplyStatus.Stalled or SalesFeedApplyStatus.PendingCustomer
+                                or SalesFeedApplyStatus.Busy })
+                        {
+                            _cursors.Upsert(CursorName, licenseKey, seq: after);
+                            _log.LogDebug("Satış akışı öğe {Kind} {ItemId} (seq {Seq}) için bekliyor: {Status}",
+                                key.Kind, key.ItemId, wire.ChangeSeq, result.Status);
+                            var outcome = result.Status switch
+                            {
+                                SalesFeedApplyStatus.Stalled => SalesPullOutcome.Stalled,
+                                SalesFeedApplyStatus.PendingCustomer => SalesPullOutcome.PendingCustomer,
+                                _ => SalesPullOutcome.Busy,
+                            };
+                            return new(outcome, key.ItemId, items.Count - i);
+                        }
+
+                        if (result is not null)
+                        {
+                            Count(result, tally);
+                            if (failing.Contains(key)) _failures.Clear(key.Kind, key.ItemId);
+                        }
+                        after = wire.ChangeSeq;
+                    }
+                }
+                after = page.NextAfterSeq;
+                _cursors.Upsert(CursorName, licenseKey, seq: after);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Uygulanan öğeler yeniden uygulanmasın diye imleç kaydedilir (yine de zararsız olurdu).
+            try { _cursors.Upsert(CursorName, licenseKey, seq: after); }
+            catch (Exception saveEx) when (saveEx is not OperationCanceledException)
+            {
+                _log.LogDebug(saveEx, "İptalde satış akışı imleci kaydedilemedi");
+            }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            try { _cursors.Upsert(CursorName, licenseKey, seq: after); }
+            catch (Exception saveEx) when (saveEx is not OperationCanceledException)
+            {
+                _log.LogDebug(saveEx, "Satış akışı imleci kaydedilemedi");
+            }
+            LogPassFailure(ex, after);
+            return new(SalesPullOutcome.Failed);
+        }
+        return new(SalesPullOutcome.CaughtUp);
+    }
+
+    /// <summary>Uygulanamayan öğenin anahtarı: tür ve satırın Id'si; satırsız öğede seq.</summary>
+    private static SalesFeedItemKey KeyOf(SalesChangeItem wire)
+    {
+        var id = wire.Session?.Id ?? wire.Order?.Id ?? wire.Shipment?.Id;
+        return new SalesFeedItemKey(wire.Kind ?? "?", id?.ToString("N") ?? $"seq-{wire.ChangeSeq}");
+    }
+
+    private static void Count(SalesFeedApplyResult result, TourTally tally)
+    {
+        switch (result.Status)
+        {
+            case SalesFeedApplyStatus.Applied: tally.Applied++; break;
+            case SalesFeedApplyStatus.Ignored: tally.Ignored++; break;
+            default: tally.Unchanged++; break;
+        }
+        tally.Labels.UnionWith(result.LabelIds);
+        tally.Sessions.UnionWith(result.SessionIds);
+        tally.Shipments.UnionWith(result.ShipmentIds);
+        tally.CatchUpOverwrites += result.CatchUpOverwrites;
+        tally.AggregateRows += result.Aggregates.ChangedRows;
+    }
+
+    // ── gönderim ───────────────────────────────────────────────────────────
+
+    /// <summary>Müşteri gönderimi. HTTP hatası gönderimin içinde kalır; buraya çıkan yalnız yerel hata — akış yine
+    /// denenir (bekleyen müşteri öğesi U5'e düşmez, sayılmaz).</summary>
+    private async Task TryPushCustomersAsync(CancellationToken ct)
+    {
+        try { await _customerPush.SyncOnceAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış akışı ön gönderimi: müşteri gönderimi yerel hatayla düştü; akış sürer");
+        }
+    }
+
+    /// <summary>Oturum ve etiket gönderimi (gönderim kapısından). Yerel hata turu düşürmez.</summary>
+    private async Task TryPushSalesAsync(CancellationToken ct)
+    {
+        try { await _salesPush.SyncOnceAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış akışı ön gönderimi: oturum/etiket gönderimi yerel hatayla düştü; akış sürer");
+        }
+    }
+
+    /// <summary>U5: oturum ve etiket bir kez daha gönderilir. Filigran = duran etiketin onayı: etiket artık onaylıysa
+    /// (bu gönderimle ya da arada koşan zamanlayıcı turuyla) akış aynı turda yeniden denenir; değilse ikinci deneme
+    /// aynı öğede yine dururdu — istek harcanmaz.</summary>
+    private async Task<bool> PushForStallAsync(string labelId, CancellationToken ct)
+    {
+        await TryPushSalesAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _labels.GetById(labelId)?.SyncedAt is not null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "Duran etiketin onayı okunamadı ({LabelId})", labelId);
+            return false;
+        }
+    }
+
+    // ── canlı yayın aynası ──────────────────────────────────────────────────
+
+    /// <summary>Son <c>sales/state</c>'in <c>liveSessions</c>'ı (bu lisansın) <c>RemoteLiveSession</c>'a. Hatası turu
+    /// düşürmez; sonraki tur yeniden aynalar.</summary>
+    private void MirrorLiveSessions(string licenseKey)
+    {
+        if (_state.LastState is not { } state || state.LicenseKey != licenseKey) return;
+        try
+        {
+            var rows = state.LiveSessions
+                .Select(s => new RemoteLiveSessionRow(
+                    s.Id.ToString("N"), s.Title, s.StartedAt.ToUnixTimeSeconds(), s.EndedAt?.ToUnixTimeSeconds(),
+                    s.OwnerMachineName, s.OwnerLastSeenAt?.ToUnixTimeSeconds(), s.State, s.UnsentLabelCount))
+                .ToList();
+            var changed = _liveSessions.Mirror(rows);
+            if (changed > 0) _log.LogDebug("Uzak canlı yayın aynası: {Changed} satır değişti ({Count} yayın)", changed, rows.Count);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Uzak canlı yayın aynası yazılamadı; sonraki turda yeniden");
+        }
+    }
+
+    // ── lisans değişimi ─────────────────────────────────────────────────────
+
+    /// <returns>null: temizlik gerekmedi ya da bitti; aksi hâlde akış bu turda uygulanmaz (sonuç).</returns>
+    private SalesPullOutcome? CleanUpAfterLicenseChange(string licenseKey)
+    {
+        try
+        {
+            var changedInProcess = _lastLicenseKey is not null
+                                   && !string.Equals(_lastLicenseKey, licenseKey, StringComparison.Ordinal);
+            if (!_cleanupPending && !changedInProcess && !_cursors.ExistsForOtherLicense(CursorName, licenseKey))
+            {
+                _lastLicenseKey = licenseKey;
+                return null;
+            }
+
+            var purge = _feed.PurgeRemoteRows();
+            if (purge.Busy)
+            {
+                _cleanupPending = true;
+                _log.LogInformation("Lisans değişti: uzak satır temizliği ödeme akışındaki müşteri yüzünden sonraki tura kaldı");
+                return SalesPullOutcome.Busy;
+            }
+            var failures = _failures.ClearAll();
+            _cursors.Upsert(CursorName, licenseKey, seq: 0);
+            var cursors = _cursors.DeleteForOtherLicenses(CursorName, licenseKey);
+            _cleanupPending = false;
+            _lastLicenseKey = licenseKey;
+            _status = _status with { LastCaughtUpAt = null, CatchingUp = false, WaitingItems = 0 };
+            _log.LogInformation(
+                "Lisans değişti: {Sessions} uzak oturum, {Labels} uzak etiket, {Live} canlı yayın başlığı ve {Failures} akış hata kaydı silindi; "
+              + "{Rows} müşterinin toplamı türetildi; önceki lisansın {Cursors} akış imleci silindi, akış baştan",
+                purge.Sessions, purge.Labels, purge.LiveSessions, failures, purge.Aggregates.ChangedRows, cursors);
+            if (purge.Sessions + purge.Labels + purge.LiveSessions > 0)
+                RaiseSalesChanged(Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>());
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _cleanupPending = true;
+            _log.LogWarning(ex, "Lisans değişimi temizliği yazılamadı; akış sonraki tura kaldı");
+            return SalesPullOutcome.Failed;
+        }
+    }
+
+    // ── durum, olay ve günlük ───────────────────────────────────────────────
+
+    private void UpdateStatus(PassResult pass)
+    {
+        var previous = _status;
+        _status = pass.Outcome switch
+        {
+            SalesPullOutcome.CaughtUp => new SalesFeedStatus(true, DateTimeOffset.UtcNow, false, 0),
+            SalesPullOutcome.MorePending => new SalesFeedStatus(true, previous.LastCaughtUpAt, true, 0),
+            SalesPullOutcome.Stalled or SalesPullOutcome.PendingCustomer or SalesPullOutcome.Busy =>
+                new SalesFeedStatus(true, previous.LastCaughtUpAt, previous.CatchingUp, pass.Waiting),
+            _ => previous with { ModeOn = true },
+        };
+    }
+
+    private void RaiseSalesChanged(IReadOnlyList<string> labels, IReadOnlyList<string> sessions, IReadOnlyList<string> shipments)
+    {
+        try
+        {
+            SalesChanged?.Invoke(this, new SalesChangedEventArgs(labels, sessions, shipments));
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Satış akışı: değişiklik bildirimi arayüze iletilemedi");
+        }
+    }
+
+    private void LogTally(TourTally t)
+    {
+        if (t.Applied + t.Ignored + t.Skipped + t.CatchUpOverwrites == 0) return;
+        _log.LogInformation(
+            "Satış akışı: {Applied} öğe uygulandı, {Unchanged} değişmedi, {Ignored} dosya öğesi yok sayıldı, {Skipped} uygulanamayıp atlandı; "
+          + "{Labels} etiket, {Sessions} oturum, {Shipments} dosya değişti; {Rows} müşterinin toplamı türetildi",
+            t.Applied, t.Unchanged, t.Ignored, t.Skipped, t.Labels.Count, t.Sessions.Count, t.Shipments.Count, t.AggregateRows);
+        if (t.CatchUpOverwrites > 0)
+            _log.LogWarning(
+                "Satış akışı ilk yetişmesi: {Count} etikette sunucudaki değer bu bilgisayardakinden farklıydı; sunucunun değeri alındı (SalesConflictLog catchup-overwrite)",
+                t.CatchUpOverwrites);
+    }
+
+    private void LogPassFailure(Exception ex, long after)
+    {
+        if (CustomerChangesPullService.IsRateLimited(ex))
+            _log.LogWarning("Satış akışı sunucu hız sınırına takıldı (429) — kalan sonraki turda (seq {After})", after);
+        else if (ex is LicenseApiNetworkException)
+        {
+            if (!_offlineLogged)
+            {
+                _offlineLogged = true;
+                _log.LogWarning(ex, "Satış akışı sunucuya ulaşamadı (seq {After}); sonraki turda yeniden", after);
+            }
+            else
+                _log.LogDebug("Satış akışı hâlâ sunucuya ulaşamıyor (seq {After})", after);
+        }
+        else if (CustomerChangesPullService.IsNotItemSpecific(ex))
+        {
+            // Ortam hatası (kilit çekişmesi, disk, sızmış kilit satırı): deneme sayılmadı; seride yığın izi bir kez.
+            if (!_environmentErrorLogged)
+            {
+                _environmentErrorLogged = true;
+                _log.LogWarning(ex, "Satış akışı yerel ortam hatasına takıldı (seq {After}); öğe deneme sayılmadı, sonraki turda yeniden", after);
+            }
+            else
+                _log.LogWarning("Satış akışı yine yerel ortam hatasına takıldı ({Error}, seq {After})", ex.GetType().Name, after);
+        }
+        else
+            _log.LogWarning(ex, "Satış akışı turu başarısız (seq {After}); sonraki turda yeniden", after);
+    }
+
+    private async Task<Guid?> ResolveLicenseIdAsync(string licenseKey, CancellationToken ct)
+    {
+        if (_cachedLicenseId is not null && _cachedLicenseKey == licenseKey) return _cachedLicenseId;
+        try
+        {
+            var licenses = await _api.GetMyLicensesAsync(ct).ConfigureAwait(false);
+            var match = licenses.FirstOrDefault(l => l.LicenseKey == licenseKey);
+            if (match?.Id is null) return null;
+            _cachedLicenseId = match.Id;
+            _cachedLicenseKey = licenseKey;
+            return _cachedLicenseId;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "Satış akışı: LicenseId çözülemedi");
+            return null;
+        }
+    }
+}

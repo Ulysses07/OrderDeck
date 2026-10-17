@@ -166,6 +166,29 @@ public sealed class CustomerChangesPullService
     }
 
     /// <summary>
+    /// Müşteri akışının tur kilidini alır; dönen nesnenin Dispose'u bırakır (iki kez çağrılabilir). Satış akışı
+    /// (<see cref="SalesChangesPullService"/>, spec 2026-10-13 §5.4-3) her sayfayı uygularken tutar: satış öğesinin
+    /// müşteri taslağı ve toplamları müşteri akışının yarım bir sayfasının (taşıma, yönlendirme) ortasına düşmez.
+    /// Kilit yalnız sayfa uygulanırken tutulur, hiçbir HTTP isteği boyunca tutulmaz. Kilit sırası: önce satış akışının
+    /// kendi tur kilidi, sonra bu; bu servis satış kilidini hiç almaz (kilitlenme olmaz).
+    /// </summary>
+    internal async Task<IDisposable> EnterTourGateAsync(CancellationToken ct)
+    {
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        return new TourGateLease(_tourGate);
+    }
+
+    private sealed class TourGateLease(SemaphoreSlim gate) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0) gate.Release();
+        }
+    }
+
+    /// <summary>
     /// D5b — destek eylemi: müşteri senkronunu baştan al. Biçim-2 gönderim imleci ve akış imleci
     /// sıfırlanır; işi arka plan servisinin sonraki turu yapar (bütün müşteriler yeniden gönderilir,
     /// akış baştan uygulanır — <c>CursorReset</c> yolunun aynısı, yeniden uygulama damga kurallarıyla
@@ -608,29 +631,29 @@ public sealed class CustomerChangesPullService
 
     /// <summary>Öğeye özgü OLMAYAN hata (M-1): deneme sayılmaz, öğe atlanmaz, tur başarısız biter.
     /// Yerel ortam (kilit çekişmesi, disk dolu, G/Ç, salt okunur, açılamayan dosya), sızmış
-    /// kilit satırı ve kilit yeniden girişi (programlama hatası).</summary>
-    private static bool IsNotItemSpecific(Exception ex)
+    /// kilit satırı ve kilit yeniden girişi (programlama hatası). Satış akışı da aynı sınıflamayı kullanır (U10).</summary>
+    internal static bool IsNotItemSpecific(Exception ex)
         => IsEnvironmentError(ex) || IsGuardLeak(ex) || ex is CustomerBusySetReentrancyException;
 
     /// <summary>SQLite birincil sonuç kodları: BUSY 5, LOCKED 6 (kilit çekişmesi — başka bir yazım
     /// yazma kilidini bütçeden uzun tuttu; gönderimin sınıflandırmasıyla aynı), NOMEM 7, READONLY 8,
     /// IOERR 10, FULL 13, CANTOPEN 14, PROTOCOL 15. CORRUPT (11) ve NOTADB (26) BURADA DEĞİL (N-1):
     /// bozulma çoğu zaman öğeye özgüdür ve U10 ile sayılır — bkz. <see cref="IsCorruption"/>.</summary>
-    private static bool IsEnvironmentError(Exception ex)
+    internal static bool IsEnvironmentError(Exception ex)
         => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) is 5 or 6 or 7 or 8 or 10 or 13 or 14 or 15;
 
     /// <summary>SQLITE_CORRUPT ve genişletilmiş kodları (ör. CORRUPT_VTAB 267).</summary>
-    private static bool IsCorruption(Exception ex)
+    internal static bool IsCorruption(Exception ex)
         => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) == 11;
 
     /// <summary>Kilit satırı zaten var: <c>SyncApplyScope.Begin</c>'in eklemesi birincil anahtara çarptı
     /// (SQLITE_CONSTRAINT 19, genişletilmiş kodlar dahil).</summary>
-    private static bool IsGuardLeak(Exception ex)
+    internal static bool IsGuardLeak(Exception ex)
         => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) == 19
            && s.Message.Contains("SyncApplyGuard", StringComparison.Ordinal);
 
     /// <summary>Sunucunun genel hız sınırı gövdesiz 429 döner → <c>http-429</c>.</summary>
-    private static bool IsRateLimited(Exception ex)
+    internal static bool IsRateLimited(Exception ex)
         => ex is ValidationException { Code: "http-429" };
 
     private void LogRoundFailure(Exception ex, long after, Dictionary<FeedApplyResult, int> tally)

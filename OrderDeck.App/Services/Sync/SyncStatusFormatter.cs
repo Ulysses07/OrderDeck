@@ -94,6 +94,9 @@ public static class SyncStatusFormatter
             lines.Add("Bekleyen ödeme işleri, ilgili müşteriye internet varken işin ait olduğu yayından " +
                       "(ya da genel toplamdan) \"Ödeme iste\" denince tamamlanır; " +
                       "hangi müşteri olduğunu bilmiyorsan destekle iletişime geç.");
+        if (attention.SkippedSalesFeedItems > 0)
+            lines.Add("Diğer bilgisayarlardan gelen bazı satış değişiklikleri bu bilgisayara uygulanamadı; " +
+                      "uyarı geçmezse destekle iletişime geç.");
         return string.Join("\n", lines);
     }
 
@@ -123,6 +126,8 @@ public static class SyncStatusFormatter
             notes.Add($"{attention.SkippedFeedItems} müşteri değişikliği uygulanamadı");
         if (attention.OpenLegacyPaymentJobs > 0)
             notes.Add($"{attention.OpenLegacyPaymentJobs} ödeme işi tamamlanmayı bekliyor");
+        if (attention.SkippedSalesFeedItems > 0)
+            notes.Add($"{attention.SkippedSalesFeedItems} satış değişikliği uygulanamadı");
         return status with { Text = status.Text + " · " + string.Join(" · ", notes), Healthy = false };
     }
 

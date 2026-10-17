@@ -186,12 +186,58 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<ICurrentLicenseProvider>());
         envelope.ReplicaId.Should().NotBeNull("açılış göçü (049) kopya kimliğini tohumlar");
 
+        // W2-03: kalp atışını (hello + state) satış akışı turu sürer — ayrı bir state zamanlayıcısı yok; 30 sn'de
+        // tam bir state isteği gider (Satis_akisi_servisi_... testi).
+        var hosted = host.Services.GetServices<IHostedService>().ToList();
+        hosted.Should().NotContain(h => h.GetType().Name == "SalesSyncStateHostedService");
+        PrivateField<SalesSyncStateService>(host.Services.GetRequiredService<SalesChangesPullService>(), "_state")
+            .Should().BeSameAs(service);
+    }
+
+    [Fact]
+    public void Satis_akisi_servisi_ortak_orneklerle_kurulur_tek_state_surucusu_ve_genel_dongude_baslatilir()
+    {
+        // Yayın ve etiket senkronu W2-03 (spec 2026-10-13 §5.4 Servis maddesi, §10.3 DI testi).
+        using var host = new global::OrderDeck.App.AppHost();
+        var pull = host.Services.GetRequiredService<SalesChangesPullService>();
+        var busy = host.Services.GetRequiredService<CustomerBusySet>();
+
+        host.Services.GetRequiredService<SalesChangesPullService>().Should().BeSameAs(pull);
+        PrivateField<SalesSyncStateService>(pull, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateService>(), "kalp atışı turun ilk adımı: aynı tur kilidi");
+        PrivateField<SalesSyncEnvelope>(pull, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>(), "hello'nun başarısı zarfta");
+        PrivateField<CustomerChangesPullService>(pull, "_customerPull").Should().BeSameAs(
+            host.Services.GetRequiredService<CustomerChangesPullService>(),
+            "sayfalar müşteri akışının tur kilidi altında: kilit yalnız tek örnekte geçerli");
+        PrivateField<WpfCustomerProjectionSyncService>(pull, "_customerPush").Should().BeSameAs(
+            host.Services.GetRequiredService<WpfCustomerProjectionSyncService>(), "ön gönderim tek müşteri gönderim kapısından");
+        PrivateField<SessionOrderSyncService>(pull, "_salesPush").Should().BeSameAs(
+            host.Services.GetRequiredService<SessionOrderSyncService>(), "ön gönderim TEK gönderim kapısından geçer");
+        var feed = PrivateField<SalesFeedRepository>(pull, "_feed")!;
+        feed.Should().BeSameAs(host.Services.GetRequiredService<SalesFeedRepository>());
+        PrivateField<CustomerBusySet>(feed, "_busy").Should().BeSameAs(busy,
+            "U13: akış uygulaması ödeme akışıyla AYNI kümeyi görmeli");
+        PrivateField<SalesFeedFailureRepository>(pull, "_failures").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesFeedFailureRepository>());
+        PrivateField<RemoteLiveSessionRepository>(pull, "_liveSessions").Should().BeSameAs(
+            host.Services.GetRequiredService<RemoteLiveSessionRepository>());
+        PrivateField<SyncCursorRepository>(pull, "_cursors").Should().BeSameAs(
+            host.Services.GetRequiredService<SyncCursorRepository>());
+
         // App.xaml.cs'e elle başlatma gerekmiyor: WpfStartupEnvironment kayıtlı bütün IHostedService'leri
         // başlatır (CLAUDE.md, PR #89; WpfStartupEnvironment.StartBackgroundServicesAsync).
         var hosted = host.Services.GetServices<IHostedService>().ToList();
-        hosted.Should().ContainSingle(h => h is SalesSyncStateHostedService);
-        PrivateField<SalesSyncStateService>(hosted.OfType<SalesSyncStateHostedService>().Single(), "_service")
-            .Should().BeSameAs(service);
+        hosted.Should().ContainSingle(h => h is SalesChangesPullHostedService);
+        PrivateField<SalesChangesPullService>(hosted.OfType<SalesChangesPullHostedService>().Single(), "_service")
+            .Should().BeSameAs(pull);
+
+        // Tek state sürücüsü: hiçbir arka plan işi state servisini doğrudan tutmaz — 30 sn'de iki ayrı kalp atışı
+        // olmasın (satış akışı turu tam bir state çağırır; SalesChangesPullServiceTests sayar).
+        hosted.Where(h => h.GetType()
+                .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
+                .Any(f => f.FieldType == typeof(SalesSyncStateService)))
+            .Should().BeEmpty();
     }
 
     [Fact]
