@@ -167,6 +167,26 @@ public sealed record SalesRemotePurgeResult(
     internal static SalesRemotePurgeResult WasBusy { get; } = new(true, 0, 0, 0, AggregateRecomputeResult.None);
 }
 
+/// <summary><see cref="SalesFeedRepository.ApplyModeOff"/>'un sonucu (<c>disable</c> turunun 2. adımı, §8.5-2): sayılar ve
+/// toplamların yeniden hesabı. Günlüğe yalnız bunlar yazılır.</summary>
+/// <param name="Busy">Silinecek uzak etiketlerin bir müşterisi ödeme akışındaydı (U13): hiçbir şey yazılmadı (yerel kip
+/// dahil), sonraki turda yeniden.</param>
+/// <param name="SessionsToLocal">Yeniden <c>Authority = 'local'</c> olan kendi yayınları.</param>
+/// <param name="Shipments">Silinen, Off'ta başka kopyanın olacak kargoya verilmemiş dosyalar.</param>
+/// <param name="FeedFailures">Silinen akış hata kayıtları (U10).</param>
+public sealed record SalesModeOffResult(
+    bool Busy,
+    int SessionsToLocal,
+    int Sessions,
+    int Labels,
+    int LiveSessions,
+    int Shipments,
+    int FeedFailures,
+    AggregateRecomputeResult Aggregates)
+{
+    internal static SalesModeOffResult WasBusy { get; } = new(true, 0, 0, 0, 0, 0, 0, AggregateRecomputeResult.None);
+}
+
 /// <summary>
 /// Akış öğesi sunucu sözleşmesine uymuyor (örn. oturumsuz sipariş, yan listede olmayan oturum ya da taslak, devir anı
 /// olmayan uzak oturum). Öğeye özgüdür, ortam hatası değildir: akış servisi uygulanamayan öğe sayar (U10). Mesaj

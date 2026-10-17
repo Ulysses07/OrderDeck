@@ -490,6 +490,68 @@ public sealed class SalesFeedRepository
         return new SalesRemotePurgeResult(false, sessions, labels, live, aggregates);
     });
 
+    // ── disable turunun 2. adımı (§8.5-2; W2-11) ─────────────────────────
+
+    /// <summary>Kendi yayınları yerel otoriteye döner (Off'ta her bilgisayar kendi yayınını push'la yazar). Authority
+    /// hiçbir tetikleyici listesinde değil: kuyruğa almaz, SyncedAt ve Revision değişmez.</summary>
+    private const string DisableSessionAuthoritySql = @"
+        UPDATE StreamSession SET Authority = 'local' WHERE Origin = 'local' AND Authority = 'server'";
+
+    /// <summary>Off'ta başka kopyanın olacak kargoya verilmemiş dosyalar (§4.10: sunucu <c>OriginReplicaId</c>'yi bağlı
+    /// etiketlerin sahibine göre yeniden yazdı, son akış taşıdı). NULL kaynak bu veritabanınındır (049 başlığı): kalır.
+    /// Kargoya verilmiş dosya her kipte tek yönlüdür (§7.1) ve kalır.</summary>
+    private const string DropForeignShipmentsSql = @"
+        DELETE FROM Shipment
+         WHERE Status <> 'Shipped'
+           AND OriginReplicaId IS NOT NULL
+           AND lower(replace(OriginReplicaId, '-', '')) <> @replica";
+
+    /// <summary>
+    /// <c>disable</c> turunun 2. adımı (spec 2026-10-13 §8.5-2, §6.5-1, M15, M19): son akış boş sayfaya kadar
+    /// uygulandıktan sonra TEK <see cref="SyncApplyScope"/> işleminde —
+    /// <list type="bullet">
+    ///   <item><c>SalesSyncState.Mode = 0</c>; <c>ModeSeenAt = </c><paramref name="modeSeenAt"/> (boşsa eskisi kalır).</item>
+    ///   <item>Kendi (<c>Origin = 'local'</c>) yayınları <c>Authority = 'local'</c>.</item>
+    ///   <item><c>Origin = 'remote'</c> etiket ve oturumlar ile <c>RemoteLiveSession</c> silinir (lisans değişimi
+    ///   temizliğinin aynısı, <see cref="PurgeRemoteRows"/>); etkilenen müşterilerin toplamları aynı işlemde etiketlerden
+    ///   türetilir (§6.1). Off'ta uzak etiket kalmaz: kirasız kümülatif çift tam istek penceresi (R1) açılmaz.</item>
+    ///   <item>Kaynağı bu kopya (<paramref name="replicaId"/>) olmayan kargoya verilmemiş dosyalar silinir; kalanlar yerel
+    ///   otoriteye döner (mod 0'da 049'un dosya tetikleyicileri ABORT etmez).</item>
+    ///   <item>Akış hata kayıtları (U10) silinir: Off'ta akış uygulanmaz, yeniden açılış akışı baştan alır.</item>
+    /// </list>
+    /// Kilit sırası U17 (önce <see cref="CustomerBusySet"/>). Silinecek uzak etiketlerin bir müşterisi ödeme akışındaysa
+    /// hiçbir şey yazılmaz (<see cref="SalesModeOffResult.Busy"/>; yerel kip de değişmez): çağıran sonraki turda yeniden
+    /// dener. İdempotent: yerel kip zaten 0 olan kopyada (mod On dönemini hiç görmemiş Ws, ya da yarıda kalmış tur) da
+    /// aynı sonucu verir. Etiket satırlarına (kendi), müşteri satırlarına ve bekleyen komutlara dokunulmaz — bekleyen
+    /// komutların yerel yazıma çevrilmesi 3. adımdır, kilit dışında.
+    /// </summary>
+    /// <param name="modeSeenAt"><c>sales/state</c>'in <c>modeChangedAt</c>'i (unix saniye).</param>
+    /// <param name="replicaId">Bu veritabanının kopya kimliği.</param>
+    public SalesModeOffResult ApplyModeOff(long? modeSeenAt, Guid replicaId) => Locked(isBusy =>
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var customers = conn.Query<string>(
+            @"SELECT DISTINCT l.CustomerId FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+               WHERE s.Origin = 'remote'", transaction: tx).ToList();
+        if (customers.Any(isBusy)) return SalesModeOffResult.WasBusy;   // Dispose geri alır
+
+        if (conn.Execute("UPDATE SalesSyncState SET Mode = 0, ModeSeenAt = COALESCE(@modeSeenAt, ModeSeenAt) WHERE Id = 1",
+                new { modeSeenAt }, tx) != 1)
+            throw new InvalidOperationException("SalesSyncState satırı yok (göç 049).");
+        var toLocal = conn.Execute(DisableSessionAuthoritySql, transaction: tx);
+        var labels = conn.Execute(DeleteRemoteLabelsSql, transaction: tx);
+        var sessions = conn.Execute(DeleteRemoteSessionsSql, transaction: tx);
+        var live = conn.Execute("DELETE FROM RemoteLiveSession", transaction: tx);
+        var aggregates = CustomerAggregateSql.Recompute(conn, tx, customers);
+        var shipments = conn.Execute(DropForeignShipmentsSql, new { replica = replicaId.ToString("N") }, tx);
+        var failures = conn.Execute("DELETE FROM SalesFeedFailure", transaction: tx);
+        scope.Commit();
+        return new SalesModeOffResult(false, toLocal, sessions, labels, live, shipments, failures, aggregates);
+    });
+
     // ── ortak ────────────────────────────────────────────────────────────
 
     /// <summary>Gövdeyi <see cref="CustomerBusySet"/> kilidi altında koşar (U17: küme → SQLite yazma kilidi). Küme yoksa
