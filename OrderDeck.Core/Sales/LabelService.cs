@@ -126,8 +126,8 @@ public sealed class LabelService
     // İptal BAĞI ÇÖZMEZ: etiket dosyaya bağlı kalır (ShipmentId "dekontla ödendi"nin tek işareti, §7.2),
     // dosyanın tutarı ve eşik havuzu etiketin fiyatı kadar düşer; iptali geri almak geri ekler. Geçici
     // yedek dosya tutarında hiç yoktur; kargoya verilmiş dosyanın tutarı donmuştur; başka bilgisayarın
-    // (yerelde olmayan) dosyası atlanır; mod On'da blok atlanır, tutarı sunucu türetir
-    // (ShipmentAmountAdjuster). Etiket, dosya ve müşteri toplamı AYNI pakette. Pay, paketin içinde
+    // (yerelde olmayan) dosyası atlanır; mod On'da blok atlanır, tutarı sunucu türetir; fark tabanı
+    // henüz türetilmemişse de yazmaz (ShipmentAmountAdjuster). Etiket, dosya ve müşteri toplamı AYNI pakette. Pay, paketin içinde
     // okunan hâlden hesaplanır: okuma ile yazma arasında başka bir yol etiketi iptal ettiyse (ya da geri
     // aldıysa) o etiket ne çevrilir ne de dosyadan ikinci kez düşülür.
 

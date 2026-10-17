@@ -14,7 +14,9 @@ namespace OrderDeck.App.Services;
 /// <para><b>Günlük:</b> yalnız değişen dosya sayısı ve toplam fark — müşteri adı, kullanıcı adı ya da Id yok.</para>
 ///
 /// <para><b>Hata açılışı durdurmaz:</b> türetme tek işlemdir; düşerse geri sarılır, damga yazılmaz ve sonraki açılışta
-/// yeniden denenir. O zamana dek dosya tutarları bugünkü değerinde kalır — canlı yayın bundan etkilenmez.</para>
+/// yeniden denenir. O zamana dek dosya tutarları bugünkü değerinde kalır — canlı yayın bundan etkilenmez. Damga boşken
+/// Y5 de dosya tutarına yazmaz (<see cref="ShipmentAmountAdjuster"/>): iptal, geri alma ve fiyat düzeltmesi
+/// türetilmemiş tabana fark eklemez; tutarı başarılı türetme etiketlerden kurar.</para>
 /// </summary>
 public static class ShipmentAmountsBoot
 {

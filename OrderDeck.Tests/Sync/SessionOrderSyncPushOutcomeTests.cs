@@ -55,6 +55,8 @@ public sealed class SessionOrderSyncPushOutcomeTests : IDisposable
     public SessionOrderSyncPushOutcomeTests()
     {
         new MigrationRunner(_db).Run();
+        // Y5'in tabanı açılışta türetilmiş say (ShipmentAmountDerivation): damga boşken dosya bloğu yazmaz.
+        Sql("UPDATE SalesSyncState SET ShipmentsDerivedAt = 900 WHERE Id = 1");
         var sessions = new SessionRepository(_db);
         _labels = new LabelRepository(_db);
         _shipments = new ShipmentRepository(_db);

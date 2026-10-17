@@ -101,7 +101,7 @@ public sealed record CorrectedLabel(Label Before, decimal NewPrice)
 /// <param name="CustomerDeltas">Müşteri toplamındaki fark (yalnız basılmış ve onaylı satırlar). Bilgi için döner:
 /// toplamın kendisi etiketlerden türetilir (spec 2026-10-13 §6.1).</param>
 /// <param name="ShipmentDeltas">Kargoya verilmemiş dosyaların toplamına yazılan fark (Y5 dosya bloğunun uyguladığı:
-/// mod On'da ve bu arada yerelden kalkmış dosyada boş).</param>
+/// mod On'da, fark tabanı henüz türetilmemişken ve bu arada yerelden kalkmış dosyada boş).</param>
 /// <param name="Elsewhere">Başka bilgisayarın dosyasında olduğu için DEĞİŞMEYEN etiketler (§7.4).</param>
 public sealed record PriceCorrectionResult(
     IReadOnlyList<CorrectedLabel> Corrected,

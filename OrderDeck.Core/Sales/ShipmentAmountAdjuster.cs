@@ -10,7 +10,7 @@ namespace OrderDeck.Core.Sales;
 /// <summary><see cref="ShipmentAmountAdjuster.Apply(IDbConnection, IDbTransaction, IReadOnlyDictionary{string, decimal})"/>'ın
 /// sonucu. Günlüğe yazılacaksa yalnız sayılar yazılır (Id ve ad yok).</summary>
 /// <param name="Applied">Bulunan ve kargoya verilmemiş dosyalar, istenen farkla (fark 0 olan da; ona yazım
-/// yapılmaz). Mod 1'de boş.</param>
+/// yapılmaz). Mod 1'de ve fark tabanı henüz türetilmemişken (<c>ShipmentsDerivedAt</c> boş) boş.</param>
 /// <param name="Missing">Bu bilgisayarda olmayan dosya sayısı — başka bilgisayarın dosyası (§7.4); atlandı.</param>
 /// <param name="Shipped">Kargoya verilmiş dosyalar: tutarı donmuştur, dokunulmadı. Çağıran bunu yarış sayabilir
 /// (<see cref="LabelService.CorrectPrices"/> sayar).</param>
@@ -39,6 +39,12 @@ public sealed record ShipmentAdjustResult(
 /// <item>Bu bilgisayarda olmayan dosya atlanır ve sayılır, istisna atılmaz: o etiketin iptali, geri alınması ve
 /// kodun fiyat düzeltmesi kilitlenmesin (§7.4, §15-57).</item>
 /// <item>Kargoya verilmiş dosyanın tutarı donmuştur (§7.2): dokunulmaz, sonuçta listelenir.</item>
+/// <item>Mod 0'da fark tabanı henüz türetilmemişse (<c>SalesSyncState.ShipmentsDerivedAt</c> boş: açılış türetmesi
+/// düştü, <c>ShipmentAmountsBoot</c> yalnız günlüğe yazıp sürdü) hiçbir dosyaya yazılmaz. Tutar o zaman türetilmemiş
+/// tabandadır — ≤0.9.10'da iptal edilmiş bağlı etiket hâlâ içindedir; fark eklemek yanlış tutar üretirdi (400 → 550,
+/// gerçek 400; 500 eşiğinde yanlış ücretsiz kargo, arada kargolanırsa yanlış tutar donar). Tutarı sonraki başarılı
+/// türetme etiketlerden kurar. Kargolanmış ve yerelde olmayan dosya yine sayılır (fiyat düzeltmesinin yarış
+/// denetimi).</item>
 /// <item>Gerisinde <c>CumulativeAmount += fark</c>, ondalık aritmetikle (<c>ShipmentService.AttachLabels</c> ile
 /// aynı: okunan değer + fark, double olarak yazılır) ve <c>SyncedAt = NULL</c>, <c>Revision + 1</c> AÇIKÇA:
 /// push yanıtının <c>current</c>'ı <see cref="SyncApplyScope"/> içinde uygulanır ve kilit
@@ -48,8 +54,8 @@ public sealed record ShipmentAdjustResult(
 /// </list>
 ///
 /// <para><b>Bağlantı (U17):</b> çağıranın işleminde koşar (<see cref="DbWrite"/> ya da
-/// <see cref="SyncApplyScope"/>); ikinci bağlantı açmaz. Okuma ve yazma aynı <c>BEGIN IMMEDIATE</c> işleminde
-/// olduğu için okunan durum yazılana kadar değişemez.</para>
+/// <see cref="SyncApplyScope"/>); ikinci bağlantı açmaz. Okuma (kip, taban damgası, dosya) ve yazma aynı
+/// <c>BEGIN IMMEDIATE</c> işleminde olduğu için okunan durum yazılana kadar değişemez.</para>
 /// </summary>
 public static class ShipmentAmountAdjuster
 {
@@ -66,9 +72,11 @@ public static class ShipmentAmountAdjuster
         IDbConnection conn, IDbTransaction tx, IReadOnlyDictionary<string, decimal> deltas)
     {
         if (deltas.Count == 0) return ShipmentAdjustResult.None;
-        if (conn.ExecuteScalar<long>(
-                "SELECT COALESCE((SELECT Mode FROM SalesSyncState WHERE Id = 1), 0)", transaction: tx) == 1)
-            return ShipmentAdjustResult.None with { ServerOwned = true };
+        // Kip ve taban damgası yazımla aynı işlemde okunur: türetme ikisinin arasına giremez.
+        var state = conn.QuerySingleOrDefault<StateRow>(
+            "SELECT Mode, ShipmentsDerivedAt FROM SalesSyncState WHERE Id = 1", transaction: tx);
+        if (state?.Mode == 1) return ShipmentAdjustResult.None with { ServerOwned = true };
+        var derived = state?.ShipmentsDerivedAt is not null;
 
         var applied = new Dictionary<string, decimal>(StringComparer.Ordinal);
         var shipped = new List<string>();
@@ -87,6 +95,9 @@ public static class ShipmentAmountAdjuster
                 shipped.Add(id);
                 continue;
             }
+            // Taban yok: tutar türetilmemiş, fark yazılmaz (sonraki türetme etiketlerden kurar). Kargolanmış ve
+            // yerelde olmayan dosya yukarıda yine sayıldı: fiyat düzeltmesinin yarış denetimi onlara bakar.
+            if (!derived) continue;
             applied[id] = delta;
             if (delta == 0m) continue;
             conn.Execute(
@@ -106,6 +117,12 @@ public static class ShipmentAmountAdjuster
             if (l.ShipmentId is { } sid && !l.IsTentativeBackup)
                 deltas[sid] = deltas.GetValueOrDefault(sid) + sign * l.Price;
         return deltas;
+    }
+
+    private sealed class StateRow
+    {
+        public long Mode { get; set; }
+        public long? ShipmentsDerivedAt { get; set; }
     }
 
     private sealed class Row

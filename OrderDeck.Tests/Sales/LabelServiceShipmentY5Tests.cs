@@ -50,9 +50,17 @@ public sealed class LabelServiceShipmentY5Tests : IDisposable
         _settings.Shipping.FreeShippingThreshold = 500m;
         _settings.Shipping.ShippingFee = 60m;
         _shipping = new ShipmentService(_shipments, _labels, () => _settings, () => 1000L);
+        // Y5'in tabanı açılışta türetilmiş say (ShipmentAmountDerivation); damgasız hâl ayrıca sınanır.
+        SetDerivedAt(900);
     }
 
     public void Dispose() => _db.Dispose();
+
+    private void SetDerivedAt(long? at)
+    {
+        using var c = _db.Open();
+        c.Execute("UPDATE SalesSyncState SET ShipmentsDerivedAt = @at WHERE Id = 1", new { at });
+    }
 
     private Label Add(string user, decimal price, string code = "A1")
         => _svc.Add(SessionId, new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, user, user, null,
@@ -215,6 +223,41 @@ public sealed class LabelServiceShipmentY5Tests : IDisposable
         act.Should().Throw<Exception>();
         _labels.GetById(k5.Id)!.CancelledAt.Should().BeNull("etiket ve dosya tek pakette: yarım iptal kalmaz");
         Amount(file).Should().Be(550m);
+    }
+
+    // ── Fark tabanı yok: açılış türetmesi düştü (§7.4 "Fark tabanı") ───
+
+    [Fact]
+    public void Turetme_tabani_yokken_iptal_ve_geri_alma_dosya_tutarina_dokunmaz_sonraki_turetme_kurar()
+    {
+        // ≤0.9.10'da iptal edilmiş 150 TL'lik etiket açık dosyaya bağlı kalmış; o sürümün Cancel'ı dosyaya
+        // dokunmadığı için F = 400 (gerçek 250). Açılış türetmesi düştü: ShipmentAmountsBoot yalnız günlüğe yazar,
+        // damga boş kalır, uygulama sürer.
+        var k1 = Attached("@ornek_alici", 250m);
+        var k5 = Attached("@ornek_alici", 150m, "K5");
+        var file = k1.ShipmentId!;
+        k5.ShipmentId.Should().Be(file, "ön koşul: iki etiket aynı dosyada");
+        Amount(file).Should().Be(400m);
+        _labels.MarkCancelled(new[] { k5.Id }, 1000, CancelReasonCodes.Customer);
+        SetDerivedAt(null);
+        var revision = _shipments.GetById(file)!.Revision;
+
+        _svc.Uncancel(new[] { k5.Id });
+        Amount(file).Should().Be(400m,
+            "türetilmemiş tabana fark eklenmez: 550 olsaydı 500 TL'lik ücretsiz kargo eşiğini yanlışlıkla geçerdi");
+
+        _svc.Cancel(new[] { k1.Id }, CancelReasonCodes.Customer);
+        Amount(file).Should().Be(400m);
+        _shipments.GetById(file)!.Revision.Should().Be(revision, "dosya yazılmadı");
+        _labels.GetById(k1.Id)!.ShipmentId.Should().Be(file, "bağ yine değişmez");
+
+        // Sonraki başarılı türetme tutarı etiketlerden kurar: K1 iptalli, K5 geri alınmış → 150.
+        ShipmentAmountDerivation.DeriveAllOnce(_db, 2000).Should().NotBeNull();
+        Amount(file).Should().Be(150m);
+
+        // Damga yazıldı: Y5 bugünkü gibi farkla çalışır.
+        _svc.Uncancel(new[] { k1.Id });
+        Amount(file).Should().Be(400m);
     }
 
     // ── Bağlı dosyası yerelde olmayan etiket (§7.4, §15-57) ────────────

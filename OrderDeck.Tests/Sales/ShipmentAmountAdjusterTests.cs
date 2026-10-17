@@ -28,9 +28,17 @@ public sealed class ShipmentAmountAdjusterTests : IDisposable
             new Customer("c1", "instagram", "@a", null, null, 100, 100,
                 false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
         _shipments = new ShipmentRepository(_db);
+        // Y5'in tabanı açılışta türetilmiş say (ShipmentAmountDerivation); damgasız hâl ayrıca sınanır.
+        SetDerivedAt(900);
     }
 
     public void Dispose() => _db.Dispose();
+
+    private void SetDerivedAt(long? at)
+    {
+        using var c = _db.Open();
+        c.Execute("UPDATE SalesSyncState SET ShipmentsDerivedAt = @at WHERE Id = 1", new { at });
+    }
 
     private Shipment Insert(string id, ShipmentStatus status, decimal amount)
     {
@@ -142,6 +150,29 @@ public sealed class ShipmentAmountAdjusterTests : IDisposable
         var after = _shipments.GetById("f1")!;
         after.CumulativeAmount.Should().Be(550m);
         after.Revision.Should().Be(before.Revision);
+    }
+
+    [Fact]
+    public void Turetme_tabani_yokken_mod_0da_hicbir_dosyaya_yazmaz()
+    {
+        // Açılış türetmesi düştüyse (ShipmentAmountsBoot yalnız günlüğe yazar) damga boştur ve dosya tutarı
+        // türetilmemiş tabandadır: ≤0.9.10'da iptal edilmiş bağlı etiket hâlâ içindedir. Fark eklemek yanlış tutar
+        // üretirdi (400 → 550, gerçek 400). Tutarı sonraki başarılı türetme etiketlerden kurar (§7.4 "Fark tabanı").
+        var open = Insert("f-acik", ShipmentStatus.Held, 400m);
+        Insert("f-gitti", ShipmentStatus.Shipped, 550m);
+        SetDerivedAt(null);
+
+        var result = ApplyInWrite(Deltas(("f-acik", 150m), ("f-gitti", -50m), ("baska-pc-dosyasi", 10m)));
+
+        result.Applied.Should().BeEmpty("türetilmemiş tabana fark yazılmaz");
+        result.ServerOwned.Should().BeFalse();
+        result.Shipped.Should().Equal(new[] { "f-gitti" },
+            "fiyat düzeltmesinin yarış denetimi kargolanmış dosyayı damgasızken de görmeli");
+        result.Missing.Should().Be(1);
+        var after = _shipments.GetById("f-acik")!;
+        after.CumulativeAmount.Should().Be(400m);
+        after.Revision.Should().Be(open.Revision, "yazım yok, kuyruğa alma yok");
+        after.SyncedAt.Should().Be(2000);
     }
 
     [Fact]
