@@ -10,8 +10,8 @@ namespace OrderDeck.App.Services.Sync;
 /// görülen kip; hello'nun makine adı, donanım parmak izi ve yetenek düzeyi. Tek örnek (DI): hello'nun başarısı
 /// burada tutulur ve gönderim servisleri (W1-06..09) aynı örnekten <see cref="IsReadyForPush"/>'u okur.
 ///
-/// <para><b>Yetenek düzeyi:</b> bu derlemede 1. W2 2'ye, YALNIZ W3 3'e çıkarır (§8.1-4): mod kapısı her kopyada
-/// 3 istediği için yarım bir derleme sahaya inse bile modu açtıramaz.</para>
+/// <para><b>Yetenek düzeyi:</b> bu derlemede 2 (W2: akış, komutlar, kip geçişi). YALNIZ W3 3'e çıkarır (§8.1-4): mod
+/// kapısı her kopyada 3 istediği için yarım bir derleme sahaya inse bile modu açtıramaz.</para>
 ///
 /// <para><b>Gönderime hazır mı:</b> geri yüklemeden sonra (<c>_meta.PreviousReplicaId</c> dolu) bu (lisans,
 /// kopya) için bir hello başarıyla gidene kadar hiçbir v2 gönderimi yapılmaz (§8.7): sunucu önce önceki kimliği
@@ -31,7 +31,7 @@ public sealed class SalesSyncEnvelope
     public const int Protocol = 2;
 
     /// <summary>W1 = 1, W2 = 2, yalnız W3 = 3 (§8.1-4).</summary>
-    public const int FeatureLevel = 1;
+    public const int FeatureLevel = 2;
 
     /// <summary>Sunucunun <c>machineName</c> ve <c>hardwareFingerprint</c> sınırı (<c>LicensesSalesController</c>).</summary>
     public const int MaxFieldLength = 128;

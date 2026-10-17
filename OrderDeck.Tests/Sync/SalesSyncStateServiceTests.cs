@@ -113,7 +113,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         var json = hello.Json;
         json.GetProperty("replicaId").GetGuid().Should().Be(pc.ReplicaId);
         json.GetProperty("protocol").GetInt32().Should().Be(2);
-        json.GetProperty("featureLevel").GetInt32().Should().Be(1, "W1 derlemesi; 3 yalnız W3 ile (§8.1-4)");
+        json.GetProperty("featureLevel").GetInt32().Should().Be(2, "W2 derlemesi; 3 yalnız W3 ile (§8.1-4)");
         json.GetProperty("seenMode").GetInt32().Should().Be(0);
         json.GetProperty("machineName").GetString().Should().Be(
             Environment.MachineName.Length > 128 ? Environment.MachineName[..128] : Environment.MachineName);
@@ -126,7 +126,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         json.TryGetProperty("paymentHistoryCompleted", out _).Should().BeFalse();
 
         var row = _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!;
-        row.FeatureLevel.Should().Be(1);
+        row.FeatureLevel.Should().Be(2);
         row.ReportedThreshold.Should().Be(1500m);
         row.ReportedFee.Should().Be(89.90m);
         row.PreviousReplicaId.Should().BeNull();
@@ -291,18 +291,20 @@ public sealed class SalesSyncStateServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Sunucu_mod_1_bildirse_de_yerel_kip_0_kalir_ve_tek_uyari_duser()
+    public async Task Sunucu_mod_1_bildirse_de_durum_turu_yerel_kipi_yazmaz_ve_uyari_dusmez()
     {
+        // Kip geçişi açılış turunun işi (SalesModeCoordinator, §8.4; W2-10): durum turu yalnız sunucunun söylediğini
+        // saklar. W1'in "bu sürüm mod On'u uygulamıyor" uyarısı W2 ile kalktı.
         var pc = NewPc();
         _server.Mode = 1;
         _server.ModeChangedAt = DateTimeOffset.UtcNow;
 
         for (var i = 0; i < 3; i++) await pc.TourAsync();
 
-        pc.State.GetMode().Should().Be(0, "kip geçişi W2'nin (§8.4); W1 Mode'u hiç yazmaz");
+        pc.State.GetMode().Should().Be(0, "durum turu Mode'u yazmaz; açılış turu yazar (§8.4)");
         pc.State.Get().ModeSeenAt.Should().BeNull();
         pc.State.Get().FirstCatchUpAt.Should().BeNull();
-        pc.Log.Warnings.Where(w => w.Message.Contains("mod 1", StringComparison.Ordinal)).Should().ContainSingle();
+        pc.Log.Warnings.Should().BeEmpty("W1'in mod 1 uyarısı kalktı");
         _server.States.Should().OnlyContain(s => s.SeenMode == "0");
         _server.Hellos.Single().Json.GetProperty("seenMode").GetInt32().Should().Be(0);
         pc.Service.LastState!.Mode.Should().Be(1, "anlık görüntü sunucunun söylediğini saklar (W2'nin girdisi)");

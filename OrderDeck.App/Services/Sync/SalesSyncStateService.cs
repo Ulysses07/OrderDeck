@@ -50,8 +50,8 @@ public sealed record SalesStateSnapshot(
 /// <para><b>state:</b> her turda, hello'nun sonucundan bağımsız: kalp atışı kesilirse başka bilgisayar bu
 /// bilgisayarın canlı yayınını sahibi susmuş sanıp bitirebilirdi (Y7). Kargo ayarının önbelleği ve KVKK boşaltma
 /// ayarı <c>SalesSyncState</c>'e yazılır; mod, canlı yayınlar, asgari sürüm ve sessizlik eşiği bellekte kalır
-/// (<see cref="LastState"/>). Yerel kipi W1 hiç yazmaz: sunucu mod 1 bildirirse bir kez uyarı düşer, yerel kip 0
-/// kalır (kip geçişi W2'nin, §8.4).</para>
+/// (<see cref="LastState"/>). Yerel kipi bu servis yazmaz: kip geçişi satış akışı turunda, başarılı state'in hemen
+/// ardından açılış turunun işidir (<c>SalesModeCoordinator</c>, §8.4).</para>
 ///
 /// <para><b>Canlı yol beklemez:</b> tur arka plan iş parçacığında koşar, her <c>await</c>
 /// <c>ConfigureAwait(false)</c>; ağ isteği uçarken hiçbir SQLite bağlantısı ya da yazma kilidi açık kalmaz. Yavaş ya
@@ -85,7 +85,6 @@ public sealed class SalesSyncStateService
     private (string LicenseKey, Guid ReplicaId)? _helloSentFor;
     /// <summary>Son başarılı hello'nun bildirdiği yerel kargo ayarı (<see cref="HelloIsCurrent"/>).</summary>
     private ReportedShippingDto? _helloShipping;
-    private string? _modeOnWarnedFor;
     private volatile SalesStateSnapshot? _last;
 
     public SalesSyncStateService(
@@ -303,7 +302,6 @@ public sealed class SalesSyncStateService
             _state.SaveServerState(
                 state.Shipping?.Version, state.Shipping?.FreeShippingThreshold, state.Shipping?.Fee,
                 state.ScrubOrderTextOnPurge);
-            WarnIfServerModeOn(licenseKey, state.Mode);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -313,25 +311,6 @@ public sealed class SalesSyncStateService
 
         _stateFailures.Succeeded();
         return true;
-    }
-
-    /// <summary>
-    /// Bu derleme kip geçişini uygulamaz (W2): sunucu mod 1 bildirse de yerel kip 0 kalır ve istekler görülen kip
-    /// 0 taşır. Mod kapısı yetenek düzeyi 3 istediği için (§4.10-2) bu yalnız elle ya da yanlışlıkla açılmış bir
-    /// lisansta görülür; lisans başına bir kez uyarılır, sunucu 0'a dönünce sayaç sıfırlanır.
-    /// </summary>
-    private void WarnIfServerModeOn(string licenseKey, int serverMode)
-    {
-        if (serverMode != 1)
-        {
-            if (_modeOnWarnedFor == licenseKey) _modeOnWarnedFor = null;
-            return;
-        }
-        if (_modeOnWarnedFor == licenseKey || _state.GetMode() != 0) return;
-        _modeOnWarnedFor = licenseKey;
-        _log.LogWarning(
-            "Sunucu satış senkronunu açık bildiriyor (mod 1) ama bu sürüm mod On'u uygulamıyor; yerel kip 0 kalır "
-          + "(featureLevel={FeatureLevel})", SalesSyncEnvelope.FeatureLevel);
     }
 
     private void WarnOrDebug(FailureSeries series, Exception ex, string what)
