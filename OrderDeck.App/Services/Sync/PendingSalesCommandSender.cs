@@ -150,19 +150,20 @@ public sealed class PendingSalesCommandSender
         return queued;
     }
 
-    /// <summary>Bütün kuyruk, eskiden yeniye. Satış akışı turu ve ödeme ön gönderimi (§6.4-1).</summary>
-    public Task<PendingSalesCommandFlush> FlushAsync(CancellationToken ct) => RunAsync(null, ct);
+    /// <summary>Bütün kuyruk, eskiden yeniye. Satış akışı turu ve ödeme ön gönderimi (§6.4-1). Arka plan gönderimi:
+    /// <c>client-update-required</c> güncelleme sorusunu açmaz (her turda modal pencere olurdu).</summary>
+    public Task<PendingSalesCommandFlush> FlushAsync(CancellationToken ct) => RunAsync(null, interactive: false, ct);
 
     /// <summary>Tek komut, hemen (kuyruk baskısı: kâğıt basıldı, sonuç beklenir). Kapı başka bir gönderimdeyse sırasını
-    /// bekler.</summary>
+    /// bekler. Operatörün işlemi: güncelleme sorusu süreç başına bir kez açılabilir.</summary>
     public Task<PendingSalesCommandFlush> SendNowAsync(Guid commandId, CancellationToken ct = default) =>
-        RunAsync(commandId.ToString("N"), ct);
+        RunAsync(commandId.ToString("N"), interactive: true, ct);
 
-    private Task<PendingSalesCommandFlush> RunAsync(string? only, CancellationToken ct) =>
+    private Task<PendingSalesCommandFlush> RunAsync(string? only, bool interactive, CancellationToken ct) =>
         Task.Run(async () =>
         {
             await _gate.WaitAsync(ct).ConfigureAwait(false);
-            try { return await ProcessAsync(only, ct).ConfigureAwait(false); }
+            try { return await ProcessAsync(only, interactive, ct).ConfigureAwait(false); }
             finally { _gate.Release(); }
         }, ct);
 
@@ -178,7 +179,7 @@ public sealed class PendingSalesCommandSender
         _ => Disposition.Drop,
     };
 
-    private async Task<PendingSalesCommandFlush> ProcessAsync(string? only, CancellationToken ct)
+    private async Task<PendingSalesCommandFlush> ProcessAsync(string? only, bool interactive, CancellationToken ct)
     {
         int mode;
         try { mode = _state.GetMode(); }
@@ -213,7 +214,7 @@ public sealed class PendingSalesCommandSender
                 continue;
             }
 
-            var outcome = await _commands.SendAsync(intent, ct).ConfigureAwait(false);
+            var outcome = await _commands.SendAsync(intent, ct, interactive).ConfigureAwait(false);
             _connectivity?.Report(outcome.Status);
             changed.UnionWith(outcome.LabelIds);
 

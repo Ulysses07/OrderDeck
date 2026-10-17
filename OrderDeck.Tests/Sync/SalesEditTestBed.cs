@@ -44,8 +44,14 @@ internal sealed class SalesEditTestBed : IDisposable
 
     private sealed class PromptSpy : IAppUpdatePrompt
     {
-        public void CheckAndPrompt() { }
+        public int Calls;
+        public void CheckAndPrompt() => Interlocked.Increment(ref Calls);
     }
+
+    private readonly PromptSpy _prompt = new();
+
+    /// <summary>Komut istemcisinin açtığı güncelleme soruları (<c>client-update-required</c>).</summary>
+    public int UpdatePrompts => Volatile.Read(ref _prompt.Calls);
 
     private readonly bool _ownsDb;
     private readonly Guid _otherReplica = Guid.NewGuid();
@@ -102,7 +108,7 @@ internal sealed class SalesEditTestBed : IDisposable
         Envelope = TestSalesEnvelope.For(Db, _license);
         var stateRepo = new SalesSyncStateRepository(Db);
         Commands = new SalesCommandClient(Api, Envelope, stateRepo, LabelRepo, new ShipmentRepository(Db),
-            new SalesFeedRepository(Db), new SalesConflictLogRepository(Db), new PromptSpy(), _license, new Clock(this),
+            new SalesFeedRepository(Db), new SalesConflictLogRepository(Db), _prompt, _license, new Clock(this),
             NullLogger<SalesCommandClient>.Instance);
         Connectivity = new SalesConnectivity(
             () => Online

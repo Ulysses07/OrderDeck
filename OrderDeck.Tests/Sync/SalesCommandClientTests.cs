@@ -577,6 +577,26 @@ public sealed class SalesCommandClientTests : IDisposable
         _server.CommandCalls.Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task Guncelleme_sorusu_arka_plan_gonderiminde_acilmaz_operatorun_isleminde_surec_basina_bir_kez()
+    {
+        var order = await RemoteLabelAsync();
+        _server.MinClientVersion = "9.0.0";
+
+        var background = await _client.SendAsync(_client.Cancel([N(order)], "musteri vazgecti"), interactive: false);
+        background.Status.Should().Be(SalesCommandStatus.ClientUpdateRequired);
+        background.Message.Should().Be("Bu işlem için uygulamayı güncelle.", "satır içi metin yine döner");
+        _prompt.Calls.Should().Be(0, "arka plan gönderimi modal soru açmaz");
+
+        (await _client.SendAsync(_client.Cancel([N(order)], "musteri vazgecti"))).Status
+            .Should().Be(SalesCommandStatus.ClientUpdateRequired);
+        (await _client.SendAsync(_client.Uncancel([N(order)]))).Status
+            .Should().Be(SalesCommandStatus.ClientUpdateRequired);
+
+        _prompt.Calls.Should().Be(1, "operatörün işleminde süreç başına bir kez");
+        _server.CommandCalls.Should().HaveCount(3);
+    }
+
     // ── taşıma ────────────────────────────────────────────────────────────
 
     [Fact]

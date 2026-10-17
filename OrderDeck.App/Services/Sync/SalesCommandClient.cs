@@ -49,7 +49,8 @@ public enum SalesCommandStatus
     /// <summary>409 <c>shipment-shipped</c>: kargoya verilmiş dosya; güncel satırlar yazıldı.</summary>
     ShipmentShipped,
 
-    /// <summary>409 <c>client-update-required</c>: güncelleme sorusu açıldı.</summary>
+    /// <summary>409 <c>client-update-required</c>: operatörün işleminde güncelleme sorusu açıldı (süreç başına bir
+    /// kez; arka plan gönderiminde açılmaz).</summary>
     ClientUpdateRequired,
 
     /// <summary>409 <c>too-many-candidates</c>: kalıcı; <c>SalesConflictLog</c>'a yazıldı.</summary>
@@ -122,7 +123,8 @@ public sealed record SalesCommandOutcome(
 /// <para><b>409'lar</b> (§5.3): <c>stale</c>/<c>plan-stale</c> satırları uygular; yalnız iptal, geri alma ve ilk
 /// baskı (niyeti idempotent) taze sürümlerle, aynı kimlikle BİR KEZ kendiliğinden yeniden denenir. Fiyat, yedek ve
 /// kargo sessizce denenmez. <c>client-update-required</c> güncelleme sorusunu açar
-/// (<see cref="IAppUpdatePrompt"/>); <c>too-many-candidates</c> ve <c>content-conflict</c> birer
+/// (<see cref="IAppUpdatePrompt"/>) — yalnız operatörün işleminde ve süreç başına bir kez, arka plan gönderiminde hiç;
+/// <c>too-many-candidates</c> ve <c>content-conflict</c> birer
 /// <c>SalesConflictLog</c> satırı yazar; <c>mode-off</c> <see cref="ModeOffDetected"/>'ı yükseltir (Off turu,
 /// §8.5).</para>
 ///
@@ -148,6 +150,9 @@ public sealed class SalesCommandClient
 
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
+
+    /// <summary>Bu süreçte güncelleme sorusu komut reddinden açıldı (<see cref="OpenUpdatePromptOnce"/>).</summary>
+    private int _updatePromptOpened;
 
     public SalesCommandClient(
         LicenseApiClient api,
@@ -243,13 +248,16 @@ public sealed class SalesCommandClient
     /// Niyeti gönderir ve sonucu uygular. Arka plan iş parçacığında koşar; yalnız <paramref name="ct"/> iptali
     /// fırlatır. Yeniden deneme her zaman dönen <see cref="SalesCommandOutcome.Intent"/> ile yapılır.
     /// </summary>
-    public Task<SalesCommandOutcome> SendAsync(SalesCommandIntent intent, CancellationToken ct = default)
+    /// <param name="interactive">Operatörün o anki işlemi (varsayılan). <c>false</c>: arka plan gönderimi (bekleyen
+    /// komutların turu, §5.5) — <c>client-update-required</c> güncelleme sorusunu AÇMAZ; satır içi metin yine döner.</param>
+    public Task<SalesCommandOutcome> SendAsync(
+        SalesCommandIntent intent, CancellationToken ct = default, bool interactive = true)
     {
         ArgumentNullException.ThrowIfNull(intent);
-        return Task.Run(() => SendCoreAsync(intent, ct), ct);
+        return Task.Run(() => SendCoreAsync(intent, interactive, ct), ct);
     }
 
-    private async Task<SalesCommandOutcome> SendCoreAsync(SalesCommandIntent intent, CancellationToken ct)
+    private async Task<SalesCommandOutcome> SendCoreAsync(SalesCommandIntent intent, bool interactive, CancellationToken ct)
     {
         var rows = new AppliedRows();
 
@@ -335,12 +343,13 @@ public sealed class SalesCommandClient
                     : SalesCommandStatus.Stale;
                 return Outcome(status, current, SalesCommandMessages.Stale, rows, problem: problem);
             }
-            return Rejected(current, problem, rows);
+            return Rejected(current, problem, rows, interactive);
         }
     }
 
     /// <summary>Stale dışındaki retler (§5.3).</summary>
-    private SalesCommandOutcome Rejected(SalesCommandIntent intent, SalesCommandProblem problem, AppliedRows rows)
+    private SalesCommandOutcome Rejected(
+        SalesCommandIntent intent, SalesCommandProblem problem, AppliedRows rows, bool interactive)
     {
         _log.LogInformation("Satış komutu {Kind} {CommandId} reddedildi: {Code}", intent.Kind, intent.CommandId, problem.Code);
         switch (problem.Code)
@@ -362,8 +371,7 @@ public sealed class SalesCommandClient
                         : SalesCommandMessages.ShipmentShippedDecision,
                     rows, problem: problem);
             case SalesCommandProblemCodes.ClientUpdateRequired:
-                try { _updatePrompt.CheckAndPrompt(); }
-                catch (Exception ex) { _log.LogWarning(ex, "Güncelleme sorusu açılamadı"); }
+                OpenUpdatePromptOnce(intent, interactive);
                 return Outcome(SalesCommandStatus.ClientUpdateRequired, intent, SalesCommandMessages.ClientUpdateRequired,
                     rows, problem: problem);
             case SalesCommandProblemCodes.TooManyCandidates:
@@ -382,6 +390,24 @@ public sealed class SalesCommandClient
                     intent.CommandId, problem.Code);
                 return Outcome(SalesCommandStatus.Invalid, intent, SalesCommandMessages.ContentConflict, rows, problem: problem);
         }
+    }
+
+    /// <summary>
+    /// <c>client-update-required</c>'ın güncelleme sorusu (§5.3) — yalnız operatörün işleminde ve süreç başına BİR
+    /// KEZ. Soru modaldır: arka plandaki bekleyen komut her 30 sn'lik turda yeniden reddedilir, her seferinde açılsaydı
+    /// yayın sırasında ana pencereyi kilitlerdi (sahibin #508 tercihi: akışlarda açılır pencere yok). "Hayır" Velopack'te
+    /// sonraki açılışa bırakır; aynı süreçte yeniden sorulmaz. Satır içi metin her retle döner.
+    /// </summary>
+    private void OpenUpdatePromptOnce(SalesCommandIntent intent, bool interactive)
+    {
+        if (!interactive || Interlocked.Exchange(ref _updatePromptOpened, 1) == 1)
+        {
+            _log.LogDebug("Satış komutu {Kind} {CommandId}: güncelleme gerekli; soru açılmadı ({Reason})", intent.Kind,
+                intent.CommandId, interactive ? "bu süreçte zaten soruldu" : "arka plan gönderimi");
+            return;
+        }
+        try { _updatePrompt.CheckAndPrompt(); }
+        catch (Exception ex) { _log.LogWarning(ex, "Güncelleme sorusu açılamadı"); }
     }
 
     /// <summary>Niyeti idempotent türler (§5.3): taze sürümlerle kendiliğinden bir kez yeniden denenir.</summary>

@@ -215,6 +215,41 @@ public sealed class PendingSalesCommandSenderTests : IDisposable
     }
 
     [Fact]
+    public async Task Client_update_required_alan_bekleyen_komut_kuyrukta_kalir_tur_guncelleme_sorusunu_hic_acmaz()
+    {
+        _bed.ModeOn();
+        var (_, _, labels) = _bed.OwnResidual();
+        var intent = QueueCancel(labels);
+        _bed.Server.MinClientVersion = "9.0.0";                              // Burak yeni sürümü zorunlu kıldı
+
+        for (var tour = 0; tour < 3; tour++)
+            (await _bed.Sender.FlushAsync(CancellationToken.None)).Kept.Should().Be(1);
+
+        _bed.UpdatePrompts.Should().Be(0,
+            "arka plandaki her tur modal soruyu yeniden açar, yayın sırasında ana pencereyi kilitlerdi (#508)");
+        var row = _bed.Pending.Get(intent.CommandId.ToString("N"))!;
+        row.LastError.Should().Be("ClientUpdateRequired");
+        row.Attempts.Should().Be(3);
+        _bed.Pending.GetCoveredLabelIds(labels).Should().Equal(labels, "güncellenince gider");
+    }
+
+    [Fact]
+    public async Task Operatorun_aninda_gonderimi_guncelleme_sorusunu_surec_basina_bir_kez_acar()
+    {
+        _bed.ModeOn();
+        var (_, _, labels) = _bed.OwnResidual(count: 2);
+        var first = QueueCancel([labels[0]]);
+        var second = QueueCancel([labels[1]]);
+        _bed.Server.MinClientVersion = "9.0.0";
+
+        (await _bed.Sender.SendNowAsync(first.CommandId)).Kept.Should().Be(1);
+        (await _bed.Sender.SendNowAsync(second.CommandId)).Kept.Should().Be(1);
+        await _bed.Sender.FlushAsync(CancellationToken.None);
+
+        _bed.UpdatePrompts.Should().Be(1, "operatörün işlemi: soru bir kez; 'Hayır'dan sonra aynı süreçte yeniden sorulmaz");
+    }
+
+    [Fact]
     public async Task Yaniti_kaybolan_komut_ayni_icerikle_yeniden_oynatilir_ikinci_kez_uygulanmaz()
     {
         _bed.ModeOn();
