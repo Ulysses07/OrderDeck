@@ -108,6 +108,7 @@ public sealed class SalesBackfillService
     private (string LicenseKey, Guid ReplicaId)? _restartLoggedFor;
     private BackfillCompletionState? _lastLoggedRepair;
     private (SalesBackfillPhase Phase, string? PendingId)? _lastLoggedWait;
+    private readonly HashSet<SalesBackfillPhase> _waitAnnounced = new();
     private int _failures;
     private DateTimeOffset? _lastFailureWarnAt;
 
@@ -520,11 +521,17 @@ public sealed class SalesBackfillService
 
     /// <summary>İmleci tutan bekleyen satır: bekleyen satır değiştikçe bir kez yazılır (60 sn'lik tur her seferinde
     /// yinelemesin). Yalnız kimlik ve sayı.</summary>
+    /// <summary>
+    /// Bekleme günlüğü (§8.2: bir kez, kimlik ve sayıyla): aşama başına ilk bekleme Information, sonrakiler Debug.
+    /// Canlı yayınla çakışan geri doldurmada bekleyen satır her turda değişir; kimliğe göre bastırma 60 sn'de bir
+    /// Information satırı demekti. Aynı bekleme yinelenirse hiç yazılmaz.
+    /// </summary>
     private void LogWaiting(SalesBackfillPhase phase, BackfillWait wait, Guid replicaId)
     {
         if (_lastLoggedWait == (phase, wait.PendingId)) return;
         _lastLoggedWait = (phase, wait.PendingId);
-        _log.LogInformation(
+        _log.Log(
+            _waitAnnounced.Add(phase) ? LogLevel.Information : LogLevel.Debug,
             "Geri doldurma: imleçten sonraki ilk {Phase} gönderilmeyi bekliyor; olağan gönderim onaylayınca kaldığı "
           + "yerden sürecek (ilk={PendingId}, bekleyen={Pending}, replica={ReplicaId})",
             phase == SalesBackfillPhase.Sessions ? "oturum" : "etiket", wait.PendingId, wait.Pending, replicaId);

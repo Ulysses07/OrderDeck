@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
@@ -828,6 +829,36 @@ public sealed class SalesBackfillServiceTests : IDisposable
         _server.Order(Guid.Parse(edited))!.Row.Price.Should().Be(150m);
         CompletionHellos.Should().ContainSingle();
         _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Bekleme_gunlugu_asama_basina_bir_kez_bilgi_bekleyen_satir_degisse_de_sonrakiler_debug()
+    {
+        // §8.2: "günlükte bir kez, kimlik ve sayıyla". Canlı yayınla çakışan geri doldurmada her 60 sn'lik turda yeni
+        // bir bekleyen satır olur; bastırma kimliğe göre olsaydı 5 saatlik yayında ≈300 Information satırı düşerdi.
+        var session = AddSession(T0, T0 + 3600);
+        var labels = AddLabels(session, 4, printedAt: T0 + 3000);
+        SeedServerSession(session, T0, T0 + 3600, releasedAt: T0 + 3700);
+        SeedServerCopies(labels);
+        var armed = true;
+        _server.DuringPush = endpoint =>
+        {
+            if (endpoint != FakeSalesServer.SalesBackfill || !armed) return;
+            armed = false;
+            Exec("UPDATE Label SET Price = 150 WHERE Id = @id", new { id = labels[1] });
+        };
+
+        await Ws.HelloAsync();
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush);
+        (await Ws.Push.SyncOnceAsync()).OrdersPushed.Should().Be(1);
+        Exec("UPDATE Label SET Price = 160 WHERE Id = @id", new { id = labels[3] });   // sonraki turda başka satır bekler
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AwaitingPush);
+        N(_server.BackfillCalls.SelectMany(c => c.Backfill.Orders ?? new()).Select(o => o.Id))
+            .Should().Contain(labels[2], "ön koşul: imleç ilerledi, bekleyen satır değişti");
+
+        var waits = Ws.Log.Entries.Where(e => e.Message.Contains("gönderilmeyi bekliyor")).ToList();
+        waits.Where(e => e.Level == LogLevel.Information).Should().ContainSingle("aşama başına bir kez");
+        waits.Where(e => e.Level == LogLevel.Debug).Should().ContainSingle();
     }
 
     [Fact]
