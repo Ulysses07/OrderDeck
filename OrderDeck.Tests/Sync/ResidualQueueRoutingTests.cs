@@ -1,9 +1,15 @@
+using System.Data;
 using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using OrderDeck.App.Services.Sync;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 using static OrderDeck.Tests.Sync.SalesEditTestBed;
 
@@ -224,6 +230,78 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         result.DiscardLabelIds.Should().Equal(residual);
         _bed.Local(residual[0]).CancelledAt.Should().NotBeNull();
         _bed.Pending.List().Should().BeEmpty();
+    }
+
+    /// <summary>Yerel servisin yazma işlemini açarken bir kez araya giren yazım (akışın devir kapısı dışındaki yazımı).</summary>
+    private sealed class InterleavingFactory(IDbConnectionFactory inner) : IDbConnectionFactory
+    {
+        public Action<IDbConnection>? BeforeNextOpen;
+
+        public IDbConnection Open()
+        {
+            if (Interlocked.Exchange(ref BeforeNextOpen, null) is { } interleave)
+            {
+                using var other = inner.Open();
+                interleave(other);
+            }
+            return inner.Open();
+        }
+    }
+
+    private sealed class Clock : IClock
+    {
+        public long UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    }
+
+    [Fact]
+    public async Task Akis_karar_ile_yerel_yazim_arasinda_devri_yazarsa_kagit_bekleyen_komuta_gecer_ABORT_disari_cikmaz()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var interleaving = new InterleavingFactory(db);
+        var clock = new Clock();
+        var labelRepo = new LabelRepository(db);
+        var labels = new LabelService(labelRepo,
+            new CustomerService(new CustomerRepository(db), new SessionRepository(db), labelRepo, clock), interleaving, clock);
+        using var bed = new SalesEditTestBed(db, labels);
+        bed.ModeOn();
+        bed.Online = false;
+        var session = bed.LocalSession(ended: true);              // kendi bitmiş, devri yerelde bilinmeyen yayını
+        var label = bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        // Kapanış yanıtı kaybolmuştu; akış turu devri tam karar ile yazım arasında yazar (devir kapısını almaz).
+        interleaving.BeforeNextOpen = c => c.Execute(
+            "UPDATE StreamSession SET ReleasedAt = 990, Authority = 'server' WHERE Id = @session", new { session });
+
+        var result = await bed.Router.MarkPrintedAsync([label]);
+
+        result.Pending.Should().Equal(new[] { label }, "karar yeniden verildi: artık sunucu satırı, bekleyen mark-printed");
+        bed.LabelRepo.GetById(label)!.PrintedAt.Should().BeNull("yerel yazım geri çevrildi, hiçbir şey yazılmadı");
+        bed.Pending.List().Should().ContainSingle().Which.Kind.Should().Be("mark-printed");
+        bed.LabelRepo.GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty(
+            "örtü: kâğıt yeniden teklif edilmez");
+    }
+
+    [Fact]
+    public async Task Off_turu_isaretlemeyle_cakisirsa_kalinti_ayni_basis_ve_sirayla_yerelde_isaretlenir()
+    {
+        _bed.ModeOn();
+        var live = ActiveLabel(out var activeSession);
+        var (_, _, residual) = _bed.OwnResidual();
+        // Off turunun 2. adımı, kâğıdın yerel yazımıyla kalıntının bekleyen komutu arasında işlenir: yerel kip 0 ve kendi
+        // yayınları yerel otoritede (ApplyModeOff'un tek işlemi).
+        _bed.Exec("CREATE TRIGGER TestOffRoundStep2 AFTER UPDATE OF PrintedAt ON Label WHEN new.Id = '" + live + "' "
+                + "BEGIN UPDATE SalesSyncState SET Mode = 0 WHERE Id = 1; "
+                + "UPDATE StreamSession SET Authority = 'local' WHERE Origin = 'local'; END");
+
+        var result = await _bed.Router.MarkPrintedAsync([live, residual[0]]);
+
+        result.Marked.Should().BeEquivalentTo([live, residual[0]]);
+        result.Notices.Should().BeEmpty();
+        Print(residual[0]).PrintedAt.Should().NotBeNull("kâğıt basıldı: işaret kaybolmaz");
+        Print(residual[0]).BatchId.Should().Be(Print(live).BatchId, "aynı basış");
+        Print(residual[0]).Seq.Should().Be(2);
+        _bed.Pending.List().Should().BeEmpty();
+        _bed.LabelRepo.GetUnprintedOutsideSession(activeSession).Should().BeEmpty("kâğıt ikinci kez teklif edilmez");
     }
 
     [Fact]

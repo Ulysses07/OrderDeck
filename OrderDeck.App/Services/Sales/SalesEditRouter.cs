@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Payments;
@@ -409,11 +410,19 @@ public sealed class SalesEditRouter : ILabelEditor
             foreach (var sessionId in gated)
                 leases.Add(await _handover.EnterAsync(sessionId, ct).ConfigureAwait(false));
             decisions = gated.Count == 0 ? first : Decide(paperOrder) ?? AllLocal(paperOrder);
-            local = decisions
-                .Where(d => d.Route is SalesEditRoute.Local or SalesEditRoute.LocalGated or SalesEditRoute.Blocked)
-                .Select(d => d.LabelId).ToList();
-            if (local.Count > 0)
-                _labels.MarkPrintedAndRecord(local, batchId, local.Select(id => seqOf[id]).ToList());
+            local = LocalPaper(decisions);
+            if (local.Count > 0 && !TryMarkPaper(local, batchId, seqOf))
+            {
+                // Akış bu arada kendi bitmiş yayınının devrini yazdı (Authority = 'server'; akış devir kapısını almaz)
+                // ve TR_Label_ServerAuthority_U yerel yazımı geri çevirdi — hiçbir satır yazılmadı (tek işlem). Kâğıt
+                // basıldı: karar yeniden verilir, devredilen satırlar bekleyen komut yoluna geçer.
+                _log.LogInformation("Kuyruk baskısı {BatchId}: yayın bu arada sunucuya devredildi; karar yeniden veriliyor",
+                    batchId);
+                decisions = Decide(paperOrder) ?? AllLocal(paperOrder);
+                local = LocalPaper(decisions);
+                if (local.Count > 0)
+                    _labels.MarkPrintedAndRecord(local, batchId, local.Select(id => seqOf[id]).ToList());
+            }
         }
         finally
         {
@@ -444,7 +453,11 @@ public sealed class SalesEditRouter : ILabelEditor
                     notices.AddRange(settled.Flush!.Settled.Warnings);
                     break;
                 default:
-                    notices.Add(SalesCommandMessages.PrintNotRecorded(own.Count, SalesCommandMessages.ModeOff));
+                    // Kararla bekleyen komut arasında yerel kip Off'a döndü (disable turunun 2. adımı): kendi yayınları
+                    // artık yerel otoritede (aynı işlemde). Kâğıt basıldı — işaret aynı basış ve sırayla yerelde
+                    // yazılır; yoksa etiket basılmamış görünür, sonraki yayında yeniden teklif edilirdi (çift kâğıt).
+                    if (TryMarkLocally(own, batchId, seqOf)) marked.AddRange(own);
+                    else notices.Add(SalesCommandMessages.PrintNotRecorded(own.Count, SalesCommandMessages.ModeOff));
                     break;
             }
             if (settled.Flush is { } flush)
@@ -481,6 +494,46 @@ public sealed class SalesEditRouter : ILabelEditor
             "Kuyruk baskısı {BatchId}: {Local} yerel, {Own} kalıntı (komut; {Pending} bekliyor), {Remote} başka bilgisayarın; {Discard} kâğıt imha edilecek",
             batchId, local.Count, own.Count, pending.Count, remote.Count, discard.Count);
         return new SalesPrintMarkResult(marked, pending, discard.ToList(), notices, changed.ToList());
+    }
+
+    /// <summary>Kâğıdın yerel yoldaki satırları.</summary>
+    private static List<string> LocalPaper(IReadOnlyList<SalesEditDecision> decisions) => decisions
+        .Where(d => d.Route is SalesEditRoute.Local or SalesEditRoute.LocalGated or SalesEditRoute.Blocked)
+        .Select(d => d.LabelId).ToList();
+
+    /// <summary>Kâğıdın yerel işareti; satırlardan biri bu arada sunucu otoritesine geçtiyse (049'un
+    /// <c>sales-server-authority</c> ABORT'u, tek işlem: hiçbir şey yazılmadı) false. Başka hata fırlar.</summary>
+    private bool TryMarkPaper(IReadOnlyList<string> labelIds, string batchId, IReadOnlyDictionary<string, int> seqOf)
+    {
+        try
+        {
+            _labels.MarkPrintedAndRecord(labelIds, batchId, labelIds.Select(id => seqOf[id]).ToList());
+            return true;
+        }
+        catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) == 19
+                                         && ex.Message.Contains("sales-server-authority", StringComparison.Ordinal))
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Bekleyen komuta giremeyen (yerel kip Off'a döndü) kâğıt satırlarının yerel işareti. Yazım düşerse
+    /// (beklenmeyen: Off'un 2. adımı yayını aynı işlemde yerele döndürür) false; çağıran operatörü uyarır.</summary>
+    private bool TryMarkLocally(IReadOnlyList<string> labelIds, string batchId, IReadOnlyDictionary<string, int> seqOf)
+    {
+        try
+        {
+            _labels.MarkPrintedAndRecord(labelIds, batchId, labelIds.Select(id => seqOf[id]).ToList());
+            _log.LogInformation("Kuyruk baskısı {BatchId}: yerel kip Off'a döndü; {Count} kalıntı yerelde işaretlendi",
+                batchId, labelIds.Count);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Kuyruk baskısı {BatchId}: {Count} kalıntının işareti yerelde de yazılamadı", batchId,
+                labelIds.Count);
+            return false;
+        }
     }
 
     private enum PendingState { Applied, Pending, Dropped, NotQueued }
