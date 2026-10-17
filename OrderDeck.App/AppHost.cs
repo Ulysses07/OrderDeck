@@ -678,6 +678,13 @@ public sealed class AppHost : IDisposable
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
+        // Spec 2026-10-13 §8.7: göç 049'dan eski bir yedek geri yüklendiyse 049 az önce yeni bir
+        // kopya kimliği tohumladı; RestoreService'in bıraktığı işaret önceki kimliği ekler (ilk
+        // sales/hello taşır). İşaret yoksa hiçbir şey yapmaz.
+        RestoreReplicaMarker.ApplyAtBoot(
+            AppPaths.DatabaseFile,
+            Services.GetRequiredService<ReplicaIdentityRepository>(),
+            Services.GetRequiredService<ILogger<AppHost>>());
         // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
         // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
         // satır artıktır.
