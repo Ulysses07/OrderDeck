@@ -34,6 +34,7 @@ public sealed partial class MainShellViewModel
         {
             RefreshQueueRows(e.LabelIds);
             RefreshPrintedLabels();
+            RefreshPrintedEditAvailability();   // W2-05: inen oturum sunucuya geçmiş olabilir (§5.7 düğme durumu)
             RefreshHeroStats();
             RefreshSalesSyncStatus(_attention?.Invoke().SkippedSalesFeedItems ?? 0);
         }

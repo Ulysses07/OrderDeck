@@ -564,7 +564,7 @@ public class MainShellPriceBoxTests
         var id = h.Vm.PrintQueue[0].Id;
         await h.Vm.PrintCommand.ExecuteAsync(null);
 
-        h.Vm.CancelLabels(new[] { id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
+        await h.Vm.CancelLabelsAsync(new[] { id }, OrderDeck.Core.Sales.CancelReasonCodes.Customer);
 
         h.Vm.PriceSourceText.Should().BeNull();
         h.Vm.IsPriceCarriedOver.Should().BeTrue();

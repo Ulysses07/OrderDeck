@@ -99,6 +99,8 @@ internal static class MainShellTestHarness
     /// veritabanı ve depolarıyla kurulur; null = yok.</param>
     /// <param name="orderSync">Etiket gönderim servisi (W1-08: gönderim sonucunun uyarı şeridi), harness'in
     /// veritabanıyla kurulur; null = yok.</param>
+    /// <param name="labelEditor">Düzenleme yönlendiricisi (W2-05), harness'in veritabanı ve etiket servisiyle
+    /// kurulur; null = kabuk yalnız yerel düzenleyiciyi kullanır (bugünkü yol).</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
         ILabelPrinter? printerOverride = null,
@@ -112,7 +114,8 @@ internal static class MainShellTestHarness
         Func<InMemorySqlite, CustomerRepository, LabelRepository,
             OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>? paymentFollowUp = null,
         Func<InMemorySqlite, OrderDeck.App.Services.Sync.SessionOrderSyncService>? orderSync = null,
-        Func<InMemorySqlite, OrderDeck.App.Services.Sync.SalesChangesPullService>? salesPull = null)
+        Func<InMemorySqlite, OrderDeck.App.Services.Sync.SalesChangesPullService>? salesPull = null,
+        Func<InMemorySqlite, LabelService, OrderDeck.App.Services.Sales.ILabelEditor>? labelEditor = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -173,7 +176,8 @@ internal static class MainShellTestHarness
             drawers: drawers, pages: pages, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
             customerPull: customerPull, printedNavigator: printedNavigator,
             paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo),
-            orderSync: orderSync?.Invoke(db), salesPull: salesPull?.Invoke(db));
+            orderSync: orderSync?.Invoke(db), salesPull: salesPull?.Invoke(db),
+            labelEditor: labelEditor?.Invoke(db, labelSvc));
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }

@@ -616,7 +616,7 @@ public class MainShellPrintedLabelsTests
         await h.Vm.ReprintPrintedCommand.ExecuteAsync(null);
         h.Vm.PrintedLabels.Message.Should().Be("1 etiket yeniden basıldı.");
         // İptal.
-        h.Vm.CancelLabels(new[] { c.Id }, CancelReasonCodes.Customer);
+        await h.Vm.CancelLabelsAsync(new[] { c.Id }, CancelReasonCodes.Customer);
         // Tazeleme (sekme değişimi, "bu yayına dön").
         h.Vm.IsPrintedTabActive = false;
         h.Vm.IsPrintedTabActive = true;
@@ -796,7 +796,7 @@ public class MainShellPrintedLabelsTests
         {
             await printer.SecondEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            h.Vm.CancelLabels(new[] { a.Id }, CancelReasonCodes.WrongProduct);
+            await h.Vm.CancelLabelsAsync(new[] { a.Id }, CancelReasonCodes.WrongProduct);
 
             h.Vm.PrintedLabels.Message.Should().StartWith("1 etiket iptal edildi.")
                 .And.Contain("1 tanesi devam eden baskı işinde").And.Contain("imha et");
@@ -840,7 +840,7 @@ public class MainShellPrintedLabelsTests
         await PrintAsync(h);
         h.Vm.IsPrintedTabActive = true;
 
-        var withBackups = h.Vm.CancelLabels(new[] { a.Id, b.Id }, CancelReasonCodes.WrongProduct);
+        var withBackups = await h.Vm.CancelLabelsAsync(new[] { a.Id, b.Id }, CancelReasonCodes.WrongProduct);
 
         withBackups.Should().ContainSingle().Which.Parent.Id.Should().Be(a.Id);
         h.CustomerRepo.FindByPlatformAndUsername("instagram", "@a")!.TotalAmount.Should().Be(0m);

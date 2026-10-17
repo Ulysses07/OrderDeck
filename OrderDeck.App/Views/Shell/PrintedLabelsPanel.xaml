@@ -120,10 +120,14 @@
                         Style="{StaticResource OD.Button.Secondary}"
                         Margin="{StaticResource OD.Pad.X2}"
                         Command="{Binding ReprintPrintedCommand}"/>
+                <!-- Seçim başka bilgisayarın devredilmiş yayınındaysa ve sunucuya ulaşılamıyorsa
+                     pasif; sebep araç ipucunda (spec 2026-10-13 §5.7), pasif düğmede de görünsün. -->
                 <Button Content="İptal et"
                         Style="{StaticResource OD.Button.Ghost}"
                         Foreground="{StaticResource OD.Brush.Accent}"
                         Margin="{StaticResource OD.Pad.X2}"
+                        ToolTip="{Binding PrintedCancelBlockedReason}"
+                        ToolTipService.ShowOnDisabled="True"
                         Command="{Binding CancelPrintedCommand}"/>
                 <Button Content="Bu kodu seç"
                         Style="{StaticResource OD.Button.Ghost}"

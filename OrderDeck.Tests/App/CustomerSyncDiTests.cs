@@ -347,5 +347,9 @@ public sealed class CustomerSyncDiTests
         var detail = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.CustomerDetailViewModel>();
         PrivateField<global::OrderDeck.App.Services.Sales.ILabelEditor>(detail, "_editor").Should().BeSameAs(editor,
             "müşteri kartı isteğe bağlı parametreyle alır; gelmezse sessizce yalnız yerel düzenleyiciye düşerdi");
+        // Kabuk ViewModel'i kurulmadan (zamanlayıcılar) türüyle: Basılanlar'ın parametresi isteğe bağlı ve kayıtlı.
+        typeof(global::OrderDeck.App.ViewModels.MainShellViewModel).GetConstructors().Single().GetParameters()
+            .Should().ContainSingle(p => p.IsOptional
+                && p.ParameterType == typeof(global::OrderDeck.App.Services.Sales.ILabelEditor));
     }
 }

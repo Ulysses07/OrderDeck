@@ -824,6 +824,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         // BAŞTA: metot oturum yokken erken dönüyor — sonda olsa durum satırı yayın dışında donardı.
         RefreshSyncStatusThrottled();
+        RefreshPrintedConnectivity();
 
         QueueCount = PrintQueue.Count;
         ClockText = DateTime.Now.ToString("HH:mm");
@@ -1124,7 +1125,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.PriceCorrection.CorrectedPaymentRequests? paymentFollowUp = null,
         Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
         Services.Sync.SessionOrderSyncService? orderSync = null,
-        Services.Sync.SalesChangesPullService? salesPull = null)
+        Services.Sync.SalesChangesPullService? salesPull = null,
+        Services.Sales.ILabelEditor? labelEditor = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1141,6 +1143,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _attention = pendingCounter is null ? null : pendingCounter.Attention;
         _log = log ?? NullLogger<MainShellViewModel>.Instance;
         _labels = labels;
+        // W2-05 (spec 2026-10-13 §5.3): Basılanlar'ın toplu iptali, yeniden baskısı ve yedek çekmecesi bunun
+        // üzerinden; mod Off'ta bugünkü LabelService çağrısı. DI yönlendiriciyi verir, testlerin çoğu yalnız yerel.
+        _editor = labelEditor ?? new Services.Sales.LocalLabelEditor(labels);
+        PrintedLabels.SelectionChanged += (_, _) => RefreshPrintedEditAvailability();
         _sessions = sessions;
         _printer = printer;
         _customers = customers;
