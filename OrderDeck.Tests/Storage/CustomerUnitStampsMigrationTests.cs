@@ -65,7 +65,7 @@ public sealed class CustomerUnitStampsMigrationTests
         using var conn = db.Open();
         conn.ExecuteScalar<string>("SELECT IdentityKey FROM Customer WHERE Id = 'old1'")
             .Should().Be("ornek.musteri");
-        conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(48);
+        conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(49);
     }
 
     [Fact]

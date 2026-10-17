@@ -111,18 +111,18 @@ Kurallar
 - **Mod Off'ta 049'un ABORT tetikleyicilerinin hiçbiri etkili olmaz:** `Authority` hep `local` kalır (devir görülse de; §2, §5.2), `SalesSyncState.Mode` 0'dır. Davranıştaki farklar kuyruğa alma tetikleyicisi ve Y5'in yerel yolu (§7.4).
 
 Kolonlar ve tablolar
-- `_meta.ReplicaId TEXT`. Göç `lower(hex(randomblob(16)))` ile tohumlar.
+- `_meta.ReplicaId TEXT`. Göç `lower(hex(randomblob(16)))` ile tohumlar. `_meta.PreviousReplicaId TEXT`: geri yüklemeden sonra `RestoreService` yedekten gelen kimliği buraya yazar, yenisini üretir; `hello` onu `previousReplicaId` olarak taşır (§8.7).
 - `StreamSession`:
   - `Origin TEXT NOT NULL DEFAULT 'local'` (`local` ya da `remote`; `remote` = akıştan indi)
   - `Authority TEXT NOT NULL DEFAULT 'local'` (`local` ya da `server`)
   - `OwnerMachineName TEXT`, `ReleasedAt INTEGER`
 - `Label.ServerVersion INTEGER` ve `Shipment.ServerVersion INTEGER`: sunucunun `Version`'ı, komutun beklenen sürümü ve v2 push'unun `baseVersion`'ı.
 - `Shipment.OriginReplicaId TEXT`: sunucudaki karşılığının aynası; yerelde açılan dosyada bu kopya.
-- `RemoteLiveSession(Id TEXT PK, Title, StartedAt, EndedAt, OwnerMachineName, OwnerLastSeenAt, State)`: başka bilgisayarın canlı ya da devrediliyor yayını. Bu satırlar `StreamSession`'a **hiç girmez**. Böylece `GetActive` (`SessionRepository.cs:67-74`, koşulu "`EndedAt IS NULL` olan herhangi bir satır") ve eski sürüme dönüşte `StartStream` ile açılıştaki kurtarma ekranı (`StartupFlow.cs:102-118`) yanılmaz.
+- `RemoteLiveSession(Id TEXT PK, Title, StartedAt, EndedAt, OwnerMachineName, OwnerLastSeenAt, State, UnsentLabelCount)`: başka bilgisayarın canlı ya da devrediliyor yayını. Bu satırlar `StreamSession`'a **hiç girmez**. Böylece `GetActive` (`SessionRepository.cs:67-74`, koşulu "`EndedAt IS NULL` olan herhangi bir satır") ve eski sürüme dönüşte `StartStream` ile açılıştaki kurtarma ekranı (`StartupFlow.cs:102-118`) yanılmaz.
 - `SalesSyncState(Id=1, Mode, ModeSeenAt, ShippingVersion, FreeShippingThreshold, ShippingFee, ScrubOrderText, FirstCatchUpAt, AggregatesDerivedAt, ShipmentsDerivedAt, PaymentHistorySentAt)`.
 - `PendingPaymentRecord(RecordId TEXT PK, Kind TEXT, PayloadJson, CreatedAt, Attempts, LastError)`: gönderilemeyen `finish` ve mod Off kayıtları (§6.4). İmleç `SyncCursor('payment-history-out', LicenseKey)`.
 - `PendingSalesCommand(CommandId TEXT PK, Kind TEXT, PayloadJson, CreatedAt, Attempts, LastError)` ve `PendingSalesCommandLabel(LabelId, CommandId, PK(LabelId, CommandId))`. `Kind` yalnız `cancel` ya da `mark-printed` olabilir (§5.5).
-- `SalesFeedFailure(Kind, ItemId, Attempts, LastError, SkippedAt)`: `CustomerFeedFailure`'ın ikizi (U10).
+- `SalesFeedFailure(Kind, ItemId, ChangeSeq, Attempts, LastError, FirstFailedAt, SkippedAt)`, PK `(Kind, ItemId)`: `CustomerFeedFailure`'ın ikizi (U10); öğe değişince (yeni `ChangeSeq`) deneme sayacı sıfırdan başlar.
 - `SalesConflictLog(Id, At, LabelId, Kind, Reason)`: yalnız Id taşır, kişisel veri taşımaz.
 - İmleçler `SyncCursor('sales-changes-in', LicenseKey)` ve `SyncCursor('sales-backfill-out', LicenseKey)`. 038 şeması değişmez; satır yoksa 0 sayılır.
 - `Customer`: şema değişmez. `TotalAmount` ve `TotalLabelsPrinted` artık etiketlerden türetilmiş değer anlamına gelir (§6.1).
