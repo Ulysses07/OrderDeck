@@ -155,6 +155,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     public int LicenseRequestCount { get { lock (_gate) return _licenseRequests; } }
     private int _licenseRequests;
 
+    /// <summary>Kargonun ters çekmesi (<c>shipments/since</c>) istek sayısı.</summary>
+    public int ShipmentsSinceRequestCount { get { lock (_gate) return _shipmentsSinceRequests; } }
+    private int _shipmentsSinceRequests;
+
     /// <summary>Gönderim uçlarına gelen bütün istekler (geçersizler dahil), uç adına göre.</summary>
     public IReadOnlyList<PushCall> PushCalls { get { lock (_gate) return _pushCalls.ToList(); } }
     private readonly List<PushCall> _pushCalls = new();
@@ -281,7 +285,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
             // ShipmentSyncService'in ters çekmesi (uygulanmıyor, yalnız imleç): sunucuda başka yazıcı yok.
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/shipments/since$") && req.Method == HttpMethod.Get)
+            {
+                lock (_gate) _shipmentsSinceRequests++;
                 return FakeHttpMessageHandler.Json(200, "[]");
+            }
 
             // Satış akışı turunun ön gönderimi (W2-03): müşteri projeksiyonları. Birleştirme kuralı taklit edilmez
             // (FakeCustomerServer'ın işi); yalnız projeksiyon kaydı — akışın müşteri taslağı onu çözer.

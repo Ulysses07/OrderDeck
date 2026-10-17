@@ -178,6 +178,74 @@ public sealed class ShipmentRepository
     }
 
     /// <summary>
+    /// v2 <c>shipments/sync</c> yanıtının dosya satırı, mod Off (spec 2026-10-13 §7.1, M19): sunucunun güncel hâli yerel
+    /// aynaya yazılır ve gönderim onaylanır. Kargoya verilmiş dosya sunucuda tek yönlü olduğu için bayat yerel karar
+    /// (ör. başka bilgisayarın kargoladığı dosya burada Held) sunucunun Shipped'ine döner; sonraki dekont yeni dosya açar.
+    ///
+    /// <para>Tek <see cref="SyncApplyScope"/> işleminde: TR_Shipment_Enqueue kuyruğa almaz (Revision değişmez, yankı
+    /// yok). F05: satır gönderilen <paramref name="revision"/>'da değilse (uçuşta yerelde değişti) hiçbir şey yazılmaz
+    /// — güncel hâli sonraki turda gider, sunucu yeniden yanıtlar. Karar alanları, tutar, kaynak kopya ve sürüm yereldekiyle
+    /// aynıysa yalnız onay yazılır (bugünkü <see cref="MarkSynced"/>). Sürüm geri gitmez. CustomerId'ye dokunulmaz.</para>
+    /// </summary>
+    /// <returns>Yazımın sonucu.</returns>
+    public ShipmentPushAck ApplyPushResponse(string id, long revision, SalesFeedShipment server, long syncedAt)
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+        var local = conn.QuerySingleOrDefault<MirrorRow>(
+            @"SELECT Status, HeldAt, ShippedAt, CumulativeAmount, OriginReplicaId, ServerVersion, Revision
+              FROM Shipment WHERE Id = @id",
+            new { id }, tx);
+        if (local is null || local.Revision != revision)
+            return ShipmentPushAck.ChangedInFlight;           // işlem yazmadan geri alınır
+
+        var status = server.Status.ToString();
+        var same = string.Equals(local.Status, status, System.StringComparison.Ordinal)
+                   && local.HeldAt == server.HeldAt
+                   && local.ShippedAt == server.ShippedAt
+                   && (decimal)local.CumulativeAmount == server.CumulativeAmount
+                   && SameReplica(local.OriginReplicaId, server.OriginReplicaId)
+                   && local.ServerVersion == server.Version;
+        if (same || (local.ServerVersion is { } known && server.Version < known))
+        {
+            conn.Execute("UPDATE Shipment SET SyncedAt = @syncedAt WHERE Id = @id AND Revision = @revision",
+                new { id, syncedAt, revision }, tx);
+            scope.Commit();
+            return ShipmentPushAck.Acked;
+        }
+
+        conn.Execute(MirrorPushResponseSql, new
+        {
+            id,
+            revision,
+            syncedAt,
+            Status = status,
+            server.HeldAt,
+            server.ShippedAt,
+            CumulativeAmount = (double)server.CumulativeAmount,
+            server.OriginReplicaId,
+            server.Version,
+        }, tx);
+        scope.Commit();
+        return ShipmentPushAck.Mirrored;
+    }
+
+    /// <summary>Sunucunun dosya satırı yerel aynaya, onayla birlikte (F05: gönderilen Revision). Kilit altında:
+    /// TR_Shipment_Enqueue kuyruğa almaz.</summary>
+    private const string MirrorPushResponseSql = @"
+        UPDATE Shipment SET Status = @Status, HeldAt = @HeldAt, ShippedAt = @ShippedAt,
+               CumulativeAmount = @CumulativeAmount, OriginReplicaId = @OriginReplicaId, ServerVersion = @Version,
+               SyncedAt = @syncedAt
+         WHERE Id = @id AND Revision = @revision";
+
+    private static bool SameReplica(string? a, string? b) =>
+        a is null || b is null
+            ? a is null && b is null
+            : string.Equals(a, b, System.StringComparison.OrdinalIgnoreCase)
+              || (System.Guid.TryParse(a, out var ga) && System.Guid.TryParse(b, out var gb) && ga == gb);
+
+    /// <summary>
     /// Label'ı bir Shipment'a bağla. ShipmentService attach sırasında
     /// kullanır; CumulativeAmount güncellemesi caller sorumluluğunda
     /// (genelde aynı transaction içinde Update çağrılır).
@@ -208,6 +276,17 @@ public sealed class ShipmentRepository
             r.Revision,
             r.ServerVersion);
 
+    private sealed class MirrorRow
+    {
+        public string Status { get; init; } = "";
+        public long? HeldAt { get; init; }
+        public long? ShippedAt { get; init; }
+        public double CumulativeAmount { get; init; }
+        public string? OriginReplicaId { get; init; }
+        public long? ServerVersion { get; init; }
+        public long Revision { get; init; }
+    }
+
     private sealed class Row
     {
         public long? ServerVersion { get; init; }
@@ -221,4 +300,17 @@ public sealed class ShipmentRepository
         public long? SyncedAt { get; init; }
         public long Revision { get; init; }
     }
+}
+
+/// <summary><see cref="ShipmentRepository.ApplyPushResponse"/>'un sonucu.</summary>
+public enum ShipmentPushAck
+{
+    /// <summary>Sunucunun satırı yereldekiyle aynıydı: yalnız onay yazıldı.</summary>
+    Acked,
+
+    /// <summary>Sunucunun satırı yerel aynaya yazıldı ve onaylandı.</summary>
+    Mirrored,
+
+    /// <summary>Satır uçuşta yerelde değişti (ya da silindi): hiçbir şey yazılmadı, sonraki turda yeniden gider.</summary>
+    ChangedInFlight,
 }

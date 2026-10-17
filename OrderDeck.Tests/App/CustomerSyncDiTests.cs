@@ -180,6 +180,9 @@ public sealed class CustomerSyncDiTests
             .Should().BeSameAs(envelope, "W1-06: etiket gönderimi zarfı ve hello kararını aynı örnekten okur");
         PrivateField<SalesSyncEnvelope>(host.Services.GetRequiredService<ShipmentSyncService>(), "_envelope")
             .Should().BeSameAs(envelope, "W1-06: kargo gönderimi de");
+        PrivateField<SalesSyncStateRepository>(host.Services.GetRequiredService<ShipmentSyncService>(), "_salesState")
+            .Should().BeSameAs(state, "W2-08: kargo servisi yerel kipi okur — parametre isteğe bağlı; gelmezse mod On'da "
+                + "da gönderirdi (§7.1)");
         PrivateField<ReplicaIdentityRepository>(service, "_identity").Should().BeSameAs(identity);
         PrivateField<SalesSyncStateRepository>(service, "_state").Should().BeSameAs(state);
         PrivateField<ICurrentLicenseProvider>(envelope, "_license").Should().BeSameAs(

@@ -514,7 +514,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
-        // Kümülatif kargo Shipment sync (PR-D, 2026-05-13).
+        // Kümülatif kargo Shipment sync (PR-D, 2026-05-13). Satış senkronu W2 (spec 2026-10-13 §7.1): mod On'da
+        // dosya sunucunun — servis yerel kipi okur ve o kipte hiç istek göndermez.
         services.AddSingleton<Services.Sync.ShipmentSyncService>(sp => new Services.Sync.ShipmentSyncService(
             sp.GetRequiredService<LicenseApiClient>(),
             sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
@@ -524,7 +525,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>(),
-            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>(),
+            sp.GetRequiredService<SalesSyncStateRepository>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
         // Session + Order sync (PR siparis-sync 2026-05-13). Satış senkronu W1-06: etiketler v2 zarfıyla (aynı

@@ -15,6 +15,12 @@ namespace OrderDeck.App.Services.Sync;
 /// Push-dominant: WPF authoritative — kararlar WPF'te verilir, mobile sadece
 /// okur. Reverse sync (pull) yine de implement edildi, ileride server-side
 /// CSR aksiyonları gerekirse hazır.
+///
+/// <para><b>Satış senkronu (spec 2026-10-13 §7.1, W2):</b> mod On'da dosya ve etiket–dosya bağı yalnız sunucuda
+/// yazılır; yerel <c>Shipment</c> salt okunur aynadır ve akışla ya da komut yanıtıyla iner. Bu servis o kipte
+/// hiçbir istek göndermez — ne gönderim ne <c>/since</c> çekmesi (lisans çözümü de yok). Mod Off'ta v2 yanıtındaki
+/// sunucu satırı yerel aynaya yazılır (<see cref="ShipmentRepository.ApplyPushResponse"/>): sunucuda tek yönlü
+/// Shipped bayat yerel kararı ezer.</para>
 /// </summary>
 public sealed class ShipmentSyncService
 {
@@ -33,6 +39,7 @@ public sealed class ShipmentSyncService
     private readonly IClock _clock;
     private readonly ILogger<ShipmentSyncService> _log;
     private readonly SyncStatusTracker? _tracker;
+    private readonly SalesSyncStateRepository? _salesState;
 
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
@@ -48,7 +55,8 @@ public sealed class ShipmentSyncService
         SalesSyncEnvelope envelope,
         IClock clock,
         ILogger<ShipmentSyncService> log,
-        SyncStatusTracker? statusTracker = null)
+        SyncStatusTracker? statusTracker = null,
+        SalesSyncStateRepository? salesState = null)
     {
         _api = api;
         _shipments = shipments;
@@ -60,12 +68,20 @@ public sealed class ShipmentSyncService
         _log = log;
         _tracker = statusTracker;
         _tracker?.RegisterPush(PushStatusName);
+        _salesState = salesState;
     }
 
     public readonly record struct SyncResult(int Pushed, int Pulled);
 
     public async Task<SyncResult> SyncOnceAsync(CancellationToken ct = default)
     {
+        // Mod On (§7.1): dosya sunucunun; gönderilecek bir şey yok, /since da yok — sıfır HTTP.
+        if (_salesState?.GetMode() == 1)
+        {
+            _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);
+            return default;
+        }
+
         var licenseId = await ResolveLicenseIdAsync(ct);
         if (licenseId is null)
         {
@@ -115,11 +131,10 @@ public sealed class ShipmentSyncService
             ShippedAt: s.ShippedAt.HasValue ? DateTimeOffset.FromUnixTimeSeconds(s.ShippedAt.Value) : null
         )).ToList();
 
+        List<SalesShipmentItem> response;
         try
         {
-            // Yanıt (v2'de dosya başına sunucunun güncel satırı) okunur ama W1'de uygulanmaz: mod Off'ta dosyanın
-            // tek yazıcısı bu kopya; yerel aynayı sunucudan tazelemek yalnız On → Off turunda gerekir (W2, §8.5).
-            _ = await _api.SyncShipmentsAsync(licenseId,
+            response = await _api.SyncShipmentsAsync(licenseId,
                 new SyncShipmentsRequest(items, envelope.ReplicaId, envelope.Protocol, envelope.SeenModeField), ct);
         }
         catch (LicenseApiException ex)
@@ -129,13 +144,50 @@ public sealed class ShipmentSyncService
         }
 
         var now = _clock.UnixNow();
+        // v2 yanıtı dosya başına sunucunun güncel satırıdır (§7.1): yerel aynaya yazılır, Shipped tek yönlü olduğu
+        // için bayat yerel karar sunucunun Shipped'ine döner. Eski sunucunun v1 yanıtı uygulanmaz (bugünkü onay).
+        var server = envelope.IsV2 ? ServerRows(response) : new Dictionary<string, SalesFeedShipment>();
+        var mirrored = 0;
         // F05: push'a giden Revision ile onayla — uçuş sırasında satır
-        // değiştiyse MarkSynced 0 satır etkiler, sonraki tick tekrar gönderir.
+        // değiştiyse 0 satır etkiler, sonraki tick tekrar gönderir.
         foreach (var item in batch)
-            _shipments.MarkSynced(item.Id, now, item.Revision);
+        {
+            if (server.TryGetValue(item.Id, out var row))
+            {
+                if (_shipments.ApplyPushResponse(item.Id, item.Revision, row, now) == ShipmentPushAck.Mirrored)
+                    mirrored++;
+            }
+            else
+            {
+                _shipments.MarkSynced(item.Id, now, item.Revision);
+            }
+        }
+        if (mirrored > 0)
+            _log.LogInformation("Shipment push: {Count} dosyada sunucunun güncel satırı yerel aynaya yazıldı", mirrored);
         _tracker?.MarkPushOk(PushStatusName, DateTimeOffset.UtcNow);       // I-3: parti gitti
 
         return batch.Count;
+    }
+
+    /// <summary>v2 yanıtının satırları, yerel Id'ye ("N") göre. v2 sunucusu her satırın kaynak kopyasını doldurur
+    /// (boşsa çağıran); kaynağı boş satır eski sunucunun v1 yanıtıdır ve uygulanmaz. Çözülemeyen satır (bilinmeyen
+    /// durum) yalnız onaylanır.</summary>
+    private Dictionary<string, SalesFeedShipment> ServerRows(IReadOnlyList<SalesShipmentItem> response)
+    {
+        var rows = new Dictionary<string, SalesFeedShipment>(StringComparer.Ordinal);
+        foreach (var item in response)
+        {
+            if (item.OriginReplicaId is null) continue;
+            try
+            {
+                rows[item.Id.ToString("N")] = SalesFeedMapper.ToCore(item);
+            }
+            catch (FormatException ex)
+            {
+                _log.LogWarning(ex, "Shipment push: sunucunun {Id} satırı okunamadı; yalnız onaylanıyor", item.Id);
+            }
+        }
+        return rows;
     }
 
     // ─── Pull (reverse sync) ──────────────────────────────────────────
