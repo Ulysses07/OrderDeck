@@ -1,6 +1,7 @@
 <UserControl x:Class="OrderDeck.App.Views.Shell.ShellTopBar"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:sync="clr-namespace:OrderDeck.App.Services.Sync">
     <!-- İki kat: 56px'lik üst çubuk ve altında, yalnız varsa, uzak yayın çipleri (W2-09). Çipler çubuğun İÇİNE
          konmadı: devrediliyor çipi iki satır olabiliyor ve dar pencerede sayaçlarla birlikte "Yayını Bitir"i
          sıfır genişliğe iterdi. -->
@@ -265,7 +266,7 @@
                                 </Ellipse.Style>
                             </Ellipse>
                             <Button DockPanel.Dock="Right"
-                                    Content="Yayını bitir…"
+                                    Content="{x:Static sync:SalesCommandMessages.ForceEndAction}"
                                     Style="{StaticResource OD.Button.Ghost}"
                                     Foreground="{StaticResource OD.Brush.Accent}"
                                     FontSize="{StaticResource OD.Font.F1}"
