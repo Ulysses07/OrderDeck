@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using Dapper;
 using OrderDeck.Core.Customers;
@@ -443,15 +444,22 @@ public sealed class LabelRepository
     }
 
     /// <summary>
-    /// Gönderim onayı, tek kısa yazma işleminde (spec 2026-10-13 §5.2): her satır <see cref="MarkSynced"/>'in F05
-    /// karşılaştır-ve-yaz kuralıyla — <c>WHERE Revision = gönderilen</c>. Uçuş sırasında değişen satıra hiçbir şey
-    /// yazılmaz (ne <c>SyncedAt</c> ne <c>ServerVersion</c>); bekleyen kalır ve sonraki tur güncel hâliyle gönderir.
+    /// Gönderim onayı, tek kısa yazma işleminde (spec 2026-10-13 §5.2): <c>SyncedAt</c> ve <c>StockSyncedAt</c>
+    /// <see cref="MarkSynced"/>'in F05 karşılaştır-ve-yaz kuralıyla — <c>WHERE Revision = gönderilen</c>. Uçuş
+    /// sırasında değişen satır onaylanmaz; bekleyen kalır ve sonraki tur güncel hâliyle gönderir.
     ///
     /// <para><c>ServerVersion</c> yalnız sürümü bilinen onayda yazılır (<see cref="LabelPushAck.ServerVersion"/>
-    /// dolu: v2 <c>applied</c>); eski sunucunun onayı mevcut değeri korur. <c>SyncedAt</c>, <c>StockSyncedAt</c> ve
-    /// <c>ServerVersion</c> 049 tetikleyicilerinin hiçbir listesinde değil: yazım kuyruğa almaz, <c>Revision</c>
-    /// değişmez (DM8) ve her kipte geçer. Mod On'da sunucunun farklı kargo bağı da aynı işlemde yazılır
-    /// (<see cref="MarkSyncedWithServerLinks"/>); mod Off'ta bağın yazıcısı bu bilgisayardır, dokunulmaz.</para>
+    /// dolu: v2 <c>applied</c>); eski sunucunun onayı mevcut değeri korur. Sürüm Revision koşuluna BAĞLI DEĞİL:
+    /// <c>applied</c>'ın sürümü bu istemcinin kendi yazımının sonucudur, satır uçuşta yeniden düzenlense de sunucu o
+    /// sürümdedir. Yazılmasaydı sonraki gönderim eski <c>baseVersion</c> ile gider, damgalı birimde (K2/K4) sunucu
+    /// onu bayat sayar ve operatörün yeni düzenlemesi <c>current</c> ile sessizce geri alınırdı. Araya başka bir
+    /// yazım (komut) girdiyse sunucunun sürümü daha ileridedir ve sonraki gönderim yine doğru biçimde yok sayılır.
+    /// Sürüm geri gitmez (daha yeni bir <c>current</c> ya da geri doldurma sürümü ezilmez).</para>
+    ///
+    /// <para><c>SyncedAt</c>, <c>StockSyncedAt</c> ve <c>ServerVersion</c> 049 tetikleyicilerinin hiçbir listesinde
+    /// değil: yazım kuyruğa almaz, <c>Revision</c> değişmez (DM8) ve her kipte geçer. Mod On'da sunucunun farklı
+    /// kargo bağı da aynı işlemde yazılır (<see cref="MarkSyncedWithServerLinks"/>); mod Off'ta bağın yazıcısı bu
+    /// bilgisayardır, dokunulmaz.</para>
     /// </summary>
     /// <returns>Onaylanan satır sayısı.</returns>
     public int MarkSyncedBatch(IReadOnlyList<LabelPushAck> acks, long syncedAt)
@@ -461,19 +469,31 @@ public sealed class LabelRepository
             return MarkSyncedWithServerLinks(acks, syncedAt);
 
         using var write = DbWrite.Begin(_factory);
-        var marked = write.Connection.Execute(MarkSyncedSql, AckParams(acks, syncedAt), write.Transaction);
+        var marked = WriteAcks(write.Connection, write.Transaction, acks, syncedAt);
         write.Commit();
         return marked;
     }
 
+    /// <summary>Onay (F05) ve sürüm, çağıranın işleminde (<see cref="MarkSyncedBatch"/>).</summary>
+    private static int WriteAcks(IDbConnection conn, IDbTransaction tx, IReadOnlyList<LabelPushAck> acks, long syncedAt)
+    {
+        var marked = conn.Execute(MarkSyncedSql, AckParams(acks, syncedAt), tx);
+        var versioned = acks.Where(a => a.ServerVersion is not null)
+            .Select(a => (object)new { id = a.Id, serverVersion = a.ServerVersion })
+            .ToArray();
+        if (versioned.Length > 0) conn.Execute(AppliedVersionSql, versioned, tx);
+        return marked;
+    }
+
     private const string MarkSyncedSql =
-        @"UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt,
-                 ServerVersion = COALESCE(@serverVersion, ServerVersion)
-          WHERE Id=@id AND Revision=@revision";
+        "UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision";
+
+    private const string AppliedVersionSql =
+        @"UPDATE Label SET ServerVersion = @serverVersion
+          WHERE Id = @id AND (ServerVersion IS NULL OR ServerVersion < @serverVersion)";
 
     private static object[] AckParams(IReadOnlyList<LabelPushAck> acks, long syncedAt) =>
-        acks.Select(a => (object)new { id = a.Id, revision = a.Revision, serverVersion = a.ServerVersion, syncedAt })
-            .ToArray();
+        acks.Select(a => (object)new { id = a.Id, revision = a.Revision, syncedAt }).ToArray();
 
     private bool IsSalesModeOn()
     {
@@ -499,7 +519,7 @@ public sealed class LabelRepository
                 .Select(a => new { id = a.Id, revision = a.Revision, shipmentId = a.ServerShipmentId })
                 .ToArray(),
             scope.Transaction);
-        var marked = scope.Connection.Execute(MarkSyncedSql, AckParams(acks, syncedAt), scope.Transaction);
+        var marked = WriteAcks(scope.Connection, scope.Transaction, acks, syncedAt);
         scope.Commit();
         return marked;
     }

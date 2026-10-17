@@ -20,8 +20,10 @@ namespace OrderDeck.App.Services.Sync;
 /// <para><b>v2 etiket gönderimi</b> (spec 2026-10-13 §4.2, §5.2; W1-06): istek v2 zarfını (kopya kimliği,
 /// <c>Protocol = 2</c>, görülen kip) ve <c>Format = 2</c>'yi taşır; her etiket 048 alanlarını, yedek ebeveynini,
 /// kargo bağını ve <c>baseVersion = ServerVersion</c>'ı. Yanıt öğe başınadır: <c>applied</c> satırda
-/// <c>SyncedAt</c>, <c>StockSyncedAt</c> ve <c>ServerVersion</c> tek kısa işlemde, F05 karşılaştır-ve-yaz kuralıyla
-/// yazılır. Durumsuz öğe ya da v1 listesi eski sunucudur — bugünkü gibi onaylanır, sürüm bilinmez. Kopya kimliği
+/// <c>SyncedAt</c> ve <c>StockSyncedAt</c> tek kısa işlemde, F05 karşılaştır-ve-yaz kuralıyla yazılır;
+/// <c>ServerVersion</c> aynı işlemde, satır uçuşta değişmiş olsa da (sunucu o sürümde; bkz.
+/// <see cref="LabelRepository.MarkSyncedBatch"/>). Durumsuz öğe ya da v1 listesi eski sunucudur — bugünkü gibi
+/// onaylanır, sürüm bilinmez. Kopya kimliği
 /// eksik ya da bozuksa gönderim durmaz, zarfsız (v1) gövde gider (<see cref="SalesSyncEnvelope.ForPush"/>); geri
 /// yüklemeden sonra hello gidene kadar tur atlanır (§8.7).</para>
 ///
@@ -524,7 +526,8 @@ public sealed class SessionOrderSyncService
             acks.Add(new LabelPushAck(batch[i].Id, batch[i].Revision, version, shipmentKnown, serverShipment));
         }
 
-        // F05: Revision karşılaştırmalı; uçuş sırasında değişen satıra yazılmaz, sonraki tur güncel hâliyle gönderir.
+        // F05: onay Revision karşılaştırmalı; uçuş sırasında değişen satır onaylanmaz, sonraki tur güncel hâliyle
+        // gönderir. applied'ın sürümü yine yazılır: sonraki gönderimin baseVersion'ı sunucununki olur.
         _labels.MarkSyncedBatch(acks, now);
         return (verdicts, unknown);
     }

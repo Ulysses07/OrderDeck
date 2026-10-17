@@ -264,7 +264,7 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
 
         var afterFirst = Local(id);
         afterFirst.SyncedAt.Should().BeNull("uçuştaki iptal onayla ezilmemeli (F05)");
-        afterFirst.ServerVersion.Should().BeNull("değişmiş satıra sürüm de yazılmaz");
+        afterFirst.ServerVersion.Should().Be(0, "sunucu bu gönderimi uyguladı: sürümü yazılır, onay yazılmaz");
 
         await _svc.SyncOnceAsync();
 
@@ -272,10 +272,60 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         calls.Should().HaveCount(2);
         OrderJson(calls[1], id).GetProperty("cancelledAt").GetDateTimeOffset()
             .Should().Be(DateTimeOffset.FromUnixTimeSeconds(1_760_000_600L));
+        OrderJson(calls[1], id).GetProperty("baseVersion").GetInt32().Should().Be(0);
         var final = Local(id);
         final.SyncedAt.Should().NotBeNull();
         final.ServerVersion.Should().Be(1);
         _server.Order(Guid.Parse(id))!.Row.CancelledAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Ucusta_yeniden_duzenlenen_satirda_applied_surumu_kaybolmaz_sonraki_gonderim_guncel_baseVersionla_gider()
+    {
+        // Sunucu P1'i uyguladı, Version v → v+1. HTTP uçarken operatör satırı yeniden düzenledi: F05 onayı yazmaz,
+        // ama v+1 bu istemcinin kendi yazımının sonucudur. Sürüm de yazılmasaydı P2 baseVersion = v ile giderdi;
+        // damgalı birimde (K2/K4: disable sonrası Off'a dönmüş lisans, force-end sonrası sahip) sunucu onu bayat sayar,
+        // birimi ignored + current ile döner ve operatörün ikinci düzenlemesi sessizce geri alınırdı.
+        var id = AddLabel();
+        await _svc.SyncOnceAsync();
+        Local(id).ServerVersion.Should().Be(0, "ön koşul");
+        Sql("UPDATE Label SET Price = 120 WHERE Id = @id", new { id });       // P1'in düzenlemesi
+        var armed = true;
+        _server.DuringPush = endpoint =>
+        {
+            if (endpoint != FakeSalesServer.OrdersSync || !armed) return;
+            armed = false;
+            _labels.MarkCancelled(new[] { id }, 1_760_000_600L, "uçuşta");  // P1 uçarken ikinci düzenleme
+        };
+
+        await _svc.SyncOnceAsync();
+
+        _server.Order(Guid.Parse(id))!.Version.Should().Be(1, "ön koşul: sunucu P1'i uyguladı");
+        var afterFirst = Local(id);
+        afterFirst.SyncedAt.Should().BeNull("uçuştaki iptal onayla ezilmez (F05)");
+        afterFirst.ServerVersion.Should().Be(1, "sunucunun bu gönderimle ilerlemiş sürümü kaybolmaz");
+
+        await _svc.SyncOnceAsync();
+
+        OrderJson(_server.Calls(FakeSalesServer.OrdersSync)[^1], id).GetProperty("baseVersion").GetInt32()
+            .Should().Be(1, "P2 sunucunun güncel sürümüyle gider; damgalı birimde bayat sayılmaz");
+        Local(id).ServerVersion.Should().Be(2);
+        Local(id).SyncedAt.Should().NotBeNull();
+        _server.Order(Guid.Parse(id))!.Row.CancelledAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Applied_onayi_surumu_geri_goturmez()
+    {
+        // Sürüm, satır onaylanmasa da yazıldığı için (yukarıdaki test) yazım tekdüze olmalı: daha yeni bir sürümü
+        // (ignored current'ı ya da geri doldurma) eski bir onay ezmesin; ezseydi sonraki gönderim bayat giderdi.
+        var id = AddLabel();
+        var revision = Local(id).Revision;
+
+        _labels.MarkSyncedBatch(new[] { new LabelPushAck(id, revision, 5) }, _clock.Now).Should().Be(1);
+        _labels.MarkSyncedBatch(new[] { new LabelPushAck(id, revision, 3) }, _clock.Now).Should().Be(1);
+
+        Local(id).ServerVersion.Should().Be(5);
     }
 
     [Theory]
