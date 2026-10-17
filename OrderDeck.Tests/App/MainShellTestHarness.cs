@@ -111,7 +111,8 @@ internal static class MainShellTestHarness
         OrderDeck.App.Services.Pages.IPageService? pages = null,
         Func<InMemorySqlite, CustomerRepository, LabelRepository,
             OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>? paymentFollowUp = null,
-        Func<InMemorySqlite, OrderDeck.App.Services.Sync.SessionOrderSyncService>? orderSync = null)
+        Func<InMemorySqlite, OrderDeck.App.Services.Sync.SessionOrderSyncService>? orderSync = null,
+        Func<InMemorySqlite, OrderDeck.App.Services.Sync.SalesChangesPullService>? salesPull = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -172,7 +173,7 @@ internal static class MainShellTestHarness
             drawers: drawers, pages: pages, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
             customerPull: customerPull, printedNavigator: printedNavigator,
             paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo),
-            orderSync: orderSync?.Invoke(db));
+            orderSync: orderSync?.Invoke(db), salesPull: salesPull?.Invoke(db));
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }

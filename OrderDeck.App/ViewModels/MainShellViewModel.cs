@@ -881,12 +881,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             if (SyncLicenseKey() is null)
             {
                 ApplySyncStatus(Services.Sync.SyncStatusFormatter.NoLicense, default);
+                RefreshSalesSyncStatus(0);
             }
             else
             {
                 var attention = _attention?.Invoke() ?? default;
                 ApplySyncStatus(Services.Sync.SyncStatusFormatter.Format(
                     _pendingCount, _syncStatus.Snapshot(), DateTimeOffset.UtcNow, attention), attention);
+                RefreshSalesSyncStatus(attention.SkippedSalesFeedItems);   // yalnız mod On'da görünür (§5.7)
             }
             _syncReadFailing = false;
         }
@@ -1121,7 +1123,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Sync.CustomerChangesPullService? customerPull = null,
         Services.PriceCorrection.CorrectedPaymentRequests? paymentFollowUp = null,
         Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
-        Services.Sync.SessionOrderSyncService? orderSync = null)
+        Services.Sync.SessionOrderSyncService? orderSync = null,
+        Services.Sync.SalesChangesPullService? salesPull = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1158,6 +1161,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // W1-08: etiket gönderiminin sonucu (reddedilen değişiklik, imha edilecek kâğıt) — _dispatcher'dan sonra.
         _orderSync = orderSync;
         if (_orderSync is not null) _orderSync.PushOutcome += OnSalesPushOutcome;
+        // W2-03: satış akışından inen değişiklikler (kuyruk kopyaları, Basılanlar, sayaçlar) — _dispatcher'dan sonra.
+        _salesPull = salesPull;
+        if (_salesPull is not null) _salesPull.SalesChanged += OnSalesChanged;
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
         // _settingsStore. Previously a first-chance NRE leaked here (caught by
@@ -2786,6 +2792,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Banner.AutoDrawRequested -= OnBannerAutoDrawRequested;
         if (_printedNavigator is not null) _printedNavigator.Requested -= OnPrintedLabelsRequested;
         if (_orderSync is not null) _orderSync.PushOutcome -= OnSalesPushOutcome;
+        if (_salesPull is not null) _salesPull.SalesChanged -= OnSalesChanged;
 
         Banner.Dispose();
         _busSubscription.Dispose();

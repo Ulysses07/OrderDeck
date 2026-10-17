@@ -288,7 +288,7 @@ public sealed class CustomerSyncDiTests
             new[]
             {
                 typeof(SyncStatusTracker), typeof(SyncPendingCounter), typeof(CustomerChangesPullService),
-                typeof(SessionOrderSyncService),
+                typeof(SessionOrderSyncService), typeof(SalesChangesPullService),
             });
         foreach (var p in syncParameters)
             host.Services.GetService(p.ParameterType).Should().NotBeNull(p.Name);
