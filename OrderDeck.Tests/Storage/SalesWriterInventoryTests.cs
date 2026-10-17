@@ -40,6 +40,7 @@ public sealed class SalesWriterInventoryTests
     private const string PushApplyFile = "OrderDeck.Core/Sales/SalesPushApply.cs";
     private const string BackfillRepo = "OrderDeck.Core/Storage/Repositories/SalesBackfillRepository.cs";
     private const string FeedRepo = "OrderDeck.Core/Storage/Repositories/SalesFeedRepository.cs";
+    private const string CustomerRepo = "OrderDeck.Core/Storage/Repositories/CustomerRepository.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -115,6 +116,8 @@ public sealed class SalesWriterInventoryTests
             "Dosya aynası (W2-01, §7.1), yalnız ApplyShipments (mod On ve disable turu): SyncApplyScope işleminde — TR_Shipment_ServerOwned_I mod 1'de ABORT etmez. CustomerId yönlendirmeden çözülür, OriginReplicaId ve ServerVersion sunucudan, onaylı doğar."),
         new(FeedRepo, "RefreshShipmentSql", "UPDATE Shipment", 1, [],
             "Dosya aynası (W2-01, §7.1): karar alanları, tutar, OriginReplicaId, ServerVersion ve onay, SyncApplyScope işleminde — TR_Shipment_ServerOwned_U ABORT etmez, TR_Shipment_Enqueue kuyruğa almaz (Revision değişmez). Yereldeki sürümden eski öğe yazılmaz."),
+        new(CustomerRepo, "ScrubPurgedLabelTextSql", "UPDATE Label", 1, [],
+            "KVKK metin boşaltması (W2-02, §9): müşteri akışından inen silme (RecordPurge) kimliğin bütün etiketlerinde DisplayName = NULL, MessageText = '' yazar — yalnız aynı işlemde okunan SalesSyncState.ScrubOrderText = 1 iken (varsayılan 0: bugünkü politika). Silmenin SyncApplyScope işleminde: TR_Label_ServerAuthority_U Authority='server' oturumda ABORT etmez. DisplayName ve MessageText TR_Label_Enqueue listesinde değil: SyncedAt, StockSyncedAt, Revision ve ServerVersion değişmez, gönderilmez (sunucu kendisi boşaltır). Kipten bağımsız."),
         new(CustomerSyncRepo, "MoveReferences", "UPDATE {table}", 1, [],
             "Yeniden anahtarlama: CustomerId'yi Label ve Shipment dahil taşır. CustomerId hiçbir tetikleyici listesinde değil: her kipte ve her oturumda yazar, kuyruğa almaz (sunucu kopyayı kendisi taşır, S18)."),
     ];
