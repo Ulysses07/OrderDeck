@@ -1942,38 +1942,114 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// Creates a tentative-backup Label that goes straight into the print
     /// queue with the parent label's price + code; the operator clicks Yazdır
     /// to physically produce the spare sticker, which carries the Y stamp.
+    ///
+    /// <para>Yönlendiriciden geçer (spec 2026-10-13 §5.3 "Yedek seçimi"; W2-06): mod Off'ta ve yerel yayında bugünkü
+    /// <see cref="LabelService.AddBackup"/>, bu çağrının içinde biter. Ebeveynin yayını devredilmişse
+    /// <c>add-backup</c> komutu arka planda gider; tıklama yine hemen tüketilir ve yedek modu kapanır. Yanıtın satırı
+    /// kuyruğa girer, ebeveynin sayacı artar; olmazsa satır içi şerit (<see cref="BackupProblem"/>), sonucu bilinmeyen
+    /// komutta "Tekrar dene" aynı niyeti gönderir.</para>
     /// </summary>
     public bool TryAssignChatAsBackup(ChatMessageViewModel messageVm)
     {
         if (BackupTargetLabel is null) return false;
 
         var target = BackupTargetLabel;
+        var message = messageVm.Message;
+        var request = new Services.Sales.SalesBackupRequest(
+            target.Id, message.Platform, message.Username, message.DisplayName ?? message.Username, message.Text);
+        // Aynı kişi aynı ebeveyne yeniden seçildiyse sonucu bilinmeyen önceki niyet aynen gider (aynı newOrderId).
+        var resend = _backupRetry is { } pending && ReferenceEquals(pending.Target, target) && pending.Request == request
+            ? pending.Intent
+            : null;
+        BackupAssignment = AssignBackupAsync(target, request, messageVm.IsSenderBlacklisted, resend);
+        // Yerel yol yukarıdaki çağrıda bitti; komut sürüyorsa yedek modu yine şimdi kapanır.
+        if (ReferenceEquals(BackupTargetLabel, target)) BackupTargetLabel = null;
+        return true;
+    }
+
+    /// <summary>Son yedek atamasının işi (yerel yolda tamamlanmış gelir); testler bekler.</summary>
+    internal Task BackupAssignment { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Yedek eklenemedi (komut yolu): satır içi şerit; null = kapalı. Pop-up yok.</summary>
+    [ObservableProperty] private string? _backupProblem;
+
+    /// <summary>Şeritteki "Tekrar dene": sonucu bilinmeyen komutun niyeti duruyor.</summary>
+    [ObservableProperty] private bool _canRetryBackup;
+
+    /// <summary>Sonucu bilinmeyen <c>add-backup</c>: hedef satır, istek ve aynen yeniden gönderilecek niyet.</summary>
+    private sealed record BackupRetry(
+        LabelViewModel Target, Services.Sales.SalesBackupRequest Request, bool Blacklisted,
+        Services.Sync.SalesCommandIntent Intent);
+
+    private BackupRetry? _backupRetry;
+
+    /// <summary>
+    /// Yedeği yönlendiriciden ekler. Yerel yol eşzamanlı biter (bugünkü sıra: kuyruk satırı, sayaç); yerel hatası
+    /// bugünkü gibi bildirilir. Komut yolunun sonucu satır içi şeride düşer.
+    /// </summary>
+    private async Task AssignBackupAsync(
+        LabelViewModel target, Services.Sales.SalesBackupRequest request, bool blacklisted,
+        Services.Sync.SalesCommandIntent? resend)
+    {
+        Services.Sales.SalesBackupResult result;
         try
         {
-            var backup = _labels.AddBackup(
-                target.Id,
-                messageVm.Message.Platform,
-                messageVm.Message.Username,
-                messageVm.Message.DisplayName ?? messageVm.Message.Username,
-                messageVm.Message.Text);
-
-            // Reflect the new tentative row in the queue UI (same pattern as
-            // AddChatToQueue) so the operator can hit Yazdır immediately.
-            PrintQueue.Add(new LabelViewModel(backup, messageVm.IsSenderBlacklisted));
-
-            // Bump the parent's chip in-place — avoids a full queue requery.
-            target.BackupCount++;
+            result = await _editor.AddBackupAsync(request, resend);
         }
         catch (Exception ex)
         {
             _dialogs.Show($"Yedek eklenemedi: {ex.Message}",
                 "Hata", DialogSeverity.Warning);
+            return;
         }
-        finally
+
+        if (result.Backup is { } backup)
         {
-            BackupTargetLabel = null;
+            // Reflect the new tentative row in the queue UI (same pattern as
+            // AddChatToQueue) so the operator can hit Yazdır immediately.
+            PrintQueue.Add(new LabelViewModel(backup, blacklisted));
+
+            // Bump the parent's chip in-place — avoids a full queue requery.
+            target.BackupCount++;
+            if (_backupRetry is not null && ReferenceEquals(_backupRetry.Target, target)
+                && _backupRetry.Request == request)
+                DismissBackupProblem();
+            return;
         }
-        return true;
+
+        if (result.AddedRemotely)
+        {
+            target.BackupCount++;
+            _backupRetry = null;
+            CanRetryBackup = false;
+            BackupProblem = Services.Sync.SalesCommandMessages.BackupAddedRemotely;
+            return;
+        }
+
+        _backupRetry = result.Resend is { } intent ? new BackupRetry(target, request, blacklisted, intent) : null;
+        CanRetryBackup = _backupRetry is not null;
+        BackupProblem = Services.Sync.SalesCommandMessages.BackupFailed(
+            result.Problem ?? Services.Sync.SalesCommandMessages.Failed);
+    }
+
+    /// <summary>"Tekrar dene": sonucu bilinmeyen <c>add-backup</c>'ı aynı <c>CommandId</c> ve <c>newOrderId</c> ile
+    /// yeniden gönderir; sunucu ikinci kez eklemez.</summary>
+    [RelayCommand]
+    private Task RetryBackupAsync()
+    {
+        if (_backupRetry is not { } retry) return Task.CompletedTask;
+        BackupProblem = null;
+        CanRetryBackup = false;
+        BackupAssignment = AssignBackupAsync(retry.Target, retry.Request, retry.Blacklisted, retry.Intent);
+        return BackupAssignment;
+    }
+
+    [RelayCommand]
+    private void DismissBackupProblem()
+    {
+        _backupRetry = null;
+        CanRetryBackup = false;
+        BackupProblem = null;
     }
 
     // F06 (denetim 2026-09-09): kuyruktan çıkarma fiziksel DELETE yapıyordu.

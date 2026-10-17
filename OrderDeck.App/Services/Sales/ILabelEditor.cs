@@ -134,6 +134,33 @@ public sealed record SalesCodePriceResult(
     public static SalesCodePriceResult Refused(string problem) => new(null, false, [], problem, null, []);
 }
 
+/// <summary>Yedek seçimi (spec 2026-10-13 §4.6 <c>add-backup</c>, §5.3 "Yedek seçimi"): ebeveyn etiket ve sohbetten
+/// seçilen kişi — bugünkü <see cref="LabelService.AddBackup"/> girdisi.</summary>
+public sealed record SalesBackupRequest(
+    string ParentLabelId,
+    string Platform,
+    string Username,
+    string DisplayName,
+    string? MessageText);
+
+/// <summary>Yedek eklemenin sonucu.</summary>
+/// <param name="Backup">Kuyruğa girecek yeni geçici yedek (yerel yazım ya da komut yanıtının satırı); eklenemediyse ya
+/// da yanıtın satırı yerele yazılamadıysa null.</param>
+/// <param name="Problem">Eklenemedi: satır içi metin (§5.3); başarıda null.</param>
+/// <param name="Resend">Sonucu bilinmeyen komut (zaman aşımı, sunucu hatası): "Tekrar dene" AYNI niyeti — aynı
+/// <c>CommandId</c> ve <c>newOrderId</c> — gönderir; sunucu ikinci kez eklemez. Yoksa null.</param>
+/// <param name="AddedRemotely">Komut uygulandı ama yanıtın satırı yerele yazılamadı (akışa kaldı).</param>
+public sealed record SalesBackupResult(
+    Label? Backup,
+    string? Problem,
+    SalesCommandIntent? Resend = null,
+    bool AddedRemotely = false)
+{
+    public static SalesBackupResult Added(Label backup) => new(backup, null);
+
+    public static SalesBackupResult Failed(string problem, SalesCommandIntent? resend = null) => new(null, problem, resend);
+}
+
 /// <summary>
 /// Etiket düzenlemelerinin tek karar noktası (spec 2026-10-13 §5.3). Mod Off'ta (<c>SalesSyncState.Mode = 0</c>, bugün
 /// her lisans) her çağrı bugünkü yerel servise gider: kapı yok, ağ yok, bekleme yok. Mod On'da etiket başına
@@ -180,4 +207,12 @@ public interface ILabelEditor
         SalesCodePriceRequest request,
         Func<IReadOnlyList<string>, PriceCorrectionResult> writeLocal,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Yedek seçimi (§4.6 <c>add-backup</c>): yerel yolda bugünkü <see cref="LabelService.AddBackup"/> (çağıranın iş
+    /// parçacığında, beklemeden; mod Off'ta her zaman); ebeveynin yayını devredilmişse <c>add-backup</c> komutu.
+    /// <paramref name="resend"/> verilirse önceki sonucu bilinmeyen niyet aynen yeniden gönderilir.
+    /// </summary>
+    Task<SalesBackupResult> AddBackupAsync(
+        SalesBackupRequest request, SalesCommandIntent? resend = null, CancellationToken ct = default);
 }

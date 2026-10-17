@@ -517,6 +517,19 @@ public sealed class LabelService
             isTentativeBackup: true);
     }
 
+    /// <summary>
+    /// Yedeğin müşterisi, etiketsiz (spec 2026-10-13 §4.6 <c>add-backup</c>): devredilmiş yayına yedeği sunucu ekler,
+    /// komut müşterinin yerel kaydını taşır. Müşteri <see cref="AddBackup"/>'ın (<see cref="Add"/>) açtığıyla aynı
+    /// kuralla bulunur ya da açılır (<c>CustomerService.GetOrCreate</c>, avatar yok), tek pakette.
+    /// </summary>
+    public Customers.Customer EnsureBackupCustomer(string platform, string username, string? displayName)
+    {
+        using var write = DbWrite.Begin(_factory);
+        var customer = _customers.GetOrCreate(platform, username, displayName, avatarUrl: null, write);
+        write.Commit();
+        return customer;
+    }
+
     /// <summary>Returns active (non-cancelled) tentative backups for a parent.
     /// Confirmed backups are excluded — they're already real labels visible in
     /// the normal queue/history.</summary>

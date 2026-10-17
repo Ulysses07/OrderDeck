@@ -1,3 +1,4 @@
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.Services.Sales;
@@ -44,4 +45,9 @@ public sealed class LocalLabelEditor(LabelService labels) : ILabelEditor
         Func<IReadOnlyList<string>, PriceCorrectionResult> writeLocal,
         CancellationToken ct = default) =>
         Task.FromResult(SalesCodePriceResult.AllLocal(writeLocal(request.LabelIds)));
+
+    public Task<SalesBackupResult> AddBackupAsync(
+        SalesBackupRequest request, SalesCommandIntent? resend = null, CancellationToken ct = default) =>
+        Task.FromResult(SalesBackupResult.Added(labels.AddBackup(
+            request.ParentLabelId, request.Platform, request.Username, request.DisplayName, request.MessageText)));
 }

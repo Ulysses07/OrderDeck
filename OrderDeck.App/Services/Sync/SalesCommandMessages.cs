@@ -50,6 +50,17 @@ public static class SalesCommandMessages
     /// yerel düzenleme beklemez, reddedilir.</summary>
     public const string HandoverInProgress = "Yayın sunucuya devrediliyor; birkaç saniye sonra tekrar dene.";
 
+    /// <summary><c>add-backup</c> uygulandı ama yanıtın satırı bu bilgisayara yazılamadı (akışa kaldı): yedek sunucuda
+    /// var, kuyruğa satış akışıyla iner.</summary>
+    public const string BackupAddedRemotely = "Yedek sunucuda eklendi; bu bilgisayara satış akışıyla inecek.";
+
+    /// <summary>Yedek seçiminin satır içi şeridi (§5.3 "Yedek seçimi"): "Yedek eklenemedi: …".</summary>
+    public static string BackupFailed(string problem)
+    {
+        var text = problem.Trim();
+        return "Yedek eklenemedi: " + (text.EndsWith('.') || text.EndsWith('!') || text.EndsWith('?') ? text : text + ".");
+    }
+
     /// <summary>Çevrimdışı yeniden baskının ekran notu (§5.6): kâğıt önbellekten basıldı, verinin tazeliği son satış
     /// akışı eşitlemesidir. Kâğıda yazılmaz.</summary>
     public static string LastSync(DateTimeOffset? at, TimeZoneInfo? zone = null) =>

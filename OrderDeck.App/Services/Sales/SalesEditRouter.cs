@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Sales;
@@ -9,7 +10,8 @@ namespace OrderDeck.App.Services.Sales;
 
 /// <summary>
 /// Düzenleme yönlendiricisi (spec 2026-10-13 §5.3; W2-05): müşteri kartı, Basılanlar'ın toplu iptali ve yeniden baskısı,
-/// yedek çekmecesi ve "Fiyatı düzelt" (<c>set-code-price</c>; W2-06) bunun üzerinden yazar.
+/// yedek çekmecesi, "Fiyatı düzelt" (<c>set-code-price</c>) ve yedek seçimi (<c>add-backup</c>; W2-06) bunun üzerinden
+/// yazar.
 ///
 /// <para><b>Mod Off</b> (<c>SalesSyncState.Mode = 0</c>, bugün her lisans; kip HER çağrıda okunur): bugünkü çağrının
 /// aynısı — <see cref="LabelService"/>'e bütün liste, çağıranın iş parçacığında, beklemeden. Oturum okunmaz, devir
@@ -462,6 +464,85 @@ public sealed class SalesEditRouter : ILabelEditor
             }
         }
         return commands;
+    }
+
+    // ── yedek seçimi (add-backup) ──────────────────────────────────────────
+
+    public Task<SalesBackupResult> AddBackupAsync(
+        SalesBackupRequest request, SalesCommandIntent? resend = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (resend is not null) return SendBackupAsync(resend, ct);
+        // Mod Off: bugünkü çağrı, beklemeden.
+        if (Decide([request.ParentLabelId]) is not { } decisions)
+            return Task.FromResult(SalesBackupResult.Added(AddBackupLocal(request)));
+
+        var decision = decisions[0];
+        switch (decision.Route)
+        {
+            case SalesEditRoute.Local:
+                return Task.FromResult(SalesBackupResult.Added(AddBackupLocal(request)));
+            case SalesEditRoute.LocalGated:
+                if (!_handover.TryEnter(decision.SessionId!, out var lease))
+                    return Task.FromResult(SalesBackupResult.Failed(SalesCommandMessages.HandoverInProgress));
+                using (lease)
+                    return Task.FromResult(SalesBackupResult.Added(AddBackupLocal(request)));
+            case SalesEditRoute.Command:
+                return AddBackupByCommandAsync(request, ct);
+            default:
+                _log.LogInformation("Yedek ekleme: ebeveyn {LabelId} için {Route}", request.ParentLabelId, decision.Route);
+                return Task.FromResult(SalesBackupResult.Failed(decision.Reason ?? SalesCommandMessages.Failed));
+        }
+    }
+
+    private Label AddBackupLocal(SalesBackupRequest request) => _labels.AddBackup(
+        request.ParentLabelId, request.Platform, request.Username, request.DisplayName, request.MessageText);
+
+    /// <summary>
+    /// Devredilmiş yayının ebeveynine yedek (§4.6 <c>add-backup</c>): müşteri yerelde bugünkü kuralla bulunur ya da
+    /// açılır (<see cref="LabelService.EnsureBackupCustomer"/>); niyet yeni <c>newOrderId</c> ile BİR KEZ kurulur
+    /// (fiyat ve kod ebeveynin, ürün yok — §12); yeniden deneme aynı niyeti gönderir.
+    /// </summary>
+    private Task<SalesBackupResult> AddBackupByCommandAsync(SalesBackupRequest request, CancellationToken ct)
+    {
+        if (_labelRepo.GetById(request.ParentLabelId) is not { } parent)
+            return Task.FromResult(SalesBackupResult.Failed(SalesCommandMessages.Failed));
+        var customer = _labels.EnsureBackupCustomer(request.Platform, request.Username, request.DisplayName);
+        var intent = _commands.Prepare(new SalesAddBackupPayload(
+            Guid.NewGuid(),
+            ToGuid(parent.Id),
+            new SalesAddBackupCustomer(customer.Id, request.Platform, request.Username, request.DisplayName),
+            request.MessageText ?? "",
+            parent.Price,
+            parent.Code));
+        return SendBackupAsync(intent, ct);
+    }
+
+    /// <summary>Niyeti gönderir; uygulandıysa yanıtın yerele yazılmış satırını döner. Sonucu bilinmeyen niyet
+    /// (<see cref="SalesCommandOutcome.CanResend"/>) "Tekrar dene" için döner.</summary>
+    private async Task<SalesBackupResult> SendBackupAsync(SalesCommandIntent intent, CancellationToken ct)
+    {
+        var outcome = await _commands.SendAsync(intent, ct).ConfigureAwait(false);
+        _connectivity.Report(outcome.Status);
+        if (!outcome.IsApplied)
+        {
+            _log.LogInformation("Yedek ekleme: add-backup {CommandId} uygulanmadı ({Status}); yeniden gönderilebilir={CanResend}",
+                intent.CommandId, outcome.Status, outcome.CanResend);
+            return SalesBackupResult.Failed(outcome.Message ?? SalesCommandMessages.Failed,
+                outcome.CanResend ? outcome.Intent : null);
+        }
+
+        var newId = NewOrderIdOf(intent);
+        var backup = _labelRepo.GetById(newId);
+        _log.LogInformation("Yedek ekleme: add-backup {CommandId} uygulandı ({Status}); yeni yedek {LabelId} yerelde={Local}",
+            intent.CommandId, outcome.ServerStatus, newId, backup is not null);
+        return backup is not null ? SalesBackupResult.Added(backup) : new SalesBackupResult(null, null, AddedRemotely: true);
+    }
+
+    private static string NewOrderIdOf(SalesCommandIntent intent)
+    {
+        using var doc = JsonDocument.Parse(intent.PayloadJson);
+        return doc.RootElement.GetProperty("newOrderId").GetGuid().ToString("N");
     }
 
     // ── sonucu bilinmeyen niyetler ─────────────────────────────────────────
