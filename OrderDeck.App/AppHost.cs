@@ -619,6 +619,16 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SalesFeedRepository>();
         services.AddSingleton<SalesFeedFailureRepository>();
         services.AddSingleton<RemoteLiveSessionRepository>();
+        // W2-10 (spec 2026-10-13 §8.4): kip adımı — satış akışı turu başarılı state'in hemen ardından çağırır. Açılışın
+        // 1. adımı giden kuyrukları AYNI gönderim servisleriyle boşaltır (müşteri, oturum ve etiket gönderim kapısından,
+        // kargo, dekont). Tur isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        services.AddSingleton<Services.Sync.ISalesOpeningFlush>(sp => new Services.Sync.SalesOpeningFlush(
+            sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
+            sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
+            sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+            sp.GetRequiredService<Services.Sync.PaymentSyncService>(),
+            sp.GetRequiredService<SalesSyncStateRepository>()));
+        services.AddSingleton<Services.Sync.SalesModeCoordinator>();
         services.AddSingleton<Services.Sync.SalesChangesPullService>();
         services.AddHostedService<Services.Sync.SalesChangesPullHostedService>();
 

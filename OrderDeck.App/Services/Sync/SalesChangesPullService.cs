@@ -14,6 +14,9 @@ public enum SalesPullOutcome
     NoLicense,
     /// <summary>Yerel kip Off: tur yalnız <c>sales/state</c> kalp atışıydı; akış istenmedi, hiçbir şey yazılmadı.</summary>
     ModeOff,
+    /// <summary>Sunucu modu On, yerel kip açılamadı (§8.4): bir giden kuyruk boşalmadı ya da kilit altında yeniden dolu
+    /// bulundu. Akış istenmedi; sonraki tur açılışı 1. adımdan yeniden dener.</summary>
+    Opening,
     /// <summary><c>sales/state</c> başarısız (ağ, sunucu, kimlik), sayfa/ağ hatası (429 dahil), uygulanamayan öğe
     /// (atlanana kadar), yerel ortam hatası ya da temizlik yazılamadı. İmleç son uygulanan öğede.</summary>
     Failed,
@@ -52,7 +55,21 @@ public sealed class SalesChangedEventArgs(
 public sealed record SalesFeedStatus(bool ModeOn, DateTimeOffset? LastCaughtUpAt, bool CatchingUp, int WaitingItems)
 {
     public static SalesFeedStatus Off { get; } = new(false, null, false, 0);
+
+    /// <summary>Mod On açılışı bekliyor (§8.4-1): sunucu modu On, yerel kip bir giden kuyruk boşalmadığı için hâlâ Off.
+    /// Satır yerel kip Off'ken de görünür: "Senkron açılıyor; bekleyen gönderim var".</summary>
+    public static SalesFeedStatus Opening { get; } = new(false, null, false, 0) { OpeningPending = true };
+
+    /// <summary>Sunucu modu On, yerel kip açılamadı (bkz. <see cref="Opening"/>).</summary>
+    public bool OpeningPending { get; init; }
 }
+
+/// <summary>Mod On'un ilk yetişmesi ufukta tamamlandı (<see cref="SalesChangesPullService.FirstCatchUpCompleted"/>; §8.4-4).
+/// Açılış başına bir kez.</summary>
+/// <param name="CatchUpOverwrites">Bu bilgisayarın kendi etiketinde sunucunun değeriyle ezilen birim sayısı (§5.4);
+/// 0'dan büyükse kabuk bir kez uyarır.</param>
+/// <param name="AggregateRows">Toplamı yeniden türetilen müşteri satırı.</param>
+public sealed record SalesFirstCatchUp(int CatchUpOverwrites, int AggregateRows);
 
 /// <summary>
 /// Satış değişiklik akışının turu (spec 2026-10-13 §5.4 Servis, §4.4, §4.5, §3.2/M5, §5.7, §12 risk 9). Diğer
@@ -64,7 +81,10 @@ public sealed record SalesFeedStatus(bool ModeOn, DateTimeOffset? LastCaughtUpAt
 /// <list type="number">
 ///   <item><c>sales/state</c> — turda TAM BİR kez (<see cref="SalesSyncStateService.TourOnceAsync"/>), her kipte:
 ///   kalp atışı kesilirse başka bilgisayar bu bilgisayarın canlı yayınını sahibi susmuş sanıp bitirebilirdi (Y7).
-///   Lisans değişimi temizliği (yerel). Yerel <c>SalesSyncState.Mode</c> 1 değilse tur burada biter: mod Off'ta
+///   Lisans değişimi temizliği (yerel). Başarılı state'in hemen ardından kip adımı (W2-10,
+///   <see cref="SalesModeCoordinator"/>, §8.4): sunucu modu 1 ve yerel kip 0 ise açılış — giden kuyruklar görülen kip 0
+///   ile boşaltılır, kilit altında <c>Mode = 1</c> yazılır, imleç 0; açılamazsa tur <see cref="SalesPullOutcome.Opening"/>
+///   ile biter. Yerel <c>SalesSyncState.Mode</c> 1 değilse tur burada biter: mod Off'ta
 ///   (bugün her lisans) akış istenmez ve hiçbir şey yazılmaz. Mod On'da <c>liveSessions</c>
 ///   <c>RemoteLiveSession</c>'a aynalanır (<see cref="RemoteLiveSessionRepository.Mirror"/>; kendi oturumunun Id'si
 ///   alınmaz, <c>StreamSession</c>'a hiç yazılmaz).</item>
@@ -82,6 +102,9 @@ public sealed record SalesFeedStatus(bool ModeOn, DateTimeOffset? LastCaughtUpAt
 ///   kaydedilir. <c>cursorReset</c> imleci 0'a çeker, akış baştan uygulanır (idempotent).</item>
 ///   <item>Değişen satırlar <see cref="SalesChanged"/> ile bildirilir (arka plan iş parçacığında; dinleyici
 ///   dispatcher'a taşır).</item>
+///   <item>Akış ufka ulaştıysa (boş sayfa, bekleyen öğe yok) ve ilk yetişme sürüyorsa: toplamlar türetilir,
+///   <c>FirstCatchUpAt</c> yazılır (<see cref="SalesModeCoordinator.CompleteFirstCatchUp"/>, §8.4-4) ve
+///   <see cref="FirstCatchUpCompleted"/> bir kez yayılır.</item>
 /// </list></para>
 ///
 /// <para><b>Bekleyen öğe:</b> U5 (gönderilmemiş yerel etiket) durdurur: oturum ve etiket bir kez daha gönderilir;
@@ -137,6 +160,7 @@ public sealed class SalesChangesPullService
     private readonly ILogger<SalesChangesPullService> _log;
     private readonly PendingSalesCommandSender? _pendingCommands;
     private readonly SessionRepository? _sessions;
+    private readonly SalesModeCoordinator? _modeCoordinator;
 
     /// <summary>"Devredilemedi" kuralı (§5.7, §12 risk 4): yalnız sunucuya ulaşan mod On turlarında gözlenir.</summary>
     private readonly HandoverStallTracker _handoverStall = new();
@@ -184,10 +208,12 @@ public sealed class SalesChangesPullService
         IClock clock,
         ILogger<SalesChangesPullService> log,
         PendingSalesCommandSender? pendingCommands = null,
-        SessionRepository? sessions = null)
+        SessionRepository? sessions = null,
+        SalesModeCoordinator? modeCoordinator = null)
     {
         _pendingCommands = pendingCommands;
         _sessions = sessions;
+        _modeCoordinator = modeCoordinator;
         if (_pendingCommands is not null)
             _pendingCommands.Settled += (_, e) => PendingCommandsSettled?.Invoke(this, e);
         _api = api;
@@ -221,6 +247,29 @@ public sealed class SalesChangesPullService
     /// <summary>Bekleyen komutların sonucu (<see cref="PendingSalesCommandSender.Settled"/>): "kâğıtları imha et" ve
     /// kalıcı ret uyarısı (§5.5). Gönderenin iş parçacığında; dinleyici arayüzü dispatcher'a taşımalı.</summary>
     public event EventHandler<PendingSalesCommandsSettled>? PendingCommandsSettled;
+
+    /// <summary>Mod On'un ilk yetişmesi tamamlandı (§8.4-4): açılış başına bir kez, turun iş parçacığında. Kabuk üstüne
+    /// yazım sayısı 0'dan büyükse bir kez uyarır (§5.4); dinleyici arayüzü dispatcher'a taşımalı. Dinleyicinin hatası
+    /// turu düşürmez.</summary>
+    public event EventHandler<SalesFirstCatchUp>? FirstCatchUpCompleted;
+
+    /// <summary>
+    /// Yerel kip On ve ilk yetişme bitmedi (<c>FirstCatchUpAt</c> boş): yayın başlatmanın Faz 0 sorusu bunu da bekler
+    /// (§5.7). Kip ya da durum okunamazsa <c>false</c> (soru sorulmaz; yayın internetsiz de başlayabilmeli).
+    /// </summary>
+    public bool IsFirstCatchUpPending()
+    {
+        try
+        {
+            var state = _stateRepo.Get();
+            return state.Mode == 1 && state.FirstCatchUpAt is null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "Satış senkronunun ilk yetişme durumu okunamadı");
+            return false;
+        }
+    }
 
     /// <summary>
     /// Bekleyen satış komutlarını hemen gönderir (spec 2026-10-13 §5.5; ödeme isteğinin ön gönderiminde İLK sıra, §6.4-1
@@ -317,6 +366,11 @@ public sealed class SalesChangesPullService
         // Lisans değişimi temizliği (yerel): yeni lisansın akışı eski lisansın uzak satırlarının üstüne inmesin.
         var cleanup = CleanUpAfterLicenseChange(licenseKey);
 
+        // Kip adımı (W2-10, §8.4): başarılı state'in hemen ardından — bekleyen komutlardan ve akıştan önce.
+        var modeStep = SalesModeStep.None;
+        if (_modeCoordinator is not null && stateOutcome == SalesStateTourOutcome.Ok && cleanup is null)
+            modeStep = await _modeCoordinator.RunAsync(licenseKey, ct).ConfigureAwait(false);
+
         int mode;
         try { mode = _stateRepo.GetMode(); }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -326,12 +380,17 @@ public sealed class SalesChangesPullService
         }
         if (mode != 1)
         {
-            _status = SalesFeedStatus.Off;
             ResetHandoverStall();
+            if (modeStep == SalesModeStep.OpeningPending)
+            {
+                _status = SalesFeedStatus.Opening;
+                return SalesPullOutcome.Opening;
+            }
+            _status = SalesFeedStatus.Off;
             return stateOutcome == SalesStateTourOutcome.Ok ? SalesPullOutcome.ModeOff : SalesPullOutcome.Failed;
         }
 
-        _status = _status with { ModeOn = true };
+        _status = _status with { ModeOn = true, OpeningPending = false };
         if (stateOutcome != SalesStateTourOutcome.Ok) return SalesPullOutcome.Failed;
         if (cleanup is { } blocked) return blocked;
 
@@ -367,7 +426,25 @@ public sealed class SalesChangesPullService
 
         // 6) Arayüz.
         if (tally.Any) RaiseSalesChanged(tally.Labels.ToList(), tally.Sessions.ToList(), tally.Shipments.ToList());
+
+        // 7) Ufuk: ilk yetişme sürüyorsa tamamlanır (§8.4-4) — toplamlar tek işlemde, FirstCatchUpAt.
+        if (pass.Outcome == SalesPullOutcome.CaughtUp) CompleteFirstCatchUp();
         return pass.Outcome;
+    }
+
+    /// <summary>Akış ufka ulaştı: ilk yetişme sürüyorsa tamamlanır ve bir kez bildirilir. Hatası turu düşürmez.</summary>
+    private void CompleteFirstCatchUp()
+    {
+        if (_modeCoordinator?.CompleteFirstCatchUp() is not { } done) return;
+        try
+        {
+            FirstCatchUpCompleted?.Invoke(this,
+                new SalesFirstCatchUp(done.CatchUpOverwrites, done.Aggregates.ChangedRows));
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Satış akışı: ilk yetişme bildirimi arayüze iletilemedi");
+        }
     }
 
     // ── akış ───────────────────────────────────────────────────────────────

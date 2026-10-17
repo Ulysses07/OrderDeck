@@ -72,6 +72,11 @@ namespace OrderDeck.Tests.Sync;
 /// devredilmişte etkisiz başarı); sahibin sessizliği <see cref="SetReplicaLastSeen"/> ile kurulur,
 /// <see cref="DeriveLiveSessions"/> state'in canlı yayın listesini sunucunun devredilmemiş oturumlarından türetir.
 /// <see cref="LoseNextResponse"/> yanıtı kaybolan komutu taklit eder.</para>
+///
+/// <para><b>Mod On açılışı</b> (W2-10): açılışın 1. adımı dekont kuyruğunu da boşaltır — <c>payments/sync</c>
+/// (<see cref="PaymentsSync"/>; kayıt, <see cref="EnqueueStatus"/>, <see cref="DuringPush"/>, yanıt boş yankı) ve
+/// <c>payments/since</c> (boş). <see cref="RequestLog"/> bütün isteklerin sırasını tutar (geri yüklemeden sonra
+/// gönderimin state yanıtını beklediğini sınamak için).</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
 {
@@ -86,6 +91,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     public const string SessionsSync = "sessions/sync";
     public const string OrdersSync = "orders/sync";
     public const string ShipmentsSync = "shipments/sync";
+
+    /// <summary>Dekont gönderimi (<c>PaymentSyncService</c>): <see cref="Calls"/>, <see cref="EnqueueStatus"/> ve
+    /// <see cref="DuringPush"/> için.</summary>
+    public const string PaymentsSync = "payments/sync";
 
     /// <summary><c>sales/backfill</c>'in uç adı: <see cref="EnqueueStatus"/> ve <see cref="EnqueueProblem"/> için.</summary>
     public const string Backfill = "backfill";
@@ -152,6 +161,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary><c>/sales/</c> altına gelen bütün istekler (kasıtlı arızalar dahil).</summary>
     public int SalesRequestCount { get { lock (_gate) return _salesRequests; } }
     private int _salesRequests;
+
+    /// <summary>Gelen her istek, geliş sırasıyla: <c>"{yöntem} {yol}"</c> (ağ hatası taklidi hariç).</summary>
+    public IReadOnlyList<string> RequestLog { get { lock (_gate) return _requestLog.ToList(); } }
+    private readonly List<string> _requestLog = new();
 
     public Replica? ReplicaRow(Guid licenseId, Guid replicaId)
     {
@@ -276,6 +289,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     {
         var path = req.RequestUri!.AbsolutePath;
         if (Offline) throw new HttpRequestException("fake offline");
+        lock (_gate) _requestLog.Add($"{req.Method} {path}");
         try
         {
             if (path == "/api/v1/me/licenses" && req.Method == HttpMethod.Get)
@@ -289,6 +303,11 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             var push = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/(sessions|orders|shipments)/sync$");
             if (push.Success && req.Method == HttpMethod.Post)
                 return await HandlePushAsync(req, Guid.Parse(push.Groups[1].Value), push.Groups[2].Value + "/sync", ct);
+
+            // Dekont gönderimi ve ters çekmesi (W2-10: mod On açılışının 1. adımı dekont kuyruğunu da boşaltır).
+            var payments = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payments/(sync|since)$");
+            if (payments.Success)
+                return await HandlePaymentsAsync(req, Guid.Parse(payments.Groups[1].Value), payments.Groups[2].Value, ct);
 
             // ShipmentSyncService'in ters çekmesi (uygulanmıyor, yalnız imleç): sunucuda başka yazıcı yok.
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/shipments/since$") && req.Method == HttpMethod.Get)
@@ -1342,6 +1361,31 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             }
         return FakeHttpMessageHandler.Json(200,
             $"{{\"synced\":{synced.ToString(CultureInfo.InvariantCulture)},\"retroactiveMatches\":0,\"redirects\":[]}}");
+    }
+
+    /// <summary><c>payments/sync</c> (dekont gönderimi: kayıt, betik, <see cref="DuringPush"/>, boş yankı) ve
+    /// <c>payments/since</c> (boş). Sunucunun dekont kuralı taklit edilmez: açılışın 1. adımı yalnız kuyruğun boşalmasına
+    /// bakar.</summary>
+    private async Task<HttpResponseMessage> HandlePaymentsAsync(
+        HttpRequestMessage req, Guid licenseId, string action, CancellationToken ct)
+    {
+        if (action == "since" && req.Method == HttpMethod.Get) return FakeHttpMessageHandler.Json(200, "[]");
+        if (action != "sync" || req.Method != HttpMethod.Post)
+        {
+            _faults.Enqueue($"beklenmeyen istek: {req.Method} payments/{action}");
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(PaymentsSync, licenseId, raw));
+            if (_scripted.TryGetValue(PaymentsSync, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        if (scripted is not null) return scripted();
+        DuringPush?.Invoke(PaymentsSync);
+        return FakeHttpMessageHandler.Json(200, "[]");
     }
 
     private Replica Touch(Guid licenseId, Guid replicaId, int seenMode)

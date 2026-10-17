@@ -355,6 +355,31 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Kip_adimi_tekil_satis_akisi_turuna_bagli_acilis_ayni_gonderim_servislerini_bosaltir()
+    {
+        // W2-10 (spec 2026-10-13 §8.4): satış akışı turu kip adımını isteğe bağlı parametreyle alır — kayıt eksikse DI
+        // sessizce null bırakır, mod On hiç açılmazdı. Açılışın 1. adımı giden kuyrukları AYNI gönderim servisleriyle
+        // boşaltır (oturum ve etiket tek gönderim kapısından).
+        using var host = new global::OrderDeck.App.AppHost();
+        var coordinator = host.Services.GetRequiredService<SalesModeCoordinator>();
+
+        host.Services.GetRequiredService<SalesModeCoordinator>().Should().BeSameAs(coordinator);
+        PrivateField<SalesModeCoordinator>(host.Services.GetRequiredService<SalesChangesPullService>(), "_modeCoordinator")
+            .Should().BeSameAs(coordinator);
+        PrivateField<SalesSyncStateService>(coordinator, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateService>(), "turun state'i: aynı son durum");
+        var flush = PrivateField<ISalesOpeningFlush>(coordinator, "_flush").Should().BeOfType<SalesOpeningFlush>().Subject;
+        PrivateField<WpfCustomerProjectionSyncService>(flush, "_customers").Should().BeSameAs(
+            host.Services.GetRequiredService<WpfCustomerProjectionSyncService>());
+        PrivateField<SessionOrderSyncService>(flush, "_sales").Should().BeSameAs(
+            host.Services.GetRequiredService<SessionOrderSyncService>(), "gönderim kapısı tek örnekte geçerli");
+        PrivateField<ShipmentSyncService>(flush, "_shipments").Should().BeSameAs(
+            host.Services.GetRequiredService<ShipmentSyncService>());
+        PrivateField<PaymentSyncService>(flush, "_payments").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentSyncService>());
+    }
+
+    [Fact]
     public void Devredilemeyen_yayin_kurali_tur_ve_dikkat_sayacina_bagli()
     {
         // W2-09 (spec 2026-10-13 §5.7, §12 risk 4): satış akışı turu devri bekleyen yayınları oturum deposundan okur;
