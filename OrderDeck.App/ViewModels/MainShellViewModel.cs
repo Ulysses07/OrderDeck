@@ -1568,6 +1568,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             d => new Views.Drawers.DekontEkleDrawer(d, vm));
         // Payment outbox 30sn içinde sync'ler — UI feedback yok, mobile app
         // listede otomatik görünür.
+        // W2-08 (spec 2026-10-13 §5.8): dekont kaydedildi ama kargo adımı ya da
+        // eşik kararı uygulanamadıysa (mod On: çevrimdışı, komut ucu yok, ret)
+        // sebebi satış şeridinde — açılır pencere yok, "Tamam" kapatır.
+        if (vm.ShipmentWarning is { } shipmentWarning)
+            ShowSalesNotice([], [shipmentWarning]);
     }
 
     private void UpdateStreamStatusLabel()

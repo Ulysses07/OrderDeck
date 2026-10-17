@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.Sync;
+using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
@@ -34,6 +35,11 @@ namespace OrderDeck.App.Services.Sales;
 /// komut; sonuç tek iletide (<see cref="SalesEditResult.ProblemText"/>). Komutun sonucu bağlantı ölçüsüne işlenir
 /// (<see cref="SalesConnectivity.Report"/>).</para>
 ///
+/// <para><b>Kargo</b> (W2-08, §5.3 "Dekont kargo adımı" ve "Eşik çekmecesi kararı", §7.1): mod Off'ta bugünkü yerel
+/// sıra (<see cref="LocalShipmentEditor"/>); mod On'da dosya sunucunun, her zaman komut — <c>attach-shipment</c>
+/// (beklenen küme yerel bağlanmamış etiketler; <c>stale</c>'de sunucunun aday kümesiyle bir kez daha) ve
+/// <c>shipment-decision</c>. Yerel <c>Shipment</c>'a hiç yazılmaz; yanıtın satırları kilit altında aynaya iner.</para>
+///
 /// <para>Yerel yazım çağıranın iş parçacığında (bugünkü gibi); komut <see cref="SalesCommandClient.SendAsync"/> ile
 /// arka planda. Günlük yalnız kimlik ve sayı taşır.</para>
 /// </summary>
@@ -47,6 +53,10 @@ public sealed class SalesEditRouter : ILabelEditor
     private readonly SalesCommandClient _commands;
     private readonly PendingSalesCommandSender _pending;
     private readonly SalesConnectivity _connectivity;
+    private readonly ShipmentService _shipments;
+    private readonly ShipmentRepository _shipmentRepo;
+    private readonly CustomerRepository _customers;
+    private readonly LocalShipmentEditor _localShipments;
     private readonly Func<DateTimeOffset?> _lastFeedSyncAt;
     private readonly ILogger<SalesEditRouter> _log;
 
@@ -65,6 +75,9 @@ public sealed class SalesEditRouter : ILabelEditor
         SalesCommandClient commands,
         PendingSalesCommandSender pending,
         SalesConnectivity connectivity,
+        ShipmentService shipments,
+        ShipmentRepository shipmentRepo,
+        CustomerRepository customers,
         Func<DateTimeOffset?> lastFeedSyncAt,
         ILogger<SalesEditRouter> log)
     {
@@ -76,6 +89,10 @@ public sealed class SalesEditRouter : ILabelEditor
         _commands = commands;
         _pending = pending;
         _connectivity = connectivity;
+        _shipments = shipments;
+        _shipmentRepo = shipmentRepo;
+        _customers = customers;
+        _localShipments = new LocalShipmentEditor(shipments);
         _lastFeedSyncAt = lastFeedSyncAt;
         _log = log;
     }
@@ -791,6 +808,138 @@ public sealed class SalesEditRouter : ILabelEditor
         using var doc = JsonDocument.Parse(intent.PayloadJson);
         return doc.RootElement.GetProperty("newOrderId").GetGuid().ToString("N");
     }
+
+    // ── kargo (attach-shipment, shipment-decision) ─────────────────────────
+
+    public Task<SalesShipmentStepResult> RunDekontShipmentStepAsync(
+        string customerId, ShipmentDirective directive, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(customerId);
+        // Mod Off: bugünkü yerel sıra, çağıranın iş parçacığında, beklemeden.
+        if (!IsModeOn()) return _localShipments.RunDekontShipmentStepAsync(customerId, directive, ct);
+        return DekontShipmentStepModeOnAsync(customerId, directive, ct);
+    }
+
+    /// <summary>
+    /// Mod On'un dekont kargo adımı (§4.6 <c>attach-shipment</c>, §7.1, §5.8): sunucu kullanılamıyorsa istek gitmez.
+    /// Niyet BİR KEZ kurulur — müşteri yerelde asıl Id'sine çözülür, önerilen dosya Id'si yeni, beklenen küme yerel
+    /// bağlanmamış etiketler ve sunucu sürümleri. <c>stale</c> aday kümesini taşırsa (adayların güncel satırları yazıldı)
+    /// aynı komut ve dosya Id'siyle, sunucunun kümesiyle bir kez daha gönderilir; ikinci ret adımı atlatır. Uygulanınca
+    /// yönerge: Hold/RecipientPays <c>shipment-decision</c> (çekmece yok), Normal'de eşik yanıtın havuzuyla.
+    /// </summary>
+    private async Task<SalesShipmentStepResult> DekontShipmentStepModeOnAsync(
+        string customerId, ShipmentDirective directive, CancellationToken ct)
+    {
+        if (_connectivity.UnavailableReason is not null)
+        {
+            _log.LogInformation("Dekont kargo adımı: sunucu kullanılamıyor; adım atlandı (dekont kaydedildi)");
+            return SalesShipmentStepResult.Skipped(SalesCommandMessages.DekontShipmentDeferred);
+        }
+
+        var customer = _customers.ResolveId(customerId);
+        var unattached = _labelRepo.GetUnattachedByCustomer(customer).Select(l => l.Id).ToList();
+        var changed = new HashSet<string>(StringComparer.Ordinal);
+        var outcome = await _commands.SendAsync(
+            _commands.Prepare(new SalesAttachShipmentPayload(customer, Guid.NewGuid()), unattached), ct).ConfigureAwait(false);
+        _connectivity.Report(outcome.Status);
+        changed.UnionWith(outcome.LabelIds);
+        if (outcome.Status == SalesCommandStatus.Stale && outcome.Problem?.Candidates is { } candidates)
+        {
+            _log.LogInformation(
+                "Dekont kargo adımı: attach-shipment {CommandId} stale ({Local} yerel, {Server} sunucu adayı); sunucunun kümesiyle bir kez yeniden",
+                outcome.Intent.CommandId, unattached.Count, candidates.Count);
+            var retry = outcome.Intent with { Expected = candidates.OrderBy(c => c.OrderId).ToList() };
+            outcome = await _commands.SendAsync(retry, ct).ConfigureAwait(false);
+            _connectivity.Report(outcome.Status);
+            changed.UnionWith(outcome.LabelIds);
+        }
+        if (!outcome.IsApplied)
+        {
+            _log.LogInformation("Dekont kargo adımı: attach-shipment {CommandId} uygulanmadı ({Status}); adım atlandı",
+                outcome.Intent.CommandId, outcome.Status);
+            return SalesShipmentStepResult.Skipped(
+                outcome.CanResend
+                    ? SalesCommandMessages.DekontShipmentDeferred
+                    : SalesCommandMessages.DekontShipmentFailed(outcome.Message ?? SalesCommandMessages.Failed),
+                changed.ToList());
+        }
+
+        var result = outcome.Result;
+        Guid? target = result?.ShipmentId ?? (result?.PoolShipmentIds is { Count: > 0 } pool ? pool[0] : null);
+        _log.LogInformation(
+            "Dekont kargo adımı: attach-shipment {CommandId} {Status} — {Attached} etiket, dosya {ShipmentId}, havuz {Pool}",
+            outcome.Intent.CommandId, outcome.ServerStatus, result?.Changed?.Count ?? 0, target, result?.Pool);
+        if (target is not { } targetId)
+            return new SalesShipmentStepResult(null, null, changed.ToList());     // bağlanacak etiket ve açık dosya yok
+
+        var shipmentId = targetId.ToString("N");
+        if (directive is ShipmentDirective.Hold or ShipmentDirective.RecipientPays)
+        {
+            var decision = await DecideModeOnAsync(shipmentId,
+                directive == ShipmentDirective.Hold ? ShipmentDecision.Hold : ShipmentDecision.RecipientPays, ct)
+                .ConfigureAwait(false);
+            changed.UnionWith(decision.ChangedLabelIds);
+            return new SalesShipmentStepResult(null, decision.Problem, changed.ToList());
+        }
+
+        if (_shipmentRepo.GetById(shipmentId) is not { } mirror)
+        {
+            _log.LogWarning("Dekont kargo adımı: dosya {ShipmentId} yerel aynada yok; eşik sorulmadı", shipmentId);
+            return new SalesShipmentStepResult(null, null, changed.ToList());
+        }
+        var ctx = _shipments.EvaluatePool(mirror, result?.Pool ?? mirror.CumulativeAmount);
+        return new SalesShipmentStepResult(ctx.ShouldPrompt && ctx.ThresholdReached ? ctx : null, null, changed.ToList());
+    }
+
+    public Task<SalesShipmentDecisionResult> DecideShipmentAsync(
+        string shipmentId, ShipmentDecision decision, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(shipmentId);
+        // Mod Off: bugünkü yerel karar, beklemeden.
+        if (!IsModeOn()) return _localShipments.DecideShipmentAsync(shipmentId, decision, ct);
+        return DecideModeOnAsync(shipmentId, decision, ct);
+    }
+
+    /// <summary>
+    /// Mod On'un kargo kararı (§4.6 <c>shipment-decision</c>, §7.3): beklenen sürüm aynanın
+    /// <see cref="Shipment.ServerVersion"/>'ı; sessiz yeniden deneme yok. <c>stale</c> ve <c>shipment-shipped</c>'te
+    /// dosyanın güncel hâli (<c>currentShipments</c>) yerel aynaya yazılmıştır, sonuç sorunu taşır. Uygulanınca havuz
+    /// kararın dosyalarının (U12) yanıttaki tutarlarıdır ("kazandın" mesajı bunu söyler).
+    /// </summary>
+    private async Task<SalesShipmentDecisionResult> DecideModeOnAsync(
+        string shipmentId, ShipmentDecision decision, CancellationToken ct)
+    {
+        if (_connectivity.UnavailableReason is { } unavailable)
+        {
+            _log.LogInformation("Kargo kararı {Decision}: dosya {ShipmentId} — sunucu kullanılamıyor", decision, shipmentId);
+            return new SalesShipmentDecisionResult(null, 0m, SalesCommandMessages.ShipmentDecisionFailed(unavailable), []);
+        }
+
+        var outcome = await _commands.SendAsync(_commands.ShipmentDecision(shipmentId, WireDecision(decision)), ct)
+            .ConfigureAwait(false);
+        _connectivity.Report(outcome.Status);
+        if (!outcome.IsApplied)
+        {
+            _log.LogInformation("Kargo kararı {Decision}: shipment-decision {CommandId} dosya {ShipmentId} uygulanmadı ({Status})",
+                decision, outcome.Intent.CommandId, shipmentId, outcome.Status);
+            return new SalesShipmentDecisionResult(null, 0m,
+                SalesCommandMessages.ShipmentDecisionFailed(outcome.Message ?? SalesCommandMessages.Failed), outcome.LabelIds);
+        }
+
+        var pooled = outcome.Result?.Decided?.Sum(d => d.Amount) ?? 0m;
+        _log.LogInformation(
+            "Kargo kararı {Decision}: shipment-decision {CommandId} uygulandı — {Files} dosya, {Unlinked} bağı çözülen etiket",
+            decision, outcome.Intent.CommandId, outcome.Result?.Decided?.Count ?? 0, outcome.Result?.Changed?.Count ?? 0);
+        return new SalesShipmentDecisionResult(_shipmentRepo.GetById(shipmentId), pooled, null, outcome.LabelIds);
+    }
+
+    private static string WireDecision(ShipmentDecision decision) => decision switch
+    {
+        ShipmentDecision.ShipNow => SalesShipmentDecisionPayload.ShipNow,
+        ShipmentDecision.Hold => SalesShipmentDecisionPayload.Hold,
+        ShipmentDecision.RecipientPays => SalesShipmentDecisionPayload.RecipientPays,
+        _ => throw new ArgumentOutOfRangeException(nameof(decision), decision, null),
+    };
 
     // ── sonucu bilinmeyen niyetler ─────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 using OrderDeck.App.Services.Sync;
+using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.Services.Sales;
@@ -193,13 +194,66 @@ public sealed record SalesBackupResult(
     public static SalesBackupResult Failed(string problem, SalesCommandIntent? resend = null) => new(null, problem, resend);
 }
 
+/// <summary>Dekontun kargo adımının sonucu (spec 2026-10-13 §5.3 "Dekont kargo adımı", §5.8 "Dekont kaydı").</summary>
+/// <param name="Threshold">Normal yönergede havuz eşiğe ulaştı: eşik çekmecesi bununla açılır; yoksa null.</param>
+/// <param name="Warning">Kargo adımı yapılamadı ya da yarım kaldı (dekont yine kaydedildi): satır içi uyarı; başarıda
+/// null. Bir sonraki dekont bütün bağlanmamış etiketleri alır.</param>
+/// <param name="ChangedLabelIds">Yerelde kargo bağı değişmiş olabilecek etiketler (komut yanıtının ve retin
+/// satırları); mod Off'ta boş.</param>
+public sealed record SalesShipmentStepResult(
+    ShipmentDecisionContext? Threshold,
+    string? Warning,
+    IReadOnlyList<string> ChangedLabelIds)
+{
+    public static SalesShipmentStepResult Local(ShipmentDecisionContext? threshold) => new(threshold, null, []);
+
+    public static SalesShipmentStepResult Skipped(string warning, IReadOnlyList<string>? changed = null) =>
+        new(null, warning, changed ?? []);
+}
+
+/// <summary>Kargo kararının sonucu (§5.3 "Eşik çekmecesi kararı").</summary>
+/// <param name="Shipment">Kararın uygulandığı dosya (yerel satır ya da ayna); uygulanamadıysa null.</param>
+/// <param name="PooledAmount">Kararın kapsadığı dosyaların toplamı (U12) — "ücretsiz kargo kazandın" mesajının tutarı.</param>
+/// <param name="Problem">Uygulanamadı: satır içi metin (§5.3); başarıda null.</param>
+/// <param name="ChangedLabelIds">Yerelde kargo bağı değişmiş olabilecek etiketler.</param>
+public sealed record SalesShipmentDecisionResult(
+    Shipment? Shipment,
+    decimal PooledAmount,
+    string? Problem,
+    IReadOnlyList<string> ChangedLabelIds);
+
+/// <summary>
+/// Kargo dosyası işlemleri (spec 2026-10-13 §5.3 "Dekont kargo adımı" ve "Eşik çekmecesi kararı", §7.1). Mod Off'ta
+/// bugünkü yerel <see cref="ShipmentService"/> sırası, çağıranın iş parçacığında, beklemeden — dönen görev tamamlanmış
+/// olarak döner. Mod On'da dosya ve etiket–dosya bağı sunucunundur: her zaman komut (<c>attach-shipment</c>,
+/// <c>shipment-decision</c>), sessiz yeniden deneme yok; yerel <c>Shipment</c>'a hiç yazılmaz.
+/// </summary>
+public interface IShipmentEditor
+{
+    /// <summary>
+    /// Dekont kaydedildikten sonra müşterinin bağlanmamış etiketlerini açık dosyasına bağlar ve yönergeyi uygular:
+    /// Hold ve RecipientPays kararı çekmecesiz verilir, Normal'de eşik havuzla değerlendirilir. Mod On'da
+    /// çevrimdışıyken, komut ucu yokken ya da komut reddedilince adım atlanır ve sonuç uyarı taşır (§5.8); dekont
+    /// kaydı etkilenmez.
+    /// </summary>
+    /// <param name="customerId">Dekontun müşterisi (yerel Id).</param>
+    Task<SalesShipmentStepResult> RunDekontShipmentStepAsync(
+        string customerId, ShipmentDirective directive, CancellationToken ct = default);
+
+    /// <summary>Eşik çekmecesinin kararı: mod Off'ta <see cref="ShipmentService.ApplyDecision(string, ShipmentDecision, out decimal)"/>,
+    /// mod On'da <c>shipment-decision</c> (beklenen sürüm aynanın <see cref="Shipment.ServerVersion"/>'ı).</summary>
+    Task<SalesShipmentDecisionResult> DecideShipmentAsync(
+        string shipmentId, ShipmentDecision decision, CancellationToken ct = default);
+}
+
 /// <summary>
 /// Etiket düzenlemelerinin tek karar noktası (spec 2026-10-13 §5.3). Mod Off'ta (<c>SalesSyncState.Mode = 0</c>, bugün
 /// her lisans) her çağrı bugünkü yerel servise gider: kapı yok, ağ yok, bekleme yok. Mod On'da etiket başına
 /// yayının <c>Authority</c>'si, kendi yayınının bitiş ve devir bilgisi, ilk yetişme ve bağlantı yolu seçer
-/// (<see cref="SalesEditRoute"/>). Çağıranlar sonucu satır içi gösterir; pop-up yok.
+/// (<see cref="SalesEditRoute"/>). Kargo işlemleri de buradan geçer (<see cref="IShipmentEditor"/>). Çağıranlar sonucu
+/// satır içi gösterir; pop-up yok.
 /// </summary>
-public interface ILabelEditor
+public interface ILabelEditor : IShipmentEditor
 {
     /// <summary>Etiket başına karar; yazmaz, ağa gitmez. Kip her çağrıda okunur.</summary>
     IReadOnlyList<SalesEditDecision> Route(IReadOnlyCollection<string> labelIds);

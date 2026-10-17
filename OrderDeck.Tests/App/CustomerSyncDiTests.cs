@@ -369,6 +369,12 @@ public sealed class CustomerSyncDiTests
         var detail = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.CustomerDetailViewModel>();
         PrivateField<global::OrderDeck.App.Services.Sales.ILabelEditor>(detail, "_editor").Should().BeSameAs(editor,
             "müşteri kartı isteğe bağlı parametreyle alır; gelmezse sessizce yalnız yerel düzenleyiciye düşerdi");
+        // W2-08: dekontun kargo adımı da yönlendiriciden — gelmezse mod On'da yerel kargo yazımı ABORT eder, adım
+        // sessizce düşerdi.
+        var dekont = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.DekontEkleViewModel>();
+        PrivateField<global::OrderDeck.App.Services.Sales.IShipmentEditor>(dekont, "_shipmentEditor").Should().BeSameAs(editor);
+        PrivateField<OrderDeck.Core.Sales.ShipmentService>(editor, "_shipments").Should().BeSameAs(
+            host.Services.GetRequiredService<OrderDeck.Core.Sales.ShipmentService>());
         // Kabuk ViewModel'i kurulmadan (zamanlayıcılar) türüyle: Basılanlar'ın parametresi isteğe bağlı ve kayıtlı.
         typeof(global::OrderDeck.App.ViewModels.MainShellViewModel).GetConstructors().Single().GetParameters()
             .Should().ContainSingle(p => p.IsOptional

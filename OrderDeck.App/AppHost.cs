@@ -636,7 +636,8 @@ public sealed class AppHost : IDisposable
         // W2-05 (spec 2026-10-13 §5.3): düzenleme yönlendiricisi — müşteri kartı, Basılanlar (toplu iptal, yeniden
         // bas) ve yedek çekmecesi bunun üzerinden yazar. Mod Off'ta bugünkü LabelService çağrısı (kapı ve ağ yok).
         // Devir kapısı TEK örnek: kapanış gönderimiyle aynı kilitler. Bağlantı ölçüsü son sales/state'ten (satış akışı
-        // turunun kalp atışı); yeniden baskının önbellek notu akışın son yetiştiği andan.
+        // turunun kalp atışı); yeniden baskının önbellek notu akışın son yetiştiği andan. W2-08: dekontun kargo adımı ve
+        // eşik kararı da buradan (mod Off'ta aynı ShipmentService, mod On'da attach-shipment / shipment-decision).
         services.AddSingleton<Services.Sales.SalesConnectivity>(sp => new Services.Sales.SalesConnectivity(
             () => sp.GetRequiredService<Services.Sync.SalesSyncStateService>().LastState,
             () => sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>().CurrentLicenseKey));
@@ -649,6 +650,9 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<Services.Sync.SalesCommandClient>(),
             sp.GetRequiredService<Services.Sync.PendingSalesCommandSender>(),
             sp.GetRequiredService<Services.Sales.SalesConnectivity>(),
+            sp.GetRequiredService<OrderDeck.Core.Sales.ShipmentService>(),
+            sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
+            sp.GetRequiredService<CustomerRepository>(),
             () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().Status.LastCaughtUpAt,
             sp.GetRequiredService<ILogger<Services.Sales.SalesEditRouter>>()));
 

@@ -113,9 +113,17 @@ internal sealed class SalesEditTestBed : IDisposable
         Sender = new PendingSalesCommandSender(Pending, Commands, new SalesConflictLogRepository(Db), stateRepo,
             Connectivity, new Clock(this), NullLogger<PendingSalesCommandSender>.Instance);
         Sender.Settled += (_, e) => { lock (Settled) Settled.Add(e); };
+        ShipmentRepo = new ShipmentRepository(Db);
+        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, () => Settings, () => new Clock(this).UnixNow());
         Router = new SalesEditRouter(Labels, LabelRepo, Sessions, stateRepo, Gate, Commands, Sender, Connectivity,
-            () => LastFeedSyncAt, NullLogger<SalesEditRouter>.Instance);
+            Shipments, ShipmentRepo, Customers, () => LastFeedSyncAt, NullLogger<SalesEditRouter>.Instance);
     }
+
+    /// <summary>Kargo (W2-08): yerel ayar (eşik ve ücret; lisans geneli ayar W3), dosya deposu ve yerel servis — mod Off
+    /// yolu ve mod On'un eşik değerlendirmesi bunu kullanır.</summary>
+    public AppSettings Settings { get; } = new();
+    public ShipmentRepository ShipmentRepo { get; }
+    public ShipmentService Shipments { get; }
 
     public void Dispose()
     {

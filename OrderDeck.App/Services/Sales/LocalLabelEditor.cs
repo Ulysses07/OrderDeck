@@ -1,4 +1,5 @@
 using OrderDeck.App.Services.Sync;
+using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.Services.Sales;
@@ -6,10 +7,23 @@ namespace OrderDeck.App.Services.Sales;
 /// <summary>
 /// Yalnız yerel düzenleyici: bugünkü <see cref="LabelService"/> çağrıları, kip okunmadan. Düzenleyici verilmeyen
 /// ViewModel'ler (testlerin çoğu) bunu kullanır; uygulamada DI <see cref="SalesEditRouter"/>'ı verir. Davranış
-/// <see cref="SalesEditRouter"/>'ın mod Off yoluyla aynı.
+/// <see cref="SalesEditRouter"/>'ın mod Off yoluyla aynı. Kargo işlemleri (<see cref="IShipmentEditor"/>) yalnız
+/// <paramref name="shipments"/> verildiyse (<see cref="LocalShipmentEditor"/>); etiket ekranları kargoya dokunmaz.
 /// </summary>
-public sealed class LocalLabelEditor(LabelService labels) : ILabelEditor
+public sealed class LocalLabelEditor(LabelService labels, ShipmentService? shipments = null) : ILabelEditor
 {
+    private IShipmentEditor Shipments => shipments is not null
+        ? new LocalShipmentEditor(shipments)
+        : throw new InvalidOperationException("Bu yerel düzenleyiciye kargo servisi verilmedi.");
+
+    public Task<SalesShipmentStepResult> RunDekontShipmentStepAsync(
+        string customerId, ShipmentDirective directive, CancellationToken ct = default) =>
+        Shipments.RunDekontShipmentStepAsync(customerId, directive, ct);
+
+    public Task<SalesShipmentDecisionResult> DecideShipmentAsync(
+        string shipmentId, ShipmentDecision decision, CancellationToken ct = default) =>
+        Shipments.DecideShipmentAsync(shipmentId, decision, ct);
+
     public IReadOnlyList<SalesEditDecision> Route(IReadOnlyCollection<string> labelIds) =>
         labelIds.Select(id => new SalesEditDecision(id, null, SalesEditRoute.Local, null)).ToList();
 

@@ -54,6 +54,27 @@ public static class SalesCommandMessages
     /// var, kuyruğa satış akışıyla iner.</summary>
     public const string BackupAddedRemotely = "Yedek sunucuda eklendi; bu bilgisayara satış akışıyla inecek.";
 
+    /// <summary>
+    /// Dekont kaydedildi ama kargo adımı yapılamadı, sunucuya ulaşılamadığı için (§5.8 "Dekont kaydı"): çevrimdışı,
+    /// komut ucu yok, sunucu hatası ya da kip henüz hazır değil. Bir sonraki dekont bütün bağlanmamış etiketleri alır.
+    /// </summary>
+    public const string DekontShipmentDeferred = "Dekont kaydedildi; kargo adımı bağlantı gelince bir sonraki dekontta yapılır.";
+
+    /// <summary>Dekont kaydedildi ama sunucu kargo adımını reddetti (güncelleme gerekli, küme çok büyük, araya başka
+    /// bilgisayarın değişikliği girdi, …): "Dekont kaydedildi; kargo adımı yapılamadı: …".</summary>
+    public static string DekontShipmentFailed(string reason) =>
+        "Dekont kaydedildi; kargo adımı yapılamadı: " + Sentence(reason);
+
+    /// <summary>Eşik çekmecesinin ya da dekont yönergesinin kargo kararı sunucuda uygulanamadı (§5.3): "Kargo kararı
+    /// uygulanamadı: …". Dosyanın güncel hâli yerel aynaya yazıldı.</summary>
+    public static string ShipmentDecisionFailed(string reason) => "Kargo kararı uygulanamadı: " + Sentence(reason);
+
+    private static string Sentence(string text)
+    {
+        var t = text.Trim();
+        return t.EndsWith('.') || t.EndsWith('!') || t.EndsWith('?') ? t : t + ".";
+    }
+
     /// <summary>Yedek seçiminin satır içi şeridi (§5.3 "Yedek seçimi"): "Yedek eklenemedi: …".</summary>
     public static string BackupFailed(string problem)
     {
