@@ -151,12 +151,14 @@ public sealed partial class MainShellViewModel
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
+        // Yazım yönlendiriciden (spec 2026-10-13 §5.3 "Fiyatı düzelt"): mod On'da devredilmiş yayın set-code-price.
         var vm = WireCorrection(new PriceCorrectionViewModel(
             _labels, _paymentFollowUp, sessionId, ids, streamDate,
             inFlight: () => _printInFlightIds,
             applied: ApplyPriceCorrection,
             reprint: ReprintAsync,
-            cloudApiEnabled: SafeCloudApiEnabled()));
+            cloudApiEnabled: SafeCloudApiEnabled(),
+            editor: _editor));
         ActivePriceCorrection = vm;
         try
         {

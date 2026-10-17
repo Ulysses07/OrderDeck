@@ -3,12 +3,13 @@ using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Licensing.Api.Models;
 
 namespace OrderDeck.App.Services.Sales;
 
 /// <summary>
 /// Düzenleme yönlendiricisi (spec 2026-10-13 §5.3; W2-05): müşteri kartı, Basılanlar'ın toplu iptali ve yeniden baskısı,
-/// yedek çekmecesi bunun üzerinden yazar.
+/// yedek çekmecesi ve "Fiyatı düzelt" (<c>set-code-price</c>; W2-06) bunun üzerinden yazar.
 ///
 /// <para><b>Mod Off</b> (<c>SalesSyncState.Mode = 0</c>, bugün her lisans; kip HER çağrıda okunur): bugünkü çağrının
 /// aynısı — <see cref="LabelService"/>'e bütün liste, çağıranın iş parçacığında, beklemeden. Oturum okunmaz, devir
@@ -331,6 +332,167 @@ public sealed class SalesEditRouter : ILabelEditor
             server.Count, cached.Count, labels.Count, fromCache);
         return new SalesReprintPlan(labels, corrections, null, fromCache, fromCache ? _lastFeedSyncAt() : null);
     }
+
+    // ── fiyat düzeltmesi (set-code-price) ──────────────────────────────────
+
+    /// <summary>Komutun <c>alsoSelectedIds</c> ve <c>paidFromBalanceIds</c> listelerinin tavanı
+    /// (<c>SalesCommandService.MaxOrders</c>, sunucunun <c>TryReadOptionalIds</c>'i).</summary>
+    private const int MaxListedOrders = 500;
+
+    public Task<SalesCodePriceResult> CorrectCodePricesAsync(
+        SalesCodePriceRequest request,
+        Func<IReadOnlyList<string>, PriceCorrectionResult> writeLocal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(writeLocal);
+        // Mod Off ve canlı yayın: bugünkü çağrı, aynı etiketlerle, beklemeden.
+        if (request.LabelIds.Count == 0 || Decide(request.LabelIds) is not { } decisions
+            || decisions.All(d => d.Route == SalesEditRoute.Local))
+            return Task.FromResult(SalesCodePriceResult.AllLocal(writeLocal(request.LabelIds)));
+
+        // Plan tek pakettir: kapalı ya da bağlantısız etiket varsa hiçbir şey yazılmaz.
+        if (decisions.FirstOrDefault(d => d.Route is SalesEditRoute.Blocked or SalesEditRoute.Unavailable) is { } refused)
+        {
+            _log.LogInformation("Fiyat düzeltmesi: {Count} etiketlik plan yazılmadı ({Route})", decisions.Count, refused.Route);
+            return Task.FromResult(SalesCodePriceResult.Refused(refused.Reason ?? SalesCommandMessages.Failed));
+        }
+        return CorrectCodePricesModeOnAsync(request, decisions, writeLocal, ct);
+    }
+
+    /// <summary>
+    /// Mod On: önce yerel parça (canlı yayın ve kapılı kendi yayını) TEK yerel yazımda, bugünkü paketle — çakışması
+    /// çağırana fırlar, henüz komut gitmemiştir. Sonra devredilmiş yayınların etiketleri plan ve yayın başına birer
+    /// <c>set-code-price</c> komutuyla, sırayla; ilk başarısızlıkta durulur (fiyatta sessiz yeniden deneme yok, §5.3).
+    /// Sonucu bilinmeyen komutun niyeti saklanır: aynı plan ve fiyatla yeniden onay aynı <c>CommandId</c>'yi gönderir,
+    /// sunucu kaydı yeniden oynatır.
+    /// </summary>
+    private async Task<SalesCodePriceResult> CorrectCodePricesModeOnAsync(
+        SalesCodePriceRequest request,
+        IReadOnlyList<SalesEditDecision> decisions,
+        Func<IReadOnlyList<string>, PriceCorrectionResult> writeLocal,
+        CancellationToken ct)
+    {
+        var serverIds = decisions.Where(d => d.Route == SalesEditRoute.Command).Select(d => d.LabelId)
+            .ToHashSet(StringComparer.Ordinal);
+        var commands = CodePriceCommands(request, serverIds);
+        var tooLong = commands.Select(c => Math.Max(c.Payload.AlsoSelectedIds.Count, c.Payload.PaidFromBalanceIds.Count))
+            .DefaultIfEmpty(0).Max();
+        if (tooLong > MaxListedOrders)
+            return SalesCodePriceResult.Refused(SalesCommandMessages.TooManyCandidates(tooLong));
+
+        PriceCorrectionResult? local = null;
+        var localIds = request.LabelIds.Where(id => !serverIds.Contains(id)).ToList();
+        if (localIds.Count > 0)
+        {
+            var leases = new List<IDisposable>();
+            try
+            {
+                foreach (var sessionId in decisions.Where(d => d.Route == SalesEditRoute.LocalGated)
+                             .Select(d => d.SessionId!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+                {
+                    if (!_handover.TryEnter(sessionId, out var lease))
+                        return SalesCodePriceResult.Refused(SalesCommandMessages.HandoverInProgress);
+                    leases.Add(lease);
+                }
+                local = writeLocal(localIds);
+            }
+            finally
+            {
+                foreach (var lease in leases) lease.Dispose();
+            }
+        }
+
+        var changed = new List<string>();
+        var rows = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (payload, expected) in commands)
+        {
+            var outcome = await _commands.SendAsync(ReuseUnresolved(_commands.Prepare(payload, expected)), ct)
+                .ConfigureAwait(false);
+            _connectivity.Report(outcome.Status);
+            TrackUnresolved(outcome);
+            rows.UnionWith(outcome.LabelIds);
+            if (!outcome.IsApplied)
+            {
+                _log.LogInformation(
+                    "Fiyat düzeltmesi: set-code-price {CommandId} uygulanmadı ({Status}); {Local} yerel, {Changed} komutla yazılmıştı",
+                    outcome.Intent.CommandId, outcome.Status, local?.Corrected.Count ?? 0, changed.Count);
+                return new SalesCodePriceResult(local, true, changed, outcome.Message ?? SalesCommandMessages.Failed,
+                    outcome.Status, rows.ToList());
+            }
+            changed.AddRange((outcome.Result?.Changed ?? []).Select(id => id.ToString("N")));
+        }
+
+        _log.LogInformation("Fiyat düzeltmesi: {Local} etiket yerel, {Commands} komutla {Changed} etiket",
+            local?.Corrected.Count ?? 0, commands.Count, changed.Count);
+        return new SalesCodePriceResult(local, serverIds.Count > 0, changed, null, null, rows.ToList());
+    }
+
+    /// <summary>
+    /// Sunucu etiketlerinin komutları: plan ve yayın başına bir <c>set-code-price</c>. Düzeltmenin yayınında kodlu plan
+    /// kodu taşır (sunucu yayın×kod'u kendisi bulur) ve yalnız yayın×kod dışında kalan seçilenleri; başka yayından
+    /// seçilenler (kalıntı kuyruk) ve kodsuz seçim kodsuz gider, yalnız seçilenlerle — yerel planlayıcının kümesiyle
+    /// aynı. Beklenen küme planın o yayındaki düzeltilebilir etiketleridir; düzeltilebilir etiketi olmayan grup gitmez.
+    /// </summary>
+    private static List<(SalesSetCodePricePayload Payload, IReadOnlyList<string> Expected)> CodePriceCommands(
+        SalesCodePriceRequest request, IReadOnlySet<string> serverIds)
+    {
+        var commands = new List<(SalesSetCodePricePayload, IReadOnlyList<string>)>();
+        foreach (var plan in request.Plans)
+        {
+            var labels = plan.Plan.Correctable.Concat(plan.Plan.Shipped).Concat(plan.Plan.Elsewhere)
+                .Where(l => serverIds.Contains(l.Id))
+                .DistinctBy(l => l.Id, StringComparer.Ordinal)
+                .ToList();
+            foreach (var group in labels.GroupBy(l => l.SessionId, StringComparer.Ordinal))
+            {
+                var code = string.Equals(group.Key, request.SessionId, StringComparison.Ordinal) ? plan.Code : null;
+                var expected = plan.Plan.Correctable
+                    .Where(l => serverIds.Contains(l.Id) && string.Equals(l.SessionId, group.Key, StringComparison.Ordinal))
+                    .Select(l => l.Id).Distinct(StringComparer.Ordinal).ToList();
+                if (expected.Count == 0) continue;
+                var also = group
+                    .Where(l => request.Selection.Contains(l.Id) && (code is null || !LabelRepository.SameCode(l.Code, code)))
+                    .Select(l => ToGuid(l.Id)).Distinct().Order().ToList();
+                if (code is null && also.Count == 0) continue;
+                var paid = expected.Where(id => request.PaidFromBalance?.Contains(id) == true)
+                    .Select(ToGuid).Distinct().Order().ToList();
+                commands.Add((new SalesSetCodePricePayload(ToGuid(group.Key), code, also, request.NewPrice, paid),
+                    expected));
+            }
+        }
+        return commands;
+    }
+
+    // ── sonucu bilinmeyen niyetler ─────────────────────────────────────────
+
+    private readonly object _unresolvedGate = new();
+
+    /// <summary>Sonucu bilinmeyen (zaman aşımı, sunucu hatası) <c>set-code-price</c> niyetleri, içerikleriyle: aynı
+    /// içerikli yeni niyet bunun yerine — aynı <c>CommandId</c> ile — gider (§4.6 adım 2, niyet başına bir kimlik).</summary>
+    private readonly Dictionary<string, SalesCommandIntent> _unresolved = new(StringComparer.Ordinal);
+
+    private static string IntentKey(SalesCommandIntent intent) =>
+        intent.Kind + "\n" + intent.PayloadJson + "\n"
+        + string.Join(",", intent.Expected.Select(e => $"{e.OrderId:N}:{e.Version}"));
+
+    private SalesCommandIntent ReuseUnresolved(SalesCommandIntent fresh)
+    {
+        lock (_unresolvedGate) return _unresolved.TryGetValue(IntentKey(fresh), out var known) ? known : fresh;
+    }
+
+    private void TrackUnresolved(SalesCommandOutcome outcome)
+    {
+        var key = IntentKey(outcome.Intent);
+        lock (_unresolvedGate)
+        {
+            if (outcome.CanResend) _unresolved[key] = outcome.Intent;
+            else _unresolved.Remove(key);
+        }
+    }
+
+    private static Guid ToGuid(string id) =>
+        Guid.TryParse(id, out var g) ? g : throw new ArgumentException($"Satış komutunun kimliği GUID değil: {id}.");
 
     // ── sonuç ──────────────────────────────────────────────────────────────
 

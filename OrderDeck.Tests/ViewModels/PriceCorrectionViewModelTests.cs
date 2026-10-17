@@ -12,6 +12,7 @@ using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
+using OrderDeck.Tests.Sync;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -461,5 +462,264 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         _labelRepo.GetById(elsewhere.Id)!.Price.Should().Be(250m);
         _labelRepo.GetById(open.Id)!.Price.Should().Be(205m);
         vm.ResultText.Should().Contain("1 etiket başka bilgisayarın dosyasında, değişmedi: @baska");
+    }
+
+    // ── yönlendirici (spec 2026-10-13 §4.6 set-code-price, §5.3 "Fiyatı düzelt"; W2-06) ──────────────
+
+    private static PriceCorrectionViewModel RoutedVm(
+        SalesEditTestBed bed, string sessionId, IEnumerable<string> selected, List<PriceCorrectionResult> applied)
+        => new(bed.Labels, payments: null, sessionId, selected.ToList(), DateTime.Now,
+            inFlight: () => null,
+            applied: applied.Add,
+            reprint: _ => Task.FromResult<string?>(null),
+            cloudApiEnabled: true,
+            editor: bed.Router);
+
+    private static string N(Guid id) => id.ToString("N");
+
+    private static long? Unix(SalesEditTestBed bed, string column, Guid id)
+        => bed.Scalar<long?>($"SELECT {column} FROM Label WHERE Id = @id", new { id = N(id) });
+
+    [Fact]
+    public async Task Mod_Onda_devredilmis_yayinda_tek_set_code_price_gider_fiyat_ve_damgalar_yanittan_yazilir()
+    {
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var session = bed.RemoteSession();
+        var customer = bed.RemoteCustomer();
+        var printed = bed.RemoteOrder(session, customer, 150m);
+        var queued = bed.RemoteOrder(session, customer, 150m, printed: false);
+        var paid = bed.RemoteOrder(session, customer, 150m);
+        var shipment = Guid.NewGuid();
+        bed.Server.SeedShipment(new FakeSalesServer.ShipmentBody(shipment, N(customer), "pending", 150m,
+            SalesEditTestBed.T0, null, null));
+        bed.Server.MutateOrder(paid, row => row with { ShipmentId = shipment });   // dekontla ödenmiş (dosyaya bağlı)
+        await bed.PullAsync();
+        var before = bed.Local(printed);
+        var applied = new List<PriceCorrectionResult>();
+        var vm = RoutedVm(bed, N(session), [N(printed)], applied);
+        vm.Codes.Should().ContainSingle().Which.Count.Should().Be(3);
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var call = bed.Server.CommandCalls.Should().ContainSingle().Subject.Command;
+        call.Kind.Should().Be("set-code-price");
+        var payload = call.Payload!.Value;
+        payload.GetProperty("sessionId").GetGuid().Should().Be(session);
+        payload.GetProperty("code").GetString().Should().Be("A1");
+        payload.GetProperty("alsoSelectedIds").EnumerateArray().Should().BeEmpty("seçilen etiket yayın×kod'un içinde");
+        payload.GetProperty("newPrice").GetDecimal().Should().Be(200m);
+        payload.GetProperty("paidFromBalanceIds").EnumerateArray().Should().BeEmpty();
+        call.Expected!.Select(e => (e!.OrderId!.Value, e.Version!.Value)).Should().BeEquivalentTo(
+            new[] { (printed, 1), (queued, 1), (paid, 2) }, "beklenen küme planın kendisi, yerel ServerVersion'larla");
+
+        new[] { printed, queued, paid }.Select(id => bed.Local(id).Price).Should().OnlyContain(p => p == 200m);
+        Unix(bed, "PriceCorrectedAt", printed).Should().Be(
+            bed.Server.Order(printed)!.Row.PriceCorrectedAt!.Value.ToUnixTimeSeconds(), "damga sunucunun saati, yanıttan");
+        Unix(bed, "PriceCorrectedAt", queued).Should().BeNull("basılmamış satırda damga yok");
+        bed.Scalar<decimal?>("SELECT PaidPrice FROM Label WHERE Id = @id", new { id = N(paid) }).Should().Be(150m,
+            "dosyaya bağlı (ödenmiş) satırın ödendiği fiyat yanıttan");
+        bed.Scalar<decimal?>("SELECT PaidPrice FROM Label WHERE Id = @id", new { id = N(printed) }).Should().BeNull();
+        bed.Local(printed).ServerVersion.Should().Be(2);
+        bed.Local(printed).SyncedAt.Should().Be(before.SyncedAt, "yanıt gönderim kuyruğuna dokunmaz");
+        bed.Local(printed).Revision.Should().Be(before.Revision);
+
+        applied.Should().ContainSingle().Which.Corrected.Select(c => c.Before.Id)
+            .Should().BeEquivalentTo(new[] { N(printed), N(queued), N(paid) }, "kabuk kuyruk kopyalarını bunlarla tazeler");
+        vm.IsDone.Should().BeTrue();
+        vm.ResultText.Should().StartWith("A1: 3 etiket 200,00 TL'ye düzeltildi (1 kuyrukta");
+        vm.IsReprintAsked.Should().BeTrue("basılmış etiket düzeldi");
+    }
+
+    [Fact]
+    public async Task Mod_Onda_plan_stale_plani_yeniler_mesaji_gosterir_ve_sessizce_yeniden_denemez()
+    {
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var session = bed.RemoteSession();
+        var customer = bed.RemoteCustomer();
+        var a = bed.RemoteOrder(session, customer, 150m);
+        var b = bed.RemoteOrder(session, customer, 150m);
+        await bed.PullAsync();
+        var applied = new List<PriceCorrectionResult>();
+        var vm = RoutedVm(bed, N(session), [N(a)], applied);
+        // Başka bilgisayar aynı kodun bir etiketinin fiyatını değiştirdi; yerel ayna henüz bilmiyor.
+        bed.Server.MutateOrder(b, row => row with { Price = 160m });
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        bed.Server.CommandCalls.Should().ContainSingle("fiyatta sessiz yeniden deneme yok");
+        vm.BlockingMessage.Should().Be("Bu arada başka bir bilgisayarda değişti; plan yenilendi.");
+        vm.IsDone.Should().BeFalse();
+        applied.Should().BeEmpty();
+        bed.Local(b).Price.Should().Be(160m, "ret'in güncel satırı yazıldı");
+        bed.Local(a).Price.Should().Be(150m);
+        bed.Server.Order(a)!.Row.Price.Should().Be(150m, "plan-stale hiçbir şey yazmaz");
+        vm.Codes.Should().ContainSingle().Which.Text.Should().Be("150,00 TL × 1, 160,00 TL × 1 — karışık",
+            "plan yerel aynadan yeniden okundu");
+
+        // Operatör yenilenen planı onaylar: yeni bir komut, bu kez uyuşan planla.
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        bed.Server.CommandCalls.Should().HaveCount(2);
+        vm.IsDone.Should().BeTrue();
+        new[] { a, b }.Select(id => bed.Local(id).Price).Should().OnlyContain(p => p == 200m);
+    }
+
+    [Fact]
+    public async Task Mod_Onda_too_many_candidates_metni_satir_icinde_ve_catisma_kaydi_yazilir()
+    {
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var (session, _, order) = await bed.RemoteLabelAsync(150m);
+        var vm = RoutedVm(bed, N(session), [N(order)], new List<PriceCorrectionResult>());
+        bed.Server.EnqueueProblem(FakeSalesServer.Commands, 409, "too-many-candidates",
+            new Dictionary<string, object?> { ["count"] = 12000, ["max"] = 10000 });
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        vm.BlockingMessage.Should().Be("Bu işlem çok fazla etiketi kapsıyor (12000); destek ile iletişime geç.");
+        vm.IsDone.Should().BeFalse();
+        bed.Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog").Should().Be(1);
+        bed.Local(order).Price.Should().Be(150m);
+        bed.Server.CommandCalls.Should().ContainSingle("kalıcıdır, yeniden denenmez");
+    }
+
+    [Fact]
+    public async Task Mod_Onda_cevrimdisiyken_devredilmis_yayinin_fiyati_duzeltilmez_ve_istek_gitmez()
+    {
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var (session, _, order) = await bed.RemoteLabelAsync(150m);
+        var http = bed.HttpCount;
+        bed.Online = false;
+        var vm = RoutedVm(bed, N(session), [N(order)], new List<PriceCorrectionResult>());
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        vm.BlockingMessage.Should().Be("Bu değişiklik için sunucu bağlantısı gerekli");
+        vm.IsDone.Should().BeFalse();
+        bed.HttpCount.Should().Be(http);
+        bed.Local(order).Price.Should().Be(150m);
+    }
+
+    [Fact]
+    public async Task Mod_Onda_yaniti_kaybolan_duzeltme_yeniden_onayda_ayni_CommandId_ile_gider_sunucu_bir_kez_uygular()
+    {
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var (session, _, order) = await bed.RemoteLabelAsync(150m);
+        var vm = RoutedVm(bed, N(session), [N(order)], new List<PriceCorrectionResult>());
+        bed.Server.LoseNextResponse(FakeSalesServer.Commands);
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        vm.BlockingMessage.Should().Be("Bu değişiklik için sunucu bağlantısı gerekli");
+        vm.IsDone.Should().BeFalse();
+        bed.Local(order).Price.Should().Be(150m, "yanıt gelmedi");
+        bed.Server.Order(order)!.Row.Price.Should().Be(200m, "sunucu uygulamıştı");
+
+        bed.StateReceivedAt = DateTimeOffset.UtcNow.AddSeconds(1);   // sonraki tur: bağlantı geri geldi
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var calls = bed.Server.CommandCalls.Select(c => c.Command).ToList();
+        calls.Should().HaveCount(2);
+        calls[1].CommandId.Should().Be(calls[0].CommandId, "aynı niyet aynı kimlikle");
+        var log = bed.Server.CommandLog(calls[0].CommandId!.Value)!;
+        log.Applications.Should().Be(1);
+        log.Replays.Should().Be(1);
+        vm.IsDone.Should().BeTrue();
+        bed.Local(order).Price.Should().Be(200m);
+    }
+
+    [Fact]
+    public async Task Mod_Onda_canli_yayin_ve_kalinti_kuyruk_karisik_secimi_yerel_yazim_ve_tek_kodsuz_komuta_bolunur()
+    {
+        // Kuyrukta canlı yayının A1'i ve önceki (devredilmiş) yayından kalmış bir A1 (§5.5): canlı parça bugünkü yerel
+        // yazımla, kalıntı yalnız kendisiyle (kodsuz, alsoSelected) komutla — yerel planın kümesi.
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var live = bed.LocalSession(ended: false);
+        var liveLabel = bed.LocalLabel(live, Guid.NewGuid().ToString("N"), 150m, printed: false);
+        var (oldSession, _, leftover) = await bed.RemoteLabelAsync(150m, printed: false);
+        var applied = new List<PriceCorrectionResult>();
+        var vm = RoutedVm(bed, live, [liveLabel, N(leftover)], applied);
+        vm.Codes.Should().ContainSingle().Which.Count.Should().Be(2);
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var call = bed.Server.CommandCalls.Should().ContainSingle().Subject.Command;
+        var payload = call.Payload!.Value;
+        payload.GetProperty("sessionId").GetGuid().Should().Be(oldSession);
+        payload.GetProperty("code").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+        payload.GetProperty("alsoSelectedIds").EnumerateArray().Select(e => e.GetGuid()).Should().Equal(leftover);
+        call.Expected!.Select(e => e!.OrderId!.Value).Should().Equal(leftover);
+        bed.Local(liveLabel).Price.Should().Be(200m);
+        bed.Local(liveLabel).SyncedAt.Should().BeNull("canlı parça bugünkü yerel yazım: gönderim kuyruğuna girer");
+        bed.Local(leftover).Price.Should().Be(200m);
+        bed.Local(leftover).SyncedAt.Should().NotBeNull("kalıntı komut yanıtından yazıldı");
+        applied.Should().ContainSingle().Which.Corrected.Should().HaveCount(2);
+        vm.IsDone.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Karisik_secimde_komut_reddedilirse_yazilan_yerel_parca_sonraki_onayin_sonucuna_katilir()
+    {
+        // Yerel parça yazıldı, kalıntının komutu plan-stale aldı. Operatör yenilenen planı onaylayınca canlı etiket artık
+        // yeni fiyatta (yeniden düzelmez): sonuç onu da saymalı — yeniden baskı sorusu ve düzeltilmiş istek kaçmasın.
+        using var bed = new SalesEditTestBed();
+        bed.ModeOn();
+        var live = bed.LocalSession(ended: false);
+        var liveLabel = bed.LocalLabel(live, Guid.NewGuid().ToString("N"), 150m, printed: false);
+        var (_, _, leftover) = await bed.RemoteLabelAsync(150m, printed: false);
+        var applied = new List<PriceCorrectionResult>();
+        var vm = RoutedVm(bed, live, [liveLabel, N(leftover)], applied);
+        bed.Server.MutateOrder(leftover, row => row with { Price = 155m });
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        vm.BlockingMessage.Should().Be("Bu arada başka bir bilgisayarda değişti; plan yenilendi.");
+        bed.Local(liveLabel).Price.Should().Be(200m, "yerel parça komuttan önce yazıldı");
+        applied.Should().ContainSingle("yazılan parça kabukta tazelenir")
+            .Which.Corrected.Select(c => c.Before.Id).Should().Equal(liveLabel);
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        vm.IsDone.Should().BeTrue();
+        applied.Should().HaveCount(2);
+        applied[1].Corrected.Select(c => (c.Before.Id, c.Before.Price)).Should().BeEquivalentTo(
+            new[] { (liveLabel, 150m), (N(leftover), 155m) });
+        vm.ResultText.Should().StartWith("A1: 2 etiket 200,00 TL'ye düzeltildi");
+    }
+
+    [Fact]
+    public async Task Mod_Offta_yonlendiriciyle_bugunku_yerel_duzeltme_yazilir_ve_istek_gitmez()
+    {
+        using var bed = new SalesEditTestBed();
+        bed.ModeOff();
+        var session = bed.LocalSession(ended: true, releasedAt: 950);
+        var customer = Guid.NewGuid().ToString("N");
+        var a = bed.LocalLabel(session, customer, 150m);
+        var b = bed.LocalLabel(session, customer, 150m, printed: false);
+        var applied = new List<PriceCorrectionResult>();
+        var vm = RoutedVm(bed, session, [a], applied);
+
+        vm.NewPriceText = "200";
+        var confirm = vm.ConfirmCommand.ExecuteAsync(null);
+
+        confirm.IsCompleted.Should().BeTrue("mod Off'ta beklemeden biter");
+        await confirm;
+        vm.IsDone.Should().BeTrue();
+        new[] { a, b }.Select(id => bed.Local(id).Price).Should().OnlyContain(p => p == 200m);
+        bed.Local(a).SyncedAt.Should().BeNull("bugünkü gibi gönderim kuyruğuna girer");
+        bed.HttpCount.Should().Be(0);
+        applied.Should().ContainSingle().Which.Corrected.Should().HaveCount(2);
     }
 }

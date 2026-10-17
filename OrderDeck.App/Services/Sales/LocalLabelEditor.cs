@@ -38,4 +38,10 @@ public sealed class LocalLabelEditor(LabelService labels) : ILabelEditor
 
     public Task<SalesReprintPlan> PrepareReprintAsync(IReadOnlyList<string> labelIds, CancellationToken ct = default) =>
         Task.FromResult(SalesReprintPlan.From(labels.PrepareReprint(labelIds)));
+
+    public Task<SalesCodePriceResult> CorrectCodePricesAsync(
+        SalesCodePriceRequest request,
+        Func<IReadOnlyList<string>, PriceCorrectionResult> writeLocal,
+        CancellationToken ct = default) =>
+        Task.FromResult(SalesCodePriceResult.AllLocal(writeLocal(request.LabelIds)));
 }

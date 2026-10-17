@@ -92,6 +92,48 @@ public sealed record SalesReprintPlan(
     public string? CacheNote => FromCache ? SalesCommandMessages.LastSync(LastSyncAt) : null;
 }
 
+/// <summary>"Fiyatı düzelt"in onayı (spec 2026-10-13 §4.6 <c>set-code-price</c>, §5.3 "Fiyatı düzelt"): planlar yerel
+/// aynadan, bugünkü planlayıcıyla (<see cref="LabelService.PlanCodeCorrection(string, IReadOnlyCollection{string})"/>).</summary>
+/// <param name="SessionId">Düzeltmenin yayını.</param>
+/// <param name="Plans">İşaretli kodların planları.</param>
+/// <param name="Selection">Operatörün seçtiği etiketler: kodsuz grubun ve yayın×kod dışında kalan seçilenlerin kaynağı
+/// (<c>alsoSelectedIds</c>).</param>
+/// <param name="LabelIds">Yerel yazımın etiketleri — planların düzeltilebilir, kargoya verilmiş ve başka bilgisayarın
+/// dosyasındaki etiketleri (bugünkü <see cref="LabelService.CorrectPrices"/> girdisi).</param>
+/// <param name="NewPrice">Yeni fiyat (≥ 0).</param>
+/// <param name="PaidFromBalance">Bakiyeden ödenmiş etiketler (yazımdan önce okunur); null = yok.</param>
+public sealed record SalesCodePriceRequest(
+    string SessionId,
+    IReadOnlyList<CodeCorrectionPlan> Plans,
+    IReadOnlySet<string> Selection,
+    IReadOnlyList<string> LabelIds,
+    decimal NewPrice,
+    IReadOnlySet<string>? PaidFromBalance);
+
+/// <summary>Fiyat düzeltmesinin sonucu. Karışık seçimde (canlı yayın + kalıntı kuyruk) yerel yazım ve komut(lar)
+/// birlikte; biri başarısızsa öncekiler yazılmış kalır (<see cref="Problem"/> dolu).</summary>
+/// <param name="Local">Yerel yazımın sonucu (bugünkü <see cref="LabelService.CorrectPrices"/>); yerel etiket yoksa
+/// null.</param>
+/// <param name="Commanded">Planda devredilmiş yayının etiketi vardı (komut yolu); false = bugünkü yerel yazım.</param>
+/// <param name="CommandChanged">Komutların fiyatını değiştirdiği etiketler (yanıtın <c>changed</c>'i).</param>
+/// <param name="Problem">Uygulanamadı (satır içi metin, §5.3); başarıda null.</param>
+/// <param name="Status">Sorun komuttan geldiyse son komutun durumu.</param>
+/// <param name="ChangedLabelIds">Yerelde değeri değişmiş olabilecek etiketler (yanıtın ve retin güncel satırları).</param>
+public sealed record SalesCodePriceResult(
+    PriceCorrectionResult? Local,
+    bool Commanded,
+    IReadOnlyList<string> CommandChanged,
+    string? Problem,
+    SalesCommandStatus? Status,
+    IReadOnlyList<string> ChangedLabelIds)
+{
+    /// <summary>Bugünkü yol: hepsi yerelde yazıldı.</summary>
+    public static SalesCodePriceResult AllLocal(PriceCorrectionResult local) => new(local, false, [], null, null, []);
+
+    /// <summary>Hiçbir şey yazılmadan reddedildi (kapalı, bağlantısız, devir sürüyor).</summary>
+    public static SalesCodePriceResult Refused(string problem) => new(null, false, [], problem, null, []);
+}
+
 /// <summary>
 /// Etiket düzenlemelerinin tek karar noktası (spec 2026-10-13 §5.3). Mod Off'ta (<c>SalesSyncState.Mode = 0</c>, bugün
 /// her lisans) her çağrı bugünkü yerel servise gider: kapı yok, ağ yok, bekleme yok. Mod On'da etiket başına
@@ -124,4 +166,18 @@ public interface ILabelEditor
     /// <summary>Yeniden baskı (§5.6): yerel satırlar <see cref="LabelService.PrepareReprint"/>; sunucu satırları
     /// çevrimiçiyken <c>reprint</c> komutunun güncel satırları, çevrimdışıyken önbellek (notla).</summary>
     Task<SalesReprintPlan> PrepareReprintAsync(IReadOnlyList<string> labelIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// "Fiyatı düzelt"in onayı (§4.6 <c>set-code-price</c>). Yerel etiketler <paramref name="writeLocal"/> ile — bugünkü
+    /// <see cref="LabelService.CorrectPrices"/> çağrısı, çağıranın iş parçacığında, beklemeden; mod Off'ta her zaman
+    /// yalnız bu. Devredilmiş yayının etiketleri planla (beklenen sürüm = planın düzeltilebilir etiketleri) komutla;
+    /// fiyatta sessiz yeniden deneme yok (<c>plan-stale</c>: güncel satırlar yazılır, sonuç sorunu taşır). Yerel
+    /// yazımın çakışması (<see cref="PriceCorrectionConflictException"/>) çağırana bugünkü gibi fırlar.
+    /// </summary>
+    /// <param name="writeLocal">Yerel yazım: verilen etiketlerle <see cref="LabelService.CorrectPrices"/> (ya da testin
+    /// dikişi).</param>
+    Task<SalesCodePriceResult> CorrectCodePricesAsync(
+        SalesCodePriceRequest request,
+        Func<IReadOnlyList<string>, PriceCorrectionResult> writeLocal,
+        CancellationToken ct = default);
 }
