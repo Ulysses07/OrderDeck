@@ -142,17 +142,6 @@ public sealed class CustomerService
         return declared;
     }
 
-    /// <param name="write">
-    /// Doluysa güncelleme çağıranın işlemine katılır — etiket durumuyla
-    /// müşteri toplamının aynı pakette yazılmasını sağlar
-    /// (bkz. <see cref="Storage.DbWrite"/>).
-    /// </param>
-    public void RecordPrintedLabels(
-        string customerId, int labelCount, decimal amount, Storage.DbWrite? write = null)
-    {
-        _repo.IncrementLabelStats(customerId, labelCount, amount, _clock.UnixNow(), write);
-    }
-
     /// <summary>Marks the customer as blacklisted with optional reason. If the
     /// customer belongs to a person-group (linked platform identities), the whole
     /// group is blacklisted so they cannot slip through on another platform.</summary>

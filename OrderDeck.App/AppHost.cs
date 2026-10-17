@@ -694,6 +694,14 @@ public sealed class AppHost : IDisposable
                 "SyncApplyGuard'da kalmış {Count} kilit satırı silindi — kaldığı sürece müşteri düzenlemeleri damgalanmadı ve gönderilmedi",
                 staleGuards);
 
+        // Spec 2026-10-13 §6.1, §8.2-7: müşteri toplamları artık etiketlerden türetiliyor; eski fark
+        // sayaçlarının birikmiş kayması ilk açılışta bir kez, tek işlemde düzeltilir
+        // (SalesSyncState.AggregatesDerivedAt). Günlükte yalnız sayılar; hata açılışı durdurmaz.
+        CustomerAggregatesBoot.Run(
+            Services.GetRequiredService<IDbConnectionFactory>(),
+            Services.GetRequiredService<IClock>().UnixNow(),
+            Services.GetRequiredService<ILogger<AppHost>>());
+
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).
         var orphans = Services.GetRequiredService<GiveawayRepository>()

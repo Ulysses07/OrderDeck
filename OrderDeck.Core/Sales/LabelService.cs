@@ -114,33 +114,36 @@ public sealed class LabelService
     public IReadOnlyList<Label> GetQueue(string sessionId) =>
         _labels.GetUnprintedBySession(sessionId);
 
+    // ─── Müşteri toplamları (spec 2026-10-13 §6.1, W1) ─────────────────────
+    // Toplam yazan beş olay (iptal, iptali geri alma, baskı, fiyat düzeltme, yedek onayı) müşterinin
+    // toplamını fark sayacıyla değil, etiketin yeni hâli yazıldıktan SONRA aynı pakette etiketlerden
+    // türeterek yazar (CustomerAggregateSql.Recompute): iki kez uygulanan ya da kaçan bir olay toplamı
+    // artık kaydıramaz, eski kayma da ilk olayda düzelir. Olayın etiketlerinin bütün müşterileri yeniden
+    // hesaplanır (yalnız değeri değişen satır yazılır). LastSeenAt ayrı ifadedir ve BUGÜNKÜ anlamını
+    // korur: yalnız eskiden sayaca dokunan müşteriler (TouchLastSeen).
+
     /// <summary>Soft-cancel: marks labels as cancelled with a reason code (one of the
     /// preset codes from CancelReasonCodes). Already-cancelled labels are silently
-    /// ignored. Reverses the customer's printed-label aggregates so revenue stays
-    /// correct on the Customer record.
+    /// ignored. The customer's printed-label totals are re-derived from the labels in
+    /// the same transaction (§6.1).
     ///
-    /// Tentative backup labels never contributed to aggregates while tentative,
-    /// so they're skipped in the negative-delta loop too — preventing a phantom
-    /// debit when a tentative backup is cancelled.</summary>
+    /// LastSeenAt moves only for customers of printed, non-tentative rows — the rows
+    /// that ever contributed to the totals.</summary>
     public void Cancel(IReadOnlyList<string> labelIds, string reason)
     {
         if (labelIds.Count == 0) return;
 
-        var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
+        var customers = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         var idsToFlip = new List<string>(labelIds.Count);
         foreach (var id in labelIds)
         {
             var lbl = _labels.GetById(id);
             if (lbl is null || lbl.CancelledAt.HasValue) continue;
             idsToFlip.Add(id);
-            // Only printed AND non-tentative rows touched the aggregates.
-            if (lbl.PrintedAt.HasValue && !lbl.IsTentativeBackup)
-            {
-                if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
-                    groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
-                else
-                    groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
-            }
+            customers.Add(lbl.CustomerId);
+            // Only printed AND non-tentative rows ever touched the totals.
+            if (lbl.PrintedAt.HasValue && !lbl.IsTentativeBackup) seen.Add(lbl.CustomerId);
         }
         if (idsToFlip.Count == 0) return;
 
@@ -155,45 +158,38 @@ public sealed class LabelService
         // çalışmıyordu, üstelik hatası yutulduğu için sessizce. Süreç ortada
         // ölürse zaten hiç çalışmıyordu. Geri sarmayı artık veritabanı yapıyor.
         using var write = DbWrite.Begin(_factory);
-        _labels.MarkCancelled(idsToFlip, _clock.UnixNow(), reason, write);
-        foreach (var (customerId, agg) in groupedAmounts)
-            _customers.RecordPrintedLabels(customerId, -agg.Count, -agg.Amount, write);
+        var now = _clock.UnixNow();
+        _labels.MarkCancelled(idsToFlip, now, reason, write);
+        CustomerAggregateSql.Recompute(customers, write);
+        CustomerAggregateSql.TouchLastSeen(seen, now, write);
         write.Commit();
     }
 
-    /// <summary>Reverses Cancel — re-applies the printed-label aggregates so
-    /// the customer's revenue total reflects the un-cancelled rows again.</summary>
+    /// <summary>Reverses Cancel — the customer's totals are re-derived from the
+    /// labels so they reflect the un-cancelled rows again (§6.1).</summary>
     public void Uncancel(IReadOnlyList<string> labelIds)
     {
         if (labelIds.Count == 0) return;
 
-        var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
+        var customers = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         var idsToFlip = new List<string>(labelIds.Count);
         foreach (var id in labelIds)
         {
             var lbl = _labels.GetById(id);
             if (lbl is null || !lbl.CancelledAt.HasValue) continue;
             idsToFlip.Add(id);
-            // Mirror Cancel's tentative skip — tentative rows had no aggregate
-            // to undo, so they get nothing on the way back either.
-            if (lbl.PrintedAt.HasValue && !lbl.IsTentativeBackup)
-            {
-                if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
-                    groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
-                else
-                    groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
-            }
+            customers.Add(lbl.CustomerId);
+            // Mirror Cancel: LastSeenAt only for rows that contribute again.
+            if (lbl.PrintedAt.HasValue && !lbl.IsTentativeBackup) seen.Add(lbl.CustomerId);
         }
         if (idsToFlip.Count == 0) return;
 
-        // Yazma sırası artık önemsiz: paket ya bütün hâlinde kalıcı olur ya
-        // hiç olmaz. (Eski telafili kurulumda sıra kritikti — Uncancel
-        // CancelReason'ı NULL'ladığı için etiketleri "geri iptal etmek"
-        // kayıpsız olamazdı, nedeni uydurmak gerekirdi. O kısıt kalktı.)
+        // Türetme etiketin YENİ hâlinden okur: önce geri alma, sonra hesap — aynı pakette.
         using var write = DbWrite.Begin(_factory);
-        foreach (var (customerId, agg) in groupedAmounts)
-            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
         _labels.Uncancel(idsToFlip, write);
+        CustomerAggregateSql.Recompute(customers, write);
+        CustomerAggregateSql.TouchLastSeen(seen, _clock.UnixNow(), write);
         write.Commit();
     }
 
@@ -217,9 +213,9 @@ public sealed class LabelService
     }
 
     /// <summary>
-    /// Marks the given labels as printed and increments customer aggregates per-customer.
-    /// Tentative backup labels still get PrintedAt set (they physically come out of
-    /// the printer) but DO NOT contribute to customer aggregates — the sale isn't
+    /// Marks the given labels as printed and re-derives the printed customers' totals
+    /// (§6.1). Tentative backup labels still get PrintedAt set (they physically come out of
+    /// the printer) but DO NOT contribute to customer totals — the sale isn't
     /// real until the operator confirms the backup via <see cref="ConfirmBackup"/>.
     ///
     /// <para>Göç 048: <paramref name="labelIds"/> KÂĞIT SIRASIDIR (yazıcıya giden liste). Çağrı bir
@@ -231,7 +227,8 @@ public sealed class LabelService
     {
         if (labelIds.Count == 0) return;
 
-        var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
+        var customers = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         var idsToPrint = new List<(string Id, int Seq)>(labelIds.Count);
         var seq = 0;
 
@@ -252,11 +249,8 @@ public sealed class LabelService
             if (lbl.PrintedAt.HasValue || lbl.CancelledAt.HasValue) continue;
 
             idsToPrint.Add((id, seq));
-            if (lbl.IsTentativeBackup) continue; // tentative rows: print only, no aggregate
-            if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
-                groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
-            else
-                groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
+            customers.Add(lbl.CustomerId);
+            if (!lbl.IsTentativeBackup) seen.Add(lbl.CustomerId); // tentative rows: print only, no total
         }
         if (idsToPrint.Count == 0) return;
 
@@ -267,9 +261,10 @@ public sealed class LabelService
         // ilkel gerekiyordu. Pakete alınca o ilkele hiç gerek kalmıyor:
         // yazılmamış bir UPDATE'i geri almak gerekmez.
         using var write = DbWrite.Begin(_factory);
-        _labels.MarkPrintedBatch(idsToPrint, _clock.UnixNow(), NewPrintBatchId(), write);
-        foreach (var (customerId, agg) in groupedAmounts)
-            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
+        var now = _clock.UnixNow();
+        _labels.MarkPrintedBatch(idsToPrint, now, NewPrintBatchId(), write);
+        CustomerAggregateSql.Recompute(customers, write);
+        CustomerAggregateSql.TouchLastSeen(seen, now, write);
         write.Commit();
     }
 
@@ -357,10 +352,11 @@ public sealed class LabelService
     /// <summary>
     /// Seçilen etiketlerin fiyatını <paramref name="newPrice"/> yapar — TEK paket (<see cref="ConfirmBackup"/>
     /// deseni): etiket fiyatları (Revision+1, SyncedAt=NULL — sunucuya mevcut senkronla gider; stok
-    /// DEĞİŞMEZ), basılmış ve onaylı (geçici yedek olmayan) etiketler için müşteri toplamı fark kadar
-    /// (<see cref="CustomerService.RecordPrintedLabels"/>, adet 0), kargoya verilmemiş bağlı dosyanın
-    /// toplamı fark kadar. Ödenmiş etiketin — dosyaya bağlı (dekont) ya da <paramref name="paidFromBalance"/>'ta —
-    /// ödendiği fiyat ödenmişken ilk düzeltmede saklanır (<see cref="LabelRepository.UpdatePriceForCorrection"/>):
+    /// DEĞİŞMEZ), düzeltilen etiketlerin müşterilerinin toplamı etiketlerden yeniden türetilir
+    /// (<see cref="CustomerAggregateSql.Recompute(IEnumerable{string}, DbWrite)"/>; sonuçtaki
+    /// <see cref="PriceCorrectionResult.CustomerDeltas"/> yalnız basılmış ve onaylı satırların farkıdır, bilgi
+    /// için döner), kargoya verilmemiş bağlı dosyanın toplamı fark kadar. Ödenmiş etiketin — dosyaya bağlı
+    /// (dekont) ya da <paramref name="paidFromBalance"/>'ta — ödendiği fiyat ödenmişken ilk düzeltmede saklanır (<see cref="LabelRepository.UpdatePriceForCorrection"/>):
     /// "ödendi, fark" aynı etiketin sonraki düzeltmelerinde de ödenene göre hesaplansın.
     ///
     /// <para>Değişmeyenler: iptal edilmiş etiket, kargo ücreti satırı, kargoya verilmiş dosyadaki etiket
@@ -409,8 +405,11 @@ public sealed class LabelService
                     throw new PriceCorrectionConflictException(
                         "Etiketlerden biri bu arada değişti (basıldı, iptal edildi ya da fiyatı değişti); hiçbir şey yazılmadı.");
             }
-            foreach (var (customerId, delta) in customerDeltas)
-                if (delta != 0m) _customers.RecordPrintedLabels(customerId, 0, delta, write);
+            // Toplam etiketlerin yeni fiyatından türetilir (§6.1); CustomerDeltas yalnız bilgi için döner.
+            // LastSeenAt bugünkü gibi yalnız sıfır olmayan farkı olan müşteride ilerler.
+            CustomerAggregateSql.Recompute(corrected.Select(c => c.Before.CustomerId), write);
+            CustomerAggregateSql.TouchLastSeen(
+                customerDeltas.Where(kv => kv.Value != 0m).Select(kv => kv.Key), now, write);
             foreach (var (shipmentId, delta) in shipmentDeltas)
             {
                 var s = _shipments.GetById(shipmentId, write);
@@ -512,9 +511,9 @@ public sealed class LabelService
 
     /// <summary>
     /// Confirms a tentative backup as a real sale: flips IsTentativeBackup→0,
-    /// then retroactively credits the customer's aggregates if the spare
-    /// sticker was already printed (which is the common path — operator
-    /// printed during the live, original cancelled next-day, now confirming).
+    /// then re-derives the customer's totals — a spare sticker that was already
+    /// printed now counts (the common path — operator printed during the live,
+    /// original cancelled next-day, now confirming).
     /// Returns the updated Label.
     /// </summary>
     public Label ConfirmBackup(string backupLabelId, decimal? newPrice = null)
@@ -526,8 +525,8 @@ public sealed class LabelService
         if (!lbl.IsTentativeBackup)
             return lbl; // already confirmed — caller can ignore.
 
-        // Üç yazma da tek pakette: fiyat güncellemesi, ciro alacağı, onay
-        // damgası. Fiyat de pakete dahil — eskiden onay adımı patladığında
+        // Üç yazma da tek pakette: fiyat güncellemesi, onay damgası, müşteri
+        // toplamı. Fiyat de pakete dahil — eskiden onay adımı patladığında
         // fiyat değişmiş, yedek hâlâ "geçici" kalmış oluyordu.
         using var write = DbWrite.Begin(_factory);
 
@@ -539,14 +538,12 @@ public sealed class LabelService
             lbl = lbl with { Price = newPrice.Value };
         }
 
-        // Retroactive aggregate credit if the sticker was already printed.
-        // Yazma sırası artık önemsiz — paket ya bütün hâlinde kalıcı olur ya
-        // hiç olmaz. (Eskiden sıra kritikti: onay önce yazılırsa yedek
-        // "gerçek satış" görünüp cirosu hiç yazılmamış olabiliyordu.)
-        if (lbl.PrintedAt.HasValue)
-            _customers.RecordPrintedLabels(lbl.CustomerId, 1, lbl.Price, write);
-
         _labels.ConfirmTentativeBackups(new[] { backupLabelId }, write);
+        // Toplam onaydan SONRA etiketlerden türetilir (§6.1): basılmış yedek artık katkı verir.
+        // LastSeenAt bugünkü gibi yalnız sticker zaten basılmışsa ilerler.
+        CustomerAggregateSql.Recompute(new[] { lbl.CustomerId }, write);
+        if (lbl.PrintedAt.HasValue)
+            CustomerAggregateSql.TouchLastSeen(new[] { lbl.CustomerId }, _clock.UnixNow(), write);
         write.Commit();
 
         return lbl with { IsTentativeBackup = false };

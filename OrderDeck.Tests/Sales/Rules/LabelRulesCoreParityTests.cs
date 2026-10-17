@@ -178,6 +178,13 @@ public sealed class LabelRulesCoreParityTests
         using var fx = new Fx();
         var shipments = new Dictionary<string, SalesShipmentStatus>(StringComparer.Ordinal);
         var label = fx.Insert(c.Label, shipments);
+        // Insert durumu SQL'le kurar, sayaca dokunmaz. W1-03'ten beri toplam etiketlerden türetilir: önce
+        // türetilmiş "önce" değeri kurulur (kaymış 0/0 tohumuyla fark katkıyı değil kaymayı ölçerdi).
+        using (var write = DbWrite.Begin(fx.Db))
+        {
+            CustomerAggregateSql.Recompute(new[] { label.CustomerId }, write);
+            write.Commit();
+        }
         var before = fx.Customers.GetById(label.CustomerId)!;
 
         // İptal, etiketin müşteri toplamına katkısını geri alır (zaten iptalse dokunmaz): düşülen = katkı.

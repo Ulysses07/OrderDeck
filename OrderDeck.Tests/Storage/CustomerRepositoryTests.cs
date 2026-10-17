@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Dapper;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Storage;
@@ -49,22 +50,6 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
 
         repo.FindByPlatformAndUsername("instagram", "@nonexistent").Should().BeNull();
-    }
-
-    [Fact]
-    public void IncrementLabelStats_adds_count_and_amount_and_lastSeen()
-    {
-        using var db = new InMemorySqlite();
-        new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
-        repo.Insert(NewCustomer());
-
-        repo.IncrementLabelStats("c1", labelDelta: 2, amountDelta: 250m, lastSeenAt: 5000);
-
-        var fresh = repo.FindByPlatformAndUsername("instagram", "@ayse_y");
-        fresh!.TotalLabelsPrinted.Should().Be(2);
-        fresh.TotalAmount.Should().Be(250m);
-        fresh.LastSeenAt.Should().Be(5000);
     }
 
     [Fact]
@@ -591,7 +576,19 @@ public class CustomerRepositoryTests
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         var cursor = CursorAfter(repo, "id1");
 
-        repo.IncrementLabelStats("id1", 1, 250m, lastSeenAt: 2000);
+        // W1-03: toplam etiketlerden türetilir, LastSeenAt ayrı ifadeyle ilerler.
+        using (var c = db.Open())
+        {
+            c.Execute("INSERT INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
+            c.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Price, AddedAt, PrintedAt)
+                        VALUES ('l1', 's1', 'id1', 'twitch', 'alice', 'A1', 250, 1, 2)");
+        }
+        using (var write = DbWrite.Begin(db))
+        {
+            CustomerAggregateSql.Recompute(new[] { "id1" }, write).ChangedRows.Should().Be(1);
+            CustomerAggregateSql.TouchLastSeen(new[] { "id1" }, 2000, write);
+            write.Commit();
+        }
 
         Delta(db, cursor).Should()
             .BeEmpty("etiket sayacı sunucu projeksiyonunu değiştirmiyor");

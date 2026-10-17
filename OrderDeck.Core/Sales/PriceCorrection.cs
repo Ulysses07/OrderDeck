@@ -90,7 +90,8 @@ public sealed record CorrectedLabel(Label Before, decimal NewPrice)
 /// <summary><see cref="LabelService.CorrectPrices"/> sonucu.</summary>
 /// <param name="Corrected">Fiyatı değişen etiketler.</param>
 /// <param name="Shipped">Kargoya verilmiş dosyada olduğu için DEĞİŞMEYEN etiketler.</param>
-/// <param name="CustomerDeltas">Müşteri toplamına yazılan fark (yalnız basılmış ve onaylı satırlar).</param>
+/// <param name="CustomerDeltas">Müşteri toplamındaki fark (yalnız basılmış ve onaylı satırlar). Bilgi için döner:
+/// toplamın kendisi etiketlerden türetilir (spec 2026-10-13 §6.1).</param>
 /// <param name="ShipmentDeltas">Kargoya verilmemiş dosyaların toplamına yazılan fark.</param>
 public sealed record PriceCorrectionResult(
     IReadOnlyList<CorrectedLabel> Corrected,

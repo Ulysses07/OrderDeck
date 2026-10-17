@@ -301,25 +301,6 @@ public sealed class CustomerRepository
         return row is null ? null : Map(row);
     }
 
-    /// <param name="write">
-    /// Doluysa yazma çağıranın işlemine katılır (bkz. <see cref="DbWrite"/>).
-    /// Etiket durumu ile müşteri toplamı birlikte değişmek zorunda: biri yazılıp
-    /// öbürü yazılmazsa ciro ile etiket listesi sessizce ayrışır. Boş
-    /// bırakılırsa metot kendi bağlantısını açar — mevcut çağıranlar için
-    /// davranış değişmiyor.
-    /// </param>
-    public void IncrementLabelStats(
-        string id, int labelDelta, decimal amountDelta, long lastSeenAt, DbWrite? write = null)
-    {
-        _factory.Execute(write,
-            @"UPDATE Customer
-              SET TotalLabelsPrinted = TotalLabelsPrinted + @labelDelta,
-                  TotalAmount        = TotalAmount + @amountDelta,
-                  LastSeenAt         = @lastSeenAt
-              WHERE Id = " + CustomerIdSql.Resolve("@id"),
-            new { id, labelDelta, amountDelta, lastSeenAt });
-    }
-
     /// <summary>Sets or clears the blacklist flag, with optional reason and timestamp.</summary>
     /// <param name="write">Doluysa çağıranın paketinde (sohbet yolu, U12).</param>
     public void UpdateBlacklist(string id, bool isBlacklisted, string? reason, long? blacklistedAt, DbWrite? write = null)

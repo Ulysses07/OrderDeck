@@ -431,8 +431,9 @@ public sealed class CustomerChangesPullServiceTests
         using (var conn = fx.Db.Open())
         {
             conn.Execute("INSERT INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
-            conn.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Price, AddedAt)
-                           VALUES ('l1', 's1', @local, 'tiktok', 'Ornek', 'A1', 10, 1)", new { local });
+            // Basılmış: W1-03'ten beri taşıma asıl kaydın toplamını taşınan etiketlerden türetir.
+            conn.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Price, AddedAt, PrintedAt)
+                           VALUES ('l1', 's1', @local, 'tiktok', 'Ornek', 'A1', 450, 1, 2)", new { local });
         }
 
         (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
@@ -441,7 +442,7 @@ public sealed class CustomerChangesPullServiceTests
         Exists(fx, local).Should().BeFalse();
         var c = fx.Customers.GetById(canonical.ToString("N"))!;
         c.FullName.Should().Be("Örnek Müşteri");
-        c.TotalAmount.Should().Be(450m);
+        (c.TotalLabelsPrinted, c.TotalAmount).Should().Be((1, 450m), "taşınan etiketten türetilir (sayaç 3/450 değil)");
         using var q = fx.Db.Open();
         q.ExecuteScalar<string>("SELECT CustomerId FROM Label WHERE Id = 'l1'").Should().Be(canonical.ToString("N"));
         fx.FeedCursor.Should().Be(7);

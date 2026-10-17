@@ -54,22 +54,6 @@ public class CustomerServiceTests
     }
 
     [Fact]
-    public void RecordPrintedLabels_bumps_aggregates()
-    {
-        using var db = new InMemorySqlite();
-        new MigrationRunner(db).Run();
-        var clock = Mock.Of<IClock>(c => c.UnixNow() == 5000L);
-        var svc = MakeSvc(db, clock, out var repo, out _, out _);
-        var c = svc.GetOrCreate("instagram", "@a", null, null);
-
-        svc.RecordPrintedLabels(c.Id, labelCount: 3, amount: 450m);
-
-        var fresh = repo.FindByPlatformAndUsername("instagram", "@a")!;
-        fresh.TotalLabelsPrinted.Should().Be(3);
-        fresh.TotalAmount.Should().Be(450m);
-    }
-
-    [Fact]
     public void AddToBlacklist_flips_flag_with_timestamp()
     {
         using var db = new InMemorySqlite();
