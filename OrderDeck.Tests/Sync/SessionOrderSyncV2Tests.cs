@@ -312,6 +312,35 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         _labels.HasUnsynced().Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Kapanis_gonderimi_kapidaki_turu_beklerken_butcesinde_biter_kapidan_vazgecer()
+    {
+        AddLabel();
+        var hold = _server.Hold(FakeSalesServer.OrdersSync);
+        var tour = Task.Run(() => _svc.SyncOnceAsync());
+        await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(10));
+        var lateLabel = AddLabel(150m, "B2");                                  // kapanışın göndereceği
+
+        var flush = new SyncFlushService(new[]
+        {
+            new FlushStep("oturum ve etiket", SyncFlushService.Drain(async ct =>
+            {
+                var r = await _svc.SyncOnceAsync(ct);
+                return r.SessionsPushed + r.OrdersPushed;
+            })),
+        });
+        var sw = Stopwatch.StartNew();
+        await flush.FlushAsync(TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10));
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3), "kapanış bütçesi kesin");
+
+        hold.Release();
+        await tour.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(200);
+        Local(lateLabel).SyncedAt.Should().BeNull(
+            "kapanışın turu kapıyı beklerken belirteci dinler: bütçe dolunca vazgeçer, sonradan gönderim yapmaz");
+        _server.Calls(FakeSalesServer.OrdersSync).Should().ContainSingle();
+    }
+
     // ── canlı yol ──────────────────────────────────────────────────────────
 
     [Fact]

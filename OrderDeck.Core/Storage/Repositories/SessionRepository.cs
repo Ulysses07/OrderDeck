@@ -37,6 +37,14 @@ public sealed class SessionRepository
             new { id, endedAt });
     }
 
+    /// <summary>Gönderim kuyruğu boş mu — kısmi <c>IX_StreamSession_SyncedAt</c> dizininden tek satır okur
+    /// (<see cref="LabelRepository.HasUnsynced"/> ile aynı amaç).</summary>
+    public bool HasUnsynced()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>("SELECT EXISTS(SELECT 1 FROM StreamSession WHERE SyncedAt IS NULL)") != 0;
+    }
+
     /// <summary>
     /// PR siparis-sync (2026-05-13): henüz LicenseServer'a push edilmemiş
     /// session'lar. Outbox query.

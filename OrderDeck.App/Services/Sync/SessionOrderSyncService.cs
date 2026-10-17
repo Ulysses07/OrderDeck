@@ -33,6 +33,11 @@ namespace OrderDeck.App.Services.Sync;
 /// (<see cref="SyncFlushService.ForClose"/>) ve sonraki görevlerde geri doldurma. Bütün tur tek bir
 /// <see cref="SemaphoreSlim"/> altındadır: aynı parti iki kez gitmez, onay sırası karışmaz.</para>
 ///
+/// <para><b>Ucuz tur</b> (sahip kararı Y9): yayında tur ≈5 sn'de bir koşar
+/// (<see cref="SessionOrderSyncHostedService"/>). Gönderilecek oturum ya da etiket yoksa hiçbir istek atılmaz —
+/// lisans çözümü dahil; kuyruk iki kısmi dizinden birer satırla okunur. Gönderim hatası uyarısı en çok
+/// <see cref="FailureWarningInterval"/>'da bir yazılır, arası Debug.</para>
+///
 /// <para><b>Canlı yol beklemez:</b> tur arka plan iş parçacığında koşar ve her <c>await</c>
 /// <c>ConfigureAwait(false)</c>'tır. Kuyruk okuması kendi bağlantısını HTTP'den ÖNCE kapatır, onay HTTP'den SONRA
 /// kısa bir işlemde yazılır: hiçbir SQLite bağlantısı ya da yazma kilidi ağ isteğini beklemez — yavaş ya da düşmüş
@@ -64,8 +69,12 @@ public sealed class SessionOrderSyncService
     /// <summary>Gönderim kapısı: bütün tur bunun altında (§5.2).</summary>
     private readonly SemaphoreSlim _pushGate = new(1, 1);
 
+    /// <summary>İki gönderim hatası uyarısı arasındaki en kısa süre (Y9: yayında tur ≈5 sn'de bir).</summary>
+    internal static readonly System.TimeSpan FailureWarningInterval = System.TimeSpan.FromMinutes(1);
+
     private System.Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
+    private long? _lastFailureWarnAt;
 
     public SessionOrderSyncService(
         LicenseApiClient api,
@@ -107,6 +116,20 @@ public sealed class SessionOrderSyncService
 
     private async Task<SyncResult> SyncCoreAsync(System.Threading.CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(_licenseProvider.CurrentLicenseKey))
+        {
+            _log.LogDebug("Session/Order sync skipped — no license key");
+            return default;
+        }
+
+        // Y9: yayında tur ≈5 sn'de bir koşar; gönderilecek bir şey yoksa HİÇBİR istek atılmaz — lisans çözümü dahil.
+        // İki kısmi dizinden birer satırlık okuma.
+        if (!_sessions.HasUnsynced() && !_labels.HasUnsynced())
+        {
+            _tracker?.MarkPushOk(PushStatusName, System.DateTimeOffset.UtcNow);   // I-3: gönderecek bir şey yok
+            return default;
+        }
+
         // null: geri yüklemeden sonra hello bekleniyor — hiçbir gönderim yapılmaz (§8.7).
         if (_envelope.ForPush() is not { } envelope)
         {
@@ -157,7 +180,7 @@ public sealed class SessionOrderSyncService
         }
         catch (LicenseApiException ex)
         {
-            _log.LogWarning(ex, "Session outbox push failed: {Code}", ex.Code);
+            LogFailure(ex, "Session outbox push failed: {Code}", ex.Code);
             return (0, false);
         }
 
@@ -190,7 +213,7 @@ public sealed class SessionOrderSyncService
         }
         catch (LicenseApiException ex)
         {
-            _log.LogWarning(ex, "Order outbox push failed: {Code}", ex.Code);
+            LogFailure(ex, "Order outbox push failed: {Code}", ex.Code);
             return (0, false);
         }
 
@@ -292,7 +315,7 @@ public sealed class SessionOrderSyncService
             var match = licenses.FirstOrDefault(l => l.LicenseKey == key);
             if (match?.Id is null)
             {
-                _log.LogWarning("LicenseId not found for current license key");
+                LogFailure(null, "LicenseId not found for current license key");
                 return null;
             }
             _cachedLicenseId = match.Id;
@@ -301,8 +324,25 @@ public sealed class SessionOrderSyncService
         }
         catch (LicenseApiException ex)
         {
-            _log.LogWarning(ex, "Failed to resolve LicenseId: {Code}", ex.Code);
+            LogFailure(ex, "Failed to resolve LicenseId: {Code}", ex.Code);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Gönderim hatası günlüğü (Y9): yayında tur ≈5 sn'de bir koştuğu için çevrimdışı bir bilgisayar her turda uyarı
+    /// yazardı. Uyarı en çok <see cref="FailureWarningInterval"/>'da bir; arası Debug. Tur kapı altında koştuğu için
+    /// durum tek iş parçacığından okunur ve yazılır.
+    /// </summary>
+    private void LogFailure(System.Exception? ex, string message, params object?[] args)
+    {
+        var now = _clock.UnixNow();
+        if (_lastFailureWarnAt is { } last && now - last < (long)FailureWarningInterval.TotalSeconds)
+        {
+            _log.LogDebug(ex, message, args);
+            return;
+        }
+        _lastFailureWarnAt = now;
+        _log.LogWarning(ex, message, args);
     }
 }
