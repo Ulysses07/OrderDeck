@@ -46,11 +46,16 @@ namespace OrderDeck.Core.Storage.Repositories;
 /// <see cref="SalesConflictLog.CatchUpOverwrite"/> izi düşer: Id ve birim adları, metin yok.</para>
 ///
 /// <para><b>Dosya.</b> Yalnız <see cref="SalesFeedApplyOptions.ApplyShipments"/> iken yerel aynaya upsert edilir
-/// (<c>OriginReplicaId</c>, <c>ServerVersion</c>, karar alanları, tutar; <c>SyncedAt = now</c>).</para>
+/// (<c>OriginReplicaId</c>, <c>ServerVersion</c>, karar alanları, tutar; <c>SyncedAt = now</c>). İşlem içinde okunan
+/// yerel kip 0 iken (mod On dönemini görmemiş kopyanın <c>disable</c> turu, §8.5) bu kopya dosyalarının yazıcısıdır:
+/// yerel satır onaysızsa hiçbir şey yazılmaz (<see cref="SalesFeedApplyStatus.Stalled"/>, U5'in dosya karşılığı; tur
+/// önce kargoyu gönderir), kargoya verilmemiş ve kaynağı başka kopya olan dosya eklenmez, yerelde varsa silinir (2.
+/// adımın kuralı öğe anında; dekont onu bu arada seçemez). Kip 1'de gönderilmemiş dosya oluşamaz (§8.4-3): sunucu
+/// yazar.</para>
 ///
 /// <para><b><c>disable</c> turu</b> (<see cref="SalesFeedApplyOptions.OwnRowsOnly"/>, §8.5-1): yalnız kendi
 /// (<c>Origin = 'local'</c>) oturum ve etiketleri yazılır — başka bilgisayarın komutlarının sonucu kendi satırına iner;
-/// uzak oturum ve etiket eklenmez ya da tazelenmez (2. adım siler). Dosyalar her zamanki gibi.</para>
+/// uzak oturum ve etiket eklenmez ya da tazelenmez (2. adım siler). Dosyalar yukarıdaki kip kuralıyla.</para>
 /// </summary>
 public sealed class SalesFeedRepository
 {
@@ -421,16 +426,42 @@ public sealed class SalesFeedRepository
                SyncedAt = @Now
          WHERE Id = @Id";
 
+    /// <summary>Yerel kip 0'da başka kopyaya geçmiş, kargoya verilmemiş ve onaylı yerel dosya (2. adımın
+    /// <c>DropForeignShipmentsSql</c>'inin öğe anındaki karşılığı). Kilit altında; silme tetikleyicisi yok.</summary>
+    private const string DropForeignShipmentItemSql = "DELETE FROM Shipment WHERE Id = @id";
+
     private SalesFeedApplyResult ApplyShipment(SalesFeedShipment s, long now) => Locked(_ =>
     {
         using var scope = SyncApplyScope.Begin(_factory);
         var conn = scope.Connection;
         var tx = scope.Transaction;
 
+        // BEGIN IMMEDIATE: yazma kilidi okumadan önce alındı — okunan satır ve kip yazılana kadar değişemez.
         var local = conn.QuerySingleOrDefault<ShipmentRow>(
             @"SELECT Status, HeldAt, ShippedAt, CumulativeAmount, OriginReplicaId, ServerVersion, SyncedAt
               FROM Shipment WHERE Id = @id",
             new { id = s.Id }, tx);
+
+        // Yerel kip 0 (mod On dönemini görmemiş kopyanın disable turu, §8.5): bu kopya dosyalarının yazıcısıdır —
+        // dekontun yerel kargo adımı yazmayı sürdürür, TR_Shipment_ServerOwned_* susar. §8.4-3'ün "gönderilmemiş dosya
+        // oluşamaz" güvencesi yalnız kip 1'de geçerli.
+        var mode = conn.ExecuteScalar<long?>("SELECT Mode FROM SalesSyncState WHERE Id = 1", transaction: tx) ?? 0;
+        if (mode == 0)
+        {
+            if (local is not null && local.SyncedAt is null)
+                return SalesFeedApplyResult.Of(SalesFeedApplyStatus.Stalled);      // U5'in dosya karşılığı; Dispose geri alır
+            if (IsForeignOpenShipment(conn, tx, s))
+            {
+                // Off'ta başka kopyanın olacak açık dosyası (§4.10): 2. adım zaten silerdi. Hiç eklenmez, varsa hemen
+                // kalkar — o ana kadar bu kopyanın dekontu onu seçip etiket bağlayamaz.
+                if (local is null) return SalesFeedApplyResult.Of(SalesFeedApplyStatus.Ignored);
+                conn.Execute(DropForeignShipmentItemSql, new { id = s.Id }, tx);
+                scope.Commit();
+                return new SalesFeedApplyResult(SalesFeedApplyStatus.Applied, Array.Empty<string>(),
+                    Array.Empty<string>(), [s.Id], false, 0, AggregateRecomputeResult.None);
+            }
+        }
+
         if (local?.ServerVersion is { } known && s.Version < known)
             return SalesFeedApplyResult.Of(SalesFeedApplyStatus.Unchanged);
 
@@ -464,6 +495,15 @@ public sealed class SalesFeedRepository
             changed ? [s.Id] : Array.Empty<string>(),
             false, 0, AggregateRecomputeResult.None);
     });
+
+    /// <summary>Kargoya verilmemiş ve kaynağı bu veritabanının kopyası olmayan dosya (<c>DropForeignShipmentsSql</c>'in
+    /// öğe karşılığı). Kaynağı boş dosya ve kopya kimliği okunamayan veritabanı yabancı sayılmaz.</summary>
+    private static bool IsForeignOpenShipment(IDbConnection conn, IDbTransaction tx, SalesFeedShipment s)
+    {
+        if (s.Status == ShipmentStatus.Shipped || s.OriginReplicaId is not { } origin) return false;
+        var own = conn.ExecuteScalar<string?>("SELECT ReplicaId FROM _meta WHERE Id = 1", transaction: tx);
+        return own is not null && !SameId(origin, own);
+    }
 
     // ── uzak satırların temizliği ────────────────────────────────────────
 

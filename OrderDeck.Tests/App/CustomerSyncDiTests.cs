@@ -374,6 +374,13 @@ public sealed class CustomerSyncDiTests
         // Kip adımı turu isteğe bağlı parametreyle alır — kayıt eksikse DI sessizce null bırakır, Off turu hiç başlamazdı.
         PrivateField<SalesModeOffRound>(host.Services.GetRequiredService<SalesModeCoordinator>(), "_modeOff")
             .Should().BeSameAs(round);
+        // Yerel kip 0'daki turun kargo ön gönderimi ve duran dosyanın gönderimi de isteğe bağlı parametrelerle: eksikse
+        // gönderilmemiş dosya kararı son akışta dururdu, tur hiç bitmezdi.
+        var pull = host.Services.GetRequiredService<SalesChangesPullService>();
+        PrivateField<ShipmentSyncService>(pull, "_shipmentPush").Should().BeSameAs(
+            host.Services.GetRequiredService<ShipmentSyncService>());
+        PrivateField<ShipmentRepository>(pull, "_shipments").Should().BeSameAs(
+            host.Services.GetRequiredService<ShipmentRepository>());
     }
 
     [Fact]

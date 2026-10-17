@@ -20,8 +20,8 @@ public enum SalesPullOutcome
     /// <summary><c>sales/state</c> başarısız (ağ, sunucu, kimlik), sayfa/ağ hatası (429 dahil), uygulanamayan öğe
     /// (atlanana kadar), yerel ortam hatası ya da temizlik yazılamadı. İmleç son uygulanan öğede.</summary>
     Failed,
-    /// <summary>Gönderilmemiş yerel etiket (U5) ve durmadan sonraki gönderim onu götüremedi. İmleç o öğede; deneme
-    /// sayılmadı.</summary>
+    /// <summary>Gönderilmemiş yerel etiket (U5; yerel kip 0'daki <c>disable</c> turunda dosya da) ve durmadan sonraki
+    /// gönderim onu götüremedi. İmleç o öğede; deneme sayılmadı.</summary>
     Stalled,
     /// <summary>Etiketin müşterisi yerelde yok, kimliği başka Id'de: yönlendirmeyi müşteri akışı getirecek. İmleç o
     /// öğede; deneme sayılmadı.</summary>
@@ -113,14 +113,16 @@ public sealed record SalesFirstCatchUp(int CatchUpOverwrites, int AggregateRows)
 /// <para><b><c>disable</c> turu</b> (W2-11, §8.5): turun başında, state'ten önce, yarıda kalmış 3. adım yeniden koşar
 /// (<see cref="SalesModeCoordinator.ResumeModeOff"/>; yerel kip 0 ∧ bekleyen komut). Kip adımı
 /// <see cref="SalesModeStep.Disabling"/> derse tur bekleyen komutları GÖNDERMEZ (komut ucu 409 <c>mode-off</c>), canlı
-/// yayın aynasını yazmaz; ön gönderimden sonra son akışı kendi satırları ve dosyalarla boş sayfaya kadar uygular, sonra
+/// yayın aynasını yazmaz; ön gönderimden (müşteri, oturum ve etiket, kargo — yerel kip 0'da dekont dosyayı yerelde
+/// yazmayı sürdürür) sonra son akışı kendi satırları ve dosyalarla boş sayfaya kadar uygular, sonra
 /// 2. ve 3. adım (<see cref="SalesModeCoordinator.CompleteModeOff"/>). Tamamlanınca durum Off, ekranlar baştan okunur
 /// (<see cref="SalesChanged"/>) ve tur <see cref="SalesPullOutcome.Disabled"/> döner. Komut ucunun <c>mode-off</c>'u
 /// (<see cref="SalesCommandClient.ModeOffDetected"/>) bir turu hemen başlatır (<see cref="RequestModeOffRound"/>):
 /// <see cref="ModeOffStarted"/> şeridi açar, isteği gören tur sonuçlanınca <see cref="ModeOffFinished"/> kapatır.</para>
 ///
-/// <para><b>Bekleyen öğe:</b> U5 (gönderilmemiş yerel etiket) durdurur: oturum ve etiket bir kez daha gönderilir;
-/// duran etiket onaylandıysa (gönderim filigranı ilerledi) akış aynı turda bir kez daha denenir, değilse tur biter.
+/// <para><b>Bekleyen öğe:</b> U5 (gönderilmemiş yerel etiket; yerel kip 0'daki <c>disable</c> turunda gönderilmemiş
+/// yerel dosya da) durdurur: etikette oturum ve etiket, dosyada kargo bir kez daha gönderilir; duran satır onaylandıysa
+/// (gönderim filigranı ilerledi) akış aynı turda bir kez daha denenir, değilse tur biter.
 /// Bekleyen müşteri ve ödeme akışındaki müşteri o öğede durur. Hiçbiri deneme sayılmaz, öğe kendiliğinden atlanmaz.</para>
 ///
 /// <para><b>Uygulanamayan öğe (U10):</b> <see cref="SalesFeedFailureRepository"/>'de kalıcı sayılır;
@@ -178,6 +180,8 @@ public sealed class SalesChangesPullService
     private readonly PendingSalesCommandSender? _pendingCommands;
     private readonly SessionRepository? _sessions;
     private readonly SalesModeCoordinator? _modeCoordinator;
+    private readonly ShipmentSyncService? _shipmentPush;
+    private readonly ShipmentRepository? _shipments;
 
     /// <summary>"Devredilemedi" kuralı (§5.7, §12 risk 4): yalnız sunucuya ulaşan mod On turlarında gözlenir.</summary>
     private readonly HandoverStallTracker _handoverStall = new();
@@ -205,7 +209,8 @@ public sealed class SalesChangesPullService
     /// <summary>Bu tur <c>mode-off</c> isteklerini sonuçlandırdı (tur kilidi altında yazılır).</summary>
     private bool _modeOffSettled;
 
-    private readonly record struct PassResult(SalesPullOutcome Outcome, string? BlockedItemId = null, int Waiting = 0);
+    private readonly record struct PassResult(
+        SalesPullOutcome Outcome, string? BlockedItemId = null, int Waiting = 0, string? BlockedKind = null);
 
     /// <summary>Bir turun birikimi: değişen kimlikler ve sayılar.</summary>
     private sealed class TourTally
@@ -236,11 +241,15 @@ public sealed class SalesChangesPullService
         PendingSalesCommandSender? pendingCommands = null,
         SessionRepository? sessions = null,
         SalesModeCoordinator? modeCoordinator = null,
-        SalesCommandClient? commands = null)
+        SalesCommandClient? commands = null,
+        ShipmentSyncService? shipmentPush = null,
+        ShipmentRepository? shipments = null)
     {
         _pendingCommands = pendingCommands;
         _sessions = sessions;
         _modeCoordinator = modeCoordinator;
+        _shipmentPush = shipmentPush;
+        _shipments = shipments;
         if (_pendingCommands is not null)
             _pendingCommands.Settled += (_, e) => PendingCommandsSettled?.Invoke(this, e);
         // W2-11 (§5.3 mode-off): komut ucu modun kapandığını söyledi — state hemen okunur, Off turu başlar.
@@ -497,8 +506,7 @@ public sealed class SalesChangesPullService
         _pagesThisTour = 0;
         var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOnOptions, ct)
             .ConfigureAwait(false);
-        if (pass.Outcome == SalesPullOutcome.Stalled && pass.BlockedItemId is { } stalledId
-            && await PushForStallAsync(stalledId, ct).ConfigureAwait(false))
+        if (pass.Outcome == SalesPullOutcome.Stalled && await PushForStallAsync(pass, ct).ConfigureAwait(false))
             pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOnOptions, ct)
                 .ConfigureAwait(false);
 
@@ -527,6 +535,9 @@ public sealed class SalesChangesPullService
         ResetHandoverStall();
         await TryPushCustomersAsync(ct).ConfigureAwait(false);
         await TryPushSalesAsync(ct).ConfigureAwait(false);
+        // Yerel kip 0'da (mod On dönemini görmemiş kopya) dekontun kargo adımı yerelde yazmayı sürdürür: gönderilmemiş
+        // dosya son akışı durdururdu (U5'in dosya karşılığı). Kip 1'de kargo gönderimi istek atmaz (§7.1).
+        await TryPushShipmentsAsync(ct).ConfigureAwait(false);
 
         var tally = new TourTally();
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
@@ -536,8 +547,7 @@ public sealed class SalesChangesPullService
         _pagesThisTour = 0;
         var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOffRoundOptions, ct)
             .ConfigureAwait(false);
-        if (pass.Outcome == SalesPullOutcome.Stalled && pass.BlockedItemId is { } stalledId
-            && await PushForStallAsync(stalledId, ct).ConfigureAwait(false))
+        if (pass.Outcome == SalesPullOutcome.Stalled && await PushForStallAsync(pass, ct).ConfigureAwait(false))
             pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOffRoundOptions, ct)
                 .ConfigureAwait(false);
         LogTally(tally);
@@ -674,7 +684,7 @@ public sealed class SalesChangesPullService
                                 SalesFeedApplyStatus.PendingCustomer => SalesPullOutcome.PendingCustomer,
                                 _ => SalesPullOutcome.Busy,
                             };
-                            return new(outcome, key.ItemId, items.Count - i);
+                            return new(outcome, key.ItemId, items.Count - i, key.Kind);
                         }
 
                         if (result is not null)
@@ -773,19 +783,36 @@ public sealed class SalesChangesPullService
         }
     }
 
-    /// <summary>U5: oturum ve etiket bir kez daha gönderilir. Filigran = duran etiketin onayı: etiket artık onaylıysa
-    /// (bu gönderimle ya da arada koşan zamanlayıcı turuyla) akış aynı turda yeniden denenir; değilse ikinci deneme
-    /// aynı öğede yine dururdu — istek harcanmaz.</summary>
-    private async Task<bool> PushForStallAsync(string labelId, CancellationToken ct)
+    /// <summary>Kargo gönderimi (<see cref="ShipmentSyncService"/>; yerel kip 1'de istek atmaz). Yerel hata turu
+    /// düşürmez.</summary>
+    private async Task TryPushShipmentsAsync(CancellationToken ct)
     {
-        await TryPushSalesAsync(ct).ConfigureAwait(false);
+        if (_shipmentPush is null) return;
+        try { await _shipmentPush.SyncOnceAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış akışı ön gönderimi: kargo gönderimi yerel hatayla düştü; akış sürer");
+        }
+    }
+
+    /// <summary>U5: duran satırın kuyruğu bir kez daha gönderilir — etikette oturum ve etiket, dosyada kargo.
+    /// Filigran = duran satırın onayı: artık onaylıysa (bu gönderimle ya da arada koşan zamanlayıcı turuyla) akış aynı
+    /// turda yeniden denenir; değilse ikinci deneme aynı öğede yine dururdu — istek harcanmaz.</summary>
+    private async Task<bool> PushForStallAsync(PassResult pass, CancellationToken ct)
+    {
+        if (pass.BlockedItemId is not { } id) return false;
+        var shipment = pass.BlockedKind == SalesFeedItemKind.Shipment;
+        if (shipment) await TryPushShipmentsAsync(ct).ConfigureAwait(false);
+        else await TryPushSalesAsync(ct).ConfigureAwait(false);
         try
         {
-            return _labels.GetById(labelId)?.SyncedAt is not null;
+            return shipment
+                ? _shipments?.GetById(id)?.SyncedAt is not null
+                : _labels.GetById(id)?.SyncedAt is not null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.LogDebug(ex, "Duran etiketin onayı okunamadı ({LabelId})", labelId);
+            _log.LogDebug(ex, "Duran satırın onayı okunamadı ({Kind} {ItemId})", pass.BlockedKind, id);
             return false;
         }
     }

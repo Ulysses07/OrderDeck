@@ -63,6 +63,7 @@ public sealed class DisableRoundTests : IDisposable
         public SalesSyncEnvelope Envelope { get; }
         public SalesSyncStateRepository State { get; }
         public SessionOrderSyncService Push { get; }
+        public ShipmentSyncService ShipmentPush { get; }
         public SalesCommandClient Commands { get; }
         public SalesModeOffRound Round { get; }
         public SalesChangesPullService Pull { get; }
@@ -98,8 +99,8 @@ public sealed class DisableRoundTests : IDisposable
                 NullLogger<SalesSyncStateService>.Instance);
             Push = new SessionOrderSyncService(api, new SessionRepository(db), labelRepo, license, Envelope,
                 new HandoverGate(), new SalesPushApply(db), clock, NullLogger<SessionOrderSyncService>.Instance);
-            var shipments = new ShipmentSyncService(api, new ShipmentRepository(db), store, Settings, license, Envelope,
-                clock, NullLogger<ShipmentSyncService>.Instance, salesState: State);
+            var shipments = ShipmentPush = new ShipmentSyncService(api, new ShipmentRepository(db), store, Settings,
+                license, Envelope, clock, NullLogger<ShipmentSyncService>.Instance, salesState: State);
             var payments = new PaymentSyncService(api, new PaymentRepository(db), cursors, license, clock,
                 NullLogger<PaymentSyncService>.Instance);
             var customerPush = new WpfCustomerProjectionSyncService(api, customerSync, cursors, license, clock,
@@ -116,7 +117,8 @@ public sealed class DisableRoundTests : IDisposable
             Pull = new SalesChangesPullService(api, state, State, Envelope, feed, new SalesFeedFailureRepository(db),
                 new RemoteLiveSessionRepository(db), cursors, labelRepo, customerPush, Push, customerPull, license, clock,
                 NullLogger<SalesChangesPullService>.Instance, sessions: new SessionRepository(db),
-                modeCoordinator: coordinator, commands: Commands);
+                modeCoordinator: coordinator, commands: Commands, shipmentPush: shipments,
+                shipments: new ShipmentRepository(db));
         }
 
         public Task<SalesPullOutcome> TourAsync() => Pull.TourOnceAsync(CancellationToken.None);
@@ -514,6 +516,55 @@ public sealed class DisableRoundTests : IDisposable
 
         _server.ChangesCalls.Should().BeEmpty("mod Off'ta akış uygulanmaz (bugünkü gibi)");
         _server.PushCalls.Should().BeEmpty();
+    }
+
+    /// <summary>Mod On dönemini görmemiş kopyanın bu kopyada açtığı, gönderilmiş (sürümü bilinen) dosyası; ardından yerel,
+    /// gönderilmemiş "Beklet" kararı ve ikinci dekontun tutarı (Held/140).</summary>
+    private static async Task<(string Id, string Customer)> UnsentLocalDecisionAsync(Pc pc)
+    {
+        var customer = pc.Customer();
+        var id = Guid.NewGuid().ToString("N");
+        var repo = new ShipmentRepository(pc.Db);
+        repo.Insert(new Shipment(id, customer, ShipmentStatus.Pending, T0.ToUnixTimeSeconds(), null, null, 60m));
+        await pc.ShipmentPush.SyncOnceAsync();                 // mod Off'ta bugünkü gönderim
+        repo.GetById(id)!.SyncedAt.Should().NotBeNull("ön koşul: dosya sunucuda");
+        repo.Update(new Shipment(id, customer, ShipmentStatus.Held, T0.ToUnixTimeSeconds(),
+            DisabledAt.AddMinutes(1).ToUnixTimeSeconds(), null, 140m));
+        return (id, customer);
+    }
+
+    [Fact]
+    public async Task Mod_On_donemini_gormemis_kopyanin_gonderilmemis_dosya_karari_son_akista_ezilmez_gonderilir()
+    {
+        var a = NewPc();
+        var (file, _) = await UnsentLocalDecisionAsync(a);
+        _server.Disable(DisabledAt);
+
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.Disabled);
+
+        var local = new ShipmentRepository(a.Db).GetById(file)!;
+        local.Status.Should().Be(ShipmentStatus.Held, "gönderilmemiş karar sunucunun eski hâliyle ezilmez");
+        local.CumulativeAmount.Should().Be(140m);
+        local.SyncedAt.Should().NotBeNull("Off turunun ön gönderimi götürdü");
+        var server = _server.Shipment(G(file))!.Row;
+        server.Status.Should().Be("held");
+        server.CumulativeAmount.Should().Be(140m);
+        _server.ChangesCalls.Should().HaveCount(2, "ön gönderim kargoyu götürdü: son akış hiç durmadı");
+        _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Kargo_on_gonderimi_dusse_de_duran_dosya_kargo_gonderimiyle_ayni_turda_biter()
+    {
+        var a = NewPc();
+        var (file, _) = await UnsentLocalDecisionAsync(a);
+        _server.Disable(DisabledAt);
+        _server.EnqueueStatus(FakeSalesServer.ShipmentsSync, 500);      // turun ön gönderimi düşer
+
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.Disabled, "durmadan sonraki gönderim dosyanın kuyruğundan");
+
+        new ShipmentRepository(a.Db).GetById(file)!.CumulativeAmount.Should().Be(140m);
+        _server.Shipment(G(file))!.Row.CumulativeAmount.Should().Be(140m);
     }
 
     // ── turdan sonra W1 yolu ──────────────────────────────────────────────

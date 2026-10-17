@@ -156,6 +156,95 @@ public sealed class DisableRoundFeedApplyTests : IDisposable
         new LabelRepository(_db).GetById(id)!.SessionId.Should().Be(own);
     }
 
+    // ── yerel kip 0'da dosya: bu kopya yazıcıdır ──────────────────────────
+
+    private string OwnReplica => new ReplicaIdentityRepository(_db).GetReplicaId()!.Value.ToString("N");
+
+    private (string Id, string Customer) OwnSyncedShipment(int serverVersion = 4)
+    {
+        var customer = Customer();
+        var id = NewId();
+        new ShipmentRepository(_db).Insert(new Shipment(id, customer, ShipmentStatus.Pending, StartedAt, null, null, 60m,
+            SyncedAt: StartedAt + 10));
+        Apply(new SalesFeedItem(SalesFeedItemKind.Shipment, 3, null, null,
+            ServerShipment(id, customer, OwnReplica, serverVersion))).Status.Should().Be(SalesFeedApplyStatus.Applied,
+            "ön koşul: sürüm bilinir");
+        return (id, customer);
+    }
+
+    private static SalesFeedShipment ServerShipment(string id, string customer, string origin, int version,
+        ShipmentStatus status = ShipmentStatus.Pending, decimal amount = 60m) =>
+        new(id, customer, status, amount, StartedAt, null, status == ShipmentStatus.Shipped ? Now - 9 : null, version,
+            origin);
+
+    private (string Status, double Amount, long? HeldAt, long? SyncedAt, long Revision) ShipmentRow(string id)
+    {
+        using var c = _db.Open();
+        return c.QuerySingle<(string, double, long?, long?, long)>(
+            "SELECT Status, CumulativeAmount, HeldAt, SyncedAt, Revision FROM Shipment WHERE Id = @id", new { id });
+    }
+
+    [Fact]
+    public void Kip_0da_gonderilmemis_yerel_dosya_akisi_durdurur_ezilmez_onaysiz_kalir()
+    {
+        var (id, customer) = OwnSyncedShipment(serverVersion: 4);
+        // Tur sürerken dekont: ikinci etiket dosyayı 140'a çıkardı, "Beklet" kararı (gönderilmedi).
+        new ShipmentRepository(_db).Update(new Shipment(id, customer, ShipmentStatus.Held, StartedAt, Now - 30, null, 140m));
+
+        var result = Apply(new SalesFeedItem(SalesFeedItemKind.Shipment, 4, null, null,
+            ServerShipment(id, customer, OwnReplica, version: 4)));
+
+        result.Status.Should().Be(SalesFeedApplyStatus.Stalled, "U5'in dosya karşılığı: önce gönderilmeli");
+        var row = ShipmentRow(id);
+        row.Status.Should().Be("Held", "gönderilmemiş karar ezilmez");
+        row.Amount.Should().Be(140d);
+        row.HeldAt.Should().Be(Now - 30);
+        row.SyncedAt.Should().BeNull("hâlâ gönderim kuyruğunda");
+    }
+
+    [Fact]
+    public void Kip_0da_baska_kopyanin_acik_dosyasi_eklenmez_yerelde_varsa_kalkar_kargolanmisi_eklenir()
+    {
+        var customer = Customer();
+        var foreign = Guid.NewGuid().ToString("N");
+        var newForeign = NewId();
+
+        Apply(new SalesFeedItem(SalesFeedItemKind.Shipment, 3, null, null,
+            ServerShipment(newForeign, customer, foreign, version: 2, status: ShipmentStatus.Held))).Status
+            .Should().Be(SalesFeedApplyStatus.Ignored, "Off'ta başka kopyanın olacak açık dosyası");
+        new ShipmentRepository(_db).GetById(newForeign).Should().BeNull("dekont onu bu arada seçemez");
+        new ShipmentRepository(_db).GetOpenByCustomer(customer).Should().BeNull();
+
+        // Yerelde duran dosya (bu kopyanın açtığı) disable'da başka kopyaya geçti (§4.10): hemen kalkar.
+        var (moved, owner) = OwnSyncedShipment();
+        var removed = Apply(new SalesFeedItem(SalesFeedItemKind.Shipment, 5, null, null,
+            ServerShipment(moved, owner, foreign, version: 6)));
+        removed.Status.Should().Be(SalesFeedApplyStatus.Applied);
+        removed.ShipmentIds.Should().Equal(moved);
+        new ShipmentRepository(_db).GetById(moved).Should().BeNull("2. adımın kuralı öğe anında");
+
+        var shipped = NewId();
+        Apply(new SalesFeedItem(SalesFeedItemKind.Shipment, 6, null, null,
+            ServerShipment(shipped, customer, foreign, version: 3, status: ShipmentStatus.Shipped))).Status
+            .Should().Be(SalesFeedApplyStatus.Applied, "kargoya verilmiş dosya her kipte kalır");
+    }
+
+    [Fact]
+    public void Kip_1de_onaysiz_yerel_dosyayi_sunucu_yazar()
+    {
+        var (id, customer) = OwnSyncedShipment(serverVersion: 4);
+        new ShipmentRepository(_db).Update(new Shipment(id, customer, ShipmentStatus.Held, StartedAt, Now - 30, null, 140m));
+        using (var c = _db.Open()) c.Execute("UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+
+        Apply(new SalesFeedItem(SalesFeedItemKind.Shipment, 4, null, null,
+            ServerShipment(id, customer, Guid.NewGuid().ToString("N"), version: 5))).Status
+            .Should().Be(SalesFeedApplyStatus.Applied, "§8.4-3: kip 1'de dosya sunucunun; durmak akışı sonsuza kilitlerdi");
+
+        var row = ShipmentRow(id);
+        row.Status.Should().Be("Pending");
+        row.SyncedAt.Should().Be(Now);
+    }
+
     [Fact]
     public void Dosya_ogesi_disable_turunda_uygulanir()
     {
