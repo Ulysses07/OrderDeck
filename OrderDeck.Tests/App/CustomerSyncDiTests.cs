@@ -293,4 +293,16 @@ public sealed class CustomerSyncDiTests
         foreach (var p in syncParameters)
             host.Services.GetService(p.ParameterType).Should().NotBeNull(p.Name);
     }
+
+    [Fact]
+    public void Guncelleme_sorusu_tekil_Velopack_ornegi()
+    {
+        // W2-04 (spec 2026-10-13 §5.3): açılış ve satış komutunun client-update-required'ı AYNI soruyu açar —
+        // ikinci örnek "sürerken yenisini açma" kilidini paylaşmazdı.
+        using var host = new global::OrderDeck.App.AppHost();
+        var prompt = host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>();
+
+        prompt.Should().BeOfType<global::OrderDeck.App.Services.VelopackUpdatePrompt>();
+        host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>().Should().BeSameAs(prompt);
+    }
 }

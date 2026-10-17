@@ -437,6 +437,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<TokenRefresher>();
         services.AddHostedService<HeartbeatHostedService>();
 
+        // Velopack güncelleme sorusu TEK örnek: açılış (App.OnStartup) ve satış komutunun client-update-required'ı
+        // (spec 2026-10-13 §5.3) aynı soruyu açar; sürerken ikinci çağrı yenisini açmaz.
+        services.AddSingleton<Services.IAppUpdatePrompt, Services.VelopackUpdatePrompt>();
+
         // Phase 5a — cloud backup
         services.AddTransient<BearerAuthHandler>();
         services.AddHttpClient<IBackupClient, BackupClient>((sp, http) =>

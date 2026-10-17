@@ -18,10 +18,6 @@ namespace OrderDeck.App;
 
 public partial class App : Application
 {
-    /// <summary>Velopack feed (delta/otomatik güncelleme). Statik dosya host'u:
-    /// Setup.exe + full/delta .nupkg + releases.win.json burada durur (Caddy serve).</summary>
-    public const string VelopackFeedUrl = "https://orderdeckapp.com/downloads/velopack";
-
     /// <summary>
     /// Özel WPF entry point. VelopackApp.Build().Run() install/update/uninstall
     /// hook'larını WPF'ten ÖNCE işler ve gerektiğinde hızlıca çıkar (WPF yükü
@@ -95,35 +91,9 @@ public partial class App : Application
         // Otomatik güncelleme (Velopack) — non-blocking. Feed'den delta iner,
         // kullanıcı onaylayınca yeniden başlatıp uygular. Sadece Velopack ile
         // kurulmuş sürümde çalışır (dev/dev-run'da IsInstalled=false → no-op).
-        // Best-effort: hata → sessiz geç, akışı bozma.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var mgr = new UpdateManager(VelopackFeedUrl);
-                if (!mgr.IsInstalled) return;
-
-                var newVersion = await mgr.CheckForUpdatesAsync();
-                if (newVersion is null) return;
-
-                await mgr.DownloadUpdatesAsync(newVersion);
-
-                Dispatcher.Invoke(() =>
-                {
-                    var ver = newVersion.TargetFullRelease.Version;
-                    var choice = MessageBox.Show(
-                        $"Yeni sürüm hazır: {ver}\n\nŞimdi yeniden başlatıp güncellensin mi?\n"
-                        + "(Hayır dersen bir sonraki açılışta uygulanır.)",
-                        "OrderDeck — Güncelleme", MessageBoxButton.YesNo, MessageBoxImage.Information);
-                    if (choice == MessageBoxResult.Yes)
-                        mgr.ApplyUpdatesAndRestart(newVersion);
-                });
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Velopack update check failed (non-fatal)");
-            }
-        });
+        // Best-effort: hata → sessiz geç, akışı bozma. Aynı soru satış komutunun
+        // client-update-required'ında da açılır (spec 2026-10-13 §5.3).
+        Host.Services.GetRequiredService<Services.IAppUpdatePrompt>().CheckAndPrompt();
 
         base.OnStartup(e);
 
