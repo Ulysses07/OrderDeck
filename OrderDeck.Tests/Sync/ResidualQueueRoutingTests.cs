@@ -282,6 +282,23 @@ public sealed class ResidualQueueRoutingTests : IDisposable
     }
 
     [Fact]
+    public async Task Baski_oncesi_yalniz_cevrimdisiyken_baska_bilgisayarin_satiri_tutulur()
+    {
+        _bed.ModeOn();
+        var (_, _, remoteOrder) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = remoteOrder.ToString("N");
+        var (_, _, own) = _bed.OwnResidual();
+        var live = ActiveLabel(out _);
+
+        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEmpty("çevrimiçi: komutla işaretlenir");
+        _bed.Online = false;
+        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEquivalentTo([remote],
+            "kendi kalıntısı bekleyen komuta girer, canlı satır yerelde; yalnız başka bilgisayarınki kayıtsız kalırdı");
+        _bed.ModeOff();
+        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEmpty("mod Off: bugünkü yerel yol");
+    }
+
+    [Fact]
     public async Task Off_turu_isaretlemeyle_cakisirsa_kalinti_ayni_basis_ve_sirayla_yerelde_isaretlenir()
     {
         _bed.ModeOn();

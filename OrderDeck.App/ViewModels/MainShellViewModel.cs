@@ -2277,6 +2277,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         foreach (var vm in PrintQueue)
             if (current.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
 
+        // §5.8: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek) sunucu
+        // kullanılamıyorken basılmaz — mark-printed gönderilemez, bekleyen komuta da girmez; kâğıt çıkar ama baskı
+        // kaydı hiçbir yerde oluşmaz, satır kimseye yeniden teklif edilmezdi. Kuyrukta kalır, sebep satır içinde.
+        var held = _editor.PrintHeldRows(labels.Select(l => l.Id).ToList());
+        if (held.Count > 0)
+        {
+            labels = labels.Where(l => !held.Contains(l.Id)).ToList();
+            ShowSalesNotice([], [Services.Sync.SalesCommandMessages.PrintHeld(held.Count)]);
+            _log.LogInformation("Kuyruk baskısı: {Held} başka bilgisayarın etiketi sunucu kullanılamadığı için basılmadı",
+                held.Count);
+        }
+
         // Basılacak iş kalmadı: yazıcı çağrılmaz, başarı döner — EndStream kapanabilir.
         if (labels.Count == 0)
         {

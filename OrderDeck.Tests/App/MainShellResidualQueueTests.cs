@@ -198,6 +198,29 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Cevrimdisiyken_baska_bilgisayarin_etiketi_basilmaz_kuyrukta_kalir_canli_etiket_basilir()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        // Başka bilgisayarın devredilmiş yayınındaki etiket (ör. add-backup ile eklenmiş yedek) kuyrukta.
+        var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
+        var remoteId = remote.ToString("N");
+        MainShellTestHarness.EnqueueLabel(s.Vm, "@canli_alici", 100m);
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+
+        s.H.Printer.Calls.Should().ContainSingle().Which.Select(l => l.Id).Should().NotContain(remoteId,
+            "mark-printed gönderilemez, bekleyen komuta da girmez: kâğıt çıkardı ama baskı kaydı hiçbir yerde olmazdı");
+        QueueIds(s).Should().Equal([remoteId], "kuyrukta bekler; bağlantı gelince basılabilir");
+        s.Bed.LabelRepo.GetById(remoteId)!.PrintedAt.Should().BeNull();
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.");
+        s.H.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
+    }
+
+    [Fact]
     public async Task Sunucuda_iptal_edilmis_kalintinin_kagidi_imha_seridine_yazilir()
     {
         using var s = Build();                                    // akış turu yok: iptal baskıdan önce inmez

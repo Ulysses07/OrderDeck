@@ -387,6 +387,16 @@ public sealed class SalesEditRouter : ILabelEditor
         return result.Build();
     }
 
+    public IReadOnlySet<string> PrintHeldRows(IReadOnlyCollection<string> labelIds)
+    {
+        var held = new HashSet<string>(StringComparer.Ordinal);
+        if (labelIds.Count == 0 || Decide(labelIds) is not { } decisions) return held;   // mod Off: hiçbiri
+        var unavailable = decisions.Where(d => d.Route == SalesEditRoute.Unavailable).ToList();
+        if (unavailable.Count == 0) return held;
+        held.UnionWith(SplitServerLabels(unavailable).Remote);
+        return held;
+    }
+
     public Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default)
     {
         if (paperOrder.Count == 0) return Task.FromResult(SalesPrintMarkResult.Empty);

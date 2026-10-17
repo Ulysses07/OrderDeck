@@ -242,6 +242,11 @@ public static class SalesCommandMessages
 
     /// <summary>Basılan kâğıdın sunucu satırı (başka bilgisayarın yayını; bekleyen komuta girmez, §5.5) işaretlenemedi:
     /// "1 etiketin baskısı sunucuya işlenemedi: …".</summary>
+    /// <summary>Kuyruk baskısından önce (§5.8): başka bilgisayarın devredilmiş yayınının satırları, sunucu
+    /// kullanılamadığı için basılmadı ve kuyrukta kaldı.</summary>
+    public static string PrintHeld(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.";
+
     public static string PrintNotRecorded(int count, string? reason)
     {
         var text = (reason ?? Failed).Trim();

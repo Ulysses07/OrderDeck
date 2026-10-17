@@ -295,6 +295,14 @@ public interface ILabelEditor : IShipmentEditor
     /// <param name="paperOrder">Basılan etiketler, kâğıt sırasıyla.</param>
     Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default);
 
+    /// <summary>
+    /// Kuyruk baskısından ÖNCE (§5.8 "devredilmiş yayında … düğmeler pasif"): şu an basılırsa baskı kaydı hiçbir yere
+    /// yazılamayacak satırlar — başka bilgisayarın devredilmiş yayınının satırı (ör. <c>add-backup</c> ile eklenmiş
+    /// yedek) ve sunucu kullanılamıyor: <c>mark-printed</c> gönderilemez, bekleyen komuta da girmez (yalnız kendi
+    /// kalıntısı girer). Çağıran onları basmaz, kuyrukta bırakır. Mod Off'ta boş; yazmaz, ağa gitmez.
+    /// </summary>
+    IReadOnlySet<string> PrintHeldRows(IReadOnlyCollection<string> labelIds);
+
     /// <summary>İptali geri alma (<see cref="LabelService.Uncancel"/> ya da <c>uncancel</c> komutu).</summary>
     Task<SalesEditResult> UncancelAsync(IReadOnlyList<string> labelIds, CancellationToken ct = default);
 
