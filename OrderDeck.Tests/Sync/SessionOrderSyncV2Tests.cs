@@ -227,6 +227,9 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         var server = Guid.NewGuid();                                            // başka bilgisayarın komutu bağladı
         _server.SeedOrder(_server.Order(Guid.Parse(id))!.Row with { ShipmentId = server }, version: 7);
         _server.Mode = 1;
+        // Sahte sunucu W2-12'den beri K4'ü uygular: mod On'da farklı bağ taşıyan v2 satırını ignored + current ile
+        // yanıtlar. Bu test istemcinin APPLIED yanıtındaki farklı bağı ele alışını sınar; yanıt zorlanır.
+        _server.OrderVerdicts[Guid.Parse(id)] = new FakeSalesServer.OrderVerdict("applied", null, []);
         Sql("UPDATE SalesSyncState SET Mode = @localMode WHERE Id = 1", new { localMode });
         Sql("UPDATE Label SET Price = 120 WHERE Id = @id", new { id });             // canlı yayında yerel düzenleme
         var revision = Local(id).Revision;

@@ -28,8 +28,8 @@ namespace OrderDeck.Tests.Sync;
 ///
 /// <para><b>Gönderim uçları</b> (W1-06): <c>sessions/sync</c>, <c>orders/sync</c> ve <c>shipments/sync</c>
 /// (<see cref="SessionsSync"/>, <see cref="OrdersSync"/>, <see cref="ShipmentsSync"/>). Zarf ve <c>format</c>
-/// doğrulaması sunucudaki <c>SalesEnvelope.TryRead</c> ve <c>TryReadFormat</c>'in aynası; sipariş deposu mod Off'un
-/// damgasız kuralıyla yazar (ekleme sürüm 0, her işlenen satırda +1 — <c>Order.SyncVersion</c>).
+/// doğrulaması sunucudaki <c>SalesEnvelope.TryRead</c> ve <c>TryReadFormat</c>'in aynası; sipariş deposu birim kuralıyla
+/// yazar (W2-12'den beri K1–K7, aşağıda; ekleme sürüm 0, her işlenen satırda +1 — <c>Order.SyncVersion</c>).
 /// <see cref="OrderVerdicts"/> bir siparişi yok sayılmış ya da reddedilmiş döndürür (W1-08: <c>Current</c> sunucunun
 /// gerçeğini — <c>current</c>'ı — kurar, <c>WithoutCurrent</c> reddedilen eklemeyi taklit eder); <see cref="OrdersResponse"/>
 /// eski sunucunun yanıtını (v1 listesi ya da <c>[]</c>) taklit eder. <see cref="Hold"/> bir ucu bırakılana kadar
@@ -77,6 +77,19 @@ namespace OrderDeck.Tests.Sync;
 /// (<see cref="PaymentsSync"/>; kayıt, <see cref="EnqueueStatus"/>, <see cref="DuringPush"/>, yanıt boş yankı) ve
 /// <c>payments/since</c> (boş). <see cref="RequestLog"/> bütün isteklerin sırasını tutar (geri yüklemeden sonra
 /// gönderimin state yanıtını beklediğini sınamak için).</para>
+///
+/// <para><b>Birim kuralı ve açılış penceresi</b> (W2-12, iki bilgisayarlı yakınsama testleri için): <c>orders/sync</c>
+/// güncelleme dalı §4.2 tablosunu uygular (<see cref="UnitRule"/>: K1 oluşum alanları yazılmaz, K2 damgalı birimi yalnız
+/// <c>baseVersion = Version</c> taşıyan v2 yazar, K3 baskı ve <c>cancelled-elsewhere</c>, K4 bağ, K5 mod On'da devredilmiş
+/// oturumda ret — zorla bitirilmiş oturumun sahibi ve açılış penceresi istisna, K6 kargolanmış dosyada fiyat reddi;
+/// yanıtta <c>ignored</c>/<c>rejected</c> + <c>current</c>); ekleme dalı başka kopyanın canlı oturumuna v2 eklemesini
+/// reddeder, bağı K4'e göre yazar, KVKK ayarıyla metni boşaltır. K7: mod On'da kabul edilen fiyat, iptal, yedek ve bağ
+/// değişikliği — push ve komutlar (iptal, geri alma, yedek onayı, kod fiyatı) — türetilmiş dosyayı yeniden türetir.
+/// Açılış penceresi (<see cref="IsOpeningWindow"/>, <c>SeenModeOnAt</c>) <c>orders/sync</c>'in K4/K5 istisnasını ve mod
+/// On'daki <c>shipments/sync</c>'i yönetir: pencerede karar alanları alınır, tutar bağlardan türetilir; pencere dışında
+/// hiçbir şey yazılmaz. <see cref="OrderVerdicts"/> verilen siparişte kuralın yerine geçer. Devralma (§8.7, Y8) bu ikizde
+/// yok: geri yüklenmiş kopya önceki kopyanın oturumunun sahibi sayılmaz. <see cref="RenumberChangeSeqs"/> kopyalanmış
+/// sunucu veritabanını (rowversion'lar yeniden verilir) taklit eder.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
 {
@@ -531,8 +544,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         }
     }
 
-    /// <summary><c>orders/sync</c> — zarf ve biçim kuralı sunucunun aynası; birimler mod Off'un damgasız kuralıyla
-    /// (son gelen kazanır), v1'de v2'ye özgü alanlar "gönderilmedi" sayılır ve korunur.</summary>
+    /// <summary><c>orders/sync</c> — zarf ve biçim kuralı sunucunun aynası; güncelleme birim kuralıyla
+    /// (<see cref="UnitRule"/>; damgasız birimde son gelen kazanır), v1'de v2'ye özgü alanlar "gönderilmedi" sayılır ve
+    /// korunur; ekleme dalı §4.2'ye göre; mod On'da K7 türetmesi.</summary>
     private HttpResponseMessage HandleOrders(Guid licenseId, string raw)
     {
         var body = JsonSerializer.Deserialize<OrdersBody>(raw, Web);
@@ -556,7 +570,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         var echoed = new List<ServerOrder>();
         lock (_gate)
         {
+            var window = envelope is { } w && IsOpeningWindow(licenseId, w.ReplicaId, w.SeenMode);
             if (envelope is { } e) Touch(licenseId, e.ReplicaId, e.SeenMode);
+            var affectedShipments = new List<Guid>();
             foreach (var order in body.Orders.GroupBy(o => o.Id).Select(g => g.Last()))
             {
                 _orders.TryGetValue(order.Id, out var current);
@@ -586,25 +602,81 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     continue;
                 }
 
-                var row = current is null
-                    ? new ServerOrder(v2 ? order : WithoutV2Fields(order), 0, v2 ? envelope!.ReplicaId : null, now)
-                    : current with
+                if (current is null)
+                {
+                    // Ekleme dalı (§4.2): v2'de başka kopyanın CANLI oturumuna ekleme satır başına reddedilir (devralma
+                    // bu ikizde yok). K4 eklemede: mod Off'ta v2'nin bağı, mod On'da yalnız açılış penceresindeki
+                    // kopyanınki; aksi hâlde bağ yazılmaz ve satır yok sayılmış döner (current'ın boş bağı uygulanır).
+                    ServerSession? owning = null;
+                    if (order.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var s) && s.LicenseId == licenseId)
+                        owning = s;
+                    if (v2 && owning is { EndedAt: null, OwnerReplicaId: { } owner } && owner != envelope!.ReplicaId)
                     {
-                        // K4 mod On: v2 push'u kargo bağını almaz, bağ sunucunundur (applied yanıtı onu taşır).
-                        Row = v2 ? (Mode == 1 ? order with { ShipmentId = current.Row.ShipmentId } : order) : order with
-                        {
-                            ParentOrderId = current.Row.ParentOrderId, PrintBatchId = current.Row.PrintBatchId,
-                            PrintSeq = current.Row.PrintSeq, PriceCorrectedAt = current.Row.PriceCorrectedAt,
-                            PaidPrice = current.Row.PaidPrice, ShipmentId = current.Row.ShipmentId,
-                        },
-                        Version = current.Version + 1,
-                        UpdatedAt = now,
-                    };
-                row = PutOrder(licenseId, row);
+                        results.Add(new OrderResultBody(order.Id, null, null, null, "rejected",
+                            Array.Empty<string>(), "session-owned-elsewhere", null));
+                        continue;
+                    }
+                    var linkAllowed = Mode != 1 || window;
+                    var insertRow = v2
+                        ? order with { BaseVersion = null, ShipmentId = linkAllowed ? order.ShipmentId : null }
+                        : WithoutV2Fields(order);
+                    // KVKK (§9, §4.2): ayar açıkken asıl kaydı silinmiş müşteriye geç gelen ekleme metni geri getirmez.
+                    if (ScrubOrderTextOnPurge && ResolveCustomer(order.CustomerId).Canonical?.PurgedAt is not null)
+                        insertRow = insertRow with { DisplayName = null, MessageText = "" };
+                    var inserted = PutOrder(licenseId,
+                        new ServerOrder(insertRow, 0, v2 ? envelope!.ReplicaId : null, now));
+                    if (Mode == 1 && inserted.Row.ShipmentId is { } linked) affectedShipments.Add(linked);
+                    echoed.Add(inserted);
+                    var linkIgnored = v2 && order.ShipmentId is not null && !linkAllowed;
+                    results.Add(linkIgnored
+                        ? new OrderResultBody(order.Id, inserted.Version, inserted.Row.ShipmentId, inserted.SessionReleasedAt,
+                            "ignored", ["shipment"], "shipment-server-owned", CurrentItem(inserted))
+                        : new OrderResultBody(order.Id, inserted.Version, inserted.Row.ShipmentId, inserted.SessionReleasedAt,
+                            "applied", Array.Empty<string>(), null, null));
+                    continue;
+                }
+
+                // Güncelleme dalı (§4.2): birim kuralı K1–K6 (UnitRule), K7 aşağıda. Satır işlendiyse sürüm +1.
+                ServerSession? session = null;
+                if (current.Row.SessionId is { } currentSid && _serverSessions.TryGetValue(currentSid, out var cs)
+                    && cs.LicenseId == licenseId)
+                    session = cs;
+                var context = new UnitContext(
+                    ModeOn: Mode == 1,
+                    Phase: session is null ? SessionPhase.None
+                        : session.ReleasedAt is not null ? SessionPhase.Released
+                        : session.EndedAt is not null ? SessionPhase.HandingOver
+                        : SessionPhase.Live,
+                    CallerOwnsSession: v2 && session?.OwnerReplicaId is { } sessionOwner && sessionOwner == envelope!.ReplicaId,
+                    SessionForceEnded: session?.ForceEndedBy is not null,
+                    OpeningWindow: window,
+                    LinkedShipmentShipped: current.Row.ShipmentId is { } currentLink
+                        && _shipments.TryGetValue(currentLink, out var linkedShipment)
+                        && linkedShipment.Row.Status == "shipped");
+                var (merged, changedUnits, ignored) = UnitRule(current, order, v2, context);
+                var row = PutOrder(licenseId, current with { Row = merged, Version = current.Version + 1, UpdatedAt = now });
+                if (Mode == 1 && changedUnits.Overlaps(["price", "cancel", "backup", "shipment"]))
+                {
+                    if (current.Row.ShipmentId is { } before) affectedShipments.Add(before);
+                    if (row.Row.ShipmentId is { } after) affectedShipments.Add(after);
+                }
                 echoed.Add(row);
-                results.Add(new OrderResultBody(order.Id, row.Version, row.Row.ShipmentId, null, "applied",
-                    Array.Empty<string>(), null, null));
+                if (ignored.Count == 0)
+                {
+                    results.Add(new OrderResultBody(order.Id, row.Version, row.Row.ShipmentId, row.SessionReleasedAt,
+                        "applied", Array.Empty<string>(), null, null));
+                    continue;
+                }
+                var rejection = ignored.FirstOrDefault(i => i.Reason is "session-released" or "shipment-shipped");
+                var reason = rejection.Reason
+                    ?? (ignored.Any(i => i.Reason == "cancelled-elsewhere") ? "cancelled-elsewhere" : ignored[0].Reason);
+                results.Add(new OrderResultBody(order.Id, row.Version, row.Row.ShipmentId, row.SessionReleasedAt,
+                    rejection.Reason is null ? "ignored" : "rejected", ignored.Select(i => i.Unit).Distinct().ToList(),
+                    reason, CurrentItem(row)));
             }
+
+            // K7 (mod On): kabul edilen fiyat, iptal, yedek ve bağ değişikliği ilgili türetilmiş dosyaları yeniden türetir.
+            DeriveAffected(affectedShipments, now);
         }
 
         var kind = OrdersResponse == PushResponseKind.Auto
@@ -738,6 +810,53 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// yanıt <c>Protocol = 2</c> taşır ama <c>ReleasedAt</c> boştur (eski imaj devri yazmadı).</summary>
     public ConcurrentDictionary<Guid, byte> WithheldReleases { get; } = new();
 
+    /// <summary>
+    /// Sunucu veritabanı kopyalandı (dışa/içe aktarma, yeni sunucuya taşıma): bütün satışlar ve değerleri (sürümler
+    /// dahil) aynen kalır, ama rowversion'lar yeniden verilir — sayaç satır sayısına iner. Birden çok kez yazılmış satır
+    /// varsa istemcilerin akış imleci yeni ufkun üstünde kalır: <c>cursorReset</c> (§4.4), akış baştan.
+    /// </summary>
+    public void RenumberChangeSeqs()
+    {
+        lock (_gate)
+        {
+            var rows = _serverSessions.Values.Select(s => (s.ChangeSeq, Kind: 0, Id: s.Id))
+                .Concat(_orders.Values.Select(o => (o.ChangeSeq, Kind: 1, Id: o.Row.Id)))
+                .Concat(_shipments.Values.Select(s => (s.ChangeSeq, Kind: 2, Id: s.Row.Id)))
+                .OrderBy(r => r.ChangeSeq)
+                .ToList();
+            long next = 0;
+            foreach (var (_, kind, id) in rows)
+            {
+                next++;
+                switch (kind)
+                {
+                    case 0: _serverSessions[id].ChangeSeq = next; break;
+                    case 1: _orders[id] = _orders[id] with { ChangeSeq = next }; break;
+                    default: _shipments[id] = _shipments[id] with { ChangeSeq = next }; break;
+                }
+            }
+            _seq = next;
+        }
+    }
+
+    /// <summary>Bütün siparişler (anlık kopya; değişmez denetimleri).</summary>
+    public IReadOnlyList<ServerOrder> AllOrders()
+    {
+        lock (_gate) return _orders.Values.ToList();
+    }
+
+    /// <summary>Bütün kargo dosyaları (anlık kopya; değişmez denetimleri).</summary>
+    public IReadOnlyList<ServerShipment> AllShipments()
+    {
+        lock (_gate) return _shipments.Values.ToList();
+    }
+
+    /// <summary>Bir yayının sunucudaki siparişleri (anlık kopya).</summary>
+    public IReadOnlyList<ServerOrder> OrdersOfSession(Guid sessionId)
+    {
+        lock (_gate) return _orders.Values.Where(o => o.Row.SessionId == sessionId).ToList();
+    }
+
     /// <summary>Başka bilgisayardan force-end (§4.6): oturum sunucuda bitirilir ve devredilir.</summary>
     public void ForceEnd(Guid id)
     {
@@ -870,7 +989,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     }
 
     /// <summary><c>shipments/sync</c> — v2 boş <c>OriginReplicaId</c>'yi çağıranla doldurur; Shipped tek yönlü (§7.1).
-    /// Yanıt v2'ye akış öğesi, v1'e bugünkü liste.</summary>
+    /// Mod On'da yalnız açılış penceresindeki kopyanın kararı alınır (<see cref="ShipmentsInOpeningWindow"/>), öbürleri
+    /// hiçbir şey yazmaz. Yanıt v2'ye akış öğesi, v1'e bugünkü liste.</summary>
     private HttpResponseMessage HandleShipments(Guid licenseId, string raw)
     {
         var body = JsonSerializer.Deserialize<ShipmentsBody>(raw, Web);
@@ -883,7 +1003,21 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         var rows = new List<ServerShipment>();
         lock (_gate)
         {
+            var window = envelope is { } w && IsOpeningWindow(licenseId, w.ReplicaId, w.SeenMode);
             if (envelope is { } e) Touch(licenseId, e.ReplicaId, e.SeenMode);
+            if (Mode == 1)
+            {
+                // §7.1: mod On'da dosya sunucunun — pencere dışında hiçbir şey yazılmaz, yanıt güncel satırlar.
+                rows = window
+                    ? ShipmentsInOpeningWindow(licenseId, envelope!.ReplicaId, body.Shipments, now)
+                    : body.Shipments.Select(s => s.Id).Distinct()
+                        .Where(id => _shipments.TryGetValue(id, out var known) && known.LicenseId == licenseId)
+                        .Select(id => _shipments[id]).ToList();
+                var windowV2 = envelope is not null && ShipmentsResponse != PushResponseKind.V1List;
+                return FakeHttpMessageHandler.Json(200, windowV2
+                    ? JsonSerializer.Serialize(rows.Select(r => r.ToItem()).ToList(), Web)
+                    : JsonSerializer.Serialize(rows.Select(r => r.ToV1()).ToList(), Web));
+            }
             foreach (var s in body.Shipments)
             {
                 _shipments.TryGetValue(s.Id, out var current);
@@ -904,6 +1038,63 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         return FakeHttpMessageHandler.Json(200, v2
             ? JsonSerializer.Serialize(rows.Select(r => r.ToItem()).ToList(), Web)
             : JsonSerializer.Serialize(rows.Select(r => r.ToV1()).ToList(), Web));
+    }
+
+    /// <summary>
+    /// Açılış penceresindeki kopyanın <c>shipments/sync</c>'i (<c>SyncOpeningWindowAsync</c>'in aynası; §7.1, §4.0): var
+    /// olan dosya Shipped değilse ve <c>CommandedAt</c> boşsa karar alanlarını (Status, HeldAt, ShippedAt) alır; yeni
+    /// dosya Pending ve tutarsız eklenir (asıl müşteri, kaynak çağıran, türetilmiş). Tutar hiçbir zaman gönderimden
+    /// alınmaz: kargoya geçen türetilmiş dosyada o anda iptal edilmiş bağlar çözülür, sonra dosyalar bağlardan türetilir,
+    /// sonra karar yazılır (sürüm yazım başına bir kez). Yanıt istek sırasıyla güncel satırlar.
+    /// </summary>
+    private List<ServerShipment> ShipmentsInOpeningWindow(
+        Guid licenseId, Guid caller, IReadOnlyList<ShipmentBody> items, DateTimeOffset now)
+    {
+        var decisions = new List<(Guid Id, ShipmentBody Item, bool Inserted)>();
+        foreach (var item in items.GroupBy(i => i.Id).Select(g => g.Last()))
+        {
+            if (_shipments.TryGetValue(item.Id, out var current))
+            {
+                if (current.LicenseId != licenseId || current.Row.Status == "shipped" || current.CommandedAt is not null)
+                    continue;
+                if (item.Status == current.Row.Status && item.HeldAt == current.Row.HeldAt
+                    && item.ShippedAt == current.Row.ShippedAt)
+                    continue;
+                decisions.Add((item.Id, item, false));
+            }
+            else
+            {
+                PutShipment(licenseId, new ServerShipment(
+                    new ShipmentBody(item.Id, ResolveCustomer(item.CustomerId).Id, "pending", 0m, item.CreatedAt, null, null),
+                    0, caller, now) { AmountDerivedAt = now });
+                decisions.Add((item.Id, item, true));
+            }
+        }
+
+        foreach (var shipping in decisions.Where(d => d.Item.Status == "shipped" && _shipments[d.Id].AmountDerivedAt is not null))
+            foreach (var order in _orders.Values
+                         .Where(o => o.LicenseId == licenseId && o.Row.ShipmentId == shipping.Id && o.Row.CancelledAt is not null)
+                         .OrderBy(o => o.Row.Id).ToList())
+                PutOrder(licenseId, order with
+                {
+                    Row = order.Row with { ShipmentId = null }, ShipmentSetAt = now, Version = order.Version + 1,
+                    UpdatedAt = now,
+                });
+
+        var derived = DeriveAffected(decisions.Select(d => d.Id), now).Select(d => d.Row.Id).ToHashSet();
+        foreach (var (id, item, inserted) in decisions)
+        {
+            var s = _shipments[id];
+            PutShipment(licenseId, s with
+            {
+                Row = s.Row with { Status = item.Status, HeldAt = item.HeldAt, ShippedAt = item.ShippedAt },
+                Version = !inserted && !derived.Contains(id) ? s.Version + 1 : s.Version,
+                UpdatedAt = now,
+            });
+        }
+        return items.Select(i => i.Id).Distinct()
+            .Where(id => _shipments.TryGetValue(id, out var row) && row.LicenseId == licenseId)
+            .Select(id => _shipments[id]).ToList();
     }
 
     // ── geri doldurma (W1-09) ──────────────────────────────────────────────
@@ -1145,6 +1336,123 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     private static bool SameSecond(DateTimeOffset? a, DateTimeOffset? b)
         => a is null || b is null ? a is null && b is null : a.Value.ToUnixTimeSeconds() == b.Value.ToUnixTimeSeconds();
+
+    /// <summary>Siparişin oturumunun hâli (§2 tablosu).</summary>
+    private enum SessionPhase { None, Live, HandingOver, Released }
+
+    /// <summary>Birim kuralının koşulları (<c>OrderMergeContext</c>'in karşılığı). <paramref name="CallerOwnsSession"/>
+    /// yalnız sahiplikten (geri yüklenmiş kopyanın devralması bu ikizde yok).</summary>
+    private sealed record UnitContext(
+        bool ModeOn, SessionPhase Phase, bool CallerOwnsSession, bool SessionForceEnded, bool OpeningWindow,
+        bool LinkedShipmentShipped);
+
+    /// <summary>
+    /// <c>orders/sync</c> güncelleme dalının birim kuralı (§4.2 tablosu), sunucudan bağımsız yazılmış: K1 oluşum alanları
+    /// hiç yazılmaz (ebeveyn yalnız boşsa); K2 damgasız birimde son gelen kazanır, damgalı birimi yalnız
+    /// <c>baseVersion = Version</c> taşıyan v2 yazar, yedek yalnız 1 → 0; K3 baskı boşsa alınır ama şu anda komutla
+    /// iptal edilmiş siparişe değil (<c>cancelled-elsewhere</c>), doluysa silinmez ve kaymaz (v2 boş grup alanlarını
+    /// doldurur); K4 bağı v1 taşımaz, mod Off'ta v2 K2'nin yazılabilirliğiyle, mod On'da yalnız açılış penceresi boş bağı
+    /// doldurur; K5 mod On'da devredilmiş oturumda fiyat, iptal ve yedek reddedilir — zorla bitirilmiş oturumun sahibi ve
+    /// açılış penceresi (v2) yalnız K2 ile yargılanır; K6 mod On'da kargolanmış dosyadaki siparişin fiyatı reddedilir.
+    /// Push'un farklı değer taşıyıp yazılmayan her birimi (birim, neden) olarak döner; aynı değer uygulanmış sayılır.
+    /// Zaman damgaları saniyeyle karşılaştırılır.
+    /// </summary>
+    private static (OrderBody Row, HashSet<string> Changed, List<(string Unit, string Reason)> Ignored) UnitRule(
+        ServerOrder server, OrderBody push, bool v2, UnitContext c)
+    {
+        var s = server.Row;
+        var m = s;
+        var ignored = new List<(string Unit, string Reason)>();
+        var locked = c.ModeOn && c.Phase == SessionPhase.Released
+                     && !(v2 && ((c.SessionForceEnded && c.CallerOwnsSession) || c.OpeningWindow));
+        bool Writable(DateTimeOffset? setAt) => setAt is null || (v2 && push.BaseVersion == server.Version);
+
+        var pushCorrected = v2 ? push.PriceCorrectedAt : s.PriceCorrectedAt;
+        var pushPaid = v2 ? push.PaidPrice : s.PaidPrice;
+        var priceDiffers = push.Price != s.Price || !SameSecond(pushCorrected, s.PriceCorrectedAt) || pushPaid != s.PaidPrice;
+        if (locked) { if (priceDiffers) ignored.Add(("price", "session-released")); }
+        else if (c.ModeOn && c.LinkedShipmentShipped) { if (priceDiffers) ignored.Add(("price", "shipment-shipped")); }
+        else if (Writable(server.PriceSetAt)) m = m with { Price = push.Price, PriceCorrectedAt = pushCorrected, PaidPrice = pushPaid };
+        else if (priceDiffers) ignored.Add(("price", "unit-stamped"));
+
+        var cancelDiffers = !SameSecond(push.CancelledAt, s.CancelledAt) || push.CancelReason != s.CancelReason;
+        if (locked) { if (cancelDiffers) ignored.Add(("cancel", "session-released")); }
+        else if (Writable(server.CancelSetAt)) m = m with { CancelledAt = push.CancelledAt, CancelReason = push.CancelReason };
+        else if (cancelDiffers) ignored.Add(("cancel", "unit-stamped"));
+
+        if (push.IsTentativeBackup != s.IsTentativeBackup)
+        {
+            if (push.IsTentativeBackup) ignored.Add(("backup", "backup-one-way"));
+            else if (locked) ignored.Add(("backup", "session-released"));
+            else if (Writable(server.BackupSetAt)) m = m with { IsTentativeBackup = false };
+            else ignored.Add(("backup", "unit-stamped"));
+        }
+
+        if (v2 && push.ShipmentId != s.ShipmentId)
+        {
+            if (!c.ModeOn)
+            {
+                if (Writable(server.ShipmentSetAt)) m = m with { ShipmentId = push.ShipmentId };
+                else ignored.Add(("shipment", "unit-stamped"));
+            }
+            else if (c.OpeningWindow && s.ShipmentId is null && server.ShipmentSetAt is null)
+                m = m with { ShipmentId = push.ShipmentId };
+            else ignored.Add(("shipment", "shipment-server-owned"));
+        }
+
+        if (s.PrintedAt is null)
+        {
+            if (push.PrintedAt is not null)
+            {
+                if (m.CancelledAt is not null && server.CancelSetAt is not null) ignored.Add(("print", "cancelled-elsewhere"));
+                else m = m with
+                {
+                    PrintedAt = push.PrintedAt,
+                    PrintBatchId = v2 ? push.PrintBatchId : s.PrintBatchId,
+                    PrintSeq = v2 ? push.PrintSeq : s.PrintSeq,
+                };
+            }
+        }
+        else
+        {
+            if (v2) m = m with { PrintBatchId = s.PrintBatchId ?? push.PrintBatchId, PrintSeq = s.PrintSeq ?? push.PrintSeq };
+            if (!SameSecond(push.PrintedAt, s.PrintedAt)
+                || (v2 && (push.PrintBatchId != m.PrintBatchId || push.PrintSeq != m.PrintSeq)))
+                ignored.Add(("print", "already-printed"));
+        }
+
+        if (v2 && s.ParentOrderId is null) m = m with { ParentOrderId = push.ParentOrderId };
+
+        var changed = new HashSet<string>(StringComparer.Ordinal);
+        if (s.Price != m.Price || s.PriceCorrectedAt != m.PriceCorrectedAt || s.PaidPrice != m.PaidPrice) changed.Add("price");
+        if (s.CancelledAt != m.CancelledAt || s.CancelReason != m.CancelReason) changed.Add("cancel");
+        if (s.IsTentativeBackup != m.IsTentativeBackup) changed.Add("backup");
+        if (s.ShipmentId != m.ShipmentId) changed.Add("shipment");
+        if (s.PrintedAt != m.PrintedAt || s.PrintBatchId != m.PrintBatchId || s.PrintSeq != m.PrintSeq) changed.Add("print");
+        return (m, changed, ignored);
+    }
+
+    /// <summary>K7: verilen dosyalardan bu lisansın türetilmiş (<c>AmountDerivedAt</c> dolu) ve Shipped olmayanlarının
+    /// tutarını bağlı siparişlerden yeniden türetir (sürüm +1, yeni seq). Türetilenleri döner.</summary>
+    private List<ServerShipment> DeriveAffected(IEnumerable<Guid> shipmentIds, DateTimeOffset now)
+    {
+        var derived = new List<ServerShipment>();
+        foreach (var id in shipmentIds.Distinct())
+        {
+            if (!_shipments.TryGetValue(id, out var shipment) || shipment.AmountDerivedAt is null
+                || shipment.Row.Status == "shipped")
+                continue;
+            derived.Add(PutShipment(shipment.LicenseId, Derive(shipment, now)));
+        }
+        return derived;
+    }
+
+    /// <summary>Siparişin güncel akış öğesi (asıl kayıt + KVKK okuma maskesi): v2 yanıtının <c>current</c>'ı.</summary>
+    private OrderItemBody CurrentItem(ServerOrder order)
+    {
+        var (customerId, canonical) = ResolveCustomer(order.Row.CustomerId);
+        return FeedOrderOf(order, customerId, canonical?.PurgedAt is not null);
+    }
 
     /// <summary><c>SalesEnvelope.TryRead</c>'in tamamı: protokolsüz istek (zarf alanı yok) v1 — <c>envelope</c> boş;
     /// yarım zarf 400.</summary>
@@ -1431,8 +1739,28 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             _replicas[(licenseId, replicaId)] = row = new Replica { ReplicaId = replicaId, FirstSeenAt = now };
         row.LastSeenAt = now;
         row.SeenMode = seenMode;
+        // SalesReplicaService.Heartbeat: kopyanın modu ilk gördüğü an; mod yeniden açıldıysa yeni dönemin ilk anı.
+        if (seenMode == 1 && (row.SeenModeOnAt is null || (ModeChangedAt is { } changedAt && row.SeenModeOnAt < changedAt)))
+            row.SeenModeOnAt = now;
         row.Requests++;
         return row;
+    }
+
+    /// <summary>
+    /// <c>SalesOpeningWindow.Applies</c>'in aynası (§4.0): mod On'da <c>SeenMode = 0</c> bildiren v2 isteği yalnız kopya
+    /// mod son açılmadan önce varsa, geri yüklenmemişse, klon izi yoksa ve bu açılıştan beri modu görmemişse Off
+    /// kurallarıyla yargılanır. Kopya satırının bu isteğin kalp atışından ÖNCEKİ hâliyle — <see cref="Touch"/>'tan önce
+    /// çağrılır. Değişim anı bilinmiyorsa ya da kopya bu istekle doğuyorsa pencere kapalı.
+    /// </summary>
+    private bool IsOpeningWindow(Guid licenseId, Guid replicaId, int seenMode)
+    {
+        if (Mode != 1 || seenMode != 0) return false;
+        if (ModeChangedAt is not { } changedAt || !_replicas.TryGetValue((licenseId, replicaId), out var before))
+            return false;
+        return before.FirstSeenAt < changedAt
+            && before.PreviousReplicaId is null
+            && !before.HardwareFingerprintConflict
+            && (before.SeenModeOnAt is null || before.SeenModeOnAt < changedAt);
     }
 
     private HttpResponseMessage Invalid(string error)
@@ -1489,7 +1817,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// farklı ya da başka lisans 409 <c>content-conflict</c>; <c>reprint</c> sonucu güncel satırlardan yeniden kurulur)
     /// → bilinmeyen sipariş 400 <c>unknown-order</c> → görünürlük 409 <c>session-live</c> (devredilmemiş yayın;
     /// <c>reprint</c> çağıranın kendi yayınını görür) → beklenen sürüm 409 <c>stale</c> + <c>current</c> → uygulama:
-    /// alanlar, damga sunucu saatiyle, değişen satırda sürüm +1 (yeni seq). K7 dosya türetmesi ve stok defteri yok.
+    /// alanlar, damga sunucu saatiyle, değişen satırda sürüm +1 (yeni seq); bağlı türetilmiş dosya yeniden türetilir (K7,
+    /// W2-12). Stok defteri yok.
     /// </summary>
     private HttpResponseMessage HandleCommand(Guid licenseId, string raw, string? userAgent)
     {
@@ -1803,7 +2132,13 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             var row = PutOrder(licenseId, w with { Version = w.Version + 1, UpdatedAt = now });
             versions.Add(new VersionBody(row.Row.Id, row.Version));
         }
-        resultJson = JsonSerializer.Serialize(new CommandResultBody(changed, skipped, versions, [])
+        // K7: iptal, geri alma ve yedek onayı bağlı türetilmiş dosyayı yeniden türetir (bağ kalır, §7.2); baskı tutara
+        // girmez.
+        var derived = command.Kind == "mark-printed"
+            ? []
+            : DeriveAffected(writes.Where(w => w.Row.ShipmentId is not null).Select(w => w.Row.ShipmentId!.Value), now);
+        resultJson = JsonSerializer.Serialize(new CommandResultBody(changed, skipped, versions,
+            derived.Select(d => new ShipmentAmountBody(d.Row.Id, d.Version, d.Row.CumulativeAmount)).ToList())
         {
             Marked = marked, AlreadyPrinted = alreadyPrinted, Cancelled = cancelled,
         }, Web);
@@ -1943,8 +2278,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             versions.Add(new VersionBody(row.Row.Id, row.Version));
             changed.Add(order.Row.Id);
         }
+        // K7: fiyatı değişen siparişlerin bağlı türetilmiş dosyaları.
+        var derived = DeriveAffected(
+            changed.Select(id => _orders[id].Row.ShipmentId).OfType<Guid>(), now);
         resultJson = JsonSerializer.Serialize(
-            new CommandResultBody(changed, command.OrderIds.Except(changed).ToList(), versions, []), Web);
+            new CommandResultBody(changed, command.OrderIds.Except(changed).ToList(), versions,
+                derived.Select(d => new ShipmentAmountBody(d.Row.Id, d.Version, d.Row.CumulativeAmount)).ToList()), Web);
         return true;
     }
 
@@ -2677,6 +3016,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         public DateTimeOffset LastSeenAt;
         public int Requests;
         public int SeenMode;
+
+        /// <summary>Kopyanın kipi 1 bildirdiği ilk an; mod yeniden açılınca yeni dönemin ilk anı (<c>SeenModeOnAt</c>).
+        /// Açılış penceresi (<see cref="IsOpeningWindow"/>) okur.</summary>
+        public DateTimeOffset? SeenModeOnAt;
         public string? MachineName;
         public string? HardwareFingerprint;
         public bool HardwareFingerprintConflict;
