@@ -30,7 +30,7 @@ public sealed record ShipmentAdjustResult(
 ///
 /// <para><b>Neden fark, neden yeniden türetme değil:</b> <c>disable</c>'dan sonra karışık bir dosya başka bilgisayarın
 /// etiketlerini de taşır; yerelde olmayan etiketleri türetme düşürürdü (§7.4). Farkın tabanı açılışta bir kez
-/// türetilir (§7.4 "Fark tabanı", §8.2-8).</para>
+/// türetilir (<see cref="ShipmentAmountDerivation"/>; §7.4 "Fark tabanı", §8.2-8).</para>
 ///
 /// <para><b>Kurallar</b>, sırayla:</para>
 /// <list type="bullet">

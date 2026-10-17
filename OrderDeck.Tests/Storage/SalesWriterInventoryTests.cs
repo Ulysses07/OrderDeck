@@ -36,6 +36,7 @@ public sealed class SalesWriterInventoryTests
     private const string ShipmentRepo = "OrderDeck.Core/Storage/Repositories/ShipmentRepository.cs";
     private const string CustomerSyncRepo = "OrderDeck.Core/Storage/Repositories/CustomerSyncRepository.cs";
     private const string AdjusterFile = "OrderDeck.Core/Sales/ShipmentAmountAdjuster.cs";
+    private const string DerivationFile = "OrderDeck.Core/Sales/ShipmentAmountDerivation.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -69,6 +70,8 @@ public sealed class SalesWriterInventoryTests
             "Dosya açılışı. Mod 1'de düşer. OriginReplicaId = _meta.ReplicaId aynı ifadede (W1-04): mod Off'ta dosyanın tek yazıcısı bu kopya. Eski ikilinin NULL'u da bu veritabanının dosyası sayılır (049 başlığı)."),
         new(AdjusterFile, "Apply", "UPDATE Shipment", 1, ["TR_Shipment_Enqueue", "TR_Shipment_ServerOwned_U"],
             "Y5 dosya bloğu (§7.4): CumulativeAmount fark kadar; Revision+1 ve SyncedAt NULL kendisi yazar — push yanıtının current'ı kilit altında uygulanır, kilit TR_Shipment_Enqueue'yu susturur, değişiklik yine gönderilmeli. Mod 1'de yazmaz (kipi aynı işlemde okuyup bloğu atlar): ABORT'a varmaz. Kargoya verilmiş ve yerelde olmayan dosyaya yazmaz."),
+        new(DerivationFile, "DeriveOpenFiles", "UPDATE Shipment", 1, ["TR_Shipment_Enqueue", "TR_Shipment_ServerOwned_U"],
+            "Y5'in fark tabanı, açılışta bir kez (§7.4, §8.2-8): kargoya verilmemiş dosyanın tutarı bağlardan. Kilit altında DEĞİL ve Revision'ı ARTIRMAZ: TR_Shipment_Enqueue değişen dosyayı kuyruğa alır (ClearStale'den sonra koşar). Yalnız mod 0'da çağrılır: ABORT'a varmaz."),
         new(ShipmentRepo, "Update", "UPDATE Shipment", 1, ["TR_Shipment_Enqueue", "TR_Shipment_ServerOwned_U"],
             "Karar ve tutar. Revision+1 kendisi yazar: kuyruğa alma tetikleyicisi etkisiz. Mod 1'de düşer."),
         new(ShipmentRepo, "MarkSynced", "UPDATE Shipment", 1, [],

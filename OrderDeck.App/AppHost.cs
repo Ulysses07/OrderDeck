@@ -702,6 +702,15 @@ public sealed class AppHost : IDisposable
             Services.GetRequiredService<IClock>().UnixNow(),
             Services.GetRequiredService<ILogger<AppHost>>());
 
+        // Spec 2026-10-13 §7.4, §8.2-8: Y5'in yerel yolu dosya tutarını farkla değiştirir; tabanı ilk açılışta
+        // bir kez türetilir (Ws öncesi iptal edilmiş bağlı etiket açık dosyada hâlâ duruyordu). ClearStale'den
+        // SONRA: kalmış kilit satırı TR_Shipment_Enqueue'yu susturur, değişen dosya gönderilmezdi. Arayüzden önce:
+        // ilk iptal ya da geri alma türetilmiş tabandan başlamalı. Günlükte yalnız sayılar; hata açılışı durdurmaz.
+        ShipmentAmountsBoot.Run(
+            Services.GetRequiredService<IDbConnectionFactory>(),
+            Services.GetRequiredService<IClock>().UnixNow(),
+            Services.GetRequiredService<ILogger<AppHost>>());
+
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).
         var orphans = Services.GetRequiredService<GiveawayRepository>()
