@@ -1179,6 +1179,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _salesPull.PendingCommandsSettled += OnPendingCommandsSettled;   // W2-07: imha ve kalıcı ret şeridi
             _salesPull.TourCompleted += OnSalesTourCompleted;
             _salesPull.FirstCatchUpCompleted += OnFirstCatchUpCompleted;     // W2-10: ilk yetişmenin şeridi
+            _salesPull.ModeOffStarted += OnSalesModeOffStarted;              // W2-11: "Senkron kapatıldı; ekran yenileniyor."
+            _salesPull.ModeOffFinished += OnSalesModeOffFinished;
         }
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
@@ -2930,6 +2932,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _salesPull.PendingCommandsSettled -= OnPendingCommandsSettled;
             _salesPull.TourCompleted -= OnSalesTourCompleted;
             _salesPull.FirstCatchUpCompleted -= OnFirstCatchUpCompleted;
+            _salesPull.ModeOffStarted -= OnSalesModeOffStarted;
+            _salesPull.ModeOffFinished -= OnSalesModeOffFinished;
         }
 
         Banner.Dispose();

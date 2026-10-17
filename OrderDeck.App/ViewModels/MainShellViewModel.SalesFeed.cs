@@ -12,6 +12,8 @@ namespace OrderDeck.App.ViewModels;
 // Durum satırının altında, yalnız mod On'da, satış akışının satırı görünür (SalesFeedStatusFormatter); mod Off'ta
 // (bugün her lisans) metin boştur ve satır gizlidir — tek istisna mod On açılışının beklemesi (W2-10). İlk yetişme
 // tamamlanınca (FirstCatchUpCompleted) kendi etiketlerinde sunucunun değeri alındıysa gönderim şeridine bir kez not düşer.
+// W2-11: komut ucu mode-off döndüğünde (ModeOffStarted) "Senkron kapatıldı; ekran yenileniyor." şeridi açılır, Off turu
+// sonuçlanınca (ModeOffFinished) kalkar; turun silinen uzak satırları ve yerele dönen yayınları SalesChanged tazeler.
 public sealed partial class MainShellViewModel
 {
     private readonly SalesChangesPullService? _salesPull;
@@ -20,6 +22,30 @@ public sealed partial class MainShellViewModel
     [ObservableProperty] private string _salesSyncStatusText = "";
     [ObservableProperty] private bool _isSalesSyncHealthy = true;
     [ObservableProperty] private string _salesSyncStatusTooltip = "";
+
+    /// <summary>W2-11 (§5.3 mode-off): komut ucu modun kapandığını söyledi — "Senkron kapatıldı; ekran yenileniyor."
+    /// Off turu sonuçlanınca kendiliğinden kalkar (açılır pencere yok); null = gizli.</summary>
+    [ObservableProperty] private string? _salesModeOffBanner;
+
+    /// <summary>Komut ucunun mode-off'u (arka plandan ya da komutu gönderenin iş parçacığından): şerit açılır.</summary>
+    private void OnSalesModeOffStarted(object? sender, EventArgs e)
+    {
+        if (_dispatcher.CheckAccess()) SalesModeOffBanner = SalesCommandMessages.ModeOff;
+        else _dispatcher.BeginInvoke(() => SalesModeOffBanner = SalesCommandMessages.ModeOff);
+    }
+
+    /// <summary>Off turu sonuçlandı (turun iş parçacığından): şerit kalkar; ekranlar akışın değişiklik olayıyla tazelendi.</summary>
+    private void OnSalesModeOffFinished(object? sender, EventArgs e)
+    {
+        void Apply()
+        {
+            SalesModeOffBanner = null;
+            RefreshSalesSyncStatus(_attention?.Invoke().SkippedSalesFeedItems ?? 0);
+        }
+
+        if (_dispatcher.CheckAccess()) Apply();
+        else _dispatcher.BeginInvoke(Apply);
+    }
 
     /// <summary>Arka plan iş parçacığından gelir: dispatcher'a taşınır, akış turunu bekletmez.</summary>
     private void OnSalesChanged(object? sender, SalesChangedEventArgs e)

@@ -1,8 +1,8 @@
 <UserControl x:Class="OrderDeck.App.Views.Shell.ShellBanners"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <!-- Dokuz şerit aynı hücreyi paylaşır; z-sırası: sunucu → lisans →
-         kendi yayını uzaktan bitirildi → etiket gönderimi sonucu → yedek
+    <!-- On şerit aynı hücreyi paylaşır; z-sırası: sunucu → lisans →
+         senkron kapatıldı → kendi yayını uzaktan bitirildi → etiket gönderimi sonucu → yedek
          eklenemedi → yedek modu → çekiliş → yayını bitir sonucu → yayını bitir
          onayı. W2-09'un üç şeridinde RemoteSessions yoksa (testler)
          FallbackValue gizler. -->
@@ -30,6 +30,22 @@
                              Converter={StaticResource NullToCollapsedConverter}}">
             <TextBlock Text="{Binding LicenseExpiryBanner}"
                        Foreground="{StaticResource OD.Brush.Amber}"
+                       FontWeight="SemiBold"
+                       Margin="{StaticResource OD.Pad.4}"
+                       VerticalAlignment="Center" TextWrapping="Wrap"/>
+        </Border>
+
+        <!-- Satış senkronu kapatıldı (W2-11, §5.3 mode-off): komut ucu modun
+             kapandığını söyledi, Off turu koşuyor. Düğme yok: tur sonuçlanınca
+             kendiliğinden kalkar. -->
+        <Border CornerRadius="{StaticResource OD.Radius.Md}"
+                Background="{StaticResource OD.Brush.InfoTint}"
+                BorderBrush="{StaticResource OD.Brush.InfoTintBorder}"
+                BorderThickness="1"
+                Visibility="{Binding SalesModeOffBanner,
+                             Converter={StaticResource NullToCollapsedConverter}}">
+            <TextBlock Text="{Binding SalesModeOffBanner}"
+                       Foreground="{StaticResource OD.Brush.Text}"
                        FontWeight="SemiBold"
                        Margin="{StaticResource OD.Pad.4}"
                        VerticalAlignment="Center" TextWrapping="Wrap"/>
