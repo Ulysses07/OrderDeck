@@ -44,7 +44,7 @@ public enum SessionAckOutcome
 public sealed class SessionRepository
 {
     private const string Columns =
-        "Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision, ReleasedAt, Authority";
+        "Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision, ReleasedAt, Authority, Origin, OwnerMachineName";
 
     private readonly IDbConnectionFactory _factory;
     public SessionRepository(IDbConnectionFactory factory) => _factory = factory;
@@ -260,7 +260,9 @@ public sealed class SessionRepository
         r.SyncedAt,
         r.Revision,
         r.ReleasedAt,
-        r.Authority);
+        r.Authority,
+        r.Origin,
+        r.OwnerMachineName);
 
     private sealed class Row
     {
@@ -274,5 +276,7 @@ public sealed class SessionRepository
         public long Revision { get; init; }
         public long? ReleasedAt { get; init; }
         public string Authority { get; init; } = StreamSessionAuthority.Local;
+        public string Origin { get; init; } = StreamSessionOrigin.Local;
+        public string? OwnerMachineName { get; init; }
     }
 }
