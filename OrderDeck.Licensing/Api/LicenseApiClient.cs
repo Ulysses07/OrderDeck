@@ -250,6 +250,41 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     }
 
     /// <summary>
+    /// <c>GET sales/changes</c> (spec 2026-10-13 §4.4): satış değişiklik akışının bir sayfası. İmleç sunucunun
+    /// rowversion'ı (<see cref="SalesChangesPage.NextAfterSeq"/>); istemci saati yok. <paramref name="replicaId"/> ve
+    /// <paramref name="seenMode"/> ile çağrı kopyanın kalp atışı da sayılır (§4.0).
+    /// <para>Müşteri akışıyla aynı gerekçe: boş sayfa turun SONLANDIRICISI — bozuk gövde (200 + <c>null</c>,
+    /// <c>items</c>'sız, listede literal <c>null</c>, yan listede <c>null</c>) sessizce boş sayfaya çevrilseydi
+    /// çağıran "yetiştim" sanırdı. Son öğeden küçük imleç aynı sayfayı sonsuza dek istetir, sırası bozuk sayfada öğe
+    /// başına kaydedilen imleç aradaki öğeyi atlatırdı. Hepsi <see cref="LicenseApiUnknownException"/>.</para>
+    /// <para><paramref name="take"/> 1..500 ya da <paramref name="seenMode"/> 0/1 dışında istek gitmeden FIRLATIR:
+    /// sunucu kırpar ya da 400 döner, çağıran elindeki değeri yanlış yorumlardı.</para>
+    /// </summary>
+    public async Task<SalesChangesPage> GetSalesChangesAsync(
+        Guid licenseId, long afterSeq, int take, Guid replicaId, int seenMode, CancellationToken ct = default)
+    {
+        if (take is < 1 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..500 olmalı (sunucu sınırı, SalesChangesFeed.MaxTake).");
+        if (seenMode is not (0 or 1))
+            throw new ArgumentOutOfRangeException(nameof(seenMode), seenMode, "seenMode 0 ya da 1 olmalı.");
+
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var qs = $"?afterSeq={afterSeq.ToString(inv)}&take={take.ToString(inv)}"
+               + $"&replicaId={replicaId:D}&seenMode={seenMode.ToString(inv)}";
+        var page = await GetExpectingJsonAsync<SalesChangesPage?>($"/api/v1/licenses/{licenseId}/sales/changes{qs}", ct);
+        if (page?.Items is null
+            || page.Items.Any(i => i is null)
+            || page.SideSessions?.Any(s => s is null) == true
+            || page.CustomerDrafts?.Any(d => d is null) == true
+            || (page.Items.Count > 0 && page.NextAfterSeq < page.Items[^1].ChangeSeq)
+            || page.Items.Zip(page.Items.Skip(1)).Any(p => p.Second.ChangeSeq <= p.First.ChangeSeq))
+            throw new LicenseApiUnknownException(200,
+                "Satış değişiklik sayfası bozuk geldi (gövde, items, bir öğe, yan liste, sıra ya da imleç). Bu 'değişiklik yok' demek değildir.");
+        return page;
+    }
+
+    /// <summary>
     /// <c>POST sales/backfill</c> (spec 2026-10-13 §4.3): geçmişin sunucuda tamamlanması — yalnız boşu doldurur,
     /// bildirimsiz, mevcut siparişte birim ayrışmasını döner. Bütün partiyi düşüren hatalar fırlatılır: 400
     /// <c>unknown-session</c> (<see cref="ValidationException"/>, <c>Code = "unknown-session"</c>), 409
