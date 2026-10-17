@@ -1,3 +1,4 @@
+using System.Data.Common;
 using FluentAssertions;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -5,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.LicenseServer.Tools;
 using Xunit;
@@ -12,28 +14,29 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Tools;
 
 /// <summary>
-/// <c>sales-sync shipping set</c> (spec 2026-10-13 §4.8, §4.10, §6.2) gerçek SQL Server'da: kuru koşu hiçbir tabloya
-/// yazmaz (bütün tabloların satır sayısı ve sağlama toplamı aynı kalır) ama şu anki satırı ve son 14 günde kopyaların
-/// bildirdiği değerleri gösterir; <c>--apply</c> ekler, sonra günceller (<c>UpdatedBy = cli</c>, sürüm bir artar);
-/// <c>--off</c> iki değeri boş yazar; bilinmeyen lisans 2 döner ve hiçbir şey yazmaz; eşzamanlı bir yazım kazanırsa
-/// 1 döner ve üzerine yazmaz. Çıktıda makine adı yok. Ayrıştırma <see cref="SalesSyncTests"/>'te; gövde, bağlantısı
-/// ve yazıcıları verilmiş <see cref="SalesSync.RunAsync(LicenseDbContext, SalesSync.ShippingSetArgs, TextWriter, TextWriter, CancellationToken)"/>'ten
-/// girilir (<see cref="SalesAuditRelationalTests"/> deseni).
+/// <c>sales-sync</c> CLI'ı (spec 2026-10-13 §4.8, §4.10, §6.2) gerçek SQL Server'da. Bu dosyada <c>shipping set</c>: kuru
+/// koşu hiçbir tabloya yazmaz (bütün tabloların satır sayısı ve sağlama toplamı aynı kalır) ama şu anki satırı ve son 14
+/// günde kopyaların bildirdiği değerleri gösterir; <c>--apply</c> ekler, sonra günceller (<c>UpdatedBy = cli</c>, sürüm
+/// bir artar); <c>--off</c> iki değeri boş yazar; bilinmeyen lisans 2 döner ve hiçbir şey yazmaz; eşzamanlı bir yazım
+/// kazanırsa 1 döner ve üzerine yazmaz. Öbür alt komutlar kısmi dosyalarda. Çıktıda makine adı yok. Ayrıştırma
+/// <see cref="SalesSyncTests"/>'te; gövdeler, bağlantısı ve yazıcıları verilmiş <c>SalesSync.RunAsync</c> aşırı
+/// yüklemelerinden girilir (<see cref="SalesAuditRelationalTests"/> deseni). Fabrika <c>SalesSync:MinClientVersion</c>'ı
+/// tanımlar: komut ucu (<c>attach-shipment</c>) mod On'da ancak böyle çalışır.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
-public sealed class SalesSyncRelationalTests : IAsyncLifetime
+public sealed partial class SalesSyncRelationalTests : IAsyncLifetime
 {
     private readonly SqlServerContainerFixture _sql;
     private string _cs = null!;
-    private RelationalApiFactory _factory = null!;
+    private SalesSyncFactory _factory = null!;
 
     public SalesSyncRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
 
     public async Task InitializeAsync()
     {
         _cs = await _sql.CreateDatabaseAsync();
-        _factory = new RelationalApiFactory(_cs);
+        _factory = new SalesSyncFactory(_cs);
         _ = _factory.Services; // göçleri şimdi kur
     }
 
@@ -308,5 +311,43 @@ public sealed class SalesSyncRelationalTests : IAsyncLifetime
             }
             return result;
         }
+    }
+
+    /// <summary>
+    /// Okuyucusuz komut kancası (<c>ExecuteUpdate</c>): <c>when</c>'i tutan ilk komutun hemen öncesinde <c>before</c>'u
+    /// bir kez koşturur — CLI'ın okuması ile yazması arasına eşzamanlı bir yazımı sırayla yerleştirir. CLI'ın kendi
+    /// bağlamına takılır; kanca gövdesi başka bağlamla (ya da HTTP ile) yazar.
+    /// </summary>
+    private sealed class BeforeNonQueryHook(Func<string, bool> when, Func<Task> before) : DbCommandInterceptor
+    {
+        public bool Ran { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!Ran && when(command.CommandText))
+            {
+                Ran = true;
+                await before();
+            }
+            return result;
+        }
+    }
+
+    /// <summary>CLI'ın bağlamı, kancayla (fabrikanın bağlamlarından ayrı bir bağlantı).</summary>
+    private LicenseDbContext HookedDb(IInterceptor hook) =>
+        new(new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(_cs).AddInterceptors(hook).Options);
+
+    /// <summary>Gerçek SQL Server; satış senkronu komutlarının sürüm kapısı tanımlı
+    /// (<see cref="SalesCommandTestKit.WpfUserAgent"/> onu geçer).</summary>
+    private sealed class SalesSyncFactory(string connectionString) : RelationalApiFactory(connectionString)
+    {
+        protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
+        {
+            ["SalesSync:MinClientVersion"] = SalesSyncConfiguredApiFactory.MinClientVersion,
+        };
     }
 }

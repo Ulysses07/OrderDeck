@@ -1,10 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.Sync;
+using OrderDeck.LicenseServer.Services.Sync.Commands;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -39,6 +42,25 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// kopyanınkini 0'layıp asıl satıra ekler). preview/scope/apply istekteki
 /// Id'yi önce <see cref="CustomerIdResolver"/>'dan geçirir; kopyaya hiçbir
 /// hareket ya da bakiye yazılmaz.</para>
+///
+/// <para><b>Satış senkronu (spec 2026-10-13 §4.7, §6.5-3, §6.6).</b> Lisansın
+/// kipi sahiplik denetimiyle birlikte okunur. Mod Off'ta hiçbir şey değişmez:
+/// kapı yok, işlem ve kilit yok. Mod On'da:
+/// <list type="bullet">
+///   <item>preview, <c>/scope</c>, <c>reverse</c> ve apply, istemci
+///   <c>SalesSync:MinClientVersion</c>'dan eskiyse ya da alt sürüm tanımsızsa
+///   bakiyeye dokunmadan 409 <c>client-update-required</c> döner
+///   (kapalı-hata). Eski sürüm GUID'li kişide mesajı bu yüzden göndermez;
+///   kira ve sunucu toplamı onu kapsamazdı. <c>/scope</c> ve <c>reverse</c>
+///   eski sürümün önizlemeden önce girdiği para yollarıdır.
+///   <c>transactions/{id}</c> kapısızdır: eski sürüm onun hatasında diskteki
+///   sonuçla devam eder (R6-02), kapı yalnız panel iadesini görmesini
+///   engellerdi.</item>
+///   <item>Kapsamlı ve anahtarı yeni apply, asıl kayıt×kapsam uygulama kilidi
+///   altında <c>/scope</c>'un yüklemini koşar: geri alınmamış düşüm varsa 409
+///   <c>scope-has-deduction</c> (DM6, M8). Ayrı tablo yok; kural defterin
+///   kendisini okur ve imaj geri alınsa da bayat durum bırakmaz.</item>
+/// </list></para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/customer-balance")]
@@ -49,16 +71,22 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// yalnız bu türü kabul eder — iade satırları bu ucun anahtarı olamaz.</summary>
     private const string KindPurchaseDeduction = "purchase-deduction";
 
+    private const string CodeClientUpdateRequired = "client-update-required";
+    private const string CodeScopeHasDeduction = "scope-has-deduction";
+
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
+    private readonly SalesSyncOptions _salesSync;
     private readonly ILogger<LicensesCustomerBalanceApplyController> _log;
 
     public LicensesCustomerBalanceApplyController(
         LicenseDbContext db, CustomerIdResolver customerIds,
+        IOptions<SalesSyncOptions> salesSync,
         ILogger<LicensesCustomerBalanceApplyController> log)
     {
         _db = db;
         _customerIds = customerIds;
+        _salesSync = salesSync.Value;
         _log = log;
     }
 
@@ -77,7 +105,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         [FromQuery] Guid wpfCustomerId,
         CancellationToken ct)
     {
-        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        var mode = await OwnedLicenseModeAsync(licenseId, ct);
+        if (mode is null) return NotFound();
+        if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
+            return ClientUpdateRequired(licenseId, "preview");
 
         // Bakiye asıl kayıtta (A5b). Yanıt istemcinin gönderdiği Id'yi taşır —
         // istemci yanıtı kendi Id'siyle eşleştirebilir.
@@ -119,6 +150,12 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// <para>Kayıt yoksa <b>204</b> — istemci bugünkü akışta kalır. Bu, alanın
     /// yeni olmasından ötürü kapsamsız yazılmış geçmiş satırlar için de geçerli
     /// ve <b>zararsız</b>: davranış R4-03 öncesine düşer.</para>
+    ///
+    /// <para>Mod On'da preview ve apply ile aynı sürüm kapısı (§6.5-3). Bu uç
+    /// salt okunur, ama v0.9.10 anahtarsız işte önce burayı sorar ve bulduğu
+    /// düşümü benimser. Toplam aynıysa önizleme ve apply hiç çağrılmaz; kapı
+    /// olmasa başka bilgisayarın teslim ettiği istek ikinci kez giderdi.
+    /// v0.9.10 bu ucun hatasında mesajı engeller (R6-01).</para>
     /// </summary>
     [HttpGet("scope")]
     public async Task<IActionResult> Scope(
@@ -133,15 +170,33 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
                     + "karakteri aşamaz.");
 
-        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        var mode = await OwnedLicenseModeAsync(licenseId, ct);
+        if (mode is null) return NotFound();
+        // v0.9.10 bulduğu düşümü benimser ve toplam aynıysa önizleme ile
+        // apply'ı hiç çağırmadan mesajı gönderir; kapı burada da olmalı.
+        if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
+            return ClientUpdateRequired(licenseId, "scope");
 
         // Düşüm asıl kayıtta (A5b: hareketler birleştirmede taşınır, yenileri
         // çözülmüş Id'yle yazılır).
         var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, wpfCustomerId, ct);
-        var row = await _db.CustomerBalanceTransactions
+        var row = await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, ct);
+
+        return row is null ? NoContent() : Ok(row);
+    }
+
+    /// <summary>
+    /// <c>/scope</c>'un yüklemi; apply'ın kapsam kuralı (§6.6) da aynı sorguyu
+    /// koşar: aynı asıl kayıt, aynı kapsam, <c>purchase-deduction</c>, geri
+    /// alınmamış; en yenisi (<c>CreatedAt</c>, sonra <c>Id</c>). Tek sorgu: uç
+    /// "düşüm yok" dediği hâlde kuralın 409 vermesi (ya da tersi) olamaz.
+    /// </summary>
+    private Task<ScopeResponse?> LatestScopeDeductionAsync(
+        Guid licenseId, Guid canonicalCustomerId, string saleScope, CancellationToken ct) =>
+        _db.CustomerBalanceTransactions
             .AsNoTracking()
             .Where(t => t.LicenseId == licenseId
-                && t.WpfCustomerId == canonicalId
+                && t.WpfCustomerId == canonicalCustomerId
                 && t.SaleScope == saleScope
                 && t.Kind == KindPurchaseDeduction
                 && !_db.CustomerBalanceTransactions.Any(r => r.ReversesTransactionId == t.Id))
@@ -149,9 +204,6 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             .ThenByDescending(t => t.Id)
             .Select(t => new ScopeResponse(t.Id, -t.Amount, t.OriginalAmount ?? 0m, t.CreatedAt))
             .FirstOrDefaultAsync(ct);
-
-        return row is null ? NoContent() : Ok(row);
-    }
 
     // ── GET transactions/{id} (R6-02 durum ucu) ─────────────────────────────
 
@@ -250,7 +302,11 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
                     + "karakteri aşamaz.");
 
-        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        var mode = await OwnedLicenseModeAsync(licenseId, ct);
+        if (mode is null) return NotFound();
+        // §6.5-3: bakiyenin her okumasından (oynatma dahil) önce.
+        if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
+            return ClientUpdateRequired(licenseId, "apply");
 
         // Kopya Id'si asıl kayda çözülür (A5b): bakiye araması, yazılan hareket
         // ve idempotency karşılaştırması asıl kayıtla.
@@ -262,23 +318,112 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         {
             var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, preKey, ct);
             if (foreign) return NotFound();
-            if (conflict)
-                return Problem(title: "content-conflict", statusCode: 409,
-                    detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
+            if (conflict) return ContentConflict();
             if (replay is not null) return Ok(replay);
         }
 
+        // §6.6: anahtar yeni (yok ya da defterde değil). Kural yalnız mod On'da
+        // ve kapsamlı istekte; kapsamsız istek ve mod Off bugünkü yoldan.
+        if (mode == SalesSyncMode.On && req.SaleScope is { } saleScope)
+            return await ApplyOncePerScopeAsync(licenseId, req, canonicalId, saleScope, ct);
+
+        return (await WriteDeductionAsync(licenseId, req, canonicalId, ct)).Result;
+    }
+
+    /// <summary>
+    /// Spec 2026-10-13 §6.6 — mod On'da kapsam başına tek geçerli düşüm. Tek
+    /// işlemde, asıl kayıt×kapsam uygulama kilidi altında
+    /// (<see cref="ScopeLockResource"/>):
+    /// <list type="number">
+    ///   <item>Anahtar yeniden aranır: aynı anahtarlı eşzamanlı istek kilitte
+    ///   beklerken kazanan yazmış olabilir. O istek oynatılır ya da
+    ///   <c>content-conflict</c> alır; kendi düşümünü "kapsamda düşüm var"
+    ///   diye görmez.</item>
+    ///   <item><c>/scope</c>'un yüklemi (<see cref="LatestScopeDeductionAsync"/>):
+    ///   geri alınmamış düşüm varsa 409 <c>scope-has-deduction
+    ///   {transactionId, appliedAmount, productTotal}</c> — istemci onu
+    ///   benimser (W3).</item>
+    ///   <item>Yoksa bugünkü yazım yolu, aynı işlemde.</item>
+    /// </list>
+    /// <c>legacy:</c> kapsamı muaf değildir (§15-18): miras işin tekrarı asıl
+    /// kapsamla gelir ve iki iş aynı düşümü sahiplenmemeli. Kural satır (çapa)
+    /// düzeyindedir; başka üyedeki izi kira ve #506'nın birleştirme sorusu
+    /// yakalar (§6.4, §6.6).
+    ///
+    /// <para><b>Kilit zaman aşımı 409 <c>stale</c></b>
+    /// (<see cref="SalesCommandLock"/>): aynı kişinin aynı satışında başka bir
+    /// apply sürüyor; hiçbir şey yazılmaz, istemci yeniden dener.</para>
+    ///
+    /// <para>InMemory'de (testler) işlem ve kilit yok; yüklem aynı.</para>
+    /// </summary>
+    private async Task<IActionResult> ApplyOncePerScopeAsync(
+        Guid licenseId, ApplyRequest req, Guid canonicalId, string saleScope, CancellationToken ct)
+    {
+        await using var transaction = _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(ct)
+            : null;
+        try
+        {
+            await SalesCommandLock.AcquireAsync(
+                _db, ScopeLockResource(licenseId, canonicalId, saleScope), SalesCommandLock.DefaultTimeout, ct);
+        }
+        catch (SalesCommandRejection rejection)
+        {
+            _log.LogInformation(
+                "customer-balance/apply: kapsam kilidi alınamadı, 409 {Code} (license={LicenseId})",
+                rejection.Code, licenseId);
+            return Problem(title: rejection.Code, detail: rejection.Message, statusCode: rejection.StatusCode);
+        }
+
+        if (req.IdempotencyKey is { } key)
+        {
+            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, canonicalId, key, ct);
+            if (foreign) return NotFound();
+            if (conflict) return ContentConflict();
+            if (replay is not null) return Ok(replay);
+        }
+
+        if (await LatestScopeDeductionAsync(licenseId, canonicalId, saleScope, ct) is { } existing)
+        {
+            _log.LogInformation(
+                "customer-balance/apply: kapsamda geri alınmamış düşüm var, 409 scope-has-deduction "
+                + "(license={LicenseId}, transaction={TransactionId})",
+                licenseId, existing.TransactionId);
+            var problem = Problem(title: CodeScopeHasDeduction, statusCode: 409,
+                detail: "Bu satışta geri alınmamış bir bakiye düşümü var.");
+            var details = (ProblemDetails)problem.Value!;
+            details.Extensions["transactionId"] = existing.TransactionId;
+            details.Extensions["appliedAmount"] = existing.AppliedAmount;
+            details.Extensions["productTotal"] = existing.ProductTotal;
+            return problem;
+        }
+
+        var (result, wrote) = await WriteDeductionAsync(licenseId, req, canonicalId, ct);
+        if (wrote && transaction is not null) await transaction.CommitAsync(ct);
+        return result;
+    }
+
+    /// <summary>
+    /// Düşümün bugünkü yazım yolu: bakiye okunur, uygulanabilir tutar
+    /// hesaplanır, ledger satırı ile bakiye tek <c>SaveChanges</c>'te yazılır
+    /// (F02 yeniden deneme döngüsü, aynı anahtar yarışında PK oynatması).
+    /// <c>Wrote</c> yalnız taze bir düşüm yazıldığında true; çağıran açık
+    /// işlemi ancak o zaman commit eder.
+    /// </summary>
+    private async Task<(IActionResult Result, bool Wrote)> WriteDeductionAsync(
+        Guid licenseId, ApplyRequest req, Guid canonicalId, CancellationToken ct)
+    {
         var balance = await _db.CustomerBalances
             .FirstOrDefaultAsync(b => b.LicenseId == licenseId
                 && b.WpfCustomerId == canonicalId, ct);
         if (balance is null || balance.Balance <= 0)
-            return Problem(title: "no-balance", statusCode: 409);
+            return (Problem(title: "no-balance", statusCode: 409), false);
 
         // İstenen tutar bakiyeden fazla olamaz; sipariş tutarından da fazla
         // olamaz (mantıksızlık).
         var appliedAmount = Math.Min(Math.Min(req.Amount, balance.Balance), req.ProductTotal);
         if (appliedAmount <= 0)
-            return Problem(title: "nothing-to-apply", statusCode: 409);
+            return (Problem(title: "nothing-to-apply", statusCode: 409), false);
 
         var customerId = User.GetTenantCustomerId();
         var now = DateTimeOffset.UtcNow;
@@ -326,13 +471,13 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 if (balance.Balance <= 0)
                 {
                     _db.ChangeTracker.Clear();
-                    return Problem(title: "no-balance", statusCode: 409);
+                    return (Problem(title: "no-balance", statusCode: 409), false);
                 }
                 appliedAmount = Math.Min(Math.Min(req.Amount, balance.Balance), req.ProductTotal);
                 if (appliedAmount <= 0)
                 {
                     _db.ChangeTracker.Clear();
-                    return Problem(title: "nothing-to-apply", statusCode: 409);
+                    return (Problem(title: "nothing-to-apply", statusCode: 409), false);
                 }
                 tx.Amount = -appliedAmount;
                 balance.Balance -= appliedAmount;
@@ -347,19 +492,21 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 _db.ChangeTracker.Clear();
                 var (winner, _, conflict) = await LookupAsync(
                     licenseId, req, canonicalId, req.IdempotencyKey.Value, ct);
-                if (conflict)
-                    return Problem(title: "content-conflict", statusCode: 409,
-                        detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
+                if (conflict) return (ContentConflict(), false);
                 if (winner is null) throw;
                 _log.LogWarning(
                     "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
                     req.IdempotencyKey, licenseId);
-                return Ok(winner);
+                return (Ok(winner), false);
             }
         }
 
-        return Ok(new ApplyResponse(txId, appliedAmount, balance.Balance));
+        return (Ok(new ApplyResponse(txId, appliedAmount, balance.Balance)), true);
     }
+
+    private ObjectResult ContentConflict() =>
+        Problem(title: "content-conflict", statusCode: 409,
+            detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
 
     /// <summary>
     /// Anahtarın daha önce uygulanıp uygulanmadığına bakar.
@@ -446,12 +593,20 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// ikizi — ama kapsamı dar: yalnız BU lisansın purchase-deduction satırı.
     /// Hakem N01 filtered-unique index (ReversesTransactionId): yarışan ikinci
     /// reverse SaveChanges'te unique ihlali alır → 409 already-reversed.
-    /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).</summary>
+    /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).
+    ///
+    /// <para>Mod On'da sürüm kapısı (§6.5-3): eski sürümün revizyonu başka
+    /// bilgisayarın teslim edilmiş düşümünü geri alırdı, ardından yeniden
+    /// apply'ı 409 alır. v0.9.10 bu 409'u başarısızlık sayar, geri alma niyeti
+    /// diskte kalır ve mesaj gitmez.</para></summary>
     [HttpPost("transactions/{transactionId:guid}/reverse")]
     public async Task<IActionResult> Reverse(
         Guid licenseId, Guid transactionId, CancellationToken ct)
     {
-        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+        var mode = await OwnedLicenseModeAsync(licenseId, ct);
+        if (mode is null) return NotFound();
+        if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
+            return ClientUpdateRequired(licenseId, "reverse");
 
         var original = await _db.CustomerBalanceTransactions
             .AsNoTracking()
@@ -525,6 +680,47 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
         && sql.Number is 2601 or 2627
         && sql.Message.Contains("ReversesTransactionId", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Kapsam kuralının kilidi (§6.6): <c>bal:{lisans}:{asıl kayıt}:{kapsam}</c>.
+    /// Kapsam küçük harfe katlanır ve sondaki boşluğu atılır:
+    /// <c>sp_getapplock</c> adları ikili karşılaştırır, <c>SaleScope</c>'un SQL
+    /// eşitliği ise harf duyarsızdır ve sondaki boşluğu yok sayar; kilit
+    /// yüklemin eşit saydığı iki kapsamı ayrı tutmamalı. Ad en çok
+    /// 4 + 32 + 1 + 32 + 1 + 128 = 198 karakter (<c>sp_getapplock</c> sınırı
+    /// 255).
+    /// </summary>
+    public static string ScopeLockResource(Guid licenseId, Guid canonicalCustomerId, string saleScope) =>
+        $"bal:{licenseId:N}:{canonicalCustomerId:N}:{saleScope.ToLowerInvariant().TrimEnd(' ')}";
+
+    /// <summary>Lisans çağırana aitse kipi; değilse null (uç 404 döner). Sahiplik
+    /// ve kip tek sorguda.</summary>
+    private async Task<SalesSyncMode?> OwnedLicenseModeAsync(Guid licenseId, CancellationToken ct)
+    {
+        var callerId = User.GetTenantCustomerId();
+        return await _db.Licenses
+            .Where(l => l.Id == licenseId && l.CustomerId == callerId)
+            .Select(l => (SalesSyncMode?)l.SalesSyncMode)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>İstemci (<c>User-Agent</c>) <c>SalesSync:MinClientVersion</c>'ı
+    /// karşılıyor mu. Kapalı-hata: sürüm bilinmiyorsa ya da alt sürüm
+    /// tanımsızsa false (<see cref="ClientVersion.IsAtLeast"/>).</summary>
+    private bool ClientMeetsMinimum() =>
+        ClientVersion.IsAtLeast(
+            ClientVersion.FromUserAgent(Request.Headers.UserAgent.ToString()),
+            _salesSync.ParseMinClientVersion());
+
+    private ObjectResult ClientUpdateRequired(Guid licenseId, string endpoint)
+    {
+        _log.LogInformation(
+            "customer-balance/{Endpoint}: mod On'da istemci alt sürümün altında ya da alt sürüm tanımsız, "
+            + "409 client-update-required (license={LicenseId})",
+            endpoint, licenseId);
+        return Problem(title: CodeClientUpdateRequired, statusCode: 409,
+            detail: "Bakiye işlemi için uygulamanın güncel sürümü gerekiyor.");
+    }
 
     private async Task<bool> OwnsLicenseAsync(Guid licenseId, CancellationToken ct)
     {

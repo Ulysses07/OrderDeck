@@ -44,6 +44,28 @@ public sealed class CustomerIdResolver
     public async Task<Guid> CanonicalOfAsync(Guid licenseId, Guid id, CancellationToken ct)
         => (await CanonicalOfAsync(licenseId, [id], ct))[id];
 
+    /// <summary>
+    /// <see cref="CanonicalOfAsync(Guid, IEnumerable{Guid}, CancellationToken)"/>'un tersi: verilen kayıtlara doğrudan ya
+    /// da zincirle (en çok <see cref="MaxHops"/> adım) yönlenen kopyaların Id'leri; girdiler dahil değil. Bir kişinin
+    /// kopya Id'siyle saklanmış satırlarını (ör. sipariş <c>CustomerId</c>'si) SQL'de aramak için.
+    /// </summary>
+    public async Task<IReadOnlyList<Guid>> CopiesOfAsync(Guid licenseId, IEnumerable<Guid> ids, CancellationToken ct)
+    {
+        var seen = ids.ToHashSet();
+        var copies = new List<Guid>();
+        var frontier = seen.ToList();
+        for (var hop = 0; hop < MaxHops && frontier.Count > 0; hop++)
+        {
+            var next = await _db.WpfCustomerProjections.IgnoreQueryFilters()
+                .Where(p => p.LicenseId == licenseId && p.MergedIntoId != null && frontier.Contains(p.MergedIntoId.Value))
+                .Select(p => p.Id)
+                .ToListAsync(ct);
+            frontier = next.Where(seen.Add).ToList();
+            copies.AddRange(frontier);
+        }
+        return copies;
+    }
+
     /// <summary>Sipariş/kargo <c>CustomerId</c>'si gibi "N" biçimli hex Id'ler
     /// için. Çözümlenemeyen (Guid olmayan) değer aynen döner.</summary>
     public async Task<IReadOnlyDictionary<string, string>> CanonicalHexOfAsync(

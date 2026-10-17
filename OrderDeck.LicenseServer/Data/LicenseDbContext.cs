@@ -73,6 +73,9 @@ public class LicenseDbContext : DbContext
     public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<LicenseShippingSettings> LicenseShippingSettings => Set<LicenseShippingSettings>();
     public DbSet<SalesCommandLog> SalesCommandLogs => Set<SalesCommandLog>();
+    public DbSet<PaymentRequestRecord> PaymentRequestRecords => Set<PaymentRequestRecord>();
+    public DbSet<PaymentRequestMember> PaymentRequestMembers => Set<PaymentRequestMember>();
+    public DbSet<PaymentRequestRecordOrder> PaymentRequestRecordOrders => Set<PaymentRequestRecordOrder>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
@@ -674,6 +677,65 @@ public class LicenseDbContext : DbContext
             b.Property(c => c.Status).HasMaxLength(SalesCommandLog.StatusMaxLength).IsRequired();
             b.Property(c => c.ResultJson).IsRequired();
             b.HasIndex(c => new { c.LicenseId, c.CreatedAt });
+        });
+
+        // Ödeme isteği kira ve teslim kaydı (yayın ve etiket senkronu S3, spec
+        // 2026-10-13 §3.1, §6.4). Birincil anahtar istemcinin recordId'si. Lisans
+        // silinince kayıt gider (cascade; lisansı silen bugünkü yol ve S3 öncesi
+        // imaj bu tabloyu bilmez), üye ve sipariş satırları da kayıt üzerinden.
+        // Alt tablolardan Licenses'a FK YOK: SQL Server aynı tabloya iki cascade
+        // yolunu reddeder. Orders'a da yok: geri doldurulan geçmiş kaydın
+        // siparişi sunucuda olmayabilir.
+        mb.Entity<PaymentRequestRecord>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Id).ValueGeneratedNever();
+            b.HasOne(r => r.License).WithMany()
+                .HasForeignKey(r => r.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Metin BIN2 (bellekte ordinal yeniden denetimle aynı eşitlik);
+            // indeks ve kilit ise özet üzerinde, çünkü SQL'in = karşılaştırması
+            // sondaki boşluğu harmandan bağımsız yutar (§2).
+            b.Property(r => r.PersonKey).HasMaxLength(PaymentRequestRecord.PersonKeyMaxLength).IsRequired()
+                .UseCollation(PaymentRequestRecord.PersonKeyCollation);
+            b.Property(r => r.PersonKeyHash).HasMaxLength(PaymentRequestRecord.HashLength).IsFixedLength().IsRequired();
+            // Varsayılan harman: defterdeki SaleScope ile aynı karşılaştırma anlamı.
+            b.Property(r => r.ScopeKey).HasMaxLength(PaymentRequestRecord.ScopeKeyMaxLength).IsRequired();
+            b.Property(r => r.OwnerWpfCustomerId).HasMaxLength(PaymentRequestRecord.WpfCustomerIdMaxLength).IsRequired();
+            b.Property(r => r.MachineName).HasMaxLength(PaymentRequestRecord.MachineNameMaxLength);
+            b.Property(r => r.ProductTotal).HasPrecision(18, 2);
+            b.Property(r => r.TotalBeforeBalance).HasPrecision(18, 2);
+            b.Property(r => r.NetAmount).HasPrecision(18, 2);
+            b.Property(r => r.AppliedAmount).HasPrecision(18, 2);
+            b.Property(r => r.RequestHash).HasMaxLength(PaymentRequestRecord.HashLength).IsFixedLength().IsRequired();
+            // DEFAULT 0: kolonu vermeyen ham INSERT (CLI, test) ona düşer.
+            b.Property(r => r.Version).HasDefaultValue(0).IsConcurrencyToken();
+            // DM6: kişi×kapsamda tek Sending. Yarışın hakemi bu indeks; ihlal
+            // adıyla tanınır ve 409 in-progress-elsewhere olur (§6.4-h).
+            b.HasIndex(r => new { r.LicenseId, r.PersonKeyHash, r.ScopeKey })
+                .IsUnique()
+                .HasFilter(PaymentRequestRecord.SendingIndexFilter)
+                .HasDatabaseName(PaymentRequestRecord.SendingIndexName);
+            // Kişi×kapsamın geçmişi (§6.4-c, e; GET payment-requests).
+            b.HasIndex(r => new { r.LicenseId, r.PersonKeyHash, r.ScopeKey, r.StartedAt });
+            b.HasMany(r => r.Members).WithOne(m => m.Record)
+                .HasForeignKey(m => m.RecordId).OnDelete(DeleteBehavior.Cascade);
+            b.HasMany(r => r.RecordOrders).WithOne(o => o.Record)
+                .HasForeignKey(o => o.RecordId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Üye kesişimi (§6.4-d, e): WpfCustomerId ham Id (GUID'siz üyeler dahil).
+        mb.Entity<PaymentRequestMember>(b =>
+        {
+            b.HasKey(m => new { m.RecordId, m.WpfCustomerId });
+            b.Property(m => m.WpfCustomerId).HasMaxLength(PaymentRequestRecord.WpfCustomerIdMaxLength);
+            b.Property(m => m.ScopeKey).HasMaxLength(PaymentRequestRecord.ScopeKeyMaxLength).IsRequired();
+            b.HasIndex(m => new { m.LicenseId, m.WpfCustomerId, m.ScopeKey });
+        });
+
+        // İsteğin kapsadığı siparişler (Covers, §6.4).
+        mb.Entity<PaymentRequestRecordOrder>(b =>
+        {
+            b.HasKey(o => new { o.RecordId, o.OrderId });
         });
 
         mb.Entity<Shopper>(b =>

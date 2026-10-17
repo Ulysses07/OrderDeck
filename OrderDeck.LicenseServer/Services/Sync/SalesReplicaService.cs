@@ -276,6 +276,27 @@ public sealed class SalesReplicaService
         return false;
     }
 
+    /// <summary>
+    /// Kopyanın kendisi ve <c>PreviousReplicaId</c> zinciri boyunca geri yüklendiği önceki kopyalar (§8.7), en çok
+    /// <see cref="MaxLineageDepth"/> halka. Kayıtlı bir öncülü olan halka dahil edilir; zincir öncülü bilinmeyen ya da
+    /// bu lisansta görülmemiş halkada biter (o halka yine dahildir: kopyanın bildirdiği önceki kimliktir). Sessizlik
+    /// aranmaz (devralmadan farkı, <see cref="CanInheritAsync"/>): yalnız "bu kopya o kopyanın soyundan mı?" sorusu
+    /// içindir — ör. önceki kopyanın açtığı ödeme kirasını geri yüklenmiş kopyanın bitirmesi (<c>finish</c>, §6.4).
+    /// </summary>
+    /// <param name="previousReplicaId">Kopyanın kayıtlı önceki kimliği (<see cref="ReplicaHistory.PreviousReplicaId"/>).</param>
+    public async Task<IReadOnlySet<Guid>> LineageAsync(
+        Guid licenseId, Guid replicaId, Guid? previousReplicaId, CancellationToken ct)
+    {
+        var lineage = new HashSet<Guid> { replicaId };
+        var next = previousReplicaId;
+        for (var depth = 0; depth < MaxLineageDepth && next is { } link && lineage.Add(link); depth++)
+            next = await _db.WpfReplicas.AsNoTracking()
+                .Where(r => r.LicenseId == licenseId && r.ReplicaId == link)
+                .Select(r => r.PreviousReplicaId)
+                .SingleOrDefaultAsync(ct);
+        return lineage;
+    }
+
     /// <summary>Sessiz önceki kopyanın devralma yargısına giren hâli.</summary>
     private sealed record SilentPredecessor(
         DateTimeOffset LastSeenAt, string? HardwareFingerprint, bool FingerprintConflict);

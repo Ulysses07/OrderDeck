@@ -191,6 +191,11 @@ public class Program
             OrderDeck.LicenseServer.Services.Sync.Commands.ShipmentDecisionCommandHandler>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.Commands.ISalesCommandHandler,
             OrderDeck.LicenseServer.Services.Sync.Commands.ForceEndCommandHandler>();
+        // Ödeme isteği kirası (§6.4, POST payment-requests/begin): kişi×kapsamda bilgisayarlar arası tek istek.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.PaymentRequests.PaymentPersonResolver>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.PaymentRequests.PaymentRequestLeaseService>();
+        // Kiranın sonu, kayıtların okunması ve ödeme geçmişi (§6.4: finish, GET payment-requests, backfill); iki kipte.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.PaymentRequests.PaymentRequestRecordService>();
         // Devrin ve türetilmiş dosyanın kaçırdığı satırlar (§4.9); takvim ScheduleSalesSyncJobs'ta.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sync.SalesReleaseRepairJob>();
         // Komut günlüğünün 90 günlük saklaması (§4.9); takvim ScheduleSalesSyncJobs'ta.
