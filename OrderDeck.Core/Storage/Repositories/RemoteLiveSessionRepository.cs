@@ -94,6 +94,15 @@ public sealed class RemoteLiveSessionRepository
         return changed;
     }
 
+    /// <summary>Bir yayını aynadan siler (W2-09: bu bilgisayarın force-end'i başardı — yayın artık canlı değil; sonraki
+    /// <c>sales/state</c> onu zaten listelemez).</summary>
+    /// <returns>Silinen satır var mıydı.</returns>
+    public bool Remove(string id)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute("DELETE FROM RemoteLiveSession WHERE Id = @id", new { id }) > 0;
+    }
+
     /// <summary>Değeri farklıysa günceller (<c>IS NOT</c>: NULL'a dayanıklı); aynıysa 0 satır.</summary>
     private const string UpsertSql = """
         INSERT INTO RemoteLiveSession

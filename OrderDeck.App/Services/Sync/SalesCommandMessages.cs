@@ -117,6 +117,79 @@ public static class SalesCommandMessages
         return $"{ended} {pending} {who} açılıp internete bağlanınca yayın buradan düzenlenebilir olur.";
     }
 
+    // ── uzak yayın çipleri, force-end ve devir (§5.7; W2-09) ─────────────────────────────────────────────
+
+    /// <summary>Çipin eylemi (§5.7): yalnız canlı ve sahibi eşik kadar sessiz yayında.</summary>
+    public const string ForceEndAction = "Yayını bitir…";
+
+    /// <summary>Kendi yayını devrediliyor (§5.7 "durum satırı").</summary>
+    public const string HandoverInProgressStatus = "Yayın sunucuya devrediliyor…";
+
+    /// <summary>Başka bilgisayarın canlı yayını (§5.7): "PC-A'da canlı · son sinyal 21:14". Son sinyal bilinmiyorsa
+    /// saat yazılmaz.</summary>
+    public static string RemoteLiveChip(string? machine, DateTimeOffset? ownerLastSeenAt, TimeZoneInfo? zone = null) =>
+        $"{Where(machine)} canlı{Signal(ownerLastSeenAt, zone)}";
+
+    /// <summary>Başka bilgisayarda devrediliyor (§5.7, Y8): "PC-A'da yayın bitti, N etiket gönderilmeyi bekliyor · son
+    /// sinyal SS:DD". Sayı bilinmiyorsa "etiketleri".</summary>
+    public static string RemoteHandingOverChip(string? machine, int? unsentLabelCount, DateTimeOffset? ownerLastSeenAt,
+        TimeZoneInfo? zone = null)
+    {
+        var pending = unsentLabelCount is { } n
+            ? $"{n.ToString(CultureInfo.InvariantCulture)} etiket gönderilmeyi bekliyor"
+            : "etiketleri gönderilmeyi bekliyor";
+        return $"{Where(machine)} yayın bitti, {pending}{Signal(ownerLastSeenAt, zone)}";
+    }
+
+    /// <summary>Devrediliyor çipinin, sahip eşik kadar sessizken ek satırı (§5.7): "PC-A açılıp internete bağlanınca
+    /// yayın buradan düzenlenebilir olur." Eylem değil, bilgi (Y8).</summary>
+    public static string RemoteHandingOverSilent(string? machine) =>
+        $"{Who(machine)} açılıp internete bağlanınca yayın buradan düzenlenebilir olur.";
+
+    /// <summary>"Yayını bitir…" onay metni (§5.7), çipteki sessizlik dakikası ve makine adıyla: "PC-A 17 dakikadır
+    /// sessiz. Yayın gerçekten bitti mi? …"</summary>
+    public static string ForceEndConfirm(string? machine, int silentMinutes)
+    {
+        var who = Who(machine);
+        return $"{who} {silentMinutes.ToString(CultureInfo.InvariantCulture)} dakikadır sessiz. Yayın gerçekten bitti mi? "
+             + "Bitirirsen yayın buradan düzenlenebilir olur. "
+             + $"{who} aslında çalışıyorsa, bağlantısı gelince gönderdiği yeni etiketler ve değişiklikler de işlenir; "
+             + "aynı etikette burada yaptığın değişiklik önceliklidir.";
+    }
+
+    /// <summary>
+    /// Kendi yayını uzaktan bitirildi, yayın hâlâ açık (§5.7 MainShell bandı, M18). Bitiren bilgisayarın adı yerelde
+    /// yok (sunucu yalnız kopya kimliğini yazar, <c>ForceEndedBy</c>): metin "başka bir bilgisayardan" der.
+    /// </summary>
+    public static string SessionEndedRemotely(DateTimeOffset releasedAt, TimeZoneInfo? zone = null) =>
+        $"Bu yayın başka bir bilgisayardan bitirildi olarak işaretlendi ({Clock(releasedAt, zone)}). "
+      + "Yayına devam edebilirsin; bitirdiğinde değişiklikler eşitlenir. "
+      + "Diğer bilgisayarın aynı etikette yaptığı değişiklik önceliklidir.";
+
+    /// <summary>Kendi bitmiş yayını devredilemiyor (§5.7 "Akış", §12 risk 4): "Yayın 13 Eki 21:00 devredilemedi: 3
+    /// etiket gönderilemiyor". Başlık her yayında aynı olduğu için yayın başlangıç saatiyle anılır.</summary>
+    public static string HandoverStuck(long sessionStartedAt, int unsentLabels, TimeZoneInfo? zone = null)
+    {
+        var started = TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeSeconds(sessionStartedAt), zone ?? TimeZoneInfo.Local)
+            .ToString("d MMM HH:mm", CultureInfo.GetCultureInfo("tr-TR"));
+        return $"Yayın {started} devredilemedi: {unsentLabels.ToString(CultureInfo.InvariantCulture)} etiket gönderilemiyor";
+    }
+
+    /// <summary>Devredilemeyen yayının ipucu: ne olduğu ve ne yapılacağı.</summary>
+    public const string HandoverStuckAdvice =
+        "Bitmiş yayının bazı etiketleri sunucuya gönderilemiyor; yayın bu yüzden diğer bilgisayarlarda düzenlenemiyor. "
+      + "Sürerse destekle iletişime geç.";
+
+    /// <summary>Cümle başında makinenin bulunma hâli: "PC-A'da"; ad yoksa "Başka bir bilgisayarda".</summary>
+    private static string Where(string? machine) =>
+        string.IsNullOrWhiteSpace(machine) ? "Başka bir bilgisayarda" : Locative(machine);
+
+    /// <summary>Cümle başında makine: "PC-A"; ad yoksa "Yayın bilgisayarı".</summary>
+    private static string Who(string? machine) => string.IsNullOrWhiteSpace(machine) ? "Yayın bilgisayarı" : machine;
+
+    private static string Signal(DateTimeOffset? at, TimeZoneInfo? zone) =>
+        at is { } t ? $" · son sinyal {Clock(t, zone)}" : "";
+
     /// <summary><c>too-many-candidates</c> (§5.3): "Bu işlem çok fazla etiketi kapsıyor (N); destek ile iletişime
     /// geç."</summary>
     public static string TooManyCandidates(int? count) =>
