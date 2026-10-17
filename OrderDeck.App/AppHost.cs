@@ -798,8 +798,11 @@ public sealed class AppHost : IDisposable
             AppPaths.DatabaseFile,
             Services.GetRequiredService<ReplicaIdentityRepository>(),
             Services.GetRequiredService<ILogger<AppHost>>());
-        if (restoreMarker.Unresolved)
-            Services.GetRequiredService<Services.Sync.SalesSyncEnvelope>().HoldUntilRestart();
+        // §8.7 (W2-10): geri yüklenmiş süreçte gönderim hello, sales/state ve kip adımından sonra açılır. "Bu süreçte
+        // geri yüklendi" şimdi okunur — ilk hello bekleyen önceki kimliği silmeden.
+        var salesEnvelope = Services.GetRequiredService<Services.Sync.SalesSyncEnvelope>();
+        if (restoreMarker.Unresolved) salesEnvelope.HoldUntilRestart();
+        else salesEnvelope.CaptureRestoreAtBoot(markerApplied: restoreMarker.Previous is not null);
         // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
         // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
         // satır artıktır.

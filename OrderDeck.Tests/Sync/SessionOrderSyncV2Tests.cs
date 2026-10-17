@@ -550,7 +550,7 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
     }
 
     [Fact]
-    public async Task Geri_yuklemeden_sonra_hello_gidene_kadar_tur_atlanir()
+    public async Task Geri_yuklemeden_sonra_hello_state_ve_kip_adimi_olana_kadar_tur_atlanir()
     {
         new ReplicaIdentityRepository(_db).SetPendingPreviousReplicaId(Guid.NewGuid());
         var id = AddLabel();
@@ -562,6 +562,11 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         Local(id).SyncedAt.Should().BeNull();
 
         _envelope.MarkHelloSucceeded(_server.Lisans, ReplicaId);
+        await _svc.SyncOnceAsync();
+        _server.PushCalls.Should().BeEmpty("W2-10 (§8.7): hello yetmez — state ve kip adımı da beklenir");
+
+        _envelope.MarkStateSucceeded(_server.Lisans, ReplicaId);
+        _envelope.MarkModeRefreshed(_server.Lisans, ReplicaId);
         await _svc.SyncOnceAsync();
 
         _server.Calls(FakeSalesServer.SessionsSync).Should().ContainSingle();

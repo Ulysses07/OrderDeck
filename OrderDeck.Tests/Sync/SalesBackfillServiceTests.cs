@@ -49,6 +49,13 @@ public sealed class SalesBackfillServiceTests : IDisposable
         public long UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     }
 
+    /// <summary>Sunucu modu 0: kip adımı açılış yapmaz, bu dikiş hiç çağrılmaz.</summary>
+    private sealed class NoOpening : ISalesOpeningFlush
+    {
+        public Task<SalesOpeningFlushResult> FlushAsync(string licenseKey, CancellationToken ct) =>
+            throw new InvalidOperationException("geri doldurma testlerinde sunucu modu 0: açılış koşmaz");
+    }
+
     /// <summary>Bir bilgisayarın yığını (bir süreç): zarf, hello turu, gönderim, kargo ve geri doldurma. Aynı
     /// veritabanıyla yeni bir örnek "yeniden başlatma"dır (hello'nun başarısı bellekte, yeniden gerekir).</summary>
     private sealed class Pc
@@ -82,10 +89,20 @@ public sealed class SalesBackfillServiceTests : IDisposable
                 clock, NullLogger<ShipmentSyncService>.Instance);
             Backfill = new SalesBackfillService(api, Envelope, State, Push, Shipments, new SalesBackfillRepository(db),
                 new SyncCursorRepository(db), Gate, License, clock, Log);
+            Coordinator = new SalesModeCoordinator(State, state, Envelope, new NoOpening(), clock,
+                NullLogger<SalesModeCoordinator>.Instance);
         }
 
-        public async Task HelloAsync() =>
+        /// <summary>Satış akışı turunun kip adımı (W2-10): geri yüklenmiş süreçte gönderim ve geri doldurma ondan sonra
+        /// açılır (§8.7). Bu testlerde sunucu modu 0 — açılış koşmaz.</summary>
+        public SalesModeCoordinator Coordinator { get; }
+
+        /// <summary>Üretimdeki tur gibi: hello + state, ardından kip adımı.</summary>
+        public async Task HelloAsync()
+        {
             (await State.TourOnceAsync(CancellationToken.None)).Should().Be(SalesStateTourOutcome.Ok);
+            (await Coordinator.RunAsync(License.CurrentLicenseKey!, CancellationToken.None)).Should().Be(SalesModeStep.None);
+        }
 
         public Task<SalesBackfillTourOutcome> TourAsync(CancellationToken ct = default) => Backfill.TourOnceAsync(ct);
     }

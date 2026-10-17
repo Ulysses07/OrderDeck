@@ -50,6 +50,10 @@ public sealed class SalesSyncBootTests
             File.Exists(marker).Should().BeFalse("işaret açılışta uygulandı ve silindi");
             host.Services.GetRequiredService<ReplicaIdentityRepository>().GetPendingPreviousReplicaId()
                 .Should().Be(previous, "ilk sales/hello önceki kopya kimliğini taşır (§8.7)");
+            var envelope = host.Services.GetRequiredService<SalesSyncEnvelope>();
+            envelope.IsRestoredInThisProcess.Should().BeTrue(
+                "W2-10: açılış süreci geri yüklenmiş sayar — gönderim hello, state ve kip adımından sonra (§8.7)");
+            envelope.ForPush().Should().BeNull();
             var state = new SalesSyncStateRepository(factory).Get();
             state.AggregatesDerivedAt.Should().NotBeNull("müşteri toplamları açılışta türetildi (§6.1)");
             state.ShipmentsDerivedAt.Should().NotBeNull("açık kargo dosyaları açılışta türetildi (§7.4)");
@@ -89,8 +93,11 @@ public sealed class SalesSyncBootTests
             identity.GetPendingPreviousReplicaId().Should().BeNull("işaret uygulanmadı");
 
             using (var host = new global::OrderDeck.App.AppHost())
-                host.Services.GetRequiredService<SalesSyncEnvelope>().IsHeldUntilRestart
-                    .Should().BeFalse("sonraki açılış işareti uyguladı");
+            {
+                var envelope = host.Services.GetRequiredService<SalesSyncEnvelope>();
+                envelope.IsHeldUntilRestart.Should().BeFalse("sonraki açılış işareti uyguladı");
+                envelope.IsRestoredInThisProcess.Should().BeTrue("W2-10: işaret uygulandı (§8.7)");
+            }
             File.Exists(marker).Should().BeFalse();
         }
         finally

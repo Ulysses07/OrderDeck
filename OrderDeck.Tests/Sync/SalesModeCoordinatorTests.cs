@@ -90,7 +90,7 @@ public sealed class SalesModeCoordinatorTests : IDisposable
                 NullLogger<WpfCustomerProjectionSyncService>.Instance);
             var customerPull = new CustomerChangesPullService(api, new CustomerRepository(db), customerSync, cursors,
                 customerPush, License, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
-            Coordinator = new SalesModeCoordinator(state, State,
+            Coordinator = new SalesModeCoordinator(state, State, Envelope,
                 new SalesOpeningFlush(customerPush, Push, shipments, payments, State), clock, Log);
             Pull = new SalesChangesPullService(api, state, State, Envelope, new SalesFeedRepository(db, busy),
                 new SalesFeedFailureRepository(db), new RemoteLiveSessionRepository(db), cursors, new LabelRepository(db),

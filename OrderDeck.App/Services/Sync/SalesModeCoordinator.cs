@@ -48,6 +48,7 @@ public sealed class SalesModeCoordinator
 {
     private readonly SalesSyncStateService _state;
     private readonly SalesSyncStateRepository _stateRepo;
+    private readonly SalesSyncEnvelope _envelope;
     private readonly ISalesOpeningFlush _flush;
     private readonly IClock _clock;
     private readonly ILogger<SalesModeCoordinator> _log;
@@ -58,12 +59,14 @@ public sealed class SalesModeCoordinator
     public SalesModeCoordinator(
         SalesSyncStateService state,
         SalesSyncStateRepository stateRepo,
+        SalesSyncEnvelope envelope,
         ISalesOpeningFlush flush,
         IClock clock,
         ILogger<SalesModeCoordinator> log)
     {
         _state = state;
         _stateRepo = stateRepo;
+        _envelope = envelope;
         _flush = flush;
         _clock = clock;
         _log = log;
@@ -72,10 +75,15 @@ public sealed class SalesModeCoordinator
     /// <summary>
     /// Bu turun kip adımı. Çağıran aynı turda başarılı bir <c>sales/state</c> almış olmalı (son durum
     /// <see cref="SalesSyncStateService.LastState"/>, bu lisansın). Satış akışı turunun tur kilidi altında koşar.
+    ///
+    /// <para><b>Geri yüklemeden sonra (§8.7):</b> adım, işe başlamadan zarfa bu (lisans, kopya) için "kip tazelendi"
+    /// yazar (<see cref="SalesSyncEnvelope.IsReadyForPush"/>'un üçüncü koşulu): ondan önce geri yüklenmiş süreçte hiçbir
+    /// satış gönderimi gitmez; ondan sonra açılışın kendi gönderimi (§8.4-1) de gidebilir.</para>
     /// </summary>
     public async Task<SalesModeStep> RunAsync(string licenseKey, CancellationToken ct)
     {
         if (_state.LastState is not { } snapshot || snapshot.LicenseKey != licenseKey) return SalesModeStep.None;
+        MarkModeRefreshed(licenseKey);
 
         int local;
         try { local = _stateRepo.GetMode(); }
@@ -164,6 +172,20 @@ public sealed class SalesModeCoordinator
             "Satış senkronunun ilk yetişmesi tamamlandı: {Rows} müşterinin toplamı türetildi (toplam fark {Diff:0.00} TL), {Overwrites} etikette sunucunun değeri alındı",
             result.Aggregates.ChangedRows, result.Aggregates.TotalAbsDiff, result.CatchUpOverwrites);
         return result;
+    }
+
+    /// <summary>Tazelenmiş kip bu (lisans, kopya) için görüldü: yalnız aynı süreçte state'i başarıyla gelmiş kopyada.</summary>
+    private void MarkModeRefreshed(string licenseKey)
+    {
+        try
+        {
+            if (_envelope.ReplicaId is { } replica && _envelope.HasStateSucceeded(licenseKey, replica))
+                _envelope.MarkModeRefreshed(licenseKey, replica);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "Satış senkronu kip adımı: kopya kimliği okunamadı; gönderim kapısı sonraki turda");
+        }
     }
 
     private void LogPending(Exception? ex, string reason)

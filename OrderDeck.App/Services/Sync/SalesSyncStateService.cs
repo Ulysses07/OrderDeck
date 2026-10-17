@@ -44,8 +44,10 @@ public sealed record SalesStateSnapshot(
 /// <para><b>hello:</b> süreç başına (lisans, kopya) çifti için bir kez; lisans değişince, kimlik dönünce ya da yerel
 /// kargo ayarı son başarılı hello'nun bildirdiğinden farklılaşınca yeniden (<see cref="HelloIsCurrent"/>). Gövde: kimlik, protokol 2, yetenek düzeyi, görülen kip, makine adı, donanım parmak izi, yerel kargo
 /// ayarı (<c>AppSettings.Shipping</c>; özellik kapalıyken iki alan da boş) ve bekleyen önceki kimlik (§8.7).
-/// 2xx önceki kimliği siler (karşılaştır ve sil) ve zarfta bu (lisans, kopya) için gönderimi açar
-/// (<see cref="SalesSyncEnvelope.IsReadyForPush"/>). Başarısız hello sonraki turda yeniden denenir.</para>
+/// 2xx önceki kimliği siler (karşılaştır ve sil) ve zarfa bu (lisans, kopya) için hello'nun başarısını yazar. Önceki
+/// kimliği taşıyan hello süreci "geri yüklendi" diye işaretler: gönderim ancak bu süreçte bir state de başarıyla gelip
+/// kip adımı koşunca açılır (<see cref="SalesSyncEnvelope.IsReadyForPush"/>, §8.7). Başarısız hello sonraki turda
+/// yeniden denenir.</para>
 ///
 /// <para><b>state:</b> her turda, hello'nun sonucundan bağımsız: kalp atışı kesilirse başka bilgisayar bu
 /// bilgisayarın canlı yayınını sahibi susmuş sanıp bitirebilirdi (Y7). Kargo ayarının önbelleği ve KVKK boşaltma
@@ -213,6 +215,8 @@ public sealed class SalesSyncStateService
                     "Bekleyen önceki kopya kimliği kopyanın kendisiyle aynıydı; silindi (replica={ReplicaId})", replicaId);
                 previous = null;
             }
+            // Önceki kimliği taşıyan hello: bu süreç geri yüklenmiş (§8.7) — gönderim kip tazelenene kadar kapalı.
+            if (previous is not null) _envelope.NoteRestored();
 
             request = new SalesHelloRequest(
                 ReplicaId: replicaId,
@@ -309,6 +313,8 @@ public sealed class SalesSyncStateService
             return false;
         }
 
+        // §8.7: geri yüklenmiş süreçte gönderimin ikinci koşulu (üçüncüsü kip adımı, SalesModeCoordinator).
+        _envelope.MarkStateSucceeded(licenseKey, replicaId);
         _stateFailures.Succeeded();
         return true;
     }

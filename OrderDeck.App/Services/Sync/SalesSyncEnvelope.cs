@@ -13,10 +13,14 @@ namespace OrderDeck.App.Services.Sync;
 /// <para><b>Yetenek düzeyi:</b> bu derlemede 2 (W2: akış, komutlar, kip geçişi). YALNIZ W3 3'e çıkarır (§8.1-4): mod
 /// kapısı her kopyada 3 istediği için yarım bir derleme sahaya inse bile modu açtıramaz.</para>
 ///
-/// <para><b>Gönderime hazır mı:</b> geri yüklemeden sonra (<c>_meta.PreviousReplicaId</c> dolu) bu (lisans,
-/// kopya) için bir hello başarıyla gidene kadar hiçbir v2 gönderimi yapılmaz (§8.7): sunucu önce önceki kimliği
-/// görmeli, yoksa geri yüklenmiş kopyanın bayat kuyruğunu açılış penceresi sayabilirdi (§4.0). Kimlik eksik ya da
-/// bozuksa da hazır değildir ve v2 isteği hiç gitmez. W2 bunun üstüne kip tazelemesini ekler.</para>
+/// <para><b>Gönderime hazır mı:</b> bu süreç geri yüklenmiş bir veritabanıyla açıldıysa ("bu süreçte geri yüklendi":
+/// açılışta bekleyen önceki kimlik vardı ya da geri yükleme işareti uygulandı, <see cref="CaptureRestoreAtBoot"/>;
+/// bekleyen önceki kimlik sonradan görülürse ya da hello onu taşırsa da işaretlenir) bu (lisans, kopya) için ÜÇÜ
+/// birden olana kadar hiçbir v2 gönderimi — oturum, etiket, kargo, geri doldurma, komut — yapılmaz (§8.7):
+/// hello başarıyla gitti (sunucu önce önceki kimliği görmeli, yoksa bayat kuyruğu açılış penceresi sayabilirdi, §4.0),
+/// bu süreçte bir <c>sales/state</c> başarıyla geldi ve kip adımı (<see cref="SalesModeCoordinator"/>) o tazelenmiş
+/// kiple bir kez koştu (W2-10): <c>SalesSyncState</c> yedekten geldiği için yerel kip bayat olabilir. Kimlik eksik ya
+/// da bozuksa da hazır değildir ve v2 isteği hiç gitmez. Geri yüklenmemiş süreçte bu kapı yoktur.</para>
 ///
 /// <para><b>Sonraki açılışa kadar kapalı</b> (<see cref="HoldUntilRestart"/>): açılışta geri yükleme kimlik işareti
 /// uygulanamadıysa (<c>RestoreReplicaMarker</c>) veritabanı geri yüklenmiştir ama önceki kimlik henüz yazılamadı.
@@ -42,9 +46,12 @@ public sealed class SalesSyncEnvelope
     private readonly ILogger<SalesSyncEnvelope> _log;
     private readonly Lazy<string?> _fingerprint;
     private readonly ConcurrentDictionary<(string LicenseKey, Guid ReplicaId), byte> _helloSucceeded = new();
+    private readonly ConcurrentDictionary<(string LicenseKey, Guid ReplicaId), byte> _stateSucceeded = new();
+    private readonly ConcurrentDictionary<(string LicenseKey, Guid ReplicaId), byte> _modeRefreshed = new();
     private int _replicaProblemLogged;
     private int _legacyFallbackLogged;
     private int _heldUntilRestart;
+    private int _restored;
 
     public SalesSyncEnvelope(
         ReplicaIdentityRepository identity,
@@ -116,17 +123,64 @@ public sealed class SalesSyncEnvelope
               + "kargo gönderimi ve geri doldurma) sonraki açılışa kadar sunucuya istek göndermiyor");
     }
 
+    /// <summary>Bu süreç geri yüklenmiş bir veritabanıyla açıldı (§8.7): gönderim kip tazelenene kadar kapalı
+    /// (<see cref="IsReadyForPush"/>). Bir kez işaretlenince süreç boyunca kalır.</summary>
+    public bool IsRestoredInThisProcess => Volatile.Read(ref _restored) == 1;
+
+    /// <summary>"Bu süreçte geri yüklendi"yi işaretler (geri dönüşü yok): hello önceki kimliği taşırken, bekleyen önceki
+    /// kimlik görüldüğünde ve açılışta (<see cref="CaptureRestoreAtBoot"/>).</summary>
+    public void NoteRestored()
+    {
+        if (Interlocked.Exchange(ref _restored, 1) == 0)
+            _log.LogInformation(
+                "Bu süreç geri yüklenmiş veritabanıyla açıldı: satış gönderimleri hello, sales/state ve kip adımından sonra başlayacak");
+    }
+
     /// <summary>
-    /// v2 gönderimi yapılabilir mi: süreç kapalı değil (<see cref="HoldUntilRestart"/>), kimlik geçerli ve ya
-    /// bekleyen önceki kimlik yok ya da bu (lisans, kopya) için hello başarıyla gitti. Gönderim turları kararı
-    /// <see cref="ForPush"/>'tan alır.
+    /// Açılışta, göç ve geri yükleme işaretinden sonra (<c>AppHost</c>): işaret uygulandıysa ya da bekleyen önceki kimlik
+    /// varsa bu süreç geri yüklenmiştir (§8.7). İlk hello önceki kimliği silmeden önce okunur: yoksa hello ile ilk
+    /// gönderim turu yarışınca işaret kaybolabilirdi. Kimlik okunamazsa güvenli yan: geri yüklenmiş sayılır.
+    /// </summary>
+    /// <param name="markerApplied">Göç 049 öncesi yedeğin işareti bu açılışta uygulandı.</param>
+    public void CaptureRestoreAtBoot(bool markerApplied)
+    {
+        try
+        {
+            if (markerApplied || _identity.GetPendingPreviousReplicaId() is not null) NoteRestored();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Açılışta bekleyen önceki kopya kimliği okunamadı; süreç geri yüklenmiş sayılıyor");
+            NoteRestored();
+        }
+    }
+
+    /// <summary>
+    /// v2 gönderimi yapılabilir mi: süreç kapalı değil (<see cref="HoldUntilRestart"/>), kimlik geçerli ve süreç geri
+    /// yüklenmemiş ya da bu (lisans, kopya) için hello, state ve kip adımı tamam (<see cref="IsReadyFor(string, Guid)"/>).
+    /// Gönderim turları kararı <see cref="ForPush"/>'tan alır.
     /// </summary>
     public bool IsReadyForPush => !IsHeldUntilRestart && ReplicaId is { } replica && IsReadyFor(replica);
 
     /// <summary>
-    /// Bir gönderim turunun zarf kararı (spec 2026-10-13 §5.2, §8.7; W1-06): <c>null</c> = turu atla (geri yüklemeden
-    /// sonra bu (lisans, kopya) için hello henüz başarılı değil, <see cref="IsReadyForPush"/>; ya da süreç
-    /// <see cref="HoldUntilRestart"/> ile kapalı). Kimlik eksik ya da bozuksa gönderim DURMAZ:
+    /// Bu (lisans, kopya) için satış isteği gönderilebilir mi (geri doldurma da sorar): süreç kapalı değil ve ya bu süreç
+    /// geri yüklenmemiş ya da bu çift için hello başarıyla gitti, bir <c>sales/state</c> başarıyla geldi ve kip adımı o
+    /// kiple bir kez koştu (§8.7).
+    /// </summary>
+    public bool IsReadyFor(string licenseKey, Guid replicaId)
+    {
+        if (IsHeldUntilRestart) return false;
+        if (_identity.GetPendingPreviousReplicaId() is not null) NoteRestored();
+        if (!IsRestoredInThisProcess) return true;
+        var key = (licenseKey, replicaId);
+        return _helloSucceeded.ContainsKey(key) && _stateSucceeded.ContainsKey(key) && _modeRefreshed.ContainsKey(key);
+    }
+
+    /// <summary>
+    /// Bir gönderim turunun zarf kararı (spec 2026-10-13 §5.2, §8.7; W1-06): <c>null</c> = turu atla (geri yüklenmiş
+    /// süreçte bu (lisans, kopya) için hello, state ya da kip adımı henüz yok, <see cref="IsReadyForPush"/>; ya da süreç
+    /// <see cref="HoldUntilRestart"/> ile kapalı). Komut istemcisi de buradan karar verir. Kimlik eksik ya da bozuksa
+    /// gönderim DURMAZ:
     /// <see cref="SalesPushEnvelope.Legacy"/> döner — çağıran zarfsız (v1) gövde gönderir, sunucu onu bugünkü gibi
     /// yargılar. Bu bir hatadır ve seri başına bir kez Error düşer (değer düzelip yeniden bozulursa yeniden).
     /// </summary>
@@ -147,9 +201,10 @@ public sealed class SalesSyncEnvelope
 
     private bool IsReadyFor(Guid replica)
     {
-        if (_identity.GetPendingPreviousReplicaId() is null) return true;
+        if (_identity.GetPendingPreviousReplicaId() is not null) NoteRestored();
+        if (!IsRestoredInThisProcess) return true;
         var key = _license.CurrentLicenseKey;
-        return !string.IsNullOrWhiteSpace(key) && HasHelloSucceeded(key, replica);
+        return !string.IsNullOrWhiteSpace(key) && IsReadyFor(key, replica);
     }
 
     public bool HasHelloSucceeded(string licenseKey, Guid replicaId) =>
@@ -157,6 +212,19 @@ public sealed class SalesSyncEnvelope
 
     internal void MarkHelloSucceeded(string licenseKey, Guid replicaId) =>
         _helloSucceeded.TryAdd((licenseKey, replicaId), 0);
+
+    /// <summary>Bu (lisans, kopya) için bu süreçte bir <c>sales/state</c> başarıyla geldi mi (§8.7).</summary>
+    public bool HasStateSucceeded(string licenseKey, Guid replicaId) =>
+        _stateSucceeded.ContainsKey((licenseKey, replicaId));
+
+    /// <summary><c>sales/state</c> başarıyla geldi ve yerelde saklandı (<see cref="SalesSyncStateService"/>).</summary>
+    internal void MarkStateSucceeded(string licenseKey, Guid replicaId) =>
+        _stateSucceeded.TryAdd((licenseKey, replicaId), 0);
+
+    /// <summary>Kip adımı bu (lisans, kopya) için tazelenmiş kiple koştu (<see cref="SalesModeCoordinator"/>, §8.7).
+    /// Adım kendi açılış gönderimini (§8.4-1) yapabilsin diye işi yapmadan önce işaretlenir.</summary>
+    internal void MarkModeRefreshed(string licenseKey, Guid replicaId) =>
+        _modeRefreshed.TryAdd((licenseKey, replicaId), 0);
 
     private static string? Truncate(string? value) =>
         value is { Length: > MaxFieldLength } ? value[..MaxFieldLength] : value;

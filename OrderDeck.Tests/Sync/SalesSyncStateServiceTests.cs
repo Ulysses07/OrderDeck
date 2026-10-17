@@ -372,6 +372,9 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         _server.Hellos.Should().HaveCount(2);
         _server.Hellos[1].Json.GetProperty("previousReplicaId").GetGuid().Should().Be(previous);
         pc.Identity.GetPendingPreviousReplicaId().Should().BeNull("2xx önceki kimliği siler");
+        pc.Envelope.IsRestoredInThisProcess.Should().BeTrue();
+        pc.Envelope.IsReadyForPush.Should().BeFalse("W2-10: hello ve state geldi, kip adımı henüz koşmadı (§8.7)");
+        pc.Envelope.MarkModeRefreshed(_server.Lisans, pc.ReplicaId);                // satış akışı turunun kip adımı
         pc.Envelope.IsReadyForPush.Should().BeTrue();
         _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!.PreviousReplicaId.Should().Be(previous);
 
@@ -389,8 +392,9 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         // Sunucu 2xx döndü ama değer silinmeden yeniden yazıldı (silme başarısız gibi): bekleyen kalır.
         await pc.TourAsync();
         pc.Identity.SetPendingPreviousReplicaId(previous);
+        pc.Envelope.MarkModeRefreshed(_server.Lisans, pc.ReplicaId);                // satış akışı turunun kip adımı (§8.7)
 
-        pc.Envelope.IsReadyForPush.Should().BeTrue("bu (lisans, kopya) için hello başarıyla gitti");
+        pc.Envelope.IsReadyForPush.Should().BeTrue("bu (lisans, kopya) için hello ve state başarıyla geldi, kip tazelendi");
         pc.License.CurrentLicenseKey = _server.SecondLisans;
         pc.Envelope.IsReadyForPush.Should().BeFalse("başka lisansta hello henüz gitmedi");
         pc.License.CurrentLicenseKey = null;

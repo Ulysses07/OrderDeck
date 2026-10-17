@@ -240,7 +240,7 @@ public sealed class ShipmentSyncV2Tests : IDisposable
     }
 
     [Fact]
-    public async Task Geri_yuklemeden_sonra_hello_gidene_kadar_kargo_gonderilmez()
+    public async Task Geri_yuklemeden_sonra_hello_state_ve_kip_adimi_olana_kadar_kargo_gonderilmez()
     {
         new ReplicaIdentityRepository(_db).SetPendingPreviousReplicaId(Guid.NewGuid());
         AddShipment();
@@ -251,6 +251,11 @@ public sealed class ShipmentSyncV2Tests : IDisposable
         _shipments.GetUnsynced().Should().ContainSingle();
 
         _envelope.MarkHelloSucceeded(_server.Lisans, ReplicaId);
+        await _svc.SyncOnceAsync();
+        _server.Calls(FakeSalesServer.ShipmentsSync).Should().BeEmpty("W2-10 (§8.7): hello yetmez — state ve kip adımı da");
+
+        _envelope.MarkStateSucceeded(_server.Lisans, ReplicaId);
+        _envelope.MarkModeRefreshed(_server.Lisans, ReplicaId);
         await _svc.SyncOnceAsync();
         _shipments.GetUnsynced().Should().BeEmpty();
     }
