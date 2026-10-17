@@ -953,6 +953,8 @@ InMemory'nin eşzamanlılık semantiği yok; bu yüzden bu testler gerçek SQL S
 7. Son 3 yayının toplamı her PC'de panelle aynı.
 8. Kalıntı kuyruk etiketi çevrimdışı iptal edilir, bağlantı gelince sunucuda iptal olur.
 9. Mod açılmadan önce PC-A'dan ödeme istenen bir kişi, açılıştan sonra PC-B'de "zaten istendi" sorusuyla gelir. `PaymentRequestRecords`'ta `Kind = Record` satırı.
+10. **Yayın sırasında kısa internet kesintisi (2 dk, deneme yayını, 2026-10-17 Burak'ın sorusu).** PC-A'da etiket yazma, baskı ve iptal kesinti boyunca çalışır; kesintide yazılan etiketler bağlantı gelince sunucuya gider; sayılar bağlantıdan önce ve sonra yerel ile sunucuda eşit, kayıp ve çift yok. Kesinti sırasında yayın bitirilirse devir bağlantı gelince olur; arada PC-B yayını "devrediliyor, N etiket" görür ve düzenleyemez (Y8).
+11. **Uzun kesinti (20 dk, deneme yayını).** PC-B'de 15. dakikadan sonra "Yayını bitir…" çıkar (Y7). Basılırsa: sunucuda yayın biter, PC-A yayına devam eder, bağlantı gelince PC-A'nın kesintide yazdığı etiketler kabul edilir (K5 istisnası), PC-B'nin aynı etikette yaptığı değişiklik korunur. Basılmazsa her şey 10. maddedeki gibi.
 
 ### 10.5 Gözlem
 
