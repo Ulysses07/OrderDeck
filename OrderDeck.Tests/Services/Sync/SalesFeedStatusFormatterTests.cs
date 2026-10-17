@@ -17,6 +17,19 @@ public sealed class SalesFeedStatusFormatterTests
     }
 
     [Fact]
+    public void Mod_On_acilisi_beklerken_satir_senkron_aciliyor_der()
+    {
+        // W2-10 (§8.4-1): sunucu modu On, yerel kip bir giden kuyruk boşalmadığı için henüz Off.
+        var s = SalesFeedStatusFormatter.Format(SalesFeedStatus.Opening, skipped: 2)!.Value;
+
+        s.Text.Should().Be("Senkron açılıyor; bekleyen gönderim var");
+        s.Healthy.Should().BeFalse();
+        SalesFeedStatusFormatter.Tooltip(s, 0).Split('\n').Should().Equal(s.Text, SalesCommandMessages.OpeningPendingAdvice);
+        SalesFeedStatusFormatter.Format(SalesFeedStatus.Opening, 0, handingOver: true, [])!.Value.Text
+            .Should().Be(s.Text, "devir sorgusu yalnız mod On'da");
+    }
+
+    [Fact]
     public void Guncel_son_tam_yetismenin_saatiyle_saglikli()
     {
         var s = SalesFeedStatusFormatter.Format(new SalesFeedStatus(true, CaughtUp, false, 0), 0)!.Value;

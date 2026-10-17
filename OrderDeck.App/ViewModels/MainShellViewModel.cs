@@ -1178,6 +1178,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _salesPull.SalesChanged += OnSalesChanged;
             _salesPull.PendingCommandsSettled += OnPendingCommandsSettled;   // W2-07: imha ve kalıcı ret şeridi
             _salesPull.TourCompleted += OnSalesTourCompleted;
+            _salesPull.FirstCatchUpCompleted += OnFirstCatchUpCompleted;     // W2-10: ilk yetişmenin şeridi
         }
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
@@ -1636,10 +1637,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // uygulamasından) inmeden yayına girmesin. Engellemiyoruz — internet
         // yokken de yayın yapılabilmeli. Yetişme lisansa bağlı (önceki
         // lisansınki sayılmaz); lisans yoksa (deneme sürümü) senkron hiç
-        // koşmaz, soru da sorulmaz.
-        if (_syncStatus is not null
-            && SyncLicenseKey() is { } licenseKey
-            && !_syncStatus.IsInitialCatchUpDoneFor(licenseKey)
+        // koşmaz, soru da sorulmaz. W2-10 (spec 2026-10-13 §5.7): mod On'da
+        // satış akışının ilk yetişmesi de beklenir (aynı soru).
+        var syncLicenseKey = SyncLicenseKey();
+        var customersPending = _syncStatus is not null && syncLicenseKey is not null
+                               && !_syncStatus.IsInitialCatchUpDoneFor(syncLicenseKey);
+        var salesPending = syncLicenseKey is not null && _salesPull?.IsFirstCatchUpPending() == true;
+        if ((customersPending || salesPending)
             && !_dialogs.Confirm(
                 "Müşteri bilgilerindeki son değişiklikler henüz inmedi (diğer bilgisayarlar / müşteri uygulaması). " +
                 "İnternet yoksa yine de başlatabilirsin. Yayını başlatayım mı?",
@@ -2925,6 +2929,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _salesPull.SalesChanged -= OnSalesChanged;
             _salesPull.PendingCommandsSettled -= OnPendingCommandsSettled;
             _salesPull.TourCompleted -= OnSalesTourCompleted;
+            _salesPull.FirstCatchUpCompleted -= OnFirstCatchUpCompleted;
         }
 
         Banner.Dispose();

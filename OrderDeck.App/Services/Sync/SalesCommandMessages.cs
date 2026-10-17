@@ -125,6 +125,22 @@ public static class SalesCommandMessages
     /// <summary>Kendi yayını devrediliyor (§5.7 "durum satırı").</summary>
     public const string HandoverInProgressStatus = "Yayın sunucuya devrediliyor…";
 
+    // ── mod On açılışı (§8.4; W2-10) ────────────────────────────────────────────────────────────────────
+
+    /// <summary>Durum satırı (§8.4-1): sunucu modu On, yerel kip bir giden kuyruk boşalmadığı için henüz açılmadı.</summary>
+    public const string OpeningPending = "Senkron açılıyor; bekleyen gönderim var";
+
+    /// <summary><see cref="OpeningPending"/>'in ipucu.</summary>
+    public const string OpeningPendingAdvice =
+        "Bu bilgisayarın gönderilmemiş kayıtları sunucuya gidince satış senkronu kendiliğinden açılır; geçmezse " +
+        "internet bağlantısını kontrol et.";
+
+    /// <summary>İlk yetişmenin şeridi (§5.4, §8.4-4): bu bilgisayarın kendi etiketlerinde sunucunun değeri alındı.
+    /// Açılış başına bir kez; yalnız sayı.</summary>
+    public static string CatchUpOverwritten(int count) =>
+        $"{count.ToString(System.Globalization.CultureInfo.InvariantCulture)} etikette sunucudaki değer bu " +
+        "bilgisayardakinden farklıydı; sunucunun değeri alındı.";
+
     /// <summary>Başka bilgisayarın canlı yayını (§5.7): "PC-A'da canlı · son sinyal 21:14". Son sinyal bilinmiyorsa
     /// saat yazılmaz.</summary>
     public static string RemoteLiveChip(string? machine, DateTimeOffset? ownerLastSeenAt, TimeZoneInfo? zone = null) =>

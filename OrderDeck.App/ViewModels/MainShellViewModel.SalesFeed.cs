@@ -10,7 +10,8 @@ namespace OrderDeck.App.ViewModels;
 // komut sonuçlarını ve kargo dosyalarını yerele yazdıktan sonra SalesChanged yayar. Kabuk dispatcher'a taşır ve
 // ekrandaki kopyaları tazeler: kuyruktaki etiketlerin kopyası (RefreshQueueRows), Basılanlar sekmesi, hero sayaçları.
 // Durum satırının altında, yalnız mod On'da, satış akışının satırı görünür (SalesFeedStatusFormatter); mod Off'ta
-// (bugün her lisans) metin boştur ve satır gizlidir.
+// (bugün her lisans) metin boştur ve satır gizlidir — tek istisna mod On açılışının beklemesi (W2-10). İlk yetişme
+// tamamlanınca (FirstCatchUpCompleted) kendi etiketlerinde sunucunun değeri alındıysa gönderim şeridine bir kez not düşer.
 public sealed partial class MainShellViewModel
 {
     private readonly SalesChangesPullService? _salesPull;
@@ -45,6 +46,31 @@ public sealed partial class MainShellViewModel
         }
     }
 
+    /// <summary>Mod On'un ilk yetişmesi tamamlandı (W2-10, §8.4-4; arka plan iş parçacığından): toplamlar türetildi —
+    /// sayaçlar ve satır tazelenir; kendi etiketlerinde sunucunun değeri alındıysa şeride bir kez not düşer (açılır
+    /// pencere yok, "Tamam" ile kapanır).</summary>
+    private void OnFirstCatchUpCompleted(object? sender, SalesFirstCatchUp e)
+    {
+        if (_dispatcher.CheckAccess()) ShowFirstCatchUp(e);
+        else _dispatcher.BeginInvoke(() => ShowFirstCatchUp(e));
+    }
+
+    /// <summary>İlk yetişmenin sonucu ekrana (UI iş parçacığında). Hatası kabuğu düşürmez.</summary>
+    internal void ShowFirstCatchUp(SalesFirstCatchUp e)
+    {
+        try
+        {
+            if (e.CatchUpOverwrites > 0)
+                ShowSalesNotice([], [SalesCommandMessages.CatchUpOverwritten(e.CatchUpOverwrites)]);
+            RefreshHeroStats();
+            RefreshSalesSyncStatus(_attention?.Invoke().SkippedSalesFeedItems ?? 0);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış senkronunun ilk yetişmesi ekrana yansıtılamadı");
+        }
+    }
+
     /// <summary>Satış akışı satırı: lisans varken ve akış mod On bildiriyorsa görünür. W2-09: önde kendi yayınının
     /// devri — "Yayın sunucuya devrediliyor…" (devri bekleyen yayın varken; sorgu yalnız mod On'da) ya da "Yayın X
     /// devredilemedi: N etiket gönderilemiyor" (<see cref="SalesChangesPullService.StuckHandovers"/>).</summary>
@@ -53,6 +79,8 @@ public sealed partial class MainShellViewModel
         SyncStatusFormatter.Status? line = null;
         if (SyncLicenseKey() is not null && _salesPull?.Status is { ModeOn: true } feed)
             line = SalesFeedStatusFormatter.Format(feed, skipped, _sessions.HasPendingHandover(), _salesPull.StuckHandovers);
+        else if (SyncLicenseKey() is not null && _salesPull?.Status is { OpeningPending: true } opening)
+            line = SalesFeedStatusFormatter.Format(opening, skipped);   // W2-10: "Senkron açılıyor; bekleyen gönderim var"
         if (line is not { } status)
         {
             SalesSyncStatusText = "";

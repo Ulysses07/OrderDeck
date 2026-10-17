@@ -7,7 +7,8 @@ namespace OrderDeck.App.Services.Sync;
 /// devri ("Yayın sunucuya devrediliyor…", "Yayın X devredilemedi: N etiket gönderilemiyor").
 ///
 /// <para><b>Yalnız mod On'da:</b> mod Off'ta (bugün her lisans) satır yoktur — <see cref="Format"/> <c>null</c> döner,
-/// kabuk satırı gizler. Saat son tam yetişmenin saatidir: bağlantı koparsa satır son bilinen anı gösterir (bayatlık
+/// kabuk satırı gizler. Tek istisna mod On açılışının beklemesidir (W2-10, §8.4-1): sunucu modu On, yerel kip bir giden
+/// kuyruk boşalmadığı için henüz Off — "Senkron açılıyor; bekleyen gönderim var". Saat son tam yetişmenin saatidir: bağlantı koparsa satır son bilinen anı gösterir (bayatlık
 /// saatten okunur; çevrimdışı uyarısı genel senkron satırının işidir).</para>
 ///
 /// <para>Metinde kişisel veri yok; yalnız sayı ve saat.</para>
@@ -26,9 +27,12 @@ public static class SalesFeedStatusFormatter
         "Bu bilgisayardaki bir kayıt gönderilince, müşteri bilgisi inince ya da açık ödeme isteği bitince " +
         "kendiliğinden sürer; geçmezse destekle iletişime geç.";
 
-    /// <returns>Satırın metni ve sağlığı; mod Off ya da durum yoksa <c>null</c> (satır gizli).</returns>
+    /// <returns>Satırın metni ve sağlığı; mod Off ya da durum yoksa <c>null</c> (satır gizli). Mod On açılışı
+    /// beklerken (W2-10, §8.4-1; yerel kip henüz Off) "Senkron açılıyor; bekleyen gönderim var".</returns>
     public static SyncStatusFormatter.Status? Format(SalesFeedStatus? status, int skipped)
     {
+        if (status is { ModeOn: false, OpeningPending: true })
+            return new(SalesCommandMessages.OpeningPending, false, SalesCommandMessages.OpeningPendingAdvice);
         if (status is not { ModeOn: true }) return null;
 
         SyncStatusFormatter.Status line;
@@ -57,6 +61,7 @@ public static class SalesFeedStatusFormatter
     {
         ArgumentNullException.ThrowIfNull(stuck);
         if (Format(status, skipped) is not { } feed) return null;
+        if (status is not { ModeOn: true }) return feed;            // açılış bekliyor: devir sorgusu yalnız mod On'da
         if (stuck.Count > 0)
         {
             var first = stuck[0];
