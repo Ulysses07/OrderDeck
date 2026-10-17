@@ -34,6 +34,9 @@ public enum SalesPullOutcome
     MorePending,
     /// <summary>Akış boş sayfaya kadar uygulandı.</summary>
     CaughtUp,
+    /// <summary><c>disable</c> turu (§8.5; W2-11) bu turda tamamlandı: son akış uygulandı, yerel kip 0, uzak satırlar
+    /// silindi, bekleyen komutlar yerel yazıma çevrildi (biri düştüyse kuyrukta kalır, sonraki turda yeniden).</summary>
+    Disabled,
 }
 
 /// <summary>Akıştan inen ve arayüzün tazeleyeceği satırlar (<see cref="SalesChangesPullService.SalesChanged"/>; §5.4-6).
@@ -107,6 +110,15 @@ public sealed record SalesFirstCatchUp(int CatchUpOverwrites, int AggregateRows)
 ///   <see cref="FirstCatchUpCompleted"/> bir kez yayılır.</item>
 /// </list></para>
 ///
+/// <para><b><c>disable</c> turu</b> (W2-11, §8.5): turun başında, state'ten önce, yarıda kalmış 3. adım yeniden koşar
+/// (<see cref="SalesModeCoordinator.ResumeModeOff"/>; yerel kip 0 ∧ bekleyen komut). Kip adımı
+/// <see cref="SalesModeStep.Disabling"/> derse tur bekleyen komutları GÖNDERMEZ (komut ucu 409 <c>mode-off</c>), canlı
+/// yayın aynasını yazmaz; ön gönderimden sonra son akışı kendi satırları ve dosyalarla boş sayfaya kadar uygular, sonra
+/// 2. ve 3. adım (<see cref="SalesModeCoordinator.CompleteModeOff"/>). Tamamlanınca durum Off, ekranlar baştan okunur
+/// (<see cref="SalesChanged"/>) ve tur <see cref="SalesPullOutcome.Disabled"/> döner. Komut ucunun <c>mode-off</c>'u
+/// (<see cref="SalesCommandClient.ModeOffDetected"/>) bir turu hemen başlatır (<see cref="RequestModeOffRound"/>):
+/// <see cref="ModeOffStarted"/> şeridi açar, isteği gören tur sonuçlanınca <see cref="ModeOffFinished"/> kapatır.</para>
+///
 /// <para><b>Bekleyen öğe:</b> U5 (gönderilmemiş yerel etiket) durdurur: oturum ve etiket bir kez daha gönderilir;
 /// duran etiket onaylandıysa (gönderim filigranı ilerledi) akış aynı turda bir kez daha denenir, değilse tur biter.
 /// Bekleyen müşteri ve ödeme akışındaki müşteri o öğede durur. Hiçbiri deneme sayılmaz, öğe kendiliğinden atlanmaz.</para>
@@ -142,6 +154,11 @@ public sealed class SalesChangesPullService
     /// <summary>Mod On'un olağan turu: dosyalar uygulanır, ilk yetişmede kendi satırının üzerine yazım izlenir (§8.4;
     /// iz yalnız <c>FirstCatchUpAt</c> boşken düşer).</summary>
     private static readonly SalesFeedApplyOptions ModeOnOptions = new(ApplyShipments: true, CountCatchUpOverwrite: true);
+
+    /// <summary><c>disable</c> turunun son akışı (§8.5-1): dosyalar uygulanır, yalnız kendi satırları yazılır (uzak
+    /// satırları 2. adım siler; mod On dönemini görmemiş kopyada uzak etiket hiç inmez, §6.5-1), ilk yetişme izi yok.</summary>
+    private static readonly SalesFeedApplyOptions ModeOffRoundOptions =
+        new(ApplyShipments: true, CountCatchUpOverwrite: false, OwnRowsOnly: true);
 
     private readonly LicenseApiClient _api;
     private readonly SalesSyncStateService _state;
@@ -179,6 +196,15 @@ public sealed class SalesChangesPullService
     private bool _environmentErrorLogged;
     private volatile SalesFeedStatus _status = SalesFeedStatus.Off;
 
+    /// <summary>Komut ucunun <c>mode-off</c> istekleri (<see cref="RequestModeOffRound"/>) ve sonuçlanmış olanlar: bir tur,
+    /// BAŞLADIĞINDA gördüğü istekleri sonuçlandırır (state başarılı ve kip adımı Off turu istemedi, ya da tur bu turda
+    /// tamamlandı). Tur sürerken gelen istek sonraki turu bekler.</summary>
+    private long _modeOffRequests;
+    private long _modeOffResolved;
+    private int _modeOffTourQueued;
+    /// <summary>Bu tur <c>mode-off</c> isteklerini sonuçlandırdı (tur kilidi altında yazılır).</summary>
+    private bool _modeOffSettled;
+
     private readonly record struct PassResult(SalesPullOutcome Outcome, string? BlockedItemId = null, int Waiting = 0);
 
     /// <summary>Bir turun birikimi: değişen kimlikler ve sayılar.</summary>
@@ -209,13 +235,16 @@ public sealed class SalesChangesPullService
         ILogger<SalesChangesPullService> log,
         PendingSalesCommandSender? pendingCommands = null,
         SessionRepository? sessions = null,
-        SalesModeCoordinator? modeCoordinator = null)
+        SalesModeCoordinator? modeCoordinator = null,
+        SalesCommandClient? commands = null)
     {
         _pendingCommands = pendingCommands;
         _sessions = sessions;
         _modeCoordinator = modeCoordinator;
         if (_pendingCommands is not null)
             _pendingCommands.Settled += (_, e) => PendingCommandsSettled?.Invoke(this, e);
+        // W2-11 (§5.3 mode-off): komut ucu modun kapandığını söyledi — state hemen okunur, Off turu başlar.
+        if (commands is not null) commands.ModeOffDetected += (_, _) => RequestModeOffRound();
         _api = api;
         _state = state;
         _stateRepo = stateRepo;
@@ -335,12 +364,56 @@ public sealed class SalesChangesPullService
     /// arayüzü dispatcher'a taşımalı. Dinleyicinin hatası turu düşürmez.</summary>
     public event EventHandler? TourCompleted;
 
+    /// <summary>Komut ucu <c>mode-off</c> döndü (W2-11, §5.3): kabuk "Senkron kapatıldı; ekran yenileniyor." şeridini
+    /// açar. Çağıranın iş parçacığında; dinleyici arayüzü dispatcher'a taşımalı.</summary>
+    public event EventHandler? ModeOffStarted;
+
+    /// <summary>Açık <c>mode-off</c> isteklerinin hepsi sonuçlandı: Off turu tamamlandı ya da sunucu artık Off demiyor
+    /// (şerit kapanır). Tur kilidi bırakıldıktan sonra, turun iş parçacığında.</summary>
+    public event EventHandler? ModeOffFinished;
+
+    /// <summary>
+    /// Komut ucunun <c>mode-off</c>'u (§5.3, §8.5): istemci modu yanlış biliyor — <c>sales/state</c> hemen okunsun ve Off
+    /// turu başlasın. Arka planda bir tur başlatır (süren turun kilidini bekler; peş peşe istekler birleşir) ve
+    /// <see cref="ModeOffStarted"/>'ı yükseltir. Beklemez: komutun kendi gönderimi turun içinden de gelebilir.
+    /// </summary>
+    public void RequestModeOffRound()
+    {
+        Interlocked.Increment(ref _modeOffRequests);
+        _log.LogInformation("Satış komutu mode-off aldı: sales/state hemen okunuyor, Off turu başlıyor");
+        try { ModeOffStarted?.Invoke(this, EventArgs.Empty); }
+        catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off bildirimi arayüze iletilemedi"); }
+        if (Interlocked.Exchange(ref _modeOffTourQueued, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            Volatile.Write(ref _modeOffTourQueued, 0);                     // bu turun kilidi beklerken gelen istek yenisini kurar
+            try { await TourOnceAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off sonrası tur düştü; sonraki turda yeniden"); }
+        });
+    }
+
     public async Task<SalesPullOutcome> TourOnceAsync(CancellationToken ct)
     {
         await _tourGate.WaitAsync(ct).ConfigureAwait(false);
         SalesPullOutcome outcome;
-        try { outcome = await TourCoreAsync(ct).ConfigureAwait(false); }
+        var modeOffFinished = false;
+        try
+        {
+            var requests = Interlocked.Read(ref _modeOffRequests);
+            _modeOffSettled = false;
+            outcome = await TourCoreAsync(ct).ConfigureAwait(false);
+            if (_modeOffSettled && requests > _modeOffResolved)
+            {
+                _modeOffResolved = requests;
+                modeOffFinished = requests == Interlocked.Read(ref _modeOffRequests);
+            }
+        }
         finally { _tourGate.Release(); }
+        if (modeOffFinished)
+        {
+            try { ModeOffFinished?.Invoke(this, EventArgs.Empty); }
+            catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off sonucu arayüze iletilemedi"); }
+        }
         try { TourCompleted?.Invoke(this, EventArgs.Empty); }
         catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: tur bitti bildirimi arayüze iletilemedi"); }
         return outcome;
@@ -355,6 +428,10 @@ public sealed class SalesChangesPullService
             return SalesPullOutcome.NoLicense;                         // lisanssız: hiçbir istek yok
         }
 
+        // 0) Off turunun yarıda kalmış 3. adımı (W2-11, §8.5; yerel): state'ten önce — tamamlanırsa bu turun state'i
+        //    görülen kip 0 taşır.
+        ResumeModeOff();
+
         // 1) Kalp atışı — turda tam bir kez, her kipte.
         var stateOutcome = await _state.TourOnceAsync(ct).ConfigureAwait(false);
         if (stateOutcome == SalesStateTourOutcome.NoLicense)
@@ -366,10 +443,13 @@ public sealed class SalesChangesPullService
         // Lisans değişimi temizliği (yerel): yeni lisansın akışı eski lisansın uzak satırlarının üstüne inmesin.
         var cleanup = CleanUpAfterLicenseChange(licenseKey);
 
-        // Kip adımı (W2-10, §8.4): başarılı state'in hemen ardından — bekleyen komutlardan ve akıştan önce.
+        // Kip adımı (W2-10, §8.4; W2-11, §8.5): başarılı state'in hemen ardından — bekleyen komutlardan ve akıştan önce.
         var modeStep = SalesModeStep.None;
         if (_modeCoordinator is not null && stateOutcome == SalesStateTourOutcome.Ok && cleanup is null)
             modeStep = await _modeCoordinator.RunAsync(licenseKey, ct).ConfigureAwait(false);
+        if (modeStep == SalesModeStep.Disabling) return await ModeOffRoundAsync(licenseKey, ct).ConfigureAwait(false);
+        // Sunucunun kipi bu turda görüldü ve Off turu gerekmiyor: açık mode-off istekleri sonuçlandı.
+        if (stateOutcome == SalesStateTourOutcome.Ok && cleanup is null) _modeOffSettled = true;
 
         int mode;
         try { mode = _stateRepo.GetMode(); }
@@ -415,10 +495,12 @@ public sealed class SalesChangesPullService
         var seenMode = _envelope.SeenMode;
 
         _pagesThisTour = 0;
-        var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ct).ConfigureAwait(false);
+        var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOnOptions, ct)
+            .ConfigureAwait(false);
         if (pass.Outcome == SalesPullOutcome.Stalled && pass.BlockedItemId is { } stalledId
             && await PushForStallAsync(stalledId, ct).ConfigureAwait(false))
-            pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ct).ConfigureAwait(false);
+            pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOnOptions, ct)
+                .ConfigureAwait(false);
 
         LogTally(tally);
         UpdateStatus(pass);
@@ -430,6 +512,67 @@ public sealed class SalesChangesPullService
         // 7) Ufuk: ilk yetişme sürüyorsa tamamlanır (§8.4-4) — toplamlar tek işlemde, FirstCatchUpAt.
         if (pass.Outcome == SalesPullOutcome.CaughtUp) CompleteFirstCatchUp();
         return pass.Outcome;
+    }
+
+    // ── disable turu (W2-11, §8.5) ──────────────────────────────────────────
+
+    /// <summary>
+    /// <c>disable</c> turu: ön gönderim (kendi gönderilmemiş satırı son akışı durdururdu, U5), son akış boş sayfaya kadar
+    /// dosyalarla ve yalnız kendi satırlarıyla (1. adım), ardından 2. ve 3. adım. Bekleyen komutlar gönderilmez (komut
+    /// ucu 409 <c>mode-off</c>), canlı yayın aynası yazılmaz (2. adım siler). Son akış bu turda bitmezse sonraki tur
+    /// kaldığı yerden sürer; yerel kip o ana kadar değişmez.
+    /// </summary>
+    private async Task<SalesPullOutcome> ModeOffRoundAsync(string licenseKey, CancellationToken ct)
+    {
+        ResetHandoverStall();
+        await TryPushCustomersAsync(ct).ConfigureAwait(false);
+        await TryPushSalesAsync(ct).ConfigureAwait(false);
+
+        var tally = new TourTally();
+        var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
+        if (licenseId is null || _envelope.ReplicaId is not { } replicaId) return SalesPullOutcome.Failed;
+        var seenMode = _envelope.SeenMode;
+
+        _pagesThisTour = 0;
+        var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOffRoundOptions, ct)
+            .ConfigureAwait(false);
+        if (pass.Outcome == SalesPullOutcome.Stalled && pass.BlockedItemId is { } stalledId
+            && await PushForStallAsync(stalledId, ct).ConfigureAwait(false))
+            pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ModeOffRoundOptions, ct)
+                .ConfigureAwait(false);
+        LogTally(tally);
+
+        var done = pass.Outcome == SalesPullOutcome.CaughtUp
+            ? _modeCoordinator!.CompleteModeOff(licenseKey, replicaId)
+            : null;
+        if (done is not { Local.Busy: false })
+        {
+            if (tally.Any) RaiseSalesChanged(tally.Labels.ToList(), tally.Sessions.ToList(), tally.Shipments.ToList());
+            return pass.Outcome != SalesPullOutcome.CaughtUp ? pass.Outcome
+                : done is null ? SalesPullOutcome.Failed : SalesPullOutcome.Busy;
+        }
+
+        _status = SalesFeedStatus.Off;
+        _modeOffSettled = true;
+        if (done.Conversion.Any) RaisePendingCommandsSettled(done.Conversion.Settled);
+        // Uzak satırlar silindi, kendi yayınları yerel: ekranlar baştan okunur.
+        tally.Labels.UnionWith(done.Conversion.Settled.ChangedLabelIds);
+        RaiseSalesChanged(tally.Labels.ToList(), tally.Sessions.ToList(), tally.Shipments.ToList());
+        return SalesPullOutcome.Disabled;
+    }
+
+    /// <summary>Turun başı: yarıda kalmış 3. adım (yerel kip 0 ∧ bekleyen komut). Sonucu arayüze; hatası turu düşürmez.</summary>
+    private void ResumeModeOff()
+    {
+        if (_modeCoordinator?.ResumeModeOff() is not { Any: true } resumed) return;
+        RaisePendingCommandsSettled(resumed.Settled);
+        RaiseSalesChanged(resumed.Settled.ChangedLabelIds, Array.Empty<string>(), Array.Empty<string>());
+    }
+
+    private void RaisePendingCommandsSettled(PendingSalesCommandsSettled settled)
+    {
+        try { PendingCommandsSettled?.Invoke(this, settled); }
+        catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: bekleyen komutların sonucu arayüze iletilemedi"); }
     }
 
     /// <summary>Akış ufka ulaştı: ilk yetişme sürüyorsa tamamlanır ve bir kez bildirilir. Hatası turu düşürmez.</summary>
@@ -450,7 +593,8 @@ public sealed class SalesChangesPullService
     // ── akış ───────────────────────────────────────────────────────────────
 
     private async Task<PassResult> PullPassAsync(
-        string licenseKey, Guid licenseId, Guid replicaId, int seenMode, TourTally tally, CancellationToken ct)
+        string licenseKey, Guid licenseId, Guid replicaId, int seenMode, TourTally tally, SalesFeedApplyOptions options,
+        CancellationToken ct)
     {
         var after = _cursors.Get(CursorName, licenseKey)?.Seq ?? 0L;
         try
@@ -490,7 +634,7 @@ public sealed class SalesChangesPullService
                         SalesFeedApplyResult? result = null;
                         try
                         {
-                            result = _feed.ApplyItem(SalesFeedMapper.ToCore(wire), sideSessions, drafts, ModeOnOptions, now);
+                            result = _feed.ApplyItem(SalesFeedMapper.ToCore(wire), sideSessions, drafts, options, now);
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException
                                                    && !CustomerChangesPullService.IsNotItemSpecific(ex))
@@ -773,7 +917,7 @@ public sealed class SalesChangesPullService
     {
         if (t.Applied + t.Ignored + t.Skipped + t.CatchUpOverwrites == 0) return;
         _log.LogInformation(
-            "Satış akışı: {Applied} öğe uygulandı, {Unchanged} değişmedi, {Ignored} dosya öğesi yok sayıldı, {Skipped} uygulanamayıp atlandı; "
+            "Satış akışı: {Applied} öğe uygulandı, {Unchanged} değişmedi, {Ignored} öğe yok sayıldı, {Skipped} uygulanamayıp atlandı; "
           + "{Labels} etiket, {Sessions} oturum, {Shipments} dosya değişti; {Rows} müşterinin toplamı türetildi",
             t.Applied, t.Unchanged, t.Ignored, t.Skipped, t.Labels.Count, t.Sessions.Count, t.Shipments.Count, t.AggregateRows);
         if (t.CatchUpOverwrites > 0)

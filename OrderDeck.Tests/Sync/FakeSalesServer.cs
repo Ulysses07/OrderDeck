@@ -823,6 +823,42 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         }
     }
 
+    /// <summary>
+    /// <c>sales-sync disable --apply</c>'ın aynası (§4.10, M19; W2-11): mod 0 ve <c>ModeChangedAt</c>; damgalar kalır.
+    /// Aynı işlemde Shipped olmayan her dosyanın <c>OriginReplicaId</c>'si bağlı siparişlerin sahibine göre yeniden
+    /// yazılır — sahip oturumun <c>OwnerReplicaId</c>'si, boşsa siparişin kaynağı (geri yükleme zinciri bu ikizde yok).
+    /// Bütün bağlı siparişler tek kopyanınsa dosya onun; karışık dosya bağlı tutarı (iptal edilmemiş fiyat) büyük
+    /// olana, eşitlikte küçük Id'ye. Bağlı sipariş ya da bilinen sahip yoksa değer değişmez. Değişen dosya yeni seq alır:
+    /// her istemci yeni değeri Off turunun son akışında görür (§4.4, §8.5-1).
+    /// </summary>
+    public void Disable(DateTimeOffset at)
+    {
+        lock (_gate)
+        {
+            Mode = 0;
+            ModeChangedAt = at;
+            foreach (var s in _shipments.Values.Where(s => s.Row.Status != "shipped").ToList())
+            {
+                var owners = _orders.Values
+                    .Where(o => o.Row.ShipmentId == s.Row.Id)
+                    .Select(o => (Owner: (o.Row.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var ss)
+                                      ? ss.OwnerReplicaId : null) ?? o.OriginReplicaId,
+                                  Amount: o.Row.CancelledAt is null ? o.Row.Price : 0m))
+                    .Where(x => x.Owner is not null)
+                    .GroupBy(x => x.Owner!.Value)
+                    .Select(g => (Owner: g.Key, Amount: g.Sum(x => x.Amount)))
+                    .OrderByDescending(x => x.Amount)
+                    .ThenBy(x => x.Owner.ToString("N"), StringComparer.Ordinal)
+                    .ToList();
+                if (owners.Count == 0 || s.OriginReplicaId == owners[0].Owner) continue;
+                PutShipment(s.LicenseId, s with
+                {
+                    OriginReplicaId = owners[0].Owner, Version = s.Version + 1, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            }
+        }
+    }
+
     /// <summary>Sunucudaki bir kargo dosyasını değiştirir (başka bilgisayarın kararı gibi): sürüm +1, yeni seq.</summary>
     public void MutateShipment(Guid id, Func<ShipmentBody, ShipmentBody> change)
     {

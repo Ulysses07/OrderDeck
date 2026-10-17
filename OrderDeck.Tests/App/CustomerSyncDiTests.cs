@@ -371,6 +371,27 @@ public sealed class CustomerSyncDiTests
         PrivateField<LabelService>(round, "_labelService").Should().BeSameAs(host.Services.GetRequiredService<LabelService>());
         PrivateField<SalesFeedRepository>(round, "_feed").Should().BeSameAs(
             host.Services.GetRequiredService<SalesFeedRepository>(), "akışla aynı CustomerBusySet (U13)");
+        // Kip adımı turu isteğe bağlı parametreyle alır — kayıt eksikse DI sessizce null bırakır, Off turu hiç başlamazdı.
+        PrivateField<SalesModeOffRound>(host.Services.GetRequiredService<SalesModeCoordinator>(), "_modeOff")
+            .Should().BeSameAs(round);
+    }
+
+    [Fact]
+    public void Komut_istemcisinin_mode_offu_satis_akisi_turunu_tetikler()
+    {
+        // W2-11 (spec 2026-10-13 §5.3): satış akışı turu komut istemcisini isteğe bağlı parametreyle dinler — kayıt
+        // eksikse mode-off yalnız sonraki 30 sn'lik turda görülürdü. Tekil istemci: bekleyen komutların göndericisi de
+        // aynı örneği kullanır.
+        using var host = new global::OrderDeck.App.AppHost();
+        var commands = host.Services.GetRequiredService<SalesCommandClient>();
+        var pull = host.Services.GetRequiredService<SalesChangesPullService>();
+
+        var listeners = PrivateField<EventHandler>(commands, "ModeOffDetected");
+        listeners.Should().NotBeNull("satış akışı turu kurulurken mode-off'a abone olur");
+        listeners!.GetInvocationList().Select(d => d.Target).Should().Contain(pull,
+            "tekil komut istemcisinin mode-off'u tekil satış akışı turuna ulaşır");
+        PrivateField<SalesCommandClient>(host.Services.GetRequiredService<PendingSalesCommandSender>(), "_commands")
+            .Should().BeSameAs(commands);
     }
 
     [Fact]
