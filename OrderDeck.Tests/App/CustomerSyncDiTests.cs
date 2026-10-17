@@ -313,6 +313,25 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Bekleyen_satis_komutu_gondericisi_tekil_tur_ve_komut_istemcisiyle_paylasilir()
+    {
+        // W2-07 (spec 2026-10-13 §5.5): satış akışı turu bekleyen komutları akıştan önce gönderir; isteğe bağlı kurucu
+        // parametresi DI'dan gelmezse tur onları hiç göndermez, örtü hiç kalkmazdı. Kapı tek örnekte geçerli.
+        using var host = new global::OrderDeck.App.AppHost();
+        var sender = host.Services.GetRequiredService<PendingSalesCommandSender>();
+
+        host.Services.GetRequiredService<PendingSalesCommandSender>().Should().BeSameAs(sender);
+        PrivateField<PendingSalesCommandSender>(host.Services.GetRequiredService<SalesChangesPullService>(),
+            "_pendingCommands").Should().BeSameAs(sender);
+        PrivateField<SalesCommandClient>(sender, "_commands").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesCommandClient>());
+        PrivateField<PendingSalesCommandRepository>(sender, "_repo").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingSalesCommandRepository>());
+        PrivateField<global::OrderDeck.App.Services.Sales.SalesConnectivity>(sender, "_connectivity").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.App.Services.Sales.SalesConnectivity>());
+    }
+
+    [Fact]
     public void Guncelleme_sorusu_tekil_Velopack_ornegi()
     {
         // W2-04 (spec 2026-10-13 §5.3): açılış ve satış komutunun client-update-required'ı AYNI soruyu açar —

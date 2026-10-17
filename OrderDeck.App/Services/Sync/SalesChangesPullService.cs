@@ -70,7 +70,8 @@ public sealed record SalesFeedStatus(bool ModeOn, DateTimeOffset? LastCaughtUpAt
 ///   alınmaz, <c>StreamSession</c>'a hiç yazılmaz).</item>
 ///   <item>Ön gönderim: müşteri (<see cref="WpfCustomerProjectionSyncService"/>), ardından oturum ve etiket
 ///   (<see cref="SessionOrderSyncService.SyncOnceAsync(CancellationToken)"/>). Gönderilmemiş yerel etiket akışı
-///   durdururdu (U5); önce gitsin.</item>
+///   durdururdu (U5); önce gitsin. Ardından bekleyen satış komutları (§5.5, <see cref="PendingSalesCommandSender"/>):
+///   çevrimdışıyken kuyruğa giren kalıntı iptali ve ilk baskısı, akış isteğinden ÖNCE.</item>
 ///   <item>Sayfalar <see cref="PageSize"/>'lık, turda en çok <see cref="MaxPagesPerTour"/> (müşteri akışıyla paylaşılan
 ///   100 istek/dk/IP bütçesi). Her sayfa müşteri akışının tur kilidi altında uygulanır
 ///   (<see cref="CustomerChangesPullService.EnterTourGateAsync"/>); kilit HİÇBİR HTTP isteği boyunca tutulmaz. Kilit
@@ -132,6 +133,7 @@ public sealed class SalesChangesPullService
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<SalesChangesPullService> _log;
+    private readonly PendingSalesCommandSender? _pendingCommands;
 
     /// <summary>Tek tur kuralı: zamanlayıcının turu ile ileride elle tetiklenen tur (baskı öncesi 3 sn'lik tur, §5.6)
     /// üst üste binmez; imleç yazımları sıralı kalır.</summary>
@@ -173,8 +175,12 @@ public sealed class SalesChangesPullService
         CustomerChangesPullService customerPull,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
-        ILogger<SalesChangesPullService> log)
+        ILogger<SalesChangesPullService> log,
+        PendingSalesCommandSender? pendingCommands = null)
     {
+        _pendingCommands = pendingCommands;
+        if (_pendingCommands is not null)
+            _pendingCommands.Settled += (_, e) => PendingCommandsSettled?.Invoke(this, e);
         _api = api;
         _state = state;
         _stateRepo = stateRepo;
@@ -198,6 +204,69 @@ public sealed class SalesChangesPullService
 
     /// <summary>Durum satırının girdisi (§5.7); mod Off'ta <see cref="SalesFeedStatus.ModeOn"/> false.</summary>
     public SalesFeedStatus Status => _status;
+
+    /// <summary>Bekleyen komutların sonucu (<see cref="PendingSalesCommandSender.Settled"/>): "kâğıtları imha et" ve
+    /// kalıcı ret uyarısı (§5.5). Gönderenin iş parçacığında; dinleyici arayüzü dispatcher'a taşımalı.</summary>
+    public event EventHandler<PendingSalesCommandsSettled>? PendingCommandsSettled;
+
+    /// <summary>
+    /// Bekleyen satış komutlarını hemen gönderir (spec 2026-10-13 §5.5; ödeme isteğinin ön gönderiminde İLK sıra, §6.4-1
+    /// — W3 bağlar). Turun gönderim adımıyla aynı kapıdan; yerel kip On değilse hiçbir şey göndermez. Yanıttan inen
+    /// satırlar <see cref="SalesChanged"/> ile bildirilir. Kuyrukta kalan (gönderilemeyen) komutların örttüğü etiketler
+    /// sonrasında <see cref="PendingSalesCommandRepository.GetCoveredLabelIds"/> ile sorulur.
+    /// </summary>
+    public async Task<PendingSalesCommandFlush> FlushPendingSalesCommandsAsync(CancellationToken ct)
+    {
+        if (_pendingCommands is null) return PendingSalesCommandFlush.Empty;
+        var flush = await _pendingCommands.FlushAsync(ct).ConfigureAwait(false);
+        if (flush.Settled.ChangedLabelIds.Count > 0)
+            RaiseSalesChanged(flush.Settled.ChangedLabelIds, Array.Empty<string>(), Array.Empty<string>());
+        return flush;
+    }
+
+    /// <summary>
+    /// Baskıdan hemen önceki akış turu (spec 2026-10-13 §5.6-2): bir tur, en çok <paramref name="budget"/> kadar
+    /// beklenir. Süre dolarsa beklemeden döner (tur iptal edilir ve arka planda kendiliğinden biter; imleç her sayfada
+    /// kaydedildiği için uygulanmış öğe kaybolmaz) — kâğıt yerel aynanın güncel hâliyle basılır.
+    /// </summary>
+    /// <returns>Tur süre içinde akışı sonuna kadar uyguladıysa true.</returns>
+    public async Task<bool> RefreshAsync(TimeSpan budget, CancellationToken ct = default)
+    {
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var tour = Task.Run(() => TourOnceAsync(cts.Token), CancellationToken.None);
+        // Kaynak tur bitince bırakılır (süre dolsa da tur belirteci kullanmayı sürdürür).
+        _ = tour.ContinueWith(t =>
+        {
+            _ = t.Exception;                                     // gözlenmemiş istisna kalmasın
+            cts.Dispose();
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        var delay = Task.Delay(budget, CancellationToken.None);
+        var finished = await Task.WhenAny(tour, delay).ConfigureAwait(false) == tour;
+        if (!finished)
+        {
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { }                  // tur tam bu arada bitti
+            _log.LogInformation("Baskı öncesi satış akışı turu {Budget} sn içinde bitmedi; yerel satırlarla basılıyor",
+                budget.TotalSeconds);
+            ct.ThrowIfCancellationRequested();
+            return false;
+        }
+        try
+        {
+            var outcome = await tour.ConfigureAwait(false);
+            return outcome == SalesPullOutcome.CaughtUp;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Baskı öncesi satış akışı turu düştü; yerel satırlarla basılıyor");
+            return false;
+        }
+    }
 
     public async Task<SalesPullOutcome> TourOnceAsync(CancellationToken ct)
     {
@@ -245,17 +314,23 @@ public sealed class SalesChangesPullService
 
         MirrorLiveSessions(licenseKey);
 
-        // 2) Ön gönderim: müşteri, ardından oturum ve etiket.
+        // 2) Ön gönderim: müşteri, ardından oturum ve etiket; sonra bekleyen satış komutları (§5.5) — akıştan ÖNCE:
+        //    sonuçları yanıttan yazılır, örtü kalkar; akış aynı satırı sonra yeniden getirse de fark üretmez.
         await TryPushCustomersAsync(ct).ConfigureAwait(false);
         await TryPushSalesAsync(ct).ConfigureAwait(false);
+        var tally = new TourTally();
+        await TrySendPendingCommandsAsync(tally, ct).ConfigureAwait(false);
 
         // 3–5) Akış.
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
-        if (licenseId is null || _envelope.ReplicaId is not { } replicaId) return SalesPullOutcome.Failed;
+        if (licenseId is null || _envelope.ReplicaId is not { } replicaId)
+        {
+            if (tally.Any) RaiseSalesChanged(tally.Labels.ToList(), tally.Sessions.ToList(), tally.Shipments.ToList());
+            return SalesPullOutcome.Failed;
+        }
         var seenMode = _envelope.SeenMode;
 
         _pagesThisTour = 0;
-        var tally = new TourTally();
         var pass = await PullPassAsync(licenseKey, licenseId.Value, replicaId, seenMode, tally, ct).ConfigureAwait(false);
         if (pass.Outcome == SalesPullOutcome.Stalled && pass.BlockedItemId is { } stalledId
             && await PushForStallAsync(stalledId, ct).ConfigureAwait(false))
@@ -433,6 +508,22 @@ public sealed class SalesChangesPullService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.LogWarning(ex, "Satış akışı ön gönderimi: oturum/etiket gönderimi yerel hatayla düştü; akış sürer");
+        }
+    }
+
+    /// <summary>Bekleyen satış komutları (§5.5). Yanıttan inen satırlar turun değişikliklerine katılır. Yerel hata turu
+    /// düşürmez; komut kuyrukta kalır, sonraki turda yeniden.</summary>
+    private async Task TrySendPendingCommandsAsync(TourTally tally, CancellationToken ct)
+    {
+        if (_pendingCommands is null) return;
+        try
+        {
+            var flush = await _pendingCommands.FlushAsync(ct).ConfigureAwait(false);
+            tally.Labels.UnionWith(flush.Settled.ChangedLabelIds);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış akışı: bekleyen satış komutları gönderilemedi (yerel hata); akış sürer");
         }
     }
 

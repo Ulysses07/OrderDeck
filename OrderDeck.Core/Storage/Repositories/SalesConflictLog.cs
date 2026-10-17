@@ -60,6 +60,12 @@ public static class SalesConflictLog
     /// lisansın Id'si — istemci hatası. Yeniden denenmez. Reason <see cref="CommandReason"/> biçiminde.</summary>
     public const string CommandContentConflict = "command-content-conflict";
 
+    /// <summary>Bekleyen satış komutu (§5.5) sunucuda kalıcı olarak reddedildi (görünürlük, geçersiz istek, çözülemeyen
+    /// kayıt …): kuyruktan düştü, örtüsü kalktı, operatör uyarıldı. Reason <see cref="CommandReason"/> ve
+    /// <c>; code={ret kodu}</c>. <c>content-conflict</c> ve <c>too-many-candidates</c> burada değil, kendi türleriyle
+    /// (komut istemcisi yazar) — iz bir kez düşer.</summary>
+    public const string PendingCommandRejected = "pending-command-rejected";
+
     /// <summary>Komut kaydının <c>Reason</c>'ı: <c>{tür}; command={id}</c>, varsa <c>; count={n}; max={m}</c>. Yalnız tür
     /// adı, kimlik ve sayı — kişisel veri yok (§9).</summary>
     public static string CommandReason(string kind, Guid commandId, int? count = null, int? max = null)

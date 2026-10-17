@@ -103,6 +103,29 @@ public static class SalesCommandMessages
             ? $"Bu işlem çok fazla etiketi kapsıyor ({n.ToString(CultureInfo.InvariantCulture)}); destek ile iletişime geç."
             : "Bu işlem çok fazla etiketi kapsıyor; destek ile iletişime geç.";
 
+    /// <summary>
+    /// Bekleyen komut (§5.5) sunucuda kalıcı olarak reddedildi; kuyruktan düştü, örtüsü kalktı: "2 etiketin bekleyen
+    /// iptali sunucuda işlenemedi: …" / "… bekleyen baskı onayı …". Sebep komutun ret metnidir (§5.3).
+    /// </summary>
+    public static string PendingRejected(string kind, int count, string? reason)
+    {
+        var what = kind == global::OrderDeck.Licensing.Api.Models.SalesCommandKinds.MarkPrinted
+            ? "bekleyen baskı onayı"
+            : "bekleyen iptali";
+        var text = (reason ?? Failed).Trim();
+        if (!(text.EndsWith('.') || text.EndsWith('!') || text.EndsWith('?'))) text += ".";
+        return $"{count.ToString(CultureInfo.InvariantCulture)} etiketin {what} sunucuda işlenemedi: {text}";
+    }
+
+    /// <summary>Basılan kâğıdın sunucu satırı (başka bilgisayarın yayını; bekleyen komuta girmez, §5.5) işaretlenemedi:
+    /// "1 etiketin baskısı sunucuya işlenemedi: …".</summary>
+    public static string PrintNotRecorded(int count, string? reason)
+    {
+        var text = (reason ?? Failed).Trim();
+        if (!(text.EndsWith('.') || text.EndsWith('!') || text.EndsWith('?'))) text += ".";
+        return $"{count.ToString(CultureInfo.InvariantCulture)} etiketin baskısı sunucuya işlenemedi: {text}";
+    }
+
     /// <summary>Yerel saat, SS:DD.</summary>
     public static string Clock(DateTimeOffset at, TimeZoneInfo? zone = null) =>
         TimeZoneInfo.ConvertTime(at, zone ?? TimeZoneInfo.Local).ToString("HH:mm", CultureInfo.InvariantCulture);

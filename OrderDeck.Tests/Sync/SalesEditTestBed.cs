@@ -7,6 +7,7 @@ using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -63,6 +64,13 @@ internal sealed class SalesEditTestBed : IDisposable
     public SalesConnectivity Connectivity { get; }
     public SalesEditRouter Router { get; }
 
+    /// <summary>Bekleyen satış komutları (W2-07): kuyruk ve gönderici (yönlendiriciyle ve akış turuyla aynı örnek).</summary>
+    public PendingSalesCommandRepository Pending { get; }
+    public PendingSalesCommandSender Sender { get; }
+
+    /// <summary>Gönderici sonuçları (<see cref="PendingSalesCommandSender.Settled"/>).</summary>
+    public List<PendingSalesCommandsSettled> Settled { get; } = new();
+
     /// <summary>false: son başarılı <c>sales/state</c> yok sayılır (çevrimdışı; §5.7).</summary>
     public bool Online { get; set; } = true;
 
@@ -101,6 +109,10 @@ internal sealed class SalesEditTestBed : IDisposable
                 ? new SalesStateSnapshot(Server.Lisans, 1, null, null, [], 15, [], StateReceivedAt)
                 : null,
             () => _license.CurrentLicenseKey);
+        Pending = new PendingSalesCommandRepository(Db);
+        Sender = new PendingSalesCommandSender(Pending, Commands, new SalesConflictLogRepository(Db), stateRepo,
+            Connectivity, new Clock(this), NullLogger<PendingSalesCommandSender>.Instance);
+        Sender.Settled += (_, e) => { lock (Settled) Settled.Add(e); };
         Router = new SalesEditRouter(Labels, LabelRepo, Sessions, stateRepo, Gate, Commands, Connectivity,
             () => LastFeedSyncAt, NullLogger<SalesEditRouter>.Instance);
     }
@@ -222,6 +234,57 @@ internal sealed class SalesEditTestBed : IDisposable
         if (authority == StreamSessionAuthority.Server)
             Exec("UPDATE StreamSession SET Authority = 'server' WHERE Id = @sessionId", new { sessionId });
         return id;
+    }
+
+    /// <summary>
+    /// Bu bilgisayarın DEVREDİLMİŞ yayını ve basılmamış kalıntı etiketleri (§5.5): yerelde <c>Origin = 'local'</c>,
+    /// <c>Authority = 'server'</c>, etiketler onaylı ve sürüm 1; sunucuda aynı yayın (sahip bu kopya, devredilmiş) ve
+    /// siparişler (sürüm 1, kaynak bu kopya).
+    /// </summary>
+    public (string Session, string Customer, IReadOnlyList<string> Labels) OwnResidual(int count = 1, decimal price = 100m)
+    {
+        var session = Guid.NewGuid();
+        var customer = Guid.NewGuid().ToString("N");
+        LocalSession(ended: true, releasedAt: 950, authority: StreamSessionAuthority.Server, id: N(session));
+        Server.SeedSession(session, T0, T0.AddHours(1), owner: Envelope.ReplicaId, title: "Yerel yayın");
+        Server.ReleaseSession(session);
+        var labels = new List<string>();
+        for (var i = 0; i < count; i++)
+        {
+            var id = Guid.NewGuid();
+            LocalLabel(N(session), customer, price, printed: false, id: N(id));
+            Exec("UPDATE Label SET ServerVersion = 1 WHERE Id = @id", new { id = N(id) });
+            var label = LabelRepo.GetById(N(id))!;
+            Server.SeedOrder(new FakeSalesServer.OrderBody(id, session, customer, label.Platform, label.Username,
+                    label.DisplayName, label.MessageText, label.Code, price, DateTimeOffset.FromUnixTimeSeconds(label.AddedAt),
+                    null, null, null, false, false, false, null, null, null, null, null, null, null, null, null),
+                version: 1, origin: Envelope.ReplicaId);
+            labels.Add(N(id));
+        }
+        return (N(session), customer, labels);
+    }
+
+    /// <summary>Bu yatağın veritabanı, sunucusu, zarfı ve göndericisiyle satış akışı turu (W2-03'ün servisi).</summary>
+    public SalesChangesPullService CreatePull()
+    {
+        var identity = new ReplicaIdentityRepository(Db);
+        var stateRepo = new SalesSyncStateRepository(Db);
+        var clock = new Clock(this);
+        var busy = new CustomerBusySet();
+        var cursors = new SyncCursorRepository(Db);
+        var customerSync = new CustomerSyncRepository(Db, busy);
+        var customerPush = new WpfCustomerProjectionSyncService(Api, customerSync, cursors, _license, clock,
+            NullLogger<WpfCustomerProjectionSyncService>.Instance);
+        return new SalesChangesPullService(Api,
+            new SalesSyncStateService(Api, Envelope, identity, stateRepo, _license, () => new AppSettings(),
+                NullLogger<SalesSyncStateService>.Instance),
+            stateRepo, Envelope, new SalesFeedRepository(Db, busy), new SalesFeedFailureRepository(Db),
+            new RemoteLiveSessionRepository(Db), cursors, LabelRepo, customerPush,
+            new SessionOrderSyncService(Api, Sessions, LabelRepo, _license, Envelope, Gate, new SalesPushApply(Db), clock,
+                NullLogger<SessionOrderSyncService>.Instance),
+            new CustomerChangesPullService(Api, Customers, customerSync, cursors, customerPush, _license, clock,
+                new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance),
+            _license, clock, NullLogger<SalesChangesPullService>.Instance, Sender);
     }
 
     // ── okuma ─────────────────────────────────────────────────────────────

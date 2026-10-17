@@ -625,6 +625,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SalesConflictLogRepository>();
         services.AddSingleton<Services.Sync.SalesCommandClient>();
 
+        // W2-07 (spec 2026-10-13 §5.5): bekleyen satış komutları (kalıntı kuyruğun çevrimdışı iptali ve ilk baskısı).
+        // Gönderici TEK örnek: satış akışı turu (akıştan önce), kuyruk baskısının anlık gönderimi ve ödeme ön gönderimi
+        // (W3) aynı kapıdan geçer — aynı komut aynı anda iki kez gitmez.
+        services.AddSingleton<PendingSalesCommandRepository>();
+        services.AddSingleton<Services.Sync.PendingSalesCommandSender>();
+
         // W2-05 (spec 2026-10-13 §5.3): düzenleme yönlendiricisi — müşteri kartı, Basılanlar (toplu iptal, yeniden
         // bas) ve yedek çekmecesi bunun üzerinden yazar. Mod Off'ta bugünkü LabelService çağrısı (kapı ve ağ yok).
         // Devir kapısı TEK örnek: kapanış gönderimiyle aynı kilitler. Bağlantı ölçüsü son sales/state'ten (satış akışı
