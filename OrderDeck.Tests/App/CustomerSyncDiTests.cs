@@ -343,5 +343,9 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<OrderDeck.Core.Sales.LabelService>());
         PrivateField<global::OrderDeck.App.Services.Sales.SalesConnectivity>(editor, "_connectivity").Should().BeSameAs(
             host.Services.GetRequiredService<global::OrderDeck.App.Services.Sales.SalesConnectivity>());
+
+        var detail = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.CustomerDetailViewModel>();
+        PrivateField<global::OrderDeck.App.Services.Sales.ILabelEditor>(detail, "_editor").Should().BeSameAs(editor,
+            "müşteri kartı isteğe bağlı parametreyle alır; gelmezse sessizce yalnız yerel düzenleyiciye düşerdi");
     }
 }

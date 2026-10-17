@@ -31,10 +31,15 @@ internal sealed class SalesEditTestBed : IDisposable
         public string? CurrentLicenseKey { get; set; } = key;
     }
 
-    private sealed class Clock : IClock
+    /// <summary>Yatağın saati: <see cref="FixedUnixNow"/> verilmişse o (iki yatağın yazımları birebir karşılaştırılsın),
+    /// yoksa gerçek saat.</summary>
+    private sealed class Clock(SalesEditTestBed bed) : IClock
     {
-        public long UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        public long UnixNow() => bed.FixedUnixNow ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     }
+
+    /// <summary>Verilirse yerel servislerin saati sabit.</summary>
+    public long? FixedUnixNow { get; set; }
 
     private sealed class PromptSpy : IAppUpdatePrompt
     {
@@ -77,8 +82,8 @@ internal sealed class SalesEditTestBed : IDisposable
         LabelRepo = new LabelRepository(Db);
         Sessions = new SessionRepository(Db);
         Customers = new CustomerRepository(Db);
-        Labels = labels ?? new LabelService(LabelRepo, new CustomerService(Customers, Sessions, LabelRepo, new Clock()),
-            Db, new Clock());
+        Labels = labels ?? new LabelService(LabelRepo,
+            new CustomerService(Customers, Sessions, LabelRepo, new Clock(this)), Db, new Clock(this));
 
         Server.Mode = 1;
         Server.MinClientVersion = "0.9.11";
@@ -89,7 +94,7 @@ internal sealed class SalesEditTestBed : IDisposable
         Envelope = TestSalesEnvelope.For(Db, _license);
         var stateRepo = new SalesSyncStateRepository(Db);
         Commands = new SalesCommandClient(Api, Envelope, stateRepo, LabelRepo, new ShipmentRepository(Db),
-            new SalesFeedRepository(Db), new SalesConflictLogRepository(Db), new PromptSpy(), _license, new Clock(),
+            new SalesFeedRepository(Db), new SalesConflictLogRepository(Db), new PromptSpy(), _license, new Clock(this),
             NullLogger<SalesCommandClient>.Instance);
         Connectivity = new SalesConnectivity(
             () => Online
@@ -188,9 +193,10 @@ internal sealed class SalesEditTestBed : IDisposable
     // ── bu bilgisayarın yayınları ─────────────────────────────────────────
 
     /// <summary>Bu bilgisayarın yayını (<c>Origin = 'local'</c>); <paramref name="authority"/> ile otorite.</summary>
-    public string LocalSession(bool ended, long? releasedAt = null, string authority = StreamSessionAuthority.Local)
+    public string LocalSession(bool ended, long? releasedAt = null, string authority = StreamSessionAuthority.Local,
+        string? id = null)
     {
-        var id = Guid.NewGuid().ToString("N");
+        id ??= Guid.NewGuid().ToString("N");
         Sessions.Insert(new StreamSession(id, "Yerel yayın", 500, ended ? 900 : null, ["tiktok"], null));
         Exec("UPDATE StreamSession SET ReleasedAt = @releasedAt, Authority = @authority, SyncedAt = 900 WHERE Id = @id",
             new { id, releasedAt, authority });
@@ -199,13 +205,13 @@ internal sealed class SalesEditTestBed : IDisposable
 
     /// <summary>Yerel müşteri (yoksa) ve bu yayına onun basılmış etiketi; onaylı (<c>SyncedAt</c> dolu).</summary>
     public string LocalLabel(string sessionId, string customerId, decimal price = 100m, bool printed = true,
-        string? parentLabelId = null, bool tentative = false)
+        string? parentLabelId = null, bool tentative = false, string? id = null)
     {
         if (Customers.GetById(customerId) is null)
             Customers.Insert(new Customer(customerId, "tiktok", $"yerel_{customerId[..6]}", null, null, 100, 200,
                 false, null, null, 0, 0m, null, null, null));
         var authority = Scalar<string>("SELECT Authority FROM StreamSession WHERE Id = @sessionId", new { sessionId });
-        var id = Guid.NewGuid().ToString("N");
+        id ??= Guid.NewGuid().ToString("N");
         // Sunucu otoritesindeki yayına yerel ekleme ABORT eder (049): yalnız kurulum için otorite bir an yerele alınır.
         if (authority == StreamSessionAuthority.Server)
             Exec("UPDATE StreamSession SET Authority = 'local' WHERE Id = @sessionId", new { sessionId });
@@ -240,6 +246,18 @@ internal sealed class SalesEditTestBed : IDisposable
     }
 
     public LabelState Local(Guid id) => Local(id.ToString("N"));
+
+    /// <summary>Etiket, müşteri, kargo dosyası ve oturum tablolarının bütün kolonları (iki yolun yazımı birebir aynı
+    /// mı).</summary>
+    public string Snapshot()
+    {
+        using var c = Db.Open();
+        var sb = new System.Text.StringBuilder();
+        foreach (var table in new[] { "Label", "Customer", "Shipment", "StreamSession" })
+            foreach (IDictionary<string, object?> row in c.Query($"SELECT * FROM {table} ORDER BY Id"))
+                sb.AppendLine(table + ": " + string.Join("|", row.Select(kv => $"{kv.Key}={kv.Value}")));
+        return sb.ToString();
+    }
 
     public void Exec(string sql, object? param = null)
     {
