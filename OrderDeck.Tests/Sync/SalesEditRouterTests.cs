@@ -296,6 +296,33 @@ public sealed class SalesEditRouterTests : IDisposable
     }
 
     [Fact]
+    public async Task Sunucunun_tavanini_asan_toplu_secim_parca_parca_komutla_gider()
+    {
+        _bed.ModeOn();
+        var session = _bed.RemoteSession();
+        var customer = _bed.RemoteCustomer();
+        var ids = Enumerable.Range(0, 501).Select(_ => _bed.RemoteOrder(session, customer).ToString("N")).ToList();
+        await _bed.PullAsync();
+
+        var reprint = await _bed.Router.PrepareReprintAsync(ids);
+        var cancel = await _bed.Router.CancelAsync(ids, "musteri");
+
+        reprint.Error.Should().BeNull("tek komut 500'ü aşsaydı 400 alırdı");
+        reprint.Labels.Should().HaveCount(501);
+        cancel.Problems.Should().BeEmpty();
+        cancel.Applied.Should().HaveCount(501);
+        _bed.Local(ids[^1]).CancelledAt.Should().NotBeNull();
+        _bed.Server.CommandCalls.Select(c => (c.Command.Kind, ItemCount(c.Command))).Should().Equal(
+            [("reprint", 500), ("reprint", 1), ("cancel", 500), ("cancel", 1)]);
+    }
+
+    private static int ItemCount(FakeSalesServer.CommandBody command)
+    {
+        var payload = command.Payload!.Value;
+        return (payload.TryGetProperty("items", out var items) ? items : payload.GetProperty("orderIds")).GetArrayLength();
+    }
+
+    [Fact]
     public async Task Iptali_geri_alma_ve_yedek_onayi_komutla()
     {
         _bed.ModeOn();

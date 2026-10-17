@@ -225,7 +225,8 @@ public sealed class SalesEditRouter : ILabelEditor
 
     /// <summary>
     /// Mod On'un bölünmüş düzenlemesi: kapalı ve kullanılamayan etiketler sorun olarak toplanır; yerel ve kapılı
-    /// etiketler TEK yerel yazımda (kapılı yayınların kilitleri yazım boyunca); sunucu etiketleri TEK komutta.
+    /// etiketler TEK yerel yazımda (kapılı yayınların kilitleri yazım boyunca); sunucu etiketleri komut başına en çok
+    /// <see cref="MaxCommandOrders"/> (sunucunun tavanı).
     /// </summary>
     private async Task<SalesEditResult> RunAsync(
         string kind,
@@ -242,13 +243,25 @@ public sealed class SalesEditRouter : ILabelEditor
         var written = WriteLocal(local, writeLocal, result);
 
         var server = decisions.Where(d => d.Route == SalesEditRoute.Command).Select(d => d.LabelId).ToList();
-        if (server.Count > 0)
+        string? unreachable = null;
+        foreach (var chunk in server.Chunk(MaxCommandOrders))
         {
-            var outcome = await _commands.SendAsync(prepareCommand(server), ct).ConfigureAwait(false);
+            // Sunucunun tek komut tavanı (SalesCommandService.MaxOrders): büyük seçim parça parça, her parça kendi
+            // komutuyla. Sonucu bilinmeyen parçadan sonrası gönderilmez (aynı sebeple sorun).
+            if (unreachable is not null)
+            {
+                result.Problem(unreachable, chunk);
+                continue;
+            }
+            var outcome = await _commands.SendAsync(prepareCommand(chunk), ct).ConfigureAwait(false);
             _connectivity.Report(outcome.Status);
             result.Changed(outcome.LabelIds);
-            if (outcome.IsApplied) result.Applied(server);
-            else result.Problem(outcome.Message ?? SalesCommandMessages.Failed, server);
+            if (outcome.IsApplied) result.Applied(chunk);
+            else
+            {
+                result.Problem(outcome.Message ?? SalesCommandMessages.Failed, chunk);
+                if (outcome.CanResend) unreachable = outcome.Message ?? SalesCommandMessages.Failed;
+            }
         }
 
         _log.LogInformation(
@@ -476,22 +489,25 @@ public sealed class SalesEditRouter : ILabelEditor
                     decisions.First(d => d.Route == SalesEditRoute.Unavailable).Reason));
             else
             {
-                var outcome = await _commands.SendAsync(
-                        _commands.MarkPrinted(batchId, remote.Select(id => (id, seqOf[id])).ToList()), ct)
-                    .ConfigureAwait(false);
-                _connectivity.Report(outcome.Status);
-                changed.UnionWith(outcome.LabelIds);
-                if (outcome.IsApplied)
+                foreach (var chunk in remote.Chunk(MaxCommandOrders))        // sunucunun tek komut tavanı
                 {
-                    marked.AddRange(remote);
-                    var asked = remote.ToHashSet(StringComparer.Ordinal);
-                    discard.UnionWith((outcome.Result?.Cancelled ?? []).Select(id => id.ToString("N"))
-                        .Where(asked.Contains));
-                    foreach (var id in (outcome.Result?.AlreadyPrinted ?? []).Select(id => id.ToString("N"))
-                                 .Where(asked.Contains))
-                        if (discard.Add(id)) alreadyPrinted.Add(id);
+                    var outcome = await _commands.SendAsync(
+                            _commands.MarkPrinted(batchId, chunk.Select(id => (id, seqOf[id])).ToList()), ct)
+                        .ConfigureAwait(false);
+                    _connectivity.Report(outcome.Status);
+                    changed.UnionWith(outcome.LabelIds);
+                    if (outcome.IsApplied)
+                    {
+                        marked.AddRange(chunk);
+                        var asked = chunk.ToHashSet(StringComparer.Ordinal);
+                        discard.UnionWith((outcome.Result?.Cancelled ?? []).Select(id => id.ToString("N"))
+                            .Where(asked.Contains));
+                        foreach (var id in (outcome.Result?.AlreadyPrinted ?? []).Select(id => id.ToString("N"))
+                                     .Where(asked.Contains))
+                            if (discard.Add(id)) alreadyPrinted.Add(id);
+                    }
+                    else notices.Add(SalesCommandMessages.PrintNotRecorded(chunk.Length, outcome.Message));
                 }
-                else notices.Add(SalesCommandMessages.PrintNotRecorded(remote.Count, outcome.Message));
             }
         }
 
@@ -621,9 +637,15 @@ public sealed class SalesEditRouter : ILabelEditor
         var printable = new HashSet<string>(StringComparer.Ordinal);
         var corrections = new HashSet<string>(StringComparer.Ordinal);
 
-        if (server.Count > 0)
+        var offline = false;
+        foreach (var chunk in server.Chunk(MaxCommandOrders))                // sunucunun tek komut tavanı
         {
-            var outcome = await _commands.SendAsync(_commands.Reprint(server), ct).ConfigureAwait(false);
+            if (offline)
+            {
+                cached.AddRange(chunk);
+                continue;
+            }
+            var outcome = await _commands.SendAsync(_commands.Reprint(chunk), ct).ConfigureAwait(false);
             _connectivity.Report(outcome.Status);
             if (outcome.IsApplied)
             {
@@ -632,8 +654,8 @@ public sealed class SalesEditRouter : ILabelEditor
             }
             else if (outcome.CanResend)
             {
-                cached.AddRange(server);
-                fromCache = true;
+                cached.AddRange(chunk);
+                fromCache = offline = true;
             }
             else
             {
@@ -663,6 +685,11 @@ public sealed class SalesEditRouter : ILabelEditor
     /// <summary>Komutun <c>alsoSelectedIds</c> ve <c>paidFromBalanceIds</c> listelerinin tavanı
     /// (<c>SalesCommandService.MaxOrders</c>, sunucunun <c>TryReadOptionalIds</c>'i).</summary>
     private const int MaxListedOrders = 500;
+
+    /// <summary>Etiket listesi taşıyan tek komutun (<c>cancel</c>, <c>uncancel</c>, <c>reprint</c>,
+    /// <c>mark-printed</c>) öğe ve beklenen sürüm tavanı (<c>SalesCommandService.MaxOrders</c>): üstündeki seçim
+    /// 400 alır, yeniden denemek hep aynı sonucu verirdi — operatörün toplu işlemi parça parça gider.</summary>
+    private const int MaxCommandOrders = 500;
 
     public Task<SalesCodePriceResult> CorrectCodePricesAsync(
         SalesCodePriceRequest request,
