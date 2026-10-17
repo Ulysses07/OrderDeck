@@ -2,6 +2,7 @@ using Dapper;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.App.Services;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
@@ -57,6 +58,45 @@ public sealed class SalesSyncBootTests
         {
             // Paylaşılan veritabanı: sonraki AppHost testleri geri yüklenmiş kopya görmesin.
             identity.ClearPendingPreviousReplicaId(previous);
+            if (File.Exists(marker)) File.Delete(marker);
+        }
+    }
+
+    [Fact]
+    public void AppHost_geri_yukleme_isaretini_okuyamazsa_bu_surecte_satis_senkronunun_v2_istekleri_kapali()
+    {
+        // §8.7, M20: işaret uygulanamadan giden hello ve geri doldurma geri yüklenmiş kopyayı sunucuya özgün gösterir.
+        using (new global::OrderDeck.App.AppHost()) { }
+        var factory = new SqliteConnectionFactory(AppPaths.DatabaseFile);
+        var identity = new ReplicaIdentityRepository(factory);
+        var stalePending = identity.GetPendingPreviousReplicaId();
+        if (stalePending is { } stale) identity.ClearPendingPreviousReplicaId(stale);
+        var marker = RestoreReplicaMarker.PathFor(AppPaths.DatabaseFile);
+        File.WriteAllText(marker, Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            using (new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.None))   // okunamayan işaret
+            using (var host = new global::OrderDeck.App.AppHost())
+            {
+                var envelope = host.Services.GetRequiredService<SalesSyncEnvelope>();
+                envelope.IsHeldUntilRestart.Should().BeTrue();
+                envelope.IsReadyForPush.Should().BeFalse("bu süreçte gönderim ve geri doldurma kapalı");
+                envelope.ForPush().Should().BeNull();
+            }
+
+            File.Exists(marker).Should().BeTrue("sonraki açılışta yeniden denenir");
+            identity.GetPendingPreviousReplicaId().Should().BeNull("işaret uygulanmadı");
+
+            using (var host = new global::OrderDeck.App.AppHost())
+                host.Services.GetRequiredService<SalesSyncEnvelope>().IsHeldUntilRestart
+                    .Should().BeFalse("sonraki açılış işareti uyguladı");
+            File.Exists(marker).Should().BeFalse();
+        }
+        finally
+        {
+            var pending = identity.GetPendingPreviousReplicaId();
+            if (pending is { } p) identity.ClearPendingPreviousReplicaId(p);
             if (File.Exists(marker)) File.Delete(marker);
         }
     }

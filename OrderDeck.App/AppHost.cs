@@ -709,11 +709,15 @@ public sealed class AppHost : IDisposable
         Services.GetRequiredService<MigrationRunner>().Run();
         // Spec 2026-10-13 §8.7: göç 049'dan eski bir yedek geri yüklendiyse 049 az önce yeni bir
         // kopya kimliği tohumladı; RestoreService'in bıraktığı işaret önceki kimliği ekler (ilk
-        // sales/hello taşır). İşaret yoksa hiçbir şey yapmaz.
-        RestoreReplicaMarker.ApplyAtBoot(
+        // sales/hello taşır). İşaret yoksa hiçbir şey yapmaz. Uygulanamazsa işaret sonraki açılışa
+        // kalır ve bu süreçte satış senkronu sunucuya hiç istek göndermez: geri yüklenmiş kopya
+        // önceki kimliksiz konuşursa sunucu onu özgün sanır, geri doldurmada yereli kazandırır (M20).
+        var restoreMarker = RestoreReplicaMarker.ApplyAtBoot(
             AppPaths.DatabaseFile,
             Services.GetRequiredService<ReplicaIdentityRepository>(),
             Services.GetRequiredService<ILogger<AppHost>>());
+        if (restoreMarker.Unresolved)
+            Services.GetRequiredService<Services.Sync.SalesSyncEnvelope>().HoldUntilRestart();
         // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
         // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
         // satır artıktır.

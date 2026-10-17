@@ -18,6 +18,12 @@ namespace OrderDeck.App.Services.Sync;
 /// görmeli, yoksa geri yüklenmiş kopyanın bayat kuyruğunu açılış penceresi sayabilirdi (§4.0). Kimlik eksik ya da
 /// bozuksa da hazır değildir ve v2 isteği hiç gitmez. W2 bunun üstüne kip tazelemesini ekler.</para>
 ///
+/// <para><b>Sonraki açılışa kadar kapalı</b> (<see cref="HoldUntilRestart"/>): açılışta geri yükleme kimlik işareti
+/// uygulanamadıysa (<c>RestoreReplicaMarker</c>) veritabanı geri yüklenmiştir ama önceki kimlik henüz yazılamadı.
+/// O süreçte hello, state, geri doldurma ve gönderim hiç gitmez (v1'e de düşmez): sunucu kopyayı özgün sanıp
+/// geri doldurmada yereli kazandırırdı (§4.3, §8.7, M20). Etiketleme ve baskı yereldir, etkilenmez; kuyruk sonraki
+/// açılışta gider.</para>
+///
 /// <para>Günlük yalnız kimlik taşır: makine adı ve parmak izi yazılmaz (sunucudaki kuralla aynı).</para>
 /// </summary>
 public sealed class SalesSyncEnvelope
@@ -38,6 +44,7 @@ public sealed class SalesSyncEnvelope
     private readonly ConcurrentDictionary<(string LicenseKey, Guid ReplicaId), byte> _helloSucceeded = new();
     private int _replicaProblemLogged;
     private int _legacyFallbackLogged;
+    private int _heldUntilRestart;
 
     public SalesSyncEnvelope(
         ReplicaIdentityRepository identity,
@@ -94,21 +101,38 @@ public sealed class SalesSyncEnvelope
     /// <summary>Görülen kip (§2): yerel <c>Mode = 0</c> ∧ bekleyen satış komutu yok ise 0, aksi hâlde 1.</summary>
     public int SeenMode => _state.GetSeenMode();
 
+    /// <summary>Bu süreçte satış senkronu sunucuya hiç istek göndermez (<see cref="HoldUntilRestart"/>).</summary>
+    public bool IsHeldUntilRestart => Volatile.Read(ref _heldUntilRestart) == 1;
+
     /// <summary>
-    /// v2 gönderimi yapılabilir mi: kimlik geçerli ve ya bekleyen önceki kimlik yok ya da bu (lisans, kopya) için
-    /// hello başarıyla gitti. Gönderim turları kararı <see cref="ForPush"/>'tan alır.
+    /// Bu süreç boyunca satış senkronunun bütün isteklerini kapatır (açılış, <c>AppHost</c>): geri yükleme kimlik
+    /// işareti uygulanamadı. Geri dönüşü yok; sonraki açılış işareti yeniden dener. Süreç başına bir kez Error düşer.
     /// </summary>
-    public bool IsReadyForPush => ReplicaId is { } replica && IsReadyFor(replica);
+    public void HoldUntilRestart()
+    {
+        if (Interlocked.Exchange(ref _heldUntilRestart, 1) == 0)
+            _log.LogError(
+                "Geri yüklenen veritabanının önceki kopya kimliği bu açılışta yazılamadı; satış senkronu (etiket, oturum, "
+              + "kargo gönderimi ve geri doldurma) sonraki açılışa kadar sunucuya istek göndermiyor");
+    }
+
+    /// <summary>
+    /// v2 gönderimi yapılabilir mi: süreç kapalı değil (<see cref="HoldUntilRestart"/>), kimlik geçerli ve ya
+    /// bekleyen önceki kimlik yok ya da bu (lisans, kopya) için hello başarıyla gitti. Gönderim turları kararı
+    /// <see cref="ForPush"/>'tan alır.
+    /// </summary>
+    public bool IsReadyForPush => !IsHeldUntilRestart && ReplicaId is { } replica && IsReadyFor(replica);
 
     /// <summary>
     /// Bir gönderim turunun zarf kararı (spec 2026-10-13 §5.2, §8.7; W1-06): <c>null</c> = turu atla (geri yüklemeden
-    /// sonra bu (lisans, kopya) için hello henüz başarılı değil, <see cref="IsReadyForPush"/>). Kimlik eksik ya da
-    /// bozuksa gönderim DURMAZ: <see cref="SalesPushEnvelope.Legacy"/> döner — çağıran zarfsız (v1) gövde gönderir,
-    /// sunucu onu bugünkü gibi yargılar. Bu bir hatadır ve seri başına bir kez Error düşer (değer düzelip yeniden
-    /// bozulursa yeniden).
+    /// sonra bu (lisans, kopya) için hello henüz başarılı değil, <see cref="IsReadyForPush"/>; ya da süreç
+    /// <see cref="HoldUntilRestart"/> ile kapalı). Kimlik eksik ya da bozuksa gönderim DURMAZ:
+    /// <see cref="SalesPushEnvelope.Legacy"/> döner — çağıran zarfsız (v1) gövde gönderir, sunucu onu bugünkü gibi
+    /// yargılar. Bu bir hatadır ve seri başına bir kez Error düşer (değer düzelip yeniden bozulursa yeniden).
     /// </summary>
     public SalesPushEnvelope? ForPush()
     {
+        if (IsHeldUntilRestart) return null;
         if (ReplicaId is not { } replica)
         {
             if (Interlocked.Exchange(ref _legacyFallbackLogged, 1) == 0)

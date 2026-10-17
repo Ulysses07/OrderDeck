@@ -13,6 +13,9 @@ public enum SalesStateTourOutcome
     NoLicense,
     /// <summary>Yerel kopya kimliği eksik ya da bozuk — hiçbir v2 isteği gitmedi.</summary>
     NoReplica,
+    /// <summary>Geri yükleme kimlik işareti bu açılışta uygulanamadı (<see cref="SalesSyncEnvelope.HoldUntilRestart"/>)
+    /// — sonraki açılışa kadar hiçbir istek gitmez.</summary>
+    RestoreUnresolved,
     /// <summary>hello ya da state başarısız (ağ, 5xx, 4xx, yerel yazım); sonraki turda yeniden denenir.</summary>
     Failed,
     /// <summary>hello (gerekiyorsa) ve state başarılı.</summary>
@@ -115,6 +118,8 @@ public sealed class SalesSyncStateService
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
         if (string.IsNullOrWhiteSpace(licenseKey)) return SalesStateTourOutcome.NoLicense;
+        // Geri yüklenmiş kopya önceki kimliği olmadan konuşmaz: sunucu onu özgün sanardı (§8.7, M20).
+        if (_envelope.IsHeldUntilRestart) return SalesStateTourOutcome.RestoreUnresolved;
 
         Guid replicaId;
         try
@@ -150,6 +155,7 @@ public sealed class SalesSyncStateService
         await _tourGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_envelope.IsHeldUntilRestart) return false;
             if (_licenseProvider.CurrentLicenseKey != licenseKey || _envelope.ReplicaId != replicaId) return false;
             return await HelloAsync(licenseKey, licenseId, replicaId, ct, backfillCompleted: true).ConfigureAwait(false);
         }

@@ -347,6 +347,29 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         pc.Envelope.IsReadyForPush.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Geri_yukleme_kimligi_cozulemeyen_surecte_hicbir_v2_istegi_gitmez_gonderim_v1e_de_dusmez()
+    {
+        // Açılışta geri yükleme işareti okunamadı ya da uygulanamadı (AppHost): veritabanı geri yüklenmiş ama sunucuya
+        // öyle bildirilemiyor. Bu süreçte hello gitseydi sunucu kopyayı özgün sanırdı (§8.7, M20); sonraki açılış yeniden
+        // dener.
+        var pc = NewPc();
+        pc.Envelope.HoldUntilRestart();
+        pc.Envelope.HoldUntilRestart();
+
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.RestoreUnresolved);
+        (await pc.Service.ReportBackfillCompletedAsync(pc.License.CurrentLicenseKey!, _server.LicenseId, pc.ReplicaId,
+            CancellationToken.None)).Should().BeFalse();
+        pc.Envelope.IsReadyForPush.Should().BeFalse();
+        pc.Envelope.ForPush().Should().BeNull("tur atlanır");
+        pc.Exec("UPDATE _meta SET ReplicaId = NULL WHERE Id = 1");
+        pc.Envelope.ForPush().Should().BeNull("kimlik bozuk olsa da zarfsız (v1) gövdeye düşmez");
+
+        _server.SalesRequestCount.Should().Be(0);
+        pc.EnvelopeLog.Entries.Where(e => e.Level == LogLevel.Error && e.Message.Contains("önceki kopya kimliği"))
+            .Should().ContainSingle("süreç başına bir kez");
+    }
+
     // ── kimlik eksik/bozuk ────────────────────────────────────────────────
 
     [Theory]

@@ -15,10 +15,20 @@ namespace OrderDeck.App.Services;
 /// yalnız önceki kimliği ekler. Göç 049 sonrası yedekte işaret yazılmaz: <see cref="RestoreService"/> kimliği
 /// dosyada, değiştirmeden önce döndürür.</para>
 ///
+/// <para><b>İşaretin varlığı geri yüklemenin kanıtıdır</b> (§4.3, M20: geri yüklenmiş kopyada yerel kazanmaz).
+/// Önceki kimlik bilinmiyorsa (<see cref="RestoreService"/> değiştirilen veritabanını okuyamadı) ya da işaretin
+/// içeriği bozuksa kopya yine geri yüklenmiş bildirilir: rastgele bir nöbetçi kimlikle. Sunucu yalnız
+/// <c>PreviousReplicaId</c>'nin dolu olmasına bakar; bilinmeyen kimlik hiçbir oturuma sahip olmadığından devralma
+/// zinciri orada durur (zararsız).</para>
+///
 /// <para><b>Uygulama idempotent:</b> açılış göçünden hemen sonra (<c>AppHost</c>) bekleyen önceki kimlik yazılır,
 /// işaret silinir. Silme başarısız olursa sonraki açılış aynı değeri yeniden yazar (zararsız; sunucu önceki
 /// kimliği bir kez yazar). Kimlik bozuksa ya da önceki kimlikle aynıysa (beklenmez) ayrıca döndürülür: geri
 /// yüklenen dosya hiçbir zaman başka bir veritabanının kimliğiyle çalışmaz.</para>
+///
+/// <para><b>Uygulanamazsa</b> (işaret okunamadı, kimlik yazılamadı) işaret kalır, sonraki açılış yeniden dener; o
+/// süreçte satış senkronunun v2 istekleri kapalıdır (<see cref="RestoreMarkerOutcome.Unresolved"/>,
+/// <c>SalesSyncEnvelope.HoldUntilRestart</c>): geri yüklenmiş kopya sunucuya özgün görünmemeli.</para>
 /// </summary>
 public static class RestoreReplicaMarker
 {
@@ -38,26 +48,27 @@ public static class RestoreReplicaMarker
     /// <summary>
     /// Açılış göçünden SONRA çağrılır. İşaret yoksa hiçbir şey yapmaz.
     /// </summary>
-    /// <returns>Bekleyen yapılan önceki kimlik; işaret yok, bozuk ya da uygulanamadıysa <c>null</c>.</returns>
-    public static Guid? ApplyAtBoot(string databaseFile, ReplicaIdentityRepository identity, ILogger log)
+    public static RestoreMarkerOutcome ApplyAtBoot(string databaseFile, ReplicaIdentityRepository identity, ILogger log)
     {
         var path = PathFor(databaseFile);
-        if (!File.Exists(path)) return null;
+        if (!File.Exists(path)) return new RestoreMarkerOutcome(null, Unresolved: false);
 
         Guid previous;
         try
         {
             if (!Guid.TryParse(File.ReadAllText(path).Trim(), out previous) || previous == Guid.Empty)
             {
-                log.LogWarning("Geri yükleme kimlik işareti bozuk; önceki kopya kimliği bildirilemeyecek, işaret siliniyor");
-                TryDelete(path, log);
-                return null;
+                previous = Guid.NewGuid();
+                log.LogWarning(
+                    "Geri yükleme kimlik işareti bozuk; kopya yine geri yüklenmiş bildirilecek, önceki kimlik bilinmiyor (nöbetçi previous={PreviousReplicaId})",
+                    previous);
             }
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            log.LogWarning(ex, "Geri yükleme kimlik işareti okunamadı; sonraki açılışta yeniden denenecek");
-            return null;
+            log.LogError(ex,
+                "Geri yükleme kimlik işareti okunamadı; bu süreçte satış senkronu sunucuya istek göndermeyecek, sonraki açılışta yeniden denenecek");
+            return new RestoreMarkerOutcome(null, Unresolved: true);
         }
 
         try
@@ -80,12 +91,13 @@ public static class RestoreReplicaMarker
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "Geri yükleme kimlik işareti uygulanamadı; sonraki açılışta yeniden denenecek");
-            return null;
+            log.LogError(ex,
+                "Geri yükleme kimlik işareti uygulanamadı; bu süreçte satış senkronu sunucuya istek göndermeyecek, sonraki açılışta yeniden denenecek");
+            return new RestoreMarkerOutcome(null, Unresolved: true);
         }
 
         TryDelete(path, log);
-        return previous;
+        return new RestoreMarkerOutcome(previous, Unresolved: false);
     }
 
     private static void TryDelete(string path, ILogger log)
@@ -97,3 +109,10 @@ public static class RestoreReplicaMarker
         }
     }
 }
+
+/// <summary>Açılıştaki işaret uygulamasının sonucu (<see cref="RestoreReplicaMarker.ApplyAtBoot"/>).</summary>
+/// <param name="Previous">Bekleyen yapılan önceki kimlik (bilinmiyorsa nöbetçi); işaret yoksa ya da uygulanamadıysa
+/// boş.</param>
+/// <param name="Unresolved">İşaret var ama bu açılışta uygulanamadı: veritabanı geri yüklenmiş, sunucuya henüz öyle
+/// bildirilemiyor. Çağıran bu süreçte satış senkronunun v2 isteklerini kapatır; işaret sonraki açılışa kalır.</param>
+public readonly record struct RestoreMarkerOutcome(Guid? Previous, bool Unresolved);

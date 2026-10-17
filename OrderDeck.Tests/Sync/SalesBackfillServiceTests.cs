@@ -412,6 +412,24 @@ public sealed class SalesBackfillServiceTests : IDisposable
     // ── 3. Sunucu kazanır (geri yüklenmiş kopya) ──────────────────────────
 
     [Fact]
+    public async Task Geri_yukleme_kimligi_cozulemeyen_surecte_geri_doldurma_istek_gondermez()
+    {
+        // AppHost açılışta geri yükleme işaretini uygulayamadı: sunucu kopyayı özgün sanıp localWins = true dönerdi
+        // (§4.3, M20). Kapı açılışta, hello'dan önce kurulur; burada hello'dan sonra kurulması geri doldurmanın kendi
+        // denetimini sınar (hello'nun kapısına güvenmez).
+        var session = AddSession(T0, T0 + 3600);
+        AddLabel(session, printedAt: T0 + 3000);
+        await Ws.HelloAsync();
+        Ws.Envelope.HoldUntilRestart();
+
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.WaitingForHello);
+
+        _server.BackfillCalls.Should().BeEmpty();
+        _server.Calls(FakeSalesServer.OrdersSync).Should().BeEmpty("boşaltma da gitmez");
+        CompletionHellos.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Geri_yuklenmis_kopyada_sunucu_kazanir_yalniz_iz_tamamlanma_beklemez()
     {
         var session = AddSession(T0, T0 + 3600);

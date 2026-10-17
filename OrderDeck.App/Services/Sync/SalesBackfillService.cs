@@ -165,7 +165,10 @@ public sealed class SalesBackfillService
 
         var cursor = ReadCursor(licenseKey, replicaId);
         if (cursor.Phase == SalesBackfillPhase.Completed) return SalesBackfillTourOutcome.AlreadyCompleted;
-        if (!_envelope.HasHelloSucceeded(licenseKey, replicaId)) return SalesBackfillTourOutcome.WaitingForHello;
+        // Geri yükleme kimliği bu süreçte yazılamadıysa hello da gitmez (zarf kapalı); ayrıca denetlenir: sunucu kopyayı
+        // özgün sanıp yereli kazandırırdı (§4.3, M20).
+        if (!_envelope.HasHelloSucceeded(licenseKey, replicaId) || _envelope.IsHeldUntilRestart)
+            return SalesBackfillTourOutcome.WaitingForHello;
 
         var budget = MaxRequestsPerTour;
         var licenseId = await ResolveLicenseIdAsync(licenseKey, () => budget--, ct).ConfigureAwait(false);

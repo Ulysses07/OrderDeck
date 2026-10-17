@@ -186,6 +186,11 @@ public sealed class RestoreService
     ///   <item>049 öncesi yedek: kolon yok. Önceki = değiştirilen veritabanının kimliği; açılış göçü 049'u koşup
     ///   yeni kimliği tohumladıktan sonra <see cref="RestoreReplicaMarker"/> ekler (gerekçe orada).</item>
     /// </list>
+    /// Geri yükleme hiçbir zaman önceki kimliksiz bitmez (§4.3, §8.7, M20: geri yüklenmiş kopyada yerel kazanmaz).
+    /// Önceki kimlik bilinmiyorsa (değiştirilen veritabanı okunamadı — geri yüklemenin sık nedeni bozuk dosya — ve
+    /// yedeğin kendi kimliği de yok) rastgele bir nöbetçi yazılır: sunucu yalnız alanın dolu olmasına bakar,
+    /// bilinmeyen kimlik hiçbir oturuma sahip olmadığından devralma da olmaz. Yedeğin henüz bildirilmemiş önceki
+    /// kimliği varsa o gerçek bir kimliktir ve korunur.
     /// Geçici dosya önce rollback-journal kipine alınır: WAL'da kalan döndürme, dosya taşınırken yan dosyasıyla
     /// birlikte kaybolabilirdi. Kip açılışta yeniden WAL olur (<see cref="SqliteConnectionFactory"/>).
     /// </summary>
@@ -205,25 +210,31 @@ public sealed class RestoreService
         var identity = new ReplicaIdentityRepository(restored);
         if (identity.HasIdentityColumns())
         {
-            var backupId = identity.GetReplicaId();
-            var previous = backupId ?? replacedId;
+            var previous = identity.GetReplicaId() ?? replacedId ?? identity.GetPendingPreviousReplicaId()
+                ?? UnknownPrevious();
             var next = identity.Rotate(previous);
             _log.LogInformation(
                 "Geri yüklenen veritabanına yeni kopya kimliği verildi (replica={ReplicaId}, previous={PreviousReplicaId})",
                 next, previous);
         }
-        else if (replacedId is { } previous)
+        else
         {
+            var previous = replacedId ?? UnknownPrevious();
             RestoreReplicaMarker.Write(_databaseFile, previous);
             _log.LogInformation(
                 "Geri yüklenen yedek göç 049'dan eski; önceki kopya kimliği açılış göçünden sonra eklenecek (previous={PreviousReplicaId})",
                 previous);
         }
-        else
-        {
-            _log.LogInformation(
-                "Geri yüklenen yedek göç 049'dan eski ve değiştirilen veritabanının kopya kimliği yok; açılış göçü yeni kimlik üretecek");
-        }
+    }
+
+    /// <summary>Önceki kimlik bilinmiyor: kopya yine geri yüklenmiş bildirilsin diye rastgele bir nöbetçi.</summary>
+    private Guid UnknownPrevious()
+    {
+        var sentinel = Guid.NewGuid();
+        _log.LogWarning(
+            "Geri yüklemede önceki kopya kimliği bilinmiyor; kopya geri yüklenmiş bildirilecek (nöbetçi previous={PreviousReplicaId})",
+            sentinel);
+        return sentinel;
     }
 
     /// <summary>Değiştirilen (şu anki) veritabanının kopya kimliği; dosya yok, eski şema ya da okunamıyorsa
@@ -238,7 +249,8 @@ public sealed class RestoreService
         }
         catch (Exception ex) when (ex is SqliteException or InvalidOperationException)
         {
-            _log.LogWarning(ex, "Değiştirilen veritabanının kopya kimliği okunamadı; önceki kimlik bildirilemeyebilir");
+            _log.LogWarning(ex,
+                "Değiştirilen veritabanının kopya kimliği okunamadı; yedeğin kimliği yoksa önceki kimlik yerine nöbetçi yazılacak");
             return null;
         }
     }
