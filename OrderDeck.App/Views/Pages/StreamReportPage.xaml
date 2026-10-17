@@ -20,8 +20,13 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Özet dörtlüsü: yayının tek bakışta okunan karnesi. -->
-        <UniformGrid Grid.Row="0" Rows="1" Columns="4"
+        <!-- Özet dörtlüsü: yayının tek bakışta okunan karnesi. Başka
+             bilgisayarın yayınında üstünde makine adı (W2-09, §5.7). -->
+        <StackPanel Grid.Row="0">
+        <TextBlock Text="{Binding RemoteMachineText}"
+                   Visibility="{Binding RemoteMachineText, Converter={StaticResource NullToCollapsedConverter}}"
+                   Style="{StaticResource OD.Text.Label}"/>
+        <UniformGrid Rows="1" Columns="4"
                      Margin="{StaticResource OD.Pad.Bottom3}">
             <StackPanel>
                 <TextBlock Text="SÜRE" Style="{StaticResource OD.Text.Micro}"/>
@@ -49,6 +54,7 @@
                            FontSize="{StaticResource OD.Font.F3}"/>
             </StackPanel>
         </UniformGrid>
+        </StackPanel>
 
         <!-- Platform kırılımı: tek platformlu yayında gürültü olmasın diye
              yalnızca 2+ platform varken görünür (Excel'de her zaman var). -->

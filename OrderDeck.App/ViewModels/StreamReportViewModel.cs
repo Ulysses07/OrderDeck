@@ -27,6 +27,10 @@ public sealed partial class StreamReportViewModel : ViewModelBase
     [ObservableProperty] private decimal _totalAmount;
     [ObservableProperty] private int    _uniqueCustomers;
 
+    /// <summary>Başka bilgisayarın (satış akışından inmiş) yayınında "PC-A'da yapılan yayın" (spec 2026-10-13 §5.7;
+    /// W2-09); bu bilgisayarın yayınında null (satır gizli).</summary>
+    [ObservableProperty] private string? _remoteMachineText;
+
     public ObservableCollection<TopCustomer>       TopCustomers      { get; } = new();
     public ObservableCollection<GiveawaySummary>   Giveaways         { get; } = new();
     public ObservableCollection<PlatformBreakdown> PlatformBreakdown { get; } = new();
@@ -96,6 +100,9 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         OnPropertyChanged(nameof(HasMultiplePlatforms));
 
         var session = _sessions.GetById(sessionId);
+        RemoteMachineText = session?.Origin != OrderDeck.Core.Sessions.StreamSessionOrigin.Remote ? null
+            : string.IsNullOrWhiteSpace(session.OwnerMachineName) ? "Başka bir bilgisayarda yapılan yayın"
+            : $"{Services.Sync.SalesCommandMessages.Locative(session.OwnerMachineName)} yapılan yayın";
         _currentSessionDate = session?.EndedAt is long ended
             ? DateTimeOffset.FromUnixTimeSeconds(ended).LocalDateTime
             : DateTime.Now;
