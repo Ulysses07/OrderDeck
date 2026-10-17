@@ -625,6 +625,24 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SalesConflictLogRepository>();
         services.AddSingleton<Services.Sync.SalesCommandClient>();
 
+        // W2-05 (spec 2026-10-13 §5.3): düzenleme yönlendiricisi — müşteri kartı, Basılanlar (toplu iptal, yeniden
+        // bas) ve yedek çekmecesi bunun üzerinden yazar. Mod Off'ta bugünkü LabelService çağrısı (kapı ve ağ yok).
+        // Devir kapısı TEK örnek: kapanış gönderimiyle aynı kilitler. Bağlantı ölçüsü son sales/state'ten (satış akışı
+        // turunun kalp atışı); yeniden baskının önbellek notu akışın son yetiştiği andan.
+        services.AddSingleton<Services.Sales.SalesConnectivity>(sp => new Services.Sales.SalesConnectivity(
+            () => sp.GetRequiredService<Services.Sync.SalesSyncStateService>().LastState,
+            () => sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>().CurrentLicenseKey));
+        services.AddSingleton<Services.Sales.ILabelEditor>(sp => new Services.Sales.SalesEditRouter(
+            sp.GetRequiredService<LabelService>(),
+            sp.GetRequiredService<LabelRepository>(),
+            sp.GetRequiredService<SessionRepository>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+            sp.GetRequiredService<Services.Sync.SalesCommandClient>(),
+            sp.GetRequiredService<Services.Sales.SalesConnectivity>(),
+            () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().Status.LastCaughtUpAt,
+            sp.GetRequiredService<ILogger<Services.Sales.SalesEditRouter>>()));
+
         // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
         // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
         // null olurdu (CustomerSyncDiTests denetler).

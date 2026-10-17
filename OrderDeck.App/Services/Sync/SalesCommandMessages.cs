@@ -46,6 +46,15 @@ public static class SalesCommandMessages
     /// <summary><c>shipment-shipped</c>, kargo kararında.</summary>
     public const string ShipmentShippedDecision = "Kargo dosyası zaten kargoya verilmiş; karar değişmez.";
 
+    /// <summary>Devir kapısı (§5.2): kendi bitmiş ama devredilmemiş yayınının kapanış gönderimi o an kilidi tutuyor;
+    /// yerel düzenleme beklemez, reddedilir.</summary>
+    public const string HandoverInProgress = "Yayın sunucuya devrediliyor; birkaç saniye sonra tekrar dene.";
+
+    /// <summary>Çevrimdışı yeniden baskının ekran notu (§5.6): kâğıt önbellekten basıldı, verinin tazeliği son satış
+    /// akışı eşitlemesidir. Kâğıda yazılmaz.</summary>
+    public static string LastSync(DateTimeOffset? at, TimeZoneInfo? zone = null) =>
+        at is { } t ? $"son eşitleme {Clock(t, zone)}" : "son eşitleme bilinmiyor";
+
     /// <summary><c>session-live</c> (§5.3): "Bu yayın PC-A'da canlı (son sinyal SS:DD)".</summary>
     public static string SessionLive(string? machine, DateTimeOffset? ownerLastSeenAt, TimeZoneInfo? zone = null)
     {

@@ -323,4 +323,25 @@ public sealed class CustomerSyncDiTests
         prompt.Should().BeOfType<global::OrderDeck.App.Services.VelopackUpdatePrompt>();
         host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>().Should().BeSameAs(prompt);
     }
+
+    [Fact]
+    public void Duzenleme_yonlendiricisi_tekil_devir_kapisini_komut_istemcisini_ve_yerel_servisi_paylasir()
+    {
+        // W2-05 (spec 2026-10-13 §5.2, §5.3): yerel yolun kapısı kapanış gönderiminin kilitleriyle AYNI örnek olmalı
+        // (yoksa "boş" okuması ile devir arasına yerel yazım girer); kart, Basılanlar ve yedek çekmecesi aynı
+        // yönlendiriciyi alır — isteğe bağlı parametre DI'dan gelmezse sessizce yalnız yerel düzenleyiciye düşerdi.
+        using var host = new global::OrderDeck.App.AppHost();
+        var editor = host.Services.GetRequiredService<global::OrderDeck.App.Services.Sales.ILabelEditor>();
+
+        editor.Should().BeOfType<global::OrderDeck.App.Services.Sales.SalesEditRouter>();
+        host.Services.GetRequiredService<global::OrderDeck.App.Services.Sales.ILabelEditor>().Should().BeSameAs(editor);
+        PrivateField<OrderDeck.Core.Sessions.HandoverGate>(editor, "_handover").Should().BeSameAs(
+            host.Services.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>());
+        PrivateField<SalesCommandClient>(editor, "_commands").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesCommandClient>());
+        PrivateField<OrderDeck.Core.Sales.LabelService>(editor, "_labels").Should().BeSameAs(
+            host.Services.GetRequiredService<OrderDeck.Core.Sales.LabelService>());
+        PrivateField<global::OrderDeck.App.Services.Sales.SalesConnectivity>(editor, "_connectivity").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.App.Services.Sales.SalesConnectivity>());
+    }
 }
