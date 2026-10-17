@@ -397,7 +397,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         var tour = Task.Run(() => pc.Service.TourOnceAsync(cts.Token));
         try
         {
-            await _server.RequestHanging.WaitAsync(TimeSpan.FromSeconds(10));
+            await _server.RequestHanging.WaitAsync(Patience);
 
             var sessionId = Guid.NewGuid().ToString("N");
             var watch = Stopwatch.StartNew();
@@ -489,12 +489,16 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         SalesSyncStateHostedService.DefaultCadence.Should().Be(TimeSpan.FromSeconds(30));
     }
 
+    /// <summary>Üst sınır, bekleme süresi değil: koşul sağlanınca hemen döner. Tam paket yükünde iş havuzu geç
+    /// büyür; arka plan işinin ilk turu 10 sn'yi aşabiliyordu.</summary>
+    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
+
     private static async Task WaitUntil(Func<bool> condition)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var deadline = DateTime.UtcNow + Patience;
         while (!condition())
         {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException("koşul 10 sn'de sağlanmadı");
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"koşul {Patience.TotalSeconds} sn'de sağlanmadı");
             await Task.Delay(20);
         }
     }

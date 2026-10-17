@@ -153,7 +153,7 @@ public sealed class SessionOrderSyncService
     /// <param name="ct">Belirteç.</param>
     public async Task<SyncResult> SyncOnceAsync(bool liveCadence, System.Threading.CancellationToken ct = default)
     {
-        await _pushGate.WaitAsync(ct).ConfigureAwait(false);
+        await EnterGateAsync(_pushGate, ct).ConfigureAwait(false);
         try
         {
             return await SyncCoreAsync(liveCadence, ct).ConfigureAwait(false);
@@ -162,6 +162,21 @@ public sealed class SessionOrderSyncService
         {
             _pushGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Gönderim kapısına girer. Belirteç kapıyı beklerken iptal edildiyse kapı alınmış olsa bile geri bırakılır ve
+    /// <see cref="System.OperationCanceledException"/> fırlar: <see cref="System.Threading.CancellationTokenSource.Cancel()"/>
+    /// önce bayrağı kurar, <see cref="System.Threading.SemaphoreSlim"/>'in bekleyeni listeden ancak sonra (iş havuzunda)
+    /// çıkar. O arada gelen <c>Release</c> kapıyı iptal edilmiş bekleyene verirdi; kapanışın payı dolduktan sonra bir
+    /// tur daha giderdi.
+    /// </summary>
+    internal static async Task EnterGateAsync(System.Threading.SemaphoreSlim gate, System.Threading.CancellationToken ct)
+    {
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        if (!ct.IsCancellationRequested) return;
+        gate.Release();
+        ct.ThrowIfCancellationRequested();
     }
 
     private async Task<SyncResult> SyncCoreAsync(bool liveCadence, System.Threading.CancellationToken ct)

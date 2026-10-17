@@ -326,6 +326,25 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
     }
 
     [Fact]
+    public async Task Kapiyi_beklerken_iptal_edilen_tur_kapi_ona_verilse_de_birakir_ve_girmez()
+    {
+        // CancellationTokenSource.Cancel önce bayrağı kurar, sonra geri çağrıları koşar; SemaphoreSlim'in bekleyeni
+        // listeden ancak iş havuzunda çıkar. O arada gelen Release (kapıdaki turun bitişi) kapıyı iptal edilmiş
+        // bekleyene verir: kapanışın payı dolduktan sonra bir tur daha giderdi.
+        for (var i = 0; i < 50; i++)
+        {
+            using var gate = new SemaphoreSlim(0, 1);
+            using var cts = new CancellationTokenSource();
+            var enter = SessionOrderSyncService.EnterGateAsync(gate, cts.Token);
+            using var releaseOnCancel = cts.Token.Register(() => gate.Release());
+            cts.Cancel();
+
+            await FluentActions.Awaiting(() => enter).Should().ThrowAsync<OperationCanceledException>();
+            gate.CurrentCount.Should().Be(1, "kapı iptal edilmiş bekleyende kalmaz");
+        }
+    }
+
+    [Fact]
     public async Task Kapanis_gonderimi_kapidaki_turu_beklerken_butcesinde_biter_kapidan_vazgecer()
     {
         AddLabel();
