@@ -133,6 +133,8 @@ public sealed class CustomerChangesPullService
     private int _lastLegacyJobs = -1;
     private int _pagesThisRound;
     private bool _feedAdvancedThisRound;
+    /// <summary>Bu turda silmelerle metni boşaltılan etiket sayısı (§9, W2-02; ayar kapalıyken hep 0).</summary>
+    private int _labelTextsScrubbedThisRound;
     private bool _offlineLogged;
     private bool _environmentErrorLogged;
     private bool _reentrancyLogged;
@@ -211,6 +213,7 @@ public sealed class CustomerChangesPullService
         RunLocalMaintenance();
         _pagesThisRound = 0;
         _feedAdvancedThisRound = false;
+        _labelTextsScrubbedThisRound = 0;
 
         // Gönderim her çekmeden ÖNCE (eski Açık soru 13). İki bilgisayar aynı yayında yorum
         // okurken yeni yorumcuların satırları sunucuya önce gider; asıl kayıt geldiğinde
@@ -431,10 +434,14 @@ public sealed class CustomerChangesPullService
     }
 
     /// <summary>Yalnız yeni bir şey yapan silme <see cref="FeedApplyResult.Purged"/> sayılır (M-4):
-    /// CursorReset tekrarında zaten uygulanmış silme "KVKK silme" günlüğünü yinelemez.</summary>
+    /// CursorReset tekrarında zaten uygulanmış silme "KVKK silme" günlüğünü yinelemez.
+    /// <c>SalesSyncState.ScrubOrderText</c> açıksa aynı işlemde kişinin etiket metni de boşalır (§9, W2-02 —
+    /// kip ne olursa olsun); sayısı turun günlüğüne gider.</summary>
     private FeedApplyResult ApplyPurge(WpfCustomerChangeItem item, DateTimeOffset purgedAt)
     {
-        _customers.RecordPurge(item.Platform, item.Username, purgedAt.ToUnixTimeSeconds(), out var changed);
+        _customers.RecordPurge(item.Platform, item.Username, purgedAt.ToUnixTimeSeconds(), out var changed,
+            out var labelTexts);
+        _labelTextsScrubbedThisRound += labelTexts;
         return changed ? FeedApplyResult.Purged : FeedApplyResult.Unchanged;
     }
 
@@ -711,6 +718,9 @@ public sealed class CustomerChangesPullService
                 N(FeedApplyResult.Skipped));
         if (N(FeedApplyResult.Purged) > 0)
             _log.LogInformation("KVKK silme: {Count} silme kararı uygulandı", N(FeedApplyResult.Purged));
+        if (_labelTextsScrubbedThisRound > 0)
+            _log.LogInformation("KVKK metin boşaltma: {Count} etiketin takma adı ve yorumu boşaltıldı (ScrubOrderTextOnPurge)",
+                _labelTextsScrubbedThisRound);
     }
 
     /// <summary>U8: taşıma, ödeme işi kapsam çakışmasında kopyanın anahtarlı işini miras kapsamına

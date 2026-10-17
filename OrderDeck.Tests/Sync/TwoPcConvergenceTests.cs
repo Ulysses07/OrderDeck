@@ -54,6 +54,21 @@ public sealed class TwoPcConvergenceTests
         public string? Tckn { get; set; }
     }
 
+    /// <summary>Etiketin sınanan kolonları (ham).</summary>
+    private sealed record LabelSnapshot
+    {
+        public string Id { get; init; } = "";
+        public string CustomerId { get; init; } = "";
+        public string Username { get; init; } = "";
+        public string? DisplayName { get; init; }
+        public string MessageText { get; init; } = "";
+        public string? Code { get; init; }
+        public double Price { get; init; }
+        public long Revision { get; init; }
+        public long? SyncedAt { get; init; }
+        public long? StockSyncedAt { get; init; }
+    }
+
     /// <summary>Bir bilgisayarın gerçek yığını: kendi SQLite'ı, gerçek gönderim, akış ve form servisleri.</summary>
     private sealed class Pc : IDisposable
     {
@@ -180,6 +195,45 @@ public sealed class TwoPcConvergenceTests
         {
             using var c = Db.Open();
             return c.ExecuteScalar<string?>("SELECT CustomerId FROM Label WHERE Id = @labelId", new { labelId });
+        }
+
+        /// <summary>Etiketin sınanan kolonları (ham).</summary>
+        public LabelSnapshot LabelRow(string labelId)
+        {
+            using var c = Db.Open();
+            return c.QuerySingle<LabelSnapshot>(
+                @"SELECT Id, CustomerId, Username, DisplayName, MessageText, Code, Price, Revision, SyncedAt, StockSyncedAt
+                  FROM Label WHERE Id = @labelId", new { labelId });
+        }
+
+        /// <summary>Başka bilgisayarın etiketinin satış akışından inmiş kopyası: devredilmiş uzak oturumda
+        /// (<c>Origin = 'remote'</c>, <c>Authority = 'server'</c>), onaylı, kilit altında (akışın eklemesi gibi).</summary>
+        public void RemoteLabelCopy(Label label, string customerId)
+        {
+            var sessionId = Guid.NewGuid().ToString("N");
+            using var scope = SyncApplyScope.Begin(Db);
+            scope.Execute(
+                @"INSERT INTO StreamSession (Id, Title, StartedAt, EndedAt, Platforms, SyncedAt, Origin, Authority,
+                                             OwnerMachineName, ReleasedAt)
+                  VALUES (@sessionId, 'Uzak yayın', 1, 2, '[""tiktok""]', 3, 'remote', 'server', 'PC-A', 2)",
+                new { sessionId });
+            scope.Execute(
+                @"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price,
+                                     AddedAt, SyncedAt, StockSyncedAt, ServerVersion)
+                  VALUES (@Id, @sessionId, @customerId, @Platform, @Username, @DisplayName, @MessageText, @Code, @price,
+                          @AddedAt, 3, 3, 1)",
+                new
+                {
+                    label.Id, sessionId, customerId, label.Platform, label.Username, label.DisplayName,
+                    label.MessageText, label.Code, price = (double)label.Price, label.AddedAt,
+                });
+            scope.Commit();
+        }
+
+        public void ScrubOrderText(bool on)
+        {
+            using var c = Db.Open();
+            c.Execute("UPDATE SalesSyncState SET ScrubOrderText = @v WHERE Id = 1", new { v = on ? 1 : 0 });
         }
 
         public void Dispose() => Db.Dispose();
@@ -595,6 +649,34 @@ public sealed class TwoPcConvergenceTests
             c.ExecuteScalar<int>("SELECT COUNT(*) FROM CustomerPurgeTombstone WHERE Username NOT LIKE '@%'").Should().Be(1);
         }
         a.LabelOwner(label.Id).Should().Be(id, "satış kaydı silmeden etkilenmez");
+    }
+
+    [Fact]
+    public async Task Silme_ayar_acikken_iki_bilgisayarda_etiket_metnini_bosaltir_satis_kaydi_kalir()
+    {
+        // §9 "Ayar açıkken yerelde" (W2-02): ScrubOrderText = 1 iken akıştan inen silme kişinin bütün yerel
+        // etiketlerinde takma adı ve yorumu boşaltır — A'nın kendi (canlı) oturumunda da, B'ye akıştan inmiş
+        // Authority='server' kopyasında da. Satış kaydı (sahip, kod, fiyat, onay ve Revision) kalır.
+        using var server = new FakeCustomerServer();
+        using var a = new Pc(server);
+        using var b = new Pc(server);
+        var id = a.Chat("ornek_kisi");
+        var label = a.Sell("ornek_kisi");
+        await a.TourAsync();
+        await b.TourAsync();
+        b.RemoteLabelCopy(label, id);
+        var before = new[] { a.LabelRow(label.Id), b.LabelRow(label.Id) };
+        a.ScrubOrderText(true);
+        b.ScrubOrderText(true);
+
+        server.Purge(Guid.Parse(id));
+        await a.TourAsync();
+        await b.TourAsync();
+
+        new[] { a.LabelRow(label.Id), b.LabelRow(label.Id) }.Should().Equal(
+            before.Select(r => r with { DisplayName = null, MessageText = "" }),
+            "yalnız takma ad ve yorum boşalır; satış kaydı silmeden etkilenmez");
+        a.LabelOwner(label.Id).Should().Be(id);
     }
 
     [Fact]

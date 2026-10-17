@@ -410,6 +410,119 @@ public sealed class CustomerChangesPullServiceTests
         conn.ExecuteScalar<int>("SELECT COUNT(*) FROM CustomerPurgeTombstone").Should().Be(0);
     }
 
+    // ── KVKK metin boşaltması (spec 2026-10-13 §9, ayara bağlı; W2-02) ──
+
+    /// <summary>Kişinin bir etiketi: <paramref name="remote"/> ise başka bilgisayarın devredilmiş, akıştan inmiş
+    /// yayınında (<c>Authority = 'server'</c>), değilse bu bilgisayarın canlı yayınında. Onaylı (SyncedAt dolu).</summary>
+    private static string SoldLabel(Fixture fx, string customerId, string username, bool remote)
+    {
+        var sessionId = Guid.NewGuid().ToString("N");
+        var labelId = Guid.NewGuid().ToString("N");
+        using var scope = SyncApplyScope.Begin(fx.Db);
+        scope.Execute(
+            @"INSERT INTO StreamSession (Id, Title, StartedAt, EndedAt, Platforms, SyncedAt, Origin, Authority, ReleasedAt)
+              VALUES (@sessionId, 'yayın', 100, @endedAt, '[""tiktok""]', 300, @origin, @authority, @endedAt)",
+            new
+            {
+                sessionId, endedAt = remote ? 200L : (long?)null,
+                origin = remote ? "remote" : "local", authority = remote ? "server" : "local",
+            });
+        scope.Execute(
+            @"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price,
+                                 AddedAt, Revision, SyncedAt, StockSyncedAt, ServerVersion)
+              VALUES (@labelId, @sessionId, @customerId, 'tiktok', @username, 'Takma Ad', 'MAVI XL aldım', 'A1', 150,
+                      150, 2, 300, 300, 4)",
+            new { labelId, sessionId, customerId, username });
+        scope.Commit();
+        return labelId;
+    }
+
+    private sealed record LabelTextRow(
+        string? DisplayName, string MessageText, string? Code, string CustomerId, long Revision, long? SyncedAt);
+
+    private static LabelTextRow LabelText(Fixture fx, string labelId)
+    {
+        using var c = fx.Db.Open();
+        var r = c.QuerySingle<(string?, string, string?, string, long, long?)>(
+            "SELECT DisplayName, MessageText, Code, CustomerId, Revision, SyncedAt FROM Label WHERE Id = @labelId",
+            new { labelId });
+        return new LabelTextRow(r.Item1, r.Item2, r.Item3, r.Item4, r.Item5, r.Item6);
+    }
+
+    private static void SetScrubOrderText(Fixture fx, bool on)
+    {
+        using var c = fx.Db.Open();
+        c.Execute("UPDATE SalesSyncState SET ScrubOrderText = @v WHERE Id = 1", new { v = on ? 1 : 0 });
+    }
+
+    [Fact]
+    public async Task Ayar_acikken_akistan_inen_silme_kisinin_kendi_ve_uzak_etiket_metnini_bosaltir_gunluk_yalniz_sayi()
+    {
+        var id = Guid.NewGuid();
+        using var fx = Build(after => after == 0
+            ? Page(3, Item(id, "SILINEN", 3) with { PurgedAt = T1 })
+            : Page(after));
+        var victim = LocalRow(fx, "silinen", id);
+        var bystander = LocalRow(fx, "baska");
+        var own = SoldLabel(fx, victim, "silinen", remote: false);
+        var remote = SoldLabel(fx, victim, "silinen", remote: true);
+        var untouched = SoldLabel(fx, bystander, "baska", remote: true);
+        SetScrubOrderText(fx, true);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        foreach (var label in new[] { own, remote })
+            LabelText(fx, label).Should().Be(new LabelTextRow(null, "", "A1", victim, 2, 300),
+                "takma ad ve yorum boşalır; kod, CustomerId, Revision ve SyncedAt kalır (gönderilmez)");
+        LabelText(fx, untouched).Should().Be(new LabelTextRow("Takma Ad", "MAVI XL aldım", "A1", bystander, 2, 300));
+        fx.Log.Entries.Should().ContainSingle(e => e.Message.Contains("KVKK metin boşaltma: 2"));
+        fx.Log.Entries.Should().NotContain(e => e.Message.Contains("silinen", StringComparison.OrdinalIgnoreCase)
+                                                || e.Message.Contains("MAVI") || e.Message.Contains("Takma"),
+            "günlük yalnız sayı taşır");
+    }
+
+    [Fact]
+    public async Task Ayar_acikken_takilan_sayfanin_ilerisindeki_silme_de_etiket_metnini_bosaltir()
+    {
+        var canonical = Guid.NewGuid();
+        var purged = Guid.NewGuid();
+        var busy = new CustomerBusySet();
+        using var fx = Build(after => after == 0
+            ? Page(9, Item(canonical, "ornek", 5), Item(purged, "silinecek", 9) with { PurgedAt = T1 })
+            : Page(after), busy: busy);
+        var holder = LocalRow(fx, "Ornek");
+        var victim = LocalRow(fx, "silinecek");
+        var label = SoldLabel(fx, victim, "silinecek", remote: true);
+        SetScrubOrderText(fx, true);
+        using var lease = await busy.EnterAsync(holder);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.Busy);
+
+        LabelText(fx, label).Should().Be(new LabelTextRow(null, "", "A1", victim, 2, 300),
+            "takılan öğeyi beklemeden uygulanan silme de etiket metnini boşaltır");
+        fx.FeedCursor.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Ayar_kapaliyken_akistan_inen_silme_etiketlere_dokunmaz()
+    {
+        var id = Guid.NewGuid();
+        using var fx = Build(after => after == 0
+            ? Page(3, Item(id, "silinen", 3) with { PurgedAt = T1 })
+            : Page(after));
+        var victim = LocalRow(fx, "silinen", id);
+        var own = SoldLabel(fx, victim, "silinen", remote: false);
+        var remote = SoldLabel(fx, victim, "silinen", remote: true);
+
+        (await fx.Svc.PullOnceAsync(CancellationToken.None)).Should().Be(CustomerPullOutcome.CaughtUp);
+
+        fx.Customers.GetById(victim)!.DisplayName.Should().Be("[Silindi]");
+        foreach (var label in new[] { own, remote })
+            LabelText(fx, label).Should().Be(new LabelTextRow("Takma Ad", "MAVI XL aldım", "A1", victim, 2, 300),
+                "ayar kapalı (üretim, §11): bugünkü politika — etiket metnine dokunulmaz");
+        fx.Log.Entries.Should().NotContain(e => e.Message.Contains("KVKK metin boşaltma"));
+    }
+
     // ── yönlendirme, kimlik sahipleri, durma (U4, U5) ───────────────────
 
     [Fact]
