@@ -194,6 +194,55 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         _server.Faults.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Yerel_kargo_ayari_degisince_sonraki_tur_hello_yu_yeni_degerle_yeniden_gonderir()
+    {
+        // §6.2 "Geçiş", §8.1-6: sales-sync status her PC'nin yerel değerini yan yana gösterir; süreç içinde değişen
+        // ayar yeniden açılışa kadar sunucuda eski kalmamalı.
+        var pc = NewPc();
+        pc.Settings.Shipping.FreeShippingThreshold = 500m;
+        pc.Settings.Shipping.ShippingFee = 60m;
+
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+        _server.Hellos.Should().ContainSingle("değişmeyen ayar ek hello göndermez");
+
+        pc.Settings.Shipping.ShippingFee = 75m;
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+
+        _server.Hellos.Should().HaveCount(2);
+        var shipping = _server.Hellos[1].Json.GetProperty("reportedShipping");
+        shipping.GetProperty("threshold").GetDecimal().Should().Be(500m);
+        shipping.GetProperty("fee").GetDecimal().Should().Be(75m);
+        var row = _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!;
+        row.ReportedThreshold.Should().Be(500m);
+        row.ReportedFee.Should().Be(75m);
+
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+        _server.Hellos.Should().HaveCount(2, "yeni değer bildirildi; değişmedikçe hello tekrarlanmaz");
+
+        // Ölçüt son BAŞARILI hello'dur: düşen bildirim sonraki turda yeniden denenir.
+        pc.Settings.Shipping.FreeShippingThreshold = 750m;
+        _server.EnqueueStatus(FakeSalesServer.Hello, 500);
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Failed);
+        _server.Hellos.Should().HaveCount(3);
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+        _server.Hellos.Should().HaveCount(4);
+        _server.Hellos[3].Json.GetProperty("reportedShipping").GetProperty("threshold").GetDecimal().Should().Be(750m);
+        _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!.ReportedThreshold.Should().Be(750m);
+
+        // Özelliğin kapatılması da bir değişikliktir: iki alan boş bildirilir.
+        pc.Settings.Shipping.ShippingFee = null;
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+        _server.Hellos.Should().HaveCount(5);
+        var off = _server.Hellos[4].Json.GetProperty("reportedShipping");
+        off.GetProperty("threshold").ValueKind.Should().Be(JsonValueKind.Null);
+        off.GetProperty("fee").ValueKind.Should().Be(JsonValueKind.Null);
+        (await pc.TourAsync()).Should().Be(SalesStateTourOutcome.Ok);
+        _server.Hellos.Should().HaveCount(5);
+        _server.Faults.Should().BeEmpty();
+    }
+
     // ── state ─────────────────────────────────────────────────────────────
 
     [Fact]

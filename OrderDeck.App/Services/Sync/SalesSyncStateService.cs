@@ -40,8 +40,8 @@ public sealed record SalesStateSnapshot(
 /// Satış senkronunun kopya turu (spec 2026-10-13 §4.5, §8.2-1, §8.7): <c>sales/hello</c> ve her turda
 /// <c>sales/state</c> (kalp atışı). Tur 30 sn'de bir ve açılışta hemen (<see cref="SalesSyncStateHostedService"/>).
 ///
-/// <para><b>hello:</b> süreç başına (lisans, kopya) çifti için bir kez; lisans değişince ya da kimlik dönünce
-/// yeniden. Gövde: kimlik, protokol 2, yetenek düzeyi, görülen kip, makine adı, donanım parmak izi, yerel kargo
+/// <para><b>hello:</b> süreç başına (lisans, kopya) çifti için bir kez; lisans değişince, kimlik dönünce ya da yerel
+/// kargo ayarı son başarılı hello'nun bildirdiğinden farklılaşınca yeniden (<see cref="HelloIsCurrent"/>). Gövde: kimlik, protokol 2, yetenek düzeyi, görülen kip, makine adı, donanım parmak izi, yerel kargo
 /// ayarı (<c>AppSettings.Shipping</c>; özellik kapalıyken iki alan da boş) ve bekleyen önceki kimlik (§8.7).
 /// 2xx önceki kimliği siler (karşılaştır ve sil) ve zarfta bu (lisans, kopya) için gönderimi açar
 /// (<see cref="SalesSyncEnvelope.IsReadyForPush"/>). Başarısız hello sonraki turda yeniden denenir.</para>
@@ -82,6 +82,8 @@ public sealed class SalesSyncStateService
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
     private (string LicenseKey, Guid ReplicaId)? _helloSentFor;
+    /// <summary>Son başarılı hello'nun bildirdiği yerel kargo ayarı (<see cref="HelloIsCurrent"/>).</summary>
+    private ReportedShippingDto? _helloShipping;
     private string? _modeOnWarnedFor;
     private volatile SalesStateSnapshot? _last;
 
@@ -137,7 +139,7 @@ public sealed class SalesSyncStateService
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
         if (licenseId is null) return SalesStateTourOutcome.NoLicense;
 
-        var helloOk = _helloSentFor == (licenseKey, replicaId)
+        var helloOk = HelloIsCurrent(licenseKey, replicaId)
             || await HelloAsync(licenseKey, licenseId.Value, replicaId, ct).ConfigureAwait(false);
         var stateOk = await StateAsync(licenseKey, licenseId.Value, replicaId, ct).ConfigureAwait(false);
         return helloOk && stateOk ? SalesStateTourOutcome.Ok : SalesStateTourOutcome.Failed;
@@ -165,6 +167,36 @@ public sealed class SalesSyncStateService
         }
     }
 
+    /// <summary>
+    /// Bu (lisans, kopya) için hello gitti ve bildirdiği yerel kargo ayarı hâlâ geçerli mi. Ayar süreç içinde
+    /// değiştiyse (ayar ekranı) hello yeniden gider: yoksa sunucunun <c>ReportedThreshold</c>/<c>ReportedFee</c>'si
+    /// yeniden açılışa dek eski kalır ve <c>sales-sync status</c> bayat değeri gösterirdi (§6.2 "Geçiş", §8.1-6).
+    /// Ölçüt son BAŞARILI hello'dur; düşen bildirim sonraki turda yeniden denenir.
+    /// </summary>
+    private bool HelloIsCurrent(string licenseKey, Guid replicaId)
+    {
+        if (_helloSentFor != (licenseKey, replicaId)) return false;
+        try
+        {
+            return ReportedShipping() == _helloShipping;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ayar okunamadı: hello denenir; hazırlanırken aynı hata uyarı serisine düşer.
+            return false;
+        }
+    }
+
+    /// <summary>hello'nun bildirdiği yerel kargo ayarı (<c>AppSettings.Shipping</c>); özellik kapalıyken iki alan da
+    /// boş.</summary>
+    private ReportedShippingDto ReportedShipping()
+    {
+        var shipping = _settings().Shipping;
+        return shipping.IsEnabled
+            ? new ReportedShippingDto(shipping.FreeShippingThreshold, shipping.ShippingFee)
+            : new ReportedShippingDto(null, null);
+    }
+
     private async Task<bool> HelloAsync(
         string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct, bool backfillCompleted = false)
     {
@@ -182,7 +214,6 @@ public sealed class SalesSyncStateService
                 previous = null;
             }
 
-            var shipping = _settings().Shipping;
             request = new SalesHelloRequest(
                 ReplicaId: replicaId,
                 PreviousReplicaId: previous,
@@ -191,9 +222,7 @@ public sealed class SalesSyncStateService
                 Protocol: SalesSyncEnvelope.Protocol,
                 FeatureLevel: SalesSyncEnvelope.FeatureLevel,
                 SeenMode: _envelope.SeenMode,
-                ReportedShipping: shipping.IsEnabled
-                    ? new ReportedShippingDto(shipping.FreeShippingThreshold, shipping.ShippingFee)
-                    : new ReportedShippingDto(null, null),
+                ReportedShipping: ReportedShipping(),
                 BackfillCompleted: backfillCompleted ? true : null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -213,6 +242,7 @@ public sealed class SalesSyncStateService
         }
 
         _helloSentFor = (licenseKey, replicaId);
+        _helloShipping = request.ReportedShipping;
         _envelope.MarkHelloSucceeded(licenseKey, replicaId);
         _helloFailures.Succeeded();
 
