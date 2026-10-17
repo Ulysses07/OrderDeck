@@ -825,6 +825,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // BAŞTA: metot oturum yokken erken dönüyor — sonda olsa durum satırı yayın dışında donardı.
         RefreshSyncStatusThrottled();
         RefreshPrintedConnectivity();
+        RefreshRemoteSessionsThrottled();   // W2-09: "son sinyal" yaşı ve eşik uygunluğu dakikada bir
 
         QueueCount = PrintQueue.Count;
         ClockText = DateTime.Now.ToString("HH:mm");
@@ -1126,7 +1127,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
         Services.Sync.SessionOrderSyncService? orderSync = null,
         Services.Sync.SalesChangesPullService? salesPull = null,
-        Services.Sales.ILabelEditor? labelEditor = null)
+        Services.Sales.ILabelEditor? labelEditor = null,
+        RemoteSessionsViewModel? remoteSessions = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1169,10 +1171,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (_orderSync is not null) _orderSync.PushOutcome += OnSalesPushOutcome;
         // W2-03: satış akışından inen değişiklikler (kuyruk kopyaları, Basılanlar, sayaçlar) — _dispatcher'dan sonra.
         _salesPull = salesPull;
+        // W2-09: uzak yayın çipleri ve force-end (§5.7) — her akış turundan sonra ayna yeniden okunur.
+        RemoteSessions = remoteSessions;
         if (_salesPull is not null)
         {
             _salesPull.SalesChanged += OnSalesChanged;
             _salesPull.PendingCommandsSettled += OnPendingCommandsSettled;   // W2-07: imha ve kalıcı ret şeridi
+            _salesPull.TourCompleted += OnSalesTourCompleted;
         }
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
@@ -2919,6 +2924,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             _salesPull.SalesChanged -= OnSalesChanged;
             _salesPull.PendingCommandsSettled -= OnPendingCommandsSettled;
+            _salesPull.TourCompleted -= OnSalesTourCompleted;
         }
 
         Banner.Dispose();

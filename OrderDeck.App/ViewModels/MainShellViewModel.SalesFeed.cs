@@ -37,6 +37,7 @@ public sealed partial class MainShellViewModel
             RefreshPrintedEditAvailability();   // W2-05: inen oturum sunucuya geçmiş olabilir (§5.7 düğme durumu)
             RefreshHeroStats();
             RefreshSalesSyncStatus(_attention?.Invoke().SkippedSalesFeedItems ?? 0);
+            RefreshRemoteSessions();            // W2-09: kendi yayınının devri ya da force-end'i bandı açar
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

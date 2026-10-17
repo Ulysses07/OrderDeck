@@ -268,11 +268,20 @@ public sealed class SalesChangesPullService
         }
     }
 
+    /// <summary>Bir tur bitti — her kipte ve her sonuçla (iptal ve beklenmeyen hata hariç); tur kilidi bırakıldıktan
+    /// sonra, turun iş parçacığında. Uzak yayın çipleri (W2-09, §5.7) aynayı her turda bununla yeniden okur; dinleyici
+    /// arayüzü dispatcher'a taşımalı. Dinleyicinin hatası turu düşürmez.</summary>
+    public event EventHandler? TourCompleted;
+
     public async Task<SalesPullOutcome> TourOnceAsync(CancellationToken ct)
     {
         await _tourGate.WaitAsync(ct).ConfigureAwait(false);
-        try { return await TourCoreAsync(ct).ConfigureAwait(false); }
+        SalesPullOutcome outcome;
+        try { outcome = await TourCoreAsync(ct).ConfigureAwait(false); }
         finally { _tourGate.Release(); }
+        try { TourCompleted?.Invoke(this, EventArgs.Empty); }
+        catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: tur bitti bildirimi arayüze iletilemedi"); }
+        return outcome;
     }
 
     private async Task<SalesPullOutcome> TourCoreAsync(CancellationToken ct)

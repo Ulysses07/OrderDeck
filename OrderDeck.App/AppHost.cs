@@ -656,6 +656,22 @@ public sealed class AppHost : IDisposable
             () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().Status.LastCaughtUpAt,
             sp.GetRequiredService<ILogger<Services.Sales.SalesEditRouter>>()));
 
+        // W2-09 (spec 2026-10-13 §5.7, §4.6 force-end): uzak yayın çipleri, "Yayını bitir…" ve kendi yayınının bandı.
+        // Ayna, komut istemcisi ve bağlantı ölçüsü tekil örnekler; sessizlik eşiği bu lisansın son sales/state'inden (15
+        // sabit yazılmaz); başarılı force-end'den sonraki akış turu aynı servisin turu (tur kilidi paylaşılır). Kabuk
+        // isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        services.AddSingleton(sp => new ViewModels.RemoteSessionsViewModel(
+            sp.GetRequiredService<RemoteLiveSessionRepository>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<SessionRepository>(),
+            sp.GetRequiredService<Services.Sync.SalesCommandClient>(),
+            sp.GetRequiredService<Services.Sales.SalesConnectivity>(),
+            () => sp.GetRequiredService<Services.Sync.SalesSyncStateService>().LastState,
+            () => sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>().CurrentLicenseKey,
+            ct => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().TourOnceAsync(ct),
+            sp.GetRequiredService<IClock>(),
+            sp.GetRequiredService<ILogger<ViewModels.RemoteSessionsViewModel>>()));
+
         // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
         // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
         // null olurdu (CustomerSyncDiTests denetler).

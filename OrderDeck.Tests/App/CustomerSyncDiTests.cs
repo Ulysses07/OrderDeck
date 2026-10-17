@@ -335,6 +335,26 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Uzak_yayin_cipleri_tekil_ve_kabugun_istege_bagli_parametresi_DIda_kayitli()
+    {
+        // W2-09 (spec 2026-10-13 §5.7): kabuk çipleri isteğe bağlı parametreyle alır — kayıt eksikse DI sessizce null
+        // bırakır, çipler ve "Yayını bitir…" hiç görünmezdi. Komut istemcisi, ayna ve bağlantı ölçüsü tekil örnekler.
+        using var host = new global::OrderDeck.App.AppHost();
+        var vm = host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.RemoteSessionsViewModel>();
+
+        host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.RemoteSessionsViewModel>().Should().BeSameAs(vm);
+        PrivateField<SalesCommandClient>(vm, "_commands").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesCommandClient>());
+        PrivateField<RemoteLiveSessionRepository>(vm, "_liveSessions").Should().BeSameAs(
+            host.Services.GetRequiredService<RemoteLiveSessionRepository>());
+        PrivateField<global::OrderDeck.App.Services.Sales.SalesConnectivity>(vm, "_connectivity").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.App.Services.Sales.SalesConnectivity>());
+        typeof(global::OrderDeck.App.ViewModels.MainShellViewModel).GetConstructors().Single().GetParameters()
+            .Should().ContainSingle(p => p.IsOptional
+                && p.ParameterType == typeof(global::OrderDeck.App.ViewModels.RemoteSessionsViewModel));
+    }
+
+    [Fact]
     public void Guncelleme_sorusu_tekil_Velopack_ornegi()
     {
         // W2-04 (spec 2026-10-13 §5.3): açılış ve satış komutunun client-update-required'ı AYNI soruyu açar —
