@@ -24,6 +24,12 @@ public sealed record SessionPushResult(int? Protocol, long? ReleasedAt, string? 
     public static readonly SessionPushResult Legacy = new(null, null, null, null);
 }
 
+/// <summary>Devri bekleyen kendi oturumu (<see cref="SessionRepository.GetPendingHandovers"/>): bitmiş,
+/// <c>Authority = 'local'</c>, devri görülmemiş ve kuyrukta.</summary>
+/// <param name="StartedAt">Yayının başlangıcı (unix saniye): durum satırı yayını bununla anar.</param>
+/// <param name="UnsentLabels">Yayının gönderilmemiş (<c>SyncedAt IS NULL</c>) etiket sayısı.</param>
+public sealed record PendingHandover(string SessionId, long StartedAt, int UnsentLabels);
+
 /// <summary><see cref="SessionRepository.ApplyRelease"/>'in sonucu.</summary>
 public enum SessionAckOutcome
 {
@@ -94,6 +100,29 @@ public sealed class SessionRepository
             @"SELECT EXISTS(SELECT 1 FROM StreamSession
                             WHERE SyncedAt IS NULL AND EndedAt IS NOT NULL AND ReleasedAt IS NULL
                               AND Authority = 'local')") != 0;
+    }
+
+    /// <summary>Devri bekleyen kendi oturumları (<see cref="HasPendingHandover"/> ile aynı koşul) ve her birinin
+    /// gönderilmemiş etiket sayısı (spec 2026-10-13 §5.7 "Yayın X devredilemedi", §12 risk 4). Başlama sırasıyla.</summary>
+    public System.Collections.Generic.IReadOnlyList<PendingHandover> GetPendingHandovers()
+    {
+        using var conn = _factory.Open();
+        return conn.Query<PendingHandoverRow>(
+                @"SELECT s.Id, s.StartedAt,
+                         (SELECT COUNT(*) FROM Label l WHERE l.SessionId = s.Id AND l.SyncedAt IS NULL) AS UnsentLabels
+                  FROM StreamSession s
+                  WHERE s.SyncedAt IS NULL AND s.EndedAt IS NOT NULL AND s.ReleasedAt IS NULL
+                    AND s.Authority = 'local'
+                  ORDER BY s.StartedAt, s.Id")
+            .Select(r => new PendingHandover(r.Id, r.StartedAt, (int)r.UnsentLabels))
+            .ToList();
+    }
+
+    private sealed class PendingHandoverRow
+    {
+        public string Id { get; init; } = "";
+        public long StartedAt { get; init; }
+        public long UnsentLabels { get; init; }
     }
 
     /// <summary>

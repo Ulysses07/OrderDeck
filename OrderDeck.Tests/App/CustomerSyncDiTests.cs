@@ -355,6 +355,20 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Devredilemeyen_yayin_kurali_tur_ve_dikkat_sayacina_bagli()
+    {
+        // W2-09 (spec 2026-10-13 §5.7, §12 risk 4): satış akışı turu devri bekleyen yayınları oturum deposundan okur;
+        // isteğe bağlı parametre DI'dan gelmezse kural hiç işlemez. Dikkat sayacı turun ölçüsünü okur.
+        using var host = new global::OrderDeck.App.AppHost();
+        PrivateField<SessionRepository>(host.Services.GetRequiredService<SalesChangesPullService>(), "_sessions")
+            .Should().BeSameAs(host.Services.GetRequiredService<SessionRepository>());
+        var counter = host.Services.GetRequiredService<SyncPendingCounter>();
+        host.Services.GetRequiredService<SyncPendingCounter>().Should().BeSameAs(counter);
+        PrivateField<Func<int>>(counter, "_stuckHandovers").Should().NotBeNull();
+        counter.Attention().StuckHandovers.Should().Be(0, "tur koşmadı");
+    }
+
+    [Fact]
     public void Guncelleme_sorusu_tekil_Velopack_ornegi()
     {
         // W2-04 (spec 2026-10-13 §5.3): açılış ve satış komutunun client-update-required'ı AYNI soruyu açar —

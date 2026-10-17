@@ -3,11 +3,13 @@ using Dapper;
 namespace OrderDeck.Core.Storage.Repositories;
 
 /// <summary>Durum satırının kalıcı uyarıları (D2): beş turda uygulanamayıp atlanan müşteri
-/// akışı öğeleri (U10), uzlaştırma bekleyen anahtarlı açık miras ödeme işleri (U8) ve beş turda
-/// uygulanamayıp atlanan satış akışı öğeleri (spec 2026-10-13 §5.7, U10).</summary>
-public readonly record struct SyncAttention(int SkippedFeedItems, int OpenLegacyPaymentJobs, int SkippedSalesFeedItems = 0)
+/// akışı öğeleri (U10), uzlaştırma bekleyen anahtarlı açık miras ödeme işleri (U8), beş turda
+/// uygulanamayıp atlanan satış akışı öğeleri (spec 2026-10-13 §5.7, U10) ve devredilemeyen kendi
+/// yayınları (§5.7, §12 risk 4; satış akışı turunun ölçüsü, veritabanında değil).</summary>
+public readonly record struct SyncAttention(int SkippedFeedItems, int OpenLegacyPaymentJobs, int SkippedSalesFeedItems = 0,
+    int StuckHandovers = 0)
 {
-    public bool Any => SkippedFeedItems + OpenLegacyPaymentJobs + SkippedSalesFeedItems > 0;
+    public bool Any => SkippedFeedItems + OpenLegacyPaymentJobs + SkippedSalesFeedItems + StuckHandovers > 0;
 }
 
 /// <summary>

@@ -45,10 +45,14 @@ public sealed partial class MainShellViewModel
         }
     }
 
-    /// <summary>Satış akışı satırı: lisans varken ve akış mod On bildiriyorsa görünür.</summary>
+    /// <summary>Satış akışı satırı: lisans varken ve akış mod On bildiriyorsa görünür. W2-09: önde kendi yayınının
+    /// devri — "Yayın sunucuya devrediliyor…" (devri bekleyen yayın varken; sorgu yalnız mod On'da) ya da "Yayın X
+    /// devredilemedi: N etiket gönderilemiyor" (<see cref="SalesChangesPullService.StuckHandovers"/>).</summary>
     private void RefreshSalesSyncStatus(int skipped)
     {
-        var line = SyncLicenseKey() is null ? null : SalesFeedStatusFormatter.Format(_salesPull?.Status, skipped);
+        SyncStatusFormatter.Status? line = null;
+        if (SyncLicenseKey() is not null && _salesPull?.Status is { ModeOn: true } feed)
+            line = SalesFeedStatusFormatter.Format(feed, skipped, _sessions.HasPendingHandover(), _salesPull.StuckHandovers);
         if (line is not { } status)
         {
             SalesSyncStatusText = "";

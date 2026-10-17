@@ -97,6 +97,8 @@ public static class SyncStatusFormatter
         if (attention.SkippedSalesFeedItems > 0)
             lines.Add("Diğer bilgisayarlardan gelen bazı satış değişiklikleri bu bilgisayara uygulanamadı; " +
                       "uyarı geçmezse destekle iletişime geç.");
+        if (attention.StuckHandovers > 0)
+            lines.Add(SalesCommandMessages.HandoverStuckAdvice);
         return string.Join("\n", lines);
     }
 
@@ -128,6 +130,8 @@ public static class SyncStatusFormatter
             notes.Add($"{attention.OpenLegacyPaymentJobs} ödeme işi tamamlanmayı bekliyor");
         if (attention.SkippedSalesFeedItems > 0)
             notes.Add($"{attention.SkippedSalesFeedItems} satış değişikliği uygulanamadı");
+        if (attention.StuckHandovers > 0)
+            notes.Add($"{attention.StuckHandovers} yayın devredilemedi");
         return status with { Text = status.Text + " · " + string.Join(" · ", notes), Healthy = false };
     }
 

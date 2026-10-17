@@ -676,7 +676,13 @@ public sealed class AppHost : IDisposable
         // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
         // null olurdu (CustomerSyncDiTests denetler).
         services.AddSingleton<SyncOutboxRepository>();
-        services.AddSingleton<Services.Sync.SyncPendingCounter>();
+        // W2-09 (spec 2026-10-13 §5.7): dikkat sayacına devredilemeyen kendi yayınları da girer (satış akışı turunun
+        // ölçüsü, veritabanında değil).
+        services.AddSingleton(sp => new Services.Sync.SyncPendingCounter(
+            sp.GetRequiredService<SyncOutboxRepository>(),
+            sp.GetRequiredService<SyncCursorRepository>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().StuckHandovers.Count));
 
         // Faz 0 (D5): kapanışta "gönder ve kapat" — bekleyen sayıya (D1) giren her gönderim, kuyruğu
         // boşaltana dek, toplam süre sınırıyla (sıra ve paylar SyncFlushService.ForClose'ta).

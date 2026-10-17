@@ -71,7 +71,9 @@ public sealed record SalesFeedStatus(bool ModeOn, DateTimeOffset? LastCaughtUpAt
 ///   <item>Ön gönderim: müşteri (<see cref="WpfCustomerProjectionSyncService"/>), ardından oturum ve etiket
 ///   (<see cref="SessionOrderSyncService.SyncOnceAsync(CancellationToken)"/>). Gönderilmemiş yerel etiket akışı
 ///   durdururdu (U5); önce gitsin. Ardından bekleyen satış komutları (§5.5, <see cref="PendingSalesCommandSender"/>):
-///   çevrimdışıyken kuyruğa giren kalıntı iptali ve ilk baskısı, akış isteğinden ÖNCE.</item>
+///   çevrimdışıyken kuyruğa giren kalıntı iptali ve ilk baskısı, akış isteğinden ÖNCE. Sonra devri bekleyen kendi
+///   yayınlarının kuyruğu ölçülür (W2-09, <see cref="HandoverStallTracker"/>; yalnız sunucuya ulaşan turda):
+///   <see cref="StuckHandovers"/>.</item>
 ///   <item>Sayfalar <see cref="PageSize"/>'lık, turda en çok <see cref="MaxPagesPerTour"/> (müşteri akışıyla paylaşılan
 ///   100 istek/dk/IP bütçesi). Her sayfa müşteri akışının tur kilidi altında uygulanır
 ///   (<see cref="CustomerChangesPullService.EnterTourGateAsync"/>); kilit HİÇBİR HTTP isteği boyunca tutulmaz. Kilit
@@ -134,6 +136,11 @@ public sealed class SalesChangesPullService
     private readonly IClock _clock;
     private readonly ILogger<SalesChangesPullService> _log;
     private readonly PendingSalesCommandSender? _pendingCommands;
+    private readonly SessionRepository? _sessions;
+
+    /// <summary>"Devredilemedi" kuralı (§5.7, §12 risk 4): yalnız sunucuya ulaşan mod On turlarında gözlenir.</summary>
+    private readonly HandoverStallTracker _handoverStall = new();
+    private volatile IReadOnlyList<StuckHandover> _stuckHandovers = Array.Empty<StuckHandover>();
 
     /// <summary>Tek tur kuralı: zamanlayıcının turu ile ileride elle tetiklenen tur (baskı öncesi 3 sn'lik tur, §5.6)
     /// üst üste binmez; imleç yazımları sıralı kalır.</summary>
@@ -176,9 +183,11 @@ public sealed class SalesChangesPullService
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
         ILogger<SalesChangesPullService> log,
-        PendingSalesCommandSender? pendingCommands = null)
+        PendingSalesCommandSender? pendingCommands = null,
+        SessionRepository? sessions = null)
     {
         _pendingCommands = pendingCommands;
+        _sessions = sessions;
         if (_pendingCommands is not null)
             _pendingCommands.Settled += (_, e) => PendingCommandsSettled?.Invoke(this, e);
         _api = api;
@@ -204,6 +213,10 @@ public sealed class SalesChangesPullService
 
     /// <summary>Durum satırının girdisi (§5.7); mod Off'ta <see cref="SalesFeedStatus.ModeOn"/> false.</summary>
     public SalesFeedStatus Status => _status;
+
+    /// <summary>Devredilemeyen kendi yayınları (§5.7 "Yayın X devredilemedi: N etiket gönderilemiyor"; kural
+    /// <see cref="HandoverStallTracker"/>). Durum satırı ve dikkat sayacı okur; mod Off'ta boş.</summary>
+    public IReadOnlyList<StuckHandover> StuckHandovers => _stuckHandovers;
 
     /// <summary>Bekleyen komutların sonucu (<see cref="PendingSalesCommandSender.Settled"/>): "kâğıtları imha et" ve
     /// kalıcı ret uyarısı (§5.5). Gönderenin iş parçacığında; dinleyici arayüzü dispatcher'a taşımalı.</summary>
@@ -314,6 +327,7 @@ public sealed class SalesChangesPullService
         if (mode != 1)
         {
             _status = SalesFeedStatus.Off;
+            ResetHandoverStall();
             return stateOutcome == SalesStateTourOutcome.Ok ? SalesPullOutcome.ModeOff : SalesPullOutcome.Failed;
         }
 
@@ -329,6 +343,8 @@ public sealed class SalesChangesPullService
         await TryPushSalesAsync(ct).ConfigureAwait(false);
         var tally = new TourTally();
         await TrySendPendingCommandsAsync(tally, ct).ConfigureAwait(false);
+        // Tur sunucuya ulaştı (state başarılı) ve ön gönderim yapıldı: devri bekleyen yayınların kuyruğu ölçülür.
+        ObserveHandoverStall();
 
         // 3–5) Akış.
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct).ConfigureAwait(false);
@@ -551,6 +567,35 @@ public sealed class SalesChangesPullService
             _log.LogDebug(ex, "Duran etiketin onayı okunamadı ({LabelId})", labelId);
             return false;
         }
+    }
+
+    // ── devredilemeyen yayın ────────────────────────────────────────────────
+
+    /// <summary>"Devredilemedi" kuralının bir gözlemi (§5.7, §12 risk 4). Yeni devredilemeyen yayın bir kez günlüğe
+    /// düşer (kimlik ve sayı). Yerel hata turu düşürmez; seri olduğu gibi kalır.</summary>
+    private void ObserveHandoverStall()
+    {
+        if (_sessions is null) return;
+        try
+        {
+            var previous = _stuckHandovers;
+            var stuck = _handoverStall.Observe(_sessions.GetPendingHandovers());
+            foreach (var s in stuck.Where(s => previous.All(p => p.SessionId != s.SessionId)))
+                _log.LogWarning(
+                    "Oturum {SessionId} devredilemiyor: {Unsent} etiket {Tours} turdur sunucuya gönderilemiyor (durum satırı ve dikkat sayacı)",
+                    s.SessionId, s.UnsentLabels, HandoverStallTracker.StuckAfterTours);
+            _stuckHandovers = stuck;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "Devri bekleyen yayınlar okunamadı; sonraki turda yeniden");
+        }
+    }
+
+    private void ResetHandoverStall()
+    {
+        _handoverStall.Reset();
+        _stuckHandovers = Array.Empty<StuckHandover>();
     }
 
     // ── canlı yayın aynası ──────────────────────────────────────────────────

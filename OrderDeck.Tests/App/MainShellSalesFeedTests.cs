@@ -139,6 +139,30 @@ public sealed class MainShellSalesFeedTests : IDisposable
     });
 
     [Fact]
+    public void Kendi_yayini_devri_beklerken_satis_satiri_onde_devrediliyor_der()
+        => RunOnOwnDispatcher(async () =>
+    {
+        // W2-09 (spec 2026-10-13 §5.7 "Kendi yayını devrediliyor"): bitmiş yayının gönderilmemiş etiketi varken
+        // kapanış bekletilir (M2); satır bunu söyler, devir görülünce kalkar.
+        using var h = Build();
+        Exec(h.Db, "UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        (await Task.Run(() => _pull!.TourOnceAsync(CancellationToken.None))).Should().Be(SalesPullOutcome.CaughtUp);
+        var session = new SessionRepository(h.Db).GetActive()!;
+        MainShellTestHarness.EnqueueLabel(h.Vm, "ornek_alici", 100m);   // gönderilmemiş etiket
+        h.Sessions.End(session.Id);
+
+        h.Vm.ApplySalesChanged(new SalesChangedEventArgs([], [], []));
+
+        h.Vm.SalesSyncStatusText.Should().StartWith("Yayın sunucuya devrediliyor… · Satış: ");
+        h.Vm.IsSalesSyncHealthy.Should().BeTrue("geçici durum");
+
+        Exec(h.Db, "UPDATE StreamSession SET ReleasedAt = 2000, SyncedAt = 2000 WHERE Id = @id", new { id = session.Id });
+        h.Vm.ApplySalesChanged(new SalesChangedEventArgs([], [], []));
+
+        h.Vm.SalesSyncStatusText.Should().StartWith("Satış: ", "devir görüldü");
+    });
+
+    [Fact]
     public void Mod_Offta_satis_satiri_gorunmez()
         => RunOnOwnDispatcher(async () =>
     {

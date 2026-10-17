@@ -292,7 +292,7 @@ internal sealed class SalesEditTestBed : IDisposable
                 NullLogger<SessionOrderSyncService>.Instance),
             new CustomerChangesPullService(Api, Customers, customerSync, cursors, customerPush, _license, clock,
                 new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance),
-            _license, clock, NullLogger<SalesChangesPullService>.Instance, Sender);
+            _license, clock, NullLogger<SalesChangesPullService>.Instance, Sender, Sessions);
     }
 
     // ── okuma ─────────────────────────────────────────────────────────────
