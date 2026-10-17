@@ -73,7 +73,7 @@ public sealed class SessionOrderSyncHandoverTests : IDisposable
             new HttpClient(_server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") },
             new LicenseTokenStore());
         _svc = new SessionOrderSyncService(api, _sessions, _labels, _license, TestSalesEnvelope.For(_db, _license),
-            _gate, _clock, _log);
+            _gate, new SalesPushApply(_db), _clock, _log);
         _server.DuringPush = endpoint =>
         {
             if (endpoint == FakeSalesServer.SessionsSync) CheckReleaseInvariant();

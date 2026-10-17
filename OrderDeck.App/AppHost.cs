@@ -527,7 +527,9 @@ public sealed class AppHost : IDisposable
         // SalesSyncEnvelope örneği — hello'nun başarısını o tutar), bütün tur tek gönderim kapısından. W1-07:
         // devir kapısı TEK örnek — kapanış gönderimi, geri doldurma ve W2'nin düzenleme yönlendiricisi aynı
         // kilitleri görmeli.
+        // W1-08: v2 yanıtının ignored/rejected satırlarını (current) yerele uygulayan Core yazıcısı.
         services.AddSingleton<OrderDeck.Core.Sessions.HandoverGate>();
+        services.AddSingleton<OrderDeck.Core.Sales.SalesPushApply>();
         services.AddSingleton<Services.Sync.SessionOrderSyncService>(sp =>
             new Services.Sync.SessionOrderSyncService(
                 sp.GetRequiredService<LicenseApiClient>(),
@@ -536,6 +538,7 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
                 sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+                sp.GetRequiredService<OrderDeck.Core.Sales.SalesPushApply>(),
                 sp.GetRequiredService<IClock>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>(),
                 sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));

@@ -21,10 +21,17 @@ namespace OrderDeck.App.Services.Sync;
 /// <c>Protocol = 2</c>, görülen kip) ve <c>Format = 2</c>'yi taşır; her etiket 048 alanlarını, yedek ebeveynini,
 /// kargo bağını ve <c>baseVersion = ServerVersion</c>'ı. Yanıt öğe başınadır: <c>applied</c> satırda
 /// <c>SyncedAt</c>, <c>StockSyncedAt</c> ve <c>ServerVersion</c> tek kısa işlemde, F05 karşılaştır-ve-yaz kuralıyla
-/// yazılır. Durumsuz öğe ya da v1 listesi eski sunucudur — bugünkü gibi onaylanır, sürüm bilinmez. Geçiş dönemi:
-/// <c>ignored</c> ve <c>rejected</c> satırlar da bugünkü gibi onaylanır, sayıları günlüğe düşer (sunucunun
-/// değerini uygulamak W1-08'in işi). Kopya kimliği eksik ya da bozuksa gönderim durmaz, zarfsız (v1) gövde gider
-/// (<see cref="SalesSyncEnvelope.ForPush"/>); geri yüklemeden sonra hello gidene kadar tur atlanır (§8.7).</para>
+/// yazılır. Durumsuz öğe ya da v1 listesi eski sunucudur — bugünkü gibi onaylanır, sürüm bilinmez. Kopya kimliği
+/// eksik ya da bozuksa gönderim durmaz, zarfsız (v1) gövde gider (<see cref="SalesSyncEnvelope.ForPush"/>); geri
+/// yüklemeden sonra hello gidene kadar tur atlanır (§8.7).</para>
+///
+/// <para><b>Yok sayılan ve reddedilen satır</b> (§5.2, §4.2; W1-08): sunucunun güncel satırı (<c>current</c>)
+/// etiket başına kendi kilitli işleminde uygulanır (<see cref="SalesPushApply"/>): <c>ignored</c>'da yok sayılan
+/// birimler, <c>rejected</c>'da bütün birimler; mod Off'ta Y5 dosya bloğu dosya tutarını düzeltir, müşteri toplamı
+/// türetilir, satır <c>ServerVersion = current.Version</c> ile onaylanır (Revision değişmez, DM8) ve
+/// <c>SalesConflictLog</c>'a tek iz düşer. Uçuşta değişen satıra hiçbir şey yazılmaz. Uygulanan satırlar
+/// <see cref="PushOutcome"/> ile arayüze gider: reddedilenler ("N değişiklik uygulanamadı") ve başka bilgisayarda
+/// iptal edilmiş basılı kâğıtlar ("kâğıtları imha et"). Günlüğe yalnız sayılar ve kimlikler düşer (§9).</para>
 ///
 /// <para><b>Oturumlar ve devir</b> (§4.1, §5.2, M2; W1-07): oturumlar da v2 zarfıyla gider, her öğe makine adını
 /// taşır. Tur sırası: oturumlar → etiketler → etiketleri bu turda giden bitmiş oturumlar bir kez daha. Bitmiş,
@@ -72,6 +79,7 @@ public sealed class SessionOrderSyncService
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly SalesSyncEnvelope _envelope;
     private readonly HandoverGate _handover;
+    private readonly SalesPushApply _pushApply;
     private readonly IClock _clock;
     private readonly ILogger<SessionOrderSyncService> _log;
     private readonly SyncStatusTracker? _tracker;
@@ -106,6 +114,7 @@ public sealed class SessionOrderSyncService
         ICurrentLicenseProvider licenseProvider,
         SalesSyncEnvelope envelope,
         HandoverGate handover,
+        SalesPushApply pushApply,
         IClock clock,
         ILogger<SessionOrderSyncService> log,
         SyncStatusTracker? statusTracker = null)
@@ -116,11 +125,15 @@ public sealed class SessionOrderSyncService
         _licenseProvider = licenseProvider;
         _envelope = envelope;
         _handover = handover;
+        _pushApply = pushApply;
         _clock = clock;
         _log = log;
         _tracker = statusTracker;
         _tracker?.RegisterPush(PushStatusName);
     }
+
+    /// <summary>Bir turda sunucunun değeri uygulanan satırlar (W1-08).</summary>
+    public event EventHandler<SalesPushOutcome>? PushOutcome;
 
     /// <param name="SessionsPushed">Onaylanan (ya da uçuşta değiştiği için yeniden gidecek) oturumlar. Bekletilen
     /// (devri görülmemiş) oturumun gönderimi sayılmaz (§5.2): kapanıştaki boşaltma döngüsü yalnız bir şey
@@ -436,33 +449,35 @@ public sealed class SessionOrderSyncService
             return (0, false);
         }
 
-        var outcome = Acknowledge(batch, items, response);
-        if (outcome.Ignored > 0 || outcome.Rejected > 0 || outcome.Unknown > 0)
+        var now = _clock.UnixNow();
+        var (verdicts, unknown) = Acknowledge(batch, items, response, now);
+        var outcome = ApplyVerdicts(verdicts, now);
+        if (unknown > 0)
             _log.LogWarning(
-                "orders/sync: {Ignored} etiket yok sayıldı, {Rejected} etiket reddedildi, {Unknown} etiketin durumu "
-              + "tanınmadı; sunucunun değeri henüz uygulanmıyor, satırlar bugünkü gibi onaylandı",
-                outcome.Ignored, outcome.Rejected, outcome.Unknown);
+                "orders/sync: {Unknown} etiketin durumu tanınmadı; satırlar sürümsüz onaylandı", unknown);
+        if (outcome is not null)
+            RaisePushOutcome(outcome);
         return (batch.Count, true);
     }
 
     /// <summary>v2 öğe biçimi (§4.2).</summary>
     private const int OrderFormatV2 = 2;
 
-    private readonly record struct AckOutcome(int Ignored, int Rejected, int Unknown);
-
     /// <summary>
-    /// Yanıtı satırlarla eşleyip onayı tek işlemde yazar. <c>applied</c>: sürümüyle (<c>ServerVersion</c>). Eski
-    /// sunucu (durumsuz öğe, v1 listesi, yanıtta olmayan satır): bugünkü gibi, sürümsüz. Geçiş dönemi —
-    /// <c>ignored</c>, <c>rejected</c> ve tanınmayan durum: sürümsüz onay (sunucunun değeri uygulanmadan sürümü
-    /// yazmak, sonraki gönderimi "güncel sürümü gördüm" diye damgalı birimi ezebilir hâle getirirdi, K2).
+    /// Yanıtı satırlarla eşler. <c>applied</c>: sürümüyle (<c>ServerVersion</c>) onay. Eski sunucu (durumsuz öğe, v1
+    /// listesi, yanıtta olmayan satır): bugünkü gibi, sürümsüz onay. Tanınmayan durum: sürümsüz onay (sürüm yazmak
+    /// sonraki gönderimi "güncel sürümü gördüm" diye damgalı birimi ezebilir hâle getirirdi, K2). Onaylar tek işlemde
+    /// yazılır. <c>ignored</c> ve <c>rejected</c> onaylanmaz: <see cref="ApplyVerdicts"/>'e döner.
     /// </summary>
-    private AckOutcome Acknowledge(
-        IReadOnlyList<LabelPushRow> batch, IReadOnlyList<SyncOrderItem> items, IReadOnlyList<SyncedOrderV2Dto> response)
+    private (List<LabelPushVerdict> Verdicts, int Unknown) Acknowledge(
+        IReadOnlyList<LabelPushRow> batch, IReadOnlyList<SyncOrderItem> items, IReadOnlyList<SyncedOrderV2Dto> response,
+        long now)
     {
         var byId = new Dictionary<System.Guid, SyncedOrderV2Dto>(response.Count);
         foreach (var r in response) byId[r.Id] = r;
 
-        int ignored = 0, rejected = 0, unknown = 0;
+        var unknown = 0;
+        var verdicts = new List<LabelPushVerdict>();
         var acks = new List<LabelPushAck>(batch.Count);
         for (var i = 0; i < batch.Count; i++)
         {
@@ -471,18 +486,102 @@ public sealed class SessionOrderSyncService
             {
                 switch (r.Status)
                 {
-                    case SyncedOrderV2Dto.StatusApplied: version = r.Version; break;
-                    case SyncedOrderV2Dto.StatusIgnored: ignored++; break;
-                    case SyncedOrderV2Dto.StatusRejected: rejected++; break;
-                    default: unknown++; break;
+                    case SyncedOrderV2Dto.StatusApplied:
+                        version = r.Version;
+                        break;
+                    case SyncedOrderV2Dto.StatusIgnored:
+                    case SyncedOrderV2Dto.StatusRejected:
+                        verdicts.Add(ToVerdict(batch[i], r));
+                        continue;
+                    default:
+                        unknown++;
+                        break;
                 }
             }
             acks.Add(new LabelPushAck(batch[i].Id, batch[i].Revision, version));
         }
 
         // F05: Revision karşılaştırmalı; uçuş sırasında değişen satıra yazılmaz, sonraki tur güncel hâliyle gönderir.
-        _labels.MarkSyncedBatch(acks, _clock.UnixNow());
-        return new AckOutcome(ignored, rejected, unknown);
+        _labels.MarkSyncedBatch(acks, now);
+        return (verdicts, unknown);
+    }
+
+    /// <summary>Tel yanıtından Core'un girdisi: gönderilen satırın Revision'ı (F05) ve <c>current</c>'ın birim
+    /// alanları yerel biçimde (unix saniye, "N" kimlik). Oluşum alanları ve CustomerId taşınmaz.</summary>
+    internal static LabelPushVerdict ToVerdict(LabelPushRow pushed, SyncedOrderV2Dto r) => new(
+        pushed.Id,
+        pushed.Revision,
+        r.Status == SyncedOrderV2Dto.StatusRejected ? LabelPushVerdictKind.Rejected : LabelPushVerdictKind.Ignored,
+        r.IgnoredUnits ?? System.Array.Empty<string>(),
+        r.Reason,
+        r.Current is { } c
+            ? new LabelServerState(
+                c.Version, c.Price, c.PriceCorrectedAt?.ToUnixTimeSeconds(), c.PaidPrice,
+                c.CancelledAt?.ToUnixTimeSeconds(), c.CancelReason, c.IsTentativeBackup,
+                c.ShipmentId?.ToString("N"),
+                c.PrintedAt?.ToUnixTimeSeconds(), c.PrintBatchId, c.PrintSeq)
+            : null);
+
+    /// <summary>
+    /// <c>ignored</c> ve <c>rejected</c> satırlarda sunucunun değeri — etiket başına kendi kilitli işleminde
+    /// (<see cref="SalesPushApply"/>; §5.2): birimler, Y5 dosya bloğu, müşteri toplamı, sürümlü onay ve iz. Uçuşta
+    /// değişen satır atlanır, yeni hâli sonraki turda gider. Günlüğe yalnız sayılar düşer (§9).
+    /// </summary>
+    /// <returns>Bu turda uygulanan satır varsa arayüze gidecek sonuç; yoksa <c>null</c>.</returns>
+    private SalesPushOutcome? ApplyVerdicts(IReadOnlyList<LabelPushVerdict> verdicts, long now)
+    {
+        if (verdicts.Count == 0) return null;
+
+        int ignored = 0, stale = 0, missing = 0, missingFiles = 0, shippedFiles = 0;
+        var rejected = new List<RejectedLabelPush>();
+        var discard = new List<string>();
+        foreach (var verdict in verdicts)
+        {
+            var result = _pushApply.Apply(verdict, now);
+            switch (result.Status)
+            {
+                case LabelPushApplyStatus.Applied or LabelPushApplyStatus.Terminal:
+                    if (verdict.Kind == LabelPushVerdictKind.Rejected)
+                        rejected.Add(new RejectedLabelPush(verdict.LabelId, verdict.Reason));
+                    else
+                        ignored++;
+                    if (result.PrintDiscard) discard.Add(verdict.LabelId);
+                    missingFiles += result.Shipments.Missing;
+                    shippedFiles += result.Shipments.Shipped.Count;
+                    _log.LogDebug("orders/sync: etiket {LabelId} {Status}, neden {Reason}, değişen birim {Units}",
+                        verdict.LabelId, result.Status, verdict.Reason, string.Join(",", result.ChangedUnits));
+                    break;
+                case LabelPushApplyStatus.Stale:
+                    stale++;
+                    break;
+                case LabelPushApplyStatus.Missing:
+                    missing++;
+                    break;
+            }
+        }
+
+        _log.LogWarning(
+            "orders/sync: {Ignored} etiket yok sayıldı, {Rejected} etiket reddedildi; sunucunun değeri uygulandı. "
+          + "{Stale} etiket uçuşta değişti (sonraki turda yeniden gider), {Missing} etiket yerelde yok, "
+          + "{Discard} kâğıt imha edilmeli; kargo bloğu {MissingFiles} dosyayı yerelde bulamadı, "
+          + "{ShippedFiles} kargolanmış dosyaya dokunmadı",
+            ignored, rejected.Count, stale, missing, discard.Count, missingFiles, shippedFiles);
+
+        return ignored + rejected.Count == 0 ? null : new SalesPushOutcome(ignored, rejected, discard);
+    }
+
+    /// <summary>Sonucu dinleyenlere verir. Dinleyicinin hatası turu düşürmez: satırlar zaten uygulandı ve
+    /// onaylandı, bir sonraki tur aynı yanıtı yeniden almaz.</summary>
+    private void RaisePushOutcome(SalesPushOutcome outcome)
+    {
+        try
+        {
+            PushOutcome?.Invoke(this, outcome);
+        }
+        catch (System.Exception ex)
+        {
+            _log.LogWarning(ex, "orders/sync: gönderim sonucu arayüze iletilemedi");
+        }
     }
 
     /// <summary>Yerel satırdan tel öğesi (§4.2): TEXT "N" kimlikler Guid'e, unix saniyeler DateTimeOffset'e,

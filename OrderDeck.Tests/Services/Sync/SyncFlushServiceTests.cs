@@ -280,7 +280,7 @@ public sealed class SyncFlushServiceTests
             new WpfCustomerProjectionSyncService(api, new CustomerSyncRepository(db), new SyncCursorRepository(db),
                 license, clock, NullLogger<WpfCustomerProjectionSyncService>.Instance),
             new SessionOrderSyncService(api, sessions, labels, license, TestSalesEnvelope.For(db, license),
-                new HandoverGate(), clock, NullLogger<SessionOrderSyncService>.Instance),
+                new HandoverGate(), new SalesPushApply(db), clock, NullLogger<SessionOrderSyncService>.Instance),
             new PaymentSyncService(api, new PaymentRepository(db), new SyncCursorRepository(db), license, clock,
                 NullLogger<PaymentSyncService>.Instance),
             new ShipmentSyncService(api, new ShipmentRepository(db), new SettingsStore(settingsPath), new AppSettings(),

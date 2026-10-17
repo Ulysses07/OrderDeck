@@ -19,6 +19,20 @@ public static class SalesConflictLog
     /// <summary>Oturum düzeyindeki kaydın <c>Reason</c>'ı: <c>session:{id}</c>.</summary>
     public static string SessionReason(string sessionId) => $"session:{sessionId}";
 
+    /// <summary>Etiket gönderiminin bir ya da birkaç birimi sunucuda yok sayıldı; sunucunun değeri
+    /// (<c>current</c>) uygulandı (§5.2, W1-08).</summary>
+    public const string PushIgnored = "push-ignored";
+
+    /// <summary>Etiket gönderimi sunucuda reddedildi (devredilmiş oturum, kargolanmış dosya, başka kopyanın canlı
+    /// yayını); sunucunun değeri (<c>current</c>) uygulandı ya da — reddedilen eklemede — satır son durumda
+    /// onaylandı (§5.2, W1-08).</summary>
+    public const string PushRejected = "push-rejected";
+
+    /// <summary>Gönderim kaydının <c>Reason</c>'ı: sunucunun nedeni ve yanıttaki birimler,
+    /// <c>{neden}; units={birim,…}</c>. Yalnız kod adları — kişisel veri yok (§9).</summary>
+    public static string PushReason(string? reason, IEnumerable<string> units)
+        => $"{(string.IsNullOrEmpty(reason) ? "?" : reason)}; units={string.Join(",", units)}";
+
     /// <summary>Çağıranın işleminde tek satır ekler.</summary>
     internal static void Insert(
         IDbConnection connection, IDbTransaction? transaction, long at, string? labelId, string kind, string? reason)

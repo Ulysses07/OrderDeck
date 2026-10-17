@@ -20,7 +20,8 @@ namespace OrderDeck.Tests.Sync;
 /// <summary>
 /// v2 etiket gönderimi (spec 2026-10-13 §4.2, §5.2; W1-06): zarf ve her v2 alanı, <c>baseVersion = ServerVersion</c>,
 /// <c>applied</c> onayının yazdıkları, uçuşta değişen satır (F05), onayın kuyruğa almaması (DM8), eski sunucunun
-/// yanıtı, geçiş dönemindeki <c>ignored</c>/<c>rejected</c>, tek gönderim kapısı, canlı yolun ağı beklememesi ve
+/// yanıtı, <c>ignored</c>/<c>rejected</c>'ın onayı (W1-08: sunucunun değeri uygulanır), tek gönderim kapısı, canlı
+/// yolun ağı beklememesi ve
 /// zarfın kimlik kuralları (bozuk kimlikte v1, geri yüklemeden sonra hello beklenir). Sunucu
 /// <see cref="FakeSalesServer"/>.
 /// </summary>
@@ -62,7 +63,7 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         _sessions.Insert(new StreamSession(_sessionId, "Örnek yayın", 1_760_000_000L, null, new[] { "tiktok" }, null));
         _envelope = TestSalesEnvelope.For(_db, _license, _envelopeLog);
         _svc = new SessionOrderSyncService(Api(), _sessions, _labels, _license, _envelope, new HandoverGate(),
-            _clock, _log);
+            new SalesPushApply(_db), _clock, _log);
     }
 
     public void Dispose()
@@ -265,8 +266,10 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
     }
 
     [Fact]
-    public async Task Yok_sayilan_ve_reddedilen_satir_simdilik_onaylanir_surumu_yazilmaz_sayisi_gunluge_duser()
+    public async Task Yok_sayilan_ve_reddedilen_satira_sunucunun_degeri_uygulanir_surumuyle_onaylanir_sayisi_gunluge_duser()
     {
+        // W1-08 geçiş dönemini kapattı: ignored/rejected artık sürümsüz onaylanmaz; current uygulanır (ayrıntılar
+        // SessionOrderSyncPushOutcomeTests ve SalesPushApplyTests).
         var ignored = AddLabel();
         var rejected = AddLabel(150m, "B2");
         var applied = AddLabel(175m, "C3");
@@ -274,19 +277,28 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         foreach (var id in new[] { ignored, rejected, applied }) Local(id).ServerVersion.Should().Be(0);
 
         _labels.MarkCancelled(new[] { ignored, rejected, applied }, 1_760_000_700L, "örnek");
-        _server.OrderVerdicts[Guid.Parse(ignored)] = new("ignored", "cancel-stamped", new[] { "cancel" });
-        _server.OrderVerdicts[Guid.Parse(rejected)] = new("rejected", "session-released", Array.Empty<string>());
+        _server.OrderVerdicts[Guid.Parse(ignored)] = new("ignored", "unit-stamped", new[] { "cancel" });
+        _server.OrderVerdicts[Guid.Parse(rejected)] = new("rejected", "session-released", new[] { "cancel" });
 
         await _svc.SyncOnceAsync();
 
-        Local(ignored).SyncedAt.Should().NotBeNull("geçiş dönemi: bugünkü gibi onay (W1-08 current'ı uygular)");
+        Local(ignored).SyncedAt.Should().NotBeNull();
         Local(rejected).SyncedAt.Should().NotBeNull();
-        Local(ignored).ServerVersion.Should().Be(0,
-            "current uygulanmadan sürüm yazmak sonraki gönderimi damgalı birimi ezebilir hâle getirirdi (K2)");
+        Local(ignored).ServerVersion.Should().Be(1, "sunucunun güncel sürümü (current.Version)");
         Local(rejected).ServerVersion.Should().Be(0);
         Local(applied).ServerVersion.Should().Be(1);
+        CancelledAt(ignored).Should().BeNull("sunucu iptali tutmadı: yerel değer sunucununkine döner");
+        CancelledAt(rejected).Should().BeNull();
+        CancelledAt(applied).Should().Be(1_760_000_700L);
+        _labels.HasUnsynced().Should().BeFalse("uygulama kuyruğa almaz (DM8)");
         _log.Warnings.Should().ContainSingle()
             .Which.Message.Should().Contain("1 etiket yok sayıldı").And.Contain("1 etiket reddedildi");
+    }
+
+    private long? CancelledAt(string id)
+    {
+        using var c = _db.Open();
+        return c.ExecuteScalar<long?>("SELECT CancelledAt FROM Label WHERE Id = @id", new { id });
     }
 
     // ── gönderim kapısı ────────────────────────────────────────────────────

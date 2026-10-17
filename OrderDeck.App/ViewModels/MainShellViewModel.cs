@@ -1120,7 +1120,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ILogger<MainShellViewModel>? log = null,
         Services.Sync.CustomerChangesPullService? customerPull = null,
         Services.PriceCorrection.CorrectedPaymentRequests? paymentFollowUp = null,
-        Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null)
+        Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
+        Services.Sync.SessionOrderSyncService? orderSync = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1154,6 +1155,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _facebookModeration = facebookModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
+        // W1-08: etiket gönderiminin sonucu (reddedilen değişiklik, imha edilecek kâğıt) — _dispatcher'dan sonra.
+        _orderSync = orderSync;
+        if (_orderSync is not null) _orderSync.PushOutcome += OnSalesPushOutcome;
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
         // _settingsStore. Previously a first-chance NRE leaked here (caught by
@@ -2781,6 +2785,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.HeartbeatStateChanged -= OnHeartbeatStateChanged;
         Banner.AutoDrawRequested -= OnBannerAutoDrawRequested;
         if (_printedNavigator is not null) _printedNavigator.Requested -= OnPrintedLabelsRequested;
+        if (_orderSync is not null) _orderSync.PushOutcome -= OnSalesPushOutcome;
 
         Banner.Dispose();
         _busSubscription.Dispose();

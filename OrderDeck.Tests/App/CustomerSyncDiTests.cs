@@ -21,6 +21,20 @@ public sealed class CustomerSyncDiTests
         => (T?)owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner);
 
     [Fact]
+    public void SessionOrderSync_yanit_uygulayicisi_tekil_ve_DIdan_gelir()
+    {
+        // W1-08: ignored/rejected uygulaması (current) tek örnek; kabuğun gönderim sonucunu dinlemesi
+        // Kabugun_istege_bagli_senkron_parametreleri_DIda_kayitli'de.
+        using var host = new global::OrderDeck.App.AppHost();
+        var apply = host.Services.GetRequiredService<OrderDeck.Core.Sales.SalesPushApply>();
+
+        host.Services.GetRequiredService<OrderDeck.Core.Sales.SalesPushApply>().Should().BeSameAs(apply);
+        PrivateField<OrderDeck.Core.Sales.SalesPushApply>(
+                host.Services.GetRequiredService<SessionOrderSyncService>(), "_pushApply")
+            .Should().BeSameAs(apply);
+    }
+
+    [Fact]
     public void Senkron_deposu_tekil_ve_mesgul_musteri_kumesini_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();
@@ -185,7 +199,7 @@ public sealed class CustomerSyncDiTests
     {
         // Kabuk ViewModel'i kurulmadan (22 servis, zamanlayıcılar) türleriyle sınanır: kayıt eksikse
         // DI isteğe bağlı parametreyi sessizce null bırakır — durum satırı (D3), kapanış uyarısı (D5)
-        // ya da destek eylemi (D5b) hiç görünmezdi.
+        // ya da destek eylemi (D5b) hiç görünmezdi; W1-08: gönderim sonucunun uyarı şeridi de.
         using var host = new global::OrderDeck.App.AppHost();
         var syncParameters = typeof(global::OrderDeck.App.ViewModels.MainShellViewModel).GetConstructors().Single()
             .GetParameters()
@@ -193,7 +207,11 @@ public sealed class CustomerSyncDiTests
             .ToList();
 
         syncParameters.Select(p => p.ParameterType).Should().BeEquivalentTo(
-            new[] { typeof(SyncStatusTracker), typeof(SyncPendingCounter), typeof(CustomerChangesPullService) });
+            new[]
+            {
+                typeof(SyncStatusTracker), typeof(SyncPendingCounter), typeof(CustomerChangesPullService),
+                typeof(SessionOrderSyncService),
+            });
         foreach (var p in syncParameters)
             host.Services.GetService(p.ParameterType).Should().NotBeNull(p.Name);
     }

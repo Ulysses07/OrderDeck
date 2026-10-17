@@ -37,6 +37,7 @@ public sealed class SalesWriterInventoryTests
     private const string CustomerSyncRepo = "OrderDeck.Core/Storage/Repositories/CustomerSyncRepository.cs";
     private const string AdjusterFile = "OrderDeck.Core/Sales/ShipmentAmountAdjuster.cs";
     private const string DerivationFile = "OrderDeck.Core/Sales/ShipmentAmountDerivation.cs";
+    private const string PushApplyFile = "OrderDeck.Core/Sales/SalesPushApply.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -62,6 +63,8 @@ public sealed class SalesWriterInventoryTests
             "Gönderim onayı, F05 karşılaştır-ve-yaz. SyncedAt ve StockSyncedAt hiçbir tetikleyici listesinde değil: her durumda geçer, kuyruğa almaz."),
         new(LabelRepo, "MarkSyncedBatch", "UPDATE Label", 1, [],
             "v2 gönderim onayı (W1-06), tek kısa işlemde, F05 karşılaştır-ve-yaz. SyncedAt, StockSyncedAt ve ServerVersion hiçbir tetikleyici listesinde değil: her kipte ve her oturumda geçer, kuyruğa almaz, Revision değişmez (DM8)."),
+        new(PushApplyFile, "WriteLabel", "UPDATE Label", 1, [],
+            "v2 yanıtının ignored/rejected uygulaması (W1-08, §5.2): current'ın birimleri (ignored'da yok sayılanlar, rejected'da hepsi) ve onay (SyncedAt, StockSyncedAt, ServerVersion), SyncApplyScope işleminde: 049 tetikleyicilerinin hepsi susar — kuyruğa almaz, Revision değişmez (DM8); Authority='server' oturumda ve mod 1'deki kargo bağında da yazar. F05: gönderilen Revision ve SyncedAt IS NULL aynı işlemde okunur; değişmiş satıra hiçbir şey yazılmaz. Oluşum alanları ve CustomerId yazılmaz."),
         new(SessionRepo, "Insert", "INSERT INTO StreamSession", 1, [],
             "Origin ve Authority varsayılanla 'local' doğar. Ekleme tetikleyicisi yok."),
         new(SessionRepo, "End", "UPDATE StreamSession", 1, ["TR_StreamSession_Enqueue", "TR_StreamSession_ServerAuthority"],

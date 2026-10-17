@@ -30,7 +30,8 @@ namespace OrderDeck.Tests.Sync;
 /// (<see cref="SessionsSync"/>, <see cref="OrdersSync"/>, <see cref="ShipmentsSync"/>). Zarf ve <c>format</c>
 /// doğrulaması sunucudaki <c>SalesEnvelope.TryRead</c> ve <c>TryReadFormat</c>'in aynası; sipariş deposu mod Off'un
 /// damgasız kuralıyla yazar (ekleme sürüm 0, her işlenen satırda +1 — <c>Order.SyncVersion</c>).
-/// <see cref="OrderVerdicts"/> bir siparişi yok sayılmış ya da reddedilmiş döndürür; <see cref="OrdersResponse"/>
+/// <see cref="OrderVerdicts"/> bir siparişi yok sayılmış ya da reddedilmiş döndürür (W1-08: <c>Current</c> sunucunun
+/// gerçeğini — <c>current</c>'ı — kurar, <c>WithoutCurrent</c> reddedilen eklemeyi taklit eder); <see cref="OrdersResponse"/>
 /// eski sunucunun yanıtını (v1 listesi ya da <c>[]</c>) taklit eder. <see cref="Hold"/> bir ucu bırakılana kadar
 /// bekletir, <see cref="DuringPush"/> istek "işlenirken" çalışır (uçuştaki yerel değişiklik), <see cref="Offline"/>
 /// her isteği ağ hatasına çevirir; <see cref="MaxInFlight"/> eşzamanlı istek sayısının tepesini verir.</para>
@@ -406,10 +407,26 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 _orders.TryGetValue(order.Id, out var current);
                 if (OrderVerdicts.TryGetValue(order.Id, out var verdict))
                 {
+                    if (verdict.WithoutCurrent)
+                    {
+                        results.Add(new OrderResultBody(order.Id, null, null, null,
+                            verdict.Status, verdict.Units, verdict.Reason, null));
+                        continue;
+                    }
+                    if (current is null && verdict.Current is not null)
+                        current = new ServerOrder(v2 ? order : WithoutV2Fields(order), 0,
+                            v2 ? envelope!.ReplicaId : null, now);
                     if (current is not null && verdict.Status == "ignored")
-                        _orders[order.Id] = current = current with { Version = current.Version + 1, UpdatedAt = now };
+                        current = current with { Version = current.Version + 1, UpdatedAt = now };
+                    var item = current?.ToItem();
+                    if (item is not null && verdict.Current is { } truth)
+                    {
+                        item = truth(item);
+                        current = current! with { Row = current.Row.WithUnits(item) };
+                    }
+                    if (current is not null) _orders[order.Id] = current;
                     results.Add(new OrderResultBody(order.Id, current?.Version, current?.Row.ShipmentId, null,
-                        verdict.Status, verdict.Units, verdict.Reason, current?.ToItem()));
+                        verdict.Status, verdict.Units, verdict.Reason, item));
                     if (current is not null) echoed.Add(current);
                     continue;
                 }
@@ -786,7 +803,14 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     /// <param name="Status"><c>ignored</c> ya da <c>rejected</c>.</param>
     /// <param name="Units">Yok sayılan birimler (<c>price</c>, <c>cancel</c>, …).</param>
-    internal sealed record OrderVerdict(string Status, string? Reason, string[] Units);
+    /// <param name="Current">W1-08: sunucunun gerçeği — depodaki satırın akış öğesine uygulanır, sonucu yanıtın
+    /// <c>current</c>'ı olur ve birim alanları depoya yazılır (sonraki turlar onu görür). Satır sunucuda yoksa önce
+    /// push'un öğesiyle eklenir (eklemenin bir birimi yok sayıldı). Boşsa depodaki satır olduğu gibi döner.</param>
+    /// <param name="WithoutCurrent">W1-08: reddedilen ekleme — sunucuda satır yok; yanıtta <c>current</c> ve sürüm
+    /// boş, depoya hiçbir şey yazılmaz.</param>
+    internal sealed record OrderVerdict(
+        string Status, string? Reason, string[] Units,
+        Func<OrderItemBody, OrderItemBody>? Current = null, bool WithoutCurrent = false);
 
     internal sealed record PushEnvelope(Guid ReplicaId, int SeenMode);
 
@@ -800,7 +824,18 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         string MessageText, string? Code, decimal Price, DateTimeOffset AddedAt, DateTimeOffset? PrintedAt,
         DateTimeOffset? CancelledAt, string? CancelReason, bool IsShippingFee, bool IsBackupPromoted,
         bool IsTentativeBackup, Guid? ProductId, Guid? ProductVariantId, int? BaseVersion, Guid? ParentOrderId,
-        string? PrintBatchId, int? PrintSeq, DateTimeOffset? PriceCorrectedAt, decimal? PaidPrice, Guid? ShipmentId);
+        string? PrintBatchId, int? PrintSeq, DateTimeOffset? PriceCorrectedAt, decimal? PaidPrice, Guid? ShipmentId)
+    {
+        /// <summary>Birim alanları (spec §2) akış öğesinden; oluşum alanları değişmez.</summary>
+        public OrderBody WithUnits(OrderItemBody item) => this with
+        {
+            Price = item.Price, PriceCorrectedAt = item.PriceCorrectedAt, PaidPrice = item.PaidPrice,
+            CancelledAt = item.CancelledAt, CancelReason = item.CancelReason,
+            IsTentativeBackup = item.IsTentativeBackup,
+            ShipmentId = item.ShipmentId,
+            PrintedAt = item.PrintedAt, PrintBatchId = item.PrintBatchId, PrintSeq = item.PrintSeq,
+        };
+    }
 
     /// <summary>Sunucudaki sipariş: son yazılan öğe, sürüm (<c>Order.SyncVersion</c>) ve kaynak kopya.</summary>
     internal sealed record ServerOrder(OrderBody Row, int Version, Guid? OriginReplicaId, DateTimeOffset UpdatedAt)
