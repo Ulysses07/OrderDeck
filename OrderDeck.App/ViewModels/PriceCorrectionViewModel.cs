@@ -89,7 +89,8 @@ public sealed partial class ResendRowViewModel : ObservableObject
 /// söyler. Kodsuz seçilen etiketlerde genişletilecek kod yok: yalnız onlar.</para>
 ///
 /// <para>Özet (onaydan önce): N etiket / M müşteri, kuyruk/basılmış, seçimde olmayıp düzelecekler, eski tutarla
-/// istek gitmiş K kişi, ödemesi alınmış P kişi, kargoya verilmiş S etiket (değişmez). Onay tek pakette yazar
+/// istek gitmiş K kişi, ödemesi alınmış P kişi, kargoya verilmiş S etiket ve başka bilgisayarın dosyasındaki E etiket
+/// (ikisi de değişmez; ikincisi spec 2026-10-13 §7.4). Onay tek pakette yazar
 /// (<see cref="LabelService.CorrectPrices"/>); kabuk kuyruktaki satırları yerinde günceller. Sonra: basılmış
 /// etiket düzeldiyse "yeniden basılsın mı?" (varsayılan Evet), teslim edilmiş isteği değişen kişiler için
 /// "düzeltilmiş isteği gönder". Aynı akış FİYAT kutusundaki fiyat değişikliğinin şeridinden de koşar
@@ -292,9 +293,11 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     {
         var chosen = Chosen(_plans, CheckedKeys());
         var targets = DistinctLabels(chosen.SelectMany(p => p.Plan.Correctable));
-        var shipped = DistinctLabels(chosen.Concat(_plans.Where(p => p.Plan.Correctable.Count == 0))
-            .SelectMany(p => p.Plan.Shipped));
-        var shown = targets.Concat(DistinctLabels(chosen.SelectMany(p => p.Plan.Shipped))).ToList();
+        var unchangedPlans = chosen.Concat(_plans.Where(p => p.Plan.Correctable.Count == 0)).ToList();
+        var shipped = DistinctLabels(unchangedPlans.SelectMany(p => p.Plan.Shipped));
+        var elsewhere = DistinctLabels(unchangedPlans.SelectMany(p => p.Plan.Elsewhere));
+        var shown = targets.Concat(DistinctLabels(chosen.SelectMany(p => p.Plan.Shipped.Concat(p.Plan.Elsewhere))))
+            .ToList();
         _shownIds = shown.Select(l => l.Id).ToHashSet(StringComparer.Ordinal);
         _shownFingerprint = PriceCorrectionPlan.FingerprintOf(_shownIds, shown);
 
@@ -326,6 +329,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         }
         if (shipped.Count > 0)
             Summary.Add($"{shipped.Count} etiket kargoya verildi, değişmeyecek");
+        if (elsewhere.Count > 0)
+            Summary.Add($"{elsewhere.Count} etiket başka bilgisayarın dosyasında, değişmeyecek");
         var excluded = DistinctLabels(_plans.SelectMany(p => p.Plan.Excluded)).Count;
         if (excluded > 0)
             Summary.Add($"{excluded} etiket (iptal ya da kargo ücreti) düzeltmeye girmez");
@@ -364,7 +369,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         // değiştiyse operatör yeni özeti görüp yeniden onaylar. Arada yazılmış yeni etiket kodun etiketidir —
         // gösterilenleri değiştirmez, düzeltmeye girer.
         var fresh = _planner();
-        var freshLabels = fresh.SelectMany(p => p.Plan.Correctable.Concat(p.Plan.Shipped));
+        var freshLabels = fresh.SelectMany(p => p.Plan.Correctable.Concat(p.Plan.Shipped).Concat(p.Plan.Elsewhere));
         if (!string.Equals(PriceCorrectionPlan.FingerprintOf(_shownIds, freshLabels), _shownFingerprint,
                 StringComparison.Ordinal))
         {
@@ -394,8 +399,9 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         PriceCorrectionResult result;
         try
         {
-            // Kargoya verilmiş olanlar da verilir: servis onlara dokunmaz, sonuçta "değişmedi" diye döner.
-            var ids = targets.Concat(chosen.SelectMany(p => p.Plan.Shipped)).Select(l => l.Id)
+            // Kargoya verilmiş ve başka bilgisayarın dosyasındakiler de verilir: servis onlara dokunmaz, sonuçta
+            // "değişmedi" diye döner.
+            var ids = targets.Concat(chosen.SelectMany(p => p.Plan.Shipped.Concat(p.Plan.Elsewhere))).Select(l => l.Id)
                 .Distinct(StringComparer.Ordinal).ToList();
             // Bakiyeden ödenmiş etiketler yazımdan ÖNCE okunur: ödendikleri fiyat ilk düzeltmede saklanır.
             result = CorrectPricesSeam?.Invoke(ids, parsed.Value)
@@ -440,6 +446,9 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         if (result.Shipped.Count > 0)
             lines.Add($"{result.Shipped.Count} etiket kargoya verildi, değişmedi: " +
                       string.Join(", ", result.Shipped.Select(l => l.DisplayName ?? l.Username).Distinct().Take(10)));
+        if (result.Elsewhere.Count > 0)
+            lines.Add($"{result.Elsewhere.Count} etiket başka bilgisayarın dosyasında, değişmedi: " +
+                      string.Join(", ", result.Elsewhere.Select(l => l.DisplayName ?? l.Username).Distinct().Take(10)));
         ResultText = string.Join("\n", lines);
 
         // Soru nereden açıldığına (kuyruk, "Basılanlar", FİYAT şeridi) değil sonuca bağlı (K5: "basılmış etiket

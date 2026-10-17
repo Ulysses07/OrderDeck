@@ -332,11 +332,12 @@ public sealed class LabelRepository
     }
 
     /// <summary>Verilen etiketler, verilen sırayla (eksik olanlar atlanır).</summary>
-    public IReadOnlyList<Label> GetByIds(IReadOnlyList<string> ids)
+    /// <param name="write">Doluysa çağıranın paketinde okur (U17): <c>LabelService.Cancel</c>/<c>Uncancel</c>
+    /// dosya payını yazımla aynı işlemde okunan hâlden hesaplar. Boşsa kendi bağlantısı.</param>
+    public IReadOnlyList<Label> GetByIds(IReadOnlyList<string> ids, DbWrite? write = null)
     {
         if (ids.Count == 0) return System.Array.Empty<Label>();
-        using var conn = _factory.Open();
-        var byId = conn.Query<Row>(
+        var byId = _factory.Query<Row>(write,
                 @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
                          Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
                   FROM Label WHERE Id IN @ids",

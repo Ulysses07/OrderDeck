@@ -19,16 +19,20 @@ public sealed class ShipmentRepository
     /// <summary>U12: CustomerId yönlendirmeden yazımla aynı ifadede çözülür — taşınmış Id'yle
     /// açılan kargo silinmiş Id'de öksüz kalmaz (Shipment'ta FK yok; hata değil sessiz kayıp
     /// olurdu). Çağıranın elindeki nesnenin <c>CustomerId</c>'si bayat kalabilir; sonraki
-    /// işlemler (<c>AttachLabels</c>, <c>ApplyDecision</c>) kargonun Id'siyle yürür.</summary>
+    /// işlemler (<c>AttachLabels</c>, <c>ApplyDecision</c>) kargonun Id'siyle yürür.
+    ///
+    /// <para>Göç 049 (spec 2026-10-13 §3.2, §7.4): <c>OriginReplicaId</c> bu veritabanının kopya kimliğidir
+    /// (<c>_meta.ReplicaId</c>, aynı ifadede okunur) — yerelde açılan dosyanın mod Off'taki tek yazıcısı bu
+    /// kopyadır.</para></summary>
     public void Insert(Shipment s)
     {
         using var conn = _factory.Open();
         conn.Execute(
             @"INSERT INTO Shipment
-              (Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt)
+              (Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, OriginReplicaId)
               VALUES
               (@Id, " + CustomerIdSql.Resolve("@CustomerId") + @", @Status, @CreatedAt, @HeldAt, @ShippedAt,
-               @CumulativeAmount, @SyncedAt)",
+               @CumulativeAmount, @SyncedAt, (SELECT ReplicaId FROM _meta WHERE Id = 1))",
             new
             {
                 s.Id,

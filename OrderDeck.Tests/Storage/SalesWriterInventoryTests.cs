@@ -35,6 +35,7 @@ public sealed class SalesWriterInventoryTests
     private const string SessionRepo = "OrderDeck.Core/Storage/Repositories/SessionRepository.cs";
     private const string ShipmentRepo = "OrderDeck.Core/Storage/Repositories/ShipmentRepository.cs";
     private const string CustomerSyncRepo = "OrderDeck.Core/Storage/Repositories/CustomerSyncRepository.cs";
+    private const string AdjusterFile = "OrderDeck.Core/Sales/ShipmentAmountAdjuster.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -65,7 +66,9 @@ public sealed class SalesWriterInventoryTests
         new(SessionRepo, "MarkSynced", "UPDATE StreamSession", 1, [],
             "Gönderim onayı, F05 karşılaştır-ve-yaz. Tetikleyici dışı."),
         new(ShipmentRepo, "Insert", "INSERT INTO Shipment", 1, ["TR_Shipment_ServerOwned_I"],
-            "Dosya açılışı. Mod 1'de düşer. OriginReplicaId yazmaz: NULL bu veritabanının dosyası sayılır (049 başlığı)."),
+            "Dosya açılışı. Mod 1'de düşer. OriginReplicaId = _meta.ReplicaId aynı ifadede (W1-04): mod Off'ta dosyanın tek yazıcısı bu kopya. Eski ikilinin NULL'u da bu veritabanının dosyası sayılır (049 başlığı)."),
+        new(AdjusterFile, "Apply", "UPDATE Shipment", 1, ["TR_Shipment_Enqueue", "TR_Shipment_ServerOwned_U"],
+            "Y5 dosya bloğu (§7.4): CumulativeAmount fark kadar; Revision+1 ve SyncedAt NULL kendisi yazar — push yanıtının current'ı kilit altında uygulanır, kilit TR_Shipment_Enqueue'yu susturur, değişiklik yine gönderilmeli. Mod 1'de yazmaz (kipi aynı işlemde okuyup bloğu atlar): ABORT'a varmaz. Kargoya verilmiş ve yerelde olmayan dosyaya yazmaz."),
         new(ShipmentRepo, "Update", "UPDATE Shipment", 1, ["TR_Shipment_Enqueue", "TR_Shipment_ServerOwned_U"],
             "Karar ve tutar. Revision+1 kendisi yazar: kuyruğa alma tetikleyicisi etkisiz. Mod 1'de düşer."),
         new(ShipmentRepo, "MarkSynced", "UPDATE Shipment", 1, [],

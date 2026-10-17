@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -46,6 +47,24 @@ public class ShipmentRepositoryTests
         found.CumulativeAmount.Should().Be(1234.56m);
         found.HeldAt.Should().BeNull();
         found.ShippedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public void Insert_yeni_dosyaya_bu_kopyanin_kimligini_yazar()
+    {
+        // Spec 2026-10-13 §3.2, §7.4: yerelde açılan dosyanın OriginReplicaId'si bu kopya — mod Off'ta dosyanın
+        // tek yazıcısı. Göç 049 var olanları tohumlamıştı; yeni dosya da aynı kimliği taşımalı.
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+
+        repo.Insert(NewShipment("sh1"));
+        repo.Insert(NewShipment("sh2", status: ShipmentStatus.Shipped));
+
+        using var conn = db.Open();
+        var replicaId = conn.ExecuteScalar<string>("SELECT ReplicaId FROM _meta WHERE Id = 1");
+        replicaId.Should().MatchRegex("^[0-9a-f]{32}$", "ön koşul: göç 049 kimliği tohumladı");
+        conn.Query<string?>("SELECT OriginReplicaId FROM Shipment ORDER BY Id")
+            .Should().Equal(replicaId, replicaId);
     }
 
     [Fact]
