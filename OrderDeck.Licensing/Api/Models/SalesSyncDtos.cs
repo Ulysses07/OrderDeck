@@ -127,6 +127,62 @@ public sealed record SalesShipmentItem(
     Guid? OriginReplicaId,
     long ChangeSeq);
 
+/// <summary>Yayın oturumu öğesi (akışta devredilmiş oturum, yan listede sayfadaki siparişlerin oturumu).</summary>
+/// <param name="Platforms">Virgülle ayrılmış platformlar (<c>sessions/sync</c> ile aynı yazım).</param>
+/// <param name="ReleasedAt">Devir anı; akıştaki ve yan listedeki oturumda dolu.</param>
+/// <param name="ChangeSeq">Satırın rowversion'ı; yan listede imleci etkilemez.</param>
+public sealed record SalesSessionItem(
+    Guid Id,
+    string? Title,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? EndedAt,
+    string Platforms,
+    string? Notes,
+    DateTimeOffset UpdatedAt,
+    Guid? OwnerReplicaId,
+    string? OwnerMachineName,
+    string? ForceEndedBy,
+    DateTimeOffset? ReleasedAt,
+    int? UnsentLabelCount,
+    long ChangeSeq);
+
+/// <summary>Yan listedeki müşteri taslağı (§4.4, §5.4): siparişin müşterisi yerelde yoksa bu taslaktan açılır.</summary>
+/// <param name="Id">Asıl kaydın hex'i; projeksiyonu olmayan müşteride siparişin ham <c>CustomerId</c>'si.</param>
+/// <param name="PurgedAt">Asıl kayıt KVKK ile silindiyse dolu; taslak o zaman takma adsız gelir.</param>
+public sealed record SalesCustomerDraft(
+    string Id,
+    string Platform,
+    string Username,
+    string? DisplayName,
+    DateTimeOffset? PurgedAt);
+
+/// <summary>Akış sayfasının bir öğesi: türü ve satırı. Tam olarak biri dolu.</summary>
+/// <param name="Kind"><see cref="KindSession"/>, <see cref="KindOrder"/> ya da <see cref="KindShipment"/>.</param>
+public sealed record SalesChangeItem(
+    string Kind,
+    long ChangeSeq,
+    SalesSessionItem? Session,
+    SalesOrderItem? Order,
+    SalesShipmentItem? Shipment)
+{
+    public const string KindSession = "session";
+    public const string KindOrder = "order";
+    public const string KindShipment = "shipment";
+}
+
+/// <summary><c>GET sales/changes</c> sayfası (§4.4).</summary>
+/// <param name="Items">Üç kaynağın ChangeSeq sırasıyla birleşimi.</param>
+/// <param name="NextAfterSeq">Son öğenin seq'i; boş sayfada verilen imleç (sıfırlandıysa 0).</param>
+/// <param name="CursorReset">İmleç geçersizdi ve sayfa baştan verildi.</param>
+/// <param name="SideSessions">Sayfadaki siparişlerin oturumları, güncel hâliyle; imleci etkilemez.</param>
+/// <param name="CustomerDrafts">Sayfadaki siparişlerin müşterileri; imleci etkilemez.</param>
+public sealed record SalesChangesPage(
+    IReadOnlyList<SalesChangeItem>? Items,
+    long NextAfterSeq,
+    bool CursorReset,
+    IReadOnlyList<SalesSessionItem>? SideSessions,
+    IReadOnlyList<SalesCustomerDraft>? CustomerDrafts);
+
 // Geri doldurma (spec 2026-10-13 §4.3, §8.2-3). Sunucudaki karşılıkları LicensesSalesController.BackfillRequest,
 // BackfillShipmentDto, BackfillResponse, BackfillSessionResultDto, BackfillOrderResultDto ve BackfillDivergedDto.
 
