@@ -266,6 +266,40 @@ public class ShipmentServiceTests
         ctx.ThresholdReached.Should().BeTrue();
     }
 
+    // ── EvaluatePool (W2-08, spec 2026-10-13 §7.1: mod On'da havuz attach-shipment yanıtından) ──────────
+
+    [Fact]
+    public void EvaluatePool_esigi_verilen_havuzla_degerlendirir_yerel_dosya_tutarlarina_bakmaz()
+    {
+        var (db, svc, _, _, _, _) = Fx(threshold: 500m);
+        using var _d = db;
+        // Ayna dosyanın kendi tutarı 300; havuz (kişinin bütün açık dosyaları, sunucudan) 550.
+        var mirror = new Shipment("kargo-ayna", Cid, ShipmentStatus.Pending, 40, null, null, 300m);
+
+        var reached = svc.EvaluatePool(mirror, 550m);
+        var below = svc.EvaluatePool(mirror, 450m);
+
+        reached.ShouldPrompt.Should().BeTrue();
+        reached.ThresholdReached.Should().BeTrue();
+        reached.PooledAmount.Should().Be(550m, "çekmece ve eşik sunucunun havuzunu gösterir");
+        reached.Shipment.Should().BeSameAs(mirror);
+        below.ThresholdReached.Should().BeFalse();
+        below.AmountToThreshold.Should().Be(50m);
+    }
+
+    [Fact]
+    public void EvaluatePool_kargo_kapaliyken_sormaz()
+    {
+        var (db, svc, _, _, _, _) = Fx(threshold: null, fee: null);
+        using var _d = db;
+
+        var ctx = svc.EvaluatePool(new Shipment("k", Cid, ShipmentStatus.Pending, 40, null, null, 900m), 900m);
+
+        ctx.ShouldPrompt.Should().BeFalse();
+        ctx.ThresholdReached.Should().BeFalse();
+        ctx.PooledAmount.Should().Be(900m);
+    }
+
     // ── ApplyDecision ───────────────────────────────────────────────────
 
     [Fact]

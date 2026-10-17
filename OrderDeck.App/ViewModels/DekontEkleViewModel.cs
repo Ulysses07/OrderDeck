@@ -425,44 +425,15 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             var customer = ResolveCustomer();
             if (customer is null) return null;
 
-            // 1) Açık (Pending/Held) Shipment bul veya oluştur
-            var shipment = _shipments.GetOrCreateOpenShipment(customer.Id);
-
-            // 2) Müşterinin henüz Shipment'a bağlanmamış aktif Label'larını attach et
-            var unattached = _labels.GetUnattachedByCustomer(customer.Id);
-            if (unattached.Count > 0)
-            {
-                var ids = new System.Collections.Generic.List<string>(unattached.Count);
-                foreach (var l in unattached) ids.Add(l.Id);
-                shipment = _shipments.AttachLabels(shipment.Id, ids);
-            }
-
-            // 3) Directive'e göre Shipment state'i ilerlet (single-source-of-truth)
-            switch (directive)
-            {
-                case ShipmentDirective.Hold:
-                    _shipments.ApplyDecision(shipment.Id, ShipmentDecision.Hold);
-                    return null; // vendor zaten beklet dedi; threshold dialog yok
-                case ShipmentDirective.RecipientPays:
-                    _shipments.ApplyDecision(shipment.Id, ShipmentDecision.RecipientPays);
-                    return null; // sticky sticker akışı; threshold dialog yok
-                case ShipmentDirective.Normal:
-                    break; // default — aşağıdaki threshold check'e düş
-            }
-
-            // 4) Threshold check (Normal directive için)
-            // PR-C/3+: allLabelsPaid hesabı buraya entegre edilecek. Şu an
-            // her zaman true varsayılıyor — operatör onaylama akışında tipik
-            // davranış (payment gerçekleşti, customer total covered demek).
-            var ctx = _shipments.EvaluateAfterPayment(customer.Id, allLabelsPaid: true);
-            if (ctx.ShouldPrompt && ctx.ThresholdReached)
+            // Aç ya da bul → bağlanmamış etiketleri bağla → yönerge / eşik (ShipmentService.AttachAfterPayment).
+            var ctx = _shipments.AttachAfterPayment(customer.Id, directive);
+            if (ctx is not null)
             {
                 _log.LogInformation(
                     "Kümülatif eşik aşıldı: Customer={Cid} Shipment={Sid} Total={Total}",
                     customer.Id, ctx.Shipment!.Id, ctx.PooledAmount);
-                return ctx;
             }
-            return null;
+            return ctx;
         }
         catch (Exception ex)
         {
