@@ -51,13 +51,7 @@ public sealed class DisableRoundConversionTests : IDisposable
         _store = new SettingsStore(_settingsPath);
         _store.Update(s => s.Shipping = new ShippingSettings { FreeShippingThreshold = 500m, ShippingFee = 50m });
         _live = _store.Load();
-        var clock = new Clock();
-        var labels = new LabelRepository(_db);
-        var labelService = new LabelService(labels,
-            new CustomerService(new CustomerRepository(_db), new SessionRepository(_db), labels, clock), _db, clock);
-        _round = new SalesModeOffRound(new SalesFeedRepository(_db), new SalesSyncStateRepository(_db),
-            new PendingSalesCommandRepository(_db), labelService, labels, new SalesConflictLogRepository(_db), _store,
-            _live, clock, NullLogger<SalesModeOffRound>.Instance);
+        _round = NewRound();
         _replica = new ReplicaIdentityRepository(_db).GetReplicaId()!.Value;
 
         _customer = Guid.NewGuid().ToString("N");
@@ -77,6 +71,18 @@ public sealed class DisableRoundConversionTests : IDisposable
     }
 
     // ── kurulum ───────────────────────────────────────────────────────────
+
+    /// <summary>Turun yerel adımları; aynı veritabanı ve ayar örneğiyle yenisi "yeniden açılış"tır.</summary>
+    private SalesModeOffRound NewRound()
+    {
+        var clock = new Clock();
+        var labels = new LabelRepository(_db);
+        var labelService = new LabelService(labels,
+            new CustomerService(new CustomerRepository(_db), new SessionRepository(_db), labels, clock), _db, clock);
+        return new SalesModeOffRound(new SalesFeedRepository(_db), new SalesSyncStateRepository(_db),
+            new PendingSalesCommandRepository(_db), labelService, labels, new SalesConflictLogRepository(_db), _store,
+            _live, clock, NullLogger<SalesModeOffRound>.Instance);
+    }
 
     private void Exec(string sql, object? param = null)
     {
@@ -260,6 +266,29 @@ public sealed class DisableRoundConversionTests : IDisposable
         var disk = new SettingsStore(_settingsPath).Load().Shipping;
         disk.FreeShippingThreshold.Should().Be(750m);
         disk.ShippingFee.Should().Be(60m);
+    }
+
+    [Fact]
+    public void Ikinci_adim_islenip_kopya_yazilmadan_surec_kapanirsa_acilista_kargo_ayari_bir_kez_yazilir()
+    {
+        new SalesSyncStateRepository(_db).SaveServerState(3, 750m, 60m, scrubOrderText: false);
+        ModeOnReleased();
+        // 2. adımın işlemi işlendi (yerel kip 0, ModeSeenAt yazıldı: tur bir daha koşmaz), kopyadan önce süreç kapandı.
+        new SalesFeedRepository(_db).ApplyModeOff(ModeChangedAt, _replica).Busy.Should().BeFalse();
+        _live.Shipping.FreeShippingThreshold.Should().Be(500m, "ön koşul: kopya yazılmadı");
+
+        NewRound().Resume();                                              // yeniden açılış (AppHost) ya da tur başı
+
+        _live.Shipping.FreeShippingThreshold.Should().Be(750m, "işaret kalıcı: kopya açılışta tamamlanır");
+        _live.Shipping.ShippingFee.Should().Be(60m);
+        new SettingsStore(_settingsPath).Load().Shipping.ShippingFee.Should().Be(60m);
+
+        // Off'ta operatör yerel ayarı sonradan değiştirir: kopya bir kez yapıldı, yeniden ezilmez.
+        _store.Update(s => s.Shipping = new ShippingSettings { FreeShippingThreshold = 900m, ShippingFee = 40m });
+        _live.Shipping = new ShippingSettings { FreeShippingThreshold = 900m, ShippingFee = 40m };
+        NewRound().Resume();
+        _live.Shipping.FreeShippingThreshold.Should().Be(900m);
+        new SettingsStore(_settingsPath).Load().Shipping.ShippingFee.Should().Be(40m);
     }
 
     [Fact]

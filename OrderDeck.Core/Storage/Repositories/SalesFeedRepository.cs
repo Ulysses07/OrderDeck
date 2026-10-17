@@ -574,6 +574,8 @@ public sealed class SalesFeedRepository
     ///   <item>Kaynağı bu kopya (<paramref name="replicaId"/>) olmayan kargoya verilmemiş dosyalar silinir; kalanlar yerel
     ///   otoriteye döner (mod 0'da 049'un dosya tetikleyicileri ABORT etmez).</item>
     ///   <item>Akış hata kayıtları (U10) silinir: Off'ta akış uygulanmaz, yeniden açılış akışı baştan alır.</item>
+    ///   <item>Kargo ayarı kopyasının kalıcı "bekliyor" işareti yazılır
+    ///   (<see cref="SalesSyncStateRepository.ModeOffShippingCopyMarker"/>); kopya işlemden sonra yazılınca silinir.</item>
     /// </list>
     /// Kilit sırası U17 (önce <see cref="CustomerBusySet"/>). Silinecek uzak etiketlerin bir müşterisi ödeme akışındaysa
     /// hiçbir şey yazılmaz (<see cref="SalesModeOffResult.Busy"/>; yerel kip de değişmez): çağıran sonraki turda yeniden
@@ -604,6 +606,11 @@ public sealed class SalesFeedRepository
         var aggregates = CustomerAggregateSql.Recompute(conn, tx, customers);
         var shipments = conn.Execute(DropForeignShipmentsSql, new { replica = replicaId.ToString("N") }, tx);
         var failures = conn.Execute("DELETE FROM SalesFeedFailure", transaction: tx);
+        // Kargo ayarı kopyası işlemden SONRA yazılır (ayar dosyası); "bekliyor" işareti işlemle birlikte kalıcı.
+        conn.Execute(
+            @"INSERT INTO SyncCursor (Name, LicenseKey, Seq) VALUES (@name, '', @modeSeenAt)
+              ON CONFLICT(Name, LicenseKey) DO UPDATE SET Seq = excluded.Seq",
+            new { name = SalesSyncStateRepository.ModeOffShippingCopyMarker, modeSeenAt }, tx);
         scope.Commit();
         return new SalesModeOffResult(false, toLocal, sessions, labels, live, shipments, failures, aggregates);
     });

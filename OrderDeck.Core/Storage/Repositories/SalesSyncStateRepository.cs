@@ -79,6 +79,33 @@ public sealed class SalesSyncStateRepository
         return conn.ExecuteScalar<int>("SELECT COALESCE((SELECT Mode FROM SalesSyncState WHERE Id = 1), 0)");
     }
 
+    /// <summary>
+    /// <c>disable</c> turunun 2. adımından sonraki kargo ayarı kopyasının (§8.5-2, §6.2) kalıcı "bekliyor" işareti:
+    /// <c>SyncCursor</c> satırı (lisanssız, <c>LicenseKey = ''</c>; <c>Seq</c> = turun <c>ModeSeenAt</c>'i). 2. adım
+    /// (<see cref="SalesFeedRepository.ApplyModeOff"/>) onu yerel kip 0 ile AYNI işlemde yazar, kopya başarıyla
+    /// yazılınca silinir (<see cref="ClearModeOffShippingCopyPending"/>). İşlemle kopya arasında süreç kapanırsa
+    /// açılışta ve turun başında kopya yeniden denenir — tur bir daha koşmadığı (ModeSeenAt yazıldı) için bellek içi
+    /// işaret kaybolurdu.
+    /// </summary>
+    public const string ModeOffShippingCopyMarker = "sales-modeoff-shipping-copy";
+
+    /// <summary><see cref="ModeOffShippingCopyMarker"/> var mı.</summary>
+    public bool IsModeOffShippingCopyPending()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            "SELECT EXISTS (SELECT 1 FROM SyncCursor WHERE Name = @name AND LicenseKey = '')",
+            new { name = ModeOffShippingCopyMarker }) == 1;
+    }
+
+    /// <summary>Kargo ayarı kopyası yazıldı: <see cref="ModeOffShippingCopyMarker"/> silinir.</summary>
+    public void ClearModeOffShippingCopyPending()
+    {
+        using var conn = _factory.Open();
+        conn.Execute("DELETE FROM SyncCursor WHERE Name = @name AND LicenseKey = ''",
+            new { name = ModeOffShippingCopyMarker });
+    }
+
     /// <summary>Çevrimdışı kuyrukta bekleyen satış komutu var mı (§5.5).</summary>
     public bool HasPendingSalesCommands()
     {

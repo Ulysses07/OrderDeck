@@ -31,7 +31,9 @@ public sealed record SalesPendingConversion(int Converted, int Dropped, int Rema
 /// (<c>SalesSyncState</c>, son <c>sales/state</c>) yerel <c>AppSettings.Shipping</c>'e yazılır (§6.2): Off'a dönen
 /// bilgisayarlar farklı yerel değerlerle farklı kargo tutarı istemez. Boş eşik ya da ücret "kargo kapalı" demektir.
 /// Lisans ayarı hiç yazılmamışsa (sürüm boş) yerel ayar korunur — mod açılışı ayarı şart koştuğu için (§4.10-4) olağan
-/// değildir. Yazım düşerse sonraki turda yeniden denenir (<see cref="Resume"/>).</para>
+/// değildir. Yazım düşerse ya da süreç işlemle kopya arasında kapanırsa açılışta ve sonraki turda yeniden denenir
+/// (<see cref="Resume"/>; "bekliyor" işareti 2. adımın işleminde kalıcı yazılır,
+/// <see cref="SalesSyncStateRepository.ModeOffShippingCopyMarker"/>).</para>
 ///
 /// <para><b>3. adım</b> (<see cref="ConvertPendingCommands"/>), kilit DIŞINDA ve olağan yerel yazım olarak: bekleyen
 /// <c>cancel</c> → <see cref="LabelService.Cancel"/>(etiketler, aynı neden); <c>mark-printed</c> →
@@ -63,9 +65,6 @@ public sealed class SalesModeOffRound
 
     /// <summary>3. adımın tek koşucusu: açılış ve tur aynı satırı iki kez çevirmez.</summary>
     private readonly Lock _gate = new();
-
-    /// <summary>2. adımdan sonraki kargo ayarı yazımı düştü: sonraki turda yeniden.</summary>
-    private volatile bool _shippingCopyPending;
 
     public SalesModeOffRound(
         SalesFeedRepository feed,
@@ -100,18 +99,19 @@ public sealed class SalesModeOffRound
     {
         var result = _feed.ApplyModeOff(modeSeenAt, replicaId);
         if (result.Busy) return result;
-        _shippingCopyPending = true;
         CopyLicenseShipping();
         return result;
     }
 
     /// <summary>
-    /// Açılışta ve her turun başında: yarıda kalmış kargo ayarı yazımı ve yerel kip 0 iken kuyrukta kalmış bekleyen
-    /// komutlar (3. adımın yeniden koşması). Yerel kip 1 ise hiçbir şey yapmaz (komutlar gönderilir).
+    /// Açılışta ve her turun başında: yarıda kalmış kargo ayarı yazımı (kalıcı işaret,
+    /// <see cref="SalesSyncStateRepository.ModeOffShippingCopyMarker"/> — süreç 2. adımla kopya arasında kapanmış
+    /// olabilir) ve yerel kip 0 iken kuyrukta kalmış bekleyen komutlar (3. adımın yeniden koşması). Yerel kip 1 ise
+    /// hiçbir şey yapmaz (komutlar gönderilir).
     /// </summary>
     public SalesPendingConversion Resume()
     {
-        if (_shippingCopyPending && _state.GetMode() == 0) CopyLicenseShipping();
+        if (_state.GetMode() == 0 && _state.IsModeOffShippingCopyPending()) CopyLicenseShipping();
         if (!_state.HasPendingSalesCommands()) return SalesPendingConversion.None;
         return ConvertPendingCommands();
     }
@@ -192,7 +192,7 @@ public sealed class SalesModeOffRound
             var state = _state.Get();
             if (state.ShippingVersion is null)
             {
-                _shippingCopyPending = false;
+                _state.ClearModeOffShippingCopyPending();
                 _log.LogWarning("Off turu: lisans geneli kargo ayarı sunucuda yazılmamış; yerel kargo ayarı korunuyor");
                 return;
             }
@@ -204,7 +204,7 @@ public sealed class SalesModeOffRound
                 FreeShippingThreshold = threshold, ShippingFee = fee,
             });
             _liveSettings.Shipping = new ShippingSettings { FreeShippingThreshold = threshold, ShippingFee = fee };
-            _shippingCopyPending = false;
+            _state.ClearModeOffShippingCopyPending();
             _log.LogInformation(
                 "Off turu: lisans geneli kargo ayarı (sürüm {Version}) yerel ayara yazıldı; kargo {State}",
                 state.ShippingVersion, threshold is > 0 && fee is > 0 ? "açık" : "kapalı");
