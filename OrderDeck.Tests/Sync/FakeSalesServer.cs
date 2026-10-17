@@ -61,7 +61,9 @@ namespace OrderDeck.Tests.Sync;
 /// <para><b>Komutlar</b> (W2-04): <c>POST sales/commands</c> (<see cref="HandleCommand"/>) — zarf, mod Off, UA'dan alt
 /// sürüm, CommandId + kanonik içerikle yeniden oynatma (<see cref="CommandLog"/>), content-conflict, beklenen sürüm
 /// (<c>stale</c> + <c>current</c>), görünürlük (<c>session-live</c>) ve beş tür sunucunun kuralıyla (damga, sürüm +1).
-/// Siparişler komutun damgalarını (<c>PriceSetAt</c>, <c>CancelSetAt</c>, <c>BackupSetAt</c>) taşır.
+/// W2-06: <c>set-code-price</c> (planı sunucu kurar; <c>plan-stale</c> + <c>plan</c> + <c>current</c>) ve
+/// <c>add-backup</c> (yeni geçici yedek satırı). Siparişler komutun damgalarını (<c>PriceSetAt</c>, <c>CancelSetAt</c>,
+/// <c>BackupSetAt</c>) taşır.
 /// <see cref="LoseNextResponse"/> yanıtı kaybolan komutu taklit eder.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
@@ -1318,11 +1320,18 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary>Komutun en çok sipariş/beklenen sürüm sayısı (<c>SalesCommandService.MaxOrders</c>).</summary>
     private const int MaxCommandOrders = 500;
 
-    private static readonly string[] KnownCommandKinds = ["cancel", "uncancel", "mark-printed", "reprint", "confirm-backup"];
+    /// <summary>Kümeyi sunucunun kurduğu türlerde (<c>set-code-price</c>'ın planı) beklenen sürümlerin tavanı
+    /// (<c>SalesCommandService.MaxSetOrders</c>).</summary>
+    private const int MaxSetOrders = 10_000;
+
+    private static readonly string[] KnownCommandKinds =
+        ["cancel", "uncancel", "mark-printed", "reprint", "confirm-backup", "set-code-price", "add-backup"];
 
     /// <summary>
-    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), şimdilik beş tür: <c>cancel</c>,
-    /// <c>uncancel</c>, <c>mark-printed</c>, <c>reprint</c>, <c>confirm-backup</c> (sonraki görevler kalanları ekler).
+    /// <c>POST sales/commands</c> — <c>SalesCommandService</c>'in aynası (§4.6), şimdilik yedi tür: <c>cancel</c>,
+    /// <c>uncancel</c>, <c>mark-printed</c>, <c>reprint</c>, <c>confirm-backup</c>, <c>set-code-price</c> (plan sunucuda
+    /// kurulur, <see cref="SetCodePrice"/>) ve <c>add-backup</c> (<see cref="AddBackup"/>); sonraki görevler kalanları
+    /// ekler.
     /// Sıra: zarf (v2) → commandId → beklenen sürümler → türün yükü (400'ler <see cref="Faults"/>'a yazılır: istemci
     /// geçersiz gövde göndermemeli) → kalp atışı → mod Off 409 <c>mode-off</c> → alt sürüm 409
     /// <c>client-update-required</c> (UA'daki "OrderDeck-WPF/x" ile <see cref="MinClientVersion"/>; ikisinden biri yoksa
@@ -1342,7 +1351,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             return Invalid(envError!);
         if (body.CommandId is not { } commandId || commandId == Guid.Empty)
             return InvalidCommand("invalid-command", "commandId boş olamaz.");
-        if (!TryReadExpected(body.Expected, out var expected, out var expectedError))
+        if (!TryReadExpected(body.Expected, body.Kind == "set-code-price" ? MaxSetOrders : MaxCommandOrders,
+                out var expected, out var expectedError))
             return InvalidCommand("invalid-expected", expectedError!);
         if (!TryParseCommand(body.Kind, body.Payload, expected, out var command, out var code, out var error))
             return InvalidCommand(code!, error!);
@@ -1368,6 +1378,24 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     return CommandSucceeded(licenseId, logged.Status, Reprint(command), command.OrderIds);
                 }
                 return CommandSucceeded(licenseId, logged.Status, logged.ResultJson, command.OrderIds);
+            }
+
+            // Kümeyi sunucunun kurduğu / yeni satır ekleyen türler kendi denetimlerini yapar (§4.6 tablosu).
+            if (command.Kind is "set-code-price" or "add-backup")
+            {
+                var now = DateTimeOffset.UtcNow;
+                var applied = command.Kind == "set-code-price"
+                    ? SetCodePrice(licenseId, command, expected, now, out var setResult, out var setRejected)
+                    : AddBackup(licenseId, replicaId, command, now, out setResult, out setRejected);
+                if (!applied) return setRejected!;
+                var setBody = JsonSerializer.Deserialize<CommandResultBody>(setResult, Web)!;
+                var setStatus = setBody.Changed.Count > 0 ? "applied" : "unchanged";
+                _commandLog[commandId] = new CommandLogEntry
+                {
+                    CommandId = commandId, LicenseId = licenseId, ReplicaId = replicaId, Kind = command.Kind, Hash = hash,
+                    Status = setStatus, ResultJson = setResult, Applications = 1,
+                };
+                return CommandSucceeded(licenseId, setStatus, setResult, command.OrderIds);
             }
 
             var unknown = command.OrderIds
@@ -1534,6 +1562,180 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         }, Web);
     }
 
+    /// <summary>409 <c>session-live</c>: sahip makine ve sahibin son kalp atışı.</summary>
+    private HttpResponseMessage SessionLiveProblem(Guid licenseId, ServerSession? session)
+    {
+        DateTimeOffset? lastSeen = session?.OwnerReplicaId is { } owner && _replicas.TryGetValue((licenseId, owner), out var r)
+            ? r.LastSeenAt
+            : null;
+        return ProblemResponse(409, "session-live",
+            "Bu yayın henüz sunucuya devredilmedi; yalnız onu açan bilgisayar değiştirebilir.",
+            new Dictionary<string, object?>
+            {
+                ["machine"] = session?.OwnerMachineName, ["ownerLastSeenAt"] = lastSeen, ["sessionId"] = session?.Id,
+            });
+    }
+
+    /// <summary>
+    /// <c>set-code-price</c> — <c>SetCodePriceCommandHandler</c>'ın aynası (§4.6): yayın bu lisansta (400
+    /// <c>unknown-session</c>) ve devredilmiş (409 <c>session-live</c>) olmalı; seçilenler bu lisansta (400
+    /// <c>unknown-order</c>). Planı sunucu kurar: yayının harf duyarsız (saklanan kod kırpılmadan) koda eşleşen
+    /// siparişleri — kodsuz seçimde hiçbiri — ∪ seçilenler, ardından sınıflama: iptal edilmiş, kargo ücreti ve kargoya
+    /// verilmiş dosyadaki sipariş planın dışında. Plan satırlarının yayını da devredilmiş olmalı; tavanı aşan plan 409
+    /// <c>too-many-candidates</c>; plan (Id ve sürüm) <c>expected</c>'den farklıysa 409 <c>plan-stale</c> + güncel
+    /// <c>plan</c> + <c>current</c> (plan ∪ komutun satırları), hiçbir şey yazılmaz. Etki fiyatı farklı plan satırında:
+    /// <c>PaidPrice</c> boşsa ve sipariş ödenmişse (dosyaya bağlı ya da <c>paidFromBalanceIds</c>'te) eski fiyat;
+    /// <c>Price</c>; <c>PriceCorrectedAt</c> yalnız basılmış satırda; <c>PriceSetAt</c>; sürüm +1. K7 türetmesi yok.
+    /// </summary>
+    private bool SetCodePrice(Guid licenseId, ParsedCommand command, List<(Guid OrderId, int Version)> expected,
+        DateTimeOffset now, out string resultJson, out HttpResponseMessage? rejected)
+    {
+        resultJson = "";
+        rejected = null;
+        var sessionId = command.SessionId!.Value;
+        if (!_serverSessions.TryGetValue(sessionId, out var session) || session.LicenseId != licenseId)
+        {
+            rejected = InvalidCommand("unknown-session", "Komutun yayını bu lisansta yok.",
+                new Dictionary<string, object?> { ["sessionId"] = sessionId });
+            return false;
+        }
+        if (session.ReleasedAt is null)
+        {
+            rejected = SessionLiveProblem(licenseId, session);
+            return false;
+        }
+        var unknown = command.AlsoSelected!
+            .Where(id => !_orders.TryGetValue(id, out var o) || o.LicenseId != licenseId)
+            .ToList();
+        if (unknown.Count > 0)
+        {
+            rejected = InvalidCommand("unknown-order", "Komutun siparişlerinden bazıları bu lisansta yok.",
+                new Dictionary<string, object?> { ["orderIds"] = unknown });
+            return false;
+        }
+
+        var codeOrders = command.Code is { } code
+            ? _orders.Values
+                .Where(o => o.LicenseId == licenseId && o.Row.SessionId == sessionId && o.Row.Code is not null
+                            && string.Equals(o.Row.Code, code, StringComparison.OrdinalIgnoreCase))
+                .Select(o => o.Row.Id)
+            : [];
+        var plan = codeOrders.Concat(command.AlsoSelected!).Distinct()
+            .Select(id => _orders[id])
+            .Where(o => o.Row.CancelledAt is null && !o.Row.IsShippingFee
+                        && !(o.Row.ShipmentId is { } shipmentId && _shipments.TryGetValue(shipmentId, out var shipment)
+                             && shipment.Row.Status == "shipped"))
+            .OrderBy(o => o.Row.Id)
+            .ToList();
+        foreach (var order in plan)
+        {
+            ServerSession? orderSession = null;
+            if (order.Row.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var s) && s.LicenseId == licenseId)
+                orderSession = s;
+            if (orderSession?.ReleasedAt is not null) continue;
+            rejected = SessionLiveProblem(licenseId, orderSession);
+            return false;
+        }
+        if (plan.Count > MaxSetOrders)
+        {
+            rejected = ProblemResponse(409, "too-many-candidates",
+                "Bu işlemin kapsadığı etiket sayısı tek komutun sınırını aşıyor.",
+                new Dictionary<string, object?> { ["count"] = plan.Count, ["max"] = MaxSetOrders });
+            return false;
+        }
+        var planSet = plan.Select(o => (o.Row.Id, o.Version)).ToHashSet();
+        if (!planSet.SetEquals(expected))
+        {
+            rejected = ProblemResponse(409, "plan-stale", "Bu arada başka bir bilgisayarda değişti; plan yenilendi.",
+                new Dictionary<string, object?>
+                {
+                    ["plan"] = plan.Select(o => new ExpectedBody(o.Row.Id, o.Version)).ToList(),
+                    ["current"] = CurrentOrderItems(licenseId,
+                        plan.Select(o => o.Row.Id).Concat(command.OrderIds).Distinct().ToList()),
+                });
+            return false;
+        }
+
+        var paidFromBalance = command.PaidFromBalance!.ToHashSet();
+        var changed = new List<Guid>();
+        var versions = new List<VersionBody>();
+        foreach (var order in plan)
+        {
+            var newPrice = command.NewPrice!.Value;
+            if (order.Row.Price == newPrice) continue;
+            var paid = order.Row.PaidPrice is null
+                       && (order.Row.ShipmentId is not null || paidFromBalance.Contains(order.Row.Id))
+                ? order.Row.Price
+                : order.Row.PaidPrice;
+            var row = PutOrder(licenseId, order with
+            {
+                Row = order.Row with
+                {
+                    Price = newPrice,
+                    PaidPrice = paid,
+                    PriceCorrectedAt = order.Row.PrintedAt is not null ? now : order.Row.PriceCorrectedAt,
+                },
+                PriceSetAt = now,
+                Version = order.Version + 1,
+                UpdatedAt = now,
+            });
+            versions.Add(new VersionBody(row.Row.Id, row.Version));
+            changed.Add(order.Row.Id);
+        }
+        resultJson = JsonSerializer.Serialize(
+            new CommandResultBody(changed, command.OrderIds.Except(changed).ToList(), versions, []), Web);
+        return true;
+    }
+
+    /// <summary>
+    /// <c>add-backup</c> — <c>AddBackupCommandHandler</c>'ın aynası (§4.6): ebeveyn bu lisansta (400
+    /// <c>unknown-order</c>) ve devredilmiş bir yayında (409 <c>session-live</c>) olmalı; yeni Id sunucuda hiçbir
+    /// lisansta olmamalı (409 <c>content-conflict</c>). Ekleme: ebeveynin yayını, müşteri asıl kayda çözülür,
+    /// <c>IsTentativeBackup</c> ve <c>IsBackupPromoted</c>, <c>ParentOrderId</c>, <c>OriginReplicaId</c> = çağıran,
+    /// <c>SessionReleasedAt</c> yayının devir anı, <c>AddedAt</c> sunucu saati, fiyat ve kod verilmediyse ebeveyninki;
+    /// ürün ve varyant boş (§12). Birim damgası yok.
+    /// </summary>
+    private bool AddBackup(Guid licenseId, Guid replicaId, ParsedCommand command, DateTimeOffset now,
+        out string resultJson, out HttpResponseMessage? rejected)
+    {
+        resultJson = "";
+        rejected = null;
+        var parentId = command.ParentOrderId!.Value;
+        if (!_orders.TryGetValue(parentId, out var parent) || parent.LicenseId != licenseId)
+        {
+            rejected = InvalidCommand("unknown-order", "Komutun siparişlerinden bazıları bu lisansta yok.",
+                new Dictionary<string, object?> { ["orderIds"] = new[] { parentId } });
+            return false;
+        }
+        ServerSession? session = null;
+        if (parent.Row.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var s) && s.LicenseId == licenseId)
+            session = s;
+        if (session?.ReleasedAt is not { } releasedAt)
+        {
+            rejected = SessionLiveProblem(licenseId, session);
+            return false;
+        }
+        var newId = command.OrderIds[0];
+        if (_orders.ContainsKey(newId))
+        {
+            rejected = ProblemResponse(409, "content-conflict", "Bu sipariş Id'si sunucuda zaten kullanılıyor.",
+                new Dictionary<string, object?> { ["orderId"] = newId });
+            return false;
+        }
+
+        var customer = command.Customer!;
+        var (customerId, _) = ResolveCustomer(customer.Id!);
+        var row = new OrderBody(newId, session.Id, customerId, customer.Platform!, customer.Username!,
+            customer.DisplayName, command.MessageText ?? "", command.Code ?? parent.Row.Code,
+            command.NewPrice ?? parent.Row.Price, now, null, null, null, false, true, true, null, null, null, parentId,
+            null, null, null, null, null);
+        var inserted = PutOrder(licenseId,
+            new ServerOrder(row, 1, replicaId, now) { SessionReleasedAt = releasedAt });
+        resultJson = JsonSerializer.Serialize(
+            new CommandResultBody([newId], [], [new VersionBody(newId, inserted.Version)], []), Web);
+        return true;
+    }
+
     /// <summary>Başarı yanıtı: siparişler (istenen sırayla, güncel, asıl kayıt + KVKK maskesi), bağlı dosyaları ve
     /// oturumları.</summary>
     private HttpResponseMessage CommandSucceeded(Guid licenseId, string status, string resultJson, IReadOnlyList<Guid> orderIds)
@@ -1562,14 +1764,15 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             })
             .ToList();
 
-    /// <summary><c>SalesCommandService.TryReadExpected</c>: Id dolu ve tekil, sürüm ≥ 0, en çok 500.</summary>
-    private static bool TryReadExpected(List<ExpectedBody?>? raw, out List<(Guid OrderId, int Version)> expected,
-        out string? error)
+    /// <summary><c>SalesCommandService.TryReadExpected</c>: Id dolu ve tekil, sürüm ≥ 0, en çok 500 (plan taşıyan türde
+    /// 10.000).</summary>
+    private static bool TryReadExpected(List<ExpectedBody?>? raw, int max,
+        out List<(Guid OrderId, int Version)> expected, out string? error)
     {
         expected = new();
         error = null;
         if (raw is null) return true;
-        if (raw.Count > MaxCommandOrders) { error = $"expected en çok {MaxCommandOrders} öğe taşır."; return false; }
+        if (raw.Count > max) { error = $"expected en çok {max} öğe taşır."; return false; }
         var seen = new HashSet<Guid>();
         foreach (var item in raw)
         {
@@ -1610,6 +1813,21 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 return false;
             }
             items = raw.Distinct().Order().ToList();
+            return true;
+        }
+
+        // SalesCommandPayload.TryReadOptionalIds: boş liste olabilir; en çok 500, boş Id yok.
+        static bool OptionalIds(List<Guid>? raw, out List<Guid> ids, out string? error)
+        {
+            ids = new();
+            error = null;
+            if (raw is null || raw.Count == 0) return true;
+            if (raw.Count > MaxCommandOrders || raw.Contains(Guid.Empty))
+            {
+                error = $"liste en çok {MaxCommandOrders} dolu Id taşır.";
+                return false;
+            }
+            ids = raw.Distinct().Order().ToList();
             return true;
         }
 
@@ -1695,6 +1913,87 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                         NewPrice = b.NewPrice is { } n ? decimal.Round(n, 2) : null,
                     };
                     break;
+                }
+                case "set-code-price":
+                {
+                    // SetCodePriceCommandHandler.TryParse; expected planın kendisidir (öğelerle eşleşmez).
+                    var b = p.Deserialize<SetCodePriceBody>(Web);
+                    if (b?.SessionId is not { } sessionId || sessionId == Guid.Empty) { error = "sessionId boş olamaz."; return false; }
+                    string? trimmed = null;
+                    if (b.Code is not null)
+                    {
+                        trimmed = b.Code.Trim();
+                        if (trimmed.Length is 0 or > 64)
+                        {
+                            error = "code kodsuz seçimde null olmalı; değilse boş olmayan, en çok 64 karakter.";
+                            return false;
+                        }
+                    }
+                    if (!OptionalIds(b.AlsoSelectedIds, out var also, out error)) return false;
+                    if (trimmed is null && also.Count == 0)
+                    {
+                        error = "code null ise alsoSelectedIds düzeltilecek siparişleri taşımalı.";
+                        return false;
+                    }
+                    if (b.NewPrice is not { } price || price < 0m || decimal.Round(price, 2) != price)
+                    {
+                        error = "newPrice 0 ya da daha büyük, en çok iki ondalıklı bir tutar olmalı.";
+                        return false;
+                    }
+                    if (!OptionalIds(b.PaidFromBalanceIds, out var paid, out error)) return false;
+                    var newPrice = decimal.Round(price, 2);
+                    command = new ParsedCommand(kind,
+                        expected.Select(e => e.OrderId).Concat(also).Distinct().Order().ToList(),
+                        $"session={sessionId:N};code={trimmed ?? "null"};also={string.Join(",", also.Select(i => i.ToString("N")))};"
+                        + $"price={(newPrice + 0.00m).ToString("F2", CultureInfo.InvariantCulture)};"
+                        + $"paid={string.Join(",", paid.Select(i => i.ToString("N")))}")
+                    {
+                        SessionId = sessionId, Code = trimmed, AlsoSelected = also, NewPrice = newPrice, PaidFromBalance = paid,
+                    };
+                    return true;
+                }
+                case "add-backup":
+                {
+                    // AddBackupCommandHandler.TryParse; expected boş olmalı (var olan satırı yazmaz).
+                    var b = p.Deserialize<AddBackupBody>(Web);
+                    if (b?.NewOrderId is not { } newId || newId == Guid.Empty
+                        || b.ParentOrderId is not { } parentId || parentId == Guid.Empty)
+                    {
+                        error = "newOrderId ve parentOrderId boş olamaz.";
+                        return false;
+                    }
+                    if (newId == parentId) { error = "newOrderId ebeveynin Id'si olamaz."; return false; }
+                    if (b.Customer is not { } customer
+                        || string.IsNullOrWhiteSpace(customer.Id) || customer.Id.Length > 64
+                        || string.IsNullOrWhiteSpace(customer.Platform) || customer.Platform.Length > 32
+                        || string.IsNullOrWhiteSpace(customer.Username) || customer.Username.Length > 200
+                        || customer.DisplayName is { Length: > 200 })
+                    {
+                        error = "customer id, platform ve username taşımalı (sınırlar içinde).";
+                        return false;
+                    }
+                    if (b.MessageText is { Length: > 2000 } || b.Code is { Length: > 64 })
+                    {
+                        error = "messageText en çok 2000, code en çok 64 karakter.";
+                        return false;
+                    }
+                    if (b.Price is { } price && (price < 0m || decimal.Round(price, 2) != price))
+                    {
+                        error = "price 0 ya da daha büyük, en çok iki ondalıklı bir tutar olmalı.";
+                        return false;
+                    }
+                    if (expected.Count > 0) { error = "add-backup var olan bir satırı yazmaz; expected boş olmalı."; return false; }
+                    var canonicalPrice = b.Price is { } bp
+                        ? (decimal.Round(bp, 2) + 0.00m).ToString("F2", CultureInfo.InvariantCulture)
+                        : "null";
+                    command = new ParsedCommand(kind, [newId],
+                        $"new={newId:N};parent={parentId:N};customer={customer.Id}|{customer.Platform}|{customer.Username}|"
+                        + $"{customer.DisplayName};text={b.MessageText ?? ""};price={canonicalPrice};code={b.Code ?? "null"}")
+                    {
+                        ParentOrderId = parentId, Customer = customer, MessageText = b.MessageText ?? "",
+                        NewPrice = b.Price is { } np ? decimal.Round(np, 2) : null, Code = b.Code,
+                    };
+                    return true;
                 }
             }
         }
@@ -2157,13 +2456,38 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary><c>ConfirmBackupCommandHandler.Body</c>.</summary>
     private sealed record ConfirmBackupBody(Guid? BackupOrderId, decimal? NewPrice);
 
+    /// <summary><c>SetCodePriceCommandHandler.Body</c>.</summary>
+    private sealed record SetCodePriceBody(
+        Guid? SessionId, string? Code, List<Guid>? AlsoSelectedIds, decimal? NewPrice, List<Guid>? PaidFromBalanceIds);
+
+    /// <summary><c>AddBackupCommandHandler.CustomerBody</c>.</summary>
+    internal sealed record AddBackupCustomerBody(string? Id, string? Platform, string? Username, string? DisplayName);
+
+    /// <summary><c>AddBackupCommandHandler.Body</c>.</summary>
+    private sealed record AddBackupBody(
+        Guid? NewOrderId, Guid? ParentOrderId, AddBackupCustomerBody? Customer, string? MessageText, decimal? Price,
+        string? Code);
+
     /// <summary>Doğrulanmış komut: tür, siparişler, kanonik yük (özet için) ve türün alanları.</summary>
     private sealed record ParsedCommand(string Kind, IReadOnlyList<Guid> OrderIds, string Canonical)
     {
         public string? Reason { get; init; }
         public string? BatchId { get; init; }
         public IReadOnlyDictionary<Guid, int>? Seqs { get; init; }
+
+        /// <summary><c>confirm-backup</c> ve <c>set-code-price</c>'ın yeni fiyatı; <c>add-backup</c>'ın fiyatı.</summary>
         public decimal? NewPrice { get; init; }
+
+        public Guid? SessionId { get; init; }
+
+        /// <summary><c>set-code-price</c>'ın kırpılmış kodu; <c>add-backup</c>'ın kodu (verildiği gibi).</summary>
+        public string? Code { get; init; }
+
+        public IReadOnlyList<Guid>? AlsoSelected { get; init; }
+        public IReadOnlyList<Guid>? PaidFromBalance { get; init; }
+        public Guid? ParentOrderId { get; init; }
+        public AddBackupCustomerBody? Customer { get; init; }
+        public string? MessageText { get; init; }
     }
 
     /// <summary><c>SalesCommandLogs</c> satırı (kanonik içerik özeti dahil).</summary>
