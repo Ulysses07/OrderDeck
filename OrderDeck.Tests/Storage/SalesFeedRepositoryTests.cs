@@ -669,4 +669,96 @@ public sealed class SalesFeedRepositoryTests : IDisposable
         Scalar<int>("SELECT COUNT(*) FROM StreamSession").Should().Be(0);
         Scalar<int>("SELECT COUNT(*) FROM Customer").Should().Be(0);
     }
+
+    // ── uzak satırların temizliği (W2-03, §5.4 lisans değişimi) ───────────
+
+    [Fact]
+    public void Uzak_satir_temizligi_uzak_oturum_etiket_ve_canli_basliklari_siler_yerel_satirlara_dokunmaz_toplamlari_turetir()
+    {
+        var customerId = InsertCustomer("alici_ornek");
+        var own = LocalSession(endedAt: LocalEndedAt, synced: true);
+        var ownLabel = InsertLocalLabel(own, customerId, synced: true, price: 40m);
+        var remote = ServerSession();
+        Apply(OrderItem(Order(remote.Id, customerId, price: 150m)), [remote]).Status.Should().Be(SalesFeedApplyStatus.Applied);
+        Exec(@"INSERT INTO RemoteLiveSession (Id, Title, StartedAt, OwnerMachineName, State)
+               VALUES (@id, 'Canlı', @at, 'PC-B', 'live')", new { id = NewId(), at = StartedAt });
+        _customers.GetById(customerId)!.TotalAmount.Should().Be(190m, "ön koşul: uzak etiket toplamda");
+
+        var result = _feed.PurgeRemoteRows();
+
+        result.Should().BeEquivalentTo(new { Busy = false, Sessions = 1, Labels = 1, LiveSessions = 1 });
+        result.Aggregates.ChangedRows.Should().Be(1);
+        Scalar<int>("SELECT COUNT(*) FROM StreamSession WHERE Origin = 'remote'").Should().Be(0);
+        Scalar<int>("SELECT COUNT(*) FROM RemoteLiveSession").Should().Be(0);
+        _sessions.GetById(own).Should().NotBeNull("kendi oturumu kalır");
+        _labels.GetById(ownLabel).Should().NotBeNull("kendi etiketi kalır");
+        var customer = _customers.GetById(customerId)!;
+        customer.TotalAmount.Should().Be(40m, "toplam kalan etiketlerden türetildi");
+        customer.TotalLabelsPrinted.Should().Be(1);
+
+        _feed.PurgeRemoteRows().Should().BeEquivalentTo(
+            new { Busy = false, Sessions = 0, Labels = 0, LiveSessions = 0 }, "idempotent");
+    }
+
+    [Fact]
+    public async Task Uzak_satir_temizligi_odeme_akisindaki_musteride_hicbir_sey_silmez()
+    {
+        var busy = new CustomerBusySet();
+        var feed = new SalesFeedRepository(_db, busy);
+        var customerId = InsertCustomer("alici_ornek");
+        var remote = ServerSession();
+        Apply(OrderItem(Order(remote.Id, customerId)), [remote], feed: feed);
+        using var lease = await busy.EnterAsync(customerId);
+
+        feed.PurgeRemoteRows().Busy.Should().BeTrue();
+
+        Scalar<int>("SELECT COUNT(*) FROM Label").Should().Be(1, "U13: ödeme isteği o kişinin toplamını okurken etiket çekilmez");
+        Scalar<int>("SELECT COUNT(*) FROM StreamSession WHERE Origin = 'remote'").Should().Be(1);
+        lease.Dispose();
+        feed.PurgeRemoteRows().Labels.Should().Be(1);
+    }
+
+    // ── uzak canlı yayın aynası (W2-03, §3.2, M5) ─────────────────────────
+
+    private static RemoteLiveSessionRow Live(string id, string state = RemoteLiveSessionState.Live, long? seen = 1_790_999_000L)
+        => new(id, "Canlı yayın", StartedAt, state == RemoteLiveSessionState.Live ? null : LocalEndedAt, "PC-B", seen,
+            state, state == RemoteLiveSessionState.HandingOver ? 4 : null);
+
+    [Fact]
+    public void Canli_yayin_aynasi_ekler_gunceller_kaybolani_siler_StreamSession_kimligini_almaz()
+    {
+        var repo = new RemoteLiveSessionRepository(_db);
+        var own = LocalSession(endedAt: null);
+        string a = NewId(), b = NewId(), gone = NewId();
+        repo.Mirror([Live(gone)]).Should().Be(1);
+
+        repo.Mirror([Live(a), Live(b, RemoteLiveSessionState.HandingOver), Live(own), Live(NewId(), "bilinmeyen")])
+            .Should().Be(3, "a ve b eklendi, kaybolan silindi; kendi oturumu ve bilinmeyen hâl alınmaz");
+        repo.GetAll().Select(r => r.Id).Should().BeEquivalentTo(a, b);
+        repo.GetAll().Single(r => r.Id == b).Should().Be(Live(b, RemoteLiveSessionState.HandingOver));
+
+        repo.Mirror([Live(a), Live(b, RemoteLiveSessionState.HandingOver)]).Should().Be(0, "aynı değer yeniden yazılmaz");
+        repo.Mirror([Live(a, seen: 1_790_999_030L)]).Should().Be(2, "a'nın son sinyali güncellendi, b silindi");
+        repo.GetAll().Should().ContainSingle().Which.OwnerLastSeenAt.Should().Be(1_790_999_030L);
+
+        Scalar<int>("SELECT COUNT(*) FROM StreamSession").Should().Be(1, "ayna StreamSession'a hiç yazmaz");
+        _sessions.GetActive()!.Id.Should().Be(own);
+        repo.Mirror([]).Should().Be(1);
+        repo.GetAll().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Baska_lisansin_imleci_taninir_ve_silinir_gecerli_lisansinki_kalir()
+    {
+        var cursors = new SyncCursorRepository(_db);
+        cursors.Upsert("sales-changes-in", "lisans-a", seq: 40);
+        cursors.Upsert("customer-changes-in", "lisans-a", seq: 9);
+
+        cursors.ExistsForOtherLicense("sales-changes-in", "lisans-a").Should().BeFalse();
+        cursors.ExistsForOtherLicense("sales-changes-in", "lisans-b").Should().BeTrue();
+
+        cursors.DeleteForOtherLicenses("sales-changes-in", "lisans-b").Should().Be(1);
+        cursors.Get("sales-changes-in", "lisans-a").Should().BeNull();
+        cursors.Get("customer-changes-in", "lisans-a")!.Seq.Should().Be(9, "başka aileye dokunulmaz");
+    }
 }

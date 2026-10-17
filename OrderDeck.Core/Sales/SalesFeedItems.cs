@@ -154,6 +154,19 @@ public sealed record SalesFeedApplyResult(
         AggregateRecomputeResult.None);
 }
 
+/// <summary><see cref="SalesFeedRepository.PurgeRemoteRows"/>'un sonucu: silinen satır sayıları ve toplamların yeniden
+/// hesabı. Günlüğe yalnız bunlar yazılır.</summary>
+/// <param name="Busy">Etkilenen bir müşteri ödeme akışındaydı (U13): hiçbir şey silinmedi, sonraki turda yeniden.</param>
+public sealed record SalesRemotePurgeResult(
+    bool Busy,
+    int Sessions,
+    int Labels,
+    int LiveSessions,
+    AggregateRecomputeResult Aggregates)
+{
+    internal static SalesRemotePurgeResult WasBusy { get; } = new(true, 0, 0, 0, AggregateRecomputeResult.None);
+}
+
 /// <summary>
 /// Akış öğesi sunucu sözleşmesine uymuyor (örn. oturumsuz sipariş, yan listede olmayan oturum ya da taslak, devir anı
 /// olmayan uzak oturum). Öğeye özgüdür, ortam hatası değildir: akış servisi uygulanamayan öğe sayar (U10). Mesaj

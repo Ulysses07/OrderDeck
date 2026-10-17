@@ -449,6 +449,47 @@ public sealed class SalesFeedRepository
             false, 0, AggregateRecomputeResult.None);
     });
 
+    // ── uzak satırların temizliği ────────────────────────────────────────
+
+    /// <summary>Uzak oturumların etiketleri (FK sırası: önce etiketler; <c>LabelBackup</c> kaskadla gider).</summary>
+    private const string DeleteRemoteLabelsSql = @"
+        DELETE FROM Label WHERE SessionId IN (SELECT Id FROM StreamSession WHERE Origin = 'remote')";
+
+    /// <summary>Akıştan inmiş oturumlar. <c>Origin = 'local'</c> satırlara hiç dokunulmaz.</summary>
+    private const string DeleteRemoteSessionsSql = @"
+        DELETE FROM StreamSession WHERE Origin = 'remote'";
+
+    /// <summary>
+    /// Akıştan inmiş bütün satırları siler (spec 2026-10-13 §5.4 "lisans değişince temizlik"; <c>disable</c> turunun
+    /// 2. adımı da aynı temizliği kullanır, §8.5): <c>Origin = 'remote'</c> oturumlar ve etiketleri,
+    /// <c>RemoteLiveSession</c>'ın tamamı; etkilenen müşterilerin toplamları aynı işlemde etiketlerden yeniden türetilir
+    /// (§6.1). Bu bilgisayarın kendi (<c>Origin = 'local'</c>) oturum ve etiketlerine, kargo aynasına ve müşteri
+    /// satırlarına dokunulmaz.
+    ///
+    /// <para>Tek <see cref="SyncApplyScope"/> işlemi; kilit sırası U17 (önce <see cref="CustomerBusySet"/>). Etkilenen
+    /// müşterilerden biri ödeme akışındaysa hiçbir şey silinmez ve sonuç <see cref="SalesRemotePurgeResult.Busy"/>
+    /// döner — ödeme isteği o kişinin toplamını okurken altından etiket çekilmesin (U13); çağıran sonraki turda yeniden
+    /// dener. İdempotent: silinecek satır yoksa hiçbir şey yazılmaz.</para>
+    /// </summary>
+    public SalesRemotePurgeResult PurgeRemoteRows() => Locked(isBusy =>
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var customers = conn.Query<string>(
+            @"SELECT DISTINCT l.CustomerId FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+               WHERE s.Origin = 'remote'", transaction: tx).ToList();
+        if (customers.Any(isBusy)) return SalesRemotePurgeResult.WasBusy;   // Dispose geri alır
+
+        var labels = conn.Execute(DeleteRemoteLabelsSql, transaction: tx);
+        var sessions = conn.Execute(DeleteRemoteSessionsSql, transaction: tx);
+        var live = conn.Execute("DELETE FROM RemoteLiveSession", transaction: tx);
+        var aggregates = CustomerAggregateSql.Recompute(conn, tx, customers);
+        scope.Commit();
+        return new SalesRemotePurgeResult(false, sessions, labels, live, aggregates);
+    });
+
     // ── ortak ────────────────────────────────────────────────────────────
 
     /// <summary>Gövdeyi <see cref="CustomerBusySet"/> kilidi altında koşar (U17: küme → SQLite yazma kilidi). Küme yoksa
