@@ -450,21 +450,57 @@ public sealed class LabelRepository
     /// <para><c>ServerVersion</c> yalnız sürümü bilinen onayda yazılır (<see cref="LabelPushAck.ServerVersion"/>
     /// dolu: v2 <c>applied</c>); eski sunucunun onayı mevcut değeri korur. <c>SyncedAt</c>, <c>StockSyncedAt</c> ve
     /// <c>ServerVersion</c> 049 tetikleyicilerinin hiçbir listesinde değil: yazım kuyruğa almaz, <c>Revision</c>
-    /// değişmez (DM8) ve her kipte geçer.</para>
+    /// değişmez (DM8) ve her kipte geçer. Mod On'da sunucunun farklı kargo bağı da aynı işlemde yazılır
+    /// (<see cref="MarkSyncedWithServerLinks"/>); mod Off'ta bağın yazıcısı bu bilgisayardır, dokunulmaz.</para>
     /// </summary>
     /// <returns>Onaylanan satır sayısı.</returns>
     public int MarkSyncedBatch(IReadOnlyList<LabelPushAck> acks, long syncedAt)
     {
         if (acks.Count == 0) return 0;
+        if (acks.Any(a => a.ServerShipmentKnown) && IsSalesModeOn())
+            return MarkSyncedWithServerLinks(acks, syncedAt);
+
         using var write = DbWrite.Begin(_factory);
-        var marked = write.Connection.Execute(
-            @"UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt,
-                     ServerVersion = COALESCE(@serverVersion, ServerVersion)
-              WHERE Id=@id AND Revision=@revision",
-            acks.Select(a => new { id = a.Id, revision = a.Revision, serverVersion = a.ServerVersion, syncedAt })
-                .ToArray(),
-            write.Transaction);
+        var marked = write.Connection.Execute(MarkSyncedSql, AckParams(acks, syncedAt), write.Transaction);
         write.Commit();
+        return marked;
+    }
+
+    private const string MarkSyncedSql =
+        @"UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt,
+                 ServerVersion = COALESCE(@serverVersion, ServerVersion)
+          WHERE Id=@id AND Revision=@revision";
+
+    private static object[] AckParams(IReadOnlyList<LabelPushAck> acks, long syncedAt) =>
+        acks.Select(a => (object)new { id = a.Id, revision = a.Revision, serverVersion = a.ServerVersion, syncedAt })
+            .ToArray();
+
+    private bool IsSalesModeOn()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long?>("SELECT Mode FROM SalesSyncState WHERE Id = 1") == 1;
+    }
+
+    /// <summary>
+    /// Mod On'da onay (spec 2026-10-13 §5.2, K4): kargo bağı sunucunundur, push onu almaz. <c>applied</c> satırda
+    /// sunucudaki bağ yereldekinden farklıysa onayla aynı işlemde, guard altında yazılır (<see cref="SyncApplyScope"/>:
+    /// <c>TR_Label_ShipmentLink</c> ABORT etmez, <c>TR_Label_Enqueue</c> kuyruğa almaz, Revision değişmez). F05 aynı:
+    /// uçuşta değişen satıra dokunulmaz. Mod işlem içinde yeniden denetlenir. Dosya tutarlarına dokunulmaz: mod On'da
+    /// yerel dosya sunucunun aynasıdır (K7).
+    /// </summary>
+    private int MarkSyncedWithServerLinks(IReadOnlyList<LabelPushAck> acks, long syncedAt)
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        scope.Connection.Execute(
+            @"UPDATE Label SET ShipmentId = @shipmentId
+              WHERE Id = @id AND Revision = @revision AND ShipmentId IS NOT @shipmentId
+                AND (SELECT Mode FROM SalesSyncState WHERE Id = 1) = 1",
+            acks.Where(a => a.ServerShipmentKnown)
+                .Select(a => new { id = a.Id, revision = a.Revision, shipmentId = a.ServerShipmentId })
+                .ToArray(),
+            scope.Transaction);
+        var marked = scope.Connection.Execute(MarkSyncedSql, AckParams(acks, syncedAt), scope.Transaction);
+        scope.Commit();
         return marked;
     }
 
@@ -965,7 +1001,11 @@ public sealed record LabelPushRow(
 /// <param name="Revision">Gönderilen satırın <c>Revision</c>'ı (F05).</param>
 /// <param name="ServerVersion">v2 <c>applied</c> yanıtının sürümü; eski sunucuda ve sürümsüz onayda boş — o zaman
 /// mevcut değer korunur.</param>
-public readonly record struct LabelPushAck(string Id, long Revision, int? ServerVersion);
+/// <param name="ServerShipmentKnown">Yanıt sunucudaki kargo bağını taşıyor (v2 <c>applied</c>).</param>
+/// <param name="ServerShipmentId">Sunucudaki kargo bağı ("N" biçiminde; bağ yoksa boş). Yalnız mod On'da yazılır
+/// (K4, §5.2).</param>
+public readonly record struct LabelPushAck(
+    string Id, long Revision, int? ServerVersion, bool ServerShipmentKnown = false, string? ServerShipmentId = null);
 
 /// <summary>"Basılanlar" sekmesinin satırı (göç 048). <see cref="BatchKey"/> grubun anahtarıdır:
 /// basışın kimliği, 048 öncesi basılmış etiketlerde aynı PrintedAt'i taşıyanlar tek grup.

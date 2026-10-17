@@ -463,7 +463,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     ? new ServerOrder(v2 ? order : WithoutV2Fields(order), 0, v2 ? envelope!.ReplicaId : null, now)
                     : current with
                     {
-                        Row = v2 ? order : order with
+                        // K4 mod On: v2 push'u kargo bağını almaz, bağ sunucunundur (applied yanıtı onu taşır).
+                        Row = v2 ? (Mode == 1 ? order with { ShipmentId = current.Row.ShipmentId } : order) : order with
                         {
                             ParentOrderId = current.Row.ParentOrderId, PrintBatchId = current.Row.PrintBatchId,
                             PrintSeq = current.Row.PrintSeq, PriceCorrectedAt = current.Row.PriceCorrectedAt,

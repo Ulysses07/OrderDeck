@@ -500,12 +500,17 @@ public sealed class SessionOrderSyncService
         for (var i = 0; i < batch.Count; i++)
         {
             int? version = null;
+            var shipmentKnown = false;
+            string? serverShipment = null;
             if (byId.TryGetValue(items[i].Id, out var r) && !r.IsLegacy)
             {
                 switch (r.Status)
                 {
                     case SyncedOrderV2Dto.StatusApplied:
                         version = r.Version;
+                        // Mod On'da kargo bağı sunucunundur (K4): onayla birlikte yazılır (Core kipi denetler).
+                        shipmentKnown = true;
+                        serverShipment = r.ShipmentId?.ToString("N");
                         break;
                     case SyncedOrderV2Dto.StatusIgnored:
                     case SyncedOrderV2Dto.StatusRejected:
@@ -516,7 +521,7 @@ public sealed class SessionOrderSyncService
                         break;
                 }
             }
-            acks.Add(new LabelPushAck(batch[i].Id, batch[i].Revision, version));
+            acks.Add(new LabelPushAck(batch[i].Id, batch[i].Revision, version, shipmentKnown, serverShipment));
         }
 
         // F05: Revision karşılaştırmalı; uçuş sırasında değişen satıra yazılmaz, sonraki tur güncel hâliyle gönderir.

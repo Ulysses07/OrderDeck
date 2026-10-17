@@ -212,6 +212,42 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
         Local(id).Should().Be(acked);
     }
 
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(0, false)]
+    public async Task Applied_satirda_sunucunun_farkli_kargo_bagi_yalniz_mod_Onda_onayla_ayni_islemde_yazilir(
+        int localMode, bool written)
+    {
+        // K4 mod On: push kargo bağını almaz, bağ sunucunundur; applied yanıtı sunucudaki bağı taşır (§5.2). Mod Off'ta
+        // bağın yazıcısı bu bilgisayardır: yanıttaki farklı bağ yazılmaz (sunucunun değeri ignored + current ile gelir).
+        var id = AddLabel();
+        var stale = Guid.NewGuid().ToString("N");
+        Sql("UPDATE Label SET ShipmentId = @stale WHERE Id = @id", new { stale, id });
+        await _svc.SyncOnceAsync();
+        var server = Guid.NewGuid();                                            // başka bilgisayarın komutu bağladı
+        _server.SeedOrder(_server.Order(Guid.Parse(id))!.Row with { ShipmentId = server }, version: 7);
+        _server.Mode = 1;
+        Sql("UPDATE SalesSyncState SET Mode = @localMode WHERE Id = 1", new { localMode });
+        Sql("UPDATE Label SET Price = 120 WHERE Id = @id", new { id });             // canlı yayında yerel düzenleme
+        var revision = Local(id).Revision;
+
+        (await _svc.SyncOnceAsync()).OrdersPushed.Should().Be(1);
+
+        Scalar<string?>("SELECT ShipmentId FROM Label WHERE Id = @id", new { id })
+            .Should().Be(written ? server.ToString("N") : stale);
+        var row = Local(id);
+        row.SyncedAt.Should().NotBeNull();
+        row.Revision.Should().Be(revision, "bağ guard altında yazılır: kuyruğa almaz (DM8)");
+        row.ServerVersion.Should().Be(_server.Order(Guid.Parse(id))!.Version);
+        _labels.HasUnsynced().Should().BeFalse();
+    }
+
+    private T Scalar<T>(string sql, object? args = null)
+    {
+        using var c = _db.Open();
+        return c.ExecuteScalar<T>(sql, args)!;
+    }
+
     [Fact]
     public async Task Ucusta_degisen_satira_hicbir_sey_yazilmaz_sonraki_tur_yeniden_gonderir()
     {
