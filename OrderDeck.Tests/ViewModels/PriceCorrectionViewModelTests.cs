@@ -438,4 +438,28 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         _labelRepo.GetById(open.Id)!.Price.Should().Be(205m);
         vm.ResultText.Should().Contain("1 etiket kargoya verildi, değişmedi: @gitti");
     }
+
+    [Fact]
+    public void Labels_of_the_code_in_another_pcs_file_stay_and_are_listed_as_unchanged()
+    {
+        // Spec 2026-10-13 §7.4: bağlı dosyası bu bilgisayarda olmayan etiket (mod Off'ta disable'dan kalan karışık
+        // dosya) düzeltilmez; özet ve sonuç onu "başka bilgisayarın dosyasında" diye ayrıca söyler.
+        var elsewhere = Add("@baska", 250m);
+        var open = Add("@a", 250m);
+        using (var c = _db.Open())
+            Dapper.SqlMapper.Execute(c, "UPDATE Label SET ShipmentId = @sid WHERE Id = @id",
+                new { sid = Guid.NewGuid().ToString("N"), id = elsewhere.Id });
+        var vm = Vm(new[] { open });
+
+        vm.Codes.Should().ContainSingle().Which.Count.Should().Be(1);
+        vm.Summary.Should().Contain("1 etiket / 1 müşteri")
+            .And.Contain("1 etiket başka bilgisayarın dosyasında, değişmeyecek");
+        vm.NewPriceText = "205";
+        vm.ConfirmCommand.Execute(null);
+
+        vm.IsDone.Should().BeTrue();
+        _labelRepo.GetById(elsewhere.Id)!.Price.Should().Be(250m);
+        _labelRepo.GetById(open.Id)!.Price.Should().Be(205m);
+        vm.ResultText.Should().Contain("1 etiket başka bilgisayarın dosyasında, değişmedi: @baska");
+    }
 }

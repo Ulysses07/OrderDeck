@@ -498,15 +498,16 @@ public sealed class CustomerSyncRepository
             conn.Execute($"UPDATE {table} SET CustomerId = @toId WHERE CustomerId = @fromId", p, tx);
     }
 
-    /// <summary>Yerel toplamlar (taşınmayan alanlar): etiket sayısı ve ciro toplanır,
-    /// ilk/son görülme genişler, avatar boşsa alınır — hedef SİLİNMEMİŞSE (inceleme M-1, KVKK):
-    /// avatar kişisel veridir, silinmiş kayda geri gelmez; toplamlar kişisel veri değildir.</summary>
+    /// <summary>Yerel toplamlar (taşınmayan alanlar): ilk/son görülme genişler, avatar boşsa alınır —
+    /// hedef SİLİNMEMİŞSE (inceleme M-1, KVKK): avatar kişisel veridir, silinmiş kayda geri gelmez.
+    /// Etiket sayısı ve ciro iki sayacın toplamı DEĞİL: referanslar taşındıktan SONRA çağrılır ve
+    /// hedefin toplamını taşınan etiketler dahil etiketlerden türetir (spec 2026-10-13 §6.1), kapsamın
+    /// bağlantısında (U17). Toplamlar kişisel veri değildir; silinmiş kayıtta da türetilir.</summary>
     private static void AddAggregates(IDbConnection conn, IDbTransaction tx, string toId,
         IReadOnlyCollection<Row> sources, bool includeSeen)
-        => conn.Execute(@"
+    {
+        conn.Execute(@"
             UPDATE Customer SET
-                TotalLabelsPrinted = TotalLabelsPrinted + @labels,
-                TotalAmount        = TotalAmount + @amount,
                 FirstSeenAt        = CASE WHEN @includeSeen = 1 THEN MIN(FirstSeenAt, @first) ELSE FirstSeenAt END,
                 LastSeenAt         = CASE WHEN @includeSeen = 1 THEN MAX(LastSeenAt, @last) ELSE LastSeenAt END,
                 AvatarUrl          = CASE WHEN PurgedAt IS NULL THEN COALESCE(AvatarUrl, @avatar) ELSE AvatarUrl END
@@ -514,13 +515,13 @@ public sealed class CustomerSyncRepository
             new
             {
                 toId,
-                labels = sources.Sum(s => s.TotalLabelsPrinted),
-                amount = sources.Sum(s => s.TotalAmount),
                 includeSeen = includeSeen ? 1 : 0,
                 first = sources.Min(s => s.FirstSeenAt),
                 last = sources.Max(s => s.LastSeenAt),
                 avatar = sources.Select(s => s.AvatarUrl).FirstOrDefault(a => !string.IsNullOrWhiteSpace(a)),
             }, tx);
+        CustomerAggregateSql.Recompute(conn, tx, new[] { toId });
+    }
 
     /// <summary>Kilit SyncSeq tetikleyicisini susturduğu için taşımadan ve dönüştürmeden sonra
     /// açıkça: asıl kayda taşınan birimler (kopyanın son gönderimden sonraki düzenlemesi dahil)

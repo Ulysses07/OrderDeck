@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage;
@@ -35,6 +36,30 @@ public class SessionRepositoryTests
         repo.End("s1", endedAt: 2000);
 
         repo.GetActive().Should().BeNull();
+    }
+
+    // §5.9 (W1): GetActive yalnız bu bilgisayarın yazdığı oturumu (Authority = 'local') görür. Savunma
+    // katmanı: uzak oturum EndedAt NULL olarak inmez, başka bilgisayarın canlı yayını RemoteLiveSession'da
+    // durur (M5). Yine de 'server' bir satır "aktif" sayılsaydı sohbet etiketi o oturuma yazılmaya
+    // çalışılır, 049'un ABORT tetikleyicisi canlı yolu kırardı. Satır SQL ile kurulur: bu hâli yazan
+    // devir yolu W2'de.
+    [Fact]
+    public void GetActive_ignores_an_open_session_with_server_authority()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new SessionRepository(db);
+        repo.Insert(new StreamSession("yerel", null, 1000, null, new[] { "instagram" }, null));
+        repo.Insert(new StreamSession("sunucu", null, 2000, null, new[] { "instagram" }, null));
+        using (var c = db.Open())
+            c.Execute("UPDATE StreamSession SET Authority = 'server' WHERE Id = 'sunucu'");
+
+        repo.GetActive()!.Id.Should().Be("yerel",
+            "daha yeni olsa da sunucunun yazdığı oturum bu bilgisayarın canlı yayını değil");
+
+        repo.End("yerel", endedAt: 3000);
+
+        repo.GetActive().Should().BeNull("açık kalan tek satır Authority = 'server'");
     }
 
     [Fact]

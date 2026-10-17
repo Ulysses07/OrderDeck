@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using Dapper;
 using OrderDeck.Core.Customers;
@@ -92,7 +93,11 @@ public sealed class LabelRepository
     /// StartStream bunları operatöre sorar ve isterse yeni kuyruğa taşır
     /// (SessionId DEĞİŞMEZ: satış hâlâ eski yayının; taşınan yalnız
     /// görünürlük). Geçici yedekler dahil:
-    /// <see cref="GetUnprintedBySession"/> ile aynı seçim kuralı.</summary>
+    /// <see cref="GetUnprintedBySession"/> ile aynı seçim kuralı.
+    /// <para>Yalnız bu bilgisayarda açılmış oturumlar (<c>Origin = 'local'</c>, §5.5): başka
+    /// bilgisayarın basılmamış kuyruğu akışla inse de burada teklif edilmez — aynı satış iki yazıcıdan
+    /// çıkabilirdi. Oturum birincil anahtarıyla bulunur; Label.SessionId yabancı anahtar olduğu için
+    /// oturumsuz etiket yoktur, süzgeç bugünkü (hepsi yerel) veride hiçbir satırı düşürmez.</para></summary>
     public IReadOnlyList<Label> GetUnprintedOutsideSession(string sessionId)
     {
         using var conn = _factory.Open();
@@ -101,6 +106,7 @@ public sealed class LabelRepository
                      Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE SessionId<>@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
+                AND EXISTS (SELECT 1 FROM StreamSession s WHERE s.Id = Label.SessionId AND s.Origin = 'local')
               ORDER BY AddedAt",
             new { sessionId }).ToList();
         return rows.Select(Map).ToList();
@@ -332,11 +338,12 @@ public sealed class LabelRepository
     }
 
     /// <summary>Verilen etiketler, verilen sırayla (eksik olanlar atlanır).</summary>
-    public IReadOnlyList<Label> GetByIds(IReadOnlyList<string> ids)
+    /// <param name="write">Doluysa çağıranın paketinde okur (U17): <c>LabelService.Cancel</c>/<c>Uncancel</c>
+    /// dosya payını yazımla aynı işlemde okunan hâlden hesaplar. Boşsa kendi bağlantısı.</param>
+    public IReadOnlyList<Label> GetByIds(IReadOnlyList<string> ids, DbWrite? write = null)
     {
         if (ids.Count == 0) return System.Array.Empty<Label>();
-        using var conn = _factory.Open();
-        var byId = conn.Query<Row>(
+        var byId = _factory.Query<Row>(write,
                 @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
                          Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
                   FROM Label WHERE Id IN @ids",
@@ -388,6 +395,133 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         conn.Execute("UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision",
             new { id, syncedAt, revision });
+    }
+
+    /// <summary>Gönderim kuyruğu boş mu — kısmi <c>IX_Label_SyncedAt</c> dizininden tek satır okur. Gönderim
+    /// turu (yayında ≈5 sn'de bir, Y9) HTTP'den, lisans çözümü dahil, önce buna bakar.</summary>
+    public bool HasUnsynced()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>("SELECT EXISTS(SELECT 1 FROM Label WHERE SyncedAt IS NULL)") != 0;
+    }
+
+    /// <summary>Bir yayının gönderilmemiş etiket sayısı (spec 2026-10-13 §5.2): kapanışın <c>Release</c>'i yalnız
+    /// bu 0 iken gönderilir, değilse sayı <c>UnsentLabelCount</c> olarak gider. Devir kapısı altında okunur.</summary>
+    public int CountUnsyncedBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM Label WHERE SessionId = @sessionId AND SyncedAt IS NULL", new { sessionId });
+    }
+
+    /// <summary>
+    /// v2 gönderiminin kuyruğu (spec 2026-10-13 §4.2, §5.2): <see cref="GetUnsynced"/>'in sırası ve süzgeci, ek olarak
+    /// 048 alanları, yedek ebeveyni, kargo bağı ve <c>ServerVersion</c> (<c>baseVersion</c>). <see cref="Label"/>
+    /// yerine ayrı satır tipi: bu alanlar yalnız gönderimin girdisi.
+    /// </summary>
+    public IReadOnlyList<LabelPushRow> GetUnsyncedForPush(int limit)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<PushRow>(
+                @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                         Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsShippingFee, IsBackupPromoted,
+                         IsTentativeBackup, ProductId, ProductVariantId, ParentLabelId, ShipmentId,
+                         PrintBatchId, PrintSeq, PriceCorrectedAt, PaidPrice, ServerVersion, Revision
+                  FROM Label
+                  WHERE SyncedAt IS NULL
+                  ORDER BY AddedAt
+                  LIMIT @limit",
+                new { limit })
+            .Select(r => new LabelPushRow(
+                r.Id, r.SessionId, r.CustomerId, r.Platform, r.Username, r.DisplayName, r.MessageText, r.Code,
+                r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason,
+                IsShippingFee: r.IsShippingFee != 0,
+                IsBackupPromoted: r.IsBackupPromoted != 0,
+                IsTentativeBackup: r.IsTentativeBackup != 0,
+                r.ProductId, r.ProductVariantId, r.ParentLabelId, r.ShipmentId,
+                r.PrintBatchId, r.PrintSeq, r.PriceCorrectedAt, r.PaidPrice, r.ServerVersion, r.Revision))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Gönderim onayı, tek kısa yazma işleminde (spec 2026-10-13 §5.2): <c>SyncedAt</c> ve <c>StockSyncedAt</c>
+    /// <see cref="MarkSynced"/>'in F05 karşılaştır-ve-yaz kuralıyla — <c>WHERE Revision = gönderilen</c>. Uçuş
+    /// sırasında değişen satır onaylanmaz; bekleyen kalır ve sonraki tur güncel hâliyle gönderir.
+    ///
+    /// <para><c>ServerVersion</c> yalnız sürümü bilinen onayda yazılır (<see cref="LabelPushAck.ServerVersion"/>
+    /// dolu: v2 <c>applied</c>); eski sunucunun onayı mevcut değeri korur. Sürüm Revision koşuluna BAĞLI DEĞİL:
+    /// <c>applied</c>'ın sürümü bu istemcinin kendi yazımının sonucudur, satır uçuşta yeniden düzenlense de sunucu o
+    /// sürümdedir. Yazılmasaydı sonraki gönderim eski <c>baseVersion</c> ile gider, damgalı birimde (K2/K4) sunucu
+    /// onu bayat sayar ve operatörün yeni düzenlemesi <c>current</c> ile sessizce geri alınırdı. Araya başka bir
+    /// yazım (komut) girdiyse sunucunun sürümü daha ileridedir ve sonraki gönderim yine doğru biçimde yok sayılır.
+    /// Sürüm geri gitmez (daha yeni bir <c>current</c> ya da geri doldurma sürümü ezilmez).</para>
+    ///
+    /// <para><c>SyncedAt</c>, <c>StockSyncedAt</c> ve <c>ServerVersion</c> 049 tetikleyicilerinin hiçbir listesinde
+    /// değil: yazım kuyruğa almaz, <c>Revision</c> değişmez (DM8) ve her kipte geçer. Mod On'da sunucunun farklı
+    /// kargo bağı da aynı işlemde yazılır (<see cref="MarkSyncedWithServerLinks"/>); mod Off'ta bağın yazıcısı bu
+    /// bilgisayardır, dokunulmaz.</para>
+    /// </summary>
+    /// <returns>Onaylanan satır sayısı.</returns>
+    public int MarkSyncedBatch(IReadOnlyList<LabelPushAck> acks, long syncedAt)
+    {
+        if (acks.Count == 0) return 0;
+        if (acks.Any(a => a.ServerShipmentKnown) && IsSalesModeOn())
+            return MarkSyncedWithServerLinks(acks, syncedAt);
+
+        using var write = DbWrite.Begin(_factory);
+        var marked = WriteAcks(write.Connection, write.Transaction, acks, syncedAt);
+        write.Commit();
+        return marked;
+    }
+
+    /// <summary>Onay (F05) ve sürüm, çağıranın işleminde (<see cref="MarkSyncedBatch"/>).</summary>
+    private static int WriteAcks(IDbConnection conn, IDbTransaction tx, IReadOnlyList<LabelPushAck> acks, long syncedAt)
+    {
+        var marked = conn.Execute(MarkSyncedSql, AckParams(acks, syncedAt), tx);
+        var versioned = acks.Where(a => a.ServerVersion is not null)
+            .Select(a => (object)new { id = a.Id, serverVersion = a.ServerVersion })
+            .ToArray();
+        if (versioned.Length > 0) conn.Execute(AppliedVersionSql, versioned, tx);
+        return marked;
+    }
+
+    private const string MarkSyncedSql =
+        "UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision";
+
+    private const string AppliedVersionSql =
+        @"UPDATE Label SET ServerVersion = @serverVersion
+          WHERE Id = @id AND (ServerVersion IS NULL OR ServerVersion < @serverVersion)";
+
+    private static object[] AckParams(IReadOnlyList<LabelPushAck> acks, long syncedAt) =>
+        acks.Select(a => (object)new { id = a.Id, revision = a.Revision, syncedAt }).ToArray();
+
+    private bool IsSalesModeOn()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long?>("SELECT Mode FROM SalesSyncState WHERE Id = 1") == 1;
+    }
+
+    /// <summary>
+    /// Mod On'da onay (spec 2026-10-13 §5.2, K4): kargo bağı sunucunundur, push onu almaz. <c>applied</c> satırda
+    /// sunucudaki bağ yereldekinden farklıysa onayla aynı işlemde, guard altında yazılır (<see cref="SyncApplyScope"/>:
+    /// <c>TR_Label_ShipmentLink</c> ABORT etmez, <c>TR_Label_Enqueue</c> kuyruğa almaz, Revision değişmez). F05 aynı:
+    /// uçuşta değişen satıra dokunulmaz. Mod işlem içinde yeniden denetlenir. Dosya tutarlarına dokunulmaz: mod On'da
+    /// yerel dosya sunucunun aynasıdır (K7).
+    /// </summary>
+    private int MarkSyncedWithServerLinks(IReadOnlyList<LabelPushAck> acks, long syncedAt)
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        scope.Connection.Execute(
+            @"UPDATE Label SET ShipmentId = @shipmentId
+              WHERE Id = @id AND Revision = @revision AND ShipmentId IS NOT @shipmentId
+                AND (SELECT Mode FROM SalesSyncState WHERE Id = 1) = 1",
+            acks.Where(a => a.ServerShipmentKnown)
+                .Select(a => new { id = a.Id, revision = a.Revision, shipmentId = a.ServerShipmentId })
+                .ToArray(),
+            scope.Transaction);
+        var marked = WriteAcks(scope.Connection, scope.Transaction, acks, syncedAt);
+        scope.Commit();
+        return marked;
     }
 
     public SessionTotals GetSessionTotals(string sessionId)
@@ -737,6 +871,36 @@ public sealed class LabelRepository
             ProductVariantId: r.ProductVariantId,
             Revision: r.Revision);
 
+    private sealed class PushRow
+    {
+        public string Id { get; init; } = "";
+        public string SessionId { get; init; } = "";
+        public string CustomerId { get; init; } = "";
+        public string Platform { get; init; } = "";
+        public string Username { get; init; } = "";
+        public string? DisplayName { get; init; }
+        public string MessageText { get; init; } = "";
+        public string? Code { get; init; }
+        public decimal Price { get; init; }
+        public long AddedAt { get; init; }
+        public long? PrintedAt { get; init; }
+        public long? CancelledAt { get; init; }
+        public string? CancelReason { get; init; }
+        public int IsShippingFee { get; init; }
+        public int IsBackupPromoted { get; init; }
+        public int IsTentativeBackup { get; init; }
+        public string? ProductId { get; init; }
+        public string? ProductVariantId { get; init; }
+        public string? ParentLabelId { get; init; }
+        public string? ShipmentId { get; init; }
+        public string? PrintBatchId { get; init; }
+        public long? PrintSeq { get; init; }
+        public long? PriceCorrectedAt { get; init; }
+        public decimal? PaidPrice { get; init; }
+        public long? ServerVersion { get; init; }
+        public long Revision { get; init; }
+    }
+
     private sealed class PrintedRow : Row
     {
         public string? PrintBatchId { get; init; }
@@ -820,6 +984,48 @@ public sealed class LabelRepository
 }
 
 public sealed record SessionTotals(int PrintedCount, decimal TotalAmount, int UniqueCustomers);
+
+/// <summary>v2 etiket gönderiminin bir satırı (<see cref="LabelRepository.GetUnsyncedForPush"/>): yerel biçimde
+/// (TEXT kimlikler, unix saniye); tel biçimine çeviri gönderim servisinde.</summary>
+/// <param name="ServerVersion">Son <c>applied</c> onayında sunucunun bildirdiği sürüm; hiç onaylanmadıysa boş.</param>
+/// <param name="Revision">F05: onay yalnız bu değer değişmemişse yazar.</param>
+public sealed record LabelPushRow(
+    string Id,
+    string SessionId,
+    string CustomerId,
+    string Platform,
+    string Username,
+    string? DisplayName,
+    string MessageText,
+    string? Code,
+    decimal Price,
+    long AddedAt,
+    long? PrintedAt,
+    long? CancelledAt,
+    string? CancelReason,
+    bool IsShippingFee,
+    bool IsBackupPromoted,
+    bool IsTentativeBackup,
+    string? ProductId,
+    string? ProductVariantId,
+    string? ParentLabelId,
+    string? ShipmentId,
+    string? PrintBatchId,
+    long? PrintSeq,
+    long? PriceCorrectedAt,
+    decimal? PaidPrice,
+    long? ServerVersion,
+    long Revision);
+
+/// <summary>Bir gönderim onayı (<see cref="LabelRepository.MarkSyncedBatch"/>).</summary>
+/// <param name="Revision">Gönderilen satırın <c>Revision</c>'ı (F05).</param>
+/// <param name="ServerVersion">v2 <c>applied</c> yanıtının sürümü; eski sunucuda ve sürümsüz onayda boş — o zaman
+/// mevcut değer korunur.</param>
+/// <param name="ServerShipmentKnown">Yanıt sunucudaki kargo bağını taşıyor (v2 <c>applied</c>).</param>
+/// <param name="ServerShipmentId">Sunucudaki kargo bağı ("N" biçiminde; bağ yoksa boş). Yalnız mod On'da yazılır
+/// (K4, §5.2).</param>
+public readonly record struct LabelPushAck(
+    string Id, long Revision, int? ServerVersion, bool ServerShipmentKnown = false, string? ServerShipmentId = null);
 
 /// <summary>"Basılanlar" sekmesinin satırı (göç 048). <see cref="BatchKey"/> grubun anahtarıdır:
 /// basışın kimliği, 048 öncesi basılmış etiketlerde aynı PrintedAt'i taşıyanlar tek grup.

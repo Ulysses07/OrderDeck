@@ -342,6 +342,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         _customers.UpdatePhone(holder, TestPhone.NewE164());
         Guarded("UPDATE Customer SET PhoneChangedAt = NULL, Email = 'ayse@example.test' WHERE Id = @holder", new { holder });
         SeedRefs(holder);
+        Backed(holder);
         var canonical = NewId();
         var watermark = Seq(holder);                         // sahibin güncel hâli gönderildi
         var holderLastSeen = _customers.GetById(holder)!.LastSeenAt;   // UpdatePhone ilerletti (N03)
@@ -362,7 +363,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         c2.TotalAmount.Should().Be(100m);
         c2.FirstSeenAt.Should().Be(100);
         c2.LastSeenAt.Should().Be(holderLastSeen, "ilk/son görülme sahiplerden gelir, sunucu satırının eklenme anından değil");
-        Refs(canonical).Should().Be(4);
+        Refs(canonical).Should().Be(6, "SeedRefs'in dört başvurusu + Backed'in iki etiketi");
         Refs(holder).Should().Be(0);
         Seq(canonical).Should().BeGreaterThan(watermark, "taşınan birimler asıl kaydın Id'siyle gönderilmeli");
         GuardRows().Should().Be(0);
@@ -377,6 +378,8 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var variant = Local("AYSE");
         SeedRefs(exact, applyKey: NewId());
         SeedRefs(variant, applyKey: NewId());
+        Backed(exact);
+        Backed(variant);
         var canonical = NewId();
         var watermark = Math.Max(Seq(exact), Seq(variant));
 
@@ -386,7 +389,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         Exists(variant).Should().BeFalse();
         RedirectOf(exact).Should().Be(canonical);
         RedirectOf(variant).Should().Be(canonical);
-        Refs(canonical).Should().Be(8);
+        Refs(canonical).Should().Be(12, "iki sahibin SeedRefs'i (8) + Backed etiketleri (4)");
         Count("SELECT COUNT(*) FROM PaymentJob WHERE CustomerId = @canonical AND ScopeKey LIKE 'legacy:%'", new { canonical })
             .Should().Be(1);
         var c = _customers.GetById(canonical)!;
@@ -429,6 +432,7 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         using (var c = _db.Open())
             c.Execute("INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt) VALUES ('tiktok', 'ŞEYMA', 5000)");
         var holder = Local("şeyma", avatar: "https://cdn.example.test/a.jpg");
+        Backed(holder);
         var canonical = NewId();
 
         _sync.ApplyServerCustomer(Server(canonical, "ŞEYMA"), Seq(holder), Now).Should().Be(FeedApplyResult.Rekeyed);
@@ -569,18 +573,81 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var copy = Local("ayse");
         var canonical = Local("Ayse");
         SeedRefs(copy);
+        Backed(copy);
+        Backed(canonical);
         var before = Seq(canonical);
 
         _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 
         Exists(copy).Should().BeFalse();
         RedirectOf(copy).Should().Be(canonical);
-        Refs(canonical).Should().Be(4);
+        Refs(canonical).Should().Be(8, "kopyanın SeedRefs'i (4) + iki satırın Backed etiketleri (4)");
         var c = _customers.GetById(canonical)!;
         c.TotalLabelsPrinted.Should().Be(4);
         c.TotalAmount.Should().Be(200m);
         Seq(canonical).Should().BeGreaterThan(before, "taşınan birimler gönderilsin (U2)");
         GuardRows().Should().Be(0);
+    }
+
+    /// <summary><see cref="Local"/>'in 2 etiket / 100 TL sayacının arkasına aynı toplamı veren iki basılmış etiket
+    /// koyar. W1-03'ten beri taşıma hedefin toplamını etiketlerden türetir: sayacın taşındığını sınayan test
+    /// etiketleri de kurmalı.</summary>
+    private void Backed(string customerId)
+    {
+        PrintedLabel(customerId, 40m);
+        PrintedLabel(customerId, 60m);
+    }
+
+    /// <summary>Basılmış etiket (W1-03): katkısı (1, fiyat); iptalli ya da geçici yedek katkısız.</summary>
+    private void PrintedLabel(string customerId, decimal price, bool cancelled = false, bool tentative = false)
+    {
+        using var c = _db.Open();
+        c.Execute("INSERT OR IGNORE INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
+        c.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Price, AddedAt,
+                                       PrintedAt, CancelledAt, IsTentativeBackup)
+                    VALUES (@id, 's1', @customerId, 'tiktok', 'u', 'A1', @price, 1, 2, @cancelledAt, @tentative)",
+            new
+            {
+                id = NewId(), customerId, price = (double)price,
+                cancelledAt = cancelled ? 3L : (long?)null, tentative = tentative ? 1 : 0,
+            });
+    }
+
+    [Fact]
+    public void RekeyToLocal_hedefin_toplami_tasinan_etiketlerden_turetilir_iki_sayacin_toplami_degil()
+    {
+        // Local() iki satırı da 2 etiket / 100 TL sayaçla açar — etiketleriyle uyuşmayan (kaymış) sayaç.
+        var copy = Local("ayse");
+        var canonical = Local("Ayse");
+        PrintedLabel(copy, 30m);
+        PrintedLabel(copy, 45m);
+        PrintedLabel(copy, 999m, cancelled: true);
+        PrintedLabel(copy, 888m, tentative: true);
+        PrintedLabel(canonical, 100m);
+        var lastSeen = Math.Max(_customers.GetById(copy)!.LastSeenAt, _customers.GetById(canonical)!.LastSeenAt);
+
+        _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
+
+        var c = _customers.GetById(canonical)!;
+        (c.TotalLabelsPrinted, c.TotalAmount).Should().Be((3, 175m), "taşınan etiketlerden türetilir; 2+2 / 100+100 değil");
+        c.FirstSeenAt.Should().Be(100, "ilk/son görülme birleştirmesi aynen");
+        c.LastSeenAt.Should().Be(lastSeen);
+    }
+
+    [Fact]
+    public void Sunucu_satiri_kimlik_sahiplerini_tasirken_toplam_tasinan_etiketlerden_turetilir()
+    {
+        var exact = Local("ayse");
+        var variant = Local("AYSE");
+        PrintedLabel(exact, 20m);
+        PrintedLabel(variant, 35m);
+        PrintedLabel(variant, 50m, cancelled: true);
+        var canonical = NewId();
+
+        _sync.ApplyServerCustomer(Server(canonical, "ayse"), Pushed, Now).Should().Be(FeedApplyResult.Rekeyed);
+
+        var c = _customers.GetById(canonical)!;
+        (c.TotalLabelsPrinted, c.TotalAmount).Should().Be((2, 55m), "sunucu satırı 0/0 eklenir, taşınan etiketlerden türetilir");
     }
 
     [Fact]
@@ -800,6 +867,8 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         var canonical = Local("Ayse");
         _customers.ScrubPersonalData(canonical);
         var copy = Local("ayse", avatar: "https://cdn.example.test/b.jpg");
+        Backed(canonical);
+        Backed(copy);
 
         _sync.RekeyToLocal(copy, canonical, Pushed, Now).Should().Be(RekeyResult.Rekeyed);
 

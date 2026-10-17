@@ -41,6 +41,8 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     public CorrectedPaymentRequestsTests()
     {
         new MigrationRunner(_db).Run();
+        // Y5'in tabanı açılışta türetilmiş say (ShipmentAmountDerivation): damga boşken dosya bloğu yazmaz.
+        using (var c = _db.Open()) c.Execute("UPDATE SalesSyncState SET ShipmentsDerivedAt = 900 WHERE Id = 1");
         _clock.Setup(c => c.UnixNow()).Returns(1000L);
         new SessionRepository(_db).Insert(new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
         _customers = new CustomerRepository(_db);

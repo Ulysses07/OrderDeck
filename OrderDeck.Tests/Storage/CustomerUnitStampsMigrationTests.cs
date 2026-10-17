@@ -65,7 +65,7 @@ public sealed class CustomerUnitStampsMigrationTests
         using var conn = db.Open();
         conn.ExecuteScalar<string>("SELECT IdentityKey FROM Customer WHERE Id = 'old1'")
             .Should().Be("ornek.musteri");
-        conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(48);
+        conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(49);
     }
 
     [Fact]
@@ -316,7 +316,19 @@ public sealed class CustomerUnitStampsMigrationTests
         var seq = repo.GetById("c1")!.SyncSeq;
         var stamp = Stamp(db, "c1", "DisplayNameChangedAt");
 
-        repo.IncrementLabelStats("c1", 1, 250m, lastSeenAt: 2000);
+        // W1-03: toplam etiketlerden türetilir (CustomerAggregateSql), LastSeenAt ayrı ifadeyle ilerler.
+        using (var c = db.Open())
+        {
+            c.Execute("INSERT INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
+            c.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Price, AddedAt, PrintedAt)
+                        VALUES ('l1', 's1', 'c1', 'tiktok', 'ayse', 'A1', 250, 1, 2)");
+        }
+        using (var write = DbWrite.Begin(db))
+        {
+            CustomerAggregateSql.Recompute(new[] { "c1" }, write).ChangedRows.Should().Be(1);
+            CustomerAggregateSql.TouchLastSeen(new[] { "c1" }, 2000, write);
+            write.Commit();
+        }
 
         repo.GetById("c1")!.SyncSeq.Should().Be(seq, "etiket basımı sıcak yol, projeksiyonu değiştirmiyor");
         Stamp(db, "c1", "DisplayNameChangedAt").Should().Be(stamp);

@@ -416,6 +416,11 @@ public class CustomerSearchViewModelTests
             using var _db = db;
             var (sut, sync) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
             var (copy, canonical) = TwoSpellings(customers, copyTotal: 100m, canonicalTotal: 150m);
+            // W1-03: taşıma toplamı etiketlerden türetir — sayaçların arkasında basılmış etiketler olmalı.
+            sessions.Insert(new StreamSession("s1", "Yayın 1", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", copy, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+            labels.Insert(new Label("l2", "s1", canonical, "tiktok", "Ornek.Musteri", "Armut", null, 150m, 111, 121));
+            sessions.End("s1", 200);
 
             sut.RefreshSearch();
             sut.Results.Should().HaveCount(2, "taşımadan önce iki satır, iki kart");
@@ -435,7 +440,7 @@ public class CustomerSearchViewModelTests
             var job = jobs.Snapshot.Should().ContainSingle().Subject;
             job.CustomerId.Should().Be(canonical);
             job.ScopeKey.Should().Be("cumulative");
-            job.ProductTotal.Should().Be(250m, "taşıma kopyanın cirosunu asıl kayda ekledi (100 + 150)");
+            job.ProductTotal.Should().Be(250m, "taşınan etiketler dahil asıl kaydın cirosu (100 + 150)");
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

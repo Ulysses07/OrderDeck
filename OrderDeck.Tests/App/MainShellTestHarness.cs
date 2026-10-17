@@ -97,6 +97,8 @@ internal static class MainShellTestHarness
     /// <param name="customerPull">Müşteri akışı (D5b destek eylemi); null = eylem kapalı.</param>
     /// <param name="paymentFollowUp">Fiyat düzeltmesinin ödeme tarafı (düzeltilmiş istek gönderimi), harness'in
     /// veritabanı ve depolarıyla kurulur; null = yok.</param>
+    /// <param name="orderSync">Etiket gönderim servisi (W1-08: gönderim sonucunun uyarı şeridi), harness'in
+    /// veritabanıyla kurulur; null = yok.</param>
     public static Harness Build(
         OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
         ILabelPrinter? printerOverride = null,
@@ -108,7 +110,8 @@ internal static class MainShellTestHarness
         OrderDeck.App.Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
         OrderDeck.App.Services.Pages.IPageService? pages = null,
         Func<InMemorySqlite, CustomerRepository, LabelRepository,
-            OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>? paymentFollowUp = null)
+            OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>? paymentFollowUp = null,
+        Func<InMemorySqlite, OrderDeck.App.Services.Sync.SessionOrderSyncService>? orderSync = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -168,7 +171,8 @@ internal static class MainShellTestHarness
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
             drawers: drawers, pages: pages, syncStatus: syncStatus, pendingCounter: pendingCounter, log: log,
             customerPull: customerPull, printedNavigator: printedNavigator,
-            paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo));
+            paymentFollowUp: paymentFollowUp?.Invoke(db, customerRepo, labelRepo),
+            orderSync: orderSync?.Invoke(db));
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs, licenseKey);
     }

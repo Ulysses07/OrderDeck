@@ -128,11 +128,11 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
         var factory = new SqliteConnectionFactory(path);
         try
         {
-            new MigrationRunner(factory).Run();                                          // bu sürüm: şema 48
+            new MigrationRunner(factory).Run();                                          // bu sürüm: şema 49
             new MigrationRunner(factory, EmbeddedMigrationScripts.UpTo(44)).Run();       // önceki sürümün koşucusu: no-op
             using (var c = factory.Open())
             {
-                c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(48);
+                c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(49);
                 // U6: hiçbir şema nesnesi (tetikleyici, indeks, görünüm) önceki sürümün kaydetmediği bir
                 // uygulama fonksiyonunu çağırmaz — od_identity_key yalnız C# ve onarım SQL'inde.
                 var called = c.Query<string>("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL")
@@ -293,7 +293,7 @@ public sealed class Migration045RehearsalTests(ITestOutputHelper output)
     private static IdentityStats AssertMigrated(IDbConnectionFactory factory, Counts before)
     {
         using var c = factory.Open();
-        c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(48);
+        c.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1").Should().Be(49);
         Snapshot(factory).Should().Be(before,
             "göç satır eklemez/silmez ve var olan veriyi değiştirmez, yeni FK ihlali üretmez, arama indeksini bozmaz");
         // Boş/boşluk kullanıcı adı kimlik değildir: anahtarı bilerek NULL (C1 incelemesi M-1).

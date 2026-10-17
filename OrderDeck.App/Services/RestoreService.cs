@@ -1,8 +1,10 @@
+using System.Data;
 using System.IO;
 using System.IO.Compression;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Backup;
 using OrderDeck.Shared.Backup;
 
@@ -56,6 +58,7 @@ public sealed class RestoreService
 
         var bakPath = _databaseFile + PreRestoreBakSuffix;
         var tempExtract = _databaseFile + ".restoring";
+        var swapped = false;
         try
         {
             // Hedge: backup existing db before overwriting
@@ -105,6 +108,12 @@ public sealed class RestoreService
                     $"Yedek bir OrderDeck veritabanı değil ({contractError}); " +
                     "mevcut veritabanına dokunulmadı.");
 
+            // Spec 2026-10-13 §8.7: geri yüklenen dosya yedeğin kopya kimliğini getirir. O
+            // kimlikle çalışmak, yedeği alan veritabanının (belki hâlâ çalışan) klonu olmak
+            // demek. Değiştirmeden ÖNCE, geçici dosyada döndürülür: başarısızlık mevcut
+            // veritabanına dokunmaz ve geri yükleme hiçbir zaman yedeğin kimliğiyle bitmez.
+            PrepareReplicaIdentity(tempExtract);
+
             // R10-D01: değiştirmeden ÖNCE kaynak bırakma — restore
             // protokolünün açık aşaması. SqliteConnectionFactory Pooling=true
             // çalışır: dispose edilmiş bağlantı bile dosya tanıtıcısını
@@ -125,6 +134,7 @@ public sealed class RestoreService
 
             // Replace db
             File.Move(tempExtract, _databaseFile, overwrite: true);
+            swapped = true;
 
             // Eski -wal/-shm yan dosyaları ZORUNLU olarak gitmeli: SQLite onları
             // yeni dosyaya aitmiş gibi uygulamaya çalışır ve veritabanını bozar.
@@ -144,16 +154,126 @@ public sealed class RestoreService
             try { if (File.Exists(tempExtract)) File.Delete(tempExtract); } catch { /* best effort */ }
 
             // Roll back from .pre-restore.bak if extract corrupted the original
+            var rolledBack = false;
             try
             {
                 if (File.Exists(bakPath) && !SqliteFile.IsIntactDatabase(_databaseFile, out _))
                 {
                     File.Copy(bakPath, _databaseFile, overwrite: true);
                     SqliteFile.DeleteSidecars(_databaseFile);
+                    rolledBack = true;
                 }
             }
             catch { /* best effort */ }
+
+            // Kimlik işareti (049 öncesi yedek) yalnız geri yüklenen dosya yerinde kaldıysa
+            // anlamlı: değiştirme olmadıysa ya da eski dosyaya dönüldüyse silinir.
+            if (!swapped || rolledBack)
+            {
+                try { RestoreReplicaMarker.Delete(_databaseFile); } catch { /* best effort */ }
+            }
             return new RestoreResult(false, $"Geri yükleme hatası: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Geri yüklenen dosyanın kopya kimliği (spec 2026-10-13 §8.7). Yeni kimlik rastgele; önceki kimlik
+    /// <c>_meta.PreviousReplicaId</c>'ye yazılır ve ilk <c>sales/hello</c> onu taşır — o hello başarıyla
+    /// gidene kadar hiçbir v2 gönderimi yapılmaz (<c>SalesSyncEnvelope.IsReadyForPush</c>).
+    /// <list type="bullet">
+    ///   <item>Göç 049 sonrası yedek: önceki = yedeğin kendi kimliği (geçersizse değiştirilen veritabanınınki);
+    ///   döndürme burada, geçici dosyada yapılır.</item>
+    ///   <item>049 öncesi yedek: kolon yok. Önceki = değiştirilen veritabanının kimliği; açılış göçü 049'u koşup
+    ///   yeni kimliği tohumladıktan sonra <see cref="RestoreReplicaMarker"/> ekler (gerekçe orada).</item>
+    /// </list>
+    /// Geri yükleme hiçbir zaman önceki kimliksiz bitmez (§4.3, §8.7, M20: geri yüklenmiş kopyada yerel kazanmaz).
+    /// Önceki kimlik bilinmiyorsa (değiştirilen veritabanı okunamadı — geri yüklemenin sık nedeni bozuk dosya — ve
+    /// yedeğin kendi kimliği de yok) rastgele bir nöbetçi yazılır: sunucu yalnız alanın dolu olmasına bakar,
+    /// bilinmeyen kimlik hiçbir oturuma sahip olmadığından devralma da olmaz. Yedeğin henüz bildirilmemiş önceki
+    /// kimliği varsa o gerçek bir kimliktir ve korunur.
+    /// Geçici dosya önce rollback-journal kipine alınır: WAL'da kalan döndürme, dosya taşınırken yan dosyasıyla
+    /// birlikte kaybolabilirdi. Kip açılışta yeniden WAL olur (<see cref="SqliteConnectionFactory"/>).
+    /// </summary>
+    private void PrepareReplicaIdentity(string tempExtract)
+    {
+        RestoreReplicaMarker.Delete(_databaseFile);          // önceki bir denemenin artığı
+        var replacedId = ReadReplacedReplicaId();
+
+        var restored = new FileConnectionFactory(tempExtract);
+        using (var conn = restored.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA journal_mode = DELETE;";
+            cmd.ExecuteNonQuery();
+        }
+
+        var identity = new ReplicaIdentityRepository(restored);
+        if (identity.HasIdentityColumns())
+        {
+            var previous = identity.GetReplicaId() ?? replacedId ?? identity.GetPendingPreviousReplicaId()
+                ?? UnknownPrevious();
+            var next = identity.Rotate(previous);
+            _log.LogInformation(
+                "Geri yüklenen veritabanına yeni kopya kimliği verildi (replica={ReplicaId}, previous={PreviousReplicaId})",
+                next, previous);
+        }
+        else
+        {
+            var previous = replacedId ?? UnknownPrevious();
+            RestoreReplicaMarker.Write(_databaseFile, previous);
+            _log.LogInformation(
+                "Geri yüklenen yedek göç 049'dan eski; önceki kopya kimliği açılış göçünden sonra eklenecek (previous={PreviousReplicaId})",
+                previous);
+        }
+    }
+
+    /// <summary>Önceki kimlik bilinmiyor: kopya yine geri yüklenmiş bildirilsin diye rastgele bir nöbetçi.</summary>
+    private Guid UnknownPrevious()
+    {
+        var sentinel = Guid.NewGuid();
+        _log.LogWarning(
+            "Geri yüklemede önceki kopya kimliği bilinmiyor; kopya geri yüklenmiş bildirilecek (nöbetçi previous={PreviousReplicaId})",
+            sentinel);
+        return sentinel;
+    }
+
+    /// <summary>Değiştirilen (şu anki) veritabanının kopya kimliği; dosya yok, eski şema ya da okunamıyorsa
+    /// (geri yüklemenin sık nedeni bozuk dosya) <c>null</c>.</summary>
+    private Guid? ReadReplacedReplicaId()
+    {
+        if (!File.Exists(_databaseFile)) return null;
+        try
+        {
+            var identity = new ReplicaIdentityRepository(new FileConnectionFactory(_databaseFile));
+            return identity.HasIdentityColumns() ? identity.GetReplicaId() : null;
+        }
+        catch (Exception ex) when (ex is SqliteException or InvalidOperationException)
+        {
+            _log.LogWarning(ex,
+                "Değiştirilen veritabanının kopya kimliği okunamadı; yedeğin kimliği yoksa önceki kimlik yerine nöbetçi yazılacak");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Tek dosyaya havuzsuz bağlantı: kapanınca tanıtıcı bırakılır (dosya hemen ardından taşınıyor). Arama
+    /// fonksiyonları kaydedilir (göç 035 tetikleyicileri); dosya yaratılmaz.
+    /// </summary>
+    private sealed class FileConnectionFactory(string path) : IDbConnectionFactory
+    {
+        private readonly string _connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false,
+        }.ToString();
+
+        public IDbConnection Open()
+        {
+            var conn = new SqliteConnection(_connectionString);
+            conn.Open();
+            SqliteSearchFunctions.Register(conn);
+            return conn;
         }
     }
 

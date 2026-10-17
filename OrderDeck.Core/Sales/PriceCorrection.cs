@@ -13,18 +13,21 @@ public sealed record PriceGroup(decimal Price, int Count);
 /// hangileri değişmez. Yazma yok; <see cref="LabelService.CorrectPrices"/> aynı sınıflamayı
 /// yazmadan hemen önce yeniden yapar.
 ///
-/// <para><b>Değişmeyenler (K6):</b> iptal edilmiş etiket, kargo ücreti satırı (ürün değil) ve
-/// kargoya VERİLMİŞ dosyadaki etiket. Kargoya verilmemiş dosyanın etiketi düzelir, dosyanın toplamı
-/// fark kadar değişir.</para>
+/// <para><b>Değişmeyenler (K6):</b> iptal edilmiş etiket, kargo ücreti satırı (ürün değil),
+/// kargoya VERİLMİŞ dosyadaki etiket ve başka bilgisayarın dosyasındaki etiket (bağlı dosya bu bilgisayarda
+/// yok, durumu bilinmiyor — spec 2026-10-13 §7.4). Kargoya verilmemiş dosyanın etiketi düzelir, dosyanın
+/// toplamı fark kadar değişir.</para>
 /// </summary>
 public sealed class PriceCorrectionPlan
 {
     public PriceCorrectionPlan(
-        IReadOnlyList<Label> correctable, IReadOnlyList<Label> shipped, IReadOnlyList<Label> excluded)
+        IReadOnlyList<Label> correctable, IReadOnlyList<Label> shipped, IReadOnlyList<Label> excluded,
+        IReadOnlyList<Label>? elsewhere = null)
     {
         Correctable = correctable;
         Shipped = shipped;
         Excluded = excluded;
+        Elsewhere = elsewhere ?? Array.Empty<Label>();
         PriceGroups = correctable
             .GroupBy(l => l.Price)
             .Select(g => new PriceGroup(g.Key, g.Count()))
@@ -42,6 +45,11 @@ public sealed class PriceCorrectionPlan
 
     /// <summary>İptal edilmiş ya da kargo ücreti satırı — düzeltmenin konusu değil.</summary>
     public IReadOnlyList<Label> Excluded { get; }
+
+    /// <summary>Başka bilgisayarın dosyasındaki etiketler — DEĞİŞMEZ ("başka bilgisayarın dosyasında"). Bağlı
+    /// olduğu kargo dosyası bu bilgisayarda yok (mod Off'ta <c>disable</c> turunun sildiği karışık dosya, §7.4):
+    /// dosya kargoya verilmiş olabilir, tutarı burada düzeltilemez.</summary>
+    public IReadOnlyList<Label> Elsewhere { get; }
 
     public IReadOnlyList<PriceGroup> PriceGroups { get; }
 
@@ -90,13 +98,17 @@ public sealed record CorrectedLabel(Label Before, decimal NewPrice)
 /// <summary><see cref="LabelService.CorrectPrices"/> sonucu.</summary>
 /// <param name="Corrected">Fiyatı değişen etiketler.</param>
 /// <param name="Shipped">Kargoya verilmiş dosyada olduğu için DEĞİŞMEYEN etiketler.</param>
-/// <param name="CustomerDeltas">Müşteri toplamına yazılan fark (yalnız basılmış ve onaylı satırlar).</param>
-/// <param name="ShipmentDeltas">Kargoya verilmemiş dosyaların toplamına yazılan fark.</param>
+/// <param name="CustomerDeltas">Müşteri toplamındaki fark (yalnız basılmış ve onaylı satırlar). Bilgi için döner:
+/// toplamın kendisi etiketlerden türetilir (spec 2026-10-13 §6.1).</param>
+/// <param name="ShipmentDeltas">Kargoya verilmemiş dosyaların toplamına yazılan fark (Y5 dosya bloğunun uyguladığı:
+/// mod On'da, fark tabanı henüz türetilmemişken ve bu arada yerelden kalkmış dosyada boş).</param>
+/// <param name="Elsewhere">Başka bilgisayarın dosyasında olduğu için DEĞİŞMEYEN etiketler (§7.4).</param>
 public sealed record PriceCorrectionResult(
     IReadOnlyList<CorrectedLabel> Corrected,
     IReadOnlyList<Label> Shipped,
     IReadOnlyDictionary<string, decimal> CustomerDeltas,
-    IReadOnlyDictionary<string, decimal> ShipmentDeltas)
+    IReadOnlyDictionary<string, decimal> ShipmentDeltas,
+    IReadOnlyList<Label> Elsewhere)
 {
     public IReadOnlyList<CorrectedLabel> CorrectedPrinted => Corrected.Where(c => c.WasPrinted).ToList();
 }

@@ -37,8 +37,8 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private readonly ShipmentRepository? _shipments;
 
     /// <summary>Yedek çekmecesinde bir yedek onaylandı (Id) — kabuk, yedek kuyruktaysa ekrandaki kopyasını
-    /// HEMEN günceller (çekmece açıkken de "Yazdır"a basılabiliyor; kâğıt kopyadan basılır, ciro
-    /// veritabanından yazılır). Null = bildirilmez.</summary>
+    /// HEMEN günceller (çekmece açıkken de kuyruk görünüyor; kâğıt ise baskıdan hemen önce veritabanından
+    /// okunur, §5.6). Null = bildirilmez.</summary>
     public Action<string>? BackupConfirmed { get; set; }
 
     private string? _customerId;

@@ -43,6 +43,8 @@ public class LabelServicePriceCorrectionTests
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
+        // Y5'in tabanı açılışta türetilmiş say (ShipmentAmountDerivation): damga boşken dosya bloğu yazmaz.
+        using (var c = db.Open()) c.Execute("UPDATE SalesSyncState SET ShipmentsDerivedAt = 900 WHERE Id = 1");
         var clock = new Mock<IClock>();
         clock.Setup(c => c.UnixNow()).Returns(1000L);
         new SessionRepository(db).Insert(new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));

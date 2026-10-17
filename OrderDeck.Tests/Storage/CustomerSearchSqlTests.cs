@@ -360,7 +360,9 @@ public class CustomerSearchSqlTests
         repo.Search(telefonParcasi, limit: 10).Select(c => c.Id).Should().Equal("t-1");
 
         // 3) İlgisiz kolon (tetikleyicinin UPDATE OF listesinde yok) — bozmamalı.
-        repo.IncrementLabelStats("t-1", 1, 250m, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        using (var c = db.Open())
+            c.Execute("UPDATE Customer SET TotalLabelsPrinted = 1, TotalAmount = 250, LastSeenAt = @now WHERE Id = 't-1'",
+                new { now = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
         repo.Search("rnek", limit: 10).Select(c => c.Id).Should().Equal("t-1");
 
         // 4) Intake upsert — ad değişince ESKİ ad artık bulunmamalı.

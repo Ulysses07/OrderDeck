@@ -74,7 +74,19 @@ public sealed class CustomerIdResolutionTests : IDisposable
         _customers.UpdatePhone(stale, phone).Should().Be(1, "0 dönseydi pencere 'silme talebi' hatası gösterirdi");
         _customers.SetRecipientPaysActive(stale, true);
         _customers.UpdateBlacklist(stale, true, "ödemedi", 5000);
-        _customers.IncrementLabelStats(stale, 1, 10m, lastSeenAt: 300);
+        // Müşteri toplamı (W1-03: etiketlerden türetilir) ve LastSeenAt de eski Id'yle çağrılabilir.
+        using (var c0 = _db.Open())
+        {
+            c0.Execute("INSERT INTO StreamSession (Id, StartedAt) VALUES ('s1', 1)");
+            c0.Execute(@"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, MessageText, Price, AddedAt, PrintedAt)
+                         VALUES ('l1', 's1', @canonical, 'tiktok', 'u', 'A1', 10, 1, 2)", new { canonical });
+        }
+        using (var write = DbWrite.Begin(_db))
+        {
+            CustomerAggregateSql.Recompute(new[] { stale }, write);
+            CustomerAggregateSql.TouchLastSeen(new[] { stale }, 300, write);
+            write.Commit();
+        }
         _customers.SetGroupId(stale, "g1");
 
         var c = _customers.GetById(canonical)!;
@@ -83,6 +95,8 @@ public sealed class CustomerIdResolutionTests : IDisposable
         c.RecipientPaysActive.Should().BeTrue();
         c.IsBlacklisted.Should().BeTrue();
         c.TotalLabelsPrinted.Should().Be(1);
+        c.TotalAmount.Should().Be(10m);
+        c.LastSeenAt.Should().Be(300);
         c.GroupId.Should().Be("g1");
         Count("SELECT COUNT(*) FROM Customer").Should().Be(1);
     }

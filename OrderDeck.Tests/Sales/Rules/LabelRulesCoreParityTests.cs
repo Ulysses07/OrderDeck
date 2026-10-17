@@ -137,6 +137,18 @@ public sealed class LabelRulesCoreParityTests
         codeKey.Invoke(null, new object?[] { c.Code }).Should().Be(c.Expected, $"vektör {name}");
     }
 
+    // ── Bilinçli tek fark: bağlı dosyası yerelde olmayan etiket (spec 2026-10-13 §7.4, §15-57; W1) ──────────
+    // Sunucuda her dosya bilinir; ortak kural bilmediği dosyayı (statusOf null) düzeltilebilir sayar. Masaüstünde
+    // dosyası yerelde olmayan etiket başka bilgisayarın dosyasındadır (mod Off'ta disable turunun sildiği karışık
+    // dosya): durumu bilinmez — kargoya verilmiş olabilir — düzeltilmez, ayrı sınıfta listelenir ve kod fiyatının
+    // kaynağında kargoya verilmiş gibi durur. Eşlik bu farkı açıkça kurar; vektörün geri kalanı birebir aynı.
+
+    /// <summary>Masaüstündeki sınıf: ortak kuralınkiyle aynı, yalnız "başka bilgisayarın dosyasında" eklenir.</summary>
+    private const string Elsewhere = "elsewhere";
+
+    private static bool OnMissingShipment(LabelFacts f, IReadOnlyDictionary<string, SalesShipmentStatus> shipments)
+        => !f.Cancelled && !f.ShippingFee && f.ShipmentId is { } sid && !shipments.ContainsKey(sid);
+
     [Theory]
     [MemberData(nameof(ClassifyNames))]
     public void Classify_LabelService_plani_ile_ayni(string name)
@@ -150,12 +162,26 @@ public sealed class LabelRulesCoreParityTests
         foreach (var l in c.Labels)
         {
             var id = realIds[l.Facts.Id];
-            var actual = plan.Correctable.Any(x => x.Id == id) ? LabelPriceClass.Correctable
-                : plan.Shipped.Any(x => x.Id == id) ? LabelPriceClass.Shipped
-                : plan.Excluded.Any(x => x.Id == id) ? LabelPriceClass.Excluded
+            var actual = plan.Correctable.Any(x => x.Id == id) ? nameof(LabelPriceClass.Correctable)
+                : plan.Shipped.Any(x => x.Id == id) ? nameof(LabelPriceClass.Shipped)
+                : plan.Excluded.Any(x => x.Id == id) ? nameof(LabelPriceClass.Excluded)
+                : plan.Elsewhere.Any(x => x.Id == id) ? Elsewhere
                 : throw new InvalidOperationException($"etiket {l.Facts.Id} planda yok");
-            actual.Should().Be(l.Expected, $"vektör {name}, etiket {l.Facts.Id}");
+            var expected = OnMissingShipment(l.Facts, c.Shipments) ? Elsewhere : l.Expected.ToString();
+            actual.Should().Be(expected, $"vektör {name}, etiket {l.Facts.Id}");
         }
+    }
+
+    [Fact]
+    public void Classify_vektorlerinde_bilinmeyen_dosya_durumu_var_ve_masaustunde_ayri_sinif()
+    {
+        // Yukarıdaki eşlemenin boş kalmadığının kanıtı: vektör dosyası bu durumu taşıyor, ortak kural onu
+        // düzeltilebilir sayıyor (sunucu anlamı), masaüstü değil.
+        var unknown = LabelRulesVectors.Classify()
+            .SelectMany(c => c.Labels.Where(l => OnMissingShipment(l.Facts, c.Shipments)))
+            .ToList();
+        unknown.Should().NotBeEmpty();
+        unknown.Should().OnlyContain(l => l.Expected == LabelPriceClass.Correctable);
     }
 
     [Theory]
@@ -166,8 +192,14 @@ public sealed class LabelRulesCoreParityTests
         using var fx = new Fx();
         foreach (var l in c.Labels) fx.Insert(l, c.Shipments);
 
+        // Dosyası yerelde olmayan etiket kaynakta kargoya verilmiş gibi durur (yukarıdaki not).
+        var expected = c.Labels.Any(l => OnMissingShipment(l, c.Shipments))
+            ? LabelRules.CodePrice(c.Labels,
+                sid => c.Shipments.TryGetValue(sid, out var s) ? s : SalesShipmentStatus.Shipped)
+            : c.Expected;
+
         decimal? actual = fx.Svc.GetCodePrice(SessionId, c.Code)?.Price;
-        actual.Should().Be(c.Expected, $"vektör {name}");
+        actual.Should().Be(expected, $"vektör {name}");
     }
 
     [Theory]
@@ -178,6 +210,13 @@ public sealed class LabelRulesCoreParityTests
         using var fx = new Fx();
         var shipments = new Dictionary<string, SalesShipmentStatus>(StringComparer.Ordinal);
         var label = fx.Insert(c.Label, shipments);
+        // Insert durumu SQL'le kurar, sayaca dokunmaz. W1-03'ten beri toplam etiketlerden türetilir: önce
+        // türetilmiş "önce" değeri kurulur (kaymış 0/0 tohumuyla fark katkıyı değil kaymayı ölçerdi).
+        using (var write = DbWrite.Begin(fx.Db))
+        {
+            CustomerAggregateSql.Recompute(new[] { label.CustomerId }, write);
+            write.Commit();
+        }
         var before = fx.Customers.GetById(label.CustomerId)!;
 
         // İptal, etiketin müşteri toplamına katkısını geri alır (zaten iptalse dokunmaz): düşülen = katkı.

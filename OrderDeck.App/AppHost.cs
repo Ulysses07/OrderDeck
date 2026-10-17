@@ -517,22 +517,68 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<SettingsStore>(),
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>(),
             sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
-        // Session + Order sync (PR siparis-sync 2026-05-13)
+        // Session + Order sync (PR siparis-sync 2026-05-13). Satış senkronu W1-06: etiketler v2 zarfıyla (aynı
+        // SalesSyncEnvelope örneği — hello'nun başarısını o tutar), bütün tur tek gönderim kapısından. W1-07:
+        // devir kapısı TEK örnek — kapanış gönderimi, geri doldurma ve W2'nin düzenleme yönlendiricisi aynı
+        // kilitleri görmeli.
+        // W1-08: v2 yanıtının ignored/rejected satırlarını (current) yerele uygulayan Core yazıcısı.
+        services.AddSingleton<OrderDeck.Core.Sessions.HandoverGate>();
+        services.AddSingleton<OrderDeck.Core.Sales.SalesPushApply>();
         services.AddSingleton<Services.Sync.SessionOrderSyncService>(sp =>
             new Services.Sync.SessionOrderSyncService(
                 sp.GetRequiredService<LicenseApiClient>(),
                 sp.GetRequiredService<SessionRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+                sp.GetRequiredService<OrderDeck.Core.Sales.SalesPushApply>(),
                 sp.GetRequiredService<IClock>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>(),
                 sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.SessionOrderSyncHostedService>();
+
+        // Yayın ve etiket senkronu (spec 2026-10-13, W1): kopya kimliği (_meta.ReplicaId), yerel
+        // satış durumu ve v2 zarfı TEK örnek — hello'nun başarısını zarf tutar, gönderim servisleri
+        // aynı örnekten IsReadyForPush okur. Kalp atışı 30 sn; açılışta hemen hello + state.
+        services.AddSingleton<ReplicaIdentityRepository>();
+        services.AddSingleton<SalesSyncStateRepository>();
+        services.AddSingleton<Services.Sync.SalesSyncEnvelope>();
+        services.AddSingleton<Services.Sync.SalesSyncStateService>(sp =>
+            new Services.Sync.SalesSyncStateService(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<ReplicaIdentityRepository>(),
+                sp.GetRequiredService<SalesSyncStateRepository>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<ILogger<Services.Sync.SalesSyncStateService>>()));
+        services.AddHostedService<Services.Sync.SalesSyncStateHostedService>();
+
+        // W1-09 (§8.2): Ws'nin ilk açılışındaki geri doldurma ve birim ayrışması onarımı. Zarf, devir kapısı,
+        // gönderim ve hello AYNI örnekler: boşaltma gönderim kapısından geçer, Release kararı kapanış gönderimiyle
+        // aynı kilitleri görür, tamamlanma hello'su turla aynı kapıdan. 60 sn'de bir; turda en çok 10 istek.
+        services.AddSingleton<SalesBackfillRepository>();
+        services.AddSingleton<Services.Sync.SalesBackfillService>(sp =>
+            new Services.Sync.SalesBackfillService(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncStateService>(),
+                sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
+                sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+                sp.GetRequiredService<SalesBackfillRepository>(),
+                sp.GetRequiredService<SyncCursorRepository>(),
+                sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<IClock>(),
+                sp.GetRequiredService<ILogger<Services.Sync.SalesBackfillService>>()));
+        services.AddHostedService<Services.Sync.SalesBackfillHostedService>();
 
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save
         // tetiklediğinde server'a PUT'lar. Periyodik değil, on-demand.
@@ -661,6 +707,17 @@ public sealed class AppHost : IDisposable
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
+        // Spec 2026-10-13 §8.7: göç 049'dan eski bir yedek geri yüklendiyse 049 az önce yeni bir
+        // kopya kimliği tohumladı; RestoreService'in bıraktığı işaret önceki kimliği ekler (ilk
+        // sales/hello taşır). İşaret yoksa hiçbir şey yapmaz. Uygulanamazsa işaret sonraki açılışa
+        // kalır ve bu süreçte satış senkronu sunucuya hiç istek göndermez: geri yüklenmiş kopya
+        // önceki kimliksiz konuşursa sunucu onu özgün sanır, geri doldurmada yereli kazandırır (M20).
+        var restoreMarker = RestoreReplicaMarker.ApplyAtBoot(
+            AppPaths.DatabaseFile,
+            Services.GetRequiredService<ReplicaIdentityRepository>(),
+            Services.GetRequiredService<ILogger<AppHost>>());
+        if (restoreMarker.Unresolved)
+            Services.GetRequiredService<Services.Sync.SalesSyncEnvelope>().HoldUntilRestart();
         // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
         // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
         // satır artıktır.
@@ -669,6 +726,23 @@ public sealed class AppHost : IDisposable
             Services.GetRequiredService<ILogger<AppHost>>().LogWarning(
                 "SyncApplyGuard'da kalmış {Count} kilit satırı silindi — kaldığı sürece müşteri düzenlemeleri damgalanmadı ve gönderilmedi",
                 staleGuards);
+
+        // Spec 2026-10-13 §6.1, §8.2-7: müşteri toplamları artık etiketlerden türetiliyor; eski fark
+        // sayaçlarının birikmiş kayması ilk açılışta bir kez, tek işlemde düzeltilir
+        // (SalesSyncState.AggregatesDerivedAt). Günlükte yalnız sayılar; hata açılışı durdurmaz.
+        CustomerAggregatesBoot.Run(
+            Services.GetRequiredService<IDbConnectionFactory>(),
+            Services.GetRequiredService<IClock>().UnixNow(),
+            Services.GetRequiredService<ILogger<AppHost>>());
+
+        // Spec 2026-10-13 §7.4, §8.2-8: Y5'in yerel yolu dosya tutarını farkla değiştirir; tabanı ilk açılışta
+        // bir kez türetilir (Ws öncesi iptal edilmiş bağlı etiket açık dosyada hâlâ duruyordu). ClearStale'den
+        // SONRA: kalmış kilit satırı TR_Shipment_Enqueue'yu susturur, değişen dosya gönderilmezdi. Arayüzden önce:
+        // ilk iptal ya da geri alma türetilmiş tabandan başlamalı. Günlükte yalnız sayılar; hata açılışı durdurmaz.
+        ShipmentAmountsBoot.Run(
+            Services.GetRequiredService<IDbConnectionFactory>(),
+            Services.GetRequiredService<IClock>().UnixNow(),
+            Services.GetRequiredService<ILogger<AppHost>>());
 
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).

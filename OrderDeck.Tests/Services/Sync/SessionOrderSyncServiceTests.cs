@@ -88,8 +88,9 @@ public sealed class SessionOrderSyncServiceTests
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
 
+        var license = new FakeLicenseProvider();
         var svc = new SessionOrderSyncService(api, sessions, labels,
-            new FakeLicenseProvider(), new FakeClock(),
+            license, TestSalesEnvelope.For(db, license), new HandoverGate(), new SalesPushApply(db), new FakeClock(),
             NullLogger<SessionOrderSyncService>.Instance, tracker);
 
         return new Fx(svc, sessions, labels, db, capturedOrdersJson);

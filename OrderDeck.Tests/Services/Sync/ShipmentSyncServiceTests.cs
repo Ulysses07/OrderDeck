@@ -59,7 +59,7 @@ public sealed class ShipmentSyncServiceTests
         var licenseProvider = new FakeLicenseProvider { CurrentLicenseKey = TestLicenseKey };
 
         var svc = new ShipmentSyncService(
-            api, shipments, store, settings, licenseProvider,
+            api, shipments, store, settings, licenseProvider, TestSalesEnvelope.For(db, licenseProvider),
             new FakeClock(), NullLogger<ShipmentSyncService>.Instance, tracker);
 
         return new Fixture(svc, settings, store, db);

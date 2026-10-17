@@ -43,6 +43,28 @@ public class LabelRepositoryTests
         unprinted[0].MessageText.Should().Be("Mavi XL aldım");
     }
 
+    // §5.5 (W1): kalıntı kuyruk yalnız bu bilgisayarda açılmış oturumlara (Origin = 'local') bakar.
+    // Başka bilgisayarın basılmamış kuyruğu akışla inse de bu bilgisayara teklif edilmez; edilseydi aynı
+    // satış iki yazıcıdan çıkabilirdi. Uzak oturum SQL ile kurulur: onu yazan akış W2'de.
+    [Fact]
+    public void GetUnprintedOutsideSession_excludes_labels_of_remote_sessions()
+    {
+        var (db, repo, sid, cid) = Fx();
+        using var _ = db;
+        var sessions = new SessionRepository(db);
+        sessions.Insert(new StreamSession("eski-yerel", null, 50, 60, new[] { "instagram" }, null));
+        sessions.Insert(new StreamSession("uzak", null, 70, 80, new[] { "instagram" }, null));
+        repo.Insert(MakeLabel("yerel-kalinti", "eski-yerel", cid));
+        repo.Insert(MakeLabel("uzak-kalinti", "uzak", cid));
+        repo.Insert(MakeLabel("aktif", sid, cid));
+        using (var c = db.Open())
+            Dapper.SqlMapper.Execute(c,
+                "UPDATE StreamSession SET Origin = 'remote', Authority = 'server' WHERE Id = 'uzak'");
+
+        repo.GetUnprintedOutsideSession(sid).Select(l => l.Id).Should().Equal(
+            new[] { "yerel-kalinti" }, "uzak oturumun etiketi de aktif oturumunki de kalıntı değil");
+    }
+
     // N07: Delete_removes_label_from_unprinted testi kaldırıldı — LabelRepository.Delete
     // kasıtlı olarak silindi (fiziksel DELETE mezar taşını yok eder, bkz. LabelRepository).
 
