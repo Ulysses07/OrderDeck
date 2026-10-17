@@ -249,6 +249,21 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             "Satış durumu yanıtı bozuk geldi (gövde null).");
     }
 
+    /// <summary>
+    /// <c>POST sales/backfill</c> (spec 2026-10-13 §4.3): geçmişin sunucuda tamamlanması — yalnız boşu doldurur,
+    /// bildirimsiz, mevcut siparişte birim ayrışmasını döner. Bütün partiyi düşüren hatalar fırlatılır: 400
+    /// <c>unknown-session</c> (<see cref="ValidationException"/>, <c>Code = "unknown-session"</c>), 409
+    /// <c>sync-conflict</c>. Çözümlenemeyen ya da boş gövde <see cref="LicenseApiUnknownException"/>.
+    /// </summary>
+    public async Task<SalesBackfillResponse> PostSalesBackfillAsync(
+        Guid licenseId, SalesBackfillRequest req, CancellationToken ct = default)
+    {
+        var response = await PostJsonExpectingJsonOrUnknownAsync<SalesBackfillRequest, SalesBackfillResponse?>(
+            $"/api/v1/licenses/{licenseId}/sales/backfill", req, ct);
+        return response ?? throw new LicenseApiUnknownException(200,
+            "Geri doldurma yanıtı bozuk geldi (gövde null).");
+    }
+
     // ─── WhatsApp template sync (Faz 2, 2026-05-15) ───────────────────────
 
     /// <summary>PaymentSettings'in WhatsApp template'lerini server'a push'lar.

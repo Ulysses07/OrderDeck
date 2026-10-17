@@ -38,6 +38,7 @@ public sealed class SalesWriterInventoryTests
     private const string AdjusterFile = "OrderDeck.Core/Sales/ShipmentAmountAdjuster.cs";
     private const string DerivationFile = "OrderDeck.Core/Sales/ShipmentAmountDerivation.cs";
     private const string PushApplyFile = "OrderDeck.Core/Sales/SalesPushApply.cs";
+    private const string BackfillRepo = "OrderDeck.Core/Storage/Repositories/SalesBackfillRepository.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -65,6 +66,14 @@ public sealed class SalesWriterInventoryTests
             "v2 gönderim onayı (W1-06), tek kısa işlemde, F05 karşılaştır-ve-yaz. SyncedAt, StockSyncedAt ve ServerVersion hiçbir tetikleyici listesinde değil: her kipte ve her oturumda geçer, kuyruğa almaz, Revision değişmez (DM8)."),
         new(PushApplyFile, "WriteLabel", "UPDATE Label", 1, [],
             "v2 yanıtının ignored/rejected uygulaması (W1-08, §5.2): current'ın birimleri (ignored'da yok sayılanlar, rejected'da hepsi) ve onay (SyncedAt, StockSyncedAt, ServerVersion), SyncApplyScope işleminde: 049 tetikleyicilerinin hepsi susar — kuyruğa almaz, Revision değişmez (DM8); Authority='server' oturumda ve mod 1'deki kargo bağında da yazar. F05: gönderilen Revision ve SyncedAt IS NULL aynı işlemde okunur; değişmiş satıra hiçbir şey yazılmaz. Oluşum alanları ve CustomerId yazılmaz."),
+        new(BackfillRepo, "WriteServerVersions", "UPDATE Label", 1, [],
+            "Geri doldurma yanıtının sürümü (W1-09, §4.3): yalnız ServerVersion, tek kısa işlemde; satır okunduğundan beri değişmediyse (Revision) ve sürüm geri gitmiyorsa. ServerVersion hiçbir tetikleyici listesinde değil: kuyruğa almaz, Revision değişmez, her kipte geçer."),
+        new(BackfillRepo, "Requeue", "UPDATE Label", 1, [],
+            "Birim ayrışmasının onarımı, yerel kazanır (W1-09, §8.2-4): onaylı satırda SyncedAt NULL ve Revision+1, iptal/yedek ayrıştıysa StockSyncedAt NULL — TR_Label_Enqueue'nun aynası, elle; bekleyen satırda Revision artmaz. SyncedAt, StockSyncedAt ve Revision hiçbir tetikleyici listesinde değil: ABORT'a varmaz. Yalnız mod Off'ta özgün kopyada (sunucunun localWins'i)."),
+        new(BackfillRepo, "StoreReleasedAt", "UPDATE StreamSession", 1, [],
+            "Geri doldurma yanıtının devir anı (W1-09, §5.2 mod Off): yalnız ReleasedAt, yerelde boşsa. Authority, SyncedAt ve Revision'a dokunmaz; ReleasedAt hiçbir tetikleyici listesinde değil."),
+        new(BackfillRepo, "QueueSessionForHandover", "UPDATE StreamSession", 1, [],
+            "Geri doldurmada devri gerçekleşmeyen kendi bitmiş oturumu olağan kuyruğa verir (W1-09, §5.2): yalnız SyncedAt NULL, Revision karşılaştırmalı, Revision artmaz. SyncedAt hiçbir tetikleyici listesinde değil; yalnız Authority='local' satırda."),
         new(SessionRepo, "Insert", "INSERT INTO StreamSession", 1, [],
             "Origin ve Authority varsayılanla 'local' doğar. Ekleme tetikleyicisi yok."),
         new(SessionRepo, "End", "UPDATE StreamSession", 1, ["TR_StreamSession_Enqueue", "TR_StreamSession_ServerAuthority"],

@@ -195,6 +195,38 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Geri_doldurma_servisi_ortak_orneklerle_kurulur_arka_plan_isi_genel_dongude_baslatilir()
+    {
+        // Yayın ve etiket senkronu W1-09 (spec 2026-10-13 §8.2, §10.3 DI testi).
+        using var host = new global::OrderDeck.App.AppHost();
+        var backfill = host.Services.GetRequiredService<SalesBackfillService>();
+
+        host.Services.GetRequiredService<SalesBackfillService>().Should().BeSameAs(backfill);
+        PrivateField<SalesSyncEnvelope>(backfill, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>(), "hello'nun başarısı zarfta: aynı örnek");
+        PrivateField<SalesSyncStateService>(backfill, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateService>(), "tamamlanma hello'su turla aynı kapıdan");
+        PrivateField<SessionOrderSyncService>(backfill, "_push").Should().BeSameAs(
+            host.Services.GetRequiredService<SessionOrderSyncService>(), "boşaltma TEK gönderim kapısından geçer");
+        PrivateField<ShipmentSyncService>(backfill, "_shipments").Should().BeSameAs(
+            host.Services.GetRequiredService<ShipmentSyncService>());
+        PrivateField<OrderDeck.Core.Sessions.HandoverGate>(backfill, "_handover").Should().BeSameAs(
+            host.Services.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+            "Release kararı kapanış gönderimiyle aynı devir kilitlerini görmeli");
+        PrivateField<SyncCursorRepository>(backfill, "_cursors").Should().BeSameAs(
+            host.Services.GetRequiredService<SyncCursorRepository>());
+        PrivateField<SalesBackfillRepository>(backfill, "_repo").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesBackfillRepository>());
+
+        // App.xaml.cs'e elle başlatma gerekmiyor: WpfStartupEnvironment kayıtlı bütün IHostedService'leri
+        // başlatır (CLAUDE.md, PR #89; WpfStartupEnvironment.StartBackgroundServicesAsync).
+        var hosted = host.Services.GetServices<IHostedService>().ToList();
+        hosted.Should().ContainSingle(h => h is SalesBackfillHostedService);
+        PrivateField<SalesBackfillService>(hosted.OfType<SalesBackfillHostedService>().Single(), "_service")
+            .Should().BeSameAs(backfill);
+    }
+
+    [Fact]
     public void Kabugun_istege_bagli_senkron_parametreleri_DIda_kayitli()
     {
         // Kabuk ViewModel'i kurulmadan (22 servis, zamanlayıcılar) türleriyle sınanır: kayıt eksikse

@@ -40,6 +40,11 @@ namespace OrderDeck.Tests.Sync;
 /// (<see cref="Session"/>); <see cref="WithheldReleases"/> geri alma penceresini, <see cref="ForceEnd"/> başka
 /// bilgisayarın force-end'ini, <see cref="SetSessionOwner"/> başka kopyanın oturumunu, <see cref="SessionsResponse"/>
 /// S1 öncesi sunucuyu taklit eder.</para>
+///
+/// <para><b>Geri doldurma</b> (W1-09): <c>sales/backfill</c> (<see cref="HandleBackfill"/>) yalnız boşu doldurur,
+/// bildirimsiz ekler (<see cref="BackfillInserted"/>), mevcut siparişte birim ayrışmasını <c>diverged</c> ile döner;
+/// <see cref="ForeignSessions"/> ve <see cref="ForeignOrders"/> başka lisansın Id'lerini, <see cref="SeedSession"/>,
+/// <see cref="SeedOrder"/> ve <see cref="SeedShipment"/> v1 döneminden kalan sunucu satırlarını kurar.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
 {
@@ -48,6 +53,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     public const string SessionsSync = "sessions/sync";
     public const string OrdersSync = "orders/sync";
     public const string ShipmentsSync = "shipments/sync";
+
+    /// <summary><c>sales/backfill</c>'in uç adı: <see cref="EnqueueStatus"/> ve <see cref="EnqueueProblem"/> için.</summary>
+    public const string Backfill = "backfill";
+
+    /// <summary><c>sales/backfill</c>: <see cref="Hold"/>, <see cref="DuringPush"/> ve <see cref="BackfillCalls"/> için.</summary>
+    public const string SalesBackfill = "sales/backfill";
 
     /// <summary>Sunucunun <c>orders/sync</c> parti tavanı ve <c>Orders.PrintBatchId</c> uzunluğu.</summary>
     private const int MaxPushBatch = 200;
@@ -180,6 +191,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             status == 204 ? FakeHttpMessageHandler.Empty(204) : FakeHttpMessageHandler.Problem(status, "fake-fault"));
     }
 
+    /// <summary>Sıradaki yanıt başlıklı problem+json (ör. 400 <c>unknown-session</c>).</summary>
+    public void EnqueueProblem(string endpoint, int status, string title)
+    {
+        lock (_gate) Script(endpoint).Enqueue(() => FakeHttpMessageHandler.Problem(status, title));
+    }
+
     /// <summary>HttpClient zaman aşımı: iptal edilmemiş belirteçle <see cref="TaskCanceledException"/>.</summary>
     public void EnqueueTimeout(string endpoint)
     {
@@ -253,6 +270,17 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     lock (_gate) _states.Add(new StateCall(licenseId, query));
                     if (scripted is not null) return scripted();
                     return HandleState(licenseId, query);
+                }
+                case Backfill when req.Method == HttpMethod.Post:
+                {
+                    var raw = await req.Content!.ReadAsStringAsync(ct);
+                    lock (_gate) _backfillCalls.Add(new PushCall(SalesBackfill, licenseId, raw));
+                    PushHold? hold;
+                    lock (_gate) _holds.TryGetValue(SalesBackfill, out hold);
+                    if (hold is not null) await hold.WaitAsync(ct);
+                    if (scripted is not null) return scripted();
+                    DuringPush?.Invoke(SalesBackfill);
+                    return HandleBackfill(licenseId, raw);
                 }
             }
 
@@ -636,6 +664,230 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             : JsonSerializer.Serialize(rows.Select(r => r.ToV1()).ToList(), Web));
     }
 
+    // ── geri doldurma (W1-09) ──────────────────────────────────────────────
+
+    /// <summary><c>sales/backfill</c> istekleri (geçersizler ve kasıtlı arızalar dahil).</summary>
+    public IReadOnlyList<PushCall> BackfillCalls { get { lock (_gate) return _backfillCalls.ToList(); } }
+    private readonly List<PushCall> _backfillCalls = new();
+
+    /// <summary>Sunucuda başka bir lisansa ait oturum Id'leri (§4.3 <c>foreign-license</c>).</summary>
+    public ConcurrentDictionary<Guid, byte> ForeignSessions { get; } = new();
+
+    /// <summary>Sunucuda başka bir lisansa ait sipariş Id'leri.</summary>
+    public ConcurrentDictionary<Guid, byte> ForeignOrders { get; } = new();
+
+    /// <summary>Geri doldurmanın (bildirimsiz) eklediği siparişler.</summary>
+    public IReadOnlyCollection<Guid> BackfillInserted { get { lock (_gate) return _backfillInserted.ToList(); } }
+    private readonly HashSet<Guid> _backfillInserted = new();
+
+    /// <summary>Sunucuya önceden var olan bir oturum koyar (ör. v1 döneminde gönderilmiş, sahipsiz).</summary>
+    public void SeedSession(Guid id, DateTimeOffset startedAt, DateTimeOffset? endedAt, Guid? owner = null,
+        DateTimeOffset? releasedAt = null, string? title = null, string platforms = "tiktok")
+    {
+        lock (_gate)
+            _serverSessions[id] = new ServerSession
+            {
+                Id = id, Title = title, StartedAt = startedAt, EndedAt = endedAt, Platforms = platforms,
+                OwnerReplicaId = owner, ReleasedAt = releasedAt,
+            };
+    }
+
+    /// <summary>Sunucuya önceden var olan bir sipariş koyar.</summary>
+    public void SeedOrder(OrderBody row, int version = 0, Guid? origin = null)
+    {
+        lock (_gate) _orders[row.Id] = new ServerOrder(row with { BaseVersion = null }, version, origin, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Sunucuya önceden var olan bir kargo dosyası koyar.</summary>
+    public void SeedShipment(ShipmentBody row, Guid? origin = null)
+    {
+        lock (_gate) _shipments[row.Id] = new ServerShipment(row, 0, origin, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// <c>sales/backfill</c> — <c>LicensesSalesController.Backfill</c> ve <c>OrderBackfillRule</c>'un aynası (mod Off,
+    /// damga yok): yalnız v2; listede en çok 200; hiçbir lisansta olmayan oturuma bağlı sipariş partinin tamamını 400
+    /// <c>unknown-session</c> ile düşürür (yazımdan önce). Oturum: yoksa eklenir (sahip çağıran), sahipsizse çağıran
+    /// sahip olur, sahibin boş <c>EndedAt</c>'i ve makine adı dolar, devir yalnız sahibin <c>Release = true</c>'su ile
+    /// (<see cref="WithheldReleases"/> hariç); başka kopyanın oturumuna dokunulmaz. Sipariş: yoksa bildirimsiz eklenir;
+    /// varsa yalnız boş yeni alanlar dolar, birimler karşılaştırılır — fark <c>diverged</c> döner, yerel kazanmak için
+    /// kopya hello'yla doğmuş, geri yüklenmemiş, klonsuz olmalı ve mod Off; sunucuda basılmış satırın baskı farkı
+    /// kilitlidir (K3). Bağ yalnız boşsa yazılır, dosyanın boş kaynağı çağıranla dolar. Başka lisansın Id'si satır
+    /// başına <c>foreign-license</c>. Satır değiştiyse sürüm bir kez artar.
+    /// </summary>
+    private HttpResponseMessage HandleBackfill(Guid licenseId, string raw)
+    {
+        var body = JsonSerializer.Deserialize<BackfillBody>(raw, Web);
+        if (body is null) return Invalid("backfill gövdesi yok");
+        if (!TryReadEnvelope(body.ReplicaId, body.Protocol, body.SeenMode, out var envelope, out var error))
+            return Invalid(error!);
+        if (envelope is null) return Invalid("backfill v2 isteğidir.");
+        var sessionItems = body.Sessions ?? new List<SessionBody>();
+        var orderItems = body.Orders ?? new List<OrderBody>();
+        var links = body.Shipments ?? new List<BackfillLinkBody>();
+        if (sessionItems.Count > MaxPushBatch || orderItems.Count > MaxPushBatch || links.Count > MaxPushBatch)
+            return Invalid("batch-too-large");
+        if (sessionItems.FirstOrDefault(s => s.MachineName is { Length: > MaxNameLength } || s.UnsentLabelCount < 0)
+            is { } invalid)
+            return Invalid($"invalid-session: {invalid.Id}");
+        if (orderItems.FirstOrDefault(o => o.PrintBatchId is { Length: > PrintBatchIdMaxLength }) is { } tooLong)
+            return Invalid($"invalid-order: printBatchId {tooLong.Id}");
+
+        var now = DateTimeOffset.UtcNow;
+        var caller = envelope.ReplicaId;
+        var sessions = sessionItems.GroupBy(s => s.Id).Select(g => g.Last()).ToList();
+        var orders = orderItems.GroupBy(o => o.Id).Select(g => g.Last()).ToList();
+        var sessionResults = new List<BackfillSessionResultBody>();
+        var orderResults = new List<BackfillOrderResultBody>();
+        var diverged = new List<BackfillDivergedBody>();
+        lock (_gate)
+        {
+            var before = _replicas.TryGetValue((licenseId, caller), out var row) ? row.Clone() : null;
+            var requestSessionIds = sessions.Select(s => s.Id).ToHashSet();
+            if (orders.Any(o => o.SessionId is { } sid && !_serverSessions.ContainsKey(sid)
+                    && !requestSessionIds.Contains(sid) && !ForeignSessions.ContainsKey(sid)))
+                return FakeHttpMessageHandler.Problem(400, "unknown-session", "Pakette bu lisansa ait olmayan SessionId var.");
+            Touch(licenseId, caller, envelope.SeenMode);
+
+            foreach (var item in sessions)
+            {
+                if (ForeignSessions.ContainsKey(item.Id))
+                {
+                    sessionResults.Add(new BackfillSessionResultBody(item.Id, null, null, null, "foreign-license"));
+                    continue;
+                }
+                if (!_serverSessions.TryGetValue(item.Id, out var session))
+                {
+                    session = new ServerSession
+                    {
+                        Id = item.Id, Title = item.Title, StartedAt = item.StartedAt, EndedAt = item.EndedAt,
+                        Platforms = item.Platforms, Notes = item.Notes, OwnerReplicaId = caller,
+                        OwnerMachineName = item.MachineName,
+                    };
+                    _serverSessions[item.Id] = session;
+                }
+                else
+                {
+                    session.OwnerReplicaId ??= caller;
+                    if (session.OwnerReplicaId == caller)
+                    {
+                        session.OwnerMachineName ??= item.MachineName;
+                        session.EndedAt ??= item.EndedAt;
+                    }
+                }
+                if (session.OwnerReplicaId == caller && item.Release && session.EndedAt is not null
+                    && session.ReleasedAt is null && !WithheldReleases.ContainsKey(item.Id))
+                    session.ReleasedAt = now;
+                sessionResults.Add(new BackfillSessionResultBody(
+                    session.Id, session.OwnerReplicaId, session.EndedAt, session.ReleasedAt, null));
+            }
+
+            var localWinsAllowed = Mode == 0 && before is { PreviousReplicaId: null, HardwareFingerprintConflict: false };
+            var inserted = new HashSet<Guid>();
+            var changed = new HashSet<Guid>();
+            var statuses = new Dictionary<Guid, (string Status, string? Reason)>();
+            foreach (var item in orders)
+            {
+                var local = item with { BaseVersion = null };
+                if (_orders.TryGetValue(item.Id, out var current))
+                {
+                    var (filled, units, locked) = BackfillRule(current.Row, local);
+                    var next = current with { Row = filled };
+                    if (filled != current.Row) changed.Add(item.Id);
+                    if (next.OriginReplicaId is null)
+                    {
+                        next = next with { OriginReplicaId = caller };
+                        changed.Add(item.Id);
+                    }
+                    _orders[item.Id] = next;
+                    if (units.Count > 0) diverged.Add(new BackfillDivergedBody(item.Id, units, localWinsAllowed && !locked));
+                    statuses[item.Id] = ("unchanged", null);
+                    continue;
+                }
+                if (ForeignOrders.ContainsKey(item.Id) || (item.SessionId is { } fs && ForeignSessions.ContainsKey(fs)))
+                {
+                    statuses[item.Id] = ("rejected", "foreign-license");
+                    continue;
+                }
+                if (item.SessionId is { } sid && _serverSessions.TryGetValue(sid, out var owning)
+                    && owning.EndedAt is null && owning.OwnerReplicaId is { } owner && owner != caller)
+                {
+                    statuses[item.Id] = ("rejected", "session-owned-elsewhere");
+                    continue;
+                }
+                _orders[item.Id] = new ServerOrder(local, 0, caller, now);
+                inserted.Add(item.Id);
+                _backfillInserted.Add(item.Id);
+                statuses[item.Id] = ("inserted", null);
+            }
+
+            foreach (var link in links)
+            {
+                foreach (var labelId in (link.LabelIds ?? new List<Guid>()).Distinct())
+                {
+                    if (!_orders.TryGetValue(labelId, out var order) || statuses.GetValueOrDefault(labelId).Status == "rejected")
+                        continue;
+                    if (order.Row.ShipmentId == link.Id || order.Row.ShipmentId is not null) continue;
+                    _orders[labelId] = order with { Row = order.Row with { ShipmentId = link.Id } };
+                    if (!inserted.Contains(labelId)) changed.Add(labelId);
+                }
+                if (_shipments.TryGetValue(link.Id, out var shipment) && shipment.OriginReplicaId is null)
+                    _shipments[link.Id] = shipment with { OriginReplicaId = caller, Version = shipment.Version + 1 };
+            }
+
+            foreach (var id in changed)
+            {
+                var order = _orders[id];
+                _orders[id] = order with { Version = order.Version + 1, UpdatedAt = now };
+                if (statuses.TryGetValue(id, out var s) && s.Status == "unchanged") statuses[id] = ("filled", null);
+            }
+
+            foreach (var item in orders)
+            {
+                var (status, reason) = statuses[item.Id];
+                orderResults.Add(new BackfillOrderResultBody(
+                    item.Id, status == "rejected" ? null : _orders[item.Id].Version, status, reason));
+            }
+        }
+
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(
+            new BackfillResponseBody(sessionResults, orderResults, diverged), Web));
+    }
+
+    /// <summary><c>OrderBackfillRule.Apply</c> (damgasız): boş yeni alanları doldurur, birimleri karşılaştırır.</summary>
+    private static (OrderBody Filled, List<string> Units, bool Locked) BackfillRule(OrderBody s, OrderBody local)
+    {
+        var filled = s with
+        {
+            ParentOrderId = s.ParentOrderId ?? local.ParentOrderId,
+            ShipmentId = s.ShipmentId ?? local.ShipmentId,
+        };
+        if (s.Price == local.Price)
+            filled = filled with
+            {
+                PriceCorrectedAt = s.PriceCorrectedAt ?? local.PriceCorrectedAt,
+                PaidPrice = s.PaidPrice ?? local.PaidPrice,
+            };
+        if (s.PrintedAt is not null)
+            filled = filled with { PrintBatchId = s.PrintBatchId ?? local.PrintBatchId, PrintSeq = s.PrintSeq ?? local.PrintSeq };
+
+        var units = new List<string>();
+        if (filled.Price != local.Price || !SameSecond(filled.PriceCorrectedAt, local.PriceCorrectedAt)
+            || filled.PaidPrice != local.PaidPrice)
+            units.Add("price");
+        if (!SameSecond(filled.CancelledAt, local.CancelledAt) || filled.CancelReason != local.CancelReason)
+            units.Add("cancel");
+        if (filled.IsTentativeBackup != local.IsTentativeBackup) units.Add("backup");
+        if (!SameSecond(filled.PrintedAt, local.PrintedAt) || filled.PrintBatchId != local.PrintBatchId
+            || filled.PrintSeq != local.PrintSeq)
+            units.Add("print");
+        var locked = units.Contains("print") && s.PrintedAt is not null;
+        return (filled, units, locked);
+    }
+
+    private static bool SameSecond(DateTimeOffset? a, DateTimeOffset? b)
+        => a is null || b is null ? a is null && b is null : a.Value.ToUnixTimeSeconds() == b.Value.ToUnixTimeSeconds();
+
     /// <summary><c>SalesEnvelope.TryRead</c>'in tamamı: protokolsüz istek (zarf alanı yok) v1 — <c>envelope</c> boş;
     /// yarım zarf 400.</summary>
     private static bool TryReadEnvelope(Guid? replicaId, int? protocol, int? seenMode,
@@ -782,7 +1034,31 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         public OrdersBody Orders => JsonSerializer.Deserialize<OrdersBody>(RawJson, Web)!;
         public SessionsBody Sessions => JsonSerializer.Deserialize<SessionsBody>(RawJson, Web)!;
         public ShipmentsBody Shipments => JsonSerializer.Deserialize<ShipmentsBody>(RawJson, Web)!;
+        public BackfillBody Backfill => JsonSerializer.Deserialize<BackfillBody>(RawJson, Web)!;
     }
+
+    /// <summary><c>LicensesSalesController.BackfillRequest</c>.</summary>
+    internal sealed record BackfillBody(
+        List<SessionBody>? Sessions, List<OrderBody>? Orders, List<BackfillLinkBody>? Shipments, bool CatalogAware,
+        Guid? ReplicaId, int? Protocol, int? SeenMode);
+
+    /// <summary><c>LicensesSalesController.BackfillShipmentDto</c>.</summary>
+    internal sealed record BackfillLinkBody(Guid Id, List<Guid>? LabelIds);
+
+    /// <summary><c>LicensesSalesController.BackfillSessionResultDto</c>.</summary>
+    internal sealed record BackfillSessionResultBody(
+        Guid Id, Guid? OwnerReplicaId, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt, string? Reason);
+
+    /// <summary><c>LicensesSalesController.BackfillOrderResultDto</c>.</summary>
+    internal sealed record BackfillOrderResultBody(Guid Id, int? Version, string Status, string? Reason);
+
+    /// <summary><c>LicensesSalesController.BackfillDivergedDto</c>.</summary>
+    internal sealed record BackfillDivergedBody(Guid Id, IReadOnlyList<string> Units, bool LocalWins);
+
+    /// <summary><c>LicensesSalesController.BackfillResponse</c>.</summary>
+    internal sealed record BackfillResponseBody(
+        IReadOnlyList<BackfillSessionResultBody> Sessions, IReadOnlyList<BackfillOrderResultBody> Orders,
+        IReadOnlyList<BackfillDivergedBody> Diverged);
 
     /// <summary><see cref="Hold"/>'un tuttuğu uç: <see cref="Arrived"/> ilk istek geldiğinde tamamlanır.</summary>
     internal sealed class PushHold

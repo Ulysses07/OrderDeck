@@ -764,6 +764,13 @@ Bugünkü davranışta 10:00'da iki bilgisayar da mesaj gönderirdi: PC-A 550 �
 
 Geri doldurma idempotenttir. Yarıda kesilmesi, yeniden denenmesi ya da `cursorReset` zararsızdır.
 
+**Uygulama (W1).** `SalesBackfillService`, 60 sn'de bir tur; hello bu (lisans, kopya) için başarılı olana kadar istek yok.
+- 2. adım süreç başına bir kez: oturum ve etiket kuyruğu gönderim kapısından boşaltılır, ardından bir kargo turu.
+- İmleç tek satırdır: `Seq = aşama × 10^12 + rowid` (oturum 0, etiket 1, dosya bağı 2, onay bekleniyor 3, tamamlandı 4), `LastId` imlecin kopya kimliği. Geri yüklemede kimlik dönünce imleç yeni kopya için baştan başlar; sunucu tamamlanmayı kopya başına tutar.
+- 3. adım yalnız **onaylı** (`SyncedAt` dolu) oturum ve etiketleri taşır. Bekleyen satırı olağan push zaten bütün birimleriyle götürür. Geri doldurma onu bildirimsiz ekleseydi push güncelleme dalına düşerdi; geri doldurma sürerken açılan canlı yayının "Yayın başladı" ve sipariş bildirimleri hiç çıkmazdı (§4.2, §4.3). Dosya bağlarında dosyaya bağlı bütün yerel etiketler gider.
+- Bitmiş, yerel, devri bilinmeyen oturumun devri sunucuda gerçekleşmezse (gönderilmemiş etiketi var ya da devir yazılmadı) oturum olağan kuyruğa verilir (`SyncedAt = NULL`, Revision artmaz). Kapanış gönderimi onu kuyruk boşalınca devreder (§5.2). Aksi hâlde v2 sahipli oturumu onarım işi de devretmediği için (§4.9-a) kaçmış kapanış hiç devredilmezdi.
+- 5. adımın koşulu: etiketin en son `backfill-requeued` izinden sonra satır onaylı ve o izden sonra `push-ignored`/`push-rejected` izi yok.
+
 ### 8.3 Mod kapısı (mühendislik kararı M1)
 
 Koşullar §4.10'da. Kapı neden dinamik değil? Dinamik kapı her istekte "bütün PC'ler Ws+ mı" diye bakardı. Eski bir PC'nin tek bir kalp atışı lisansı yayın ortasında Off'a düşürürdü. O zaman devredilmiş yayınlar düzenlenemez olur, kargo yerel otoriteye geri döner ve kira kalkar; bunun güvenli bir dönüş tarafı yok. Ortak bakiye §7.2 de aynı gerekçeyle statik kapı seçti. Eski PC riskini anahtar değil, çalışma anı korumaları kapatır:

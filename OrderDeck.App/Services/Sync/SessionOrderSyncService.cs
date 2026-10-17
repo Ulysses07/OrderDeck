@@ -46,7 +46,8 @@ namespace OrderDeck.App.Services.Sync;
 ///
 /// <para><b>Gönderim kapısı</b> (§5.2): <see cref="SyncOnceAsync(CancellationToken)"/> birden çok yerden eşzamanlı çağrılır —
 /// zamanlayıcı (<see cref="SessionOrderSyncHostedService"/>), kapanıştaki "gönder ve kapat"
-/// (<see cref="SyncFlushService.ForClose"/>) ve sonraki görevlerde geri doldurma. Bütün tur tek bir
+/// (<see cref="SyncFlushService.ForClose"/>) ve geri doldurmanın boşaltma adımı (<see cref="SalesBackfillService"/>,
+/// §8.2-2; geri doldurmanın kendi partileri kapıyı tutmaz). Bütün tur tek bir
 /// <see cref="SemaphoreSlim"/> altındadır: aynı parti iki kez gitmez, onay sırası karışmaz.</para>
 ///
 /// <para><b>Ucuz tur</b> (sahip kararı Y9): yayında tur ≈5 sn'de bir koşar
@@ -373,8 +374,9 @@ public sealed class SessionOrderSyncService
     }
 
     /// <summary>v2 öğesi (§4.1): makine adı her öğede; devir adayında <c>Release</c> (kuyruk boşsa) ya da
-    /// <c>UnsentLabelCount</c>, öbür oturumlarda <c>Release = false</c>. v1'de üçü de yazılmaz.</summary>
-    private static SyncSessionItem ToSyncSessionItem(
+    /// <c>UnsentLabelCount</c>, öbür oturumlarda <c>Release = false</c>. v1'de üçü de yazılmaz. Geri doldurma
+    /// (<see cref="SalesBackfillService"/>) aynı öğeyi kurar.</summary>
+    internal static SyncSessionItem ToSyncSessionItem(
         StreamSession s, bool v2, string? machineName, IReadOnlyDictionary<string, int> unsent)
     {
         var count = unsent.TryGetValue(s.Id, out var n) ? n : (int?)null;

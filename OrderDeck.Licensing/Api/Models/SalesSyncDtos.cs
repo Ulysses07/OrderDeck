@@ -126,3 +126,55 @@ public sealed record SalesShipmentItem(
     DateTimeOffset? CommandedAt,
     Guid? OriginReplicaId,
     long ChangeSeq);
+
+// Geri doldurma (spec 2026-10-13 §4.3, §8.2-3). Sunucudaki karşılıkları LicensesSalesController.BackfillRequest,
+// BackfillShipmentDto, BackfillResponse, BackfillSessionResultDto, BackfillOrderResultDto ve BackfillDivergedDto.
+
+/// <summary>Bir kargo dosyası ve bu kopyada ona bağlı etiketler (§4.3 dosya bağları).</summary>
+public sealed record SalesBackfillShipment(Guid Id, IReadOnlyList<Guid> LabelIds);
+
+/// <summary>
+/// <c>POST sales/backfill</c> gövdesi: her listede en çok 200 öğe. Oturum ve sipariş öğeleri <c>sessions/sync</c> ve
+/// <c>orders/sync</c> v2 öğeleriyle aynı biçimde (oturumda <c>Release</c>, <c>MachineName</c>,
+/// <c>UnsentLabelCount</c>; siparişte <c>baseVersion</c> okunmaz). Geri doldurma yalnız v2 konuşur: zarf
+/// (<paramref name="ReplicaId"/>, <paramref name="Protocol"/> = 2, <paramref name="SeenMode"/>) her zaman dolu.
+/// </summary>
+/// <param name="CatalogAware">orders/sync ile aynı: stok defteri yalnız eklemede.</param>
+public sealed record SalesBackfillRequest(
+    IReadOnlyList<SyncSessionItem> Sessions,
+    IReadOnlyList<SyncOrderItem> Orders,
+    IReadOnlyList<SalesBackfillShipment> Shipments,
+    bool CatalogAware,
+    Guid ReplicaId,
+    int Protocol,
+    int SeenMode);
+
+/// <summary>Oturumun yazımdan sonraki sahiplik ve devir hâli.</summary>
+/// <param name="ReleasedAt">Devir anı (bu çağrıda ya da önceden). Mod Off'ta istemci yalnız bunu saklar (§5.2).</param>
+/// <param name="Reason">Doluysa öğe reddedildi, hiçbir şey yazılmadı (<see cref="SalesBackfillOrderResult.ReasonForeignLicense"/>).</param>
+public sealed record SalesBackfillSessionResult(
+    Guid Id, Guid? OwnerReplicaId, DateTimeOffset? EndedAt, DateTimeOffset? ReleasedAt, string? Reason);
+
+/// <param name="Version">Satırın sürümü (sonraki push'un <c>baseVersion</c>'ı); reddedilen eklemede boş.</param>
+/// <param name="Status"><c>inserted</c>, <c>filled</c>, <c>unchanged</c> ya da <see cref="StatusRejected"/>.</param>
+/// <param name="Reason"><see cref="StatusRejected"/>'ın nedeni: <see cref="ReasonForeignLicense"/> ya da
+/// <c>session-owned-elsewhere</c>.</param>
+public sealed record SalesBackfillOrderResult(Guid Id, int? Version, string Status, string? Reason)
+{
+    public const string StatusRejected = "rejected";
+
+    /// <summary>Id'si (ya da oturumu) sunucuda başka bir lisansın: lisans değiştiren PC'nin eski geçmişi. Son durum —
+    /// yeniden gönderilmez (§4.3).</summary>
+    public const string ReasonForeignLicense = "foreign-license";
+}
+
+/// <summary>Mevcut siparişte yerel değeri sunucudakinden farklı birimler (§4.3); sunucu yazmadı.</summary>
+/// <param name="Units"><c>price</c>, <c>cancel</c>, <c>backup</c>, <c>print</c>.</param>
+/// <param name="LocalWins">Yerel değer doğru: satır olağan kuyruğa yeniden alınır (§8.2-4). Değilse yalnız iz.</param>
+public sealed record SalesBackfillDiverged(Guid Id, IReadOnlyList<string> Units, bool LocalWins);
+
+/// <summary><c>sales/backfill</c> yanıtı.</summary>
+public sealed record SalesBackfillResponse(
+    IReadOnlyList<SalesBackfillSessionResult>? Sessions,
+    IReadOnlyList<SalesBackfillOrderResult>? Orders,
+    IReadOnlyList<SalesBackfillDiverged>? Diverged);

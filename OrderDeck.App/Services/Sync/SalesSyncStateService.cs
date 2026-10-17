@@ -138,7 +138,29 @@ public sealed class SalesSyncStateService
         return helloOk && stateOk ? SalesStateTourOutcome.Ok : SalesStateTourOutcome.Failed;
     }
 
-    private async Task<bool> HelloAsync(string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct)
+    /// <summary>
+    /// Geri doldurmanın tamamlandığını bildirir (spec 2026-10-13 §8.2-5; W1-09): <c>hello {backfillCompleted: true}</c>,
+    /// gövdenin geri kalanı turun hello'suyla aynı. Turla aynı kapıdan geçer. Geçerli lisans ya da kopya kimliği
+    /// geri doldurmanın yapıldığı (lisans, kopya) değilse istek gitmez: bayrak yanlış kopyaya yazılmasın.
+    /// </summary>
+    /// <returns>2xx alındı mı; değilse çağıran sonraki turda yeniden dener.</returns>
+    public async Task<bool> ReportBackfillCompletedAsync(
+        string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct)
+    {
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_licenseProvider.CurrentLicenseKey != licenseKey || _envelope.ReplicaId != replicaId) return false;
+            return await HelloAsync(licenseKey, licenseId, replicaId, ct, backfillCompleted: true).ConfigureAwait(false);
+        }
+        finally
+        {
+            _tourGate.Release();
+        }
+    }
+
+    private async Task<bool> HelloAsync(
+        string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct, bool backfillCompleted = false)
     {
         Guid? previous;
         SalesHelloRequest request;
@@ -165,7 +187,8 @@ public sealed class SalesSyncStateService
                 SeenMode: _envelope.SeenMode,
                 ReportedShipping: shipping.IsEnabled
                     ? new ReportedShippingDto(shipping.FreeShippingThreshold, shipping.ShippingFee)
-                    : new ReportedShippingDto(null, null));
+                    : new ReportedShippingDto(null, null),
+                BackfillCompleted: backfillCompleted ? true : null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -207,8 +230,9 @@ public sealed class SalesSyncStateService
         else
         {
             _log.LogInformation(
-                "sales/hello gönderildi (replica={ReplicaId}, featureLevel={FeatureLevel}, seenMode={SeenMode})",
-                replicaId, request.FeatureLevel, request.SeenMode);
+                "sales/hello gönderildi (replica={ReplicaId}, featureLevel={FeatureLevel}, seenMode={SeenMode}, "
+              + "backfillCompleted={BackfillCompleted})",
+                replicaId, request.FeatureLevel, request.SeenMode, backfillCompleted);
         }
         return true;
     }

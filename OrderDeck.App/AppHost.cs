@@ -561,6 +561,25 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<ILogger<Services.Sync.SalesSyncStateService>>()));
         services.AddHostedService<Services.Sync.SalesSyncStateHostedService>();
 
+        // W1-09 (§8.2): Ws'nin ilk açılışındaki geri doldurma ve birim ayrışması onarımı. Zarf, devir kapısı,
+        // gönderim ve hello AYNI örnekler: boşaltma gönderim kapısından geçer, Release kararı kapanış gönderimiyle
+        // aynı kilitleri görür, tamamlanma hello'su turla aynı kapıdan. 60 sn'de bir; turda en çok 10 istek.
+        services.AddSingleton<SalesBackfillRepository>();
+        services.AddSingleton<Services.Sync.SalesBackfillService>(sp =>
+            new Services.Sync.SalesBackfillService(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncStateService>(),
+                sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
+                sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+                sp.GetRequiredService<SalesBackfillRepository>(),
+                sp.GetRequiredService<SyncCursorRepository>(),
+                sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<IClock>(),
+                sp.GetRequiredService<ILogger<Services.Sync.SalesBackfillService>>()));
+        services.AddHostedService<Services.Sync.SalesBackfillHostedService>();
+
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save
         // tetiklediğinde server'a PUT'lar. Periyodik değil, on-demand.
         services.AddSingleton<Services.Sync.WhatsAppTemplateSyncService>();

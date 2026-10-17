@@ -33,6 +33,19 @@ public static class SalesConflictLog
     public static string PushReason(string? reason, IEnumerable<string> units)
         => $"{(string.IsNullOrEmpty(reason) ? "?" : reason)}; units={string.Join(",", units)}";
 
+    /// <summary>Geri doldurmada birim ayrışması, yerel kazanır (§4.3, §8.2-4; W1-09): satır olağan kuyruğa yeniden
+    /// alındı ve v2 push'uyla gidecek. Geri doldurmanın tamamlanması (<c>backfillCompleted</c>, §8.2-5) etiketin bu
+    /// satırdan sonraki ilk gönderiminin <c>applied</c> olmasını bekler.</summary>
+    public const string BackfillRequeued = "backfill-requeued";
+
+    /// <summary>Geri doldurmada birim ayrışması, sunucu kazanır (geri yüklenmiş ya da kopyalanmış veritabanı,
+    /// damgalı birim; §4.3, §8.7): yalnız iz — satır kuyruğa alınmaz, sunucunun değeri mod On'un ilk turunda
+    /// iner.</summary>
+    public const string BackfillDiverged = "backfill-diverged";
+
+    /// <summary>Geri doldurma kaydının <c>Reason</c>'ı: ayrışan birimler, <c>units={birim,…}</c>.</summary>
+    public static string UnitsReason(IEnumerable<string> units) => $"units={string.Join(",", units)}";
+
     /// <summary>Çağıranın işleminde tek satır ekler.</summary>
     internal static void Insert(
         IDbConnection connection, IDbTransaction? transaction, long at, string? labelId, string kind, string? reason)
