@@ -162,6 +162,10 @@ public sealed class CustomerSyncDiTests
         host.Services.GetRequiredService<SalesSyncStateRepository>().Should().BeSameAs(state);
         PrivateField<SalesSyncEnvelope>(service, "_envelope").Should().BeSameAs(envelope,
             "hello'nun başarısını zarf tutar; gönderim servisleri IsReadyForPush'u AYNI örnekten okumalı");
+        PrivateField<SalesSyncEnvelope>(host.Services.GetRequiredService<SessionOrderSyncService>(), "_envelope")
+            .Should().BeSameAs(envelope, "W1-06: etiket gönderimi zarfı ve hello kararını aynı örnekten okur");
+        PrivateField<SalesSyncEnvelope>(host.Services.GetRequiredService<ShipmentSyncService>(), "_envelope")
+            .Should().BeSameAs(envelope, "W1-06: kargo gönderimi de");
         PrivateField<ReplicaIdentityRepository>(service, "_identity").Should().BeSameAs(identity);
         PrivateField<SalesSyncStateRepository>(service, "_state").Should().BeSameAs(state);
         PrivateField<ICurrentLicenseProvider>(envelope, "_license").Should().BeSameAs(

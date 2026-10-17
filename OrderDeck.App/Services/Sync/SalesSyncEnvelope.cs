@@ -37,6 +37,7 @@ public sealed class SalesSyncEnvelope
     private readonly Lazy<string?> _fingerprint;
     private readonly ConcurrentDictionary<(string LicenseKey, Guid ReplicaId), byte> _helloSucceeded = new();
     private int _replicaProblemLogged;
+    private int _legacyFallbackLogged;
 
     public SalesSyncEnvelope(
         ReplicaIdentityRepository identity,
@@ -95,17 +96,36 @@ public sealed class SalesSyncEnvelope
 
     /// <summary>
     /// v2 gönderimi yapılabilir mi: kimlik geçerli ve ya bekleyen önceki kimlik yok ya da bu (lisans, kopya) için
-    /// hello başarıyla gitti. W1-06..09'un her v2 gönderim turu bu false iken turu atlar.
+    /// hello başarıyla gitti. Gönderim turları kararı <see cref="ForPush"/>'tan alır.
     /// </summary>
-    public bool IsReadyForPush
+    public bool IsReadyForPush => ReplicaId is { } replica && IsReadyFor(replica);
+
+    /// <summary>
+    /// Bir gönderim turunun zarf kararı (spec 2026-10-13 §5.2, §8.7; W1-06): <c>null</c> = turu atla (geri yüklemeden
+    /// sonra bu (lisans, kopya) için hello henüz başarılı değil, <see cref="IsReadyForPush"/>). Kimlik eksik ya da
+    /// bozuksa gönderim DURMAZ: <see cref="SalesPushEnvelope.Legacy"/> döner — çağıran zarfsız (v1) gövde gönderir,
+    /// sunucu onu bugünkü gibi yargılar. Bu bir hatadır ve seri başına bir kez Error düşer (değer düzelip yeniden
+    /// bozulursa yeniden).
+    /// </summary>
+    public SalesPushEnvelope? ForPush()
     {
-        get
+        if (ReplicaId is not { } replica)
         {
-            if (ReplicaId is not { } replica) return false;
-            if (_identity.GetPendingPreviousReplicaId() is null) return true;
-            var key = _license.CurrentLicenseKey;
-            return !string.IsNullOrWhiteSpace(key) && HasHelloSucceeded(key, replica);
+            if (Interlocked.Exchange(ref _legacyFallbackLogged, 1) == 0)
+                _log.LogError(
+                    "Yerel kopya kimliği (_meta.ReplicaId) eksik ya da bozuk; etiket ve kargo gönderimi v2 zarfı olmadan "
+                  + "(v1) sürüyor — sunucu sahipliği ve görülen kipi bu bilgisayardan öğrenemez");
+            return SalesPushEnvelope.Legacy;
         }
+        Interlocked.Exchange(ref _legacyFallbackLogged, 0);
+        return IsReadyFor(replica) ? new SalesPushEnvelope(replica, SeenMode) : null;
+    }
+
+    private bool IsReadyFor(Guid replica)
+    {
+        if (_identity.GetPendingPreviousReplicaId() is null) return true;
+        var key = _license.CurrentLicenseKey;
+        return !string.IsNullOrWhiteSpace(key) && HasHelloSucceeded(key, replica);
     }
 
     public bool HasHelloSucceeded(string licenseKey, Guid replicaId) =>
@@ -116,4 +136,20 @@ public sealed class SalesSyncEnvelope
 
     private static string? Truncate(string? value) =>
         value is { Length: > MaxFieldLength } ? value[..MaxFieldLength] : value;
+}
+
+/// <summary>Bir gönderim isteğinin zarfı (<see cref="SalesSyncEnvelope.ForPush"/>).</summary>
+/// <param name="ReplicaId">Boşsa zarfsız (v1) gövde: kimlik eksik ya da bozuk.</param>
+/// <param name="SeenMode">Görülen kip (§2); v1'de anlamsız.</param>
+public readonly record struct SalesPushEnvelope(Guid? ReplicaId, int SeenMode)
+{
+    public static readonly SalesPushEnvelope Legacy = new(null, 0);
+
+    public bool IsV2 => ReplicaId is not null;
+
+    /// <summary>İstekteki <c>protocol</c>: v2'de 2, v1'de yazılmaz.</summary>
+    public int? Protocol => IsV2 ? SalesSyncEnvelope.Protocol : null;
+
+    /// <summary>İstekteki <c>seenMode</c>: v2'de değer, v1'de yazılmaz.</summary>
+    public int? SeenModeField => IsV2 ? SeenMode : null;
 }

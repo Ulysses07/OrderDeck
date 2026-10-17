@@ -29,6 +29,7 @@ public sealed class ShipmentSyncService
     private readonly SettingsStore _settingsStore;
     private readonly AppSettings _settings;
     private readonly ICurrentLicenseProvider _licenseProvider;
+    private readonly SalesSyncEnvelope _envelope;
     private readonly IClock _clock;
     private readonly ILogger<ShipmentSyncService> _log;
     private readonly SyncStatusTracker? _tracker;
@@ -44,6 +45,7 @@ public sealed class ShipmentSyncService
         SettingsStore settingsStore,
         AppSettings settings,
         ICurrentLicenseProvider licenseProvider,
+        SalesSyncEnvelope envelope,
         IClock clock,
         ILogger<ShipmentSyncService> log,
         SyncStatusTracker? statusTracker = null)
@@ -53,6 +55,7 @@ public sealed class ShipmentSyncService
         _settingsStore = settingsStore;
         _settings = settings;
         _licenseProvider = licenseProvider;
+        _envelope = envelope;
         _clock = clock;
         _log = log;
         _tracker = statusTracker;
@@ -93,6 +96,15 @@ public sealed class ShipmentSyncService
             return 0;
         }
 
+        // v2 zarfı (spec 2026-10-13 §4.0, §7.1): sunucu yeni dosyanın OriginReplicaId'sini bu kopya yazar — mod Off'ta
+        // dosyanın tek yazıcısı. null: geri yüklemeden sonra hello bekleniyor, gönderim yok (§8.7). Kimlik bozuksa
+        // zarfsız (v1) gövde gider; gönderim durmaz.
+        if (_envelope.ForPush() is not { } envelope)
+        {
+            _log.LogDebug("Shipment outbox push skipped — waiting for sales/hello after restore");
+            return 0;
+        }
+
         var items = batch.Select(s => new SyncShipmentItem(
             Id: Guid.Parse(s.Id),
             CustomerId: s.CustomerId,
@@ -105,7 +117,10 @@ public sealed class ShipmentSyncService
 
         try
         {
-            _ = await _api.SyncShipmentsAsync(licenseId, new SyncShipmentsRequest(items), ct);
+            // Yanıt (v2'de dosya başına sunucunun güncel satırı) okunur ama W1'de uygulanmaz: mod Off'ta dosyanın
+            // tek yazıcısı bu kopya; yerel aynayı sunucudan tazelemek yalnız On → Off turunda gerekir (W2, §8.5).
+            _ = await _api.SyncShipmentsAsync(licenseId,
+                new SyncShipmentsRequest(items, envelope.ReplicaId, envelope.Protocol, envelope.SeenModeField), ct);
         }
         catch (LicenseApiException ex)
         {

@@ -279,11 +279,12 @@ public sealed class SyncFlushServiceTests
         var flush = SyncFlushService.ForClose(
             new WpfCustomerProjectionSyncService(api, new CustomerSyncRepository(db), new SyncCursorRepository(db),
                 license, clock, NullLogger<WpfCustomerProjectionSyncService>.Instance),
-            new SessionOrderSyncService(api, sessions, labels, license, clock, NullLogger<SessionOrderSyncService>.Instance),
+            new SessionOrderSyncService(api, sessions, labels, license, TestSalesEnvelope.For(db, license), clock,
+                NullLogger<SessionOrderSyncService>.Instance),
             new PaymentSyncService(api, new PaymentRepository(db), new SyncCursorRepository(db), license, clock,
                 NullLogger<PaymentSyncService>.Instance),
             new ShipmentSyncService(api, new ShipmentRepository(db), new SettingsStore(settingsPath), new AppSettings(),
-                license, clock, NullLogger<ShipmentSyncService>.Instance));
+                license, TestSalesEnvelope.For(db, license), clock, NullLogger<ShipmentSyncService>.Instance));
 
         try
         {

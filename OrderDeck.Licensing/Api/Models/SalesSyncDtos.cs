@@ -62,3 +62,67 @@ public sealed record SalesStateDto(
     bool ScrubOrderTextOnPurge,
     int ForceEndSilenceMinutes,
     IReadOnlyList<LegacyMachineDto>? LegacyMachines);
+
+// Akış öğesi biçimi (§4.4; sunucuda Services/Sync/SalesFeedItems.cs). Gönderim uçlarının v2 yanıtındaki `current`
+// (§4.2), kargo gönderiminin v2 yanıtı (§7.1) ve W2'nin akışı aynı biçimi taşır; alan adları ve tipleri sunucudaki
+// kayıtların aynası.
+
+/// <summary>Sipariş (etiket) öğesi: sunucu satırının tamamı; birim damgaları bilgi amaçlı.</summary>
+/// <param name="CustomerId">Asıl kaydın hex'i; GUID olmayan değer ham gelir.</param>
+/// <param name="Version">Satırın sürümü: komutların beklenen sürümü ve v2 gönderiminin <c>baseVersion</c>'ı.</param>
+public sealed record SalesOrderItem(
+    Guid Id,
+    Guid? SessionId,
+    string CustomerId,
+    string Platform,
+    string Username,
+    string? DisplayName,
+    string MessageText,
+    string? Code,
+    decimal Price,
+    DateTimeOffset AddedAt,
+    DateTimeOffset? PrintedAt,
+    DateTimeOffset? CancelledAt,
+    string? CancelReason,
+    bool IsShippingFee,
+    bool IsBackupPromoted,
+    bool IsTentativeBackup,
+    Guid? ProductId,
+    Guid? ProductVariantId,
+    DateTimeOffset UpdatedAt,
+    int Version,
+    Guid? ParentOrderId,
+    Guid? ShipmentId,
+    Guid? OriginReplicaId,
+    string? PrintBatchId,
+    int? PrintSeq,
+    DateTimeOffset? PriceCorrectedAt,
+    decimal? PaidPrice,
+    DateTimeOffset? SessionReleasedAt,
+    DateTimeOffset? PriceSetAt,
+    DateTimeOffset? CancelSetAt,
+    DateTimeOffset? BackupSetAt,
+    DateTimeOffset? ShipmentSetAt,
+    DateTimeOffset? TextScrubbedAt,
+    long ChangeSeq);
+
+/// <summary>Kargo dosyası öğesi. v2 <c>shipments/sync</c> yanıtı bunun listesidir (§7.1); eski sunucunun v1 yanıtı
+/// (<see cref="SyncedShipmentDto"/>) da bu tiple okunur — v2'ye özgü alanlar o zaman varsayılan değerde kalır.</summary>
+/// <param name="Status"><c>pending</c>, <c>held</c>, <c>recipientpays</c> ya da <c>shipped</c>.</param>
+/// <param name="AmountDerivedAt">Doluysa tutar bağlı siparişlerden türetilir (DM7).</param>
+/// <param name="CommandedAt">Dosyaya sunucu komutu dokundu (§7.1).</param>
+/// <param name="OriginReplicaId">Mod Off'ta dosyanın tek yazıcısı (§3.1).</param>
+public sealed record SalesShipmentItem(
+    Guid Id,
+    string CustomerId,
+    string Status,
+    decimal CumulativeAmount,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? HeldAt,
+    DateTimeOffset? ShippedAt,
+    DateTimeOffset UpdatedAt,
+    int Version,
+    DateTimeOffset? AmountDerivedAt,
+    DateTimeOffset? CommandedAt,
+    Guid? OriginReplicaId,
+    long ChangeSeq);

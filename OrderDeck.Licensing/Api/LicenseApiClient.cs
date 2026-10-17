@@ -162,11 +162,17 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     // ─── Shipment sync (PR-D, 2026-05-13) ─────────────────────────────────
 
     /// <summary>WPF outbox push: Shipment batch upsert by Id. WPF authoritative
-    /// (mobile mutation yapmıyor). Max 200 item/batch.</summary>
-    public Task<List<SyncedShipmentDto>> SyncShipmentsAsync(
+    /// (mobile mutation yapmıyor). Max 200 item/batch.
+    /// <para>Yanıt (spec 2026-10-13 §7.1): v2 zarflı istekte dosya başına sunucunun güncel satırı (akış öğesi);
+    /// zarfsız istekte ve eski sunucuda bugünkü <see cref="SyncedShipmentDto"/> listesi — ikisi de
+    /// <see cref="SalesShipmentItem"/> olarak okunur (v1'de v2'ye özgü alanlar varsayılan değerde).</para></summary>
+    public async Task<List<SalesShipmentItem>> SyncShipmentsAsync(
         Guid licenseId, SyncShipmentsRequest req, CancellationToken ct = default)
-        => PostJsonExpectingJsonAsync<SyncShipmentsRequest, List<SyncedShipmentDto>>(
+    {
+        var rows = await PostJsonExpectingJsonOrUnknownAsync<SyncShipmentsRequest, List<SalesShipmentItem?>>(
             $"/api/v1/licenses/{licenseId}/shipments/sync", req, ct);
+        return rows?.OfType<SalesShipmentItem>().ToList() ?? new();
+    }
 
     /// <summary>Reverse sync (nadiren kullanılır — WPF authoritative). İmleç
     /// bileşik; gerekçe <see cref="GetPaymentsSinceAsync"/>'de.</summary>
@@ -190,6 +196,20 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         Guid licenseId, SyncOrdersRequest req, CancellationToken ct = default)
         => PostJsonExpectingJsonAsync<SyncOrdersRequest, List<SyncedOrderDto>>(
             $"/api/v1/licenses/{licenseId}/orders/sync", req, ct);
+
+    /// <summary>
+    /// <c>orders/sync</c>, öğe başına yanıtla (spec 2026-10-13 §4.2). <c>Format = 2</c> ve v2 zarflı istekte sunucu
+    /// her öğe için <see cref="SyncedOrderV2Dto"/> döner. Zarfsız istekte ya da eski sunucuda yanıt bugünkü
+    /// <see cref="SyncedOrderDto"/> listesidir; aynı tiple okunur ve öğeleri <see cref="SyncedOrderV2Dto.IsLegacy"/>
+    /// olur. Çözümlenemeyen gövde <see cref="LicenseApiUnknownException"/>'a çevrilir.
+    /// </summary>
+    public async Task<List<SyncedOrderV2Dto>> SyncOrdersV2Async(
+        Guid licenseId, SyncOrdersRequest req, CancellationToken ct = default)
+    {
+        var rows = await PostJsonExpectingJsonOrUnknownAsync<SyncOrdersRequest, List<SyncedOrderV2Dto?>>(
+            $"/api/v1/licenses/{licenseId}/orders/sync", req, ct);
+        return rows?.OfType<SyncedOrderV2Dto>().ToList() ?? new();
+    }
 
     // ─── Satış senkronu: kopya uçları (spec 2026-10-13 §4.5) ─────────────
 
@@ -622,6 +642,21 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             : Array.IndexOf(successCodes, (int)resp.StatusCode) >= 0;
         if (!ok) await ThrowMappedAsync(resp);
         return (await DeserializeAsync<TResp>(resp, ct))!;
+    }
+
+    /// <summary><see cref="PostJsonExpectingJsonAsync{TReq,TResp}"/> gibi; ek olarak çözümlenemeyen başarılı gövde
+    /// (kesik yanıt, JSON content-type'lı HTML) ham <see cref="JsonException"/> yerine
+    /// <see cref="LicenseApiUnknownException"/> olur — <see cref="GetExpectingJsonAsync{TResp}"/>'daki kural.
+    /// Gönderim servisleri yalnız <see cref="LicenseApiException"/>'ı gönderim hatası sayar.</summary>
+    private async Task<TResp?> PostJsonExpectingJsonOrUnknownAsync<TReq, TResp>(string path, TReq body, CancellationToken ct)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post, path, body, ct);
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+        try { return await DeserializeAsync<TResp>(resp, ct); }
+        catch (JsonException ex)
+        {
+            throw new LicenseApiUnknownException((int)resp.StatusCode, $"Gövde çözümlenemedi: {ex.Message}");
+        }
     }
 
     private async Task<TResp> GetExpectingJsonAsync<TResp>(string path, CancellationToken ct)

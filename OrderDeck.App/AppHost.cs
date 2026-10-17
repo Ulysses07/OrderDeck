@@ -517,18 +517,21 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<SettingsStore>(),
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>(),
             sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
-        // Session + Order sync (PR siparis-sync 2026-05-13)
+        // Session + Order sync (PR siparis-sync 2026-05-13). Satış senkronu W1-06: etiketler v2 zarfıyla (aynı
+        // SalesSyncEnvelope örneği — hello'nun başarısını o tutar), bütün tur tek gönderim kapısından.
         services.AddSingleton<Services.Sync.SessionOrderSyncService>(sp =>
             new Services.Sync.SessionOrderSyncService(
                 sp.GetRequiredService<LicenseApiClient>(),
                 sp.GetRequiredService<SessionRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
                 sp.GetRequiredService<IClock>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>(),
                 sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));

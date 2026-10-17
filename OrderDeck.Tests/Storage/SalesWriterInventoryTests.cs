@@ -60,6 +60,8 @@ public sealed class SalesWriterInventoryTests
             "Fiyat birimi (yedek onayı). Revision+1 kendisi yazar. Sunucu otoritesinde düşer."),
         new(LabelRepo, "MarkSynced", "UPDATE Label", 1, [],
             "Gönderim onayı, F05 karşılaştır-ve-yaz. SyncedAt ve StockSyncedAt hiçbir tetikleyici listesinde değil: her durumda geçer, kuyruğa almaz."),
+        new(LabelRepo, "MarkSyncedBatch", "UPDATE Label", 1, [],
+            "v2 gönderim onayı (W1-06), tek kısa işlemde, F05 karşılaştır-ve-yaz. SyncedAt, StockSyncedAt ve ServerVersion hiçbir tetikleyici listesinde değil: her kipte ve her oturumda geçer, kuyruğa almaz, Revision değişmez (DM8)."),
         new(SessionRepo, "Insert", "INSERT INTO StreamSession", 1, [],
             "Origin ve Authority varsayılanla 'local' doğar. Ekleme tetikleyicisi yok."),
         new(SessionRepo, "End", "UPDATE StreamSession", 1, ["TR_StreamSession_Enqueue", "TR_StreamSession_ServerAuthority"],
