@@ -308,7 +308,13 @@ public sealed class SessionOrderSyncCadenceTests : IDisposable
             await WaitUntilAsync(() => _server.Order(Guid.Parse(live)) is not null);
 
             _sessions.End(session, _clock.Now);
-            await WaitUntilAsync(() => _sessions.GetById(session)!.SyncedAt is not null);
+            // Kapanışı götüren tur oturumu onayladıktan sonra etiketleri okur: boşta etiket o turun okumasından önce
+            // yazılırsa aynı turda giderdi. Döngü boşta ritme oturana (yayının bittiği tık geçti) ve süren tur bitene
+            // kadar beklenir.
+            await WaitUntilAsync(() => _sessions.GetById(session)!.SyncedAt is not null
+                && !Field<bool>(hosted, "_wasLive") && !Field<bool>(hosted, "_handingOver"));
+            await Task.Delay(100);
+            await _svc.SyncOnceAsync();
 
             var idle = AddLabel(session);
             await Task.Delay(400);
