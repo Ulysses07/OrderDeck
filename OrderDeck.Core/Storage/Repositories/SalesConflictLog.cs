@@ -49,6 +49,11 @@ public static class SalesConflictLog
     /// görülmesi beklenir.</summary>
     public const string CatchUpOverwrite = "catchup-overwrite";
 
+    /// <summary>Mod On açıldı (§8.4-2; W2-10): yerel <c>Mode = 1</c> yazıldı, akış 0'dan alınacak. Açılış başına tek
+    /// satır, <c>LabelId</c> boş; Reason <c>sessions={n}</c> (hemen <c>server</c> olan kendi yayınları). İlk yetişmenin
+    /// <see cref="CatchUpOverwrite"/> sayısı bu satırdan sonrakilerdir: önceki bir mod On döneminin izleri sayılmaz.</summary>
+    public const string ModeOpened = "mode-opened";
+
     /// <summary>Geri doldurma kaydının <c>Reason</c>'ı: ayrışan birimler, <c>units={birim,…}</c>.</summary>
     public static string UnitsReason(IEnumerable<string> units) => $"units={string.Join(",", units)}";
 

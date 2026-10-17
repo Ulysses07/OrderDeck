@@ -47,6 +47,7 @@ public sealed class SalesWriterInventoryTests
     private const string FeedRepo = "OrderDeck.Core/Storage/Repositories/SalesFeedRepository.cs";
     private const string CustomerRepo = "OrderDeck.Core/Storage/Repositories/CustomerRepository.cs";
     private const string PendingRepo = "OrderDeck.Core/Storage/Repositories/PendingSalesCommandRepository.cs";
+    private const string StateRepo = "OrderDeck.Core/Storage/Repositories/SalesSyncStateRepository.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -96,6 +97,8 @@ public sealed class SalesWriterInventoryTests
             "Devir yanıtı (W1-07, §5.2): ReleasedAt ve Authority, SyncApplyScope işleminde. İkisi de hiçbir tetikleyici listesinde değil: kuyruğa almaz, Authority='server' satırda da geçer. Authority='server' YALNIZ aynı işlemde okunan Mode = 1 ∧ EndedAt dolu iken; mod Off'ta Authority hiç değişmez, aktif oturumda yalnız ReleasedAt saklanır."),
         new(SessionRepo, "AckIfUnchanged", "UPDATE StreamSession", 1, [],
             "Devir yanıtının onayı (W1-07): MarkSynced'in F05 karşılaştır-ve-yaz koşulu, çağıranın işleminde (devir anıyla aynı SyncApplyScope ya da iz kaydıyla aynı DbWrite). Tetikleyici dışı."),
+        new(StateRepo, "EnableSessionAuthoritySql", "UPDATE StreamSession", 1, [],
+            "Mod On açılışı (W2-10, §8.4-2): devri yerelde bilinen kendi BİTMİŞ oturumları Authority='server', Mode = 1 ile aynı SyncApplyScope işleminde ve kargo/etiket kuyruğunun kilit altındaki yeniden denetiminden sonra. Authority hiçbir tetikleyici listesinde değil: kuyruğa almaz (SyncedAt, Revision değişmez). Açık (canlı) oturum yerel kalır."),
         new(ShipmentRepo, "Insert", "INSERT INTO Shipment", 1, ["TR_Shipment_ServerOwned_I"],
             "Dosya açılışı. Mod 1'de düşer. OriginReplicaId = _meta.ReplicaId aynı ifadede (W1-04): mod Off'ta dosyanın tek yazıcısı bu kopya. Eski ikilinin NULL'u da bu veritabanının dosyası sayılır (049 başlığı)."),
         new(AdjusterFile, "Apply", "UPDATE Shipment", 1, ["TR_Shipment_Enqueue", "TR_Shipment_ServerOwned_U"],

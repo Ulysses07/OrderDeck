@@ -15,13 +15,53 @@ public sealed record SalesSyncStateRow(
     long? ShipmentsDerivedAt,
     long? PaymentHistorySentAt);
 
+/// <summary>Mod On açılışının 1. adımında boşaltılan giden kuyrukların kalanı (spec 2026-10-13 §8.4-1;
+/// <see cref="SalesSyncStateRepository.GetOpeningBacklog"/>). Canlı (açık) yayının oturumu ve etiketleri sayılmaz: iki
+/// kipte aynı yargılanırlar.</summary>
+/// <param name="Customers">Gönderim imlecinin üstünde, verilen tavanın altında kalan, silinmemiş müşteriler.</param>
+/// <param name="EndedSessions">Gönderilmemiş, bitmiş kendi yayınları (devri sunucudan görülmemiş olanlar dahil).</param>
+/// <param name="EndedSessionLabels">Bitmiş yayınların gönderilmemiş etiketleri.</param>
+/// <param name="Shipments">Gönderilmemiş kargo dosyaları.</param>
+/// <param name="Payments">Gönderilmemiş dekontlar.</param>
+/// <param name="PaymentRecords">Gönderilmeyi bekleyen ödeme kayıtları (<c>PendingPaymentRecord</c>; W3 gönderir).</param>
+public sealed record SalesOpeningBacklog(
+    int Customers, int EndedSessions, int EndedSessionLabels, int Shipments, int Payments, int PaymentRecords)
+{
+    public bool IsEmpty =>
+        Customers + EndedSessions + EndedSessionLabels + Shipments + Payments + PaymentRecords == 0;
+}
+
+/// <summary><see cref="SalesSyncStateRepository.TryEnableMode"/>'un sonucu.</summary>
+public enum SalesModeEnableStatus
+{
+    /// <summary>Yerel <c>Mode = 1</c> yazıldı (bu açılış).</summary>
+    Enabled,
+    /// <summary>Yerel kip zaten 1: hiçbir şey yazılmadı.</summary>
+    AlreadyOn,
+    /// <summary>Kilit altında kargo kuyruğu ya da bitmiş yayınların etiket kuyruğu boş değildi: hiçbir şey yazılmadı,
+    /// yerel kip 0 kaldı.</summary>
+    Backlog,
+}
+
+/// <param name="PendingShipments">Kilit altında sayılan gönderilmemiş dosya (yalnız <see cref="SalesModeEnableStatus.Backlog"/>).</param>
+/// <param name="PendingLabels">Kilit altında sayılan, bitmiş yayınların gönderilmemiş etiketi.</param>
+/// <param name="SessionsToServer">Hemen <c>server</c> olan, devri yerelde bilinen kendi bitmiş yayınları.</param>
+public sealed record SalesModeEnableResult(
+    SalesModeEnableStatus Status, int PendingShipments, int PendingLabels, int SessionsToServer);
+
+/// <summary>İlk yetişmenin ufukta tamamlanması (<see cref="SalesSyncStateRepository.CompleteFirstCatchUp"/>).</summary>
+/// <param name="Aggregates">Bütün müşterilerin toplamlarının yeniden hesabı (§6.1).</param>
+/// <param name="CatchUpOverwrites">Bu açılıştan beri kendi etiketinde sunucunun değeriyle ezilen birim izleri
+/// (<see cref="SalesConflictLog.CatchUpOverwrite"/>).</param>
+public sealed record SalesFirstCatchUpResult(AggregateRecomputeResult Aggregates, int CatchUpOverwrites);
+
 /// <summary>
 /// Satış senkronunun yerel durumu (tek satır, <c>SalesSyncState.Id = 1</c>).
 ///
-/// <para><b>Yazıcılar:</b> W1 yalnız sunucunun bildirdiği değerleri saklar (<see cref="SaveServerState"/>:
-/// kargo ayarının önbelleği ve KVKK boşaltma ayarı). <c>Mode</c>, <c>ModeSeenAt</c> ve
-/// <c>FirstCatchUpAt</c>'i W1 HİÇ yazmaz: kip geçişleri (§8.4 açılış, §8.5 <c>disable</c> turu) W2'nindir.
-/// Mod Off'ta (bugün her lisans) <c>Mode</c> 0 kalır.</para>
+/// <para><b>Yazıcılar:</b> sunucunun bildirdiği değerler (<see cref="SaveServerState"/>: kargo ayarının önbelleği ve
+/// KVKK boşaltma ayarı) her turda. <c>Mode</c>, <c>ModeSeenAt</c> ve <c>FirstCatchUpAt</c>'i yalnız kip geçişleri
+/// yazar: mod On açılışı (§8.4; W2-10, <see cref="TryEnableMode"/> ve <see cref="CompleteFirstCatchUp"/>) ve
+/// <c>disable</c> turu (§8.5). Mod Off'ta (bugün her lisans) <c>Mode</c> 0 kalır.</para>
 ///
 /// <para><b>Görülen kip (§2, §8.5):</b> istemci 0'ı ancak Off turu tamamen bitince bildirir — yerel
 /// <c>Mode = 0</c> ∧ <c>PendingSalesCommand</c> boş; aksi hâlde 1 (<see cref="GetSeenMode"/>).</para>
@@ -107,6 +147,137 @@ public sealed class SalesSyncStateRepository
                 fee = (double?)fee,
                 scrub = scrubOrderText ? 1 : 0,
             }) == 1;
+    }
+
+    // ── mod On açılışı (§8.4; W2-10) ────────────────────────────────────
+
+    /// <summary>Müşteri gönderim kuyruğunun şu anki tavanı (<c>MAX(SyncSeq)</c>; boş tabloda 0). Açılışın 1. adımı
+    /// gönderimden ÖNCE okur: gönderimden sonra doğan müşteri (yayında sohbet) kuyruğu "boş değil" saydırmaz.</summary>
+    public long MaxCustomerSyncSeq()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>("SELECT COALESCE(MAX(SyncSeq), 0) FROM Customer");
+    }
+
+    /// <summary>
+    /// Açılışın 1. adımında boşaltılan giden kuyrukların kalanı (§8.4-1), tek bağlantıda. Ölçütler gönderim
+    /// servislerininki: <c>SyncedAt IS NULL</c>; müşteride imlecin üstü (silinmiş satır gönderilmez, sayılmaz;
+    /// <c>SyncOutboxRepository.CountPending</c> ile aynı). Canlı yayının oturumu ve etiketleri sayılmaz.
+    /// </summary>
+    /// <param name="customerWatermark">Müşteri gönderim imleci (<c>customer-projection-out-v2</c>).</param>
+    /// <param name="customerCeiling">Gönderimden önce okunan tavan (<see cref="MaxCustomerSyncSeq"/>).</param>
+    public SalesOpeningBacklog GetOpeningBacklog(long customerWatermark, long customerCeiling)
+    {
+        using var conn = _factory.Open();
+        var r = conn.QuerySingle<(long, long, long, long, long, long)>(
+            """
+            SELECT (SELECT COUNT(*) FROM Customer
+                     WHERE SyncSeq > @customerWatermark AND SyncSeq <= @customerCeiling AND PurgedAt IS NULL),
+                   (SELECT COUNT(*) FROM StreamSession
+                     WHERE SyncedAt IS NULL AND EndedAt IS NOT NULL AND Origin = 'local'),
+                   (SELECT COUNT(*) FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+                     WHERE l.SyncedAt IS NULL AND s.EndedAt IS NOT NULL),
+                   (SELECT COUNT(*) FROM Shipment WHERE SyncedAt IS NULL),
+                   (SELECT COUNT(*) FROM Payment WHERE SyncedAt IS NULL),
+                   (SELECT COUNT(*) FROM PendingPaymentRecord)
+            """,
+            new { customerWatermark, customerCeiling });
+        return new SalesOpeningBacklog((int)r.Item1, (int)r.Item2, (int)r.Item3, (int)r.Item4, (int)r.Item5, (int)r.Item6);
+    }
+
+    /// <summary>
+    /// Açılışın 2. adımı (§8.4-2), TEK <see cref="SyncApplyScope"/> işleminde (BEGIN IMMEDIATE: yazma kilidi okumadan
+    /// önce alınır, denetim ile yazım arasına yerel yazım giremez):
+    /// <list type="number">
+    ///   <item>Kip zaten 1 ise hiçbir şey yazılmaz (<see cref="SalesModeEnableStatus.AlreadyOn"/>).</item>
+    ///   <item>Kargo kuyruğu ve canlı olmayan yayınların etiket kuyruğu YENİDEN sayılır; biri boş değilse (ör. 1. adım
+    ///   gönderirken kaydedilen dekontun kargo yazımı) hiçbir şey yazılmaz (<see cref="SalesModeEnableStatus.Backlog"/>).
+    ///   Canlı yayının etiketleri denetime girmez.</item>
+    ///   <item><c>Mode = 1</c>, <c>ModeSeenAt = </c><paramref name="modeSeenAt"/>, <c>FirstCatchUpAt = NULL</c> (ilk
+    ///   yetişme bu açılış için baştan; Off → On yeniden açılışı dahil, §8.5). Bundan sonra 049'un
+    ///   <c>TR_Shipment_ServerOwned_*</c> ve <c>TR_Label_ShipmentLink</c> tetikleyicileri yerel kargo yazımını ABORT eder:
+    ///   gönderilmemiş kargo kararı doğamaz.</item>
+    ///   <item>Yerelde devri bilinen (<c>ReleasedAt</c> dolu) kendi BİTMİŞ yayınları <c>Authority = 'server'</c>: ilk
+    ///   yetişme birkaç tur sürse de onlarda yerel yol seçilmez. Kilit altında: tetikleyiciler susar, oturum kuyruğa
+    ///   girmez (<c>SyncedAt</c>, <c>Revision</c> değişmez). Hâlâ açık (canlı) yayın — force-end görmüş olsa da — yerel
+    ///   kalır (M18).</item>
+    ///   <item>Akış imleci (<paramref name="cursorName"/>, <paramref name="licenseKey"/>) 0: akış baştan, açılış başına
+    ///   bir kez (§8.4-3).</item>
+    ///   <item><see cref="SalesConflictLog.ModeOpened"/> izi: ilk yetişmenin üstüne yazım sayısının tabanı.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="modeSeenAt"><c>sales/state</c>'in <c>modeChangedAt</c>'i (unix saniye).</param>
+    /// <param name="now">İzin anı (unix saniye).</param>
+    public SalesModeEnableResult TryEnableMode(long? modeSeenAt, string cursorName, string licenseKey, long now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cursorName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(licenseKey);
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var mode = conn.ExecuteScalar<long?>("SELECT Mode FROM SalesSyncState WHERE Id = 1", transaction: tx)
+                   ?? throw new InvalidOperationException("SalesSyncState satırı yok (göç 049).");
+        if (mode == 1) return new SalesModeEnableResult(SalesModeEnableStatus.AlreadyOn, 0, 0, 0);
+
+        var (shipments, labels) = conn.QuerySingle<(long, long)>(
+            """
+            SELECT (SELECT COUNT(*) FROM Shipment WHERE SyncedAt IS NULL),
+                   (SELECT COUNT(*) FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
+                     WHERE l.SyncedAt IS NULL AND s.EndedAt IS NOT NULL)
+            """, transaction: tx);
+        if (shipments + labels > 0)
+            return new SalesModeEnableResult(SalesModeEnableStatus.Backlog, (int)shipments, (int)labels, 0); // geri alınır
+
+        conn.Execute(
+            "UPDATE SalesSyncState SET Mode = 1, ModeSeenAt = @modeSeenAt, FirstCatchUpAt = NULL WHERE Id = 1",
+            new { modeSeenAt }, tx);
+        var sessions = conn.Execute(EnableSessionAuthoritySql, transaction: tx);
+        SyncCursorRepository.Upsert(conn, tx, cursorName, licenseKey, seq: 0);
+        SalesConflictLog.Insert(conn, tx, now, null, SalesConflictLog.ModeOpened,
+            "sessions=" + sessions.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        scope.Commit();
+        return new SalesModeEnableResult(SalesModeEnableStatus.Enabled, 0, 0, sessions);
+    }
+
+    /// <summary>Devri yerelde bilinen kendi bitmiş yayınları (§8.4-2). Açık yayın (<c>EndedAt IS NULL</c>) yerel kalır.</summary>
+    private const string EnableSessionAuthoritySql = @"
+        UPDATE StreamSession SET Authority = 'server'
+         WHERE Origin = 'local' AND Authority = 'local' AND EndedAt IS NOT NULL AND ReleasedAt IS NOT NULL";
+
+    /// <summary>
+    /// Açılışın 4. adımı (§8.4-4, §6.1): akış ufka ulaşınca (boş sayfa, bekleyen öğe yok) TEK işlemde bütün müşterilerin
+    /// toplamları etiketlerden yeniden hesaplanır ve <c>FirstCatchUpAt</c> yazılır. Kip 1 değilse ya da ilk yetişme zaten
+    /// tamamsa hiçbir şey yazılmaz. Sonuç bu açılıştan beri düşen <see cref="SalesConflictLog.CatchUpOverwrite"/>
+    /// izlerini sayar (son <see cref="SalesConflictLog.ModeOpened"/> satırından sonrakiler; tur sayısından ve yeniden
+    /// başlatmadan bağımsız).
+    ///
+    /// <para><see cref="CustomerAggregateSql.DeriveAllOnce"/> gibi müşteri meşguliyet kümesini almaz: yazılan değer
+    /// etiketlerden türetilmiş değerdir — akışın etkilenen müşteriler için aynı işlemde yazdığıyla aynı.</para>
+    /// </summary>
+    /// <returns>Bu çağrı ilk yetişmeyi tamamladıysa sonuç; aksi hâlde <c>null</c>.</returns>
+    public SalesFirstCatchUpResult? CompleteFirstCatchUp(long now)
+    {
+        using var write = DbWrite.Begin(_factory);
+        var conn = write.Connection;
+        var tx = write.Transaction;
+        var (mode, firstCatchUpAt) = conn.QuerySingleOrDefault<(long, long?)>(
+            "SELECT Mode, FirstCatchUpAt FROM SalesSyncState WHERE Id = 1", transaction: tx);
+        if (mode != 1 || firstCatchUpAt is not null) return null;
+
+        var aggregates = CustomerAggregateSql.RecomputeAll(conn, tx);
+        conn.Execute(
+            "UPDATE SalesSyncState SET FirstCatchUpAt = @now WHERE Id = 1 AND Mode = 1 AND FirstCatchUpAt IS NULL",
+            new { now }, tx);
+        var overwrites = conn.ExecuteScalar<long>(
+            """
+            SELECT COUNT(*) FROM SalesConflictLog
+             WHERE Kind = @catchUp
+               AND Id > COALESCE((SELECT MAX(Id) FROM SalesConflictLog WHERE Kind = @opened), 0)
+            """,
+            new { catchUp = SalesConflictLog.CatchUpOverwrite, opened = SalesConflictLog.ModeOpened }, tx);
+        write.Commit();
+        return new SalesFirstCatchUpResult(aggregates, (int)overwrites);
     }
 
     private static decimal? ToDecimal(double? value) => value is { } v ? (decimal)v : null;
