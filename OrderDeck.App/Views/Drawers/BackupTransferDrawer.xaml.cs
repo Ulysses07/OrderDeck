@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using CommunityToolkit.Mvvm.ComponentModel;
 using OrderDeck.App.Services.Drawers;
+using OrderDeck.App.Services.Sales;
 using OrderDeck.Core.Sales;
 
 // System.Windows.Controls.Label ile OrderDeck.Core.Sales.Label çakışıyor;
@@ -20,10 +21,14 @@ namespace OrderDeck.App.Views.Drawers;
 /// retroactively if the spare sticker had already been printed.
 ///
 /// Faz 3'te modal pencereden çekmeceye geçti; gerekçe XAML'in başında.
+///
+/// <para>Onay düzenleme yönlendiricisinden geçer (spec 2026-10-13 §5.3 "Yedek çekmecesi", <c>confirm-backup</c>):
+/// mod Off'ta bugünkü yerel onay, mod On'da devredilmiş yayının yedeği komutla. Çevrimdışıyken sunucu yedeğinin
+/// kartı pasif, araç ipucu §5.7. Yönlendirici verilmezse (eski çağıranlar) bugünkü yerel yol.</para>
 /// </summary>
 public partial class BackupTransferDrawer : UserControl
 {
-    private readonly LabelService _labels;
+    private readonly ILabelEditor _editor;
     private readonly Drawer _drawer;
     private readonly System.Action<string>? _onConfirmed;
 
@@ -31,11 +36,11 @@ public partial class BackupTransferDrawer : UserControl
 
     private BackupTransferDrawer(
         Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups,
-        System.Action<string>? onConfirmed)
+        System.Action<string>? onConfirmed, ILabelEditor? editor)
     {
         InitializeComponent();
         _drawer = drawer;
-        _labels = labels;
+        _editor = editor ?? new LocalLabelEditor(labels);
         _onConfirmed = onConfirmed;
         BackupsList.ItemsSource = Rows;
 
@@ -46,18 +51,18 @@ public partial class BackupTransferDrawer : UserControl
             "sonra dönebilirsin.";
 
         foreach (var b in backups)
-            Rows.Add(new BackupRowViewModel(b));
+            Rows.Add(BackupRowViewModel.Create(b, _editor));
     }
 
     /// <summary>Toplu iptal (K3, "Basılanlar"): birden çok etiketin yedekleri TEK çekmecede — her etiket
     /// için ayrı çekmece açılmaz. Her yedek kartının üstünde hangi etiketin yedeği olduğu yazar.</summary>
     private BackupTransferDrawer(
         Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups,
-        System.Action<string>? onConfirmed)
+        System.Action<string>? onConfirmed, ILabelEditor? editor)
     {
         InitializeComponent();
         _drawer = drawer;
-        _labels = labels;
+        _editor = editor ?? new LocalLabelEditor(labels);
         _onConfirmed = onConfirmed;
         BackupsList.ItemsSource = Rows;
 
@@ -70,30 +75,33 @@ public partial class BackupTransferDrawer : UserControl
             var header = $"'{parent.DisplayName ?? parent.Username}' etiketinin yedeği — orijinal fiyat " +
                          $"{parent.Price.ToString("N2", CultureInfo.CurrentCulture)} TL";
             foreach (var b in backups)
-                Rows.Add(new BackupRowViewModel(b) { GroupHeader = header });
+                Rows.Add(BackupRowViewModel.Create(b, _editor, header));
         }
     }
 
     /// <summary>Çekmece başlığı çağıranda kuruluyor (yedek sayısı orada
     /// biliniyor), gövde yalnız listeyi ve açıklamayı taşıyor.</summary>
     /// <param name="onConfirmed">Yedek onaylandı (Id) — kabuk kuyruktaki kopyayı hemen günceller.</param>
+    /// <param name="editor">Düzenleme yönlendiricisi; null = yalnız yerel onay (bugünkü yol).</param>
     public static BackupTransferDrawer Create(
         Drawer drawer, LabelService labels, Label parentLabel, IReadOnlyList<Label> backups,
-        System.Action<string>? onConfirmed = null)
-        => new(drawer, labels, parentLabel, backups, onConfirmed);
+        System.Action<string>? onConfirmed = null, ILabelEditor? editor = null)
+        => new(drawer, labels, parentLabel, backups, onConfirmed, editor);
 
     /// <summary>Toplu iptalin yedek çekmecesi: birden çok etiketin yedekleri tek listede.</summary>
     /// <param name="onConfirmed">Yedek onaylandı (Id) — kabuk kuyruktaki kopyayı hemen günceller.</param>
+    /// <param name="editor">Düzenleme yönlendiricisi; null = yalnız yerel onay (bugünkü yol).</param>
     public static BackupTransferDrawer Create(
         Drawer drawer, LabelService labels, IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> groups,
-        System.Action<string>? onConfirmed = null)
-        => new(drawer, labels, groups, onConfirmed);
+        System.Action<string>? onConfirmed = null, ILabelEditor? editor = null)
+        => new(drawer, labels, groups, onConfirmed, editor);
 
-    private void OnPromote(object sender, RoutedEventArgs e)
+    /// <summary>Olay işleyicisi: <see cref="BackupRowViewModel.PromoteAsync"/> hatayı kartın satırına yazar, fırlatmaz.</summary>
+    private async void OnPromote(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn) return;
         if (btn.DataContext is not BackupRowViewModel row) return;
-        row.Promote((id, price) => _labels.ConfirmBackup(id, newPrice: price), _onConfirmed);
+        await row.PromoteAsync(_editor, _onConfirmed);
     }
 }
 
@@ -108,8 +116,24 @@ public sealed partial class BackupRowViewModel : ObservableObject
     [ObservableProperty] private string _actionButtonText = "Onayla";
     [ObservableProperty] private string? _errorText;
 
+    /// <summary>"Onayla"nın araç ipucu: sunucu yedeği çevrimdışıyken kart pasif ve sebebi burada (§5.7); yoksa null.</summary>
+    [ObservableProperty] private string? _actionToolTip;
+
     /// <summary>Toplu iptalde kartın hangi etiketin yedeği olduğu; tek etiketli çekmecede null.</summary>
     public string? GroupHeader { get; init; }
+
+    /// <summary>Kartı kurar; yedeğin onayı şu an sunucu istiyor ve sunucu kullanılamıyorsa kart pasif, sebep araç
+    /// ipucunda (<see cref="ILabelEditor.EditBlockedReason"/>).</summary>
+    public static BackupRowViewModel Create(Label backup, ILabelEditor editor, string? groupHeader = null)
+    {
+        var row = new BackupRowViewModel(backup) { GroupHeader = groupHeader };
+        if (editor.EditBlockedReason([backup.Id]) is { } reason)
+        {
+            row.IsActionable = false;
+            row.ActionToolTip = reason;
+        }
+        return row;
+    }
 
     public string DisplayName => Backup.Username;
     public string MessageText => string.IsNullOrEmpty(Backup.MessageText) ? "—" : Backup.MessageText;
@@ -181,6 +205,36 @@ public sealed partial class BackupRowViewModel : ObservableObject
         catch (System.Exception ex)
         {
             ErrorText = $"Yedek onaylanamadı: {ex.Message}";
+            return;
+        }
+        MarkPromoted();
+        confirmed?.Invoke(Backup.Id);
+    }
+
+    /// <summary>
+    /// <see cref="Promote"/>'un yönlendiricili hâli (spec 2026-10-13 §5.3): onay <see cref="ILabelEditor"/>'den geçer —
+    /// mod Off'ta bugünkü yerel onay (eşzamanlı biter), mod On'da gerekirse <c>confirm-backup</c> komutu. Komut
+    /// sürerken kart pasif (çift tıklama ikinci komut göndermesin). Ret ya da hata kartın kendi satırında; kart yeniden
+    /// denenebilir, bildirim gitmez. Fırlatmaz.
+    /// </summary>
+    public async Task PromoteAsync(ILabelEditor editor, System.Action<string>? confirmed)
+    {
+        if (ReadPrice() is not { } price) return;
+        IsActionable = false;
+        try
+        {
+            var result = await editor.ConfirmBackupAsync(Backup.Id, price);
+            if (result.HasProblems)
+            {
+                ErrorText = result.ProblemText;
+                IsActionable = true;
+                return;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ErrorText = $"Yedek onaylanamadı: {ex.Message}";
+            IsActionable = true;
             return;
         }
         MarkPromoted();

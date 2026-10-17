@@ -118,11 +118,15 @@
                                         <TextBlock Grid.Column="1" Text="TL"
                                                    Style="{StaticResource OD.Text.Suffix}"/>
 
+                                        <!-- Sunucu yedeği çevrimdışıyken pasif; sebep araç ipucunda
+                                             (spec 2026-10-13 §5.7) — pasif düğmede de görünsün. -->
                                         <Button Grid.Column="2"
                                                 Content="{Binding ActionButtonText}"
                                                 Style="{StaticResource OD.Button.Primary}"
                                                 Margin="{StaticResource OD.Pad.Left4}"
                                                 IsEnabled="{Binding IsActionable}"
+                                                ToolTip="{Binding ActionToolTip}"
+                                                ToolTipService.ShowOnDisabled="True"
                                                 Click="OnPromote"/>
                                     </Grid>
 
