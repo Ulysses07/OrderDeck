@@ -33,9 +33,15 @@
 --          (OriginReplicaId = _meta.ReplicaId; mod On'da başka PC'nin bu PC'nin etiketleri için
 --          açtığı dosya Off'ta bu PC'ye geçer);
 --        - bağlı etiketi var ama hiçbiri yerel değilse SİLİNİR (başka bilgisayarın dosyası);
---        - SIFIR ETİKETLİ dosya: sunucu kuralında bağlı sipariş yoksa sahip değişmez; dosya bu
---          kopyanınsa (OriginReplicaId bu kopya, geri yüklemeden önceki kopya ya da NULL — NULL'u
---          049'dan sonra eski ikili açmıştır, o da bu veritabanı) KALIR, başka kopyanınsa SİLİNİR.
+--        - SIFIR ETİKETLİ dosya: sunucu kuralında bağlı sipariş yoksa sahip değişmez. Akış
+--          (sales/changes) bu veritabanına HİÇ uygulanmadıysa — 'sales-changes-in' imleci yok ve uzak
+--          oturum yok; W1 döneminde ve mod Off'ta hep böyle — dosya yalnız bu veritabanında ya da
+--          geri yükleme soyundaki bir kopyada açılmış olabilir: KALIR. OriginReplicaId burada karar
+--          olamaz: geri yüklemeden önce açılan dosya yedeğin kimliğini taşır, _meta.PreviousReplicaId
+--          ise ilk başarılı hello'da silinir (yalnız bekleyen bildirimdir). Akış uygulanmışsa
+--          (başka kopyanın dosyası aynaya inmiş olabilir) dosya bu kopyanınsa (OriginReplicaId bu
+--          kopya, bekleyen önceki kopya ya da NULL — NULL'u 049'dan sonra eski ikili açmıştır, o da
+--          bu veritabanı) KALIR, başka kopyanınsa SİLİNİR.
 --   2) Uzak etiketler, uzak oturumlar (Origin = 'remote') ve RemoteLiveSession silinir.
 --   3) Kendi oturumları yerel otoriteye döner (Authority = 'local' WHERE Origin = 'local').
 --   4) SalesSyncState.Mode = 0.
@@ -58,15 +64,21 @@ BEGIN IMMEDIATE;
 DROP TABLE IF EXISTS temp.reset_guard;
 DROP TABLE IF EXISTS temp.reset_shipment;
 
--- Shipped olmayan her dosyanın yerel ve uzak bağlı etiket sayısı (karar uzak etiketler silinmeden
--- önce verilir). Oturumu bulunamayan etiket yerel sayılır.
+-- Shipped olmayan her dosyanın yerel ve uzak bağlı etiket sayısı ve sahibinin başka kopya olup
+-- olmadığı (karar uzak etiketler silinmeden önce verilir). Oturumu bulunamayan etiket yerel sayılır.
+-- ForeignOrigin yalnız akış uygulanmış veritabanında 1 olabilir (başlıktaki SIFIR ETİKETLİ kuralı).
 CREATE TEMP TABLE reset_shipment AS
 SELECT sh.Id AS Id,
        sh.OriginReplicaId AS OriginReplicaId,
        (SELECT COUNT(*) FROM Label l LEFT JOIN StreamSession s ON s.Id = l.SessionId
          WHERE l.ShipmentId = sh.Id AND COALESCE(s.Origin, 'local') <> 'remote') AS LocalLabels,
        (SELECT COUNT(*) FROM Label l JOIN StreamSession s ON s.Id = l.SessionId
-         WHERE l.ShipmentId = sh.Id AND s.Origin = 'remote') AS RemoteLabels
+         WHERE l.ShipmentId = sh.Id AND s.Origin = 'remote') AS RemoteLabels,
+       (sh.OriginReplicaId IS NOT NULL
+        AND sh.OriginReplicaId IS NOT (SELECT ReplicaId FROM _meta WHERE Id = 1)
+        AND sh.OriginReplicaId IS NOT (SELECT PreviousReplicaId FROM _meta WHERE Id = 1)
+        AND (EXISTS (SELECT 1 FROM SyncCursor WHERE Name = 'sales-changes-in')
+             OR EXISTS (SELECT 1 FROM StreamSession WHERE Origin = 'remote'))) AS ForeignOrigin
   FROM Shipment sh
  WHERE sh.Status <> 'Shipped';
 
@@ -87,11 +99,7 @@ SELECT (SELECT Mode FROM SalesSyncState WHERE Id = 1) AS Mod,
        (SELECT COUNT(*) FROM StreamSession WHERE Origin = 'local' AND Authority <> 'local') AS YereleDonecekYayin,
        (SELECT COUNT(*) FROM temp.reset_shipment WHERE LocalLabels > 0 AND RemoteLabels = 0) AS KalanDosya,
        (SELECT COUNT(*) FROM temp.reset_shipment
-         WHERE LocalLabels = 0
-           AND (RemoteLabels > 0
-                OR (OriginReplicaId IS NOT NULL
-                    AND OriginReplicaId IS NOT (SELECT ReplicaId FROM _meta WHERE Id = 1)
-                    AND OriginReplicaId IS NOT (SELECT PreviousReplicaId FROM _meta WHERE Id = 1)))) AS SilinecekDosya,
+         WHERE LocalLabels = 0 AND (RemoteLabels > 0 OR ForeignOrigin = 1)) AS SilinecekDosya,
        (SELECT COUNT(*) FROM PendingSalesCommand) AS BekleyenKomut;
 
 -- KİLİT. CHECK düşerse satır eklenmez; aşağıdaki her yazım bu satırı şart koşar.
@@ -115,11 +123,7 @@ UPDATE Shipment
 DELETE FROM Shipment
  WHERE EXISTS (SELECT 1 FROM temp.reset_guard)
    AND Id IN (SELECT Id FROM temp.reset_shipment
-               WHERE LocalLabels = 0
-                 AND (RemoteLabels > 0
-                      OR (OriginReplicaId IS NOT NULL
-                          AND OriginReplicaId IS NOT (SELECT ReplicaId FROM _meta WHERE Id = 1)
-                          AND OriginReplicaId IS NOT (SELECT PreviousReplicaId FROM _meta WHERE Id = 1))));
+               WHERE LocalLabels = 0 AND (RemoteLabels > 0 OR ForeignOrigin = 1));
 
 -- 2) Uzak satırlar. Etiketler oturumlardan ÖNCE: yabancı anahtar kapalıyken de öksüz kalmaz.
 DELETE FROM Label

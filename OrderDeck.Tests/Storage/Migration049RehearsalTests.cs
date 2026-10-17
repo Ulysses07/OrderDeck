@@ -367,6 +367,51 @@ public sealed class Migration049RehearsalTests(ITestOutputHelper output)
         finally { Drop(path); }
     }
 
+    /// <summary>
+    /// Sıfır etiketli açık dosyanın sahibi geri yüklemeden önceki kopya olabilir (yedeğin kimliği). <c>_meta.PreviousReplicaId</c>
+    /// ilk başarılı hello'da silinir; betik ona dayanırsa Held kararı yerelden silinir, sunucuda açık kalır ve sonraki
+    /// dekont yeni bir dosya açar. Akış hiç uygulanmadıysa (W1 dönemi; mod Off'ta da) dosya yalnız bu veritabanında ve
+    /// onun geri yükleme soyunda açılabilir: silinmez. Akış uygulanmışsa (mod On'un aynası) başka kopyanın sıfır
+    /// etiketli dosyası bugünkü gibi silinir.
+    /// </summary>
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Sifirlama_betigi_geri_yukleme_ve_hellodan_sonra_sifir_etiketli_acik_dosyayi_akis_yoksa_silmez(
+        bool streamApplied, bool kept)
+    {
+        var path = TempDb();
+        var factory = new SqliteConnectionFactory(path);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var backupReplica = Guid.NewGuid();                                // yedeğin kimliği = önceki kopya
+            using (var c = factory.Open())
+            {
+                c.Execute(SeedCustomerSql, new { Id = "m1", Username = "@alici.bir" });
+                c.Execute(@"INSERT INTO Shipment (Id, CustomerId, Status, CreatedAt, HeldAt, CumulativeAmount, OriginReplicaId)
+                            VALUES ('bos-yedek', 'm1', 'Held', 300, 310, 0, @origin)", new { origin = backupReplica.ToString("N") });
+                if (streamApplied)
+                    c.Execute("INSERT INTO SyncCursor (Name, LicenseKey, Seq) VALUES ('sales-changes-in', @key, 5)",
+                        new { key = $"lisans-{Guid.NewGuid():N}" });
+            }
+            var identity = new OrderDeck.Core.Storage.Repositories.ReplicaIdentityRepository(factory);
+            identity.Rotate(backupReplica);                                    // geri yükleme (§8.7)
+            identity.ClearPendingPreviousReplicaId(backupReplica).Should().BeTrue("hello başarılı: önceki kimlik silindi");
+
+            var (blockers, plan) = RunResetScript(path);
+
+            blockers.Should().BeEmpty();
+            plan.DeletedShipments.Should().Be(kept ? 0 : 1);
+            using (var c = factory.Open())
+                c.Query<string>("SELECT Status FROM Shipment WHERE Id = 'bos-yedek'")
+                    .Should().Equal(kept ? new[] { "Held" } : Array.Empty<string>());
+
+            RunResetScript(path).Plan.DeletedShipments.Should().Be(0, "ikinci koşu hiçbir şey değiştirmez");
+        }
+        finally { Drop(path); }
+    }
+
     [Fact]
     public void Sifirlama_betigi_turetme_damgalarini_ve_geri_doldurma_imlecini_siler_Wsye_donuste_dosya_yeniden_turetilir()
     {
