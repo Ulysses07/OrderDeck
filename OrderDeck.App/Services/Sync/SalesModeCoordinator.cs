@@ -53,7 +53,7 @@ public sealed class SalesModeCoordinator
     private readonly IClock _clock;
     private readonly ILogger<SalesModeCoordinator> _log;
 
-    /// <summary>Süren bir "açılıyor" serisi: ilk turu Information, arası Debug.</summary>
+    /// <summary>Süren bir "açılıyor" serisi: ilk turu Warning, arası Debug.</summary>
     private bool _openingLogged;
 
     public SalesModeCoordinator(

@@ -167,14 +167,8 @@ public sealed class SalesSyncEnvelope
     /// geri yüklenmemiş ya da bu çift için hello başarıyla gitti, bir <c>sales/state</c> başarıyla geldi ve kip adımı o
     /// kiple bir kez koştu (§8.7).
     /// </summary>
-    public bool IsReadyFor(string licenseKey, Guid replicaId)
-    {
-        if (IsHeldUntilRestart) return false;
-        if (_identity.GetPendingPreviousReplicaId() is not null) NoteRestored();
-        if (!IsRestoredInThisProcess) return true;
-        var key = (licenseKey, replicaId);
-        return _helloSucceeded.ContainsKey(key) && _stateSucceeded.ContainsKey(key) && _modeRefreshed.ContainsKey(key);
-    }
+    public bool IsReadyFor(string licenseKey, Guid replicaId) =>
+        !IsHeldUntilRestart && (!RestoreGateApplies() || IsRefreshed(licenseKey, replicaId));
 
     /// <summary>
     /// Bir gönderim turunun zarf kararı (spec 2026-10-13 §5.2, §8.7; W1-06): <c>null</c> = turu atla (geri yüklenmiş
@@ -201,10 +195,23 @@ public sealed class SalesSyncEnvelope
 
     private bool IsReadyFor(Guid replica)
     {
-        if (_identity.GetPendingPreviousReplicaId() is not null) NoteRestored();
-        if (!IsRestoredInThisProcess) return true;
+        if (!RestoreGateApplies()) return true;
         var key = _license.CurrentLicenseKey;
-        return !string.IsNullOrWhiteSpace(key) && IsReadyFor(key, replica);
+        return !string.IsNullOrWhiteSpace(key) && IsRefreshed(key, replica);
+    }
+
+    /// <summary>Geri yükleme kapısı bu süreçte geçerli mi; bekleyen önceki kimlik görülürse süreç işaretlenir.</summary>
+    private bool RestoreGateApplies()
+    {
+        if (_identity.GetPendingPreviousReplicaId() is not null) NoteRestored();
+        return IsRestoredInThisProcess;
+    }
+
+    /// <summary>Bu (lisans, kopya) için hello, state ve kip adımı tamam (§8.7).</summary>
+    private bool IsRefreshed(string licenseKey, Guid replicaId)
+    {
+        var key = (licenseKey, replicaId);
+        return _helloSucceeded.ContainsKey(key) && _stateSucceeded.ContainsKey(key) && _modeRefreshed.ContainsKey(key);
     }
 
     public bool HasHelloSucceeded(string licenseKey, Guid replicaId) =>
