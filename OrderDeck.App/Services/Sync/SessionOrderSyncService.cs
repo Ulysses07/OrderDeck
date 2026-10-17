@@ -1,4 +1,5 @@
 using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
@@ -25,10 +26,18 @@ namespace OrderDeck.App.Services.Sync;
 /// değerini uygulamak W1-08'in işi). Kopya kimliği eksik ya da bozuksa gönderim durmaz, zarfsız (v1) gövde gider
 /// (<see cref="SalesSyncEnvelope.ForPush"/>); geri yüklemeden sonra hello gidene kadar tur atlanır (§8.7).</para>
 ///
-/// <para><b>Oturumlar</b> W1-07'ye kadar bugünkü (v1) gövdeyle gider: sunucunun eski devir yolu ("EndedAt dolu
-/// gelmesi yeter") sürer.</para>
+/// <para><b>Oturumlar ve devir</b> (§4.1, §5.2, M2; W1-07): oturumlar da v2 zarfıyla gider, her öğe makine adını
+/// taşır. Tur sırası: oturumlar → etiketler → etiketleri bu turda giden bitmiş oturumlar bir kez daha. Bitmiş,
+/// <c>Authority = 'local'</c> ve devri henüz görülmemiş oturum için <see cref="HandoverGate"/> altında
+/// <c>Label WHERE SessionId = @id AND SyncedAt IS NULL</c> sayılır: 0 ise <c>Release = true</c>, değilse
+/// <c>Release = false</c> + <c>UnsentLabelCount</c>. Kapı o oturumun yanıtı uygulanana kadar tutulur. Yanıtı Core
+/// uygular (<see cref="SessionRepository.ApplyRelease"/>): devir görülene kadar bitmiş oturum onaylanmaz, kuyrukta
+/// kalır (geri alma penceresinde kapanış kaybolmaz); mod Off'ta <c>Authority</c> hiç yazılmaz. Bekletilen oturumun
+/// gönderimi "gönderilen kayıt" sayılmaz (<see cref="SyncResult.SessionsPushed"/>): kapanıştaki boşaltma döngüsü
+/// boşuna dönmez. Canlı ritimde (<c>liveCadence</c>) bekletilen oturum en çok <see cref="HeldResendInterval"/>'da bir
+/// yeniden gider — gönderilmemiş etiket sayısı değişmedikçe.</para>
 ///
-/// <para><b>Gönderim kapısı</b> (§5.2): <see cref="SyncOnceAsync"/> birden çok yerden eşzamanlı çağrılır —
+/// <para><b>Gönderim kapısı</b> (§5.2): <see cref="SyncOnceAsync(CancellationToken)"/> birden çok yerden eşzamanlı çağrılır —
 /// zamanlayıcı (<see cref="SessionOrderSyncHostedService"/>), kapanıştaki "gönder ve kapat"
 /// (<see cref="SyncFlushService.ForClose"/>) ve sonraki görevlerde geri doldurma. Bütün tur tek bir
 /// <see cref="SemaphoreSlim"/> altındadır: aynı parti iki kez gitmez, onay sırası karışmaz.</para>
@@ -62,6 +71,7 @@ public sealed class SessionOrderSyncService
     private readonly LabelRepository _labels;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly SalesSyncEnvelope _envelope;
+    private readonly HandoverGate _handover;
     private readonly IClock _clock;
     private readonly ILogger<SessionOrderSyncService> _log;
     private readonly SyncStatusTracker? _tracker;
@@ -72,9 +82,22 @@ public sealed class SessionOrderSyncService
     /// <summary>İki gönderim hatası uyarısı arasındaki en kısa süre (Y9: yayında tur ≈5 sn'de bir).</summary>
     internal static readonly System.TimeSpan FailureWarningInterval = System.TimeSpan.FromMinutes(1);
 
+    /// <summary>Canlı ritimde bekletilen (devri görülmemiş) bir oturumun iki gönderimi arasındaki en kısa süre —
+    /// gönderilmemiş etiket sayısı değişmedikçe (§5.2; Y9'un ≈5 sn'lik turu her seferinde yinelemesin).</summary>
+    public static readonly System.TimeSpan HeldResendInterval = System.TimeSpan.FromSeconds(60);
+
     private System.Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
     private long? _lastFailureWarnAt;
+
+    /// <summary>Bekletilen oturumların son gönderimi (canlı ritimdeki seyreltme). Yalnız gönderim kapısı altında
+    /// okunur ve yazılır.</summary>
+    private readonly Dictionary<string, HeldSend> _held = new(System.StringComparer.Ordinal);
+
+    private readonly record struct HeldSend(long Revision, int Unsent, long SentAt);
+
+    /// <summary>Bu turun ilk geçişinde bekletilen oturum ve o anki gönderilmemiş etiket sayısı.</summary>
+    private readonly record struct HeldInTour(string Id, int Unsent);
 
     public SessionOrderSyncService(
         LicenseApiClient api,
@@ -82,6 +105,7 @@ public sealed class SessionOrderSyncService
         LabelRepository labels,
         ICurrentLicenseProvider licenseProvider,
         SalesSyncEnvelope envelope,
+        HandoverGate handover,
         IClock clock,
         ILogger<SessionOrderSyncService> log,
         SyncStatusTracker? statusTracker = null)
@@ -91,22 +115,34 @@ public sealed class SessionOrderSyncService
         _labels = labels;
         _licenseProvider = licenseProvider;
         _envelope = envelope;
+        _handover = handover;
         _clock = clock;
         _log = log;
         _tracker = statusTracker;
         _tracker?.RegisterPush(PushStatusName);
     }
 
+    /// <param name="SessionsPushed">Onaylanan (ya da uçuşta değiştiği için yeniden gidecek) oturumlar. Bekletilen
+    /// (devri görülmemiş) oturumun gönderimi sayılmaz (§5.2): kapanıştaki boşaltma döngüsü yalnız bir şey
+    /// gönderildikçe yineler.</param>
     public readonly record struct SyncResult(int SessionsPushed, int OrdersPushed);
 
     /// <summary>Bir gönderim turu; gönderim kapısından geçer (eşzamanlı çağrılar sıraya girer). Belirteç kapıyı
     /// beklerken de dinlenir: kapanışın payı dolunca beklemeden çıkar.</summary>
-    public async Task<SyncResult> SyncOnceAsync(System.Threading.CancellationToken ct = default)
+    public Task<SyncResult> SyncOnceAsync(System.Threading.CancellationToken ct = default)
+        => SyncOnceAsync(liveCadence: false, ct);
+
+    /// <param name="liveCadence">Canlı yayın ritmindeki tur (≈5 sn, Y9;
+    /// <see cref="SessionOrderSyncHostedService"/>): bekletilen oturum yalnız gönderilmemiş etiket sayısı değiştiyse
+    /// ya da son gönderiminden <see cref="HeldResendInterval"/> geçtiyse yeniden gider. Boşta ritim, kapanış ve diğer
+    /// çağıranlar seyreltmez.</param>
+    /// <param name="ct">Belirteç.</param>
+    public async Task<SyncResult> SyncOnceAsync(bool liveCadence, System.Threading.CancellationToken ct = default)
     {
         await _pushGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            return await SyncCoreAsync(ct).ConfigureAwait(false);
+            return await SyncCoreAsync(liveCadence, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -114,7 +150,7 @@ public sealed class SessionOrderSyncService
         }
     }
 
-    private async Task<SyncResult> SyncCoreAsync(System.Threading.CancellationToken ct)
+    private async Task<SyncResult> SyncCoreAsync(bool liveCadence, System.Threading.CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_licenseProvider.CurrentLicenseKey))
         {
@@ -144,12 +180,19 @@ public sealed class SessionOrderSyncService
             return default;
         }
 
-        // Önce session'lar (Order.SessionId FK olduğu için)
-        var (sessionsPushed, sessionsOk) = await PushSessionsAsync(licenseId.Value, ct).ConfigureAwait(false);
+        // Kapanış sırası (§5.2, M2): önce oturumlar (Order.SessionId FK olduğu için; bitmiş oturum gönderilmemiş
+        // etiket sayısıyla bekletilir), sonra etiketler, sonra etiketleri bu turda giden bitmiş oturumlar yeniden —
+        // kuyrukları boşaldıysa Release = true ile.
+        var heldThisTour = new List<HeldInTour>();
+        var (sessionsPushed, sessionsOk) = await PushSessionsAsync(
+            licenseId.Value, envelope, liveCadence, heldThisTour, ct).ConfigureAwait(false);
         var (ordersPushed, ordersOk) = await PushOrdersAsync(licenseId.Value, envelope, ct).ConfigureAwait(false);
+        var (releasesPushed, releasesOk) = await PushReleasesAsync(
+            licenseId.Value, envelope, heldThisTour, ct).ConfigureAwait(false);
+        sessionsPushed += releasesPushed;
 
-        // I-3: iki gönderim de başardı ya da gönderecek bir şey yoktu — durum satırı sağlıklı sayar.
-        if (sessionsOk && ordersOk) _tracker?.MarkPushOk(PushStatusName, System.DateTimeOffset.UtcNow);
+        // I-3: gönderimler başardı ya da gönderecek bir şey yoktu — durum satırı sağlıklı sayar.
+        if (sessionsOk && ordersOk && releasesOk) _tracker?.MarkPushOk(PushStatusName, System.DateTimeOffset.UtcNow);
 
         if (sessionsPushed > 0 || ordersPushed > 0)
             _log.LogInformation(
@@ -159,24 +202,120 @@ public sealed class SessionOrderSyncService
         return new SyncResult(sessionsPushed, ordersPushed);
     }
 
-    /// <returns>Gönderilen sayı; <c>Ok</c> = gönderim başarılı ya da gönderecek bir şey yoktu.</returns>
-    private async Task<(int Pushed, bool Ok)> PushSessionsAsync(System.Guid licenseId, System.Threading.CancellationToken ct)
+    /// <summary>Devir adayı (§5.2): bitmiş, bu bilgisayarın yazdığı ve devri henüz görülmemiş oturum.</summary>
+    private static bool IsHandoverCandidate(StreamSession s) =>
+        s.EndedAt is not null && s.Authority == StreamSessionAuthority.Local && s.ReleasedAt is null;
+
+    /// <summary>
+    /// Turun ilk geçişi: kuyruktaki oturumlar. v2'de devir adaylarının kilidi alınır, gönderilmemiş etiketleri sayılır
+    /// ve kilit yanıt uygulanana kadar tutulur. Canlı ritimde son gönderiminden bu yana sayısı değişmemiş ve
+    /// <see cref="HeldResendInterval"/> dolmamış bekletilen oturum atlanır.
+    /// </summary>
+    /// <param name="heldOut">Bu geçişte bekletilen oturumlar (turun son geçişinin girdisi).</param>
+    /// <returns>Sayılan (bekletilmeyen) oturum sayısı; <c>Ok</c> = gönderim başarılı ya da gönderecek bir şey
+    /// yoktu.</returns>
+    private async Task<(int Pushed, bool Ok)> PushSessionsAsync(
+        System.Guid licenseId, SalesPushEnvelope envelope, bool liveCadence, List<HeldInTour> heldOut,
+        System.Threading.CancellationToken ct)
     {
         var batch = _sessions.GetUnsynced(SessionBatchSize);
         if (batch.Count == 0) return (0, true);
 
-        var items = batch.Select(s => new SyncSessionItem(
-            Id: System.Guid.Parse(s.Id),
-            Title: s.Title,
-            StartedAt: System.DateTimeOffset.FromUnixTimeSeconds(s.StartedAt),
-            EndedAt: s.EndedAt.HasValue ? System.DateTimeOffset.FromUnixTimeSeconds(s.EndedAt.Value) : null,
-            Platforms: string.Join(",", s.Platforms),
-            Notes: s.Notes
-        )).ToList();
-
+        // v1 gövdesi (kimlik bozuk) devir bayrağı taşımaz: sunucu bugünkü gibi "EndedAt dolu gelmesi yeter" der.
+        var candidates = envelope.IsV2
+            ? batch.Where(IsHandoverCandidate).Select(s => s.Id).ToList()
+            : new List<string>();
+        var leases = await EnterHandoverAsync(candidates, ct).ConfigureAwait(false);
         try
         {
-            _ = await _api.SyncSessionsAsync(licenseId, new SyncSessionsRequest(items), ct).ConfigureAwait(false);
+            var now = _clock.UnixNow();
+            var unsent = new Dictionary<string, int>(System.StringComparer.Ordinal);
+            foreach (var id in candidates) unsent[id] = _labels.CountUnsyncedBySession(id);
+
+            var send = new List<StreamSession>(batch.Count);
+            foreach (var s in batch)
+            {
+                if (liveCadence && unsent.TryGetValue(s.Id, out var count) && IsThrottled(s, count, now))
+                {
+                    // Sayısı değişmemiş bekletilen oturum: istek yok, kapısı hemen açılır. Etiketleri bu turda
+                    // giderse son geçiş onu yine devreder.
+                    if (leases.Remove(s.Id, out var lease)) lease.Dispose();
+                    heldOut.Add(new HeldInTour(s.Id, count));
+                    continue;
+                }
+                send.Add(s);
+            }
+            if (send.Count == 0) return (0, true);
+
+            return await SendSessionsAsync(licenseId, envelope, send, unsent, now, heldOut, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseAll(leases);
+        }
+    }
+
+    /// <summary>
+    /// Turun son geçişi (§5.2 "Etiketler gittikten sonra oturum aynı turda bir kez daha gönderilir"): ilk geçişte
+    /// gönderilmemiş etiketleri yüzünden bekletilen oturum, kilit altında yeniden sayılır; kuyruğu boşaldıysa
+    /// <c>Release = true</c> ile gider. Hâlâ etiketi bekleyen oturum bu turda yeniden gönderilmez.
+    /// </summary>
+    private async Task<(int Pushed, bool Ok)> PushReleasesAsync(
+        System.Guid licenseId, SalesPushEnvelope envelope, IReadOnlyList<HeldInTour> heldThisTour,
+        System.Threading.CancellationToken ct)
+    {
+        var due = heldThisTour.Where(h => h.Unsent > 0).Select(h => h.Id).ToList();
+        if (due.Count == 0) return (0, true);
+
+        var leases = await EnterHandoverAsync(due, ct).ConfigureAwait(false);
+        try
+        {
+            var now = _clock.UnixNow();
+            var unsent = new Dictionary<string, int>(System.StringComparer.Ordinal);
+            var send = new List<StreamSession>(due.Count);
+            foreach (var id in due)
+            {
+                var s = _sessions.GetById(id);
+                if (s is not null && s.SyncedAt is null && IsHandoverCandidate(s)
+                    && _labels.CountUnsyncedBySession(id) == 0)
+                {
+                    unsent[id] = 0;
+                    send.Add(s);
+                }
+                else if (leases.Remove(id, out var lease))
+                {
+                    lease.Dispose();
+                }
+            }
+            if (send.Count == 0) return (0, true);
+
+            return await SendSessionsAsync(licenseId, envelope, send, unsent, now, heldOut: null, ct)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseAll(leases);
+        }
+    }
+
+    /// <summary>Tek <c>sessions/sync</c> isteği ve yanıtının uygulanması. Çağıran devir adaylarının kilidini
+    /// tutar.</summary>
+    /// <param name="unsent">Devir adaylarının gönderilmemiş etiket sayısı (kilit altında okundu).</param>
+    private async Task<(int Pushed, bool Ok)> SendSessionsAsync(
+        System.Guid licenseId, SalesPushEnvelope envelope, IReadOnlyList<StreamSession> send,
+        IReadOnlyDictionary<string, int> unsent, long now, List<HeldInTour>? heldOut,
+        System.Threading.CancellationToken ct)
+    {
+        var machineName = string.IsNullOrEmpty(_envelope.MachineName) ? null : _envelope.MachineName;
+        var items = send.Select(s => ToSyncSessionItem(s, envelope.IsV2, machineName, unsent)).ToList();
+        var request = envelope.IsV2
+            ? new SyncSessionsRequest(items, envelope.ReplicaId, envelope.Protocol, envelope.SeenModeField)
+            : new SyncSessionsRequest(items);
+
+        List<SyncedSessionDto> response;
+        try
+        {
+            response = await _api.SyncSessionsAsync(licenseId, request, ct).ConfigureAwait(false);
         }
         catch (LicenseApiException ex)
         {
@@ -184,11 +323,91 @@ public sealed class SessionOrderSyncService
             return (0, false);
         }
 
-        var now = _clock.UnixNow();
-        // F05: push'a giden Revision ile onayla — uçuş sırasında satır
-        // değiştiyse MarkSynced 0 satır etkiler, sonraki tick tekrar gönderir.
-        foreach (var s in batch) _sessions.MarkSynced(s.Id, now, s.Revision);
-        return (batch.Count, true);
+        var byId = new Dictionary<System.Guid, SyncedSessionDto>(response.Count);
+        foreach (var r in response) byId[r.Id] = r;
+
+        var pushed = 0;
+        foreach (var s in send)
+        {
+            // Yanıtta olmayan oturum ya da protokolsüz yanıt: eski sunucu — bugünkü gibi onay.
+            var result = byId.TryGetValue(System.Guid.Parse(s.Id), out var dto)
+                ? new SessionPushResult(dto.Protocol, dto.ReleasedAt?.ToUnixTimeSeconds(), dto.Status, dto.Reason)
+                : SessionPushResult.Legacy;
+            var outcome = _sessions.ApplyRelease(s.Id, s.Revision, result, now);
+            if (outcome == SessionAckOutcome.Held)
+            {
+                var count = unsent.GetValueOrDefault(s.Id);
+                _held[s.Id] = new HeldSend(s.Revision, count, now);
+                heldOut?.Add(new HeldInTour(s.Id, count));
+                _log.LogDebug("Oturum {SessionId} devir bekliyor: {Unsent} etiket gönderilmedi", s.Id, count);
+                continue;
+            }
+
+            _held.Remove(s.Id);
+            pushed++;
+            switch (outcome)
+            {
+                case SessionAckOutcome.Released:
+                    _log.LogInformation("Oturum {SessionId} sunucuya devredildi", s.Id);
+                    break;
+                case SessionAckOutcome.OwnedElsewhere:
+                    _log.LogWarning(
+                        "Oturum {SessionId} sunucuda başka kopyanın; kapanışı yok sayıldı, iz SalesConflictLog'da", s.Id);
+                    break;
+            }
+        }
+        return (pushed, true);
+    }
+
+    /// <summary>v2 öğesi (§4.1): makine adı her öğede; devir adayında <c>Release</c> (kuyruk boşsa) ya da
+    /// <c>UnsentLabelCount</c>, öbür oturumlarda <c>Release = false</c>. v1'de üçü de yazılmaz.</summary>
+    private static SyncSessionItem ToSyncSessionItem(
+        StreamSession s, bool v2, string? machineName, IReadOnlyDictionary<string, int> unsent)
+    {
+        var count = unsent.TryGetValue(s.Id, out var n) ? n : (int?)null;
+        return new SyncSessionItem(
+            Id: System.Guid.Parse(s.Id),
+            Title: s.Title,
+            StartedAt: System.DateTimeOffset.FromUnixTimeSeconds(s.StartedAt),
+            EndedAt: s.EndedAt.HasValue ? System.DateTimeOffset.FromUnixTimeSeconds(s.EndedAt.Value) : null,
+            Platforms: string.Join(",", s.Platforms),
+            Notes: s.Notes,
+            Release: v2 ? count == 0 : null,
+            MachineName: v2 ? machineName : null,
+            UnsentLabelCount: v2 && count > 0 ? count : null);
+    }
+
+    /// <summary>Canlı ritimde bekletilen oturumun yeniden gönderimi seyreltilir mi: aynı satır, aynı gönderilmemiş
+    /// sayı ve son gönderiminden <see cref="HeldResendInterval"/> geçmedi.</summary>
+    private bool IsThrottled(StreamSession s, int unsent, long now) =>
+        _held.TryGetValue(s.Id, out var last)
+        && last.Revision == s.Revision
+        && last.Unsent == unsent
+        && now - last.SentAt < (long)HeldResendInterval.TotalSeconds;
+
+    /// <summary>Devir kilitlerini kimlik sırasıyla alır (geri doldurma da aynı sırayla alır: kilitlenme olmaz).
+    /// Belirteç iptal olursa alınanlar bırakılır.</summary>
+    private async Task<Dictionary<string, System.IDisposable>> EnterHandoverAsync(
+        IEnumerable<string> sessionIds, System.Threading.CancellationToken ct)
+    {
+        var leases = new Dictionary<string, System.IDisposable>(System.StringComparer.Ordinal);
+        try
+        {
+            foreach (var id in sessionIds.Distinct(System.StringComparer.Ordinal).OrderBy(i => i, System.StringComparer.Ordinal))
+                leases[id] = await _handover.EnterAsync(id, ct).ConfigureAwait(false);
+            return leases;
+        }
+        catch
+        {
+            ReleaseAll(leases);
+            throw;
+        }
+    }
+
+    private static void ReleaseAll(Dictionary<string, System.IDisposable> leases)
+    {
+        foreach (var lease in leases.Values) lease.Dispose();
+        leases.Clear();
     }
 
     /// <returns>Gönderilen sayı; <c>Ok</c> = gönderim başarılı ya da gönderecek bir şey yoktu.</returns>

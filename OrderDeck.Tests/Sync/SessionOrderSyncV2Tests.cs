@@ -61,7 +61,8 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
             null, 1, 1, false, null, null, 0, 0m, null, null, null));
         _sessions.Insert(new StreamSession(_sessionId, "Örnek yayın", 1_760_000_000L, null, new[] { "tiktok" }, null));
         _envelope = TestSalesEnvelope.For(_db, _license, _envelopeLog);
-        _svc = new SessionOrderSyncService(Api(), _sessions, _labels, _license, _envelope, _clock, _log);
+        _svc = new SessionOrderSyncService(Api(), _sessions, _labels, _license, _envelope, new HandoverGate(),
+            _clock, _log);
     }
 
     public void Dispose()
@@ -452,15 +453,43 @@ public sealed class SessionOrderSyncV2Tests : IDisposable
     }
 
     [Fact]
-    public async Task Oturumlar_W1_07ye_kadar_v1_govdesiyle_gider()
+    public async Task Oturumlar_v2_zarfi_ve_makine_adiyla_gider_bitmis_bos_kuyruklu_oturum_devredilir()
     {
         _sessions.End(_sessionId, 1_760_000_900L);
 
         await _svc.SyncOnceAsync();
 
+        _server.Faults.Should().BeEmpty();
         var root = _server.Calls(FakeSalesServer.SessionsSync).Single().Json;
+        root.GetProperty("replicaId").GetGuid().Should().Be(ReplicaId);
+        root.GetProperty("protocol").GetInt32().Should().Be(2);
+        root.GetProperty("seenMode").GetInt32().Should().Be(0);
+        var item = root.GetProperty("sessions").EnumerateArray().Single();
+        item.GetProperty("machineName").GetString().Should().Be(_envelope.MachineName);
+        item.GetProperty("release").GetBoolean().Should().BeTrue("etiket kuyruğu boş (M2)");
+        item.TryGetProperty("unsentLabelCount", out _).Should().BeFalse();
+        var session = _sessions.GetById(_sessionId)!;
+        session.SyncedAt.Should().NotBeNull();
+        session.ReleasedAt.Should().NotBeNull();
+        session.Authority.Should().Be(StreamSessionAuthority.Local, "mod Off: Authority yazılmaz");
+    }
+
+    [Fact]
+    public async Task Kopya_kimligi_bozuksa_oturum_v1_govdesiyle_gider_devir_alanlari_yazilmaz()
+    {
+        Sql("UPDATE _meta SET ReplicaId = 'bozuk' WHERE Id = 1");
+        _sessions.End(_sessionId, 1_760_000_900L);
+        AddLabel();
+
+        await _svc.SyncOnceAsync();
+
+        _server.Faults.Should().BeEmpty("v1 gövdesi v2 öğe alanı taşımaz");
+        var root = _server.Calls(FakeSalesServer.SessionsSync)[0].Json;
         foreach (var field in new[] { "replicaId", "protocol", "seenMode" })
-            root.TryGetProperty(field, out _).Should().BeFalse("sunucunun eski devir yolu sürer");
-        _sessions.GetById(_sessionId)!.SyncedAt.Should().NotBeNull();
+            root.TryGetProperty(field, out _).Should().BeFalse();
+        var item = root.GetProperty("sessions").EnumerateArray().Single();
+        foreach (var field in new[] { "release", "machineName", "unsentLabelCount" })
+            item.TryGetProperty(field, out _).Should().BeFalse($"v1 öğesi {field} taşımaz");
+        _sessions.GetById(_sessionId)!.SyncedAt.Should().NotBeNull("sunucu v1 kapanışını bugünkü gibi devreder");
     }
 }

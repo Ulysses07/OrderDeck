@@ -90,7 +90,7 @@ public sealed class SessionOrderSyncServiceTests
 
         var license = new FakeLicenseProvider();
         var svc = new SessionOrderSyncService(api, sessions, labels,
-            license, TestSalesEnvelope.For(db, license), new FakeClock(),
+            license, TestSalesEnvelope.For(db, license), new HandoverGate(), new FakeClock(),
             NullLogger<SessionOrderSyncService>.Instance, tracker);
 
         return new Fx(svc, sessions, labels, db, capturedOrdersJson);

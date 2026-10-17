@@ -22,6 +22,10 @@ namespace OrderDeck.App.Services.Sync;
 /// hiçbir istek atmaz (<see cref="SessionOrderSyncService"/>'in ucuz kuyruk denetimi). Tur arka plan iş
 /// parçacığında ve gönderim kapısından geçer; canlı yol (etiket yazma, baskı, iptal) onu beklemez.</para>
 ///
+/// <para>Canlı ritimdeki tur (<c>liveCadence</c>, W1-07): devir bekleyen bitmiş oturum her tıkta değil, gönderilmemiş
+/// etiket sayısı değişince ya da en çok <see cref="SessionOrderSyncService.HeldResendInterval"/>'da bir yeniden
+/// gider.</para>
+///
 /// <para><b>Hatalar:</b> tur hata verirse (yerel SQLite hatası — HTTP hatalarını servis kendisi yutar) uyarı en çok
 /// <see cref="FailureWarningInterval"/>'da bir yazılır, arası Debug; zamanlayıcı sürer.</para>
 /// </summary>
@@ -104,8 +108,10 @@ public sealed class SessionOrderSyncHostedService : BackgroundService
             live = false;
         }
 
-        var due = live
-            || _wasLive                                                     // yayın bu tıkta bitti: bir tur daha
+        // Canlı ritim (yayında ya da yayının bittiği görülen tıkta): devir bekleyen oturum her tıkta değil, sayısı
+        // değişince ya da dakikada bir yeniden gider (SessionOrderSyncService.HeldResendInterval).
+        var liveCadence = live || _wasLive;
+        var due = liveCadence                                               // _wasLive: yayın bu tıkta bitti, bir tur daha
             || _lastTourAt is not { } last
             || _time.GetElapsedTime(last) >= _idleInterval;
         _wasLive = live;
@@ -114,7 +120,7 @@ public sealed class SessionOrderSyncHostedService : BackgroundService
         _lastTourAt = _time.GetTimestamp();
         try
         {
-            await _syncService.SyncOnceAsync(ct).ConfigureAwait(false);
+            await _syncService.SyncOnceAsync(liveCadence, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

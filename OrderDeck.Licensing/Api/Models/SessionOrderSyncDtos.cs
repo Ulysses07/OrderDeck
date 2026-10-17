@@ -3,21 +3,47 @@ using System.Text.Json.Serialization;
 namespace OrderDeck.Licensing.Api.Models;
 
 /// <summary>WPF → LicenseServer push: tek StreamSession item (PR siparis-sync 2026-05-13).</summary>
+/// <param name="Release">v2 (spec 2026-10-13 §4.1, §5.2, M2): yayın bitti ve etiket kuyruğu boş — yayını sunucuya
+/// devret. Aktif oturumda <c>false</c>. Boşken (v1) telde yazılmaz.</param>
+/// <param name="MachineName">v2: gönderen bilgisayarın adı (sunucuda <c>OwnerMachineName</c>). Boşken yazılmaz.</param>
+/// <param name="UnsentLabelCount">v2, bitmiş oturum, <c>Release = false</c>: yayının gönderilmemiş etiket sayısı
+/// (devrediliyor çipi ve CLI gösterir). Boşken yazılmaz.</param>
 public sealed record SyncSessionItem(
     System.Guid Id,
     string? Title,
     System.DateTimeOffset StartedAt,
     System.DateTimeOffset? EndedAt,
     string Platforms,         // comma-separated: "instagram,youtube"
-    string? Notes);
+    string? Notes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Release = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? MachineName = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? UnsentLabelCount = null);
 
-public sealed record SyncSessionsRequest(System.Collections.Generic.IReadOnlyList<SyncSessionItem> Sessions);
+/// <param name="ReplicaId">v2 zarfı (spec 2026-10-13 §4.0): kopya kimliği, <c>Protocol = 2</c> ve görülen kip.
+/// Boşken telde hiç yazılmaz — zarfsız gövde bugünkü (v1) gövdeyle birebir aynıdır.</param>
+public sealed record SyncSessionsRequest(
+    System.Collections.Generic.IReadOnlyList<SyncSessionItem> Sessions,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] System.Guid? ReplicaId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Protocol = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? SeenMode = null);
 
+/// <summary>
+/// <c>sessions/sync</c> yanıtının öğesi (sunucuda <c>LicensesSessionsSyncController.SyncedSessionDto</c>). Eski sunucu
+/// yeni alanları göndermez: <see cref="Protocol"/> boşsa sunucu eski sürümdür (spec 2026-10-13 §5.2).
+/// </summary>
+/// <param name="ReleasedAt">Sunucunun devir anı; devredilmemiş oturumda boş.</param>
+/// <param name="Status"><c>applied</c> ya da <c>ignored</c>.</param>
+/// <param name="Reason"><c>ignored</c>'ın nedeni: <c>session-owned-elsewhere</c> ya da <c>session-released</c>.</param>
 public sealed record SyncedSessionDto(
     System.Guid Id, string? Title,
     System.DateTimeOffset StartedAt, System.DateTimeOffset? EndedAt,
     string Platforms, string? Notes,
-    System.DateTimeOffset UpdatedAt);
+    System.DateTimeOffset UpdatedAt,
+    System.Guid? OwnerReplicaId = null,
+    System.DateTimeOffset? ReleasedAt = null,
+    int? Protocol = null,
+    string? Status = null,
+    string? Reason = null);
 
 /// <summary>WPF → LicenseServer push: tek Order (Label) item.</summary>
 /// <param name="BaseVersion">v2 (spec 2026-10-13 §4.2, K2): satırın istemcideki <c>ServerVersion</c>'ı — son

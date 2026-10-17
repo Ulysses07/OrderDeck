@@ -34,6 +34,11 @@ namespace OrderDeck.Tests.Sync;
 /// eski sunucunun yanıtını (v1 listesi ya da <c>[]</c>) taklit eder. <see cref="Hold"/> bir ucu bırakılana kadar
 /// bekletir, <see cref="DuringPush"/> istek "işlenirken" çalışır (uçuştaki yerel değişiklik), <see cref="Offline"/>
 /// her isteği ağ hatasına çevirir; <see cref="MaxInFlight"/> eşzamanlı istek sayısının tepesini verir.</para>
+///
+/// <para><b>Oturumlar ve devir</b> (W1-07): sahiplik, <c>Release</c> ve <c>UnsentLabelCount</c> sunucunun kuralıyla
+/// (<see cref="Session"/>); <see cref="WithheldReleases"/> geri alma penceresini, <see cref="ForceEnd"/> başka
+/// bilgisayarın force-end'ini, <see cref="SetSessionOwner"/> başka kopyanın oturumunu, <see cref="SessionsResponse"/>
+/// S1 öncesi sunucuyu taklit eder.</para>
 /// </summary>
 internal sealed class FakeSalesServer : HttpMessageHandler
 {
@@ -447,33 +452,134 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         PriceCorrectedAt = null, PaidPrice = null, ShipmentId = null,
     };
 
-    /// <summary><c>sessions/sync</c> — W1-06'da yalnız kayıt ve bugünkü (v1) devir yolu: EndedAt tekdüze, EndedAt
-    /// dolu gelince devredilir.</summary>
+    /// <summary>
+    /// <c>sessions/sync</c> (W1-07) — <c>LicensesSessionsSyncController.SyncSessions</c>'ın aynası: EndedAt tekdüze;
+    /// v2 eklemesinde çağıran sahip olur; devredilmiş oturumun başlık/platform/notu yok sayılır
+    /// (<c>session-released</c>); sahip olmayan v2 kopyasının kapanışı ve <c>Release</c>'i yazılmaz
+    /// (<c>session-owned-elsewhere</c>). Devir: bitmiş ∧ devredilmemiş ∧ (v1 ∨ sahipsiz ∨ sahibin
+    /// <c>Release = true</c>'su); sahibin <c>Release = false</c>'u <c>UnsentLabelCount</c>'u yazar. Yanıt her
+    /// biçimde <c>Protocol = 2</c> taşır (sunucu gibi); <see cref="SessionsResponse"/> eski sunucuyu taklit eder.
+    /// </summary>
     private HttpResponseMessage HandleSessions(Guid licenseId, string raw)
     {
         var body = JsonSerializer.Deserialize<SessionsBody>(raw, Web);
         if (body?.Sessions is null) return Invalid("sessions/sync gövdesi yok");
         if (!TryReadEnvelope(body.ReplicaId, body.Protocol, body.SeenMode, out var envelope, out var error))
             return Invalid(error!);
+        if (body.Sessions.Count > MaxPushBatch) return Invalid("batch-too-large");
+        if (body.Sessions.FirstOrDefault(s => s.MachineName is { Length: > MaxNameLength } || s.UnsentLabelCount < 0)
+            is { } invalid)
+            return Invalid($"invalid-session: {invalid.Id}");
+        if (envelope is null && body.Sessions.Any(s => s.Release || s.MachineName is not null || s.UnsentLabelCount is not null))
+            return Invalid("v1 gövdesi v2 öğe alanı taşımamalı");
 
         var now = DateTimeOffset.UtcNow;
         var results = new List<SessionResultBody>();
         lock (_gate)
         {
             if (envelope is { } e) Touch(licenseId, e.ReplicaId, e.SeenMode);
-            foreach (var s in body.Sessions)
+            foreach (var item in body.Sessions)
             {
-                _serverSessions.TryGetValue(s.Id, out var current);
-                var endedAt = current?.Row.EndedAt ?? s.EndedAt;
-                var releasedAt = current?.ReleasedAt ?? (endedAt is not null ? now : null);
-                _serverSessions[s.Id] = new ServerSession(s with { EndedAt = endedAt }, releasedAt);
-                results.Add(new SessionResultBody(s.Id, s.Title, s.StartedAt, endedAt, s.Platforms, s.Notes, now,
-                    null, releasedAt, 2, "applied", null));
+                string? reason = null;
+                SessionRole role;
+                if (_serverSessions.TryGetValue(item.Id, out var current))
+                {
+                    if (current.ReleasedAt is not null)
+                    {
+                        if (current.Title != item.Title || current.Platforms != item.Platforms || current.Notes != item.Notes)
+                            reason = "session-released";
+                        current.EndedAt ??= item.EndedAt;
+                        results.Add(current.ToResult(now, reason));
+                        continue;
+                    }
+                    role = envelope is null ? SessionRole.Legacy
+                        : current.OwnerReplicaId is null ? SessionRole.Unowned
+                        : current.OwnerReplicaId == envelope.ReplicaId ? SessionRole.Owner
+                        : SessionRole.NonOwner;
+                    current.Title = item.Title;
+                    current.Platforms = item.Platforms;
+                    current.Notes = item.Notes;
+                    if (role != SessionRole.NonOwner) current.EndedAt ??= item.EndedAt;
+                    else if ((current.EndedAt is null && item.EndedAt is not null) || item.Release)
+                        reason = "session-owned-elsewhere";
+                }
+                else
+                {
+                    current = new ServerSession
+                    {
+                        Id = item.Id, Title = item.Title, StartedAt = item.StartedAt, EndedAt = item.EndedAt,
+                        Platforms = item.Platforms, Notes = item.Notes,
+                        OwnerReplicaId = envelope?.ReplicaId,
+                        OwnerMachineName = envelope is null ? null : item.MachineName,
+                    };
+                    _serverSessions[item.Id] = current;
+                    role = envelope is null ? SessionRole.Legacy : SessionRole.Owner;
+                }
+
+                if (current.EndedAt is not null)
+                {
+                    switch (role)
+                    {
+                        case SessionRole.Legacy or SessionRole.Unowned:
+                            current.ReleasedAt = now;
+                            break;
+                        case SessionRole.Owner when item.Release:
+                            if (!WithheldReleases.ContainsKey(item.Id)) current.ReleasedAt = now;
+                            break;
+                        case SessionRole.Owner:
+                            current.UnsentLabelCount = item.UnsentLabelCount;
+                            break;
+                    }
+                }
+                results.Add(current.ToResult(now, reason));
             }
         }
-        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(results, Web));
+
+        return SessionsResponse switch
+        {
+            PushResponseKind.EmptyList => FakeHttpMessageHandler.Json(200, "[]"),
+            PushResponseKind.V1List => FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(
+                results.Select(r => new V1SessionBody(r.Id, r.Title, r.StartedAt, r.EndedAt, r.Platforms, r.Notes,
+                    r.UpdatedAt)).ToList(), Web)),
+            _ => FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(results, Web)),
+        };
     }
     private readonly Dictionary<Guid, ServerSession> _serverSessions = new();
+
+    private enum SessionRole { Legacy, Unowned, Owner, NonOwner }
+
+    /// <summary>Sunucudaki oturum satırı (anlık kopya).</summary>
+    public ServerSessionView? Session(Guid id)
+    {
+        lock (_gate) return _serverSessions.TryGetValue(id, out var s) ? s.View() : null;
+    }
+
+    /// <summary><c>sessions/sync</c> yanıtının biçimi: Auto = sunucunun bugünkü yanıtı (<c>Protocol = 2</c>); V1List
+    /// ve EmptyList eski sunucuyu (S1 öncesi) taklit eder.</summary>
+    public PushResponseKind SessionsResponse { get; set; }
+
+    /// <summary>Geri alma penceresi (§5.2, M2): bu oturumlara gelen sahibin <c>Release = true</c>'su devretmez —
+    /// yanıt <c>Protocol = 2</c> taşır ama <c>ReleasedAt</c> boştur (eski imaj devri yazmadı).</summary>
+    public ConcurrentDictionary<Guid, byte> WithheldReleases { get; } = new();
+
+    /// <summary>Başka bilgisayardan force-end (§4.6): oturum sunucuda bitirilir ve devredilir.</summary>
+    public void ForceEnd(Guid id)
+    {
+        lock (_gate)
+        {
+            var s = _serverSessions[id];
+            var now = DateTimeOffset.UtcNow;
+            s.EndedAt ??= now;
+            s.ReleasedAt = now;
+            s.ForceEndedBy = Guid.NewGuid().ToString();
+        }
+    }
+
+    /// <summary>Oturumun sahibini başka bir kopya yapar (§8.7: devralamayan geri yüklenmiş kopya).</summary>
+    public void SetSessionOwner(Guid id, Guid ownerReplicaId)
+    {
+        lock (_gate) _serverSessions[id].OwnerReplicaId = ownerReplicaId;
+    }
 
     /// <summary><c>shipments/sync</c> — v2 boş <c>OriginReplicaId</c>'yi çağıranla doldurur; Shipped tek yönlü (§7.1).
     /// Yanıt v2'ye akış öğesi, v1'e bugünkü liste.</summary>
@@ -744,13 +850,43 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         Guid Id, string? Title, DateTimeOffset StartedAt, DateTimeOffset? EndedAt, string Platforms, string? Notes,
         bool Release, string? MachineName, int? UnsentLabelCount);
 
-    internal sealed record ServerSession(SessionBody Row, DateTimeOffset? ReleasedAt);
+    /// <summary>Sunucunun <c>StreamSessions</c> satırının bu testlerin baktığı kısmı.</summary>
+    private sealed class ServerSession
+    {
+        public Guid Id;
+        public string? Title;
+        public DateTimeOffset StartedAt;
+        public DateTimeOffset? EndedAt;
+        public string Platforms = "";
+        public string? Notes;
+        public Guid? OwnerReplicaId;
+        public string? OwnerMachineName;
+        public DateTimeOffset? ReleasedAt;
+        public int? UnsentLabelCount;
+        public string? ForceEndedBy;
+
+        public SessionResultBody ToResult(DateTimeOffset now, string? reason) => new(
+            Id, Title, StartedAt, EndedAt, Platforms, Notes, now, OwnerReplicaId, ReleasedAt, 2,
+            reason is null ? "applied" : "ignored", reason);
+
+        public ServerSessionView View() => new(
+            Id, Title, EndedAt, OwnerReplicaId, OwnerMachineName, ReleasedAt, UnsentLabelCount, ForceEndedBy);
+    }
+
+    internal sealed record ServerSessionView(
+        Guid Id, string? Title, DateTimeOffset? EndedAt, Guid? OwnerReplicaId, string? OwnerMachineName,
+        DateTimeOffset? ReleasedAt, int? UnsentLabelCount, string? ForceEndedBy);
 
     /// <summary><c>LicensesSessionsSyncController.SyncedSessionDto</c>.</summary>
     internal sealed record SessionResultBody(
         Guid Id, string? Title, DateTimeOffset StartedAt, DateTimeOffset? EndedAt, string Platforms, string? Notes,
         DateTimeOffset UpdatedAt, Guid? OwnerReplicaId, DateTimeOffset? ReleasedAt, int Protocol, string Status,
         string? Reason);
+
+    /// <summary>S1 öncesi sunucunun oturum yanıtı (yeni alan yok).</summary>
+    internal sealed record V1SessionBody(
+        Guid Id, string? Title, DateTimeOffset StartedAt, DateTimeOffset? EndedAt, string Platforms, string? Notes,
+        DateTimeOffset UpdatedAt);
 
     /// <summary><c>LicensesShipmentsSyncController.SyncRequest</c>.</summary>
     internal sealed record ShipmentsBody(List<ShipmentBody>? Shipments, Guid? ReplicaId, int? Protocol, int? SeenMode);

@@ -187,10 +187,18 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
 
     // ─── Session + Order sync (PR siparis-sync 2026-05-13) ────────────────
 
-    public Task<List<SyncedSessionDto>> SyncSessionsAsync(
+    /// <summary>
+    /// <c>sessions/sync</c> (spec 2026-10-13 §4.1). Yanıt öğesi sunucudaki satırdır; v2 sunucu sahipliği, devir anını
+    /// ve <c>Protocol = 2</c>'yi ekler, eski sunucu eklemez (aynı tiple okunur). Çözümlenemeyen gövde
+    /// <see cref="LicenseApiUnknownException"/>'a çevrilir; boş gövde boş listedir.
+    /// </summary>
+    public async Task<List<SyncedSessionDto>> SyncSessionsAsync(
         Guid licenseId, SyncSessionsRequest req, CancellationToken ct = default)
-        => PostJsonExpectingJsonAsync<SyncSessionsRequest, List<SyncedSessionDto>>(
+    {
+        var rows = await PostJsonExpectingJsonOrUnknownAsync<SyncSessionsRequest, List<SyncedSessionDto?>>(
             $"/api/v1/licenses/{licenseId}/sessions/sync", req, ct);
+        return rows?.OfType<SyncedSessionDto>().ToList() ?? new();
+    }
 
     public Task<List<SyncedOrderDto>> SyncOrdersAsync(
         Guid licenseId, SyncOrdersRequest req, CancellationToken ct = default)

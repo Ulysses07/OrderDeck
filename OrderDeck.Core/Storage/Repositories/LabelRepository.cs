@@ -404,6 +404,15 @@ public sealed class LabelRepository
         return conn.ExecuteScalar<long>("SELECT EXISTS(SELECT 1 FROM Label WHERE SyncedAt IS NULL)") != 0;
     }
 
+    /// <summary>Bir yayının gönderilmemiş etiket sayısı (spec 2026-10-13 §5.2): kapanışın <c>Release</c>'i yalnız
+    /// bu 0 iken gönderilir, değilse sayı <c>UnsentLabelCount</c> olarak gider. Devir kapısı altında okunur.</summary>
+    public int CountUnsyncedBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM Label WHERE SessionId = @sessionId AND SyncedAt IS NULL", new { sessionId });
+    }
+
     /// <summary>
     /// v2 gönderiminin kuyruğu (spec 2026-10-13 §4.2, §5.2): <see cref="GetUnsynced"/>'in sırası ve süzgeci, ek olarak
     /// 048 alanları, yedek ebeveyni, kargo bağı ve <c>ServerVersion</c> (<c>baseVersion</c>). <see cref="Label"/>

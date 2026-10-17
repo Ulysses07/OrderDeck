@@ -75,7 +75,7 @@ public sealed class SessionOrderSyncCadenceTests : IDisposable
             new HttpClient(_server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") },
             new LicenseTokenStore());
         _svc = new SessionOrderSyncService(api, _sessions, _labels, _license, TestSalesEnvelope.For(_db, _license),
-            _clock, _log);
+            new HandoverGate(), _clock, _log);
         _hosted = new SessionOrderSyncHostedService(_svc, _sessions, _hostedLog,
             Tick, SessionOrderSyncHostedService.IdleInterval, _time);
     }
