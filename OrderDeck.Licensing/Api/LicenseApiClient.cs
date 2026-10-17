@@ -299,6 +299,76 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             "Geri doldurma yanıtı bozuk geldi (gövde null).");
     }
 
+    /// <summary>
+    /// <c>POST sales/commands</c> (spec 2026-10-13 §4.6). FIRLATMAZ — komutun her sonucu çağıranın kararıdır:
+    /// <list type="bullet">
+    ///   <item>200 → <see cref="SalesCommandTransport.Ok"/>; gövde eksiksiz olmalı (liste, öğe ya da sonuç null değil),
+    ///   değilse <see cref="SalesCommandTransport.Failed"/> — komut uygulanmış olabilir, aynı niyet aynen yeniden
+    ///   gönderilince yeniden oynatma güncel satırları döner.</item>
+    ///   <item>400 ve 409 başlıklı ProblemDetails → <see cref="SalesCommandTransport.Problem"/> (ek üyeleriyle). Başlıksız
+    ///   ya da çözümlenemeyen gövde <see cref="SalesCommandTransport.Failed"/>.</item>
+    ///   <item>404 → <see cref="SalesCommandTransport.EndpointMissing"/> (komut ucu yok, §8.6).</item>
+    ///   <item>Ağ hatası ve zaman aşımı → <see cref="SalesCommandTransport.Offline"/>.</item>
+    ///   <item>5xx ve öbür kodlar → <see cref="SalesCommandTransport.Failed"/>.</item>
+    /// </list>
+    /// Yalnız <paramref name="ct"/> iptali fırlatır (<see cref="OperationCanceledException"/>).
+    /// </summary>
+    public async Task<SalesCommandHttpResult> PostSalesCommandAsync(
+        Guid licenseId, SalesCommandRequest req, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await SendJsonAsync(HttpMethod.Post, $"/api/v1/licenses/{licenseId}/sales/commands", req, ct)
+                .ConfigureAwait(false);
+        }
+        catch (LicenseApiNetworkException ex)
+        {
+            return new SalesCommandHttpResult(SalesCommandTransport.Offline, 0, Error: ex.Message);
+        }
+
+        using (resp)
+        {
+            var status = (int)resp.StatusCode;
+            if (resp.IsSuccessStatusCode)
+            {
+                SalesCommandResponse? body;
+                try { body = await DeserializeAsync<SalesCommandResponse?>(resp, ct).ConfigureAwait(false); }
+                catch (JsonException ex)
+                {
+                    return new SalesCommandHttpResult(SalesCommandTransport.Failed, status,
+                        Error: $"Komut yanıtı çözümlenemedi: {ex.Message}");
+                }
+                if (body?.Orders is null || body.Shipments is null || body.Sessions is null || body.Result is null
+                    || string.IsNullOrEmpty(body.Status)
+                    || body.Orders.Any(o => o is null) || body.Shipments.Any(s => s is null)
+                    || body.Sessions.Any(s => s is null))
+                    return new SalesCommandHttpResult(SalesCommandTransport.Failed, status,
+                        Error: "Komut yanıtı bozuk geldi (gövde, liste, öğe ya da sonuç eksik).");
+                return new SalesCommandHttpResult(SalesCommandTransport.Ok, status, Response: body);
+            }
+
+            if (status == (int)HttpStatusCode.NotFound)
+                return new SalesCommandHttpResult(SalesCommandTransport.EndpointMissing, status);
+
+            if (status is (int)HttpStatusCode.BadRequest or (int)HttpStatusCode.Conflict)
+            {
+                SalesCommandProblem? problem = null;
+                try { problem = await resp.Content.ReadFromJsonAsync<SalesCommandProblem>(JsonOpts, ct).ConfigureAwait(false); }
+                catch (JsonException) { /* başlıksız sayılır */ }
+                catch (NotSupportedException) { /* problem+json değil */ }
+                if (!string.IsNullOrEmpty(problem?.Code)
+                    && problem.Current?.Any(o => o is null) != true
+                    && problem.CurrentShipments?.Any(s => s is null) != true)
+                    return new SalesCommandHttpResult(SalesCommandTransport.Problem, status, Problem: problem);
+                return new SalesCommandHttpResult(SalesCommandTransport.Failed, status,
+                    Error: $"HTTP {status} başlıklı bir ProblemDetails taşımıyor.");
+            }
+
+            return new SalesCommandHttpResult(SalesCommandTransport.Failed, status, Error: $"HTTP {status}");
+        }
+    }
+
     // ─── WhatsApp template sync (Faz 2, 2026-05-15) ───────────────────────
 
     /// <summary>PaymentSettings'in WhatsApp template'lerini server'a push'lar.
