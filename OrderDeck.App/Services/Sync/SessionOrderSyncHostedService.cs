@@ -14,6 +14,10 @@ namespace OrderDeck.App.Services.Sync;
 /// eksik kalan en çok son birkaç saniyedir.</item>
 /// <item>Yayının bittiği görülen tıkta bir tur daha: kapanış ve son etiketler aktif yayın yokken uygulanan bekleme
 /// olmadan gider.</item>
+/// <item>Sonra da, tur etiket gönderdikçe ve bu bilgisayarın devri bekleyen bir oturumu kuyrukta durdukça
+/// (<see cref="SessionRepository.HasPendingHandover"/>) her tıkta tur: turda en çok 100 etiket gittiği için büyük
+/// kuyrukla biten yayının devri dakikalarca sürmesin (§5.2, Y9). Tur bir şey gönderemezse (çevrimdışı, kalıcı olarak
+/// gönderilemeyen etiket, §12 risk 4) boşta ritme dönülür.</item>
 /// <item>Aktif yayın yokken en çok <see cref="IdleInterval"/>'da (60 sn, bugünkü ritim) bir tur. Açılıştaki ilk
 /// tıkta tur koşar.</item>
 /// </list>
@@ -49,6 +53,10 @@ public sealed class SessionOrderSyncHostedService : BackgroundService
 
     private long? _lastTourAt;
     private bool _wasLive;
+
+    /// <summary>Son tur aktif yayın yokken etiket gönderdi ve bu bilgisayarın devri bekleyen bir oturumu hâlâ kuyrukta:
+    /// sonraki tıkta da tur.</summary>
+    private bool _handingOver;
     private long? _lastWarnAt;
 
     public SessionOrderSyncHostedService(
@@ -108,19 +116,22 @@ public sealed class SessionOrderSyncHostedService : BackgroundService
             live = false;
         }
 
-        // Canlı ritim (yayında ya da yayının bittiği görülen tıkta): devir bekleyen oturum her tıkta değil, sayısı
-        // değişince ya da dakikada bir yeniden gider (SessionOrderSyncService.HeldResendInterval).
-        var liveCadence = live || _wasLive;
+        // Canlı ritim (yayında, yayının bittiği görülen tıkta ya da devir bekleyen kuyruk gittikçe): devir bekleyen
+        // oturum her tıkta değil, sayısı değişince ya da dakikada bir yeniden gider
+        // (SessionOrderSyncService.HeldResendInterval).
+        var liveCadence = live || _wasLive || _handingOver;
         var due = liveCadence                                               // _wasLive: yayın bu tıkta bitti, bir tur daha
             || _lastTourAt is not { } last
             || _time.GetElapsedTime(last) >= _idleInterval;
         _wasLive = live;
+        _handingOver = false;
         if (!due) return false;
 
         _lastTourAt = _time.GetTimestamp();
         try
         {
-            await _syncService.SyncOnceAsync(liveCadence, ct).ConfigureAwait(false);
+            var result = await _syncService.SyncOnceAsync(liveCadence, ct).ConfigureAwait(false);
+            _handingOver = !live && result.OrdersPushed > 0 && _sessions.HasPendingHandover();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

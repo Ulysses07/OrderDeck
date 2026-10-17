@@ -84,6 +84,18 @@ public sealed class SessionRepository
         return conn.ExecuteScalar<long>("SELECT EXISTS(SELECT 1 FROM StreamSession WHERE SyncedAt IS NULL)") != 0;
     }
 
+    /// <summary>Bu bilgisayarın devri bekleyen bir oturumu var mı (spec 2026-10-13 §5.2): bitmiş,
+    /// <c>Authority = 'local'</c>, devri görülmemiş ve kuyrukta (gönderilmemiş etiketleri yüzünden bekletiliyor). Kısmi
+    /// <c>IX_StreamSession_SyncedAt</c> dizininden okur.</summary>
+    public bool HasPendingHandover()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            @"SELECT EXISTS(SELECT 1 FROM StreamSession
+                            WHERE SyncedAt IS NULL AND EndedAt IS NOT NULL AND ReleasedAt IS NULL
+                              AND Authority = 'local')") != 0;
+    }
+
     /// <summary>
     /// PR siparis-sync (2026-05-13): henüz LicenseServer'a push edilmemiş
     /// session'lar. Outbox query.

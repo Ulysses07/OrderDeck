@@ -407,6 +407,7 @@ Mod On'daki farklar:
   - `Release = NOT EXISTS (Label WHERE SessionId = @id AND SyncedAt IS NULL)`, devir kapısı altında hesaplanır. `Release = false` ise öğe gönderilmemiş etiket sayısını (`UnsentLabelCount`) taşır; başka bilgisayarın çipi ve CLI bunu gösterir (§4.1, §5.7).
   - Oturum satırı, devir sunucudan görülene kadar `MarkSynced` **edilmez**. Kuyrukta kalır ve her turda yeniden gider. Böylece geri alma penceresinde kapanış kaybolmaz (hakem 2'nin D2 karşı örneği 2).
   - Etiketler gittikten sonra oturum aynı turda bir kez daha gönderilir.
+  - Turda en çok 100 etiket gider. Yayın bittikten sonra da, tur etiket gönderdikçe ve kendi oturumu devir bekledikçe ritim canlı (≈5 sn) kalır; büyük kuyrukla biten yayının devri dakikalara kaymaz (Y9). Tur bir şey gönderemezse (çevrimdışı, kalıcı olarak gönderilemeyen etiket, §12 risk 4) boşta ritme döner.
   - Bekletilen (`Release = false`) oturumun yeniden gönderimi "gönderilen kayıt" sayılmaz. Kapanıştaki boşaltma döngüsü (`SyncFlushService.cs:90-94`, tur bir şey gönderdikçe yineliyor) bu yüzden boşuna dönmez.
   - Yanıtta `ReleasedAt` gelirse tek bir SyncApplyScope işleminde `ReleasedAt` ve `MarkSynced` yazılır; `Authority = 'server'` **yalnız `SalesSyncState.Mode = 1` iken** yazılır. Mod Off'ta oturum `local` kalır ve bugünkü gibi düzenlenir; mod On'a geçişte §8.4 adım 3 onu çevirir.
   - Yanıtta `Protocol = 2` yoksa sunucu eski sürümdür; bugünkü gibi `MarkSynced` yapılır.

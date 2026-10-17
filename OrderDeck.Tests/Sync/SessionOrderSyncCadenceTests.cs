@@ -213,6 +213,42 @@ public sealed class SessionOrderSyncCadenceTests : IDisposable
     }
 
     [Fact]
+    public async Task Yayin_bitince_devir_bekleyen_kuyruk_gonderildikce_canli_ritim_surer_devirden_sonra_bosta()
+    {
+        var session = StartStream();
+        (await _hosted.TickAsync(CancellationToken.None)).Should().BeTrue("açılıştaki ilk tık");
+        // "Hepsini bas ve yayını bitir": kuyrukta 250 gönderilmemiş etiket varken yayın biter.
+        var labels = Enumerable.Range(0, 250).Select(_ => AddLabel(session)).ToList();
+        _sessions.End(session, _clock.Now);
+
+        (await NextTickAsync()).Should().BeTrue("yayının bittiği görülen tık");
+        _sessions.GetById(session)!.ReleasedAt.Should().BeNull("turda 100 etiket: 150 kaldı, devir bekliyor");
+        (await NextTickAsync()).Should().BeTrue("kendi oturumu devir beklerken ve kuyruk gittikçe ritim canlı kalır");
+        (await NextTickAsync()).Should().BeTrue();
+
+        labels.Should().OnlyContain(id => _server.Order(Guid.Parse(id)) != null);
+        _sessions.GetById(session)!.ReleasedAt.Should().NotBeNull("devir ≈15 sn'de; dakikalar sonra değil");
+        _server.Session(Guid.Parse(session))!.ReleasedAt.Should().NotBeNull();
+        (await NextTickAsync()).Should().BeFalse("devir bitti: boşta ritim");
+    }
+
+    [Fact]
+    public async Task Devir_bekleyen_oturumun_etiketleri_gidemiyorsa_ritim_bosta_kalir()
+    {
+        var session = StartStream();
+        (await _hosted.TickAsync(CancellationToken.None)).Should().BeTrue("açılıştaki ilk tık");
+        AddLabel(session);
+        _sessions.End(session, _clock.Now);
+        _server.Offline = true;                                                // etiket kalıcı olarak gidemiyor
+
+        (await NextTickAsync()).Should().BeTrue("yayının bittiği görülen tık");
+        var tours = 0;
+        for (var i = 0; i < 12; i++)                                           // +10 … +65 sn
+            if (await NextTickAsync()) tours++;
+        tours.Should().Be(1, "ilerleme yokken devir beklemesi ritmi canlı tutmaz: son turdan 60 sn sonra bir tur");
+    }
+
+    [Fact]
     public async Task Cevrimdisi_turlar_disari_sizmaz_dakikada_en_cok_bir_uyari_yazar_canli_yazim_etkilenmez()
     {
         var session = StartStream();
