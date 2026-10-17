@@ -43,6 +43,12 @@ public static class SalesConflictLog
     /// iner.</summary>
     public const string BackfillDiverged = "backfill-diverged";
 
+    /// <summary>Mod On'un ilk yetişmesinde (<c>FirstCatchUpAt</c> boş) bu bilgisayarın kendi etiketinde sunucudaki
+    /// birim yereldekinden farklıydı; sunucunun değeri yazıldı (§5.4, §8.4). Reason <see cref="UnitsReason"/>
+    /// biçiminde, yalnız birim adları. Geri doldurmadaki onarımdan (§8.2-4) sonra yalnız geri yüklenmiş veritabanında
+    /// görülmesi beklenir.</summary>
+    public const string CatchUpOverwrite = "catchup-overwrite";
+
     /// <summary>Geri doldurma kaydının <c>Reason</c>'ı: ayrışan birimler, <c>units={birim,…}</c>.</summary>
     public static string UnitsReason(IEnumerable<string> units) => $"units={string.Join(",", units)}";
 

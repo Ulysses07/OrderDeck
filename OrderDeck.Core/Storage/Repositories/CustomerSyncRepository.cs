@@ -44,6 +44,17 @@ public enum FeedApplyResult
     Skipped,
 }
 
+/// <summary><see cref="CustomerSyncRepository.EnsureSalesDraft"/>'ın sonucu.</summary>
+internal enum SalesDraftOutcome
+{
+    /// <summary>Müşteri (yönlendirmeden çözülerek) yerelde var.</summary>
+    Exists,
+    /// <summary>Taslak eklendi.</summary>
+    Inserted,
+    /// <summary>Aynı kimlik başka Id'de: hiçbir şey yazılmadı.</summary>
+    PendingCustomer,
+}
+
 public enum RekeyResult
 {
     SourceMissing,
@@ -385,6 +396,38 @@ public sealed class CustomerSyncRepository
     {
         using var conn = _factory.Open();
         return conn.Execute("DELETE FROM CustomerFeedFailure");
+    }
+
+    // ── satış akışının müşteri taslağı (spec 2026-10-13 §4.4, §5.4) ─────
+
+    /// <summary>
+    /// Satış akışının siparişindeki müşteriyi sağlar — <c>SalesFeedRepository.ApplyItem</c>'in işleminde (kilit
+    /// sırası U17: çağıran <see cref="CustomerBusySet"/> kilidini ve <see cref="SyncApplyScope"/>'u zaten tutuyor;
+    /// burada ikinci bağlantı açılmaz).
+    /// <list type="bullet">
+    /// <item>Id (yönlendirmeden çözülerek, U12) yerelde varsa: <see cref="SalesDraftOutcome.Exists"/>.</item>
+    /// <item>Yoksa ve aynı kimlikte (platform + kimlik anahtarı ya da birebir ad, <see cref="ReadHolders"/>) başka
+    /// Id'li satır varsa: <see cref="SalesDraftOutcome.PendingCustomer"/> — hiçbir şey yazılmaz; yönlendirmeyi müşteri
+    /// akışı getirir (kopya asıl kayda taşınır).</item>
+    /// <item>Değilse taslak müşteri akışının sunucudan ekleme yoluyla açılır (<see cref="InsertFromServer"/>): 0/0
+    /// toplam, damgasız takma ad, KVKK mezar taşı boşaltması (silinmiş kimlik dirilmez) ve canlı Id'nin yönlendirme
+    /// kaydının silinmesi. Taslak sunucuda silinmiş diyorsa (<paramref name="purgedAt"/>) satır aynı işlemde boşaltılır
+    /// (<see cref="CustomerRepository.ScrubAsPurgedSql"/>).</item>
+    /// </list>
+    /// Taslak yalnız kimlik ve takma ad taşır; kişisel alan yazılmaz.
+    /// </summary>
+    internal static SalesDraftOutcome EnsureSalesDraft(IDbConnection conn, IDbTransaction tx,
+        string id, string platform, string username, string? displayName, long? purgedAt, long nowUnix)
+    {
+        if (ReadResolved(conn, tx, id) is not null) return SalesDraftOutcome.Exists;
+        if (ReadHolders(conn, tx, platform, username, excludeId: id).Count > 0) return SalesDraftOutcome.PendingCustomer;
+
+        var fields = new CustomerSyncState { Username = username, DisplayName = purgedAt is null ? displayName : null };
+        InsertFromServer(conn, tx, new ServerCustomer(id, platform, username, CreatedByShopper: false, fields),
+            firstSeenAt: nowUnix, lastSeenAt: nowUnix);
+        if (purgedAt is { } at)
+            conn.Execute(CustomerRepository.ScrubAsPurgedSql, new { id, purgedAt = at }, tx);
+        return SalesDraftOutcome.Inserted;
     }
 
     // ── çekirdek ────────────────────────────────────────────────────────

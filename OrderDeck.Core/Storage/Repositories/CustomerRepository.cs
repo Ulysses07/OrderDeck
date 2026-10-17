@@ -81,6 +81,19 @@ public sealed class CustomerRepository
                   AND (t.Username = Customer.Username OR t.IdentityKey = Customer.IdentityKey))";
 
     /// <summary>
+    /// Sunucunun "bu asıl kayıt silindi" dediği satırı (satış akışının müşteri taslağı, spec 2026-10-13 §4.4, §9)
+    /// boşaltır: <see cref="ScrubIfTombstonedSql"/> ile aynı atamalar, <c>PurgedAt</c> sunucunun silme anı (ilk tarih
+    /// korunur). Mezar taşı yazmaz — kimlik düzeyindeki kararı müşteri akışının silme öğesi getirir; bu yalnız
+    /// açılan satırın kişisel alanlarının o ana kadar boş ve kapılı kalmasıdır (yazımlar <c>PurgedAt IS NULL</c>'a
+    /// bağlı). Parametreler <c>@id</c>, <c>@purgedAt</c>.
+    /// </summary>
+    internal const string ScrubAsPurgedSql = @"
+        UPDATE Customer
+        SET " + ScrubAssignments + @",
+            PurgedAt = COALESCE(PurgedAt, @purgedAt)
+        WHERE Id = @id";
+
+    /// <summary>
     /// Kimlik başına tek silme kararı. <c>MIN</c>: tekrarlanan bildirim İLK
     /// silme tarihini korur (tarih adli kayıt). Tek metinde, çünkü
     /// <see cref="RecordPurge"/> kanonik kimlik ve (R12-D01) YouTube alias'ı

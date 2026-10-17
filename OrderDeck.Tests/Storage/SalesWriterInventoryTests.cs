@@ -39,6 +39,7 @@ public sealed class SalesWriterInventoryTests
     private const string DerivationFile = "OrderDeck.Core/Sales/ShipmentAmountDerivation.cs";
     private const string PushApplyFile = "OrderDeck.Core/Sales/SalesPushApply.cs";
     private const string BackfillRepo = "OrderDeck.Core/Storage/Repositories/SalesBackfillRepository.cs";
+    private const string FeedRepo = "OrderDeck.Core/Storage/Repositories/SalesFeedRepository.cs";
 
     private static readonly string[] LabelUnit = ["TR_Label_Enqueue", "TR_Label_ServerAuthority_U"];
 
@@ -100,6 +101,20 @@ public sealed class SalesWriterInventoryTests
             "Gönderim onayı, F05 karşılaştır-ve-yaz. Tetikleyici dışı."),
         new(ShipmentRepo, "AttachLabel", "UPDATE Label", 1, ["TR_Label_Enqueue", "TR_Label_ShipmentLink", "TR_Label_ServerAuthority_U"],
             "Kargo bağı. Revision'ı ARTIRMAZ: TR_Label_Enqueue kuyruğa alır (049'un davranış değişikliği, fazladan bir gönderim). Mod 1'de ve sunucu otoritesinde düşer."),
+        new(FeedRepo, "InsertRemoteSessionSql", "INSERT INTO StreamSession", 1, [],
+            "Akış uygulaması (W2-01, §5.4): başka bilgisayarın devredilmiş yayını Origin='remote', Authority='server' ile, SyncApplyScope işleminde. Onaylı doğar (SyncedAt = now): gönderim kuyruğuna ve geri doldurmaya (Origin='local') girmez. Açık inmez (EndedAt boşsa devir anı): GetActive ve kurtarma ekranı yanılmaz. Ekleme tetikleyicisi yok."),
+        new(FeedRepo, "RefreshRemoteSessionSql", "UPDATE StreamSession", 1, [],
+            "Akış uygulaması (W2-01): uzak oturumun güncel hâli (başlık, kapanış, platformlar, not, makine adı, devir anı), yalnız Origin='remote' satırda, SyncApplyScope işleminde: TR_StreamSession_ServerAuthority ABORT etmez, TR_StreamSession_Enqueue kuyruğa almaz (Revision değişmez, DM8)."),
+        new(FeedRepo, "StoreOwnReleaseSql", "UPDATE StreamSession", 1, [],
+            "Akış uygulaması (W2-01, §5.4): kendi oturumuna devir anı ve Authority, yalnız Origin='local' satırda, SyncApplyScope işleminde (ikisi de tetikleyici listesi dışında). Authority='server' YALNIZ işlem içinde okunan Mode = 1 ∧ EndedAt dolu iken (ApplyRelease ile aynı kural); aktif kendi yayınında yalnız ReleasedAt (force-end, M18). EndedAt'e dokunmaz."),
+        new(FeedRepo, "InsertLabelSql", "INSERT INTO Label", 1, [],
+            "Akış uygulaması (W2-01, §5.4): yeni satır, SyncApplyScope işleminde — TR_Label_ServerAuthority_I susar (Authority='server' oturuma ekleme). CustomerId yönlendirmeden çözülür; SyncedAt = StockSyncedAt = now (kuyruğa girmez, stok ikinci kez düşmez), ServerVersion sunucunun sürümü. Yerel müşteri silinmişse metin boş."),
+        new(FeedRepo, "WriteUnitsSql", "UPDATE Label", 1, [],
+            "Akış uygulaması (W2-01, §5.4): onaylı (SyncedAt dolu, U5) satıra değişen birimler, ShipmentId ve ServerVersion; StockSyncedAt yalnız boşsa onayla doldurulur. SyncApplyScope işleminde: TR_Label_Enqueue kuyruğa almaz (SyncedAt, Revision değişmez, DM8), TR_Label_ServerAuthority_U ve TR_Label_ShipmentLink ABORT etmez. Oluşum alanları ve CustomerId yazılmaz (DM4)."),
+        new(FeedRepo, "InsertShipmentSql", "INSERT INTO Shipment", 1, [],
+            "Dosya aynası (W2-01, §7.1), yalnız ApplyShipments (mod On ve disable turu): SyncApplyScope işleminde — TR_Shipment_ServerOwned_I mod 1'de ABORT etmez. CustomerId yönlendirmeden çözülür, OriginReplicaId ve ServerVersion sunucudan, onaylı doğar."),
+        new(FeedRepo, "RefreshShipmentSql", "UPDATE Shipment", 1, [],
+            "Dosya aynası (W2-01, §7.1): karar alanları, tutar, OriginReplicaId, ServerVersion ve onay, SyncApplyScope işleminde — TR_Shipment_ServerOwned_U ABORT etmez, TR_Shipment_Enqueue kuyruğa almaz (Revision değişmez). Yereldeki sürümden eski öğe yazılmaz."),
         new(CustomerSyncRepo, "MoveReferences", "UPDATE {table}", 1, [],
             "Yeniden anahtarlama: CustomerId'yi Label ve Shipment dahil taşır. CustomerId hiçbir tetikleyici listesinde değil: her kipte ve her oturumda yazar, kuyruğa almaz (sunucu kopyayı kendisi taşır, S18)."),
     ];
