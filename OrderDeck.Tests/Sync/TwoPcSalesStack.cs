@@ -313,7 +313,7 @@ internal sealed class SalesPc
             NullLogger<RemotePaymentRecords>.Instance, Pull, PaymentRecords);
         PaymentFollowUp = new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(
             Customers, LabelRepo, Jobs, Shipping, Payments, RemotePayments);
-        PaymentHistory = new PaymentHistoryBackfill(api, Envelope, StateService, State, Jobs, Customers, LabelRepo,
+        PaymentHistory = new PaymentHistoryBackfill(api, Envelope, StateService, State, Jobs, Customers, LabelRepo, busy,
             PaymentRecords, PendingPaymentRecords, cursors, license, clock, NullLogger<PaymentHistoryBackfill>.Instance);
         ShippingWriter = new LicenseShippingSettingsWriter(api, Envelope, State, license, () => Pull.RequestModeOffRound(),
             NullLogger<LicenseShippingSettingsWriter>.Instance);

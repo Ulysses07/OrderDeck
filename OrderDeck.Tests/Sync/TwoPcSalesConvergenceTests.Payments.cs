@@ -371,6 +371,75 @@ public sealed partial class TwoPcSalesConvergenceTests
         await AssertConvergedAsync(a, b);
     }
 
+    /// <summary>
+    /// W3 son incelemesi (doğrulayıcı): ödeme geçmişi gönderimi uçuştaki işi okumaz. <c>BeginSend</c> yazılmış,
+    /// <c>MarkDelivered</c> henüz yazılmamış iş <c>HasUnconfirmedSend</c> görünür; geçmiş o anda okusaydı Unconfirmed(J,0,1)
+    /// kurardı, gönderim bitince mod Off yazıcısı Delivered(J,1) yazardı: tek mesaja iki Id, sunucu ikisini de
+    /// <c>applied</c> sayar, PC-B'nin sorusu iki öncül gösterirdi. Geçmiş, kişisi ödeme akışında olan işten önce keser
+    /// (ödeme akışıyla aynı <c>CustomerBusySet</c>); kira bitince işin teslimden sonraki satırından mod Off kaydıyla aynı
+    /// kaydı kurar, sunucu <c>unchanged</c> sayar.
+    /// </summary>
+    [Fact]
+    public async Task Mod_Off_gonderim_ucustayken_odeme_gecmisi_isi_okumaz_sunucuda_tek_kayit_B_tek_oncul_gorur()
+    {
+        Use("AB");
+        var (a, b) = await PcsAsync(modeOn: false);
+        var session = a.StartStream();
+        var label = a.Sell(session, "alici_ucusta", "K1", 350m);
+        await a.PrintAsync(label.Id);
+        a.EndStream(session);
+        await a.PushAsync();
+        await a.PushAsync();
+        var customerId = label.CustomerId;
+        Phone(a, customerId);
+        var scope = $"session:{session}";
+        a.Store.Update(s => s.Payment.UseCloudApi = true);
+
+        var hold = _server.Hold(FakeSalesServer.WhatsAppSend);
+        Task<PaymentRequestOutcome> request;
+        PaymentHistoryTourOutcome duringSend;
+        try
+        {
+            request = RequestAsync(a, customerId, scope, null);
+            await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(30));
+            a.Jobs.GetPersonScopeJobs([customerId], scope).Jobs.Should().ContainSingle()
+                .Which.HasUnconfirmedSend.Should().BeTrue("ön koşul: gönderim uçuşta (deneme yazıldı, teslim yazılmadı)");
+            duringSend = await a.PaymentHistory.TourOnceAsync(CancellationToken.None);
+        }
+        finally { hold.Release(); }
+        (await request).Result.Should().Be(PaymentRequestResult.Sent);
+
+        var job = a.Jobs.GetPersonScopeJobs([customerId], scope).Jobs.Should().ContainSingle().Subject;
+        (job.Deliveries, job.HasUnconfirmedSend).Should().Be((1, false));
+        // Geri doldurma turunun sırasıyla (önce kuyruk, sonra geçmiş) geçmiş tamamlanana dek.
+        var tours = new List<PaymentHistoryTourOutcome>();
+        while (tours.Count < 5 && tours.LastOrDefault() != PaymentHistoryTourOutcome.Completed)
+        {
+            await a.PaymentRecords.FlushAsync(CancellationToken.None);
+            tours.Add(await a.PaymentHistory.TourOnceAsync(CancellationToken.None));
+        }
+
+        var stored = _server.PaymentRecords().Should().ContainSingle("tek mesaja tek kayıt").Subject;
+        stored.Id.Should().Be(OrderDeck.Core.Payments.PaymentRecordIds.Delivered(job.Id, 1));
+        stored.State.Should().Be("delivered");
+        stored.OrderIds.Should().Equal(G(label.Id));
+        duringSend.Should().Be(PaymentHistoryTourOutcome.InProgress, "sayfa uçuştaki işten önce kesildi, imleç onu geçmedi");
+        tours.Should().Equal(PaymentHistoryTourOutcome.AwaitingQueue, PaymentHistoryTourOutcome.Completed);
+        _server.Calls(FakeSalesServer.PaymentRequestsBackfill).Should().HaveCount(2,
+            "mod Off kaydı ve kira bittikten sonra geçmiş: ikincisi unchanged");
+
+        await EnableAsync(a, b);
+        _server.PaymentRecords().Should().ContainSingle();
+        await SyncAsync(a, b);
+        Phone(b, customerId);
+        var asked = await RequestAsync(b, customerId, scope, null);
+        asked.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        var prior = asked.Prompt!.Requests.Should().ContainSingle("aynı istek tek öncül").Subject;
+        (prior.Machine, prior.Unconfirmed, prior.Amount).Should().Be(("PC-A", false, job.PromptNet));
+        b.Launcher.LaunchedUrls.Should().BeEmpty();
+        await AssertConvergedAsync(a, b);
+    }
+
     // ── ön gönderim (§6.4-1) ───────────────────────────────────────────────
 
     /// <summary>

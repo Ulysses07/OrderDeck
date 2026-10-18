@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -50,6 +51,11 @@ public enum PaymentHistoryTourOutcome
 /// kişisinin o kapsamdaki katkı veren etiketlerinden isteğin anından önce ya da o anda basılmış olanlar
 /// (<c>Covers</c>: <c>PrintedAt ≤ PromptAt</c>, ikisi de bu bilgisayarın saati); asıl kapsamı bilinmeyen miras işte
 /// boş. Kapsamı tanınmayan ya da sahibi tel biçimine sığmayan iş atlanır (sayısı günlükte).</item>
+/// <item><b>Uçuştaki gönderim okunmaz:</b> sahibinin kişisinden bir üye ödeme akışında kiralıysa (ödeme akışıyla AYNI
+/// <see cref="CustomerBusySet"/>) sayfa o işten önce kesilir, imleç onu geçmez, sonraki tur oradan sürer
+/// (<see cref="ReadSettled"/>). Deneme yazılmış, teslimi henüz yazılmamış satırdan kurulan kayıt Unconfirmed(J,D,D+1)
+/// olurdu, mod Off yazıcısı gönderim bitince Delivered(J,D+1) yazardı: tek mesaja iki Id. İş atlanmaz, beklenir: atlanan
+/// işin önceki teslimini başka hiçbir yol göndermezdi.</item>
 /// <item><b>Tamamlanma:</b> imleç bitti ∧ kuyruk boş (yazılan kayıtlar gönderildi ya da son durumla düştü) →
 /// <see cref="SalesSyncStateService.ReportPaymentHistoryCompletedAsync"/> (<c>hello {paymentHistoryCompleted: true}</c>)
 /// → imleçte tamamlanma işareti ve <c>SalesSyncState.PaymentHistorySentAt</c>. Bundan sonra bu (lisans, kopya) için
@@ -83,6 +89,7 @@ public sealed class PaymentHistoryBackfill
     private readonly PaymentJobRepository _jobs;
     private readonly CustomerRepository _customers;
     private readonly LabelRepository _labels;
+    private readonly CustomerBusySet _busy;
     private readonly PaymentRecordSender _sender;
     private readonly PendingPaymentRecordRepository _pending;
     private readonly SyncCursorRepository _cursors;
@@ -96,6 +103,7 @@ public sealed class PaymentHistoryBackfill
     private string? _cachedLicenseKey;
     private (string LicenseKey, Guid ReplicaId)? _restartLoggedFor;
     private int? _lastLoggedRemaining;
+    private string? _lastBusyJobId;
     private int _failures;
     private DateTimeOffset? _lastFailureWarnAt;
 
@@ -107,6 +115,7 @@ public sealed class PaymentHistoryBackfill
         PaymentJobRepository jobs,
         CustomerRepository customers,
         LabelRepository labels,
+        CustomerBusySet busy,
         PaymentRecordSender sender,
         PendingPaymentRecordRepository pending,
         SyncCursorRepository cursors,
@@ -121,6 +130,7 @@ public sealed class PaymentHistoryBackfill
         _jobs = jobs;
         _customers = customers;
         _labels = labels;
+        _busy = busy;
         _sender = sender;
         _pending = pending;
         _cursors = cursors;
@@ -208,7 +218,9 @@ public sealed class PaymentHistoryBackfill
     }
 
     /// <summary>Turun sayfaları: imleçten sonraki işler kirasız kayda çevrilip kuyruğa yazılır, imleç her sayfadan sonra
-    /// yazılır. <c>finished</c> = işler bitti (imleç <see cref="PaymentHistoryPhase.Done"/>).</summary>
+    /// yazılır. <c>finished</c> = işler bitti (imleç <see cref="PaymentHistoryPhase.Done"/>). Kişisi ödeme akışında olan
+    /// işte sayfa kesilir (<see cref="ReadSettled"/>): imleç o işten önceki satırda kalır, tur biter, sonraki tur oradan
+    /// sürer.</summary>
     private (PaymentHistoryCursor Cursor, bool Finished) EnqueuePages(
         string licenseKey, Guid replicaId, PaymentHistoryCursor cursor, CancellationToken ct)
     {
@@ -225,24 +237,53 @@ public sealed class PaymentHistoryBackfill
                 {
                     cursor = PaymentHistoryCursor.Done;
                     SaveCursor(licenseKey, replicaId, cursor);
+                    _lastBusyJobId = null;
                     return (cursor, true);
                 }
 
-                foreach (var (_, job) in rows)
+                long? passed = null;
+                string? busyJobId = null;
+                foreach (var (rowId, row) in rows)
                 {
-                    scanned++;
-                    if (!job.IsDelivered) continue;
-                    if (BuildRecord(job) is not { } item)
+                    // Teslim edilmemiş satır kayda çevrilmez; okunduktan sonra başlayan bir gönderimi mod Off kaydı taşır.
+                    if (row.IsDelivered)
                     {
-                        skipped++;
-                        continue;
+                        var read = ReadSettled(row);
+                        if (read.Busy)
+                        {
+                            busyJobId = row.Id;
+                            break;
+                        }
+                        if (read.Job is { } job)
+                        {
+                            if (BuildRecord(job, read.Members) is not { } item) skipped++;
+                            else if (_sender.EnqueueRecord(item)) queued++;
+                            else alreadyQueued++;
+                        }
                     }
-                    if (_sender.EnqueueRecord(item)) queued++;
-                    else alreadyQueued++;
+                    scanned++;
+                    passed = rowId;
                 }
-                cursor = cursor.After(rows[^1].RowId);
-                SaveCursor(licenseKey, replicaId, cursor);
+                if (passed is { } last)
+                {
+                    cursor = cursor.After(last);
+                    SaveCursor(licenseKey, replicaId, cursor);
+                }
                 pages++;
+
+                if (busyJobId is not null)
+                {
+                    if (_lastBusyJobId != busyJobId)
+                    {
+                        _lastBusyJobId = busyJobId;
+                        _log.LogInformation(
+                            "Ödeme geçmişi: işin kişisi şu an ödeme akışında (ya da iş okunurken değişti); sayfa bu işten "
+                          + "önce kesildi, sonraki turda yeniden denenecek (job={JobId}, replica={ReplicaId})",
+                            busyJobId, replicaId);
+                    }
+                    return (cursor, false);
+                }
+                _lastBusyJobId = null;
             }
         }
         finally
@@ -256,8 +297,51 @@ public sealed class PaymentHistoryBackfill
         }
     }
 
+    /// <summary>
+    /// Teslim edilmiş görünen işin oturmuş satırı, <see cref="CustomerBusySet"/>'in kilidi altında. Ödeme akışı kişinin
+    /// bütün üyelerini kiralar; gönderim denemesi, teslim ve mod Off kaydı o kira altında yazılır. Kira sürerken satır
+    /// "deneme yazıldı, teslim yazılmadı" (<c>HasUnconfirmedSend</c>) görünebilir: ondan kurulan kayıt Unconfirmed(J,D,D+1)
+    /// olur, gönderim bitince mod Off yazıcısı Delivered(J,D+1) yazar — tek mesaja iki Id, sunucu ikisini de <c>applied</c>
+    /// sayar. Bu yüzden kişinin bir üyesi kiralıysa <c>Busy</c> döner (çağıran sayfayı keser).
+    ///
+    /// <para><b>Sıra önemli:</b> önce kira sorusu, SONRA satırın yeniden okunması. Kilit tutulurken yeni kira
+    /// başlayamaz; kira bırakma ise kilitsizdir — satır önce okunsaydı arada biten bir akış uçuştaki satırı "oturmuş"
+    /// gösterirdi. Kira yoksa yeniden okunan satır, o kişinin son akışının bütün yazılarını taşır (mod Off kaydı da
+    /// kuyrukta). Satırın sahibi kira sorusundan sonra değiştiyse soru o kişi için sorulmamıştır: <c>Busy</c> (sonraki
+    /// tur yeniden okur). Satır artık "teslim edilmiş ya da gitmiş olabilecek" değilse (<c>AbandonSend</c>) <c>Job</c>
+    /// null.</para>
+    ///
+    /// <para>Kilit kısa tutulur (kişi ve iş okuması; kayıt kilit dışında kurulur). U17: hiçbir veritabanı işlemi açık
+    /// değil; gövde yalnız okur.</para>
+    /// </summary>
+    private SettledJob ReadSettled(PaymentJob row) =>
+        _busy.RunLocked(isBusy =>
+        {
+            var members = LocalMembers(row.CustomerId);
+            if (members.Any(isBusy)) return new SettledJob(true, null, members);
+            var job = _jobs.Get(row.Id);
+            if (job is null || !job.IsDelivered) return new SettledJob(false, null, members);
+            if (!string.Equals(job.CustomerId, row.CustomerId, StringComparison.Ordinal))
+                return new SettledJob(true, null, members);
+            return new SettledJob(false, job, members);
+        });
+
+    /// <summary><see cref="ReadSettled"/>'in sonucu.</summary>
+    private readonly record struct SettledJob(bool Busy, PaymentJob? Job, IReadOnlyList<string> Members);
+
+    /// <summary>Sahibin BUGÜNKÜ kişisi: satırı yönlendirildiyse (birleştirme, "@" ikizi) güncel satırın grubu. Sahip her
+    /// durumda üyedir (sunucu sahibi üyelerde ister) ve önce gelir; satırı yoksa kişi yalnız sahiptir.</summary>
+    private List<string> LocalMembers(string ownerId)
+    {
+        var person = _customers.GetPaymentPerson(ownerId);
+        var localMembers = new List<string>(person.MemberIds.Count + 1) { ownerId };
+        localMembers.AddRange(person.MemberIds);
+        return localMembers;
+    }
+
     /// <summary>İşin kirasız kaydı (<see cref="PaymentHistoryRecords.FromJob"/>); kurulamıyorsa null.</summary>
-    private PaymentRequestBackfillItem? BuildRecord(PaymentJob job)
+    /// <param name="localMembers">Sahibin kişisi (<see cref="LocalMembers"/>), kira sorusundaki okumadan.</param>
+    private PaymentRequestBackfillItem? BuildRecord(PaymentJob job, IReadOnlyList<string> localMembers)
     {
         var scope = job.SaleScopeKey;
         if (!PaymentHistoryRecords.IsRecordScope(scope))
@@ -266,11 +350,6 @@ public sealed class PaymentHistoryBackfill
             return null;
         }
 
-        // Sahibin BUGÜNKÜ kişisi: satırı yönlendirildiyse (birleştirme, "@" ikizi) güncel satırın grubu. Sahip her
-        // durumda üyedir (sunucu sahibi üyelerde ister); satırı yoksa kişi yalnız sahiptir.
-        var person = _customers.GetPaymentPerson(job.CustomerId);
-        var localMembers = new List<string>(person.MemberIds.Count + 1) { job.CustomerId };
-        localMembers.AddRange(person.MemberIds);
         var members = PaymentHistoryRecords.WireMembers(job.CustomerId, localMembers);
         if (members is null)
         {

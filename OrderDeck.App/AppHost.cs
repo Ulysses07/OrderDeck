@@ -625,8 +625,9 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<IClock>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SalesBackfillService>>()));
         // W3-06 (§6.4 "Ödeme geçmişi", §8.2-6): ödeme geçmişi geri doldurması — yerel işlerden kirasız kayıtlar AYNI
-        // göndericinin kuyruğuna, tamamlanma hello'su aynı durum servisinden (turla aynı kapı). Sürücüsü geri doldurma
-        // turu (aşağıdaki hosted service): ayrı zamanlayıcı yok.
+        // göndericinin kuyruğuna, tamamlanma hello'su aynı durum servisinden (turla aynı kapı). Ödeme akışıyla AYNI
+        // CustomerBusySet: kişisi akışta olan işi okumaz (uçuştaki gönderim). Sürücüsü geri doldurma turu (aşağıdaki
+        // hosted service): ayrı zamanlayıcı yok.
         services.AddSingleton<Services.Sync.PaymentHistoryBackfill>(sp =>
             new Services.Sync.PaymentHistoryBackfill(
                 sp.GetRequiredService<LicenseApiClient>(),
@@ -636,6 +637,7 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<PaymentJobRepository>(),
                 sp.GetRequiredService<CustomerRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
+                sp.GetRequiredService<CustomerBusySet>(),
                 sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
                 sp.GetRequiredService<PendingPaymentRecordRepository>(),
                 sp.GetRequiredService<SyncCursorRepository>(),

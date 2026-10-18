@@ -67,7 +67,8 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
         public PaymentHistoryBackfill History { get; }
         public CapturingLogger<PaymentHistoryBackfill> Log { get; } = new();
 
-        public Pc(FakeSalesServer server, IDbConnectionFactory db, string fingerprint, int pageSize, int maxPages)
+        public Pc(FakeSalesServer server, IDbConnectionFactory db, string fingerprint, int pageSize, int maxPages,
+            CustomerBusySet busy)
         {
             License = new License(server.Lisans);
             var identity = new ReplicaIdentityRepository(db);
@@ -84,8 +85,8 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
             PaymentRecords = new PaymentRecordSender(api, pending, Envelope, License, clock,
                 NullLogger<PaymentRecordSender>.Instance);
             History = new PaymentHistoryBackfill(api, Envelope, State, state, new PaymentJobRepository(db),
-                new CustomerRepository(db), new LabelRepository(db), PaymentRecords, pending, new SyncCursorRepository(db),
-                License, clock, Log)
+                new CustomerRepository(db), new LabelRepository(db), busy, PaymentRecords, pending,
+                new SyncCursorRepository(db), License, clock, Log)
             {
                 PageSize = pageSize,
                 MaxPagesPerTour = maxPages,
@@ -138,8 +139,8 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
     }
 
     private Pc NewPc(int pageSize = PaymentHistoryBackfill.DefaultPageSize,
-        int maxPages = PaymentHistoryBackfill.DefaultMaxPagesPerTour)
-        => new(_server, _db, _fingerprint, pageSize, maxPages);
+        int maxPages = PaymentHistoryBackfill.DefaultMaxPagesPerTour, CustomerBusySet? busy = null)
+        => new(_server, _db, _fingerprint, pageSize, maxPages, busy ?? new CustomerBusySet());
 
     private Guid ReplicaId => new ReplicaIdentityRepository(_db).GetReplicaId()!.Value;
 
@@ -390,6 +391,55 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
 
         Sent().Select(r => r.RecordId).Should().Equal(PaymentRecordIds.Delivered(good.Id, 1));
         pc.Log.Warnings.Should().Contain(e => e.Message.Contains(bad.Id) && e.Message.Contains("kapsam"));
+    }
+
+    // ── ödeme akışıyla yarış ───────────────────────────────────────────────
+
+    /// <summary>
+    /// W3 son incelemesi (doğrulayıcı): gönderimi uçuştaki iş okunmaz. Ödeme akışı kişinin bütün üyelerini
+    /// <see cref="CustomerBusySet"/>'te kiralar; deneme, teslim ve mod Off kaydı o kira altında yazılır. Kira sürerken iş
+    /// "deneme yazıldı, teslim yazılmadı" (<c>HasUnconfirmedSend</c>) görünebilir: geçmiş o anda okusaydı Unconfirmed(J,1,2)
+    /// kurardı, gönderim bitince mod Off yazıcısı Delivered(J,2) yazardı — tek mesaja iki Id. Sayfa o işten önce kesilir,
+    /// imleç onu geçmez (sonraki işler de bekler: atlanan işin önceki teslimi kaybolmasın); kira bitince iş son satırından
+    /// okunur.
+    /// </summary>
+    [Fact]
+    public async Task Kisisi_odeme_akisinda_olan_is_okunmaz_sayfa_ondan_once_kesilir_kira_bitince_son_satirindan_gider()
+    {
+        var other = AddCustomer("ornek_baska");
+        var owner = AddCustomer("ornek_sahip");
+        var second = AddCustomer("ornek_ikinci");
+        _customers.MergeIntoGroup(new[] { owner, second });
+        var before = AddJob(other, "cumulative", 90m);
+        var inFlight = AddJob(owner, "cumulative", 100m);                           // bir teslim
+        var after = AddJob(other, $"session:{AddSession(T0)}", 70m);
+        var busy = new CustomerBusySet();
+        var lease = await busy.EnterAsync(second);                                 // akış her üyeyi kiralar; biri yeter
+        _jobs.BeginSend(inFlight.Id, 100m);                                        // ikinci gönderim uçuşta
+        _jobs.Get(inFlight.Id)!.HasUnconfirmedSend.Should().BeTrue("ön koşul: deneme yazıldı, teslim yazılmadı");
+
+        var pc = NewPc(busy: busy);
+        await pc.HelloAsync();
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.InProgress, "sayfa uçuştaki işten önce kesildi");
+        Queued().Select(r => r.RecordId).Should().Equal(PaymentRecordIds.Delivered(before.Id, 1));
+        Cursor()!.Seq.Should().Be(
+            new PaymentHistoryCursor(PaymentHistoryPhase.Jobs,
+                Scalar<long>("SELECT rowid FROM PaymentJob WHERE Id = @id", new { id = before.Id })).Encode(),
+            "imleç kesilen işten önceki satırda");
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.InProgress, "kira sürdükçe her tur bekler");
+        pc.Log.Entries.Should().Contain(e => e.Level == Microsoft.Extensions.Logging.LogLevel.Information
+                                             && e.Message.Contains(inFlight.Id) && e.Message.Contains("ödeme akışında"));
+
+        _jobs.MarkDelivered(inFlight.Id, 100m);                                    // gönderim bitti
+        lease.Dispose();                                                            // akış kişiyi bıraktı
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.AwaitingQueue);
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.Completed);
+
+        Sent().Select(r => r.RecordId).Should().Equal(new[]
+        {
+            PaymentRecordIds.Delivered(before.Id, 1), PaymentRecordIds.Delivered(inFlight.Id, 2),
+            PaymentRecordIds.Delivered(after.Id, 1),
+        }, "uçuştaki işin kaydı teslimden sonraki satırından: mod Off yazıcısıyla aynı Id; Unconfirmed(J,1,2) hiç gitmez");
     }
 
     // ── imleç ──────────────────────────────────────────────────────────────

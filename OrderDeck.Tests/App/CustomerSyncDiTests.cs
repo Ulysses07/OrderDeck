@@ -433,6 +433,12 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<ICurrentLicenseProvider>());
         PrivateField<PaymentJobRepository>(history, "_jobs").Should().BeSameAs(
             host.Services.GetRequiredService<IPaymentJobStore>(), "ödeme akışıyla aynı depo örneği");
+        // Kişisi ödeme akışında olan işi okumaz (uçuştaki gönderim): ayrı bir küme akışın kirasını görmezdi.
+        PrivateField<CustomerBusySet>(history, "_busy").Should().BeSameAs(
+                host.Services.GetRequiredService<CustomerBusySet>())
+            .And.BeSameAs(PrivateField<CustomerBusySet>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_busy"),
+                "ödeme akışıyla aynı CustomerBusySet (U13)");
 
         var hosted = host.Services.GetServices<IHostedService>().ToList();
         PrivateField<PaymentHistoryBackfill>(hosted.OfType<SalesBackfillHostedService>().Single(), "_history")
