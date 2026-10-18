@@ -427,6 +427,133 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         await AssertConvergedAsync(a, b);
     }
 
+    // ── 5b. başka bilgisayarın yayınındaki satırın kâğıdı (sahip kararı Y11) ──
+
+    /// <summary>A yayını bitirir; B, A'nın devredilmiş yayınındaki etikete yedek ekler (<c>add-backup</c>). Yedek B'nin
+    /// kuyruğundadır ve yayını A'nındır.</summary>
+    private async Task<(SalesPc A, SalesPc B, string Parent, string Backup)> RemoteBackupAsync()
+    {
+        var (a, b) = await PcsAsync();
+        var session = a.StartStream();
+        var parent = a.Sell(session, "alici_bir", "A1", 120m);
+        await a.PrintAsync(parent.Id);
+        a.EndStream(session);
+        await SyncAsync(a, b);
+        var added = await b.Editor.AddBackupAsync(
+            new SalesBackupRequest(parent.Id, "tiktok", "alici_yedek", "Takma Ad", "A1 bana da"));
+        added.Problem.Should().BeNull();
+        var backup = added.Backup!.Id;
+        b.SessionOf(b.Row(backup)!.SessionId)!.Origin.Should().Be(StreamSessionOrigin.Remote, "ön koşul: A'nın yayını");
+        return (a, b, parent.Id, backup);
+    }
+
+    private IReadOnlyList<Guid> MarkPrintedCommandIds() => _server.CommandCalls
+        .Where(c => c.Command.Kind == "mark-printed").Select(c => c.Command.CommandId!.Value).ToList();
+
+    /// <summary>Müşteri toplamı (W1: etiketlerden türetilir).</summary>
+    private static (decimal Amount, int Labels) Totals(SalesPc pc, string labelId)
+    {
+        var customer = pc.Customers.GetById(pc.Row(labelId)!.CustomerId)!;
+        return (customer.TotalAmount, customer.TotalLabelsPrinted);
+    }
+
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task B_A_nin_yayinindaki_yedegi_basar_baglanti_koparsa_onay_bekler_yeniden_acilista_kalir_yakinsar(
+        string order)
+    {
+        Use(order);
+        var (a, b, _, backup) = await RemoteBackupAsync();
+
+        b.Offline = true;                                                // bağlantı kopar; B henüz bilmiyor
+        var print = await b.PrintAsync(backup);
+        print.Pending.Should().Equal(backup);
+        print.Notices.Should().BeEmpty("baskı onayı kaybolmaz: \"işlenemedi\" yok");
+        b.Papers[backup].Should().Be(1);
+        b.PendingCount.Should().Be(1);
+        var sent = MarkPrintedCommandIds();
+
+        b = b.Restart();                                                 // çevrimdışı yeniden açılış
+        b.PendingCount.Should().Be(1, "bekleyen onay kalıcı");
+        await b.PrintAsync(backup);
+        b.Papers.Should().BeEmpty("örtü kalıcı: kâğıt ikinci kez çıkmaz");
+
+        b.Offline = false;
+        await SyncAsync(a, b);
+
+        b.PendingCount.Should().Be(0);
+        var commands = MarkPrintedCommandIds();
+        commands.Distinct().Should().ContainSingle("tur aynı CommandId'yi yineler");
+        _server.CommandLog(commands[0])!.Applications.Should().Be(1);
+        sent.Should().BeEmpty("ön koşul: kopuk bağlantıda istek sunucuya varmadı");
+        _server.Order(G(backup))!.Row.PrintedAt.Should().NotBeNull();
+        a.Row(backup)!.PrintedAt.Should().NotBeNull("A'ya akışla indi");
+        b.Row(backup)!.PrintedAt.Should().NotBeNull();
+
+        // Yedek onaylanır: basılmış olduğu için müşteri toplamına girer (W2 M4: basılmamış görünseydi girmezdi).
+        (await b.Editor.ConfirmBackupAsync(backup, null)).HasProblems.Should().BeFalse();
+        await SyncAsync(a, b);
+
+        Totals(a, backup).Should().Be(Totals(b, backup), "müşteri toplamı iki bilgisayarda eşit");
+        Totals(b, backup).Amount.Should().Be(120m, "onaylı ve basılmış yedek toplama girer");
+        await AssertConvergedAsync(a, b);
+    }
+
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task B_nin_uzak_baski_onayinin_yaniti_kaybolur_yeniden_acilistan_sonra_tur_ayni_kimlikle_yineler_bir_kez_uygulanir(
+        string order)
+    {
+        Use(order);
+        var (a, b, _, backup) = await RemoteBackupAsync();
+        _server.LoseNextResponse(FakeSalesServer.Commands);           // sunucu uygular, yanıt kaybolur (zaman aşımı)
+
+        (await b.PrintAsync(backup)).Pending.Should().Equal(backup);
+        b = b.Restart();
+        b.PendingCount.Should().Be(1, "sonucu bilinmeyen onay yeniden açılışta kalır");
+        b.Row(backup)!.PrintedAt.Should().BeNull("yanıt kayboldu");
+
+        await SyncAsync(a, b);
+
+        var commands = MarkPrintedCommandIds();
+        commands.Should().HaveCount(2).And.OnlyContain(id => id == commands[0], "aynı CommandId");
+        _server.CommandLog(commands[0])!.Applications.Should().Be(1, "çift işaret yok");
+        _server.CommandLog(commands[0])!.Replays.Should().Be(1);
+        b.PendingCount.Should().Be(0);
+        b.Row(backup)!.PrintedAt.Should().NotBeNull();
+        a.Row(backup)!.PrintedAt.Should().NotBeNull();
+        await AssertConvergedAsync(a, b);
+    }
+
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task Gonderilemeyen_uzak_baski_onayi_Off_turunda_sayili_uyariyla_duser_gonderilmez_ABORT_yok(string order)
+    {
+        Use(order);
+        var (a, b, _, backup) = await RemoteBackupAsync();
+        var settled = new List<PendingSalesCommandsSettled>();
+        b.Pull.PendingCommandsSettled += (_, e) => { lock (settled) settled.Add(e); };
+        b.Offline = true;
+        (await b.PrintAsync(backup)).Pending.Should().Equal(backup);
+
+        _server.Disable(DateTimeOffset.UtcNow);
+        b.Offline = false;
+        await SyncAsync(a, b);
+
+        MarkPrintedCommandIds().Should().BeEmpty("Off turu komut göndermez (sunucu mode-off döner, §4.6-1)");
+        foreach (var pc in new[] { a, b })
+        {
+            pc.State.GetMode().Should().Be(0, $"{pc.Name} Off turunu bitirdi");
+            pc.PendingCount.Should().Be(0);
+            pc.Envelope.SeenMode.Should().Be(0);
+        }
+        settled.SelectMany(s => s.Warnings).Should().Equal(SalesCommandMessages.PrintUnrecordedModeOff(1));
+        b.ConflictCount(SalesConflictLog.PendingCommandRejected).Should().Be(1, "sessiz kayıp yok: iz");
+        b.Row(backup).Should().BeNull("uzak satır Off'ta silinir");
+        a.Row(backup)!.PrintedAt.Should().BeNull("kayıt sunucuya ulaşmadı: yayının sahibinde basılmamış görünür");
+        _server.Order(G(backup))!.Row.PrintedAt.Should().BeNull();
+    }
+
     /// <summary>Bekleyen <c>mark-printed</c>'in basış kimliği (<see cref="PendingSalesCommandCodec"/> biçimi).</summary>
     private static string PendingBatchOf(SalesPc pc)
     {
