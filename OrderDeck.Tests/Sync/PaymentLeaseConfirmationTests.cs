@@ -72,6 +72,21 @@ public sealed class PaymentLeaseConfirmationTests
             "500'ü aşan liste özet tutsa da 400 invalid-confirmed-priors alırdı; bütün kümeyi özet onaylar");
     }
 
+    [Fact] // W3-09: belirteç o 409'un en çok 500 öncül Id'sini taşır (sorunun sırasıyla ilkleri)
+    public void Belirtec_en_cok_500_Id_tasir()
+    {
+        var digest = Digest();
+        var ids = Enumerable.Range(0, 600).Select(_ => Guid.NewGuid()).ToList();
+
+        var read = PaymentLeaseConfirmation.From(new HashSet<string>(StringComparer.Ordinal)
+        {
+            PaymentLeaseConfirmation.Create(digest, ids).Token,
+        });
+
+        read.PriorIds.Should().Equal(ids.Take(PaymentRequestLimits.MaxConfirmedPriorIds));
+        read.PriorsDigest.Should().Be(digest);
+    }
+
     [Theory]
     [InlineData("kira-onay:")]
     [InlineData("kira-onay:0:v1.abc:")]

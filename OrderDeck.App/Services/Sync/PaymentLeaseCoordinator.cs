@@ -89,9 +89,12 @@ public sealed record PaymentLeaseConfirmation(string? PriorsDigest, IReadOnlyLis
 
     public static PaymentLeaseConfirmation None { get; } = new(null, []);
 
-    /// <summary>Yeni onay; sıra numarası süreç içinde artar.</summary>
+    /// <summary>Yeni onay; sıra numarası süreç içinde artar. Id'lerin en çok
+    /// <see cref="PaymentRequestLimits.MaxConfirmedPriorIds"/>'ü tutulur — sorunun sırasıyla ilkleri (en eskiler): onay
+    /// turunda küme değişirse sunucunun taze sorusu listenin dışındaki, yani en yeni öncülleri gösterir.</summary>
     public static PaymentLeaseConfirmation Create(string? priorsDigest, IEnumerable<Guid> priorIds) =>
-        new(string.IsNullOrEmpty(priorsDigest) ? null : priorsDigest, priorIds.Distinct().ToList(),
+        new(string.IsNullOrEmpty(priorsDigest) ? null : priorsDigest,
+            priorIds.Distinct().Take(PaymentRequestLimits.MaxConfirmedPriorIds).ToList(),
             Interlocked.Increment(ref _lastSequence));
 
     /// <summary>Onay belirteci (<see cref="PaymentPrompt.Token"/>): <c>kira-onay:{sıra}:{özet}:{Id,…}</c>. Özet base64url
@@ -228,8 +231,12 @@ public sealed record PaymentLeaseBeginInput(
 ///   (W3-06). Bitmediyse satır içi engel "Senkron kapatıldı; ekran yenileniyor.".</item>
 ///   <item><c>already-requested</c> (W3-09) → mesaj gitmez; bugünkü "tekrar gönderilsin mi?" sorusu
 ///   (<see cref="PaymentRequestResult.AlreadyRequested"/>), sunucunun öncülleri makine adıyla; yerel planın sorusu aynı
-///   diyaloğa katılır. Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) öncül Id'lerini taşır, akış onunla
-///   yeniden koşar.</item>
+///   diyaloğa katılır. Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) 409'un <c>priorsDigest</c>'ini aynen ve
+///   en çok 500 öncül Id'sini taşır, akış onunla yeniden koşar: <c>confirmedPriorsDigest</c> + <c>confirmedPriorIds</c>
+///   (#523). Yeni bir <c>already-requested</c> ancak operatör yeniden onaylarsa özeti değiştirir (en yeni belirteç
+///   geçerli); öbür retlerin yeniden denemelerinde özet de Id listesi de korunur.</item>
+///   <item><c>invalid-priors-digest</c> (400, beklenmez) → sert hata yok: özet atılır, <c>begin</c> bir kez özetsiz
+///   (yalnız Id listesiyle) yinelenir; sunucunun taze 409'u soruyu yeniden getirir.</item>
 /// </list></para>
 ///
 /// <para><b>Akışın sonu</b> (<see cref="PaymentLeaseFlow.FinishAsync"/>, §6.4 "Akışın sonu"): kira alındıysa (ya da
@@ -511,9 +518,10 @@ public sealed class PaymentLeaseCoordinator
             return Unreachable(flow, input, endpointMissing: false, "lisans çözülemedi");
 
         // Her begin (yeniden koşular ve settings-stale'in yerinde yinelemesi dahil) YENİ bir Id: önceki deneme kira
-        // yazmadı (ret) ya da kapandı. Onay alanları operatörün onayladığı belirteçlerden — yeniden koşularda aynı.
+        // yazmadı (ret) ya da kapandı. Onay alanları operatörün onayladığı belirteçlerden — yeniden koşularda aynı: özet
+        // 409'un priorsDigest'i aynen, Id listesi en çok 500 (§6.4, #523).
         var confirmation = input.Confirmation ?? PaymentLeaseConfirmation.None;
-        var request = new PaymentRequestBeginRequest(
+        PaymentRequestBeginRequest NewRequest(string? digest) => new(
             RecordId: Guid.NewGuid(),
             OwnerId: person.OwnerId ?? person.MemberIds[0],
             MemberIds: person.MemberIds,
@@ -524,23 +532,28 @@ public sealed class PaymentLeaseCoordinator
             RecipientPays: input.RecipientPays,
             ShippingSettingsVersion: input.ShippingSettingsVersion,
             ConfirmedPriorIds: confirmation.WirePriorIds,
-            ConfirmedPriorsDigest: confirmation.PriorsDigest,
+            ConfirmedPriorsDigest: digest,
             ReplicaId: envelope.ReplicaId!.Value,
             Protocol: SalesSyncEnvelope.Protocol,
             SeenMode: envelope.SeenMode);
+        var request = NewRequest(confirmation.PriorsDigest);
 
         PaymentRequestHttpResult<PaymentRequestBeginResponse> http;
         try
         {
-            http = await _api.PostPaymentRequestBeginAsync(licenseId.Value, request, ct).ConfigureAwait(false);
-            if (http.Transport is PaymentRequestTransport.Offline or PaymentRequestTransport.Failed)
+            http = await SendBeginAsync(flow, licenseId.Value, request, ct).ConfigureAwait(false);
+            if (request.ConfirmedPriorsDigest is not null
+                && http is { Transport: PaymentRequestTransport.Problem,
+                             Problem.Code: PaymentRequestProblemCodes.InvalidPriorsDigest })
             {
-                // Sunucu isteği almış olabilir: kira yazıldıysa çıkışta abandoned ile kapanır (yoksa finish
-                // record-not-found alır ve düşer). Akış içi tek yineleme AYNI Id ve gövdeyle: sunucu yeniden oynatır.
-                flow.Begun(request.RecordId);
-                _log.LogInformation("Ödeme isteği kirası {RecordId}: yanıt alınamadı ({Transport}); aynı istek bir kez "
-                                  + "yineleniyor", request.RecordId, http.Transport);
-                http = await _api.PostPaymentRequestBeginAsync(licenseId.Value, request, ct).ConfigureAwait(false);
+                // §6.4: özeti aynen yankılayan istemcide beklenmez (biçim değişikliği genişlet/daralt ile çıkar). Sert hata
+                // gösterilmez: 400 hiçbir şey yazmadı; özet atılır ve begin bir kez özetsiz (yalnız Id listesiyle) yinelenir
+                // — küme Id listesini aşıyorsa sunucunun taze 409'u soruyu yeniden getirir.
+                _log.LogWarning("Ödeme isteği kirası {RecordId}: invalid-priors-digest — özet atıldı, istek bir kez "
+                              + "özetsiz yineleniyor", request.RecordId);
+                flow.Clear();
+                request = NewRequest(null);
+                http = await SendBeginAsync(flow, licenseId.Value, request, ct).ConfigureAwait(false);
             }
         }
         catch (ArgumentOutOfRangeException ex)
@@ -576,6 +589,20 @@ public sealed class PaymentLeaseCoordinator
                 flow.Clear();
                 return Rejected(flow, request.RecordId, http.StatusCode, http.Problem!, input);
         }
+    }
+
+    /// <summary><c>begin</c>'i gönderir; yanıt alınamazsa (çevrimdışı, sunucu hatası) akış içinde AYNI Id ve gövdeyle bir
+    /// kez yineler — sunucu yeniden oynatır (§6.4-a). Kira yazılmış olabileceği için ilk denemenin Id'si akışa yazılır:
+    /// çıkışta abandoned ile kapanır (yoksa finish record-not-found alır ve düşer).</summary>
+    private async Task<PaymentRequestHttpResult<PaymentRequestBeginResponse>> SendBeginAsync(
+        PaymentLeaseFlow flow, Guid licenseId, PaymentRequestBeginRequest request, CancellationToken ct)
+    {
+        var http = await _api.PostPaymentRequestBeginAsync(licenseId, request, ct).ConfigureAwait(false);
+        if (http.Transport is not (PaymentRequestTransport.Offline or PaymentRequestTransport.Failed)) return http;
+        flow.Begun(request.RecordId);
+        _log.LogInformation("Ödeme isteği kirası {RecordId}: yanıt alınamadı ({Transport}); aynı istek bir kez yineleniyor",
+            request.RecordId, http.Transport);
+        return await _api.PostPaymentRequestBeginAsync(licenseId, request, ct).ConfigureAwait(false);
     }
 
     /// <summary>Kira alınamadı, sunucunun kararı da yok: mesaj gitmez (M9), bugünkü belirsizlik sunumu.</summary>
@@ -690,8 +717,9 @@ public sealed class PaymentLeaseCoordinator
     ///   <item>İstekler sunucunun öncülleridir, sunucunun sırasıyla (kapanış anı); makine adıyla. Tutar teslim edilmiş net,
     ///   yoksa (teslim kaydı olmadan dolan kira) kiranın bakiye öncesi tutarı — o istek "gitmiş olabilir"dir (§6.8).</item>
     ///   <item>Son öncül kiraysa ve bakiye öncesi tutarı bu isteğinkinden farklıysa yeni toplam da sorulur (K5).</item>
-    ///   <item>Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) öncül Id'lerini taşır; operatör onaylayınca akış
-    ///   onunla yeniden koşar ve <c>begin</c> onayı taşır.</item>
+    ///   <item>Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) 409'un <c>priorsDigest</c>'ini aynen ve en çok 500
+    ///   öncül Id'sini taşır; operatör onaylayınca akış onunla yeniden koşar ve <c>begin</c> onayı taşır. 500'ü aşan
+    ///   küme de tek onay turunda geçer: bütün kümeyi özet onaylar.</item>
     /// </list>
     /// Yerel planın sorusu çağıranda katılır (<c>PaymentRequestService.WithLocalPlan</c>). Öncülsüz ret beklenmez: istemci
     /// hatası sayılır.
@@ -710,7 +738,9 @@ public sealed class PaymentLeaseCoordinator
             p.At,
             Unconfirmed: p.Unconfirmed || p.NetAmount is null,
             Machine: p.Machine)).ToList();
-        var confirmation = PaymentLeaseConfirmation.Create(null, priors.Select(p => p.Id));
+        // Onay öncül kümesinin özetiyle taşınır (#523): Id listesi en çok 500 — fazlası gönderilmez, bütün kümeyi özet
+        // onaylar. Özetsiz (#523 öncesi) sunucuda onay yalnız Id listesidir.
+        var confirmation = PaymentLeaseConfirmation.Create(problem.PriorsDigest, priors.Select(p => p.Id));
 
         // K5: tutarın değiştiğini yalnız bakiye öncesi tutarı bilinen öncülde söyleyebiliriz (kira; kirasız kaydın neti
         // düşümü içermez).

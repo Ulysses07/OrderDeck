@@ -709,6 +709,132 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().HaveCount(2);
     }
 
+    // ── onay özeti: priorsDigest → confirmedPriorsDigest (#523; W3-09) ────
+    // Sahte sunucu #523'ün (e) kuralını aynalar (FakeSalesServer.AlreadyRequestedRule): Id listesinin dışında öncül
+    // kalırsa onay özeti bütün kümenin özetine eşit olmalı.
+
+    /// <summary>Sunucuya alıcının kümülatif kapsamındaki bir kaydını ekler; kapanış sırası <paramref name="minute"/>.</summary>
+    private FakeSalesServer.PaymentPrior SeedPrior(Customer buyer, string machine, decimal net, int minute)
+    {
+        var at = TenOClock.AddMinutes(minute);
+        var prior = new FakeSalesServer.PaymentPrior(Guid.NewGuid(), machine, [buyer.Id], "cumulative", net, net, at,
+            at.AddSeconds(15), Unconfirmed: false);
+        _server.AddPaymentPrior(prior);
+        return prior;
+    }
+
+    private static string? ConfirmedDigest(System.Text.Json.JsonElement begin) =>
+        begin.TryGetProperty("confirmedPriorsDigest", out var digest) ? digest.GetString() : null;
+
+    [Fact]
+    public async Task Onayda_ikinci_begin_409un_ozetini_aynen_ve_oncul_Idlerini_tasir_gecer_mesaj_bir_kez()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_ozet", 500m);
+        var priors = new[] { SeedPrior(buyer.Customer, "PC-B", 300m, -60), SeedPrior(buyer.Customer, "PC-A", 550m, 0) };
+        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle()
+            .Which.Message.Should().Be("PC-A'dan 550,00 TL istendi (10:00); tekrar gönderilsin mi?");
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        ConfirmedDigest(begins[0]).Should().BeNull("ilk begin'de onay yok: alan telde hiç yazılmaz");
+        ConfirmedDigest(begins[1]).Should().Be(FakeSalesServer.PriorsDigest.Compute(priors.Select(p => p.Id)),
+            "409'un priorsDigest'i aynen");
+        ConfirmedPriorIds(begins[1]).Should().Equal(priors.Select(p => p.Id));
+        pc.Launcher.LaunchedUrls.Should().ContainSingle("mesaj bir kez");
+        FinishOutcomes().Should().Equal("delivered");
+    }
+
+    [Fact]
+    public async Task Besyuzu_asan_oncullu_soru_tek_onay_turunda_ozetle_ve_en_cok_500_Idyle_gecer()
+    {
+        // §12-16, §13 W3: kayıtlar kapanmaz; 500'den fazla öncül biriken kişi × kapsam Id listesiyle kalıcı kilitlenirdi.
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_sadik", 500m);
+        var priors = Enumerable.Range(0, 600).Select(i => SeedPrior(buyer.Customer, "PC-B", 550m, i - 600)).ToList();
+        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle("tek diyalog");
+        var begins = Begins();
+        begins.Should().HaveCount(2, "tek onay turu");
+        ConfirmedPriorIds(begins[1]).Should().HaveCount(PaymentRequestLimits.MaxConfirmedPriorIds,
+                "fazlası gönderilmez (500'ü aşan liste 400 invalid-confirmed-priors alırdı)")
+            .And.Equal(priors.Take(PaymentRequestLimits.MaxConfirmedPriorIds).Select(p => p.Id));
+        ConfirmedDigest(begins[1]).Should().Be(FakeSalesServer.PriorsDigest.Compute(priors.Select(p => p.Id)),
+            "bütün kümeyi özet onaylar");
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Soru_ile_onay_arasinda_kume_degisirse_yeni_ozetle_yeniden_sorulur_ucuncu_begin_yalniz_en_yeni_ozeti_tasir()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kume", 500m);
+        var first = SeedPrior(buyer.Customer, "PC-B", 300m, -60);
+        FakeSalesServer.PaymentPrior? late = null;
+        var dialogs = new FakeDialogService
+        {
+            ConfirmResult = _ =>
+            {
+                late ??= SeedPrior(buyer.Customer, "PC-C", 550m, 0);  // soru ile onay arasında PC-C istedi
+                return true;
+            },
+        };
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().HaveCount(2, "küme değişti: taze 409 yeni özetle yeniden sordu");
+        dialogs.Confirmations[1].Message.Should().StartWith("PC-C'den 550,00 TL istendi");
+        var begins = Begins();
+        begins.Should().HaveCount(3);
+        var d1 = FakeSalesServer.PriorsDigest.Compute([first.Id]);
+        var d2 = FakeSalesServer.PriorsDigest.Compute([first.Id, late!.Id]);
+        ConfirmedDigest(begins[1]).Should().Be(d1);
+        ConfirmedPriorIds(begins[1]).Should().Equal(first.Id);
+        ConfirmedDigest(begins[2]).Should().Be(d2, "yeni already-requested'in özeti öncekinin yerini aldı");
+        ConfirmedPriorIds(begins[2]).Should().Equal(new[] { late.Id }, "yalnız en yeni sorunun öncülleri");
+        _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().OnlyContain(
+            c => !c.RawJson.Contains("confirmedThrough", StringComparison.OrdinalIgnoreCase),
+            "terk edilen filigran hiçbir biçimde yazılmaz");
+        typeof(PaymentRequestBeginRequest).GetProperties().Should().NotContain(p => p.Name.Contains("Through"));
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Invalid_priors_digest_ozet_atilir_bir_kez_ozetsiz_yinelenir_sonuc_soru()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_bozuk_ozet", 500m);
+        SeedPrior(buyer.Customer, "PC-B", 550m, 0);
+        var stale = PaymentLeaseConfirmation.Create(FakeSalesServer.PriorsDigest.Compute([Guid.NewGuid()]), []);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 400, "invalid-priors-digest");
+
+        var outcome = await RequestAsync(pc, buyer.Customer, "cumulative",
+            new HashSet<string>(StringComparer.Ordinal) { stale.Token });
+
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "sert hata yok; sunucunun taze 409'u soruyu getirdi");
+        outcome.Prompt!.Requests.Should().ContainSingle().Which.Machine.Should().Be("PC-B");
+        var begins = Begins();
+        begins.Should().HaveCount(2, "bir kez özetsiz yinelendi");
+        ConfirmedDigest(begins[0]).Should().Be(stale.PriorsDigest);
+        begins[1].TryGetProperty("confirmedPriorsDigest", out _).Should().BeFalse("özet atıldı: gövdede anahtar yok");
+        ConfirmedPriorIds(begins[1]).Should().BeEmpty();
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+    }
+
     // ── yeniden denenen retler (W3-08) ────────────────────────────────────
 
     private IReadOnlyList<System.Text.Json.JsonElement> Begins() =>
@@ -900,7 +1026,7 @@ public sealed class PaymentLeaseTests : IDisposable
         var pc = await PcAsync();
         var live = pc.StartStream();
         var buyer = await BuyerAsync(pc, live, "alici_onay", 120m);
-        var digest = $"v1.{Guid.NewGuid():N}";
+        var digest = FakeSalesServer.PriorsDigest.Compute([Guid.NewGuid()]);   // sunucunun biçimi (#523)
         var priors = new[] { Guid.NewGuid(), Guid.NewGuid() };
         var confirmation = PaymentLeaseConfirmation.Create(digest, priors);
         _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, code, code switch

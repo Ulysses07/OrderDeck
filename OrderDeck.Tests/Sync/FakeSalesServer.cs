@@ -1870,10 +1870,26 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new { records = results }, Web));
     }
 
+    /// <summary>Sunucuda kayıtlı, teslim edilmiş ya da sonucu bilinmeyen ödeme isteği kaydı (W3-09): <c>begin</c>'in (e)
+    /// adımının öncülü (<see cref="AddPaymentPrior"/>).</summary>
+    /// <param name="Members">Kaydın üyeleri; isteğin üyeleriyle kesişiyorsa aynı kişi sayılır.</param>
+    internal sealed record PaymentPrior(Guid Id, string? Machine, IReadOnlyList<string> Members, string ScopeKey,
+        decimal? NetAmount, decimal? TotalBeforeBalance, DateTimeOffset At, DateTimeOffset FinishedAt, bool Unconfirmed);
+
+    private readonly List<PaymentPrior> _paymentPriors = new();
+
+    /// <summary>Kaydı sunucuya ekler: sonraki <c>begin</c>'in (e) adımı onu görür.</summary>
+    public void AddPaymentPrior(PaymentPrior prior)
+    {
+        lock (_gate) _paymentPriors.Add(prior);
+    }
+
     /// <summary>
     /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), betik, v2 zarfı denetimi; mod Off'ta 409
-    /// <c>mode-off</c> (§4.7). Kira kuralları (yeniden oynatma, üye kesişimi, öncüller, sunucu toplamı, kargo) taklit
-    /// edilmez: betik yoksa 200, durum <c>sending</c>, üyeler istemcinin üyeleri ∪ <see cref="ExtraBeginMembers"/>.
+    /// <c>mode-off</c> (§4.7). Kira kurallarından yalnız (e) taklit edilir (W3-09, #523'ün aynası,
+    /// <see cref="AlreadyRequestedRule"/>); öbürleri (yeniden oynatma, üye kesişimi, sunucu toplamı, kargo) taklit
+    /// edilmez: betik yoksa ve (e) geçerse 200, durum <c>sending</c>, üyeler istemcinin üyeleri ∪
+    /// <see cref="ExtraBeginMembers"/>.
     /// </summary>
     private async Task<HttpResponseMessage> HandlePaymentBeginAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
     {
@@ -1893,6 +1909,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             || !root.TryGetProperty("seenMode", out _))
             return Invalid($"{PaymentRequestsBegin}: v2 zarfı yok");
         if (Mode != 1) return FakeHttpMessageHandler.Problem(409, "mode-off");
+        if (AlreadyRequestedRule(root) is { } rejected) return rejected;
 
         return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
         {
@@ -1902,6 +1919,100 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString())
                 .Concat(ExtraBeginMembers).Distinct(StringComparer.Ordinal).ToList(),
         }, Web));
+    }
+
+    /// <summary>
+    /// <c>begin</c>'in onay denetimi ve (e) adımı, #523'ün aynası (<c>PaymentRequestLeaseService</c>): 500'ü aşan
+    /// <c>confirmedPriorIds</c> 400 <c>invalid-confirmed-priors</c>, biçimi bozuk <c>confirmedPriorsDigest</c> 400
+    /// <c>invalid-priors-digest</c>. Kişi × kapsamın kayıtları (<see cref="AddPaymentPrior"/>; üye kesişimi, aynı kapsam)
+    /// Id listesinin dışında öncül bırakıyorsa onay özeti BÜTÜN kümenin özetine eşit olmalı; değilse 409
+    /// <c>already-requested {priors, priorsDigest}</c> — <c>priors</c> listenin dışındakiler, kapanış sırasıyla. Geçerse null.
+    /// </summary>
+    private HttpResponseMessage? AlreadyRequestedRule(JsonElement root)
+    {
+        var confirmed = root.TryGetProperty("confirmedPriorIds", out var ids) && ids.ValueKind == JsonValueKind.Array
+            ? ids.EnumerateArray().Select(i => i.GetGuid()).ToHashSet()
+            : new HashSet<Guid>();
+        if (confirmed.Count > 500)
+            return ProblemResponse(400, "invalid-confirmed-priors", "confirmedPriorIds en çok 500 dolu Id taşır.");
+        byte[]? confirmedDigest = null;
+        if (root.TryGetProperty("confirmedPriorsDigest", out var digestText) && digestText.ValueKind != JsonValueKind.Null
+            && (digestText.ValueKind != JsonValueKind.String || !PriorsDigest.TryParse(digestText.GetString(), out confirmedDigest)))
+            return ProblemResponse(400, "invalid-priors-digest", "confirmedPriorsDigest biçimi bozuk.");
+
+        var scopeKey = root.GetProperty("scopeKey").GetString();
+        var members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()!).ToHashSet(StringComparer.Ordinal);
+        List<PaymentPrior> open;
+        lock (_gate)
+            open = _paymentPriors
+                .Where(p => p.ScopeKey == scopeKey && p.Members.Any(members.Contains))
+                .OrderBy(p => p.FinishedAt).ThenBy(p => p.At).ThenBy(p => p.Id)
+                .ToList();
+        var priors = open.Where(p => !confirmed.Contains(p.Id)).ToList();
+        if (priors.Count == 0) return null;
+
+        var digest = PriorsDigest.Hash(open.Select(p => p.Id));
+        if (confirmedDigest is not null && confirmedDigest.AsSpan().SequenceEqual(digest)) return null;
+        return ProblemResponse(409, "already-requested", "Bu kişiden bu kapsamda daha önce ödeme istendi; tekrar gönderilsin mi?",
+            new Dictionary<string, object?>
+            {
+                ["priors"] = priors.Select(p => new
+                {
+                    id = p.Id, machine = p.Machine, netAmount = p.NetAmount, totalBeforeBalance = p.TotalBeforeBalance,
+                    at = p.At, finishedAt = p.FinishedAt, unconfirmed = p.Unconfirmed,
+                }).ToList(),
+                ["priorsDigest"] = PriorsDigest.Format(digest),
+            });
+    }
+
+    /// <summary>
+    /// <c>priorsDigest</c>'in hesabı, sunucunun <c>PaymentRequestPriorsDigest</c>'inin aynası (§6.4-e "Özetin biçimi"): Id'ler
+    /// tekilleştirilir, RFC 9562 (büyük uçlu) baytlarının sırasıyla art arda SHA-256; telde <c>v1.</c> + dolgusuz base64url
+    /// (46 karakter), tek yazım. İstemci özeti hesaplamaz — yalnız yankılar; bu ikiz sunucunun karşılaştırmasını taklit eder.
+    /// </summary>
+    internal static class PriorsDigest
+    {
+        private const string Prefix = "v1.";
+
+        public static string Compute(IEnumerable<Guid> ids) => Format(Hash(ids));
+
+        public static byte[] Hash(IEnumerable<Guid> ids)
+        {
+            var keys = ids.Distinct().Select(BigEndian).Order().ToArray();
+            var buffer = new byte[keys.Length * 16];
+            for (var i = 0; i < keys.Length; i++)
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt128BigEndian(buffer.AsSpan(i * 16, 16), keys[i]);
+            return System.Security.Cryptography.SHA256.HashData(buffer);
+        }
+
+        public static string Format(byte[] hash) => Prefix + System.Buffers.Text.Base64Url.EncodeToString(hash);
+
+        public static bool TryParse(string? value, out byte[]? hash)
+        {
+            hash = null;
+            if (value is null || value.Length != Prefix.Length + 43 || !value.StartsWith(Prefix, StringComparison.Ordinal))
+                return false;
+            var encoded = value.AsSpan(Prefix.Length);
+            foreach (var c in encoded)
+                if (!(c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')) return false;
+            var decoded = new byte[32];
+            try
+            {
+                if (!System.Buffers.Text.Base64Url.TryDecodeFromChars(encoded, decoded, out var written) || written != 32)
+                    return false;
+            }
+            catch (FormatException) { return false; }
+            if (Format(decoded) != value) return false;                    // tek yazım: artık bitler sıfır
+            hash = decoded;
+            return true;
+        }
+
+        private static UInt128 BigEndian(Guid id)
+        {
+            Span<byte> bytes = stackalloc byte[16];
+            id.TryWriteBytes(bytes, bigEndian: true, out _);
+            return System.Buffers.Binary.BinaryPrimitives.ReadUInt128BigEndian(bytes);
+        }
     }
 
     /// <summary>Bakiye uçları (W3-07): önizleme <see cref="BalancePreview"/>, kapsam <see cref="ScopeDeductions"/>'tan
