@@ -66,6 +66,11 @@ public sealed class SalesEditRouter : ILabelEditor
     /// <see cref="PendingSalesCommandSender.Settled"/> ile gelir, komut zaten kalıcı kuyrukta.</summary>
     internal static readonly TimeSpan ImmediateSendBudget = TimeSpan.FromSeconds(3);
 
+    /// <summary>Kâğıdın kapılı satırları (kendi bitmiş, devredilmemiş yayını) için devir kilidinin en çok beklenme süresi
+    /// (§5.6-2'nin baskı öncesi beklemesiyle aynı). Süre dolunca baskı beklemez; kapılı satırlar kilit açılınca arka
+    /// planda, kilit altında işaretlenir. Testler kısaltır.</summary>
+    internal TimeSpan HandoverWaitBudget { get; set; } = TimeSpan.FromSeconds(3);
+
     /// <param name="lastFeedSyncAt">Satış akışının bu süreçte son yetiştiği an (çevrimdışı yeniden baskının notu).</param>
     public SalesEditRouter(
         LabelService labels,
@@ -428,11 +433,19 @@ public sealed class SalesEditRouter : ILabelEditor
     }
 
     /// <summary>
-    /// Mod On'un kâğıt işaretlemesi (§5.6-4): TEK basış kimliği, kâğıt sırası kesintisiz. Kendi bitmiş ama devredilmemiş
-    /// yayınlarının kilidi (kapanış gönderimi o an "kuyruk boş mu" kararındaysa) beklenerek alınır ve karar kilit altında
-    /// yeniden verilir: devir arada görüldüyse o satırlar da sunucu yoluna geçer. Kâğıt zaten basıldığı için kapalı
-    /// (ilk yetişme) satır da yerelde damgalanır — sunucu devredilmiş yayına baskı doldurmayı kabul eder (K3). Kendi
-    /// devredilmiş yayınının satırları bekleyen <c>mark-printed</c> (kalıcı önce), başka bilgisayarınkiler doğrudan komut.
+    /// Mod On'un kâğıt işaretlemesi (§5.6-4): TEK basış kimliği, kâğıt sırası kesintisiz; parçalar ayrı işlemlerde.
+    /// <list type="number">
+    ///   <item>Canlı ve yerel satırlar (<see cref="SalesEditRoute.Local"/>) hemen, devir kilitlerinden ÖNCE ve kendi
+    ///   işleminde (§5.1, §5.2: canlı yol kapıya uğramaz). Kendi bitmiş yayınının kapanış gönderimi kilidi sessions/sync
+    ///   boyunca tutsa da canlı etiketin işareti onu beklemez.</item>
+    ///   <item>Kendi bitmiş ama devredilmemiş yayınlarının satırları (<see cref="SalesEditRoute.LocalGated"/>,
+    ///   <see cref="SalesEditRoute.Blocked"/>): <see cref="MarkGatedPaperAsync"/> — kilit beklenir, karar kilit altında
+    ///   yeniden verilir. Kilit en çok <see cref="HandoverWaitBudget"/> beklenir: süre dolunca çağıran beklemez, bu
+    ///   satırlar <see cref="SalesPrintMarkResult.Pending"/>'de döner ve kilit açılınca arka planda aynı kuralla
+    ///   işaretlenir. Kilitsiz yazılmaz (M2: kapanış "kuyruk boş" okuduysa devir kuyruk boşken olur), işaret de
+    ///   düşmez.</item>
+    ///   <item>Sunucu satırları (<see cref="MarkServerPaperAsync"/>).</item>
+    /// </list>
     /// </summary>
     private async Task<SalesPrintMarkResult> MarkPrintedModeOnAsync(
         IReadOnlyList<string> paperOrder, IReadOnlyList<SalesEditDecision> first, CancellationToken ct)
@@ -440,18 +453,85 @@ public sealed class SalesEditRouter : ILabelEditor
         var batchId = LabelService.NewPrintBatchId();
         var seqOf = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var i = 0; i < paperOrder.Count; i++) seqOf.TryAdd(paperOrder[i], i + 1);
+        var result = new PrintMarkBuilder();
 
-        var gated = first.Where(d => d.Route is SalesEditRoute.LocalGated or SalesEditRoute.Blocked)
-            .Select(d => d.SessionId!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var decisions = first;
+        var live = decisions.Where(d => d.Route == SalesEditRoute.Local).Select(d => d.LabelId).ToList();
+        if (live.Count > 0 && !TryMarkPaper(live, batchId, seqOf))
+        {
+            // Beklenmeyen: canlı satırın yayını bu arada sunucu otoritesine geçti ve TR_Label_ServerAuthority_U yazımı
+            // geri çevirdi — hiçbir satır yazılmadı (tek işlem). Kâğıt basıldı: karar yeniden verilir.
+            _log.LogInformation("Kuyruk baskısı {BatchId}: canlı satırın yayını bu arada sunucuya geçti; karar yeniden veriliyor",
+                batchId);
+            decisions = Decide(paperOrder) ?? AllLocal(paperOrder);
+            live = decisions.Where(d => d.Route == SalesEditRoute.Local).Select(d => d.LabelId).ToList();
+            if (live.Count > 0)
+                _labels.MarkPrintedAndRecord(live, batchId, live.Select(id => seqOf[id]).ToList());
+        }
+        result.Local(live);
+
+        var gated = decisions.Where(IsGated).Select(d => d.LabelId).ToList();
+        var deferred = 0;
+        if (gated.Count > 0)
+        {
+            var sessions = decisions.Where(IsGated).Select(d => d.SessionId!).Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal).ToList();
+            var part = MarkGatedPaperAsync(gated, sessions, batchId, seqOf);
+            if (await Task.WhenAny(part, Task.Delay(HandoverWaitBudget, ct)).ConfigureAwait(false) == part)
+            {
+                // Kilit altında verilen karar kapılı satırların eski kararının yerine geçer: devri görülenler aşağıda
+                // kâğıdın öbür sunucu satırlarıyla aynı komuta girer.
+                var (gatedResult, gatedDecisions) = await part.ConfigureAwait(false);
+                result.Merge(gatedResult);
+                decisions = decisions.Where(d => !IsGated(d)).Concat(gatedDecisions).ToList();
+            }
+            else
+            {
+                // Kapanış gönderimi kilidi hâlâ tutuyor (sessions/sync sürüyor). Baskı komutu ve "Yayını bitir" daha
+                // fazla beklemez; iş kilit açılınca arka planda biter (kapılı kararlar aşağıdaki sunucu yolunda yok
+                // sayılır: Local/LocalGated/Blocked).
+                deferred = gated.Count;
+                result.Pending.AddRange(gated);
+                _log.LogInformation(
+                    "Kuyruk baskısı {BatchId}: {Count} satırın devir kilidi süresinde alınamadı (kapanış gönderimi sürüyor); kilit açılınca işaretlenecek",
+                    batchId, gated.Count);
+                _ = FinishDeferredGatedAsync(part, batchId, seqOf, gated.Count);
+            }
+        }
+
+        await MarkServerPaperAsync(decisions, result, batchId, seqOf, ct).ConfigureAwait(false);
+
+        _log.LogInformation(
+            "Kuyruk baskısı {BatchId}: {Local} yerel, {Own} kalıntı (komut; {Pending} bekliyor), {Remote} başka bilgisayarın, {Deferred} kilit bekliyor; {Discard} kâğıt imha edilecek",
+            batchId, result.LocalCount, result.OwnCount, result.Pending.Count - deferred, result.RemoteCount, deferred,
+            result.Discard.Count);
+        return result.Build();
+    }
+
+    private static bool IsGated(SalesEditDecision d) => d.Route is SalesEditRoute.LocalGated or SalesEditRoute.Blocked;
+
+    /// <summary>
+    /// Kâğıdın kapılı parçası (kendi bitmiş ama devredilmemiş yayınları): kilitler kimlik sırasıyla beklenir (kapanış
+    /// gönderimi o an "kuyruk boş mu" kararındaysa) ve karar kilit altında yeniden verilir. Hâlâ yerel yoldaki satırlar
+    /// kilit altında damgalanır; kâğıt zaten basıldığı için kapalı (ilk yetişme) satır da — sunucu devredilmiş yayına
+    /// baskı doldurmayı kabul eder (K3). Devri arada görülen satırlar dönen kararda sunucu yolundadır; komutları kilit
+    /// bırakıldıktan sonra çağıranın işidir. Kâğıt basıldı: çağıranın beklemekten vazgeçmesi (süre, belirteç) bu işi
+    /// kesmez.
+    /// </summary>
+    /// <param name="sessionIds">Kapılı yayınlar, kimlik sırasıyla (kilitlenme olmasın).</param>
+    /// <returns>Yerelde damgalananlar ve kapılı satırların kilit altındaki kararı.</returns>
+    private async Task<(PrintMarkBuilder Result, IReadOnlyList<SalesEditDecision> Decisions)> MarkGatedPaperAsync(
+        IReadOnlyList<string> gated, IReadOnlyList<string> sessionIds, string batchId,
+        IReadOnlyDictionary<string, int> seqOf)
+    {
+        var result = new PrintMarkBuilder();
         var leases = new List<IDisposable>();
-        IReadOnlyList<SalesEditDecision> decisions;
-        List<string> local;
         try
         {
-            foreach (var sessionId in gated)
-                leases.Add(await _handover.EnterAsync(sessionId, ct).ConfigureAwait(false));
-            decisions = gated.Count == 0 ? first : Decide(paperOrder) ?? AllLocal(paperOrder);
-            local = LocalPaper(decisions);
+            foreach (var sessionId in sessionIds)
+                leases.Add(await _handover.EnterAsync(sessionId, CancellationToken.None).ConfigureAwait(false));
+            var decisions = Decide(gated) ?? AllLocal(gated);
+            var local = LocalPaper(decisions);
             if (local.Count > 0 && !TryMarkPaper(local, batchId, seqOf))
             {
                 // Akış bu arada kendi bitmiş yayınının devrini yazdı (Authority = 'server'; akış devir kapısını almaz)
@@ -459,24 +539,56 @@ public sealed class SalesEditRouter : ILabelEditor
                 // basıldı: karar yeniden verilir, devredilen satırlar bekleyen komut yoluna geçer.
                 _log.LogInformation("Kuyruk baskısı {BatchId}: yayın bu arada sunucuya devredildi; karar yeniden veriliyor",
                     batchId);
-                decisions = Decide(paperOrder) ?? AllLocal(paperOrder);
+                decisions = Decide(gated) ?? AllLocal(gated);
                 local = LocalPaper(decisions);
                 if (local.Count > 0)
                     _labels.MarkPrintedAndRecord(local, batchId, local.Select(id => seqOf[id]).ToList());
             }
+            result.Local(local);
+            return (result, decisions);
         }
         finally
         {
             foreach (var lease in leases) lease.Dispose();
         }
+    }
 
-        var marked = new List<string>(local);
-        var pending = new List<string>();
-        var discard = new HashSet<string>(StringComparer.Ordinal);
-        var alreadyPrinted = new HashSet<string>(StringComparer.Ordinal);
-        var notices = new List<string>();
-        var changed = new HashSet<string>(local, StringComparer.Ordinal);
+    /// <summary>
+    /// Süresinde beklenemeyen kapılı parçanın arka planda bitişi: kilit açılınca yerel damga (<see cref="MarkGatedPaperAsync"/>),
+    /// devri görülen satırlar için bekleyen <c>mark-printed</c> (kalıcı önce; çevrimiçiyse hemen gönderilir — sonucu
+    /// arayüze <see cref="PendingSalesCommandSender.Settled"/> ile gider). Günlük yalnız kimlik ve sayı taşır.
+    /// </summary>
+    private async Task FinishDeferredGatedAsync(
+        Task<(PrintMarkBuilder Result, IReadOnlyList<SalesEditDecision> Decisions)> part, string batchId,
+        IReadOnlyDictionary<string, int> seqOf, int count)
+    {
+        try
+        {
+            var (result, decisions) = await part.ConfigureAwait(false);
+            await MarkServerPaperAsync(decisions, result, batchId, seqOf, CancellationToken.None).ConfigureAwait(false);
+            _log.LogInformation(
+                "Kuyruk baskısı {BatchId}: kilit açıldı; {Count} satırdan {Local} yerelde işaretlendi, {Own} kalıntı komuta girdi ({Pending} bekliyor); {Notices} uyarı",
+                batchId, count, result.LocalCount, result.OwnCount, result.Pending.Count, result.Notices.Count);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex,
+                "Kuyruk baskısı {BatchId}: kâğıdı basılmış {Count} satırın işareti kilit açıldıktan sonra yazılamadı",
+                batchId, count);
+        }
+    }
+
+    /// <summary>
+    /// Kâğıdın sunucu yolundaki satırları (§5.5, §5.6-4): kendi devredilmiş yayınınınkiler bekleyen <c>mark-printed</c>
+    /// (kalıcı önce; çevrimiçiyse hemen gönderilir), başka bilgisayarınkiler doğrudan komut. Basış kimliği ve kâğıt
+    /// sıraları kâğıdınkiyle aynı.
+    /// </summary>
+    private async Task MarkServerPaperAsync(IReadOnlyList<SalesEditDecision> decisions, PrintMarkBuilder result,
+        string batchId, IReadOnlyDictionary<string, int> seqOf, CancellationToken ct)
+    {
         var (own, remote) = SplitServerLabels(decisions);
+        result.OwnCount += own.Count;
+        result.RemoteCount += remote.Count;
         var online = decisions.Any(d => d.Route == SalesEditRoute.Command);
 
         if (own.Count > 0)
@@ -490,27 +602,27 @@ public sealed class SalesEditRouter : ILabelEditor
                 switch (settled.State)
                 {
                     case PendingState.Applied:
-                        marked.AddRange(chunk);
+                        result.Marked.AddRange(chunk);
                         break;
                     case PendingState.Pending:
-                        pending.AddRange(chunk);
+                        result.Pending.AddRange(chunk);
                         break;
                     case PendingState.Dropped:
-                        notices.AddRange(settled.Flush!.Settled.Warnings);
+                        result.Notices.AddRange(settled.Flush!.Settled.Warnings);
                         break;
                     default:
                         // Kararla bekleyen komut arasında yerel kip Off'a döndü (disable turunun 2. adımı): kendi
                         // yayınları artık yerel otoritede (aynı işlemde). Kâğıt basıldı — işaret aynı basış ve sırayla
                         // yerelde yazılır; yoksa etiket basılmamış görünür, sonraki yayında yeniden teklif edilirdi.
-                        if (TryMarkLocally(chunk, batchId, seqOf)) marked.AddRange(chunk);
-                        else notices.Add(SalesCommandMessages.PrintNotRecorded(chunk.Length, SalesCommandMessages.ModeOff));
+                        if (TryMarkLocally(chunk, batchId, seqOf)) result.Marked.AddRange(chunk);
+                        else result.Notices.Add(SalesCommandMessages.PrintNotRecorded(chunk.Length, SalesCommandMessages.ModeOff));
                         break;
                 }
                 if (settled.Flush is { } flush)
                 {
-                    discard.UnionWith(flush.Settled.DiscardLabelIds);
-                    alreadyPrinted.UnionWith(flush.Settled.AlreadyPrintedLabelIds);
-                    changed.UnionWith(flush.Settled.ChangedLabelIds);
+                    result.Discard.UnionWith(flush.Settled.DiscardLabelIds);
+                    result.AlreadyPrinted.UnionWith(flush.Settled.AlreadyPrintedLabelIds);
+                    result.Changed.UnionWith(flush.Settled.ChangedLabelIds);
                 }
             }
         }
@@ -518,7 +630,7 @@ public sealed class SalesEditRouter : ILabelEditor
         if (remote.Count > 0)
         {
             if (!online)
-                notices.Add(SalesCommandMessages.PrintNotRecorded(remote.Count,
+                result.Notices.Add(SalesCommandMessages.PrintNotRecorded(remote.Count,
                     decisions.First(d => d.Route == SalesEditRoute.Unavailable).Reason));
             else
             {
@@ -528,27 +640,60 @@ public sealed class SalesEditRouter : ILabelEditor
                             _commands.MarkPrinted(batchId, chunk.Select(id => (id, seqOf[id])).ToList()), ct)
                         .ConfigureAwait(false);
                     _connectivity.Report(outcome.Status);
-                    changed.UnionWith(outcome.LabelIds);
+                    result.Changed.UnionWith(outcome.LabelIds);
                     if (outcome.IsApplied)
                     {
-                        marked.AddRange(chunk);
+                        result.Marked.AddRange(chunk);
                         var asked = chunk.ToHashSet(StringComparer.Ordinal);
-                        discard.UnionWith((outcome.Result?.Cancelled ?? []).Select(id => id.ToString("N"))
+                        result.Discard.UnionWith((outcome.Result?.Cancelled ?? []).Select(id => id.ToString("N"))
                             .Where(asked.Contains));
                         foreach (var id in (outcome.Result?.AlreadyPrinted ?? []).Select(id => id.ToString("N"))
                                      .Where(asked.Contains))
-                            if (discard.Add(id)) alreadyPrinted.Add(id);
+                            if (result.Discard.Add(id)) result.AlreadyPrinted.Add(id);
                     }
-                    else notices.Add(SalesCommandMessages.PrintNotRecorded(chunk.Length, outcome.Message));
+                    else result.Notices.Add(SalesCommandMessages.PrintNotRecorded(chunk.Length, outcome.Message));
                 }
             }
         }
+    }
 
-        _log.LogInformation(
-            "Kuyruk baskısı {BatchId}: {Local} yerel, {Own} kalıntı (komut; {Pending} bekliyor), {Remote} başka bilgisayarın; {Discard} kâğıt imha edilecek",
-            batchId, local.Count, own.Count, pending.Count, remote.Count, discard.Count);
-        return new SalesPrintMarkResult(marked, pending, discard.ToList(), notices, changed.ToList(),
-            alreadyPrinted.ToList());
+    /// <summary>Kâğıt işaretlemesinin (ya da bir parçasının) birikimi. Parçalar ayrı etiketleri taşır; kapılı parça
+    /// süresinde biterse ana parçaya katılır, bitmezse yalnız arka planda kullanılır (eşzamanlı erişim yok).</summary>
+    private sealed class PrintMarkBuilder
+    {
+        public readonly List<string> Marked = new();
+        public readonly List<string> Pending = new();
+        public readonly HashSet<string> Discard = new(StringComparer.Ordinal);
+        public readonly HashSet<string> AlreadyPrinted = new(StringComparer.Ordinal);
+        public readonly List<string> Notices = new();
+        public readonly HashSet<string> Changed = new(StringComparer.Ordinal);
+        public int LocalCount;
+        public int OwnCount;
+        public int RemoteCount;
+
+        /// <summary>Yerelde damgalanan satırlar.</summary>
+        public void Local(IReadOnlyCollection<string> ids)
+        {
+            Marked.AddRange(ids);
+            Changed.UnionWith(ids);
+            LocalCount += ids.Count;
+        }
+
+        public void Merge(PrintMarkBuilder part)
+        {
+            Marked.AddRange(part.Marked);
+            Pending.AddRange(part.Pending);
+            Discard.UnionWith(part.Discard);
+            AlreadyPrinted.UnionWith(part.AlreadyPrinted);
+            Notices.AddRange(part.Notices);
+            Changed.UnionWith(part.Changed);
+            LocalCount += part.LocalCount;
+            OwnCount += part.OwnCount;
+            RemoteCount += part.RemoteCount;
+        }
+
+        public SalesPrintMarkResult Build() =>
+            new(Marked, Pending, Discard.ToList(), Notices, Changed.ToList(), AlreadyPrinted.ToList());
     }
 
     /// <summary>Kâğıdın yerel yoldaki satırları.</summary>

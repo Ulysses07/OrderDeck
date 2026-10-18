@@ -89,8 +89,9 @@ public sealed record SalesEditResult(
 
 /// <summary>Kuyruk baskısının işaretlenmesi (spec 2026-10-13 §5.6-4, §5.5): kâğıt basıldıktan sonra.</summary>
 /// <param name="Marked">Basılmış işaretlenen etiketler (yerel yazım ya da uygulanan komut; zaten basılmış olan dahil).</param>
-/// <param name="Pending">Kâğıdı basılan ama sunucuya henüz işlenmeyen kalıntı etiketler: bekleyen <c>mark-printed</c>'de,
-/// örtülü — yeniden açılışta da teklif edilmez.</param>
+/// <param name="Pending">Kâğıdı basılan ama henüz işaretlenmeyen etiketler: sunucuya işlenmeyen kalıntılar bekleyen
+/// <c>mark-printed</c>'de, örtülü — yeniden açılışta da teklif edilmez; kendi bitmiş yayınının satırları, devir kilidi
+/// süresinde alınamadıysa (kapanış gönderimi sürüyor), kilit açılınca arka planda kilit altında işaretlenir.</param>
 /// <param name="DiscardLabelIds">Sunucunun <c>cancelled[]</c> ve <c>alreadyPrinted[]</c>'i: "kâğıtları imha et".</param>
 /// <param name="Notices">Satır içi uyarılar (işaretlenemeyen sunucu satırı, kalıcı ret); yoksa boş.</param>
 /// <param name="ChangedLabelIds">Yerelde değeri değişmiş olabilecek etiketler.</param>
@@ -293,7 +294,8 @@ public interface ILabelEditor : IShipmentEditor
     /// <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string})"/>, beklemeden. Mod On'da tek basış kimliği ve
     /// kâğıt sırası: yerel satırlar <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string}, string, IReadOnlyList{int})"/>
     /// ile, devredilmiş kendi yayınının satırları bekleyen <c>mark-printed</c> komutuyla (kalıcı önce; çevrimiçiyse hemen
-    /// gönderilir).
+    /// gönderilir). Canlı yayının satırları devir kilidine uğramadan hemen; kendi bitmiş yayınının satırları kilidi en çok
+    /// 3 sn bekler, süre dolunca kilit açılınca arka planda işaretlenir (<see cref="SalesPrintMarkResult.Pending"/>).
     /// </summary>
     /// <param name="paperOrder">Basılan etiketler, kâğıt sırasıyla.</param>
     Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default);

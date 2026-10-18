@@ -438,4 +438,94 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         Print(label).PrintedAt.Should().BeNull("ABORT'a varmadı");
         _bed.Pending.List().Should().ContainSingle().Which.Kind.Should().Be("mark-printed");
     }
+
+    [Fact]
+    public async Task Kapanis_kilidi_tutulurken_karisik_kagitta_canli_etiket_kilidi_beklemeden_hemen_isaretlenir()
+    {
+        _bed.ModeOn();
+        _bed.Online = false;
+        var live = ActiveLabel(out _);
+        var session = _bed.LocalSession(ended: true);              // kendi bitmiş, devredilmemiş yayını: kapılı
+        var gated = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        var held = await _bed.Gate.EnterAsync(session);            // kapanış gönderimi sessions/sync'te asılı
+
+        var mark = _bed.Router.MarkPrintedAsync([gated, live]);
+
+        Print(live).PrintedAt.Should().NotBeNull("canlı satır devir kilidine uğramaz: kilitlerden önce, kendi işleminde");
+        Print(gated).PrintedAt.Should().BeNull("kapılı satır kapanış kararı sürerken kilitsiz yazılmaz (M2)");
+        mark.IsCompleted.Should().BeFalse("kapılı satır kilidi bekliyor");
+        held.Dispose();
+        var result = await mark.WaitAsync(TestPatience.Upper);
+
+        result.Marked.Should().BeEquivalentTo([gated, live]);
+        result.Pending.Should().BeEmpty();
+        Print(gated).BatchId.Should().Be(Print(live).BatchId, "tek basış: parçalar ayrı işlemlerde, kimlik aynı");
+        Print(gated).Seq.Should().Be(1);
+        Print(live).Seq.Should().Be(2, "kâğıt sırası kesintisiz");
+        _bed.Gate.EntryCount.Should().Be(0, "kilit yazımdan sonra bırakılır");
+    }
+
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TestPatience.Upper;
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"koşul {TestPatience.Upper.TotalSeconds} sn'de sağlanmadı");
+            await Task.Delay(20);
+        }
+    }
+
+    [Fact]
+    public async Task Kapanis_kilidi_suresinde_birakilmazsa_isaretleme_beklemez_kapili_satir_kilit_acilinca_ayni_basisla_isaretlenir()
+    {
+        _bed.ModeOn();
+        _bed.Online = false;
+        var live = ActiveLabel(out _);
+        var session = _bed.LocalSession(ended: true);
+        var gated = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        _bed.Router.HandoverWaitBudget = TimeSpan.FromMilliseconds(100);   // §5.6-2'nin 3 sn'si, kısaltılmış
+        var held = await _bed.Gate.EnterAsync(session);            // kapanış gönderimi sessions/sync'te asılı
+
+        var result = await _bed.Router.MarkPrintedAsync([gated, live]).WaitAsync(TimeSpan.FromSeconds(10));
+
+        result.Marked.Should().Equal(live);
+        result.Pending.Should().Equal(new[] { gated }, "kilit süresinde alınamadı: kilit açılınca işaretlenecek");
+        Print(gated).PrintedAt.Should().BeNull("süre doldu diye kilitsiz yazılmaz (M2)");
+        _bed.Pending.List().Should().BeEmpty("yerel otoriteli yayının satırı bekleyen komuta girmez");
+
+        held.Dispose();
+        await WaitUntil(() => Print(gated).PrintedAt is not null && _bed.Gate.EntryCount == 0);
+
+        Print(gated).BatchId.Should().Be(Print(live).BatchId, "aynı basış");
+        Print(gated).Seq.Should().Be(1);
+        Print(live).Seq.Should().Be(2);
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Suresi_dolan_kapili_satirin_yayini_beklerken_devredilirse_kilit_acilinca_bekleyen_mark_printed_olur()
+    {
+        _bed.ModeOn();
+        _bed.Online = false;
+        var session = _bed.LocalSession(ended: true);
+        var label = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        _bed.Router.HandoverWaitBudget = TimeSpan.FromMilliseconds(100);
+        var held = await _bed.Gate.EnterAsync(session);
+
+        var result = await _bed.Router.MarkPrintedAsync([label]).WaitAsync(TimeSpan.FromSeconds(10));
+        result.Pending.Should().Equal(new[] { label });
+
+        // Kapanış o arada devri gördü: yayın sunucu otoritesine geçti.
+        _bed.Exec("UPDATE StreamSession SET ReleasedAt = 990, Authority = 'server' WHERE Id = @session", new { session });
+        held.Dispose();
+        await WaitUntil(() => _bed.Pending.List().Count == 1 && _bed.Gate.EntryCount == 0);
+
+        var row = _bed.Pending.List().Single();
+        row.Kind.Should().Be("mark-printed", "kilit altında yeniden karar: artık sunucu satırı");
+        row.LabelIds.Should().Equal(label);
+        Print(label).PrintedAt.Should().BeNull("ABORT'a varmadı");
+        _bed.LabelRepo.GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty(
+            "örtü: kâğıt yeniden teklif edilmez, baskı kaybolmaz");
+    }
 }
