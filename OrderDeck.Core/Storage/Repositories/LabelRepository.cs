@@ -755,6 +755,20 @@ public sealed class LabelRepository
             new { memberIds, sessionId }) == 1;
     }
 
+    /// <summary>
+    /// Verilen yayınlardan bu bilgisayarda açılmamış olanlar (<c>Origin</c> <c>local</c> değil — satış akışından inmiş):
+    /// etiketlerinin basılma anı başka bilgisayarın saatidir. Ödeme isteğinin "bu etiketi içeriyor mu" sorusu (spec 2026-10-13
+    /// §6.4, M17) bu etiketlerde iki bilgisayarın saatini karşılaştırmaz.
+    /// </summary>
+    public IReadOnlySet<string> RemoteSessionIds(IReadOnlyCollection<string> sessionIds)
+    {
+        if (sessionIds.Count == 0) return new HashSet<string>(StringComparer.Ordinal);
+        using var conn = _factory.Open();
+        return conn.Query<string>(
+                "SELECT Id FROM StreamSession WHERE Id IN @sessionIds AND Origin <> 'local'", new { sessionIds })
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
     /// <summary>Returns the labels a customer added in a specific session, ordered
     /// oldest-first so the auctioneer sees them in the order they happened during
     /// the live. Cancelled rows are returned too — UI flags them visually.</summary>

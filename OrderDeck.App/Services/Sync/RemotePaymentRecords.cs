@@ -21,7 +21,11 @@ public readonly record struct RemotePaymentKey(string ScopeKey, PaymentPerson Pe
 /// açılmaz, bu bilgisayarın ona kirayla ya da kirasız kayıtla yaptığı istek yalnız sunucudaki kaydıyla temsil edilir.</param>
 /// <param name="NewestOtherAfterLocal">Yerel işin son tesliminden SONRA kapanmış en yeni başka kopya kaydı; null = yerel iş en
 /// yeni (listede bu kopyanın kaydı yok ya da yerel kaydı henüz gönderilmedi).</param>
-public sealed record RemotePaymentLast(PaymentRequestListItem? Newest, PaymentRequestListItem? NewestOtherAfterLocal)
+/// <param name="LocalRecord">Yerel işin son tesliminin sunucudaki kaydı: bu kopyanın en yeni teslim edilmiş ya da sonucu
+/// bilinmeyen kaydı. Yerel kaydı henüz gönderilmediyse (kuyrukta) ya da listede yoksa null. Yerel iş başka bilgisayarın
+/// yayınından inmiş etiketi saatle değil bu kaydın sipariş kümesiyle kapsar (M17).</param>
+public sealed record RemotePaymentLast(
+    PaymentRequestListItem? Newest, PaymentRequestListItem? NewestOtherAfterLocal, PaymentRequestListItem? LocalRecord = null)
 {
     /// <summary>Birleşik son istek kayıtsa o kayıt; yerel işse null.</summary>
     /// <param name="hasLocal">Kişi × kapsamın teslim edilmiş (ya da gitmiş olabilecek) yerel işi var mı.</param>
@@ -82,6 +86,7 @@ public sealed class RemotePaymentSnapshot
 
         PaymentRequestListItem? newest = null;
         PaymentRequestListItem? afterLocal = null;
+        PaymentRequestListItem? localRecord = null;
         for (var i = 0; i < records.Count; i++)
         {
             var record = records[i];
@@ -89,8 +94,9 @@ public sealed class RemotePaymentSnapshot
             var mine = _own.Contains(record.ReplicaId);
             if (!mine || record.ReplicaId == _current) newest = record;
             if (!mine && i > localAt) afterLocal = record;
+            if (mine && !localQueued) localRecord = record;
         }
-        return new RemotePaymentLast(newest, afterLocal);
+        return new RemotePaymentLast(newest, afterLocal, localRecord);
     }
 
     /// <summary>"Zaten istendi" sorusuna giren kayıt: teslim edilmiş ya da sonucu bilinmeyen (gitmiş olabilir).</summary>

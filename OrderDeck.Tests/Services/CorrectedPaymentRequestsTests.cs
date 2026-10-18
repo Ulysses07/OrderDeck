@@ -1148,6 +1148,63 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         sut.Badges(sid, labels).RequestedLabels.Should().BeEmpty("en yeni istek PC-B'nin ve L'yi içermiyor");
     }
 
+    /// <summary>Yayını başka bilgisayarda açılmış (akıştan inmiş) yap: etiketlerinin basılma anı o bilgisayarın saatidir.</summary>
+    private void MakeRemote(string sessionId)
+    {
+        using var c = _db.Open();
+        c.Execute("UPDATE StreamSession SET Origin = 'remote', Authority = 'server' WHERE Id = @sessionId", new { sessionId });
+    }
+
+    [Theory]
+    [InlineData(false, false)]   // bu kopyanın kaydı L'yi içermiyor: kapsamaz
+    [InlineData(true, true)]     // içeriyor: kapsar
+    public async Task Mod_On_yerel_is_uzak_yayinin_etiketini_saatle_degil_kendi_kaydinin_siparis_kumesiyle_kapsar(
+        bool recordHasLabel, bool covered)
+    {
+        // Bu bilgisayar kümülatif isteği tamamı bakiyeden düşerek teslim etti; L başka bilgisayarın yayınında, o bilgisayarın
+        // saatiyle (geride) basıldı ve istekten SONRA basılmış olsa da isteğin anından erken görünüyor. Yerel iş L'yi
+        // PromptAt ≥ PrintedAt ile kapsıyor sayıyordu (iki bilgisayarın saati karşılaştırılıyordu, M17): L "bakiyeden ödendi"
+        // rozeti alıyor, düzeltmede ödendiği fiyat saklanıyordu. Uzak yayının etiketinde karar bu kopyanın aynı isteğinin
+        // sunucudaki kaydının sipariş kümesiyle verilir.
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@saat_farki", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        MakeRemote(sid);
+        AppliedAndDelivered(l.CustomerId, CorrectedPaymentRequests.CumulativeScope, 250m, 250m);
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.CumulativeScope, 1, 0m,
+            recordHasLabel ? new[] { l.Id } : Array.Empty<string>(), replica: OwnReplica, machine: "BU-PC",
+            fullyFromBalance: true, applied: 250m);
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id });
+
+        await sut.PrefetchAsync(sid, labels);
+
+        var badges = sut.Badges(sid, labels);
+        badges.BalancePaidLabels.Contains(l.Id).Should().Be(covered);
+        badges.RequestedLabels.Should().BeEmpty();
+        sut.BalancePaidLabels(sid, labels).Contains(l.Id).Should().Be(covered);
+    }
+
+    [Fact]
+    public void Mod_On_uzak_kayit_okunmadiysa_yerel_is_uzak_yayinin_etiketini_kapsamaz_yerel_yayininkini_kapsar()
+    {
+        // Ön okuma yokken (ya da düştüyse) sipariş kümesi bilinmez: uzak yayının etiketi kapsanmış sayılmaz. Bu bilgisayarın
+        // yayınının etiketi bugünkü gibi aynı bilgisayarın iki saatiyle karşılaştırılır.
+        UseRemote();
+        var remoteSession = NewSession();
+        var localSession = NewSession();
+        var remote = AddIn(remoteSession, "@okunmadi", 250m);
+        var local = AddIn(localSession, "@okunmadi", 100m);
+        _labels.MarkPrintedAndRecord(new[] { remote.Id, local.Id });
+        MakeRemote(remoteSession);
+        AppliedAndDelivered(remote.CustomerId, CorrectedPaymentRequests.CumulativeScope, 350m, 350m);
+        var sut = SutOn();
+
+        sut.Badges(remoteSession, _labelRepo.GetByIds(new[] { remote.Id })).BalancePaidLabels.Should().BeEmpty();
+        sut.Badges(localSession, _labelRepo.GetByIds(new[] { local.Id })).BalancePaidLabels.Should().Equal(local.Id);
+    }
+
     [Fact]
     public async Task Mod_On_yerel_isi_olmayan_kiside_bu_kopyanin_kaydi_da_son_istek_adayidir()
     {

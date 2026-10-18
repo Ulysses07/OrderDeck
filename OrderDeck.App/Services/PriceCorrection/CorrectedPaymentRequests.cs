@@ -196,6 +196,7 @@ public sealed class CorrectedPaymentRequests
 
         var shipping = _shipping.Current().Settings;
         var remote = _remote?.Snapshot();
+        var remoteSessions = RemoteSessionsOf(remote, persons.Values.SelectMany(p => p.Items).Select(i => i.Label));
         var toResend = new List<CorrectedRequestCandidate>();
         var paid = new List<PaidPerson>();
         var requestedPersons = 0;
@@ -212,7 +213,7 @@ public sealed class CorrectedPaymentRequests
                 .ToList();
 
             var lasts = counted.Count > 0
-                ? LastDeliveredRequests(sessionId, person, remote).ToList()
+                ? LastDeliveredRequests(sessionId, person, remote, remoteSessions).ToList()
                 : new List<(string Scope, LastRequest Last)>();
             // Bakiyeden ödenmiş etiketler: onları içeren son istek tamamen bakiyeden düşülmüş.
             var byBalance = counted.Where(i => PaidByBalance(i.Label, lasts)).ToList();
@@ -263,8 +264,10 @@ public sealed class CorrectedPaymentRequests
     /// teslimi listede bu kopyanın en yeni kaydının yerindedir (yoksa ya da yerel kaydı kuyruktaysa en yeni). İki bilgisayarın
     /// saati karşılaştırılmaz. Kişi × kapsam okunmamışsa (mod Off, bütçe, okuma düştü) yalnız yerel iş.</para>
     /// </summary>
+    /// <param name="remoteSessions">Etiketlerin yayınlarından başka bilgisayarda açılmış olanlar (<see cref="RemoteSessionsOf"/>):
+    /// yerel iş onların etiketlerini saatle değil kendi kaydının sipariş kümesiyle kapsar.</param>
     private IEnumerable<(string Scope, LastRequest Last)> LastDeliveredRequests(
-        string sessionId, PaymentPerson person, RemotePaymentSnapshot? remote)
+        string sessionId, PaymentPerson person, RemotePaymentSnapshot? remote, IReadOnlySet<string> remoteSessions)
     {
         foreach (var scope in new[] { SessionScope(sessionId), CumulativeScope })
         {
@@ -273,12 +276,20 @@ public sealed class CorrectedPaymentRequests
             if (jobs.Count + legacies.Count > 0
                 && PersonScopePlan.For(jobs, legacies, person.OwnerId).PromptJobs is { Count: > 0 } prompts)
                 local = prompts[^1];
-            if (remote?.For(scope, person)?.LastWith(local is not null) is { } other)
+            var read = remote?.For(scope, person);
+            if (read?.LastWith(local is not null) is { } other)
                 yield return (scope, LastRequest.Of(other));
             else if (local is not null)
-                yield return (scope, LastRequest.Of(local));
+                yield return (scope, LastRequest.Of(local, read?.LocalRecord, remoteSessions));
         }
     }
+
+    /// <summary>Etiketlerin yayınlarından başka bilgisayarda açılmış olanlar — yalnız mod On'da (uzak kayıt görüntüsü varken);
+    /// mod Off'ta uzak yayın yoktur, sorgu da yapılmaz.</summary>
+    private IReadOnlySet<string> RemoteSessionsOf(RemotePaymentSnapshot? remote, IEnumerable<Label> labels)
+        => remote is null
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : _labels.RemoteSessionIds(labels.Select(l => l.SessionId).Distinct(StringComparer.Ordinal).ToList());
 
     /// <summary>İstek, <paramref name="printedAt"/>'te basılmış etiketi içeriyor mu: etiket basıldıktan sonra
     /// (aynı saniye dahil) gitti. Anı bilinmeyen gönderim temkinle içeriyor sayılır.</summary>
@@ -293,7 +304,9 @@ public sealed class CorrectedPaymentRequests
     /// Kişi × kapsamın son isteği: bu bilgisayarın işi ya da (mod On) başka bilgisayarın kaydı. Sorular aynı tanımla cevaplanır:
     /// <list type="bullet">
     ///   <item><see cref="Covers"/> — yerel işte isteğin anı etiketin basılma anıyla (ikisi de bu bilgisayarın saati); uzak
-    ///   kayıtta etiket kaydın sipariş kümesinde mi (<c>PaymentRequestRecordOrders</c>; saat karşılaştırılmaz).</item>
+    ///   kayıtta etiket kaydın sipariş kümesinde mi (<c>PaymentRequestRecordOrders</c>; saat karşılaştırılmaz). Mod On'da
+    ///   başka bilgisayarın yayınından inmiş etiketin basılma anı o bilgisayarın saatidir: yerel iş onu yerel işin sunucudaki
+    ///   kaydının (<see cref="RemotePaymentLast.LocalRecord"/>) sipariş kümesiyle kapsar; kayıt okunmadıysa kapsamaz (M17).</item>
     ///   <item><see cref="IsPaidByBalance"/> — uzak kayıtta teslim edilmiş ∧ tamamı bakiyeden.</item>
     ///   <item>Tutar sorudaki gibi: uzak kayıtta net, yoksa (teslim kaydı olmadan dolan kira) kiranın bakiye öncesi tutarı —
     ///   o istek "gitmiş olabilir"dir.</item>
@@ -301,25 +314,35 @@ public sealed class CorrectedPaymentRequests
     /// </summary>
     private sealed class LastRequest
     {
+        private static readonly IReadOnlySet<string> NoSessions = new HashSet<string>(StringComparer.Ordinal);
+
         private readonly PaymentJob? _local;
         private readonly PaymentRequestListItem? _remote;
         private readonly HashSet<Guid>? _orders;
+        private readonly IReadOnlySet<string> _remoteSessions;
 
-        private LastRequest(PaymentJob? local, PaymentRequestListItem? remote)
+        /// <param name="orders">Uzak kayıtta kaydın sipariş kümesi; yerel işte işin sunucudaki kaydınınki (yoksa null).</param>
+        private LastRequest(PaymentJob? local, PaymentRequestListItem? remote, HashSet<Guid>? orders,
+            IReadOnlySet<string> remoteSessions)
         {
             _local = local;
             _remote = remote;
-            if (remote is not null) _orders = remote.OrderIds.ToHashSet();
+            _orders = orders;
+            _remoteSessions = remoteSessions;
         }
 
-        public static LastRequest Of(PaymentJob local) => new(local, null);
+        /// <param name="record">Yerel işin son tesliminin sunucudaki kaydı (mod On; okunmadıysa null).</param>
+        /// <param name="remoteSessions">Başka bilgisayarda açılmış yayınlar (mod Off'ta boş).</param>
+        public static LastRequest Of(PaymentJob local, PaymentRequestListItem? record = null,
+            IReadOnlySet<string>? remoteSessions = null)
+            => new(local, null, record?.OrderIds.ToHashSet(), remoteSessions ?? NoSessions);
 
-        public static LastRequest Of(PaymentRequestListItem remote) => new(null, remote);
+        public static LastRequest Of(PaymentRequestListItem remote) => new(null, remote, remote.OrderIds.ToHashSet(), NoSessions);
 
         /// <summary>İstek basılmış <paramref name="label"/>'ı içeriyor mu.</summary>
-        public bool Covers(Label label) => _local is not null
+        public bool Covers(Label label) => _local is not null && !_remoteSessions.Contains(label.SessionId)
             ? label.PrintedAt is long printedAt && CorrectedPaymentRequests.Covers(_local, printedAt)
-            : Guid.TryParse(label.Id, out var orderId) && _orders!.Contains(orderId);
+            : _orders is not null && Guid.TryParse(label.Id, out var orderId) && _orders.Contains(orderId);
 
         /// <summary>İsteğin tamamı bakiyeden düşüldü (müşteriden 0 TL istendi).</summary>
         public bool IsPaidByBalance => _local is not null
@@ -369,13 +392,14 @@ public sealed class CorrectedPaymentRequests
     {
         var result = new HashSet<string>(StringComparer.Ordinal);
         var remote = _remote?.Snapshot();
+        var remoteSessions = RemoteSessionsOf(remote, labels);
         var byPerson = new Dictionary<string, List<(string Scope, LastRequest Last)>>(StringComparer.Ordinal);
         foreach (var label in labels)
         {
             if (label.PrintedAt is null || label.IsTentativeBackup || label.ShipmentId is not null) continue;
             var person = _customers.GetPaymentPerson(label.CustomerId);
             if (!byPerson.TryGetValue(person.MemberKey, out var lasts))
-                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person, remote).ToList();
+                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person, remote, remoteSessions).ToList();
             if (PaidByBalance(label, lasts)) result.Add(label.Id);
         }
         return result;
@@ -395,13 +419,14 @@ public sealed class CorrectedPaymentRequests
         var requested = new HashSet<string>(StringComparer.Ordinal);
         var balancePaid = new HashSet<string>(StringComparer.Ordinal);
         var remote = _remote?.Snapshot();
+        var remoteSessions = RemoteSessionsOf(remote, labels);
         var byPerson = new Dictionary<string, IReadOnlyList<(string Scope, LastRequest Last)>>(StringComparer.Ordinal);
         foreach (var label in labels)
         {
             if (label.PrintedAt is null || label.IsTentativeBackup) continue;
             var person = _customers.GetPaymentPerson(label.CustomerId);
             if (!byPerson.TryGetValue(person.MemberKey, out var lasts))
-                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person, remote).ToList();
+                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person, remote, remoteSessions).ToList();
             foreach (var (_, last) in lasts)
             {
                 if (!last.Covers(label)) continue;
