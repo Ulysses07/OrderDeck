@@ -307,6 +307,44 @@ public sealed class PaymentLeaseTests : IDisposable
     }
 
     [Fact]
+    public async Task Cloud_API_isleniyor_SendPending_finish_unconfirmed()
+    {
+        // Sonuç bilinmiyor (in_progress): öbür bilgisayarda "istendi" değil "istenmiş olabilir" sorulmalı (§6.4 "Akışın sonu").
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_isleniyor", 120m);
+        _server.EnqueueJson(FakeSalesServer.WhatsAppSend, 200,
+            """{"ok":false,"errorCode":"in_progress","errorMessage":"işleniyor","messageId":null}""");
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.SendPending);
+
+        var finish = _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle().Subject.Json;
+        finish.GetProperty("outcome").GetString().Should().Be("unconfirmed");
+        finish.GetProperty("netAmount").GetDecimal().Should().Be(120m + 50m);
+        pc.Launcher.LaunchedUrls.Should().BeEmpty("bugünkü davranış: wa.me açılmaz");
+    }
+
+    [Fact]
+    public async Task Tamami_bakiyeden_odenen_istegin_finishi_fullyFromBalance_ve_dusumu_tasir()
+    {
+        // Uzak "ödendi" rozeti ve BalancePaidLabels bu bayrağa dayanır (§6.4 "Teslim kayıtlarının okunması").
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        _server.BalancePreview = 500m;
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_bakiyeden", 120m);
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.Sent);
+
+        var finish = _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle().Subject.Json;
+        finish.GetProperty("outcome").GetString().Should().Be("delivered");
+        finish.GetProperty("netAmount").GetDecimal().Should().Be(0m);
+        finish.GetProperty("appliedAmount").GetDecimal().Should().Be(120m + 50m);
+        finish.GetProperty("fullyFromBalance").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Yerel_tekrar_gonderim_sorusu_donmeden_once_finish_abandoned()
     {
         var pc = await PcAsync();
