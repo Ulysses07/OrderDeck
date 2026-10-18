@@ -330,6 +330,37 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Odeme_gecmisi_geri_doldurmasi_ortak_orneklerle_kurulur_geri_doldurma_turu_surer()
+    {
+        // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6, §10.3 DI testi): kayıtlar TEK göndericinin kuyruğuna,
+        // tamamlanma hello'su turla aynı kapıdan (aynı durum servisi), bekleme kararı aynı zarftan. Sürücü geri doldurma
+        // turu: ayrı hosted service yok, mevcut olanın genel döngüde başlatılması yeter (CLAUDE.md, PR #89).
+        using var host = new global::OrderDeck.App.AppHost();
+        var history = host.Services.GetRequiredService<PaymentHistoryBackfill>();
+
+        host.Services.GetRequiredService<PaymentHistoryBackfill>().Should().BeSameAs(history);
+        PrivateField<PaymentRecordSender>(history, "_sender").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentRecordSender>());
+        PrivateField<PendingPaymentRecordRepository>(history, "_pending").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingPaymentRecordRepository>());
+        PrivateField<SalesSyncStateService>(history, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateService>(), "tamamlanma hello'su turla aynı kapıdan");
+        PrivateField<SalesSyncEnvelope>(history, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>());
+        PrivateField<SyncCursorRepository>(history, "_cursors").Should().BeSameAs(
+            host.Services.GetRequiredService<SyncCursorRepository>());
+        PrivateField<ICurrentLicenseProvider>(history, "_licenseProvider").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+        PrivateField<PaymentJobRepository>(history, "_jobs").Should().BeSameAs(
+            host.Services.GetRequiredService<IPaymentJobStore>(), "ödeme akışıyla aynı depo örneği");
+
+        var hosted = host.Services.GetServices<IHostedService>().ToList();
+        PrivateField<PaymentHistoryBackfill>(hosted.OfType<SalesBackfillHostedService>().Single(), "_history")
+            .Should().BeSameAs(history);
+        hosted.Should().NotContain(h => h.GetType().Name.Contains("PaymentHistory"), "ayrı zamanlayıcı yok");
+    }
+
+    [Fact]
     public void Odeme_kaydi_gondericisi_tekil_geri_doldurma_turu_ve_acilisin_birinci_adimiyla_paylasilir()
     {
         // W3-05 (spec 2026-10-13 §6.4, §8.4-1): bekleyen ödeme kayıtlarını geri doldurma turu (60 sn, iki kipte) ve mod On

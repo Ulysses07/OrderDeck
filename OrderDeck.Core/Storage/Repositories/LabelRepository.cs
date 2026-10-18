@@ -713,7 +713,11 @@ public sealed class LabelRepository
     /// </summary>
     /// <param name="memberIds">Kişinin üyeleri, ham Id (GUID'siz olanlar dahil).</param>
     /// <param name="sessionId">Yayın kapsamının yayını; kümülatif kapsamda boş.</param>
-    public PrintedTotal GetPrintedTotal(IReadOnlyCollection<string> memberIds, string? sessionId = null)
+    /// <param name="printedAtOrBefore">Verilirse yalnız bu andan (unix saniye) önce ya da bu anda basılmış etiketler:
+    /// ödeme geçmişinin kirasız kaydı geçmiş bir isteğin kapsadığı kümeyi böyle kurar (<c>Covers</c> kuralı,
+    /// <c>PrintedAt ≤ PromptAt</c>; spec 2026-10-13 §6.4 "Ödeme geçmişi"). İki an da bu bilgisayarın saatidir.</param>
+    public PrintedTotal GetPrintedTotal(
+        IReadOnlyCollection<string> memberIds, string? sessionId = null, long? printedAtOrBefore = null)
     {
         if (memberIds.Count == 0) return new PrintedTotal(0m, []);
         using var conn = _factory.Open();
@@ -722,9 +726,10 @@ public sealed class LabelRepository
                FROM Label l
                WHERE l.CustomerId IN @memberIds
                  AND (@sessionId IS NULL OR l.SessionId = @sessionId)
+                 AND (@printedAtOrBefore IS NULL OR l.PrintedAt <= @printedAtOrBefore)
                  AND {CustomerAggregateSql.ContributesCondition}
                ORDER BY l.Id",
-            new { memberIds, sessionId }).ToList();
+            new { memberIds, sessionId, printedAtOrBefore }).ToList();
         return new PrintedTotal(rows.Sum(r => r.Price), rows.Select(r => r.Id).ToList());
     }
 

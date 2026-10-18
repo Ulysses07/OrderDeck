@@ -1400,9 +1400,9 @@ public sealed class PaymentRequestService
     /// onu asıl kapsamda bulamaz, R4-03 çift düşüm koruması delinirdi (yedekten dönen kurulum aynı satışı
     /// ikinci kez düşerdi). Kapsam A11 içerik karşılaştırmasının dışında: kayıtlı anahtarların replay'i
     /// etkilenmez, idempotency anahtarı (ApplyKey) aynı kalır. Asıl kapsamı bilinmeyen (047 öncesi) miras
-    /// eskisi gibi kendi adıyla gider.</summary>
-    private static string SaleScopeOf(PaymentJob job)
-        => job.IsLegacyScope && job.PriorScopeKey is { } prior ? prior : job.ScopeKey;
+    /// eskisi gibi kendi adıyla gider. Tanım <see cref="PaymentJob.SaleScopeKey"/>'de: kirasız ödeme kaydı
+    /// (W3-06) aynı eşlemeyle gider.</summary>
+    private static string SaleScopeOf(PaymentJob job) => job.SaleScopeKey;
 
     /// <summary>R4-02: diske inmiş geri alma niyetini uzlaştırır. Sunucudaki
     /// geri alma deterministik idempotenttir (tekrar = 409 already-reversed =

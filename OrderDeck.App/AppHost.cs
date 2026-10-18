@@ -90,8 +90,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerSyncRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
-        // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService).
-        services.AddSingleton<IPaymentJobStore, PaymentJobRepository>();
+        // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService). Somut tip de aynı örnek: ödeme
+        // geçmişi geri doldurması (W3-06) işleri rowid sırasıyla okur.
+        services.AddSingleton<PaymentJobRepository>();
+        services.AddSingleton<IPaymentJobStore>(sp => sp.GetRequiredService<PaymentJobRepository>());
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
@@ -601,6 +603,24 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 sp.GetRequiredService<IClock>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SalesBackfillService>>()));
+        // W3-06 (§6.4 "Ödeme geçmişi", §8.2-6): ödeme geçmişi geri doldurması — yerel işlerden kirasız kayıtlar AYNI
+        // göndericinin kuyruğuna, tamamlanma hello'su aynı durum servisinden (turla aynı kapı). Sürücüsü geri doldurma
+        // turu (aşağıdaki hosted service): ayrı zamanlayıcı yok.
+        services.AddSingleton<Services.Sync.PaymentHistoryBackfill>(sp =>
+            new Services.Sync.PaymentHistoryBackfill(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncStateService>(),
+                sp.GetRequiredService<SalesSyncStateRepository>(),
+                sp.GetRequiredService<PaymentJobRepository>(),
+                sp.GetRequiredService<CustomerRepository>(),
+                sp.GetRequiredService<LabelRepository>(),
+                sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
+                sp.GetRequiredService<PendingPaymentRecordRepository>(),
+                sp.GetRequiredService<SyncCursorRepository>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<IClock>(),
+                sp.GetRequiredService<ILogger<Services.Sync.PaymentHistoryBackfill>>()));
         services.AddHostedService<Services.Sync.SalesBackfillHostedService>();
 
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save

@@ -222,6 +222,18 @@ public sealed class SalesSyncStateRepository
             new { version, threshold = (double?)threshold, fee = (double?)fee }) == 1;
     }
 
+    /// <summary>
+    /// Ödeme geçmişi geri doldurması bitti ve sunucuya bildirildi (spec 2026-10-13 §3.2, §8.2-6; W3-06):
+    /// <c>PaymentHistorySentAt</c>'i yazar. Yalnız tanı damgasıdır — tamamlanma kararı lisans ve kopya başına imlecin
+    /// (<c>SyncCursor('payment-history-out', LicenseKey)</c>): geri yüklenen veritabanı damgayı yedekten getirse de imleç
+    /// yeni kopya için baştan başlar (§8.7).
+    /// </summary>
+    public void MarkPaymentHistorySent(long at)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE SalesSyncState SET PaymentHistorySentAt = @at WHERE Id = 1", new { at });
+    }
+
     // ── mod On açılışı (§8.4; W2-10) ────────────────────────────────────
 
     /// <summary>Müşteri gönderim kuyruğunun şu anki tavanı (<c>MAX(SyncSeq)</c>; boş tabloda 0). Açılışın 1. adımı

@@ -97,6 +97,12 @@ public sealed record PaymentJob(
     public bool IsLegacyScope =>
         ScopeKey == "legacy" || ScopeKey.StartsWith("legacy:", StringComparison.Ordinal);
 
+    /// <summary>İşin ASIL kapsamı: asıl kapsamı bilinen miras işte indirilmeden önceki kapsam
+    /// (<see cref="PriorScopeKey"/>), öbür işlerde kendi kapsamı. Asıl kapsamı bilinmeyen miras işte
+    /// <c>legacy</c>/<c>legacy:…</c> adının kendisi. Apply'ın <c>SaleScope</c>'u ve kirasız ödeme kaydının
+    /// kapsamı (spec 2026-10-13 §6.4 "Ödeme geçmişi") bununla gider — yerel soru miras işi o kapsamda arar.</summary>
+    public string SaleScopeKey => IsLegacyScope && PriorScopeKey is { } prior ? prior : ScopeKey;
+
     /// <summary>Önceki sürümün (Velopack geri dönüşü) teslimi: legacy olmayan kapsamda ClosedAt'ı iki
     /// sürümde de yalnız teslim yazar, önceki sürüm teslim kaydı yazmaz. ClosedAt teslim kaydından
     /// yeniyse o kapanış en son teslimdir. SQL karşılığı <see cref="PaymentJobSql.ClosedByLaterDelivery"/>
@@ -776,12 +782,30 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             }) == 1;
     }
 
-    private const string SelectSql =
-        @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
+    private const string Columns =
+        @"Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
                  AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey,
                  DeliveredAt, DeliveredNet, Deliveries, SendAttempts, AttemptNet, PriorAttemptNet,
-                 AttemptAt, PriorAttemptAt, ResumeCovers
-          FROM PaymentJob";
+                 AttemptAt, PriorAttemptAt, ResumeCovers";
+
+    private const string SelectSql = "SELECT " + Columns + " FROM PaymentJob";
+
+    /// <summary>
+    /// Ödeme geçmişi geri doldurmasının sayfası (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6; W3-06): <c>rowid</c>'i
+    /// <paramref name="afterRowId"/>'den büyük işler, <c>rowid</c> sırasıyla, en çok <paramref name="limit"/> — kapalı ve
+    /// miras işler dahil, süzgeçsiz (teslim kararı çağıranın, <see cref="PaymentJob.IsDelivered"/>). İşler hiç silinmez ve
+    /// uygulama <c>VACUUM</c> koşmaz: <c>rowid</c> kararlı bir imleçtir.
+    /// </summary>
+    public IReadOnlyList<(long RowId, PaymentJob Job)> GetAfterRowId(long afterRowId, int limit)
+    {
+        if (limit <= 0) return Array.Empty<(long, PaymentJob)>();
+        using var conn = _factory.Open();
+        return conn.Query<Row>(
+                "SELECT rowid AS RowId, " + Columns + " FROM PaymentJob WHERE rowid > @afterRowId ORDER BY rowid LIMIT @limit",
+                new { afterRowId, limit })
+            .Select(r => (r.RowId, Map(r)))
+            .ToList();
+    }
 
     private static PaymentJob Map(Row r) => new(
         r.Id,
@@ -816,6 +840,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
 
     private sealed class Row
     {
+        /// <summary>Yalnız <see cref="GetAfterRowId"/> seçer; öbür sorgularda 0.</summary>
+        public long RowId { get; init; }
         public string Id { get; init; } = "";
         public string CustomerId { get; init; } = "";
         public string ScopeKey { get; init; } = "";

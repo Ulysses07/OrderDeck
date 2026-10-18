@@ -22,6 +22,16 @@ public static class PaymentRequestLimits
 
     /// <summary>Bir geri doldurma partisinin en çok kayıt sayısı.</summary>
     public const int MaxBackfillBatch = 200;
+
+    /// <summary>Bir isteğin ya da kaydın en çok sipariş sayısı (<c>PaymentRequestRules.MaxOrders</c> =
+    /// <c>SalesCommandService.MaxSetOrders</c>).</summary>
+    public const int MaxOrders = 10_000;
+
+    /// <summary>Bir üye Id'sinin en çok uzunluğu (<c>PaymentRequestRecord.WpfCustomerIdMaxLength</c>).</summary>
+    public const int MaxMemberIdLength = 64;
+
+    /// <summary>Kapsam anahtarının en çok uzunluğu (<c>PaymentRequestRecord.ScopeKeyMaxLength</c>).</summary>
+    public const int MaxScopeKeyLength = 128;
 }
 
 /// <summary>Kaydın teldeki durumu (<c>PaymentRequestWire.State</c>); <c>finish</c>'in sonucu ve geri doldurmanın durumu da
