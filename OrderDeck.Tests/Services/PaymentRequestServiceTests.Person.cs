@@ -1307,6 +1307,9 @@ public partial class PaymentRequestServiceTests
         public void AdoptLegacyResult(string targetId, string legacyId) => inner.AdoptLegacyResult(targetId, legacyId);
         public bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal)
             => inner.AdoptRemoteResult(id, transactionId, appliedAmount, productTotal);
+        public bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal,
+            Guid expectedKey, int expectedRevision)
+            => inner.AdoptRemoteResult(id, transactionId, appliedAmount, productTotal, expectedKey, expectedRevision);
         public bool AdoptExternalReversal(string id, Guid expectedKey, int expectedRevision)
             => inner.AdoptExternalReversal(id, expectedKey, expectedRevision);
     }

@@ -330,6 +330,21 @@ public interface IPaymentJobStore
     /// bırakırdı. false = yeniden oku.</para></summary>
     bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal);
 
+    /// <summary>Spec 2026-10-13 §6.6 (W3-11): apply denemesinin (<paramref name="expectedKey"/> +
+    /// <paramref name="expectedRevision"/>) cevabı 409 <c>scope-has-deduction</c> — sunucu kuralı yalnız anahtarı YENİ
+    /// apply'da çalıştırır, yani bu anahtar sunucuda hiç yazılmadı; kapsamda başka bir geri alınmamış düşüm duruyor. Cevap
+    /// o denemenin KESİN sonucudur ve düşüm işe benimsenir: iş <see cref="PaymentJobState.Applied"/> olur, ApplyKey
+    /// sunucudaki işlemin kimliği, AppliedAmount/ProductTotal sunucunun bildiği değerler (tutar farklıysa revizyon dalı
+    /// devralır).
+    ///
+    /// <para>Koşul <see cref="MarkApplied"/>'ınkiyle aynı (R4-01 + R6-03): deneme hâlâ diskteki denemeyse ve geri alma
+    /// beklemiyorsa. Durum makinesi değişmez — geçiş <see cref="MarkApplied"/>'ın apply_uncertain → applied geçişidir;
+    /// farkı anahtarın sunucudaki işleme dönmesi. Revision ARTMIYOR (<see cref="AdoptRemoteResult(string, Guid, decimal, decimal)"/>
+    /// gibi): denemenin geç cevapları anahtar değiştiği için bayatlar. Miras işte çağrılmaz (servis kuralı: düşüm büyük
+    /// olasılıkla başka bir yerel işindir). false = yeniden oku.</para></summary>
+    bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal,
+        Guid expectedKey, int expectedRevision);
+
     /// <summary>R6-02: sunucudaki düşüm DIŞARIDAN (panel iadesi ya da sunucu
     /// tarafı geri yükleme) geçersizleşti — uygulanmış işi taze duruma döndürür:
     /// State=created, ApplyKey=NULL, AppliedAmount=NULL, Revision+1,
@@ -758,6 +773,29 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 state = PaymentJobState.Applied,
                 created = PaymentJobState.Created,
                 now = Now(),
+            }) == 1;
+    }
+
+    public bool AdoptRemoteResult(
+        string id, Guid transactionId, decimal appliedAmount, decimal productTotal,
+        Guid expectedKey, int expectedRevision)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
+                  ApplyKey=@tx, AppliedAmount=@amt, ProductTotal=@total,
+                  State=@state, UpdatedAt=@now" + ResultGuard,
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                tx = transactionId.ToString("N"),
+                amt = Dec(appliedAmount),
+                total = Dec(productTotal),
+                state = PaymentJobState.Applied,
+                now = Now(),
+                reversePending = PaymentJobState.ReversePending,
             }) == 1;
     }
 

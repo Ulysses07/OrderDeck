@@ -846,7 +846,23 @@ public sealed class PaymentRequestService
 
         /// <summary>Bu tıklamada miras kapsamına indirilen işler (W2 iptali için).</summary>
         public IReadOnlyList<DemotedJob>? Demoted { get; init; }
+
+        /// <summary>Spec 2026-10-13 §6.6 (W3-11): apply 409 <c>scope-has-deduction</c> aldı ve kapsamdaki düşüm işe
+        /// (<see cref="Job"/>) benimsendi — akış revizyon adımına döner (<see cref="ReviseAndSettleAsync"/>). Sonuç tek
+        /// başına kesin değildir (Uncertain=true): dönüşü işlemeyen bir çağıran mesajı engeller.</summary>
+        public bool ScopeDeductionAdopted { get; init; }
     }
+
+    /// <summary>Bir apply denemesinin (<see cref="ReplayAsync"/>) sonucu.</summary>
+    /// <param name="Job">İş satırının deneme sonrası güncel hâli.</param>
+    /// <param name="Stale">Spec §6.6: sunucu kapsam kilidini 5 sn içinde alamadı (409 <c>stale</c>) — hiçbir şey
+    /// yazılmadı, iş anahtarıyla <c>apply_uncertain</c> kaldı. Çağıran hemen bir kez yeniden dener (en çok iki apply).</param>
+    /// <param name="Adopted">Spec §6.6: 409 <c>scope-has-deduction</c> — kapsamdaki düşüm bu işe benimsendi
+    /// (<see cref="IPaymentJobStore.AdoptRemoteResult(string, Guid, decimal, decimal, Guid, int)"/>).</param>
+    /// <param name="LegacyScopeDeduction">Miras işte 409 <c>scope-has-deduction</c>: benimsenmedi, hiçbir şey yazılmadı —
+    /// çağıran #506'nın birleştirme sorusunu sorar.</param>
+    private sealed record ApplyAttempt(
+        PaymentJob Job, bool Stale = false, bool Adopted = false, ScopeHasDeductionException? LegacyScopeDeduction = null);
 
     /// <summary>
     /// Lisans id'si çözülemediğinde (sunucuya ulaşılamıyor) verilecek karar. Kişi × kapsamın işi
@@ -1088,10 +1104,22 @@ public sealed class PaymentRequestService
             var resolved = new List<PaymentJob>(legacies.Count);
             foreach (var l in legacies)
             {
-                var r = await ReplayAsync(licenseId.Value, Guid.ParseExact(l.CustomerId, "N"), l, ct);
-                if (r.State == PaymentJobState.ApplyUncertain)
-                    return new(true, 0m, r);
-                resolved.Add(r);
+                var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, Guid.ParseExact(l.CustomerId, "N"), l, ct);
+                if (attempt.LegacyScopeDeduction is { } deduction)
+                {
+                    // §6.6 (W3-11): miras iş kapsamdaki düşümü BENİMSEMEZ — düşüm büyük olasılıkla başka bir yerel
+                    // işindir, iki iş aynı düşümü sahiplenirdi. #506'nın birleştirme sorusu sorulur; soruya kadar
+                    // hiçbir şey yazılmaz, mesaj gitmez.
+                    var token = LegacyScopeDeductionToken(attempt.Job, deduction);
+                    if (confirmedTokens?.Contains(token) != true)
+                        return new(true, 0m, job) { Prompt = LegacyScopeDeductionPrompt(job.ScopeKey, token, deduction) };
+                    if (!CloseRefusedLegacy(attempt.Job))
+                        return new(true, 0m, _jobs.Get(l.Id));
+                    continue;
+                }
+                if (attempt.Job.State == PaymentJobState.ApplyUncertain)
+                    return new(true, 0m, attempt.Job);
+                resolved.Add(attempt.Job);
             }
 
             job = _jobs.Get(job.Id)!;
@@ -1160,10 +1188,16 @@ public sealed class PaymentRequestService
         //    R9-F01: replay idempotency kaydının TARİHSEL sonucunu getirir;
         //    düşüm bu arada dışarıdan geri alındıysa yine "applied" der.
         //    remoteConfirmed set edilmez — 6. adım güncelliği doğrulasın.
+        //    W3-11 (§6.6): kilit zaman aşımı (stale; hiçbir şey yazılmadı) hemen bir kez daha denenir. Anahtar
+        //    sunucuda yoksa ve kapsamda başka düşüm duruyorsa (scope-has-deduction) o düşüm benimsenir: kilit altındaki
+        //    güncel cevaptır (yüklem geri alınmışları dışlar), 6. adım yeniden sormaz; tutar farkını 5. adım revize eder.
         if (job.State == PaymentJobState.ApplyUncertain)
         {
-            job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
-            if (job.State == PaymentJobState.ApplyUncertain)
+            var attempt = await ReplayOnceMoreIfStaleAsync(licenseId.Value, wpfCustomerId, job, ct);
+            job = attempt.Job;
+            if (attempt.Adopted)
+                remoteConfirmed = true;
+            else if (job.State == PaymentJobState.ApplyUncertain)
                 return new(true, 0m, job);
         }
 
@@ -1202,6 +1236,26 @@ public sealed class PaymentRequestService
                 remoteConfirmed = true; // düşüm az önce sunucudan benimsendi
         }
 
+        // 5–8. W3-11 (spec 2026-10-13 §6.6): apply 409 scope-has-deduction aldıysa kapsamdaki düşüm işe benimsendi ve akış
+        //    revizyon adımına BİR KEZ döner — toplam aynıysa kesin sonuç, farklıysa benimsenen düşüm geri alınır ve yeni
+        //    anahtarla taze uygulanır. Cevap kilit altındaki güncel gerçektir (yüklem geri alınmışları dışlar): 6. adım
+        //    yeniden doğrulamaz. Aynı tıklamada ikinci benimseme (araya yine başka düşüm girdi) dönmez: DefiniteForCall
+        //    toplam tutarsa mesaja çıkar, tutmazsa durur — sıradaki tıklama revize eder (ping-pong yok).
+        var settled = await ReviseAndSettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, remoteConfirmed, ct);
+        if (!settled.ScopeDeductionAdopted) return settled;
+        settled = await ReviseAndSettleAsync(licenseId.Value, wpfCustomerId, settled.Job!, totalAmount, remoteConfirmed: true, ct);
+        return settled.ScopeDeductionAdopted ? DefiniteForCall(settled.Job!, totalAmount) : settled;
+    }
+
+    /// <summary><see cref="SettleScopeAsync"/>'in 5–8. adımları (revizyon, tekrar paylaşım, sıfır toplam, taze uygulama) —
+    /// 1–4 kesinleşmiş işle. Apply'ın <c>scope-has-deduction</c>'ında (W3-11) çağıran bu adımlara benimsenen işle bir kez
+    /// döner.</summary>
+    /// <param name="remoteConfirmed">R6-02: işin sonucu bu tıklamada sunucudan güncel bir cevapla öğrenildi (kapsam
+    /// benimsemesi) — 6. adım yeniden sormaz.</param>
+    private async Task<BalanceOutcome> ReviseAndSettleAsync(
+        Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal totalAmount, bool remoteConfirmed,
+        CancellationToken ct)
+    {
         // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
         //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
         //    çalışır (geri alınacak şey yoktur, sadece tutar güncellenir).
@@ -1217,7 +1271,7 @@ public sealed class PaymentRequestService
 
                 if (job.State == PaymentJobState.ReversePending)
                 {
-                    job = await FinishReversalAsync(licenseId.Value, job, ct);
+                    job = await FinishReversalAsync(licenseId, job, ct);
                     if (job.State == PaymentJobState.ReversePending)
                         return new(true, 0m, job);
                 }
@@ -1231,7 +1285,7 @@ public sealed class PaymentRequestService
             {
                 _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
                 job = _jobs.Get(job.Id)!;
-                return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
+                return await SettleAsync(licenseId, wpfCustomerId, job, totalAmount, ct);
             }
         }
 
@@ -1251,7 +1305,7 @@ public sealed class PaymentRequestService
                             AppliedAmount: > 0m })
             {
                 var blocked = await VerifyAppliedStillStandsAsync(
-                    licenseId.Value, job, appliedKey, ct);
+                    licenseId, job, appliedKey, ct);
                 if (blocked is not null) return blocked;
 
                 // R9-F02: doğrulama await'i sırasında eşzamanlı bir akış
@@ -1312,7 +1366,7 @@ public sealed class PaymentRequestService
         decimal previewBalance;
         try
         {
-            var preview = await _api.GetBalancePreviewAsync(licenseId.Value, wpfCustomerId, ct);
+            var preview = await _api.GetBalancePreviewAsync(licenseId, wpfCustomerId, ct);
             previewBalance = preview.Balance;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1343,7 +1397,7 @@ public sealed class PaymentRequestService
                 return DefiniteForCall(job, totalAmount);
         }
         job = _jobs.Get(job.Id)!;
-        return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
+        return await SettleAsync(licenseId, wpfCustomerId, job, totalAmount, ct);
     }
 
     /// <summary>Kişi düzeyindeki kapsam uzlaştırmasının sonucu: <see cref="Job"/> null = sorgu ya da
@@ -1523,7 +1577,11 @@ public sealed class PaymentRequestService
         return new(true, 0m, _jobs.Get(job.Id));
     }
 
-    /// <summary>Diskteki anahtarla apply — bir deneme + bir anında tekrar (K3).</summary>
+    /// <summary>Diskteki anahtarla apply — bir deneme + bir anında tekrar (K3).
+    /// <para>W3-11 (spec 2026-10-13 §6.6): kilit zaman aşımının (409 <c>stale</c>) "bir kez yeniden"i K3'ün anında
+    /// tekrarıdır — en çok iki apply; ikisi de stale ise iş anahtarıyla <c>apply_uncertain</c> kalır (sıradaki tıklama
+    /// oynatır), mesaj gitmez. Apply 409 <c>scope-has-deduction</c> aldıysa düşüm işe benimsenmiştir: sonuç
+    /// <see cref="BalanceOutcome.ScopeDeductionAdopted"/> ile döner, çağıran revizyon adımına döner.</para></summary>
     private async Task<BalanceOutcome> SettleAsync(
         Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal requestedTotal,
         CancellationToken ct)
@@ -1534,10 +1592,70 @@ public sealed class PaymentRequestService
         var entryKey = job.ApplyKey;
         var entryRevision = job.Revision;
 
-        job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
-        if (job.State == PaymentJobState.ApplyUncertain)
-            job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
-        return ClassifySettledJob(job, entryKey, entryRevision, requestedTotal);
+        var attempt = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        if (!attempt.Adopted && attempt.Job.State == PaymentJobState.ApplyUncertain)
+        {
+            attempt = await ReplayAsync(licenseId, wpfCustomerId, attempt.Job, ct);
+            if (attempt.Stale) LogStalePersists(attempt.Job);
+        }
+        if (attempt.Adopted)
+            return new(true, 0m, attempt.Job) { ScopeDeductionAdopted = true };
+        return ClassifySettledJob(attempt.Job, entryKey, entryRevision, requestedTotal);
+    }
+
+    /// <summary>Tek apply denemesi (<see cref="ReplayAsync"/>); kilit zaman aşımında (409 <c>stale</c>, hiçbir şey
+    /// yazılmadı) hemen bir kez daha — spec 2026-10-13 §6.6, en çok iki apply. Belirsiz işin (3. adım) ve miras işlerin
+    /// (1. adım) tek replay'i için: ağ hatası bugünkü gibi yeniden denenmez, akış durur.</summary>
+    private async Task<ApplyAttempt> ReplayOnceMoreIfStaleAsync(
+        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+    {
+        var attempt = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        if (!attempt.Stale || attempt.Job.State != PaymentJobState.ApplyUncertain) return attempt;
+        attempt = await ReplayAsync(licenseId, wpfCustomerId, attempt.Job, ct);
+        if (attempt.Stale) LogStalePersists(attempt.Job);
+        return attempt;
+    }
+
+    /// <summary>§6.6: ikinci deneme de kilit zaman aşımı aldı — ayrı günlük satırı (sahadan gelen günlükte "neden
+    /// gitmedi"nin tek ayırt edici bilgisi).</summary>
+    private void LogStalePersists(PaymentJob job) => _log?.LogWarning(
+        "Bakiye apply'ı ikinci kez kilit zaman aşımı aldı (stale) — mesaj engellendi, iş anahtarıyla belirsiz kalıyor; "
+        + "sıradaki tıklama oynatır (job={JobId}, key={Key})", job.Id, job.ApplyKey);
+
+    /// <summary>§6.6 (W3-11): miras işin birleştirme sorusunun onay belirteci — iki izin kimliğinden: miras işin denemesi
+    /// (Id, anahtar, revizyon) ve sunucunun kapsamdaki işlemi. Biri değişirse (başka deneme, başka düşüm) tutmaz, yeniden
+    /// sorulur.</summary>
+    private static string LegacyScopeDeductionToken(PaymentJob legacy, ScopeHasDeductionException deduction)
+        => $"miras-uzak:{legacy.Id}/{legacy.ApplyKey?.ToString("N") ?? "-"}/"
+           + $"{legacy.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{deduction.TransactionId:N}";
+
+    /// <summary>§6.6 (W3-11): miras işin apply'ı kapsamda başka bir geri alınmamış düşüm buldu — #506'nın birleştirme
+    /// sorusu, kapsam uzlaştırmasının çok izli sorusuyla aynı biçimde (<see cref="ReconcilePersonScopeAsync"/>): sunucu
+    /// teslimi bilmez, iz "gitmiş istek" değil bulunan bakiye düşümü diye anlatılır. Onayda kapsamdaki düşüm kalır, miras
+    /// iş kapanır (<see cref="CloseRefusedLegacy"/>); kişinin toplamı tek istekte yeniden istenir.</summary>
+    private static PaymentPrompt LegacyScopeDeductionPrompt(
+        string scopeKey, string token, ScopeHasDeductionException deduction)
+        => new(PersonScopePromptKind.Merge, scopeKey, Array.Empty<PriorPaymentRequest>(), token,
+            RemoteDeductions: [deduction.AppliedAmount]);
+
+    /// <summary>§6.6 (W3-11): operatör miras işin birleştirmesini onayladı. Sunucu kuralı yalnız anahtarı YENİ apply'da
+    /// çalışır ve kilit altında kapsamdaki düşümü gösterdi: miras anahtarı sunucuda hiç yazılmadı — işin düşümü yok, geri
+    /// alınacak bir şey yok. İş kesin "düşüm yok" olarak yazılır ve kapatılır; benimsenmez (devralma adayı da olmaz —
+    /// yazılmamış anahtarı taze işe taşırdı). Kapsamdaki düşüm kalır: kalan iş onu taşıyorsa sürer, tazeyse kapsam
+    /// uzlaştırması (4. adım) benimser. Satır arada başka akışa geçtiyse false (bu tıklama durur).</summary>
+    private bool CloseRefusedLegacy(PaymentJob legacy)
+    {
+        if (!_jobs.MarkNoBalance(legacy.Id, legacy.ApplyKey, legacy.Revision))
+        {
+            _log?.LogWarning(
+                "Miras işin birleştirmesi onaylandı ama iş arada taşındı — mesaj engellendi (job={JobId})", legacy.Id);
+            return false;
+        }
+        _jobs.Close(legacy.Id);
+        _log?.LogInformation(
+            "Miras işin anahtarı sunucuda yazılmamış (kapsamda başka düşüm var) — birleştirme onaylandı, iş kapatıldı "
+            + "(job={JobId})", legacy.Id);
+        return true;
     }
 
     /// <summary>R6-03: para yolunda sonucu üreten SON nokta. Bir sonuç yalnız
@@ -1616,8 +1734,19 @@ public sealed class PaymentRequestService
     /// araya bir revizyon girebilir (ağda takılan cevap dakikalarca sürebilir);
     /// o yüzden sonuç, isteği açan anahtar + revizyon koşuluyla yazılır. Koşul
     /// tutmuyorsa cevap sessizce DEĞİL, günlüğe yazılarak atılır — dönüşte
-    /// satır yeniden okunduğu için çağıran zaten kazananın sonucunu görür.</summary>
-    private async Task<PaymentJob> ReplayAsync(
+    /// satır yeniden okunduğu için çağıran zaten kazananın sonucunu görür.
+    ///
+    /// <para>Spec 2026-10-13 §6.6 (W3-11; sunucu bunları yalnız mod On'da üretir, kod moddan bağımsız):
+    /// <list type="bullet">
+    /// <item>409 <c>stale</c> (kapsam kilidi 5 sn'de alınamadı): hiçbir şey yazılmadı, iş anahtarıyla belirsiz kalır;
+    ///   <see cref="ApplyAttempt.Stale"/> ile döner, çağıran bir kez yeniden dener.</item>
+    /// <item>409 <c>scope-has-deduction</c>: kural yalnız anahtarı yeni apply'da çalışır — bu anahtar sunucuda HİÇ
+    ///   yazılmadı, kapsamda başka bir geri alınmamış düşüm duruyor. Miras olmayan işte düşüm denemenin koşuluyla
+    ///   benimsenir (<see cref="ApplyAttempt.Adopted"/>; çağıran revizyon adımına döner). Miras işte
+    ///   (<see cref="PaymentJob.IsLegacyScope"/>) benimseme YOK: düşüm büyük olasılıkla başka bir yerel işindir ve iki iş
+    ///   aynı düşümü sahiplenirdi — hiçbir şey yazılmaz, <see cref="ApplyAttempt.LegacyScopeDeduction"/> ile döner.</item>
+    /// </list></para></summary>
+    private async Task<ApplyAttempt> ReplayAsync(
         Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
         if (job.ApplyKey is null)
@@ -1658,12 +1787,37 @@ public sealed class PaymentRequestService
                 "Bakiye anahtarı sunucuda farklı içerikle kayıtlı (job={JobId}, key={Key})",
                 job.Id, job.ApplyKey);
         }
+        catch (ValidationException ex) when (ex.Code == "stale")
+        {
+            _log?.LogWarning(
+                "Bakiye apply'ı kilit zaman aşımı aldı (stale) — sunucu hiçbir şey yazmadı (job={JobId}, key={Key})",
+                job.Id, key);
+            return new(_jobs.Get(job.Id)!, Stale: true);
+        }
+        catch (ScopeHasDeductionException ex)
+        {
+            if (job.IsLegacyScope)
+            {
+                _log?.LogWarning(
+                    "Miras işin apply'ı kapsamda başka düşüm buldu (scope-has-deduction) — benimsenmedi, birleştirme "
+                    + "sorulacak (job={JobId}, key={Key}, tx={TransactionId})", job.Id, key, ex.TransactionId);
+                return new(_jobs.Get(job.Id)!, LegacyScopeDeduction: ex);
+            }
+            if (_jobs.AdoptRemoteResult(job.Id, ex.TransactionId, ex.AppliedAmount, ex.ProductTotal, key, revision))
+            {
+                _log?.LogInformation(
+                    "Apply kapsamda geri alınmamış düşüm buldu (scope-has-deduction) — düşüm benimsendi, revizyon "
+                    + "adımına dönülüyor (job={JobId}, key={Key}, tx={TransactionId})", job.Id, key, ex.TransactionId);
+                return new(_jobs.Get(job.Id)!, Adopted: true);
+            }
+            LogBayat("kapsamda düşüm var");
+        }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             _log?.LogWarning(ex, "Bakiye apply belirsiz kaldı (job={JobId})", job.Id);
         }
-        return _jobs.Get(job.Id)!;
+        return new(_jobs.Get(job.Id)!);
     }
 
     /// <summary>Sunucuya giden satış kapsamı: asıl apply'ın gönderdiği kapsam. Miras işte bu, indirme

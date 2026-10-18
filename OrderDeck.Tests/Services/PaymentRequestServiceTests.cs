@@ -152,6 +152,28 @@ public partial class PaymentRequestServiceTests : IDisposable
         public Func<int, Task>? OnApplyAsync { get; set; }
         private int _applyCount;
 
+        /// <summary>W3-11: apply'ın çağrı başına cevabı (parametre kaçıncı apply olduğu, 1'den). Dolu dönerse o cevap
+        /// gider ve hiçbir deftere işlenmez (sunucu reddetti); null → normal yol. Bkz. <see cref="ApplyStale"/>,
+        /// <see cref="ScopeHasDeduction"/>.</summary>
+        public Func<int, HttpResponseMessage?>? ApplyResponse { get; set; }
+
+        /// <summary>§6.6: kapsam kilidi 5 sn'de alınamadı — 409 <c>stale</c>, hiçbir şey yazılmadı.</summary>
+        public static HttpResponseMessage ApplyStale() => Problem("stale");
+
+        /// <summary>§6.6: kapsamda geri alınmamış düşüm var — 409 <c>scope-has-deduction</c> ek üyeleriyle (gerçek
+        /// sunucunun ProblemDetails uzantıları).</summary>
+        public static HttpResponseMessage ScopeHasDeduction(Guid transactionId, decimal appliedAmount, decimal productTotal)
+            => new((HttpStatusCode)409)
+            {
+                Content = new StringContent(
+                    $$"""
+                    {"title":"scope-has-deduction","status":409,"transactionId":"{{transactionId}}",
+                     "appliedAmount":{{appliedAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+                     "productTotal":{{productTotal.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}
+                    """,
+                    Encoding.UTF8, "application/problem+json"),
+            };
+
         /// <summary>true ise apply cevabındaki appliedAmount = min(istenen
         /// tutar, PreviewBalance) — gerçek sunucu gibi. Varsayılan false:
         /// eski testler appliedAmount olarak doğrudan PreviewBalance bekliyor
@@ -228,6 +250,8 @@ public partial class PaymentRequestServiceTests : IDisposable
                     sira = ++_applyCount;
                 }
                 if (OnApplyAsync is not null) await OnApplyAsync(sira);
+                // W3-11: senaryolu ret (stale, scope-has-deduction) — sunucu hiçbir şey yazmadı, defterlere işlenmez.
+                if (ApplyResponse?.Invoke(sira) is { } scripted) return scripted;
                 decimal applied;
                 if (RowBalances is { } rowBalances && ApplyProblemTitle is null)
                 {
