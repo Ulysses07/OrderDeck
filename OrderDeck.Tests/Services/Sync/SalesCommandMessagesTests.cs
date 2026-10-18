@@ -35,6 +35,16 @@ public sealed class SalesCommandMessagesTests
     public void Makine_adinin_bulunma_eki_son_hecenin_sesine_uyar(string machine, string expected)
         => SalesCommandMessages.Locative(machine).Should().Be(expected);
 
+    // Ödeme sorusu (spec 2026-10-13 §6.8; W3-09): "PC-A'dan … istendi".
+    [Theory]
+    [InlineData("PC-A", "PC-A'dan")]
+    [InlineData("PC", "PC'den")]
+    [InlineData("DESKTOP-4F2KJ3", "DESKTOP-4F2KJ3'ten")]
+    [InlineData("PC-40", "PC-40'tan")]
+    [InlineData("KASA-1", "KASA-1'den")]
+    public void Makine_adinin_ayrilma_eki_bulunma_ekinin_sesine_uyar(string machine, string expected)
+        => SalesCommandMessages.Ablative(machine).Should().Be(expected);
+
     [Fact]
     public void Oturum_canli_metni_makineyi_ve_yerel_saati_yazar()
     {

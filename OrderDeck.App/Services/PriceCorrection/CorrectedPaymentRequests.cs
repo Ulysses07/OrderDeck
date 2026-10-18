@@ -376,12 +376,13 @@ public sealed class CorrectedPaymentRequests
 
             var outcome = await _request(customer, Total, streamDate, c.ScopeKey, null);
             // Operatörün tek onayı: listede gösterilen istek için "tekrar gönder". Soru BAŞKA bir şeyi
-            // soruyorsa (birleştirme, farklı son istek) onay ona verilmiş sayılmaz.
+            // soruyorsa (birleştirme, farklı son istek) onay ona verilmiş sayılmaz. Onay sorunun BÜTÜN belirteçlerini
+            // verir: mod On'da sunucunun sorusuna katılan yerel planın kapısı da geçer (W3-09).
             if (outcome.Result == PaymentRequestResult.AlreadyRequested
                 && outcome.Prompt is { Kind: PersonScopePromptKind.Resend } prompt
                 && prompt.Requests.Count > 0 && prompt.Requests[^1].Amount == c.PriorAmount)
                 outcome = await _request(customer, Total, streamDate, c.ScopeKey,
-                    new HashSet<string>(StringComparer.Ordinal) { prompt.Token });
+                    new HashSet<string>(prompt.Tokens, StringComparer.Ordinal));
 
             return outcome.Result switch
             {

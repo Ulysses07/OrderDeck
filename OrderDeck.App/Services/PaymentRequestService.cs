@@ -92,12 +92,27 @@ public enum PaymentRequestResult
 public sealed record PaymentPrompt(
     PersonScopePromptKind Kind, string ScopeKey, IReadOnlyList<PriorPaymentRequest> Requests, string Token,
     int UnsentDeductions = 0, bool RefundsToOtherRow = false, bool RefundsDeductions = true,
-    IReadOnlyList<decimal>? RemoteDeductions = null, decimal? NewTotal = null, bool PriorHadBalance = false);
+    IReadOnlyList<decimal>? RemoteDeductions = null, decimal? NewTotal = null, bool PriorHadBalance = false)
+{
+    /// <summary>
+    /// Aynı "Evet"in geçirdiği öbür kapıların belirteçleri (spec 2026-10-13 §6.4, §6.7; W3-09): mod On'da sunucunun
+    /// <c>already-requested</c> sorusuna yerel planın sorusu katılır — <see cref="Token"/> uzak onay, buradaki yerel planın
+    /// belirteci. Tek onay iki kapıyı da geçirir; ikinci diyalog açılmaz. Çoğu soruda boş.
+    /// </summary>
+    public IReadOnlyList<string> AlsoConfirms { get; init; } = [];
+
+    /// <summary>"Evet"in onayladığı bütün belirteçler: <see cref="Token"/> ve <see cref="AlsoConfirms"/>. Onaylayan her
+    /// çağıran (soru, fiyat düzeltmesinin toplu gönderimi) yeniden çağrıya bunların HEPSİNİ verir.</summary>
+    public IReadOnlyList<string> Tokens => AlsoConfirms.Count == 0 ? [Token] : [Token, .. AlsoConfirms];
+}
 
 /// <summary>Daha önce gitmiş bir istek: müşteriden istenen net tutar ve (son) teslim anı.
 /// <see cref="Unconfirmed"/> = gönderim başladı ama sonucu yazılamadı: istek GİTMİŞ OLABİLİR (kesin
-/// değil); tutar ve an o denemenin tutarı ve anıdır.</summary>
-public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, bool Unconfirmed = false);
+/// değil); tutar ve an o denemenin tutarı ve anıdır.
+/// <para><see cref="Machine"/>: sunucunun kaydı (mod On, <c>already-requested</c>'ın öncülü; spec 2026-10-13 §6.4-e,
+/// W3-09) — isteği yapan bilgisayarın adı; soru onu makine adıyla anlatır. Yerel işte null.</para></summary>
+public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, bool Unconfirmed = false,
+    string? Machine = null);
 
 /// <summary>"Ödeme iste"nin sonucu.
 /// <para><see cref="OwnerId"/> ve <see cref="Demoted"/> banka beklentisi (W2) için: beklenti işin sahip
@@ -618,6 +633,10 @@ public sealed class PaymentRequestService
                     person, scopeKey, orderIds, productTotal, totalAmount, customer.RecipientPaysActive,
                     shipping.Version ?? 0, confirmation), ct);
                 if (stop is null) break;
+                // already-requested (§6.4-e; W3-09): sunucunun öncülleri sahip kararı 2'nin sorusuyla sorulur; yerel planın
+                // sorusu aynı diyaloğa katılır (tek onay iki kapıyı da geçirir).
+                if (stop is { Result: PaymentRequestResult.AlreadyRequested, Prompt: { } remote })
+                    return stop with { Prompt = WithLocalPlan(remote, person, scopeKey), OwnerId = person.OwnerId };
                 // settings-stale (§6.2; W3-08): kargo önbelleği sunucunun güncel ayarıyla yenilendi — kargo yeni anlık
                 // görüntüden yeniden hesaplanır ve kira YERİNDE bir kez daha istenir (kişi bırakılmaz); mesaj da yeni
                 // ücretle gider. Koşu başına bir kez; sonraki ret engeldir.
@@ -956,6 +975,51 @@ public sealed class PaymentRequestService
                 "Bakiye akışında beklenmeyen hata — mesaj engellendi (customer={CustomerId})",
                 person.LeasedId);
             return new(true, 0m, null);
+        }
+    }
+
+    /// <summary>
+    /// Mod On'da sunucunun <c>already-requested</c> sorusuna (§6.4-e; W3-09) yerel planı katar — sahip kararları 2 ve 4'ün
+    /// soruları yerel işten ve sunucu kayıtlarından BİRLİKTE kurulur (§6.7). Kira bakiyeden önce istendiği için yerel kapı
+    /// (<see cref="IPaymentJobStore.FindOrCreateForPerson"/>) henüz sormadı; sorsaydı operatör aynı isteğe iki diyalog
+    /// görürdü. Okuma salt okumadır (<see cref="IPaymentJobStore.GetPersonScopeJobs"/>, kapının baktığı küme) ve planı
+    /// kapınınkiyle aynıdır (<see cref="PersonScopePlan.For(IReadOnlyList{PaymentJob}, IReadOnlyList{PaymentJob}, string?)"/>).
+    ///
+    /// <para>Yerel plan soru gerektiriyorsa tür ondan gelir (birleştirme önceliklidir; uzak soru hep tekrar göndermedir) ve
+    /// planın belirteci <see cref="PaymentPrompt.AlsoConfirms"/>'a girer: "Evet" uzak onayı da yerel kapıyı da geçirir.
+    /// Gösterilen istekler sunucunun öncülleridir — bu bilgisayarın kendi istekleri de sunucuda kayıtlıdır (kira ya da
+    /// geri doldurma). Soru ile onay arasında yerel durum değişirse yerel belirteç tutmaz ve kapı yeniden sorar (bugünkü
+    /// gibi).</para>
+    ///
+    /// <para>Bakiye işi yalnız GUID'li sahibi olan kişide var (<see cref="ResolveBalanceAsync"/>'in kapısı); öbüründe uzak
+    /// soru olduğu gibi döner. Okuma düşerse de uzak soru döner: yerel kapı onay turunda kendisi sorar.</para>
+    /// </summary>
+    private PaymentPrompt WithLocalPlan(PaymentPrompt remote, PaymentPerson person, string scopeKey)
+    {
+        if (person.OwnerId is null) return remote;
+        try
+        {
+            var (jobs, legacies) = _jobs.GetPersonScopeJobs(person.MemberIds, scopeKey);
+            if (jobs.Count + legacies.Count == 0) return remote;
+            var plan = PersonScopePlan.For(jobs, legacies, person.OwnerId);
+            if (!plan.NeedsConfirmation) return remote;
+            var merge = plan.Kind == PersonScopePromptKind.Merge;
+            return remote with
+            {
+                Kind = plan.Kind,
+                UnsentDeductions = plan.UnsentDeductions,
+                RefundsToOtherRow = plan.RefundsToOtherRow,
+                RefundsDeductions = plan.RefundsDeductions,
+                NewTotal = merge ? null : remote.NewTotal,
+                PriorHadBalance = !merge && remote.PriorHadBalance,
+                AlsoConfirms = [plan.Token],
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogWarning(ex, "Ödeme sorusuna yerel plan katılamadı; uzak soru tek başına soruluyor (customer={CustomerId})",
+                person.LeasedId);
+            return remote;
         }
     }
 

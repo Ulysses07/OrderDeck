@@ -489,32 +489,224 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().BeEmpty();
     }
 
+    // ── already-requested sorusu (W3-09) ──────────────────────────────────
+
+    /// <summary>Bugün 10:00 (yerel saat): sorudaki "(10:00)".</summary>
+    private static readonly DateTimeOffset TenOClock = new(DateTime.Today.AddHours(10));
+
+    /// <summary><c>already-requested</c>'ın öncülü (sunucunun <c>PaymentRequestPrior</c>'ı).</summary>
+    private static object Prior(Guid id, string machine, decimal? net, decimal? before, DateTimeOffset at,
+        bool unconfirmed = false) =>
+        new { id, machine, netAmount = net, totalBeforeBalance = before, at, finishedAt = at.AddSeconds(15), unconfirmed };
+
+    /// <summary>Sıradaki <c>begin</c>'in yanıtı 409 <c>already-requested</c>; #523 öncesi biçim (özet yok).</summary>
+    private void EnqueueAlreadyRequested(params object[] priors) =>
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "already-requested",
+            new Dictionary<string, object?> { ["priors"] = priors });
+
+    /// <summary>Kartın ve raporun yolu: sorular operatöre sorulur (<see cref="PaymentResultPresenter.RequestConfirmedAsync"/>).</summary>
+    private static Task<PaymentRequestOutcome> AskAsync(SalesPc pc, Customer customer, string scope,
+        FakeDialogService dialogs) =>
+        PaymentResultPresenter.RequestConfirmedAsync(dialogs, tokens => RequestAsync(pc, customer, scope, tokens));
+
+    private static IReadOnlyList<Guid> ConfirmedPriorIds(System.Text.Json.JsonElement begin) =>
+        begin.GetProperty("confirmedPriorIds").EnumerateArray().Select(i => i.GetGuid()).ToList();
+
     [Fact]
-    public async Task Soru_gelene_kadar_already_requested_metinli_engel_mesaj_yok()
+    public async Task Already_requested_PC_A_oncu_makine_adiyla_sorulur_mesaj_ve_finish_yok()
     {
-        // Henüz fail-closed: "tekrar gönderilsin mi?" sorusu W3-09'da.
+        // §6.8: PC-B yeniden dener → "PC-A'dan 550 ₺ istendi (10:00); tekrar gönderilsin mi?"
         var pc = await PcAsync();
         UseCloudApi(pc);
         var live = pc.StartStream();
-        var buyer = await BuyerAsync(pc, live, "alici_ret", 120m);
-        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "already-requested",
-            new Dictionary<string, object?>
-            {
-                ["priors"] = new[]
-                {
-                    new { id = Guid.NewGuid(), machine = "PC-B", netAmount = 120m, at = DateTimeOffset.UtcNow,
-                          finishedAt = DateTimeOffset.UtcNow, unconfirmed = false },
-                },
-                ["priorsDigest"] = "v1.AAAA",
-            });
+        var buyer = await BuyerAsync(pc, live, "alici_ret", 500m);
+        EnqueueAlreadyRequested(Prior(Guid.NewGuid(), "PC-A", 550m, 550m, TenOClock));
+        var dialogs = new FakeDialogService();
 
-        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
 
-        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
-        outcome.Message.Should().Be("Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi.");
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "'Hayır': hiçbir şey yapılmadı");
+        var (title, message) = dialogs.Confirmations.Should().ContainSingle().Subject;
+        title.Should().Be("Ödeme isteği zaten gönderildi");
+        message.Should().Be("PC-A'dan 550,00 TL istendi (10:00); tekrar gönderilsin mi?",
+            "sahip kararı 2'nin sorusu, sunucunun öncülü makine adıyla (tutar uygulamanın biçimiyle)");
+        outcome.Prompt!.Requests.Should().ContainSingle().Which.Machine.Should().Be("PC-A");
         _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
-        _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle("bu görevde yeniden deneme yok");
-        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty("bakiyeden önce durdu");
+        _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty("ret kira yazmaz; kapatılacak kira yok");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Teslim_kaydi_olmadan_dolan_kira_istenmis_olabilir_diye_sorulur()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_dolmus", 500m);
+        EnqueueAlreadyRequested(Prior(Guid.NewGuid(), "PC-A", net: null, before: 550m, TenOClock, unconfirmed: true));
+        var dialogs = new FakeDialogService();
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        var request = outcome.Prompt!.Requests.Should().ContainSingle().Subject;
+        request.Amount.Should().Be(550m, "neti olmayan kirada sorunun tutarı kiranın bakiye öncesi tutarı (§6.8)");
+        request.Unconfirmed.Should().BeTrue();
+        var (title, message) = dialogs.Confirmations.Should().ContainSingle().Subject;
+        title.Should().Be("Ödeme isteği gönderilmiş olabilir");
+        message.Should().Be("10:00'da PC-A'dan 550,00 TL istenmiş olabilir (sonucu bilinmiyor); tekrar gönderilsin mi?");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Onayda_ikinci_begin_oncul_Idleriyle_gecer_mesaj_bir_kez()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_onayli", 500m);
+        var priors = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        EnqueueAlreadyRequested(
+            Prior(priors[0], "PC-B", 300m, 350m, TenOClock.AddHours(-2)),
+            Prior(priors[1], "PC-A", 550m, 550m, TenOClock));
+        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle().Which.Message.Should().StartWith("PC-A'dan 550,00 TL istendi",
+            "en yeni öncül sorulur (sunucunun kapanış sırası)");
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        ConfirmedPriorIds(begins[0]).Should().BeEmpty();
+        ConfirmedPriorIds(begins[1]).Should().Equal(priors, "onay belirteci uzak kayıt Id'lerini kapsar (§6.4)");
+        begins[1].TryGetProperty("confirmedPriorsDigest", out _).Should().BeFalse("#523 öncesi yanıtta özet yoktu");
+        pc.Launcher.LaunchedUrls.Should().ContainSingle("mesaj bir kez");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle()
+            .Which.RecordId.Should().Be(begins[1].GetProperty("recordId").GetGuid());
+        FinishOutcomes().Should().Equal("delivered");
+    }
+
+    [Fact]
+    public async Task Son_oncul_kiraysa_ve_tutar_degistiyse_soru_yeni_toplami_da_soyler()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_k5", 500m);
+        EnqueueAlreadyRequested(Prior(Guid.NewGuid(), "PC-B", 200m, 300m, TenOClock));
+
+        var outcome = await RequestAsync(pc, buyer.Customer, "cumulative");
+
+        outcome.Prompt!.NewTotal.Should().Be(550m, "K5: bu isteğin bakiye öncesi toplamı son kiranınkinden farklı");
+        outcome.Prompt.PriorHadBalance.Should().BeTrue("son kiranın netinden bakiye düşülmüştü");
+    }
+
+    /// <summary>Bu bilgisayarın teslim edilmiş isteği: ilk istek kirayla gider (sunucu kaydı yok sayılır), yerel iş teslim
+    /// edilmiş olur. Döner: o isteğin kira Id'si.</summary>
+    private async Task<Guid> DeliveredLocallyAsync(SalesPc pc, Customer customer, string scope)
+    {
+        (await RequestAsync(pc, customer, scope)).Result.Should().Be(PaymentRequestResult.Opened);
+        pc.Jobs.GetPersonScopeJobs([customer.Id], scope).Jobs.Should().ContainSingle().Which.IsDelivered.Should().BeTrue();
+        return Begins()[^1].GetProperty("recordId").GetGuid();
+    }
+
+    [Fact]
+    public async Task Yerel_teslim_ve_uzak_oncul_tek_diyalog_onayda_mesaj()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_iki_kapi", 500m);
+        var own = await DeliveredLocallyAsync(pc, buyer.Customer, "cumulative");
+        EnqueueAlreadyRequested(
+            Prior(own, "PC-A", 550m, 550m, TenOClock.AddHours(-1)),
+            Prior(Guid.NewGuid(), "PC-B", 550m, 550m, TenOClock));
+        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle("tek onay uzak onayı da yerel kapıyı da geçirir; ikinci diyalog yok")
+            .Which.Message.Should().Be("PC-B'den 550,00 TL istendi (10:00); tekrar gönderilsin mi?");
+        pc.Launcher.LaunchedUrls.Should().HaveCount(2, "ilk istek ve onaylanan tekrar");
+        Begins().Should().HaveCount(3);
+        FinishOutcomes().Should().Equal("delivered", "delivered");
+        pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], "cumulative").Jobs.Should().ContainSingle()
+            .Which.Deliveries.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Yerel_teslim_ve_uzak_oncul_Hayir_mesaj_yok_yeni_kira_yok()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_hayir", 500m);
+        var own = await DeliveredLocallyAsync(pc, buyer.Customer, "cumulative");
+        EnqueueAlreadyRequested(Prior(own, "PC-A", 550m, 550m, TenOClock));
+        var dialogs = new FakeDialogService();
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        outcome.Prompt!.Kind.Should().Be(PersonScopePromptKind.Resend);
+        outcome.Prompt.AlsoConfirms.Should().ContainSingle("yerel planın belirteci aynı soruya katıldı");
+        dialogs.Confirmations.Should().ContainSingle();
+        pc.Launcher.LaunchedUrls.Should().ContainSingle("yalnız ilk istek");
+        Begins().Should().HaveCount(2);
+        FinishOutcomes().Should().Equal(new[] { "delivered" }, "409 kira yazmaz: kapatılacak kira yok");
+    }
+
+    [Fact]
+    public async Task Soru_ile_onay_arasinda_yerel_durum_degisirse_kira_abandoned_kapanir_yerel_soru_Hayir_mesaj_yok()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_degisti", 500m);
+        var own = await DeliveredLocallyAsync(pc, buyer.Customer, "cumulative");
+        EnqueueAlreadyRequested(Prior(own, "PC-A", 550m, 550m, TenOClock));
+        var job = pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], "cumulative").Jobs.Single();
+        var answers = 0;
+        var dialogs = new FakeDialogService
+        {
+            ConfirmResult = _ =>
+            {
+                if (++answers > 1) return false;
+                pc.Jobs.BeginSend(job.Id, 550m);                          // öbür pencere bu arada gönderdi
+                return true;
+            },
+        };
+
+        var outcome = await AskAsync(pc, buyer.Customer, "cumulative", dialogs);
+
+        outcome.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        dialogs.Confirmations.Should().HaveCount(2, "yerel belirteç tutmadı; yerel kapı yeniden sordu (bugünkü gibi)");
+        dialogs.Confirmations[1].Message.Should().Contain("sonucu kaydedilemedi");
+        pc.Launcher.LaunchedUrls.Should().ContainSingle("yalnız ilk istek");
+        var begins = Begins();
+        begins.Should().HaveCount(3);
+        var finishes = _server.Calls(FakeSalesServer.PaymentRequestsFinish);
+        finishes.Select(f => f.Json.GetProperty("outcome").GetString()).Should().Equal("delivered", "abandoned");
+        finishes[1].RecordId.Should().Be(begins[2].GetProperty("recordId").GetGuid(),
+            "onay turunun kirası soruyla kapandı (W3-07)");
+    }
+
+    [Fact]
+    public async Task Duzeltilmis_istek_listesi_uzak_ve_yerel_soruyu_tek_onayla_gecer()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_duzeltme_onay", 500m);
+        var own = await DeliveredLocallyAsync(pc, buyer.Customer, "cumulative");
+        EnqueueAlreadyRequested(Prior(own, "PC-A", 550m, 550m, TenOClock));
+        var corrected = new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(
+            pc.Customers, pc.LabelRepo, pc.Jobs, pc.Shipping, pc.Payments);
+        var candidate = new OrderDeck.App.Services.PriceCorrection.CorrectedRequestCandidate(
+            buyer.Customer.Id, "Örnek", "cumulative", 550m, TenOClock, false, 550m);
+
+        var outcome = (await corrected.ResendAsync(live, DateTime.Now, [candidate])).Should().ContainSingle().Subject;
+
+        outcome.Status.Should().Be(OrderDeck.App.Services.PriceCorrection.ResendStatus.Opened,
+            "listenin onayı sorunun bütün belirteçlerini verir; yerel kapı ikinci kez sormaz");
+        pc.Launcher.LaunchedUrls.Should().HaveCount(2);
     }
 
     // ── yeniden denenen retler (W3-08) ────────────────────────────────────

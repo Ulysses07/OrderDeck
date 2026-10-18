@@ -39,10 +39,6 @@ public static class PaymentLeaseMessages
     /// <summary><c>settings-stale</c> (§6.2, §6.4).</summary>
     public const string SettingsStale = "Kargo ayarı bu arada değişti; biraz sonra tekrar dene.";
 
-    /// <summary><c>already-requested</c> (§6.4-e): sunucuda bu kişi × kapsamın onaylanmamış önceki isteği var; mesaj
-    /// gitmedi (fail-closed).</summary>
-    public const string AlreadyRequested = "Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi.";
-
     /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim: iki kuruş hanesi + "TL".</summary>
     private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
 }
@@ -230,7 +226,10 @@ public sealed record PaymentLeaseBeginInput(
 ///   şeridini açar) ve en çok <see cref="ModeOffRoundBudget"/> bekler. Tur bittiyse (yerel kip 0, bekleyen komut yok;
 ///   uzak etiketler silindi) istek mod Off yolunda bir kez yeniden kurulur: yerel toplam, kira yok, kirasız kayıt
 ///   (W3-06). Bitmediyse satır içi engel "Senkron kapatıldı; ekran yenileniyor.".</item>
-///   <item><c>already-requested</c> → şimdilik metinli satır içi engel (soru W3-09'da).</item>
+///   <item><c>already-requested</c> (W3-09) → mesaj gitmez; bugünkü "tekrar gönderilsin mi?" sorusu
+///   (<see cref="PaymentRequestResult.AlreadyRequested"/>), sunucunun öncülleri makine adıyla; yerel planın sorusu aynı
+///   diyaloğa katılır. Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) öncül Id'lerini taşır, akış onunla
+///   yeniden koşar.</item>
 /// </list></para>
 ///
 /// <para><b>Akışın sonu</b> (<see cref="PaymentLeaseFlow.FinishAsync"/>, §6.4 "Akışın sonu"): kira alındıysa (ya da
@@ -674,15 +673,58 @@ public sealed class PaymentLeaseCoordinator
                         recordId);
                 return Blocked(SalesCommandMessages.ModeOff);
             case PaymentRequestProblemCodes.AlreadyRequested:
-                _log.LogInformation("Ödeme isteği kirası {RecordId}: already-requested ({Priors} öncül) — mesaj engellendi",
-                    recordId, problem.Priors?.Count);
-                return Blocked(PaymentLeaseMessages.AlreadyRequested);
+                return AlreadyRequested(recordId, problem, input);
             default:
                 // content-conflict, 400 ve tanınmayan ret: istemci hatası, yeniden denenmez.
                 _log.LogError("Ödeme isteği kirası {RecordId} reddedildi (HTTP {Status}, {Code}): istemci hatası — mesaj "
                             + "engellendi", recordId, status, problem.Code);
                 return Blocked(SalesCommandMessages.ContentConflict);
         }
+    }
+
+    /// <summary>
+    /// <c>already-requested</c> (§6.4-e, "409'ların istemcideki karşılığı"; sahip kararı 2, #506; W3-09): sunucuda bu kişi ×
+    /// kapsamın onaylanmamış önceki isteği var — mesaj gitmez, operatöre bugünkü "tekrar gönderilsin mi?" sorusu sorulur
+    /// (<see cref="PaymentRequestResult.AlreadyRequested"/>). Ret kira yazmaz; kapatılacak bir şey yok.
+    /// <list type="bullet">
+    ///   <item>İstekler sunucunun öncülleridir, sunucunun sırasıyla (kapanış anı); makine adıyla. Tutar teslim edilmiş net,
+    ///   yoksa (teslim kaydı olmadan dolan kira) kiranın bakiye öncesi tutarı — o istek "gitmiş olabilir"dir (§6.8).</item>
+    ///   <item>Son öncül kiraysa ve bakiye öncesi tutarı bu isteğinkinden farklıysa yeni toplam da sorulur (K5).</item>
+    ///   <item>Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) öncül Id'lerini taşır; operatör onaylayınca akış
+    ///   onunla yeniden koşar ve <c>begin</c> onayı taşır.</item>
+    /// </list>
+    /// Yerel planın sorusu çağıranda katılır (<c>PaymentRequestService.WithLocalPlan</c>). Öncülsüz ret beklenmez: istemci
+    /// hatası sayılır.
+    /// </summary>
+    private PaymentRequestOutcome AlreadyRequested(Guid recordId, PaymentRequestProblem problem, PaymentLeaseBeginInput input)
+    {
+        var priors = problem.Priors ?? [];
+        if (priors.Count == 0)
+        {
+            _log.LogError("Ödeme isteği kirası {RecordId}: öncülsüz already-requested — mesaj engellendi", recordId);
+            return Blocked(SalesCommandMessages.ContentConflict);
+        }
+
+        var requests = priors.Select(p => new PriorPaymentRequest(
+            p.NetAmount ?? p.TotalBeforeBalance ?? 0m,
+            p.At,
+            Unconfirmed: p.Unconfirmed || p.NetAmount is null,
+            Machine: p.Machine)).ToList();
+        var confirmation = PaymentLeaseConfirmation.Create(null, priors.Select(p => p.Id));
+
+        // K5: tutarın değiştiğini yalnız bakiye öncesi tutarı bilinen öncülde söyleyebiliriz (kira; kirasız kaydın neti
+        // düşümü içermez).
+        var last = priors[^1];
+        var total = PaymentHistoryRecords.Money(input.TotalBeforeBalance);
+        var changed = last.TotalBeforeBalance is { } before && PaymentHistoryRecords.Money(before) != total;
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, input.ScopeKey, requests, confirmation.Token,
+            NewTotal: changed ? total : null,
+            PriorHadBalance: changed && last.NetAmount is { } net && net < last.TotalBeforeBalance!.Value);
+
+        _log.LogInformation(
+            "Ödeme isteği kirası {RecordId}: already-requested ({Priors} öncül, {Unconfirmed} sonucu bilinmeyen) — mesaj "
+          + "gitmedi, operatöre soruluyor", recordId, priors.Count, requests.Count(r => r.Unconfirmed));
+        return new PaymentRequestOutcome(PaymentRequestResult.AlreadyRequested, prompt);
     }
 
     /// <summary>

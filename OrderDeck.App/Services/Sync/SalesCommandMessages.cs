@@ -302,6 +302,10 @@ public static class SalesCommandMessages
         return $"{machine}'{(hard ? 't' : 'd')}{(back ? 'a' : 'e')}";
     }
 
+    /// <summary>Makine adının ayrılma hâli, <see cref="Locative"/> ile aynı ses kuralıyla: "PC-A" → "PC-A'dan", "PC" →
+    /// "PC'den", "DESKTOP-4F2KJ3" → "DESKTOP-4F2KJ3'ten" (ödeme sorusu, spec 2026-10-13 §6.8: "PC-A'dan … istendi").</summary>
+    public static string Ablative(string machine) => Locative(machine) + "n";
+
     private static (bool Back, bool Hard) LastSound(string name)
     {
         var end = name.Length - 1;
