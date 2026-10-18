@@ -221,7 +221,7 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
-    public async Task Yayini_bitirirken_kuyrukta_yalniz_bekletilen_satir_kalirsa_soru_yinelenmez_yayin_acik_kalir()
+    public async Task Yayini_bitirirken_kuyrukta_yalniz_bekletilen_satir_kalirsa_soru_yinelenmez_yayin_acik_kalir_sebep_seritte()
     {
         using var s = Build();
         s.Bed.ModeOn();
@@ -240,9 +240,11 @@ public sealed class MainShellResidualQueueTests
         s.H.Printer.Calls.Should().ContainSingle();
         QueueIds(s).Should().Equal([remoteId], "bekletilen satır kuyrukta kalır");
         s.H.Sessions.GetActive().Should().NotBeNull("bekletilen satır basılmadı: yayın açık kalır (başarısız baskı gibi)");
-        s.H.Dialogs.Shown.Should().ContainSingle().Which.Message.Should().Be(
+        s.H.Dialogs.Shown.Should().BeEmpty("satış durumu açılır pencereyle değil şeritte söylenir (#508)");
+        s.Vm.SalesPushWarning.Should().Be(
             "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. Yayın açık bırakıldı. "
-          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.");
+          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.",
+            "şeritte tek bildirim: baskının \"kuyrukta bekliyor\" notu yinelenmez, yerine yayının neden açık kaldığı");
     }
 
     [Fact]

@@ -254,7 +254,8 @@ public static class SalesCommandMessages
         $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.";
 
     /// <summary>"Yayını bitir"in "hepsini bas"ından sonra kuyrukta yalnız bekletilen satırlar (<see cref="PrintHeld"/>)
-    /// kaldı: yayın açık bırakılır, soru yinelenmez.</summary>
+    /// kaldı: yayın açık bırakılır, soru yinelenmez. Satış şeridinde baskının <see cref="PrintHeld"/> notunun yerine
+    /// geçer (açılır pencere yok).</summary>
     public static string EndStreamHeld(int count) =>
         $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. "
       + "Yayın açık bırakıldı. Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.";
