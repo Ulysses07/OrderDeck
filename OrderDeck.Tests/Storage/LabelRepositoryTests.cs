@@ -4,6 +4,7 @@ using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Shared.Sales;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -167,10 +168,66 @@ public class LabelRepositoryTests
         top.Should().HaveCount(15); // top-10 değil, o yayında alan herkes
     }
 
+    private static LabelFacts Facts(Label l) => new(l.Id, l.Code, l.Price, l.PrintedAt is not null,
+        l.CancelledAt is not null, l.IsTentativeBackup, l.IsShippingFee, l.ShipmentId);
+
+    // W3 (spec 2026-10-13 §6.1 "para yolları sayacı okumaz", §6.4 istemci adım 2): ödeme tutarı kişinin bütün
+    // üyelerinin etiketlerinden okunur; toplama giren Id'ler (begin'in orderIds'i) birlikte döner. Küme
+    // LabelRules.Contribution kümesidir — sunucu toplamı (f) da onu sayar. Kargo ücreti satırı dahildir.
+    [Fact]
+    public void GetPrintedTotal_uyeler_arasi_toplam_ve_Id_kumesi_Contribution_kumesi()
+    {
+        var (db, repo, sid, _) = Fx(); // c1 hazır
+        using var _2 = db;
+        var customers = new CustomerRepository(db);
+        foreach (var id in new[] { "c2", "c3" })
+            customers.Insert(new Customer(id, "instagram", "@" + id, null, null,
+                100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
+        new SessionRepository(db).Insert(
+            new StreamSession("s2", null, 300, null, new[] { "instagram" }, null));
+
+        repo.Insert(MakeLabel("l1", sid, "c1", price: 100m, printedAt: 500));
+        repo.Insert(MakeLabel("l2", "s2", "c2", price: 40m, printedAt: 700));                                   // öbür üye, başka yayın
+        repo.Insert(MakeLabel("l3", sid, "c2", price: 25m, printedAt: 500) with { IsShippingFee = true });     // kargo ücreti satırı
+        repo.Insert(MakeLabel("l4", sid, "c1", price: 7m, printedAt: null));                                   // basılmadı
+        repo.Insert(MakeLabel("l5", "s2", "c1", price: 11m, printedAt: 700));                                  // iptal (aşağıda)
+        repo.Insert(MakeLabel("l6", sid, "c2", price: 13m, printedAt: 500) with { IsTentativeBackup = true }); // geçici yedek
+        repo.Insert(MakeLabel("l7", sid, "c3", price: 60m, printedAt: 500));                                   // üye değil
+        repo.MarkCancelled(new[] { "l5" }, cancelledAt: 800, reason: "iptal");
+        var members = new[] { "c1", "c2" };
+
+        var contributing = repo.GetByIds(new[] { "l1", "l2", "l3", "l4", "l5", "l6", "l7" })
+            .Where(l => members.Contains(l.CustomerId) && LabelRules.Contribution(Facts(l)).Count == 1)
+            .ToList();
+        contributing.Select(l => l.Id).Should().BeEquivalentTo(new[] { "l1", "l2", "l3" }, "ön koşul");
+
+        var total = repo.GetPrintedTotal(members);
+
+        total.LabelIds.Should().BeEquivalentTo(contributing.Select(l => l.Id),
+            "basılmamış, iptal edilmiş, geçici yedek ve üye olmayanın etiketi kümeye girmez");
+        total.Total.Should().Be(contributing.Sum(l => LabelRules.Contribution(Facts(l)).Amount))
+            .And.Be(165m, "bütün yayınlar, iki üye, kargo ücreti satırı dahil");
+
+        // Oturum süzgeci: yalnız o yayının etiketleri (yayın kapsamı).
+        var s1 = repo.GetPrintedTotal(members, sid);
+        s1.LabelIds.Should().BeEquivalentTo(new[] { "l1", "l3" });
+        s1.Total.Should().Be(125m);
+        var s2 = repo.GetPrintedTotal(members, "s2");
+        s2.LabelIds.Should().Equal("l2");
+        s2.Total.Should().Be(40m);
+
+        var unknown = repo.GetPrintedTotal(new[] { "yok" });
+        unknown.Total.Should().Be(0m);
+        unknown.LabelIds.Should().BeEmpty();
+        var none = repo.GetPrintedTotal(Array.Empty<string>(), sid);
+        none.Total.Should().Be(0m);
+        none.LabelIds.Should().BeEmpty();
+    }
+
     // U12 (Bölüm C): ödeme akışı liste/rapor tutarını kiraladığı güncel Id için bununla yeniden
     // okur — tanım raporun müşteri satırıyla birebir aynı olmalı.
     [Fact]
-    public void GetSessionPrintedTotal_raporun_musteri_toplamiyla_ayni_tanimi_kullanir()
+    public void GetPrintedTotal_oturum_suzgeciyle_raporun_musteri_toplamiyla_ayni_tanimi_kullanir()
     {
         var (db, repo, sid, _) = Fx(); // c1 hazır
         using var _2 = db;
@@ -188,24 +245,24 @@ public class LabelRepositoryTests
         repo.Insert(MakeLabel("l7", sid, "c2", price: 60m, printedAt: 500));
         repo.MarkCancelled(new[] { "l4" }, cancelledAt: 600, reason: "iptal");
 
-        repo.GetSessionPrintedTotal(sid, new[] { "c1" }).Should().Be(140m,
+        repo.GetPrintedTotal(new[] { "c1" }, sid).Total.Should().Be(140m,
             "basılmamış, iptal edilmiş, yedek ve başka yayının etiketi sayılmaz");
-        repo.GetSessionPrintedTotal(sid, new[] { "c2" }).Should().Be(60m);
-        repo.GetSessionPrintedTotal(sid, new[] { "c1", "c2" }).Should().Be(200m, "çok Id: toplamları");
-        repo.GetSessionPrintedTotal(sid, new[] { "yok" }).Should().Be(0m);
-        repo.GetSessionPrintedTotal(sid, Array.Empty<string>()).Should().Be(0m);
+        repo.GetPrintedTotal(new[] { "c2" }, sid).Total.Should().Be(60m);
+        repo.GetPrintedTotal(new[] { "c1", "c2" }, sid).Total.Should().Be(200m, "çok Id: toplamları");
+        repo.GetPrintedTotal(new[] { "yok" }, sid).Total.Should().Be(0m);
+        repo.GetPrintedTotal(Array.Empty<string>(), sid).Total.Should().Be(0m);
 
         // Raporun satırlarıyla aynı tanım: müşteri başına ve toplamda birebir.
         var top = repo.GetTopCustomersBySession(sid, int.MaxValue);
         top.Select(t => t.CustomerId).Should().BeEquivalentTo(new[] { "c1", "c2" });
         foreach (var t in top)
-            repo.GetSessionPrintedTotal(sid, new[] { t.CustomerId! }).Should().Be(t.TotalAmount);
-        repo.GetSessionPrintedTotal(sid, top.Select(t => t.CustomerId!).ToList())
+            repo.GetPrintedTotal(new[] { t.CustomerId! }, sid).Total.Should().Be(t.TotalAmount);
+        repo.GetPrintedTotal(top.Select(t => t.CustomerId!).ToList(), sid).Total
             .Should().Be(top.Sum(t => t.TotalAmount));
     }
 
     // Sahip kararı 3: ödeme isteği kişinin yayın toplamını ister; satır kendi tutarının yanında kişi
-    // toplamını gösterir. Toplam GetSessionPrintedTotal(kişinin üyeleri) ile aynı, limitten bağımsız.
+    // toplamını gösterir. Toplam GetPrintedTotal(kişinin üyeleri, yayın) ile aynı, limitten bağımsız.
     [Fact]
     public void GetTopCustomersBySession_gruplu_kisinin_satirlari_kisi_toplamini_tasir()
     {
@@ -227,8 +284,8 @@ public class LabelRepositoryTests
         top.Single(t => t.CustomerId == "ca").PersonTotalAmount.Should().Be(300m);
         top.Single(t => t.CustomerId == "cb").PersonTotalAmount.Should().Be(300m);
         top.Single(t => t.CustomerId == "c1").PersonTotalAmount.Should().BeNull("tek satırlı kişi — tutar zaten satırınki");
-        repo.GetSessionPrintedTotal(sid, customers.CompleteGroups(new[] { customers.GetById("ca")! })
-                .Select(c => c.Id).ToList())
+        repo.GetPrintedTotal(customers.CompleteGroups(new[] { customers.GetById("ca")! })
+                .Select(c => c.Id).ToList(), sid).Total
             .Should().Be(300m, "rapor ile ödeme akışı aynı kişi toplamını görür");
 
         // Limit kişi toplamını kesmez: ilk satır (200) kişinin 100'lük satırı listede olmasa da 300 der.

@@ -253,4 +253,55 @@ public class StreamReportViewModel_OpenWhatsAppTests
             if (File.Exists(settingsPath)) File.Delete(settingsPath);
         }
     }
+
+    // W3 (spec 2026-10-13 §6.1 "para yolları sayacı okumaz"): rapordan istenen tutar kişinin (bütün üyeleri) bu
+    // yayındaki etiketleridir (LabelRules.Contribution) — satırın tutarı da, Customer.TotalAmount önbelleği de değil.
+    [Fact]
+    public async Task OpenWhatsApp_bozuk_sayacli_kisinin_istenen_tutari_yayindaki_etiketlerden()
+    {
+        var (db, customers, sessions, labels, giveaways, _, dialogs, settingsPath, _) =
+            Setup(cloudApiInProgress: true);
+        using var _db = db;
+        try
+        {
+            var (sut, _, jobs) = Synced(db, customers, sessions, labels, giveaways, settingsPath, dialogs);
+            var tt = Guid.NewGuid().ToString("N");
+            var ig = Guid.NewGuid().ToString("N");
+            customers.Insert(new Customer(tt, "tiktok", "ornek.musteri", "Örnek Müşteri", null,
+                100, 101, false, null, null, 0, 0m, null, null, TestPhone.NewE164(), GroupId: "grp-1"));
+            customers.Insert(new Customer(ig, "instagram", "ornek_ig", "Örnek Müşteri", null,
+                100, 102, false, null, null, 0, 0m, null, null, null, GroupId: "grp-1"));
+            sessions.Insert(new StreamSession("s0", "Önceki", 10, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l7", "s0", ig, "instagram", "ornek_ig", "Eski", null, 70m, 20, 30));
+            sessions.End("s0", 50);
+            sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", tt, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+            labels.Insert(new Label("l2", "s1", ig, "instagram", "ornek_ig", "Armut", null, 60m, 111, 121));
+            labels.Insert(new Label("l3", "s1", tt, "tiktok", "ornek.musteri", "Kargo", null, 25m, 112, 122,
+                IsShippingFee: true));
+            labels.Insert(new Label("l4", "s1", tt, "tiktok", "ornek.musteri", "Kuyrukta", null, 30m, 113, null));
+            labels.Insert(new Label("l5", "s1", ig, "instagram", "ornek_ig", "İptal", null, 20m, 114, 124));
+            labels.Insert(new Label("l6", "s1", tt, "tiktok", "ornek.musteri", "Yedek", null, 13m, 115, 125,
+                IsTentativeBackup: true));
+            sessions.End("s1", 200);
+            labels.MarkCancelled(new[] { "l5" }, cancelledAt: 130, reason: "iptal");
+            using (var c = db.Open())
+                Dapper.SqlMapper.Execute(c, "UPDATE Customer SET TotalAmount = 999 WHERE GroupId = 'grp-1'");
+
+            sut.Load("s1");
+            var row = sut.TopCustomers.Single(t => t.CustomerId == tt);
+            row.TotalAmount.Should().Be(125m, "ön koşul: satırın kendi payı 100 + kargo ücreti satırı 25");
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(row);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.ScopeKey.Should().Be("session:s1");
+            job.ProductTotal.Should().Be(185m,
+                "kişinin bu yayındaki etiketleri: 100 + 60 + 25; basılmamış, iptal, yedek ve önceki yayın hariç");
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+        }
+    }
 }

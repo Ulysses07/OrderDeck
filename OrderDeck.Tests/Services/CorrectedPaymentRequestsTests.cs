@@ -432,6 +432,33 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public void Cumulative_new_total_is_read_from_the_labels_not_the_customer_counter()
+    {
+        // W3 (spec 2026-10-13 §6.1 "para yolları sayacı okumaz"): genel kapsamın yeni toplamı kişinin bütün
+        // yayınlardaki etiketlerinden (LabelRules.Contribution) — Customer.TotalAmount önbelleği bozuk olsa da.
+        var a1 = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id });
+        new SessionRepository(_db).Insert(new StreamSession("s2", null, 2000, null, new[] { "instagram" }, null));
+        var later = _labels.Add("s2", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "@x", "@x", null,
+            "@x aldım", 1000, Array.Empty<string>()), 100m, "Z9");
+        var queued = _labels.Add("s2", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "@x", "@x", null,
+            "@x aldım", 1000, Array.Empty<string>()), 40m, "Z8");
+        _labels.MarkPrintedAndRecord(new[] { later.Id });
+        _labelRepo.GetById(queued.Id)!.PrintedAt.Should().BeNull("ön koşul: kuyrukta");
+        Delivered(a1.CustomerId, "cumulative", 350m);
+        var result = _labels.CorrectPrices(new[] { a1.Id }, 205m);
+        // Düzeltme toplamı türetti; sayaç ondan SONRA bozulur.
+        using (var c = _db.Open())
+            c.Execute("UPDATE Customer SET TotalAmount = 999 WHERE Id = @id", new { id = a1.CustomerId });
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        var row = plan.ToResend.Should().ContainSingle().Subject;
+        row.ScopeKey.Should().Be("cumulative");
+        row.NewTotal.Should().Be(305m, "bütün yayınların basılmış etiketleri: 205 + 100; kuyruktaki sayılmaz");
+    }
+
+    [Fact]
     public void Dekont_difference_of_a_correction_leaves_out_an_earlier_corrections_settled_difference()
     {
         // A1 200 + B2 100 dekontla ödendi (ikisi açık dosyada). A1 200 → 250: "+50"; operatör 50'yi aldı, ikinci

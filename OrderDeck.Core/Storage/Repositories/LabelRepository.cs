@@ -661,7 +661,7 @@ public sealed class LabelRepository
     /// <see cref="TopCustomer.PersonTotalAmount"/>: satırın kişisi (<see cref="CustomerGroup"/>) bu
     /// raporda birden çok satırla görünüyorsa kişinin yayın toplamı — ödeme isteği bu tutarı ister
     /// (sahip kararı 3). Toplam bütün satırlar üzerinden, <paramref name="limit"/>'ten ÖNCE alınır;
-    /// tanım <see cref="GetSessionPrintedTotal"/> ile aynıdır (aynı etiket süzgeci, aynı kişi kuralı).</summary>
+    /// tanım <see cref="GetPrintedTotal"/>'ın yayın süzgeçli hâliyle aynıdır (aynı etiket süzgeci, aynı kişi kuralı).</summary>
     public IReadOnlyList<TopCustomer> GetTopCustomersBySession(string sessionId, int limit = 10)
     {
         using var conn = _factory.Open();
@@ -693,21 +693,39 @@ public sealed class LabelRepository
             .ToList();
     }
 
-    /// <summary>U12 (Bölüm C): verilen müşterilerin bu yayındaki satış toplamı —
-    /// <see cref="GetTopCustomersBySession"/> ile AYNI tanım (basılmış, iptal edilmemiş, yedek
-    /// olmayan etiketler). Ödeme akışı, liste/rapor anlık görüntüsünün Id başına tuttuğu tutarı
-    /// kiraladığı GÜNCEL Id için bununla yeniden okur: görüntü bir yerel taşımadan önce
-    /// alındıysa kopyanın satırı yalnız kendi yazımının payını taşır.</summary>
-    public decimal GetSessionPrintedTotal(string sessionId, IReadOnlyCollection<string> customerIds)
+    /// <summary>
+    /// Ödeme isteğinin ürün toplamı (spec 2026-10-13 §6.1 "para yolları sayacı okumaz", §6.4 istemci adım 2):
+    /// verilen müşterilerin (kişinin bütün üyeleri) katkısı olan etiketlerinin fiyat toplamı ve Id'leri.
+    /// <c>Customer.TotalAmount</c> okunmaz: o ekranın önbelleği, bu para.
+    ///
+    /// <para><b>Süzgeç</b> <see cref="OrderDeck.Shared.Sales.LabelRules.Contribution"/>'ın SQL karşılığıdır ve müşteri
+    /// toplamlarını türeten metnin aynısıdır (<see cref="CustomerAggregateSql.ContributesCondition"/>): basılmış ∧
+    /// iptal edilmemiş ∧ geçici yedek değil. Kargo ücreti satırı dahildir; <see cref="GetTopCustomersBySession"/> ve
+    /// sunucu toplamı da onu sayar.</para>
+    ///
+    /// <para><paramref name="sessionId"/> verilirse yalnız o yayının etiketleri (<c>session:{id}</c> kapsamı);
+    /// verilmezse bütün yayınlar (<c>cumulative</c>). Ödeme akışı, liste/rapor anlık görüntüsünün Id başına tuttuğu
+    /// tutarı kiraladığı GÜNCEL kişi için bununla yeniden okur (U12, Bölüm C): görüntü bir yerel taşımadan önce
+    /// alındıysa kopyanın satırı yalnız kendi yazımının payını taşır.</para>
+    ///
+    /// <para><see cref="PrintedTotal.LabelIds"/> toplama giren etiketlerdir — <c>begin</c>'in <c>orderIds</c>'i; sunucu
+    /// kümeyi kendi toplamıyla karşılaştırır (§6.4 f).</para>
+    /// </summary>
+    /// <param name="memberIds">Kişinin üyeleri, ham Id (GUID'siz olanlar dahil).</param>
+    /// <param name="sessionId">Yayın kapsamının yayını; kümülatif kapsamda boş.</param>
+    public PrintedTotal GetPrintedTotal(IReadOnlyCollection<string> memberIds, string? sessionId = null)
     {
-        if (customerIds.Count == 0) return 0m;
+        if (memberIds.Count == 0) return new PrintedTotal(0m, []);
         using var conn = _factory.Open();
-        return conn.ExecuteScalar<decimal?>(
-            @"SELECT COALESCE(SUM(Price), 0)
-              FROM Label
-              WHERE SessionId=@sessionId AND CustomerId IN @customerIds
-                AND PrintedAt IS NOT NULL AND CancelledAt IS NULL AND IsTentativeBackup = 0",
-            new { sessionId, customerIds }) ?? 0m;
+        var rows = conn.Query<(string Id, decimal Price)>(
+            $@"SELECT l.Id, l.Price
+               FROM Label l
+               WHERE l.CustomerId IN @memberIds
+                 AND (@sessionId IS NULL OR l.SessionId = @sessionId)
+                 AND {CustomerAggregateSql.ContributesCondition}
+               ORDER BY l.Id",
+            new { memberIds, sessionId }).ToList();
+        return new PrintedTotal(rows.Sum(r => r.Price), rows.Select(r => r.Id).ToList());
     }
 
     /// <summary>Returns the labels a customer added in a specific session, ordered
@@ -1037,6 +1055,10 @@ public sealed class LabelRepository
 }
 
 public sealed record SessionTotals(int PrintedCount, decimal TotalAmount, int UniqueCustomers);
+
+/// <summary>Kişinin basılmış toplamı (<see cref="LabelRepository.GetPrintedTotal"/>): katkısı olan etiketlerin fiyat
+/// toplamı ve Id'leri (Id sırasıyla).</summary>
+public sealed record PrintedTotal(decimal Total, IReadOnlyList<string> LabelIds);
 
 /// <summary>v2 etiket gönderiminin bir satırı (<see cref="LabelRepository.GetUnsyncedForPush"/>): yerel biçimde
 /// (TEXT kimlikler, unix saniye); tel biçimine çeviri gönderim servisinde.</summary>

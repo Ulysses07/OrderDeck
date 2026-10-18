@@ -329,13 +329,12 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         // REDDEDİLİR (null → ListStale). Değilse tutar, akışın kira altında okuduğu KİŞİNİN
         // (bütün üyeler) toplamıdır: yayın-içi ya da kümülatif — yayın raporu da aynı kişi için
         // aynı toplamı ister, yoksa aynı iş iki giriş arasında sürekli revize edilirdi. Yayın,
-        // kapsam kimliği gibi anlık görüntüden kalır (R4-08).
+        // kapsam kimliği gibi anlık görüntüden kalır (R4-08). İki kapsamda da tutar etiketlerden
+        // okunur (W3, spec 2026-10-13 §6.1): kümülatifte de Customer.TotalAmount önbelleği okunmaz.
         decimal? CurrentAmount(PaymentPerson person)
         {
             if (!string.Equals(person.LeasedId, customer.Id, StringComparison.Ordinal)) return null;
-            return sessionScope is not null
-                ? _labels.GetSessionPrintedTotal(sessionScope.Id, person.MemberIds.ToList())
-                : person.Members.Sum(m => m.TotalAmount);
+            return _labels.GetPrintedTotal(person.MemberIds.ToList(), sessionScope?.Id).Total;
         }
     }
 }

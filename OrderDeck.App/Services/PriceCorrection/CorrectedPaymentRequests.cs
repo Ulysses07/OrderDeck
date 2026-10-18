@@ -406,12 +406,12 @@ public sealed class CorrectedPaymentRequests
         }
     }
 
-    /// <summary>Ödeme akışının isteyeceği ürün toplamı: yayın kapsamında kişinin bu yayındaki basılmış
-    /// toplamı, genel kapsamda üyelerin müşteri toplamı (CustomerSearchViewModel.CurrentAmount ile aynı).</summary>
+    /// <summary>Ödeme akışının isteyeceği ürün toplamı: yayın kapsamında kişinin bu yayındaki, genel kapsamda bütün
+    /// yayınlardaki basılmış etiketleri (CustomerSearchViewModel.CurrentAmount ile aynı). İkisi de etiketlerden okunur
+    /// (W3, spec 2026-10-13 §6.1): Customer.TotalAmount önbelleği okunmaz.</summary>
     private decimal ProductTotal(string sessionId, string scopeKey, PaymentPerson person)
-        => scopeKey.StartsWith("session:", StringComparison.Ordinal)
-            ? _labels.GetSessionPrintedTotal(sessionId, person.MemberIds.ToList())
-            : person.Members.Sum(m => m.TotalAmount);
+        => _labels.GetPrintedTotal(person.MemberIds.ToList(),
+            scopeKey.StartsWith("session:", StringComparison.Ordinal) ? sessionId : null).Total;
 
     private static string DisplayOf(Label l) => string.IsNullOrWhiteSpace(l.DisplayName) ? l.Username : l.DisplayName!;
 }

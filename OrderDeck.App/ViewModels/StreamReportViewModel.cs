@@ -268,7 +268,8 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         //
         // Sahip kararı 3: istenen tutar KİŞİNİN oturum toplamıdır (bütün üyeler), satırınki değil —
         // kartla aynı küme ve aynı toplam; yoksa aynı iş iki giriş arasında sürekli revize edilirdi.
-        // Satır kendi tutarının yanında kişi toplamını gösterir (PersonTotalAmount).
+        // Satır kendi tutarının yanında kişi toplamını gösterir (PersonTotalAmount). Tutar etiketlerden
+        // okunur (W3, spec 2026-10-13 §6.1), Customer.TotalAmount önbelleğinden değil.
         decimal? CurrentAmount(PaymentPerson person)
         {
             if (topCustomer.CustomerId is { } rowId
@@ -276,7 +277,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
                 return null;
             return _sessionId is null
                 ? topCustomer.TotalAmount
-                : _labels.GetSessionPrintedTotal(_sessionId, person.MemberIds.ToList());
+                : _labels.GetPrintedTotal(person.MemberIds.ToList(), _sessionId).Total;
         }
     }
 }
