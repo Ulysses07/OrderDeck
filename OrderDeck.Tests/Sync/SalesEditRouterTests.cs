@@ -323,6 +323,44 @@ public sealed class SalesEditRouterTests : IDisposable
     }
 
     [Fact]
+    public async Task Tavani_asan_baska_bilgisayarin_kagidi_parca_parca_ayni_basisla_isaretlenir()
+    {
+        _bed.ModeOn();
+        var session = _bed.RemoteSession();
+        var customer = _bed.RemoteCustomer();
+        var ids = Enumerable.Range(0, 501)
+            .Select(_ => _bed.RemoteOrder(session, customer, printed: false).ToString("N")).ToList();
+        await _bed.PullAsync();
+
+        var mark = await _bed.Router.MarkPrintedAsync(ids);
+
+        mark.Notices.Should().BeEmpty("tek komut 500'ü aşsaydı 400 alırdı");
+        mark.Marked.Should().HaveCount(501);
+        var calls = _bed.Server.CommandCalls.Select(c => c.Command).ToList();
+        calls.Select(c => (c.Kind, ItemCount(c))).Should().Equal([("mark-printed", 500), ("mark-printed", 1)]);
+        calls.Select(c => c.Payload!.Value.GetProperty("batchId").GetString()).Distinct().Should().ContainSingle();
+        _bed.LabelRepo.GetById(ids[^1])!.PrintedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Tavani_asan_secimde_ilk_parcanin_sonucu_bilinmezse_sonrakiler_gonderilmez_ayni_sebeple_sorun()
+    {
+        _bed.ModeOn();
+        var session = _bed.RemoteSession();
+        var customer = _bed.RemoteCustomer();
+        var ids = Enumerable.Range(0, 501).Select(_ => _bed.RemoteOrder(session, customer).ToString("N")).ToList();
+        await _bed.PullAsync();
+        _bed.Server.EnqueueStatus(FakeSalesServer.Commands, 503);
+
+        var cancel = await _bed.Router.CancelAsync(ids, "musteri");
+
+        _bed.Server.CommandCalls.Should().ContainSingle("sonucu bilinmeyen parçadan sonrası gönderilmez");
+        cancel.Applied.Should().BeEmpty();
+        cancel.Problems.Should().ContainSingle("iki parça aynı sebeple").Which.LabelIds.Should().HaveCount(501);
+        _bed.Local(ids[^1]).CancelledAt.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Iptali_geri_alma_ve_yedek_onayi_komutla()
     {
         _bed.ModeOn();

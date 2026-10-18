@@ -246,6 +246,37 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Baska_bilgisayarin_satiri_orada_zaten_basilmissa_serit_zaten_basilmisti_der()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remote.ToString("N"))!, isCustomerBlacklisted: false));
+        s.Bed.Server.MutateOrder(remote, o => o with { PrintedAt = T0.AddHours(2) });   // akış inmedi
+
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+
+        s.H.Printer.Calls.Should().ContainSingle("kâğıt çıktı");
+        s.Vm.SalesPushWarning.Should().Be("1 etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.",
+            "iptal edilmemiş: \"iptal edilmişti\" yanlış sebep olurdu");
+    }
+
+    [Fact]
+    public async Task Kalintinin_kagidi_baska_yerde_zaten_basilmissa_serit_zaten_basilmisti_der()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var labels = await OfferResidualAsync(s);
+        s.Bed.Server.MutateOrder(Guid.ParseExact(labels[0], "N"), o => o with { PrintedAt = T0.AddHours(2) });
+
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+
+        s.H.Printer.Calls.Should().ContainSingle("kâğıt çıktı");
+        s.Vm.SalesPushWarning.Should().Be("1 etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.");
+        s.Bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Sunucuda_iptal_edilmis_kalintinin_kagidi_imha_seridine_yazilir()
     {
         using var s = Build();                                    // akış turu yok: iptal baskıdan önce inmez
@@ -373,5 +404,24 @@ public sealed class MainShellResidualQueueTests
         s.Bed.Pending.List().Should().BeEmpty();
         s.Bed.Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog").Should().Be(1);
         s.Bed.Local(labels[0]).CancelledAt.Should().BeNull("iptal uygulanmadı; örtü kalktı");
+    });
+
+    [Fact]
+    public void Turun_bekleyen_baski_onayi_zaten_basilmis_donerse_serit_zaten_basilmisti_der()
+        => RunOnOwnDispatcher(async () =>
+    {
+        using var s = Build(withPull: true);
+        s.Bed.ModeOn();
+        var labels = await OfferResidualAsync(s);
+        s.Bed.Online = false;
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+        s.Bed.Pending.List().Should().ContainSingle("ön koşul: kâğıdın onayı bekleyen komutta");
+        s.Bed.Server.MutateOrder(Guid.ParseExact(labels[0], "N"), o => o with { PrintedAt = T0.AddHours(2) });
+
+        await Task.Run(() => s.Pull!.TourOnceAsync(CancellationToken.None));
+        await Dispatcher.Yield(DispatcherPriority.Background);
+
+        s.Bed.Pending.List().Should().BeEmpty();
+        s.Vm.SalesPushWarning.Should().Be("1 etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.");
     });
 }
