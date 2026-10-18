@@ -89,8 +89,9 @@ public sealed record SalesEditResult(
 
 /// <summary>Kuyruk baskısının işaretlenmesi (spec 2026-10-13 §5.6-4, §5.5): kâğıt basıldıktan sonra.</summary>
 /// <param name="Marked">Basılmış işaretlenen etiketler (yerel yazım ya da uygulanan komut; zaten basılmış olan dahil).</param>
-/// <param name="Pending">Kâğıdı basılan ama henüz işaretlenmeyen etiketler: sunucuya işlenmeyen kalıntılar bekleyen
-/// <c>mark-printed</c>'de, örtülü — yeniden açılışta da teklif edilmez; kendi bitmiş yayınının satırları, devir kilidi
+/// <param name="Pending">Kâğıdı basılan ama henüz işaretlenmeyen etiketler: sunucuya işlenmeyen sunucu satırları (kendi
+/// kalıntısı ve başka bilgisayarınki, Y11) bekleyen <c>mark-printed</c>'de, örtülü — yeniden açılışta da teklif
+/// edilmez, tur aynı kimlikle yineler; kendi bitmiş yayınının satırları, devir kilidi
 /// süresinde alınamadıysa (kapanış gönderimi sürüyor), kilit açılınca arka planda kilit altında işaretlenir.</param>
 /// <param name="DiscardLabelIds">Sunucunun <c>cancelled[]</c> ve <c>alreadyPrinted[]</c>'i: "kâğıtları imha et".</param>
 /// <param name="Notices">Satır içi uyarılar (işaretlenemeyen sunucu satırı, kalıcı ret); yoksa boş.</param>
