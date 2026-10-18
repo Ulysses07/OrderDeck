@@ -25,6 +25,11 @@ namespace OrderDeck.Core.Payments;
 /// <c>PaymentHistoryRecords.FromJob</c>) — kaydı kuran yolun ayrıca bildiği sonuç değil. Teslim yazılmış iş (Cloud API'nin
 /// <c>in_progress</c>'i dahil: <c>SendPending</c> yerelde teslim yazar) <see cref="Delivered"/>'dır.</para>
 ///
+/// <para><b>Kalan risk (geri yükleme, spec §8.7):</b> kopya kimliği türetmeye girmez. Geri yükleme işin sayaçlarını yedek
+/// anına geri çeker; yedekten sonra yapılmış bir teslimin (iş, sayı) çifti geri yüklenmiş kopyanın sonraki teslimine yeniden
+/// verilir ve o teslimin kaydı sunucuya yazılmaz (<c>content-conflict</c> ya da <c>unchanged</c>). Düzeltme ödeme
+/// geçmişinin baştan gönderimiyle birlikte tasarlanmalı; sahip kararı bekliyor.</para>
+///
 /// <para>Türetme: SHA-256("orderdeck-payment-record|{uzay}|{iş Id'si}|{sayı}") özetinin ilk 16 baytı; belirsiz kayıtta
 /// sayı "{teslim}.{deneme}". Sayı biçimi kültürden bağımsız. DEĞİŞTİRİLMEZ: sunucuya gitmiş kayıtların Id'leri bu metne
 /// bağlı; farklı bir türetme aynı işi ikinci kez yazdırırdı.</para>
