@@ -257,7 +257,7 @@ public sealed class SalesModeCoordinatorTests : IDisposable
         Scalar<int>("SELECT COUNT(*) FROM Shipment WHERE SyncedAt IS NULL").Should().Be(0);
         pc.Pull.Status.ModeOn.Should().BeTrue();
         pc.Pull.Status.OpeningPending.Should().BeFalse();
-        _server.Hellos.Single().Json.GetProperty("featureLevel").GetInt32().Should().Be(2, "W2 derlemesi (§8.1-4)");
+        _server.Hellos.Single().Json.GetProperty("featureLevel").GetInt32().Should().Be(3, "W3'ü içeren derleme (§8.1-4)");
         _server.Faults.Should().BeEmpty();
     }
 

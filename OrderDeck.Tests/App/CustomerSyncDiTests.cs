@@ -441,6 +441,32 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Yetenek_duzeyi_3_ise_kira_sarmali_ve_odeme_kaydi_gondericisi_kayitli_ve_odeme_servisine_bagli()
+    {
+        // W3-12 (spec 2026-10-13 §2 "Ws", §4.10-2, §8.1-4): hello'daki featureLevel = 3 mod kapısının ikinci kilididir ve
+        // "bu derleme W3'ün hepsini taşıyor" demektir. Kira sarmalı ya da ödeme kaydı göndericisi DI'da eksik ya da ödeme
+        // servisine bağlı değilse PaymentRequestService'in isteğe bağlı parametreleri sessizce null kalır: mod On'da istek
+        // kirasız (fail-closed'sız) gider, mod Off kayıtları sunucuya hiç geçmez — ama kopya kapıdan 3 ile geçerdi.
+        SalesSyncEnvelope.FeatureLevel.Should().Be(3, "W3'ü içeren derleme");
+        using var host = new global::OrderDeck.App.AppHost();
+        var payments = host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>();
+        var lease = host.Services.GetRequiredService<PaymentLeaseCoordinator>();
+        var sender = host.Services.GetRequiredService<PaymentRecordSender>();
+
+        PrivateField<PaymentLeaseCoordinator>(payments, "_lease").Should().NotBeNull().And.BeSameAs(lease,
+            "kira sarmalı ödeme servisine bağlı");
+        PrivateField<PaymentRecordSender>(lease, "_records").Should().BeSameAs(sender, "finish'ler tek göndericiden");
+        var offRecords = PrivateField<PaymentOffRecordWriter>(payments, "_offRecords");
+        offRecords.Should().NotBeNull().And.BeSameAs(host.Services.GetRequiredService<PaymentOffRecordWriter>());
+        PrivateField<PaymentRecordSender>(offRecords!, "_sender").Should().BeSameAs(sender,
+            "mod Off kayıtları tek göndericinin kuyruğuna");
+        PrivateField<PaymentRecordSender>(host.Services.GetRequiredService<PaymentHistoryBackfill>(), "_sender")
+            .Should().BeSameAs(sender, "ödeme geçmişi tek göndericinin kuyruğuna");
+        host.Services.GetServices<IHostedService>().OfType<SalesBackfillHostedService>().Should().ContainSingle(
+            "gönderici ve geçmiş geri doldurma turuyla sürer");
+    }
+
+    [Fact]
     public void Odeme_kaydi_gondericisi_tekil_geri_doldurma_turu_ve_acilisin_birinci_adimiyla_paylasilir()
     {
         // W3-05 (spec 2026-10-13 §6.4, §8.4-1): bekleyen ödeme kayıtlarını geri doldurma turu (60 sn, iki kipte) ve mod On

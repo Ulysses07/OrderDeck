@@ -113,7 +113,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         var json = hello.Json;
         json.GetProperty("replicaId").GetGuid().Should().Be(pc.ReplicaId);
         json.GetProperty("protocol").GetInt32().Should().Be(2);
-        json.GetProperty("featureLevel").GetInt32().Should().Be(2, "W2 derlemesi; 3 yalnız W3 ile (§8.1-4)");
+        json.GetProperty("featureLevel").GetInt32().Should().Be(3, "W3'ü içeren derleme; mod kapısı 3 ister (§8.1-4)");
         json.GetProperty("seenMode").GetInt32().Should().Be(0);
         json.GetProperty("machineName").GetString().Should().Be(
             Environment.MachineName.Length > 128 ? Environment.MachineName[..128] : Environment.MachineName);
@@ -126,7 +126,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         json.TryGetProperty("paymentHistoryCompleted", out _).Should().BeFalse();
 
         var row = _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!;
-        row.FeatureLevel.Should().Be(2);
+        row.FeatureLevel.Should().Be(3);
         row.ReportedThreshold.Should().Be(1500m);
         row.ReportedFee.Should().Be(89.90m);
         row.PreviousReplicaId.Should().BeNull();
