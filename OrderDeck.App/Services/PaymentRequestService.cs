@@ -338,16 +338,20 @@ public sealed class PaymentRequestService
         // ve satış akışının ApplyItem'ı meşgul müşteriyi erteler). Tur koşar, sonra bütün akış AYNI onay belirteçleriyle
         // yeniden koşar. Her hak bir kez; harcanmış hakkın reddi satır içi engeldir (koordinatör karar verir).
         var retried = PaymentLeaseRetry.None;
+        // mode-off'tan sonraki yeniden kurmada ilk koşunun begin toplamı (uzak etiketler dahil): yerel toplam 0'a düştüyse
+        // mesaj gitmez (PaymentLeaseCoordinator.CheckModeOffScope).
+        decimal? modeOnTotal = null;
         while (true)
         {
             var run = new LeaseRun();
             var outcome = await RequestPaymentOnceAsync(
-                customer, productTotalFor, streamDate, scopeKey, confirmedTokens, retried, run, ct);
+                customer, productTotalFor, streamDate, scopeKey, confirmedTokens, retried, modeOnTotal, run, ct);
             var retry = run.Flow?.PendingRetry ?? PaymentLeaseRetry.None;
             if (retry == PaymentLeaseRetry.None) return outcome;
 
             var stop = await _lease!.RunRetryAsync(retry, ct);
             if (stop is not null) return stop with { OwnerId = outcome.OwnerId };
+            if ((retry & PaymentLeaseRetry.ModeOffRound) != 0) modeOnTotal = run.Flow!.BegunProductTotal;
             retried |= retry;
         }
     }
@@ -359,10 +363,12 @@ public sealed class PaymentRequestService
     }
 
     /// <summary><see cref="RequestPaymentAsync"/>'in bir koşusu; mod On akışı <paramref name="run"/>'a yazılır.</summary>
+    /// <param name="modeOnTotal">Bu koşu <c>begin</c>'in <c>mode-off</c>'undan sonraki yeniden kurmaysa ilk koşunun begin
+    /// toplamı; değilse null.</param>
     private async Task<PaymentRequestOutcome> RequestPaymentOnceAsync(
         Customer customer, Func<PaymentPerson, decimal?> productTotalFor, DateTime streamDate,
-        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseRetry retried, LeaseRun run,
-        CancellationToken ct)
+        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseRetry retried, decimal? modeOnTotal,
+        LeaseRun run, CancellationToken ct)
     {
         // Mod On (spec 2026-10-13 §6.4-1, W3-07): ön gönderim akışın EN BAŞINDA, hiçbir kira alınmadan — bekleyen
         // komutların yanıt satırları ve gönderimlerin yönlendirmeleri bu kişinin kirasını beklemesin (U13/U17). Yerel kip
@@ -443,6 +449,12 @@ public sealed class PaymentRequestService
                             customerId);
                         return new(PaymentRequestResult.BalanceUncertain);
                     }
+
+                    // Mod Off yolu: kapsamın yayını bu bilgisayarda değilse (Off turu uzak yayını sildi) ya da mode-off'tan
+                    // sonraki yeniden kurmada kişinin bütün etiketleri uzaktıysa mesaj gitmez — telefon da sorulmaz.
+                    if (paymentLease is null
+                        && _lease?.CheckModeOffScope(person, scopeKey, productTotal.Value, modeOnTotal) is { } offStop)
+                        return offStop with { OwnerId = person.OwnerId };
 
                     var phone = person.ContactPhone;
                     if (!PhoneNormalizer.IsValidTr(phone))

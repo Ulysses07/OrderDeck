@@ -306,7 +306,7 @@ internal sealed class SalesPc
         OffRecords = new PaymentOffRecordWriter(PaymentRecords, State, LabelRepo, license, clock,
             NullLogger<PaymentOffRecordWriter>.Instance);
         Lease = new PaymentLeaseCoordinator(api, Envelope, license, State, Pull, customerPull, PaymentRecords,
-            customerPush, Push, Pending, LabelRepo, _prompt, NullLogger<PaymentLeaseCoordinator>.Instance);
+            customerPush, Push, Pending, LabelRepo, Sessions, _prompt, NullLogger<PaymentLeaseCoordinator>.Instance);
         Payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), Launcher, api, license, Jobs, Shipping,
             NullLogger<PaymentRequestService>.Instance, Customers, busy, OffRecords, Lease);
         RemotePayments = new RemotePaymentRecords(api, license, State, Identity, PendingPaymentRecords,

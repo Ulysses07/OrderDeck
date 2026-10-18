@@ -888,7 +888,10 @@ public sealed class PaymentLeaseTests : IDisposable
 
     /// <summary>Başka bilgisayarın (PC-B) devredilmiş yayınında alıcının basılmış etiketi — yalnız sunucuda; bu bilgisayara
     /// ancak bir akış turuyla iner.</summary>
-    private Guid SeedRemoteOrder(Customer buyer, decimal price)
+    private Guid SeedRemoteOrder(Customer buyer, decimal price) => SeedRemote(buyer, price).Order;
+
+    /// <summary><see cref="SeedRemoteOrder"/>; yayının Id'siyle.</summary>
+    private (Guid Session, Guid Order) SeedRemote(Customer buyer, decimal price)
     {
         var session = Guid.NewGuid();
         _server.SeedSession(session, DateTimeOffset.UtcNow.AddHours(-3), DateTimeOffset.UtcNow.AddHours(-2),
@@ -899,7 +902,7 @@ public sealed class PaymentLeaseTests : IDisposable
                 "R1 aldım", "R1", price, DateTimeOffset.UtcNow.AddHours(-3), DateTimeOffset.UtcNow.AddHours(-3), null, null,
                 false, false, false, null, null, null, null, null, null, null, null, null),
             version: 1, origin: Guid.NewGuid());
-        return order;
+        return (session, order);
     }
 
     private static Dictionary<string, object?> StaleTotal(decimal serverTotal, string? liveMachine = null)
@@ -1195,6 +1198,87 @@ public sealed class PaymentLeaseTests : IDisposable
         }
         finally { hold.Release(); }
         await WaitUntilAsync(() => pc.State.GetMode() == 0);           // tur iptal edilmedi, arka planda bitti
+    }
+
+    /// <summary>Etiketi bu bilgisayarda olmayan, telefonlu GUID'li alıcı; PC-B'nin devredilmiş yayınında 500'lük basılmış
+    /// etiketi var (akıştan indi). Başka bilgisayarın bu kişiye teslim edilmiş isteğinin düşümü sunucuda.</summary>
+    private async Task<(Customer Buyer, string RemoteSession)> RemoteOnlyBuyerAsync(SalesPc pc, string username)
+    {
+        GuidCustomer(pc, "tiktok", username);
+        var buyer = WithPhone(pc, username);
+        var (session, _) = SeedRemote(buyer, 500m);
+        await pc.SettleAsync();
+        pc.RemoteRows.Should().BeGreaterThan(0, "PC-B'nin etiketi mod On'da indi");
+        _server.BalancePreview = 100m;
+        _server.ScopeDeductions[Guid.ParseExact(buyer.Id, "N")] = new FakeSalesServer.ScopeDeduction(Guid.NewGuid(), 100m,
+            500m + 50m, DateTimeOffset.UtcNow.AddMinutes(-5));
+        return (buyer, session.ToString("N"));
+    }
+
+    [Fact]
+    public async Task Mode_off_sonrasi_uzak_yayin_kapsami_yeniden_kurulmaz_mesaj_bakiye_ve_kayit_yok()
+    {
+        // Off turu PC-B'nin yayınını ve etiketlerini sildi: "yerel toplamla yeniden kurma" 0 TL + kargo isteği olurdu, kapsam
+        // uzlaştırması başka bilgisayarın düşümünü benimseyip tutar farkıyla geri alırdı.
+        var pc = await PcAsync();
+        var (buyer, remote) = await RemoteOnlyBuyerAsync(pc, "alici_uzak_yayin");
+        _server.Mode = 0;                                               // sales-sync disable
+        _server.ModeChangedAt = DateTimeOffset.UtcNow;
+        var mark = _server.RequestLog.Count;
+
+        var outcome = await RequestAsync(pc, buyer, Scope(remote));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Senkron kapatıldı; bu yayın bu bilgisayarda değil.");
+        pc.State.GetMode().Should().Be(0, "Off turu bitti");
+        Begins().Should().ContainSingle("ilk koşunun begin'i; yeniden kurma kirasız ve mesajsız durdu")
+            .Which.GetProperty("productTotal").GetDecimal().Should().Be(500m);
+        Log(mark).Should().NotContain("bakiye", "bakiye uçlarına (scope, apply, reverse) hiç gidilmedi");
+        _server.Calls(FakeSalesServer.BalanceReverseEndpoint).Should().BeEmpty();
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        pc.PendingPaymentRecords.List().Should().NotContain(r => r.Kind == PendingPaymentRecordKinds.Record);
+        pc.Jobs.GetPersonScopeJobs([buyer.Id], Scope(remote)).Jobs.Should().BeEmpty("iş açılmadı");
+    }
+
+    [Fact]
+    public async Task Mode_off_sonrasi_kisinin_butun_etiketleri_uzaktiysa_kumulatif_yeniden_kurulmaz()
+    {
+        var pc = await PcAsync();
+        var (buyer, _) = await RemoteOnlyBuyerAsync(pc, "alici_uzak_kumulatif");
+        _server.Mode = 0;
+        _server.ModeChangedAt = DateTimeOffset.UtcNow;
+        var mark = _server.RequestLog.Count;
+
+        var outcome = await RequestAsync(pc, buyer, "cumulative");
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Senkron kapatıldı; ekran yenileniyor.");
+        Begins().Should().ContainSingle().Which.GetProperty("productTotal").GetDecimal().Should().Be(500m);
+        pc.RemoteRows.Should().Be(0, "Off turu uzak etiketleri sildi: yerel toplam 0");
+        Log(mark).Should().NotContain("bakiye");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty("operatörün gördüğü 500 TL'nin hiçbir parçası bu bilgisayarda değil");
+        pc.PendingPaymentRecords.List().Should().NotContain(r => r.Kind == PendingPaymentRecordKinds.Record);
+    }
+
+    [Fact]
+    public async Task Mod_Offta_acik_kalmis_ekranin_silinmis_uzak_yayin_kapsamina_istek_gitmez()
+    {
+        // Off turundan sonra açık kalmış rapor ya da arama listesi (son yayın uzak olabilir) silinmiş yayını gösteriyor:
+        // begin olmadan doğrudan mod Off yolu da aynı engelle durur.
+        var pc = await PcAsync();
+        var (buyer, remote) = await RemoteOnlyBuyerAsync(pc, "alici_bayat_ekran");
+        _server.Mode = 0;
+        _server.ModeChangedAt = DateTimeOffset.UtcNow;
+        await pc.SettleAsync();
+        pc.State.GetMode().Should().Be(0, "Off turu bitti");
+        var mark = _server.RequestLog.Count;
+
+        var outcome = await RequestAsync(pc, buyer, Scope(remote));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Senkron kapatıldı; bu yayın bu bilgisayarda değil.");
+        Log(mark).Should().BeEmpty("mod Off: begin yok; bakiye uçlarına da gidilmedi");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
     }
 
     // ── kapsam uzlaştırmasında sunucu üyeleri (W3-08) ─────────────────────

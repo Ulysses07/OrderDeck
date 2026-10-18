@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
@@ -38,6 +39,10 @@ public static class PaymentLeaseMessages
 
     /// <summary><c>settings-stale</c> (§6.2, §6.4).</summary>
     public const string SettingsStale = "Kargo ayarı bu arada değişti; biraz sonra tekrar dene.";
+
+    /// <summary>Mod Off yolunda yayın kapsamının oturumu bu bilgisayarda yok ya da başka bilgisayarın (uzak) yayını: Off turu
+    /// uzak yayınları sildi, açık kalmış rapor ya da liste o yayını gösteriyor (<see cref="PaymentLeaseCoordinator.CheckModeOffScope"/>).</summary>
+    public const string SessionNotLocal = "Senkron kapatıldı; bu yayın bu bilgisayarda değil.";
 
     /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim: iki kuruş hanesi + "TL".</summary>
     private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
@@ -228,7 +233,9 @@ public sealed record PaymentLeaseBeginInput(
 ///   ister (<see cref="SalesChangesPullService.QueueModeOffRound"/>; kabuk "Senkron kapatıldı; ekran yenileniyor."
 ///   şeridini açar) ve en çok <see cref="ModeOffRoundBudget"/> bekler. Tur bittiyse (yerel kip 0, bekleyen komut yok;
 ///   uzak etiketler silindi) istek mod Off yolunda bir kez yeniden kurulur: yerel toplam, kira yok, kirasız kayıt
-///   (W3-06). Bitmediyse satır içi engel "Senkron kapatıldı; ekran yenileniyor.".</item>
+///   (W3-06) — kapsamın yayını artık bu bilgisayarda değilse ya da kişinin kapsamdaki bütün etiketleri uzaktıysa (yerel
+///   toplam 0'a düştü) mesaj gitmez, satır içi engel (<see cref="CheckModeOffScope"/>). Bitmediyse satır içi engel
+///   "Senkron kapatıldı; ekran yenileniyor.".</item>
 ///   <item><c>already-requested</c> (W3-09) → mesaj gitmez; bugünkü "tekrar gönderilsin mi?" sorusu
 ///   (<see cref="PaymentRequestResult.AlreadyRequested"/>), sunucunun öncülleri makine adıyla; yerel planın sorusu aynı
 ///   diyaloğa katılır. Onay belirteci (<see cref="PaymentLeaseConfirmation"/>) 409'un <c>priorsDigest</c>'ini aynen ve
@@ -275,6 +282,7 @@ public sealed class PaymentLeaseCoordinator
     private readonly SessionOrderSyncService _salesPush;
     private readonly PendingSalesCommandRepository _pendingCommands;
     private readonly LabelRepository _labels;
+    private readonly SessionRepository _sessions;
     private readonly IAppUpdatePrompt _updatePrompt;
     private readonly ILogger<PaymentLeaseCoordinator> _log;
 
@@ -296,9 +304,11 @@ public sealed class PaymentLeaseCoordinator
         SessionOrderSyncService salesPush,
         PendingSalesCommandRepository pendingCommands,
         LabelRepository labels,
+        SessionRepository sessions,
         IAppUpdatePrompt updatePrompt,
         ILogger<PaymentLeaseCoordinator> log)
     {
+        _sessions = sessions;
         _updatePrompt = updatePrompt;
         _api = api;
         _envelope = envelope;
@@ -405,6 +415,55 @@ public sealed class PaymentLeaseCoordinator
         return Blocked(SalesCommandMessages.ModeOff);
     }
 
+    /// <summary>
+    /// Mod Off yolunun kapsam denetimi (spec 2026-10-13 §5.3, §6.4 <c>mode-off</c>; §8.5): akış mod Off yolundan gidecekse
+    /// kişi ve yerel toplam okunduktan sonra, telefon, bakiye ve mesajdan ÖNCE. Off turu uzak (başka bilgisayarın) yayınları
+    /// ve etiketlerini siler; "yerel toplamla yeniden kurma" yalnız bu bilgisayarda kalan etiketler için anlamlıdır.
+    /// <list type="bullet">
+    ///   <item><c>session:{id}</c> kapsamının oturumu yerelde yok ya da uzak (Off turu sildi; açık kalmış rapor ya da liste
+    ///   onu gösteriyor) → engel (<see cref="PaymentLeaseMessages.SessionNotLocal"/>). Gitseydi yerel toplam 0 olurdu: istek
+    ///   yalnız kargo ücretiyle gider, kapsam uzlaştırması başka bilgisayarın teslim edilmiş isteğinin düşümünü benimseyip
+    ///   tutar farkı yüzünden geri alırdı.</item>
+    ///   <item><paramref name="modeOnTotal"/> doluysa (bu istek <c>begin</c>'in <c>mode-off</c>'undan sonra yeniden kuruluyor)
+    ///   ve ilk koşunun toplamı &gt; 0 iken yerel toplam 0 → engel ("Senkron kapatıldı; ekran yenileniyor."): kişinin bu
+    ///   kapsamdaki bütün etiketleri uzaktı, operatörün gördüğü tutarın hiçbir parçası bu bilgisayarda değil. Toplam yalnız
+    ///   düştüyse (yerel ve uzak etiket karışık) istek spec gereği yerel toplamla gider.</item>
+    /// </list>
+    /// Bugünkü mod Off'ta oturum hiç silinmez: denetim yalnız Off turundan sonra tetiklenir. <c>null</c> = sürer. Okuma hatası
+    /// engeldir (fail-closed). Günlük yalnız Id taşır.
+    /// </summary>
+    internal PaymentRequestOutcome? CheckModeOffScope(
+        PaymentPerson person, string scopeKey, decimal localTotal, decimal? modeOnTotal)
+    {
+        if (PaymentHistoryRecords.SessionIdOf(scopeKey) is { Length: > 0 } sessionId)
+        {
+            StreamSession? session;
+            try { session = _sessions.GetById(sessionId); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogError(ex, "Ödeme isteği (mod Off): kapsamın yayını okunamadı — mesaj engellendi (customer={CustomerId})",
+                    person.LeasedId);
+                return FailClosed;
+            }
+            if (session is not { Origin: StreamSessionOrigin.Local })
+            {
+                _log.LogInformation(
+                    "Ödeme isteği (mod Off): kapsamın yayını bu bilgisayarda değil ({State}) — mesaj engellendi "
+                  + "(customer={CustomerId}, session={SessionId})",
+                    session is null ? "yok" : "uzak", person.LeasedId, sessionId);
+                return Blocked(PaymentLeaseMessages.SessionNotLocal);
+            }
+        }
+        if (modeOnTotal is > 0m && localTotal <= 0m)
+        {
+            _log.LogInformation(
+                "Ödeme isteği (mod Off): mode-off'tan sonra kişinin bu kapsamda yerel etiketi kalmadı — mesaj engellendi "
+              + "(customer={CustomerId})", person.LeasedId);
+            return Blocked(SalesCommandMessages.ModeOff);
+        }
+        return null;
+    }
+
     /// <summary>Yeniden denemenin turu: arka plan iş parçacığında, en çok <see cref="RetryTourTimeout"/> beklenir; süre
     /// dolarsa ya da tur düşerse günlüğe yazılır ve geçilir (tur arka planda biter, hatası gözlenir).</summary>
     private async Task RunBoundedAsync(string name, Func<CancellationToken, Task> run, CancellationToken ct)
@@ -505,6 +564,7 @@ public sealed class PaymentLeaseCoordinator
     {
         var person = input.Person;
         flow.RecordsLocally = false;
+        flow.BegunProductTotal = input.ProductTotal;
         if (!PaymentHistoryRecords.IsLeaseScope(input.ScopeKey) || person.MemberIds.Count == 0)
         {
             _log.LogError("Ödeme isteği kirası kurulamadı: kapsam ya da üye kümesi kira biçimine uymuyor — mesaj engellendi "
@@ -939,6 +999,10 @@ public sealed class PaymentLeaseFlow
     /// bağlantı gelince gider).
     /// </summary>
     public bool RecordsLocally { get; internal set; }
+
+    /// <summary>Son <c>begin</c>'in ürün toplamı (kapsamdan okunan, uzak etiketler dahil). <c>mode-off</c>'tan sonra istek
+    /// yeniden kurulurken yerel toplamla karşılaştırılır (<see cref="PaymentLeaseCoordinator.CheckModeOffScope"/>).</summary>
+    public decimal? BegunProductTotal { get; internal set; }
 
     /// <summary>
     /// Kişi × kapsamın kirası (§6.4 istemci adımı 3). <c>null</c> = kira alındı, akış sürer; değilse akış durur ve bu sonuç
