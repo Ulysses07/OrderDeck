@@ -157,6 +157,26 @@ public sealed class PendingSalesCommandSender
         return queued;
     }
 
+    /// <summary>
+    /// Kuyruğa giremeyen niyetin izi (<see cref="Enqueue"/> false döndü): karar ile kuyruğa yazma arasında yerel kip Off'a
+    /// döndüğü için başka bilgisayarın satırının baskı onayı hiçbir yere yazılamadı. Off turunun 3. adımının düşürdüğü
+    /// uzak onayla aynı biçim (<c>code=remote-mode-off</c>, §5.5): saha kontrolü iki yolu aynı sorguyla bulur. Yazılamazsa
+    /// yalnız günlük.
+    /// </summary>
+    public void TraceNotQueued(SalesCommandIntent intent, int labels, string code)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        try
+        {
+            _conflicts.Add(_clock.UnixNow(), null, SalesConflictLog.PendingCommandRejected,
+                $"{intent.Kind}; command={intent.CommandId:N}; code={code}; labels={labels}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış komutu {Kind} {CommandId}: SalesConflictLog yazılamadı", intent.Kind, intent.CommandId);
+        }
+    }
+
     /// <summary>Bütün kuyruk, eskiden yeniye. Satış akışı turu ve ödeme ön gönderimi (§6.4-1). Arka plan gönderimi:
     /// <c>client-update-required</c> güncelleme sorusunu açmaz (her turda modal pencere olurdu).</summary>
     public Task<PendingSalesCommandFlush> FlushAsync(CancellationToken ct) => RunAsync(null, interactive: false, ct);

@@ -403,6 +403,9 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         result.Notices.Should().Equal(SalesCommandMessages.PrintUnrecordedModeOff(1));
         _bed.Pending.List().Should().BeEmpty();
         _bed.Server.CommandCalls.Should().BeEmpty();
+        _bed.Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k AND Reason LIKE @r",
+                new { k = SalesConflictLog.PendingCommandRejected, r = "mark-printed; command=%; code=remote-mode-off; labels=1" })
+            .Should().Be(1, "Off turunun 3. adımıyla aynı iz: sessiz kayıp yok (§5.5)");
     }
 
     // ── sunucunun tek komut tavanı (500) ───────────────────────────────────

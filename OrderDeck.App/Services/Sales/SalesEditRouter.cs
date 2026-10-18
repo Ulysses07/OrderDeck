@@ -386,7 +386,7 @@ public sealed class SalesEditRouter : ILabelEditor
         {
             var parts = await QueueAndSendAsync([own], ids => _commands.Cancel(ids, reason), online, ct)
                 .ConfigureAwait(false);
-            foreach (var (chunk, _, settled) in parts)
+            foreach (var (chunk, _, _, settled) in parts)
             {
                 switch (settled.State)
                 {
@@ -603,7 +603,7 @@ public sealed class SalesEditRouter : ILabelEditor
         var parts = await QueueAndSendAsync([own, remote],
             ids => _commands.MarkPrinted(batchId, ids.Select(id => (id, seqOf[id])).ToList()), online, ct)
             .ConfigureAwait(false);
-        foreach (var (chunk, group, settled) in parts)
+        foreach (var (chunk, group, intent, settled) in parts)
         {
             switch (settled.State)
             {
@@ -625,11 +625,13 @@ public sealed class SalesEditRouter : ILabelEditor
                     break;
                 default:
                     // Aynı yarış, başka bilgisayarın satırı: 2. adım onu yerel kip 0 ile aynı işlemde sildi, yerelde
-                    // yazılamaz (Off turunun 3. adımıyla aynı kural). Kâğıt basıldı ama kaydı yok — sayılı uyarı.
+                    // yazılamaz (Off turunun 3. adımıyla aynı kural). Kâğıt basıldı ama kaydı yok — sayılı uyarı ve
+                    // Off turunun düşürdüğü uzak onayla aynı iz (§5.5).
                     _log.LogWarning(
                         "Kuyruk baskısı {BatchId}: yerel kip Off'a döndü; başka bilgisayarın {Count} satırının baskısı sunucuya işlenemedi",
                         batchId, chunk.Length);
                     result.Notices.Add(SalesCommandMessages.PrintUnrecordedModeOff(chunk.Length));
+                    _pending.TraceNotQueued(intent, chunk.Length, "remote-mode-off");
                     break;
             }
             if (settled.Flush is { } flush)
@@ -731,36 +733,38 @@ public sealed class SalesEditRouter : ILabelEditor
     /// HEPSİ kalıcı yazılır (örtü — kâğıt ya da iptal artık yeniden teklif edilmez; ağdan önce), çevrimiçiyse sırayla
     /// hemen gönderilir. Sonucu bilinmeyen parçadan sonrası gönderilmez: kuyrukta kalır, satış akışı turu sırayla götürür.
     /// </summary>
-    /// <returns>Parça başına etiketler, grubun sırası (<paramref name="groups"/>'taki) ve sonuç.</returns>
-    private async Task<IReadOnlyList<(string[] Labels, int Group, PendingSettlement Settlement)>> QueueAndSendAsync(
-        IReadOnlyList<IReadOnlyList<string>> groups, Func<IReadOnlyList<string>, SalesCommandIntent> prepare, bool online,
-        CancellationToken ct)
+    /// <returns>Parça başına etiketler, grubun sırası (<paramref name="groups"/>'taki), niyet (kuyruğa giremediyse de —
+    /// izi onun kimliğini taşır) ve sonuç.</returns>
+    private async Task<IReadOnlyList<(string[] Labels, int Group, SalesCommandIntent Intent, PendingSettlement Settlement)>>
+        QueueAndSendAsync(IReadOnlyList<IReadOnlyList<string>> groups, Func<IReadOnlyList<string>, SalesCommandIntent> prepare,
+            bool online, CancellationToken ct)
     {
-        var parts = new List<(string[] Labels, int Group, SalesCommandIntent? Intent)>();
+        var parts = new List<(string[] Labels, int Group, SalesCommandIntent Intent, bool Queued)>();
         for (var group = 0; group < groups.Count; group++)
             foreach (var chunk in groups[group].Chunk(MaxCommandOrders))
             {
                 var intent = prepare(chunk);
-                parts.Add((chunk, group, _pending.Enqueue(intent, chunk) ? intent : null));
+                parts.Add((chunk, group, intent, _pending.Enqueue(intent, chunk)));
             }
 
-        var results = new List<(string[] Labels, int Group, PendingSettlement Settlement)>(parts.Count);
+        var results = new List<(string[] Labels, int Group, SalesCommandIntent Intent, PendingSettlement Settlement)>(
+            parts.Count);
         var send = online;
-        foreach (var (chunk, group, intent) in parts)
+        foreach (var (chunk, group, intent, queued) in parts)
         {
-            if (intent is null)
+            if (!queued)
             {
-                results.Add((chunk, group, new(PendingState.NotQueued, null)));
+                results.Add((chunk, group, intent, new(PendingState.NotQueued, null)));
                 continue;
             }
             if (!send)
             {
-                results.Add((chunk, group, new(PendingState.Pending, null)));
+                results.Add((chunk, group, intent, new(PendingState.Pending, null)));
                 continue;
             }
             var settled = await SendQueuedAsync(intent, ct).ConfigureAwait(false);
             if (settled.State == PendingState.Pending) send = false;
-            results.Add((chunk, group, settled));
+            results.Add((chunk, group, intent, settled));
         }
         return results;
     }
