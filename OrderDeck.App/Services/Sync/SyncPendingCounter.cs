@@ -11,10 +11,14 @@ public sealed class SyncPendingCounter
     private readonly SyncOutboxRepository _outbox;
     private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _license;
+    private readonly Func<int>? _stuckHandovers;
 
-    public SyncPendingCounter(SyncOutboxRepository outbox, SyncCursorRepository cursors, ICurrentLicenseProvider license)
+    /// <param name="stuckHandovers">Devredilemeyen kendi yayınlarının sayısı (W2-09, spec 2026-10-13 §5.7: dikkat
+    /// sayacına eklenir; <see cref="SalesChangesPullService.StuckHandovers"/>). null = sayılmaz.</param>
+    public SyncPendingCounter(SyncOutboxRepository outbox, SyncCursorRepository cursors, ICurrentLicenseProvider license,
+        Func<int>? stuckHandovers = null)
     {
-        _outbox = outbox; _cursors = cursors; _license = license;
+        _outbox = outbox; _cursors = cursors; _license = license; _stuckHandovers = stuckHandovers;
     }
 
     public int Count()
@@ -26,6 +30,7 @@ public sealed class SyncPendingCounter
         return _outbox.CountPending(seq);
     }
 
-    /// <summary>D2'nin kalıcı uyarıları (U8, U10).</summary>
-    public SyncAttention Attention() => _outbox.CountAttention();
+    /// <summary>D2'nin kalıcı uyarıları (U8, U10) ve devredilemeyen yayınlar (§5.7).</summary>
+    public SyncAttention Attention() =>
+        _outbox.CountAttention() with { StuckHandovers = _stuckHandovers?.Invoke() ?? 0 };
 }

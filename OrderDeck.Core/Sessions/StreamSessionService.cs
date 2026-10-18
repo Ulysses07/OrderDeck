@@ -42,4 +42,8 @@ public sealed class StreamSessionService
     }
 
     public StreamSession? GetActive() => _repo.GetActive();
+
+    /// <summary>Bu bilgisayarın bitmiş ama sunucuya henüz devredilmemiş bir yayını var mı (spec 2026-10-13 §5.2, §5.7
+    /// "Yayın sunucuya devrediliyor…").</summary>
+    public bool HasPendingHandover() => _repo.HasPendingHandover();
 }

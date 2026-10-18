@@ -81,6 +81,19 @@ public sealed class CustomerRepository
                   AND (t.Username = Customer.Username OR t.IdentityKey = Customer.IdentityKey))";
 
     /// <summary>
+    /// Sunucunun "bu asıl kayıt silindi" dediği satırı (satış akışının müşteri taslağı, spec 2026-10-13 §4.4, §9)
+    /// boşaltır: <see cref="ScrubIfTombstonedSql"/> ile aynı atamalar, <c>PurgedAt</c> sunucunun silme anı (ilk tarih
+    /// korunur). Mezar taşı yazmaz — kimlik düzeyindeki kararı müşteri akışının silme öğesi getirir; bu yalnız
+    /// açılan satırın kişisel alanlarının o ana kadar boş ve kapılı kalmasıdır (yazımlar <c>PurgedAt IS NULL</c>'a
+    /// bağlı). Parametreler <c>@id</c>, <c>@purgedAt</c>.
+    /// </summary>
+    internal const string ScrubAsPurgedSql = @"
+        UPDATE Customer
+        SET " + ScrubAssignments + @",
+            PurgedAt = COALESCE(PurgedAt, @purgedAt)
+        WHERE Id = @id";
+
+    /// <summary>
     /// Kimlik başına tek silme kararı. <c>MIN</c>: tekrarlanan bildirim İLK
     /// silme tarihini korur (tarih adli kayıt). Tek metinde, çünkü
     /// <see cref="RecordPurge"/> kanonik kimlik ve (R12-D01) YouTube alias'ı
@@ -1536,6 +1549,15 @@ public sealed class CustomerRepository
     ///
     /// <para>Bölüm C kural 2 + 8: akıştan inen silme kilit altında
     /// (<see cref="SyncApplyScope"/>) yazılır — düzenleme değildir.</para>
+    ///
+    /// <para><b>Etiket metni (spec 2026-10-13 §9 "Ayar açıkken yerelde", W2-02):</b>
+    /// <c>SalesSyncState.ScrubOrderText = 1</c> iken (sunucunun
+    /// <c>SalesSync:ScrubOrderTextOnPurge</c> ayarının yerel kopyası) aynı işlemde
+    /// kimliğin bütün yerel etiketlerinde — bu satırlara bağlı (<c>CustomerId</c>),
+    /// kendi ve başka bilgisayardan inmiş, her oturumda — takma ad ve yorum
+    /// boşaltılır (<see cref="ScrubPurgedLabelTextSql"/>). Ayar işlem içinde,
+    /// yazının <c>WHERE</c>'inde okunur. Varsayılan ve üretim değeri 0 (sahip
+    /// kararı, §11): etiketlere bugünkü gibi dokunulmaz.</para>
     /// </summary>
     /// <returns>Boşaltılan yerel satır sayısı; satır yoksa 0 — karar yine de yazılmıştır.</returns>
     public int RecordPurge(string platform, string username, long purgedAtUnix)
@@ -1547,6 +1569,12 @@ public sealed class CustomerRepository
     /// Zaten uygulanmış silmenin tekrarı (akış CursorReset'le yeniden oynatıldı) false — akış
     /// servisinin "KVKK silme" günlüğü yinelenmez (C7 incelemesi M-4).</param>
     public int RecordPurge(string platform, string username, long purgedAtUnix, out bool changed)
+        => RecordPurge(platform, username, purgedAtUnix, out changed, out _);
+
+    /// <inheritdoc cref="RecordPurge(string, string, long, out bool)"/>
+    /// <param name="labelTextsScrubbed">Metni bu çağrıyla boşaltılan etiket sayısı (ayar kapalıyken ve
+    /// tekrarda 0). Sıfırdan büyükse <paramref name="changed"/> da true.</param>
+    public int RecordPurge(string platform, string username, long purgedAtUnix, out bool changed, out int labelTextsScrubbed)
     {
         // Akıştan inen KVKK kararı bir DÜZENLEME değildir (kural 2): kilit altında
         // yazılır — boşaltılan birimler "şimdi" damgalanmaz, SyncSeq ilerlemez (sunucu
@@ -1598,7 +1626,7 @@ public sealed class CustomerRepository
         }
 
         // Harf duyarsız: NOCASE (ASCII) + kimlik anahtarı (ASCII dışı harf farkı).
-        int newlyScrubbed = 0, scrubbed = 0;
+        int newlyScrubbed = 0, scrubbed = 0, labels = 0;
         foreach (var spelling in spellings)
         {
             var key = CustomerIdentity.KeyOrNull(spelling);
@@ -1614,12 +1642,40 @@ public sealed class CustomerRepository
                   WHERE Platform = @platform
                     AND (Username = @spelling COLLATE NOCASE OR IdentityKey = @key)",
                 new { platform, spelling, purgedAtUnix, key }, tx);
+            labels += conn.Execute(ScrubPurgedLabelTextSql, new { platform, spelling, key }, tx);
         }
 
         scope.Commit();
-        changed = newTombstones > 0 || newlyScrubbed > 0;
+        labelTextsScrubbed = labels;
+        changed = newTombstones > 0 || newlyScrubbed > 0 || labels > 0;
         return scrubbed;
     }
+
+    /// <summary>
+    /// W2-02 (spec 2026-10-13 §9 "Ayar açıkken yerelde"): silinen kimliğin satırlarına bağlı bütün etiketlerde
+    /// takma ad ve yorum boşaltılır — sunucunun <c>OrderTextScrub</c>'ıyla aynı değerler (<c>DisplayName = NULL</c>,
+    /// <c>MessageText = ''</c>). Satır, CustomerId, kullanıcı adı, kod ve fiyat mali kayıt olarak kalır.
+    ///
+    /// <para><b>Ayar yazının <c>WHERE</c>'inde:</b> <c>SalesSyncState.ScrubOrderText</c> silmenin işleminde okunur
+    /// (BEGIN IMMEDIATE — okuma ile yazma arasına başka yazıcı giremez). 0 iken (varsayılan, §11) hiçbir satır
+    /// eşleşmez: bugünkü politika.</para>
+    ///
+    /// <para><b>Kilit altında, gönderilmez:</b> <see cref="RecordPurge(string, string, long, out bool, out int)"/>'un
+    /// <see cref="SyncApplyScope"/>'unda koşar — devredilmiş (<c>Authority = 'server'</c>) oturumun etiketinde
+    /// <c>TR_Label_ServerAuthority_U</c> ABORT etmez. <c>DisplayName</c> ve <c>MessageText</c> kuyruğa alma
+    /// tetikleyicisinin listesinde değil; <c>SyncedAt</c>, <c>StockSyncedAt</c>, <c>Revision</c> ve
+    /// <c>ServerVersion</c> değişmez: boşaltma hiçbir yere gönderilmez, sunucu kendisi boşaltır.</para>
+    ///
+    /// <para>Zaten boş satır yeniden yazılmaz: tekrarlanan silme hiçbir şey değiştirmez ve sayılmaz.
+    /// Parametreler <c>@platform</c>, <c>@spelling</c>, <c>@key</c> — müşteri boşaltmasının eşlemesiyle aynı.</para>
+    /// </summary>
+    private const string ScrubPurgedLabelTextSql = @"
+        UPDATE Label SET DisplayName = NULL, MessageText = ''
+         WHERE EXISTS (SELECT 1 FROM SalesSyncState WHERE Id = 1 AND ScrubOrderText = 1)
+           AND CustomerId IN (SELECT c.Id FROM Customer c
+                               WHERE c.Platform = @platform
+                                 AND (c.Username = @spelling COLLATE NOCASE OR c.IdentityKey = @key))
+           AND (DisplayName IS NOT NULL OR MessageText <> '')";
 
     /// <summary>Mezar taşını yazar (ilk tarih korunur); kimlik için ilk karar mıydı.</summary>
     private static bool UpsertTombstone(System.Data.IDbConnection conn, System.Data.IDbTransaction tx,

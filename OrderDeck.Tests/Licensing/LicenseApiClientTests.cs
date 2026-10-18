@@ -651,4 +651,94 @@ public sealed class LicenseApiClientTests
         p.BroadcastCodes[1].SellerAxisValue.Should().BeNull();
         p.BroadcastCodes[1].Code.Should().Be("BUZ");
     }
+
+    // ─── GetSalesChangesAsync (spec 2026-10-13 §4.4; W2-03) ────────────────
+
+    private static string SalesSessionJson(Guid id, long seq) => $$"""
+        {"id":"{{id}}","title":"Akşam","startedAt":"2026-10-10T18:00:00+00:00","endedAt":"2026-10-10T20:00:00+00:00",
+         "platforms":"tiktok","notes":null,"updatedAt":"2026-10-10T20:00:01+00:00","ownerReplicaId":null,
+         "ownerMachineName":"PC-B","forceEndedBy":null,"releasedAt":"2026-10-10T20:00:01+00:00",
+         "unsentLabelCount":null,"changeSeq":{{seq}}}
+        """;
+
+    [Fact]
+    public async Task GetSalesChangesAsync_imleci_kopyayi_ve_kipi_gonderir_sayfayi_ve_yan_listeyi_cozer()
+    {
+        string? query = null;
+        var session = Guid.NewGuid();
+        var replica = Guid.NewGuid();
+        var client = BuildClient(req =>
+        {
+            query = req.RequestUri!.PathAndQuery;
+            return FakeHttpMessageHandler.Json(200, $$"""
+                {"items":[{"kind":"session","changeSeq":41,"session":{{SalesSessionJson(session, 41)}},"order":null,"shipment":null}],
+                 "nextAfterSeq":41,"cursorReset":true,
+                 "sideSessions":[{{SalesSessionJson(session, 41)}}],
+                 "customerDrafts":[{"id":"ham-kimlik","platform":"tiktok","username":"ornek","displayName":null,"purgedAt":null}]}
+                """);
+        });
+
+        var page = await client.GetSalesChangesAsync(TestLicenseId, afterSeq: 7, take: 500, replica, seenMode: 1);
+
+        query.Should().Be(
+            $"/api/v1/licenses/{TestLicenseId}/sales/changes?afterSeq=7&take=500&replicaId={replica:D}&seenMode=1");
+        page.NextAfterSeq.Should().Be(41);
+        page.CursorReset.Should().BeTrue();
+        page.Items.Should().ContainSingle().Which.Session!.Id.Should().Be(session);
+        page.SideSessions.Should().ContainSingle();
+        page.CustomerDrafts.Should().ContainSingle().Which.Id.Should().Be("ham-kimlik");
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("""{"nextAfterSeq":0}""")]
+    [InlineData("""{"items":[null],"nextAfterSeq":5}""")]
+    [InlineData("""{"items":[],"nextAfterSeq":0,"sideSessions":[null]}""")]
+    [InlineData("""{"items":[],"nextAfterSeq":0,"customerDrafts":[null]}""")]
+    [InlineData("<html>bakım</html>")]
+    public async Task GetSalesChangesAsync_bozuk_govde_bos_sayfa_sayilmaz_firlatir(string body)
+    {
+        // Boş sayfa turun SONLANDIRICISI: bozuk gövde sessizce boş sayfaya çevrilseydi tur "güncel" sanılırdı.
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, body));
+        var act = () => client.GetSalesChangesAsync(TestLicenseId, 0, 500, Guid.NewGuid(), 0);
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
+    }
+
+    [Fact]
+    public async Task GetSalesChangesAsync_imlec_son_ogeden_eskiyse_ya_da_sira_bozuksa_firlatir()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var stale = BuildClient(_ => FakeHttpMessageHandler.Json(200, $$"""
+            {"items":[{"kind":"session","changeSeq":50,"session":{{SalesSessionJson(a, 50)}}}],"nextAfterSeq":49}
+            """));
+        var unordered = BuildClient(_ => FakeHttpMessageHandler.Json(200, $$"""
+            {"items":[{"kind":"session","changeSeq":50,"session":{{SalesSessionJson(a, 50)}}},
+                      {"kind":"session","changeSeq":44,"session":{{SalesSessionJson(b, 44)}}}],"nextAfterSeq":50}
+            """));
+
+        // Son öğeden küçük imleç aynı sayfayı sonsuza dek istetirdi; sırasız sayfada öğe başına kaydedilen imleç
+        // aradaki öğeyi atlatırdı.
+        await stale.Invoking(c => c.GetSalesChangesAsync(TestLicenseId, 0, 500, Guid.NewGuid(), 0))
+            .Should().ThrowAsync<LicenseApiUnknownException>();
+        await unordered.Invoking(c => c.GetSalesChangesAsync(TestLicenseId, 0, 500, Guid.NewGuid(), 0))
+            .Should().ThrowAsync<LicenseApiUnknownException>();
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(501, 0)]
+    [InlineData(500, 2)]
+    public async Task GetSalesChangesAsync_sinir_disi_take_ya_da_kip_istek_gitmeden_firlatir(int take, int seenMode)
+    {
+        var calls = 0;
+        var client = BuildClient(_ =>
+        {
+            calls++;
+            return FakeHttpMessageHandler.Json(200, """{"items":[],"nextAfterSeq":0}""");
+        });
+        var act = () => client.GetSalesChangesAsync(TestLicenseId, 0, take, Guid.NewGuid(), seenMode);
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        calls.Should().Be(0);
+    }
 }

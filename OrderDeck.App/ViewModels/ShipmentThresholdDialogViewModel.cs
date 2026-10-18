@@ -25,6 +25,10 @@ public sealed class ShipmentThresholdDialogViewModel
     public string CustomerDisplay { get; }
     public decimal FreeShippingThreshold { get; }
 
+    /// <summary>Plan yeniden gösteriliyorsa (spec 2026-10-13 §5.3: önceki karar <c>stale</c> aldı, dosya başka
+    /// bilgisayarda değişti) çekmecenin başındaki satır içi not; ilk gösterimde null.</summary>
+    public string? Notice { get; init; }
+
     /// <summary>Eşiğin hesaplandığı tutar: kişinin bütün açık dosyalarının toplamı (U12 —
     /// yerel taşımadan kalan fazla dosya dahil; tek dosyada dosyanın kendi tutarı).</summary>
     public decimal CumulativeAmount => Context.PooledAmount;

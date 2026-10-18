@@ -22,11 +22,25 @@ public sealed record StreamSession(
     /// <summary>Göç 049: <see cref="StreamSessionAuthority.Local"/> ise satırı bu bilgisayar yazar,
     /// <see cref="StreamSessionAuthority.Server"/> ise yalnız komut yanıtı ve akış. Kendi oturumu ancak mod On'da
     /// devir görülünce <c>server</c> olur (§5.2).</summary>
-    string Authority = StreamSessionAuthority.Local);
+    string Authority = StreamSessionAuthority.Local,
+    /// <summary>Göç 049: <see cref="StreamSessionOrigin.Local"/> ise yayın bu veritabanında açıldı,
+    /// <see cref="StreamSessionOrigin.Remote"/> ise satış akışından indi (başka bilgisayarın devredilmiş yayını, §3.2).
+    /// Salt okunur: yalnız akış uygulaması uzak satır ekler.</summary>
+    string Origin = StreamSessionOrigin.Local,
+    /// <summary>Göç 049: yayını açan bilgisayarın adı (akıştan; rapor ve geçmiş ekranları için, §5.7). Yerel
+    /// oturumda boş. Salt okunur.</summary>
+    string? OwnerMachineName = null);
 
 /// <summary><c>StreamSession.Authority</c> değerleri (göç 049'un CHECK kısıtı).</summary>
 public static class StreamSessionAuthority
 {
     public const string Local = "local";
     public const string Server = "server";
+}
+
+/// <summary><c>StreamSession.Origin</c> değerleri (göç 049'un CHECK kısıtı).</summary>
+public static class StreamSessionOrigin
+{
+    public const string Local = "local";
+    public const string Remote = "remote";
 }

@@ -263,6 +263,26 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
+
+                <!-- Satış akışı (yayın ve etiket senkronu): yalnız mod On'da; metin boşken satır yok.
+                     Senkron satırıyla aynı görünüm: sağlıksızsa sarı, tamamı ve ne yapılacağı ipucunda. -->
+                <TextBlock Text="{Binding SalesSyncStatusText}"
+                           Visibility="{Binding SalesSyncStatusText, Converter={StaticResource NullToCollapsedConverter}}"
+                           FontSize="{StaticResource OD.Font.F1}"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding SalesSyncStatusTooltip}"
+                           Margin="{StaticResource OD.Pad.Top5}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.Amber}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSalesSyncHealthy}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
             </StackPanel>
 
             <!-- Dar modda yukarıdaki panel (senkron satırı dahil) gizli: senkron

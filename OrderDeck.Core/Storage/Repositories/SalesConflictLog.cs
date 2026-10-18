@@ -43,8 +43,43 @@ public static class SalesConflictLog
     /// iner.</summary>
     public const string BackfillDiverged = "backfill-diverged";
 
+    /// <summary>Mod On'un ilk yetişmesinde (<c>FirstCatchUpAt</c> boş) bu bilgisayarın kendi etiketinde sunucudaki
+    /// birim yereldekinden farklıydı; sunucunun değeri yazıldı (§5.4, §8.4). Reason <see cref="UnitsReason"/>
+    /// biçiminde, yalnız birim adları. Geri doldurmadaki onarımdan (§8.2-4) sonra yalnız geri yüklenmiş veritabanında
+    /// görülmesi beklenir.</summary>
+    public const string CatchUpOverwrite = "catchup-overwrite";
+
+    /// <summary>Mod On açıldı (§8.4-2; W2-10): yerel <c>Mode = 1</c> yazıldı, akış 0'dan alınacak. Açılış başına tek
+    /// satır, <c>LabelId</c> boş; Reason <c>sessions={n}</c> (hemen <c>server</c> olan kendi yayınları). İlk yetişmenin
+    /// <see cref="CatchUpOverwrite"/> sayısı bu satırdan sonrakilerdir: önceki bir mod On döneminin izleri sayılmaz.</summary>
+    public const string ModeOpened = "mode-opened";
+
     /// <summary>Geri doldurma kaydının <c>Reason</c>'ı: ayrışan birimler, <c>units={birim,…}</c>.</summary>
     public static string UnitsReason(IEnumerable<string> units) => $"units={string.Join(",", units)}";
+
+    /// <summary>Satış komutu 409 <c>too-many-candidates</c> aldı (spec 2026-10-13 §4.6, §5.3): kümenin etiket sayısı tek
+    /// komutun tavanını aşıyor. Kalıcıdır, yeniden denenmez. Reason <see cref="CommandReason"/> biçiminde.</summary>
+    public const string CommandTooManyCandidates = "command-too-many-candidates";
+
+    /// <summary>Satış komutu 409 <c>content-conflict</c> aldı (§5.3): aynı CommandId'ye farklı içerik ya da başka
+    /// lisansın Id'si — istemci hatası. Yeniden denenmez. Reason <see cref="CommandReason"/> biçiminde.</summary>
+    public const string CommandContentConflict = "command-content-conflict";
+
+    /// <summary>Bekleyen satış komutu (§5.5) sunucuda kalıcı olarak reddedildi (görünürlük, geçersiz istek, çözülemeyen
+    /// kayıt …): kuyruktan düştü, örtüsü kalktı, operatör uyarıldı. Reason <see cref="CommandReason"/> ve
+    /// <c>; code={ret kodu}</c>. <c>content-conflict</c> ve <c>too-many-candidates</c> burada değil, kendi türleriyle
+    /// (komut istemcisi yazar) — iz bir kez düşer.</summary>
+    public const string PendingCommandRejected = "pending-command-rejected";
+
+    /// <summary>Komut kaydının <c>Reason</c>'ı: <c>{tür}; command={id}</c>, varsa <c>; count={n}; max={m}</c>. Yalnız tür
+    /// adı, kimlik ve sayı — kişisel veri yok (§9).</summary>
+    public static string CommandReason(string kind, Guid commandId, int? count = null, int? max = null)
+    {
+        var reason = $"{kind}; command={commandId:N}";
+        if (count is { } n) reason += $"; count={n.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        if (max is { } m) reason += $"; max={m.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        return reason;
+    }
 
     /// <summary>Çağıranın işleminde tek satır ekler.</summary>
     internal static void Insert(
@@ -52,4 +87,20 @@ public static class SalesConflictLog
         => connection.Execute(
             "INSERT INTO SalesConflictLog (At, LabelId, Kind, Reason) VALUES (@at, @labelId, @kind, @reason)",
             new { at, labelId, kind, reason }, transaction);
+}
+
+/// <summary><see cref="SalesConflictLog"/>'a kendi bağlantısıyla tek satır yazan depo (komut istemcisi, W2-04).
+/// Satır yalnız kimlik, tür adı ve sayı taşır (§9).</summary>
+public sealed class SalesConflictLogRepository
+{
+    private readonly IDbConnectionFactory _factory;
+
+    public SalesConflictLogRepository(IDbConnectionFactory factory) => _factory = factory;
+
+    /// <param name="labelId">Kayıt tek bir etikete aitse onun Id'si; komut düzeyindeki kayıtta boş.</param>
+    public void Add(long at, string? labelId, string kind, string? reason)
+    {
+        using var conn = _factory.Open();
+        SalesConflictLog.Insert(conn, null, at, labelId, kind, reason);
+    }
 }

@@ -216,7 +216,7 @@ public sealed class LabelService
     /// grupları önce PrintedAt'e (saniye) göre sıralar; aynı saniyedeki iki "Yazdır"ın sırasını bu kimlik
     /// verir — rastgele kimlikte eskisi yarı yarıya üstte çıkardı (K1: en yeni basış en üstte). Önek UTC
     /// tik sayısı (sabit 16 onaltılık hane; süreç içinde her çağrıda en az bir artar), sonek rastgele.</summary>
-    internal static string NewPrintBatchId()
+    public static string NewPrintBatchId()
     {
         long ticks;
         while (true)
@@ -243,15 +243,34 @@ public sealed class LabelService
     public void MarkPrintedAndRecord(IReadOnlyList<string> labelIds)
     {
         if (labelIds.Count == 0) return;
+        MarkPrintedAndRecord(labelIds, NewPrintBatchId(), Enumerable.Range(1, labelIds.Count).ToList());
+    }
+
+    /// <summary>
+    /// <see cref="MarkPrintedAndRecord(IReadOnlyList{string})"/>'ın basışı dışarıdan verilen hâli (spec 2026-10-13 §5.6-4,
+    /// §5.5): karışık kâğıtta (canlı yayının satırları + devredilmiş yayının kalıntısı) yerel satırlar burada, sunucu
+    /// satırları <c>mark-printed</c> komutuyla AYNI basış kimliği ve kesintisiz sırayla damgalanır; mod Off'a dönüşte
+    /// bekleyen <c>mark-printed</c> da aynı kimlik ve sırayla yerel yazıma çevrilir. Atlanan satır (zaten basılmış ya da
+    /// iptal) yazılmaz, öbürlerinin konumu değişmez.
+    /// </summary>
+    /// <param name="labelIds">Yerelde damgalanacak etiketler, kâğıt sırasıyla.</param>
+    /// <param name="batchId">Basışın kimliği (<see cref="NewPrintBatchId"/>).</param>
+    /// <param name="seqs">Her etiketin kâğıttaki konumu (1'den), <paramref name="labelIds"/> ile aynı sırada.</param>
+    public void MarkPrintedAndRecord(IReadOnlyList<string> labelIds, string batchId, IReadOnlyList<int> seqs)
+    {
+        if (labelIds.Count == 0) return;
+        ArgumentException.ThrowIfNullOrWhiteSpace(batchId);
+        if (seqs.Count != labelIds.Count)
+            throw new ArgumentException("Her etiketin kâğıttaki konumu verilmeli.", nameof(seqs));
 
         var customers = new HashSet<string>(StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var idsToPrint = new List<(string Id, int Seq)>(labelIds.Count);
-        var seq = 0;
 
-        foreach (var id in labelIds)
+        for (var i = 0; i < labelIds.Count; i++)
         {
-            seq++;
+            var id = labelIds[i];
+            var seq = seqs[i];
             var lbl = _labels.GetById(id);
             if (lbl is null) continue;
 
@@ -279,7 +298,7 @@ public sealed class LabelService
         // yazılmamış bir UPDATE'i geri almak gerekmez.
         using var write = DbWrite.Begin(_factory);
         var now = _clock.UnixNow();
-        _labels.MarkPrintedBatch(idsToPrint, now, NewPrintBatchId(), write);
+        _labels.MarkPrintedBatch(idsToPrint, now, batchId, write);
         CustomerAggregateSql.Recompute(customers, write);
         CustomerAggregateSql.TouchLastSeen(seen, now, write);
         write.Commit();
@@ -515,6 +534,19 @@ public sealed class LabelService
             isBackupPromoted: true,
             parentLabelId: parent.Id,
             isTentativeBackup: true);
+    }
+
+    /// <summary>
+    /// Yedeğin müşterisi, etiketsiz (spec 2026-10-13 §4.6 <c>add-backup</c>): devredilmiş yayına yedeği sunucu ekler,
+    /// komut müşterinin yerel kaydını taşır. Müşteri <see cref="AddBackup"/>'ın (<see cref="Add"/>) açtığıyla aynı
+    /// kuralla bulunur ya da açılır (<c>CustomerService.GetOrCreate</c>, avatar yok), tek pakette.
+    /// </summary>
+    public Customers.Customer EnsureBackupCustomer(string platform, string username, string? displayName)
+    {
+        using var write = DbWrite.Begin(_factory);
+        var customer = _customers.GetOrCreate(platform, username, displayName, avatarUrl: null, write);
+        write.Commit();
+        return customer;
     }
 
     /// <summary>Returns active (non-cancelled) tentative backups for a parent.

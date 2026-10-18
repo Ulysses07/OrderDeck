@@ -62,6 +62,26 @@ public class SessionRepositoryTests
         repo.GetActive().Should().BeNull("açık kalan tek satır Authority = 'server'");
     }
 
+    // Göç 049 (spec 2026-10-13 §3.2, §5.7): Origin ve OwnerMachineName okunur — rapor ve geçmiş ekranları başka
+    // bilgisayarın yayınını makine adıyla gösterir. Yerel ekleme ikisini yazmaz ('local', boş).
+    [Fact]
+    public void Origin_ve_OwnerMachineName_okunur_yerel_eklemede_local_ve_bos()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new SessionRepository(db);
+        repo.Insert(new StreamSession("yerel", null, 1000, 1500, new[] { "instagram" }, null));
+        repo.Insert(new StreamSession("uzak", null, 2000, 2500, new[] { "tiktok" }, null));
+        using (var c = db.Open())
+            c.Execute("UPDATE StreamSession SET Origin = 'remote', Authority = 'server', OwnerMachineName = 'PC-B' WHERE Id = 'uzak'");
+
+        var remote = repo.GetById("uzak")!;
+        (remote.Origin, remote.OwnerMachineName).Should().Be((StreamSessionOrigin.Remote, "PC-B"));
+        var local = repo.GetById("yerel")!;
+        (local.Origin, local.OwnerMachineName).Should().Be((StreamSessionOrigin.Local, (string?)null));
+        repo.GetAllEnded(limit: 10).Single(s => s.Id == "uzak").OwnerMachineName.Should().Be("PC-B");
+    }
+
     [Fact]
     public void GetAllEnded_returns_only_ended_sessions_newest_first()
     {

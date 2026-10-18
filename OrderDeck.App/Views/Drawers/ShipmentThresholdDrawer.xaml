@@ -19,12 +19,28 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Ücretsiz kargo kazanıldı"
-                   TextWrapping="Wrap"
-                   FontFamily="{StaticResource OD.Font.Sans}"
-                   FontSize="{StaticResource OD.Font.F3}"
-                   FontWeight="Bold"
-                   Foreground="{StaticResource OD.Brush.Success}"/>
+        <StackPanel Grid.Row="0">
+            <!-- Plan yeniden gösteriliyor (spec 2026-10-13 §5.3): önceki karar
+                 stale aldı, dosya başka bilgisayarda değişti; tutarlar güncel. -->
+            <Border Margin="{StaticResource OD.Pad.Bottom4}"
+                    Padding="{StaticResource OD.Pad.3}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OD.Radius.Md}"
+                    Visibility="{Binding Notice, Converter={StaticResource NullToCollapsedConverter}}">
+                <TextBlock Text="{Binding Notice}" TextWrapping="Wrap"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Foreground="{StaticResource OD.Brush.Text}"
+                           Margin="0"/>
+            </Border>
+            <TextBlock Text="Ücretsiz kargo kazanıldı"
+                       TextWrapping="Wrap"
+                       FontFamily="{StaticResource OD.Font.Sans}"
+                       FontSize="{StaticResource OD.Font.F3}"
+                       FontWeight="Bold"
+                       Foreground="{StaticResource OD.Brush.Success}"/>
+        </StackPanel>
 
         <TextBlock Grid.Row="1" TextWrapping="Wrap"
                    Margin="{StaticResource OD.Pad.Top5}"

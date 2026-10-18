@@ -167,6 +167,23 @@ public sealed class MainShellSalesPushWarningTests : IDisposable
     }
 
     [Fact]
+    public void Baska_yerde_zaten_basilmis_kagit_iptal_edilmis_diye_yazilmaz()
+    {
+        using var h = Build();
+
+        // mark-printed: l1 başka bilgisayarda iptal edilmiş, l2 ve l3 başka bilgisayarda zaten basılmış (iptal değil).
+        h.Vm.ShowSalesNotice(["l1", "l2"], [], ["l2"]);
+        h.Vm.ShowSalesNotice(["l3", "l2"], [], ["l3", "l2"]);
+
+        h.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarda iptal edilmişti; kâğıtları imha et. " +
+            "2 etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.");
+        OrderDeck.App.ViewModels.MainShellViewModel.SalesPushWarningText(new Dictionary<string, int>(), 0, null,
+                alreadyPrinted: 1)
+            .Should().Be("1 etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.");
+    }
+
+    [Fact]
     public void Metin_nedenleri_sayilariyla_siralar()
     {
         MainShellViewModelText(new() { ["session-released"] = 2, ["shipment-shipped"] = 1 }, 0)

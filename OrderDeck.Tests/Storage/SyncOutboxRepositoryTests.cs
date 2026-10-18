@@ -119,6 +119,20 @@ public sealed class SyncOutboxRepositoryTests : IDisposable
     }
 
     [Fact]
+    public void Dikkat_sayaci_atlanan_satis_akisi_ogesini_sayar_denemedekini_saymaz()
+    {
+        // Spec 2026-10-13 §5.7: dikkat sayacına SalesFeedFailure'ın atlananları eklenir (U10).
+        var failures = new SalesFeedFailureRepository(_db);
+        failures.Record("order", "a", 1, "x", 1);
+        failures.Record("order", "b", 1, "x", 1);
+        failures.MarkSkipped("order", "b", 2);
+
+        _outbox.CountAttention().Should().Be(new SyncAttention(0, 0, 1));
+        _outbox.CountAttention().SkippedSalesFeedItems.Should().Be(failures.CountSkipped());
+        new SyncAttention(0, 0, 1).Any.Should().BeTrue();
+    }
+
+    [Fact]
     public void Dikkat_yoksa_Any_false()
     {
         _outbox.CountAttention().Should().Be(default(SyncAttention));

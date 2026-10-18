@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Services.PriceCorrection;
+using OrderDeck.App.Services.Sales;
 using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.ViewModels;
@@ -107,6 +108,7 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     private static readonly CultureInfo Tr = CultureInfo.GetCultureInfo("tr-TR");
 
     private readonly LabelService _labels;
+    private readonly ILabelEditor _editor;
     private readonly CorrectedPaymentRequests? _payments;
     private readonly string _sessionId;
     private readonly Func<IReadOnlyList<CodeCorrectionPlan>> _planner;
@@ -133,13 +135,16 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// <param name="reprint">Kabuğun yeniden baskı yolu (yazıcı kapısı paylaşılır); hata metni ya da null.</param>
     /// <param name="cloudApiEnabled">WhatsApp Cloud API açık mı — kapalıysa her kişi için WhatsApp
     /// penceresi açılacağı söylenir.</param>
+    /// <param name="editor">Düzenleme yönlendiricisi (spec 2026-10-13 §5.3 "Fiyatı düzelt"): mod On'da devredilmiş
+    /// yayının etiketleri <c>set-code-price</c> komutuyla. Verilmezse (testlerin çoğu) yalnız yerel — bugünkü yol.</param>
     public PriceCorrectionViewModel(
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId,
         IReadOnlyList<string> labelIds, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
-        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
+        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled,
+        ILabelEditor? editor = null)
         : this(labels, payments, sessionId, () => labels.PlanCodeCorrection(sessionId, labelIds),
-            labelIds.ToHashSet(StringComparer.Ordinal), streamDate, inFlight, applied, reprint, cloudApiEnabled)
+            labelIds.ToHashSet(StringComparer.Ordinal), streamDate, inFlight, applied, reprint, cloudApiEnabled, editor)
     {
     }
 
@@ -147,9 +152,10 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId,
         Func<IReadOnlyList<CodeCorrectionPlan>> planner, IReadOnlySet<string> selection, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
-        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
+        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled, ILabelEditor? editor)
     {
         _labels = labels;
+        _editor = editor ?? new LocalLabelEditor(labels);
         _payments = payments;
         _sessionId = sessionId;
         _planner = planner;
@@ -165,14 +171,14 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     }
 
     /// <summary>FİYAT kutusundaki fiyat değişikliğinin düzeltmesi (F2): tek kod, işaretli — kodun yayındaki
-    /// bütün düzeltilebilir etiketleri.</summary>
+    /// bütün düzeltilebilir etiketleri. Yalnız canlı yayın, her zaman yerel (spec 2026-10-13 §5.3 "FİYAT kutusu").</summary>
     public static PriceCorrectionViewModel ForCode(
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId, string code, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
         => new(labels, payments, sessionId, () => new[] { labels.PlanCodeCorrection(sessionId, code) },
             new HashSet<string>(StringComparer.Ordinal), streamDate, inFlight, applied,
-            reprint, cloudApiEnabled);
+            reprint, cloudApiEnabled, editor: null);
 
     /// <summary>Çekmeceyi (ya da FİYAT kutusunun altındaki satır içi sonucu) kapatır; testte boş.</summary>
     public Action? Close { get; set; }
@@ -340,9 +346,16 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     }
 
     /// <summary>Onay. Yeni fiyat okunur (FİYAT kutusuyla aynı kural); 0 TL ikinci tıklamayla onaylanır.
-    /// Uçuştaki baskı ya da gösterilen etiketlerin arada değişmesi düzeltmeyi durdurur (satır içi).</summary>
+    /// Uçuştaki baskı ya da gösterilen etiketlerin arada değişmesi düzeltmeyi durdurur (satır içi).
+    ///
+    /// <para>Yazım yönlendiriciden geçer (spec 2026-10-13 §5.3 "Fiyatı düzelt"): mod Off'ta ve canlı yayında bugünkü
+    /// <see cref="LabelService.CorrectPrices"/> (ya da <see cref="CorrectPricesSeam"/>), beklemeden. Mod On'da
+    /// devredilmiş yayının etiketleri yerel aynadan kurulan planla <c>set-code-price</c> komutuna gider (beklenen sürüm
+    /// planın kendisi); fiyat, <c>PriceCorrectedAt</c> ve <c>PaidPrice</c> yanıttan yazılır. <c>plan-stale</c>'de
+    /// güncel satırlar yazılmıştır: plan yeniden okunur, sebep satır içinde, sessiz yeniden deneme yok. Karışık seçimde
+    /// (canlı yayın + kalıntı kuyruk) önce yazılan parça sonraki onayın sonucuna katılır.</para></summary>
     [RelayCommand]
-    private void Confirm()
+    private async Task ConfirmAsync()
     {
         if (IsDone) return;
         BlockingMessage = null;
@@ -396,7 +409,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             return;
         }
 
-        PriceCorrectionResult result;
+        var newPrice = parsed.Value;
+        SalesCodePriceResult outcome;
         try
         {
             // Kargoya verilmiş ve başka bilgisayarın dosyasındakiler de verilir: servis onlara dokunmaz, sonuçta
@@ -404,8 +418,11 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             var ids = targets.Concat(chosen.SelectMany(p => p.Plan.Shipped.Concat(p.Plan.Elsewhere))).Select(l => l.Id)
                 .Distinct(StringComparer.Ordinal).ToList();
             // Bakiyeden ödenmiş etiketler yazımdan ÖNCE okunur: ödendikleri fiyat ilk düzeltmede saklanır.
-            result = CorrectPricesSeam?.Invoke(ids, parsed.Value)
-                     ?? _labels.CorrectPrices(ids, parsed.Value, _payments?.BalancePaidLabels(_sessionId, targets));
+            var paidFromBalance = _payments?.BalancePaidLabels(_sessionId, targets);
+            outcome = await _editor.CorrectCodePricesAsync(
+                new SalesCodePriceRequest(_sessionId, chosen, _selection, ids, newPrice, paidFromBalance),
+                local => CorrectPricesSeam?.Invoke(local, newPrice)
+                         ?? _labels.CorrectPrices(local, newPrice, paidFromBalance));
         }
         catch (PriceCorrectionConflictException ex)
         {
@@ -419,8 +436,69 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             return;
         }
 
+        var result = Compose(outcome, chosen, targets, newPrice);
+        if (outcome.Problem is { } problem)
+        {
+            // Yazılmış parça (karışık seçimin yerel parçası, önceki komutlar) kabukta tazelenir ve sonraki onayın
+            // sonucuna katılır: yeniden baskı sorusu ve düzeltilmiş istek onları da kapsasın.
+            if (result.Corrected.Count > 0)
+            {
+                _carried = Carry(_carried, result.Corrected);
+                _applied(result);
+            }
+            if (outcome.Status is not null || result.Corrected.Count > 0) ReloadPlan(_planner());
+            BlockingMessage = problem;
+            return;
+        }
+
+        if (_carried.Count > 0)
+        {
+            result = result with { Corrected = Carry(_carried, result.Corrected) };
+            _carried = Array.Empty<CorrectedLabel>();
+        }
         _applied(result);
-        ShowResult(result, parsed.Value);
+        ShowResult(result, newPrice);
+    }
+
+    /// <summary>Önceki başarısız onaylarda yazılmış etiketler (karışık seçim): sonraki başarılı onayın sonucuna
+    /// katılır.</summary>
+    private IReadOnlyList<CorrectedLabel> _carried = Array.Empty<CorrectedLabel>();
+
+    /// <summary>Yönlendiricinin sonucundan düzeltmenin sonucu. Yalnız yerel yazımsa bugünkü sonucun kendisi; komut
+    /// varsa komutun değiştirdiği etiketler (önceki hâlleriyle) yerel parçaya eklenir, değişmeyenler planlardan.</summary>
+    private static PriceCorrectionResult Compose(
+        SalesCodePriceResult outcome, IReadOnlyList<CodeCorrectionPlan> chosen, IReadOnlyList<Label> targets,
+        decimal newPrice)
+    {
+        if (!outcome.Commanded && outcome.Local is { } local) return local;
+
+        var commanded = outcome.CommandChanged.ToHashSet(StringComparer.Ordinal);
+        var byCommand = targets.Where(l => commanded.Contains(l.Id)).Select(l => new CorrectedLabel(l, newPrice)).ToList();
+        var corrected = (outcome.Local?.Corrected ?? Array.Empty<CorrectedLabel>()).Concat(byCommand)
+            .DistinctBy(c => c.Before.Id, StringComparer.Ordinal).ToList();
+        var customerDeltas = new Dictionary<string, decimal>(
+            outcome.Local?.CustomerDeltas ?? new Dictionary<string, decimal>(), StringComparer.Ordinal);
+        // Müşteri toplamındaki fark (bilgi için): yalnız basılmış ve onaylı satırlar (CorrectPrices ile aynı kural).
+        foreach (var c in byCommand.Where(c => c.WasPrinted && !c.Before.IsTentativeBackup))
+            customerDeltas[c.Before.CustomerId] = customerDeltas.GetValueOrDefault(c.Before.CustomerId) + c.Delta;
+        return new PriceCorrectionResult(
+            corrected,
+            DistinctLabels(chosen.SelectMany(p => p.Plan.Shipped)),
+            customerDeltas,
+            outcome.Local?.ShipmentDeltas ?? new Dictionary<string, decimal>(StringComparer.Ordinal),
+            DistinctLabels(chosen.SelectMany(p => p.Plan.Elsewhere)));
+    }
+
+    /// <summary>Taşınan düzeltmeler + yenileri: aynı etiket yeniden düzeltildiyse önceki hâli (ilk fiyatı) korunur,
+    /// yeni fiyatı yazılır.</summary>
+    private static IReadOnlyList<CorrectedLabel> Carry(IReadOnlyList<CorrectedLabel> carried, IReadOnlyList<CorrectedLabel> fresh)
+    {
+        if (carried.Count == 0) return fresh;
+        var again = fresh.ToDictionary(c => c.Before.Id, StringComparer.Ordinal);
+        var known = carried.Select(c => c.Before.Id).ToHashSet(StringComparer.Ordinal);
+        return carried.Select(c => again.TryGetValue(c.Before.Id, out var newer) ? c with { NewPrice = newer.NewPrice } : c)
+            .Concat(fresh.Where(c => !known.Contains(c.Before.Id)))
+            .ToList();
     }
 
     private void ShowResult(PriceCorrectionResult result, decimal newPrice)

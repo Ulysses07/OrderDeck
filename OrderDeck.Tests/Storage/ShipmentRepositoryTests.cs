@@ -294,4 +294,24 @@ public class ShipmentRepositoryTests
         repo.GetUnsynced(limit: 3).Should().HaveCount(3);
         repo.GetUnsynced(limit: 100).Should().HaveCount(10);
     }
+
+    [Fact]
+    public void Butun_okumalar_sunucu_surumunu_tasir_yerel_dosyada_bos()
+    {
+        // Spec 2026-10-13 §4.6 (W2-04): shipment-decision'ın expectedVersion'ı Shipment.ServerVersion'dan. Okuma
+        // yollarından biri sütunu seçmeseydi o yoldan okunan dosyanın sürümü sessizce boş görünürdü.
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+        repo.Insert(NewShipment("sh1"));
+        repo.Insert(NewShipment("sh2", createdAt: 900L));
+        using (var conn = db.Open())
+            conn.Execute("UPDATE Shipment SET ServerVersion = 5 WHERE Id = 'sh1'");
+
+        repo.GetById("sh1")!.ServerVersion.Should().Be(5);
+        repo.GetById("sh2")!.ServerVersion.Should().BeNull("yerelde açılmış, sunucu sürümü bilinmiyor");
+        repo.GetOpenByCustomer("c1")!.ServerVersion.Should().Be(5);
+        repo.GetAllOpenByCustomer("c1").Single(s => s.Id == "sh1").ServerVersion.Should().Be(5);
+        repo.GetByStatus(ShipmentStatus.Pending).Single(s => s.Id == "sh1").ServerVersion.Should().Be(5);
+        repo.GetUnsynced().Single(s => s.Id == "sh1").ServerVersion.Should().Be(5);
+    }
 }

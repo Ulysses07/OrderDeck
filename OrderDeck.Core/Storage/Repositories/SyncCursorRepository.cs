@@ -52,7 +52,14 @@ public sealed class SyncCursorRepository
         long? seq = null, DateTimeOffset? updatedAt = null, Guid? lastId = null)
     {
         using var conn = _factory.Open();
-        conn.Execute(
+        Upsert(conn, null, name, licenseKey, seq, updatedAt, lastId);
+    }
+
+    /// <summary><see cref="Upsert(string, string, long?, DateTimeOffset?, Guid?)"/>, çağıranın işleminde (imleç başka
+    /// bir yazımla aynı işlemde değişmeli: mod On açılışı, §8.4-3).</summary>
+    internal static void Upsert(System.Data.IDbConnection conn, System.Data.IDbTransaction? tx, string name,
+        string licenseKey, long? seq = null, DateTimeOffset? updatedAt = null, Guid? lastId = null)
+        => conn.Execute(
             """
             INSERT INTO SyncCursor (Name, LicenseKey, Seq, UpdatedAt, LastId)
             VALUES (@name, @licenseKey, @seq, @updatedAt, @lastId)
@@ -68,7 +75,27 @@ public sealed class SyncCursorRepository
                 seq,
                 updatedAt = updatedAt?.ToString("O"),
                 lastId = lastId?.ToString("D"),
-            });
+            },
+            tx);
+
+    /// <summary>Bu ailenin verilen lisanstan BAŞKA bir lisansa ait imleci var mı. Satış akışı lisans değişimini
+    /// süreçler arasında bununla tanır: başka lisansın akış imleci, yereldeki uzak satırların o lisanstan indiğini
+    /// söyler (spec 2026-10-13 §5.4).</summary>
+    public bool ExistsForOtherLicense(string name, string licenseKey)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            "SELECT EXISTS (SELECT 1 FROM SyncCursor WHERE Name = @name AND LicenseKey <> @licenseKey)",
+            new { name, licenseKey }) == 1;
+    }
+
+    /// <summary>Bu ailenin verilen lisanstan başka lisanslara ait imleçlerini siler, sayısını döner. O lisansa
+    /// dönülürse akış baştan alınır (uzak satırları temizlik sildi).</summary>
+    public int DeleteForOtherLicenses(string name, string licenseKey)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute("DELETE FROM SyncCursor WHERE Name = @name AND LicenseKey <> @licenseKey",
+            new { name, licenseKey });
     }
 
     private sealed record Row(string Name, string LicenseKey, long? Seq,

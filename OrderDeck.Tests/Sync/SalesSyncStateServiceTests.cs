@@ -5,7 +5,6 @@ using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
@@ -114,7 +113,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         var json = hello.Json;
         json.GetProperty("replicaId").GetGuid().Should().Be(pc.ReplicaId);
         json.GetProperty("protocol").GetInt32().Should().Be(2);
-        json.GetProperty("featureLevel").GetInt32().Should().Be(1, "W1 derlemesi; 3 yalnız W3 ile (§8.1-4)");
+        json.GetProperty("featureLevel").GetInt32().Should().Be(2, "W2 derlemesi; 3 yalnız W3 ile (§8.1-4)");
         json.GetProperty("seenMode").GetInt32().Should().Be(0);
         json.GetProperty("machineName").GetString().Should().Be(
             Environment.MachineName.Length > 128 ? Environment.MachineName[..128] : Environment.MachineName);
@@ -127,7 +126,7 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         json.TryGetProperty("paymentHistoryCompleted", out _).Should().BeFalse();
 
         var row = _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!;
-        row.FeatureLevel.Should().Be(1);
+        row.FeatureLevel.Should().Be(2);
         row.ReportedThreshold.Should().Be(1500m);
         row.ReportedFee.Should().Be(89.90m);
         row.PreviousReplicaId.Should().BeNull();
@@ -292,18 +291,20 @@ public sealed class SalesSyncStateServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Sunucu_mod_1_bildirse_de_yerel_kip_0_kalir_ve_tek_uyari_duser()
+    public async Task Sunucu_mod_1_bildirse_de_durum_turu_yerel_kipi_yazmaz_ve_uyari_dusmez()
     {
+        // Kip geçişi açılış turunun işi (SalesModeCoordinator, §8.4; W2-10): durum turu yalnız sunucunun söylediğini
+        // saklar. W1'in "bu sürüm mod On'u uygulamıyor" uyarısı W2 ile kalktı.
         var pc = NewPc();
         _server.Mode = 1;
         _server.ModeChangedAt = DateTimeOffset.UtcNow;
 
         for (var i = 0; i < 3; i++) await pc.TourAsync();
 
-        pc.State.GetMode().Should().Be(0, "kip geçişi W2'nin (§8.4); W1 Mode'u hiç yazmaz");
+        pc.State.GetMode().Should().Be(0, "durum turu Mode'u yazmaz; açılış turu yazar (§8.4)");
         pc.State.Get().ModeSeenAt.Should().BeNull();
         pc.State.Get().FirstCatchUpAt.Should().BeNull();
-        pc.Log.Warnings.Where(w => w.Message.Contains("mod 1", StringComparison.Ordinal)).Should().ContainSingle();
+        pc.Log.Warnings.Should().BeEmpty("W1'in mod 1 uyarısı kalktı");
         _server.States.Should().OnlyContain(s => s.SeenMode == "0");
         _server.Hellos.Single().Json.GetProperty("seenMode").GetInt32().Should().Be(0);
         pc.Service.LastState!.Mode.Should().Be(1, "anlık görüntü sunucunun söylediğini saklar (W2'nin girdisi)");
@@ -371,6 +372,9 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         _server.Hellos.Should().HaveCount(2);
         _server.Hellos[1].Json.GetProperty("previousReplicaId").GetGuid().Should().Be(previous);
         pc.Identity.GetPendingPreviousReplicaId().Should().BeNull("2xx önceki kimliği siler");
+        pc.Envelope.IsRestoredInThisProcess.Should().BeTrue();
+        pc.Envelope.IsReadyForPush.Should().BeFalse("W2-10: hello ve state geldi, kip adımı henüz koşmadı (§8.7)");
+        pc.Envelope.MarkModeRefreshed(_server.Lisans, pc.ReplicaId);                // satış akışı turunun kip adımı
         pc.Envelope.IsReadyForPush.Should().BeTrue();
         _server.ReplicaRow(_server.LicenseId, pc.ReplicaId)!.PreviousReplicaId.Should().Be(previous);
 
@@ -388,8 +392,9 @@ public sealed class SalesSyncStateServiceTests : IDisposable
         // Sunucu 2xx döndü ama değer silinmeden yeniden yazıldı (silme başarısız gibi): bekleyen kalır.
         await pc.TourAsync();
         pc.Identity.SetPendingPreviousReplicaId(previous);
+        pc.Envelope.MarkModeRefreshed(_server.Lisans, pc.ReplicaId);                // satış akışı turunun kip adımı (§8.7)
 
-        pc.Envelope.IsReadyForPush.Should().BeTrue("bu (lisans, kopya) için hello başarıyla gitti");
+        pc.Envelope.IsReadyForPush.Should().BeTrue("bu (lisans, kopya) için hello ve state başarıyla geldi, kip tazelendi");
         pc.License.CurrentLicenseKey = _server.SecondLisans;
         pc.Envelope.IsReadyForPush.Should().BeFalse("başka lisansta hello henüz gitmedi");
         pc.License.CurrentLicenseKey = null;
@@ -536,42 +541,9 @@ public sealed class SalesSyncStateServiceTests : IDisposable
             "makine adı günlüğe yazılmaz (sunucudaki kuralla aynı)");
     }
 
-    // ── arka plan işi ─────────────────────────────────────────────────────
+    // Arka plan işi (açılışta hemen tur, sonra 30 sn): W2-03'ten beri kalp atışını satış akışı turu sürer —
+    // SalesChangesPullServiceTests.Arka_plan_isi_acilista_hemen_tur_atar_sonra_ritimle_surer_tek_state_surucusu.
 
-    [Fact]
-    public async Task Arka_plan_isi_acilista_hemen_tur_atar_sonra_ritimle_surer()
-    {
-        var pc = NewPc();
-        using (var once = new SalesSyncStateHostedService(pc.Service,
-                   NullLogger<SalesSyncStateHostedService>.Instance, TimeSpan.FromHours(1)))
-        {
-            await once.StartAsync(CancellationToken.None);
-            await WaitUntil(() => _server.States.Count >= 1);
-            await once.StopAsync(CancellationToken.None);
-        }
-        _server.Hellos.Should().ContainSingle("açılışta 30 sn beklenmez: hello + kalp atışı hemen");
-        _server.States.Should().ContainSingle();
-
-        using var cadence = new SalesSyncStateHostedService(pc.Service,
-            NullLogger<SalesSyncStateHostedService>.Instance, TimeSpan.FromMilliseconds(50));
-        await cadence.StartAsync(CancellationToken.None);
-        await WaitUntil(() => _server.States.Count >= 4);
-        await cadence.StopAsync(CancellationToken.None);
-        _server.Hellos.Should().ContainSingle("aynı servis örneği: süreç başına bir hello");
-        SalesSyncStateHostedService.DefaultCadence.Should().Be(TimeSpan.FromSeconds(30));
-    }
-
-    /// <summary>Üst sınır, bekleme süresi değil: koşul sağlanınca hemen döner. Tam paket yükünde iş havuzu geç
-    /// büyür; arka plan işinin ilk turu 10 sn'yi aşabiliyordu.</summary>
+    /// <summary>Üst sınır, bekleme süresi değil: koşul sağlanınca hemen döner.</summary>
     private static readonly TimeSpan Patience = TestPatience.Upper;
-
-    private static async Task WaitUntil(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow + Patience;
-        while (!condition())
-        {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException($"koşul {Patience.TotalSeconds} sn'de sağlanmadı");
-            await Task.Delay(20);
-        }
-    }
 }

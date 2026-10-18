@@ -38,19 +38,22 @@ public sealed record SalesStateSnapshot(
 
 /// <summary>
 /// Satış senkronunun kopya turu (spec 2026-10-13 §4.5, §8.2-1, §8.7): <c>sales/hello</c> ve her turda
-/// <c>sales/state</c> (kalp atışı). Tur 30 sn'de bir ve açılışta hemen (<see cref="SalesSyncStateHostedService"/>).
+/// <c>sales/state</c> (kalp atışı). Tur 30 sn'de bir ve açılışta hemen; sürücüsü satış akışı turudur, onun ilk adımı
+/// (<see cref="SalesChangesPullService"/>, <see cref="SalesChangesPullHostedService"/>; W2): turda tam bir state.
 ///
 /// <para><b>hello:</b> süreç başına (lisans, kopya) çifti için bir kez; lisans değişince, kimlik dönünce ya da yerel
 /// kargo ayarı son başarılı hello'nun bildirdiğinden farklılaşınca yeniden (<see cref="HelloIsCurrent"/>). Gövde: kimlik, protokol 2, yetenek düzeyi, görülen kip, makine adı, donanım parmak izi, yerel kargo
 /// ayarı (<c>AppSettings.Shipping</c>; özellik kapalıyken iki alan da boş) ve bekleyen önceki kimlik (§8.7).
-/// 2xx önceki kimliği siler (karşılaştır ve sil) ve zarfta bu (lisans, kopya) için gönderimi açar
-/// (<see cref="SalesSyncEnvelope.IsReadyForPush"/>). Başarısız hello sonraki turda yeniden denenir.</para>
+/// 2xx önceki kimliği siler (karşılaştır ve sil) ve zarfa bu (lisans, kopya) için hello'nun başarısını yazar. Önceki
+/// kimliği taşıyan hello süreci "geri yüklendi" diye işaretler: gönderim ancak bu süreçte bir state de başarıyla gelip
+/// kip adımı koşunca açılır (<see cref="SalesSyncEnvelope.IsReadyForPush"/>, §8.7). Başarısız hello sonraki turda
+/// yeniden denenir.</para>
 ///
 /// <para><b>state:</b> her turda, hello'nun sonucundan bağımsız: kalp atışı kesilirse başka bilgisayar bu
 /// bilgisayarın canlı yayınını sahibi susmuş sanıp bitirebilirdi (Y7). Kargo ayarının önbelleği ve KVKK boşaltma
 /// ayarı <c>SalesSyncState</c>'e yazılır; mod, canlı yayınlar, asgari sürüm ve sessizlik eşiği bellekte kalır
-/// (<see cref="LastState"/>). Yerel kipi W1 hiç yazmaz: sunucu mod 1 bildirirse bir kez uyarı düşer, yerel kip 0
-/// kalır (kip geçişi W2'nin, §8.4).</para>
+/// (<see cref="LastState"/>). Yerel kipi bu servis yazmaz: kip geçişi satış akışı turunda, başarılı state'in hemen
+/// ardından açılış turunun işidir (<c>SalesModeCoordinator</c>, §8.4).</para>
 ///
 /// <para><b>Canlı yol beklemez:</b> tur arka plan iş parçacığında koşar, her <c>await</c>
 /// <c>ConfigureAwait(false)</c>; ağ isteği uçarken hiçbir SQLite bağlantısı ya da yazma kilidi açık kalmaz. Yavaş ya
@@ -84,7 +87,6 @@ public sealed class SalesSyncStateService
     private (string LicenseKey, Guid ReplicaId)? _helloSentFor;
     /// <summary>Son başarılı hello'nun bildirdiği yerel kargo ayarı (<see cref="HelloIsCurrent"/>).</summary>
     private ReportedShippingDto? _helloShipping;
-    private string? _modeOnWarnedFor;
     private volatile SalesStateSnapshot? _last;
 
     public SalesSyncStateService(
@@ -213,6 +215,8 @@ public sealed class SalesSyncStateService
                     "Bekleyen önceki kopya kimliği kopyanın kendisiyle aynıydı; silindi (replica={ReplicaId})", replicaId);
                 previous = null;
             }
+            // Önceki kimliği taşıyan hello: bu süreç geri yüklenmiş (§8.7) — gönderim kip tazelenene kadar kapalı.
+            if (previous is not null) _envelope.NoteRestored();
 
             request = new SalesHelloRequest(
                 ReplicaId: replicaId,
@@ -302,7 +306,6 @@ public sealed class SalesSyncStateService
             _state.SaveServerState(
                 state.Shipping?.Version, state.Shipping?.FreeShippingThreshold, state.Shipping?.Fee,
                 state.ScrubOrderTextOnPurge);
-            WarnIfServerModeOn(licenseKey, state.Mode);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -310,27 +313,10 @@ public sealed class SalesSyncStateService
             return false;
         }
 
+        // §8.7: geri yüklenmiş süreçte gönderimin ikinci koşulu (üçüncüsü kip adımı, SalesModeCoordinator).
+        _envelope.MarkStateSucceeded(licenseKey, replicaId);
         _stateFailures.Succeeded();
         return true;
-    }
-
-    /// <summary>
-    /// Bu derleme kip geçişini uygulamaz (W2): sunucu mod 1 bildirse de yerel kip 0 kalır ve istekler görülen kip
-    /// 0 taşır. Mod kapısı yetenek düzeyi 3 istediği için (§4.10-2) bu yalnız elle ya da yanlışlıkla açılmış bir
-    /// lisansta görülür; lisans başına bir kez uyarılır, sunucu 0'a dönünce sayaç sıfırlanır.
-    /// </summary>
-    private void WarnIfServerModeOn(string licenseKey, int serverMode)
-    {
-        if (serverMode != 1)
-        {
-            if (_modeOnWarnedFor == licenseKey) _modeOnWarnedFor = null;
-            return;
-        }
-        if (_modeOnWarnedFor == licenseKey || _state.GetMode() != 0) return;
-        _modeOnWarnedFor = licenseKey;
-        _log.LogWarning(
-            "Sunucu satış senkronunu açık bildiriyor (mod 1) ama bu sürüm mod On'u uygulamıyor; yerel kip 0 kalır "
-          + "(featureLevel={FeatureLevel})", SalesSyncEnvelope.FeatureLevel);
     }
 
     private void WarnOrDebug(FailureSeries series, Exception ex, string what)

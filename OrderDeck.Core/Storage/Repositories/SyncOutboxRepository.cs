@@ -3,10 +3,13 @@ using Dapper;
 namespace OrderDeck.Core.Storage.Repositories;
 
 /// <summary>Durum satırının kalıcı uyarıları (D2): beş turda uygulanamayıp atlanan müşteri
-/// akışı öğeleri (U10) ve uzlaştırma bekleyen anahtarlı açık miras ödeme işleri (U8).</summary>
-public readonly record struct SyncAttention(int SkippedFeedItems, int OpenLegacyPaymentJobs)
+/// akışı öğeleri (U10), uzlaştırma bekleyen anahtarlı açık miras ödeme işleri (U8), beş turda
+/// uygulanamayıp atlanan satış akışı öğeleri (spec 2026-10-13 §5.7, U10) ve devredilemeyen kendi
+/// yayınları (§5.7, §12 risk 4; satış akışı turunun ölçüsü, veritabanında değil).</summary>
+public readonly record struct SyncAttention(int SkippedFeedItems, int OpenLegacyPaymentJobs, int SkippedSalesFeedItems = 0,
+    int StuckHandovers = 0)
 {
-    public bool Any => SkippedFeedItems + OpenLegacyPaymentJobs > 0;
+    public bool Any => SkippedFeedItems + OpenLegacyPaymentJobs + SkippedSalesFeedItems + StuckHandovers > 0;
 }
 
 /// <summary>
@@ -38,15 +41,17 @@ public sealed class SyncOutboxRepository
             new { c = customerPushCursor });
     }
 
-    /// <summary>Operatörün bilmesi gereken iki kalıcı durum (bkz. <see cref="SyncAttention"/>).
+    /// <summary>Operatörün bilmesi gereken kalıcı durumlar (bkz. <see cref="SyncAttention"/>).
     /// Anahtarlı açık miras iş ölçütü <see cref="CustomerSyncRepository.CountOpenKeyedLegacyJobs"/>
-    /// ile aynı (ortak koşul).</summary>
+    /// ile aynı (ortak koşul); atlanan satış akışı öğesi <see cref="SalesFeedFailureRepository.CountSkipped"/>
+    /// ile aynı.</summary>
     public SyncAttention CountAttention()
     {
         using var conn = _factory.Open();
-        var (skipped, legacy) = conn.QuerySingle<(long, long)>(@"
+        var (skipped, legacy, salesSkipped) = conn.QuerySingle<(long, long, long)>(@"
             SELECT (SELECT COUNT(*) FROM CustomerFeedFailure WHERE SkippedAt IS NOT NULL),
-                   (SELECT COUNT(*) FROM PaymentJob WHERE " + CustomerSyncRepository.OpenKeyedLegacyJobCondition + ")");
-        return new SyncAttention((int)skipped, (int)legacy);
+                   (SELECT COUNT(*) FROM PaymentJob WHERE " + CustomerSyncRepository.OpenKeyedLegacyJobCondition + @"),
+                   (SELECT COUNT(*) FROM SalesFeedFailure WHERE SkippedAt IS NOT NULL)");
+        return new SyncAttention((int)skipped, (int)legacy, (int)salesSkipped);
     }
 }

@@ -51,7 +51,7 @@ public sealed class ShipmentRepository
     public Shipment? GetById(string id, DbWrite? write = null)
     {
         var row = _factory.QueryFirstOrDefault<Row>(write,
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -76,7 +76,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC, Id DESC
@@ -91,7 +91,7 @@ public sealed class ShipmentRepository
     /// <param name="write"><inheritdoc cref="GetById" path="/param[@name='write']"/></param>
     public IReadOnlyList<Shipment> GetAllOpenByCustomer(string customerId, DbWrite? write = null)
         => _factory.Query<Row>(write,
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE CustomerId = " + CustomerIdSql.Resolve("@customerId") + @" AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC, Id DESC",
@@ -116,7 +116,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE Status=@status
               ORDER BY CreatedAt",
@@ -157,7 +157,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision, ServerVersion
               FROM Shipment
               WHERE SyncedAt IS NULL
               ORDER BY CreatedAt
@@ -176,6 +176,74 @@ public sealed class ShipmentRepository
         conn.Execute("UPDATE Shipment SET SyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision",
             new { id, syncedAt, revision });
     }
+
+    /// <summary>
+    /// v2 <c>shipments/sync</c> yanıtının dosya satırı, mod Off (spec 2026-10-13 §7.1, M19): sunucunun güncel hâli yerel
+    /// aynaya yazılır ve gönderim onaylanır. Kargoya verilmiş dosya sunucuda tek yönlü olduğu için bayat yerel karar
+    /// (ör. başka bilgisayarın kargoladığı dosya burada Held) sunucunun Shipped'ine döner; sonraki dekont yeni dosya açar.
+    ///
+    /// <para>Tek <see cref="SyncApplyScope"/> işleminde: TR_Shipment_Enqueue kuyruğa almaz (Revision değişmez, yankı
+    /// yok). F05: satır gönderilen <paramref name="revision"/>'da değilse (uçuşta yerelde değişti) hiçbir şey yazılmaz
+    /// — güncel hâli sonraki turda gider, sunucu yeniden yanıtlar. Karar alanları, tutar, kaynak kopya ve sürüm yereldekiyle
+    /// aynıysa yalnız onay yazılır (bugünkü <see cref="MarkSynced"/>). Sürüm geri gitmez. CustomerId'ye dokunulmaz.</para>
+    /// </summary>
+    /// <returns>Yazımın sonucu.</returns>
+    public ShipmentPushAck ApplyPushResponse(string id, long revision, SalesFeedShipment server, long syncedAt)
+    {
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+        var local = conn.QuerySingleOrDefault<MirrorRow>(
+            @"SELECT Status, HeldAt, ShippedAt, CumulativeAmount, OriginReplicaId, ServerVersion, Revision
+              FROM Shipment WHERE Id = @id",
+            new { id }, tx);
+        if (local is null || local.Revision != revision)
+            return ShipmentPushAck.ChangedInFlight;           // işlem yazmadan geri alınır
+
+        var status = server.Status.ToString();
+        var same = string.Equals(local.Status, status, System.StringComparison.Ordinal)
+                   && local.HeldAt == server.HeldAt
+                   && local.ShippedAt == server.ShippedAt
+                   && (decimal)local.CumulativeAmount == server.CumulativeAmount
+                   && SameReplica(local.OriginReplicaId, server.OriginReplicaId)
+                   && local.ServerVersion == server.Version;
+        if (same || (local.ServerVersion is { } known && server.Version < known))
+        {
+            conn.Execute("UPDATE Shipment SET SyncedAt = @syncedAt WHERE Id = @id AND Revision = @revision",
+                new { id, syncedAt, revision }, tx);
+            scope.Commit();
+            return ShipmentPushAck.Acked;
+        }
+
+        conn.Execute(MirrorPushResponseSql, new
+        {
+            id,
+            revision,
+            syncedAt,
+            Status = status,
+            server.HeldAt,
+            server.ShippedAt,
+            CumulativeAmount = (double)server.CumulativeAmount,
+            server.OriginReplicaId,
+            server.Version,
+        }, tx);
+        scope.Commit();
+        return ShipmentPushAck.Mirrored;
+    }
+
+    /// <summary>Sunucunun dosya satırı yerel aynaya, onayla birlikte (F05: gönderilen Revision). Kilit altında:
+    /// TR_Shipment_Enqueue kuyruğa almaz.</summary>
+    private const string MirrorPushResponseSql = @"
+        UPDATE Shipment SET Status = @Status, HeldAt = @HeldAt, ShippedAt = @ShippedAt,
+               CumulativeAmount = @CumulativeAmount, OriginReplicaId = @OriginReplicaId, ServerVersion = @Version,
+               SyncedAt = @syncedAt
+         WHERE Id = @id AND Revision = @revision";
+
+    private static bool SameReplica(string? a, string? b) =>
+        a is null || b is null
+            ? a is null && b is null
+            : string.Equals(a, b, System.StringComparison.OrdinalIgnoreCase)
+              || (System.Guid.TryParse(a, out var ga) && System.Guid.TryParse(b, out var gb) && ga == gb);
 
     /// <summary>
     /// Label'ı bir Shipment'a bağla. ShipmentService attach sırasında
@@ -205,10 +273,23 @@ public sealed class ShipmentRepository
             r.CreatedAt, r.HeldAt, r.ShippedAt,
             (decimal)r.CumulativeAmount,
             r.SyncedAt,
-            r.Revision);
+            r.Revision,
+            r.ServerVersion);
+
+    private sealed class MirrorRow
+    {
+        public string Status { get; init; } = "";
+        public long? HeldAt { get; init; }
+        public long? ShippedAt { get; init; }
+        public double CumulativeAmount { get; init; }
+        public string? OriginReplicaId { get; init; }
+        public long? ServerVersion { get; init; }
+        public long Revision { get; init; }
+    }
 
     private sealed class Row
     {
+        public long? ServerVersion { get; init; }
         public string Id { get; init; } = "";
         public string CustomerId { get; init; } = "";
         public string Status { get; init; } = "Pending";
@@ -219,4 +300,17 @@ public sealed class ShipmentRepository
         public long? SyncedAt { get; init; }
         public long Revision { get; init; }
     }
+}
+
+/// <summary><see cref="ShipmentRepository.ApplyPushResponse"/>'un sonucu.</summary>
+public enum ShipmentPushAck
+{
+    /// <summary>Sunucunun satırı yereldekiyle aynıydı: yalnız onay yazıldı.</summary>
+    Acked,
+
+    /// <summary>Sunucunun satırı yerel aynaya yazıldı ve onaylandı.</summary>
+    Mirrored,
+
+    /// <summary>Satır uçuşta yerelde değişti (ya da silindi): hiçbir şey yazılmadı, sonraki turda yeniden gider.</summary>
+    ChangedInFlight,
 }

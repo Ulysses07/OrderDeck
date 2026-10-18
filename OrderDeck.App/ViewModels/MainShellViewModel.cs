@@ -824,6 +824,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         // BAŞTA: metot oturum yokken erken dönüyor — sonda olsa durum satırı yayın dışında donardı.
         RefreshSyncStatusThrottled();
+        RefreshPrintedConnectivity();
+        RefreshRemoteSessionsThrottled();   // W2-09: "son sinyal" yaşı ve eşik uygunluğu dakikada bir
 
         QueueCount = PrintQueue.Count;
         ClockText = DateTime.Now.ToString("HH:mm");
@@ -881,12 +883,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             if (SyncLicenseKey() is null)
             {
                 ApplySyncStatus(Services.Sync.SyncStatusFormatter.NoLicense, default);
+                RefreshSalesSyncStatus(0);
             }
             else
             {
                 var attention = _attention?.Invoke() ?? default;
                 ApplySyncStatus(Services.Sync.SyncStatusFormatter.Format(
                     _pendingCount, _syncStatus.Snapshot(), DateTimeOffset.UtcNow, attention), attention);
+                RefreshSalesSyncStatus(attention.SkippedSalesFeedItems);   // yalnız mod On'da görünür (§5.7)
             }
             _syncReadFailing = false;
         }
@@ -1121,7 +1125,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Services.Sync.CustomerChangesPullService? customerPull = null,
         Services.PriceCorrection.CorrectedPaymentRequests? paymentFollowUp = null,
         Services.PriceCorrection.PrintedLabelsNavigator? printedNavigator = null,
-        Services.Sync.SessionOrderSyncService? orderSync = null)
+        Services.Sync.SessionOrderSyncService? orderSync = null,
+        Services.Sync.SalesChangesPullService? salesPull = null,
+        Services.Sales.ILabelEditor? labelEditor = null,
+        RemoteSessionsViewModel? remoteSessions = null)
     {
         _paymentFollowUp = paymentFollowUp;
         _printedNavigator = printedNavigator;
@@ -1138,6 +1145,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _attention = pendingCounter is null ? null : pendingCounter.Attention;
         _log = log ?? NullLogger<MainShellViewModel>.Instance;
         _labels = labels;
+        // W2-05 (spec 2026-10-13 §5.3): Basılanlar'ın toplu iptali, yeniden baskısı ve yedek çekmecesi bunun
+        // üzerinden; mod Off'ta bugünkü LabelService çağrısı. DI yönlendiriciyi verir, testlerin çoğu yalnız yerel.
+        _editor = labelEditor ?? new Services.Sales.LocalLabelEditor(labels);
+        PrintedLabels.SelectionChanged += (_, _) => RefreshPrintedEditAvailability();
         _sessions = sessions;
         _printer = printer;
         _customers = customers;
@@ -1158,6 +1169,22 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // W1-08: etiket gönderiminin sonucu (reddedilen değişiklik, imha edilecek kâğıt) — _dispatcher'dan sonra.
         _orderSync = orderSync;
         if (_orderSync is not null) _orderSync.PushOutcome += OnSalesPushOutcome;
+        // W2-03: satış akışından inen değişiklikler (kuyruk kopyaları, Basılanlar, sayaçlar) — _dispatcher'dan sonra.
+        _salesPull = salesPull;
+        // W2-09: uzak yayın çipleri ve force-end (§5.7) — her akış turundan sonra ayna yeniden okunur.
+        RemoteSessions = remoteSessions;
+        if (_salesPull is not null)
+        {
+            _salesPull.SalesChanged += OnSalesChanged;
+            _salesPull.PendingCommandsSettled += OnPendingCommandsSettled;   // W2-07: imha ve kalıcı ret şeridi
+            _salesPull.TourCompleted += OnSalesTourCompleted;
+            _salesPull.FirstCatchUpCompleted += OnFirstCatchUpCompleted;     // W2-10: ilk yetişmenin şeridi
+            _salesPull.ModeOffStarted += OnSalesModeOffStarted;              // W2-11: "Senkron kapatıldı; ekran yenileniyor."
+            _salesPull.ModeOffFinished += OnSalesModeOffFinished;
+        }
+        // §5.6-4: devir kilidi süresinde alınamayan kâğıt satırlarının arka planda biten işareti aynı şeride (uyarı,
+        // imha listesi, yazılamayan kayıt) — _dispatcher'dan sonra.
+        _editor.DeferredPrintSettled += OnPendingCommandsSettled;
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
         // _settingsStore. Previously a first-chance NRE leaked here (caught by
@@ -1552,6 +1579,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             d => new Views.Drawers.DekontEkleDrawer(d, vm));
         // Payment outbox 30sn içinde sync'ler — UI feedback yok, mobile app
         // listede otomatik görünür.
+        // W2-08 (spec 2026-10-13 §5.8): dekont kaydedildi ama kargo adımı ya da
+        // eşik kararı uygulanamadıysa (mod On: çevrimdışı, komut ucu yok, ret)
+        // sebebi satış şeridinde — açılır pencere yok, "Tamam" kapatır.
+        if (vm.ShipmentWarning is { } shipmentWarning)
+            ShowSalesNotice([], [shipmentWarning]);
     }
 
     private void UpdateStreamStatusLabel()
@@ -1610,10 +1642,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // uygulamasından) inmeden yayına girmesin. Engellemiyoruz — internet
         // yokken de yayın yapılabilmeli. Yetişme lisansa bağlı (önceki
         // lisansınki sayılmaz); lisans yoksa (deneme sürümü) senkron hiç
-        // koşmaz, soru da sorulmaz.
-        if (_syncStatus is not null
-            && SyncLicenseKey() is { } licenseKey
-            && !_syncStatus.IsInitialCatchUpDoneFor(licenseKey)
+        // koşmaz, soru da sorulmaz. W2-10 (spec 2026-10-13 §5.7): mod On'da
+        // satış akışının ilk yetişmesi de beklenir (aynı soru).
+        var syncLicenseKey = SyncLicenseKey();
+        var customersPending = _syncStatus is not null && syncLicenseKey is not null
+                               && !_syncStatus.IsInitialCatchUpDoneFor(syncLicenseKey);
+        var salesPending = syncLicenseKey is not null && _salesPull?.IsFirstCatchUpPending() == true;
+        if ((customersPending || salesPending)
             && !_dialogs.Confirm(
                 "Müşteri bilgilerindeki son değişiklikler henüz inmedi (diğer bilgisayarlar / müşteri uygulaması). " +
                 "İnternet yoksa yine de başlatabilirsin. Yayını başlatayım mı?",
@@ -1721,6 +1756,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                     "Etiketler basılamadı; yayın açık bırakıldı. Yazıcıyı " +
                     "kontrol edip tekrar dene veya \"basmadan bitir\"i seç.",
                     "Yayını Bitir", DialogSeverity.Warning);
+                return;
+            }
+
+            // §5.8: sunucu yokken başka bilgisayarın devredilmiş yayınının satırları basılmaz, kuyrukta kalır
+            // (PrintCoreAsync). Kuyrukta yalnız onlar kaldıysa soru yinelenseydi "Evet" hiç bitmezdi: başarısız baskı
+            // gibi yayın açık kalır. Sebep açılır pencerede değil satış şeridinde (#508): baskının "kuyrukta bekliyor"
+            // notunun (sayısı ne olursa olsun) yerine yayının neden açık kaldığını da söyleyen metin geçer — şeritte tek
+            // bildirim.
+            var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
+            if (held.Count > 0 && PrintQueue.All(r => held.Contains(r.Id)))
+            {
+                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count));
                 return;
             }
         }
@@ -1930,38 +1977,116 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// Creates a tentative-backup Label that goes straight into the print
     /// queue with the parent label's price + code; the operator clicks Yazdır
     /// to physically produce the spare sticker, which carries the Y stamp.
+    ///
+    /// <para>Yönlendiriciden geçer (spec 2026-10-13 §5.3 "Yedek seçimi"; W2-06): mod Off'ta ve yerel yayında bugünkü
+    /// <see cref="LabelService.AddBackup"/>, bu çağrının içinde biter. Ebeveynin yayını devredilmişse
+    /// <c>add-backup</c> komutu arka planda gider; tıklama yine hemen tüketilir ve yedek modu kapanır. Yanıtın satırı
+    /// kuyruğa girer, ebeveynin sayacı artar; olmazsa satır içi şerit (<see cref="BackupProblem"/>), sonucu bilinmeyen
+    /// komutta "Tekrar dene" aynı niyeti gönderir.</para>
     /// </summary>
     public bool TryAssignChatAsBackup(ChatMessageViewModel messageVm)
     {
         if (BackupTargetLabel is null) return false;
 
         var target = BackupTargetLabel;
+        var message = messageVm.Message;
+        var request = new Services.Sales.SalesBackupRequest(
+            target.Id, message.Platform, message.Username, message.DisplayName ?? message.Username, message.Text);
+        // Aynı kişi aynı ebeveyne yeniden seçildiyse sonucu bilinmeyen önceki niyet aynen gider (aynı newOrderId).
+        var resend = _backupRetry is { } pending && ReferenceEquals(pending.Target, target) && pending.Request == request
+            ? pending.Intent
+            : null;
+        BackupAssignment = AssignBackupAsync(target, request, messageVm.IsSenderBlacklisted, resend);
+        // Yerel yol yukarıdaki çağrıda bitti; komut sürüyorsa yedek modu yine şimdi kapanır.
+        if (ReferenceEquals(BackupTargetLabel, target)) BackupTargetLabel = null;
+        return true;
+    }
+
+    /// <summary>Son yedek atamasının işi (yerel yolda tamamlanmış gelir); testler bekler.</summary>
+    internal Task BackupAssignment { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Yedek eklenemedi (komut yolu): satır içi şerit; null = kapalı. Pop-up yok.</summary>
+    [ObservableProperty] private string? _backupProblem;
+
+    /// <summary>Şeritteki "Tekrar dene": sonucu bilinmeyen komutun niyeti duruyor.</summary>
+    [ObservableProperty] private bool _canRetryBackup;
+
+    /// <summary>Sonucu bilinmeyen <c>add-backup</c>: hedef satır, istek ve aynen yeniden gönderilecek niyet.</summary>
+    private sealed record BackupRetry(
+        LabelViewModel Target, Services.Sales.SalesBackupRequest Request, bool Blacklisted,
+        Services.Sync.SalesCommandIntent Intent);
+
+    private BackupRetry? _backupRetry;
+
+    /// <summary>
+    /// Yedeği yönlendiriciden ekler. Yerel yol eşzamanlı biter (bugünkü sıra: kuyruk satırı, sayaç); yerel hatası
+    /// bugünkü gibi bildirilir. Komut yolunun sonucu satır içi şeride düşer.
+    /// </summary>
+    private async Task AssignBackupAsync(
+        LabelViewModel target, Services.Sales.SalesBackupRequest request, bool blacklisted,
+        Services.Sync.SalesCommandIntent? resend)
+    {
+        Services.Sales.SalesBackupResult result;
         try
         {
-            var backup = _labels.AddBackup(
-                target.Id,
-                messageVm.Message.Platform,
-                messageVm.Message.Username,
-                messageVm.Message.DisplayName ?? messageVm.Message.Username,
-                messageVm.Message.Text);
-
-            // Reflect the new tentative row in the queue UI (same pattern as
-            // AddChatToQueue) so the operator can hit Yazdır immediately.
-            PrintQueue.Add(new LabelViewModel(backup, messageVm.IsSenderBlacklisted));
-
-            // Bump the parent's chip in-place — avoids a full queue requery.
-            target.BackupCount++;
+            result = await _editor.AddBackupAsync(request, resend);
         }
         catch (Exception ex)
         {
             _dialogs.Show($"Yedek eklenemedi: {ex.Message}",
                 "Hata", DialogSeverity.Warning);
+            return;
         }
-        finally
+
+        if (result.Backup is { } backup)
         {
-            BackupTargetLabel = null;
+            // Reflect the new tentative row in the queue UI (same pattern as
+            // AddChatToQueue) so the operator can hit Yazdır immediately.
+            PrintQueue.Add(new LabelViewModel(backup, blacklisted));
+
+            // Bump the parent's chip in-place — avoids a full queue requery.
+            target.BackupCount++;
+            if (_backupRetry is not null && ReferenceEquals(_backupRetry.Target, target)
+                && _backupRetry.Request == request)
+                DismissBackupProblem();
+            return;
         }
-        return true;
+
+        if (result.AddedRemotely)
+        {
+            target.BackupCount++;
+            _backupRetry = null;
+            CanRetryBackup = false;
+            BackupProblem = Services.Sync.SalesCommandMessages.BackupAddedRemotely;
+            return;
+        }
+
+        _backupRetry = result.Resend is { } intent ? new BackupRetry(target, request, blacklisted, intent) : null;
+        CanRetryBackup = _backupRetry is not null;
+        var problem = result.Problem ?? Services.Sync.SalesCommandMessages.Failed;
+        BackupProblem = _backupRetry is not null
+            ? Services.Sync.SalesCommandMessages.BackupUnknown(problem)    // uygulanmış olabilir: "eklenemedi" denmez
+            : Services.Sync.SalesCommandMessages.BackupFailed(problem);
+    }
+
+    /// <summary>"Tekrar dene": sonucu bilinmeyen <c>add-backup</c>'ı aynı <c>CommandId</c> ve <c>newOrderId</c> ile
+    /// yeniden gönderir; sunucu ikinci kez eklemez.</summary>
+    [RelayCommand]
+    private Task RetryBackupAsync()
+    {
+        if (_backupRetry is not { } retry) return Task.CompletedTask;
+        BackupProblem = null;
+        CanRetryBackup = false;
+        BackupAssignment = AssignBackupAsync(retry.Target, retry.Request, retry.Blacklisted, retry.Intent);
+        return BackupAssignment;
+    }
+
+    [RelayCommand]
+    private void DismissBackupProblem()
+    {
+        _backupRetry = null;
+        CanRetryBackup = false;
+        BackupProblem = null;
     }
 
     // F06 (denetim 2026-09-09): kuyruktan çıkarma fiziksel DELETE yapıyordu.
@@ -1989,7 +2114,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private bool CanRemoveSelectedFromQueue() => CanWrite() && !IsPrintedTabActive;
 
     [RelayCommand(CanExecute = nameof(CanRemoveSelectedFromQueue))]
-    private void RemoveSelectedFromQueue()
+    private async Task RemoveSelectedFromQueue()
     {
         if (IsPrintedTabActive || SelectedQueueItems.Count == 0) return;
 
@@ -2001,16 +2126,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             "Kuyruktan Çıkar"))
             return;
 
-        var snapshot = SelectedQueueItems.ToList();
-        _labels.Cancel(snapshot.Select(vm => vm.Id).ToList(),
-            CancelReasonCodes.QueueRemoved);
-        foreach (var vm in snapshot) PrintQueue.Remove(vm);
-        SelectedQueueItems.Clear();
-        AfterLabelsCancelled();
+        await CancelQueueRowsAsync(SelectedQueueItems.Select(vm => vm.Id).ToList());
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void ClearQueue()
+    private async Task ClearQueue()
     {
         if (PrintQueue.Count == 0) return;
 
@@ -2022,10 +2142,28 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (inFlight > 0) msg += InFlightWarning(inFlight);
         if (!_dialogs.Confirm(msg, "Hepsini Temizle")) return;
 
-        _labels.Cancel(PrintQueue.Select(i => i.Id).ToList(),
-            CancelReasonCodes.QueueRemoved);
-        PrintQueue.Clear();
+        await CancelQueueRowsAsync(PrintQueue.Select(i => i.Id).ToList());
+    }
+
+    /// <summary>
+    /// Kuyruktan çıkarmanın çekirdeği (spec 2026-10-13 §5.3 "Kuyruktan çıkar", "Kuyruğu temizle"; §5.5): iptal
+    /// yönlendiriciden geçer. Mod Off'ta bugünkü <see cref="LabelService.Cancel"/> — eşzamanlı biter, ağ yok. Mod On'da
+    /// canlı yayının etiketleri yerelde, devredilmiş kendi yayınının kalıntıları komutla ya da (çevrimdışı, komut ucu
+    /// yok) bekleyen komutla; ikisi de kuyruktan çıkar (bekleyen komutun etiketi örtülü). Uygulanamayanlar kuyrukta kalır,
+    /// sebebi satış şeridinde (pop-up yok).
+    /// </summary>
+    private async Task CancelQueueRowsAsync(System.Collections.Generic.IReadOnlyList<string> ids)
+    {
+        var result = await _editor.CancelQueueAsync(ids, CancelReasonCodes.QueueRemoved);
+        RemoveQueueRows(result.Applied.Concat(result.PendingLabelIds).ToHashSet(StringComparer.Ordinal));
+        // Uygulanamayan satır kuyrukta kalır ama seçimden çıkar (bugünkü gibi seçim boşalır).
+        var asked = ids.ToHashSet(StringComparer.Ordinal);
+        for (var i = SelectedQueueItems.Count - 1; i >= 0; i--)
+            if (asked.Contains(SelectedQueueItems[i].Id)) SelectedQueueItems.RemoveAt(i);
         AfterLabelsCancelled();
+        var notes = result.NoticeTexts.ToList();
+        if (result.ProblemText is { } problem) notes.Insert(0, problem);
+        if (notes.Count > 0) ShowSalesNotice([], notes);
     }
 
     /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.
@@ -2118,30 +2256,55 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         else _dispatcher.BeginInvoke(() => PrintCommand.NotifyCanExecuteChanged());
     }
 
+    /// <summary>Baskıdan hemen önceki satış akışı turunun en çok süresi (spec 2026-10-13 §5.6-2).</summary>
+    internal static readonly TimeSpan PrintRefreshBudget = TimeSpan.FromSeconds(3);
+
     private async Task<bool> PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
     {
-        // §5.6: kâğıt ekrandaki kopyadan değil, veritabanındaki güncel satırdan basılır. Kopya bayat
-        // olabilir: satır VM'e haber verilmeden başka bir yoldan (müşteri detayı, Basılanlar, ileride
-        // başka bilgisayarın komutu) iptal edilmiş, basılmış ya da fiyatı düzeltilmiş olabilir. Tek
-        // birincil anahtar SELECT'i; GetByIds verilen sırayı korur, kâğıt sırası değişmez.
-        var fresh = _labelRepo.GetByIds(snapshot.Select(vm => vm.Id).ToList());
-        var labels = fresh.Where(l => l.PrintedAt is null && l.CancelledAt is null).ToList();
+        // §5.6-1: kâğıt ekrandaki kopyadan değil, veritabanındaki güncel satırdan basılır. Kopya bayat
+        // olabilir: satır VM'e haber verilmeden başka bir yoldan (müşteri detayı, Basılanlar, başka
+        // bilgisayarın komutu) iptal edilmiş, basılmış ya da fiyatı düzeltilmiş olabilir. Bekleyen komut
+        // örtüsündeki kalıntı (§5.5: çevrimdışı iptal ya da kâğıdı basılmış) da düşer. Tek birincil anahtar
+        // SELECT'i; verilen sıra korunur, kâğıt sırası değişmez.
+        var ids = snapshot.Select(vm => vm.Id).ToList();
+        var labels = _labelRepo.GetPrintableByIds(ids).ToList();
+
+        // §5.6-2: mod On'da, çevrimiçiyken ve kâğıtta devredilmiş yayının satırı varsa önce en çok 3 sn'lik bir akış
+        // turu (başka bilgisayarda az önce iptal edilen kalıntı basılmasın), sonra yeniden okuma. Mod Off'ta (bugün her
+        // lisans) ve yalnız canlı yayının satırlarında tur yok, bekleme yok.
+        if (_salesPull is not null && labels.Count > 0
+            && _editor.Route(labels.Select(l => l.Id).ToList()).Any(d => d.Route == Services.Sales.SalesEditRoute.Command))
+        {
+            await _salesPull.RefreshAsync(PrintRefreshBudget);
+            labels = _labelRepo.GetPrintableByIds(ids).ToList();
+        }
         var current = labels.ToDictionary(l => l.Id, StringComparer.Ordinal);
 
-        // Yok, iptal edilmiş ya da basılmış satır kâğıda gitmez ve kuyruktan düşer (kimlikle, R8-02B).
-        // Kuyrukta kalsaydı EndStream "kuyrukta N etiket var" sorusunu boşuna yinelerdi.
-        var dropped = snapshot.Select(vm => vm.Id).Where(id => !current.ContainsKey(id))
-            .ToHashSet(StringComparer.Ordinal);
+        // Yok, iptal edilmiş, basılmış ya da bekleyen komut örtüsündeki satır kâğıda gitmez ve kuyruktan düşer
+        // (kimlikle, R8-02B). Kuyrukta kalsaydı EndStream "kuyrukta N etiket var" sorusunu boşuna yinelerdi.
+        var dropped = ids.Where(id => !current.ContainsKey(id)).ToHashSet(StringComparer.Ordinal);
         if (dropped.Count > 0)
         {
             RemoveQueueRows(dropped);
             _log.LogInformation(
-                "Baskıdan önce yeniden okuma: {Dropped} kuyruk satırı kâğıda gitmedi (iptal edilmiş, basılmış ya da yok)",
+                "Baskıdan önce yeniden okuma: {Dropped} kuyruk satırı kâğıda gitmedi (iptal edilmiş, basılmış, bekleyen komutta ya da yok)",
                 dropped.Count);
         }
         // Kalanların kopyası tazelenir: ekrandaki fiyat ve ad kâğıttakiyle aynı olsun.
         foreach (var vm in PrintQueue)
             if (current.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
+
+        // §5.8: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek) sunucu
+        // kullanılamıyorken basılmaz — mark-printed gönderilemez, bekleyen komuta da girmez; kâğıt çıkar ama baskı
+        // kaydı hiçbir yerde oluşmaz, satır kimseye yeniden teklif edilmezdi. Kuyrukta kalır, sebep satır içinde.
+        var held = _editor.PrintHeldRows(labels.Select(l => l.Id).ToList());
+        if (held.Count > 0)
+        {
+            labels = labels.Where(l => !held.Contains(l.Id)).ToList();
+            ShowHeldNotice(Services.Sync.SalesCommandMessages.PrintHeld(held.Count));
+            _log.LogInformation("Kuyruk baskısı: {Held} başka bilgisayarın etiketi sunucu kullanılamadığı için basılmadı",
+                held.Count);
+        }
 
         // Basılacak iş kalmadı: yazıcı çağrılmaz, başarı döner — EndStream kapanabilir.
         if (labels.Count == 0)
@@ -2174,7 +2337,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return false;
         }
 
-        _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
+        // §5.6-4: kâğıt sırasıyla işaretleme yönlendiriciden geçer. Mod Off'ta bugünkü
+        // LabelService.MarkPrintedAndRecord — eşzamanlı biter, ağ yok. Mod On'da tek basış kimliği: yerel satırlar
+        // yerelde, devredilmiş kendi yayınının kalıntıları mark-printed komutuyla ya da (çevrimdışı) bekleyen komutla.
+        // Sunucunun cancelled[]/alreadyPrinted[]'i "kâğıtları imha et" (§5.6-5), işlenemeyen satır uyarı.
+        var mark = await _editor.MarkPrintedAsync(labels.Select(l => l.Id).ToList());
+        if (mark.DiscardLabelIds.Count > 0 || mark.Notices.Count > 0)
+            ShowSalesNotice(mark.DiscardLabelIds, mark.Notices, mark.AlreadyPrintedLabelIds);
 
         // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan
         // seçimsizler korunur). R8-02B: uzlaştırma referansla değil ETİKET
@@ -2686,10 +2855,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// <summary>Delete kısayolu yalnız Kuyruk sekmesinde: "Basılanlar" açıkken kuyruğun görünmeyen
     /// seçimini iptal etmek operatörün kastı olamaz.</summary>
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void DeleteSelectedFromQueueViaShortcut()
+    private async Task DeleteSelectedFromQueueViaShortcut()
     {
         if (IsPrintedTabActive) return;
-        RemoveSelectedFromQueue();
+        await RemoveSelectedFromQueue();
     }
 
     [RelayCommand]
@@ -2786,6 +2955,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Banner.AutoDrawRequested -= OnBannerAutoDrawRequested;
         if (_printedNavigator is not null) _printedNavigator.Requested -= OnPrintedLabelsRequested;
         if (_orderSync is not null) _orderSync.PushOutcome -= OnSalesPushOutcome;
+        if (_salesPull is not null)
+        {
+            _salesPull.SalesChanged -= OnSalesChanged;
+            _salesPull.PendingCommandsSettled -= OnPendingCommandsSettled;
+            _salesPull.TourCompleted -= OnSalesTourCompleted;
+            _salesPull.FirstCatchUpCompleted -= OnFirstCatchUpCompleted;
+            _salesPull.ModeOffStarted -= OnSalesModeOffStarted;
+            _salesPull.ModeOffFinished -= OnSalesModeOffFinished;
+        }
+        _editor.DeferredPrintSettled -= OnPendingCommandsSettled;
 
         Banner.Dispose();
         _busSubscription.Dispose();

@@ -6,12 +6,23 @@
          ShowDialog'du, artık yığına ikinci bir sayfa biniyor ve geri oku
          rapordan buraya döndürüyor. Geri yığınının tek gerçek tüketicisi. -->
     <Grid Margin="{StaticResource OD.Pad.7}">
+        <!-- Sütunlar görsel ağaçta değil, DataContext'i göremez: "Bilgisayar"
+             sütununun görünürlüğü bu vekilin DataContext'inden okunur
+             (x:Reference ataya bağlanamaz, döngü olur). -->
+        <FrameworkElement x:Name="ColumnProxy" Visibility="Collapsed"/>
         <DataGrid x:Name="HistoryGrid"
                   Style="{StaticResource OD.DataGrid}"
                   ItemsSource="{Binding Sessions}"
                   MouseDoubleClick="OnRowDoubleClick">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Tarih"    Binding="{Binding StartedLabel}" Width="2*"/>
+                <!-- W2-09 (spec 2026-10-13 §5.7): başka bilgisayarın yayını
+                     makine adıyla. Yalnız uzak yayın varken (mod On); bu
+                     bilgisayarın yayınında boş. -->
+                <DataGridTextColumn Header="Bilgisayar" Binding="{Binding Machine}" Width="*"
+                                    Visibility="{Binding DataContext.HasRemoteSessions,
+                                                 Source={x:Reference ColumnProxy},
+                                                 Converter={StaticResource BoolToVisibleConverter}}"/>
                 <DataGridTextColumn Header="Süre"     Binding="{Binding Duration}"     Width="*"/>
                 <DataGridTextColumn Header="Etiket"   Binding="{Binding LabelCount}"   Width="*"/>
                 <DataGridTextColumn Header="Ciro"

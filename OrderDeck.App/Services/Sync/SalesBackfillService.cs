@@ -167,8 +167,8 @@ public sealed class SalesBackfillService
         var cursor = ReadCursor(licenseKey, replicaId);
         if (cursor.Phase == SalesBackfillPhase.Completed) return SalesBackfillTourOutcome.AlreadyCompleted;
         // Geri yükleme kimliği bu süreçte yazılamadıysa hello da gitmez (zarf kapalı); ayrıca denetlenir: sunucu kopyayı
-        // özgün sanıp yereli kazandırırdı (§4.3, M20).
-        if (!_envelope.HasHelloSucceeded(licenseKey, replicaId) || _envelope.IsHeldUntilRestart)
+        // özgün sanıp yereli kazandırırdı (§4.3, M20). Geri yüklenmiş süreçte ayrıca state ve kip adımı beklenir (§8.7).
+        if (!_envelope.HasHelloSucceeded(licenseKey, replicaId) || !_envelope.IsReadyFor(licenseKey, replicaId))
             return SalesBackfillTourOutcome.WaitingForHello;
 
         var budget = MaxRequestsPerTour;

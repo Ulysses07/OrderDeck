@@ -285,6 +285,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -293,6 +294,9 @@
                     <TextBlock Grid.Row="0" Text="{Binding LabelsSectionTitle}"
                                Style="{StaticResource OD.Text.Micro}"/>
 
+                    <!-- Başka bilgisayarın devredilmiş yayınındaki etiket çevrimdışıyken
+                         düzenlenemez: düğme pasif, sebep araç ipucunda (spec 2026-10-13
+                         §5.7) — pasif düğmede de görünsün. -->
                     <Grid Grid.Row="1" Margin="{StaticResource OD.Pad.Top3}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -301,14 +305,28 @@
                         <Button Grid.Column="0" Content="Seçilenleri İptal Et"
                                 Style="{StaticResource OD.Button.Secondary}"
                                 Margin="{StaticResource OD.Pad.X2}"
+                                ToolTip="{Binding CancelBlockedReason}"
+                                ToolTipService.ShowOnDisabled="True"
                                 Command="{Binding CancelSelectedCommand}"/>
                         <Button Grid.Column="1" Content="İptali Geri Al"
                                 Style="{StaticResource OD.Button.Secondary}"
                                 Margin="{StaticResource OD.Pad.X2}"
+                                ToolTip="{Binding UncancelBlockedReason}"
+                                ToolTipService.ShowOnDisabled="True"
                                 Command="{Binding UncancelSelectedCommand}"/>
                     </Grid>
 
-                    <Grid Grid.Row="2" Margin="{StaticResource OD.Pad.Top3}">
+                    <!-- Son işlemin satır içi sonucu: uygulanamayan etiketler ve sebebi
+                         (ör. "Bu yayın PC-A'da canlı"). Pop-up yok; seçim değişince kalkar. -->
+                    <TextBlock Grid.Row="2"
+                               Text="{Binding LabelsMessage}"
+                               Style="{StaticResource OD.Text.Hint}"
+                               Foreground="{StaticResource OD.Brush.Text}"
+                               Margin="{StaticResource OD.Pad.Top3}"
+                               TextWrapping="Wrap"
+                               Visibility="{Binding LabelsMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                    <Grid Grid.Row="3" Margin="{StaticResource OD.Pad.Top3}">
                         <ListBox x:Name="LabelsList"
                                  Style="{StaticResource CardList}"
                                  ItemContainerStyle="{StaticResource CardItem}"

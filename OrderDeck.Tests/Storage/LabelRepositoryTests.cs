@@ -296,4 +296,24 @@ public class LabelRepositoryTests
         back!.ProductId.Should().BeNull();
         back.ProductVariantId.Should().BeNull();
     }
+
+    [Fact]
+    public void GetServerVersions_bilinen_surumu_bilinmeyeni_null_yereldeki_olmayani_hic_dondurmez()
+    {
+        // Spec 2026-10-13 §4.6 adım 4 (W2-04): satış komutunun beklenen sürümü etiketin ServerVersion'ından.
+        var (db, repo, sid, cid) = Fx();
+        using var _ = db;
+        repo.Insert(MakeLabel("l1", sid, cid));
+        repo.Insert(MakeLabel("l2", sid, cid));
+        using (var conn = db.Open())
+            Dapper.SqlMapper.Execute(conn, "UPDATE Label SET ServerVersion = 7 WHERE Id = 'l1'");
+
+        var versions = repo.GetServerVersions(["l1", "l2", "yok", "l1"]);
+
+        versions.Should().HaveCount(2);
+        versions["l1"].Should().Be(7);
+        versions["l2"].Should().BeNull("sunucunun sürümü hiç bilinmedi");
+        versions.ContainsKey("yok").Should().BeFalse();
+        repo.GetServerVersions([]).Should().BeEmpty();
+    }
 }

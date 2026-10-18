@@ -250,6 +250,41 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     }
 
     /// <summary>
+    /// <c>GET sales/changes</c> (spec 2026-10-13 §4.4): satış değişiklik akışının bir sayfası. İmleç sunucunun
+    /// rowversion'ı (<see cref="SalesChangesPage.NextAfterSeq"/>); istemci saati yok. <paramref name="replicaId"/> ve
+    /// <paramref name="seenMode"/> ile çağrı kopyanın kalp atışı da sayılır (§4.0).
+    /// <para>Müşteri akışıyla aynı gerekçe: boş sayfa turun SONLANDIRICISI — bozuk gövde (200 + <c>null</c>,
+    /// <c>items</c>'sız, listede literal <c>null</c>, yan listede <c>null</c>) sessizce boş sayfaya çevrilseydi
+    /// çağıran "yetiştim" sanırdı. Son öğeden küçük imleç aynı sayfayı sonsuza dek istetir, sırası bozuk sayfada öğe
+    /// başına kaydedilen imleç aradaki öğeyi atlatırdı. Hepsi <see cref="LicenseApiUnknownException"/>.</para>
+    /// <para><paramref name="take"/> 1..500 ya da <paramref name="seenMode"/> 0/1 dışında istek gitmeden FIRLATIR:
+    /// sunucu kırpar ya da 400 döner, çağıran elindeki değeri yanlış yorumlardı.</para>
+    /// </summary>
+    public async Task<SalesChangesPage> GetSalesChangesAsync(
+        Guid licenseId, long afterSeq, int take, Guid replicaId, int seenMode, CancellationToken ct = default)
+    {
+        if (take is < 1 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..500 olmalı (sunucu sınırı, SalesChangesFeed.MaxTake).");
+        if (seenMode is not (0 or 1))
+            throw new ArgumentOutOfRangeException(nameof(seenMode), seenMode, "seenMode 0 ya da 1 olmalı.");
+
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var qs = $"?afterSeq={afterSeq.ToString(inv)}&take={take.ToString(inv)}"
+               + $"&replicaId={replicaId:D}&seenMode={seenMode.ToString(inv)}";
+        var page = await GetExpectingJsonAsync<SalesChangesPage?>($"/api/v1/licenses/{licenseId}/sales/changes{qs}", ct);
+        if (page?.Items is null
+            || page.Items.Any(i => i is null)
+            || page.SideSessions?.Any(s => s is null) == true
+            || page.CustomerDrafts?.Any(d => d is null) == true
+            || (page.Items.Count > 0 && page.NextAfterSeq < page.Items[^1].ChangeSeq)
+            || page.Items.Zip(page.Items.Skip(1)).Any(p => p.Second.ChangeSeq <= p.First.ChangeSeq))
+            throw new LicenseApiUnknownException(200,
+                "Satış değişiklik sayfası bozuk geldi (gövde, items, bir öğe, yan liste, sıra ya da imleç). Bu 'değişiklik yok' demek değildir.");
+        return page;
+    }
+
+    /// <summary>
     /// <c>POST sales/backfill</c> (spec 2026-10-13 §4.3): geçmişin sunucuda tamamlanması — yalnız boşu doldurur,
     /// bildirimsiz, mevcut siparişte birim ayrışmasını döner. Bütün partiyi düşüren hatalar fırlatılır: 400
     /// <c>unknown-session</c> (<see cref="ValidationException"/>, <c>Code = "unknown-session"</c>), 409
@@ -262,6 +297,76 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             $"/api/v1/licenses/{licenseId}/sales/backfill", req, ct);
         return response ?? throw new LicenseApiUnknownException(200,
             "Geri doldurma yanıtı bozuk geldi (gövde null).");
+    }
+
+    /// <summary>
+    /// <c>POST sales/commands</c> (spec 2026-10-13 §4.6). FIRLATMAZ — komutun her sonucu çağıranın kararıdır:
+    /// <list type="bullet">
+    ///   <item>200 → <see cref="SalesCommandTransport.Ok"/>; gövde eksiksiz olmalı (liste, öğe ya da sonuç null değil),
+    ///   değilse <see cref="SalesCommandTransport.Failed"/> — komut uygulanmış olabilir, aynı niyet aynen yeniden
+    ///   gönderilince yeniden oynatma güncel satırları döner.</item>
+    ///   <item>400 ve 409 başlıklı ProblemDetails → <see cref="SalesCommandTransport.Problem"/> (ek üyeleriyle). Başlıksız
+    ///   ya da çözümlenemeyen gövde <see cref="SalesCommandTransport.Failed"/>.</item>
+    ///   <item>404 → <see cref="SalesCommandTransport.EndpointMissing"/> (komut ucu yok, §8.6).</item>
+    ///   <item>Ağ hatası ve zaman aşımı → <see cref="SalesCommandTransport.Offline"/>.</item>
+    ///   <item>5xx ve öbür kodlar → <see cref="SalesCommandTransport.Failed"/>.</item>
+    /// </list>
+    /// Yalnız <paramref name="ct"/> iptali fırlatır (<see cref="OperationCanceledException"/>).
+    /// </summary>
+    public async Task<SalesCommandHttpResult> PostSalesCommandAsync(
+        Guid licenseId, SalesCommandRequest req, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await SendJsonAsync(HttpMethod.Post, $"/api/v1/licenses/{licenseId}/sales/commands", req, ct)
+                .ConfigureAwait(false);
+        }
+        catch (LicenseApiNetworkException ex)
+        {
+            return new SalesCommandHttpResult(SalesCommandTransport.Offline, 0, Error: ex.Message);
+        }
+
+        using (resp)
+        {
+            var status = (int)resp.StatusCode;
+            if (resp.IsSuccessStatusCode)
+            {
+                SalesCommandResponse? body;
+                try { body = await DeserializeAsync<SalesCommandResponse?>(resp, ct).ConfigureAwait(false); }
+                catch (JsonException ex)
+                {
+                    return new SalesCommandHttpResult(SalesCommandTransport.Failed, status,
+                        Error: $"Komut yanıtı çözümlenemedi: {ex.Message}");
+                }
+                if (body?.Orders is null || body.Shipments is null || body.Sessions is null || body.Result is null
+                    || string.IsNullOrEmpty(body.Status)
+                    || body.Orders.Any(o => o is null) || body.Shipments.Any(s => s is null)
+                    || body.Sessions.Any(s => s is null))
+                    return new SalesCommandHttpResult(SalesCommandTransport.Failed, status,
+                        Error: "Komut yanıtı bozuk geldi (gövde, liste, öğe ya da sonuç eksik).");
+                return new SalesCommandHttpResult(SalesCommandTransport.Ok, status, Response: body);
+            }
+
+            if (status == (int)HttpStatusCode.NotFound)
+                return new SalesCommandHttpResult(SalesCommandTransport.EndpointMissing, status);
+
+            if (status is (int)HttpStatusCode.BadRequest or (int)HttpStatusCode.Conflict)
+            {
+                SalesCommandProblem? problem = null;
+                try { problem = await resp.Content.ReadFromJsonAsync<SalesCommandProblem>(JsonOpts, ct).ConfigureAwait(false); }
+                catch (JsonException) { /* başlıksız sayılır */ }
+                catch (NotSupportedException) { /* problem+json değil */ }
+                if (!string.IsNullOrEmpty(problem?.Code)
+                    && problem.Current?.Any(o => o is null) != true
+                    && problem.CurrentShipments?.Any(s => s is null) != true)
+                    return new SalesCommandHttpResult(SalesCommandTransport.Problem, status, Problem: problem);
+                return new SalesCommandHttpResult(SalesCommandTransport.Failed, status,
+                    Error: $"HTTP {status} başlıklı bir ProblemDetails taşımıyor.");
+            }
+
+            return new SalesCommandHttpResult(SalesCommandTransport.Failed, status, Error: $"HTTP {status}");
+        }
     }
 
     // ─── WhatsApp template sync (Faz 2, 2026-05-15) ───────────────────────

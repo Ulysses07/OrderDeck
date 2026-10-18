@@ -374,7 +374,15 @@ public sealed partial class PrintedLabelsViewModel : ObservableObject
             UpdateSelectedCount();
     }
 
-    private void UpdateSelectedCount() => SelectedCount = Rows.Count(r => r.IsSelected);
+    private void UpdateSelectedCount()
+    {
+        SelectedCount = Rows.Count(r => r.IsSelected);
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Seçim değişti (sayı aynı kalsa da — ör. bir satırın yerine başkası seçildi): kabuk düğmelerin
+    /// pasiflik sebebini yeniden hesaplar (spec 2026-10-13 §5.7). Toplu seçimlerde bir kez.</summary>
+    public event EventHandler? SelectionChanged;
 
     /// <summary>"Bu baskıyı seç": grubun (görünen) bütün satırları seçime eklenir.</summary>
     [RelayCommand]

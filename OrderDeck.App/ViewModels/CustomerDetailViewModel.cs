@@ -10,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Formatting;
 using OrderDeck.App.Services.Drawers;
+using OrderDeck.App.Services.Sales;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
@@ -35,6 +36,11 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     /// <summary>Açık kargo dosyası sayımı (iki açık kargo uyarısı). DI kayıtlı tekil örneği verir;
     /// testlerin çoğu vermez — uyarı o zaman hiç gösterilmez.</summary>
     private readonly ShipmentRepository? _shipments;
+
+    /// <summary>İptal, iptali geri alma ve yedek onayının tek karar noktası (spec 2026-10-13 §5.3 "Müşteri kartı"):
+    /// mod Off'ta bugünkü <see cref="LabelService"/> çağrısı, mod On'da devredilmiş yayının etiketi komutla. DI
+    /// yönlendiriciyi verir; verilmezse (testlerin çoğu) yalnız yerel düzenleyici.</summary>
+    private readonly ILabelEditor _editor;
 
     /// <summary>Yedek çekmecesinde bir yedek onaylandı (Id) — kabuk, yedek kuyruktaysa ekrandaki kopyasını
     /// HEMEN günceller (çekmece açıkken de kuyruk görünüyor; kâğıt ise baskıdan hemen önce veritabanından
@@ -70,6 +76,21 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
     /// <summary>Kişinin birden fazla açık kargo dosyası varsa uyarı metni, yoksa null.</summary>
     [ObservableProperty] private string? _openShipmentWarning;
+
+    /// <summary>Son iptal/geri alma işleminin satır içi sonucu (uygulanamayan etiketler ve sebebi; §5.3, §5.7);
+    /// sorun yoksa null. Pop-up yok. Seçim değişince kalkar.</summary>
+    [ObservableProperty] private string? _labelsMessage;
+
+    /// <summary>"Seçilenleri İptal Et" pasifse sebebi (araç ipucu, §5.7): iptal edilecek etiketlerin hepsi sunucu
+    /// istiyor ve sunucu kullanılamıyor. Karışık seçim etkin kalır.</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CancelSelectedCommand))]
+    private string? _cancelBlockedReason;
+
+    /// <summary>"İptali Geri Al" pasifse sebebi (araç ipucu, §5.7).</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(UncancelSelectedCommand))]
+    private string? _uncancelBlockedReason;
 
     // Kayıt formu / iletişim bilgileri (form doldurulduysa dolu; chat-only müşteride boş).
     [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))][NotifyPropertyChangedFor(nameof(HeaderName))] private string? _fullName;
@@ -114,7 +135,8 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         StreamSessionService sessions,
         LicenseApiClient api,
         IDrawerService? drawers = null,
-        ShipmentRepository? shipments = null)
+        ShipmentRepository? shipments = null,
+        ILabelEditor? editor = null)
     {
         _customers = customers;
         _labels = labels;
@@ -124,12 +146,24 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         _api = api;
         _drawers = drawers;
         _shipments = shipments;
+        _editor = editor ?? new LocalLabelEditor(labelService);
 
         SelectedLabels.CollectionChanged += (_, _) =>
         {
+            LabelsMessage = null;
+            RefreshEditAvailability();
             CancelSelectedCommand.NotifyCanExecuteChanged();
             UncancelSelectedCommand.NotifyCanExecuteChanged();
         };
+    }
+
+    /// <summary>Seçime göre düğmelerin pasiflik sebebi (§5.7). Mod Off'ta yönlendirici yalnız kipi okur.</summary>
+    private void RefreshEditAvailability()
+    {
+        var toCancel = SelectedLabels.Where(l => !l.IsCancelled).Select(l => l.Id).ToList();
+        var toUncancel = SelectedLabels.Where(l => l.IsCancelled).Select(l => l.Id).ToList();
+        CancelBlockedReason = toCancel.Count == 0 ? null : _editor.EditBlockedReason(toCancel);
+        UncancelBlockedReason = toUncancel.Count == 0 ? null : _editor.EditBlockedReason(toUncancel);
     }
 
     /// <summary>Loads customer summary + label/giveaway history. Returns false if customer not found.</summary>
@@ -325,10 +359,23 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         var reason = view!.SelectedReasonCode;
         if (string.IsNullOrEmpty(reason)) return;
 
+        await CancelLabelsAsync(targets, reason);
+    }
+
+    /// <summary>
+    /// İptalin çekirdeği (sebep seçildikten sonra): yönlendiriciden geçer (spec 2026-10-13 §5.3 "Müşteri kartı") — mod
+    /// Off'ta bugünkü <see cref="LabelService.Cancel"/>, mod On'da devredilmiş yayının etiketi komutla, karışık seçim
+    /// bölünür. Uygulanamayanlar ve sebebi satır içi (<see cref="LabelsMessage"/>). İptal edilen her etiketin yedeği
+    /// varsa yedek çekmecesi açılır — komutla iptal edilende de, yerel aynadaki satırlarla.
+    /// </summary>
+    internal async Task CancelLabelsAsync(IReadOnlyList<string> targets, string reason)
+    {
         try
         {
-            _labelService.Cancel(targets, reason);
+            var result = await _editor.CancelAsync(targets, reason);
             ReloadLabels();
+            LabelsMessage = result.ProblemText;
+            if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
             // For each cancelled label that has backups, surface the transfer
             // drawer so the operator can promote a backup to a new label.
@@ -336,7 +383,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
             // kapanmadan sıradaki açılmıyor, çünkü await yığının üstündeki
             // çekmecenin kapanmasını bekliyor. Pratikte nadir: olağan iptal
             // tek satır.
-            foreach (var labelId in targets)
+            foreach (var labelId in result.Applied)
             {
                 var backups = _labelService.GetBackups(labelId);
                 if (backups.Count == 0) continue;
@@ -347,7 +394,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
                 await _drawers.ShowAsync(
                     $"'{parent.Username}' yedekleri ({backups.Count})",
                     d => Views.Drawers.BackupTransferDrawer.Create(
-                        d, _labelService, parent, backups, BackupConfirmed));
+                        d, _labelService, parent, backups, BackupConfirmed, _editor));
             }
         }
         catch (Exception ex)
@@ -357,15 +404,18 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         }
     }
 
+    /// <summary>İptali geri alma; yönlendiriciden geçer (<see cref="CancelLabelsAsync"/> gibi). Mod Off'ta bugünkü gibi
+    /// eşzamanlı biter.</summary>
     [RelayCommand(CanExecute = nameof(CanUncancelSelected))]
-    private void UncancelSelected()
+    private async Task UncancelSelectedAsync()
     {
         var targets = SelectedLabels.Where(l => l.IsCancelled).Select(l => l.Id).ToList();
         if (targets.Count == 0) return;
         try
         {
-            _labelService.Uncancel(targets);
+            var result = await _editor.UncancelAsync(targets);
             ReloadLabels();
+            LabelsMessage = result.ProblemText;
         }
         catch (Exception ex)
         {
@@ -374,8 +424,8 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         }
     }
 
-    private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled);
-    private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled);
+    private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled) && CancelBlockedReason is null;
+    private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled) && UncancelBlockedReason is null;
 
     /// <summary>
     /// Kimlik rozetinde gösterilecek kullanıcı adı. Kayıt formundan gelen

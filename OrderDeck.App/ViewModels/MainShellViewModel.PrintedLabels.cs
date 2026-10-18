@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Services.PriceCorrection;
+using OrderDeck.App.Services.Sales;
 using OrderDeck.Core.Sales;
 
 namespace OrderDeck.App.ViewModels;
@@ -21,6 +22,36 @@ public sealed partial class MainShellViewModel
 {
     private readonly CorrectedPaymentRequests? _paymentFollowUp;
     private readonly PrintedLabelsNavigator? _printedNavigator;
+
+    /// <summary>Düzenleme yönlendiricisi (spec 2026-10-13 §5.3; W2-05): toplu iptal, yeniden baskı ve yedek
+    /// çekmecesinin onayı. Mod Off'ta bugünkü <see cref="LabelService"/> çağrısı.</summary>
+    private readonly ILabelEditor _editor;
+
+    /// <summary>"İptal et" pasifse sebebi (§5.7 araç ipucu): seçili satırların HEPSİ başka bilgisayarın
+    /// devredilmiş yayınından (komut ister) ve sunucu şu an kullanılamıyor. Karışık seçim etkin kalır.</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CancelPrintedCommand))]
+    private string? _printedCancelBlockedReason;
+
+    /// <summary>Seçili satırların hepsi sunucu istiyor mu — seçim ya da veri değişince yönlendiriciden okunur; 1 sn'lik
+    /// zamanlayıcı yalnız bağlantıyı (bellekten) yeniden değerlendirir.</summary>
+    private bool _printedSelectionNeedsServer;
+
+    /// <summary>Seçim ya da akıştan inen veri değişti: seçimin sunucu isteyip istemediği yeniden okunur (mod Off'ta
+    /// yönlendirici yalnız kipi okur).</summary>
+    private void RefreshPrintedEditAvailability()
+    {
+        var ids = PrintedLabels.SelectedIds;
+        _printedSelectionNeedsServer = ids.Count > 0
+            && _editor.Route(ids).All(d => d.Route is SalesEditRoute.Command or SalesEditRoute.Unavailable);
+        RefreshPrintedConnectivity();
+    }
+
+    /// <summary>Bağlantı değişmiş olabilir (çevrimdışı oldu ya da geri geldi): yalnız bellekten.</summary>
+    private void RefreshPrintedConnectivity() =>
+        PrintedCancelBlockedReason = _printedSelectionNeedsServer ? _editor.ServerUnavailableReason : null;
+
+    private bool CanCancelPrinted() => CanWrite() && PrintedCancelBlockedReason is null;
 
     /// <summary>"Basılanlar" sekmesinin verisi ve seçimi.</summary>
     public PrintedLabelsViewModel PrintedLabels { get; }
@@ -120,12 +151,14 @@ public sealed partial class MainShellViewModel
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
+        // Yazım yönlendiriciden (spec 2026-10-13 §5.3 "Fiyatı düzelt"): mod On'da devredilmiş yayın set-code-price.
         var vm = WireCorrection(new PriceCorrectionViewModel(
             _labels, _paymentFollowUp, sessionId, ids, streamDate,
             inFlight: () => _printInFlightIds,
             applied: ApplyPriceCorrection,
             reprint: ReprintAsync,
-            cloudApiEnabled: SafeCloudApiEnabled()));
+            cloudApiEnabled: SafeCloudApiEnabled(),
+            editor: _editor));
         ActivePriceCorrection = vm;
         try
         {
@@ -208,8 +241,11 @@ public sealed partial class MainShellViewModel
         if (ids.Count == 0) return;
         // Sayı BASILANLARIN sayısı, seçilenlerin değil: arada iptal edilmiş satır basılmaz
         // (PrepareReprint süzer) — "3 basıldı" denip 2 kâğıt çıkıyordu.
-        var (printed, error) = await ReprintCoreAsync(ids);
-        PrintedLabels.Message = error ?? $"{printed} etiket yeniden basıldı.";
+        var (printed, error, cacheNote) = await ReprintCoreAsync(ids);
+        // §5.6: çevrimdışıyken sunucu satırları önbellekten basıldı — not kâğıda değil ekrana.
+        PrintedLabels.Message = error ?? (cacheNote is null
+            ? $"{printed} etiket yeniden basıldı."
+            : $"{printed} etiket yeniden basıldı (sunucuya ulaşılamadı; {cacheNote}).");
     }
 
     /// <summary>
@@ -220,12 +256,17 @@ public sealed partial class MainShellViewModel
     /// </summary>
     internal async Task<string?> ReprintAsync(IReadOnlyList<string> ids) => (await ReprintCoreAsync(ids)).Error;
 
-    /// <summary><see cref="ReprintAsync"/> + basılan etiket sayısı (yalnız basılmış, iptal edilmemiş olanlar).</summary>
-    private async Task<(int Printed, string? Error)> ReprintCoreAsync(IReadOnlyList<string> ids)
+    /// <summary><see cref="ReprintAsync"/> + basılan etiket sayısı (yalnız basılmış, iptal edilmemiş olanlar) ve
+    /// önbellek notu. Satırlar yönlendiriciden (spec 2026-10-13 §5.6, "Yeniden bas"): mod Off'ta ve yerel
+    /// satırlarda bugünkü <see cref="LabelService.PrepareReprint"/>; mod On'da başka bilgisayarın devredilmiş
+    /// yayınının satırları çevrimiçiyken <c>reprint</c> komutunun güncel satırları (arada iptal edilen basılmaz,
+    /// düzeltilmiş fiyat basılır), çevrimdışıyken önbellek ve "son eşitleme SS:DD" notu.</summary>
+    private async Task<(int Printed, string? Error, string? CacheNote)> ReprintCoreAsync(IReadOnlyList<string> ids)
     {
-        if (_printTask is not null) return (0, "Başka bir baskı sürüyor; bitince tekrar dene.");
-        var reprint = _labels.PrepareReprint(ids);
-        if (reprint.Labels.Count == 0) return (0, "Yeniden basılacak etiket yok (iptal edilmiş olabilir).");
+        if (_printTask is not null) return (0, "Başka bir baskı sürüyor; bitince tekrar dene.", null);
+        var reprint = await _editor.PrepareReprintAsync(ids);
+        if (reprint.Error is { } refused) return (0, refused, null);
+        if (reprint.Labels.Count == 0) return (0, "Yeniden basılacak etiket yok (iptal edilmiş olabilir).", null);
 
         string? error = null;
         var ran = await RunPrinterJobAsync(reprint.Labels.Select(l => l.Id).ToHashSet(StringComparer.Ordinal), async () =>
@@ -243,7 +284,7 @@ public sealed partial class MainShellViewModel
             }
         }, isQueue: false);
         if (!ran && error is null) error = "Başka bir baskı sürüyor; bitince tekrar dene.";
-        return (error is null ? reprint.Labels.Count : 0, error);
+        return (error is null ? reprint.Labels.Count : 0, error, error is null ? reprint.CacheNote : null);
     }
 
     /// <summary>Kapanınca liste tazelenir (<see cref="ShowCustomerDetailAsync"/> — her yoldan).</summary>
@@ -262,7 +303,7 @@ public sealed partial class MainShellViewModel
     /// sunucuda iade edilir). Yedeği olan etiketlerin yedekleri TEK çekmecede listelenir (25 ayrı çekmece
     /// değil).
     /// </summary>
-    [RelayCommand(CanExecute = nameof(CanWrite))]
+    [RelayCommand(CanExecute = nameof(CanCancelPrinted))]
     private async Task CancelPrintedAsync()
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
@@ -283,10 +324,11 @@ public sealed partial class MainShellViewModel
     /// basılır, ciroya yeni fiyat yazılırdı.</summary>
     internal async Task CancelAndTransferBackupsAsync(IReadOnlyList<string> ids, string reason)
     {
-        var withBackups = CancelLabels(ids, reason);
+        var withBackups = await CancelLabelsAsync(ids, reason);
         if (withBackups.Count == 0 || _drawers is null) return;
         await _drawers.ShowAsync($"İptal edilen etiketlerin yedekleri ({withBackups.Sum(g => g.Backups.Count)})",
-            d => Views.Drawers.BackupTransferDrawer.Create(d, _labels, withBackups, onConfirmed: OnBackupConfirmed));
+            d => Views.Drawers.BackupTransferDrawer.Create(d, _labels, withBackups, onConfirmed: OnBackupConfirmed,
+                editor: _editor));
         RefreshQueueRows(withBackups.SelectMany(g => g.Backups).Select(b => b.Id));
         RefreshPrintedLabels();
         RefreshHeroStats();
@@ -299,18 +341,24 @@ public sealed partial class MainShellViewModel
     /// basılır, ciroya (veritabanından) yeni fiyat yazılırdı.</summary>
     internal void OnBackupConfirmed(string backupId) => RefreshQueueRows(new[] { backupId });
 
-    /// <summary>Toplu iptalin çekirdeği: iptal + liste tazeleme; geçici yedeği olan etiketleri (yedek
-    /// aktarımı için) döner.</summary>
-    internal IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)> CancelLabels(
+    /// <summary>Toplu iptalin çekirdeği: iptal + liste tazeleme; iptal edilen ve geçici yedeği olan etiketleri
+    /// (yedek aktarımı için) döner. İptal yönlendiriciden geçer (spec 2026-10-13 §5.3 "Basılanlar toplu iptal"):
+    /// mod Off'ta bugünkü <see cref="LabelService.Cancel"/> (eşzamanlı biter), mod On'da başka bilgisayarın
+    /// devredilmiş yayınının etiketleri komutla, karışık seçim bölünür. Uygulanamayanlar ve sebebi aynı satır içi
+    /// iletide; yedekler yerel aynadan okunur.</summary>
+    internal async Task<IReadOnlyList<(Label Parent, IReadOnlyList<Label> Backups)>> CancelLabelsAsync(
         IReadOnlyList<string> ids, string reason)
     {
         // R7-04 Soru B (kuyruk iptaliyle aynı): uçuştaki işle (kuyruk baskısı ya da yeniden baskı) kesişen
         // etiketler. İptal yazıcıyı durdurmaz — o kâğıtlar ("DÜZELTME" işaretli yeniden baskı dahil) yine
-        // çıkar; operatöre imha etmesi söylenir (satır içi, pop-up yok).
-        var inFlight = _printInFlightIds is { } flying ? ids.Count(flying.Contains) : 0;
-        _labels.Cancel(ids, reason);
+        // çıkar; operatöre imha etmesi söylenir (satır içi, pop-up yok). Komut beklenirken baskı biteceği için
+        // kesişim iptalden ÖNCE alınır.
+        var flying = _printInFlightIds is { } inFlightIds
+            ? ids.Where(inFlightIds.Contains).ToHashSet(StringComparer.Ordinal)
+            : null;
+        var result = await _editor.CancelAsync(ids, reason);
         var withBackups = new List<(Label Parent, IReadOnlyList<Label> Backups)>();
-        foreach (var id in ids)
+        foreach (var id in result.Applied)
         {
             var backups = _labels.GetBackups(id);
             if (backups.Count == 0) continue;
@@ -319,10 +367,14 @@ public sealed partial class MainShellViewModel
         RefreshPrintedLabels();
         RefreshHeroStats();
         AfterLabelsCancelled();
-        PrintedLabels.Message = $"{ids.Count} etiket iptal edildi." + (inFlight > 0
-            ? $" {inFlight} tanesi devam eden baskı işinde: iptal yazıcıyı durdurmaz — bu etiketlerden çıkan " +
-              "ya da sonradan çıkacak kâğıtları imha et."
-            : "");
+        var inFlight = flying is null ? 0 : result.Applied.Count(flying.Contains);
+        var done = result.Applied.Count > 0 || !result.HasProblems
+            ? $"{result.Applied.Count} etiket iptal edildi." + (inFlight > 0
+                ? $" {inFlight} tanesi devam eden baskı işinde: iptal yazıcıyı durdurmaz — bu etiketlerden çıkan " +
+                  "ya da sonradan çıkacak kâğıtları imha et."
+                : "")
+            : null;
+        PrintedLabels.Message = string.Join(" ", new[] { done, result.ProblemText }.Where(t => t is not null));
         return withBackups;
     }
 }

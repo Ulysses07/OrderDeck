@@ -133,9 +133,17 @@ public sealed class CustomerChangesPullService
     private int _lastLegacyJobs = -1;
     private int _pagesThisRound;
     private bool _feedAdvancedThisRound;
+    /// <summary>Bu turda silmelerle metni boşaltılan etiket sayısı (§9, W2-02; ayar kapalıyken hep 0).</summary>
+    private int _labelTextsScrubbedThisRound;
     private bool _offlineLogged;
     private bool _environmentErrorLogged;
     private bool _reentrancyLogged;
+    private long _caughtUpRounds;
+
+    /// <summary>Bu süreçte akışın boş sayfaya kadar uygulandığı (takılmadan yetiştiği) tur sayısı. Satış akışı, bekleyen
+    /// müşterinin yönlendirmesini ancak bu sayı ilerledikçe "gelmedi" sayar (spec 2026-10-13 §5.4; projeksiyonu olmayan
+    /// Id'ye müşteri akışı hiç yönlendirme getirmez).</summary>
+    internal long CaughtUpRounds => Interlocked.Read(ref _caughtUpRounds);
 
     private BlockKey? _block;
     private int _blockRounds;
@@ -161,6 +169,29 @@ public sealed class CustomerChangesPullService
         await _tourGate.WaitAsync(ct).ConfigureAwait(false);
         try { return await PullOnceCoreAsync(ct).ConfigureAwait(false); }
         finally { _tourGate.Release(); }
+    }
+
+    /// <summary>
+    /// Müşteri akışının tur kilidini alır; dönen nesnenin Dispose'u bırakır (iki kez çağrılabilir). Satış akışı
+    /// (<see cref="SalesChangesPullService"/>, spec 2026-10-13 §5.4-3) her sayfayı uygularken tutar: satış öğesinin
+    /// müşteri taslağı ve toplamları müşteri akışının yarım bir sayfasının (taşıma, yönlendirme) ortasına düşmez.
+    /// Kilit yalnız sayfa uygulanırken tutulur, hiçbir HTTP isteği boyunca tutulmaz. Kilit sırası: önce satış akışının
+    /// kendi tur kilidi, sonra bu; bu servis satış kilidini hiç almaz (kilitlenme olmaz).
+    /// </summary>
+    internal async Task<IDisposable> EnterTourGateAsync(CancellationToken ct)
+    {
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        return new TourGateLease(_tourGate);
+    }
+
+    private sealed class TourGateLease(SemaphoreSlim gate) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0) gate.Release();
+        }
     }
 
     /// <summary>
@@ -211,6 +242,7 @@ public sealed class CustomerChangesPullService
         RunLocalMaintenance();
         _pagesThisRound = 0;
         _feedAdvancedThisRound = false;
+        _labelTextsScrubbedThisRound = 0;
 
         // Gönderim her çekmeden ÖNCE (eski Açık soru 13). İki bilgisayar aynı yayında yorum
         // okurken yeni yorumcuların satırları sunucuya önce gider; asıl kayıt geldiğinde
@@ -256,6 +288,7 @@ public sealed class CustomerChangesPullService
         _environmentErrorLogged = false;                      // N-2: ortam hatası serisi bitti
         if (outcome == CustomerPullOutcome.CaughtUp)
         {
+            Interlocked.Increment(ref _caughtUpRounds);
             _tracker.MarkPullSucceeded(DateTimeOffset.UtcNow, licenseKey);
             LogLegacyPaymentJobs();
         }
@@ -431,10 +464,14 @@ public sealed class CustomerChangesPullService
     }
 
     /// <summary>Yalnız yeni bir şey yapan silme <see cref="FeedApplyResult.Purged"/> sayılır (M-4):
-    /// CursorReset tekrarında zaten uygulanmış silme "KVKK silme" günlüğünü yinelemez.</summary>
+    /// CursorReset tekrarında zaten uygulanmış silme "KVKK silme" günlüğünü yinelemez.
+    /// <c>SalesSyncState.ScrubOrderText</c> açıksa aynı işlemde kişinin etiket metni de boşalır (§9, W2-02 —
+    /// kip ne olursa olsun); sayısı turun günlüğüne gider.</summary>
     private FeedApplyResult ApplyPurge(WpfCustomerChangeItem item, DateTimeOffset purgedAt)
     {
-        _customers.RecordPurge(item.Platform, item.Username, purgedAt.ToUnixTimeSeconds(), out var changed);
+        _customers.RecordPurge(item.Platform, item.Username, purgedAt.ToUnixTimeSeconds(), out var changed,
+            out var labelTexts);
+        _labelTextsScrubbedThisRound += labelTexts;
         return changed ? FeedApplyResult.Purged : FeedApplyResult.Unchanged;
     }
 
@@ -601,29 +638,29 @@ public sealed class CustomerChangesPullService
 
     /// <summary>Öğeye özgü OLMAYAN hata (M-1): deneme sayılmaz, öğe atlanmaz, tur başarısız biter.
     /// Yerel ortam (kilit çekişmesi, disk dolu, G/Ç, salt okunur, açılamayan dosya), sızmış
-    /// kilit satırı ve kilit yeniden girişi (programlama hatası).</summary>
-    private static bool IsNotItemSpecific(Exception ex)
+    /// kilit satırı ve kilit yeniden girişi (programlama hatası). Satış akışı da aynı sınıflamayı kullanır (U10).</summary>
+    internal static bool IsNotItemSpecific(Exception ex)
         => IsEnvironmentError(ex) || IsGuardLeak(ex) || ex is CustomerBusySetReentrancyException;
 
     /// <summary>SQLite birincil sonuç kodları: BUSY 5, LOCKED 6 (kilit çekişmesi — başka bir yazım
     /// yazma kilidini bütçeden uzun tuttu; gönderimin sınıflandırmasıyla aynı), NOMEM 7, READONLY 8,
     /// IOERR 10, FULL 13, CANTOPEN 14, PROTOCOL 15. CORRUPT (11) ve NOTADB (26) BURADA DEĞİL (N-1):
     /// bozulma çoğu zaman öğeye özgüdür ve U10 ile sayılır — bkz. <see cref="IsCorruption"/>.</summary>
-    private static bool IsEnvironmentError(Exception ex)
+    internal static bool IsEnvironmentError(Exception ex)
         => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) is 5 or 6 or 7 or 8 or 10 or 13 or 14 or 15;
 
     /// <summary>SQLITE_CORRUPT ve genişletilmiş kodları (ör. CORRUPT_VTAB 267).</summary>
-    private static bool IsCorruption(Exception ex)
+    internal static bool IsCorruption(Exception ex)
         => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) == 11;
 
     /// <summary>Kilit satırı zaten var: <c>SyncApplyScope.Begin</c>'in eklemesi birincil anahtara çarptı
     /// (SQLITE_CONSTRAINT 19, genişletilmiş kodlar dahil).</summary>
-    private static bool IsGuardLeak(Exception ex)
+    internal static bool IsGuardLeak(Exception ex)
         => ex is SqliteException s && (s.SqliteErrorCode & 0xFF) == 19
            && s.Message.Contains("SyncApplyGuard", StringComparison.Ordinal);
 
     /// <summary>Sunucunun genel hız sınırı gövdesiz 429 döner → <c>http-429</c>.</summary>
-    private static bool IsRateLimited(Exception ex)
+    internal static bool IsRateLimited(Exception ex)
         => ex is ValidationException { Code: "http-429" };
 
     private void LogRoundFailure(Exception ex, long after, Dictionary<FeedApplyResult, int> tally)
@@ -711,6 +748,9 @@ public sealed class CustomerChangesPullService
                 N(FeedApplyResult.Skipped));
         if (N(FeedApplyResult.Purged) > 0)
             _log.LogInformation("KVKK silme: {Count} silme kararı uygulandı", N(FeedApplyResult.Purged));
+        if (_labelTextsScrubbedThisRound > 0)
+            _log.LogInformation("KVKK metin boşaltma: {Count} etiketin takma adı ve yorumu boşaltıldı (ScrubOrderTextOnPurge)",
+                _labelTextsScrubbedThisRound);
     }
 
     /// <summary>U8: taşıma, ödeme işi kapsam çakışmasında kopyanın anahtarlı işini miras kapsamına

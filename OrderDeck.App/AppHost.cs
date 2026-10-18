@@ -437,6 +437,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<TokenRefresher>();
         services.AddHostedService<HeartbeatHostedService>();
 
+        // Velopack güncelleme sorusu TEK örnek: açılış (App.OnStartup) ve satış komutunun client-update-required'ı
+        // (spec 2026-10-13 §5.3) aynı soruyu açar; sürerken ikinci çağrı yenisini açmaz.
+        services.AddSingleton<Services.IAppUpdatePrompt, Services.VelopackUpdatePrompt>();
+
         // Phase 5a — cloud backup
         services.AddTransient<BearerAuthHandler>();
         services.AddHttpClient<IBackupClient, BackupClient>((sp, http) =>
@@ -510,7 +514,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
         services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
-        // Kümülatif kargo Shipment sync (PR-D, 2026-05-13).
+        // Kümülatif kargo Shipment sync (PR-D, 2026-05-13). Satış senkronu W2 (spec 2026-10-13 §7.1): mod On'da
+        // dosya sunucunun — servis yerel kipi okur ve o kipte hiç istek göndermez.
         services.AddSingleton<Services.Sync.ShipmentSyncService>(sp => new Services.Sync.ShipmentSyncService(
             sp.GetRequiredService<LicenseApiClient>(),
             sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
@@ -520,7 +525,8 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>(),
-            sp.GetRequiredService<Services.Sync.SyncStatusTracker>()));
+            sp.GetRequiredService<Services.Sync.SyncStatusTracker>(),
+            sp.GetRequiredService<SalesSyncStateRepository>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
         // Session + Order sync (PR siparis-sync 2026-05-13). Satış senkronu W1-06: etiketler v2 zarfıyla (aynı
@@ -546,7 +552,8 @@ public sealed class AppHost : IDisposable
 
         // Yayın ve etiket senkronu (spec 2026-10-13, W1): kopya kimliği (_meta.ReplicaId), yerel
         // satış durumu ve v2 zarfı TEK örnek — hello'nun başarısını zarf tutar, gönderim servisleri
-        // aynı örnekten IsReadyForPush okur. Kalp atışı 30 sn; açılışta hemen hello + state.
+        // aynı örnekten IsReadyForPush okur. Kalp atışını (hello + state, 30 sn, açılışta hemen) W2'den
+        // beri satış akışı turu sürer (aşağıda SalesChangesPullHostedService): ayrı state zamanlayıcısı yok.
         services.AddSingleton<ReplicaIdentityRepository>();
         services.AddSingleton<SalesSyncStateRepository>();
         services.AddSingleton<Services.Sync.SalesSyncEnvelope>();
@@ -559,7 +566,6 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SalesSyncStateService>>()));
-        services.AddHostedService<Services.Sync.SalesSyncStateHostedService>();
 
         // W1-09 (§8.2): Ws'nin ilk açılışındaki geri doldurma ve birim ayrışması onarımı. Zarf, devir kapısı,
         // gönderim ve hello AYNI örnekler: boşaltma gönderim kapısından geçer, Release kararı kapanış gönderimiyle
@@ -606,11 +612,94 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.CustomerChangesPullService>();
         services.AddHostedService<Services.Sync.CustomerChangesPullHostedService>();
 
+        // Yayın ve etiket senkronu W2 (spec 2026-10-13 §5.4): satış değişiklik akışı. TEK 30 sn'lik sürücü — turun
+        // ilk adımı sales/state kalp atışı (her kipte); mod On'da uzak canlı yayın aynası, ön gönderim (müşteri, oturum
+        // ve etiket) ve akış. Akış deposu ödeme akışıyla AYNI CustomerBusySet'i alır (U13); sayfalar müşteri akışının
+        // tur kilidi altında uygulanır (aynı CustomerChangesPullService örneği). Açılışta hemen bir tur.
+        services.AddSingleton<SalesFeedRepository>();
+        services.AddSingleton<SalesFeedFailureRepository>();
+        services.AddSingleton<RemoteLiveSessionRepository>();
+        // W2-10 (spec 2026-10-13 §8.4): kip adımı — satış akışı turu başarılı state'in hemen ardından çağırır. Açılışın
+        // 1. adımı giden kuyrukları AYNI gönderim servisleriyle boşaltır (müşteri, oturum ve etiket gönderim kapısından,
+        // kargo, dekont). Tur isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        services.AddSingleton<Services.Sync.ISalesOpeningFlush>(sp => new Services.Sync.SalesOpeningFlush(
+            sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
+            sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
+            sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+            sp.GetRequiredService<Services.Sync.PaymentSyncService>(),
+            sp.GetRequiredService<SalesSyncStateRepository>()));
+        services.AddSingleton<Services.Sync.SalesModeCoordinator>();
+        services.AddSingleton<Services.Sync.SalesChangesPullService>();
+        services.AddHostedService<Services.Sync.SalesChangesPullHostedService>();
+
+        // W2-04 (spec 2026-10-13 §4.6, §5.3): satış komutlarının istemcisi. Yanıtları akışla AYNI depoyla (aynı
+        // CustomerBusySet) yazar; zarf ve güncelleme sorusu tekil örnekler.
+        services.AddSingleton<SalesConflictLogRepository>();
+        services.AddSingleton<Services.Sync.SalesCommandClient>();
+
+        // W2-07 (spec 2026-10-13 §5.5): bekleyen satış komutları (kalıntı kuyruğun çevrimdışı iptali ve ilk baskısı).
+        // Gönderici TEK örnek: satış akışı turu (akıştan önce), kuyruk baskısının anlık gönderimi ve ödeme ön gönderimi
+        // (W3) aynı kapıdan geçer — aynı komut aynı anda iki kez gitmez.
+        services.AddSingleton<PendingSalesCommandRepository>();
+        services.AddSingleton<Services.Sync.PendingSalesCommandSender>();
+
+        // W2-11 (spec 2026-10-13 §8.5): disable turunun yerel adımları — kip adımı isteğe bağlı parametreyle alır
+        // (CustomerSyncDiTests denetler). Kargo ayarının kopyası CANLI AppSettings örneğine ve diske (Update) yazılır;
+        // bekleyen komutlar aynı LabelService ile yerel yazıma çevrilir. Yarıda kalan 3. adım açılışta, gönderimlerden
+        // önce yeniden koşar (aşağıda, göçten sonra). Satış akışı turu komut istemcisinin mode-off'unu isteğe bağlı
+        // parametreyle dinler.
+        services.AddSingleton<Services.Sync.SalesModeOffRound>();
+
+        // W2-05 (spec 2026-10-13 §5.3): düzenleme yönlendiricisi — müşteri kartı, Basılanlar (toplu iptal, yeniden
+        // bas) ve yedek çekmecesi bunun üzerinden yazar. Mod Off'ta bugünkü LabelService çağrısı (kapı ve ağ yok).
+        // Devir kapısı TEK örnek: kapanış gönderimiyle aynı kilitler. Bağlantı ölçüsü son sales/state'ten (satış akışı
+        // turunun kalp atışı); yeniden baskının önbellek notu akışın son yetiştiği andan. W2-08: dekontun kargo adımı ve
+        // eşik kararı da buradan (mod Off'ta aynı ShipmentService, mod On'da attach-shipment / shipment-decision).
+        services.AddSingleton<Services.Sales.SalesConnectivity>(sp => new Services.Sales.SalesConnectivity(
+            () => sp.GetRequiredService<Services.Sync.SalesSyncStateService>().LastState,
+            () => sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>().CurrentLicenseKey));
+        services.AddSingleton<Services.Sales.ILabelEditor>(sp => new Services.Sales.SalesEditRouter(
+            sp.GetRequiredService<LabelService>(),
+            sp.GetRequiredService<LabelRepository>(),
+            sp.GetRequiredService<SessionRepository>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
+            sp.GetRequiredService<Services.Sync.SalesCommandClient>(),
+            sp.GetRequiredService<Services.Sync.PendingSalesCommandSender>(),
+            sp.GetRequiredService<Services.Sales.SalesConnectivity>(),
+            sp.GetRequiredService<OrderDeck.Core.Sales.ShipmentService>(),
+            sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
+            sp.GetRequiredService<CustomerRepository>(),
+            () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().Status.LastCaughtUpAt,
+            sp.GetRequiredService<ILogger<Services.Sales.SalesEditRouter>>()));
+
+        // W2-09 (spec 2026-10-13 §5.7, §4.6 force-end): uzak yayın çipleri, "Yayını bitir…" ve kendi yayınının bandı.
+        // Ayna, komut istemcisi ve bağlantı ölçüsü tekil örnekler; sessizlik eşiği bu lisansın son sales/state'inden (15
+        // sabit yazılmaz); başarılı force-end'den sonraki akış turu aynı servisin turu (tur kilidi paylaşılır). Kabuk
+        // isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        services.AddSingleton(sp => new ViewModels.RemoteSessionsViewModel(
+            sp.GetRequiredService<RemoteLiveSessionRepository>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<SessionRepository>(),
+            sp.GetRequiredService<Services.Sync.SalesCommandClient>(),
+            sp.GetRequiredService<Services.Sales.SalesConnectivity>(),
+            () => sp.GetRequiredService<Services.Sync.SalesSyncStateService>().LastState,
+            () => sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>().CurrentLicenseKey,
+            ct => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().TourOnceAsync(ct),
+            sp.GetRequiredService<IClock>(),
+            sp.GetRequiredService<ILogger<ViewModels.RemoteSessionsViewModel>>()));
+
         // Faz 0 (D1): gönderilmemiş kayıt ve dikkat sayacı — durum satırı (D2/D3) ve kapanış
         // uyarısı okur. İlk tüketicileri İSTEĞE BAĞLI kurucu parametresi: kayıt eksikse sessizce
         // null olurdu (CustomerSyncDiTests denetler).
         services.AddSingleton<SyncOutboxRepository>();
-        services.AddSingleton<Services.Sync.SyncPendingCounter>();
+        // W2-09 (spec 2026-10-13 §5.7): dikkat sayacına devredilemeyen kendi yayınları da girer (satış akışı turunun
+        // ölçüsü, veritabanında değil).
+        services.AddSingleton(sp => new Services.Sync.SyncPendingCounter(
+            sp.GetRequiredService<SyncOutboxRepository>(),
+            sp.GetRequiredService<SyncCursorRepository>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().StuckHandovers.Count));
 
         // Faz 0 (D5): kapanışta "gönder ve kapat" — bekleyen sayıya (D1) giren her gönderim, kuyruğu
         // boşaltana dek, toplam süre sınırıyla (sıra ve paylar SyncFlushService.ForClose'ta).
@@ -716,8 +805,11 @@ public sealed class AppHost : IDisposable
             AppPaths.DatabaseFile,
             Services.GetRequiredService<ReplicaIdentityRepository>(),
             Services.GetRequiredService<ILogger<AppHost>>());
-        if (restoreMarker.Unresolved)
-            Services.GetRequiredService<Services.Sync.SalesSyncEnvelope>().HoldUntilRestart();
+        // §8.7 (W2-10): geri yüklenmiş süreçte gönderim hello, sales/state ve kip adımından sonra açılır. "Bu süreçte
+        // geri yüklendi" şimdi okunur — ilk hello bekleyen önceki kimliği silmeden.
+        var salesEnvelope = Services.GetRequiredService<Services.Sync.SalesSyncEnvelope>();
+        if (restoreMarker.Unresolved) salesEnvelope.HoldUntilRestart();
+        else salesEnvelope.CaptureRestoreAtBoot(markerApplied: restoreMarker.Previous is not null);
         // U15: kalmış SyncApplyGuard satırı (bir hatanın artığı) bütün damgalamayı
         // ve gönderimi sessizce kapatır; kapsamlar satırı commit'ten önce sildiği için görünen her
         // satır artıktır.
@@ -743,6 +835,19 @@ public sealed class AppHost : IDisposable
             Services.GetRequiredService<IDbConnectionFactory>(),
             Services.GetRequiredService<IClock>().UnixNow(),
             Services.GetRequiredService<ILogger<AppHost>>());
+
+        // Spec 2026-10-13 §8.5 (W2-11): disable turu 2. ile 3. adım arasında kesildiyse (yerel kip 0, bekleyen satış
+        // komutu dolu) 3. adım burada, hiçbir gönderimden önce yeniden koşar: bekleyen iptal ve baskı onayı olağan yerel
+        // yazıma çevrilir. O ana kadar hello ve state görülen kip 1 bildirir. Hata açılışı durdurmaz (her tur yeniden dener).
+        try
+        {
+            Services.GetRequiredService<Services.Sync.SalesModeOffRound>().Resume();
+        }
+        catch (Exception ex)
+        {
+            Services.GetRequiredService<ILogger<AppHost>>().LogWarning(ex,
+                "Satış senkronu Off turunun bekleyen komutları açılışta yerel yazıma çevrilemedi; satış akışı turu yeniden dener");
+        }
 
         // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
         // session starts clean (otherwise GetActiveBySession would surface stale rows).

@@ -29,6 +29,14 @@ namespace OrderDeck.App.ViewModels;
 /// eşiği sırasını kendi yürütüyor, view yalnız "kapandı mı" cevabını alıyor.
 /// Alt çekmeceleri <see cref="Services.Drawers.IDrawerService"/> üzerinden
 /// açar; servis verilmezse (test fixture'ları) sorular atlanır.
+///
+/// Satış senkronu W2-08 (spec 2026-10-13 §5.3, §5.8, §7.1): kargo adımı
+/// (dosyaya bağlama, yönerge, eşik kararı) düzenleme yönlendiricisinden
+/// geçer (<see cref="Services.Sales.IShipmentEditor"/>). Mod Off'ta bugünkü
+/// yerel sıra, eşzamanlı. Mod On'da dosya sunucunun: <c>attach-shipment</c>
+/// ve <c>shipment-decision</c> komutları, ağ işi arka planda, kaydetme zinciri
+/// bekler; dekont her durumda kaydedilir, kargo adımı yapılamazsa
+/// <see cref="ShipmentWarning"/> dolar (kabuk satış şeridinde gösterir).
 /// </summary>
 public sealed partial class DekontEkleViewModel : ObservableObject
 {
@@ -36,8 +44,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     private readonly CustomerRepository _customers;
     private readonly SessionRepository _sessions;
     private readonly PaymentMatcherService _matcher;
-    private readonly LabelRepository _labels;
-    private readonly ShipmentService _shipments;
+    private readonly Services.Sales.IShipmentEditor _shipmentEditor;
     private readonly OrderDeck.App.Services.PaymentRequestService? _paymentRequest;
     private readonly IClock _clock;
     private readonly ILogger<DekontEkleViewModel> _log;
@@ -59,6 +66,12 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// operatör override edebilir, ama görsel uyarı kritik bilgi).</summary>
     [ObservableProperty] private string? _ibanWarning;
 
+    /// <summary>W2-08 (spec 2026-10-13 §5.8 "Dekont kaydı"): dekont kaydedildi ama
+    /// kargo adımı ya da eşik kararı uygulanamadı (çevrimdışı, komut ucu yok,
+    /// sunucu reddetti). Kaydetmeyi engellemez; çekmece kapanınca kabuk satış
+    /// şeridinde gösterir (açılır pencere yok). Her kaydetmede sıfırlanır.</summary>
+    [ObservableProperty] private string? _shipmentWarning;
+
     // PDF parse hash (Payment.PdfHash'e CommitInternal'da yazılır — duplicate
     // dedect için). Operator PDF yüklemediyse null kalır.
     private string? _pendingPdfHash;
@@ -79,14 +92,17 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         IClock clock,
         ILogger<DekontEkleViewModel> log,
         OrderDeck.App.Services.PaymentRequestService? paymentRequest = null,
-        Services.Drawers.IDrawerService? drawers = null)
+        Services.Drawers.IDrawerService? drawers = null,
+        Services.Sales.ILabelEditor? editor = null)
     {
         _payments = payments;
         _customers = customers;
         _sessions = sessions;
         _matcher = matcher;
-        _labels = labels;
-        _shipments = shipments;
+        // Kargo adımı (W2-08) düzenleyiciden geçer: uygulamada DI yönlendiriciyi verir; verilmezse (testler) bugünkü
+        // yerel yol. Bağlanmamış etiketleri ShipmentService kendi deposundan okur — labels artık saklanmaz (parametre
+        // DI ve testlerin kurucusu için kalır).
+        _shipmentEditor = editor ?? (Services.Sales.IShipmentEditor)new Services.Sales.LocalShipmentEditor(shipments);
         _pdfParser = pdfParser;
         _settings = settings;
         _clock = clock;
@@ -229,7 +245,14 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         // PR-C/2: Save başarılı + kümülatif eşik aşıldıysa kargo eşiği
         // çekmecesi açılmalı. Null = eşik aşılmadı veya hook çalışmadı
         // (müşteri çözülemedi, feature kapalı, vs.).
-        ShipmentDecisionContext? ThresholdContext = null);
+        ShipmentDecisionContext? ThresholdContext = null)
+    {
+        /// <summary>W2-08: mod On'da kargo adımı (komut) kayıttan sonra arka
+        /// planda sürüyor; <see cref="SaveAsync"/> bekler ve sonucu
+        /// <see cref="ThresholdContext"/>'e yazar. Mod Off'ta adım eşzamanlı
+        /// biter, bu null'dır.</summary>
+        internal Task<ShipmentDecisionContext?>? PendingShipmentStep { get; init; }
+    }
 
     public enum SaveResultKind { Saved, NeedsShipmentDecision, Error }
 
@@ -244,6 +267,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// </summary>
     public async Task<bool> SaveAsync()
     {
+        ShipmentWarning = null;
         var result = TrySave();
 
         if (result.Kind == SaveResultKind.NeedsShipmentDecision)
@@ -254,6 +278,11 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         }
 
         if (result.Kind != SaveResultKind.Saved) return false;
+
+        // W2-08: mod On'da kargo adımı (attach-shipment) arka planda sürüyor —
+        // dekont zaten kaydedildi; eşik sorusu adımın sonucuyla.
+        if (result.PendingShipmentStep is { } pending)
+            result = result with { ThresholdContext = await pending, PendingShipmentStep = null };
 
         await MaybePromptThresholdAsync(result);
         return true;
@@ -269,6 +298,11 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         return vm.ChosenDirective;
     }
 
+    /// <summary>
+    /// Eşik çekmecesi. Mod On'da karar <c>stale</c> alırsa (çekmece açıkken dosya başka bilgisayarda değişti) sessiz
+    /// yeniden deneme yok: plan güncel havuzla, sebebi başında yazarak BİR KEZ yeniden gösterilir (spec 2026-10-13
+    /// §5.3); havuz eşiğin altına indiyse ya da dosya kargolandıysa sorulacak karar yoktur, sebep şeritte kalır.
+    /// </summary>
     private async Task MaybePromptThresholdAsync(SaveResult result)
     {
         if (result.ThresholdContext is not { Shipment: not null } ctx) return;
@@ -278,14 +312,27 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             ? $"{CustomerPlatform}/{CustomerUsername}"
             : PayerName;
 
-        var vm = new ShipmentThresholdDialogViewModel(
-            ctx, customerDisplay, _settings.Shipping.FreeShippingThreshold ?? 0m);
+        string? notice = null;
+        for (var shown = 0; shown < 2; shown++)
+        {
+            var vm = new ShipmentThresholdDialogViewModel(
+                ctx, customerDisplay, _settings.Shipping.FreeShippingThreshold ?? 0m) { Notice = notice };
 
-        await _drawers.ShowAsync("Ücretsiz Kargo Hakkı",
-            d => new Views.Drawers.ShipmentThresholdDrawer(d, vm));
+            await _drawers.ShowAsync("Ücretsiz Kargo Hakkı",
+                d => new Views.Drawers.ShipmentThresholdDrawer(d, vm));
 
-        if (vm.ChosenDecision is { } decision)
-            ApplyShipmentDecision(ctx.Shipment!.Id, decision);
+            if (vm.ChosenDecision is not { } decision) return;
+            var decided = await ApplyShipmentDecisionCoreAsync(ctx.Shipment!.Id, decision);
+            if (decided is null) return;
+            if (decided.Problem is null)
+            {
+                if (shown > 0) ShipmentWarning = null;       // yeniden gösterilen plandaki karar uygulandı
+                return;
+            }
+            if (decided.Replan is not { Shipment: not null } replan) return;
+            ctx = replan;
+            notice = Services.Sync.SalesCommandMessages.Stale;
+        }
     }
 
     /// <summary>İlk kaydetme denemesi: doğrulama + duplicate kontrolü +
@@ -393,8 +440,13 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             // Held'e aldık ama yine de kümülatif Label'ları attach etmek için
             // hook'u çağırıyoruz — sonraki yayında threshold kontrol akışı
             // doğru hesaplasın.
-            var thresholdContext = TryEvaluateShipment(directive);
-            return new SaveResult(SaveResultKind.Saved, ThresholdContext: thresholdContext);
+            // W2-08: adım düzenleyiciden geçer. Mod Off'ta yerel sıra burada,
+            // eşzamanlı biter (görev tamamlanmış döner — bugünkü sonuç); mod
+            // On'da komut arka planda sürer, SaveAsync bekler.
+            var step = TryEvaluateShipmentAsync(directive);
+            return step.IsCompletedSuccessfully
+                ? new SaveResult(SaveResultKind.Saved, ThresholdContext: step.Result)
+                : new SaveResult(SaveResultKind.Saved) { PendingShipmentStep = step };
         }
         catch (Exception ex)
         {
@@ -417,52 +469,34 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     ///
     /// Yalnız "Normal" directive + threshold aşılmışsa context döndürülür;
     /// <see cref="SaveAsync"/> kargo eşiği çekmecesini açar.
+    ///
+    /// W2-08: adım <see cref="Services.Sales.IShipmentEditor"/>'dan geçer.
+    /// Mod On'da adım atlanırsa (çevrimdışı, komut ucu yok, ret) dekont yine
+    /// kaydedilmiştir; uyarı <see cref="ShipmentWarning"/>'e yazılır. Hiç
+    /// fırlatmaz.
     /// </summary>
-    private ShipmentDecisionContext? TryEvaluateShipment(ShipmentDirective directive)
+    private async Task<ShipmentDecisionContext?> TryEvaluateShipmentAsync(ShipmentDirective directive)
     {
         try
         {
             var customer = ResolveCustomer();
             if (customer is null) return null;
 
-            // 1) Açık (Pending/Held) Shipment bul veya oluştur
-            var shipment = _shipments.GetOrCreateOpenShipment(customer.Id);
-
-            // 2) Müşterinin henüz Shipment'a bağlanmamış aktif Label'larını attach et
-            var unattached = _labels.GetUnattachedByCustomer(customer.Id);
-            if (unattached.Count > 0)
+            // Aç ya da bul → bağlanmamış etiketleri bağla → yönerge / eşik (mod Off: ShipmentService.AttachAfterPayment).
+            var step = await _shipmentEditor.RunDekontShipmentStepAsync(customer.Id, directive);
+            if (step.Warning is { } warning)
             {
-                var ids = new System.Collections.Generic.List<string>(unattached.Count);
-                foreach (var l in unattached) ids.Add(l.Id);
-                shipment = _shipments.AttachLabels(shipment.Id, ids);
+                ShipmentWarning = warning;
+                _log.LogInformation("Dekont kargo adımı: Customer={Cid} — adım tamamlanmadı, uyarı gösterildi", customer.Id);
             }
-
-            // 3) Directive'e göre Shipment state'i ilerlet (single-source-of-truth)
-            switch (directive)
-            {
-                case ShipmentDirective.Hold:
-                    _shipments.ApplyDecision(shipment.Id, ShipmentDecision.Hold);
-                    return null; // vendor zaten beklet dedi; threshold dialog yok
-                case ShipmentDirective.RecipientPays:
-                    _shipments.ApplyDecision(shipment.Id, ShipmentDecision.RecipientPays);
-                    return null; // sticky sticker akışı; threshold dialog yok
-                case ShipmentDirective.Normal:
-                    break; // default — aşağıdaki threshold check'e düş
-            }
-
-            // 4) Threshold check (Normal directive için)
-            // PR-C/3+: allLabelsPaid hesabı buraya entegre edilecek. Şu an
-            // her zaman true varsayılıyor — operatör onaylama akışında tipik
-            // davranış (payment gerçekleşti, customer total covered demek).
-            var ctx = _shipments.EvaluateAfterPayment(customer.Id, allLabelsPaid: true);
-            if (ctx.ShouldPrompt && ctx.ThresholdReached)
+            var ctx = step.Threshold;
+            if (ctx is not null)
             {
                 _log.LogInformation(
                     "Kümülatif eşik aşıldı: Customer={Cid} Shipment={Sid} Total={Total}",
                     customer.Id, ctx.Shipment!.Id, ctx.PooledAmount);
-                return ctx;
             }
-            return null;
+            return ctx;
         }
         catch (Exception ex)
         {
@@ -481,31 +515,61 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// PR-E (2026-05-12): ShipNow seçilirse müşteriye WhatsApp "ücretsiz
     /// kargo kazandın" mesajı tetiklenir (fail-silent — phone yoksa veya
     /// template boşsa sessiz geçer).
+    ///
+    /// W2-08: <see cref="ApplyShipmentDecisionAsync"/>'i başlatır. Mod Off'ta
+    /// karar çağıranın iş parçacığında, beklemeden uygulanır (bugünkü gibi);
+    /// mod On'da komut arka planda biter.
     /// </summary>
     public void ApplyShipmentDecision(string shipmentId, ShipmentDecision decision)
+        => _ = ApplyShipmentDecisionAsync(shipmentId, decision);
+
+    /// <summary>
+    /// Eşik çekmecesinin kararı (spec 2026-10-13 §5.3 "Eşik çekmecesi
+    /// kararı"): mod Off'ta yerel karar, mod On'da <c>shipment-decision</c>.
+    /// Uygulanamazsa (kargolanmış dosya, araya başka bilgisayarın kararı
+    /// girdi, çevrimdışı) metin <see cref="ShipmentWarning"/>'e yazılır; dosyanın
+    /// güncel hâli yerel aynadadır. ShipNow'da "ücretsiz kargo kazandın" mesajı
+    /// kararın kapsadığı dosyaların toplamıyla (mod On'da yanıtın tutarları).
+    /// Hiç fırlatmaz.
+    /// </summary>
+    public Task ApplyShipmentDecisionAsync(string shipmentId, ShipmentDecision decision)
+        => ApplyShipmentDecisionCoreAsync(shipmentId, decision);
+
+    /// <returns>Kararın sonucu; karar hata verdiyse (günlüğe yazıldı) null.</returns>
+    private async Task<Services.Sales.SalesShipmentDecisionResult?> ApplyShipmentDecisionCoreAsync(
+        string shipmentId, ShipmentDecision decision)
     {
-        Shipment? updated = null;
-        decimal pooledAmount;
+        Services.Sales.SalesShipmentDecisionResult result;
         try
         {
-            updated = _shipments.ApplyDecision(shipmentId, decision, out pooledAmount);
-            _log.LogInformation(
-                "Shipment {Id} → {Decision} (kümülatif kargo çekmecesinden)",
-                shipmentId, decision);
+            result = await _shipmentEditor.DecideShipmentAsync(shipmentId, decision);
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex,
                 "Shipment {Id} ApplyDecision {Decision} hata verdi", shipmentId, decision);
-            return;
+            return null;
         }
+
+        if (result.Problem is { } problem)
+        {
+            ShipmentWarning = problem;
+            _log.LogInformation(
+                "Shipment {Id} → {Decision} uygulanmadı (kümülatif kargo çekmecesinden)",
+                shipmentId, decision);
+            return result;
+        }
+        _log.LogInformation(
+            "Shipment {Id} → {Decision} (kümülatif kargo çekmecesinden)",
+            shipmentId, decision);
 
         // PR-E: ShipNow → "kazandın" WhatsApp tetikleyici. PaymentRequestService
         // null ise (test fixture'larda) sessiz geç.
-        if (decision == ShipmentDecision.ShipNow && _paymentRequest is not null && updated is not null)
+        if (decision == ShipmentDecision.ShipNow && _paymentRequest is not null && result.Shipment is not null)
         {
-            TriggerShippingWonWhatsApp(updated, pooledAmount);
+            TriggerShippingWonWhatsApp(result.Shipment, result.PooledAmount);
         }
+        return result;
     }
 
     /// <param name="pooledAmount">Kararın kapsadığı dosyaların toplamı (U12 — yerel taşımadan

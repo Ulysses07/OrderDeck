@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using OrderDeck.Core.Payments;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 
@@ -102,6 +103,49 @@ public sealed class ShipmentService
     }
 
     /// <summary>
+    /// Dekontun kargo adımı, yerel yol (mod Off; spec 2026-10-13 §5.3 "Dekont kargo adımı"): müşterinin açık dosyası
+    /// bulunur ya da açılır (<see cref="GetOrCreateOpenShipment"/>), henüz bağlanmamış etiketleri bağlanır
+    /// (<see cref="AttachLabels"/>), yönerge Hold ya da RecipientPays ise karar uygulanır (eşik sorusu yok — operatör
+    /// zaten karar verdi), Normal'de eşik değerlendirilir (<see cref="EvaluateAfterPayment"/>). Dekont ekranının
+    /// bugünkü sırası (<c>DekontEkleViewModel</c>'den taşındı); hata çağırana fırlar.
+    /// </summary>
+    /// <returns>Normal yönergede eşik aşıldıysa eşik çekmecesinin bağlamı; yoksa null.</returns>
+    public ShipmentDecisionContext? AttachAfterPayment(string customerId, ShipmentDirective directive)
+    {
+        // 1) Açık (Pending/Held) Shipment bul veya oluştur
+        var shipment = GetOrCreateOpenShipment(customerId);
+
+        // 2) Müşterinin henüz Shipment'a bağlanmamış aktif Label'larını attach et
+        var unattached = _labels.GetUnattachedByCustomer(customerId);
+        if (unattached.Count > 0)
+        {
+            var ids = new List<string>(unattached.Count);
+            foreach (var l in unattached) ids.Add(l.Id);
+            shipment = AttachLabels(shipment.Id, ids);
+        }
+
+        // 3) Directive'e göre Shipment state'i ilerlet (single-source-of-truth)
+        switch (directive)
+        {
+            case ShipmentDirective.Hold:
+                ApplyDecision(shipment.Id, ShipmentDecision.Hold);
+                return null; // vendor zaten beklet dedi; threshold dialog yok
+            case ShipmentDirective.RecipientPays:
+                ApplyDecision(shipment.Id, ShipmentDecision.RecipientPays);
+                return null; // sticky sticker akışı; threshold dialog yok
+            case ShipmentDirective.Normal:
+                break; // default — aşağıdaki threshold check'e düş
+        }
+
+        // 4) Threshold check (Normal directive için)
+        // PR-C/3+: allLabelsPaid hesabı buraya entegre edilecek. Şu an
+        // her zaman true varsayılıyor — operatör onaylama akışında tipik
+        // davranış (payment gerçekleşti, customer total covered demek).
+        var ctx = EvaluateAfterPayment(customerId, allLabelsPaid: true);
+        return ctx.ShouldPrompt && ctx.ThresholdReached ? ctx : null;
+    }
+
+    /// <summary>
     /// Payment.Confirmed sonrası vendor'a hangi modal gösterilmeli karar
     /// verir. Caller önce müşterinin TÜM Label'larının ödenmiş olduğunu
     /// (<paramref name="allLabelsPaid"/>) tespit etmeli — eğer false ise
@@ -126,9 +170,19 @@ public sealed class ShipmentService
         var open = _shipments.GetAllOpenByCustomer(customerId);
         if (open.Count == 0)
             return ShipmentDecisionContext.Silent(customerId);
-        var shipment = open[0];
-        var pooled = open.Sum(s => s.CumulativeAmount);
+        return EvaluatePool(open[0], open.Sum(s => s.CumulativeAmount));
+    }
 
+    /// <summary>
+    /// Eşik değerlendirmesi, havuz verilmiş olarak (<see cref="EvaluateAfterPayment"/>'ın kuralı). Mod On'da (spec
+    /// 2026-10-13 §7.1) dosyalar sunucunundur ve havuz <c>attach-shipment</c> yanıtından gelir: kişinin bütün
+    /// Pending/Held dosyalarının commit sonrası toplamı. Eşik ve ücret bu servisin ayarından okunur (W2'de yerel
+    /// <c>AppSettings.Shipping</c>; lisans geneli ayar W3).
+    /// </summary>
+    /// <param name="shipment">Kararın verileceği dosya (kişinin en yeni açık dosyası).</param>
+    /// <param name="pooled">Eşiğin hesaplandığı tutar.</param>
+    public ShipmentDecisionContext EvaluatePool(Shipment shipment, decimal pooled)
+    {
         var shipping = _settings().Shipping;
         if (!shipping.IsEnabled)
             return new ShipmentDecisionContext(

@@ -69,6 +69,18 @@ public sealed class LabelRepository
         return row is null ? null : Map(row);
     }
 
+    /// <summary>
+    /// Bekleyen komut örtüsü (spec 2026-10-13 §5.5; <see cref="PendingSalesCommandRepository"/>): devredilmiş kendi
+    /// yayınının kalıntı etiketi için iptal ya da ilk baskı komutu kuyrukta bekliyorsa etiket yerel okuyucularda
+    /// uygulanmış sayılır — kuyrukta ve kalıntı teklifinde yeniden görünmez, ikinci kâğıt çıkmaz. Bağ tablosunun
+    /// birincil anahtarı (LabelId, CommandId) ile tek arama; kuyruk boşken (mod Off, bugün her lisans) hiçbir satırı
+    /// düşürmez.
+    /// </summary>
+    internal const string NotCoveredByPendingCommand =
+        "NOT EXISTS (SELECT 1 FROM PendingSalesCommandLabel p WHERE p.LabelId = Label.Id)";
+
+    /// <summary>Yayının kuyruğu: basılmamış, iptal edilmemiş ve bekleyen komut örtüsünde olmayan etiketler
+    /// (<see cref="NotCoveredByPendingCommand"/>).</summary>
     public IReadOnlyList<Label> GetUnprintedBySession(string sessionId)
     {
         using var conn = _factory.Open();
@@ -82,6 +94,7 @@ public sealed class LabelRepository
                      Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE SessionId=@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
+                AND " + NotCoveredByPendingCommand + @"
               ORDER BY AddedAt",
             new { sessionId }).ToList();
         return rows.Select(Map).ToList();
@@ -97,7 +110,10 @@ public sealed class LabelRepository
     /// <para>Yalnız bu bilgisayarda açılmış oturumlar (<c>Origin = 'local'</c>, §5.5): başka
     /// bilgisayarın basılmamış kuyruğu akışla inse de burada teklif edilmez — aynı satış iki yazıcıdan
     /// çıkabilirdi. Oturum birincil anahtarıyla bulunur; Label.SessionId yabancı anahtar olduğu için
-    /// oturumsuz etiket yoktur, süzgeç bugünkü (hepsi yerel) veride hiçbir satırı düşürmez.</para></summary>
+    /// oturumsuz etiket yoktur, süzgeç bugünkü (hepsi yerel) veride hiçbir satırı düşürmez.</para>
+    /// <para>Bekleyen komut örtüsündeki etiket (çevrimdışı iptal ya da basılmış kâğıdı sunucuya henüz işlenmemiş
+    /// kalıntı; <see cref="NotCoveredByPendingCommand"/>) teklif edilmez: yeniden açılışta da aynı kâğıt ikinci kez
+    /// çıkmaz.</para></summary>
     public IReadOnlyList<Label> GetUnprintedOutsideSession(string sessionId)
     {
         using var conn = _factory.Open();
@@ -107,6 +123,7 @@ public sealed class LabelRepository
               FROM Label
               WHERE SessionId<>@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
                 AND EXISTS (SELECT 1 FROM StreamSession s WHERE s.Id = Label.SessionId AND s.Origin = 'local')
+                AND " + NotCoveredByPendingCommand + @"
               ORDER BY AddedAt",
             new { sessionId }).ToList();
         return rows.Select(Map).ToList();
@@ -350,6 +367,42 @@ public sealed class LabelRepository
                 new { ids = ids.Distinct().ToArray() })
             .ToDictionary(r => r.Id, Map, System.StringComparer.Ordinal);
         return ids.Distinct().Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+    }
+
+    /// <summary>
+    /// Baskıdan hemen önceki yeniden okuma (spec 2026-10-13 §5.6-1): verilen etiketlerden kâğıda gidebilecekler,
+    /// verilen sırayla — basılmamış, iptal edilmemiş ve bekleyen komut örtüsünde olmayan
+    /// (<see cref="NotCoveredByPendingCommand"/>). Kuyruğun seçim kuralı (<see cref="GetUnprintedBySession"/>) ile aynı.
+    /// </summary>
+    public IReadOnlyList<Label> GetPrintableByIds(IReadOnlyList<string> ids)
+    {
+        if (ids.Count == 0) return System.Array.Empty<Label>();
+        using var conn = _factory.Open();
+        var byId = conn.Query<Row>(
+                @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                         Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
+                  FROM Label
+                  WHERE Id IN @ids AND PrintedAt IS NULL AND CancelledAt IS NULL
+                    AND " + NotCoveredByPendingCommand,
+                new { ids = ids.Distinct().ToArray() })
+            .ToDictionary(r => r.Id, Map, System.StringComparer.Ordinal);
+        return ids.Distinct().Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+    }
+
+    /// <summary>
+    /// Verilen etiketlerin sunucudaki sürümü (<c>ServerVersion</c>, göç 049): satış komutunun beklenen sürümü (spec
+    /// 2026-10-13 §4.6 adım 4; <c>expected</c>). Yerelde olmayan etiket sözlükte yoktur; sürümü hiç bilinmeyen etiket
+    /// (onaylanmamış ya da eski sunucunun sürümsüz onayı) null değerle döner.
+    /// </summary>
+    public IReadOnlyDictionary<string, int?> GetServerVersions(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0) return new Dictionary<string, int?>(System.StringComparer.Ordinal);
+        using var conn = _factory.Open();
+        return conn.Query<(string Id, long? ServerVersion)>(
+                "SELECT Id, ServerVersion FROM Label WHERE Id IN @ids",
+                new { ids = ids.Distinct().ToArray() })
+            .ToDictionary(r => r.Id, r => r.ServerVersion is { } v ? (int?)checked((int)v) : null,
+                System.StringComparer.Ordinal);
     }
 
     /// <summary>Updates the Price of a single label. Used by
