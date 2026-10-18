@@ -424,6 +424,8 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         _bed.Online = false;
         var session = _bed.LocalSession(ended: true);
         var label = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        // Bekleme bütçesi açıkça uzun: yavaş koşuda §5.6-2'nin 3 sn'si dolup ertelenmiş dala düşülmesin (c8167d08).
+        _bed.Router.HandoverWaitBudget = TestPatience.Upper;
         var held = await _bed.Gate.EnterAsync(session);
 
         var mark = _bed.Router.MarkPrintedAsync([label]);
@@ -447,6 +449,7 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         var live = ActiveLabel(out _);
         var session = _bed.LocalSession(ended: true);              // kendi bitmiş, devredilmemiş yayını: kapılı
         var gated = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        _bed.Router.HandoverWaitBudget = TestPatience.Upper;       // ertelenmiş dala düşülmesin (yavaş koşu)
         var held = await _bed.Gate.EnterAsync(session);            // kapanış gönderimi sessions/sync'te asılı
 
         var mark = _bed.Router.MarkPrintedAsync([gated, live]);
