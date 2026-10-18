@@ -2059,8 +2059,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         _backupRetry = result.Resend is { } intent ? new BackupRetry(target, request, blacklisted, intent) : null;
         CanRetryBackup = _backupRetry is not null;
-        BackupProblem = Services.Sync.SalesCommandMessages.BackupFailed(
-            result.Problem ?? Services.Sync.SalesCommandMessages.Failed);
+        var problem = result.Problem ?? Services.Sync.SalesCommandMessages.Failed;
+        BackupProblem = _backupRetry is not null
+            ? Services.Sync.SalesCommandMessages.BackupUnknown(problem)    // uygulanmış olabilir: "eklenemedi" denmez
+            : Services.Sync.SalesCommandMessages.BackupFailed(problem);
     }
 
     /// <summary>"Tekrar dene": sonucu bilinmeyen <c>add-backup</c>'ı aynı <c>CommandId</c> ve <c>newOrderId</c> ile

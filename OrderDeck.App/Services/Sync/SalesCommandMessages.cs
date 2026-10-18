@@ -82,6 +82,14 @@ public static class SalesCommandMessages
         return "Yedek eklenemedi: " + (text.EndsWith('.') || text.EndsWith('!') || text.EndsWith('?') ? text : text + ".");
     }
 
+    /// <summary>Sonucu bilinmeyen <c>add-backup</c> (istek gitti, yanıt gelmedi; uygulanmış olabilir): "Yedeğin sonucu
+    /// bilinmiyor: …". Şeritteki "Tekrar dene" ve aynı kişinin yeniden seçimi aynı niyeti gönderir.</summary>
+    public static string BackupUnknown(string problem)
+    {
+        var text = problem.Trim();
+        return "Yedeğin sonucu bilinmiyor: " + (text.EndsWith('.') || text.EndsWith('!') || text.EndsWith('?') ? text : text + ".");
+    }
+
     /// <summary>Çevrimdışı yeniden baskının ekran notu (§5.6): kâğıt önbellekten basıldı, verinin tazeliği son satış
     /// akışı eşitlemesidir. Kâğıda yazılmaz.</summary>
     public static string LastSync(DateTimeOffset? at, TimeZoneInfo? zone = null) =>

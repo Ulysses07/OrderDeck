@@ -889,7 +889,7 @@ public sealed class SalesEditRouter : ILabelEditor
         SalesBackupRequest request, SalesCommandIntent? resend = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (resend is not null) return SendBackupAsync(resend, ct);
+        if (resend is not null) return SendBackupAsync(request, resend, ct);
         // Mod Off: bugünkü çağrı, beklemeden.
         if (Decide([request.ParentLabelId]) is not { } decisions)
             return Task.FromResult(SalesBackupResult.Added(AddBackupLocal(request)));
@@ -924,6 +924,12 @@ public sealed class SalesEditRouter : ILabelEditor
     /// </summary>
     private Task<SalesBackupResult> AddBackupByCommandAsync(SalesBackupRequest request, CancellationToken ct)
     {
+        // Aynı kişi aynı ebeveyne yeniden seçildi ve önceki niyetin sonucu bilinmiyor (şerit kapatılmış olsa da): aynı
+        // CommandId ve newOrderId gider, sunucu ikinci yedeği eklemez.
+        SalesCommandIntent? known;
+        lock (_unresolvedGate) _unresolvedBackups.TryGetValue(BackupKey(request), out known);
+        if (known is not null) return SendBackupAsync(request, known, ct);
+
         if (_labelRepo.GetById(request.ParentLabelId) is not { } parent)
             return Task.FromResult(SalesBackupResult.Failed(SalesCommandMessages.Failed));
         var customer = _labels.EnsureBackupCustomer(request.Platform, request.Username, request.DisplayName);
@@ -934,15 +940,29 @@ public sealed class SalesEditRouter : ILabelEditor
             request.MessageText ?? "",
             Price: null,
             Code: null));
-        return SendBackupAsync(intent, ct);
+        return SendBackupAsync(request, intent, ct);
     }
 
+    /// <summary>Sonucu bilinmeyen <c>add-backup</c> niyetleri (ebeveyn, platform, kullanıcı adı) anahtarıyla; uygulanınca
+    /// ya da kalıcı retle düşer.</summary>
+    private readonly Dictionary<string, SalesCommandIntent> _unresolvedBackups = new(StringComparer.Ordinal);
+
+    private static string BackupKey(SalesBackupRequest request) =>
+        request.ParentLabelId + "\n" + request.Platform + "\n" + request.Username;
+
     /// <summary>Niyeti gönderir; uygulandıysa yanıtın yerele yazılmış satırını döner. Sonucu bilinmeyen niyet
-    /// (<see cref="SalesCommandOutcome.CanResend"/>) "Tekrar dene" için döner.</summary>
-    private async Task<SalesBackupResult> SendBackupAsync(SalesCommandIntent intent, CancellationToken ct)
+    /// (<see cref="SalesCommandOutcome.CanResend"/>) "Tekrar dene" için döner ve aynı kişinin yeniden seçimi için
+    /// saklanır.</summary>
+    private async Task<SalesBackupResult> SendBackupAsync(
+        SalesBackupRequest request, SalesCommandIntent intent, CancellationToken ct)
     {
         var outcome = await _commands.SendAsync(intent, ct).ConfigureAwait(false);
         _connectivity.Report(outcome.Status);
+        lock (_unresolvedGate)
+        {
+            if (outcome.CanResend) _unresolvedBackups[BackupKey(request)] = outcome.Intent;
+            else _unresolvedBackups.Remove(BackupKey(request));
+        }
         if (!outcome.IsApplied)
         {
             _log.LogInformation("Yedek ekleme: add-backup {CommandId} uygulanmadı ({Status}); yeniden gönderilebilir={CanResend}",

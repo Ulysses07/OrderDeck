@@ -127,7 +127,8 @@ public sealed class MainShellBackupRoutingTests
         Assign(s, row);
         await s.H.Vm.BackupAssignment;
 
-        s.H.Vm.BackupProblem.Should().Be("Yedek eklenemedi: Bu değişiklik için sunucu bağlantısı gerekli.");
+        s.H.Vm.BackupProblem.Should().Be("Yedeğin sonucu bilinmiyor: Bu değişiklik için sunucu bağlantısı gerekli.",
+            "komut uygulanmış olabilir: \"eklenemedi\" demek yanlış olurdu");
         s.H.Vm.CanRetryBackup.Should().BeTrue();
         s.H.Vm.IsInBackupSelectionMode.Should().BeFalse("başarısızlıkta yedek modu kapanır");
         s.H.Vm.PrintQueue.Should().NotContain(r => r.Label.IsTentativeBackup);
@@ -166,6 +167,29 @@ public sealed class MainShellBackupRoutingTests
         calls.Should().HaveCount(2);
         calls[1].CommandId.Should().Be(calls[0].CommandId, "aynı kişi aynı ebeveyne: aynı niyet, yinelenen yedek yok");
         s.H.Vm.PrintQueue.Should().ContainSingle(r => r.Label.IsTentativeBackup);
+        row.BackupCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Sonucu_bilinmeyen_yedekte_serit_kapatilsa_da_ayni_kisiyi_yeniden_secmek_ayni_niyeti_gonderir()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, _, row) = await ReleasedParentAsync(s);
+        s.Bed.Server.LoseNextResponse(FakeSalesServer.Commands);
+        Assign(s, row);
+        await s.H.Vm.BackupAssignment;
+
+        s.H.Vm.DismissBackupProblemCommand.Execute(null);                // "Tamam"
+        s.Bed.StateReceivedAt = DateTimeOffset.UtcNow.AddSeconds(1);     // sonraki başarılı state: yeniden çevrimiçi
+        Assign(s, row);
+        await s.H.Vm.BackupAssignment;
+
+        var calls = s.Bed.Server.CommandCalls.Select(c => c.Command).ToList();
+        calls.Should().HaveCount(2);
+        calls[1].CommandId.Should().Be(calls[0].CommandId, "şerit kapatılsa da sonucu bilinmeyen niyet unutulmaz");
+        s.Bed.Server.CommandLog(calls[0].CommandId!.Value)!.Applications.Should().Be(1, "sunucu yedeği bir kez ekler");
+        s.H.Vm.PrintQueue.Should().ContainSingle(r => r.Label.IsTentativeBackup, "ikinci Y kâğıdı çıkmaz");
         row.BackupCount.Should().Be(1);
     }
 
