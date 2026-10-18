@@ -9,10 +9,42 @@ namespace OrderDeck.App.Services.Sync;
 /// <summary>Ödeme isteği kirasının (spec 2026-10-13 §6.4; W3) operatöre görünen satır içi metinleri.</summary>
 public static class PaymentLeaseMessages
 {
+    private static readonly System.Globalization.CultureInfo Tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+
     /// <summary>§6.4-1: bu kişinin bu kapsamdaki bir etiketinin bekleyen komutu (kalıntı kuyruğun iptali ya da ilk baskısı)
     /// ön gönderimde gönderilemedi.</summary>
     public const string PendingCommandBlocked =
         "Bekleyen baskı ya da iptal onayı gönderilemedi; bağlantı gelince tekrar dene.";
+
+    /// <summary><c>in-progress-elsewhere</c> (§6.4): "PC-A'da bu kişiye ödeme isteniyor". Makine adı bilinmiyorsa
+    /// (kilit zaman aşımı) null — bugünkü metin gösterilir.</summary>
+    public static string? InProgressElsewhere(string? machine) =>
+        string.IsNullOrWhiteSpace(machine)
+            ? null
+            : $"{SalesCommandMessages.Locative(machine)} bu kişiye ödeme isteniyor — biraz sonra tekrar deneyin.";
+
+    /// <summary><c>members-stale</c> (§6.4).</summary>
+    public const string MembersStale = "Müşteri grupları eşitleniyor; biraz sonra tekrar dene.";
+
+    /// <summary><c>stale-total</c> (§6.4): "Bu bilgisayar güncel değil (sunucu X TL, burada Y TL)".</summary>
+    public static string NotCurrent(decimal serverTotal, decimal localTotal) =>
+        $"Bu bilgisayar güncel değil (sunucu {Money(serverTotal)}, burada {Money(localTotal)}).";
+
+    /// <summary><c>stale-total</c>'ın <c>liveElsewhere</c>'i (§6.4): "Bu kişinin PC-A'da süren yayında etiketi var; istek
+    /// yayın bitip devredilince yapılabilir."</summary>
+    public static string LiveElsewhere(string? machine) =>
+        $"Bu kişinin {(string.IsNullOrWhiteSpace(machine) ? "başka bir bilgisayarda" : SalesCommandMessages.Locative(machine))} "
+      + "süren yayında etiketi var; istek yayın bitip devredilince yapılabilir.";
+
+    /// <summary><c>settings-stale</c> (§6.2, §6.4).</summary>
+    public const string SettingsStale = "Kargo ayarı bu arada değişti; biraz sonra tekrar dene.";
+
+    /// <summary><c>already-requested</c> (§6.4-e): sunucuda bu kişi × kapsamın onaylanmamış önceki isteği var; mesaj
+    /// gitmedi (fail-closed).</summary>
+    public const string AlreadyRequested = "Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi.";
+
+    /// <summary>Uygulamanın öbür tutar metinleriyle aynı biçim: iki kuruş hanesi + "TL".</summary>
+    private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
 }
 
 /// <summary>Kapsamdan yeniden okunan tutar (spec 2026-10-13 §6.4 istemci adımı 2).</summary>
@@ -71,7 +103,19 @@ public sealed record PaymentLeaseBeginInput(
 /// <para><b>Kira</b> (<see cref="PaymentLeaseFlow.BeginAsync"/>, §6.4 istemci adımı 3): tutar okunup kargo hesaplandıktan
 /// sonra, bakiyeden ÖNCE (GUID'siz kişide de). Akış başına yeni <c>recordId</c>; yalnız yanıtı kaybolan isteğin akış içi
 /// tek yinelemesi aynı Id'yi ve aynı gövdeyi taşır (sunucu yeniden oynatır, §6.4-a). 200 → akış sürer, sunucunun üyeleri
-/// saklanır (<see cref="PaymentLeaseFlow.ServerMembers"/>). Kira alınamazsa mesaj GİTMEZ (M9, fail-closed).</para>
+/// saklanır (<see cref="PaymentLeaseFlow.ServerMembers"/>). Kira alınamazsa mesaj GİTMEZ (M9, fail-closed):
+/// <list type="bullet">
+///   <item>Sunucuya ulaşılamadı (çevrimdışı, sunucu hatası, lisans çözülemedi), v2 zarfı hazır değil → bugünkü
+///   belirsizlik sunumu (<see cref="PaymentRequestResult.BalanceUncertain"/>); kira ucu yok (404, S3 geri alındı, §8.6) →
+///   satır içi "Sunucu güncelleniyor…". İstisna (§5.8, §6.5-2): GUID'li üyesi olmayan VE kapsamdaki hiçbir etiketi uzak
+///   (akıştan inmiş) bir yayında olmayan kişi bugünkü yerel yoldan gider; kaydı bağlantı gelince yazılır
+///   (<see cref="PaymentLeaseFlow.RecordsLocally"/>, W3-06'nın kirasız kaydı).</item>
+///   <item><c>in-progress-elsewhere</c> → <see cref="PaymentRequestResult.PaymentInProgress"/>, makine adıyla.</item>
+///   <item><c>client-update-required</c> → güncelleme sorusu (süreç başına bir kez) ve satır içi engel.</item>
+///   <item><c>content-conflict</c> ve 400 → satır içi "İşlem kaydedilemedi (iç hata); tekrar dene." (günlüğe).</item>
+///   <item><c>members-stale</c>, <c>stale-total</c>, <c>settings-stale</c>, <c>mode-off</c>, <c>already-requested</c> →
+///   şimdilik metinli satır içi engel (yeniden deneme, Off turu ve soru W3-08/09'da).</item>
+/// </list></para>
 ///
 /// <para><b>Akışın sonu</b> (<see cref="PaymentLeaseFlow.FinishAsync"/>, §6.4 "Akışın sonu"): kira alındıysa (ya da
 /// sonucu bilinmiyorsa) her çıkışta <c>finish</c> — <c>delivered</c>, <c>unconfirmed</c> ya da <c>abandoned</c>; net,
@@ -100,10 +144,14 @@ public sealed class PaymentLeaseCoordinator
     private readonly SessionOrderSyncService _salesPush;
     private readonly PendingSalesCommandRepository _pendingCommands;
     private readonly LabelRepository _labels;
+    private readonly IAppUpdatePrompt _updatePrompt;
     private readonly ILogger<PaymentLeaseCoordinator> _log;
 
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
+
+    /// <summary>Bu süreçte güncelleme sorusu kira reddinden açıldı (<see cref="OpenUpdatePromptOnce"/>).</summary>
+    private int _updatePromptOpened;
 
     public PaymentLeaseCoordinator(
         LicenseApiClient api,
@@ -116,8 +164,10 @@ public sealed class PaymentLeaseCoordinator
         SessionOrderSyncService salesPush,
         PendingSalesCommandRepository pendingCommands,
         LabelRepository labels,
+        IAppUpdatePrompt updatePrompt,
         ILogger<PaymentLeaseCoordinator> log)
     {
+        _updatePrompt = updatePrompt;
         _api = api;
         _envelope = envelope;
         _license = license;
@@ -223,6 +273,7 @@ public sealed class PaymentLeaseCoordinator
         PaymentLeaseFlow flow, PaymentLeaseBeginInput input, CancellationToken ct)
     {
         var person = input.Person;
+        flow.RecordsLocally = false;
         if (!PaymentHistoryRecords.IsLeaseScope(input.ScopeKey) || person.MemberIds.Count == 0)
         {
             _log.LogError("Ödeme isteği kirası kurulamadı: kapsam ya da üye kümesi kira biçimine uymuyor — mesaj engellendi "
@@ -230,18 +281,10 @@ public sealed class PaymentLeaseCoordinator
             return FailClosed;
         }
         if (_envelope.ForPush() is not { IsV2: true } envelope)
-        {
-            _log.LogInformation("Ödeme isteği kirası: v2 zarfı hazır değil — mesaj engellendi (customer={CustomerId})",
-                person.LeasedId);
-            return FailClosed;
-        }
+            return Unreachable(flow, input, endpointMissing: false, "v2 zarfı hazır değil");
         var licenseId = await ResolveLicenseIdAsync(ct).ConfigureAwait(false);
         if (licenseId is null)
-        {
-            _log.LogInformation("Ödeme isteği kirası: lisans çözülemedi (sunucuya ulaşılamıyor) — mesaj engellendi "
-                              + "(customer={CustomerId})", person.LeasedId);
-            return FailClosed;
-        }
+            return Unreachable(flow, input, endpointMissing: false, "lisans çözülemedi");
 
         var request = new PaymentRequestBeginRequest(
             RecordId: Guid.NewGuid(),
@@ -275,11 +318,11 @@ public sealed class PaymentLeaseCoordinator
         }
         catch (ArgumentOutOfRangeException ex)
         {
-            // İstemcinin göndermeden reddettiği istek (üye sayısı sınırı aşıyor).
+            // İstemcinin göndermeden reddettiği istek (üye sayısı sunucu sınırını aşıyor): sunucunun 400'ü gibi.
             _log.LogError(ex, "Ödeme isteği kirası {RecordId} gönderilemedi: istek sunucu sınırlarını aşıyor — mesaj "
                             + "engellendi", request.RecordId);
             flow.Clear();
-            return FailClosed;
+            return Blocked(SalesCommandMessages.ContentConflict);
         }
 
         switch (http.Transport)
@@ -297,23 +340,117 @@ public sealed class PaymentLeaseCoordinator
                     request.RecordId, http.Response!.State);
                 return FailClosed;
             case PaymentRequestTransport.Offline or PaymentRequestTransport.Failed:
-                _log.LogInformation("Ödeme isteği kirası {RecordId}: sunucuya ulaşılamadı ({Transport}, HTTP {Status}) — "
-                                  + "mesaj engellendi", request.RecordId, http.Transport, http.StatusCode);
-                return FailClosed;
+                return Unreachable(flow, input, endpointMissing: false,
+                    $"{http.Transport} HTTP {http.StatusCode} (kira {request.RecordId})");
             case PaymentRequestTransport.EndpointMissing:
                 flow.Clear();
-                _log.LogWarning("Ödeme isteği kirası {RecordId}: kira ucu yok (404) — mesaj engellendi", request.RecordId);
-                return FailClosed;
+                return Unreachable(flow, input, endpointMissing: true, $"kira ucu yok (kira {request.RecordId})");
             default:
                 flow.Clear();
-                _log.LogInformation("Ödeme isteği kirası {RecordId} reddedildi: {Code} — mesaj engellendi",
-                    request.RecordId, http.Problem?.Code);
-                return FailClosed;
+                return Rejected(request.RecordId, http.StatusCode, http.Problem!, input);
         }
     }
 
-    /// <summary>Kira alınamadı: mesaj gitmez (M9), bugünkü belirsizlik sunumu.</summary>
+    /// <summary>Kira alınamadı, sunucunun kararı da yok: mesaj gitmez (M9), bugünkü belirsizlik sunumu.</summary>
     private static PaymentRequestOutcome FailClosed => new(PaymentRequestResult.BalanceUncertain);
+
+    private static PaymentRequestOutcome Blocked(string message) => new(PaymentRequestResult.Blocked, Message: message);
+
+    /// <summary>
+    /// Kiraya ulaşılamadı (çevrimdışı, sunucu hatası, lisans çözülemedi, zarf hazır değil, uç yok; §5.8, §6.5-2, §8.6).
+    /// İstisna: GUID'li üyesi olmayan VE kapsamdaki hiçbir etiketi uzak (akıştan inmiş) bir yayında olmayan kişi bugünkü
+    /// yerel yoldan gider (null, <see cref="PaymentLeaseFlow.RecordsLocally"/>) — çevrimdışı canlı yayın sürebilsin (Y3);
+    /// uzak etiketi olan hiçbir kişi kirayı atlayamaz. Öbürlerinde mesaj gitmez.
+    /// </summary>
+    private PaymentRequestOutcome? Unreachable(
+        PaymentLeaseFlow flow, PaymentLeaseBeginInput input, bool endpointMissing, string reason)
+    {
+        var person = input.Person;
+        bool local;
+        try
+        {
+            local = person.OwnerId is null
+                    && !_labels.HasRemoteLabels(person.MemberIds, PaymentHistoryRecords.SessionIdOf(input.ScopeKey));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Ödeme isteği kirası: uzak etiket denetimi okunamadı (customer={CustomerId})",
+                person.LeasedId);
+            local = false;
+        }
+
+        if (local)
+        {
+            flow.RecordsLocally = true;
+            _log.LogInformation(
+                "Ödeme isteği kirasına ulaşılamadı ({Reason}); GUID'siz ve yalnız kendi etiketleri olan kişi yerel yoldan "
+              + "gidiyor, kayıt bağlantı gelince (customer={CustomerId})", reason, person.LeasedId);
+            return null;
+        }
+
+        _log.LogInformation("Ödeme isteği kirasına ulaşılamadı ({Reason}) — mesaj engellendi (customer={CustomerId})",
+            reason, person.LeasedId);
+        return endpointMissing ? Blocked(SalesCommandMessages.EndpointMissing) : FailClosed;
+    }
+
+    /// <summary>Sunucunun reddi (§6.4 "409'ların istemcideki karşılığı"; §5.3). Hiçbir ret kira yazmaz.</summary>
+    private PaymentRequestOutcome Rejected(
+        Guid recordId, int status, PaymentRequestProblem problem, PaymentLeaseBeginInput input)
+    {
+        switch (problem.Code)
+        {
+            case PaymentRequestProblemCodes.InProgressElsewhere:
+                _log.LogInformation(
+                    "Ödeme isteği kirası {RecordId}: başka bilgisayarda bu kişiye istek sürüyor (other={OtherRecordId}) — "
+                  + "mesaj engellendi", recordId, problem.RecordId);
+                return new PaymentRequestOutcome(PaymentRequestResult.PaymentInProgress,
+                    Message: PaymentLeaseMessages.InProgressElsewhere(problem.Machine));
+            case PaymentRequestProblemCodes.ClientUpdateRequired:
+                _log.LogWarning("Ödeme isteği kirası {RecordId}: güncelleme gerekli — mesaj engellendi", recordId);
+                OpenUpdatePromptOnce(recordId);
+                return Blocked(SalesCommandMessages.ClientUpdateRequired);
+            case PaymentRequestProblemCodes.MembersStale:
+                _log.LogInformation("Ödeme isteği kirası {RecordId}: members-stale ({Members} sunucu üyesi) — mesaj engellendi",
+                    recordId, problem.Members?.Count);
+                return Blocked(PaymentLeaseMessages.MembersStale);
+            case PaymentRequestProblemCodes.StaleTotal:
+                _log.LogInformation(
+                    "Ödeme isteği kirası {RecordId}: stale-total ({Live} başka bilgisayarda süren yayın) — mesaj engellendi",
+                    recordId, problem.LiveElsewhere?.Count ?? 0);
+                return Blocked(problem.LiveElsewhere is { Count: > 0 } live
+                    ? PaymentLeaseMessages.LiveElsewhere(live[0].Machine)
+                    : PaymentLeaseMessages.NotCurrent(problem.ServerTotal ?? 0m, input.ProductTotal));
+            case PaymentRequestProblemCodes.SettingsStale:
+                _log.LogInformation("Ödeme isteği kirası {RecordId}: settings-stale (sunucu sürümü {Version}) — mesaj "
+                                  + "engellendi", recordId, problem.Current?.Version);
+                return Blocked(PaymentLeaseMessages.SettingsStale);
+            case PaymentRequestProblemCodes.ModeOff:
+                _log.LogInformation("Ödeme isteği kirası {RecordId}: mode-off — mesaj engellendi", recordId);
+                return Blocked(SalesCommandMessages.ModeOff);
+            case PaymentRequestProblemCodes.AlreadyRequested:
+                _log.LogInformation("Ödeme isteği kirası {RecordId}: already-requested ({Priors} öncül) — mesaj engellendi",
+                    recordId, problem.Priors?.Count);
+                return Blocked(PaymentLeaseMessages.AlreadyRequested);
+            default:
+                // content-conflict, 400 ve tanınmayan ret: istemci hatası, yeniden denenmez.
+                _log.LogError("Ödeme isteği kirası {RecordId} reddedildi (HTTP {Status}, {Code}): istemci hatası — mesaj "
+                            + "engellendi", recordId, status, problem.Code);
+                return Blocked(SalesCommandMessages.ContentConflict);
+        }
+    }
+
+    /// <summary><c>client-update-required</c>'ın güncelleme sorusu (§5.3) — süreç başına BİR KEZ (Velopack sorusu
+    /// modaldır; "Hayır" sonraki açılışa bırakır). Satır içi metin her retle döner.</summary>
+    private void OpenUpdatePromptOnce(Guid recordId)
+    {
+        if (Interlocked.Exchange(ref _updatePromptOpened, 1) == 1)
+        {
+            _log.LogDebug("Ödeme isteği kirası {RecordId}: güncelleme sorusu bu süreçte zaten açıldı", recordId);
+            return;
+        }
+        try { _updatePrompt.CheckAndPrompt(); }
+        catch (Exception ex) { _log.LogWarning(ex, "Güncelleme sorusu açılamadı"); }
+    }
 
     /// <summary><see cref="PaymentLeaseFlow.FinishAsync"/>'in gövdesi: önce kalıcı kuyruk, sonra süreli gönderim. Fırlatmaz.</summary>
     internal async Task FinishAsync(Guid recordId, string outcome, decimal netAmount, decimal? appliedAmount)
@@ -395,6 +532,13 @@ public sealed class PaymentLeaseFlow
     public IReadOnlyList<string> ServerMembers { get; private set; } = [];
 
     /// <summary>
+    /// Kiraya ulaşılamadı ve kişi yerel yolun istisnasında (GUID'li üye yok, kapsamda uzak etiket yok; §5.8, §6.5-2): akış
+    /// bugünkü yerel yoldan gider ve teslim ya da belirsiz gönderimden sonra kirasız kayıt yazılır (W3-06'nın kaydı,
+    /// bağlantı gelince gider).
+    /// </summary>
+    public bool RecordsLocally { get; internal set; }
+
+    /// <summary>
     /// Kişi × kapsamın kirası (§6.4 istemci adımı 3). <c>null</c> = kira alındı, akış sürer; değilse akış durur ve bu sonuç
     /// döner (mesaj gitmez). Yerel kip On'da kira zorunludur ve fail-closed çalışır (M9).
     /// </summary>
@@ -408,12 +552,15 @@ public sealed class PaymentLeaseFlow
     /// </summary>
     /// <param name="netAmount">Mesajın neti (bakiye düşüldükten sonra).</param>
     /// <param name="appliedAmount">Bakiyeden düşülen; bakiye adımı sonuçlanmadıysa ya da kişide bakiye işi yoksa null.</param>
+    /// <remarks>Yerel yolda (<see cref="RecordsLocally"/>) sonucu bilinmeyen kira her zaman <c>abandoned</c> kapanır:
+    /// teslimi kirasız kayıt taşır; kira da teslim deseydi aynı mesaj sunucuda iki öncül olurdu.</remarks>
     public Task FinishAsync(string outcome, decimal netAmount, decimal? appliedAmount)
     {
         if (_recordId is not { } recordId) return Task.CompletedTask;
         _recordId = null;
         ServerMembers = [];
-        return _owner.FinishAsync(recordId, outcome, netAmount, appliedAmount);
+        return _owner.FinishAsync(recordId, RecordsLocally ? PaymentRequestStates.Abandoned : outcome, netAmount,
+            appliedAmount);
     }
 
     internal void Begun(Guid recordId, IReadOnlyList<string>? serverMembers = null)

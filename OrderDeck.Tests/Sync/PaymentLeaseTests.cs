@@ -341,6 +341,256 @@ public sealed class PaymentLeaseTests : IDisposable
         finish.Json.GetProperty("outcome").GetString().Should().Be("abandoned");
     }
 
+    // ── kapalı hata ve 409 eşlemeleri ─────────────────────────────────────
+
+    [Fact]
+    public async Task Baska_bilgisayarin_kirasi_PaymentInProgress_makine_adiyla_mesaj_ve_finish_yok()
+    {
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_baska_pc", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "in-progress-elsewhere",
+            new Dictionary<string, object?>
+            {
+                ["machine"] = "PC-B", ["since"] = DateTimeOffset.UtcNow, ["recordId"] = Guid.NewGuid(),
+            });
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.PaymentInProgress);
+        outcome.Message.Should().Be("PC-B'de bu kişiye ödeme isteniyor — biraz sonra tekrar deneyin.");
+        _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty("ret kira yazmaz; kapatılacak bir şey yok");
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty("bakiyeden önce durdu");
+    }
+
+    [Fact]
+    public async Task Kilit_zaman_asiminda_makine_adi_yoksa_bugunku_metin()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kilit", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "in-progress-elsewhere");
+        var dialogs = new FakeDialogService();
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+        PaymentResultPresenter.Notify(dialogs, outcome);
+
+        outcome.Result.Should().Be(PaymentRequestResult.PaymentInProgress);
+        outcome.Message.Should().BeNull();
+        dialogs.InfosShown.Should().Equal(
+            "Bu müşteri için başka bir pencerede ödeme isteği sürüyor — biraz sonra tekrar deneyin.");
+    }
+
+    [Fact]
+    public async Task Begin_cevrimdisi_GUIDsiz_ve_yalniz_kendi_etiketleri_olan_kiside_yerel_yol_ve_kayit()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var guidless = GuidlessCustomer(pc, "ornek_yerel");
+        var label = InsertLabel(pc, live, guidless.Id, "tiktok", "ornek_yerel", 100m, printed: true);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+
+        (await RequestAsync(pc, guidless, Scope(live))).Result.Should().Be(PaymentRequestResult.Opened,
+            "§5.8: yalnız kendi etiketleri olan GUID'siz kişide bugünkü gibi yerel (çevrimdışı canlı yayın, Y3)");
+
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+        var record = pc.PendingPaymentRecords.List().Where(r => r.Kind == PendingPaymentRecordKinds.Record)
+            .Select(PendingPaymentRecordCodec.DecodeRecord).Should().ContainSingle(
+                "kayıt bağlantı gelince yazılır (W3-06'nın kirasız kaydı)").Subject;
+        record.OwnerId.Should().Be(guidless.Id);
+        record.ScopeKey.Should().Be(Scope(live));
+        record.State.Should().Be(PaymentRequestStates.Delivered);
+        record.NetAmount.Should().Be(100m + 50m);
+        record.OrderIds.Should().Equal(Guid.ParseExact(label, "N"));
+        FinishOutcomes().Should().Equal(new[] { "abandoned" },
+            "sonucu bilinmeyen begin kapanır; teslimi kirasız kayıt taşır");
+    }
+
+    [Fact]
+    public async Task Begin_cevrimdisi_GUIDsiz_ama_uzak_yayinda_etiketi_olan_kiside_mesaj_yok()
+    {
+        // §6.5-2: akıştan GUID'siz Id'li müşteri de iner; kural GUID'e değil uzak etikete de bakar.
+        var pc = await PcAsync();
+        var guidless = GuidlessCustomer(pc, "ornek_uzak");
+        var remote = Guid.NewGuid();
+        _server.SeedSession(remote, DateTimeOffset.UtcNow.AddHours(-3), DateTimeOffset.UtcNow.AddHours(-2),
+            owner: Guid.NewGuid(), title: "Akşam yayını", ownerMachineName: "PC-B");
+        _server.ReleaseSession(remote);
+        var order = Guid.NewGuid();
+        _server.SeedOrder(new FakeSalesServer.OrderBody(order, remote, guidless.Id, "tiktok", "ornek_uzak", "Örnek",
+                "A1 aldım", "A1", 90m, DateTimeOffset.UtcNow.AddHours(-3), DateTimeOffset.UtcNow.AddHours(-3), null, null,
+                false, false, false, null, null, null, null, null, null, null, null, null),
+            version: 1, origin: Guid.NewGuid());
+        await pc.SettleAsync();
+        pc.SessionOf(remote.ToString("N"))!.Origin.Should().Be("remote");
+        pc.Row(order.ToString("N"))!.CustomerId.Should().Be(guidless.Id);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+
+        (await RequestAsync(pc, guidless, "cumulative")).Result.Should().Be(PaymentRequestResult.BalanceUncertain,
+            "uzak etiketi olan hiçbir kişi kirayı atlayamaz (fail-closed)");
+
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        pc.PendingPaymentRecords.List().Should().NotContain(r => r.Kind == PendingPaymentRecordKinds.Record);
+    }
+
+    [Fact]
+    public async Task Kira_ucu_yoksa_satir_ici_engel_mesaj_yok()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_uc_yok", 120m);
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsBegin, 404);
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked, "§8.6: S3 geri alınırsa GUID'li kişide fail-closed");
+        outcome.Message.Should().Be("Sunucu güncelleniyor; biraz sonra tekrar dene.");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Guncelleme_gerekli_engel_ve_guncelleme_sorusu_bir_kez()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_surum", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "client-update-required");
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "client-update-required");
+
+        var first = await RequestAsync(pc, buyer.Customer, Scope(live));
+        var second = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        first.Result.Should().Be(PaymentRequestResult.Blocked);
+        first.Message.Should().Be("Bu işlem için uygulamayı güncelle.");
+        second.Message.Should().Be("Bu işlem için uygulamayı güncelle.");
+        pc.UpdatePrompts.Should().Be(1, "güncelleme sorusu süreç başına bir kez");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(409, "content-conflict")]
+    [InlineData(400, "invalid-orders")]
+    public async Task Icerik_cakismasi_ve_gecersiz_istek_ic_hata_engeli(int status, string code)
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_ic_hata", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, status, code);
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("İşlem kaydedilemedi (iç hata); tekrar dene.");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    public static TheoryData<string, string> InterimRejections => new()
+    {
+        { "members-stale", "Müşteri grupları eşitleniyor; biraz sonra tekrar dene." },
+        { "stale-total", "Bu bilgisayar güncel değil (sunucu 180,00 TL, burada 120,00 TL)." },
+        { "stale-total-live", "Bu kişinin PC-B'de süren yayında etiketi var; istek yayın bitip devredilince yapılabilir." },
+        { "settings-stale", "Kargo ayarı bu arada değişti; biraz sonra tekrar dene." },
+        { "mode-off", "Senkron kapatıldı; ekran yenileniyor." },
+        { "already-requested", "Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi." },
+    };
+
+    [Theory]
+    [MemberData(nameof(InterimRejections))]
+    public async Task Yeniden_deneme_gelene_kadar_kira_retleri_metinli_engel_mesaj_yok(string scenario, string expected)
+    {
+        // W3-08/09'a kadar fail-closed: yeniden deneme, Off turu ve "tekrar gönderilsin mi?" sorusu sonra gelir.
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_ret", 120m);
+        var (code, extensions) = scenario switch
+        {
+            "members-stale" => ("members-stale", new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } }),
+            "stale-total" => ("stale-total", new Dictionary<string, object?> { ["serverTotal"] = 180m }),
+            "stale-total-live" => ("stale-total", new Dictionary<string, object?>
+            {
+                ["serverTotal"] = 180m,
+                ["liveElsewhere"] = new[] { new { sessionId = Guid.NewGuid(), machine = "PC-B" } },
+            }),
+            "settings-stale" => ("settings-stale", new Dictionary<string, object?>
+            {
+                ["current"] = new { version = 4, freeShippingThreshold = 1000m, fee = 60m },
+            }),
+            "already-requested" => ("already-requested", new Dictionary<string, object?>
+            {
+                ["priors"] = new[]
+                {
+                    new { id = Guid.NewGuid(), machine = "PC-B", netAmount = 120m, at = DateTimeOffset.UtcNow,
+                          finishedAt = DateTimeOffset.UtcNow, unconfirmed = false },
+                },
+                ["priorsDigest"] = "v1.AAAA",
+            }),
+            _ => (scenario, new Dictionary<string, object?>()),
+        };
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, code, extensions);
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be(expected);
+        _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle("bu görevde yeniden deneme yok");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Yayin_raporunda_engel_satir_ici_seritte_acilir_pencere_yok()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        await BuyerAsync(pc, live, "alici_rapor", 120m);
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsBegin, 404);
+        var dialogs = new FakeDialogService();
+        var vm = new StreamReportViewModel(pc.LabelRepo, pc.Sessions, new GiveawayRepository(pc.Db), pc.Customers,
+            pc.Payments, dialogs);
+        vm.Load(live);
+
+        await vm.OpenWhatsAppCommand.ExecuteAsync(vm.TopCustomers.Should().ContainSingle().Subject);
+
+        vm.PaymentProblem.Should().Be("Sunucu güncelleniyor; biraz sonra tekrar dene.");
+        dialogs.Shown.Should().BeEmpty();
+        dialogs.InfosShown.Should().BeEmpty();
+        dialogs.ErrorsShown.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Duzeltilmis_istek_listesinde_engel_elle_bakilmali_ve_nedeni()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_duzeltme", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "content-conflict");
+        var corrected = new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(
+            pc.Customers, pc.LabelRepo, pc.Jobs, pc.Shipping, pc.Payments);
+        var candidate = new OrderDeck.App.Services.PriceCorrection.CorrectedRequestCandidate(
+            buyer.Customer.Id, "Örnek", Scope(live), 100m, DateTimeOffset.UtcNow, false, 170m);
+
+        var outcome = (await corrected.ResendAsync(live, DateTime.Now, [candidate])).Should().ContainSingle().Subject;
+
+        outcome.Status.Should().Be(OrderDeck.App.Services.PriceCorrection.ResendStatus.Manual);
+        outcome.Note.Should().Be("İşlem kaydedilemedi (iç hata); tekrar dene.");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    /// <summary>GUID'siz (ham Id'li) telefonlu müşteri: bakiye işi açılmaz.</summary>
+    private static Customer GuidlessCustomer(SalesPc pc, string username)
+    {
+        var customer = new Customer($"tiktok:{username}_{Guid.NewGuid():N}", "tiktok", username, "Örnek", null,
+            1, 1, false, null, null, 0, 0m, null, null, TestPhone.NewE164());
+        pc.Customers.Insert(customer);
+        return customer;
+    }
+
     private IReadOnlyList<string?> FinishOutcomes() =>
         _server.Calls(FakeSalesServer.PaymentRequestsFinish).Select(f => f.Json.GetProperty("outcome").GetString())
             .ToList();

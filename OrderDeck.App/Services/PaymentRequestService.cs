@@ -155,9 +155,10 @@ public sealed class PaymentRequestService
     /// örneği — ikinci bir örnek kirayı senkrona görünmez yapardı). Null yalnız testlerde (kira yok).</param>
     /// <param name="offRecords">Mod Off'ta her teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec
     /// 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)"; W3-06). DI verir; null yalnız testlerde (kayıt yok).</param>
-    /// <param name="lease">Mod On sarmalı (spec 2026-10-13 §6.4; W3-07): ön gönderim, kapsamdan yeniden okunan tutar ve
-    /// bekleyen komut engeli. Yalnız girişte ve çıkışta çağrılır; yerel kip Off'ta hiçbir şey yapmaz. DI verir; null
-    /// yalnız testlerde (bugünkü yol).</param>
+    /// <param name="lease">Mod On sarmalı (spec 2026-10-13 §6.4; W3-07): ön gönderim, bekleyen komut engeli, kapsamdan
+    /// yeniden okunan tutar, bakiyeden önce kira (<c>begin</c>; fail-closed) ve her çıkışta <c>finish</c>. Yalnız girişte ve
+    /// çıkışta çağrılır, ödeme işinin durum makinesi değişmez; yerel kip Off'ta hiçbir şey yapmaz. DI verir; null yalnız
+    /// testlerde (bugünkü yol).</param>
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
@@ -659,7 +660,7 @@ public sealed class PaymentRequestService
                 case CloudSendOutcome.Sent:
                     exit.Delivered();
                     MarkDelivered(deliveryJob, totalAmount);
-                    RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
+                    RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
                     return Done(PaymentRequestResult.Sent);
                 case CloudSendOutcome.Pending:
                     // Sonuç bilinmiyor: mesaj gitmiş olabilir — teslim kaydı yazılır, sıradaki tıklama
@@ -668,7 +669,7 @@ public sealed class PaymentRequestService
                     // deneme aynı anahtarı yeniden kullanır (R2-01).
                     exit.Unconfirmed();
                     MarkDelivered(deliveryJob, totalAmount);
-                    RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
+                    RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
                     return Done(PaymentRequestResult.SendPending);
                 case CloudSendOutcome.FallBackUnknown:
                     cloudMayHaveSent = true;
@@ -692,13 +693,13 @@ public sealed class PaymentRequestService
             else
             {
                 exit.Unconfirmed();
-                RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
+                RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
             }
             return Done(PaymentRequestResult.LaunchFailed);
         }
         exit.Delivered();
         MarkDelivered(deliveryJob, totalAmount);
-        RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
+        RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
         return Done(PaymentRequestResult.Opened);
     }
 
@@ -706,15 +707,17 @@ public sealed class PaymentRequestService
     /// Mod Off'ta teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec 2026-10-13 §6.4 "Ödeme geçmişi
     /// (mod Off'ta da)"; W3-06): yalnız kuyruğa yazar, ağa çıkmaz, mesaj akışını ve soruları değiştirmez. İşli kişide
     /// işin teslimden SONRAKİ satırı okunur (kayıt Id'si teslim ya da deneme sayısından türetilir —
-    /// <see cref="PaymentOffRecordWriter"/>). Yerel kip On ise yazılmaz: o yolun kaydı kiradır (W3-07). Hata yutulur —
-    /// mesaj zaten gitti.
+    /// <see cref="PaymentOffRecordWriter"/>). Yerel kip On ise yazılmaz: o yolun kaydı kiradır (W3-07) — tek istisna,
+    /// kiraya ulaşılamadığında yerel yoldan giden GUID'siz kişi (<see cref="PaymentLeaseFlow.RecordsLocally"/>, spec §5.8:
+    /// "kayıt bağlantı gelince yazılır"). Hata yutulur — mesaj zaten gitti.
     /// </summary>
-    private void RecordModeOff(PaymentPerson person, PaymentJob? job, string scopeKey, bool unconfirmed, decimal net)
+    private void RecordWithoutLease(
+        PaymentLeaseFlow? lease, PaymentPerson person, PaymentJob? job, string scopeKey, bool unconfirmed, decimal net)
     {
         if (_offRecords is null) return;
         try
         {
-            if (!_offRecords.IsModeOff()) return;
+            if (lease is null ? !_offRecords.IsModeOff() : !lease.RecordsLocally) return;
             var current = job is null ? null : _jobs.Get(job.Id);
             if (job is not null && current is null) return;
             _offRecords.Record(person, current, scopeKey, unconfirmed, net);

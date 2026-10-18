@@ -372,6 +372,10 @@ public sealed class CustomerSyncDiTests
             host.Services.GetRequiredService<PendingSalesCommandRepository>());
         PrivateField<SalesSyncStateRepository>(lease, "_state").Should().BeSameAs(
             host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<SalesSyncEnvelope>(lease, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>(), "zarf tekil: geri yüklemeden sonra kip tazelenene kadar istek yok");
+        PrivateField<global::OrderDeck.App.Services.IAppUpdatePrompt>(lease, "_updatePrompt").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>());
     }
 
     [Fact]

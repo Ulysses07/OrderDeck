@@ -733,6 +733,28 @@ public sealed class LabelRepository
         return new PrintedTotal(rows.Sum(r => r.Price), rows.Select(r => r.Id).ToList());
     }
 
+    /// <summary>
+    /// Verilen müşterilerin (bir ödeme kişisinin bütün üyeleri) kapsamdaki etiketlerinden herhangi biri bu bilgisayarda
+    /// açılmamış bir yayında mı (<c>Origin</c> <c>local</c> değil — satış akışından inmiş). Etiketin durumu süzülmez.
+    /// Mod On'da ödeme kirasına ulaşılamazken yerel yolun istisnası buna bakar (spec 2026-10-13 §6.5-2): akıştan GUID'siz
+    /// Id'li müşteri de inebildiği için kural GUID'e değil uzak etikete de bakar; uzak etiketi olan hiçbir kişi kirayı
+    /// atlayamaz.
+    /// </summary>
+    /// <param name="sessionId">Yayın kapsamının yayını; kümülatif kapsamda boş (bütün yayınlar).</param>
+    public bool HasRemoteLabels(IReadOnlyCollection<string> memberIds, string? sessionId = null)
+    {
+        if (memberIds.Count == 0) return false;
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            @"SELECT EXISTS (
+                SELECT 1 FROM Label l
+                JOIN StreamSession s ON s.Id = l.SessionId
+                WHERE l.CustomerId IN @memberIds
+                  AND (@sessionId IS NULL OR l.SessionId = @sessionId)
+                  AND s.Origin <> 'local')",
+            new { memberIds, sessionId }) == 1;
+    }
+
     /// <summary>Returns the labels a customer added in a specific session, ordered
     /// oldest-first so the auctioneer sees them in the order they happened during
     /// the live. Cancelled rows are returned too — UI flags them visually.</summary>
