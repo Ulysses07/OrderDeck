@@ -15,6 +15,15 @@ public sealed record SalesSyncStateRow(
     long? ShipmentsDerivedAt,
     long? PaymentHistorySentAt);
 
+/// <summary>Kargo ayarı sağlayıcısının okuması (<see cref="SalesSyncStateRepository.GetShippingCache"/>; spec 2026-10-13
+/// §6.2): yerel kip ve <c>sales/state</c>'in sakladığı lisans geneli kargo ayarı. Ayar sunucuda hiç yazılmadıysa üç
+/// alan da boş.</summary>
+/// <param name="CopyPending"><c>disable</c> turunun kargo ayarı kopyası bekliyor
+/// (<see cref="SalesSyncStateRepository.ModeOffShippingCopyMarker"/>): kip 0 yazıldı, lisans geneli değer yerel ayara henüz
+/// yazılamadı.</param>
+public sealed record SalesShippingCache(
+    int Mode, int? Version, decimal? FreeShippingThreshold, decimal? ShippingFee, bool CopyPending = false);
+
 /// <summary>Mod On açılışının 1. adımında boşaltılan giden kuyrukların kalanı (spec 2026-10-13 §8.4-1;
 /// <see cref="SalesSyncStateRepository.GetOpeningBacklog"/>). Canlı (açık) yayının oturumu ve etiketleri sayılmaz: iki
 /// kipte aynı yargılanırlar.</summary>
@@ -23,7 +32,8 @@ public sealed record SalesSyncStateRow(
 /// <param name="EndedSessionLabels">Bitmiş yayınların gönderilmemiş etiketleri.</param>
 /// <param name="Shipments">Gönderilmemiş kargo dosyaları.</param>
 /// <param name="Payments">Gönderilmemiş dekontlar.</param>
-/// <param name="PaymentRecords">Gönderilmeyi bekleyen ödeme kayıtları (<c>PendingPaymentRecord</c>; W3 gönderir).</param>
+/// <param name="PaymentRecords">Gönderilmeyi bekleyen ödeme kayıtları (<c>PendingPaymentRecord</c>; App'teki
+/// <c>PaymentRecordSender</c> gönderir, açılışın ilk kuyruğu).</param>
 public sealed record SalesOpeningBacklog(
     int Customers, int EndedSessions, int EndedSessionLabels, int Shipments, int Payments, int PaymentRecords)
 {
@@ -145,6 +155,27 @@ public sealed class SalesSyncStateRepository
     }
 
     /// <summary>
+    /// Yerel kip ve lisans geneli kargo ayarının önbelleği, TEK sorguda (<c>ShippingSettingsProvider</c>, §6.2): kip ile
+    /// değer aynı satır okumasından gelir; <c>disable</c> turunun kopya işareti
+    /// (<see cref="ModeOffShippingCopyMarker"/>) da aynı sorguda. Satır yoksa kip 0 (<see cref="GetMode"/> gibi) ve önbellek
+    /// boş.
+    /// </summary>
+    public SalesShippingCache GetShippingCache()
+    {
+        using var conn = _factory.Open();
+        var row = conn.QuerySingleOrDefault<ShippingRow>(
+            """
+            SELECT Mode, ShippingVersion, FreeShippingThreshold, ShippingFee,
+                   EXISTS (SELECT 1 FROM SyncCursor WHERE Name = @name AND LicenseKey = '') AS CopyPending
+            FROM SalesSyncState WHERE Id = 1
+            """, new { name = ModeOffShippingCopyMarker });
+        return row is null
+            ? new SalesShippingCache(0, null, null, null)
+            : new SalesShippingCache((int)row.Mode, (int?)row.ShippingVersion,
+                ToDecimal(row.FreeShippingThreshold), ToDecimal(row.ShippingFee), row.CopyPending != 0);
+    }
+
+    /// <summary>
     /// <c>sales/state</c>'in bildirdiği lisans geneli kargo ayarını (§6.2; ayar hiç yazılmadıysa üçü de
     /// <c>null</c>) ve KVKK boşaltma ayarını (§9) saklar. Değerler aynıysa yazmaz: 30 saniyelik turun
     /// her seferinde yazma kilidi almaması için.
@@ -174,6 +205,43 @@ public sealed class SalesSyncStateRepository
                 fee = (double?)fee,
                 scrub = scrubOrderText ? 1 : 0,
             }) == 1;
+    }
+
+    /// <summary>
+    /// Lisans geneli kargo ayarının önbelleğini sunucunun döndürdüğü satırla günceller (ayar ekranının
+    /// <c>PUT shipping-settings</c>'i: 200'ün satırı ya da 409 <c>stale</c>'in <c>current</c>'ı; §4.8, §6.2). Yalnız
+    /// <see cref="SaveServerState"/>'in üç kargo alanını yazar: KVKK boşaltma ayarı bu yanıtta yoktur. Koşulsuz yazar —
+    /// eşzamanlı bir <c>sales/state</c> turu daha eski sürümü üstüne yazarsa bir sonraki tur düzeltir; o arada eski
+    /// sürümle giden yazım <c>stale</c>, ödeme isteği <c>settings-stale</c> alır.
+    /// </summary>
+    /// <returns>Satır değiştiyse true.</returns>
+    public bool SaveShippingCache(int version, decimal? threshold, decimal? fee)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            """
+            UPDATE SalesSyncState
+            SET ShippingVersion = @version,
+                FreeShippingThreshold = @threshold,
+                ShippingFee = @fee
+            WHERE Id = 1
+              AND (ShippingVersion IS NOT @version
+                   OR FreeShippingThreshold IS NOT @threshold
+                   OR ShippingFee IS NOT @fee)
+            """,
+            new { version, threshold = (double?)threshold, fee = (double?)fee }) == 1;
+    }
+
+    /// <summary>
+    /// Ödeme geçmişi geri doldurması bitti ve sunucuya bildirildi (spec 2026-10-13 §3.2, §8.2-6; W3-06):
+    /// <c>PaymentHistorySentAt</c>'i yazar. Yalnız tanı damgasıdır — tamamlanma kararı lisans ve kopya başına imlecin
+    /// (<c>SyncCursor('payment-history-out', LicenseKey)</c>): geri yüklenen veritabanı damgayı yedekten getirse de imleç
+    /// yeni kopya için baştan başlar (§8.7).
+    /// </summary>
+    public void MarkPaymentHistorySent(long at)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE SalesSyncState SET PaymentHistorySentAt = @at WHERE Id = 1", new { at });
     }
 
     // ── mod On açılışı (§8.4; W2-10) ────────────────────────────────────
@@ -344,6 +412,15 @@ public sealed class SalesSyncStateRepository
     }
 
     private static decimal? ToDecimal(double? value) => value is { } v ? (decimal)v : null;
+
+    private sealed class ShippingRow
+    {
+        public long Mode { get; set; }
+        public long? ShippingVersion { get; set; }
+        public double? FreeShippingThreshold { get; set; }
+        public double? ShippingFee { get; set; }
+        public long CopyPending { get; set; }
+    }
 
     private sealed class Row
     {

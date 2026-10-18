@@ -117,7 +117,7 @@ public sealed class StreamHistoryMachineNameTests : IDisposable
             store.Save(new AppSettings());
             var payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), new FakeUrlLauncher(),
                 PaymentRequestServiceTestHelpers.StubApiClient(), new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                new InMemoryPaymentJobStore());
+                new InMemoryPaymentJobStore(), LocalShipping.Of(store));
             var report = new StreamReportViewModel(_labels, _sessions, new GiveawayRepository(_db),
                 new CustomerRepository(_db), payments, new FakeDialogService());
 

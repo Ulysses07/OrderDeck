@@ -78,8 +78,12 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     private readonly PdfDekontParser _pdfParser;
     private readonly AppSettings _settings;
+    private readonly IShippingSettingsProvider _shipping;
     private readonly Services.Drawers.IDrawerService? _drawers;
 
+    /// <param name="settings">Hesap bilgileri (IBAN ve hesap sahibi denetimi).</param>
+    /// <param name="shipping">Eşik çekmecesinin eşik metni (spec 2026-10-13 §6.2): değerlendirmeyle aynı kaynak — mod
+    /// Off'ta yerel ayar, mod On'da lisans geneli ayar.</param>
     public DekontEkleViewModel(
         PaymentRepository payments,
         CustomerRepository customers,
@@ -89,6 +93,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         ShipmentService shipments,
         PdfDekontParser pdfParser,
         AppSettings settings,
+        IShippingSettingsProvider shipping,
         IClock clock,
         ILogger<DekontEkleViewModel> log,
         OrderDeck.App.Services.PaymentRequestService? paymentRequest = null,
@@ -105,6 +110,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _shipmentEditor = editor ?? (Services.Sales.IShipmentEditor)new Services.Sales.LocalShipmentEditor(shipments);
         _pdfParser = pdfParser;
         _settings = settings;
+        _shipping = shipping;
         _clock = clock;
         _log = log;
         _paymentRequest = paymentRequest;
@@ -316,7 +322,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         for (var shown = 0; shown < 2; shown++)
         {
             var vm = new ShipmentThresholdDialogViewModel(
-                ctx, customerDisplay, _settings.Shipping.FreeShippingThreshold ?? 0m) { Notice = notice };
+                ctx, customerDisplay, _shipping.Current().Settings.FreeShippingThreshold ?? 0m) { Notice = notice };
 
             await _drawers.ShowAsync("Ücretsiz Kargo Hakkı",
                 d => new Views.Drawers.ShipmentThresholdDrawer(d, vm));

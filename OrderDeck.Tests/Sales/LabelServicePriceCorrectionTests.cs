@@ -166,7 +166,7 @@ public class LabelServicePriceCorrectionTests
         var shippedLabel = fx.Add("@b", 250m);
         fx.Svc.MarkPrintedAndRecord(new[] { openLabel.Id, shippedLabel.Id });
 
-        var shipmentSvc = new ShipmentService(fx.Shipments, fx.Labels, () => new OrderDeck.Core.Settings.AppSettings());
+        var shipmentSvc = new ShipmentService(fx.Shipments, fx.Labels, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(openLabel.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { openLabel.Id });
         var gone = shipmentSvc.GetOrCreateOpenShipment(shippedLabel.CustomerId);
@@ -336,7 +336,7 @@ public class LabelServicePriceCorrectionTests
         using var fx = Build();
         var shippedLabel = AddIn(fx, "s1", "@a", 250m, "A1");
         fx.Svc.MarkPrintedAndRecord(new[] { shippedLabel.Id });
-        var shipmentSvc = new ShipmentService(fx.Shipments, fx.Labels, () => new OrderDeck.Core.Settings.AppSettings());
+        var shipmentSvc = new ShipmentService(fx.Shipments, fx.Labels, LocalShipping.Off());
         var gone = shipmentSvc.GetOrCreateOpenShipment(shippedLabel.CustomerId);
         shipmentSvc.AttachLabels(gone.Id, new[] { shippedLabel.Id });
         shipmentSvc.ApplyDecision(gone.Id, ShipmentDecision.ShipNow);

@@ -42,10 +42,13 @@ public partial class SettingsPage : UserControl
     public static SettingsPage Create(ShellPage page, SettingsViewModel vm)
         => new(page, vm);
 
-    private void OnSave(object sender, RoutedEventArgs e)
+    /// <summary>Kaydet. Mod On'da kargo kısmı sunucuya yazılır (W3-03): beklenir, arayüz iş parçacığı bloklanmaz;
+    /// yazılamazsa sayfa açık kalır ve sebep satır içi şeritte görünür.</summary>
+    private async void OnSave(object sender, RoutedEventArgs e)
     {
-        _vm.SaveCommand.Execute(null);
-        if (!_vm.Saved) return;   // doğrulama düştü, sayfa açık kalıyor
+        if (!_vm.CanSave) return;   // kargo yazımı zaten sürüyor
+        await _vm.SaveCommand.ExecuteAsync(null);
+        if (!_vm.Saved) return;   // doğrulama düştü ya da kargo yazılamadı, sayfa açık kalıyor
 
         if (_vm.OverlayPortChanged)
         {

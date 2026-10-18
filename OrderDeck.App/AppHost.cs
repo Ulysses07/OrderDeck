@@ -90,8 +90,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerSyncRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
-        // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService).
-        services.AddSingleton<IPaymentJobStore, PaymentJobRepository>();
+        // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService). Somut tip de aynı örnek: ödeme
+        // geçmişi geri doldurması (W3-06) işleri rowid sırasıyla okur.
+        services.AddSingleton<PaymentJobRepository>();
+        services.AddSingleton<IPaymentJobStore>(sp => sp.GetRequiredService<PaymentJobRepository>());
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
@@ -108,12 +110,21 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CatalogPhotoCache>();
         // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();
-        // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
+        // Satış senkronu W3 (spec 2026-10-13 §6.2, Y4): kargo eşiği ve ücretinin TEK okuma noktası — mod Off'ta CANLI
+        // AppSettings örneği, mod On'da lisans geneli ayarın önbelleği (SalesSyncState). Tek örnek; okuyucular (ödeme
+        // isteği, #508 planı, dekont eşleştirmesi, eşik değerlendirmesi, dekont ekranı) bunu alır (CustomerSyncDiTests
+        // denetler). sales/hello'nun bildirdiği değer ve disable turunun kopyası bilerek yerel ayarda kalır. Satış durumu
+        // deposunun kaydı aşağıda (satış senkronu bloğu).
+        services.AddSingleton<IShippingSettingsProvider>(sp => new ShippingSettingsProvider(
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<AppSettings>()));
+
+        // Kargo PR C: dekont eşleştirme servisi (LabelRepository + kargo ayarı sağlayıcısı).
         // UI entegrasyonu PR D'de (dekont formu/customer picker + kargo yönergesi).
         services.AddSingleton<OrderDeck.Core.Payments.PaymentMatcherService>(sp =>
             new OrderDeck.Core.Payments.PaymentMatcherService(
                 sp.GetRequiredService<LabelRepository>(),
-                () => sp.GetRequiredService<AppSettings>()));
+                sp.GetRequiredService<IShippingSettingsProvider>()));
 
         // Kümülatif kargo PR-B/C: Shipment persistence + iş kuralları servisi.
         // ShipmentService DekontEkleViewModel'a inject edilir; payment onayı
@@ -123,7 +134,7 @@ public sealed class AppHost : IDisposable
             new OrderDeck.Core.Sales.ShipmentService(
                 sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
-                () => sp.GetRequiredService<AppSettings>()));
+                sp.GetRequiredService<IShippingSettingsProvider>()));
 
         // Domain
         services.AddSingleton<StreamSessionService>();
@@ -362,13 +373,27 @@ public sealed class AppHost : IDisposable
 
         // Basılanlar sekmesi + fiyat düzeltme (K1–K7, 2026-10-12): düzeltmenin ödeme tarafı (teslim
         // edilmiş isteği değişen kişiler, düzeltilmiş isteği gönder) ve rapordan sekmeye geçiş.
+        // W3-10 (spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması"): mod On'da rozetler ve "ödendi, fark" planı başka
+        // bilgisayarların ödeme kayıtlarını da sayar — tekil önbellek (yalnız mod On, yükleme başına istek bütçesi); satış
+        // akışından değişiklik inince ve ödeme kaydı (finish dahil) sunucuya geçince geçersizleşir: AYNI akış servisi ve TEK
+        // ödeme kaydı göndericisi.
+        services.AddSingleton(sp => new Services.Sync.RemotePaymentRecords(
+            sp.GetRequiredService<LicenseApiClient>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<ReplicaIdentityRepository>(),
+            sp.GetRequiredService<PendingPaymentRecordRepository>(),
+            sp.GetRequiredService<ILogger<Services.Sync.RemotePaymentRecords>>(),
+            sp.GetRequiredService<Services.Sync.SalesChangesPullService>(),
+            sp.GetRequiredService<Services.Sync.PaymentRecordSender>()));
         services.AddSingleton<Services.PriceCorrection.CorrectedPaymentRequests>(sp =>
             new Services.PriceCorrection.CorrectedPaymentRequests(
                 sp.GetRequiredService<CustomerRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<IPaymentJobStore>(),
-                sp.GetRequiredService<SettingsStore>(),
-                sp.GetRequiredService<PaymentRequestService>()));
+                sp.GetRequiredService<IShippingSettingsProvider>(),
+                sp.GetRequiredService<PaymentRequestService>(),
+                sp.GetRequiredService<Services.Sync.RemotePaymentRecords>()));
         services.AddSingleton<Services.PriceCorrection.PrintedLabelsNavigator>();
 
         // Faz 2 — çekmece altyapısı. TEK örnek iki rolde: DrawerHost'un
@@ -570,6 +595,20 @@ public sealed class AppHost : IDisposable
         // W1-09 (§8.2): Ws'nin ilk açılışındaki geri doldurma ve birim ayrışması onarımı. Zarf, devir kapısı,
         // gönderim ve hello AYNI örnekler: boşaltma gönderim kapısından geçer, Release kararı kapanış gönderimiyle
         // aynı kilitleri görür, tamamlanma hello'su turla aynı kapıdan. 60 sn'de bir; turda en çok 10 istek.
+        // W3-05 (spec 2026-10-13 §3.2, §4.7, §6.4, §8.4-1): bekleyen ödeme kayıtları — gönderilemeyen finish'ler ve mod
+        // Off'taki kirasız kayıtlar, iki kipte. Gönderici TEK örnek: geri doldurma turu (60 sn, geri doldurmanın
+        // durumundan bağımsız) ve mod On açılışının 1. adımı (İLK kuyruk) aynı kapıdan geçer — aynı kayıt aynı anda iki
+        // kez gitmez. Zarf tekil örnek (geri yüklemeden sonra kip tazelenene kadar istek yok).
+        services.AddSingleton<PendingPaymentRecordRepository>();
+        services.AddSingleton<Services.Sync.PaymentRecordSender>();
+        // W3-06 (§6.4 "Ödeme geçmişi (mod Off'ta da)"): mod Off'ta her teslim ya da belirsiz gönderimden sonra kirasız
+        // kayıt — PaymentRequestService'in isteğe bağlı parametresi; kayıt AYNI göndericinin kuyruğuna.
+        services.AddSingleton<Services.Sync.PaymentOffRecordWriter>();
+        // W3-07 (spec 2026-10-13 §6.4): ödeme isteğinin mod On sarmalı — PaymentRequestService'in isteğe bağlı parametresi
+        // (yerel kip Off'ta hiçbir şey yapmaz). Ön gönderim AYNI örneklerden: bekleyen komutlar satış akışı servisinin
+        // tek göndericisinden, finish'ler tek ödeme kaydı göndericisinden, müşteri ve oturum/etiket gönderim kapısından.
+        services.AddSingleton<Services.Sync.PaymentLeaseCoordinator>();
+
         services.AddSingleton<SalesBackfillRepository>();
         services.AddSingleton<Services.Sync.SalesBackfillService>(sp =>
             new Services.Sync.SalesBackfillService(
@@ -578,12 +617,33 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.SalesSyncStateService>(),
                 sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
                 sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+                sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
                 sp.GetRequiredService<SalesBackfillRepository>(),
                 sp.GetRequiredService<SyncCursorRepository>(),
                 sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
                 sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
                 sp.GetRequiredService<IClock>(),
                 sp.GetRequiredService<ILogger<Services.Sync.SalesBackfillService>>()));
+        // W3-06 (§6.4 "Ödeme geçmişi", §8.2-6): ödeme geçmişi geri doldurması — yerel işlerden kirasız kayıtlar AYNI
+        // göndericinin kuyruğuna, tamamlanma hello'su aynı durum servisinden (turla aynı kapı). Ödeme akışıyla AYNI
+        // CustomerBusySet: kişisi akışta olan işi okumaz (uçuştaki gönderim). Sürücüsü geri doldurma turu (aşağıdaki
+        // hosted service): ayrı zamanlayıcı yok.
+        services.AddSingleton<Services.Sync.PaymentHistoryBackfill>(sp =>
+            new Services.Sync.PaymentHistoryBackfill(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+                sp.GetRequiredService<Services.Sync.SalesSyncStateService>(),
+                sp.GetRequiredService<SalesSyncStateRepository>(),
+                sp.GetRequiredService<PaymentJobRepository>(),
+                sp.GetRequiredService<CustomerRepository>(),
+                sp.GetRequiredService<LabelRepository>(),
+                sp.GetRequiredService<CustomerBusySet>(),
+                sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
+                sp.GetRequiredService<PendingPaymentRecordRepository>(),
+                sp.GetRequiredService<SyncCursorRepository>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<IClock>(),
+                sp.GetRequiredService<ILogger<Services.Sync.PaymentHistoryBackfill>>()));
         services.AddHostedService<Services.Sync.SalesBackfillHostedService>();
 
         // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save
@@ -620,9 +680,11 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SalesFeedFailureRepository>();
         services.AddSingleton<RemoteLiveSessionRepository>();
         // W2-10 (spec 2026-10-13 §8.4): kip adımı — satış akışı turu başarılı state'in hemen ardından çağırır. Açılışın
-        // 1. adımı giden kuyrukları AYNI gönderim servisleriyle boşaltır (müşteri, oturum ve etiket gönderim kapısından,
-        // kargo, dekont). Tur isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        // 1. adımı giden kuyrukları AYNI gönderim servisleriyle boşaltır (W3-05: önce bekleyen ödeme kayıtları, sonra
+        // müşteri, oturum ve etiket gönderim kapısından, kargo, dekont). Tur isteğe bağlı parametreyle alır
+        // (CustomerSyncDiTests denetler).
         services.AddSingleton<Services.Sync.ISalesOpeningFlush>(sp => new Services.Sync.SalesOpeningFlush(
+            sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
             sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
             sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
             sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
@@ -636,6 +698,17 @@ public sealed class AppHost : IDisposable
         // CustomerBusySet) yazar; zarf ve güncelleme sorusu tekil örnekler.
         services.AddSingleton<SalesConflictLogRepository>();
         services.AddSingleton<Services.Sync.SalesCommandClient>();
+
+        // W3-03 (spec 2026-10-13 §4.8, §6.2, Y4): ayar ekranının mod On'daki kargo yazıcısı (PUT shipping-settings).
+        // Önbelleği satış durumu deposuna yazar (sağlayıcı oradan okur); mode-off'ta Off turu satış akışı servisinden
+        // tembel çözülür. Ayar ekranı isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        services.AddSingleton(sp => new Services.Sync.LicenseShippingSettingsWriter(
+            sp.GetRequiredService<LicenseApiClient>(),
+            sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().RequestModeOffRound(),
+            sp.GetRequiredService<ILogger<Services.Sync.LicenseShippingSettingsWriter>>()));
 
         // W2-07 (spec 2026-10-13 §5.5): bekleyen satış komutları (kalıntı kuyruğun çevrimdışı iptali ve ilk baskısı).
         // Gönderici TEK örnek: satış akışı turu (akıştan önce), kuyruk baskısının anlık gönderimi ve ödeme ön gönderimi

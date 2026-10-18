@@ -37,7 +37,8 @@ public class ShipmentServiceTests
         settings.Shipping.ShippingFee = fee;
 
         long now = 1_000L;
-        var svc = new ShipmentService(shipRepo, labelRepo, () => settings, () => now);
+        var svc = new ShipmentService(shipRepo, labelRepo,
+            new ShippingSettingsProvider(new SalesSyncStateRepository(db), settings), () => now);
         return (db, svc, shipRepo, labelRepo, settings, now);
     }
 
@@ -298,6 +299,45 @@ public class ShipmentServiceTests
         ctx.ShouldPrompt.Should().BeFalse();
         ctx.ThresholdReached.Should().BeFalse();
         ctx.PooledAmount.Should().Be(900m);
+    }
+
+    [Fact]
+    public void EvaluatePool_mod_On_esigi_yerel_ayardan_degil_lisans_geneli_ayardan_okur()
+    {
+        // Spec 2026-10-13 §6.2 (Y4): yerel eşik 500, lisans geneli 1000. 600'lük havuz yerelde eşik üstü, lisansta değil.
+        var (db, svc, _, _, _, _) = Fx(threshold: 500m, fee: 60m);
+        using var _d = db;
+        new SalesSyncStateRepository(db).SaveServerState(3, 1000m, 80m, scrubOrderText: false);
+        var mirror = new Shipment("kargo-ayna", Cid, ShipmentStatus.Pending, 40, null, null, 600m);
+
+        svc.EvaluatePool(mirror, 600m).ThresholdReached.Should().BeTrue("mod Off: yerel 500");
+
+        ModeOn(db);
+        var ctx = svc.EvaluatePool(mirror, 600m);
+
+        ctx.ShouldPrompt.Should().BeTrue();
+        ctx.ThresholdReached.Should().BeFalse();
+        ctx.AmountToThreshold.Should().Be(400m, "lisans geneli eşik 1000");
+    }
+
+    [Fact]
+    public void EvaluatePool_mod_On_lisans_ayari_hic_yazilmamissa_kargo_kapali_sormaz()
+    {
+        // Yerel ayar açık olsa da: mod On'da sunucu ayarı yoksa (önbellek boş) kargo kapalı (§6.2, §4.8).
+        var (db, svc, _, _, _, _) = Fx(threshold: 500m, fee: 60m);
+        using var _d = db;
+        ModeOn(db);
+
+        var ctx = svc.EvaluatePool(new Shipment("k", Cid, ShipmentStatus.Pending, 40, null, null, 900m), 900m);
+
+        ctx.ShouldPrompt.Should().BeFalse();
+        ctx.ThresholdReached.Should().BeFalse();
+    }
+
+    private static void ModeOn(InMemorySqlite db)
+    {
+        using var conn = db.Open();
+        conn.Execute("UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
     }
 
     // ── ApplyDecision ───────────────────────────────────────────────────

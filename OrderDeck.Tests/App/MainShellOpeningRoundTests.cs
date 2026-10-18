@@ -81,7 +81,8 @@ public sealed class MainShellOpeningRoundTests : IDisposable
             var payments = new PaymentSyncService(api, new PaymentRepository(db), cursors, license, clock,
                 NullLogger<PaymentSyncService>.Instance);
             var coordinator = new SalesModeCoordinator(state, stateRepo, envelope,
-                new SalesOpeningFlush(customerPush, push, shipments, payments, stateRepo), clock,
+                new SalesOpeningFlush(new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), envelope, license,
+                    clock, NullLogger<PaymentRecordSender>.Instance), customerPush, push, shipments, payments, stateRepo), clock,
                 NullLogger<SalesModeCoordinator>.Instance);
             _pull = new SalesChangesPullService(api, state, stateRepo, envelope, new SalesFeedRepository(db, busy),
                 new SalesFeedFailureRepository(db), new RemoteLiveSessionRepository(db), cursors, new LabelRepository(db),

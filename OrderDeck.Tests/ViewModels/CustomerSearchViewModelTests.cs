@@ -55,7 +55,7 @@ public class CustomerSearchViewModelTests
                    new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var jobs = new InMemoryPaymentJobStore();
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider, jobs);
+            api, licenseProvider, jobs, LocalShipping.Of(settingsStore));
         var dialogs = new FakeDialogService();
         var sut = new CustomerSearchViewModel(customers, customerService, sessions, labels, paymentService, dialogs);
         return (db, customers, sessions, labels, launcher, dialogs, jobs, settingsPath, sut);
@@ -347,8 +347,9 @@ public class CustomerSearchViewModelTests
     {
         var busy = new CustomerBusySet();
         var (api, license) = PaymentRequestServiceTestHelpers.InProgressCloudApiClient();
-        var payment = new PaymentRequestService(new SettingsStore(settingsPath), new WhatsAppMessageBuilder(),
-            new FakeUrlLauncher(), api, license, jobs, log: null, customers: customers, busy: busy);
+        var store = new SettingsStore(settingsPath);
+        var payment = new PaymentRequestService(store, new WhatsAppMessageBuilder(),
+            new FakeUrlLauncher(), api, license, jobs, LocalShipping.Of(store), log: null, customers: customers, busy: busy);
         var customerService = new CustomerService(customers, sessions, labels, Mock.Of<IClock>(c => c.UnixNow() == 1L));
         return (new CustomerSearchViewModel(customers, customerService, sessions, labels, payment, dialogs),
                 new CustomerSyncRepository(db, busy));
@@ -520,6 +521,58 @@ public class CustomerSearchViewModelTests
             await sut.OpenWhatsAppCommand.ExecuteAsync(groupCard);
             jobs.Snapshot.Single(j => j.ScopeKey == "cumulative").ProductTotal.Should().Be(groupCard.TotalAmount);
             dialogs.InfosShown.Should().NotContain(m => m.Contains("tekrar seçin"));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    // W3 (spec 2026-10-13 §6.1 "para yolları sayacı okumaz"): Customer.TotalAmount bir önbellek; kümülatif istek
+    // Σ üyelerin sayacını değil, kişinin bütün üyelerinin etiketlerini (LabelRules.Contribution) ister. Sayaç
+    // bozulsa da (kaçan bir türetme, eski bir fark sayacı) istenen tutar etiketlerden doğru çıkar.
+    [Fact]
+    public async Task OpenWhatsApp_bozuk_sayacli_kartta_istenen_tutar_etiketlerden()
+    {
+        var (db, customers, sessions, labels, _, dialogs, jobs, path, _) = Setup(cloudApiInProgress: true);
+        try
+        {
+            using var _db = db;
+            var (sut, _) = Synced(db, customers, sessions, labels, jobs, path, dialogs);
+            var tt = Guid.NewGuid().ToString("N");
+            var ig = Guid.NewGuid().ToString("N");
+            customers.Insert(new Customer(tt, "tiktok", "ornek.musteri", "Örnek Müşteri", null,
+                100, 101, false, null, null, 0, 0m, null, null, TestPhone.NewE164(), GroupId: "grp-1"));
+            customers.Insert(new Customer(ig, "instagram", "ornek_ig", "Örnek Müşteri", null,
+                100, 102, false, null, null, 0, 0m, null, null, null, GroupId: "grp-1"));
+            sessions.Insert(new StreamSession("s1", "Yayın 1", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", tt, "tiktok", "ornek.musteri", "Elma", null, 100m, 110, 120));
+            labels.Insert(new Label("l4", "s1", tt, "tiktok", "ornek.musteri", "Kuyrukta", null, 30m, 111, null));
+            labels.Insert(new Label("l5", "s1", ig, "instagram", "ornek_ig", "İptal", null, 20m, 112, 122));
+            sessions.End("s1", 200);
+            sessions.Insert(new StreamSession("s2", "Yayın 2", 300, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l2", "s2", ig, "instagram", "ornek_ig", "Armut", null, 50m, 310, 320));
+            labels.Insert(new Label("l3", "s2", tt, "tiktok", "ornek.musteri", "Kargo", null, 25m, 311, 321,
+                IsShippingFee: true));
+            labels.Insert(new Label("l6", "s2", tt, "tiktok", "ornek.musteri", "Yedek", null, 13m, 312, 322,
+                IsTentativeBackup: true));
+            sessions.End("s2", 400);
+            labels.MarkCancelled(new[] { "l5" }, cancelledAt: 130, reason: "iptal");
+            // Sayaç bozuk: etiketlerle tutmuyor.
+            using (var c = db.Open())
+                Dapper.SqlMapper.Execute(c, "UPDATE Customer SET TotalAmount = 999 WHERE GroupId = 'grp-1'");
+
+            sut.RefreshSearch();
+            var card = sut.Results.Should().ContainSingle(c => c.GroupId == "grp-1").Subject;
+            card.TotalAmount.Should().Be(1998m, "ön koşul: kart sayacı gösteriyor");
+            await sut.OpenWhatsAppCommand.ExecuteAsync(card);
+
+            var job = jobs.Snapshot.Should().ContainSingle().Subject;
+            job.ScopeKey.Should().Be("cumulative");
+            job.ProductTotal.Should().Be(175m,
+                "iki üye, iki yayın: 100 + 50 + kargo ücreti satırı 25; basılmamış, iptal ve yedek hariç");
+
+            // Yayın kapsamı aynı tanımın oturum süzgeçli hâli (son yayın s2: 50 + 25).
+            sut.LastStreamShoppersOnly = true;
+            await sut.OpenWhatsAppCommand.ExecuteAsync(sut.Results.Single(c => c.GroupId == "grp-1"));
+            jobs.Snapshot.Single(j => j.ScopeKey == "session:s2").ProductTotal.Should().Be(75m);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

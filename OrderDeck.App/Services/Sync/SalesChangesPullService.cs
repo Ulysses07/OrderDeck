@@ -209,7 +209,12 @@ public sealed class SalesChangesPullService
     /// tamamlandı). Tur sürerken gelen istek sonraki turu bekler.</summary>
     private long _modeOffRequests;
     private long _modeOffResolved;
-    private int _modeOffTourQueued;
+
+    /// <summary>Kuyruğa alınmış ama henüz başlamamış <c>mode-off</c> turu (<see cref="QueueModeOffRound"/>): peş peşe istekler
+    /// ona katılır. Tur başlarken (tur kilidini beklemeden önce) boşalır; sonra gelen istek yenisini kurar.</summary>
+    private Task? _queuedModeOffTour;
+    private readonly object _modeOffQueueLock = new();
+
     /// <summary>Bu tur <c>mode-off</c> isteklerini sonuçlandırdı (tur kilidi altında yazılır).</summary>
     private bool _modeOffSettled;
 
@@ -370,9 +375,10 @@ public sealed class SalesChangesPullService
     }
 
     /// <summary>
-    /// Baskıdan hemen önceki akış turu (spec 2026-10-13 §5.6-2): bir tur, en çok <paramref name="budget"/> kadar
-    /// beklenir. Süre dolarsa beklemeden döner (tur iptal edilir ve arka planda kendiliğinden biter; imleç her sayfada
-    /// kaydedildiği için uygulanmış öğe kaybolmaz) — kâğıt yerel aynanın güncel hâliyle basılır.
+    /// Sınırlı akış turu: baskıdan hemen önce (spec 2026-10-13 §5.6-2) ve ödeme isteği kirasının <c>stale-total</c>
+    /// yeniden denemesinde (§6.4, W3-08). Bir tur, en çok <paramref name="budget"/> kadar beklenir. Süre dolarsa beklemeden
+    /// döner (tur iptal edilir ve arka planda kendiliğinden biter; imleç her sayfada kaydedildiği için uygulanmış öğe
+    /// kaybolmaz) — çağıran yerel aynanın güncel hâliyle devam eder.
     /// </summary>
     /// <returns>Tur süre içinde akışı sonuna kadar uyguladıysa true.</returns>
     public async Task<bool> RefreshAsync(TimeSpan budget, CancellationToken ct = default)
@@ -392,7 +398,7 @@ public sealed class SalesChangesPullService
         {
             try { cts.Cancel(); }
             catch (ObjectDisposedException) { }                  // tur tam bu arada bitti
-            _log.LogInformation("Baskı öncesi satış akışı turu {Budget} sn içinde bitmedi; yerel satırlarla basılıyor",
+            _log.LogInformation("Sınırlı satış akışı turu {Budget} sn içinde bitmedi; yerel satırlarla devam ediliyor",
                 budget.TotalSeconds);
             ct.ThrowIfCancellationRequested();
             return false;
@@ -408,7 +414,7 @@ public sealed class SalesChangesPullService
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Baskı öncesi satış akışı turu düştü; yerel satırlarla basılıyor");
+            _log.LogWarning(ex, "Sınırlı satış akışı turu düştü; yerel satırlarla devam ediliyor");
             return false;
         }
     }
@@ -431,19 +437,34 @@ public sealed class SalesChangesPullService
     /// turu başlasın. Arka planda bir tur başlatır (süren turun kilidini bekler; peş peşe istekler birleşir) ve
     /// <see cref="ModeOffStarted"/>'ı yükseltir. Beklemez: komutun kendi gönderimi turun içinden de gelebilir.
     /// </summary>
-    public void RequestModeOffRound()
+    public void RequestModeOffRound() => _ = QueueModeOffRound();
+
+    /// <summary>
+    /// <see cref="RequestModeOffRound"/>'ın beklenebilir biçimi: dönen görev bu isteği gören turdur (kuyrukta bekleyen tur
+    /// varsa o). Ödeme isteği kirasının <c>mode-off</c>'u (§6.4, §8.5; W3-08) Off turunu sınırlı süre bekler, sonra isteği
+    /// mod Off yolunda yeniden kurar. Görev fırlatmaz (turun hatası günlüğe düşer); süre dolsa da tur iptal edilmez.
+    /// </summary>
+    public Task QueueModeOffRound()
     {
         Interlocked.Increment(ref _modeOffRequests);
         _log.LogInformation("Satış komutu mode-off aldı: sales/state hemen okunuyor, Off turu başlıyor");
         try { ModeOffStarted?.Invoke(this, EventArgs.Empty); }
         catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off bildirimi arayüze iletilemedi"); }
-        if (Interlocked.Exchange(ref _modeOffTourQueued, 1) == 1) return;
-        _ = Task.Run(async () =>
+        lock (_modeOffQueueLock)
         {
-            Volatile.Write(ref _modeOffTourQueued, 0);                     // bu turun kilidi beklerken gelen istek yenisini kurar
-            try { await TourOnceAsync(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off sonrası tur düştü; sonraki turda yeniden"); }
-        });
+            if (_queuedModeOffTour is { } queued) return queued;
+            // Görev başlamadan alana yazılır: tur başlarken alanı boşaltan adım yazımdan sonra koşar.
+            var start = new Task<Task>(async () =>
+            {
+                lock (_modeOffQueueLock) _queuedModeOffTour = null;    // bu turun kilidi beklerken gelen istek yenisini kurar
+                try { await TourOnceAsync(CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off sonrası tur düştü; sonraki turda yeniden"); }
+            });
+            var tour = start.Unwrap();
+            _queuedModeOffTour = tour;
+            start.Start(TaskScheduler.Default);
+            return tour;
+        }
     }
 
     /// <summary>

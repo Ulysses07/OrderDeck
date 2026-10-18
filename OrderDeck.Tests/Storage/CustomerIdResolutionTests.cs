@@ -225,7 +225,7 @@ public sealed class CustomerIdResolutionTests : IDisposable
         SeedGiveaway();
         var labels = new LabelRepository(_db);
         var shipments = new ShipmentRepository(_db);
-        var shipmentService = new ShipmentService(shipments, labels, () => new AppSettings());
+        var shipmentService = new ShipmentService(shipments, labels, LocalShipping.Off());
 
         // FK açık: çözülmeseydi INSERT "FOREIGN KEY constraint failed" ile düşerdi (kayıp satış).
         labels.Insert(new Label(Guid.NewGuid().ToString("N"), "s1", stale, "tiktok", "ayse", "A1", null, 10m, 1, null));

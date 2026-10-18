@@ -127,6 +127,67 @@ public abstract class PaymentJobStoreContractTests
         job.AppliedAmount.Should().Be(250m);
     }
 
+    // ── W3-11 (spec 2026-10-13 §6.6): apply'ın scope-has-deduction'ı — denemenin anahtarı yazılmadı ──────
+
+    /// <summary>650'lik taze iş, apply denemesi K'de (apply_uncertain, rev 0).</summary>
+    private (IPaymentJobStore Store, string JobId, Guid Key) DenemedeBekleyen()
+    {
+        var store = CreateStore();
+        var job = store.FindOrCreate("c1", "session:s1", 650m);
+        var key = Guid.NewGuid();
+        store.BeginApply(job.Id, key).Should().BeTrue();
+        return (store, job.Id, key);
+    }
+
+    [Fact]
+    public void AdoptRemoteResult_denemenin_kesin_cevabiyla_kapsamdaki_dusumu_benimser()
+    {
+        var (store, id, key) = DenemedeBekleyen();
+        var tx = Guid.NewGuid();
+
+        store.AdoptRemoteResult(id, tx, appliedAmount: 100m, productTotal: 600m, key, expectedRevision: 0)
+            .Should().BeTrue();
+
+        var job = store.Get(id)!;
+        job.State.Should().Be(PaymentJobState.Applied);
+        job.ApplyKey.Should().Be(tx, "düşüm sunucudaki işlemin kimliğiyle tanınır — denemenin anahtarı yazılmadı");
+        job.AppliedAmount.Should().Be(100m);
+        job.ProductTotal.Should().Be(600m, "düşümün yazıldığı toplam; fark revizyon dalına kalır");
+        job.Revision.Should().Be(0, "benimseme yeni deneme açmaz");
+        job.ClosedAt.Should().BeNull();
+        store.MarkApplied(id, key, 0, 650m).Should().BeFalse("denemenin geç cevabı anahtar değiştiği için bayatlar");
+    }
+
+    [Fact]
+    public void AdoptRemoteResult_bayat_deneme_dokunamaz()
+    {
+        var (store, id, key) = DenemedeBekleyen();
+
+        store.AdoptRemoteResult(id, Guid.NewGuid(), 100m, 600m, Guid.NewGuid(), expectedRevision: 0)
+            .Should().BeFalse("başka denemenin cevabı");
+        store.AdoptRemoteResult(id, Guid.NewGuid(), 100m, 600m, key, expectedRevision: 1)
+            .Should().BeFalse("bayat revizyon");
+
+        var job = store.Get(id)!;
+        job.State.Should().Be(PaymentJobState.ApplyUncertain);
+        job.ApplyKey.Should().Be(key);
+        job.ProductTotal.Should().Be(650m);
+    }
+
+    [Fact]
+    public void AdoptRemoteResult_geri_alma_niyetini_ezmez()
+    {
+        var (store, id, key) = UygulanmisVeGeriAlmaBekleyen();
+
+        store.AdoptRemoteResult(id, Guid.NewGuid(), 100m, 600m, key, expectedRevision: 0)
+            .Should().BeFalse("niyet silinirse iade adımı bir daha çalışmaz");
+
+        var job = store.Get(id)!;
+        job.State.Should().Be(PaymentJobState.ReversePending);
+        job.ApplyKey.Should().Be(key);
+        job.PendingTotal.Should().Be(50m);
+    }
+
     [Fact] // R4-01 korunuyor: koruma normal replay'i fazla sıkılaştıramaz
     public void SonucYazicilari_GeriAlmaYokken_ReplayYazmayaDevamEder()
     {

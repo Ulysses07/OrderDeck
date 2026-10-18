@@ -83,18 +83,22 @@ public sealed class DekontShipmentCommandTests : IDisposable
         Microsoft.Extensions.Logging.ILogger<DekontEkleViewModel>? log = null,
         OrderDeck.App.Services.PaymentRequestService? paymentRequest = null, bool routed = true) =>
         new(new PaymentRepository(_bed.Db), _bed.Customers, _bed.Sessions,
-            new PaymentMatcherService(_bed.LabelRepo, () => _bed.Settings), _bed.LabelRepo, _bed.Shipments,
-            new PdfDekontParser(), _bed.Settings, new Clock(),
+            new PaymentMatcherService(_bed.LabelRepo, _bed.Shipping), _bed.LabelRepo, _bed.Shipments,
+            new PdfDekontParser(), _bed.Settings, _bed.Shipping, new Clock(),
             log ?? NullLogger<DekontEkleViewModel>.Instance, paymentRequest, drawers, routed ? _bed.Router : null)
         {
             PayerName = "Gönderen", AmountText = amount, ReferansNo = $"ref-{Guid.NewGuid():N}",
             PaidAt = DateTime.Today, CustomerPlatform = "tiktok", CustomerUsername = "alici_ornek",
         };
 
+    /// <summary>Yerel ayar ve lisans geneli ayar aynı değerde: mod Off yereli, mod On lisans genelini okur (spec
+    /// 2026-10-13 §6.2). Kaynağın ayrımını <see cref="Mod_On_esik_ve_cekmecenin_esik_metni_lisans_geneli_ayardan"/>
+    /// sınar.</summary>
     private void Threshold(decimal threshold, decimal fee)
     {
         _bed.Settings.Shipping.FreeShippingThreshold = threshold;
         _bed.Settings.Shipping.ShippingFee = fee;
+        _bed.LicenseShipping(threshold, fee);
     }
 
     private static string PayloadString(FakeSalesServer.PushCall call, string name) =>
@@ -228,6 +232,27 @@ public sealed class DekontShipmentCommandTests : IDisposable
         _bed.ShipmentRepo.GetById(shipmentId)!.Status.Should().Be(ShipmentStatus.Shipped);
         Server.Shipment(Guid.Parse(shipmentId))!.Row.Status.Should().Be("shipped");
         vm.ShipmentWarning.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Mod_On_esik_ve_cekmecenin_esik_metni_lisans_geneli_ayardan()
+    {
+        // Spec 2026-10-13 §6.2 (Y4): yerel eşik 200 (150'lik havuz altında kalırdı), lisans geneli 140. Eşik
+        // değerlendirmesi de çekmecenin eşik metni de lisans geneli ayardan.
+        _bed.Settings.Shipping.FreeShippingThreshold = 200m;
+        _bed.Settings.Shipping.ShippingFee = 50m;
+        _bed.LicenseShipping(140m, 50m, version: 4);
+        await _bed.RemoteLabelAsync(150m);
+        _bed.ModeOn();
+        var drawers = new Drawers { Decision = ShipmentDecision.ShipNow };
+        var vm = Vm("150", drawers);
+
+        (await vm.SaveAsync()).Should().BeTrue();
+
+        drawers.Titles.Should().Equal("Ücretsiz Kargo Hakkı");
+        drawers.Threshold!.FreeShippingThreshold.Should().Be(140m);
+        drawers.Threshold.ThresholdText.Should().Be("140,00 TL");
+        drawers.Threshold.CumulativeAmount.Should().Be(150m);
     }
 
     [Fact]
@@ -375,7 +400,7 @@ public sealed class DekontShipmentCommandTests : IDisposable
                 new OrderDeck.Core.Customers.WhatsAppMessageBuilder(),
                 launcher, PaymentRequestServiceTestHelpers.StubApiClient(),
                 new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore());
+                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), _bed.Shipping);
             var drawers = new Drawers { Decision = ShipmentDecision.ShipNow };
             var vm = Vm("5300", drawers, paymentRequest: paymentRequest);
 
@@ -503,8 +528,8 @@ public sealed class DekontShipmentCommandTests : IDisposable
             bed.LocalLabel(session, "kisi-0001", 40m, id: "etiket-2", tentative: true);
             bed.Exec("UPDATE Customer SET Platform = 'tiktok', Username = 'alici_ornek' WHERE Id = 'kisi-0001'");
             var vm = new DekontEkleViewModel(new PaymentRepository(bed.Db), bed.Customers, bed.Sessions,
-                new PaymentMatcherService(bed.LabelRepo, () => bed.Settings), bed.LabelRepo, bed.Shipments,
-                new PdfDekontParser(), bed.Settings, new Clock(), NullLogger<DekontEkleViewModel>.Instance,
+                new PaymentMatcherService(bed.LabelRepo, bed.Shipping), bed.LabelRepo, bed.Shipments,
+                new PdfDekontParser(), bed.Settings, bed.Shipping, new Clock(), NullLogger<DekontEkleViewModel>.Instance,
                 editor: routed ? bed.Router : null)
             {
                 PayerName = "Gönderen", AmountText = "150", ReferansNo = "ref-1", PaidAt = DateTime.Today,

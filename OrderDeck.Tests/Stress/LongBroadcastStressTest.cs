@@ -114,9 +114,10 @@ public class LongBroadcastStressTest
 
         var customerService = new CustomerService(customerRepo, sessionRepo, labelRepo, clock);
         var labelService = new LabelService(labelRepo, customerService, db, clock);
-        var matcher = new PaymentMatcherService(labelRepo, () => settings);
+        var shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(db), settings);
+        var matcher = new PaymentMatcherService(labelRepo, shipping);
         var shipmentService = new ShipmentService(
-            shipmentRepo, labelRepo, () => settings, () => clock.UnixNow());
+            shipmentRepo, labelRepo, shipping, () => clock.UnixNow());
 
         var bus = new ChatBus();
 

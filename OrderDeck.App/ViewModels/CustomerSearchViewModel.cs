@@ -36,6 +36,13 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
 
     partial void OnNewThisSessionCountChanged(int value) => HasNewThisSession = value > 0;
 
+    /// <summary>Son "Ödeme iste"nin satır içi engeli (spec 2026-10-13 §6.4, W3-07: bekleyen komut, sunucunun reddi,
+    /// güncelleme gerekli…); açılır pencere yok, "Tamam" kapatır. Yeni tıklama temizler.</summary>
+    [ObservableProperty] private string? _paymentProblem;
+
+    [RelayCommand]
+    private void DismissPaymentProblem() => PaymentProblem = null;
+
     /// <summary>Arama sonucu üst sınırı.</summary>
     private const int SearchLimit = 50;
 
@@ -291,12 +298,13 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         var sessionScope = streamSum > 0m && session is not null ? session : null;
         var scopeKey = sessionScope is not null ? $"session:{sessionScope.Id}" : "cumulative";
 
-        var result = await RequestPaymentAsync(customer);
+        PaymentProblem = null;
+        var outcome = await RequestPaymentAsync(customer);
 
         // R4-07: Telefon diyaloğundan sonraki İKİNCİ çağrının sonucu da aynı
         // bildirim yolundan geçmeli — eskiden dönüş değeri okunmuyordu ve o
         // çağrı belirsiz/başarısız dönerse ekranda hiçbir şey olmuyordu.
-        if (result == PaymentRequestResult.PhoneRequired)
+        if (outcome.Result == PaymentRequestResult.PhoneRequired)
         {
             if (!await _dialogService.ShowPhoneEntryAsync(customer.Id)) return;
 
@@ -307,20 +315,22 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
                 return;
             }
 
-            result = await RequestPaymentAsync(updated);
+            outcome = await RequestPaymentAsync(updated);
         }
 
         // U12 (Bölüm C): kart liste yüklendikten sonra yerel taşımayla bayatladı — istek
         // gönderilmedi; liste yenilenir, operatör güncel kartı yeniden seçer.
-        if (result == PaymentRequestResult.ListStale) RefreshSearch();
+        if (outcome.Result == PaymentRequestResult.ListStale) RefreshSearch();
 
-        PaymentResultPresenter.Notify(_dialogService, result);
+        // W3-07: mod On'un engelleri satır içi (açılır pencere yok); öbür sonuçlar bugünkü gibi.
+        PaymentProblem = PaymentResultPresenter.InlineProblem(outcome);
+        PaymentResultPresenter.Notify(_dialogService, outcome);
 
         // Sahip kararları 2 ve 4: teslim edilmiş istek ya da birden çok istek varsa operatöre sorulur;
         // "Evet" → aynı istek onay belirteciyle yeniden.
-        async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
-            (await PaymentResultPresenter.RequestConfirmedAsync(_dialogService, tokens =>
-                _paymentService.RequestPaymentAsync(c, CurrentAmount, streamDate, scopeKey, tokens))).Result;
+        Task<PaymentRequestOutcome> RequestPaymentAsync(Customer c) =>
+            PaymentResultPresenter.RequestConfirmedAsync(_dialogService, tokens =>
+                _paymentService.RequestPaymentAsync(c, CurrentAmount, streamDate, scopeKey, tokens));
 
         // U12 (Bölüm C): kartın tutarı liste anlık görüntüsünden ve Id başına. Liste açıkken
         // senkron bir kopyayı (harf farklı yazım) asıl kayda taşıdıysa kopyanın kartı yalnız kendi
@@ -329,13 +339,12 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         // REDDEDİLİR (null → ListStale). Değilse tutar, akışın kira altında okuduğu KİŞİNİN
         // (bütün üyeler) toplamıdır: yayın-içi ya da kümülatif — yayın raporu da aynı kişi için
         // aynı toplamı ister, yoksa aynı iş iki giriş arasında sürekli revize edilirdi. Yayın,
-        // kapsam kimliği gibi anlık görüntüden kalır (R4-08).
+        // kapsam kimliği gibi anlık görüntüden kalır (R4-08). İki kapsamda da tutar etiketlerden
+        // okunur (W3, spec 2026-10-13 §6.1): kümülatifte de Customer.TotalAmount önbelleği okunmaz.
         decimal? CurrentAmount(PaymentPerson person)
         {
             if (!string.Equals(person.LeasedId, customer.Id, StringComparison.Ordinal)) return null;
-            return sessionScope is not null
-                ? _labels.GetSessionPrintedTotal(sessionScope.Id, person.MemberIds.ToList())
-                : person.Members.Sum(m => m.TotalAmount);
+            return _labels.GetPrintedTotal(person.MemberIds.ToList(), sessionScope?.Id).Total;
         }
     }
 }

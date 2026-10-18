@@ -17,6 +17,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Tests.Fakes;
 using OrderDeck.Tests.TestHelpers;
 
 namespace OrderDeck.Tests.Sync;
@@ -27,9 +28,13 @@ namespace OrderDeck.Tests.Sync;
 /// GERÇEK servisler — <see cref="SessionOrderSyncService"/>, <see cref="SalesChangesPullService"/>,
 /// <see cref="SalesSyncStateService"/> + <see cref="SalesModeCoordinator"/> + <see cref="SalesModeOffRound"/>,
 /// <see cref="SalesCommandClient"/>, <see cref="PendingSalesCommandSender"/>, <see cref="SalesEditRouter"/>
-/// (<see cref="ILabelEditor"/>), <see cref="ShipmentSyncService"/>, <see cref="SalesBackfillService"/> ve
-/// <see cref="RemoteSessionsViewModel"/>. Kurulum <c>AppHost</c>'un kayıtlarıyla aynı örnek paylaşımını izler (tek zarf,
-/// tek devir kapısı, tek gönderici, tek CustomerBusySet). Sunucu <see cref="FakeSalesServer"/>.
+/// (<see cref="ILabelEditor"/>), <see cref="ShipmentSyncService"/>, <see cref="SalesBackfillService"/>,
+/// <see cref="RemoteSessionsViewModel"/> ve ödeme isteği (W3: <see cref="PaymentRequestService"/>,
+/// <see cref="PaymentLeaseCoordinator"/>, <see cref="PaymentRecordSender"/>, <see cref="PaymentOffRecordWriter"/>,
+/// <see cref="PaymentHistoryBackfill"/>, <see cref="RemotePaymentRecords"/>, <see cref="LicenseShippingSettingsWriter"/>).
+/// Kurulum <c>AppHost</c>'un kayıtlarıyla aynı örnek paylaşımını izler (tek zarf, tek devir kapısı, tek gönderici, tek
+/// ödeme kaydı göndericisi, tek CustomerBusySet). Sunucu <see cref="FakeSalesServer"/>; bağlantı hello'da ve oturum
+/// gönderiminde bilgisayarın adını bildirir (<see cref="Link"/>).
 ///
 /// <para>Bir nesne bir süreçtir: <see cref="Restart"/> aynı veritabanında yeni süreç açar (AppHost'un açılış adımlarıyla:
 /// geri yükleme işareti, toplam ve dosya türetmesi, yarım kalmış Off turunun 3. adımı); <see cref="RestoreFrom"/>
@@ -58,14 +63,25 @@ internal sealed class SalesPc
         public long UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     }
 
-    private sealed class NoPrompt : IAppUpdatePrompt
+    /// <summary>Güncelleme sorusu (Velopack) — açılmaz, sayılır (<see cref="UpdatePrompts"/>).</summary>
+    private sealed class PromptSpy : IAppUpdatePrompt
     {
-        public void CheckAndPrompt() { }
+        public int Calls;
+        public void CheckAndPrompt() => Interlocked.Increment(ref Calls);
     }
 
+    private readonly PromptSpy _prompt = new();
+
+    /// <summary>Bu süreçte açılan güncelleme soruları (komut istemcisi ve ödeme kirası paylaşır, AppHost gibi).</summary>
+    public int UpdatePrompts => Volatile.Read(ref _prompt.Calls);
+
     /// <summary>Bu bilgisayarın ağ bağlantısı: kapalıyken her istek (lisans çözümü dahil) ağ hatası verir; öbür
-    /// bilgisayar etkilenmez.</summary>
-    internal sealed class Link(HttpMessageHandler server) : DelegatingHandler(server)
+    /// bilgisayar etkilenmez.
+    /// <para><b>Makine adı</b> (W3-12): iki "bilgisayar" aynı süreçte koştuğu için ikisinin de
+    /// <c>Environment.MachineName</c>'i aynıdır. Bağlantı hello'nun ve oturum gönderiminin <c>machineName</c>'ini bu
+    /// bilgisayarın adıyla değiştirir — sunucunun kiradaki, öncüldeki ve canlı yayındaki makine adı gerçek iki
+    /// bilgisayardaki gibi ayrışır ("PC-A'dan 550,00 TL istendi"). Üretim kodu değişmez.</para></summary>
+    internal sealed class Link(HttpMessageHandler server, string? machineName = null) : DelegatingHandler(server)
     {
         private int _offline;
 
@@ -75,8 +91,36 @@ internal sealed class SalesPc
             set => Volatile.Write(ref _offline, value ? 1 : 0);
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
-            Offline ? throw new HttpRequestException("fake offline (bu bilgisayar)") : base.SendAsync(request, ct);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (Offline) throw new HttpRequestException("fake offline (bu bilgisayar)");
+            if (machineName is not null && request.Content is not null
+                && request.RequestUri!.AbsolutePath is var path
+                && (path.EndsWith("/sales/hello", StringComparison.Ordinal)
+                    || path.EndsWith("/sessions/sync", StringComparison.Ordinal)))
+            {
+                var node = System.Text.Json.Nodes.JsonNode.Parse(await request.Content.ReadAsStringAsync(ct));
+                RenameMachine(node, machineName);
+                request.Content = new StringContent(node!.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+            }
+            return await base.SendAsync(request, ct);
+        }
+
+        private static void RenameMachine(System.Text.Json.Nodes.JsonNode? node, string machineName)
+        {
+            switch (node)
+            {
+                case System.Text.Json.Nodes.JsonObject obj:
+                    if (obj["machineName"] is System.Text.Json.Nodes.JsonValue value
+                        && value.TryGetValue<string>(out _))
+                        obj["machineName"] = machineName;
+                    foreach (var (_, child) in obj.ToList()) RenameMachine(child, machineName);
+                    break;
+                case System.Text.Json.Nodes.JsonArray array:
+                    foreach (var child in array) RenameMachine(child, machineName);
+                    break;
+            }
+        }
     }
 
     private readonly Link _link;
@@ -98,6 +142,10 @@ internal sealed class SalesPc
 
     public LabelService Labels { get; }
     public StreamSessionService Streams { get; }
+
+    /// <summary>Gerçek kargo ayarı sağlayıcısı: mod Off'ta <see cref="Settings"/>, mod On'da sunucunun lisans geneli
+    /// ayarı (state turunun önbelleği; spec 2026-10-13 §6.2).</summary>
+    public ShippingSettingsProvider Shipping { get; }
     public ShipmentService Shipments { get; }
     public SalesSyncEnvelope Envelope { get; }
     public SalesSyncStateService StateService { get; }
@@ -110,7 +158,43 @@ internal sealed class SalesPc
     public SalesModeOffRound OffRound { get; }
     public SalesChangesPullService Pull { get; }
     public SalesBackfillService Backfill { get; }
+
+    /// <summary>Bekleyen ödeme kayıtlarının göndericisi (W3-05): açılışın 1. adımı ve geri doldurma turu paylaşır.</summary>
+    public PaymentRecordSender PaymentRecords { get; }
     public RemoteSessionsViewModel RemoteSessions { get; }
+
+    // ── ödeme isteği (W3-07): AppHost gibi tek ödeme servisi, kira sarmalı ve mod Off kaydı ──
+
+    public LicenseApiClient Api { get; }
+    public ICurrentLicenseProvider LicenseProvider { get; }
+    public CustomerBusySet Busy { get; }
+    public WpfCustomerProjectionSyncService CustomerPush { get; }
+    public SettingsStore Store { get; }
+    public PaymentJobRepository Jobs { get; }
+    public PendingPaymentRecordRepository PendingPaymentRecords { get; }
+
+    /// <summary>wa.me penceresi (açılan bağlantılar; <see cref="FakeUrlLauncher.ThrowOnLaunch"/> açılamamayı taklit
+    /// eder).</summary>
+    public FakeUrlLauncher Launcher { get; } = new();
+    public PaymentOffRecordWriter OffRecords { get; }
+    public PaymentLeaseCoordinator Lease { get; }
+    public PaymentRequestService Payments { get; }
+
+    /// <summary>Başka bilgisayarların ödeme kayıtları (W3-10): AppHost gibi aynı akış servisi ve aynı ödeme kaydı göndericisi
+    /// önbelleği boşaltır.</summary>
+    public RemotePaymentRecords RemotePayments { get; }
+
+    /// <summary>Fiyat düzeltmesinin ödeme tarafı ve "Basılanlar" rozetleri (W3-10): gönderim bu bilgisayarın ödeme servisinden,
+    /// uzak kayıtlar <see cref="RemotePayments"/>'tan.</summary>
+    public OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests PaymentFollowUp { get; }
+
+    /// <summary>Ödeme geçmişi geri doldurması (W3-06, §8.2-6): AppHost gibi kayıtlar TEK ödeme kaydı göndericisinin
+    /// kuyruğuna, tamamlanma hello'su aynı durum servisinden; sürücüsü geri doldurma turu (<see cref="BackgroundRoundAsync"/>).</summary>
+    public PaymentHistoryBackfill PaymentHistory { get; }
+
+    /// <summary>Ayar ekranının mod On'daki lisans geneli kargo yazıcısı (W3-03, §4.8): önbellek aynı satış durumu deposuna,
+    /// <c>mode-off</c>'ta Off turu aynı akış servisinden.</summary>
+    public LicenseShippingSettingsWriter ShippingWriter { get; }
 
     /// <summary>Bu süreçte basılan kâğıt sayısı, etiket başına (<see cref="PrintAsync"/>).</summary>
     public Dictionary<string, int> Papers { get; } = new(StringComparer.Ordinal);
@@ -136,15 +220,18 @@ internal sealed class SalesPc
         Db = db;
         SettingsPath = settingsPath;
         Fingerprint = fingerprint;
-        _link = new Link(server) { Offline = offline };
+        _link = new Link(server, name) { Offline = offline };
 
         var license = new License(server.Lisans);
+        LicenseProvider = license;
         var clock = new Clock();
         var store = new SettingsStore(settingsPath);
+        Store = store;
         Settings = store.Load();
         var http = new HttpClient(_link, disposeHandler: false) { BaseAddress = new Uri("https://test.local") };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("OrderDeck-WPF/0.9.11");
         var api = new LicenseApiClient(http, new LicenseTokenStore());
+        Api = api;
 
         Sessions = new SessionRepository(db);
         LabelRepo = new LabelRepository(db);
@@ -154,6 +241,7 @@ internal sealed class SalesPc
         Identity = new ReplicaIdentityRepository(db);
         Pending = new PendingSalesCommandRepository(db);
         var busy = new CustomerBusySet();
+        Busy = busy;
         var cursors = new SyncCursorRepository(db);
         var customerSync = new CustomerSyncRepository(db, busy);
         var feed = new SalesFeedRepository(db, busy);
@@ -163,7 +251,8 @@ internal sealed class SalesPc
 
         Labels = new LabelService(LabelRepo, new CustomerService(Customers, Sessions, LabelRepo, clock), db, clock);
         Streams = new StreamSessionService(Sessions, clock);
-        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, () => Settings, clock.UnixNow);
+        Shipping = new ShippingSettingsProvider(State, Settings);
+        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, Shipping, clock.UnixNow);
         Envelope = new SalesSyncEnvelope(Identity, State, new Hardware(fingerprint), license,
             NullLogger<SalesSyncEnvelope>.Instance);
         StateService = new SalesSyncStateService(api, Envelope, Identity, State, license, () => Settings,
@@ -180,9 +269,10 @@ internal sealed class SalesPc
             NullLogger<PaymentSyncService>.Instance);
         var customerPush = new WpfCustomerProjectionSyncService(api, customerSync, cursors, license, clock,
             NullLogger<WpfCustomerProjectionSyncService>.Instance);
+        CustomerPush = customerPush;
         var customerPull = new CustomerChangesPullService(api, Customers, customerSync, cursors, customerPush, license,
             clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
-        Commands = new SalesCommandClient(api, Envelope, State, LabelRepo, ShipmentRepo, feed, conflicts, new NoPrompt(),
+        Commands = new SalesCommandClient(api, Envelope, State, LabelRepo, ShipmentRepo, feed, conflicts, _prompt,
             license, clock, NullLogger<SalesCommandClient>.Instance);
         Connectivity = new SalesConnectivity(() => StateService.LastState, () => license.CurrentLicenseKey);
         Sender = new PendingSalesCommandSender(Pending, Commands, conflicts, State, Connectivity, clock,
@@ -193,8 +283,12 @@ internal sealed class SalesPc
         };
         OffRound = new SalesModeOffRound(feed, State, Pending, Labels, LabelRepo, conflicts, store, Settings, clock,
             NullLogger<SalesModeOffRound>.Instance);
+        // AppHost gibi tek ödeme kaydı göndericisi: açılışın 1. adımı ve geri doldurma turu aynı kapıdan.
+        PendingPaymentRecords = new PendingPaymentRecordRepository(db);
+        PaymentRecords = new PaymentRecordSender(api, PendingPaymentRecords, Envelope, license, clock,
+            NullLogger<PaymentRecordSender>.Instance);
         var coordinator = new SalesModeCoordinator(StateService, State, Envelope,
-            new SalesOpeningFlush(customerPush, Push, ShipmentSync, payments, State), clock,
+            new SalesOpeningFlush(PaymentRecords, customerPush, Push, ShipmentSync, payments, State), clock,
             NullLogger<SalesModeCoordinator>.Instance, OffRound);
         Pull = new SalesChangesPullService(api, StateService, State, Envelope, feed, new SalesFeedFailureRepository(db),
             liveSessions, cursors, LabelRepo, customerPush, Push, customerPull, license, clock,
@@ -205,11 +299,29 @@ internal sealed class SalesPc
         };
         Editor = new SalesEditRouter(Labels, LabelRepo, Sessions, State, gate, Commands, Sender, Connectivity, Shipments,
             ShipmentRepo, Customers, () => Pull.Status.LastCaughtUpAt, NullLogger<SalesEditRouter>.Instance);
-        Backfill = new SalesBackfillService(api, Envelope, StateService, Push, ShipmentSync, new SalesBackfillRepository(db),
-            cursors, gate, license, clock, NullLogger<SalesBackfillService>.Instance);
+        Backfill = new SalesBackfillService(api, Envelope, StateService, Push, ShipmentSync, PaymentRecords,
+            new SalesBackfillRepository(db), cursors, gate, license, clock, NullLogger<SalesBackfillService>.Instance);
         RemoteSessions = new RemoteSessionsViewModel(liveSessions, State, Sessions, Commands, Connectivity,
             () => StateService.LastState, () => license.CurrentLicenseKey, ct => Pull.TourOnceAsync(ct), clock,
             NullLogger<RemoteSessionsViewModel>.Instance);
+
+        // AppHost gibi ödeme isteği: tek servis, kira sarmalı (ön gönderim aynı örneklerden), mod Off kaydı aynı
+        // göndericinin kuyruğuna, aynı CustomerBusySet.
+        Jobs = new PaymentJobRepository(db);
+        OffRecords = new PaymentOffRecordWriter(PaymentRecords, State, LabelRepo, license, clock,
+            NullLogger<PaymentOffRecordWriter>.Instance);
+        Lease = new PaymentLeaseCoordinator(api, Envelope, license, State, Pull, customerPull, PaymentRecords,
+            customerPush, Push, Pending, LabelRepo, Sessions, _prompt, NullLogger<PaymentLeaseCoordinator>.Instance);
+        Payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), Launcher, api, license, Jobs, Shipping,
+            NullLogger<PaymentRequestService>.Instance, Customers, busy, OffRecords, Lease);
+        RemotePayments = new RemotePaymentRecords(api, license, State, Identity, PendingPaymentRecords,
+            NullLogger<RemotePaymentRecords>.Instance, Pull, PaymentRecords);
+        PaymentFollowUp = new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(
+            Customers, LabelRepo, Jobs, Shipping, Payments, RemotePayments);
+        PaymentHistory = new PaymentHistoryBackfill(api, Envelope, StateService, State, Jobs, Customers, LabelRepo, busy,
+            PaymentRecords, PendingPaymentRecords, cursors, license, clock, NullLogger<PaymentHistoryBackfill>.Instance);
+        ShippingWriter = new LicenseShippingSettingsWriter(api, Envelope, State, license, () => Pull.RequestModeOffRound(),
+            NullLogger<LicenseShippingSettingsWriter>.Instance);
 
         // AppHost.Initialize'ın açılış adımları (göçten sonra, arka plan işlerinden önce).
         Envelope.CaptureRestoreAtBoot(markerApplied: false);
@@ -298,8 +410,8 @@ internal sealed class SalesPc
     /// <summary>
     /// Bir bilgisayarın bütün arka plan sürücülerinin birer turu, uygulamadaki gibi: satış akışı turu (30 sn; sayfa
     /// sınırı bitene kadar), oturum ve etiket gönderimi (60 sn), kargo gönderimi (30 sn; mod On'da istek yok) ve geri
-    /// doldurma (60 sn; tamamlandıysa istek yok). Mod Off'ta satış akışı turu yalnız kalp atışıdır — gönderim 60 sn'lik
-    /// sürücünündür.
+    /// doldurma (60 sn; tamamlandıysa istek yok) — SalesBackfillHostedService gibi ardından ödeme geçmişi geri doldurması
+    /// (W3-06; tamamlandıysa istek yok). Mod Off'ta satış akışı turu yalnız kalp atışıdır — gönderim 60 sn'lik sürücünündür.
     /// </summary>
     public async Task<SalesPullOutcome> BackgroundRoundAsync()
     {
@@ -307,8 +419,27 @@ internal sealed class SalesPc
         await Push.SyncOnceAsync();
         await ShipmentSync.SyncOnceAsync();
         await Backfill.TourOnceAsync(CancellationToken.None);
+        await PaymentHistory.TourOnceAsync(CancellationToken.None);
         Server.Faults.Should().BeEmpty($"{Name}: sahte sunucu her isteği işleyebilmeli");
         return outcome;
+    }
+
+    /// <summary>
+    /// Ödeme geçmişini tamamlar (§8.2-6) — <c>sales-sync enable</c>'ın ön koşulu (§4.10-2: her kopyada
+    /// <c>PaymentHistoryCompletedAt</c>): geri doldurma turu ve kuyruğun gönderimi, tamamlanma hello'su gidene kadar.
+    /// Mod açılmadan önce koşar; açıldıktan sonraki kiralı işler geçmişe girmez (imleç tamamlandı).
+    /// </summary>
+    public async Task CompletePaymentHistoryAsync()
+    {
+        for (var tour = 0; tour < 20; tour++)
+        {
+            var outcome = await PaymentHistory.TourOnceAsync(CancellationToken.None);
+            if (outcome is PaymentHistoryTourOutcome.Completed or PaymentHistoryTourOutcome.AlreadyCompleted) break;
+            await PaymentRecords.FlushAsync(CancellationToken.None);
+        }
+        Server.ReplicaRow(Server.LicenseId, Replica)!.PaymentHistoryCompleted.Should().BeTrue(
+            $"{Name}: ödeme geçmişi tamamlandı (mod kapısının koşulu)");
+        Server.Faults.Should().BeEmpty($"{Name}: sahte sunucu her isteği işleyebilmeli");
     }
 
     // ── canlı yol ─────────────────────────────────────────────────────────
@@ -318,9 +449,10 @@ internal sealed class SalesPc
     public void EndStream(string sessionId) => Streams.End(sessionId);
 
     /// <summary>Sohbetten etiket (canlı yol, <see cref="LabelService.Add"/>).</summary>
-    public Label Sell(string sessionId, string username, string code = "A1", decimal price = 100m) =>
+    public Label Sell(string sessionId, string username, string code = "A1", decimal price = 100m,
+        string platform = "tiktok") =>
         Labels.Add(sessionId,
-            new ChatMessage(Guid.NewGuid().ToString("N"), "tiktok", null, username, "Takma Ad", null, $"{code} aldım",
+            new ChatMessage(Guid.NewGuid().ToString("N"), platform, null, username, "Takma Ad", null, $"{code} aldım",
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds(), Array.Empty<string>()),
             price, code);
 

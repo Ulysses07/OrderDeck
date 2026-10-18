@@ -47,7 +47,7 @@ public partial class PaymentRequestServiceTests : IDisposable
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         var licProv = new StubLicenseProvider();
         return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, licProv, _jobs);
+            api, licProv, _jobs, LocalShipping.Of(store));
     }
 
     private sealed class StubLicenseProvider : ICurrentLicenseProvider
@@ -152,6 +152,28 @@ public partial class PaymentRequestServiceTests : IDisposable
         public Func<int, Task>? OnApplyAsync { get; set; }
         private int _applyCount;
 
+        /// <summary>W3-11: apply'ın çağrı başına cevabı (parametre kaçıncı apply olduğu, 1'den). Dolu dönerse o cevap
+        /// gider ve hiçbir deftere işlenmez (sunucu reddetti); null → normal yol. Bkz. <see cref="ApplyStale"/>,
+        /// <see cref="ScopeHasDeduction"/>.</summary>
+        public Func<int, HttpResponseMessage?>? ApplyResponse { get; set; }
+
+        /// <summary>§6.6: kapsam kilidi 5 sn'de alınamadı — 409 <c>stale</c>, hiçbir şey yazılmadı.</summary>
+        public static HttpResponseMessage ApplyStale() => Problem("stale");
+
+        /// <summary>§6.6: kapsamda geri alınmamış düşüm var — 409 <c>scope-has-deduction</c> ek üyeleriyle (gerçek
+        /// sunucunun ProblemDetails uzantıları).</summary>
+        public static HttpResponseMessage ScopeHasDeduction(Guid transactionId, decimal appliedAmount, decimal productTotal)
+            => new((HttpStatusCode)409)
+            {
+                Content = new StringContent(
+                    $$"""
+                    {"title":"scope-has-deduction","status":409,"transactionId":"{{transactionId}}",
+                     "appliedAmount":{{appliedAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+                     "productTotal":{{productTotal.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}
+                    """,
+                    Encoding.UTF8, "application/problem+json"),
+            };
+
         /// <summary>true ise apply cevabındaki appliedAmount = min(istenen
         /// tutar, PreviewBalance) — gerçek sunucu gibi. Varsayılan false:
         /// eski testler appliedAmount olarak doğrudan PreviewBalance bekliyor
@@ -163,10 +185,15 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// olmadığı durumdan farklıdır — ayrımı A10 testleri sınar.</summary>
         public bool ThrowTimeoutOnLicenses { get; set; }
 
+        /// <summary>Gelen her isteğin yolu, geliş sırasıyla (W3-06: mod Off'ta kira ucuna istek gitmediği).</summary>
+        public List<string> RequestPaths { get { lock (_sync) return _requestPaths.ToList(); } }
+        private readonly List<string> _requestPaths = new();
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            lock (_sync) _requestPaths.Add(path);
 
             if (path == "/api/v1/me/licenses")
             {
@@ -223,6 +250,8 @@ public partial class PaymentRequestServiceTests : IDisposable
                     sira = ++_applyCount;
                 }
                 if (OnApplyAsync is not null) await OnApplyAsync(sira);
+                // W3-11: senaryolu ret (stale, scope-has-deduction) — sunucu hiçbir şey yazmadı, defterlere işlenmez.
+                if (ApplyResponse?.Invoke(sira) is { } scripted) return scripted;
                 decimal applied;
                 if (RowBalances is { } rowBalances && ApplyProblemTitle is null)
                 {
@@ -398,16 +427,19 @@ public partial class PaymentRequestServiceTests : IDisposable
 
     /// <summary>Verilen sahte sunucu üstünde bir servis örneği. Kişi kilidinin bekleme süresi
     /// kısaltılır: kilide takılan bir test 20 sn asılı kalmasın, hızla düşsün.</summary>
+    /// <param name="shipping">Kargo ayarı sağlayıcısı; verilmezse ayar dosyası (mod Off).</param>
+    /// <param name="offRecords">Mod Off'taki kirasız ödeme kaydı (W3-06); verilmezse kayıt yok.</param>
     private PaymentRequestService SutOn(
         WhatsAppStubHandler handler, SettingsStore store, FakeUrlLauncher launcher,
         ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null,
-        CustomerRepository? customers = null, CustomerBusySet? busy = null)
+        CustomerRepository? customers = null, CustomerBusySet? busy = null,
+        IShippingSettingsProvider? shipping = null, PaymentOffRecordWriter? offRecords = null)
     {
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs,
-            log: null, customers: customers, busy: busy)
+            api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs, shipping ?? LocalShipping.Of(store),
+            log: null, customers: customers, busy: busy, offRecords: offRecords)
         {
             PersonGateTimeout = TimeSpan.FromSeconds(5),
         };
@@ -534,7 +566,7 @@ public partial class PaymentRequestServiceTests : IDisposable
         settings.Shipping.ShippingFee = 150m;
 
         var customer = MakeCustomer(Telefon, recipientPaysActive: true);
-        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings);
+        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings.Shipping);
 
         total.Should().Be(3000m, "alıcı ödemeli — total değişmez");
         fee.Should().BeNull();
@@ -547,7 +579,7 @@ public partial class PaymentRequestServiceTests : IDisposable
         var settings = new AppSettings();   // Shipping defaults null
 
         var customer = MakeCustomer(Telefon);
-        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings);
+        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings.Shipping);
 
         total.Should().Be(3000m);
         fee.Should().BeNull();
@@ -562,7 +594,7 @@ public partial class PaymentRequestServiceTests : IDisposable
         settings.Shipping.ShippingFee = 150m;
 
         var customer = MakeCustomer(Telefon);
-        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 6000m, settings);
+        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 6000m, settings.Shipping);
 
         total.Should().Be(6000m);
         fee.Should().BeNull();
@@ -577,11 +609,46 @@ public partial class PaymentRequestServiceTests : IDisposable
         settings.Shipping.ShippingFee = 150m;
 
         var customer = MakeCustomer(Telefon);
-        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings);
+        var (total, fee, note) = PaymentRequestService.ComputeShipping(customer, 3000m, settings.Shipping);
 
         total.Should().Be(3150m);
         fee.Should().Be(150m);
         note.Should().Be("Kargo: 150,00 TL");
+    }
+
+    /// <summary>
+    /// Spec 2026-10-13 §6.2 (Y4): mesajın kargosu <see cref="IShippingSettingsProvider"/>'dan — mod On'da lisans geneli
+    /// ayar, mod Off'ta yerel ayar. Aynı kurulum: yerel 500/60, lisans geneli 1000/80, ürün 600. İki yol da (yalın
+    /// <c>OpenWhatsApp</c> ve kişi düzeyindeki istek akışı) aynı kaynağı okur.
+    /// </summary>
+    [Theory]
+    [InlineData(0, "600")]   // yerel eşik 500: eşik üstü, ücretsiz kargo
+    [InlineData(1, "680")]   // lisans geneli eşik 1000: 600 + 80
+    public async Task Mesajin_kargosu_mod_On_da_lisans_geneli_ayardan_mod_Off_ta_yerel_ayardan(int mode, string total)
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var live = new AppSettings();
+        live.Shipping.FreeShippingThreshold = 500m;
+        live.Shipping.ShippingFee = 60m;
+        live.Payment.WhatsAppMessageTemplate = "Toplam: {tutar}";
+        _store.Save(live);
+        var state = new SalesSyncStateRepository(db);
+        state.SaveServerState(3, 1000m, 80m, scrubOrderText: false);
+        using (var conn = db.Open())
+            Dapper.SqlMapper.Execute(conn, "UPDATE SalesSyncState SET Mode = @mode WHERE Id = 1", new { mode });
+        var http = new HttpClient(new StubHandler()) { BaseAddress = new Uri("https://stub") };
+        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher,
+            new LicenseApiClient(http, new LicenseTokenStore()), new StubLicenseProvider(), _jobs,
+            new ShippingSettingsProvider(state, live));
+
+        sut.OpenWhatsApp(MakeCustomer(Telefon), 600m, new DateTime(2026, 10, 13))
+            .Should().Be(PaymentRequestResult.Opened);
+        (await sut.OpenWhatsAppAsync(MakeCustomer(Telefon), 600m, new DateTime(2026, 10, 13), "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        _launcher.LaunchedUrls.Should().HaveCount(2)
+            .And.OnlyContain(url => url.Contains($"Toplam%3A%20{total}%2C00"));
     }
 
     [Fact]

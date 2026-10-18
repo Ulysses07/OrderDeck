@@ -40,8 +40,32 @@ public sealed class PaymentMatcherServiceTests
         settings.Shipping.FreeShippingThreshold = threshold;
         settings.Shipping.ShippingFee = fee;
 
-        var svc = new PaymentMatcherService(labels, () => settings);
+        var svc = new PaymentMatcherService(labels, new ShippingSettingsProvider(new SalesSyncStateRepository(db), settings));
         return (svc, labels, customers, db, settings);
+    }
+
+    [Fact]
+    public void Mod_On_eslestirme_yerel_ayari_degil_lisans_geneli_kargo_ayarini_kullanir()
+    {
+        // Spec 2026-10-13 §6.2 (Y4): yerel 500/60'ta 600 TL eşik üstü (kargosuz); lisans geneli 1000/80'de eşik altı —
+        // beklenen 680, 600'lük dekont kargo eksik.
+        var (svc, labels, _, db, _) = Build(threshold: 500m, fee: 60m);
+        using var _2 = db;
+        labels.Insert(NewProductLabel(600m));
+        var state = new SalesSyncStateRepository(db);
+        state.SaveServerState(3, 1000m, 80m, scrubOrderText: false);
+
+        svc.Match(CustomerId, SessionId, dekontAmount: 600m).Outcome
+            .Should().Be(PaymentMatcherService.MatchOutcome.Match, "mod Off: yerel ayar, eşik üstü");
+
+        using (var conn = db.Open())
+            Dapper.SqlMapper.Execute(conn, "UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        state.GetMode().Should().Be(1);
+        var result = svc.Match(CustomerId, SessionId, dekontAmount: 600m);
+
+        result.Outcome.Should().Be(PaymentMatcherService.MatchOutcome.ShippingShortage);
+        result.ExpectedAmount.Should().Be(680m);
+        result.ShippingFee.Should().Be(80m);
     }
 
     private static Label NewProductLabel(decimal price, long addedAt = 1100L) =>

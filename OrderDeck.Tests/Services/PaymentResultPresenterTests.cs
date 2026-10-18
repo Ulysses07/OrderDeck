@@ -156,6 +156,76 @@ public sealed class PaymentResultPresenterTests
         message.Should().NotContain("istendi");
     }
 
+    // ── mod On: sunucunun öncülleri (spec 2026-10-13 §6.4-e, §6.8; W3-09) ──────────────────────────────
+
+    private static readonly DateTimeOffset Onda = new(2026, 10, 11, 10, 0, 0, TimeSpan.FromHours(3));
+
+    private static string Saat(DateTimeOffset at)
+        => at.ToLocalTime().ToString("HH:mm", CultureInfo.GetCultureInfo("tr-TR"));
+
+    [Fact]
+    public void Uzak_oncul_makine_adiyla_istendi_diye_sorulur()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "cumulative",
+            new[] { new PriorPaymentRequest(550m, Onda, Machine: "PC-A") }, "t");
+
+        var (title, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        title.Should().Be("Ödeme isteği zaten gönderildi");
+        message.Should().Be($"PC-A'dan 550,00 TL istendi ({Saat(Onda)}); tekrar gönderilsin mi?",
+            "§6.8: \"PC-A'dan 550 ₺ istendi (10:00); tekrar gönderilsin mi?\" — tutar uygulamanın biçimiyle");
+    }
+
+    [Fact] // §6.8: teslim kaydı olmadan dolan kira olgu diye anlatılmaz
+    public void Dolmus_kira_makine_adiyla_istenmis_olabilir_diye_sorulur()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "cumulative",
+            new[] { new PriorPaymentRequest(550m, Onda, Unconfirmed: true, Machine: "PC-A") }, "t");
+
+        var (title, message) = PaymentResultPresenter.PromptText(prompt, Simdi);
+
+        title.Should().Be("Ödeme isteği gönderilmiş olabilir");
+        message.Should().Be(
+            $"{Saat(Onda)}{PaymentResultPresenter.Locative(Onda)} PC-A'dan 550,00 TL istenmiş olabilir (sonucu bilinmiyor); "
+          + "tekrar gönderilsin mi?");
+        message.Should().NotContain("istendi");
+    }
+
+    [Fact] // K5 sunucunun öncülünde de: eski ve yeni tutar birlikte
+    public void Uzak_oncul_tutar_degistiyse_yeni_tutari_da_soyler()
+    {
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "cumulative",
+            new[] { new PriorPaymentRequest(250m, Onda, Machine: "PC-B") }, "t", NewTotal: 205m);
+
+        PaymentResultPresenter.PromptText(prompt, Simdi).Message.Should().Be(
+            $"PC-B'den 250,00 TL istendi ({Saat(Onda)}); yeni tutar 205,00 TL. Düzeltilmiş istek gönderilsin mi?");
+    }
+
+    [Fact] // Tek onay iki kapıyı da geçirir: "Evet" sorunun BÜTÜN belirteçlerini verir (W3-09)
+    public async Task Onay_sorunun_butun_belirteclerini_yeniden_cagriya_verir()
+    {
+        var dialogs = new OrderDeck.Tests.Fakes.FakeDialogService { ConfirmResult = _ => true };
+        var prompt = new PaymentPrompt(PersonScopePromptKind.Resend, "cumulative",
+            new[] { new PriorPaymentRequest(550m, Onda, Machine: "PC-A") }, "uzak-belirtec")
+        {
+            AlsoConfirms = ["yerel-belirtec"],
+        };
+        var calls = new List<IReadOnlySet<string>?>();
+
+        var outcome = await PaymentResultPresenter.RequestConfirmedAsync(dialogs, tokens =>
+        {
+            calls.Add(tokens is null ? null : new HashSet<string>(tokens, StringComparer.Ordinal));
+            return Task.FromResult(calls.Count == 1
+                ? new PaymentRequestOutcome(PaymentRequestResult.AlreadyRequested, prompt)
+                : new PaymentRequestOutcome(PaymentRequestResult.Opened));
+        });
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        dialogs.Confirmations.Should().ContainSingle("ikinci diyalog yok");
+        calls.Should().HaveCount(2);
+        calls[1].Should().BeEquivalentTo(["uzak-belirtec", "yerel-belirtec"]);
+    }
+
     [Fact] // Birleştirmede de sonucu yazılamamış istek "gitmiş" diye kesin sayılmaz
     public void Birlestirme_sonucu_yazilamamis_istegi_gitmis_olabilir_diye_isaretler()
     {

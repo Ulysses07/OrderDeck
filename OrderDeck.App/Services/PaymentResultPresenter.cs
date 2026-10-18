@@ -25,6 +25,32 @@ namespace OrderDeck.App.Services;
 /// </summary>
 public static class PaymentResultPresenter
 {
+    /// <summary>
+    /// Sonucun tamamıyla bildirim (spec 2026-10-13 §6.4; W3-07): <see cref="PaymentRequestResult.Blocked"/> açılır pencere
+    /// AÇMAZ — metni çağıran satır içi gösterir (<see cref="InlineProblem"/>; sahibin #508 tercihi).
+    /// <see cref="PaymentRequestResult.PaymentInProgress"/> başka bilgisayarın kirasında makine adlı metni
+    /// (<see cref="PaymentRequestOutcome.Message"/>) gösterir; öbür sonuçlar <see cref="Notify(IDialogService, PaymentRequestResult)"/>
+    /// ile bugünkü gibi.
+    /// </summary>
+    public static void Notify(IDialogService dialogs, PaymentRequestOutcome outcome)
+    {
+        switch (outcome.Result)
+        {
+            case PaymentRequestResult.Blocked:
+                return;
+            case PaymentRequestResult.PaymentInProgress when !string.IsNullOrWhiteSpace(outcome.Message):
+                dialogs.ShowInfo(outcome.Message);
+                return;
+            default:
+                Notify(dialogs, outcome.Result);
+                return;
+        }
+    }
+
+    /// <summary>Satır içi şeridin metni: <see cref="PaymentRequestResult.Blocked"/>'ın nedeni; öbür sonuçlarda null.</summary>
+    public static string? InlineProblem(PaymentRequestOutcome outcome)
+        => outcome.Result == PaymentRequestResult.Blocked ? outcome.Message : null;
+
     /// <summary>Sonucu operatöre bildirir. <see cref="PaymentRequestResult.Opened"/>
     /// ve <see cref="PaymentRequestResult.Sent"/> sessizdir — başarı zaten
     /// ekranda görünür (WhatsApp penceresi açılır / mesaj gider).</summary>
@@ -95,6 +121,8 @@ public static class PaymentResultPresenter
     /// deseni — kira diyalog boyunca tutulmaz, servis belirteçle durumun değişmediğini doğrular).
     /// "Hayır" → hiçbir şey değişmez, soru sonucu döner (<see cref="Notify"/> sessiz geçer).
     /// İki çağrı yeri (müşteri arama, yayın raporu) aynı yoldan geçer (R4-07 gerekçesi).
+    /// <para>"Evet" sorunun BÜTÜN belirteçlerini verir (<see cref="PaymentPrompt.Tokens"/>): mod On'da sunucunun sorusuna
+    /// katılan yerel planın kapısı da aynı onayla geçer (W3-09).</para>
     /// </summary>
     public static async Task<PaymentRequestOutcome> RequestConfirmedAsync(
         IDialogService dialogs, Func<IReadOnlySet<string>?, Task<PaymentRequestOutcome>> request)
@@ -107,7 +135,7 @@ public static class PaymentResultPresenter
         {
             var (title, message) = PromptText(prompt, DateTimeOffset.Now);
             if (!await dialogs.ConfirmAsync(message, title)) return outcome;
-            tokens.Add(prompt.Token);
+            tokens.UnionWith(prompt.Tokens);
             outcome = await request(tokens);
         }
         return outcome;
@@ -131,7 +159,12 @@ public static class PaymentResultPresenter
     ///
     /// <para>Sonucu yazılamamış gönderim (<see cref="PriorPaymentRequest.Unconfirmed"/>) olgu diye
     /// anlatılmaz ("zaten gönderildi", "istendi" denmez): istek gitmemiş de olabilir — operatör az önce
-    /// "WhatsApp açılamadı" görmüş olabilir; "Hayır" derse müşteriye hiç istek gitmeyebilir.</para></summary>
+    /// "WhatsApp açılamadı" görmüş olabilir; "Hayır" derse müşteriye hiç istek gitmeyebilir.</para>
+    ///
+    /// <para>Mod On'da sunucunun öncülü (<see cref="PriorPaymentRequest.Machine"/> dolu; spec 2026-10-13 §6.4-e, §6.8;
+    /// W3-09) isteği yapan bilgisayarın adıyla anlatılır: "PC-A'dan 550,00 TL istendi (10:00); tekrar gönderilsin mi?".
+    /// Teslim kaydı olmadan dolan kira olgu diye anlatılmaz: "10:00'da PC-A'dan 550,00 TL istenmiş olabilir (sonucu
+    /// bilinmiyor); …".</para></summary>
     public static (string Title, string Message) PromptText(PaymentPrompt prompt, DateTimeOffset now)
     {
         if (prompt.Kind == PersonScopePromptKind.Resend)
@@ -146,6 +179,17 @@ public static class PaymentResultPresenter
                     ? $"yeni toplam {Money(nt)} (bakiye düşülmeden önce)"
                     : $"yeni tutar {Money(nt)}")
                 : null;
+            var question = newText is null ? "tekrar gönderilsin mi?" : $"{newText}. Düzeltilmiş istek gönderilsin mi?";
+            if (last?.Machine is { Length: > 0 } machine)
+            {
+                var from = Sync.SalesCommandMessages.Ablative(machine);
+                return last.Unconfirmed
+                    ? ("Ödeme isteği gönderilmiş olabilir",
+                        $"{atte}{from} {Money(last.Amount)} istenmiş olabilir (sonucu bilinmiyor); {question}")
+                    : ("Ödeme isteği zaten gönderildi",
+                        $"{from} {Money(last.Amount)} istendi{(last.At is { } when ? $" ({WhenText(when, now)})" : "")}; "
+                      + question);
+            }
             if (last is { Unconfirmed: true })
                 return ("Ödeme isteği gönderilmiş olabilir", newText is null
                     ? $"{at}{Money(last.Amount)} tutarındaki istek gönderilmiş olabilir (sonucu kaydedilemedi), " +

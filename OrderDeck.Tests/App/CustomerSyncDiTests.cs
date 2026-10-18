@@ -94,6 +94,58 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Kargo_ayari_saglayicisi_tekil_okuyucular_ayni_ornegi_alir_mod_Offta_canli_ayar()
+    {
+        // W3 (spec 2026-10-13 §6.2): kargo eşiğinin TEK okuma noktası. Bir okuyucu başka örnek ya da yerel ayar alsaydı
+        // mod On'da yerel değerle tutar isterdi.
+        using var host = new global::OrderDeck.App.AppHost();
+        var shipping = host.Services.GetRequiredService<IShippingSettingsProvider>();
+
+        host.Services.GetRequiredService<IShippingSettingsProvider>().Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>(),
+                "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(host.Services.GetRequiredService<ShipmentService>(), "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<OrderDeck.Core.Payments.PaymentMatcherService>(), "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.DekontEkleViewModel>(), "_shipping")
+            .Should().BeSameAs(shipping);
+
+        // Geçici kökün yeni veritabanı mod Off: değer CANLI ayar örneğinin kendisi.
+        var snapshot = shipping.Current();
+        snapshot.Settings.Should().BeSameAs(host.Services.GetRequiredService<AppSettings>().Shipping);
+        snapshot.Version.Should().BeNull();
+    }
+
+    [Fact]
+    public void Kargo_ayari_yazicisi_tekil_satis_durumu_deposuna_ve_zarfa_bagli()
+    {
+        // W3-03 (§4.8, §6.2): ayar ekranının mod On'daki yazıcısı önbelleği sağlayıcının okuduğu depoya yazmalı; başka
+        // bir depo örneği olsaydı (aynı veritabanı olsa da) DI kaydının bozulduğunu gösterirdi. Ayar ekranı yazıcıyı ve
+        // sağlayıcıyı isteğe bağlı parametreyle alır: kayıt eksik olsaydı ekran sessizce mod Off gibi yerel yazardı.
+        using var host = new global::OrderDeck.App.AppHost();
+        var writer = host.Services.GetRequiredService<LicenseShippingSettingsWriter>();
+
+        host.Services.GetRequiredService<LicenseShippingSettingsWriter>().Should().BeSameAs(writer);
+        PrivateField<SalesSyncStateRepository>(writer, "_state")
+            .Should().BeSameAs(host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<SalesSyncEnvelope>(writer, "_envelope")
+            .Should().BeSameAs(host.Services.GetRequiredService<SalesSyncEnvelope>());
+        PrivateField<Action>(writer, "_requestModeOffRound").Should().NotBeNull();
+
+        var parameters = typeof(global::OrderDeck.App.ViewModels.SettingsViewModel).GetConstructors()
+            .Single().GetParameters().Select(p => p.ParameterType).ToList();
+        parameters.Should().Contain(typeof(IShippingSettingsProvider)).And.Contain(typeof(LicenseShippingSettingsWriter));
+    }
+
+    [Fact]
     public void Musteri_detay_penceresi_kargo_deposunu_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();
@@ -275,6 +327,172 @@ public sealed class CustomerSyncDiTests
         hosted.Should().ContainSingle(h => h is SalesBackfillHostedService);
         PrivateField<SalesBackfillService>(hosted.OfType<SalesBackfillHostedService>().Single(), "_service")
             .Should().BeSameAs(backfill);
+    }
+
+    [Fact]
+    public void Mod_Off_odeme_kaydi_yazicisi_odeme_servisine_bagli_tekil_gondericinin_kuyruguna_yazar()
+    {
+        // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)"): PaymentRequestService'in isteğe bağlı
+        // parametresi — kayıt eksikse DI onu sessizce null bırakır ve mod Off'taki istekler sunucuya hiç geçmezdi.
+        using var host = new global::OrderDeck.App.AppHost();
+        var writer = host.Services.GetRequiredService<PaymentOffRecordWriter>();
+
+        PrivateField<PaymentOffRecordWriter>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_offRecords")
+            .Should().BeSameAs(writer);
+        PrivateField<PaymentRecordSender>(writer, "_sender").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentRecordSender>(), "kayıt TEK göndericinin kuyruğuna");
+        PrivateField<SalesSyncStateRepository>(writer, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<ICurrentLicenseProvider>(writer, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+    }
+
+    [Fact]
+    public void Odeme_kirasi_sarmali_odeme_servisine_bagli_on_gonderimi_tekil_orneklerden()
+    {
+        // W3-07 (spec 2026-10-13 §6.4): PaymentRequestService'in isteğe bağlı parametresi — kayıt eksikse DI onu sessizce
+        // null bırakır ve mod On'da istek kirasız, ön gönderimsiz giderdi (M9'un fail-closed'ı hiç çalışmazdı).
+        using var host = new global::OrderDeck.App.AppHost();
+        var lease = host.Services.GetRequiredService<PaymentLeaseCoordinator>();
+
+        host.Services.GetRequiredService<PaymentLeaseCoordinator>().Should().BeSameAs(lease);
+        PrivateField<PaymentLeaseCoordinator>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_lease")
+            .Should().BeSameAs(lease);
+        PrivateField<SalesChangesPullService>(lease, "_pull").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesChangesPullService>(), "bekleyen komutlar tek göndericiden");
+        PrivateField<CustomerChangesPullService>(lease, "_customerPull").Should().BeSameAs(
+            host.Services.GetRequiredService<CustomerChangesPullService>(),
+            "W3-08 members-stale turu: müşteri akışının TEK tur kilidi (satış akışı da onu tutar)");
+        PrivateField<PaymentRecordSender>(lease, "_records").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentRecordSender>(), "finish'ler TEK göndericinin kuyruğundan");
+        PrivateField<WpfCustomerProjectionSyncService>(lease, "_customerPush").Should().BeSameAs(
+            host.Services.GetRequiredService<WpfCustomerProjectionSyncService>(), "müşteri gönderiminin tek tur kilidi");
+        PrivateField<SessionOrderSyncService>(lease, "_salesPush").Should().BeSameAs(
+            host.Services.GetRequiredService<SessionOrderSyncService>(), "gönderim kapısı tek örnekte");
+        PrivateField<PendingSalesCommandRepository>(lease, "_pendingCommands").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingSalesCommandRepository>());
+        PrivateField<SalesSyncStateRepository>(lease, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<SalesSyncEnvelope>(lease, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>(), "zarf tekil: geri yüklemeden sonra kip tazelenene kadar istek yok");
+        PrivateField<global::OrderDeck.App.Services.IAppUpdatePrompt>(lease, "_updatePrompt").Should().BeSameAs(
+            host.Services.GetRequiredService<global::OrderDeck.App.Services.IAppUpdatePrompt>());
+    }
+
+    [Fact]
+    public void Uzak_odeme_kayitlari_tekil_fiyat_duzeltmesine_bagli_akis_ve_kayit_gondericisiyle_bosalir()
+    {
+        // W3-10 (spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması"): CorrectedPaymentRequests'in isteğe bağlı parametresi —
+        // kayıt eksikse DI onu null bırakır ve mod On'da rozetler ile "ödendi, fark" planı başka bilgisayarın isteğini hiç
+        // görmezdi. Önbellek TEK satış akışı servisinin SalesChanged'iyle ve TEK ödeme kaydı göndericisinin RecordsSent'iyle
+        // boşalır: başka örneğe abone olsaydı hiç boşalmazdı.
+        using var host = new global::OrderDeck.App.AppHost();
+        var remote = host.Services.GetRequiredService<RemotePaymentRecords>();
+
+        host.Services.GetRequiredService<RemotePaymentRecords>().Should().BeSameAs(remote);
+        PrivateField<RemotePaymentRecords>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>(),
+                "_remote")
+            .Should().BeSameAs(remote);
+        PrivateField<SalesSyncStateRepository>(remote, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<PendingPaymentRecordRepository>(remote, "_pending").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingPaymentRecordRepository>());
+        PrivateField<ICurrentLicenseProvider>(remote, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+        PrivateField<EventHandler<SalesChangedEventArgs>>(host.Services.GetRequiredService<SalesChangesPullService>(),
+                "SalesChanged")!
+            .GetInvocationList().Should().Contain(d => ReferenceEquals(d.Target, remote), "satış akışı önbelleği boşaltır");
+        PrivateField<EventHandler>(host.Services.GetRequiredService<PaymentRecordSender>(), "RecordsSent")!
+            .GetInvocationList().Should().Contain(d => ReferenceEquals(d.Target, remote), "finish sunucuya geçince boşalır");
+    }
+
+    [Fact]
+    public void Odeme_gecmisi_geri_doldurmasi_ortak_orneklerle_kurulur_geri_doldurma_turu_surer()
+    {
+        // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6, §10.3 DI testi): kayıtlar TEK göndericinin kuyruğuna,
+        // tamamlanma hello'su turla aynı kapıdan (aynı durum servisi), bekleme kararı aynı zarftan. Sürücü geri doldurma
+        // turu: ayrı hosted service yok, mevcut olanın genel döngüde başlatılması yeter (CLAUDE.md, PR #89).
+        using var host = new global::OrderDeck.App.AppHost();
+        var history = host.Services.GetRequiredService<PaymentHistoryBackfill>();
+
+        host.Services.GetRequiredService<PaymentHistoryBackfill>().Should().BeSameAs(history);
+        PrivateField<PaymentRecordSender>(history, "_sender").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentRecordSender>());
+        PrivateField<PendingPaymentRecordRepository>(history, "_pending").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingPaymentRecordRepository>());
+        PrivateField<SalesSyncStateService>(history, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateService>(), "tamamlanma hello'su turla aynı kapıdan");
+        PrivateField<SalesSyncEnvelope>(history, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>());
+        PrivateField<SyncCursorRepository>(history, "_cursors").Should().BeSameAs(
+            host.Services.GetRequiredService<SyncCursorRepository>());
+        PrivateField<ICurrentLicenseProvider>(history, "_licenseProvider").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+        PrivateField<PaymentJobRepository>(history, "_jobs").Should().BeSameAs(
+            host.Services.GetRequiredService<IPaymentJobStore>(), "ödeme akışıyla aynı depo örneği");
+        // Kişisi ödeme akışında olan işi okumaz (uçuştaki gönderim): ayrı bir küme akışın kirasını görmezdi.
+        PrivateField<CustomerBusySet>(history, "_busy").Should().BeSameAs(
+                host.Services.GetRequiredService<CustomerBusySet>())
+            .And.BeSameAs(PrivateField<CustomerBusySet>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_busy"),
+                "ödeme akışıyla aynı CustomerBusySet (U13)");
+
+        var hosted = host.Services.GetServices<IHostedService>().ToList();
+        PrivateField<PaymentHistoryBackfill>(hosted.OfType<SalesBackfillHostedService>().Single(), "_history")
+            .Should().BeSameAs(history);
+        hosted.Should().NotContain(h => h.GetType().Name.Contains("PaymentHistory"), "ayrı zamanlayıcı yok");
+    }
+
+    [Fact]
+    public void Yetenek_duzeyi_3_ise_kira_sarmali_ve_odeme_kaydi_gondericisi_kayitli_ve_odeme_servisine_bagli()
+    {
+        // W3-12 (spec 2026-10-13 §2 "Ws", §4.10-2, §8.1-4): hello'daki featureLevel = 3 mod kapısının ikinci kilididir ve
+        // "bu derleme W3'ün hepsini taşıyor" demektir. Kira sarmalı ya da ödeme kaydı göndericisi DI'da eksik ya da ödeme
+        // servisine bağlı değilse PaymentRequestService'in isteğe bağlı parametreleri sessizce null kalır: mod On'da istek
+        // kirasız (fail-closed'sız) gider, mod Off kayıtları sunucuya hiç geçmez — ama kopya kapıdan 3 ile geçerdi.
+        SalesSyncEnvelope.FeatureLevel.Should().Be(3, "W3'ü içeren derleme");
+        using var host = new global::OrderDeck.App.AppHost();
+        var payments = host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>();
+        var lease = host.Services.GetRequiredService<PaymentLeaseCoordinator>();
+        var sender = host.Services.GetRequiredService<PaymentRecordSender>();
+
+        PrivateField<PaymentLeaseCoordinator>(payments, "_lease").Should().NotBeNull().And.BeSameAs(lease,
+            "kira sarmalı ödeme servisine bağlı");
+        PrivateField<PaymentRecordSender>(lease, "_records").Should().BeSameAs(sender, "finish'ler tek göndericiden");
+        var offRecords = PrivateField<PaymentOffRecordWriter>(payments, "_offRecords");
+        offRecords.Should().NotBeNull().And.BeSameAs(host.Services.GetRequiredService<PaymentOffRecordWriter>());
+        PrivateField<PaymentRecordSender>(offRecords!, "_sender").Should().BeSameAs(sender,
+            "mod Off kayıtları tek göndericinin kuyruğuna");
+        PrivateField<PaymentRecordSender>(host.Services.GetRequiredService<PaymentHistoryBackfill>(), "_sender")
+            .Should().BeSameAs(sender, "ödeme geçmişi tek göndericinin kuyruğuna");
+        host.Services.GetServices<IHostedService>().OfType<SalesBackfillHostedService>().Should().ContainSingle(
+            "gönderici ve geçmiş geri doldurma turuyla sürer");
+    }
+
+    [Fact]
+    public void Odeme_kaydi_gondericisi_tekil_geri_doldurma_turu_ve_acilisin_birinci_adimiyla_paylasilir()
+    {
+        // W3-05 (spec 2026-10-13 §6.4, §8.4-1): bekleyen ödeme kayıtlarını geri doldurma turu (60 sn, iki kipte) ve mod On
+        // açılışının 1. adımı (İLK kuyruk) gönderir. Kapı tek örnekte geçerli: iki örnek aynı kaydı aynı anda iki kez
+        // gönderirdi. Zarf tekil örnek: geri yüklemeden sonra kip tazelenene kadar istek gitmez (§8.7).
+        using var host = new global::OrderDeck.App.AppHost();
+        var sender = host.Services.GetRequiredService<PaymentRecordSender>();
+
+        host.Services.GetRequiredService<PaymentRecordSender>().Should().BeSameAs(sender);
+        PrivateField<PaymentRecordSender>(host.Services.GetRequiredService<SalesBackfillService>(), "_paymentRecords")
+            .Should().BeSameAs(sender);
+        var flush = PrivateField<ISalesOpeningFlush>(host.Services.GetRequiredService<SalesModeCoordinator>(), "_flush")
+            .Should().BeOfType<SalesOpeningFlush>().Subject;
+        PrivateField<PaymentRecordSender>(flush, "_paymentRecords").Should().BeSameAs(sender);
+        PrivateField<PendingPaymentRecordRepository>(sender, "_repo").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingPaymentRecordRepository>());
+        PrivateField<SalesSyncEnvelope>(sender, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>(), "hello, state ve kip adımının kararı zarfta: aynı örnek");
+        PrivateField<ICurrentLicenseProvider>(sender, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
     }
 
     [Fact]

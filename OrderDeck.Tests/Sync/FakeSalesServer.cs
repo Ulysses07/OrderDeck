@@ -78,6 +78,14 @@ namespace OrderDeck.Tests.Sync;
 /// <c>payments/since</c> (boş). <see cref="RequestLog"/> bütün isteklerin sırasını tutar (geri yüklemeden sonra
 /// gönderimin state yanıtını beklediğini sınamak için).</para>
 ///
+/// <para><b>Bekleyen ödeme kayıtları</b> (W3-05): <c>payment-requests/backfill</c> ve <c>payment-requests/{id}/finish</c>
+/// (<see cref="PaymentRequestsBackfill"/>, <see cref="PaymentRequestsFinish"/>; kayıt, betik, v2 zarfı). Kira ve kayıt
+/// kuralları taklit edilmez. W3-07: <c>payment-requests/begin</c> (<see cref="PaymentRequestsBegin"/>; betik yoksa 200
+/// <c>sending</c>, mod Off'ta <c>mode-off</c>), ödeme akışının bakiye uçları (<see cref="BalancePreview"/>) ve Cloud API
+/// gönderimi (<see cref="WhatsAppSend"/>) — ödeme isteği uçtan uca sürülebilsin. W3-12: <see cref="LeaseRules"/> açıkken
+/// kira, kayıt, liste, geri doldurma ve bakiye defteri sunucunun kurallarıyla (<c>FakeSalesServer.PaymentRules.cs</c>);
+/// <c>shipping-settings</c> GET/PUT her zaman.</para>
+///
 /// <para><b>Birim kuralı ve açılış penceresi</b> (W2-12, iki bilgisayarlı yakınsama testleri için): <c>orders/sync</c>
 /// güncelleme dalı §4.2 tablosunu uygular (<see cref="UnitRule"/>: K1 oluşum alanları yazılmaz, K2 damgalı birimi yalnız
 /// <c>baseVersion = Version</c> taşıyan v2 yazar, K3 baskı ve <c>cancelled-elsewhere</c>, K4 bağ, K5 mod On'da devredilmiş
@@ -91,7 +99,7 @@ namespace OrderDeck.Tests.Sync;
 /// yok: geri yüklenmiş kopya önceki kopyanın oturumunun sahibi sayılmaz. <see cref="RenumberChangeSeqs"/> kopyalanmış
 /// sunucu veritabanını (rowversion'lar yeniden verilir) taklit eder.</para>
 /// </summary>
-internal sealed class FakeSalesServer : HttpMessageHandler
+internal sealed partial class FakeSalesServer : HttpMessageHandler
 {
     public const string Hello = "hello";
     public const string State = "state";
@@ -108,6 +116,46 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary>Dekont gönderimi (<c>PaymentSyncService</c>): <see cref="Calls"/>, <see cref="EnqueueStatus"/> ve
     /// <see cref="DuringPush"/> için.</summary>
     public const string PaymentsSync = "payments/sync";
+
+    /// <summary>Bekleyen ödeme kayıtlarının uçları (W3-05, <c>PaymentRecordSender</c>): <see cref="Calls"/> ve
+    /// <see cref="EnqueueStatus"/> için.</summary>
+    public const string PaymentRequestsBackfill = "payment-requests/backfill";
+    public const string PaymentRequestsFinish = "payment-requests/finish";
+
+    /// <summary>Ödeme isteği kirası (W3-07, <c>PaymentLeaseCoordinator</c>): <see cref="Calls"/>, <see cref="EnqueueStatus"/>,
+    /// <see cref="EnqueueProblem(string, int, string, IReadOnlyDictionary{string, object?})"/> ve
+    /// <see cref="EnqueueTimeout"/> için. <see cref="LeaseRules"/> kapalıyken kira kuralları taklit edilmez (yalnız (e)):
+    /// betik yoksa 200 <c>sending</c>; açıkken a–h (W3-12).</summary>
+    public const string PaymentRequestsBegin = "payment-requests/begin";
+
+    /// <summary>Ödeme isteği kayıtlarının listesi (W3-10, <c>RemotePaymentRecords</c>): <see cref="Calls"/>,
+    /// <see cref="EnqueueStatus"/> ve <see cref="EnqueueTimeout"/> için. Kayıtlar <see cref="AddPaymentPrior"/>'dan.</summary>
+    public const string PaymentRequestsList = "payment-requests/list";
+
+    /// <summary>Ödeme akışının bakiye uçları (W3-07): <c>customer-balance/preview</c>, <c>scope</c>
+    /// (<see cref="ScopeDeductions"/>'da yoksa 204) ve <c>apply</c> (<see cref="BalancePreview"/>'dan en çok istenen
+    /// kadar).</summary>
+    public const string BalancePreviewEndpoint = "customer-balance/preview";
+    public const string BalanceScopeEndpoint = "customer-balance/scope";
+    public const string BalanceApplyEndpoint = "customer-balance/apply";
+
+    /// <summary>WhatsApp Cloud API gönderimi (W3-07): betik yoksa <c>{ok: true}</c>; <see cref="EnqueueJson"/> başka yanıt
+    /// verir.</summary>
+    public const string WhatsAppSend = "whatsapp/send";
+
+    /// <summary>Bakiye önizlemesinin döneceği bakiye (her müşteri için aynı); 0 = bakiye yok, apply çağrılmaz.</summary>
+    public decimal BalancePreview { get; set; }
+
+    /// <summary>Betiksiz <c>begin</c> 200'ünün üyelerine eklenir (sunucunun asıl kayda çözdüğü, istemcinin bilmediği üye;
+    /// W3-08 kapsam uzlaştırması).</summary>
+    public List<string> ExtraBeginMembers { get; } = new();
+
+    /// <summary><c>customer-balance/scope</c>'un müşteri başına yanıtı (geri alınmamış düşüm); olmayan müşteride 204.</summary>
+    public ConcurrentDictionary<Guid, ScopeDeduction> ScopeDeductions { get; } = new();
+
+    /// <summary><c>/scope</c>'un bulduğu düşüm (<c>LicensesCustomerBalanceApplyController.ScopeResponse</c>).</summary>
+    internal sealed record ScopeDeduction(Guid TransactionId, decimal AppliedAmount, decimal ProductTotal,
+        DateTimeOffset CreatedAt);
 
     /// <summary><c>sales/backfill</c>'in uç adı: <see cref="EnqueueStatus"/> ve <see cref="EnqueueProblem"/> için.</summary>
     public const string Backfill = "backfill";
@@ -170,6 +218,14 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary><c>wpf-customers/sync</c> istekleri (ham gövde).</summary>
     public IReadOnlyList<PushCall> CustomerPushCalls { get { lock (_gate) return _customerPushCalls.ToList(); } }
     private readonly List<PushCall> _customerPushCalls = new();
+
+    /// <summary><c>wpf-customers/changes</c> (müşteri akışı) istek sayısı.</summary>
+    public int CustomerChangesCalls { get { lock (_gate) return _customerChangesCalls; } }
+    private int _customerChangesCalls;
+
+    /// <summary>Müşteri akışı isteği "işlenirken" çalışır (yanıttan önce): ödeme kirasının <c>members-stale</c> turunda
+    /// kiraların bırakıldığını sınamak ve grup senkronunun gelişini taklit etmek için (W3-08).</summary>
+    public Action? DuringCustomerChanges { get; set; }
 
     /// <summary><c>/sales/</c> altına gelen bütün istekler (kasıtlı arızalar dahil).</summary>
     public int SalesRequestCount { get { lock (_gate) return _salesRequests; } }
@@ -295,6 +351,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         lock (_gate) Script(endpoint).Enqueue(() => throw new TaskCanceledException("fake timeout"));
     }
 
+    /// <summary>Sıradaki yanıt verilen kod ve JSON gövdesi (ör. WhatsApp gönderiminin <c>{ok: false}</c>'u).</summary>
+    public void EnqueueJson(string endpoint, int status, string json)
+    {
+        lock (_gate) Script(endpoint).Enqueue(() => FakeHttpMessageHandler.Json(status, json));
+    }
+
     private Queue<Func<HttpResponseMessage>> Script(string endpoint) =>
         _scripted.TryGetValue(endpoint, out var q) ? q : _scripted[endpoint] = new Queue<Func<HttpResponseMessage>>();
 
@@ -322,6 +384,45 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             if (payments.Success)
                 return await HandlePaymentsAsync(req, Guid.Parse(payments.Groups[1].Value), payments.Groups[2].Value, ct);
 
+            // Ödeme isteği kirası (W3-07): begin; kira kuralları taklit edilmez.
+            var paymentBegin = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payment-requests/begin$");
+            if (paymentBegin.Success && req.Method == HttpMethod.Post)
+                return await HandlePaymentBeginAsync(req, Guid.Parse(paymentBegin.Groups[1].Value), ct);
+
+            // Ödeme isteği kayıtlarının listesi (W3-10): rozetler ve fiyat düzeltme planı.
+            var paymentList = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payment-requests$");
+            if (paymentList.Success && req.Method == HttpMethod.Get)
+                return await HandlePaymentListAsync(req, Guid.Parse(paymentList.Groups[1].Value));
+
+            // Lisans geneli kargo ayarı (W3-12, §4.8): kipten bağımsız her zaman.
+            var shippingSettings = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/shipping-settings$");
+            if (shippingSettings.Success)
+                return await HandleShippingSettingsAsync(req, Guid.Parse(shippingSettings.Groups[1].Value), ct);
+
+            // Bakiye işleminin durumu ve geri alınması (W3-12): yalnız kurallar açıkken (defter); kapalıyken bugünkü gibi
+            // beklenmeyen istek.
+            var balanceTransaction = Regex.Match(path,
+                @"^/api/v1/licenses/([0-9a-fA-F-]{36})/customer-balance/transactions/([0-9a-fA-F-]{36})(/reverse)?$");
+            if (balanceTransaction.Success && LeaseRules
+                && req.Method == (balanceTransaction.Groups[3].Success ? HttpMethod.Post : HttpMethod.Get))
+                return await HandleBalanceTransactionAsync(req, Guid.Parse(balanceTransaction.Groups[1].Value),
+                    Guid.Parse(balanceTransaction.Groups[2].Value), balanceTransaction.Groups[3].Success, ct);
+
+            // Ödeme akışının bakiye uçları ve Cloud API gönderimi (W3-07): ödeme isteği testleri akışı uçtan uca sürer.
+            var balance = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/customer-balance/(preview|scope|apply)$");
+            if (balance.Success)
+                return await HandleBalanceAsync(req, Guid.Parse(balance.Groups[1].Value), balance.Groups[2].Value, ct);
+            var whatsapp = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/whatsapp/send$");
+            if (whatsapp.Success && req.Method == HttpMethod.Post)
+                return await HandleWhatsAppSendAsync(req, Guid.Parse(whatsapp.Groups[1].Value), ct);
+
+            // Bekleyen ödeme kayıtları (W3-05): kirasız kayıtların geri doldurması ve gönderilemeyen finish'ler.
+            var paymentRequests = Regex.Match(path,
+                @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payment-requests/(backfill|([0-9a-fA-F-]{36})/finish)$");
+            if (paymentRequests.Success && req.Method == HttpMethod.Post)
+                return await HandlePaymentRequestAsync(req, Guid.Parse(paymentRequests.Groups[1].Value),
+                    paymentRequests.Groups[3].Success ? Guid.Parse(paymentRequests.Groups[3].Value) : null, ct);
+
             // ShipmentSyncService'in ters çekmesi (uygulanmıyor, yalnız imleç): sunucuda başka yazıcı yok.
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/shipments/since$") && req.Method == HttpMethod.Get)
             {
@@ -340,6 +441,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/wpf-customers/changes$")
                 && req.Method == HttpMethod.Get)
             {
+                lock (_gate) _customerChangesCalls++;
+                DuringCustomerChanges?.Invoke();
                 var afterSeq = Regex.Match(req.RequestUri!.Query, @"afterSeq=(\d+)") is { Success: true } m
                     ? long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)
                     : 0L;
@@ -394,6 +497,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 {
                     var query = req.RequestUri.Query;
                     lock (_gate) _changesCalls.Add(new StateCall(licenseId, query));
+                    PushHold? hold;
+                    lock (_gate) _holds.TryGetValue(Changes, out hold);
+                    if (hold is not null) await hold.WaitAsync(ct);
                     if (scripted is not null) return scripted();
                     var page = HandleChanges(licenseId, query);
                     ct.ThrowIfCancellationRequested();             // OnChanges'in iptali: yanıt istemciye varmaz
@@ -1709,6 +1815,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             {
                 var id = c.GetProperty("id").GetGuid();
                 if (_customers.TryGetValue(id, out var known) && known.PurgedAt is not null) continue;
+                RecordPushedGroup(id, c);
                 _customers[id] = new CustomerProjection(id, c.GetProperty("platform").GetString()!,
                     c.GetProperty("username").GetString()!,
                     c.TryGetProperty("displayName", out var dn) && dn.ValueKind == JsonValueKind.String ? dn.GetString() : null,
@@ -1742,6 +1849,389 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         if (scripted is not null) return scripted();
         DuringPush?.Invoke(PaymentsSync);
         return FakeHttpMessageHandler.Json(200, "[]");
+    }
+
+    /// <summary>Sunucunun aldığı kirasız kayıt Id'leri (<c>payment-requests/backfill</c>).</summary>
+    public IReadOnlyCollection<Guid> PaymentRecordIds { get { lock (_gate) return _paymentRecordIds.ToList(); } }
+    private readonly HashSet<Guid> _paymentRecordIds = new();
+
+    /// <summary>
+    /// <c>payment-requests/backfill</c> ve <c>payment-requests/{id}/finish</c> (W3-05, bekleyen ödeme kayıtları): kayıt
+    /// (<see cref="Calls"/>), betik (<see cref="EnqueueStatus"/>) ve v2 zarfı denetimi. Geri doldurma her öğeye
+    /// <c>applied</c> (aynı Id ikinci kez <c>unchanged</c>) döner, finish sonucu yankılar. Kira ve kayıt kuralları taklit
+    /// edilmez: açılışın 1. adımı ve geri doldurma turu yalnız kuyruğun gönderilip boşalmasına bakar.
+    /// </summary>
+    private async Task<HttpResponseMessage> HandlePaymentRequestAsync(
+        HttpRequestMessage req, Guid licenseId, Guid? finishId, CancellationToken ct)
+    {
+        var endpoint = finishId is null ? PaymentRequestsBackfill : PaymentRequestsFinish;
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(endpoint, licenseId, raw, finishId));
+            if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        await WaitHoldAsync(endpoint, ct);
+        if (scripted is not null) return scripted();
+
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        if (LeaseRules)
+            return finishId is { } id ? FinishByRules(licenseId, id, root) : BackfillByRules(licenseId, root);
+        if (!root.TryGetProperty("replicaId", out var replica) || replica.ValueKind != JsonValueKind.String
+            || !root.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 2
+            || !root.TryGetProperty("seenMode", out _))
+            return Invalid($"{endpoint}: v2 zarfı yok");
+
+        if (finishId is { } recordId)
+            return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+            {
+                recordId, state = root.GetProperty("outcome").GetString(), finishedAt = DateTimeOffset.UtcNow,
+            }, Web));
+
+        var results = new List<object>();
+        var replicaId = replica.GetGuid();
+        lock (_gate)
+            foreach (var record in root.GetProperty("records").EnumerateArray())
+            {
+                var id = record.GetProperty("recordId").GetGuid();
+                var applied = _paymentRecordIds.Add(id);
+                results.Add(new { recordId = id, status = applied ? "applied" : "unchanged" });
+                if (applied && StoreBackfilledRecords)
+                    _paymentRecords.Add(RowOf(licenseId, StoredRecord(licenseId, replicaId, record)));
+            }
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new { records = results }, Web));
+    }
+
+    /// <summary>Geri doldurmanın kirasız kaydı, sunucuda (<see cref="StoreBackfilledRecords"/>): makine adı kopyanın hello'sundan,
+    /// kapanış anı sunucu saati.</summary>
+    private PaymentPrior StoredRecord(Guid licenseId, Guid replicaId, JsonElement record)
+    {
+        static decimal? Decimal(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : null;
+        _replicas.TryGetValue((licenseId, replicaId), out var row);
+        return new PaymentPrior(
+            record.GetProperty("recordId").GetGuid(),
+            row?.MachineName,
+            record.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()!).ToList(),
+            record.GetProperty("scopeKey").GetString()!,
+            Decimal(record, "netAmount"),
+            TotalBeforeBalance: null,
+            record.GetProperty("at").GetDateTimeOffset(),
+            DateTimeOffset.UtcNow,
+            record.GetProperty("state").GetString() == "unconfirmed",
+            ReplicaId: replicaId,
+            OrderIds: record.GetProperty("orderIds").EnumerateArray().Select(o => o.GetGuid()).ToList(),
+            AppliedAmount: Decimal(record, "appliedAmount"),
+            FullyFromBalance: record.GetProperty("fullyFromBalance").GetBoolean(),
+            Kind: "record");
+    }
+
+    /// <summary>Elle konmuş öncülün sunucu satırı (W3-12: kayıtlar tek depoda). PersonKey yok: kişiyi üye kesişimi
+    /// bulur. Kopyası verilmemişse başka bir bilgisayar (<see cref="OtherReplicaId"/>).</summary>
+    private PaymentRecordRow RowOf(Guid licenseId, PaymentPrior prior) => new()
+    {
+        Id = prior.Id, LicenseId = licenseId,
+        Kind = prior.Kind ?? (prior.TotalBeforeBalance is null ? "record" : "lease"),
+        State = prior.Unconfirmed ? "unconfirmed" : "delivered", ScopeKey = prior.ScopeKey,
+        ReplicaId = prior.ReplicaId ?? OtherReplicaId, Machine = prior.Machine, Members = prior.Members.ToList(),
+        OrderIds = (prior.OrderIds ?? []).ToList(), TotalBeforeBalance = prior.TotalBeforeBalance,
+        NetAmount = prior.NetAmount, AppliedAmount = prior.AppliedAmount, FullyFromBalance = prior.FullyFromBalance,
+        StartedAt = prior.At, FinishedAt = prior.FinishedAt, Hash = "seed:" + prior.Id.ToString("N"),
+    };
+
+    /// <summary>Sunucuda kayıtlı, teslim edilmiş ya da sonucu bilinmeyen ödeme isteği kaydı (W3-09): <c>begin</c>'in (e)
+    /// adımının öncülü (<see cref="AddPaymentPrior"/>). W3-10: liste ucu (<see cref="PaymentRequestsList"/>) da bunları
+    /// döner.</summary>
+    /// <param name="Members">Kaydın üyeleri; isteğin üyeleriyle kesişiyorsa aynı kişi sayılır.</param>
+    /// <param name="ReplicaId">Kaydı yazan kopya; null = başka bir bilgisayar (<see cref="OtherReplicaId"/>).</param>
+    /// <param name="OrderIds">Kaydın kapsadığı siparişler (<c>PaymentRequestRecordOrders</c>); null = boş.</param>
+    /// <param name="Kind">null = <paramref name="TotalBeforeBalance"/> doluysa kira, değilse kirasız kayıt.</param>
+    internal sealed record PaymentPrior(Guid Id, string? Machine, IReadOnlyList<string> Members, string ScopeKey,
+        decimal? NetAmount, decimal? TotalBeforeBalance, DateTimeOffset At, DateTimeOffset FinishedAt, bool Unconfirmed,
+        Guid? ReplicaId = null, IReadOnlyList<Guid>? OrderIds = null, decimal? AppliedAmount = null,
+        bool? FullyFromBalance = null, string? Kind = null);
+
+    /// <summary>Kaydı sunucuya ekler: sonraki <c>begin</c>'in (e) adımı ve liste ucu onu görür.</summary>
+    public void AddPaymentPrior(PaymentPrior prior)
+    {
+        lock (_gate) _paymentRecords.Add(RowOf(LicenseId, prior));
+    }
+
+    /// <summary>Kopyası verilmemiş öncülün kopyası: başka bir bilgisayar.</summary>
+    public Guid OtherReplicaId { get; } = Guid.NewGuid();
+
+    /// <summary>
+    /// W3-10: <c>payment-requests/backfill</c>'in kirasız kayıtları sunucuda kayıt olarak kalsın (<see cref="AddPaymentPrior"/>
+    /// gibi): liste ucu ve <c>begin</c>'in (e) adımı onları görür; kopya isteğin zarfından, makine adı kopyanın hello'sundan,
+    /// kapanış anı sunucu saati. Varsayılan kapalı: geri doldurmayı yalnız gönderimi için süren testler etkilenmesin.
+    /// </summary>
+    public bool StoreBackfilledRecords { get; set; }
+
+    /// <summary>
+    /// <c>GET payment-requests?scopeKey&amp;memberIds</c> (W3-10, <c>LicensesPaymentRequestsController.List</c>'in ikizi): kayıt
+    /// (<see cref="Calls"/>, gövde yerine <c>{scopeKey, memberIds}</c>), betik; kişi × kapsamın kayıtları — aynı kapsam
+    /// (ordinal), üyeleri istenenlerle kesişen, kapanış anına göre eskiden yeniye (sunucunun sırası), en yeni 200. Asıl kayda
+    /// çözme ve kopyalarla genişletme taklit edilmez.
+    /// </summary>
+    private async Task<HttpResponseMessage> HandlePaymentListAsync(HttpRequestMessage req, Guid licenseId)
+    {
+        await Task.Yield();
+        var query = System.Web.HttpUtility.ParseQueryString(req.RequestUri!.Query);
+        var scopeKey = query["scopeKey"];
+        var members = (query.GetValues("memberIds") ?? []).ToHashSet(StringComparer.Ordinal);
+        Func<HttpResponseMessage>? scripted = null;
+        List<PaymentRecordRow> rows;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(PaymentRequestsList, licenseId,
+                JsonSerializer.Serialize(new { scopeKey, memberIds = members.Order(StringComparer.Ordinal).ToList() }, Web)));
+            if (_scripted.TryGetValue(PaymentRequestsList, out var q) && q.Count > 0) scripted = q.Dequeue();
+            rows = _paymentRecords
+                .Where(p => p.State is "delivered" or "unconfirmed" && p.ScopeKey == scopeKey
+                            && p.Members.Any(members.Contains))
+                .OrderBy(p => p.FinishedAt).ThenBy(p => p.StartedAt).ThenBy(p => p.Id)
+                .TakeLast(200)
+                .ToList();
+        }
+        await WaitHoldAsync(PaymentRequestsList, CancellationToken.None);
+        if (scripted is not null) return scripted();
+        if (LeaseRules) return ListByRules(licenseId, scopeKey, members);
+        if (string.IsNullOrEmpty(scopeKey) || members.Count is 0 or > 100)
+            return ProblemResponse(400, "invalid-members", "memberIds 1–100 üye taşır.");
+
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+        {
+            records = rows.Select(p => new
+            {
+                id = p.Id,
+                replicaId = p.ReplicaId,
+                machine = p.Machine,
+                kind = p.Kind,
+                state = p.State,
+                netAmount = p.NetAmount,
+                appliedAmount = p.AppliedAmount,
+                fullyFromBalance = p.FullyFromBalance,
+                productTotal = (decimal?)null,
+                totalBeforeBalance = p.TotalBeforeBalance,
+                startedAt = p.StartedAt,
+                finishedAt = p.FinishedAt,
+                orderIds = p.OrderIds.Order().ToList(),
+            }).ToList(),
+        }, Web));
+    }
+
+    /// <summary>Betiksiz yolda sıradaki <c>begin</c> 200'ünün durumu — aynı Id'li yinelemenin yeniden oynattığı kapanmış kayıt
+    /// (<c>unconfirmed</c>: süresi dolmuş kira; <c>abandoned</c>, <c>delivered</c>: son hâl). Bir kez kullanılır; boşsa
+    /// <c>sending</c>.</summary>
+    public string? NextBeginReplayState { get; set; }
+
+    /// <summary>
+    /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), bekletme, betik, v2 zarfı denetimi; mod
+    /// Off'ta 409 <c>mode-off</c> (§4.7). Kira kurallarından yalnız (e) taklit edilir (W3-09, #523'ün aynası,
+    /// <see cref="AlreadyRequestedRule"/>); öbürleri (yeniden oynatma, üye kesişimi, sunucu toplamı, kargo) taklit
+    /// edilmez: betik yoksa ve (e) geçerse 200, durum <c>sending</c>, üyeler istemcinin üyeleri ∪
+    /// <see cref="ExtraBeginMembers"/>. <see cref="LeaseRules"/> açıkken bütün kurallar (<see cref="BeginByRules"/>).
+    /// </summary>
+    private async Task<HttpResponseMessage> HandlePaymentBeginAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
+    {
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(PaymentRequestsBegin, licenseId, raw));
+            if (_scripted.TryGetValue(PaymentRequestsBegin, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        await WaitHoldAsync(PaymentRequestsBegin, ct);
+        if (scripted is not null) return scripted();
+
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        if (LeaseRules) return BeginByRules(licenseId, root, req.Headers.UserAgent.ToString());
+        if (!root.TryGetProperty("replicaId", out var replica) || replica.ValueKind != JsonValueKind.String
+            || !root.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 2
+            || !root.TryGetProperty("seenMode", out _))
+            return Invalid($"{PaymentRequestsBegin}: v2 zarfı yok");
+        if (Mode != 1) return FakeHttpMessageHandler.Problem(409, "mode-off");
+        if (AlreadyRequestedRule(root) is { } rejected) return rejected;
+
+        string state;
+        lock (_gate)
+        {
+            state = NextBeginReplayState ?? "sending";
+            NextBeginReplayState = null;
+        }
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+        {
+            recordId = root.GetProperty("recordId").GetGuid(),
+            state,
+            leaseUntil = DateTimeOffset.UtcNow.AddSeconds(120),
+            members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString())
+                .Concat(ExtraBeginMembers).Distinct(StringComparer.Ordinal).ToList(),
+        }, Web));
+    }
+
+    /// <summary>
+    /// <c>begin</c>'in onay denetimi ve (e) adımı, #523'ün aynası (<c>PaymentRequestLeaseService</c>): 500'ü aşan
+    /// <c>confirmedPriorIds</c> 400 <c>invalid-confirmed-priors</c>, biçimi bozuk <c>confirmedPriorsDigest</c> 400
+    /// <c>invalid-priors-digest</c>. Kişi × kapsamın kayıtları (<see cref="AddPaymentPrior"/>; üye kesişimi, aynı kapsam)
+    /// Id listesinin dışında öncül bırakıyorsa onay özeti BÜTÜN kümenin özetine eşit olmalı; değilse 409
+    /// <c>already-requested {priors, priorsDigest}</c> — <c>priors</c> listenin dışındakiler, kapanış sırasıyla. Geçerse null.
+    /// </summary>
+    private HttpResponseMessage? AlreadyRequestedRule(JsonElement root)
+    {
+        var confirmed = root.TryGetProperty("confirmedPriorIds", out var ids) && ids.ValueKind == JsonValueKind.Array
+            ? ids.EnumerateArray().Select(i => i.GetGuid()).ToHashSet()
+            : new HashSet<Guid>();
+        if (confirmed.Count > 500)
+            return ProblemResponse(400, "invalid-confirmed-priors", "confirmedPriorIds en çok 500 dolu Id taşır.");
+        byte[]? confirmedDigest = null;
+        if (root.TryGetProperty("confirmedPriorsDigest", out var digestText) && digestText.ValueKind != JsonValueKind.Null
+            && (digestText.ValueKind != JsonValueKind.String || !PriorsDigest.TryParse(digestText.GetString(), out confirmedDigest)))
+            return ProblemResponse(400, "invalid-priors-digest", "confirmedPriorsDigest biçimi bozuk.");
+
+        var scopeKey = root.GetProperty("scopeKey").GetString();
+        var members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()!).ToHashSet(StringComparer.Ordinal);
+        List<PaymentRecordRow> open;
+        lock (_gate)
+            open = _paymentRecords
+                .Where(p => p.State is "delivered" or "unconfirmed" && p.ScopeKey == scopeKey
+                            && p.Members.Any(members.Contains))
+                .OrderBy(p => p.FinishedAt).ThenBy(p => p.StartedAt).ThenBy(p => p.Id)
+                .ToList();
+        var priors = open.Where(p => !confirmed.Contains(p.Id)).ToList();
+        if (priors.Count == 0) return null;
+
+        var digest = PriorsDigest.Hash(open.Select(p => p.Id));
+        if (confirmedDigest is not null && confirmedDigest.AsSpan().SequenceEqual(digest)) return null;
+        return ProblemResponse(409, "already-requested", "Bu kişiden bu kapsamda daha önce ödeme istendi; tekrar gönderilsin mi?",
+            new Dictionary<string, object?>
+            {
+                ["priors"] = priors.Select(p => new
+                {
+                    id = p.Id, machine = p.Machine, netAmount = p.NetAmount, totalBeforeBalance = p.TotalBeforeBalance,
+                    at = p.StartedAt, finishedAt = p.FinishedAt, unconfirmed = p.State == "unconfirmed",
+                }).ToList(),
+                ["priorsDigest"] = PriorsDigest.Format(digest),
+            });
+    }
+
+    /// <summary>
+    /// <c>priorsDigest</c>'in hesabı, sunucunun <c>PaymentRequestPriorsDigest</c>'inin aynası (§6.4-e "Özetin biçimi"): Id'ler
+    /// tekilleştirilir, RFC 9562 (büyük uçlu) baytlarının sırasıyla art arda SHA-256; telde <c>v1.</c> + dolgusuz base64url
+    /// (46 karakter), tek yazım. İstemci özeti hesaplamaz — yalnız yankılar; bu ikiz sunucunun karşılaştırmasını taklit eder.
+    /// </summary>
+    internal static class PriorsDigest
+    {
+        private const string Prefix = "v1.";
+
+        public static string Compute(IEnumerable<Guid> ids) => Format(Hash(ids));
+
+        public static byte[] Hash(IEnumerable<Guid> ids)
+        {
+            var keys = ids.Distinct().Select(BigEndian).Order().ToArray();
+            var buffer = new byte[keys.Length * 16];
+            for (var i = 0; i < keys.Length; i++)
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt128BigEndian(buffer.AsSpan(i * 16, 16), keys[i]);
+            return System.Security.Cryptography.SHA256.HashData(buffer);
+        }
+
+        public static string Format(byte[] hash) => Prefix + System.Buffers.Text.Base64Url.EncodeToString(hash);
+
+        public static bool TryParse(string? value, out byte[]? hash)
+        {
+            hash = null;
+            if (value is null || value.Length != Prefix.Length + 43 || !value.StartsWith(Prefix, StringComparison.Ordinal))
+                return false;
+            var encoded = value.AsSpan(Prefix.Length);
+            foreach (var c in encoded)
+                if (!(c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')) return false;
+            var decoded = new byte[32];
+            try
+            {
+                if (!System.Buffers.Text.Base64Url.TryDecodeFromChars(encoded, decoded, out var written) || written != 32)
+                    return false;
+            }
+            catch (FormatException) { return false; }
+            if (Format(decoded) != value) return false;                    // tek yazım: artık bitler sıfır
+            hash = decoded;
+            return true;
+        }
+
+        private static UInt128 BigEndian(Guid id)
+        {
+            Span<byte> bytes = stackalloc byte[16];
+            id.TryWriteBytes(bytes, bigEndian: true, out _);
+            return System.Buffers.Binary.BinaryPrimitives.ReadUInt128BigEndian(bytes);
+        }
+    }
+
+    /// <summary>Bakiye uçları (W3-07): önizleme <see cref="BalancePreview"/>, kapsam <see cref="ScopeDeductions"/>'tan
+    /// (yoksa 204, düşüm yok), apply en çok
+    /// istenen kadar ve işlem kimliği = idempotency anahtarı (gerçek sunucu gibi). Kayıt <see cref="Calls"/>'ta.</summary>
+    private async Task<HttpResponseMessage> HandleBalanceAsync(
+        HttpRequestMessage req, Guid licenseId, string action, CancellationToken ct)
+    {
+        var endpoint = "customer-balance/" + action;
+        var raw = req.Content is null ? req.RequestUri!.Query : await req.Content.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(endpoint, licenseId, raw));
+            if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        await WaitHoldAsync(endpoint, ct);
+        if (scripted is not null) return scripted();
+        if (LeaseRules) return BalanceByRules(req, action, raw);
+
+        switch (action)
+        {
+            case "preview" when req.Method == HttpMethod.Get:
+                return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+                {
+                    wpfCustomerId = Guid.Empty, balance = BalancePreview, updatedAt = DateTimeOffset.UtcNow,
+                }, Web));
+            case "scope" when req.Method == HttpMethod.Get:
+            {
+                var customer = Regex.Match(req.RequestUri!.Query, @"wpfCustomerId=([0-9a-fA-F-]{36})");
+                return customer.Success && ScopeDeductions.TryGetValue(Guid.Parse(customer.Groups[1].Value), out var found)
+                    ? FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(found, Web))
+                    : FakeHttpMessageHandler.Empty(204);
+            }
+            case "apply" when req.Method == HttpMethod.Post:
+            {
+                using var doc = JsonDocument.Parse(raw);
+                var amount = doc.RootElement.GetProperty("amount").GetDecimal();
+                var key = doc.RootElement.TryGetProperty("idempotencyKey", out var k) && k.ValueKind == JsonValueKind.String
+                    ? k.GetGuid()
+                    : Guid.NewGuid();
+                var applied = Math.Min(BalancePreview, amount);
+                return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+                {
+                    transactionId = key, appliedAmount = applied, remainingBalance = BalancePreview - applied,
+                }, Web));
+            }
+            default:
+                _faults.Enqueue($"beklenmeyen istek: {req.Method} {endpoint}");
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+    }
+
+    /// <summary>WhatsApp Cloud API gönderimi (W3-07): kayıt, betik; betik yoksa gönderildi.</summary>
+    private async Task<HttpResponseMessage> HandleWhatsAppSendAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
+    {
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(WhatsAppSend, licenseId, raw));
+            if (_scripted.TryGetValue(WhatsAppSend, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        await WaitHoldAsync(WhatsAppSend, ct);
+        if (scripted is not null) return scripted();
+        return FakeHttpMessageHandler.Json(200,
+            $"{{\"ok\":true,\"errorCode\":null,\"errorMessage\":null,\"messageId\":\"{Guid.NewGuid()}\"}}");
     }
 
     private Replica Touch(Guid licenseId, Guid replicaId, int seenMode)
@@ -3084,7 +3574,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     }
 
     /// <summary>Bir gönderim isteği: uç, lisans ve ham gövde.</summary>
-    internal sealed record PushCall(string Endpoint, Guid LicenseId, string RawJson)
+    /// <param name="RecordId">Yolda taşınan kayıt Id'si (<c>payment-requests/{id}/finish</c>); öbür uçlarda null.</param>
+    internal sealed record PushCall(string Endpoint, Guid LicenseId, string RawJson, Guid? RecordId = null)
     {
         public JsonElement Json
         {

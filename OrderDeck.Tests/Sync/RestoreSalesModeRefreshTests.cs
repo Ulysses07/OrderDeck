@@ -87,13 +87,16 @@ public sealed class RestoreSalesModeRefreshTests : IDisposable
                 NullLogger<WpfCustomerProjectionSyncService>.Instance);
             var customerPull = new CustomerChangesPullService(api, new CustomerRepository(db), customerSync, cursors,
                 customerPush, license, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
-            Backfill = new SalesBackfillService(api, Envelope, state, Push, Shipments, new SalesBackfillRepository(db),
-                cursors, gate, license, clock, NullLogger<SalesBackfillService>.Instance);
+            // AppHost gibi tek gönderici: geri doldurma turu ve açılışın 1. adımı aynı kapıdan.
+            var paymentRecords = new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), Envelope, license,
+                clock, NullLogger<PaymentRecordSender>.Instance);
+            Backfill = new SalesBackfillService(api, Envelope, state, Push, Shipments, paymentRecords,
+                new SalesBackfillRepository(db), cursors, gate, license, clock, NullLogger<SalesBackfillService>.Instance);
             Commands = new SalesCommandClient(api, Envelope, stateRepo, new LabelRepository(db), new ShipmentRepository(db),
                 new SalesFeedRepository(db, busy), new SalesConflictLogRepository(db), new NoPrompt(), license, clock,
                 NullLogger<SalesCommandClient>.Instance);
             var coordinator = new SalesModeCoordinator(state, stateRepo, Envelope,
-                new SalesOpeningFlush(customerPush, Push, Shipments, payments, stateRepo), clock,
+                new SalesOpeningFlush(paymentRecords, customerPush, Push, Shipments, payments, stateRepo), clock,
                 NullLogger<SalesModeCoordinator>.Instance);
             Pull = new SalesChangesPullService(api, state, stateRepo, Envelope, new SalesFeedRepository(db, busy),
                 new SalesFeedFailureRepository(db), new RemoteLiveSessionRepository(db), cursors, new LabelRepository(db),

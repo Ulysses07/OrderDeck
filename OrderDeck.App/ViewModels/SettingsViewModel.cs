@@ -55,6 +55,32 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _freeShippingThresholdText = "";
     [ObservableProperty] private string _shippingFeeText = "";
 
+    // W3-03 (spec 2026-10-13 §4.8, §6.2, sahip kararı Y4) — mod On'da eşik ve ücret lisans geneli ayardır: alanlar
+    // onu gösterir, kaydet kargo kısmını sunucuya yazar (LicenseShippingSettingsWriter), yerel AppSettings.Shipping'e
+    // dokunmaz. Mod Off'ta (bugün her lisans) bugünkü yerel yazım.
+
+    /// <summary>Kargo alanları lisans geneli ayarı gösteriyor (mod On): Kargo kartında "Lisans geneli · bütün
+    /// bilgisayarlar" çipi.</summary>
+    [ObservableProperty] private bool _isShippingLicenseWide;
+
+    /// <summary>Lisans geneli kargo yazımının sonucu, satır içi şerit (açılır pencere yok, #508): stale, çevrimdışı,
+    /// mode-off, uç yok. "Tamam" kapatır.</summary>
+    [ObservableProperty] private string? _shippingNotice;
+
+    /// <summary>Kargo yazımı sunucuda sürüyor: "Kaydet" pasif (aynı değer iki kez gitmesin).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    private bool _isShippingSaving;
+
+    /// <summary>"Kaydet" basılabilir: kargo yazımı sürmüyor.</summary>
+    public bool CanSave => !IsShippingSaving;
+
+    /// <summary><c>decimal(18,2)</c>'nin üst sınırı: sunucunun <c>LicenseShippingSettings.MaxAmount</c>'ı.</summary>
+    private const decimal MaxLicenseShippingAmount = 9_999_999_999_999_999.99m;
+
+    private const string LicenseShippingValidationError =
+        "Kargo eşiği ve ücreti ya ikisi de boş (kargo kapalı) ya da ikisi de 0'dan büyük olmalı; en çok iki ondalık.";
+
     // PR-E — Kümülatif kargo "kazandın" WhatsApp şablonu.
     [ObservableProperty] private string _shippingWonTemplate = "";
 
@@ -132,6 +158,19 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// oradaki senaryolar OAuth bağlama komutunu tetiklemiyor.</summary>
     private readonly Services.Drawers.IDrawerService? _drawers;
 
+    /// <summary>Kargo ayarının kaynağı (§6.2). Verilmezse (eski testler) mod Off sayılır: yerel ayar.</summary>
+    private readonly IShippingSettingsProvider? _shipping;
+
+    /// <summary>Mod On'da kargo kısmının yazıcısı (<c>PUT shipping-settings</c>).</summary>
+    private readonly Services.Sync.LicenseShippingSettingsWriter? _shippingWriter;
+
+    /// <summary>Kargo alanlarının en son gösterdiği değer ve sürümü (açılışta, stale'de, yazımdan sonra). Kaydet bununla
+    /// karşılaştırır — kargo değişmediyse istek gitmez — ve <c>expectedVersion</c> olarak bu sürümü gönderir: arada
+    /// başka bilgisayarın yazdığı değer sessizce ezilmesin, <c>stale</c> gelsin.</summary>
+    private decimal? _shownThreshold;
+    private decimal? _shownFee;
+    private int? _shownVersion;
+
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
         ShopperAppSettingsViewModel shopperApp,
@@ -141,8 +180,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null,
         System.Net.Http.IHttpClientFactory? httpFactory = null,
         Services.Drawers.IDrawerService? drawers = null,
-        WhatsAppCloudSettingsViewModel? whatsAppCloud = null)
+        WhatsAppCloudSettingsViewModel? whatsAppCloud = null,
+        IShippingSettingsProvider? shipping = null,
+        Services.Sync.LicenseShippingSettingsWriter? shippingWriter = null)
     {
+        _shipping = shipping;
+        _shippingWriter = shippingWriter;
         _drawers = drawers;
         WhatsAppCloud = whatsAppCloud;
         _liveSettings = settings;
@@ -452,9 +495,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Papara          = _liveSettings.Payment.Papara;
 
         // Kargo PR A — Shipping. Empty string olarak göster eğer ayar null;
-        // operator boş bırakmayı = feature off olarak görür.
-        FreeShippingThresholdText = FormatOptionalDecimal(_liveSettings.Shipping.FreeShippingThreshold);
-        ShippingFeeText           = FormatOptionalDecimal(_liveSettings.Shipping.ShippingFee);
+        // operator boş bırakmayı = feature off olarak görür. W3-03: kaynak
+        // sağlayıcı — mod On'da lisans geneli ayar, mod Off'ta yerel ayar.
+        ShowShipping(CurrentShipping());
 
         // PR-E — Kümülatif kargo "kazandın" template.
         ShippingWonTemplate = _liveSettings.Payment.ShippingWonTemplate;
@@ -492,7 +535,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
             AvailableFonts.Add(f.Name);
     }
 
-    private bool Validate()
+    private bool Validate() => Validate(licenseWideShipping: false);
+
+    /// <param name="licenseWideShipping">Mod On: kargo alanları sunucunun kuralıyla da doğrulanır (§4.8).</param>
+    private bool Validate(bool licenseWideShipping)
     {
         if (OverlayPort < 1024 || OverlayPort > 65535)
         { ValidationError = "Port 1024-65535 arasında olmalı."; return false; }
@@ -535,23 +581,52 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return false;
         }
 
+        // Mod On: sunucunun kuralı (§4.8, LicenseShippingSettings.IsValid) — ya ikisi boş ya ikisi > 0, en çok iki
+        // ondalık. Mod Off'ta bugünkü gevşek okuma (geçersiz → boş) değişmez.
+        if (licenseWideShipping && !TryParseLicenseShipping(out _, out _))
+        {
+            ValidationError = LicenseShippingValidationError;
+            return false;
+        }
+
         ValidationError = null;
         return true;
     }
 
+    /// <summary>
+    /// Kaydet. Kargo dışı alanlar her kipte bugünkü gibi yerel (canlı örnek + diskte atomik Update). Kargo kısmı mod
+    /// Off'ta yerel ayara, mod On'da lisans geneli ayara gider (W3-03, §6.2): istemcide doğrulanır, arayüz iş parçacığı
+    /// dışında <c>PUT shipping-settings</c> yapılır ve yerel <c>AppSettings.Shipping</c> hiç yazılmaz. Kargo değişmediyse
+    /// istek gitmez (kargo dışı bir ayarı kaydetmek bağlantı istemez). Yazılamazsa sayfa açık kalır ve sebep satır içi
+    /// şeritte görünür (<see cref="ShippingNotice"/>); <see cref="Saved"/> yalnız her şey yazılınca true.
+    /// </summary>
     [RelayCommand]
-    private void Save()
+    private async System.Threading.Tasks.Task SaveAsync()
     {
-        if (!Validate()) return;
+        Saved = false;
+
+        // Kaynak kaydet anında yeniden okunur: sayfa açıkken kip değişmiş olabilir (disable turu sunucu değerini yerel
+        // ayara kopyaladı → artık yerel yazım).
+        var shipping = CurrentShipping();
+        var licenseWide = shipping.LicenseWide;
+        if (!Validate(licenseWide)) return;
+        ShippingNotice = null;
+
+        // Mod Off'ta kargo yalnız operatör değiştirdiyse yerel ayara yazılır (§6.2/§8.5): form mod On'da açılıp disable'dan
+        // sonra kaydedilirse değişmemiş alanlar, Off turunun yerel ayara kopyaladığı güncel lisans geneli değeri bayat
+        // değerle ezerdi. Saf mod Off'ta sonuç aynı: değişmemiş alan zaten yerel değerdir.
+        var writeLocalShipping = !licenseWide
+            && (ParseOptionalDecimal(FreeShippingThresholdText) != _shownThreshold
+                || ParseOptionalDecimal(ShippingFeeText) != _shownFee);
 
         // Mutate the live AppSettings instance so dependents (LabelPrinter, OverlayHost)
         // pick up the new values immediately. AppSettings is a class with public setters.
-        ApplyFormTo(_liveSettings);
+        ApplyFormTo(_liveSettings, includeShipping: writeLocalShipping);
 
         // N04: diske bütün-nesne Save yerine atomik Update — canlı örnekteki
         // sync imleci gibi alanlar açılıştan beri bayatlamış olabilir; yalnız
         // bu ekranın sahip olduğu alanlar diskteki EN GÜNCEL kopyaya yazılır.
-        _store.Update(ApplyFormTo);
+        _store.Update(target => ApplyFormTo(target, includeShipping: writeLocalShipping));
 
         // Faz 2 (2026-05-15): WhatsApp template'leri server'a push'la (mobile
         // preview için). Fire-and-forget — sonuç dialog akışını engellemesin.
@@ -561,13 +636,111 @@ public sealed partial class SettingsViewModel : ViewModelBase
         }
 
         OverlayPortChanged = (OverlayPort != _originalOverlayPort);
+
+        if (licenseWide && !await SaveLicenseShippingAsync().ConfigureAwait(true)) return;
         Saved = true;
+    }
+
+    [RelayCommand]
+    private void DismissShippingNotice() => ShippingNotice = null;
+
+    /// <summary>
+    /// Mod On'da kargo kısmını lisans geneli ayara yazar (§4.8). Başarıda ve <c>stale</c>'de alanlar sunucunun satırını
+    /// gösterir (önbellek yazıcıda güncellendi); öbür sonuçlarda önbellek değerine döner — form hiçbir zaman yürürlükte
+    /// olmayan bir değeri kaydedilmiş gibi göstermez.
+    /// </summary>
+    /// <returns>Kargo yazıldı ya da değişmemişti.</returns>
+    private async System.Threading.Tasks.Task<bool> SaveLicenseShippingAsync()
+    {
+        TryParseLicenseShipping(out var threshold, out var fee);   // Validate'te geçti
+        if (threshold == _shownThreshold && fee == _shownFee) return true;
+
+        if (_shippingWriter is null)
+        {
+            ShowShipping(CurrentShipping());
+            ShippingNotice = Services.Sync.SalesCommandMessages.NotReady;
+            return false;
+        }
+
+        Services.Sync.ShippingSettingsSaveOutcome outcome;
+        IsShippingSaving = true;
+        try
+        {
+            // Beklenen sürüm formun GÖSTERDİĞİ değerin sürümü. Form mod Off'ta yerel değerle açıldıysa (sürümü yok) ve sayfa
+            // açıkken kip 1 olduysa 0 gider: sunucuda satır varsa stale döner, alanlar lisans geneli değerle yenilenir.
+            // Önbelleğin sürümü gitseydi formun hiç göstermediği lisans geneli değer sessizce ezilirdi.
+            outcome = await _shippingWriter
+                .SaveAsync(_shownVersion ?? 0, threshold, fee)
+                .ConfigureAwait(true);
+        }
+        finally
+        {
+            IsShippingSaving = false;
+        }
+
+        if (outcome.Current is { } row
+            && outcome.Status is Services.Sync.ShippingSettingsSaveStatus.Saved or Services.Sync.ShippingSettingsSaveStatus.Stale)
+        {
+            ShowShipping(new ShippingSnapshot(
+                new ShippingSettings { FreeShippingThreshold = row.FreeShippingThreshold, ShippingFee = row.Fee },
+                row.Version, LicenseWide: true));
+        }
+        else
+        {
+            ShowShipping(CurrentShipping());
+        }
+        ShippingNotice = outcome.Message;
+        return outcome.Status == Services.Sync.ShippingSettingsSaveStatus.Saved;
+    }
+
+    /// <summary>Kargo ayarının şu anki kaynağı; sağlayıcı yoksa (eski testler) yerel ayar.</summary>
+    private ShippingSnapshot CurrentShipping() =>
+        _shipping?.Current() ?? new ShippingSnapshot(_liveSettings.Shipping, Version: null, LicenseWide: false);
+
+    /// <summary>Kargo alanlarını, çipi ve karşılaştırma değerini verilen anlık görüntüyle doldurur.</summary>
+    private void ShowShipping(ShippingSnapshot snapshot)
+    {
+        _shownThreshold = snapshot.Settings.FreeShippingThreshold;
+        _shownFee = snapshot.Settings.ShippingFee;
+        _shownVersion = snapshot.Version;
+        IsShippingLicenseWide = snapshot.LicenseWide;
+        FreeShippingThresholdText = FormatOptionalDecimal(_shownThreshold);
+        ShippingFeeText = FormatOptionalDecimal(_shownFee);
+    }
+
+    /// <summary>
+    /// Mod On'un kargo okuması (§4.8): boş → null; "0" → null (kartın ipucu: "0 yaz = kargo kapalı"); öbür değer
+    /// sayı, &gt; 0, en çok iki ondalık ve <c>decimal(18,2)</c>'ye sığmalı. İkisi birlikte boş ya da birlikte dolu.
+    /// Türkçe virgül ve nokta kabul edilir (<see cref="ParseOptionalDecimal"/> ile aynı).
+    /// </summary>
+    private bool TryParseLicenseShipping(out decimal? threshold, out decimal? fee)
+    {
+        var thresholdOk = TryParseLicenseAmount(FreeShippingThresholdText, out threshold);
+        var feeOk = TryParseLicenseAmount(ShippingFeeText, out fee);
+        return thresholdOk && feeOk && threshold.HasValue == fee.HasValue;
+    }
+
+    private static bool TryParseLicenseAmount(string? raw, out decimal? value)
+    {
+        value = null;
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var normalized = raw.Trim().Replace(',', '.');
+        if (!decimal.TryParse(normalized,
+                System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var parsed)) return false;
+        if (parsed == 0m) return true;
+        if (parsed < 0m || parsed > MaxLicenseShippingAmount || decimal.Round(parsed, 2) != parsed) return false;
+        value = parsed;
+        return true;
     }
 
     /// <summary>Formdaki değerleri hedef nesneye yazar. İki kez çağrılır: canlı
     /// (DI) örnek anında etki için, diskten taze yüklenen kopya kalıcılık için
     /// (bkz. <c>Save</c>, N04). Bu yüzden idempotent olmalı — yalnız atama.</summary>
-    private void ApplyFormTo(AppSettings target)
+    /// <param name="includeShipping">false (mod On): kargo eşiği ve ücreti lisans geneli ayardır, yerel ayar
+    /// yazılmaz (§6.2).</param>
+    private void ApplyFormTo(AppSettings target, bool includeShipping)
     {
         target.PrinterName          = SelectedPrinter == DefaultPrinterSentinel ? null : SelectedPrinter;
         target.LabelWidthMm         = LabelWidthMm;
@@ -586,8 +759,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         target.Payment.Papara                  = Papara;
 
         // Kargo PR A — Shipping. Empty/0/negative → null (feature kapalı).
-        target.Shipping.FreeShippingThreshold = ParseOptionalDecimal(FreeShippingThresholdText);
-        target.Shipping.ShippingFee           = ParseOptionalDecimal(ShippingFeeText);
+        if (includeShipping)
+        {
+            target.Shipping.FreeShippingThreshold = ParseOptionalDecimal(FreeShippingThresholdText);
+            target.Shipping.ShippingFee           = ParseOptionalDecimal(ShippingFeeText);
+        }
 
         // PR-E — Kümülatif kargo "kazandın" template.
         target.Payment.ShippingWonTemplate = ShippingWonTemplate ?? string.Empty;

@@ -1,7 +1,8 @@
 <UserControl x:Class="OrderDeck.App.Views.Pages.SettingsPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:controls="clr-namespace:OrderDeck.App.Controls">
+             xmlns:controls="clr-namespace:OrderDeck.App.Controls"
+             xmlns:sync="clr-namespace:OrderDeck.App.Services.Sync">
     <!-- Ayarlar (eski AyarlarDialog penceresi, 561 satır).
 
          Pencere sürümünden üç şey DÜŞTÜ:
@@ -43,10 +44,40 @@
                                Margin="{StaticResource OD.Pad.X5}"
                                Visibility="{Binding ValidationError,
                                             Converter={StaticResource NullToCollapsedConverter}}"/>
+                    <!-- Mod On'da kargo yazımı sunucuda sürerken pasif (W3-03). -->
                     <Button Content="Kaydet"
                             Style="{StaticResource OD.Button.Primary}"
+                            IsEnabled="{Binding CanSave}"
                             Click="OnSave" IsDefault="True"/>
                 </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Lisans geneli kargo yazımının sonucu (W3-03, spec 2026-10-13 §4.8,
+             §6.2): stale, çevrimdışı, mode-off, uç yok. ShellBanners'ın amber
+             geçici şerit deseni; açılır pencere yok (#508), "Tamam" kapatır.
+             Kaydet çubuğunun HEMEN ÜSTÜNDE, sekmelerin dışında: doğrulama
+             hatasıyla aynı gerekçe — operatör hangi bölmede olursa olsun
+             sayfanın neden kapanmadığını burada görür. -->
+        <Border DockPanel.Dock="Bottom"
+                CornerRadius="{StaticResource OD.Radius.Md}"
+                Background="{StaticResource OD.Brush.AmberTint}"
+                BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                BorderThickness="1"
+                Margin="{StaticResource OD.Pad.3}"
+                Visibility="{Binding ShippingNotice,
+                             Converter={StaticResource NullToCollapsedConverter}}">
+            <DockPanel LastChildFill="True" Margin="{StaticResource OD.Pad.4}">
+                <Button DockPanel.Dock="Right"
+                        Content="Tamam"
+                        Command="{Binding DismissShippingNoticeCommand}"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Foreground="{StaticResource OD.Brush.Amber}"
+                        Margin="{StaticResource OD.Pad.2}"/>
+                <TextBlock Text="{Binding ShippingNotice}"
+                           Foreground="{StaticResource OD.Brush.Amber}"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center" TextWrapping="Wrap"/>
             </DockPanel>
         </Border>
 
@@ -495,7 +526,31 @@
 
                     <Border Style="{StaticResource OD.Card}">
                         <StackPanel>
-                            <TextBlock Style="{StaticResource OD.Text.Section}" Text="Kargo"/>
+                            <!-- Mod On'da eşik ve ücret lisans geneli ayardır (W3-03,
+                                 spec 2026-10-13 §6.2, sahip kararı Y4): kaydet sunucuya
+                                 yazar, bütün bilgisayarlar aynı değeri kullanır. Çip
+                                 OD.Chip'in dinlenme görünümünde ama tıklanmaz (Border,
+                                 W2-09'un uzak yayın çipiyle aynı): ToggleButton bir
+                                 eylem vaat ederdi. -->
+                            <DockPanel LastChildFill="False">
+                                <TextBlock DockPanel.Dock="Left"
+                                           Style="{StaticResource OD.Text.Section}" Text="Kargo"/>
+                                <Border DockPanel.Dock="Right"
+                                        Background="{StaticResource OD.Brush.Surface2}"
+                                        BorderBrush="{StaticResource OD.Brush.Border}"
+                                        BorderThickness="1"
+                                        CornerRadius="{StaticResource OD.Radius.Sm}"
+                                        Padding="{StaticResource OD.Pad.3}"
+                                        Margin="{StaticResource OD.Pad.Bottom3}"
+                                        VerticalAlignment="Center"
+                                        Visibility="{Binding IsShippingLicenseWide,
+                                                     Converter={StaticResource BoolToVisibleConverter}}">
+                                    <TextBlock Text="{x:Static sync:SalesCommandMessages.ShippingLicenseWideChip}"
+                                               FontSize="{StaticResource OD.Font.F1}"
+                                               FontWeight="Medium"
+                                               Foreground="{StaticResource OD.Brush.TextDim}"/>
+                                </Border>
+                            </DockPanel>
                             <UniformGrid Columns="2">
                                 <StackPanel Margin="{StaticResource OD.Pad.X2}">
                                     <TextBlock Style="{StaticResource OD.Text.Label}" Text="Ücretsiz Kargo Eşiği"/>

@@ -45,6 +45,32 @@ public sealed class ValidationException : LicenseApiException
     public ValidationException(string code, string message) : base(code, message) { }
 }
 
+/// <summary>
+/// Spec 2026-10-13 §6.6: mod On'da <c>customer-balance/apply</c> kapsamda geri alınmamış bir düşüm bulunca 409
+/// <c>scope-has-deduction {transactionId, appliedAmount, productTotal}</c> döner; hiçbir şey yazılmamıştır. İstemci düşümü
+/// benimser (miras işte benimsemez). Ek üyeleri eksik aynı ret bugünkü gibi <see cref="ValidationException"/> olur.
+/// </summary>
+public sealed class ScopeHasDeductionException : LicenseApiException
+{
+    public const string ProblemCode = "scope-has-deduction";
+
+    /// <summary>Kapsamdaki düşümün işlem kimliği (ledger PK).</summary>
+    public Guid TransactionId { get; }
+
+    public decimal AppliedAmount { get; }
+
+    /// <summary>Düşümün yazıldığı satış toplamı (<c>OriginalAmount</c>).</summary>
+    public decimal ProductTotal { get; }
+
+    public ScopeHasDeductionException(Guid transactionId, decimal appliedAmount, decimal productTotal, string? message = null)
+        : base(ProblemCode, message ?? "Bu satışta geri alınmamış bir bakiye düşümü var.")
+    {
+        TransactionId = transactionId;
+        AppliedAmount = appliedAmount;
+        ProductTotal = productTotal;
+    }
+}
+
 public sealed class LicenseApiNetworkException : LicenseApiException
 {
     public LicenseApiNetworkException(string message, Exception? inner = null)

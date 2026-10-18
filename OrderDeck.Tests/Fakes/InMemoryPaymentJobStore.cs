@@ -388,11 +388,41 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         }
     }
 
+    /// <summary>İki <c>AdoptRemoteResult</c> biçiminin çağrı sayısı (W3-11: miras işte benimseme olmadığı).</summary>
+    public int AdoptRemoteCalls
+    {
+        get { lock (_gate) return _adoptRemoteCalls; }
+    }
+    private int _adoptRemoteCalls;
+
+    public bool AdoptRemoteResult(
+        string id, Guid transactionId, decimal appliedAmount, decimal productTotal,
+        Guid expectedKey, int expectedRevision)
+    {
+        lock (_gate)
+        {
+            _adoptRemoteCalls++;
+            var j = _jobs[id];
+            // Gerçek deponun ResultGuard'ı: denemenin kimliği tutmalı, geri alma niyeti ezilmez.
+            if (Bayat(j, expectedKey, expectedRevision) || GeriAlmaBekliyor(j)) return false;
+            _jobs[id] = j.FreezeDelivery() with
+            {
+                ApplyKey = transactionId,
+                AppliedAmount = appliedAmount,
+                ProductTotal = productTotal,
+                State = PaymentJobState.Applied,
+                UpdatedAt = Now(),
+            };
+            return true;
+        }
+    }
+
     public bool AdoptRemoteResult(
         string id, Guid transactionId, decimal appliedAmount, decimal productTotal)
     {
         lock (_gate)
         {
+            _adoptRemoteCalls++;
             var j = _jobs[id];
             if (j.ApplyKey is not null || j.State != PaymentJobState.Created) return false;
             _jobs[id] = j.FreezeDelivery() with

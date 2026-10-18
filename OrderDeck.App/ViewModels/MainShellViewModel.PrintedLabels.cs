@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.PriceCorrection;
 using OrderDeck.App.Services.Sales;
 using OrderDeck.Core.Sales;
@@ -99,8 +100,52 @@ public sealed partial class MainShellViewModel
         var sessionId = _otherSession?.SessionId ?? _sessions.GetActive()?.Id;
         PrintedLabels.IsOtherSession = _otherSession is not null;
         PrintedLabels.OtherSessionTitle = _otherSession?.Title ?? "";
-        if (IsPrintedTabActive) PrintedLabels.Load(sessionId);
+        if (IsPrintedTabActive)
+        {
+            PrintedLabels.Load(sessionId);
+            PrefetchPrintedPaymentStatus(sessionId);
+        }
         else PrintedLabels.UpdateCount(sessionId);
+    }
+
+    /// <summary>"Basılanlar" rozetlerinin uzak kayıt ön okuması (W3-10) — testler bekler.</summary>
+    internal Task PrintedPaymentPrefetch { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// Ödeme rozetleri mod On'da başka bilgisayarların isteklerini de sayar (spec 2026-10-13 §6.4 "Teslim kayıtlarının
+    /// okunması"; W3-10): liste önce yerel işlerle (ve önbellekteki uzak kayıtlarla) hemen kurulur; listedeki kişilerin
+    /// okunmamış uzak kayıtları arka planda okunur (yükleme başına istek bütçesiyle — hız sınırı müşteri ve satış akışıyla
+    /// paylaşılıyor) ve yeni bir şey geldiyse liste yerinde yeniden kurulur. Yeniden kurma yeni bir ön okuma başlatmaz:
+    /// bütçeye kalan kişiler sonraki yüklemede okunur. Ağ işi arayüz iş parçacığında koşmaz; okuma düşerse rozetler yerel
+    /// kalır. Mod Off'ta hiçbir şey yapılmaz.
+    /// </summary>
+    private void PrefetchPrintedPaymentStatus(string? sessionId)
+    {
+        if (_paymentFollowUp is null || sessionId is null || PrintedLabels.Rows.Count == 0) return;
+        var labels = PrintedLabels.Rows.Select(r => r.Label).ToList();
+        PrintedPaymentPrefetch = PrefetchPrintedPaymentStatusAsync(_paymentFollowUp, sessionId, labels);
+    }
+
+    private async Task PrefetchPrintedPaymentStatusAsync(
+        CorrectedPaymentRequests payments, string sessionId, IReadOnlyList<Label> labels)
+    {
+        if (!await payments.PrefetchAsync(sessionId, labels).ConfigureAwait(false)) return;
+
+        void Reload()
+        {
+            try
+            {
+                if (IsPrintedTabActive && string.Equals(PrintedLabels.SessionId, sessionId, StringComparison.Ordinal))
+                    PrintedLabels.Load(sessionId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning(ex, "Basılanlar: uzak ödeme kayıtlarıyla rozetler yenilenemedi; sonraki tazelemede yeniden");
+            }
+        }
+
+        if (_dispatcher.CheckAccess()) Reload();
+        else _ = _dispatcher.BeginInvoke(Reload);
     }
 
     /// <summary>Yayın başladı/bitti ya da operatör "bu yayına dön" dedi: sekme aktif yayına döner.</summary>

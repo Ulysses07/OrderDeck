@@ -72,7 +72,7 @@ public class CodePriceResultLayoutTests
     {
         var h = MainShellTestHarness.Build(paymentFollowUp: (db, customers, labels) =>
             new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,
-                new PaymentJobRepository(db), () => new OrderDeck.Core.Settings.AppSettings(),
+                new PaymentJobRepository(db), OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
                 (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
                     OrderDeck.App.Services.PaymentRequestResult.Sent))));
         h.Vm.ActiveCode = "A1";

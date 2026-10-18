@@ -97,6 +97,12 @@ public sealed record PaymentJob(
     public bool IsLegacyScope =>
         ScopeKey == "legacy" || ScopeKey.StartsWith("legacy:", StringComparison.Ordinal);
 
+    /// <summary>İşin ASIL kapsamı: asıl kapsamı bilinen miras işte indirilmeden önceki kapsam
+    /// (<see cref="PriorScopeKey"/>), öbür işlerde kendi kapsamı. Asıl kapsamı bilinmeyen miras işte
+    /// <c>legacy</c>/<c>legacy:…</c> adının kendisi. Apply'ın <c>SaleScope</c>'u ve kirasız ödeme kaydının
+    /// kapsamı (spec 2026-10-13 §6.4 "Ödeme geçmişi") bununla gider — yerel soru miras işi o kapsamda arar.</summary>
+    public string SaleScopeKey => IsLegacyScope && PriorScopeKey is { } prior ? prior : ScopeKey;
+
     /// <summary>Önceki sürümün (Velopack geri dönüşü) teslimi: legacy olmayan kapsamda ClosedAt'ı iki
     /// sürümde de yalnız teslim yazar, önceki sürüm teslim kaydı yazmaz. ClosedAt teslim kaydından
     /// yeniyse o kapanış en son teslimdir. SQL karşılığı <see cref="PaymentJobSql.ClosedByLaterDelivery"/>
@@ -323,6 +329,21 @@ public interface IPaymentJobStore
     /// bir işi ezmek, hâlâ uçuşta olan bir denemenin cevabını sahipsiz
     /// bırakırdı. false = yeniden oku.</para></summary>
     bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal);
+
+    /// <summary>Spec 2026-10-13 §6.6 (W3-11): apply denemesinin (<paramref name="expectedKey"/> +
+    /// <paramref name="expectedRevision"/>) cevabı 409 <c>scope-has-deduction</c> — sunucu kuralı yalnız anahtarı YENİ
+    /// apply'da çalıştırır, yani bu anahtar sunucuda hiç yazılmadı; kapsamda başka bir geri alınmamış düşüm duruyor. Cevap
+    /// o denemenin KESİN sonucudur ve düşüm işe benimsenir: iş <see cref="PaymentJobState.Applied"/> olur, ApplyKey
+    /// sunucudaki işlemin kimliği, AppliedAmount/ProductTotal sunucunun bildiği değerler (tutar farklıysa revizyon dalı
+    /// devralır).
+    ///
+    /// <para>Koşul <see cref="MarkApplied"/>'ınkiyle aynı (R4-01 + R6-03): deneme hâlâ diskteki denemeyse ve geri alma
+    /// beklemiyorsa. Durum makinesi değişmez — geçiş <see cref="MarkApplied"/>'ın apply_uncertain → applied geçişidir;
+    /// farkı anahtarın sunucudaki işleme dönmesi. Revision ARTMIYOR (<see cref="AdoptRemoteResult(string, Guid, decimal, decimal)"/>
+    /// gibi): denemenin geç cevapları anahtar değiştiği için bayatlar. Miras işte çağrılmaz (servis kuralı: düşüm büyük
+    /// olasılıkla başka bir yerel işindir). false = yeniden oku.</para></summary>
+    bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal,
+        Guid expectedKey, int expectedRevision);
 
     /// <summary>R6-02: sunucudaki düşüm DIŞARIDAN (panel iadesi ya da sunucu
     /// tarafı geri yükleme) geçersizleşti — uygulanmış işi taze duruma döndürür:
@@ -755,6 +776,29 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             }) == 1;
     }
 
+    public bool AdoptRemoteResult(
+        string id, Guid transactionId, decimal appliedAmount, decimal productTotal,
+        Guid expectedKey, int expectedRevision)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            "UPDATE PaymentJob SET " + PaymentJobSql.FreezeDelivery + @"
+                  ApplyKey=@tx, AppliedAmount=@amt, ProductTotal=@total,
+                  State=@state, UpdatedAt=@now" + ResultGuard,
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                tx = transactionId.ToString("N"),
+                amt = Dec(appliedAmount),
+                total = Dec(productTotal),
+                state = PaymentJobState.Applied,
+                now = Now(),
+                reversePending = PaymentJobState.ReversePending,
+            }) == 1;
+    }
+
     public bool AdoptExternalReversal(string id, Guid expectedKey, int expectedRevision)
     {
         using var conn = _factory.Open();
@@ -776,12 +820,30 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             }) == 1;
     }
 
-    private const string SelectSql =
-        @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
+    private const string Columns =
+        @"Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
                  AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal, PriorScopeKey,
                  DeliveredAt, DeliveredNet, Deliveries, SendAttempts, AttemptNet, PriorAttemptNet,
-                 AttemptAt, PriorAttemptAt, ResumeCovers
-          FROM PaymentJob";
+                 AttemptAt, PriorAttemptAt, ResumeCovers";
+
+    private const string SelectSql = "SELECT " + Columns + " FROM PaymentJob";
+
+    /// <summary>
+    /// Ödeme geçmişi geri doldurmasının sayfası (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6; W3-06): <c>rowid</c>'i
+    /// <paramref name="afterRowId"/>'den büyük işler, <c>rowid</c> sırasıyla, en çok <paramref name="limit"/> — kapalı ve
+    /// miras işler dahil, süzgeçsiz (teslim kararı çağıranın, <see cref="PaymentJob.IsDelivered"/>). İşler hiç silinmez ve
+    /// uygulama <c>VACUUM</c> koşmaz: <c>rowid</c> kararlı bir imleçtir.
+    /// </summary>
+    public IReadOnlyList<(long RowId, PaymentJob Job)> GetAfterRowId(long afterRowId, int limit)
+    {
+        if (limit <= 0) return Array.Empty<(long, PaymentJob)>();
+        using var conn = _factory.Open();
+        return conn.Query<Row>(
+                "SELECT rowid AS RowId, " + Columns + " FROM PaymentJob WHERE rowid > @afterRowId ORDER BY rowid LIMIT @limit",
+                new { afterRowId, limit })
+            .Select(r => (r.RowId, Map(r)))
+            .ToList();
+    }
 
     private static PaymentJob Map(Row r) => new(
         r.Id,
@@ -816,6 +878,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
 
     private sealed class Row
     {
+        /// <summary>Yalnız <see cref="GetAfterRowId"/> seçer; öbür sorgularda 0.</summary>
+        public long RowId { get; init; }
         public string Id { get; init; } = "";
         public string CustomerId { get; init; } = "";
         public string ScopeKey { get; init; } = "";

@@ -4,9 +4,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using Dapper;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.PriceCorrection;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -15,6 +17,7 @@ using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
+using OrderDeck.Licensing.Api;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -54,7 +57,11 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
             _shipments);
     }
 
-    public void Dispose() => _db.Dispose();
+    public void Dispose()
+    {
+        _server?.Dispose();
+        _db.Dispose();
+    }
 
     private Label Add(string platform, string user, decimal price, string code = "A12")
         => _labels.Add("s1", new ChatMessage(Guid.NewGuid().ToString("N"), platform, null, user, user, null,
@@ -68,8 +75,11 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     private PaidPerson? PaidOf(PriceCorrectionResult result)
         => Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta))).Paid.SingleOrDefault();
 
+    /// <summary>Uygulamanın canlı ayar örneği (kargo kapalı); kargo ayarı sağlayıcısı gerçek — mod Off'ta bu örnek.</summary>
+    private readonly AppSettings _live = new();
+
     private CorrectedPaymentRequests Sut(CorrectedPaymentRequests.RequestPayment? request = null)
-        => new(_customers, _labelRepo, _jobs, () => new AppSettings(),
+        => new(_customers, _labelRepo, _jobs, new ShippingSettingsProvider(new SalesSyncStateRepository(_db), _live),
             request ?? ((_, _, _, _, _) => throw new InvalidOperationException("gönderim beklenmiyordu")));
 
     /// <summary>Kişiye bu kapsamda teslim edilmiş (mesajı ulaşmış) bir istek: sonucu kesin (bakiye yok)
@@ -136,6 +146,25 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public void Mod_On_yeni_toplamin_kargosu_yerel_ayardan_degil_lisans_geneli_ayardan()
+    {
+        // Spec 2026-10-13 §6.2 (Y4): plan ödeme akışının isteyeceği tutarı göstermeli — mod On'da lisans geneli ayarla.
+        // Kişinin yayın toplamı 2 × 205 + 100 = 510: yerel 500/60'ta eşik üstü (kargosuz), lisansın 1000/80'inde değil.
+        var (a1, a2, _, _) = GroupedPersonWithRequest();
+        var result = _labels.CorrectPrices(new[] { a1.Id, a2.Id }, 205m);
+        _live.Shipping = new ShippingSettings { FreeShippingThreshold = 500m, ShippingFee = 60m };
+        new SalesSyncStateRepository(_db).SaveServerState(3, 1000m, 80m, scrubOrderText: false);
+        var affected = result.Corrected.Select(c => (c.Before, c.Delta)).ToList();
+
+        Sut().Plan("s1", affected).ToResend.Should().ContainSingle()
+            .Which.NewTotal.Should().Be(510m, "mod Off: yerel ayar, eşik üstü");
+
+        using (var c = _db.Open()) c.Execute("UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        Sut().Plan("s1", affected).ToResend.Should().ContainSingle()
+            .Which.NewTotal.Should().Be(590m, "mod On: lisans geneli 1000/80 — 510 + 80");
+    }
+
+    [Fact]
     public void Unchanged_total_is_not_listed()
     {
         var (a1, _, _, _) = GroupedPersonWithRequest();
@@ -165,7 +194,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     {
         var l = Add("instagram", "@odedi", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(l.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { l.Id });   // dekont kaydı etiketleri dosyaya bağlar
         Delivered(l.CustomerId, "session:s1", 250m);
@@ -246,7 +275,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var printed = Add("instagram", "@q", 250m);
         _labels.MarkPrintedAndRecord(new[] { printed.Id });
         var queued = Add("instagram", "@q", 250m);
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(printed.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { printed.Id, queued.Id });
         var result = _labels.CorrectPrices(new[] { queued.Id }, 205m);
@@ -268,7 +297,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var paidOne = Add("instagram", "@iki", 250m);
         var unpaid = Add("instagram", "@iki", 250m);
         _labels.MarkPrintedAndRecord(new[] { paidOne.Id, unpaid.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(paidOne.CustomerId).Id, new[] { paidOne.Id });
         Delivered(paidOne.CustomerId, "session:s1", 500m);
         var result = _labels.CorrectPrices(new[] { paidOne.Id, unpaid.Id }, 205m);
@@ -314,7 +343,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         // da dosyaya bağlı saklanmıyor; ödenen fiyatı ilk düzeltme yazar.
         var l = Add("instagram", "@dekont", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(l.CustomerId).Id, new[] { l.Id });
 
         var first = _labels.CorrectPrices(new[] { l.Id }, 200m);
@@ -338,7 +367,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var l = Add("instagram", "@sonra", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
         _labels.CorrectPrices(new[] { l.Id }, 200m);
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(l.CustomerId).Id, new[] { l.Id });
 
         var result = _labels.CorrectPrices(new[] { l.Id }, 190m);
@@ -410,6 +439,33 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public void Cumulative_new_total_is_read_from_the_labels_not_the_customer_counter()
+    {
+        // W3 (spec 2026-10-13 §6.1 "para yolları sayacı okumaz"): genel kapsamın yeni toplamı kişinin bütün
+        // yayınlardaki etiketlerinden (LabelRules.Contribution) — Customer.TotalAmount önbelleği bozuk olsa da.
+        var a1 = Add("instagram", "@x", 250m, "A1");
+        _labels.MarkPrintedAndRecord(new[] { a1.Id });
+        new SessionRepository(_db).Insert(new StreamSession("s2", null, 2000, null, new[] { "instagram" }, null));
+        var later = _labels.Add("s2", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "@x", "@x", null,
+            "@x aldım", 1000, Array.Empty<string>()), 100m, "Z9");
+        var queued = _labels.Add("s2", new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, "@x", "@x", null,
+            "@x aldım", 1000, Array.Empty<string>()), 40m, "Z8");
+        _labels.MarkPrintedAndRecord(new[] { later.Id });
+        _labelRepo.GetById(queued.Id)!.PrintedAt.Should().BeNull("ön koşul: kuyrukta");
+        Delivered(a1.CustomerId, "cumulative", 350m);
+        var result = _labels.CorrectPrices(new[] { a1.Id }, 205m);
+        // Düzeltme toplamı türetti; sayaç ondan SONRA bozulur.
+        using (var c = _db.Open())
+            c.Execute("UPDATE Customer SET TotalAmount = 999 WHERE Id = @id", new { id = a1.CustomerId });
+
+        var plan = Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        var row = plan.ToResend.Should().ContainSingle().Subject;
+        row.ScopeKey.Should().Be("cumulative");
+        row.NewTotal.Should().Be(305m, "bütün yayınların basılmış etiketleri: 205 + 100; kuyruktaki sayılmaz");
+    }
+
+    [Fact]
     public void Dekont_difference_of_a_correction_leaves_out_an_earlier_corrections_settled_difference()
     {
         // A1 200 + B2 100 dekontla ödendi (ikisi açık dosyada). A1 200 → 250: "+50"; operatör 50'yi aldı, ikinci
@@ -417,7 +473,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var a1 = Add("instagram", "@x", 200m, "A1");
         var b2 = Add("instagram", "@x", 100m, "B2");
         _labels.MarkPrintedAndRecord(new[] { a1.Id, b2.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(a1.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { a1.Id, b2.Id });
         PaidOf(Correct(a1.Id, 250m))!.Delta.Should().Be(50m);
@@ -612,7 +668,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var shippedLabel = Add("instagram", "@kargo", 250m);
         var dekont = Add("instagram", "@dekont", 250m);
         _labels.MarkPrintedAndRecord(new[] { shippedLabel.Id, dekont.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var shipped = shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(shippedLabel.CustomerId).Id,
             new[] { shippedLabel.Id });
         shipmentSvc.ApplyDecision(shipped.Id, ShipmentDecision.ShipNow);
@@ -923,7 +979,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         // Çevrimdışıyken akış bakiyeyi denemeden tam tutarı isteyebilir (K5: çevrimdışı atlanır).
         var (_, _, _, person) = GroupedPersonWithRequest();
         var calls = 0;
-        var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, () => new AppSettings(),
+        var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, LocalShipping.Off(),
             (_, _, _, _, _) =>
             {
                 calls++;
@@ -974,8 +1030,8 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
             store.Save(s);
             var payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
                 PaymentRequestServiceTestHelpers.StubApiClient(), new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                _jobs, customers: _customers);
-            var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, store, payments);
+                _jobs, LocalShipping.Of(store), customers: _customers);
+            var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, LocalShipping.Of(store), payments);
 
             var outcomes = await sut.ResendAsync("s1", DateTime.Now,
                 new[] { new CorrectedRequestCandidate(l.CustomerId, "Uçtan", "session:s1", 250m, null, false, 205m) });
@@ -987,5 +1043,453 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         {
             if (System.IO.File.Exists(settingsPath)) System.IO.File.Delete(settingsPath);
         }
+    }
+
+    // ── Mod On: başka bilgisayarların kayıtları (W3-10, spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması") ─────
+
+    private OrderDeck.Tests.Sync.FakeSalesServer? _server;
+    private RemotePaymentRecords? _remote;
+
+    private sealed class FixedLicense(string key) : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => key;
+    }
+
+    /// <summary>Uzak kayıtların önbelleği, sahte sunucuya bağlı. <paramref name="modeOn"/> ise yerel kip 1.</summary>
+    private RemotePaymentRecords UseRemote(bool modeOn = true)
+    {
+        if (modeOn)
+            using (var c = _db.Open()) c.Execute("UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        _server = new OrderDeck.Tests.Sync.FakeSalesServer { Mode = modeOn ? 1 : 0 };
+        var http = new System.Net.Http.HttpClient(_server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") };
+        _remote = new RemotePaymentRecords(new LicenseApiClient(http, new LicenseTokenStore()), new FixedLicense(_server.Lisans),
+            new SalesSyncStateRepository(_db), new ReplicaIdentityRepository(_db), new PendingPaymentRecordRepository(_db),
+            NullLogger<RemotePaymentRecords>.Instance);
+        return _remote;
+    }
+
+    private CorrectedPaymentRequests SutOn(CorrectedPaymentRequests.RequestPayment? request = null)
+        => new(_customers, _labelRepo, _jobs, new ShippingSettingsProvider(new SalesSyncStateRepository(_db), _live),
+            request ?? ((_, _, _, _, _) => throw new InvalidOperationException("gönderim beklenmiyordu")),
+            remote: _remote);
+
+    /// <summary>Kira kapsamına uyan ("N" biçimli Id'li) yayın: yayın kapsamının uzak kayıtları ancak böyle okunur.</summary>
+    private string NewSession()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        new SessionRepository(_db).Insert(new StreamSession(id, null, 1000, null, new[] { "instagram" }, null));
+        return id;
+    }
+
+    private Label AddIn(string sessionId, string user, decimal price, string code = "A1")
+        => _labels.Add(sessionId, new ChatMessage(Guid.NewGuid().ToString("N"), "instagram", null, user, user, null,
+            $"{user} aldım", 1000, Array.Empty<string>()), price, code);
+
+    private Guid OwnReplica => new ReplicaIdentityRepository(_db).GetReplicaId()!.Value;
+
+    private static readonly DateTimeOffset T0 = new(2026, 10, 18, 10, 0, 0, TimeSpan.Zero);
+
+    /// <summary>Sunucudaki bir kayıt; <paramref name="minute"/> sunucunun kapanış sırası.</summary>
+    private void ServerRecord(string member, string scope, int minute, decimal? net, IEnumerable<string> covers,
+        Guid? replica = null, string? machine = "PC-A", bool fullyFromBalance = false, decimal? applied = null,
+        decimal? totalBeforeBalance = null, bool unconfirmed = false)
+        => _server!.AddPaymentPrior(new OrderDeck.Tests.Sync.FakeSalesServer.PaymentPrior(
+            Guid.NewGuid(), machine, new[] { member }, scope, net, totalBeforeBalance, T0.AddMinutes(minute),
+            T0.AddMinutes(minute), unconfirmed, ReplicaId: replica, OrderIds: covers.Select(Guid.Parse).ToList(),
+            AppliedAmount: applied, FullyFromBalance: fullyFromBalance));
+
+    private int ListCalls => _server!.Calls(OrderDeck.Tests.Sync.FakeSalesServer.PaymentRequestsList).Count;
+
+    [Fact]
+    public async Task Mod_On_baska_PCnin_L_yi_iceren_kaydi_L_ye_odeme_istendi_rozeti_verir()
+    {
+        // PC-B L'yi içeren bir istek yaptı; bu bilgisayarda hiç iş yok. Rozet ancak ön okumadan sonra: hesap zaman uyumlu ve
+        // yalnız önbellekten okur.
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@uzak", 250m);
+        var other = AddIn(sid, "@uzak", 100m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { l.Id, other.Id });
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.SessionScope(sid), 1, 250m, new[] { l.Id }, machine: "PC-B");
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id, other.Id });
+
+        sut.Badges(sid, labels).RequestedLabels.Should().BeEmpty("ön okumadan önce önbellek boş — yalnız yerel");
+        (await sut.PrefetchAsync(sid, labels)).Should().BeTrue();
+
+        var badges = sut.Badges(sid, labels);
+        badges.RequestedLabels.Should().Equal(new[] { l.Id }, "uzak Covers sipariş kümesiyle: B2 kümede değil");
+        badges.BalancePaidLabels.Should().BeEmpty();
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(_labelRepo, sut.Badges);
+        printed.Load(sid);
+        printed.Rows.Single(r => r.Id == l.Id).StatusText.Should().Be("ödeme istendi");
+        printed.Rows.Single(r => r.Id == other.Id).StatusText.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Mod_On_L_yi_icermeyen_daha_yeni_uzak_kayit_rozeti_kaldirir()
+    {
+        // Bu bilgisayar L'yi içeren isteği yaptı (kaydı sunucuda, 10:01); PC-B sonra (10:02) L'yi içermeyen bir istek yaptı.
+        // Son istek PC-B'ninki: L'nin rozeti yok. Saatler karşılaştırılmaz — yerel işin yeri listedeki kendi kaydıdır.
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@son", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        Delivered(l.CustomerId, scope, 250m);
+        ServerRecord(l.CustomerId, scope, 1, 250m, new[] { l.Id }, replica: OwnReplica, machine: "BU-PC");
+        ServerRecord(l.CustomerId, scope, 2, 0m, Array.Empty<string>(), machine: "PC-B");
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id });
+        sut.Badges(sid, labels).RequestedLabels.Should().Equal(new[] { l.Id }, "ön koşul: yerel iş L'yi içeriyor");
+
+        await sut.PrefetchAsync(sid, labels);
+
+        sut.Badges(sid, labels).RequestedLabels.Should().BeEmpty("en yeni istek PC-B'nin ve L'yi içermiyor");
+    }
+
+    /// <summary>Yayını başka bilgisayarda açılmış (akıştan inmiş) yap: etiketlerinin basılma anı o bilgisayarın saatidir.</summary>
+    private void MakeRemote(string sessionId)
+    {
+        using var c = _db.Open();
+        c.Execute("UPDATE StreamSession SET Origin = 'remote', Authority = 'server' WHERE Id = @sessionId", new { sessionId });
+    }
+
+    [Theory]
+    [InlineData(false, false)]   // bu kopyanın kaydı L'yi içermiyor: kapsamaz
+    [InlineData(true, true)]     // içeriyor: kapsar
+    public async Task Mod_On_yerel_is_uzak_yayinin_etiketini_saatle_degil_kendi_kaydinin_siparis_kumesiyle_kapsar(
+        bool recordHasLabel, bool covered)
+    {
+        // Bu bilgisayar kümülatif isteği tamamı bakiyeden düşerek teslim etti; L başka bilgisayarın yayınında, o bilgisayarın
+        // saatiyle (geride) basıldı ve istekten SONRA basılmış olsa da isteğin anından erken görünüyor. Yerel iş L'yi
+        // PromptAt ≥ PrintedAt ile kapsıyor sayıyordu (iki bilgisayarın saati karşılaştırılıyordu, M17): L "bakiyeden ödendi"
+        // rozeti alıyor, düzeltmede ödendiği fiyat saklanıyordu. Uzak yayının etiketinde karar bu kopyanın aynı isteğinin
+        // sunucudaki kaydının sipariş kümesiyle verilir.
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@saat_farki", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        MakeRemote(sid);
+        AppliedAndDelivered(l.CustomerId, CorrectedPaymentRequests.CumulativeScope, 250m, 250m);
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.CumulativeScope, 1, 0m,
+            recordHasLabel ? new[] { l.Id } : Array.Empty<string>(), replica: OwnReplica, machine: "BU-PC",
+            fullyFromBalance: true, applied: 250m);
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id });
+
+        await sut.PrefetchAsync(sid, labels);
+
+        var badges = sut.Badges(sid, labels);
+        badges.BalancePaidLabels.Contains(l.Id).Should().Be(covered);
+        badges.RequestedLabels.Should().BeEmpty();
+        sut.BalancePaidLabels(sid, labels).Contains(l.Id).Should().Be(covered);
+    }
+
+    [Fact]
+    public void Mod_On_uzak_kayit_okunmadiysa_yerel_is_uzak_yayinin_etiketini_kapsamaz_yerel_yayininkini_kapsar()
+    {
+        // Ön okuma yokken (ya da düştüyse) sipariş kümesi bilinmez: uzak yayının etiketi kapsanmış sayılmaz. Bu bilgisayarın
+        // yayınının etiketi bugünkü gibi aynı bilgisayarın iki saatiyle karşılaştırılır.
+        UseRemote();
+        var remoteSession = NewSession();
+        var localSession = NewSession();
+        var remote = AddIn(remoteSession, "@okunmadi", 250m);
+        var local = AddIn(localSession, "@okunmadi", 100m);
+        _labels.MarkPrintedAndRecord(new[] { remote.Id, local.Id });
+        MakeRemote(remoteSession);
+        AppliedAndDelivered(remote.CustomerId, CorrectedPaymentRequests.CumulativeScope, 350m, 350m);
+        var sut = SutOn();
+
+        sut.Badges(remoteSession, _labelRepo.GetByIds(new[] { remote.Id })).BalancePaidLabels.Should().BeEmpty();
+        sut.Badges(localSession, _labelRepo.GetByIds(new[] { local.Id })).BalancePaidLabels.Should().Equal(local.Id);
+    }
+
+    [Fact]
+    public async Task Mod_On_yerel_isi_olmayan_kiside_bu_kopyanin_kaydi_da_son_istek_adayidir()
+    {
+        // GUID'siz kişide yerel iş açılmaz: bu bilgisayarın kirayla yaptığı isteği yalnız sunucudaki kendi kaydı temsil eder.
+        // Kendi kayıtları hep atlanıyordu — PC-A'nın daha eski kaydı (L1) "son istek" seçiliyor, bu bilgisayarın L1+L3'ü
+        // içeren isteği rozette ve #508 planında görünmüyordu: L3 düzeltilince "eski tutarla istek gitmiş" çıkmıyordu.
+        UseRemote();
+        var sid = NewSession();
+        var l1 = AddIn(sid, "@isesiz", 250m);
+        var l3 = AddIn(sid, "@isesiz", 200m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { l1.Id, l3.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        ServerRecord(l1.CustomerId, scope, 1, 250m, new[] { l1.Id }, machine: "PC-A");
+        ServerRecord(l1.CustomerId, scope, 2, 450m, new[] { l1.Id, l3.Id }, replica: OwnReplica, machine: "BU-PC");
+        _jobs.GetPersonScopeJobs(new[] { l1.CustomerId }, scope).Jobs.Should().BeEmpty("ön koşul: yerel iş yok");
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l1.Id, l3.Id });
+
+        await sut.PrefetchAsync(sid, labels);
+
+        sut.Badges(sid, labels).RequestedLabels.Should().BeEquivalentTo(new[] { l1.Id, l3.Id },
+            "son istek bu bilgisayarın kaydı: ikisini de içeriyor");
+        var result = _labels.CorrectPrices(new[] { l3.Id }, 150m);
+        var row = sut.Plan(sid, result.Corrected.Select(c => (c.Before, c.Delta))).ToResend.Should().ContainSingle().Subject;
+        row.PriorAmount.Should().Be(450m, "eski tutar bu bilgisayarın isteği");
+    }
+
+    [Fact]
+    public async Task Mod_On_en_yeni_uzak_kayit_teslim_ve_tamami_bakiyeden_ise_etiket_odendi()
+    {
+        UseRemote();
+        var sid = NewSession();
+        var paid = AddIn(sid, "@bakiye", 250m);
+        var unsure = AddIn(sid, "@belirsiz", 300m);
+        _labels.MarkPrintedAndRecord(new[] { paid.Id, unsure.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        ServerRecord(paid.CustomerId, scope, 1, 0m, new[] { paid.Id }, fullyFromBalance: true, applied: 250m);
+        // Sonucu bilinmeyen kayıt "ödendi" değildir: teslim edilmiş ∧ tamamı bakiyeden.
+        ServerRecord(unsure.CustomerId, scope, 1, 0m, new[] { unsure.Id }, fullyFromBalance: true, applied: 300m,
+            unconfirmed: true);
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { paid.Id, unsure.Id });
+
+        await sut.PrefetchAsync(sid, labels);
+
+        var badges = sut.Badges(sid, labels);
+        badges.BalancePaidLabels.Should().Equal(new[] { paid.Id });
+        badges.RequestedLabels.Should().Equal(new[] { unsure.Id });
+        sut.BalancePaidLabels(sid, labels).Should().Equal(new[] { paid.Id },
+            "düzeltmeden önce okunan küme rozetlerle aynı kural — ödendiği fiyat saklansın");
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(_labelRepo, sut.Badges);
+        printed.Load(sid);
+        printed.Rows.Single(r => r.Id == paid.Id).StatusText.Should().Be("ödendi");
+
+        var result = _labels.CorrectPrices(new[] { paid.Id }, 200m, sut.BalancePaidLabels(sid, labels));
+        var row = sut.Plan(sid, result.Corrected.Select(c => (c.Before, c.Delta))).Paid.Should().ContainSingle().Subject;
+        row.ByBalance.Should().BeTrue();
+        row.Delta.Should().Be(-50m);
+    }
+
+    [Fact]
+    public async Task Mod_On_kendi_kopyasinin_kayitlari_cift_sayilmaz()
+    {
+        // Bu bilgisayarın (ve geri yüklemeden önceki kimliğinin) kayıtları yerel işle temsil edilir; birleştirmeye yalnız
+        // başka kopyaların kayıtları girer. Uzak sayılsalardı: @kendi'nin L'yi içermeyen, tamamı bakiyeden görünen kayıtları
+        // yerel isteğin yerine geçerdi; yerel işi olmayan @eski'nin kaydı (geri yüklenen eski yedekte işi yok) L2'yi
+        // "ödendi" gösterirdi.
+        UseRemote();
+        var previous = Guid.NewGuid();
+        new ReplicaIdentityRepository(_db).SetPendingPreviousReplicaId(previous);
+        var sid = NewSession();
+        var l = AddIn(sid, "@kendi", 250m);
+        var l2 = AddIn(sid, "@eski", 300m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id, l2.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        Delivered(l.CustomerId, scope, 250m);
+        ServerRecord(l.CustomerId, scope, 1, 0m, Array.Empty<string>(), replica: previous, fullyFromBalance: true,
+            applied: 250m);
+        ServerRecord(l.CustomerId, scope, 2, 0m, Array.Empty<string>(), replica: OwnReplica, fullyFromBalance: true,
+            applied: 250m);
+        ServerRecord(l2.CustomerId, scope, 3, 0m, new[] { l2.Id }, replica: previous, fullyFromBalance: true,
+            applied: 300m);
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id, l2.Id });
+
+        (await sut.PrefetchAsync(sid, labels)).Should().BeTrue();
+
+        var badges = sut.Badges(sid, labels);
+        badges.RequestedLabels.Should().Equal(new[] { l.Id }, "son istek yerel iş");
+        badges.BalancePaidLabels.Should().BeEmpty("bu kopyanın kayıtları uzak kayıt sayılmaz");
+        var plan = sut.Plan(sid, labels.Select(x => (x, 0m)));
+        plan.RequestedPersons.Should().Be(1, "aynı istek iki kez sayılmaz");
+        plan.Paid.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Mod_On_yerel_kaydi_kuyrukta_bekleyen_is_en_yeni_sayilir()
+    {
+        // Listede bu bilgisayarın eski kaydı (10:01) ve PC-B'nin sonraki kaydı (10:02) var; bu bilgisayarın SON teslimi henüz
+        // gönderilmedi (kuyrukta). Gönderilmemiş yerel kayıt en yenidir: PC-B'nin kaydı son istek sayılmaz.
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@kuyruk", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        Delivered(l.CustomerId, scope, 250m);
+        ServerRecord(l.CustomerId, scope, 1, 250m, new[] { l.Id }, replica: OwnReplica);
+        ServerRecord(l.CustomerId, scope, 2, 0m, Array.Empty<string>(), machine: "PC-B");
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id });
+        await sut.PrefetchAsync(sid, labels);
+        sut.Badges(sid, labels).RequestedLabels.Should().BeEmpty("ön koşul: kuyruk boşken PC-B'nin kaydı en yeni");
+
+        var item = new OrderDeck.Licensing.Api.Models.PaymentRequestBackfillItem(Guid.NewGuid(), l.CustomerId,
+            new[] { l.CustomerId }, scope, new[] { Guid.Parse(l.Id) }, "delivered", 250m, null, false, T0);
+        new PendingPaymentRecordRepository(_db).Enqueue(PendingPaymentRecordCodec.Key(item.RecordId),
+            PendingPaymentRecordKinds.Record, PendingPaymentRecordCodec.EncodeRecord(item), 1000).Should().BeTrue();
+
+        sut.Badges(sid, labels).RequestedLabels.Should().Equal(new[] { l.Id }, "yerel kaydı kuyrukta: yerel iş en yeni");
+    }
+
+    [Fact]
+    public async Task Mod_On_PC_A_isteginden_sonra_duzeltme_adayi_PC_A_netini_gosterir_ve_soru_kendiliginden_onaylanir()
+    {
+        // Bu bilgisayar 350 istedi (kaydı 10:01); PC-A sonra 400 istedi (10:02; kargo eklenmiş tutar). Fiyat düzeltmesinin
+        // planı "son istenen"i PC-A'nın netiyle göstermeli; toplu gönderimde begin'in sorusunun son öncülü de PC-A'nın kaydı:
+        // tutar eşit olduğu için operatörün listedeki onayı sorunun onayıdır — ikinci soru yok, istek bir kez gider.
+        UseRemote();
+        var sid = NewSession();
+        var a = AddIn(sid, "@pca", 250m);
+        var b = AddIn(sid, "@pca", 100m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { a.Id, b.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        Delivered(a.CustomerId, scope, 350m);
+        ServerRecord(a.CustomerId, scope, 1, 350m, new[] { a.Id, b.Id }, replica: OwnReplica, machine: "BU-PC");
+        ServerRecord(a.CustomerId, scope, 2, 400m, new[] { a.Id, b.Id }, machine: "PC-A", totalBeforeBalance: 400m);
+        var calls = new List<IReadOnlySet<string>?>();
+        var sut = SutOn((_, _, _, s, tokens) =>
+        {
+            calls.Add(tokens);
+            return Task.FromResult(tokens is null
+                ? new PaymentRequestOutcome(PaymentRequestResult.AlreadyRequested,
+                    new PaymentPrompt(PersonScopePromptKind.Resend, s,
+                        new[]
+                        {
+                            new PriorPaymentRequest(350m, T0.AddMinutes(1), Machine: "BU-PC"),
+                            new PriorPaymentRequest(400m, T0.AddMinutes(2), Machine: "PC-A"),
+                        }, "uzak-onay"))
+                : new PaymentRequestOutcome(PaymentRequestResult.Sent));
+        });
+        await sut.PrefetchAsync(sid, _labelRepo.GetByIds(new[] { a.Id, b.Id }));
+
+        var result = _labels.CorrectPrices(new[] { a.Id }, 205m);
+        var plan = sut.Plan(sid, result.Corrected.Select(c => (c.Before, c.Delta)));
+
+        var row = plan.ToResend.Should().ContainSingle().Subject;
+        row.PriorAmount.Should().Be(400m, "son istek PC-A'nın — yerel işin 350'si değil");
+        row.PriorAt.Should().Be(T0.AddMinutes(2));
+        row.PriorUnconfirmed.Should().BeFalse();
+        row.NewTotal.Should().Be(305m);
+
+        var outcomes = await sut.ResendAsync(sid, DateTime.Now, plan.ToResend);
+
+        outcomes.Should().ContainSingle().Which.Status.Should().Be(ResendStatus.Sent);
+        calls.Should().HaveCount(2, "soru bir kez, onaylı çağrı bir kez");
+        calls[1].Should().BeEquivalentTo(new[] { "uzak-onay" });
+    }
+
+    [Fact]
+    public async Task Mod_On_fiyat_duzeltme_ozeti_ve_sonucu_uzak_istegi_on_okumadan_sonra_sayar()
+    {
+        // Çekmece beklemez: özet önce yerel işlerle kurulur, uzak kayıtlar arka planda okununca yeniden hesaplanır. Sonucun
+        // planı da önce ön okur (arada senkron önbelleği boşalttıysa yeniden) sonra kurulur.
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@cekmece", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.SessionScope(sid), 1, 250m, new[] { l.Id }, machine: "PC-B");
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, SutOn(), sid, new[] { l.Id },
+            DateTime.Now, inFlight: () => null, applied: _ => { }, reprint: _ => Task.FromResult<string?>(null),
+            cloudApiEnabled: true);
+
+        await vm.SummaryRefresh;
+
+        vm.Summary.Should().Contain("1 kişiye eski tutarla ödeme isteği gitmiş", "PC-B'nin isteği etiketi içeriyor");
+        _remote!.Invalidate();                               // arada satış akışı değişiklik indirdi
+        vm.NewPriceText = "205";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        vm.SkipReprintCommand.Execute(null);
+        var row = vm.ResendRows.Should().ContainSingle().Subject.Candidate;
+        row.PriorAmount.Should().Be(250m);
+        row.NewTotal.Should().Be(205m);
+    }
+
+    [Fact]
+    public async Task Mod_On_fiyat_duzeltme_onayi_bakiyeden_odenmis_uzak_istegi_yazimdan_once_on_okur()
+    {
+        // PC-B L'nin isteğini tamamı bakiyeden düşerek teslim etti. Çekmece açılınca ön okuma onu getirdi; operatör onaylamadan
+        // satış akışı önbelleği boşalttı. Yazımdan önceki "bakiyeden ödenmiş" kümesi yalnız önbellekten okunsaydı L'nin
+        // ödendiği fiyat (PaidPrice) saklanmaz, ikinci düzeltmenin "ödendi, fark"ı yanlış çıkardı (spec §6.4).
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@bakiye_onay", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.SessionScope(sid), 1, 0m, new[] { l.Id }, machine: "PC-B",
+            fullyFromBalance: true, applied: 250m);
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, SutOn(), sid, new[] { l.Id },
+            DateTime.Now, inFlight: () => null, applied: _ => { }, reprint: _ => Task.FromResult<string?>(null),
+            cloudApiEnabled: true);
+        await vm.SummaryRefresh;
+        _remote!.Invalidate();                               // arada satış akışı değişiklik indirdi
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        _labelRepo.GetPaidPrices(new[] { l.Id }).Should().ContainKey(l.Id)
+            .WhoseValue.Should().Be(250m, "ödendiği fiyat ilk düzeltmede saklandı");
+    }
+
+    [Fact]
+    public async Task Mod_On_liste_cevrimdisiyken_sonuc_yerel_istisna_yok()
+    {
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@cevrimdisi", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        Delivered(l.CustomerId, scope, 250m);
+        ServerRecord(l.CustomerId, scope, 1, 0m, Array.Empty<string>(), machine: "PC-B");
+        _server!.Offline = true;
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id });
+
+        var prefetch = () => sut.PrefetchAsync(sid, labels);
+
+        (await prefetch.Should().NotThrowAsync()).Subject.Should().BeFalse();
+        sut.Badges(sid, labels).RequestedLabels.Should().Equal(new[] { l.Id }, "okunamayan kişi yalnız yerel");
+        sut.Plan(sid, new[] { (_labelRepo.GetById(l.Id)!, 0m) }).RequestedPersons.Should().Be(1);
+
+        _server.Offline = false;
+        _server.EnqueueStatus(OrderDeck.Tests.Sync.FakeSalesServer.PaymentRequestsList, 500);
+        (await sut.PrefetchAsync(sid, labels)).Should().BeFalse("sunucu hatası: yalnız yerel");
+        sut.Badges(sid, labels).RequestedLabels.Should().Equal(new[] { l.Id });
+    }
+
+    [Fact]
+    public async Task Mod_Offta_uzak_kayit_okunmaz_sifir_istek()
+    {
+        UseRemote(modeOn: false);
+        var sid = NewSession();
+        var l = AddIn(sid, "@off", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.SessionScope(sid), 1, 250m, new[] { l.Id }, machine: "PC-B");
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l.Id });
+
+        (await sut.PrefetchAsync(sid, labels, force: true)).Should().BeFalse();
+
+        sut.Badges(sid, labels).RequestedLabels.Should().BeEmpty("mod Off: bugünkü davranış, yalnız yerel");
+        sut.Plan(sid, new[] { (_labelRepo.GetById(l.Id)!, 0m) }).RequestedPersons.Should().Be(0);
+        _server!.RequestLog.Should().BeEmpty("mod Off'ta lisans çözümü de liste de yok");
+    }
+
+    [Fact]
+    public async Task Mod_On_uc_yuz_kisilik_yukleme_istek_butcesi_kadar_istek_atar()
+    {
+        // Hız sınırı (100 istek/dk/IP) müşteri ve satış akışıyla paylaşılıyor: bir yükleme lisans çözümü dahil en çok
+        // RequestBudget istek atar; kalanlar sonraki yüklemede (okunmuşlar yeniden istenmez).
+        UseRemote();
+        var sid = NewSession();
+        var labels = Enumerable.Range(0, 300).Select(i => AddIn(sid, $"@alici{i}", 100m)).ToList();
+        _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToArray());
+        var sut = SutOn();
+        var printed = _labelRepo.GetByIds(labels.Select(l => l.Id).ToList());
+
+        await sut.PrefetchAsync(sid, printed);
+
+        _server!.RequestLog.Should().HaveCount(RemotePaymentRecords.RequestBudget, "lisans çözümü + liste istekleri");
+        ListCalls.Should().Be(RemotePaymentRecords.RequestBudget - 1);
+
+        await sut.PrefetchAsync(sid, printed);
+
+        ListCalls.Should().Be(2 * RemotePaymentRecords.RequestBudget - 1,
+            "ikinci yükleme sıradakileri okur (lisans önbellekte); okunmuşlar yeniden istenmez");
+        _server.Calls(OrderDeck.Tests.Sync.FakeSalesServer.PaymentRequestsList)
+            .Select(c => c.RawJson).Should().OnlyHaveUniqueItems();
     }
 }

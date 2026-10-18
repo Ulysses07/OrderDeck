@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Licensing.Api.Models;
 
 namespace OrderDeck.App.Services.PriceCorrection;
 
@@ -85,6 +88,12 @@ public sealed record ResendOutcome(CorrectedRequestCandidate Candidate, ResendSt
 /// için gitmiş istek ayrıca listelenir. Yalnız düzeltilen etiketleri içeren istekler sayılır
 /// (<see cref="Plan"/>).</para>
 ///
+/// <para><b>Başka bilgisayarların istekleri</b> (mod On; spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması", §6.7, M17;
+/// W3-10): son istek yerel işlerle sunucunun kayıtlarından birlikte bulunur — PC-A'nın isteği PC-B'nin rozetlerinde ve
+/// planında da görünür. Uzak kaydın bir etiketi içerip içermediği sipariş kümesiyle cevaplanır; iki bilgisayarın saati
+/// karşılaştırılmaz. Hesaplar zaman uyumlu ve önbellekten okur (<see cref="PrefetchAsync"/> önce bekletilir); okunamayan kişi
+/// yalnız yerel kalır, hiçbir şey engellenmez — para güvenliği <c>begin</c>'in "zaten istendi" sorusundadır.</para>
+///
 /// <para><b>Gönderim:</b> her kişi mevcut <see cref="PaymentRequestService.RequestPaymentAsync"/> yolundan
 /// geçer (kişi kilidi, revizyon, iade). Operatörün TEK onayı listedeki "tekrar gönder" sorusunun cevabıdır —
 /// yalnız soru listede gösterilen isteği soruyorsa. Ek soru gerektiren (birleştirme, telefon, bakiye
@@ -99,31 +108,39 @@ public sealed class CorrectedPaymentRequests
     private readonly CustomerRepository _customers;
     private readonly LabelRepository _labels;
     private readonly IPaymentJobStore _jobs;
-    private readonly Func<AppSettings> _settings;
+    private readonly IShippingSettingsProvider _shipping;
     private readonly RequestPayment _request;
     private readonly Func<Task<bool>>? _balanceOffline;
+    private readonly RemotePaymentRecords? _remote;
 
+    /// <param name="shipping">Yeni toplamın kargosu (spec 2026-10-13 §6.2): ödeme akışıyla aynı kaynak — mod Off'ta
+    /// yerel ayar, mod On'da lisans geneli ayar. Plan, akışın isteyeceği tutarı göstermeli.</param>
     /// <param name="balanceOffline">Bakiye sunucusuna ulaşılamıyor mu
     /// (<see cref="PaymentRequestService.IsBalanceOfflineAsync"/>); null = denetlenmez.</param>
+    /// <param name="remote">Başka bilgisayarların ödeme kayıtları (spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması";
+    /// W3-10): mod On'da rozetler, <see cref="BalancePaidLabels"/> ve <see cref="Plan"/> yerel işleri bunlarla birleştirir.
+    /// null = yalnız yerel (bugünkü davranış).</param>
     public CorrectedPaymentRequests(
         CustomerRepository customers, LabelRepository labels, IPaymentJobStore jobs,
-        Func<AppSettings> settings, RequestPayment request, Func<Task<bool>>? balanceOffline = null)
+        IShippingSettingsProvider shipping, RequestPayment request, Func<Task<bool>>? balanceOffline = null,
+        RemotePaymentRecords? remote = null)
     {
         _customers = customers;
         _labels = labels;
         _jobs = jobs;
-        _settings = settings;
+        _shipping = shipping;
         _request = request;
         _balanceOffline = balanceOffline;
+        _remote = remote;
     }
 
-    /// <summary>DI kurucusu: gönderim gerçek ödeme servisinden.</summary>
+    /// <summary>DI kurucusu: gönderim gerçek ödeme servisinden, uzak kayıtlar tekil önbellekten.</summary>
     public CorrectedPaymentRequests(
         CustomerRepository customers, LabelRepository labels, IPaymentJobStore jobs,
-        SettingsStore settings, PaymentRequestService payments)
-        : this(customers, labels, jobs, settings.Load,
+        IShippingSettingsProvider shipping, PaymentRequestService payments, RemotePaymentRecords? remote = null)
+        : this(customers, labels, jobs, shipping,
             (c, total, date, scope, tokens) => payments.RequestPaymentAsync(c, total, date, scope, tokens),
-            () => payments.IsBalanceOfflineAsync())
+            () => payments.IsBalanceOfflineAsync(), remote)
     {
     }
 
@@ -137,7 +154,7 @@ public sealed class CorrectedPaymentRequests
     ///
     /// <para><b>Yalnız düzeltilen etiketleri İÇEREN istek sayılır</b> (<see cref="Covers"/>): kapsamın son
     /// teslim edilmiş isteği, kişinin düzeltilen basılmış ve onaylı etiketlerinden en erkeninin basılmasından
-    /// SONRA gitmiş olmalı. Etiketlerden önce gitmiş istek (ör. günler önceki genel istek) yanlış fiyatı hiç
+    /// SONRA gitmiş olmalı (mod On'da başka bilgisayarın kaydıysa en az birini sipariş kümesinde taşımalı). Etiketlerden önce gitmiş istek (ör. günler önceki genel istek) yanlış fiyatı hiç
     /// içermedi: ne "eski tutarla istek gitmiş" listesine girer ne de "ödendi" kararını verir. Kuyruktaki
     /// etiket henüz hiçbir istekte yok, geçici yedek toplamlara girmez — ikisi de isteği etkilemez.</para>
     ///
@@ -177,7 +194,9 @@ public sealed class CorrectedPaymentRequests
             entry.Items.Add(item);
         }
 
-        var settings = _settings();
+        var shipping = _shipping.Current().Settings;
+        var remote = _remote?.Snapshot();
+        var remoteSessions = RemoteSessionsOf(remote, persons.Values.SelectMany(p => p.Items).Select(i => i.Label));
         var toResend = new List<CorrectedRequestCandidate>();
         var paid = new List<PaidPerson>();
         var requestedPersons = 0;
@@ -194,17 +213,15 @@ public sealed class CorrectedPaymentRequests
                 .ToList();
 
             var lasts = counted.Count > 0
-                ? LastDeliveredRequests(sessionId, person).ToList()
-                : new List<(string Scope, PaymentJob Last)>();
+                ? LastDeliveredRequests(sessionId, person, remote, remoteSessions).ToList()
+                : new List<(string Scope, LastRequest Last)>();
             // Bakiyeden ödenmiş etiketler: onları içeren son istek tamamen bakiyeden düşülmüş.
             var byBalance = counted.Where(i => PaidByBalance(i.Label, lasts)).ToList();
-            var delivered = new List<(string Scope, PaymentJob Last)>();
-            if (counted.Count > 0)
-            {
-                var earliestPrint = counted.Min(i => i.Label.PrintedAt!.Value);
-                foreach (var (scope, last) in lasts)
-                    if (Covers(last, earliestPrint) && !IsPaidByBalance(last)) delivered.Add((scope, last));
-            }
+            // Düzeltilen etiketlerden en az birini içeren son istek (yerel işte: en erkeni basıldıktan sonra gitti; uzak
+            // kayıtta: sipariş kümesinde).
+            var delivered = lasts
+                .Where(x => counted.Any(i => x.Last.Covers(i.Label)) && !x.Last.IsPaidByBalance)
+                .ToList();
 
             var paidItems = attached.Concat(byBalance).ToList();
             if (paidItems.Count > 0)
@@ -226,32 +243,53 @@ public sealed class CorrectedPaymentRequests
             {
                 // Ödeme akışının şimdi isteyeceği toplam (kargo dahil, bakiye düşülmeden önce).
                 var newTotal = PaymentRequestService.ComputeShipping(
-                    contact, ProductTotal(sessionId, scope, person), settings).Total;
+                    contact, ProductTotal(sessionId, scope, person), shipping).Total;
                 // Son isteğin bakiye öncesi toplamı (ödeme sorusuyla aynı): net + hâlâ duran düşüm.
-                var priorBalance = last.AppliedAmount is > 0m ? last.AppliedAmount.Value : 0m;
-                if (newTotal == PriorTotal(last)) continue;
+                if (newTotal == last.TotalBeforeBalance) continue;
                 toResend.Add(new CorrectedRequestCandidate(
-                    person.LeasedId, display, scope, last.PromptNet,
-                    last.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null,
-                    last.HasUnconfirmedSend, newTotal, PriorHadBalance: priorBalance > 0m));
+                    person.LeasedId, display, scope, last.Amount, last.At, last.Unconfirmed, newTotal,
+                    PriorHadBalance: last.Applied > 0m));
             }
         }
 
         return new PaymentFollowUpPlan(requestedPersons, toResend, paid);
     }
 
-    /// <summary>Kişinin yayın ve genel kapsamdaki SON teslim edilmiş (ya da gitmiş olabilecek) isteği —
-    /// ödeme sorusuyla aynı plan (<see cref="PersonScopePlan.PromptJobs"/>): soruda "istendi" denen istek.</summary>
-    private IEnumerable<(string Scope, PaymentJob Last)> LastDeliveredRequests(string sessionId, PaymentPerson person)
+    /// <summary>
+    /// Kişinin yayın ve genel kapsamdaki SON teslim edilmiş (ya da gitmiş olabilecek) isteği — ödeme sorusuyla aynı plan
+    /// (<see cref="PersonScopePlan.PromptJobs"/>): soruda "istendi" denen istek.
+    ///
+    /// <para><b>Mod On'da başka bilgisayarların kayıtlarıyla birleşik</b> (spec 2026-10-13 §6.4 "Teslim kayıtlarının
+    /// okunması", §6.7; W3-10; <see cref="RemotePaymentSnapshot.For"/>): sıra sunucunun kapanış sırasıdır, yerel işin son
+    /// teslimi listede bu kopyanın en yeni kaydının yerindedir (yoksa ya da yerel kaydı kuyruktaysa en yeni). İki bilgisayarın
+    /// saati karşılaştırılmaz. Kişi × kapsam okunmamışsa (mod Off, bütçe, okuma düştü) yalnız yerel iş.</para>
+    /// </summary>
+    /// <param name="remoteSessions">Etiketlerin yayınlarından başka bilgisayarda açılmış olanlar (<see cref="RemoteSessionsOf"/>):
+    /// yerel iş onların etiketlerini saatle değil kendi kaydının sipariş kümesiyle kapsar.</param>
+    private IEnumerable<(string Scope, LastRequest Last)> LastDeliveredRequests(
+        string sessionId, PaymentPerson person, RemotePaymentSnapshot? remote, IReadOnlySet<string> remoteSessions)
     {
         foreach (var scope in new[] { SessionScope(sessionId), CumulativeScope })
         {
             var (jobs, legacies) = _jobs.GetPersonScopeJobs(person.MemberIds, scope);
-            if (jobs.Count + legacies.Count == 0) continue;
-            var prompts = PersonScopePlan.For(jobs, legacies, person.OwnerId).PromptJobs;
-            if (prompts.Count > 0) yield return (scope, prompts[^1]);
+            PaymentJob? local = null;
+            if (jobs.Count + legacies.Count > 0
+                && PersonScopePlan.For(jobs, legacies, person.OwnerId).PromptJobs is { Count: > 0 } prompts)
+                local = prompts[^1];
+            var read = remote?.For(scope, person);
+            if (read?.LastWith(local is not null) is { } other)
+                yield return (scope, LastRequest.Of(other));
+            else if (local is not null)
+                yield return (scope, LastRequest.Of(local, read?.LocalRecord, remoteSessions));
         }
     }
+
+    /// <summary>Etiketlerin yayınlarından başka bilgisayarda açılmış olanlar — yalnız mod On'da (uzak kayıt görüntüsü varken);
+    /// mod Off'ta uzak yayın yoktur, sorgu da yapılmaz.</summary>
+    private IReadOnlySet<string> RemoteSessionsOf(RemotePaymentSnapshot? remote, IEnumerable<Label> labels)
+        => remote is null
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : _labels.RemoteSessionIds(labels.Select(l => l.SessionId).Distinct(StringComparer.Ordinal).ToList());
 
     /// <summary>İstek, <paramref name="printedAt"/>'te basılmış etiketi içeriyor mu: etiket basıldıktan sonra
     /// (aynı saniye dahil) gitti. Anı bilinmeyen gönderim temkinle içeriyor sayılır.</summary>
@@ -262,11 +300,90 @@ public sealed class CorrectedPaymentRequests
     internal static bool IsPaidByBalance(PaymentJob request)
         => request.State == PaymentJobState.Applied && request.AppliedAmount is > 0m && request.PromptNet <= 0m;
 
+    /// <summary>
+    /// Kişi × kapsamın son isteği: bu bilgisayarın işi ya da (mod On) başka bilgisayarın kaydı. Sorular aynı tanımla cevaplanır:
+    /// <list type="bullet">
+    ///   <item><see cref="Covers"/> — yerel işte isteğin anı etiketin basılma anıyla (ikisi de bu bilgisayarın saati); uzak
+    ///   kayıtta etiket kaydın sipariş kümesinde mi (<c>PaymentRequestRecordOrders</c>; saat karşılaştırılmaz). Mod On'da
+    ///   başka bilgisayarın yayınından inmiş etiketin basılma anı o bilgisayarın saatidir: yerel iş onu yerel işin sunucudaki
+    ///   kaydının (<see cref="RemotePaymentLast.LocalRecord"/>) sipariş kümesiyle kapsar; kayıt okunmadıysa kapsamaz (M17).</item>
+    ///   <item><see cref="IsPaidByBalance"/> — uzak kayıtta teslim edilmiş ∧ tamamı bakiyeden.</item>
+    ///   <item>Tutar sorudaki gibi: uzak kayıtta net, yoksa (teslim kaydı olmadan dolan kira) kiranın bakiye öncesi tutarı —
+    ///   o istek "gitmiş olabilir"dir.</item>
+    /// </list>
+    /// </summary>
+    private sealed class LastRequest
+    {
+        private static readonly IReadOnlySet<string> NoSessions = new HashSet<string>(StringComparer.Ordinal);
+
+        private readonly PaymentJob? _local;
+        private readonly PaymentRequestListItem? _remote;
+        private readonly HashSet<Guid>? _orders;
+        private readonly IReadOnlySet<string> _remoteSessions;
+
+        /// <param name="orders">Uzak kayıtta kaydın sipariş kümesi; yerel işte işin sunucudaki kaydınınki (yoksa null).</param>
+        private LastRequest(PaymentJob? local, PaymentRequestListItem? remote, HashSet<Guid>? orders,
+            IReadOnlySet<string> remoteSessions)
+        {
+            _local = local;
+            _remote = remote;
+            _orders = orders;
+            _remoteSessions = remoteSessions;
+        }
+
+        /// <param name="record">Yerel işin son tesliminin sunucudaki kaydı (mod On; okunmadıysa null).</param>
+        /// <param name="remoteSessions">Başka bilgisayarda açılmış yayınlar (mod Off'ta boş).</param>
+        public static LastRequest Of(PaymentJob local, PaymentRequestListItem? record = null,
+            IReadOnlySet<string>? remoteSessions = null)
+            => new(local, null, record?.OrderIds.ToHashSet(), remoteSessions ?? NoSessions);
+
+        public static LastRequest Of(PaymentRequestListItem remote) => new(null, remote, remote.OrderIds.ToHashSet(), NoSessions);
+
+        /// <summary>İstek basılmış <paramref name="label"/>'ı içeriyor mu.</summary>
+        public bool Covers(Label label) => _local is not null && !_remoteSessions.Contains(label.SessionId)
+            ? label.PrintedAt is long printedAt && CorrectedPaymentRequests.Covers(_local, printedAt)
+            : _orders is not null && Guid.TryParse(label.Id, out var orderId) && _orders.Contains(orderId);
+
+        /// <summary>İsteğin tamamı bakiyeden düşüldü (müşteriden 0 TL istendi).</summary>
+        public bool IsPaidByBalance => _local is not null
+            ? CorrectedPaymentRequests.IsPaidByBalance(_local)
+            : _remote!.State == PaymentRequestStates.Delivered && _remote.FullyFromBalance == true;
+
+        /// <summary>Müşteriden istenen net (sorudaki tutar).</summary>
+        public decimal Amount => _local?.PromptNet ?? _remote!.NetAmount ?? _remote.TotalBeforeBalance ?? 0m;
+
+        /// <summary>İsteğin anı (yalnız gösterim): yerel işte teslim ya da deneme anı, uzak kayıtta isteğin anı.</summary>
+        public DateTimeOffset? At => _local is not null
+            ? _local.PromptAt is long at ? DateTimeOffset.FromUnixTimeSeconds(at) : null
+            : _remote!.StartedAt;
+
+        /// <summary>Gönderimin sonucu bilinmiyor (gitmiş olabilir).</summary>
+        public bool Unconfirmed => _local?.HasUnconfirmedSend
+                                   ?? (_remote!.State == PaymentRequestStates.Unconfirmed || _remote.NetAmount is null);
+
+        /// <summary>İsteğin netinden düşülmüş, hâlâ duran bakiye.</summary>
+        public decimal Applied
+        {
+            get
+            {
+                var applied = _local is not null ? _local.AppliedAmount : _remote!.AppliedAmount;
+                return applied is > 0m ? applied.Value : 0m;
+            }
+        }
+
+        /// <summary>İsteğin bakiye ÖNCESİ toplamı (ödeme sorusuyla aynı — PaymentRequestService.PromptOf): mesajdaki net +
+        /// hâlâ duran düşüm; kirada sunucunun bildiği bakiye öncesi tutar. Tamamı bakiyeden düşülmüş istekte bu, müşterinin
+        /// bakiyeden ödediği tutardır.</summary>
+        public decimal TotalBeforeBalance => _local is not null
+            ? _local.PromptNet + Applied
+            : _remote!.TotalBeforeBalance ?? (_remote.NetAmount ?? 0m) + Applied;
+    }
+
     /// <summary>Etiket bakiyeden ödendi: basılmış, onaylı, dosyaya bağlı değil ve kişinin bir kapsamdaki son
-    /// isteği onu içeriyor (<see cref="Covers"/>) ve tamamı bakiyeden düşülmüş.</summary>
-    private static bool PaidByBalance(Label label, IEnumerable<(string Scope, PaymentJob Last)> lasts)
-        => label.PrintedAt is long printedAt && !label.IsTentativeBackup && label.ShipmentId is null
-           && lasts.Any(x => IsPaidByBalance(x.Last) && Covers(x.Last, printedAt));
+    /// isteği onu içeriyor (<see cref="LastRequest.Covers"/>) ve tamamı bakiyeden düşülmüş.</summary>
+    private static bool PaidByBalance(Label label, IEnumerable<(string Scope, LastRequest Last)> lasts)
+        => label.PrintedAt.HasValue && !label.IsTentativeBackup && label.ShipmentId is null
+           && lasts.Any(x => x.Last.IsPaidByBalance && x.Last.Covers(label));
 
     /// <summary>Verilen etiketlerden bakiyeden ödenmiş olanlar (<see cref="PaidByBalance"/>, <see cref="Plan"/> ile
     /// aynı kural) — düzeltme yazılmadan önce okunur: ödendiği fiyat ilk düzeltmede saklansın
@@ -274,22 +391,19 @@ public sealed class CorrectedPaymentRequests
     public IReadOnlySet<string> BalancePaidLabels(string sessionId, IReadOnlyCollection<Label> labels)
     {
         var result = new HashSet<string>(StringComparer.Ordinal);
-        var byPerson = new Dictionary<string, List<(string Scope, PaymentJob Last)>>(StringComparer.Ordinal);
+        var remote = _remote?.Snapshot();
+        var remoteSessions = RemoteSessionsOf(remote, labels);
+        var byPerson = new Dictionary<string, List<(string Scope, LastRequest Last)>>(StringComparer.Ordinal);
         foreach (var label in labels)
         {
             if (label.PrintedAt is null || label.IsTentativeBackup || label.ShipmentId is not null) continue;
             var person = _customers.GetPaymentPerson(label.CustomerId);
             if (!byPerson.TryGetValue(person.MemberKey, out var lasts))
-                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person).ToList();
+                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person, remote, remoteSessions).ToList();
             if (PaidByBalance(label, lasts)) result.Add(label.Id);
         }
         return result;
     }
-
-    /// <summary>İsteğin bakiye ÖNCESİ toplamı (ödeme sorusuyla aynı — PaymentRequestService.PromptOf): mesajdaki
-    /// net + hâlâ duran düşüm. Tamamı bakiyeden düşülmüş istekte bu, müşterinin bakiyeden ödediği tutardır.</summary>
-    private static decimal PriorTotal(PaymentJob request)
-        => request.PromptNet + (request.AppliedAmount is > 0m ? request.AppliedAmount.Value : 0m);
 
     /// <summary>"Basılanlar" rozetleri — <see cref="Plan"/> ile AYNI tanımlar, ETİKET düzeyinde: istek kişinin
     /// son isteğidir (#506, kişi düzeyi) ama rozeti yalnız o isteğin İÇERDİĞİ (etiket basıldıktan sonra
@@ -304,21 +418,59 @@ public sealed class CorrectedPaymentRequests
     {
         var requested = new HashSet<string>(StringComparer.Ordinal);
         var balancePaid = new HashSet<string>(StringComparer.Ordinal);
-        var byPerson = new Dictionary<string, IReadOnlyList<(string Scope, PaymentJob Last)>>(StringComparer.Ordinal);
+        var remote = _remote?.Snapshot();
+        var remoteSessions = RemoteSessionsOf(remote, labels);
+        var byPerson = new Dictionary<string, IReadOnlyList<(string Scope, LastRequest Last)>>(StringComparer.Ordinal);
         foreach (var label in labels)
         {
-            if (label.PrintedAt is not long printedAt || label.IsTentativeBackup) continue;
+            if (label.PrintedAt is null || label.IsTentativeBackup) continue;
             var person = _customers.GetPaymentPerson(label.CustomerId);
             if (!byPerson.TryGetValue(person.MemberKey, out var lasts))
-                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person).ToList();
+                byPerson[person.MemberKey] = lasts = LastDeliveredRequests(sessionId, person, remote, remoteSessions).ToList();
             foreach (var (_, last) in lasts)
             {
-                if (!Covers(last, printedAt)) continue;
-                if (IsPaidByBalance(last)) balancePaid.Add(label.Id);
+                if (!last.Covers(label)) continue;
+                if (last.IsPaidByBalance) balancePaid.Add(label.Id);
                 else requested.Add(label.Id);
             }
         }
         return new PaymentBadges(requested, balancePaid);
+    }
+
+    /// <summary>
+    /// Uzak kayıtların ön okuması (spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması"; W3-10): <see cref="Badges"/>,
+    /// <see cref="BalancePaidLabels"/> ve <see cref="Plan"/> zaman uyumlu ve yalnız önbellekten okur — çağıran önce bunu bekler,
+    /// sonra (sonuç true ise) yeniden hesaplar. Verilen etiketlerin (basılmış, geçici yedek olmayan; en yeni baskı önce)
+    /// kişileri, yayın ve genel kapsamda. Kişi araması da ağ işi de arka planda; istek bütçesi ve süresi
+    /// <see cref="RemotePaymentRecords"/>'ta. Mod Off'ta ya da uzak kayıt kaynağı yoksa hemen false. Fırlatmaz (iptal hariç).
+    /// </summary>
+    /// <param name="force">Önbellekte olanları da yeniden oku (fiyat düzeltme çekmecesinin açılışı).</param>
+    /// <returns>Uzak kayıtlardan biri yeni geldi ya da değişti.</returns>
+    public Task<bool> PrefetchAsync(string sessionId, IEnumerable<Label> labels, bool force = false,
+        CancellationToken ct = default)
+    {
+        if (_remote is null || !_remote.IsModeOn) return Task.FromResult(false);
+        var ordered = labels.Where(l => l.PrintedAt.HasValue && !l.IsTentativeBackup)
+            .OrderByDescending(l => l.PrintedAt)
+            .ToList();
+        if (ordered.Count == 0) return Task.FromResult(false);
+        return _remote.RefreshAsync(KeysOf(sessionId, ordered), force, ct);
+    }
+
+    /// <summary>Etiketlerin kişileri, kişi başına yayın ve genel kapsam; tembel (ön okumanın arka plan iş parçacığında ve bütçe
+    /// bitince durur).</summary>
+    private IEnumerable<RemotePaymentKey> KeysOf(string sessionId, IReadOnlyList<Label> labels)
+    {
+        var seenCustomers = new HashSet<string>(StringComparer.Ordinal);
+        var seenPersons = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var label in labels)
+        {
+            if (!seenCustomers.Add(label.CustomerId)) continue;
+            var person = _customers.GetPaymentPerson(label.CustomerId);
+            if (!seenPersons.Add(person.MemberKey)) continue;
+            yield return new RemotePaymentKey(SessionScope(sessionId), person);
+            yield return new RemotePaymentKey(CumulativeScope, person);
+        }
     }
 
     /// <summary>Toplu gönderim sürüyor mu. Aynı anda TEK toplu gönderim: fiyat düzeltme çekmecesi gönderim
@@ -374,12 +526,13 @@ public sealed class CorrectedPaymentRequests
 
             var outcome = await _request(customer, Total, streamDate, c.ScopeKey, null);
             // Operatörün tek onayı: listede gösterilen istek için "tekrar gönder". Soru BAŞKA bir şeyi
-            // soruyorsa (birleştirme, farklı son istek) onay ona verilmiş sayılmaz.
+            // soruyorsa (birleştirme, farklı son istek) onay ona verilmiş sayılmaz. Onay sorunun BÜTÜN belirteçlerini
+            // verir: mod On'da sunucunun sorusuna katılan yerel planın kapısı da geçer (W3-09).
             if (outcome.Result == PaymentRequestResult.AlreadyRequested
                 && outcome.Prompt is { Kind: PersonScopePromptKind.Resend } prompt
                 && prompt.Requests.Count > 0 && prompt.Requests[^1].Amount == c.PriorAmount)
                 outcome = await _request(customer, Total, streamDate, c.ScopeKey,
-                    new HashSet<string>(StringComparer.Ordinal) { prompt.Token });
+                    new HashSet<string>(prompt.Tokens, StringComparer.Ordinal));
 
             return outcome.Result switch
             {
@@ -392,7 +545,11 @@ public sealed class CorrectedPaymentRequests
                 PaymentRequestResult.PhoneRequired => new(c, ResendStatus.Manual, "WhatsApp numarası gerekli"),
                 PaymentRequestResult.BalanceUncertain => new(c, ResendStatus.Manual,
                     "bakiye doğrulanamadı (sunucuya ulaşılamıyor olabilir)"),
-                PaymentRequestResult.PaymentInProgress => new(c, ResendStatus.Manual, "başka bir pencerede ödeme isteği sürüyor"),
+                PaymentRequestResult.PaymentInProgress => new(c, ResendStatus.Manual,
+                    outcome.Message ?? "başka bir pencerede ödeme isteği sürüyor"),
+                // W3-07 (spec 2026-10-13 §6.4): mod On'un engeli — elle bakılmalı, neden satırda.
+                PaymentRequestResult.Blocked => new(c, ResendStatus.Manual,
+                    outcome.Message ?? "ödeme isteği engellendi"),
                 PaymentRequestResult.ListStale => new(c, ResendStatus.Manual, "müşteri kaydı bilgisayarlar arası birleştirildi"),
                 PaymentRequestResult.LaunchFailed => new(c, ResendStatus.Manual, "WhatsApp açılamadı"),
                 _ => new(c, ResendStatus.Manual, outcome.Result.ToString()),
@@ -404,12 +561,12 @@ public sealed class CorrectedPaymentRequests
         }
     }
 
-    /// <summary>Ödeme akışının isteyeceği ürün toplamı: yayın kapsamında kişinin bu yayındaki basılmış
-    /// toplamı, genel kapsamda üyelerin müşteri toplamı (CustomerSearchViewModel.CurrentAmount ile aynı).</summary>
+    /// <summary>Ödeme akışının isteyeceği ürün toplamı: yayın kapsamında kişinin bu yayındaki, genel kapsamda bütün
+    /// yayınlardaki basılmış etiketleri (CustomerSearchViewModel.CurrentAmount ile aynı). İkisi de etiketlerden okunur
+    /// (W3, spec 2026-10-13 §6.1): Customer.TotalAmount önbelleği okunmaz.</summary>
     private decimal ProductTotal(string sessionId, string scopeKey, PaymentPerson person)
-        => scopeKey.StartsWith("session:", StringComparison.Ordinal)
-            ? _labels.GetSessionPrintedTotal(sessionId, person.MemberIds.ToList())
-            : person.Members.Sum(m => m.TotalAmount);
+        => _labels.GetPrintedTotal(person.MemberIds.ToList(),
+            scopeKey.StartsWith("session:", StringComparison.Ordinal) ? sessionId : null).Total;
 
     private static string DisplayOf(Label l) => string.IsNullOrWhiteSpace(l.DisplayName) ? l.Username : l.DisplayName!;
 }

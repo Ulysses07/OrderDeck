@@ -16,6 +16,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -58,6 +59,7 @@ public sealed class SalesModeCoordinatorTests : IDisposable
         public SalesSyncEnvelope Envelope { get; }
         public SalesSyncStateRepository State { get; }
         public SessionOrderSyncService Push { get; }
+        public PaymentRecordSender PaymentRecords { get; }
         public SalesModeCoordinator Coordinator { get; }
         public SalesChangesPullService Pull { get; }
         public CapturingLogger<SalesModeCoordinator> Log { get; } = new();
@@ -90,8 +92,10 @@ public sealed class SalesModeCoordinatorTests : IDisposable
                 NullLogger<WpfCustomerProjectionSyncService>.Instance);
             var customerPull = new CustomerChangesPullService(api, new CustomerRepository(db), customerSync, cursors,
                 customerPush, License, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
+            PaymentRecords = new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), Envelope, License,
+                clock, NullLogger<PaymentRecordSender>.Instance);
             Coordinator = new SalesModeCoordinator(state, State, Envelope,
-                new SalesOpeningFlush(customerPush, Push, shipments, payments, State), clock, Log);
+                new SalesOpeningFlush(PaymentRecords, customerPush, Push, shipments, payments, State), clock, Log);
             Pull = new SalesChangesPullService(api, state, State, Envelope, new SalesFeedRepository(db, busy),
                 new SalesFeedFailureRepository(db), new RemoteLiveSessionRepository(db), cursors, new LabelRepository(db),
                 customerPush, Push, customerPull, License, clock, NullLogger<SalesChangesPullService>.Instance,
@@ -253,7 +257,7 @@ public sealed class SalesModeCoordinatorTests : IDisposable
         Scalar<int>("SELECT COUNT(*) FROM Shipment WHERE SyncedAt IS NULL").Should().Be(0);
         pc.Pull.Status.ModeOn.Should().BeTrue();
         pc.Pull.Status.OpeningPending.Should().BeFalse();
-        _server.Hellos.Single().Json.GetProperty("featureLevel").GetInt32().Should().Be(2, "W2 derlemesi (§8.1-4)");
+        _server.Hellos.Single().Json.GetProperty("featureLevel").GetInt32().Should().Be(3, "W3'ü içeren derleme (§8.1-4)");
         _server.Faults.Should().BeEmpty();
     }
 
@@ -287,6 +291,67 @@ public sealed class SalesModeCoordinatorTests : IDisposable
         pc.Log.Warnings.Should().ContainSingle("bekleyen gönderim seride bir kez uyarılır");
     }
 
+    // ── (a') 1. adımın ilk kuyruğu: bekleyen ödeme kayıtları (W3-05) ──────
+
+    /// <summary>Mod Off'ta yazılmış kirasız kayıt (bugünkü yolun teslim kaydı; yükü testte elle kurulur).</summary>
+    private static PaymentRequestBackfillItem PaymentRecord(string customerId) =>
+        new(Guid.NewGuid(), customerId, [customerId], "cumulative", [Guid.NewGuid()], PaymentRequestStates.Delivered, 80m,
+            null, false, T0.AddDays(1));
+
+    [Fact]
+    public async Task Acilis_bekleyen_odeme_kayitlarini_musteri_gonderiminden_once_gonderir_kuyruk_bosalinca_acar()
+    {
+        var customer = LocalCustomer();                 // müşteri kuyruğu da dolu: sıra istek günlüğünden okunur
+        ServerModeOn();
+        var pc = NewPc();
+        var record = PaymentRecord(customer);
+        pc.PaymentRecords.EnqueueRecord(record).Should().BeTrue();
+        var finish = new PendingPaymentFinish(Guid.NewGuid(), PaymentRequestStates.Delivered, 80m, null, false);
+        pc.PaymentRecords.EnqueueFinish(finish).Should().BeTrue();
+
+        (await pc.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp);
+
+        var log = _server.RequestLog.ToList();
+        var firstPaymentRecord = log.FindIndex(r => r.Contains("/payment-requests/", StringComparison.Ordinal));
+        var firstCustomerPush = log.FindIndex(r => r.EndsWith("/wpf-customers/sync", StringComparison.Ordinal));
+        firstPaymentRecord.Should().BeGreaterThanOrEqualTo(0);
+        firstCustomerPush.Should().BeGreaterThan(firstPaymentRecord,
+            "1. adımın ilk kuyruğu bekleyen ödeme kayıtlarıdır (§8.4-1)");
+        _server.PaymentRecordIds.Should().Equal(record.RecordId);
+        _server.Calls(FakeSalesServer.PaymentRequestsBackfill).Should().ContainSingle()
+            .Which.Should().Match<FakeSalesServer.PushCall>(c => SeenModeOf(c) == 0, "yerel kip açılmadan önce");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle()
+            .Which.Should().Match<FakeSalesServer.PushCall>(c => SeenModeOf(c) == 0);
+        Scalar<int>("SELECT COUNT(*) FROM PendingPaymentRecord").Should().Be(0);
+        pc.State.GetMode().Should().Be(1, "kuyruk boşaldı: açılış sürdü");
+        _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Odeme_kaydi_gonderilemezse_acilis_ilk_kuyrukta_durur_yerel_kip_0_kalir_sonraki_tur_tamamlar()
+    {
+        var customer = LocalCustomer();
+        ServerModeOn();
+        var pc = NewPc();
+        pc.PaymentRecords.EnqueueRecord(PaymentRecord(customer)).Should().BeTrue();
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsBackfill, 500);
+
+        (await pc.TourAsync()).Should().Be(SalesPullOutcome.Opening);
+
+        pc.State.GetMode().Should().Be(0, "ödeme kaydı kuyruğu boşalmadı");
+        _server.CustomerPushCalls.Should().BeEmpty("boşalmayan ilk kuyrukta durulur");
+        _server.ChangesCalls.Should().BeEmpty();
+        Scalar<int>("SELECT Attempts FROM PendingPaymentRecord").Should().Be(1);
+        pc.Log.Warnings.Should().ContainSingle().Which.Message.Should().Contain(SalesOpeningFlush.PaymentRecordsQueue);
+
+        (await pc.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp);
+
+        pc.State.GetMode().Should().Be(1);
+        Scalar<int>("SELECT COUNT(*) FROM PendingPaymentRecord").Should().Be(0);
+        _server.Calls(FakeSalesServer.PaymentRequestsBackfill).Should().HaveCount(2);
+        _server.CustomerPushCalls.Should().NotBeEmpty();
+    }
+
     // ── (b) 1. ile 2. adım arasında kaydedilen dekont ─────────────────────
 
     [Fact]
@@ -296,7 +361,8 @@ public sealed class SalesModeCoordinatorTests : IDisposable
         LocalPayment();
         ServerModeOn();
         var pc = NewPc();
-        var shipments = new ShipmentService(new ShipmentRepository(_db), new LabelRepository(_db), () => new AppSettings());
+        var shipments = new ShipmentService(new ShipmentRepository(_db), new LabelRepository(_db),
+            new ShippingSettingsProvider(new SalesSyncStateRepository(_db), new AppSettings()));
         var saved = 0;
         // Dekont gönderilirken operatör başka bir dekont kaydeder: kargo adımı (mod 0'da yerel) dosya yazar. Kargo
         // kuyruğu 1. adımda zaten boş bulunmuştu; yalnız 2. adımın kilit altındaki denetimi görür.

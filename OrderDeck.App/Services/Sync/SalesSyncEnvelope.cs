@@ -34,8 +34,12 @@ public sealed class SalesSyncEnvelope
 {
     public const int Protocol = 2;
 
-    /// <summary>W1 = 1, W2 = 2, yalnız W3 = 3 (§8.1-4).</summary>
-    public const int FeatureLevel = 2;
+    /// <summary>Derlemenin yetenek düzeyi, <c>sales/hello</c>'da bildirilir: W1 = 1, W2 = 2, W3 = 3 (§8.1-4). 3 yalnız W3'ün
+    /// HEPSİNİ taşıyan derlemede — ön gönderim, kira sarmalı ve 409 eşlemeleri, onay özeti, ödeme geçmişi ve mod Off kayıtları,
+    /// sunucu toplamı (<c>GetPrintedTotal</c>) ve lisans geneli kargo ayarı; mod kapısı her kopyada 3 ister (§2 "Ws",
+    /// §4.10-2): yarım bir derleme sahaya inse bile modu açtıramaz. Bekçi testi kira sarmalının ve ödeme kaydı
+    /// göndericisinin DI'da ödeme servisine bağlı olduğunu denetler.</summary>
+    public const int FeatureLevel = 3;
 
     /// <summary>Sunucunun <c>machineName</c> ve <c>hardwareFingerprint</c> sınırı (<c>LicensesSalesController</c>).</summary>
     public const int MaxFieldLength = 128;

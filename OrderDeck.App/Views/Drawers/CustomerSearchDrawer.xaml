@@ -267,6 +267,29 @@
 
         <!-- ═══ Alt ═══ -->
         <StackPanel Grid.Row="3" Margin="{StaticResource OD.Pad.Top4}">
+            <!-- "Öde"nin satır içi engeli (spec 2026-10-13 §6.4, W3-07): bekleyen
+                 komut gönderilemedi, sunucu reddetti, güncelleme gerekli… ShellBanners
+                 deseninde amber şerit; açılır pencere yok, "Tamam" kapatır. -->
+            <Border CornerRadius="{StaticResource OD.Radius.Md}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    Margin="{StaticResource OD.Pad.Bottom4}"
+                    Visibility="{Binding PaymentProblem,
+                                 Converter={StaticResource NullToCollapsedConverter}}">
+                <DockPanel LastChildFill="True" Margin="{StaticResource OD.Pad.4}">
+                    <Button DockPanel.Dock="Right"
+                            Content="Tamam"
+                            Command="{Binding DismissPaymentProblemCommand}"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            Foreground="{StaticResource OD.Brush.Amber}"
+                            Margin="{StaticResource OD.Pad.2}"/>
+                    <TextBlock Text="{Binding PaymentProblem}"
+                               Foreground="{StaticResource OD.Brush.Amber}"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                </DockPanel>
+            </Border>
             <Button Content="Seçilenleri Birleştir"
                     Style="{StaticResource OD.Button.Primary}"
                     Command="{Binding MergeSelectedCommand}"/>

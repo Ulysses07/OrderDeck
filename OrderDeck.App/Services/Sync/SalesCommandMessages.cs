@@ -54,6 +54,15 @@ public static class SalesCommandMessages
     /// var, kuyruğa satış akışıyla iner.</summary>
     public const string BackupAddedRemotely = "Yedek sunucuda eklendi; bu bilgisayara satış akışıyla inecek.";
 
+    /// <summary>Ayar ekranının lisans geneli kargo yazımı 409 <c>stale</c> aldı (§4.8, W3-03): önbellek ve form sunucunun
+    /// güncel satırını gösterir.</summary>
+    public const string ShippingSettingsStale =
+        "Kargo ayarı bu arada başka bilgisayarda değişti; güncel değer gösterildi.";
+
+    /// <summary>Ayar ekranının Kargo kartındaki çip: mod On'da eşik ve ücret lisans geneli ayardır (§6.2, sahip kararı
+    /// Y4).</summary>
+    public const string ShippingLicenseWideChip = "Lisans geneli · bütün bilgisayarlar";
+
     /// <summary>
     /// Dekont kaydedildi ama kargo adımı yapılamadı, sunucuya ulaşılamadığı için (§5.8 "Dekont kaydı"): çevrimdışı,
     /// komut ucu yok, sunucu hatası ya da kip henüz hazır değil. Bir sonraki dekont bütün bağlanmamış etiketleri alır.
@@ -302,6 +311,10 @@ public static class SalesCommandMessages
         var (back, hard) = LastSound(machine);
         return $"{machine}'{(hard ? 't' : 'd')}{(back ? 'a' : 'e')}";
     }
+
+    /// <summary>Makine adının ayrılma hâli, <see cref="Locative"/> ile aynı ses kuralıyla: "PC-A" → "PC-A'dan", "PC" →
+    /// "PC'den", "DESKTOP-4F2KJ3" → "DESKTOP-4F2KJ3'ten" (ödeme sorusu, spec 2026-10-13 §6.8: "PC-A'dan … istendi").</summary>
+    public static string Ablative(string machine) => Locative(machine) + "n";
 
     private static (bool Back, bool Hard) LastSound(string name)
     {

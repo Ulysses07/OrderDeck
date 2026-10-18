@@ -197,10 +197,11 @@ public sealed class ShipmentSyncV2Tests : IDisposable
         labels.Insert(new Label(labelId, sessionId, customer.Id, "instagram", "@alici_ornek", "ürün", null, 120m,
             1_760_001_100L, null));
         var settings = new AppSettings();
+        var shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(_db), settings);
         var vm = new OrderDeck.App.ViewModels.DekontEkleViewModel(new PaymentRepository(_db), customers, sessions,
-            new PaymentMatcherService(labels, () => settings), labels,
-            new ShipmentService(_shipments, labels, () => settings, () => 1_760_002_000L),
-            new OrderDeck.PdfParsing.PdfDekontParser(), settings, new Clock(),
+            new PaymentMatcherService(labels, shipping), labels,
+            new ShipmentService(_shipments, labels, shipping, () => 1_760_002_000L),
+            new OrderDeck.PdfParsing.PdfDekontParser(), settings, shipping, new Clock(),
             NullLogger<OrderDeck.App.ViewModels.DekontEkleViewModel>.Instance)
         {
             PayerName = "Gönderen", AmountText = "120", ReferansNo = $"ref-{Guid.NewGuid():N}",

@@ -32,9 +32,14 @@ namespace OrderDeck.Tests.Sync;
 /// fazladan bir tur hiçbir yerel satırı ve hiçbir sunucu satırını değiştirmez (aynı akış öğesi iki kez → sıfır
 /// fark).</para>
 /// </summary>
-public sealed class TwoPcSalesConvergenceTests : IDisposable
+public sealed partial class TwoPcSalesConvergenceTests : IDisposable
 {
-    private readonly FakeSalesServer _server = new() { DeriveLiveSessions = true, MinClientVersion = "0.9.11" };
+    /// <summary>Ödeme uçları sunucunun kurallarıyla (W3-12, <see cref="FakeSalesServer.LeaseRules"/>): kira, onay özeti,
+    /// sunucu toplamı, kargo ayarı, geri doldurma ve bakiye defterinin kapsam kuralı.</summary>
+    private readonly FakeSalesServer _server = new()
+    {
+        DeriveLiveSessions = true, MinClientVersion = "0.9.11", LeaseRules = true,
+    };
     private readonly List<IDisposable> _owned = new();
     private readonly List<string> _files = new();
     private bool _bFirst;
@@ -75,13 +80,18 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         return (a, b);
     }
 
-    /// <summary><c>sales-sync enable --apply</c>: mod On, değişim anı, lisans geneli kargo ayarı; ardından verilen
+    /// <summary><c>sales-sync enable --apply</c>: önce kapının ödeme geçmişi koşulu (§4.10-2: her kopyada
+    /// <c>PaymentHistoryCompletedAt</c>; W3-12), sonra mod On, değişim anı, lisans geneli kargo ayarı; ardından verilen
     /// bilgisayarlar açılış turunu bitirir.</summary>
-    private async Task EnableAsync(params SalesPc[] pcs)
+    private Task EnableAsync(params SalesPc[] pcs) =>
+        EnableAsync(new FakeSalesServer.ShippingBody(Version: 2, FreeShippingThreshold: 750m, Fee: 60m), pcs);
+
+    private async Task EnableAsync(FakeSalesServer.ShippingBody shipping, params SalesPc[] pcs)
     {
+        foreach (var pc in Ordered(pcs)) await pc.CompletePaymentHistoryAsync();
         _server.Mode = 1;
         _server.ModeChangedAt = DateTimeOffset.UtcNow;
-        _server.Shipping = new FakeSalesServer.ShippingBody(Version: 2, FreeShippingThreshold: 750m, Fee: 60m);
+        _server.Shipping = shipping;
         foreach (var pc in Ordered(pcs))
         {
             (await pc.SettleAsync()).Should().Be(SalesPullOutcome.CaughtUp, $"{pc.Name} mod On'u açtı");
@@ -1303,6 +1313,64 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         b.Rows().Select(r => r.Id).Should().BeEquivalentTo([first.Id, second.Id, third.Id]);
         await AssertConvergedAsync(a, b);
     }
+
+    // ── ödeme geçmişi: açılıştan önceki istek mod On'da öbür bilgisayarda görünür (§10.3, M17, §15-2; W3-10) ──
+
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task Odeme_gecmisi_A_nin_acilistan_onceki_istegi_mod_Onda_B_nin_rozetinde_ve_sorusunda_gorunur(string order)
+    {
+        Use(order);
+        var (a, b) = await PcsAsync(modeOn: false);                      // kirasız kayıt sunucuda kalır (LeaseRules)
+        var session = a.StartStream();
+        var label = a.Sell(session, "alici_gecmis", "K1", 300m);
+        await a.PrintAsync(label.Id);
+        a.EndStream(session);
+        await a.PushAsync();
+        await a.PushAsync();
+        _server.Session(G(session))!.ReleasedAt.Should().NotBeNull("ön koşul: yayın devredildi");
+        var customerId = a.Customers.FindByPlatformAndUsername("tiktok", "alici_gecmis")!.Id;
+        a.Customers.UpdatePhone(customerId, OrderDeck.Tests.TestHelpers.TestPhone.NewE164()).Should().Be(1);
+        var scope = $"session:{session}";
+
+        // Mod Off'ta istek: bugünkü yerel yol (wa.me), kirasız kayıt kuyruğa, geri doldurma turu sunucuya götürür.
+        (await RequestAsync(a, customerId, scope)).Result.Should().Be(OrderDeck.App.Services.PaymentRequestResult.Opened);
+        (await a.PaymentRecords.FlushAsync(CancellationToken.None)).Sent.Should().Be(1, "kirasız kayıt sunucuya geçti");
+        await EnableAsync(a, b);
+        await SyncAsync(a, b);
+        b.Rows().Select(r => r.Id).Should().Contain(label.Id, "ön koşul: devredilmiş yayın B'de");
+        var onB = b.LabelRepo.GetByIds([label.Id]);
+        b.PaymentFollowUp.Badges(session, onB).RequestedLabels.Should().BeEmpty("B'de iş yok; ön okumadan önce yalnız yerel");
+
+        // B'nin rozeti: A'nın kaydı sipariş kümesinde L'yi taşıyor.
+        (await b.PaymentFollowUp.PrefetchAsync(session, onB)).Should().BeTrue();
+        b.PaymentFollowUp.Badges(session, onB).RequestedLabels.Should().Equal([label.Id]);
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(b.LabelRepo, b.PaymentFollowUp.Badges);
+        printed.Load(session);
+        printed.Rows.Single(r => r.Id == label.Id).StatusText.Should().Be("ödeme istendi");
+
+        // A'da aynı kayıt kendi kaydı: yerel işle temsil edilir, çift sayılmaz.
+        var onA = a.LabelRepo.GetByIds([label.Id]);
+        await a.PaymentFollowUp.PrefetchAsync(session, onA);
+        a.PaymentFollowUp.Badges(session, onA).RequestedLabels.Should().Equal([label.Id]);
+        a.PaymentFollowUp.Plan(session, [(onA[0], 0m)]).RequestedPersons.Should().Be(1);
+
+        // B'nin sorusu: begin'in (e) adımı A'nın kaydını sorar; mesaj gitmez.
+        b.Customers.UpdatePhone(customerId, OrderDeck.Tests.TestHelpers.TestPhone.NewE164()).Should().Be(1);
+        var outcome = await RequestAsync(b, customerId, scope);
+        outcome.Result.Should().Be(OrderDeck.App.Services.PaymentRequestResult.AlreadyRequested);
+        var prior = outcome.Prompt!.Requests.Should().ContainSingle().Subject;
+        prior.Amount.Should().Be(350m, "A'nın mod Off'ta istediği: 300 + yerel kargo 50");
+        prior.Machine.Should().NotBeNull("sorunun metni isteği yapan bilgisayarı söyler");
+        b.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Faults.Should().BeEmpty();
+    }
+
+    /// <summary>Ödeme kartının/raporunun tutar tanımıyla istek: kişinin bütün üyelerinin kapsamdaki basılmış etiketleri.</summary>
+    private static Task<OrderDeck.App.Services.PaymentRequestOutcome> RequestAsync(SalesPc pc, string customerId, string scope)
+        => pc.Payments.RequestPaymentAsync(pc.Customers.GetById(customerId)!,
+            p => pc.LabelRepo.GetPrintedTotal(p.MemberIds.ToList(), PaymentHistoryRecords.SessionIdOf(scope)).Total,
+            DateTime.Now, scope, null);
 
     private long Cursor(SalesPc pc) => pc.Scalar<long>(
         "SELECT COALESCE((SELECT Seq FROM SyncCursor WHERE Name = @name AND LicenseKey = @key), 0)",

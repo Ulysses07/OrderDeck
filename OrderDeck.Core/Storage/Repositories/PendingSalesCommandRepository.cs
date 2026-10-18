@@ -168,6 +168,27 @@ public sealed class PendingSalesCommandRepository
             .ToHashSet(StringComparer.Ordinal);
     }
 
+    /// <summary>
+    /// Verilen müşterilerin (bir ödeme kişisinin bütün üyeleri) etiketlerinden bekleyen bir komutun örttükleri — kapsam
+    /// <paramref name="sessionId"/> verilirse o yayın (<c>session:{id}</c>), verilmezse bütün yayınlar
+    /// (<c>cumulative</c>). Etiketin durumu süzülmez: bekleyen ilk baskı basılmamış, bekleyen iptal basılmış satırı
+    /// örter; ikisi de ödeme isteğinin tutarını değiştirecek gönderilmemiş bir karardır (spec 2026-10-13 §6.4-1).
+    /// </summary>
+    public IReadOnlySet<string> GetCoveredLabelIdsOfCustomers(
+        IReadOnlyCollection<string> customerIds, string? sessionId)
+    {
+        if (customerIds.Count == 0) return new HashSet<string>(StringComparer.Ordinal);
+        using var conn = _factory.Open();
+        return conn.Query<string>(
+                @"SELECT DISTINCT p.LabelId
+                  FROM PendingSalesCommandLabel p
+                  JOIN Label l ON l.Id = p.LabelId
+                  WHERE l.CustomerId IN @customerIds
+                    AND (@sessionId IS NULL OR l.SessionId = @sessionId)",
+                new { customerIds = customerIds.Distinct(StringComparer.Ordinal).ToArray(), sessionId })
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
     private sealed class Row
     {
         public string CommandId { get; init; } = "";

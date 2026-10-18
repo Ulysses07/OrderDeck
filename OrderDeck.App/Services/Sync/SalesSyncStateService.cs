@@ -170,6 +170,31 @@ public sealed class SalesSyncStateService
     }
 
     /// <summary>
+    /// Ödeme geçmişi geri doldurmasının tamamlandığını bildirir (spec 2026-10-13 §4.5, §6.4 "Ödeme geçmişi", §8.2-6;
+    /// W3-06): <c>hello {paymentHistoryCompleted: true}</c>, gövdenin geri kalanı turun hello'suyla aynı. Kapı ve
+    /// denetim <see cref="ReportBackfillCompletedAsync"/>'inkiyle aynı: turla aynı kapıdan geçer; süreç kapalıysa ya da
+    /// geçerli lisans veya kopya kimliği geri doldurmanın yapıldığı (lisans, kopya) değilse istek gitmez — bayrak yanlış
+    /// kopyaya yazılmasın. Mod kapısı bu bayrağı her kopyada ister (§4.10-2).
+    /// </summary>
+    /// <returns>2xx alındı mı; değilse çağıran sonraki turda yeniden dener.</returns>
+    public async Task<bool> ReportPaymentHistoryCompletedAsync(
+        string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct)
+    {
+        await _tourGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_envelope.IsHeldUntilRestart) return false;
+            if (_licenseProvider.CurrentLicenseKey != licenseKey || _envelope.ReplicaId != replicaId) return false;
+            return await HelloAsync(licenseKey, licenseId, replicaId, ct, paymentHistoryCompleted: true)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _tourGate.Release();
+        }
+    }
+
+    /// <summary>
     /// Bu (lisans, kopya) için hello gitti ve bildirdiği yerel kargo ayarı hâlâ geçerli mi. Ayar süreç içinde
     /// değiştiyse (ayar ekranı) hello yeniden gider: yoksa sunucunun <c>ReportedThreshold</c>/<c>ReportedFee</c>'si
     /// yeniden açılışa dek eski kalır ve <c>sales-sync status</c> bayat değeri gösterirdi (§6.2 "Geçiş", §8.1-6).
@@ -200,7 +225,8 @@ public sealed class SalesSyncStateService
     }
 
     private async Task<bool> HelloAsync(
-        string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct, bool backfillCompleted = false)
+        string licenseKey, Guid licenseId, Guid replicaId, CancellationToken ct, bool backfillCompleted = false,
+        bool paymentHistoryCompleted = false)
     {
         Guid? previous;
         SalesHelloRequest request;
@@ -227,7 +253,8 @@ public sealed class SalesSyncStateService
                 FeatureLevel: SalesSyncEnvelope.FeatureLevel,
                 SeenMode: _envelope.SeenMode,
                 ReportedShipping: ReportedShipping(),
-                BackfillCompleted: backfillCompleted ? true : null);
+                BackfillCompleted: backfillCompleted ? true : null,
+                PaymentHistoryCompleted: paymentHistoryCompleted ? true : null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -271,8 +298,8 @@ public sealed class SalesSyncStateService
         {
             _log.LogInformation(
                 "sales/hello gönderildi (replica={ReplicaId}, featureLevel={FeatureLevel}, seenMode={SeenMode}, "
-              + "backfillCompleted={BackfillCompleted})",
-                replicaId, request.FeatureLevel, request.SeenMode, backfillCompleted);
+              + "backfillCompleted={BackfillCompleted}, paymentHistoryCompleted={PaymentHistoryCompleted})",
+                replicaId, request.FeatureLevel, request.SeenMode, backfillCompleted, paymentHistoryCompleted);
         }
         return true;
     }
