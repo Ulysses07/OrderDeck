@@ -94,6 +94,42 @@ public sealed class ShippingSettingsProviderTests : IDisposable
         snapshot.LicenseWide.Should().BeTrue();
     }
 
+    private void CopyPending()
+    {
+        using var conn = _db.Open();
+        conn.Execute("INSERT INTO SyncCursor (Name, LicenseKey, Seq) VALUES (@name, '', 1)",
+            new { name = SalesSyncStateRepository.ModeOffShippingCopyMarker });
+    }
+
+    [Fact]
+    public void Mod_Offa_donuste_kopya_bitmediyse_lisans_geneli_onbellek_okunur()
+    {
+        // §6.2/§8.5: Off turu Mode=0'ı yazdı ama ayarın yerel kopyası yazılamadı (dosya kilitli, disk dolu) — işaret kaldı.
+        // Sağlayıcı yalnız kipe bakıyordu: kopya bitene kadar bu bilgisayar mod On öncesinin eski yerel ayarıyla (500/60)
+        // istiyor, öbürleri lisans genelinin (1000/80) kopyasıyla — iki PC farklı kargo isterdi.
+        _state.SaveServerState(3, 1000m, 80m, scrubOrderText: false);
+        CopyPending();
+
+        var snapshot = _sut.Current();
+
+        snapshot.Settings.FreeShippingThreshold.Should().Be(1000m);
+        snapshot.Settings.ShippingFee.Should().Be(80m);
+        snapshot.Version.Should().BeNull("mod Off: sürüm yok, kira yok");
+        snapshot.LicenseWide.Should().BeFalse("ayar ekranı yerel ayarı düzenler");
+
+        _state.ClearModeOffShippingCopyPending();
+        _sut.Current().Settings.Should().BeSameAs(_live.Shipping, "kopya bitti: yerel ayar (artık lisans geneli değeri)");
+    }
+
+    [Fact]
+    public void Kopya_bekliyor_ama_sunucuda_ayar_yoksa_yerel_ayar()
+    {
+        // Sunucuda ayar hiç yazılmadıysa tur yerel ayarı korur (kopya işareti silinir): sağlayıcı da yerel okur.
+        CopyPending();
+
+        _sut.Current().Settings.Should().BeSameAs(_live.Shipping);
+    }
+
     [Fact]
     public void Mod_On_sunucuda_kapatilmis_ayar_kapali_surumuyle()
     {

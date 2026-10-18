@@ -18,7 +18,11 @@ public sealed record SalesSyncStateRow(
 /// <summary>Kargo ayarı sağlayıcısının okuması (<see cref="SalesSyncStateRepository.GetShippingCache"/>; spec 2026-10-13
 /// §6.2): yerel kip ve <c>sales/state</c>'in sakladığı lisans geneli kargo ayarı. Ayar sunucuda hiç yazılmadıysa üç
 /// alan da boş.</summary>
-public sealed record SalesShippingCache(int Mode, int? Version, decimal? FreeShippingThreshold, decimal? ShippingFee);
+/// <param name="CopyPending"><c>disable</c> turunun kargo ayarı kopyası bekliyor
+/// (<see cref="SalesSyncStateRepository.ModeOffShippingCopyMarker"/>): kip 0 yazıldı, lisans geneli değer yerel ayara henüz
+/// yazılamadı.</param>
+public sealed record SalesShippingCache(
+    int Mode, int? Version, decimal? FreeShippingThreshold, decimal? ShippingFee, bool CopyPending = false);
 
 /// <summary>Mod On açılışının 1. adımında boşaltılan giden kuyrukların kalanı (spec 2026-10-13 §8.4-1;
 /// <see cref="SalesSyncStateRepository.GetOpeningBacklog"/>). Canlı (açık) yayının oturumu ve etiketleri sayılmaz: iki
@@ -152,17 +156,23 @@ public sealed class SalesSyncStateRepository
 
     /// <summary>
     /// Yerel kip ve lisans geneli kargo ayarının önbelleği, TEK sorguda (<c>ShippingSettingsProvider</c>, §6.2): kip ile
-    /// değer aynı satır okumasından gelir. Satır yoksa kip 0 (<see cref="GetMode"/> gibi) ve önbellek boş.
+    /// değer aynı satır okumasından gelir; <c>disable</c> turunun kopya işareti
+    /// (<see cref="ModeOffShippingCopyMarker"/>) da aynı sorguda. Satır yoksa kip 0 (<see cref="GetMode"/> gibi) ve önbellek
+    /// boş.
     /// </summary>
     public SalesShippingCache GetShippingCache()
     {
         using var conn = _factory.Open();
         var row = conn.QuerySingleOrDefault<ShippingRow>(
-            "SELECT Mode, ShippingVersion, FreeShippingThreshold, ShippingFee FROM SalesSyncState WHERE Id = 1");
+            """
+            SELECT Mode, ShippingVersion, FreeShippingThreshold, ShippingFee,
+                   EXISTS (SELECT 1 FROM SyncCursor WHERE Name = @name AND LicenseKey = '') AS CopyPending
+            FROM SalesSyncState WHERE Id = 1
+            """, new { name = ModeOffShippingCopyMarker });
         return row is null
             ? new SalesShippingCache(0, null, null, null)
             : new SalesShippingCache((int)row.Mode, (int?)row.ShippingVersion,
-                ToDecimal(row.FreeShippingThreshold), ToDecimal(row.ShippingFee));
+                ToDecimal(row.FreeShippingThreshold), ToDecimal(row.ShippingFee), row.CopyPending != 0);
     }
 
     /// <summary>
@@ -409,6 +419,7 @@ public sealed class SalesSyncStateRepository
         public long? ShippingVersion { get; set; }
         public double? FreeShippingThreshold { get; set; }
         public double? ShippingFee { get; set; }
+        public long CopyPending { get; set; }
     }
 
     private sealed class Row

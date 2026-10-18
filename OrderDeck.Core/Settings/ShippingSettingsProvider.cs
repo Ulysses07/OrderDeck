@@ -34,7 +34,7 @@ public interface IShippingSettingsProvider
 /// <c>sales/state</c>'in her turda sakladığı lisans geneli ayarın önbelleği (<c>ShippingVersion</c>,
 /// <c>FreeShippingThreshold</c>, <c>ShippingFee</c>; <see cref="SalesSyncStateRepository.SaveServerState"/>); değilse CANLI
 /// <see cref="AppSettings"/> örneğinin <see cref="AppSettings.Shipping"/>'i — mod Off'ta (bugün her lisans) değer
-/// bugünkünün aynısı.
+/// bugünkünün aynısı. Tek istisna <c>disable</c> turunun yarım kalmış kopyası: işaret dururken mod Off'ta da önbellek okunur.
 /// </summary>
 public sealed class ShippingSettingsProvider : IShippingSettingsProvider
 {
@@ -54,7 +54,16 @@ public sealed class ShippingSettingsProvider : IShippingSettingsProvider
     {
         var cache = _state.GetShippingCache();
         if (cache.Mode != 1)
+        {
+            // disable turu kip 0'ı yazdı ama lisans geneli değerin yerel kopyası henüz yazılamadı (işaret duruyor; §6.2,
+            // §8.5-2 bunları tek adım sayar): kopya bitene kadar Off'taki okumalar sunucu değerini görür — yoksa bu bilgisayar
+            // mod On öncesinin eski yerel ayarıyla, öbürleri lisans geneli değerle farklı kargo isterdi. Sürüm yok (mod Off).
+            if (cache.CopyPending && cache.Version is not null)
+                return new ShippingSnapshot(
+                    new ShippingSettings { FreeShippingThreshold = cache.FreeShippingThreshold, ShippingFee = cache.ShippingFee },
+                    Version: null, LicenseWide: false);
             return new ShippingSnapshot(_live.Shipping, Version: null, LicenseWide: false);
+        }
 
         // Sunucu ayarı hiç yazılmadıysa sales/state üç alanı da boş bildirir: kapalı ayar, sürüm 0 (§4.8, §6.4-g).
         if (cache.Version is not { } version)
