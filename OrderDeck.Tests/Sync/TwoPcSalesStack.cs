@@ -36,8 +36,9 @@ namespace OrderDeck.Tests.Sync;
 /// yedeği veritabanına geri yükler, kopya kimliğini döndürür (RestoreService gibi) ve yeni süreç açar.</para>
 ///
 /// <para>Kâğıt sayacı (<see cref="Papers"/>): <see cref="PrintAsync"/> MainShell'in baskı sırasını izler — satırlar
-/// kimlikle yeniden okunur ve örtü uygulanır (<see cref="LabelRepository.GetPrintableByIds"/>, §5.6-1), kâğıda kalanlar
-/// basılır, sonra yönlendiriciyle işaretlenir (§5.6-4).</para>
+/// kimlikle yeniden okunur ve örtü uygulanır (<see cref="LabelRepository.GetPrintableByIds"/>, §5.6-1), sunucu
+/// kullanılamıyorken başka bilgisayarın yayınının satırı bekletilir (§5.8), kâğıda kalanlar basılır, sonra
+/// yönlendiriciyle işaretlenir (§5.6-4).</para>
 /// </summary>
 internal sealed class SalesPc
 {
@@ -113,6 +114,10 @@ internal sealed class SalesPc
 
     /// <summary>Bu süreçte basılan kâğıt sayısı, etiket başına (<see cref="PrintAsync"/>).</summary>
     public Dictionary<string, int> Papers { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Son <see cref="PrintAsync"/>'te kâğıda gitmeyip kuyrukta bekletilen satırlar
+    /// (<see cref="ILabelEditor.PrintHeldRows"/>: sunucu kullanılamıyorken başka bilgisayarın yayınının satırı, §5.8).</summary>
+    public IReadOnlySet<string> LastHeld { get; private set; } = new HashSet<string>();
 
     /// <summary>Bu süreçte "kâğıdı imha et" denen etiketler (bekleyen komut sonucu, baskı işaretlemesi, push).</summary>
     public List<string> Discarded { get; } = new();
@@ -321,11 +326,15 @@ internal sealed class SalesPc
 
     /// <summary>
     /// MainShell'in baskı sırası (§5.6): satırlar kimlikle yeniden okunur, örtü uygulanır, iptal edilmiş ya da basılmış
-    /// satır düşer; kalanlar kâğıda basılır (<see cref="Papers"/>) ve kâğıt sırasıyla yönlendiriciden işaretlenir.
+    /// satır düşer; sunucu kullanılamıyorken başka bilgisayarın yayınının satırı kâğıda gitmez (<see cref="LastHeld"/>,
+    /// §5.8); kalanlar kâğıda basılır (<see cref="Papers"/>) ve kâğıt sırasıyla yönlendiriciden işaretlenir.
     /// </summary>
     public async Task<SalesPrintMarkResult> PrintAsync(params string[] labelIds)
     {
         var printable = LabelRepo.GetPrintableByIds(labelIds).Select(l => l.Id).ToList();
+        var held = Editor.PrintHeldRows(printable);
+        LastHeld = held;
+        printable = printable.Where(id => !held.Contains(id)).ToList();
         foreach (var id in printable) Papers[id] = Papers.GetValueOrDefault(id) + 1;
         if (printable.Count == 0) return SalesPrintMarkResult.Empty;
         var result = await Editor.MarkPrintedAsync(printable);

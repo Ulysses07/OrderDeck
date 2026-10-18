@@ -20,7 +20,8 @@ namespace OrderDeck.Tests.Sync;
 /// §5.6-4; W2-07): mod Off'ta bugünkü yerel iptal ve baskı, sıfır istek, sıfır bekleyen komut. Mod On'da canlı yayının
 /// etiketleri yerelde; devredilmiş KENDİ yayınının kalıntıları sabit kimlikli komutla — önce bekleyen komut (örtü),
 /// çevrimiçiyse hemen gönderilir; çevrimdışıyken ya da komut ucu yokken kuyrukta bekler. Başka bilgisayarın yayınındaki
-/// satırın kâğıdı da (sahip kararı Y11) aynı yoldan: sonucu bilinmeyen onay kuyrukta kalır, tur aynı kimlikle yineler.
+/// satır sunucu kullanılamıyorken kâğıda gitmez (<c>PrintHeldRows</c>); kâğıdı basıldıysa onayı (sahip kararı Y11) aynı
+/// yoldan: sonucu bilinmeyen onay kuyrukta kalır, tur aynı kimlikle yineler.
 /// Karışık kâğıt tek basış kimliği ve kesintisiz sıra taşır. Kendi bitmiş yayınının kapanış kararı sürerken işaretleme
 /// kilidi bekler ve kararı kilit altında yeniden verir.
 /// </summary>
@@ -219,6 +220,9 @@ public sealed class ResidualQueueRoutingTests : IDisposable
     }
 
     // ── başka bilgisayarın yayınındaki satırın kâğıdı (sahip kararı Y11) ────
+    // Kabuk bu satırı bilinen çevrimdışılıkta kâğıda göndermez (PrintHeldRows, aşağıda). Kâğıdı basılmışsa onayı
+    // kalıcıdır: yanıt kaybolur, bağlantı kâğıt basılırken kopar (karar ile işaret arasında; aşağıda Online = false ile
+    // kurulur) ya da süreç kapanırsa bekleyen komut kalır ve tur aynı kimlikle yineler.
 
     /// <summary>Satış akışının bir turu (bekleyen komutlar akıştan önce gider); sahte sunucu her isteği işleyebilmeli.</summary>
     private async Task TourAsync()
@@ -264,14 +268,15 @@ public sealed class ResidualQueueRoutingTests : IDisposable
     }
 
     [Fact]
-    public async Task Cevrimdisi_basilan_baska_bilgisayarin_satiri_bekleyen_mark_printed_olur_ortulur_baglaninca_gonderilir()
+    public async Task Kagit_basilirken_baglanti_koparsa_baska_bilgisayarin_satiri_bekleyen_mark_printed_olur_ortulur_baglaninca_gonderilir()
     {
         _bed.ModeOn();
         var live = ActiveLabel(out _);
         var (remoteSession, _, order) = await _bed.RemoteLabelAsync(printed: false);
         var remote = N(order);
         var (_, _, own) = _bed.OwnResidual();
-        _bed.Online = false;
+        _bed.Router.PrintHeldRows([live, remote, own[0]]).Should().BeEmpty("ön koşul: çevrimiçi karar, hepsi kâğıda gider");
+        _bed.Online = false;                                           // kâğıt basılırken bağlantı koptu
         var requests = _bed.HttpCount;
 
         var result = await _bed.Router.MarkPrintedAsync([live, remote, own[0]]);
@@ -579,13 +584,16 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         var remote = remoteOrder.ToString("N");
         var (_, _, own) = _bed.OwnResidual();
         var live = ActiveLabel(out _);
+        // Kendi bitmiş, henüz devredilmemiş yayını (yerel otorite, kapılı yol).
+        var ended = _bed.LocalLabel(_bed.LocalSession(ended: true), Guid.NewGuid().ToString("N"), printed: false);
 
-        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEmpty("çevrimiçi: komutla işaretlenir");
+        _bed.Router.PrintHeldRows([remote, own[0], live, ended]).Should().BeEmpty("çevrimiçi: komutla işaretlenir");
         _bed.Online = false;
-        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEquivalentTo([remote],
-            "kendi kalıntısı bekleyen komuta girer, canlı satır yerelde; yalnız başka bilgisayarınki kayıtsız kalırdı");
+        _bed.Router.PrintHeldRows([remote, own[0], live, ended]).Should().BeEquivalentTo([remote],
+            "sahip kararı Y11: kendi canlı ve önceki yayınlarının satırları basılır; başka bilgisayarınki bekler — örtü "
+          + "yalnız bu bilgisayarda olurdu, yayının sahibi aynı satırı kalıntıdan basabilirdi (risk 18)");
         _bed.ModeOff();
-        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEmpty("mod Off: bugünkü yerel yol");
+        _bed.Router.PrintHeldRows([remote, own[0], live, ended]).Should().BeEmpty("mod Off: bugünkü yerel yol");
     }
 
     [Fact]

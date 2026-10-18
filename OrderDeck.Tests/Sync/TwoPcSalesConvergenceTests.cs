@@ -466,7 +466,9 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         var (a, b, _, backup) = await RemoteBackupAsync();
 
         b.Offline = true;                                                // bağlantı kopar; B henüz bilmiyor
+        b.Connectivity.IsOnline.Should().BeTrue("ön koşul: kopma fark edilmedi; bilinseydi yedek bekletilirdi (§5.8)");
         var print = await b.PrintAsync(backup);
+        b.LastHeld.Should().BeEmpty();
         print.Pending.Should().Equal(backup);
         print.Notices.Should().BeEmpty("baskı onayı kaybolmaz: \"işlenemedi\" yok");
         b.Papers[backup].Should().Be(1);
@@ -533,7 +535,7 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         var (a, b, _, backup) = await RemoteBackupAsync();
         var settled = new List<PendingSalesCommandsSettled>();
         b.Pull.PendingCommandsSettled += (_, e) => { lock (settled) settled.Add(e); };
-        b.Offline = true;
+        b.Offline = true;                                                // bağlantı kopar; B henüz bilmiyor (§5.8)
         (await b.PrintAsync(backup)).Pending.Should().Equal(backup);
 
         _server.Disable(DateTimeOffset.UtcNow);
@@ -554,52 +556,99 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         _server.Order(G(backup))!.Row.PrintedAt.Should().BeNull();
     }
 
-    /// <summary>
-    /// Çevrimdışı uzak baskının bilinen bedeli (spec §12 risk 18): B çevrimdışı olduğunu bilirken A'nın yayınındaki
-    /// yedeği basar (bekletme yok, Y11); örtü yalnız B'dedir. A'da yedek kendi yayınının satırıdır, sonraki yayının
-    /// kalıntı sorusunda teklif edilir ve A onu da basar — iki kâğıt. Sunucuda ilk yazan kazanır: tek <c>PrintedAt</c>
-    /// (A'nın basışı); B bağlanınca onayı <c>alreadyPrinted</c> döner ve B'de "kâğıdı imha et" çıkar.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(Orders))]
-    public async Task B_cevrimdisi_uzak_yedegi_basar_A_kalinti_teklifinden_de_basarsa_B_baglaninca_imha_bildirimi_alir_tek_baski_yakinsar(
-        string order)
+    /// <summary>B, A'nın yayınındaki yedeği (A'ya akışla inmiş) çevrimdışı olduğunu bilirken basmaya çalışır: sahip kararı
+    /// Y11 (a) — kâğıda gitmez, kuyrukta bekler, örtü de olmaz (§5.8).</summary>
+    private async Task<(SalesPc A, SalesPc B, string Backup)> RemoteBackupHeldOfflineAsync()
     {
-        Use(order);
         var (a, b, _, backup) = await RemoteBackupAsync();
         await RoundAsync(a);                                             // yedek A'ya akışla iner
         a.Row(backup).Should().NotBeNull("ön koşul: A yedeği gördü");
-        var settled = new List<PendingSalesCommandsSettled>();
-        b.Pull.PendingCommandsSettled += (_, e) => { lock (settled) settled.Add(e); };
 
         b.Offline = true;
         b.Connectivity.Report(SalesCommandStatus.Offline);               // B çevrimdışı olduğunu biliyor
-        b.Connectivity.IsOnline.Should().BeFalse("ön koşul: bekletmenin kaldırıldığı yol (bilinen çevrimdışılık)");
-        (await b.PrintAsync(backup)).Pending.Should().Equal(backup);
-        b.Papers[backup].Should().Be(1);
+        b.Connectivity.IsOnline.Should().BeFalse("ön koşul: bilinen çevrimdışılık");
+        (await b.PrintAsync(backup)).Should().BeSameAs(SalesPrintMarkResult.Empty, "kâğıda giden satır yok");
+        b.LastHeld.Should().BeEquivalentTo([backup], "başka bilgisayarın yayınının satırı bekletilir");
+        b.Papers.Should().NotContainKey(backup, "kâğıt çıkmaz");
+        b.PendingCount.Should().Be(0, "basılmadı: bekleyen onay ve örtü yok");
+        b.Row(backup)!.PrintedAt.Should().BeNull();
+        MarkPrintedCommandIds().Should().BeEmpty();
+        return (a, b, backup);
+    }
 
-        a.ResidualOffer().Should().Contain(backup, "örtü yalnız B'de: A'da kendi yayınının basılmamış satırı");
-        var aPrint = await a.PrintAsync(backup);
-        aPrint.Marked.Should().Equal(backup);
-        a.Papers[backup].Should().Be(1, "ikinci kâğıt (risk 18)");
+    /// <summary>
+    /// Sahip kararı Y11 (a): B çevrimdışıyken bekletilen uzak yedek bağlantı gelince basılır; onay kalıcı bekleyen
+    /// komutla gider ve hemen uygulanır. A'ya basılmış iner, A'nın kalıntı sorusunda teklif edilmez: tek kâğıt.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task B_cevrimdisiyken_A_nin_yayinindaki_yedegi_bekletir_baglaninca_basar_onay_bekleyen_komutla_gider_A_ya_teklif_edilmez(
+        string order)
+    {
+        Use(order);
+        var (a, b, backup) = await RemoteBackupHeldOfflineAsync();
+
+        b.Offline = false;
+        await SyncAsync(a, b);
+        b.Connectivity.IsOnline.Should().BeTrue("ön koşul: B bağlandı");
+
+        var print = await b.PrintAsync(backup);                          // kuyrukta bekleyen satır yeniden basılır
+        b.LastHeld.Should().BeEmpty();
+        print.Marked.Should().Equal(new[] { backup }, "onay bekleyen komutla gitti ve hemen uygulandı (Y11)");
+        b.Papers[backup].Should().Be(1);
+        b.PendingCount.Should().Be(0);
+        var commands = MarkPrintedCommandIds();
+        commands.Should().ContainSingle();
+        _server.CommandLog(commands[0])!.Applications.Should().Be(1);
+
+        await SyncAsync(a, b);
+
+        a.Row(backup)!.PrintedAt.Should().NotBeNull("A'ya akışla basılmış indi");
+        a.ResidualOffer().Should().NotContain(backup, "A'da kalıntı olarak teklif edilmez");
+        a.Papers.Should().NotContainKey(backup, "tek kâğıt: B'ninki");
+        a.Discarded.Should().BeEmpty();
+        b.Discarded.Should().BeEmpty();
+        await AssertConvergedAsync(a, b);
+    }
+
+    /// <summary>
+    /// Risk 18'in kapanışı (sahip kararı Y11, a): B çevrimdışıyken A'nın yayınındaki yedeği bekletirken A onu yeni yayının
+    /// kalıntı sorusundan basar. B hiç basmadığı için iki kâğıt çıkmaz: B bağlanınca satır basılmış iner, kuyruk düğmesi
+    /// onu kâğıda göndermez, imha bildirimi de yoktur.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task B_cevrimdisiyken_yedegi_bekletirken_A_kalinti_teklifinden_basarsa_B_baglaninca_ikinci_kagit_cikmaz(
+        string order)
+    {
+        Use(order);
+        var (a, b, backup) = await RemoteBackupHeldOfflineAsync();
+        var settled = new List<PendingSalesCommandsSettled>();
+        b.Pull.PendingCommandsSettled += (_, e) => { lock (settled) settled.Add(e); };
+
+        a.ResidualOffer().Should().Contain(backup, "A'da kendi yayınının basılmamış satırı");
+        (await a.PrintAsync(backup)).Marked.Should().Equal(backup);
         var aBatch = a.Row(backup)!.PrintBatchId;
         aBatch.Should().NotBeNull();
 
         b.Offline = false;
         await SyncAsync(a, b);
+        b.Row(backup)!.PrintedAt.Should().NotBeNull("A'nın basışı akışla indi");
+        await b.PrintAsync(backup);                                      // B'nin kuyruğunda bekleyen satır yeniden
 
-        b.PendingCount.Should().Be(0);
+        b.LastHeld.Should().BeEmpty();
+        b.Papers.Should().NotContainKey(backup, "basılmış satır kâğıda gitmez");
+        a.Papers[backup].Should().Be(1, "tek kâğıt: A'nınki");
+        MarkPrintedCommandIds().Should().ContainSingle("yalnız A'nın onayı");
         lock (settled)
         {
-            settled.SelectMany(s => s.AlreadyPrintedLabelIds).Should().Equal(new[] { backup },
-                "B'nin onayı alreadyPrinted: B'de \"kâğıdı imha et\" (zaten basılmıştı)");
+            settled.SelectMany(s => s.AlreadyPrintedLabelIds).Should().BeEmpty("B hiç basmadı: imha bildirimi yok");
             settled.SelectMany(s => s.Warnings).Should().BeEmpty();
         }
-        b.Discarded.Should().Contain(backup);
-        a.Discarded.Should().NotContain(backup, "imha bildirimi yalnız geç kalan B'de");
-        _server.Order(G(backup))!.Row.PrintBatchId.Should().Be(aBatch, "ilk yazan kazanır: tek baskı");
+        b.Discarded.Should().BeEmpty();
+        a.Discarded.Should().BeEmpty();
+        _server.Order(G(backup))!.Row.PrintBatchId.Should().Be(aBatch);
         b.Row(backup)!.PrintBatchId.Should().Be(aBatch);
-        b.Row(backup)!.PrintedAt.Should().Be(a.Row(backup)!.PrintedAt);
         await AssertConvergedAsync(a, b);
     }
 
