@@ -43,6 +43,7 @@ public static class PaymentRequestRules
     public const string CodeInvalidAmount = "invalid-amount";
     public const string CodeInvalidShipping = "invalid-shipping";
     public const string CodeInvalidConfirmedPriors = "invalid-confirmed-priors";
+    public const string CodeInvalidPriorsDigest = "invalid-priors-digest";
     public const string CodeModeOff = "mode-off";
     public const string CodeClientUpdateRequired = "client-update-required";
     public const string CodeContentConflict = "content-conflict";
