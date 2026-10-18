@@ -630,7 +630,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         OverlayPortChanged = (OverlayPort != _originalOverlayPort);
 
-        if (licenseWide && !await SaveLicenseShippingAsync(shipping).ConfigureAwait(true)) return;
+        if (licenseWide && !await SaveLicenseShippingAsync().ConfigureAwait(true)) return;
         Saved = true;
     }
 
@@ -643,7 +643,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// olmayan bir değeri kaydedilmiş gibi göstermez.
     /// </summary>
     /// <returns>Kargo yazıldı ya da değişmemişti.</returns>
-    private async System.Threading.Tasks.Task<bool> SaveLicenseShippingAsync(ShippingSnapshot shipping)
+    private async System.Threading.Tasks.Task<bool> SaveLicenseShippingAsync()
     {
         TryParseLicenseShipping(out var threshold, out var fee);   // Validate'te geçti
         if (threshold == _shownThreshold && fee == _shownFee) return true;
@@ -659,8 +659,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         IsShippingSaving = true;
         try
         {
+            // Beklenen sürüm formun GÖSTERDİĞİ değerin sürümü. Form mod Off'ta yerel değerle açıldıysa (sürümü yok) ve sayfa
+            // açıkken kip 1 olduysa 0 gider: sunucuda satır varsa stale döner, alanlar lisans geneli değerle yenilenir.
+            // Önbelleğin sürümü gitseydi formun hiç göstermediği lisans geneli değer sessizce ezilirdi.
             outcome = await _shippingWriter
-                .SaveAsync(_shownVersion ?? shipping.Version ?? 0, threshold, fee)
+                .SaveAsync(_shownVersion ?? 0, threshold, fee)
                 .ConfigureAwait(true);
         }
         finally

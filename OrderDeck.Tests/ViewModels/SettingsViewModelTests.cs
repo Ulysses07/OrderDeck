@@ -432,6 +432,34 @@ public sealed class SettingsViewModel_LicenseShippingTests : IDisposable
     }
 
     [Fact]
+    public async Task Mod_Offta_acilan_form_mod_Onda_kaydedilirse_hic_gosterilmemis_lisans_geneli_deger_ezilmez()
+    {
+        // Form mod Off'ta yerel 600/49 ile açıldı; sayfa açıkken açılış turu kipi 1 yaptı (lisans geneli 1000/80, v3).
+        // Operatör yalnız eşiği değiştirir. Kaydet önbelleğin sürümüyle gitseydi formun hiç göstermediği ücret (80) yerel
+        // 49'la sessizce ezilirdi; sürümsüz (0) gider, sunucu stale ve güncel değeri döner.
+        var sut = CreateVm();
+        sut.IsShippingLicenseWide.Should().BeFalse("ön koşul: form yerel değerle açıldı");
+        ModeOn(version: 3, threshold: 1000m, fee: 80m);
+        _put = () => FakeHttpMessageHandler.Json(409, """
+            {"title":"stale","status":409,"detail":"x",
+             "current":{"version":3,"freeShippingThreshold":1000,"fee":80,"updatedAt":"2026-10-18T09:30:00+00:00",
+                        "updatedBy":"cli"}}
+            """);
+
+        sut.FreeShippingThresholdText = "650";
+        await sut.SaveCommand.ExecuteAsync(null);
+
+        JsonDocument.Parse(Puts.Should().ContainSingle().Subject.Body!).RootElement
+            .GetProperty("expectedVersion").GetInt32().Should().Be(0, "form lisans geneli hiçbir sürümü göstermedi");
+        sut.Saved.Should().BeFalse();
+        sut.IsShippingLicenseWide.Should().BeTrue();
+        sut.FreeShippingThresholdText.Should().Be("1000");
+        sut.ShippingFeeText.Should().Be("80");
+        sut.ShippingNotice.Should().Be(SalesCommandMessages.ShippingSettingsStale);
+        LocalShippingUnchanged();
+    }
+
+    [Fact]
     public async Task Mod_Onda_cevrimdisi_serit_baglanti_ister_alanlar_onbellege_doner_yerel_yazim_yok()
     {
         ModeOn(version: 4, threshold: 500m, fee: 30m);
