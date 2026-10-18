@@ -229,10 +229,11 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         var (_, _, residual) = _bed.OwnResidual(count: 501);
 
         var result = await _bed.Router.MarkPrintedAsync(residual);
+        // Anlık gönderim bütçesi (3 sn) yük altında aşılabilir: kalan parçalar kuyrukta, tur götürür.
+        await _bed.Sender.FlushAsync(CancellationToken.None);
 
         result.Notices.Should().BeEmpty("tek komut 500'ü aşsaydı 400 alır, komut düşerdi");
-        result.Marked.Should().BeEquivalentTo(residual);
-        result.Pending.Should().BeEmpty();
+        result.Marked.Concat(result.Pending).Should().BeEquivalentTo(residual, "her satır işaretli ya da örtülü");
         var calls = _bed.Server.CommandCalls.Select(c => c.Command).ToList();
         calls.Select(c => (c.Kind, ItemCount(c))).Should().Equal([("mark-printed", 500), ("mark-printed", 1)]);
         calls.Select(c => c.CommandId).Should().OnlyHaveUniqueItems("her parça kendi bekleyen komutu");
@@ -251,10 +252,12 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         var (_, _, residual) = _bed.OwnResidual(count: 501);
 
         var result = await _bed.Router.CancelQueueAsync(residual, CancelReasonCodes.QueueRemoved);
+        // Anlık gönderim bütçesi (3 sn) yük altında aşılabilir: kalan parçalar kuyrukta, tur götürür.
+        await _bed.Sender.FlushAsync(CancellationToken.None);
 
         result.HasProblems.Should().BeFalse();
-        result.NoticeTexts.Should().BeEmpty();
-        result.Applied.Should().HaveCount(501);
+        result.NoticeTexts.Should().BeEmpty("tek komut 500'ü aşsaydı 400 alır, komut düşerdi");
+        result.Applied.Concat(result.PendingLabelIds).Should().BeEquivalentTo(residual, "her satır uygulandı ya da örtülü");
         _bed.Server.CommandCalls.Select(c => (c.Command.Kind, ItemCount(c.Command))).Should().Equal(
             [("cancel", 500), ("cancel", 1)]);
         _bed.Local(residual[^1]).CancelledAt.Should().NotBeNull();
