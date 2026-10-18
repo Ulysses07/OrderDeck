@@ -7,7 +7,9 @@ namespace OrderDeck.Core.Payments;
 /// <summary>
 /// Kirasız ödeme kaydının (<c>payment-requests/backfill</c>) belirlenimli Id'si (spec 2026-10-13 §6.4 "Ödeme geçmişi"):
 /// yerel <c>PaymentJob</c>'un Id'si ile teslim ya da deneme sayısından türetilir, yineleme zararsızdır — aynı iş aynı
-/// sayıda aynı Id'yi verir, sunucu onu <c>unchanged</c> sayar (geri yüklenmiş kopyanın baştan gönderimi dahil, §8.7).
+/// sayıda aynı Id'yi verir; içerik aynıysa sunucu onu <c>unchanged</c> sayar (geri yüklenmiş kopyanın baştan gönderimi
+/// dahil, §8.7), teslimden sonra değiştiyse (iptal, revizyon, birleştirme) <c>content-conflict</c> ile düşer ve ilk kayıt
+/// kalır.
 ///
 /// <para><b>İki ayrı ad uzayı:</b> teslim edilmiş kayıt <see cref="Delivered"/> (teslim sayısıyla), sonucu bilinmeyen
 /// gönderim <see cref="Unconfirmed"/> (teslim ve deneme sayısıyla). Tek uzay olsaydı belirsiz denemenin ardından gelen teslim

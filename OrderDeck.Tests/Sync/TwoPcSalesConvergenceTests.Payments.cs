@@ -440,6 +440,52 @@ public sealed partial class TwoPcSalesConvergenceTests
         await AssertConvergedAsync(a, b);
     }
 
+    /// <summary>
+    /// W3 son incelemesi (doğrulayıcı): iki yazıcının Id'si her durumda aynı, içerik ise teslimden sonra değişebilir. Mod
+    /// Off kaydı K1+K2 ile gittikten sonra K2 iptal edilir (yeni teslim yok); geçmiş aynı Id'yi yalnız K1 ile kurar. Sunucu
+    /// ikinciyi <c>content-conflict</c> sayar, kuyruktan son durumla düşer; ilk kayıt (mesaj anının görüntüsü) kalır, geçmiş
+    /// yine tamamlanır. Yinelenme ya da kayıp yok.
+    /// </summary>
+    [Fact]
+    public async Task Teslimden_sonra_icerik_degisirse_gecmisin_ayni_Idli_kaydi_content_conflict_ile_duser_ilk_kayit_kalir()
+    {
+        Use("AB");
+        var (a, _) = await PcsAsync(modeOn: false);
+        var session = a.StartStream();
+        var k1 = a.Sell(session, "alici_vazgecen", "K1", 200m);
+        var k2 = a.Sell(session, "alici_vazgecen", "K2", 150m);
+        k2.CustomerId.Should().Be(k1.CustomerId);
+        await a.PrintAsync(k1.Id, k2.Id);
+        a.EndStream(session);
+        await a.PushAsync();
+        await a.PushAsync();
+        var customerId = k1.CustomerId;
+        Phone(a, customerId);
+        var scope = $"session:{session}";
+
+        (await RequestAsync(a, customerId, scope, null)).Result.Should().Be(PaymentRequestResult.Opened);
+        var offRecord = PendingPaymentRecordCodec.DecodeRecord(
+            a.PendingPaymentRecords.List().Should().ContainSingle().Subject);
+        offRecord.OrderIds.Should().BeEquivalentTo([G(k1.Id), G(k2.Id)]);
+        (await a.PaymentRecords.FlushAsync(CancellationToken.None)).Sent.Should().Be(1);
+
+        (await a.Editor.CancelAsync([k2.Id], "musteri-vazgecti")).HasProblems.Should().BeFalse();
+        await a.PaymentHistory.TourOnceAsync(CancellationToken.None);
+        var historyRecord = PendingPaymentRecordCodec.DecodeRecord(
+            a.PendingPaymentRecords.List().Should().ContainSingle().Subject);
+        historyRecord.RecordId.Should().Be(offRecord.RecordId, "Id yalnız işin satırından: aynı teslim");
+        historyRecord.OrderIds.Should().Equal(new[] { G(k1.Id) },
+            "içerik okunduğu andan: iptal edilen etiket katkı vermez");
+
+        var second = await a.PaymentRecords.FlushAsync(CancellationToken.None);
+        (second.Sent, second.Dropped).Should().Be((0, 1), "aynı Id başka içerik: content-conflict, son durum");
+        var stored = _server.PaymentRecords().Should().ContainSingle("yinelenme yok").Subject;
+        stored.Id.Should().Be(offRecord.RecordId);
+        stored.OrderIds.Should().BeEquivalentTo([G(k1.Id), G(k2.Id)], "ilk kayıt kalır: mesaj anının görüntüsü");
+        (await a.PaymentHistory.TourOnceAsync(CancellationToken.None)).Should().Be(PaymentHistoryTourOutcome.Completed,
+            "düşen kayıt tamamlanmayı bekletmez");
+    }
+
     // ── ön gönderim (§6.4-1) ───────────────────────────────────────────────
 
     /// <summary>

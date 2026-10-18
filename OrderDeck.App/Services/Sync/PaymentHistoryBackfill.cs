@@ -61,7 +61,8 @@ public enum PaymentHistoryTourOutcome
 /// → imleçte tamamlanma işareti ve <c>SalesSyncState.PaymentHistorySentAt</c>. Bundan sonra bu (lisans, kopya) için
 /// istek yok. Geri yüklemede kimlik döner: önceki kopya tamamladıysa işler yeniden kayda çevrilmez, yalnız yeni kopyanın
 /// tamamlanması bildirilir (sonraki teslimler mod Off kaydı ya da kirayla sunucuda; kiranın kaydı işten türetilmez);
-/// tamamlamadıysa imleç baştan başlar (aynı Id'ler, sunucu <c>unchanged</c>).</item>
+/// tamamlamadıysa imleç baştan başlar (aynı Id'ler; sunucu içerik aynıysa <c>unchanged</c>, arada değiştiyse
+/// <c>content-conflict</c> sayar ve ilk kaydı tutar — <see cref="PaymentHistoryRecords"/>).</item>
 /// </list>
 ///
 /// <para><b>Sürücü</b> <see cref="SalesBackfillHostedService"/>'in 60 sn'lik turudur; o tur önce kuyruğu gönderir
@@ -378,7 +379,8 @@ public sealed class PaymentHistoryBackfill
     /// (<see cref="PaymentHistoryCursor.Done"/>: kuyruk boşalınca <c>hello {paymentHistoryCompleted: true}</c>) — o andan
     /// sonraki her teslim mod Off kaydıyla ya da kirayla zaten sunucuda; kiranın kaydı rastgele Id'lidir, işten türetilen
     /// kayıt onun ikinci öncülü olur ve eski istek en yeni sayılırdı. Tamamlamadıysa baştan (Id'ler işten türetilir: önceki
-    /// kopyanın gönderdikleri sunucuda <c>unchanged</c>).
+    /// kopyanın gönderdikleri sunucuda <c>unchanged</c>, içerik arada değiştiyse <c>content-conflict</c> ve ilk kayıt
+    /// kalır).
     /// </summary>
     private PaymentHistoryCursor ReadCursor(string licenseKey, Guid replicaId)
     {

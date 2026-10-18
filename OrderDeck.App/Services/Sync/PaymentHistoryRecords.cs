@@ -8,7 +8,12 @@ namespace OrderDeck.App.Services.Sync;
 /// Kirasız ödeme kaydının (<c>payment-requests/backfill</c> öğesi, <see cref="PaymentRequestBackfillItem"/>) kurulumu
 /// (spec 2026-10-13 §4.7, §6.4 "Ödeme geçmişi (mod Off'ta da)", M17; W3-06). Ödeme geçmişi geri doldurması
 /// (<see cref="PaymentHistoryBackfill"/>) ve mod Off'taki teslim kaydı (<see cref="PaymentOffRecordWriter"/>) AYNI
-/// kuralla kurar: aynı iş aynı sayıda aynı Id'yi ve aynı içeriği verir, sunucu yinelemeyi <c>unchanged</c> sayar.
+/// kuralla kurar: aynı iş aynı sayıda HER ZAMAN aynı Id'yi verir. İçerik ise okunduğu andaki satırdan ve etiketlerden
+/// gelir; teslimden sonra yeni teslim olmadan değişebilir — etiket iptali ya da tutar revizyonu (<c>netAmount</c>,
+/// <c>appliedAmount</c>, <c>fullyFromBalance</c>), birleştirme ya da "@" ikizi (kapsanan siparişler; sahip ve üyeler
+/// özete girmez). İçerik aynıysa sunucu yinelemeyi <c>unchanged</c> sayar; değiştiyse ikinci gönderim
+/// <c>content-conflict</c> ile kuyruktan düşer, ilk kayıt kalır (mod Off kaydı önce gittiyse mesaj anının görüntüsü;
+/// kuyruktayken de <c>EnqueueRecord</c> Id'ye göre ilkini tutar). Yinelenme ya da kayıp yok; çakışma günlüğe düşer.
 ///
 /// <para><b>İşten kayıt</b> (<see cref="FromJob"/>) yalnız işin satırından türer — çağıranın ayrıca bildiği bir sonuç
 /// (gönderim çıkışı) Id'ye ya da duruma girmez. Geri doldurma işi sonradan, çıkışı bilmeden okur (geri yüklenmiş kopyanın

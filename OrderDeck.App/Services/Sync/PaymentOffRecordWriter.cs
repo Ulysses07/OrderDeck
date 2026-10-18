@@ -22,7 +22,8 @@ namespace OrderDeck.App.Services.Sync;
 /// <list type="bullet">
 ///   <item><b>İşli kişi</b> (GUID'li sahip, bakiye akışının işi): ödeme geçmişiyle AYNI türetme
 ///   (<see cref="PaymentHistoryRecords.FromJob"/>, işin teslimden sonraki satırı) — Id, durum ve tutarlar yalnız işin
-///   satırından; geri doldurma aynı işi sonradan görse de aynı kaydı üretir. Çıkışın bayrağı (<c>unconfirmed</c>) burada
+///   satırından; geri doldurma aynı işi sonradan görse de aynı Id'yi üretir (içerik teslimden sonra değişmediyse aynı
+///   kaydı; değiştiyse ikincisi <c>content-conflict</c> ile düşer, bu kayıt kalır). Çıkışın bayrağı (<c>unconfirmed</c>) burada
 ///   kullanılmaz: geri doldurma onu bilmez, bayrağa göre ayrışan kayıt aynı teslime ikinci Id verirdi. <c>SendPending</c>
 ///   yerelde teslim yazdığı için kaydı <c>delivered</c>'dır; teslim yazımı düştüyse iş sonucu bilinmeyen gönderim der ve
 ///   kayıt <c>unconfirmed</c>'dır.</item>
