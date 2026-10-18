@@ -125,6 +125,27 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Kargo_ayari_yazicisi_tekil_satis_durumu_deposuna_ve_zarfa_bagli()
+    {
+        // W3-03 (§4.8, §6.2): ayar ekranının mod On'daki yazıcısı önbelleği sağlayıcının okuduğu depoya yazmalı; başka
+        // bir depo örneği olsaydı (aynı veritabanı olsa da) DI kaydının bozulduğunu gösterirdi. Ayar ekranı yazıcıyı ve
+        // sağlayıcıyı isteğe bağlı parametreyle alır: kayıt eksik olsaydı ekran sessizce mod Off gibi yerel yazardı.
+        using var host = new global::OrderDeck.App.AppHost();
+        var writer = host.Services.GetRequiredService<LicenseShippingSettingsWriter>();
+
+        host.Services.GetRequiredService<LicenseShippingSettingsWriter>().Should().BeSameAs(writer);
+        PrivateField<SalesSyncStateRepository>(writer, "_state")
+            .Should().BeSameAs(host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<SalesSyncEnvelope>(writer, "_envelope")
+            .Should().BeSameAs(host.Services.GetRequiredService<SalesSyncEnvelope>());
+        PrivateField<Action>(writer, "_requestModeOffRound").Should().NotBeNull();
+
+        var parameters = typeof(global::OrderDeck.App.ViewModels.SettingsViewModel).GetConstructors()
+            .Single().GetParameters().Select(p => p.ParameterType).ToList();
+        parameters.Should().Contain(typeof(IShippingSettingsProvider)).And.Contain(typeof(LicenseShippingSettingsWriter));
+    }
+
+    [Fact]
     public void Musteri_detay_penceresi_kargo_deposunu_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();

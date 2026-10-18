@@ -196,6 +196,31 @@ public sealed class SalesSyncStateRepository
             }) == 1;
     }
 
+    /// <summary>
+    /// Lisans geneli kargo ayarının önbelleğini sunucunun döndürdüğü satırla günceller (ayar ekranının
+    /// <c>PUT shipping-settings</c>'i: 200'ün satırı ya da 409 <c>stale</c>'in <c>current</c>'ı; §4.8, §6.2). Yalnız
+    /// <see cref="SaveServerState"/>'in üç kargo alanını yazar: KVKK boşaltma ayarı bu yanıtta yoktur. Koşulsuz yazar —
+    /// eşzamanlı bir <c>sales/state</c> turu daha eski sürümü üstüne yazarsa bir sonraki tur düzeltir; o arada eski
+    /// sürümle giden yazım <c>stale</c>, ödeme isteği <c>settings-stale</c> alır.
+    /// </summary>
+    /// <returns>Satır değiştiyse true.</returns>
+    public bool SaveShippingCache(int version, decimal? threshold, decimal? fee)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            """
+            UPDATE SalesSyncState
+            SET ShippingVersion = @version,
+                FreeShippingThreshold = @threshold,
+                ShippingFee = @fee
+            WHERE Id = 1
+              AND (ShippingVersion IS NOT @version
+                   OR FreeShippingThreshold IS NOT @threshold
+                   OR ShippingFee IS NOT @fee)
+            """,
+            new { version, threshold = (double?)threshold, fee = (double?)fee }) == 1;
+    }
+
     // ── mod On açılışı (§8.4; W2-10) ────────────────────────────────────
 
     /// <summary>Müşteri gönderim kuyruğunun şu anki tavanı (<c>MAX(SyncSeq)</c>; boş tabloda 0). Açılışın 1. adımı

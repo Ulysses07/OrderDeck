@@ -146,6 +146,30 @@ public sealed class SalesSyncStateRepositoryTests : IDisposable
         row.FirstCatchUpAt.Should().Be(88);
     }
 
+    [Fact]
+    public void Kargo_onbellegi_yalniz_uc_kargo_alanini_yazar_KVKK_ayarina_ve_kipe_dokunmaz()
+    {
+        // W3-03 (§4.8, §6.2): ayar ekranının PUT'u ve 409 stale'i önbelleği sunucunun döndürdüğü satırla günceller.
+        // sales/state'in KVKK boşaltma ayarı bu yanıtta yok; ona dokunulsaydı bir sonraki tura kadar yanlış kalırdı.
+        Exec("UPDATE SalesSyncState SET Mode = 1, ModeSeenAt = 77 WHERE Id = 1");
+        _repo.SaveServerState(3, 1500m, 89.90m, scrubOrderText: true);
+
+        _repo.SaveShippingCache(4, 2000m, 99.50m).Should().BeTrue();
+        var row = _repo.Get();
+        row.ShippingVersion.Should().Be(4);
+        row.FreeShippingThreshold.Should().Be(2000m);
+        row.ShippingFee.Should().Be(99.50m);
+        row.ScrubOrderText.Should().BeTrue("KVKK ayarı yalnız sales/state'ten gelir");
+        row.Mode.Should().Be(1);
+        row.ModeSeenAt.Should().Be(77);
+
+        _repo.SaveShippingCache(4, 2000m, 99.50m).Should().BeFalse("aynı değerler yazma kilidi almaz");
+
+        // Kargo kapatıldı: iki değer boş, sürüm dolu.
+        _repo.SaveShippingCache(5, null, null).Should().BeTrue();
+        _repo.GetShippingCache().Should().Be(new SalesShippingCache(1, 5, null, null));
+    }
+
     // ── mod On açılışı, 1. adım: kuyruk kalanı (§8.4-1) ────────────────────
 
     [Fact]

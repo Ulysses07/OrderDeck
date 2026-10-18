@@ -54,6 +54,15 @@ public static class SalesCommandMessages
     /// var, kuyruğa satış akışıyla iner.</summary>
     public const string BackupAddedRemotely = "Yedek sunucuda eklendi; bu bilgisayara satış akışıyla inecek.";
 
+    /// <summary>Ayar ekranının lisans geneli kargo yazımı 409 <c>stale</c> aldı (§4.8, W3-03): önbellek ve form sunucunun
+    /// güncel satırını gösterir.</summary>
+    public const string ShippingSettingsStale =
+        "Kargo ayarı bu arada başka bilgisayarda değişti; güncel değer gösterildi.";
+
+    /// <summary>Ayar ekranının Kargo kartındaki çip: mod On'da eşik ve ücret lisans geneli ayardır (§6.2, sahip kararı
+    /// Y4).</summary>
+    public const string ShippingLicenseWideChip = "Lisans geneli · bütün bilgisayarlar";
+
     /// <summary>
     /// Dekont kaydedildi ama kargo adımı yapılamadı, sunucuya ulaşılamadığı için (§5.8 "Dekont kaydı"): çevrimdışı,
     /// komut ucu yok, sunucu hatası ya da kip henüz hazır değil. Bir sonraki dekont bütün bağlanmamış etiketleri alır.

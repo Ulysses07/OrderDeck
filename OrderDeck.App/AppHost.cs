@@ -646,6 +646,17 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SalesConflictLogRepository>();
         services.AddSingleton<Services.Sync.SalesCommandClient>();
 
+        // W3-03 (spec 2026-10-13 §4.8, §6.2, Y4): ayar ekranının mod On'daki kargo yazıcısı (PUT shipping-settings).
+        // Önbelleği satış durumu deposuna yazar (sağlayıcı oradan okur); mode-off'ta Off turu satış akışı servisinden
+        // tembel çözülür. Ayar ekranı isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        services.AddSingleton(sp => new Services.Sync.LicenseShippingSettingsWriter(
+            sp.GetRequiredService<LicenseApiClient>(),
+            sp.GetRequiredService<Services.Sync.SalesSyncEnvelope>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            () => sp.GetRequiredService<Services.Sync.SalesChangesPullService>().RequestModeOffRound(),
+            sp.GetRequiredService<ILogger<Services.Sync.LicenseShippingSettingsWriter>>()));
+
         // W2-07 (spec 2026-10-13 §5.5): bekleyen satış komutları (kalıntı kuyruğun çevrimdışı iptali ve ilk baskısı).
         // Gönderici TEK örnek: satış akışı turu (akıştan önce), kuyruk baskısının anlık gönderimi ve ödeme ön gönderimi
         // (W3) aynı kapıdan geçer — aynı komut aynı anda iki kez gitmez.
