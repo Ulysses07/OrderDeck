@@ -460,6 +460,34 @@ public sealed class SettingsViewModel_LicenseShippingTests : IDisposable
     }
 
     [Fact]
+    public async Task Mod_Onda_acilan_form_disabledan_sonra_kaydedilirse_Off_turunun_kopyasi_ezilmez()
+    {
+        // Form mod On'da lisans geneli 500/60 (v3) ile açıldı. PC-B ayarı 700/70 (v4) yaptı, sonra disable geldi: Off turu v4'ü
+        // yerel ayara kopyaladı. Operatör yalnız etiket genişliğini değiştirip kaydetti — kip artık Off olduğu için form,
+        // değişmemiş kargo alanlarını yerel ayara yazıyor, kopyayı bayat 500/60 ile eziyordu (§6.2/§8.5: PC'ler Off'a
+        // döndüklerinde farklı yerel değerlerle farklı kargo istemez).
+        ModeOn(version: 3, threshold: 500m, fee: 60m);
+        var sut = CreateVm();
+        sut.IsShippingLicenseWide.Should().BeTrue("ön koşul: form lisans geneli değerle açıldı");
+        using (var c = _db.Open()) c.Execute("UPDATE SalesSyncState SET Mode = 0 WHERE Id = 1");
+        _state.SaveServerState(4, 700m, 70m, scrubOrderText: false);
+        _settings.Shipping = new ShippingSettings { FreeShippingThreshold = 700m, ShippingFee = 70m };
+        _store.Update(s => s.Shipping = new ShippingSettings { FreeShippingThreshold = 700m, ShippingFee = 70m });
+
+        sut.LabelWidthMm += 5;
+        await sut.SaveCommand.ExecuteAsync(null);
+
+        sut.Saved.Should().BeTrue();
+        Puts.Should().BeEmpty("mod Off: istek gitmez");
+        _settings.Shipping.FreeShippingThreshold.Should().Be(700m, "değişmemiş kargo alanı Off turunun kopyasını ezmez");
+        _settings.Shipping.ShippingFee.Should().Be(70m);
+        var disk = _store.Load();
+        disk.Shipping.FreeShippingThreshold.Should().Be(700m);
+        disk.Shipping.ShippingFee.Should().Be(70m);
+        disk.LabelWidthMm.Should().Be(sut.LabelWidthMm, "kargo dışı alan yine kaydedilir");
+    }
+
+    [Fact]
     public async Task Mod_Onda_cevrimdisi_serit_baglanti_ister_alanlar_onbellege_doner_yerel_yazim_yok()
     {
         ModeOn(version: 4, threshold: 500m, fee: 30m);

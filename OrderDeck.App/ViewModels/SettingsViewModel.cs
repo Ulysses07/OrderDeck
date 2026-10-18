@@ -612,14 +612,21 @@ public sealed partial class SettingsViewModel : ViewModelBase
         if (!Validate(licenseWide)) return;
         ShippingNotice = null;
 
+        // Mod Off'ta kargo yalnız operatör değiştirdiyse yerel ayara yazılır (§6.2/§8.5): form mod On'da açılıp disable'dan
+        // sonra kaydedilirse değişmemiş alanlar, Off turunun yerel ayara kopyaladığı güncel lisans geneli değeri bayat
+        // değerle ezerdi. Saf mod Off'ta sonuç aynı: değişmemiş alan zaten yerel değerdir.
+        var writeLocalShipping = !licenseWide
+            && (ParseOptionalDecimal(FreeShippingThresholdText) != _shownThreshold
+                || ParseOptionalDecimal(ShippingFeeText) != _shownFee);
+
         // Mutate the live AppSettings instance so dependents (LabelPrinter, OverlayHost)
         // pick up the new values immediately. AppSettings is a class with public setters.
-        ApplyFormTo(_liveSettings, includeShipping: !licenseWide);
+        ApplyFormTo(_liveSettings, includeShipping: writeLocalShipping);
 
         // N04: diske bütün-nesne Save yerine atomik Update — canlı örnekteki
         // sync imleci gibi alanlar açılıştan beri bayatlamış olabilir; yalnız
         // bu ekranın sahip olduğu alanlar diskteki EN GÜNCEL kopyaya yazılır.
-        _store.Update(target => ApplyFormTo(target, includeShipping: !licenseWide));
+        _store.Update(target => ApplyFormTo(target, includeShipping: writeLocalShipping));
 
         // Faz 2 (2026-05-15): WhatsApp template'leri server'a push'la (mobile
         // preview için). Fire-and-forget — sonuç dialog akışını engellemesin.
