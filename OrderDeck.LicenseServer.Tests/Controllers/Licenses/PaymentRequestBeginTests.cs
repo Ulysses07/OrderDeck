@@ -74,6 +74,14 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         { "kargo-surumu-eksi", "invalid-shipping" },
         { "onaylananlar-501", "invalid-confirmed-priors" },
         { "onaylanan-bos-guid", "invalid-confirmed-priors" },
+        { "ozet-bos", "invalid-priors-digest" },
+        { "ozet-oneksiz", "invalid-priors-digest" },
+        { "ozet-surum-2", "invalid-priors-digest" },
+        { "ozet-base64url-degil", "invalid-priors-digest" },
+        { "ozet-dolgulu", "invalid-priors-digest" },
+        { "ozet-kisa", "invalid-priors-digest" },
+        { "ozet-bosluklu", "invalid-priors-digest" },
+        { "ozet-kanonik-degil", "invalid-priors-digest" },
     };
 
     /// <summary>Her 400 sınıfı: hiçbir şey yazılmaz.</summary>
@@ -133,8 +141,30 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
                 body["confirmedPriorIds"] = Enumerable.Range(0, 501).Select(_ => Guid.NewGuid()).ToArray();
                 break;
             case "onaylanan-bos-guid": body["confirmedPriorIds"] = new[] { Guid.Empty }; break;
+            // Özet yalnız already-requested'in priorsDigest'i olabilir: "v1." + 32 baytın dolgusuz base64url'i (43
+            // karakter). Değerler üretilir; geçerli olandan bir karakter bozulur.
+            case "ozet-bos": body["confirmedPriorsDigest"] = ""; break;
+            case "ozet-oneksiz": body["confirmedPriorsDigest"] = Kit.UnrelatedPriorsDigest()[3..]; break;
+            case "ozet-surum-2": body["confirmedPriorsDigest"] = "v2." + Kit.UnrelatedPriorsDigest()[3..]; break;
+            case "ozet-base64url-degil": body["confirmedPriorsDigest"] = ReplaceAt(Kit.UnrelatedPriorsDigest(), 10, '+'); break;
+            case "ozet-dolgulu": body["confirmedPriorsDigest"] = Kit.UnrelatedPriorsDigest() + "="; break;
+            case "ozet-kisa": body["confirmedPriorsDigest"] = Kit.UnrelatedPriorsDigest()[..^1]; break;
+            case "ozet-bosluklu": body["confirmedPriorsDigest"] = ReplaceAt(Kit.UnrelatedPriorsDigest(), 10, ' '); break;
+            case "ozet-kanonik-degil": body["confirmedPriorsDigest"] = NonCanonical(Kit.UnrelatedPriorsDigest()); break;
             default: throw new ArgumentOutOfRangeException(nameof(@case), @case, null);
         }
+    }
+
+    private static string ReplaceAt(string value, int index, char replacement) =>
+        string.Concat(value.AsSpan(0, index), [replacement], value.AsSpan(index + 1));
+
+    /// <summary>Aynı 32 bayta çözülen ikinci bir yazım: son karakterin artık iki biti (32 bayt 256 bit, 43 karakter 258
+    /// bit) sıfır değil. Özetin tek bir yazımı vardır.</summary>
+    private static string NonCanonical(string digest)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        var last = alphabet.IndexOf(digest[^1], StringComparison.Ordinal);
+        return digest[..^1] + alphabet[last | 1];
     }
 
     /// <summary>
@@ -301,6 +331,30 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
 
         second.StatusCode.Should().Be(HttpStatusCode.OK, await second.Content.ReadAsStringAsync());
         (await Kit.ReadAsync(second)).Should().BeEquivalentTo(await Kit.ReadAsync(first));
+        (await kit.RecordsAsync()).Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// §6.4-a, e: <c>confirmedPriorsDigest</c>, <c>confirmedPriorIds</c> gibi istek özetine girmez. Yanıtı kaybolan isteğin
+    /// yeniden gönderimi sonraki bir sorunun onayıyla (başka özet) ya da onaysız gelebilir; ikisi de aynı kaydı döner,
+    /// ikinci satır yok.
+    /// </summary>
+    [Fact]
+    public async Task Yeniden_oynatma_onay_ozetine_bakmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var recordId = Guid.NewGuid();
+        var replica = Guid.NewGuid();
+        var first = await BeginOkAsync(kit, Kit.Body(recordId, replica, owner, [owner],
+            confirmedPriorsDigest: Kit.UnrelatedPriorsDigest()));
+
+        var otherDigest = await BeginOkAsync(kit, Kit.Body(recordId, replica, owner, [owner],
+            confirmedPriorsDigest: Kit.UnrelatedPriorsDigest()));
+        var noDigest = await BeginOkAsync(kit, Kit.Body(recordId, replica, owner, [owner]));
+
+        otherDigest.Should().BeEquivalentTo(first);
+        noDigest.Should().BeEquivalentTo(first);
         (await kit.RecordsAsync()).Should().ContainSingle();
     }
 
@@ -596,6 +650,237 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         problem.GetProperty("title").GetString().Should().Be("in-progress-elsewhere");
         problem.GetProperty("recordId").GetGuid().Should().Be(lease.RecordId);
         (await kit.RecordsAsync()).Should().ContainSingle();
+    }
+
+    // ── (e) onay özeti (priorsDigest) ────────────────────────────────────────
+
+    /// <summary>
+    /// §6.4-e, §12-16: kişi×kapsamda 600 öncül. Id listesi en çok 500 Id taşıdığı için onları onaylayamaz; kapsam kalıcı
+    /// olarak kilitlenirdi. 409 öncül kümesinin özetini (<c>priorsDigest</c>) taşır; onu boş Id listesiyle geri yollayan
+    /// istek kirayı alır.
+    /// </summary>
+    [Fact]
+    public async Task Alti_yuz_oncul_ozetle_onaylanir_kira_yazilir()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+        var ids = new List<Guid>();
+        for (var i = 0; i < 600; i++) ids.Add((await SeedDeliveredAsync(kit, owner, t0.AddHours(i))).Id);
+
+        var problem = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])));
+        Priors(problem).Should().HaveCount(600);
+        PriorsDigest(problem).Should().Be(Kit.ExpectedPriorsDigest(ids));
+
+        var lease = await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            confirmedPriorsDigest: PriorsDigest(problem)));
+        (await kit.RecordAsync(lease.RecordId))!.State.Should().Be(PaymentRequestState.Sending);
+    }
+
+    /// <summary>
+    /// §6.4-e: soru ile onay arasında yeni bir öncül göründü — yeni kapandı ya da kapanış anı gösterilenlerden eski (geç
+    /// commit edilmiş geri doldurma; gerçek iç içe geçiş SQL Server'da, <see cref="PaymentRequestBeginRelationalTests"/>).
+    /// Onay yalnız gösterilen kümeyi kapsar, saate bakmaz: özet tutmaz, istek yeniden sorulur — yeni öncül listede, özet
+    /// farklı. Yeni özetle kira yazılır.
+    /// </summary>
+    [Theory]
+    [InlineData("yeni")]
+    [InlineData("erken-damgali")]
+    public async Task Soru_ile_onay_arasinda_gorunen_oncul_yeniden_sorulur_yeni_ozetle_200(string @case)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var replica = Guid.NewGuid();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-2);
+        var first = await SeedDeliveredAsync(kit, owner, t0);
+        var second = await SeedDeliveredAsync(kit, owner, t0.AddHours(1));
+        var question = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner])));
+        Priors(question).Select(p => p.Id).Should().Equal(first.Id, second.Id);
+
+        var appeared = await SeedDeliveredAsync(kit, owner,
+            @case == "yeni" ? DateTimeOffset.UtcNow : t0.AddMinutes(30));
+        var stale = await AlreadyRequestedAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner],
+            confirmedPriorsDigest: PriorsDigest(question))));
+
+        Guid[] byFinishedAt = @case == "yeni"
+            ? [first.Id, second.Id, appeared.Id]
+            : [first.Id, appeared.Id, second.Id];
+        Priors(stale).Select(p => p.Id).Should().Equal(byFinishedAt);
+        PriorsDigest(stale).Should().NotBe(PriorsDigest(question))
+            .And.Be(Kit.ExpectedPriorsDigest([first.Id, second.Id, appeared.Id]));
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), replica, owner, [owner],
+            confirmedPriorsDigest: PriorsDigest(stale)));
+    }
+
+    /// <summary>
+    /// §6.4-e: soru ile onay arasında kişinin kümesine ESKİ bir kayıt katıldı — kapanış anı gösterilen öncülden eski,
+    /// soru anında başka bir satırın kaydıydı. Üç yoldan: birleştirmede (kimlik onarımı) kayıt kopyanın Id'siyle saklıdır
+    /// ve üye kesişimi onu kopyalar üzerinden bulur (<c>WithCopiesAsync</c>); grup değişiminde istemci kişiyi yeniden
+    /// kurar, öbür satır üye olur; geri doldurmanın aynı işi yeniden göndermesi kayda yeni üye ekler (<c>UnionMembers</c>;
+    /// grup senkronu başka türlü görmüş bir bilgisayar). Küme değiştiği için özet tutmaz ve kayıt sorulur; bir zaman
+    /// filigranı onu yutardı.
+    /// </summary>
+    [Theory]
+    [InlineData("birlesme")]
+    [InlineData("grup-degisimi")]
+    [InlineData("geri-doldurma-uye-birlesimi")]
+    public async Task Soru_ile_onay_arasinda_kumeye_katilan_eski_kayit_yutulmaz(string @case)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = await kit.SeedProjectionAsync(groupId: null);
+        var other = await kit.SeedProjectionAsync(groupId: null);
+        var replica = Guid.NewGuid();
+        var oldAt = DateTimeOffset.UtcNow.AddDays(-3);
+        // Geri doldurmanın yinelemesi yalnız aynı içerikli kayda üye ekler: o durumda eski kayıt da geri doldurmayla
+        // yazılır (kapanış anı sunucunun alış anı, gösterilen öncülden önce).
+        var old = @case == "geri-doldurma-uye-birlesimi"
+            ? await BackfilledAsync(kit, Kit.BackfillItem(Guid.NewGuid(), other, [other], oldAt, netAmount: 40m))
+            : await kit.SeedRecordAsync("c:" + other, [other], PaymentRequestKind.Record,
+                PaymentRequestState.Delivered, oldAt.AddMinutes(-1), finishedAt: oldAt, netAmount: 40m);
+        var shown = await SeedDeliveredAsync(kit, owner, DateTimeOffset.UtcNow);
+        var question = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner])));
+        Priors(question).Select(p => p.Id).Should().Equal(shown.Id);
+
+        string[] members;
+        switch (@case)
+        {
+            case "birlesme":
+                await kit.MergeAsync(other, into: owner);
+                members = [owner];
+                break;
+            case "grup-degisimi":
+                await kit.GroupAsync($"grp-{Guid.NewGuid():N}", owner, other);
+                members = [owner, other];
+                break;
+            case "geri-doldurma-uye-birlesimi":
+                var replay = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+                    Kit.BackfillItem(old.Id, other, [other, owner], oldAt, netAmount: 40m)));
+                replay.StatusCode.Should().Be(HttpStatusCode.OK, await replay.Content.ReadAsStringAsync());
+                (await Kit.ReadBackfillAsync(replay)).Records.Should().Equal(new Kit.BackfillResult(old.Id, "unchanged"));
+                members = [owner];
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(@case), @case, null);
+        }
+        var confirm = await AlreadyRequestedAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, members,
+            confirmedPriorsDigest: PriorsDigest(question))));
+
+        Priors(confirm).Select(p => p.Id).Should().Equal(old.Id, shown.Id);
+        PriorsDigest(confirm).Should().Be(Kit.ExpectedPriorsDigest([old.Id, shown.Id]));
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), replica, owner, members,
+            confirmedPriorsDigest: PriorsDigest(confirm)));
+    }
+
+    /// <summary>
+    /// §6.4-e: soru ile onay arasında bir öncül kümeden ÇIKTI — sonucu bilinmeyen kira geç <c>abandoned</c> ile kapandı.
+    /// Onay küme eşitliğidir: sorunun özeti tutmaz ve istek kalan öncülle yeniden sorulur. Id listesi bunu sormazdı;
+    /// özet bilerek daha katıdır, fazladan bir soru güvenli yöndedir. Yeni özetle kira yazılır.
+    /// </summary>
+    [Fact]
+    public async Task Soru_ile_onay_arasinda_kumeden_cikan_oncul_yeniden_sorulur()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var pcA = Guid.NewGuid();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-3);
+        var delivered = await SeedDeliveredAsync(kit, owner, t0);
+        var lease = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Unconfirmed, t0.AddHours(1), finishedAt: t0.AddHours(1).AddMinutes(2), replicaId: pcA,
+            machineName: "PC-A");
+        var question = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])));
+        Priors(question).Select(p => p.Id).Should().Equal(delivered.Id, lease.Id);
+
+        var abandon = await kit.FinishAsync(lease.Id, Kit.FinishBody(pcA, "abandoned"));
+        abandon.StatusCode.Should().Be(HttpStatusCode.OK, await abandon.Content.ReadAsStringAsync());
+        var confirm = await AlreadyRequestedAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner,
+            [owner], confirmedPriorsDigest: PriorsDigest(question))));
+
+        Priors(confirm).Select(p => p.Id).Should().Equal(delivered.Id);
+        PriorsDigest(confirm).Should().NotBe(PriorsDigest(question))
+            .And.Be(Kit.ExpectedPriorsDigest([delivered.Id]));
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            confirmedPriorsDigest: PriorsDigest(confirm)));
+    }
+
+    /// <summary>
+    /// §6.4-e: özet Id listesinden bağımsızdır — Id listesiyle onaylananlar dahil bütün öncül kümesinin özetidir. İki onay
+    /// "ya da" ile birleşir: Id listesinin dışında öncül kalmadıysa geçer; kaldıysa özet bütün kümeyle tutmalıdır. Onay
+    /// turunda Id listesi değişse de (başka bir alt küme, 500'de kesilmiş birikimli liste ya da hiç) tutan özet geçer:
+    /// soru döngüye girmez. Bütün öncülleri kapsayan Id listesinde özete bakılmaz (bugünkü davranış).
+    /// </summary>
+    [Theory]
+    [InlineData("baska-alt-kume")]
+    [InlineData("id-yok")]
+    [InlineData("hepsi-idli-ilgisiz-ozet")]
+    public async Task Id_listesi_ve_ozet_birlikte_dongusuz(string @case)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-3);
+        var p1 = await SeedDeliveredAsync(kit, owner, t0);
+        var p2 = await SeedDeliveredAsync(kit, owner, t0.AddHours(1));
+        var p3 = await SeedDeliveredAsync(kit, owner, t0.AddHours(2));
+
+        var withIds = await AlreadyRequestedAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner,
+            [owner], confirmedPriorIds: [p3.Id])));
+        var withoutIds = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])));
+        Priors(withIds).Select(p => p.Id).Should().Equal(p1.Id, p2.Id);
+        PriorsDigest(withIds).Should().Be(PriorsDigest(withoutIds))
+            .And.Be(Kit.ExpectedPriorsDigest([p1.Id, p2.Id, p3.Id]));
+
+        var (ids, digest) = @case switch
+        {
+            "baska-alt-kume" => (new[] { p1.Id }, PriorsDigest(withIds)),
+            "id-yok" => (Array.Empty<Guid>(), PriorsDigest(withIds)),
+            "hepsi-idli-ilgisiz-ozet" => (new[] { p1.Id, p2.Id, p3.Id }, Kit.UnrelatedPriorsDigest()),
+            _ => throw new ArgumentOutOfRangeException(nameof(@case), @case, null),
+        };
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner], confirmedPriorIds: ids,
+            confirmedPriorsDigest: digest));
+    }
+
+    /// <summary>
+    /// §6.4-e: özet Id kümesinindir; okuma ve gösterim sırasından bağımsız, deterministiktir. Öncüller kapanış anına göre
+    /// gösterilir; burada bu sıra Id'lerin kanonik sırasının (küçük harf "N", ordinal) tersidir. Sonucu bilinmeyen kiraya
+    /// geç <c>delivered</c> gelir: kapanış anı yenilenir, kira listenin sonuna geçer. Id kümesi aynı kaldığı için özet
+    /// değişmez (Id listesinin anlamıyla eşdeğer: o da durum değişiminde yeniden sormaz) ve ilk sorunun özeti hâlâ geçer.
+    /// </summary>
+    [Fact]
+    public async Task Ozet_siradan_bagimsiz_gec_finish_ozeti_degistirmez()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var pcA = Guid.NewGuid();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-3);
+        var ids = Enumerable.Range(0, 3)
+            .Select(_ => Guid.NewGuid())
+            .OrderByDescending(id => id.ToString("N"), StringComparer.Ordinal)
+            .ToList();
+        for (var i = 0; i < ids.Count; i++)
+            await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record, PaymentRequestState.Delivered,
+                t0.AddHours(i).AddMinutes(-1), finishedAt: t0.AddHours(i), netAmount: 10m, id: ids[i]);
+        var lease = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Unconfirmed, t0.AddHours(-2), finishedAt: t0.AddHours(-1), replicaId: pcA,
+            machineName: "PC-A");
+
+        var first = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])));
+        var late = await kit.FinishAsync(lease.Id, Kit.FinishBody(pcA, "delivered", netAmount: 10m));
+        late.StatusCode.Should().Be(HttpStatusCode.OK, await late.Content.ReadAsStringAsync());
+        var second = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])));
+
+        Priors(first).Select(p => p.Id).Should().Equal([lease.Id, .. ids]);
+        Priors(second).Select(p => p.Id).Should().Equal([.. ids, lease.Id]);
+        Priors(second)[^1].Unconfirmed.Should().BeFalse();
+        PriorsDigest(second).Should().Be(PriorsDigest(first)).And.Be(Kit.ExpectedPriorsDigest([.. ids, lease.Id]));
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
+            confirmedPriorsDigest: PriorsDigest(first)));
     }
 
     // ── (c) süre dolumu ──────────────────────────────────────────────────────
@@ -1020,6 +1305,33 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         problem.GetProperty("title").GetString().Should().Be("stale-total");
         problem.GetProperty("serverTotal").GetDecimal().Should().Be(serverTotal);
         return problem;
+    }
+
+    /// <summary>409 <c>already-requested</c>; ProblemDetails gövdesi.</summary>
+    private static async Task<JsonElement> AlreadyRequestedAsync(HttpResponseMessage resp)
+    {
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("already-requested");
+        return problem;
+    }
+
+    /// <summary><c>already-requested</c>'ın öncül kümesi özeti.</summary>
+    private static string PriorsDigest(JsonElement problem) => problem.GetProperty("priorsDigest").GetString()!;
+
+    /// <summary>Teslim edilmiş kirasız bir öncül; istek anı kapanıştan bir dakika önce.</summary>
+    private static Task<PaymentRequestRecord> SeedDeliveredAsync(Kit kit, string owner, DateTimeOffset finishedAt) =>
+        kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record, PaymentRequestState.Delivered,
+            finishedAt.AddMinutes(-1), finishedAt: finishedAt, netAmount: 10m);
+
+    /// <summary>Geri doldurmayla yazılmış kirasız bir öncül (öğe <c>applied</c>); kaydın yazılmış hâli.</summary>
+    private static async Task<PaymentRequestRecord> BackfilledAsync(Kit kit, Dictionary<string, object?> item)
+    {
+        var resp = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(), item));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var result = (await Kit.ReadBackfillAsync(resp)).Records.Should().ContainSingle().Subject;
+        result.Status.Should().Be("applied");
+        return (await kit.RecordAsync(result.RecordId))!;
     }
 
     /// <summary>409 <c>settings-stale</c>; ProblemDetails gövdesi.</summary>

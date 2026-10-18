@@ -1,4 +1,6 @@
+using System.Buffers.Text;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
@@ -38,7 +40,8 @@ public sealed class PaymentRequestTestKit
     /// <summary>
     /// <c>begin</c> gövdesi (v2, <c>seenMode = 1</c>). Sözlük: 400 testleri alanı siler ya da bozar. Varsayılanlar boş
     /// bir sunucu kümesine ve yazılmamış kargo ayarına uyar (§6.4-f, g): sipariş yok, ürün toplamı 0, ayar sürümü 0,
-    /// <paramref name="totalBeforeBalance"/> verilmezse ürün toplamı (kargo yok).
+    /// <paramref name="totalBeforeBalance"/> verilmezse ürün toplamı (kargo yok). <paramref name="confirmedPriorsDigest"/>
+    /// yalnız verilirse gövdeye girer: verilmeyen istek özetten önceki gövdeyle birebir aynıdır (geriye uyum).
     /// </summary>
     public static Dictionary<string, object?> Body(
         Guid recordId,
@@ -51,25 +54,49 @@ public sealed class PaymentRequestTestKit
         decimal? totalBeforeBalance = null,
         bool recipientPays = false,
         int shippingSettingsVersion = 0,
-        IEnumerable<Guid>? confirmedPriorIds = null) => new()
+        IEnumerable<Guid>? confirmedPriorIds = null,
+        string? confirmedPriorsDigest = null)
     {
-        ["recordId"] = recordId,
-        ["replicaId"] = replicaId,
-        ["protocol"] = 2,
-        ["seenMode"] = 1,
-        ["ownerId"] = ownerId,
-        ["memberIds"] = memberIds.ToArray(),
-        ["scopeKey"] = scopeKey,
-        ["orderIds"] = (orderIds ?? []).ToArray(),
-        ["productTotal"] = productTotal,
-        ["totalBeforeBalance"] = totalBeforeBalance ?? productTotal,
-        ["recipientPays"] = recipientPays,
-        ["shippingSettingsVersion"] = shippingSettingsVersion,
-        ["confirmedPriorIds"] = (confirmedPriorIds ?? []).ToArray(),
-    };
+        var body = new Dictionary<string, object?>
+        {
+            ["recordId"] = recordId,
+            ["replicaId"] = replicaId,
+            ["protocol"] = 2,
+            ["seenMode"] = 1,
+            ["ownerId"] = ownerId,
+            ["memberIds"] = memberIds.ToArray(),
+            ["scopeKey"] = scopeKey,
+            ["orderIds"] = (orderIds ?? []).ToArray(),
+            ["productTotal"] = productTotal,
+            ["totalBeforeBalance"] = totalBeforeBalance ?? productTotal,
+            ["recipientPays"] = recipientPays,
+            ["shippingSettingsVersion"] = shippingSettingsVersion,
+            ["confirmedPriorIds"] = (confirmedPriorIds ?? []).ToArray(),
+        };
+        if (confirmedPriorsDigest is not null) body["confirmedPriorsDigest"] = confirmedPriorsDigest;
+        return body;
+    }
 
     public Task<HttpResponseMessage> BeginAsync(object body, string? userAgent = SalesKit.WpfUserAgent) =>
         Sales.SendToAsync(BeginUrl, body, userAgent);
+
+    /// <summary>
+    /// <c>already-requested</c>'ın <c>priorsDigest</c>'i, sunucu kodundan bağımsız türetilir (§6.4-e): Id'lerin küçük harf
+    /// "N" yazımları ordinal sıralanır, her birinin 16 baytı (yazımın onaltılık çözümü, RFC 9562 büyük uçlu) art arda
+    /// SHA-256'dan geçer; <c>v1.</c> + dolgusuz base64url. Sunucunun biçimi ve kanonik sırası böyle sabitlenir.
+    /// </summary>
+    public static string ExpectedPriorsDigest(IEnumerable<Guid> ids)
+    {
+        var bytes = ids.Distinct()
+            .Select(id => id.ToString("N"))
+            .Order(StringComparer.Ordinal)
+            .SelectMany(Convert.FromHexString)
+            .ToArray();
+        return "v1." + Base64Url.EncodeToString(SHA256.HashData(bytes));
+    }
+
+    /// <summary>Biçimi doğru ama hiçbir kümenin özeti olmayan bir özet: rastgele 32 bayt.</summary>
+    public static string UnrelatedPriorsDigest() => "v1." + Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
 
     /// <summary>200 yanıtının biçimi (<see cref="PaymentRequestBeginResponse"/>).</summary>
     public sealed record BeginResponse(Guid RecordId, string State, DateTimeOffset? LeaseUntil, List<string> Members);
@@ -225,6 +252,21 @@ public sealed class PaymentRequestTestKit
                 .SingleAsync(p => p.LicenseId == LicenseId && p.Id == copyId);
             row.MergedIntoId = Guid.ParseExact(into, "N");
             row.UpdatedAt = DateTimeOffset.UtcNow;
+        });
+
+    /// <summary>Verilen kayıtları aynı gruba alır (<c>GroupId</c>), grup senkronunun yazdığı gibi. Ödeme isteği
+    /// kayıtlarına dokunulmaz.</summary>
+    public Task GroupAsync(string groupId, params string[] ids) =>
+        Sales.WithDbAsync(async db =>
+        {
+            foreach (var id in ids)
+            {
+                var key = Guid.ParseExact(id, "N");
+                var row = await db.WpfCustomerProjections.IgnoreQueryFilters()
+                    .SingleAsync(p => p.LicenseId == LicenseId && p.Id == key);
+                row.GroupId = groupId;
+                row.UpdatedAt = DateTimeOffset.UtcNow;
+            }
         });
 
     /// <summary>Aynı yayıncının (aynı istemci ve kiracı) ikinci bir lisansı.</summary>

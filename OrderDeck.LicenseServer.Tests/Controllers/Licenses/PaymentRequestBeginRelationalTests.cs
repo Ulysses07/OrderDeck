@@ -16,7 +16,7 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
 /// <c>POST payment-requests/begin</c>'in eşzamanlılık ve harman sözleşmesi gerçek SQL Server'da — spec 2026-10-13 §6.4,
-/// DM6, M10, §10.1-8, -15, -16, -17, -18, -28 (begin). Kişi×kapsam ve üye×kapsam uygulama kilitleri, filtreli tekil
+/// DM6, M10, §10.1-8, -15, -16, -17, -18, -28 (begin), -29. Kişi×kapsam ve üye×kapsam uygulama kilitleri, filtreli tekil
 /// indeks (yarışın hakemi) ve SQL'in harf duyarsız, sondaki boşluğu yok sayan karşılaştırması InMemory'de yoktur.
 ///
 /// <para>Yarış sırayla kurulur (zamanlamayla değil): bir isteğin kira kaydı diske inmeden hemen önce kanca rakip isteği
@@ -378,6 +378,50 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
         asked.GetProperty("priors").EnumerateArray().Select(p => p.GetProperty("id").GetGuid()).Should().Equal(sending.Id);
     }
 
+    // ── §10.1-29: onay özeti ve geç commit ───────────────────────────────────
+
+    /// <summary>
+    /// §10.1-29, §6.4-e: commit sırası damga sırası değildir. Geri doldurma kilitsizdir ve kapanış anını (alış anı)
+    /// yazımından önce damgalar. Kayıt diske inmeden hemen önce kanca aynı kişi×kapsamda PC-A'nın yeniden başlayan
+    /// begin'ini koşturur: soru kaydı görmez, sorunun en yeni öncülü (PC-A'nın kendi kirası, begin'in anı) kayıttan sonra
+    /// damgalanmıştır. Onay 409'un <c>priorsDigest</c>'iyle gelir; küme değiştiği için özet tutmaz ve PC-B'nin kaydı
+    /// sorulur. Sorudaki en yeni kapanış anına dayanan bir zaman filigranı kaydı yutar, PC-B'nin gönderdiği istek
+    /// PC-A'dan ikinci kez giderdi.
+    /// </summary>
+    [Fact]
+    public async Task Sorudan_sonra_commit_edilen_erken_damgali_geri_doldurma_ozetle_yutulmaz()
+    {
+        var owner = Kit.NewId();
+        var old = await _kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record,
+            PaymentRequestState.Delivered, DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(-1),
+            netAmount: 50m);
+        var lease = await BeginOkAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner], confirmedPriorIds: [old.Id]));
+        var backfilled = Guid.NewGuid();
+        HttpResponseMessage? question = null;
+        _factory.Hook.ArmInjection(async () =>
+            question = await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner])));
+
+        var backfill = await _kit.BackfillAsync(Kit.BackfillBody(_pcB,
+            Kit.BackfillItem(backfilled, owner, [owner], DateTimeOffset.UtcNow, netAmount: 70m)));
+
+        backfill.StatusCode.Should().Be(HttpStatusCode.OK, await backfill.Content.ReadAsStringAsync());
+        _factory.Hook.Injected.Should().BeTrue("soru geri doldurmanın yazımından hemen önce gösterilmeli");
+        var asked = await AlreadyRequestedAsync(question!);
+        PriorIds(asked).Should().Equal(old.Id, lease.RecordId);
+        var late = await _kit.RecordAsync(backfilled);
+        var restarted = await _kit.RecordAsync(lease.RecordId);
+        late!.FinishedAt.Should().BeBefore(restarted!.FinishedAt!.Value, "geri doldurma sorudan önce damgaladı, sonra yazdı");
+
+        var confirm = await AlreadyRequestedAsync(await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner],
+            confirmedPriorsDigest: asked.GetProperty("priorsDigest").GetString())));
+
+        PriorIds(confirm).Should().Equal(old.Id, backfilled, lease.RecordId);
+        confirm.GetProperty("priorsDigest").GetString()
+            .Should().Be(Kit.ExpectedPriorsDigest([old.Id, backfilled, lease.RecordId]));
+        await BeginOkAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner],
+            confirmedPriorsDigest: confirm.GetProperty("priorsDigest").GetString()));
+    }
+
     // ── §10.1-18: stale-total küme karşılaştırması ve üye eşlemesi ──────────
 
     /// <summary>
@@ -490,6 +534,18 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
         resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
         return await Kit.ReadAsync(resp);
     }
+
+    /// <summary>409 <c>already-requested</c>; ProblemDetails gövdesi.</summary>
+    private static async Task<System.Text.Json.JsonElement> AlreadyRequestedAsync(HttpResponseMessage resp)
+    {
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict, await resp.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(resp);
+        problem.GetProperty("title").GetString().Should().Be("already-requested");
+        return problem;
+    }
+
+    private static List<Guid> PriorIds(System.Text.Json.JsonElement problem) =>
+        problem.GetProperty("priors").EnumerateArray().Select(p => p.GetProperty("id").GetGuid()).ToList();
 
     /// <summary>İki istekten tam olarak biri kirayı yazdı, öbürü 409 <c>in-progress-elsewhere</c> ile kazananı gördü; tek
     /// Sending satırı.</summary>

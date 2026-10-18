@@ -1,3 +1,6 @@
+using System.Buffers.Binary;
+using System.Buffers.Text;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -19,6 +22,10 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 /// <param name="ShippingSettingsVersion">Tutarın hesaplandığı lisans kargo ayarı sürümü (satır yoksa 0).</param>
 /// <param name="ConfirmedPriorIds">Kullanıcının "tekrar gönderilsin mi?" sorusunda onayladığı önceki kayıtlar; saklanmaz,
 /// özete girmez.</param>
+/// <param name="ConfirmedPriorsDigest">Kullanıcının onayladığı sorunun öncül kümesi özeti: <c>already-requested</c>'ın
+/// <c>priorsDigest</c>'i aynen (<see cref="PaymentRequestPriorsDigest"/>). Kişi×kapsamın öncül kümesi o sorudan beri
+/// değişmediyse hepsi onaylıdır; değiştiyse istek yeniden sorulur. Boyut sınırı yoktur. Saklanmaz, istek özetine girmez.
+/// Yoksa onay yalnız <paramref name="ConfirmedPriorIds"/>'tir.</param>
 public sealed record PaymentRequestBeginRequest(
     Guid? RecordId,
     string? OwnerId,
@@ -32,7 +39,8 @@ public sealed record PaymentRequestBeginRequest(
     List<Guid>? ConfirmedPriorIds,
     Guid? ReplicaId = null,
     int? Protocol = null,
-    int? SeenMode = null) : ISalesEnvelopeFields;
+    int? SeenMode = null,
+    string? ConfirmedPriorsDigest = null) : ISalesEnvelopeFields;
 
 /// <summary>
 /// <c>begin</c>'in 200 yanıtı (ilk kayıt ve yeniden oynatma): kaydın GÜNCEL hâli.
@@ -213,10 +221,10 @@ public static class PaymentRequestWire
 /// tutarlar iki ondalığa sabitlenir (<c>100</c> ile <c>100.00</c> aynı istektir). Alan sırası ya da JSON yazımı farklı
 /// iki gönderim aynı özeti verir.
 ///
-/// <para>Özete girmeyenler: kalp atışı alanları (<c>protocol</c>, <c>seenMode</c>) ve <c>confirmedPriorIds</c> (saklanmaz;
-/// yanıtı kaybolan isteğin yeniden gönderimi kullanıcının sonraki onayıyla gelebilir). Kopya özete girer: aynı Id'yi
-/// başka kopyanın göndermesi de çakışmadır. Sahip ve üyeler istemcinin ham yazımıyla girer: aradaki bir birleştirme
-/// yeniden gönderimi çakışmaya çevirmesin.</para>
+/// <para>Özete girmeyenler: kalp atışı alanları (<c>protocol</c>, <c>seenMode</c>), <c>confirmedPriorIds</c> ve
+/// <c>confirmedPriorsDigest</c> (saklanmaz; yanıtı kaybolan isteğin yeniden gönderimi kullanıcının sonraki onayıyla
+/// gelebilir). Kopya özete girer: aynı Id'yi başka kopyanın göndermesi de çakışmadır. Sahip ve üyeler istemcinin ham
+/// yazımıyla girer: aradaki bir birleştirme yeniden gönderimi çakışmaya çevirmesin.</para>
 /// </summary>
 public static class PaymentRequestHash
 {
@@ -297,4 +305,90 @@ public static class PaymentRequestHash
     }
 
     private static string Money(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
+}
+
+/// <summary>
+/// <c>already-requested</c>'ın öncül kümesi özeti (<c>priorsDigest</c>, §6.4-e) ve onu geri taşıyan
+/// <c>confirmedPriorsDigest</c>. Onay "kullanıcı tam olarak bu öncülleri gördü" demektir: <c>confirmedPriorIds</c>'in
+/// anlamı, boyut sınırı olmadan. Saate bağlı değildir; kümeye geç commit, birleştirme ya da grup değişimiyle katılan
+/// kayıt, kapanış anı ne olursa olsun özeti değiştirir.
+///
+/// <para><b>Hesap:</b> kişi×kapsamın <c>Delivered</c> ve <c>Unconfirmed</c> kayıtlarının Id'leri tekilleştirilir; her
+/// birinin RFC 9562 (büyük uçlu) 16 baytı, bu baytların sırasıyla (küçük harf "N" yazımının ordinal sırası; .NET'in
+/// <see cref="Guid.ToByteArray()"/> düzeni değil) art arda SHA-256'dan geçer. Yalnız Id'ler girer: durum ya da kapanış
+/// anı değişimi (geç <c>delivered</c>) özeti değiştirmez, Id listesi de o durumda yeniden sormaz.</para>
+///
+/// <para><b>Tel:</b> <c>v1.</c> + 32 baytın dolgusuz base64url'i (toplam 46 karakter), tek yazım. Başka her biçim
+/// <see cref="TryParse"/>'ta reddedilir (400 <c>invalid-priors-digest</c>).</para>
+/// </summary>
+public static class PaymentRequestPriorsDigest
+{
+    public const string Prefix = "v1.";
+
+    /// <summary>SHA-256 uzunluğu.</summary>
+    private const int HashLength = 32;
+
+    /// <summary>32 baytın dolgusuz base64url uzunluğu.</summary>
+    private const int EncodedLength = 43;
+
+    /// <summary>Id kümesinin teldeki özeti.</summary>
+    public static string Compute(IEnumerable<Guid> ids) => Format(Hash(ids));
+
+    /// <summary>Id kümesinin SHA-256'sı, kanonik sırayla; okuma sırası ve yinelenen Id özeti değiştirmez.</summary>
+    public static byte[] Hash(IEnumerable<Guid> ids)
+    {
+        var keys = ids.Distinct().Select(BigEndian).Order().ToArray();
+        var buffer = new byte[keys.Length * 16];
+        for (var i = 0; i < keys.Length; i++) BinaryPrimitives.WriteUInt128BigEndian(buffer.AsSpan(i * 16, 16), keys[i]);
+        return SHA256.HashData(buffer);
+    }
+
+    /// <summary>Özetin teldeki yazımı.</summary>
+    public static string Format(byte[] hash) => Prefix + Base64Url.EncodeToString(hash);
+
+    /// <summary>
+    /// Teldeki özeti çözer: <see cref="Prefix"/> + 43 karakter base64url, 32 bayt, tek yazım (dolgu, boşluk ya da artık
+    /// bitleri sıfır olmayan son karakter reddedilir). Bilinmeyen sürüm de biçim hatasıdır.
+    ///
+    /// <para>Tek yazım çözümden ÖNCE denetlenir: <see cref="Base64Url.TryDecodeFromChars"/> adına rağmen geçersiz
+    /// karakterde ve artık bitleri sıfır olmayan son karakterde <see cref="FormatException"/> atar (500 olurdu), boşluğu
+    /// da yok sayar.</para>
+    /// </summary>
+    public static bool TryParse(string? value, [NotNullWhen(true)] out byte[]? hash)
+    {
+        hash = null;
+        if (value is null || value.Length != Prefix.Length + EncodedLength
+            || !value.StartsWith(Prefix, StringComparison.Ordinal))
+            return false;
+
+        var encoded = value.AsSpan(Prefix.Length);
+        foreach (var c in encoded)
+            if (Sextet(c) < 0) return false;
+        // 43 karakter 258 bit taşır, özet 256: son karakterin alt iki biti sıfır olmalı.
+        if ((Sextet(encoded[^1]) & 0b11) != 0) return false;
+
+        var decoded = new byte[HashLength];
+        if (!Base64Url.TryDecodeFromChars(encoded, decoded, out var written) || written != HashLength) return false;
+        hash = decoded;
+        return true;
+    }
+
+    /// <summary>Base64url karakterinin 6 bitlik değeri; alfabe dışındaysa -1.</summary>
+    private static int Sextet(char c) => c switch
+    {
+        >= 'A' and <= 'Z' => c - 'A',
+        >= 'a' and <= 'z' => c - 'a' + 26,
+        >= '0' and <= '9' => c - '0' + 52,
+        '-' => 62,
+        '_' => 63,
+        _ => -1,
+    };
+
+    /// <summary>Id'nin RFC 9562 baytları tek sayı olarak: sayı sırası bayt sırasıdır.</summary>
+    private static UInt128 BigEndian(Guid id)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        id.TryWriteBytes(bytes, bigEndian: true, out _);
+        return BinaryPrimitives.ReadUInt128BigEndian(bytes);
+    }
 }

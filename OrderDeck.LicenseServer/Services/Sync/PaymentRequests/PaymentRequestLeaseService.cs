@@ -30,7 +30,8 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 ///   <c>in-progress-elsewhere</c> (makine bilinmiyor).</item>
 ///   <item>Kilit altında: (a) yeniden, (b) üyeler (409 <c>members-stale</c>), (c) süresi dolmuş ve bu kopyanın önceki
 ///   <c>Sending</c> kaydının <c>Unconfirmed</c> yapılması, (d) başka kopyanın canlı kirası (409
-///   <c>in-progress-elsewhere</c>), (e) onaylanmamış önceki istek (409 <c>already-requested</c>), (f) sunucu toplamı
+///   <c>in-progress-elsewhere</c>), (e) onaylanmamış önceki istek (409 <c>already-requested {priors, priorsDigest}</c>;
+///   onay Id listesiyle ya da öncül kümesinin özetiyle, <see cref="PaymentRequestPriorsDigest"/>), (f) sunucu toplamı
 ///   (409 <c>stale-total</c>), (g) kargo ayarı (409 <c>settings-stale</c>), (h) kiranın yazılması. (c)'nin yazımı (d)–(g)
 ///   retlerinde de kalır; (f) ve (g) hiçbir şey yazmaz.</item>
 /// </list>
@@ -53,7 +54,8 @@ public sealed class PaymentRequestLeaseService
     /// <summary>Kira süresi (§6.4-h): <c>LeaseUntil = StartedAt + 120 sn</c>.</summary>
     public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(120);
 
-    /// <summary>Onaylanmış önceki kayıtların en çok sayısı.</summary>
+    /// <summary>Id listesiyle onaylanmış önceki kayıtların en çok sayısı. Daha büyük küme öncül kümesi özetiyle onaylanır
+    /// (<c>confirmedPriorsDigest</c>, §6.4-e).</summary>
     public const int MaxConfirmedPriors = 500;
 
     /// <summary>Kayıt tablosunun birincil anahtarının adı: eşzamanlı aynı <c>recordId</c> bununla tanınır.</summary>
@@ -97,6 +99,7 @@ public sealed class PaymentRequestLeaseService
         bool RecipientPays,
         int ShippingSettingsVersion,
         IReadOnlySet<Guid> ConfirmedPriorIds,
+        byte[]? ConfirmedPriorsDigest,
         byte[] RequestHash)
     {
         public Guid ReplicaId => Envelope.ReplicaId;
@@ -264,9 +267,17 @@ public sealed class PaymentRequestLeaseService
         // (e) Onaylanmamış önceki istek: teslim edilmiş ya da sonucu bilinmeyen, iki türden de. Sıra liste ucununki:
         // kapanış anı (sunucu saati), eşitlikte istek anı, sonra Id. Kirasız kaydın istek anı istemcinin saatidir; sıranın
         // ilk anahtarı olsaydı iki bilgisayarın saati karşılaştırılırdı.
-        var priors = related
-            .Where(r => r.State is PaymentRequestState.Delivered or PaymentRequestState.Unconfirmed
-                && !begin.ConfirmedPriorIds.Contains(r.Id))
+        //
+        // İki onay "ya da" ile birleşir: Id listesinin dışında öncül kalmadıysa geçer; kaldıysa onay özeti BÜTÜN öncül
+        // kümesinin (Id listesiyle onaylananlar dahil) bugünkü özetine eşit olmalıdır. Özet Id listesine bağlı olmadığı
+        // için onay turunda listeyi değiştiren istemci (500'de kesilmiş birikimli liste) tutan özeti bozamaz; soru döngüye
+        // girmez. Küme sorudan beri değiştiyse (yeni kapanış, geç commit, birleştirme, grup değişimi) özet tutmaz ve
+        // istek yeniden sorulur.
+        var open = related
+            .Where(r => r.State is PaymentRequestState.Delivered or PaymentRequestState.Unconfirmed)
+            .ToList();
+        var priors = open
+            .Where(r => !begin.ConfirmedPriorIds.Contains(r.Id))
             .Select(r => new PaymentRequestPrior(
                 r.Id,
                 r.MachineName,
@@ -282,13 +293,28 @@ public sealed class PaymentRequestLeaseService
             .ToList();
         if (priors.Count > 0)
         {
+            var digest = PaymentRequestPriorsDigest.Hash(open.Select(r => r.Id));
+            if (begin.ConfirmedPriorsDigest is not { } confirmed || !confirmed.AsSpan().SequenceEqual(digest))
+            {
+                _log.LogInformation(
+                    "payment-requests/begin: onaylanmamış önceki istek, 409 already-requested — {Priors} kayıt, onay özeti "
+                    + "{DigestOutcome}, {Expired} kira Unconfirmed yapıldı (license={LicenseId}, replica={ReplicaId}, "
+                    + "record={RecordId})",
+                    priors.Count, begin.ConfirmedPriorsDigest is null ? "gelmedi" : "tutmadı", expired, licenseId,
+                    begin.ReplicaId, begin.RecordId);
+                return Fail(StatusCodes.Status409Conflict, CodeAlreadyRequested,
+                    "Bu kişiden bu kapsamda daha önce ödeme istendi; tekrar gönderilsin mi?",
+                    new Dictionary<string, object?>
+                    {
+                        ["priors"] = priors,
+                        ["priorsDigest"] = PaymentRequestPriorsDigest.Format(digest),
+                    });
+            }
+
             _log.LogInformation(
-                "payment-requests/begin: onaylanmamış önceki istek, 409 already-requested — {Priors} kayıt, {Expired} kira "
-                + "Unconfirmed yapıldı (license={LicenseId}, replica={ReplicaId}, record={RecordId})",
-                priors.Count, expired, licenseId, begin.ReplicaId, begin.RecordId);
-            return Fail(StatusCodes.Status409Conflict, CodeAlreadyRequested,
-                "Bu kişiden bu kapsamda daha önce ödeme istendi; tekrar gönderilsin mi?",
-                new Dictionary<string, object?> { ["priors"] = priors });
+                "payment-requests/begin: öncül kümesi özetle onaylandı — {Priors} kayıt Id listesinin dışında "
+                + "(license={LicenseId}, replica={ReplicaId}, record={RecordId})",
+                priors.Count, licenseId, begin.ReplicaId, begin.RecordId);
         }
 
         // (f) Sunucu toplamı: istemcinin sipariş kümesi ve ürün toplamı sunucununkiyle aynı olmalı (M11).
@@ -709,6 +735,13 @@ public sealed class PaymentRequestLeaseService
             return Invalid(CodeInvalidConfirmedPriors,
                 $"confirmedPriorIds en çok {MaxConfirmedPriors} dolu Id taşır.", out failure);
 
+        byte[]? priorsDigest = null;
+        if (request.ConfirmedPriorsDigest is { } digestText
+            && !PaymentRequestPriorsDigest.TryParse(digestText, out priorsDigest))
+            return Invalid(CodeInvalidPriorsDigest,
+                "confirmedPriorsDigest already-requested'in priorsDigest'i olmalı (v1. + 43 karakter base64url).",
+                out failure);
+
         var orders = rawOrders.Distinct().ToList();
         var productTotal = request.ProductTotal!.Value;
         var totalBeforeBalance = request.TotalBeforeBalance!.Value;
@@ -724,6 +757,7 @@ public sealed class PaymentRequestLeaseService
             recipientPays,
             shippingVersion,
             (request.ConfirmedPriorIds ?? []).ToHashSet(),
+            priorsDigest,
             PaymentRequestHash.Compute(
                 envelope.ReplicaId, ownerId, members, scopeKey, orders, productTotal, totalBeforeBalance, recipientPays,
                 shippingVersion));
