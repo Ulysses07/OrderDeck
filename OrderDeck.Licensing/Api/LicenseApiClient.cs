@@ -369,6 +369,225 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         }
     }
 
+    // ─── Ödeme isteği kirası ve kayıtları (spec 2026-10-13 §4.7, §6.4) ──────
+    //
+    // Bu altı uç FIRLATMAZ (PostSalesCommandAsync deseni): her sonuç çağıranın kararıdır ve
+    // PaymentRequestHttpResult'ta gelir — Ok (eksiksiz 200), Problem (400/409 başlıklı ve ek üyeleri eksiksiz ret;
+    // finish'in 404 record-not-found'u), EndpointMissing (öbür 404'ler), Offline (ağ hatası, zaman aşımı), Failed
+    // (5xx, öbür kodlar, başlıksız ya da eksik ret, bozuk 200). Yalnız ct iptali fırlar. Sunucunun 400 vereceği sınır
+    // dışı istek (PaymentRequestLimits) gönderilmeden fırlatılır: çağıran hatasıdır.
+
+    /// <summary>
+    /// <c>POST payment-requests/begin</c> (§6.4 istemci adımı 3): kişi×kapsamın kirası. 409'lar ek üyeleriyle
+    /// <see cref="PaymentRequestTransport.Problem"/>: <c>already-requested {priors, priorsDigest}</c> (#523 öncesi sunucuda
+    /// özet yok), <c>members-stale {members}</c>, <c>stale-total {serverTotal, liveElsewhere}</c>, <c>settings-stale
+    /// {current}</c>, <c>in-progress-elsewhere {machine, since, recordId}</c> (kilit zaman aşımında boş). Ek üyesi eksik
+    /// ret ve yanıtın kaydı başka bir Id taşıyan 200'ü <see cref="PaymentRequestTransport.Failed"/>.
+    /// <para><see cref="PaymentRequestBeginRequest.ConfirmedPriorIds"/> &gt; 500 ya da üye sayısı 1–100 dışında istek
+    /// gitmeden <see cref="ArgumentOutOfRangeException"/>.</para>
+    /// </summary>
+    public Task<PaymentRequestHttpResult<PaymentRequestBeginResponse>> PostPaymentRequestBeginAsync(
+        Guid licenseId, PaymentRequestBeginRequest req, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(req);
+        GuardMembers(req.MemberIds, $"{nameof(req)}.{nameof(req.MemberIds)}");
+        if (req.ConfirmedPriorIds is { Count: > PaymentRequestLimits.MaxConfirmedPriorIds } confirmed)
+            throw new ArgumentOutOfRangeException($"{nameof(req)}.{nameof(req.ConfirmedPriorIds)}", confirmed.Count,
+                $"confirmedPriorIds en çok {PaymentRequestLimits.MaxConfirmedPriorIds} Id taşır; fazlası gönderilmez, "
+                + "bütün kümeyi onay özeti onaylar (sunucu 400 invalid-confirmed-priors verirdi).");
+
+        return PaymentRequestCallAsync<PaymentRequestBeginResponse>(
+            token => SendJsonAsync(HttpMethod.Post, $"/api/v1/licenses/{licenseId}/payment-requests/begin", req, token),
+            r => r.RecordId == req.RecordId && !string.IsNullOrEmpty(r.State)
+                 && r.Members is not null && !r.Members.Any(m => m is null),
+            IsCompleteBeginProblem,
+            ct);
+    }
+
+    /// <summary>
+    /// <c>POST payment-requests/{id}/finish</c> (§6.4 "Akışın sonu"): kiranın sonucu, iki kipte. Kayıt bu lisansta yoksa
+    /// 404 <c>record-not-found</c> <see cref="PaymentRequestTransport.Problem"/>'dir (uç yok değil); yanıtın kaydı başka bir
+    /// Id taşıyorsa <see cref="PaymentRequestTransport.Failed"/>.
+    /// </summary>
+    public Task<PaymentRequestHttpResult<PaymentRequestFinishResponse>> PostPaymentRequestFinishAsync(
+        Guid licenseId, Guid recordId, PaymentRequestFinishRequest req, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(req);
+        return PaymentRequestCallAsync<PaymentRequestFinishResponse>(
+            token => SendJsonAsync(HttpMethod.Post,
+                $"/api/v1/licenses/{licenseId}/payment-requests/{recordId}/finish", req, token),
+            r => r.RecordId == recordId && !string.IsNullOrEmpty(r.State),
+            _ => true,
+            ct);
+    }
+
+    /// <summary>
+    /// <c>GET payment-requests?scopeKey&amp;memberIds</c> (§6.4 "Teslim kayıtlarının okunması"): kişi×kapsamın kayıtları,
+    /// salt okunur. <c>memberIds</c> yinelenen anahtarla gider (sunucu <c>List&lt;string&gt;</c> okur), değerler kaçışlı.
+    /// Boş liste "kayıt yok" demektir; bu yüzden bozuk gövde (<c>records</c>'suz, literal <c>null</c> öğe, sipariş kümesi
+    /// olmayan öğe) boş listeye çevrilmez, <see cref="PaymentRequestTransport.Failed"/> olur.
+    /// <para>Üye sayısı 1–100 dışında istek gitmeden <see cref="ArgumentOutOfRangeException"/>.</para>
+    /// </summary>
+    public Task<PaymentRequestHttpResult<PaymentRequestListResponse>> GetPaymentRequestsAsync(
+        Guid licenseId, string scopeKey, IReadOnlyList<string> memberIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scopeKey);
+        GuardMembers(memberIds, nameof(memberIds));
+
+        var qs = "?scopeKey=" + Uri.EscapeDataString(scopeKey)
+                 + string.Concat(memberIds.Select(m => "&memberIds=" + Uri.EscapeDataString(m)));
+        return PaymentRequestCallAsync<PaymentRequestListResponse>(
+            token => SendGetAsync($"/api/v1/licenses/{licenseId}/payment-requests{qs}", token),
+            r => r.Records is not null
+                 && r.Records.All(i => i is not null && i.Id != Guid.Empty && i.OrderIds is not null
+                                       && !string.IsNullOrEmpty(i.Kind) && !string.IsNullOrEmpty(i.State)),
+            _ => true,
+            ct);
+    }
+
+    /// <summary>
+    /// <c>POST payment-requests/backfill</c> (§6.4 "Ödeme geçmişi"): kirasız kayıtlar, moddan bağımsız. Yanıt öğe başına
+    /// ve istekteki sırayla gelir; sayısı ya da Id'leri istekle hizalanmayan, durumu boş sonuç
+    /// <see cref="PaymentRequestTransport.Failed"/> (yineleme zararsız).
+    /// <para>Parti 1–200 ya da bir öğenin üye sayısı 1–100 dışında istek gitmeden
+    /// <see cref="ArgumentOutOfRangeException"/>.</para>
+    /// </summary>
+    public Task<PaymentRequestHttpResult<PaymentRequestBackfillResponse>> PostPaymentRequestBackfillAsync(
+        Guid licenseId, PaymentRequestBackfillRequest req, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(req);
+        if (req.Records is not { Count: > 0 and <= PaymentRequestLimits.MaxBackfillBatch } records)
+            throw new ArgumentOutOfRangeException($"{nameof(req)}.{nameof(req.Records)}", req.Records?.Count,
+                $"backfill partisi 1–{PaymentRequestLimits.MaxBackfillBatch} kayıt taşır (sunucu 400 invalid-batch verirdi).");
+        foreach (var record in records)
+        {
+            ArgumentNullException.ThrowIfNull(record, $"{nameof(req)}.{nameof(req.Records)}");
+            GuardMembers(record.MemberIds, $"{nameof(req)}.{nameof(req.Records)}.{nameof(record.MemberIds)}");
+        }
+
+        return PaymentRequestCallAsync<PaymentRequestBackfillResponse>(
+            token => SendJsonAsync(HttpMethod.Post, $"/api/v1/licenses/{licenseId}/payment-requests/backfill", req, token),
+            r => r.Records is not null
+                 && r.Records.Count == records.Count
+                 && r.Records.Select((result, i) => result is not null && result.RecordId == records[i].RecordId
+                                                    && !string.IsNullOrEmpty(result.Status)).All(ok => ok),
+            _ => true,
+            ct);
+    }
+
+    // ─── Lisans geneli kargo ayarı (spec 2026-10-13 §4.8, §6.2) ─────────────
+
+    /// <summary><c>GET shipping-settings</c>: lisansın ayarı ve sürümü; satır yoksa sürüm 0 ve boş değerler. Fırlatmaz
+    /// (ödeme isteği uçlarının sonucu).</summary>
+    public Task<PaymentRequestHttpResult<ShippingSettingsSnapshot>> GetShippingSettingsAsync(
+        Guid licenseId, CancellationToken ct = default)
+        => PaymentRequestCallAsync<ShippingSettingsSnapshot>(
+            token => SendGetAsync($"/api/v1/licenses/{licenseId}/shipping-settings", token),
+            _ => true,
+            _ => true,
+            ct);
+
+    /// <summary>
+    /// <c>PUT shipping-settings</c> (§4.8): WPF ayar ekranı, yalnız mod On'da. Sürüm eskiyse 409 <c>stale {current}</c>
+    /// <see cref="PaymentRequestTransport.Problem"/>'dir (<c>current</c>'sız <c>stale</c> başarısız); mod Off'ta 409
+    /// <c>mode-off</c>. Fırlatmaz.
+    /// </summary>
+    public Task<PaymentRequestHttpResult<ShippingSettingsSnapshot>> PutShippingSettingsAsync(
+        Guid licenseId, ShippingSettingsPutRequest req, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(req);
+        return PaymentRequestCallAsync<ShippingSettingsSnapshot>(
+            token => SendJsonAsync(HttpMethod.Put, $"/api/v1/licenses/{licenseId}/shipping-settings", req, token),
+            _ => true,
+            p => p.Code != PaymentRequestProblemCodes.Stale || p.Current is not null,
+            ct);
+    }
+
+    /// <summary>Üye listesi 1–<see cref="PaymentRequestLimits.MaxMembers"/>: sunucu sınırı (<c>invalid-members</c>).</summary>
+    private static void GuardMembers(IReadOnlyList<string>? memberIds, string paramName)
+    {
+        if (memberIds is not { Count: > 0 and <= PaymentRequestLimits.MaxMembers })
+            throw new ArgumentOutOfRangeException(paramName, memberIds?.Count,
+                $"memberIds 1–{PaymentRequestLimits.MaxMembers} üye taşır (sunucu 400 invalid-members verirdi).");
+    }
+
+    /// <summary><c>begin</c>'in ek üyeli retleri ancak ek üyeleri gelince kullanılabilir: soru öncülsüz, yeniden deneme
+    /// sunucu grubu, toplamı ya da ayarı olmadan kurulamaz. Öncülün <c>priorsDigest</c>'i #523 öncesi sunucuda yoktur ve
+    /// zorunlu değildir; <c>in-progress-elsewhere</c>'in alanları kilit zaman aşımında boştur.</summary>
+    private static bool IsCompleteBeginProblem(PaymentRequestProblem p) => p.Code switch
+    {
+        PaymentRequestProblemCodes.AlreadyRequested => p.Priors is not null,
+        PaymentRequestProblemCodes.MembersStale => p.Members is not null,
+        PaymentRequestProblemCodes.StaleTotal => p.ServerTotal is not null,
+        PaymentRequestProblemCodes.SettingsStale => p.Current is not null,
+        _ => true,
+    };
+
+    /// <summary>
+    /// Ödeme isteği ve kargo ayarı uçlarının ortak taşıma eşlemesi (yukarıdaki blok yorumu). <paramref name="isComplete"/>
+    /// 200 gövdesinin, <paramref name="isCompleteProblem"/> ucun ek üyeli retlerinin eksiksizliğini denetler; listelerde
+    /// literal <c>null</c> öğe her retde bozuk sayılır.
+    /// </summary>
+    private async Task<PaymentRequestHttpResult<TResp>> PaymentRequestCallAsync<TResp>(
+        Func<CancellationToken, Task<HttpResponseMessage>> send,
+        Func<TResp, bool> isComplete,
+        Func<PaymentRequestProblem, bool> isCompleteProblem,
+        CancellationToken ct)
+        where TResp : class
+    {
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await send(ct).ConfigureAwait(false);
+        }
+        catch (LicenseApiNetworkException ex)
+        {
+            return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Offline, 0, Error: ex.Message);
+        }
+
+        using (resp)
+        {
+            var status = (int)resp.StatusCode;
+            if (resp.IsSuccessStatusCode)
+            {
+                TResp? body;
+                try { body = await DeserializeAsync<TResp?>(resp, ct).ConfigureAwait(false); }
+                catch (JsonException ex)
+                {
+                    return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Failed, status,
+                        Error: $"Yanıt çözümlenemedi: {ex.Message}");
+                }
+                if (body is null || !isComplete(body))
+                    return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Failed, status,
+                        Error: "Yanıt bozuk geldi (gövde, liste, öğe ya da kayıt Id'si eksik/uyumsuz).");
+                return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Ok, status, Response: body);
+            }
+
+            if (status is (int)HttpStatusCode.BadRequest or (int)HttpStatusCode.NotFound or (int)HttpStatusCode.Conflict)
+            {
+                PaymentRequestProblem? problem = null;
+                try { problem = await DeserializeAsync<PaymentRequestProblem?>(resp, ct).ConfigureAwait(false); }
+                catch (JsonException) { /* başlıksız sayılır */ }
+
+                if (status == (int)HttpStatusCode.NotFound)
+                    return problem?.Code == PaymentRequestProblemCodes.RecordNotFound
+                        ? new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Problem, status, Problem: problem)
+                        : new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.EndpointMissing, status);
+
+                if (!string.IsNullOrEmpty(problem?.Code)
+                    && problem.Priors?.Any(p => p is null) != true
+                    && problem.Members?.Any(m => m is null) != true
+                    && problem.LiveElsewhere?.Any(s => s is null) != true
+                    && isCompleteProblem(problem))
+                    return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Problem, status, Problem: problem);
+                return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Failed, status,
+                    Error: $"HTTP {status} başlıklı ya da ek üyeleri eksiksiz bir ProblemDetails taşımıyor.");
+            }
+
+            return new PaymentRequestHttpResult<TResp>(PaymentRequestTransport.Failed, status, Error: $"HTTP {status}");
+        }
+    }
+
     // ─── WhatsApp template sync (Faz 2, 2026-05-15) ───────────────────────
 
     /// <summary>PaymentSettings'in WhatsApp template'lerini server'a push'lar.
@@ -615,12 +834,32 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             HttpStatusCode.NotFound, nullRequiresTitle: "transaction-not-found");
 
     /// <summary>WPF "Ödeme iste" sonrası bakiye düşüşünü commit eder.
-    /// Server min(Amount, balance, productTotal) ile capped uygular.</summary>
+    /// Server min(Amount, balance, productTotal) ile capped uygular.
+    ///
+    /// <para>Spec 2026-10-13 §6.6: mod On'da kapsamda geri alınmamış düşüm varsa 409 <c>scope-has-deduction</c> tipli
+    /// <see cref="ScopeHasDeductionException"/> olur (ek üyeleri eksikse bugünkü gibi
+    /// <see cref="ValidationException"/>). Öbür hatalar bugünkü gibi: kilit zaman aşımı 409 <c>stale</c> dahil 4xx
+    /// <see cref="ValidationException"/> (<c>Code</c> = başlık).</para></summary>
     public async Task<CustomerBalanceApplyResponse> ApplyBalanceAsync(
         Guid licenseId, CustomerBalanceApplyRequest req, CancellationToken ct = default)
     {
-        return await PostJsonExpectingJsonAsync<CustomerBalanceApplyRequest, CustomerBalanceApplyResponse>(
-            $"/api/v1/licenses/{licenseId}/customer-balance/apply", req, ct);
+        using var resp = await SendJsonAsync(HttpMethod.Post, $"/api/v1/licenses/{licenseId}/customer-balance/apply", req, ct);
+        if (resp.IsSuccessStatusCode)
+            return (await DeserializeAsync<CustomerBalanceApplyResponse>(resp, ct))!;
+        if (resp.StatusCode != HttpStatusCode.Conflict)
+        {
+            await ThrowMappedAsync(resp);
+            throw new InvalidOperationException("ThrowMappedAsync her zaman fırlatır."); // ulaşılmaz
+        }
+
+        // 409 gövdesi bir kez okunur (içerik akışı ikinci okumada boş döner); eşleme ThrowMappedAsync'inkiyle aynı.
+        ApplyProblemPayload? problem = null;
+        try { problem = await DeserializeAsync<ApplyProblemPayload>(resp, ct); }
+        catch (JsonException) { /* problem+json değil — başlıksız */ }
+        if (problem is { Title: ScopeHasDeductionException.ProblemCode, TransactionId: { } transactionId,
+                AppliedAmount: { } appliedAmount, ProductTotal: { } productTotal })
+            throw new ScopeHasDeductionException(transactionId, appliedAmount, productTotal, problem.Detail);
+        throw MapProblem((int)resp.StatusCode, problem?.Title, problem?.Detail);
     }
 
     /// <summary>Bir purchase-deduction satırını geri alır (revizyon akışı, K2).
@@ -918,6 +1157,28 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         }
     }
 
+    /// <summary>Gövdesiz GET, <see cref="SendJsonAsync{TReq}"/>'in 401 yenileme yoluyla: yanıtı çağırana bırakır, ağ hatası
+    /// ve zaman aşımı <see cref="LicenseApiNetworkException"/>. Fırlatmayan uçlar (ödeme isteği listesi, kargo ayarı)
+    /// kullanır.</summary>
+    private async Task<HttpResponseMessage> SendGetAsync(string path, CancellationToken ct)
+    {
+        var canRefresh = OnUnauthorized is not null && !path.StartsWith("/api/v1/auth/");
+        for (var attempt = 0; ; attempt++)
+        {
+            HttpResponseMessage resp;
+            try { resp = await _http.GetAsync(path, ct); }
+            catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+            if (resp.StatusCode != HttpStatusCode.Unauthorized || attempt > 0 || !canRefresh)
+                return resp;
+
+            // Yenileme başarısızsa da bir kez daha sorulur: çağıran belirli bir 401 görür (SendJsonAsync gibi).
+            resp.Dispose();
+            await OnUnauthorized!(ct);
+        }
+    }
+
     private static async Task<T?> DeserializeAsync<T>(HttpResponseMessage resp, CancellationToken ct)
     {
         var stream = await resp.Content.ReadAsStreamAsync(ct);
@@ -941,17 +1202,28 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             // Body wasn't problem+json — fall through with title=null
         }
 
-        // Map by (status, title)
-        if (status == 401) throw new InvalidCredentialsException(detail ?? "E-posta veya şifre yanlış");
-        if (status == 403 && title == "email-not-confirmed") throw new EmailNotConfirmedException(detail ?? "E-posta doğrulanmamış");
-        if (status == 409 && title == "slot-full") throw new SlotFullException(detail ?? "Slot dolu");
-        if (status == 409 && title == "license-revoked") throw new LicenseRevokedException(detail ?? "Lisans iptal");
-        if (status == 409 && title == "license-expired") throw new LicenseExpiredException(detail ?? "Lisans süresi dolmuş");
-        if (status >= 400 && status < 500)
-            throw new ValidationException(title ?? $"http-{status}", detail ?? $"HTTP {status}");
+        throw MapProblem(status, title, detail);
+    }
 
-        throw new LicenseApiUnknownException(status, detail ?? $"HTTP {status}");
+    /// <summary><see cref="ThrowMappedAsync"/>'in (durum, başlık) eşlemesi; gövdeyi kendisi okuyan çağıran (apply) aynı
+    /// istisnayı buradan alır.</summary>
+    private static LicenseApiException MapProblem(int status, string? title, string? detail)
+    {
+        // Map by (status, title)
+        if (status == 401) return new InvalidCredentialsException(detail ?? "E-posta veya şifre yanlış");
+        if (status == 403 && title == "email-not-confirmed") return new EmailNotConfirmedException(detail ?? "E-posta doğrulanmamış");
+        if (status == 409 && title == "slot-full") return new SlotFullException(detail ?? "Slot dolu");
+        if (status == 409 && title == "license-revoked") return new LicenseRevokedException(detail ?? "Lisans iptal");
+        if (status == 409 && title == "license-expired") return new LicenseExpiredException(detail ?? "Lisans süresi dolmuş");
+        if (status >= 400 && status < 500)
+            return new ValidationException(title ?? $"http-{status}", detail ?? $"HTTP {status}");
+
+        return new LicenseApiUnknownException(status, detail ?? $"HTTP {status}");
     }
 
     private sealed record ProblemPayload(string? Title, string? Detail, int? Status);
+
+    /// <summary><c>customer-balance/apply</c>'ın 409 gövdesi: <c>scope-has-deduction</c>'ın ek üyeleriyle (§6.6).</summary>
+    private sealed record ApplyProblemPayload(
+        string? Title, string? Detail, Guid? TransactionId, decimal? AppliedAmount, decimal? ProductTotal);
 }
