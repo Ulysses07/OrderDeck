@@ -50,9 +50,10 @@ public sealed record SalesPendingConversion(int Converted, int Dropped, int Rema
 /// değil — sayılı uyarı (<see cref="SalesCommandMessages.PrintUnrecordedModeOff"/>), <c>SalesConflictLog</c>'a iz ve
 /// günlükte sayı. Yerel yazım denenmez, ABORT yok.</para>
 ///
-/// <para><b>Yeniden koşma</b> (<see cref="Resume"/>): açılışta (AppHost, hiçbir gönderimden önce) ve her satış akışı
-/// turunun başında — yerel <c>Mode = 0</c> ∧ <c>PendingSalesCommand</c> dolu ise 3. adım yeniden koşar (süreç 2. ile 3.
-/// adım arasında kapanmış). Görülen kip o ana kadar 1 kalır (<see cref="SalesSyncStateRepository.GetSeenMode"/>).</para>
+/// <para><b>Yeniden koşma</b> (<see cref="Resume"/>): açılışta (AppHost, hiçbir gönderimden önce —
+/// <see cref="SalesChangesPullService.ResumeModeOffAtStartup"/>: sonuç kabuk abone olunca şeride gider) ve her satış
+/// akışı turunun başında — yerel <c>Mode = 0</c> ∧ <c>PendingSalesCommand</c> dolu ise 3. adım yeniden koşar (süreç 2.
+/// ile 3. adım arasında kapanmış). Görülen kip o ana kadar 1 kalır (<see cref="SalesSyncStateRepository.GetSeenMode"/>).</para>
 ///
 /// <para>Günlük yalnız kimlik, tür ve sayı taşır.</para>
 /// </summary>

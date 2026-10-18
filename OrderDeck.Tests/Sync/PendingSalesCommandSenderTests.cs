@@ -118,6 +118,29 @@ public sealed class PendingSalesCommandSenderTests : IDisposable
     }
 
     [Fact]
+    public async Task Abonesi_yokken_gelen_kalici_ret_ilk_aboneye_bir_kez_iletilir()
+    {
+        _bed.ModeOn();
+        var pull = _bed.CreatePull();
+        var (_, _, labels) = _bed.OwnResidual();
+        QueueCancel(labels);
+        _bed.Server.EnqueueProblem(FakeSalesServer.Commands, 409, "content-conflict");
+
+        // Kabuk henüz abone değil: açılışın ilk turu kabuk kurulmadan biter.
+        (await pull.FlushPendingSalesCommandsAsync(CancellationToken.None)).Dropped.Should().Be(1);
+
+        var first = new TaskCompletionSource<PendingSalesCommandsSettled>(TaskCreationOptions.RunContinuationsAsynchronously);
+        pull.PendingCommandsSettled += (_, e) => first.TrySetResult(e);
+        var settled = await first.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        settled.Warnings.Should().ContainSingle().Which.Should().StartWith("1 etiketin bekleyen iptali sunucuda işlenemedi:");
+
+        var late = new List<PendingSalesCommandsSettled>();
+        pull.PendingCommandsSettled += (_, e) => { lock (late) late.Add(e); };
+        await Task.Delay(300);
+        lock (late) late.Should().BeEmpty("saklanan sonuç yalnız ilk aboneye, bir kez");
+    }
+
+    [Fact]
     public async Task Stale_satirlari_tazeler_ve_tam_bir_kez_yeniden_dener()
     {
         _bed.ModeOn();

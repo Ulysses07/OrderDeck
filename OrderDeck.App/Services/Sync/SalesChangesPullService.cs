@@ -213,6 +213,13 @@ public sealed class SalesChangesPullService
     /// <summary>Bu tur <c>mode-off</c> isteklerini sonuçlandırdı (tur kilidi altında yazılır).</summary>
     private bool _modeOffSettled;
 
+    /// <summary><see cref="PendingCommandsSettled"/>'ın aboneleri ve abonesi yokken yükselen dikkat isteyen sonuçlar
+    /// (ilk aboneye bir kez). Üst sınır yalnız güvenlik: kabuk açılışta bir kez abone olur, arada birkaç sonuç olur.</summary>
+    private readonly Lock _settledGate = new();
+    private EventHandler<PendingSalesCommandsSettled>? _pendingCommandsSettled;
+    private readonly List<PendingSalesCommandsSettled> _unclaimedSettled = new();
+    private const int MaxUnclaimedSettled = 32;
+
     private readonly record struct PassResult(
         SalesPullOutcome Outcome, string? BlockedItemId = null, int Waiting = 0, string? BlockedKind = null);
 
@@ -262,7 +269,7 @@ public sealed class SalesChangesPullService
         _shipmentPush = shipmentPush;
         _shipments = shipments;
         if (_pendingCommands is not null)
-            _pendingCommands.Settled += (_, e) => PendingCommandsSettled?.Invoke(this, e);
+            _pendingCommands.Settled += (_, e) => RaisePendingCommandsSettled(e);
         // W2-11 (§5.3 mode-off): komut ucu modun kapandığını söyledi — state hemen okunur, Off turu başlar.
         if (commands is not null) commands.ModeOffDetected += (_, _) => RequestModeOffRound();
         _api = api;
@@ -293,9 +300,36 @@ public sealed class SalesChangesPullService
     /// <see cref="HandoverStallTracker"/>). Durum satırı ve dikkat sayacı okur; mod Off'ta boş.</summary>
     public IReadOnlyList<StuckHandover> StuckHandovers => _stuckHandovers;
 
-    /// <summary>Bekleyen komutların sonucu (<see cref="PendingSalesCommandSender.Settled"/>): "kâğıtları imha et" ve
-    /// kalıcı ret uyarısı (§5.5). Gönderenin iş parçacığında; dinleyici arayüzü dispatcher'a taşımalı.</summary>
-    public event EventHandler<PendingSalesCommandsSettled>? PendingCommandsSettled;
+    /// <summary>
+    /// Bekleyen komutların sonucu (<see cref="PendingSalesCommandSender.Settled"/>, Off turunun 3. adımı): "kâğıtları imha
+    /// et", kalıcı ret ve başka bilgisayarın düşen baskı onayının sayılı uyarısı (§5.5). Gönderenin iş parçacığında;
+    /// dinleyici arayüzü dispatcher'a taşımalı. Abonesi yokken yükselen dikkat isteyen sonuç (açılıştaki çeviri,
+    /// <see cref="ResumeModeOffAtStartup"/>; kabuk kurulmadan biten ilk tur) saklanır ve İLK aboneye bir kez, iş parçacığı
+    /// havuzundan iletilir — abonenin kurucusuna yeniden girilmez, şerit sessizce boş kalmaz.
+    /// </summary>
+    public event EventHandler<PendingSalesCommandsSettled>? PendingCommandsSettled
+    {
+        add
+        {
+            if (value is null) return;
+            PendingSalesCommandsSettled[] backlog;
+            lock (_settledGate)
+            {
+                _pendingCommandsSettled += value;
+                backlog = _unclaimedSettled.ToArray();
+                _unclaimedSettled.Clear();
+            }
+            if (backlog.Length == 0) return;
+            _ = Task.Run(() =>
+            {
+                foreach (var settled in backlog) DeliverPendingCommandsSettled(value, settled);
+            });
+        }
+        remove
+        {
+            lock (_settledGate) _pendingCommandsSettled -= value;
+        }
+    }
 
     /// <summary>Mod On'un ilk yetişmesi tamamlandı (§8.4-4): açılış başına bir kez, turun iş parçacığında. Kabuk üstüne
     /// yazım sayısı 0'dan büyükse bir kez uyarır (§5.4); dinleyici arayüzü dispatcher'a taşımalı. Dinleyicinin hatası
@@ -411,6 +445,15 @@ public sealed class SalesChangesPullService
             catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: mode-off sonrası tur düştü; sonraki turda yeniden"); }
         });
     }
+
+    /// <summary>
+    /// Açılışta, arka plan işlerinden ve kabuktan ÖNCE (AppHost; §8.5, W2-11): <c>disable</c> turu 2. ile 3. adım arasında
+    /// kesildiyse (yerel kip 0, bekleyen satış komutu dolu) 3. adım hiçbir gönderimden önce yeniden koşar — turun başındaki
+    /// adımın aynısı (<see cref="SalesModeCoordinator.ResumeModeOff"/>; hatası açılışı durdurmaz, her tur yeniden dener).
+    /// Sonucu (imha edilecek kâğıt, başka bilgisayarın düşen baskı onayının sayılı uyarısı) kabuk henüz abone değilken
+    /// yükselir; <see cref="PendingCommandsSettled"/> onu saklar ve ilk aboneye iletir.
+    /// </summary>
+    public void ResumeModeOffAtStartup() => ResumeModeOff();
 
     public async Task<SalesPullOutcome> TourOnceAsync(CancellationToken ct)
     {
@@ -590,9 +633,36 @@ public sealed class SalesChangesPullService
         RaiseSalesChanged(resumed.Settled.ChangedLabelIds, Array.Empty<string>(), Array.Empty<string>());
     }
 
+    /// <summary>Sonucu abonelere iletir; abone yoksa dikkat isteyen sonucu ilk aboneye saklar
+    /// (<see cref="PendingCommandsSettled"/>).</summary>
     private void RaisePendingCommandsSettled(PendingSalesCommandsSettled settled)
     {
-        try { PendingCommandsSettled?.Invoke(this, settled); }
+        EventHandler<PendingSalesCommandsSettled>? handlers;
+        var overflow = false;
+        lock (_settledGate)
+        {
+            handlers = _pendingCommandsSettled;
+            if (handlers is null)
+            {
+                if (!settled.NeedsAttention) return;                      // değişen satırlar: kabuk kurulurken baştan okur
+                if (_unclaimedSettled.Count == MaxUnclaimedSettled)
+                {
+                    _unclaimedSettled.RemoveAt(0);
+                    overflow = true;
+                }
+                _unclaimedSettled.Add(settled);
+            }
+        }
+        if (overflow)
+            _log.LogWarning("Satış akışı: abonesiz bekleyen komut sonuçları {Max} sınırını aştı; en eskisi düştü",
+                MaxUnclaimedSettled);
+        if (handlers is not null) DeliverPendingCommandsSettled(handlers, settled);
+    }
+
+    private void DeliverPendingCommandsSettled(EventHandler<PendingSalesCommandsSettled> handlers,
+        PendingSalesCommandsSettled settled)
+    {
+        try { handlers(this, settled); }
         catch (Exception ex) { _log.LogWarning(ex, "Satış akışı: bekleyen komutların sonucu arayüze iletilemedi"); }
     }
 

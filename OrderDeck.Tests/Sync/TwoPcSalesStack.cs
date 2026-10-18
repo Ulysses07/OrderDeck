@@ -210,7 +210,7 @@ internal sealed class SalesPc
         Envelope.CaptureRestoreAtBoot(markerApplied: false);
         CustomerAggregatesBoot.Run(db, clock.UnixNow(), NullLogger.Instance);
         ShipmentAmountsBoot.Run(db, clock.UnixNow(), NullLogger.Instance);
-        OffRound.Resume();
+        Pull.ResumeModeOffAtStartup();
     }
 
     /// <summary>Yeni bilgisayar: göç koşmuş yeni veritabanı, yerel kargo ayarı 500/50 (lisans genelinden farklı).</summary>
