@@ -579,6 +579,13 @@ public sealed class AppHost : IDisposable
         // W1-09 (§8.2): Ws'nin ilk açılışındaki geri doldurma ve birim ayrışması onarımı. Zarf, devir kapısı,
         // gönderim ve hello AYNI örnekler: boşaltma gönderim kapısından geçer, Release kararı kapanış gönderimiyle
         // aynı kilitleri görür, tamamlanma hello'su turla aynı kapıdan. 60 sn'de bir; turda en çok 10 istek.
+        // W3-05 (spec 2026-10-13 §3.2, §4.7, §6.4, §8.4-1): bekleyen ödeme kayıtları — gönderilemeyen finish'ler ve mod
+        // Off'taki kirasız kayıtlar, iki kipte. Gönderici TEK örnek: geri doldurma turu (60 sn, geri doldurmanın
+        // durumundan bağımsız) ve mod On açılışının 1. adımı (İLK kuyruk) aynı kapıdan geçer — aynı kayıt aynı anda iki
+        // kez gitmez. Zarf tekil örnek (geri yüklemeden sonra kip tazelenene kadar istek yok).
+        services.AddSingleton<PendingPaymentRecordRepository>();
+        services.AddSingleton<Services.Sync.PaymentRecordSender>();
+
         services.AddSingleton<SalesBackfillRepository>();
         services.AddSingleton<Services.Sync.SalesBackfillService>(sp =>
             new Services.Sync.SalesBackfillService(
@@ -587,6 +594,7 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<Services.Sync.SalesSyncStateService>(),
                 sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
                 sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),
+                sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
                 sp.GetRequiredService<SalesBackfillRepository>(),
                 sp.GetRequiredService<SyncCursorRepository>(),
                 sp.GetRequiredService<OrderDeck.Core.Sessions.HandoverGate>(),
@@ -629,9 +637,11 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SalesFeedFailureRepository>();
         services.AddSingleton<RemoteLiveSessionRepository>();
         // W2-10 (spec 2026-10-13 §8.4): kip adımı — satış akışı turu başarılı state'in hemen ardından çağırır. Açılışın
-        // 1. adımı giden kuyrukları AYNI gönderim servisleriyle boşaltır (müşteri, oturum ve etiket gönderim kapısından,
-        // kargo, dekont). Tur isteğe bağlı parametreyle alır (CustomerSyncDiTests denetler).
+        // 1. adımı giden kuyrukları AYNI gönderim servisleriyle boşaltır (W3-05: önce bekleyen ödeme kayıtları, sonra
+        // müşteri, oturum ve etiket gönderim kapısından, kargo, dekont). Tur isteğe bağlı parametreyle alır
+        // (CustomerSyncDiTests denetler).
         services.AddSingleton<Services.Sync.ISalesOpeningFlush>(sp => new Services.Sync.SalesOpeningFlush(
+            sp.GetRequiredService<Services.Sync.PaymentRecordSender>(),
             sp.GetRequiredService<Services.Sync.WpfCustomerProjectionSyncService>(),
             sp.GetRequiredService<Services.Sync.SessionOrderSyncService>(),
             sp.GetRequiredService<Services.Sync.ShipmentSyncService>(),

@@ -330,6 +330,29 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Odeme_kaydi_gondericisi_tekil_geri_doldurma_turu_ve_acilisin_birinci_adimiyla_paylasilir()
+    {
+        // W3-05 (spec 2026-10-13 §6.4, §8.4-1): bekleyen ödeme kayıtlarını geri doldurma turu (60 sn, iki kipte) ve mod On
+        // açılışının 1. adımı (İLK kuyruk) gönderir. Kapı tek örnekte geçerli: iki örnek aynı kaydı aynı anda iki kez
+        // gönderirdi. Zarf tekil örnek: geri yüklemeden sonra kip tazelenene kadar istek gitmez (§8.7).
+        using var host = new global::OrderDeck.App.AppHost();
+        var sender = host.Services.GetRequiredService<PaymentRecordSender>();
+
+        host.Services.GetRequiredService<PaymentRecordSender>().Should().BeSameAs(sender);
+        PrivateField<PaymentRecordSender>(host.Services.GetRequiredService<SalesBackfillService>(), "_paymentRecords")
+            .Should().BeSameAs(sender);
+        var flush = PrivateField<ISalesOpeningFlush>(host.Services.GetRequiredService<SalesModeCoordinator>(), "_flush")
+            .Should().BeOfType<SalesOpeningFlush>().Subject;
+        PrivateField<PaymentRecordSender>(flush, "_paymentRecords").Should().BeSameAs(sender);
+        PrivateField<PendingPaymentRecordRepository>(sender, "_repo").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingPaymentRecordRepository>());
+        PrivateField<SalesSyncEnvelope>(sender, "_envelope").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncEnvelope>(), "hello, state ve kip adımının kararı zarfta: aynı örnek");
+        PrivateField<ICurrentLicenseProvider>(sender, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+    }
+
+    [Fact]
     public void Kabugun_istege_bagli_senkron_parametreleri_DIda_kayitli()
     {
         // Kabuk ViewModel'i kurulmadan (22 servis, zamanlayıcılar) türleriyle sınanır: kayıt eksikse

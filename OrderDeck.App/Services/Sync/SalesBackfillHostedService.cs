@@ -7,8 +7,9 @@ namespace OrderDeck.App.Services.Sync;
 /// <see cref="SalesBackfillService"/>'in arka plan işi (spec 2026-10-13 §8.2; W1-09): 60 sn'de bir tur. İlk tur da
 /// bir aralık sonra: açılıştaki hello (<see cref="SalesChangesPullHostedService"/>) ve müşteri akışının ilk turu aynı
 /// 100 istek/dk/IP bütçesini paylaşır (§12 risk 9); geri doldurma zaten hello'yu bekler. Tamamlanmış geri doldurmada
-/// tur tek bir imleç okumasıdır. Kayıt AppHost'ta <c>AddHostedService</c>; başlatma WpfStartupEnvironment'in genel
-/// döngüsünde (CLAUDE.md, PR #89).
+/// tur tek bir imleç okumasıdır; bekleyen ödeme kayıtları (W3-05) her turda, iki kipte gider — boş kuyrukta yalnız bir
+/// sayım. Kayıt AppHost'ta <c>AddHostedService</c>; başlatma WpfStartupEnvironment'in genel döngüsünde (CLAUDE.md,
+/// PR #89).
 /// </summary>
 public sealed class SalesBackfillHostedService : BackgroundService
 {

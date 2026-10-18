@@ -78,6 +78,10 @@ namespace OrderDeck.Tests.Sync;
 /// <c>payments/since</c> (boş). <see cref="RequestLog"/> bütün isteklerin sırasını tutar (geri yüklemeden sonra
 /// gönderimin state yanıtını beklediğini sınamak için).</para>
 ///
+/// <para><b>Bekleyen ödeme kayıtları</b> (W3-05): <c>payment-requests/backfill</c> ve <c>payment-requests/{id}/finish</c>
+/// (<see cref="PaymentRequestsBackfill"/>, <see cref="PaymentRequestsFinish"/>; kayıt, betik, v2 zarfı). Kira ve kayıt
+/// kuralları taklit edilmez.</para>
+///
 /// <para><b>Birim kuralı ve açılış penceresi</b> (W2-12, iki bilgisayarlı yakınsama testleri için): <c>orders/sync</c>
 /// güncelleme dalı §4.2 tablosunu uygular (<see cref="UnitRule"/>: K1 oluşum alanları yazılmaz, K2 damgalı birimi yalnız
 /// <c>baseVersion = Version</c> taşıyan v2 yazar, K3 baskı ve <c>cancelled-elsewhere</c>, K4 bağ, K5 mod On'da devredilmiş
@@ -108,6 +112,11 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary>Dekont gönderimi (<c>PaymentSyncService</c>): <see cref="Calls"/>, <see cref="EnqueueStatus"/> ve
     /// <see cref="DuringPush"/> için.</summary>
     public const string PaymentsSync = "payments/sync";
+
+    /// <summary>Bekleyen ödeme kayıtlarının uçları (W3-05, <c>PaymentRecordSender</c>): <see cref="Calls"/> ve
+    /// <see cref="EnqueueStatus"/> için.</summary>
+    public const string PaymentRequestsBackfill = "payment-requests/backfill";
+    public const string PaymentRequestsFinish = "payment-requests/finish";
 
     /// <summary><c>sales/backfill</c>'in uç adı: <see cref="EnqueueStatus"/> ve <see cref="EnqueueProblem"/> için.</summary>
     public const string Backfill = "backfill";
@@ -321,6 +330,13 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             var payments = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payments/(sync|since)$");
             if (payments.Success)
                 return await HandlePaymentsAsync(req, Guid.Parse(payments.Groups[1].Value), payments.Groups[2].Value, ct);
+
+            // Bekleyen ödeme kayıtları (W3-05): kirasız kayıtların geri doldurması ve gönderilemeyen finish'ler.
+            var paymentRequests = Regex.Match(path,
+                @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payment-requests/(backfill|([0-9a-fA-F-]{36})/finish)$");
+            if (paymentRequests.Success && req.Method == HttpMethod.Post)
+                return await HandlePaymentRequestAsync(req, Guid.Parse(paymentRequests.Groups[1].Value),
+                    paymentRequests.Groups[3].Success ? Guid.Parse(paymentRequests.Groups[3].Value) : null, ct);
 
             // ShipmentSyncService'in ters çekmesi (uygulanmıyor, yalnız imleç): sunucuda başka yazıcı yok.
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/shipments/since$") && req.Method == HttpMethod.Get)
@@ -1742,6 +1758,52 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         if (scripted is not null) return scripted();
         DuringPush?.Invoke(PaymentsSync);
         return FakeHttpMessageHandler.Json(200, "[]");
+    }
+
+    /// <summary>Sunucunun aldığı kirasız kayıt Id'leri (<c>payment-requests/backfill</c>).</summary>
+    public IReadOnlyCollection<Guid> PaymentRecordIds { get { lock (_gate) return _paymentRecordIds.ToList(); } }
+    private readonly HashSet<Guid> _paymentRecordIds = new();
+
+    /// <summary>
+    /// <c>payment-requests/backfill</c> ve <c>payment-requests/{id}/finish</c> (W3-05, bekleyen ödeme kayıtları): kayıt
+    /// (<see cref="Calls"/>), betik (<see cref="EnqueueStatus"/>) ve v2 zarfı denetimi. Geri doldurma her öğeye
+    /// <c>applied</c> (aynı Id ikinci kez <c>unchanged</c>) döner, finish sonucu yankılar. Kira ve kayıt kuralları taklit
+    /// edilmez: açılışın 1. adımı ve geri doldurma turu yalnız kuyruğun gönderilip boşalmasına bakar.
+    /// </summary>
+    private async Task<HttpResponseMessage> HandlePaymentRequestAsync(
+        HttpRequestMessage req, Guid licenseId, Guid? finishId, CancellationToken ct)
+    {
+        var endpoint = finishId is null ? PaymentRequestsBackfill : PaymentRequestsFinish;
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(endpoint, licenseId, raw));
+            if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        if (scripted is not null) return scripted();
+
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("replicaId", out var replica) || replica.ValueKind != JsonValueKind.String
+            || !root.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 2
+            || !root.TryGetProperty("seenMode", out _))
+            return Invalid($"{endpoint}: v2 zarfı yok");
+
+        if (finishId is { } recordId)
+            return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+            {
+                recordId, state = root.GetProperty("outcome").GetString(), finishedAt = DateTimeOffset.UtcNow,
+            }, Web));
+
+        var results = new List<object>();
+        lock (_gate)
+            foreach (var record in root.GetProperty("records").EnumerateArray())
+            {
+                var id = record.GetProperty("recordId").GetGuid();
+                results.Add(new { recordId = id, status = _paymentRecordIds.Add(id) ? "applied" : "unchanged" });
+            }
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new { records = results }, Web));
     }
 
     private Replica Touch(Guid licenseId, Guid replicaId, int seenMode)

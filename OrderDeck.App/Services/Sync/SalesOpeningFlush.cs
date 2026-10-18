@@ -30,13 +30,16 @@ public interface ISalesOpeningFlush
 ///
 /// <para><b>Sıra</b> (her kuyruk kendi gönderiminden hemen sonra sayılır, <see cref="SalesSyncStateRepository.GetOpeningBacklog"/>):
 /// <list type="number">
+///   <item>Bekleyen ödeme kayıtları (<see cref="PaymentRecordSender"/>, W3-05; §8.4-1'in ilk kuyruğu): gönderilemeyen
+///   <c>finish</c>'ler ve mod Off kirasız kayıtları — mod On'da öbür bilgisayarın <c>begin</c>'i (e) bu bilgisayarın
+///   önceki isteklerini görmeli. Gönderim bütçelidir (<see cref="PaymentRecordSender.MaxRequestsPerFlush"/>); kalan
+///   varsa açılış burada durur, sonraki tur sürdürür. Boşaltma sürerken yazılan kayıt sonda yeniden sayılır.</item>
 ///   <item>Müşteri (<see cref="WpfCustomerProjectionSyncService"/>; tur kuyruğu kendisi parti parti boşaltır). Tavan
 ///   gönderimden ÖNCE okunur: gönderim sırasında doğan müşteri (yayında sohbet) açılışı bekletmez.</item>
 ///   <item>Oturum ve etiket (<see cref="SessionOrderSyncService"/>, gönderim kapısından; tur bir şey gönderdikçe
 ///   yinelenir). Canlı yayının oturumu ve etiketleri sayılmaz: iki kipte aynı yargılanırlar.</item>
 ///   <item>Kargo (<see cref="ShipmentSyncService"/>, yinelenir).</item>
-///   <item>Dekont (<see cref="PaymentSyncService"/>, yinelenir); ardından <c>PendingPaymentRecord</c> boş olmalı (W3
-///   gönderir; W2'de hiçbir yol yazmaz).</item>
+///   <item>Dekont (<see cref="PaymentSyncService"/>, yinelenir).</item>
 /// </list>
 /// Boşalmayan ilk kuyrukta durulur: yerel kip 0 kalır, sonraki tur baştan dener. Kuyruğun boşaldığı ile 2. adımın
 /// kilidi arasında yazılan kargo ya da etiket (ör. dekontun kargo adımı) 2. adımın kilit altındaki yeniden denetimine
@@ -54,6 +57,7 @@ public sealed class SalesOpeningFlush : ISalesOpeningFlush
     internal const string PaymentsQueue = "dekont";
     internal const string PaymentRecordsQueue = "ödeme kaydı";
 
+    private readonly PaymentRecordSender _paymentRecords;
     private readonly WpfCustomerProjectionSyncService _customers;
     private readonly SessionOrderSyncService _sales;
     private readonly ShipmentSyncService _shipments;
@@ -61,12 +65,14 @@ public sealed class SalesOpeningFlush : ISalesOpeningFlush
     private readonly SalesSyncStateRepository _state;
 
     public SalesOpeningFlush(
+        PaymentRecordSender paymentRecords,
         WpfCustomerProjectionSyncService customers,
         SessionOrderSyncService sales,
         ShipmentSyncService shipments,
         PaymentSyncService payments,
         SalesSyncStateRepository state)
     {
+        _paymentRecords = paymentRecords;
         _customers = customers;
         _sales = sales;
         _shipments = shipments;
@@ -79,8 +85,13 @@ public sealed class SalesOpeningFlush : ISalesOpeningFlush
         ArgumentException.ThrowIfNullOrWhiteSpace(licenseKey);
 
         var ceiling = _state.MaxCustomerSyncSeq();
-        await _customers.SyncOnceAsync(ct).ConfigureAwait(false);
+        await _paymentRecords.FlushAsync(ct).ConfigureAwait(false);
         var backlog = Backlog(licenseKey, ceiling, ct);
+        if (backlog.PaymentRecords > 0)
+            return SalesOpeningFlushResult.Blocked(PaymentRecordsQueue, backlog.PaymentRecords);
+
+        await _customers.SyncOnceAsync(ct).ConfigureAwait(false);
+        backlog = Backlog(licenseKey, ceiling, ct);
         if (backlog.Customers > 0) return SalesOpeningFlushResult.Blocked(CustomersQueue, backlog.Customers);
 
         await DrainAsync(async t =>
@@ -101,6 +112,8 @@ public sealed class SalesOpeningFlush : ISalesOpeningFlush
             .ConfigureAwait(false);
         backlog = Backlog(licenseKey, ceiling, ct);
         if (backlog.Payments > 0) return SalesOpeningFlushResult.Blocked(PaymentsQueue, backlog.Payments);
+        // Boşaltma sürerken yazılan ödeme kaydı (yerel kip hâlâ 0: istek bugünkü yoldan, kirasız kayıt): sonraki tur
+        // onu da ilk sırada gönderir.
         if (backlog.PaymentRecords > 0)
             return SalesOpeningFlushResult.Blocked(PaymentRecordsQueue, backlog.PaymentRecords);
         return SalesOpeningFlushResult.Ok;

@@ -112,7 +112,8 @@ public sealed class DisableRoundTests : IDisposable
             Round = new SalesModeOffRound(feed, State, new PendingSalesCommandRepository(db), Labels, labelRepo,
                 new SalesConflictLogRepository(db), store, Settings, clock, NullLogger<SalesModeOffRound>.Instance);
             var coordinator = new SalesModeCoordinator(state, State, Envelope,
-                new SalesOpeningFlush(customerPush, Push, shipments, payments, State), clock,
+                new SalesOpeningFlush(new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), Envelope, license,
+                    clock, NullLogger<PaymentRecordSender>.Instance), customerPush, Push, shipments, payments, State), clock,
                 NullLogger<SalesModeCoordinator>.Instance, Round);
             Pull = new SalesChangesPullService(api, state, State, Envelope, feed, new SalesFeedFailureRepository(db),
                 new RemoteLiveSessionRepository(db), cursors, labelRepo, customerPush, Push, customerPull, license, clock,

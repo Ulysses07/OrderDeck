@@ -14,6 +14,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -65,6 +66,7 @@ public sealed class SalesBackfillServiceTests : IDisposable
         public SalesSyncStateService State { get; }
         public SessionOrderSyncService Push { get; }
         public ShipmentSyncService Shipments { get; }
+        public PaymentRecordSender PaymentRecords { get; }
         public SalesBackfillService Backfill { get; }
         public CapturingLogger<SalesBackfillService> Log { get; } = new();
         public HandoverGate Gate { get; } = new();
@@ -87,8 +89,10 @@ public sealed class SalesBackfillServiceTests : IDisposable
             var store = new SettingsStore(settingsPath);
             Shipments = new ShipmentSyncService(api, new ShipmentRepository(db), store, store.Load(), License, Envelope,
                 clock, NullLogger<ShipmentSyncService>.Instance);
-            Backfill = new SalesBackfillService(api, Envelope, State, Push, Shipments, new SalesBackfillRepository(db),
-                new SyncCursorRepository(db), Gate, License, clock, Log);
+            PaymentRecords = new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), Envelope, License,
+                clock, NullLogger<PaymentRecordSender>.Instance);
+            Backfill = new SalesBackfillService(api, Envelope, State, Push, Shipments, PaymentRecords,
+                new SalesBackfillRepository(db), new SyncCursorRepository(db), Gate, License, clock, Log);
             Coordinator = new SalesModeCoordinator(State, state, Envelope, new NoOpening(), clock,
                 NullLogger<SalesModeCoordinator>.Instance);
         }
@@ -902,6 +906,33 @@ public sealed class SalesBackfillServiceTests : IDisposable
         (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
         new[] { first, pending, last }.Should().OnlyContain(id => _server.Session(Guid.Parse(id))!.OwnerReplicaId == ReplicaId);
         CompletionHellos.Should().ContainSingle();
+    }
+
+    // ── bekleyen ödeme kayıtları (W3-05) ───────────────────────────────────
+
+    [Fact]
+    public async Task Tamamlanmis_geri_doldurmada_da_tur_bekleyen_odeme_kayitlarini_gonderir()
+    {
+        var session = AddSession(T0, T0 + 3600);
+        AddLabels(session, 2);
+        SeedServerSession(session, T0, T0 + 3600, releasedAt: T0 + 3700);
+        await Ws.HelloAsync();
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.Completed);
+        var record = new PaymentRequestBackfillItem(Guid.NewGuid(), _customerId, [_customerId], "cumulative",
+            [Guid.NewGuid()], PaymentRequestStates.Delivered, 100m, null, false, At(T0 + 4000));
+        Ws.PaymentRecords.EnqueueRecord(record).Should().BeTrue();
+        var finish = new PendingPaymentFinish(Guid.NewGuid(), PaymentRequestStates.Unconfirmed, 100m, null, false);
+        Ws.PaymentRecords.EnqueueFinish(finish).Should().BeTrue();
+        var salesBackfills = _server.BackfillCalls.Count;
+
+        (await Ws.TourAsync()).Should().Be(SalesBackfillTourOutcome.AlreadyCompleted);
+
+        _server.PaymentRecordIds.Should().Equal(record.RecordId);
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle();
+        Scalar<long>("SELECT COUNT(*) FROM PendingPaymentRecord").Should().Be(0,
+            "erken dönüş (AlreadyCompleted) göndericiyi atlamaz; iki kipte (burada mod Off)");
+        _server.BackfillCalls.Should().HaveCount(salesBackfills, "satış geri doldurması tamamlanmış: sales/backfill yok");
+        _server.Faults.Should().BeEmpty();
     }
 
     // ── hello, lisans ve kopya ─────────────────────────────────────────────

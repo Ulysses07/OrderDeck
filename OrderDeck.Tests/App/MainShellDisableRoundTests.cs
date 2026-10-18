@@ -81,7 +81,8 @@ public sealed class MainShellDisableRoundTests : IDisposable
                     clock), db, clock),
                 labels, new SalesConflictLogRepository(db), store, settings, clock, NullLogger<SalesModeOffRound>.Instance);
             var coordinator = new SalesModeCoordinator(state, _state, envelope,
-                new SalesOpeningFlush(customerPush, push, shipments, payments, _state), clock,
+                new SalesOpeningFlush(new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), envelope, license,
+                    clock, NullLogger<PaymentRecordSender>.Instance), customerPush, push, shipments, payments, _state), clock,
                 NullLogger<SalesModeCoordinator>.Instance, round);
             _pull = new SalesChangesPullService(api, state, _state, envelope, feed, new SalesFeedFailureRepository(db),
                 new RemoteLiveSessionRepository(db), cursors, labels, customerPush, push,

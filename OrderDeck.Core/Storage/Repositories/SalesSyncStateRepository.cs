@@ -28,7 +28,8 @@ public sealed record SalesShippingCache(int Mode, int? Version, decimal? FreeShi
 /// <param name="EndedSessionLabels">Bitmiş yayınların gönderilmemiş etiketleri.</param>
 /// <param name="Shipments">Gönderilmemiş kargo dosyaları.</param>
 /// <param name="Payments">Gönderilmemiş dekontlar.</param>
-/// <param name="PaymentRecords">Gönderilmeyi bekleyen ödeme kayıtları (<c>PendingPaymentRecord</c>; W3 gönderir).</param>
+/// <param name="PaymentRecords">Gönderilmeyi bekleyen ödeme kayıtları (<c>PendingPaymentRecord</c>; App'teki
+/// <c>PaymentRecordSender</c> gönderir, açılışın ilk kuyruğu).</param>
 public sealed record SalesOpeningBacklog(
     int Customers, int EndedSessions, int EndedSessionLabels, int Shipments, int Payments, int PaymentRecords)
 {

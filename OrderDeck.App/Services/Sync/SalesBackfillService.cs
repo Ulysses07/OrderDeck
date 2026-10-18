@@ -70,6 +70,10 @@ public enum SalesBackfillTourOutcome
 /// <para>Lisans değişince imleç yeni lisansın anahtarındadır: geri doldurma yeni lisansa baştan gider. Geri yüklemeden
 /// sonra kopya kimliği döner ve imleç yeni kopya için baştan başlar. Ödeme geçmişi (§8.2-6) W3'ün işidir.</para>
 ///
+/// <para><b>Bekleyen ödeme kayıtları</b> (W3-05): her tur, geri doldurmadan önce ve onun durumundan bağımsız olarak,
+/// <c>PendingPaymentRecord</c> kuyruğunu <see cref="PaymentRecordSender"/> ile gönderir (iki kipte; kendi bütçesi ve zarf
+/// kararıyla). Gönderici tek örnektir: mod On açılışının 1. adımı da aynı kapıdan geçer.</para>
+///
 /// <para><b>Canlı yol beklemez:</b> tur arka plan iş parçacığında koşar, her <c>await</c> <c>ConfigureAwait(false)</c>;
 /// ağ isteği uçarken açık SQLite bağlantısı ya da yazma kilidi yok. Günlük yalnız kimlik ve sayı taşır: müşteri,
 /// makine adı ve lisans anahtarı yazılmaz.</para>
@@ -93,6 +97,7 @@ public sealed class SalesBackfillService
     private readonly SalesSyncStateService _state;
     private readonly SessionOrderSyncService _push;
     private readonly ShipmentSyncService _shipments;
+    private readonly PaymentRecordSender _paymentRecords;
     private readonly SalesBackfillRepository _repo;
     private readonly SyncCursorRepository _cursors;
     private readonly HandoverGate _handover;
@@ -118,6 +123,7 @@ public sealed class SalesBackfillService
         SalesSyncStateService state,
         SessionOrderSyncService push,
         ShipmentSyncService shipments,
+        PaymentRecordSender paymentRecords,
         SalesBackfillRepository repo,
         SyncCursorRepository cursors,
         HandoverGate handover,
@@ -130,6 +136,7 @@ public sealed class SalesBackfillService
         _state = state;
         _push = push;
         _shipments = shipments;
+        _paymentRecords = paymentRecords;
         _repo = repo;
         _cursors = cursors;
         _handover = handover;
@@ -138,13 +145,14 @@ public sealed class SalesBackfillService
         _log = log;
     }
 
-    /// <summary>Bir tur. İptal belirteci <see cref="OperationCanceledException"/> ile çıkar; imleç son uygulanan
-    /// partide kalır.</summary>
+    /// <summary>Bir tur: önce bekleyen ödeme kayıtları (<see cref="PaymentRecordSender"/>), sonra geri doldurma. İptal
+    /// belirteci <see cref="OperationCanceledException"/> ile çıkar; imleç son uygulanan partide kalır.</summary>
     public async Task<SalesBackfillTourOutcome> TourOnceAsync(CancellationToken ct)
     {
         await _tourGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            await FlushPaymentRecordsAsync(ct).ConfigureAwait(false);
             return await TourCoreAsync(ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -234,6 +242,24 @@ public sealed class SalesBackfillService
             "Geri doldurma tamamlandı; sunucuya bildirildi (replica={ReplicaId}, yerelde olmayan yeniden kuyruk etiketi={Missing})",
             replicaId, repair.Missing);
         return SalesBackfillTourOutcome.Completed;
+    }
+
+    /// <summary>
+    /// Bekleyen ödeme kayıtları (spec 2026-10-13 §6.4 "Akışın sonu" ve "Ödeme geçmişi"; W3-05): iki kipte ve geri
+    /// doldurmanın durumundan bağımsız — tamamlanmış geri doldurmanın erken dönüşü, hello beklemesi ya da geri doldurmanın
+    /// yerel hatası onu atlamaz. Zarf kararını gönderici kendisi verir (<see cref="SalesSyncEnvelope.ForPush"/>); boş
+    /// kuyrukta istek yok. Göndericinin yerel hatası geri doldurmayı düşürmez.
+    /// </summary>
+    private async Task FlushPaymentRecordsAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _paymentRecords.FlushAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Bekleyen ödeme kayıtları gönderilemedi (yerel hata); sonraki turda yeniden denenecek");
+        }
     }
 
     /// <summary>Bir partinin gönderimi: yanıt uygulanınca imlecin yeni değeri, sonraki tura kalınca <c>null</c>.</summary>

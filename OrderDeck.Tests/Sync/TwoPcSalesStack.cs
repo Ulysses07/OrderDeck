@@ -113,6 +113,9 @@ internal sealed class SalesPc
     public SalesModeOffRound OffRound { get; }
     public SalesChangesPullService Pull { get; }
     public SalesBackfillService Backfill { get; }
+
+    /// <summary>Bekleyen ödeme kayıtlarının göndericisi (W3-05): açılışın 1. adımı ve geri doldurma turu paylaşır.</summary>
+    public PaymentRecordSender PaymentRecords { get; }
     public RemoteSessionsViewModel RemoteSessions { get; }
 
     /// <summary>Bu süreçte basılan kâğıt sayısı, etiket başına (<see cref="PrintAsync"/>).</summary>
@@ -193,8 +196,11 @@ internal sealed class SalesPc
         };
         OffRound = new SalesModeOffRound(feed, State, Pending, Labels, LabelRepo, conflicts, store, Settings, clock,
             NullLogger<SalesModeOffRound>.Instance);
+        // AppHost gibi tek ödeme kaydı göndericisi: açılışın 1. adımı ve geri doldurma turu aynı kapıdan.
+        PaymentRecords = new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), Envelope, license, clock,
+            NullLogger<PaymentRecordSender>.Instance);
         var coordinator = new SalesModeCoordinator(StateService, State, Envelope,
-            new SalesOpeningFlush(customerPush, Push, ShipmentSync, payments, State), clock,
+            new SalesOpeningFlush(PaymentRecords, customerPush, Push, ShipmentSync, payments, State), clock,
             NullLogger<SalesModeCoordinator>.Instance, OffRound);
         Pull = new SalesChangesPullService(api, StateService, State, Envelope, feed, new SalesFeedFailureRepository(db),
             liveSessions, cursors, LabelRepo, customerPush, Push, customerPull, license, clock,
@@ -205,8 +211,8 @@ internal sealed class SalesPc
         };
         Editor = new SalesEditRouter(Labels, LabelRepo, Sessions, State, gate, Commands, Sender, Connectivity, Shipments,
             ShipmentRepo, Customers, () => Pull.Status.LastCaughtUpAt, NullLogger<SalesEditRouter>.Instance);
-        Backfill = new SalesBackfillService(api, Envelope, StateService, Push, ShipmentSync, new SalesBackfillRepository(db),
-            cursors, gate, license, clock, NullLogger<SalesBackfillService>.Instance);
+        Backfill = new SalesBackfillService(api, Envelope, StateService, Push, ShipmentSync, PaymentRecords,
+            new SalesBackfillRepository(db), cursors, gate, license, clock, NullLogger<SalesBackfillService>.Instance);
         RemoteSessions = new RemoteSessionsViewModel(liveSessions, State, Sessions, Commands, Connectivity,
             () => StateService.LastState, () => license.CurrentLicenseKey, ct => Pull.TourOnceAsync(ct), clock,
             NullLogger<RemoteSessionsViewModel>.Instance);
