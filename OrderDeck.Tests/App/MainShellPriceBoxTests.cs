@@ -1173,6 +1173,82 @@ public class MainShellPriceBoxTests
         drawers.Count.Should().Be(0, "çekmece açılmaz — kod/fiyat kutusu ve kuyruk örtülmez");
     }
 
+    [Fact]
+    public void Mod_On_Evet_canli_yolda_ag_beklemeden_sonucu_satir_ici_gosterir() => RunOnOwnDispatcher(async () =>
+    {
+        // Mod On (spec 2026-10-13 §5.1; W3-10): onay yazımdan önce uzak kayıtları ön okumayı bekliyordu. Kabuk sonucu
+        // Execute'tan hemen sonra okuduğu için "Fiyat değiştirilemedi." diyordu — fiyat ise arkadan 200 oluyordu; yeniden
+        // baskı sorusu ve 250 istenmiş kişinin "düzeltilmiş isteği gönder" satırı hiçbir yerde görünmüyordu. Canlı yayının
+        // etiketlerini başka bilgisayarın kaydı kapsayamaz (Y1, §6.3 liveElsewhere): FİYAT kutusu ağa hiç gitmez.
+        using var server = new OrderDeck.Tests.Sync.FakeSalesServer { Mode = 1 };
+        using var h = MainShellTestHarness.Build(paymentFollowUp: (db, customers, labels) =>
+        {
+            var http = new System.Net.Http.HttpClient(server, disposeHandler: false)
+            {
+                BaseAddress = new Uri("https://test.local"),
+            };
+            var remote = new OrderDeck.App.Services.Sync.RemotePaymentRecords(
+                new OrderDeck.Licensing.Api.LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore()),
+                new FixedLicense(server.Lisans), new SalesSyncStateRepository(db), new ReplicaIdentityRepository(db),
+                new PendingPaymentRecordRepository(db),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<OrderDeck.App.Services.Sync.RemotePaymentRecords>.Instance);
+            return new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,
+                new PaymentJobRepository(db), OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
+                (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
+                    OrderDeck.App.Services.PaymentRequestResult.Sent)), remote: remote);
+        });
+        using (var c = h.Db.Open())
+            Dapper.SqlMapper.Execute(c, "UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        await WithCodeLabels(h, 250m, "@a");
+        var row = h.Vm.PrintQueue[0];
+        await h.Vm.PrintCommand.ExecuteAsync(null);
+        DeliveredRequest(h, row.Label.CustomerId, 250m);
+
+        h.Vm.ActivePriceText = "200";
+        h.Vm.ConfirmCodePriceCommand.Execute(null);
+
+        h.Vm.CodePriceError.Should().BeNull("fiyat değişti — operatöre 'değiştirilemedi' denmez");
+        h.Vm.CodePriceQuestion.Should().BeNull();
+        DbPrice(h, row.Label.Id).Should().Be(200m);
+        var result = h.Vm.CodePriceCorrection;
+        result.Should().NotBeNull("sonuç kutunun altında satır içi");
+        result!.IsReprintAsked.Should().BeTrue("basılmış etiketin kâğıdında eski fiyat var");
+        result.ResendRows.Should().ContainSingle("250 istenmiş kişiye düzeltilmiş istek önerilir")
+            .Which.Candidate.NewTotal.Should().Be(200m);
+        server.Calls(OrderDeck.Tests.Sync.FakeSalesServer.PaymentRequestsList).Should().BeEmpty(
+            "canlı yayının FİYAT kutusu uzak kayıt okumaz");
+    });
+
+    private sealed class FixedLicense(string key) : OrderDeck.App.Services.Sync.ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => key;
+    }
+
+    /// <summary>Kabuk ve devamları kendi STA dispatcher'ında: onayın beklemeye düşen devamı test bittikten sonra iş
+    /// parçacığı havuzunda kapanmış veritabanına yazmasın.</summary>
+    private static void RunOnOwnDispatcher(Func<Task> body)
+    {
+        Exception? failure = null;
+        var thread = new System.Threading.Thread(() =>
+        {
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            System.Threading.SynchronizationContext.SetSynchronizationContext(
+                new System.Windows.Threading.DispatcherSynchronizationContext(dispatcher));
+            dispatcher.BeginInvoke(new Action(async () =>
+            {
+                try { await body(); }
+                catch (Exception ex) { failure = ex; }
+                finally { dispatcher.InvokeShutdown(); }
+            }));
+            System.Windows.Threading.Dispatcher.Run();
+        });
+        thread.SetApartmentState(System.Threading.ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+        thread.Join(TimeSpan.FromSeconds(60)).Should().BeTrue("STA dispatcher koşusu zaman aşımına uğramamalı");
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
     private static MainShellTestHarness.Harness BuildWithPayments(OrderDeck.App.Services.Drawers.IDrawerService? drawers = null)
         => MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
             new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,

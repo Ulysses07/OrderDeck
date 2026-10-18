@@ -119,6 +119,12 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     private readonly Func<IReadOnlyList<string>, Task<string?>> _reprint;
     private readonly bool _cloudApi;
 
+    /// <summary>FİYAT kutusunun düzeltmesi (<see cref="ForCode"/>): bu bilgisayarın canlı yayını. Uzak kayıt ön okuması
+    /// yapılmaz — canlı yol ağ beklemez (spec 2026-10-13 §5.1), beklemesi de bir şey değiştirmez: devredilmemiş satış başka
+    /// bilgisayarda istenemez (Y1; §6.3 <c>stale-total liveElsewhere</c>), yani hiçbir uzak kayıt bu etiketleri kapsamaz.
+    /// Kabuk onayın sonucunu zaman uyumlu okur.</summary>
+    private readonly bool _liveStream;
+
     private IReadOnlyList<CodeCorrectionPlan> _plans = Array.Empty<CodeCorrectionPlan>();
     private IReadOnlySet<string> _shownIds = new HashSet<string>();
     private string _shownFingerprint = "";
@@ -144,7 +150,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled,
         ILabelEditor? editor = null)
         : this(labels, payments, sessionId, () => labels.PlanCodeCorrection(sessionId, labelIds),
-            labelIds.ToHashSet(StringComparer.Ordinal), streamDate, inFlight, applied, reprint, cloudApiEnabled, editor)
+            labelIds.ToHashSet(StringComparer.Ordinal), streamDate, inFlight, applied, reprint, cloudApiEnabled, editor,
+            liveStream: false)
     {
     }
 
@@ -152,8 +159,9 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId,
         Func<IReadOnlyList<CodeCorrectionPlan>> planner, IReadOnlySet<string> selection, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
-        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled, ILabelEditor? editor)
+        Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled, ILabelEditor? editor, bool liveStream)
     {
+        _liveStream = liveStream;
         _labels = labels;
         _editor = editor ?? new LocalLabelEditor(labels);
         _payments = payments;
@@ -180,25 +188,27 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// Özetin ödeme satırları mod On'da başka bilgisayarların isteklerini de sayar (spec 2026-10-13 §6.4 "Teslim kayıtlarının
     /// okunması"; W3-10): özet önce yerel işlerle hemen kurulur, uzak kayıtlar arka planda okunur, yeni bir şey geldiyse özet
     /// yeniden hesaplanır. Bekletmez; okuma düşerse özet yerel kalır. Açılışta zorlanır (planın tutarı güncel olsun); plan
-    /// yeniden okununca yalnız eksikler.
+    /// yeniden okununca yalnız eksikler. FİYAT kutusunun düzeltmesinde (<see cref="_liveStream"/>) hiç okunmaz.
     /// </summary>
     private async Task RefreshSummaryAsync(bool force)
     {
-        if (_payments is null) return;
+        if (_payments is null || _liveStream) return;
         var labels = DistinctLabels(_plans.SelectMany(p => p.Plan.Correctable)).Where(l => l.ShipmentId is null).ToList();
         if (labels.Count == 0) return;
         if (await _payments.PrefetchAsync(_sessionId, labels, force) && !IsDone) RecomputeSummary();
     }
 
     /// <summary>FİYAT kutusundaki fiyat değişikliğinin düzeltmesi (F2): tek kod, işaretli — kodun yayındaki
-    /// bütün düzeltilebilir etiketleri. Yalnız canlı yayın, her zaman yerel (spec 2026-10-13 §5.3 "FİYAT kutusu").</summary>
+    /// bütün düzeltilebilir etiketleri. Yalnız canlı yayın, her zaman yerel (spec 2026-10-13 §5.3 "FİYAT kutusu"). Onay
+    /// beklemeden biter (uzak kayıt ön okuması yok, <see cref="_liveStream"/>): kabuk sonucu
+    /// <c>ConfirmCommand.Execute</c>'tan hemen sonra okur.</summary>
     public static PriceCorrectionViewModel ForCode(
         LabelService labels, CorrectedPaymentRequests? payments, string sessionId, string code, DateTime streamDate,
         Func<IReadOnlySet<string>?> inFlight, Action<PriceCorrectionResult> applied,
         Func<IReadOnlyList<string>, Task<string?>> reprint, bool cloudApiEnabled)
         => new(labels, payments, sessionId, () => new[] { labels.PlanCodeCorrection(sessionId, code) },
             new HashSet<string>(StringComparer.Ordinal), streamDate, inFlight, applied,
-            reprint, cloudApiEnabled, editor: null);
+            reprint, cloudApiEnabled, editor: null, liveStream: true);
 
     /// <summary>Çekmeceyi (ya da FİYAT kutusunun altındaki satır içi sonucu) kapatır; testte boş.</summary>
     public Action? Close { get; set; }
@@ -403,7 +413,8 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
         // yalnız önbellekten okur. Çekmece açıldıktan sonra senkron önbelleği boşaltmış ya da açılışın ön okuması henüz
         // bitmemiş olabilir: eksik anahtarlar burada ön okunur (süre ve istek bütçesiyle sınırlı; düşerse yerel kalır).
         // Yoksa başka bilgisayarın "tamamı bakiyeden" isteği sayılmaz, etiketin ödendiği fiyat (PaidPrice) saklanmazdı.
-        // Plan denetiminden ÖNCE: denetimle yazım arasına ağ beklemesi girmesin.
+        // Plan denetiminden ÖNCE: denetimle yazım arasına ağ beklemesi girmesin. FİYAT kutusunun canlı yolunda okunmaz
+        // (_liveStream): onay orada beklemeden biter — kabuk sonucu zaman uyumlu okur.
         await RefreshSummaryAsync(force: false);
 
         // Çekmece açıkken baskı başlamış/bitmiş olabilir: plan yeniden okunur; gösterilen etiketlerden biri
@@ -572,12 +583,14 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
     /// Sonucun ödeme satırları (K5): eski tutarla istek gitmiş kişiler ve ödemesi alınmışlar. Mod On'da başka bilgisayarların
     /// istekleri de sayılır (spec 2026-10-13 §6.4; W3-10): önce düzeltilen etiketlerin kişilerinin uzak kayıtları ön okunur
     /// (yalnız eksikler — özet açılışta okudu; arada senkron geçersizleştirdiyse yeniden), sonra plan kurulur. Ön okuma süre ve
-    /// istek bütçesiyle sınırlı; düşerse plan yerel kalır.
+    /// istek bütçesiyle sınırlı; düşerse plan yerel kalır. FİYAT kutusunun canlı yolunda (<see cref="_liveStream"/>) okunmaz:
+    /// liste beklemeden kurulur.
     /// </summary>
     private async Task ShowPaymentFollowUpAsync(PriceCorrectionResult result)
     {
         if (_payments is null || result.Corrected.Count == 0) return;
-        await _payments.PrefetchAsync(_sessionId, result.Corrected.Select(c => c.Before).Where(l => l.ShipmentId is null));
+        if (!_liveStream)
+            await _payments.PrefetchAsync(_sessionId, result.Corrected.Select(c => c.Before).Where(l => l.ShipmentId is null));
 
         var follow = _payments.Plan(_sessionId, result.Corrected.Select(c => (c.Before, c.Delta)));
         foreach (var c in follow.ToResend) ResendRows.Add(new ResendRowViewModel(c));
