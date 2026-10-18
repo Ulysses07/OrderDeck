@@ -1759,12 +1759,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             // §5.8: sunucu yokken başka bilgisayarın devredilmiş yayınının satırları basılmaz, kuyrukta kalır
             // (PrintCoreAsync). Kuyrukta yalnız onlar kaldıysa soru yinelenseydi "Evet" hiç bitmezdi: başarısız baskı
             // gibi yayın açık kalır. Sebep açılır pencerede değil satış şeridinde (#508): baskının "kuyrukta bekliyor"
-            // notunun yerine yayının neden açık kaldığını da söyleyen metin geçer — şeritte tek bildirim.
+            // notunun (sayısı ne olursa olsun) yerine yayının neden açık kaldığını da söyleyen metin geçer — şeritte tek
+            // bildirim.
             var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
             if (held.Count > 0 && PrintQueue.All(r => held.Contains(r.Id)))
             {
-                _pendingNotes.Remove(Services.Sync.SalesCommandMessages.PrintHeld(held.Count));
-                ShowSalesNotice([], [Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count)]);
+                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count));
                 return;
             }
         }
@@ -2298,7 +2298,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (held.Count > 0)
         {
             labels = labels.Where(l => !held.Contains(l.Id)).ToList();
-            ShowSalesNotice([], [Services.Sync.SalesCommandMessages.PrintHeld(held.Count)]);
+            ShowHeldNotice(Services.Sync.SalesCommandMessages.PrintHeld(held.Count));
             _log.LogInformation("Kuyruk baskısı: {Held} başka bilgisayarın etiketi sunucu kullanılamadığı için basılmadı",
                 held.Count);
         }

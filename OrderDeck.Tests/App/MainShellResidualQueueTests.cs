@@ -248,6 +248,34 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Yayini_bitirirken_seritte_farkli_sayili_eski_bekletme_notu_kalmaz()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (remoteSession, customer, first) = await s.Bed.RemoteLabelAsync(printed: false);
+        var second = s.Bed.RemoteOrder(remoteSession, customer, printed: false);   // aynı uzak yayın
+        await s.Bed.PullAsync();
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(first.ToString("N"))!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.",
+            "ön koşul: şerit kapatılmadı");
+        // Kuyruğa başka bilgisayarın ikinci satırı girdi (ör. bağlantı varken add-backup ile eklenen yedek).
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(second.ToString("N"))!, isCustomerBlacklisted: false));
+        var answers = 0;
+        s.H.Dialogs.ThreeWayResult = _ => ++answers <= 3 ? true : null;   // "Evet", sonra "İptal"
+
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        s.H.Sessions.GetActive().Should().NotBeNull("ön koşul: bekletilen satırlar basılmadı, yayın açık");
+        s.Vm.SalesPushWarning.Should().Be(
+            "2 etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. Yayın açık bırakıldı. "
+          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.",
+            "bekletme notu tek: eski baskının \"1 etiket … kuyrukta bekliyor\"u sayısı farklı diye şeritte kalmaz");
+    }
+
+    [Fact]
     public async Task Baska_bilgisayarin_satiri_orada_zaten_basilmissa_serit_zaten_basilmisti_der()
     {
         using var s = Build();
