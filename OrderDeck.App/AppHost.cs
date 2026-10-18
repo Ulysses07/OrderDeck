@@ -587,6 +587,9 @@ public sealed class AppHost : IDisposable
         // kez gitmez. Zarf tekil örnek (geri yüklemeden sonra kip tazelenene kadar istek yok).
         services.AddSingleton<PendingPaymentRecordRepository>();
         services.AddSingleton<Services.Sync.PaymentRecordSender>();
+        // W3-06 (§6.4 "Ödeme geçmişi (mod Off'ta da)"): mod Off'ta her teslim ya da belirsiz gönderimden sonra kirasız
+        // kayıt — PaymentRequestService'in isteğe bağlı parametresi; kayıt AYNI göndericinin kuyruğuna.
+        services.AddSingleton<Services.Sync.PaymentOffRecordWriter>();
 
         services.AddSingleton<SalesBackfillRepository>();
         services.AddSingleton<Services.Sync.SalesBackfillService>(sp =>

@@ -125,6 +125,7 @@ public sealed class PaymentRequestService
     private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
     private readonly CustomerRepository? _customers;
     private readonly CustomerBusySet? _busy;
+    private readonly PaymentOffRecordWriter? _offRecords;
 
     /// <summary>Kişi başına özel ödeme kilidi — servis tekil (AppHost), yani süreç içi tek kilit tablosu.</summary>
     private readonly PaymentPersonGate _personGate = new();
@@ -139,6 +140,8 @@ public sealed class PaymentRequestService
     /// yönlendirme tablosundan çözer. DI verir; null yalnız testlerde (Id olduğu gibi kullanılır).</param>
     /// <param name="busy">U13: senkron deposuyla paylaşılan TEK meşgul müşteri kümesi (DI tekil
     /// örneği — ikinci bir örnek kirayı senkrona görünmez yapardı). Null yalnız testlerde (kira yok).</param>
+    /// <param name="offRecords">Mod Off'ta her teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec
+    /// 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)"; W3-06). DI verir; null yalnız testlerde (kayıt yok).</param>
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
@@ -149,7 +152,8 @@ public sealed class PaymentRequestService
         IShippingSettingsProvider shipping,
         Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null,
         CustomerRepository? customers = null,
-        CustomerBusySet? busy = null)
+        CustomerBusySet? busy = null,
+        PaymentOffRecordWriter? offRecords = null)
     {
         _settingsStore = settingsStore;
         _messageBuilder = messageBuilder;
@@ -161,6 +165,7 @@ public sealed class PaymentRequestService
         _log = log;
         _customers = customers;
         _busy = busy;
+        _offRecords = offRecords;
     }
 
     // License key → Guid LicenseId resolution. Aynı pattern CustomerChangesPullService /
@@ -560,6 +565,7 @@ public sealed class PaymentRequestService
             {
                 case CloudSendOutcome.Sent:
                     MarkDelivered(deliveryJob, totalAmount);
+                    RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
                     return Done(PaymentRequestResult.Sent);
                 case CloudSendOutcome.Pending:
                     // Sonuç bilinmiyor: mesaj gitmiş olabilir — teslim kaydı yazılır, sıradaki tıklama
@@ -567,6 +573,7 @@ public sealed class PaymentRequestService
                     // doğrulayıp gerekirse tekrar denemeyi söylüyor. Bakiye sonucu zaten kesin: sonraki
                     // deneme aynı anahtarı yeniden kullanır (R2-01).
                     MarkDelivered(deliveryJob, totalAmount);
+                    RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
                     return Done(PaymentRequestResult.SendPending);
                 case CloudSendOutcome.FallBackUnknown:
                     cloudMayHaveSent = true;
@@ -585,12 +592,37 @@ public sealed class PaymentRequestService
             // İş açık kalır: operatörün ikinci tıklaması aynı anahtarı bulur,
             // bakiye ikinci kez düşmez (R2-01). wa.me açılmadı — mesaj gitmedi: deneme geri alınır,
             // sıradaki tıklama sorusuz yeniden dener. Cloud API sonucu bilinmeden düşüldüyse deneme
-            // kalır: o gönderim ulaşmış olabilir.
+            // kalır: o gönderim ulaşmış olabilir (mod Off'ta belirsiz kayıt da yazılır).
             if (!cloudMayHaveSent) AbandonSend(deliveryJob);
+            else RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
             return Done(PaymentRequestResult.LaunchFailed);
         }
         MarkDelivered(deliveryJob, totalAmount);
+        RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
         return Done(PaymentRequestResult.Opened);
+    }
+
+    /// <summary>
+    /// Mod Off'ta teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec 2026-10-13 §6.4 "Ödeme geçmişi
+    /// (mod Off'ta da)"; W3-06): yalnız kuyruğa yazar, ağa çıkmaz, mesaj akışını ve soruları değiştirmez. İşli kişide
+    /// işin teslimden SONRAKİ satırı okunur (kayıt Id'si teslim ya da deneme sayısından türetilir —
+    /// <see cref="PaymentOffRecordWriter"/>). Yerel kip On ise yazılmaz: o yolun kaydı kiradır (W3-07). Hata yutulur —
+    /// mesaj zaten gitti.
+    /// </summary>
+    private void RecordModeOff(PaymentPerson person, PaymentJob? job, string scopeKey, bool unconfirmed, decimal net)
+    {
+        if (_offRecords is null) return;
+        try
+        {
+            if (!_offRecords.IsModeOff()) return;
+            var current = job is null ? null : _jobs.Get(job.Id);
+            if (job is not null && current is null) return;
+            _offRecords.Record(person, current, scopeKey, unconfirmed, net);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Mod Off ödeme kaydı yazılamadı (job={JobId})", job?.Id);
+        }
     }
 
     /// <summary>Gönderim denemesini mesajın netiyle yazar (<see cref="IPaymentJobStore.BeginSend"/>);

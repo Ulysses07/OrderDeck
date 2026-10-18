@@ -163,10 +163,15 @@ public partial class PaymentRequestServiceTests : IDisposable
         /// olmadığı durumdan farklıdır — ayrımı A10 testleri sınar.</summary>
         public bool ThrowTimeoutOnLicenses { get; set; }
 
+        /// <summary>Gelen her isteğin yolu, geliş sırasıyla (W3-06: mod Off'ta kira ucuna istek gitmediği).</summary>
+        public List<string> RequestPaths { get { lock (_sync) return _requestPaths.ToList(); } }
+        private readonly List<string> _requestPaths = new();
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            lock (_sync) _requestPaths.Add(path);
 
             if (path == "/api/v1/me/licenses")
             {
@@ -399,17 +404,18 @@ public partial class PaymentRequestServiceTests : IDisposable
     /// <summary>Verilen sahte sunucu üstünde bir servis örneği. Kişi kilidinin bekleme süresi
     /// kısaltılır: kilide takılan bir test 20 sn asılı kalmasın, hızla düşsün.</summary>
     /// <param name="shipping">Kargo ayarı sağlayıcısı; verilmezse ayar dosyası (mod Off).</param>
+    /// <param name="offRecords">Mod Off'taki kirasız ödeme kaydı (W3-06); verilmezse kayıt yok.</param>
     private PaymentRequestService SutOn(
         WhatsAppStubHandler handler, SettingsStore store, FakeUrlLauncher launcher,
         ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null,
         CustomerRepository? customers = null, CustomerBusySet? busy = null,
-        IShippingSettingsProvider? shipping = null)
+        IShippingSettingsProvider? shipping = null, PaymentOffRecordWriter? offRecords = null)
     {
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
             api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs, shipping ?? LocalShipping.Of(store),
-            log: null, customers: customers, busy: busy)
+            log: null, customers: customers, busy: busy, offRecords: offRecords)
         {
             PersonGateTimeout = TimeSpan.FromSeconds(5),
         };

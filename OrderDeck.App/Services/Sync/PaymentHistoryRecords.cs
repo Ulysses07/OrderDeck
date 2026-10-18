@@ -7,7 +7,7 @@ namespace OrderDeck.App.Services.Sync;
 /// <summary>
 /// Kirasız ödeme kaydının (<c>payment-requests/backfill</c> öğesi, <see cref="PaymentRequestBackfillItem"/>) kurulumu
 /// (spec 2026-10-13 §4.7, §6.4 "Ödeme geçmişi (mod Off'ta da)", M17; W3-06). Ödeme geçmişi geri doldurması
-/// (<see cref="PaymentHistoryBackfill"/>) ve mod Off'taki teslim kaydı (<c>PaymentOffRecordWriter</c>) AYNI
+/// (<see cref="PaymentHistoryBackfill"/>) ve mod Off'taki teslim kaydı (<see cref="PaymentOffRecordWriter"/>) AYNI
 /// kuralla kurar: aynı iş aynı sayıda aynı Id'yi ve aynı içeriği verir, sunucu yinelemeyi <c>unchanged</c> sayar.
 ///
 /// <para><b>İşten kayıt</b> (<see cref="FromJob"/>):

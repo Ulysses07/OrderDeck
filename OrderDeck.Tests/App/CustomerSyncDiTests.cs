@@ -330,6 +330,25 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Mod_Off_odeme_kaydi_yazicisi_odeme_servisine_bagli_tekil_gondericinin_kuyruguna_yazar()
+    {
+        // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)"): PaymentRequestService'in isteğe bağlı
+        // parametresi — kayıt eksikse DI onu sessizce null bırakır ve mod Off'taki istekler sunucuya hiç geçmezdi.
+        using var host = new global::OrderDeck.App.AppHost();
+        var writer = host.Services.GetRequiredService<PaymentOffRecordWriter>();
+
+        PrivateField<PaymentOffRecordWriter>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_offRecords")
+            .Should().BeSameAs(writer);
+        PrivateField<PaymentRecordSender>(writer, "_sender").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentRecordSender>(), "kayıt TEK göndericinin kuyruğuna");
+        PrivateField<SalesSyncStateRepository>(writer, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<ICurrentLicenseProvider>(writer, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+    }
+
+    [Fact]
     public void Odeme_gecmisi_geri_doldurmasi_ortak_orneklerle_kurulur_geri_doldurma_turu_surer()
     {
         // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6, §10.3 DI testi): kayıtlar TEK göndericinin kuyruğuna,
