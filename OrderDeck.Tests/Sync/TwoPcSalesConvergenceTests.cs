@@ -32,9 +32,14 @@ namespace OrderDeck.Tests.Sync;
 /// fazladan bir tur hiçbir yerel satırı ve hiçbir sunucu satırını değiştirmez (aynı akış öğesi iki kez → sıfır
 /// fark).</para>
 /// </summary>
-public sealed class TwoPcSalesConvergenceTests : IDisposable
+public sealed partial class TwoPcSalesConvergenceTests : IDisposable
 {
-    private readonly FakeSalesServer _server = new() { DeriveLiveSessions = true, MinClientVersion = "0.9.11" };
+    /// <summary>Ödeme uçları sunucunun kurallarıyla (W3-12, <see cref="FakeSalesServer.LeaseRules"/>): kira, onay özeti,
+    /// sunucu toplamı, kargo ayarı, geri doldurma ve bakiye defterinin kapsam kuralı.</summary>
+    private readonly FakeSalesServer _server = new()
+    {
+        DeriveLiveSessions = true, MinClientVersion = "0.9.11", LeaseRules = true,
+    };
     private readonly List<IDisposable> _owned = new();
     private readonly List<string> _files = new();
     private bool _bFirst;
@@ -75,13 +80,18 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         return (a, b);
     }
 
-    /// <summary><c>sales-sync enable --apply</c>: mod On, değişim anı, lisans geneli kargo ayarı; ardından verilen
+    /// <summary><c>sales-sync enable --apply</c>: önce kapının ödeme geçmişi koşulu (§4.10-2: her kopyada
+    /// <c>PaymentHistoryCompletedAt</c>; W3-12), sonra mod On, değişim anı, lisans geneli kargo ayarı; ardından verilen
     /// bilgisayarlar açılış turunu bitirir.</summary>
-    private async Task EnableAsync(params SalesPc[] pcs)
+    private Task EnableAsync(params SalesPc[] pcs) =>
+        EnableAsync(new FakeSalesServer.ShippingBody(Version: 2, FreeShippingThreshold: 750m, Fee: 60m), pcs);
+
+    private async Task EnableAsync(FakeSalesServer.ShippingBody shipping, params SalesPc[] pcs)
     {
+        foreach (var pc in Ordered(pcs)) await pc.CompletePaymentHistoryAsync();
         _server.Mode = 1;
         _server.ModeChangedAt = DateTimeOffset.UtcNow;
-        _server.Shipping = new FakeSalesServer.ShippingBody(Version: 2, FreeShippingThreshold: 750m, Fee: 60m);
+        _server.Shipping = shipping;
         foreach (var pc in Ordered(pcs))
         {
             (await pc.SettleAsync()).Should().Be(SalesPullOutcome.CaughtUp, $"{pc.Name} mod On'u açtı");
@@ -1086,8 +1096,7 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
     public async Task Odeme_gecmisi_A_nin_acilistan_onceki_istegi_mod_Onda_B_nin_rozetinde_ve_sorusunda_gorunur(string order)
     {
         Use(order);
-        _server.StoreBackfilledRecords = true;
-        var (a, b) = await PcsAsync(modeOn: false);
+        var (a, b) = await PcsAsync(modeOn: false);                      // kirasız kayıt sunucuda kalır (LeaseRules)
         var session = a.StartStream();
         var label = a.Sell(session, "alici_gecmis", "K1", 300m);
         await a.PrintAsync(label.Id);
