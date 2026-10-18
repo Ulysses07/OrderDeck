@@ -12,7 +12,7 @@ namespace OrderDeck.App.Services.Sync;
 ///
 /// <para><b>İşten kayıt</b> (<see cref="FromJob"/>):
 /// <list type="bullet">
-///   <item>Id: sonucu bilinmeyen gönderimde <see cref="PaymentRecordIds.Unconfirmed"/> (deneme sayısıyla), aksi hâlde
+///   <item>Id: sonucu bilinmeyen gönderimde <see cref="PaymentRecordIds.Unconfirmed"/> (teslim ve deneme sayısıyla), aksi hâlde
 ///   <see cref="PaymentRecordIds.Delivered"/> (teslim sayısıyla) — iki ayrı ad uzayı.</item>
 ///   <item>Durum <c>unconfirmed</c> (= <see cref="PaymentJob.HasUnconfirmedSend"/>) ya da <c>delivered</c>.</item>
 ///   <item>Sahip işin satırı (<see cref="PaymentJob.CustomerId"/>); kapsam işin ASIL kapsamı
@@ -103,7 +103,7 @@ public static class PaymentHistoryRecords
     /// <param name="wireMembers"><see cref="WireMembers"/>'ın sonucu: sahip önce.</param>
     /// <param name="orderIds">Kaydın kapsadığı siparişler (<see cref="WireOrders"/>); miras kapsamda boş.</param>
     /// <param name="forceUnconfirmed">Teslim yazılmış olsa da sonuç bilinmiyor (Cloud API <c>in_progress</c>,
-    /// <c>SendPending</c>): kayıt <c>unconfirmed</c>, Id deneme sayısıyla.</param>
+    /// <c>SendPending</c>): kayıt <c>unconfirmed</c>, Id teslim ve deneme sayısıyla.</param>
     public static PaymentRequestBackfillItem FromJob(
         PaymentJob job, IReadOnlyList<string> wireMembers, IReadOnlyList<Guid> orderIds, bool forceUnconfirmed = false)
     {
@@ -113,7 +113,7 @@ public static class PaymentHistoryRecords
         var applied = job.AppliedAmount;
         return new PaymentRequestBackfillItem(
             RecordId: unconfirmed
-                ? PaymentRecordIds.Unconfirmed(job.Id, job.SendAttempts)
+                ? PaymentRecordIds.Unconfirmed(job.Id, job.Deliveries, job.SendAttempts)
                 : PaymentRecordIds.Delivered(job.Id, job.Deliveries),
             OwnerId: job.CustomerId,
             MemberIds: wireMembers,

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Payments;
+using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api.Models;
 using Xunit;
 
@@ -20,10 +21,34 @@ public sealed class PaymentHistoryRecordsTests
 
         PaymentRecordIds.Delivered(job, 2).Should().Be(PaymentRecordIds.Delivered(job, 2), "yineleme zararsız");
         PaymentRecordIds.Delivered(job, 2).Should().NotBe(PaymentRecordIds.Delivered(job, 3));
-        PaymentRecordIds.Unconfirmed(job, 2).Should().NotBe(PaymentRecordIds.Delivered(job, 2),
+        PaymentRecordIds.Unconfirmed(job, 1, 2).Should().NotBe(PaymentRecordIds.Delivered(job, 2),
             "belirsiz denemeden sonraki teslim aynı sayıyı taşır; Id'si ayrı olmalı");
         PaymentRecordIds.Delivered(job, 1).Should().NotBe(PaymentRecordIds.Delivered(Guid.NewGuid().ToString("N"), 1));
         PaymentRecordIds.Delivered(job, 1).Should().NotBe(Guid.Empty);
+    }
+
+    [Fact]
+    public void Belirsiz_kayit_Idsi_teslimden_sonra_ayni_deneme_sayisinda_yeniden_kullanilmaz()
+    {
+        // MarkDelivered deneme sayısını teslim sayısına geri çeker. D=0'da iki belirsiz deneme (SA=2) ve bir teslim (D=1,
+        // SA=1) sonra gelen sonucu bilinmeyen teslim (D=2, SA=2) yine "unconfirmed 2" Id'sini üretiyordu: sunucu farklı
+        // içerikle aynı Id'ye content-conflict der, en yeni "istenmiş olabilir" kaydı hiç yazılmazdı.
+        var id = Guid.NewGuid().ToString("N");
+        var customer = Guid.NewGuid().ToString("N");
+        PaymentJob Job(int deliveries, int attempts, decimal net) => new(
+            id, customer, "cumulative", net, 0, null, null, PaymentJobState.NoBalance, 1000, 1000, null,
+            DeliveredAt: deliveries > 0 ? 1000 : null, DeliveredNet: deliveries > 0 ? net : null,
+            Deliveries: deliveries, SendAttempts: attempts, AttemptNet: net, AttemptAt: 1000);
+        var members = new[] { customer };
+
+        var secondUnsure = PaymentHistoryRecords.FromJob(Job(0, 2, 200m), members, []);
+        var laterUnsure = PaymentHistoryRecords.FromJob(Job(2, 2, 350m), members, [], forceUnconfirmed: true);
+
+        secondUnsure.State.Should().Be(PaymentRequestStates.Unconfirmed);
+        laterUnsure.State.Should().Be(PaymentRequestStates.Unconfirmed);
+        laterUnsure.RecordId.Should().NotBe(secondUnsure.RecordId, "başka istek, başka Id");
+        PaymentHistoryRecords.FromJob(Job(2, 2, 350m), members, [], forceUnconfirmed: true).RecordId
+            .Should().Be(laterUnsure.RecordId, "yineleme zararsız");
     }
 
     [Theory]

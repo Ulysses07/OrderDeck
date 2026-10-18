@@ -297,7 +297,7 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
         a.OrderIds.Should().BeEquivalentTo(new[] { G(ownLabel), G(secondLabel) },
             "kişinin bütün üyelerinin katkı veren etiketleri, istekten önce basılmış olanlar");
 
-        var b = queued[PaymentRecordIds.Unconfirmed(unconfirmed.Id, 2)];
+        var b = queued[PaymentRecordIds.Unconfirmed(unconfirmed.Id, 1, 2)];
         b.State.Should().Be(PaymentRequestStates.Unconfirmed);
         b.ScopeKey.Should().Be($"session:{s2}");
         b.NetAmount.Should().Be(270m, "sorunun gösterdiği net: belirsiz denemenin neti");
@@ -501,7 +501,7 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
         var secondRound = Sent().Skip(firstRound.Count).ToList();
         secondRound.Select(r => r.RecordId).Should().BeEquivalentTo(new[]
         {
-            PaymentRecordIds.Delivered(first.Id, 1), PaymentRecordIds.Unconfirmed(second.Id, 2),
+            PaymentRecordIds.Delivered(first.Id, 1), PaymentRecordIds.Unconfirmed(second.Id, 1, 2),
         });
         secondRound.Select(r => JsonSerializer.Serialize(r, Web)).Should()
             .BeEquivalentTo(firstRound.Select(r => JsonSerializer.Serialize(r, Web)), "aynı içerik: sunucu unchanged");

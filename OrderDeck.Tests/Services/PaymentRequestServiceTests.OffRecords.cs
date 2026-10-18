@@ -197,7 +197,7 @@ public partial class PaymentRequestServiceTests
             var job = Isler(db, "cumulative").Should().ContainSingle().Subject;
             var record = Kayitlar(bed).Should().ContainSingle().Subject;
             record.State.Should().Be(PaymentRequestStates.Unconfirmed, "sonuç bilinmiyor: mesaj gitmiş olabilir");
-            record.RecordId.Should().Be(PaymentRecordIds.Unconfirmed(job.Id, job.SendAttempts));
+            record.RecordId.Should().Be(PaymentRecordIds.Unconfirmed(job.Id, job.Deliveries, job.SendAttempts));
             record.RecordId.Should().NotBe(PaymentRecordIds.Delivered(job.Id, job.Deliveries));
             record.NetAmount.Should().Be(250m);
             _launcher.LaunchedUrls.Should().BeEmpty("bugünkü davranış: wa.me açılmaz");
@@ -227,7 +227,7 @@ public partial class PaymentRequestServiceTests
             job.HasUnconfirmedSend.Should().BeTrue();
             var record = Kayitlar(bed).Should().ContainSingle().Subject;
             record.State.Should().Be(PaymentRequestStates.Unconfirmed);
-            record.RecordId.Should().Be(PaymentRecordIds.Unconfirmed(job.Id, 1));
+            record.RecordId.Should().Be(PaymentRecordIds.Unconfirmed(job.Id, 0, 1));
             record.NetAmount.Should().Be(250m);
             KiraUcuYok(bed);
         }
