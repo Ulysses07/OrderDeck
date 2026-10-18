@@ -1159,20 +1159,43 @@ public sealed class PaymentLeaseTests : IDisposable
     }
 
     [Fact]
-    public async Task Members_stale_ve_stale_totalin_yeniden_deneme_hakki_ortak()
+    public async Task Members_stale_ve_stale_totalin_yeniden_deneme_haklari_ayri()
     {
+        // §6.4: members-stale de stale-total de "bir tur ve bir kez yeniden deneme" alır. Hak ortaktı: grup değişikliğiyle
+        // gelen members-stale'den sonra kişi yeniden kurulunca küme yeni üyenin henüz inmemiş etiketleri yüzünden tutmuyor
+        // (stale-total), satış turu hiç koşmadan "Bu bilgisayar güncel değil" engeli çıkıyordu.
         var pc = await PcAsync();
         var live = pc.StartStream();
-        var buyer = await BuyerAsync(pc, live, "alici_ortak_hak", 120m);
+        var buyer = await BuyerAsync(pc, live, "alici_ayri_hak", 120m);
         _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "members-stale",
             new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } });
         _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(180m));
 
         var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
 
-        outcome.Result.Should().Be(PaymentRequestResult.Blocked, "bütün akış yalnız BİR KEZ yeniden koşar");
-        outcome.Message.Should().Be("Bu bilgisayar güncel değil (sunucu 180,00 TL, burada 120,00 TL).");
-        Begins().Should().HaveCount(2);
+        outcome.Result.Should().Be(PaymentRequestResult.Opened, "stale-total'ın kendi turu ve yeniden denemesi var");
+        Begins().Should().HaveCount(3);
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Her_ret_turunun_hakki_bir_kez_ikinci_members_stale_engeldir()
+    {
+        // Haklar ayrı ama her biri bir kez: members-stale → stale-total → members-stale zincirinde üçüncü ret engeldir (döngü
+        // yok; bir isteğin en çok bir müşteri turu, bir satış turu ve bir Off turu).
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_hak_bir_kez", 120m);
+        var members = new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } };
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "members-stale", members);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(180m));
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "members-stale", members);
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Müşteri grupları eşitleniyor; biraz sonra tekrar dene.");
+        Begins().Should().HaveCount(3);
         pc.Launcher.LaunchedUrls.Should().BeEmpty();
     }
 

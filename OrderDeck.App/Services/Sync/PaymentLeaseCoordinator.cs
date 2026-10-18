@@ -61,11 +61,9 @@ public enum PaymentLeaseRetry
     /// <summary><c>members-stale</c>: bir müşteri akışı turu, kişi yeniden kurulur.</summary>
     CustomerTour = 1,
 
-    /// <summary><c>stale-total</c>: bir sınırlı satış akışı turu, tutar yeniden okunur.</summary>
+    /// <summary><c>stale-total</c>: bir sınırlı satış akışı turu, tutar yeniden okunur. Hakkı <see cref="CustomerTour"/>'dan
+    /// ayrıdır (§6.4: her biri "bir tur ve bir kez yeniden deneme").</summary>
     SalesTour = 2,
-
-    /// <summary>İki turun ortak hakkı: akış bu ikisinden ötürü toplam BİR KEZ yeniden koşar.</summary>
-    Tour = CustomerTour | SalesTour,
 
     /// <summary><c>mode-off</c>: Off turu (§8.5) sınırlı süre beklenir; bittiyse istek mod Off yolunda yeniden kurulur
     /// (yerel toplam, kira yok, kirasız kayıt).</summary>
@@ -223,8 +221,8 @@ public sealed record PaymentLeaseBeginInput(
 ///   <see cref="RunRetryAsync"/> bir tur koşar (<c>members-stale</c> → bir müşteri akışı turu, <c>stale-total</c> → bir
 ///   sınırlı satış akışı turu; ikisi de en çok <see cref="RetryTourBudget"/>), ardından bütün akış AYNI onay
 ///   belirteçleriyle (<see cref="PaymentLeaseConfirmation"/>: özet + Id listesi) ve YENİ bir <c>recordId</c> ile BİR KEZ
-///   yeniden koşar. İkisinin hakkı ortaktır. Ret sürerse satır içi engel: "Müşteri grupları eşitleniyor…" ya da
-///   "Bu bilgisayar güncel değil (sunucu X, burada Y)" — tutarlar ikinci denemeden; <c>liveElsewhere</c> doluysa
+///   yeniden koşar. Her birinin hakkı ayrıdır ve bir kezdir. Ret sürerse satır içi engel: "Müşteri grupları
+///   eşitleniyor…" ya da "Bu bilgisayar güncel değil (sunucu X, burada Y)" — tutarlar ikinci denemeden; <c>liveElsewhere</c> doluysa
 ///   "Bu kişinin PC-A'da süren yayında etiketi var…".</item>
 ///   <item><c>settings-stale</c> (§6.2) → 409'un <c>current</c>'ı lisans geneli kargo önbelleğine yazılır, kargo yeniden
 ///   hesaplanır ve kira YERİNDE bir kez daha istenir (<see cref="PaymentLeaseFlow.TakeShippingRecompute"/>; kişi
@@ -984,11 +982,11 @@ public sealed class PaymentLeaseFlow
     public PaymentLeaseRetry PendingRetry { get; private set; }
 
     /// <summary>Yeniden deneme hakkı varsa onu ister (<see cref="PendingRetry"/>); hak bu isteğin önceki bir koşusunda
-    /// harcandıysa false — ret engeldir. <c>members-stale</c> ile <c>stale-total</c>'ın hakkı ortaktır.</summary>
+    /// harcandıysa false — ret engeldir. Her retin hakkı ayrıdır (§6.4): bir istek en çok bir müşteri turu, bir satış turu
+    /// ve bir Off turuyla yeniden koşar — döngü yok.</summary>
     internal bool RequestRetry(PaymentLeaseRetry retry)
     {
-        var right = (retry & PaymentLeaseRetry.Tour) != 0 ? PaymentLeaseRetry.Tour : retry;
-        if ((_retried & right) != 0) return false;
+        if ((_retried & retry) != 0) return false;
         PendingRetry = retry;
         return true;
     }
