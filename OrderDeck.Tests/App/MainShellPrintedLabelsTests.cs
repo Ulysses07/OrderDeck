@@ -91,6 +91,88 @@ public class MainShellPrintedLabelsTests
         await h.Vm.PrintCommand.ExecuteAsync(null);
     }
 
+    // ── W3-10: rozetlerde başka bilgisayarların kayıtları (spec 2026-10-13 §6.4) ─────
+
+    private sealed class FixedLicense(string key) : OrderDeck.App.Services.Sync.ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => key;
+    }
+
+    /// <summary>Kabuk ve olayları kendi STA dispatcher'ında (dispatcher'a taşınan yeniden kurma koşsun).</summary>
+    private static void RunOnOwnDispatcher(Func<Task> body)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            SynchronizationContext.SetSynchronizationContext(
+                new System.Windows.Threading.DispatcherSynchronizationContext(dispatcher));
+            dispatcher.BeginInvoke(new Action(async () =>
+            {
+                try { await body(); }
+                catch (Exception ex) { failure = ex; }
+                finally { dispatcher.InvokeShutdown(); }
+            }));
+            System.Windows.Threading.Dispatcher.Run();
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+        thread.Join(TimeSpan.FromSeconds(60)).Should().BeTrue("STA dispatcher koşusu zaman aşımına uğramamalı");
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    [Fact]
+    public void Basilanlar_mod_Onda_uzak_kayitlari_arka_planda_okur_ve_rozetleri_yerinde_yeniden_kurar()
+        => RunOnOwnDispatcher(async () =>
+    {
+        using var server = new OrderDeck.Tests.Sync.FakeSalesServer { Mode = 1 };
+        var drawers = new ScriptedDrawers();
+        using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
+        {
+            var http = new System.Net.Http.HttpClient(server, disposeHandler: false)
+            {
+                BaseAddress = new Uri("https://test.local"),
+            };
+            var remote = new OrderDeck.App.Services.Sync.RemotePaymentRecords(
+                new OrderDeck.Licensing.Api.LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore()),
+                new FixedLicense(server.Lisans), new SalesSyncStateRepository(db), new ReplicaIdentityRepository(db),
+                new PendingPaymentRecordRepository(db),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<OrderDeck.App.Services.Sync.RemotePaymentRecords>.Instance);
+            return new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
+                OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
+                (_, _, _, _, _) => throw new InvalidOperationException("gönderim beklenmiyordu"), remote: remote);
+        });
+        drawers.Vm = h.Vm;
+        var a = Enqueue(h, "@uzak", 250m);
+        await PrintAsync(h);
+        var sessionId = h.Sessions.GetActive()!.Id;
+        var at = DateTimeOffset.UtcNow;
+        server.AddPaymentPrior(new OrderDeck.Tests.Sync.FakeSalesServer.PaymentPrior(Guid.NewGuid(), "PC-B",
+            new[] { a.Label.CustomerId }, CorrectedPaymentRequests.SessionScope(sessionId), 250m, null, at, at, false,
+            OrderIds: new[] { Guid.Parse(a.Label.Id) }));
+        using (var c = h.Db.Open())
+            Dapper.SqlMapper.Execute(c, "UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+
+        h.Vm.IsPrintedTabActive = true;
+
+        h.Vm.PrintedLabels.Rows.Single().StatusText.Should().BeEmpty("liste beklemeden, önce yerel işlerle kurulur");
+        var row = h.Vm.PrintedLabels.Rows.Single();
+        await h.Vm.PrintedPaymentPrefetch;
+        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+        h.Vm.PrintedLabels.Rows.Single().StatusText.Should().Be("ödeme istendi", "PC-B'nin kaydı etiketi içeriyor");
+        h.Vm.PrintedLabels.Rows.Single().Should().NotBeSameAs(row, "satır yeni durumla yerinde değişti");
+        server.Calls(OrderDeck.Tests.Sync.FakeSalesServer.PaymentRequestsList).Should().HaveCount(2,
+            "kişinin yayın ve genel kapsamı; yeniden kurma yeni okuma başlatmaz");
+
+        h.Vm.IsPrintedTabActive = false;
+        h.Vm.IsPrintedTabActive = true;
+        await h.Vm.PrintedPaymentPrefetch;
+        server.Calls(OrderDeck.Tests.Sync.FakeSalesServer.PaymentRequestsList).Should().HaveCount(2,
+            "okunmuş kişi × kapsam yeniden istenmez");
+        h.Vm.PrintedLabels.Rows.Single().StatusText.Should().Be("ödeme istendi");
+    });
+
     // ── K4: kuyrukta fiyat düzeltme ─────────────────────────────────────
 
     [Fact]

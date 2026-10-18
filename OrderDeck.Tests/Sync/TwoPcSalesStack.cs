@@ -143,6 +143,14 @@ internal sealed class SalesPc
     public PaymentLeaseCoordinator Lease { get; }
     public PaymentRequestService Payments { get; }
 
+    /// <summary>Başka bilgisayarların ödeme kayıtları (W3-10): AppHost gibi aynı akış servisi ve aynı ödeme kaydı göndericisi
+    /// önbelleği boşaltır.</summary>
+    public RemotePaymentRecords RemotePayments { get; }
+
+    /// <summary>Fiyat düzeltmesinin ödeme tarafı ve "Basılanlar" rozetleri (W3-10): gönderim bu bilgisayarın ödeme servisinden,
+    /// uzak kayıtlar <see cref="RemotePayments"/>'tan.</summary>
+    public OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests PaymentFollowUp { get; }
+
     /// <summary>Bu süreçte basılan kâğıt sayısı, etiket başına (<see cref="PrintAsync"/>).</summary>
     public Dictionary<string, int> Papers { get; } = new(StringComparer.Ordinal);
 
@@ -257,6 +265,10 @@ internal sealed class SalesPc
             customerPush, Push, Pending, LabelRepo, _prompt, NullLogger<PaymentLeaseCoordinator>.Instance);
         Payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), Launcher, api, license, Jobs, Shipping,
             NullLogger<PaymentRequestService>.Instance, Customers, busy, OffRecords, Lease);
+        RemotePayments = new RemotePaymentRecords(api, license, State, Identity, PendingPaymentRecords,
+            NullLogger<RemotePaymentRecords>.Instance, Pull, PaymentRecords);
+        PaymentFollowUp = new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(
+            Customers, LabelRepo, Jobs, Shipping, Payments, RemotePayments);
 
         // AppHost.Initialize'ın açılış adımları (göçten sonra, arka plan işlerinden önce).
         Envelope.CaptureRestoreAtBoot(markerApplied: false);

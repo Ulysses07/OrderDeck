@@ -190,10 +190,30 @@ public sealed class PaymentRecordSender
     public Task<PaymentRecordFlush> FlushAsync(CancellationToken ct, bool finishesOnly = false) =>
         Task.Run(async () =>
         {
+            PaymentRecordFlush flush;
             await _gate.WaitAsync(ct).ConfigureAwait(false);
-            try { return await ProcessAsync(finishesOnly, ct).ConfigureAwait(false); }
+            try { flush = await ProcessAsync(finishesOnly, ct).ConfigureAwait(false); }
             finally { _gate.Release(); }
+            if (flush.Sent > 0) RaiseRecordsSent();
+            return flush;
         }, ct);
+
+    /// <summary>En az bir kayıt (<c>finish</c> ya da kirasız kayıt) sunucuya geçti — gönderim kapısının dışında, gönderimin iş
+    /// parçacığında. Uzak kayıtların önbelleği (<see cref="RemotePaymentRecords"/>, W3-10) bununla geçersizleşir: bu kopyanın
+    /// yeni kaydı listede yerel işin yerini belirler. Dinleyicinin hatası gönderimi düşürmez.</summary>
+    public event EventHandler? RecordsSent;
+
+    private void RaiseRecordsSent()
+    {
+        try
+        {
+            RecordsSent?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Bekleyen ödeme kayıtları: gönderim bildirimi dinleyiciye iletilemedi");
+        }
+    }
 
     /// <summary>Bir gönderimin sayaçları ve bütçesi.</summary>
     private sealed class Tally(int budget)

@@ -373,13 +373,27 @@ public sealed class AppHost : IDisposable
 
         // Basılanlar sekmesi + fiyat düzeltme (K1–K7, 2026-10-12): düzeltmenin ödeme tarafı (teslim
         // edilmiş isteği değişen kişiler, düzeltilmiş isteği gönder) ve rapordan sekmeye geçiş.
+        // W3-10 (spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması"): mod On'da rozetler ve "ödendi, fark" planı başka
+        // bilgisayarların ödeme kayıtlarını da sayar — tekil önbellek (yalnız mod On, yükleme başına istek bütçesi); satış
+        // akışından değişiklik inince ve ödeme kaydı (finish dahil) sunucuya geçince geçersizleşir: AYNI akış servisi ve TEK
+        // ödeme kaydı göndericisi.
+        services.AddSingleton(sp => new Services.Sync.RemotePaymentRecords(
+            sp.GetRequiredService<LicenseApiClient>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<ReplicaIdentityRepository>(),
+            sp.GetRequiredService<PendingPaymentRecordRepository>(),
+            sp.GetRequiredService<ILogger<Services.Sync.RemotePaymentRecords>>(),
+            sp.GetRequiredService<Services.Sync.SalesChangesPullService>(),
+            sp.GetRequiredService<Services.Sync.PaymentRecordSender>()));
         services.AddSingleton<Services.PriceCorrection.CorrectedPaymentRequests>(sp =>
             new Services.PriceCorrection.CorrectedPaymentRequests(
                 sp.GetRequiredService<CustomerRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<IPaymentJobStore>(),
                 sp.GetRequiredService<IShippingSettingsProvider>(),
-                sp.GetRequiredService<PaymentRequestService>()));
+                sp.GetRequiredService<PaymentRequestService>(),
+                sp.GetRequiredService<Services.Sync.RemotePaymentRecords>()));
         services.AddSingleton<Services.PriceCorrection.PrintedLabelsNavigator>();
 
         // Faz 2 — çekmece altyapısı. TEK örnek iki rolde: DrawerHost'un

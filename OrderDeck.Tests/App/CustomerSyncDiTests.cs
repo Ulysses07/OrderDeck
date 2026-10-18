@@ -382,6 +382,34 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Uzak_odeme_kayitlari_tekil_fiyat_duzeltmesine_bagli_akis_ve_kayit_gondericisiyle_bosalir()
+    {
+        // W3-10 (spec 2026-10-13 §6.4 "Teslim kayıtlarının okunması"): CorrectedPaymentRequests'in isteğe bağlı parametresi —
+        // kayıt eksikse DI onu null bırakır ve mod On'da rozetler ile "ödendi, fark" planı başka bilgisayarın isteğini hiç
+        // görmezdi. Önbellek TEK satış akışı servisinin SalesChanged'iyle ve TEK ödeme kaydı göndericisinin RecordsSent'iyle
+        // boşalır: başka örneğe abone olsaydı hiç boşalmazdı.
+        using var host = new global::OrderDeck.App.AppHost();
+        var remote = host.Services.GetRequiredService<RemotePaymentRecords>();
+
+        host.Services.GetRequiredService<RemotePaymentRecords>().Should().BeSameAs(remote);
+        PrivateField<RemotePaymentRecords>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>(),
+                "_remote")
+            .Should().BeSameAs(remote);
+        PrivateField<SalesSyncStateRepository>(remote, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateRepository>());
+        PrivateField<PendingPaymentRecordRepository>(remote, "_pending").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingPaymentRecordRepository>());
+        PrivateField<ICurrentLicenseProvider>(remote, "_license").Should().BeSameAs(
+            host.Services.GetRequiredService<ICurrentLicenseProvider>());
+        PrivateField<EventHandler<SalesChangedEventArgs>>(host.Services.GetRequiredService<SalesChangesPullService>(),
+                "SalesChanged")!
+            .GetInvocationList().Should().Contain(d => ReferenceEquals(d.Target, remote), "satış akışı önbelleği boşaltır");
+        PrivateField<EventHandler>(host.Services.GetRequiredService<PaymentRecordSender>(), "RecordsSent")!
+            .GetInvocationList().Should().Contain(d => ReferenceEquals(d.Target, remote), "finish sunucuya geçince boşalır");
+    }
+
+    [Fact]
     public void Odeme_gecmisi_geri_doldurmasi_ortak_orneklerle_kurulur_geri_doldurma_turu_surer()
     {
         // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6, §10.3 DI testi): kayıtlar TEK göndericinin kuyruğuna,

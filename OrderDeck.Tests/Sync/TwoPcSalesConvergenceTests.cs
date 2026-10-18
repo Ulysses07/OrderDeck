@@ -1079,6 +1079,65 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         await AssertConvergedAsync(a, b);
     }
 
+    // ── ödeme geçmişi: açılıştan önceki istek mod On'da öbür bilgisayarda görünür (§10.3, M17, §15-2; W3-10) ──
+
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task Odeme_gecmisi_A_nin_acilistan_onceki_istegi_mod_Onda_B_nin_rozetinde_ve_sorusunda_gorunur(string order)
+    {
+        Use(order);
+        _server.StoreBackfilledRecords = true;
+        var (a, b) = await PcsAsync(modeOn: false);
+        var session = a.StartStream();
+        var label = a.Sell(session, "alici_gecmis", "K1", 300m);
+        await a.PrintAsync(label.Id);
+        a.EndStream(session);
+        await a.PushAsync();
+        await a.PushAsync();
+        _server.Session(G(session))!.ReleasedAt.Should().NotBeNull("ön koşul: yayın devredildi");
+        var customerId = a.Customers.FindByPlatformAndUsername("tiktok", "alici_gecmis")!.Id;
+        a.Customers.UpdatePhone(customerId, OrderDeck.Tests.TestHelpers.TestPhone.NewE164()).Should().Be(1);
+        var scope = $"session:{session}";
+
+        // Mod Off'ta istek: bugünkü yerel yol (wa.me), kirasız kayıt kuyruğa, geri doldurma turu sunucuya götürür.
+        (await RequestAsync(a, customerId, scope)).Result.Should().Be(OrderDeck.App.Services.PaymentRequestResult.Opened);
+        (await a.PaymentRecords.FlushAsync(CancellationToken.None)).Sent.Should().Be(1, "kirasız kayıt sunucuya geçti");
+        await EnableAsync(a, b);
+        await SyncAsync(a, b);
+        b.Rows().Select(r => r.Id).Should().Contain(label.Id, "ön koşul: devredilmiş yayın B'de");
+        var onB = b.LabelRepo.GetByIds([label.Id]);
+        b.PaymentFollowUp.Badges(session, onB).RequestedLabels.Should().BeEmpty("B'de iş yok; ön okumadan önce yalnız yerel");
+
+        // B'nin rozeti: A'nın kaydı sipariş kümesinde L'yi taşıyor.
+        (await b.PaymentFollowUp.PrefetchAsync(session, onB)).Should().BeTrue();
+        b.PaymentFollowUp.Badges(session, onB).RequestedLabels.Should().Equal([label.Id]);
+        var printed = new OrderDeck.App.ViewModels.PrintedLabelsViewModel(b.LabelRepo, b.PaymentFollowUp.Badges);
+        printed.Load(session);
+        printed.Rows.Single(r => r.Id == label.Id).StatusText.Should().Be("ödeme istendi");
+
+        // A'da aynı kayıt kendi kaydı: yerel işle temsil edilir, çift sayılmaz.
+        var onA = a.LabelRepo.GetByIds([label.Id]);
+        await a.PaymentFollowUp.PrefetchAsync(session, onA);
+        a.PaymentFollowUp.Badges(session, onA).RequestedLabels.Should().Equal([label.Id]);
+        a.PaymentFollowUp.Plan(session, [(onA[0], 0m)]).RequestedPersons.Should().Be(1);
+
+        // B'nin sorusu: begin'in (e) adımı A'nın kaydını sorar; mesaj gitmez.
+        b.Customers.UpdatePhone(customerId, OrderDeck.Tests.TestHelpers.TestPhone.NewE164()).Should().Be(1);
+        var outcome = await RequestAsync(b, customerId, scope);
+        outcome.Result.Should().Be(OrderDeck.App.Services.PaymentRequestResult.AlreadyRequested);
+        var prior = outcome.Prompt!.Requests.Should().ContainSingle().Subject;
+        prior.Amount.Should().Be(350m, "A'nın mod Off'ta istediği: 300 + yerel kargo 50");
+        prior.Machine.Should().NotBeNull("sorunun metni isteği yapan bilgisayarı söyler");
+        b.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Faults.Should().BeEmpty();
+    }
+
+    /// <summary>Ödeme kartının/raporunun tutar tanımıyla istek: kişinin bütün üyelerinin kapsamdaki basılmış etiketleri.</summary>
+    private static Task<OrderDeck.App.Services.PaymentRequestOutcome> RequestAsync(SalesPc pc, string customerId, string scope)
+        => pc.Payments.RequestPaymentAsync(pc.Customers.GetById(customerId)!,
+            p => pc.LabelRepo.GetPrintedTotal(p.MemberIds.ToList(), PaymentHistoryRecords.SessionIdOf(scope)).Total,
+            DateTime.Now, scope, null);
+
     private long Cursor(SalesPc pc) => pc.Scalar<long>(
         "SELECT COALESCE((SELECT Seq FROM SyncCursor WHERE Name = @name AND LicenseKey = @key), 0)",
         new { name = SalesChangesPullService.CursorName, key = _server.Lisans });
