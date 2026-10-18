@@ -489,29 +489,16 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().BeEmpty();
     }
 
-    public static TheoryData<string, string> InterimRejections => new()
+    [Fact]
+    public async Task Soru_gelene_kadar_already_requested_metinli_engel_mesaj_yok()
     {
-        { "settings-stale", "Kargo ayarı bu arada değişti; biraz sonra tekrar dene." },
-        { "mode-off", "Senkron kapatıldı; ekran yenileniyor." },
-        { "already-requested", "Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi." },
-    };
-
-    [Theory]
-    [MemberData(nameof(InterimRejections))]
-    public async Task Yeniden_deneme_gelene_kadar_kira_retleri_metinli_engel_mesaj_yok(string scenario, string expected)
-    {
-        // Henüz fail-closed: settings-stale ve mode-off W3-08'in ikinci adımında, "tekrar gönderilsin mi?" sorusu W3-09'da.
+        // Henüz fail-closed: "tekrar gönderilsin mi?" sorusu W3-09'da.
         var pc = await PcAsync();
         UseCloudApi(pc);
         var live = pc.StartStream();
         var buyer = await BuyerAsync(pc, live, "alici_ret", 120m);
-        var (code, extensions) = scenario switch
-        {
-            "settings-stale" => ("settings-stale", new Dictionary<string, object?>
-            {
-                ["current"] = new { version = 4, freeShippingThreshold = 1000m, fee = 60m },
-            }),
-            "already-requested" => ("already-requested", new Dictionary<string, object?>
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "already-requested",
+            new Dictionary<string, object?>
             {
                 ["priors"] = new[]
                 {
@@ -519,15 +506,12 @@ public sealed class PaymentLeaseTests : IDisposable
                           finishedAt = DateTimeOffset.UtcNow, unconfirmed = false },
                 },
                 ["priorsDigest"] = "v1.AAAA",
-            }),
-            _ => (scenario, new Dictionary<string, object?>()),
-        };
-        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, code, extensions);
+            });
 
         var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
 
         outcome.Result.Should().Be(PaymentRequestResult.Blocked);
-        outcome.Message.Should().Be(expected);
+        outcome.Message.Should().Be("Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi.");
         _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
         _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle("bu görevde yeniden deneme yok");
         _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
@@ -715,7 +699,7 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().BeEmpty();
     }
 
-    public static TheoryData<string> RetriedRejections => new() { "members-stale", "stale-total" };
+    public static TheoryData<string> RetriedRejections => new() { "members-stale", "stale-total", "settings-stale" };
 
     [Theory]
     [MemberData(nameof(RetriedRejections))]
@@ -730,6 +714,7 @@ public sealed class PaymentLeaseTests : IDisposable
         _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, code, code switch
         {
             "members-stale" => new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } },
+            "settings-stale" => SettingsStale(version: 4, fee: 60m),
             _ => StaleTotal(120m),
         });
 
@@ -743,6 +728,130 @@ public sealed class PaymentLeaseTests : IDisposable
         {
             begin.GetProperty("confirmedPriorsDigest").GetString().Should().Be(digest, "özet aynen yankılanır (#523)");
             begin.GetProperty("confirmedPriorIds").EnumerateArray().Select(i => i.GetGuid()).Should().Equal(priors);
+        }
+    }
+
+    private static Dictionary<string, object?> SettingsStale(int version, decimal fee) => new()
+    {
+        ["current"] = new
+        {
+            version, freeShippingThreshold = 1000m, fee, updatedAt = DateTimeOffset.UtcNow, updatedBy = "cli",
+        },
+    };
+
+    [Fact]
+    public async Task Settings_stale_onbellek_currentten_kira_yerinde_yeni_surum_ve_ucretle_yinelenir_mesaj_yeni_ucretle()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kargo", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "settings-stale", SettingsStale(4, 60m));
+        var mark = _server.RequestLog.Count;
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        var cache = pc.State.GetShippingCache();
+        cache.Version.Should().Be(4, "409'un current'ı lisans geneli kargo önbelleğine yazıldı");
+        cache.FreeShippingThreshold.Should().Be(1000m);
+        cache.ShippingFee.Should().Be(60m);
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        begins[0].GetProperty("shippingSettingsVersion").GetInt32().Should().Be(3);
+        begins[0].GetProperty("totalBeforeBalance").GetDecimal().Should().Be(120m + 50m);
+        begins[1].GetProperty("shippingSettingsVersion").GetInt32().Should().Be(4);
+        begins[1].GetProperty("totalBeforeBalance").GetDecimal().Should().Be(120m + 60m, "kargo yeniden hesaplandı");
+        begins[1].GetProperty("recordId").GetGuid().Should().NotBe(begins[0].GetProperty("recordId").GetGuid());
+        var raw = _server.RequestLog.Skip(mark).Where(e => !e.EndsWith("/me/licenses", StringComparison.Ordinal)).ToList();
+        var first = raw.FindIndex(e => e.EndsWith("/payment-requests/begin", StringComparison.Ordinal));
+        raw[first + 1].Should().EndWith("/payment-requests/begin",
+            "kira yerinde yinelendi: kişi bırakılmadı, arada tur ya da ön gönderim yok");
+        Uri.UnescapeDataString(pc.Launcher.LaunchedUrls.Should().ContainSingle().Subject)
+            .Should().Contain("Kargo: 60,00 TL", "mesaj yeni ücretle");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Single().Json.GetProperty("netAmount").GetDecimal()
+            .Should().Be(180m);
+    }
+
+    [Fact]
+    public async Task Settings_stale_surerse_satir_ici_engel_mesaj_yok()
+    {
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kargo_surer", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "settings-stale", SettingsStale(4, 60m));
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "settings-stale", SettingsStale(5, 70m));
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Kargo ayarı bu arada değişti; biraz sonra tekrar dene.");
+        Begins().Should().HaveCount(2, "yerinde bir kez yinelenir");
+        pc.State.GetShippingCache().Version.Should().Be(5, "her settings-stale önbelleği sunucunun değeriyle yeniler");
+        _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Mode_off_Off_turu_beklenir_uzak_etiketler_silinir_mesaj_yerel_toplamla_ve_kirasiz_kayitla_gider()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kapandi", 120m);
+        SeedRemoteOrder(buyer.Customer, 90m);
+        await pc.SettleAsync();
+        pc.RemoteRows.Should().BeGreaterThan(0, "PC-B'nin etiketi mod On'da indi");
+        _server.Mode = 0;                                               // sales-sync disable
+        _server.ModeChangedAt = DateTimeOffset.UtcNow;
+
+        var outcome = await RequestAsync(pc, buyer.Customer, "cumulative");
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened, "Off turundan sonra istek mod Off yolunda yeniden kuruldu");
+        Begins().Should().ContainSingle("ikinci begin yok: mod Off'ta kira yok")
+            .Which.GetProperty("productTotal").GetDecimal().Should().Be(210m, "ilk koşu uzak etiketi de saymıştı");
+        pc.State.GetMode().Should().Be(0);
+        pc.RemoteRows.Should().Be(0, "Off turu uzak etiketleri sildi");
+        var record = pc.PendingPaymentRecords.List().Where(r => r.Kind == PendingPaymentRecordKinds.Record)
+            .Select(PendingPaymentRecordCodec.DecodeRecord).Should().ContainSingle("W3-06: mod Off'ta kirasız kayıt").Subject;
+        record.NetAmount.Should().Be(120m + 50m, "mesaj yerel toplamla gitti");
+        record.OrderIds.Should().Equal(Guid.ParseExact(buyer.Labels[0].Id, "N"));
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty("ret kira yazmaz");
+    }
+
+    [Fact]
+    public async Task Mode_off_Off_turu_suresinde_bitmezse_engel_mesaj_yok()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kapandi_bekler", 120m);
+        pc.Lease.ModeOffRoundTimeout = TimeSpan.FromMilliseconds(300);
+        _server.Mode = 0;
+        _server.ModeChangedAt = DateTimeOffset.UtcNow;
+        var hold = _server.Hold(FakeSalesServer.Changes);
+        try
+        {
+            var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+            outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+            outcome.Message.Should().Be("Senkron kapatıldı; ekran yenileniyor.");
+            hold.Arrived.IsCompleted.Should().BeTrue("Off turunun son akışı başladı ve takıldı");
+            Begins().Should().ContainSingle();
+            pc.State.GetMode().Should().Be(1, "Off turu bitmedi");
+            pc.Launcher.LaunchedUrls.Should().BeEmpty();
+            pc.PendingPaymentRecords.List().Should().NotContain(r => r.Kind == PendingPaymentRecordKinds.Record);
+        }
+        finally { hold.Release(); }
+        await WaitUntilAsync(() => pc.State.GetMode() == 0);           // tur iptal edilmedi, arka planda bitti
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("koşul 10 sn içinde tutmadı");
+            await Task.Delay(20);
         }
     }
 

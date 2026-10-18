@@ -611,10 +611,21 @@ public sealed class PaymentRequestService
         // operatörün onayladığı uzak öncüllerden (W3-09 sorar); akışın yeniden koşuları aynı belirteçlerle gelir.
         if (paymentLease is not null)
         {
-            var stop = await paymentLease.BeginAsync(new PaymentLeaseBeginInput(
-                person, scopeKey, orderIds, productTotal, totalAmount, customer.RecipientPaysActive,
-                shipping.Version ?? 0, PaymentLeaseConfirmation.From(confirmedTokens)), ct);
-            if (stop is not null) return stop with { OwnerId = person.OwnerId };
+            var confirmation = PaymentLeaseConfirmation.From(confirmedTokens);
+            while (true)
+            {
+                var stop = await paymentLease.BeginAsync(new PaymentLeaseBeginInput(
+                    person, scopeKey, orderIds, productTotal, totalAmount, customer.RecipientPaysActive,
+                    shipping.Version ?? 0, confirmation), ct);
+                if (stop is null) break;
+                // settings-stale (§6.2; W3-08): kargo önbelleği sunucunun güncel ayarıyla yenilendi — kargo yeni anlık
+                // görüntüden yeniden hesaplanır ve kira YERİNDE bir kez daha istenir (kişi bırakılmaz); mesaj da yeni
+                // ücretle gider. Koşu başına bir kez; sonraki ret engeldir.
+                if (!paymentLease.TakeShippingRecompute()) return stop with { OwnerId = person.OwnerId };
+                shipping = _shipping.Current();
+                (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, shipping.Settings);
+                exit.Net = totalAmount;
+            }
         }
 
         // Bakiye uygulaması — PaymentJob durum makinesi (R2-01..04).

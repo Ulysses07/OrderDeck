@@ -459,6 +459,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 {
                     var query = req.RequestUri.Query;
                     lock (_gate) _changesCalls.Add(new StateCall(licenseId, query));
+                    PushHold? hold;
+                    lock (_gate) _holds.TryGetValue(Changes, out hold);
+                    if (hold is not null) await hold.WaitAsync(ct);
                     if (scripted is not null) return scripted();
                     var page = HandleChanges(licenseId, query);
                     ct.ThrowIfCancellationRequested();             // OnChanges'in iptali: yanıt istemciye varmaz

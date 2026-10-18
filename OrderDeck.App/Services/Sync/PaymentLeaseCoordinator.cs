@@ -65,6 +65,10 @@ public enum PaymentLeaseRetry
 
     /// <summary>İki turun ortak hakkı: akış bu ikisinden ötürü toplam BİR KEZ yeniden koşar.</summary>
     Tour = CustomerTour | SalesTour,
+
+    /// <summary><c>mode-off</c>: Off turu (§8.5) sınırlı süre beklenir; bittiyse istek mod Off yolunda yeniden kurulur
+    /// (yerel toplam, kira yok, kirasız kayıt).</summary>
+    ModeOffRound = 4,
 }
 
 /// <summary>
@@ -218,8 +222,15 @@ public sealed record PaymentLeaseBeginInput(
 ///   yeniden koşar. İkisinin hakkı ortaktır. Ret sürerse satır içi engel: "Müşteri grupları eşitleniyor…" ya da
 ///   "Bu bilgisayar güncel değil (sunucu X, burada Y)" — tutarlar ikinci denemeden; <c>liveElsewhere</c> doluysa
 ///   "Bu kişinin PC-A'da süren yayında etiketi var…".</item>
-///   <item><c>settings-stale</c>, <c>mode-off</c>, <c>already-requested</c> → şimdilik metinli satır içi engel (W3-08'in
-///   ikinci adımı ve W3-09).</item>
+///   <item><c>settings-stale</c> (§6.2) → 409'un <c>current</c>'ı lisans geneli kargo önbelleğine yazılır, kargo yeniden
+///   hesaplanır ve kira YERİNDE bir kez daha istenir (<see cref="PaymentLeaseFlow.TakeShippingRecompute"/>; kişi
+///   bırakılmaz, onay alanları aynı); mesaj yeni ücretle gider. Sürerse satır içi engel.</item>
+///   <item><c>mode-off</c> (§4.7, §5.3, §8.5) → mesaj gitmez; akış kişiyi bırakır, <see cref="RunRetryAsync"/> Off turunu
+///   ister (<see cref="SalesChangesPullService.QueueModeOffRound"/>; kabuk "Senkron kapatıldı; ekran yenileniyor."
+///   şeridini açar) ve en çok <see cref="ModeOffRoundBudget"/> bekler. Tur bittiyse (yerel kip 0, bekleyen komut yok;
+///   uzak etiketler silindi) istek mod Off yolunda bir kez yeniden kurulur: yerel toplam, kira yok, kirasız kayıt
+///   (W3-06). Bitmediyse satır içi engel "Senkron kapatıldı; ekran yenileniyor.".</item>
+///   <item><c>already-requested</c> → şimdilik metinli satır içi engel (soru W3-09'da).</item>
 /// </list></para>
 ///
 /// <para><b>Akışın sonu</b> (<see cref="PaymentLeaseFlow.FinishAsync"/>, §6.4 "Akışın sonu"): kira alındıysa (ya da
@@ -242,6 +253,10 @@ public sealed class PaymentLeaseCoordinator
     /// <summary><c>members-stale</c>'in müşteri akışı turunun ve <c>stale-total</c>'ın satış akışı turunun süresi (§6.4);
     /// dolarsa beklenmez, akış yine bir kez yeniden koşar (karar ikinci <c>begin</c>'in).</summary>
     public static readonly TimeSpan RetryTourBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary><c>begin</c>'in <c>mode-off</c>'undan sonra Off turunun beklendiği süre (§8.5): ön gönderim, son akış ve yerel
+    /// geçiş. Dolarsa istek engellenir; tur arka planda sürer, operatörün sonraki tıklaması mod Off yolundan gider.</summary>
+    public static readonly TimeSpan ModeOffRoundBudget = TimeSpan.FromSeconds(10);
 
     private readonly LicenseApiClient _api;
     private readonly SalesSyncEnvelope _envelope;
@@ -302,6 +317,9 @@ public sealed class PaymentLeaseCoordinator
     /// <summary>Yeniden denemenin turunun süresi; testler kısaltır.</summary>
     internal TimeSpan RetryTourTimeout { get; set; } = RetryTourBudget;
 
+    /// <summary>Off turunun bekleme süresi; testler kısaltır.</summary>
+    internal TimeSpan ModeOffRoundTimeout { get; set; } = ModeOffRoundBudget;
+
     /// <summary>
     /// Akışın girişi. Yerel kip On değilse null — bugünkü yol. On ise ön gönderim koşar ve akışın nesnesi döner. Yerel
     /// kip okunamazsa yerel hata fırlar (çağıran mesajı engeller); iptal <see cref="OperationCanceledException"/>.
@@ -323,8 +341,12 @@ public sealed class PaymentLeaseCoordinator
     ///   (<see cref="CustomerChangesPullService.PullOnceAsync"/>) — eksik grup üyeleri ve yönlendirmeler iner.</item>
     ///   <item><see cref="PaymentLeaseRetry.SalesTour"/> (<c>stale-total</c>): bir sınırlı satış akışı turu
     ///   (<see cref="SalesChangesPullService.RefreshAsync"/>) — devredilmiş yayınların etiketleri ve komut sonuçları iner.</item>
+    ///   <item><see cref="PaymentLeaseRetry.ModeOffRound"/> (<c>mode-off</c>): Off turu istenir ve en çok
+    ///   <see cref="ModeOffRoundTimeout"/> beklenir. Tur TAMAMEN bittiyse (yerel kip 0 ∧ bekleyen komut yok —
+    ///   <see cref="SalesSyncStateRepository.GetSeenMode"/>; uzak etiketler silindi, bekleyen baskılar yerele çevrildi) akış
+    ///   yeniden koşar ve yerel kip 0 olduğu için mod Off yolundan gider. Bitmediyse engel; tur arka planda sürer.</item>
     /// </list>
-    /// Tur en çok <see cref="RetryTourTimeout"/> beklenir; dolarsa arka planda biter. Turun hatası ya da zaman aşımı engel
+    /// Turlar en çok <see cref="RetryTourTimeout"/> beklenir; dolarsa arka planda biter. Turun hatası ya da zaman aşımı engel
     /// değildir: akış yine bir kez yeniden koşar, karar ikinci <c>begin</c>'in. <c>null</c> = akış yeniden koşsun; doluysa
     /// akış bu sonuçla biter (mesaj gitmez). Ağ işi arka plan iş parçacığında; iptal fırlar.
     /// </summary>
@@ -339,10 +361,42 @@ public sealed class PaymentLeaseCoordinator
                 await RunBoundedAsync("satış akışı turu", t => _pull.RefreshAsync(RetryTourTimeout, t), ct)
                     .ConfigureAwait(false);
                 return null;
+            case PaymentLeaseRetry.ModeOffRound:
+                return await AwaitModeOffRoundAsync(ct).ConfigureAwait(false);
             default:
                 _log.LogError("Ödeme isteği kirası: tanınmayan yeniden deneme {Retry} — mesaj engellendi", retry);
                 return FailClosed;
         }
+    }
+
+    /// <summary><see cref="PaymentLeaseRetry.ModeOffRound"/>: Off turu istenir ve sınırlı süre beklenir (tur iptal edilmez).</summary>
+    private async Task<PaymentRequestOutcome?> AwaitModeOffRoundAsync(CancellationToken ct)
+    {
+        var round = _pull.QueueModeOffRound();
+        try
+        {
+            await round.WaitAsync(ModeOffRoundTimeout, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _log.LogInformation("Ödeme isteği kirası: Off turu {Budget} sn içinde bitmedi; tur arka planda sürüyor",
+                ModeOffRoundTimeout.TotalSeconds);
+        }
+
+        int seenMode;
+        try { seenMode = _state.GetSeenMode(); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Ödeme isteği kirası: Off turundan sonra yerel kip okunamadı — mesaj engellendi");
+            seenMode = 1;
+        }
+        if (seenMode == 0)
+        {
+            _log.LogInformation("Ödeme isteği kirası: Off turu bitti; istek mod Off yolunda yerel toplamla yeniden kuruluyor");
+            return null;
+        }
+        _log.LogInformation("Ödeme isteği kirası: Off turu tamamlanmadı — mesaj engellendi");
+        return Blocked(SalesCommandMessages.ModeOff);
     }
 
     /// <summary>Yeniden denemenin turu: arka plan iş parçacığında, en çok <see cref="RetryTourTimeout"/> beklenir; süre
@@ -610,11 +664,14 @@ public sealed class PaymentLeaseCoordinator
                     ? PaymentLeaseMessages.LiveElsewhere(live[0].Machine)
                     : PaymentLeaseMessages.NotCurrent(problem.ServerTotal ?? 0m, input.ProductTotal));
             case PaymentRequestProblemCodes.SettingsStale:
-                _log.LogInformation("Ödeme isteği kirası {RecordId}: settings-stale (sunucu sürümü {Version}) — mesaj "
-                                  + "engellendi", recordId, problem.Current?.Version);
-                return Blocked(PaymentLeaseMessages.SettingsStale);
+                return SettingsStale(flow, recordId, problem.Current!, input);
             case PaymentRequestProblemCodes.ModeOff:
-                _log.LogInformation("Ödeme isteği kirası {RecordId}: mode-off — mesaj engellendi", recordId);
+                if (flow.RequestRetry(PaymentLeaseRetry.ModeOffRound))
+                    _log.LogInformation("Ödeme isteği kirası {RecordId}: mode-off — mesaj gitmedi, kişi bırakılıyor, Off "
+                                      + "turundan sonra istek mod Off yolunda yeniden kurulacak", recordId);
+                else
+                    _log.LogInformation("Ödeme isteği kirası {RecordId}: Off turundan sonra yine mode-off — mesaj engellendi",
+                        recordId);
                 return Blocked(SalesCommandMessages.ModeOff);
             case PaymentRequestProblemCodes.AlreadyRequested:
                 _log.LogInformation("Ödeme isteği kirası {RecordId}: already-requested ({Priors} öncül) — mesaj engellendi",
@@ -626,6 +683,38 @@ public sealed class PaymentLeaseCoordinator
                             + "engellendi", recordId, status, problem.Code);
                 return Blocked(SalesCommandMessages.ContentConflict);
         }
+    }
+
+    /// <summary>
+    /// <c>settings-stale</c> (§6.2, §6.4-g): sunucunun güncel lisans geneli kargo ayarı (409'un <c>current</c>'ı) önbelleğe
+    /// yazılır — sağlayıcı her çağrıda önbellekten okur, mesajın ve kiranın tutarı aynı yeni anlık görüntüden çıkar. Hak
+    /// varsa çağıran kargoyu yeniden hesaplar ve kirayı YERİNDE bir kez daha ister
+    /// (<see cref="PaymentLeaseFlow.TakeShippingRecompute"/>; kişi bırakılmaz). Önbellek yazılamazsa ya da hak harcandıysa
+    /// engel. Sürüm aynıysa (tutar ayarla tutmadı) önbellek değişmez; yinelenen istek yine reddedilir ve engel olur.
+    /// </summary>
+    private PaymentRequestOutcome SettingsStale(
+        PaymentLeaseFlow flow, Guid recordId, ShippingSettingsSnapshot current, PaymentLeaseBeginInput input)
+    {
+        try
+        {
+            _state.SaveShippingCache(current.Version, current.FreeShippingThreshold, current.Fee);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Ödeme isteği kirası {RecordId}: settings-stale — kargo önbelleği yazılamadı, mesaj engellendi",
+                recordId);
+            return Blocked(PaymentLeaseMessages.SettingsStale);
+        }
+        if (flow.RequestShippingRecompute())
+        {
+            _log.LogInformation(
+                "Ödeme isteği kirası {RecordId}: settings-stale (sürüm {Sent} → {Current}) — kargo yeniden hesaplanıp kira "
+              + "yerinde bir kez yineleniyor", recordId, input.ShippingSettingsVersion, current.Version);
+            return Blocked(PaymentLeaseMessages.SettingsStale);
+        }
+        _log.LogInformation("Ödeme isteği kirası {RecordId}: settings-stale yinelemede sürüyor (sürüm {Sent}, sunucu "
+                          + "{Current}) — mesaj engellendi", recordId, input.ShippingSettingsVersion, current.Version);
+        return Blocked(PaymentLeaseMessages.SettingsStale);
     }
 
     /// <summary><c>client-update-required</c>'ın güncelleme sorusu (§5.3) — süreç başına BİR KEZ (Velopack sorusu
@@ -738,6 +827,33 @@ public sealed class PaymentLeaseFlow
         var right = (retry & PaymentLeaseRetry.Tour) != 0 ? PaymentLeaseRetry.Tour : retry;
         if ((_retried & right) != 0) return false;
         PendingRetry = retry;
+        return true;
+    }
+
+    /// <summary><c>settings-stale</c>'in yerinde yinelemesi bu koşuda harcandı.</summary>
+    private bool _shippingRecomputeUsed;
+
+    /// <summary>Kargo önbelleği yenilendi, yineleme bekliyor (<see cref="TakeShippingRecompute"/>).</summary>
+    private bool _shippingRecomputePending;
+
+    /// <summary>
+    /// <c>settings-stale</c>'den sonra (§6.2): kargo önbelleği sunucunun güncel ayarıyla yenilendi — çağıran kargoyu yeniden
+    /// hesaplar ve <see cref="BeginAsync"/>'i YERİNDE bir kez daha çağırır (kişi bırakılmaz; yeni <c>recordId</c>, aynı onay
+    /// alanları). Okununca sıfırlanır; koşu başına en çok bir kez true.
+    /// </summary>
+    public bool TakeShippingRecompute()
+    {
+        var pending = _shippingRecomputePending;
+        _shippingRecomputePending = false;
+        return pending;
+    }
+
+    /// <summary>Yerinde yineleme hakkı varsa ister; bu koşuda harcandıysa false (ret engeldir).</summary>
+    internal bool RequestShippingRecompute()
+    {
+        if (_shippingRecomputeUsed) return false;
+        _shippingRecomputeUsed = true;
+        _shippingRecomputePending = true;
         return true;
     }
 
