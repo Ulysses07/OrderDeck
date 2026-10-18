@@ -11,7 +11,7 @@
             <RowDefinition Height="Auto"/>   <!-- kalıcı band -->
         </Grid.RowDefinitions>
 
-        <!-- On geçici şerit aynı hücreyi paylaşır; z-sırası: sunucu → lisans →
+        <!-- Dokuz geçici şerit aynı hücreyi paylaşır; z-sırası: sunucu → lisans →
              senkron kapatıldı → etiket gönderimi sonucu → yedek eklenemedi →
              yedek modu → çekiliş → yayını bitir sonucu → yayını bitir onayı.
              W2-09'un şeritlerinde RemoteSessions yoksa (testler) FallbackValue
