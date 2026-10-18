@@ -198,44 +198,30 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
-    public async Task Cevrimdisiyken_baska_bilgisayarin_etiketi_de_basilir_onayi_bekler_baglaninca_tur_gonderir()
+    public async Task Cevrimdisiyken_baska_bilgisayarin_etiketi_basilmaz_kuyrukta_kalir_canli_etiket_basilir()
     {
-        using var s = Build(withPull: true);
+        using var s = Build();
         s.Bed.ModeOn();
         // Başka bilgisayarın devredilmiş yayınındaki etiket (ör. add-backup ile eklenmiş yedek) kuyrukta.
         var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
         var remoteId = remote.ToString("N");
         MainShellTestHarness.EnqueueLabel(s.Vm, "@canli_alici", 100m);
-        var live = s.Vm.PrintQueue.Last().Id;
         s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
         s.Bed.Online = false;
 
         await s.Vm.PrintCommand.ExecuteAsync(null);
 
-        s.H.Printer.Calls.Should().ContainSingle().Which.Select(l => l.Id).Should().Equal(live, remoteId);
-        s.Vm.PrintQueue.Should().BeEmpty();
-        var row = s.Bed.Pending.List().Should().ContainSingle(
-            "Y11: baskı onayı kalıcı bekleyen komut; kâğıt basıldı, kayıt kaybolmaz").Subject;
-        row.Kind.Should().Be("mark-printed");
-        row.LabelIds.Should().Equal(remoteId);
-        PrintStamp(s, remoteId).PrintedAt.Should().BeNull("sunucu otoritesindeki satır yerelde yazılmaz");
-        PrintStamp(s, live).PrintedAt.Should().NotBeNull();
-        s.Vm.SalesPushWarning.Should().BeNull("bekleyen onay sorun değil");
+        s.H.Printer.Calls.Should().ContainSingle().Which.Select(l => l.Id).Should().NotContain(remoteId,
+            "mark-printed gönderilemez, bekleyen komuta da girmez: kâğıt çıkardı ama baskı kaydı hiçbir yerde olmazdı");
+        QueueIds(s).Should().Equal([remoteId], "kuyrukta bekler; bağlantı gelince basılabilir");
+        s.Bed.LabelRepo.GetById(remoteId)!.PrintedAt.Should().BeNull();
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.");
         s.H.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
-
-        // Bağlantı geldi: tur onayı akıştan önce gönderir.
-        s.Bed.Online = true;
-        s.Bed.StateReceivedAt = DateTimeOffset.UtcNow;
-        (await Task.Run(() => s.Pull!.TourOnceAsync(CancellationToken.None))).Should().Be(SalesPullOutcome.CaughtUp);
-
-        PrintStamp(s, remoteId).PrintedAt.Should().NotBeNull();
-        PrintStamp(s, remoteId).BatchId.Should().Be(PrintStamp(s, live).BatchId, "tek basış");
-        PrintStamp(s, remoteId).Seq.Should().Be(2);
-        s.Bed.Pending.List().Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Cevrimdisi_yayini_bitirirken_baska_bilgisayarin_satiri_da_basilir_yayin_biter()
+    public async Task Yayini_bitirirken_kuyrukta_yalniz_bekletilen_satir_kalirsa_soru_yinelenmez_yayin_acik_kalir_sebep_seritte()
     {
         using var s = Build();
         s.Bed.ModeOn();
@@ -245,17 +231,48 @@ public sealed class MainShellResidualQueueTests
         s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
         s.Bed.Online = false;
         var answers = 0;
-        s.H.Dialogs.ThreeWayResult = _ => ++answers <= 3 ? true : null;   // "Evet"; yinelenirse sonra "İptal"
+        s.H.Dialogs.ThreeWayResult = _ => ++answers <= 3 ? true : null;   // üç kez "Evet", sonra "İptal"
 
         await s.Vm.EndStreamCommand.ExecuteAsync(null);
 
-        s.H.Dialogs.ThreeWayConfirmations.Should().ContainSingle("kuyruk tek baskıda boşaldı");
-        s.H.Printer.Calls.Should().ContainSingle().Which.Select(l => l.Id).Should().Contain(remoteId);
-        s.Vm.PrintQueue.Should().BeEmpty();
-        s.H.Sessions.GetActive().Should().BeNull("bekletilen satır yok: yayın biter");
-        s.Bed.Pending.List().Should().ContainSingle().Which.LabelIds.Should().Equal(remoteId);
-        s.H.Dialogs.Shown.Should().BeEmpty();
-        s.Vm.SalesPushWarning.Should().BeNull();
+        s.H.Dialogs.ThreeWayConfirmations.Should().ContainSingle(
+            "basılabilen basıldı; kuyrukta yalnız bekletilen satır kaldı — aynı soru sonsuza dek yinelenmez");
+        s.H.Printer.Calls.Should().ContainSingle();
+        QueueIds(s).Should().Equal([remoteId], "bekletilen satır kuyrukta kalır");
+        s.H.Sessions.GetActive().Should().NotBeNull("bekletilen satır basılmadı: yayın açık kalır (başarısız baskı gibi)");
+        s.H.Dialogs.Shown.Should().BeEmpty("satış durumu açılır pencereyle değil şeritte söylenir (#508)");
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. Yayın açık bırakıldı. "
+          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.",
+            "şeritte tek bildirim: baskının \"kuyrukta bekliyor\" notu yinelenmez, yerine yayının neden açık kaldığı");
+    }
+
+    [Fact]
+    public async Task Yayini_bitirirken_seritte_farkli_sayili_eski_bekletme_notu_kalmaz()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (remoteSession, customer, first) = await s.Bed.RemoteLabelAsync(printed: false);
+        var second = s.Bed.RemoteOrder(remoteSession, customer, printed: false);   // aynı uzak yayın
+        await s.Bed.PullAsync();
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(first.ToString("N"))!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.",
+            "ön koşul: şerit kapatılmadı");
+        // Kuyruğa başka bilgisayarın ikinci satırı girdi (ör. bağlantı varken add-backup ile eklenen yedek).
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(second.ToString("N"))!, isCustomerBlacklisted: false));
+        var answers = 0;
+        s.H.Dialogs.ThreeWayResult = _ => ++answers <= 3 ? true : null;   // "Evet", sonra "İptal"
+
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        s.H.Sessions.GetActive().Should().NotBeNull("ön koşul: bekletilen satırlar basılmadı, yayın açık");
+        s.Vm.SalesPushWarning.Should().Be(
+            "2 etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. Yayın açık bırakıldı. "
+          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.",
+            "bekletme notu tek: eski baskının \"1 etiket … kuyrukta bekliyor\"u sayısı farklı diye şeritte kalmaz");
     }
 
     [Fact]

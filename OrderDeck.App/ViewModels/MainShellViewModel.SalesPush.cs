@@ -38,6 +38,11 @@ public sealed partial class MainShellViewModel
     /// işlenemeyen satırları, bekleyen komutun kalıcı reddi. Aynı metin bir kez.</summary>
     private readonly List<string> _pendingNotes = new();
 
+    /// <summary><see cref="_pendingNotes"/>'taki bekletilen satır notu (§5.8: baskının <c>PrintHeld</c>'i ya da "Yayını
+    /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
+    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>).</summary>
+    private string? _heldNote;
+
     /// <summary>Gönderim sonucunun uyarı şeridi; null = şerit kapalı.</summary>
     [ObservableProperty] private string? _salesPushWarning;
 
@@ -72,6 +77,15 @@ public sealed partial class MainShellViewModel
         foreach (var note in notes)
             if (!_pendingNotes.Contains(note)) _pendingNotes.Add(note);
         RenderSalesPushWarning();
+    }
+
+    /// <summary>Bekletilen satırların notu (§5.8) şeride; şeritte önceki bekletme notu varsa (eski bir baskının farklı
+    /// sayılı <c>PrintHeld</c>'i dahil) onun yerine geçer — birbiriyle çelişen iki sayı görünmez. UI iş parçacığında.</summary>
+    private void ShowHeldNotice(string note)
+    {
+        if (_heldNote is { } previous) _pendingNotes.Remove(previous);
+        _heldNote = note;
+        ShowSalesNotice([], [note]);
     }
 
     /// <summary>Arka plan iş parçacığından gelir (satış akışı turu, kâğıdın gecikmiş komutu, devir kilidi açılınca biten
@@ -114,6 +128,7 @@ public sealed partial class MainShellViewModel
         _pendingDiscard.Clear();
         _pendingDuplicate.Clear();
         _pendingNotes.Clear();
+        _heldNote = null;
         SalesPushWarning = null;
     }
 

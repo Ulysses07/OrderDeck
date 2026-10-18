@@ -1758,6 +1758,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                     "Yayını Bitir", DialogSeverity.Warning);
                 return;
             }
+
+            // §5.8: sunucu yokken başka bilgisayarın devredilmiş yayınının satırları basılmaz, kuyrukta kalır
+            // (PrintCoreAsync). Kuyrukta yalnız onlar kaldıysa soru yinelenseydi "Evet" hiç bitmezdi: başarısız baskı
+            // gibi yayın açık kalır. Sebep açılır pencerede değil satış şeridinde (#508): baskının "kuyrukta bekliyor"
+            // notunun (sayısı ne olursa olsun) yerine yayının neden açık kaldığını da söyleyen metin geçer — şeritte tek
+            // bildirim.
+            var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
+            if (held.Count > 0 && PrintQueue.All(r => held.Contains(r.Id)))
+            {
+                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count));
+                return;
+            }
         }
 
         _sessions.End(session.Id);
@@ -2281,6 +2293,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Kalanların kopyası tazelenir: ekrandaki fiyat ve ad kâğıttakiyle aynı olsun.
         foreach (var vm in PrintQueue)
             if (current.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
+
+        // §5.8: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek) sunucu
+        // kullanılamıyorken basılmaz — mark-printed gönderilemez, bekleyen komuta da girmez; kâğıt çıkar ama baskı
+        // kaydı hiçbir yerde oluşmaz, satır kimseye yeniden teklif edilmezdi. Kuyrukta kalır, sebep satır içinde.
+        var held = _editor.PrintHeldRows(labels.Select(l => l.Id).ToList());
+        if (held.Count > 0)
+        {
+            labels = labels.Where(l => !held.Contains(l.Id)).ToList();
+            ShowHeldNotice(Services.Sync.SalesCommandMessages.PrintHeld(held.Count));
+            _log.LogInformation("Kuyruk baskısı: {Held} başka bilgisayarın etiketi sunucu kullanılamadığı için basılmadı",
+                held.Count);
+        }
 
         // Basılacak iş kalmadı: yazıcı çağrılmaz, başarı döner — EndStream kapanabilir.
         if (labels.Count == 0)

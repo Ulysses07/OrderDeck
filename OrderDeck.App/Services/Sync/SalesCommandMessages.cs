@@ -248,6 +248,18 @@ public static class SalesCommandMessages
                "etiketleri kontrol et.";
     }
 
+    /// <summary>Kuyruk baskısından önce (§5.8): başka bilgisayarın devredilmiş yayınının satırları, sunucu
+    /// kullanılamadığı için basılmadı ve kuyrukta kaldı.</summary>
+    public static string PrintHeld(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.";
+
+    /// <summary>"Yayını bitir"in "hepsini bas"ından sonra kuyrukta yalnız bekletilen satırlar (<see cref="PrintHeld"/>)
+    /// kaldı: yayın açık bırakılır, soru yinelenmez. Satış şeridinde baskının <see cref="PrintHeld"/> notunun yerine
+    /// geçer (açılır pencere yok).</summary>
+    public static string EndStreamHeld(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. "
+      + "Yayın açık bırakıldı. Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.";
+
     /// <summary>Basılan kâğıdın kendi kalıntısı bekleyen komuta giremedi (karar ile kuyruk arasında yerel kip Off'a
     /// döndü) ve işareti yerelde de yazılamadı: "1 etiketin baskısı sunucuya işlenemedi: …".</summary>
     public static string PrintNotRecorded(int count, string? reason)
