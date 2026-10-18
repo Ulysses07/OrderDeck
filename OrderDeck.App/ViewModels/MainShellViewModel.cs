@@ -2294,9 +2294,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         foreach (var vm in PrintQueue)
             if (current.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
 
-        // §5.8: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek) sunucu
-        // kullanılamıyorken basılmaz — mark-printed gönderilemez, bekleyen komuta da girmez; kâğıt çıkar ama baskı
-        // kaydı hiçbir yerde oluşmaz, satır kimseye yeniden teklif edilmezdi. Kuyrukta kalır, sebep satır içinde.
+        // §5.8, sahip kararı Y11: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek)
+        // sunucu kullanılamıyorken basılmaz — örtü yalnız bu bilgisayarda olurdu, yayının sahibi aynı satırı kalıntı
+        // teklifinden basabilirdi (çift kâğıt, risk 18). Kuyrukta kalır, sebep şeritte; bağlantı gelince basılır.
+        // Kendi canlı yayınının ve kendi önceki yayınlarının satırları her durumda basılır.
         var held = _editor.PrintHeldRows(labels.Select(l => l.Id).ToList());
         if (held.Count > 0)
         {

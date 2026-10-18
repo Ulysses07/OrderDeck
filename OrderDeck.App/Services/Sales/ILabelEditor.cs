@@ -312,10 +312,12 @@ public interface ILabelEditor : IShipmentEditor
     event EventHandler<PendingSalesCommandsSettled>? DeferredPrintSettled;
 
     /// <summary>
-    /// Kuyruk baskısından ÖNCE (§5.8 "devredilmiş yayında … düğmeler pasif"): şu an basılırsa baskı kaydı hiçbir yere
-    /// yazılamayacak satırlar — başka bilgisayarın devredilmiş yayınının satırı (ör. <c>add-backup</c> ile eklenmiş
-    /// yedek) ve sunucu kullanılamıyor: <c>mark-printed</c> gönderilemez, bekleyen komuta da girmez (yalnız kendi
-    /// kalıntısı girer). Çağıran onları basmaz, kuyrukta bırakır. Mod Off'ta boş; yazmaz, ağa gitmez.
+    /// Kuyruk baskısından ÖNCE (§5.8, sahip kararı Y11): sunucu kullanılamıyorken kâğıda gitmeyecek satırlar — başka
+    /// bilgisayarın devredilmiş yayınının satırı (ör. <c>add-backup</c> ile eklenmiş yedek). Basılsaydı örtü yalnız bu
+    /// bilgisayarda olurdu; yayının sahibi onay sunucuya ulaşana kadar aynı satırı kalıntı teklifinden basabilir, iki
+    /// kâğıt çıkardı (risk 18). Çağıran onları basmaz, kuyrukta bırakır; bağlantı gelince basılır ve onay bekleyen
+    /// komutla gider. Kendi canlı yayını ve kendi önceki yayınlarının satırları hiç tutulmaz. Mod Off'ta boş; yazmaz,
+    /// ağa gitmez.
     /// </summary>
     IReadOnlySet<string> PrintHeldRows(IReadOnlyCollection<string> labelIds);
 
