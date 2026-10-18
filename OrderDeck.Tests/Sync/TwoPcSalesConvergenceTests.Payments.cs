@@ -312,6 +312,65 @@ public sealed partial class TwoPcSalesConvergenceTests
         await AssertConvergedAsync(a, b);
     }
 
+    /// <summary>
+    /// W3 son incelemesi: Cloud API <c>in_progress</c> (<c>SendPending</c>) yerelde teslim yazar (<c>MarkDelivered</c>: teslim
+    /// ve deneme sayısı eşit). Mod Off kaydı ve aynı işi sonradan okuyan ödeme geçmişi AYNI kaydı kurar (Id ve içerik):
+    /// sunucu ikincisini <c>unchanged</c> sayar, tek mesaja tek kayıt kalır, PC-B'nin sorusu tek öncül gösterir. Eskiden mod
+    /// Off kaydı Unconfirmed(J,1,1), geçmiş Delivered(J,1) üretiyordu: ikisi de <c>applied</c>, aynı istek iki öncül.
+    /// </summary>
+    [Fact]
+    public async Task Mod_Off_SendPending_kaydi_ve_odeme_gecmisi_ayni_kaydi_kurar_sunucuda_tek_kayit_B_tek_oncul_gorur()
+    {
+        Use("AB");
+        var (a, b) = await PcsAsync(modeOn: false);
+        var session = a.StartStream();
+        var label = a.Sell(session, "alici_isleniyor", "K1", 300m);
+        await a.PrintAsync(label.Id);
+        a.EndStream(session);
+        await a.PushAsync();
+        await a.PushAsync();
+        var customerId = label.CustomerId;
+        Phone(a, customerId);
+        var scope = $"session:{session}";
+        a.Store.Update(s => s.Payment.UseCloudApi = true);
+        _server.EnqueueJson(FakeSalesServer.WhatsAppSend, 200,
+            """{"ok":false,"errorCode":"in_progress","errorMessage":"işleniyor","messageId":null}""");
+
+        (await RequestAsync(a, customerId, scope, null)).Result.Should().Be(PaymentRequestResult.SendPending);
+
+        // 1. yol: mod Off kaydı kuyruktan sunucuya.
+        var offRecord = PendingPaymentRecordCodec.DecodeRecord(
+            a.PendingPaymentRecords.List().Should().ContainSingle().Subject);
+        var first = await a.PaymentRecords.FlushAsync(CancellationToken.None);
+        (first.Sent, first.Dropped).Should().Be((1, 0));
+        _server.PaymentRecords().Should().ContainSingle();
+
+        // 2. yol: ödeme geçmişi aynı işi okur — aynı kayıt, sunucuda unchanged (content-conflict değil).
+        await a.PaymentHistory.TourOnceAsync(CancellationToken.None);
+        var historyRecord = PendingPaymentRecordCodec.DecodeRecord(
+            a.PendingPaymentRecords.List().Should().ContainSingle("geçmiş işi yeniden kuyruğa yazar").Subject);
+        historyRecord.Should().BeEquivalentTo(offRecord, o => o.ComparingRecordsByMembers());
+        var second = await a.PaymentRecords.FlushAsync(CancellationToken.None);
+        (second.Sent, second.Dropped).Should().Be((1, 0), "yineleme unchanged; içerik çakışması kaydı düşürürdü");
+        _server.Calls(FakeSalesServer.PaymentRequestsBackfill).Should().HaveCount(2, "iki yol da gönderdi");
+
+        var stored = _server.PaymentRecords().Should().ContainSingle("tek mesaja tek kayıt").Subject;
+        stored.Id.Should().Be(offRecord.RecordId);
+        stored.Kind.Should().Be("record");
+        stored.State.Should().Be("delivered", "işin satırı teslim diyor (SendPending, #506)");
+        stored.OrderIds.Should().Equal(G(label.Id));
+
+        await EnableAsync(a, b);
+        _server.PaymentRecords().Should().ContainSingle();
+        await SyncAsync(a, b);
+        Phone(b, customerId);
+        var asked = await RequestAsync(b, customerId, scope, null);
+        asked.Result.Should().Be(PaymentRequestResult.AlreadyRequested);
+        asked.Prompt!.Requests.Should().ContainSingle("aynı istek tek öncül").Which.Machine.Should().Be("PC-A");
+        b.Launcher.LaunchedUrls.Should().BeEmpty();
+        await AssertConvergedAsync(a, b);
+    }
+
     // ── ön gönderim (§6.4-1) ───────────────────────────────────────────────
 
     /// <summary>

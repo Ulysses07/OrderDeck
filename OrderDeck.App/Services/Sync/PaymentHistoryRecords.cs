@@ -10,7 +10,11 @@ namespace OrderDeck.App.Services.Sync;
 /// (<see cref="PaymentHistoryBackfill"/>) ve mod Off'taki teslim kaydı (<see cref="PaymentOffRecordWriter"/>) AYNI
 /// kuralla kurar: aynı iş aynı sayıda aynı Id'yi ve aynı içeriği verir, sunucu yinelemeyi <c>unchanged</c> sayar.
 ///
-/// <para><b>İşten kayıt</b> (<see cref="FromJob"/>):
+/// <para><b>İşten kayıt</b> (<see cref="FromJob"/>) yalnız işin satırından türer — çağıranın ayrıca bildiği bir sonuç
+/// (gönderim çıkışı) Id'ye ya da duruma girmez. Geri doldurma işi sonradan, çıkışı bilmeden okur (geri yüklenmiş kopyanın
+/// baştan gönderimi de, §8.7); çıkışa göre ayrışan bir yazıcı aynı teslime ikinci bir Id verir, sunucu ikisini de
+/// <c>applied</c> sayıp tek mesaja iki öncül yazardı. Cloud API'nin <c>in_progress</c>'i (<c>SendPending</c>) bu yüzden
+/// <c>delivered</c>'dır: o çıkış yerelde teslim yazar (<c>MarkDelivered</c>, deneme sayısı teslim sayısına eşitlenir).
 /// <list type="bullet">
 ///   <item>Id: sonucu bilinmeyen gönderimde <see cref="PaymentRecordIds.Unconfirmed"/> (teslim ve deneme sayısıyla), aksi hâlde
 ///   <see cref="PaymentRecordIds.Delivered"/> (teslim sayısıyla) — iki ayrı ad uzayı.</item>
@@ -102,13 +106,11 @@ public static class PaymentHistoryRecords
     /// <summary>İşin kirasız kaydı (sınıf belgesi).</summary>
     /// <param name="wireMembers"><see cref="WireMembers"/>'ın sonucu: sahip önce.</param>
     /// <param name="orderIds">Kaydın kapsadığı siparişler (<see cref="WireOrders"/>); miras kapsamda boş.</param>
-    /// <param name="forceUnconfirmed">Teslim yazılmış olsa da sonuç bilinmiyor (Cloud API <c>in_progress</c>,
-    /// <c>SendPending</c>): kayıt <c>unconfirmed</c>, Id teslim ve deneme sayısıyla.</param>
     public static PaymentRequestBackfillItem FromJob(
-        PaymentJob job, IReadOnlyList<string> wireMembers, IReadOnlyList<Guid> orderIds, bool forceUnconfirmed = false)
+        PaymentJob job, IReadOnlyList<string> wireMembers, IReadOnlyList<Guid> orderIds)
     {
         ArgumentNullException.ThrowIfNull(job);
-        var unconfirmed = forceUnconfirmed || job.HasUnconfirmedSend;
+        var unconfirmed = job.HasUnconfirmedSend;
         var net = job.PromptNet;
         var applied = job.AppliedAmount;
         return new PaymentRequestBackfillItem(

@@ -15,9 +15,13 @@ namespace OrderDeck.Core.Payments;
 /// sunucu onu <c>content-conflict</c> sayıp teslimi hiç yazmazdı.</para>
 ///
 /// <para><b>Belirsiz kayıtta teslim sayısı da Id'ye girer:</b> deneme sayısı tek başına tekdüze değil — <c>MarkDelivered</c>
-/// onu yeni teslim sayısına geri çeker. D=0'da iki belirsiz deneme (2) ve bir teslimden (D=1, deneme 1) sonra gelen sonucu
-/// bilinmeyen teslim (D=2, deneme 2) yine "2" üretir, aynı Id başka içerikle giderdi. (teslim, deneme) çifti her belirsiz
+/// onu yeni teslim sayısına geri çeker. D=0'da iki belirsiz deneme (2) ve bir teslimden (D=1, deneme 1) sonra sonucu
+/// yazılamayan deneme (D=1, deneme 2) yine "2" üretir, aynı Id başka içerikle giderdi. (teslim, deneme) çifti her belirsiz
 /// gönderimde yenidir: teslimler arasında deneme sayısı yalnız artar (başlamamış denemenin geri alınması kayıt bırakmaz).</para>
+///
+/// <para><b>Hangi uzay:</b> yalnız işin satırı belirler (<c>HasUnconfirmedSend</c> = deneme &gt; teslim;
+/// <c>PaymentHistoryRecords.FromJob</c>) — kaydı kuran yolun ayrıca bildiği sonuç değil. Teslim yazılmış iş (Cloud API'nin
+/// <c>in_progress</c>'i dahil: <c>SendPending</c> yerelde teslim yazar) <see cref="Delivered"/>'dır.</para>
 ///
 /// <para>Türetme: SHA-256("orderdeck-payment-record|{uzay}|{iş Id'si}|{sayı}") özetinin ilk 16 baytı; belirsiz kayıtta
 /// sayı "{teslim}.{deneme}". Sayı biçimi kültürden bağımsız. DEĞİŞTİRİLMEZ: sunucuya gitmiş kayıtların Id'leri bu metne

@@ -24,7 +24,8 @@ namespace OrderDeck.Tests.Services;
 // W3-06 b) ──────────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // Mod Off (bugün her lisans) mesaj akışı ve soruları bugünküyle birebir; yalnız gönderim çıkışlarında kuyruğa bir kayıt
-// yazılır: Sent/Opened → teslim, SendPending ve Cloud API'den sonra açılamayan wa.me → belirsiz, düz LaunchFailed → yok.
+// yazılır: Sent/Opened/SendPending → teslim (SendPending yerelde teslim yazar), Cloud API'den sonra açılamayan wa.me →
+// belirsiz, düz LaunchFailed → yok. İşli kişide kayıt yalnız işin satırından türer: ödeme geçmişiyle aynı Id ve içerik.
 // Kira ucu (payment-requests/begin) hiç çağrılmaz; ağa yalnız bugünkü bakiye ve gönderim istekleri çıkar.
 public partial class PaymentRequestServiceTests
 {
@@ -39,7 +40,8 @@ public partial class PaymentRequestServiceTests
     }
 
     private sealed record OffBed(
-        PaymentRequestService Sut, WhatsAppStubHandler Handler, PendingPaymentRecordRepository Pending);
+        PaymentRequestService Sut, WhatsAppStubHandler Handler, PendingPaymentRecordRepository Pending,
+        PaymentOffRecordWriter Writer);
 
     /// <summary>Gerçek SQLite (FileDb) üstünde, kayıt yazıcısı bağlı servis. Gönderici hiç gönderim yapmaz: testler
     /// kuyruğa bakar.</summary>
@@ -56,7 +58,7 @@ public partial class PaymentRequestServiceTests
         var writer = new PaymentOffRecordWriter(sender, new SalesSyncStateRepository(db.Factory),
             new LabelRepository(db.Factory), license, clock, NullLogger<PaymentOffRecordWriter>.Instance);
         var sut = SutOn(handler, _store, _launcher, license, db.Jobs, db.Customers, db.Busy, offRecords: writer);
-        return new OffBed(sut, handler, pending);
+        return new OffBed(sut, handler, pending, writer);
     }
 
     private static string Oturum(SyncedDb db)
@@ -181,27 +183,77 @@ public partial class PaymentRequestServiceTests
     }
 
     [Fact]
-    public async Task Mod_Offta_SendPending_unconfirmed_kayit_deneme_sayisiyla()
+    public async Task Mod_Offta_SendPending_kaydi_isin_teslimiyle_delivered_odeme_gecmisiyle_ayni_Id_ve_icerik()
     {
+        // W3 son incelemesi: in_progress'te (SendPending) iş teslimini yazar (MarkDelivered: teslim = deneme = 1; #506).
+        // Mod Off kaydı onu Unconfirmed(J,1,1) Id'li "unconfirmed" kayıt diye yazıyor, ödeme geçmişi aynı işi sonradan
+        // okuyunca (HasUnconfirmedSend = false) Delivered(J,1) Id'li "delivered" kayıt kuruyordu: Id'ler farklı, sunucu
+        // ikisini de applied alır, tek mesaja kalıcı iki öncül olurdu. Kayıt yalnız işin satırından türer.
         var db = FileDb();
         try
         {
             EnableCloudApi();
             var owner = Uye(db, "ornek_sahip");
+            var session = Oturum(db);
+            var printed = Etiket(db, session, owner.Id, 250m);
             var bed = OffSut(db);
             bed.Handler.SendResponseJson =
                 """{"ok":false,"errorCode":"in_progress","errorMessage":"işleniyor","messageId":null}""";
+            var scope = $"session:{session}";
 
-            (await bed.Sut.OpenWhatsAppAsync(owner, 250m, T, "cumulative")).Should().Be(PaymentRequestResult.SendPending);
+            (await bed.Sut.OpenWhatsAppAsync(owner, 250m, T, scope)).Should().Be(PaymentRequestResult.SendPending);
 
-            var job = Isler(db, "cumulative").Should().ContainSingle().Subject;
+            var job = Isler(db, scope).Should().ContainSingle().Subject;
+            job.Deliveries.Should().Be(1, "ön koşul: SendPending yerelde teslim yazar (#506)");
+            job.HasUnconfirmedSend.Should().BeFalse();
             var record = Kayitlar(bed).Should().ContainSingle().Subject;
-            record.State.Should().Be(PaymentRequestStates.Unconfirmed, "sonuç bilinmiyor: mesaj gitmiş olabilir");
-            record.RecordId.Should().Be(PaymentRecordIds.Unconfirmed(job.Id, job.Deliveries, job.SendAttempts));
-            record.RecordId.Should().NotBe(PaymentRecordIds.Delivered(job.Id, job.Deliveries));
+            record.RecordId.Should().Be(PaymentRecordIds.Delivered(job.Id, 1));
+            record.State.Should().Be(PaymentRequestStates.Delivered, "işin satırı teslim diyor; kayıt onun aynası");
+            record.Should().BeEquivalentTo(
+                PaymentHistoryRecords.FromJob(job, [owner.Id], [Guid.ParseExact(printed, "N")]),
+                o => o.ComparingRecordsByMembers(),
+                "ödeme geçmişi aynı işten aynı kaydı kurar: sunucu yinelemeyi unchanged sayar");
             record.NetAmount.Should().Be(250m);
             _launcher.LaunchedUrls.Should().BeEmpty("bugünkü davranış: wa.me açılmaz");
             KiraUcuYok(bed);
+        }
+        finally { Drop(db); }
+    }
+
+    /// <summary>
+    /// İşli kişide kaydı gönderim çıkışının bayrağı değil işin satırı belirler: ödeme geçmişi işi bayraksız okur, iki yazıcı
+    /// her durumda aynı kaydı (Id ve içerik) kurmalı (<see cref="PaymentHistoryRecords.FromJob"/>).
+    /// </summary>
+    [Theory]
+    [InlineData(1, 1, true)]     // SendPending: sonuç bilinmiyor, ama iş teslimini yazdı
+    [InlineData(1, 1, false)]    // teslim
+    [InlineData(0, 1, true)]     // gerçek belirsiz deneme (Cloud API'den sonra açılamayan wa.me)
+    [InlineData(1, 2, false)]    // teslim yazılamadı (hata yutuldu): iş sonucu bilinmeyen gönderim diyor
+    [InlineData(2, 2, false)]    // ardışık ikinci teslim
+    [InlineData(2, 3, true)]     // iki teslimden sonra belirsiz deneme
+    public void Isli_kiside_mod_Off_kaydi_bayraktan_bagimsiz_isin_satirindan_odeme_gecmisiyle_ayni(
+        int deliveries, int attempts, bool unconfirmed)
+    {
+        var db = FileDb();
+        try
+        {
+            var owner = Uye(db, "ornek_sahip");
+            var bed = OffSut(db);
+            var job = new PaymentJob(Guid.NewGuid().ToString("N"), owner.Id, "cumulative", 250m, 0, null, null,
+                PaymentJobState.NoBalance, 1_000, 1_100, null,
+                DeliveredAt: deliveries > 0 ? 1_000 : null, DeliveredNet: deliveries > 0 ? 250m : null,
+                Deliveries: deliveries, SendAttempts: attempts, AttemptNet: 240m, AttemptAt: 1_100);
+
+            bed.Writer.Record(db.Customers.GetPaymentPerson(owner.Id), job, "cumulative", unconfirmed, 250m)
+                .Should().NotBeNull();
+
+            var record = Kayitlar(bed).Should().ContainSingle().Subject;
+            record.Should().BeEquivalentTo(PaymentHistoryRecords.FromJob(job, [owner.Id], []),
+                o => o.ComparingRecordsByMembers());
+            record.RecordId.Should().Be(attempts > deliveries
+                ? PaymentRecordIds.Unconfirmed(job.Id, deliveries, attempts)
+                : PaymentRecordIds.Delivered(job.Id, deliveries));
+            record.State.Should().Be(attempts > deliveries ? PaymentRequestStates.Unconfirmed : PaymentRequestStates.Delivered);
         }
         finally { Drop(db); }
     }

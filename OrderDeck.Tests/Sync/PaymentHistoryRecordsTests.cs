@@ -30,9 +30,9 @@ public sealed class PaymentHistoryRecordsTests
     [Fact]
     public void Belirsiz_kayit_Idsi_teslimden_sonra_ayni_deneme_sayisinda_yeniden_kullanilmaz()
     {
-        // MarkDelivered deneme sayısını teslim sayısına geri çeker. D=0'da iki belirsiz deneme (SA=2) ve bir teslim (D=1,
-        // SA=1) sonra gelen sonucu bilinmeyen teslim (D=2, SA=2) yine "unconfirmed 2" Id'sini üretiyordu: sunucu farklı
-        // içerikle aynı Id'ye content-conflict der, en yeni "istenmiş olabilir" kaydı hiç yazılmazdı.
+        // MarkDelivered deneme sayısını teslim sayısına geri çeker. D=0'da iki belirsiz deneme (SA=2) ve bir teslimden (D=1,
+        // SA=1) sonra sonucu yazılamayan deneme (D=1, SA=2) yalnız deneme sayısıyla yine "unconfirmed 2" Id'sini üretirdi:
+        // sunucu farklı içerikle aynı Id'ye content-conflict der, en yeni "istenmiş olabilir" kaydı hiç yazılmazdı.
         var id = Guid.NewGuid().ToString("N");
         var customer = Guid.NewGuid().ToString("N");
         PaymentJob Job(int deliveries, int attempts, decimal net) => new(
@@ -42,13 +42,31 @@ public sealed class PaymentHistoryRecordsTests
         var members = new[] { customer };
 
         var secondUnsure = PaymentHistoryRecords.FromJob(Job(0, 2, 200m), members, []);
-        var laterUnsure = PaymentHistoryRecords.FromJob(Job(2, 2, 350m), members, [], forceUnconfirmed: true);
+        var laterUnsure = PaymentHistoryRecords.FromJob(Job(1, 2, 350m), members, []);
 
         secondUnsure.State.Should().Be(PaymentRequestStates.Unconfirmed);
         laterUnsure.State.Should().Be(PaymentRequestStates.Unconfirmed);
         laterUnsure.RecordId.Should().NotBe(secondUnsure.RecordId, "başka istek, başka Id");
-        PaymentHistoryRecords.FromJob(Job(2, 2, 350m), members, [], forceUnconfirmed: true).RecordId
+        PaymentHistoryRecords.FromJob(Job(1, 2, 350m), members, []).RecordId
             .Should().Be(laterUnsure.RecordId, "yineleme zararsız");
+    }
+
+    [Fact]
+    public void Kayit_yalniz_isin_satirindan_teslim_yazilmis_is_delivered_teslim_sayisiyla()
+    {
+        // Cloud API in_progress (SendPending) yerelde teslim yazar: MarkDelivered teslim ve deneme sayısını eşitler (D=2,
+        // SA=2). Ödeme geçmişi işi çıkışı bilmeden okur; mod Off kaydı da aynı türetmeyi kullanır. Kayıt delivered,
+        // Delivered(J,2): yazıcılardan biri belirsiz uzayda Id üretseydi sunucuda aynı mesaja iki kayıt olurdu.
+        var id = Guid.NewGuid().ToString("N");
+        var customer = Guid.NewGuid().ToString("N");
+        var job = new PaymentJob(id, customer, "cumulative", 350m, 0, null, null, PaymentJobState.NoBalance, 1000, 1000,
+            null, DeliveredAt: 1000, DeliveredNet: 350m, Deliveries: 2, SendAttempts: 2, AttemptNet: 350m, AttemptAt: 1000);
+
+        var record = PaymentHistoryRecords.FromJob(job, [customer], []);
+
+        record.State.Should().Be(PaymentRequestStates.Delivered);
+        record.RecordId.Should().Be(PaymentRecordIds.Delivered(id, 2));
+        record.NetAmount.Should().Be(350m);
     }
 
     [Theory]

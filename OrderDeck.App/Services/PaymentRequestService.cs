@@ -758,7 +758,9 @@ public sealed class PaymentRequestService
                     // Sonuç bilinmiyor: mesaj gitmiş olabilir — teslim kaydı yazılır, sıradaki tıklama
                     // (bu pencerede ya da öbüründe) "tekrar gönderilsin mi?" diye sorar; bildirim de
                     // doğrulayıp gerekirse tekrar denemeyi söylüyor. Bakiye sonucu zaten kesin: sonraki
-                    // deneme aynı anahtarı yeniden kullanır (R2-01).
+                    // deneme aynı anahtarı yeniden kullanır (R2-01). Mod Off kaydı işli kişide işin satırından
+                    // türer (teslim yazıldı → delivered, ödeme geçmişiyle aynı Id); belirsiz bayrağı yalnız işsiz
+                    // kişinin kaydına girer.
                     exit.Unconfirmed();
                     MarkDelivered(deliveryJob, totalAmount);
                     RecordWithoutLease(paymentLease, exit, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
@@ -798,8 +800,8 @@ public sealed class PaymentRequestService
     /// <summary>
     /// Mod Off'ta teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec 2026-10-13 §6.4 "Ödeme geçmişi
     /// (mod Off'ta da)"; W3-06): yalnız kuyruğa yazar, ağa çıkmaz, mesaj akışını ve soruları değiştirmez. İşli kişide
-    /// işin teslimden SONRAKİ satırı okunur (kayıt Id'si teslim ya da deneme sayısından türetilir —
-    /// <see cref="PaymentOffRecordWriter"/>). Karar akışın GİRİŞİNDEKİ kipe göredir (<see cref="LeaseExit.EnteredModeOff"/>):
+    /// işin teslimden SONRAKİ satırı okunur (kaydın Id'si ve durumu yalnız ondan türetilir, <paramref name="unconfirmed"/>
+    /// yalnız işsiz kişinin kaydına girer — <see cref="PaymentOffRecordWriter"/>). Karar akışın GİRİŞİNDEKİ kipe göredir (<see cref="LeaseExit.EnteredModeOff"/>):
     /// girişte mod Off yolunu seçen akış kip sonradan 1 olsa da yazar. Kiralı akış yazmaz: o yolun kaydı kiradır (W3-07) —
     /// tek istisna, kiraya ulaşılamadığında yerel yoldan giden GUID'siz kişi (<see cref="PaymentLeaseFlow.RecordsLocally"/>,
     /// spec §5.8: "kayıt bağlantı gelince yazılır"). Hata yutulur — mesaj zaten gitti.

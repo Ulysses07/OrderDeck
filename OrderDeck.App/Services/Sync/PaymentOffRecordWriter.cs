@@ -14,19 +14,21 @@ namespace OrderDeck.App.Services.Sync;
 /// değişmez. Mod On açılınca öbür bilgisayarın sorusu ve rozetleri bu kayıtları da görür.
 ///
 /// <para><b>Çağıran</b> <c>PaymentRequestService</c>'in gönderim çıkışlarıdır: <c>Sent</c>/<c>Opened</c> → teslim,
-/// <c>SendPending</c> ve Cloud API'nin sonucu bilinmeden wa.me'ye düştüğü <c>LaunchFailed</c> → belirsiz; düz
-/// <c>LaunchFailed</c> (mesaj kesin gitmedi) → kayıt yok. Mod kapısı (<see cref="IsModeOff"/>) çağıranındır: mod On'un
-/// çevrimdışı GUID'siz yerel yolu (W3-07) da aynı kaydı yazar.</para>
+/// <c>SendPending</c> ve Cloud API'nin sonucu bilinmeden wa.me'ye düştüğü <c>LaunchFailed</c> → belirsiz bayrağı; düz
+/// <c>LaunchFailed</c> (mesaj kesin gitmedi) → kayıt yok. Bayrak yalnız işsiz kişinin kaydına girer (aşağıda). Mod kapısı
+/// (<see cref="IsModeOff"/>) çağıranındır: mod On'un çevrimdışı GUID'siz yerel yolu (W3-07) da aynı kaydı yazar.</para>
 ///
 /// <para><b>Kayıt</b>:
 /// <list type="bullet">
 ///   <item><b>İşli kişi</b> (GUID'li sahip, bakiye akışının işi): ödeme geçmişiyle AYNI türetme
-///   (<see cref="PaymentHistoryRecords.FromJob"/>, işin teslimden sonraki satırı) — Id iş ile teslim ya da deneme
-///   sayısından; geri doldurma aynı işi sonradan görse de aynı Id'yi üretir. <c>SendPending</c>'de teslim yazılmış olsa
-///   da kayıt belirsizdir (Id deneme sayısıyla).</item>
-///   <item><b>İşsiz (GUID'siz) kişi</b>: rastgele Id (yükte saklanır, yinelenen gönderim aynı Id'yi taşır); sahip kişinin
-///   belirlenimli sahibi (<see cref="PaymentOwnerRule.Order"/>'ın ilki — iki bilgisayar aynı satırı seçer); net
-///   mesajdaki tutar, düşüm yok.</item>
+///   (<see cref="PaymentHistoryRecords.FromJob"/>, işin teslimden sonraki satırı) — Id, durum ve tutarlar yalnız işin
+///   satırından; geri doldurma aynı işi sonradan görse de aynı kaydı üretir. Çıkışın bayrağı (<c>unconfirmed</c>) burada
+///   kullanılmaz: geri doldurma onu bilmez, bayrağa göre ayrışan kayıt aynı teslime ikinci Id verirdi. <c>SendPending</c>
+///   yerelde teslim yazdığı için kaydı <c>delivered</c>'dır; teslim yazımı düştüyse iş sonucu bilinmeyen gönderim der ve
+///   kayıt <c>unconfirmed</c>'dır.</item>
+///   <item><b>İşsiz (GUID'siz) kişi</b>: rastgele Id (yükte saklanır, yinelenen gönderim aynı Id'yi taşır); durum çıkışın
+///   bayrağından (yerel kayıt yok, geri doldurma bu kişiyi görmez); sahip kişinin belirlenimli sahibi
+///   (<see cref="PaymentOwnerRule.Order"/>'ın ilki — iki bilgisayar aynı satırı seçer); net mesajdaki tutar, düşüm yok.</item>
 ///   <item>Üyeler kişinin bütün üyeleri (sahip önce, ≤ 100); <c>orderIds</c> isteğin
 ///   <see cref="LabelRepository.GetPrintedTotal"/> Id'leri (kişinin o kapsamdaki katkı veren etiketleri) — işli kişide
 ///   ödeme geçmişinin <c>Covers</c> kuralıyla (<c>PrintedAt ≤ PromptAt</c>, <see cref="PaymentHistoryRecords.PromptAtOf"/>).</item>
@@ -70,7 +72,8 @@ public sealed class PaymentOffRecordWriter
     /// <param name="job">Bakiye akışının işi, teslim ya da deneme yazıldıktan SONRA yeniden okunmuş hâli; işsiz
     /// (GUID'siz) kişide null.</param>
     /// <param name="scopeKey">İsteğin kapsamı (<c>session:{id}</c> ya da <c>cumulative</c>).</param>
-    /// <param name="unconfirmed">Sonuç bilinmiyor: <c>SendPending</c> ya da Cloud API'den sonra açılamayan wa.me.</param>
+    /// <param name="unconfirmed">Sonuç bilinmiyor: <c>SendPending</c> ya da Cloud API'den sonra açılamayan wa.me. Yalnız
+    /// işsiz kişide kaydın durumudur; işli kişide durum işin satırından okunur (<see cref="PaymentJob.HasUnconfirmedSend"/>).</param>
     /// <param name="netAmount">Mesajdaki net tutar (işsiz kişide kaydın tutarı; işli kişide işin satırı okunur).</param>
     /// <returns>Kuyruğa yazılan kaydın Id'si; yazılmadıysa (lisans yok, biçim uymuyor, zaten kuyrukta, hata) null.</returns>
     public Guid? Record(PaymentPerson person, PaymentJob? job, string scopeKey, bool unconfirmed, decimal netAmount)
@@ -110,7 +113,7 @@ public sealed class PaymentOffRecordWriter
                     .LabelIds);
 
             var item = job is not null
-                ? PaymentHistoryRecords.FromJob(job, members, orders, forceUnconfirmed: unconfirmed)
+                ? PaymentHistoryRecords.FromJob(job, members, orders)
                 : new PaymentRequestBackfillItem(
                     RecordId: Guid.NewGuid(),
                     OwnerId: owner,
