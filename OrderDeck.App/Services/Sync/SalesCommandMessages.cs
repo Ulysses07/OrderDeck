@@ -269,6 +269,13 @@ public static class SalesCommandMessages
         return $"{count.ToString(CultureInfo.InvariantCulture)} etiketin baskısı sunucuya işlenemedi: {text}";
     }
 
+    /// <summary>Kâğıdı basılan satırların işareti arka planda (devir kilidi açılınca, §5.6-4) beklenmeyen bir hatayla
+    /// yazılamadı: satır basılmamış görünür. "1 etiketin kâğıdı basıldı ama baskısı bu bilgisayara yazılamadı (iç hata);
+    /// etiketleri kontrol et."</summary>
+    public static string PrintNotWritten(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} etiketin kâğıdı basıldı ama baskısı bu bilgisayara yazılamadı " +
+        "(iç hata); etiketleri kontrol et.";
+
     /// <summary>Yerel saat, SS:DD.</summary>
     public static string Clock(DateTimeOffset at, TimeZoneInfo? zone = null) =>
         TimeZoneInfo.ConvertTime(at, zone ?? TimeZoneInfo.Local).ToString("HH:mm", CultureInfo.InvariantCulture);

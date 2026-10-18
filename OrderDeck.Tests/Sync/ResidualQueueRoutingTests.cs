@@ -488,6 +488,7 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         var session = _bed.LocalSession(ended: true);
         var gated = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
         _bed.Router.HandoverWaitBudget = TimeSpan.FromMilliseconds(100);   // §5.6-2'nin 3 sn'si, kısaltılmış
+        var settled = DeferredSettlement();
         var held = await _bed.Gate.EnterAsync(session);            // kapanış gönderimi sessions/sync'te asılı
 
         var result = await _bed.Router.MarkPrintedAsync([gated, live]).WaitAsync(TimeSpan.FromSeconds(10));
@@ -504,6 +505,44 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         Print(gated).Seq.Should().Be(1);
         Print(live).Seq.Should().Be(2);
         _bed.Pending.List().Should().BeEmpty();
+        var notice = await settled.WaitAsync(TestPatience.Upper);
+        notice.ChangedLabelIds.Should().Equal(gated);
+        notice.NeedsAttention.Should().BeFalse("işaret yazıldı: uyarılacak bir şey yok");
+    }
+
+    /// <summary>Yönlendiricinin arka planda biten kâğıt işaretinin sonucu (<c>DeferredPrintSettled</c>).</summary>
+    private Task<PendingSalesCommandsSettled> DeferredSettlement()
+    {
+        var settled = new TaskCompletionSource<PendingSalesCommandsSettled>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _bed.Router.DeferredPrintSettled += (_, e) => settled.TrySetResult(e);
+        return settled.Task;
+    }
+
+    [Fact]
+    public async Task Suresi_dolan_kapili_satirin_isareti_arka_planda_yazilamazsa_sessizce_kaybolmaz_uyari_doner()
+    {
+        _bed.ModeOn();
+        _bed.Online = false;
+        var session = _bed.LocalSession(ended: true);
+        var label = _bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        _bed.Router.HandoverWaitBudget = TimeSpan.FromMilliseconds(100);
+        var settled = DeferredSettlement();
+        var held = await _bed.Gate.EnterAsync(session);
+
+        var result = await _bed.Router.MarkPrintedAsync([label]).WaitAsync(TimeSpan.FromSeconds(10));
+        result.Pending.Should().Equal(new[] { label });
+        result.Notices.Should().BeEmpty("ön koşul: sonuç henüz yok");
+
+        // Beklenmeyen veritabanı hatası (devrin sales-server-authority ABORT'u değil): kilit açılınca damga düşer.
+        _bed.Exec("CREATE TRIGGER TestMarkFails BEFORE UPDATE OF PrintedAt ON Label WHEN new.Id = '" + label + "' "
+                + "BEGIN SELECT RAISE(ABORT, 'test-db-failure'); END");
+        held.Dispose();
+        var notice = await settled.WaitAsync(TestPatience.Upper);
+
+        notice.Warnings.Should().Equal(SalesCommandMessages.PrintNotWritten(1));
+        notice.NeedsAttention.Should().BeTrue("kâğıdı basılan satırın kaydı yazılamadı: operatör görmeli");
+        Print(label).PrintedAt.Should().BeNull();
+        _bed.Gate.EntryCount.Should().Be(0, "kilit hata olsa da bırakılır");
     }
 
     [Fact]

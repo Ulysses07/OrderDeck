@@ -71,6 +71,9 @@ public sealed class SalesEditRouter : ILabelEditor
     /// planda, kilit altında işaretlenir. Testler kısaltır.</summary>
     internal TimeSpan HandoverWaitBudget { get; set; } = TimeSpan.FromSeconds(3);
 
+    /// <inheritdoc/>
+    public event EventHandler<PendingSalesCommandsSettled>? DeferredPrintSettled;
+
     /// <param name="lastFeedSyncAt">Satış akışının bu süreçte son yetiştiği an (çevrimdışı yeniden baskının notu).</param>
     public SalesEditRouter(
         LabelService labels,
@@ -442,8 +445,8 @@ public sealed class SalesEditRouter : ILabelEditor
     ///   <see cref="SalesEditRoute.Blocked"/>): <see cref="MarkGatedPaperAsync"/> — kilit beklenir, karar kilit altında
     ///   yeniden verilir. Kilit en çok <see cref="HandoverWaitBudget"/> beklenir: süre dolunca çağıran beklemez, bu
     ///   satırlar <see cref="SalesPrintMarkResult.Pending"/>'de döner ve kilit açılınca arka planda aynı kuralla
-    ///   işaretlenir. Kilitsiz yazılmaz (M2: kapanış "kuyruk boş" okuduysa devir kuyruk boşken olur), işaret de
-    ///   düşmez.</item>
+    ///   işaretlenir (sonucu <see cref="DeferredPrintSettled"/>). Kilitsiz yazılmaz (M2: kapanış "kuyruk boş"
+    ///   okuduysa devir kuyruk boşken olur), işaret de düşmez.</item>
     ///   <item>Sunucu satırları (<see cref="MarkServerPaperAsync"/>).</item>
     /// </list>
     /// </summary>
@@ -555,13 +558,16 @@ public sealed class SalesEditRouter : ILabelEditor
 
     /// <summary>
     /// Süresinde beklenemeyen kapılı parçanın arka planda bitişi: kilit açılınca yerel damga (<see cref="MarkGatedPaperAsync"/>),
-    /// devri görülen satırlar için bekleyen <c>mark-printed</c> (kalıcı önce; çevrimiçiyse hemen gönderilir — sonucu
-    /// arayüze <see cref="PendingSalesCommandSender.Settled"/> ile gider). Günlük yalnız kimlik ve sayı taşır.
+    /// devri görülen satırlar için bekleyen <c>mark-printed</c> (kalıcı önce; çevrimiçiyse hemen gönderilir). Sonuç
+    /// <see cref="DeferredPrintSettled"/> ile arayüzün şeridine gider — uyarılar (işlenemeyen satır, Off'a dönüşte
+    /// yazılamayan işaret) ve beklenmeyen hata da (<see cref="SalesCommandMessages.PrintNotWritten"/>): kâğıdı basılan
+    /// satırın kaydı sessizce kaybolmaz. Günlük yalnız kimlik ve sayı taşır.
     /// </summary>
     private async Task FinishDeferredGatedAsync(
         Task<(PrintMarkBuilder Result, IReadOnlyList<SalesEditDecision> Decisions)> part, string batchId,
         IReadOnlyDictionary<string, int> seqOf, int count)
     {
+        PendingSalesCommandsSettled settled;
         try
         {
             var (result, decisions) = await part.ConfigureAwait(false);
@@ -569,12 +575,21 @@ public sealed class SalesEditRouter : ILabelEditor
             _log.LogInformation(
                 "Kuyruk baskısı {BatchId}: kilit açıldı; {Count} satırdan {Local} yerelde işaretlendi, {Own} kalıntı komuta girdi ({Pending} bekliyor); {Notices} uyarı",
                 batchId, count, result.LocalCount, result.OwnCount, result.Pending.Count, result.Notices.Count);
+            var built = result.Build();
+            settled = new PendingSalesCommandsSettled(built.ChangedLabelIds, built.DiscardLabelIds, built.Notices,
+                built.AlreadyPrintedLabelIds);
         }
         catch (Exception ex)
         {
             _log.LogError(ex,
                 "Kuyruk baskısı {BatchId}: kâğıdı basılmış {Count} satırın işareti kilit açıldıktan sonra yazılamadı",
                 batchId, count);
+            settled = new PendingSalesCommandsSettled([], [], [SalesCommandMessages.PrintNotWritten(count)]);
+        }
+        try { DeferredPrintSettled?.Invoke(this, settled); }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Kuyruk baskısı {BatchId}: arka planda biten işaretin sonucu arayüze iletilemedi", batchId);
         }
     }
 

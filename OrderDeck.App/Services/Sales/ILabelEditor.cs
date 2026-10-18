@@ -301,6 +301,15 @@ public interface ILabelEditor : IShipmentEditor
     Task<SalesPrintMarkResult> MarkPrintedAsync(IReadOnlyList<string> paperOrder, CancellationToken ct = default);
 
     /// <summary>
+    /// <see cref="MarkPrintedAsync"/>'in süresinde beklenemeyen satırlarının işareti arka planda bitti (kilit açıldı):
+    /// değişen etiketler, imha edilecek kâğıtlar ve uyarılar — işlenemeyen sunucu satırı, kalıcı ret ya da işaret hiç
+    /// yazılamadıysa <see cref="SalesCommandMessages.PrintNotWritten"/>. Çağıranın şeridi bunu
+    /// <see cref="MarkPrintedAsync"/>'in kendi sonucu gibi gösterir; sessizce kaybolmaz. Arka plan iş parçacığından gelir;
+    /// mod Off'ta hiç gelmez.
+    /// </summary>
+    event EventHandler<PendingSalesCommandsSettled>? DeferredPrintSettled;
+
+    /// <summary>
     /// Kuyruk baskısından ÖNCE (§5.8 "devredilmiş yayında … düğmeler pasif"): şu an basılırsa baskı kaydı hiçbir yere
     /// yazılamayacak satırlar — başka bilgisayarın devredilmiş yayınının satırı (ör. <c>add-backup</c> ile eklenmiş
     /// yedek) ve sunucu kullanılamıyor: <c>mark-printed</c> gönderilemez, bekleyen komuta da girmez (yalnız kendi

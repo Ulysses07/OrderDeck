@@ -1182,6 +1182,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _salesPull.ModeOffStarted += OnSalesModeOffStarted;              // W2-11: "Senkron kapatıldı; ekran yenileniyor."
             _salesPull.ModeOffFinished += OnSalesModeOffFinished;
         }
+        // §5.6-4: devir kilidi süresinde alınamayan kâğıt satırlarının arka planda biten işareti aynı şeride (uyarı,
+        // imha listesi, yazılamayan kayıt) — _dispatcher'dan sonra.
+        _editor.DeferredPrintSettled += OnPendingCommandsSettled;
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
         // that method calls UpdateChatHealth() synchronously, which reads
         // _settingsStore. Previously a first-chance NRE leaked here (caught by
@@ -2961,6 +2964,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _salesPull.ModeOffStarted -= OnSalesModeOffStarted;
             _salesPull.ModeOffFinished -= OnSalesModeOffFinished;
         }
+        _editor.DeferredPrintSettled -= OnPendingCommandsSettled;
 
         Banner.Dispose();
         _busSubscription.Dispose();

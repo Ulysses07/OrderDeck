@@ -454,4 +454,36 @@ public sealed class MainShellResidualQueueTests
         s.Bed.Pending.List().Should().BeEmpty();
         s.Vm.SalesPushWarning.Should().Be("1 etiket başka bilgisayarda zaten basılmıştı; kâğıtları imha et.");
     });
+
+    [Fact]
+    public void Devir_kilidi_suresinde_alinamayan_satirin_isareti_arka_planda_yazilamazsa_serit_soyler()
+        => RunOnOwnDispatcher(async () =>
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        s.Bed.Online = false;
+        var session = s.Bed.LocalSession(ended: true);             // kendi bitmiş, devredilmemiş yayını: kapılı
+        var label = s.Bed.LocalLabel(session, Guid.NewGuid().ToString("N"), printed: false);
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(label)!, isCustomerBlacklisted: false));
+        s.Bed.Router.HandoverWaitBudget = TimeSpan.FromMilliseconds(100);
+        var held = await s.Bed.Gate.EnterAsync(session);           // kapanış gönderimi sessions/sync'te asılı
+
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+        s.H.Printer.Calls.Should().ContainSingle("ön koşul: kâğıt çıktı");
+        s.Vm.SalesPushWarning.Should().BeNull("ön koşul: işaret kilit açılınca arka planda");
+
+        // Beklenmeyen veritabanı hatası: kilit açılınca damga düşer.
+        s.Bed.Exec("CREATE TRIGGER TestMarkFails BEFORE UPDATE OF PrintedAt ON Label WHEN new.Id = '" + label + "' "
+                 + "BEGIN SELECT RAISE(ABORT, 'test-db-failure'); END");
+        held.Dispose();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (s.Vm.SalesPushWarning is null && DateTime.UtcNow < deadline)
+            await Task.Delay(20);                                   // dispatcher bu arada sonucu işler
+
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiketin kâğıdı basıldı ama baskısı bu bilgisayara yazılamadı (iç hata); etiketleri kontrol et.",
+            "kâğıdı basılan satırın kaydı yazılamadı: sessizce kaybolmaz");
+        s.H.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
+        PrintStamp(s, label).PrintedAt.Should().BeNull();
+    });
 }

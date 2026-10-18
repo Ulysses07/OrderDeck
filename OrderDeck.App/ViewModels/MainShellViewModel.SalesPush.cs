@@ -88,7 +88,8 @@ public sealed partial class MainShellViewModel
         ShowSalesNotice([], [note]);
     }
 
-    /// <summary>Arka plan iş parçacığından gelir (satış akışı turu, kâğıdın gecikmiş komutu): dispatcher'a taşınır.</summary>
+    /// <summary>Arka plan iş parçacığından gelir (satış akışı turu, kâğıdın gecikmiş komutu, devir kilidi açılınca biten
+    /// kâğıt işareti — <see cref="Services.Sales.ILabelEditor.DeferredPrintSettled"/>): dispatcher'a taşınır.</summary>
     private void OnPendingCommandsSettled(object? sender, PendingSalesCommandsSettled settled)
     {
         void Apply()

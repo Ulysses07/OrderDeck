@@ -48,6 +48,9 @@ public sealed class LocalLabelEditor(LabelService labels, ShipmentService? shipm
         return Task.FromResult(SalesPrintMarkResult.AllLocal(paperOrder));
     }
 
+    /// <summary>Yerel düzenleyici işareti hep eşzamanlı bitirir: arka plan sonucu yok, hiç gelmez.</summary>
+    public event EventHandler<PendingSalesCommandsSettled>? DeferredPrintSettled { add { } remove { } }
+
     public IReadOnlySet<string> PrintHeldRows(IReadOnlyCollection<string> labelIds) => new HashSet<string>();
 
     public Task<SalesEditResult> UncancelAsync(IReadOnlyList<string> labelIds, CancellationToken ct = default)
