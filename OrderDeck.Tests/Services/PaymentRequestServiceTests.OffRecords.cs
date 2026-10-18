@@ -291,6 +291,36 @@ public partial class PaymentRequestServiceTests
     }
 
     [Fact]
+    public async Task Giriste_mod_Off_secen_akis_kip_arada_1_olsa_da_kaydini_yazar()
+    {
+        // Kirasız kaydın kararı akışın GİRİŞİNDEKİ kipe göre: istek mod Off yolundan girdi (kira yok), bakiye uçlarında
+        // beklerken açılış turu yerel kipi 1 yaptı. Teslimden sonra kip yeniden okunsaydı isteğin ne kirası ne kaydı
+        // olurdu; ödeme geçmişi o ana dek tamamlandığından onu bir daha hiçbir yol göndermezdi.
+        var db = FileDb();
+        try
+        {
+            var owner = Uye(db, "ornek_sahip");
+            var bed = OffSut(db);
+            bed.Handler.PreviewBalance = 100m;
+            bed.Handler.OnApplyAsync = _ =>
+            {
+                ModOn(db);                                                    // açılış turunun 2. adımı
+                return Task.CompletedTask;
+            };
+
+            (await bed.Sut.OpenWhatsAppAsync(owner, 250m, T, "cumulative")).Should().Be(PaymentRequestResult.Opened);
+
+            new SalesSyncStateRepository(db.Factory).GetMode().Should().Be(1, "ön koşul: kip akış sürerken değişti");
+            var job = Isler(db, "cumulative").Should().ContainSingle().Subject;
+            var record = Kayitlar(bed).Should().ContainSingle("giriş mod Off'u seçti: teslimin kaydı yazılır").Subject;
+            record.RecordId.Should().Be(PaymentRecordIds.Delivered(job.Id, 1));
+            record.NetAmount.Should().Be(150m);
+            KiraUcuYok(bed);
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact]
     public async Task Yerel_kip_On_iken_bu_yol_kayit_yazmaz()
     {
         // Mod On'un kaydı kiradır (begin/finish, W3-07); bu yol yalnız Mode = 0'da yazar.

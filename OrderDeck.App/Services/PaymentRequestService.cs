@@ -368,10 +368,17 @@ public sealed class PaymentRequestService
         // komutların yanıt satırları ve gönderimlerin yönlendirmeleri bu kişinin kirasını beklemesin (U13/U17). Yerel kip
         // Off'ta null: bugünkü yol.
         PaymentLeaseFlow? paymentLease;
+        bool enteredModeOff;
         try
         {
             paymentLease = _lease is null ? null : await _lease.EnterAsync(retried, ct);
             run.Flow = paymentLease;
+            // Kirasız kaydın kararı GİRİŞTE verilir (spec 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)"): bu akış mod Off
+            // yolundan gidiyorsa teslim ya da belirsiz gönderimden sonra kaydı yazılır — akış ağda beklerken açılış turu yerel
+            // kipi 1'e çevirse de. Teslimden sonra kip yeniden okunsaydı kirasız giden istek ne kira ne kayıt bırakırdı;
+            // ödeme geçmişi o ana dek tamamlanmış olduğundan onu bir daha hiçbir yol göndermezdi. Kira sarmalı bağlıyken
+            // (üretim) null akış kipin On olmadığı demektir; sarmalsız kurulumda (testler) kip burada bir kez okunur.
+            enteredModeOff = paymentLease is null && (_lease is not null || _offRecords?.IsModeOff() == true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -443,7 +450,8 @@ public sealed class PaymentRequestService
                     var contact = current with { Phone = phone, RecipientPaysActive = person.RecipientPaysActive };
 
                     var outcome = await OpenWhatsAppCoreAsync(
-                        contact, person, productTotal.Value, streamDate, scopeKey, confirmedTokens, paymentLease, ct);
+                        contact, person, productTotal.Value, streamDate, scopeKey, confirmedTokens, paymentLease,
+                        enteredModeOff, ct);
                     if (outcome is not null) return outcome;
                     _log?.LogInformation(
                         "Ödeme kişisinin üye kümesi akış sırasında değişti — yeniden okunuyor (customer={CustomerId})",
@@ -569,12 +577,15 @@ public sealed class PaymentRequestService
     /// <para>Mod On (<paramref name="paymentLease"/> dolu; spec 2026-10-13 §6.4, W3-07): kişi okunduktan sonra bekleyen
     /// komut engeli ve tutarın kapsamdan yeniden okunması — mesajın tutarı da kiranın tutarı da bu okumadan; kargo ayarı
     /// tek anlık görüntüden. Kira (<c>begin</c>) bakiyeden ÖNCE; çıkışta, hangi yoldan olursa olsun (soru, belirsizlik,
-    /// üye kümesi değişti, istisna dahil), <c>finish</c> (<see cref="LeaseExit"/>).</para></summary>
+    /// üye kümesi değişti, istisna dahil), <c>finish</c> (<see cref="LeaseExit"/>).</para>
+    /// <param name="enteredModeOff">Akış girişte mod Off yolunu seçti: teslim ya da belirsiz gönderimden sonra kirasız kayıt
+    /// yazılır (<see cref="RecordWithoutLease"/>).</param></summary>
     private async Task<PaymentRequestOutcome?> OpenWhatsAppCoreAsync(
         Customer customer, PaymentPerson person, decimal productTotal, DateTime streamDate,
-        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseFlow? paymentLease, CancellationToken ct)
+        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseFlow? paymentLease, bool enteredModeOff,
+        CancellationToken ct)
     {
-        var exit = new LeaseExit();
+        var exit = new LeaseExit { EnteredModeOff = enteredModeOff };
         try
         {
             return await SendCoreAsync(
@@ -598,6 +609,10 @@ public sealed class PaymentRequestService
 
         /// <summary>Bakiyeden düşülen; bakiye adımı sonuçlanmadıysa ya da kişide bakiye işi yoksa null.</summary>
         public decimal? Applied { get; set; }
+
+        /// <summary>Akış girişte mod Off yolunu seçti (kira yok): gönderim çıkışlarında kirasız kayıt yazılır
+        /// (<see cref="RecordWithoutLease"/>) — kip sonradan değişse de.</summary>
+        public bool EnteredModeOff { get; init; }
 
         public void Delivered() => Outcome = PaymentRequestStates.Delivered;
         public void Unconfirmed() => Outcome = PaymentRequestStates.Unconfirmed;
@@ -725,7 +740,7 @@ public sealed class PaymentRequestService
                 case CloudSendOutcome.Sent:
                     exit.Delivered();
                     MarkDelivered(deliveryJob, totalAmount);
-                    RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
+                    RecordWithoutLease(paymentLease, exit, person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
                     return Done(PaymentRequestResult.Sent);
                 case CloudSendOutcome.Pending:
                     // Sonuç bilinmiyor: mesaj gitmiş olabilir — teslim kaydı yazılır, sıradaki tıklama
@@ -734,7 +749,7 @@ public sealed class PaymentRequestService
                     // deneme aynı anahtarı yeniden kullanır (R2-01).
                     exit.Unconfirmed();
                     MarkDelivered(deliveryJob, totalAmount);
-                    RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
+                    RecordWithoutLease(paymentLease, exit, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
                     return Done(PaymentRequestResult.SendPending);
                 case CloudSendOutcome.FallBackUnknown:
                     cloudMayHaveSent = true;
@@ -758,13 +773,13 @@ public sealed class PaymentRequestService
             else
             {
                 exit.Unconfirmed();
-                RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
+                RecordWithoutLease(paymentLease, exit, person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
             }
             return Done(PaymentRequestResult.LaunchFailed);
         }
         exit.Delivered();
         MarkDelivered(deliveryJob, totalAmount);
-        RecordWithoutLease(paymentLease, person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
+        RecordWithoutLease(paymentLease, exit, person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
         return Done(PaymentRequestResult.Opened);
     }
 
@@ -772,17 +787,19 @@ public sealed class PaymentRequestService
     /// Mod Off'ta teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec 2026-10-13 §6.4 "Ödeme geçmişi
     /// (mod Off'ta da)"; W3-06): yalnız kuyruğa yazar, ağa çıkmaz, mesaj akışını ve soruları değiştirmez. İşli kişide
     /// işin teslimden SONRAKİ satırı okunur (kayıt Id'si teslim ya da deneme sayısından türetilir —
-    /// <see cref="PaymentOffRecordWriter"/>). Yerel kip On ise yazılmaz: o yolun kaydı kiradır (W3-07) — tek istisna,
-    /// kiraya ulaşılamadığında yerel yoldan giden GUID'siz kişi (<see cref="PaymentLeaseFlow.RecordsLocally"/>, spec §5.8:
-    /// "kayıt bağlantı gelince yazılır"). Hata yutulur — mesaj zaten gitti.
+    /// <see cref="PaymentOffRecordWriter"/>). Karar akışın GİRİŞİNDEKİ kipe göredir (<see cref="LeaseExit.EnteredModeOff"/>):
+    /// girişte mod Off yolunu seçen akış kip sonradan 1 olsa da yazar. Kiralı akış yazmaz: o yolun kaydı kiradır (W3-07) —
+    /// tek istisna, kiraya ulaşılamadığında yerel yoldan giden GUID'siz kişi (<see cref="PaymentLeaseFlow.RecordsLocally"/>,
+    /// spec §5.8: "kayıt bağlantı gelince yazılır"). Hata yutulur — mesaj zaten gitti.
     /// </summary>
     private void RecordWithoutLease(
-        PaymentLeaseFlow? lease, PaymentPerson person, PaymentJob? job, string scopeKey, bool unconfirmed, decimal net)
+        PaymentLeaseFlow? lease, LeaseExit exit, PaymentPerson person, PaymentJob? job, string scopeKey, bool unconfirmed,
+        decimal net)
     {
         if (_offRecords is null) return;
         try
         {
-            if (lease is null ? !_offRecords.IsModeOff() : !lease.RecordsLocally) return;
+            if (lease is null ? !exit.EnteredModeOff : !lease.RecordsLocally) return;
             var current = job is null ? null : _jobs.Get(job.Id);
             if (job is not null && current is null) return;
             _offRecords.Record(person, current, scopeKey, unconfirmed, net);

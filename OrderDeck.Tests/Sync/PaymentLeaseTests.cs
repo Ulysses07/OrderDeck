@@ -6,6 +6,7 @@ using OrderDeck.App.Services;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Customers;
+using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -161,6 +162,39 @@ public sealed class PaymentLeaseTests : IDisposable
         pc.Launcher.LaunchedUrls.Should().ContainSingle();
         pc.PendingPaymentRecords.List().Should().ContainSingle()
             .Which.Kind.Should().Be(PendingPaymentRecordKinds.Record, "W3-06: mod Off'ta kirasız kayıt");
+    }
+
+    [Fact]
+    public async Task Mod_Offta_giren_istek_gonderim_surerken_acilis_kipi_1_yapsa_da_kirasiz_kaydi_yazilir()
+    {
+        // Lisansta enable --apply; bu bilgisayarın açılış turu, mod Off yolundan girmiş bir istek Cloud API'de beklerken
+        // biter. Kayıt kararı girişteki kipe göre: isteğin ne kirası ne kaydı olmasaydı öbür bilgisayarın begin'i (e)'de
+        // öncül bulamaz, "zaten istendi" sorulmadan ikinci istek giderdi.
+        var pc = await PcAsync(modeOn: false);
+        UseCloudApi(pc);
+        var session = pc.StartStream();
+        var buyer = await BuyerAsync(pc, session, "alici_gecis", 150m);
+        var hold = _server.Hold(FakeSalesServer.WhatsAppSend);
+        Task<PaymentRequestOutcome> request;
+        try
+        {
+            request = RequestAsync(pc, buyer.Customer, Scope(session));
+            await hold.Arrived.WaitAsync(TimeSpan.FromSeconds(30));
+            _server.Mode = 1;                                               // sales-sync enable --apply
+            _server.ModeChangedAt = DateTimeOffset.UtcNow;
+            _server.Shipping = new FakeSalesServer.ShippingBody(Version: 3, FreeShippingThreshold: 1000m, Fee: 50m);
+            await pc.TourAsync();
+            pc.State.GetMode().Should().Be(1, "ön koşul: açılış istek sürerken bitti");
+        }
+        finally { hold.Release(); }
+
+        (await request).Result.Should().Be(PaymentRequestResult.Sent);
+
+        Begins().Should().BeEmpty("istek girişte mod Off yolunu seçti: kira yok");
+        var job = pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], Scope(session)).Jobs.Should().ContainSingle().Subject;
+        pc.PendingPaymentRecords.List().Where(r => r.Kind == PendingPaymentRecordKinds.Record)
+            .Select(PendingPaymentRecordCodec.DecodeRecord).Should().ContainSingle("teslimin kirasız kaydı kuyrukta")
+            .Which.RecordId.Should().Be(PaymentRecordIds.Delivered(job.Id, 1));
     }
 
     // ── ön gönderim ───────────────────────────────────────────────────────
