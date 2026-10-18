@@ -236,6 +236,29 @@ public sealed class DisableRoundConversionTests : IDisposable
     }
 
     [Fact]
+    public void Ayri_kagitlarin_uzak_baski_onaylari_tek_toplam_uyari_ve_komut_basina_iz_olur()
+    {
+        var first = RemoteLabel();
+        var second = RemoteLabel();
+        var third = RemoteLabel();
+        ModeOnReleased();
+        // İki ayrı kâğıt: başka bilgisayarın satırları için iki ayrı bekleyen komut (1 ve 2 etiket).
+        EnqueuePrint(LabelService.NewPrintBatchId(), (first, 1));
+        EnqueuePrint(LabelService.NewPrintBatchId(), (second, 1), (third, 2));
+
+        _round.ApplyLocal(ModeChangedAt, _replica).Busy.Should().BeFalse();
+        var result = _round.ConvertPendingCommands();
+
+        result.Should().BeEquivalentTo(new { Converted = 0, Dropped = 2, Remaining = 0 });
+        result.Settled.Warnings.Should().Equal(new[] { SalesCommandMessages.PrintUnrecordedModeOff(3) },
+            "şerit aynı metni bir kez gösterir: komut başına uyarı sayıyı eksik gösterirdi, uyarı turun sonunda toplanır");
+        Scalar<int>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k AND Reason LIKE @r",
+                new { k = SalesConflictLog.PendingCommandRejected, r = "%code=remote-mode-off%" })
+            .Should().Be(2, "iz komut başına");
+        PendingCount().Should().Be(0);
+    }
+
+    [Fact]
     public void Acilista_kalmis_uzak_baski_onayi_Resumeda_da_sayili_uyariyla_duser()
     {
         var remote = RemoteLabel();

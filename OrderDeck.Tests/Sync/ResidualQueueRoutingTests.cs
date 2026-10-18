@@ -294,7 +294,10 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         }
         _bed.LabelRepo.GetPrintableByIds([remote]).Should().BeEmpty("baskı öncesi yeniden okumada görünmez");
         _bed.LabelRepo.GetUnprintedBySession(N(remoteSession)).Should().BeEmpty("yayının kuyruğunda görünmez");
-        _bed.LabelRepo.GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty("teklif edilmez");
+        // Yalnız kendi kalıntısı için anlamlı: bu sorgu Origin='local' oturumlara bakar, uzak satır örtüsüz de girmez.
+        // Uzak satırın örtüsünü yukarıdaki iki sorgu kanıtlar.
+        _bed.LabelRepo.GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty(
+            "kendi kalıntısı örtü altında teklif edilmez");
 
         await TourAsync();
 
