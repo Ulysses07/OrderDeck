@@ -89,8 +89,9 @@ public sealed record SalesEditResult(
 
 /// <summary>Kuyruk baskısının işaretlenmesi (spec 2026-10-13 §5.6-4, §5.5): kâğıt basıldıktan sonra.</summary>
 /// <param name="Marked">Basılmış işaretlenen etiketler (yerel yazım ya da uygulanan komut; zaten basılmış olan dahil).</param>
-/// <param name="Pending">Kâğıdı basılan ama henüz işaretlenmeyen etiketler: sunucuya işlenmeyen kalıntılar bekleyen
-/// <c>mark-printed</c>'de, örtülü — yeniden açılışta da teklif edilmez; kendi bitmiş yayınının satırları, devir kilidi
+/// <param name="Pending">Kâğıdı basılan ama henüz işaretlenmeyen etiketler: sunucuya işlenmeyen sunucu satırları (kendi
+/// kalıntısı ve başka bilgisayarınki, Y11) bekleyen <c>mark-printed</c>'de, örtülü — yeniden açılışta da teklif
+/// edilmez, tur aynı kimlikle yineler; kendi bitmiş yayınının satırları, devir kilidi
 /// süresinde alınamadıysa (kapanış gönderimi sürüyor), kilit açılınca arka planda kilit altında işaretlenir.</param>
 /// <param name="DiscardLabelIds">Sunucunun <c>cancelled[]</c> ve <c>alreadyPrinted[]</c>'i: "kâğıtları imha et".</param>
 /// <param name="Notices">Satır içi uyarılar (işaretlenemeyen sunucu satırı, kalıcı ret); yoksa boş.</param>
@@ -293,8 +294,9 @@ public interface ILabelEditor : IShipmentEditor
     /// Kuyruk baskısının işaretlenmesi, kâğıt basıldıktan SONRA (§5.6-4). Mod Off'ta bugünkü
     /// <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string})"/>, beklemeden. Mod On'da tek basış kimliği ve
     /// kâğıt sırası: yerel satırlar <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string}, string, IReadOnlyList{int})"/>
-    /// ile, devredilmiş kendi yayınının satırları bekleyen <c>mark-printed</c> komutuyla (kalıcı önce; çevrimiçiyse hemen
-    /// gönderilir). Canlı yayının satırları devir kilidine uğramadan hemen; kendi bitmiş yayınının satırları kilidi en çok
+    /// ile, devredilmiş yayınların satırları — kendi kalıntısı da başka bilgisayarınki de (sahip kararı Y11) — bekleyen
+    /// <c>mark-printed</c> komutuyla (kalıcı önce; çevrimiçiyse hemen gönderilir; sonucu bilinmezse tur aynı kimlikle
+    /// yineler). Canlı yayının satırları devir kilidine uğramadan hemen; kendi bitmiş yayınının satırları kilidi en çok
     /// 3 sn bekler, süre dolunca kilit açılınca arka planda işaretlenir (<see cref="SalesPrintMarkResult.Pending"/>).
     /// </summary>
     /// <param name="paperOrder">Basılan etiketler, kâğıt sırasıyla.</param>
@@ -310,10 +312,12 @@ public interface ILabelEditor : IShipmentEditor
     event EventHandler<PendingSalesCommandsSettled>? DeferredPrintSettled;
 
     /// <summary>
-    /// Kuyruk baskısından ÖNCE (§5.8 "devredilmiş yayında … düğmeler pasif"): şu an basılırsa baskı kaydı hiçbir yere
-    /// yazılamayacak satırlar — başka bilgisayarın devredilmiş yayınının satırı (ör. <c>add-backup</c> ile eklenmiş
-    /// yedek) ve sunucu kullanılamıyor: <c>mark-printed</c> gönderilemez, bekleyen komuta da girmez (yalnız kendi
-    /// kalıntısı girer). Çağıran onları basmaz, kuyrukta bırakır. Mod Off'ta boş; yazmaz, ağa gitmez.
+    /// Kuyruk baskısından ÖNCE (§5.8, sahip kararı Y11): sunucu kullanılamıyorken kâğıda gitmeyecek satırlar — başka
+    /// bilgisayarın devredilmiş yayınının satırı (ör. <c>add-backup</c> ile eklenmiş yedek). Basılsaydı örtü yalnız bu
+    /// bilgisayarda olurdu; yayının sahibi onay sunucuya ulaşana kadar aynı satırı kalıntı teklifinden basabilir, iki
+    /// kâğıt çıkardı (risk 18). Çağıran onları basmaz, kuyrukta bırakır; bağlantı gelince basılır ve onay bekleyen
+    /// komutla gider. Kendi canlı yayını ve kendi önceki yayınlarının satırları hiç tutulmaz. Mod Off'ta boş; yazmaz,
+    /// ağa gitmez.
     /// </summary>
     IReadOnlySet<string> PrintHeldRows(IReadOnlyCollection<string> labelIds);
 

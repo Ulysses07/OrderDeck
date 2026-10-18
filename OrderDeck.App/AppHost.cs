@@ -838,10 +838,12 @@ public sealed class AppHost : IDisposable
 
         // Spec 2026-10-13 §8.5 (W2-11): disable turu 2. ile 3. adım arasında kesildiyse (yerel kip 0, bekleyen satış
         // komutu dolu) 3. adım burada, hiçbir gönderimden önce yeniden koşar: bekleyen iptal ve baskı onayı olağan yerel
-        // yazıma çevrilir. O ana kadar hello ve state görülen kip 1 bildirir. Hata açılışı durdurmaz (her tur yeniden dener).
+        // yazıma çevrilir, başka bilgisayarın baskı onayı sayılı uyarıyla düşer (Y11). O ana kadar hello ve state görülen
+        // kip 1 bildirir. Sonuç (imha, uyarı) satış akışı servisinde saklanır, kabuk abone olunca şeride gider — kabuk
+        // henüz yok. Hata açılışı durdurmaz (her tur yeniden dener).
         try
         {
-            Services.GetRequiredService<Services.Sync.SalesModeOffRound>().Resume();
+            Services.GetRequiredService<Services.Sync.SalesChangesPullService>().ResumeModeOffAtStartup();
         }
         catch (Exception ex)
         {

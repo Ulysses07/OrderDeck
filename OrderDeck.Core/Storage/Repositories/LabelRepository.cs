@@ -71,8 +71,9 @@ public sealed class LabelRepository
 
     /// <summary>
     /// Bekleyen komut örtüsü (spec 2026-10-13 §5.5; <see cref="PendingSalesCommandRepository"/>): devredilmiş kendi
-    /// yayınının kalıntı etiketi için iptal ya da ilk baskı komutu kuyrukta bekliyorsa etiket yerel okuyucularda
-    /// uygulanmış sayılır — kuyrukta ve kalıntı teklifinde yeniden görünmez, ikinci kâğıt çıkmaz. Bağ tablosunun
+    /// yayınının kalıntı etiketi ya da başka bilgisayarın yayınındaki satır (Y11) için iptal ya da ilk baskı komutu
+    /// kuyrukta bekliyorsa etiket yerel okuyucularda uygulanmış sayılır — kuyrukta, kalıntı teklifinde ve baskı öncesi
+    /// yeniden okumada görünmez, ikinci kâğıt çıkmaz; yayının kökeni süzülmez. Bağ tablosunun
     /// birincil anahtarı (LabelId, CommandId) ile tek arama; kuyruk boşken (mod Off, bugün her lisans) hiçbir satırı
     /// düşürmez.
     /// </summary>

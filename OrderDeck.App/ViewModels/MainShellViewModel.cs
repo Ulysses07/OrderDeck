@@ -2294,9 +2294,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         foreach (var vm in PrintQueue)
             if (current.TryGetValue(vm.Id, out var updated)) vm.Replace(updated);
 
-        // §5.8: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek) sunucu
-        // kullanılamıyorken basılmaz — mark-printed gönderilemez, bekleyen komuta da girmez; kâğıt çıkar ama baskı
-        // kaydı hiçbir yerde oluşmaz, satır kimseye yeniden teklif edilmezdi. Kuyrukta kalır, sebep satır içinde.
+        // §5.8, sahip kararı Y11: başka bilgisayarın devredilmiş yayınının satırı (ör. add-backup ile eklenmiş yedek)
+        // sunucu kullanılamıyorken basılmaz — örtü yalnız bu bilgisayarda olurdu, yayının sahibi aynı satırı kalıntı
+        // teklifinden basabilirdi (çift kâğıt, risk 18). Kuyrukta kalır, sebep şeritte; bağlantı gelince basılır.
+        // Kendi canlı yayınının ve kendi önceki yayınlarının satırları her durumda basılır.
         var held = _editor.PrintHeldRows(labels.Select(l => l.Id).ToList());
         if (held.Count > 0)
         {
@@ -2339,7 +2340,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         // §5.6-4: kâğıt sırasıyla işaretleme yönlendiriciden geçer. Mod Off'ta bugünkü
         // LabelService.MarkPrintedAndRecord — eşzamanlı biter, ağ yok. Mod On'da tek basış kimliği: yerel satırlar
-        // yerelde, devredilmiş kendi yayınının kalıntıları mark-printed komutuyla ya da (çevrimdışı) bekleyen komutla.
+        // yerelde, devredilmiş yayınların satırları (kendi kalıntısı ve başka bilgisayarınki, Y11) bekleyen mark-printed
+        // komutuyla — çevrimiçiyse hemen gönderilir, sonucu bilinmezse tur aynı kimlikle yineler.
         // Sunucunun cancelled[]/alreadyPrinted[]'i "kâğıtları imha et" (§5.6-5), işlenemeyen satır uyarı.
         var mark = await _editor.MarkPrintedAsync(labels.Select(l => l.Id).ToList());
         if (mark.DiscardLabelIds.Count > 0 || mark.Notices.Count > 0)
