@@ -28,7 +28,8 @@ namespace OrderDeck.App.Services.Sync;
 ///   belirlenimli sahibi (<see cref="PaymentOwnerRule.Order"/>'ın ilki — iki bilgisayar aynı satırı seçer); net
 ///   mesajdaki tutar, düşüm yok.</item>
 ///   <item>Üyeler kişinin bütün üyeleri (sahip önce, ≤ 100); <c>orderIds</c> isteğin
-///   <see cref="LabelRepository.GetPrintedTotal"/> Id'leri (kişinin o kapsamdaki katkı veren etiketleri).</item>
+///   <see cref="LabelRepository.GetPrintedTotal"/> Id'leri (kişinin o kapsamdaki katkı veren etiketleri) — işli kişide
+///   ödeme geçmişinin <c>Covers</c> kuralıyla (<c>PrintedAt ≤ PromptAt</c>, <see cref="PaymentHistoryRecords.PromptAtOf"/>).</item>
 /// </list>
 /// Lisans anahtarı yoksa yazılmaz (bakiye ve senkron özelliği kapalı). Kapsamı ya da sahibi tel biçimine uymayan istek
 /// yazılmaz (sunucunun 400'ü kuyruğu kilitlerdi). Hiçbir hata fırlatılmaz: mesaj zaten gitti, kaydın yazılamaması
@@ -99,10 +100,13 @@ public sealed class PaymentOffRecordWriter
                 return null;
             }
 
+            // İşli kişide ödeme geçmişiyle AYNI Covers kuralı (PrintedAt ≤ PromptAt): aynı Id iki yazıcıda aynı kümeyi
+            // taşısın — farklı küme sunucuda content-conflict olurdu, kayıttan sonra basılan etiket de "istendi" sayılırdı.
             IReadOnlyList<Guid> orders = [];
             if (PaymentHistoryRecords.IsLeaseScope(scope))
                 orders = PaymentHistoryRecords.WireOrders(_labels.GetPrintedTotal(
-                    localMembers.Distinct(StringComparer.Ordinal).ToList(), PaymentHistoryRecords.SessionIdOf(scope))
+                    localMembers.Distinct(StringComparer.Ordinal).ToList(), PaymentHistoryRecords.SessionIdOf(scope),
+                    job is null ? null : PaymentHistoryRecords.PromptAtOf(job))
                     .LabelIds);
 
             var item = job is not null

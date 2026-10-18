@@ -135,6 +135,30 @@ public partial class PaymentRequestServiceTests
     }
 
     [Fact]
+    public async Task Isli_kiside_kaydin_siparisleri_odeme_gecmisiyle_ayni_Covers_kuraliyla_istekten_sonra_basilan_girmez()
+    {
+        // Aynı Id ödeme geçmişinde de üretilir (PaymentHistoryRecords.FromJob): iki yazıcı aynı kümeyi taşımalı, yoksa
+        // sunucu content-conflict verir; isteğin anından sonra basılan etiket "istendi" sayılmaz.
+        var db = FileDb();
+        try
+        {
+            var owner = Uye(db, "ornek_sahip");
+            var session = Oturum(db);
+            var before = Etiket(db, session, owner.Id, 250m);
+            Etiket(db, session, owner.Id, 80m, printedAt: DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
+            var bed = OffSut(db);
+            var scope = $"session:{session}";
+
+            (await bed.Sut.OpenWhatsAppAsync(owner, 250m, T, scope)).Should().Be(PaymentRequestResult.Opened);
+
+            var job = Isler(db, scope).Should().ContainSingle().Subject;
+            Kayitlar(bed).Should().ContainSingle().Which.OrderIds.Should().Equal(new[] { Guid.ParseExact(before, "N") },
+                "Covers: PrintedAt ≤ PromptAt (job={0})", job.Id);
+        }
+        finally { Drop(db); }
+    }
+
+    [Fact]
     public async Task Mod_Offta_tamami_bakiyeden_odenen_istek_fullyFromBalance()
     {
         var db = FileDb();
