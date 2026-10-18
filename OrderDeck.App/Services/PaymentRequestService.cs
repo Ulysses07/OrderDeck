@@ -519,22 +519,69 @@ public sealed class PaymentRequestService
     /// yazılmadı, gönderilmedi).
     ///
     /// <para>Mod On (<paramref name="paymentLease"/> dolu; spec 2026-10-13 §6.4, W3-07): kişi okunduktan sonra bekleyen
-    /// komut engeli ve tutarın kapsamdan yeniden okunması — mesajın tutarı da kiranın tutarı da bu okumadan. Kargo ayarı
-    /// tek anlık görüntüden.</para></summary>
+    /// komut engeli ve tutarın kapsamdan yeniden okunması — mesajın tutarı da kiranın tutarı da bu okumadan; kargo ayarı
+    /// tek anlık görüntüden. Kira (<c>begin</c>) bakiyeden ÖNCE; çıkışta, hangi yoldan olursa olsun (soru, belirsizlik,
+    /// üye kümesi değişti, istisna dahil), <c>finish</c> (<see cref="LeaseExit"/>).</para></summary>
     private async Task<PaymentRequestOutcome?> OpenWhatsAppCoreAsync(
         Customer customer, PaymentPerson person, decimal productTotal, DateTime streamDate,
         string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseFlow? paymentLease, CancellationToken ct)
     {
+        var exit = new LeaseExit();
+        try
+        {
+            return await SendCoreAsync(
+                customer, person, productTotal, streamDate, scopeKey, confirmedTokens, paymentLease, exit, ct);
+        }
+        finally
+        {
+            if (paymentLease is not null) await paymentLease.FinishAsync(exit.Outcome, exit.Net, exit.Applied);
+        }
+    }
+
+    /// <summary>
+    /// Kiranın sonucu (spec 2026-10-13 §6.4 "Akışın sonu"): gönderim çıkışları işaretler — <c>Sent</c>/<c>Opened</c> →
+    /// <c>delivered</c>; <c>SendPending</c> ve Cloud API'nin sonucu bilinmeden açılamayan wa.me → <c>unconfirmed</c>;
+    /// gönderim denemesinden önceki her dönüş ve <c>AbandonSend</c> (varsayılan) → <c>abandoned</c>. Net ve düşüm akıştan.
+    /// </summary>
+    private sealed class LeaseExit
+    {
+        public string Outcome { get; private set; } = PaymentRequestStates.Abandoned;
+        public decimal Net { get; set; }
+
+        /// <summary>Bakiyeden düşülen; bakiye adımı sonuçlanmadıysa ya da kişide bakiye işi yoksa null.</summary>
+        public decimal? Applied { get; set; }
+
+        public void Delivered() => Outcome = PaymentRequestStates.Delivered;
+        public void Unconfirmed() => Outcome = PaymentRequestStates.Unconfirmed;
+    }
+
+    private async Task<PaymentRequestOutcome?> SendCoreAsync(
+        Customer customer, PaymentPerson person, decimal productTotal, DateTime streamDate,
+        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseFlow? paymentLease, LeaseExit exit,
+        CancellationToken ct)
+    {
         var settings = _settingsStore.Load();
         var shipping = _shipping.Current();
+        IReadOnlyList<Guid> orderIds = [];
         if (paymentLease is not null)
         {
             var amount = paymentLease.ReadAmount(person, scopeKey);
             if (amount.Stop is { } stop) return stop with { OwnerId = person.OwnerId };
             productTotal = amount.ProductTotal;
+            orderIds = amount.OrderIds;
         }
         var (totalAmount, shippingFee, shippingNote) =
             ComputeShipping(customer, productTotal, shipping.Settings);
+        exit.Net = totalAmount;
+
+        // Mod On: kişi × kapsamın kirası bakiyeden ÖNCE (GUID'siz kişide de). Alınamazsa mesaj gitmez (M9).
+        if (paymentLease is not null)
+        {
+            var stop = await paymentLease.BeginAsync(new PaymentLeaseBeginInput(
+                person, scopeKey, orderIds, productTotal, totalAmount, customer.RecipientPaysActive,
+                shipping.Version ?? 0), ct);
+            if (stop is not null) return stop with { OwnerId = person.OwnerId };
+        }
 
         // Bakiye uygulaması — PaymentJob durum makinesi (R2-01..04).
         // Eski fail-silent davranış BİLEREK terk edildi: sonuç belirsizse mesaj
@@ -572,6 +619,8 @@ public sealed class PaymentRequestService
             appliedBalance = outcome.AppliedBalance;
             totalAmount -= appliedBalance;
         }
+        exit.Net = totalAmount;
+        exit.Applied = deliveryJob is not null ? appliedBalance : null;
 
         PaymentRequestOutcome Done(PaymentRequestResult result) => new(result, null, ownerId, demoted);
 
@@ -608,6 +657,7 @@ public sealed class PaymentRequestService
                 customer.Phone!, message, BuildTemplateRef(settings, ctx), "wpf-payment", ct))
             {
                 case CloudSendOutcome.Sent:
+                    exit.Delivered();
                     MarkDelivered(deliveryJob, totalAmount);
                     RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
                     return Done(PaymentRequestResult.Sent);
@@ -616,6 +666,7 @@ public sealed class PaymentRequestService
                     // (bu pencerede ya da öbüründe) "tekrar gönderilsin mi?" diye sorar; bildirim de
                     // doğrulayıp gerekirse tekrar denemeyi söylüyor. Bakiye sonucu zaten kesin: sonraki
                     // deneme aynı anahtarı yeniden kullanır (R2-01).
+                    exit.Unconfirmed();
                     MarkDelivered(deliveryJob, totalAmount);
                     RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
                     return Done(PaymentRequestResult.SendPending);
@@ -638,9 +689,14 @@ public sealed class PaymentRequestService
             // sıradaki tıklama sorusuz yeniden dener. Cloud API sonucu bilinmeden düşüldüyse deneme
             // kalır: o gönderim ulaşmış olabilir (mod Off'ta belirsiz kayıt da yazılır).
             if (!cloudMayHaveSent) AbandonSend(deliveryJob);
-            else RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
+            else
+            {
+                exit.Unconfirmed();
+                RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: true, totalAmount);
+            }
             return Done(PaymentRequestResult.LaunchFailed);
         }
+        exit.Delivered();
         MarkDelivered(deliveryJob, totalAmount);
         RecordModeOff(person, deliveryJob, scopeKey, unconfirmed: false, totalAmount);
         return Done(PaymentRequestResult.Opened);

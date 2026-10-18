@@ -166,12 +166,14 @@ public sealed class PaymentLeaseTests : IDisposable
     // ── ön gönderim ───────────────────────────────────────────────────────
 
     [Fact]
-    public async Task On_gonderim_sirasi_bekleyen_komut_finish_musteri_satis_ve_sonra_odeme_akisi()
+    public async Task Mutlu_yol_sirasi_bekleyen_komut_finish_musteri_satis_begin_bakiye_mesaj_finish_delivered()
     {
         var pc = await PcAsync();
         UseCloudApi(pc);
+        _server.BalancePreview = 50m;
         await HandedOverWithPendingPrintAsync(pc, "alici_kalinti");     // başka kişinin bekleyen komutu
-        pc.PaymentRecords.EnqueueFinish(new PendingPaymentFinish(Guid.NewGuid(), PaymentRequestStates.Abandoned, 0m,
+        var stale = Guid.NewGuid();
+        pc.PaymentRecords.EnqueueFinish(new PendingPaymentFinish(stale, PaymentRequestStates.Abandoned, 0m,
             null, false)).Should().BeTrue();
         var live = pc.StartStream();
         var buyer = await BuyerAsync(pc, live, "alici_canli", 200m);    // müşteri ve etiket kuyrukta
@@ -179,12 +181,183 @@ public sealed class PaymentLeaseTests : IDisposable
 
         (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.Sent);
 
-        Log(mark).Should().StartWith(new[] { "komut", "finish", "müşteri", "satış" },
-            "§6.4-1: önce bekleyen komutlar, sonra bekleyen finish'ler, müşteri, oturum ve etiket");
-        Log(mark).Should().EndWith(new[] { "bakiye", "mesaj" });
+        Log(mark).Should().Equal(new[] { "komut", "finish", "müşteri", "satış", "begin", "bakiye", "mesaj", "finish" },
+            "§6.4: ön gönderim (bekleyen komut → bekleyen finish → müşteri → oturum ve etiket), kira bakiyeden önce, "
+          + "teslimden sonra finish");
+        var begin = _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle().Subject.Json;
+        var finishes = _server.Calls(FakeSalesServer.PaymentRequestsFinish);
+        finishes.Select(f => f.RecordId).Should().Equal(stale, begin.GetProperty("recordId").GetGuid());
+        var finish = finishes[1].Json;
+        finish.GetProperty("outcome").GetString().Should().Be("delivered");
+        finish.GetProperty("netAmount").GetDecimal().Should().Be(200m + 50m - 50m, "kargo dahil toplam − bakiye");
+        finish.GetProperty("appliedAmount").GetDecimal().Should().Be(50m);
+        finish.GetProperty("fullyFromBalance").GetBoolean().Should().BeFalse();
+        finish.GetProperty("replicaId").GetGuid().Should().Be(pc.Replica);
+        finish.GetProperty("seenMode").GetInt32().Should().Be(1);
         pc.PendingCount.Should().Be(0);
-        pc.PendingPaymentRecords.Count().Should().Be(0, "bekleyen finish ön gönderimde gitti");
+        pc.PendingPaymentRecords.Count().Should().Be(0, "finish'ler gitti; mod On'da kirasız kayıt yok");
         _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Begin_govdesi_butun_uyeler_GUIDsiz_ham_Id_dahil_siparisler_katki_kumesi_surum_onbellekten()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_govde", 150m, 70m);
+        pc.Sell(live, "alici_govde", "U1", 40m);                         // basılmamış: katkı yok
+        var cancelled = pc.Sell(live, "alici_govde", "C1", 30m);
+        await pc.PrintAsync(cancelled.Id);
+        pc.Labels.Cancel([cancelled.Id], "musteri");                      // iptal: katkı yok
+        var guidless = new Customer($"instagram:ornek_g_{Guid.NewGuid():N}", "instagram", "ornek_g", "Örnek", null,
+            1, 1, false, null, null, 0, 0m, null, null, null);
+        pc.Customers.Insert(guidless);
+        pc.Customers.MergeIntoGroup([buyer.Customer.Id, guidless.Id]);
+        var guidlessLabel = InsertLabel(pc, live, guidless.Id, "instagram", "ornek_g", 25m, printed: true);
+        InsertLabel(pc, live, buyer.Customer.Id, "tiktok", "alici_govde", 60m, printed: true, tentative: true);
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.Opened);
+
+        var body = _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle().Subject.Json;
+        body.GetProperty("ownerId").GetString().Should().Be(buyer.Customer.Id);
+        body.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()).Should()
+            .BeEquivalentTo([buyer.Customer.Id, guidless.Id], "kişinin BÜTÜN üyeleri, GUID'siz ham Id dahil (§6.4-3)");
+        body.GetProperty("scopeKey").GetString().Should().Be(Scope(live));
+        body.GetProperty("orderIds").EnumerateArray().Select(o => o.GetGuid()).Should().BeEquivalentTo(
+            buyer.Labels.Select(l => Guid.ParseExact(l.Id, "N")).Append(Guid.ParseExact(guidlessLabel, "N")),
+            "katkı kümesi: basılmış, iptal edilmemiş, geçici yedek değil");
+        body.GetProperty("productTotal").GetDecimal().Should().Be(150m + 70m + 25m);
+        body.GetProperty("totalBeforeBalance").GetDecimal().Should().Be(150m + 70m + 25m + 50m,
+            "kargo lisans geneli ayardan (eşik 1000, ücret 50)");
+        body.GetProperty("recipientPays").GetBoolean().Should().BeFalse();
+        body.GetProperty("shippingSettingsVersion").GetInt32().Should().Be(3, "sürüm sales/state önbelleğinden");
+        body.GetProperty("confirmedPriorIds").GetArrayLength().Should().Be(0);
+        body.TryGetProperty("confirmedPriorsDigest", out _).Should().BeFalse("onay alanları boş (W3-09 doldurur)");
+        body.GetProperty("replicaId").GetGuid().Should().Be(pc.Replica);
+        body.GetProperty("protocol").GetInt32().Should().Be(2);
+        body.GetProperty("seenMode").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task WhatsApp_acilamazsa_finish_abandoned_ve_deneme_geri_alinir()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_acilmaz", 120m);
+        pc.Launcher.ThrowOnLaunch = new InvalidOperationException("wa.me açılamadı");
+        var scope = Scope(live);
+
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.LaunchFailed);
+
+        FinishOutcomes().Should().Equal("abandoned");
+        var job = pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], scope).Jobs.Should().ContainSingle().Subject;
+        job.HasUnconfirmedSend.Should().BeFalse("AbandonSend: mesaj gitmedi, deneme geri alındı");
+        job.Deliveries.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Cloud_APIden_sonra_wa_me_acilamazsa_finish_unconfirmed()
+    {
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_belirsiz", 120m);
+        _server.EnqueueJson(FakeSalesServer.WhatsAppSend, 200,
+            """{"ok":false,"errorCode":"server_error","errorMessage":"fake","messageId":null}""");
+        pc.Launcher.ThrowOnLaunch = new InvalidOperationException("wa.me açılamadı");
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.LaunchFailed);
+
+        FinishOutcomes().Should().Equal(new[] { "unconfirmed" },
+            "Cloud API mesajı göndermiş olabilir (§6.4 'Akışın sonu')");
+    }
+
+    [Fact]
+    public async Task Yerel_tekrar_gonderim_sorusu_donmeden_once_finish_abandoned()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_soru", 120m);
+        var scope = Scope(live);
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.Opened);
+
+        var second = await RequestAsync(pc, buyer.Customer, scope);
+
+        second.Result.Should().Be(PaymentRequestResult.AlreadyRequested, "sahip kararı 2: yerel soru bugünkü gibi");
+        var begins = _server.Calls(FakeSalesServer.PaymentRequestsBegin).Select(b => b.Json.GetProperty("recordId").GetGuid())
+            .ToList();
+        begins.Should().HaveCount(2).And.OnlyHaveUniqueItems("akış başına yeni recordId");
+        var finishes = _server.Calls(FakeSalesServer.PaymentRequestsFinish);
+        finishes.Select(f => f.RecordId!.Value).Should().Equal(begins);
+        finishes.Select(f => f.Json.GetProperty("outcome").GetString()).Should().Equal("delivered", "abandoned");
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Finish_gonderilemezse_kuyrukta_kalir_sonraki_gonderimde_gider()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_kuyruk", 120m);
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsFinish, 503);
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.Opened);
+
+        var row = pc.PendingPaymentRecords.List().Should().ContainSingle().Subject;
+        row.Kind.Should().Be(PendingPaymentRecordKinds.Finish);
+        row.Attempts.Should().Be(1);
+        var recordId = _server.Calls(FakeSalesServer.PaymentRequestsBegin).Single().Json.GetProperty("recordId").GetGuid();
+        row.RecordId.Should().Be(recordId.ToString("N"));
+
+        (await pc.PaymentRecords.FlushAsync(CancellationToken.None)).Sent.Should().Be(1);
+
+        pc.PendingPaymentRecords.Count().Should().Be(0);
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Select(f => f.RecordId).Should().Equal(recordId, recordId);
+        FinishOutcomes().Should().Equal("delivered", "delivered");
+    }
+
+    [Fact]
+    public async Task Begin_cevrimdisi_GUIDli_uyede_mesaj_yok_ayni_recordId_ile_bir_kez_yinelenir()
+    {
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_cevrimdisi", 120m);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+        _server.EnqueueTimeout(FakeSalesServer.PaymentRequestsBegin);
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.BalanceUncertain,
+            "M9: kira alınamazsa GUID'li kişide mesaj gitmez (bugünkü belirsizlik sunumu)");
+
+        var begins = _server.Calls(FakeSalesServer.PaymentRequestsBegin);
+        begins.Should().HaveCount(2);
+        begins[1].RawJson.Should().Be(begins[0].RawJson, "yanıtı kaybolan isteğin akış içi yinelemesi aynı Id ve gövdeyle");
+        _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty("bakiye adımına geçilmedi");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        var finish = _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle(
+            "kira sunucuda yazılmış olabilir: abandoned ile kapanır, sonraki istekte sahte 'gitmiş olabilir' çıkmaz").Subject;
+        finish.RecordId.Should().Be(begins[0].Json.GetProperty("recordId").GetGuid());
+        finish.Json.GetProperty("outcome").GetString().Should().Be("abandoned");
+    }
+
+    private IReadOnlyList<string?> FinishOutcomes() =>
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Select(f => f.Json.GetProperty("outcome").GetString())
+            .ToList();
+
+    /// <summary>Etiket satırı doğrudan (GUID'siz müşteri ya da geçici yedek kurulumu için); Id "N" biçimli.</summary>
+    private static string InsertLabel(SalesPc pc, string sessionId, string customerId, string platform, string username,
+        decimal price, bool printed, bool tentative = false)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        pc.Exec(
+            @"INSERT INTO Label (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price,
+                                 AddedAt, PrintedAt, IsTentativeBackup)
+              VALUES (@id, @sessionId, @customerId, @platform, @username, 'Örnek', 'aldım', 'G1', @price, 1500,
+                      @printedAt, @tentative)",
+            new { id, sessionId, customerId, platform, username, price, printedAt = printed ? 2000L : (long?)null,
+                  tentative = tentative ? 1 : 0 });
+        return id;
     }
 
     [Fact]

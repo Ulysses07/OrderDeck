@@ -1817,7 +1817,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         Func<HttpResponseMessage>? scripted = null;
         lock (_gate)
         {
-            _pushCalls.Add(new PushCall(endpoint, licenseId, raw));
+            _pushCalls.Add(new PushCall(endpoint, licenseId, raw, finishId));
             if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
         }
         if (scripted is not null) return scripted();
@@ -3276,7 +3276,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     }
 
     /// <summary>Bir gönderim isteği: uç, lisans ve ham gövde.</summary>
-    internal sealed record PushCall(string Endpoint, Guid LicenseId, string RawJson)
+    /// <param name="RecordId">Yolda taşınan kayıt Id'si (<c>payment-requests/{id}/finish</c>); öbür uçlarda null.</param>
+    internal sealed record PushCall(string Endpoint, Guid LicenseId, string RawJson, Guid? RecordId = null)
     {
         public JsonElement Json
         {
