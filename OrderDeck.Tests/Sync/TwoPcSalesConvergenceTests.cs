@@ -554,6 +554,55 @@ public sealed class TwoPcSalesConvergenceTests : IDisposable
         _server.Order(G(backup))!.Row.PrintedAt.Should().BeNull();
     }
 
+    /// <summary>
+    /// Çevrimdışı uzak baskının bilinen bedeli (spec §12 risk 18): B çevrimdışı olduğunu bilirken A'nın yayınındaki
+    /// yedeği basar (bekletme yok, Y11); örtü yalnız B'dedir. A'da yedek kendi yayınının satırıdır, sonraki yayının
+    /// kalıntı sorusunda teklif edilir ve A onu da basar — iki kâğıt. Sunucuda ilk yazan kazanır: tek <c>PrintedAt</c>
+    /// (A'nın basışı); B bağlanınca onayı <c>alreadyPrinted</c> döner ve B'de "kâğıdı imha et" çıkar.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public async Task B_cevrimdisi_uzak_yedegi_basar_A_kalinti_teklifinden_de_basarsa_B_baglaninca_imha_bildirimi_alir_tek_baski_yakinsar(
+        string order)
+    {
+        Use(order);
+        var (a, b, _, backup) = await RemoteBackupAsync();
+        await RoundAsync(a);                                             // yedek A'ya akışla iner
+        a.Row(backup).Should().NotBeNull("ön koşul: A yedeği gördü");
+        var settled = new List<PendingSalesCommandsSettled>();
+        b.Pull.PendingCommandsSettled += (_, e) => { lock (settled) settled.Add(e); };
+
+        b.Offline = true;
+        b.Connectivity.Report(SalesCommandStatus.Offline);               // B çevrimdışı olduğunu biliyor
+        b.Connectivity.IsOnline.Should().BeFalse("ön koşul: bekletmenin kaldırıldığı yol (bilinen çevrimdışılık)");
+        (await b.PrintAsync(backup)).Pending.Should().Equal(backup);
+        b.Papers[backup].Should().Be(1);
+
+        a.ResidualOffer().Should().Contain(backup, "örtü yalnız B'de: A'da kendi yayınının basılmamış satırı");
+        var aPrint = await a.PrintAsync(backup);
+        aPrint.Marked.Should().Equal(backup);
+        a.Papers[backup].Should().Be(1, "ikinci kâğıt (risk 18)");
+        var aBatch = a.Row(backup)!.PrintBatchId;
+        aBatch.Should().NotBeNull();
+
+        b.Offline = false;
+        await SyncAsync(a, b);
+
+        b.PendingCount.Should().Be(0);
+        lock (settled)
+        {
+            settled.SelectMany(s => s.AlreadyPrintedLabelIds).Should().Equal(new[] { backup },
+                "B'nin onayı alreadyPrinted: B'de \"kâğıdı imha et\" (zaten basılmıştı)");
+            settled.SelectMany(s => s.Warnings).Should().BeEmpty();
+        }
+        b.Discarded.Should().Contain(backup);
+        a.Discarded.Should().NotContain(backup, "imha bildirimi yalnız geç kalan B'de");
+        _server.Order(G(backup))!.Row.PrintBatchId.Should().Be(aBatch, "ilk yazan kazanır: tek baskı");
+        b.Row(backup)!.PrintBatchId.Should().Be(aBatch);
+        b.Row(backup)!.PrintedAt.Should().Be(a.Row(backup)!.PrintedAt);
+        await AssertConvergedAsync(a, b);
+    }
+
     /// <summary>Bekleyen <c>mark-printed</c>'in basış kimliği (<see cref="PendingSalesCommandCodec"/> biçimi).</summary>
     private static string PendingBatchOf(SalesPc pc)
     {
