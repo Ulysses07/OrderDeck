@@ -362,6 +362,9 @@ public sealed class CustomerSyncDiTests
             .Should().BeSameAs(lease);
         PrivateField<SalesChangesPullService>(lease, "_pull").Should().BeSameAs(
             host.Services.GetRequiredService<SalesChangesPullService>(), "bekleyen komutlar tek göndericiden");
+        PrivateField<CustomerChangesPullService>(lease, "_customerPull").Should().BeSameAs(
+            host.Services.GetRequiredService<CustomerChangesPullService>(),
+            "W3-08 members-stale turu: müşteri akışının TEK tur kilidi (satış akışı da onu tutar)");
         PrivateField<PaymentRecordSender>(lease, "_records").Should().BeSameAs(
             host.Services.GetRequiredService<PaymentRecordSender>(), "finish'ler TEK göndericinin kuyruğundan");
         PrivateField<WpfCustomerProjectionSyncService>(lease, "_customerPush").Should().BeSameAs(

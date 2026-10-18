@@ -318,13 +318,45 @@ public sealed class PaymentRequestService
         Customer customer, Func<PaymentPerson, decimal?> productTotalFor, DateTime streamDate,
         string scopeKey, IReadOnlySet<string>? confirmedTokens = null, CancellationToken ct = default)
     {
+        // Mod On'da kiranın yeniden denenen retleri (spec 2026-10-13 §6.4 "409'ların istemcideki karşılığı"; W3-08): koşu
+        // döndüğünde kişi kilitleri ve tıklanan müşterinin kirası BIRAKILMIŞTIR — tur kira tutulurken işe yaramazdı (müşteri
+        // ve satış akışının ApplyItem'ı meşgul müşteriyi erteler). Tur koşar, sonra bütün akış AYNI onay belirteçleriyle
+        // yeniden koşar. Her hak bir kez; harcanmış hakkın reddi satır içi engeldir (koordinatör karar verir).
+        var retried = PaymentLeaseRetry.None;
+        while (true)
+        {
+            var run = new LeaseRun();
+            var outcome = await RequestPaymentOnceAsync(
+                customer, productTotalFor, streamDate, scopeKey, confirmedTokens, retried, run, ct);
+            var retry = run.Flow?.PendingRetry ?? PaymentLeaseRetry.None;
+            if (retry == PaymentLeaseRetry.None) return outcome;
+
+            var stop = await _lease!.RunRetryAsync(retry, ct);
+            if (stop is not null) return stop with { OwnerId = outcome.OwnerId };
+            retried |= retry;
+        }
+    }
+
+    /// <summary>Bir koşunun mod On akışı (<see cref="PaymentLeaseCoordinator.EnterAsync"/>; yerel kip Off'ta null).</summary>
+    private sealed class LeaseRun
+    {
+        public PaymentLeaseFlow? Flow { get; set; }
+    }
+
+    /// <summary><see cref="RequestPaymentAsync"/>'in bir koşusu; mod On akışı <paramref name="run"/>'a yazılır.</summary>
+    private async Task<PaymentRequestOutcome> RequestPaymentOnceAsync(
+        Customer customer, Func<PaymentPerson, decimal?> productTotalFor, DateTime streamDate,
+        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseRetry retried, LeaseRun run,
+        CancellationToken ct)
+    {
         // Mod On (spec 2026-10-13 §6.4-1, W3-07): ön gönderim akışın EN BAŞINDA, hiçbir kira alınmadan — bekleyen
         // komutların yanıt satırları ve gönderimlerin yönlendirmeleri bu kişinin kirasını beklemesin (U13/U17). Yerel kip
         // Off'ta null: bugünkü yol.
         PaymentLeaseFlow? paymentLease;
         try
         {
-            paymentLease = _lease is null ? null : await _lease.EnterAsync(ct);
+            paymentLease = _lease is null ? null : await _lease.EnterAsync(retried, ct);
+            run.Flow = paymentLease;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -575,12 +607,13 @@ public sealed class PaymentRequestService
             ComputeShipping(customer, productTotal, shipping.Settings);
         exit.Net = totalAmount;
 
-        // Mod On: kişi × kapsamın kirası bakiyeden ÖNCE (GUID'siz kişide de). Alınamazsa mesaj gitmez (M9).
+        // Mod On: kişi × kapsamın kirası bakiyeden ÖNCE (GUID'siz kişide de). Alınamazsa mesaj gitmez (M9). Onay alanları
+        // operatörün onayladığı uzak öncüllerden (W3-09 sorar); akışın yeniden koşuları aynı belirteçlerle gelir.
         if (paymentLease is not null)
         {
             var stop = await paymentLease.BeginAsync(new PaymentLeaseBeginInput(
                 person, scopeKey, orderIds, productTotal, totalAmount, customer.RecipientPaysActive,
-                shipping.Version ?? 0), ct);
+                shipping.Version ?? 0, PaymentLeaseConfirmation.From(confirmedTokens)), ct);
             if (stop is not null) return stop with { OwnerId = person.OwnerId };
         }
 

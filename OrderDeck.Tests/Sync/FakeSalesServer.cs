@@ -200,6 +200,14 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     public IReadOnlyList<PushCall> CustomerPushCalls { get { lock (_gate) return _customerPushCalls.ToList(); } }
     private readonly List<PushCall> _customerPushCalls = new();
 
+    /// <summary><c>wpf-customers/changes</c> (müşteri akışı) istek sayısı.</summary>
+    public int CustomerChangesCalls { get { lock (_gate) return _customerChangesCalls; } }
+    private int _customerChangesCalls;
+
+    /// <summary>Müşteri akışı isteği "işlenirken" çalışır (yanıttan önce): ödeme kirasının <c>members-stale</c> turunda
+    /// kiraların bırakıldığını sınamak ve grup senkronunun gelişini taklit etmek için (W3-08).</summary>
+    public Action? DuringCustomerChanges { get; set; }
+
     /// <summary><c>/sales/</c> altına gelen bütün istekler (kasıtlı arızalar dahil).</summary>
     public int SalesRequestCount { get { lock (_gate) return _salesRequests; } }
     private int _salesRequests;
@@ -395,6 +403,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             if (Regex.IsMatch(path, @"^/api/v1/licenses/[0-9a-fA-F-]{36}/wpf-customers/changes$")
                 && req.Method == HttpMethod.Get)
             {
+                lock (_gate) _customerChangesCalls++;
+                DuringCustomerChanges?.Invoke();
                 var afterSeq = Regex.Match(req.RequestUri!.Query, @"afterSeq=(\d+)") is { Success: true } m
                     ? long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)
                     : 0L;

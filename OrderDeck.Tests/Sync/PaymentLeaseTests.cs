@@ -491,9 +491,6 @@ public sealed class PaymentLeaseTests : IDisposable
 
     public static TheoryData<string, string> InterimRejections => new()
     {
-        { "members-stale", "Müşteri grupları eşitleniyor; biraz sonra tekrar dene." },
-        { "stale-total", "Bu bilgisayar güncel değil (sunucu 180,00 TL, burada 120,00 TL)." },
-        { "stale-total-live", "Bu kişinin PC-B'de süren yayında etiketi var; istek yayın bitip devredilince yapılabilir." },
         { "settings-stale", "Kargo ayarı bu arada değişti; biraz sonra tekrar dene." },
         { "mode-off", "Senkron kapatıldı; ekran yenileniyor." },
         { "already-requested", "Bu kişiden bu kapsam için daha önce ödeme istenmiş; istek gönderilmedi." },
@@ -503,20 +500,13 @@ public sealed class PaymentLeaseTests : IDisposable
     [MemberData(nameof(InterimRejections))]
     public async Task Yeniden_deneme_gelene_kadar_kira_retleri_metinli_engel_mesaj_yok(string scenario, string expected)
     {
-        // W3-08/09'a kadar fail-closed: yeniden deneme, Off turu ve "tekrar gönderilsin mi?" sorusu sonra gelir.
+        // Henüz fail-closed: settings-stale ve mode-off W3-08'in ikinci adımında, "tekrar gönderilsin mi?" sorusu W3-09'da.
         var pc = await PcAsync();
         UseCloudApi(pc);
         var live = pc.StartStream();
         var buyer = await BuyerAsync(pc, live, "alici_ret", 120m);
         var (code, extensions) = scenario switch
         {
-            "members-stale" => ("members-stale", new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } }),
-            "stale-total" => ("stale-total", new Dictionary<string, object?> { ["serverTotal"] = 180m }),
-            "stale-total-live" => ("stale-total", new Dictionary<string, object?>
-            {
-                ["serverTotal"] = 180m,
-                ["liveElsewhere"] = new[] { new { sessionId = Guid.NewGuid(), machine = "PC-B" } },
-            }),
             "settings-stale" => ("settings-stale", new Dictionary<string, object?>
             {
                 ["current"] = new { version = 4, freeShippingThreshold = 1000m, fee = 60m },
@@ -541,6 +531,219 @@ public sealed class PaymentLeaseTests : IDisposable
         _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
         _server.Calls(FakeSalesServer.PaymentRequestsBegin).Should().ContainSingle("bu görevde yeniden deneme yok");
         _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+    }
+
+    // ── yeniden denenen retler (W3-08) ────────────────────────────────────
+
+    private IReadOnlyList<System.Text.Json.JsonElement> Begins() =>
+        _server.Calls(FakeSalesServer.PaymentRequestsBegin).Select(c => c.Json).ToList();
+
+    private static IReadOnlyList<string?> MemberIds(System.Text.Json.JsonElement begin) =>
+        begin.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()).ToList();
+
+    /// <summary>GUID'li, telefonsuz yerel müşteri (grubun ikinci hesabı).</summary>
+    private static Customer GuidCustomer(SalesPc pc, string platform, string username)
+    {
+        var customer = new Customer(Guid.NewGuid().ToString("N"), platform, username, "Örnek", null,
+            1, 1, false, null, null, 0, 0m, null, null, null);
+        pc.Customers.Insert(customer);
+        return customer;
+    }
+
+    /// <summary>Başka bilgisayarın (PC-B) devredilmiş yayınında alıcının basılmış etiketi — yalnız sunucuda; bu bilgisayara
+    /// ancak bir akış turuyla iner.</summary>
+    private Guid SeedRemoteOrder(Customer buyer, decimal price)
+    {
+        var session = Guid.NewGuid();
+        _server.SeedSession(session, DateTimeOffset.UtcNow.AddHours(-3), DateTimeOffset.UtcNow.AddHours(-2),
+            owner: Guid.NewGuid(), title: "Akşam yayını", ownerMachineName: "PC-B");
+        _server.ReleaseSession(session);
+        var order = Guid.NewGuid();
+        _server.SeedOrder(new FakeSalesServer.OrderBody(order, session, buyer.Id, buyer.Platform, buyer.Username, "Örnek",
+                "R1 aldım", "R1", price, DateTimeOffset.UtcNow.AddHours(-3), DateTimeOffset.UtcNow.AddHours(-3), null, null,
+                false, false, false, null, null, null, null, null, null, null, null, null),
+            version: 1, origin: Guid.NewGuid());
+        return order;
+    }
+
+    private static Dictionary<string, object?> StaleTotal(decimal serverTotal, string? liveMachine = null)
+    {
+        var extensions = new Dictionary<string, object?> { ["serverTotal"] = serverTotal };
+        if (liveMachine is not null)
+            extensions["liveElsewhere"] = new[] { new { sessionId = Guid.NewGuid(), machine = liveMachine } };
+        return extensions;
+    }
+
+    [Fact]
+    public async Task Members_stale_kiralar_birakilmisken_musteri_turu_kisi_yeniden_kurulur_bir_kez_yeniden_dener()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_grup", 120m);
+        var second = GuidCustomer(pc, "instagram", "alici_grup_ig");
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "members-stale",
+            new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id, second.Id } });
+        var busyDuringTour = new List<bool>();
+        _server.DuringCustomerChanges = () =>
+        {
+            busyDuringTour.Add(pc.Busy.RunLocked(isBusy => isBusy(buyer.Customer.Id)));
+            // Müşteri akışı grup değişikliğini getirdi (FakeCustomerServer'ın işi; burada yerelde taklit).
+            if (busyDuringTour.Count == 1) pc.Customers.MergeIntoGroup([buyer.Customer.Id, second.Id]);
+        };
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened, "müşteri turundan sonra yeniden deneme geçti");
+        busyDuringTour.Should().NotBeEmpty("members-stale bir müşteri akışı turu koşturur")
+            .And.OnlyContain(busy => !busy, "tur sırasında kişinin kirası bırakılmıştı (ApplyItem meşgul müşteriyi erteler)");
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        MemberIds(begins[0]).Should().Equal(buyer.Customer.Id);
+        MemberIds(begins[1]).Should().BeEquivalentTo([buyer.Customer.Id, second.Id], "kişi yeniden kuruldu");
+        begins[1].GetProperty("recordId").GetGuid().Should().NotBe(begins[0].GetProperty("recordId").GetGuid(),
+            "her yeniden koşu yeni recordId");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Select(f => f.RecordId).Should().Equal(
+            new Guid?[] { begins[1].GetProperty("recordId").GetGuid() }, "ret kira yazmaz; yalnız geçen kira kapanır");
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Members_stale_surerse_satir_ici_engel_mesaj_yok_tam_iki_begin()
+    {
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_grup_surer", 120m);
+        for (var i = 0; i < 2; i++)
+            _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "members-stale",
+                new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id, Guid.NewGuid().ToString("N") } });
+        var mark = _server.RequestLog.Count;
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Müşteri grupları eşitleniyor; biraz sonra tekrar dene.");
+        Begins().Should().HaveCount(2, "akış bir kez yeniden koşar");
+        Log(mark).Should().ContainInOrder("begin", "GET " + CustomerChangesPath(), "begin");
+        _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty("bakiyeden önce durdu");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    private string CustomerChangesPath() => $"/api/v1/licenses/{_server.LicenseId}/wpf-customers/changes";
+
+    [Fact]
+    public async Task Stale_total_satis_turundan_sonra_guncel_toplamla_gecer()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_toplam", 120m);
+        var remote = SeedRemoteOrder(buyer.Customer, 90m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(210m));
+
+        var outcome = await RequestAsync(pc, buyer.Customer, "cumulative");
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        begins[0].GetProperty("productTotal").GetDecimal().Should().Be(120m);
+        begins[1].GetProperty("productTotal").GetDecimal().Should().Be(210m,
+            "satış akışı turu PC-B'nin etiketini indirdi (kira bırakılmıştı; ApplyItem müşteriyi ertelemedi)");
+        begins[1].GetProperty("orderIds").EnumerateArray().Select(o => o.GetGuid()).Should().Contain(remote);
+        begins[1].GetProperty("totalBeforeBalance").GetDecimal().Should().Be(210m + 50m);
+        FinishOutcomes().Should().Equal("delivered");
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Single().Json.GetProperty("netAmount").GetDecimal()
+            .Should().Be(260m, "mesaj güncel toplamla gitti");
+        pc.Launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Stale_total_surerse_metnin_iki_tutari_ikinci_denemeden()
+    {
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_toplam_surer", 120m);
+        SeedRemoteOrder(buyer.Customer, 90m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(250m));
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(260m));
+
+        var outcome = await RequestAsync(pc, buyer.Customer, "cumulative");
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be("Bu bilgisayar güncel değil (sunucu 260,00 TL, burada 210,00 TL).",
+            "sunucunun toplamı ikinci 409'dan, yerel toplam turdan sonra yeniden okunan");
+        Begins().Should().HaveCount(2);
+        _server.Calls(FakeSalesServer.WhatsAppSend).Should().BeEmpty();
+        _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Stale_total_liveElsewhere_surerse_baska_bilgisayarin_yayini_metni()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_canli_baska", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(200m, "PC-B"));
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(200m, "PC-B"));
+
+        var outcome = await RequestAsync(pc, buyer.Customer, "cumulative");
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked);
+        outcome.Message.Should().Be(
+            "Bu kişinin PC-B'de süren yayında etiketi var; istek yayın bitip devredilince yapılabilir.");
+        Begins().Should().HaveCount(2);
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Members_stale_ve_stale_totalin_yeniden_deneme_hakki_ortak()
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_ortak_hak", 120m);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "members-stale",
+            new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } });
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "stale-total", StaleTotal(180m));
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live));
+
+        outcome.Result.Should().Be(PaymentRequestResult.Blocked, "bütün akış yalnız BİR KEZ yeniden koşar");
+        outcome.Message.Should().Be("Bu bilgisayar güncel değil (sunucu 180,00 TL, burada 120,00 TL).");
+        Begins().Should().HaveCount(2);
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    public static TheoryData<string> RetriedRejections => new() { "members-stale", "stale-total" };
+
+    [Theory]
+    [MemberData(nameof(RetriedRejections))]
+    public async Task Yeniden_denemede_onay_ozeti_ve_Id_listesi_istek_govdelerinde_ayni(string code)
+    {
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_onay", 120m);
+        var digest = $"v1.{Guid.NewGuid():N}";
+        var priors = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var confirmation = PaymentLeaseConfirmation.Create(digest, priors);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, code, code switch
+        {
+            "members-stale" => new Dictionary<string, object?> { ["members"] = new[] { buyer.Customer.Id } },
+            _ => StaleTotal(120m),
+        });
+
+        var outcome = await RequestAsync(pc, buyer.Customer, Scope(live),
+            new HashSet<string>(StringComparer.Ordinal) { confirmation.Token });
+
+        outcome.Result.Should().Be(PaymentRequestResult.Opened);
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        foreach (var begin in begins)
+        {
+            begin.GetProperty("confirmedPriorsDigest").GetString().Should().Be(digest, "özet aynen yankılanır (#523)");
+            begin.GetProperty("confirmedPriorIds").EnumerateArray().Select(i => i.GetGuid()).Should().Equal(priors);
+        }
     }
 
     [Fact]

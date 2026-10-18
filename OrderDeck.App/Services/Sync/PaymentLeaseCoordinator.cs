@@ -47,6 +47,99 @@ public static class PaymentLeaseMessages
     private static string Money(decimal amount) => amount.ToString("N2", Tr) + " TL";
 }
 
+/// <summary>
+/// Kiranın yeniden denenen retleri (spec 2026-10-13 §6.4 "409'ların istemcideki karşılığı"; W3-08): akış kişiyi bırakır,
+/// bir tur koşar ve bütün akış AYNI onay belirteçleriyle bir kez yeniden koşar
+/// (<see cref="PaymentLeaseCoordinator.RunRetryAsync"/>). Bayraklar bir isteğin harcadığı yeniden denemeleri de tutar.
+/// </summary>
+[Flags]
+public enum PaymentLeaseRetry
+{
+    None = 0,
+
+    /// <summary><c>members-stale</c>: bir müşteri akışı turu, kişi yeniden kurulur.</summary>
+    CustomerTour = 1,
+
+    /// <summary><c>stale-total</c>: bir sınırlı satış akışı turu, tutar yeniden okunur.</summary>
+    SalesTour = 2,
+
+    /// <summary>İki turun ortak hakkı: akış bu ikisinden ötürü toplam BİR KEZ yeniden koşar.</summary>
+    Tour = CustomerTour | SalesTour,
+}
+
+/// <summary>
+/// "Tekrar gönderilsin mi?" sorusunun UZAK öncüller için onayı (spec 2026-10-13 §6.4 "409'ların istemcideki karşılığı",
+/// PR #523 eki): sunucunun <c>already-requested</c>'ındaki öncül kümesinin özeti (<c>priorsDigest</c>) ve öncül Id'leri.
+/// <see cref="PaymentPrompt.Token"/> olarak taşınır (<see cref="Token"/>); operatör onaylayınca belirteç kümesiyle geri gelir
+/// (<see cref="From"/>) ve <c>begin</c>'e iki alanla gider: <c>confirmedPriorsDigest</c> aynen, <c>confirmedPriorIds</c> en
+/// çok <see cref="PaymentRequestLimits.MaxConfirmedPriorIds"/> Id (fazlası gönderilmez — bütün kümeyi özet onaylar).
+///
+/// <para>Akışın yeniden koşuları (<c>members-stale</c>, <c>stale-total</c>, <c>settings-stale</c>) aynı belirteç kümesiyle
+/// koştuğu için özet de Id listesi de korunur; sunucu her istekte kümeyi yeniden karşılaştırır, küme değiştiyse yeniden
+/// sorar. Birden çok uzak onay varsa (soru onaydan sonra yeniden geldi) en yenisi geçerlidir: belirteç süreç içi bir sıra
+/// numarası taşır. Belirteci soru kurar (W3-09); bozuk belirteç onay sayılmaz.</para>
+/// </summary>
+/// <param name="PriorsDigest">409'un <c>priorsDigest</c>'i, aynen; #523 öncesi sunucuda null.</param>
+/// <param name="PriorIds">Sorunun öncülleri (sunucunun sırasıyla).</param>
+/// <param name="Sequence">Süreç içi sıra: büyük olan yenidir.</param>
+public sealed record PaymentLeaseConfirmation(string? PriorsDigest, IReadOnlyList<Guid> PriorIds, long Sequence = 0)
+{
+    private const string Prefix = "kira-onay:";
+    private static long _lastSequence;
+
+    public static PaymentLeaseConfirmation None { get; } = new(null, []);
+
+    /// <summary>Yeni onay; sıra numarası süreç içinde artar.</summary>
+    public static PaymentLeaseConfirmation Create(string? priorsDigest, IEnumerable<Guid> priorIds) =>
+        new(string.IsNullOrEmpty(priorsDigest) ? null : priorsDigest, priorIds.Distinct().ToList(),
+            Interlocked.Increment(ref _lastSequence));
+
+    /// <summary>Onay belirteci (<see cref="PaymentPrompt.Token"/>): <c>kira-onay:{sıra}:{özet}:{Id,…}</c>. Özet base64url
+    /// olduğu için ':' taşımaz; Id'ler "N" hex.</summary>
+    public string Token =>
+        $"{Prefix}{Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture)}:{PriorsDigest}:"
+      + string.Join(',', PriorIds.Select(id => id.ToString("N")));
+
+    /// <summary><c>begin</c>'in <c>confirmedPriorIds</c>'i: en çok <see cref="PaymentRequestLimits.MaxConfirmedPriorIds"/>
+    /// Id, fazlası kesilir.</summary>
+    public IReadOnlyList<Guid> WirePriorIds =>
+        PriorIds.Count <= PaymentRequestLimits.MaxConfirmedPriorIds
+            ? PriorIds
+            : PriorIds.Take(PaymentRequestLimits.MaxConfirmedPriorIds).ToList();
+
+    /// <summary>Onaylanan belirteçlerdeki en yeni uzak onay; yoksa <see cref="None"/>.</summary>
+    public static PaymentLeaseConfirmation From(IReadOnlySet<string>? confirmedTokens)
+    {
+        var newest = None;
+        if (confirmedTokens is null) return newest;
+        foreach (var token in confirmedTokens)
+            if (TryParse(token, out var parsed) && parsed.Sequence > newest.Sequence) newest = parsed;
+        return newest;
+    }
+
+    private static bool TryParse(string token, out PaymentLeaseConfirmation confirmation)
+    {
+        confirmation = None;
+        if (!token.StartsWith(Prefix, StringComparison.Ordinal)) return false;
+        var body = token.AsSpan(Prefix.Length);
+        var first = body.IndexOf(':');
+        var last = body.LastIndexOf(':');
+        if (first < 0 || last <= first) return false;
+        if (!long.TryParse(body[..first], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var sequence) || sequence <= 0)
+            return false;
+        var digest = body[(first + 1)..last].ToString();
+        var ids = new List<Guid>();
+        foreach (var part in body[(last + 1)..].ToString().Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!Guid.TryParseExact(part, "N", out var id)) return false;
+            ids.Add(id);
+        }
+        confirmation = new PaymentLeaseConfirmation(digest.Length == 0 ? null : digest, ids, sequence);
+        return true;
+    }
+}
+
 /// <summary>Kapsamdan yeniden okunan tutar (spec 2026-10-13 §6.4 istemci adımı 2).</summary>
 /// <param name="ProductTotal">Kişinin bütün üyelerinin kapsamdaki katkı veren etiketlerinin toplamı
 /// (<see cref="LabelRepository.GetPrintedTotal"/>).</param>
@@ -67,6 +160,8 @@ public sealed record PaymentLeaseAmount(decimal ProductTotal, IReadOnlyList<Guid
 /// (<c>ComputeShipping</c>).</param>
 /// <param name="RecipientPays">Kişi düzeyinde alıcı ödemeli.</param>
 /// <param name="ShippingSettingsVersion">Anlık görüntünün lisans geneli ayar sürümü (önbellek boşsa 0).</param>
+/// <param name="Confirmation">Operatörün onayladığı uzak öncüller (<see cref="PaymentLeaseConfirmation.From"/>); yoksa
+/// onay alanları boş gider.</param>
 public sealed record PaymentLeaseBeginInput(
     PaymentPerson Person,
     string ScopeKey,
@@ -74,7 +169,8 @@ public sealed record PaymentLeaseBeginInput(
     decimal ProductTotal,
     decimal TotalBeforeBalance,
     bool RecipientPays,
-    int ShippingSettingsVersion);
+    int ShippingSettingsVersion,
+    PaymentLeaseConfirmation? Confirmation = null);
 
 /// <summary>
 /// Ödeme isteğinin mod On sarmalı (spec 2026-10-13 §6.4 "İstemci tarafı", §6.5-2, M9, M11, §12 risk 14; W3-07).
@@ -113,8 +209,17 @@ public sealed record PaymentLeaseBeginInput(
 ///   <item><c>in-progress-elsewhere</c> → <see cref="PaymentRequestResult.PaymentInProgress"/>, makine adıyla.</item>
 ///   <item><c>client-update-required</c> → güncelleme sorusu (süreç başına bir kez) ve satır içi engel.</item>
 ///   <item><c>content-conflict</c> ve 400 → satır içi "İşlem kaydedilemedi (iç hata); tekrar dene." (günlüğe).</item>
-///   <item><c>members-stale</c>, <c>stale-total</c>, <c>settings-stale</c>, <c>mode-off</c>, <c>already-requested</c> →
-///   şimdilik metinli satır içi engel (yeniden deneme, Off turu ve soru W3-08/09'da).</item>
+///   <item><c>members-stale</c> ve <c>stale-total</c> (W3-08) → akış kişiyi BIRAKIR ve yeniden başlar
+///   (<see cref="PaymentLeaseFlow.PendingRetry"/>): kira tutulurken tur işe yaramaz — müşteri ve satış akışının
+///   <c>ApplyItem</c>'ı meşgul müşteriyi erteler. Kişi kilitleri ve tıklanan müşterinin kirası bırakıldıktan sonra
+///   <see cref="RunRetryAsync"/> bir tur koşar (<c>members-stale</c> → bir müşteri akışı turu, <c>stale-total</c> → bir
+///   sınırlı satış akışı turu; ikisi de en çok <see cref="RetryTourBudget"/>), ardından bütün akış AYNI onay
+///   belirteçleriyle (<see cref="PaymentLeaseConfirmation"/>: özet + Id listesi) ve YENİ bir <c>recordId</c> ile BİR KEZ
+///   yeniden koşar. İkisinin hakkı ortaktır. Ret sürerse satır içi engel: "Müşteri grupları eşitleniyor…" ya da
+///   "Bu bilgisayar güncel değil (sunucu X, burada Y)" — tutarlar ikinci denemeden; <c>liveElsewhere</c> doluysa
+///   "Bu kişinin PC-A'da süren yayında etiketi var…".</item>
+///   <item><c>settings-stale</c>, <c>mode-off</c>, <c>already-requested</c> → şimdilik metinli satır içi engel (W3-08'in
+///   ikinci adımı ve W3-09).</item>
 /// </list></para>
 ///
 /// <para><b>Akışın sonu</b> (<see cref="PaymentLeaseFlow.FinishAsync"/>, §6.4 "Akışın sonu"): kira alındıysa (ya da
@@ -134,11 +239,16 @@ public sealed class PaymentLeaseCoordinator
     /// <summary><c>finish</c>'in akış içindeki gönderim süresi; dolarsa kayıt kuyrukta kalır.</summary>
     public static readonly TimeSpan FinishBudget = TimeSpan.FromSeconds(3);
 
+    /// <summary><c>members-stale</c>'in müşteri akışı turunun ve <c>stale-total</c>'ın satış akışı turunun süresi (§6.4);
+    /// dolarsa beklenmez, akış yine bir kez yeniden koşar (karar ikinci <c>begin</c>'in).</summary>
+    public static readonly TimeSpan RetryTourBudget = TimeSpan.FromSeconds(5);
+
     private readonly LicenseApiClient _api;
     private readonly SalesSyncEnvelope _envelope;
     private readonly ICurrentLicenseProvider _license;
     private readonly SalesSyncStateRepository _state;
     private readonly SalesChangesPullService _pull;
+    private readonly CustomerChangesPullService _customerPull;
     private readonly PaymentRecordSender _records;
     private readonly WpfCustomerProjectionSyncService _customerPush;
     private readonly SessionOrderSyncService _salesPush;
@@ -159,6 +269,7 @@ public sealed class PaymentLeaseCoordinator
         ICurrentLicenseProvider license,
         SalesSyncStateRepository state,
         SalesChangesPullService pull,
+        CustomerChangesPullService customerPull,
         PaymentRecordSender records,
         WpfCustomerProjectionSyncService customerPush,
         SessionOrderSyncService salesPush,
@@ -173,6 +284,7 @@ public sealed class PaymentLeaseCoordinator
         _license = license;
         _state = state;
         _pull = pull;
+        _customerPull = customerPull;
         _records = records;
         _customerPush = customerPush;
         _salesPush = salesPush;
@@ -187,15 +299,74 @@ public sealed class PaymentLeaseCoordinator
     /// <summary><c>finish</c>'in akış içindeki gönderim süresi; testler değiştirir.</summary>
     internal TimeSpan FinishTimeout { get; set; } = FinishBudget;
 
+    /// <summary>Yeniden denemenin turunun süresi; testler kısaltır.</summary>
+    internal TimeSpan RetryTourTimeout { get; set; } = RetryTourBudget;
+
     /// <summary>
     /// Akışın girişi. Yerel kip On değilse null — bugünkü yol. On ise ön gönderim koşar ve akışın nesnesi döner. Yerel
     /// kip okunamazsa yerel hata fırlar (çağıran mesajı engeller); iptal <see cref="OperationCanceledException"/>.
     /// </summary>
-    public async Task<PaymentLeaseFlow?> EnterAsync(CancellationToken ct)
+    /// <param name="retried">Bu isteğin daha önceki koşularında harcanmış yeniden denemeler (<see cref="RunRetryAsync"/>):
+    /// harcanmış bir hak yeniden istenmez, ret satır içi engel olur.</param>
+    public async Task<PaymentLeaseFlow?> EnterAsync(PaymentLeaseRetry retried, CancellationToken ct)
     {
         if (_state.GetMode() != 1) return null;
         await PrePushAsync(ct).ConfigureAwait(false);
-        return new PaymentLeaseFlow(this);
+        return new PaymentLeaseFlow(this, retried);
+    }
+
+    /// <summary>
+    /// Kiranın yeniden denenen reddinden sonra, akış kişiyi ve tıklanan müşteriyi BIRAKTIKTAN sonra (§6.4): müşteri ve satış
+    /// akışının <c>ApplyItem</c>'ı meşgul müşteriyi erteler, kira tutulurken tur işe yaramazdı.
+    /// <list type="bullet">
+    ///   <item><see cref="PaymentLeaseRetry.CustomerTour"/> (<c>members-stale</c>): bir müşteri akışı turu
+    ///   (<see cref="CustomerChangesPullService.PullOnceAsync"/>) — eksik grup üyeleri ve yönlendirmeler iner.</item>
+    ///   <item><see cref="PaymentLeaseRetry.SalesTour"/> (<c>stale-total</c>): bir sınırlı satış akışı turu
+    ///   (<see cref="SalesChangesPullService.RefreshAsync"/>) — devredilmiş yayınların etiketleri ve komut sonuçları iner.</item>
+    /// </list>
+    /// Tur en çok <see cref="RetryTourTimeout"/> beklenir; dolarsa arka planda biter. Turun hatası ya da zaman aşımı engel
+    /// değildir: akış yine bir kez yeniden koşar, karar ikinci <c>begin</c>'in. <c>null</c> = akış yeniden koşsun; doluysa
+    /// akış bu sonuçla biter (mesaj gitmez). Ağ işi arka plan iş parçacığında; iptal fırlar.
+    /// </summary>
+    internal async Task<PaymentRequestOutcome?> RunRetryAsync(PaymentLeaseRetry retry, CancellationToken ct)
+    {
+        switch (retry)
+        {
+            case PaymentLeaseRetry.CustomerTour:
+                await RunBoundedAsync("müşteri akışı turu", t => _customerPull.PullOnceAsync(t), ct).ConfigureAwait(false);
+                return null;
+            case PaymentLeaseRetry.SalesTour:
+                await RunBoundedAsync("satış akışı turu", t => _pull.RefreshAsync(RetryTourTimeout, t), ct)
+                    .ConfigureAwait(false);
+                return null;
+            default:
+                _log.LogError("Ödeme isteği kirası: tanınmayan yeniden deneme {Retry} — mesaj engellendi", retry);
+                return FailClosed;
+        }
+    }
+
+    /// <summary>Yeniden denemenin turu: arka plan iş parçacığında, en çok <see cref="RetryTourTimeout"/> beklenir; süre
+    /// dolarsa ya da tur düşerse günlüğe yazılır ve geçilir (tur arka planda biter, hatası gözlenir).</summary>
+    private async Task RunBoundedAsync(string name, Func<CancellationToken, Task> run, CancellationToken ct)
+    {
+        var tour = Task.Run(() => run(ct), CancellationToken.None);
+        try
+        {
+            await tour.WaitAsync(RetryTourTimeout, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _ = tour.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            _log.LogInformation("Ödeme isteği kirası: yeniden denemenin {Tour} {Budget} sn içinde bitmedi; akış yine de "
+                              + "bir kez yeniden koşuyor", name, RetryTourTimeout.TotalSeconds);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _log.LogWarning(ex, "Ödeme isteği kirası: yeniden denemenin {Tour} düştü; akış yine de bir kez yeniden koşuyor",
+                name);
+        }
     }
 
     private async Task PrePushAsync(CancellationToken ct)
@@ -286,6 +457,9 @@ public sealed class PaymentLeaseCoordinator
         if (licenseId is null)
             return Unreachable(flow, input, endpointMissing: false, "lisans çözülemedi");
 
+        // Her begin (yeniden koşular ve settings-stale'in yerinde yinelemesi dahil) YENİ bir Id: önceki deneme kira
+        // yazmadı (ret) ya da kapandı. Onay alanları operatörün onayladığı belirteçlerden — yeniden koşularda aynı.
+        var confirmation = input.Confirmation ?? PaymentLeaseConfirmation.None;
         var request = new PaymentRequestBeginRequest(
             RecordId: Guid.NewGuid(),
             OwnerId: person.OwnerId ?? person.MemberIds[0],
@@ -296,8 +470,8 @@ public sealed class PaymentLeaseCoordinator
             TotalBeforeBalance: PaymentHistoryRecords.Money(input.TotalBeforeBalance),
             RecipientPays: input.RecipientPays,
             ShippingSettingsVersion: input.ShippingSettingsVersion,
-            ConfirmedPriorIds: [],
-            ConfirmedPriorsDigest: null,
+            ConfirmedPriorIds: confirmation.WirePriorIds,
+            ConfirmedPriorsDigest: confirmation.PriorsDigest,
             ReplicaId: envelope.ReplicaId!.Value,
             Protocol: SalesSyncEnvelope.Protocol,
             SeenMode: envelope.SeenMode);
@@ -347,7 +521,7 @@ public sealed class PaymentLeaseCoordinator
                 return Unreachable(flow, input, endpointMissing: true, $"kira ucu yok (kira {request.RecordId})");
             default:
                 flow.Clear();
-                return Rejected(request.RecordId, http.StatusCode, http.Problem!, input);
+                return Rejected(flow, request.RecordId, http.StatusCode, http.Problem!, input);
         }
     }
 
@@ -393,9 +567,11 @@ public sealed class PaymentLeaseCoordinator
         return endpointMissing ? Blocked(SalesCommandMessages.EndpointMissing) : FailClosed;
     }
 
-    /// <summary>Sunucunun reddi (§6.4 "409'ların istemcideki karşılığı"; §5.3). Hiçbir ret kira yazmaz.</summary>
+    /// <summary>Sunucunun reddi (§6.4 "409'ların istemcideki karşılığı"; §5.3). Hiçbir ret kira yazmaz. Yeniden denenen
+    /// retlerde (<see cref="PaymentLeaseFlow.PendingRetry"/>) dönen sonuç akışı durdurur; hak harcanmışsa engelin
+    /// kendisidir.</summary>
     private PaymentRequestOutcome Rejected(
-        Guid recordId, int status, PaymentRequestProblem problem, PaymentLeaseBeginInput input)
+        PaymentLeaseFlow flow, Guid recordId, int status, PaymentRequestProblem problem, PaymentLeaseBeginInput input)
     {
         switch (problem.Code)
         {
@@ -410,13 +586,26 @@ public sealed class PaymentLeaseCoordinator
                 OpenUpdatePromptOnce(recordId);
                 return Blocked(SalesCommandMessages.ClientUpdateRequired);
             case PaymentRequestProblemCodes.MembersStale:
-                _log.LogInformation("Ödeme isteği kirası {RecordId}: members-stale ({Members} sunucu üyesi) — mesaj engellendi",
-                    recordId, problem.Members?.Count);
+                if (flow.RequestRetry(PaymentLeaseRetry.CustomerTour))
+                    _log.LogInformation(
+                        "Ödeme isteği kirası {RecordId}: members-stale ({Members} sunucu üyesi) — kişi bırakılıyor, müşteri "
+                      + "akışı turundan sonra akış bir kez yeniden koşacak", recordId, problem.Members?.Count);
+                else
+                    _log.LogInformation(
+                        "Ödeme isteği kirası {RecordId}: members-stale yeniden denemede sürüyor ({Members} sunucu üyesi) — "
+                      + "mesaj engellendi", recordId, problem.Members?.Count);
                 return Blocked(PaymentLeaseMessages.MembersStale);
             case PaymentRequestProblemCodes.StaleTotal:
-                _log.LogInformation(
-                    "Ödeme isteği kirası {RecordId}: stale-total ({Live} başka bilgisayarda süren yayın) — mesaj engellendi",
-                    recordId, problem.LiveElsewhere?.Count ?? 0);
+                if (flow.RequestRetry(PaymentLeaseRetry.SalesTour))
+                    _log.LogInformation(
+                        "Ödeme isteği kirası {RecordId}: stale-total ({Live} başka bilgisayarda süren yayın) — kişi "
+                      + "bırakılıyor, satış akışı turundan sonra akış bir kez yeniden koşacak",
+                        recordId, problem.LiveElsewhere?.Count ?? 0);
+                else
+                    _log.LogInformation(
+                        "Ödeme isteği kirası {RecordId}: stale-total yeniden denemede sürüyor ({Live} başka bilgisayarda "
+                      + "süren yayın) — mesaj engellendi", recordId, problem.LiveElsewhere?.Count ?? 0);
+                // Tutarlar bu denemeden: sunucunun toplamı bu 409'dan, yerel toplam bu begin'in kapsamdan okuduğu.
                 return Blocked(problem.LiveElsewhere is { Count: > 0 } live
                     ? PaymentLeaseMessages.LiveElsewhere(live[0].Machine)
                     : PaymentLeaseMessages.NotCurrent(problem.ServerTotal ?? 0m, input.ProductTotal));
@@ -522,10 +711,35 @@ public sealed class PaymentLeaseFlow
 {
     private readonly PaymentLeaseCoordinator _owner;
 
+    /// <summary>Bu isteğin önceki koşularında harcanmış yeniden denemeler.</summary>
+    private readonly PaymentLeaseRetry _retried;
+
     /// <summary>Kapanmamış kira (ya da sonucu bilinmeyen <c>begin</c>): çıkışta <c>finish</c> bununla gider.</summary>
     private Guid? _recordId;
 
-    internal PaymentLeaseFlow(PaymentLeaseCoordinator owner) => _owner = owner;
+    internal PaymentLeaseFlow(PaymentLeaseCoordinator owner, PaymentLeaseRetry retried)
+    {
+        _owner = owner;
+        _retried = retried;
+    }
+
+    /// <summary>
+    /// Kira yeniden denenen bir retle durdu (W3-08, §6.4): çağıran kişiyi ve tıklanan müşteriyi BIRAKIR,
+    /// <see cref="PaymentLeaseCoordinator.RunRetryAsync"/>'i çağırır ve bütün akışı aynı onay belirteçleriyle bir kez yeniden
+    /// koşar (bu bayrak o koşunun <see cref="PaymentLeaseCoordinator.EnterAsync"/>'ine eklenir). Yoksa
+    /// <see cref="PaymentLeaseRetry.None"/>.
+    /// </summary>
+    public PaymentLeaseRetry PendingRetry { get; private set; }
+
+    /// <summary>Yeniden deneme hakkı varsa onu ister (<see cref="PendingRetry"/>); hak bu isteğin önceki bir koşusunda
+    /// harcandıysa false — ret engeldir. <c>members-stale</c> ile <c>stale-total</c>'ın hakkı ortaktır.</summary>
+    internal bool RequestRetry(PaymentLeaseRetry retry)
+    {
+        var right = (retry & PaymentLeaseRetry.Tour) != 0 ? PaymentLeaseRetry.Tour : retry;
+        if ((_retried & right) != 0) return false;
+        PendingRetry = retry;
+        return true;
+    }
 
     /// <summary>Son kiranın sunucu üyeleri (<c>begin</c> yanıtı): istemcinin kümesi asıl kayda çözülmüş, sunucunun grubuyla
     /// birleşmiş — kapsam uzlaştırmasının adayları (§6.4 "Kapsam uzlaştırması"). Kira yokken boş.</summary>

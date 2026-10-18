@@ -336,9 +336,10 @@ public sealed class SalesChangesPullService
     }
 
     /// <summary>
-    /// Baskıdan hemen önceki akış turu (spec 2026-10-13 §5.6-2): bir tur, en çok <paramref name="budget"/> kadar
-    /// beklenir. Süre dolarsa beklemeden döner (tur iptal edilir ve arka planda kendiliğinden biter; imleç her sayfada
-    /// kaydedildiği için uygulanmış öğe kaybolmaz) — kâğıt yerel aynanın güncel hâliyle basılır.
+    /// Sınırlı akış turu: baskıdan hemen önce (spec 2026-10-13 §5.6-2) ve ödeme isteği kirasının <c>stale-total</c>
+    /// yeniden denemesinde (§6.4, W3-08). Bir tur, en çok <paramref name="budget"/> kadar beklenir. Süre dolarsa beklemeden
+    /// döner (tur iptal edilir ve arka planda kendiliğinden biter; imleç her sayfada kaydedildiği için uygulanmış öğe
+    /// kaybolmaz) — çağıran yerel aynanın güncel hâliyle devam eder.
     /// </summary>
     /// <returns>Tur süre içinde akışı sonuna kadar uyguladıysa true.</returns>
     public async Task<bool> RefreshAsync(TimeSpan budget, CancellationToken ct = default)
@@ -358,7 +359,7 @@ public sealed class SalesChangesPullService
         {
             try { cts.Cancel(); }
             catch (ObjectDisposedException) { }                  // tur tam bu arada bitti
-            _log.LogInformation("Baskı öncesi satış akışı turu {Budget} sn içinde bitmedi; yerel satırlarla basılıyor",
+            _log.LogInformation("Sınırlı satış akışı turu {Budget} sn içinde bitmedi; yerel satırlarla devam ediliyor",
                 budget.TotalSeconds);
             ct.ThrowIfCancellationRequested();
             return false;
@@ -374,7 +375,7 @@ public sealed class SalesChangesPullService
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Baskı öncesi satış akışı turu düştü; yerel satırlarla basılıyor");
+            _log.LogWarning(ex, "Sınırlı satış akışı turu düştü; yerel satırlarla devam ediliyor");
             return false;
         }
     }
