@@ -716,23 +716,30 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
 
     /// <summary>
     /// §6.4-e: soru ile onay arasında kişinin kümesine ESKİ bir kayıt katıldı — kapanış anı gösterilen öncülden eski,
-    /// soru anında başka bir satırın kaydıydı. Birleştirmede (kimlik onarımı) kayıt kopyanın Id'siyle saklıdır ve üye
-    /// kesişimi onu kopyalar üzerinden bulur (<c>WithCopiesAsync</c>); grup değişiminde istemci kişiyi yeniden kurar,
-    /// öbür satır üye olur. Küme değiştiği için özet tutmaz ve kayıt sorulur; bir zaman filigranı onu yutardı.
+    /// soru anında başka bir satırın kaydıydı. Üç yoldan: birleştirmede (kimlik onarımı) kayıt kopyanın Id'siyle saklıdır
+    /// ve üye kesişimi onu kopyalar üzerinden bulur (<c>WithCopiesAsync</c>); grup değişiminde istemci kişiyi yeniden
+    /// kurar, öbür satır üye olur; geri doldurmanın aynı işi yeniden göndermesi kayda yeni üye ekler (<c>UnionMembers</c>;
+    /// grup senkronu başka türlü görmüş bir bilgisayar). Küme değiştiği için özet tutmaz ve kayıt sorulur; bir zaman
+    /// filigranı onu yutardı.
     /// </summary>
     [Theory]
     [InlineData("birlesme")]
     [InlineData("grup-degisimi")]
+    [InlineData("geri-doldurma-uye-birlesimi")]
     public async Task Soru_ile_onay_arasinda_kumeye_katilan_eski_kayit_yutulmaz(string @case)
     {
         var kit = await Kit.CreateAsync(_factory);
         var owner = await kit.SeedProjectionAsync(groupId: null);
         var other = await kit.SeedProjectionAsync(groupId: null);
         var replica = Guid.NewGuid();
-        var old = await kit.SeedRecordAsync("c:" + other, [other], PaymentRequestKind.Record,
-            PaymentRequestState.Delivered, DateTimeOffset.UtcNow.AddDays(-3).AddMinutes(-1),
-            finishedAt: DateTimeOffset.UtcNow.AddDays(-3), netAmount: 40m);
-        var shown = await SeedDeliveredAsync(kit, owner, DateTimeOffset.UtcNow.AddDays(-1));
+        var oldAt = DateTimeOffset.UtcNow.AddDays(-3);
+        // Geri doldurmanın yinelemesi yalnız aynı içerikli kayda üye ekler: o durumda eski kayıt da geri doldurmayla
+        // yazılır (kapanış anı sunucunun alış anı, gösterilen öncülden önce).
+        var old = @case == "geri-doldurma-uye-birlesimi"
+            ? await BackfilledAsync(kit, Kit.BackfillItem(Guid.NewGuid(), other, [other], oldAt, netAmount: 40m))
+            : await kit.SeedRecordAsync("c:" + other, [other], PaymentRequestKind.Record,
+                PaymentRequestState.Delivered, oldAt.AddMinutes(-1), finishedAt: oldAt, netAmount: 40m);
+        var shown = await SeedDeliveredAsync(kit, owner, DateTimeOffset.UtcNow);
         var question = await AlreadyRequestedAsync(
             await kit.BeginAsync(Kit.Body(Guid.NewGuid(), replica, owner, [owner])));
         Priors(question).Select(p => p.Id).Should().Equal(shown.Id);
@@ -748,6 +755,13 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
                 await kit.GroupAsync($"grp-{Guid.NewGuid():N}", owner, other);
                 members = [owner, other];
                 break;
+            case "geri-doldurma-uye-birlesimi":
+                var replay = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(),
+                    Kit.BackfillItem(old.Id, other, [other, owner], oldAt, netAmount: 40m)));
+                replay.StatusCode.Should().Be(HttpStatusCode.OK, await replay.Content.ReadAsStringAsync());
+                (await Kit.ReadBackfillAsync(replay)).Records.Should().Equal(new Kit.BackfillResult(old.Id, "unchanged"));
+                members = [owner];
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(@case), @case, null);
         }
@@ -757,6 +771,38 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         Priors(confirm).Select(p => p.Id).Should().Equal(old.Id, shown.Id);
         PriorsDigest(confirm).Should().Be(Kit.ExpectedPriorsDigest([old.Id, shown.Id]));
         await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), replica, owner, members,
+            confirmedPriorsDigest: PriorsDigest(confirm)));
+    }
+
+    /// <summary>
+    /// §6.4-e: soru ile onay arasında bir öncül kümeden ÇIKTI — sonucu bilinmeyen kira geç <c>abandoned</c> ile kapandı.
+    /// Onay küme eşitliğidir: sorunun özeti tutmaz ve istek kalan öncülle yeniden sorulur. Id listesi bunu sormazdı;
+    /// özet bilerek daha katıdır, fazladan bir soru güvenli yöndedir. Yeni özetle kira yazılır.
+    /// </summary>
+    [Fact]
+    public async Task Soru_ile_onay_arasinda_kumeden_cikan_oncul_yeniden_sorulur()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var owner = Kit.NewId();
+        var pcA = Guid.NewGuid();
+        var t0 = DateTimeOffset.UtcNow.AddDays(-3);
+        var delivered = await SeedDeliveredAsync(kit, owner, t0);
+        var lease = await kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Lease,
+            PaymentRequestState.Unconfirmed, t0.AddHours(1), finishedAt: t0.AddHours(1).AddMinutes(2), replicaId: pcA,
+            machineName: "PC-A");
+        var question = await AlreadyRequestedAsync(
+            await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner])));
+        Priors(question).Select(p => p.Id).Should().Equal(delivered.Id, lease.Id);
+
+        var abandon = await kit.FinishAsync(lease.Id, Kit.FinishBody(pcA, "abandoned"));
+        abandon.StatusCode.Should().Be(HttpStatusCode.OK, await abandon.Content.ReadAsStringAsync());
+        var confirm = await AlreadyRequestedAsync(await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner,
+            [owner], confirmedPriorsDigest: PriorsDigest(question))));
+
+        Priors(confirm).Select(p => p.Id).Should().Equal(delivered.Id);
+        PriorsDigest(confirm).Should().NotBe(PriorsDigest(question))
+            .And.Be(Kit.ExpectedPriorsDigest([delivered.Id]));
+        await BeginOkAsync(kit, Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner],
             confirmedPriorsDigest: PriorsDigest(confirm)));
     }
 
@@ -1277,6 +1323,16 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
     private static Task<PaymentRequestRecord> SeedDeliveredAsync(Kit kit, string owner, DateTimeOffset finishedAt) =>
         kit.SeedRecordAsync("c:" + owner, [owner], PaymentRequestKind.Record, PaymentRequestState.Delivered,
             finishedAt.AddMinutes(-1), finishedAt: finishedAt, netAmount: 10m);
+
+    /// <summary>Geri doldurmayla yazılmış kirasız bir öncül (öğe <c>applied</c>); kaydın yazılmış hâli.</summary>
+    private static async Task<PaymentRequestRecord> BackfilledAsync(Kit kit, Dictionary<string, object?> item)
+    {
+        var resp = await kit.BackfillAsync(Kit.BackfillBody(Guid.NewGuid(), item));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var result = (await Kit.ReadBackfillAsync(resp)).Records.Should().ContainSingle().Subject;
+        result.Status.Should().Be("applied");
+        return (await kit.RecordAsync(result.RecordId))!;
+    }
 
     /// <summary>409 <c>settings-stale</c>; ProblemDetails gövdesi.</summary>
     private static async Task<JsonElement> SettingsStaleAsync(HttpResponseMessage resp)
