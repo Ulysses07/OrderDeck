@@ -217,6 +217,99 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         _bed.HttpCount.Should().Be(0);
     }
 
+    // ── sunucunun tek komut tavanı (500) ───────────────────────────────────
+
+    private static int ItemCount(FakeSalesServer.CommandBody command) =>
+        command.Payload!.Value.GetProperty("items").GetArrayLength();
+
+    [Fact]
+    public async Task Tavani_asan_kalinti_baskisi_500luk_bekleyen_komutlara_bolunur_ayni_basis_ve_kesintisiz_sira()
+    {
+        _bed.ModeOn();
+        var (_, _, residual) = _bed.OwnResidual(count: 501);
+
+        var result = await _bed.Router.MarkPrintedAsync(residual);
+
+        result.Notices.Should().BeEmpty("tek komut 500'ü aşsaydı 400 alır, komut düşerdi");
+        result.Marked.Should().BeEquivalentTo(residual);
+        result.Pending.Should().BeEmpty();
+        var calls = _bed.Server.CommandCalls.Select(c => c.Command).ToList();
+        calls.Select(c => (c.Kind, ItemCount(c))).Should().Equal([("mark-printed", 500), ("mark-printed", 1)]);
+        calls.Select(c => c.CommandId).Should().OnlyHaveUniqueItems("her parça kendi bekleyen komutu");
+        calls.Select(c => c.Payload!.Value.GetProperty("batchId").GetString()).Distinct().Should().ContainSingle(
+            "tek basış kimliği");
+        calls[1].Payload!.Value.GetProperty("items")[0].GetProperty("seq").GetInt32().Should().Be(501, "sıra kesintisiz");
+        Print(residual[^1]).PrintedAt.Should().NotBeNull();
+        Print(residual[^1]).Seq.Should().Be(501);
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Tavani_asan_kalinti_iptali_parca_parca_komutla_uygulanir()
+    {
+        _bed.ModeOn();
+        var (_, _, residual) = _bed.OwnResidual(count: 501);
+
+        var result = await _bed.Router.CancelQueueAsync(residual, CancelReasonCodes.QueueRemoved);
+
+        result.HasProblems.Should().BeFalse();
+        result.NoticeTexts.Should().BeEmpty();
+        result.Applied.Should().HaveCount(501);
+        _bed.Server.CommandCalls.Select(c => (c.Command.Kind, ItemCount(c.Command))).Should().Equal(
+            [("cancel", 500), ("cancel", 1)]);
+        _bed.Local(residual[^1]).CancelledAt.Should().NotBeNull();
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Tavani_asan_kalinti_cevrimdisi_her_parca_ayri_bekleyen_komut_olur()
+    {
+        _bed.ModeOn();
+        _bed.Online = false;
+        var (_, _, residual) = _bed.OwnResidual(count: 501);
+
+        var result = await _bed.Router.CancelQueueAsync(residual, CancelReasonCodes.QueueRemoved);
+
+        result.PendingLabelIds.Should().HaveCount(501);
+        _bed.Pending.List().Select(r => r.LabelIds.Count).Should().Equal([500, 1]);
+        _bed.HttpCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Tavani_asan_kalintida_ilk_parcanin_sonucu_bilinmezse_ikincisi_gonderilmez_kuyrukta_bekler()
+    {
+        _bed.ModeOn();
+        var (_, _, residual) = _bed.OwnResidual(count: 501);
+        _bed.Server.EnqueueStatus(FakeSalesServer.Commands, 503);
+
+        var result = await _bed.Router.MarkPrintedAsync(residual);
+
+        result.Pending.Should().HaveCount(501);
+        result.Notices.Should().BeEmpty();
+        _bed.Server.CommandCalls.Should().ContainSingle("sonucu bilinmeyen parçadan sonrası tur gönderir");
+        _bed.Pending.List().Select(r => r.LabelIds.Count).Should().Equal([500, 1]);
+        _bed.LabelRepo.GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty(
+            "iki parça da örtülü: kâğıt yeniden teklif edilmez");
+    }
+
+    [Fact]
+    public async Task Tavani_asan_baska_bilgisayarin_kuyruk_iptali_parca_parca()
+    {
+        _bed.ModeOn();
+        var session = _bed.RemoteSession();
+        var customer = _bed.RemoteCustomer();
+        var ids = Enumerable.Range(0, 501)
+            .Select(_ => _bed.RemoteOrder(session, customer, printed: false).ToString("N")).ToList();
+        await _bed.PullAsync();
+
+        var result = await _bed.Router.CancelQueueAsync(ids, CancelReasonCodes.QueueRemoved);
+
+        result.HasProblems.Should().BeFalse();
+        result.Applied.Should().HaveCount(501);
+        _bed.Server.CommandCalls.Select(c => (c.Command.Kind, ItemCount(c.Command))).Should().Equal(
+            [("cancel", 500), ("cancel", 1)]);
+    }
+
     [Fact]
     public async Task Sunucuda_iptal_edilmis_kalintinin_kagidi_imha_listesinde()
     {

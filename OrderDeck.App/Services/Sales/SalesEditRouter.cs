@@ -352,33 +352,51 @@ public sealed class SalesEditRouter : ILabelEditor
                     remote);
             else
             {
-                var outcome = await _commands.SendAsync(_commands.Cancel(remote, reason), ct).ConfigureAwait(false);
-                _connectivity.Report(outcome.Status);
-                result.Changed(outcome.LabelIds);
-                if (outcome.IsApplied) result.Applied(remote);
-                else result.Problem(outcome.Message ?? SalesCommandMessages.Failed, remote);
+                string? unreachable = null;
+                foreach (var chunk in remote.Chunk(MaxCommandOrders))        // sunucunun tek komut tavanı
+                {
+                    // Sonucu bilinmeyen parçadan sonrası gönderilmez (aynı sebeple sorun).
+                    if (unreachable is not null)
+                    {
+                        result.Problem(unreachable, chunk);
+                        continue;
+                    }
+                    var outcome = await _commands.SendAsync(_commands.Cancel(chunk, reason), ct).ConfigureAwait(false);
+                    _connectivity.Report(outcome.Status);
+                    result.Changed(outcome.LabelIds);
+                    if (outcome.IsApplied) result.Applied(chunk);
+                    else
+                    {
+                        result.Problem(outcome.Message ?? SalesCommandMessages.Failed, chunk);
+                        if (outcome.CanResend) unreachable = outcome.Message ?? SalesCommandMessages.Failed;
+                    }
+                }
             }
         }
 
         if (own.Count > 0)
         {
-            var settled = await QueueAndSendAsync(_commands.Cancel(own, reason), own, online, ct).ConfigureAwait(false);
-            switch (settled.State)
+            var parts = await QueueAndSendAsync(own, ids => _commands.Cancel(ids, reason), online, ct)
+                .ConfigureAwait(false);
+            foreach (var (chunk, settled) in parts)
             {
-                case PendingState.Applied:
-                    result.Applied(own);
-                    break;
-                case PendingState.Pending:
-                    result.Pending(own);
-                    break;
-                case PendingState.Dropped:
-                    result.Notice(settled.Flush!.Settled.Warnings);
-                    break;
-                default:
-                    result.Problem(SalesCommandMessages.ModeOff, own);
-                    break;
+                switch (settled.State)
+                {
+                    case PendingState.Applied:
+                        result.Applied(chunk);
+                        break;
+                    case PendingState.Pending:
+                        result.Pending(chunk);
+                        break;
+                    case PendingState.Dropped:
+                        result.Notice(settled.Flush!.Settled.Warnings);
+                        break;
+                    default:
+                        result.Problem(SalesCommandMessages.ModeOff, chunk);
+                        break;
+                }
+                if (settled.Flush is { } flush) result.Changed(flush.Settled.ChangedLabelIds);
             }
-            if (settled.Flush is { } flush) result.Changed(flush.Settled.ChangedLabelIds);
         }
 
         _log.LogInformation(
@@ -463,32 +481,37 @@ public sealed class SalesEditRouter : ILabelEditor
 
         if (own.Count > 0)
         {
-            var intent = _commands.MarkPrinted(batchId, own.Select(id => (id, seqOf[id])).ToList());
-            var settled = await QueueAndSendAsync(intent, own, online, ct).ConfigureAwait(false);
-            switch (settled.State)
+            // Sunucunun tek komut tavanı: parça başına ayrı bekleyen komut; basış kimliği ve kâğıt sıraları aynı.
+            var parts = await QueueAndSendAsync(own,
+                ids => _commands.MarkPrinted(batchId, ids.Select(id => (id, seqOf[id])).ToList()), online, ct)
+                .ConfigureAwait(false);
+            foreach (var (chunk, settled) in parts)
             {
-                case PendingState.Applied:
-                    marked.AddRange(own);
-                    break;
-                case PendingState.Pending:
-                    pending.AddRange(own);
-                    break;
-                case PendingState.Dropped:
-                    notices.AddRange(settled.Flush!.Settled.Warnings);
-                    break;
-                default:
-                    // Kararla bekleyen komut arasında yerel kip Off'a döndü (disable turunun 2. adımı): kendi yayınları
-                    // artık yerel otoritede (aynı işlemde). Kâğıt basıldı — işaret aynı basış ve sırayla yerelde
-                    // yazılır; yoksa etiket basılmamış görünür, sonraki yayında yeniden teklif edilirdi (çift kâğıt).
-                    if (TryMarkLocally(own, batchId, seqOf)) marked.AddRange(own);
-                    else notices.Add(SalesCommandMessages.PrintNotRecorded(own.Count, SalesCommandMessages.ModeOff));
-                    break;
-            }
-            if (settled.Flush is { } flush)
-            {
-                discard.UnionWith(flush.Settled.DiscardLabelIds);
-                alreadyPrinted.UnionWith(flush.Settled.AlreadyPrintedLabelIds);
-                changed.UnionWith(flush.Settled.ChangedLabelIds);
+                switch (settled.State)
+                {
+                    case PendingState.Applied:
+                        marked.AddRange(chunk);
+                        break;
+                    case PendingState.Pending:
+                        pending.AddRange(chunk);
+                        break;
+                    case PendingState.Dropped:
+                        notices.AddRange(settled.Flush!.Settled.Warnings);
+                        break;
+                    default:
+                        // Kararla bekleyen komut arasında yerel kip Off'a döndü (disable turunun 2. adımı): kendi
+                        // yayınları artık yerel otoritede (aynı işlemde). Kâğıt basıldı — işaret aynı basış ve sırayla
+                        // yerelde yazılır; yoksa etiket basılmamış görünür, sonraki yayında yeniden teklif edilirdi.
+                        if (TryMarkLocally(chunk, batchId, seqOf)) marked.AddRange(chunk);
+                        else notices.Add(SalesCommandMessages.PrintNotRecorded(chunk.Length, SalesCommandMessages.ModeOff));
+                        break;
+                }
+                if (settled.Flush is { } flush)
+                {
+                    discard.UnionWith(flush.Settled.DiscardLabelIds);
+                    alreadyPrinted.UnionWith(flush.Settled.AlreadyPrintedLabelIds);
+                    changed.UnionWith(flush.Settled.ChangedLabelIds);
+                }
             }
         }
 
@@ -573,16 +596,50 @@ public sealed class SalesEditRouter : ILabelEditor
     private readonly record struct PendingSettlement(PendingState State, PendingSalesCommandFlush? Flush);
 
     /// <summary>
-    /// Kalıntının komutu: önce bekleyen komut olarak kalıcı yazılır (örtü — kâğıt ya da iptal artık yeniden teklif
-    /// edilmez), çevrimiçiyse hemen gönderilir. Gönderim <see cref="ImmediateSendBudget"/> içinde bitmezse beklenmez:
-    /// sonucu arka planda işlenir (<see cref="PendingSalesCommandSender.Settled"/>), sonucu bilinmeyen komut zaten kuyrukta.
+    /// Kalıntının komutları, sunucunun tek komut tavanına (<see cref="MaxCommandOrders"/>) göre parça parça: her parça
+    /// kendi sabit kimliği ve örtüsüyle ayrı bekleyen komut (<paramref name="prepare"/> parçanın niyetini kurar; kâğıtta
+    /// basış kimliği ve sıralar parçalar arasında aynı kalır). Önce HEPSİ kalıcı yazılır (örtü — kâğıt ya da iptal artık
+    /// yeniden teklif edilmez; ağdan önce), çevrimiçiyse sırayla hemen gönderilir. Sonucu bilinmeyen parçadan sonrası
+    /// gönderilmez: kuyrukta kalır, satış akışı turu sırayla götürür.
     /// </summary>
-    private async Task<PendingSettlement> QueueAndSendAsync(
-        SalesCommandIntent intent, IReadOnlyList<string> labelIds, bool online, CancellationToken ct)
+    private async Task<IReadOnlyList<(string[] Labels, PendingSettlement Settlement)>> QueueAndSendAsync(
+        IReadOnlyList<string> labelIds, Func<IReadOnlyList<string>, SalesCommandIntent> prepare, bool online,
+        CancellationToken ct)
     {
-        if (!_pending.Enqueue(intent, labelIds)) return new(PendingState.NotQueued, null);
-        if (!online) return new(PendingState.Pending, null);
+        var parts = new List<(string[] Labels, SalesCommandIntent? Intent)>();
+        foreach (var chunk in labelIds.Chunk(MaxCommandOrders))
+        {
+            var intent = prepare(chunk);
+            parts.Add((chunk, _pending.Enqueue(intent, chunk) ? intent : null));
+        }
 
+        var results = new List<(string[] Labels, PendingSettlement Settlement)>(parts.Count);
+        var send = online;
+        foreach (var (chunk, intent) in parts)
+        {
+            if (intent is null)
+            {
+                results.Add((chunk, new(PendingState.NotQueued, null)));
+                continue;
+            }
+            if (!send)
+            {
+                results.Add((chunk, new(PendingState.Pending, null)));
+                continue;
+            }
+            var settled = await SendQueuedAsync(intent, ct).ConfigureAwait(false);
+            if (settled.State == PendingState.Pending) send = false;
+            results.Add((chunk, settled));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Kuyruktaki tek komutun anlık gönderimi. <see cref="ImmediateSendBudget"/> içinde bitmezse beklenmez: sonucu arka
+    /// planda işlenir (<see cref="PendingSalesCommandSender.Settled"/>), sonucu bilinmeyen komut zaten kuyrukta.
+    /// </summary>
+    private async Task<PendingSettlement> SendQueuedAsync(SalesCommandIntent intent, CancellationToken ct)
+    {
         var send = _pending.SendNowAsync(intent.CommandId, CancellationToken.None);
         _ = send.ContinueWith(t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
             TaskScheduler.Default);
