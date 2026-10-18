@@ -108,12 +108,21 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CatalogPhotoCache>();
         // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();
-        // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
+        // Satış senkronu W3 (spec 2026-10-13 §6.2, Y4): kargo eşiği ve ücretinin TEK okuma noktası — mod Off'ta CANLI
+        // AppSettings örneği, mod On'da lisans geneli ayarın önbelleği (SalesSyncState). Tek örnek; okuyucular (ödeme
+        // isteği, #508 planı, dekont eşleştirmesi, eşik değerlendirmesi, dekont ekranı) bunu alır (CustomerSyncDiTests
+        // denetler). sales/hello'nun bildirdiği değer ve disable turunun kopyası bilerek yerel ayarda kalır. Satış durumu
+        // deposunun kaydı aşağıda (satış senkronu bloğu).
+        services.AddSingleton<IShippingSettingsProvider>(sp => new ShippingSettingsProvider(
+            sp.GetRequiredService<SalesSyncStateRepository>(),
+            sp.GetRequiredService<AppSettings>()));
+
+        // Kargo PR C: dekont eşleştirme servisi (LabelRepository + kargo ayarı sağlayıcısı).
         // UI entegrasyonu PR D'de (dekont formu/customer picker + kargo yönergesi).
         services.AddSingleton<OrderDeck.Core.Payments.PaymentMatcherService>(sp =>
             new OrderDeck.Core.Payments.PaymentMatcherService(
                 sp.GetRequiredService<LabelRepository>(),
-                () => sp.GetRequiredService<AppSettings>()));
+                sp.GetRequiredService<IShippingSettingsProvider>()));
 
         // Kümülatif kargo PR-B/C: Shipment persistence + iş kuralları servisi.
         // ShipmentService DekontEkleViewModel'a inject edilir; payment onayı
@@ -123,7 +132,7 @@ public sealed class AppHost : IDisposable
             new OrderDeck.Core.Sales.ShipmentService(
                 sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
-                () => sp.GetRequiredService<AppSettings>()));
+                sp.GetRequiredService<IShippingSettingsProvider>()));
 
         // Domain
         services.AddSingleton<StreamSessionService>();
@@ -367,7 +376,7 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<CustomerRepository>(),
                 sp.GetRequiredService<LabelRepository>(),
                 sp.GetRequiredService<IPaymentJobStore>(),
-                sp.GetRequiredService<SettingsStore>(),
+                sp.GetRequiredService<IShippingSettingsProvider>(),
                 sp.GetRequiredService<PaymentRequestService>()));
         services.AddSingleton<Services.PriceCorrection.PrintedLabelsNavigator>();
 

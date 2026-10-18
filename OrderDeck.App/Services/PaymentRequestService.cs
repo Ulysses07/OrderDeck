@@ -107,7 +107,8 @@ public sealed record PaymentRequestOutcome(
 /// Phone null/invalid ise PhoneRequired (caller PhoneEntryDialog açar).
 ///
 /// Kargo entegrasyon (2026-05-12): caller ürün toplamını geçer, service
-/// AppSettings.Shipping + Customer.RecipientPaysActive flag'ine göre kargo
+/// kargo ayarı (IShippingSettingsProvider: mod Off'ta AppSettings.Shipping, mod On'da
+/// lisans geneli ayar) + Customer.RecipientPaysActive flag'ine göre kargo
 /// ücretini hesaplar, template'e ShippingNote + final TotalAmount yansıtır.
 /// Mevcut caller signature'ları aynı kalır (productTotal eski "totalAmount"un
 /// semantic karşılığı — caller zaten label sum geçiriyordu).
@@ -120,6 +121,7 @@ public sealed class PaymentRequestService
     private readonly LicenseApiClient _api;
     private readonly ICurrentLicenseProvider _currentLicense;
     private readonly IPaymentJobStore _jobs;
+    private readonly IShippingSettingsProvider _shipping;
     private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
     private readonly CustomerRepository? _customers;
     private readonly CustomerBusySet? _busy;
@@ -131,6 +133,8 @@ public sealed class PaymentRequestService
     /// <see cref="PaymentRequestResult.PaymentInProgress"/>. Testler kısaltır.</summary>
     internal TimeSpan PersonGateTimeout { get; set; } = TimeSpan.FromSeconds(20);
 
+    /// <param name="shipping">Kargo eşiği ve ücretinin kaynağı (spec 2026-10-13 §6.2): mod Off'ta yerel ayar, mod On'da
+    /// lisans geneli ayar. Mesaj şablonu ve hesap bilgileri <paramref name="settingsStore"/>'dan okunmaya devam eder.</param>
     /// <param name="customers">U12 (Bölüm C): bakiye akışının girişinde müşteri Id'sini yerel
     /// yönlendirme tablosundan çözer. DI verir; null yalnız testlerde (Id olduğu gibi kullanılır).</param>
     /// <param name="busy">U13: senkron deposuyla paylaşılan TEK meşgul müşteri kümesi (DI tekil
@@ -142,6 +146,7 @@ public sealed class PaymentRequestService
         LicenseApiClient api,
         ICurrentLicenseProvider currentLicense,
         IPaymentJobStore jobs,
+        IShippingSettingsProvider shipping,
         Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null,
         CustomerRepository? customers = null,
         CustomerBusySet? busy = null)
@@ -152,6 +157,7 @@ public sealed class PaymentRequestService
         _api = api;
         _currentLicense = currentLicense;
         _jobs = jobs;
+        _shipping = shipping;
         _log = log;
         _customers = customers;
         _busy = busy;
@@ -205,7 +211,8 @@ public sealed class PaymentRequestService
             return PaymentRequestResult.PhoneRequired;
 
         var settings = _settingsStore.Load();
-        var (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, settings);
+        var (totalAmount, shippingFee, shippingNote) =
+            ComputeShipping(customer, productTotal, _shipping.Current().Settings);
 
         var ctx = new PaymentContext(
             DisplayName: customer.DisplayName ?? customer.Username,
@@ -477,7 +484,8 @@ public sealed class PaymentRequestService
         string scopeKey, IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
     {
         var settings = _settingsStore.Load();
-        var (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, settings);
+        var (totalAmount, shippingFee, shippingNote) =
+            ComputeShipping(customer, productTotal, _shipping.Current().Settings);
 
         // Bakiye uygulaması — PaymentJob durum makinesi (R2-01..04).
         // Eski fail-silent davranış BİLEREK terk edildi: sonuç belirsizse mesaj
@@ -1636,16 +1644,17 @@ public sealed class PaymentRequestService
     ///   <item>productTotal &gt;= FreeShippingThreshold → "Ücretsiz kargo"</item>
     ///   <item>productTotal &lt; threshold → "Kargo: X TL", total = productTotal + fee</item>
     /// </list>
+    /// <para>Ayarı çağıran <see cref="IShippingSettingsProvider"/>'dan verir (spec 2026-10-13 §6.2): <c>AppSettings</c>
+    /// alan bir biçim bilerek yok — mod On'da yerel ayarın okunduğu bir yol derlenmesin.</para>
     /// </summary>
     internal static (decimal Total, decimal? Fee, string Note) ComputeShipping(
-        Customer customer, decimal productTotal, AppSettings settings)
+        Customer customer, decimal productTotal, ShippingSettings shipping)
     {
         if (customer.RecipientPaysActive)
         {
             return (productTotal, null, "Kargo: alıcı ödemeli");
         }
 
-        var shipping = settings.Shipping;
         if (!shipping.IsEnabled)
         {
             return (productTotal, null, "");

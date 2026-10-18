@@ -15,6 +15,11 @@ public sealed record SalesSyncStateRow(
     long? ShipmentsDerivedAt,
     long? PaymentHistorySentAt);
 
+/// <summary>Kargo ayarı sağlayıcısının okuması (<see cref="SalesSyncStateRepository.GetShippingCache"/>; spec 2026-10-13
+/// §6.2): yerel kip ve <c>sales/state</c>'in sakladığı lisans geneli kargo ayarı. Ayar sunucuda hiç yazılmadıysa üç
+/// alan da boş.</summary>
+public sealed record SalesShippingCache(int Mode, int? Version, decimal? FreeShippingThreshold, decimal? ShippingFee);
+
 /// <summary>Mod On açılışının 1. adımında boşaltılan giden kuyrukların kalanı (spec 2026-10-13 §8.4-1;
 /// <see cref="SalesSyncStateRepository.GetOpeningBacklog"/>). Canlı (açık) yayının oturumu ve etiketleri sayılmaz: iki
 /// kipte aynı yargılanırlar.</summary>
@@ -142,6 +147,21 @@ public sealed class SalesSyncStateRepository
             (int)row.Mode, row.ModeSeenAt, (int?)row.ShippingVersion,
             ToDecimal(row.FreeShippingThreshold), ToDecimal(row.ShippingFee), row.ScrubOrderText != 0,
             row.FirstCatchUpAt, row.AggregatesDerivedAt, row.ShipmentsDerivedAt, row.PaymentHistorySentAt);
+    }
+
+    /// <summary>
+    /// Yerel kip ve lisans geneli kargo ayarının önbelleği, TEK sorguda (<c>ShippingSettingsProvider</c>, §6.2): kip ile
+    /// değer aynı satır okumasından gelir. Satır yoksa kip 0 (<see cref="GetMode"/> gibi) ve önbellek boş.
+    /// </summary>
+    public SalesShippingCache GetShippingCache()
+    {
+        using var conn = _factory.Open();
+        var row = conn.QuerySingleOrDefault<ShippingRow>(
+            "SELECT Mode, ShippingVersion, FreeShippingThreshold, ShippingFee FROM SalesSyncState WHERE Id = 1");
+        return row is null
+            ? new SalesShippingCache(0, null, null, null)
+            : new SalesShippingCache((int)row.Mode, (int?)row.ShippingVersion,
+                ToDecimal(row.FreeShippingThreshold), ToDecimal(row.ShippingFee));
     }
 
     /// <summary>
@@ -344,6 +364,14 @@ public sealed class SalesSyncStateRepository
     }
 
     private static decimal? ToDecimal(double? value) => value is { } v ? (decimal)v : null;
+
+    private sealed class ShippingRow
+    {
+        public long Mode { get; set; }
+        public long? ShippingVersion { get; set; }
+        public double? FreeShippingThreshold { get; set; }
+        public double? ShippingFee { get; set; }
+    }
 
     private sealed class Row
     {

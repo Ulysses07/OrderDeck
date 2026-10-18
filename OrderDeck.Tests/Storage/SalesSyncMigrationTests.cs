@@ -459,7 +459,8 @@ public sealed class SalesSyncMigrationTests : IDisposable
         var settings = new AppSettings();
         settings.Shipping.FreeShippingThreshold = 500m;
         settings.Shipping.ShippingFee = 60m;
-        var shipping = new ShipmentService(_shipments, _labels, () => settings, () => 1000L);
+        var shipping = new ShipmentService(_shipments, _labels,
+            new ShippingSettingsProvider(new SalesSyncStateRepository(_db), settings), () => 1000L);
 
         // Canlı yayın (§5.1): sohbetten etiket, yedek, baskı, FİYAT kutusu, iptal ve geri alma, yedek onayı.
         _sessions.Insert(new StreamSession("canli", null, 1000, null, new[] { "instagram" }, null));

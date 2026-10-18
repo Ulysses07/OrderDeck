@@ -97,6 +97,10 @@ internal sealed class SalesPc
 
     public LabelService Labels { get; }
     public StreamSessionService Streams { get; }
+
+    /// <summary>Gerçek kargo ayarı sağlayıcısı: mod Off'ta <see cref="Settings"/>, mod On'da sunucunun lisans geneli
+    /// ayarı (state turunun önbelleği; spec 2026-10-13 §6.2).</summary>
+    public ShippingSettingsProvider Shipping { get; }
     public ShipmentService Shipments { get; }
     public SalesSyncEnvelope Envelope { get; }
     public SalesSyncStateService StateService { get; }
@@ -158,7 +162,8 @@ internal sealed class SalesPc
 
         Labels = new LabelService(LabelRepo, new CustomerService(Customers, Sessions, LabelRepo, clock), db, clock);
         Streams = new StreamSessionService(Sessions, clock);
-        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, () => Settings, clock.UnixNow);
+        Shipping = new ShippingSettingsProvider(State, Settings);
+        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, Shipping, clock.UnixNow);
         Envelope = new SalesSyncEnvelope(Identity, State, new Hardware(fingerprint), license,
             NullLogger<SalesSyncEnvelope>.Instance);
         StateService = new SalesSyncStateService(api, Envelope, Identity, State, license, () => Settings,

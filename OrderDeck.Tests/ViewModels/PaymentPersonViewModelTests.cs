@@ -48,7 +48,8 @@ public sealed class PaymentPersonViewModelTests : IDisposable
         var store = new SettingsStore(_settingsPath);
         store.Save(new AppSettings());
         var payment = new PaymentRequestService(store, new WhatsAppMessageBuilder(), _launcher,
-            _api.Client(), _api.License(), _jobs, log: null, customers: _customers, busy: new CustomerBusySet());
+            _api.Client(), _api.License(), _jobs, LocalShipping.Of(store), log: null, customers: _customers,
+            busy: new CustomerBusySet());
         _report = new StreamReportViewModel(_labels, _sessions, new GiveawayRepository(_db), _customers, payment, _dialogs);
         var customerService = new CustomerService(_customers, _sessions, _labels, Mock.Of<IClock>(c => c.UnixNow() == 1L));
         _search = new CustomerSearchViewModel(_customers, customerService, _sessions, _labels, payment, _dialogs);

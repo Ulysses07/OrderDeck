@@ -155,6 +155,30 @@ public sealed class SalesSyncStateServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Mod_On_da_hello_lisans_geneli_ayari_degil_yerel_kargo_ayarini_bildirir()
+    {
+        // Spec 2026-10-13 §6.2 "Geçiş": hello her kipte YEREL AppSettings.Shipping'i bildirir (Burak farkı sales-sync
+        // status'ta görür). Okuyucular W3'ten beri lisans geneli ayarı sağlayıcıdan okur; hello okumaz.
+        var pc = NewPc();
+        pc.Settings.Shipping.FreeShippingThreshold = 500m;
+        pc.Settings.Shipping.ShippingFee = 60m;
+        _server.Shipping = new FakeSalesServer.ShippingBody(3, 1000m, 80m);
+        pc.Exec("UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        var provider = new ShippingSettingsProvider(pc.State, pc.Settings);
+
+        await pc.TourAsync();
+        await pc.TourAsync();
+
+        provider.Current().Settings.FreeShippingThreshold.Should().Be(1000m, "okuyucular lisans geneli ayarı görür");
+        var hello = _server.Hellos.Should().ContainSingle("bildirilen değer değişmedi: hello yeniden gitmez").Subject;
+        var shipping = hello.Json.GetProperty("reportedShipping");
+        shipping.GetProperty("threshold").GetDecimal().Should().Be(500m);
+        shipping.GetProperty("fee").GetDecimal().Should().Be(60m);
+        pc.Settings.Shipping.FreeShippingThreshold.Should().Be(500m, "tur yerel ayara yazmaz");
+        _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Uzun_parmak_izi_128_karaktere_kisalir()
     {
         var pc = NewPc(fingerprint: string.Concat(Enumerable.Repeat(Guid.NewGuid().ToString("N"), 7)));

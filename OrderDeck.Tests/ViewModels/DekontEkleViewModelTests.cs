@@ -33,6 +33,9 @@ public sealed class DekontEkleViewModelTests
         public ShipmentRepository Shipments { get; }
         public ShipmentService ShipmentSvc { get; }
         public AppSettings Settings { get; }
+
+        /// <summary>Gerçek kargo ayarı sağlayıcısı: mod Off'ta (varsayılan) <see cref="Settings"/>.</summary>
+        public ShippingSettingsProvider Shipping { get; }
         public InMemorySqlite Db { get; }
 
         public Fixture()
@@ -45,13 +48,14 @@ public sealed class DekontEkleViewModelTests
             Labels = new LabelRepository(Db);
             Shipments = new ShipmentRepository(Db);
             Settings = new AppSettings();
-            ShipmentSvc = new ShipmentService(Shipments, Labels, () => Settings, () => 1_000L);
+            Shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(Db), Settings);
+            ShipmentSvc = new ShipmentService(Shipments, Labels, Shipping, () => 1_000L);
 
-            var matcher = new PaymentMatcherService(Labels, () => Settings);
+            var matcher = new PaymentMatcherService(Labels, Shipping);
             var pdfParser = new PdfDekontParser();
             Vm = new DekontEkleViewModel(
                 Payments, Customers, Sessions, matcher, Labels, ShipmentSvc,
-                pdfParser, Settings,
+                pdfParser, Settings, Shipping,
                 new FakeClock(),
                 NullLogger<DekontEkleViewModel>.Instance);
         }
@@ -749,14 +753,14 @@ public sealed class DekontEkleViewModelTests
                 store, new WhatsAppMessageBuilder(), launcher,
                 PaymentRequestServiceTestHelpers.StubApiClient(),
                 new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore());
+                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), fx.Shipping);
 
             // Custom VM with the wired PaymentRequestService
             var vm = new DekontEkleViewModel(
                 fx.Payments, fx.Customers, fx.Sessions,
-                new PaymentMatcherService(fx.Labels, () => fx.Settings),
+                new PaymentMatcherService(fx.Labels, fx.Shipping),
                 fx.Labels, fx.ShipmentSvc,
-                new PdfDekontParser(), fx.Settings,
+                new PdfDekontParser(), fx.Settings, fx.Shipping,
                 new FakeClock(),
                 NullLogger<DekontEkleViewModel>.Instance,
                 paymentRequest);
@@ -825,12 +829,12 @@ public sealed class DekontEkleViewModelTests
                 store, new WhatsAppMessageBuilder(), launcher,
                 PaymentRequestServiceTestHelpers.StubApiClient(),
                 new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore());
+                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), fx.Shipping);
             var vm = new DekontEkleViewModel(
                 fx.Payments, fx.Customers, fx.Sessions,
-                new PaymentMatcherService(fx.Labels, () => fx.Settings),
+                new PaymentMatcherService(fx.Labels, fx.Shipping),
                 fx.Labels, fx.ShipmentSvc,
-                new PdfDekontParser(), fx.Settings,
+                new PdfDekontParser(), fx.Settings, fx.Shipping,
                 new FakeClock(),
                 NullLogger<DekontEkleViewModel>.Instance,
                 paymentRequest);
@@ -894,12 +898,12 @@ public sealed class DekontEkleViewModelTests
                 store, new WhatsAppMessageBuilder(), launcher,
                 PaymentRequestServiceTestHelpers.StubApiClient(),
                 new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore());
+                new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), fx.Shipping);
             var vm = new DekontEkleViewModel(
                 fx.Payments, fx.Customers, fx.Sessions,
-                new PaymentMatcherService(fx.Labels, () => fx.Settings),
+                new PaymentMatcherService(fx.Labels, fx.Shipping),
                 fx.Labels, fx.ShipmentSvc,
-                new PdfDekontParser(), fx.Settings,
+                new PdfDekontParser(), fx.Settings, fx.Shipping,
                 new FakeClock(),
                 NullLogger<DekontEkleViewModel>.Instance,
                 paymentRequest);

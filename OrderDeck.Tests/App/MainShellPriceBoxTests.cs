@@ -962,7 +962,7 @@ public class MainShellPriceBoxTests
     private static void ShipNow(MainShellTestHarness.Harness h, OrderDeck.App.ViewModels.LabelViewModel row)
     {
         var shipments = new OrderDeck.Core.Sales.ShipmentService(new ShipmentRepository(h.Db), new LabelRepository(h.Db),
-            () => new OrderDeck.Core.Settings.AppSettings());
+            OrderDeck.Tests.TestHelpers.LocalShipping.Off());
         var file = shipments.GetOrCreateOpenShipment(row.Label.CustomerId);
         shipments.AttachLabels(file.Id, new[] { row.Id });
         shipments.ApplyDecision(file.Id, OrderDeck.Core.Sales.ShipmentDecision.ShipNow);
@@ -1154,7 +1154,7 @@ public class MainShellPriceBoxTests
         var drawers = new CountingDrawers();
         using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
             new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,
-                new PaymentJobRepository(db), () => new OrderDeck.Core.Settings.AppSettings(),
+                new PaymentJobRepository(db), OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
                 (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
                     OrderDeck.App.Services.PaymentRequestResult.Sent))));
         await WithCodeLabels(h, 250m, "@a");
@@ -1176,7 +1176,7 @@ public class MainShellPriceBoxTests
     private static MainShellTestHarness.Harness BuildWithPayments(OrderDeck.App.Services.Drawers.IDrawerService? drawers = null)
         => MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
             new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(customers, labels,
-                new PaymentJobRepository(db), () => new OrderDeck.Core.Settings.AppSettings(),
+                new PaymentJobRepository(db), OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
                 (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
                     OrderDeck.App.Services.PaymentRequestResult.Sent))));
 

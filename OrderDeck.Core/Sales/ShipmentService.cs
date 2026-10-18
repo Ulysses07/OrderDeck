@@ -24,18 +24,20 @@ public sealed class ShipmentService
 {
     private readonly ShipmentRepository _shipments;
     private readonly LabelRepository _labels;
-    private readonly Func<AppSettings> _settings;
+    private readonly IShippingSettingsProvider _shipping;
     private readonly Func<long> _nowUnix;
 
+    /// <param name="shipping">Eşik ve ücretin kaynağı (spec 2026-10-13 §6.2): mod Off'ta yerel ayar, mod On'da lisans
+    /// geneli ayar.</param>
     public ShipmentService(
         ShipmentRepository shipments,
         LabelRepository labels,
-        Func<AppSettings> settings,
+        IShippingSettingsProvider shipping,
         Func<long>? nowUnix = null)
     {
         _shipments = shipments;
         _labels = labels;
-        _settings = settings;
+        _shipping = shipping;
         _nowUnix = nowUnix ?? (() => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
 
@@ -176,14 +178,14 @@ public sealed class ShipmentService
     /// <summary>
     /// Eşik değerlendirmesi, havuz verilmiş olarak (<see cref="EvaluateAfterPayment"/>'ın kuralı). Mod On'da (spec
     /// 2026-10-13 §7.1) dosyalar sunucunundur ve havuz <c>attach-shipment</c> yanıtından gelir: kişinin bütün
-    /// Pending/Held dosyalarının commit sonrası toplamı. Eşik ve ücret bu servisin ayarından okunur (W2'de yerel
-    /// <c>AppSettings.Shipping</c>; lisans geneli ayar W3).
+    /// Pending/Held dosyalarının commit sonrası toplamı. Eşik <see cref="IShippingSettingsProvider"/>'dan okunur (§6.2):
+    /// mod On'da lisans geneli ayar, mod Off'ta yerel <c>AppSettings.Shipping</c>.
     /// </summary>
     /// <param name="shipment">Kararın verileceği dosya (kişinin en yeni açık dosyası).</param>
     /// <param name="pooled">Eşiğin hesaplandığı tutar.</param>
     public ShipmentDecisionContext EvaluatePool(Shipment shipment, decimal pooled)
     {
-        var shipping = _settings().Shipping;
+        var shipping = _shipping.Current().Settings;
         if (!shipping.IsEnabled)
             return new ShipmentDecisionContext(
                 Shipment: shipment,

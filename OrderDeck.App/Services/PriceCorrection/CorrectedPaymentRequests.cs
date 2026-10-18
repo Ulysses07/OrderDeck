@@ -99,20 +99,22 @@ public sealed class CorrectedPaymentRequests
     private readonly CustomerRepository _customers;
     private readonly LabelRepository _labels;
     private readonly IPaymentJobStore _jobs;
-    private readonly Func<AppSettings> _settings;
+    private readonly IShippingSettingsProvider _shipping;
     private readonly RequestPayment _request;
     private readonly Func<Task<bool>>? _balanceOffline;
 
+    /// <param name="shipping">Yeni toplamın kargosu (spec 2026-10-13 §6.2): ödeme akışıyla aynı kaynak — mod Off'ta
+    /// yerel ayar, mod On'da lisans geneli ayar. Plan, akışın isteyeceği tutarı göstermeli.</param>
     /// <param name="balanceOffline">Bakiye sunucusuna ulaşılamıyor mu
     /// (<see cref="PaymentRequestService.IsBalanceOfflineAsync"/>); null = denetlenmez.</param>
     public CorrectedPaymentRequests(
         CustomerRepository customers, LabelRepository labels, IPaymentJobStore jobs,
-        Func<AppSettings> settings, RequestPayment request, Func<Task<bool>>? balanceOffline = null)
+        IShippingSettingsProvider shipping, RequestPayment request, Func<Task<bool>>? balanceOffline = null)
     {
         _customers = customers;
         _labels = labels;
         _jobs = jobs;
-        _settings = settings;
+        _shipping = shipping;
         _request = request;
         _balanceOffline = balanceOffline;
     }
@@ -120,8 +122,8 @@ public sealed class CorrectedPaymentRequests
     /// <summary>DI kurucusu: gönderim gerçek ödeme servisinden.</summary>
     public CorrectedPaymentRequests(
         CustomerRepository customers, LabelRepository labels, IPaymentJobStore jobs,
-        SettingsStore settings, PaymentRequestService payments)
-        : this(customers, labels, jobs, settings.Load,
+        IShippingSettingsProvider shipping, PaymentRequestService payments)
+        : this(customers, labels, jobs, shipping,
             (c, total, date, scope, tokens) => payments.RequestPaymentAsync(c, total, date, scope, tokens),
             () => payments.IsBalanceOfflineAsync())
     {
@@ -177,7 +179,7 @@ public sealed class CorrectedPaymentRequests
             entry.Items.Add(item);
         }
 
-        var settings = _settings();
+        var shipping = _shipping.Current().Settings;
         var toResend = new List<CorrectedRequestCandidate>();
         var paid = new List<PaidPerson>();
         var requestedPersons = 0;
@@ -226,7 +228,7 @@ public sealed class CorrectedPaymentRequests
             {
                 // Ödeme akışının şimdi isteyeceği toplam (kargo dahil, bakiye düşülmeden önce).
                 var newTotal = PaymentRequestService.ComputeShipping(
-                    contact, ProductTotal(sessionId, scope, person), settings).Total;
+                    contact, ProductTotal(sessionId, scope, person), shipping).Total;
                 // Son isteğin bakiye öncesi toplamı (ödeme sorusuyla aynı): net + hâlâ duran düşüm.
                 var priorBalance = last.AppliedAmount is > 0m ? last.AppliedAmount.Value : 0m;
                 if (newTotal == PriorTotal(last)) continue;

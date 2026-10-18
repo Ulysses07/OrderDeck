@@ -296,7 +296,8 @@ public sealed class SalesModeCoordinatorTests : IDisposable
         LocalPayment();
         ServerModeOn();
         var pc = NewPc();
-        var shipments = new ShipmentService(new ShipmentRepository(_db), new LabelRepository(_db), () => new AppSettings());
+        var shipments = new ShipmentService(new ShipmentRepository(_db), new LabelRepository(_db),
+            new ShippingSettingsProvider(new SalesSyncStateRepository(_db), new AppSettings()));
         var saved = 0;
         // Dekont gönderilirken operatör başka bir dekont kaydeder: kargo adımı (mod 0'da yerel) dosya yazar. Kargo
         // kuyruğu 1. adımda zaten boş bulunmuştu; yalnız 2. adımın kilit altındaki denetimi görür.

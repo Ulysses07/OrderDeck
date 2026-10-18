@@ -280,8 +280,8 @@ public sealed class SalesSyncStateRepositoryTests : IDisposable
         var session = Session(endedAt: T0 + 3600, releasedAt: T0 + 3700);
         var label = Label(session, customer);
         var existing = Shipment(customer, synced: true);
-        var shipments = new ShipmentService(new ShipmentRepository(_db), new LabelRepository(_db), () => new AppSettings(),
-            () => T0 + 10_000);
+        var shipments = new ShipmentService(new ShipmentRepository(_db), new LabelRepository(_db),
+            new ShippingSettingsProvider(new SalesSyncStateRepository(_db), new AppSettings()), () => T0 + 10_000);
 
         Enable().Status.Should().Be(SalesModeEnableStatus.Enabled);
 

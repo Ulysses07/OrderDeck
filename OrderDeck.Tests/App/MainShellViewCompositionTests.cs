@@ -373,15 +373,17 @@ public class MainShellViewCompositionTests
         new MigrationRunner(db).Run();
         var labels = new LabelRepository(db);
         var settings = new AppSettings();
+        var shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(db), settings);
         return new DekontEkleViewModel(
             new PaymentRepository(db),
             new CustomerRepository(db),
             new SessionRepository(db),
-            new PaymentMatcherService(labels, () => settings),
+            new PaymentMatcherService(labels, shipping),
             labels,
-            new ShipmentService(new ShipmentRepository(db), labels, () => settings, () => 1_000L),
+            new ShipmentService(new ShipmentRepository(db), labels, shipping, () => 1_000L),
             new PdfDekontParser(),
             settings,
+            shipping,
             new SystemClock(),
             NullLogger<DekontEkleViewModel>.Instance);
     }

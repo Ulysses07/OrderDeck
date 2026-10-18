@@ -424,8 +424,7 @@ public sealed class PriceCorrectionViewModelTests : IDisposable
         var shipped = Add("@gitti", 250m);
         var open = Add("@a", 250m);
         _labels.MarkPrintedAndRecord(new[] { shipped.Id, open.Id });
-        var shipments = new ShipmentService(new ShipmentRepository(_db), _labelRepo,
-            () => new OrderDeck.Core.Settings.AppSettings());
+        var shipments = new ShipmentService(new ShipmentRepository(_db), _labelRepo, LocalShipping.Off());
         var file = shipments.GetOrCreateOpenShipment(shipped.CustomerId);
         shipments.AttachLabels(file.Id, new[] { shipped.Id });
         shipments.ApplyDecision(file.Id, ShipmentDecision.ShipNow);

@@ -22,12 +22,14 @@ namespace OrderDeck.Core.Payments;
 public sealed class PaymentMatcherService
 {
     private readonly LabelRepository _labels;
-    private readonly System.Func<AppSettings> _settings;
+    private readonly IShippingSettingsProvider _shipping;
 
-    public PaymentMatcherService(LabelRepository labels, System.Func<AppSettings> settings)
+    /// <param name="shipping">Eşik ve ücretin kaynağı (spec 2026-10-13 §6.2): mod Off'ta yerel ayar, mod On'da lisans
+    /// geneli ayar.</param>
+    public PaymentMatcherService(LabelRepository labels, IShippingSettingsProvider shipping)
     {
         _labels = labels;
-        _settings = settings;
+        _shipping = shipping;
     }
 
     public enum MatchOutcome
@@ -56,7 +58,7 @@ public sealed class PaymentMatcherService
     public MatchResult Match(string customerId, string sessionId, decimal dekontAmount)
     {
         var productTotal = _labels.GetCustomerSessionLabelTotal(customerId, sessionId);
-        var shipping = _settings().Shipping;
+        var shipping = _shipping.Current().Settings;
 
         if (!shipping.IsEnabled)
         {

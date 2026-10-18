@@ -68,8 +68,11 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     private PaidPerson? PaidOf(PriceCorrectionResult result)
         => Sut().Plan("s1", result.Corrected.Select(c => (c.Before, c.Delta))).Paid.SingleOrDefault();
 
+    /// <summary>Uygulamanın canlı ayar örneği (kargo kapalı); kargo ayarı sağlayıcısı gerçek — mod Off'ta bu örnek.</summary>
+    private readonly AppSettings _live = new();
+
     private CorrectedPaymentRequests Sut(CorrectedPaymentRequests.RequestPayment? request = null)
-        => new(_customers, _labelRepo, _jobs, () => new AppSettings(),
+        => new(_customers, _labelRepo, _jobs, new ShippingSettingsProvider(new SalesSyncStateRepository(_db), _live),
             request ?? ((_, _, _, _, _) => throw new InvalidOperationException("gönderim beklenmiyordu")));
 
     /// <summary>Kişiye bu kapsamda teslim edilmiş (mesajı ulaşmış) bir istek: sonucu kesin (bakiye yok)
@@ -136,6 +139,25 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public void Mod_On_yeni_toplamin_kargosu_yerel_ayardan_degil_lisans_geneli_ayardan()
+    {
+        // Spec 2026-10-13 §6.2 (Y4): plan ödeme akışının isteyeceği tutarı göstermeli — mod On'da lisans geneli ayarla.
+        // Kişinin yayın toplamı 2 × 205 + 100 = 510: yerel 500/60'ta eşik üstü (kargosuz), lisansın 1000/80'inde değil.
+        var (a1, a2, _, _) = GroupedPersonWithRequest();
+        var result = _labels.CorrectPrices(new[] { a1.Id, a2.Id }, 205m);
+        _live.Shipping = new ShippingSettings { FreeShippingThreshold = 500m, ShippingFee = 60m };
+        new SalesSyncStateRepository(_db).SaveServerState(3, 1000m, 80m, scrubOrderText: false);
+        var affected = result.Corrected.Select(c => (c.Before, c.Delta)).ToList();
+
+        Sut().Plan("s1", affected).ToResend.Should().ContainSingle()
+            .Which.NewTotal.Should().Be(510m, "mod Off: yerel ayar, eşik üstü");
+
+        using (var c = _db.Open()) c.Execute("UPDATE SalesSyncState SET Mode = 1 WHERE Id = 1");
+        Sut().Plan("s1", affected).ToResend.Should().ContainSingle()
+            .Which.NewTotal.Should().Be(590m, "mod On: lisans geneli 1000/80 — 510 + 80");
+    }
+
+    [Fact]
     public void Unchanged_total_is_not_listed()
     {
         var (a1, _, _, _) = GroupedPersonWithRequest();
@@ -165,7 +187,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     {
         var l = Add("instagram", "@odedi", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(l.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { l.Id });   // dekont kaydı etiketleri dosyaya bağlar
         Delivered(l.CustomerId, "session:s1", 250m);
@@ -246,7 +268,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var printed = Add("instagram", "@q", 250m);
         _labels.MarkPrintedAndRecord(new[] { printed.Id });
         var queued = Add("instagram", "@q", 250m);
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(printed.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { printed.Id, queued.Id });
         var result = _labels.CorrectPrices(new[] { queued.Id }, 205m);
@@ -268,7 +290,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var paidOne = Add("instagram", "@iki", 250m);
         var unpaid = Add("instagram", "@iki", 250m);
         _labels.MarkPrintedAndRecord(new[] { paidOne.Id, unpaid.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(paidOne.CustomerId).Id, new[] { paidOne.Id });
         Delivered(paidOne.CustomerId, "session:s1", 500m);
         var result = _labels.CorrectPrices(new[] { paidOne.Id, unpaid.Id }, 205m);
@@ -314,7 +336,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         // da dosyaya bağlı saklanmıyor; ödenen fiyatı ilk düzeltme yazar.
         var l = Add("instagram", "@dekont", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(l.CustomerId).Id, new[] { l.Id });
 
         var first = _labels.CorrectPrices(new[] { l.Id }, 200m);
@@ -338,7 +360,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var l = Add("instagram", "@sonra", 250m);
         _labels.MarkPrintedAndRecord(new[] { l.Id });
         _labels.CorrectPrices(new[] { l.Id }, 200m);
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(l.CustomerId).Id, new[] { l.Id });
 
         var result = _labels.CorrectPrices(new[] { l.Id }, 190m);
@@ -417,7 +439,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var a1 = Add("instagram", "@x", 200m, "A1");
         var b2 = Add("instagram", "@x", 100m, "B2");
         _labels.MarkPrintedAndRecord(new[] { a1.Id, b2.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var open = shipmentSvc.GetOrCreateOpenShipment(a1.CustomerId);
         shipmentSvc.AttachLabels(open.Id, new[] { a1.Id, b2.Id });
         PaidOf(Correct(a1.Id, 250m))!.Delta.Should().Be(50m);
@@ -612,7 +634,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var shippedLabel = Add("instagram", "@kargo", 250m);
         var dekont = Add("instagram", "@dekont", 250m);
         _labels.MarkPrintedAndRecord(new[] { shippedLabel.Id, dekont.Id });
-        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, () => new AppSettings());
+        var shipmentSvc = new ShipmentService(_shipments, _labelRepo, LocalShipping.Off());
         var shipped = shipmentSvc.AttachLabels(shipmentSvc.GetOrCreateOpenShipment(shippedLabel.CustomerId).Id,
             new[] { shippedLabel.Id });
         shipmentSvc.ApplyDecision(shipped.Id, ShipmentDecision.ShipNow);
@@ -923,7 +945,7 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         // Çevrimdışıyken akış bakiyeyi denemeden tam tutarı isteyebilir (K5: çevrimdışı atlanır).
         var (_, _, _, person) = GroupedPersonWithRequest();
         var calls = 0;
-        var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, () => new AppSettings(),
+        var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, LocalShipping.Off(),
             (_, _, _, _, _) =>
             {
                 calls++;
@@ -974,8 +996,8 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
             store.Save(s);
             var payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
                 PaymentRequestServiceTestHelpers.StubApiClient(), new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
-                _jobs, customers: _customers);
-            var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, store, payments);
+                _jobs, LocalShipping.Of(store), customers: _customers);
+            var sut = new CorrectedPaymentRequests(_customers, _labelRepo, _jobs, LocalShipping.Of(store), payments);
 
             var outcomes = await sut.ResendAsync("s1", DateTime.Now,
                 new[] { new CorrectedRequestCandidate(l.CustomerId, "Uçtan", "session:s1", 250m, null, false, 205m) });

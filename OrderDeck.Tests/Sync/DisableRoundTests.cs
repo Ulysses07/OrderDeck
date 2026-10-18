@@ -304,7 +304,8 @@ public sealed class DisableRoundTests : IDisposable
         new ShipmentRepository(b.Db).GetById(fileForA.ToString("N")).Should().BeNull("PC-B dosyayı tutmaz");
         new ShipmentRepository(b.Db).GetById(fileForB.ToString("N")).Should().NotBeNull("PC-B'nin kendi dosyası kalır");
         new ShipmentRepository(a.Db).GetById(fileForB.ToString("N")).Should().BeNull("PC-A'da başkasının açık dosyası kalmaz");
-        new ShipmentService(new ShipmentRepository(a.Db), new LabelRepository(a.Db), () => a.Settings)
+        new ShipmentService(new ShipmentRepository(a.Db), new LabelRepository(a.Db),
+                new ShippingSettingsProvider(a.State, a.Settings))
             .GetOrCreateOpenShipment(customer).Id.Should().Be(fileForA.ToString("N"),
                 "PC-A'nın sonraki dekontu dosyayı bulur; eşik doğru havuzdan");
 
@@ -339,7 +340,8 @@ public sealed class DisableRoundTests : IDisposable
 
         var local = new ShipmentRepository(a.Db).GetById(file.ToString("N"))!;
         local.Status.Should().Be(ShipmentStatus.Shipped, "son akış dosya öğelerini de uygular (§8.5-1)");
-        var next = new ShipmentService(new ShipmentRepository(a.Db), new LabelRepository(a.Db), () => a.Settings)
+        var next = new ShipmentService(new ShipmentRepository(a.Db), new LabelRepository(a.Db),
+                new ShippingSettingsProvider(a.State, a.Settings))
             .GetOrCreateOpenShipment(customer);
         next.Id.Should().NotBe(file.ToString("N"), "kargolanmış dosyaya yeni etiket bağlanmaz: yeni dosya");
         _server.Faults.Should().BeEmpty();

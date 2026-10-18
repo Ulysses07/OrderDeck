@@ -51,7 +51,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
                (OrderDeck.App.Services.Sync.ICurrentLicenseProvider)
                    new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider, new InMemoryPaymentJobStore());
+            api, licenseProvider, new InMemoryPaymentJobStore(), LocalShipping.Of(settingsStore));
         var dialogs = new FakeDialogService();
         var sut = new StreamReportViewModel(labels, sessions, giveaways, customers, paymentService, dialogs);
         return (db, customers, sessions, labels, giveaways, launcher, dialogs, settingsPath, sut);
@@ -196,8 +196,9 @@ public class StreamReportViewModel_OpenWhatsAppTests
         var busy = new CustomerBusySet();
         var jobs = new InMemoryPaymentJobStore();
         var (api, license) = PaymentRequestServiceTestHelpers.InProgressCloudApiClient();
-        var payment = new PaymentRequestService(new SettingsStore(settingsPath), new WhatsAppMessageBuilder(),
-            new FakeUrlLauncher(), api, license, jobs, log: null, customers: customers, busy: busy);
+        var store = new SettingsStore(settingsPath);
+        var payment = new PaymentRequestService(store, new WhatsAppMessageBuilder(),
+            new FakeUrlLauncher(), api, license, jobs, LocalShipping.Of(store), log: null, customers: customers, busy: busy);
         return (new StreamReportViewModel(labels, sessions, giveaways, customers, payment, dialogs),
                 new CustomerSyncRepository(db, busy), jobs);
     }

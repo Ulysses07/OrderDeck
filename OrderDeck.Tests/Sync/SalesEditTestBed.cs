@@ -120,16 +120,25 @@ internal sealed class SalesEditTestBed : IDisposable
             Connectivity, new Clock(this), NullLogger<PendingSalesCommandSender>.Instance);
         Sender.Settled += (_, e) => { lock (Settled) Settled.Add(e); };
         ShipmentRepo = new ShipmentRepository(Db);
-        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, () => Settings, () => new Clock(this).UnixNow());
+        Shipping = new ShippingSettingsProvider(stateRepo, Settings);
+        Shipments = new ShipmentService(ShipmentRepo, LabelRepo, Shipping, () => new Clock(this).UnixNow());
         Router = new SalesEditRouter(Labels, LabelRepo, Sessions, stateRepo, Gate, Commands, Sender, Connectivity,
             Shipments, ShipmentRepo, Customers, () => LastFeedSyncAt, NullLogger<SalesEditRouter>.Instance);
     }
 
-    /// <summary>Kargo (W2-08): yerel ayar (eşik ve ücret; lisans geneli ayar W3), dosya deposu ve yerel servis — mod Off
-    /// yolu ve mod On'un eşik değerlendirmesi bunu kullanır.</summary>
+    /// <summary>Kargo (W2-08): yerel ayar (eşik ve ücret), dosya deposu ve yerel servis. Eşik W3'ten beri
+    /// <see cref="Shipping"/>'den okunur: mod Off'ta bu yerel ayar, mod On'da lisans geneli ayar
+    /// (<see cref="LicenseShipping"/>; spec 2026-10-13 §6.2).</summary>
     public AppSettings Settings { get; } = new();
+
+    /// <summary>Gerçek kargo ayarı sağlayıcısı (yatağın veritabanı ve <see cref="Settings"/>).</summary>
+    public ShippingSettingsProvider Shipping { get; }
     public ShipmentRepository ShipmentRepo { get; }
     public ShipmentService Shipments { get; }
+
+    /// <summary><c>sales/state</c>'in saklayacağı lisans geneli kargo ayarı (yerel önbellek; mod On'da okunur).</summary>
+    public void LicenseShipping(decimal? threshold, decimal? fee, int version = 1) =>
+        new SalesSyncStateRepository(Db).SaveServerState(version, threshold, fee, scrubOrderText: false);
 
     public void Dispose()
     {

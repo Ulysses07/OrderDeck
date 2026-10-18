@@ -49,7 +49,8 @@ public sealed class LabelServiceShipmentY5Tests : IDisposable
         // §7.2'nin sayısal örneği: eşik 500 TL, kargo ücreti 60 TL.
         _settings.Shipping.FreeShippingThreshold = 500m;
         _settings.Shipping.ShippingFee = 60m;
-        _shipping = new ShipmentService(_shipments, _labels, () => _settings, () => 1000L);
+        _shipping = new ShipmentService(_shipments, _labels,
+            new ShippingSettingsProvider(new SalesSyncStateRepository(_db), _settings), () => 1000L);
         // Y5'in tabanı açılışta türetilmiş say (ShipmentAmountDerivation); damgasız hâl ayrıca sınanır.
         SetDerivedAt(900);
     }

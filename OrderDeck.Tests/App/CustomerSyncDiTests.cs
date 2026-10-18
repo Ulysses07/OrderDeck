@@ -94,6 +94,37 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Kargo_ayari_saglayicisi_tekil_okuyucular_ayni_ornegi_alir_mod_Offta_canli_ayar()
+    {
+        // W3 (spec 2026-10-13 §6.2): kargo eşiğinin TEK okuma noktası. Bir okuyucu başka örnek ya da yerel ayar alsaydı
+        // mod On'da yerel değerle tutar isterdi.
+        using var host = new global::OrderDeck.App.AppHost();
+        var shipping = host.Services.GetRequiredService<IShippingSettingsProvider>();
+
+        host.Services.GetRequiredService<IShippingSettingsProvider>().Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests>(),
+                "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(host.Services.GetRequiredService<ShipmentService>(), "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<OrderDeck.Core.Payments.PaymentMatcherService>(), "_shipping")
+            .Should().BeSameAs(shipping);
+        PrivateField<IShippingSettingsProvider>(
+                host.Services.GetRequiredService<global::OrderDeck.App.ViewModels.DekontEkleViewModel>(), "_shipping")
+            .Should().BeSameAs(shipping);
+
+        // Geçici kökün yeni veritabanı mod Off: değer CANLI ayar örneğinin kendisi.
+        var snapshot = shipping.Current();
+        snapshot.Settings.Should().BeSameAs(host.Services.GetRequiredService<AppSettings>().Shipping);
+        snapshot.Version.Should().BeNull();
+    }
+
+    [Fact]
     public void Musteri_detay_penceresi_kargo_deposunu_DIdan_alir()
     {
         using var host = new global::OrderDeck.App.AppHost();

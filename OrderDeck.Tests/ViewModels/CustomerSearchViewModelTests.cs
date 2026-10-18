@@ -55,7 +55,7 @@ public class CustomerSearchViewModelTests
                    new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var jobs = new InMemoryPaymentJobStore();
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider, jobs);
+            api, licenseProvider, jobs, LocalShipping.Of(settingsStore));
         var dialogs = new FakeDialogService();
         var sut = new CustomerSearchViewModel(customers, customerService, sessions, labels, paymentService, dialogs);
         return (db, customers, sessions, labels, launcher, dialogs, jobs, settingsPath, sut);
@@ -347,8 +347,9 @@ public class CustomerSearchViewModelTests
     {
         var busy = new CustomerBusySet();
         var (api, license) = PaymentRequestServiceTestHelpers.InProgressCloudApiClient();
-        var payment = new PaymentRequestService(new SettingsStore(settingsPath), new WhatsAppMessageBuilder(),
-            new FakeUrlLauncher(), api, license, jobs, log: null, customers: customers, busy: busy);
+        var store = new SettingsStore(settingsPath);
+        var payment = new PaymentRequestService(store, new WhatsAppMessageBuilder(),
+            new FakeUrlLauncher(), api, license, jobs, LocalShipping.Of(store), log: null, customers: customers, busy: busy);
         var customerService = new CustomerService(customers, sessions, labels, Mock.Of<IClock>(c => c.UnixNow() == 1L));
         return (new CustomerSearchViewModel(customers, customerService, sessions, labels, payment, dialogs),
                 new CustomerSyncRepository(db, busy));

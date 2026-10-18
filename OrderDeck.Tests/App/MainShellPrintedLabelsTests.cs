@@ -506,7 +506,7 @@ public class MainShellPrintedLabelsTests
         var drawers = new ScriptedDrawers();
         using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
             new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
-                () => new OrderDeck.Core.Settings.AppSettings(), (_, _, _, _, _) => gate.Task));
+                OrderDeck.Tests.TestHelpers.LocalShipping.Off(), (_, _, _, _, _) => gate.Task));
         drawers.Vm = h.Vm;
         var a = Enqueue(h, "@a", 250m);
         await PrintAsync(h);
@@ -546,7 +546,7 @@ public class MainShellPrintedLabelsTests
         var drawers = new ScriptedDrawers();
         using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
             new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
-                () => new OrderDeck.Core.Settings.AppSettings(),
+                OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
                 (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
                     OrderDeck.App.Services.PaymentRequestResult.PhoneRequired))));
         drawers.Vm = h.Vm;
@@ -585,7 +585,7 @@ public class MainShellPrintedLabelsTests
         var drawers = new ScriptedDrawers();
         using var h = MainShellTestHarness.Build(drawers, paymentFollowUp: (db, customers, labels) =>
             new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
-                () => new OrderDeck.Core.Settings.AppSettings(),
+                OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
                 (_, _, _, _, _) => Task.FromResult(new OrderDeck.App.Services.PaymentRequestOutcome(
                     OrderDeck.App.Services.PaymentRequestResult.PhoneRequired))));
         drawers.Vm = h.Vm;
