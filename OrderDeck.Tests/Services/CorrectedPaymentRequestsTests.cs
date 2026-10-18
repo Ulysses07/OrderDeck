@@ -1316,6 +1316,31 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public async Task Mod_On_fiyat_duzeltme_onayi_bakiyeden_odenmis_uzak_istegi_yazimdan_once_on_okur()
+    {
+        // PC-B L'nin isteğini tamamı bakiyeden düşerek teslim etti. Çekmece açılınca ön okuma onu getirdi; operatör onaylamadan
+        // satış akışı önbelleği boşalttı. Yazımdan önceki "bakiyeden ödenmiş" kümesi yalnız önbellekten okunsaydı L'nin
+        // ödendiği fiyat (PaidPrice) saklanmaz, ikinci düzeltmenin "ödendi, fark"ı yanlış çıkardı (spec §6.4).
+        UseRemote();
+        var sid = NewSession();
+        var l = AddIn(sid, "@bakiye_onay", 250m);
+        _labels.MarkPrintedAndRecord(new[] { l.Id });
+        ServerRecord(l.CustomerId, CorrectedPaymentRequests.SessionScope(sid), 1, 0m, new[] { l.Id }, machine: "PC-B",
+            fullyFromBalance: true, applied: 250m);
+        var vm = new OrderDeck.App.ViewModels.PriceCorrectionViewModel(_labels, SutOn(), sid, new[] { l.Id },
+            DateTime.Now, inFlight: () => null, applied: _ => { }, reprint: _ => Task.FromResult<string?>(null),
+            cloudApiEnabled: true);
+        await vm.SummaryRefresh;
+        _remote!.Invalidate();                               // arada satış akışı değişiklik indirdi
+
+        vm.NewPriceText = "200";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        _labelRepo.GetPaidPrices(new[] { l.Id }).Should().ContainKey(l.Id)
+            .WhoseValue.Should().Be(250m, "ödendiği fiyat ilk düzeltmede saklandı");
+    }
+
+    [Fact]
     public async Task Mod_On_liste_cevrimdisiyken_sonuc_yerel_istisna_yok()
     {
         UseRemote();

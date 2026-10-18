@@ -399,6 +399,13 @@ public sealed partial class PriceCorrectionViewModel : ObservableObject
             return;
         }
 
+        // Mod On (spec 2026-10-13 §6.4; W3-10): yazımdan önceki "bakiyeden ödenmiş" kümesi (BalancePaidLabels) zaman uyumlu ve
+        // yalnız önbellekten okur. Çekmece açıldıktan sonra senkron önbelleği boşaltmış ya da açılışın ön okuması henüz
+        // bitmemiş olabilir: eksik anahtarlar burada ön okunur (süre ve istek bütçesiyle sınırlı; düşerse yerel kalır).
+        // Yoksa başka bilgisayarın "tamamı bakiyeden" isteği sayılmaz, etiketin ödendiği fiyat (PaidPrice) saklanmazdı.
+        // Plan denetiminden ÖNCE: denetimle yazım arasına ağ beklemesi girmesin.
+        await RefreshSummaryAsync(force: false);
+
         // Çekmece açıkken baskı başlamış/bitmiş olabilir: plan yeniden okunur; gösterilen etiketlerden biri
         // değiştiyse operatör yeni özeti görüp yeniden onaylar. Arada yazılmış yeni etiket kodun etiketidir —
         // gösterilenleri değiştirmez, düzeltmeye girer.
