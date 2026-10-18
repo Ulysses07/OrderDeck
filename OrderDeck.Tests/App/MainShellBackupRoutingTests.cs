@@ -77,10 +77,12 @@ public sealed class MainShellBackupRoutingTests
         customer.GetProperty("platform").GetString().Should().Be("instagram");
         customer.GetProperty("username").GetString().Should().Be("yedek_alici");
         payload.GetProperty("messageText").GetString().Should().Be("ben de aldım");
-        payload.GetProperty("price").GetDecimal().Should().Be(150m, "ebeveynin fiyatı");
-        payload.GetProperty("code").GetString().Should().Be("A1", "ebeveynin kodu");
+        Absent(payload, "price").Should().BeTrue("fiyat ve kod sunucudaki ebeveynin güncel değeri (yerel ayna bayat olabilir)");
+        Absent(payload, "code").Should().BeTrue();
 
         var backup = s.H.Vm.PrintQueue.Should().ContainSingle(r => r.Label.IsTentativeBackup).Which;
+        backup.Label.Price.Should().Be(150m, "ebeveynin fiyatı");
+        backup.Label.Code.Should().Be("A1", "ebeveynin kodu");
         backup.Id.Should().Be(N(newId));
         backup.Label.ParentLabelId.Should().Be(N(parent));
         backup.Label.SessionId.Should().Be(N(session));
@@ -91,6 +93,27 @@ public sealed class MainShellBackupRoutingTests
         s.Bed.Server.Order(newId)!.OriginReplicaId.Should().Be(s.Bed.Envelope.ReplicaId);
         s.H.Vm.BackupProblem.Should().BeNull();
         s.H.Dialogs.Shown.Should().BeEmpty("pop-up yok");
+    }
+
+    private static bool Absent(System.Text.Json.JsonElement payload, string name) =>
+        !payload.TryGetProperty(name, out var value) || value.ValueKind == System.Text.Json.JsonValueKind.Null;
+
+    [Fact]
+    public async Task Akis_gecikmisken_yedek_ebeveynin_sunucudaki_guncel_fiyatini_alir()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, parent, row) = await ReleasedParentAsync(s);
+        // Başka bilgisayar kodun fiyatını düzeltti (set-code-price); bu bilgisayarın akışı henüz inmedi.
+        s.Bed.Server.MutateOrder(parent, o => o with { Price = 120m });
+        s.Bed.Local(parent).Price.Should().Be(150m, "ön koşul: yerel ayna bayat");
+
+        Assign(s, row);
+        await s.H.Vm.BackupAssignment;
+
+        var backup = s.H.Vm.PrintQueue.Should().ContainSingle(r => r.Label.IsTentativeBackup).Which;
+        backup.Label.Price.Should().Be(120m, "Y kâğıdı ve ödeme isteği güncel fiyatı sayar; S×K'de iki fiyat doğmaz");
+        s.Bed.Server.Order(Guid.ParseExact(backup.Id, "N"))!.Row.Price.Should().Be(120m);
     }
 
     [Fact]

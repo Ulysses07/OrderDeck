@@ -918,7 +918,9 @@ public sealed class SalesEditRouter : ILabelEditor
     /// <summary>
     /// Devredilmiş yayının ebeveynine yedek (§4.6 <c>add-backup</c>): müşteri yerelde bugünkü kuralla bulunur ya da
     /// açılır (<see cref="LabelService.EnsureBackupCustomer"/>); niyet yeni <c>newOrderId</c> ile BİR KEZ kurulur
-    /// (fiyat ve kod ebeveynin, ürün yok — §12); yeniden deneme aynı niyeti gönderir.
+    /// (ürün yok — §12); yeniden deneme aynı niyeti gönderir. Fiyat ve kod gönderilmez: sunucu ebeveynin GÜNCEL
+    /// değerini yazar — yerel ayna akış gecikmesi kadar bayat olabilir (başka bilgisayarın <c>set-code-price</c>'ı),
+    /// yedek de Y kâğıdı da yanıtın satırından.
     /// </summary>
     private Task<SalesBackupResult> AddBackupByCommandAsync(SalesBackupRequest request, CancellationToken ct)
     {
@@ -930,8 +932,8 @@ public sealed class SalesEditRouter : ILabelEditor
             ToGuid(parent.Id),
             new SalesAddBackupCustomer(customer.Id, request.Platform, request.Username, request.DisplayName),
             request.MessageText ?? "",
-            parent.Price,
-            parent.Code));
+            Price: null,
+            Code: null));
         return SendBackupAsync(intent, ct);
     }
 
