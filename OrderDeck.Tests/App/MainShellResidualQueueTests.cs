@@ -198,7 +198,7 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
-    public async Task Cevrimdisiyken_baska_bilgisayarin_etiketi_basilmaz_kuyrukta_kalir_canli_etiket_basilir()
+    public async Task Cevrimdisiyken_baska_bilgisayarin_etiketi_basilmaz_kuyrukta_kalir_canli_etiket_basilir_baglaninca_o_da_basilir()
     {
         using var s = Build();
         s.Bed.ModeOn();
@@ -206,18 +206,36 @@ public sealed class MainShellResidualQueueTests
         var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
         var remoteId = remote.ToString("N");
         MainShellTestHarness.EnqueueLabel(s.Vm, "@canli_alici", 100m);
+        var live = s.Vm.PrintQueue.Last().Id;
         s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
         s.Bed.Online = false;
 
         await s.Vm.PrintCommand.ExecuteAsync(null);
 
-        s.H.Printer.Calls.Should().ContainSingle().Which.Select(l => l.Id).Should().NotContain(remoteId,
-            "mark-printed gönderilemez, bekleyen komuta da girmez: kâğıt çıkardı ama baskı kaydı hiçbir yerde olmazdı");
+        s.H.Printer.Calls.Should().ContainSingle().Which.Select(l => l.Id).Should().Equal([live],
+            "sahip kararı Y11: canlı yayının etiketi internetsiz de basılır; başka bilgisayarınki basılmaz — örtü yalnız "
+          + "bu bilgisayarda olurdu, yayının sahibi aynı satırı kalıntı teklifinden basabilirdi (risk 18)");
         QueueIds(s).Should().Equal([remoteId], "kuyrukta bekler; bağlantı gelince basılabilir");
         s.Bed.LabelRepo.GetById(remoteId)!.PrintedAt.Should().BeNull();
+        s.Bed.Pending.List().Should().BeEmpty("basılmadı: örtü de yok");
         s.Vm.SalesPushWarning.Should().Be(
             "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.");
         s.H.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
+
+        // Bağlantı geldi: aynı kuyruk düğmesi satırı basar, onay Y11 yolundan (kalıcı bekleyen komut, hemen gönderilir).
+        s.Bed.Online = true;
+        s.Bed.StateReceivedAt = DateTimeOffset.UtcNow;
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+
+        s.H.Printer.Calls.Should().HaveCount(2);
+        s.H.Printer.Calls[1].Select(l => l.Id).Should().Equal([remoteId]);
+        s.Vm.PrintQueue.Should().BeEmpty();
+        var sent = s.Bed.Server.CommandCalls.Should().ContainSingle().Subject.Command;
+        sent.Kind.Should().Be("mark-printed");
+        sent.CommandId.Should().NotBeNull("bekleyen komutun sabit kimliği");
+        s.Bed.Server.Order(remote)!.Row.PrintedAt.Should().NotBeNull();
+        PrintStamp(s, remoteId).PrintedAt.Should().NotBeNull("yanıttan yazıldı");
+        s.Bed.Pending.List().Should().BeEmpty();
     }
 
     [Fact]

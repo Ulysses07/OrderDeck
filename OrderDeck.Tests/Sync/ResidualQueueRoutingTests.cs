@@ -19,9 +19,11 @@ namespace OrderDeck.Tests.Sync;
 /// Kalıntı kuyruğun yönlendirmesi (spec 2026-10-13 §5.3 "Kuyruktan çıkar", "Kuyruğu temizle", "Kuyruk baskısı"; §5.5;
 /// §5.6-4; W2-07): mod Off'ta bugünkü yerel iptal ve baskı, sıfır istek, sıfır bekleyen komut. Mod On'da canlı yayının
 /// etiketleri yerelde; devredilmiş KENDİ yayınının kalıntıları sabit kimlikli komutla — önce bekleyen komut (örtü),
-/// çevrimiçiyse hemen gönderilir; çevrimdışıyken ya da komut ucu yokken kuyrukta bekler. Karışık kâğıt tek basış kimliği
-/// ve kesintisiz sıra taşır. Kendi bitmiş yayınının kapanış kararı sürerken işaretleme kilidi bekler ve kararı kilit
-/// altında yeniden verir.
+/// çevrimiçiyse hemen gönderilir; çevrimdışıyken ya da komut ucu yokken kuyrukta bekler. Başka bilgisayarın yayınındaki
+/// satır sunucu kullanılamıyorken kâğıda gitmez (<c>PrintHeldRows</c>); kâğıdı basıldıysa onayı (sahip kararı Y11) aynı
+/// yoldan: sonucu bilinmeyen onay kuyrukta kalır, tur aynı kimlikle yineler.
+/// Karışık kâğıt tek basış kimliği ve kesintisiz sıra taşır. Kendi bitmiş yayınının kapanış kararı sürerken işaretleme
+/// kilidi bekler ve kararı kilit altında yeniden verir.
 /// </summary>
 public sealed class ResidualQueueRoutingTests : IDisposable
 {
@@ -217,6 +219,203 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         _bed.HttpCount.Should().Be(0);
     }
 
+    // ── başka bilgisayarın yayınındaki satırın kâğıdı (sahip kararı Y11) ────
+    // Kabuk bu satırı bilinen çevrimdışılıkta kâğıda göndermez (PrintHeldRows, aşağıda). Kâğıdı basılmışsa onayı
+    // kalıcıdır: yanıt kaybolur, bağlantı kâğıt basılırken kopar (karar ile işaret arasında; aşağıda Online = false ile
+    // kurulur) ya da süreç kapanırsa bekleyen komut kalır ve tur aynı kimlikle yineler.
+
+    /// <summary>Satış akışının bir turu (bekleyen komutlar akıştan önce gider); sahte sunucu her isteği işleyebilmeli.</summary>
+    private async Task TourAsync()
+    {
+        _bed.Online = true;
+        _bed.StateReceivedAt = DateTimeOffset.UtcNow;
+        (await Task.Run(() => _bed.CreatePull().TourOnceAsync(CancellationToken.None))).Should().Be(SalesPullOutcome.CaughtUp);
+        _bed.Server.Faults.Should().BeEmpty();
+    }
+
+    private static Guid CommandIdOf(FakeSalesServer.PushCall call) => call.Command.CommandId!.Value;
+
+    [Fact]
+    public async Task Baska_bilgisayarin_satirinin_baski_onayi_zaman_asiminda_bekleyen_komut_kalir_tur_ayni_kimlikle_gonderir_bir_kez_uygulanir()
+    {
+        _bed.ModeOn();
+        var (_, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        _bed.Server.LoseNextResponse(FakeSalesServer.Commands);       // sunucu uygular, yanıt kaybolur (zaman aşımı)
+
+        var result = await _bed.Router.MarkPrintedAsync([remote]);
+
+        result.Pending.Should().Equal(remote);
+        result.Notices.Should().BeEmpty("sonucu bilinmeyen baskı onayı kaybolmaz: \"işlenemedi\" notu yok");
+        var row = _bed.Pending.List().Should().ContainSingle().Subject;
+        row.Kind.Should().Be("mark-printed");
+        row.LabelIds.Should().Equal(remote);
+        var sent = CommandIdOf(_bed.Server.CommandCalls.Should().ContainSingle().Subject);
+        row.CommandId.Should().Be(N(sent), "sabit kimlik: tur aynı komutu yineler");
+        _bed.Server.Order(order)!.Row.PrintedAt.Should().NotBeNull("ön koşul: sunucu uyguladı");
+        _bed.LabelRepo.GetById(remote)!.PrintedAt.Should().BeNull("yanıt kayboldu");
+        _bed.LabelRepo.GetPrintableByIds([remote]).Should().BeEmpty("örtü: kâğıt yeniden teklif edilmez");
+
+        await TourAsync();
+
+        _bed.Server.CommandCalls.Select(CommandIdOf).Should().Equal(sent, sent);
+        _bed.Server.CommandLog(sent)!.Applications.Should().Be(1, "sunucu aynı kimliği ikinci kez uygulamaz");
+        _bed.Server.CommandLog(sent)!.Replays.Should().Be(1);
+        _bed.LabelRepo.GetById(remote)!.PrintedAt.Should().NotBeNull("yeniden oynatmanın yanıtından");
+        _bed.Pending.List().Should().BeEmpty();
+        _bed.Settled.SelectMany(s => s.Warnings).Should().BeEmpty();
+        _bed.Settled.SelectMany(s => s.DiscardLabelIds).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Kagit_basilirken_baglanti_koparsa_baska_bilgisayarin_satiri_bekleyen_mark_printed_olur_ortulur_baglaninca_gonderilir()
+    {
+        _bed.ModeOn();
+        var live = ActiveLabel(out _);
+        var (remoteSession, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        var (_, _, own) = _bed.OwnResidual();
+        _bed.Router.PrintHeldRows([live, remote, own[0]]).Should().BeEmpty("ön koşul: çevrimiçi karar, hepsi kâğıda gider");
+        _bed.Online = false;                                           // kâğıt basılırken bağlantı koptu
+        var requests = _bed.HttpCount;
+
+        var result = await _bed.Router.MarkPrintedAsync([live, remote, own[0]]);
+
+        result.Marked.Should().Equal(live);
+        result.Pending.Should().BeEquivalentTo([remote, own[0]]);
+        result.Notices.Should().BeEmpty();
+        _bed.HttpCount.Should().Be(requests, "çevrimdışı: istek yok");
+        var rows = _bed.Pending.List();
+        rows.Should().HaveCount(2, "kendi kalıntısı ve başka bilgisayarın satırı ayrı bekleyen komut (Off kuralı farklı)");
+        rows.Select(r => r.LabelIds.Single()).Should().BeEquivalentTo([remote, own[0]]);
+        var batch = Print(live).BatchId;
+        foreach (var r in rows)
+        {
+            using var doc = JsonDocument.Parse(r.PayloadJson);
+            var payload = doc.RootElement.GetProperty("payload");
+            payload.GetProperty("batchId").GetString().Should().Be(batch, "tek basış");
+            var seq = payload.GetProperty("items")[0].GetProperty("seq").GetInt32();
+            seq.Should().Be(r.LabelIds.Single() == remote ? 2 : 3, "kâğıt sırası");
+        }
+        _bed.LabelRepo.GetPrintableByIds([remote]).Should().BeEmpty("baskı öncesi yeniden okumada görünmez");
+        _bed.LabelRepo.GetUnprintedBySession(N(remoteSession)).Should().BeEmpty("yayının kuyruğunda görünmez");
+        // Yalnız kendi kalıntısı için anlamlı: bu sorgu Origin='local' oturumlara bakar, uzak satır örtüsüz de girmez.
+        // Uzak satırın örtüsünü yukarıdaki iki sorgu kanıtlar.
+        _bed.LabelRepo.GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty(
+            "kendi kalıntısı örtü altında teklif edilmez");
+
+        await TourAsync();
+
+        Print(remote).PrintedAt.Should().NotBeNull("bağlantı gelince sunucuda işlendi, yanıttan yazıldı");
+        Print(remote).BatchId.Should().Be(batch);
+        Print(remote).Seq.Should().Be(2);
+        _bed.Server.Order(order)!.Row.PrintBatchId.Should().Be(batch);
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Basildiktan_sonra_baska_bilgisayarda_iptal_edilen_satirin_bekleyen_onayi_imha_bildirimiyle_duser()
+    {
+        _bed.ModeOn();
+        var (_, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        _bed.Online = false;
+        (await _bed.Router.MarkPrintedAsync([remote])).Pending.Should().Equal(remote);
+        _bed.Server.MutateOrder(order, o => o with { CancelledAt = T0.AddHours(2), CancelReason = "musteri" });
+
+        await TourAsync();
+
+        _bed.Settled.SelectMany(s => s.DiscardLabelIds).Should().Equal(new[] { remote }, "\"kâğıdı imha et\"");
+        _bed.Settled.SelectMany(s => s.AlreadyPrintedLabelIds).Should().BeEmpty("sebep iptal");
+        _bed.Pending.List().Should().BeEmpty();
+        _bed.Local(remote).CancelledAt.Should().NotBeNull();
+        Print(remote).PrintedAt.Should().BeNull("iptal edilmiş siparişe baskı alınmaz");
+    }
+
+    [Fact]
+    public async Task Bekleyen_uzak_baski_onayi_bayatsa_taze_surumle_bir_kez_yeniden_denenir_uygulanir()
+    {
+        _bed.ModeOn();
+        var (_, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        _bed.Online = false;
+        (await _bed.Router.MarkPrintedAsync([remote])).Pending.Should().Equal(remote);
+        _bed.Server.MutateOrder(order, o => o with { Price = 175m });   // başka bilgisayarın fiyat düzeltmesi: sürüm 2
+
+        await TourAsync();
+
+        _bed.Server.CommandCalls.Select(CommandIdOf).Distinct().Should().ContainSingle("aynı kimlik, taze sürüm");
+        _bed.Server.CommandCalls.Should().HaveCount(2, "stale, ardından bir kez yeniden deneme");
+        Print(remote).PrintedAt.Should().NotBeNull();
+        _bed.Local(remote).Price.Should().Be(175m);
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Bekleyen_uzak_baski_onayi_guncelleme_gerekliyse_kuyrukta_kalir_arka_planda_soru_acilmaz()
+    {
+        _bed.ModeOn();
+        var (_, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        _bed.Online = false;
+        (await _bed.Router.MarkPrintedAsync([remote])).Pending.Should().Equal(remote);
+        _bed.Server.MinClientVersion = "0.9.12";
+
+        await TourAsync();
+
+        var row = _bed.Pending.List().Should().ContainSingle().Subject;
+        row.LabelIds.Should().Equal(remote);
+        row.LastError.Should().Be(nameof(SalesCommandStatus.ClientUpdateRequired));
+        _bed.UpdatePrompts.Should().Be(0, "arka plandaki bekleyen komut güncelleme sorusunu açmaz");
+        _bed.LabelRepo.GetPrintableByIds([remote]).Should().BeEmpty("örtü sürer");
+
+        _bed.Server.MinClientVersion = "0.9.11";
+        await TourAsync();
+        Print(remote).PrintedAt.Should().NotBeNull();
+        _bed.Pending.List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Bekleyen_uzak_baski_onayi_kalici_retle_duser_iz_ve_uyari()
+    {
+        _bed.ModeOn();
+        var (_, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        _bed.Online = false;
+        (await _bed.Router.MarkPrintedAsync([remote])).Pending.Should().Equal(remote);
+        _bed.Server.EnqueueProblem(FakeSalesServer.Commands, 409, "content-conflict");
+
+        await TourAsync();
+
+        _bed.Pending.List().Should().BeEmpty();
+        _bed.Settled.SelectMany(s => s.Warnings).Should().Equal(
+            SalesCommandMessages.PendingRejected("mark-printed", 1, SalesCommandMessages.ContentConflict));
+        _bed.Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Karar_ile_kuyruk_arasinda_Off_turu_islenirse_uzak_satirin_kagidi_sayili_uyari_olur_yerel_yazim_yok()
+    {
+        _bed.ModeOn();
+        var live = ActiveLabel(out _);
+        var (_, _, order) = await _bed.RemoteLabelAsync(printed: false);
+        var remote = N(order);
+        // Off turunun 2. adımı, kâğıdın yerel yazımıyla bekleyen komut arasında işlenir: yerel kip 0, uzak satırlar silinir.
+        _bed.Exec("CREATE TRIGGER TestOffRoundStep2 AFTER UPDATE OF PrintedAt ON Label WHEN new.Id = '" + live + "' "
+                + "BEGIN UPDATE SalesSyncState SET Mode = 0 WHERE Id = 1; "
+                + "DELETE FROM Label WHERE Id = '" + remote + "'; END");
+
+        var result = await _bed.Router.MarkPrintedAsync([live, remote]);
+
+        result.Marked.Should().Equal(new[] { live }, "uzak satır yerelde işaretlenmiş sayılmaz");
+        result.Notices.Should().Equal(SalesCommandMessages.PrintUnrecordedModeOff(1));
+        _bed.Pending.List().Should().BeEmpty();
+        _bed.Server.CommandCalls.Should().BeEmpty();
+        _bed.Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k AND Reason LIKE @r",
+                new { k = SalesConflictLog.PendingCommandRejected, r = "mark-printed; command=%; code=remote-mode-off; labels=1" })
+            .Should().Be(1, "Off turunun 3. adımıyla aynı iz: sessiz kayıp yok (§5.5)");
+    }
+
     // ── sunucunun tek komut tavanı (500) ───────────────────────────────────
 
     private static int ItemCount(FakeSalesServer.CommandBody command) =>
@@ -385,13 +584,16 @@ public sealed class ResidualQueueRoutingTests : IDisposable
         var remote = remoteOrder.ToString("N");
         var (_, _, own) = _bed.OwnResidual();
         var live = ActiveLabel(out _);
+        // Kendi bitmiş, henüz devredilmemiş yayını (yerel otorite, kapılı yol).
+        var ended = _bed.LocalLabel(_bed.LocalSession(ended: true), Guid.NewGuid().ToString("N"), printed: false);
 
-        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEmpty("çevrimiçi: komutla işaretlenir");
+        _bed.Router.PrintHeldRows([remote, own[0], live, ended]).Should().BeEmpty("çevrimiçi: komutla işaretlenir");
         _bed.Online = false;
-        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEquivalentTo([remote],
-            "kendi kalıntısı bekleyen komuta girer, canlı satır yerelde; yalnız başka bilgisayarınki kayıtsız kalırdı");
+        _bed.Router.PrintHeldRows([remote, own[0], live, ended]).Should().BeEquivalentTo([remote],
+            "sahip kararı Y11: kendi canlı ve önceki yayınlarının satırları basılır; başka bilgisayarınki bekler — örtü "
+          + "yalnız bu bilgisayarda olurdu, yayının sahibi aynı satırı kalıntıdan basabilirdi (risk 18)");
         _bed.ModeOff();
-        _bed.Router.PrintHeldRows([remote, own[0], live]).Should().BeEmpty("mod Off: bugünkü yerel yol");
+        _bed.Router.PrintHeldRows([remote, own[0], live, ended]).Should().BeEmpty("mod Off: bugünkü yerel yol");
     }
 
     [Fact]

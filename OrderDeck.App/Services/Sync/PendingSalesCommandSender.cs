@@ -89,7 +89,8 @@ public sealed record PendingSalesCommandFlush(int Sent, int Kept, int Dropped, i
 
 /// <summary>
 /// Bekleyen satış komutlarının gönderimi (spec 2026-10-13 §5.5, §5.8 "Kalıntı kuyruk", §6.4-1; W2-07). Kuyruğa
-/// devredilmiş KENDİ yayınının kalıntı etiketlerinin iptali ve ilk baskısı girer (<see cref="Enqueue"/>; yalnız mod
+/// devredilmiş KENDİ yayınının kalıntı etiketlerinin iptali ve ilk baskısı, ayrıca başka bilgisayarın devredilmiş
+/// yayınındaki satırın ilk baskısı (sahip kararı Y11) girer (<see cref="Enqueue"/>; yalnız mod
 /// On). Satış akışı turu kuyruğu ön gönderimden sonra, akıştan ÖNCE gönderir
 /// (<see cref="SalesChangesPullService.FlushPendingSalesCommandsAsync"/>); kuyruk baskısı kâğıdın komutunu hemen
 /// gönderir (<see cref="SendNowAsync"/>). Hepsi tek kapıdan: aynı komut aynı anda iki kez gitmez.
@@ -154,6 +155,26 @@ public sealed class PendingSalesCommandSender
         _log.LogInformation("Bekleyen satış komutu {Kind} {CommandId}: {Count} etiket kuyruğa {Result}", intent.Kind,
             intent.CommandId, labelIds.Count, queued ? "alındı" : "alınmadı (yerel kip Off)");
         return queued;
+    }
+
+    /// <summary>
+    /// Kuyruğa giremeyen niyetin izi (<see cref="Enqueue"/> false döndü): karar ile kuyruğa yazma arasında yerel kip Off'a
+    /// döndüğü için başka bilgisayarın satırının baskı onayı hiçbir yere yazılamadı. Off turunun 3. adımının düşürdüğü
+    /// uzak onayla aynı biçim (<c>code=remote-mode-off</c>, §5.5): saha kontrolü iki yolu aynı sorguyla bulur. Yazılamazsa
+    /// yalnız günlük.
+    /// </summary>
+    public void TraceNotQueued(SalesCommandIntent intent, int labels, string code)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        try
+        {
+            _conflicts.Add(_clock.UnixNow(), null, SalesConflictLog.PendingCommandRejected,
+                $"{intent.Kind}; command={intent.CommandId:N}; code={code}; labels={labels}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış komutu {Kind} {CommandId}: SalesConflictLog yazılamadı", intent.Kind, intent.CommandId);
+        }
     }
 
     /// <summary>Bütün kuyruk, eskiden yeniye. Satış akışı turu ve ödeme ön gönderimi (§6.4-1). Arka plan gönderimi:

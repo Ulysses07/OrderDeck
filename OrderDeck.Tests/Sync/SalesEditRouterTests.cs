@@ -333,9 +333,13 @@ public sealed class SalesEditRouterTests : IDisposable
         await _bed.PullAsync();
 
         var mark = await _bed.Router.MarkPrintedAsync(ids);
+        // Y11: başka bilgisayarın satırı da bekleyen komut; anlık gönderim bütçesi (3 sn) yük altında aşılabilir —
+        // kalan parçalar kuyrukta, tur götürür.
+        await _bed.Sender.FlushAsync(CancellationToken.None);
 
         mark.Notices.Should().BeEmpty("tek komut 500'ü aşsaydı 400 alırdı");
-        mark.Marked.Should().HaveCount(501);
+        mark.Marked.Concat(mark.Pending).Should().BeEquivalentTo(ids, "her satır işaretli ya da örtülü");
+        _bed.Pending.List().Should().BeEmpty();
         var calls = _bed.Server.CommandCalls.Select(c => c.Command).ToList();
         calls.Select(c => (c.Kind, ItemCount(c))).Should().Equal([("mark-printed", 500), ("mark-printed", 1)]);
         calls.Select(c => c.Payload!.Value.GetProperty("batchId").GetString()).Distinct().Should().ContainSingle();

@@ -1,5 +1,6 @@
 using System.Runtime.ExceptionServices;
 using System.Windows.Threading;
+using Dapper;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
@@ -11,6 +12,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.Sync;
 using OrderDeck.Tests.TestHelpers;
 
@@ -47,51 +49,83 @@ public sealed class MainShellDisableRoundTests : IDisposable
             try { File.Delete(f); } catch { /* en iyi çaba */ }
     }
 
-    private MainShellTestHarness.Harness Build() =>
-        MainShellTestHarness.Build(salesPull: db =>
+    private MainShellTestHarness.Harness Build() => MainShellTestHarness.Build(salesPull: BuildPull);
+
+    private SalesChangesPullService BuildPull(InMemorySqlite db)
+    {
+        var license = new License(_server.Lisans);
+        var identity = new ReplicaIdentityRepository(db);
+        _state = new SalesSyncStateRepository(db);
+        var envelope = new SalesSyncEnvelope(identity, _state, new Hardware(Guid.NewGuid().ToString("N")), license,
+            NullLogger<SalesSyncEnvelope>.Instance);
+        var api = new LicenseApiClient(
+            new HttpClient(_server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") },
+            new LicenseTokenStore());
+        var clock = new SystemClock();
+        var busy = new CustomerBusySet();
+        var cursors = new SyncCursorRepository(db);
+        var customerSync = new CustomerSyncRepository(db, busy);
+        var customerPush = new WpfCustomerProjectionSyncService(api, customerSync, cursors, license, clock,
+            NullLogger<WpfCustomerProjectionSyncService>.Instance);
+        var store = new SettingsStore(_settingsPath);
+        var settings = store.Load();
+        var state = new SalesSyncStateService(api, envelope, identity, _state, license, () => settings,
+            NullLogger<SalesSyncStateService>.Instance);
+        var labels = new LabelRepository(db);
+        var push = new SessionOrderSyncService(api, new SessionRepository(db), labels, license, envelope,
+            new HandoverGate(), new SalesPushApply(db), clock, NullLogger<SessionOrderSyncService>.Instance);
+        var shipments = new ShipmentSyncService(api, new ShipmentRepository(db), store, settings, license, envelope,
+            clock, NullLogger<ShipmentSyncService>.Instance, salesState: _state);
+        var payments = new PaymentSyncService(api, new PaymentRepository(db), cursors, license,
+            clock, NullLogger<PaymentSyncService>.Instance);
+        var feed = new SalesFeedRepository(db, busy);
+        var round = new SalesModeOffRound(feed, _state, new PendingSalesCommandRepository(db),
+            new LabelService(labels, new CustomerService(new CustomerRepository(db), new SessionRepository(db), labels,
+                clock), db, clock),
+            labels, new SalesConflictLogRepository(db), store, settings, clock, NullLogger<SalesModeOffRound>.Instance);
+        var coordinator = new SalesModeCoordinator(state, _state, envelope,
+            new SalesOpeningFlush(new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), envelope, license,
+                clock, NullLogger<PaymentRecordSender>.Instance), customerPush, push, shipments, payments, _state), clock,
+            NullLogger<SalesModeCoordinator>.Instance, round);
+        _pull = new SalesChangesPullService(api, state, _state, envelope, feed, new SalesFeedFailureRepository(db),
+            new RemoteLiveSessionRepository(db), cursors, labels, customerPush, push,
+            new CustomerChangesPullService(api, new CustomerRepository(db), customerSync, cursors, customerPush,
+                license, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance),
+            license, clock, NullLogger<SalesChangesPullService>.Instance,
+            sessions: new SessionRepository(db), modeCoordinator: coordinator);
+        return _pull;
+    }
+
+    /// <summary>
+    /// <c>disable</c> turu 2. adımda kesilmiş veritabanı: başka bilgisayarın devredilmiş yayınındaki satırın baskı onayı
+    /// kuyrukta kaldı (Y11), 2. adım yerel kipi 0 yaptı ve uzak satırı sildi, 3. adımdan önce süreç kapandı.
+    /// </summary>
+    private static void SeedRemotePrintLeftByInterruptedOffRound(InMemorySqlite db)
+    {
+        const long t0 = 1_790_980_000L;
+        var customer = Guid.NewGuid().ToString("N");
+        new CustomerRepository(db).Insert(new Customer(customer, "tiktok", "alici_" + customer[..8], "Takma Ad", null,
+            1, 1, false, null, null, 0, 0m, null, null, null));
+        var session = Guid.NewGuid().ToString("N");
+        new SessionRepository(db).Insert(new StreamSession(session, "Başka bilgisayarın yayını", t0, t0 + 3600,
+            ["tiktok"], null, SyncedAt: t0 + 3700));
+        var label = Guid.NewGuid().ToString("N");
+        new LabelRepository(db).Insert(new Label(label, session, customer, "tiktok", "alici", "yorum", "A1", 70m,
+            t0 + 90, PrintedAt: null, DisplayName: "Takma Ad", SyncedAt: t0 + 200));
+        using (var c = db.Open())
         {
-            var license = new License(_server.Lisans);
-            var identity = new ReplicaIdentityRepository(db);
-            _state = new SalesSyncStateRepository(db);
-            var envelope = new SalesSyncEnvelope(identity, _state, new Hardware(Guid.NewGuid().ToString("N")), license,
-                NullLogger<SalesSyncEnvelope>.Instance);
-            var api = new LicenseApiClient(
-                new HttpClient(_server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") },
-                new LicenseTokenStore());
-            var clock = new SystemClock();
-            var busy = new CustomerBusySet();
-            var cursors = new SyncCursorRepository(db);
-            var customerSync = new CustomerSyncRepository(db, busy);
-            var customerPush = new WpfCustomerProjectionSyncService(api, customerSync, cursors, license, clock,
-                NullLogger<WpfCustomerProjectionSyncService>.Instance);
-            var store = new SettingsStore(_settingsPath);
-            var settings = store.Load();
-            var state = new SalesSyncStateService(api, envelope, identity, _state, license, () => settings,
-                NullLogger<SalesSyncStateService>.Instance);
-            var labels = new LabelRepository(db);
-            var push = new SessionOrderSyncService(api, new SessionRepository(db), labels, license, envelope,
-                new HandoverGate(), new SalesPushApply(db), clock, NullLogger<SessionOrderSyncService>.Instance);
-            var shipments = new ShipmentSyncService(api, new ShipmentRepository(db), store, settings, license, envelope,
-                clock, NullLogger<ShipmentSyncService>.Instance, salesState: _state);
-            var payments = new PaymentSyncService(api, new PaymentRepository(db), cursors, license,
-                clock, NullLogger<PaymentSyncService>.Instance);
-            var feed = new SalesFeedRepository(db, busy);
-            var round = new SalesModeOffRound(feed, _state, new PendingSalesCommandRepository(db),
-                new LabelService(labels, new CustomerService(new CustomerRepository(db), new SessionRepository(db), labels,
-                    clock), db, clock),
-                labels, new SalesConflictLogRepository(db), store, settings, clock, NullLogger<SalesModeOffRound>.Instance);
-            var coordinator = new SalesModeCoordinator(state, _state, envelope,
-                new SalesOpeningFlush(new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), envelope, license,
-                    clock, NullLogger<PaymentRecordSender>.Instance), customerPush, push, shipments, payments, _state), clock,
-                NullLogger<SalesModeCoordinator>.Instance, round);
-            _pull = new SalesChangesPullService(api, state, _state, envelope, feed, new SalesFeedFailureRepository(db),
-                new RemoteLiveSessionRepository(db), cursors, labels, customerPush, push,
-                new CustomerChangesPullService(api, new CustomerRepository(db), customerSync, cursors, customerPush,
-                    license, clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance),
-                license, clock, NullLogger<SalesChangesPullService>.Instance,
-                sessions: new SessionRepository(db), modeCoordinator: coordinator);
-            return _pull;
-        });
+            c.Execute("UPDATE StreamSession SET Origin = 'remote', Authority = 'server', ReleasedAt = @r WHERE Id = @s",
+                new { r = t0 + 3650, s = session });
+            c.Execute("UPDATE SalesSyncState SET Mode = 1, ModeSeenAt = 10, FirstCatchUpAt = 20 WHERE Id = 1");
+        }
+        var intent = new SalesCommandIntent(Guid.NewGuid(), SalesCommandKinds.MarkPrinted,
+            new SalesMarkPrintedPayload(LabelService.NewPrintBatchId(),
+                [new SalesMarkPrintedItem(Guid.ParseExact(label, "N"), 1)]).ToWireJson(), []);
+        new PendingSalesCommandRepository(db).Enqueue(intent.CommandId.ToString("N"), intent.Kind,
+            PendingSalesCommandCodec.Encode(intent), [label], t0 + 20).Should().BeTrue("ön koşul: yerel kip 1");
+        new SalesFeedRepository(db).ApplyModeOff(t0 + 5000, new ReplicaIdentityRepository(db).GetReplicaId()!.Value)
+            .Busy.Should().BeFalse();
+    }
 
     /// <summary>Gövdeyi KENDİ Dispatcher döngüsü olan STA iş parçacığında koşturur (bkz.
     /// <c>MainShellOpeningRoundTests.RunOnOwnDispatcher</c>).</summary>
@@ -142,5 +176,27 @@ public sealed class MainShellDisableRoundTests : IDisposable
         h.Vm.SalesSyncStatusText.Should().BeEmpty("mod Off'ta satış satırı yok (bugünkü gibi)");
         h.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
         _server.Faults.Should().BeEmpty();
+    });
+
+    [Fact]
+    public void Acilista_Off_turunun_dusurdugu_uzak_baski_onayinin_uyarisi_kabuk_kurulunca_seride_gelir()
+        => RunOnOwnDispatcher(async () =>
+    {
+        // AppHost'un sırası: açılış adımı arka plan işlerinden ve kabuktan önce; kabuk sonra abone olur.
+        using var h = MainShellTestHarness.Build(salesPull: db =>
+        {
+            var pull = BuildPull(db);
+            SeedRemotePrintLeftByInterruptedOffRound(db);
+            pull.ResumeModeOffAtStartup();
+            return pull;
+        });
+
+        for (var i = 0; i < 100 && h.Vm.SalesPushWarning is null; i++) await Task.Delay(50);
+
+        h.Vm.SalesPushWarning.Should().Be(SalesCommandMessages.PrintUnrecordedModeOff(1),
+            "sessiz kayıp yok: açılışta düşen uzak baskı onayının uyarısı kabuğun şeridine ulaşır (§5.5, risk 17)");
+        _state!.HasPendingSalesCommands().Should().BeFalse("açılışta çevrildi");
+        _state.GetSeenMode().Should().Be(0);
+        h.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
     });
 }

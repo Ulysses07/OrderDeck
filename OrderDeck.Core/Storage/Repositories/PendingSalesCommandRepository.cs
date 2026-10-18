@@ -36,8 +36,9 @@ public sealed record PendingSalesCommandRow(
 /// <summary>
 /// Bekleyen satış komutları (göç 049'un <c>PendingSalesCommand</c> ve <c>PendingSalesCommandLabel</c> tabloları; spec
 /// 2026-10-13 §3.2, §5.5, §5.8 "Kalıntı kuyruk"). Bu bilgisayarın DEVREDİLMİŞ kendi yayınlarından kalan kuyruk
-/// etiketlerinin iptali ve ilk baskısı komutla yapılır; sunucuya o an ulaşılamazsa (ya da kâğıt basıldıysa, önce
-/// kalıcı kayıt olarak) burada bekler ve satış akışı turu onu akıştan ÖNCE gönderir.
+/// etiketlerinin iptali ve ilk baskısı, başka bilgisayarın devredilmiş yayınındaki satırın ilk baskısı (sahip kararı
+/// Y11) komutla yapılır; sunucuya o an ulaşılamazsa (ya da kâğıt basıldıysa, önce kalıcı kayıt olarak) burada bekler
+/// ve satış akışı turu onu akıştan ÖNCE, aynı kimlikle gönderir.
 ///
 /// <para><b>Örtü:</b> bir komutun örttüğü etiket yerel okuyucularda uygulanmış sayılır — kuyruk
 /// (<see cref="LabelRepository.GetUnprintedBySession"/>), kalıntı teklifi
