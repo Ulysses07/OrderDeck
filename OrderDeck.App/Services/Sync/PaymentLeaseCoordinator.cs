@@ -642,8 +642,8 @@ public sealed class PaymentLeaseCoordinator
                               + "engellendi, kayıt abandoned ile kapatılacak", request.RecordId);
                 return FailClosed;
             case PaymentRequestTransport.Ok:
-                // Yeniden oynatma son hâldeki bir kaydı döndürdü: bu akışın kirası yok.
-                flow.Clear();
+                // Yeniden oynatma son hâldeki bir kaydı döndürdü: bu akışın kirası yok, kapatılacak bir şey de yok.
+                flow.Settled(request.RecordId);
                 _log.LogWarning("Ödeme isteği kirası {RecordId}: kayıt {State} durumunda döndü — mesaj engellendi",
                     request.RecordId, http.Response!.State);
                 return FailClosed;
@@ -651,23 +651,29 @@ public sealed class PaymentLeaseCoordinator
                 return Unreachable(flow, input, endpointMissing: false,
                     $"{http.Transport} HTTP {http.StatusCode} (kira {request.RecordId})");
             case PaymentRequestTransport.EndpointMissing:
-                flow.Clear();
+                // Uç yok: önceki deneme de kira yazamadı.
+                flow.Settled(request.RecordId);
                 return Unreachable(flow, input, endpointMissing: true, $"kira ucu yok (kira {request.RecordId})");
             default:
+                // Ret kira yazmaz. Önceki denemenin sonucu bilinmiyorsa (yanıtı alınamadı) Id akışta kalır ve çıkışta
+                // abandoned ile kapanır: yineleme, sunucu ilk denemeyi hâlâ işlerken kişi kilidinde zaman aşımına
+                // uğrayıp in-progress-elsewhere almış olabilir — ilk deneme sonradan Sending yazılırsa kapanmazdı.
                 flow.Clear();
                 return Rejected(flow, request.RecordId, http.StatusCode, http.Problem!, input);
         }
     }
 
     /// <summary><c>begin</c>'i gönderir; yanıt alınamazsa (çevrimdışı, sunucu hatası) akış içinde AYNI Id ve gövdeyle bir
-    /// kez yineler — sunucu yeniden oynatır (§6.4-a). Kira yazılmış olabileceği için ilk denemenin Id'si akışa yazılır:
-    /// çıkışta abandoned ile kapanır (yoksa finish record-not-found alır ve düşer).</summary>
+    /// kez yineler — sunucu yeniden oynatır (§6.4-a). Kira yazılmış olabileceği için ilk denemenin Id'si akışa sonucu
+    /// bilinmeyen deneme olarak yazılır (<see cref="PaymentLeaseFlow.Uncertain"/>): yinelemenin sonucu onu çözmedikçe
+    /// (kira alındı ya da kayıt son hâlde döndü) çıkışta abandoned ile kapanır — kayıt yoksa finish record-not-found alır ve
+    /// zararsızca düşer.</summary>
     private async Task<PaymentRequestHttpResult<PaymentRequestBeginResponse>> SendBeginAsync(
         PaymentLeaseFlow flow, Guid licenseId, PaymentRequestBeginRequest request, CancellationToken ct)
     {
         var http = await _api.PostPaymentRequestBeginAsync(licenseId, request, ct).ConfigureAwait(false);
         if (http.Transport is not (PaymentRequestTransport.Offline or PaymentRequestTransport.Failed)) return http;
-        flow.Begun(request.RecordId);
+        flow.Uncertain(request.RecordId);
         _log.LogInformation("Ödeme isteği kirası {RecordId}: yanıt alınamadı ({Transport}); aynı istek bir kez yineleniyor",
             request.RecordId, http.Transport);
         return await _api.PostPaymentRequestBeginAsync(licenseId, request, ct).ConfigureAwait(false);
@@ -871,24 +877,25 @@ public sealed class PaymentLeaseCoordinator
     }
 
     /// <summary><see cref="PaymentLeaseFlow.FinishAsync"/>'in gövdesi: önce kalıcı kuyruk, sonra süreli gönderim. Fırlatmaz.</summary>
-    internal async Task FinishAsync(Guid recordId, string outcome, decimal netAmount, decimal? appliedAmount)
+    /// <param name="recordId">Akışın kirası; yoksa yalnız <paramref name="abandoned"/> kapanır.</param>
+    /// <param name="abandoned">Sonucu bilinmeyen önceki <c>begin</c> denemeleri: mesajları gitmedi, <c>abandoned</c> ile
+    /// kapanır (kayıt yoksa sunucu record-not-found der, kuyruktan düşer).</param>
+    internal async Task FinishAsync(
+        Guid? recordId, string outcome, decimal netAmount, decimal? appliedAmount, IReadOnlyList<Guid> abandoned)
     {
-        var finish = new PendingPaymentFinish(
-            recordId,
-            outcome,
-            PaymentHistoryRecords.Money(netAmount),
-            appliedAmount is { } applied ? PaymentHistoryRecords.Money(applied) : null,
-            FullyFromBalance: appliedAmount is > 0m && netAmount <= 0m);
-        try
-        {
-            _records.EnqueueFinish(finish);
-        }
-        catch (Exception ex)
-        {
-            // Kayıt yazılamadı: kira sunucuda dolar ve "gitmiş olabilir" sayılır (fail-closed yönü).
-            _log.LogWarning(ex, "Ödeme isteği kirası {RecordId}: finish ({Outcome}) kuyruğa yazılamadı", recordId, outcome);
-            return;
-        }
+        var enqueued = false;
+        foreach (var orphan in abandoned)
+            enqueued |= Enqueue(new PendingPaymentFinish(
+                orphan, PaymentRequestStates.Abandoned, PaymentHistoryRecords.Money(netAmount), null, FullyFromBalance: false),
+                orphan, PaymentRequestStates.Abandoned);
+        if (recordId is { } id)
+            enqueued |= Enqueue(new PendingPaymentFinish(
+                id,
+                outcome,
+                PaymentHistoryRecords.Money(netAmount),
+                appliedAmount is { } applied ? PaymentHistoryRecords.Money(applied) : null,
+                FullyFromBalance: appliedAmount is > 0m && netAmount <= 0m), id, outcome);
+        if (!enqueued) return;
 
         using var budget = new CancellationTokenSource(FinishTimeout);
         try
@@ -906,6 +913,22 @@ public sealed class PaymentLeaseCoordinator
         {
             _log.LogWarning(ex, "Ödeme isteği kirası {RecordId}: finish ({Outcome}) gönderimi yerel hatayla düştü; kuyrukta",
                 recordId, outcome);
+        }
+    }
+
+    /// <summary>Finish'i kalıcı kuyruğa yazar; yazılamazsa false (kira sunucuda dolar ve "gitmiş olabilir" sayılır —
+    /// fail-closed yönü).</summary>
+    private bool Enqueue(PendingPaymentFinish finish, Guid recordId, string outcome)
+    {
+        try
+        {
+            _records.EnqueueFinish(finish);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Ödeme isteği kirası {RecordId}: finish ({Outcome}) kuyruğa yazılamadı", recordId, outcome);
+            return false;
         }
     }
 
@@ -1030,19 +1053,43 @@ public sealed class PaymentLeaseFlow
     /// teslimi kirasız kayıt taşır; kira da teslim deseydi aynı mesaj sunucuda iki öncül olurdu.</remarks>
     public Task FinishAsync(string outcome, decimal netAmount, decimal? appliedAmount)
     {
-        if (_recordId is not { } recordId) return Task.CompletedTask;
+        var current = _recordId;
+        var orphans = _uncertain.Where(id => id != current).ToList();
+        _uncertain.Clear();
         _recordId = null;
         ServerMembers = [];
-        return _owner.FinishAsync(recordId, RecordsLocally ? PaymentRequestStates.Abandoned : outcome, netAmount,
-            appliedAmount);
+        if (current is null && orphans.Count == 0) return Task.CompletedTask;
+        return _owner.FinishAsync(current, RecordsLocally ? PaymentRequestStates.Abandoned : outcome, netAmount,
+            appliedAmount, orphans);
     }
+
+    /// <summary>Yanıtı alınamamış <c>begin</c> denemeleri (kira yazılmış olabilir): sonucu öğrenilmedikçe çıkışta
+    /// <c>abandoned</c> ile kapanır — sonraki bir deneme (yeni Id) akışın kirası olsa da.</summary>
+    private readonly HashSet<Guid> _uncertain = new();
 
     internal void Begun(Guid recordId, IReadOnlyList<string>? serverMembers = null)
     {
         _recordId = recordId;
+        _uncertain.Remove(recordId);
         if (serverMembers is not null) ServerMembers = serverMembers;
     }
 
+    /// <summary>Denemenin yanıtı alınamadı: kira yazılmış olabilir — akışın kirası sayılır (yineleme de düşerse çıkışta
+    /// kapanır) ve sonucu öğrenilmedikçe (<see cref="Begun"/>, <see cref="Settled"/>) çıkışta abandoned ile kapanır.</summary>
+    internal void Uncertain(Guid recordId)
+    {
+        _recordId = recordId;
+        _uncertain.Add(recordId);
+    }
+
+    /// <summary>Denemenin sonucu öğrenildi ve kapatılacak kira yok (kayıt son hâlde döndü ya da uç yok).</summary>
+    internal void Settled(Guid recordId)
+    {
+        _uncertain.Remove(recordId);
+        Clear();
+    }
+
+    /// <summary>Akışın kirası yok (ret). Sonucu bilinmeyen önceki denemeler (<see cref="Uncertain"/>) unutulmaz.</summary>
     internal void Clear()
     {
         _recordId = null;

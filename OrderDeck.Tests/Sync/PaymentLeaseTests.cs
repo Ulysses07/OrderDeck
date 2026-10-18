@@ -444,6 +444,59 @@ public sealed class PaymentLeaseTests : IDisposable
         finish.Json.GetProperty("outcome").GetString().Should().Be(expectedFinish);
     }
 
+    [Fact]
+    public async Task Begin_ilk_denemesi_belirsizken_yinelemesi_reddedilirse_ilk_deneme_abandoned_ile_kapanir()
+    {
+        // İlk begin'in yanıtı alınamadı (sunucu kişi kilidini tutarken yavaş); aynı Id'li yineleme kilidi bekleyip 409
+        // in-progress-elsewhere (kilit zaman aşımı, makine ve kayıt yok) aldı. İstemci Id'yi siliyordu: ilk deneme sonradan
+        // Sending olarak yazılırsa hiç kapanmıyor, 120 sn öbür bilgisayarları engelleyip kalıcı "istenmiş olabilir" kalıyordu.
+        // Sonucu bilinmeyen deneme çıkışta abandoned ile kapanır (kayıt yoksa sunucu record-not-found der, zararsız düşer).
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_belirsiz_ret", 120m);
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsBegin, 503);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 409, "in-progress-elsewhere");
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.PaymentInProgress);
+
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        begins[1].GetProperty("recordId").GetGuid().Should().Be(begins[0].GetProperty("recordId").GetGuid(),
+            "yineleme aynı Id'yle");
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        var finish = _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle().Subject;
+        finish.RecordId.Should().Be(begins[0].GetProperty("recordId").GetGuid());
+        finish.Json.GetProperty("outcome").GetString().Should().Be("abandoned");
+    }
+
+    [Fact]
+    public async Task Belirsiz_begin_sonrasi_ozet_reddinde_yeni_kira_teslim_eski_deneme_abandoned_kapanir()
+    {
+        // İlk begin belirsiz, aynı Id'li yineleme invalid-priors-digest (400) aldı; özetsiz yeni Id'li begin kirayı aldı ve
+        // mesaj gitti. Yeni kira delivered kapanır; sonucu bilinmeyen ilk deneme de abandoned ile kapanır — yeni Id'nin
+        // akışa yazılması onu unutturmaz.
+        var pc = await PcAsync();
+        UseCloudApi(pc);
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_belirsiz_ozet", 120m);
+        var stale = PaymentLeaseConfirmation.Create(FakeSalesServer.PriorsDigest.Compute([Guid.NewGuid()]), []);
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsBegin, 503);
+        _server.EnqueueProblem(FakeSalesServer.PaymentRequestsBegin, 400, "invalid-priors-digest");
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live), new HashSet<string>(StringComparer.Ordinal) { stale.Token }))
+            .Result.Should().Be(PaymentRequestResult.Sent);
+
+        var begins = Begins();
+        begins.Should().HaveCount(3);
+        var first = begins[0].GetProperty("recordId").GetGuid();
+        var lease = begins[2].GetProperty("recordId").GetGuid();
+        lease.Should().NotBe(first);
+        var finishes = _server.Calls(FakeSalesServer.PaymentRequestsFinish);
+        finishes.Should().HaveCount(2);
+        finishes.Single(f => f.RecordId == lease).Json.GetProperty("outcome").GetString().Should().Be("delivered");
+        finishes.Single(f => f.RecordId == first).Json.GetProperty("outcome").GetString().Should().Be("abandoned");
+    }
+
     // ── kapalı hata ve 409 eşlemeleri ─────────────────────────────────────
 
     [Fact]
