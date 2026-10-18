@@ -446,7 +446,38 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
     }
 
     [Fact]
-    public async Task Geri_yukleme_yeni_kopya_icin_bastan_baslar_ayni_Idler_sunucuda_unchanged()
+    public async Task Geri_yuklemede_onceki_kopya_tamamladiysa_isler_yeniden_gonderilmez_yalniz_tamamlanma_hellosu()
+    {
+        // Önceki kopya geçmişi tamamladıysa veritabanındaki her teslimin sunucuda kaydı var: tamamlanmadan önceki işler
+        // geçmişle, sonraki teslimler mod Off kaydıyla ya da kirayla. Kiranın kaydı rastgele Id'lidir: yeni kopya işleri
+        // yeniden kayda çevirseydi aynı istek sunucuda iki öncül olur, eski istek en yeni sayılırdı.
+        var owner = AddCustomer("ornek_sahip");
+        AddJob(owner, "cumulative", 100m);
+        var pc = NewPc();
+        await pc.HelloAsync();
+        await pc.TickAsync();
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.Completed);
+        var original = ReplicaId;
+        var sent = Sent().Count;
+        AddJob(owner, $"session:{AddSession(T0 + 50_000)}", 70m);                  // mod On'da kirayla teslim edildi
+
+        new ReplicaIdentityRepository(_db).Rotate();                               // geri yükleme: kimlik döner
+        pc = NewPc();
+        await pc.HelloAsync();
+        ReplicaId.Should().NotBe(original);
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.Completed);
+
+        Sent().Should().HaveCount(sent, "işler yeniden kayda çevrilmedi");
+        _pending.Count().Should().Be(0);
+        CompletionHellos.Select(h => h.Body.ReplicaId).Should().Equal(new Guid?[] { original, ReplicaId },
+            "tamamlanma kopya başına: yeni kopya kendi bayrağını gönderir (mod kapısı, §4.10-2)");
+        _server.ReplicaRow(_server.LicenseId, ReplicaId)!.PaymentHistoryCompleted.Should().BeTrue();
+        Cursor()!.LastId.Should().Be(ReplicaId);
+        Cursor()!.Seq.Should().Be(PaymentHistoryCursor.Completed.Encode());
+    }
+
+    [Fact]
+    public async Task Geri_yuklemede_onceki_kopyanin_imleci_tamamlanmamissa_bastan_baslar_ayni_Idler_sunucuda_unchanged()
     {
         var owner = AddCustomer("ornek_sahip");
         var first = AddJob(owner, "cumulative", 100m);
@@ -454,7 +485,9 @@ public sealed class PaymentHistoryBackfillTests : IDisposable
         var pc = NewPc();
         await pc.HelloAsync();
         await pc.TickAsync();
-        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.Completed);
+        _server.EnqueueStatus(FakeSalesServer.Hello, 503);                         // kayıtlar gitti, tamamlanma gitmedi
+        (await pc.TickAsync()).Should().Be(PaymentHistoryTourOutcome.Failed);
+        Cursor()!.Seq.Should().Be(PaymentHistoryCursor.Done.Encode(), "ön koşul: önceki kopya tamamlamadı");
         var original = ReplicaId;
         var firstRound = Sent().ToList();
 

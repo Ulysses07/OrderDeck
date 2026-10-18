@@ -21,12 +21,13 @@ public enum PaymentHistoryPhase
 /// <c>PaymentJob.rowid</c>'ini birlikte taşır.
 ///
 /// <para><b>Kodlama:</b> <c>Seq = aşama × 10^12 + rowid</c>; <c>Seq = 2 × 10^12</c> tamamlanma işaretidir.
-/// <c>LastId</c> imlecin ait olduğu kopya kimliğidir (<c>_meta.ReplicaId</c>): geri yüklemeden sonra kimlik döner ve
-/// imleç yeni kopya için baştan başlar (§8.7) — kayıt Id'leri işten türetildiği için yeniden gönderim sunucuda
+/// <c>LastId</c> imlecin ait olduğu kopya kimliğidir (<c>_meta.ReplicaId</c>): geri yüklemeden sonra kimlik döner. Önceki
+/// kopya tamamladıysa yeni kopya işleri yeniden göndermez, yalnız kendi tamamlanmasını bildirir (<see cref="Done"/>);
+/// tamamlamadıysa imleç baştan başlar (§8.7) — kayıt Id'leri işten türetildiği için önceki kopyanın gönderdikleri sunucuda
 /// <c>unchanged</c>'dir. Lisans değişince imleç yeni lisansın anahtarındadır.</para>
 ///
-/// <para>Satır yoksa, <c>Seq</c> çözülemiyorsa ya da kopya başkasıysa imleç baştandır (<see cref="Start"/>):
-/// geri doldurma idempotent, baştan koşmak zararsızdır.</para>
+/// <para>Satır yoksa ya da <c>Seq</c> çözülemiyorsa imleç baştandır (<see cref="Start"/>): geri doldurma idempotent,
+/// baştan koşmak zararsızdır.</para>
 /// </summary>
 public readonly record struct PaymentHistoryCursor(PaymentHistoryPhase Phase, long RowId)
 {

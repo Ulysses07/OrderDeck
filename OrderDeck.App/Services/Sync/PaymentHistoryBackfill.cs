@@ -53,7 +53,9 @@ public enum PaymentHistoryTourOutcome
 /// <item><b>Tamamlanma:</b> imleç bitti ∧ kuyruk boş (yazılan kayıtlar gönderildi ya da son durumla düştü) →
 /// <see cref="SalesSyncStateService.ReportPaymentHistoryCompletedAsync"/> (<c>hello {paymentHistoryCompleted: true}</c>)
 /// → imleçte tamamlanma işareti ve <c>SalesSyncState.PaymentHistorySentAt</c>. Bundan sonra bu (lisans, kopya) için
-/// istek yok; geri yüklemede kimlik döner ve imleç baştan başlar (aynı Id'ler, sunucu <c>unchanged</c>).</item>
+/// istek yok. Geri yüklemede kimlik döner: önceki kopya tamamladıysa işler yeniden kayda çevrilmez, yalnız yeni kopyanın
+/// tamamlanması bildirilir (sonraki teslimler mod Off kaydı ya da kirayla sunucuda; kiranın kaydı işten türetilmez);
+/// tamamlamadıysa imleç baştan başlar (aynı Id'ler, sunucu <c>unchanged</c>).</item>
 /// </list>
 ///
 /// <para><b>Sürücü</b> <see cref="SalesBackfillHostedService"/>'in 60 sn'lik turudur; o tur önce kuyruğu gönderir
@@ -291,21 +293,36 @@ public sealed class PaymentHistoryBackfill
 
     // ── imleç ────────────────────────────────────────────────────────────
 
-    /// <summary>İmleç (<see cref="PaymentHistoryCursor"/>): satır yoksa, çözülemiyorsa ya da başka kopyanınsa baştan.</summary>
+    /// <summary>
+    /// İmleç (<see cref="PaymentHistoryCursor"/>): satır yoksa ya da çözülemiyorsa baştan. Başka kopyanınsa (geri yükleme,
+    /// §8.7): önceki kopya geçmişi TAMAMLADIYSA işler yeniden kayda çevrilmez, yalnız yeni kopyanın tamamlanması kalır
+    /// (<see cref="PaymentHistoryCursor.Done"/>: kuyruk boşalınca <c>hello {paymentHistoryCompleted: true}</c>) — o andan
+    /// sonraki her teslim mod Off kaydıyla ya da kirayla zaten sunucuda; kiranın kaydı rastgele Id'lidir, işten türetilen
+    /// kayıt onun ikinci öncülü olur ve eski istek en yeni sayılırdı. Tamamlamadıysa baştan (Id'ler işten türetilir: önceki
+    /// kopyanın gönderdikleri sunucuda <c>unchanged</c>).
+    /// </summary>
     private PaymentHistoryCursor ReadCursor(string licenseKey, Guid replicaId)
     {
         var row = _cursors.Get(PaymentHistoryCursor.Name, licenseKey);
         if (row is null) return PaymentHistoryCursor.Start;
         if (row.LastId != replicaId)
         {
+            var completed = row.Seq is { } previous
+                            && PaymentHistoryCursor.Decode(previous) is { Phase: PaymentHistoryPhase.Completed };
             if (_restartLoggedFor != (licenseKey, replicaId))
             {
                 _restartLoggedFor = (licenseKey, replicaId);
-                _log.LogInformation(
-                    "Ödeme geçmişi imleci başka bir kopya kimliğine ait (geri yükleme); yeni kopya için baştan başlıyor "
-                  + "(replica={ReplicaId})", replicaId);
+                if (completed)
+                    _log.LogInformation(
+                        "Ödeme geçmişi imleci başka bir kopya kimliğine ait (geri yükleme) ve o kopya geçmişi tamamlamıştı; "
+                      + "işler yeniden gönderilmiyor, yalnız yeni kopyanın tamamlanması bildirilecek (replica={ReplicaId})",
+                        replicaId);
+                else
+                    _log.LogInformation(
+                        "Ödeme geçmişi imleci başka bir kopya kimliğine ait (geri yükleme); yeni kopya için baştan başlıyor "
+                      + "(replica={ReplicaId})", replicaId);
             }
-            return PaymentHistoryCursor.Start;
+            return completed ? PaymentHistoryCursor.Done : PaymentHistoryCursor.Start;
         }
         if (row.Seq is not { } seq || PaymentHistoryCursor.Decode(seq) is not { } cursor)
         {
