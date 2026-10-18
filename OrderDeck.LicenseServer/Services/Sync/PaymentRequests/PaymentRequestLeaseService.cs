@@ -298,10 +298,10 @@ public sealed class PaymentRequestLeaseService
             {
                 _log.LogInformation(
                     "payment-requests/begin: onaylanmamış önceki istek, 409 already-requested — {Priors} kayıt, onay özeti "
-                    + "tutmadı {DigestMismatch}, {Expired} kira Unconfirmed yapıldı (license={LicenseId}, "
-                    + "replica={ReplicaId}, record={RecordId})",
-                    priors.Count, begin.ConfirmedPriorsDigest is not null, expired, licenseId, begin.ReplicaId,
-                    begin.RecordId);
+                    + "{DigestOutcome}, {Expired} kira Unconfirmed yapıldı (license={LicenseId}, replica={ReplicaId}, "
+                    + "record={RecordId})",
+                    priors.Count, begin.ConfirmedPriorsDigest is null ? "gelmedi" : "tutmadı", expired, licenseId,
+                    begin.ReplicaId, begin.RecordId);
                 return Fail(StatusCodes.Status409Conflict, CodeAlreadyRequested,
                     "Bu kişiden bu kapsamda daha önce ödeme istendi; tekrar gönderilsin mi?",
                     new Dictionary<string, object?>
