@@ -16,7 +16,8 @@ public enum SalesModeStep
     /// bulundu. Durum satırı "Senkron açılıyor; bekleyen gönderim var"; sonraki tur 1. adımdan yeniden dener.</summary>
     OpeningPending,
 
-    /// <summary>Bu adımda yerel <c>Mode = 1</c> yazıldı; akış 0'dan, ilk yetişme başladı.</summary>
+    /// <summary>Bu adımda yerel <c>Mode = 1</c> yazıldı ya da yerel kip 1 kalmışken yeni bir mod On dönemi görüldü
+    /// (§8.5 "Off → On (yeniden)"); akış 0'dan, ilk yetişme başladı.</summary>
     Enabled,
 
     /// <summary><c>disable</c> turu (§8.5; W2-11): sunucu modu 0 ve yerel kip 1 (tam tur), ya da yerel kip 0 ve
@@ -50,6 +51,10 @@ public sealed record SalesModeOffCompletion(SalesModeOffResult Local, SalesPendi
 ///   <c>FirstCatchUpAt</c> yazılır.</item>
 /// </list>
 /// O anda canlı bir yayın varsa yerel kalır ve normal yoldan (kapanış gönderimi) devreder.</para>
+///
+/// <para><b>Yerel kip 1 kalmışken yeni mod On dönemi</b> (sunucu modu 1, <c>modeChangedAt</c> yerel <c>ModeSeenAt</c>'ten
+/// yeni; §8.5 "Off → On (yeniden) | §8.4 baştan"): araya giren <c>disable</c> turu yarıda kaldı ya da hiç koşmadı. Görülen
+/// an, ilk yetişme ve imleç 0 tek işlemde yeniden yazılır (<see cref="SalesSyncStateRepository.TryReopenMode"/>).</para>
 ///
 /// <para><b><c>disable</c> turu</b> (sunucu modu 0; §8.5, §2 "Görülen kip", M15; W2-11): yerel kip 1 ise ya da yerel kip 0
 /// ve <c>modeChangedAt</c> yerelde son görülenden (<c>ModeSeenAt</c>) yeniyse <see cref="SalesModeStep.Disabling"/>:
@@ -130,6 +135,11 @@ public sealed class SalesModeCoordinator
             _openingLogged = false;
             return IsModeOffRoundDue(snapshot, row) ? SalesModeStep.Disabling : SalesModeStep.None;
         }
+        if (snapshot.Mode == 1 && row.Mode == 1)
+        {
+            _openingLogged = false;
+            return IsNewModeOnEpoch(snapshot, row) ? Reopen(licenseKey, snapshot) : SalesModeStep.None;
+        }
         if (snapshot.Mode != 1 || row.Mode != 0)
         {
             _openingLogged = false;
@@ -147,6 +157,39 @@ public sealed class SalesModeCoordinator
         if (row.Mode == 1) return true;
         return snapshot.ModeChangedAt is { } changed
                && (row.ModeSeenAt is not { } seen || changed.ToUnixTimeSeconds() > seen);
+    }
+
+    /// <summary>Sunucu modu 1 ve yerel kip 1, ama <c>modeChangedAt</c> yerelde son görülenden yeni: bu kopyanın görmediği
+    /// yeni bir mod On dönemi (araya giren Off turu yarıda kaldı ya da hiç koşmadı). Görülen an bilinmiyorsa (eski
+    /// kurulum, elle yazılmış kip) karar verilemez: geçiş yok.</summary>
+    private static bool IsNewModeOnEpoch(SalesStateSnapshot snapshot, SalesSyncStateRow row) =>
+        snapshot.ModeChangedAt is { } changed && row.ModeSeenAt is { } seen && changed.ToUnixTimeSeconds() > seen;
+
+    /// <summary>
+    /// Yeni mod On dönemi (§8.5 tablosu "Off → On (yeniden) | §8.4 baştan"): yarım kalmış <c>disable</c> turu son akışı
+    /// yalnız kendi satırlarıyla uygularken imleci yok saydığı uzak öğelerin ötesine taşımış olabilir; olağan akış o
+    /// imleçten sürseydi aradaki uzak değişiklikler bu bilgisayara hiç inmezdi. Açılışın yazımı baştan, tek işlemde
+    /// (<see cref="SalesSyncStateRepository.TryReopenMode"/>): görülen an, ilk yetişme, imleç 0. Hata turu düşürmez:
+    /// görülen an yazılmadığı için sonraki tur yeniden dener.
+    /// </summary>
+    private SalesModeStep Reopen(string licenseKey, SalesStateSnapshot snapshot)
+    {
+        int? sessions;
+        try
+        {
+            sessions = _stateRepo.TryReopenMode(snapshot.ModeChangedAt!.Value.ToUnixTimeSeconds(),
+                SalesChangesPullService.CursorName, licenseKey, _clock.UnixNow());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Satış senkronu kip adımı: yeni mod On dönemi yazılamadı; sonraki turda yeniden");
+            return SalesModeStep.None;
+        }
+        if (sessions is null) return SalesModeStep.None;
+        _log.LogInformation(
+            "Satış senkronu yeni bir mod On dönemi gördü (yerel kip 1 kalmıştı): {Sessions} kendi yayını sunucuya geçti; akış baştan alınıyor",
+            sessions.Value);
+        return SalesModeStep.Enabled;
     }
 
     /// <summary>

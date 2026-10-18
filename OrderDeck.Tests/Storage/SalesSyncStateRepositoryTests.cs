@@ -247,6 +247,32 @@ public sealed class SalesSyncStateRepositoryTests : IDisposable
     }
 
     [Fact]
+    public void Yeni_mod_On_donemi_yerel_kip_1_iken_imleci_ve_ilk_yetismeyi_bastan_alir_ayni_donemde_yazmaz()
+    {
+        Enable(modeSeenAt: T0 + 5_000).Status.Should().Be(SalesModeEnableStatus.Enabled);
+        Exec("UPDATE SalesSyncState SET FirstCatchUpAt = 123 WHERE Id = 1");
+        Exec("UPDATE SyncCursor SET Seq = 77 WHERE Name = @Cursor", new { Cursor });
+
+        _repo.TryReopenMode(T0 + 5_000, Cursor, Lisans, T0 + 9_500).Should().BeNull("dönem aynı");
+        _repo.TryReopenMode(T0 + 4_000, Cursor, Lisans, T0 + 9_500).Should().BeNull("eski dönem");
+        Scalar<long>("SELECT Seq FROM SyncCursor WHERE Name = @Cursor", new { Cursor }).Should().Be(77);
+        _repo.Get().FirstCatchUpAt.Should().Be(123);
+
+        _repo.TryReopenMode(T0 + 8_000, Cursor, Lisans, T0 + 9_500).Should().Be(0);
+
+        var state = _repo.Get();
+        state.Mode.Should().Be(1);
+        state.ModeSeenAt.Should().Be(T0 + 8_000);
+        state.FirstCatchUpAt.Should().BeNull("yeni dönemin ilk yetişmesi baştan");
+        Scalar<long>("SELECT Seq FROM SyncCursor WHERE Name = @Cursor", new { Cursor }).Should().Be(0);
+        Scalar<long>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k", new { k = SalesConflictLog.ModeOpened })
+            .Should().Be(2);
+
+        Exec("UPDATE SalesSyncState SET Mode = 0 WHERE Id = 1");
+        _repo.TryReopenMode(T0 + 9_000, Cursor, Lisans, T0 + 9_500).Should().BeNull("yerel kip 0: olağan açılış yolu");
+    }
+
+    [Fact]
     public void Mod_1_yazildiktan_sonra_yerel_kargo_yazimi_ABORT_eder_gonderilmemis_dosya_dogamaz()
     {
         // §10.3: 2. adımdan sonra SyncedAt IS NULL yerel dosya oluşamaz (kilit altındaki denetim + ABORT).

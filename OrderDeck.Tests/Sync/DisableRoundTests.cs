@@ -450,6 +450,73 @@ public sealed class DisableRoundTests : IDisposable
         _server.Faults.Should().BeEmpty();
     }
 
+    // ── yarım Off turundan sonra yeniden açılış ───────────────────────────
+
+    [Fact]
+    public async Task Yarim_Off_turundan_sonra_yeniden_acilan_modda_uzak_degisiklik_kaybolmaz()
+    {
+        ServerModeOn();
+        var a = NewPc();
+        await OpenAsync(a);
+        var b = NewPc();
+        var customerB = b.Customer();
+        var sessionB = b.EndedSession();
+        var labelB = b.Label(sessionB, customerB, 25m);
+        await OpenAsync(b);
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp);
+        new LabelRepository(a.Db).GetById(labelB).Should().NotBeNull("ön koşul: PC-B'nin etiketi PC-A'da uzak satır");
+
+        // PC-B'nin mod On iptali sunucuda; PC-A henüz çekmedi. Mod kapanır; PC-A'nın Off turu ilk sayfadan (uzak öğe:
+        // yalnız kendi satırları yazılır, imleç ötesine geçer) sonra ağ kopmasıyla yarıda kalır.
+        _server.MutateOrder(G(labelB), o => o with { CancelledAt = DisabledAt.AddHours(-1), CancelReason = "musteri-vazgecti" });
+        _server.Disable(DisabledAt);
+        _server.PageLimit = 1;
+        _server.OnChanges = _ => _server.Offline = true;     // ilk sayfa döner, sonraki istek ağ hatası
+
+        (await a.TourAsync()).Should().NotBe(SalesPullOutcome.Disabled);
+
+        a.State.GetMode().Should().Be(1, "ön koşul: Off turu 2. adıma varmadı");
+        new LabelRepository(a.Db).GetById(labelB)!.CancelledAt.Should().BeNull("ön koşul: uzak öğe Off turunda yok sayıldı");
+
+        // Mod yeniden açılır (yeni dönem); PC-A Off turunu hiç bitirmedi.
+        _server.OnChanges = null;
+        _server.PageLimit = null;
+        _server.Offline = false;
+        var reopenedAt = DisabledAt.AddDays(1);
+        _server.Mode = 1;
+        _server.ModeChangedAt = reopenedAt;
+
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp);
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp);
+
+        new LabelRepository(a.Db).GetById(labelB)!.CancelledAt.Should().NotBeNull(
+            "yeni mod On dönemi §8.4 baştan (§8.5 Off → On): imleç 0, PC-B'nin iptali PC-A'nın uzak aynasına iner");
+        var state = a.State.Get();
+        state.Mode.Should().Be(1);
+        state.ModeSeenAt.Should().Be(reopenedAt.ToUnixTimeSeconds(), "yeni dönem görüldü: bir kez");
+        state.FirstCatchUpAt.Should().NotBeNull("yeni dönemin ilk yetişmesi tamamlandı");
+        a.Scalar<int>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k", new { k = SalesConflictLog.ModeOpened })
+            .Should().Be(2, "ilk açılış ve yeni dönem");
+        _server.Faults.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Ayni_mod_On_doneminde_imlec_sifirlanmaz()
+    {
+        ServerModeOn();
+        var a = NewPc();
+        a.Label(a.EndedSession(), a.Customer(), 40m);
+        await OpenAsync(a);
+        var changes = _server.ChangesCalls.Count;
+
+        (await a.TourAsync()).Should().Be(SalesPullOutcome.CaughtUp);
+
+        _server.ChangesCalls.Skip(changes).Should().ContainSingle()
+            .Which.AfterSeq.Should().NotBe("0", "dönem aynı: akış kaldığı yerden");
+        a.Scalar<int>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k", new { k = SalesConflictLog.ModeOpened })
+            .Should().Be(1);
+    }
+
     // ── komut ucunun mode-off'u ───────────────────────────────────────────
 
     [Fact]

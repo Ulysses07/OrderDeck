@@ -3018,6 +3018,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     {
         public string? ReplicaId => QueryValue(Query, "replicaId");
         public string? SeenMode => QueryValue(Query, "seenMode");
+        public string? AfterSeq => QueryValue(Query, "afterSeq");
     }
 
     /// <summary>Sunucunun <c>WpfReplicas</c> satırının bu testlerin baktığı kısmı.</summary>

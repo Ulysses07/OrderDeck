@@ -267,6 +267,42 @@ public sealed class SalesSyncStateRepository
         return new SalesModeEnableResult(SalesModeEnableStatus.Enabled, 0, 0, sessions);
     }
 
+    /// <summary>
+    /// Yerel kip 1 kalmışken görülen YENİ mod On dönemi (§8.5 tablosu "Off → On (yeniden) | §8.4 baştan"): sunucu modu 1
+    /// ve <paramref name="modeSeenAt"/> (state'in <c>modeChangedAt</c>'i) yerel <c>ModeSeenAt</c>'ten yeni. Bu kopya
+    /// araya giren Off dönemini bitirmedi — yarım kalmış <c>disable</c> turu son akışı yalnız kendi satırlarıyla
+    /// uygularken imleci yok saydığı uzak öğelerin ötesine taşımış olabilir — ya da hiç görmedi. TEK
+    /// <see cref="SyncApplyScope"/> işleminde, kilit altında yeniden okuyarak açılışın yazımı baştan:
+    /// <c>ModeSeenAt</c>, <c>FirstCatchUpAt = NULL</c>, devri yerelde bilinen kendi bitmiş yayınları <c>server</c>, akış
+    /// imleci 0 ve <see cref="SalesConflictLog.ModeOpened"/> izi (ilk yetişme sayımının tabanı).
+    ///
+    /// <para>Giden kuyruk denetimi (<see cref="TryEnableMode"/>'un kilit altındaki sayımı) yok: yerel kip 1'de görülen kip
+    /// 1'dir, gönderimler olağan mod On yolundan gider; açılış penceresine bağlı değildir.</para>
+    /// </summary>
+    /// <returns>Devri bilinen ve <c>server</c> olan kendi yayını sayısı; kip 1 değilse ya da dönem zaten görüldüyse
+    /// (<c>ModeSeenAt</c> boş ya da ≥ <paramref name="modeSeenAt"/>) hiçbir şey yazılmaz, <c>null</c>.</returns>
+    public int? TryReopenMode(long modeSeenAt, string cursorName, string licenseKey, long now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cursorName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(licenseKey);
+        using var scope = SyncApplyScope.Begin(_factory);
+        var conn = scope.Connection;
+        var tx = scope.Transaction;
+
+        var (mode, seen) = conn.QuerySingleOrDefault<(long Mode, long? Seen)>(
+            "SELECT Mode, ModeSeenAt FROM SalesSyncState WHERE Id = 1", transaction: tx);
+        if (mode != 1 || seen is not { } seenAt || modeSeenAt <= seenAt) return null;
+
+        conn.Execute("UPDATE SalesSyncState SET ModeSeenAt = @modeSeenAt, FirstCatchUpAt = NULL WHERE Id = 1",
+            new { modeSeenAt }, tx);
+        var sessions = conn.Execute(EnableSessionAuthoritySql, transaction: tx);
+        SyncCursorRepository.Upsert(conn, tx, cursorName, licenseKey, seq: 0);
+        SalesConflictLog.Insert(conn, tx, now, null, SalesConflictLog.ModeOpened,
+            "reopened sessions=" + sessions.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        scope.Commit();
+        return sessions;
+    }
+
     /// <summary>Devri yerelde bilinen kendi bitmiş yayınları (§8.4-2). Açık yayın (<c>EndedAt IS NULL</c>) yerel kalır.</summary>
     private const string EnableSessionAuthoritySql = @"
         UPDATE StreamSession SET Authority = 'server'
