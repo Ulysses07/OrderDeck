@@ -125,8 +125,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <see cref="EnqueueTimeout"/> için. Kira kuralları taklit edilmez: betik yoksa 200 <c>sending</c>.</summary>
     public const string PaymentRequestsBegin = "payment-requests/begin";
 
-    /// <summary>Ödeme akışının bakiye uçları (W3-07): <c>customer-balance/preview</c>, <c>scope</c> (hep 204) ve
-    /// <c>apply</c> (<see cref="BalancePreview"/>'dan en çok istenen kadar).</summary>
+    /// <summary>Ödeme akışının bakiye uçları (W3-07): <c>customer-balance/preview</c>, <c>scope</c>
+    /// (<see cref="ScopeDeductions"/>'da yoksa 204) ve <c>apply</c> (<see cref="BalancePreview"/>'dan en çok istenen
+    /// kadar).</summary>
     public const string BalancePreviewEndpoint = "customer-balance/preview";
     public const string BalanceScopeEndpoint = "customer-balance/scope";
     public const string BalanceApplyEndpoint = "customer-balance/apply";
@@ -137,6 +138,17 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     /// <summary>Bakiye önizlemesinin döneceği bakiye (her müşteri için aynı); 0 = bakiye yok, apply çağrılmaz.</summary>
     public decimal BalancePreview { get; set; }
+
+    /// <summary>Betiksiz <c>begin</c> 200'ünün üyelerine eklenir (sunucunun asıl kayda çözdüğü, istemcinin bilmediği üye;
+    /// W3-08 kapsam uzlaştırması).</summary>
+    public List<string> ExtraBeginMembers { get; } = new();
+
+    /// <summary><c>customer-balance/scope</c>'un müşteri başına yanıtı (geri alınmamış düşüm); olmayan müşteride 204.</summary>
+    public ConcurrentDictionary<Guid, ScopeDeduction> ScopeDeductions { get; } = new();
+
+    /// <summary><c>/scope</c>'un bulduğu düşüm (<c>LicensesCustomerBalanceApplyController.ScopeResponse</c>).</summary>
+    internal sealed record ScopeDeduction(Guid TransactionId, decimal AppliedAmount, decimal ProductTotal,
+        DateTimeOffset CreatedAt);
 
     /// <summary><c>sales/backfill</c>'in uç adı: <see cref="EnqueueStatus"/> ve <see cref="EnqueueProblem"/> için.</summary>
     public const string Backfill = "backfill";
@@ -1861,7 +1873,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <summary>
     /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), betik, v2 zarfı denetimi; mod Off'ta 409
     /// <c>mode-off</c> (§4.7). Kira kuralları (yeniden oynatma, üye kesişimi, öncüller, sunucu toplamı, kargo) taklit
-    /// edilmez: betik yoksa 200, durum <c>sending</c>, üyeler istemcinin üyeleri.
+    /// edilmez: betik yoksa 200, durum <c>sending</c>, üyeler istemcinin üyeleri ∪ <see cref="ExtraBeginMembers"/>.
     /// </summary>
     private async Task<HttpResponseMessage> HandlePaymentBeginAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
     {
@@ -1887,11 +1899,13 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             recordId = root.GetProperty("recordId").GetGuid(),
             state = "sending",
             leaseUntil = DateTimeOffset.UtcNow.AddSeconds(120),
-            members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()).ToList(),
+            members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString())
+                .Concat(ExtraBeginMembers).Distinct(StringComparer.Ordinal).ToList(),
         }, Web));
     }
 
-    /// <summary>Bakiye uçları (W3-07): önizleme <see cref="BalancePreview"/>, kapsam hep 204 (düşüm yok), apply en çok
+    /// <summary>Bakiye uçları (W3-07): önizleme <see cref="BalancePreview"/>, kapsam <see cref="ScopeDeductions"/>'tan
+    /// (yoksa 204, düşüm yok), apply en çok
     /// istenen kadar ve işlem kimliği = idempotency anahtarı (gerçek sunucu gibi). Kayıt <see cref="Calls"/>'ta.</summary>
     private async Task<HttpResponseMessage> HandleBalanceAsync(
         HttpRequestMessage req, Guid licenseId, string action, CancellationToken ct)
@@ -1914,7 +1928,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                     wpfCustomerId = Guid.Empty, balance = BalancePreview, updatedAt = DateTimeOffset.UtcNow,
                 }, Web));
             case "scope" when req.Method == HttpMethod.Get:
-                return FakeHttpMessageHandler.Empty(204);
+            {
+                var customer = Regex.Match(req.RequestUri!.Query, @"wpfCustomerId=([0-9a-fA-F-]{36})");
+                return customer.Success && ScopeDeductions.TryGetValue(Guid.Parse(customer.Groups[1].Value), out var found)
+                    ? FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(found, Web))
+                    : FakeHttpMessageHandler.Empty(204);
+            }
             case "apply" when req.Method == HttpMethod.Post:
             {
                 using var doc = JsonDocument.Parse(raw);

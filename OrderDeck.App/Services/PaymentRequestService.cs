@@ -649,7 +649,9 @@ public sealed class PaymentRequestService
         // olsa da. GUID'li üye yoksa iş yoktur (sunucu GUID olmayan Id'ye düşüm yazamaz).
         if (person.OwnerId is not null)
         {
-            var outcome = await ResolveBalanceAsync(person, totalAmount, scopeKey, confirmedTokens, ct);
+            // Kira tutuluyken kapsam uzlaştırmasının adaylarına begin'in sunucu üyeleri de katılır (§6.4).
+            var outcome = await ResolveBalanceAsync(person, totalAmount, scopeKey, confirmedTokens,
+                paymentLease?.ServerMembers ?? [], ct);
             if (outcome.MembershipChanged) return null;
             demoted = outcome.Demoted ?? demoted;
             ownerId = outcome.Job?.CustomerId ?? ownerId;
@@ -913,9 +915,11 @@ public sealed class PaymentRequestService
     /// kesindir (Uncertain=false; AppliedBalance mesaja yazılabilir) ya da
     /// akış durmalıdır (Uncertain=true; çağıran BalanceUncertain döner) ya da
     /// operatöre sorulmalıdır (<see cref="BalanceOutcome.Prompt"/>).</summary>
+    /// <param name="serverMembers">Kira tutuluyken <c>begin</c>'in sunucu üyeleri (<see cref="PaymentLeaseFlow.ServerMembers"/>);
+    /// kirasız yolda boş.</param>
     private async Task<BalanceOutcome> ResolveBalanceAsync(
         PaymentPerson person, decimal totalAmount, string scopeKey,
-        IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
+        IReadOnlySet<string>? confirmedTokens, IReadOnlyList<string> serverMembers, CancellationToken ct)
     {
         try
         {
@@ -942,7 +946,7 @@ public sealed class PaymentRequestService
                     "Kişi birleştirmesi: survivor={SurvivorJobId} demoted={DemotedJobId} owner={CustomerId} keptOpen={KeptOpen}",
                     pj.Job!.Id, d.JobId, d.CustomerId, d.KeptOpen);
 
-            var outcome = await SettleScopeAsync(person, pj.Job!, totalAmount, confirmedTokens, ct);
+            var outcome = await SettleScopeAsync(person, pj.Job!, totalAmount, confirmedTokens, serverMembers, ct);
             return outcome with { Demoted = pj.Demoted };
         }
         catch (OperationCanceledException) { throw; }
@@ -984,7 +988,7 @@ public sealed class PaymentRequestService
     /// satırınkiyle değil: sunucu bir anahtarı farklı asıl kayıtla oynatmayı içerik çakışması sayar.</summary>
     private async Task<BalanceOutcome> SettleScopeAsync(
         PaymentPerson person, PaymentJob job, decimal totalAmount,
-        IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
+        IReadOnlySet<string>? confirmedTokens, IReadOnlyList<string> serverMembers, CancellationToken ct)
     {
         var licenseId = await ResolveLicenseIdAsync(ct);
         if (licenseId is null)
@@ -1124,7 +1128,8 @@ public sealed class PaymentRequestService
         //    kaldığı için operatörün sıradaki tıklaması temiz dener.
         if (job.State == PaymentJobState.Created && job.ApplyKey is null)
         {
-            var reconciled = await ReconcilePersonScopeAsync(licenseId.Value, person, job, confirmedTokens, ct);
+            var reconciled = await ReconcilePersonScopeAsync(
+                licenseId.Value, person, job, confirmedTokens, serverMembers, ct);
             if (reconciled.Prompt is not null) return new(true, 0m, job) { Prompt = reconciled.Prompt };
             if (reconciled.Job is null) return new(true, 0m, job);
             job = reconciled.Job;
@@ -1300,13 +1305,30 @@ public sealed class PaymentRequestService
     /// buydu.</para>
     ///
     /// <para>Benimseme koşullu: araya giren bir akış işe anahtar yazdıysa
-    /// (false) satır yeniden okunur ve onun bıraktığı durumdan devam edilir.</para></summary>
+    /// (false) satır yeniden okunur ve onun bıraktığı durumdan devam edilir.</para>
+    ///
+    /// <para><b>Sunucu üyeleri</b> (mod On, kira tutuluyken; spec 2026-10-13 §6.4 "Kapsam uzlaştırması", §6.6, §12 risk 12;
+    /// W3-08): adaylar = yerel GUID'li üyeler ∪ <c>begin</c> yanıtının GUID'li üyeleri (ordinal tekil, yerel önce). Grup
+    /// senkronu gecikmiş bilgisayar başka üyeye yazılmış düşümü böyle görür ve kendi çapasından ikinci düşüm yazmaz; §6.6
+    /// kuralı çapa düzeyinde kalır, bu katman onu kişi düzeyinde tamamlar. İz yerelde bilinmeyen bir sunucu üyesindeyse (yerel
+    /// kopyanın sunucudaki asıl kaydı; yönlendirmesi henüz inmedi) iş ona TAŞINMAZ: yerel kişi işi bulamaz olurdu — sonraki
+    /// tıklama ikinci iş açar, taşıma çakışır, istek kilitlenirdi. Düşüm işlem kimliğiyle benimsenir; geri alma ve doğrulama
+    /// işlem kimliğiyle çalışır.</para></summary>
     private async Task<ScopeReconciliation> ReconcilePersonScopeAsync(
         Guid licenseId, PaymentPerson person, PaymentJob job,
-        IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
+        IReadOnlySet<string>? confirmedTokens, IReadOnlyList<string> serverMembers, CancellationToken ct)
     {
-        var candidates = person.Members.Select(m => m.Id).Where(PaymentOwnerRule.IsOwnerCapable).ToList();
-        if (!candidates.Contains(job.CustomerId, StringComparer.Ordinal)) candidates.Insert(0, job.CustomerId);
+        var localCandidates = person.Members.Select(m => m.Id).Where(PaymentOwnerRule.IsOwnerCapable).ToList();
+        if (!localCandidates.Contains(job.CustomerId, StringComparer.Ordinal)) localCandidates.Insert(0, job.CustomerId);
+        var local = localCandidates.ToHashSet(StringComparer.Ordinal);
+        var candidates = localCandidates
+            .Concat(serverMembers.Where(PaymentOwnerRule.IsOwnerCapable))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (candidates.Count > localCandidates.Count)
+            _log?.LogInformation(
+                "Kapsam uzlaştırması: kiranın sunucu üyelerinden {Extra} aday eklendi (job={JobId}, scope={ScopeKey})",
+                candidates.Count - localCandidates.Count, job.Id, job.ScopeKey);
 
         var traces = new List<(string MemberId, CustomerBalanceScope Scope)>();
         foreach (var memberId in candidates)
@@ -1361,7 +1383,14 @@ public sealed class PaymentRequestService
         }
 
         var (owner, scope) = traces[0];
-        if (!string.Equals(owner, job.CustomerId, StringComparison.Ordinal))
+        if (!local.Contains(owner))
+        {
+            // Yalnız sunucunun bildiği üye (W3-08): iş sahibinde kalır, düşüm işlem kimliğiyle benimsenir.
+            _log?.LogInformation(
+                "Kapsam izi yerelde bilinmeyen bir sunucu üyesinde — iş sahibinde kalıyor (job={JobId}, member={CustomerId})",
+                job.Id, owner);
+        }
+        else if (!string.Equals(owner, job.CustomerId, StringComparison.Ordinal))
         {
             // Teslim edilmiş taze iş de taşınır (soru kapıda sorulmuştu). W2: taşınan teslimin beklentisi
             // yeni sahibe yeniden anahtarlanmalı, eski sahipte Superseded.

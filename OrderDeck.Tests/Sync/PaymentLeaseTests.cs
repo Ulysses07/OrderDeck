@@ -845,6 +845,41 @@ public sealed class PaymentLeaseTests : IDisposable
         await WaitUntilAsync(() => pc.State.GetMode() == 0);           // tur iptal edilmedi, arka planda bitti
     }
 
+    // ── kapsam uzlaştırmasında sunucu üyeleri (W3-08) ─────────────────────
+
+    [Fact]
+    public async Task Sunucu_uyelerinde_yerelde_bilinmeyen_uyenin_dusumu_benimsenir_ikinci_dusum_yok()
+    {
+        // §6.4 "Kapsam uzlaştırması": grup senkronu gecikmiş bilgisayar başka üyeye yazılmış düşümü kiranın sunucu
+        // üyeleriyle görür ve kendi çapasından ikinci düşüm yazmaz.
+        var pc = await PcAsync();
+        _server.BalancePreview = 50m;                                   // benimsenmeseydi apply ikinci düşümü yazardı
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, "alici_uzlasma", 120m);
+        var unknown = Guid.NewGuid();
+        pc.Customers.GetById(unknown.ToString("N")).Should().BeNull("üye yalnız sunucuda");
+        _server.ExtraBeginMembers.Add(unknown.ToString("N"));
+        var transaction = Guid.NewGuid();
+        _server.ScopeDeductions[unknown] = new FakeSalesServer.ScopeDeduction(transaction, 50m, 120m + 50m,
+            DateTimeOffset.UtcNow.AddMinutes(-5));
+        var scope = Scope(live);
+
+        (await RequestAsync(pc, buyer.Customer, scope)).Result.Should().Be(PaymentRequestResult.Opened);
+
+        var asked = _server.Calls(FakeSalesServer.BalanceScopeEndpoint).Select(c => c.RawJson).ToList();
+        asked.Should().Contain(q => q.Contains(Guid.ParseExact(buyer.Customer.Id, "N").ToString("D")));
+        asked.Should().Contain(q => q.Contains(unknown.ToString("D")), "/scope sunucu üyesine de soruldu");
+        _server.Calls(FakeSalesServer.BalanceApplyEndpoint).Should().BeEmpty("düşüm benimsendi: ikinci düşüm yok");
+        var job = pc.Jobs.GetPersonScopeJobs([buyer.Customer.Id], scope).Jobs.Should().ContainSingle().Subject;
+        job.ApplyKey.Should().Be(transaction);
+        job.AppliedAmount.Should().Be(50m);
+        job.CustomerId.Should().Be(buyer.Customer.Id,
+            "iş yerelde bilinmeyen üyeye taşınmaz — yerel kişi onu bulmaya devam eder");
+        var finish = _server.Calls(FakeSalesServer.PaymentRequestsFinish).Single().Json;
+        finish.GetProperty("netAmount").GetDecimal().Should().Be(120m + 50m - 50m);
+        finish.GetProperty("appliedAmount").GetDecimal().Should().Be(50m);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(10);
