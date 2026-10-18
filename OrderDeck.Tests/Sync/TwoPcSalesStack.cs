@@ -17,6 +17,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Tests.Fakes;
 using OrderDeck.Tests.TestHelpers;
 
 namespace OrderDeck.Tests.Sync;
@@ -57,10 +58,17 @@ internal sealed class SalesPc
         public long UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     }
 
-    private sealed class NoPrompt : IAppUpdatePrompt
+    /// <summary>Güncelleme sorusu (Velopack) — açılmaz, sayılır (<see cref="UpdatePrompts"/>).</summary>
+    private sealed class PromptSpy : IAppUpdatePrompt
     {
-        public void CheckAndPrompt() { }
+        public int Calls;
+        public void CheckAndPrompt() => Interlocked.Increment(ref Calls);
     }
+
+    private readonly PromptSpy _prompt = new();
+
+    /// <summary>Bu süreçte açılan güncelleme soruları (komut istemcisi ve ödeme kirası paylaşır, AppHost gibi).</summary>
+    public int UpdatePrompts => Volatile.Read(ref _prompt.Calls);
 
     /// <summary>Bu bilgisayarın ağ bağlantısı: kapalıyken her istek (lisans çözümü dahil) ağ hatası verir; öbür
     /// bilgisayar etkilenmez.</summary>
@@ -118,6 +126,23 @@ internal sealed class SalesPc
     public PaymentRecordSender PaymentRecords { get; }
     public RemoteSessionsViewModel RemoteSessions { get; }
 
+    // ── ödeme isteği (W3-07): AppHost gibi tek ödeme servisi, kira sarmalı ve mod Off kaydı ──
+
+    public LicenseApiClient Api { get; }
+    public ICurrentLicenseProvider LicenseProvider { get; }
+    public CustomerBusySet Busy { get; }
+    public WpfCustomerProjectionSyncService CustomerPush { get; }
+    public SettingsStore Store { get; }
+    public PaymentJobRepository Jobs { get; }
+    public PendingPaymentRecordRepository PendingPaymentRecords { get; }
+
+    /// <summary>wa.me penceresi (açılan bağlantılar; <see cref="FakeUrlLauncher.ThrowOnLaunch"/> açılamamayı taklit
+    /// eder).</summary>
+    public FakeUrlLauncher Launcher { get; } = new();
+    public PaymentOffRecordWriter OffRecords { get; }
+    public PaymentLeaseCoordinator Lease { get; }
+    public PaymentRequestService Payments { get; }
+
     /// <summary>Bu süreçte basılan kâğıt sayısı, etiket başına (<see cref="PrintAsync"/>).</summary>
     public Dictionary<string, int> Papers { get; } = new(StringComparer.Ordinal);
 
@@ -141,12 +166,15 @@ internal sealed class SalesPc
         _link = new Link(server) { Offline = offline };
 
         var license = new License(server.Lisans);
+        LicenseProvider = license;
         var clock = new Clock();
         var store = new SettingsStore(settingsPath);
+        Store = store;
         Settings = store.Load();
         var http = new HttpClient(_link, disposeHandler: false) { BaseAddress = new Uri("https://test.local") };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("OrderDeck-WPF/0.9.11");
         var api = new LicenseApiClient(http, new LicenseTokenStore());
+        Api = api;
 
         Sessions = new SessionRepository(db);
         LabelRepo = new LabelRepository(db);
@@ -156,6 +184,7 @@ internal sealed class SalesPc
         Identity = new ReplicaIdentityRepository(db);
         Pending = new PendingSalesCommandRepository(db);
         var busy = new CustomerBusySet();
+        Busy = busy;
         var cursors = new SyncCursorRepository(db);
         var customerSync = new CustomerSyncRepository(db, busy);
         var feed = new SalesFeedRepository(db, busy);
@@ -183,9 +212,10 @@ internal sealed class SalesPc
             NullLogger<PaymentSyncService>.Instance);
         var customerPush = new WpfCustomerProjectionSyncService(api, customerSync, cursors, license, clock,
             NullLogger<WpfCustomerProjectionSyncService>.Instance);
+        CustomerPush = customerPush;
         var customerPull = new CustomerChangesPullService(api, Customers, customerSync, cursors, customerPush, license,
             clock, new SyncStatusTracker(), NullLogger<CustomerChangesPullService>.Instance);
-        Commands = new SalesCommandClient(api, Envelope, State, LabelRepo, ShipmentRepo, feed, conflicts, new NoPrompt(),
+        Commands = new SalesCommandClient(api, Envelope, State, LabelRepo, ShipmentRepo, feed, conflicts, _prompt,
             license, clock, NullLogger<SalesCommandClient>.Instance);
         Connectivity = new SalesConnectivity(() => StateService.LastState, () => license.CurrentLicenseKey);
         Sender = new PendingSalesCommandSender(Pending, Commands, conflicts, State, Connectivity, clock,
@@ -197,7 +227,8 @@ internal sealed class SalesPc
         OffRound = new SalesModeOffRound(feed, State, Pending, Labels, LabelRepo, conflicts, store, Settings, clock,
             NullLogger<SalesModeOffRound>.Instance);
         // AppHost gibi tek ödeme kaydı göndericisi: açılışın 1. adımı ve geri doldurma turu aynı kapıdan.
-        PaymentRecords = new PaymentRecordSender(api, new PendingPaymentRecordRepository(db), Envelope, license, clock,
+        PendingPaymentRecords = new PendingPaymentRecordRepository(db);
+        PaymentRecords = new PaymentRecordSender(api, PendingPaymentRecords, Envelope, license, clock,
             NullLogger<PaymentRecordSender>.Instance);
         var coordinator = new SalesModeCoordinator(StateService, State, Envelope,
             new SalesOpeningFlush(PaymentRecords, customerPush, Push, ShipmentSync, payments, State), clock,
@@ -216,6 +247,16 @@ internal sealed class SalesPc
         RemoteSessions = new RemoteSessionsViewModel(liveSessions, State, Sessions, Commands, Connectivity,
             () => StateService.LastState, () => license.CurrentLicenseKey, ct => Pull.TourOnceAsync(ct), clock,
             NullLogger<RemoteSessionsViewModel>.Instance);
+
+        // AppHost gibi ödeme isteği: tek servis, kira sarmalı (ön gönderim aynı örneklerden), mod Off kaydı aynı
+        // göndericinin kuyruğuna, aynı CustomerBusySet.
+        Jobs = new PaymentJobRepository(db);
+        OffRecords = new PaymentOffRecordWriter(PaymentRecords, State, LabelRepo, license, clock,
+            NullLogger<PaymentOffRecordWriter>.Instance);
+        Lease = new PaymentLeaseCoordinator(State, Pull, PaymentRecords, customerPush, Push, Pending, LabelRepo,
+            NullLogger<PaymentLeaseCoordinator>.Instance);
+        Payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), Launcher, api, license, Jobs, Shipping,
+            NullLogger<PaymentRequestService>.Instance, Customers, busy, OffRecords, Lease);
 
         // AppHost.Initialize'ın açılış adımları (göçten sonra, arka plan işlerinden önce).
         Envelope.CaptureRestoreAtBoot(markerApplied: false);

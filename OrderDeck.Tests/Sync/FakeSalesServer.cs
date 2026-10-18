@@ -80,7 +80,9 @@ namespace OrderDeck.Tests.Sync;
 ///
 /// <para><b>Bekleyen ödeme kayıtları</b> (W3-05): <c>payment-requests/backfill</c> ve <c>payment-requests/{id}/finish</c>
 /// (<see cref="PaymentRequestsBackfill"/>, <see cref="PaymentRequestsFinish"/>; kayıt, betik, v2 zarfı). Kira ve kayıt
-/// kuralları taklit edilmez.</para>
+/// kuralları taklit edilmez. W3-07: <c>payment-requests/begin</c> (<see cref="PaymentRequestsBegin"/>; betik yoksa 200
+/// <c>sending</c>, mod Off'ta <c>mode-off</c>), ödeme akışının bakiye uçları (<see cref="BalancePreview"/>) ve Cloud API
+/// gönderimi (<see cref="WhatsAppSend"/>) — ödeme isteği uçtan uca sürülebilsin.</para>
 ///
 /// <para><b>Birim kuralı ve açılış penceresi</b> (W2-12, iki bilgisayarlı yakınsama testleri için): <c>orders/sync</c>
 /// güncelleme dalı §4.2 tablosunu uygular (<see cref="UnitRule"/>: K1 oluşum alanları yazılmaz, K2 damgalı birimi yalnız
@@ -117,6 +119,24 @@ internal sealed class FakeSalesServer : HttpMessageHandler
     /// <see cref="EnqueueStatus"/> için.</summary>
     public const string PaymentRequestsBackfill = "payment-requests/backfill";
     public const string PaymentRequestsFinish = "payment-requests/finish";
+
+    /// <summary>Ödeme isteği kirası (W3-07, <c>PaymentLeaseCoordinator</c>): <see cref="Calls"/>, <see cref="EnqueueStatus"/>,
+    /// <see cref="EnqueueProblem(string, int, string, IReadOnlyDictionary{string, object?})"/> ve
+    /// <see cref="EnqueueTimeout"/> için. Kira kuralları taklit edilmez: betik yoksa 200 <c>sending</c>.</summary>
+    public const string PaymentRequestsBegin = "payment-requests/begin";
+
+    /// <summary>Ödeme akışının bakiye uçları (W3-07): <c>customer-balance/preview</c>, <c>scope</c> (hep 204) ve
+    /// <c>apply</c> (<see cref="BalancePreview"/>'dan en çok istenen kadar).</summary>
+    public const string BalancePreviewEndpoint = "customer-balance/preview";
+    public const string BalanceScopeEndpoint = "customer-balance/scope";
+    public const string BalanceApplyEndpoint = "customer-balance/apply";
+
+    /// <summary>WhatsApp Cloud API gönderimi (W3-07): betik yoksa <c>{ok: true}</c>; <see cref="EnqueueJson"/> başka yanıt
+    /// verir.</summary>
+    public const string WhatsAppSend = "whatsapp/send";
+
+    /// <summary>Bakiye önizlemesinin döneceği bakiye (her müşteri için aynı); 0 = bakiye yok, apply çağrılmaz.</summary>
+    public decimal BalancePreview { get; set; }
 
     /// <summary><c>sales/backfill</c>'in uç adı: <see cref="EnqueueStatus"/> ve <see cref="EnqueueProblem"/> için.</summary>
     public const string Backfill = "backfill";
@@ -304,6 +324,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         lock (_gate) Script(endpoint).Enqueue(() => throw new TaskCanceledException("fake timeout"));
     }
 
+    /// <summary>Sıradaki yanıt verilen kod ve JSON gövdesi (ör. WhatsApp gönderiminin <c>{ok: false}</c>'u).</summary>
+    public void EnqueueJson(string endpoint, int status, string json)
+    {
+        lock (_gate) Script(endpoint).Enqueue(() => FakeHttpMessageHandler.Json(status, json));
+    }
+
     private Queue<Func<HttpResponseMessage>> Script(string endpoint) =>
         _scripted.TryGetValue(endpoint, out var q) ? q : _scripted[endpoint] = new Queue<Func<HttpResponseMessage>>();
 
@@ -330,6 +356,19 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             var payments = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payments/(sync|since)$");
             if (payments.Success)
                 return await HandlePaymentsAsync(req, Guid.Parse(payments.Groups[1].Value), payments.Groups[2].Value, ct);
+
+            // Ödeme isteği kirası (W3-07): begin; kira kuralları taklit edilmez.
+            var paymentBegin = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payment-requests/begin$");
+            if (paymentBegin.Success && req.Method == HttpMethod.Post)
+                return await HandlePaymentBeginAsync(req, Guid.Parse(paymentBegin.Groups[1].Value), ct);
+
+            // Ödeme akışının bakiye uçları ve Cloud API gönderimi (W3-07): ödeme isteği testleri akışı uçtan uca sürer.
+            var balance = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/customer-balance/(preview|scope|apply)$");
+            if (balance.Success)
+                return await HandleBalanceAsync(req, Guid.Parse(balance.Groups[1].Value), balance.Groups[2].Value, ct);
+            var whatsapp = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/whatsapp/send$");
+            if (whatsapp.Success && req.Method == HttpMethod.Post)
+                return await HandleWhatsAppSendAsync(req, Guid.Parse(whatsapp.Groups[1].Value), ct);
 
             // Bekleyen ödeme kayıtları (W3-05): kirasız kayıtların geri doldurması ve gönderilemeyen finish'ler.
             var paymentRequests = Regex.Match(path,
@@ -1804,6 +1843,97 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 results.Add(new { recordId = id, status = _paymentRecordIds.Add(id) ? "applied" : "unchanged" });
             }
         return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new { records = results }, Web));
+    }
+
+    /// <summary>
+    /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), betik, v2 zarfı denetimi; mod Off'ta 409
+    /// <c>mode-off</c> (§4.7). Kira kuralları (yeniden oynatma, üye kesişimi, öncüller, sunucu toplamı, kargo) taklit
+    /// edilmez: betik yoksa 200, durum <c>sending</c>, üyeler istemcinin üyeleri.
+    /// </summary>
+    private async Task<HttpResponseMessage> HandlePaymentBeginAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
+    {
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(PaymentRequestsBegin, licenseId, raw));
+            if (_scripted.TryGetValue(PaymentRequestsBegin, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        if (scripted is not null) return scripted();
+
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("replicaId", out var replica) || replica.ValueKind != JsonValueKind.String
+            || !root.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 2
+            || !root.TryGetProperty("seenMode", out _))
+            return Invalid($"{PaymentRequestsBegin}: v2 zarfı yok");
+        if (Mode != 1) return FakeHttpMessageHandler.Problem(409, "mode-off");
+
+        return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+        {
+            recordId = root.GetProperty("recordId").GetGuid(),
+            state = "sending",
+            leaseUntil = DateTimeOffset.UtcNow.AddSeconds(120),
+            members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()).ToList(),
+        }, Web));
+    }
+
+    /// <summary>Bakiye uçları (W3-07): önizleme <see cref="BalancePreview"/>, kapsam hep 204 (düşüm yok), apply en çok
+    /// istenen kadar ve işlem kimliği = idempotency anahtarı (gerçek sunucu gibi). Kayıt <see cref="Calls"/>'ta.</summary>
+    private async Task<HttpResponseMessage> HandleBalanceAsync(
+        HttpRequestMessage req, Guid licenseId, string action, CancellationToken ct)
+    {
+        var endpoint = "customer-balance/" + action;
+        var raw = req.Content is null ? req.RequestUri!.Query : await req.Content.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(endpoint, licenseId, raw));
+            if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        if (scripted is not null) return scripted();
+
+        switch (action)
+        {
+            case "preview" when req.Method == HttpMethod.Get:
+                return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+                {
+                    wpfCustomerId = Guid.Empty, balance = BalancePreview, updatedAt = DateTimeOffset.UtcNow,
+                }, Web));
+            case "scope" when req.Method == HttpMethod.Get:
+                return FakeHttpMessageHandler.Empty(204);
+            case "apply" when req.Method == HttpMethod.Post:
+            {
+                using var doc = JsonDocument.Parse(raw);
+                var amount = doc.RootElement.GetProperty("amount").GetDecimal();
+                var key = doc.RootElement.TryGetProperty("idempotencyKey", out var k) && k.ValueKind == JsonValueKind.String
+                    ? k.GetGuid()
+                    : Guid.NewGuid();
+                var applied = Math.Min(BalancePreview, amount);
+                return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
+                {
+                    transactionId = key, appliedAmount = applied, remainingBalance = BalancePreview - applied,
+                }, Web));
+            }
+            default:
+                _faults.Enqueue($"beklenmeyen istek: {req.Method} {endpoint}");
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+    }
+
+    /// <summary>WhatsApp Cloud API gönderimi (W3-07): kayıt, betik; betik yoksa gönderildi.</summary>
+    private async Task<HttpResponseMessage> HandleWhatsAppSendAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
+    {
+        var raw = await req.Content!.ReadAsStringAsync(ct);
+        Func<HttpResponseMessage>? scripted = null;
+        lock (_gate)
+        {
+            _pushCalls.Add(new PushCall(WhatsAppSend, licenseId, raw));
+            if (_scripted.TryGetValue(WhatsAppSend, out var q) && q.Count > 0) scripted = q.Dequeue();
+        }
+        if (scripted is not null) return scripted();
+        return FakeHttpMessageHandler.Json(200,
+            $"{{\"ok\":true,\"errorCode\":null,\"errorMessage\":null,\"messageId\":\"{Guid.NewGuid()}\"}}");
     }
 
     private Replica Touch(Guid licenseId, Guid replicaId, int seenMode)

@@ -89,9 +89,34 @@
             </ItemsControl>
         </StackPanel>
 
-        <TextBlock Grid.Row="2" Text="EN ÇOK ALAN MÜŞTERİLER"
-                   Style="{StaticResource OD.Text.Micro}"
-                   Margin="{StaticResource OD.Pad.Top5}"/>
+        <StackPanel Grid.Row="2">
+            <!-- "WhatsApp" ödeme isteğinin satır içi engeli (spec 2026-10-13 §6.4,
+                 W3-07): ShellBanners deseninde amber şerit; açılır pencere yok,
+                 "Tamam" kapatır. -->
+            <Border CornerRadius="{StaticResource OD.Radius.Md}"
+                    Background="{StaticResource OD.Brush.AmberTint}"
+                    BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                    BorderThickness="1"
+                    Margin="{StaticResource OD.Pad.Top5}"
+                    Visibility="{Binding PaymentProblem,
+                                 Converter={StaticResource NullToCollapsedConverter}}">
+                <DockPanel LastChildFill="True" Margin="{StaticResource OD.Pad.4}">
+                    <Button DockPanel.Dock="Right"
+                            Content="Tamam"
+                            Command="{Binding DismissPaymentProblemCommand}"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            Foreground="{StaticResource OD.Brush.Amber}"
+                            Margin="{StaticResource OD.Pad.2}"/>
+                    <TextBlock Text="{Binding PaymentProblem}"
+                               Foreground="{StaticResource OD.Brush.Amber}"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                </DockPanel>
+            </Border>
+            <TextBlock Text="EN ÇOK ALAN MÜŞTERİLER"
+                       Style="{StaticResource OD.Text.Micro}"
+                       Margin="{StaticResource OD.Pad.Top5}"/>
+        </StackPanel>
 
         <DataGrid Grid.Row="3"
                   Style="{StaticResource OD.DataGrid}"

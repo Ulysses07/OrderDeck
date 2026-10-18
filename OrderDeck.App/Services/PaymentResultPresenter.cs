@@ -25,6 +25,32 @@ namespace OrderDeck.App.Services;
 /// </summary>
 public static class PaymentResultPresenter
 {
+    /// <summary>
+    /// Sonucun tamamıyla bildirim (spec 2026-10-13 §6.4; W3-07): <see cref="PaymentRequestResult.Blocked"/> açılır pencere
+    /// AÇMAZ — metni çağıran satır içi gösterir (<see cref="InlineProblem"/>; sahibin #508 tercihi).
+    /// <see cref="PaymentRequestResult.PaymentInProgress"/> başka bilgisayarın kirasında makine adlı metni
+    /// (<see cref="PaymentRequestOutcome.Message"/>) gösterir; öbür sonuçlar <see cref="Notify(IDialogService, PaymentRequestResult)"/>
+    /// ile bugünkü gibi.
+    /// </summary>
+    public static void Notify(IDialogService dialogs, PaymentRequestOutcome outcome)
+    {
+        switch (outcome.Result)
+        {
+            case PaymentRequestResult.Blocked:
+                return;
+            case PaymentRequestResult.PaymentInProgress when !string.IsNullOrWhiteSpace(outcome.Message):
+                dialogs.ShowInfo(outcome.Message);
+                return;
+            default:
+                Notify(dialogs, outcome.Result);
+                return;
+        }
+    }
+
+    /// <summary>Satır içi şeridin metni: <see cref="PaymentRequestResult.Blocked"/>'ın nedeni; öbür sonuçlarda null.</summary>
+    public static string? InlineProblem(PaymentRequestOutcome outcome)
+        => outcome.Result == PaymentRequestResult.Blocked ? outcome.Message : null;
+
     /// <summary>Sonucu operatöre bildirir. <see cref="PaymentRequestResult.Opened"/>
     /// ve <see cref="PaymentRequestResult.Sent"/> sessizdir — başarı zaten
     /// ekranda görünür (WhatsApp penceresi açılır / mesaj gider).</summary>

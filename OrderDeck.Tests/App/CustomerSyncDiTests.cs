@@ -349,6 +349,32 @@ public sealed class CustomerSyncDiTests
     }
 
     [Fact]
+    public void Odeme_kirasi_sarmali_odeme_servisine_bagli_on_gonderimi_tekil_orneklerden()
+    {
+        // W3-07 (spec 2026-10-13 §6.4): PaymentRequestService'in isteğe bağlı parametresi — kayıt eksikse DI onu sessizce
+        // null bırakır ve mod On'da istek kirasız, ön gönderimsiz giderdi (M9'un fail-closed'ı hiç çalışmazdı).
+        using var host = new global::OrderDeck.App.AppHost();
+        var lease = host.Services.GetRequiredService<PaymentLeaseCoordinator>();
+
+        host.Services.GetRequiredService<PaymentLeaseCoordinator>().Should().BeSameAs(lease);
+        PrivateField<PaymentLeaseCoordinator>(
+                host.Services.GetRequiredService<global::OrderDeck.App.Services.PaymentRequestService>(), "_lease")
+            .Should().BeSameAs(lease);
+        PrivateField<SalesChangesPullService>(lease, "_pull").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesChangesPullService>(), "bekleyen komutlar tek göndericiden");
+        PrivateField<PaymentRecordSender>(lease, "_records").Should().BeSameAs(
+            host.Services.GetRequiredService<PaymentRecordSender>(), "finish'ler TEK göndericinin kuyruğundan");
+        PrivateField<WpfCustomerProjectionSyncService>(lease, "_customerPush").Should().BeSameAs(
+            host.Services.GetRequiredService<WpfCustomerProjectionSyncService>(), "müşteri gönderiminin tek tur kilidi");
+        PrivateField<SessionOrderSyncService>(lease, "_salesPush").Should().BeSameAs(
+            host.Services.GetRequiredService<SessionOrderSyncService>(), "gönderim kapısı tek örnekte");
+        PrivateField<PendingSalesCommandRepository>(lease, "_pendingCommands").Should().BeSameAs(
+            host.Services.GetRequiredService<PendingSalesCommandRepository>());
+        PrivateField<SalesSyncStateRepository>(lease, "_state").Should().BeSameAs(
+            host.Services.GetRequiredService<SalesSyncStateRepository>());
+    }
+
+    [Fact]
     public void Odeme_gecmisi_geri_doldurmasi_ortak_orneklerle_kurulur_geri_doldurma_turu_surer()
     {
         // W3-06 (spec 2026-10-13 §6.4 "Ödeme geçmişi", §8.2-6, §10.3 DI testi): kayıtlar TEK göndericinin kuyruğuna,

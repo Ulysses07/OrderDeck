@@ -590,6 +590,10 @@ public sealed class AppHost : IDisposable
         // W3-06 (§6.4 "Ödeme geçmişi (mod Off'ta da)"): mod Off'ta her teslim ya da belirsiz gönderimden sonra kirasız
         // kayıt — PaymentRequestService'in isteğe bağlı parametresi; kayıt AYNI göndericinin kuyruğuna.
         services.AddSingleton<Services.Sync.PaymentOffRecordWriter>();
+        // W3-07 (spec 2026-10-13 §6.4): ödeme isteğinin mod On sarmalı — PaymentRequestService'in isteğe bağlı parametresi
+        // (yerel kip Off'ta hiçbir şey yapmaz). Ön gönderim AYNI örneklerden: bekleyen komutlar satış akışı servisinin
+        // tek göndericisinden, finish'ler tek ödeme kaydı göndericisinden, müşteri ve oturum/etiket gönderim kapısından.
+        services.AddSingleton<Services.Sync.PaymentLeaseCoordinator>();
 
         services.AddSingleton<SalesBackfillRepository>();
         services.AddSingleton<Services.Sync.SalesBackfillService>(sp =>

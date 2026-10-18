@@ -57,8 +57,16 @@ public enum PaymentRequestResult
     MergeRequired,
 
     /// <summary>Bu kişi için başka bir ödeme akışı sürüyor (öbür pencere) ve süresi sınırlı bekleme
-    /// doldu. Hiçbir şey gönderilmedi; operatör biraz sonra tekrar dener.</summary>
+    /// doldu. Hiçbir şey gönderilmedi; operatör biraz sonra tekrar dener. Mod On'da başka bilgisayarın kirası da
+    /// (spec 2026-10-13 §6.4 <c>in-progress-elsewhere</c>): metin makine adıyla
+    /// <see cref="PaymentRequestOutcome.Message"/>'da.</summary>
     PaymentInProgress,
+
+    /// <summary>Mod On'da (spec 2026-10-13 §6.4, W3) ön gönderim ya da sunucunun kirası isteği durdurdu: gönderilemeyen
+    /// bekleyen komut, sunucunun reddi, güncelleme gerekli, uç yok. Hiçbir şey gönderilmedi; neden
+    /// <see cref="PaymentRequestOutcome.Message"/>'da ve SATIR İÇİ gösterilir (açılır pencere yok — sahibin #508
+    /// tercihi).</summary>
+    Blocked,
 }
 
 /// <summary>Operatöre sorulacak soru (<see cref="PaymentRequestResult.AlreadyRequested"/> /
@@ -95,12 +103,16 @@ public sealed record PriorPaymentRequest(decimal Amount, DateTimeOffset? At, boo
 /// <para><see cref="OwnerId"/> ve <see cref="Demoted"/> banka beklentisi (W2) için: beklenti işin sahip
 /// satırına yazılır (işsiz yollarda kişinin belirlenimli sahibi; GUID'li üye yoksa null → beklenti yok),
 /// indirilen her iş için (CustomerId, OriginalScopeKey) beklentisi iptal edilir. Sahip yeniden
-/// türetilmez.</para></summary>
+/// türetilmez.</para>
+/// <para><see cref="Message"/>: operatöre gösterilecek metin — <see cref="PaymentRequestResult.Blocked"/>'ta her zaman,
+/// <see cref="PaymentRequestResult.PaymentInProgress"/>'ta kirayı tutan bilgisayarın adı biliniyorsa; öbür sonuçlarda
+/// null (metni <see cref="PaymentResultPresenter"/> kurar).</para></summary>
 public sealed record PaymentRequestOutcome(
     PaymentRequestResult Result,
     PaymentPrompt? Prompt = null,
     string? OwnerId = null,
-    IReadOnlyList<DemotedJob>? Demoted = null);
+    IReadOnlyList<DemotedJob>? Demoted = null,
+    string? Message = null);
 
 /// <summary>
 /// Phase 4g: Customer + tutar + tarih → Settings template substitution + wa.me launch.
@@ -126,6 +138,7 @@ public sealed class PaymentRequestService
     private readonly CustomerRepository? _customers;
     private readonly CustomerBusySet? _busy;
     private readonly PaymentOffRecordWriter? _offRecords;
+    private readonly PaymentLeaseCoordinator? _lease;
 
     /// <summary>Kişi başına özel ödeme kilidi — servis tekil (AppHost), yani süreç içi tek kilit tablosu.</summary>
     private readonly PaymentPersonGate _personGate = new();
@@ -142,6 +155,9 @@ public sealed class PaymentRequestService
     /// örneği — ikinci bir örnek kirayı senkrona görünmez yapardı). Null yalnız testlerde (kira yok).</param>
     /// <param name="offRecords">Mod Off'ta her teslim ya da belirsiz gönderimden sonraki kirasız ödeme kaydı (spec
     /// 2026-10-13 §6.4 "Ödeme geçmişi (mod Off'ta da)"; W3-06). DI verir; null yalnız testlerde (kayıt yok).</param>
+    /// <param name="lease">Mod On sarmalı (spec 2026-10-13 §6.4; W3-07): ön gönderim, kapsamdan yeniden okunan tutar ve
+    /// bekleyen komut engeli. Yalnız girişte ve çıkışta çağrılır; yerel kip Off'ta hiçbir şey yapmaz. DI verir; null
+    /// yalnız testlerde (bugünkü yol).</param>
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
@@ -153,7 +169,8 @@ public sealed class PaymentRequestService
         Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null,
         CustomerRepository? customers = null,
         CustomerBusySet? busy = null,
-        PaymentOffRecordWriter? offRecords = null)
+        PaymentOffRecordWriter? offRecords = null,
+        PaymentLeaseCoordinator? lease = null)
     {
         _settingsStore = settingsStore;
         _messageBuilder = messageBuilder;
@@ -166,6 +183,7 @@ public sealed class PaymentRequestService
         _customers = customers;
         _busy = busy;
         _offRecords = offRecords;
+        _lease = lease;
     }
 
     // License key → Guid LicenseId resolution. Aynı pattern CustomerChangesPullService /
@@ -299,6 +317,21 @@ public sealed class PaymentRequestService
         Customer customer, Func<PaymentPerson, decimal?> productTotalFor, DateTime streamDate,
         string scopeKey, IReadOnlySet<string>? confirmedTokens = null, CancellationToken ct = default)
     {
+        // Mod On (spec 2026-10-13 §6.4-1, W3-07): ön gönderim akışın EN BAŞINDA, hiçbir kira alınmadan — bekleyen
+        // komutların yanıt satırları ve gönderimlerin yönlendirmeleri bu kişinin kirasını beklemesin (U13/U17). Yerel kip
+        // Off'ta null: bugünkü yol.
+        PaymentLeaseFlow? paymentLease;
+        try
+        {
+            paymentLease = _lease is null ? null : await _lease.EnterAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogError(ex, "Ödeme akışının kip kapısı okunamadı — mesaj engellendi (customer={CustomerId})",
+                customer.Id);
+            return new(PaymentRequestResult.BalanceUncertain);
+        }
+
         IDisposable lease;
         string customerId;
         try
@@ -362,7 +395,7 @@ public sealed class PaymentRequestService
                     var contact = current with { Phone = phone, RecipientPaysActive = person.RecipientPaysActive };
 
                     var outcome = await OpenWhatsAppCoreAsync(
-                        contact, person, productTotal.Value, streamDate, scopeKey, confirmedTokens, ct);
+                        contact, person, productTotal.Value, streamDate, scopeKey, confirmedTokens, paymentLease, ct);
                     if (outcome is not null) return outcome;
                     _log?.LogInformation(
                         "Ödeme kişisinin üye kümesi akış sırasında değişti — yeniden okunuyor (customer={CustomerId})",
@@ -483,14 +516,25 @@ public sealed class PaymentRequestService
     /// <summary>Bakiye akışının gövdesi — kişi kiralı, <paramref name="customer"/> kira altında okunan
     /// iletişim satırı (ad tıklanan satırdan; telefon ve alıcı ödemeli kişi düzeyinde). <c>null</c> =
     /// üye kümesi yazma işleminin içinde değişmiş bulundu; çağıran kişiyi yeniden okur (hiçbir şey
-    /// yazılmadı, gönderilmedi).</summary>
+    /// yazılmadı, gönderilmedi).
+    ///
+    /// <para>Mod On (<paramref name="paymentLease"/> dolu; spec 2026-10-13 §6.4, W3-07): kişi okunduktan sonra bekleyen
+    /// komut engeli ve tutarın kapsamdan yeniden okunması — mesajın tutarı da kiranın tutarı da bu okumadan. Kargo ayarı
+    /// tek anlık görüntüden.</para></summary>
     private async Task<PaymentRequestOutcome?> OpenWhatsAppCoreAsync(
         Customer customer, PaymentPerson person, decimal productTotal, DateTime streamDate,
-        string scopeKey, IReadOnlySet<string>? confirmedTokens, CancellationToken ct)
+        string scopeKey, IReadOnlySet<string>? confirmedTokens, PaymentLeaseFlow? paymentLease, CancellationToken ct)
     {
         var settings = _settingsStore.Load();
+        var shipping = _shipping.Current();
+        if (paymentLease is not null)
+        {
+            var amount = paymentLease.ReadAmount(person, scopeKey);
+            if (amount.Stop is { } stop) return stop with { OwnerId = person.OwnerId };
+            productTotal = amount.ProductTotal;
+        }
         var (totalAmount, shippingFee, shippingNote) =
-            ComputeShipping(customer, productTotal, _shipping.Current().Settings);
+            ComputeShipping(customer, productTotal, shipping.Settings);
 
         // Bakiye uygulaması — PaymentJob durum makinesi (R2-01..04).
         // Eski fail-silent davranış BİLEREK terk edildi: sonuç belirsizse mesaj

@@ -183,11 +183,15 @@ public sealed class PaymentRecordSender
 
     /// <summary>Kuyruğu bütçe içinde gönderir. Kapı başka bir gönderimdeyse sırasını bekler (ardından kalanı görür).
     /// Yerel veritabanı hatası çağırana fırlar; iptal <see cref="OperationCanceledException"/>.</summary>
-    public Task<PaymentRecordFlush> FlushAsync(CancellationToken ct) =>
+    /// <param name="finishesOnly">Yalnız bekleyen <c>finish</c>'ler (ödeme isteğinin ön gönderimi ve akış sonu, W3-07;
+    /// spec 2026-10-13 §6.4): kirasız kayıtların partileri bütçeyi yemesin. Bu kopyanın gönderilmemiş <c>abandoned</c>
+    /// finish'i <c>begin</c>'den önce gitmezse sunucu o kirayı <c>Unconfirmed</c> yapar (§6.4-c) ve sahte bir "gitmiş
+    /// olabilir" sorusu çıkardı. <see cref="PaymentRecordFlush.Remaining"/> yine bütün kuyruğu sayar.</param>
+    public Task<PaymentRecordFlush> FlushAsync(CancellationToken ct, bool finishesOnly = false) =>
         Task.Run(async () =>
         {
             await _gate.WaitAsync(ct).ConfigureAwait(false);
-            try { return await ProcessAsync(ct).ConfigureAwait(false); }
+            try { return await ProcessAsync(finishesOnly, ct).ConfigureAwait(false); }
             finally { _gate.Release(); }
         }, ct);
 
@@ -203,9 +207,15 @@ public sealed class PaymentRecordSender
         public readonly List<string> Conflicts = new();
     }
 
-    private async Task<PaymentRecordFlush> ProcessAsync(CancellationToken ct)
+    private async Task<PaymentRecordFlush> ProcessAsync(bool finishesOnly, CancellationToken ct)
     {
         var rows = _repo.List();
+        if (finishesOnly)
+        {
+            var all = rows.Count;
+            rows = rows.Where(r => r.Kind == PendingPaymentRecordKinds.Finish).ToList();
+            if (rows.Count == 0) return new PaymentRecordFlush(0, 0, 0, all);
+        }
         if (rows.Count == 0) return PaymentRecordFlush.Empty;
 
         if (_envelope.ForPush() is not { IsV2: true } envelope)

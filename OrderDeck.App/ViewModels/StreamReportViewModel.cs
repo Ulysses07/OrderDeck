@@ -31,6 +31,13 @@ public sealed partial class StreamReportViewModel : ViewModelBase
     /// W2-09); bu bilgisayarın yayınında null (satır gizli).</summary>
     [ObservableProperty] private string? _remoteMachineText;
 
+    /// <summary>Son "Ödeme iste"nin satır içi engeli (spec 2026-10-13 §6.4, W3-07); açılır pencere yok, "Tamam" kapatır.
+    /// Yeni tıklama temizler.</summary>
+    [ObservableProperty] private string? _paymentProblem;
+
+    [RelayCommand]
+    private void DismissPaymentProblem() => PaymentProblem = null;
+
     public ObservableCollection<TopCustomer>       TopCustomers      { get; } = new();
     public ObservableCollection<GiveawaySummary>   Giveaways         { get; } = new();
     public ObservableCollection<PlatformBreakdown> PlatformBreakdown { get; } = new();
@@ -229,12 +236,13 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             return;
         }
 
-        var result = await RequestPaymentAsync(customer);
+        PaymentProblem = null;
+        var outcome = await RequestPaymentAsync(customer);
 
         // R4-07: Telefon diyaloğundan sonraki İKİNCİ çağrının sonucu da aynı
         // bildirim yolundan geçmeli — eskiden dönüş değeri okunmuyordu ve o
         // çağrı belirsiz/başarısız dönerse ekranda hiçbir şey olmuyordu.
-        if (result == PaymentRequestResult.PhoneRequired)
+        if (outcome.Result == PaymentRequestResult.PhoneRequired)
         {
             if (!await _dialogService.ShowPhoneEntryAsync(customer.Id)) return;
 
@@ -245,21 +253,23 @@ public sealed partial class StreamReportViewModel : ViewModelBase
                 return;
             }
 
-            result = await RequestPaymentAsync(updated);
+            outcome = await RequestPaymentAsync(updated);
         }
 
         // U12 (Bölüm C): satır rapor yüklendikten sonra yerel taşımayla bayatladı — istek
         // gönderilmedi; rapor yenilenir, operatör güncel satırı yeniden seçer.
-        if (result == PaymentRequestResult.ListStale && _sessionId is not null) Load(_sessionId);
+        if (outcome.Result == PaymentRequestResult.ListStale && _sessionId is not null) Load(_sessionId);
 
-        PaymentResultPresenter.Notify(_dialogService, result);
+        // W3-07: mod On'un engelleri satır içi (açılır pencere yok); öbür sonuçlar bugünkü gibi.
+        PaymentProblem = PaymentResultPresenter.InlineProblem(outcome);
+        PaymentResultPresenter.Notify(_dialogService, outcome);
 
         // Sahip kararları 2 ve 4: teslim edilmiş istek ya da birden çok istek varsa operatöre sorulur;
         // "Evet" → aynı istek onay belirteciyle yeniden.
-        async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
-            (await PaymentResultPresenter.RequestConfirmedAsync(_dialogService, tokens =>
+        Task<PaymentRequestOutcome> RequestPaymentAsync(Customer c) =>
+            PaymentResultPresenter.RequestConfirmedAsync(_dialogService, tokens =>
                 _paymentService.RequestPaymentAsync(
-                    c, CurrentAmount, _currentSessionDate, $"session:{_sessionId}", tokens))).Result;
+                    c, CurrentAmount, _currentSessionDate, $"session:{_sessionId}", tokens));
 
         // U12 (Bölüm C): satırın tutarı rapor yüklenirken Id başına toplandı. Rapor açıkken
         // senkron bir kopyayı (harf farklı yazım) asıl kayda taşıdıysa kopyanın satırı yalnız

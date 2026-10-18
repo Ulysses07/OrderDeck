@@ -394,7 +394,11 @@ public sealed class CorrectedPaymentRequests
                 PaymentRequestResult.PhoneRequired => new(c, ResendStatus.Manual, "WhatsApp numarası gerekli"),
                 PaymentRequestResult.BalanceUncertain => new(c, ResendStatus.Manual,
                     "bakiye doğrulanamadı (sunucuya ulaşılamıyor olabilir)"),
-                PaymentRequestResult.PaymentInProgress => new(c, ResendStatus.Manual, "başka bir pencerede ödeme isteği sürüyor"),
+                PaymentRequestResult.PaymentInProgress => new(c, ResendStatus.Manual,
+                    outcome.Message ?? "başka bir pencerede ödeme isteği sürüyor"),
+                // W3-07 (spec 2026-10-13 §6.4): mod On'un engeli — elle bakılmalı, neden satırda.
+                PaymentRequestResult.Blocked => new(c, ResendStatus.Manual,
+                    outcome.Message ?? "ödeme isteği engellendi"),
                 PaymentRequestResult.ListStale => new(c, ResendStatus.Manual, "müşteri kaydı bilgisayarlar arası birleştirildi"),
                 PaymentRequestResult.LaunchFailed => new(c, ResendStatus.Manual, "WhatsApp açılamadı"),
                 _ => new(c, ResendStatus.Manual, outcome.Result.ToString()),
