@@ -89,7 +89,8 @@ public sealed record PendingSalesCommandFlush(int Sent, int Kept, int Dropped, i
 
 /// <summary>
 /// Bekleyen satış komutlarının gönderimi (spec 2026-10-13 §5.5, §5.8 "Kalıntı kuyruk", §6.4-1; W2-07). Kuyruğa
-/// devredilmiş KENDİ yayınının kalıntı etiketlerinin iptali ve ilk baskısı girer (<see cref="Enqueue"/>; yalnız mod
+/// devredilmiş KENDİ yayınının kalıntı etiketlerinin iptali ve ilk baskısı, ayrıca başka bilgisayarın devredilmiş
+/// yayınındaki satırın ilk baskısı (sahip kararı Y11) girer (<see cref="Enqueue"/>; yalnız mod
 /// On). Satış akışı turu kuyruğu ön gönderimden sonra, akıştan ÖNCE gönderir
 /// (<see cref="SalesChangesPullService.FlushPendingSalesCommandsAsync"/>); kuyruk baskısı kâğıdın komutunu hemen
 /// gönderir (<see cref="SendNowAsync"/>). Hepsi tek kapıdan: aynı komut aynı anda iki kez gitmez.

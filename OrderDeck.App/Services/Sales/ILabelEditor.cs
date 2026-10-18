@@ -293,8 +293,9 @@ public interface ILabelEditor : IShipmentEditor
     /// Kuyruk baskısının işaretlenmesi, kâğıt basıldıktan SONRA (§5.6-4). Mod Off'ta bugünkü
     /// <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string})"/>, beklemeden. Mod On'da tek basış kimliği ve
     /// kâğıt sırası: yerel satırlar <see cref="LabelService.MarkPrintedAndRecord(IReadOnlyList{string}, string, IReadOnlyList{int})"/>
-    /// ile, devredilmiş kendi yayınının satırları bekleyen <c>mark-printed</c> komutuyla (kalıcı önce; çevrimiçiyse hemen
-    /// gönderilir). Canlı yayının satırları devir kilidine uğramadan hemen; kendi bitmiş yayınının satırları kilidi en çok
+    /// ile, devredilmiş yayınların satırları — kendi kalıntısı da başka bilgisayarınki de (sahip kararı Y11) — bekleyen
+    /// <c>mark-printed</c> komutuyla (kalıcı önce; çevrimiçiyse hemen gönderilir; sonucu bilinmezse tur aynı kimlikle
+    /// yineler). Canlı yayının satırları devir kilidine uğramadan hemen; kendi bitmiş yayınının satırları kilidi en çok
     /// 3 sn bekler, süre dolunca kilit açılınca arka planda işaretlenir (<see cref="SalesPrintMarkResult.Pending"/>).
     /// </summary>
     /// <param name="paperOrder">Basılan etiketler, kâğıt sırasıyla.</param>

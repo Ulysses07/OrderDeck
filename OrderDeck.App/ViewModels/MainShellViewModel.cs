@@ -2339,7 +2339,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         // §5.6-4: kâğıt sırasıyla işaretleme yönlendiriciden geçer. Mod Off'ta bugünkü
         // LabelService.MarkPrintedAndRecord — eşzamanlı biter, ağ yok. Mod On'da tek basış kimliği: yerel satırlar
-        // yerelde, devredilmiş kendi yayınının kalıntıları mark-printed komutuyla ya da (çevrimdışı) bekleyen komutla.
+        // yerelde, devredilmiş yayınların satırları (kendi kalıntısı ve başka bilgisayarınki, Y11) bekleyen mark-printed
+        // komutuyla — çevrimiçiyse hemen gönderilir, sonucu bilinmezse tur aynı kimlikle yineler.
         // Sunucunun cancelled[]/alreadyPrinted[]'i "kâğıtları imha et" (§5.6-5), işlenemeyen satır uyarı.
         var mark = await _editor.MarkPrintedAsync(labels.Select(l => l.Id).ToList());
         if (mark.DiscardLabelIds.Count > 0 || mark.Notices.Count > 0)
