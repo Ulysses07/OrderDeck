@@ -222,11 +222,14 @@ public sealed record SalesShipmentStepResult(
 /// <param name="PooledAmount">Kararın kapsadığı dosyaların toplamı (U12) — "ücretsiz kargo kazandın" mesajının tutarı.</param>
 /// <param name="Problem">Uygulanamadı: satır içi metin (§5.3); başarıda null.</param>
 /// <param name="ChangedLabelIds">Yerelde kargo bağı değişmiş olabilecek etiketler.</param>
+/// <param name="Replan">Mod On'da karar <c>stale</c> aldı ve güncel aynada dosya hâlâ açık, havuz hâlâ eşikte: plan
+/// bununla yeniden gösterilir (§5.3 "sessiz yeniden deneme yok … plan yeniden gösterilir"); yoksa null.</param>
 public sealed record SalesShipmentDecisionResult(
     Shipment? Shipment,
     decimal PooledAmount,
     string? Problem,
-    IReadOnlyList<string> ChangedLabelIds);
+    IReadOnlyList<string> ChangedLabelIds,
+    ShipmentDecisionContext? Replan = null);
 
 /// <summary>
 /// Kargo dosyası işlemleri (spec 2026-10-13 §5.3 "Dekont kargo adımı" ve "Eşik çekmecesi kararı", §7.1). Mod Off'ta

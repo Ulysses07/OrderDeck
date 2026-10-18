@@ -1075,10 +1075,13 @@ public sealed class SalesEditRouter : ILabelEditor
         _connectivity.Report(outcome.Status);
         if (!outcome.IsApplied)
         {
-            _log.LogInformation("Kargo kararı {Decision}: shipment-decision {CommandId} dosya {ShipmentId} uygulanmadı ({Status})",
-                decision, outcome.Intent.CommandId, shipmentId, outcome.Status);
+            var replan = outcome.Status == SalesCommandStatus.Stale ? Replan(shipmentId) : null;
+            _log.LogInformation(
+                "Kargo kararı {Decision}: shipment-decision {CommandId} dosya {ShipmentId} uygulanmadı ({Status}); plan yeniden gösterilecek={Replan}",
+                decision, outcome.Intent.CommandId, shipmentId, outcome.Status, replan is not null);
             return new SalesShipmentDecisionResult(null, 0m,
-                SalesCommandMessages.ShipmentDecisionFailed(outcome.Message ?? SalesCommandMessages.Failed), outcome.LabelIds);
+                SalesCommandMessages.ShipmentDecisionFailed(outcome.Message ?? SalesCommandMessages.Failed), outcome.LabelIds,
+                replan);
         }
 
         var pooled = outcome.Result?.Decided?.Sum(d => d.Amount) ?? 0m;
@@ -1086,6 +1089,27 @@ public sealed class SalesEditRouter : ILabelEditor
             "Kargo kararı {Decision}: shipment-decision {CommandId} uygulandı — {Files} dosya, {Unlinked} bağı çözülen etiket",
             decision, outcome.Intent.CommandId, outcome.Result?.Decided?.Count ?? 0, outcome.Result?.Changed?.Count ?? 0);
         return new SalesShipmentDecisionResult(_shipmentRepo.GetById(shipmentId), pooled, null, outcome.LabelIds);
+    }
+
+    /// <summary>
+    /// <c>stale</c>'den sonra planın güncel hâli (§5.3): yanıtın <c>currentShipments</c>'ı aynaya yazıldı. Dosya hâlâ
+    /// açıksa (Pending/Held) eşik kişinin aynadaki bütün açık dosyalarının toplamıyla yeniden değerlendirilir (U12;
+    /// dekont adımıyla aynı kural); havuz eşiğin altındaysa ya da dosya kargolandıysa sorulacak karar yok — null.
+    /// </summary>
+    private ShipmentDecisionContext? Replan(string shipmentId)
+    {
+        try
+        {
+            if (_shipmentRepo.GetById(shipmentId) is not { Status: ShipmentStatus.Pending or ShipmentStatus.Held } mirror)
+                return null;
+            var ctx = _shipments.EvaluateAfterPayment(mirror.CustomerId, allLabelsPaid: true);
+            return ctx is { ShouldPrompt: true, ThresholdReached: true, Shipment: not null } ? ctx : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Kargo kararı: dosya {ShipmentId} için plan yeniden değerlendirilemedi", shipmentId);
+            return null;
+        }
     }
 
     private static string WireDecision(ShipmentDecision decision) => decision switch

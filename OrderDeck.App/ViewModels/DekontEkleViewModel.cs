@@ -298,6 +298,11 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         return vm.ChosenDirective;
     }
 
+    /// <summary>
+    /// Eşik çekmecesi. Mod On'da karar <c>stale</c> alırsa (çekmece açıkken dosya başka bilgisayarda değişti) sessiz
+    /// yeniden deneme yok: plan güncel havuzla, sebebi başında yazarak BİR KEZ yeniden gösterilir (spec 2026-10-13
+    /// §5.3); havuz eşiğin altına indiyse ya da dosya kargolandıysa sorulacak karar yoktur, sebep şeritte kalır.
+    /// </summary>
     private async Task MaybePromptThresholdAsync(SaveResult result)
     {
         if (result.ThresholdContext is not { Shipment: not null } ctx) return;
@@ -307,14 +312,27 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             ? $"{CustomerPlatform}/{CustomerUsername}"
             : PayerName;
 
-        var vm = new ShipmentThresholdDialogViewModel(
-            ctx, customerDisplay, _settings.Shipping.FreeShippingThreshold ?? 0m);
+        string? notice = null;
+        for (var shown = 0; shown < 2; shown++)
+        {
+            var vm = new ShipmentThresholdDialogViewModel(
+                ctx, customerDisplay, _settings.Shipping.FreeShippingThreshold ?? 0m) { Notice = notice };
 
-        await _drawers.ShowAsync("Ücretsiz Kargo Hakkı",
-            d => new Views.Drawers.ShipmentThresholdDrawer(d, vm));
+            await _drawers.ShowAsync("Ücretsiz Kargo Hakkı",
+                d => new Views.Drawers.ShipmentThresholdDrawer(d, vm));
 
-        if (vm.ChosenDecision is { } decision)
-            await ApplyShipmentDecisionAsync(ctx.Shipment!.Id, decision);
+            if (vm.ChosenDecision is not { } decision) return;
+            var decided = await ApplyShipmentDecisionCoreAsync(ctx.Shipment!.Id, decision);
+            if (decided is null) return;
+            if (decided.Problem is null)
+            {
+                if (shown > 0) ShipmentWarning = null;       // yeniden gösterilen plandaki karar uygulandı
+                return;
+            }
+            if (decided.Replan is not { Shipment: not null } replan) return;
+            ctx = replan;
+            notice = Services.Sync.SalesCommandMessages.Stale;
+        }
     }
 
     /// <summary>İlk kaydetme denemesi: doğrulama + duplicate kontrolü +
@@ -514,7 +532,12 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// kararın kapsadığı dosyaların toplamıyla (mod On'da yanıtın tutarları).
     /// Hiç fırlatmaz.
     /// </summary>
-    public async Task ApplyShipmentDecisionAsync(string shipmentId, ShipmentDecision decision)
+    public Task ApplyShipmentDecisionAsync(string shipmentId, ShipmentDecision decision)
+        => ApplyShipmentDecisionCoreAsync(shipmentId, decision);
+
+    /// <returns>Kararın sonucu; karar hata verdiyse (günlüğe yazıldı) null.</returns>
+    private async Task<Services.Sales.SalesShipmentDecisionResult?> ApplyShipmentDecisionCoreAsync(
+        string shipmentId, ShipmentDecision decision)
     {
         Services.Sales.SalesShipmentDecisionResult result;
         try
@@ -525,7 +548,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         {
             _log.LogWarning(ex,
                 "Shipment {Id} ApplyDecision {Decision} hata verdi", shipmentId, decision);
-            return;
+            return null;
         }
 
         if (result.Problem is { } problem)
@@ -534,7 +557,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             _log.LogInformation(
                 "Shipment {Id} → {Decision} uygulanmadı (kümülatif kargo çekmecesinden)",
                 shipmentId, decision);
-            return;
+            return result;
         }
         _log.LogInformation(
             "Shipment {Id} → {Decision} (kümülatif kargo çekmecesinden)",
@@ -546,6 +569,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         {
             TriggerShippingWonWhatsApp(result.Shipment, result.PooledAmount);
         }
+        return result;
     }
 
     /// <param name="pooledAmount">Kararın kapsadığı dosyaların toplamı (U12 — yerel taşımadan

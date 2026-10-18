@@ -38,8 +38,13 @@ public sealed class DekontShipmentCommandTests : IDisposable
         public List<string> Titles { get; } = new();
         public ShipmentDirective? Directive { get; set; }
         public ShipmentDecision? Decision { get; set; }
+
+        /// <summary>Verilirse eşik çekmecesinin sırayla açılışlarının kararları (sonrası null); yoksa hep
+        /// <see cref="Decision"/>.</summary>
+        public Queue<ShipmentDecision?>? Decisions { get; set; }
         public Action? BeforeDecision { get; set; }
         public ShipmentThresholdDialogViewModel? Threshold { get; private set; }
+        public List<ShipmentThresholdDialogViewModel> Thresholds { get; } = new();
 
         public Task<bool> ShowAsync(string title, Func<Drawer, object> buildContent)
         {
@@ -54,8 +59,10 @@ public sealed class DekontShipmentCommandTests : IDisposable
                     break;
                 case ShipmentThresholdDialogViewModel threshold:
                     Threshold = threshold;
+                    Thresholds.Add(threshold);
                     BeforeDecision?.Invoke();
-                    threshold.ChosenDecision = Decision;
+                    threshold.ChosenDecision = Decisions is null ? Decision
+                        : Decisions.Count > 0 ? Decisions.Dequeue() : null;
                     break;
             }
             return Task.FromResult(true);
@@ -270,29 +277,81 @@ public sealed class DekontShipmentCommandTests : IDisposable
             "ret currentShipments taşır: ayna tazelenir");
     }
 
+    /// <summary>Çekmece açıkken başka bilgisayar dosyayı değiştirir (bir kez): kararın beklenen sürümü bayatlar.</summary>
+    private Action ChangeOnceWhileDrawerOpen(Guid order, Func<FakeSalesServer.ShipmentBody, FakeSalesServer.ShipmentBody> change)
+    {
+        var done = false;
+        return () =>
+        {
+            if (done) return;
+            done = true;
+            Server.MutateShipment(Guid.Parse(_bed.LabelRepo.GetById(N(order))!.ShipmentId!), change);
+        };
+    }
+
     [Fact]
-    public async Task Bayat_dosya_surumunde_karar_sessizce_yeniden_denenmez_uyari_ayna_tazelenir()
+    public async Task Bayat_dosya_surumunde_karar_sessizce_yeniden_denenmez_ayna_tazelenir_plan_yeniden_gosterilir()
     {
         Threshold(100m, 50m);
         var (_, _, order) = await _bed.RemoteLabelAsync(150m);
         _bed.ModeOn();
-        var drawers = new Drawers { Decision = ShipmentDecision.ShipNow };
-        drawers.BeforeDecision = () =>
-        {
-            var shipment = Guid.Parse(_bed.LabelRepo.GetById(N(order))!.ShipmentId!);
-            Server.MutateShipment(shipment, s => s with { Status = "held", HeldAt = SalesEditTestBed.T0.AddHours(2) });
-        };
+        var drawers = new Drawers { Decisions = new([ShipmentDecision.ShipNow, null]) };
+        drawers.BeforeDecision = ChangeOnceWhileDrawerOpen(order,
+            s => s with { Status = "held", HeldAt = SalesEditTestBed.T0.AddHours(2) });
         var vm = Vm("150", drawers);
 
         (await vm.SaveAsync()).Should().BeTrue();
 
         Server.CommandCalls.Select(c => c.Command.Kind).Should().Equal(["attach-shipment", "shipment-decision"],
-            "kargoda sessiz yeniden deneme yok (§5.3)");
-        vm.ShipmentWarning.Should().Be(SalesCommandMessages.ShipmentDecisionFailed(SalesCommandMessages.Stale));
+            "kargoda sessiz yeniden deneme yok (§5.3); ikinci çekmecede operatör karar vermedi");
+        drawers.Thresholds.Should().HaveCount(2, "plan güncel havuzla bir kez yeniden gösterilir (§5.3)");
+        drawers.Thresholds[0].Notice.Should().BeNull();
+        drawers.Thresholds[1].Notice.Should().Be(SalesCommandMessages.Stale);
+        drawers.Thresholds[1].Context.Shipment!.Status.Should().Be(ShipmentStatus.Held, "aynanın güncel hâli");
+        vm.ShipmentWarning.Should().Be(SalesCommandMessages.ShipmentDecisionFailed(SalesCommandMessages.Stale),
+            "karar verilmedi: şerit sebebi söyler");
         var shipmentId = _bed.LabelRepo.GetById(N(order))!.ShipmentId!;
         var mirror = _bed.ShipmentRepo.GetById(shipmentId)!;
         mirror.Status.Should().Be(ShipmentStatus.Held);
         mirror.ServerVersion.Should().Be(Server.Shipment(Guid.Parse(shipmentId))!.Version);
+    }
+
+    [Fact]
+    public async Task Bayat_karardan_sonra_yeniden_gosterilen_planda_verilen_karar_guncel_surumle_uygulanir()
+    {
+        Threshold(100m, 50m);
+        var (_, _, order) = await _bed.RemoteLabelAsync(150m);
+        _bed.ModeOn();
+        var drawers = new Drawers { Decisions = new([ShipmentDecision.ShipNow, ShipmentDecision.ShipNow]) };
+        drawers.BeforeDecision = ChangeOnceWhileDrawerOpen(order,
+            s => s with { Status = "held", HeldAt = SalesEditTestBed.T0.AddHours(2) });
+        var vm = Vm("150", drawers);
+
+        (await vm.SaveAsync()).Should().BeTrue();
+
+        Server.CommandCalls.Select(c => c.Command.Kind).Should().Equal(
+            ["attach-shipment", "shipment-decision", "shipment-decision"]);
+        var shipmentId = _bed.LabelRepo.GetById(N(order))!.ShipmentId!;
+        Server.Shipment(Guid.Parse(shipmentId))!.Row.Status.Should().Be("shipped", "operatörün ikinci kararı uygulandı");
+        _bed.ShipmentRepo.GetById(shipmentId)!.Status.Should().Be(ShipmentStatus.Shipped);
+        vm.ShipmentWarning.Should().BeNull("karar uygulandı");
+    }
+
+    [Fact]
+    public async Task Bayat_karardan_sonra_havuz_esigin_altindaysa_plan_yeniden_gosterilmez()
+    {
+        Threshold(100m, 50m);
+        var (_, _, order) = await _bed.RemoteLabelAsync(150m);
+        _bed.ModeOn();
+        var drawers = new Drawers { Decisions = new([ShipmentDecision.ShipNow, ShipmentDecision.ShipNow]) };
+        drawers.BeforeDecision = ChangeOnceWhileDrawerOpen(order, s => s with { CumulativeAmount = 60m });
+        var vm = Vm("150", drawers);
+
+        (await vm.SaveAsync()).Should().BeTrue();
+
+        drawers.Thresholds.Should().ContainSingle("eşiğin altında karar sorulmaz (§7.2)");
+        Server.CommandCalls.Select(c => c.Command.Kind).Should().Equal(["attach-shipment", "shipment-decision"]);
+        vm.ShipmentWarning.Should().Be(SalesCommandMessages.ShipmentDecisionFailed(SalesCommandMessages.Stale));
     }
 
     [Fact]
