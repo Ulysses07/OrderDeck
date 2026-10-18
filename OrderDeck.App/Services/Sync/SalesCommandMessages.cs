@@ -245,6 +245,12 @@ public static class SalesCommandMessages
     public static string PrintHeld(int count) =>
         $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.";
 
+    /// <summary>"Yayını bitir"in "hepsini bas"ından sonra kuyrukta yalnız bekletilen satırlar (<see cref="PrintHeld"/>)
+    /// kaldı: yayın açık bırakılır, soru yinelenmez.</summary>
+    public static string EndStreamHeld(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. "
+      + "Yayın açık bırakıldı. Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.";
+
     /// <summary>Basılan kâğıdın sunucu satırı (başka bilgisayarın yayını; bekleyen komuta girmez, §5.5) işaretlenemedi:
     /// "1 etiketin baskısı sunucuya işlenemedi: …".</summary>
     public static string PrintNotRecorded(int count, string? reason)

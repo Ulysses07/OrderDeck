@@ -1755,6 +1755,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                     "Yayını Bitir", DialogSeverity.Warning);
                 return;
             }
+
+            // §5.8: sunucu yokken başka bilgisayarın devredilmiş yayınının satırları basılmaz, kuyrukta kalır
+            // (PrintCoreAsync). Kuyrukta yalnız onlar kaldıysa soru yinelenseydi "Evet" hiç bitmezdi: başarısız baskı
+            // gibi yayın açık kalır, sebep tek uyarıda.
+            var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
+            if (held.Count > 0 && PrintQueue.All(r => held.Contains(r.Id)))
+            {
+                _dialogs.Show(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count), "Yayını Bitir",
+                    DialogSeverity.Warning);
+                return;
+            }
         }
 
         _sessions.End(session.Id);

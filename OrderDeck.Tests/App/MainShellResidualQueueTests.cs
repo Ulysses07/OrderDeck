@@ -221,6 +221,31 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Yayini_bitirirken_kuyrukta_yalniz_bekletilen_satir_kalirsa_soru_yinelenmez_yayin_acik_kalir()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
+        var remoteId = remote.ToString("N");
+        MainShellTestHarness.EnqueueLabel(s.Vm, "@canli_alici", 100m);
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+        var answers = 0;
+        s.H.Dialogs.ThreeWayResult = _ => ++answers <= 3 ? true : null;   // üç kez "Evet", sonra "İptal"
+
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        s.H.Dialogs.ThreeWayConfirmations.Should().ContainSingle(
+            "basılabilen basıldı; kuyrukta yalnız bekletilen satır kaldı — aynı soru sonsuza dek yinelenmez");
+        s.H.Printer.Calls.Should().ContainSingle();
+        QueueIds(s).Should().Equal([remoteId], "bekletilen satır kuyrukta kalır");
+        s.H.Sessions.GetActive().Should().NotBeNull("bekletilen satır basılmadı: yayın açık kalır (başarısız baskı gibi)");
+        s.H.Dialogs.Shown.Should().ContainSingle().Which.Message.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. Yayın açık bırakıldı. "
+          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.");
+    }
+
+    [Fact]
     public async Task Sunucuda_iptal_edilmis_kalintinin_kagidi_imha_seridine_yazilir()
     {
         using var s = Build();                                    // akış turu yok: iptal baskıdan önce inmez
