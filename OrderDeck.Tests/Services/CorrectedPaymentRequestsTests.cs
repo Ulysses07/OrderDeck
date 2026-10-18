@@ -1149,6 +1149,33 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
     }
 
     [Fact]
+    public async Task Mod_On_yerel_isi_olmayan_kiside_bu_kopyanin_kaydi_da_son_istek_adayidir()
+    {
+        // GUID'siz kişide yerel iş açılmaz: bu bilgisayarın kirayla yaptığı isteği yalnız sunucudaki kendi kaydı temsil eder.
+        // Kendi kayıtları hep atlanıyordu — PC-A'nın daha eski kaydı (L1) "son istek" seçiliyor, bu bilgisayarın L1+L3'ü
+        // içeren isteği rozette ve #508 planında görünmüyordu: L3 düzeltilince "eski tutarla istek gitmiş" çıkmıyordu.
+        UseRemote();
+        var sid = NewSession();
+        var l1 = AddIn(sid, "@isesiz", 250m);
+        var l3 = AddIn(sid, "@isesiz", 200m, "B2");
+        _labels.MarkPrintedAndRecord(new[] { l1.Id, l3.Id });
+        var scope = CorrectedPaymentRequests.SessionScope(sid);
+        ServerRecord(l1.CustomerId, scope, 1, 250m, new[] { l1.Id }, machine: "PC-A");
+        ServerRecord(l1.CustomerId, scope, 2, 450m, new[] { l1.Id, l3.Id }, replica: OwnReplica, machine: "BU-PC");
+        _jobs.GetPersonScopeJobs(new[] { l1.CustomerId }, scope).Jobs.Should().BeEmpty("ön koşul: yerel iş yok");
+        var sut = SutOn();
+        var labels = _labelRepo.GetByIds(new[] { l1.Id, l3.Id });
+
+        await sut.PrefetchAsync(sid, labels);
+
+        sut.Badges(sid, labels).RequestedLabels.Should().BeEquivalentTo(new[] { l1.Id, l3.Id },
+            "son istek bu bilgisayarın kaydı: ikisini de içeriyor");
+        var result = _labels.CorrectPrices(new[] { l3.Id }, 150m);
+        var row = sut.Plan(sid, result.Corrected.Select(c => (c.Before, c.Delta))).ToResend.Should().ContainSingle().Subject;
+        row.PriorAmount.Should().Be(450m, "eski tutar bu bilgisayarın isteği");
+    }
+
+    [Fact]
     public async Task Mod_On_en_yeni_uzak_kayit_teslim_ve_tamami_bakiyeden_ise_etiket_odendi()
     {
         UseRemote();

@@ -16,15 +16,16 @@ public readonly record struct RemotePaymentKey(string ScopeKey, PaymentPerson Pe
 /// "Teslim kayıtlarının okunması"; W3-10). İki bilgisayarın saati karşılaştırılmaz: sıra sunucunun kapanış sırasıdır ve yerel
 /// işin son teslimi listede bu kopyanın en yeni kaydının yerindedir.
 /// </summary>
-/// <param name="NewestOther">Başka kopyaların en yeni teslim edilmiş ya da sonucu bilinmeyen kaydı — kişi × kapsamın yerel işi
-/// yoksa son istek budur.</param>
+/// <param name="Newest">En yeni teslim edilmiş ya da sonucu bilinmeyen kayıt, bu kopyanınkiler dahil (geri yüklemeden önceki
+/// kimliğinkiler hariç) — kişi × kapsamın yerel işi yoksa son istek budur. Bu kopyanın kaydı da aday: GUID'siz kişide yerel iş
+/// açılmaz, bu bilgisayarın ona kirayla ya da kirasız kayıtla yaptığı istek yalnız sunucudaki kaydıyla temsil edilir.</param>
 /// <param name="NewestOtherAfterLocal">Yerel işin son tesliminden SONRA kapanmış en yeni başka kopya kaydı; null = yerel iş en
 /// yeni (listede bu kopyanın kaydı yok ya da yerel kaydı henüz gönderilmedi).</param>
-public sealed record RemotePaymentLast(PaymentRequestListItem? NewestOther, PaymentRequestListItem? NewestOtherAfterLocal)
+public sealed record RemotePaymentLast(PaymentRequestListItem? Newest, PaymentRequestListItem? NewestOtherAfterLocal)
 {
-    /// <summary>Birleşik son istek uzak kayıtsa o kayıt; yerel işse null.</summary>
+    /// <summary>Birleşik son istek kayıtsa o kayıt; yerel işse null.</summary>
     /// <param name="hasLocal">Kişi × kapsamın teslim edilmiş (ya da gitmiş olabilecek) yerel işi var mı.</param>
-    public PaymentRequestListItem? LastWith(bool hasLocal) => hasLocal ? NewestOtherAfterLocal : NewestOther;
+    public PaymentRequestListItem? LastWith(bool hasLocal) => hasLocal ? NewestOtherAfterLocal : Newest;
 }
 
 /// <summary>
@@ -35,15 +36,20 @@ public sealed class RemotePaymentSnapshot
 {
     private readonly IReadOnlyDictionary<(string Scope, string MemberKey), IReadOnlyList<PaymentRequestListItem>> _entries;
     private readonly IReadOnlySet<Guid> _own;
+    private readonly Guid? _current;
     private readonly bool _anyQueuedFinish;
     private readonly IReadOnlyList<(string Scope, IReadOnlySet<string> Members)> _queuedRecords;
 
+    /// <param name="own">Bu kopyanın kimlikleri: şimdiki ve bekleyen önceki.</param>
+    /// <param name="current">Şimdiki kimlik (<paramref name="own"/>'un içinde).</param>
     internal RemotePaymentSnapshot(
         IReadOnlyDictionary<(string Scope, string MemberKey), IReadOnlyList<PaymentRequestListItem>> entries,
-        IReadOnlySet<Guid> own, bool anyQueuedFinish, IReadOnlyList<(string Scope, IReadOnlySet<string> Members)> queuedRecords)
+        IReadOnlySet<Guid> own, Guid? current, bool anyQueuedFinish,
+        IReadOnlyList<(string Scope, IReadOnlySet<string> Members)> queuedRecords)
     {
         _entries = entries;
         _own = own;
+        _current = current;
         _anyQueuedFinish = anyQueuedFinish;
         _queuedRecords = queuedRecords;
     }
@@ -52,9 +58,11 @@ public sealed class RemotePaymentSnapshot
     /// Kişi × kapsamın uzak kayıtları; okunmamışsa (bütçe bitti, okuma düştü, hiç istenmedi) null — çağıran yalnız yerel
     /// işi kullanır.
     /// <list type="bullet">
-    ///   <item>Birleştirmeye yalnız BAŞKA kopyaların teslim edilmiş ya da sonucu bilinmeyen kayıtları girer; bu kopyanın (ve
-    ///   bekleyen önceki kimliğinin) kayıtları yerel işle zaten temsil edilir. Canlı kira (sonucu henüz yok) girmez — "zaten
-    ///   istendi" sorusunun (e) adımı gibi.</item>
+    ///   <item>Yerel iş varken birleştirmeye yalnız BAŞKA kopyaların teslim edilmiş ya da sonucu bilinmeyen kayıtları girer; bu
+    ///   kopyanın (ve bekleyen önceki kimliğinin) kayıtları yerel işle zaten temsil edilir. Yerel iş yoksa şimdiki kimliğin
+    ///   kayıtları da adaydır (<see cref="RemotePaymentLast.Newest"/>): GUID'siz kişide yerel iş açılmaz, isteği yalnız kaydı
+    ///   temsil eder. Önceki kimliğin kayıtları yerel işsiz kişide de girmez (geri yüklenen yedekte işi olmayan istek — bugünkü
+    ///   sözleşme). Canlı kira (sonucu henüz yok) girmez — "zaten istendi" sorusunun (e) adımı gibi.</item>
     ///   <item>Yerel işin son teslimi, listede bu kopyanın en yeni kaydının yerindedir. Listede bu kopyanın kaydı yoksa ya da
     ///   yerel kaydı henüz gönderilmediyse (kuyrukta bekleyen kirasız kayıt ya da teslim/belirsiz <c>finish</c>) yerel iş en
     ///   yenidir.</item>
@@ -77,9 +85,10 @@ public sealed class RemotePaymentSnapshot
         for (var i = 0; i < records.Count; i++)
         {
             var record = records[i];
-            if (_own.Contains(record.ReplicaId) || !IsPrompt(record)) continue;
-            newest = record;
-            if (i > localAt) afterLocal = record;
+            if (!IsPrompt(record)) continue;
+            var mine = _own.Contains(record.ReplicaId);
+            if (!mine || record.ReplicaId == _current) newest = record;
+            if (!mine && i > localAt) afterLocal = record;
         }
         return new RemotePaymentLast(newest, afterLocal);
     }
@@ -211,7 +220,8 @@ public sealed class RemotePaymentRecords
             lock (_gate) entries = new(_entries);
 
             var own = new HashSet<Guid>();
-            if (_identity.GetReplicaId() is { } replica) own.Add(replica);
+            var current = _identity.GetReplicaId();
+            if (current is { } replica) own.Add(replica);
             if (_identity.GetPendingPreviousReplicaId() is { } previous) own.Add(previous);
 
             var anyQueuedFinish = false;
@@ -239,7 +249,7 @@ public sealed class RemotePaymentRecords
                     // Çözülemeyen satırı gönderici düşürür; burada sayılmaz.
                 }
             }
-            return new RemotePaymentSnapshot(entries, own, anyQueuedFinish, queuedRecords);
+            return new RemotePaymentSnapshot(entries, own, current, anyQueuedFinish, queuedRecords);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -242,6 +242,6 @@ public sealed class RemotePaymentRecordsTests : IDisposable
         remote.Snapshot()!.For("cumulative", person).Should().BeNull("bayat yanıt geçersizleşmeden sonra yazılmaz");
         handler.OnList = null;
         (await remote.RefreshAsync([new RemotePaymentKey("cumulative", person)])).Should().BeTrue();
-        remote.Snapshot()!.For("cumulative", person)!.NewestOther.Should().NotBeNull();
+        remote.Snapshot()!.For("cumulative", person)!.Newest.Should().NotBeNull();
     }
 }
