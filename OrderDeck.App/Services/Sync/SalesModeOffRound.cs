@@ -10,7 +10,8 @@ namespace OrderDeck.App.Services.Sync;
 
 /// <summary>Bekleyen komutların yerel yazıma çevrilmesinin sonucu (<c>disable</c> turunun 3. adımı, §8.5-3).</summary>
 /// <param name="Converted">Yerel yazıma çevrilip kuyruktan düşen komutlar.</param>
-/// <param name="Dropped">Kaydı okunamadığı için çevrilemeden düşen komutlar (<c>SalesConflictLog</c>'a iz).</param>
+/// <param name="Dropped">Çevrilemeden düşen komutlar (<c>SalesConflictLog</c>'a iz): kaydı okunamadı ya da etiketleri
+/// yerelde yok — başka bilgisayarın yayınındaki satırın baskı onayı (Y11), 2. adım uzak satırları sildi.</param>
 /// <param name="Remaining">Kuyrukta kalan komutlar (yerel yazım düştü; sonraki turda ya da açılışta yeniden).</param>
 /// <param name="Settled">Arayüze dönük sonuç: değişen etiketler, imha edilecek kâğıtlar (iptal edilmiş etiketin basılmış
 /// kâğıdı) ve uyarılar — bekleyen komutların sunucu sonucuyla aynı şerit (§5.5).</param>
@@ -41,6 +42,13 @@ public sealed record SalesPendingConversion(int Converted, int Dropped, int Rema
 /// kimliği, aynı sıra). Yazım tetikleyiciyle kuyruğa girer ve push'la gider; basılmış kâğıt yeniden teklif edilmez. Her
 /// satır kendi yerel yazımından SONRA silinir — örtü o ana kadar kalkmaz; ikisi arasında süreç ölürse yeniden çeviri
 /// zararsızdır (iptal edilmiş ve basılmış etiket atlanır). Yazımı düşen satır ve arkasındakiler kuyrukta kalır.</para>
+///
+/// <para><b>Başka bilgisayarın satırı</b> (sahip kararı Y11): onun yayınındaki satırın <c>mark-printed</c>'i de kuyruğa
+/// girer, ama 2. adım o satırı yerel kip 0 ile aynı işlemde siler ve mod Off'ta satır yayını açan bilgisayarın yerel
+/// otoritesindedir — yerel yazıma çevrilemez. Göndermek de denenmez: tur ancak sunucu modu 0 iken koşar ve komut ucu
+/// 409 <c>mode-off</c> döner (§4.6-1); niyet mod On'dayken her turda akıştan önce zaten denendi. Komut düşer; sessizce
+/// değil — sayılı uyarı (<see cref="SalesCommandMessages.PrintUnrecordedModeOff"/>), <c>SalesConflictLog</c>'a iz ve
+/// günlükte sayı. Yerel yazım denenmez, ABORT yok.</para>
 ///
 /// <para><b>Yeniden koşma</b> (<see cref="Resume"/>): açılışta (AppHost, hiçbir gönderimden önce) ve her satış akışı
 /// turunun başında — yerel <c>Mode = 0</c> ∧ <c>PendingSalesCommand</c> dolu ise 3. adım yeniden koşar (süreç 2. ile 3.
@@ -128,7 +136,7 @@ public sealed class SalesModeOffRound
             var changed = new HashSet<string>(StringComparer.Ordinal);
             var discard = new HashSet<string>(StringComparer.Ordinal);
             var warnings = new List<string>();
-            int converted = 0, dropped = 0;
+            int converted = 0, dropped = 0, unrecordedPrints = 0;
             foreach (var row in rows)
             {
                 LocalWrite? write;
@@ -145,12 +153,17 @@ public sealed class SalesModeOffRound
                     continue;
                 }
 
+                int unrecorded;
                 try
                 {
+                    // Yerelde olmayan etiket başka bilgisayarın yayınındadır (Y11: onun baskı onayı da kuyruğa girer):
+                    // 2. adım uzak satırları yerel kip 0 ile aynı işlemde sildi, kip 0'da akış uzak satır indirmez.
+                    // Yerel yazıma çevrilemez — mod Off'ta o satır yayını açan bilgisayarın yerel otoritesinde.
+                    var present = _labels.GetByIds(write.LabelIds);
+                    unrecorded = write.LabelIds.Count - present.Count;
                     if (write.Kind == PendingSalesCommandKinds.MarkPrinted)
-                        discard.UnionWith(_labels.GetByIds(write.LabelIds)
-                            .Where(l => l.CancelledAt is not null).Select(l => l.Id));
-                    write.Apply(_labelService);
+                        discard.UnionWith(present.Where(l => l.CancelledAt is not null).Select(l => l.Id));
+                    if (present.Count > 0) write.Apply(_labelService);            // yerel servis olmayanı zaten atlar
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -161,17 +174,24 @@ public sealed class SalesModeOffRound
                 }
                 _pending.Delete(row.CommandId);                                   // örtü yerel yazımdan sonra kalkar
                 changed.UnionWith(row.LabelIds);
-                converted++;
-                _log.LogInformation(
-                    "Bekleyen satış komutu {Kind} {CommandId} yerel yazıma çevrildi (mod Off): {Labels} etiket kuyruğa alındı",
-                    row.Kind, row.CommandId, row.LabelIds.Count);
+                if (unrecorded == 0)
+                {
+                    converted++;
+                    _log.LogInformation(
+                        "Bekleyen satış komutu {Kind} {CommandId} yerel yazıma çevrildi (mod Off): {Labels} etiket kuyruğa alındı",
+                        row.Kind, row.CommandId, row.LabelIds.Count);
+                    continue;
+                }
+                if (unrecorded < write.LabelIds.Count) converted++; else dropped++;
+                unrecordedPrints += Unrecorded(row, unrecorded, warnings);
             }
 
+            if (unrecordedPrints > 0) warnings.Add(SalesCommandMessages.PrintUnrecordedModeOff(unrecordedPrints));
             var remaining = rows.Count - converted - dropped;
             if (remaining == 0)
                 _log.LogInformation(
-                    "Satış senkronu Off turunun 3. adımı tamamlandı: {Converted} bekleyen komut yerel yazıma çevrildi, {Dropped} okunamadı; görülen kip 0",
-                    converted, dropped);
+                    "Satış senkronu Off turunun 3. adımı tamamlandı: {Converted} bekleyen komut yerel yazıma çevrildi, {Dropped} çevrilemeden düştü ({Unrecorded} başka bilgisayarın etiketinin baskısı sunucuya ulaşmadı); görülen kip 0",
+                    converted, dropped, unrecordedPrints);
             if (discard.Count > 0)
                 _log.LogWarning(
                     "Off turu: {Count} etiketin kâğıdı basılmıştı ama etiket başka bilgisayarda iptal edilmiş; kâğıt imha edilmeli",
@@ -247,6 +267,33 @@ public sealed class SalesModeOffRound
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Etiketleri (bir kısmı ya da hepsi) yerelde olmayan komut (Y11): başka bilgisayarın yayınındaki satırın baskı
+    /// onayı sunucuya ulaşmadan senkron kapandı. Kâğıt basıldı ama sunucuda kaydı yok; sessizce kaybolmaz — bir iz ve
+    /// günlükte sayı; baskı onaylarının sayılı uyarısı (<see cref="SalesCommandMessages.PrintUnrecordedModeOff"/>) turun
+    /// sonunda TEK metin (şerit aynı metni bir kez gösterir: komut başına "1 etiket…" yazılsaydı sayı eksik görünürdü).
+    /// Komut zaten silindi.
+    /// </summary>
+    /// <returns>Uyarısı turun sonunda toplanacak baskı onayı satırı sayısı (öbür türde 0; onun uyarısı hemen).</returns>
+    private int Unrecorded(PendingSalesCommandRow row, int count, List<string> warnings)
+    {
+        var print = row.Kind == PendingSalesCommandKinds.MarkPrinted;
+        if (!print) warnings.Add(SalesCommandMessages.PendingNotConverted(row.Kind, count));
+        _log.LogWarning(
+            "Bekleyen satış komutu {Kind} {CommandId}: {Count} etiket başka bilgisayarın yayınında (Off turu yerelden sildi); yerel yazıma çevrilemedi, sunucuya ulaşmadan düştü",
+            row.Kind, row.CommandId, count);
+        try
+        {
+            _conflicts.Add(_clock.UnixNow(), null, SalesConflictLog.PendingCommandRejected,
+                $"{row.Kind}; command={row.CommandId}; code=remote-mode-off; labels={count}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Bekleyen satış komutu {CommandId}: SalesConflictLog yazılamadı", row.CommandId);
+        }
+        return print ? count : 0;
     }
 
     /// <summary>Okunamayan kayıt: düşer, örtü kalkar, bir iz ve bir uyarı.</summary>

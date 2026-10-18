@@ -269,6 +269,16 @@ public static class SalesCommandMessages
         return $"{count.ToString(CultureInfo.InvariantCulture)} etiketin baskısı sunucuya işlenemedi: {text}";
     }
 
+    /// <summary>
+    /// Başka bilgisayarın yayınındaki satırın bekleyen baskı onayı (Y11, §5.5) sunucuya ulaşmadan senkron kapatıldı
+    /// (Off turu, §8.5-3): satır bu bilgisayardan silindi, yerel yazıma çevrilemez; mod Off'ta o satır yayını açan
+    /// bilgisayarın yerel otoritesinde ve orada basılmamış görünür. "2 etiketin kâğıdı basıldı ama baskısı sunucuya
+    /// işlenmeden senkron kapatıldı. Bu etiketler yayını açan bilgisayarda basılmamış görünür; orada yeniden basılmamalı."
+    /// </summary>
+    public static string PrintUnrecordedModeOff(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} etiketin kâğıdı basıldı ama baskısı sunucuya işlenmeden senkron " +
+        "kapatıldı. Bu etiketler yayını açan bilgisayarda basılmamış görünür; orada yeniden basılmamalı.";
+
     /// <summary>Kâğıdı basılan satırların işareti arka planda (devir kilidi açılınca, §5.6-4) beklenmeyen bir hatayla
     /// yazılamadı: satır basılmamış görünür. "1 etiketin kâğıdı basıldı ama baskısı bu bilgisayara yazılamadı (iç hata);
     /// etiketleri kontrol et."</summary>

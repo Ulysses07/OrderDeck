@@ -105,6 +105,21 @@ public sealed class DisableRoundConversionTests : IDisposable
         return id;
     }
 
+    /// <summary>Başka bilgisayarın devredilmiş yayınındaki basılmamış etiket (ör. <c>add-backup</c> ile eklenmiş yedek):
+    /// akıştan inmiş gibi <c>Origin = 'remote'</c>, <c>Authority = 'server'</c>.</summary>
+    private string RemoteLabel()
+    {
+        var session = Guid.NewGuid().ToString("N");
+        new SessionRepository(_db).Insert(new StreamSession(session, "Başka bilgisayarın yayını", T0, T0 + 3600, ["tiktok"],
+            null, SyncedAt: T0 + 3700));
+        var id = Guid.NewGuid().ToString("N");
+        new LabelRepository(_db).Insert(new Label(id, session, _customer, "tiktok", "alici", "yorum", "A1", 70m,
+            T0 + 90, PrintedAt: null, DisplayName: "Takma Ad", SyncedAt: T0 + 200));
+        Exec("UPDATE StreamSession SET Origin = 'remote', Authority = 'server', ReleasedAt = @r WHERE Id = @s",
+            new { r = T0 + 3650, s = session });
+        return id;
+    }
+
     /// <summary>Mod On'da devri görülmüş yayın: yerel kip 1, yayın sunucu otoritesinde.</summary>
     private void ModeOnReleased()
     {
@@ -187,6 +202,54 @@ public sealed class DisableRoundConversionTests : IDisposable
         new LabelRepository(_db).GetUnprintedOutsideSession(Guid.NewGuid().ToString("N")).Should().BeEmpty(
             "iptal edilen ve basılan kalıntı yeniden teklif edilmez");
         new SessionRepository(_db).GetById(_session)!.Authority.Should().Be(StreamSessionAuthority.Local);
+    }
+
+    [Fact]
+    public void Uzak_baski_onayi_yerel_yazima_cevrilemez_sayili_uyari_ve_izle_duser_kendi_kalintisi_cevrilir()
+    {
+        var own = Residual();
+        var remote = RemoteLabel();
+        var other = RemoteLabel();
+        ModeOnReleased();
+        var batch = LabelService.NewPrintBatchId();
+        // Kâğıt: kendi kalıntısı ve başka bilgisayarın yayınındaki iki satır (Y11: ikisi de bekleyen komut, ayrı parça).
+        EnqueuePrint(batch, (own, 1));
+        var remoteCommand = EnqueuePrint(batch, (remote, 2), (other, 3));
+
+        _round.ApplyLocal(ModeChangedAt, _replica).Busy.Should().BeFalse();
+        Scalar<int>("SELECT COUNT(*) FROM Label WHERE Id IN (@remote, @other)", new { remote, other }).Should().Be(0,
+            "ön koşul: 2. adım uzak satırları sildi");
+        var act = () => _round.ConvertPendingCommands();
+        var result = act.Should().NotThrow("uzak satıra yerel yazım denenmez, ABORT yok").Subject;
+
+        result.Should().BeEquivalentTo(new { Converted = 1, Dropped = 1, Remaining = 0 });
+        Row(own).PrintedAt.Should().NotBeNull("kendi kalıntısı aynı basışla yerelde işaretlenir");
+        Row(own).Batch.Should().Be(batch);
+        result.Settled.Warnings.Should().Equal(SalesCommandMessages.PrintUnrecordedModeOff(2));
+        result.Settled.DiscardLabelIds.Should().BeEmpty();
+        Scalar<int>("SELECT COUNT(*) FROM SalesConflictLog WHERE Kind = @k AND Reason LIKE @r",
+                new { k = SalesConflictLog.PendingCommandRejected, r = $"%command={remoteCommand}%code=remote-mode-off%" })
+            .Should().Be(1, "sessiz kayıp yok: iz");
+        PendingCount().Should().Be(0);
+        SeenMode().Should().Be(0, "kuyruk boşaldı: tur bitti");
+        Scalar<int>("SELECT COUNT(*) FROM Label").Should().Be(1, "uzak satır yerelde yeniden doğmaz");
+    }
+
+    [Fact]
+    public void Acilista_kalmis_uzak_baski_onayi_Resumeda_da_sayili_uyariyla_duser()
+    {
+        var remote = RemoteLabel();
+        ModeOnReleased();
+        EnqueuePrint(LabelService.NewPrintBatchId(), (remote, 1));
+        // 2. adım işlendi, 3. adımdan önce süreç kapandı.
+        new SalesFeedRepository(_db).ApplyModeOff(ModeChangedAt, _replica).Busy.Should().BeFalse();
+
+        var result = NewRound().Resume();
+
+        result.Should().BeEquivalentTo(new { Converted = 0, Dropped = 1, Remaining = 0 });
+        result.Settled.Warnings.Should().Equal(SalesCommandMessages.PrintUnrecordedModeOff(1));
+        PendingCount().Should().Be(0);
+        SeenMode().Should().Be(0);
     }
 
     [Fact]
