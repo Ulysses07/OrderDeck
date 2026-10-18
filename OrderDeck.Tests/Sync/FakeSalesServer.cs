@@ -82,7 +82,9 @@ namespace OrderDeck.Tests.Sync;
 /// (<see cref="PaymentRequestsBackfill"/>, <see cref="PaymentRequestsFinish"/>; kayıt, betik, v2 zarfı). Kira ve kayıt
 /// kuralları taklit edilmez. W3-07: <c>payment-requests/begin</c> (<see cref="PaymentRequestsBegin"/>; betik yoksa 200
 /// <c>sending</c>, mod Off'ta <c>mode-off</c>), ödeme akışının bakiye uçları (<see cref="BalancePreview"/>) ve Cloud API
-/// gönderimi (<see cref="WhatsAppSend"/>) — ödeme isteği uçtan uca sürülebilsin.</para>
+/// gönderimi (<see cref="WhatsAppSend"/>) — ödeme isteği uçtan uca sürülebilsin. W3-12: <see cref="LeaseRules"/> açıkken
+/// kira, kayıt, liste, geri doldurma ve bakiye defteri sunucunun kurallarıyla (<c>FakeSalesServer.PaymentRules.cs</c>);
+/// <c>shipping-settings</c> GET/PUT her zaman.</para>
 ///
 /// <para><b>Birim kuralı ve açılış penceresi</b> (W2-12, iki bilgisayarlı yakınsama testleri için): <c>orders/sync</c>
 /// güncelleme dalı §4.2 tablosunu uygular (<see cref="UnitRule"/>: K1 oluşum alanları yazılmaz, K2 damgalı birimi yalnız
@@ -97,7 +99,7 @@ namespace OrderDeck.Tests.Sync;
 /// yok: geri yüklenmiş kopya önceki kopyanın oturumunun sahibi sayılmaz. <see cref="RenumberChangeSeqs"/> kopyalanmış
 /// sunucu veritabanını (rowversion'lar yeniden verilir) taklit eder.</para>
 /// </summary>
-internal sealed class FakeSalesServer : HttpMessageHandler
+internal sealed partial class FakeSalesServer : HttpMessageHandler
 {
     public const string Hello = "hello";
     public const string State = "state";
@@ -122,7 +124,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
     /// <summary>Ödeme isteği kirası (W3-07, <c>PaymentLeaseCoordinator</c>): <see cref="Calls"/>, <see cref="EnqueueStatus"/>,
     /// <see cref="EnqueueProblem(string, int, string, IReadOnlyDictionary{string, object?})"/> ve
-    /// <see cref="EnqueueTimeout"/> için. Kira kuralları taklit edilmez: betik yoksa 200 <c>sending</c>.</summary>
+    /// <see cref="EnqueueTimeout"/> için. <see cref="LeaseRules"/> kapalıyken kira kuralları taklit edilmez (yalnız (e)):
+    /// betik yoksa 200 <c>sending</c>; açıkken a–h (W3-12).</summary>
     public const string PaymentRequestsBegin = "payment-requests/begin";
 
     /// <summary>Ödeme isteği kayıtlarının listesi (W3-10, <c>RemotePaymentRecords</c>): <see cref="Calls"/>,
@@ -390,6 +393,20 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             var paymentList = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/payment-requests$");
             if (paymentList.Success && req.Method == HttpMethod.Get)
                 return await HandlePaymentListAsync(req, Guid.Parse(paymentList.Groups[1].Value));
+
+            // Lisans geneli kargo ayarı (W3-12, §4.8): kipten bağımsız her zaman.
+            var shippingSettings = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/shipping-settings$");
+            if (shippingSettings.Success)
+                return await HandleShippingSettingsAsync(req, Guid.Parse(shippingSettings.Groups[1].Value), ct);
+
+            // Bakiye işleminin durumu ve geri alınması (W3-12): yalnız kurallar açıkken (defter); kapalıyken bugünkü gibi
+            // beklenmeyen istek.
+            var balanceTransaction = Regex.Match(path,
+                @"^/api/v1/licenses/([0-9a-fA-F-]{36})/customer-balance/transactions/([0-9a-fA-F-]{36})(/reverse)?$");
+            if (balanceTransaction.Success && LeaseRules
+                && req.Method == (balanceTransaction.Groups[3].Success ? HttpMethod.Post : HttpMethod.Get))
+                return await HandleBalanceTransactionAsync(req, Guid.Parse(balanceTransaction.Groups[1].Value),
+                    Guid.Parse(balanceTransaction.Groups[2].Value), balanceTransaction.Groups[3].Success, ct);
 
             // Ödeme akışının bakiye uçları ve Cloud API gönderimi (W3-07): ödeme isteği testleri akışı uçtan uca sürer.
             var balance = Regex.Match(path, @"^/api/v1/licenses/([0-9a-fA-F-]{36})/customer-balance/(preview|scope|apply)$");
@@ -1798,6 +1815,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             {
                 var id = c.GetProperty("id").GetGuid();
                 if (_customers.TryGetValue(id, out var known) && known.PurgedAt is not null) continue;
+                RecordPushedGroup(id, c);
                 _customers[id] = new CustomerProjection(id, c.GetProperty("platform").GetString()!,
                     c.GetProperty("username").GetString()!,
                     c.TryGetProperty("displayName", out var dn) && dn.ValueKind == JsonValueKind.String ? dn.GetString() : null,
@@ -1854,10 +1872,13 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             _pushCalls.Add(new PushCall(endpoint, licenseId, raw, finishId));
             if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
         }
+        await WaitHoldAsync(endpoint, ct);
         if (scripted is not null) return scripted();
 
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
+        if (LeaseRules)
+            return finishId is { } id ? FinishByRules(licenseId, id, root) : BackfillByRules(licenseId, root);
         if (!root.TryGetProperty("replicaId", out var replica) || replica.ValueKind != JsonValueKind.String
             || !root.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 2
             || !root.TryGetProperty("seenMode", out _))
@@ -1877,7 +1898,8 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 var id = record.GetProperty("recordId").GetGuid();
                 var applied = _paymentRecordIds.Add(id);
                 results.Add(new { recordId = id, status = applied ? "applied" : "unchanged" });
-                if (applied && StoreBackfilledRecords) _paymentPriors.Add(StoredRecord(licenseId, replicaId, record));
+                if (applied && StoreBackfilledRecords)
+                    _paymentRecords.Add(RowOf(licenseId, StoredRecord(licenseId, replicaId, record)));
             }
         return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new { records = results }, Web));
     }
@@ -1906,6 +1928,19 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             Kind: "record");
     }
 
+    /// <summary>Elle konmuş öncülün sunucu satırı (W3-12: kayıtlar tek depoda). PersonKey yok: kişiyi üye kesişimi
+    /// bulur. Kopyası verilmemişse başka bir bilgisayar (<see cref="OtherReplicaId"/>).</summary>
+    private PaymentRecordRow RowOf(Guid licenseId, PaymentPrior prior) => new()
+    {
+        Id = prior.Id, LicenseId = licenseId,
+        Kind = prior.Kind ?? (prior.TotalBeforeBalance is null ? "record" : "lease"),
+        State = prior.Unconfirmed ? "unconfirmed" : "delivered", ScopeKey = prior.ScopeKey,
+        ReplicaId = prior.ReplicaId ?? OtherReplicaId, Machine = prior.Machine, Members = prior.Members.ToList(),
+        OrderIds = (prior.OrderIds ?? []).ToList(), TotalBeforeBalance = prior.TotalBeforeBalance,
+        NetAmount = prior.NetAmount, AppliedAmount = prior.AppliedAmount, FullyFromBalance = prior.FullyFromBalance,
+        StartedAt = prior.At, FinishedAt = prior.FinishedAt, Hash = "seed:" + prior.Id.ToString("N"),
+    };
+
     /// <summary>Sunucuda kayıtlı, teslim edilmiş ya da sonucu bilinmeyen ödeme isteği kaydı (W3-09): <c>begin</c>'in (e)
     /// adımının öncülü (<see cref="AddPaymentPrior"/>). W3-10: liste ucu (<see cref="PaymentRequestsList"/>) da bunları
     /// döner.</summary>
@@ -1918,12 +1953,10 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         Guid? ReplicaId = null, IReadOnlyList<Guid>? OrderIds = null, decimal? AppliedAmount = null,
         bool? FullyFromBalance = null, string? Kind = null);
 
-    private readonly List<PaymentPrior> _paymentPriors = new();
-
     /// <summary>Kaydı sunucuya ekler: sonraki <c>begin</c>'in (e) adımı ve liste ucu onu görür.</summary>
     public void AddPaymentPrior(PaymentPrior prior)
     {
-        lock (_gate) _paymentPriors.Add(prior);
+        lock (_gate) _paymentRecords.Add(RowOf(LicenseId, prior));
     }
 
     /// <summary>Kopyası verilmemiş öncülün kopyası: başka bir bilgisayar.</summary>
@@ -1949,19 +1982,22 @@ internal sealed class FakeSalesServer : HttpMessageHandler
         var scopeKey = query["scopeKey"];
         var members = (query.GetValues("memberIds") ?? []).ToHashSet(StringComparer.Ordinal);
         Func<HttpResponseMessage>? scripted = null;
-        List<PaymentPrior> rows;
+        List<PaymentRecordRow> rows;
         lock (_gate)
         {
             _pushCalls.Add(new PushCall(PaymentRequestsList, licenseId,
                 JsonSerializer.Serialize(new { scopeKey, memberIds = members.Order(StringComparer.Ordinal).ToList() }, Web)));
             if (_scripted.TryGetValue(PaymentRequestsList, out var q) && q.Count > 0) scripted = q.Dequeue();
-            rows = _paymentPriors
-                .Where(p => p.ScopeKey == scopeKey && p.Members.Any(members.Contains))
-                .OrderBy(p => p.FinishedAt).ThenBy(p => p.At).ThenBy(p => p.Id)
+            rows = _paymentRecords
+                .Where(p => p.State is "delivered" or "unconfirmed" && p.ScopeKey == scopeKey
+                            && p.Members.Any(members.Contains))
+                .OrderBy(p => p.FinishedAt).ThenBy(p => p.StartedAt).ThenBy(p => p.Id)
                 .TakeLast(200)
                 .ToList();
         }
+        await WaitHoldAsync(PaymentRequestsList, CancellationToken.None);
         if (scripted is not null) return scripted();
+        if (LeaseRules) return ListByRules(licenseId, scopeKey, members);
         if (string.IsNullOrEmpty(scopeKey) || members.Count is 0 or > 100)
             return ProblemResponse(400, "invalid-members", "memberIds 1–100 üye taşır.");
 
@@ -1970,28 +2006,28 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             records = rows.Select(p => new
             {
                 id = p.Id,
-                replicaId = p.ReplicaId ?? OtherReplicaId,
+                replicaId = p.ReplicaId,
                 machine = p.Machine,
-                kind = p.Kind ?? (p.TotalBeforeBalance is null ? "record" : "lease"),
-                state = p.Unconfirmed ? "unconfirmed" : "delivered",
+                kind = p.Kind,
+                state = p.State,
                 netAmount = p.NetAmount,
                 appliedAmount = p.AppliedAmount,
                 fullyFromBalance = p.FullyFromBalance,
                 productTotal = (decimal?)null,
                 totalBeforeBalance = p.TotalBeforeBalance,
-                startedAt = p.At,
+                startedAt = p.StartedAt,
                 finishedAt = p.FinishedAt,
-                orderIds = (p.OrderIds ?? []).Order().ToList(),
+                orderIds = p.OrderIds.Order().ToList(),
             }).ToList(),
         }, Web));
     }
 
     /// <summary>
-    /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), betik, v2 zarfı denetimi; mod Off'ta 409
-    /// <c>mode-off</c> (§4.7). Kira kurallarından yalnız (e) taklit edilir (W3-09, #523'ün aynası,
+    /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), bekletme, betik, v2 zarfı denetimi; mod
+    /// Off'ta 409 <c>mode-off</c> (§4.7). Kira kurallarından yalnız (e) taklit edilir (W3-09, #523'ün aynası,
     /// <see cref="AlreadyRequestedRule"/>); öbürleri (yeniden oynatma, üye kesişimi, sunucu toplamı, kargo) taklit
     /// edilmez: betik yoksa ve (e) geçerse 200, durum <c>sending</c>, üyeler istemcinin üyeleri ∪
-    /// <see cref="ExtraBeginMembers"/>.
+    /// <see cref="ExtraBeginMembers"/>. <see cref="LeaseRules"/> açıkken bütün kurallar (<see cref="BeginByRules"/>).
     /// </summary>
     private async Task<HttpResponseMessage> HandlePaymentBeginAsync(HttpRequestMessage req, Guid licenseId, CancellationToken ct)
     {
@@ -2002,10 +2038,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             _pushCalls.Add(new PushCall(PaymentRequestsBegin, licenseId, raw));
             if (_scripted.TryGetValue(PaymentRequestsBegin, out var q) && q.Count > 0) scripted = q.Dequeue();
         }
+        await WaitHoldAsync(PaymentRequestsBegin, ct);
         if (scripted is not null) return scripted();
 
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
+        if (LeaseRules) return BeginByRules(licenseId, root, req.Headers.UserAgent.ToString());
         if (!root.TryGetProperty("replicaId", out var replica) || replica.ValueKind != JsonValueKind.String
             || !root.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 2
             || !root.TryGetProperty("seenMode", out _))
@@ -2044,11 +2082,12 @@ internal sealed class FakeSalesServer : HttpMessageHandler
 
         var scopeKey = root.GetProperty("scopeKey").GetString();
         var members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString()!).ToHashSet(StringComparer.Ordinal);
-        List<PaymentPrior> open;
+        List<PaymentRecordRow> open;
         lock (_gate)
-            open = _paymentPriors
-                .Where(p => p.ScopeKey == scopeKey && p.Members.Any(members.Contains))
-                .OrderBy(p => p.FinishedAt).ThenBy(p => p.At).ThenBy(p => p.Id)
+            open = _paymentRecords
+                .Where(p => p.State is "delivered" or "unconfirmed" && p.ScopeKey == scopeKey
+                            && p.Members.Any(members.Contains))
+                .OrderBy(p => p.FinishedAt).ThenBy(p => p.StartedAt).ThenBy(p => p.Id)
                 .ToList();
         var priors = open.Where(p => !confirmed.Contains(p.Id)).ToList();
         if (priors.Count == 0) return null;
@@ -2061,7 +2100,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
                 ["priors"] = priors.Select(p => new
                 {
                     id = p.Id, machine = p.Machine, netAmount = p.NetAmount, totalBeforeBalance = p.TotalBeforeBalance,
-                    at = p.At, finishedAt = p.FinishedAt, unconfirmed = p.Unconfirmed,
+                    at = p.StartedAt, finishedAt = p.FinishedAt, unconfirmed = p.State == "unconfirmed",
                 }).ToList(),
                 ["priorsDigest"] = PriorsDigest.Format(digest),
             });
@@ -2131,7 +2170,9 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             _pushCalls.Add(new PushCall(endpoint, licenseId, raw));
             if (_scripted.TryGetValue(endpoint, out var q) && q.Count > 0) scripted = q.Dequeue();
         }
+        await WaitHoldAsync(endpoint, ct);
         if (scripted is not null) return scripted();
+        if (LeaseRules) return BalanceByRules(req, action, raw);
 
         switch (action)
         {
@@ -2176,6 +2217,7 @@ internal sealed class FakeSalesServer : HttpMessageHandler
             _pushCalls.Add(new PushCall(WhatsAppSend, licenseId, raw));
             if (_scripted.TryGetValue(WhatsAppSend, out var q) && q.Count > 0) scripted = q.Dequeue();
         }
+        await WaitHoldAsync(WhatsAppSend, ct);
         if (scripted is not null) return scripted();
         return FakeHttpMessageHandler.Json(200,
             $"{{\"ok\":true,\"errorCode\":null,\"errorMessage\":null,\"messageId\":\"{Guid.NewGuid()}\"}}");
