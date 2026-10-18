@@ -633,8 +633,16 @@ public sealed class PaymentLeaseCoordinator
                     "Ödeme isteği kirası alındı {RecordId} (customer={CustomerId}, {Members} üye, {Orders} sipariş)",
                     request.RecordId, person.LeasedId, http.Response.Members.Count, request.OrderIds.Count);
                 return null;
+            case PaymentRequestTransport.Ok when http.Response!.State == PaymentRequestStates.Unconfirmed:
+                // Yanıtı kaybolan ilk begin'in kirası, aynı Id'li yineleme yanıt alana kadar doldu (§6.4-a): kayıt bu akışın,
+                // mesaj gitmedi. Kira tutulur ve çıkışta abandoned ile kapanır (sunucunun finish'i Unconfirmed'ı kabul eder);
+                // yoksa kayıt kalıcı olarak "istenmiş olabilir" kalır, öbür bilgisayarların her sorusunda görünürdü.
+                flow.Begun(request.RecordId);
+                _log.LogWarning("Ödeme isteği kirası {RecordId}: yinelemede kira dolmuş döndü (unconfirmed) — mesaj "
+                              + "engellendi, kayıt abandoned ile kapatılacak", request.RecordId);
+                return FailClosed;
             case PaymentRequestTransport.Ok:
-                // Yeniden oynatma kapanmış bir kaydı döndürdü: bu akışın kirası yok.
+                // Yeniden oynatma son hâldeki bir kaydı döndürdü: bu akışın kirası yok.
                 flow.Clear();
                 _log.LogWarning("Ödeme isteği kirası {RecordId}: kayıt {State} durumunda döndü — mesaj engellendi",
                     request.RecordId, http.Response!.State);

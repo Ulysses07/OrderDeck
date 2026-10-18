@@ -375,6 +375,37 @@ public sealed class PaymentLeaseTests : IDisposable
         finish.Json.GetProperty("outcome").GetString().Should().Be("abandoned");
     }
 
+    [Theory]
+    [InlineData("unconfirmed", "abandoned")]   // süresi dolmuş kendi kirası: finish(abandoned) onu kapatır
+    [InlineData("abandoned", null)]            // son hâl: kapatılacak bir şey yok
+    public async Task Begin_yinelemesi_kendi_kirasini_kapanmis_dondururse_mesaj_yok_suresi_dolmussa_abandoned_kapanir(
+        string replayedState, string? expectedFinish)
+    {
+        // İlk begin'in yanıtı kayboldu; aynı Id'li yineleme kira süresi dolduktan sonra yanıt aldı ve sunucu kaydı
+        // "unconfirmed" döndürdü. Mesaj hiç gitmedi: kayıt öyle kalsaydı öbür bilgisayarların her sorusunda "istenmiş
+        // olabilir (sonucu bilinmiyor)" diye görünürdü. Sunucunun finish'i Unconfirmed kaydı abandoned'a çevirir.
+        var pc = await PcAsync();
+        var live = pc.StartStream();
+        var buyer = await BuyerAsync(pc, live, $"alici_yineleme_{replayedState}", 120m);
+        _server.EnqueueStatus(FakeSalesServer.PaymentRequestsBegin, 503);
+        _server.NextBeginReplayState = replayedState;
+
+        (await RequestAsync(pc, buyer.Customer, Scope(live))).Result.Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        var begins = Begins();
+        begins.Should().HaveCount(2);
+        pc.Launcher.LaunchedUrls.Should().BeEmpty();
+        _server.Calls(FakeSalesServer.BalancePreviewEndpoint).Should().BeEmpty();
+        if (expectedFinish is null)
+        {
+            _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().BeEmpty("son hâldeki kayıt bitirilmez");
+            return;
+        }
+        var finish = _server.Calls(FakeSalesServer.PaymentRequestsFinish).Should().ContainSingle().Subject;
+        finish.RecordId.Should().Be(begins[0].GetProperty("recordId").GetGuid());
+        finish.Json.GetProperty("outcome").GetString().Should().Be(expectedFinish);
+    }
+
     // ── kapalı hata ve 409 eşlemeleri ─────────────────────────────────────
 
     [Fact]

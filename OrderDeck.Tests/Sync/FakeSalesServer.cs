@@ -2022,6 +2022,11 @@ internal sealed partial class FakeSalesServer : HttpMessageHandler
         }, Web));
     }
 
+    /// <summary>Betiksiz yolda sıradaki <c>begin</c> 200'ünün durumu — aynı Id'li yinelemenin yeniden oynattığı kapanmış kayıt
+    /// (<c>unconfirmed</c>: süresi dolmuş kira; <c>abandoned</c>, <c>delivered</c>: son hâl). Bir kez kullanılır; boşsa
+    /// <c>sending</c>.</summary>
+    public string? NextBeginReplayState { get; set; }
+
     /// <summary>
     /// <c>POST payment-requests/begin</c> (W3-07): kayıt (<see cref="Calls"/>), bekletme, betik, v2 zarfı denetimi; mod
     /// Off'ta 409 <c>mode-off</c> (§4.7). Kira kurallarından yalnız (e) taklit edilir (W3-09, #523'ün aynası,
@@ -2051,10 +2056,16 @@ internal sealed partial class FakeSalesServer : HttpMessageHandler
         if (Mode != 1) return FakeHttpMessageHandler.Problem(409, "mode-off");
         if (AlreadyRequestedRule(root) is { } rejected) return rejected;
 
+        string state;
+        lock (_gate)
+        {
+            state = NextBeginReplayState ?? "sending";
+            NextBeginReplayState = null;
+        }
         return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(new
         {
             recordId = root.GetProperty("recordId").GetGuid(),
-            state = "sending",
+            state,
             leaseUntil = DateTimeOffset.UtcNow.AddSeconds(120),
             members = root.GetProperty("memberIds").EnumerateArray().Select(m => m.GetString())
                 .Concat(ExtraBeginMembers).Distinct(StringComparer.Ordinal).ToList(),
