@@ -137,6 +137,12 @@ public sealed class PaymentRecordSender
     /// <summary>Tek gönderim kapısı: geri doldurma turu ve açılışın 1. adımı sıraya girer.</summary>
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    /// <summary>Kapıda sırasını bekleyen gönderim sayısı — testler ikinci gönderimin gerçekten kapıda beklediğini
+    /// zamanlamaya dayanmadan doğrular.</summary>
+    internal int GateWaiters => Volatile.Read(ref _gateWaiters);
+
+    private int _gateWaiters;
+
     /// <summary>400 alan kayıtlar: kayıt başına bir kez uyarı (60 sn'lik tur her seferinde yinelemesin).</summary>
     private readonly HashSet<string> _rejectionWarned = new(StringComparer.Ordinal);
 
@@ -191,7 +197,9 @@ public sealed class PaymentRecordSender
         Task.Run(async () =>
         {
             PaymentRecordFlush flush;
-            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            Interlocked.Increment(ref _gateWaiters);
+            try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+            finally { Interlocked.Decrement(ref _gateWaiters); }
             try { flush = await ProcessAsync(finishesOnly, ct).ConfigureAwait(false); }
             finally { _gate.Release(); }
             if (flush.Sent > 0) RaiseRecordsSent();

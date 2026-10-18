@@ -459,11 +459,20 @@ public sealed class PaymentRecordSenderTests : IDisposable
             }, Web));
         }
 
+        // Bekleme sınırları tam takım yükünde de yetsin (iş parçacığı havuzu doyabilir); doğrulama gevşemez: ikinci
+        // gönderimin kapıda beklediği zamanlamayla değil kapının sayacıyla görülür.
         var a = _sender.FlushAsync(CancellationToken.None);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(60));
+        var requestsWhileHeld = Volatile.Read(ref _httpCount);
         var b = _sender.FlushAsync(CancellationToken.None);
-        await Task.Delay(100);
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (_sender.GateWaiters != 1)
+        {
+            DateTime.UtcNow.Should().BeBefore(deadline, "ikinci gönderim kapıya varmalı");
+            await Task.Delay(10);
+        }
         b.IsCompleted.Should().BeFalse("ikinci gönderim kapıda bekler");
+        Volatile.Read(ref _httpCount).Should().Be(requestsWhileHeld, "kapıdaki gönderim istek atmadı");
         release.SetResult();
         var results = await Task.WhenAll(a, b);
 
