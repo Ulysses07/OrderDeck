@@ -1,32 +1,29 @@
+using Dapper;
 using FluentAssertions;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
-using OrderDeck.PdfParsing;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
-using OrderDeck.Core.Time;
 using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace OrderDeck.Tests.ViewModels;
 
+/// <summary>
+/// "Gelen Ödemeler" çekmecesi (<see cref="DekontEkleViewModel"/>; 2026-10-19'a kadar "Yeni Dekont"). Dekont kaydı
+/// kalktı: form müşteri + gelen tutardır, hiçbir <c>Payment</c> satırı yazılmaz. Kargo zinciri (eşleştirme, yönerge,
+/// RecipientPays bayrağı, dosyaya bağlama, eşik, karar, "kazandın" mesajı) bugünkü gibi çalışır.
+/// </summary>
 public sealed class DekontEkleViewModelTests
 {
-    private sealed class FakeClock : IClock
-    {
-        public long UnixNow() => 1714521600L;
-        public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(1714521600L);
-    }
-
     private sealed class Fixture
     {
         public DekontEkleViewModel Vm { get; }
-        public PaymentRepository Payments { get; }
         public CustomerRepository Customers { get; }
         public SessionRepository Sessions { get; }
         public LabelRepository Labels { get; }
@@ -42,7 +39,6 @@ public sealed class DekontEkleViewModelTests
         {
             Db = new InMemorySqlite();
             new MigrationRunner(Db).Run();
-            Payments = new PaymentRepository(Db);
             Customers = new CustomerRepository(Db);
             Sessions = new SessionRepository(Db);
             Labels = new LabelRepository(Db);
@@ -51,22 +47,34 @@ public sealed class DekontEkleViewModelTests
             Shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(Db), Settings);
             ShipmentSvc = new ShipmentService(Shipments, Labels, Shipping, () => 1_000L);
 
-            var matcher = new PaymentMatcherService(Labels, Shipping);
-            var pdfParser = new PdfDekontParser();
-            Vm = new DekontEkleViewModel(
-                Payments, Customers, Sessions, matcher, Labels, ShipmentSvc,
-                pdfParser, Settings, Shipping,
-                new FakeClock(),
-                NullLogger<DekontEkleViewModel>.Instance);
+            Vm = NewVm();
+        }
+
+        public DekontEkleViewModel NewVm(OrderDeck.App.Services.PaymentRequestService? paymentRequest = null) =>
+            new(Customers, Sessions, new PaymentMatcherService(Labels, Shipping), ShipmentSvc, Shipping,
+                NullLogger<DekontEkleViewModel>.Instance, paymentRequest);
+
+        /// <summary>Yerel <c>Payment</c> tablosunun satır sayısı: çekmece artık hiç yazmamalı.</summary>
+        public int PaymentRows()
+        {
+            using var c = Db.Open();
+            return c.ExecuteScalar<int>("SELECT COUNT(*) FROM Payment");
+        }
+
+        public int ShipmentRows()
+        {
+            using var c = Db.Open();
+            return c.ExecuteScalar<int>("SELECT COUNT(*) FROM Shipment");
         }
     }
 
+    /// <summary>Geçerli form: müşteri (instagram/@ayse_y) + gelen tutar. Müşteriyi veritabanına
+    /// <see cref="SeedCustomer"/> ekler.</summary>
     private static void FillValid(DekontEkleViewModel vm)
     {
-        vm.PayerName = "Test Gönderen";
+        vm.CustomerPlatform = "instagram";
+        vm.CustomerUsername = "@ayse_y";
         vm.AmountText = "250,50";
-        vm.ReferansNo = "REF-001";
-        vm.PaidAt = DateTime.Today;
     }
 
     private static Customer SeedCustomer(Fixture fx, string id = "c1",
@@ -96,7 +104,19 @@ public sealed class DekontEkleViewModelTests
         return sid;
     }
 
-    // ── Existing validation + parse tests ────────────────────────────────
+    private static string SeedLabel(Fixture fx, string sessionId, string customerId, decimal price,
+        long addedAt = 1100L, string text = "ürün")
+    {
+        var id = System.Guid.NewGuid().ToString("N");
+        fx.Labels.Insert(new Label(
+            Id: id, SessionId: sessionId, CustomerId: customerId,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: text, Code: null, Price: price,
+            AddedAt: addedAt, PrintedAt: null));
+        return id;
+    }
+
+    // ── Doğrulama ─────────────────────────────────────────────────────────
 
     [Fact]
     public void CanSave_is_false_when_form_is_empty()
@@ -106,11 +126,59 @@ public sealed class DekontEkleViewModelTests
     }
 
     [Fact]
-    public void CanSave_is_true_when_all_required_fields_are_set()
+    public void CanSave_is_true_when_customer_and_amount_are_set()
     {
         var fx = new Fixture();
         FillValid(fx.Vm);
         fx.Vm.CanSave.Should().BeTrue();
+    }
+
+    /// <summary>Müşteri zorunlu: kargo zinciri müşterisiz çalışmaz. Boşsa satır içi hata, hiçbir şey yazılmaz.</summary>
+    [Theory]
+    [InlineData("", "")]
+    [InlineData("instagram", "")]
+    [InlineData("", "@ayse_y")]
+    [InlineData("instagram", "   ")]
+    public async Task Musteri_bosken_kayit_yok_satir_ici_hata(string platform, string username)
+    {
+        var fx = new Fixture();
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        var label = SeedLabel(fx, sid, customer.Id, 250.50m);
+        fx.Vm.AmountText = "250,50";
+        fx.Vm.CustomerPlatform = platform;
+        fx.Vm.CustomerUsername = username;
+
+        fx.Vm.CanSave.Should().BeFalse("Kaydet pasif");
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
+        result.Error.Should().Contain("Müşteri gerekli");
+        fx.Vm.ErrorMessage.Should().Be(result.Error, "satır içi hata");
+
+        (await fx.Vm.SaveAsync()).Should().BeFalse("çekmece açık kalır, form düzeltilebilsin");
+        fx.Vm.ErrorMessage.Should().NotBeNull();
+
+        fx.PaymentRows().Should().Be(0);
+        fx.ShipmentRows().Should().Be(0, "kargo zinciri çalışmadı");
+        fx.Labels.GetById(label)!.ShipmentId.Should().BeNull();
+    }
+
+    [Fact]
+    public void Bulunamayan_musteride_kayit_yok_satir_ici_hata()
+    {
+        // Eskiden dekont yine yazılıyor, eşleştirme sessizce atlanıyordu. Artık yazılacak bir şey yok: sessizce
+        // kapanmak "oldu" sanılırdı.
+        var fx = new Fixture();
+        SeedActiveSession(fx);
+        FillValid(fx.Vm);
+        fx.Vm.CustomerUsername = "@bilinmeyen";
+
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
+        fx.Vm.ErrorMessage.Should().Contain("Müşteri bulunamadı");
+        fx.PaymentRows().Should().Be(0);
+        fx.ShipmentRows().Should().Be(0);
     }
 
     [Theory]
@@ -121,56 +189,12 @@ public sealed class DekontEkleViewModelTests
     public void Amount_accepts_comma_and_dot_decimal(string raw)
     {
         var fx = new Fixture();
+        SeedCustomer(fx);
         FillValid(fx.Vm);
         fx.Vm.AmountText = raw;
-        fx.Vm.ReferansNo = $"REF-{System.Guid.NewGuid():N}";
 
-        var result = fx.Vm.TrySave();
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-
-        var stored = fx.Payments.ListByStatus(PaymentStatus.Pending).First();
-        stored.Amount.Should().BeGreaterThan(0);
-    }
-
-    [Fact]
-    public void TrySave_persists_payment_with_pending_status_and_normal_directive()
-    {
-        var fx = new Fixture();
-        FillValid(fx.Vm);
-
-        var result = fx.Vm.TrySave();
-
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        var stored = fx.Payments.FindByReferansNo("REF-001");
-        stored.Should().NotBeNull();
-        stored!.PayerName.Should().Be("Test Gönderen");
-        stored.Amount.Should().Be(250.50m);
-        stored.Status.Should().Be(PaymentStatus.Pending);
-        stored.ShipmentDirective.Should().Be(ShipmentDirective.Normal);
-        stored.SyncedAt.Should().BeNull("outbox pickup yapacak");
-    }
-
-    [Fact]
-    public void TrySave_rejects_empty_payer_name()
-    {
-        var fx = new Fixture();
-        FillValid(fx.Vm);
-        fx.Vm.PayerName = "";
-
-        var result = fx.Vm.TrySave();
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
-        result.Error.Should().Contain("Ödeyen");
-    }
-
-    [Fact]
-    public void TrySave_rejects_empty_referans_no()
-    {
-        var fx = new Fixture();
-        FillValid(fx.Vm);
-        fx.Vm.ReferansNo = "";
-
-        var result = fx.Vm.TrySave();
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
+        fx.Vm.CanSave.Should().BeTrue();
+        fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
     }
 
     [Theory]
@@ -181,54 +205,36 @@ public sealed class DekontEkleViewModelTests
     public void TrySave_rejects_invalid_amount(string raw)
     {
         var fx = new Fixture();
+        SeedCustomer(fx);
         FillValid(fx.Vm);
         fx.Vm.AmountText = raw;
 
         fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
+        fx.ShipmentRows().Should().Be(0);
     }
+
+    // ── Payment yazılmaz, kargo zinciri çalışır ──────────────────────────
 
     [Fact]
-    public void TrySave_rejects_future_paid_date()
+    public async Task Kaydet_hicbir_Payment_satiri_yazmaz_ama_kargo_zinciri_calisir()
     {
         var fx = new Fixture();
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        var labelId = SeedLabel(fx, sid, customer.Id, 1200m);
         FillValid(fx.Vm);
-        fx.Vm.PaidAt = DateTime.Today.AddDays(2);
+        fx.Vm.AmountText = "1200";
 
-        var result = fx.Vm.TrySave();
-        result.Error.Should().Contain("gelecek");
+        (await fx.Vm.SaveAsync()).Should().BeTrue();
+
+        fx.PaymentRows().Should().Be(0, "dekont kaydı kalktı: payments/sync'e yeni satır gitmez");
+        var shipmentId = fx.Labels.GetById(labelId)!.ShipmentId;
+        shipmentId.Should().NotBeNullOrEmpty("etiket açık kargo dosyasına bağlandı");
+        fx.Shipments.GetById(shipmentId!)!.CumulativeAmount.Should().Be(1200m);
+        fx.Vm.ErrorMessage.Should().BeNull();
     }
 
-    [Fact]
-    public void TrySave_rejects_duplicate_referans_no()
-    {
-        var fx = new Fixture();
-        FillValid(fx.Vm);
-        fx.Vm.TrySave();
-
-        // Reset VM (simulate fresh dialog) and try same ref no
-        FillValid(fx.Vm);
-        fx.Vm.ReferansNo = "REF-001";
-
-        var result = fx.Vm.TrySave();
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
-        result.Error.Should().Contain("zaten kayıtlı");
-    }
-
-    // ── Customer + matcher integration (Kargo PR D) ──────────────────────
-
-    [Fact]
-    public void TrySave_without_customer_inputs_uses_basic_flow_no_matcher()
-    {
-        var fx = new Fixture();
-        FillValid(fx.Vm);
-        // Müşteri alanları boş → matcher skip
-
-        var result = fx.Vm.TrySave();
-
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
-            .Should().Be(ShipmentDirective.Normal);
-    }
+    // ── Müşteri + eşleştirme (Kargo PR D) ────────────────────────────────
 
     [Fact]
     public void TrySave_with_customer_no_session_at_all_skips_matcher()
@@ -237,8 +243,6 @@ public sealed class DekontEkleViewModelTests
         SeedCustomer(fx);
         // Hiçbir session yok (ne aktif ne bitmiş) → matcher skip
         FillValid(fx.Vm);
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
 
@@ -248,9 +252,8 @@ public sealed class DekontEkleViewModelTests
     [Fact]
     public void TrySave_falls_back_to_latest_ended_session_when_no_active()
     {
-        // %90 dekont yayın bittikten sonra giriliyor → matcher en son
-        // bitmiş yayın üzerinden çalışmalı. Bu hotfix öncesi matcher
-        // sessizce skip ediyordu.
+        // Ödemelerin çoğu yayın bittikten sonra işleniyor → matcher en son bitmiş yayın üzerinden çalışmalı. Bu
+        // hotfix öncesi matcher sessizce skip ediyordu.
         var fx = new Fixture();
         fx.Settings.Shipping.FreeShippingThreshold = 5000m;
         fx.Settings.Shipping.ShippingFee = 150m;
@@ -258,17 +261,10 @@ public sealed class DekontEkleViewModelTests
         var endedSid = SeedEndedSession(fx);
 
         // Müşteri bu (artık bitmiş) yayında 3000 TL alım yaptı
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: endedSid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 3000m,
-            AddedAt: 950L, PrintedAt: null));
+        SeedLabel(fx, endedSid, customer.Id, 3000m, addedAt: 950L);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "3000"; // kargo eksik
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
 
@@ -289,28 +285,15 @@ public sealed class DekontEkleViewModelTests
         var activeSid = SeedActiveSession(fx);
 
         // Bitmiş yayında 3000 TL, aktif yayında 500 TL
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: endedSid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "eski ürün", Code: null, Price: 3000m,
-            AddedAt: 950L, PrintedAt: null));
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: activeSid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "yeni ürün", Code: null, Price: 500m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, endedSid, customer.Id, 3000m, addedAt: 950L, text: "eski ürün");
+        SeedLabel(fx, activeSid, customer.Id, 500m, text: "yeni ürün");
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "500"; // sadece aktif yayın tutarı
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
 
-        // Aktif yayın seçildiğinde ProductTotal=500 → 500+150=650 expected,
-        // dekont 500 → shortage
+        // Aktif yayın seçildiğinde ProductTotal=500 → 500+150=650 expected, gelen 500 → shortage
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
         result.Shortage!.ProductTotal.Should().Be(500m,
             "aktif yayın varken bitmiş yayına bakma");
@@ -324,23 +307,16 @@ public sealed class DekontEkleViewModelTests
         var sid = SeedActiveSession(fx);
 
         // Müşterinin ürün label'ı 500 TL — kargo feature off, match if 500
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 500m,
-            AddedAt: 1100L, PrintedAt: null));
+        var labelId = SeedLabel(fx, sid, customer.Id, 500m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "500";
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
 
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
-            .Should().Be(ShipmentDirective.Normal);
+        var shipment = fx.Shipments.GetById(fx.Labels.GetById(labelId)!.ShipmentId!)!;
+        shipment.Status.Should().Be(ShipmentStatus.Pending, "Normal yönerge: dosya beklemeye alınmaz");
     }
 
     [Fact]
@@ -352,18 +328,10 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 3000m,
-            AddedAt: 1100L, PrintedAt: null));
+        var labelId = SeedLabel(fx, sid, customer.Id, 3000m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "3000"; // Sadece ürün, kargo eksik
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
 
@@ -371,13 +339,15 @@ public sealed class DekontEkleViewModelTests
         result.Shortage.Should().NotBeNull();
         result.Shortage!.ProductTotal.Should().Be(3000m);
         result.Shortage.ExpectedAmount.Should().Be(3150m);
+        result.Shortage.DekontAmount.Should().Be(3000m, "matcher gelen tutarı alır");
 
-        // Henüz Payment yaratılmamış
-        fx.Payments.FindByReferansNo("REF-001").Should().BeNull();
+        // Yönerge bekleniyor: henüz hiçbir şey yazılmadı
+        fx.PaymentRows().Should().Be(0);
+        fx.Labels.GetById(labelId)!.ShipmentId.Should().BeNull();
     }
 
     [Fact]
-    public void CommitWithDirective_persists_payment_with_chosen_directive()
+    public void CommitWithDirective_RecipientPays_sets_customer_flag_and_shipment_status()
     {
         var fx = new Fixture();
         fx.Settings.Shipping.FreeShippingThreshold = 5000m;
@@ -385,60 +355,23 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 3000m,
-            AddedAt: 1100L, PrintedAt: null));
-
-        FillValid(fx.Vm);
-        fx.Vm.AmountText = "3000";
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
-
-        // İlk save NeedsShipmentDecision döner
-        fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
-
-        // Vendor "Beklet" seçti
-        var commit = fx.Vm.CommitWithDirective(ShipmentDirective.Hold);
-
-        commit.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        var stored = fx.Payments.FindByReferansNo("REF-001")!;
-        stored.ShipmentDirective.Should().Be(ShipmentDirective.Hold);
-    }
-
-    [Fact]
-    public void CommitWithDirective_RecipientPays_roundtrips()
-    {
-        var fx = new Fixture();
-        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
-        fx.Settings.Shipping.ShippingFee = 150m;
-
-        var customer = SeedCustomer(fx);
-        var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 2500m,
-            AddedAt: 1100L, PrintedAt: null));
+        var labelId = SeedLabel(fx, sid, customer.Id, 2500m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "2500";
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
         fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
 
         var commit = fx.Vm.CommitWithDirective(ShipmentDirective.RecipientPays);
 
         commit.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
-            .Should().Be(ShipmentDirective.RecipientPays);
+        commit.ThresholdContext.Should().BeNull("RecipientPays yapışkan karar: eşik sorulmaz");
 
         // Kargo PR F: RecipientPays seçimi customer flag'ini set etmeli.
         // Print template bu flag'i okuyup "ALICI ÖDEMELİ" render edecek.
         fx.Customers.GetById(customer.Id)!.RecipientPaysActive.Should().BeTrue();
+        var shipment = fx.Shipments.GetById(fx.Labels.GetById(labelId)!.ShipmentId!)!;
+        shipment.Status.Should().Be(ShipmentStatus.RecipientPays, "yönerge dosyaya uygulandı");
+        fx.PaymentRows().Should().Be(0);
     }
 
     [Fact]
@@ -451,17 +384,10 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 2500m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 2500m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "2500";
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
         fx.Vm.TrySave();
         fx.Vm.CommitWithDirective(ShipmentDirective.Hold);
 
@@ -469,70 +395,7 @@ public sealed class DekontEkleViewModelTests
     }
 
     [Fact]
-    public void TrySave_with_unknown_customer_silently_skips_matcher()
-    {
-        var fx = new Fixture();
-        SeedActiveSession(fx);
-        // Customer asla seed edilmedi
-
-        FillValid(fx.Vm);
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@bilinmeyen";
-
-        var result = fx.Vm.TrySave();
-
-        // Müşteri bulunmadı → basic save, no prompt
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-    }
-
-    // ── IBAN match check (2026-05-12) ───────────────────────────────────
-
-    /// <summary>Vendor IBAN'ı Settings.Payment.Iban'da set'li olduğunda PDF
-    /// alıcı IBAN'ı uyuşmazsa uyarı çıkar.</summary>
-    [Fact]
-    public void TryFillFromPdf_warns_when_recipient_iban_does_not_match_settings()
-    {
-        var fx = new Fixture();
-        fx.Settings.Payment.Iban = TestIban.Grouped(TestIban.NewTr("00111")); // boşluklu ok
-        // PDF text içinde ALICI IBAN tamamen farklı:
-        var pdfText = "ALICI IBAN: TR99 0099 9999 9999 9999 9999 99";
-
-        // Helper: smoke text → IBAN extract → CheckIbanMatch logic doğrudan
-        // burada tetiklenmez (TryFillFromPdf byte[] alır, PdfPig açar). Bunun
-        // için ParseFromText pathini taklit edip ViewModel.TryFillFromPdf
-        // davranışını test edelim — pure parser çıktısı bizim helper'a düşer.
-        var parser = new OrderDeck.PdfParsing.PdfDekontParser();
-        var parsed = parser.ParseFromText(pdfText, "fakehash");
-
-        parsed.RecipientIban.Should().Be("TR990099999999999999999999");
-        // ViewModel'in CheckIbanMatch'i private; ama IbanWarning gözlemlenebilir.
-        // PDF byte[] olmadan direkt test için Parse(byte[]) çağırılamaz; bu
-        // testte parser sonucunu zaten doğrulamak yeterli. Full integration
-        // smoke gerçek PDF üzerinden manuel.
-        parsed.RecipientIban.Should().NotBe(NormalizeIban(fx.Settings.Payment.Iban));
-    }
-
-    [Fact]
-    public void TryFillFromPdf_no_warning_when_recipient_iban_matches()
-    {
-        var fx = new Fixture();
-        var iban = TestIban.NewTr("00111");
-        fx.Settings.Payment.Iban = TestIban.Grouped(iban);
-        var pdfText = $"ALICI IBAN: {iban}";  // boşluksuz aynı
-
-        var parser = new OrderDeck.PdfParsing.PdfDekontParser();
-        var parsed = parser.ParseFromText(pdfText, "fakehash");
-
-        parsed.RecipientIban.Should().Be(iban);
-        // Normalize sonrası eşleşmeli
-        parsed.RecipientIban.Should().Be(NormalizeIban(fx.Settings.Payment.Iban));
-    }
-
-    private static string NormalizeIban(string raw)
-        => System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", "").ToUpperInvariant();
-
-    [Fact]
-    public void TrySave_when_dekont_includes_shipping_fee_is_Saved_with_normal_directive()
+    public void TrySave_when_amount_includes_shipping_fee_is_Saved_with_normal_directive()
     {
         var fx = new Fixture();
         fx.Settings.Shipping.FreeShippingThreshold = 5000m;
@@ -540,23 +403,16 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 3000m,
-            AddedAt: 1100L, PrintedAt: null));
+        var labelId = SeedLabel(fx, sid, customer.Id, 3000m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "3150"; // Ürün + kargo dahil
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
 
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
-            .Should().Be(ShipmentDirective.Normal);
+        fx.Shipments.GetById(fx.Labels.GetById(labelId)!.ShipmentId!)!.Status
+            .Should().Be(ShipmentStatus.Pending);
     }
 
     // ── PR-C/2: Shipment hook integration tests ──────────────────────────
@@ -567,17 +423,10 @@ public sealed class DekontEkleViewModelTests
         var fx = new Fixture();
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        var labelId = System.Guid.NewGuid().ToString("N");
-        fx.Labels.Insert(new Label(
-            Id: labelId, SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 1200m,
-            AddedAt: 1100L, PrintedAt: null));
+        var labelId = SeedLabel(fx, sid, customer.Id, 1200m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "1200";
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
@@ -599,17 +448,10 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 1200m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 1200m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "1350"; // 1200 ürün + 150 kargo
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
@@ -625,17 +467,10 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 5200m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 5200m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "5200"; // ücretsiz kargo bölgesi
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
@@ -653,17 +488,10 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        var labelId = System.Guid.NewGuid().ToString("N");
-        fx.Labels.Insert(new Label(
-            Id: labelId, SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 1200m,
-            AddedAt: 1100L, PrintedAt: null));
+        var labelId = SeedLabel(fx, sid, customer.Id, 1200m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "1200"; // ürün only, kargo eksik
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var initial = fx.Vm.TrySave();
         initial.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
@@ -677,6 +505,7 @@ public sealed class DekontEkleViewModelTests
         var shipment = fx.Shipments.GetById(attached.ShipmentId!)!;
         shipment.Status.Should().Be(ShipmentStatus.Held);
         shipment.HeldAt.Should().NotBeNull();
+        fx.PaymentRows().Should().Be(0, "yönerge eskiden Payment satırına da yazılıyordu; artık yalnız dosyada");
     }
 
     [Fact]
@@ -688,17 +517,10 @@ public sealed class DekontEkleViewModelTests
 
         var customer = SeedCustomer(fx);
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 5200m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 5200m);
 
         FillValid(fx.Vm);
         fx.Vm.AmountText = "5200";
-        fx.Vm.CustomerPlatform = "instagram";
-        fx.Vm.CustomerUsername = "@ayse_y";
 
         var result = fx.Vm.TrySave();
         var shipmentId = result.ThresholdContext!.Shipment!.Id;
@@ -735,12 +557,7 @@ public sealed class DekontEkleViewModelTests
 
         // Eşik aşan label
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 5300m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 5300m);
 
         // SettingsStore + PaymentRequestService + FakeLauncher hazırla
         var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"od-pr-{System.Guid.NewGuid():N}.json");
@@ -756,19 +573,10 @@ public sealed class DekontEkleViewModelTests
                 new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), fx.Shipping);
 
             // Custom VM with the wired PaymentRequestService
-            var vm = new DekontEkleViewModel(
-                fx.Payments, fx.Customers, fx.Sessions,
-                new PaymentMatcherService(fx.Labels, fx.Shipping),
-                fx.Labels, fx.ShipmentSvc,
-                new PdfDekontParser(), fx.Settings, fx.Shipping,
-                new FakeClock(),
-                NullLogger<DekontEkleViewModel>.Instance,
-                paymentRequest);
+            var vm = fx.NewVm(paymentRequest);
 
             FillValid(vm);
             vm.AmountText = "5300";
-            vm.CustomerPlatform = "instagram";
-            vm.CustomerUsername = "@ayse_y";
 
             var result = vm.TrySave();
             result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
@@ -812,12 +620,7 @@ public sealed class DekontEkleViewModelTests
         fx.Shipments.Insert(new Shipment("kargo-yeni", customer.Id, ShipmentStatus.Pending, 70, null, null, 0m));
 
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 5300m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 5300m);
 
         var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"od-pr-{System.Guid.NewGuid():N}.json");
         try
@@ -830,19 +633,10 @@ public sealed class DekontEkleViewModelTests
                 PaymentRequestServiceTestHelpers.StubApiClient(),
                 new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
                 new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), fx.Shipping);
-            var vm = new DekontEkleViewModel(
-                fx.Payments, fx.Customers, fx.Sessions,
-                new PaymentMatcherService(fx.Labels, fx.Shipping),
-                fx.Labels, fx.ShipmentSvc,
-                new PdfDekontParser(), fx.Settings, fx.Shipping,
-                new FakeClock(),
-                NullLogger<DekontEkleViewModel>.Instance,
-                paymentRequest);
+            var vm = fx.NewVm(paymentRequest);
 
             FillValid(vm);
             vm.AmountText = "5300";
-            vm.CustomerPlatform = "instagram";
-            vm.CustomerUsername = "@ayse_y";
 
             var result = vm.TrySave();
             var ctx = result.ThresholdContext!;
@@ -881,12 +675,7 @@ public sealed class DekontEkleViewModelTests
         fx.Customers.Insert(customer);
 
         var sid = SeedActiveSession(fx);
-        fx.Labels.Insert(new Label(
-            Id: System.Guid.NewGuid().ToString("N"),
-            SessionId: sid, CustomerId: customer.Id,
-            Platform: "instagram", Username: "@ayse_y",
-            MessageText: "ürün", Code: null, Price: 5300m,
-            AddedAt: 1100L, PrintedAt: null));
+        SeedLabel(fx, sid, customer.Id, 5300m);
 
         var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"od-pr-{System.Guid.NewGuid():N}.json");
         try
@@ -899,19 +688,10 @@ public sealed class DekontEkleViewModelTests
                 PaymentRequestServiceTestHelpers.StubApiClient(),
                 new PaymentRequestServiceTestHelpers.NullLicenseProvider(),
                 new OrderDeck.Tests.Fakes.InMemoryPaymentJobStore(), fx.Shipping);
-            var vm = new DekontEkleViewModel(
-                fx.Payments, fx.Customers, fx.Sessions,
-                new PaymentMatcherService(fx.Labels, fx.Shipping),
-                fx.Labels, fx.ShipmentSvc,
-                new PdfDekontParser(), fx.Settings, fx.Shipping,
-                new FakeClock(),
-                NullLogger<DekontEkleViewModel>.Instance,
-                paymentRequest);
+            var vm = fx.NewVm(paymentRequest);
 
             FillValid(vm);
             vm.AmountText = "5300";
-            vm.CustomerPlatform = "instagram";
-            vm.CustomerUsername = "@ayse_y";
 
             var result = vm.TrySave();
             vm.ApplyShipmentDecision(result.ThresholdContext!.Shipment!.Id,
@@ -923,24 +703,5 @@ public sealed class DekontEkleViewModelTests
         {
             if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
         }
-    }
-
-    [Fact]
-    public void TrySave_without_customer_skips_shipment_hook()
-    {
-        var fx = new Fixture();
-        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
-        fx.Settings.Shipping.ShippingFee = 150m;
-
-        FillValid(fx.Vm);
-        // Müşteri alanları boş bırakılır
-
-        var result = fx.Vm.TrySave();
-        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
-        result.ThresholdContext.Should().BeNull();
-
-        // Hiçbir Shipment oluşmamalı
-        var anyShipment = fx.Shipments.GetByStatus(ShipmentStatus.Pending);
-        anyShipment.Should().BeEmpty();
     }
 }

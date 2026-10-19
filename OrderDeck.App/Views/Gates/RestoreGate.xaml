@@ -70,8 +70,8 @@
                                         Visibility="{Binding IsMonthlyMilestone, Converter={StaticResource BoolToVisibleConverter}}">
                                     <!-- OD.Text.Micro'nun kendi rengi gri
                                          (OD.Brush.TextMute); amber zeminli her
-                                         yüzey (ShellBanners, SettingsPage,
-                                         DekontEkleDrawer) amber metinle
+                                         yüzey (ShellBanners, SettingsPage)
+                                         amber metinle
                                          eşleşiyor, çip de öyle olsun. -->
                                     <TextBlock Text="Aylık" Style="{StaticResource OD.Text.Micro}"
                                                Foreground="{StaticResource OD.Brush.Amber}"/>

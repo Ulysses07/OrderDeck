@@ -204,8 +204,8 @@ public sealed record SalesBackupResult(
 
 /// <summary>Dekontun kargo adımının sonucu (spec 2026-10-13 §5.3 "Dekont kargo adımı", §5.8 "Dekont kaydı").</summary>
 /// <param name="Threshold">Normal yönergede havuz eşiğe ulaştı: eşik çekmecesi bununla açılır; yoksa null.</param>
-/// <param name="Warning">Kargo adımı yapılamadı ya da yarım kaldı (dekont yine kaydedildi): satır içi uyarı; başarıda
-/// null. Bir sonraki dekont bütün bağlanmamış etiketleri alır.</param>
+/// <param name="Warning">Kargo adımı yapılamadı ya da yarım kaldı: satır içi uyarı; başarıda null. Bir sonraki kayıt
+/// (Gelen Ödemeler; 2026-10-19'a kadar dekont) bütün bağlanmamış etiketleri alır.</param>
 /// <param name="ChangedLabelIds">Yerelde kargo bağı değişmiş olabilecek etiketler (komut yanıtının ve retin
 /// satırları); mod Off'ta boş.</param>
 public sealed record SalesShipmentStepResult(
@@ -242,10 +242,10 @@ public sealed record SalesShipmentDecisionResult(
 public interface IShipmentEditor
 {
     /// <summary>
-    /// Dekont kaydedildikten sonra müşterinin bağlanmamış etiketlerini açık dosyasına bağlar ve yönergeyi uygular:
-    /// Hold ve RecipientPays kararı çekmecesiz verilir, Normal'de eşik havuzla değerlendirilir. Mod On'da
-    /// çevrimdışıyken, komut ucu yokken ya da komut reddedilince adım atlanır ve sonuç uyarı taşır (§5.8); dekont
-    /// kaydı etkilenmez.
+    /// Gelen Ödemeler kaydında (2026-10-19'a kadar dekont kaydı; artık Payment yazılmaz) müşterinin bağlanmamış
+    /// etiketlerini açık dosyasına bağlar ve yönergeyi uygular: Hold ve RecipientPays kararı çekmecesiz verilir,
+    /// Normal'de eşik havuzla değerlendirilir. Mod On'da çevrimdışıyken, komut ucu yokken ya da komut reddedilince adım
+    /// atlanır ve sonuç uyarı taşır (§5.8).
     /// </summary>
     /// <param name="customerId">Dekontun müşterisi (yerel Id).</param>
     Task<SalesShipmentStepResult> RunDekontShipmentStepAsync(

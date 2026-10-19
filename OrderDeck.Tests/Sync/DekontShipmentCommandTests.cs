@@ -9,8 +9,6 @@ using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
-using OrderDeck.Core.Time;
-using OrderDeck.PdfParsing;
 using OrderDeck.Tests.App;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
@@ -19,7 +17,8 @@ namespace OrderDeck.Tests.Sync;
 
 /// <summary>
 /// Dekontun kargo adımı ve eşik kararı yönlendiriciden (W2-08; spec 2026-10-13 §5.3 "Dekont kargo adımı" ve "Eşik
-/// çekmecesi kararı", §5.8 "Dekont kaydı", §7.1–§7.3). Mod On'da dosya sunucunun: <c>attach-shipment</c> (beklenen
+/// çekmecesi kararı", §5.8 "Dekont kaydı", §7.1–§7.3). 2026-10-19'dan beri adım "Gelen Ödemeler" çekmecesinden yürür ve
+/// hiçbir <c>Payment</c> satırı yazılmaz. Mod On'da dosya sunucunun: <c>attach-shipment</c> (beklenen
 /// küme yerel bağlanmamış etiketler; <c>stale</c>'de sunucunun kümesiyle bir kez daha) ve <c>shipment-decision</c>
 /// (beklenen sürüm aynanın <c>ServerVersion</c>'ı); yanıt kilit altında aynaya iner, yerel <c>Shipment</c>'a hiç
 /// yazılmaz. Mod Off'ta bugünkü yerel sıra, ağsız ve eşzamanlı. Sunucu <see cref="FakeSalesServer"/>, çekmeceler
@@ -27,11 +26,6 @@ namespace OrderDeck.Tests.Sync;
 /// </summary>
 public sealed class DekontShipmentCommandTests : IDisposable
 {
-    private sealed class Clock : IClock
-    {
-        public long UnixNow() => SalesEditTestBed.T0.ToUnixTimeSeconds() + 7_200;
-    }
-
     /// <summary>Çekmeceler: içerik STA'da kurulur, ViewModel'e operatörün seçimi yazılır.</summary>
     private sealed class Drawers : IDrawerService
     {
@@ -82,14 +76,15 @@ public sealed class DekontShipmentCommandTests : IDisposable
     private DekontEkleViewModel Vm(string amount, IDrawerService? drawers = null,
         Microsoft.Extensions.Logging.ILogger<DekontEkleViewModel>? log = null,
         OrderDeck.App.Services.PaymentRequestService? paymentRequest = null, bool routed = true) =>
-        new(new PaymentRepository(_bed.Db), _bed.Customers, _bed.Sessions,
-            new PaymentMatcherService(_bed.LabelRepo, _bed.Shipping), _bed.LabelRepo, _bed.Shipments,
-            new PdfDekontParser(), _bed.Settings, _bed.Shipping, new Clock(),
+        new(_bed.Customers, _bed.Sessions,
+            new PaymentMatcherService(_bed.LabelRepo, _bed.Shipping), _bed.Shipments, _bed.Shipping,
             log ?? NullLogger<DekontEkleViewModel>.Instance, paymentRequest, drawers, routed ? _bed.Router : null)
         {
-            PayerName = "Gönderen", AmountText = amount, ReferansNo = $"ref-{Guid.NewGuid():N}",
-            PaidAt = DateTime.Today, CustomerPlatform = "tiktok", CustomerUsername = "alici_ornek",
+            AmountText = amount, CustomerPlatform = "tiktok", CustomerUsername = "alici_ornek",
         };
+
+    /// <summary>Gelen Ödemeler çekmecesi (2026-10-19) hiçbir <c>Payment</c> satırı yazmaz; kargo adımı yine çalışır.</summary>
+    private int PaymentRows() => _bed.Scalar<int>("SELECT COUNT(*) FROM Payment");
 
     /// <summary>Yerel ayar ve lisans geneli ayar aynı değerde: mod Off yereli, mod On lisans genelini okur (spec
     /// 2026-10-13 §6.2). Kaynağın ayrımını <see cref="Mod_On_esik_ve_cekmecenin_esik_metni_lisans_geneli_ayardan"/>
@@ -137,7 +132,7 @@ public sealed class DekontShipmentCommandTests : IDisposable
         mirror.ServerVersion.Should().Be(Server.Shipment(proposed)!.Version);
         mirror.SyncedAt.Should().NotBeNull("ayna onaylı: shipments/sync'e girmez");
         vm.ShipmentWarning.Should().BeNull();
-        new PaymentRepository(_bed.Db).FindByReferansNo(vm.ReferansNo).Should().NotBeNull();
+        PaymentRows().Should().Be(0, "Gelen Ödemeler Payment yazmaz");
 
         var printed = new PrintedLabelsViewModel(_bed.LabelRepo);
         printed.Load(N(session), withPaymentStatus: false);
@@ -188,13 +183,13 @@ public sealed class DekontShipmentCommandTests : IDisposable
         };
         var vm = Vm("150");
 
-        (await vm.SaveAsync()).Should().BeTrue("dekont kaydedilir");
+        (await vm.SaveAsync()).Should().BeTrue("uyarı şeritte, çekmece kapanır");
 
         Server.CommandCalls.Should().HaveCount(2);
         vm.ShipmentWarning.Should().Be(SalesCommandMessages.DekontShipmentFailed(SalesCommandMessages.Stale));
         _bed.LabelRepo.GetById(N(order))!.ShipmentId.Should().BeNull();
         ShipmentRows().Should().Be(0);
-        new PaymentRepository(_bed.Db).FindByReferansNo(vm.ReferansNo).Should().NotBeNull();
+        PaymentRows().Should().Be(0);
     }
 
     // ── mod On: yönerge ve eşik kararı ─────────────────────────────────────
@@ -273,8 +268,7 @@ public sealed class DekontShipmentCommandTests : IDisposable
         var shipmentId = _bed.LabelRepo.GetById(N(order))!.ShipmentId!;
         _bed.ShipmentRepo.GetById(shipmentId)!.Status.Should().Be(ShipmentStatus.Held);
         Server.Shipment(Guid.Parse(shipmentId))!.Row.Status.Should().Be("held");
-        new PaymentRepository(_bed.Db).FindByReferansNo(vm.ReferansNo)!.ShipmentDirective
-            .Should().Be(ShipmentDirective.Hold);
+        PaymentRows().Should().Be(0, "yönerge yalnız dosyada; eskiden Payment satırına da yazılıyordu");
     }
 
     [Fact]
@@ -416,10 +410,10 @@ public sealed class DekontShipmentCommandTests : IDisposable
         }
     }
 
-    // ── mod On: adım atlanır, dekont kaydedilir (§5.8) ─────────────────────
+    // ── mod On: adım atlanır, uyarı şeritte (§5.8) ─────────────────────────
 
     [Fact]
-    public async Task Cevrimdisi_dekont_kaydedilir_kargo_adimi_atlanir_uyari_yerel_kargo_yazimi_denenmez()
+    public async Task Cevrimdisi_kargo_adimi_atlanir_uyari_hicbir_sey_yazilmaz_yerel_kargo_yazimi_denenmez()
     {
         var (_, _, order) = await _bed.RemoteLabelAsync(150m);
         _bed.ModeOn();
@@ -428,11 +422,12 @@ public sealed class DekontShipmentCommandTests : IDisposable
         var log = new CapturingLogger<DekontEkleViewModel>();
         var vm = Vm("150", log: log);
 
-        (await vm.SaveAsync()).Should().BeTrue("dekont kaydı çevrimdışı çalışır");
+        (await vm.SaveAsync()).Should().BeTrue("çekmece kapanır, sebep şeritte");
 
-        new PaymentRepository(_bed.Db).FindByReferansNo(vm.ReferansNo).Should().NotBeNull();
+        PaymentRows().Should().Be(0, "dekont kaydı kalktı: çevrimdışıyken de hiçbir şey yazılmaz");
         vm.ShipmentWarning.Should().Be(SalesCommandMessages.DekontShipmentDeferred);
-        vm.ShipmentWarning.Should().Be("Dekont kaydedildi; kargo adımı bağlantı gelince bir sonraki dekontta yapılır.");
+        vm.ShipmentWarning.Should().Be(
+            "Kargo adımı yapılamadı: sunucuya ulaşılamadı. Bağlantı gelince Gelen Ödemeler'den yeniden kaydet.");
         _bed.HttpCount.Should().Be(http, "çevrimdışıyken istek gitmez");
         ShipmentRows().Should().Be(0);
         _bed.LabelRepo.GetById(N(order))!.ShipmentId.Should().BeNull();
@@ -451,7 +446,7 @@ public sealed class DekontShipmentCommandTests : IDisposable
         (await vm.SaveAsync()).Should().BeTrue();
 
         vm.ShipmentWarning.Should().Be(SalesCommandMessages.DekontShipmentDeferred);
-        new PaymentRepository(_bed.Db).FindByReferansNo(vm.ReferansNo).Should().NotBeNull();
+        PaymentRows().Should().Be(0);
         ShipmentRows().Should().Be(0);
         log.Warnings.Should().BeEmpty();
         _bed.Connectivity.IsOnline.Should().BeFalse("komutun ağ hatası bağlantı ölçüsüne işlendi");
@@ -483,7 +478,7 @@ public sealed class DekontShipmentCommandTests : IDisposable
             new { kind = SalesConflictLog.CommandTooManyCandidates }).Should().Be(1);
 
         ShipmentRows().Should().Be(0);
-        new PaymentRepository(_bed.Db).FindByReferansNo(tooMany.ReferansNo).Should().NotBeNull();
+        PaymentRows().Should().Be(0);
     }
 
     // ── mod Off: bugünkü yerel yol ─────────────────────────────────────────
@@ -527,13 +522,11 @@ public sealed class DekontShipmentCommandTests : IDisposable
             bed.LocalLabel(session, "kisi-0001", 150m, id: "etiket-1");
             bed.LocalLabel(session, "kisi-0001", 40m, id: "etiket-2", tentative: true);
             bed.Exec("UPDATE Customer SET Platform = 'tiktok', Username = 'alici_ornek' WHERE Id = 'kisi-0001'");
-            var vm = new DekontEkleViewModel(new PaymentRepository(bed.Db), bed.Customers, bed.Sessions,
-                new PaymentMatcherService(bed.LabelRepo, bed.Shipping), bed.LabelRepo, bed.Shipments,
-                new PdfDekontParser(), bed.Settings, bed.Shipping, new Clock(), NullLogger<DekontEkleViewModel>.Instance,
-                editor: routed ? bed.Router : null)
+            var vm = new DekontEkleViewModel(bed.Customers, bed.Sessions,
+                new PaymentMatcherService(bed.LabelRepo, bed.Shipping), bed.Shipments, bed.Shipping,
+                NullLogger<DekontEkleViewModel>.Instance, editor: routed ? bed.Router : null)
             {
-                PayerName = "Gönderen", AmountText = "150", ReferansNo = "ref-1", PaidAt = DateTime.Today,
-                CustomerPlatform = "tiktok", CustomerUsername = "alici_ornek",
+                AmountText = "150", CustomerPlatform = "tiktok", CustomerUsername = "alici_ornek",
             };
             var ctx = vm.TrySave().ThresholdContext!;
             vm.ApplyShipmentDecision(ctx.Shipment!.Id, ShipmentDecision.Hold);

@@ -19,7 +19,6 @@ using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
-using OrderDeck.PdfParsing;
 using OrderDeck.Tests.TestHelpers;
 
 // OrderDeck.Core.Sales'te de bir GiveawayDrawer var (çekilişi ÇEKEN sınıf,
@@ -71,12 +70,12 @@ public class MainShellViewCompositionTests
                 d => GiveawayDrawerView.Create(d, new AppSettings()));
             Assert.IsType<GiveawayDrawerView>(giveaway.Top!.Content);
 
-            // Dekont zinciri (Faz 2b): üç çekmece AYNI yığına üst üste
-            // biniyor — yığının kendisi bunun için yazılmıştı, o yüzden
-            // burada gerçekten iç içe kuruluyorlar. En derindeki içerik
-            // en son itilen olmalı.
+            // Gelen Ödemeler zinciri (Faz 2b'nin dekont zinciri): üç çekmece
+            // AYNI yığına üst üste biniyor — yığının kendisi bunun için
+            // yazılmıştı, o yüzden burada gerçekten iç içe kuruluyorlar. En
+            // derindeki içerik en son itilen olmalı.
             var dekont = new DrawerStack();
-            dekont.ShowAsync("Yeni Dekont",
+            dekont.ShowAsync("Gelen Ödemeler",
                 d => new DekontEkleDrawer(d, BuildDekontViewModel()));
             Assert.IsType<DekontEkleDrawer>(dekont.Top!.Content);
 
@@ -364,7 +363,7 @@ public class MainShellViewCompositionTests
                System.IO.Path.GetTempPath(),
                $"orderdeck-composition-{Guid.NewGuid():N}.json");
 
-    /// <summary>Dekont formu on bir bağımlılık istiyor; hepsi gerçek ama
+    /// <summary>Gelen Ödemeler formunun bağımlılıkları; hepsi gerçek ama
     /// bellekte. Çekmece açılırken hiçbiri kullanılmıyor — burada sınanan
     /// XAML'in çözülmesi, davranışı DekontEkleViewModelTests kapsıyor.</summary>
     private static DekontEkleViewModel BuildDekontViewModel()
@@ -375,16 +374,11 @@ public class MainShellViewCompositionTests
         var settings = new AppSettings();
         var shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(db), settings);
         return new DekontEkleViewModel(
-            new PaymentRepository(db),
             new CustomerRepository(db),
             new SessionRepository(db),
             new PaymentMatcherService(labels, shipping),
-            labels,
             new ShipmentService(new ShipmentRepository(db), labels, shipping, () => 1_000L),
-            new PdfDekontParser(),
-            settings,
             shipping,
-            new SystemClock(),
             NullLogger<DekontEkleViewModel>.Instance);
     }
 }
