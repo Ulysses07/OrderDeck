@@ -251,6 +251,54 @@ public sealed class DekontShipmentCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Kaydetme_surerken_ikinci_Kaydet_zinciri_yeniden_kosturmaz()
+    {
+        // 2026-10-19'a kadar referans no tekrar kontrolü çift tıklamayı da durduruyordu: Payment satırı ilk tıklamada,
+        // ilk await'ten önce yazılırdı, ikinci tıklama "zaten kayıtlı" alırdı. Mod On'da attach-shipment ağda
+        // beklerken çekmece en üstte ve Kaydet etkin; WPF çift tıklamada Click'i iki kez yükseltir. Koruma yoksa
+        // ikinci tıklama zinciri baştan koşturur: ikinci attach-shipment, ikinci eşik çekmecesi, ikinci karar.
+        Threshold(100m, 50m);
+        await _bed.RemoteLabelAsync(150m);
+        _bed.ModeOn();
+        var drawers = new Drawers { Decision = ShipmentDecision.ShipNow };
+        using var release = new ManualResetEventSlim();
+        var commands = 0;
+        Server.DuringPush = endpoint =>
+        {
+            // İlk komut (attach-shipment) ikinci tıklamadan sonrasına kadar yanıtlanmaz.
+            if (endpoint == FakeSalesServer.SalesCommands && Interlocked.Increment(ref commands) == 1)
+                release.Wait(TimeSpan.FromSeconds(10));
+        };
+        var vm = Vm("150", drawers);
+
+        Task<bool> first, second;
+        bool firstPending, canSaveWhileSaving;
+        try
+        {
+            first = vm.SaveAsync();
+            firstPending = !first.IsCompleted;
+            canSaveWhileSaving = vm.CanSave;
+            second = vm.SaveAsync();
+        }
+        finally
+        {
+            release.Set();
+        }
+        var secondResult = await second;
+        var firstResult = await first;
+
+        firstPending.Should().BeTrue("mod On'da kargo adımı ağda bekliyor");
+        secondResult.Should().BeFalse("zincir zaten sürüyor: ikinci tıklama çekmeceyi kapatmaz");
+        firstResult.Should().BeTrue();
+        Server.CommandCalls.Select(c => c.Command.Kind).Should().Equal(["attach-shipment", "shipment-decision"],
+            "zincir bir kez koştu");
+        drawers.Titles.Should().Equal(["Ücretsiz Kargo Hakkı"], "eşik çekmecesi bir kez açıldı");
+        canSaveWhileSaving.Should().BeFalse("kaydetme sürerken Kaydet pasif");
+        vm.CanSave.Should().BeTrue("zincir bitti: form yeniden kullanılabilir");
+        vm.ShipmentWarning.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Hold_yonergesi_cekmecesiz_shipment_decision_gonderir()
     {
         Threshold(1000m, 60m);
