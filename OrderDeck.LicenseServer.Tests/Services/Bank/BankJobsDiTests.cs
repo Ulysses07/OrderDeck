@@ -130,7 +130,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     {
         // Önceki açılışta (anahtar varken) kaydolmuş Obifin işleri anahtar kalkınca Hangfire'da kalıp her 5 dakikada bir
         // BankHasher hatasıyla düşmesin; çekim yokken eşleştirme taraması (bank-match-sweep) da kalkar. Saklama işi ise
-        // BankHasher istemez ve 90/180 günlük silme KVKK yükümlülüğüdür: anahtar kalksa da zaten saklanmış satırlar için
+        // BankHasher istemez ve 30/180 günlük silme KVKK yükümlülüğüdür: anahtar kalksa da zaten saklanmış satırlar için
         // koşmaya devam eder.
         var storage = new MemoryStorage();
         var manager = new RecurringJobManager(storage);
@@ -143,6 +143,16 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         job.Id.Should().Be("bank-data-retention");
         job.Cron.Should().Be("57 4 * * *");
         job.TimeZoneId.Should().Be("UTC");
+    }
+
+    [Fact]
+    public void Ham_kayit_saklama_suresi_yapilandirmayla_30_gun()
+    {
+        // Prod'daki süre sınıf varsayılanından değil appsettings.json'daki OrderDeck:Bank bölümünden gelir (Program.cs): orada
+        // 90 kalsaydı ya da geri dönseydi saklama testleri (sınıf varsayılanıyla) yeşil kalır, prod 90 gün saklardı (KVKK Ö-2,
+        // karar 5).
+        _factory.Services.GetRequiredService<IOptions<BankOptions>>().Value.RawJsonRetentionDays
+            .Should().Be(30, "politikadaki ham kayıt süresi 30 gün");
     }
 
     [Fact]

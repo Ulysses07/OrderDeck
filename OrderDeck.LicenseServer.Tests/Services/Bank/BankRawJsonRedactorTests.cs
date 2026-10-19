@@ -10,8 +10,20 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 /// üretilir (repo public).</summary>
 public sealed class BankRawJsonRedactorTests
 {
+    /// <summary>Gizlilik politikasındaki "bankanın gönderdiği kaydın kopyası" listesi, metin olarak sabit. Hukuken riskli yön
+    /// listeye alan EKLEMEK (metin saklananı eksik anlatır): liste değişince bu test kırılır; o zaman politikanın iki kopyası ve
+    /// avukata giden metin de değişmeli (<see cref="BankRawJsonRedactor"/> özeti).</summary>
+    private const string PolicyFieldList = "Aciklama,GonderenAdi,GonderenBanka,IslemAciklama,IslemKodu,MakbuzNo,ReferansNo";
+
     private static string Kept(string redacted)
         => string.Join(",", JsonDocument.Parse(redacted).RootElement.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+
+    [Fact]
+    public void Beyaz_liste_politikadaki_alan_listesiyle_ayni()
+    {
+        string.Join(",", BankRawJsonRedactor.AllowedFields.Order(StringComparer.Ordinal))
+            .Should().Be(PolicyFieldList, "politikadaki 'kaydın kopyası' listesiyle aynı olmalı");
+    }
 
     [Fact]
     public void Yalniz_beyaz_listedeki_alanlar_kalir()
@@ -27,7 +39,7 @@ public sealed class BankRawJsonRedactorTests
 
         var redacted = BankRawJsonRedactor.Redact(json);
 
-        Kept(redacted).Should().Be(string.Join(",", BankRawJsonRedactor.AllowedFields.Order(StringComparer.Ordinal)));
+        Kept(redacted).Should().Be(PolicyFieldList, "politikadaki 'kaydın kopyası' listesiyle aynı olmalı");
         redacted.Should().NotContain(iban).And.NotContain(vkn).And.NotContain("123.45").And.NotContain("Alici").And.NotContain("Sube");
     }
 
