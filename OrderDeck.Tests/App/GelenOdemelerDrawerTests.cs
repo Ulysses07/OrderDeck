@@ -27,7 +27,7 @@ public class GelenOdemelerDrawerTests
         var error = ThemeTestHost.RunOnSta(() =>
         {
             var stack = new DrawerStack();
-            stack.ShowAsync("Gelen Ödemeler", d => new DekontEkleDrawer(d, BuildViewModel()));
+            stack.ShowAsync(DekontEkleViewModel.DrawerTitle, d => new DekontEkleDrawer(d, BuildViewModel()));
             var drawer = Assert.IsType<DekontEkleDrawer>(stack.Top!.Content);
             texts.AddRange(Descendants(drawer).OfType<TextBlock>().Select(t => t.Text ?? ""));
         });

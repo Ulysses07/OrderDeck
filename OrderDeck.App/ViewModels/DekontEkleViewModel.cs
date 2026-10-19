@@ -35,6 +35,9 @@ namespace OrderDeck.App.ViewModels;
 /// </summary>
 public sealed partial class DekontEkleViewModel : ObservableObject
 {
+    /// <summary>Çekmecenin başlığı; sol menüdeki satır da aynı metni taşır (<c>ShellSidebar.xaml</c>, testle bağlı).</summary>
+    public const string DrawerTitle = "Gelen Ödemeler";
+
     private readonly CustomerRepository _customers;
     private readonly SessionRepository _sessions;
     private readonly PaymentMatcherService _matcher;

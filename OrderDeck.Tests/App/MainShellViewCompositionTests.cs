@@ -75,7 +75,7 @@ public class MainShellViewCompositionTests
             // yazılmıştı, o yüzden burada gerçekten iç içe kuruluyorlar. En
             // derindeki içerik en son itilen olmalı.
             var dekont = new DrawerStack();
-            dekont.ShowAsync("Gelen Ödemeler",
+            dekont.ShowAsync(DekontEkleViewModel.DrawerTitle,
                 d => new DekontEkleDrawer(d, BuildDekontViewModel()));
             Assert.IsType<DekontEkleDrawer>(dekont.Top!.Content);
 

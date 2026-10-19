@@ -7,7 +7,7 @@ namespace OrderDeck.Tests.App;
 
 /// <summary>
 /// Sol menüde ödeme çekmecesinin satırı "Gelen Ödemeler" (2026-10-19'a kadar "Yeni Dekont"). Komut değişmedi
-/// (<c>OpenDekontEkleCommand</c>); metin ve ipucu yeni ad.
+/// (<c>OpenDekontEkleCommand</c>); metin, ipucu ve açılan çekmecenin başlığı yeni ad.
 /// </summary>
 public class ShellSidebarGelenOdemelerTests
 {
@@ -31,6 +31,9 @@ public class ShellSidebarGelenOdemelerTests
         Assert.Equal("Gelen Ödemeler", label);
         Assert.Equal("Gelen Ödemeler", toolTip);
         Assert.DoesNotContain("Yeni Dekont", labels);
+        // Açılan çekmecenin başlığı da aynı ad: kabuk başlığı bu sabitten verir. Komutun kendisi App.Host istediği
+        // için testte koşturulamıyor; bağ sabit üzerinden.
+        Assert.Equal(OrderDeck.App.ViewModels.DekontEkleViewModel.DrawerTitle, label);
     }
 
     /// <summary>Mantıksal ağaç: şablon uygulanmadan (yerleşim yok) içerik çocuklarını da verir.</summary>

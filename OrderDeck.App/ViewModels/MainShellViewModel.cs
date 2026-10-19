@@ -1576,7 +1576,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var vm = global::OrderDeck.App.App.Host.Services
             .GetRequiredService<DekontEkleViewModel>();
 
-        await _drawers.ShowAsync("Gelen Ödemeler",
+        await _drawers.ShowAsync(DekontEkleViewModel.DrawerTitle,
             d => new Views.Drawers.DekontEkleDrawer(d, vm));
         // W2-08 (spec 2026-10-13 §5.8): kargo adımı ya da eşik kararı
         // uygulanamadıysa (mod On: çevrimdışı, komut ucu yok, ret) sebebi
