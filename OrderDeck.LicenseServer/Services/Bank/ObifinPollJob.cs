@@ -71,12 +71,14 @@ public sealed class ObifinPollJob
         _pageSize = opt.Value.PageSize <= 0 ? ObifinOptions.DefaultPageSize : opt.Value.PageSize;
     }
 
-    /// <summary>Tüm Verified bağlantılar. Kiracı yalıtımı: bir bağlantının hatası (geçici ya da beklenmeyen) döngüyü
-    /// kesmez — toplanır, sıradakine geçilir, sonda tek <see cref="AggregateException"/> fırlar (Hangfire koşuyu yine
+    /// <summary>Tüm Verified bağlantılar; lisansı biten önce Disabled'a çekilir, çekilmez (KVKK K-6). Kiracı yalıtımı: bir
+    /// bağlantının hatası (geçici ya da beklenmeyen) döngüyü kesmez — toplanır, sıradakine geçilir, sonda tek <see cref="AggregateException"/> fırlar (Hangfire koşuyu yine
     /// Failed gösterir). Aksi hâlde sürekli düşen bir bağlantı, sırada ondan sonra gelen yayıncıları her koşuda aç
     /// bırakırdı. Yalnız işin kendi iptali döngüyü hemen keser.</summary>
     public async Task RunAsync(CancellationToken ct = default)
     {
+        // KVKK K-6: lisansı biten bağlantı önce Disabled'a çekilir; aşağıdaki Verified listesine girmez.
+        await ObifinConnectionService.DisableEndedLicensesAsync(_db, DateTimeOffset.UtcNow, _log, ct);
         var ids = await _db.ObifinConnections.AsNoTracking()
             .Where(c => c.Status == ObifinConnectionStatus.Verified)
             .Select(c => c.Id).ToListAsync(ct);
@@ -106,6 +108,10 @@ public sealed class ObifinPollJob
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.Id == connectionId, ct);
         if (conn is null || conn.Status != ObifinConnectionStatus.Verified) return;
+        // KVKK K-6: "Şimdi çek" bu metodu doğrudan kuyruğa atar, RunAsync'teki denetimi atlardı; lisans koşu sırasında da
+        // bitmiş olabilir. İzlenen conn aynı örnektir: lisansı bittiyse Disabled'a çekilmiş döner, Obifin'e gidilmez.
+        await ObifinConnectionService.DisableEndedLicensesAsync(_db, DateTimeOffset.UtcNow, _log, ct);
+        if (conn.Status != ObifinConnectionStatus.Verified) return;
         var creds = _connections.TryResolveCredentials(conn);
         if (creds is null)
         {

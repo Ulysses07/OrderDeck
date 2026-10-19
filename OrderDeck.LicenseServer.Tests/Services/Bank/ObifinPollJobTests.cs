@@ -840,4 +840,91 @@ public sealed class ObifinPollJobTests
         sink.Received.Select(t => t.ObifinId).Should().Equal(1L, 2L);
         (await db.BankTransactions.CountAsync()).Should().Be(2);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Lisansi_biten_baglanti_cekilmez_Disabled_ve_DisabledAt_yazilir(bool expired)
+    {
+        // KVKK K-6: hizmeti bitmiş yayıncının hesabından hareket toplanmaz. Lisans bitince bağlantı Disabled'a çekilir,
+        // DisabledAt hizmet sonu silmesinin (30 gün) sayacıdır.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var license = await db.Licenses.SingleAsync(l => l.Id == lic);
+        if (expired) license.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        else license.RevokedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 9, 0, 0), 100m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Should().BeEmpty("lisansı biten yayıncının hesabı Obifin'den sorgulanmaz");
+        sink.Received.Should().BeEmpty();
+        (await db.BankTransactions.CountAsync()).Should().Be(0);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.DisabledAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+        conn.LastError.Should().Be(ObifinConnectionService.LicenseEndedMessage);
+    }
+
+    [Fact]
+    public async Task Lisansi_biten_baglanti_durur_gecerli_lisansin_cekimi_surer()
+    {
+        // Süzgeç bağlantı başınadır: bir yayıncının lisansının bitmesi başka yayıncının çekimini durdurmaz.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var ended = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var active = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        (await db.Licenses.SingleAsync(l => l.Id == ended)).ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 9, 0, 0), 100m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Should().ContainSingle("yalnız lisansı geçerli bağlantı çekildi");
+        sink.Received.Should().ContainSingle(t => t.LicenseId == active);
+        (await db.BankTransactions.CountAsync(t => t.LicenseId == ended)).Should().Be(0);
+        (await db.ObifinConnections.SingleAsync(c => c.LicenseId == ended)).Status.Should().Be(ObifinConnectionStatus.Disabled);
+        var stillOn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == active);
+        stillOn.Status.Should().Be(ObifinConnectionStatus.Verified);
+        stillOn.DisabledAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Simdi_cek_yolu_da_lisansi_biten_baglantiyi_cekmez()
+    {
+        // Admin'in "Şimdi çek"i PollConnectionAsync'i doğrudan kuyruğa atar; RunAsync'in başındaki denetimi atlamaz.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        (await db.Licenses.SingleAsync(l => l.Id == lic)).RevokedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+        var connId = (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).Id;
+
+        await job.PollConnectionAsync(connId, CancellationToken.None);
+
+        client.Calls.Should().BeEmpty();
+        var conn = await db.ObifinConnections.SingleAsync(c => c.Id == connId);
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.DisabledAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Zaten_Disabled_baglantinin_DisabledAt_tarihi_degismez()
+    {
+        // 30 günlük sayaç her koşuda yeniden başlamasın.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var first = DateTimeOffset.UtcNow.AddDays(-10);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.Status = ObifinConnectionStatus.Disabled; conn.DisabledAt = first;
+        (await db.Licenses.SingleAsync(l => l.Id == lic)).ExpiresAt = DateTimeOffset.UtcNow.AddDays(-11);
+        await db.SaveChangesAsync();
+
+        await job.RunAsync(CancellationToken.None);
+
+        (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).DisabledAt.Should().Be(first);
+    }
 }

@@ -439,6 +439,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("DisabledAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("LastError")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");

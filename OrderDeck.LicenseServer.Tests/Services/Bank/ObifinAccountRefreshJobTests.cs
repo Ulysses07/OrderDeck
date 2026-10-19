@@ -174,4 +174,27 @@ public sealed class ObifinAccountRefreshJobTests
         ok.Should().Be(0);
         client.Calls.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task Lisansi_biten_baglantinin_hesaplari_yenilenmez_Disabled_yazilir()
+    {
+        // KVKK K-6: hizmeti bitmiş yayıncının hesap listesi de Obifin'den sorgulanmaz.
+        using var db = NewDb(); var client = new PerUserObifin();
+        var (job, svc) = Build(db, client);
+        var userCode = $"u-{Guid.NewGuid():N}@x";
+        var lic = await SeedVerifiedAsync(db, svc, userCode);
+        client.Accounts[userCode] = () => new[] { Account(9298) };
+        (await db.Licenses.SingleAsync(l => l.Id == lic)).ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+
+        var ok = await job.RunAsync(CancellationToken.None);
+
+        ok.Should().Be(0);
+        client.Calls.Should().BeEmpty();
+        (await db.BankAccounts.CountAsync(a => a.LicenseId == lic)).Should().Be(0);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.DisabledAt.Should().NotBeNull();
+        conn.LastError.Should().Be(ObifinConnectionService.LicenseEndedMessage);
+    }
 }
