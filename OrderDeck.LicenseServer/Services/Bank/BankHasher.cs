@@ -49,13 +49,20 @@ public sealed class BankHasher
         return compact.Length < 8 ? null : compact;
     }
 
-    /// <summary>`TR12…345` — yalnız görüntü. Ham girdi ASLA dönmez: boş/boşluk → "",
-    /// 8 karakterden kısa değer normalize (boşluksuz, büyük harf) hâliyle döner.</summary>
+    /// <summary>IBAN olmayan değerin maskesi: bir değerin geldiği görünür, hiçbir karakteri görünmez (KVKK Ö-6).</summary>
+    public const string ShortValueMask = "…";
+
+    /// <summary>En kısa geçerli IBAN uzunluğu (ISO 13616; ör. Norveç 15). Bundan kısa değer IBAN olamaz.</summary>
+    public const int MinIbanLength = 15;
+
+    /// <summary>`TR12…345` — yalnız görüntü. Ham girdi ASLA dönmez: boş/boşluk → "", <see cref="MinIbanLength"/>'ten kısa değer
+    /// (hesap numarası vb.) → <see cref="ShortValueMask"/>: 10 haneli bir hesap numarasının 7 hanesi "maske" sütununda açık
+    /// kalmasın. Görev 11 kuralı "geçerli IBAN değilse <see cref="ShortValueMask"/>"a sıkılaştırır.</summary>
     public static string MaskIban(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return "";
         var compact = Compact(iban);
-        return compact.Length < 8 ? compact : compact[..4] + "…" + compact[^3..];
+        return compact.Length < MinIbanLength ? ShortValueMask : compact[..4] + "…" + compact[^3..];
     }
 
     /// <summary>ISO 13616 / ISO 7064 MOD 97-10: boşluksuz, büyük harfli değerin ilk dört karakteri sona alınır, harfler 10–35'e

@@ -80,7 +80,7 @@ public sealed class BankHasherTests
         var h = NewHasher();
         h.HashIban("").Should().BeNull();
         h.HashIban("  ").Should().BeNull();
-        BankHasher.MaskIban("TR12").Should().Be("TR12");
+        BankHasher.MaskIban("TR12").Should().Be(BankHasher.ShortValueMask, "kısa değer maske sütununda açık kalmaz (KVKK Ö-6)");
     }
 
     [Fact]
@@ -88,7 +88,12 @@ public sealed class BankHasherTests
     {
         BankHasher.MaskIban(null).Should().Be("");
         BankHasher.MaskIban("  ").Should().Be("", "boşluk ham hâliyle görünüme çıkmaz");
-        BankHasher.MaskIban(" tr 12 ").Should().Be("TR12", "kısa değer normalize hâliyle döner");
+        BankHasher.MaskIban(" tr 12 ").Should().Be("…", "kısa değer hiçbir karakteriyle görünmez");
+        BankHasher.MaskIban(TestPhone.Digits(7)).Should().Be("…", "7 haneli hesap numarası da");
+        BankHasher.MaskIban(TestPhone.Digits(10)).Should().Be("…", "10 haneli hesap numarasının 7 hanesi açık kalmaz");
+        BankHasher.MaskIban(TestPhone.Digits(14)).Should().Be("…", "en kısa geçerli IBAN 15 karakter");
+        var shortest = WithCheckDigits("NO", TestPhone.Digits(11));
+        BankHasher.MaskIban(shortest).Should().Be(shortest[..4] + "…" + shortest[^3..], "15 karakterlik geçerli IBAN (Norveç) kısa değer sayılmaz");
     }
 
     [Fact]
