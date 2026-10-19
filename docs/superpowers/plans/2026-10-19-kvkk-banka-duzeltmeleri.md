@@ -77,8 +77,8 @@
 | 6 | `Services/Bank/BankHasher.cs`; test `BankHasherTests.cs` |
 | 7 | `Domain/Bank/ObifinConnection.cs`; `ObifinPollJob.cs`; `ObifinConnectionService.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; göç `*_ObifinInitialCollectFrom`; test `ObifinPollJobTests.cs` |
 | 8 | YENİ `Services/Bank/BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; `Program.cs`; YENİ testler `Services/Bank/BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs`, `Tools/BankDataCleanupRelationalTests.cs` |
-| 9 | YENİ `Domain/DataDestructionRecord.cs`, `Services/Privacy/DataDestruction.cs`, `Services/Bank/BankJobAlerts.cs`; `Data/LicenseDbContext.cs`; `Services/Audit/AuditEvents.cs`, `AuditRetentionJobs.cs`; `Services/Bank/BankDataRetentionJob.cs`; `Program.cs`; göç `*_DataDestructionRecords`; testler `AuditRetentionJobsTests.cs`, `BankDataRetentionJobTests.cs` |
-| 10 | `Services/Bank/BankDataRetentionJob.cs` (yeniden), `BankOptions.cs`; `appsettings.json`; `Domain/Bank/CustomerIbanMemory.cs`; `Services/Bank/PaymentMatchReconciler.cs`; göç `*_IbanMemoryLastConfirmedAt`; testler `BankDataRetentionJobTests.cs` (yeniden), `PaymentMatchReconcilerTests.cs` |
+| 9 | YENİ `Domain/DataDestructionRecord.cs`, `Services/Privacy/DataDestruction.cs`, `Services/Privacy/DataDestructionDigestJob.cs`, `Services/Bank/BankJobAlerts.cs`; `Data/LicenseDbContext.cs`; `Services/Audit/AuditEvents.cs`, `AuditRetentionJobs.cs`; `Services/Bank/BankDataRetentionJob.cs`, `BankDataCleanupJob.cs`, `ObifinConnectionService.cs` (`ResetShadowData`); `Controllers/Customers/AdminCustomersController.cs`; `Tools/BankDataCleanup.cs`; `Program.cs`; göç `*_DataDestructionRecords`; testler `AuditRetentionJobsTests.cs`, `BankDataRetentionJobTests.cs`, `BankDataCleanupJobTests.cs`, `ObifinPollJobTests.cs`, `GdprFlowTests.cs`, `BankJobsDiTests.cs`, YENİ `Services/Privacy/DataDestructionDigestJobTests.cs` |
+| 10 | `Services/Bank/BankDataRetentionJob.cs` (yeniden), `BankOptions.cs`; `appsettings.json`; `Domain/Bank/CustomerIbanMemory.cs`; `Services/Bank/PaymentMatchReconciler.cs`; göç `*_IbanMemoryLastConfirmedAt`; testler `BankDataRetentionJobTests.cs` (yeniden), YENİ `BankDataRetentionRelationalTests.cs`, `PaymentMatchReconcilerTests.cs` |
 | 11 | `Services/Bank/BankHasher.cs`; `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; göç `*_BankAccountIbanQualityCounters`; testler `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs` |
 | 12 | `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; göç `*_BankAccountApproval`; testler `ObifinPollJobTests.cs`, `Pages/Admin/AdminObifinPageTests.cs` |
 | 13 | YENİ `Services/Bank/BankConnectionTerminator.cs`; `Domain/Bank/ObifinConnection.cs`; `ObifinConnectionService.cs` (statik kimlik çözümü, `IsLicenseActiveAsync`, `ClearServiceEnd`, lisans denetimi); `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; `Controllers/Customers/AdminCustomersController.cs` (purge reddi); `Program.cs`; göç `*_ObifinConnectionServiceEnd`; YENİ test `Services/Bank/BankConnectionTerminatorTests.cs`; `AdminObifinPageTests.cs`, `Controllers/Compliance/GdprFlowTests.cs` |
@@ -101,7 +101,19 @@
 
 **P0 deploy'undan sonra (Görev 1–8):**
 1. Kuru koşu, çıktıyı tutanağa kaydet: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup`
-2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle (komut `DataDestructionRecords`'a yazmaz; P0'da tablo yok).
+2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle. P0'da `DataDestructionRecords` yok: bu koşunun Silme Yönetmeliği md. 7/3 kaydı (en az 3 yıl) **tutanağın kendisidir**. P1'den sonraki koşular tabloya da yazar (Görev 9: tetikleyici `cleanup`, yapan `cli`).
+   **Ne zaman koşturulmaz:** 04:57 UTC saklama işi (P1) ya da bir shopper silmesi / banka veri talebi silmesi sürerken. Komut oku-değiştir-yaz yapar, `BankTransaction`'da eşzamanlılık jetonu yok: arada boşaltılan bir açıklama ya da ham kayıt maskelenmiş eski hâliyle geri yazılabilirdi. Gündüz, başka silme işlemi yapmadan koştur.
+   **Tutanak kalıbı** (repo DIŞINDA, KVKK klasöründe; 3 yıl saklanır):
+   ```text
+   bank-data-cleanup tutanağı — KVKK ön inceleme §5.1 (P0)
+   Tarih/saat (TR): ____          Koşturan: ____          İmaj: master-<sha>
+   Komut ve çıkış kodu (kuru):    bank-data-cleanup  → __
+   Kuru koşu çıktısı (satır aynen):  ____
+   Komut ve çıkış kodu (uygula):  bank-data-cleanup --apply  → __   Yeniden koşuldu mu: __
+   Uygulama çıktısı (satır aynen):  ____
+   Not: çıktı kişisel veri içermez (yalnız sayılar ve lisans kimliği). Yedek: aynı gece 03:00 UTC yedeği
+   bu silmelerden ÖNCE alınmışsa, geri yüklemede komut yeniden --apply ile koşturulur (deploy/README.md, Geri yükleme).
+   ```
 
 **P1 deploy'undan ÖNCE:**
 - admin/obifin'de durumu `Disabled` olan bağlantılara bak (P0'dan beri lisans bitişiyle durdurulanlar). `DisabledAt`'i 30 günü geçmiş olanların banka verisi P1'in ilk 05:17 UTC koşusunda **yalnız yerelde** silinir (Obifin'e gidilmez; Görev 14). Lisansı uzatılacak yayıncı varsa önce lisansı uzat: iş, lisansı yeniden geçerli bağlantıyı silmez, `Unverified`'a çeker ve e-postayla "Doğrula" der.
@@ -114,6 +126,9 @@
 6. Yedek betikleri CI ile **kopyalanmaz** (CI yalnız `rollback-license-server.sh`'ı kopyalıyor): HashKey'in Bitwarden'da olduğunu doğruladıktan sonra `deploy/scripts/backup-sql-to-r2.sh` ve `backup-env-to-r2.sh`'ı `/opt/orderdeck/scripts/`'e kopyala, birer kez elle çalıştırıp günlüğe bak (Görev 23).
 7. R2'de `sql-bak/` için yaşam döngüsü kuralı (32 gün) ve tarihsiz eski nesne kontrolü (not Ö-12).
 8. Yayıncıların veri sorumlusu bilgileri (Görev 21–22) ancak metin işinin (form paragrafı v2 ve yeni `KvkkNotice.TextVersion`) yayımlanmasından SONRA girilir: form bloğu metin sürümünün özetinin dışında, bilgi girilene kadar çizilmez.
+9. İlk saat başı +13'ten sonra `Admin__AlertEmail` kutusuna "[OrderDeck] İmha kaydı özeti" düştüğünü gör (Görev 9; ilk özet büyük olasılıkla 04:57 saklama koşusundan sonraki saatte). Bu e-postalar **silinmez**: yedekten geri yüklemeden sonra silmeler bunlardan yeniden uygulanır. Posta kutusunda bunlar için bir etiket/klasör ve "silme" kuralı dışı tutma ayarla.
+
+**Yedekten geri yükleme yapılırsa (her zaman):** `deploy/README.md` → "Geri yükleme" → "Silmeleri yeniden uygula" (Görev 23). Kısaca: yedek anını not et → `bank-data-retention`, `security-data-retention`, `audit-retention`'ı elle tetikle → yedek anından sonraki "İmha kaydı özeti" e-postalarındaki olay kaynaklı silmeleri tetikleyicisine göre yeniden uygula → yedek anı ile felaket arasındaki en çok bir saatlik boşluk için canlı veritabanına hâlâ erişiliyorsa `DataDestructionRecords`'u (OccurredAt > yedek anı) dışa al.
 
 ---
 
@@ -1533,6 +1548,20 @@ public sealed class BankDataCleanupJob
         return r;
     }
 
+    // İmha kaydı eylemleri (Görev 9'daki DataDestruction.Actions ile aynı değerler; Görev 9 onlara bağlar).
+    private const string Deleted = "deleted", Nulled = "nulled", Masked = "masked";
+
+    /// <summary>Bir UYGULAMA partisinin imha kaydı (KVKK Ö-13): partinin SaveChanges'inden hemen önce çağrılır, kayıt silmeyle
+    /// aynı işlemde yazılır. Kuru koşuda çağrılmaz. P0'da kalıcı imha tablosu yok: yalnız günlüğe (sayılar) yazar, P0 koşusu
+    /// tutanakla kayda geçer (Prod adımları); Görev 9 gövdeyi <c>DataDestruction.Record</c>'a bağlar (tetikleyici
+    /// <c>cleanup</c>, yapan <c>cli</c>).</summary>
+    private void RecordBatch(Guid? licenseId, string target, string action, int count, string criterion)
+    {
+        if (count > 0)
+            _log.LogDebug("bank-data-cleanup partisi: {Target} {Action} {Count} ({Criterion}), lisans={LicenseId}",
+                target, action, count, criterion, licenseId);
+    }
+
     /// <summary>İlk çekimin TR takvim günü − <see cref="ObifinPollJob.InitialGraceDays"/> (çekim işiyle aynı kural).</summary>
     public static DateOnly AnchorFor(DateTimeOffset backfillCompletedAt)
         => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(backfillCompletedAt, ObifinConnectionService.TrZone).DateTime)
@@ -1558,7 +1587,7 @@ public sealed class BankDataCleanupJob
             r.OutgoingOrZeroDeleted = await deletable.CountAsync(ct);
             return;
         }
-        var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, ct);
+        var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, licenseId, "giden ya da sıfır tutarlı (K-4)", ct);
         r.OutgoingOrZeroDeleted = deleted;
         r.MatchesDeleted += matches;
         if (!completed) r.FailedBatches++;
@@ -1588,7 +1617,7 @@ public sealed class BankDataCleanupJob
                 r.PreAnchorDeleted += deletableCount;
                 continue;
             }
-            var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, ct);
+            var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, c.LicenseId, "ilk çekim çapasından eski (Ö-5)", ct);
             r.PreAnchorDeleted += deleted;
             r.MatchesDeleted += matches;
             if (!completed)
@@ -1607,7 +1636,7 @@ public sealed class BankDataCleanupJob
     /// <summary>Sorgunun seçtiği hareketleri eşleşme satırlarıyla partiler hâlinde siler. Silinen satır sorgudan düşer: her
     /// parti baştan sorgulanır. Eşzamanlı eşleştirme yazısı (jeton) partiyi geri aldırır: Completed = false.</summary>
     private async Task<(int Transactions, int Matches, bool Completed)> DeleteInBatchesAsync(
-        IQueryable<BankTransaction> query, CancellationToken ct)
+        IQueryable<BankTransaction> query, Guid? licenseId, string criterion, CancellationToken ct)
     {
         int transactions = 0, matches = 0;
         while (true)
@@ -1618,6 +1647,8 @@ public sealed class BankDataCleanupJob
             var rows = await _db.PaymentMatches.Where(m => ids.Contains(m.BankTransactionId)).ToListAsync(ct);
             _db.PaymentMatches.RemoveRange(rows);
             _db.BankTransactions.RemoveRange(batch);
+            RecordBatch(licenseId, "BankTransactions", Deleted, batch.Count, criterion);
+            RecordBatch(licenseId, "PaymentMatches", Deleted, rows.Count, criterion);
             try
             {
                 await _db.SaveChangesAsync(ct);
@@ -1647,6 +1678,7 @@ public sealed class BankDataCleanupJob
             var batch = await query.OrderBy(t => t.Id).Take(BatchSize).ToListAsync(ct);
             if (batch.Count == 0) return;
             foreach (var t in batch) t.CounterpartyTaxIdHash = null;
+            RecordBatch(licenseId, "BankTransactions.CounterpartyTaxIdHash", Nulled, batch.Count, "VKN/TCKN kodu amaçsız (Ö-2)");
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             r.TaxIdHashesCleared += batch.Count;
@@ -1662,6 +1694,7 @@ public sealed class BankDataCleanupJob
         foreach (var chunk in ids.Chunk(BatchSize))
         {
             var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id) && t.RawJson != null).ToListAsync(ct);
+            int rewrittenHere = 0, unreadableHere = 0;
             foreach (var t in rows)
             {
                 string? rewritten;
@@ -1672,15 +1705,22 @@ public sealed class BankDataCleanupJob
                 catch (ObifinProtocolException)
                 {
                     // Okunamayan ham kayıt tanıya da yaramaz: boşaltılır.
-                    r.RawJsonUnreadableCleared++;
+                    unreadableHere++;
                     t.RawJson = null;
                     continue;
                 }
                 if (rewritten == t.RawJson) continue;
-                r.RawJsonRewritten++;
+                rewrittenHere++;
                 t.RawJson = rewritten;
             }
-            if (apply) await _db.SaveChangesAsync(ct);
+            r.RawJsonRewritten += rewrittenHere;
+            r.RawJsonUnreadableCleared += unreadableHere;
+            if (apply)
+            {
+                RecordBatch(licenseId, "BankTransactions.RawJson", Masked, rewrittenHere, "ham kayıt beyaz listesi (Ö-2)");
+                RecordBatch(licenseId, "BankTransactions.RawJson", Nulled, unreadableHere, "okunamayan ham kayıt");
+                await _db.SaveChangesAsync(ct);
+            }
             _db.ChangeTracker.Clear();
         }
     }
@@ -1691,14 +1731,20 @@ public sealed class BankDataCleanupJob
         foreach (var chunk in ids.Chunk(BatchSize))
         {
             var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id) && t.Description != null).ToListAsync(ct);
+            var maskedHere = 0;
             foreach (var t in rows)
             {
                 var masked = BankDescriptionMasker.Mask(t.Description);
                 if (masked == t.Description) continue;
-                r.DescriptionsMasked++;
+                maskedHere++;
                 t.Description = masked;
             }
-            if (apply) await _db.SaveChangesAsync(ct);
+            r.DescriptionsMasked += maskedHere;
+            if (apply)
+            {
+                RecordBatch(licenseId, "BankTransactions.Description", Masked, maskedHere, "açıklamada IBAN/11 haneli numara (Ö-16)");
+                await _db.SaveChangesAsync(ct);
+            }
             _db.ChangeTracker.Clear();
         }
     }
@@ -1992,21 +2038,24 @@ Görev 1–8 bitti. P0 ayrı PR olarak öne alınacak mı? (Genel kurallar → P
 
 ### Görev 9: Kalıcı imha kaydı, denetim budaması muafiyeti, saklama işi uyarısı (P1-14)
 
-**Neden (not Ö-13):** periyodik banka silmesi ve purge'ün banka adımları kalıcı olarak kayda geçmiyor; denetim kayıtları 24 ayda budanıyor, oysa imha kayıtları en az 3 yıl saklanmalı (Silme Yönetmeliği md. 7/3); saklama işi haftalarca düşerse süreler sessizce aşılır. Üç parça:
-1. **`DataDestructionRecords`** tablosu: kişisel veri İÇERMEZ (tarih, lisans, tablo/alan, eylem, satır sayısı, ölçüt, tetikleyici, talep kimliği, yapan). Hiçbir iş budamaz. Kayıt, silmeyle **aynı** `SaveChanges`'te yazılır (biri olup öbürü olmasın). Yardımcı: `DataDestruction.Record(...)`. Sonraki görevler (10, 13, 14, 15, 17) bunu kullanır.
-2. **Denetim budaması:** imha olayları (`customer.purged`, `shopper.purged` ve sonra eklenecek banka silme olayları) 24 ayda değil `DestructionRetentionMonths` (36) ayda budanır.
+**Neden (not Ö-13, Ö-12):** periyodik banka silmesi, purge'ün banka adımları, yayıncı silmesi, kimlik değişiminde gölge veri silmesi ve tek seferlik temizlik kalıcı olarak kayda geçmiyor; denetim kayıtları 24 ayda budanıyor, oysa imha kayıtları en az 3 yıl saklanmalı (Silme Yönetmeliği md. 7/3); saklama işi haftalarca düşerse süreler sessizce aşılır; yedekten geri yükleme silineni geri getirir ve hangi silmenin yeniden uygulanacağı hiçbir yerde kalmaz. Beş parça:
+1. **`DataDestructionRecords`** tablosu: kişisel veri İÇERMEZ (tarih, lisans, silinen kaydın takma kimliği `SubjectId` — ShopperId/CustomerId, tablo/alan, eylem, satır sayısı, ölçüt, tetikleyici, talep kimliği, yapan). Hiçbir iş budamaz. Kayıt, silmeyle **aynı** `SaveChanges`'te yazılır (biri olup öbürü olmasın). Yardımcı: `DataDestruction.Record(...)`. Bu görev saklama işine, yayıncı silmesine (`customer-purge`), kimlik değişimindeki gölge veri silmesine (`credential-change`) ve `bank-data-cleanup`'a (`cleanup`, yapan `cli`) bağlar; sonraki görevler (10, 11, 13, 14, 15, 16, 17) de kullanır.
+2. **Denetim budaması:** yalnız ayrıntısı kişisel veri İÇERMEYEN imha olayları (`shopper.purged` ve sonra eklenecek banka silme olayları) 24 ayda değil `DestructionRetentionMonths` (36) ayda budanır. `customer.purged` BİLEREK muaf değil: ayrıntısında silinen yayıncının e-postası (`preEmail`) var; o satır 24 ayda gider, yayıncı silmesinin 3 yıllık kaydı kişisel veri içermeyen `DataDestructionRecords` satırlarıdır.
 3. **Uyarı:** banka saklama işi düşerse `Admin:AlertEmail`'e e-posta (`BankJobAlerts`, `BackupRestoreDrillJob` kalıbı) ve istisna yine Hangfire'a çıkar.
+4. **Veritabanı dışında kopya (Ö-12):** imha kayıtları aynı veritabanında durduğu için yedekten geri yükleme onları da yedek anına sarar; tablo tek başına geri yüklemeden sonra silmeleri yeniden uygulamanın dayanağı OLAMAZ. Saatlik `DataDestructionDigestJob` bir önceki tam saatin kayıtlarını (kişisel veri yok) yöneticiye CSV metni olarak e-postalar; geri yükleme prosedürü (Görev 23, `deploy/README.md` "Geri yükleme") bu e-postalardan yürür. Bir saatlik boşluk kalabilir; prosedür onu da anlatır.
+5. Talep silmesinin (Görev 17) yeniden uygulanması IBAN'ı ister ama talep kapanınca özet boşalır: prosedür başvurunun aslına (yazılı başvuru ya da e-postası) dayanır; imha kaydı yalnız talep kimliğini taşır.
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Domain/DataDestructionRecord.cs`
-- Create: `OrderDeck.LicenseServer/Services/Privacy/DataDestruction.cs`
+- Create: `OrderDeck.LicenseServer/Services/Privacy/DataDestruction.cs`, `OrderDeck.LicenseServer/Services/Privacy/DataDestructionDigestJob.cs`
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankJobAlerts.cs`
 - Modify: `OrderDeck.LicenseServer/Data/LicenseDbContext.cs` (DbSet + model)
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`, `OrderDeck.LicenseServer/Services/Audit/AuditRetentionJobs.cs`
-- Modify: `OrderDeck.LicenseServer/Services/Bank/BankDataRetentionJob.cs`
-- Modify: `OrderDeck.LicenseServer/Program.cs` (DI)
+- Modify: `OrderDeck.LicenseServer/Services/Bank/BankDataRetentionJob.cs`, `BankDataCleanupJob.cs`, `ObifinConnectionService.cs` (`ResetShadowData`)
+- Modify: `OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs` (`Purge`)
+- Modify: `OrderDeck.LicenseServer/Program.cs` (DI + takvim)
 - Create: göç `*_DataDestructionRecords`
-- Test: `OrderDeck.LicenseServer.Tests/Services/Audit/AuditRetentionJobsTests.cs`, `OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Audit/AuditRetentionJobsTests.cs`, `OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs`, `BankDataCleanupJobTests.cs`, `ObifinPollJobTests.cs`, `Controllers/Compliance/GdprFlowTests.cs`, YENİ `Services/Privacy/DataDestructionDigestJobTests.cs`
 
 - [ ] **Adım 1: Denetim budaması testini yaz (kırmızı)**
 
@@ -2014,9 +2063,10 @@ Görev 1–8 bitti. P0 ayrı PR olarak öne alınacak mı? (Genel kurallar → P
 
 ```csharp
     [Fact]
-    public async Task Imha_olaylari_24_ayda_degil_36_ayda_budanir()
+    public async Task Kisisel_veri_icermeyen_imha_olaylari_36_ayda_customer_purged_24_ayda_budanir()
     {
-        // Silme Yönetmeliği md. 7/3: imha kayıtları en az üç yıl. Normal olay 24 ayda gider.
+        // Silme Yönetmeliği md. 7/3: imha kayıtları en az üç yıl. Normal olay 24 ayda gider. customer.purged ayrıntısında
+        // silinen yayıncının e-postası var: muafiyet onu 36 ay tutmasın (kalıcı kaydı DataDestructionRecords'ta).
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         AuditLogEntry Entry(string type, int monthsAgo) => new()
@@ -2025,16 +2075,18 @@ Görev 1–8 bitti. P0 ayrı PR olarak öne alınacak mı? (Genel kurallar → P
             AdminId = Guid.Empty, AdminUsername = "test",
         };
         var purge30 = Entry(AuditEvents.ShopperPurged, 30);
-        var purge37 = Entry(AuditEvents.CustomerPurged, 37);
+        var purge37 = Entry(AuditEvents.ShopperPurged, 37);
+        var customerPurge30 = Entry(AuditEvents.CustomerPurged, 30);
         var normal30 = Entry("test-" + Guid.NewGuid().ToString("N")[..8], 30);
-        db.AuditLogs.AddRange(purge30, purge37, normal30);
+        db.AuditLogs.AddRange(purge30, purge37, customerPurge30, normal30);
         await db.SaveChangesAsync();
 
         await Make(db).PruneAsync(CancellationToken.None);
 
-        var ids = new[] { purge30.Id, purge37.Id, normal30.Id };
+        var ids = new[] { purge30.Id, purge37.Id, customerPurge30.Id, normal30.Id };
         (await db.AuditLogs.AsNoTracking().Where(a => ids.Contains(a.Id)).Select(a => a.Id).ToListAsync())
             .Should().BeEquivalentTo(new[] { purge30.Id });
+        AuditEvents.DestructionEvents.Should().NotContain(AuditEvents.CustomerPurged);
     }
 ```
 
@@ -2125,14 +2177,19 @@ namespace OrderDeck.LicenseServer.Domain;
 /// <summary>
 /// Kişisel verinin silinmesi, boşaltılması ya da maskelenmesinin kalıcı kaydı (Silme Yönetmeliği md. 5/3, 7/3: en az üç yıl;
 /// KVKK ön inceleme Ö-13). Kişisel veri İÇERMEZ: ne, ne zaman, kaç satır, hangi ölçütle, ne tetikledi, kim. Lisansa FK YOK:
-/// lisans silinse de kayıt yaşar. Hiçbir iş bu tabloyu budamaz. Yedekten geri yüklemeden sonra silmeleri yeniden uygulamanın
-/// dayanağı da budur.
+/// lisans silinse de kayıt yaşar. Hiçbir iş bu tabloyu budamaz.
+/// <para><b>Geri yükleme:</b> tablo aynı veritabanındadır; yedekten geri yükleme onu da yedek anına sarar. Geri yüklemeden
+/// sonra silmeleri yeniden uygulamanın dayanağı bu tablo DEĞİL, veritabanı dışındaki kopyasıdır
+/// (<c>DataDestructionDigestJob</c>'ın saatlik e-postası; prosedür <c>deploy/README.md</c> "Geri yükleme").</para>
 /// </summary>
 public sealed class DataDestructionRecord
 {
     public Guid Id { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
     public Guid? LicenseId { get; set; }
+    /// <summary>Silmenin konusu olan kaydın takma kimliği (ShopperId, CustomerId): kişinin kendi verisi silinmiş ya da
+    /// anonimleştirilmiştir, kimlik tek başına kimseyi göstermez. Geri yüklemeden sonra silme bununla yeniden uygulanır.</summary>
+    public Guid? SubjectId { get; set; }
     /// <summary>Tablo ya da tablo.alan, ör. <c>BankTransactions.RawJson</c>.</summary>
     public string Target { get; set; } = "";
     /// <summary><c>DataDestruction.Actions</c> değerlerinden biri.</summary>
@@ -2164,28 +2221,39 @@ public static class DataDestruction
     {
         public const string Deleted = "deleted";
         public const string Nulled = "nulled";
+        /// <summary>Değer daha az tanımlayıcı bir biçimle değiştirildi (maske, beyaz liste, kimliğe çevirme).</summary>
+        public const string Masked = "masked";
     }
 
     public static class Triggers
     {
         public const string Retention = "retention";
         public const string ShopperPurge = "shopper-purge";
+        public const string CustomerPurge = "customer-purge";
         public const string SubjectRequest = "subject-request";
         public const string ServiceEnd = "service-end";
         public const string AdminRemove = "admin-remove";
+        /// <summary>Obifin kimliği değişti, eski hesabın gölge verisi silindi (<c>ObifinConnectionService.ResetShadowData</c>).</summary>
+        public const string CredentialChange = "credential-change";
+        /// <summary>Tek seferlik <c>bank-data-cleanup</c> komutu.</summary>
+        public const string Cleanup = "cleanup";
     }
 
     public const string SystemActor = "system";
+    /// <summary>Konteynerde elle koşulan komut (<c>bank-data-cleanup</c>).</summary>
+    public const string CliActor = "cli";
+    /// <summary>Yönetici eylemi, kullanıcı adı servise ulaşmadığında (adı aynı işlemin denetim satırında).</summary>
+    public const string AdminActor = "admin";
 
     /// <summary>Kaydı izleyiciye EKLER, kaydetmez: silmeyle aynı SaveChanges'te yazılsın. Sıfır satırlık işlem yazılmaz.</summary>
     public static void Record(LicenseDbContext db, Guid? licenseId, string target, string action, int rowCount,
-        string criterion, string trigger, string actor, Guid? requestId = null)
+        string criterion, string trigger, string actor, Guid? requestId = null, Guid? subjectId = null)
     {
         if (rowCount <= 0) return;
         db.DataDestructionRecords.Add(new DataDestructionRecord
         {
-            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, LicenseId = licenseId, Target = target, Action = action,
-            RowCount = rowCount, Criterion = criterion, Trigger = trigger, RequestId = requestId, Actor = actor,
+            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, LicenseId = licenseId, SubjectId = subjectId, Target = target,
+            Action = action, RowCount = rowCount, Criterion = criterion, Trigger = trigger, RequestId = requestId, Actor = actor,
         });
     }
 }
@@ -2213,6 +2281,7 @@ public static class DataDestruction
             b.Property(r => r.Actor).HasMaxLength(256).IsRequired();
             b.HasIndex(r => r.OccurredAt);
             b.HasIndex(r => r.LicenseId);
+            b.HasIndex(r => r.SubjectId);
         });
 ```
 
@@ -2223,10 +2292,12 @@ public static class DataDestruction
 ```csharp
     /// <summary>İmha olayları (Silme Yönetmeliği md. 7/3: en az üç yıl). <see cref="AuditRetentionJobs"/> bunları
     /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta değil <see cref="AuditRetentionOptions.DestructionRetentionMonths"/>'ta
-    /// budar. Yeni bir silme olayı eklenirse buraya da eklenir.</summary>
+    /// budar. YALNIZ ayrıntısı kişisel veri İÇERMEYEN (sayılar, kimlikler) olaylar girer: muafiyet kişisel veriyi daha uzun
+    /// tutmamalı. <see cref="CustomerPurged"/> BİLEREK yok — ayrıntısında silinen yayıncının e-postası var, 24 ayda gider;
+    /// yayıncı silmesinin 3 yıllık kaydı kişisel veri içermeyen <c>DataDestructionRecords</c>. Yeni bir silme olayı eklenirse
+    /// ayrıntısı kişisel veri içermiyorsa buraya da eklenir.</summary>
     public static readonly IReadOnlySet<string> DestructionEvents = new HashSet<string>(StringComparer.Ordinal)
     {
-        CustomerPurged,
         ShopperPurged,
     };
 ```
@@ -2453,12 +2524,330 @@ Expected: PASS (yeni tablo SQL Server'da kuruldu).
 
 ```bash
 git add OrderDeck.LicenseServer/Domain/DataDestructionRecord.cs OrderDeck.LicenseServer/Services/Privacy/DataDestruction.cs OrderDeck.LicenseServer/Services/Bank/BankJobAlerts.cs OrderDeck.LicenseServer/Services/Bank/BankDataRetentionJob.cs OrderDeck.LicenseServer/Services/Audit OrderDeck.LicenseServer/Data OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Audit/AuditRetentionJobsTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs
-git commit -m "feat(kvkk): kalıcı imha kaydı tut, imha denetimini 36 ay sakla
+git commit -m "feat(kvkk): kalıcı imha kaydı tut, kişisel veri içermeyen imha denetimini 36 ay sakla
 
 DataDestructionRecords (kişisel veri içermez, budanmaz) her banka
-saklama partisinde aynı işlemle yazılır; customer/shopper purge denetim
-olayları 24 değil 36 ayda budanır; saklama işi düşerse Admin:AlertEmail'e
-e-posta gider (KVKK ön inceleme Ö-13, P1-14).
+saklama partisinde aynı işlemle yazılır; shopper purge denetim olayı 24
+değil 36 ayda budanır (customer.purged e-posta taşıdığı için muaf değil);
+saklama işi düşerse Admin:AlertEmail'e e-posta gider (KVKK ön inceleme
+Ö-13, P1-14).
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+- [ ] **Adım 13: Yayıncı silmesinin kalıcı imha kaydı (test önce, kırmızı)**
+
+`Controllers/Compliance/GdprFlowTests.cs` — `Purge_via_admin_anonymises_customer_and_deletes_data` testinin sonuna (`purgeAudit.Should().BeGreaterThan(0);`'dan sonra):
+
+```csharp
+        // KVKK Ö-13: kalıcı imha kaydı yayıncı kimliğiyle (anonimleştirilmiş satır kalır) ve kişisel veri İÇERMEZ — silinen
+        // e-posta yalnız 24 ayda budanan customer.purged denetim satırında.
+        var records = await verifyDb.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == customerId).ToListAsync();
+        records.Should().Contain(r => r.Target == "CustomerBackups" && r.RowCount == 1
+            && r.Trigger == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.CustomerPurge);
+        records.Should().Contain(r => r.Target == "Customers.Email+Name+PasswordHash+Notes" && r.RowCount == 1);
+        System.Text.Json.JsonSerializer.Serialize(records).Should().NotContain(originalEmail);
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~GdprFlowTests"`
+Expected: FAIL — yayıncı silmesi imha kaydı yazmıyor.
+
+`Controllers/Customers/AdminCustomersController.cs` — üste `using OrderDeck.LicenseServer.Services.Privacy;` ekle. `Purge`'te `customer.Notes = null;` satırının ALTINA (SaveChanges'ten önce; sayımlar silme henüz yazılmadığı için DB'den doğru gelir):
+
+```csharp
+        // KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. preEmail BURAYA girmez: e-posta
+        // yalnız 24 ayda budanan customer.purged denetim satırında. SubjectId = yayıncı hesabının kimliği (satır anonimleştirilmiş
+        // kalır): yedekten geri yüklemeden sonra silme bununla yeniden uygulanır.
+        var actor = User.FindFirst("username")?.Value ?? User.Identity?.Name ?? DataDestruction.AdminActor;
+        const string criterion = "yayıncı silme talebi";
+        void Record(string target, string action, int count) => DataDestruction.Record(_db, null, target, action, count, criterion,
+            DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
+        Record("Licenses", DataDestruction.Actions.Deleted, licenseIds.Count);
+        Record("Activations", DataDestruction.Actions.Deleted,
+            await _db.Activations.CountAsync(a => licenseIds.Contains(a.LicenseId), ct));
+        Record("CustomerBackups", DataDestruction.Actions.Deleted, backupRows.Count);
+        Record("EmailLogs", DataDestruction.Actions.Deleted, await _db.EmailLogs.CountAsync(e => e.CustomerId == id, ct));
+        Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, configIds.Count);
+        Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, configIds.Count == 0 ? 0
+            : await _db.IntakeFormSubmissions.CountAsync(s => configIds.Contains(s.IntakeFormConfigId), ct));
+        Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
+```
+
+Metodun özetindeki "Audit row is written with the pre-purge email so the action remains traceable." cümlesinin ALTINA: `/// The audit row (with the e-mail) is pruned at 24 months like any other; the 3-year destruction record is the PII-free DataDestructionRecords rows written in the same SaveChanges (KVKK Ö-13).`
+
+- [ ] **Adım 14: Kimlik değişiminde silinen gölge verinin imha kaydı (test önce, kırmızı)**
+
+`ObifinPollJobTests.cs` — üste `using OrderDeck.LicenseServer.Services.Privacy;` ekle; sınıfın sonuna:
+
+```csharp
+    [Fact]
+    public async Task Kimlik_degisince_silinen_golge_veri_imha_kaydina_yazilir()
+    {
+        // KVKK Ö-13: ResetShadowData'nın toplu silmesi de kalıcı kayda geçer (yapan: aynı işlemin denetim satırındaki yönetici).
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 9, 0, 0), 100m));
+        await job.RunAsync(CancellationToken.None);
+
+        await svc.UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", null, null, CancellationToken.None, allowShadowReset: true);
+
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == lic).ToListAsync())
+            .Should().Contain(r => r.Target == "BankTransactions" && r.RowCount == 1 && r.Action == DataDestruction.Actions.Deleted
+                && r.Trigger == DataDestruction.Triggers.CredentialChange);
+    }
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~ObifinPollJobTests.Kimlik_degisince_silinen"`
+Expected: FAIL.
+
+`Services/Bank/ObifinConnectionService.cs` — üste `using OrderDeck.LicenseServer.Services.Privacy;` ekle. `ResetShadowData`'da `_db.BankConnections.RemoveRange(bankConnections);` satırının ALTINA:
+
+```csharp
+        // KVKK Ö-13: eski hesabın gölge verisi bu işlemde silinir; kişisel veri içermeyen imha kaydı aynı SaveChanges'te (SaveAsync
+        // jeton çakışmasında yeniden dener, ikinci çakışmada izleyiciyi boşaltır: kayıt silmeyle birlikte düşer).
+        const string criterion = "Obifin kimliği değişti";
+        void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
+            count, criterion, DataDestruction.Triggers.CredentialChange, DataDestruction.AdminActor);
+        Record("PaymentMatches", matches.Count);
+        Record("BankTransactions", transactions.Count);
+        Record("BankAccounts", accounts.Count);
+        Record("CustomerIbanMemories", memories.Count);
+        Record("PaymentMatchGaps", gaps.Count);
+        Record("BankConnections", bankConnections.Count);
+```
+
+- [ ] **Adım 15: `bank-data-cleanup` imha kaydı (test önce, kırmızı)**
+
+`BankDataCleanupJobTests.cs` — üste `using OrderDeck.LicenseServer.Services.Privacy;` ekle; sınıfın sonuna:
+
+```csharp
+    [Fact]
+    public async Task Uygulama_her_partide_imha_kaydi_yazar_kuru_kosu_yazmaz()
+    {
+        // KVKK Ö-13: tek seferlik temizlik de kalıcı kayda geçer (tetikleyici cleanup, yapan cli), silmeyle aynı işlemde.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        db.BankTransactions.AddRange(Tx(lic, 30m, direction: BankTransactionDirection.Outgoing),
+            Tx(lic, 10m, rawJson: """{"Aciklama":"x","Bakiye":"1"}""", taxIdHash: Hex64()));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(null, apply: false, CancellationToken.None);
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0, "kuru koşu hiçbir şey yazmaz");
+
+        await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.Cleanup && x.Actor == DataDestruction.CliActor);
+        records.Should().Contain(x => x.Target == "BankTransactions" && x.Action == DataDestruction.Actions.Deleted && x.RowCount == 1);
+        records.Should().Contain(x => x.Target == "BankTransactions.CounterpartyTaxIdHash" && x.Action == DataDestruction.Actions.Nulled);
+        records.Should().Contain(x => x.Target == "BankTransactions.RawJson" && x.Action == DataDestruction.Actions.Masked);
+    }
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupJobTests"`
+Expected: FAIL — `RecordBatch` (Görev 8) yalnız günlüğe yazıyor.
+
+`Services/Bank/BankDataCleanupJob.cs` — üste `using OrderDeck.LicenseServer.Services.Privacy;` ekle; yerel sabitleri ve `RecordBatch`'i şununla değiştir:
+
+```csharp
+    private const string Deleted = DataDestruction.Actions.Deleted, Nulled = DataDestruction.Actions.Nulled,
+        Masked = DataDestruction.Actions.Masked;
+
+    /// <summary>Bir UYGULAMA partisinin kalıcı imha kaydı (KVKK Ö-13): partinin SaveChanges'inden hemen önce çağrılır, kayıt
+    /// silmeyle aynı işlemde yazılır (parti eşzamanlılıkla geri alınırsa kayıt da düşer). Kuru koşuda çağrılmaz.</summary>
+    private void RecordBatch(Guid? licenseId, string target, string action, int count, string criterion)
+        => DataDestruction.Record(_db, licenseId, target, action, count, criterion, DataDestruction.Triggers.Cleanup,
+            DataDestruction.CliActor);
+```
+
+Sınıf özetinin sonuna: `/// Her uygulama partisi kalıcı imha kaydını aynı işlemde yazar (tetikleyici cleanup, yapan cli; KVKK Ö-13).` `Tools/BankDataCleanup.cs` özetindeki "Önce kuru koşu, çıktı tutanağa." cümlesinin sonuna: ` P1'den sonra uygulama DataDestructionRecords'a da yazar.`
+
+- [ ] **Adım 16: Saatlik imha özeti — veritabanı dışında kopya (test önce, kırmızı)**
+
+`OrderDeck.LicenseServer.Tests/Services/Privacy/DataDestructionDigestJobTests.cs`:
+
+```csharp
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.Privacy;
+
+/// <summary>KVKK Ö-12/Ö-13: imha kayıtlarının veritabanı dışındaki kopyası — saatlik e-posta, kişisel veri yok, pencereler
+/// örtüşmez.</summary>
+public sealed class DataDestructionDigestJobTests
+{
+    private static LicenseDbContext NewDb() => new(new DbContextOptionsBuilder<LicenseDbContext>()
+        .UseInMemoryDatabase($"destruction-digest-{Guid.NewGuid():N}").Options);
+
+    private static DataDestructionDigestJob Job(LicenseDbContext db, TestEmailSender email)
+        => new(db, new BankJobAlerts(email, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [BankJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
+            }).Build(), NullLogger<BankJobAlerts>.Instance));
+
+    private static DataDestructionRecord Record(DateTimeOffset at, string target) => new()
+    {
+        Id = Guid.NewGuid(), OccurredAt = at, LicenseId = Guid.NewGuid(), SubjectId = Guid.NewGuid(), Target = target,
+        Action = DataDestruction.Actions.Deleted, RowCount = 3, Criterion = "OccurredAt+30g;eşleşmeyen",
+        Trigger = DataDestruction.Triggers.ShopperPurge, Actor = DataDestruction.SystemActor,
+    };
+
+    [Fact]
+    public async Task Onceki_tam_saatin_kayitlari_CSV_olarak_gider_pencere_disindakiler_gitmez()
+    {
+        using var db = NewDb(); var email = new TestEmailSender();
+        var end = new DateTimeOffset(2026, 10, 20, 9, 0, 0, TimeSpan.Zero);
+        var inside = Record(end.AddMinutes(-59), "Shoppers.FullName+Phone+Address+Email+TcProtected");
+        var atStart = Record(end.AddHours(-1), "PaymentMatches.WpfCustomerId+Evidence");
+        var atEnd = Record(end, "BankTransactions");
+        var beforeStart = Record(end.AddHours(-1).AddTicks(-1), "CustomerIbanMemories");
+        db.DataDestructionRecords.AddRange(inside, atStart, atEnd, beforeStart);
+        await db.SaveChangesAsync();
+
+        var sent = await Job(db, email).RunForWindowEndingAsync(end, CancellationToken.None);
+
+        sent.Should().Be(2, "pencere [end − 1 saat, end)");
+        var mail = email.Sent.Should().ContainSingle().Subject;
+        mail.Subject.Should().Be(DataDestructionDigestJob.Subject);
+        mail.PlainBody.Should().Contain(inside.SubjectId.ToString()).And.Contain(atStart.Target).And.Contain("shopper-purge")
+            .And.NotContain(atEnd.Target).And.NotContain(beforeStart.Target);
+        mail.PlainBody.Should().Contain("OccurredAt+30g,eşleşmeyen", "ayraç ölçüt içinde kaçışlanır");
+    }
+
+    [Fact]
+    public async Task Kayit_yoksa_e_posta_gitmez()
+    {
+        using var db = NewDb(); var email = new TestEmailSender();
+
+        (await Job(db, email).RunForWindowEndingAsync(new DateTimeOffset(2026, 10, 20, 9, 0, 0, TimeSpan.Zero),
+            CancellationToken.None)).Should().Be(0);
+        email.Sent.Should().BeEmpty();
+    }
+}
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~DataDestructionDigestJobTests"`
+Expected: FAIL — `DataDestructionDigestJob` yok.
+
+`OrderDeck.LicenseServer/Services/Privacy/DataDestructionDigestJob.cs`:
+
+```csharp
+using System.Globalization;
+using System.Text;
+using Hangfire;
+using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Bank;
+
+namespace OrderDeck.LicenseServer.Services.Privacy;
+
+/// <summary>
+/// İmha kayıtlarının veritabanı DIŞINDAKİ kopyası (KVKK Ö-12, Ö-13): her saat, bir önceki tam saatin
+/// <see cref="DataDestructionRecord"/> satırlarını yöneticiye (<c>Admin:AlertEmail</c>) CSV metni olarak e-postalar. Yedekten geri
+/// yükleme tabloyu yedek anına sarar; geri yüklemeden sonra olay kaynaklı silmeler (shopper ve yayıncı silmesi, banka veri talebi,
+/// bağlantı kaldırma, kimlik değişimi, temizlik komutu) bu e-postalardan yeniden uygulanır (<c>deploy/README.md</c> "Geri
+/// yükleme"). Kişisel veri YOK: tarih, lisans/konu/talep kimliği, hedef, eylem, sayı, ölçüt, tetikleyici, yapan. Kayıt yoksa
+/// e-posta gitmez. Pencere <c>[önceki saat başı, bu saat başı)</c>: durum tutmaz, pencereler örtüşmez. Gönderim düşerse
+/// <see cref="BankJobAlerts"/> günlüğe yazar; o saatin kayıtları tabloda durur, <see cref="RunForWindowEndingAsync"/> elle
+/// yeniden koşulabilir.
+/// </summary>
+[AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+public sealed class DataDestructionDigestJob
+{
+    public const string JobId = "data-destruction-digest";
+    /// <summary>Saat başı +13 dk: 5 dakikalık ızgara, :02 (hesap yenileme) ve :07 (eşleşme taraması) dışında.</summary>
+    public const string Cron = "13 * * * *";
+    public const string Subject = "[OrderDeck] İmha kaydı özeti";
+
+    private readonly LicenseDbContext _db;
+    private readonly BankJobAlerts _alerts;
+
+    public DataDestructionDigestJob(LicenseDbContext db, BankJobAlerts alerts) { _db = db; _alerts = alerts; }
+
+    public Task<int> RunAsync(CancellationToken ct = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return RunForWindowEndingAsync(new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, 0, 0, TimeSpan.Zero), ct);
+    }
+
+    /// <summary><c>[end − 1 saat, end)</c> penceresinin kayıtlarını gönderir; gönderilen satır sayısını döner.</summary>
+    public async Task<int> RunForWindowEndingAsync(DateTimeOffset end, CancellationToken ct)
+    {
+        var start = end.AddHours(-1);
+        var rows = await _db.DataDestructionRecords.AsNoTracking()
+            .Where(r => r.OccurredAt >= start && r.OccurredAt < end).OrderBy(r => r.OccurredAt).ToListAsync(ct);
+        if (rows.Count == 0) return 0;
+        await _alerts.SendAsync(Subject, ToCsv(start, end, rows), CancellationToken.None);
+        return rows.Count;
+    }
+
+    public static string ToCsv(DateTimeOffset start, DateTimeOffset end, IReadOnlyList<DataDestructionRecord> rows)
+    {
+        static string Clean(string? value) => (value ?? "").Replace(';', ',').Replace('\n', ' ').Replace('\r', ' ');
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new StringBuilder();
+        sb.AppendLine(inv, $"# İmha kayıtları {start.UtcDateTime:yyyy-MM-dd HH:mm}–{end.UtcDateTime:HH:mm} UTC, {rows.Count} satır. " +
+            "Kişisel veri içermez. SİLMEYİN: yedekten geri yüklemeden sonra silmeler buradan yeniden uygulanır " +
+            "(deploy/README.md, Geri yükleme).");
+        sb.AppendLine("zaman_utc;lisans;konu;hedef;eylem;satir;olcut;tetikleyici;talep;yapan");
+        foreach (var r in rows)
+            sb.AppendLine(string.Join(';',
+                r.OccurredAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", inv), r.LicenseId?.ToString() ?? "",
+                r.SubjectId?.ToString() ?? "", Clean(r.Target), Clean(r.Action), r.RowCount.ToString(inv), Clean(r.Criterion),
+                Clean(r.Trigger), r.RequestId?.ToString() ?? "", Clean(r.Actor)));
+        return sb.ToString();
+    }
+}
+```
+
+`Program.cs` — `BankJobAlerts` kaydının ALTINA:
+
+```csharp
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>();
+```
+
+Genel takvimde `security-data-retention` kaydının ALTINA:
+
+```csharp
+            // İmha kayıtlarının veritabanı dışındaki kopyası (KVKK Ö-12/Ö-13): saatlik, :13. Yedekten geri yüklemeden sonra
+            // silmeler bu e-postalardan yeniden uygulanır (deploy/README.md, Geri yükleme).
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>(
+                OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob.Cron);
+```
+
+`BankJobsDiTests.cs` — `Banka_isleri_ve_servisleri_DI_kapsamindan_cozulur`'a: `sp.GetRequiredService<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>().Should().NotBeNull();`
+
+- [ ] **Adım 17: Koştur — yeşil**
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~GdprFlowTests|FullyQualifiedName~ObifinPollJobTests|FullyQualifiedName~ObifinConnectionServiceTests|FullyQualifiedName~BankDataCleanup|FullyQualifiedName~DataDestructionDigestJobTests|FullyQualifiedName~BankJobsDiTests|FullyQualifiedName~Audit"`
+Expected: PASS (Docker gerekli: `BankDataCleanupRelationalTests`).
+
+Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~CustomerPurgeRelationalTests"`
+Expected: PASS (imha kaydı purge'ün SaveChanges'inde; gerçek SQL'de de tek işlem).
+
+- [ ] **Adım 18: Commit**
+
+```bash
+git add OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs OrderDeck.LicenseServer/Services/Bank/BankDataCleanupJob.cs OrderDeck.LicenseServer/Tools/BankDataCleanup.cs OrderDeck.LicenseServer/Services/Privacy/DataDestructionDigestJob.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Controllers/Compliance/GdprFlowTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankDataCleanupJobTests.cs OrderDeck.LicenseServer.Tests/Services/Privacy/DataDestructionDigestJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankJobsDiTests.cs
+git commit -m "feat(kvkk): yayıncı silmesi, kimlik değişimi ve temizlik de imha kaydı yazsın; saatlik dış kopya
+
+Yayıncı silmesi (e-postasız, yayıncı kimliğiyle), Obifin kimliği
+değişimindeki gölge veri silmesi ve bank-data-cleanup partileri kalıcı
+imha kaydını silmeyle aynı işlemde yazar. data-destruction-digest her
+saat bir önceki saatin kayıtlarını yöneticiye e-postalar: yedekten geri
+yüklemeden sonra silmeler buradan yeniden uygulanır (KVKK ön inceleme
+Ö-12, Ö-13).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -2488,7 +2877,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - Modify: `OrderDeck.LicenseServer/Domain/Bank/CustomerIbanMemory.cs`
 - Modify: `OrderDeck.LicenseServer/Services/Bank/PaymentMatchReconciler.cs:333-348` (`LearnIbanAsync`)
 - Create: göç `*_IbanMemoryLastConfirmedAt`
-- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs` (bütünüyle), `PaymentMatchReconcilerTests.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs` (bütünüyle), YENİ `BankDataRetentionRelationalTests.cs` (Testcontainers), `PaymentMatchReconcilerTests.cs`
 
 - [ ] **Adım 1: IBAN bağı tazeleme testini yaz (kırmızı)**
 
@@ -3064,18 +3453,138 @@ public sealed class BankDataRetentionJob
 Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add IbanMemoryLastConfirmedAt --output-dir Data/Migrations`
 Expected: `Up` yalnız `AddColumn<DateTimeOffset>(name: "LastConfirmedAt", table: "CustomerIbanMemories", nullable: true)`.
 
-- [ ] **Adım 9: Koştur — yeşil**
+- [ ] **Adım 9: Gerçek SQL Server testi**
+
+Bu iş her gece prod verisi siler; alt sorgular ("eşleşmeyen" = bağlı eşleşmesi olmayan; gerekçe metni için hareket üzerinde
+EXISTS), `COALESCE(LastConfirmedAt, CreatedAt)`, jetonlu eşleşme silmesi ve imha kaydının aynı işlemde yazılması InMemory'de
+SQL'e çevrilmez. `OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionRelationalTests.cs`:
+
+```csharp
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.Bank;
+
+/// <summary>BankDataRetentionJob gerçek SQL Server'da (göçlerle kurulmuş şema, FK'ler, CHECK kısıtları): saklama tablosu
+/// uygulanır, her imha partisi kaydını aynı işlemde yazar.</summary>
+[Collection(SqlServerCollection.Name)]
+[Trait("Category", "Testcontainers")]
+public sealed class BankDataRetentionRelationalTests : IAsyncLifetime
+{
+    private readonly SqlServerContainerFixture _sql;
+    private RelationalApiFactory _factory = null!;
+    public BankDataRetentionRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
+
+    public async Task InitializeAsync()
+    {
+        _factory = new RelationalApiFactory(await _sql.CreateDatabaseAsync());
+        _ = _factory.Services; // göçleri şimdi kur
+    }
+
+    public Task DisposeAsync()
+    {
+        _factory.Dispose();
+        return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Saklama_tablosu_gercek_SQL_Serverda_uygulanir_ve_imha_kaydi_yazar()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var lic = Guid.NewGuid();
+        long obifinId = 1;
+        BankTransaction Tx(int ageDays) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, ObifinId = obifinId++, ObifinAccountId = 6, BankaKodu = "qnb",
+            Direction = BankTransactionDirection.Incoming, Amount = 10m, Currency = "TL", OccurredAt = now.AddDays(-ageDays),
+            FetchedAt = now.AddDays(-ageDays), Description = "aciklama", CounterpartyName = "ad", RawJson = "{}",
+        };
+        PaymentMatch Match(BankTransaction tx, Guid? actual) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx.Id, ActualWpfCustomerId = actual, Evidence = "kanıt",
+            DecidedAt = actual is null ? null : now, Layer = PaymentMatchLayer.NameAmount,
+            Status = actual is null ? PaymentMatchStatus.Proposed : PaymentMatchStatus.ManualOnly,
+            CreatedAt = tx.FetchedAt, UpdatedAt = tx.FetchedAt,
+        };
+        CustomerIbanMemory Memory(DateTimeOffset createdAt, DateTimeOffset? lastConfirmedAt) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = Guid.NewGuid(), IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}",
+            IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = createdAt,
+            LastConfirmedAt = lastConfirmedAt,
+        };
+        var expired = Tx(181); var unmatched = Tx(31); var linked = Tx(31); var young = Tx(10);
+        var expiredMatch = Match(expired, Guid.NewGuid()); var unmatchedMatch = Match(unmatched, null);
+        var linkedMatch = Match(linked, Guid.NewGuid());
+        var staleConfirmed = Memory(now.AddMonths(-20), now.AddMonths(-12).AddDays(-1));
+        var staleNeverConfirmed = Memory(now.AddMonths(-12).AddDays(-1), null);
+        var fresh = Memory(now.AddMonths(-20), now.AddMonths(-1));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = new Customer { Id = Guid.NewGuid(), Email = $"br-{Guid.NewGuid():N}@example.test", Name = "Saklama",
+                PasswordHash = $"h-{Guid.NewGuid():N}", CreatedAt = now };
+            db.Customers.Add(customer);
+            db.Licenses.Add(new License { Id = lic, CustomerId = customer.Id, LicenseKey = "br-" + Guid.NewGuid().ToString("N")[..12],
+                SkuCode = "STD", ActivationSlots = 1, IssuedAt = now, ExpiresAt = now.AddYears(1) });
+            db.BankTransactions.AddRange(expired, unmatched, linked, young);
+            db.PaymentMatches.AddRange(expiredMatch, unmatchedMatch, linkedMatch);
+            db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = lic, PaymentId = Guid.NewGuid(),
+                CreatedAt = now.AddDays(-181) });
+            db.CustomerIbanMemories.AddRange(staleConfirmed, staleNeverConfirmed, fresh);
+            await db.SaveChangesAsync();
+        }
+
+        BankRetentionResult r;
+        using (var scope = _factory.Services.CreateScope())
+            r = await scope.ServiceProvider.GetRequiredService<BankDataRetentionJob>().RunAsync(CancellationToken.None);
+
+        (r.TransactionsDeleted, r.MatchesDeleted, r.GapsDeleted, r.IbanMemoriesDeleted).Should().Be((1, 1, 1, 2));
+        r.UnmatchedDescriptionsPurged.Should().Be(1, "öneri eşleşme değildir; bağlı olanın açıklaması kalır");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.BankTransactions.AnyAsync(t => t.Id == expired.Id)).Should().BeFalse();
+            (await db.PaymentMatches.AnyAsync(m => m.Id == expiredMatch.Id)).Should().BeFalse();
+            var u = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == unmatched.Id);
+            (u.Description, u.CounterpartyName, u.RawJson).Should().Be(((string?)null, (string?)null, (string?)null));
+            (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == unmatchedMatch.Id)).Evidence
+                .Should().BeNull("gerekçe metni hareketin açıklamasıyla gider");
+            var l = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == linked.Id);
+            l.Description.Should().Be("aciklama");
+            l.RawJson.Should().BeNull("ham kayıt 30 günde gider");
+            (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == linkedMatch.Id)).Evidence.Should().Be("kanıt");
+            (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == young.Id)).RawJson.Should().Be("{}");
+            (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { fresh.Id });
+            var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+            records.Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.Retention);
+            records.Select(x => x.Target).Should().Contain(new[] { "BankTransactions", "PaymentMatches", "PaymentMatchGaps",
+                "BankTransactions.RawJson", "BankTransactions.Description+CounterpartyName", "PaymentMatches.Evidence",
+                "CustomerIbanMemories" });
+        }
+    }
+}
+```
+
+- [ ] **Adım 10: Koştur — yeşil**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~Services.Bank|FullyQualifiedName~BankJobsDiTests"`
+Expected: PASS (Docker gerekli: `BankDataRetentionRelationalTests`; zaman aşımında sınıfı tek başına yeniden koştur).
+
+Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupRelationalTests|FullyQualifiedName~BankDataRetentionRelationalTests"`
 Expected: PASS.
 
-Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupRelationalTests"`
-Expected: PASS.
-
-- [ ] **Adım 10: Commit**
+- [ ] **Adım 11: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Bank/BankDataRetentionJob.cs OrderDeck.LicenseServer/Services/Bank/BankOptions.cs OrderDeck.LicenseServer/appsettings.json OrderDeck.LicenseServer/Domain/Bank/CustomerIbanMemory.cs OrderDeck.LicenseServer/Services/Bank/PaymentMatchReconciler.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer/Data/Migrations OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/PaymentMatchReconcilerTests.cs
+git add OrderDeck.LicenseServer/Services/Bank/BankDataRetentionJob.cs OrderDeck.LicenseServer/Services/Bank/BankOptions.cs OrderDeck.LicenseServer/appsettings.json OrderDeck.LicenseServer/Domain/Bank/CustomerIbanMemory.cs OrderDeck.LicenseServer/Services/Bank/PaymentMatchReconciler.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer/Data/Migrations OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankDataRetentionRelationalTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/PaymentMatchReconcilerTests.cs
 git commit -m "fix(bank-kvkk): banka saklama sürelerini işlem tarihine bağla ve kısalt
 
 Ham kayıt ve eşleşmeyen havalenin açıklaması 30, hareketin tamamı,
@@ -7908,7 +8417,7 @@ Başlık yorumuna bir satır: `# OrderDeck__Bank__HashKey satırı süzülür (B
 
 - [ ] **Adım 3: README'yi güncelle**
 
-`deploy/README.md` — "Off-host replication" bölümünde üç düzenleme.
+`deploy/README.md` — "Off-host replication" bölümünde dört düzenleme.
 
 (a) Şu cümleyi:
 
@@ -7941,6 +8450,45 @@ eklenir. Anahtar kaybolursa eski özetler eşleşmez, IBAN hafızası yeniden ö
 satırını ekleyin (yedekte yok).
 ```
 
+(d) (c)'nin ALTINA yeni alt bölüm (KVKK ön inceleme Ö-12; Görev 9'daki dış kopya):
+
+```markdown
+#### Silmeleri yeniden uygula (KVKK)
+
+Yedek, alındığı andan sonra yapılan silmeleri geri getirir. `DataDestructionRecords`
+tablosu da aynı veritabanında olduğu için yedek anına sarılır: yeniden uygulamanın
+dayanağı tablo değil, saatlik **"[OrderDeck] İmha kaydı özeti"** e-postalarıdır
+(`DataDestructionDigestJob`; `Admin__AlertEmail` kutusu). Uygulamayı geri yüklenen
+veritabanıyla açtıktan sonra, kullanıcılara açmadan önce:
+
+1. Yedeğin anını not edin (`orderdeck-<tarih>.bak.gz.gpg` → o günün 03:00 UTC'si).
+2. Hangfire panosundan `bank-data-retention`, `security-data-retention` ve
+   `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler kendiliğinden yeniden
+   uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
+3. Yedek anından sonraki özet e-postalarını açın; her satırı **tetikleyicisine** göre
+   yeniden uygulayın (`konu` = ShopperId/CustomerId, `talep` = talep kimliği):
+   - `shopper-purge`: admin/shoppers/deletion-requests'te o ShopperId'nin talebi geri
+     yüklenmişse yeniden "Sil"; talep yedekten sonra geldiyse satır yoktur — aynı
+     ShopperId için `ShopperDeletionRequests`'e talep satırı ekleyip sayfadan işleyin.
+   - `customer-purge`: `POST /api/v1/admin/customers/{konu}/purge` (onay e-postası geri
+     yüklenen satırdaki adres). Obifin bağlantısı varsa önce admin/obifin → "Kaldır ve sil".
+   - `subject-request`: talep satırı geri yüklenmiş ve açıksa admin/banka-veri-talepleri'nde
+     yeniden "Sil ve kapat"; yoksa başvurunun aslındaki (yazılı başvuru / e-posta) IBAN'la
+     yeni talep açıp silin — talep kapanınca IBAN özeti boşaldığı için kayıt IBAN taşımaz.
+   - `admin-remove`: admin/obifin'de o lisans için yeniden "Kaldır ve sil" (Obifin tarafı
+     zaten kaldırıldıysa liste boş döner).
+   - `credential-change`: admin/obifin'de o lisansın Obifin kimliğini yeniden kaydedin.
+   - `cleanup`: `bank-data-cleanup --apply` (ve yedekten sonra koşulduysa
+     `--reset-iban-memory --apply`) yeniden.
+   - `retention`, `service-end`: 2. adım yeterli.
+4. Yedek anı ile felaket arasındaki son saat e-postaya girmemiş olabilir: eski
+   veritabanına hâlâ erişiliyorsa `SELECT * FROM DataDestructionRecords WHERE OccurredAt > '<yedek anı>'`
+   çıktısını alıp aynı şekilde uygulayın; erişilemiyorsa admin/shoppers/deletion-requests,
+   admin/banka-veri-talepleri ve günlükleri o saat için elle gözden geçirin.
+5. Yeniden uygulanan her silme yeni bir imha kaydı yazar; bitince bir tutanak (tarih,
+   yedek anı, uygulanan satır sayısı) KVKK klasörüne eklenir.
+```
+
 - [ ] **Adım 4: Sözdizimi ve süzgeç denetimi**
 
 Run (Bash):
@@ -7962,8 +8510,10 @@ git commit -m "fix(backup-kvkk): yerel SQL yedeğini şifreli ve 1 gün tut, Has
 
 Sunucu diskinde yalnız şifreli .bak.gz.gpg kalır (1 gün); düz kopyalar
 şifrelenince ve hata durumunda silinir. .env gece yedeği
-OrderDeck__Bank__HashKey satırını içermez (Bitwarden'da). Betikler CI ile
-kopyalanmaz: Burak VPS'e elle kopyalar (KVKK ön inceleme Ö-12, Ö-6, P1-16).
+OrderDeck__Bank__HashKey satırını içermez (Bitwarden'da). README'ye geri
+yüklemeden sonra silmeleri imha özeti e-postalarından yeniden uygulama
+prosedürü eklendi. Betikler CI ile kopyalanmaz: Burak VPS'e elle kopyalar
+(KVKK ön inceleme Ö-12, Ö-6, P1-16).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
