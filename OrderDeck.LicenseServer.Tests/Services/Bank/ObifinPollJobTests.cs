@@ -368,9 +368,9 @@ public sealed class ObifinPollJobTests
     }
 
     [Fact]
-    public async Task Ham_json_kimlik_alanlari_redakte_edilerek_saklanir_hash_ve_maske_ham_degerden_uretilir()
+    public async Task Ham_kayit_beyaz_listeyle_saklanir_hash_ve_maske_ham_degerden_uretilir()
     {
-        // Spec §7: ham JSON'da IBAN/VKN/TCKN kalmaz; hash + maske DTO'nun ham değerinden (redaksiyondan ÖNCE) çıkar.
+        // KVKK Ö-2: ham kayıt beyaz listeyle saklanır; özet + maske DTO'nun ham değerinden (redaksiyondan ÖNCE) çıkar.
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, _) = Build(db, client, today);
         await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
@@ -383,7 +383,7 @@ public sealed class ObifinPollJobTests
         await job.RunAsync(CancellationToken.None);
 
         var tx = await db.BankTransactions.SingleAsync();
-        tx.RawJson.Should().NotContain(iban).And.NotContain(vkn).And.Contain("[redakte]").And.Contain("Ad Soyad");
+        tx.RawJson.Should().Be("""{"GonderenAdi":"Ad Soyad"}""", "yalnız beyaz listedeki alanlar kalır (KVKK Ö-2)");
         tx.CounterpartyIbanHash.Should().HaveLength(64);
         tx.CounterpartyIbanMasked.Should().Be(BankHasher.MaskIban(iban));
         tx.CounterpartyTaxIdHash.Should().BeNull("VKN/TCKN kodu amaçsız: yazılmaz (KVKK Ö-2)");

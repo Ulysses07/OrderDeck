@@ -53,7 +53,7 @@ public sealed class BankDataRetentionJobTests
     };
 
     [Fact]
-    public async Task Ham_json_90_gun_aciklama_180_gun_sonra_bosaltilir_tutar_ve_hash_kalir()
+    public async Task Ham_json_30_gun_aciklama_180_gun_sonra_bosaltilir_tutar_ve_hash_kalir()
     {
         using var db = NewDb();
         var fresh = Row(10); var mid = Row(100); var old = Row(200);
@@ -71,20 +71,20 @@ public sealed class BankDataRetentionJobTests
     }
 
     [Fact]
-    public async Task Sinirda_90_ve_180_gunun_hemen_icindeki_kalir_hemen_disindaki_bosaltilir()
+    public async Task Sinirda_30_ve_180_gunun_hemen_icindeki_kalir_hemen_disindaki_bosaltilir()
     {
         using var db = NewDb();
         var minute = TimeSpan.FromMinutes(1);
-        var rawIn = Row(TimeSpan.FromDays(90) - minute); var rawOut = Row(TimeSpan.FromDays(90) + minute);
+        var rawIn = Row(TimeSpan.FromDays(30) - minute); var rawOut = Row(TimeSpan.FromDays(30) + minute);
         var descIn = Row(TimeSpan.FromDays(180) - minute); var descOut = Row(TimeSpan.FromDays(180) + minute);
         db.BankTransactions.AddRange(rawIn, rawOut, descIn, descOut);
         await db.SaveChangesAsync();
 
         await Job(db).RunAsync(CancellationToken.None);
 
-        (await db.BankTransactions.FindAsync(rawIn.Id))!.RawJson.Should().NotBeNull("90 günün bir dakika içinde");
+        (await db.BankTransactions.FindAsync(rawIn.Id))!.RawJson.Should().NotBeNull("30 günün bir dakika içinde");
         var ro = (await db.BankTransactions.FindAsync(rawOut.Id))!;
-        ro.RawJson.Should().BeNull("90 günü bir dakika geçti"); ro.Description.Should().Be("aciklama");
+        ro.RawJson.Should().BeNull("30 günü bir dakika geçti"); ro.Description.Should().Be("aciklama");
         var di = (await db.BankTransactions.FindAsync(descIn.Id))!;
         di.Description.Should().Be("aciklama", "180 günün bir dakika içinde"); di.CounterpartyName.Should().Be("ad");
         di.DescriptionPurgedAt.Should().BeNull();

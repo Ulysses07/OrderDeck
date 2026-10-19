@@ -6,7 +6,7 @@ using OrderDeck.LicenseServer.Data;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
-/// <summary>Spec §5/§7: ham JSON 90 gün, açıklama/gönderen adı 180 gün; tutar, tarih, hash'ler kalır.
+/// <summary>Spec §5/§7: ham JSON 30 gün (KVKK karar 5), açıklama/gönderen adı 180 gün; tutar, tarih, hash'ler kalır.
 /// Faz 1'de kanıt metni (PaymentMatch.Evidence) de 180 günde boşaltılır.</summary>
 [DisableConcurrentExecution(timeoutInSeconds: 600)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]

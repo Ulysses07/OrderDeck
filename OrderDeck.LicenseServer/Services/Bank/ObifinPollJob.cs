@@ -27,8 +27,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// hesabın satırlarını ne eski imleci ne eski kimliğin hatasını geri yazmalı: hareket/imleç/hata kaydeden HER
 /// SaveChanges'ten önce UserCode/BaseUrl/UpdatedAt taze okunur, biri değiştiyse kaydedilmez.</para>
 ///
-/// <para><b>Ham JSON</b> saklanmadan önce redakte edilir (<see cref="BankRawJsonRedactor"/>); IBAN özeti + maske DTO'nun
-/// ham değerinden üretilir. Karşı tarafın VKN/TCKN'si okunmaz ve yazılmaz (KVKK Ö-2).</para>
+/// <para><b>Ham JSON</b> saklanmadan önce beyaz listeye indirilir, açıklamaları maskelenir (<see cref="BankRawJsonRedactor"/>,
+/// KVKK Ö-2); IBAN özeti + maske DTO'nun ham değerinden üretilir. Karşı tarafın VKN/TCKN'si okunmaz ve yazılmaz (KVKK Ö-2).</para>
 /// </summary>
 [DisableConcurrentExecution(LockResource, 300)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]

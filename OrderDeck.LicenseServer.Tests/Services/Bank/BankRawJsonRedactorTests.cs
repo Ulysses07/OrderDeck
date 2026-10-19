@@ -1,101 +1,97 @@
 using System.Text.Json;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 
-/// <summary>Ham hareket JSON'u saklanmadan önce kimlik alanları (adı IBAN/VKN/TCKN içeren) silinir (spec §7).
-/// Hash + maske DTO'nun ham değerinden ÖNCE üretilir; bu yalnız saklanan kopyayı temizler.</summary>
+/// <summary>KVKK Ö-2: ham hareket kaydının yalnız beyaz listedeki alanları saklanır; açıklama alanları maskelenir. Değerler
+/// üretilir (repo public).</summary>
 public sealed class BankRawJsonRedactorTests
 {
+    private static string Kept(string redacted)
+        => string.Join(",", JsonDocument.Parse(redacted).RootElement.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+
     [Fact]
-    public void Adi_IBAN_VKN_TCKN_iceren_alanlarin_degeri_redakte_edilir_adlar_ve_diger_alanlar_kalir()
+    public void Yalniz_beyaz_listedeki_alanlar_kalir()
     {
         var iban = BankHasherTests.TestIban();
-        var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
-        var tckn = Random.Shared.NextInt64(10_000_000_000, 99_999_999_999).ToString();
-        var json = $$"""{"Id":"1","KarsiHesapIBAN":"{{iban}}","BorcluVKN":"{{vkn}}","AmirVKN":"","LehdarTCKN":"{{tckn}}","GonderenAdi":"Ad Soyad","Tutar":"10.00"}""";
+        var vkn = TestPhone.Digits(10);
+        var json = $$"""
+        {"Id":"1","HesapId":"6","IslemNo":"X1","Aciklama":"HAVALE ornek_musteri34","IslemAciklama":"EFT","GonderenAdi":"Ad Soyad",
+         "GonderenBanka":"Banka","GonderenSube":"Sube","AliciAdi":"Alici","MusteriAciklamasi":"not","EkDetay1":"a","EkDetay2":"b",
+         "EkDetay3":"c","EkDetay4":"d","Bakiye":"123.45","KarsiHesapIBAN":"{{iban}}","BorcluVKN":"{{vkn}}","IslemKodu":"FT",
+         "ReferansNo":"R1","MakbuzNo":"M1","Tutar":"10.00","TutarEksiArti":"10.00"}
+        """;
 
         var redacted = BankRawJsonRedactor.Redact(json);
 
-        redacted.Should().NotContain(iban).And.NotContain(vkn).And.NotContain(tckn);
-        using var doc = JsonDocument.Parse(redacted);
-        var root = doc.RootElement;
-        root.GetProperty("KarsiHesapIBAN").GetString().Should().Be("[redakte]");
-        root.GetProperty("BorcluVKN").GetString().Should().Be("[redakte]");
-        root.GetProperty("AmirVKN").GetString().Should().Be("[redakte]", "boş değer de aynı kuralla — dallanma yok");
-        root.GetProperty("LehdarTCKN").GetString().Should().Be("[redakte]");
-        root.GetProperty("GonderenAdi").GetString().Should().Be("Ad Soyad", "ad zaten CounterpartyName'de");
-        root.GetProperty("Id").GetString().Should().Be("1");
-        root.GetProperty("Tutar").GetString().Should().Be("10.00");
+        Kept(redacted).Should().Be(string.Join(",", BankRawJsonRedactor.AllowedFields.Order(StringComparer.Ordinal)));
+        redacted.Should().NotContain(iban).And.NotContain(vkn).And.NotContain("123.45").And.NotContain("Alici").And.NotContain("Sube");
     }
 
     [Fact]
-    public void Alan_adi_buyuk_kucuk_harf_farki_gozetilmeden_eslesir()
+    public void Aciklama_alanlarindaki_IBAN_ve_on_bir_haneli_numara_maskelenir()
     {
         var iban = BankHasherTests.TestIban();
-        var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
-        var json = $$"""{"karsiIban":"{{iban}}","Vkn_No":"{{vkn}}","tckn":"x"}""";
+        var tckn = TestTckn.NewValid();
+        var json = $$"""{"Aciklama":"HAVALE {{iban}}","IslemAciklama":"FAST {{tckn}}","GonderenAdi":"Ad Soyad"}""";
+
+        var root = JsonDocument.Parse(BankRawJsonRedactor.Redact(json)).RootElement;
+
+        root.GetProperty("Aciklama").GetString().Should().Be($"HAVALE {BankHasher.MaskIban(iban)}");
+        root.GetProperty("IslemAciklama").GetString().Should().Be($"FAST {BankDescriptionMasker.ElevenDigitMask}");
+        root.GetProperty("GonderenAdi").GetString().Should().Be("Ad Soyad");
+    }
+
+    [Fact]
+    public void Sayi_olarak_gelen_aciklamadaki_on_bir_haneli_numara_da_maskelenir()
+    {
+        // İstemci açıklamayı sayı gelse de metne çevirip okur (ObifinClient.Str): sütun maskelenirken kopya düz kalmasın.
+        var tckn = TestTckn.NewValid();
+        var json = $$"""{"Aciklama":{{tckn}},"IslemAciklama":42}""";
 
         var redacted = BankRawJsonRedactor.Redact(json);
 
-        using var doc = JsonDocument.Parse(redacted);
-        foreach (var p in doc.RootElement.EnumerateObject())
-            p.Value.GetString().Should().Be("[redakte]", $"{p.Name} kimlik alanıdır");
+        redacted.Should().NotContain(tckn);
+        var root = JsonDocument.Parse(redacted).RootElement;
+        root.GetProperty("Aciklama").GetString().Should().Be(BankDescriptionMasker.ElevenDigitMask);
+        root.GetProperty("IslemAciklama").GetInt32().Should().Be(42, "maskelenecek bir şey yoksa sayı aynen kalır");
+        BankRawJsonRedactor.Redact(redacted).Should().Be(redacted);
     }
 
     [Fact]
-    public void Ic_ice_nesne_ve_dizilerdeki_kimlik_alanlari_da_redakte_edilir()
+    public void Ic_ice_nesne_ve_dizi_alinmaz_null_ve_sayi_aynen_kalir()
     {
-        var iban = BankHasherTests.TestIban();
-        var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
-        var json = $$"""{"Detay":{"KarsiHesapIBAN":"{{iban}}","Ad":"A"},"Liste":[{"AmirVKN":"{{vkn}}"},"duz",5,null,true]}""";
+        var json = """{"Aciklama":{"x":"y"},"GonderenAdi":["a"],"ReferansNo":null,"MakbuzNo":42}""";
 
-        var redacted = BankRawJsonRedactor.Redact(json);
+        var root = JsonDocument.Parse(BankRawJsonRedactor.Redact(json)).RootElement;
 
-        redacted.Should().NotContain(iban).And.NotContain(vkn);
-        using var doc = JsonDocument.Parse(redacted);
-        var root = doc.RootElement;
-        root.GetProperty("Detay").GetProperty("KarsiHesapIBAN").GetString().Should().Be("[redakte]");
-        root.GetProperty("Detay").GetProperty("Ad").GetString().Should().Be("A");
-        var list = root.GetProperty("Liste");
-        list[0].GetProperty("AmirVKN").GetString().Should().Be("[redakte]");
-        list[1].GetString().Should().Be("duz");
-        list[2].GetInt32().Should().Be(5);
-        list[3].ValueKind.Should().Be(JsonValueKind.Null);
-        list[4].GetBoolean().Should().BeTrue();
+        root.TryGetProperty("Aciklama", out _).Should().BeFalse();
+        root.TryGetProperty("GonderenAdi", out _).Should().BeFalse();
+        root.GetProperty("ReferansNo").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("MakbuzNo").GetInt32().Should().Be(42);
     }
 
     [Fact]
-    public void Diger_degerlerin_JSON_turu_korunur_Turkce_karakterler_kacislanmaz()
+    public void Turkce_karakterler_kacislanmaz_ve_islem_idempotent()
     {
-        // Saklanan kopya insan gözüyle okunur (admin tanısı): "Müşteri", "M\u00FC\u015Fteri" diye kaçışlanarak yazılmaz.
-        var json = """{"Sayi":10.5,"Bos":null,"Evet":true,"GonderenAdi":"Örnek Müşteri"}""";
+        const string json = """{"Aciklama":"ÖDEME çğışü","GonderenAdi":"Şükrü"}""";
 
-        var redacted = BankRawJsonRedactor.Redact(json);
+        var once = BankRawJsonRedactor.Redact(json);
 
-        redacted.Should().Contain("Örnek Müşteri");
-        using var doc = JsonDocument.Parse(redacted);
-        var root = doc.RootElement;
-        root.GetProperty("Sayi").GetDecimal().Should().Be(10.5m);
-        root.GetProperty("Bos").ValueKind.Should().Be(JsonValueKind.Null);
-        root.GetProperty("Evet").GetBoolean().Should().BeTrue();
+        once.Should().Be(json);
+        BankRawJsonRedactor.Redact(once).Should().Be(once);
     }
 
-    [Fact]
-    public void Kimlik_alani_olmayan_JSON_oldugu_gibi_kalir()
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("[1,2]")]
+    [InlineData("\"metin\"")]
+    public void Json_nesne_degilse_protokol_hatasi(string raw)
     {
-        const string json = """{"Id":"1","Aciklama":"HAVALE","HesapId":"6"}""";
-        BankRawJsonRedactor.Redact(json).Should().Be(json);
-    }
-
-    [Fact]
-    public void Gecersiz_JSON_protokol_istisnasi()
-    {
-        // İstemci satırı zaten ayrıştırdı; buraya JSON olmayan metin gelmesi sözleşme ihlalidir — sessizce
-        // (ham hâliyle) saklanmaz.
-        var act = () => BankRawJsonRedactor.Redact("{not json");
+        var act = () => BankRawJsonRedactor.Redact(raw);
         act.Should().Throw<ObifinProtocolException>();
     }
 }

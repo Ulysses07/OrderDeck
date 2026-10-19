@@ -13,6 +13,7 @@ public sealed class BankOptions
     /// → [CCP, POS] (prod'da docker-compose'un <c>environment</c> bölümüne de eklenmeli).</para></summary>
     public string[] ExcludedTransactionCodes { get; set; } = ["CCP"];
 
-    public int RawJsonRetentionDays { get; set; } = 90;
+    /// <summary>Ham kayıt (beyaz listeli, <see cref="BankRawJsonRedactor"/>) saklama süresi — KVKK karar 5: 30 gün.</summary>
+    public int RawJsonRetentionDays { get; set; } = 30;
     public int DescriptionRetentionDays { get; set; } = 180;
 }

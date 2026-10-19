@@ -1333,7 +1333,7 @@ public class Program
     /// </summary>
     public static void ScheduleBankJobs(IRecurringJobManager manager, bool enabled)
     {
-        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
+        // Ham JSON 30 gün, açıklama 180 gün (spec §5, KVKK karar 5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
         // Anahtarsız da kaydolur (bkz. özet): BankHasher istemez, KVKK silmesi durmamalı.
         manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
             "bank-data-retention",
