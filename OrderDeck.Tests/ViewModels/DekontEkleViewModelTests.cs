@@ -10,6 +10,7 @@ using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace OrderDeck.Tests.ViewModels;
@@ -232,6 +233,28 @@ public sealed class DekontEkleViewModelTests
         shipmentId.Should().NotBeNullOrEmpty("etiket açık kargo dosyasına bağlandı");
         fx.Shipments.GetById(shipmentId!)!.CumulativeAmount.Should().Be(1200m);
         fx.Vm.ErrorMessage.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Kargo_adimi_hata_verirse_uyari_seride_duser_sessizce_kapanmaz()
+    {
+        // Kargo adımı fırlatırsa (ör. yerel veritabanı hatası) eskiden yalnız günlüğe yazılıyordu; dekont satırı yine
+        // kalıyordu. 2026-10-19'dan beri kaydedilen başka bir şey yok: uyarı şeride düşmezse operatör "oldu" sanır.
+        var fx = new Fixture();
+        SeedCustomer(fx);
+        var editor = new Mock<OrderDeck.App.Services.Sales.ILabelEditor>();
+        editor.Setup(e => e.RunDekontShipmentStepAsync(
+                It.IsAny<string>(), It.IsAny<ShipmentDirective>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("yerel yazım hatası"));
+        var vm = new DekontEkleViewModel(fx.Customers, fx.Sessions, new PaymentMatcherService(fx.Labels, fx.Shipping),
+            fx.ShipmentSvc, fx.Shipping, NullLogger<DekontEkleViewModel>.Instance, editor: editor.Object);
+        FillValid(vm);
+
+        (await vm.SaveAsync()).Should().BeTrue("uyarı şeritte, çekmece kapanır (çevrimdışı uyarısıyla aynı yol)");
+
+        vm.ShipmentWarning.Should().Be(OrderDeck.App.Services.Sync.SalesCommandMessages.DekontShipmentFailed(
+            OrderDeck.App.Services.Sync.SalesCommandMessages.ContentConflict));
+        fx.PaymentRows().Should().Be(0);
     }
 
     // ── Müşteri + eşleştirme (Kargo PR D) ────────────────────────────────
