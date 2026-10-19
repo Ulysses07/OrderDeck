@@ -42,8 +42,15 @@ public sealed partial class MainShellViewModel
     /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
     /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyruk baskısından, kuyruktan çıkarmadan
     /// ("Kuyruktan çıkar", "Kuyruğu temizle") ya da "Yayını bitir"den sonra kuyrukta bekletilen satır kalmadıysa kalkar
-    /// (<see cref="ClearStaleHeldNotice"/>). Başka yol onu kaldırmaz: şerit kapatılana kadar kalır.</summary>
+    /// (<see cref="ClearStaleHeldNotice"/>). Yayın kapandığında satırlar hâlâ bekliyorsa (bağlantı yokken "basmadan
+    /// bitir") "Yayını bitir"in "Yayın açık bırakıldı" diyen notu yanlış olur: yerine baskının <c>PrintHeld</c>'i geçer
+    /// (satırlar kuyrukta bekliyor, bağlantı gelince basılır). Başka yol onu kaldırmaz: şerit kapatılana kadar
+    /// kalır.</summary>
     private string? _heldNote;
+
+    /// <summary><see cref="_heldNote"/> "Yayını bitir"in <c>EndStreamHeld</c>'i mi ("Yayın açık bırakıldı" der). Yalnız
+    /// <see cref="_heldNote"/> doluyken anlamlı; ikisini birlikte <see cref="ShowHeldNotice"/> yazar.</summary>
+    private bool _heldNoteSaysStreamOpen;
 
     /// <summary>Gönderim sonucunun uyarı şeridi; null = şerit kapalı.</summary>
     [ObservableProperty] private string? _salesPushWarning;
@@ -83,10 +90,13 @@ public sealed partial class MainShellViewModel
 
     /// <summary>Bekletilen satırların notu (§5.8) şeride; şeritte önceki bekletme notu varsa (eski bir baskının farklı
     /// sayılı <c>PrintHeld</c>'i dahil) onun yerine geçer — birbiriyle çelişen iki sayı görünmez. UI iş parçacığında.</summary>
-    private void ShowHeldNotice(string note)
+    /// <param name="streamLeftOpen">Not "Yayını bitir"in <c>EndStreamHeld</c>'i: yayının açık bırakıldığını
+    /// söyler.</param>
+    private void ShowHeldNotice(string note, bool streamLeftOpen = false)
     {
         if (_heldNote is { } previous) _pendingNotes.Remove(previous);
         _heldNote = note;
+        _heldNoteSaysStreamOpen = streamLeftOpen;
         ShowSalesNotice([], [note]);
     }
 
@@ -94,10 +104,19 @@ public sealed partial class MainShellViewModel
     /// (<see cref="_heldNote"/>) bayattır: şeritten kalkar, diğer notlar kalır; hiç not kalmadıysa şerit kapanır. Kuyruk
     /// baskısından, kuyruktan çıkarmadan ve "Yayını bitir"den sonra. Not yoksa (mod Off dahil) hiçbir şey yapmaz. UI iş
     /// parçacığında.</summary>
-    private void ClearStaleHeldNotice()
+    /// <param name="streamEnded">Yayın gerçekten kapandı ("Yayını bitir"). Kuyrukta hâlâ bekletilen satır varsa
+    /// (bağlantı yokken "basmadan bitir") ve not "Yayını bitir"in <c>EndStreamHeld</c>'iyse ("Yayın açık bırakıldı"
+    /// artık yanlış) yerine baskının <c>PrintHeld</c>'i geçer (<see cref="ShowHeldNotice"/>): satırlar kuyrukta
+    /// bekliyor, bağlantı gelince basılır. Baskının notu aynen kalır.</param>
+    private void ClearStaleHeldNotice(bool streamEnded = false)
     {
         if (_heldNote is not { } note) return;
-        if (_editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList()).Count > 0) return;
+        var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
+        if (held.Count > 0)
+        {
+            if (streamEnded && _heldNoteSaysStreamOpen) ShowHeldNotice(SalesCommandMessages.PrintHeld(held.Count));
+            return;
+        }
         _pendingNotes.Remove(note);
         _heldNote = null;
         RenderSalesPushWarning();

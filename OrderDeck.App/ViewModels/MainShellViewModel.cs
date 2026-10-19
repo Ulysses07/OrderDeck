@@ -1767,7 +1767,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
             if (held.Count > 0 && PrintQueue.All(r => held.Contains(r.Id)))
             {
-                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count));
+                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count), streamLeftOpen: true);
                 return;
             }
         }
@@ -1782,9 +1782,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Yayın bitti: "Basılanlar" boşalır; o yayının listesi rapordan açılır (K6).
         ShowActiveSessionInPrintedTab();
         ForgetStreamPrice();
-        // §5.8: yayın bitti; kuyrukta bekletilen satır kalmadıysa (ör. bağlantı geldi, "basmadan bitir") "Yayın açık
-        // bırakıldı" notu bayat — şeritten kalkar.
-        ClearStaleHeldNotice();
+        // §5.8: yayın bitti. Kuyrukta bekletilen satır kalmadıysa (ör. bağlantı geldi, "basmadan bitir") bekletme notu
+        // bayat — şeritten kalkar. Kaldıysa (bağlantı yokken "basmadan bitir") "Yayın açık bırakıldı" yanlış: yerine
+        // "kuyrukta bekliyor" geçer.
+        ClearStaleHeldNotice(streamEnded: true);
 
         // Yayın bitince rapor kendiliğinden açılır. Sayfa await EDİLMİYOR:
         // burası yayını bitiren akışın sonu, rapor kapanınca yapılacak iş

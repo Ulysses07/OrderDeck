@@ -325,6 +325,40 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Cevrimdisi_basmadan_bitirilen_yayinda_yayin_acik_birakildi_notu_kuyrukta_bekliyor_notuna_doner()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
+        var remoteId = remote.ToString("N");
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+        s.H.Dialogs.ThreeWayResult = _ => true;                     // "Evet: hepsini bas"
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı olmadan basılamaz. Yayın açık bırakıldı. "
+          + "Bağlantı gelince tekrar dene veya \"basmadan bitir\"i seç.",
+            "ön koşul: bekletilen satır basılmadı, yayın açık");
+        // Şeritte bekletme notundan bağımsız bir uyarı da var (ör. arka planda işlenemeyen bir komut).
+        const string unrelated = "1 etiketin bekleyen iptali sunucuda işlenemedi; tekrar dene.";
+        s.Vm.ShowSalesNotice([], [unrelated]);
+
+        // Bağlantı hâlâ yok; operatör basmadan bitirir — yayın kapanır, satır kuyrukta bekler.
+        s.H.Dialogs.ThreeWayResult = _ => false;                    // "Hayır: basmadan bitir"
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        s.H.Sessions.GetActive().Should().BeNull("ön koşul: yayın bitti");
+        QueueIds(s).Should().Equal([remoteId], "ön koşul: bekletilen satır kuyrukta");
+        s.H.Printer.Calls.Should().BeEmpty("ön koşul: hiçbir şey basılmadı");
+        s.Vm.SalesPushWarning.Should().Be(
+            unrelated
+          + " 1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.",
+            "\"Yayın açık bırakıldı\" artık yanlış (yayın bitti): yerine baskının notu geçer — satır kuyrukta "
+          + "bekliyor, bağlantı gelince basılır; ilgisiz not kalır");
+        s.H.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
+    }
+
+    [Fact]
     public async Task Baglanti_gelince_kuyruk_temizlenirse_bekletme_notu_kalkar_ilgisiz_not_kalir()
     {
         const string printHeld =
