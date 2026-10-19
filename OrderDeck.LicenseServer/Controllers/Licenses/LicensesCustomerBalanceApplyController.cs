@@ -73,6 +73,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     private const string CodeClientUpdateRequired = "client-update-required";
     private const string CodeScopeHasDeduction = "scope-has-deduction";
+    private const string CodeBalanceBusy = "balance-busy";
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
@@ -643,6 +644,12 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// reverse SaveChanges'te unique ihlali alır → 409 already-reversed.
     /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).
     ///
+    /// <para>Ortak bakiye §4.5: Id çapaya çözülür ve çekim GRUP olarak geri
+    /// alınır (<see cref="PersonBalance.ReverseGroupAsync"/>); eski tek bacaklı
+    /// düşümün geri alması bugünkü satırla aynı. Üç çakışmadan sonra 503
+    /// balance-busy — dayanıklılık katmanı yeniden dener, ikinci deneme
+    /// already-reversed'i başarı sayar.</para>
+    ///
     /// <para>Mod On'da sürüm kapısı (§6.5-3): eski sürümün revizyonu başka
     /// bilgisayarın teslim edilmiş düşümünü geri alırdı, ardından yeniden
     /// apply'ı 409 alır. v0.9.10 bu 409'u başarısızlık sayar, geri alma niyeti
@@ -656,78 +663,33 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         if (mode == SalesSyncMode.On && !ClientMeetsMinimum())
             return ClientUpdateRequired(licenseId, "reverse");
 
-        var original = await _db.CustomerBalanceTransactions
+        var target = await _db.CustomerBalanceTransactions
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == transactionId
                 && t.LicenseId == licenseId
                 && t.Kind == KindPurchaseDeduction, ct);
-        if (original is null) return NotFound();
+        var anchor = target is null ? null : await _person.AnchorOfAsync(target, ct);
+        // Bacak çapasıyla aynı türü taşır (D4); tür denetimi bozuk veride bu ucun
+        // düşüm dışı bir grubu geri almasını önler.
+        if (anchor is null || anchor.Kind != KindPurchaseDeduction) return NotFound();
 
-        // Hızlı yol ön kontrolü; asıl hakem N01 index'i (aşağıdaki catch).
-        var alreadyReversed = await _db.CustomerBalanceTransactions
-            .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
-        if (alreadyReversed) return Problem(title: "already-reversed", statusCode: 409);
-
-        var balance = await _db.CustomerBalances
-            .FirstOrDefaultAsync(b => b.LicenseId == licenseId
-                && b.WpfCustomerId == original.WpfCustomerId, ct);
-        // Apply bakiye satırı olmadan düşüm yazmaz; satır silinmiyor da.
-        if (balance is null) return NotFound();
-
-        var now = DateTimeOffset.UtcNow;
-        var reverseAmount = -original.Amount; // düşüm negatif → geri alma pozitif
-
-        _db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+        return await _person.ReverseGroupAsync(licenseId, anchor.Id, User.GetTenantCustomerId(), ct) switch
         {
-            Id = Guid.NewGuid(),
-            LicenseId = licenseId,
-            WpfCustomerId = original.WpfCustomerId,
-            Amount = reverseAmount,
-            Kind = "reversal",
-            OriginalAmount = null,
-            Reason = $"Reverse of {transactionId:N}",
-            ReversesTransactionId = transactionId,
-            CreatedByCustomerId = User.GetTenantCustomerId(),
-            CreatedAt = now,
-        });
-
-        balance.Balance += reverseAmount;
-        balance.UpdatedAt = now;
-
-        const int maxAttempts = 3;
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                await _db.SaveChangesAsync(ct);
-                return Ok();
-            }
-            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
-            {
-                // F02 kalıbı: bakiyeyi güncel değere çek, deltayı yeniden uygula.
-                // Geri alma para EKLER — negatif kontrolü gerekmez.
-                foreach (var entry in ex.Entries)
-                    await entry.ReloadAsync(ct);
-                balance.Balance += reverseAmount;
-                balance.UpdatedAt = DateTimeOffset.UtcNow;
-            }
-            catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
-            {
-                // N01: eşzamanlı ikinci reverse yarışı kaybetti; transaction
-                // geri alındı, bakiyeye hiçbir şey yazılmadı.
-                _db.ChangeTracker.Clear();
-                return Problem(title: "already-reversed", statusCode: 409);
-            }
-        }
+            PersonBalance.ReverseOutcome.Reversed => Ok(),
+            PersonBalance.ReverseOutcome.AlreadyReversed => Problem(title: "already-reversed", statusCode: 409),
+            PersonBalance.ReverseOutcome.Busy => BalanceBusy(licenseId, "reverse"),
+            _ => NotFound(),
+        };
     }
 
-    /// <summary>N01 hakemi (PanelCustomerBalanceController'daki ile aynı):
-    /// 2601/2627 = unique ihlali; index adı filtresi, başka unique yarışlarının
-    /// aynı koda karışmasını önler.</summary>
-    private static bool IsDuplicateReversal(DbUpdateException ex) =>
-        ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
-        && sql.Number is 2601 or 2627
-        && sql.Message.Contains("ReversesTransactionId", StringComparison.Ordinal);
+    private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
+    {
+        _log.LogWarning(
+            "customer-balance/{Endpoint}: bakiye satırları üst üste çakıştı, 503 balance-busy (license={LicenseId})",
+            endpoint, licenseId);
+        return Problem(title: CodeBalanceBusy, statusCode: 503,
+            detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+    }
 
     /// <summary>
     /// Kapsam kuralının kilidi (§6.6): <c>bal:{lisans}:{asıl kayıt}:{kapsam}</c>.
