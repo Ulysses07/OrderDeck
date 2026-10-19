@@ -81,8 +81,8 @@
 | 10 | `Services/Bank/BankDataRetentionJob.cs` (yeniden), `BankOptions.cs`; `appsettings.json`; `Domain/Bank/CustomerIbanMemory.cs`; `Services/Bank/PaymentMatchReconciler.cs`; göç `*_IbanMemoryLastConfirmedAt`; testler `BankDataRetentionJobTests.cs` (yeniden), `PaymentMatchReconcilerTests.cs` |
 | 11 | `Services/Bank/BankHasher.cs`; `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; göç `*_BankAccountIbanQualityCounters`; testler `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs` |
 | 12 | `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; göç `*_BankAccountApproval`; testler `ObifinPollJobTests.cs`, `Pages/Admin/AdminObifinPageTests.cs` |
-| 13 | YENİ `Services/Bank/BankConnectionTerminator.cs`; `ObifinConnectionService.cs` (statik kimlik çözümü); `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; `Program.cs`; YENİ test `Services/Bank/BankConnectionTerminatorTests.cs`; `AdminObifinPageTests.cs` |
-| 14 | YENİ `Services/Bank/BankServiceEndPurgeJob.cs`; `Program.cs`; YENİ test `Services/Bank/BankServiceEndPurgeJobTests.cs`; `BankJobsDiTests.cs` |
+| 13 | YENİ `Services/Bank/BankConnectionTerminator.cs`; `Domain/Bank/ObifinConnection.cs`; `ObifinConnectionService.cs` (statik kimlik çözümü, `IsLicenseActiveAsync`, `ClearServiceEnd`, lisans denetimi); `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; `Controllers/Customers/AdminCustomersController.cs` (purge reddi); `Program.cs`; göç `*_ObifinConnectionServiceEnd`; YENİ test `Services/Bank/BankConnectionTerminatorTests.cs`; `AdminObifinPageTests.cs`, `Controllers/Compliance/GdprFlowTests.cs` |
+| 14 | YENİ `Services/Bank/BankServiceEndPurgeJob.cs`; `ObifinConnectionService.cs` (`ReviveRenewedLicensesAsync`); `Program.cs`; YENİ test `Services/Bank/BankServiceEndPurgeJobTests.cs`; `BankJobsDiTests.cs` |
 | 15 | YENİ `Services/Bank/BankSubjectScrub.cs`; `Services/Shoppers/ShopperPurgeService.cs`; testler `ShopperPurgeServiceTests.cs` |
 | 16 | `Pages/Admin/BankaEslestirme/Index.cshtml.cs`; `Pages/Admin/Obifin/Index.cshtml.cs`; `AuditEvents.cs`; testler `AdminBankaEslestirmePageTests.cs`, `AdminObifinPageTests.cs` |
 | 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs` |
@@ -103,8 +103,12 @@
 1. Kuru koşu, çıktıyı tutanağa kaydet: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup`
 2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle (komut `DataDestructionRecords`'a yazmaz; P0'da tablo yok).
 
+**P1 deploy'undan ÖNCE:**
+- admin/obifin'de durumu `Disabled` olan bağlantılara bak (P0'dan beri lisans bitişiyle durdurulanlar). `DisabledAt`'i 30 günü geçmiş olanların banka verisi P1'in ilk 05:17 UTC koşusunda **yalnız yerelde** silinir (Obifin'e gidilmez; Görev 14). Lisansı uzatılacak yayıncı varsa önce lisansı uzat: iş, lisansı yeniden geçerli bağlantıyı silmez, `Unverified`'a çeker ve e-postayla "Doğrula" der.
+- Aynı Obifin kullanıcısı (BaseUrl + kullanıcı kodu) birden çok lisansta kayıtlı mı bak (Faz 2 spec §13'teki paylaşılan kullanıcı). Kayıtlıysa o lisanslardan birinde "Kaldır ve sil" Obifin'e hiç gitmez; Obifin tarafı Obifin panelinden **yalnız o lisansın** bağlantısı için elle kapatılır (Görev 13).
+
 **P1 deploy'undan sonra (Görev 9–25):**
-3. **Hemen** admin/obifin → hesaplar → EMAR hesaplarını "Onayla" (Görev 12; onaylanmayan hesabın hareketi kaydedilmez ve sonra gelmez).
+3. **Hemen** admin/obifin → hesaplar → EMAR hesaplarını "Onayla" (Görev 12; onaylanmayan hesabın hareketi kaydedilmez ve sonra gelmez). Onay ayrıca "Kaldır ve sil"in hangi Obifin bağlantısının bu lisansa ait olduğunu bilmesini sağlar.
 4. `Admin__AlertEmail` `.env`'de dolu mu bak (saklama ve hizmet sonu işlerinin uyarı adresi).
 5. Karar 5'e göre: `bank-data-cleanup` (kuru) → maskeli kaynaklı özet sayısı; gerekirse `--apply`; Faz 2'den önce `--reset-iban-memory --apply`.
 6. Yedek betikleri CI ile **kopyalanmaz** (CI yalnız `rollback-license-server.sh`'ı kopyalıyor): HashKey'in Bitwarden'da olduğunu doğruladıktan sonra `deploy/scripts/backup-sql-to-r2.sh` ve `backup-env-to-r2.sh`'ı `/opt/orderdeck/scripts/`'e kopyala, birer kez elle çalıştırıp günlüğe bak (Görev 23).
@@ -3824,19 +3828,25 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 13: Bağlantıyı durdur, etkinleştir, kaldır ve sil (P1-10a)
 
-**Neden (not K-6, Ö-9):** yönetim sayfasında yalnız Kaydet/Doğrula/Banka ekle/Şimdi çek var; durdurma ya da kaldırma yok. `IObifinClient.RemoveBankConnectionAsync` (`bankaapi/sil`) hiçbir yerden çağrılmıyor. Yeni `BankConnectionTerminator`:
-- **Durdur:** `Disabled` + `DisabledAt` (30 günlük sayaç; Görev 14).
-- **Etkinleştir:** yalnız lisans geçerliyse; `Unverified`'a döner (yönetici Doğrula'ya basar), `DisabledAt` boşalır.
-- **Kaldır ve sil:** Obifin'de bu kimliğin altındaki **bütün** banka bağlantıları listelenip `bankaapi/sil` ile kaldırılır (pilotta QNB bağlantısı Obifin panelinden eklendi, yerelde satırı yok — bu yüzden yerel `BankConnections` değil Obifin'in listesi esas), sonra lisansın bütün banka verisi ve Obifin kimliği yerelde silinir, imha kaydı yazılır. **Obifin API'sinde hareket silme ucu yok** (doküman: `bankaapi/liste|ekle|guncelle|sil|bankakodlari`, hesap listesi, hareket listesi): Obifin'deki kopyanın silinmesi yazılı istenir — sonuç mesajı bunu söyler. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır (KVKK), yönetici elle kaldırmaya yönlendirilir.
+**Neden (not K-6, Ö-9):** yönetim sayfasında yalnız Kaydet/Doğrula/Banka ekle/Şimdi çek var; durdurma ya da kaldırma yok. `IObifinClient.RemoveBankConnectionAsync` (`bankaapi/sil`) hiçbir yerden çağrılmıyor. Yayıncı silmesi (`AdminCustomersController.Purge`) banka tablolarını lisansla kaskadla götürüyor ama Obifin'e bir şey söylemiyor: Obifin bankadan çekmeyi ve saklamayı sürdürür. Yeni `BankConnectionTerminator`:
+- **Durdur:** `Disabled` + `DisabledAt` (30 günlük sayaç; Görev 14) + `DisabledByAdmin`. Lisans bitişiyle zaten Disabled olan bağlantıda yalnız `DisabledByAdmin` yazılır (tarih değişmez): yönetici kararı, lisans yenilenince kendiliğinden açılmasın (Görev 14).
+- **Etkinleştir:** yalnız lisans geçerliyse; `Unverified`'a döner (yönetici Doğrula'ya basar), hizmet sonu alanları (`DisabledAt`, `BankDataPurgedAt`, `DisabledByAdmin`) boşalır.
+- **Kaldır ve sil (YALNIZ yöneticinin eylemi; `bankaapi/sil`'i çağıran tek yol):** Obifin tarafı **lisansa özgü**. `ObifinConnection`'da yalnız `LicenseId` tekil; aynı (BaseUrl, UserCode) birden çok lisansa girilebilir ve Faz 2 spec §13'te sahibin tercihi "(A) tek paylaşılan Obifin kullanıcısı". Bu yüzden: (1) aynı (BaseUrl, UserCode) başka bir lisansın bağlantısında da varsa Obifin'e **hiç gidilmez**, sonuç "paylaşılan kullanıcı — elle kaldır" olur; (2) yalnız bu lisansın yerel `BankConnections`'ındaki ve **onaylı** hesaplarının (Görev 12; Obifin hesap listesindeki `BankaApiId`) bağlantıları kaldırılır — pilotta QNB bağlantısı Obifin panelinden eklendi, yerelde satırı yok, onaylı hesap üzerinden bulunur; (3) Obifin listesindeki diğer bağlantılara dokunulmaz, "bu lisansa ait olduğu doğrulanamadı — elle kontrol" diye raporlanır (`ObifinConnectionService.ResetShadowData`'nın yabancı `BankaApiId` uyarısının aynısı). Sonra lisansın bütün banka verisi ve Obifin kimliği yerelde silinir, imha kaydı yazılır. **Obifin API'sinde hareket silme ucu yok** (doküman: `bankaapi/liste|ekle|guncelle|sil|bankakodlari`, hesap listesi, hareket listesi): Obifin'deki kopyanın silinmesi yazılı istenir — sonuç mesajı bunu söyler. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır (KVKK), yönetici elle kaldırmaya yönlendirilir.
+- **Yalnız yerel silme (Görev 14'teki otomatik iş için):** Obifin'e **gidilmez**. Lisansın banka verisi silinir; Obifin kimliği ve yerel `BankConnections` satırları (yalnız `BankaApiId`, kişisel veri değil) KALIR ki yönetici Obifin tarafını sonra "Kaldır ve sil" ile kapatabilsin; `BankDataPurgedAt` yazılır, sayfada uyarı şeridi çıkar.
+- **Yayıncı silmesi:** Obifin bağlantısı olan lisans varken `Purge` 409 `bank-connection-active` ile reddeder ve önce "Kaldır ve sil"i ister. Purge içinde ağ çağrısı yapılmaz; Obifin tarafı tek yoldan (yukarıdaki korumalarla) kapanır.
+- **`DisabledAt` yaşam döngüsü:** Disabled'dan çıkan her yol (Etkinleştir, lisans geçerliyken kimlik değişimi, başarılı doğrulama, Görev 14'teki lisans yenilenmesi) hizmet sonu alanlarını `ObifinConnectionService.ClearServiceEnd` ile boşaltır. Lisansı bitmiş bağlantıda Doğrula ve Banka ekle Obifin'e gitmez; kimlik değişimi Disabled bağlantıyı yalnız lisans geçerliyse açar (sayaç kimlik düzenlemesiyle sıfırlanmaz). Durum hücresi tarihi yalnız `Disabled` iken gösterir.
 - `BankHasher` İSTEMEZ: banka modülü anahtarsız kapalıyken de durdurma ve silme çalışır. Obifin kimliği yeni statik `ObifinConnectionService.ResolveCredentials` ile çözülür (amaçlar aynı).
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankConnectionTerminator.cs`
-- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs` (statik `ResolveCredentials`; örnek metodu ona devreder)
+- Modify: `OrderDeck.LicenseServer/Domain/Bank/ObifinConnection.cs` (`BankDataPurgedAt`, `DisabledByAdmin`)
+- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs` (statik `ResolveCredentials`, `IsLicenseActiveAsync`, `ClearServiceEnd`; `MarkVerified`, `VerifyAsync`, `AddBankConnectionAsync`, `UpsertWithResultAsync`)
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/Obifin/Index.cshtml(.cs)`
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`
+- Modify: `OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs` (`Purge` reddi)
 - Modify: `OrderDeck.LicenseServer/Program.cs` (DI)
-- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankConnectionTerminatorTests.cs` (YENİ), `Pages/Admin/AdminObifinPageTests.cs`
+- Create: göç `*_ObifinConnectionServiceEnd`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankConnectionTerminatorTests.cs` (YENİ), `Pages/Admin/AdminObifinPageTests.cs`, `Controllers/Compliance/GdprFlowTests.cs`
 
 - [ ] **Adım 1: Servis testlerini yaz (kırmızı)**
 
@@ -3857,29 +3867,44 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 
-/// <summary>KVKK K-6/Ö-9: bağlantıyı durdurma, etkinleştirme, kaldırıp silme. Obifin'e ulaşılamasa da yerel silme yapılır.</summary>
+/// <summary>KVKK K-6/Ö-9: bağlantıyı durdurma, etkinleştirme, kaldırıp silme. Obifin tarafı lisansa özgü: paylaşılan Obifin
+/// kullanıcısında Obifin'e hiç gidilmez, yalnız bu lisansa ait bağlantılar kaldırılır. Otomatik yerel silme Obifin'e gitmez.
+/// Obifin'e ulaşılamasa da yerel silme yapılır.</summary>
 public sealed class BankConnectionTerminatorTests
 {
     private sealed class TerminatorObifin : IObifinClient
     {
         public List<ObifinBankConnectionDto> Connections { get; } = new();
+        public List<ObifinAccountDto> Accounts { get; } = new();
         public Func<Exception>? ListFails { get; set; }
         public HashSet<long> RemoveFails { get; } = new();
         public List<long> Removed { get; } = new();
+        /// <summary>Obifin'e giden her çağrı (bağlantı listesi, hesap listesi, kaldırma).</summary>
+        public int Calls { get; private set; }
 
         public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
-            => ListFails is { } fail ? Task.FromException<IReadOnlyList<ObifinBankConnectionDto>>(fail())
+        {
+            Calls++;
+            return ListFails is { } fail ? Task.FromException<IReadOnlyList<ObifinBankConnectionDto>>(fail())
                 : Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>(Connections.ToList());
+        }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
         {
+            Calls++;
             if (RemoveFails.Contains(id)) return Task.FromException(new ObifinApiException(new[] { "Silinemedi" }));
             Removed.Add(id);
             return Task.CompletedTask;
         }
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            Calls++;
+            return Task.FromResult<IReadOnlyList<ObifinAccountDto>>(Accounts.ToList());
+        }
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            Calls++;
+            throw new NotSupportedException();
+        }
         public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
             => throw new NotSupportedException();
     }
@@ -3892,8 +3917,20 @@ public sealed class BankConnectionTerminatorTests
     private static BankConnectionTerminator Terminator(LicenseDbContext db, IObifinClient client)
         => new(db, client, Protection, NullLogger<BankConnectionTerminator>.Instance);
 
-    /// <summary>Gerçek şifreli kimlikle bağlantı (servis üzerinden) + her banka tablosundan birer satır.</summary>
-    private static async Task<Guid> SeedAsync(LicenseDbContext db, IObifinClient client, bool licenseActive = true)
+    private static ObifinConnectionService Service(LicenseDbContext db, IObifinClient client)
+        => new(db, client, Protection,
+            new BankHasher(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" })),
+            Options.Create(new ObifinOptions()), NullLogger<ObifinConnectionService>.Instance);
+
+    /// <summary>Obifin hesap listesindeki hesap: <paramref name="id"/> = ObifinAccountId, bağlı olduğu banka bağlantısı
+    /// <paramref name="bankaApiId"/>.</summary>
+    private static ObifinAccountDto Account(long id, long bankaApiId) => new(id, "qnb", bankaApiId, null, null, "TL", null, null, true, null);
+
+    /// <summary>Gerçek şifreli kimlikle bağlantı (servis üzerinden) + her banka tablosundan birer satır. Hesap 6 ONAYLI (bu
+    /// lisansın tahsilat hesabı), hesap 9 onaysız (Obifin panelinden eklenmiş, sahibi belli değil); yerel banka bağlantısı
+    /// #501. <paramref name="userCode"/> verilirse o Obifin kullanıcısıyla (paylaşılan kullanıcı senaryosu).</summary>
+    private static async Task<Guid> SeedAsync(LicenseDbContext db, IObifinClient client, bool licenseActive = true,
+        string? userCode = null)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer { Id = customerId, Email = $"t-{Guid.NewGuid():N}@x", Name = "T",
@@ -3903,11 +3940,8 @@ public sealed class BankConnectionTerminatorTests
             ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = licenseActive ? DateTimeOffset.UtcNow.AddDays(30) : DateTimeOffset.UtcNow.AddDays(-1) });
         await db.SaveChangesAsync();
-        var svc = new ObifinConnectionService(db, client, Protection,
-            new BankHasher(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" })),
-            Options.Create(new ObifinOptions()), NullLogger<ObifinConnectionService>.Instance);
-        var conn = await svc.UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}",
-            CancellationToken.None);
+        var conn = await Service(db, client).UpsertAsync(lic, "", userCode ?? $"api-{Guid.NewGuid():N}@x",
+            $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}", CancellationToken.None);
         var now = DateTimeOffset.UtcNow;
         var tx = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = 1, ObifinAccountId = 6, BankaKodu = "qnb",
             Direction = BankTransactionDirection.Incoming, Amount = 10m, Currency = "TL", OccurredAt = now, FetchedAt = now,
@@ -3918,8 +3952,11 @@ public sealed class BankConnectionTerminatorTests
         db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = Guid.NewGuid(),
             IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = now });
         db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = lic, PaymentId = Guid.NewGuid(), CreatedAt = now });
-        db.BankAccounts.Add(new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 6, BankaKodu = "qnb",
-            IbanMasked = "TR12…345", Currency = "TL", RefreshedAt = now });
+        db.BankAccounts.AddRange(
+            new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 6, BankaKodu = "qnb",
+                IbanMasked = "TR12…345", Currency = "TL", RefreshedAt = now, ApprovedAt = now, ApprovedBy = "test" },
+            new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 9, BankaKodu = "garanti",
+                IbanMasked = "?", Currency = "TL", RefreshedAt = now });
         db.BankConnections.Add(new BankConnection { Id = Guid.NewGuid(), LicenseId = lic, ObifinConnectionId = conn.Id,
             BankaKodu = "qnb", BankaApiId = 501, Label = "QNB", Status = BankConnectionStatus.Active, CreatedAt = now });
         await db.SaveChangesAsync();
@@ -3941,7 +3978,26 @@ public sealed class BankConnectionTerminatorTests
         var conn = await db.ObifinConnections.AsNoTracking().SingleAsync();
         conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
         conn.DisabledAt.Should().NotBeNull().And.Be(first);
+        conn.DisabledByAdmin.Should().BeTrue();
         conn.LastError.Should().Be(BankConnectionTerminator.StoppedByAdminMessage);
+    }
+
+    [Fact]
+    public async Task Lisans_bitisiyle_durmus_baglantiyi_Durdur_yonetici_kararina_cevirir_tarih_degismez()
+    {
+        // Lisans yenilenince kendiliğinden açılan bağlantı (Görev 14) yöneticinin durdurduğu bağlantı olmamalı.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client, licenseActive: false);
+        var disabledAt = DateTimeOffset.UtcNow.AddDays(-3);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.Status = ObifinConnectionStatus.Disabled; conn.DisabledAt = disabledAt;
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+
+        await Terminator(db, client).StopAsync(lic, CancellationToken.None);
+
+        var after = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        after.DisabledByAdmin.Should().BeTrue();
+        after.DisabledAt.Should().Be(disabledAt, "30 günlük sayaç baştan başlamaz");
     }
 
     [Fact]
@@ -3960,31 +4016,70 @@ public sealed class BankConnectionTerminatorTests
         var resumed = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == active);
         resumed.Status.Should().Be(ObifinConnectionStatus.Unverified);
         resumed.DisabledAt.Should().BeNull();
+        resumed.BankDataPurgedAt.Should().BeNull();
+        resumed.DisabledByAdmin.Should().BeFalse();
         await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankConnectionTerminator.LicenseStillEndedMessage);
     }
 
     [Fact]
-    public async Task Kaldir_Obifindeki_butun_banka_baglantilarini_kaldirir_yerel_veriyi_siler_imha_kaydi_yazar()
+    public async Task Kaldir_yalniz_bu_lisansa_ait_baglantilari_kaldirir_digerini_elle_kontrole_birakir_yerel_veriyi_siler()
     {
+        // KVKK K-6/Ö-9 + Faz 2 spec §13: Obifin kullanıcısının altında başka lisansın (ya da sahibi belirsiz) bankası olabilir.
+        // Yalnız yerel BankConnections (#501) ve ONAYLI hesabın bankası (#600) kaldırılır; onaysız hesabın bankası (#777)
+        // Obifin'de kalır ve elle kontrole bırakılır.
         using var db = NewDb(); var client = new TerminatorObifin();
         client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
-        client.Connections.Add(new ObifinBankConnectionDto(777, "garanti", "Panelden", true));
+        client.Connections.Add(new ObifinBankConnectionDto(600, "qnb", "Panelden", true));
+        client.Connections.Add(new ObifinBankConnectionDto(777, "garanti", "Bilinmeyen", true));
+        client.Accounts.Add(Account(6, 600));
+        client.Accounts.Add(Account(9, 777));
         var lic = await SeedAsync(db, client);
         var other = await SeedAsync(db, client);
 
         var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "admin",
             CancellationToken.None);
 
-        client.Removed.Should().BeEquivalentTo(new[] { 501L, 777L });
-        r.NeedsManualObifinAction.Should().BeFalse();
-        (r.Transactions, r.Matches, r.Memories, r.Gaps, r.Accounts, r.BankConnections).Should().Be((1, 1, 1, 1, 1, 1));
+        client.Removed.Should().BeEquivalentTo(new[] { 501L, 600L });
+        r.ObifinRemoved.Should().BeEquivalentTo(new[] { 501L, 600L });
+        r.ObifinUnowned.Should().BeEquivalentTo(new[] { 777L }, "bu lisansa ait olduğu doğrulanamayan bağlantıya dokunulmaz");
+        r.NeedsManualObifinAction.Should().BeTrue();
+        r.ManualActionText().Should().Contain("#777").And.Contain("elle kontrol");
+        (r.Transactions, r.Matches, r.Memories, r.Gaps, r.Accounts, r.BankConnections).Should().Be((1, 1, 1, 1, 2, 1));
         (await db.ObifinConnections.AnyAsync(c => c.LicenseId == lic)).Should().BeFalse("Obifin kimliği de silinir");
         (await db.BankTransactions.AnyAsync(x => x.LicenseId == lic)).Should().BeFalse();
         (await db.BankTransactions.AnyAsync(x => x.LicenseId == other)).Should().BeTrue("başka lisansa dokunulmaz");
+        (await db.ObifinConnections.AnyAsync(c => c.LicenseId == other)).Should().BeTrue();
         var records = await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync();
         records.Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.AdminRemove && x.Actor == "admin");
         records.Select(x => x.Target).Should().Contain(new[] { "BankTransactions", "PaymentMatches", "CustomerIbanMemories",
             "PaymentMatchGaps", "BankAccounts", "BankConnections", "ObifinConnections" });
+    }
+
+    [Fact]
+    public async Task Paylasilan_Obifin_kullanicisinda_Obifine_hic_gidilmez_baska_lisansa_dokunulmaz()
+    {
+        // Faz 2 spec §13 (A): tek paylaşılan Obifin kullanıcısı. Bir lisansın (test/demo ya da başka yayıncı) kaldırılması
+        // EMAR'ın QNB bağlantısını Obifin'den silmemeli: QNB API'si için yeniden başvuru haftalar sürer.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
+        client.Accounts.Add(Account(6, 501));
+        var sharedUser = $"api-{Guid.NewGuid():N}@x";
+        var lic = await SeedAsync(db, client, userCode: sharedUser);
+        var emar = await SeedAsync(db, client, userCode: sharedUser);
+
+        var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "admin",
+            CancellationToken.None);
+
+        client.Calls.Should().Be(0, "paylaşılan Obifin kullanıcısında Obifin'e hiç gidilmez");
+        client.Removed.Should().BeEmpty();
+        r.SharedObifinUser.Should().BeTrue();
+        r.NeedsManualObifinAction.Should().BeTrue();
+        r.ManualActionText().Should().Contain("başka bir lisansta da kayıtlı");
+        (await db.BankTransactions.AnyAsync(x => x.LicenseId == lic)).Should().BeFalse("yerel silme yine yapılır");
+        (await db.ObifinConnections.AnyAsync(c => c.LicenseId == lic)).Should().BeFalse();
+        (await db.ObifinConnections.AnyAsync(c => c.LicenseId == emar)).Should().BeTrue();
+        (await db.BankTransactions.AnyAsync(x => x.LicenseId == emar)).Should().BeTrue();
+        (await db.BankConnections.AnyAsync(b => b.LicenseId == emar && b.BankaApiId == 501)).Should().BeTrue();
     }
 
     [Fact]
@@ -4007,6 +4102,7 @@ public sealed class BankConnectionTerminatorTests
         using var db = NewDb(); var client = new TerminatorObifin();
         client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
         client.Connections.Add(new ObifinBankConnectionDto(502, "qnb", "QNB-2", true));
+        client.Accounts.Add(Account(6, 502));   // onaylı hesabın bankası: bu lisansın
         client.RemoveFails.Add(502);
         var lic = await SeedAsync(db, client);
 
@@ -4016,6 +4112,77 @@ public sealed class BankConnectionTerminatorTests
         r.ObifinRemoved.Should().BeEquivalentTo(new[] { 501L });
         r.ObifinFailed.Should().BeEquivalentTo(new[] { 502L });
         r.NeedsManualObifinAction.Should().BeTrue();
+        r.ManualActionText().Should().Contain("#502");
+    }
+
+    [Fact]
+    public async Task Yerel_silme_Obifine_gitmez_kimligi_ve_banka_baglantisini_tutar_isaret_yazar()
+    {
+        // Otomatik hizmet sonu işi (Görev 14) bankaapi/sil çağırmaz: Obifin tarafını yönetici "Kaldır ve sil" ile kapatır.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
+        var lic = await SeedAsync(db, client);
+
+        var r = await Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd,
+            DataDestruction.SystemActor, CancellationToken.None);
+
+        client.Calls.Should().Be(0);
+        r.ObifinNotAttempted.Should().BeTrue();
+        r.NeedsManualObifinAction.Should().BeTrue();
+        r.ManualActionText().Should().Contain("Kaldır ve sil");
+        (r.Transactions, r.Matches, r.Memories, r.Gaps, r.Accounts, r.BankConnections).Should().Be((1, 1, 1, 1, 2, 0));
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.BankDataPurgedAt.Should().NotBeNull();
+        (await db.BankConnections.AnyAsync(b => b.LicenseId == lic && b.BankaApiId == 501)).Should().BeTrue("yönetici sonra kaldırır");
+        (await db.BankTransactions.AnyAsync(x => x.LicenseId == lic)).Should().BeFalse();
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync())
+            .Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.ServiceEnd)
+            .And.NotContain(x => x.Target == "ObifinConnections" || x.Target == "BankConnections");
+    }
+
+    [Fact]
+    public async Task Lisansi_bitmis_baglantida_Dogrula_ve_Banka_ekle_Obifine_gitmez()
+    {
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client, licenseActive: false);
+        var svc = Service(db, client);
+
+        var verify = () => svc.VerifyAsync(lic, CancellationToken.None);
+        var add = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", new Dictionary<string, string>(), CancellationToken.None);
+
+        await verify.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.LicenseEndedMessage);
+        await add.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.LicenseEndedMessage);
+        client.Calls.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Durdurulmus_baglantida_kimlik_degisince_lisans_gecerliyse_Unverified_sayac_bosalir_bitmisse_Disabled_kalir(
+        bool licenseActive)
+    {
+        // KVKK K-6: hizmet sonu sayacı kimlik düzenlemesiyle sıfırlanmaz; Disabled'dan çıkan bağlantının tarihi kalmaz.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client, licenseActive);
+        var disabledAt = DateTimeOffset.UtcNow.AddDays(-5);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.Status = ObifinConnectionStatus.Disabled; conn.DisabledAt = disabledAt;
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+
+        await Service(db, client).UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", null, null, CancellationToken.None,
+            allowShadowReset: true);
+
+        var after = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        if (licenseActive)
+        {
+            after.Status.Should().Be(ObifinConnectionStatus.Unverified);
+            after.DisabledAt.Should().BeNull();
+        }
+        else
+        {
+            after.Status.Should().Be(ObifinConnectionStatus.Disabled);
+            after.DisabledAt.Should().Be(disabledAt);
+        }
     }
 }
 ```
@@ -4023,11 +4190,81 @@ public sealed class BankConnectionTerminatorTests
 - [ ] **Adım 2: Koştur — derleme hatası bekle**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankConnectionTerminatorTests"`
-Expected: FAIL — `BankConnectionTerminator` yok.
+Expected: FAIL — `BankConnectionTerminator`, `BankDataPurgedAt`, `DisabledByAdmin` yok.
 
-- [ ] **Adım 3: Statik kimlik çözümü**
+- [ ] **Adım 3: Varlık alanları, statik kimlik çözümü ve `DisabledAt` yaşam döngüsü**
 
-`Services/Bank/ObifinConnectionService.cs` — örnek `TryResolveCredentials` metodunu şununla değiştir:
+`Domain/Bank/ObifinConnection.cs` — `DisabledAt`'in ALTINA:
+
+```csharp
+    /// <summary>Bağlantıyı yönetici durdurdu (KVKK K-6). Lisans bitişiyle kendiliğinden durdurulan bağlantı lisans yenilenince
+    /// kendiliğinden Unverified'a döner (BankServiceEndPurgeJob); yöneticinin durdurduğu dönmez. Disabled'dan çıkınca boşalır.</summary>
+    public bool DisabledByAdmin { get; set; }
+    /// <summary>Hizmet sonu işinin bu bağlantının banka verisini YEREL olarak sildiği an (Obifin'e gidilmez). Obifin kimliği ve
+    /// yerel <c>BankConnections</c> durur: yönetici Obifin tarafını "Kaldır ve sil" ile kapatır. Doluyken iş bağlantıyı yeniden
+    /// işlemez; Disabled'dan çıkınca boşalır.</summary>
+    public DateTimeOffset? BankDataPurgedAt { get; set; }
+```
+
+`Services/Bank/ObifinConnectionService.cs` — `DisableEndedLicensesAsync`'in (Görev 1) ALTINA:
+
+```csharp
+    /// <summary>Lisans bugün geçerli mi (iptal edilmemiş, süresi dolmamış). Doğrulama, banka ekleme, kimlik değişimi,
+    /// etkinleştirme ve hizmet sonu işi aynı kuralı kullanır.</summary>
+    public static Task<bool> IsLicenseActiveAsync(LicenseDbContext db, Guid licenseId, DateTimeOffset now, CancellationToken ct)
+        => db.Licenses.AnyAsync(l => l.Id == licenseId && l.RevokedAt == null && l.ExpiresAt > now, ct);
+
+    /// <summary>Bağlantı Disabled'dan çıkarken hizmet sonu alanları boşalır (KVKK K-6): 30 günlük sayaç, yerel silme işareti,
+    /// yönetici durdurması. Disabled'dan çıkan her yol bunu çağırır: Etkinleştir, lisans geçerliyken kimlik değişimi, başarılı
+    /// doğrulama, lisansın yenilenmesi (Görev 14). Kaydetmez.</summary>
+    public static void ClearServiceEnd(ObifinConnection conn)
+    {
+        conn.DisabledAt = null;
+        conn.BankDataPurgedAt = null;
+        conn.DisabledByAdmin = false;
+    }
+```
+
+`MarkVerified`'ı şununla değiştir (özeti aynı kalır; sonuna bir cümle: `Verified'a geçen bağlantının hizmet sonu alanları boşalır.`):
+
+```csharp
+    private static void MarkVerified(ObifinConnection conn, DateTimeOffset now)
+    {
+        if (conn.Status != ObifinConnectionStatus.Disabled)
+        {
+            conn.Status = ObifinConnectionStatus.Verified;
+            // DisabledAt/BankDataPurgedAt Disabled dışında anlamsız: durum hücresi ve hizmet sonu işi bayat tarih görmesin.
+            ClearServiceEnd(conn);
+        }
+        conn.LastError = null; conn.LastVerifiedAt = now; conn.UpdatedAt = now;
+    }
+```
+
+`VerifyAsync`'te `?? throw new ObifinValidationException("Obifin bağlantısı yok.");` satırının ALTINA ve `AddBankConnectionAsync`'te `?? throw new ObifinValidationException("Önce Obifin bağlantısı kaydedilmeli.");` satırının ALTINA:
+
+```csharp
+        // KVKK K-6: lisansı bitmiş yayıncının bankası için Obifin'e gidilmez (çekim ve hesap yenilemeyle aynı kural).
+        if (!await IsLicenseActiveAsync(_db, licenseId, DateTimeOffset.UtcNow, ct))
+            throw new ObifinValidationException(LicenseEndedMessage);
+```
+
+`UpsertWithResultAsync`'te durum satırını:
+
+```csharp
+        conn.Status = conn.Status == ObifinConnectionStatus.Disabled && !credentialChanged
+            ? ObifinConnectionStatus.Disabled : ObifinConnectionStatus.Unverified;
+```
+şununla değiştir:
+```csharp
+        // Disabled bağlantı kimlik değişince açılır — YALNIZ lisans geçerliyse (KVKK K-6: lisansı bitmiş bağlantının hizmet
+        // sonu sayacı kimlik düzenlemesiyle sıfırlanmasın; açılsaydı çekim onu hemen yeni tarihle yeniden durdururdu).
+        var stayDisabled = conn.Status == ObifinConnectionStatus.Disabled
+            && (!credentialChanged || !await IsLicenseActiveAsync(_db, licenseId, now, ct));
+        conn.Status = stayDisabled ? ObifinConnectionStatus.Disabled : ObifinConnectionStatus.Unverified;
+        if (!stayDisabled) ClearServiceEnd(conn);
+```
+
+Statik kimlik çözümü — örnek `TryResolveCredentials` metodunu şununla değiştir:
 
 ```csharp
     /// <summary>Şifre çözülemezse null (anahtar halkası kaybı) — çağıran Failed'a çeker.</summary>
@@ -4063,23 +4300,51 @@ using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
-/// <summary>Kaldırmanın sonucu. Yerel silme her durumda yapılmıştır; <see cref="NeedsManualObifinAction"/> ise Obifin'deki
-/// banka bağlantılarının (bir kısmı) elle kaldırılmalıdır.</summary>
-public sealed record BankRemovalResult(IReadOnlyList<long> ObifinRemoved, IReadOnlyList<long> ObifinFailed, bool ObifinUnreachable,
+/// <summary>Kaldırmanın sonucu. Yerel silme her durumda yapılmıştır. Obifin tarafı: <see cref="ObifinRemoved"/> kaldırıldı,
+/// <see cref="ObifinFailed"/> kaldırılamadı, <see cref="ObifinUnowned"/> Obifin listesinde var ama bu lisansa ait olduğu
+/// doğrulanamadı (dokunulmadı), <see cref="SharedObifinUser"/> Obifin kullanıcısı başka lisansta da kayıtlı (Obifin'e hiç
+/// gidilmedi), <see cref="ObifinNotAttempted"/> yalnız yerel silme (otomatik hizmet sonu işi; Obifin'e gidilmedi).</summary>
+public sealed record BankRemovalResult(IReadOnlyList<long> ObifinRemoved, IReadOnlyList<long> ObifinFailed,
+    IReadOnlyList<long> ObifinUnowned, bool ObifinUnreachable, bool SharedObifinUser, bool ObifinNotAttempted,
     int Transactions, int Matches, int Memories, int Gaps, int Accounts, int BankConnections)
 {
-    public bool NeedsManualObifinAction => ObifinUnreachable || ObifinFailed.Count > 0;
+    public bool NeedsManualObifinAction => ObifinNotAttempted || ObifinUnreachable || SharedObifinUser
+        || ObifinFailed.Count > 0 || ObifinUnowned.Count > 0;
+
+    /// <summary>Yöneticinin Obifin'de elle yapacağı iş (admin bildirimi ve hizmet sonu e-postası); kimlik bilgisi içermez. Elle iş
+    /// yoksa boş.</summary>
+    public string ManualActionText()
+    {
+        if (ObifinNotAttempted)
+            return "Obifin'e gidilmedi (yalnız yerel silme): admin/obifin'de bu lisans için 'Kaldır ve sil'e basın.";
+        if (SharedObifinUser)
+            return "Bu Obifin kullanıcısı başka bir lisansta da kayıtlı; Obifin'e hiç gidilmedi. Obifin panelinden YALNIZ bu " +
+                "lisansın banka bağlantısını elle kaldırın, diğer lisansınkine dokunmayın.";
+        if (ObifinUnreachable)
+            return "Obifin'e ulaşılamadı: Obifin panelinden bu lisansın banka bağlantılarını elle kaldırın.";
+        var parts = new List<string>();
+        if (ObifinFailed.Count > 0)
+            parts.Add($"kaldırılamayan banka bağlantıları #{string.Join(", #", ObifinFailed)}: Obifin panelinden elle kaldırın");
+        if (ObifinUnowned.Count > 0)
+            parts.Add($"bu lisansa ait olduğu doğrulanamayan #{string.Join(", #", ObifinUnowned)}: elle kontrol edin, başka " +
+                "lisansınsa dokunmayın");
+        return parts.Count == 0 ? "" : "Obifin'de " + string.Join("; ", parts) + ".";
+    }
 }
 
 /// <summary>
-/// Banka bağlantısının durdurulması, yeniden etkinleştirilmesi ve kaldırılıp verisinin silinmesi (KVKK K-6, Ö-9).
-/// <see cref="BankHasher"/> İSTEMEZ: banka modülü anahtarsız kapalıyken de durdurma ve silme çalışır (silme KVKK yükümlülüğü).
-/// <para><b>Kaldır ve sil:</b> Obifin'de bu kimliğin altındaki BÜTÜN banka bağlantıları listelenip <c>bankaapi/sil</c> ile
-/// kaldırılır (yerel <c>BankConnections</c> eksik olabilir: Obifin panelinden eklenen bağlantının yerel satırı yok). Sonra
-/// lisansın bütün banka verisi ve Obifin kimliği silinir, imha kaydı aynı işlemde yazılır. Obifin API'sinde hareket silme
-/// ucu yok: Obifin'deki kopyanın silinmesi yazılı istenir. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine
-/// yapılır. Yerel silme eşzamanlı bir eşleştirme yazısıyla (jeton) çakışırsa bir kez baştan yeniden denenir.</para>
-/// <para>Günlüğe kimlik bilgisi yazılmaz; yalnız lisans kimliği, BankaApiId ve istisna türü.</para>
+/// Banka bağlantısının durdurulması, yeniden etkinleştirilmesi, kaldırılıp verisinin silinmesi ve hizmet sonunda yalnız yerel
+/// verisinin silinmesi (KVKK K-6, Ö-9). <see cref="BankHasher"/> İSTEMEZ: banka modülü anahtarsız kapalıyken de durdurma ve
+/// silme çalışır (silme KVKK yükümlülüğü).
+/// <para><b>Kaldır ve sil</b> (<see cref="RemoveAndDeleteAsync"/>, yalnız yöneticinin eylemi — <c>bankaapi/sil</c>'i çağıran
+/// TEK yol): Obifin tarafı lisansa özgüdür, bkz. <see cref="RemoveFromObifinAsync"/>. Sonra lisansın bütün banka verisi ve Obifin
+/// kimliği silinir, imha kaydı aynı işlemde yazılır. Obifin API'sinde hareket silme ucu yok: Obifin'deki kopyanın silinmesi
+/// yazılı istenir. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır.</para>
+/// <para><b>Yalnız yerel silme</b> (<see cref="PurgeLocalDataAsync"/>, otomatik hizmet sonu işi): Obifin'e gidilmez; banka
+/// verisi silinir, Obifin kimliği ve yerel <c>BankConnections</c> (yalnız <c>BankaApiId</c>) kalır, <c>BankDataPurgedAt</c>
+/// yazılır — yönetici Obifin tarafını sonra "Kaldır ve sil" ile kapatır.</para>
+/// <para>Yerel silme eşzamanlı bir eşleştirme yazısıyla (jeton) çakışırsa bir kez baştan yeniden denenir. Günlüğe kimlik
+/// bilgisi yazılmaz; yalnız lisans kimliği, BankaApiId, sayılar ve istisna türü.</para>
 /// </summary>
 public sealed class BankConnectionTerminator
 {
@@ -4096,82 +4361,156 @@ public sealed class BankConnectionTerminator
         ILogger<BankConnectionTerminator> log)
     { _db = db; _client = client; _protection = protection; _log = log; }
 
-    /// <summary>Disabled + DisabledAt (hizmet sonu sayacı). Zaten Disabled ise dokunulmaz.</summary>
+    /// <summary>Disabled + DisabledAt (hizmet sonu sayacı) + DisabledByAdmin. Lisans bitişiyle zaten Disabled ise yalnız
+    /// DisabledByAdmin yazılır (tarih değişmez): yenilenen lisans yöneticinin durdurduğu bağlantıyı açmasın.</summary>
     public async Task StopAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException(NoConnectionMessage);
-        if (conn.Status == ObifinConnectionStatus.Disabled) return;
         var now = DateTimeOffset.UtcNow;
+        if (conn.Status == ObifinConnectionStatus.Disabled)
+        {
+            if (conn.DisabledByAdmin) return;
+            conn.DisabledByAdmin = true;
+            conn.UpdatedAt = now;
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
         conn.Status = ObifinConnectionStatus.Disabled;
         conn.DisabledAt = now;
+        conn.DisabledByAdmin = true;
         conn.LastError = StoppedByAdminMessage;
         conn.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
     }
 
-    /// <summary>Yalnız lisans geçerliyse: Unverified'a döner (yönetici Doğrula'ya basar), DisabledAt boşalır.</summary>
+    /// <summary>Yalnız lisans geçerliyse: Unverified'a döner (yönetici Doğrula'ya basar), hizmet sonu alanları boşalır.</summary>
     public async Task ResumeAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException(NoConnectionMessage);
         if (conn.Status != ObifinConnectionStatus.Disabled) return;
         var now = DateTimeOffset.UtcNow;
-        if (!await _db.Licenses.AnyAsync(l => l.Id == licenseId && l.RevokedAt == null && l.ExpiresAt > now, ct))
+        if (!await ObifinConnectionService.IsLicenseActiveAsync(_db, licenseId, now, ct))
             throw new ObifinValidationException(LicenseStillEndedMessage);
         conn.Status = ObifinConnectionStatus.Unverified;
-        conn.DisabledAt = null;
+        ObifinConnectionService.ClearServiceEnd(conn);
         conn.LastError = null;
         conn.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
     }
 
+    /// <summary>Yöneticinin "Kaldır ve sil"i: Obifin'de bu lisansa ait banka bağlantılarını kaldırır (lisansa özgü,
+    /// <see cref="RemoveFromObifinAsync"/>), sonra lisansın bütün banka verisini ve Obifin kimliğini siler.</summary>
     public async Task<BankRemovalResult> RemoveAndDeleteAsync(Guid licenseId, string trigger, string actor, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException(NoConnectionMessage);
-        var removed = new List<long>();
-        var failed = new List<long>();
-        var unreachable = false;
+        var obifin = await RemoveFromObifinAsync(conn, ct);
+        return await DeleteLocalWithRetryAsync(licenseId, trigger, actor, keepConnection: false, obifin, ct);
+    }
+
+    /// <summary>Otomatik hizmet sonu silmesi (BankServiceEndPurgeJob): Obifin'e GİDİLMEZ. Banka verisi silinir; Obifin kimliği ve
+    /// yerel <c>BankConnections</c> kalır, <c>BankDataPurgedAt</c> yazılır.</summary>
+    public async Task<BankRemovalResult> PurgeLocalDataAsync(Guid licenseId, string trigger, string actor, CancellationToken ct)
+    {
+        if (!await _db.ObifinConnections.AnyAsync(c => c.LicenseId == licenseId, ct))
+            throw new ObifinValidationException(NoConnectionMessage);
+        return await DeleteLocalWithRetryAsync(licenseId, trigger, actor, keepConnection: true, ObifinOutcome.Skipped, ct);
+    }
+
+    private sealed record ObifinOutcome(List<long> Removed, List<long> Failed, List<long> Unowned, bool Unreachable, bool Shared,
+        bool NotAttempted)
+    {
+        public static ObifinOutcome Skipped => new([], [], [], false, false, true);
+        public static ObifinOutcome Unreached => new([], [], [], true, false, false);
+    }
+
+    /// <summary>
+    /// Obifin tarafı, LİSANSA ÖZGÜ (Faz 2 spec §13: tek paylaşılan Obifin kullanıcısı olabilir; <c>ObifinConnection</c>'da yalnız
+    /// <c>LicenseId</c> tekil):
+    /// <list type="number">
+    /// <item>Aynı (BaseUrl, UserCode) başka bir lisansın bağlantısında da varsa Obifin'e HİÇ gidilmez: o kullanıcının altındaki
+    /// bağlantıların hangisinin kime ait olduğu buradan güvenle bilinemez.</item>
+    /// <item>Yalnız bu lisansın yerel <c>BankConnections</c>'ındaki ve ONAYLI hesaplarının (Görev 12; Obifin hesap listesindeki
+    /// <c>BankaApiId</c>) bağlantıları kaldırılır.</item>
+    /// <item>Obifin listesindeki diğer bağlantılara dokunulmaz; "elle kontrol" diye raporlanır.</item>
+    /// </list>
+    /// Kimlik çözülemez ya da iki listeden biri alınamazsa hiçbir şey kaldırılmaz (ulaşılamadı).
+    /// </summary>
+    private async Task<ObifinOutcome> RemoveFromObifinAsync(ObifinConnection conn, CancellationToken ct)
+    {
+        var licenseId = conn.LicenseId;
+        var sameUserCode = await _db.ObifinConnections.AsNoTracking()
+            .Where(c => c.LicenseId != licenseId && c.UserCode == conn.UserCode).Select(c => c.BaseUrl).ToListAsync(ct);
+        if (sameUserCode.Any(b => string.Equals(b.TrimEnd('/'), conn.BaseUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)))
+        {
+            _log.LogWarning("Obifin kaldırma: Obifin kullanıcısı başka lisansta da kayıtlı, Obifin'e gidilmedi — lisans={LicenseId}",
+                licenseId);
+            return new ObifinOutcome([], [], [], Unreachable: false, Shared: true, NotAttempted: false);
+        }
         var creds = ObifinConnectionService.ResolveCredentials(_protection, conn);
         if (creds is null)
         {
-            unreachable = true;
             _log.LogWarning("Obifin kaldırma: saklı kimlik çözülemedi — lisans={LicenseId}; Obifin'de elle kaldırılmalı", licenseId);
+            return ObifinOutcome.Unreached;
         }
-        else
+
+        var owned = (await _db.BankConnections.AsNoTracking().Where(b => b.LicenseId == licenseId)
+            .Select(b => b.BankaApiId).ToListAsync(ct)).ToHashSet();
+        var approvedAccounts = (await _db.BankAccounts.AsNoTracking().Where(a => a.LicenseId == licenseId && a.ApprovedAt != null)
+            .Select(a => a.ObifinAccountId).ToListAsync(ct)).ToHashSet();
+        IReadOnlyList<ObifinBankConnectionDto> list;
+        try
         {
-            IReadOnlyList<ObifinBankConnectionDto> list = [];
+            list = await _client.ListBankConnectionsAsync(creds, ct);
+            if (approvedAccounts.Count > 0)
+                foreach (var a in await _client.ListAccountsAsync(creds, ct))
+                    if (approvedAccounts.Contains(a.Id) && a.BankaApiId is { } apiId) owned.Add(apiId);
+        }
+        catch (Exception ex) when (ObifinConnectionService.DescribeClientFailure(ex, ct) is not null)
+        {
+            _log.LogWarning("Obifin kaldırma: banka bağlantı ya da hesap listesi alınamadı — lisans={LicenseId}: {Type}",
+                licenseId, ex.GetType().Name);
+            return ObifinOutcome.Unreached;
+        }
+
+        var removed = new List<long>();
+        var failed = new List<long>();
+        var unowned = new List<long>();
+        foreach (var bc in list)
+        {
+            if (!owned.Contains(bc.BankaApiId))
+            {
+                unowned.Add(bc.BankaApiId);
+                continue;
+            }
             try
             {
-                list = await _client.ListBankConnectionsAsync(creds, ct);
+                await _client.RemoveBankConnectionAsync(creds, bc.BankaApiId, ct);
+                removed.Add(bc.BankaApiId);
             }
             catch (Exception ex) when (ObifinConnectionService.DescribeClientFailure(ex, ct) is not null)
             {
-                unreachable = true;
-                _log.LogWarning("Obifin kaldırma: banka bağlantı listesi alınamadı — lisans={LicenseId}: {Type}", licenseId, ex.GetType().Name);
-            }
-            foreach (var bc in list)
-            {
-                try
-                {
-                    await _client.RemoveBankConnectionAsync(creds, bc.BankaApiId, ct);
-                    removed.Add(bc.BankaApiId);
-                }
-                catch (Exception ex) when (ObifinConnectionService.DescribeClientFailure(ex, ct) is not null)
-                {
-                    failed.Add(bc.BankaApiId);
-                    _log.LogWarning("Obifin kaldırma: banka bağlantısı #{BankaApiId} kaldırılamadı — lisans={LicenseId}: {Type}",
-                        bc.BankaApiId, licenseId, ex.GetType().Name);
-                }
+                failed.Add(bc.BankaApiId);
+                _log.LogWarning("Obifin kaldırma: banka bağlantısı #{BankaApiId} kaldırılamadı — lisans={LicenseId}: {Type}",
+                    bc.BankaApiId, licenseId, ex.GetType().Name);
             }
         }
+        if (unowned.Count > 0)
+            _log.LogWarning("Obifin kaldırma: {Count} banka bağlantısının bu lisansa ait olduğu doğrulanamadı, dokunulmadı — " +
+                "lisans={LicenseId}", unowned.Count, licenseId);
+        return new ObifinOutcome(removed, failed, unowned, Unreachable: false, Shared: false, NotAttempted: false);
+    }
 
+    private async Task<BankRemovalResult> DeleteLocalWithRetryAsync(Guid licenseId, string trigger, string actor,
+        bool keepConnection, ObifinOutcome obifin, CancellationToken ct)
+    {
         for (var attempt = 1; ; attempt++)
         {
             try
             {
-                return await DeleteLocalAsync(licenseId, trigger, actor, removed, failed, unreachable, ct);
+                return await DeleteLocalAsync(licenseId, trigger, actor, keepConnection, obifin, ct);
             }
             catch (DbUpdateConcurrencyException) when (attempt == 1)
             {
@@ -4181,15 +4520,20 @@ public sealed class BankConnectionTerminator
         }
     }
 
-    private async Task<BankRemovalResult> DeleteLocalAsync(Guid licenseId, string trigger, string actor, List<long> removed,
-        List<long> failed, bool unreachable, CancellationToken ct)
+    /// <summary><paramref name="keepConnection"/>: Obifin kimliği ve yerel BankConnections kalır, BankDataPurgedAt yazılır
+    /// (yalnız yerel silme).</summary>
+    private async Task<BankRemovalResult> DeleteLocalAsync(Guid licenseId, string trigger, string actor, bool keepConnection,
+        ObifinOutcome obifin, CancellationToken ct)
     {
+        var now = DateTimeOffset.UtcNow;
         var matches = await _db.PaymentMatches.Where(m => m.LicenseId == licenseId).ToListAsync(ct);
         var transactions = await _db.BankTransactions.Where(t => t.LicenseId == licenseId).ToListAsync(ct);
         var memories = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId).ToListAsync(ct);
         var gaps = await _db.PaymentMatchGaps.Where(g => g.LicenseId == licenseId).ToListAsync(ct);
         var accounts = await _db.BankAccounts.Where(a => a.LicenseId == licenseId).ToListAsync(ct);
-        var bankConnections = await _db.BankConnections.Where(b => b.LicenseId == licenseId).ToListAsync(ct);
+        var bankConnections = keepConnection
+            ? new List<BankConnection>()
+            : await _db.BankConnections.Where(b => b.LicenseId == licenseId).ToListAsync(ct);
         var connections = await _db.ObifinConnections.Where(c => c.LicenseId == licenseId).ToListAsync(ct);
         _db.PaymentMatches.RemoveRange(matches);
         _db.BankTransactions.RemoveRange(transactions);
@@ -4197,8 +4541,15 @@ public sealed class BankConnectionTerminator
         _db.PaymentMatchGaps.RemoveRange(gaps);
         _db.BankAccounts.RemoveRange(accounts);
         _db.BankConnections.RemoveRange(bankConnections);
-        _db.ObifinConnections.RemoveRange(connections);
-        const string criterion = "bağlantı kaldırıldı";
+        if (keepConnection)
+        {
+            foreach (var c in connections) { c.BankDataPurgedAt = now; c.UpdatedAt = now; }
+        }
+        else
+        {
+            _db.ObifinConnections.RemoveRange(connections);
+        }
+        var criterion = keepConnection ? "hizmet sonu + 30 gün (yalnız yerel)" : "bağlantı kaldırıldı";
         void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
             count, criterion, trigger, actor);
         Record("PaymentMatches", matches.Count);
@@ -4207,14 +4558,16 @@ public sealed class BankConnectionTerminator
         Record("PaymentMatchGaps", gaps.Count);
         Record("BankAccounts", accounts.Count);
         Record("BankConnections", bankConnections.Count);
-        Record("ObifinConnections", connections.Count);
+        if (!keepConnection) Record("ObifinConnections", connections.Count);
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
-        _log.LogWarning("Banka bağlantısı kaldırıldı ve verisi silindi — lisans={LicenseId}, tetikleyici={Trigger}: hareket={Transactions}, " +
-            "eşleşme={Matches}, IBAN bağı={Memories}; Obifin'de kaldırılan={Removed}, kaldırılamayan={Failed}, ulaşılamadı={Unreachable}",
-            licenseId, trigger, transactions.Count, matches.Count, memories.Count, removed.Count, failed.Count, unreachable);
-        return new BankRemovalResult(removed, failed, unreachable, transactions.Count, matches.Count, memories.Count, gaps.Count,
-            accounts.Count, bankConnections.Count);
+        _log.LogWarning("Banka verisi silindi — lisans={LicenseId}, tetikleyici={Trigger}, yalnız yerel={Local}: hareket={Transactions}, " +
+            "eşleşme={Matches}, IBAN bağı={Memories}; Obifin'de kaldırılan={Removed}, kaldırılamayan={Failed}, sahibi doğrulanamayan=" +
+            "{Unowned}, ulaşılamadı={Unreachable}, paylaşılan kullanıcı={Shared}",
+            licenseId, trigger, keepConnection, transactions.Count, matches.Count, memories.Count, obifin.Removed.Count,
+            obifin.Failed.Count, obifin.Unowned.Count, obifin.Unreachable, obifin.Shared);
+        return new BankRemovalResult(obifin.Removed, obifin.Failed, obifin.Unowned, obifin.Unreachable, obifin.Shared,
+            obifin.NotAttempted, transactions.Count, matches.Count, memories.Count, gaps.Count, accounts.Count, bankConnections.Count);
     }
 }
 ```
@@ -4259,6 +4612,9 @@ Sınıfın sonuna:
             conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
             conn.DisabledAt.Should().NotBeNull();
         }
+        async Task<string> StatusCellAsync()
+            => (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector("[data-cell='status']")!.TextContent;
+        (await StatusCellAsync()).Should().Contain("silinecek");
 
         (await PostAsync(client, "Resume", fields())).StatusCode.Should().Be(HttpStatusCode.Redirect);
         using (var scope = factory.Services.CreateScope())
@@ -4268,6 +4624,7 @@ Sınıfın sonuna:
             (await db.AuditLogs.CountAsync(a => a.TargetId == lic.ToString()
                 && (a.EventType == AuditEvents.ObifinConnectionStop || a.EventType == AuditEvents.ObifinConnectionResume))).Should().Be(2);
         }
+        (await StatusCellAsync()).Should().NotContain("silinecek", "tarih yalnız Disabled iken gösterilir");
     }
 
     [Fact]
@@ -4327,7 +4684,8 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove,` ekle.
 ```
 
 - `[BindProperty] public bool ConfirmRemove { get; set; }`
-- `ConnectionRow`'a `DateTimeOffset? DisabledAt` ekle (`Status`'tan hemen sonra) ve `Select`'te `c.Status, c.DisabledAt,` yap.
+- `ConnectionRow`'a `DateTimeOffset? DisabledAt, DateTimeOffset? BankDataPurgedAt` ekle (`Status`'tan hemen sonra) ve `Select`'te `c.Status, c.DisabledAt, c.BankDataPurgedAt,` yap.
+- Özellik: `/// <summary>Banka verisi hizmet sonunda yerelde silinmiş, Obifin tarafı "Kaldır ve sil" bekleyen bağlantı sayısı.</summary> public int PendingObifinRemoval => Rows.Count(r => r.BankDataPurgedAt is not null);`
 - İşleyiciler (`OnPostPollNowAsync`'ten önce):
 
 ```csharp
@@ -4368,8 +4726,9 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove,` ekle.
         return RedirectToPage();
     }
 
-    /// <summary>Obifin'deki banka bağlantılarını kaldırır ve lisansın bütün banka verisini siler (KVKK K-6, Ö-9). İstek jetonu
-    /// BİLEREK kullanılmaz: yarıda kesilen kaldırma Obifin'de bağlantı bırakıp yerelde iz kaybettirirdi.</summary>
+    /// <summary>Obifin'de bu lisansa ait banka bağlantılarını kaldırır (paylaşılan Obifin kullanıcısında Obifin'e gitmez, sahibi
+    /// doğrulanamayana dokunmaz) ve lisansın bütün banka verisini siler (KVKK K-6, Ö-9). <c>bankaapi/sil</c>'i çağıran TEK yol.
+    /// İstek jetonu BİLEREK kullanılmaz: yarıda kesilen kaldırma Obifin'de bağlantı bırakıp yerelde iz kaybettirirdi.</summary>
     public async Task<IActionResult> OnPostRemoveAsync()
     {
         if (!ConfirmRemove)
@@ -4389,14 +4748,14 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove,` ekle.
             TempData["Error"] = ex.Message;
             return RedirectToPage();
         }
+        // Denetimde "elle iş" bilgisi de durur: yazılı silme teyidinin ve Obifin'deki elle kaldırmanın takibi buradan.
         await _audit.LogAsync(AuditEvents.ObifinConnectionRemove, AuditTargets.ObifinConnection, LicenseId.ToString(),
             new { r.Transactions, r.Matches, r.Memories, obifinRemoved = r.ObifinRemoved.Count, obifinFailed = r.ObifinFailed.Count,
-                r.ObifinUnreachable }, CancellationToken.None);
+                obifinUnowned = r.ObifinUnowned.Count, r.ObifinUnreachable, r.SharedObifinUser,
+                needsManualObifinAction = r.NeedsManualObifinAction, writtenConfirmationRequired = true }, CancellationToken.None);
         var summary = $"Banka verisi silindi: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı, {r.Accounts} hesap. ";
         if (r.NeedsManualObifinAction)
-            TempData["Error"] = summary + "Obifin'deki banka bağlantısı kaldırılamadı"
-                + (r.ObifinFailed.Count > 0 ? $" (#{string.Join(", #", r.ObifinFailed)})" : "")
-                + ": Obifin panelinden elle kaldırın. " + ObifinCopyWarning;
+            TempData["Error"] = summary + r.ManualActionText() + " " + ObifinCopyWarning;
         else
             TempData["Success"] = summary + $"Obifin'de {r.ObifinRemoved.Count} banka bağlantısı kaldırıldı. " + ObifinCopyWarning;
         return RedirectToPage();
@@ -4405,11 +4764,25 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove,` ekle.
 
 (`AdminName()` Görev 12'de eklendi.)
 
-`Index.cshtml` — durum hücresini:
-`<td data-cell="status">@r.Status</td>`
-şununla değiştir:
+`Index.cshtml` — `@if (Model.UnapprovedAccounts > 0) { … }` bloğunun (Görev 12) ALTINA:
+
 ```cshtml
-            <td data-cell="status">@r.Status@(r.DisabledAt is { } disabledAt ? $" ({disabledAt:yyyy-MM-dd}; silinecek {disabledAt.AddDays(30):yyyy-MM-dd})" : "")</td>
+@if (Model.PendingObifinRemoval > 0)
+{
+    <div class="alert alert-warning" data-banner="pending-obifin-removal">
+        @Model.PendingObifinRemoval bağlantının banka verisi hizmet sonunda silindi; Obifin tarafı bekliyor: satırdaki "Kaldır ve sil"e basın.
+    </div>
+}
+```
+
+Durum hücresini:
+`<td data-cell="status">@r.Status</td>`
+şununla değiştir (tarih yalnız `Disabled` iken; 30 = `BankServiceEndPurgeJob.GracePeriod`, Görev 14):
+```cshtml
+            <td data-cell="status">@r.Status@(r.Status != ObifinConnectionStatus.Disabled || r.DisabledAt is not { } disabledAt ? ""
+                : r.BankDataPurgedAt is { } purgedAt
+                    ? $" ({disabledAt:yyyy-MM-dd}; banka verisi {purgedAt:yyyy-MM-dd} silindi — Obifin için Kaldır ve sil)"
+                    : $" ({disabledAt:yyyy-MM-dd}; silinecek {disabledAt.AddDays(30):yyyy-MM-dd})")</td>
 ```
 
 Satırın eylem hücresinde `<a class="btn btn-sm btn-link" … >Düzenle</a>` satırının ÜSTÜNE:
@@ -4433,22 +4806,129 @@ Satırın eylem hücresinde `<a class="btn btn-sm btn-link" … >Düzenle</a>` s
                 </form>
 ```
 
-- [ ] **Adım 8: Koştur — yeşil**
+- [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~AdminObifinPageTests|FullyQualifiedName~BankConnectionTerminatorTests|FullyQualifiedName~BankJobsDiTests"`
-Expected: PASS.
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinConnectionServiceEnd --output-dir Data/Migrations`
+Expected: `Up` yalnız `AddColumn<DateTimeOffset>(name: "BankDataPurgedAt", table: "ObifinConnections", nullable: true)` ve `AddColumn<bool>(name: "DisabledByAdmin", table: "ObifinConnections", nullable: false, defaultValue: false)`. P0'da lisans bitişiyle Disabled'a çekilmiş bağlantılar `DisabledByAdmin = false` ile gelir — doğru: P1'den önce yönetici durdurması yoktu.
 
-- [ ] **Adım 9: Commit**
+- [ ] **Adım 9: Yayıncı silmesi Obifin bağlantısını atlamasın (test önce, kırmızı)**
+
+`Controllers/Compliance/GdprFlowTests.cs` — üste `using System.Text.Json;` ekle; sınıfa yardımcı ve test:
+
+```csharp
+    /// <summary>Bearer-Admin istemcisi (üretilmiş yönetici; parola literal değil).</summary>
+    private async Task<HttpClient> AdminApiClientAsync()
+    {
+        string adminToken;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var hasher = scope.ServiceProvider.GetRequiredService<PasswordHasher>();
+            var jwt = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
+            var admin = new OrderDeck.LicenseServer.Domain.AdminUser
+            {
+                Id = Guid.NewGuid(), Username = $"a-{Guid.NewGuid():N}", PasswordHash = hasher.Hash($"p-{Guid.NewGuid():N}"),
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.AdminUsers.Add(admin);
+            await db.SaveChangesAsync();
+            adminToken = jwt.IssueAdminToken(admin.Id, admin.Username).Token;
+        }
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
+        return client;
+    }
+
+    [Fact]
+    public async Task Purge_Obifin_baglantisi_varken_reddedilir_once_Kaldir_ve_sil_istenir()
+    {
+        // KVKK K-6/Ö-9: yayıncı silmesi banka tablolarını kaskadla götürür ama Obifin'e bir şey söylemez; Obifin bankadan çekmeyi
+        // ve saklamayı sürdürürdü. Bağlantı varken silme reddedilir: Obifin tarafı yalnız "Kaldır ve sil"de (lisansa özgü,
+        // paylaşılan kullanıcı korumalı) kapanır.
+        var (_, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var licenseId = Guid.NewGuid();
+        string email;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            email = (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email;
+            db.Licenses.Add(new OrderDeck.LicenseServer.Domain.License { Id = licenseId, LicenseKey = $"LDK-GD-{Guid.NewGuid():N}",
+                CustomerId = customerId, SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+            // Korunan alanlar sahte: kimlik çözülemez → "Kaldır ve sil" Obifin'e gidemez (ulaşılamadı), yerel silme yine yapılır.
+            db.ObifinConnections.Add(new OrderDeck.LicenseServer.Domain.Bank.ObifinConnection { Id = Guid.NewGuid(),
+                LicenseId = licenseId, BaseUrl = "https://example.invalid", UserCode = $"u-{Guid.NewGuid():N}@x",
+                PasswordProtected = $"p-{Guid.NewGuid():N}", ApiKeyProtected = $"a-{Guid.NewGuid():N}",
+                Status = OrderDeck.LicenseServer.Domain.Bank.ObifinConnectionStatus.Verified,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+        using var admin = await AdminApiClientAsync();
+
+        var refused = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        refused.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+        problem.GetProperty("title").GetString().Should().Be("bank-connection-active");
+        problem.GetProperty("detail").GetString().Should().Contain("Kaldır ve sil").And.Contain("yazılı");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email.Should().Be(email, "hiçbir şey silinmedi");
+            var r = await scope.ServiceProvider.GetRequiredService<OrderDeck.LicenseServer.Services.Bank.BankConnectionTerminator>()
+                .RemoveAndDeleteAsync(licenseId, OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.AdminRemove,
+                    "admin", CancellationToken.None);
+            r.NeedsManualObifinAction.Should().BeTrue("kimlik çözülemedi: Obifin'de elle kaldırılacak");
+        }
+
+        (await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent, "Obifin tarafı kapandıktan sonra silme yapılır");
+    }
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~GdprFlowTests"`
+Expected: FAIL — purge 204 döner (bağlantı kaskadla gidiyor, Obifin'e bir şey söylenmiyor).
+
+`Controllers/Customers/AdminCustomersController.cs` — `Purge`'te `var preEmail = customer.Email;` satırının ÜSTÜNE:
+
+```csharp
+        // KVKK K-6/Ö-9: banka tabloları lisansla kaskadla gider ama Obifin'e bir şey söylenmez — Obifin bankadan çekmeyi ve
+        // saklamayı sürdürür. Obifin bağlantısı olan lisans varken silme reddedilir: Obifin tarafı (lisansa özgü kaldırma,
+        // paylaşılan kullanıcı koruması, yazılı teyit uyarısı) yalnız admin/obifin'deki "Kaldır ve sil"de kapanır. Purge içinde
+        // ağ çağrısı yapılmaz.
+        var bankLicenses = await _db.ObifinConnections
+            .CountAsync(c => _db.Licenses.Any(l => l.Id == c.LicenseId && l.CustomerId == id), ct);
+        if (bankLicenses > 0)
+            return Problem(title: "bank-connection-active", statusCode: 409,
+                detail: $"Bu yayıncının {bankLicenses} lisansında Obifin banka bağlantısı var. Önce admin/obifin'de her biri için " +
+                    "'Kaldır ve sil' çalıştırın ve Obifin'den hareket kopyasının silindiğine dair yazılı teyit isteyin; sonra " +
+                    "silmeyi yineleyin.");
+```
+
+Metodun özetine bir paragraf: `/// Obifin banka bağlantısı olan lisans varken 409 bank-connection-active: önce admin/obifin → "Kaldır ve sil" (KVKK K-6, Ö-9).`
+
+- [ ] **Adım 10: Koştur — yeşil**
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~AdminObifinPageTests|FullyQualifiedName~BankConnectionTerminatorTests|FullyQualifiedName~ObifinConnectionServiceTests|FullyQualifiedName~ObifinPollJobTests|FullyQualifiedName~BankJobsDiTests|FullyQualifiedName~GdprFlowTests"`
+Expected: PASS. (`ObifinConnectionServiceTests`'in lisansları geçerli; Disabled bağlantı testleri `MarkVerified`'ın Disabled'ı açmadığını hâlâ doğrular.)
+
+Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupRelationalTests|FullyQualifiedName~CustomerPurgeRelationalTests"`
+Expected: PASS (yeni sütunlar SQL Server'da; purge'ün gerçek SQL yolu bağlantısız lisansta değişmedi).
+
+- [ ] **Adım 11: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Bank/BankConnectionTerminator.cs OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs OrderDeck.LicenseServer/Pages/Admin/Obifin OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankConnectionTerminatorTests.cs OrderDeck.LicenseServer.Tests/Pages/Admin/AdminObifinPageTests.cs
+git add OrderDeck.LicenseServer/Domain/Bank/ObifinConnection.cs OrderDeck.LicenseServer/Services/Bank/BankConnectionTerminator.cs OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs OrderDeck.LicenseServer/Pages/Admin/Obifin OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer/Data/Migrations OrderDeck.LicenseServer.Tests/Services/Bank/BankConnectionTerminatorTests.cs OrderDeck.LicenseServer.Tests/Pages/Admin/AdminObifinPageTests.cs OrderDeck.LicenseServer.Tests/Controllers/Compliance/GdprFlowTests.cs
 git commit -m "feat(bank-kvkk): banka bağlantısını durdur, etkinleştir, kaldır ve sil
 
-Yönetim sayfasına Durdur/Etkinleştir/Kaldır ve sil eylemleri: kaldırma
-Obifin'deki bütün banka bağlantılarını bankaapi/sil ile kaldırır, lisansın
-banka verisini ve Obifin kimliğini siler, imha kaydı yazar; Obifin'deki
-hareket kopyası için yazılı talep uyarısı verir (KVKK ön inceleme K-6,
-Ö-9, P1-10).
+Yönetim sayfasına Durdur/Etkinleştir/Kaldır ve sil: kaldırma Obifin'de
+yalnız bu lisansa ait bağlantıları (yerel kayıt ya da onaylı hesap)
+bankaapi/sil ile kaldırır, paylaşılan Obifin kullanıcısında Obifin'e hiç
+gitmez, sahibi doğrulanamayanı elle kontrole bırakır; lisansın banka
+verisini ve Obifin kimliğini siler, imha kaydı yazar. Otomatik iş için
+Obifin'e gitmeyen yerel silme. Obifin bağlantısı varken yayıncı silmesi
+reddedilir. Lisansı bitmiş bağlantıda Doğrula/Banka ekle Obifin'e gitmez
+(KVKK ön inceleme K-6, Ö-9, P1-10).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -4457,10 +4937,19 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 14: Hizmet sonu + 30 gün silme işi (P1-10b)
 
-**Neden (not K-6 öneri 2):** bağlantı durdurulduktan ya da lisans bittikten 30 gün sonra lisansın bütün banka verisi silinmeli (İYS "ayrılış + 30 gün" kalıbı; Silme Yönetmeliği md. 11/3'teki 3 ay sınırının içinde). Günlük iş: önce lisansı biteni Disabled'a çeker (çekim anahtarsız zamanlanmıyor olabilir), sonra `DisabledAt`'i 30 günü geçenleri `BankConnectionTerminator.RemoveAndDeleteAsync` ile kaldırıp siler ve yöneticiye özet e-posta gönderir (Obifin'den yazılı silme teyidi istensin; elle kaldırılması gerekenler listelenir). Çekimle aynı kilit (`obifin-poll`): silme ile çekim yarışmaz. Anahtardan bağımsız HEP zamanlanır (`BankHasher` istemez).
+**Neden (not K-6 öneri 2):** bağlantı durdurulduktan ya da lisans bittikten 30 gün sonra lisansın bütün banka verisi silinmeli (İYS "ayrılış + 30 gün" kalıbı; Silme Yönetmeliği md. 11/3'teki 3 ay sınırının içinde). Günlük iş, sırayla:
+1. **Lisansı yenilenen bağlantı silinmez.** Lisans uzatma (`AdminLicensesController.Extend`, `Licenses/Detail` → Uzat) ya da iptalin geri alınması bağlantıya dokunmuyor; iş olmasa bağlantı Disabled kalır ve 30. günde ödeme yapan yayıncının bütün banka verisi geri dönüşsüz silinirdi. Kendiliğinden (lisans bitişiyle) durdurulmuş ve lisansı bugün geçerli bağlantı `Unverified`'a döner, hizmet sonu alanları boşalır (`ObifinConnectionService.ReviveRenewedLicensesAsync`), yöneticiye "lisans yenilendi, Doğrula'ya basın" e-postası gider. Yöneticinin durdurduğu (`DisabledByAdmin`) bağlantı kendiliğinden açılmaz. Silme sorgusu aynı kuralı bir kez daha uygular (eşzamanlı uzatmaya karşı).
+2. Lisansı biteni Disabled'a çeker (çekim anahtarsız zamanlanmıyor olabilir).
+3. `DisabledAt`'i 30 günü geçen ve henüz işlenmemiş (`BankDataPurgedAt` boş) bağlantının banka verisini **yalnız yerelde** siler (`BankConnectionTerminator.PurgeLocalDataAsync`). **Obifin'e gidilmez:** `bankaapi/sil`'i yalnız yöneticinin "Kaldır ve sil"i çağırır (Görev 13: lisansa özgü, paylaşılan kullanıcı korumalı). İnsan onayı olmadan Obifin'deki bir bağlantıyı silmek — paylaşılan Obifin kullanıcısında EMAR'ın QNB bağlantısını da — haftalar süren yeniden başvuru demekti.
+4. Yöneticiye özet e-posta: her lisans için "admin/obifin'de Kaldır ve sil" ve Obifin'den yazılı silme teyidi istenmesi; admin/obifin'de de uyarı şeridi kalır.
+
+**P0 → P1 geçişi:** Görev 1 (P0) `DisabledAt` yazmaya başladı. P1 geç deploy edilirse ilk 05:17 koşusu 30 günü geçmiş bütün bağlantıların verisini YEREL olarak siler (Obifin'e gidilmez; lisansı yenilenmiş olan 1. adımda kurtulur). Prod adımlarındaki "P1 deploy'undan önce" maddesine bakın.
+
+Çekimle aynı kilit (`obifin-poll`): silme ile çekim yarışmaz. Anahtardan bağımsız HEP zamanlanır (`BankHasher` istemez).
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankServiceEndPurgeJob.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs` (`ReviveRenewedLicensesAsync`, `LicenseRenewedMessage`)
 - Modify: `OrderDeck.LicenseServer/Program.cs` (DI + `ScheduleBankJobs`)
 - Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankServiceEndPurgeJobTests.cs` (YENİ), `BankJobsDiTests.cs`
 
@@ -4484,14 +4973,26 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 
-/// <summary>KVKK K-6: hizmet sonu + 30 gün banka verisi silinir; lisansı biten önce durdurulur; yöneticiye özet gider.</summary>
+/// <summary>KVKK K-6: hizmet sonu + 30 gün banka verisi YEREL olarak silinir (Obifin'e gidilmez); lisansı yenilenen silinmez;
+/// lisansı biten önce durdurulur; yöneticiye özet gider.</summary>
 public sealed class BankServiceEndPurgeJobTests
 {
+    /// <summary>Her çağrıda patlar: otomatik iş Obifin'e HİÇ gitmemeli (gitseydi iş lisansı "DÜŞTÜ" sayar, test kırılır).</summary>
+    private sealed class NoCallObifin : IObifinClient
+    {
+        private static Exception Fail() => new InvalidOperationException("Otomatik hizmet sonu işi Obifin'e gitmemeli.");
+        public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default) => throw Fail();
+        public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default) => throw Fail();
+        public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default) => throw Fail();
+        public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default) => throw Fail();
+    }
+
     private static LicenseDbContext NewDb()
         => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"bank-end-{Guid.NewGuid():N}").Options);
 
     private static BankServiceEndPurgeJob Job(LicenseDbContext db, TestEmailSender email)
-        => new(db, new BankConnectionTerminator(db, new NullObifinClient(), new EphemeralDataProtectionProvider(),
+        => new(db, new BankConnectionTerminator(db, new NoCallObifin(), new EphemeralDataProtectionProvider(),
                 NullLogger<BankConnectionTerminator>.Instance),
             new BankJobAlerts(email, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -4499,9 +5000,9 @@ public sealed class BankServiceEndPurgeJobTests
             }).Build(), NullLogger<BankJobAlerts>.Instance),
             NullLogger<BankServiceEndPurgeJob>.Instance);
 
-    /// <summary>Lisans + bağlantı (korunan alanlar sahte: kimlik çözülemez, Obifin'e gidilmez) + bir hareket.</summary>
+    /// <summary>Lisans + bağlantı (gerçek kimlik çözülse de iş Obifin'e gitmez) + bir hareket + yerel banka bağlantısı.</summary>
     private static async Task<Guid> SeedAsync(LicenseDbContext db, ObifinConnectionStatus status, DateTimeOffset? disabledAt,
-        DateTimeOffset licenseExpiresAt)
+        DateTimeOffset licenseExpiresAt, bool disabledByAdmin = false)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer { Id = customerId, Email = $"e-{Guid.NewGuid():N}@x", Name = "E",
@@ -4510,41 +5011,116 @@ public sealed class BankServiceEndPurgeJobTests
         db.Licenses.Add(new License { Id = lic, LicenseKey = $"LDK-{Guid.NewGuid():N}", CustomerId = customerId, SkuCode = "STD",
             ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow.AddYears(-1), ExpiresAt = licenseExpiresAt });
         var now = DateTimeOffset.UtcNow;
-        db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = lic, BaseUrl = "https://example.invalid",
+        var connId = Guid.NewGuid();
+        db.ObifinConnections.Add(new ObifinConnection { Id = connId, LicenseId = lic, BaseUrl = "https://example.invalid",
             UserCode = $"u-{Guid.NewGuid():N}@x", PasswordProtected = $"p-{Guid.NewGuid():N}", ApiKeyProtected = $"a-{Guid.NewGuid():N}",
-            Status = status, DisabledAt = disabledAt, CreatedAt = now, UpdatedAt = now });
+            Status = status, DisabledAt = disabledAt, DisabledByAdmin = disabledByAdmin,
+            LastError = disabledByAdmin ? BankConnectionTerminator.StoppedByAdminMessage
+                : status == ObifinConnectionStatus.Disabled ? ObifinConnectionService.LicenseEndedMessage : null,
+            CreatedAt = now, UpdatedAt = now });
+        db.BankConnections.Add(new BankConnection { Id = Guid.NewGuid(), LicenseId = lic, ObifinConnectionId = connId,
+            BankaKodu = "qnb", BankaApiId = 501, Label = "QNB", Status = BankConnectionStatus.Active, CreatedAt = now });
         db.BankTransactions.Add(new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = 1, ObifinAccountId = 6,
             BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 10m, Currency = "TL", OccurredAt = now, FetchedAt = now });
         await db.SaveChangesAsync();
         return lic;
     }
 
+    private static readonly DateTimeOffset Ended = DateTimeOffset.UtcNow.AddDays(-40);
+
     [Fact]
-    public async Task Otuz_gunu_gecen_durdurulmus_baglantinin_verisi_silinir_otuz_gun_icindeki_kalir()
+    public async Task Otuz_gunu_gecen_baglantinin_verisi_yerelde_silinir_Obifine_gidilmez_otuz_gun_icindeki_kalir()
     {
         using var db = NewDb(); var email = new TestEmailSender();
-        var future = DateTimeOffset.UtcNow.AddYears(1);
-        var due = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31), future);
-        var waiting = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-29), future);
+        var due = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31), Ended);
+        var waiting = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-29), Ended);
 
         var deleted = await Job(db, email).RunAsync(CancellationToken.None);
 
-        deleted.Should().Be(1);
+        deleted.Should().Be(1, "NoCallObifin'e dokunulsaydı lisans DÜŞTÜ sayılırdı");
         (await db.BankTransactions.AnyAsync(t => t.LicenseId == due)).Should().BeFalse();
-        (await db.ObifinConnections.AnyAsync(c => c.LicenseId == due)).Should().BeFalse();
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == due);
+        conn.BankDataPurgedAt.Should().NotBeNull("Obifin kimliği yönetici 'Kaldır ve sil' diyene kadar kalır");
+        (await db.BankConnections.AnyAsync(b => b.LicenseId == due && b.BankaApiId == 501)).Should().BeTrue();
         (await db.BankTransactions.AnyAsync(t => t.LicenseId == waiting)).Should().BeTrue();
         (await db.DataDestructionRecords.AnyAsync(r => r.LicenseId == due && r.Trigger == DataDestruction.Triggers.ServiceEnd))
             .Should().BeTrue();
         var mail = email.Sent.Should().ContainSingle().Subject;
         mail.Subject.Should().Be(BankServiceEndPurgeJob.DoneSubject);
-        mail.PlainBody.Should().Contain(due.ToString()).And.Contain("ELLE KALDIRILACAK").And.Contain("YAZILI teyit");
+        mail.PlainBody.Should().Contain(due.ToString()).And.Contain("Kaldır ve sil").And.Contain("YAZILI teyit");
+    }
+
+    [Fact]
+    public async Task Islenmis_baglanti_ertesi_gun_yeniden_islenmez()
+    {
+        using var db = NewDb(); var email = new TestEmailSender();
+        await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31), Ended);
+        await Job(db, email).RunAsync(CancellationToken.None);
+
+        var second = await Job(db, email).RunAsync(CancellationToken.None);
+
+        second.Should().Be(0);
+        email.Sent.Should().ContainSingle("ikinci koşu e-posta göndermez");
+    }
+
+    [Fact]
+    public async Task Lisans_yenilenmisse_veri_silinmez_baglanti_Unverified_olur_yoneticiye_uyari_gider()
+    {
+        // KVKK K-6 + veri kaybı: lisans 30 gün içinde uzatıldı (Extend bağlantıya dokunmuyor). Ödeme yapan yayıncının verisi
+        // silinmemeli; bağlantı yönetici Doğrula'ya basana dek Unverified bekler.
+        using var db = NewDb(); var email = new TestEmailSender();
+        var lic = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31),
+            licenseExpiresAt: DateTimeOffset.UtcNow.AddDays(30));
+
+        var deleted = await Job(db, email).RunAsync(CancellationToken.None);
+
+        deleted.Should().Be(0);
+        (await db.BankTransactions.AnyAsync(t => t.LicenseId == lic)).Should().BeTrue();
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Unverified);
+        (conn.DisabledAt, conn.BankDataPurgedAt).Should().Be(((DateTimeOffset?)null, (DateTimeOffset?)null));
+        conn.LastError.Should().Be(ObifinConnectionService.LicenseRenewedMessage);
+        var mail = email.Sent.Should().ContainSingle().Subject;
+        mail.Subject.Should().Be(BankServiceEndPurgeJob.RenewedSubject);
+        mail.PlainBody.Should().Contain(lic.ToString()).And.Contain("Doğrula");
+    }
+
+    [Fact]
+    public async Task Yerel_silmeden_sonra_lisans_yenilenirse_baglanti_yine_acilir()
+    {
+        using var db = NewDb(); var email = new TestEmailSender();
+        var lic = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31), Ended);
+        await Job(db, email).RunAsync(CancellationToken.None);
+        (await db.Licenses.SingleAsync(l => l.Id == lic)).ExpiresAt = DateTimeOffset.UtcNow.AddDays(30);
+        await db.SaveChangesAsync();
+
+        await Job(db, email).RunAsync(CancellationToken.None);
+
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Unverified);
+        conn.BankDataPurgedAt.Should().BeNull("yeniden toplanan veri sonraki hizmet sonunda yine silinebilsin");
+    }
+
+    [Fact]
+    public async Task Yonetici_durdurduysa_lisans_gecerli_olsa_da_otuz_gunde_silinir_kendiliginden_acilmaz()
+    {
+        using var db = NewDb(); var email = new TestEmailSender();
+        var lic = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31),
+            licenseExpiresAt: DateTimeOffset.UtcNow.AddDays(30), disabledByAdmin: true);
+
+        var deleted = await Job(db, email).RunAsync(CancellationToken.None);
+
+        deleted.Should().Be(1);
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.BankDataPurgedAt.Should().NotBeNull();
     }
 
     [Fact]
     public async Task Lisansi_biten_ama_hala_Verified_baglanti_bugun_durdurulur_silinmez()
     {
         using var db = NewDb(); var email = new TestEmailSender();
-        var lic = await SeedAsync(db, ObifinConnectionStatus.Verified, null, DateTimeOffset.UtcNow.AddDays(-40));
+        var lic = await SeedAsync(db, ObifinConnectionStatus.Verified, null, Ended);
 
         var deleted = await Job(db, email).RunAsync(CancellationToken.None);
 
@@ -4560,9 +5136,46 @@ public sealed class BankServiceEndPurgeJobTests
 - [ ] **Adım 2: Koştur — derleme hatası bekle**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankServiceEndPurgeJobTests"`
-Expected: FAIL — `BankServiceEndPurgeJob` yok.
+Expected: FAIL — `BankServiceEndPurgeJob`, `LicenseRenewedMessage` yok.
 
-- [ ] **Adım 3: İşi yaz**
+- [ ] **Adım 3: Lisans yenilenmesini tanı**
+
+`Services/Bank/ObifinConnectionService.cs` — `LicenseEndedMessage`'ın ALTINA:
+
+```csharp
+    /// <summary>Lisansı yenilenen (kendiliğinden durdurulmuş) bağlantının <c>LastError</c> metni.</summary>
+    public const string LicenseRenewedMessage = "Lisans yenilendi; çekimi sürdürmek için Doğrula'ya basın.";
+```
+
+`ClearServiceEnd`'in (Görev 13) ALTINA:
+
+```csharp
+    /// <summary>KVKK K-6 + veri kaybı: kendiliğinden (lisans bitişiyle, <c>DisabledByAdmin</c> yanlış) Disabled'a çekilmiş
+    /// bağlantının lisansı bugün yeniden geçerliyse — uzatma ya da iptalin geri alınması; ikisi de bağlantıya dokunmuyor —
+    /// bağlantı Unverified'a döner, hizmet sonu alanları boşalır (<see cref="ClearServiceEnd"/>), <see cref="LicenseRenewedMessage"/>
+    /// yazılır. Çekim yönetici Doğrula'ya basınca sürer. Yöneticinin durdurduğu bağlantı açılmaz. Lisans kimliklerini döner.</summary>
+    public static async Task<IReadOnlyList<Guid>> ReviveRenewedLicensesAsync(LicenseDbContext db, DateTimeOffset now, ILogger log,
+        CancellationToken ct)
+    {
+        var renewed = await db.ObifinConnections
+            .Where(c => c.Status == ObifinConnectionStatus.Disabled && !c.DisabledByAdmin
+                && db.Licenses.Any(l => l.Id == c.LicenseId && l.RevokedAt == null && l.ExpiresAt > now))
+            .ToListAsync(ct);
+        if (renewed.Count == 0) return [];
+        foreach (var c in renewed)
+        {
+            c.Status = ObifinConnectionStatus.Unverified;
+            ClearServiceEnd(c);
+            c.LastError = LicenseRenewedMessage;
+            c.UpdatedAt = now;
+        }
+        await db.SaveChangesAsync(ct);
+        log.LogWarning("Obifin: lisansı yenilenen {Count} bağlantı Unverified'a çekildi, hizmet sonu silmesi iptal", renewed.Count);
+        return renewed.Select(c => c.LicenseId).ToList();
+    }
+```
+
+- [ ] **Adım 4: İşi yaz**
 
 `OrderDeck.LicenseServer/Services/Bank/BankServiceEndPurgeJob.cs`:
 
@@ -4580,12 +5193,17 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// Hizmet sonu + <see cref="GracePeriod"/> banka verisi silmesi (KVKK K-6 öneri 2; İYS "ayrılış + 30 gün" kalıbı, Silme
 /// Yönetmeliği md. 11/3'teki 3 ayın içinde). Günde bir:
 /// <list type="number">
+/// <item>Lisansı yenilenen bağlantı silinmez: kendiliğinden durdurulmuşsa Unverified'a döner
+/// (<see cref="ObifinConnectionService.ReviveRenewedLicensesAsync"/>), yöneticiye "Doğrula" e-postası gider.</item>
 /// <item>Lisansı biten bağlantı Disabled'a çekilir (<see cref="ObifinConnectionService.DisableEndedLicensesAsync"/>): çekim
 /// anahtarsız zamanlanmıyor olabilir, sayaç burada da başlasın.</item>
-/// <item><c>DisabledAt</c>'i <see cref="GracePeriod"/>'u geçen bağlantı <see cref="BankConnectionTerminator.RemoveAndDeleteAsync"/>
-/// ile kaldırılır ve verisi silinir. Bir lisansın hatası sıradakini bekletmez.</item>
-/// <item>Bir şey silindiyse ya da düştüyse yöneticiye özet e-posta: elle kaldırılacak Obifin bağlantıları ve her silinen
-/// lisans için Obifin'den yazılı silme teyidi istenmesi gerektiği (Obifin API'sinde hareket silme ucu yok).</item>
+/// <item><c>DisabledAt</c>'i <see cref="GracePeriod"/>'u geçen, henüz işlenmemiş (<c>BankDataPurgedAt</c> boş) ve lisansı
+/// yeniden geçerli olmayan (yönetici durdurduysa lisans önemsiz) bağlantının banka verisi
+/// <see cref="BankConnectionTerminator.PurgeLocalDataAsync"/> ile YALNIZ YERELDE silinir. Obifin'e GİDİLMEZ:
+/// <c>bankaapi/sil</c>'i yalnız yöneticinin "Kaldır ve sil"i çağırır (lisansa özgü, paylaşılan kullanıcı korumalı) — insan
+/// onayı olmadan paylaşılan bir Obifin kullanıcısının altındaki bağlantı silinmesin. Bir lisansın hatası sıradakini bekletmez.</item>
+/// <item>Bir şey silindiyse ya da düştüyse yöneticiye özet e-posta: her lisans için admin/obifin'de "Kaldır ve sil" ve Obifin'den
+/// yazılı silme teyidi (Obifin API'sinde hareket silme ucu yok).</item>
 /// </list>
 /// Çekimle aynı kilit (<see cref="ObifinPollJob.LockResource"/>): silme ile çekim yarışmaz. <see cref="BankHasher"/> istemez;
 /// anahtardan bağımsız HEP zamanlanır.
@@ -4600,6 +5218,7 @@ public sealed class BankServiceEndPurgeJob
     public static readonly TimeSpan GracePeriod = TimeSpan.FromDays(30);
     public const string DoneSubject = "[OrderDeck] Hizmet sonu banka silmesi yapıldı";
     public const string FailedSubject = "[OrderDeck] Hizmet sonu banka silmesi düştü";
+    public const string RenewedSubject = "[OrderDeck] Lisans yenilendi: banka bağlantısını doğrulayın";
 
     private readonly LicenseDbContext _db;
     private readonly BankConnectionTerminator _terminator;
@@ -4614,10 +5233,18 @@ public sealed class BankServiceEndPurgeJob
     public async Task<int> RunAsync(CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
+        var renewed = await ObifinConnectionService.ReviveRenewedLicensesAsync(_db, now, _log, ct);
+        if (renewed.Count > 0)
+            await _alerts.SendAsync(RenewedSubject, string.Join("\n", renewed.Select(id =>
+                $"lisans {id}: lisans yeniden geçerli; hizmet sonu silmesi iptal, bağlantı Unverified. admin/obifin'de Doğrula'ya basın."))
+                + "\n\nYöneticinin durdurduğu bağlantılar kendiliğinden açılmaz.", CancellationToken.None);
         await ObifinConnectionService.DisableEndedLicensesAsync(_db, now, _log, ct);
         var cutoff = now - GracePeriod;
         var due = await _db.ObifinConnections.AsNoTracking()
-            .Where(c => c.Status == ObifinConnectionStatus.Disabled && c.DisabledAt != null && c.DisabledAt <= cutoff)
+            .Where(c => c.Status == ObifinConnectionStatus.Disabled && c.DisabledAt != null && c.DisabledAt <= cutoff
+                && c.BankDataPurgedAt == null
+                // Savunma (ilk adımın kuralı, eşzamanlı bir uzatmaya karşı): lisansı bugün geçerli ve yönetici durdurmamışsa silinmez.
+                && (c.DisabledByAdmin || !_db.Licenses.Any(l => l.Id == c.LicenseId && l.RevokedAt == null && l.ExpiresAt > now)))
             .Select(c => c.LicenseId).ToListAsync(ct);
         var deleted = 0;
         var failures = new List<Exception>();
@@ -4626,13 +5253,11 @@ public sealed class BankServiceEndPurgeJob
         {
             try
             {
-                var r = await _terminator.RemoveAndDeleteAsync(licenseId, DataDestruction.Triggers.ServiceEnd,
+                var r = await _terminator.PurgeLocalDataAsync(licenseId, DataDestruction.Triggers.ServiceEnd,
                     DataDestruction.SystemActor, ct);
                 deleted++;
-                notes.Add($"lisans {licenseId}: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı silindi; " +
-                    $"Obifin'de kaldırılan {r.ObifinRemoved.Count}" + (r.NeedsManualObifinAction
-                        ? $" — ELLE KALDIRILACAK (kaldırılamayan {r.ObifinFailed.Count}{(r.ObifinUnreachable ? ", Obifin'e ulaşılamadı" : "")})"
-                        : ""));
+                notes.Add($"lisans {licenseId}: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı, " +
+                    $"{r.Accounts} hesap yerelde silindi. {r.ManualActionText()}");
             }
             catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
@@ -4644,8 +5269,9 @@ public sealed class BankServiceEndPurgeJob
         }
         if (notes.Count > 0)
             await _alerts.SendAsync(failures.Count > 0 ? FailedSubject : DoneSubject,
-                string.Join("\n", notes) + "\n\nHer silinen lisans için Obifin'den hareket kopyasının silindiğine dair YAZILI teyit " +
-                "isteyin (Obifin API'sinde hareket silme ucu yok).", CancellationToken.None);
+                string.Join("\n", notes) + "\n\nObifin'e gidilmedi. Her lisans için admin/obifin'de 'Kaldır ve sil'e basın (paylaşılan " +
+                "Obifin kullanıcısı ya da sahibi doğrulanamayan bağlantı varsa sayfa söyler) ve Obifin'den hareket kopyasının " +
+                "silindiğine dair YAZILI teyit isteyin (Obifin API'sinde hareket silme ucu yok).", CancellationToken.None);
         if (failures.Count > 0)
             throw new AggregateException($"Hizmet sonu banka silmesi {failures.Count} lisansta düştü.", failures);
         return deleted;
@@ -4653,7 +5279,7 @@ public sealed class BankServiceEndPurgeJob
 }
 ```
 
-- [ ] **Adım 4: DI ve takvim**
+- [ ] **Adım 5: DI ve takvim**
 
 `Program.cs` — `builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankMatchSweepJob>();` satırının ALTINA:
 
@@ -4671,9 +5297,9 @@ public sealed class BankServiceEndPurgeJob
             OrderDeck.LicenseServer.Services.Bank.BankServiceEndPurgeJob.Cron);
 ```
 
-`ScheduleBankJobs` özetine bir paragraf: `/// <para><c>bank-service-end-purge</c> 05:17'de, anahtardan bağımsız: hizmet sonu silmesi KVKK yükümlülüğü.</para>`
+`ScheduleBankJobs` özetine bir paragraf: `/// <para><c>bank-service-end-purge</c> 05:17'de, anahtardan bağımsız: hizmet sonu silmesi KVKK yükümlülüğü. Yalnız yerel siler; Obifin'e gitmez.</para>`
 
-- [ ] **Adım 5: Takvim testlerini güncelle**
+- [ ] **Adım 6: Takvim testlerini güncelle**
 
 `BankJobsDiTests.cs`:
 - `Banka_isleri_ve_servisleri_DI_kapsamindan_cozulur`'a ekle:
@@ -4699,21 +5325,23 @@ public sealed class BankServiceEndPurgeJob
         });
 ```
 
-- [ ] **Adım 6: Koştur — yeşil**
+- [ ] **Adım 7: Koştur — yeşil**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankServiceEndPurgeJobTests|FullyQualifiedName~BankJobsDiTests"`
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankServiceEndPurgeJobTests|FullyQualifiedName~BankConnectionTerminatorTests|FullyQualifiedName~BankJobsDiTests"`
 Expected: PASS.
 
-- [ ] **Adım 7: Commit**
+- [ ] **Adım 8: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Bank/BankServiceEndPurgeJob.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankServiceEndPurgeJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankJobsDiTests.cs
+git add OrderDeck.LicenseServer/Services/Bank/BankServiceEndPurgeJob.cs OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankServiceEndPurgeJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankJobsDiTests.cs
 git commit -m "feat(bank-kvkk): hizmet sonu + 30 gün banka verisini silen günlük iş ekle
 
-bank-service-end-purge (05:17 UTC, anahtardan bağımsız): lisansı biten
-bağlantıyı durdurur, 30 günü geçeni Obifin'den kaldırıp verisini siler,
-yöneticiye özet ve Obifin yazılı teyit hatırlatması gönderir
-(KVKK ön inceleme K-6, P1-10).
+bank-service-end-purge (05:17 UTC, anahtardan bağımsız): lisansı yenilenen
+bağlantıyı silmez, Unverified'a çeker ve yöneticiyi uyarır; lisansı biteni
+durdurur; 30 günü geçenin banka verisini yalnız yerelde siler, Obifin'e
+gitmez (bankaapi/sil yalnız yöneticinin Kaldır ve sil'inde); yöneticiye
+özet ve Obifin yazılı teyit hatırlatması gönderir (KVKK ön inceleme K-6,
+P1-10).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
