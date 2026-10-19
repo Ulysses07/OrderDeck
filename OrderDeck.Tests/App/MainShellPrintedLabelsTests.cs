@@ -138,7 +138,11 @@ public class MainShellPrintedLabelsTests
                 new OrderDeck.Licensing.Api.LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore()),
                 new FixedLicense(server.Lisans), new SalesSyncStateRepository(db), new ReplicaIdentityRepository(db),
                 new PendingPaymentRecordRepository(db),
-                Microsoft.Extensions.Logging.Abstractions.NullLogger<OrderDeck.App.Services.Sync.RemotePaymentRecords>.Instance);
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<OrderDeck.App.Services.Sync.RemotePaymentRecords>.Instance)
+            {
+                // Süre bütçesi (3 sn) burada sınanmıyor; tam pakette havuz yüklüyken iki liste isteği ona sığmayabilir.
+                RefreshTimeout = OrderDeck.Tests.TestHelpers.TestPatience.Upper,
+            };
             return new CorrectedPaymentRequests(customers, labels, new PaymentJobRepository(db),
                 OrderDeck.Tests.TestHelpers.LocalShipping.Off(),
                 (_, _, _, _, _) => throw new InvalidOperationException("gönderim beklenmiyordu"), remote: remote);
