@@ -19,9 +19,12 @@ public sealed class ObifinConnection
     /// <summary>Görülen en büyük Obifin hareket Id'si; yalnız tam başarılı turda ilerler.</summary>
     public long? LastObifinTransactionId { get; set; }
     public DateTimeOffset? BackfillCompletedAt { get; set; }
-    /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an: lisans bitti ya da yönetici durdurdu
-    /// (KVKK K-6). Hizmet sonu silmesi (BankServiceEndPurgeJob) bu andan 30 gün sonra koşar; yeniden etkinleştirmede
-    /// boşaltılır. Zaten Disabled olan bağlantıda yeniden yazılmaz: sayaç baştan başlamaz.</summary>
+    /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6). Bugün yalnız lisans bitişi
+    /// yazar (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>); zaten Disabled olan bağlantıda yeniden yazılmaz.
+    /// Görev 13/14 ile: yöneticinin durdurması da yazar, hizmet sonu silmesi (BankServiceEndPurgeJob) bu andan 30 gün sonra
+    /// koşar, Disabled'dan çıkan her yol boşaltır. O zamana dek bilinen boşluk: kimlik değişimi Disabled bağlantıyı
+    /// Unverified'a çevirir ama bu alanı boşaltmaz; lisans hâlâ bitmişse sonraki koşu yeni tarih yazar, sayaç baştan
+    /// başlar (Görev 13 kapatır).</summary>
     public DateTimeOffset? DisabledAt { get; set; }
     public string? LastError { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

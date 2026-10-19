@@ -72,9 +72,10 @@ public sealed class ObifinPollJob
     }
 
     /// <summary>Tüm Verified bağlantılar; lisansı biten önce Disabled'a çekilir, çekilmez (KVKK K-6). Kiracı yalıtımı: bir
-    /// bağlantının hatası (geçici ya da beklenmeyen) döngüyü kesmez — toplanır, sıradakine geçilir, sonda tek <see cref="AggregateException"/> fırlar (Hangfire koşuyu yine
-    /// Failed gösterir). Aksi hâlde sürekli düşen bir bağlantı, sırada ondan sonra gelen yayıncıları her koşuda aç
-    /// bırakırdı. Yalnız işin kendi iptali döngüyü hemen keser.</summary>
+    /// bağlantının hatası (geçici ya da beklenmeyen) döngüyü kesmez — toplanır, sıradakine geçilir, sonda tek
+    /// <see cref="AggregateException"/> fırlar (Hangfire koşuyu yine Failed gösterir). Aksi hâlde sürekli düşen bir
+    /// bağlantı, sırada ondan sonra gelen yayıncıları her koşuda aç bırakırdı. Yalnız işin kendi iptali döngüyü hemen
+    /// keser.</summary>
     public async Task RunAsync(CancellationToken ct = default)
     {
         // KVKK K-6: lisansı biten bağlantı önce Disabled'a çekilir; aşağıdaki Verified listesine girmez.

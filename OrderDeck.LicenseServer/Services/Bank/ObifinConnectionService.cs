@@ -1,8 +1,10 @@
+using System.Linq.Expressions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
@@ -110,11 +112,22 @@ public sealed class ObifinConnectionService
     public static DateTimeOffset TrToUtc(DateTime trLocal)
         => new DateTimeOffset(DateTime.SpecifyKind(trLocal, DateTimeKind.Unspecified), TrZone.GetUtcOffset(trLocal)).ToUniversalTime();
 
-    /// <summary>KVKK K-6: süresi dolmuş ya da iptal edilmiş lisansın bağlantısı <see cref="ObifinConnectionStatus.Disabled"/>'a
-    /// çekilir, <see cref="ObifinConnection.DisabledAt"/> ve <see cref="LicenseEndedMessage"/> yazılır. Zaten Disabled olan
-    /// atlanır (DisabledAt korunur: hizmet sonu sayacı baştan başlamaz). Statik: <see cref="BankHasher"/> istemez — çekim,
-    /// "Şimdi çek", hesap yenileme ve hizmet sonu işi aynı kuralı buradan kullanır. Lisansın bitmiş sayılması tek yerde
-    /// (bu sorguda) tanımlıdır.
+    /// <summary>Lisans <paramref name="now"/> anında geçerli mi: iptal edilmemiş ve süresi dolmamış (KVKK K-6). Banka modülünde
+    /// lisans kuralının tek tanımı; EF sorgusuna çevrilir. <see cref="DisableEndedLicensesAsync"/> bunun değilini "bitmiş"
+    /// sayar; Görev 13/14 ile gelecek lisans denetimleri (doğrulama, banka ekleme, lisans yenilenmesi, hizmet sonu silmesi) de
+    /// bunu kullanır. Banka modülü dışında aynı yüklem lisans denetleyen controller'larda ayrıca yazılıdır; bu ifade onların
+    /// yerine geçmez.</summary>
+    public static Expression<Func<License, bool>> LicenseActiveAt(DateTimeOffset now)
+        => l => l.RevokedAt == null && l.ExpiresAt > now;
+
+    /// <summary>KVKK K-6: lisansı <see cref="LicenseActiveAt"/>'e göre geçerli olmayan (süresi dolmuş ya da iptal edilmiş)
+    /// bağlantı <see cref="ObifinConnectionStatus.Disabled"/>'a çekilir, <see cref="ObifinConnection.DisabledAt"/> ve
+    /// <see cref="LicenseEndedMessage"/> yazılır. Zaten Disabled olan atlanır (DisabledAt korunur: hizmet sonu sayacı baştan
+    /// başlamaz). Süzgeç bilerek "Disabled değil", "Verified" değil: lisansı biten Failed/Unverified bağlantı da durur ve
+    /// tarih alır, yoksa hizmet sonu silmesine hiç girmezdi. Statik: <see cref="BankHasher"/> istemez — çekim, "Şimdi çek" ve
+    /// hesap yenileme aynı kuralı buradan kullanır (hizmet sonu işi Görev 14 ile).
+    /// <para>Lisans uzatılınca bağlantı kendiliğinden açılmaz: uzatma (<c>AdminLicensesController.Extend</c>) bağlantıya
+    /// dokunmuyor, yenilenen lisansı tanıyan yol Görev 14 ile gelir. O zamana dek elle kurtarma: plan → Prod adımları.</para>
     /// <para>Çağıranın bağlamında izlenen bir bağlantı sorguya girerse aynı örnek döner (EF kimlik çözümü) ve o örnek
     /// Disabled'a çekilir: çağıran sonra durumuna bakarak çekimi bırakabilir. <c>UpdatedAt</c> ilerler: eşzamanlı bir çekim
     /// koşusu kimlik denetiminde bunu görür ve yazmadan biter. Değişen bağlantı sayısını döner.</para>
@@ -124,9 +137,9 @@ public sealed class ObifinConnectionService
     public static async Task<int> DisableEndedLicensesAsync(LicenseDbContext db, DateTimeOffset now, ILogger log,
         CancellationToken ct, Guid? onlyConnectionId = null)
     {
+        var activeLicenseIds = db.Licenses.Where(LicenseActiveAt(now)).Select(l => l.Id);
         var query = db.ObifinConnections
-            .Where(c => c.Status != ObifinConnectionStatus.Disabled
-                && (c.License.RevokedAt != null || c.License.ExpiresAt <= now));
+            .Where(c => c.Status != ObifinConnectionStatus.Disabled && !activeLicenseIds.Contains(c.LicenseId));
         if (onlyConnectionId is { } connectionId) query = query.Where(c => c.Id == connectionId);
         var ended = await query.ToListAsync(ct);
         if (ended.Count == 0) return 0;
@@ -489,11 +502,12 @@ public sealed class ObifinConnectionService
     /// bağlantıyı, aynı uç yeniden başarı verdiğinde bile (ör. admin'in elle yenilemesi ya da banka eklemesi) insan
     /// "Doğrula"ya basana kadar yapışkan bir Failed'da bırakırdı. (Geçici hata hesap yenilemede zaten Failed yazmaz —
     /// bkz. <see cref="RefreshAccountsAsync"/>.)
-    /// <para><see cref="ObifinConnectionStatus.Disabled"/> admin'in (ya da lisans bitişinin, bkz.
-    /// <see cref="DisableEndedLicensesAsync"/>) anahtarıdır: kanıt (başarı ya da hata) onu
-    /// çevirmez, yalnız açık bir etkinleştirme çevirir. Aksi hâlde yenileme işi kapatılmış bağlantıyı sessizce
-    /// yeniden açardı. Kanıt alanları (<c>LastVerifiedAt</c>, <c>LastError</c>) yine yazılır: admin ekranı
-    /// "kapalı ama kimlik çalışıyor / son hata şu" diyebilsin.</para></summary>
+    /// <para><see cref="ObifinConnectionStatus.Disabled"/>'ı kanıt (başarı ya da hata) çevirmez: aksi hâlde yenileme işi
+    /// kapatılmış bağlantıyı sessizce yeniden açardı. Bugün Disabled'ı yalnız lisans bitişi yazar
+    /// (<see cref="DisableEndedLicensesAsync"/>) ve ondan yalnız kimlik değişimi çıkarır (<see cref="UpsertWithResultAsync"/>,
+    /// Unverified'a); yöneticinin durdurması, açık etkinleştirme ve lisans yenilenince açılma Görev 13/14 ile gelir. Kanıt
+    /// alanları (<c>LastVerifiedAt</c>, <c>LastError</c>) yine yazılır: admin ekranı "kapalı ama kimlik çalışıyor / son hata
+    /// şu" diyebilsin.</para></summary>
     private static void MarkVerified(ObifinConnection conn, DateTimeOffset now)
     {
         if (conn.Status != ObifinConnectionStatus.Disabled) conn.Status = ObifinConnectionStatus.Verified;
