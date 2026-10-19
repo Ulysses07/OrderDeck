@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -12,9 +13,29 @@ public sealed class BankHasherTests
     private static BankHasher NewHasher(string? key = null)
         => new(Options.Create(new BankOptions { HashKey = key ?? $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" }));
 
-    /// <summary>Test IBAN'ı üretir — repo public, gerçek IBAN yazılmaz.</summary>
+    /// <summary>Mod-97 geçerli TR IBAN üretir — repo public, gerçek IBAN yazılmaz. Gerçek bir hesaba denk gelemez: TR IBAN'da
+    /// 5 haneli banka kodundan sonraki rezerv hanesi bugün hep 0'dır, burada 1–9 (kontrol haneleri yine tutar, biçim yine TR
+    /// IBAN: 26 karakter, TR + 24 rakam).</summary>
     public static string TestIban()
-        => "TR" + Random.Shared.NextInt64(10_000_000_000_000_000, 99_999_999_999_999_999).ToString() + "0000000";
+        => WithCheckDigits("TR", TestPhone.Digits(5) + Random.Shared.Next(1, 10) + TestPhone.Digits(16));
+
+    /// <summary>ISO 13616 kontrol haneleriyle IBAN üretir. Üretim kodundan bağımsız hesap: test doğrulayıcının kendisini sınar.
+    /// BBAN büyük harf ve rakamdan oluşmalı.</summary>
+    public static string WithCheckDigits(string country, string bban)
+    {
+        var remainder = 0;
+        foreach (var c in bban + country + "00")
+            remainder = char.IsAsciiDigit(c) ? (remainder * 10 + (c - '0')) % 97 : (remainder * 100 + (c - 'A' + 10)) % 97;
+        return country + (98 - remainder).ToString("00") + bban;
+    }
+
+    /// <summary>Kontrol hanelerini bozar (her zaman geçersiz: geçerli kontrol hanesi tektir, 02–98 aralığında başka bir
+    /// değer kalanı değiştirir).</summary>
+    public static string WrongCheckDigits(string iban)
+    {
+        var check = int.Parse(iban[2..4]);
+        return iban[..2] + (check == 98 ? 2 : check + 1).ToString("00") + iban[4..];
+    }
 
     [Fact]
     public void Ayni_iban_ayni_anahtarla_ayni_hashi_verir_bosluk_ve_kucuk_harf_farki_yok()
@@ -110,5 +131,16 @@ public sealed class BankHasherTests
     {
         var act = () => new BankHasher(Options.Create(new BankOptions { HashKey = new string('k', 31) }));
         act.Should().Throw<InvalidOperationException>().WithMessage(BankHasher.DisabledMessage);
+    }
+
+    [Fact]
+    public void Kontrol_hanesi_denetimi_gecerli_IBANi_kabul_eder_bozugu_reddeder()
+    {
+        var iban = TestIban();
+        BankHasher.HasValidIbanChecksum(iban).Should().BeTrue();
+        BankHasher.HasValidIbanChecksum(WrongCheckDigits(iban)).Should().BeFalse();
+        BankHasher.HasValidIbanChecksum(iban[..10] + "******" + iban[16..]).Should().BeFalse("harf/rakam dışı karakter");
+        BankHasher.HasValidIbanChecksum(iban.ToLowerInvariant()).Should().BeFalse("büyük harfli, boşluksuz değer bekler");
+        BankHasher.HasValidIbanChecksum("TR1").Should().BeFalse("kısa değer");
     }
 }

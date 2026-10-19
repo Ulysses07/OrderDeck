@@ -315,7 +315,9 @@ public sealed class ObifinPollJob
                 Direction = BankTransactionDirection.Incoming,
                 Amount = dto.SignedAmount, Currency = Trim(dto.Currency, 3),
                 OccurredAt = ObifinConnectionService.TrToUtc(dto.OccurredAtTr),
-                Description = Trim(dto.Description, 512), TransactionCode = Trim(dto.TransactionCode, 32),
+                // KVKK Ö-16: açıklamadaki IBAN ve 11 haneli numara maskelenerek yazılır (kırpmadan önce: 512 sınırı IBAN'ın
+                // ortasına düşerse kırpılmış baş hiçbir kalıba uymaz).
+                Description = Trim(BankDescriptionMasker.Mask(dto.Description), 512), TransactionCode = Trim(dto.TransactionCode, 32),
                 CommonType = Trim(dto.CommonType, 64), BankReference = Trim(dto.BankReference, 64),
                 CounterpartyIbanHash = _hasher.HashIban(dto.CounterpartyIban),
                 CounterpartyIbanMasked = masked.Length == 0 ? null : masked,

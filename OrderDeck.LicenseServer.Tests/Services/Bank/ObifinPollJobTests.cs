@@ -959,4 +959,38 @@ public sealed class ObifinPollJobTests
 
         (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).DisabledAt.Should().Be(first);
     }
+
+    [Fact]
+    public async Task Aciklamadaki_IBAN_ve_on_bir_haneli_numara_maskelenerek_yazilir()
+    {
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var iban = BankHasherTests.TestIban();
+        var tckn = TestTckn.NewValid();
+        client.Transactions.Add(Tx(21, new DateTime(2026, 9, 25, 10, 0, 0), 50m, $"HAVALE {iban} {tckn} ornek_musteri34"));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var tx = await db.BankTransactions.SingleAsync();
+        tx.Description.Should().Be($"HAVALE {BankHasher.MaskIban(iban)} {BankDescriptionMasker.ElevenDigitMask} ornek_musteri34");
+    }
+
+    [Fact]
+    public async Task Kirpilan_uzun_aciklamada_IBAN_kirpmadan_once_maskelenir()
+    {
+        // 512 karakter sınırı IBAN'ın ortasına düşerse önce kırpmak IBAN'ın başını (TR + 9 rakam) düz bırakırdı: ne IBAN ne
+        // 11 hane kalıbına uyar. Maske önce uygulanır, kırpma maskelenmiş metne.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var iban = BankHasherTests.TestIban();
+        var filler = new string('x', 500);
+        client.Transactions.Add(Tx(22, new DateTime(2026, 9, 25, 10, 0, 0), 50m, $"{filler} {iban}"));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var tx = await db.BankTransactions.SingleAsync();
+        tx.Description.Should().Be($"{filler} {BankHasher.MaskIban(iban)}").And.NotContain(iban[..11]);
+    }
 }

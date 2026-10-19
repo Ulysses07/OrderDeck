@@ -58,6 +58,22 @@ public sealed class BankHasher
         return compact.Length < 8 ? compact : compact[..4] + "…" + compact[^3..];
     }
 
+    /// <summary>ISO 13616 / ISO 7064 MOD 97-10: boşluksuz, büyük harfli değerin ilk dört karakteri sona alınır, harfler 10–35'e
+    /// çevrilir, kalan 1 olmalı. Biçim (ülke, uzunluk) denetlemez — çağıran yapar; ASCII büyük harf/rakam dışı karakterde
+    /// (küçük harf dahil) false.</summary>
+    public static bool HasValidIbanChecksum(string compactUpper)
+    {
+        if (compactUpper.Length < 5) return false;
+        var remainder = 0;
+        foreach (var c in compactUpper[4..] + compactUpper[..4])
+        {
+            if (char.IsAsciiDigit(c)) remainder = (remainder * 10 + (c - '0')) % 97;
+            else if (char.IsAsciiLetterUpper(c)) remainder = (remainder * 100 + (c - 'A' + 10)) % 97;
+            else return false;
+        }
+        return remainder == 1;
+    }
+
     private static string Compact(string value)
         => new string(value.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
 
