@@ -325,6 +325,43 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Baglanti_gelince_kuyruk_temizlenirse_bekletme_notu_kalkar_ilgisiz_not_kalir()
+    {
+        const string printHeld =
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.";
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
+        var remoteId = remote.ToString("N");
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+        s.Vm.SalesPushWarning.Should().Be(printHeld, "ön koşul: bekletme notu şeritte");
+        // Bekletilen satır kuyruktayken başka bir satırı çıkarmak notu kaldırmaz: satır hâlâ bekliyor.
+        MainShellTestHarness.EnqueueLabel(s.Vm, "@canli_alici", 100m);
+        s.Vm.SelectedQueueItems.Add(s.Vm.PrintQueue.Last());
+        await s.Vm.RemoveSelectedFromQueueCommand.ExecuteAsync(null);
+        QueueIds(s).Should().Equal([remoteId], "ön koşul: canlı satır kuyruktan çıktı");
+        s.Vm.SalesPushWarning.Should().Be(printHeld, "bekletilen satır kuyrukta: not hâlâ doğru");
+        // Şeritte bekletme notundan bağımsız bir uyarı da var (ör. arka planda işlenemeyen bir komut).
+        const string unrelated = "1 etiketin bekleyen iptali sunucuda işlenemedi; tekrar dene.";
+        s.Vm.ShowSalesNotice([], [unrelated]);
+
+        // Bağlantı geldi; operatör satırı basmak yerine kuyruğu temizler — kuyruk baskısı yok.
+        s.Bed.Online = true;
+        s.Bed.StateReceivedAt = DateTimeOffset.UtcNow;
+        s.H.Dialogs.ConfirmResult = _ => true;
+        await s.Vm.ClearQueueCommand.ExecuteAsync(null);
+
+        s.Vm.PrintQueue.Should().BeEmpty("ön koşul: satır sunucuda iptal edildi");
+        s.Bed.Server.CommandCalls.Should().ContainSingle().Which.Command.Kind.Should().Be("cancel");
+        s.H.Printer.Calls.Should().BeEmpty("ön koşul: hiçbir şey basılmadı");
+        s.Vm.SalesPushWarning.Should().Be(unrelated,
+            "kuyrukta bekletilen satır kalmadı: \"kuyrukta bekliyor\" bayat, bekletme notu kalkar, ilgisiz not operatör "
+          + "kapatana kadar kalır");
+    }
+
+    [Fact]
     public async Task Baska_bilgisayarin_satiri_orada_zaten_basilmissa_serit_zaten_basilmisti_der()
     {
         using var s = Build();

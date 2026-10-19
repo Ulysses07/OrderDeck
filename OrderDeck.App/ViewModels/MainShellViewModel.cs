@@ -2167,6 +2167,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var notes = result.NoticeTexts.ToList();
         if (result.ProblemText is { } problem) notes.Insert(0, problem);
         if (notes.Count > 0) ShowSalesNotice([], notes);
+        // §5.8: bekletilen satır kuyruktan çıktıysa (ör. bağlantı geldi, "Kuyruğu temizle") "kuyrukta bekliyor" notu
+        // bayat — şeritten kalkar. Bekletilen satır kuyrukta kaldıysa (çevrimdışı iptali uygulanamadı) not kalır.
+        ClearStaleHeldNotice();
     }
 
     /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.

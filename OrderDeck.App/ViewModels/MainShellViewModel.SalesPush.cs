@@ -40,9 +40,9 @@ public sealed partial class MainShellViewModel
 
     /// <summary><see cref="_pendingNotes"/>'taki bekletilen satır notu (§5.8: baskının <c>PrintHeld</c>'i ya da "Yayını
     /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
-    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyruk baskısından ya da "Yayını bitir"den
-    /// sonra kuyrukta bekletilen satır kalmadıysa kalkar (<see cref="ClearStaleHeldNotice"/>). Başka yol (ör. kuyruktan
-    /// çıkarma) onu kaldırmaz: şerit kapatılana kadar kalır.</summary>
+    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyruk baskısından, kuyruktan çıkarmadan
+    /// ("Kuyruktan çıkar", "Kuyruğu temizle") ya da "Yayını bitir"den sonra kuyrukta bekletilen satır kalmadıysa kalkar
+    /// (<see cref="ClearStaleHeldNotice"/>). Başka yol onu kaldırmaz: şerit kapatılana kadar kalır.</summary>
     private string? _heldNote;
 
     /// <summary>Gönderim sonucunun uyarı şeridi; null = şerit kapalı.</summary>
@@ -92,7 +92,8 @@ public sealed partial class MainShellViewModel
 
     /// <summary>Kuyrukta bekletilen satır kalmadıysa (bağlantı geldi ve basıldı ya da artık bekletilmiyor) bekletme notu
     /// (<see cref="_heldNote"/>) bayattır: şeritten kalkar, diğer notlar kalır; hiç not kalmadıysa şerit kapanır. Kuyruk
-    /// baskısından ve "Yayını bitir"den sonra. Not yoksa (mod Off dahil) hiçbir şey yapmaz. UI iş parçacığında.</summary>
+    /// baskısından, kuyruktan çıkarmadan ve "Yayını bitir"den sonra. Not yoksa (mod Off dahil) hiçbir şey yapmaz. UI iş
+    /// parçacığında.</summary>
     private void ClearStaleHeldNotice()
     {
         if (_heldNote is not { } note) return;
