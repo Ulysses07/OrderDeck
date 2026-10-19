@@ -3,7 +3,7 @@ namespace OrderDeck.LicenseServer.Domain.Bank;
 public enum BankTransactionDirection { Incoming = 0, Outgoing = 1 }
 
 /// <summary>Obifin'den çekilen tek hareket. (LicenseId, ObifinId) tekil → idempotent yazım.
-/// Karşı IBAN/VKN yalnız hash + maske (spec §7); ham JSON ve açıklama süreli (§5).</summary>
+/// Karşı IBAN yalnız özet + maske (spec §7); karşı tarafın VKN/TCKN'si yazılmaz (KVKK Ö-2); ham JSON ve açıklama süreli (§5).</summary>
 public sealed class BankTransaction
 {
     public Guid Id { get; set; }
@@ -24,6 +24,8 @@ public sealed class BankTransaction
     public string? CounterpartyIbanHash { get; set; }
     public string? CounterpartyIbanMasked { get; set; }
     public string? CounterpartyName { get; set; }
+    /// <summary>YAZILMAZ (KVKK Ö-2, 2026-10). Sütun genişlet/daralt kuralıyla bir sonraki sürümde düşürülür; eski değerleri
+    /// <c>bank-data-cleanup</c> boşaltır. Yeni kod bu alanı okumamalı.</summary>
     public string? CounterpartyTaxIdHash { get; set; }
     public string? RawJson { get; set; }
     public DateTimeOffset FetchedAt { get; set; }

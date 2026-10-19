@@ -236,7 +236,6 @@ public sealed class ObifinClientTests
         page.Items[0].OccurredAtTr.Should().Be(new DateTime(2022, 10, 10, 12, 7, 30));
         page.Items[0].CounterpartyIban.Should().Be(karsiIban);
         page.Items[0].CounterpartyName.Should().BeNull("JSON null");
-        page.Items[0].CounterpartyTaxId.Should().BeNull("boş string null sayılır");
         page.Items[0].RawJson.Should().Contain("\"Id\":\"326404\"");
     }
 

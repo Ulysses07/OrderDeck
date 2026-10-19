@@ -139,7 +139,7 @@ public sealed class ObifinPollJobTests
     }
 
     private static ObifinTransactionDto Tx(long id, DateTime whenTr, decimal signed, string desc = "HAVALE test", string? iban = null)
-        => new(id, 6, "qnb", whenTr, signed, "TL", desc, "FT", "EFT", $"ref-{id}", iban, null, null, $"{{\"Id\":\"{id}\"}}");
+        => new(id, 6, "qnb", whenTr, signed, "TL", desc, "FT", "EFT", $"ref-{id}", iban, null, $"{{\"Id\":\"{id}\"}}");
 
     private static (ObifinPollJob Job, ObifinConnectionService Svc, RecordingSink Sink) Build(LicenseDbContext db, ScriptedObifin client,
         DateOnly todayTr, ObifinOptions? jobOptions = null, ILogger<ObifinPollJob>? log = null)
@@ -378,7 +378,7 @@ public sealed class ObifinPollJobTests
         var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
         var raw = $$"""{"Id":"9","KarsiHesapIBAN":"{{iban}}","BorcluVKN":"{{vkn}}","GonderenAdi":"Ad Soyad"}""";
         client.Transactions.Add(new ObifinTransactionDto(9, 6, "qnb", new DateTime(2026, 9, 25, 12, 0, 0), 10m, "TL",
-            "EFT", "FT", "EFT", "ref-9", iban, "Ad Soyad", vkn, raw));
+            "EFT", "FT", "EFT", "ref-9", iban, "Ad Soyad", raw));
 
         await job.RunAsync(CancellationToken.None);
 
@@ -386,7 +386,7 @@ public sealed class ObifinPollJobTests
         tx.RawJson.Should().NotContain(iban).And.NotContain(vkn).And.Contain("[redakte]").And.Contain("Ad Soyad");
         tx.CounterpartyIbanHash.Should().HaveLength(64);
         tx.CounterpartyIbanMasked.Should().Be(BankHasher.MaskIban(iban));
-        tx.CounterpartyTaxIdHash.Should().HaveLength(64);
+        tx.CounterpartyTaxIdHash.Should().BeNull("VKN/TCKN kodu amaçsız: yazılmaz (KVKK Ö-2)");
         tx.CounterpartyName.Should().Be("Ad Soyad");
     }
 
@@ -401,7 +401,7 @@ public sealed class ObifinPollJobTests
         db.BankAccounts.Add(known); await db.SaveChangesAsync();
         client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 10m));   // hesap 6 = bilinen
         client.Transactions.Add(new ObifinTransactionDto(2, 99, "qnb", new DateTime(2026, 9, 25, 8, 2, 0), 10m, "TL",
-            null, null, null, null, null, null, null, "{}"));                       // hesap 99 bilinmiyor
+            null, null, null, null, null, null, "{}"));                       // hesap 99 bilinmiyor
 
         await job.RunAsync(CancellationToken.None);
 

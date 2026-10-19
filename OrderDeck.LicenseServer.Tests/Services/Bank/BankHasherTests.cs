@@ -5,8 +5,8 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 
-/// <summary>IBAN/VKN düz saklanmaz; HMAC anahtarı olmadan hash'ten geri dönülemez,
-/// aynı değer aynı hash'i verir (hafıza araması), maskeleme yalnız görüntü içindir.</summary>
+/// <summary>IBAN düz saklanmaz; HMAC anahtarı olmadan özetten IBAN elde edilemez, aynı değer aynı özeti verir (hafıza
+/// araması), maskeleme yalnız görüntü içindir. VKN/TCKN artık özetlenmez (KVKK Ö-2).</summary>
 public sealed class BankHasherTests
 {
     private static BankHasher NewHasher(string? key = null)
@@ -110,49 +110,5 @@ public sealed class BankHasherTests
     {
         var act = () => new BankHasher(Options.Create(new BankOptions { HashKey = new string('k', 31) }));
         act.Should().Throw<InvalidOperationException>().WithMessage(BankHasher.DisabledMessage);
-    }
-
-    [Fact]
-    public void Vkn_hashinde_yalniz_rakamlar_sayilir_ayni_vkn_ayni_hash()
-    {
-        var h = NewHasher();
-        var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
-        var hash = h.HashTaxId(vkn);
-
-        hash.Should().HaveLength(64, "SHA-256 hex");
-        h.HashTaxId(vkn).Should().Be(hash, "aynı VKN aynı hash");
-        h.HashTaxId($" {vkn[..3]} {vkn[3..]} ").Should().Be(hash, "boşluk atılır");
-        h.HashTaxId($"VKN: {vkn}").Should().Be(hash, "harf ve noktalama atılır");
-    }
-
-    [Fact]
-    public void Vkn_bos_rakamsiz_veya_kalinti_ise_hash_uretmez()
-    {
-        var h = NewHasher();
-        h.HashTaxId(null).Should().BeNull();
-        h.HashTaxId("").Should().BeNull();
-        h.HashTaxId("   ").Should().BeNull();
-        h.HashTaxId("VKN").Should().BeNull();
-        h.HashTaxId("0").Should().BeNull("tek rakam kimlik değildir; hash'i olsaydı eşleştirici delil sanabilirdi");
-        h.HashTaxId("-").Should().BeNull();
-    }
-
-    /// <summary>VKN 10, TCKN 11 rakamdır. Daha kısa kalıntı (9 rakam) hash'lenmez; aksi hâlde
-    /// bozuk bir alan sonraki eşleştiricide kimlik kanıtı gibi eşleşebilirdi.</summary>
-    [Theory]
-    [InlineData(1, false)]
-    [InlineData(9, false)]
-    [InlineData(10, true)]
-    [InlineData(11, true)]
-    public void Vkn_hashi_yalniz_10_veya_daha_fazla_rakamda_uretilir(int digitCount, bool expectHash)
-    {
-        var h = NewHasher();
-        // Üretilmiş rakam dizisi (repo public — gerçek VKN/TCKN yazılmaz).
-        var value = string.Concat(Enumerable.Range(0, digitCount).Select(_ => Random.Shared.Next(0, 10)));
-
-        var hash = h.HashTaxId(value);
-
-        if (expectHash) hash.Should().MatchRegex("^[0-9a-f]{64}$", "HMAC-SHA256 küçük hex");
-        else hash.Should().BeNull();
     }
 }

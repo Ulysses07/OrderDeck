@@ -113,7 +113,6 @@ public sealed class ObifinClient : IObifinClient
                 BankReference: Str(row, "IslemNo"),
                 CounterpartyIban: Str(row, "KarsiHesapIBAN"),
                 CounterpartyName: Str(row, "GonderenAdi"),
-                CounterpartyTaxId: Str(row, "BorcluVKN") ?? Str(row, "AmirVKN") ?? Str(row, "LehdarTCKN"),
                 RawJson: row.GetRawText());
         });
         return new ObifinPage<ObifinTransactionDto>(items,

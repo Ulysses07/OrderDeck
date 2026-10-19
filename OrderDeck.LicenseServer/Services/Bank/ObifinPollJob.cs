@@ -27,8 +27,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// hesabın satırlarını ne eski imleci ne eski kimliğin hatasını geri yazmalı: hareket/imleç/hata kaydeden HER
 /// SaveChanges'ten önce UserCode/BaseUrl/UpdatedAt taze okunur, biri değiştiyse kaydedilmez.</para>
 ///
-/// <para><b>Ham JSON</b> saklanmadan önce IBAN/VKN/TCKN alanları redakte edilir
-/// (<see cref="BankRawJsonRedactor"/>); hash + maske DTO'nun ham değerinden üretilir.</para>
+/// <para><b>Ham JSON</b> saklanmadan önce redakte edilir (<see cref="BankRawJsonRedactor"/>); IBAN özeti + maske DTO'nun
+/// ham değerinden üretilir. Karşı tarafın VKN/TCKN'si okunmaz ve yazılmaz (KVKK Ö-2).</para>
 /// </summary>
 [DisableConcurrentExecution(LockResource, 300)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
@@ -305,7 +305,7 @@ public sealed class ObifinPollJob
                 _db.BankAccounts.Add(account);
                 accounts[dto.AccountId] = account;
             }
-            // Hash + maske ham DTO değerinden; sütuna ham IBAN/VKN girmez (DB CHECK kısıtı da 64 hex ister).
+            // IBAN özeti + maske ham DTO değerinden; sütuna ham IBAN girmez (DB CHECK kısıtı da 64 hex ister).
             // Boş maske ("") null saklanır: MaskIban ham girdiyi döndürmez, boş değer görüntüde yer tutmasın.
             var masked = BankHasher.MaskIban(dto.CounterpartyIban);
             var tx = new BankTransaction
@@ -320,7 +320,6 @@ public sealed class ObifinPollJob
                 CounterpartyIbanHash = _hasher.HashIban(dto.CounterpartyIban),
                 CounterpartyIbanMasked = masked.Length == 0 ? null : masked,
                 CounterpartyName = Trim(dto.CounterpartyName, 160),
-                CounterpartyTaxIdHash = _hasher.HashTaxId(dto.CounterpartyTaxId),
                 RawJson = BankRawJsonRedactor.Redact(dto.RawJson), FetchedAt = now,
             };
             _db.BankTransactions.Add(tx);

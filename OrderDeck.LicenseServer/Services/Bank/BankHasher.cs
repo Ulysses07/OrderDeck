@@ -6,15 +6,12 @@ using Microsoft.Extensions.Options;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
-/// IBAN/VKN için HMAC-SHA256 (spec §7). Düz SHA yetersiz: IBAN'ın entropisi düşük,
-/// sızan tablo sözlükle çözülür. Anahtar yalnız sunucuda; hash yalnız "aynı mı" sorusuna
-/// cevap verir (hafıza araması), geri dönüş yoktur.
+/// IBAN için HMAC-SHA256 (spec §7). Düz SHA yetersiz: IBAN'ın entropisi düşük, sızan tablo sözlükle çözülür. Anahtar yalnız
+/// sunucuda; özet yalnız "aynı mı" sorusuna cevap verir (hafıza araması). Anahtarı bilmeyen özetten IBAN elde edemez; anahtarı
+/// bilen aday IBAN'ları deneyerek bulabilir — özet ve maske bu yüzden kişisel veri sayılır (KVKK Ö-6). VKN/TCKN özetlenmez.
 /// </summary>
 public sealed class BankHasher
 {
-    /// <summary>VKN 10 rakam — bundan kısa bir değer vergi kimliği değildir.</summary>
-    public const int MinTaxIdDigits = 10;
-
     /// <summary>Spec §7: HMAC anahtarı en az bu kadar BAYT (UTF-8) — karakter değil.</summary>
     public const int MinKeyBytes = 32;
 
@@ -43,16 +40,6 @@ public sealed class BankHasher
     {
         var norm = NormalizeIban(iban);
         return norm is null ? null : Hmac(norm);
-    }
-
-    /// <summary>Yalnız rakamlar sayılır. VKN 10, TCKN 11 rakamdır; <see cref="MinTaxIdDigits"/>'ten
-    /// kısa kalıntı ("0", "-", 9 rakam) null döner — hash'i olsaydı sonraki eşleştirici onu
-    /// kimlik kanıtı sanabilirdi.</summary>
-    public string? HashTaxId(string? taxId)
-    {
-        if (string.IsNullOrWhiteSpace(taxId)) return null;
-        var digits = new string(taxId.Where(char.IsAsciiDigit).ToArray());
-        return digits.Length < MinTaxIdDigits ? null : Hmac(digits);
     }
 
     public static string? NormalizeIban(string? iban)

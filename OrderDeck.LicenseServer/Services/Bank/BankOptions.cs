@@ -1,7 +1,7 @@
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>`OrderDeck:Bank` bölümü. <see cref="HashKey"/> .env'den gelir (Bitwarden'da yedek);
-/// IBAN/VKN hash'leri bu anahtarla HMAC'lenir — anahtar değişirse eski hash'ler eşleşmez.</summary>
+/// IBAN özetleri bu anahtarla HMAC'lenir — anahtar değişirse eski özetler eşleşmez. VKN/TCKN özetlenmez (KVKK Ö-2).</summary>
 public sealed class BankOptions
 {
     public string HashKey { get; set; } = "";
