@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -13,8 +14,13 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kullanıcı adları eşleşmez — eşleştirici açıklamadaki kullanıcı adına bakıyor. Kontrol hanesi tutmayan dizi (yanlış yazılmış
 /// IBAN) maskelenmez: kalıbı sınırsız bırakmanın bedeli. Tutmayan adaydan sonra arama bir karakter ileriden sürer: önündeki
 /// "TR" + 7 rakam gerçek IBAN'ın başını yutup onu düz bırakmasın.</item>
-/// <item>Harf ya da rakama bitişik OLMAYAN 11 haneli rakam dizisi (TCKN, cep telefonu) <see cref="ElevenDigitMask"/> olur.
-/// Harfe bitişik dizi kullanıcı adının parçası olabilir: maskelenmez (bedeli: isme bitişik yazılmış TCKN düz kalır).</item>
+/// <item>Rakama bitişik olmayan 11 haneli rakam dizisi (TCKN, cep telefonu) <see cref="ElevenDigitMask"/> olur. Tek başına
+/// duran dizi (komşusu boşluk, noktalama ya da metin sınırı) her zaman maskelenir. Harfe bitişik dizi kullanıcı adının parçası
+/// olabilir; yalnız TCKN kontrol hanelerini tutuyorsa (<see cref="TcknValidator"/>) maskelenir: kimlik numarasının en doğal
+/// yazımları (<c>TC</c>/<c>TCKN</c>/<c>TCNO</c> önekli, isme bitişik) harfe bitişik. TCKN 0 ile başlamadığı için kullanıcı
+/// adındaki "0" ile başlayan telefon hiç etkilenmez; harfe bitişik rastgele 11 hane yaklaşık %1 olasılıkla (9/1000) TCKN gibi
+/// görünüp maskelenir — IBAN'daki mod-97 ile aynı türden, gizlilik yönünde bedel. '_' ya da '.' harf değildir: onlarla ayrılmış
+/// 11 hane maskelenir; o kullanıcı adı açıklamadan eşleşmez.</item>
 /// </list>
 /// Maske kırpmadan ÖNCE uygulanır: sütun sınırı IBAN'ın ortasına düşerse kırpılmış baş hiçbir kalıba uymaz. Saf ve
 /// idempotent: maskelenmiş metin yeniden maskelenince değişmez (bank-data-cleanup buna dayanır).
@@ -28,14 +34,25 @@ public static partial class BankDescriptionMasker
     [GeneratedRegex(@"[Tt][Rr]\s?[0-9]\s?[0-9](?:\s?[0-9]){5}(?:\s?[0-9A-Za-z]){17}", RegexOptions.CultureInvariant)]
     private static partial Regex TrIban();
 
-    [GeneratedRegex(@"(?<![\p{L}\p{N}])\d{11}(?![\p{L}\p{N}])", RegexOptions.CultureInvariant)]
+    // Sınır yalnız rakam; harf komşuluğu eşleşmeden sonra MaskElevenDigits'te tartılır.
+    [GeneratedRegex(@"(?<!\p{N})\d{11}(?!\p{N})", RegexOptions.CultureInvariant)]
     private static partial Regex ElevenDigits();
 
     public static string? Mask(string? text)
     {
         if (string.IsNullOrEmpty(text)) return text;
-        return ElevenDigits().Replace(MaskIbans(text), ElevenDigitMask);
+        return MaskElevenDigits(MaskIbans(text));
     }
+
+    private static string MaskElevenDigits(string text)
+        => ElevenDigits().Replace(text, m =>
+        {
+            var letterBefore = m.Index > 0 && char.IsLetter(text[m.Index - 1]);
+            var end = m.Index + m.Length;
+            var letterAfter = end < text.Length && char.IsLetter(text[end]);
+            // Harfe bitişik dizi kullanıcı adının parçası olabilir: yalnız TCKN kontrol hanelerini tutuyorsa maskelenir.
+            return (letterBefore || letterAfter) && TcknValidator.Validate(m.Value) is not null ? m.Value : ElevenDigitMask;
+        });
 
     private static string MaskIbans(string text)
     {

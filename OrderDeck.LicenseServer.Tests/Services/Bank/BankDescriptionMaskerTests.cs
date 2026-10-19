@@ -11,6 +11,14 @@ public sealed class BankDescriptionMaskerTests
     private static string Spaced(string iban)
         => string.Join(" ", iban.Chunk(4).Select(c => new string(c)));
 
+    /// <summary>TCKN biçimli ama kontrol hanesi tutmayan 11 hane: geçerli TCKN'nin son hanesi bir kaydırılır (son hane ilk on
+    /// hanenin toplamına bağlı; tek hane değişince hiçbir koşuda tutmaz).</summary>
+    private static string BrokenTckn()
+    {
+        var tckn = TestTckn.NewValid();
+        return tckn[..10] + (char)('0' + (tckn[10] - '0' + 1) % 10);
+    }
+
     [Fact]
     public void Bitisik_IBAN_maskelenir()
     {
@@ -75,13 +83,45 @@ public sealed class BankDescriptionMaskerTests
     }
 
     [Theory]
-    [InlineData("user")]
-    [InlineData("ş")]
-    public void Harfe_bitisik_on_bir_hane_maskelenmez(string prefix)
+    [InlineData("TC", "")]
+    [InlineData("TCKN", "")]
+    [InlineData("HAVALE TCNO", " AD SOYAD")]
+    [InlineData("HAVALE ", "AHMET")]
+    [InlineData("ş", "")]
+    public void Harfe_bitisik_gecerli_TCKN_de_yildizlanir(string before, string after)
     {
-        // Kullanıcı adının parçası olabilir (eşleştirici açıklamadaki kullanıcı adına bakıyor).
-        var digits = TestPhone.Digits(11);
-        BankDescriptionMasker.Mask($"HAVALE {prefix}{digits}").Should().Be($"HAVALE {prefix}{digits}");
+        // Kimlik numarasının en doğal yazımları harfe bitişik: "TC…", "TCKN…", isme bitişik "…AHMET". Kontrol haneleri tutan dizi
+        // komşusu harf olsa da maskelenir.
+        var tckn = TestTckn.NewValid();
+        BankDescriptionMasker.Mask($"{before}{tckn}{after}").Should().Be($"{before}{BankDescriptionMasker.ElevenDigitMask}{after}");
+    }
+
+    [Theory]
+    [InlineData("HAVALE user", "")]
+    [InlineData("ş", "")]
+    [InlineData("HAVALE ", "AHMET")]
+    public void Harfe_bitisik_TCKN_olmayan_on_bir_hane_maskelenmez(string before, string after)
+    {
+        // Kullanıcı adının parçası olabilir (eşleştirici açıklamadaki kullanıcı adına bakıyor): kontrol hanesi tutmayan dizi düz kalır.
+        var digits = BrokenTckn();
+        BankDescriptionMasker.Mask($"{before}{digits}{after}").Should().Be($"{before}{digits}{after}");
+    }
+
+    [Fact]
+    public void Kullanici_adindaki_sifirla_baslayan_telefon_degismez()
+    {
+        // TCKN 0 ile başlamaz: kullanıcı adına bitişik "0" + 10 haneli telefon hiçbir koşuda TCKN sayılmaz.
+        var text = $"HAVALE user0{TestPhone.NewNational()}";
+        BankDescriptionMasker.Mask(text).Should().Be(text);
+    }
+
+    [Fact]
+    public void Alt_cizgi_ya_da_noktayla_ayrilmis_on_bir_hane_yildizlanir()
+    {
+        // '_' ve '.' harf değil: dizi tek başına duruyor sayılır ve maskelenir (o kullanıcı adı açıklamadan eşleşmez).
+        var digits = "0" + TestPhone.NewNational();
+        BankDescriptionMasker.Mask($"ayse_{digits} ali.{digits}")
+            .Should().Be($"ayse_{BankDescriptionMasker.ElevenDigitMask} ali.{BankDescriptionMasker.ElevenDigitMask}");
     }
 
     [Theory]
@@ -105,7 +145,8 @@ public sealed class BankDescriptionMaskerTests
     {
         BankDescriptionMasker.Mask(null).Should().BeNull();
         BankDescriptionMasker.Mask("").Should().Be("");
-        var once = BankDescriptionMasker.Mask($"{BankHasherTests.TestIban()} {TestTckn.NewValid()}");
+        var once = BankDescriptionMasker.Mask(
+            $"{BankHasherTests.TestIban()} {TestTckn.NewValid()} TC{TestTckn.NewValid()} user{BrokenTckn()}");
         BankDescriptionMasker.Mask(once).Should().Be(once);
     }
 }
