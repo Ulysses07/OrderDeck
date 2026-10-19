@@ -140,10 +140,18 @@ public class BackupServiceTests : IDisposable
         sut.QueueBackup("test1");
         sut.QueueBackup("test2");  // should be skipped (single-flight)
 
-        await startedSignals.WaitAsync(TimeSpan.FromSeconds(2));
-        releaseSignals.Release();
-        await Task.Delay(200);
-
-        fake.Uploads.Count.Should().Be(1, because: "second QueueBackup detected active and skipped");
+        // Yükleme sahteye ancak anlık görüntü + zip + SHA'dan sonra ulaşır; yavaş
+        // runner'da bu saniyeler sürer. Sabit bekleme yerine sinyalin kendisi
+        // beklenir ve sayım, ilk yükleme sahtede tutulurken yapılır.
+        try
+        {
+            (await startedSignals.WaitAsync(TimeSpan.FromSeconds(30))).Should().BeTrue(
+                because: "ilk yedek sahte istemciye ulaşmalı");
+            fake.Uploads.Count.Should().Be(1, because: "second QueueBackup detected active and skipped");
+        }
+        finally
+        {
+            releaseSignals.Release();
+        }
     }
 }
