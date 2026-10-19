@@ -320,6 +320,27 @@ public sealed class DekontShipmentCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Kargo_Ucreti_Eksik_cekmecesinden_vazgecilirse_hicbir_sey_yazilmaz_komut_gitmez()
+    {
+        Threshold(1000m, 60m);
+        var (_, customer, order) = await _bed.RemoteLabelAsync(150m);
+        _bed.ModeOn();
+        var drawers = new Drawers { Directive = null };                    // Vazgeç
+        var vm = Vm("150", drawers);                                       // kargo ücreti eksik
+
+        (await vm.SaveAsync()).Should().BeFalse("çekmece açık kalır, form düzeltilebilsin");
+
+        drawers.Titles.Should().Equal(["Kargo Ücreti Eksik"]);
+        Server.CommandCalls.Should().BeEmpty("vazgeçince kargo adımı başlamaz");
+        PaymentRows().Should().Be(0);
+        ShipmentRows().Should().Be(0);
+        _bed.LabelRepo.GetById(N(order))!.ShipmentId.Should().BeNull();
+        _bed.Customers.GetById(N(customer))!.RecipientPaysActive.Should().BeFalse();
+        vm.ShipmentWarning.Should().BeNull();
+        vm.CanSave.Should().BeTrue("form yeniden kaydedilebilir");
+    }
+
+    [Fact]
     public async Task Kargolanmis_dosyaya_karar_satir_ici_uyari_ayna_guncel_dosyayla_tazelenir()
     {
         Threshold(100m, 50m);
