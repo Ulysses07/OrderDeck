@@ -1068,15 +1068,16 @@ public class LicenseDbContext : DbContext
              .HasMaxLength(CustomerBalanceTransaction.SaleScopeMaxLength);
             b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.SaleScope })
              .HasFilter("[SaleScope] IS NOT NULL");
-            // Ortak bakiye (spec §3.1): grup okuması ve geri alma. TEKİL DEĞİL — kimlik birleşmesi aynı çekimin iki
-            // bacağını aynı satıra taşıyabilir (CustomerIdentityMerger), geri alma bacak başına yazılır.
+            // Ortak bakiye (spec §3.1): grup okuması ve geri alma. TEKİL DEĞİL — bir grubun bütün satırları (çapa ve
+            // bacaklar) aynı DrawGroupId'yi taşır. Bacak başına (DrawGroupId, WpfCustomerId) tekilliği de kurulamaz:
+            // kimlik birleşmesi aynı çekimin iki bacağını aynı satıra taşıyabilir (CustomerIdentityMerger).
             b.HasIndex(t => t.DrawGroupId)
              .HasFilter("[DrawGroupId] IS NOT NULL")
              .HasDatabaseName("IX_CustomerBalanceTransactions_DrawGroupId");
         });
 
-        // Ortak bakiye denetiminin taban çizgisi (spec §3.1, §7.3). Projeksiyona FK yok: lisans işareti satırı
-        // (WpfCustomerId = Guid.Empty) ve S1 öncesi kopyalar için. Lisans silinince cascade.
+        // Ortak bakiye denetiminin taban çizgisi (spec §3.1, §7.3). Projeksiyona FK yok, çünkü
+        // WpfCustomerId = Guid.Empty lisans işaret satırıdır (hiçbir projeksiyona karşılık gelmez). Lisans silinince cascade.
         mb.Entity<PersonBalanceBaseline>(b =>
         {
             b.HasKey(x => new { x.LicenseId, x.WpfCustomerId });

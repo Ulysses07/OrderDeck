@@ -8,7 +8,7 @@ namespace OrderDeck.LicenseServer.Domain;
 ///
 /// <para><see cref="WpfCustomerId"/> = <see cref="Guid.Empty"/> satırı lisansın "taban alındı" işaretidir: yakalama
 /// anında hiç sapması olmayan lisans da işaret alır, uyarılar onun için de açılır (plan "Spec ↔ kod farkları" 7).
-/// Projeksiyona FK yok — işaret satırı ve silinen projeksiyonlar için.</para>
+/// Projeksiyona FK yok, çünkü işaret satırı (<see cref="Guid.Empty"/>) hiçbir projeksiyona karşılık gelmez.</para>
 /// </summary>
 public sealed class PersonBalanceBaseline
 {

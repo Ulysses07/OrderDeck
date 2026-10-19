@@ -78,8 +78,8 @@ public sealed class PaymentPersonResolver
 
     /// <summary>
     /// Sahibin grubundaki asıl kayıtlar ("N" hex, ordinal sıralı): lisansın kopya olmayan projeksiyonlarından
-    /// <c>GroupId</c>'si sahibinkiyle ORDINAL eşit olanlar. SQL harf duyarsız ve sondaki boşluğu yok sayarak getirir; eşitlik
-    /// bellekte denetlenir (ortak bakiye §4.13'ün yöntemi; <c>GroupId</c> BIN2'ye geçtikten sonra da doğru kalır).
+    /// <c>GroupId</c>'si sahibinkiyle ORDINAL eşit olanlar. Kolon BIN2: SQL harf farkını ayırır ama sondaki boşluğu yine
+    /// yutarak getirir; kesin eşitlik bellekte, ordinal denetlenir (ortak bakiye §4.13'ün yöntemi).
     /// Gruplanmamış sahipte boş.
     /// </summary>
     public async Task<IReadOnlyList<string>> ServerGroupAsync(Guid licenseId, string? groupId, CancellationToken ct)

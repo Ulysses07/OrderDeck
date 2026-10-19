@@ -6,14 +6,23 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     /// <summary>
-    /// Ortak bakiye S1 (spec 2026-10-11 §3.1). Yalnız ekleyici: <c>CustomerBalanceTransactions.DrawGroupId</c> +
-    /// filtreli tekil OLMAYAN indeks; <c>WpfCustomerProjections.GroupId</c> BIN2 harmanı + (LicenseId, GroupId)
-    /// filtreli indeks; <c>Licenses.PersonBalancePoolSince</c>; <c>PersonBalanceBaselines</c> tablosu.
+    /// Ortak bakiye S1 (spec 2026-10-11 §3.1): <c>CustomerBalanceTransactions.DrawGroupId</c> + filtreli tekil OLMAYAN
+    /// indeks; <c>WpfCustomerProjections.GroupId</c> BIN2 harmanı + (LicenseId, GroupId) filtreli indeks;
+    /// <c>Licenses.PersonBalancePoolSince</c>; <c>PersonBalanceBaselines</c> tablosu.
+    ///
+    /// <para><b>Ekleyici, tek istisna harman.</b> Kolon, indeks ve tablo eklenir; S1 öncesi imajın yazımları yeni şemada
+    /// sürer. Ekleyici olmayan tek adım <c>GroupId</c>'nin harmanıdır ve deploy'un otomatik geri almasından sonra (imaj
+    /// döner, şema kalır) S1 öncesi imajın sonucunu değiştirmez: o imajda <c>GroupId</c>'yi SQL'de okuyan üç yer —
+    /// <c>CustomerGroupUnion.LoadGroupRowsAsync</c>, <c>CustomerGroupingJob</c>'un grup üyeleri okuması,
+    /// <c>PaymentPersonResolver.ServerGroupAsync</c> — SQL'de en çok aday daraltır, kesin eşlemeyi bellekte ordinal yapar.
+    /// BIN2'nin fazladan elediği adaylar (harf, genişlik ya da varsayılan harmanın yok saydığı bir karakterle ayrılan
+    /// numara) ordinal eşlemede de elenir.</para>
     ///
     /// <para><b>ONLINE yok, veri yazımı yok</b> (prod SQL Server Express; geri doldurma yok — eski satırların
-    /// DrawGroupId'si NULL kalır). <b>İstatistik:</b> GroupId'ye bağlı, indekse ait olmayan istatistik (otomatik
-    /// <c>_WA_Sys_*</c> ya da kullanıcı) harman değişimini engeller; önce düşürülür, motor gerekirse yeniden açar.
-    /// PersonBalanceS1MigrationTests sabitler (Developer + Express).</para>
+    /// DrawGroupId'si NULL kalır). <b>İstatistik:</b> GroupId'deki kullanıcı istatistiği harman değişimini engeller
+    /// (Msg 5074); otomatik istatistiği (<c>_WA_Sys_*</c>) <c>ALTER COLUMN</c> kendisi düşürür. Göç indekse ait olmayan
+    /// ikisini de önce düşürür (spec §3.1); motor gerekirse yeniden açar. PersonBalanceS1MigrationTests ikisi varken
+    /// sabitler (Developer + Express).</para>
     /// </summary>
     public partial class PersonBalanceS1 : Migration
     {
@@ -46,7 +55,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 type: "uniqueidentifier",
                 nullable: true);
 
-            // Harman değişiminden ÖNCE: GroupId'deki istatistik ALTER COLUMN'u engeller.
+            // Harman değişiminden ÖNCE: GroupId'deki kullanıcı istatistiği ALTER COLUMN'u engeller.
             migrationBuilder.Sql(DropGroupIdStatistics);
 
             migrationBuilder.AlterColumn<string>(

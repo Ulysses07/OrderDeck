@@ -38,8 +38,8 @@ internal static class CustomerGroupUnion
     /// <summary>Lisansın, numarası (<see cref="KeyOf"/>) verilenlerden biri olan
     /// ASIL kayıtları — silinmişler DAHİL (kara liste kaynağı olabilirler; hedef
     /// asla). İzlenen örnekler: çağıranın işleminde yazılır. SQL süzgeci yalnız
-    /// aday daraltır (kolonun varsayılan collation'ı harf farkını yok sayar);
-    /// kesin eşleme bellekte, ordinal. Bellekte de asıl kayıt süzülür: aynı
+    /// aday daraltır (kolon BIN2: harf farkını ayırır, sondaki boşluğu SQL '='
+    /// yine yutar); kesin eşleme bellekte, ordinal. Bellekte de asıl kayıt süzülür: aynı
     /// işlemde kopyaya çevrilmiş ama henüz kaydedilmemiş satır SQL'de hâlâ asıl
     /// görünür.</summary>
     internal static async Task<List<WpfCustomerProjection>> LoadGroupRowsAsync(
