@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 // OrderDeck.LicenseServer/Services/IntakeForm/KvkkNotice.cs'te). Müşteri formda
 // bu metni okuduğunu onaylıyor; IntakeFormKvkkTests bu dosyanın özetini tutuyor
 // ve metnini formdaki kopyayla blok blok karşılaştırıyor.
-const EFFECTIVE_DATE = '2026-09-04';
+const EFFECTIVE_DATE = '2026-10-19';
 
 export default function PrivacyTr() {
   return (
@@ -36,7 +36,7 @@ export default function PrivacyTr() {
 
       <h2>1. Toplanan veriler</h2>
       <p>
-        {BRAND} masaüstü uygulaması iki tür veri ile çalışır:
+        {BRAND} aşağıdaki veri türleriyle çalışır:
       </p>
 
       <h3>1.1. Lisans ve hesap verileri</h3>
@@ -86,12 +86,89 @@ export default function PrivacyTr() {
         <li>WhatsApp ve/veya SMS ile bilgilendirme mesajı almaya dair açık rıza (onay kutuları)</li>
       </ul>
       <p>
-        Bu veriler yalnızca ilgili yayıncının sipariş, kargo ve fatura süreçleri için
-        işlenir; üçüncü kişilerle pazarlama amacıyla paylaşılmaz veya satılmaz. Mesaj
+        Bu veriler yalnızca ilgili yayıncının sipariş, ödeme, kargo ve fatura süreçleri için
+        işlenir (havaleyle yapılan ödemenin kime ait olduğunun tespiti dahil, bkz. Bölüm 1.4);
+        üçüncü kişilerle pazarlama amacıyla paylaşılmaz veya satılmaz. Mesaj
         gönderimi yalnızca alıcının açıkça onay verdiği kanallardan yapılır; alıcı bu
         onayı dilediği an geri çekebilir. Bu verilerin veri sorumlusu, formu oluşturan
         yayıncıdır; {BRAND} verileri yayıncı adına barındırır ve yayıncının uygulamasına
         iletir.
+      </p>
+
+      <h3>1.4. Yayıncının banka hesap hareketleri (havale/EFT eşleştirme)</h3>
+      <p>
+        Banka bağlantısı kurulan yayıncılarda {BRAND}, yayıncının kendi banka hesabındaki
+        hareketleri, banka hesap hareketlerini toplayan hizmet sağlayıcı Obifin aracılığıyla okur.
+        Bu veriler ilgili kişilerden (örneğin havaleyi gönderen alıcıdan) değil, yayıncının
+        bankasından gelir. Toplama otomatiktir: {BRAND} sunucusu Obifin'i yaklaşık 5 dakikada
+        bir sorgular; bağlantı ilk kurulduğunda son 90 günün hareketleri bir kez alınır.
+        Bağlantıyı yayıncının talebi üzerine {BRAND} yöneticisi kurar. Bankanın web servis
+        şifresi {BRAND}'te saklanmaz, yalnızca bağlantıyı kurmak için Obifin'e iletilir; Obifin
+        erişim bilgileri sunucuda şifrelenmiş olarak tutulur. Bu özellik şu an deneme aşamasındadır.
+      </p>
+      <p>İşlenen bilgiler:</p>
+      <ul>
+        <li>Yayıncının hesabı: banka, para birimi, IBAN'ın maskeli hâli ve anahtarlı özeti</li>
+        <li>Her hareketin yönü (gelen/giden), tutarı, para birimi ve işlem zamanı</li>
+        <li>Bankanın açıklama metni: havaleyi gönderenin yazdığı açıklamayı ve çoğu bankada gönderenin adını içerir</li>
+        <li>Bankanın iletmesi hâlinde gönderen adı</li>
+        <li>İşlem kodu, işlem tipi ve banka referans numarası</li>
+        <li>
+          Karşı tarafın IBAN'ı: yalnızca anahtarlı özeti (HMAC; açık IBAN'a geri çevrilemez,
+          yalnızca aynı IBAN'ın yeniden tanınmasına yarar) ve ilk 4 ile son 3 karakteri görünen
+          maskeli hâli
+        </li>
+        <li>
+          Bankanın iletmesi hâlinde karşı tarafın vergi kimlik numarası veya T.C. Kimlik
+          Numarası: yalnızca aynı yöntemle üretilmiş anahtarlı özeti
+        </li>
+        <li>
+          Bankanın hareket için gönderdiği ham kayıt, teknik arıza incelemesi için: IBAN, vergi
+          kimlik ve T.C. kimlik numarası alanları silinmiş olarak; diğer alanlar (örneğin adlar,
+          gönderen banka ve şube, işlem sonrası hesap bakiyesi) kalır
+        </li>
+      </ul>
+      <p>
+        IBAN ve kimlik numaraları açık hâliyle ayrı bir alanda saklanmaz. Banka bu bilgileri
+        açıklama metninin içine yazmışsa, açıklama metni Bölüm 5'teki süre dolana kadar olduğu
+        gibi saklanır.
+      </p>
+      <p>
+        Okunan hareketler yalnızca yayıncının alıcılarına ait değildir: yayıncının hesabına para
+        gönderen ya da yayıncının hesabından para gönderilen herkesin (örneğin tedarikçiler, kira
+        ve maaş ödemeleri, yayıncının kendi hesapları arasındaki aktarımlar) hareketleri de aynı
+        biçimde okunur ve saklanır. Hesaptan giden hareketler eşleştirmede kullanılmaz.
+      </p>
+      <p>
+        Amaç, hesaba gelen bir havalenin yayıncının hangi müşterisinin ödemesi olduğunu tahmin
+        etmektir. Bunun için gelen havalenin açıklaması, yayıncının müşteri kayıtlarındaki
+        kullanıcı adları ve ad soyadlarla karşılaştırılır; havalenin daha önce aynı müşteriye
+        bağlanmış bir IBAN'dan gelip gelmediğine de bakılır. Tahminin doğruluğu, yayıncının
+        panelde dekont onaylarken verdiği kararla karşılaştırılarak ölçülür. Dekont onayıyla
+        ya da {BRAND} yöneticisinin elle eşlemesiyle doğrulanan bir bağdan, o IBAN'ın (yalnızca
+        özeti ve maskeli hâliyle) o müşteriye ait olduğu kaydedilir.
+      </p>
+      <p>
+        Bu aşamada hiçbir ödeme otomatik onaylanmaz ve tahminler hiçbir ödemenin durumunu
+        değiştirmez. Tahminler yayıncı paneli, masaüstü uygulaması veya müşteri uygulamasında
+        gösterilmez; yalnızca {BRAND} yöneticisi, eşleştirmenin doğruluğunu ölçmek için bir
+        yönetim sayfasında görür.
+      </p>
+      <p>
+        Bu verilerin veri sorumlusu, banka hesabı kendisine ait olan
+        yayıncıdır; {BRAND} verileri yayıncı adına ve yayıncının talimatıyla işler. Hukuki sebepler: havaleyi gönderen
+        alıcılar için alıcı ile yayıncı arasındaki satış sözleşmesinin ifası, yani ödemenin hangi
+        siparişe ait olduğunun tespiti (KVKK m. 5/2-c); yayıncının kendi hesap bilgileri için
+        yayıncı ile {BRAND} arasındaki hizmet sözleşmesinin ifası (KVKK m. 5/2-c); alıcı olmayan
+        karşı taraflar ve eşleştirmenin doğruluğunun ölçülmesi için yayıncının, gelen ödemeleri
+        doğru kişiye bağlama konusundaki meşru menfaati (KVKK m. 5/2-f). Bu işleme için açık
+        rızaya dayanılmaz.
+      </p>
+      <p>
+        Hareketler yayıncının bankasından Obifin aracılığıyla {BRAND}'e ulaşır; Obifin bu
+        hizmette {BRAND}'in yararlandığı hizmet sağlayıcıdır (alt veri
+        işleyen). {BRAND} bu verileri satmaz, pazarlama veya reklam amacıyla kullanmaz. Veriler, sunucudaki diğer
+        verilerle birlikte şifreli yedeklere (Bölüm 7) dahildir.
       </p>
 
       <h2>2. YouTube API kullanımı</h2>
@@ -197,6 +274,17 @@ export default function PrivacyTr() {
       <ul>
         <li>Hesap verileri (e-posta, lisans): hesap silinene kadar</li>
         <li>Kayıt formu ile toplanan alıcı bilgileri: ilgili yayıncı silene kadar</li>
+        <li>
+          Banka hesap hareketleri (Bölüm 1.4): ham kayıt 90 gün; açıklama metni, gönderen adı ve
+          eşleştirmenin gerekçe metni 180 gün; tutar, tarih, yön, işlem kodu, banka referans
+          numarası, maskeli IBAN, IBAN ve kimlik numarası özetleri ile eşleştirme sonucu
+          yayıncının hesabı silinene kadar. Süreler hareketin {BRAND}'e alındığı günden işler;
+          silme her gün otomatik yapılır
+        </li>
+        <li>
+          Öğrenilen IBAN–müşteri bağı (yalnızca IBAN özeti ve maskeli hâli): bağ kaldırılana,
+          ilgili kişinin silme talebi uygulanana ya da yayıncının hesabı silinene kadar
+        </li>
         <li>Sunucu erişim logları: 30 gün</li>
         <li>Güvenlik kayıtları: 90 gün</li>
         <li>
@@ -219,6 +307,12 @@ export default function PrivacyTr() {
       <p>
         Bu haklarınızı kullanmak için <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>{' '}
         adresine yazabilirsiniz. Talepleriniz 30 gün içinde yanıtlanır.
+      </p>
+      <p>
+        Banka hesap hareketleriyle (Bölüm 1.4) ilgili taleplerinizi, ödeme yaptığınız ya da ödeme
+        aldığınız yayıncıya veya doğrudan bize iletebilirsiniz; bize gelen talebi yayıncıyla
+        birlikte sonuçlandırırız. Bankaların kendi kayıtları bankaların
+        sorumluluğundadır; {BRAND} o kayıtları değiştiremez veya silemez.
       </p>
 
       <h2>7. Veri güvenliği</h2>
