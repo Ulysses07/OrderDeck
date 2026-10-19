@@ -40,8 +40,9 @@ public sealed partial class MainShellViewModel
 
     /// <summary><see cref="_pendingNotes"/>'taki bekletilen satır notu (§5.8: baskının <c>PrintHeld</c>'i ya da "Yayını
     /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
-    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyrukta bekletilen satır kalmayınca kalkar
-    /// (<see cref="ClearStaleHeldNotice"/>).</summary>
+    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyruk baskısından ya da "Yayını bitir"den
+    /// sonra kuyrukta bekletilen satır kalmadıysa kalkar (<see cref="ClearStaleHeldNotice"/>). Başka yol (ör. kuyruktan
+    /// çıkarma) onu kaldırmaz: şerit kapatılana kadar kalır.</summary>
     private string? _heldNote;
 
     /// <summary>Gönderim sonucunun uyarı şeridi; null = şerit kapalı.</summary>
