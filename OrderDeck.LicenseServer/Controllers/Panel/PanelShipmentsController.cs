@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Sync;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -33,6 +34,15 @@ public sealed class PanelShipmentsController : ControllerBase
         _db = db;
     }
 
+    /// <param name="CustomerUsername">Müşterinin asıl kaydındaki kullanıcı adı.
+    /// Bu ve sonraki iki alan yalnız ad içindir (panel listesi müşteriyi Id
+    /// yerine adıyla gösterir); projeksiyonu bulunmayan, Id'si GUID olmayan ya
+    /// da KVKK ile silinmiş müşteride üçü de null. Sona eklendi: eski panel
+    /// görmezden gelir.</param>
+    /// <param name="CustomerDisplayName">Platform takma adı; yoksa null (panel
+    /// kullanıcı adına, o da yoksa Id'ye düşer). Form adı (FullName) BİLEREK
+    /// verilmez.</param>
+    /// <param name="CustomerPlatform">Asıl kaydın platformu (küçük harf).</param>
     public sealed record ShipmentDto(
         Guid Id,
         Guid LicenseId,
@@ -42,7 +52,10 @@ public sealed class PanelShipmentsController : ControllerBase
         DateTimeOffset CreatedAt,
         DateTimeOffset? HeldAt,
         DateTimeOffset? ShippedAt,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        string? CustomerUsername,
+        string? CustomerDisplayName,
+        string? CustomerPlatform);
 
     /// <summary>
     /// GET /api/panel/shipments?status=held&amp;customerId=...&amp;take=50.
@@ -81,11 +94,44 @@ public sealed class PanelShipmentsController : ControllerBase
                 s.Id, s.LicenseId, s.CustomerId,
                 s.Status.ToString().ToLowerInvariant(),
                 s.CumulativeAmount,
-                s.CreatedAt, s.HeldAt, s.ShippedAt, s.UpdatedAt))
+                s.CreatedAt, s.HeldAt, s.ShippedAt, s.UpdatedAt,
+                null, null, null))
             .ToListAsync(ct);
 
-        return Ok(rows);
+        // Müşteri adları sayfa kesildikten SONRA, lisans başına toplu
+        // yüklemeyle: satır başına sorgu yok; birleştirme zinciri varsa en çok
+        // SalesCustomerDirectory.MaxHops ek okuma. Müşteri yalnız kargo
+        // dosyasının KENDİ lisansında aranır — aynı Id'li başka lisansın kaydı
+        // kullanılmaz.
+        var customersByLicense = new Dictionary<Guid, SalesCustomerDirectory>();
+        foreach (var license in rows.GroupBy(r => r.LicenseId))
+            customersByLicense[license.Key] = await SalesCustomerDirectory.LoadAsync(
+                _db, license.Key, license.Select(r => r.CustomerId), ct);
+
+        return Ok(rows.Select(r => WithCustomer(r, customersByLicense[r.LicenseId])).ToList());
     }
+
+    /// <summary>
+    /// Satıra müşterinin adını ekler. Id önce asıl kayda çözülür (birleştirmeden
+    /// sonra eski bir bilgisayar dosyayı kopyanın Id'siyle göndermiş olabilir;
+    /// kopyanın kişisel alanları boştur) — <see cref="SalesCustomerDirectory"/>,
+    /// <c>CustomerIdResolver</c> ile aynı kural. Asıl kayıt yoksa ya da KVKK ile
+    /// silinmişse satır adsız kalır. Satırın <c>CustomerId</c>'si değişmez.
+    /// </summary>
+    private static ShipmentDto WithCustomer(ShipmentDto row, SalesCustomerDirectory customers)
+    {
+        if (customers.Resolve(row.CustomerId).Canonical is not { PurgedAt: null } canonical)
+            return row;
+        return row with
+        {
+            CustomerUsername = NullIfBlank(canonical.Username),
+            CustomerDisplayName = NullIfBlank(canonical.DisplayName),
+            CustomerPlatform = NullIfBlank(canonical.Platform),
+        };
+    }
+
+    private static string? NullIfBlank(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool TryParseStatus(string raw, out ShipmentStatus result)
     {
