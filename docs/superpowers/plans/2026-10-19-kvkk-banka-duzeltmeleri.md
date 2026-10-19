@@ -39,7 +39,7 @@
 2. **İlk çekim çapası** (Görev 7): bağlantı anı − 2 gün (dekont bağdaştırmasının aday penceresi). Gerekçe Görev 7'de. Alternatif 30 gün.
 3. **Eşleştirme kaydının 180. günde silinmesi** (Görev 10): not "sil ya da sayılara indir" diyor; plan **siler**, ölçüm ekranı zaten son 30 güne bakıyor. Ölçüm geçmişi istenirse ayrı iş.
 4. **Onaylı hesap listesi fail-closed** (Görev 12): mevcut hesaplar göçle **onaylanmaz**. Deploy'dan hemen sonra admin/obifin'de EMAR hesapları onaylanmalı; onaylanana kadar gelen hareket kaydedilmez ve imleç ilerlediği için sonradan gelmez. Alternatif: göçte `Active = 1` hesapları otomatik onaylamak (not §5.9 "EMAR dışı hesap var mı" kontrolünden sonra).
-5. **Maskeli kaynaklı özetler** (Görev 11): mevcut özetlerin maskeli IBAN'dan üretilip üretilmediği saklı veriden tam belirlenemez. `bank-data-cleanup --reset-iban-memory` bütün IBAN hafızasını ve hareket özetlerini siler (not Ö-7: "belirlenemezse IBAN hafızası sıfırlanıp yeniden öğrenilsin"). Koşturup koşturmamak Burak'ın kararı; plan önerisi: Faz 2'den önce koştur.
+5. **Maskeli kaynaklı özetler** (Görev 11): mevcut özetlerin maskeli IBAN'dan üretilip üretilmediği saklı veriden tam belirlenemez. `bank-data-cleanup --reset-iban-memory` bütün IBAN hafızasını siler (not Ö-7: "belirlenemezse IBAN hafızası sıfırlanıp yeniden öğrenilsin"). Hareketlerdeki özetler **kalır** (IBAN talep aracı onlarla arar); hafıza yalnız Görev 11'den sonra çekilmiş, geçerli IBAN'lı hareketlerden yeniden öğrenilir. Koşturup koşturmamak Burak'ın kararı; plan önerisi: Faz 2'den önce koştur.
 6. **Silme talebinde harekette kalan özet ve maske** (Görev 15, 17): plan özet ve maskeyi **tutar** (Faz 2 tasarımı güvenlik için istiyor); açıklama, ad, ham kayıt ve eşleştirme kimlikleri silinir. Avukat "özet de silinsin" derse `BankSubjectScrub.Transaction`'a iki satır.
 7. **IBAN talep aracında eşleşme kimliği** (Görev 17): IBAN hafızası yoksa eşleştirme satırındaki müşteri kimliği silinmez (havaleyi gönderen ile ödemesi sayılan müşteri farklı kişi olabilir); yalnız kanıt ve hareket metni silinir.
 8. **HashKey yedeği** (Görev 23): `.env` gece yedeğinden çıkarılır, yalnız Bitwarden'da kalır. Ön koşul: Burak HashKey'in Bitwarden'da güncel olduğunu doğrular.
@@ -60,7 +60,7 @@
 - **Göç:** `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add <Ad> --output-dir Data/Migrations` (dotnet-ef 10 global). Göç + Designer + `LicenseDbContextModelSnapshot.cs` birlikte commit'lenir. Üretilen `Up` YALNIZ `AddColumn`/`CreateTable`/`CreateIndex` içermeli (genişletme); `DropColumn`, `AlterColumn` (nullable → not null), `RenameColumn` görürsen dur ve sor. `ortak-bakiye-s1` dalı da göç ekliyor: hangisi ikinci merge edilirse onun göçü yeniden üretilir (snapshot çakışması) — bu planın işi değil, PR açıklamasına not.
 - **Testcontainers:** önce `docker version`. "NamedPipeClientStream … ConnectInternal" hatasında koşuyu PowerShell'den yap: `$env:DOCKER_HOST='npipe://./pipe/dockerDesktopLinuxEngine'` (İKİ eğik çizgi), ardından aynı `dotnet test`. Başka bir oturum da Docker kullanıyor: `StartContainerAsync`/`TaskCanceledException` zaman aşımları koddan değildir, o sınıfı tek başına yeniden koştur.
 - **Göçün gerçek SQL Server'da kurulduğunun kanıtı:** göç ekleyen her görevin sonunda bir Testcontainers sınıfı koşulur (`RelationalApiFactory` göçleri `Migrate()` ile kurar; model ile snapshot ayrışırsa EF 10 açılışta düşer). Görev 8'den önce `GroupCustomersRelationalTests`, sonra `BankDataCleanupRelationalTests`.
-- **Public repo hijyeni:** testte kimlik bilgisi/parola/anahtar literali yok (`$"{önek}-{Guid.NewGuid():N}"`), nötr değişken adları, telefon `TestPhone`, TCKN `TestTckn.NewValid()`, IBAN `BankHasherTests.TestIban()` (Görev 11'den sonra mod-97 geçerli üretilir). Gerçek IBAN/TCKN/müşteri verisi yok. `OneDrive/Masaüstü/obifin-api-key.txt` ve `/root/.obifin.env` ASLA okunmaz.
+- **Public repo hijyeni:** testte kimlik bilgisi/parola/anahtar literali yok (`$"{önek}-{Guid.NewGuid():N}"`), nötr değişken adları, telefon `TestPhone`, TCKN `TestTckn.NewValid()`, IBAN `BankHasherTests.TestIban()` (Görev 4'ten sonra mod-97 geçerli üretilir; bozuk kontrol hanesi `WrongCheckDigits`). Gerçek IBAN/TCKN/müşteri verisi yok. `OneDrive/Masaüstü/obifin-api-key.txt` ve `/root/.obifin.env` ASLA okunmaz.
 - **Commit:** emir kipi, `type(scope): özet`, Türkçe; gövdenin son satırı:
   `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
 - **Prod'a bağlanma, prod veri yazımı, VPS işlemi YOK** — Burak yapar (aşağıdaki "Prod adımları").
@@ -70,22 +70,22 @@
 | Görev | Dosyalar |
 |---|---|
 | 1 | `Domain/Bank/ObifinConnection.cs`; `Services/Bank/ObifinConnectionService.cs`; `Services/Bank/ObifinPollJob.cs`; `Services/Bank/ObifinAccountRefreshJob.cs`; göç `*_ObifinConnectionDisabledAt`; test `Services/Bank/ObifinPollJobTests.cs`, `Services/Bank/ObifinAccountRefreshJobTests.cs` |
-| 2 | `Services/Bank/ObifinPollJob.cs`; test `ObifinPollJobTests.cs` |
+| 2 | `Services/Bank/ObifinPollJob.cs`, `ObifinClient.cs` (işaretli tutar); testler `ObifinPollJobTests.cs`, `ObifinClientTests.cs` |
 | 3 | `Services/Bank/IObifinClient.cs`, `ObifinClient.cs`, `ObifinPollJob.cs`, `BankHasher.cs`; `Domain/Bank/BankTransaction.cs`; testler `BankHasherTests.cs`, `ObifinClientTests.cs`, `ObifinPollJobTests.cs` |
-| 4 | YENİ `Services/Bank/BankDescriptionMasker.cs`; `ObifinPollJob.cs`; YENİ test `Services/Bank/BankDescriptionMaskerTests.cs`; `ObifinPollJobTests.cs` |
+| 4 | YENİ `Services/Bank/BankDescriptionMasker.cs`; `BankHasher.cs` (`HasValidIbanChecksum`); `ObifinPollJob.cs`; YENİ test `Services/Bank/BankDescriptionMaskerTests.cs`; `BankHasherTests.cs` (mod-97 geçerli test IBAN'ı); `ObifinPollJobTests.cs` |
 | 5 | `Services/Bank/BankRawJsonRedactor.cs`, `BankOptions.cs`; `appsettings.json`; testler `BankRawJsonRedactorTests.cs` (yeniden), `ObifinPollJobTests.cs`, `BankDataRetentionJobTests.cs` |
 | 6 | `Services/Bank/BankHasher.cs`; test `BankHasherTests.cs` |
 | 7 | `Domain/Bank/ObifinConnection.cs`; `ObifinPollJob.cs`; `ObifinConnectionService.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; göç `*_ObifinInitialCollectFrom`; test `ObifinPollJobTests.cs` |
-| 8 | YENİ `Services/Bank/BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; `Program.cs`; YENİ testler `Services/Bank/BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs`, `Tools/BankDataCleanupRelationalTests.cs` |
+| 8 | YENİ `Services/Bank/BankDataCleanupJob.cs` (kısa maske adımı ve imha kaydı kancası dahil), `Tools/BankDataCleanup.cs`; `Program.cs`; YENİ testler `Services/Bank/BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs`, `Tools/BankDataCleanupRelationalTests.cs` |
 | 9 | YENİ `Domain/DataDestructionRecord.cs`, `Services/Privacy/DataDestruction.cs`, `Services/Privacy/DataDestructionDigestJob.cs`, `Services/Bank/BankJobAlerts.cs`; `Data/LicenseDbContext.cs`; `Services/Audit/AuditEvents.cs`, `AuditRetentionJobs.cs`; `Services/Bank/BankDataRetentionJob.cs`, `BankDataCleanupJob.cs`, `ObifinConnectionService.cs` (`ResetShadowData`); `Controllers/Customers/AdminCustomersController.cs`; `Tools/BankDataCleanup.cs`; `Program.cs`; göç `*_DataDestructionRecords`; testler `AuditRetentionJobsTests.cs`, `BankDataRetentionJobTests.cs`, `BankDataCleanupJobTests.cs`, `ObifinPollJobTests.cs`, `GdprFlowTests.cs`, `BankJobsDiTests.cs`, YENİ `Services/Privacy/DataDestructionDigestJobTests.cs` |
 | 10 | `Services/Bank/BankDataRetentionJob.cs` (yeniden), `BankOptions.cs`; `appsettings.json`; `Domain/Bank/CustomerIbanMemory.cs`; `Services/Bank/PaymentMatchReconciler.cs`; göç `*_IbanMemoryLastConfirmedAt`; testler `BankDataRetentionJobTests.cs` (yeniden), YENİ `BankDataRetentionRelationalTests.cs`, `PaymentMatchReconcilerTests.cs` |
-| 11 | `Services/Bank/BankHasher.cs`; `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; göç `*_BankAccountIbanQualityCounters`; testler `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs` |
+| 11 | `Services/Bank/BankHasher.cs`; `Domain/Bank/BankAccount.cs`, `BankTransaction.cs`; `ObifinPollJob.cs`; `PaymentMatchReconciler.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; göç `*_IbanQualityCountersAndHashValid`; testler `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `PaymentMatchReconcilerTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs` |
 | 12 | `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; göç `*_BankAccountApproval`; testler `ObifinPollJobTests.cs`, `Pages/Admin/AdminObifinPageTests.cs` |
 | 13 | YENİ `Services/Bank/BankConnectionTerminator.cs`; `Domain/Bank/ObifinConnection.cs`; `ObifinConnectionService.cs` (statik kimlik çözümü, `IsLicenseActiveAsync`, `ClearServiceEnd`, lisans denetimi); `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; `Controllers/Customers/AdminCustomersController.cs` (purge reddi); `Program.cs`; göç `*_ObifinConnectionServiceEnd`; YENİ test `Services/Bank/BankConnectionTerminatorTests.cs`; `AdminObifinPageTests.cs`, `Controllers/Compliance/GdprFlowTests.cs` |
 | 14 | YENİ `Services/Bank/BankServiceEndPurgeJob.cs`; `ObifinConnectionService.cs` (`ReviveRenewedLicensesAsync`); `Program.cs`; YENİ test `Services/Bank/BankServiceEndPurgeJobTests.cs`; `BankJobsDiTests.cs` |
 | 15 | YENİ `Services/Bank/BankSubjectScrub.cs`; `Services/Shoppers/ShopperPurgeService.cs`; testler `ShopperPurgeServiceTests.cs` |
-| 16 | `Pages/Admin/BankaEslestirme/Index.cshtml.cs`; `Pages/Admin/Obifin/Index.cshtml.cs`; `AuditEvents.cs`; testler `AdminBankaEslestirmePageTests.cs`, `AdminObifinPageTests.cs` |
-| 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs` |
+| 16 | `Pages/Admin/BankaEslestirme/Index.cshtml.cs`; `Pages/Admin/Obifin/Index.cshtml.cs`; `AuditEvents.cs`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs` (eski denetim satırları); testler `AdminBankaEslestirmePageTests.cs`, `AdminObifinPageTests.cs`, `BankDataCleanupJobTests.cs` |
+| 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `BankConnectionTerminator.cs`, `Controllers/Customers/AdminCustomersController.cs` (açık talepleri kapat); `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs`; `BankConnectionTerminatorTests.cs`, `GdprFlowTests.cs` |
 | 18 | YENİ `Pages/Admin/BankaVeriTalepleri/Index.cshtml(.cs)`; `Pages/Shared/_AdminLayout.cshtml`; `Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)`; `AuditEvents.cs`; YENİ testler `Pages/Admin/AdminBankaVeriTalepleriPageTests.cs`, `Pages/Admin/AdminDeletionRequestsPageTests.cs` |
 | 19 | `Controllers/Panel/PanelPaymentsController.cs`; test `Services/Push/ShopperOrderPaymentPushTests.cs` |
 | 20 | `Services/Audit/SecurityDataRetentionJob.cs`; `Pages/Admin/Shoppers/DeletionRequests.cshtml`; test `Services/Audit/SecurityDataRetentionJobTests.cs` |
@@ -122,7 +122,7 @@
 **P1 deploy'undan sonra (Görev 9–25):**
 3. **Hemen** admin/obifin → hesaplar → EMAR hesaplarını "Onayla" (Görev 12; onaylanmayan hesabın hareketi kaydedilmez ve sonra gelmez). Onay ayrıca "Kaldır ve sil"in hangi Obifin bağlantısının bu lisansa ait olduğunu bilmesini sağlar.
 4. `Admin__AlertEmail` `.env`'de dolu mu bak (saklama ve hizmet sonu işlerinin uyarı adresi).
-5. Karar 5'e göre: `bank-data-cleanup` (kuru) → maskeli kaynaklı özet sayısı; gerekirse `--apply`; Faz 2'den önce `--reset-iban-memory --apply`.
+5. Karar 5'e göre: `bank-data-cleanup` (kuru) → maskeli kaynaklı özet ve kısa maske sayısı; gerekirse `--apply`; Faz 2'den önce `--reset-iban-memory --apply`. Sınır: sıfırlama yalnız `CustomerIbanMemories`'i siler; hareketlerdeki özetler 180 güne kadar kalır (IBAN ile erişim/silme talebi onlarla bulunur, Görev 17) ve P1 öncesinde çekilmiş hareketlerden hafıza yeniden öğrenilmez (`CounterpartyIbanHashValid`). Tutanak kalıbı P0'dakiyle aynı; P1'den sonra komut `DataDestructionRecords`'a da yazar. Saklama işi ya da bir silme sürerken koşturma (1. madde).
 6. Yedek betikleri CI ile **kopyalanmaz** (CI yalnız `rollback-license-server.sh`'ı kopyalıyor): HashKey'in Bitwarden'da olduğunu doğruladıktan sonra `deploy/scripts/backup-sql-to-r2.sh` ve `backup-env-to-r2.sh`'ı `/opt/orderdeck/scripts/`'e kopyala, birer kez elle çalıştırıp günlüğe bak (Görev 23).
 7. R2'de `sql-bak/` için yaşam döngüsü kuralı (32 gün) ve tarihsiz eski nesne kontrolü (not Ö-12).
 8. Yayıncıların veri sorumlusu bilgileri (Görev 21–22) ancak metin işinin (form paragrafı v2 ve yeni `KvkkNotice.TextVersion`) yayımlanmasından SONRA girilir: form bloğu metin sürümünün özetinin dışında, bilgi girilene kadar çizilmez.
@@ -362,11 +362,12 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 2: Giden ve sıfır tutarlı hareketi kaydetme (P0-2)
 
-**Neden (not K-4):** giden hareketlerin (maaş, kira, tedarikçi, şahsi harcama) okuyan bir kod yolu yok ve bu kişiler için aydınlatma kanalı yok. Obifin isteğinde yön süzgeci olmadığı için hareket sunucuya gelir; artık kaydedilmeden atılır. Sıfır tutarlı satır da ödeme olamaz. İmleç sıralı listeden hesaplandığı için (`FetchWindowWithMetaAsync`, `ordered[^1].Id`) atlanan satırlar imleci yine ilerletir.
+**Neden (not K-4):** giden hareketlerin (maaş, kira, tedarikçi, şahsi harcama) okuyan bir kod yolu yok ve bu kişiler için aydınlatma kanalı yok. Obifin isteğinde yön süzgeci olmadığı için hareket sunucuya gelir; artık kaydedilmeden atılır. Sıfır tutarlı satır da ödeme olamaz. İmleç sıralı listeden hesaplandığı için (`FetchWindowWithMetaAsync`, `ordered[^1].Id`) atlanan satırlar imleci yine ilerletir. **Yön işaretten okunur:** `ObifinClient` bugün `TutarEksiArti` yoksa işaretsiz `Tutar`'a düşüyor — o durumda giden hareket pozitif okunur ve süzgeçten geçerdi. Artık işaretli tutar yoksa sayfa `ObifinProtocolException` ile düşer (fail-closed; virgüllü tutardaki "sessiz hata yerine gürültülü hata" kuralının aynısı): hiçbir satır yazılmaz, imleç ilerlemez, hata bağlantının `LastError`'unda görünür.
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs:279-320` (`UpsertAsync`)
-- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinClient.cs` (`ListTransactionsAsync`, işaretli tutar)
+- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs`, `ObifinClientTests.cs`
 
 - [ ] **Adım 1: Mevcut üç testi yeni kurala çevir (kırmızı)**
 
@@ -414,12 +415,43 @@ satırını şununla değiştir:
     }
 ```
 
+`ObifinClientTests.cs` sınıfının sonuna:
+
+```csharp
+    [Fact]
+    public async Task Isaretli_tutar_yoksa_protokol_istisnasi_isaretsiz_Tutar_kullanilmaz()
+    {
+        // KVKK K-4: yön TutarEksiArti'nın işaretinden okunur. İşaretsiz Tutar'a düşülseydi giden hareket pozitif okunur, "yalnız
+        // gelen" süzgecinden geçip kaydedilirdi. Fail-closed: sayfa düşer, hiçbir satır yazılmaz, imleç ilerlemez.
+        var (client, _) = Build("""
+        {"Hata":[],"Liste":[{"Id":"1","HesapId":"6","IslemZamaniDT":"2022-10-10 12:07:30",
+          "Tutar":"10.00","ParaBirimi":"TL","BankaKodu":"garanti"}]}
+        """);
+        var act = () => client.ListTransactionsAsync(Creds(), new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17), null, 1, 1000);
+        await act.Should().ThrowAsync<ObifinProtocolException>();
+    }
+```
+
 - [ ] **Adım 2: Koştur — kırmızı bekle**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~ObifinPollJobTests"`
-Expected: FAIL — üç test (giden/sıfır satır hâlâ yazılıyor).
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~ObifinPollJobTests|FullyQualifiedName~ObifinClientTests"`
+Expected: FAIL — üç çekim testi (giden/sıfır satır hâlâ yazılıyor) ve istemci testi (işaretsiz `Tutar` kabul ediliyor).
 
 - [ ] **Adım 3: Uygula**
+
+`Services/Bank/ObifinClient.cs` — `ListTransactionsAsync`'te:
+
+```csharp
+            var signed = Dec(row, "TutarEksiArti") ?? Dec(row, "Tutar")
+                ?? throw new ObifinProtocolException("hareket tutarı yok");
+```
+şununla değiştir:
+```csharp
+            // KVKK K-4: yön yalnız işaretli tutardan okunur. İşaretsiz "Tutar"a düşülseydi giden hareket pozitif okunur ve çekim
+            // işinin "yalnız gelen" süzgecinden geçerdi. Fail-closed: sayfa düşer, imleç ilerlemez, hata LastError'da görünür.
+            var signed = Dec(row, "TutarEksiArti")
+                ?? throw new ObifinProtocolException("işaretli hareket tutarı (TutarEksiArti) yok");
+```
 
 `ObifinPollJob.UpsertAsync` içinde `foreach (var dto in items)` döngüsünün ilk satırı olan yorum + `if (!existing.Add(dto.Id)) continue;` ikilisinin ÜSTÜNE ekle:
 
@@ -457,17 +489,19 @@ Sınıf özetindeki (`/// <summary>`) ilk paragrafın sonuna şu cümleyi ekle: 
 - [ ] **Adım 4: Koştur — yeşil**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~ObifinPollJobTests|FullyQualifiedName~Services.Bank"`
-Expected: PASS.
+Expected: PASS. (`ObifinClientTests`'in diğer hareket örneklerinin hepsinde `TutarEksiArti` var; yoksa o örneğe ekle — test verisi gerçek yanıt biçimini taşımalı.)
 
 - [ ] **Adım 5: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs
+git add OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs OrderDeck.LicenseServer/Services/Bank/ObifinClient.cs OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/ObifinClientTests.cs
 git commit -m "fix(bank-kvkk): giden ve sıfır tutarlı banka hareketini kaydetme
 
 Obifin listesindeki giden ve sıfır tutarlı hareketler BankTransaction
-olarak yazılmadan atılır; imleç yine ilerler (KVKK ön inceleme K-4, P0-2).
-Mevcut satırlar bank-data-cleanup komutuyla silinir (Görev 8).
+olarak yazılmadan atılır; imleç yine ilerler. Yön yalnız TutarEksiArti'dan
+okunur: işaretli tutar yoksa sayfa düşer, işaretsiz Tutar'a düşülmez
+(KVKK ön inceleme K-4, P0-2). Mevcut satırlar bank-data-cleanup
+komutuyla silinir (Görev 8).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -609,12 +643,55 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 4: Açıklamadaki IBAN ve 11 haneli numarayı maskele (P0-5)
 
-**Neden (not Ö-16, Ö-4):** havale açıklaması serbest metin; gönderen IBAN'ını ya da T.C. kimlik numarasını yazabiliyor ve bu düz saklanıyor. Kayda alınmadan önce TR IBAN kalıbı `BankHasher.MaskIban` biçimine (`TR12…345`), tek başına duran 11 haneli rakam dizisi (TCKN, cep telefonu) yıldıza çevrilir. Kalıp bilerek dar: `TR` + 2 rakam + 5 rakam (banka kodu) + 17 alfasayısal; "TRANSFER ODEME…" gibi sözcük dizileri ve kullanıcı adları eşleşmez (eşleştirici açıklamadaki kullanıcı adına bakıyor).
+**Neden (not Ö-16, Ö-4):** havale açıklaması serbest metin; gönderen IBAN'ını ya da T.C. kimlik numarasını yazabiliyor ve bu düz saklanıyor. Kayda alınmadan önce TR IBAN `BankHasher.MaskIban` biçimine (`TR12…345`), tek başına duran 11 haneli rakam dizisi (TCKN, cep telefonu) yıldıza çevrilir.
+- **IBAN:** kalıp `TR` + 2 rakam + 5 rakam (banka kodu) + 17 alfasayısal, harf/rakam **sınırı olmadan** (açıklamada IBAN'ın önüne ya da arkasına bitişik yazılmış harf — `IBANTR…`, `…1234AHMET` — eşleşmeyi engellemesin); yanlış eşleşmeyi **ISO 7064 mod-97** eler (`BankHasher.HasValidIbanChecksum`, bu görevde eklenir; Görev 11 aynı denetimi `NormalizeIban`'da kullanır). "TRANSFER ODEME…" gibi sözcük dizileri ve kullanıcı adları eşleşmez (eşleştiricinin baktığı kullanıcı adı bozulmaz). Kontrol hanesi tutmayan IBAN biçimli dizi (yanlış yazılmış IBAN) maskelenmez — bilinçli sınır: kalıbı sınırsız bırakmanın bedeli.
+- **11 hane:** sınır `[\p{L}\p{N}]` (harf ya da rakam): harfe bitişik dizi (`user12345678901`) kullanıcı adının parçası olabilir, maskelenmez. Bedeli: isme bitişik yazılmış TCKN (`12345678901AHMET`) maskelenmez.
+- **Test IBAN'ı:** `BankHasherTests.TestIban()` bu görevde mod-97 geçerli üretilir (`WithCheckDigits`); repo public, gerçek IBAN yazılmaz.
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankDescriptionMasker.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Bank/BankHasher.cs` (`HasValidIbanChecksum`)
 - Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs` (`Description = …` satırı)
-- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankDescriptionMaskerTests.cs` (YENİ), `ObifinPollJobTests.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankDescriptionMaskerTests.cs` (YENİ), `BankHasherTests.cs` (geçerli test IBAN'ı), `ObifinPollJobTests.cs`
+
+- [ ] **Adım 0: Test IBAN üretecini mod-97 geçerli yap**
+
+`BankHasherTests.cs` — `TestIban()` yardımcısını şununla değiştir:
+
+```csharp
+    /// <summary>Mod-97 geçerli TR IBAN üretir — repo public, gerçek IBAN yazılmaz (rastgele 22 haneli BBAN; geçerli kontrol
+    /// haneli rastgele bir değerin gerçek bir hesaba denk gelmesi için banka kodu ve hesap numarasının da tutması gerekir).</summary>
+    public static string TestIban() => WithCheckDigits("TR", TestPhone.Digits(22));
+
+    /// <summary>ISO 13616 kontrol haneleriyle IBAN üretir. Üretim kodundan bağımsız hesap: test doğrulayıcının kendisini sınar.</summary>
+    public static string WithCheckDigits(string country, string bban)
+    {
+        var remainder = 0;
+        foreach (var c in bban + country + "00")
+            remainder = char.IsAsciiDigit(c) ? (remainder * 10 + (c - '0')) % 97 : (remainder * 100 + (c - 'A' + 10)) % 97;
+        return country + (98 - remainder).ToString("00") + bban;
+    }
+
+    /// <summary>Kontrol hanelerini bozar (her zaman geçersiz: tek hanenin değişmesi mod-97 kalanını değiştirir).</summary>
+    public static string WrongCheckDigits(string iban)
+    {
+        var check = int.Parse(iban[2..4]);
+        return iban[..2] + (check == 98 ? 2 : check + 1).ToString("00") + iban[4..];
+    }
+```
+
+Dosyanın üstüne `using OrderDeck.LicenseServer.Tests.TestHelpers;` ekle (yoksa). Sınıfın sonuna:
+
+```csharp
+    [Fact]
+    public void Kontrol_hanesi_denetimi_gecerli_IBANi_kabul_eder_bozugu_reddeder()
+    {
+        var iban = TestIban();
+        BankHasher.HasValidIbanChecksum(iban).Should().BeTrue();
+        BankHasher.HasValidIbanChecksum(WrongCheckDigits(iban)).Should().BeFalse();
+        BankHasher.HasValidIbanChecksum(iban[..10] + "******" + iban[16..]).Should().BeFalse("harf/rakam dışı karakter");
+    }
+```
 
 - [ ] **Adım 1: Maskeleyici testini yaz (kırmızı)**
 
@@ -654,10 +731,35 @@ public sealed class BankDescriptionMaskerTests
     }
 
     [Fact]
+    public void Harfe_bitisik_IBAN_de_maskelenir()
+    {
+        // Sınır yok: "IBANTR…" ya da "…1234AHMET" gibi bitişik yazımda da IBAN maskelenir; mod-97 yanlış eşleşmeyi eler.
+        var iban = BankHasherTests.TestIban();
+        BankDescriptionMasker.Mask($"IBAN{iban}AHMET").Should().Be($"IBAN{BankHasher.MaskIban(iban)}AHMET");
+    }
+
+    [Fact]
+    public void Kontrol_hanesi_tutmayan_IBAN_bicimli_dizi_maskelenmez()
+    {
+        var wrong = BankHasherTests.WrongCheckDigits(BankHasherTests.TestIban());
+        BankDescriptionMasker.Mask($"REF {wrong}").Should().Be($"REF {wrong}");
+    }
+
+    [Fact]
     public void On_bir_haneli_numara_yildizlanir()
     {
         var tckn = TestTckn.NewValid();
         BankDescriptionMasker.Mask($"FAST {tckn} AD SOYAD").Should().Be($"FAST {BankDescriptionMasker.ElevenDigitMask} AD SOYAD");
+    }
+
+    [Theory]
+    [InlineData("user")]
+    [InlineData("ş")]
+    public void Harfe_bitisik_on_bir_hane_maskelenmez(string prefix)
+    {
+        // Kullanıcı adının parçası olabilir (eşleştirici açıklamadaki kullanıcı adına bakıyor).
+        var digits = TestPhone.Digits(11);
+        BankDescriptionMasker.Mask($"HAVALE {prefix}{digits}").Should().Be($"HAVALE {prefix}{digits}");
     }
 
     [Theory]
@@ -689,10 +791,29 @@ public sealed class BankDescriptionMaskerTests
 
 - [ ] **Adım 2: Koştur — derleme hatası bekle**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDescriptionMaskerTests"`
-Expected: FAIL — `BankDescriptionMasker` yok.
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDescriptionMaskerTests|FullyQualifiedName~BankHasherTests"`
+Expected: FAIL — `BankDescriptionMasker`, `HasValidIbanChecksum` yok.
 
-- [ ] **Adım 3: Maskeleyiciyi yaz**
+- [ ] **Adım 3: Kontrol hanesi denetimi ve maskeleyici**
+
+`Services/Bank/BankHasher.cs` — `MaskIban`'ın ALTINA:
+
+```csharp
+    /// <summary>ISO 13616 / ISO 7064 MOD 97-10: boşluksuz, büyük harfli değerin ilk dört karakteri sona alınır, harfler 10–35'e
+    /// çevrilir, kalan 1 olmalı. Biçim (ülke, uzunluk) denetlemez — çağıran yapar; ASCII harf/rakam dışı karakterde false.</summary>
+    public static bool HasValidIbanChecksum(string compactUpper)
+    {
+        if (compactUpper.Length < 5) return false;
+        var remainder = 0;
+        foreach (var c in compactUpper[4..] + compactUpper[..4])
+        {
+            if (char.IsAsciiDigit(c)) remainder = (remainder * 10 + (c - '0')) % 97;
+            else if (char.IsAsciiLetterUpper(c)) remainder = (remainder * 100 + (c - 'A' + 10)) % 97;
+            else return false;
+        }
+        return remainder == 1;
+    }
+```
 
 `OrderDeck.LicenseServer/Services/Bank/BankDescriptionMasker.cs`:
 
@@ -705,10 +826,12 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// KVKK Ö-16/Ö-4: havale açıklaması serbest metindir; gönderen içine IBAN ya da T.C. kimlik numarası yazabilir. Kayda alınmadan
 /// önce (açıklama sütunu ve ham kayıttaki açıklama alanları):
 /// <list type="bullet">
-/// <item>TR IBAN — bitişik ya da tek boşluklu gruplarla, büyük/küçük harf — <see cref="BankHasher.MaskIban"/> biçimine
-/// (<c>TR12…345</c>) çevrilir. Kalıp bilerek dar: <c>TR</c> + 2 rakam + 5 rakam (banka kodu) + 17 alfasayısal. Sözcük
-/// dizileri ve kullanıcı adları eşleşmez — eşleştirici açıklamadaki kullanıcı adına bakıyor.</item>
-/// <item>Tek başına duran 11 haneli rakam dizisi (TCKN, cep telefonu) <see cref="ElevenDigitMask"/> olur.</item>
+/// <item>TR IBAN — bitişik ya da tek boşluklu gruplarla, büyük/küçük harf, önünde ya da arkasında bitişik harf olsa da —
+/// <see cref="BankHasher.MaskIban"/> biçimine (<c>TR12…345</c>) çevrilir. Kalıp <c>TR</c> + 2 rakam + 5 rakam (banka kodu) + 17
+/// alfasayısal; sınır yok, yanlış eşleşmeyi mod-97 (<see cref="BankHasher.HasValidIbanChecksum"/>) eler. Sözcük dizileri ve
+/// kullanıcı adları eşleşmez — eşleştirici açıklamadaki kullanıcı adına bakıyor. Kontrol hanesi tutmayan dizi maskelenmez.</item>
+/// <item>Harf ya da rakama bitişik OLMAYAN 11 haneli rakam dizisi (TCKN, cep telefonu) <see cref="ElevenDigitMask"/> olur.
+/// Harfe bitişik dizi kullanıcı adının parçası olabilir: maskelenmez.</item>
 /// </list>
 /// Saf ve idempotent: maskelenmiş metin yeniden maskelenince değişmez (bank-data-cleanup buna dayanır).
 /// </summary>
@@ -716,17 +839,20 @@ public static partial class BankDescriptionMasker
 {
     public const string ElevenDigitMask = "***********";
 
-    [GeneratedRegex(@"(?<![A-Za-z0-9])TR\s?\d\s?\d(?:\s?\d){5}(?:\s?[0-9A-Za-z]){17}(?![A-Za-z0-9])",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"TR\s?\d\s?\d(?:\s?\d){5}(?:\s?[0-9A-Za-z]){17}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TrIban();
 
-    [GeneratedRegex(@"(?<!\d)\d{11}(?!\d)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?<![\p{L}\p{N}])\d{11}(?![\p{L}\p{N}])", RegexOptions.CultureInvariant)]
     private static partial Regex ElevenDigits();
 
     public static string? Mask(string? text)
     {
         if (string.IsNullOrEmpty(text)) return text;
-        var withoutIban = TrIban().Replace(text, m => BankHasher.MaskIban(m.Value));
+        var withoutIban = TrIban().Replace(text, m =>
+        {
+            var compact = new string(m.Value.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
+            return BankHasher.HasValidIbanChecksum(compact) ? BankHasher.MaskIban(compact) : m.Value;
+        });
         return ElevenDigits().Replace(withoutIban, ElevenDigitMask);
     }
 }
@@ -734,7 +860,7 @@ public static partial class BankDescriptionMasker
 
 - [ ] **Adım 4: Koştur — maskeleyici yeşil**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDescriptionMaskerTests"`
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDescriptionMaskerTests|FullyQualifiedName~BankHasherTests"`
 Expected: PASS.
 
 - [ ] **Adım 5: Çekim testini yaz (kırmızı)**
@@ -783,12 +909,13 @@ Expected: PASS.
 - [ ] **Adım 8: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Bank/BankDescriptionMasker.cs OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankDescriptionMaskerTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs
+git add OrderDeck.LicenseServer/Services/Bank/BankDescriptionMasker.cs OrderDeck.LicenseServer/Services/Bank/BankHasher.cs OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankDescriptionMaskerTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankHasherTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/ObifinPollJobTests.cs
 git commit -m "fix(bank-kvkk): havale açıklamasındaki IBAN ve kimlik numarasını maskele
 
-TR IBAN kalıbı kısaltılmış biçime, tek başına 11 haneli numara yıldıza
-çevrilerek kaydedilir; kullanıcı adları ve sözcükler eşleşmez
-(KVKK ön inceleme Ö-16, P0-5).
+TR IBAN (bitişik harfe rağmen, mod-97 ile doğrulanmış) kısaltılmış
+biçime, harfe bitişik olmayan 11 haneli numara yıldıza çevrilerek
+kaydedilir; kullanıcı adları ve sözcükler eşleşmez. Test IBAN'ı mod-97
+geçerli üretilir (KVKK ön inceleme Ö-16, P0-5).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -1023,7 +1150,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 6: Kısa değerin maskesi açık kalmasın (P0-6)
 
-**Neden (not Ö-6):** `MaskIban` 8 karakterden kısa değeri olduğu gibi döndürüyor; banka kısa bir hesap numarası yazarsa "maske" sütununda açık kalır ve "IBAN açık hâliyle saklanmaz" cümlesi yanlışlanır. Kısa değer artık `"…"` döner (bir değerin geldiği görünür, kendisi görünmez).
+**Neden (not Ö-6):** `MaskIban` 8 karakterden kısa değeri olduğu gibi döndürüyor; 8–14 karakteri ise `1234…890` biçiminde maskeliyor — 10 haneli bir hesap numarasının 7 hanesi açık kalıyor. Banka IBAN yerine hesap numarası yazarsa "maske" sütununda açık kalır ve "IBAN açık hâliyle saklanmaz" cümlesi yanlışlanır. P0'da en kısa geçerli IBAN uzunluğundan (15) kısa her değer `"…"` döner (bir değerin geldiği görünür, kendisi görünmez); Görev 11 bunu "geçerli IBAN değilse `…`" kuralına sıkılaştırır. Mevcut satırlardaki ham kısa değerleri ve eski biçimli maskeleri Görev 8'deki komut `…`'a çevirir.
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Bank/BankHasher.cs` (`MaskIban`)
@@ -1044,9 +1171,11 @@ satırını şununla değiştir:
 ```csharp
         BankHasher.MaskIban(" tr 12 ").Should().Be("…", "kısa değer hiçbir karakteriyle görünmez");
         BankHasher.MaskIban(TestPhone.Digits(7)).Should().Be("…", "7 haneli hesap numarası da");
+        BankHasher.MaskIban(TestPhone.Digits(10)).Should().Be("…", "10 haneli hesap numarasının 7 hanesi açık kalmaz");
+        BankHasher.MaskIban(TestPhone.Digits(14)).Should().Be("…", "en kısa geçerli IBAN 15 karakter");
 ```
 
-Dosyanın üstüne `using OrderDeck.LicenseServer.Tests.TestHelpers;` ekle (yoksa).
+(`using OrderDeck.LicenseServer.Tests.TestHelpers;` Görev 4'te eklendi.)
 
 - [ ] **Adım 2: Koştur — kırmızı**
 
@@ -1058,23 +1187,27 @@ Expected: FAIL — `ShortValueMask` yok.
 `Services/Bank/BankHasher.cs` — `MaskIban` metodunu (özetiyle) şununla değiştir:
 
 ```csharp
-    /// <summary>Kısa değerin maskesi: bir değerin geldiği görünür, hiçbir karakteri görünmez (KVKK Ö-6).</summary>
+    /// <summary>IBAN olmayan değerin maskesi: bir değerin geldiği görünür, hiçbir karakteri görünmez (KVKK Ö-6).</summary>
     public const string ShortValueMask = "…";
 
-    /// <summary>`TR12…345` — yalnız görüntü. Ham girdi ASLA dönmez: boş/boşluk → "", 8 karakterden kısa değer →
-    /// <see cref="ShortValueMask"/> (banka kısa bir hesap numarası iletirse maske sütununda açık kalmasın).</summary>
+    /// <summary>En kısa geçerli IBAN uzunluğu (ISO 13616; ör. Norveç 15). Bundan kısa değer IBAN olamaz.</summary>
+    public const int MinIbanLength = 15;
+
+    /// <summary>`TR12…345` — yalnız görüntü. Ham girdi ASLA dönmez: boş/boşluk → "", <see cref="MinIbanLength"/>'ten kısa değer
+    /// (hesap numarası vb.) → <see cref="ShortValueMask"/>: 10 haneli bir hesap numarasının 7 hanesi "maske" sütununda açık
+    /// kalmasın. Görev 11 kuralı "geçerli IBAN değilse <see cref="ShortValueMask"/>"a sıkılaştırır.</summary>
     public static string MaskIban(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return "";
         var compact = Compact(iban);
-        return compact.Length < 8 ? ShortValueMask : compact[..4] + "…" + compact[^3..];
+        return compact.Length < MinIbanLength ? ShortValueMask : compact[..4] + "…" + compact[^3..];
     }
 ```
 
 - [ ] **Adım 4: Koştur — yeşil**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~Services.Bank"`
-Expected: PASS.
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~Services.Bank|FullyQualifiedName~Pages.Admin"`
+Expected: PASS. (Maskeyi bir test IBAN'ından ya da `BankHasher.MaskIban`'dan alan testler etkilenmez; kısa sabit bir maskeyi beklenen değer olarak yazan test varsa `ShortValueMask`'a çevir.)
 
 - [ ] **Adım 5: Commit**
 
@@ -1082,8 +1215,9 @@ Expected: PASS.
 git add OrderDeck.LicenseServer/Services/Bank/BankHasher.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankHasherTests.cs
 git commit -m "fix(bank-kvkk): kısa hesap numarasını maske sütununda açık bırakma
 
-MaskIban 8 karakterden kısa değer için ham değeri değil '…' döndürür
-(KVKK ön inceleme Ö-6, P0-6).
+MaskIban en kısa geçerli IBAN uzunluğundan (15) kısa değer için ham
+değeri ya da 7 karakterini değil '…' döndürür (KVKK ön inceleme Ö-6,
+P0-6). Mevcut satırları bank-data-cleanup çevirir (Görev 8).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -1294,8 +1428,11 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 Silme kuralları:
 - **Giden/sıfır:** eşleşme satırlarıyla birlikte silinir. İnsan kararına bağlı (karar anı, dekont ya da gerçek müşteri dolu) olan atlanır ve sayılır — olması beklenmez (elle eşleme yalnız geleni kabul ediyor), varsa Burak bakar.
 - **Çapa öncesi:** çapası olmayan ve ilk çekimi bitmiş bağlantıya çapa = ilk çekimin TR günü − 2 yazılır; çapadan eski, kararsız, IBAN öğretmemiş (`CustomerIbanMemory.SourceBankTransactionId`) ve bir gap'i çözmemiş (`PaymentMatchGap.ResolvedBankTransactionId`) hareketler silinir. Bağlı olanlar kalır (180 günlük kural onları sonra siler — Görev 10).
+- **Eski maskeler (Ö-6):** eski `MaskIban` 8 karakterden kısa değeri ham, 8–14 karakteri `1234…890` biçiminde yazdı. Üç tabloda (`BankTransactions.CounterpartyIbanMasked`, `CustomerIbanMemories.IbanMasked`, `BankAccounts.IbanMasked`) IBAN maskesi biçiminde (`AA00…XXX`) olmayan maske `BankHasher.ShortValueMask` olur; yer tutucu `?` ve boş kalır. (Görev 11'deki `ClearMaskedSourceHashes` yalnız özeti olan satırlara bakar; kısa değerin özeti hiç yoktu — bu adım onları kapsar.)
 - Partiler 500'lük; eşzamanlı bir eşleştirme yazısı (`PaymentMatch.UpdatedAt` jetonu) partiyi geri aldırır → o adım biter, çıkış 1, komut yeniden çalıştırılır (idempotent).
 - Bağlantının `UpdatedAt`'i BİLEREK değişmez: çekim işinin kimlik denetimi onu karşılaştırır.
+- Maskeleme/daraltma adımları oku-değiştir-yaz yapar ve `BankTransaction`'da jeton yok: saklama işi (04:57 UTC), shopper silmesi ya da banka veri talebi silmesi sürerken koşturulmaz (Prod adımları). Komutu Burak gündüz ve elle koşturur; çakışma penceresi bu kuralla kapanır, koşullu güncellemeye gerek kalmaz.
+- Her uygulama partisi kayıt kancasını (`RecordBatch`) çağırır: P0'da yalnız günlük (tutanak esastır), Görev 9'dan sonra kalıcı imha kaydı.
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankDataCleanupJob.cs`
@@ -1447,19 +1584,69 @@ public sealed class BankDataCleanupJobTests
     }
 
     [Fact]
+    public async Task Kisa_ya_da_eski_bicimli_maske_ShortValueMask_olur_IBAN_maskesi_ve_yer_tutucu_kalir()
+    {
+        // KVKK Ö-6: eski MaskIban kısa değeri ham, 8–14 karakteri "1234…890" yazdı (10 hanenin 7'si açık).
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var account10 = TestPhone.Digits(10);
+        var oldFormat = account10[..4] + "…" + account10[^3..];
+        var shortRaw = Tx(lic, 10m); shortRaw.CounterpartyIbanMasked = TestPhone.Digits(7);
+        var oldMasked = Tx(lic, 11m); oldMasked.CounterpartyIbanMasked = oldFormat;
+        var ibanMasked = Tx(lic, 12m); ibanMasked.CounterpartyIbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban());
+        db.BankTransactions.AddRange(shortRaw, oldMasked, ibanMasked);
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = Guid.NewGuid(),
+            IbanHash = Hex64(), IbanMasked = oldFormat, LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = DateTimeOffset.UtcNow });
+        var placeholder = new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 1, BankaKodu = "qnb",
+            IbanMasked = "?", Currency = "TL", RefreshedAt = DateTimeOffset.UtcNow };
+        var oldAccount = new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 2, BankaKodu = "qnb",
+            IbanMasked = oldFormat, Currency = "TL", RefreshedAt = DateTimeOffset.UtcNow };
+        db.BankAccounts.AddRange(placeholder, oldAccount);
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None);
+        dry.ShortMasksReplaced.Should().Be(4);
+        (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == shortRaw.Id)).CounterpartyIbanMasked
+            .Should().HaveLength(7, "kuru koşu yazmaz");
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.ShortMasksReplaced.Should().Be(4);
+        var masks = await db.BankTransactions.AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.CounterpartyIbanMasked);
+        masks[shortRaw.Id].Should().Be(BankHasher.ShortValueMask);
+        masks[oldMasked.Id].Should().Be(BankHasher.ShortValueMask);
+        masks[ibanMasked.Id].Should().Be(ibanMasked.CounterpartyIbanMasked, "IBAN maskesi biçimi kalır");
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).IbanMasked.Should().Be(BankHasher.ShortValueMask);
+        (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == placeholder.Id)).IbanMasked.Should().Be("?");
+        (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == oldAccount.Id)).IbanMasked.Should().Be(BankHasher.ShortValueMask);
+    }
+
+    [Theory]
+    [InlineData("TR12…345", false)]
+    [InlineData("…", false)]
+    [InlineData("?", false)]
+    [InlineData(null, false)]
+    [InlineData("1234…890", true)]
+    [InlineData("TR12", true)]
+    [InlineData("1234567", true)]
+    public void IBAN_maskesi_bicimi_disindaki_maske_yeniden_maskelenir(string? mask, bool expected)
+        => BankDataCleanupJob.NeedsRemask(mask).Should().Be(expected);
+
+    [Fact]
     public async Task Ikinci_uygulama_hicbir_satiri_degistirmez()
     {
         using var db = NewDb(); var lic = Guid.NewGuid();
+        var withShortMask = Tx(lic, 12m); withShortMask.CounterpartyIbanMasked = TestPhone.Digits(7);
         db.BankTransactions.AddRange(
             Tx(lic, 30m, direction: BankTransactionDirection.Outgoing),
-            Tx(lic, 10m, description: $"EFT {TestTckn.NewValid()}", rawJson: """{"Aciklama":"x","Bakiye":"1"}""", taxIdHash: Hex64()));
+            Tx(lic, 10m, description: $"EFT {TestTckn.NewValid()}", rawJson: """{"Aciklama":"x","Bakiye":"1"}""", taxIdHash: Hex64()),
+            withShortMask);
         await db.SaveChangesAsync();
         await Job(db).RunAsync(null, apply: true, CancellationToken.None);
 
         var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
 
-        (r.OutgoingOrZeroDeleted, r.TaxIdHashesCleared, r.RawJsonRewritten, r.DescriptionsMasked, r.PreAnchorDeleted, r.AnchorsSet)
-            .Should().Be((0, 0, 0, 0, 0, 0));
+        (r.OutgoingOrZeroDeleted, r.TaxIdHashesCleared, r.RawJsonRewritten, r.DescriptionsMasked, r.PreAnchorDeleted, r.AnchorsSet,
+            r.ShortMasksReplaced).Should().Be((0, 0, 0, 0, 0, 0, 0));
     }
 
     [Fact]
@@ -1503,10 +1690,13 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <item><c>CounterpartyTaxIdHash</c> boşaltılır.</item>
 /// <item>Ham kayıt beyaz listeye indirilir (<see cref="BankRawJsonRedactor"/>); okunamayan ham kayıt boşaltılır.</item>
 /// <item>Açıklamadaki IBAN ve 11 haneli numara maskelenir (<see cref="BankDescriptionMasker"/>).</item>
+/// <item>IBAN maskesi biçiminde olmayan eski maske (ham kısa değer, <c>1234…890</c>) <see cref="BankHasher.ShortValueMask"/>
+/// olur (<see cref="NeedsRemask"/>; KVKK Ö-6).</item>
 /// </list>
 /// Yeniden koşu idempotent. Partiler <see cref="BatchSize"/>'lık; eşzamanlı bir eşleştirme yazısıyla çakışan silme partisi geri
-/// alınır, <see cref="Report.FailedBatches"/> artar ve o adım biter — komut yeniden çalıştırılır. Bağlantının <c>UpdatedAt</c>'i
-/// BİLEREK değişmez (çekim işinin kimlik denetimi). Günlüğe yalnız sayılar yazılır.
+/// alınır, <see cref="Report.FailedBatches"/> artar ve o adım biter — komut yeniden çalıştırılır. Maskeleme adımları
+/// oku-değiştir-yaz yapar (<c>BankTransaction</c>'da jeton yok): saklama işi ya da bir silme sürerken koşturulmaz. Bağlantının
+/// <c>UpdatedAt</c>'i BİLEREK değişmez (çekim işinin kimlik denetimi). Günlüğe yalnız sayılar yazılır.
 /// </summary>
 public sealed class BankDataCleanupJob
 {
@@ -1524,6 +1714,7 @@ public sealed class BankDataCleanupJob
         public int RawJsonRewritten { get; set; }
         public int RawJsonUnreadableCleared { get; set; }
         public int DescriptionsMasked { get; set; }
+        public int ShortMasksReplaced { get; set; }
         public int FailedBatches { get; set; }
     }
 
@@ -1540,11 +1731,13 @@ public sealed class BankDataCleanupJob
         await ClearTaxIdHashesAsync(licenseId, apply, r, ct);
         await RewriteRawJsonAsync(licenseId, apply, r, ct);
         await MaskDescriptionsAsync(licenseId, apply, r, ct);
+        await RemaskShortValuesAsync(licenseId, apply, r, ct);
         _log.LogInformation("bank-data-cleanup ({Mode}): giden/sıfır={Outgoing} (atlanan {Skipped}), çapa={Anchors}, " +
             "çapa öncesi={PreAnchor} (bağlı {Linked}), eşleşme={Matches}, VKN kodu={TaxIds}, ham kayıt={Raw} (okunamayan {Unreadable}), " +
-            "açıklama={Descriptions}, düşen parti={Failed}", apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted,
+            "açıklama={Descriptions}, kısa maske={ShortMasks}, düşen parti={Failed}", apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted,
             r.OutgoingOrZeroSkippedDecided, r.AnchorsSet, r.PreAnchorDeleted, r.PreAnchorSkippedLinked, r.MatchesDeleted,
-            r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared, r.DescriptionsMasked, r.FailedBatches);
+            r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared, r.DescriptionsMasked, r.ShortMasksReplaced,
+            r.FailedBatches);
         return r;
     }
 
@@ -1748,6 +1941,72 @@ public sealed class BankDataCleanupJob
             _db.ChangeTracker.Clear();
         }
     }
+
+    /// <summary>Saklı maske IBAN maskesi biçiminde (<c>AA00…XXX</c>, <see cref="BankHasher.MaskIban"/>) değil mi? Eski
+    /// <c>MaskIban</c>'ın ham kısa değeri ve <c>1234…890</c> biçimi evet. Yer tutucu "?", boş ve
+    /// <see cref="BankHasher.ShortValueMask"/> hayır (dokunulmaz).</summary>
+    public static bool NeedsRemask(string? masked)
+    {
+        if (string.IsNullOrEmpty(masked) || masked == "?" || masked == BankHasher.ShortValueMask) return false;
+        var parts = masked.Split('…');
+        var ibanStyle = parts.Length == 2 && parts[0].Length == 4 && parts[1].Length == 3
+            && char.IsAsciiLetterUpper(parts[0][0]) && char.IsAsciiLetterUpper(parts[0][1])
+            && char.IsAsciiDigit(parts[0][2]) && char.IsAsciiDigit(parts[0][3])
+            && parts[1].All(c => char.IsAsciiLetterUpper(c) || char.IsAsciiDigit(c));
+        return !ibanStyle;
+    }
+
+    /// <summary>KVKK Ö-6: üç tablodaki eski biçimli ya da kısa maskeyi <see cref="BankHasher.ShortValueMask"/>'a çevirir. Maske
+    /// SQL'de süzülemediği için hareketler kimlik anlık görüntüsüyle partiler hâlinde, IBAN hafızası ve hesaplar (küçük tablolar)
+    /// tek seferde gezilir.</summary>
+    private async Task RemaskShortValuesAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
+    {
+        const string criterion = "eski kısa ya da hesap numarası maskesi (Ö-6)";
+        var ids = await Transactions(licenseId).Where(t => t.CounterpartyIbanMasked != null).OrderBy(t => t.Id)
+            .Select(t => t.Id).ToListAsync(ct);
+        foreach (var chunk in ids.Chunk(BatchSize))
+        {
+            var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id)).ToListAsync(ct);
+            var changed = 0;
+            foreach (var t in rows.Where(t => NeedsRemask(t.CounterpartyIbanMasked)))
+            {
+                t.CounterpartyIbanMasked = BankHasher.ShortValueMask;
+                changed++;
+            }
+            r.ShortMasksReplaced += changed;
+            if (apply && changed > 0)
+            {
+                RecordBatch(licenseId, "BankTransactions.CounterpartyIbanMasked", Masked, changed, criterion);
+                await _db.SaveChangesAsync(ct);
+            }
+            _db.ChangeTracker.Clear();
+        }
+
+        var memories = await (licenseId is { } ml ? _db.CustomerIbanMemories.Where(m => m.LicenseId == ml) : _db.CustomerIbanMemories)
+            .ToListAsync(ct);
+        var accounts = await (licenseId is { } al ? _db.BankAccounts.Where(a => a.LicenseId == al) : _db.BankAccounts)
+            .ToListAsync(ct);
+        var memoriesChanged = 0;
+        foreach (var m in memories.Where(m => NeedsRemask(m.IbanMasked)))
+        {
+            m.IbanMasked = BankHasher.ShortValueMask;
+            memoriesChanged++;
+        }
+        var accountsChanged = 0;
+        foreach (var a in accounts.Where(a => NeedsRemask(a.IbanMasked)))
+        {
+            a.IbanMasked = BankHasher.ShortValueMask;
+            accountsChanged++;
+        }
+        r.ShortMasksReplaced += memoriesChanged + accountsChanged;
+        if (apply && memoriesChanged + accountsChanged > 0)
+        {
+            RecordBatch(licenseId, "CustomerIbanMemories.IbanMasked", Masked, memoriesChanged, criterion);
+            RecordBatch(licenseId, "BankAccounts.IbanMasked", Masked, accountsChanged, criterion);
+            await _db.SaveChangesAsync(ct);
+        }
+        _db.ChangeTracker.Clear();
+    }
 }
 ```
 
@@ -1814,7 +2073,9 @@ namespace OrderDeck.LicenseServer.Tools;
 /// Konteyner içinde elle koşulur:
 ///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup [--license &lt;guid&gt;] [--apply]
 /// KVKK düzeltmelerinden önce yazılmış banka verisini yeni kurallara indirir; kurallar <see cref="BankDataCleanupJob"/>'ta.
-/// --apply yoksa kuru koşu: aynı sayıları hesaplar, hiçbir şey yazmaz. Önce kuru koşu, çıktı tutanağa.
+/// --apply yoksa kuru koşu: aynı sayıları hesaplar, hiçbir şey yazmaz. Önce kuru koşu, çıktı tutanağa. Saklama işi (04:57 UTC),
+/// shopper silmesi ya da banka veri talebi silmesi sürerken koşturulmaz: maskeleme adımları oku-değiştir-yaz yapar, arada
+/// boşaltılan metni eski hâliyle geri yazabilirdi.
 /// <para>Çıkış kodları: 0 tamam; 1 bazı partiler eşzamanlı bir eşleştirme yazısı yüzünden geri alındı — yeniden çalıştır
 /// (idempotent); 2 kullanım/yapılandırma.</para>
 /// <para>Argümanlar katı (<see cref="GroupCustomers"/> kalıbı): tanınmayan, yinelenen ya da değeri eksik argüman → 2,
@@ -1895,7 +2156,7 @@ public static class BankDataCleanup
            $"çapa yazılan={r.AnchorsSet} çapa öncesi silinen={r.PreAnchorDeleted} (bağlı kalan={r.PreAnchorSkippedLinked}) | " +
            $"eşleşme silinen={r.MatchesDeleted} | VKN/TCKN kodu boşaltılan={r.TaxIdHashesCleared} | " +
            $"ham kayıt daraltılan={r.RawJsonRewritten} (okunamayan boşaltılan={r.RawJsonUnreadableCleared}) | " +
-           $"açıklama maskelenen={r.DescriptionsMasked} | düşen parti={r.FailedBatches}";
+           $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | düşen parti={r.FailedBatches}";
 }
 ```
 
@@ -2023,7 +2284,8 @@ git commit -m "feat(bank-kvkk): mevcut banka verisi için tek seferlik temizlik 
 bank-data-cleanup [--license] [--apply]: varsayılan kuru koşu; uygulamada
 giden/sıfır hareketleri ve çapa öncesi kararsız ilk çekim satırlarını
 siler, VKN/TCKN kodlarını boşaltır, ham kaydı beyaz listeye indirir,
-açıklamadaki IBAN/TCKN'yi maskeler. Prod'da Burak koşturur.
+açıklamadaki IBAN/TCKN'yi maskeler, eski kısa/hesap numarası maskelerini
+'…'ya çevirir. Prod'da Burak koşturur.
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -3599,56 +3861,51 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 11: Yalnız geçerli IBAN özetlenir; maskeli IBAN sayacı ve temizliği (P1-12)
 
-**Neden (not Ö-7):** bankalar gönderen IBAN'ını maskeli verebilir (TCMB: rıza yoksa alıcının ekstresinde maskeli). `NormalizeIban` yalnız uzunluk ≥ 8 istiyor; maskeli değer de özetleniyor, aynı ilk/son karakterleri taşıyan farklı gönderenler aynı özete düşüyor ve IBAN hafızası farklı kişileri tek müşteriye bağlıyor. Artık yalnız tam ve geçerli IBAN özetlenir: harf/rakam, ülke + kontrol biçimi, uzunluk 15–34 (TR'de 26), ISO 7064 mod-97 = 1. TR BBAN'ı harf içerebilir: "TR'den sonra yalnız rakam" koşulu konmaz. Banka hesabı başına tam/maskeli/boş sayacı tutulur (değer yazılmadan). Mevcut maskeli kaynaklı özetler `bank-data-cleanup` ile temizlenir; maskeden anlaşılamayanlar için `--reset-iban-memory` (karar 5).
+**Neden (not Ö-7, Ö-6, K-7):** bankalar gönderen IBAN'ını maskeli verebilir (TCMB: rıza yoksa alıcının ekstresinde maskeli). `NormalizeIban` yalnız uzunluk ≥ 8 istiyor; maskeli değer de özetleniyor, aynı ilk/son karakterleri taşıyan farklı gönderenler aynı özete düşüyor ve IBAN hafızası farklı kişileri tek müşteriye bağlıyor. Artık yalnız tam ve geçerli IBAN özetlenir: harf/rakam, ülke + kontrol biçimi, uzunluk 15–34 (TR'de 26), ISO 7064 mod-97 = 1 (`HasValidIbanChecksum`, Görev 4). TR BBAN'ı harf içerebilir: "TR'den sonra yalnız rakam" koşulu konmaz. Banka hesabı başına tam/maskeli/boş sayacı tutulur (değer yazılmadan).
+
+- **Maske de aynı kuralla (Ö-6):** `MaskIban` geçerli IBAN almadıysa (`Classify != Full`) `ShortValueMask` döner — Görev 6'daki "15'ten kısa" kuralının sıkılaşmışı: 15+ karakterlik IBAN olmayan değer de 7 karakteriyle görünmez.
+- **Mevcut özetler:** maskesi maskeli kaynağı ele veren özetler `bank-data-cleanup` ile boşaltılır ve o özetle öğrenilmiş hafıza silinir. Maskeden anlaşılamayanlar için `--reset-iban-memory` **yalnız `CustomerIbanMemories`'i siler; hareketlerdeki özetler KALIR** (karar 5). Özet boşaltılsaydı IBAN talep aracı (Görev 17) o hareketleri — 180 güne kadar duran tutar, tarih, maske, açıklama ve ad — bulamaz, "veri yok" derdi; Shopper hesabı olmayanların tek yolu bu (K-7). Maskeli bir değerin özeti gerçek bir IBAN'ın özetine hiçbir zaman eşit olmadığı için kalan özetler talep aramasını da bozmaz.
+- **Yeniden öğrenme kapısı:** sıfırlamadan sonra eski hareketlerdeki (maskeli kaynaklı olabilecek) özet, elle eşleme ya da dekont onayıyla hafızaya yeniden girmemeli. Yeni `BankTransaction.CounterpartyIbanHashValid` bayrağı: çekim işi bu görevden sonra yalnız geçerli IBAN'ı özetler ve bayrağı yazar; `LearnIbanAsync` yalnız bayraklı hareketten öğrenir. Göç bayrağı eski satırlarda `false` bırakır: kesme anından önce çekilmiş hareket bir daha IBAN öğretmez.
 
 **Files:**
-- Modify: `OrderDeck.LicenseServer/Services/Bank/BankHasher.cs` (`NormalizeIban`, yeni `Classify`, `IbanQuality`)
-- Modify: `OrderDeck.LicenseServer/Domain/Bank/BankAccount.cs`
-- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs` (`UpsertAsync`)
+- Modify: `OrderDeck.LicenseServer/Services/Bank/BankHasher.cs` (`NormalizeIban`, `MaskIban`, yeni `Classify`, `IbanQuality`)
+- Modify: `OrderDeck.LicenseServer/Domain/Bank/BankAccount.cs`, `OrderDeck.LicenseServer/Domain/Bank/BankTransaction.cs` (`CounterpartyIbanHashValid`)
+- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinPollJob.cs` (`UpsertAsync`), `PaymentMatchReconciler.cs` (`LearnIbanAsync` kapısı)
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/Obifin/Index.cshtml(.cs)` (hesap satırı)
 - Modify: `OrderDeck.LicenseServer/Services/Bank/BankDataCleanupJob.cs`, `OrderDeck.LicenseServer/Tools/BankDataCleanup.cs`
-- Create: göç `*_BankAccountIbanQualityCounters`
-- Test: `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs`
+- Create: göç `*_IbanQualityCountersAndHashValid`
+- Test: `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `PaymentMatchReconcilerTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs`
 
-- [ ] **Adım 1: Test IBAN üretecini geçerli yap ve doğrulama testlerini yaz (kırmızı)**
+- [ ] **Adım 1: Doğrulama ve maske testlerini yaz (kırmızı)**
 
-`BankHasherTests.cs` — `TestIban()` yardımcısını şununla değiştir:
+(`TestIban()` Görev 4'ten beri mod-97 geçerli; `WithCheckDigits`, `WrongCheckDigits` orada.)
+
+`BankHasherTests.cs` — `Maske_bosluklu_kucuk_harfli_girdiyi_normalize_ederek_maskeler`'deki sabit IBAN'ı geçerli üret (maske artık yalnız geçerli IBAN'da 7 karakter gösterir):
 
 ```csharp
-    /// <summary>Mod-97 geçerli TR IBAN üretir — repo public, gerçek IBAN yazılmaz (rastgele 22 haneli BBAN).</summary>
-    public static string TestIban() => WithCheckDigits("TR", TestPhone.Digits(22));
+        var iban = WithCheckDigits("TR", string.Concat(Enumerable.Range(1, 22).Select(i => i % 10)));
+        var messy = " " + string.Join(" ", iban.Chunk(4).Select(c => new string(c))).ToLowerInvariant() + " ";
 
-    /// <summary>ISO 13616 kontrol haneleriyle IBAN üretir. Üretim kodundan bağımsız hesap: test doğrulayıcının kendisini sınar.</summary>
-    public static string WithCheckDigits(string country, string bban)
-    {
-        var remainder = 0;
-        foreach (var c in bban + country + "00")
-            remainder = char.IsAsciiDigit(c) ? (remainder * 10 + (c - '0')) % 97 : (remainder * 100 + (c - 'A' + 10)) % 97;
-        return country + (98 - remainder).ToString("00") + bban;
-    }
-
-    private static string WrongCheckDigits(string iban)
-    {
-        var check = int.Parse(iban[2..4]);
-        return iban[..2] + (check == 98 ? 2 : check + 1).ToString("00") + iban[4..];
-    }
+        BankHasher.MaskIban(messy).Should().Be(iban[..4] + "…" + "012");
 ```
 
 Sınıfın sonuna:
 
 ```csharp
     [Fact]
-    public void Gecerli_TR_IBAN_tam_sayilir_ve_ozetlenir()
+    public void Gecerli_TR_IBAN_tam_sayilir_ozetlenir_ve_ilk_dort_son_uc_karakterle_maskelenir()
     {
         var iban = TestIban();
         BankHasher.Classify(iban).Should().Be(IbanQuality.Full);
         NewHasher().HashIban(iban).Should().HaveLength(64);
+        BankHasher.MaskIban(iban).Should().Be(iban[..4] + "…" + iban[^3..]);
     }
 
     [Fact]
-    public void Maskeli_kisaltilmis_ya_da_kontrol_hanesi_yanlis_IBAN_ozetlenmez()
+    public void Maskeli_kisaltilmis_ya_da_kontrol_hanesi_yanlis_IBAN_ozetlenmez_maskesi_karakter_gostermez()
     {
-        // KVKK Ö-7: maskeli değer özetlenseydi farklı gönderenler aynı özete düşerdi.
+        // KVKK Ö-7: maskeli değer özetlenseydi farklı gönderenler aynı özete düşerdi. Ö-6: IBAN olmayan değerin maskesi
+        // hiçbir karakterini göstermez (15+ karakterlik hesap numarası dahil).
         var iban = TestIban();
         var h = NewHasher();
         var bad = new[]
@@ -3658,11 +3915,13 @@ Sınıfın sonuna:
             iban[..25],
             iban + "0",
             WrongCheckDigits(iban),
+            TestPhone.Digits(16),
         };
         foreach (var value in bad)
         {
             h.HashIban(value).Should().BeNull(value.Length.ToString());
             BankHasher.Classify(value).Should().Be(IbanQuality.Masked);
+            BankHasher.MaskIban(value).Should().Be(BankHasher.ShortValueMask, value.Length.ToString());
         }
         BankHasher.Classify(null).Should().Be(IbanQuality.Empty);
         BankHasher.Classify("   ").Should().Be(IbanQuality.Empty);
@@ -3698,7 +3957,7 @@ Expected: FAIL — `IbanQuality`, `Classify` yok.
 public enum IbanQuality { Empty = 0, Masked = 1, Full = 2 }
 ```
 
-`NormalizeIban` metodunu şununla değiştir ve altına `Classify` + `Mod97` ekle:
+`NormalizeIban` metodunu şununla değiştir ve altına `Classify` ekle (kontrol hanesi denetimi Görev 4'teki `HasValidIbanChecksum`):
 
 ```csharp
     /// <summary>
@@ -3712,30 +3971,33 @@ public enum IbanQuality { Empty = 0, Masked = 1, Full = 2 }
     {
         if (string.IsNullOrWhiteSpace(iban)) return null;
         var compact = Compact(iban);
-        if (compact.Length is < 15 or > 34) return null;
+        if (compact.Length < MinIbanLength || compact.Length > 34) return null;
         foreach (var c in compact)
             if (!char.IsAsciiLetterUpper(c) && !char.IsAsciiDigit(c)) return null;
         if (!char.IsAsciiLetterUpper(compact[0]) || !char.IsAsciiLetterUpper(compact[1])
             || !char.IsAsciiDigit(compact[2]) || !char.IsAsciiDigit(compact[3])) return null;
         if (compact.StartsWith("TR", StringComparison.Ordinal) && compact.Length != 26) return null;
-        return Mod97(compact) == 1 ? compact : null;
+        return HasValidIbanChecksum(compact) ? compact : null;
     }
 
     /// <summary>Boş → <see cref="IbanQuality.Empty"/>; geçerli → <see cref="IbanQuality.Full"/>; dolu ama geçersiz (maskeli,
-    /// kısaltılmış, bozuk) → <see cref="IbanQuality.Masked"/>.</summary>
+    /// kısaltılmış, bozuk, hesap numarası) → <see cref="IbanQuality.Masked"/>.</summary>
     public static IbanQuality Classify(string? iban)
         => string.IsNullOrWhiteSpace(iban) ? IbanQuality.Empty
             : NormalizeIban(iban) is null ? IbanQuality.Masked : IbanQuality.Full;
+```
 
-    /// <summary>ISO 13616 / ISO 7064 MOD 97-10: ilk dört karakter sona alınır, harfler 10–35'e çevrilir, sayı 97'ye bölünür.</summary>
-    private static int Mod97(string iban)
+`MaskIban`'ı (Görev 6) şununla değiştir:
+
+```csharp
+    /// <summary>`TR12…345` — yalnız görüntü, YALNIZ geçerli IBAN için (<see cref="Classify"/> = Full). Ham girdi ASLA dönmez:
+    /// boş/boşluk → ""; maskeli, kısaltılmış, bozuk ya da hesap numarası → <see cref="ShortValueMask"/> (KVKK Ö-6: IBAN olmayan
+    /// değerin hiçbir karakteri "maske" sütununda görünmez).</summary>
+    public static string MaskIban(string? iban)
     {
-        var remainder = 0;
-        foreach (var c in iban[4..] + iban[..4])
-            remainder = char.IsAsciiDigit(c)
-                ? (remainder * 10 + (c - '0')) % 97
-                : (remainder * 100 + (c - 'A' + 10)) % 97;
-        return remainder;
+        if (string.IsNullOrWhiteSpace(iban)) return "";
+        var normalized = NormalizeIban(iban);
+        return normalized is null ? ShortValueMask : normalized[..4] + "…" + normalized[^3..];
     }
 ```
 
@@ -3744,7 +4006,7 @@ public enum IbanQuality { Empty = 0, Masked = 1, Full = 2 }
 - [ ] **Adım 4: Koştur — hasher yeşil, bankanın geri kalanı da**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~Services.Bank|FullyQualifiedName~Admin"`
-Expected: PASS (bütün testler `TestIban()` kullanıyor; artık geçerli).
+Expected: PASS (testler `TestIban()` kullanıyor, Görev 4'ten beri geçerli). Kırmızı varsa: maske beklentisini sabit, geçersiz bir IBAN'dan kuran test — değeri `WithCheckDigits` ile üret.
 
 - [ ] **Adım 5: Çekim sayacı testini yaz (kırmızı)**
 
@@ -3765,10 +4027,13 @@ Expected: PASS (bütün testler `TestIban()` kullanıyor; artık geçerli).
 
         await job.RunAsync(CancellationToken.None);
 
-        (await db.BankTransactions.SingleAsync(t => t.ObifinId == 31)).CounterpartyIbanHash.Should().HaveLength(64);
+        var full = await db.BankTransactions.SingleAsync(t => t.ObifinId == 31);
+        full.CounterpartyIbanHash.Should().HaveLength(64);
+        full.CounterpartyIbanHashValid.Should().BeTrue("bu özet geçerli IBAN'dan: IBAN öğretebilir");
         var m = await db.BankTransactions.SingleAsync(t => t.ObifinId == 32);
         m.CounterpartyIbanHash.Should().BeNull("maskeli IBAN özetlenmez (KVKK Ö-7)");
-        m.CounterpartyIbanMasked.Should().Be(BankHasher.MaskIban(masked));
+        m.CounterpartyIbanHashValid.Should().BeFalse();
+        m.CounterpartyIbanMasked.Should().Be(BankHasher.ShortValueMask, "IBAN olmayan değerin maskesi karakter göstermez (Ö-6)");
         var account = await db.BankAccounts.SingleAsync(a => a.ObifinAccountId == 6);
         (account.IbanFullCount, account.IbanMaskedCount, account.IbanEmptyCount).Should().Be((1, 1, 1));
     }
@@ -3798,6 +4063,21 @@ Expected: PASS (bütün testler `TestIban()` kullanıyor; artık geçerli).
             }
 ```
 
+`Domain/Bank/BankTransaction.cs` — `CounterpartyIbanMasked`'ın ALTINA:
+
+```csharp
+    /// <summary>Özet mod-97 geçerli bir IBAN'dan üretildi (Görev 11 sonrası çekim). Yalnız bu hareketler IBAN hafızası öğretir
+    /// (<c>PaymentMatchReconciler.LearnIbanAsync</c>, KVKK Ö-7): öncesinde çekilen hareketin özeti maskeli IBAN'dan üretilmiş
+    /// olabilir. Göç eski satırlarda false bırakır.</summary>
+    public bool CounterpartyIbanHashValid { get; set; }
+```
+
+`ObifinPollJob.UpsertAsync` — `var masked = BankHasher.MaskIban(dto.CounterpartyIban);` satırının ALTINA `var ibanHash = _hasher.HashIban(dto.CounterpartyIban);` ekle; nesne başlatıcıdaki `CounterpartyIbanHash = _hasher.HashIban(dto.CounterpartyIban),` satırını şununla değiştir (özet artık yalnız geçerli IBAN'da dolu):
+
+```csharp
+                CounterpartyIbanHash = ibanHash, CounterpartyIbanHashValid = ibanHash is not null,
+```
+
 - [ ] **Adım 7: Yönetim sayfasında göster**
 
 `Pages/Admin/Obifin/Index.cshtml.cs` — `AccountRow`'u şununla değiştir:
@@ -3817,8 +4097,46 @@ Expected: PASS (bütün testler `TestIban()` kullanıyor; artık geçerli).
 
 - [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankAccountIbanQualityCounters --output-dir Data/Migrations`
-Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable: false, defaultValue: 0)` (sütun varsayılanı 0: eski imajın INSERT'ü sütunu bilmese de geçer).
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add IbanQualityCountersAndHashValid --output-dir Data/Migrations`
+Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable: false, defaultValue: 0)` ve bir `AddColumn<bool>(name: "CounterpartyIbanHashValid", table: "BankTransactions", nullable: false, defaultValue: false)` (varsayılanlar: eski imajın INSERT'ü sütunları bilmese de geçer; eski hareketler IBAN öğretmez). Eski satırları `true` yapan `UPDATE` EKLEME.
+
+- [ ] **Adım 8b: Eski hareketten IBAN öğrenilmesin (test önce, kırmızı)**
+
+`PaymentMatchReconcilerTests.cs` — `Tx` yardımcısının nesne başlatıcısına `CounterpartyIbanHashValid = ibanHash is not null,` ekle (testlerin hareketleri bu görevden sonraki çekimi temsil eder). Başka bir test dosyası elle eşleme ya da dekont onayıyla IBAN öğrenilmesini bekliyorsa (`CustomerIbanMemories` iddiası; ör. `AdminBankaEslestirmePageTests`) o dosyanın hareketine de aynı bayrağı koy. Sınıfın sonuna:
+
+```csharp
+    [Fact]
+    public async Task Kesme_anindan_once_cekilmis_hareketin_ozeti_IBAN_ogretmez()
+    {
+        // KVKK Ö-7: Görev 11'den önce çekilen hareketin özeti maskeli IBAN'dan üretilmiş olabilir; --reset-iban-memory'den sonra
+        // ondan yeniden öğrenilen bağ farklı gönderenleri tek müşteriye bağlardı.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var tx = Tx(db, s.LicenseId, 100m, DateTimeOffset.UtcNow.AddHours(-1), "EFT GELEN", Hasher.HashIban(BankHasherTests.TestIban()));
+        tx.CounterpartyIbanHashValid = false;
+        db.SaveChanges();
+
+        await Recon(db).ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+    }
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~PaymentMatchReconcilerTests"`
+Expected: FAIL — yalnız yeni test (hafıza öğrenildi).
+
+`Services/Bank/PaymentMatchReconciler.cs` — `LearnIbanAsync`'in (Görev 10) ilk satırını:
+
+```csharp
+        if (tx.CounterpartyIbanHash is null) return;
+```
+şununla değiştir:
+```csharp
+        // KVKK Ö-7: yalnız geçerli IBAN'dan üretilmiş özet öğretir. Kesme anından (Görev 11) önce çekilen hareketin özeti maskeli
+        // IBAN'dan olabilir; --reset-iban-memory hafızayı silse de o özet buradan geri gelirdi.
+        if (tx.CounterpartyIbanHash is null || !tx.CounterpartyIbanHashValid) return;
+```
+
+Run: aynı komut. Expected: PASS.
 
 - [ ] **Adım 9: Temizlik komutu testlerini yaz (kırmızı)**
 
@@ -3855,8 +4173,10 @@ Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable:
     }
 
     [Fact]
-    public async Task Reset_iban_memory_butun_hafizayi_ve_ozetleri_siler_kuru_kosuda_yalniz_sayar()
+    public async Task Reset_iban_memory_yalniz_hafizayi_siler_hareket_ozeti_kalir_kuru_kosuda_yalniz_sayar()
     {
+        // KVKK K-7: hareketin özeti kalmalı — IBAN talep aracı (Görev 17) hareketleri yalnız özetle bulur; boşaltılsaydı 180 güne
+        // kadar duran veri "yok" görünürdü. Yeniden öğrenmeyi LearnIbanAsync'in CounterpartyIbanHashValid kapısı engeller.
         using var db = NewDb(); var lic = Guid.NewGuid();
         var hash = Hex64();
         var t = Tx(lic, 10m); t.CounterpartyIbanHash = hash; t.CounterpartyIbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban());
@@ -3865,14 +4185,14 @@ Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable:
         await db.SaveChangesAsync();
 
         var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None, resetIbanMemory: true);
-        (dry.IbanMemoriesReset, dry.IbanHashesReset).Should().Be((1, 1));
+        dry.IbanMemoriesReset.Should().Be(1);
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(1);
 
         var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None, resetIbanMemory: true);
 
-        (r.IbanMemoriesReset, r.IbanHashesReset).Should().Be((1, 1));
+        r.IbanMemoriesReset.Should().Be(1);
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
-        (await db.BankTransactions.SingleAsync()).CounterpartyIbanHash.Should().BeNull();
+        (await db.BankTransactions.SingleAsync()).CounterpartyIbanHash.Should().Be(hash, "talep aracı hareketi özetle bulur");
         (await db.BankTransactions.SingleAsync()).CounterpartyIbanMasked.Should().NotBeNull("maske kalır");
     }
 
@@ -3909,14 +4229,14 @@ Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable:
         public int MaskedSourceHashesCleared { get; set; }
         public int MaskedSourceMemoriesDeleted { get; set; }
         public int IbanMemoriesReset { get; set; }
-        public int IbanHashesReset { get; set; }
 ```
 
 `RunAsync` imzasını ve gövdesini şununla değiştir (log satırı aynı kalır, sonuna maskeli/sıfırlama sayıları eklenir):
 
 ```csharp
     /// <param name="resetIbanMemory">KVKK Ö-7, not karar 5: maskeden anlaşılamayan maskeli kaynaklı özetler için bütün IBAN
-    /// hafızasını siler ve hareketlerdeki özetleri boşaltır (maske kalır); yeniden öğrenilir.</param>
+    /// hafızasını siler. Hareketlerdeki özetler KALIR (IBAN talep aracı onlarla arar, K-7); yeniden öğrenmeyi
+    /// <c>CounterpartyIbanHashValid</c> kapısı engeller.</param>
     public async Task<Report> RunAsync(Guid? licenseId, bool apply, CancellationToken ct, bool resetIbanMemory = false)
     {
         var r = new Report();
@@ -3925,15 +4245,16 @@ Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable:
         await ClearTaxIdHashesAsync(licenseId, apply, r, ct);
         await RewriteRawJsonAsync(licenseId, apply, r, ct);
         await MaskDescriptionsAsync(licenseId, apply, r, ct);
+        await RemaskShortValuesAsync(licenseId, apply, r, ct);
         await ClearMaskedSourceHashesAsync(licenseId, apply, r, ct);
         if (resetIbanMemory) await ResetIbanMemoryAsync(licenseId, apply, r, ct);
         _log.LogInformation("bank-data-cleanup ({Mode}): giden/sıfır={Outgoing} (atlanan {Skipped}), çapa={Anchors}, " +
             "çapa öncesi={PreAnchor} (bağlı {Linked}), eşleşme={Matches}, VKN kodu={TaxIds}, ham kayıt={Raw} (okunamayan {Unreadable}), " +
-            "açıklama={Descriptions}, maskeli özet={MaskedHashes} (hafıza {MaskedMemories}), sıfırlanan hafıza={ResetMemories} " +
-            "(özet {ResetHashes}), düşen parti={Failed}", apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted,
+            "açıklama={Descriptions}, kısa maske={ShortMasks}, maskeli özet={MaskedHashes} (hafıza {MaskedMemories}), " +
+            "sıfırlanan hafıza={ResetMemories}, düşen parti={Failed}", apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted,
             r.OutgoingOrZeroSkippedDecided, r.AnchorsSet, r.PreAnchorDeleted, r.PreAnchorSkippedLinked, r.MatchesDeleted,
-            r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared, r.DescriptionsMasked,
-            r.MaskedSourceHashesCleared, r.MaskedSourceMemoriesDeleted, r.IbanMemoriesReset, r.IbanHashesReset, r.FailedBatches);
+            r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared, r.DescriptionsMasked, r.ShortMasksReplaced,
+            r.MaskedSourceHashesCleared, r.MaskedSourceMemoriesDeleted, r.IbanMemoriesReset, r.FailedBatches);
         return r;
     }
 ```
@@ -3974,21 +4295,30 @@ Sınıfın sonuna:
                 .Where(m => m.LicenseId == license && hashes.Contains(m.IbanHash)).ToListAsync(ct);
             r.MaskedSourceHashesCleared += txs.Count;
             r.MaskedSourceMemoriesDeleted += memories.Count;
+            // Maskeli bir değerin özeti gerçek bir IBAN'ın özetine eşit olamaz: boşaltmak IBAN talep aramasından bir şey
+            // kaybettirmez (talep gerçek IBAN'ın özetiyle arar).
             foreach (var t in txs) t.CounterpartyIbanHash = null;
             _db.CustomerIbanMemories.RemoveRange(memories);
-            if (apply) await _db.SaveChangesAsync(ct);
+            if (apply)
+            {
+                RecordBatch(license, "BankTransactions.CounterpartyIbanHash", Nulled, txs.Count, "maskeli kaynaklı özet (Ö-7)");
+                RecordBatch(license, "CustomerIbanMemories", Deleted, memories.Count, "maskeli kaynaklı özet (Ö-7)");
+                await _db.SaveChangesAsync(ct);
+            }
             _db.ChangeTracker.Clear();
         }
     }
 
+    /// <summary>KVKK Ö-7, karar 5: bütün IBAN hafızası silinir. Hareketlerdeki özetler BİLEREK KALIR: IBAN talep aracı
+    /// (BankSubjectRequestService) hareketleri yalnız özetle bulur, boşaltılsaydı 180 güne kadar duran veri erişim/silme
+    /// talebinde "yok" görünürdü (K-7). Eski hareketin özeti hafızaya geri giremez: <c>LearnIbanAsync</c> yalnız
+    /// <c>CounterpartyIbanHashValid</c> hareketten öğrenir.</summary>
     private async Task ResetIbanMemoryAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
     {
         var memories = licenseId is { } l ? _db.CustomerIbanMemories.Where(m => m.LicenseId == l) : _db.CustomerIbanMemories;
-        var hashed = Transactions(licenseId).Where(t => t.CounterpartyIbanHash != null);
         if (!apply)
         {
             r.IbanMemoriesReset = await memories.CountAsync(ct);
-            r.IbanHashesReset = await hashed.CountAsync(ct);
             return;
         }
         while (true)
@@ -3996,19 +4326,10 @@ Sınıfın sonuna:
             var batch = await memories.OrderBy(m => m.Id).Take(BatchSize).ToListAsync(ct);
             if (batch.Count == 0) break;
             _db.CustomerIbanMemories.RemoveRange(batch);
+            RecordBatch(licenseId, "CustomerIbanMemories", Deleted, batch.Count, "IBAN hafızası sıfırlama (Ö-7, karar 5)");
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             r.IbanMemoriesReset += batch.Count;
-            if (batch.Count < BatchSize) break;
-        }
-        while (true)
-        {
-            var batch = await hashed.OrderBy(t => t.Id).Take(BatchSize).ToListAsync(ct);
-            if (batch.Count == 0) break;
-            foreach (var t in batch) t.CounterpartyIbanHash = null;
-            await _db.SaveChangesAsync(ct);
-            _db.ChangeTracker.Clear();
-            r.IbanHashesReset += batch.Count;
             if (batch.Count < BatchSize) break;
         }
     }
@@ -4027,12 +4348,12 @@ Sınıfın sonuna:
            $"çapa yazılan={r.AnchorsSet} çapa öncesi silinen={r.PreAnchorDeleted} (bağlı kalan={r.PreAnchorSkippedLinked}) | " +
            $"eşleşme silinen={r.MatchesDeleted} | VKN/TCKN kodu boşaltılan={r.TaxIdHashesCleared} | " +
            $"ham kayıt daraltılan={r.RawJsonRewritten} (okunamayan boşaltılan={r.RawJsonUnreadableCleared}) | " +
-           $"açıklama maskelenen={r.DescriptionsMasked} | " +
+           $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | " +
            $"maskeli kaynaklı özet boşaltılan={r.MaskedSourceHashesCleared} (hafıza silinen={r.MaskedSourceMemoriesDeleted}) | " +
-           $"sıfırlanan IBAN hafızası={r.IbanMemoriesReset} (özet={r.IbanHashesReset}) | düşen parti={r.FailedBatches}";
+           $"sıfırlanan IBAN hafızası={r.IbanMemoriesReset} | düşen parti={r.FailedBatches}";
 ```
 
-- Sınıf özetine `--reset-iban-memory` paragrafı: `/// <para><c>--reset-iban-memory</c>: bütün IBAN hafızasını siler, hareket özetlerini boşaltır (maske kalır) — maskeli kaynaklı özetler saklı veriden tam anlaşılamadığı için Faz 2'den önce (KVKK Ö-7, karar Burak'ın).</para>`
+- Sınıf özetine `--reset-iban-memory` paragrafı: `/// <para><c>--reset-iban-memory</c>: bütün IBAN hafızasını siler; hareket özetleri KALIR (IBAN talep aracı onlarla arar) ve eski hareketten yeniden öğrenilmez (CounterpartyIbanHashValid kapısı) — maskeli kaynaklı özetler saklı veriden tam anlaşılamadığı için Faz 2'den önce (KVKK Ö-7, karar Burak'ın).</para>`
 
 - [ ] **Adım 11: Koştur — yeşil**
 
@@ -4042,13 +4363,16 @@ Expected: PASS (Docker gerekli: `BankDataCleanupRelationalTests`).
 - [ ] **Adım 12: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Bank OrderDeck.LicenseServer/Domain/Bank/BankAccount.cs OrderDeck.LicenseServer/Pages/Admin/Obifin OrderDeck.LicenseServer/Tools/BankDataCleanup.cs OrderDeck.LicenseServer/Data/Migrations OrderDeck.LicenseServer.Tests/Services/Bank OrderDeck.LicenseServer.Tests/Tools/BankDataCleanupTests.cs
-git commit -m "fix(bank-kvkk): yalnız geçerli IBAN'ı özetle, maskeli IBAN'ı say ve temizle
+git add OrderDeck.LicenseServer/Services/Bank OrderDeck.LicenseServer/Domain/Bank/BankAccount.cs OrderDeck.LicenseServer/Domain/Bank/BankTransaction.cs OrderDeck.LicenseServer/Pages/Admin/Obifin OrderDeck.LicenseServer/Tools/BankDataCleanup.cs OrderDeck.LicenseServer/Data/Migrations OrderDeck.LicenseServer.Tests/Services/Bank OrderDeck.LicenseServer.Tests/Tools/BankDataCleanupTests.cs OrderDeck.LicenseServer.Tests/Pages/Admin
+git commit -m "fix(bank-kvkk): yalnız geçerli IBAN'ı özetle ve maskele, maskeli IBAN'ı say ve temizle
 
 NormalizeIban harf/rakam, ülke+kontrol biçimi, TR'de 26 karakter ve
-mod-97 ister; maskeli değer özetlenmez. Hesap başına tam/maskeli/boş
-sayacı; bank-data-cleanup maskeli kaynaklı özetleri boşaltır,
---reset-iban-memory bütün hafızayı sıfırlar (KVKK ön inceleme Ö-7, P1-12).
+mod-97 ister; maskeli değer özetlenmez, IBAN olmayan değerin maskesi
+karakter göstermez. Hesap başına tam/maskeli/boş sayacı. bank-data-cleanup
+maskeli kaynaklı özetleri boşaltır; --reset-iban-memory yalnız hafızayı
+siler, hareket özetleri talep aracı için kalır ve kesme anından önceki
+hareket IBAN öğretmez (CounterpartyIbanHashValid) (KVKK ön inceleme Ö-7,
+Ö-6, P1-12).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -5862,8 +6186,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Neden (not K-7):** Shopper KVKK silmesi yalnız IBAN hafızasını siliyor ve kanıt metnini boşaltıyor; aynı kişiye bağlı hareketlerin açıklaması, gönderen adı ve ham kaydı 30/180. güne kadar kalıyor; eşleştirme satırında müşteri kimlikleri duruyor. Kurul 2021/670: "ilk periyodik imhada sileriz" cevabı yetersiz. Genişletilen 3b adımı:
 - Kişiye bağlı eşleşme satırı (öneri ya da gerçek müşteri = silinen kişi): müşteri kimliği ve kanıt silinir; satır ölçüm kaydı olarak kalır. Kararsız öneri "öneri yok"a iner; öneriden farklı müşteriye elle verilmiş karar (ManualOnly + öneri) ölçümde çelişki sayıldığı için durum `Contradicted` olur (sonuç kaybolmasın — `PaymentMatchMetrics.Classify`).
 - Bu satırların hareketleri ile **silinen IBAN hafızası özetinden gelen diğer hareketler**: açıklama, gönderen adı, ham kayıt silinir. Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kalır (karar 6).
-- Kullanıcı adı yalnız kanıtta geçen (önerisiz çelişki) satırda yalnız kanıt boşaltılır (bugünkü davranış).
-- İmha kayıtları (tetikleyici `shopper-purge`) aynı işlemde.
+- Kanıtında silinen kişinin kullanıcı adı anahtarı geçen ama başka müşteriye bağlı ya da önerisiz satır (`named`): kanıt boşaltılır **ve hareketinin açıklaması, gönderen adı, ham kaydı da silinir** — kanıtın kaynağı o açıklamadır, silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama, satır başka müşteriye bağlıysa 180 güne kadar kalırdı (K-7: 30 gün içinde silme). Satırdaki başka müşterinin kimliği ve kararı kalır; o hareketin metnini fazladan silmek minimizasyondur, zararsız.
+- İmha kayıtları (tetikleyici `shopper-purge`, `SubjectId` = ShopperId) aynı işlemde. Purge'ün banka dışı adımları da (Shopper satırı, ödemeler, yayıncı kopyaları, bağlı satırlar, dekontlar) birer kayıt yazar: banka verisi olmayan kişinin silmesi de veritabanı dışındaki özete (Görev 9) girer ve geri yüklemeden sonra yeniden uygulanabilir.
 - **Dokunulmayanlar (avukat kararı):** `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını bırakması; `Payment.ShopperId` bağı.
 
 Ortak kurallar yeni `BankSubjectScrub`'da; Görev 17'deki IBAN talep aracı da aynılarını kullanır. Purge'ün mevcut tek yeniden deneme kalıbı (eşleşme jetonu çakışırsa satırları tazele, kuralı yeniden uygula) korunur.
@@ -5952,6 +6276,48 @@ Ortak kurallar yeni `BankSubjectScrub`'da; Görev 17'deki IBAN talep aracı da a
         (await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == otherTx.Id)).Description.Should().Be("HAVALE ornek_m");
         (await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == license.Id).ToListAsync())
             .Should().Contain(r => r.Target == "BankTransactions.Description+CounterpartyName+RawJson" && r.RowCount == 3
+                && r.Trigger == DataDestruction.Triggers.ShopperPurge && r.SubjectId == shopper.Id);
+    }
+
+    [Fact]
+    public async Task Kanitinda_kullanici_adi_gecen_baska_musterinin_hareketinin_metni_de_silinir()
+    {
+        // KVKK K-7: kanıtın kaynağı hareketin açıklamasıdır ve silinen kişinin kullanıcı adını taşır. Yalnız kanıt boşaltılsaydı
+        // açıklama, satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
+        using var db = NewDb();
+        var (shopper, license, _) = SeedLinkedShopper(db);
+        var otherId = Guid.NewGuid();
+        var namedTx = BankTx(license);
+        var named = BankMatch(namedTx, PaymentMatchStatus.ManualOnly, null, otherId);
+        named.Evidence = $"conflict:username={BankTextNormalizer.UsernameKey("ornek_m")},iban-memory";
+        db.BankTransactions.Add(namedTx);
+        db.PaymentMatches.Add(named);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        result!.BankTransactionsScrubbed.Should().Be(1);
+        var t = await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == namedTx.Id);
+        (t.Description, t.CounterpartyName, t.RawJson).Should().Be(((string?)null, (string?)null, (string?)null));
+        t.Amount.Should().Be(250m, "tutar ve tarih kalır");
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync(x => x.Id == named.Id);
+        m.Evidence.Should().BeNull();
+        m.ActualWpfCustomerId.Should().Be(otherId, "başka müşterinin kararı kalır");
+    }
+
+    [Fact]
+    public async Task Banka_verisi_olmayan_silme_de_ShopperId_ile_imha_kaydi_yazar()
+    {
+        // KVKK Ö-12/Ö-13: veritabanı dışındaki saatlik özet yalnız imha kaydından beslenir; banka verisi olmayan kişinin silmesi
+        // de geri yüklemeden sonra yeniden uygulanabilmeli.
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        await db.SaveChangesAsync();
+
+        await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == shopper.Id).ToListAsync())
+            .Should().Contain(r => r.Target == "Shoppers.FullName+Phone+Address+Email+TcProtected" && r.RowCount == 1
                 && r.Trigger == DataDestruction.Triggers.ShopperPurge);
     }
 
@@ -6084,12 +6450,13 @@ public sealed record ShopperPurgeResult(
 ```csharp
         // 3b. Gölge banka eşleştirmesinin izi (Obifin) — KVKK K-7. IBAN hafızası "bu IBAN bu kişiyle ilişkili" bağıdır:
         //     silinir. Kişiye bağlı eşleşme satırında (öneri ya da gerçek müşteri) müşteri kimliği ve kanıt boşaltılır; satır
-        //     ölçüm kaydı olarak kalır (BankSubjectScrub.MatchForCustomer). Bu satırların hareketleri ile silinen hafıza
-        //     özetinden gelen hareketlerin açıklaması, gönderen adı ve ham kaydı silinir; tutar, tarih, maske ve özet kalır
-        //     (özet avukat kararı). Kullanıcı adı anahtarı yalnız kanıtta geçen satırda (önerisiz çelişki) yalnız kanıt
-        //     boşaltılır; anahtar önek olarak başka bir anahtara da uyabilir, fazladan boşaltma zararsız. UpdatedAt eşleşmenin
-        //     jetonudur; çakışma SaveAsync'te bir kez yeniden denenir. Kullanıcı adı (ScrubPersonal) ve Payment.ShopperId bağı
-        //     avukat kararına kadar BİLEREK kalır.
+        //     ölçüm kaydı olarak kalır (BankSubjectScrub.MatchForCustomer). Bu satırların hareketleri, kullanıcı adı anahtarı
+        //     yalnız kanıtta geçen satırların (named) hareketleri ve silinen hafıza özetinden gelen hareketlerin açıklaması,
+        //     gönderen adı ve ham kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı). named satırda yalnız
+        //     kanıt boşaltılır, başka müşterinin kimliği kalır; hareket metni ise silinir — kanıtın kaynağı o açıklamadır ve
+        //     silinen kişinin kullanıcı adını taşır. Anahtar önek olarak başka bir anahtara da uyabilir: fazladan silme
+        //     minimizasyondur, zararsız. UpdatedAt eşleşmenin jetonudur; çakışma SaveAsync'te bir kez yeniden denenir.
+        //     Kullanıcı adı (ScrubPersonal) ve Payment.ShopperId bağı avukat kararına kadar BİLEREK kalır.
         var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
         var ibanMemories = new List<CustomerIbanMemory>();
         // Değer: kimliği silinecek müşteri; null = yalnız kanıt.
@@ -6121,9 +6488,9 @@ public sealed record ShopperPurgeResult(
             foreach (var m in named) scrubbedMatches.TryAdd(m, null);
 
             var hashes = memories.Select(m => m.IbanHash).ToList();
-            var linkedTxIds = linked.Select(m => m.BankTransactionId).ToList();
+            var matchedTxIds = linked.Concat(named).Select(m => m.BankTransactionId).ToList();
             var txs = await _db.BankTransactions
-                .Where(t => t.LicenseId == licenseId && (linkedTxIds.Contains(t.Id)
+                .Where(t => t.LicenseId == licenseId && (matchedTxIds.Contains(t.Id)
                     || (t.CounterpartyIbanHash != null && hashes.Contains(t.CounterpartyIbanHash))))
                 .ToListAsync(ct);
             foreach (var t in txs) scrubbedTransactions[t.Id] = t;
@@ -6134,17 +6501,27 @@ public sealed record ShopperPurgeResult(
         _db.CustomerIbanMemories.RemoveRange(ibanMemories);
         foreach (var (m, customer) in scrubbedMatches) ScrubMatch(m, customer, now);
         foreach (var t in scrubbedTransactions.Values) BankSubjectScrub.Transaction(t, now);
+        // SubjectId = ShopperId: geri yüklemeden sonra silme bununla yeniden uygulanır (Görev 9, deploy/README "Geri yükleme").
+        void Record(Guid? license, string target, string action, int count) => DataDestruction.Record(_db, license, target, action,
+            count, "silme talebi", DataDestruction.Triggers.ShopperPurge, DataDestruction.SystemActor, subjectId: shopperId);
         foreach (var (licenseId, counts) in bankCounts)
         {
-            const string criterion = "silme talebi";
-            DataDestruction.Record(_db, licenseId, "CustomerIbanMemories", DataDestruction.Actions.Deleted, counts.Memories,
-                criterion, DataDestruction.Triggers.ShopperPurge, DataDestruction.SystemActor);
-            DataDestruction.Record(_db, licenseId, "PaymentMatches.WpfCustomerId+Evidence", DataDestruction.Actions.Nulled,
-                counts.Matches, criterion, DataDestruction.Triggers.ShopperPurge, DataDestruction.SystemActor);
-            DataDestruction.Record(_db, licenseId, "BankTransactions.Description+CounterpartyName+RawJson",
-                DataDestruction.Actions.Nulled, counts.Transactions, criterion, DataDestruction.Triggers.ShopperPurge,
-                DataDestruction.SystemActor);
+            Record(licenseId, "CustomerIbanMemories", DataDestruction.Actions.Deleted, counts.Memories);
+            Record(licenseId, "PaymentMatches.WpfCustomerId+Evidence", DataDestruction.Actions.Nulled, counts.Matches);
+            Record(licenseId, "BankTransactions.Description+CounterpartyName+RawJson", DataDestruction.Actions.Nulled,
+                counts.Transactions);
         }
+```
+
+`await SaveAsync(scrubbedMatches, scrubbedOrders, now, ct);` satırının ÜSTÜNE (purge'ün banka dışı adımları; aynı SaveChanges):
+
+```csharp
+        // KVKK Ö-12/Ö-13: banka verisi olmasa da silmenin kalıcı kaydı yazılır (kişisel veri yok, yalnız sayılar).
+        Record(null, "Shoppers.FullName+Phone+Address+Email+TcProtected", DataDestruction.Actions.Nulled, 1);
+        Record(null, "Payments.PersonalFields", DataDestruction.Actions.Nulled, payments.Count);
+        Record(null, "ShopperPaymentMedia", DataDestruction.Actions.Deleted, pdfsDeleted);
+        Record(null, "WpfCustomerProjections.PersonalFields", DataDestruction.Actions.Nulled, projections.Count);
+        Record(null, "ShopperDependents", DataDestruction.Actions.Deleted, dependents);
 ```
 
 Sınıfa (`ScrubOrderText`'in yanına) yardımcıyı ekle:
@@ -6212,10 +6589,11 @@ Expected: PASS. (`ShopperPurgeServiceConcurrencyTests` Testcontainers ister; `Es
 git add OrderDeck.LicenseServer/Services/Bank/BankSubjectScrub.cs OrderDeck.LicenseServer/Services/Shoppers/ShopperPurgeService.cs OrderDeck.LicenseServer.Tests/Services/Shoppers/ShopperPurgeServiceTests.cs
 git commit -m "fix(kvkk): müşteri silmesinde banka hareketlerinin metnini ve eşleşme kimliklerini de sil
 
-Silinen kişiye bağlı ve IBAN hafızası özetinden gelen hareketlerin
-açıklaması, gönderen adı ve ham kaydı; eşleşme satırlarındaki müşteri
-kimlikleri ve kanıt silinir, ölçüm sonucu korunur, imha kaydı yazılır
-(KVKK ön inceleme K-7, P1-8).
+Silinen kişiye bağlı, kanıtında kullanıcı adı geçen ve IBAN hafızası
+özetinden gelen hareketlerin açıklaması, gönderen adı ve ham kaydı;
+eşleşme satırlarındaki müşteri kimlikleri ve kanıt silinir, ölçüm sonucu
+korunur. Purge'ün bütün adımları ShopperId ile imha kaydı yazar
+(KVKK ön inceleme K-7, Ö-13, P1-8).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -6224,13 +6602,14 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 16: Banka sayfalarının görüntülenmesi denetime; denetimde kullanıcı adı yerine kimlik (P1-15, denetim kısmı)
 
-**Neden (not Ö-4, Ö-14; Kurul 2018/10 3-c):** banka yönetim sayfalarında açıklama, kanıt ve maske görüntüleniyor ama görüntüleme loglanmıyor; elle eşleme denetim kaydına müşterinin kullanıcı adını yazıyor ve bu kayıt 24 ay duruyor, purge temizlemiyor. Artık: Banka Eşleştirme (lisans seçiliyken) ve Obifin sayfasının her görüntülenmesi `bank.page.view` olarak denetime yazılır (Görev 18'deki talep sayfası da); elle eşleme ayrıntısı kullanıcı adı yerine müşteri kayıt numarasını (`WpfCustomerId`) taşır. **İki aşamalı doğrulama kapsam dışı.**
+**Neden (not Ö-4, Ö-14; Kurul 2018/10 3-c):** banka yönetim sayfalarında açıklama, kanıt ve maske görüntüleniyor ama görüntüleme loglanmıyor; elle eşleme denetim kaydına müşterinin kullanıcı adını yazıyor ve bu kayıt 24 ay duruyor, purge temizlemiyor. Artık: Banka Eşleştirme (lisans seçiliyken) ve Obifin sayfasının her görüntülenmesi `bank.page.view` olarak denetime yazılır (Görev 18'deki talep sayfası da); elle eşleme ayrıntısı kullanıcı adı yerine müşteri kayıt numarasını (`WpfCustomerId`) taşır. **Mevcut satırlar:** 28.09'dan bu yana yazılmış `bank.match.manual` satırları `{"username":…}` taşıyor ve 24 ay duruyor; `bank-data-cleanup` bunları kimliğe çevirir (eşleşme satırında gerçek müşteri varsa `{"wpfCustomerId":…}`, yoksa ayrıntı boşalır), varsayılan kuru koşu. **İki aşamalı doğrulama bu planın dışında** — takip planı ve sahibi kapsam tablosunda.
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/BankaEslestirme/Index.cshtml.cs:85-130, 163-165`
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/Obifin/Index.cshtml.cs` (`OnGetAsync`)
-- Test: `Pages/Admin/AdminBankaEslestirmePageTests.cs`, `Pages/Admin/AdminObifinPageTests.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Bank/BankDataCleanupJob.cs`, `OrderDeck.LicenseServer/Tools/BankDataCleanup.cs` (eski denetim satırları)
+- Test: `Pages/Admin/AdminBankaEslestirmePageTests.cs`, `Pages/Admin/AdminObifinPageTests.cs`, `Services/Bank/BankDataCleanupJobTests.cs`
 
 - [ ] **Adım 1: Testleri yaz (kırmızı)**
 
@@ -6336,15 +6715,102 @@ Sınıf özetindeki "Audit ayrıntısı yalnız kullanıcı adıdır" ifadesini 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~AdminBankaEslestirmePageTests|FullyQualifiedName~AdminObifinPageTests|FullyQualifiedName~Audit"`
 Expected: PASS.
 
-- [ ] **Adım 5: Commit**
+- [ ] **Adım 5: Eski denetim satırlarındaki kullanıcı adı (test önce, kırmızı)**
+
+`BankDataCleanupJobTests.cs` — üste `using OrderDeck.LicenseServer.Domain;` ve `using OrderDeck.LicenseServer.Services.Audit;` ekle; sınıfın sonuna:
+
+```csharp
+    [Fact]
+    public async Task Elle_eslemenin_eski_denetim_satirinda_kullanici_adi_kimlige_cevrilir_kuru_kosu_yazmaz()
+    {
+        // KVKK Ö-14: 28.09'dan Görev 16'ya kadar bank.match.manual ayrıntısı {"username":…} taşıdı; 24 ay durur, purge
+        // temizlemez. Eşleşme satırında gerçek müşteri varsa kimliğe çevrilir, yoksa ayrıntı boşalır.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var customer = Guid.NewGuid();
+        var matchedTx = Tx(lic, 10m);
+        db.BankTransactions.Add(matchedTx);
+        db.PaymentMatches.Add(Match(matchedTx, actual: customer, decidedAt: DateTimeOffset.UtcNow));
+        AuditLogEntry Audit(Guid txId, string details) => new()
+        {
+            Id = Guid.NewGuid(), EventType = AuditEvents.BankMatchManual, TargetType = AuditTargets.BankTransaction,
+            TargetId = txId.ToString(), Details = details, OccurredAt = DateTimeOffset.UtcNow, AdminId = Guid.Empty,
+            AdminUsername = "admin",
+        };
+        var withMatch = Audit(matchedTx.Id, "{\"username\":\"ornek_musteri34\"}");
+        var orphan = Audit(Guid.NewGuid(), "{\"username\":\"ornek_musteri35\"}");   // hareket 180 günde silinmiş
+        var already = Audit(matchedTx.Id, $"{{\"wpfCustomerId\":\"{customer}\"}}");
+        db.AuditLogs.AddRange(withMatch, orphan, already);
+        await db.SaveChangesAsync();
+
+        (await Job(db).RunAsync(null, apply: false, CancellationToken.None)).AuditUsernamesRewritten.Should().Be(2);
+        (await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Id == withMatch.Id)).Details.Should().Contain("ornek_musteri34",
+            "kuru koşu yazmaz");
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.AuditUsernamesRewritten.Should().Be(2);
+        (await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Id == withMatch.Id)).Details
+            .Should().Be($"{{\"wpfCustomerId\":\"{customer}\"}}");
+        (await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Id == orphan.Id)).Details.Should().BeNull();
+        (await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Id == already.Id)).Details.Should().Be(already.Details);
+    }
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupJobTests"`
+Expected: FAIL — `AuditUsernamesRewritten` yok.
+
+`Services/Bank/BankDataCleanupJob.cs` — üste `using System.Text.Json;` ve `using OrderDeck.LicenseServer.Services.Audit;` ekle. `Report`'a `public int AuditUsernamesRewritten { get; set; }`; `RunAsync`'te `ClearMaskedSourceHashesAsync` çağrısının ALTINA `await RewriteManualMatchAuditAsync(licenseId, apply, r, ct);` (log satırının sonuna `denetim kullanıcı adı={AuditUsernames}` ve `r.AuditUsernamesRewritten`). Sınıfın sonuna:
+
+```csharp
+    /// <summary>KVKK Ö-14: Görev 16'ya kadar elle eşleme denetim satırı ayrıntıya müşterinin kullanıcı adını yazdı
+    /// (<c>{"username":…}</c>; 24 ay durur, purge temizlemez). Ayrıntı kimliğe çevrilir: hareketin eşleşme satırında gerçek müşteri
+    /// varsa <c>{"wpfCustomerId":…}</c> (yeni kayıtların biçimi), yoksa (hareket 180 günde silinmiş) boşaltılır. Lisans verilirse
+    /// yalnız o lisansın hareketini hedefleyen satırlar. Az satır: tek seferde.</summary>
+    private async Task RewriteManualMatchAuditAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
+    {
+        var rows = await _db.AuditLogs
+            .Where(a => a.EventType == AuditEvents.BankMatchManual && a.Details != null && a.Details.Contains("\"username\""))
+            .ToListAsync(ct);
+        var txIds = rows.Select(a => Guid.TryParse(a.TargetId, out var id) ? id : Guid.Empty).Distinct().ToList();
+        var owners = await _db.BankTransactions.AsNoTracking().Where(t => txIds.Contains(t.Id))
+            .ToDictionaryAsync(t => t.Id, t => t.LicenseId, ct);
+        var customers = await _db.PaymentMatches.AsNoTracking()
+            .Where(m => txIds.Contains(m.BankTransactionId) && m.ActualWpfCustomerId != null)
+            .ToDictionaryAsync(m => m.BankTransactionId, m => m.ActualWpfCustomerId!.Value, ct);
+        var changed = 0;
+        foreach (var a in rows)
+        {
+            var txId = Guid.TryParse(a.TargetId, out var id) ? id : Guid.Empty;
+            if (licenseId is { } l && (!owners.TryGetValue(txId, out var owner) || owner != l)) continue;
+            a.Details = customers.TryGetValue(txId, out var customer)
+                ? JsonSerializer.Serialize(new { wpfCustomerId = customer })
+                : null;
+            changed++;
+        }
+        r.AuditUsernamesRewritten = changed;
+        if (apply && changed > 0)
+        {
+            RecordBatch(licenseId, "AuditLogs.Details", Masked, changed, "elle eşleme denetiminde kullanıcı adı (Ö-14)");
+            await _db.SaveChangesAsync(ct);
+        }
+        _db.ChangeTracker.Clear();
+    }
+```
+
+`Tools/BankDataCleanup.cs` — `Format`'ta `| düşen parti=` öncesine `| denetimde kullanıcı adı çevrilen={r.AuditUsernamesRewritten} ` ekle; sınıf özetine: `/// <para>Görev 16'dan önce yazılmış elle eşleme denetim satırlarındaki kullanıcı adını kimliğe çevirir (KVKK Ö-14).</para>`
+
+Run: aynı komut. Expected: PASS. (`Ikinci_uygulama_hicbir_satiri_degistirmez` etkilenmez: denetim satırı yok.)
+
+- [ ] **Adım 6: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer/Pages/Admin/BankaEslestirme/Index.cshtml.cs OrderDeck.LicenseServer/Pages/Admin/Obifin/Index.cshtml.cs OrderDeck.LicenseServer.Tests/Pages/Admin
+git add OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer/Pages/Admin/BankaEslestirme/Index.cshtml.cs OrderDeck.LicenseServer/Pages/Admin/Obifin/Index.cshtml.cs OrderDeck.LicenseServer/Services/Bank/BankDataCleanupJob.cs OrderDeck.LicenseServer/Tools/BankDataCleanup.cs OrderDeck.LicenseServer.Tests/Pages/Admin OrderDeck.LicenseServer.Tests/Services/Bank/BankDataCleanupJobTests.cs
 git commit -m "fix(bank-kvkk): banka sayfası görüntülemesini denetle, denetime kullanıcı adı yazma
 
 Banka Eşleştirme ve Obifin sayfalarının görüntülenmesi bank.page.view
 olarak denetime yazılır; elle eşleme denetimi kullanıcı adı yerine
-müşteri kayıt numarasını taşır (KVKK ön inceleme Ö-4, Ö-14, P1-15).
+müşteri kayıt numarasını taşır; bank-data-cleanup eski satırlardaki
+kullanıcı adını kimliğe çevirir (KVKK ön inceleme Ö-4, Ö-14, P1-15).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -6354,14 +6820,17 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ### Görev 17: IBAN ile banka verisi talebi — kayıt, arama, dışa aktarma, silme (P1-9a, servis)
 
 **Neden (not K-7, Ö-11):** Shopper hesabı olmayanlar (yalnız formu dolduranlar, WPF'te kayıtlı müşteriler, müşteri olmayan karşı taraflar) için erişim ve silme aracı yok; "hakkımda hangi banka verisi var" ancak elle SQL ile cevaplanabiliyor; 30 günlük son tarih izlenmiyor. Yeni talep kaydı (`BankSubjectRequest`): lisans, tür (erişim/silme), IBAN'ın yalnız özeti ve maskesi, alış tarihi, **son tarih = alış + 30 gün**, kapanış ve kişisel veri içermeyen sonuç. IBAN sunucuda özetlenir (yalnız geçerli IBAN — Görev 11), düz saklanmaz; talep kapanınca özet de boşalır. Arama aynı lisanstaki aynı özetli hareketleri ve IBAN bağlarını bulur; dışa aktarım CSV'dir (müşteri kimliği yazılmaz); silme Görev 15'in kurallarıyla yapılır ve imha kaydı talep kimliğiyle yazılır.
+- **Doğrulamanın kaydı (Ö-11, K-7 öneri 3):** başkasının havale bilgisini açıklamanın ve yanlış kişinin talebiyle veri silmenin ispat yükü veri sorumlusunda; uyarı şeridi yetmez. Dışa aktarma ve silmeden önce yönetici kimliğin ve IBAN sahipliğinin **nasıl** doğrulandığını kaydeder: kişisel veri içermeyen, zorunlu `Verification` (yöntem: ıslak imzalı dilekçe / KEP–güvenli e-imza–mobil imza / veri sorumlusunda kayıtlı iletişim — her birinde IBAN sahipliği banka belgesiyle), `VerifiedAt`, `VerifiedBy`. Kaydedilmeden dışa aktarma ve silme reddedilir.
+- **Açık talep veri yokken kalmaz:** bağlantı kaldırma, hizmet sonu yerel silmesi (Görev 13–14) ve yayıncı silmesi lisansın açık taleplerini kapatır (özet boşalır, sonuç yazılır — yöneticinin başvurana yanıt vermesi gerekir). Kapanmış talebin maskesi 30 gün sonra boşalır (Görev 20).
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Domain/Bank/BankSubjectRequest.cs`
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankSubjectRequestService.cs`
 - Modify: `OrderDeck.LicenseServer/Data/LicenseDbContext.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Bank/BankConnectionTerminator.cs`, `OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs` (açık talepleri kapat)
 - Modify: `OrderDeck.LicenseServer/Program.cs` (DI)
 - Create: göç `*_BankSubjectRequests`
-- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankSubjectRequestServiceTests.cs` (YENİ)
+- Test: `OrderDeck.LicenseServer.Tests/Services/Bank/BankSubjectRequestServiceTests.cs` (YENİ), `BankConnectionTerminatorTests.cs`, `Controllers/Compliance/GdprFlowTests.cs`
 
 - [ ] **Adım 1: Servis testlerini yaz (kırmızı)**
 
@@ -6471,12 +6940,41 @@ public sealed class BankSubjectRequestServiceTests
         await db.SaveChangesAsync();
         var r = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Access, new DateOnly(2026, 10, 19), "admin",
             CancellationToken.None);
+        await Service(db).VerifyAsync(r.Id, BankSubjectVerification.WetSignatureAndBankDocument, "admin", CancellationToken.None);
 
-        var csv = Encoding.UTF8.GetString(BankSubjectRequestService.ToCsv((await Service(db).FindAsync(r.Id, CancellationToken.None))!));
+        var csv = Encoding.UTF8.GetString(await Service(db).ExportAsync(r.Id, CancellationToken.None));
 
         csv.Should().Contain(BankHasher.MaskIban(iban)).And.Contain("125.50").And.Contain("bir müşteriyle eşleşti");
         csv.Should().NotContain(iban[4..20]).And.NotContain(customer.ToString());
         csv.Should().Contain("\"'=HYPERLINK(\"\"x\"\")\"", "formül enjeksiyonu kesme işaretiyle etkisiz");
+    }
+
+    [Fact]
+    public async Task Dogrulama_kaydedilmeden_disa_aktarma_ve_silme_yapilmaz_kayit_kisisel_veri_icermez()
+    {
+        // KVKK Ö-11/K-7: başkasının havale bilgisini açıklamamanın ve yanlış kişinin talebiyle silmemenin ispatı veri
+        // sorumlusunda: yöntem kaydı zorunlu, serbest metin yok.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        db.BankTransactions.Add(Tx(lic, iban));
+        await db.SaveChangesAsync();
+        var r = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Erasure, new DateOnly(2026, 10, 19), "admin",
+            CancellationToken.None);
+
+        var export = () => Service(db).ExportAsync(r.Id, CancellationToken.None);
+        var erase = () => Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+        var noMethod = () => Service(db).VerifyAsync(r.Id, BankSubjectVerification.None, "admin", CancellationToken.None);
+
+        await export.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.NotVerifiedMessage);
+        await erase.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.NotVerifiedMessage);
+        await noMethod.Should().ThrowAsync<ObifinValidationException>();
+        (await db.BankTransactions.AsNoTracking().SingleAsync()).Description.Should().NotBeNull("silme yapılmadı");
+
+        await Service(db).VerifyAsync(r.Id, BankSubjectVerification.ElectronicSignatureAndBankDocument, "admin", CancellationToken.None);
+
+        var verified = await db.BankSubjectRequests.AsNoTracking().SingleAsync();
+        (verified.Verification, verified.VerifiedBy).Should().Be((BankSubjectVerification.ElectronicSignatureAndBankDocument, "admin"));
+        verified.VerifiedAt.Should().NotBeNull();
     }
 
     [Fact]
@@ -6497,6 +6995,7 @@ public sealed class BankSubjectRequestServiceTests
         await db.SaveChangesAsync();
         var r = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Erasure, new DateOnly(2026, 10, 19), "admin",
             CancellationToken.None);
+        await Service(db).VerifyAsync(r.Id, BankSubjectVerification.WetSignatureAndBankDocument, "admin", CancellationToken.None);
 
         var result = await Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
 
@@ -6513,6 +7012,27 @@ public sealed class BankSubjectRequestServiceTests
 
         var again = () => Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
         await again.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.ClosedMessage);
+    }
+
+    [Fact]
+    public async Task Lisansin_acik_talepleri_kapatilir_ozet_bosalir_kapali_talebe_dokunulmaz()
+    {
+        // Bağlantı kaldırma, hizmet sonu yerel silmesi ve yayıncı silmesi bu yardımcıyı çağırır: veri yokken açık talep ve
+        // özeti kalmasın.
+        using var db = NewDb(); var lic = SeedLicense(db); var other = SeedLicense(db);
+        var open = await Service(db).CreateAsync(Hasher, lic, BankHasherTests.TestIban(), BankSubjectRequestKind.Access,
+            new DateOnly(2026, 10, 19), "admin", CancellationToken.None);
+        var otherOpen = await Service(db).CreateAsync(Hasher, other, BankHasherTests.TestIban(), BankSubjectRequestKind.Access,
+            new DateOnly(2026, 10, 19), "admin", CancellationToken.None);
+
+        var closed = await BankSubjectRequestService.CloseOpenForLicensesAsync(db, [lic], "Lisansın banka verisi silindi.",
+            DataDestruction.SystemActor, DateTimeOffset.UtcNow, CancellationToken.None);
+        await db.SaveChangesAsync();
+
+        closed.Should().Be(1);
+        var o = await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == open.Id);
+        (o.ClosedAt is not null, o.IbanHash, o.Outcome).Should().Be((true, (string?)null, "Lisansın banka verisi silindi."));
+        (await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == otherOpen.Id)).ClosedAt.Should().BeNull();
     }
 }
 ```
@@ -6532,9 +7052,27 @@ namespace OrderDeck.LicenseServer.Domain.Bank;
 public enum BankSubjectRequestKind { Access = 0, Erasure = 1 }
 
 /// <summary>
+/// Başvuranın kimliğinin ve IBAN'ın ona ait olduğunun nasıl doğrulandığı (KVKK Ö-11; Başvuru Tebliği m. 5'teki kanallar). Her
+/// yöntemde IBAN sahipliği banka belgesiyle (dekont, hesap cüzdanı, banka ekstresi) görülür. Kişisel veri İÇERMEZ — yalnız
+/// yöntem; belgenin kendisi kaydedilmez. Serbest metin BİLEREK yok.
+/// </summary>
+public enum BankSubjectVerification
+{
+    None = 0,
+    /// <summary>Islak imzalı dilekçe + kimlik belgesi; IBAN banka belgesiyle.</summary>
+    WetSignatureAndBankDocument = 1,
+    /// <summary>KEP, güvenli elektronik imza ya da mobil imza; IBAN banka belgesiyle.</summary>
+    ElectronicSignatureAndBankDocument = 2,
+    /// <summary>Veri sorumlusunda önceden kayıtlı iletişim kanalı (ör. Shopper hesabının telefonu/e-postası); IBAN banka
+    /// belgesiyle.</summary>
+    RegisteredContactAndBankDocument = 3,
+}
+
+/// <summary>
 /// Banka hareketi karşı tarafının (Shopper hesabı olsun olmasın) erişim ya da silme talebi (KVKK m. 11, m. 13/2; ön inceleme
-/// K-7). Son tarih alış + 30 gün. IBAN düz saklanmaz: yalnız özet (talep kapanınca boşaltılır) ve kısaltılmış hâli. Lisansa FK
-/// BİLEREK yok (ShopperDeletionRequest kalıbı): talebin belgesi lisans silinse de yaşar. Sonuç kişisel veri içermez.
+/// K-7). Son tarih alış + 30 gün. IBAN düz saklanmaz: yalnız özet (talep kapanınca boşaltılır) ve kısaltılmış hâli (kapanıştan 30
+/// gün sonra boşaltılır — SecurityDataRetentionJob). Lisansa FK BİLEREK yok (ShopperDeletionRequest kalıbı): talebin belgesi
+/// lisans silinse de yaşar. Sonuç ve doğrulama yöntemi kişisel veri içermez.
 /// </summary>
 public sealed class BankSubjectRequest
 {
@@ -6542,7 +7080,12 @@ public sealed class BankSubjectRequest
     public Guid LicenseId { get; set; }
     public BankSubjectRequestKind Kind { get; set; }
     public string? IbanHash { get; set; }
+    /// <summary>Kısaltılmış IBAN; kapanıştan 30 gün sonra "" olur.</summary>
     public string IbanMasked { get; set; } = "";
+    /// <summary>Dışa aktarma ve silmeden önce zorunlu (<see cref="BankSubjectVerification"/>).</summary>
+    public BankSubjectVerification Verification { get; set; }
+    public DateTimeOffset? VerifiedAt { get; set; }
+    public string? VerifiedBy { get; set; }
     /// <summary>Talebin OrderDeck'e ulaştığı gün (TR gün başı, UTC).</summary>
     public DateTimeOffset ReceivedAt { get; set; }
     public DateTimeOffset DueAt { get; set; }
@@ -6570,6 +7113,8 @@ public sealed class BankSubjectRequest
             b.Property(r => r.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
             b.Property(r => r.IbanHash).HasMaxLength(64);
             b.Property(r => r.IbanMasked).HasMaxLength(40).IsRequired();
+            b.Property(r => r.Verification).HasConversion<string>().HasMaxLength(40).IsRequired();
+            b.Property(r => r.VerifiedBy).HasMaxLength(256);
             b.Property(r => r.CreatedBy).HasMaxLength(256).IsRequired();
             b.Property(r => r.ClosedBy).HasMaxLength(256);
             b.Property(r => r.Outcome).HasMaxLength(500);
@@ -6594,8 +7139,9 @@ using OrderDeck.LicenseServer.Services.Privacy;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
-/// IBAN ile banka verisi talebi (KVKK K-7, Ö-11): kayıt, arama, dışa aktarma, silme, kapatma. Shopper hesabı olmayanların tek
-/// yolu. Kimlik ve IBAN sahipliğinin doğrulanması yöneticinin işidir (sayfa uyarır). <see cref="BankHasher"/> yalnız talep
+/// IBAN ile banka verisi talebi (KVKK K-7, Ö-11): kayıt, doğrulama kaydı, arama, dışa aktarma, silme, kapatma. Shopper hesabı
+/// olmayanların tek yolu. Kimlik ve IBAN sahipliğinin doğrulanması yöneticinin işidir; NASIL doğrulandığı (kişisel veri içermeyen
+/// yöntem) kaydedilmeden dışa aktarma ve silme yapılmaz — ispat yükü veri sorumlusunda. <see cref="BankHasher"/> yalnız talep
 /// açarken gerekir (çağıran verir): modül anahtarsız kapalıyken açık talepler yine kapatılabilir ve silinebilir.
 /// </summary>
 public sealed class BankSubjectRequestService
@@ -6604,6 +7150,8 @@ public sealed class BankSubjectRequestService
     public const string InvalidIbanMessage = "Geçerli bir IBAN girin (boşluklu yazılabilir). Kısaltılmış ya da maskeli IBAN aranamaz.";
     public const string NotFoundMessage = "Talep bulunamadı.";
     public const string ClosedMessage = "Talep kapatılmış.";
+    public const string NotVerifiedMessage = "Önce başvuranın kimliğini ve IBAN'ın ona ait olduğunu doğrulayıp yöntemi kaydedin.";
+    public const string NoMethodMessage = "Doğrulama yöntemini seçin.";
     /// <summary>Silmenin bildirimine eklenir: OrderDeck'in silemediği kopyalar.</summary>
     public const string OtherCopiesNotice = "Obifin'deki kopya için Obifin'e yazılı talep gönderin; bankanın kendi kayıtları bankanın sorumluluğundadır.";
 
@@ -6663,9 +7211,50 @@ public sealed class BankSubjectRequestService
         return new Lookup(request, rows, memories);
     }
 
+    /// <summary>Kimlik ve IBAN sahipliğinin doğrulama YÖNTEMİNİ kaydeder (KVKK Ö-11). Açık talepte, dışa aktarma ve silmeden önce
+    /// zorunlu; yeniden kaydedilebilir (son yöntem geçerli).</summary>
+    public async Task VerifyAsync(Guid requestId, BankSubjectVerification method, string actor, CancellationToken ct)
+    {
+        if (method == BankSubjectVerification.None) throw new ObifinValidationException(NoMethodMessage);
+        var request = await _db.BankSubjectRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
+            ?? throw new ObifinValidationException(NotFoundMessage);
+        if (request.ClosedAt is not null) throw new ObifinValidationException(ClosedMessage);
+        request.Verification = method;
+        request.VerifiedAt = DateTimeOffset.UtcNow;
+        request.VerifiedBy = actor;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Dışa aktarım (<see cref="ToCsv"/>): yalnız açık ve doğrulaması kaydedilmiş talepte.</summary>
+    public async Task<byte[]> ExportAsync(Guid requestId, CancellationToken ct)
+    {
+        var lookup = await FindAsync(requestId, ct) ?? throw new ObifinValidationException(NotFoundMessage);
+        if (lookup.Request.ClosedAt is not null) throw new ObifinValidationException(ClosedMessage);
+        if (lookup.Request.Verification == BankSubjectVerification.None) throw new ObifinValidationException(NotVerifiedMessage);
+        return ToCsv(lookup);
+    }
+
+    /// <summary>Lisansların açık taleplerini kapatır (bağlantı kaldırma, hizmet sonu yerel silmesi, yayıncı silmesi): özet boşalır,
+    /// <paramref name="outcome"/> yazılır. Yönetici başvurana yine yanıt vermelidir. KAYDETMEZ: çağıranın silmesiyle aynı
+    /// SaveChanges. Kapatılan sayısını döner.</summary>
+    public static async Task<int> CloseOpenForLicensesAsync(LicenseDbContext db, IReadOnlyCollection<Guid> licenseIds, string outcome,
+        string actor, DateTimeOffset now, CancellationToken ct)
+    {
+        if (licenseIds.Count == 0) return 0;
+        var open = await db.BankSubjectRequests.Where(r => licenseIds.Contains(r.LicenseId) && r.ClosedAt == null).ToListAsync(ct);
+        foreach (var r in open)
+        {
+            r.ClosedAt = now;
+            r.ClosedBy = actor;
+            r.IbanHash = null;
+            r.Outcome = outcome;
+        }
+        return open.Count;
+    }
+
     /// <summary>Erişim talebinin dışa aktarımı (KVKK m. 11/1-b). Müşteri kimliği ve kullanıcı adı YAZILMAZ: havaleyi gönderen ile
     /// ödemesi sayılan müşteri farklı kişi olabilir. UTF-8 BOM'lu (Excel), noktalı virgül ayraçlı; '=', '+', '-', '@' ile başlayan
-    /// hücre kesme işaretiyle başlar (formül enjeksiyonu).</summary>
+    /// hücre kesme işaretiyle başlar (formül enjeksiyonu). Doğrulama denetimi <see cref="ExportAsync"/>'te.</summary>
     public static byte[] ToCsv(Lookup lookup)
     {
         var sb = new StringBuilder();
@@ -6715,6 +7304,8 @@ public sealed class BankSubjectRequestService
         var request = await _db.BankSubjectRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
             ?? throw new ObifinValidationException(NotFoundMessage);
         if (request.ClosedAt is not null || request.IbanHash is null) throw new ObifinValidationException(ClosedMessage);
+        // KVKK Ö-11: yanlış kişinin talebiyle silinmesin — doğrulama yöntemi kayıtlı olmalı.
+        if (request.Verification == BankSubjectVerification.None) throw new ObifinValidationException(NotVerifiedMessage);
         var now = DateTimeOffset.UtcNow;
         var memories = await _db.CustomerIbanMemories
             .Where(m => m.LicenseId == request.LicenseId && m.IbanHash == request.IbanHash).ToListAsync(ct);
@@ -6774,6 +7365,91 @@ public sealed class BankSubjectRequestService
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService>();
 ```
 
+- [ ] **Adım 5b: Veri silinince açık talep kalmasın (test önce, kırmızı)**
+
+`BankConnectionTerminatorTests.cs` sınıfının sonuna:
+
+```csharp
+    [Fact]
+    public async Task Kaldirma_ve_yerel_silme_lisansin_acik_banka_veri_talebini_kapatir()
+    {
+        // KVKK K-7: veri silindikten sonra açık talep ve IBAN özeti kalmasın; yönetici başvurana yanıt verir.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        db.BankSubjectRequests.Add(new BankSubjectRequest { Id = Guid.NewGuid(), LicenseId = lic, Kind = BankSubjectRequestKind.Erasure,
+            IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", ReceivedAt = DateTimeOffset.UtcNow,
+            DueAt = DateTimeOffset.UtcNow.AddDays(30), CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "admin" });
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+
+        await Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor,
+            CancellationToken.None);
+
+        var closed = await db.BankSubjectRequests.AsNoTracking().SingleAsync();
+        closed.ClosedAt.Should().NotBeNull();
+        closed.IbanHash.Should().BeNull();
+        closed.Outcome.Should().Contain("başvurana yanıt verin");
+    }
+```
+
+`Controllers/Compliance/GdprFlowTests.cs` sınıfının sonuna (Görev 13'teki `AdminApiClientAsync` yardımcısıyla):
+
+```csharp
+    [Fact]
+    public async Task Purge_yayincinin_acik_banka_veri_talebini_kapatir()
+    {
+        // KVKK K-7: talebin lisansa FK'sı yok (belge lisans silinse de yaşar); açık kalırsa IBAN özeti süresiz durur.
+        var (_, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var licenseId = Guid.NewGuid(); var requestId = Guid.NewGuid();
+        string email;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            email = (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email;
+            db.Licenses.Add(new OrderDeck.LicenseServer.Domain.License { Id = licenseId, LicenseKey = $"LDK-GD-{Guid.NewGuid():N}",
+                CustomerId = customerId, SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+            db.BankSubjectRequests.Add(new OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequest { Id = requestId,
+                LicenseId = licenseId, Kind = OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequestKind.Access,
+                IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", ReceivedAt = DateTimeOffset.UtcNow,
+                DueAt = DateTimeOffset.UtcNow.AddDays(30), CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "admin" });
+            await db.SaveChangesAsync();
+        }
+        using var admin = await AdminApiClientAsync();
+
+        (await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var verify = _factory.Services.CreateScope();
+        var request = await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().BankSubjectRequests.AsNoTracking()
+            .SingleAsync(r => r.Id == requestId);
+        request.ClosedAt.Should().NotBeNull();
+        request.IbanHash.Should().BeNull();
+    }
+```
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankConnectionTerminatorTests|FullyQualifiedName~GdprFlowTests"`
+Expected: FAIL — iki yeni test (talep açık kalıyor).
+
+`Services/Bank/BankConnectionTerminator.cs` — `DeleteLocalAsync`'te `await _db.SaveChangesAsync(ct);` satırının ÜSTÜNE:
+
+```csharp
+        // KVKK K-7: veri yokken açık talep ve IBAN özeti kalmasın; yönetici başvurana yine yanıt verir (Görev 18 sayfası).
+        await BankSubjectRequestService.CloseOpenForLicensesAsync(_db, [licenseId],
+            (keepConnection ? "Hizmet sonu" : "Bağlantı kaldırıldı") + ": lisansın banka verisi silindi; talep kapatıldı — " +
+            "başvurana yanıt verin.", actor, now, ct);
+```
+
+`Controllers/Customers/AdminCustomersController.cs` — `Purge`'te Görev 9'daki `Record("Customers.Email+Name+PasswordHash+Notes", …);` satırının ALTINA:
+
+```csharp
+        // KVKK K-7: yayıncının lisanslarındaki açık banka veri talepleri kapanır (FK yok: talep satırı belge olarak kalır, özet
+        // boşalır). Yönetici başvurana yine yanıt verir.
+        await OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService.CloseOpenForLicensesAsync(_db, licenseIds,
+            "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.", actor, DateTimeOffset.UtcNow, ct);
+```
+
+Run: aynı komut. Expected: PASS.
+
 - [ ] **Adım 6: Göçü üret ve incele**
 
 Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankSubjectRequests --output-dir Data/Migrations`
@@ -6781,22 +7457,24 @@ Expected: `Up` yalnız `CreateTable("BankSubjectRequests")` (CHECK kısıtıyla)
 
 - [ ] **Adım 7: Koştur — yeşil**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankSubjectRequestServiceTests|FullyQualifiedName~BankJobsDiTests"`
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankSubjectRequestServiceTests|FullyQualifiedName~BankConnectionTerminatorTests|FullyQualifiedName~BankServiceEndPurgeJobTests|FullyQualifiedName~GdprFlowTests|FullyQualifiedName~BankJobsDiTests"`
 Expected: PASS.
 
-Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupRelationalTests"`
+Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupRelationalTests|FullyQualifiedName~CustomerPurgeRelationalTests"`
 Expected: PASS.
 
 - [ ] **Adım 8: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Domain/Bank/BankSubjectRequest.cs OrderDeck.LicenseServer/Services/Bank/BankSubjectRequestService.cs OrderDeck.LicenseServer/Data OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankSubjectRequestServiceTests.cs
+git add OrderDeck.LicenseServer/Domain/Bank/BankSubjectRequest.cs OrderDeck.LicenseServer/Services/Bank/BankSubjectRequestService.cs OrderDeck.LicenseServer/Services/Bank/BankConnectionTerminator.cs OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs OrderDeck.LicenseServer/Data OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankSubjectRequestServiceTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankConnectionTerminatorTests.cs OrderDeck.LicenseServer.Tests/Controllers/Compliance/GdprFlowTests.cs
 git commit -m "feat(bank-kvkk): IBAN ile banka verisi talebi servisini ekle
 
 BankSubjectRequest: IBAN yalnız özet ve maskeyle, son tarih alış + 30 gün;
-arama, müşteri kimliği yazmayan CSV dışa aktarım, silme (Görev 15
-kurallarıyla, imha kaydı talep kimliğiyle) ve kapatma
-(KVKK ön inceleme K-7, Ö-11, P1-9).
+kimlik ve IBAN sahipliği doğrulama yöntemi (kişisel veri içermez) kaydedilmeden
+dışa aktarma ve silme yok; arama, müşteri kimliği yazmayan CSV dışa
+aktarım, silme (Görev 15 kurallarıyla, imha kaydı talep kimliğiyle) ve
+kapatma. Bağlantı kaldırma, hizmet sonu silmesi ve yayıncı silmesi açık
+talepleri kapatır (KVKK ön inceleme K-7, Ö-11, P1-9).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -6805,7 +7483,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 18: Banka veri talepleri sayfası ve silme talepleri listesinde son tarih (P1-9b)
 
-**Neden:** Görev 17'nin servisine yönetici arayüzü; Shopper silme talepleri listesinde de son tarih (talep + 30 gün) ve gecikme işareti. Talep sayfası görüntülenmesi denetime yazılır (Görev 16'daki olay); oluşturma, dışa aktarma, silme, kapatma da denetime yazılır (silme imha olayı → 36 ay).
+**Neden:** Görev 17'nin servisine yönetici arayüzü; Shopper silme talepleri listesinde de son tarih (talep + 30 gün) ve gecikme işareti. Talep sayfası görüntülenmesi denetime yazılır (Görev 16'daki olay); oluşturma, doğrulama yönteminin kaydı, dışa aktarma, silme, kapatma da denetime yazılır (silme imha olayı → 36 ay). Dışa aktar ve Sil düğmeleri doğrulama yöntemi kaydedilmeden çalışmaz (servis reddeder, sayfa hata şeridi gösterir).
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Pages/Admin/BankaVeriTalepleri/Index.cshtml`, `Index.cshtml.cs`
@@ -6902,6 +7580,12 @@ public sealed class AdminBankaVeriTalepleriPageTests : IClassFixture<ApiFactory>
         html.Should().NotContain(iban[4..20], "IBAN sayfaya düz basılmaz");
         (await ParseAsync(html)).QuerySelector($"tr[data-tx='{txId}']").Should().NotBeNull();
 
+        var unverified = await client.PostAsync($"{PagePath}?handler=Export&id={id}", await FormAsync(client, detailPath, new()));
+        unverified.StatusCode.Should().Be(HttpStatusCode.Redirect, "doğrulama yöntemi kaydedilmeden dışa aktarım yok (KVKK Ö-11)");
+        (await client.PostAsync($"{PagePath}?handler=Verify&id={id}", await FormAsync(client, detailPath,
+            new Dictionary<string, string> { ["Verification"] = "WetSignatureAndBankDocument" }))).StatusCode
+            .Should().Be(HttpStatusCode.Redirect);
+
         var export = await client.PostAsync($"{PagePath}?handler=Export&id={id}", await FormAsync(client, detailPath, new()));
         export.Content.Headers.ContentType!.MediaType.Should().Be("text/csv");
         var csv = await export.Content.ReadAsStringAsync();
@@ -6916,7 +7600,9 @@ public sealed class AdminBankaVeriTalepleriPageTests : IClassFixture<ApiFactory>
         var request = await db.BankSubjectRequests.AsNoTracking().SingleAsync(r => r.Id == id);
         request.ClosedAt.Should().NotBeNull(); request.IbanHash.Should().BeNull();
         var events = await db.AuditLogs.AsNoTracking().Where(a => a.TargetId == id.ToString()).Select(a => a.EventType).ToListAsync();
-        events.Should().Contain(new[] { AuditEvents.BankSubjectCreate, AuditEvents.BankSubjectExport, AuditEvents.BankSubjectErase });
+        events.Should().Contain(new[] { AuditEvents.BankSubjectCreate, AuditEvents.BankSubjectVerify, AuditEvents.BankSubjectExport,
+            AuditEvents.BankSubjectErase });
+        request.Verification.Should().Be(BankSubjectVerification.WetSignatureAndBankDocument);
         AuditEvents.DestructionEvents.Should().Contain(AuditEvents.BankSubjectErase, "silme 36 ay saklanır");
         (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.BankPageView && a.Details!.Contains(id.ToString()))).Should().BeTrue();
     }
@@ -6997,6 +7683,8 @@ Expected: FAIL — olaylar ve sayfa yok.
 ```csharp
     // IBAN ile banka veri talebi (admin/banka-veri-talepleri). Ayrıntıya IBAN, açıklama, ad GİRMEZ; yalnız tür ve sayılar.
     public const string BankSubjectCreate = "bank.subject.create";
+    /// <summary>Kimlik + IBAN sahipliği doğrulama yöntemi kaydedildi (ayrıntı: yalnız yöntem adı).</summary>
+    public const string BankSubjectVerify = "bank.subject.verify";
     public const string BankSubjectExport = "bank.subject.export";
     /// <summary>İmha olayı (<see cref="DestructionEvents"/>).</summary>
     public const string BankSubjectErase = "bank.subject.erase";
@@ -7048,6 +7736,7 @@ public class IndexModel : PageModel
     [BindProperty] public string? Iban { get; set; }
     [BindProperty] public BankSubjectRequestKind Kind { get; set; }
     [BindProperty] public DateOnly? ReceivedOn { get; set; }
+    [BindProperty] public BankSubjectVerification Verification { get; set; }
 
     public List<LicenseOption> Licenses { get; private set; } = new();
     public List<RequestRow> Requests { get; private set; } = new();
@@ -7105,13 +7794,40 @@ public class IndexModel : PageModel
         return RedirectToPage(new { id = request.Id });
     }
 
+    /// <summary>KVKK Ö-11: kimlik ve IBAN sahipliğinin doğrulama YÖNTEMİ (kişisel veri değil). Dışa aktarma ve silmeden önce
+    /// zorunlu.</summary>
+    public async Task<IActionResult> OnPostVerifyAsync(Guid id)
+    {
+        try
+        {
+            await _requests.VerifyAsync(id, Verification, AdminName(), CancellationToken.None);
+        }
+        catch (ObifinValidationException ex)
+        {
+            TempData["Error"] = ex.Message;
+            return RedirectToPage(new { id });
+        }
+        await _audit.LogAsync(AuditEvents.BankSubjectVerify, AuditTargets.BankSubjectRequest, id.ToString(),
+            new { method = Verification.ToString() }, CancellationToken.None);
+        TempData["Success"] = "Doğrulama yöntemi kaydedildi.";
+        return RedirectToPage(new { id });
+    }
+
     public async Task<IActionResult> OnPostExportAsync(Guid id, CancellationToken ct)
     {
-        var lookup = await _requests.FindAsync(id, ct);
-        if (lookup is null) return NotFound();
-        await _audit.LogAsync(AuditEvents.BankSubjectExport, AuditTargets.BankSubjectRequest, id.ToString(),
-            new { rows = lookup.Transactions.Count }, CancellationToken.None);
-        return File(BankSubjectRequestService.ToCsv(lookup), "text/csv; charset=utf-8", $"banka-verisi-{id:N}.csv");
+        byte[] csv;
+        try
+        {
+            csv = await _requests.ExportAsync(id, ct);
+        }
+        catch (ObifinValidationException ex)
+        {
+            TempData["Error"] = ex.Message;
+            return RedirectToPage(new { id });
+        }
+        await _audit.LogAsync(AuditEvents.BankSubjectExport, AuditTargets.BankSubjectRequest, id.ToString(), null,
+            CancellationToken.None);
+        return File(csv, "text/csv; charset=utf-8", $"banka-verisi-{id:N}.csv");
     }
 
     /// <summary>İstek jetonu BİLEREK kullanılmaz: kaydedilmiş silmenin denetimi istek iptaliyle düşmesin.</summary>
@@ -7214,7 +7930,7 @@ public class IndexModel : PageModel
         <tr data-request="@r.Id">
             <td>@r.License</td>
             <td>@(r.Kind == BankSubjectRequestKind.Erasure ? "Silme" : "Erişim")</td>
-            <td><code>@r.IbanMasked</code></td>
+            <td><code>@(string.IsNullOrEmpty(r.IbanMasked) ? "(silindi)" : r.IbanMasked)</code></td>
             <td>@TimeZoneInfo.ConvertTime(r.ReceivedAt, tr).ToString("dd.MM.yyyy")</td>
             <td data-cell="due" class="@(overdue ? "text-danger fw-bold" : "")">@TimeZoneInfo.ConvertTime(r.DueAt, tr).ToString("dd.MM.yyyy")@(overdue ? " (gecikti)" : "")</td>
             <td><small>@(r.ClosedAt is { } c ? $"kapandı {TimeZoneInfo.ConvertTime(c, tr):dd.MM.yyyy}: {r.Outcome}" : "açık")</small></td>
@@ -7246,6 +7962,19 @@ public class IndexModel : PageModel
     </table>
     @if (s.Request.ClosedAt is null)
     {
+        <form method="post" class="row g-2 mb-2" asp-page-handler="Verify" asp-route-id="@s.Request.Id" data-form="verify">
+            <div class="col-md-8"><label class="form-label">Kimlik ve IBAN sahipliği nasıl doğrulandı? (zorunlu; belge saklanmaz)</label>
+                <select name="Verification" class="form-select" required>
+                    <option value="">— yöntem seçin —</option>
+                    <option value="WetSignatureAndBankDocument">Islak imzalı dilekçe + kimlik; IBAN banka belgesiyle</option>
+                    <option value="ElectronicSignatureAndBankDocument">KEP / güvenli e-imza / mobil imza; IBAN banka belgesiyle</option>
+                    <option value="RegisteredContactAndBankDocument">Kayıtlı iletişim kanalı; IBAN banka belgesiyle</option>
+                </select></div>
+            <div class="col-md-4 align-self-end"><button class="btn btn-outline-secondary">Doğrulamayı kaydet</button></div>
+        </form>
+        <p class="small" data-cell="verification">@(s.Request.Verification == BankSubjectVerification.None
+            ? "Doğrulama kaydı yok: dışa aktarma ve silme yapılamaz."
+            : $"Doğrulandı: {s.Request.Verification} ({s.Request.VerifiedBy}, {TimeZoneInfo.ConvertTime(s.Request.VerifiedAt!.Value, tr):dd.MM.yyyy HH:mm})")</p>
         <form method="post" class="d-inline" asp-page-handler="Export" asp-route-id="@s.Request.Id">
             <button class="btn btn-outline-primary">CSV dışa aktar</button>
         </form>
@@ -7293,8 +8022,9 @@ Expected: PASS.
 git add OrderDeck.LicenseServer/Pages/Admin/BankaVeriTalepleri OrderDeck.LicenseServer/Pages/Shared/_AdminLayout.cshtml OrderDeck.LicenseServer/Pages/Admin/Shoppers OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer.Tests/Pages/Admin/AdminBankaVeriTalepleriPageTests.cs OrderDeck.LicenseServer.Tests/Pages/Admin/AdminDeletionRequestsPageTests.cs
 git commit -m "feat(bank-kvkk): banka veri talepleri sayfası ve silme taleplerinde son tarih ekle
 
-admin/banka-veri-talepleri: IBAN ile talep aç, hareketleri gör, CSV dışa
-aktar, sil ve kapat; her işlem ve görüntüleme denetime yazılır. Shopper
+admin/banka-veri-talepleri: IBAN ile talep aç, doğrulama yöntemini kaydet,
+hareketleri gör, CSV dışa aktar, sil ve kapat; her işlem ve görüntüleme
+denetime yazılır. Shopper
 silme talepleri listesi son tarihi (talep + 30 gün) ve gecikmeyi gösterir
 (KVKK ön inceleme K-7, Ö-11, P1-9).
 
@@ -7384,7 +8114,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 20: Silme talebindeki telefon 30 gün sonra boşaltılır (P2-25)
 
-**Neden (not D-5):** `ShopperDeletionRequests.PhoneAtRequest` süresiz; talebin kaydı kanıt olarak kalmalı ama telefona işlendikten sonra ihtiyaç yok. İşlenmiş talebin telefonu işlenmeden 30 gün sonra boşaltılır (`SecurityDataRetentionJob`, kendi süresiyle — `RetentionDays` kapalıyken de koşar). Bekleyen talebe dokunulmaz (yönetici kimin talebine baktığını görmeli). Süre politikaya yazılmalı (metin işi).
+**Neden (not D-5, Ö-11):** `ShopperDeletionRequests.PhoneAtRequest` süresiz; talebin kaydı kanıt olarak kalmalı ama telefona işlendikten sonra ihtiyaç yok. İşlenmiş talebin telefonu işlenmeden 30 gün sonra boşaltılır (`SecurityDataRetentionJob`, kendi süresiyle — `RetentionDays` kapalıyken de koşar). Bekleyen talebe dokunulmaz (yönetici kimin talebine baktığını görmeli). Aynı kural banka veri talebinin (Görev 17) kısaltılmış IBAN'ına da uygulanır: özet kapanışta boşalıyor, maske (`BankSubjectRequests.IbanMasked`) kapanıştan 30 gün sonra boşaltılır; açık talebe dokunulmaz. Süreler politikaya yazılmalı (metin işi).
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Audit/SecurityDataRetentionJob.cs:8-19, 57-66`
@@ -7423,6 +8153,37 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
         rows[recent.Id].PhoneAtRequest.Should().Be(recent.PhoneAtRequest);
         rows[pending.Id].PhoneAtRequest.Should().Be(pending.PhoneAtRequest, "bekleyen talepte yönetici kimin talebine baktığını görür");
     }
+
+    [Fact]
+    public async Task Kapanmis_banka_veri_talebinin_kisaltilmis_IBANi_30_gun_sonra_bosaltilir_acik_talebe_dokunulmaz()
+    {
+        // KVKK Ö-11: özet kapanışta boşaldı; kısaltılmış IBAN da talebin belgesi için gereğinden uzun kalmasın.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequest Request(DateTimeOffset? closedAt) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = Guid.NewGuid(), Kind = OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequestKind.Access,
+            IbanHash = closedAt is null ? $"{Guid.NewGuid():N}{Guid.NewGuid():N}" : null, IbanMasked = "TR12…345",
+            ReceivedAt = DateTimeOffset.UtcNow.AddDays(-60), DueAt = DateTimeOffset.UtcNow.AddDays(-30),
+            CreatedAt = DateTimeOffset.UtcNow.AddDays(-60), CreatedBy = "admin", ClosedAt = closedAt,
+            ClosedBy = closedAt is null ? null : "admin",
+        };
+        var old = Request(DateTimeOffset.UtcNow.AddDays(-31));
+        var recent = Request(DateTimeOffset.UtcNow.AddDays(-29));
+        var open = Request(null);
+        db.BankSubjectRequests.AddRange(old, recent, open);
+        await db.SaveChangesAsync();
+
+        await new SecurityDataRetentionJob(db, Options.Create(new SecurityDataRetentionOptions()),
+            NullLogger<SecurityDataRetentionJob>.Instance).AnonymiseAsync(CancellationToken.None);
+
+        var rows = await db.BankSubjectRequests.AsNoTracking()
+            .Where(r => r.Id == old.Id || r.Id == recent.Id || r.Id == open.Id).ToDictionaryAsync(r => r.Id);
+        rows[old.Id].IbanMasked.Should().BeEmpty();
+        rows[old.Id].ClosedAt.Should().NotBeNull("talebin kaydı kalır");
+        rows[recent.Id].IbanMasked.Should().Be("TR12…345");
+        rows[open.Id].IbanMasked.Should().Be("TR12…345");
+    }
 ```
 
 - [ ] **Adım 2: Koştur — kırmızı**
@@ -7435,8 +8196,9 @@ Expected: FAIL — telefon boşaltılmadı.
 `SecurityDataRetentionJob.cs` — `SecurityDataRetentionOptions`'a `BatchSize`'ın ALTINA:
 
 ```csharp
-    /// <summary>İşlenmiş silme talebindeki telefonun (<c>ShopperDeletionRequest.PhoneAtRequest</c>) boşaltılacağı gün, işlenme
-    /// tarihinden. 0 = kapalı. <see cref="RetentionDays"/>'ten bağımsız. KVKK ön inceleme D-5; gizlilik politikasına yazılmalı.</summary>
+    /// <summary>İşlenmiş silme talebindeki telefonun (<c>ShopperDeletionRequest.PhoneAtRequest</c>) ve kapanmış banka veri
+    /// talebindeki kısaltılmış IBAN'ın (<c>BankSubjectRequest.IbanMasked</c>) boşaltılacağı gün, işlenme/kapanış tarihinden.
+    /// 0 = kapalı. <see cref="RetentionDays"/>'ten bağımsız. KVKK ön inceleme D-5, Ö-11; gizlilik politikasına yazılmalı.</summary>
     public int DeletionRequestPhoneDays { get; set; } = 30;
 ```
 
@@ -7472,6 +8234,16 @@ Expected: FAIL — telefon boşaltılmadı.
                 relational, ct);
             if (phones > 0)
                 _log.LogInformation("[SecurityDataRetention] {Count} işlenmiş silme talebinin telefonu boşaltıldı", phones);
+
+            // KVKK Ö-11: kapanmış banka veri talebinin kısaltılmış IBAN'ı (özet kapanışta boşaldı). Açık talebe dokunulmaz.
+            var masks = await RunAsync(
+                "BankSubjectRequest.IbanMasked",
+                () => _db.BankSubjectRequests.Where(r => r.ClosedAt != null && r.ClosedAt < phoneCutoff && r.IbanMasked != ""),
+                q => q.ExecuteUpdateAsync(s => s.SetProperty(r => r.IbanMasked, ""), ct),
+                rows => { foreach (var r in rows) r.IbanMasked = ""; },
+                relational, ct);
+            if (masks > 0)
+                _log.LogInformation("[SecurityDataRetention] {Count} kapanmış banka veri talebinin kısaltılmış IBAN'ı boşaltıldı", masks);
         }
 
         if (_opt.RetentionDays <= 0)
@@ -7483,7 +8255,9 @@ Expected: FAIL — telefon boşaltılmadı.
         var cutoff = DateTimeOffset.UtcNow.AddDays(-_opt.RetentionDays);
 ```
 
-Sınıf özetine ekle: `/// Ayrıca işlenmiş silme talebinin telefonu işlenmeden <see cref="SecurityDataRetentionOptions.DeletionRequestPhoneDays"/> gün sonra boşaltılır (KVKK D-5).`
+Sınıf özetine ekle: `/// Ayrıca işlenmiş silme talebinin telefonu işlenmeden ve kapanmış banka veri talebinin kısaltılmış IBAN'ı kapanıştan <see cref="SecurityDataRetentionOptions.DeletionRequestPhoneDays"/> gün sonra boşaltılır (KVKK D-5, Ö-11).`
+
+`Pages/Admin/BankaVeriTalepleri/Index.cshtml` (Görev 18) boş maskeyi zaten "(silindi)" gösterir.
 
 `DeletionRequests.cshtml` — `<td><code>@r.PhoneAtRequest</code></td>` → `<td><code>@(string.IsNullOrEmpty(r.PhoneAtRequest) ? "(silindi)" : r.PhoneAtRequest)</code></td>`
 
@@ -7496,11 +8270,12 @@ Expected: PASS.
 
 ```bash
 git add OrderDeck.LicenseServer/Services/Audit/SecurityDataRetentionJob.cs OrderDeck.LicenseServer/Pages/Admin/Shoppers/DeletionRequests.cshtml OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionJobTests.cs
-git commit -m "fix(kvkk): işlenmiş silme talebindeki telefonu 30 gün sonra boşalt
+git commit -m "fix(kvkk): işlenmiş silme talebindeki telefonu ve banka talebindeki maskeyi 30 gün sonra boşalt
 
-Talebin kaydı kanıt olarak kalır; telefon işlenmeden 30 gün sonra
-SecurityDataRetentionJob ile boşaltılır, bekleyen talebe dokunulmaz
-(KVKK ön inceleme D-5, P2-25).
+Talebin kaydı kanıt olarak kalır; telefon işlenmeden, banka veri
+talebinin kısaltılmış IBAN'ı kapanıştan 30 gün sonra
+SecurityDataRetentionJob ile boşaltılır, bekleyen/açık talebe dokunulmaz
+(KVKK ön inceleme D-5, Ö-11, P2-25).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -8303,7 +9078,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ### Görev 23: Yerel SQL yedeği şifreli ve 1 gün; HashKey .env yedeğine girmez (P1-16)
 
 **Neden (not Ö-12, Ö-6):** VPS'teki yerel SQL yedeği bilerek şifresiz ve ~4 gün kalıyor; politika "şifreli yedekler" diyor. IBAN tanıma kodlarının anahtarı (`OrderDeck__Bank__HashKey`) `.env` gece yedeğinin içinde, SQL yedeğiyle aynı kovada ve aynı parolayla: tek parola + kova erişimi hem özetleri hem anahtarı verir.
-- **SQL:** yerelde yalnız şifreli kopya (`.bak.gz.gpg`) kalır, en çok 1 gün. Düz `.bak`/`.bak.gz` yalnız şifrelenene kadar yaşar; betik nerede düşerse düşsün `EXIT` tuzağı siler (şifre-çöz turunun ara dosyası dahil). Eski sürümden kalmış düz kopyalar da silinir. Uzaktaki zincir (adlar, önek, parola, budama) aynen.
+- **SQL:** yerelde yalnız **bugünkü** şifreli kopya (`.bak.gz.gpg`) kalır — ada göre silinir, `-mtime` eşiğine değil (cron saati kayarsa dünkü kopya kalmasın). Düz `.bak`/`.bak.gz` yalnız şifrelenene kadar yaşar; betik nerede düşerse düşsün `EXIT` tuzağı siler. Şifre-çöz turunun düz ara dosyası (`encrypt_verified`'ın `.roundtrip`'i) SQL konteynerine bağlı klasörde değil, `mktemp -d` ile açılan 700 izinli çalışma klasöründe üretilir; betik `umask 077` ile başlar. Eski sürümden kalmış düz kopyalar da silinir. Uzaktaki zincir (adlar, önek, parola, budama) aynen.
 - **HashKey (notun önerisi "yalnız parola yöneticisinde"):** `.env` yedeği HashKey satırı süzülerek alınır; asıl kopyası Bitwarden'da. Geri yüklemede `.env`'e elle eklenir. **Ön koşul (Burak):** Bitwarden'daki HashKey'in VPS'tekiyle aynı olduğunu doğrula — aksi hâlde host kaybında özetler eşleşmez.
 - Bu betikleri CI kopyalamaz (CI yalnız `rollback-license-server.sh`'ı kopyalıyor); Burak elle kopyalar ve bir kez çalıştırıp günlüğe bakar. Cron satırları değişmez.
 
@@ -8335,6 +9110,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 #
 # Cron: 0 3 * * * /opt/orderdeck/scripts/backup-sql-to-r2.sh >>/var/log/orderdeck-sql-backup.log 2>&1
 set -euo pipefail
+# Betiğin yazdığı her dosya (şifreli kopya, şifre-çöz turunun düz ara dosyası) yalnız sahibine açık.
+umask 077
 
 LOG_PREFIX="[$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
 echo "$LOG_PREFIX backup-sql start"
@@ -8355,9 +9132,13 @@ BAK="/var/opt/mssql/backup/orderdeck-${STAMP}.bak"
 HOST_BAK="${LOCAL_DIR}/orderdeck-${STAMP}.bak"
 GZ="${HOST_BAK}.gz"
 CIPHER="${GZ}.gpg"
+# Şifreleme ve şifre-çöz turu 700 izinli ayrı bir klasörde (aynı dosya sisteminde: büyük dosya /tmp'ye taşınmaz). LOCAL_DIR
+# SQL konteynerine bağlı; düz ara dosya (.roundtrip) orada, başka izinlerle bir an bile durmasın.
+WORK=$(mktemp -d "${LOCAL_DIR}/.enc.XXXXXX")
+chmod 700 "$WORK"
 
 # Düz kopyalar ve şifre-çöz turunun ara dosyası betik nasıl biterse bitsin silinir.
-trap 'rm -f "$HOST_BAK" "$GZ" "${CIPHER}.roundtrip"' EXIT
+trap 'rm -f "$HOST_BAK" "$GZ"; rm -rf "$WORK"' EXIT
 
 # 1) BACKUP DATABASE inside container.
 #    INIT overwrites if today's file already exists (rerun-safe).
@@ -8371,20 +9152,24 @@ if [[ ! -f "$HOST_BAK" ]]; then echo "$LOG_PREFIX bak file missing on host: $HOS
 # 2) Compress (Express has no native COMPRESSION; gzip externally).
 gzip -9 -f "$HOST_BAK"
 
-# 3) Encrypt next to it, then drop the plaintext at once. Sıra önemli: önce
-#    sıkıştır sonra şifrele — tersi sıkışmaz.
-encrypt_verified "$GZ" "$CIPHER"
+# 3) Encrypt in the private work dir (roundtrip file lives there too), then
+#    drop the plaintext at once and move the cipher next to the backups.
+#    Sıra önemli: önce sıkıştır sonra şifrele — tersi sıkışmaz.
+encrypt_verified "$GZ" "$WORK/cipher.gpg"
 rm -f "$GZ"
+mv "$WORK/cipher.gpg" "$CIPHER"
 SIZE=$(stat -c%s "$CIPHER")
 
 # 4) Upload to R2 with date prefix.
 aws s3 cp "$CIPHER" "${BUCKET}/orderdeck-${STAMP}.bak.gz.gpg" \
   --profile r2 --only-show-errors
 
-# 5) Local retention: only the encrypted copy, 1 day (-mtime +0 = 24 saatten
-#    eski). Eski sürümden kalmış düz kopyalar da gider.
-find "$LOCAL_DIR" -name "orderdeck-*.bak.gz.gpg" -mtime +0 -delete
-find "$LOCAL_DIR" \( -name "orderdeck-*.bak.gz" -o -name "orderdeck-*.bak" \) -delete
+# 5) Local retention: YALNIZ bugünkü şifreli kopya kalır (zamana değil ada
+#    bakar: cron saati kayarsa dünkü kopya -mtime eşiğine takılıp kalmasın).
+#    Eski sürümden kalmış düz kopyalar ve yarım kalmış çalışma klasörleri de gider.
+find "$LOCAL_DIR" -maxdepth 1 -name "orderdeck-*.bak.gz.gpg" ! -name "$(basename "$CIPHER")" -delete
+find "$LOCAL_DIR" -maxdepth 1 \( -name "orderdeck-*.bak.gz" -o -name "orderdeck-*.bak" \) -delete
+find "$LOCAL_DIR" -maxdepth 1 -type d -name ".enc.*" ! -path "$WORK" -exec rm -rf {} +
 
 # 6) Remote retention.
 prune_dated_objects "$BUCKET" "$KEEP_DAYS"
@@ -8499,8 +9284,16 @@ S="C:/Users/burak/AppData/Local/Temp/claude/C--Users-burak-source-repos-LiveDeck
 printf 'A=1\nOrderDeck__Bank__HashKey=x\n  export OrderDeck__Bank__HashKey=y\nB=OrderDeck__Bank__HashKey=z\n' > "$S/env-filter-test"
 { grep -Ev '^[[:space:]]*(export[[:space:]]+)?OrderDeck__Bank__HashKey=' "$S/env-filter-test" || true; }
 rm -f "$S/env-filter-test"
+# Yerel saklama: yalnız bugünkü şifreli kopya kalır (betikteki 5. adımın aynısı, sahte dosyalarla).
+D="$S/retention-test"; rm -rf "$D"; mkdir -p "$D/.enc.old" "$D/.enc.now"
+touch "$D/orderdeck-2026-10-18.bak.gz.gpg" "$D/orderdeck-2026-10-19.bak.gz.gpg" "$D/orderdeck-2026-10-17.bak.gz" "$D/x.txt"
+LOCAL_DIR="$D"; CIPHER="$D/orderdeck-2026-10-19.bak.gz.gpg"; WORK="$D/.enc.now"
+find "$LOCAL_DIR" -maxdepth 1 -name "orderdeck-*.bak.gz.gpg" ! -name "$(basename "$CIPHER")" -delete
+find "$LOCAL_DIR" -maxdepth 1 \( -name "orderdeck-*.bak.gz" -o -name "orderdeck-*.bak" \) -delete
+find "$LOCAL_DIR" -maxdepth 1 -type d -name ".enc.*" ! -path "$WORK" -exec rm -rf {} +
+ls -A "$D"; rm -rf "$D"
 ```
-Expected: `SYNTAX_OK`; süzgeç çıktısı yalnız `A=1` ve `B=OrderDeck__Bank__HashKey=z` (satır başı olmayan eşleşme süzülmez).
+Expected: `SYNTAX_OK`; süzgeç çıktısı yalnız `A=1` ve `B=OrderDeck__Bank__HashKey=z` (satır başı olmayan eşleşme süzülmez); saklama denemesinde kalanlar yalnız `.enc.now`, `orderdeck-2026-10-19.bak.gz.gpg` ve `x.txt`.
 
 - [ ] **Adım 5: Commit**
 
