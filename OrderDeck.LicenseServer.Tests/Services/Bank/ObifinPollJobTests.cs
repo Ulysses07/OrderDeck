@@ -842,15 +842,24 @@ public sealed class ObifinPollJobTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Lisansi_biten_baglanti_cekilmez_Disabled_ve_DisabledAt_yazilir(bool expired)
+    [InlineData(true, ObifinConnectionStatus.Verified)]
+    [InlineData(false, ObifinConnectionStatus.Verified)]
+    // Süzgeç bilerek "Disabled değil", "Verified" değil: lisansı biten Failed/Unverified bağlantı da durur ve tarih alır.
+    // Daraltılsaydı Failed bağlantı hiç DisabledAt almaz, hizmet sonu silmesine (30 gün) hiç girmezdi.
+    [InlineData(true, ObifinConnectionStatus.Failed)]
+    [InlineData(false, ObifinConnectionStatus.Failed)]
+    [InlineData(true, ObifinConnectionStatus.Unverified)]
+    [InlineData(false, ObifinConnectionStatus.Unverified)]
+    public async Task Lisansi_biten_baglanti_cekilmez_Disabled_ve_DisabledAt_yazilir(bool expired, ObifinConnectionStatus start)
     {
         // KVKK K-6: hizmeti bitmiş yayıncının hesabından hareket toplanmaz. Lisans bitince bağlantı Disabled'a çekilir,
         // DisabledAt hizmet sonu silmesinin (30 gün) sayacıdır.
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, sink) = Build(db, client, today);
         var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        seeded.Status = start;
+        if (start == ObifinConnectionStatus.Failed) seeded.LastError = $"onceki-hata-{Guid.NewGuid():N}";
         var license = await db.Licenses.SingleAsync(l => l.Id == lic);
         if (expired) license.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
         else license.RevokedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
