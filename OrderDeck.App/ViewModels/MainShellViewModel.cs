@@ -1676,6 +1676,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             AppendToQueue(leftover);
         }
+        // §5.8: kuyruk yeni yayından yüklendi. Başka bilgisayarın bekletilen satırı (bağlantı yokken "basmadan bitir")
+        // yeni yayının kuyruğuna da teklife de girmez: kuyrukta bekletilen satır kalmadıysa "kuyrukta bekliyor" notu
+        // bayat — şeritten kalkar.
+        ClearStaleHeldNotice();
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))] private async Task EndStream()

@@ -41,11 +41,11 @@ public sealed partial class MainShellViewModel
     /// <summary><see cref="_pendingNotes"/>'taki bekletilen satır notu (§5.8: baskının <c>PrintHeld</c>'i ya da "Yayını
     /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
     /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyruk baskısından, kuyruktan çıkarmadan
-    /// ("Kuyruktan çıkar", "Kuyruğu temizle") ya da "Yayını bitir"den sonra kuyrukta bekletilen satır kalmadıysa kalkar
-    /// (<see cref="ClearStaleHeldNotice"/>). Yayın kapandığında satırlar hâlâ bekliyorsa (bağlantı yokken "basmadan
-    /// bitir") "Yayını bitir"in "Yayın açık bırakıldı" diyen notu yanlış olur: yerine baskının <c>PrintHeld</c>'i geçer
-    /// (satırlar kuyrukta bekliyor, bağlantı gelince basılır). Başka yol onu kaldırmaz: şerit kapatılana kadar
-    /// kalır.</summary>
+    /// ("Kuyruktan çıkar", "Kuyruğu temizle"), "Yayını bitir"den ya da "Yayını başlat"tan (kuyruk yeni yayından
+    /// yüklenir) sonra kuyrukta bekletilen satır kalmadıysa kalkar (<see cref="ClearStaleHeldNotice"/>). Yayın
+    /// kapandığında satırlar hâlâ bekliyorsa (bağlantı yokken "basmadan bitir") "Yayını bitir"in "Yayın açık bırakıldı"
+    /// diyen notu yanlış olur: yerine baskının <c>PrintHeld</c>'i geçer (satırlar kuyrukta bekliyor, bağlantı gelince
+    /// basılır). Bunların dışında kalan yol onu kaldırmaz: şerit kapatılana kadar kalır.</summary>
     private string? _heldNote;
 
     /// <summary><see cref="_heldNote"/> "Yayını bitir"in <c>EndStreamHeld</c>'i mi ("Yayın açık bırakıldı" der). Yalnız
@@ -102,8 +102,8 @@ public sealed partial class MainShellViewModel
 
     /// <summary>Kuyrukta bekletilen satır kalmadıysa (bağlantı geldi ve basıldı ya da artık bekletilmiyor) bekletme notu
     /// (<see cref="_heldNote"/>) bayattır: şeritten kalkar, diğer notlar kalır; hiç not kalmadıysa şerit kapanır. Kuyruk
-    /// baskısından, kuyruktan çıkarmadan ve "Yayını bitir"den sonra. Not yoksa (mod Off dahil) hiçbir şey yapmaz. UI iş
-    /// parçacığında.</summary>
+    /// baskısından, kuyruktan çıkarmadan, "Yayını bitir"den ve "Yayını başlat"tan sonra. Not yoksa (mod Off dahil) hiçbir
+    /// şey yapmaz. UI iş parçacığında.</summary>
     /// <param name="streamEnded">Yayın gerçekten kapandı ("Yayını bitir"). Kuyrukta hâlâ bekletilen satır varsa
     /// (bağlantı yokken "basmadan bitir") ve not "Yayını bitir"in <c>EndStreamHeld</c>'iyse ("Yayın açık bırakıldı"
     /// artık yanlış) yerine baskının <c>PrintHeld</c>'i geçer (<see cref="ShowHeldNotice"/>): satırlar kuyrukta

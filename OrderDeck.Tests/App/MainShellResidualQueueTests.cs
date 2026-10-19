@@ -396,6 +396,41 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Cevrimdisi_basmadan_bitirilen_yayindan_sonra_yeni_yayin_acilinca_bekletme_notu_kalkar_ilgisiz_not_kalir()
+    {
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (_, _, remote) = await s.Bed.RemoteLabelAsync(printed: false);
+        var remoteId = remote.ToString("N");
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(remoteId)!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+        s.H.Dialogs.ThreeWayResult = _ => true;                     // "Evet: hepsini bas" — yayın açık kalır
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+        s.H.Dialogs.ThreeWayResult = _ => false;                    // "Hayır: basmadan bitir"
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+        s.H.Sessions.GetActive().Should().BeNull("ön koşul: yayın bitti");
+        s.Vm.SalesPushWarning.Should().Be(
+            "1 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.",
+            "ön koşul: satır kuyrukta bekliyor");
+        // Şeritte bekletme notundan bağımsız bir uyarı da var (ör. arka planda işlenemeyen bir komut).
+        const string unrelated = "1 etiketin bekleyen iptali sunucuda işlenemedi; tekrar dene.";
+        s.Vm.ShowSalesNotice([], [unrelated]);
+
+        // Bağlantı hâlâ yok; operatör yeni yayın açar — kuyruk yeni yayından yüklenir.
+        s.H.Dialogs.ConfirmResult = _ => true;
+        s.Vm.StartStreamCommand.Execute(null);
+
+        s.H.Sessions.GetActive().Should().NotBeNull("ön koşul: yeni yayın açık");
+        s.Vm.PrintQueue.Should().BeEmpty(
+            "ön koşul: başka bilgisayarın satırı yeni yayının kuyruğuna girmez (kuyruk yeni yayının, teklif yalnız kendi "
+          + "yayınlarının)");
+        s.H.Printer.Calls.Should().BeEmpty("ön koşul: hiçbir şey basılmadı");
+        s.Vm.SalesPushWarning.Should().Be(unrelated,
+            "kuyrukta bekletilen satır kalmadı: \"kuyrukta bekliyor\" bayat, bekletme notu kalkar, ilgisiz not operatör "
+          + "kapatana kadar kalır");
+    }
+
+    [Fact]
     public async Task Baska_bilgisayarin_satiri_orada_zaten_basilmissa_serit_zaten_basilmisti_der()
     {
         using var s = Build();
