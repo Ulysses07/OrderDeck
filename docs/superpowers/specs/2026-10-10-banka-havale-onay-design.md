@@ -43,7 +43,7 @@ Kaynaklar: LiveDeck `origin/master` 3d484d73, OrderDeck-Mobile `origin/main` 76f
 **2. `PaymentExpectationAllocation` (yeni).** `(PaymentId, ExpectationId, Amount, CreatedAt, ReversedAt?)`. Hangi ödemenin hangi beklentinin ne kadarını kapattığını tutar. Onayın SaveChanges'inde yazılır; geri almada `ReversedAt` alır ve `PaidAmount` yeniden hesaplanır. Tek bir `FulfilledByPaymentId` bunu taşıyamazdı: bir ödeme birden çok beklentiyi, bir beklenti birden çok ödemeyi kapatabilir.
 
 **3. `Payment`'a eklenecek alanlar**
-- `WpfCustomerId Guid?`: shopper dekontunda gönderim anında `ShopperBroadcasterLinks.WpfCustomerId`'den doldurulur, eski satırlar geri doldurulur. WPF dekontunda W3 ile sync öğesine eklenir; `SyncPaymentItem` bugün müşteri taşımıyor (`LicensesPaymentsSyncController.cs:44-51`). *(2026-10-19: WPF dekont kaydı kalktı, çekmece "Gelen Ödemeler" oldu ve Payment yazmıyor; WPF'ten yeni dekont gelmez, bu madde yalnız eski satırlar için anlamlı — §8 W3 notu.)* Bilinmiyorsa null kalır ve §5-6'da "müşterisi bilinmeyen" sayılır.
+- `WpfCustomerId Guid?`: shopper dekontunda gönderim anında `ShopperBroadcasterLinks.WpfCustomerId`'den doldurulur, eski satırlar geri doldurulur. WPF dekontunda W3 ile sync öğesine eklenir; `SyncPaymentItem` bugün müşteri taşımıyor (`LicensesPaymentsSyncController.cs:44-51`). *(2026-10-19: WPF dekont kaydı kalktı, çekmece "Gelen Ödemeler" oldu ve Payment yazmıyor. WPF sync öğesine müşteri kimliği eklenmeyecek (§8 W3 maddesi geçersiz); WPF'ten gelmiş eski satırlar müşterisiz kalır.)* Bilinmiyorsa null kalır ve §5-6'da "müşterisi bilinmeyen" sayılır.
 - `Source` (Receipt / Bank). PR2'de mevcut satırlar `Receipt` ile geri doldurulur.
 - `ApprovalSource` (ReceiptHuman / BankHuman / BankAuto)
 - `ApprovedByOperatorId Guid?`: personel onayında `TenantClaims.GetOperatorId` (`TenantClaims.cs:72`).
@@ -423,7 +423,7 @@ Mercekler: **kod** = kod tutarlılığı, **para** = para güvenliği, **kvkk** 
 | 3 | kod | Önemli | PaymentId yazan yollar Decision'ı atlıyor | İşlendi §3, §4.4, §11.2 (birleşik: 18, 44) |
 | 4 | kod | Önemli | Gölge IBAN çifti BankConfirm'e yükselmiyor | İşlendi §2.5 (upsert) |
 | 5 | kod | Önemli | Ortak IBAN işareti silmeyle kayboluyor | İşlendi §2.5 `BankIbanState` (birleşik: 25) |
-| 6 | kod | Önemli | WPF dekontunun müşterisi bilinmiyor | İşlendi §2.3, §5-6, §8 W3 (birleşik: 17) |
+| 6 | kod | Önemli | WPF dekontunun müşterisi bilinmiyor | İşlendi §2.3, §5-6, §8 W3 (birleşik: 17). *2026-10-19: W3 maddesi geçersiz, WPF dekont yazmıyor* |
 | 7 | kod | Önemli | Beklentisiz fazla, overpaymentToBalance çelişkisi | İşlendi §4.3, §6, §16 "4 (uygulama)" (birleşik: 16, 33) |
 | 8 | kod | Önemli | Fazla geri alınamayınca geri alma düşüyor | İşlendi §2.8, §11.2 + sahibe soru 2 (birleşik: 23) |
 | 9 | kod | Önemli | Seçici projeksiyon id'si döndürmüyor | İşlendi §6 seçici ucu, §7 (birleşik: 34) |
