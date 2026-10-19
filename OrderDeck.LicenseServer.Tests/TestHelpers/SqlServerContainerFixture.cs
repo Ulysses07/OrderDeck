@@ -69,9 +69,12 @@ public class SqlServerContainerFixture : IAsyncLifetime
 
 /// <summary>
 /// Prod'un sürümü SQL Server Express: ONLINE indeks işlemi yok, tampon havuzu
-/// sınırlı. Yalnız prod sürümüne özgü bir davranışı kanıtlayan test kullanır
-/// (göçün Express'te koşması, spec 2026-10-13 §10.1-12) — ayrı bir container
-/// başlattığı için genel koleksiyona girmez.
+/// sınırlı. Yalnız prod sürümüne özgü bir davranışı kanıtlayan testler kullanır
+/// (göçlerin Express'te koşması: satış senkronu S1, spec 2026-10-13 §10.1-12;
+/// ortak bakiye S1, spec 2026-10-11 §8.2-11). Ayrı bir container olduğu için
+/// genel koleksiyona girmez; kendi koleksiyonunda
+/// (<see cref="SqlServerExpressCollection"/>) bir kez başlar. Sınıf başına
+/// <c>IClassFixture</c> her sınıfa ayrı bir Express container'ı açardı.
 /// </summary>
 public sealed class SqlServerExpressContainerFixture : SqlServerContainerFixture
 {
@@ -87,4 +90,14 @@ public sealed class SqlServerExpressContainerFixture : SqlServerContainerFixture
 public sealed class SqlServerCollection : ICollectionFixture<SqlServerContainerFixture>
 {
     public const string Name = "sqlserver";
+}
+
+/// <summary>
+/// Express container'ını paylaşan testler (<see cref="SqlServerExpressContainerFixture"/>):
+/// container koleksiyon başına bir kez kalkar, izolasyon yine veritabanı düzeyinde.
+/// </summary>
+[CollectionDefinition(Name)]
+public sealed class SqlServerExpressCollection : ICollectionFixture<SqlServerExpressContainerFixture>
+{
+    public const string Name = "sqlserver-express";
 }

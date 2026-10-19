@@ -54,8 +54,9 @@ public sealed class SalesSyncS1MigrationTests
 /// (<see cref="SalesSyncS1MigrationScriptTests"/>) ONLINE'ı metinden yakalar;
 /// bu test göçün Express motorunda gerçekten uygulandığını ve süresini gösterir.
 /// </summary>
+[Collection(SqlServerExpressCollection.Name)]
 [Trait("Category", "Testcontainers")]
-public sealed class SalesSyncS1MigrationExpressTests : IClassFixture<SqlServerExpressContainerFixture>
+public sealed class SalesSyncS1MigrationExpressTests
 {
     private readonly SqlServerExpressContainerFixture _sql;
     private readonly ITestOutputHelper _output;
