@@ -1,4 +1,5 @@
 using System;
+using System.Data;
 using System.Linq;
 using Dapper;
 using FluentAssertions;
@@ -903,19 +904,41 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
         _customers.Search("zeyn").Select(c => c.Username).Should().Equal("zeynep");
     }
 
+    /// <summary>Üretim fabrikasının bağlantısı; yazma kilidi bütçesi (<see cref="SqliteConnectionFactory.WriteContentionTimeoutSeconds"/>)
+    /// testin üst sınırına çekilir ve ilk açılış bildirilir. Bütçenin kendisi
+    /// <c>SqliteContentionTests.Blocked_writer_gives_up_within_the_configured_budget</c>'ta sınanır.</summary>
+    private sealed class PatientFactory(IDbConnectionFactory inner) : IDbConnectionFactory
+    {
+        private readonly TaskCompletionSource _opened = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Opened => _opened.Task;
+
+        public IDbConnection Open()
+        {
+            var conn = (SqliteConnection)inner.Open();
+            conn.DefaultTimeout = (int)TestPatience.Upper.TotalSeconds;
+            _opened.TrySetResult();
+            return conn;
+        }
+    }
+
     [Fact]
     public async Task Dosya_veritabaninda_tasima_yarisan_yaziciyi_bekler_yazdigini_kaybetmez()
     {
         // Üretim kurgusu (dosya, WAL, havuz): başka bir bağlantı yazma kilidini tutarken taşıma
         // OKUMADAN önce kilidi bekler (BEGIN IMMEDIATE) — okuma-birleştirme-yazma yarışan yazımın
         // ARDINA düşer, operatörün o an kaydettiği not kaybolmaz.
+        //
+        // Taşımanın kilit bekleme bütçesi 10 sn yerine testin üst sınırı: tam pakette testin devamı
+        // 10 sn'den geç koşunca taşıma kilit hâlâ testteyken "database is locked" ile düşüyordu.
         var path = Path.Combine(Path.GetTempPath(), $"od-rekey-{Guid.NewGuid():N}.db");
         var factory = new SqliteConnectionFactory(path);
         try
         {
             new MigrationRunner(factory).Run();
             var customers = new CustomerRepository(factory);
-            var sync = new CustomerSyncRepository(factory, new CustomerBusySet());
+            var patient = new PatientFactory(factory);
+            var sync = new CustomerSyncRepository(patient, new CustomerBusySet());
             string Insert(string username)
             {
                 var id = NewId();
@@ -935,11 +958,12 @@ public sealed class CustomerSyncRepositoryTests : IDisposable
                 writer.Execute("UPDATE Customer SET Notes = 'yarışan not' WHERE Id = @copy", new { copy }, tx);
 
                 var rekey = Task.Run(() => sync.RekeyToLocal(copy, canonical, Pushed, Now));
+                await patient.Opened.WaitAsync(TestPatience.Upper);       // taşıma bağlantısını açtı: sırada BEGIN IMMEDIATE
                 await Task.Delay(300);
                 rekey.IsCompleted.Should().BeFalse("taşıma yazma kilidini bekler");
                 tx.Commit();
 
-                (await rekey.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be(RekeyResult.Rekeyed);
+                (await rekey.WaitAsync(TestPatience.Upper)).Should().Be(RekeyResult.Rekeyed);
             }
 
             customers.GetById(canonical)!.Notes.Should().Be("yarışan not", "kopyanın taşımadan hemen önceki düzenlemesi taşındı");

@@ -1055,7 +1055,10 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         public string? CurrentLicenseKey => key;
     }
 
-    /// <summary>Uzak kayıtların önbelleği, sahte sunucuya bağlı. <paramref name="modeOn"/> ise yerel kip 1.</summary>
+    /// <summary>Uzak kayıtların önbelleği, sahte sunucuya bağlı. <paramref name="modeOn"/> ise yerel kip 1.
+    /// <para>Ön okumanın süre bütçesi (<see cref="RemotePaymentRecords.RefreshBudget"/>, 3 sn) burada sınanmıyor: testin
+    /// üst sınırına çekilir. Sahte sunucunun liste ucu iş parçacığı havuzuna döner; tam pakette havuz yüklüyken ön okuma
+    /// 3 sn'yi aşıp kalan kişileri okumadan duruyordu.</para></summary>
     private RemotePaymentRecords UseRemote(bool modeOn = true)
     {
         if (modeOn)
@@ -1064,7 +1067,10 @@ public sealed class CorrectedPaymentRequestsTests : IDisposable
         var http = new System.Net.Http.HttpClient(_server, disposeHandler: false) { BaseAddress = new Uri("https://test.local") };
         _remote = new RemotePaymentRecords(new LicenseApiClient(http, new LicenseTokenStore()), new FixedLicense(_server.Lisans),
             new SalesSyncStateRepository(_db), new ReplicaIdentityRepository(_db), new PendingPaymentRecordRepository(_db),
-            NullLogger<RemotePaymentRecords>.Instance);
+            NullLogger<RemotePaymentRecords>.Instance)
+        {
+            RefreshTimeout = TestPatience.Upper,
+        };
         return _remote;
     }
 

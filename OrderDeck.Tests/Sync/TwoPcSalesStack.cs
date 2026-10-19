@@ -314,8 +314,9 @@ internal sealed class SalesPc
             customerPush, Push, Pending, LabelRepo, Sessions, _prompt, NullLogger<PaymentLeaseCoordinator>.Instance);
         Payments = new PaymentRequestService(store, new WhatsAppMessageBuilder(), Launcher, api, license, Jobs, Shipping,
             NullLogger<PaymentRequestService>.Instance, Customers, busy, OffRecords, Lease);
+        // Ön okumanın süre bütçesi (3 sn) burada sınanmıyor; tam pakette havuz yüklüyken liste istekleri ona sığmayabilir.
         RemotePayments = new RemotePaymentRecords(api, license, State, Identity, PendingPaymentRecords,
-            NullLogger<RemotePaymentRecords>.Instance, Pull, PaymentRecords);
+            NullLogger<RemotePaymentRecords>.Instance, Pull, PaymentRecords) { RefreshTimeout = TestPatience.Upper };
         PaymentFollowUp = new OrderDeck.App.Services.PriceCorrection.CorrectedPaymentRequests(
             Customers, LabelRepo, Jobs, Shipping, Payments, RemotePayments);
         PaymentHistory = new PaymentHistoryBackfill(api, Envelope, StateService, State, Jobs, Customers, LabelRepo, busy,
