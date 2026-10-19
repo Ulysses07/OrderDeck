@@ -169,9 +169,9 @@ public class PanelShipmentsControllerTests : IClassFixture<ApiFactory>
     //    müşteriyi Id yerine adıyla göstermeli.
 
     /// <summary>Her satır kendi müşterisinin projeksiyonundan kullanıcı adı +
-    /// takma ad + platform alır; takma adı olmayan müşteride takma ad null
-    /// (panel kullanıcı adına düşer). Yalnız ad gider: telefon, form adı
-    /// (FullName) yanıtta yok.</summary>
+    /// görünen ad + platform alır. Form adı yoksa görünen ad takma addır; ikisi
+    /// de yoksa null (panel kullanıcı adına düşer). Yalnız ad gider: telefon ve
+    /// adres yanıtta yok.</summary>
     [Fact]
     public async Task List_returns_customer_name_fields_from_projection()
     {
@@ -199,7 +199,26 @@ public class PanelShipmentsControllerTests : IClassFixture<ApiFactory>
 
         raw.Should().Contain("\"customerUsername\"", "sözleşme camelCase");
         raw.Should().NotContain(named.Phone!).And.NotContain(plain.Phone!)
-            .And.NotContain(named.FullName!);
+            .And.NotContain(named.Address!);
+    }
+
+    /// <summary>Görünen ad müşteri detayıyla aynı kuraldan gelir: form adı
+    /// (FullName) doluysa o, takma ad değil — depo personeli paketi form
+    /// adıyla tanır ve panel bu adı müşteri detayında zaten gösteriyor.</summary>
+    [Fact]
+    public async Task List_display_name_prefers_full_name_like_customer_detail()
+    {
+        var (client, _, licenseId) = await SeedLicenseAsync();
+        var id = Guid.NewGuid();
+        await AddAsync(
+            Projection(licenseId, id, "@formlu", "Formlu Takma", fullName: "Örnek Form Adı"),
+            HeldShipment(licenseId, id.ToString("N")));
+
+        var row = await GetSingleAsync(client, id.ToString("N"));
+
+        row.CustomerDisplayName.Should().Be("Örnek Form Adı");
+        row.CustomerUsername.Should().Be("@formlu");
+        row.CustomerPlatform.Should().Be("instagram");
     }
 
     /// <summary>Projeksiyonu sunucuya hiç gelmemiş müşteri ve GUID olmayan eski
@@ -225,7 +244,7 @@ public class PanelShipmentsControllerTests : IClassFixture<ApiFactory>
     {
         var (client, _, licenseId) = await SeedLicenseAsync();
         var id = Guid.NewGuid();
-        var purged = Projection(licenseId, id, "@silinen", "Silinen Takma");
+        var purged = Projection(licenseId, id, "@silinen", "Silinen Takma", fullName: "Silinen Form Adı");
         purged.MarkPurged(DateTimeOffset.UtcNow);
         purged.Username.Should().Be("@silinen", "ön koşul: kimlik silmede kalır");
         await AddAsync(purged, HeldShipment(licenseId, id.ToString("N")));
@@ -358,17 +377,18 @@ public class PanelShipmentsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>Kişisel alanları dolu bir asıl kayıt — yanıta yalnız adın
-    /// gittiğini doğrulamak için telefon ve form adı da taşır.</summary>
+    /// gittiğini doğrulamak için telefon ve adres de taşır.</summary>
     private static WpfCustomerProjection Projection(Guid licenseId, Guid id, string username,
-        string? displayName, string platform = "instagram") => new()
+        string? displayName, string platform = "instagram", string? fullName = null) => new()
     {
         Id = id,
         LicenseId = licenseId,
         Platform = platform,
         Username = username,
         DisplayName = displayName,
-        FullName = "Örnek Form Adı",
+        FullName = fullName,
         Phone = TestPhone.NewE164(),
+        Address = $"Örnek Sokak {Guid.NewGuid():N}",
         UpdatedAt = DateTimeOffset.UtcNow,
     };
 }

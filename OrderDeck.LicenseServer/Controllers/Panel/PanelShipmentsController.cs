@@ -2,7 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
-using OrderDeck.LicenseServer.Services.Sync;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -28,10 +28,12 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelShipmentsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly CustomerIdResolver _customerIds;
 
-    public PanelShipmentsController(LicenseDbContext db)
+    public PanelShipmentsController(LicenseDbContext db, CustomerIdResolver customerIds)
     {
         _db = db;
+        _customerIds = customerIds;
     }
 
     /// <param name="CustomerUsername">Müşterinin asıl kaydındaki kullanıcı adı.
@@ -39,9 +41,10 @@ public sealed class PanelShipmentsController : ControllerBase
     /// yerine adıyla gösterir); projeksiyonu bulunmayan, Id'si GUID olmayan ya
     /// da KVKK ile silinmiş müşteride üçü de null. Sona eklendi: eski panel
     /// görmezden gelir.</param>
-    /// <param name="CustomerDisplayName">Platform takma adı; yoksa null (panel
-    /// kullanıcı adına, o da yoksa Id'ye düşer). Form adı (FullName) BİLEREK
-    /// verilmez.</param>
+    /// <param name="CustomerDisplayName">Müşteri detayındaki görünen adla aynı
+    /// kural: form adı (FullName) doluysa o, değilse platform takma adı; ikisi
+    /// de boşsa null (panel kullanıcı adına, o da yoksa Id'ye düşer). Telefon,
+    /// adres vb. kişisel alanlar verilmez.</param>
     /// <param name="CustomerPlatform">Asıl kaydın platformu (küçük harf).</param>
     public sealed record ShipmentDto(
         Guid Id,
@@ -98,35 +101,63 @@ public sealed class PanelShipmentsController : ControllerBase
                 null, null, null))
             .ToListAsync(ct);
 
-        // Müşteri adları sayfa kesildikten SONRA, lisans başına toplu
-        // yüklemeyle: satır başına sorgu yok; birleştirme zinciri varsa en çok
-        // SalesCustomerDirectory.MaxHops ek okuma. Müşteri yalnız kargo
-        // dosyasının KENDİ lisansında aranır — aynı Id'li başka lisansın kaydı
-        // kullanılmaz.
-        var customersByLicense = new Dictionary<Guid, SalesCustomerDirectory>();
+        // Müşteri adları sayfa kesildikten SONRA, toplu (satır başına sorgu
+        // yok): önce her lisansın Id'leri müşteri detayıyla aynı çözücüyle asıl
+        // kayda çevrilir (birleştirme zinciri varsa en çok üç ek okuma), sonra
+        // asıl kayıtlar tek sorguda okunur. Müşteri yalnız kargo dosyasının
+        // KENDİ lisansında aranır — aynı Id'li başka lisansın kaydı kullanılmaz.
+        var canonicalOf = new Dictionary<(Guid LicenseId, string CustomerId), Guid>();
         foreach (var license in rows.GroupBy(r => r.LicenseId))
-            customersByLicense[license.Key] = await SalesCustomerDirectory.LoadAsync(
-                _db, license.Key, license.Select(r => r.CustomerId), ct);
+        {
+            var hexes = await _customerIds.CanonicalHexOfAsync(
+                license.Key, license.Select(r => r.CustomerId), ct);
+            foreach (var (raw, hex) in hexes)
+                if (Guid.TryParseExact(hex, "N", out var id))
+                    canonicalOf[(license.Key, raw)] = id;
+        }
 
-        return Ok(rows.Select(r => WithCustomer(r, customersByLicense[r.LicenseId])).ToList());
+        var ids = canonicalOf.Values.Distinct().ToList();
+        var licenseIds = canonicalOf.Keys.Select(k => k.LicenseId).Distinct().ToList();
+        var customers = ids.Count == 0
+            ? new Dictionary<Guid, CustomerNameRow>()
+            : await _db.WpfCustomerProjections.AsNoTracking()
+                .Where(p => ids.Contains(p.Id) && licenseIds.Contains(p.LicenseId))
+                .Select(p => new CustomerNameRow(
+                    p.Id, p.LicenseId, p.Platform, p.Username, p.FullName, p.DisplayName, p.PurgedAt))
+                .ToDictionaryAsync(p => p.Id, ct);
+
+        return Ok(rows.Select(r => WithCustomer(r, canonicalOf, customers)).ToList());
     }
 
+    /// <summary>Kargo satırına adı yazılan asıl müşteri kaydının okunan alanları.</summary>
+    private sealed record CustomerNameRow(
+        Guid Id, Guid LicenseId, string Platform, string Username,
+        string? FullName, string? DisplayName, DateTimeOffset? PurgedAt);
+
     /// <summary>
-    /// Satıra müşterinin adını ekler. Id önce asıl kayda çözülür (birleştirmeden
+    /// Satıra müşterinin adını ekler. Id asıl kayda çözülmüştür (birleştirmeden
     /// sonra eski bir bilgisayar dosyayı kopyanın Id'siyle göndermiş olabilir;
-    /// kopyanın kişisel alanları boştur) — <see cref="SalesCustomerDirectory"/>,
-    /// <c>CustomerIdResolver</c> ile aynı kural. Asıl kayıt yoksa ya da KVKK ile
-    /// silinmişse satır adsız kalır. Satırın <c>CustomerId</c>'si değişmez.
+    /// kopyanın kişisel alanları boştur). Görünen ad müşteri detayıyla aynı
+    /// kuraldan gelir (<see cref="PanelCustomersController.ResolveDisplayName"/>).
+    /// Asıl kayıt yoksa, başka lisansınsa ya da KVKK ile silinmişse satır adsız
+    /// kalır. Satırın <c>CustomerId</c>'si değişmez.
     /// </summary>
-    private static ShipmentDto WithCustomer(ShipmentDto row, SalesCustomerDirectory customers)
+    private static ShipmentDto WithCustomer(
+        ShipmentDto row,
+        IReadOnlyDictionary<(Guid LicenseId, string CustomerId), Guid> canonicalOf,
+        IReadOnlyDictionary<Guid, CustomerNameRow> customers)
     {
-        if (customers.Resolve(row.CustomerId).Canonical is not { PurgedAt: null } canonical)
+        if (!canonicalOf.TryGetValue((row.LicenseId, row.CustomerId), out var id)
+            || !customers.TryGetValue(id, out var customer)
+            || customer.LicenseId != row.LicenseId
+            || customer.PurgedAt is not null)
             return row;
         return row with
         {
-            CustomerUsername = NullIfBlank(canonical.Username),
-            CustomerDisplayName = NullIfBlank(canonical.DisplayName),
-            CustomerPlatform = NullIfBlank(canonical.Platform),
+            CustomerUsername = NullIfBlank(customer.Username),
+            CustomerDisplayName = NullIfBlank(
+                PanelCustomersController.ResolveDisplayName(customer.FullName, customer.DisplayName)),
+            CustomerPlatform = NullIfBlank(customer.Platform),
         };
     }
 
