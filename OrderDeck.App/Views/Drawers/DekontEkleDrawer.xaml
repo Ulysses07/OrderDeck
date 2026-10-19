@@ -24,6 +24,12 @@
                            Style="{StaticResource OD.Text.Hint}"
                            Margin="0"/>
 
+                <!-- Zorunluluğu form söyler: müşteri boşken Kaydet yalnız
+                     pasifleşir, satır içi hata görünmez. Eski formdaki
+                     "MÜŞTERİ (OPSİYONEL — …)" başlığının yerinde. -->
+                <TextBlock Text="MÜŞTERİ (ZORUNLU)" Style="{StaticResource OD.Text.Micro}"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
+
                 <TextBlock Text="PLATFORM" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
                 <ComboBox Style="{StaticResource OD.ComboBox}"
