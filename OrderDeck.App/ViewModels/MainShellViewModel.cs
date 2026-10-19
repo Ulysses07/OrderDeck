@@ -2228,7 +2228,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             {
                 var ok = await PrintCoreAsync(snapshot);
                 // §5.8: bekletilen satır basıldıysa "kuyrukta bekliyor" notu bayat — kapı kapanmadan şeritten kalkar,
-                // uçuştaki baskıyı bekleyen EndStream de güncel şeridi görür.
+                // uçuştaki baskıyı bekleyen EndStream de güncel şeridi görür. Seçimle basıldıysa notun sayısı (kâğıdın
+                // bekletilenleri) kuyruktaki bekletilen satırların sayısına döner.
                 ClearStaleHeldNotice();
                 return ok;
             }, isQueue: true);

@@ -39,13 +39,14 @@ public sealed partial class MainShellViewModel
     private readonly List<string> _pendingNotes = new();
 
     /// <summary><see cref="_pendingNotes"/>'taki bekletilen satır notu (§5.8: baskının <c>PrintHeld</c>'i ya da "Yayını
-    /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
-    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyruk baskısından, kuyruktan çıkarmadan
-    /// ("Kuyruktan çıkar", "Kuyruğu temizle"), "Yayını bitir"den ya da "Yayını başlat"tan (kuyruk yeni yayından
-    /// yüklenir) sonra kuyrukta bekletilen satır kalmadıysa kalkar (<see cref="ClearStaleHeldNotice"/>). Yayın
-    /// kapandığında satırlar hâlâ bekliyorsa (bağlantı yokken "basmadan bitir") "Yayını bitir"in "Yayın açık bırakıldı"
-    /// diyen notu yanlış olur: yerine baskının <c>PrintHeld</c>'i geçer (satırlar kuyrukta bekliyor, bağlantı gelince
-    /// basılır). Bunların dışında kalan yol onu kaldırmaz: şerit kapatılana kadar kalır.</summary>
+    /// bitir"in <c>EndStreamHeld</c>'i); null = yok. En çok bir tane: yenisi sayısı ne olursa olsun eskisinin yerine
+    /// geçer (<see cref="ShowHeldNotice"/>). Kuyruğun durumunu söyler; kuyruk baskısından, kuyruktan çıkarmadan
+    /// ("Kuyruktan çıkar", "Kuyruğu temizle"), "Yayını bitir"den ve "Yayını başlat"tan (kuyruk yeni yayından yüklenir)
+    /// sonra kuyruğa göre yenilenir (<see cref="ClearStaleHeldNotice"/>): kuyrukta bekletilen satır kalmadıysa kalkar;
+    /// kaldıysa baskının notu kuyruktaki bekletilen satırları sayar (seçimle basılınca seçilmeyenler de). Yayın açıkken
+    /// "Yayını bitir"in "Yayın açık bırakıldı" diyen notu kalır; yayın kapandığında satırlar hâlâ bekliyorsa (bağlantı
+    /// yokken "basmadan bitir") o not yanlış olur: yerine baskının <c>PrintHeld</c>'i geçer (satırlar kuyrukta bekliyor,
+    /// bağlantı gelince basılır). Bu anların dışında yenilenmez: şerit kapatılana kadar kalır.</summary>
     private string? _heldNote;
 
     /// <summary><see cref="_heldNote"/> "Yayını bitir"in <c>EndStreamHeld</c>'i mi ("Yayın açık bırakıldı" der). Yalnız
@@ -100,26 +101,31 @@ public sealed partial class MainShellViewModel
         ShowSalesNotice([], [note]);
     }
 
-    /// <summary>Kuyrukta bekletilen satır kalmadıysa (bağlantı geldi ve basıldı ya da artık bekletilmiyor) bekletme notu
-    /// (<see cref="_heldNote"/>) bayattır: şeritten kalkar, diğer notlar kalır; hiç not kalmadıysa şerit kapanır. Kuyruk
-    /// baskısından, kuyruktan çıkarmadan, "Yayını bitir"den ve "Yayını başlat"tan sonra. Not yoksa (mod Off dahil) hiçbir
-    /// şey yapmaz. UI iş parçacığında.</summary>
+    /// <summary>Bekletme notunu (<see cref="_heldNote"/>) kuyruğa göre yeniler. Kuyrukta bekletilen satır kalmadıysa
+    /// (bağlantı geldi ve basıldı, kuyruktan çıktı ya da artık bekletilmiyor) not bayattır: şeritten kalkar, diğer notlar
+    /// kalır; hiç not kalmadıysa şerit kapanır. Kaldıysa baskının <c>PrintHeld</c>'i kuyruktaki bekletilen satırları
+    /// sayar: sayı farklıysa (ör. seçimle basıldı, seçilmeyen bekletilen satır da kuyrukta) yerine doğru sayılısı geçer
+    /// (<see cref="ShowHeldNotice"/>). Yayın açıkken "Yayını bitir"in <c>EndStreamHeld</c>'i olduğu gibi kalır: yayının
+    /// neden açık kaldığını söyler. Kuyruk baskısından, kuyruktan çıkarmadan, "Yayını bitir"den ve "Yayını başlat"tan
+    /// sonra. Not yoksa (mod Off dahil) hiçbir şey yapmaz. UI iş parçacığında.</summary>
     /// <param name="streamEnded">Yayın gerçekten kapandı ("Yayını bitir"). Kuyrukta hâlâ bekletilen satır varsa
     /// (bağlantı yokken "basmadan bitir") ve not "Yayını bitir"in <c>EndStreamHeld</c>'iyse ("Yayın açık bırakıldı"
-    /// artık yanlış) yerine baskının <c>PrintHeld</c>'i geçer (<see cref="ShowHeldNotice"/>): satırlar kuyrukta
-    /// bekliyor, bağlantı gelince basılır. Baskının notu aynen kalır.</param>
+    /// artık yanlış) yerine baskının <c>PrintHeld</c>'i geçer: satırlar kuyrukta bekliyor, bağlantı gelince
+    /// basılır.</param>
     private void ClearStaleHeldNotice(bool streamEnded = false)
     {
         if (_heldNote is not { } note) return;
         var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
-        if (held.Count > 0)
+        if (held.Count == 0)
         {
-            if (streamEnded && _heldNoteSaysStreamOpen) ShowHeldNotice(SalesCommandMessages.PrintHeld(held.Count));
+            _pendingNotes.Remove(note);
+            _heldNote = null;
+            RenderSalesPushWarning();
             return;
         }
-        _pendingNotes.Remove(note);
-        _heldNote = null;
-        RenderSalesPushWarning();
+        if (_heldNoteSaysStreamOpen && !streamEnded) return;
+        var current = SalesCommandMessages.PrintHeld(held.Count);
+        if (!string.Equals(current, note, System.StringComparison.Ordinal)) ShowHeldNotice(current);
     }
 
     /// <summary>Arka plan iş parçacığından gelir (satış akışı turu, kâğıdın gecikmiş komutu, devir kilidi açılınca biten

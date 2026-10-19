@@ -431,6 +431,41 @@ public sealed class MainShellResidualQueueTests
     }
 
     [Fact]
+    public async Task Bekletilen_satirlardan_biri_secilip_basilinca_not_kuyrukta_bekleyenlerin_hepsini_sayar()
+    {
+        const string twoHeld =
+            "2 etiket başka bilgisayarın yayınında; sunucu bağlantısı gelince basılabilir, kuyrukta bekliyor.";
+        using var s = Build();
+        s.Bed.ModeOn();
+        var (remoteSession, customer, first) = await s.Bed.RemoteLabelAsync(printed: false);
+        var second = s.Bed.RemoteOrder(remoteSession, customer, printed: false);   // aynı uzak yayın
+        await s.Bed.PullAsync();
+        var firstId = first.ToString("N");
+        var secondId = second.ToString("N");
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(firstId)!, isCustomerBlacklisted: false));
+        s.Vm.PrintQueue.Add(new LabelViewModel(s.Bed.LabelRepo.GetById(secondId)!, isCustomerBlacklisted: false));
+        s.Bed.Online = false;
+
+        // Operatör yalnız ilkini seçip basar.
+        s.Vm.SelectedQueueItems.Add(s.Vm.PrintQueue.Single(r => r.Id == firstId));
+        await s.Vm.PrintCommand.ExecuteAsync(null);
+
+        s.H.Printer.Calls.Should().BeEmpty("ön koşul: bekletilen satır basılmadı");
+        QueueIds(s).Should().Equal([firstId, secondId], "ön koşul: ikisi de kuyrukta bekliyor");
+        s.Vm.SalesPushWarning.Should().Be(twoHeld,
+            "not kuyruğun durumunu söyler: seçilmeyen bekletilen satır da kuyrukta bekliyor");
+
+        // Bağlantı hâlâ yok; operatör basmadan bitirir — iki satır da kuyrukta bekler.
+        s.H.Dialogs.ThreeWayResult = _ => false;                    // "Hayır: basmadan bitir"
+        await s.Vm.EndStreamCommand.ExecuteAsync(null);
+
+        s.H.Sessions.GetActive().Should().BeNull("ön koşul: yayın bitti");
+        QueueIds(s).Should().Equal([firstId, secondId], "ön koşul: ikisi de kuyrukta bekliyor");
+        s.Vm.SalesPushWarning.Should().Be(twoHeld, "yayın kapanınca da not kuyruktaki iki satırı sayar");
+        s.H.Dialogs.Shown.Should().BeEmpty("açılır pencere yok");
+    }
+
+    [Fact]
     public async Task Baska_bilgisayarin_satiri_orada_zaten_basilmissa_serit_zaten_basilmisti_der()
     {
         using var s = Build();
