@@ -107,6 +107,24 @@
 
 ## Prod adımları (Burak; plan bunları YAPMAZ)
 
+**P0 deploy'undan ÖNCE (Görev 1):** Görev 1 lisansı biten bağlantıyı ilk çekim koşusunda (5 dakika içinde) `Disabled`'a çeker; bağlantıyı lisans yenilenince geri açan yol (`ReviveRenewedLicensesAsync`) Görev 14'te, yani P1'de. Lisans uzatma (`AdminLicensesController.Extend`, Licenses/Detail → Uzat) yalnız `ExpiresAt`'i ilerletir, bağlantıya dokunmaz; aynı kimlikle Kaydet `Disabled`'ı korur, kimlik değişimi ise gölge veriyi siler. P0 ile P1 arasında bitip uzatılan lisansta banka çekimi ve otomatik eşleştirme **sessizce durur** (admin/obifin'de yalnız `Disabled` ve "Lisans sona erdi…" görünür).
+- a) Hangi bağlantıların duracağına bak; EMAR lisansının P1 deploy'undan önce bitmeyeceğini doğrula (bitecekse lisansı P0'dan önce uzat ya da P0 ile P1'i aynı pencerede çıkar):
+  ```sql
+  SELECT c.LicenseId, c.Status, l.ExpiresAt, l.RevokedAt
+  FROM ObifinConnections c JOIN Licenses l ON l.Id = c.LicenseId;
+  ```
+- b) Elle durdurulmuş eski satır var mı: `SELECT COUNT(*) FROM ObifinConnections WHERE Status = 'Disabled';` — **0 beklenir** (kod Görev 1'e kadar `Disabled` hiç yazmadı). 0 değilse o satırların `DisabledAt`'i `NULL` kalır: Görev 1 zaten Disabled olanı atlar, tarih yazmaz. Görev 14'ün ilk koşusu onları bugünle damgalar ve yönetici durdurması sayar (aşağıda "P1 deploy'undan ÖNCE"). Göçe veri `UPDATE`'i eklenmez (genişletme kuralı).
+
+**P0 ile P1 arasında (P0 ayrı çıktıysa):** Bir lisans uzatılır ya da iptali geri alınırsa bağlantısı P1'e kadar kendiliğinden açılmaz. Durma 30 günden kısaysa arada gelen hareketler kaybolmaz: çekim son 31 günü imleçten sorar.
+- Elle kurtarma, **lisans uzatıldıktan SONRA** (önce yapılırsa sonraki çekim koşusu bağlantıyı yeniden durdurur):
+  ```sql
+  UPDATE ObifinConnections
+  SET Status = 'Unverified', DisabledAt = NULL, LastError = NULL, UpdatedAt = SYSDATETIMEOFFSET()
+  WHERE LicenseId = '<lisans>' AND Status = 'Disabled';
+  ```
+  Sonra admin/obifin → **Doğrula**. Kimliği değiştirerek Kaydet'e basılmaz (gölge veri silinir).
+- Alternatif: P0 ile P1 aynı pencerede çıkar; o zaman bu boşluk hiç açılmaz.
+
 **P0 deploy'undan sonra (Görev 1–8):**
 1. Kuru koşu, çıktıyı tutanağa kaydet: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup`
 2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle. P0'da `DataDestructionRecords` yok: bu koşunun Silme Yönetmeliği md. 7/3 kaydı (en az 3 yıl) **tutanağın kendisidir**. P1'den sonraki koşular tabloya da yazar (Görev 9: tetikleyici `cleanup`, yapan `cli`).
@@ -125,6 +143,7 @@
 
 **P1 deploy'undan ÖNCE:**
 - admin/obifin'de durumu `Disabled` olan bağlantılara bak (P0'dan beri lisans bitişiyle durdurulanlar). `DisabledAt`'i 30 günü geçmiş olanların banka verisi P1'in ilk 05:17 UTC koşusunda **yalnız yerelde** silinir (Obifin'e gidilmez; Görev 14). Lisansı uzatılacak yayıncı varsa önce lisansı uzat: iş, lisansı yeniden geçerli bağlantıyı silmez, `Unverified`'a çeker ve e-postayla "Doğrula" der.
+- P0 öncesi kontrolde (b) `Disabled` sayısı 0 değildiyse: o tarihsiz satırlar ilk koşuda bugünle damgalanır ve yönetici durdurması sayılır (`DisabledByAdmin`; lisans geçerli olsa da kendiliğinden açılmaz, 30. günde yerel verisi silinir). Açılması gereken varsa P1'den sonra admin/obifin → Etkinleştir (Görev 13).
 - Aynı Obifin kullanıcısı (BaseUrl + kullanıcı kodu) birden çok lisansta kayıtlı mı bak (Faz 2 spec §13'teki paylaşılan kullanıcı). Kayıtlıysa o lisanslardan birinde "Kaldır ve sil" Obifin'e hiç gitmez; Obifin tarafı Obifin panelinden **yalnız o lisansın** bağlantısı için elle kapatılır (Görev 13).
 
 **P1 deploy'undan sonra (Görev 9–25):**
@@ -365,6 +384,12 @@ o bankayı sorgulamaz (KVKK ön inceleme K-6, P0-1).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
+
+**Uygulama notu (Görev 1 incelemesi, 20.10):** kod yukarıdaki parçalardan şu noktalarda ayrılır; sonraki görevler koddakine göre yazıldı.
+- Lisans kuralı tek ifadede: `ObifinConnectionService.LicenseActiveAt(now)` (`Expression<Func<License, bool>>`). `DisableEndedLicensesAsync` bunun değilini alt sorguyla süzer (SQL'de `NOT IN`); Görev 13'ün `IsLicenseActiveAsync`'i, Görev 14'ün yenilenme ve silme sorguları da onu kullanır. "Tek yer" yalnız banka modülü için doğrudur: lisans denetleyen controller'lar aynı yüklemi ayrıca yazar.
+- `PollConnectionAsync` ayrı lisans sorgusu yapmaz: `DisableEndedLicensesAsync(..., onlyConnectionId: conn.Id)` çağırır ve izlenen `conn`'un durumuna bakar. Tek bağlantılık çağrı yalnız kendini denetler (kiracı yalıtımı); bütün kiracılar `RunAsync`'in başında ve hesap yenilemede denetlenir.
+- Testler: başlangıç durumu ekseni (Verified/Failed/Unverified × süre bitti/iptal), iki lisanslı çekimde yalnız bitenin durması, "Şimdi çek"in başka lisansın satırına yazmaması.
+- P1'e kalan davranış belgede "Görev 13/14 ile" diye işaretli; Görev 13 Adım 3 ve Görev 14 Adım 3 işaretleri kaldırır. P0 tek başına çıkarsa: Prod adımları → "P0 deploy'undan ÖNCE" ve "P0 ile P1 arasında".
 
 ---
 
@@ -2301,6 +2326,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - [ ] **Adım 12: Burak'a sor (PR kararı)**
 
 Görev 1–8 bitti. P0 ayrı PR olarak öne alınacak mı? (Genel kurallar → PR.) Cevaba göre devam.
+
+Soruyla birlikte Burak'a şunu da söyle: P0 tek başına çıkarsa lisans bitişiyle `Disabled` olan bağlantıyı geri açan yol P1'e (Görev 14) kadar yok; lisans uzatma bağlantıya dokunmuyor, P0 ile P1 arasında bitip uzatılan lisansta çekim ve otomatik eşleştirme sessizce durur. Seçenekler: (1) P0 ayrı çıkar, "Prod adımları → P0 deploy'undan ÖNCE" (a, b) deploy'dan önce koşulur, "P0 ile P1 arasında" elle kurtarma SQL'i geçerli olur; (2) P0 ile P1 aynı pencerede çıkar. P0 ayrı PR olursa PR-A gövdesine "Prod adımları"nın bu iki bloğu aynen girer.
 
 ---
 
@@ -5035,7 +5062,16 @@ Expected: FAIL — `BankConnectionTerminator`, `BankDataPurgedAt`, `DisabledByAd
 
 - [ ] **Adım 3: Varlık alanları, statik kimlik çözümü ve `DisabledAt` yaşam döngüsü**
 
-`Domain/Bank/ObifinConnection.cs` — `DisabledAt`'in ALTINA:
+Görev 1'in belgeleri P1 davranışını "Görev 13/14 ile" diye işaretledi; bu görev yöneticinin durdurmasını, etkinleştirmeyi ve `DisabledAt` boşaltmasını getirir. `Domain/Bank/ObifinConnection.cs` — `DisabledAt`'in özetini şununla değiştir ("bilinen boşluk" cümlesi gider: kimlik değişimi artık lisans bitmişse Disabled'ı korur):
+
+```csharp
+    /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6): lisans bitti
+    /// (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>) ya da yönetici durdurdu (<c>BankConnectionTerminator</c>).
+    /// Zaten Disabled olan bağlantıda yeniden yazılmaz: sayaç baştan başlamaz. Hizmet sonu silmesi (Görev 14) bu andan 30 gün
+    /// sonra koşar; Disabled'dan çıkan her yol <c>ObifinConnectionService.ClearServiceEnd</c> ile boşaltır.</summary>
+```
+
+Aynı dosyada `DisabledAt`'in ALTINA:
 
 ```csharp
     /// <summary>Bağlantıyı yönetici durdurdu (KVKK K-6). Lisans bitişiyle kendiliğinden durdurulan bağlantı lisans yenilenince
@@ -5051,9 +5087,10 @@ Expected: FAIL — `BankConnectionTerminator`, `BankDataPurgedAt`, `DisabledByAd
 
 ```csharp
     /// <summary>Lisans bugün geçerli mi (iptal edilmemiş, süresi dolmamış). Doğrulama, banka ekleme, kimlik değişimi,
-    /// etkinleştirme ve hizmet sonu işi aynı kuralı kullanır.</summary>
+    /// etkinleştirme ve hizmet sonu işi aynı kuralı kullanır: yüklem <see cref="LicenseActiveAt"/> (Görev 1), banka
+    /// modülündeki tek tanım — burada yeniden yazılmaz.</summary>
     public static Task<bool> IsLicenseActiveAsync(LicenseDbContext db, Guid licenseId, DateTimeOffset now, CancellationToken ct)
-        => db.Licenses.AnyAsync(l => l.Id == licenseId && l.RevokedAt == null && l.ExpiresAt > now, ct);
+        => db.Licenses.Where(LicenseActiveAt(now)).AnyAsync(l => l.Id == licenseId, ct);
 
     /// <summary>Bağlantı Disabled'dan çıkarken hizmet sonu alanları boşalır (KVKK K-6): 30 günlük sayaç, yerel silme işareti,
     /// yönetici durdurması. Disabled'dan çıkan her yol bunu çağırır: Etkinleştir, lisans geçerliyken kimlik değişimi, başarılı
@@ -5066,7 +5103,7 @@ Expected: FAIL — `BankConnectionTerminator`, `BankDataPurgedAt`, `DisabledByAd
     }
 ```
 
-`MarkVerified`'ı şununla değiştir (özeti aynı kalır; sonuna bir cümle: `Verified'a geçen bağlantının hizmet sonu alanları boşalır.`):
+`MarkVerified`'ı şununla değiştir. Özetin Görev 1'deki "Bugün Disabled'ı yalnız lisans bitişi yazar … Görev 13/14 ile gelir." cümlesi şuna döner: `Disabled'ı lisans bitişi (DisableEndedLicensesAsync) ve yönetici (BankConnectionTerminator) yazar; ondan Etkinleştir, lisans geçerliyken kimlik değişimi ve lisansın yenilenmesi (Görev 14) çıkarır.` Sonuna bir cümle: `Verified'a geçen bağlantının hizmet sonu alanları boşalır.`
 
 ```csharp
     private static void MarkVerified(ObifinConnection conn, DateTimeOffset now)
@@ -5779,6 +5816,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ### Görev 14: Hizmet sonu + 30 gün silme işi (P1-10b)
 
 **Neden (not K-6 öneri 2):** bağlantı durdurulduktan ya da lisans bittikten 30 gün sonra lisansın bütün banka verisi silinmeli (İYS "ayrılış + 30 gün" kalıbı; Silme Yönetmeliği md. 11/3'teki 3 ay sınırının içinde). Günlük iş, sırayla:
+0. **Tarihsiz `Disabled` damgalanır.** Kod `Disabled`'ı hep `DisabledAt`'le yazar (Görev 1, 13); tarihsiz satır ancak P0'dan önce elle (SQL ile) durdurulmuş olabilir. Görev 1 zaten Disabled olanı atladığı için ona hiç tarih yazılmaz; damgalanmasa hizmet sonu silmesine hiç girmezdi. Sayaç bugün başlar ve satır **yönetici durdurması** sayılır (`DisabledByAdmin`): bu durumu yazan bir insandır, 1. adım onu lisans geçerli diye kendiliğinden açmamalı. Prod adımlarındaki P0 öncesi kontrol (b) bu sayının 0 olmasını bekliyor; adım o varsayıma dayanmaz, ucuz olduğu için koşulsuz koşar.
 1. **Lisansı yenilenen bağlantı silinmez.** Lisans uzatma (`AdminLicensesController.Extend`, `Licenses/Detail` → Uzat) ya da iptalin geri alınması bağlantıya dokunmuyor; iş olmasa bağlantı Disabled kalır ve 30. günde ödeme yapan yayıncının bütün banka verisi geri dönüşsüz silinirdi. Kendiliğinden (lisans bitişiyle) durdurulmuş ve lisansı bugün geçerli bağlantı `Unverified`'a döner, hizmet sonu alanları boşalır (`ObifinConnectionService.ReviveRenewedLicensesAsync`), yöneticiye "lisans yenilendi, Doğrula'ya basın" e-postası gider. Yöneticinin durdurduğu (`DisabledByAdmin`) bağlantı kendiliğinden açılmaz. Silme sorgusu aynı kuralı bir kez daha uygular (eşzamanlı uzatmaya karşı).
 2. Lisansı biteni Disabled'a çeker (çekim anahtarsız zamanlanmıyor olabilir).
 3. `DisabledAt`'i 30 günü geçen ve henüz işlenmemiş (`BankDataPurgedAt` boş) bağlantının banka verisini **yalnız yerelde** siler (`BankConnectionTerminator.PurgeLocalDataAsync`). **Obifin'e gidilmez:** `bankaapi/sil`'i yalnız yöneticinin "Kaldır ve sil"i çağırır (Görev 13: lisansa özgü, paylaşılan kullanıcı korumalı). İnsan onayı olmadan Obifin'deki bir bağlantıyı silmek — paylaşılan Obifin kullanıcısında EMAR'ın QNB bağlantısını da — haftalar süren yeniden başvuru demekti.
@@ -5971,6 +6009,26 @@ public sealed class BankServiceEndPurgeJobTests
         conn.DisabledAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), "30 günlük sayaç bugün başlar");
         email.Sent.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task Tarihsiz_Disabled_baglanti_bugun_damgalanir_yonetici_durdurmasi_sayilir_acilmaz_silinmez()
+    {
+        // P0 öncesi elle (SQL ile) Disabled yapılmış satırın DisabledAt'i yok: damgalanmasa hizmet sonu silmesine hiç girmezdi.
+        // Kod bu durumu hiç yazmaz; yazan yöneticidir — lisans geçerli olsa da kendiliğinden açılmaz.
+        using var db = NewDb(); var email = new TestEmailSender();
+        var lic = await SeedAsync(db, ObifinConnectionStatus.Disabled, disabledAt: null,
+            licenseExpiresAt: DateTimeOffset.UtcNow.AddDays(30));
+
+        var deleted = await Job(db, email).RunAsync(CancellationToken.None);
+
+        deleted.Should().Be(0);
+        (await db.BankTransactions.AnyAsync(t => t.LicenseId == lic)).Should().BeTrue();
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.DisabledByAdmin.Should().BeTrue();
+        conn.DisabledAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), "30 günlük sayaç bugün başlar");
+        email.Sent.Should().BeEmpty("yenilenme e-postası gitmez: bağlantı açılmadı");
+    }
 }
 ```
 
@@ -5998,9 +6056,11 @@ Expected: FAIL — `BankServiceEndPurgeJob`, `LicenseRenewedMessage` yok.
     public static async Task<IReadOnlyList<Guid>> ReviveRenewedLicensesAsync(LicenseDbContext db, DateTimeOffset now, ILogger log,
         CancellationToken ct)
     {
+        // Lisans kuralı LicenseActiveAt'ten (Görev 1): banka modülünde tek tanım.
+        var activeLicenseIds = db.Licenses.Where(LicenseActiveAt(now)).Select(l => l.Id);
         var renewed = await db.ObifinConnections
             .Where(c => c.Status == ObifinConnectionStatus.Disabled && !c.DisabledByAdmin
-                && db.Licenses.Any(l => l.Id == c.LicenseId && l.RevokedAt == null && l.ExpiresAt > now))
+                && activeLicenseIds.Contains(c.LicenseId))
             .ToListAsync(ct);
         if (renewed.Count == 0) return [];
         foreach (var c in renewed)
@@ -6015,6 +6075,8 @@ Expected: FAIL — `BankServiceEndPurgeJob`, `LicenseRenewedMessage` yok.
         return renewed.Select(c => c.LicenseId).ToList();
     }
 ```
+
+Görev 1'in "Görev 14 ile" işaretlerini kaldır (bu görev onları getiriyor): `DisableEndedLicensesAsync` özetinde "(hizmet sonu işi Görev 14 ile)" → "ve hizmet sonu işi (<c>BankServiceEndPurgeJob</c>)"; "Lisans uzatılınca bağlantı kendiliğinden açılmaz … plan → Prod adımları." paragrafı şuna döner: `<para>Lisans uzatma (<c>AdminLicensesController.Extend</c>) bağlantıya dokunmaz; yenilenen lisansı <see cref="ReviveRenewedLicensesAsync"/> tanır.</para>`. `LicenseActiveAt` özetinde "Görev 13/14 ile gelecek lisans denetimleri (…) de bunu kullanır" → "lisans denetimleri (<see cref="IsLicenseActiveAsync"/>, <see cref="ReviveRenewedLicensesAsync"/>, hizmet sonu silmesi) de bunu kullanır".
 
 - [ ] **Adım 4: İşi yaz**
 
@@ -6034,6 +6096,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// Hizmet sonu + <see cref="GracePeriod"/> banka verisi silmesi (KVKK K-6 öneri 2; İYS "ayrılış + 30 gün" kalıbı, Silme
 /// Yönetmeliği md. 11/3'teki 3 ayın içinde). Günde bir:
 /// <list type="number">
+/// <item>Tarihsiz Disabled (kod Disabled'ı hep DisabledAt'le yazar; tarihsiz satırı ancak bir insan SQL ile yazmıştır) bugünle
+/// damgalanır ve yönetici durdurması sayılır: sayaç başlar, sonraki adım onu kendiliğinden açmaz.</item>
 /// <item>Lisansı yenilenen bağlantı silinmez: kendiliğinden durdurulmuşsa Unverified'a döner
 /// (<see cref="ObifinConnectionService.ReviveRenewedLicensesAsync"/>), yöneticiye "Doğrula" e-postası gider.</item>
 /// <item>Lisansı biten bağlantı Disabled'a çekilir (<see cref="ObifinConnectionService.DisableEndedLicensesAsync"/>): çekim
@@ -6074,6 +6138,17 @@ public sealed class BankServiceEndPurgeJob
     public async Task<int> RunAsync(CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
+        // Tarihsiz Disabled: P0'dan önce elle (SQL ile) durdurulmuş satır. Görev 1 zaten Disabled olanı atlar, tarih yazmaz;
+        // damgalanmasa hizmet sonu silmesine hiç girmezdi. Yazan bir insandır: yönetici durdurması sayılır, aşağıda açılmaz.
+        var undated = await _db.ObifinConnections
+            .Where(c => c.Status == ObifinConnectionStatus.Disabled && c.DisabledAt == null).ToListAsync(ct);
+        if (undated.Count > 0)
+        {
+            foreach (var c in undated) { c.DisabledAt = now; c.DisabledByAdmin = true; c.UpdatedAt = now; }
+            await _db.SaveChangesAsync(ct);
+            _log.LogWarning("Hizmet sonu: tarihsiz {Count} Disabled bağlantı bugünle damgalandı, yönetici durdurması sayıldı — " +
+                "lisanslar={LicenseIds}", undated.Count, string.Join(",", undated.Select(c => c.LicenseId)));
+        }
         var renewed = await ObifinConnectionService.ReviveRenewedLicensesAsync(_db, now, _log, ct);
         if (renewed.Count > 0)
             await _alerts.SendAsync(RenewedSubject, string.Join("\n", renewed.Select(id =>
@@ -6081,11 +6156,13 @@ public sealed class BankServiceEndPurgeJob
                 + "\n\nYöneticinin durdurduğu bağlantılar kendiliğinden açılmaz.", CancellationToken.None);
         await ObifinConnectionService.DisableEndedLicensesAsync(_db, now, _log, ct);
         var cutoff = now - GracePeriod;
+        var activeLicenseIds = _db.Licenses.Where(ObifinConnectionService.LicenseActiveAt(now)).Select(l => l.Id);
         var due = await _db.ObifinConnections.AsNoTracking()
             .Where(c => c.Status == ObifinConnectionStatus.Disabled && c.DisabledAt != null && c.DisabledAt <= cutoff
                 && c.BankDataPurgedAt == null
-                // Savunma (ilk adımın kuralı, eşzamanlı bir uzatmaya karşı): lisansı bugün geçerli ve yönetici durdurmamışsa silinmez.
-                && (c.DisabledByAdmin || !_db.Licenses.Any(l => l.Id == c.LicenseId && l.RevokedAt == null && l.ExpiresAt > now)))
+                // Savunma (yenilenme adımının kuralı, eşzamanlı bir uzatmaya karşı): lisansı bugün geçerli ve yönetici
+                // durdurmamışsa silinmez.
+                && (c.DisabledByAdmin || !activeLicenseIds.Contains(c.LicenseId)))
             .Select(c => c.LicenseId).ToListAsync(ct);
         var deleted = 0;
         var failures = new List<Exception>();
@@ -6177,8 +6254,9 @@ Expected: PASS.
 git add OrderDeck.LicenseServer/Services/Bank/BankServiceEndPurgeJob.cs OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankServiceEndPurgeJobTests.cs OrderDeck.LicenseServer.Tests/Services/Bank/BankJobsDiTests.cs
 git commit -m "feat(bank-kvkk): hizmet sonu + 30 gün banka verisini silen günlük iş ekle
 
-bank-service-end-purge (05:17 UTC, anahtardan bağımsız): lisansı yenilenen
-bağlantıyı silmez, Unverified'a çeker ve yöneticiyi uyarır; lisansı biteni
+bank-service-end-purge (05:17 UTC, anahtardan bağımsız): elle durdurulmuş
+tarihsiz bağlantıyı bugünle damgalar (yönetici durdurması sayılır); lisansı
+yenilenen bağlantıyı silmez, Unverified'a çeker ve yöneticiyi uyarır; lisansı biteni
 durdurur; 30 günü geçenin banka verisini yalnız yerelde siler, Obifin'e
 gitmez (bankaapi/sil yalnız yöneticinin Kaldır ve sil'inde); yöneticiye
 özet ve Obifin yazılı teyit hatırlatması gönderir (KVKK ön inceleme K-6,
