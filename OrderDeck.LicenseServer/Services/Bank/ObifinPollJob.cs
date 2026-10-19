@@ -11,7 +11,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <summary>
 /// Obifin'den hareket çekimi (spec §5). Bağlantı başına: ilk çekimde 90 gün 31'lik dilimlerle, sonra
 /// `[bugün−30, bugün]` + `BaslangicHareketId` imleci. Yazım idempotent ((LicenseId, ObifinId) tekil); imleç
-/// yalnız tam başarılı turda ilerler. Webhook yok — bu iş tek kaynak.
+/// yalnız tam başarılı turda ilerler. Webhook yok — bu iş tek kaynak. Yalnız gelen ve tutarı sıfırdan büyük hareket
+/// kaydedilir (KVKK K-4).
 ///
 /// <para><b>Hata sınıfları.</b> Obifin'in kendi mesajı (<see cref="ObifinApiException"/>, ör. kimlik hatalı)
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
@@ -286,6 +287,10 @@ public sealed class ObifinPollJob
         var fresh = new List<BankTransaction>();
         foreach (var dto in items)
         {
+            // KVKK K-4: yalnız hesaba GELEN ve tutarı sıfırdan büyük hareket kaydedilir. Giden hareket (maaş, kira, tedarikçi,
+            // şahsi harcama) ve sıfır tutarlı satır hiçbir amaca hizmet etmez; Obifin'de yön süzgeci yok, burada atılır. İmleç
+            // sıralı listeden hesaplanır (FetchWindowWithMetaAsync): atlanan satır imleci yine ilerletir.
+            if (dto.SignedAmount <= 0) continue;
             // Aynı sayfada tekrar eden Id (beklenmez) de tekil index'e çarpmaz.
             if (!existing.Add(dto.Id)) continue;
             if (!accounts.TryGetValue(dto.AccountId, out var account))
@@ -307,8 +312,8 @@ public sealed class ObifinPollJob
             {
                 Id = Guid.NewGuid(), LicenseId = conn.LicenseId, ObifinId = dto.Id, BankAccountId = account.Id,
                 ObifinAccountId = dto.AccountId, BankaKodu = Trim(dto.BankaKodu, 32),
-                Direction = dto.SignedAmount >= 0 ? BankTransactionDirection.Incoming : BankTransactionDirection.Outgoing,
-                Amount = Math.Abs(dto.SignedAmount), Currency = Trim(dto.Currency, 3),
+                Direction = BankTransactionDirection.Incoming,
+                Amount = dto.SignedAmount, Currency = Trim(dto.Currency, 3),
                 OccurredAt = ObifinConnectionService.TrToUtc(dto.OccurredAtTr),
                 Description = Trim(dto.Description, 512), TransactionCode = Trim(dto.TransactionCode, 32),
                 CommonType = Trim(dto.CommonType, 64), BankReference = Trim(dto.BankReference, 64),
@@ -323,8 +328,8 @@ public sealed class ObifinPollJob
         }
         if (fresh.Count == 0) return;
         await SaveIfIdentityUnchangedAsync(conn.Id, identity, ct);
-        // Sıfır tutarlı satır (Obifin demo verisinde görüldü: TutarEksiArti "0.00") saklanır ama ödeme olamaz.
-        foreach (var tx in fresh.Where(t => t.Direction == BankTransactionDirection.Incoming && t.Amount != 0))
+        // Yalnız gelen ve sıfırdan büyük satır yazıldı (yukarıdaki süzgeç): hepsi eşleştiriciye gider.
+        foreach (var tx in fresh)
             await _sink.OnNewIncomingAsync(tx, ct);
         // Kaydedilen satırlar koşu boyunca izleyicide birikmesin: 90 günlük ilk çekim on binlerce satır (ham JSON dahil)
         // tutar, her SaveChanges'in DetectChanges'i büyürdü. Bağlantı (conn) izlenmeye devam eder — imleç onun üzerinde;

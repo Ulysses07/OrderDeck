@@ -189,7 +189,7 @@ public sealed class ObifinPollJobTests
         call.Since.Should().Be(200);
         (call.To.DayNumber - call.From.DayNumber + 1).Should().Be(31);
         call.To.Should().Be(today);
-        (await db.BankTransactions.CountAsync()).Should().Be(2);
+        (await db.BankTransactions.CountAsync()).Should().Be(1, "giden hareket (202) kaydedilmeden atılır");
         sink.Received.Should().ContainSingle(t => t.ObifinId == 201, "yalnız GELEN hareket eşleştiriciye gider");
         (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).LastObifinTransactionId.Should().Be(202);
     }
@@ -326,7 +326,7 @@ public sealed class ObifinPollJobTests
     }
 
     [Fact]
-    public async Task Tr_saat_utc_ye_cevrilir_yon_isaretten_iban_yalniz_hash_ve_maske()
+    public async Task Tr_saat_utc_ye_cevrilir_iban_yalniz_hash_ve_maske_giden_atilir()
     {
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, _) = Build(db, client, today);
@@ -346,7 +346,7 @@ public sealed class ObifinPollJobTests
         // İzlenen varlık lisans→müşteri→lisanslar döngüsüne bağlanır; yalnız satırın sütunları serileştirilir.
         var row = db.Entry(inc).CurrentValues.ToObject();
         System.Text.Json.JsonSerializer.Serialize(row).Should().NotContain(iban[4..12], "ham IBAN hiçbir alanda yok");
-        (await db.BankTransactions.SingleAsync(t => t.ObifinId == 8)).Direction.Should().Be(BankTransactionDirection.Outgoing);
+        (await db.BankTransactions.AnyAsync(t => t.ObifinId == 8)).Should().BeFalse("giden hareket kaydedilmeden atılır (KVKK K-4)");
     }
 
     [Fact]
@@ -574,22 +574,23 @@ public sealed class ObifinPollJobTests
     }
 
     [Fact]
-    public async Task Sifir_tutarli_hareket_saklanir_ama_eslestiriciye_gitmez()
+    public async Task Giden_ve_sifir_tutarli_hareket_yazilmaz_imlec_yine_ilerler()
     {
-        // Obifin demo verisinde TutarEksiArti "0.00" satırlar var: her satır gibi saklanır (imleç ve tanı için), ama
-        // ödeme olamaz — eşleştiriciye (sink) verilmez.
+        // KVKK K-4: giden hareketin ve sıfır tutarlı satırın (Obifin demo verisinde TutarEksiArti "0.00") amacı yok.
+        // Obifin listesinde gelir, kaydedilmeden atılır; imleç sıralı listeden hesaplandığı için yine ilerler.
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, sink) = Build(db, client, today);
         await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
         client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 0m));
         client.Transactions.Add(Tx(2, new DateTime(2026, 9, 25, 8, 2, 0), 25m));
+        client.Transactions.Add(Tx(3, new DateTime(2026, 9, 25, 8, 3, 0), -40m));
 
         await job.RunAsync(CancellationToken.None);
 
-        (await db.BankTransactions.CountAsync()).Should().Be(2, "sıfır tutarlı satır da saklanır");
-        (await db.BankTransactions.SingleAsync(t => t.ObifinId == 1)).Amount.Should().Be(0m);
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 2L });
+        (await db.BankTransactions.SingleAsync()).Direction.Should().Be(BankTransactionDirection.Incoming);
         sink.Received.Should().ContainSingle().Which.ObifinId.Should().Be(2);
-        (await db.ObifinConnections.SingleAsync()).LastObifinTransactionId.Should().Be(2);
+        (await db.ObifinConnections.SingleAsync()).LastObifinTransactionId.Should().Be(3, "atlanan hareketler de görüldü");
     }
 
     [Fact]

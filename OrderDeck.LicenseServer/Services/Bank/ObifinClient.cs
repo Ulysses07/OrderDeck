@@ -96,8 +96,10 @@ public sealed class ObifinClient : IObifinClient
         var root = doc.RootElement;
         var items = ReadList(doc, row =>
         {
-            var signed = Dec(row, "TutarEksiArti") ?? Dec(row, "Tutar")
-                ?? throw new ObifinProtocolException("hareket tutarı yok");
+            // KVKK K-4: yön yalnız işaretli tutardan okunur. İşaretsiz "Tutar"a düşülseydi giden hareket pozitif okunur ve çekim
+            // işinin "yalnız gelen" süzgecinden geçerdi. Fail-closed: sayfa düşer, imleç ilerlemez, hata LastError'da görünür.
+            var signed = Dec(row, "TutarEksiArti")
+                ?? throw new ObifinProtocolException("işaretli hareket tutarı (TutarEksiArti) yok");
             return new ObifinTransactionDto(
                 Id: Long(row, "Id") ?? throw new ObifinProtocolException("hareket Id yok"),
                 AccountId: Long(row, "HesapId") ?? 0,

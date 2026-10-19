@@ -277,6 +277,19 @@ public sealed class ObifinClientTests
     }
 
     [Fact]
+    public async Task Isaretli_tutar_yoksa_protokol_istisnasi_isaretsiz_Tutar_kullanilmaz()
+    {
+        // KVKK K-4: yön TutarEksiArti'nın işaretinden okunur. İşaretsiz Tutar'a düşülseydi giden hareket pozitif okunur, "yalnız
+        // gelen" süzgecinden geçip kaydedilirdi. Fail-closed: sayfa düşer, hiçbir satır yazılmaz, imleç ilerlemez.
+        var (client, _) = Build("""
+        {"Hata":[],"Liste":[{"Id":"1","HesapId":"6","IslemZamaniDT":"2022-10-10 12:07:30",
+          "Tutar":"10.00","ParaBirimi":"TL","BankaKodu":"garanti"}]}
+        """);
+        var act = () => client.ListTransactionsAsync(Creds(), new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17), null, 1, 1000);
+        await act.Should().ThrowAsync<ObifinProtocolException>();
+    }
+
+    [Fact]
     public async Task Otuz_bir_gunden_uzun_aralik_istemcide_reddedilir()
     {
         var (client, h) = Build("""{"Hata":[],"Liste":[]}""");
