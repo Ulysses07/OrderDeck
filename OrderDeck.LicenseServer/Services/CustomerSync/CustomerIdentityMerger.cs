@@ -19,7 +19,8 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///
 /// CustomerBalance de bilerek taşınmaz/silinmez (A4 kalite incelemesi,
 /// 2026-10-06): tutar asıl kaydın satırına eklenir (yoksa açılır), kopyanınki
-/// 0'lanır ama satır kalır. Gerekçe RepointReferencesAsync'in bakiye bloğunda.
+/// 0'lanır ama satır kalır. Sıfır bakiyeli kopya satırı da damgalanır (ortak bakiye M12).
+/// Gerekçe RepointReferencesAsync'in bakiye bloğunda.
 /// </summary>
 public sealed class CustomerIdentityMerger
 {
@@ -28,9 +29,9 @@ public sealed class CustomerIdentityMerger
 
     /// <summary>Taşınan/birleştirilen satır sayıları.</summary>
     /// <param name="Balances">
-    /// 1 yalnız kopyanın SIFIR OLMAYAN bir bakiyesi asıl kayda eklendiğinde;
-    /// kopyanın bakiye satırı zaten 0'sa sayılmaz, satır olduğu gibi
-    /// (dokunulmadan) bırakılır. A7'nin günlüklediği sayaç budur.
+    /// 1 yalnız kopyanın SIFIR OLMAYAN bir bakiyesi asıl kayda eklendiğinde; kopyanın bakiye satırı zaten 0'sa
+    /// sayılmaz — satır yalnız damgalanır (ortak bakiye M12: jetonu ilerler, tutarı değişmez). A7'nin günlüklediği
+    /// sayaç budur.
     /// </param>
     public sealed record RepointCounts(
         int Orders, int Shipments, int Links, int BalanceTransactions,
@@ -113,6 +114,16 @@ public sealed class CustomerIdentityMerger
             fromBal.Balance = 0m;
             fromBal.UpdatedAt = now;
             balances = 1;
+        }
+        else if (fromBal is not null)
+        {
+            // Ortak bakiye M12 (spec 2026-10-11 §4.12): tutarı 0 olsa da kopyanın bakiye satırı damgalanır (jetonu
+            // LicenseDbContext.StampVersions ilerletir). Çok bacaklı düşümden sonra bacak satırı tipik olarak 0'da
+            // kalır; damgasız, o satırı okuyan eşzamanlı bir grup geri alması çakışmadan commit eder ve parayı kopya
+            // satıra yazardı — bütün okumalar asıl kayda çözüldüğü için o para görünmez olurdu. Damgayla geri alma
+            // çakışır ve bacağın güncel (asıl) satırıyla yeniden kurulur.
+            fromBal.UpdatedAt = now;
+            _db.Entry(fromBal).Property(b => b.UpdatedAt).IsModified = true;
         }
 
         var ibans = await _db.CustomerIbanMemories

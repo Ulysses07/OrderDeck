@@ -174,6 +174,14 @@ public class LicenseDbContext : DbContext
     private void StampPaymentMatchVersions() => StampVersions<PaymentMatch>(m => m.UpdatedAt);
 
     /// <summary>
+    /// <see cref="CustomerBalance.UpdatedAt"/> (F02 jetonu) ortak bakiyenin kişi kilidinin de jetonudur (spec
+    /// 2026-10-11 §4.11, M6): grup değişimi kancası ve birleştiricinin sıfır bakiye damgası satırı yalnız "değişti"
+    /// işaretler, değeri burada ilerler. <c>UtcNow</c> atamasına güvenen bugünkü yazarlar saat geri giderse aynı
+    /// değeri yazabilirdi; <c>max(UtcNow, özgün + 1 tick)</c> ile bir dokunuş hiçbir zaman kaybolmaz.
+    /// </summary>
+    private void StampCustomerBalanceVersions() => StampVersions<CustomerBalance>(b => b.UpdatedAt);
+
+    /// <summary>
     /// <typeparamref name="TEntity"/>'nin değişmiş (<see cref="EntityState.Modified"/>)
     /// her girdisinde sürüm sütununu <c>max(UtcNow, özgün + 1 tick)</c> yapar ve
     /// değişmiş işaretler. Eklenen satır kendi değeriyle yazılır; silinen satırın
@@ -209,6 +217,7 @@ public class LicenseDbContext : DbContext
         SyncDerivedColumns();
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
+        StampCustomerBalanceVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -218,6 +227,7 @@ public class LicenseDbContext : DbContext
         SyncDerivedColumns();
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
+        StampCustomerBalanceVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
