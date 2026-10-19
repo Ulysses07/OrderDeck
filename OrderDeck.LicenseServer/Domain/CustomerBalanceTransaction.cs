@@ -65,6 +65,18 @@ public sealed class CustomerBalanceTransaction
     /// </summary>
     public string? SaleScope { get; set; }
 
+    /// <summary>
+    /// Ortak bakiye (spec 2026-10-11 §2, §3.2): çok bacaklı bir çekimin bacaklarını çapaya bağlar. Değer çapanın
+    /// <see cref="Id"/>'si; çapada kendi <see cref="Id"/>'si. <c>null</c> = eski, tek bacaklı satır — kendi başına
+    /// bir grup. Çapa ⇔ <c>DrawGroupId == null || DrawGroupId == Id</c> (<c>PersonBalance.IsAnchor</c>).
+    ///
+    /// <para>Çekimleri (havuz kipindeki düşüm, elle eksi, çekim türü iptal) S2 yazar; S1 bu biçimi yalnız OKUR ve
+    /// çok bacaklı bir çekimin grup geri almasını yazar (geri alma satırları geri alma çapasına bağlanır). Havuz kipi
+    /// hiç açılmamış bir lisansta dolu satır yoktur. Bacaklarda <see cref="SaleScope"/>, <see cref="OriginalAmount"/>
+    /// ve <see cref="Reason"/> boştur; açıklama çapada durur.</para>
+    /// </summary>
+    public Guid? DrawGroupId { get; set; }
+
     /// <summary>Bu transaction'ı oluşturan yayıncı (Customer) — audit.</summary>
     public Guid CreatedByCustomerId { get; set; }
 
