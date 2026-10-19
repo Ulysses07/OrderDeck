@@ -40,7 +40,8 @@ public sealed partial class MainShellViewModel
 
     /// <summary><see cref="_pendingNotes"/>'taki bekletilen satır notu (§5.8: baskının <c>PrintHeld</c>'i ya da "Yayını
     /// bitir"in <c>EndStreamHeld</c>'i); null = yok. Kuyruğun o anki durumunu söyler: en çok bir tane, yenisi sayısı ne
-    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>).</summary>
+    /// olursa olsun eskisinin yerine geçer (<see cref="ShowHeldNotice"/>); kuyrukta bekletilen satır kalmayınca kalkar
+    /// (<see cref="ClearStaleHeldNotice"/>).</summary>
     private string? _heldNote;
 
     /// <summary>Gönderim sonucunun uyarı şeridi; null = şerit kapalı.</summary>
@@ -86,6 +87,18 @@ public sealed partial class MainShellViewModel
         if (_heldNote is { } previous) _pendingNotes.Remove(previous);
         _heldNote = note;
         ShowSalesNotice([], [note]);
+    }
+
+    /// <summary>Kuyrukta bekletilen satır kalmadıysa (bağlantı geldi ve basıldı ya da artık bekletilmiyor) bekletme notu
+    /// (<see cref="_heldNote"/>) bayattır: şeritten kalkar, diğer notlar kalır; hiç not kalmadıysa şerit kapanır. Kuyruk
+    /// baskısından ve "Yayını bitir"den sonra. Not yoksa (mod Off dahil) hiçbir şey yapmaz. UI iş parçacığında.</summary>
+    private void ClearStaleHeldNotice()
+    {
+        if (_heldNote is not { } note) return;
+        if (_editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList()).Count > 0) return;
+        _pendingNotes.Remove(note);
+        _heldNote = null;
+        RenderSalesPushWarning();
     }
 
     /// <summary>Arka plan iş parçacığından gelir (satış akışı turu, kâğıdın gecikmiş komutu, devir kilidi açılınca biten

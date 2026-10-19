@@ -1782,6 +1782,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Yayın bitti: "Basılanlar" boşalır; o yayının listesi rapordan açılır (K6).
         ShowActiveSessionInPrintedTab();
         ForgetStreamPrice();
+        // §5.8: yayın bitti; kuyrukta bekletilen satır kalmadıysa (ör. bağlantı geldi, "basmadan bitir") "Yayın açık
+        // bırakıldı" notu bayat — şeritten kalkar.
+        ClearStaleHeldNotice();
 
         // Yayın bitince rapor kendiliğinden açılır. Sayfa await EDİLMİYOR:
         // burası yayını bitiren akışın sonu, rapor kapanınca yapılacak iş
@@ -2213,7 +2216,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (snapshot.Count == 0) return true;
 
         return await RunPrinterJobAsync(snapshot.Select(vm => vm.Id).ToHashSet(),
-            () => PrintCoreAsync(snapshot), isQueue: true);
+            async () =>
+            {
+                var ok = await PrintCoreAsync(snapshot);
+                // §5.8: bekletilen satır basıldıysa "kuyrukta bekliyor" notu bayat — kapı kapanmadan şeritten kalkar,
+                // uçuştaki baskıyı bekleyen EndStream de güncel şeridi görür.
+                ClearStaleHeldNotice();
+                return ok;
+            }, isQueue: true);
     }
 
     /// <summary>Yazıcıya giden HER iş (kuyruk baskısı, yeniden baskı) bu kapıdan geçer: aynı anda tek iş,
