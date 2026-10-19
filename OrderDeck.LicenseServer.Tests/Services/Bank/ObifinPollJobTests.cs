@@ -920,6 +920,28 @@ public sealed class ObifinPollJobTests
     }
 
     [Fact]
+    public async Task Simdi_cek_yalniz_kendi_baglantisini_denetler_baska_lisansin_satirina_yazmaz()
+    {
+        // Kiracı yalıtımı: tek bağlantılık çağrı başka yayıncının bitmiş bağlantısına yazmaz — o satırdaki bir kayıt hatası
+        // (ör. arada silinen müşteri) bu bağlantının "Şimdi çek"ini düşürmesin. Onu zamanlanmış koşu ve hesap yenileme durdurur.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var other = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var own = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        (await db.Licenses.SingleAsync(l => l.Id == other)).ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 9, 0, 0), 100m));
+        var ownId = (await db.ObifinConnections.SingleAsync(c => c.LicenseId == own)).Id;
+
+        await job.PollConnectionAsync(ownId, CancellationToken.None);
+
+        sink.Received.Should().ContainSingle(t => t.LicenseId == own);
+        var untouched = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == other);
+        untouched.Status.Should().Be(ObifinConnectionStatus.Verified, "başka lisansın bağlantısını zamanlanmış koşu durdurur");
+        untouched.DisabledAt.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Zaten_Disabled_baglantinin_DisabledAt_tarihi_degismez()
     {
         // 30 günlük sayaç her koşuda yeniden başlamasın.

@@ -110,7 +110,8 @@ public sealed class ObifinPollJob
         if (conn is null || conn.Status != ObifinConnectionStatus.Verified) return;
         // KVKK K-6: "Şimdi çek" bu metodu doğrudan kuyruğa atar, RunAsync'teki denetimi atlardı; lisans koşu sırasında da
         // bitmiş olabilir. İzlenen conn aynı örnektir: lisansı bittiyse Disabled'a çekilmiş döner, Obifin'e gidilmez.
-        await ObifinConnectionService.DisableEndedLicensesAsync(_db, DateTimeOffset.UtcNow, _log, ct);
+        // Yalnız bu bağlantı denetlenir (kiracı yalıtımı); bütün kiracıları RunAsync'in başı ve hesap yenileme durdurur.
+        await ObifinConnectionService.DisableEndedLicensesAsync(_db, DateTimeOffset.UtcNow, _log, ct, onlyConnectionId: conn.Id);
         if (conn.Status != ObifinConnectionStatus.Verified) return;
         var creds = _connections.TryResolveCredentials(conn);
         if (creds is null)

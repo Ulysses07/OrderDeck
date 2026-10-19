@@ -117,14 +117,18 @@ public sealed class ObifinConnectionService
     /// (bu sorguda) tanımlıdır.
     /// <para>Çağıranın bağlamında izlenen bir bağlantı sorguya girerse aynı örnek döner (EF kimlik çözümü) ve o örnek
     /// Disabled'a çekilir: çağıran sonra durumuna bakarak çekimi bırakabilir. <c>UpdatedAt</c> ilerler: eşzamanlı bir çekim
-    /// koşusu kimlik denetiminde bunu görür ve yazmadan biter. Değişen bağlantı sayısını döner.</para></summary>
+    /// koşusu kimlik denetiminde bunu görür ve yazmadan biter. Değişen bağlantı sayısını döner.</para>
+    /// <para><paramref name="onlyConnectionId"/> verilirse yalnız o bağlantı denetlenir (tek bağlantılık çekim, "Şimdi çek"):
+    /// kiracı yalıtımı — başka bir lisansın satırındaki kayıt hatası bu bağlantının çekimini düşürmesin. Bütün kiracılar
+    /// zamanlanmış çekim koşusunun ve hesap yenilemenin başında denetlenir.</para></summary>
     public static async Task<int> DisableEndedLicensesAsync(LicenseDbContext db, DateTimeOffset now, ILogger log,
-        CancellationToken ct)
+        CancellationToken ct, Guid? onlyConnectionId = null)
     {
-        var ended = await db.ObifinConnections
+        var query = db.ObifinConnections
             .Where(c => c.Status != ObifinConnectionStatus.Disabled
-                && (c.License.RevokedAt != null || c.License.ExpiresAt <= now))
-            .ToListAsync(ct);
+                && (c.License.RevokedAt != null || c.License.ExpiresAt <= now));
+        if (onlyConnectionId is { } connectionId) query = query.Where(c => c.Id == connectionId);
+        var ended = await query.ToListAsync(ct);
         if (ended.Count == 0) return 0;
         foreach (var c in ended)
         {
