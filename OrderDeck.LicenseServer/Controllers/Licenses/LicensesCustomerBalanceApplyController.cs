@@ -76,26 +76,31 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
+    private readonly PersonBalance _person;
     private readonly SalesSyncOptions _salesSync;
     private readonly ILogger<LicensesCustomerBalanceApplyController> _log;
 
     public LicensesCustomerBalanceApplyController(
-        LicenseDbContext db, CustomerIdResolver customerIds,
+        LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person,
         IOptions<SalesSyncOptions> salesSync,
         ILogger<LicensesCustomerBalanceApplyController> log)
     {
         _db = db;
         _customerIds = customerIds;
+        _person = person;
         _salesSync = salesSync.Value;
         _log = log;
     }
 
     public sealed record PreviewQuery(Guid WpfCustomerId);
 
+    /// <param name="PersonPool">Ortak bakiye (spec 2026-10-11 §4.1): havuz kipinde true. S1 kip bayrağını okumaz,
+    /// hep false döner — satır kipi, bakiye istenen satırınki.</param>
     public sealed record PreviewResponse(
         Guid WpfCustomerId,
         decimal Balance,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        bool PersonPool = false);
 
     // ── GET preview ─────────────────────────────────────────────────────────
 
@@ -115,7 +120,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, wpfCustomerId, ct);
         var row = await _db.CustomerBalances
             .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
-            .Select(b => new PreviewResponse(wpfCustomerId, b.Balance, b.UpdatedAt))
+            .Select(b => new PreviewResponse(wpfCustomerId, b.Balance, b.UpdatedAt, false))
             .FirstOrDefaultAsync(ct);
 
         return Ok(row ?? new PreviewResponse(wpfCustomerId, 0m, DateTimeOffset.UtcNow));
@@ -123,11 +128,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     // ── GET scope (R4-03 uzlaştırma) ────────────────────────────────────────
 
+    /// <param name="AppliedAmount">Grubun toplamı (<c>−Σ</c>, spec 2026-10-11 §4.3): çok bacaklı düşümde çapanın
+    /// kendi payı 0 olabilir. Eski tek bacaklı satırda <c>−Amount</c>.</param>
+    /// <param name="PersonPool">Havuz kipinde true; S1'de hep false (WPF birleştirme notunda kullanır, §6.1-d).</param>
     public sealed record ScopeResponse(
         Guid TransactionId,
         decimal AppliedAmount,
         decimal ProductTotal,
-        DateTimeOffset CreatedAt);
+        DateTimeOffset CreatedAt,
+        bool PersonPool = false);
 
     /// <summary>
     /// R4-03: "bu müşterinin bu satışında zaten bir düşüm var mı?" — salt okunur.
@@ -190,6 +199,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// koşar: aynı asıl kayıt, aynı kapsam, <c>purchase-deduction</c>, geri
     /// alınmamış; en yenisi (<c>CreatedAt</c>, sonra <c>Id</c>). Tek sorgu: uç
     /// "düşüm yok" dediği hâlde kuralın 409 vermesi (ya da tersi) olamaz.
+    ///
+    /// <para><b>Ortak bakiye (spec 2026-10-11 §4.2, §4.3):</b> yalnız çapalar
+    /// aranır (bacaklar kapsam taşımaz; süzgeç savunma) ve tutar grubun
+    /// toplamıdır — 409 <c>scope-has-deduction</c>'ın <c>appliedAmount</c>'u da
+    /// buradan gelir. Çapa düzeyinde kalır: aynı kişinin başka satırındaki çapa
+    /// bu yüklemi tetiklemez (M10). Çapanın geri alma satırı grubun tamamını
+    /// temsil eder (D5, grup tek işlemde geri alınır). Eski tek bacaklı satırda
+    /// grup yalnız kendisidir; S2 çapasında <c>DrawGroupId = Id</c> olduğundan
+    /// çapa toplamda bir kez sayılır.</para>
     /// </summary>
     private Task<ScopeResponse?> LatestScopeDeductionAsync(
         Guid licenseId, Guid canonicalCustomerId, string saleScope, CancellationToken ct) =>
@@ -199,10 +217,18 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 && t.WpfCustomerId == canonicalCustomerId
                 && t.SaleScope == saleScope
                 && t.Kind == KindPurchaseDeduction
+                && (t.DrawGroupId == null || t.DrawGroupId == t.Id)
                 && !_db.CustomerBalanceTransactions.Any(r => r.ReversesTransactionId == t.Id))
             .OrderByDescending(t => t.CreatedAt)
             .ThenByDescending(t => t.Id)
-            .Select(t => new ScopeResponse(t.Id, -t.Amount, t.OriginalAmount ?? 0m, t.CreatedAt))
+            .Select(t => new ScopeResponse(
+                t.Id,
+                -_db.CustomerBalanceTransactions
+                    .Where(g => g.LicenseId == licenseId && (g.Id == t.Id || g.DrawGroupId == t.Id))
+                    .Sum(g => g.Amount),
+                t.OriginalAmount ?? 0m,
+                t.CreatedAt,
+                false))
             .FirstOrDefaultAsync(ct);
 
     // ── GET transactions/{id} (R6-02 durum ucu) ─────────────────────────────
@@ -228,6 +254,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// <para>Yalnız <c>purchase-deduction</c> satırları tanınır; iade/yükleme
     /// satırının kimliğiyle sorulursa <b>404</b> — istemci bunu "sunucu bu
     /// düşümü tanımıyor" diye okur ve paylaşımı durdurur.</para>
+    ///
+    /// <para><b>Ortak bakiye (spec 2026-10-11 §4.4):</b> bacak Id'si çapaya
+    /// çözülür, tutar grubun toplamı (<c>−Σ</c>), <c>Reversed</c> çapanın geri
+    /// alma satırı. Eski tek bacaklı satırda üçü de bugünkü gibi.</para>
     /// </summary>
     [HttpGet("transactions/{transactionId:guid}")]
     public async Task<IActionResult> TransactionStatus(
@@ -240,20 +270,25 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             .FirstOrDefaultAsync(t => t.Id == transactionId
                 && t.LicenseId == licenseId
                 && t.Kind == KindPurchaseDeduction, ct);
+        // Ortak bakiye §4.4: bacak çapasına çözülür; çapası olmayan (yetim)
+        // bacak tanınmayan düşüm sayılır — verify onu ayrıca sayar.
+        var anchor = tx is null ? null : await _person.AnchorOfAsync(tx, ct);
         // R9-F03: başlıklı 404 — istemci "işlem gerçekten yok"u yalnız bu
         // başlıkla kabul eder. Gövdesiz 404 (eski sunucu, rota yok) anahtar
         // silmeye yol açmamalı: istemci onu uç-hatası sayar ve diskteki
         // sonuçla devam eder. Başlığı değiştirme — istemci sözleşmesi.
-        if (tx is null)
+        if (anchor is null)
             return Problem(
                 title: "transaction-not-found",
                 detail: "Bu kimlikle kayıtlı bir düşüm işlemi yok.",
                 statusCode: 404);
 
+        // Grup tek işlemde geri alınır (D5): çapanın geri alma satırı grubun
+        // tamamını temsil eder.
         var reversed = await _db.CustomerBalanceTransactions
-            .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
+            .AnyAsync(t => t.ReversesTransactionId == anchor.Id, ct);
 
-        return Ok(new TransactionStatusResponse(tx.Id, -tx.Amount, reversed));
+        return Ok(new TransactionStatusResponse(anchor.Id, -await _person.GroupSumAsync(anchor, ct), reversed));
     }
 
     // ── POST apply ──────────────────────────────────────────────────────────
@@ -526,6 +561,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// değil): istemci bunu ekranda gösteriyor, eski bir değeri oynatmak
     /// operatöre yanlış bakiye gösterirdi. <c>AppliedAmount</c> ise ledger
     /// satırından gelir — "ne kadar düştü" cevabı değişmemeli.</para>
+    ///
+    /// <para><b>Ortak bakiye (spec 2026-10-11 §4.2 "İdempotency ve A11"):</b>
+    /// anahtar her zaman bir ÇAPANIN Id'sidir; bulunan satır bacaksa
+    /// (<c>DrawGroupId</c> dolu ve ≠ Id) foreign sayılır → 404 (savunma:
+    /// istemcinin ürettiği Guid'in sunucunun bacak Id'sine denk gelmesi pratikte
+    /// imkânsız). Tutar karşılaştırması ve oynatılan <c>AppliedAmount</c> grubun
+    /// toplamıdır (<c>−Σ</c>); <c>sameCustomer</c> ve <c>OriginalAmount</c>
+    /// çapada, değişmez (M10). Eski tek bacaklı satırda grup yalnız kendisi:
+    /// davranış bugünküyle aynı.</para>
     /// </summary>
     /// <param name="canonicalCustomerId">İstekteki müşteri Id'sinin asıl kaydı
     /// (A5b, <see cref="CustomerIdResolver"/>).</param>
@@ -537,7 +581,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             .FirstOrDefaultAsync(t => t.Id == key, ct);
         if (tx is null) return (null, false, false);
 
-        if (tx.LicenseId != licenseId || tx.Kind != KindPurchaseDeduction)
+        if (tx.LicenseId != licenseId || tx.Kind != KindPurchaseDeduction || !PersonBalance.IsAnchor(tx))
         {
             _log.LogWarning(
                 "Bakiye idempotency anahtarı başka bir kayda ait (key={Key}, license={LicenseId}, kind={Kind})",
@@ -562,11 +606,14 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // taşınır, eski sürüm aynı isteği kopya Id'siyle tekrarlar: bu çelişki
         // değil, aynı kişinin aynı isteği. Hareketin kendi Id'si yalnız istekle
         // farklıysa çözülür (çelişki yolunda tek ek sorgu).
+        // Ortak bakiye §4.2: tutar grubun toplamı (çapanın payı 0 olabilir);
+        // eski tek bacaklı satırda kendi tutarı, sorgu yok.
+        var applied = -await _person.GroupSumAsync(tx, ct);
         var sameCustomer = tx.WpfCustomerId == canonicalCustomerId
             || await _customerIds.CanonicalOfAsync(licenseId, tx.WpfCustomerId, ct) == canonicalCustomerId;
         if (!sameCustomer
             || tx.OriginalAmount != req.ProductTotal
-            || -tx.Amount > req.Amount)
+            || applied > req.Amount)
         {
             _log.LogWarning(
                 "Bakiye idempotency anahtarı farklı içerikle yeniden kullanıldı (key={Key}, license={LicenseId})",
@@ -583,7 +630,8 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         _log.LogInformation(
             "Bakiye uygulama sonucu tekrar oynatıldı (key={Key}, license={LicenseId})", key, licenseId);
-        return (new ApplyResponse(tx.Id, -tx.Amount, remaining), false, false);
+        // remaining satır kipinde bugünkü gibi asıl kaydın bakiyesi; havuz Σ'sı S2.
+        return (new ApplyResponse(tx.Id, applied, remaining), false, false);
     }
 
     // ── POST reverse (revizyon: eski düşümü geri al) ────────────────────────
