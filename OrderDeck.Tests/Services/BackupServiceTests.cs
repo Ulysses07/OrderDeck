@@ -11,6 +11,17 @@ using Xunit;
 
 namespace OrderDeck.Tests.Services;
 
+/// <summary>Başka sınıfların <c>Dispose</c>'u <see cref="SqliteConnection.ClearAllPools"/>'u GLOBAL çağırıyor. Bu sınıfın
+/// havuzda boşta duran bağlantısını anlık görüntü sürerken kapatırsa, WAL'daki son bağlantının kapanış checkpoint'i kilidi
+/// alır ve <c>SqliteFile.Snapshot</c> "database is locked" ile döner; yükleme hiç olmaz. Ölçüldü: eşzamanlı temizlemeyle
+/// 300 anlık görüntüden 173'ü, temizlemesiz 0'ı.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class BackupServiceCollection
+{
+    public const string Name = "Yedek servisi (paralel değil)";
+}
+
+[Collection(BackupServiceCollection.Name)]
 public class BackupServiceTests : IDisposable
 {
     private readonly string _dir;
