@@ -55,6 +55,14 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// Her kaydetmede sıfırlanır.</summary>
     [ObservableProperty] private string? _shipmentWarning;
 
+    /// <summary>Kaydetme zinciri sürüyor (<see cref="SaveAsync"/>): Kaydet pasif, ikinci çağrı zinciri yeniden
+    /// koşturmaz. 2026-10-19'a kadar bu işi referans no tekrar kontrolü yan etki olarak yapıyordu (Payment satırı ilk
+    /// await'ten önce yazılırdı); mod On'da attach-shipment ağda beklerken çift tıklama zinciri iki kez
+    /// koşturuyordu.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    private bool _isSaving;
+
     private readonly IShippingSettingsProvider _shipping;
     private readonly Services.Drawers.IDrawerService? _drawers;
 
@@ -83,7 +91,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _drawers = drawers;
     }
 
-    public bool CanSave => Validate() is null;
+    public bool CanSave => !IsSaving && Validate() is null;
 
     partial void OnAmountTextChanged(string value) => RefreshCanSave();
     partial void OnCustomerPlatformChanged(string value) => RefreshCanSave();
@@ -123,32 +131,43 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// <summary>
     /// Kaydetme zincirinin tamamı — çekmecenin "Kaydet" düğmesi yalnız bunu
     /// çağırır. <c>true</c>: zincir tamam, çekmece kapansın. <c>false</c>:
-    /// doğrulama hatası (<see cref="ErrorMessage"/> bağlı) ya da operatör
-    /// kargo yönergesinden vazgeçti — form açık kalsın, düzeltilebilsin.
+    /// doğrulama hatası (<see cref="ErrorMessage"/> bağlı), operatör kargo
+    /// yönergesinden vazgeçti — form açık kalsın, düzeltilebilsin — ya da
+    /// zincir zaten sürüyor (<see cref="IsSaving"/>; çift tıklama), ikinci
+    /// çağrı hiçbir şey yapmaz.
     ///
     /// Faz 2b'de <c>DekontEkleDialog.OnSave</c>'in switch'inden birebir
     /// taşındı; sıra ve dallanma aynı.
     /// </summary>
     public async Task<bool> SaveAsync()
     {
-        ShipmentWarning = null;
-        var result = TrySave();
-
-        if (result.Kind == SaveResultKind.NeedsShipmentDecision)
+        if (IsSaving) return false;
+        IsSaving = true;
+        try
         {
-            var directive = await AskShipmentDirectiveAsync(result.Shortage!);
-            if (directive is null) return false;
-            result = CommitWithDirective(directive.Value);
+            ShipmentWarning = null;
+            var result = TrySave();
+
+            if (result.Kind == SaveResultKind.NeedsShipmentDecision)
+            {
+                var directive = await AskShipmentDirectiveAsync(result.Shortage!);
+                if (directive is null) return false;
+                result = CommitWithDirective(directive.Value);
+            }
+
+            if (result.Kind != SaveResultKind.Saved) return false;
+
+            // W2-08: mod On'da kargo adımı (attach-shipment) arka planda sürüyor; eşik sorusu adımın sonucuyla.
+            if (result.PendingShipmentStep is { } pending)
+                result = result with { ThresholdContext = await pending, PendingShipmentStep = null };
+
+            await MaybePromptThresholdAsync(result);
+            return true;
         }
-
-        if (result.Kind != SaveResultKind.Saved) return false;
-
-        // W2-08: mod On'da kargo adımı (attach-shipment) arka planda sürüyor; eşik sorusu adımın sonucuyla.
-        if (result.PendingShipmentStep is { } pending)
-            result = result with { ThresholdContext = await pending, PendingShipmentStep = null };
-
-        await MaybePromptThresholdAsync(result);
-        return true;
+        finally
+        {
+            IsSaving = false;
+        }
     }
 
     private async Task<ShipmentDirective?> AskShipmentDirectiveAsync(

@@ -35,6 +35,8 @@ public partial class DekontEkleDrawer : UserControl
     {
         // false: doğrulama hatası (ErrorMessage bağlı) ya da operatör kargo
         // yönergesinden vazgeçti — çekmece açık kalsın, form düzeltilebilsin.
+        // Zincir zaten sürüyorsa (çift tıklama) da false: kapatmayı ilk
+        // tıklamanın zinciri yapar.
         if (await _vm.SaveAsync()) _drawer.Close(true);
     }
 }
