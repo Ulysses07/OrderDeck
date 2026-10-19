@@ -55,6 +55,7 @@
 16. **Banka veri talebinde doğrulama yöntemleri** (Görev 17): ıslak imzalı dilekçe / KEP–güvenli e-imza–mobil imza / kayıtlı iletişim kanalı, her birinde IBAN sahipliği banka belgesiyle. Liste avukata sorulmalı (Başvuru Tebliği kanallarıyla yeterli mi).
 17. **Geri yükleme sonrası yeniden uygulama** (Görev 9, 23): dış kopya saatlik e-posta; son yedekle felaket arasındaki en çok bir saat için canlı veritabanı gerekir. Avukata: bu boşluk ve elle yeniden uygulama prosedürü yeterli mi.
 18. **[S4] açıklama maskesinin metni** (Görev 4; metin işi / **avukat**): kod açıklamada *tanınabilir biçimde yazılmış* TR IBAN'ı ve 11 haneli numarayı maskeler, her yazımı değil. Bilinçli olarak düz kalanlar: kontrol hanesi tutmayan (yanlış yazılmış) IBAN; TR dışı IBAN; `-`, `.` ya da birden çok boşlukla bölünmüş IBAN; boşluk, nokta ya da tireyle bölünmüş 11 hane; daha uzun bir rakam dizisinin içindeki 11 hane; `+90…` ile (12 hane) ya da boşluklu yazılmış telefon; harfe bitişik ama kontrol hanesi tutmayan 11 hane (yanlış yazılmış TCKN, kullanıcı adındaki "0" ile başlayan telefon). Metindeki mutlak "kayda alınırken maskelenir" cümlesi Ö-16'nın "metin mutlak güvence veriyor, kod tutmuyor" sorununu küçük ölçekte tekrarlar. Öneri: "Açıklamada tanınabilir biçimde yazılmış TR IBAN'ları ve 11 haneli kimlik numaraları kayda alınırken maskelenir" gibi niteleyici bir ifade; ya da bu sınırlar avukat paketinde listelensin. Kod değişmez; karar metinde.
+19. **Ham kaydın kopyasında "işlem açıklaması" (`IslemAciklama`)** (Görev 5; metin işi / **avukat**): kod kopyada **yedi** alan tutar (açıklama, işlem açıklaması, gönderen adı, gönderen banka, işlem kodu, referans, makbuz no); notun v2 metni (§4.3 [S3]), §3 Ö-2 öneri 2 ve avukat paketi **altı** sayıyor, işlem açıklaması eksik. Metin bu hâliyle onaylanırsa saklanan kopyayı eksik anlatır (Ö-16). Plan alanı **tutar**: açıklama sütunu `Aciklama` yoksa `IslemAciklama`'dan okunur (`ObifinClient.cs`: `Str(row, "Aciklama") ?? Str(row, "IslemAciklama")`), yani teknik arıza incelemesinde sütunun kaynağı odur; alan `Aciklama` ile aynı maskeden geçer. Metin işinde "işlem açıklaması" eklenecek yerler: notun §4.3 [S3] satırı ve §3 Ö-2 öneri 2; avukat paketinde `01-veri-isleme-sozlesmesi-yayinci.md` (teknik önlemler madde c ve saklama tablosunun "kaydın kopyası" satırı), `05-imha-proseduru.md` (süre tablosunun "kaydın kopyası" satırı), `09-karar-kaydi.md` K3 ("altı alan" → yedi); metin yayımlanınca politikanın iki kopyası (`Pages/Public/_GizlilikPolitikasi.cshtml`, `web/app/(tr)/gizlilik-politikasi/page.tsx`). Alternatif (alanı atmak): `BankRawJsonRedactor.AllowedFields` ve `DescriptionFields`'tan birer kelime + `BankRawJsonRedactorTests.PolicyFieldList`; o zaman açıklaması `IslemAciklama`'dan gelen satırda kopya sütunun kaynağını göstermez. Liste `BankRawJsonRedactorTests.PolicyFieldList`'te metin olarak sabit: kod ya da metin değişirse öbürü de değişir.
 
 ---
 
@@ -130,6 +131,7 @@
 1. Kuru koşu, çıktıyı tutanağa kaydet: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup`
 2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle. P0'da `DataDestructionRecords` yok: bu koşunun Silme Yönetmeliği md. 7/3 kaydı (en az 3 yıl) **tutanağın kendisidir**. P1'den sonraki koşular tabloya da yazar (Görev 9: tetikleyici `cleanup`, yapan `cli`).
    **Ne zaman koşturulmaz:** 04:57 UTC saklama işi (P1) ya da bir shopper silmesi / banka veri talebi silmesi sürerken. Komut oku-değiştir-yaz yapar, `BankTransaction`'da eşzamanlılık jetonu yok: arada boşaltılan bir açıklama ya da ham kayıt maskelenmiş eski hâliyle geri yazılabilirdi. Gündüz, başka silme işlemi yapmadan koştur.
+   **İlk saklama koşusu da tutanağa girer:** Görev 5 ham kayıt süresini 90 günden 30 güne indirdiği için deploy'dan sonraki ilk 04:57 UTC (07:57 TR) `bank-data-retention` koşusu, `FetchedAt`'i 30–90 gün önce olan bütün satırların ham kaydını **bir kerede** boşaltır. Silme Yönetmeliği md. 7/3 (Ö-13) her imhanın kaydını ister ve P0'da `DataDestructionRecords` yok: sayım bu koşudan ÖNCE alınır (deploy'dan önce ya da sonra; deploy 01:00–07:57 TR arasındaysa ilk koşu aynı sabahtır), koşudan sonra boşaltılanın 0 kaldığı yeniden sayılır. Kalıbın "İlk saklama koşusu" satırları bunun için.
    **Tutanak kalıbı** (repo DIŞINDA, KVKK klasöründe; 3 yıl saklanır):
    ```text
    bank-data-cleanup tutanağı — KVKK ön inceleme §5.1 (P0)
@@ -140,6 +142,19 @@
    Uygulama çıktısı (satır aynen):  ____
    Not: çıktı kişisel veri içermez (yalnız sayılar ve lisans kimliği). Yedek: aynı gece 03:00 UTC yedeği
    bu silmelerden ÖNCE alınmışsa, geri yüklemede komut yeniden --apply ile koşturulur (deploy/README.md, Geri yükleme).
+
+   İlk saklama koşusu (ham kayıt 90 → 30 gün; deploy'dan sonraki ilk 04:57 UTC koşusu, bir kerelik toplu boşaltma)
+   Koşudan ÖNCE sayım — anı (TR): ____   Sonuç: ____
+     SELECT COUNT(*) FROM BankTransactions
+     WHERE RawJson IS NOT NULL AND FetchedAt < DATEADD(day, -30, SYSDATETIMEOFFSET());
+   Koşunun günü (UTC): ____   Günlük satırı (aynen; docker compose logs license-server | grep "Banka veri saklama"):  ____
+     (Sayım ile satırdaki "ham JSON" sayısı arasındaki fark, sayımdan koşuya kadar 30 günü dolan satırlardır.)
+   Koşudan SONRA sayım — anı (TR): ____   Sonuç (0 beklenir): ____
+     SELECT COUNT(*) FROM BankTransactions
+     WHERE RawJson IS NOT NULL AND FetchedAt < DATEADD(day, -30, CAST('<koşu günü>T04:57:00+00:00' AS datetimeoffset));
+   Bilerek kabul: P0 ile P1 arasındaki sonraki günlük saklama koşuları (ham kayıt 30 gün, açıklama 180 gün) eskiden
+   olduğu gibi yalnız uygulama günlüğünde kalır; imha kaydı tablosu (DataDestructionRecords) P1'de (Görev 9) gelir.
+   P1 deploy tarihi: ____   Kabul eden: ____
    ```
 
 **P1 deploy'undan ÖNCE:**
@@ -958,7 +973,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 5: Ham kayıt beyaz listesi ve 30 günlük süre (P0-4)
 
-**Neden (not Ö-2, Ö-4, karar 5):** ham kayıtta `Bakiye`, `MusteriAciklamasi`, `EkDetay1-4`, `AliciAdi`, `GonderenSube` 90 gün kalıyor; hiçbiri kullanılmıyor. Kara liste (adı IBAN/VKN/TCKN içeren alan) yerine beyaz liste: yalnız açıklama, işlem açıklaması, gönderen adı, gönderen banka, işlem kodu, referans ve makbuz no kalır; açıklama alanları Görev 4'teki maskeleyiciden geçer; iç içe nesne/dizi alınmaz. Süre 90 → 30 gün. **Beyaz liste değişirse politikadaki "bankanın gönderdiği kaydın kopyası" listesi de değişmeli** (sınıf özetine yazılır).
+**Neden (not Ö-2, Ö-4, karar 5):** ham kayıtta `Bakiye`, `MusteriAciklamasi`, `EkDetay1-4`, `AliciAdi`, `GonderenSube` 90 gün kalıyor; hiçbiri kullanılmıyor. Kara liste (adı IBAN/VKN/TCKN içeren alan) yerine beyaz liste: yalnız açıklama, işlem açıklaması, gönderen adı, gönderen banka, işlem kodu, referans ve makbuz no kalır; açıklama alanları Görev 4'teki maskeleyiciden geçer; iç içe nesne/dizi alınmaz. Süre 90 → 30 gün. **Beyaz liste değişirse politikadaki "bankanın gönderdiği kaydın kopyası" listesi de değişmeli** (sınıf özetine yazılır). İnceleme sonrası (19.10): liste testte kendisiyle değil metin olarak sabit (`BankRawJsonRedactorTests.PolicyFieldList`), 30 günün yapılandırmadan geldiği `BankJobsDiTests.Ham_kayit_saklama_suresi_yapilandirmayla_30_gun`'de sınanır; notun ve avukat paketinin altı alan saymasıyla (işlem açıklaması eksik) çelişki karar 19'da; ilk saklama koşusunun bir kerelik toplu boşaltması P0 tutanağında (Prod adımları).
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Bank/BankRawJsonRedactor.cs` (bütünüyle)
