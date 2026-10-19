@@ -14,28 +14,30 @@
 
 ## Kapsam
 
-**İçinde (notun §5.1 numaralarıyla):** P0 1–7, mevcut veri için tek seferlik temizlik komutu, P1 8–14, 15'in yalnız denetim kısmı, 16, 17, 19, 22 ve P2 25.
+**İçinde (notun §5.1 numaralarıyla):** P0 1–7, mevcut veri için tek seferlik temizlik komutu, P1 8–14, 15'in yalnız denetim kısmı, 16, 17, 19, 22 ve P2 25. Plan incelemesinin (19.10) eklediği parçalar da içinde: Obifin kaldırmasının lisansa özgü olması ve paylaşılan kullanıcı koruması (Görev 13), lisans yenilenince silmeme (Görev 14), Obifin bağlantılı yayıncı silmesinin reddi (Görev 13), imha kayıtlarının veritabanı dışındaki saatlik kopyası ve geri yükleme prosedürü (Görev 9, 23), kimlik değişimindeki gölge veri silmesinin (`ResetShadowData`) imha kaydı (Görev 9), eski kısa maskelerin ve eski denetim satırlarındaki kullanıcı adının temizliği (Görev 8, 16), talep doğrulamasının kaydı (Görev 17).
 
-**Kapsam dışı (gerekçesiyle):**
+**Kapsam dışı (gerekçesi, takibi ve sahibiyle):** "Yarım iş yapmayalım" isteği gereği dışarıdaki her madde için takip planı ve kararı veren kişi yazılı. Bu tablodaki maddeler kapanmadan KVKK düzeltmeleri "tamam" sayılmaz.
 
-| # | Konu | Neden dışarıda |
-|---|---|---|
-| 15 (kısmen) | Yönetici girişine iki aşamalı doğrulama | Ayrı bir kimlik doğrulama işi; görev tanımı açıkça dışarıda bıraktı. Denetim kısmı Görev 16'da. |
-| 18 | Shopper kayıt/dekont metinleri, Profil ve panelde politika bağlantısı, bir kerelik duyuru, WhatsApp şablon satırı | Kardeş repolar (OrderDeck-Shopper, OrderDeck-Mobile) ve WPF; bu plan yalnız sunucu. Shopper'ın göstereceği veri sorumlusu alanının **sunucu ucu** Görev 22'de. |
-| 20 | Formdaki zorunlu "okudum" kutusunu kaldırma | Avukat onayına bağlı (not §4.5 Seçenek 1/2). |
-| 21 | Yönetici formundaki banka kimlik bilgisi girişini kaldırma | Faz 2 Obifin kiracılık modeli kararına bağlı (not §6 karar 9). |
-| 23 | Lisansa özgü HMAC, maskede kontrol hanelerini gizleme | P2; maske biçimi değişmez, politika metni "ilk 4 ve son 3 karakter" ile yazılır ([S7] "kod değişmezse" satırı). |
-| 24 | Gönderen adını Faz 2'ye kadar hiç yazmama | Burak kararı (not §6 karar 4). Kod bugünkü gibi yazmaya devam eder. |
-| 26 | Açıklama sütununu şifreleme | P2 değerlendirme. |
-| 27 | Geri alma gerekçelerine "İlgili kişi itirazı" | Faz 2 (otomatik onay) işi. |
-| — | Faz 2 işleri (havale onayı, otomatik onay, `BankIbanState`, `PaymentExpectation`) | Ayrı spec (`2026-10-10-banka-havale-onay-design.md`). |
-| — | `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını da boşaltması; `Payment.ShopperId` bağının kaderi | Avukat kararı (not K-7 öneri 1–2, §7 soru 8). Görev 15 bu ikisine dokunmaz. |
-| — | Sipariş bildiriminin (yeni sipariş push'u) gövdesindeki tutar | Not §5.1/19 yalnız dekont onay/ret bildirimini sayıyor; sipariş push'u ayrıca değerlendirilmeli (aşağıda karar listesinde). |
-| — | R2 yaşam döngüsü kuralı (`sql-bak/` önekine 32 gün), R2 kova konumu, Hostinger veri merkezi tespiti | Cloudflare/Hostinger panosu işi (Burak). |
+| # | Konu | Neden dışarıda | Takip / sahibi |
+|---|---|---|---|
+| 15 (kısmen) — Ö-4 öneri 3 | Yönetici girişine iki aşamalı doğrulama (AdminCookie + Bearer-Admin) | Kurul 2018/10 karar 3-e: özel nitelikli veri için m. 6/4'ün **zorunlu** önlemi (açıklamada tesadüfen geçen özel nitelikli veri, Ö-4). Ayrı bir kimlik doğrulama işi (TOTP, kurtarma kodları, oturum yenileme); görev tanımı bu planın dışında bıraktı. Denetim kısmı Görev 16'da. | Ayrı plan `docs/superpowers/plans/<tarih>-admin-iki-asamali-dogrulama.md`. Sahibi **Burak**. Kapı P1 ile aynı: Faz 2'den ve ikinci yayıncıdan önce yayında. |
+| 18 / **K-8 (Kritik)** — kardeş repolar | Shopper kayıt ve dekont ekranı metinleri, Profil'de "Gizlilik Politikası ve haklarım", bir kerelik duyuru (OrderDeck-Shopper); panelde politika bağlantısı (OrderDeck-Mobile) | Başka repolar; metinler §4.6'dan, avukat onayına bağlı. Shopper'ın göstereceği veri sorumlusu alanının **sunucu ucu** Görev 22'de. | Her repoda ayrı plan (`OrderDeck-Shopper` ve `OrderDeck-Mobile` `docs/superpowers/plans/<tarih>-kvkk-k8-metinler.md`). Sahibi **Burak**; metin **avukat** onayından sonra, P1 ile aynı sürüm penceresinde. |
+| 18 / **K-8** — bu repo, WPF | WhatsApp ödeme şablonuna tek satır: `OrderDeck.Core/Settings/AppSettings.cs:180-184` (`PaymentSettings.WhatsAppMessageTemplate` varsayılanı) ve mevcut kurulumların kayıtlı şablonu için bir kerelik ayar göçü | WPF (OrderDeck.Core/App) değişikliği, Velopack sürümüyle çıkar; bu plan yalnız sunucu. Satırın vereceği bağlantının sayfası ve metni avukat onaylı olmalı; şablon Meta onaylıysa yeniden onaya gider. | Ayrı plan `docs/superpowers/plans/<tarih>-kvkk-k8-wpf-odeme-sablonu.md`. Sahibi **Burak**; metin **avukat**. |
+| K-8 — politika | Dekont işlemenin politikada alt bölümü (PDF ayrıştırma, `PayerName`, R2 saklama, süre); kapsam cümlesinin genişletilmesi | Metin işi. | Metin işi (v2) / **avukat**. |
+| 20 | Formdaki zorunlu "okudum" kutusunu kaldırma | Avukat onayına bağlı (not §4.5 Seçenek 1/2). | Metin işi; karar **avukat**. |
+| 21 | Yönetici formundaki banka kimlik bilgisi girişini kaldırma | Faz 2 Obifin kiracılık modeli kararına bağlı (not §6 karar 9). | Faz 2 spec §13; karar **Burak**. |
+| 23 | Lisansa özgü HMAC, maskede kontrol hanelerini gizleme | P2; maske biçimi değişmez, politika metni "ilk 4 ve son 3 karakter" ile yazılır ([S7] "kod değişmezse" satırı). | P2 listesi; **Burak**. |
+| 24 | Gönderen adını Faz 2'ye kadar hiç yazmama | Burak kararı (not §6 karar 4). Kod bugünkü gibi yazmaya devam eder. | Karar verildi (**Burak**). |
+| 26 | Açıklama sütununu şifreleme | P2 değerlendirme. | P2 listesi; **Burak**. |
+| 27 | Geri alma gerekçelerine "İlgili kişi itirazı" | Faz 2 (otomatik onay) işi. | Faz 2 spec. |
+| — | Faz 2 işleri (havale onayı, otomatik onay, `BankIbanState`, `PaymentExpectation`) | Ayrı spec (`2026-10-10-banka-havale-onay-design.md`). | Faz 2 spec. |
+| — | `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını da boşaltması; `Payment.ShopperId` bağının kaderi | Avukat kararı (not K-7 öneri 1–2, §7 soru 8). Görev 15 bu ikisine dokunmaz. | Karar **avukat**; kod tek satır (Görev 15'in notu). |
+| — | Sipariş bildiriminin (yeni sipariş push'u) gövdesindeki tutar | Not §5.1/19 yalnız dekont onay/ret bildirimini sayıyor; sipariş push'u ayrıca değerlendirilmeli (aşağıda karar listesinde). | Karar **Burak** (karar 9). |
+| — | R2 yaşam döngüsü kuralı (`sql-bak/` önekine 32 gün), R2 kova konumu, Hostinger veri merkezi tespiti | Cloudflare/Hostinger panosu işi. | **Burak** (Prod adımları 7). |
 
 ## Burak / avukat kararı gerekenler (plan varsayılanıyla ilerler, değiştirmek tek satır)
 
-1. **Saklama süreleri** (Görev 5, 10, 13, 14, 20): ham kayıt 30 gün; eşleşmeyen havalenin açıklaması/adı 30 gün; hareketin tamamı + eşleştirme satırı + gap 180 gün; IBAN bağı son doğrulamadan 12 ay; çekimden sonra en az 7 gün; hizmet sonu + 30 gün; silme talebindeki telefon işlendikten 30 gün sonra. Hepsi `BankOptions` / `SecurityDataRetentionOptions` / sabit; not "süreler öneri, avukat onaylamalı" diyor.
+1. **Saklama süreleri** (Görev 5, 10, 13, 14, 20): ham kayıt 30 gün; eşleşmeyen havalenin açıklaması/adı 30 gün; hareketin tamamı + eşleştirme satırı + gap 180 gün; IBAN bağı son doğrulamadan 12 ay; çekimden sonra en az 7 gün; hizmet sonu + 30 gün; silme talebindeki telefon işlendikten, kapanmış banka veri talebinin kısaltılmış IBAN'ı kapanıştan 30 gün sonra; imha kaydı süresiz (en az 3 yıl), kişisel veri içermeyen imha denetim olayları 36 ay. Hepsi `BankOptions` / `SecurityDataRetentionOptions` / sabit; not "süreler öneri, avukat onaylamalı" diyor.
 2. **İlk çekim çapası** (Görev 7): bağlantı anı − 2 gün (dekont bağdaştırmasının aday penceresi). Gerekçe Görev 7'de. Alternatif 30 gün.
 3. **Eşleştirme kaydının 180. günde silinmesi** (Görev 10): not "sil ya da sayılara indir" diyor; plan **siler**, ölçüm ekranı zaten son 30 güne bakıyor. Ölçüm geçmişi istenirse ayrı iş.
 4. **Onaylı hesap listesi fail-closed** (Görev 12): mevcut hesaplar göçle **onaylanmaz**. Deploy'dan hemen sonra admin/obifin'de EMAR hesapları onaylanmalı; onaylanana kadar gelen hareket kaydedilmez ve imleç ilerlediği için sonradan gelmez. Alternatif: göçte `Active = 1` hesapları otomatik onaylamak (not §5.9 "EMAR dışı hesap var mı" kontrolünden sonra).
@@ -46,6 +48,12 @@
 9. **Sipariş push'undaki tutar**: dokunulmadı (yukarıda).
 10. **Veri sorumlusu bilgileri** (Görev 21–22): müşteri (yayıncı hesabı) düzeyinde, kayıt formunda ve Shopper kod sorgusunda **anonim** gösterilir. Şahıs yayıncının ev adresinin bu yolla açılması avukata sorulmalı (not §7 soru 9).
 11. **Veri sorumlusu kimliği çelişkisi** (politikada "Musa Sevinç", Meta'da "Emar Global Ltd. Şti."): bu plan metne dokunmaz; avukat paketinde.
+12. **Obifin'de kaldırmayı yalnız yönetici yapar** (Görev 13–14): otomatik hizmet sonu işi yerel veriyi siler, `bankaapi/sil` çağırmaz; paylaşılan Obifin kullanıcısında "Kaldır ve sil" de Obifin'e gitmez. Alternatif (paylaşılmayan kullanıcıda otomatik kaldırma) insan onayı olmadan dış sistemde geri dönüşsüz iş yapacağı için seçilmedi.
+13. **Obifin bağlantılı yayıncının silinmesi reddedilir** (Görev 13): önce "Kaldır ve sil". Alternatif (purge içinde kaldırma) silme isteğine ağ çağrısı ve ikinci bir Obifin yolu eklerdi.
+14. **Lisans yenilenince** (Görev 14) kendiliğinden durdurulmuş bağlantı `Unverified`'a döner ve silinmez; yöneticinin durdurduğu açılmaz, 30. günde yerel verisi silinir.
+15. **`customer.purged` denetim satırındaki `preEmail`** 24 ay kalır (mevcut davranış; 36 ay muafiyetinden çıkarıldı). Avukat "hiç yazılmasın" derse `Purge`'te tek satır.
+16. **Banka veri talebinde doğrulama yöntemleri** (Görev 17): ıslak imzalı dilekçe / KEP–güvenli e-imza–mobil imza / kayıtlı iletişim kanalı, her birinde IBAN sahipliği banka belgesiyle. Liste avukata sorulmalı (Başvuru Tebliği kanallarıyla yeterli mi).
+17. **Geri yükleme sonrası yeniden uygulama** (Görev 9, 23): dış kopya saatlik e-posta; son yedekle felaket arasındaki en çok bir saat için canlı veritabanı gerekir. Avukata: bu boşluk ve elle yeniden uygulama prosedürü yeterli mi.
 
 ---
 
@@ -88,7 +96,7 @@
 | 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `BankConnectionTerminator.cs`, `Controllers/Customers/AdminCustomersController.cs` (açık talepleri kapat); `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs`; `BankConnectionTerminatorTests.cs`, `GdprFlowTests.cs` |
 | 18 | YENİ `Pages/Admin/BankaVeriTalepleri/Index.cshtml(.cs)`; `Pages/Shared/_AdminLayout.cshtml`; `Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)`; `AuditEvents.cs`; YENİ testler `Pages/Admin/AdminBankaVeriTalepleriPageTests.cs`, `Pages/Admin/AdminDeletionRequestsPageTests.cs` |
 | 19 | `Controllers/Panel/PanelPaymentsController.cs`; test `Services/Push/ShopperOrderPaymentPushTests.cs` |
-| 20 | `Services/Audit/SecurityDataRetentionJob.cs`; `Pages/Admin/Shoppers/DeletionRequests.cshtml`; test `Services/Audit/SecurityDataRetentionJobTests.cs` |
+| 20 | `Services/Audit/SecurityDataRetentionJob.cs` (telefon + banka talebi maskesi); `Pages/Admin/Shoppers/DeletionRequests.cshtml`; test `Services/Audit/SecurityDataRetentionJobTests.cs` |
 | 21 | YENİ `Domain/DataControllerProfile.cs`, `Services/Privacy/DataControllerProfiles.cs`, `Controllers/Panel/PanelDataControllerController.cs`; `LicenseDbContext.cs`; `Pages/Admin/Customers/Detail.cshtml(.cs)`; `Controllers/Customers/AdminCustomersController.cs`; `AuditEvents.cs`; göç `*_DataControllerProfiles`; YENİ testler `Services/Privacy/DataControllerProfilesTests.cs`, `Controllers/Panel/PanelDataControllerControllerTests.cs` |
 | 22 | `Pages/Public/IntakeForm.cshtml(.cs)`; `Controllers/Shopper/ShopperBroadcastersController.cs`; testler `Pages/Public/IntakeFormDataControllerTests.cs` (YENİ), `Controllers/Shopper/ShopperBroadcastersCodeLookupTests.cs`, YENİ `Controllers/Shopper/ShopperDataControllerTests.cs` |
 | 23 | `deploy/scripts/backup-sql-to-r2.sh`, `deploy/scripts/backup-env-to-r2.sh`, `deploy/README.md` |
@@ -8738,6 +8746,13 @@ Yeni işleyici:
         _db.DataControllerProfiles.RemoveRange(_db.DataControllerProfiles.Where(p => p.CustomerId == id));
 ```
 
+ve Görev 9'daki `Record("Customers.Email+Name+PasswordHash+Notes", …);` satırının ALTINA (kalıcı imha kaydı):
+
+```csharp
+        Record("DataControllerProfiles", DataDestruction.Actions.Deleted,
+            await _db.DataControllerProfiles.CountAsync(p => p.CustomerId == id, ct));
+```
+
 - [ ] **Adım 7: Göçü üret ve incele**
 
 Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add DataControllerProfiles --output-dir Data/Migrations`
@@ -9463,7 +9478,7 @@ git diff --stat origin/master..HEAD
 git diff origin/master..HEAD -- OrderDeck.LicenseServer.Tests | grep -nE "TR[0-9]{24}|[0-9]{11}|Password *= *\"[^\"]+\"" || echo "LITERAL_YOK"
 git diff origin/master..HEAD -- 'OrderDeck.LicenseServer/Data/Migrations/*.cs' | grep -nE "DropColumn|DropTable|RenameColumn|AlterColumn" || echo "DARALTMA_YOK"
 ```
-Expected: 25 commit (plan + 24 görev; P0 ayrı PR'a alındıysa bu dalda yalnız P1'inkiler); `LITERAL_YOK` (eşleşme çıkarsa satıra bak: üretilmiş değer mi, literal mi); `DARALTMA_YOK`.
+Expected: plan commit'leri + her görevin commit adımı başına bir commit (Görev 9'da iki; P0 ayrı PR'a alındıysa bu dalda yalnız P1'inkiler) — sayıyı görev listesindeki "Commit" adımlarıyla karşılaştır; `LITERAL_YOK` (eşleşme çıkarsa satıra bak: üretilmiş değer mi, literal mi); `DARALTMA_YOK`. Ayrıca `git grep -n "bankaapi/sil\|RemoveBankConnectionAsync" OrderDeck.LicenseServer` yalnız `BankConnectionTerminator.RemoveFromObifinAsync`'i ve istemciyi göstermeli (Obifin'de kaldırmanın tek yolu).
 
 - [ ] **Adım 5: Sonuç**
 
@@ -9476,25 +9491,26 @@ Push ve PR yok (Burak isterse). Burak'a özet: commit listesi, paket sonucu, "Pr
 | Not §5.1 | Görev |
 |---|---|
 | P0-1 lisans bitince çekimi durdur, Disabled + DisabledAt | 1 |
-| P0-2 giden ve sıfır tutarlı hareketi yazma; mevcut satırları sil | 2, 8 |
+| P0-2 giden ve sıfır tutarlı hareketi yazma (yön yalnız işaretli tutardan); mevcut satırları sil | 2, 8 |
 | P0-3 VKN/TCKN kodu yazımını kaldır, eski değerleri boşalt | 3, 8 |
 | P0-4 ham kayıt beyaz listesi, 30 gün | 5, 8 |
-| P0-5 açıklamada IBAN/TCKN maskeleme | 4, 8 |
-| P0-6 MaskIban kısa değer | 6 |
+| P0-5 açıklamada IBAN/TCKN maskeleme (sınırsız kalıp + mod-97) | 4, 8 |
+| P0-6 MaskIban kısa değer; mevcut kısa/eski maskeler | 6, 8, 11 |
 | P0-7 ilk çekim bağlantı anına; bağlanmamış ilk çekim satırlarını sil | 7, 8 |
-| P1-8 purge'ün banka adımı | 15 |
-| P1-9 IBAN ile arama/dışa aktarma/silme, talep kaydı, son tarih; silme taleplerinde son tarih | 17, 18 |
-| P1-10 durdur / kaldır ve sil; hizmet sonu + 30 gün işi; Obifin `bankaapi/sil` (hareket silme ucu yok → uyarı) | 13, 14 |
-| P1-11 saklama işlem tarihinden; eşleşmeyen 30 gün; eşleştirme satırı 180 gün; IBAN bağı LastConfirmedAt + 12 ay | 10 |
-| P1-12 NormalizeIban (harf/rakam, TR 26, mod-97), sayaç, maskeli kaynaklı özet temizliği | 11 |
+| P1-8 purge'ün banka adımı (kanıtında kullanıcı adı geçen hareketler dahil) | 15 |
+| P1-9 IBAN ile arama/dışa aktarma/silme, talep kaydı, doğrulama yöntemi, son tarih; veri silinince açık talebin kapanması; silme taleplerinde son tarih | 17, 18, 20 |
+| P1-10 durdur / kaldır ve sil (Obifin tarafı lisansa özgü, paylaşılan kullanıcıda Obifin'e gidilmez); hizmet sonu + 30 gün işi (yalnız yerel, lisans yenilenince silmez); Obifin bağlantılı yayıncı silmesinin reddi; Obifin `bankaapi/sil` (hareket silme ucu yok → uyarı) | 13, 14 |
+| P1-11 saklama işlem tarihinden; eşleşmeyen 30 gün; eşleştirme satırı 180 gün; IBAN bağı LastConfirmedAt + 12 ay; gerçek SQL Server testi | 10 |
+| P1-12 NormalizeIban (harf/rakam, TR 26, mod-97), sayaç, maskeli kaynaklı özet temizliği; sıfırlamada özetlerin kalması ve yeniden öğrenme kapısı | 11 |
 | P1-13 lisans başına izinli hesap listesi, uyarı | 12 |
-| P1-14 kalıcı imha kaydı ≥ 36 ay, denetim budaması muafiyeti, iş düşerse e-posta | 9 |
-| P1-15 (denetim) sayfa görüntüleme denetimi; kullanıcı adı yerine kimlik | 16 |
-| P1-16 yerel SQL yedeği şifreli/1 gün; HashKey ayrı | 23 |
+| P1-14 kalıcı imha kaydı ≥ 36 ay (yayıncı silmesi, kimlik değişimi, temizlik komutu dahil), kişisel veri içermeyen olaylarla sınırlı denetim muafiyeti, iş düşerse e-posta, veritabanı dışındaki saatlik kopya | 9 |
+| P1-15 (denetim) sayfa görüntüleme denetimi; kullanıcı adı yerine kimlik; eski satırların çevrilmesi | 16 |
+| P1-16 yerel SQL yedeği şifreli/yalnız bugünkü; HashKey ayrı; geri yüklemeden sonra silmeleri yeniden uygulama prosedürü | 23 (+ 9) |
 | P1-17 veri sorumlusu bilgileri: model, admin, panel, form, Shopper ucu | 21, 22 |
 | P1-19 FCM gövdesinden tutar ve ret gerekçesi | 19 |
 | P1-22 TR/EN yürürlük tarihi eşitlik testi | 24 |
-| P2-25 silme talebindeki telefon | 20 |
+| P2-25 silme talebindeki telefon (ve kapanmış banka talebinin maskesi) | 20 |
+| P1-15 (iki aşamalı doğrulama), P1-18 / K-8 (Shopper, panel, WPF ödeme şablonu) | Kapsam dışı tablosu: takip planı ve sahibi orada |
 
 
 
