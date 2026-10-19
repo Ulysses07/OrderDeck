@@ -1676,6 +1676,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             AppendToQueue(leftover);
         }
+        // §5.8: kuyruk yeni yayından yüklendi. Başka bilgisayarın bekletilen satırı (bağlantı yokken "basmadan bitir")
+        // yeni yayının kuyruğuna da teklife de girmez: kuyrukta bekletilen satır kalmadıysa "kuyrukta bekliyor" notu
+        // bayat — şeritten kalkar.
+        ClearStaleHeldNotice();
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))] private async Task EndStream()
@@ -1767,7 +1771,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             var held = _editor.PrintHeldRows(PrintQueue.Select(r => r.Id).ToList());
             if (held.Count > 0 && PrintQueue.All(r => held.Contains(r.Id)))
             {
-                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count));
+                ShowHeldNotice(Services.Sync.SalesCommandMessages.EndStreamHeld(held.Count), streamLeftOpen: true);
                 return;
             }
         }
@@ -1782,6 +1786,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Yayın bitti: "Basılanlar" boşalır; o yayının listesi rapordan açılır (K6).
         ShowActiveSessionInPrintedTab();
         ForgetStreamPrice();
+        // §5.8: yayın bitti. Kuyrukta bekletilen satır kalmadıysa (ör. bağlantı geldi, "basmadan bitir") bekletme notu
+        // bayat — şeritten kalkar. Kaldıysa (bağlantı yokken "basmadan bitir") "Yayın açık bırakıldı" yanlış: yerine
+        // "kuyrukta bekliyor" geçer.
+        ClearStaleHeldNotice(streamEnded: true);
 
         // Yayın bitince rapor kendiliğinden açılır. Sayfa await EDİLMİYOR:
         // burası yayını bitiren akışın sonu, rapor kapanınca yapılacak iş
@@ -2164,6 +2172,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var notes = result.NoticeTexts.ToList();
         if (result.ProblemText is { } problem) notes.Insert(0, problem);
         if (notes.Count > 0) ShowSalesNotice([], notes);
+        // §5.8: bekletilen satır kuyruktan çıktıysa (ör. bağlantı geldi, "Kuyruğu temizle") "kuyrukta bekliyor" notu
+        // bayat — şeritten kalkar. Bekletilen satır kuyrukta kaldıysa (çevrimdışı iptali uygulanamadı) not kalır.
+        ClearStaleHeldNotice();
     }
 
     /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.
@@ -2213,7 +2224,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (snapshot.Count == 0) return true;
 
         return await RunPrinterJobAsync(snapshot.Select(vm => vm.Id).ToHashSet(),
-            () => PrintCoreAsync(snapshot), isQueue: true);
+            async () =>
+            {
+                var ok = await PrintCoreAsync(snapshot);
+                // §5.8: bekletilen satır basıldıysa "kuyrukta bekliyor" notu bayat — kapı kapanmadan şeritten kalkar,
+                // uçuştaki baskıyı bekleyen EndStream de güncel şeridi görür. Seçimle basıldıysa notun sayısı (kâğıdın
+                // bekletilenleri) kuyruktaki bekletilen satırların sayısına döner.
+                ClearStaleHeldNotice();
+                return ok;
+            }, isQueue: true);
     }
 
     /// <summary>Yazıcıya giden HER iş (kuyruk baskısı, yeniden baskı) bu kapıdan geçer: aynı anda tek iş,
