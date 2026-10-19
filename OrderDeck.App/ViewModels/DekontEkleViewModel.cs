@@ -316,7 +316,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// çekmecesini açar.
     ///
     /// W2-08: adım <see cref="Services.Sales.IShipmentEditor"/>'dan geçer. Mod On'da adım atlanırsa (çevrimdışı, komut
-    /// ucu yok, ret) uyarı <see cref="ShipmentWarning"/>'e yazılır. Hiç fırlatmaz.
+    /// ucu yok, ret) ya da adım hata verirse (her iki mod) uyarı <see cref="ShipmentWarning"/>'e yazılır. Hiç
+    /// fırlatmaz.
     /// </summary>
     private async Task<ShipmentDecisionContext?> TryEvaluateShipmentAsync(ShipmentDirective directive)
     {
@@ -343,9 +344,12 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            // Hook silent: ana akışı bozmasın — bir sonraki gelen ödemede tekrar denenir (Shipment idempotent).
+            // Ana akışı bozmasın — bir sonraki gelen ödemede tekrar denenir (Shipment idempotent). Ama sessiz değil:
+            // 2026-10-19'dan beri çekmece Payment yazmıyor, uyarı olmazsa operatör "oldu" sanır.
             _log.LogWarning(ex,
-                "Shipment evaluate hook hata verdi (silent skip); ana save akışı etkilenmedi.");
+                "Gelen ödeme kargo adımı hata verdi; uyarı şeride yazıldı.");
+            ShipmentWarning = Services.Sync.SalesCommandMessages.DekontShipmentFailed(
+                Services.Sync.SalesCommandMessages.ContentConflict);
             return null;
         }
     }
