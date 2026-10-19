@@ -153,6 +153,8 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Privacy.TcknProtector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdResolver>();
+        // Ortak bakiye (spec 2026-10-11): kişi, çekim grubu okuyucuları, grup geri alması, toplanmış liste.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalance>();
         // Yayın ve etiket senkronu (spec 2026-10-13): kopya kaydı ve protokolsüz istek izi; ayarlar compose
         // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge,
         // SalesSync__ForceEndSilenceMinutes). Sessizlik eşiği açılışta doğrulanır: 0 ya da eksi değer başka
