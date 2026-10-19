@@ -188,7 +188,7 @@ public sealed class ShipmentSyncV2Tests : IDisposable
         local.Revision.Should().Be(0, "kilit altında yazıldı: kuyruğa alma tetikleyicisi susar");
         _shipments.GetUnsynced().Should().BeEmpty("yankı yok: sunucunun satırı yeniden gönderilmez");
 
-        // Sonraki dekont: kargolanmış dosyaya değil yeni dosyaya bağlanır.
+        // Sonraki gelen ödeme (Gelen Ödemeler çekmecesi): kargolanmış dosyaya değil yeni dosyaya bağlanır.
         var sessions = new SessionRepository(_db);
         var labels = new LabelRepository(_db);
         var sessionId = Guid.NewGuid().ToString("N");
@@ -198,14 +198,12 @@ public sealed class ShipmentSyncV2Tests : IDisposable
             1_760_001_100L, null));
         var settings = new AppSettings();
         var shipping = new ShippingSettingsProvider(new SalesSyncStateRepository(_db), settings);
-        var vm = new OrderDeck.App.ViewModels.DekontEkleViewModel(new PaymentRepository(_db), customers, sessions,
-            new PaymentMatcherService(labels, shipping), labels,
-            new ShipmentService(_shipments, labels, shipping, () => 1_760_002_000L),
-            new OrderDeck.PdfParsing.PdfDekontParser(), settings, shipping, new Clock(),
+        var vm = new OrderDeck.App.ViewModels.DekontEkleViewModel(customers, sessions,
+            new PaymentMatcherService(labels, shipping),
+            new ShipmentService(_shipments, labels, shipping, () => 1_760_002_000L), shipping,
             NullLogger<OrderDeck.App.ViewModels.DekontEkleViewModel>.Instance)
         {
-            PayerName = "Gönderen", AmountText = "120", ReferansNo = $"ref-{Guid.NewGuid():N}",
-            PaidAt = DateTime.Today, CustomerPlatform = "instagram", CustomerUsername = "@alici_ornek",
+            AmountText = "120", CustomerPlatform = "instagram", CustomerUsername = "@alici_ornek",
         };
 
         vm.TrySave().Kind.Should().Be(OrderDeck.App.ViewModels.DekontEkleViewModel.SaveResultKind.Saved);

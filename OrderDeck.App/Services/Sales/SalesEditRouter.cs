@@ -1152,7 +1152,7 @@ public sealed class SalesEditRouter : ILabelEditor
     {
         if (_connectivity.UnavailableReason is not null)
         {
-            _log.LogInformation("Dekont kargo adımı: sunucu kullanılamıyor; adım atlandı (dekont kaydedildi)");
+            _log.LogInformation("Dekont kargo adımı: sunucu kullanılamıyor; adım atlandı");
             return SalesShipmentStepResult.Skipped(SalesCommandMessages.DekontShipmentDeferred);
         }
 

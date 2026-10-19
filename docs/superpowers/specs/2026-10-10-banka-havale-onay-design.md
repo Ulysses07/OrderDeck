@@ -43,7 +43,7 @@ Kaynaklar: LiveDeck `origin/master` 3d484d73, OrderDeck-Mobile `origin/main` 76f
 **2. `PaymentExpectationAllocation` (yeni).** `(PaymentId, ExpectationId, Amount, CreatedAt, ReversedAt?)`. Hangi ödemenin hangi beklentinin ne kadarını kapattığını tutar. Onayın SaveChanges'inde yazılır; geri almada `ReversedAt` alır ve `PaidAmount` yeniden hesaplanır. Tek bir `FulfilledByPaymentId` bunu taşıyamazdı: bir ödeme birden çok beklentiyi, bir beklenti birden çok ödemeyi kapatabilir.
 
 **3. `Payment`'a eklenecek alanlar**
-- `WpfCustomerId Guid?`: shopper dekontunda gönderim anında `ShopperBroadcasterLinks.WpfCustomerId`'den doldurulur, eski satırlar geri doldurulur. WPF dekontunda W3 ile sync öğesine eklenir; `SyncPaymentItem` bugün müşteri taşımıyor (`LicensesPaymentsSyncController.cs:44-51`). Bilinmiyorsa null kalır ve §5-6'da "müşterisi bilinmeyen" sayılır.
+- `WpfCustomerId Guid?`: shopper dekontunda gönderim anında `ShopperBroadcasterLinks.WpfCustomerId`'den doldurulur, eski satırlar geri doldurulur. WPF dekontunda W3 ile sync öğesine eklenir; `SyncPaymentItem` bugün müşteri taşımıyor (`LicensesPaymentsSyncController.cs:44-51`). *(2026-10-19: WPF dekont kaydı kalktı, çekmece "Gelen Ödemeler" oldu ve Payment yazmıyor. WPF sync öğesine müşteri kimliği eklenmeyecek (§8 W3 maddesi geçersiz); WPF'ten gelmiş eski satırlar müşterisiz kalır.)* Bilinmiyorsa null kalır ve §5-6'da "müşterisi bilinmeyen" sayılır.
 - `Source` (Receipt / Bank). PR2'de mevcut satırlar `Receipt` ile geri doldurulur.
 - `ApprovalSource` (ReceiptHuman / BankHuman / BankAuto)
 - `ApprovedByOperatorId Guid?`: personel onayında `TenantClaims.GetOperatorId` (`TenantClaims.cs:72`).
@@ -132,7 +132,7 @@ Geri alma ayrı bir durum değildir; `Reverted` olayı yazılır ve satır `Unma
 - **Beklenti yoksa ya da akış güvenilir değilse** fazla hesaplanmaz. Bakiyeye hiçbir şey yazılmaz, "Eksik" gösterilmez, alt sayfa "İstenen tutar bilinmiyor" der. Bu, sahibin kararının uygulanışıdır: "fazla" ancak bilinen bir isteğe göre vardır. Havalenin tamamını fazla saymak müşteriye aynı parayı iki kez kredi yazardı. Pilot PR5 ve W2'den önce koştuğu için pilotta hiç bakiye satırı yazılmaz.
 - İstek gösterilen fazlayı ve kalanı da (`shownOverpayment`, `shownRemaining`) taşır. Sunucu yeniden hesaplar; tutmazsa (beklenti arada değiştiyse) 409 `stale` döner.
 - **Eksik (karar §16-5):** "Evet" ödemeyi dekont onayı gibi onaylar (kargolanacak etiketi dahil). Beklentinin kalanı açık kalır (`PaidAmount < Amount`, `Status = Open`); panelde, WPF müşteri kartında ve havale listesinde **"Eksik X ₺"** görünür.
-- Kalan > 0 ise alt sayfa, WPF dekont girişindeki "Kargo Ücreti Eksik" sorusunu (`DekontEkleViewModel.cs:267`) aynen sorar: Normal / Beklet / Alıcı öder. Seçim varsayılan gelmez ve `shipmentDirective` olarak gönderilir. Bu olmasaydı banka satırı varsayılan `Normal` yönergeyle kargolanır, kargo bedelini satıcı öderdi.
+- Kalan > 0 ise alt sayfa, WPF dekont girişindeki (2026-10-19'dan beri "Gelen Ödemeler" çekmecesi) "Kargo Ücreti Eksik" sorusunu (`DekontEkleViewModel.cs:267`) aynen sorar: Normal / Beklet / Alıcı öder. Seçim varsayılan gelmez ve `shipmentDirective` olarak gönderilir. Bu olmasaydı banka satırı varsayılan `Normal` yönergeyle kargolanır, kargo bedelini satıcı öderdi.
 - Otomatik onayda fazla da eksik de oluşmaz, çünkü kural kuruşu kuruşuna eşitlik ister (§5-5).
 
 ### 4.4 Dekont ile havale aynı borç için gelirse
@@ -265,7 +265,7 @@ Genel bakiye geri alma ucu `bank-overpayment` satırını 409 `use-bank-revert` 
   - Göç `SyncCursor`'daki `payment-decision-in` satırını (`PaymentSyncService.cs:33`) siler. İmleç pilottaki onayların ötesine geçmiş durumda; yeniden çekim olmadan o onaylar WPF'e hiç inmez.
   - Sunucunun `UpdatedAt`'i yeniyse upsert `PayerName`'i de (boş dahil) yazar; purge temizliği WPF kopyasına böyle ulaşır. Banka satırında `PayerName` zaten boş gelir.
   - Çekilen banka ödemesi WPF'in kargo akışını tetiklemez; yönerge sunucudan gelir. `RecipientPays` geldiyse müşterinin yapışkan bayrağı (`DekontEkleViewModel.cs:376-381`) uygulanır.
-  - WPF dekontunun sync öğesine, biliniyorsa, müşteri kimliği eklenir (§2.3).
+  - ~~WPF dekontunun sync öğesine, biliniyorsa, müşteri kimliği eklenir (§2.3).~~ **Geçersiz (2026-10-19):** WPF artık dekont yazmıyor; "Gelen Ödemeler" çekmecesi yalnız kargo zincirini yürütür, Payment satırı üretmez. payments/sync sözleşmesi değişmedi; yerelde gönderilmemiş eski satırlar müşterisiz gider.
   - `LabelOf`'a `bank-overpayment` → "Havale fazlası" eklenir.
 
 ## 9. Çoklu PC ve panel yakınsaması
@@ -423,7 +423,7 @@ Mercekler: **kod** = kod tutarlılığı, **para** = para güvenliği, **kvkk** 
 | 3 | kod | Önemli | PaymentId yazan yollar Decision'ı atlıyor | İşlendi §3, §4.4, §11.2 (birleşik: 18, 44) |
 | 4 | kod | Önemli | Gölge IBAN çifti BankConfirm'e yükselmiyor | İşlendi §2.5 (upsert) |
 | 5 | kod | Önemli | Ortak IBAN işareti silmeyle kayboluyor | İşlendi §2.5 `BankIbanState` (birleşik: 25) |
-| 6 | kod | Önemli | WPF dekontunun müşterisi bilinmiyor | İşlendi §2.3, §5-6, §8 W3 (birleşik: 17) |
+| 6 | kod | Önemli | WPF dekontunun müşterisi bilinmiyor | İşlendi §2.3, §5-6, §8 W3 (birleşik: 17). *2026-10-19: W3 maddesi geçersiz, WPF dekont yazmıyor* |
 | 7 | kod | Önemli | Beklentisiz fazla, overpaymentToBalance çelişkisi | İşlendi §4.3, §6, §16 "4 (uygulama)" (birleşik: 16, 33) |
 | 8 | kod | Önemli | Fazla geri alınamayınca geri alma düşüyor | İşlendi §2.8, §11.2 + sahibe soru 2 (birleşik: 23) |
 | 9 | kod | Önemli | Seçici projeksiyon id'si döndürmüyor | İşlendi §6 seçici ucu, §7 (birleşik: 34) |

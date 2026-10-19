@@ -269,7 +269,9 @@
     </Style>
 
     <!-- ══ Tarih seçici ═══════════════════════════════════════════════════
-         Faz 2b (2026-08-10), DekontEkleDrawer'ın "ÖDEME TARİHİ" alanı için.
+         Faz 2b (2026-08-10), DekontEkleDrawer'ın "ÖDEME TARİHİ" alanı için
+         yazıldı; o alan 2026-10-19'da dekont kaydıyla kalktı, tüketici
+         artık PeriodReportPage.
          O tarihte yerleşik kontrolleri karartan eski tema sözlüğünde
          DatePicker ile Calendar HİÇ yoktu: koyu formun ortasında
          bembeyaz bir kutu ve açık renkli bir takvim çıkıyordu. Pencere

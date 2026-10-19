@@ -1,28 +1,23 @@
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using Microsoft.Win32;
 using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.ViewModels;
 
 namespace OrderDeck.App.Views.Drawers;
 
 /// <summary>
-/// Dekont giriş formu, çekmece içinde. Eski <c>DekontEkleDialog</c>
-/// penceresinin yerini alır.
+/// "Gelen Ödemeler" formu, çekmece içinde (2026-10-19'a kadar "Yeni Dekont"; eski <c>DekontEkleDialog</c>
+/// penceresinin yerini almıştı).
 ///
 /// Pencere sürümünde kaydetme ZİNCİRİ burada, code-behind'daydı:
 /// <c>TrySave</c> → (kargo yönergesi modal'ı) → <c>CommitWithDirective</c> →
 /// (kargo eşiği modal'ı) → <c>ApplyShipmentDecision</c>. O akış
 /// <see cref="DekontEkleViewModel.SaveAsync"/>'e taşındı (spec §9, Faz 2b/4);
-/// geriye yalnız "hangi çekmecedeyim" bilgisi kaldı. Dosya seçici hâlâ
-/// burada: <see cref="OpenFileDialog"/> bir işletim sistemi penceresi,
-/// spec'in kaldırdığı uygulama içi pop-up'lardan değil.
+/// geriye yalnız "hangi çekmecedeyim" bilgisi kaldı. PDF dosya seçici dekont
+/// kaydıyla birlikte kalktı.
 /// </summary>
 public partial class DekontEkleDrawer : UserControl
 {
-    private const int MaxPdfBytes = 20 * 1024 * 1024;
-
     private readonly Drawer _drawer;
     private readonly DekontEkleViewModel _vm;
 
@@ -40,37 +35,8 @@ public partial class DekontEkleDrawer : UserControl
     {
         // false: doğrulama hatası (ErrorMessage bağlı) ya da operatör kargo
         // yönergesinden vazgeçti — çekmece açık kalsın, form düzeltilebilsin.
+        // Zincir zaten sürüyorsa (çift tıklama) da false: kapatmayı ilk
+        // tıklamanın zinciri yapar.
         if (await _vm.SaveAsync()) _drawer.Close(true);
-    }
-
-    private void OnPickPdf(object sender, RoutedEventArgs e)
-    {
-        var picker = new OpenFileDialog
-        {
-            Title = "Dekont PDF'i seç",
-            Filter = "PDF dosyaları (*.pdf)|*.pdf",
-            CheckFileExists = true
-        };
-        if (picker.ShowDialog(Window.GetWindow(this)) != true) return;
-
-        // PDF okuma hataları ErrorMessage'a yazılıyor: pencere sürümünde üç
-        // ayrı MessageBox vardı, çekmecede hata için zaten sabit bir satır
-        // var (spec §6.3 "satır içi onay" ile aynı gerekçe).
-        try
-        {
-            var bytes = File.ReadAllBytes(picker.FileName);
-            if (bytes.Length > MaxPdfBytes)
-            {
-                _vm.ErrorMessage =
-                    "PDF dosyası 20 MB'tan büyük. Bu boyutta bir dekont olası değil — "
-                    + "yanlış dosya seçmiş olabilir misin?";
-                return;
-            }
-            _vm.ErrorMessage = _vm.TryFillFromPdf(bytes);
-        }
-        catch (System.Exception ex)
-        {
-            _vm.ErrorMessage = "PDF okunurken hata: " + ex.Message;
-        }
     }
 }

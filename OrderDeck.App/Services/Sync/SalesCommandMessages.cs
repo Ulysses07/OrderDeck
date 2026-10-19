@@ -64,15 +64,18 @@ public static class SalesCommandMessages
     public const string ShippingLicenseWideChip = "Lisans geneli · bütün bilgisayarlar";
 
     /// <summary>
-    /// Dekont kaydedildi ama kargo adımı yapılamadı, sunucuya ulaşılamadığı için (§5.8 "Dekont kaydı"): çevrimdışı,
-    /// komut ucu yok, sunucu hatası ya da kip henüz hazır değil. Bir sonraki dekont bütün bağlanmamış etiketleri alır.
+    /// Gelen Ödemeler çekmecesinin kargo adımı yapılamadı, sunucuya ulaşılamadığı için (§5.8 "Dekont kaydı"):
+    /// çevrimdışı, komut ucu yok, sunucu hatası ya da kip henüz hazır değil. 2026-10-19'dan beri çekmece Payment
+    /// yazmıyor: kaydedilen bir şey yok, operatör bağlantı gelince yeniden kaydeder; o kayıt bütün bağlanmamış
+    /// etiketleri alır.
     /// </summary>
-    public const string DekontShipmentDeferred = "Dekont kaydedildi; kargo adımı bağlantı gelince bir sonraki dekontta yapılır.";
+    public const string DekontShipmentDeferred =
+        "Kargo adımı yapılamadı: sunucuya ulaşılamadı. Bağlantı gelince Gelen Ödemeler'den yeniden kaydet.";
 
-    /// <summary>Dekont kaydedildi ama sunucu kargo adımını reddetti (güncelleme gerekli, küme çok büyük, araya başka
-    /// bilgisayarın değişikliği girdi, …): "Dekont kaydedildi; kargo adımı yapılamadı: …".</summary>
+    /// <summary>Sunucu Gelen Ödemeler çekmecesinin kargo adımını reddetti (güncelleme gerekli, küme çok büyük, araya
+    /// başka bilgisayarın değişikliği girdi, …): "Kargo adımı yapılamadı: …".</summary>
     public static string DekontShipmentFailed(string reason) =>
-        "Dekont kaydedildi; kargo adımı yapılamadı: " + Sentence(reason);
+        "Kargo adımı yapılamadı: " + Sentence(reason);
 
     /// <summary>Eşik çekmecesinin ya da dekont yönergesinin kargo kararı sunucuda uygulanamadı (§5.3): "Kargo kararı
     /// uygulanamadı: …". Dosyanın güncel hâli yerel aynaya yazıldı.</summary>

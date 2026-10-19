@@ -488,7 +488,8 @@ internal sealed class SalesPc
             local => Labels.CorrectPrices(local, newPrice));
     }
 
-    /// <summary>Dekont kaydedildikten sonraki kargo adımı (DekontEkleViewModel'in çağrısı).</summary>
+    /// <summary>Gelen Ödemeler kaydının kargo adımı (DekontEkleViewModel'in çağrısı; 2026-10-19'dan beri Payment
+    /// yazılmaz).</summary>
     public Task<SalesShipmentStepResult> DekontAsync(string customerId, ShipmentDirective directive = ShipmentDirective.Normal)
         => Editor.RunDekontShipmentStepAsync(customerId, directive);
 
