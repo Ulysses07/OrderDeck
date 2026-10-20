@@ -66,7 +66,8 @@ public sealed class DataDestructionDigestJob
 
     public static string ToCsv(IReadOnlyList<DataDestructionRecord> rows)
     {
-        static string Clean(string? value) => (value ?? "").Replace(';', ',').Replace('\n', ' ').Replace('\r', ' ');
+        // Savunma: DataDestruction yazarken zaten çevirir (dış kopya tabloyla birebir); elle ya da eski kodla yazılmış satır için.
+        static string Clean(string? value) => DataDestruction.CsvSafe(value);
         var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
         var first = rows.Count == 0 ? default : rows.Min(r => r.OccurredAt).UtcDateTime;

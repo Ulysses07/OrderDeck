@@ -43,15 +43,23 @@ public static class DataDestruction
     public static string ActorOf(ClaimsPrincipal user)
         => user.FindFirst("sub")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? AdminActor;
 
-    /// <summary>Kaydı izleyiciye EKLER, kaydetmez: silmeyle aynı SaveChanges'te yazılsın. Sıfır satırlık işlem yazılmaz.</summary>
+    /// <summary>Dış kopyanın (<see cref="DataDestructionDigestJob.ToCsv"/>) ayracı <c>;</c> ve satır sonu tabloya girmez: <c>;</c> →
+    /// <c>,</c>, satır sonu → boşluk. E-postadaki değer tablodakiyle birebir aynı kalır; geri yüklemede ikisi karşılaştırılır.
+    /// Ölçüt yazılırken zaten <c>;</c> kullanılmaz (<c>, </c> ya da <c> / </c>); bu, unutulan bir yazımın güvencesi.</summary>
+    public static string CsvSafe(string? value) => (value ?? "").Replace(';', ',').Replace('\r', ' ').Replace('\n', ' ');
+
+    /// <summary>Kaydı izleyiciye EKLER, kaydetmez: silmeyle aynı SaveChanges'te yazılsın. Sıfır satırlık işlem yazılmaz. Serbest
+    /// metinler (<paramref name="target"/>, <paramref name="criterion"/>, <paramref name="actor"/>) <see cref="CsvSafe"/>'ten
+    /// geçer.</summary>
     public static void Record(LicenseDbContext db, Guid? licenseId, string target, string action, int rowCount,
         string criterion, string trigger, string actor, Guid? requestId = null, Guid? subjectId = null)
     {
         if (rowCount <= 0) return;
         db.DataDestructionRecords.Add(new DataDestructionRecord
         {
-            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, LicenseId = licenseId, SubjectId = subjectId, Target = target,
-            Action = action, RowCount = rowCount, Criterion = criterion, Trigger = trigger, RequestId = requestId, Actor = actor,
+            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, LicenseId = licenseId, SubjectId = subjectId,
+            Target = CsvSafe(target), Action = action, RowCount = rowCount, Criterion = CsvSafe(criterion), Trigger = trigger,
+            RequestId = requestId, Actor = CsvSafe(actor),
         });
     }
 
@@ -61,7 +69,7 @@ public static class DataDestruction
     public static void RecordRun(LicenseDbContext db, string job, string criterion)
         => db.DataDestructionRecords.Add(new DataDestructionRecord
         {
-            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, Target = job, Action = Actions.RunCompleted, RowCount = 0,
-            Criterion = criterion, Trigger = Triggers.Retention, Actor = SystemActor,
+            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, Target = CsvSafe(job), Action = Actions.RunCompleted,
+            RowCount = 0, Criterion = CsvSafe(criterion), Trigger = Triggers.Retention, Actor = SystemActor,
         });
 }

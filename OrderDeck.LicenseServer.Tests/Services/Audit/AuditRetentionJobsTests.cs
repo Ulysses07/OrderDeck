@@ -217,8 +217,10 @@ public class AuditRetentionJobsTests : IClassFixture<ApiFactory>
         records.Where(r => r.Target == "AuditLogs").Should().OnlyContain(r => r.Action == DataDestruction.Actions.Deleted);
         records.Where(r => r.Target == "AuditLogs").Select(r => (r.Criterion, r.RowCount)).Should().BeEquivalentTo(new[]
         {
-            ("OccurredAt+24ay", 3), ("OccurredAt+24ay", 2), ("OccurredAt+36ay;imha olayı", 2),
+            ("OccurredAt+24ay", 3), ("OccurredAt+24ay", 2), ("OccurredAt+36ay, imha olayı", 2),
         });
+        // Ölçütler dış kopyanın (CSV) ayracını taşımaz: e-postadaki değer tablodakiyle aynı.
+        records.Should().OnlyContain(r => !r.Criterion.Contains(';'));
         records.Should().ContainSingle(r => r.Action == DataDestruction.Actions.RunCompleted)
             .Which.Should().Match<DataDestructionRecord>(r => r.Target == AuditRetentionJobs.JobId && r.RowCount == 0);
         (await db.AuditLogs.CountAsync()).Should().Be(2);

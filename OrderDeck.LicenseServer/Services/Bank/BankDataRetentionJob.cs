@@ -72,7 +72,7 @@ public sealed class BankDataRetentionJob
                 raw, desc, evidence);
         // Başarılı koşunun kaydı, silecek satır olmasa da (iç imha prosedürü §4.2-3: son başarılı çalışma buradan okunur).
         DataDestruction.RecordRun(_db, JobId,
-            $"RawJson FetchedAt+{_opt.RawJsonRetentionDays}g; açıklama, kanıt +{_opt.DescriptionRetentionDays}g");
+            $"RawJson FetchedAt+{_opt.RawJsonRetentionDays}g / açıklama, kanıt +{_opt.DescriptionRetentionDays}g");
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
         return (raw, desc);

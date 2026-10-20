@@ -105,7 +105,7 @@ public sealed class AuditRetentionJobs
         var totalDeleted = await PruneWhereAsync(a => a.OccurredAt < cutoff && !exempt.Contains(a.EventType),
                 $"OccurredAt+{_opt.RetentionMonths}ay", ct)
             + await PruneWhereAsync(a => a.OccurredAt < destructionCutoff && exempt.Contains(a.EventType),
-                $"OccurredAt+{destructionMonths}ay;imha olayı", ct);
+                $"OccurredAt+{destructionMonths}ay, imha olayı", ct);
         // Silmeden SONRA: 36 ayı geçip yukarıda silinen satır boşuna maskelenmesin. Ad zaten kimlikse ve IP boşsa satır seçilmez:
         // her koşu aynı satırı yeniden yazıp yeniden saymaz. Koşul ve MaskWhereAsync'in yazdığı değer aynı ifade
         // (AdminId.ToString().ToLower(); SQL'de LOWER(CONVERT(…))): yazılan değer koşulu kesin kapatır, döngü biter.
@@ -115,7 +115,8 @@ public sealed class AuditRetentionJobs
 
         // Kesilen koşu (Hangfire kapanışı) partilerin döngüsünden sessizce çıkar: başarılı koşu kaydı yazılmasın.
         ct.ThrowIfCancellationRequested();
-        DataDestruction.RecordRun(_db, JobId, $"OccurredAt+{_opt.RetentionMonths}ay; imha olayı +{destructionMonths}ay");
+        // Ölçüt metninde ';' yok: dış kopyanın (CSV) ayracı.
+        DataDestruction.RecordRun(_db, JobId, $"OccurredAt+{_opt.RetentionMonths}ay / imha olayı +{destructionMonths}ay");
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
 

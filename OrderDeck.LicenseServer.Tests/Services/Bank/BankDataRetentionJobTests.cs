@@ -222,6 +222,7 @@ public sealed class BankDataRetentionJobTests
         (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should().ContainSingle()
             .Which.Should().Match<OrderDeck.LicenseServer.Domain.DataDestructionRecord>(r =>
                 r.Action == DataDestruction.Actions.RunCompleted && r.Target == BankDataRetentionJob.JobId && r.RowCount == 0
-                && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor && r.LicenseId == null);
+                && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor && r.LicenseId == null
+                && !r.Criterion.Contains(';'));
     }
 }

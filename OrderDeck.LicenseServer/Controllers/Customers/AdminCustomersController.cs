@@ -209,7 +209,7 @@ public sealed class AdminCustomersController : ControllerBase
             action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
         int Deleted<T>() where T : class => _db.ChangeTracker.Entries<T>().Count(e => e.State == EntityState.Deleted);
         // Lisansa bağlı satırlar (siparişler, katalog, banka verisi …) ayrıca sayılmaz: lisansla birlikte FK cascade'iyle gider.
-        Record("Licenses", DataDestruction.Actions.Deleted, Deleted<License>(), criterion + "; bağlı satırlar FK cascade ile");
+        Record("Licenses", DataDestruction.Actions.Deleted, Deleted<License>(), criterion + ", bağlı satırlar FK cascade ile");
         Record("Activations", DataDestruction.Actions.Deleted, Deleted<Activation>());
         Record("CustomerBackups", DataDestruction.Actions.Deleted, Deleted<CustomerBackup>());
         Record("EmailLogs", DataDestruction.Actions.Deleted, Deleted<EmailLog>());

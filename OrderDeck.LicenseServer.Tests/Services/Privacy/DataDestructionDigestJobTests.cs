@@ -150,6 +150,27 @@ public sealed class DataDestructionDigestJobTests
     }
 
     [Fact]
+    public void Dis_kopyadaki_olcut_ve_hedef_tablodakiyle_birebir_aynidir()
+    {
+        // Geri yüklemede e-postadaki satır tabloyla birebir karşılaştırılabilmeli: CSV ayracı (';') ve satır sonu tabloya hiç
+        // girmez (DataDestruction yazarken çevirir); ToCsv'nin kaçışlaması yalnız savunma.
+        using var db = NewDb();
+        DataDestruction.Record(db, null, "AuditLogs;x", DataDestruction.Actions.Deleted, 1, "a+24ay; b +36ay\nc",
+            DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+        DataDestruction.RecordRun(db, "test-job", "a+24ay;b\r\n+36ay");
+        var rows = db.ChangeTracker.Entries<DataDestructionRecord>().Select(e => e.Entity).OrderBy(r => r.Target).ToList();
+
+        rows.Should().OnlyContain(r => r.Criterion.IndexOfAny(new[] { ';', '\r', '\n' }) < 0
+            && r.Target.IndexOfAny(new[] { ';', '\r', '\n' }) < 0);
+        var lines = DataDestructionDigestJob.ToCsv(rows).Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        var header = lines[1].Split(';');
+        var data = lines.Skip(2).Select(l => l.Split(';')).ToList();
+        data.Should().HaveCount(2).And.OnlyContain(cols => cols.Length == header.Length);
+        data.Select(c => (c[Array.IndexOf(header, "hedef")], c[Array.IndexOf(header, "olcut")]))
+            .Should().Equal(rows.Select(r => (r.Target, r.Criterion)));
+    }
+
+    [Fact]
     public async Task Kayit_yoksa_ya_da_hepsi_gonderilmisse_e_posta_gitmez()
     {
         using var db = NewDb(); var email = new TestEmailSender();
