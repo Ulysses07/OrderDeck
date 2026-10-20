@@ -147,7 +147,7 @@
 1. Kuru koşu, çıktıyı tutanağa kaydet: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup`
 2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle. P0'da `DataDestructionRecords` yok: bu koşunun Silme Yönetmeliği md. 7/3 kaydı (en az 3 yıl) **tutanağın kendisidir**. P1'den sonraki koşular tabloya da yazar (Görev 9: tetikleyici `cleanup`, yapan `cli`).
    **Ne zaman koşturulmaz:** 04:57 UTC saklama işi (P1) ya da bir shopper silmesi / banka veri talebi silmesi sürerken. Komut oku-değiştir-yaz yapar, `BankTransaction`'da eşzamanlılık jetonu yok: arada boşaltılan bir açıklama ya da ham kayıt maskelenmiş eski hâliyle geri yazılabilirdi. Gündüz, başka silme işlemi yapmadan koştur.
-   **İlk saklama koşusu da tutanağa girer:** Görev 5 ham kayıt süresini 90 günden 30 güne indirdiği için deploy'dan sonraki ilk 04:57 UTC (07:57 TR) `bank-data-retention` koşusu, `FetchedAt`'i 30–90 gün önce olan bütün satırların ham kaydını **bir kerede** boşaltır. Silme Yönetmeliği md. 7/3 (Ö-13) her imhanın kaydını ister ve P0'da `DataDestructionRecords` yok: sayım bu koşudan ÖNCE alınır (deploy'dan önce ya da sonra; deploy 01:00–07:57 TR arasındaysa ilk koşu aynı sabahtır), koşudan sonra boşaltılanın 0 kaldığı yeniden sayılır. Kalıbın "İlk saklama koşusu" satırları bunun için.
+   **İlk saklama koşusu da tutanağa girer:** Görev 5 ham kayıt süresini 90 günden 30 güne indirdiği için deploy'dan sonraki ilk 04:57 UTC (07:57 TR) `bank-data-retention` koşusu, `FetchedAt`'i 30–90 gün önce olan bütün satırların ham kaydını **bir kerede** boşaltır. Silme Yönetmeliği md. 7/3 (Ö-13) her imhanın kaydını ister ve P0'da `DataDestructionRecords` yok: sayım bu koşudan ÖNCE alınır (deploy'dan önce ya da sonra; deploy 01:00–07:57 TR arasındaysa ilk koşu aynı sabahtır), koşudan sonra boşaltılanın 0 kaldığı yeniden sayılır. Kalıbın "İlk saklama koşusu" satırları bunun için. **P0 ile P1 aynı pencerede çıkıyorsa** bu bölüm uygulanmaz: ilk koşu P1 kuralıyla (Görev 10: işlem tarihinden 30 gün, çekimden en az 7 gün) boşaltır ve aşağıdaki `FetchedAt` sorgusu onu saymaz. Sayım "P1 ilk koşu tutanağı"ndaki ham kayıt sorgusuyla alınır.
    **Tutanak kalıbı** (repo DIŞINDA, KVKK klasöründe; 3 yıl saklanır):
    ```text
    bank-data-cleanup tutanağı — KVKK ön inceleme §5.1 (P0)
@@ -182,7 +182,7 @@
 - **Veri sorumlusu kapısı (karar 23, Görev 21):** P1'den sonra lisansın müşterisinde veri sorumlusu bilgisi yoksa ilk bağlantı kaydı, Doğrula ve Banka ekle reddedilir. EMAR'ın Verified bağlantısının çekimi sürer. Ama metin işi (form paragrafı v2) P1'den önce yayımlanmayacaksa ve P1 ile metin arasında bir Doğrula gerekebilirse (lisans yenilenmesi, Etkinleştir, kimlik değişimi), **merge'den önce** `.env`'e `Obifin__RequireDataControllerProfile=false` yaz. Metin yayımlanıp EMAR'ın bilgisi girilince satırı sil ve yeniden başlat (Prod adımları 8). `.env` yazımını Burak yapar.
 - **İlk koşuların beklenen sayıları (P0'daki ilk saklama koşusunun kalıbı; aşağıdaki "P1 ilk koşu tutanağı"):** P1 üç günlük işin ilk koşusunu değiştirir ve hiçbirinin kuru koşusu yok:
   - `security-data-retention` 03:40 UTC: işlenmiş silme talebinin telefonu (Görev 20).
-  - `bank-data-retention` 04:57 UTC: eşleşmeyen açıklama 180 → 30 gün; hareket, eşleşme ve gap 180 gün işlem tarihinden; IBAN bağı 12 ay (Görev 10).
+  - `bank-data-retention` 04:57 UTC: eşleşmeyen açıklama 180 → 30 gün; hareket, eşleşme ve gap 180 gün işlem tarihinden; ham kayıt çekimden 30 gün → işlem tarihinden 30 gün; gerekçe metni eşleştirme satırının oluşturulmasından 180 gün → hareketin açıklamasıyla (eşleşmeyende işlem tarihinden 30 gün: ilk koşu 30–180 günlük bütün eşleşmeyen gerekçe metinlerini bir kerede boşaltır); IBAN bağı 12 ay (Görev 10).
   - `bank-service-end-purge` 05:17 UTC: 30 günü geçmiş Disabled bağlantının yerel verisi (Görev 14).
 
   İlk koşu 30–180 günlük geçmişi bir kerede siler. Sayımlar deploy'dan ÖNCE alınır (deploy 01:00–06:40 TR arasındaysa ilk koşu aynı sabahtır). Koşudan sonra işin `DataDestructionRecords` satırlarıyla karşılaştırılır, koşul yeniden sayılır (0 beklenir). P1'de imha kaydı tablosu var, ama beklenen sayı tutanakta olmazsa "fazla mı silindi" sorusu cevapsız kalır.
@@ -212,16 +212,29 @@ Deploy'dan ÖNCE sayım — anı (TR): ____
   -- security-data-retention (03:40 UTC): işlenmiş silme talebinin telefonu
   SELECT COUNT(*) FROM ShopperDeletionRequests
   WHERE HandledAt IS NOT NULL AND HandledAt < DATEADD(day, -30, SYSDATETIMEOFFSET()) AND PhoneAtRequest <> '';      → ____
-  -- bank-data-retention (04:57 UTC)
-  SELECT COUNT(*) FROM BankTransactions                                               -- silinecek hareket
+  -- bank-data-retention (04:57 UTC); koşullar BankDataRetentionJob'ınkilerin aynısı, adımların sırasıyla
+  SELECT COUNT(*) FROM BankTransactions                                               -- 1. silinecek hareket
   WHERE OccurredAt < DATEADD(day, -180, SYSDATETIMEOFFSET()) AND FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET());  → ____
-  SELECT COUNT(*) FROM BankTransactions t                                             -- boşaltılacak eşleşmeyen açıklama/ad
+  SELECT COUNT(*) FROM PaymentMatches m JOIN BankTransactions t ON t.Id = m.BankTransactionId   -- 1. hareketle silinecek eşleşme
+  WHERE t.OccurredAt < DATEADD(day, -180, SYSDATETIMEOFFSET()) AND t.FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET());  → ____
+  SELECT COUNT(*) FROM PaymentMatchGaps WHERE CreatedAt < DATEADD(day, -180, SYSDATETIMEOFFSET());  -- 1. gap  → ____
+  SELECT COUNT(*) FROM BankTransactions                                               -- 2. boşaltılacak ham kayıt (P0'daki FetchedAt ölçütü değil)
+  WHERE RawJson IS NOT NULL AND OccurredAt < DATEADD(day, -30, SYSDATETIMEOFFSET())
+    AND OccurredAt >= DATEADD(day, -180, SYSDATETIMEOFFSET()) AND FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET());  → ____
+  SELECT COUNT(*) FROM BankTransactions t                                             -- 3. boşaltılacak eşleşmeyen açıklama/ad
   WHERE t.DescriptionPurgedAt IS NULL AND t.OccurredAt < DATEADD(day, -30, SYSDATETIMEOFFSET())
     AND t.OccurredAt >= DATEADD(day, -180, SYSDATETIMEOFFSET()) AND t.FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET())
     AND NOT EXISTS (SELECT 1 FROM PaymentMatches m WHERE m.BankTransactionId = t.Id
                     AND (m.ActualWpfCustomerId IS NOT NULL OR m.PaymentId IS NOT NULL));                              → ____
-  SELECT COUNT(*) FROM PaymentMatchGaps WHERE CreatedAt < DATEADD(day, -180, SYSDATETIMEOFFSET());                  → ____
-  SELECT COUNT(*) FROM CustomerIbanMemories                                           -- P1 öncesi LastConfirmedAt yok
+  SELECT COUNT(*) FROM PaymentMatches m JOIN BankTransactions t ON t.Id = m.BankTransactionId   -- 4. boşaltılacak gerekçe metni
+  WHERE m.Evidence IS NOT NULL                                                        --    (eskiden satırın CreatedAt+180 günü)
+    AND NOT (t.OccurredAt < DATEADD(day, -180, SYSDATETIMEOFFSET()) AND t.FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET()))
+    AND (t.DescriptionPurgedAt IS NOT NULL                                            --    açıklaması önce boşaltılmış
+         OR (t.OccurredAt < DATEADD(day, -30, SYSDATETIMEOFFSET())                    --    ya da bu koşuda boşaltılacak (3.)
+             AND t.FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET())
+             AND NOT EXISTS (SELECT 1 FROM PaymentMatches x WHERE x.BankTransactionId = t.Id
+                             AND (x.ActualWpfCustomerId IS NOT NULL OR x.PaymentId IS NOT NULL))));            → ____
+  SELECT COUNT(*) FROM CustomerIbanMemories                                           -- 5. IBAN bağı; P1 öncesi LastConfirmedAt yok
   WHERE CreatedAt < DATEADD(month, -12, SYSDATETIMEOFFSET());                                                          → ____
   -- bank-service-end-purge (05:17 UTC): yerelde silinecek bağlantılar (lisansı yenilenmiş olan kurtulur)
   SELECT c.LicenseId, c.DisabledAt, l.ExpiresAt, l.RevokedAt,
