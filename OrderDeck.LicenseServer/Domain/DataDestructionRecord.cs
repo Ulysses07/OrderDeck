@@ -2,8 +2,9 @@ namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// Kişisel verinin silinmesi, boşaltılması ya da maskelenmesinin kalıcı kaydı (Silme Yönetmeliği md. 5/3, 7/3: en az üç yıl;
-/// KVKK ön inceleme Ö-13). Kişisel veri İÇERMEZ: ne, ne zaman, kaç satır, hangi ölçütle, ne tetikledi, kim. Lisansa FK YOK:
-/// lisans silinse de kayıt yaşar. Hiçbir iş bu tabloyu budamaz.
+/// KVKK ön inceleme Ö-13). Kişisel veri İÇERMEZ: ne, ne zaman, kaç satır, hangi ölçütle, ne tetikledi, kim. Kimlikler takma
+/// kimliktir (konu, talep, yapan yöneticinin <c>sub</c>'ı); ad, e-posta, IBAN, kullanıcı adı yazılmaz. Lisansa FK YOK: lisans
+/// silinse de kayıt yaşar. Hiçbir iş bu tabloyu budamaz.
 /// <para><b>Geri yükleme:</b> tablo aynı veritabanındadır; yedekten geri yükleme onu da yedek anına sarar. Geri yüklemeden
 /// sonra silmeleri yeniden uygulamanın dayanağı bu tablo DEĞİL, veritabanı dışındaki kopyasıdır
 /// (<c>DataDestructionDigestJob</c>'ın saatlik e-postası; prosedür <c>deploy/README.md</c> "Geri yükleme").</para>
@@ -27,7 +28,9 @@ public sealed class DataDestructionRecord
     public string Trigger { get; set; } = "";
     /// <summary>Talep üzerine yapıldıysa talebin kimliği (banka veri talebi).</summary>
     public Guid? RequestId { get; set; }
-    /// <summary><c>system</c> ya da yönetici kullanıcı adı.</summary>
+    /// <summary><c>system</c>, <c>cli</c>, <c>admin</c> ya da yöneticinin kimliği (<c>sub</c>,
+    /// <c>DataDestruction.ActorOf</c>). Kullanıcı adı YAZILMAZ: tablo budanmaz, ad bir gerçek kişiyi gösterir (KVKK Ö-14);
+    /// adı aynı işlemin denetim satırında (24 ay).</summary>
     public string Actor { get; set; } = "";
     /// <summary>Kaydın veritabanı dışındaki kopyaya (<c>DataDestructionDigestJob</c>'ın e-postası) gittiği an; <c>null</c> = henüz
     /// gitmedi. Yalnız gönderim başarılı olunca yazılır: düşen gönderim ya da kesinti sonraki koşuda telafi edilir.</summary>

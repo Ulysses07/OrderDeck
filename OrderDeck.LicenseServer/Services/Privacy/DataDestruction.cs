@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 
@@ -34,8 +35,13 @@ public static class DataDestruction
     public const string SystemActor = "system";
     /// <summary>Konteynerde elle koşulan komut (<c>bank-data-cleanup</c>).</summary>
     public const string CliActor = "cli";
-    /// <summary>Yönetici eylemi, kullanıcı adı servise ulaşmadığında (adı aynı işlemin denetim satırında).</summary>
+    /// <summary>Yönetici eylemi, yöneticinin kimliği servise ulaşmadığında (kim olduğu aynı işlemin denetim satırında).</summary>
     public const string AdminActor = "admin";
+
+    /// <summary>Yönetici eyleminin yapanı: yöneticinin takma kimliği (<c>sub</c>), kullanıcı adı DEĞİL (KVKK Ö-14) — tablo
+    /// budanmaz, tek kişilik işletmede ad bir gerçek kişiyi gösterir. Kimlik yoksa <see cref="AdminActor"/>.</summary>
+    public static string ActorOf(ClaimsPrincipal user)
+        => user.FindFirst("sub")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? AdminActor;
 
     /// <summary>Kaydı izleyiciye EKLER, kaydetmez: silmeyle aynı SaveChanges'te yazılsın. Sıfır satırlık işlem yazılmaz.</summary>
     public static void Record(LicenseDbContext db, Guid? licenseId, string target, string action, int rowCount,

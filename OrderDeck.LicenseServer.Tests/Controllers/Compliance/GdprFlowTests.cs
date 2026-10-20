@@ -73,28 +73,38 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             originalEmail = (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email;
+            // Panel uygulamasının push kaydı (cihaz kimliği + FCM jetonu): müşteri satırı anonimleştirilip kaldığı için FK
+            // cascade'i tetiklenmez, purge açıkça silmeli.
+            db.PushDevices.Add(new OrderDeck.LicenseServer.Domain.PushDevice
+            {
+                Id = Guid.NewGuid(), CustomerId = customerId, DeviceId = $"dev-{Guid.NewGuid():N}", Platform = "android",
+                PushToken = $"push-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow, LastSeenAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
         }
 
         // Mint an admin token.
         string adminToken;
+        OrderDeck.LicenseServer.Domain.AdminUser admin;
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             var hasher = scope.ServiceProvider.GetRequiredService<PasswordHasher>();
             var jwt = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
-            var admin = await db.AdminUsers.FirstOrDefaultAsync();
-            if (admin is null)
+            var existing = await db.AdminUsers.FirstOrDefaultAsync();
+            if (existing is null)
             {
-                admin = new OrderDeck.LicenseServer.Domain.AdminUser
+                existing = new OrderDeck.LicenseServer.Domain.AdminUser
                 {
                     Id = Guid.NewGuid(),
                     Username = "purgetest-admin",
                     PasswordHash = hasher.Hash("x"),
                     CreatedAt = DateTimeOffset.UtcNow
                 };
-                db.AdminUsers.Add(admin);
+                db.AdminUsers.Add(existing);
                 await db.SaveChangesAsync();
             }
+            admin = existing;
             adminToken = jwt.IssueAdminToken(admin.Id, admin.Username).Token;
         }
 
@@ -131,6 +141,11 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
         // Girişin bıraktığı yenileme jetonu (oluşturan IP'yi taşır) da silinir ve kayda geçer.
         records.Should().Contain(r => r.Target == "RefreshTokens" && r.RowCount >= 1);
         System.Text.Json.JsonSerializer.Serialize(records).Should().NotContain(originalEmail);
+        // Push cihazı (cihaz kimliği + jeton) silinir ve kayda geçer.
+        (await verifyDb.PushDevices.CountAsync(d => d.CustomerId == customerId)).Should().Be(0);
+        records.Should().Contain(r => r.Target == "PushDevices" && r.RowCount == 1);
+        // Yapan: yöneticinin kimliği (sub), kullanıcı adı değil — tablo budanmaz, ad bir gerçek kişiyi gösterir (KVKK Ö-14).
+        records.Should().OnlyContain(r => r.Actor == admin.Id.ToString());
     }
 
     [Fact]

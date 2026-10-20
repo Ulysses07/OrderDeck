@@ -117,7 +117,7 @@ public sealed class AdminCustomersController : ControllerBase
     /// <summary>
     /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
     /// data (licenses, activations, refresh tokens, intake form submissions,
-    /// email logs, backup blobs + metadata) and anonymises the Customer row
+    /// email logs, panel push devices, backup blobs + metadata) and anonymises the Customer row
     /// itself. The Customer row stays — its Id is referenced from AuditLog
     /// rows that we MUST retain for the configured retention window. Email
     /// + Name are blanked, PasswordHash is set to a sentinel that no hash
@@ -165,6 +165,9 @@ public sealed class AdminCustomersController : ControllerBase
         _db.RefreshTokens.RemoveRange(_db.RefreshTokens.Where(r => r.CustomerId == id));
         _db.PasswordResetTokens.RemoveRange(_db.PasswordResetTokens.Where(p => p.CustomerId == id));
         _db.EmailConfirmationTokens.RemoveRange(_db.EmailConfirmationTokens.Where(t => t.CustomerId == id));
+        // Panel push devices (device id + FCM/APNS token). The FK cascades on Customer delete, but the Customer row is
+        // anonymised and kept — the cascade never fires, so they go explicitly.
+        _db.PushDevices.RemoveRange(_db.PushDevices.Where(d => d.CustomerId == id));
         // Intake form submissions reference IntakeFormConfig (not Customer directly).
         // Drop the customer's config + all submissions that fed into it.
         var configIds = await _db.IntakeFormConfigs
@@ -197,7 +200,8 @@ public sealed class AdminCustomersController : ControllerBase
         // KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. preEmail BURAYA girmez: e-posta
         // yalnız 24 ayda budanan customer.purged denetim satırında. SubjectId = yayıncı hesabının kimliği (satır anonimleştirilmiş
         // kalır): yedekten geri yüklemeden sonra silme bununla yeniden uygulanır. Sayımlar DB'den: silme henüz yazılmadı.
-        var actor = User.FindFirst("username")?.Value ?? User.Identity?.Name ?? DataDestruction.AdminActor;
+        // Yapan: yöneticinin kimliği, kullanıcı adı değil (tablo budanmaz; adı aşağıdaki denetim satırında, 24 ay).
+        var actor = DataDestruction.ActorOf(User);
         const string criterion = "yayıncı silme talebi";
         void Record(string target, string action, int count, string why = criterion) => DataDestruction.Record(_db, null, target,
             action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
@@ -212,6 +216,7 @@ public sealed class AdminCustomersController : ControllerBase
             await _db.PasswordResetTokens.CountAsync(p => p.CustomerId == id, ct));
         Record("EmailConfirmationTokens", DataDestruction.Actions.Deleted,
             await _db.EmailConfirmationTokens.CountAsync(t => t.CustomerId == id, ct));
+        Record("PushDevices", DataDestruction.Actions.Deleted, await _db.PushDevices.CountAsync(d => d.CustomerId == id, ct));
         Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, configIds.Count);
         Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, configIds.Count == 0 ? 0
             : await _db.IntakeFormSubmissions.CountAsync(s => configIds.Contains(s.IntakeFormConfigId), ct));
