@@ -114,4 +114,96 @@ public sealed class PersonBalanceGroupReversalTests : IClassFixture<ApiFactory>
         (await kit.ReverseAsync(refund)).StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await kit.ReverseAsync(manual)).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Birlesmeden_sonra_ayni_satira_dusen_iki_bacak_tek_bakiye_satirinda_toplanir(bool canonicalHasRow)
+    {
+        // Spec §4.12: aynı çekimin iki bacağı birleşmeden sonra aynı satıra düşebilir. Geri alma ikinci bacakta
+        // satırı izlenenlerde bulmalı: yoksa ikinci bir bakiye satırı açar (SQL'de tekil ihlal, her denemede).
+        var kit = await Kit.CreateAsync(_factory);
+        var g = Kit.NewGroup();
+        var t = await kit.MemberAsync(g);
+        var i = await kit.MemberAsync(g, 100m, platform: "instagram");
+        var y = await kit.MemberAsync(g, 20m);
+        var ids = await kit.SeedDrawAsync(Kit.KindDeduction, [(t, 0m), (i, 100m), (y, 20m)],
+            originalAmount: 120m, saleScope: Kit.Session42);
+        var canonical = await kit.MemberAsync(g, canonicalHasRow ? 5m : 0m, balanceRow: false);
+        await kit.Sales.WithDbAsync(async db =>
+        {
+            // I ve Y aynı asıl kayda birleşti; ikisinin de satırı 0'da kaldığı için birleştirici asıl kayda satır açmaz.
+            var moved = await db.CustomerBalanceTransactions.Where(x => x.WpfCustomerId == i || x.WpfCustomerId == y).ToListAsync();
+            foreach (var x in moved) x.WpfCustomerId = canonical;
+            foreach (var p in await db.WpfCustomerProjections.Where(p => p.Id == i || p.Id == y).ToListAsync())
+                p.MergedIntoId = canonical;
+        });
+
+        (await kit.ReverseAsync(ids[0])).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var rows = await kit.Sales.ReadDbAsync(db => db.CustomerBalances.AsNoTracking()
+            .Where(b => b.LicenseId == kit.LicenseId && b.WpfCustomerId == canonical).ToListAsync());
+        rows.Should().ContainSingle("iki bacak aynı satıra döner").Which.Balance.Should().Be(canonicalHasRow ? 125m : 120m);
+        (await kit.ReversalsOfAsync([ids[1], ids[2]])).Should().OnlyContain(r => r.WpfCustomerId == canonical);
+        (await kit.LedgerHoldsAsync(canonical)).Should().BeTrue("D1");
+        (await kit.BalanceAsync(i)).Should().Be(0m);
+        (await kit.BalanceAsync(y)).Should().Be(0m);
+    }
+
+    [Fact]
+    public async Task Capasi_olmayan_yetim_bacak_404_ve_hicbir_sey_yazmaz()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var a = await kit.MemberAsync(null, 50m);
+        var orphan = Guid.NewGuid();
+        await kit.Sales.WithDbAsync(async db =>
+        {
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = orphan, LicenseId = kit.LicenseId, WpfCustomerId = a, Amount = -20m, Kind = Kit.KindDeduction,
+                DrawGroupId = Guid.NewGuid(), CreatedByCustomerId = kit.CustomerId, CreatedAt = DateTimeOffset.UtcNow,
+            });
+            (await db.CustomerBalances.SingleAsync(b => b.WpfCustomerId == a)).Balance -= 20m;
+        });
+
+        (await kit.ReverseAsync(orphan)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        (await kit.ReversalsOfAsync([orphan])).Should().BeEmpty();
+        (await kit.BalanceAsync(a)).Should().Be(30m);
+    }
+
+    [Fact]
+    public async Task Capasi_dusum_olmayan_bacak_404_ve_hicbir_sey_yazmaz()
+    {
+        // D4 bozuk veri: bacak düşüm, çapası elle ayar. WPF ucu düşüm dışı bir grubu geri almaz.
+        var kit = await Kit.CreateAsync(_factory);
+        var a = await kit.MemberAsync(null, 50m);
+        var b = await kit.MemberAsync(null, 50m);
+        var ids = await kit.SeedDrawAsync(Kit.KindManual, [(a, 10m), (b, 20m)], reason: "elle");
+        await kit.Sales.WithDbAsync(async db =>
+            (await db.CustomerBalanceTransactions.SingleAsync(x => x.Id == ids[1])).Kind = Kit.KindDeduction);
+
+        (await kit.ReverseAsync(ids[1])).StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        (await kit.ReversalsOfAsync(ids)).Should().BeEmpty();
+        (await kit.BalanceAsync(a)).Should().Be(40m);
+        (await kit.BalanceAsync(b)).Should().Be(30m);
+    }
+
+    [Fact]
+    public async Task Tek_bacakli_S2_grubunun_geri_almasi_kendi_capasidir()
+    {
+        // S2 biçimli tek bacaklı çekim (DrawGroupId = Id): geri alma da grup biçiminde, kendi çapası (§3.2).
+        var kit = await Kit.CreateAsync(_factory);
+        var a = await kit.MemberAsync(null, 80m);
+        var d = (await kit.SeedDrawAsync(Kit.KindDeduction, [(a, 30m)], originalAmount: 50m, saleScope: Kit.Session42))[0];
+
+        (await kit.ReverseAsync(d)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var reversal = (await kit.ReversalsOfAsync([d])).Should().ContainSingle().Subject;
+        reversal.DrawGroupId.Should().Be(reversal.Id);
+        reversal.Should().BeEquivalentTo(new { WpfCustomerId = a, Amount = 30m, Reason = $"Reverse of {d:N}" });
+        (await kit.BalanceAsync(a)).Should().Be(80m);
+        (await kit.LedgerHoldsAsync(a)).Should().BeTrue("D1");
+    }
 }
