@@ -14,7 +14,7 @@
 
 ## Kapsam
 
-**İçinde (notun §5.1 numaralarıyla):** P0 1–7, mevcut veri için tek seferlik temizlik komutu, P1 8–14, 15'in yalnız denetim kısmı, 16, 17, 19, 22 ve P2 25. Plan incelemesinin (19.10) eklediği parçalar da içinde: Obifin kaldırmasının lisansa özgü olması ve paylaşılan kullanıcı koruması (Görev 13), lisans yenilenince silmeme (Görev 14), Obifin bağlantılı yayıncı silmesinin reddi (Görev 13), imha kayıtlarının veritabanı dışındaki saatlik kopyası ve geri yükleme prosedürü (Görev 9, 23), kimlik değişimindeki gölge veri silmesinin (`ResetShadowData`) imha kaydı (Görev 9), eski kısa maskelerin ve eski denetim satırlarındaki kullanıcı adının temizliği (Görev 8, 16), talep doğrulamasının kaydı (Görev 17). Görev 10–22'nin ikinci plan incelemesinin (20.10) ekledikleri: durdurulmuş ya da yerel verisi silinmiş bağlantıda eşleştirmenin, dekont bağdaştırmasının ve IBAN öğrenmenin de durması; Obifin tarafının günlük hatırlatma ve kişisel veri içermeyen yazılı silme teyidi kaydıyla izlenmesi; onaysız hesabın reddi ve P1'den önce yazılmış verisinin silinmesi, onayın geri alınması; "Kaldır ve sil"de lisans anahtarıyla yazılı onay; yerel silmenin partili yapılması ve gerçek SQL Server testi (Görev 12–14).
+**İçinde (notun §5.1 numaralarıyla):** P0 1–7, mevcut veri için tek seferlik temizlik komutu, P1 8–14, 15'in yalnız denetim kısmı, 16, 17, 19, 22 ve P2 25. Plan incelemesinin (19.10) eklediği parçalar da içinde: Obifin kaldırmasının lisansa özgü olması ve paylaşılan kullanıcı koruması (Görev 13), lisans yenilenince silmeme (Görev 14), Obifin bağlantılı yayıncı silmesinin reddi (Görev 13), imha kayıtlarının veritabanı dışındaki saatlik kopyası ve geri yükleme prosedürü (Görev 9, 23), kimlik değişimindeki gölge veri silmesinin (`ResetShadowData`) imha kaydı (Görev 9), eski kısa maskelerin ve eski denetim satırlarındaki kullanıcı adının temizliği (Görev 8, 16), talep doğrulamasının kaydı (Görev 17). Görev 10–22'nin ikinci plan incelemesinin (20.10) ekledikleri: durdurulmuş ya da yerel verisi silinmiş bağlantıda eşleştirmenin, dekont bağdaştırmasının ve IBAN öğrenmenin de durması; Obifin tarafının günlük hatırlatma ve kişisel veri içermeyen yazılı silme teyidi kaydıyla izlenmesi; onaysız hesabın reddi ve P1'den önce yazılmış verisinin silinmesi, onayın geri alınması; "Kaldır ve sil"de lisans anahtarıyla yazılı onay; yerel silmenin partili yapılması ve gerçek SQL Server testi (Görev 12–14). Banka veri talebinin kişisel veri içermeyen sonuç kategorileri (yanıtlandı, doğrulanamadı, kanuni gerekçeyle ret, geri çekildi), silmenin yalnız silme talebinde yapılması ve CSV kaçışının sekme/satır başını kapsaması (Görev 17–18). Veri sorumlusu bilgisi olmadan banka modülünün açılmaması (fail-closed, pilot için bayrak) ve formda gösterilen bilginin sürümünün kayda yazılması (Görev 21–22). Güvenlik saklama işinin imha ve koşu kaydı (Görev 20). Yeni yönetici sütunlarında kullanıcı adı yerine kimlik (Görev 12, 17, 18, 21). P1'in ilk koşuları için deploy öncesi beklenen sayımlar (Prod adımları).
 
 **Kapsam dışı (gerekçesi, takibi ve sahibiyle):** "Yarım iş yapmayalım" isteği gereği dışarıdaki her madde için takip planı ve kararı veren kişi yazılı. Bu tablodaki maddeler kapanmadan KVKK düzeltmeleri "tamam" sayılmaz.
 
@@ -22,10 +22,10 @@
 |---|---|---|---|
 | 15 (kısmen) — Ö-4 öneri 3 | Yönetici girişine iki aşamalı doğrulama (AdminCookie + Bearer-Admin) | Kurul 2018/10 karar 3-e: özel nitelikli veri için m. 6/4'ün **zorunlu** önlemi (açıklamada tesadüfen geçen özel nitelikli veri, Ö-4). Ayrı bir kimlik doğrulama işi (TOTP, kurtarma kodları, oturum yenileme); görev tanımı bu planın dışında bıraktı. Denetim kısmı Görev 16'da. | Ayrı plan `docs/superpowers/plans/<tarih>-admin-iki-asamali-dogrulama.md`. Sahibi **Burak**. Kapı P1 ile aynı: Faz 2'den ve ikinci yayıncıdan önce yayında. |
 | 18 / **K-8 (Kritik)** — kardeş repolar | Shopper kayıt ve dekont ekranı metinleri, Profil'de "Gizlilik Politikası ve haklarım", bir kerelik duyuru (OrderDeck-Shopper); panelde politika bağlantısı (OrderDeck-Mobile) | Başka repolar; metinler §4.6'dan, avukat onayına bağlı. Shopper'ın göstereceği veri sorumlusu alanının **sunucu ucu** Görev 22'de. | Her repoda ayrı plan (`OrderDeck-Shopper` ve `OrderDeck-Mobile` `docs/superpowers/plans/<tarih>-kvkk-k8-metinler.md`). Sahibi **Burak**; metin **avukat** onayından sonra, P1 ile aynı sürüm penceresinde. |
-| 18 / **K-8** — bu repo, WPF | WhatsApp ödeme şablonuna tek satır: `OrderDeck.Core/Settings/AppSettings.cs:180-184` (`PaymentSettings.WhatsAppMessageTemplate` varsayılanı) ve mevcut kurulumların kayıtlı şablonu için bir kerelik ayar göçü | WPF (OrderDeck.Core/App) değişikliği, Velopack sürümüyle çıkar; bu plan yalnız sunucu. Satırın vereceği bağlantının sayfası ve metni avukat onaylı olmalı; şablon Meta onaylıysa yeniden onaya gider. | Ayrı plan `docs/superpowers/plans/<tarih>-kvkk-k8-wpf-odeme-sablonu.md`. Sahibi **Burak**; metin **avukat**. |
+| 18 / **K-8**, 17 / **K-3** — bu repo, WPF | WhatsApp ödeme şablonuna tek satır: `OrderDeck.Core/Settings/AppSettings.cs:180-184` (`PaymentSettings.WhatsAppMessageTemplate` varsayılanı) ve mevcut kurulumların kayıtlı şablonu için bir kerelik ayar göçü. Aynı mesaja **veri sorumlusunun unvanı ve KVKK başvuru e-postası** da basılır (K-3 öneri 3, not §5.1/17 "ödeme mesajına basılması"). Değer sunucudaki `DataControllerProfiles`'tan (Görev 21) gelir; WPF'in onu okuyacağı uç (lisans kimliğiyle) takip planında yazılır. Profil yoksa satır basılmaz ve WPF uyarır. | WPF (OrderDeck.Core/App) değişikliği, Velopack sürümüyle çıkar; bu plan yalnız sunucu. Satırın vereceği bağlantının sayfası ve metni avukat onaylı olmalı; şablon Meta onaylıysa yeniden onaya gider. | Ayrı plan `docs/superpowers/plans/<tarih>-kvkk-k8-wpf-odeme-sablonu.md`. Sahibi **Burak**; metin **avukat**. |
 | K-8 — politika | Dekont işlemenin politikada alt bölümü (PDF ayrıştırma, `PayerName`, R2 saklama, süre); kapsam cümlesinin genişletilmesi | Metin işi. | Metin işi (v2) / **avukat**. |
 | 20 | Formdaki zorunlu "okudum" kutusunu kaldırma | Avukat onayına bağlı (not §4.5 Seçenek 1/2). | Metin işi; karar **avukat**. |
-| 21 | Yönetici formundaki banka kimlik bilgisi girişini kaldırma | Faz 2 Obifin kiracılık modeli kararına bağlı (not §6 karar 9). | Faz 2 spec §13; karar **Burak**. |
+| 21 | Yönetici formundaki banka kimlik bilgisi girişini kaldırma **ya da işletenin kendi lisansıyla sınırlama** | Kaldırma, Faz 2 Obifin kiracılık modeli kararına bağlı (not §6 karar 9). Notun ikinci seçeneği ("işletenin kendi lisansıyla sınırla": banka kimliği yalnız OrderDeck'i işletenin lisansında girilebilir) Faz 2'ye bağlı DEĞİL, bugün de uygulanabilir; Ö-8'in amacı (yayıncının banka şifresinin OrderDeck'te durmaması) ikinci yayıncı gelmeden karşılanır. | Kaldırma: Faz 2 spec §13. Sınırlama: ayrı küçük plan (`docs/superpowers/plans/<tarih>-obifin-banka-kimligi-sinirla.md`), ikinci yayıncıdan önce. Karar ve sahibi **Burak**. |
 | 23 | Lisansa özgü HMAC, maskede kontrol hanelerini gizleme | P2; maske biçimi değişmez, politika metni "ilk 4 ve son 3 karakter" ile yazılır ([S7] "kod değişmezse" satırı). | P2 listesi; **Burak**. |
 | 24 | Gönderen adını Faz 2'ye kadar hiç yazmama | Burak kararı (not §6 karar 4). Kod bugünkü gibi yazmaya devam eder. | Karar verildi (**Burak**). |
 | 26 | Açıklama sütununu şifreleme | P2 değerlendirme. | P2 listesi; **Burak**. |
@@ -34,6 +34,8 @@
 | — | `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını da boşaltması; `Payment.ShopperId` bağının kaderi | Avukat kararı (not K-7 öneri 1–2, §7 soru 8). Görev 15 bu ikisine dokunmaz. | Karar **avukat**; kod tek satır (Görev 15'in notu). |
 | — | Sipariş bildiriminin (yeni sipariş push'u) gövdesindeki tutar | Not §5.1/19 yalnız dekont onay/ret bildirimini sayıyor; sipariş push'u ayrıca değerlendirilmeli (aşağıda karar listesinde). | Karar **Burak** (karar 9). |
 | — | R2 yaşam döngüsü kuralı (`sql-bak/` önekine 32 gün), R2 kova konumu, Hostinger veri merkezi tespiti | Cloudflare/Hostinger panosu işi. | **Burak** (Prod adımları 7). |
+| — | `BankTransactions.CounterpartyTaxIdHash` sütununu düşürme (daraltma adımı) | Genişlet/daralt kuralı: P0 (Görev 3) yazmayı kesti, Görev 8 değerleri boşalttı. Sütun ancak eski imaja dönme ihtimali kalmayınca düşürülür; varlık özeti "bir sonraki sürümde düşürülür" diyor. Bu plan yalnız genişletme yapar (`DropColumn` yasak). | Ayrı küçük plan (`DropColumn` göçü + varlıktan alan), P1 prod'da bir sürüm döndükten sonra. Sahibi **Burak**. |
+| — | R2'de duran, HashKey içeren eski `.env` yedekleri; HashKey'i döndürme kararı | Görev 23 yeni `.env` yedeğine anahtarı koymaz. Ama eski `env/` nesneleri uzak budama süresi dolana kadar R2'de kalır: SQL yedeğiyle aynı kovada, aynı parolayla (Ö-6'nın kaygısı o süre boyunca sürer). Döndürmek bütün özetleri ve IBAN hafızasını geçersiz kılar: eski özetler yeni anahtarla eşleşmez; hafıza sıfırlanır, hareket özetleri yeniden hesaplanamaz (ham IBAN saklanmıyor). | Karar **Burak**: (a) Görev 23'ün betikleri kopyalanıp ilk temiz `.env` yedeği alındıktan sonra eski `env/` nesnelerini elle silmek (önerilen, ucuz); (b) döndürmenin gerekli olup olmadığı (eski yedekler parolayla şifreli, parola Bitwarden'da). Prod adımları 6'ya bağlı; sonuç tutanağa. |
 
 ## Burak / avukat kararı gerekenler (plan varsayılanıyla ilerler, değiştirmek tek satır)
 
@@ -58,6 +60,9 @@
 19. **Ham kaydın kopyasında "işlem açıklaması" (`IslemAciklama`)** (Görev 5; metin işi / **avukat**): kod kopyada **yedi** alan tutar (açıklama, işlem açıklaması, gönderen adı, gönderen banka, işlem kodu, referans, makbuz no); notun v2 metni (§4.3 [S3]), §3 Ö-2 öneri 2 ve avukat paketi **altı** sayıyor, işlem açıklaması eksik. Metin bu hâliyle onaylanırsa saklanan kopyayı eksik anlatır (Ö-16). Plan alanı **tutar**: açıklama sütunu `Aciklama` yoksa `IslemAciklama`'dan okunur (`ObifinClient.cs`: `Str(row, "Aciklama") ?? Str(row, "IslemAciklama")`), yani teknik arıza incelemesinde sütunun kaynağı odur; alan `Aciklama` ile aynı maskeden geçer. Metin işinde "işlem açıklaması" eklenecek yerler: notun §4.3 [S3] satırı ve §3 Ö-2 öneri 2; avukat paketinde `01-veri-isleme-sozlesmesi-yayinci.md` (teknik önlemler madde c ve saklama tablosunun "kaydın kopyası" satırı), `05-imha-proseduru.md` (süre tablosunun "kaydın kopyası" satırı), `09-karar-kaydi.md` K3 ("altı alan" → yedi); metin yayımlanınca politikanın iki kopyası (`Pages/Public/_GizlilikPolitikasi.cshtml`, `web/app/(tr)/gizlilik-politikasi/page.tsx`). Alternatif (alanı atmak): `BankRawJsonRedactor.AllowedFields` ve `DescriptionFields`'tan birer kelime + `BankRawJsonRedactorTests.PolicyFieldList`; o zaman açıklaması `IslemAciklama`'dan gelen satırda kopya sütunun kaynağını göstermez. Liste `BankRawJsonRedactorTests.PolicyFieldList`'te metin olarak sabit: kod ya da metin değişirse öbürü de değişir.
 20. **[S5] ilk çekimin metni** (Görev 7; metin işi / **avukat**): kod ilk çekimi bağlantı gününün **iki takvim günü öncesinin başından** başlatır. Çapa, bağlantının ilk çekim turunun TR günü − `InitialGraceDays` (2). Tur çapayı Obifin'e gitmeden kaydeder; tur yarıda kalsa ya da hiç kayıt yapmadan düşse de (geçici hata, Obifin reddi) çapa kalır, sonraki turlar aynı çapadan sürer, kimlik değişene kadar değişmez. İlk tur doğrulanmış bağlantıda en geç 5 dakika içinde koşar (çekim işi gecikirse çapa yalnız daha ileri düşer), yani bağlantı anından en çok yaklaşık üç gün geriye gidilir. Hiçbir turda çapadan eski gün Obifin'den istenmez; Obifin istenen aralığın dışından hareket döndürse de çapadan eskisi yazılmaz. Notun [S5] seçenekleri kodla uyuşmaz. "Son 30 günün" kodu yanlış anlatır. "Bağlantının kurulduğu andan itibaren" ise kodun tutmadığı mutlak bir güvence verir: Ö-16'nın "metin mutlak güvence veriyor, kod tutmuyor" sorunu küçük ölçekte yeniden doğar. Kodla birebir uyan ifade: "bağlantı ilk kurulduğunda, kurulduğu günden en çok iki gün öncesine kadar uzanan hareketler bir kez alınır; daha eski hareketler alınmaz." Metin işinde değişecek yerler: notun §4.3 metnindeki "son {30} günün hareketleri bir kez alınır [S5]" cümlesi ve §4.3 tablosunun [S5] satırı; avukat paketinde `09-karar-kaydi.md` K6, şöyle doldurulur: "İlk bağlantıda geçmişe dönük çekim 90 günden bağlantı gününün iki gün öncesine iner; …". Metin yayımlanınca politikanın iki kopyası da değişir (`Pages/Public/_GizlilikPolitikasi.cshtml` ve `web/app/(tr)/gizlilik-politikasi/page.tsx`; ikisi bugün "son 90 günün" diyor). Karar 2'deki "Alternatif 30 gün" avukata bu ifadeyle yan yana sunulur. 30 gün seçilirse `InitialGraceDays` ile onu aday penceresine bağlayan test (`Ilk_cekim_payi_dekont_aday_penceresine_esit`) değişir; metin de "son 30 günün" olur. Mevcut bağlantılarda (Görev 8) çapa = ilk çekimin günü − 2. Çapadan eski kararsız satırlar çapası olan her bağlantıda silinir (P0 anında yarıda kalmış eski ilk çekim dahil). Çapadan eski olup bir karara, IBAN öğrenmesine ya da gap'e bağlı satırlar kalır ve 180 günlük kuralla silinir (Görev 10); K6'nın ikinci yarısı bunu anlatır. **Sıra:** Görev 7 kodu metinden önce ya da metinle aynı anda canlıya çıkar. [S5] cümlesi (politikanın iki kopyası) ancak P0 deploy'u ve `bank-data-cleanup --apply` bittikten sonra yayımlanır. Kod önce çıkarsa metin bir süre fazlasını ("son 90 gün") anlatır: işleme metinden dardır, ihlal değildir. Ters sıra (önce metin) Ö-16'nın kalıbını kurardı: 90 günlük kod çalışırken ve eski satırlar silinmeden metin mutlak bir güvence vermiş olurdu. Kod değişmez; karar metinde.
 21. **Obifin tarafının takibi** (Görev 13–14; K-6 öneri 1, Ö-9 öneri 3): otomatik iş Obifin'e gitmediği için (karar 12) Obifin'in bankadan çekmeyi ve saklamayı bırakması iki adımda izlenir. (a) Yerel verisi hizmet sonunda silinmiş ama "Kaldır ve sil" bekleyen bağlantı (`BankDataPurgedAt` dolu). (b) "Kaldır ve sil"in açtığı, Obifin'den yazılı silme teyidi bekleyen kayıt (`ObifinCopyDeletions`: lisans, istek anı ve yapan, teyit anı ve yapan; kişisel veri yok; lisansa ve bağlantıya FK yok, budanmaz). Hizmet sonu işi ikisini her gün tek bir hatırlatma e-postasında listeler. Biri 14 günü (`BankConnectionTerminator.ObifinFollowUpOverdue`) geçtiyse konu "GECİKTİ" olur. Yönetici teyit yazısı gelince admin/obifin'de "Teyit alındı"ya basar; bu bir imha kaydı yazar (`Obifin.HareketKopyasi`, tetikleyici `processor-confirmation`). 14 gün bir öneridir: Obifin sözleşmesindeki silme süresi netleşince ona çekilir. Avukat paketindeki iç imha prosedürüne (`05-imha-proseduru.md`; metin işi) aynı adım girer: "Obifin'e yazılı silme talebi, teyit yazısı KVKK klasöründe 3 yıl, sistemde 'Teyit alındı'".
+22. **Banka veri talebi satırının saklama süresi** (Görev 17, 20): talep satırı başvurunun belgesidir: alış, son tarih, tür, doğrulama yöntemi, sonuç kategorisi ve yöneticilerin takma kimlikleri. Kapanıştan 30 gün sonra satırda kişisel veri kalmaz (özet kapanışta, kısaltılmış IBAN +30 günde boşalır), ama satır süresiz durur. Plan satırı silmez. Önerilen varsayılan: kapanıştan 3 yıl sonra silinsin (imha kaydıyla aynı süre, Silme Yönetmeliği md. 7/3 kalıbı); kod tek sorgudur (`SecurityDataRetentionJob`, Görev 20'nin kalıbı, imha kaydıyla). Aynı soru `ShopperDeletionRequests` için de geçerli (telefonu 30 günde boşalıyor, satır süresiz). Karar **avukat**; onaydan sonra küçük bir iş.
+23. **Veri sorumlusu bilgisi olmadan banka modülü açılmaz** (Görev 21; K-3 öneri 3 "banka modülü açılmadan önce"): ilk Obifin bağlantı kaydı, Doğrula ve Banka ekle, lisansın müşterisinde `DataControllerProfile` yoksa reddedilir ve Obifin'e gidilmez. `Obifin:RequireDataControllerProfile` varsayılan `true` (fail-closed). Yalnız pilot geçişinde `.env`'e `Obifin__RequireDataControllerProfile=false` yazılabilir: metin işi (form paragrafı v2) yayımlanıp EMAR'ın bilgisi girilene kadar bir Doğrula/Banka ekle gerekirse (Prod adımları 8). Mevcut Verified bağlantının çekimi bu kapıya takılmaz (veri kaybı olmasın).
+24. **Gösterilen veri sorumlusu bilgisinin ispatı** (Görev 21–22; m. 10/1-a, ispat yükü veri sorumlusunda): profil her içerik değişikliğinde yeni bir sürüm alır; sürümlerin içeriği `DataControllerProfileVersions`'ta tutulur (yalnız eklenir). Kayıt formu gönderimi sayfanın gösterdiği sürümü `IntakeFormSubmission.DataControllerVersion`'a yazar (gizli alan, yalnız o yayıncının var olan bir sürümü). Bir kayıt anında hangi kimliğin gösterildiği böylece sonradan ispatlanır. Sınırlar avukat paketine not olarak girer: (a) sürüm satırları şahıs yayıncıda kişisel veridir ve yayıncının KVKK silmesinde profille birlikte silinir; o andan sonra eski gönderimin hangi kimliği gördüğü ispatlanamaz. (b) Shopper ekranlarında (kardeş repo) gösterilen sürüm kaydedilmez. Avukat "sürümler yayıncı silindikten sonra da şu süre saklansın" derse purge satırı değişir.
 
 ---
 
@@ -92,17 +97,17 @@
 | 9 | YENİ `Domain/DataDestructionRecord.cs`, `Services/Privacy/DataDestruction.cs`, `Services/Privacy/DataDestructionDigestJob.cs`, `Services/Observability/AdminJobAlerts.cs`; `Data/LicenseDbContext.cs`; `Services/Audit/AuditEvents.cs`, `AuditRetentionJobs.cs`; `Services/Bank/BankDataRetentionJob.cs`, `BankDataCleanupJob.cs`, `ObifinConnectionService.cs` (`ResetShadowData`, `actor`); `Pages/Admin/Obifin/Index.cshtml.cs`; `Controllers/Customers/AdminCustomersController.cs`; `Tools/BankDataCleanup.cs`; `Program.cs`; göç `*_DataDestructionRecords`; testler `AuditRetentionJobsTests.cs`, `AuditRetentionRelationalTests.cs`, `BankDataRetentionJobTests.cs`, `BankDataCleanupJobTests.cs`, `ObifinPollJobTests.cs`, `AdminObifinPageTests.cs`, `GdprFlowTests.cs`, `CustomerPurgeRelationalTests.cs`, `BankJobsDiTests.cs`, YENİ `Services/Privacy/DataDestructionDigestJobTests.cs`, `Services/Observability/AdminJobAlertsTests.cs` |
 | 10 | `Services/Bank/BankDataRetentionJob.cs` (yeniden), `BankOptions.cs`; `appsettings.json`; `Domain/Bank/CustomerIbanMemory.cs`; `Services/Bank/PaymentMatchReconciler.cs`; göç `*_IbanMemoryLastConfirmedAt`; testler `BankDataRetentionJobTests.cs` (yeniden), YENİ `BankDataRetentionRelationalTests.cs`, `PaymentMatchReconcilerTests.cs` |
 | 11 | `Services/Bank/BankHasher.cs`; `Domain/Bank/BankAccount.cs`, `BankTransaction.cs`; `ObifinPollJob.cs`; `PaymentMatchReconciler.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs`; göç `*_IbanQualityCountersAndHashValid`; testler `BankHasherTests.cs`, `ObifinPollJobTests.cs`, `PaymentMatchReconcilerTests.cs`, `BankDataCleanupJobTests.cs`, `Tools/BankDataCleanupTests.cs` |
-| 12 | `Domain/Bank/BankAccount.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; göç `*_BankAccountApproval`; testler `ObifinPollJobTests.cs`, `Pages/Admin/AdminObifinPageTests.cs` |
+| 12 | `Domain/Bank/BankAccount.cs`; `Data/LicenseDbContext.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)` (onaylayan = yönetici kimliği); `AuditEvents.cs`; göç `*_BankAccountApproval`; testler `ObifinPollJobTests.cs` (sayaç kalıcılığı dahil), `Pages/Admin/AdminObifinPageTests.cs` |
 | 13 | YENİ `Services/Bank/BankConnectionTerminator.cs` (partili yerel silme, Obifin teyidi, hesap reddi), YENİ `Domain/Bank/ObifinCopyDeletion.cs`; `Domain/Bank/ObifinConnection.cs`; `Data/LicenseDbContext.cs`; `Services/Privacy/DataDestruction.cs` (iki tetikleyici); `ObifinConnectionService.cs` (statik kimlik çözümü, `IsLicenseActiveAsync`, `ClearServiceEnd`, `MatchingActive`, lisans denetimi); `PaymentMatchReconcileJob.cs`, `BankMatchSweepJob.cs`, `PaymentMatchReconciler.cs` (eşleştirme kapısı); `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; `Controllers/Customers/AdminCustomersController.cs` (purge reddi); `Program.cs`; göç `*_ObifinConnectionServiceEnd`; YENİ testler `Services/Bank/BankConnectionTerminatorTests.cs`, `Services/Bank/BankConnectionTerminatorRelationalTests.cs`; `PaymentMatchReconcileJobTests.cs`, `BankMatchSweepJobTests.cs`, `PaymentMatchReconcilerTests.cs`, `AdminObifinPageTests.cs`, `Controllers/Compliance/GdprFlowTests.cs` |
 | 14 | YENİ `Services/Bank/BankServiceEndPurgeJob.cs` (hizmet sonu silmesi + Obifin takibi hatırlatması); `ObifinConnectionService.cs` (`ReviveRenewedLicensesAsync`); `Program.cs`; YENİ test `Services/Bank/BankServiceEndPurgeJobTests.cs`; `BankJobsDiTests.cs` |
 | 15 | YENİ `Services/Bank/BankSubjectScrub.cs`; `Services/Shoppers/ShopperPurgeService.cs`; testler `ShopperPurgeServiceTests.cs` |
 | 16 | `Pages/Admin/BankaEslestirme/Index.cshtml.cs`; `Pages/Admin/Obifin/Index.cshtml.cs`; `AuditEvents.cs`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs` (eski denetim satırları); testler `AdminBankaEslestirmePageTests.cs`, `AdminObifinPageTests.cs`, `BankDataCleanupJobTests.cs` |
-| 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `BankConnectionTerminator.cs`, `Controllers/Customers/AdminCustomersController.cs` (açık talepleri kapat); `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs`; `BankConnectionTerminatorTests.cs`, `GdprFlowTests.cs` |
+| 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `BankConnectionTerminator.cs`, `Controllers/Customers/AdminCustomersController.cs` (açık talepleri kapat); `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs` (sonuç kategorileri, tür denetimi, CSV kaçışı); `BankConnectionTerminatorTests.cs`, `GdprFlowTests.cs` |
 | 18 | YENİ `Pages/Admin/BankaVeriTalepleri/Index.cshtml(.cs)`; `Pages/Shared/_AdminLayout.cshtml`; `Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)`; `AuditEvents.cs`; YENİ testler `Pages/Admin/AdminBankaVeriTalepleriPageTests.cs`, `Pages/Admin/AdminDeletionRequestsPageTests.cs` |
 | 19 | `Controllers/Panel/PanelPaymentsController.cs`; test `Services/Push/ShopperOrderPaymentPushTests.cs` |
-| 20 | `Services/Audit/SecurityDataRetentionJob.cs` (telefon + banka talebi maskesi); `Pages/Admin/Shoppers/DeletionRequests.cshtml`; test `Services/Audit/SecurityDataRetentionJobTests.cs` |
-| 21 | YENİ `Domain/DataControllerProfile.cs`, `Services/Privacy/DataControllerProfiles.cs`, `Controllers/Panel/PanelDataControllerController.cs`; `LicenseDbContext.cs`; `Pages/Admin/Customers/Detail.cshtml(.cs)`; `Controllers/Customers/AdminCustomersController.cs`; `AuditEvents.cs`; göç `*_DataControllerProfiles`; YENİ testler `Services/Privacy/DataControllerProfilesTests.cs`, `Controllers/Panel/PanelDataControllerControllerTests.cs` |
-| 22 | `Pages/Public/IntakeForm.cshtml(.cs)`; `Controllers/Shopper/ShopperBroadcastersController.cs`; testler `Pages/Public/IntakeFormDataControllerTests.cs` (YENİ), `Controllers/Shopper/ShopperBroadcastersCodeLookupTests.cs`, YENİ `Controllers/Shopper/ShopperDataControllerTests.cs` |
+| 20 | `Services/Audit/SecurityDataRetentionJob.cs` (telefon + banka talebi maskesi; her hedefin imha kaydı ve koşu kaydı); `Program.cs` (`JobId`); `Pages/Admin/Shoppers/DeletionRequests.cshtml`; testler `Services/Audit/SecurityDataRetentionJobTests.cs`, YENİ `Services/Audit/SecurityDataRetentionRelationalTests.cs` |
+| 21 | YENİ `Domain/DataControllerProfile.cs`, `Domain/DataControllerProfileVersion.cs`, `Services/Privacy/DataControllerProfiles.cs`, `Controllers/Panel/PanelDataControllerController.cs`; `Domain/IntakeFormSubmission.cs` (`DataControllerVersion`); `LicenseDbContext.cs`; `Services/Bank/ObifinConnectionService.cs`, `ObifinOptions.cs`, `appsettings.json` (veri sorumlusu kapısı); `Pages/Admin/Customers/Detail.cshtml(.cs)`; `Controllers/Customers/AdminCustomersController.cs`; `AuditEvents.cs`; göç `*_DataControllerProfiles`; YENİ `OrderDeck.LicenseServer.Tests/TestHelpers/TestDataController.cs`; YENİ testler `Services/Privacy/DataControllerProfilesTests.cs`, `Controllers/Panel/PanelDataControllerControllerTests.cs`, `Pages/Admin/AdminCustomerDataControllerTests.cs`, `Services/Bank/ObifinDataControllerGateTests.cs`; banka bağlantısı kuran testlerin tohum yardımcıları (`ObifinConnectionServiceTests`, `ObifinConnectionServiceConcurrencyTests`, `ObifinPollJobTests`, `ObifinAccountRefreshJobTests`, `AdminObifinPageTests`, `BankConnectionTerminatorTests`); `GdprFlowTests.cs` |
+| 22 | `Services/IntakeForm/IntakeFormService.cs` (gösterilen sürüm); `Pages/Public/IntakeForm.cshtml(.cs)`; `Controllers/Shopper/ShopperBroadcastersController.cs`; testler `Pages/Public/IntakeFormDataControllerTests.cs` (YENİ), `Controllers/Shopper/ShopperBroadcastersCodeLookupTests.cs`, YENİ `Controllers/Shopper/ShopperDataControllerTests.cs` |
 | 23 | `deploy/scripts/backup-sql-to-r2.sh`, `deploy/scripts/backup-env-to-r2.sh`, `deploy/README.md` |
 | 24 | `web/app/(en)/en/privacy-policy/page.tsx`; YENİ test `OrderDeck.LicenseServer.Tests/Pages/Public/PolicyEffectiveDateParityTests.cs` |
 | 25 | kod yok — tam sunucu paketi (ayrık) |
@@ -174,6 +179,13 @@
 - P0 öncesi kontrolde (b) `Disabled` sayısı 0 değildiyse: o tarihsiz satırlar ilk koşuda bugünle damgalanır ve yönetici durdurması sayılır (`DisabledByAdmin`; lisans geçerli olsa da kendiliğinden açılmaz, 30. günde yerel verisi silinir). Açılması gereken varsa P1'den sonra admin/obifin → Etkinleştir (Görev 13).
 - Aynı Obifin kullanıcısı (BaseUrl + kullanıcı kodu) birden çok lisansta kayıtlı mı bak (Faz 2 spec §13'teki paylaşılan kullanıcı). Kayıtlıysa o lisanslardan birinde "Kaldır ve sil" Obifin'e hiç gitmez; Obifin tarafı Obifin panelinden **yalnız o lisansın** bağlantısı için elle kapatılır (Görev 13).
 - **Merge'den ÖNCE** prod `.env`'de `Admin__AlertEmail` dolu mu bak (`deploy/HA-PLAYBOOK.md`: disk uyarısı da msmtp/Brevo ile buraya gidiyor). Saklama, hizmet sonu ve denetim budaması işlerinin uyarı adresi bu; boşsa `data-destruction-digest` deploy'dan sonraki ilk :13'ten başlayarak **her saat Failed** olur — tasarım gereği: dış kopya gönderilmeden kayıt işaretlenmez, kayıtlar tabloda bekler (Görev 9 incelemesi).
+- **Veri sorumlusu kapısı (karar 23, Görev 21):** P1'den sonra lisansın müşterisinde veri sorumlusu bilgisi yoksa ilk bağlantı kaydı, Doğrula ve Banka ekle reddedilir. EMAR'ın Verified bağlantısının çekimi sürer. Ama metin işi (form paragrafı v2) P1'den önce yayımlanmayacaksa ve P1 ile metin arasında bir Doğrula gerekebilirse (lisans yenilenmesi, Etkinleştir, kimlik değişimi), **merge'den önce** `.env`'e `Obifin__RequireDataControllerProfile=false` yaz. Metin yayımlanıp EMAR'ın bilgisi girilince satırı sil ve yeniden başlat (Prod adımları 8). `.env` yazımını Burak yapar.
+- **İlk koşuların beklenen sayıları (P0'daki ilk saklama koşusunun kalıbı; aşağıdaki "P1 ilk koşu tutanağı"):** P1 üç günlük işin ilk koşusunu değiştirir ve hiçbirinin kuru koşusu yok:
+  - `security-data-retention` 03:40 UTC: işlenmiş silme talebinin telefonu (Görev 20).
+  - `bank-data-retention` 04:57 UTC: eşleşmeyen açıklama 180 → 30 gün; hareket, eşleşme ve gap 180 gün işlem tarihinden; IBAN bağı 12 ay (Görev 10).
+  - `bank-service-end-purge` 05:17 UTC: 30 günü geçmiş Disabled bağlantının yerel verisi (Görev 14).
+
+  İlk koşu 30–180 günlük geçmişi bir kerede siler. Sayımlar deploy'dan ÖNCE alınır (deploy 01:00–06:40 TR arasındaysa ilk koşu aynı sabahtır). Koşudan sonra işin `DataDestructionRecords` satırlarıyla karşılaştırılır, koşul yeniden sayılır (0 beklenir). P1'de imha kaydı tablosu var, ama beklenen sayı tutanakta olmazsa "fazla mı silindi" sorusu cevapsız kalır.
 - **Deploy geri alınırsa** (`/ready` 60 sn'de gelmez, imaj geri alınır, göç kalır): Hangfire panosu → Recurring jobs'ta eski imajın tanımadığı P1 işlerini (`data-destruction-digest`, Görev 14'ten sonra `bank-service-end-purge`) sil. Kalırlarsa eski imaj tipi yükleyemez ve her tetiklemede günlüğe iş yükleme hatası düşer (zararsız ama gürültülü). Yeni imaj yeniden çıkınca işler açılışta yeniden kaydedilir.
 
 **P1 deploy'undan sonra (Görev 9–25):**
@@ -187,9 +199,45 @@
 5. Karar 5'e göre: `bank-data-cleanup` (kuru) → maskeli kaynaklı özet ve kısa maske sayısı; gerekirse `--apply`; Faz 2'den önce `--reset-iban-memory --apply`. Sınır: sıfırlama yalnız `CustomerIbanMemories`'i siler; hareketlerdeki özetler 180 güne kadar kalır (IBAN ile erişim/silme talebi onlarla bulunur, Görev 17) ve P1 öncesinde çekilmiş hareketlerden hafıza yeniden öğrenilmez (`CounterpartyIbanHashValid`). Tutanak kalıbı P0'dakiyle aynı; P1'den sonra komut `DataDestructionRecords`'a da yazar. Saklama işi ya da bir silme sürerken koşturma (1. madde).
 6. Yedek betikleri CI ile **kopyalanmaz** (CI yalnız `rollback-license-server.sh`'ı kopyalıyor): HashKey'in Bitwarden'da olduğunu doğruladıktan sonra `deploy/scripts/backup-sql-to-r2.sh` ve `backup-env-to-r2.sh`'ı `/opt/orderdeck/scripts/`'e kopyala, birer kez elle çalıştırıp günlüğe bak (Görev 23).
 7. R2'de `sql-bak/` için yaşam döngüsü kuralı (32 gün) ve tarihsiz eski nesne kontrolü (not Ö-12).
-8. Yayıncıların veri sorumlusu bilgileri (Görev 21–22) ancak metin işinin (form paragrafı v2 ve yeni `KvkkNotice.TextVersion`) yayımlanmasından SONRA girilir: form bloğu metin sürümünün özetinin dışında, bilgi girilene kadar çizilmez.
-9. İlk saat başı +13'ten sonra `Admin__AlertEmail` kutusuna "[OrderDeck] İmha kaydı özeti" düştüğünü gör (Görev 9; ilk özet büyük olasılıkla 03:30 `audit-retention` koşusundan sonraki saatte — her başarılı `audit-retention` ve `bank-data-retention` koşusu silecek satır olmasa da bir `run-completed` satırı bırakır, yani özet her gün gelir). Bu e-postalar **silinmez**: yedekten geri yüklemeden sonra silmeler bunlardan yeniden uygulanır. Posta kutusunda bunlar için bir etiket/klasör ve "silme" kuralı dışı tutma ayarla. Haftalık "son başarılı çalışma" kontrolü (iç imha prosedürü §4.3): son günlerin özetlerinde `bank-data-retention`, `audit-retention` (ve Görev 14'ten sonra `bank-service-end-purge`) `run-completed` satırı var mı; yoksa Hangfire panosuna bak. Hangfire'da `data-destruction-digest` Failed ise e-posta gitmiyor demektir: kayıtlar tabloda bekler, SMTP/adres düzelince sonraki koşu (ya da "Trigger now") hepsini gönderir.
+8. Yayıncıların veri sorumlusu bilgileri (Görev 21–22) ancak metin işinin (form paragrafı v2 ve yeni `KvkkNotice.TextVersion`) yayımlanmasından SONRA girilir: form bloğu metin sürümünün özetinin dışında, bilgi girilene kadar çizilmez. Bilgi girilene kadar banka modülü yeni bağlantı, Doğrula ve Banka ekle için kapalıdır (karar 23). EMAR'ın bilgisi girilince, P1 öncesinde `.env`'e geçici `Obifin__RequireDataControllerProfile=false` yazıldıysa o satır silinir ve konteyner yeniden başlatılır; admin/obifin'de bir Doğrula ile kapının açık olduğu görülür. Her bilgi değişikliği yeni bir sürüm yazar; form gönderimi gösterilen sürümü kaydeder (karar 24).
+9. İlk saat başı +13'ten sonra `Admin__AlertEmail` kutusuna "[OrderDeck] İmha kaydı özeti" düştüğünü gör (Görev 9; ilk özet büyük olasılıkla 03:30 `audit-retention` koşusundan sonraki saatte — her başarılı `audit-retention` ve `bank-data-retention` koşusu silecek satır olmasa da bir `run-completed` satırı bırakır, yani özet her gün gelir). Bu e-postalar **silinmez**: yedekten geri yüklemeden sonra silmeler bunlardan yeniden uygulanır. Posta kutusunda bunlar için bir etiket/klasör ve "silme" kuralı dışı tutma ayarla. Haftalık "son başarılı çalışma" kontrolü (iç imha prosedürü §4.3): son günlerin özetlerinde `bank-data-retention`, `audit-retention`, `security-data-retention` (Görev 20'den sonra) ve `bank-service-end-purge` (Görev 14'ten sonra) `run-completed` satırı var mı; yoksa Hangfire panosuna bak. Hangfire'da `data-destruction-digest` Failed ise e-posta gitmiyor demektir: kayıtlar tabloda bekler, SMTP/adres düzelince sonraki koşu (ya da "Trigger now") hepsini gönderir.
 10. **Obifin tarafı (karar 21, her "Kaldır ve sil"den ve her hizmet sonu silmesinden sonra):** hizmet sonunda yerel verisi silinen bağlantı için admin/obifin'de "Kaldır ve sil". Her "Kaldır ve sil"den sonra Obifin'e yazılı silme talebi gönder: hareket kopyası silinsin, banka bağlantısı kapatılsın. Teyit yazısı gelince admin/obifin → "Obifin silme teyidi bekleyenler" → "Teyit alındı". Teyit yazısını KVKK klasöründe 3 yıl sakla. `bank-service-end-purge` bunlar kapanana kadar her gün "[OrderDeck] Obifin tarafı bekliyor" e-postası gönderir. 14 günü geçen satır "GECİKTİ" konusuyla gelir: Obifin'i yeniden yazılı uyar, durumu tutanağa yaz.
+
+**P1 ilk koşu tutanağı** (repo DIŞINDA, KVKK klasöründe; 3 yıl; "P1 deploy'undan ÖNCE" maddesine bağlı):
+```text
+P1 ilk koşu tutanağı — KVKK ön inceleme §5.1 (P1)
+Deploy (TR): ____   İmaj: master-<sha>   Sayımı alan: ____
+
+Deploy'dan ÖNCE sayım — anı (TR): ____
+  -- security-data-retention (03:40 UTC): işlenmiş silme talebinin telefonu
+  SELECT COUNT(*) FROM ShopperDeletionRequests
+  WHERE HandledAt IS NOT NULL AND HandledAt < DATEADD(day, -30, SYSDATETIMEOFFSET()) AND PhoneAtRequest <> '';      → ____
+  -- bank-data-retention (04:57 UTC)
+  SELECT COUNT(*) FROM BankTransactions                                               -- silinecek hareket
+  WHERE OccurredAt < DATEADD(day, -180, SYSDATETIMEOFFSET()) AND FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET());  → ____
+  SELECT COUNT(*) FROM BankTransactions t                                             -- boşaltılacak eşleşmeyen açıklama/ad
+  WHERE t.DescriptionPurgedAt IS NULL AND t.OccurredAt < DATEADD(day, -30, SYSDATETIMEOFFSET())
+    AND t.OccurredAt >= DATEADD(day, -180, SYSDATETIMEOFFSET()) AND t.FetchedAt < DATEADD(day, -7, SYSDATETIMEOFFSET())
+    AND NOT EXISTS (SELECT 1 FROM PaymentMatches m WHERE m.BankTransactionId = t.Id
+                    AND (m.ActualWpfCustomerId IS NOT NULL OR m.PaymentId IS NOT NULL));                              → ____
+  SELECT COUNT(*) FROM PaymentMatchGaps WHERE CreatedAt < DATEADD(day, -180, SYSDATETIMEOFFSET());                  → ____
+  SELECT COUNT(*) FROM CustomerIbanMemories                                           -- P1 öncesi LastConfirmedAt yok
+  WHERE CreatedAt < DATEADD(month, -12, SYSDATETIMEOFFSET());                                                          → ____
+  -- bank-service-end-purge (05:17 UTC): yerelde silinecek bağlantılar (lisansı yenilenmiş olan kurtulur)
+  SELECT c.LicenseId, c.DisabledAt, l.ExpiresAt, l.RevokedAt,
+         (SELECT COUNT(*) FROM BankTransactions t WHERE t.LicenseId = c.LicenseId) AS Hareket
+  FROM ObifinConnections c JOIN Licenses l ON l.Id = c.LicenseId
+  WHERE c.Status = 'Disabled' AND c.DisabledAt <= DATEADD(day, -30, SYSDATETIMEOFFSET());                         → ____
+
+İlk koşuların günü (UTC): ____
+İşlerin kayıtları (sayımla karşılaştır; fark = sayımdan koşuya kadar süresi dolanlar):
+  SELECT Trigger, Target, Action, SUM(RowCount) AS Satir FROM DataDestructionRecords
+  WHERE OccurredAt >= '<gün>T03:30:00+00:00' AND OccurredAt < '<gün>T05:30:00+00:00'
+    AND Trigger IN ('retention', 'service-end')
+  GROUP BY Trigger, Target, Action;                                                                                   → ____
+Koşudan SONRA aynı sorgular (SYSDATETIMEOFFSET() yerine koşu anı) — 0 beklenir:  ____
+Not: çıktı kişisel veri içermez (sayılar ve lisans kimliği). Kabul eden: ____
+```
 
 **Yedekten geri yükleme yapılırsa (her zaman):** `deploy/README.md` → "Geri yükleme" → "Silmeleri yeniden uygula" (Görev 23). Kısaca: yedek anını not et → `bank-data-retention`, `security-data-retention`, `audit-retention`'ı elle tetikle → yedek anından sonraki "İmha kaydı özeti" e-postalarındaki olay kaynaklı silmeleri tetikleyicisine göre yeniden uygula → son başarılı özetten sonraki kayıtlar (olağan durumda en çok ~1 saat 13 dk; özet işi düşmüşse daha fazla) için canlı veritabanına hâlâ erişiliyorsa `DataDestructionRecords`'u (`DigestedAt IS NULL` ya da OccurredAt > yedek anı) dışa al.
 
@@ -3458,6 +3506,28 @@ public sealed class BankDataRetentionJobTests
     }
 
     [Fact]
+    public async Task Yalniz_dekont_bagi_olan_hareket_eslesen_sayilir_aciklamasi_ve_gerekcesi_kalir()
+    {
+        // "Eşleşen" = gerçek müşteri YA DA dekont bağı (PaymentId). Gap çözümüyle dekonta bağlanmış ama gerçek müşterisi boş satır
+        // 30 günde açıklamasını kaybetmemeli; "eşleşmeyen" sorgusunun ikinci koşulu başka hiçbir testte sınanmıyor.
+        using var db = NewDb();
+        var tx = Row(TimeSpan.FromDays(30) + Minute);
+        var match = MatchFor(tx, linked: false);
+        match.PaymentId = Guid.NewGuid();
+        match.Status = PaymentMatchStatus.ConfirmedByHuman;
+        db.BankTransactions.Add(tx);
+        db.PaymentMatches.Add(match);
+        await db.SaveChangesAsync();
+
+        var r = await Job(db).RunAsync(CancellationToken.None);
+
+        r.UnmatchedDescriptionsPurged.Should().Be(0);
+        var t = (await db.BankTransactions.FindAsync(tx.Id))!;
+        (t.Description, t.CounterpartyName, t.DescriptionPurgedAt).Should().Be(("aciklama", "ad", (DateTimeOffset?)null));
+        (await db.PaymentMatches.FindAsync(match.Id))!.Evidence.Should().Be("kanıt metni");
+    }
+
+    [Fact]
     public async Task Hareket_eslesme_ve_gap_180_gunde_silinir()
     {
         using var db = NewDb();
@@ -4616,6 +4686,29 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
         placeholder.UnapprovedSkippedCount.Should().Be(1);
         (await db.ObifinConnections.SingleAsync()).LastObifinTransactionId.Should().Be(2, "atlanan hareket de görüldü");
     }
+
+    [Fact]
+    public async Task Yalniz_onaysiz_hareket_gelen_turda_sayac_ve_imlec_turun_sonundaki_kayitla_kalici_olur()
+    {
+        // Sayfada yazılacak hareket yoksa UpsertAsync erken döner (fresh boş): yer tutucu ve sayaç izleyicide kalır, turun
+        // sonundaki kimlik korumalı kayıt imleçle birlikte yazar. Bu yol başka hiçbir testte yok; kayıt atlanırsa uyarı sayısı
+        // sessizce sıfır kalırdı.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(new ObifinTransactionDto(2, 99, "qnb", new DateTime(2026, 9, 25, 8, 2, 0), 10m, "TL",
+            null, null, null, null, null, null, "{}"));
+        client.Transactions.Add(new ObifinTransactionDto(3, 99, "qnb", new DateTime(2026, 9, 25, 8, 3, 0), 12m, "TL",
+            null, null, null, null, null, null, "{}"));
+
+        await job.RunAsync(CancellationToken.None);
+        db.ChangeTracker.Clear();
+
+        (await db.BankTransactions.CountAsync()).Should().Be(0);
+        sink.Received.Should().BeEmpty();
+        (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.ObifinAccountId == 99)).UnapprovedSkippedCount.Should().Be(2);
+        (await db.ObifinConnections.AsNoTracking().SingleAsync()).LastObifinTransactionId.Should().Be(3);
+    }
 ```
 
 - [ ] **Adım 2: Koştur — derleme hatası bekle**
@@ -4631,6 +4724,8 @@ Expected: FAIL — `ApprovedAt`, `ApprovedBy`, `UnapprovedSkippedCount` yok.
     /// <summary>Yöneticinin bu hesabı lisansa bağladığı an (KVKK Ö-10). Null = onaysız: hareketi hiçbir lisansa yazılmaz, yalnız
     /// <see cref="UnapprovedSkippedCount"/> artar. Yalnız yayıncının müşteri tahsilatı hesabı onaylanır.</summary>
     public DateTimeOffset? ApprovedAt { get; set; }
+    /// <summary>Onaylayan yöneticinin kimliği (<c>DataDestruction.ActorOf</c>: <c>sub</c>), kullanıcı adı DEĞİL (KVKK Ö-14): satır
+    /// budanmaz, ad bir gerçek kişiyi gösterir; adı aynı işlemin 24 aylık denetim satırında.</summary>
     public string? ApprovedBy { get; set; }
     /// <summary>Onaysızken atlanan hareket sayısı (yönetim sayfasındaki uyarı).</summary>
     public int UnapprovedSkippedCount { get; set; }
@@ -4704,7 +4799,8 @@ Expected: PASS.
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var account = await vdb.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId);
         account.ApprovedAt.Should().NotBeNull();
-        account.ApprovedBy.Should().Be("admin");
+        var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+        account.ApprovedBy.Should().Be(adminId.ToString(), "yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14)");
         (await vdb.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinAccountApprove && a.TargetId == lic.ToString()))
             .Should().BeTrue();
     }
@@ -4760,7 +4856,8 @@ new AccountRow(a.Id, a.ObifinAccountId, a.BankaKodu, a.IbanMasked, a.Currency, a
         if (account.ApprovedAt is null)
         {
             account.ApprovedAt = DateTimeOffset.UtcNow;
-            account.ApprovedBy = AdminName();
+            // Yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14; Görev 9 kuralı): sütun budanmaz.
+            account.ApprovedBy = DataDestruction.ActorOf(User);
             await _db.SaveChangesAsync(ct);
             await _audit.LogAsync(AuditEvents.ObifinAccountApprove, AuditTargets.ObifinConnection, account.LicenseId.ToString(),
                 new { account.ObifinAccountId, account.BankaKodu }, CancellationToken.None);
@@ -4768,10 +4865,9 @@ new AccountRow(a.Id, a.ObifinAccountId, a.BankaKodu, a.IbanMasked, a.Currency, a
         TempData["Success"] = "Hesap onaylandı; bundan sonraki hareketleri kaydedilecek.";
         return RedirectToPage();
     }
-
-    /// <summary>AdminCookie kimliği "username" claim'inde (DeletionRequests kalıbı).</summary>
-    private string AdminName() => User.FindFirst("username")?.Value ?? User.Identity?.Name ?? "admin";
 ```
+
+(`DataDestruction` için `using OrderDeck.LicenseServer.Services.Privacy;` Görev 9'dan beri sayfada var. Kullanıcı adı yazan bir yardımcı EKLENMEZ.)
 
 `Index.cshtml` — `@if (Model.BankDisabled) { … }` bloğunun ALTINA:
 
@@ -6440,7 +6536,7 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove, ObifinAccountReject, O
     }
 ```
 
-(`AdminName()` Görev 12'de eklendi; imha kaydına giden `actor` için KULLANILMAZ, Görev 9 incelemesi.)
+(Yönetici kimliği her yerde `DataDestruction.ActorOf(User)`; sayfada kullanıcı adı yazan bir yardımcı yok — Görev 9 incelemesi, ikinci plan incelemesi.)
 
 `Index.cshtml` — `@if (Model.UnapprovedAccounts > 0) { … }` bloğunun (Görev 12) ALTINA:
 
@@ -7998,6 +8094,10 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Neden (not K-7, Ö-11):** Shopper hesabı olmayanlar (yalnız formu dolduranlar, WPF'te kayıtlı müşteriler, müşteri olmayan karşı taraflar) için erişim ve silme aracı yok; "hakkımda hangi banka verisi var" ancak elle SQL ile cevaplanabiliyor; 30 günlük son tarih izlenmiyor. Yeni talep kaydı (`BankSubjectRequest`): lisans, tür (erişim/silme), IBAN'ın yalnız özeti ve maskesi, alış tarihi, **son tarih = alış + 30 gün**, kapanış ve kişisel veri içermeyen sonuç. IBAN sunucuda özetlenir (yalnız geçerli IBAN — Görev 11), düz saklanmaz; talep kapanınca özet de boşalır. Arama aynı lisanstaki aynı özetli hareketleri ve IBAN bağlarını bulur; dışa aktarım CSV'dir (müşteri kimliği yazılmaz); silme Görev 15'in kurallarıyla yapılır ve imha kaydı talep kimliğiyle yazılır.
 - **Doğrulamanın kaydı (Ö-11, K-7 öneri 3):** başkasının havale bilgisini açıklamanın ve yanlış kişinin talebiyle veri silmenin ispat yükü veri sorumlusunda; uyarı şeridi yetmez. Dışa aktarma ve silmeden önce yönetici kimliğin ve IBAN sahipliğinin **nasıl** doğrulandığını kaydeder: kişisel veri içermeyen, zorunlu `Verification` (yöntem: ıslak imzalı dilekçe / KEP–güvenli e-imza–mobil imza / veri sorumlusunda kayıtlı iletişim — her birinde IBAN sahipliği banka belgesiyle), `VerifiedAt`, `VerifiedBy`. Kaydedilmeden dışa aktarma ve silme reddedilir.
 - **Açık talep veri yokken kalmaz:** bağlantı kaldırma, hizmet sonu yerel silmesi (Görev 13–14) ve yayıncı silmesi lisansın açık taleplerini kapatır (özet boşalır, sonuç yazılır — yöneticinin başvurana yanıt vermesi gerekir). Kapanmış talebin maskesi 30 gün sonra boşalır (Görev 20).
+- **Sonuç kategoridir, serbest metin değil (ikinci plan incelemesi; K-7, Ö-11; KVKK m. 13/3, Silme Yönetmeliği md. 12/1-c gerekçeli ret).** Talep yalnız iki yolla kapanıyordu: "Silindi" ya da sabit "Yanıtlandı (dışa aktarım iletildi)". Kimliği ya da IBAN sahipliği doğrulanamayan, ya da gerekçeyle (kısmen) reddedilen talebi kapatan yönetici kayda yanlış bir sonuç düşürüyordu; talep kaydı ispat değerini kaybederdi. Artık `BankSubjectResolution`: `Erased` (yalnız `EraseAsync`), `Answered` (yalnız doğrulaması kayıtlı ERİŞİM talebinde, çünkü dışa aktarım ancak orada mümkün), `RejectedNotVerified` (yalnız doğrulama kaydı OLMAYAN talepte), `RejectedLegalGround`, `Withdrawn`, `DataDeleted` (yalnız `CloseOpenForLicensesAsync`). Sonuç metni kategoriden üretilir, yönetici serbest metin yazmaz; sayfada "Reddet / kapat" seçenekleri olur ve kategori denetime yazılır (Görev 18).
+- **Silme yalnız silme talebinde:** `EraseAsync` `Kind == Erasure` ister; erişim talebiyle silme yapılmaz.
+- **CSV formül kaçışı** OWASP listesine uyar: `=`, `+`, `-`, `@`'e ek olarak sekme (`\t`) ve satır başı (`\r`) ile başlayan hücre de kesme işaretiyle başlar.
+- **Yönetici sütunları kimlik taşır:** `CreatedBy`, `VerifiedBy`, `ClosedBy` yöneticinin `sub`'ı (`DataDestruction.ActorOf`), kullanıcı adı değil. Bu Görev 9'un kuralıdır (KVKK Ö-14): talep satırının saklama süresi henüz yok (karar 22), satır süresiz duruyor.
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Domain/Bank/BankSubjectRequest.cs`
@@ -8183,6 +8283,7 @@ public sealed class BankSubjectRequestServiceTests
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
         var closed = await db.BankSubjectRequests.AsNoTracking().SingleAsync();
         closed.ClosedAt.Should().NotBeNull(); closed.IbanHash.Should().BeNull(); closed.ClosedBy.Should().Be("admin");
+        closed.Resolution.Should().Be(BankSubjectResolution.Erased);
         (await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).ToListAsync())
             .Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.SubjectRequest).And.HaveCount(3);
 
@@ -8208,7 +8309,84 @@ public sealed class BankSubjectRequestServiceTests
         closed.Should().Be(1);
         var o = await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == open.Id);
         (o.ClosedAt is not null, o.IbanHash, o.Outcome).Should().Be((true, (string?)null, "Lisansın banka verisi silindi."));
+        o.Resolution.Should().Be(BankSubjectResolution.DataDeleted);
         (await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == otherOpen.Id)).ClosedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Kapatma_yalniz_kurala_uygun_kategoriyle_yapilir_sonuc_metni_kategoriden_gelir()
+    {
+        // KVKK m. 13/3, Silme Yönetmeliği md. 12/1-c: gerekçeli ret ayrı bir sonuç. Talep kaydına yanlış sonuç düşmesin:
+        // doğrulanmamış erişim talebi "yanıtlandı", doğrulanmış talep "doğrulanamadı" kapanamaz; silme yalnız EraseAsync'te.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        async Task<BankSubjectRequest> Open(BankSubjectRequestKind kind, bool verified)
+        {
+            var r = await Service(db).CreateAsync(Hasher, lic, BankHasherTests.TestIban(), kind, new DateOnly(2026, 10, 19), "admin",
+                CancellationToken.None);
+            if (verified)
+                await Service(db).VerifyAsync(r.Id, BankSubjectVerification.WetSignatureAndBankDocument, "admin", CancellationToken.None);
+            return r;
+        }
+        var unverifiedAccess = await Open(BankSubjectRequestKind.Access, verified: false);
+        var verifiedAccess = await Open(BankSubjectRequestKind.Access, verified: true);
+        var verifiedErasure = await Open(BankSubjectRequestKind.Erasure, verified: true);
+        Func<Task> Close(BankSubjectRequest r, BankSubjectResolution resolution)
+            => () => Service(db).CloseAsync(r.Id, resolution, "admin", CancellationToken.None);
+
+        await Close(unverifiedAccess, BankSubjectResolution.Answered).Should().ThrowAsync<ObifinValidationException>()
+            .WithMessage(BankSubjectRequestService.ResolutionNotAllowedMessage);
+        await Close(verifiedErasure, BankSubjectResolution.Answered).Should().ThrowAsync<ObifinValidationException>();
+        await Close(verifiedAccess, BankSubjectResolution.RejectedNotVerified).Should().ThrowAsync<ObifinValidationException>();
+        await Close(verifiedErasure, BankSubjectResolution.Erased).Should().ThrowAsync<ObifinValidationException>();
+        await Close(verifiedErasure, BankSubjectResolution.DataDeleted).Should().ThrowAsync<ObifinValidationException>();
+
+        await Close(unverifiedAccess, BankSubjectResolution.RejectedNotVerified)();
+        await Close(verifiedAccess, BankSubjectResolution.Answered)();
+        await Close(verifiedErasure, BankSubjectResolution.RejectedLegalGround)();
+
+        var rows = await db.BankSubjectRequests.AsNoTracking().ToDictionaryAsync(r => r.Id);
+        rows[unverifiedAccess.Id].Should().Match<BankSubjectRequest>(r => r.Resolution == BankSubjectResolution.RejectedNotVerified
+            && r.Outcome == BankSubjectRequestService.OutcomeText(BankSubjectResolution.RejectedNotVerified)
+            && r.ClosedAt != null && r.IbanHash == null);
+        rows[verifiedAccess.Id].Resolution.Should().Be(BankSubjectResolution.Answered);
+        rows[verifiedErasure.Id].Resolution.Should().Be(BankSubjectResolution.RejectedLegalGround);
+    }
+
+    [Fact]
+    public async Task Erisim_talebiyle_silme_yapilmaz()
+    {
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        db.BankTransactions.Add(Tx(lic, iban));
+        await db.SaveChangesAsync();
+        var r = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Access, new DateOnly(2026, 10, 19), "admin",
+            CancellationToken.None);
+        await Service(db).VerifyAsync(r.Id, BankSubjectVerification.WetSignatureAndBankDocument, "admin", CancellationToken.None);
+
+        var erase = () => Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
+
+        await erase.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.WrongKindMessage);
+        (await db.BankTransactions.AsNoTracking().SingleAsync()).Description.Should().NotBeNull("silme yapılmadı");
+        (await db.BankSubjectRequests.AsNoTracking().SingleAsync()).ClosedAt.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("=1+1")]
+    [InlineData("+1")]
+    [InlineData("-1")]
+    [InlineData("@SUM(A1)")]
+    [InlineData("\t=1+1")]
+    [InlineData("\r=1+1")]
+    public void Formul_sayilabilecek_hucre_kesme_isaretiyle_baslar(string description)
+    {
+        // OWASP CSV injection: '=', '+', '-', '@', sekme ve satır başı ile başlayan hücre formül sayılabilir.
+        var request = new BankSubjectRequest { Id = Guid.NewGuid(), IbanMasked = "TR12…345" };
+        var row = new BankSubjectRequestService.TransactionRow(Guid.NewGuid(), DateTimeOffset.UtcNow, 1m, "TL", "qnb", "TR12…345",
+            description, null, null, null, null, false);
+
+        var csv = Encoding.UTF8.GetString(BankSubjectRequestService.ToCsv(new BankSubjectRequestService.Lookup(request, [row], 0)));
+
+        csv.Should().Contain("\"'" + description + "\"");
     }
 }
 ```
@@ -8245,6 +8423,29 @@ public enum BankSubjectVerification
 }
 
 /// <summary>
+/// Talebin nasıl kapandığı (KVKK m. 13/3: talep kabul edilir ya da gerekçesi açıklanarak reddedilir; Silme Yönetmeliği md.
+/// 12/1-c gerekçeli ret). Kategoridir; sonuç metni koddan üretilir (<c>BankSubjectRequestService.OutcomeText</c>), serbest metin
+/// YOK. Kişisel veri içermez.
+/// </summary>
+public enum BankSubjectResolution
+{
+    None = 0,
+    /// <summary>Silme talebi uygulandı (yalnız <c>EraseAsync</c>).</summary>
+    Erased = 1,
+    /// <summary>Erişim talebi yanıtlandı, dışa aktarım başvurana iletildi (yalnız doğrulaması kayıtlı erişim talebi).</summary>
+    Answered = 2,
+    /// <summary>Kimlik ya da IBAN sahipliği doğrulanamadı; reddedildi (yalnız doğrulama kaydı OLMAYAN talep).</summary>
+    RejectedNotVerified = 3,
+    /// <summary>Kanuni gerekçeyle tamamen ya da kısmen reddedildi; gerekçe başvurana yazılı bildirildi.</summary>
+    RejectedLegalGround = 4,
+    /// <summary>Başvuran talebini geri çekti.</summary>
+    Withdrawn = 5,
+    /// <summary>Lisansın banka verisi silindiği için kapandı (bağlantı kaldırma, hizmet sonu, yayıncı silmesi; yalnız
+    /// <c>CloseOpenForLicensesAsync</c>). Yönetici başvurana yine yanıt verir.</summary>
+    DataDeleted = 6,
+}
+
+/// <summary>
 /// Banka hareketi karşı tarafının (Shopper hesabı olsun olmasın) erişim ya da silme talebi (KVKK m. 11, m. 13/2; ön inceleme
 /// K-7). Son tarih alış + 30 gün. IBAN düz saklanmaz: yalnız özet (talep kapanınca boşaltılır) ve kısaltılmış hâli (kapanıştan 30
 /// gün sonra boşaltılır — SecurityDataRetentionJob). Lisansa FK BİLEREK yok (ShopperDeletionRequest kalıbı): talebin belgesi
@@ -8261,6 +8462,8 @@ public sealed class BankSubjectRequest
     /// <summary>Dışa aktarma ve silmeden önce zorunlu (<see cref="BankSubjectVerification"/>).</summary>
     public BankSubjectVerification Verification { get; set; }
     public DateTimeOffset? VerifiedAt { get; set; }
+    /// <summary>Yönetici sütunları (<see cref="VerifiedBy"/>, <see cref="CreatedBy"/>, <see cref="ClosedBy"/>): yöneticinin kimliği
+    /// (<c>DataDestruction.ActorOf</c>: <c>sub</c>) ya da <c>system</c>; kullanıcı adı DEĞİL (KVKK Ö-14: satır süresiz, karar 22).</summary>
     public string? VerifiedBy { get; set; }
     /// <summary>Talebin OrderDeck'e ulaştığı gün (TR gün başı, UTC).</summary>
     public DateTimeOffset ReceivedAt { get; set; }
@@ -8269,6 +8472,9 @@ public sealed class BankSubjectRequest
     public string CreatedBy { get; set; } = "";
     public DateTimeOffset? ClosedAt { get; set; }
     public string? ClosedBy { get; set; }
+    /// <summary>Nasıl kapandığı (kategori); açıkken <see cref="BankSubjectResolution.None"/>.</summary>
+    public BankSubjectResolution Resolution { get; set; }
+    /// <summary>Sonucun metni: koddan üretilir (kategoriden ya da silmenin sayılarından), yönetici yazmaz. Kişisel veri yok.</summary>
     public string? Outcome { get; set; }
 }
 ```
@@ -8293,6 +8499,7 @@ public sealed class BankSubjectRequest
             b.Property(r => r.VerifiedBy).HasMaxLength(256);
             b.Property(r => r.CreatedBy).HasMaxLength(256).IsRequired();
             b.Property(r => r.ClosedBy).HasMaxLength(256);
+            b.Property(r => r.Resolution).HasConversion<string>().HasMaxLength(32).IsRequired();
             b.Property(r => r.Outcome).HasMaxLength(500);
             b.HasIndex(r => new { r.ClosedAt, r.DueAt });
             b.ToTable(tb => tb.HasCheckConstraint("CK_BankSubjectRequests_IbanHash_Hex64",
@@ -8328,6 +8535,9 @@ public sealed class BankSubjectRequestService
     public const string ClosedMessage = "Talep kapatılmış.";
     public const string NotVerifiedMessage = "Önce başvuranın kimliğini ve IBAN'ın ona ait olduğunu doğrulayıp yöntemi kaydedin.";
     public const string NoMethodMessage = "Doğrulama yöntemini seçin.";
+    public const string WrongKindMessage = "Erişim talebiyle silme yapılmaz; silme için ayrı bir silme talebi açın.";
+    public const string ResolutionNotAllowedMessage = "Bu sonuç bu talebe uygulanamaz: 'Yanıtlandı' yalnız doğrulanmış erişim talebinde, " +
+        "'Doğrulanamadı' yalnız doğrulama kaydı olmayan talepte seçilir; silme 'Sil ve kapat' ile yapılır.";
     /// <summary>Silmenin bildirimine eklenir: OrderDeck'in silemediği kopyalar.</summary>
     public const string OtherCopiesNotice = "Obifin'deki kopya için Obifin'e yazılı talep gönderin; bankanın kendi kayıtları bankanın sorumluluğundadır.";
 
@@ -8411,8 +8621,9 @@ public sealed class BankSubjectRequestService
     }
 
     /// <summary>Lisansların açık taleplerini kapatır (bağlantı kaldırma, hizmet sonu yerel silmesi, yayıncı silmesi): özet boşalır,
-    /// <paramref name="outcome"/> yazılır. Yönetici başvurana yine yanıt vermelidir. KAYDETMEZ: çağıranın silmesiyle aynı
-    /// SaveChanges. Kapatılan sayısını döner.</summary>
+    /// sonuç <see cref="BankSubjectResolution.DataDeleted"/>, <paramref name="outcome"/> (çağıranın sabit metni, yönetici girdisi
+    /// değil) yazılır. Yönetici başvurana yine yanıt vermelidir. KAYDETMEZ: çağıranın silmesiyle aynı SaveChanges. Kapatılan
+    /// sayısını döner.</summary>
     public static async Task<int> CloseOpenForLicensesAsync(LicenseDbContext db, IReadOnlyCollection<Guid> licenseIds, string outcome,
         string actor, DateTimeOffset now, CancellationToken ct)
     {
@@ -8423,14 +8634,16 @@ public sealed class BankSubjectRequestService
             r.ClosedAt = now;
             r.ClosedBy = actor;
             r.IbanHash = null;
+            r.Resolution = BankSubjectResolution.DataDeleted;
             r.Outcome = outcome;
         }
         return open.Count;
     }
 
     /// <summary>Erişim talebinin dışa aktarımı (KVKK m. 11/1-b). Müşteri kimliği ve kullanıcı adı YAZILMAZ: havaleyi gönderen ile
-    /// ödemesi sayılan müşteri farklı kişi olabilir. UTF-8 BOM'lu (Excel), noktalı virgül ayraçlı; '=', '+', '-', '@' ile başlayan
-    /// hücre kesme işaretiyle başlar (formül enjeksiyonu). Doğrulama denetimi <see cref="ExportAsync"/>'te.</summary>
+    /// ödemesi sayılan müşteri farklı kişi olabilir. UTF-8 BOM'lu (Excel), noktalı virgül ayraçlı; '=', '+', '-', '@', sekme ve
+    /// satır başı ile başlayan hücre kesme işaretiyle başlar (formül enjeksiyonu, OWASP CSV injection listesi). Doğrulama denetimi
+    /// <see cref="ExportAsync"/>'te.</summary>
     public static byte[] ToCsv(Lookup lookup)
     {
         var sb = new StringBuilder();
@@ -8452,7 +8665,8 @@ public sealed class BankSubjectRequestService
     private static string Cell(string? value)
     {
         if (string.IsNullOrEmpty(value)) return "";
-        if ("=+-@".Contains(value[0])) value = "'" + value;
+        // OWASP CSV injection: sekme ve satır başı da formülün önüne geçebilir.
+        if ("=+-@\t\r".Contains(value[0])) value = "'" + value;
         return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
@@ -8480,6 +8694,8 @@ public sealed class BankSubjectRequestService
         var request = await _db.BankSubjectRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
             ?? throw new ObifinValidationException(NotFoundMessage);
         if (request.ClosedAt is not null || request.IbanHash is null) throw new ObifinValidationException(ClosedMessage);
+        // Erişim talebiyle silme yapılmaz: başvuranın istediği bu değil.
+        if (request.Kind != BankSubjectRequestKind.Erasure) throw new ObifinValidationException(WrongKindMessage);
         // KVKK Ö-11: yanlış kişinin talebiyle silinmesin — doğrulama yöntemi kayıtlı olmalı.
         if (request.Verification == BankSubjectVerification.None) throw new ObifinValidationException(NotVerifiedMessage);
         var now = DateTimeOffset.UtcNow;
@@ -8504,6 +8720,7 @@ public sealed class BankSubjectRequestService
         request.ClosedAt = now;
         request.ClosedBy = actor;
         request.IbanHash = null;
+        request.Resolution = BankSubjectResolution.Erased;
         request.Outcome = $"Silindi: {txs.Count} hareketin açıklaması/adı/ham kaydı, {memories.Count} IBAN bağı, " +
             $"{matches.Count} eşleşme satırının kimliği/kanıtı. Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kaldı.";
         const string criterion = "ilgili kişi talebi";
@@ -8517,18 +8734,44 @@ public sealed class BankSubjectRequestService
         return new EraseResult(txs.Count, memories.Count, matches.Count);
     }
 
-    /// <summary>Erişim talebi yanıtlandı (dışa aktarım iletildi): talep kapanır, özet boşalır.</summary>
-    public async Task CloseAsync(Guid requestId, string actor, CancellationToken ct)
+    /// <summary>Talebi bir sonuç KATEGORİSİYLE kapatır (KVKK m. 13/3; Silme Yönetmeliği md. 12/1-c gerekçeli ret): sonuç metni
+    /// kategoriden üretilir (<see cref="OutcomeText"/>), serbest metin yok; özet boşalır. Kurallar talep kaydının ispat değerini
+    /// korur: <see cref="BankSubjectResolution.Answered"/> yalnız doğrulaması kayıtlı ERİŞİM talebinde (dışa aktarım ancak orada
+    /// mümkün); <see cref="BankSubjectResolution.RejectedNotVerified"/> yalnız doğrulama kaydı OLMAYAN talepte;
+    /// <see cref="BankSubjectResolution.RejectedLegalGround"/> ve <see cref="BankSubjectResolution.Withdrawn"/> her talepte.
+    /// <see cref="BankSubjectResolution.Erased"/>'ı yalnız <see cref="EraseAsync"/>, <see cref="BankSubjectResolution.DataDeleted"/>'ı
+    /// yalnız <see cref="CloseOpenForLicensesAsync"/> yazar.</summary>
+    public async Task CloseAsync(Guid requestId, BankSubjectResolution resolution, string actor, CancellationToken ct)
     {
         var request = await _db.BankSubjectRequests.FirstOrDefaultAsync(r => r.Id == requestId, ct)
             ?? throw new ObifinValidationException(NotFoundMessage);
         if (request.ClosedAt is not null) throw new ObifinValidationException(ClosedMessage);
+        var verified = request.Verification != BankSubjectVerification.None;
+        var allowed = resolution switch
+        {
+            BankSubjectResolution.Answered => request.Kind == BankSubjectRequestKind.Access && verified,
+            BankSubjectResolution.RejectedNotVerified => !verified,
+            BankSubjectResolution.RejectedLegalGround or BankSubjectResolution.Withdrawn => true,
+            _ => false,
+        };
+        if (!allowed) throw new ObifinValidationException(ResolutionNotAllowedMessage);
         request.ClosedAt = DateTimeOffset.UtcNow;
         request.ClosedBy = actor;
         request.IbanHash = null;
-        request.Outcome = "Yanıtlandı (dışa aktarım iletildi).";
+        request.Resolution = resolution;
+        request.Outcome = OutcomeText(resolution);
         await _db.SaveChangesAsync(ct);
     }
+
+    /// <summary>Kapatma kategorisinin sonuç metni (talep listesi ve kayıt). Kişisel veri yok.</summary>
+    public static string OutcomeText(BankSubjectResolution resolution) => resolution switch
+    {
+        BankSubjectResolution.Answered => "Yanıtlandı: dışa aktarım başvurana iletildi.",
+        BankSubjectResolution.RejectedNotVerified => "Reddedildi: başvuranın kimliği ya da IBAN'ın ona ait olduğu doğrulanamadı.",
+        BankSubjectResolution.RejectedLegalGround => "Reddedildi (tamamen ya da kısmen): kanuni gerekçe başvurana yazılı bildirildi.",
+        BankSubjectResolution.Withdrawn => "Başvuran talebi geri çekti.",
+        _ => "",
+    };
 }
 ```
 
@@ -8629,7 +8872,7 @@ Run: aynı komut. Expected: PASS.
 - [ ] **Adım 6: Göçü üret ve incele**
 
 Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankSubjectRequests --output-dir Data/Migrations`
-Expected: `Up` yalnız `CreateTable("BankSubjectRequests")` (CHECK kısıtıyla) + `CreateIndex`.
+Expected: `Up` yalnız `CreateTable("BankSubjectRequests")` (CHECK kısıtıyla; `Resolution` nvarchar(32) not null) + `CreateIndex`.
 
 - [ ] **Adım 7: Koştur — yeşil**
 
@@ -8648,9 +8891,11 @@ git commit -m "feat(bank-kvkk): IBAN ile banka verisi talebi servisini ekle
 BankSubjectRequest: IBAN yalnız özet ve maskeyle, son tarih alış + 30 gün;
 kimlik ve IBAN sahipliği doğrulama yöntemi (kişisel veri içermez) kaydedilmeden
 dışa aktarma ve silme yok; arama, müşteri kimliği yazmayan CSV dışa
-aktarım, silme (Görev 15 kurallarıyla, imha kaydı talep kimliğiyle) ve
-kapatma. Bağlantı kaldırma, hizmet sonu silmesi ve yayıncı silmesi açık
-talepleri kapatır (KVKK ön inceleme K-7, Ö-11, P1-9).
+aktarım (sekme ve satır başı dahil formül kaçışı), yalnız silme talebinde
+silme (Görev 15 kurallarıyla, imha kaydı talep kimliğiyle) ve kişisel veri
+içermeyen sonuç kategorisiyle kapatma (yanıtlandı, doğrulanamadı, kanuni
+gerekçeyle ret, geri çekildi). Bağlantı kaldırma, hizmet sonu silmesi ve
+yayıncı silmesi açık talepleri kapatır (KVKK ön inceleme K-7, Ö-11, P1-9).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -8659,7 +8904,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 18: Banka veri talepleri sayfası ve silme talepleri listesinde son tarih (P1-9b)
 
-**Neden:** Görev 17'nin servisine yönetici arayüzü; Shopper silme talepleri listesinde de son tarih (talep + 30 gün) ve gecikme işareti. Talep sayfası görüntülenmesi denetime yazılır (Görev 16'daki olay); oluşturma, doğrulama yönteminin kaydı, dışa aktarma, silme, kapatma da denetime yazılır (silme imha olayı → 36 ay). Dışa aktar ve Sil düğmeleri doğrulama yöntemi kaydedilmeden çalışmaz (servis reddeder, sayfa hata şeridi gösterir).
+**Neden:** Görev 17'nin servisine yönetici arayüzü; Shopper silme talepleri listesinde de son tarih (talep + 30 gün) ve gecikme işareti. Talep sayfası görüntülenmesi denetime yazılır (Görev 16'daki olay); oluşturma, doğrulama yönteminin kaydı, dışa aktarma, silme, kapatma da denetime yazılır (silme imha olayı → 36 ay). Dışa aktar ve Sil düğmeleri doğrulama yöntemi kaydedilmeden çalışmaz (servis reddeder, sayfa hata şeridi gösterir). İkinci plan incelemesinden sonra (Görev 17) "Sil ve kapat" yalnız silme talebinde görünür. "Yanıtlandı, kapat" yalnız doğrulanmış erişim talebinde görünür. "Reddet / kapat" seçenekleri kategoridir: doğrulanamadı (yalnız doğrulama kaydı yokken), kanuni gerekçeyle ret, geri çekildi. Seçilen kategori talebe ve denetim satırına yazılır. Oluşturan, doğrulayan ve kapatan sütunlarına yöneticinin kimliği (`DataDestruction.ActorOf`) yazılır, kullanıcı adı değil.
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Pages/Admin/BankaVeriTalepleri/Index.cshtml`, `Index.cshtml.cs`
@@ -8800,6 +9045,40 @@ public sealed class AdminBankaVeriTalepleriPageTests : IClassFixture<ApiFactory>
         (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().BankSubjectRequests.AnyAsync(r => r.LicenseId == lic))
             .Should().BeFalse();
     }
+
+    [Fact]
+    public async Task Dogrulanamayan_talep_kategoriyle_reddedilir_yanitlandi_secilemez_kayitta_yonetici_kimligi_durur()
+    {
+        // KVKK m. 13/3, Silme Yönetmeliği md. 12/1-c: gerekçeli ret ayrı sonuç; talep kaydına yanlış sonuç düşmez. Ö-14: satır
+        // süresiz, yönetici sütunlarında kullanıcı adı yok.
+        var (lic, _, iban) = await SeedAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var created = await client.PostAsync($"{PagePath}?handler=Create", await FormAsync(client, PagePath,
+            new Dictionary<string, string> { ["LicenseId"] = lic.ToString(), ["Iban"] = iban, ["Kind"] = "Access" }));
+        var detailPath = created.Headers.Location!.ToString();
+        var id = Guid.Parse(detailPath[(detailPath.IndexOf("id=", StringComparison.Ordinal) + 3)..]);
+        (await ParseAsync(await client.GetStringAsync(detailPath))).QuerySelector("form[data-form='erase']")
+            .Should().BeNull("erişim talebinde silme düğmesi yok");
+
+        await client.PostAsync($"{PagePath}?handler=Close&id={id}", await FormAsync(client, detailPath,
+            new Dictionary<string, string> { ["Resolution"] = "Answered" }));
+        using (var scope = _factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().BankSubjectRequests.AsNoTracking()
+                .SingleAsync(r => r.Id == id)).ClosedAt.Should().BeNull("doğrulanmamış erişim talebi 'yanıtlandı' kapanamaz");
+
+        (await client.PostAsync($"{PagePath}?handler=Close&id={id}", await FormAsync(client, detailPath,
+            new Dictionary<string, string> { ["Resolution"] = "RejectedNotVerified" }))).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var verify = _factory.Services.CreateScope();
+        var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var request = await db.BankSubjectRequests.AsNoTracking().SingleAsync(r => r.Id == id);
+        (request.Resolution, request.IbanHash).Should().Be((BankSubjectResolution.RejectedNotVerified, (string?)null));
+        request.Outcome.Should().Be(BankSubjectRequestService.OutcomeText(BankSubjectResolution.RejectedNotVerified));
+        var adminId = (await db.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id.ToString();
+        (request.CreatedBy, request.ClosedBy).Should().Be((adminId, adminId), "yöneticinin kimliği, kullanıcı adı değil (Ö-14)");
+        (await db.AuditLogs.AsNoTracking().SingleAsync(a => a.EventType == AuditEvents.BankSubjectClose && a.TargetId == id.ToString()))
+            .Details.Should().Contain("RejectedNotVerified");
+    }
 }
 ```
 
@@ -8914,6 +9193,8 @@ public class IndexModel : PageModel
     [BindProperty] public BankSubjectRequestKind Kind { get; set; }
     [BindProperty] public DateOnly? ReceivedOn { get; set; }
     [BindProperty] public BankSubjectVerification Verification { get; set; }
+    /// <summary>Kapatmanın kategorisi (Görev 17: serbest metin yok).</summary>
+    [BindProperty] public BankSubjectResolution Resolution { get; set; }
 
     public List<LicenseOption> Licenses { get; private set; } = new();
     public List<RequestRow> Requests { get; private set; } = new();
@@ -8958,7 +9239,8 @@ public class IndexModel : PageModel
             var hasher = _services.GetRequiredService<BankHasher>();
             var receivedOn = ReceivedOn ?? DateOnly.FromDateTime(
                 TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, ObifinConnectionService.TrZone).DateTime);
-            request = await _requests.CreateAsync(hasher, LicenseId, Iban ?? "", Kind, receivedOn, AdminName(), ct);
+            // Yönetici sütunlarına kimlik, kullanıcı adı değil (KVKK Ö-14; satır süresiz — karar 22).
+            request = await _requests.CreateAsync(hasher, LicenseId, Iban ?? "", Kind, receivedOn, DataDestruction.ActorOf(User), ct);
         }
         catch (ObifinValidationException ex)
         {
@@ -8977,7 +9259,7 @@ public class IndexModel : PageModel
     {
         try
         {
-            await _requests.VerifyAsync(id, Verification, AdminName(), CancellationToken.None);
+            await _requests.VerifyAsync(id, Verification, DataDestruction.ActorOf(User), CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -9028,23 +9310,25 @@ public class IndexModel : PageModel
         return RedirectToPage(new { id });
     }
 
+    /// <summary>Talebi bir sonuç kategorisiyle kapatır (KVKK m. 13/3; Silme Yönetmeliği md. 12/1-c gerekçeli ret): yanıtlandı
+    /// (yalnız doğrulanmış erişim talebi), doğrulanamadı, kanuni gerekçeyle ret, geri çekildi. Kural serviste
+    /// (<see cref="BankSubjectRequestService.CloseAsync"/>); kategori denetime yazılır, serbest metin yok.</summary>
     public async Task<IActionResult> OnPostCloseAsync(Guid id)
     {
         try
         {
-            await _requests.CloseAsync(id, AdminName(), CancellationToken.None);
+            await _requests.CloseAsync(id, Resolution, DataDestruction.ActorOf(User), CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
             TempData["Error"] = ex.Message;
             return RedirectToPage(new { id });
         }
-        await _audit.LogAsync(AuditEvents.BankSubjectClose, AuditTargets.BankSubjectRequest, id.ToString(), null, CancellationToken.None);
-        TempData["Success"] = "Talep yanıtlandı olarak kapatıldı.";
+        await _audit.LogAsync(AuditEvents.BankSubjectClose, AuditTargets.BankSubjectRequest, id.ToString(),
+            new { resolution = Resolution.ToString() }, CancellationToken.None);
+        TempData["Success"] = "Talep kapatıldı: " + BankSubjectRequestService.OutcomeText(Resolution);
         return RedirectToPage(new { id });
     }
-
-    private string AdminName() => User.FindFirst("username")?.Value ?? User.Identity?.Name ?? "admin";
 }
 ```
 
@@ -9150,18 +9434,41 @@ public class IndexModel : PageModel
                 </select></div>
             <div class="col-md-4 align-self-end"><button class="btn btn-outline-secondary">Doğrulamayı kaydet</button></div>
         </form>
+        @* Doğrulayanın kimliği (sub) basılmaz: yöneticiye bir şey söylemez, yalnız tarih ve yöntem. *@
         <p class="small" data-cell="verification">@(s.Request.Verification == BankSubjectVerification.None
             ? "Doğrulama kaydı yok: dışa aktarma ve silme yapılamaz."
-            : $"Doğrulandı: {s.Request.Verification} ({s.Request.VerifiedBy}, {TimeZoneInfo.ConvertTime(s.Request.VerifiedAt!.Value, tr):dd.MM.yyyy HH:mm})")</p>
+            : $"Doğrulandı: {s.Request.Verification} ({TimeZoneInfo.ConvertTime(s.Request.VerifiedAt!.Value, tr):dd.MM.yyyy HH:mm})")</p>
         <form method="post" class="d-inline" asp-page-handler="Export" asp-route-id="@s.Request.Id">
             <button class="btn btn-outline-primary">CSV dışa aktar</button>
         </form>
-        <form method="post" class="d-inline" asp-page-handler="Erase" asp-route-id="@s.Request.Id"
-              onsubmit="return confirm('Bu IBAN ile ilgili havale metinleri ve IBAN bağı silinecek. Geri alınamaz. Emin misiniz?')">
-            <button class="btn btn-outline-danger">Sil ve kapat</button>
-        </form>
-        <form method="post" class="d-inline" asp-page-handler="Close" asp-route-id="@s.Request.Id">
-            <button class="btn btn-outline-secondary">Yanıtlandı, kapat</button>
+        @if (s.Request.Kind == BankSubjectRequestKind.Erasure)
+        {
+            <form method="post" class="d-inline" asp-page-handler="Erase" asp-route-id="@s.Request.Id" data-form="erase"
+                  onsubmit="return confirm('Bu IBAN ile ilgili havale metinleri ve IBAN bağı silinecek. Geri alınamaz. Emin misiniz?')">
+                <button class="btn btn-outline-danger">Sil ve kapat</button>
+            </form>
+        }
+        @if (s.Request.Kind == BankSubjectRequestKind.Access && s.Request.Verification != BankSubjectVerification.None)
+        {
+            <form method="post" class="d-inline" asp-page-handler="Close" asp-route-id="@s.Request.Id">
+                <input type="hidden" name="Resolution" value="Answered" />
+                <button class="btn btn-outline-secondary">Yanıtlandı (dışa aktarım iletildi), kapat</button>
+            </form>
+        }
+        @* KVKK m. 13/3, Silme Yönetmeliği md. 12/1-c: gerekçeli ret kategoridir; gerekçenin kendisi başvurana yazılı gider, sisteme
+           serbest metin girmez. *@
+        <form method="post" class="row g-2 mt-2" asp-page-handler="Close" asp-route-id="@s.Request.Id" data-form="reject">
+            <div class="col-md-8"><label class="form-label">Reddet / kapat (gerekçe başvurana yazılı bildirilir)</label>
+                <select name="Resolution" class="form-select" required>
+                    <option value="">— sonuç seçin —</option>
+                    @if (s.Request.Verification == BankSubjectVerification.None)
+                    {
+                        <option value="RejectedNotVerified">Kimlik ya da IBAN sahipliği doğrulanamadı</option>
+                    }
+                    <option value="RejectedLegalGround">Kanuni gerekçeyle (tamamen ya da kısmen) reddedildi</option>
+                    <option value="Withdrawn">Başvuran talebi geri çekti</option>
+                </select></div>
+            <div class="col-md-4 align-self-end"><button class="btn btn-outline-danger">Reddet / kapat</button></div>
         </form>
     }
 }
@@ -9201,8 +9508,9 @@ git add OrderDeck.LicenseServer/Pages/Admin/BankaVeriTalepleri OrderDeck.License
 git commit -m "feat(bank-kvkk): banka veri talepleri sayfası ve silme taleplerinde son tarih ekle
 
 admin/banka-veri-talepleri: IBAN ile talep aç, doğrulama yöntemini kaydet,
-hareketleri gör, CSV dışa aktar, sil ve kapat; her işlem ve görüntüleme
-denetime yazılır. Shopper
+hareketleri gör, CSV dışa aktar, silme talebinde sil ve kapat, sonuç
+kategorisiyle kapat ya da reddet; her işlem ve görüntüleme denetime
+yazılır, yönetici sütunlarına kullanıcı adı değil kimlik girer. Shopper
 silme talepleri listesi son tarihi (talep + 30 gün) ve gecikmeyi gösterir
 (KVKK ön inceleme K-7, Ö-11, P1-9).
 
@@ -9294,10 +9602,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 **Neden (not D-5, Ö-11):** `ShopperDeletionRequests.PhoneAtRequest` süresiz; talebin kaydı kanıt olarak kalmalı ama telefona işlendikten sonra ihtiyaç yok. İşlenmiş talebin telefonu işlenmeden 30 gün sonra boşaltılır (`SecurityDataRetentionJob`, kendi süresiyle — `RetentionDays` kapalıyken de koşar). Bekleyen talebe dokunulmaz (yönetici kimin talebine baktığını görmeli). Aynı kural banka veri talebinin (Görev 17) kısaltılmış IBAN'ına da uygulanır: özet kapanışta boşalıyor, maske (`BankSubjectRequests.IbanMasked`) kapanıştan 30 gün sonra boşaltılır; açık talebe dokunulmaz. Süreler politikaya yazılmalı (metin işi).
 
+**İmha kaydı (ikinci plan incelemesi; Ö-13, Görev 9'un "her imha kayıt bırakır" kuralı):** telefon ve maske boşaltması `DataDestructionRecords`'a yazmıyor, koşu kaydı bırakmıyordu; iş düşse ya da hiç koşmasa haftalık "son başarılı çalışma" kontrolü bunu göremezdi. İşin ortak boşaltma yardımcısı (`RunAsync`) artık her partinin kaydını (hedef, `nulled`, satır sayısı, ölçüt, tetikleyici `retention`, yapan `system`) partiyle AYNI işlemde yazar. Relational'da `ExecuteUpdate` ve kayıt açık bir işlemde (`audit-retention`'ın kalıbı); InMemory'de tek SaveChanges. Bu yardımcıdan geçen bütün hedefler kayıt bırakır: telefon, maske ve mevcut IP/UA boşaltmaları. Başarılı koşu sonda `DataDestruction.RecordRun(JobId)` yazar. Relational yol `SecurityDataRetentionRelationalTests` ile gerçek SQL Server'da sınanır.
+
 **Files:**
-- Modify: `OrderDeck.LicenseServer/Services/Audit/SecurityDataRetentionJob.cs:8-19, 57-66`
+- Modify: `OrderDeck.LicenseServer/Services/Audit/SecurityDataRetentionJob.cs` (bütünüyle: süre, imha kaydı, koşu kaydı)
+- Modify: `OrderDeck.LicenseServer/Program.cs` (`security-data-retention` → `SecurityDataRetentionJob.JobId`)
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/Shoppers/DeletionRequests.cshtml` (boş telefon)
-- Test: `OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionJobTests.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionJobTests.cs`, YENİ `SecurityDataRetentionRelationalTests.cs` (Testcontainers)
 
 - [ ] **Adım 1: Testi yaz (kırmızı)**
 
@@ -9362,12 +9673,103 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
         rows[recent.Id].IbanMasked.Should().Be("TR12…345");
         rows[open.Id].IbanMasked.Should().Be("TR12…345");
     }
+
+    [Fact]
+    public async Task Her_bosaltma_kisisel_veri_icermeyen_imha_kaydi_yazar_basarili_kosu_kosu_kaydi_birakir()
+    {
+        // KVKK Ö-13 (Görev 9 kuralı): her imha kayıt bırakır; haftalık "son başarılı çalışma" kontrolü koşu kaydından okunur.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var start = DateTimeOffset.UtcNow;
+        db.ShopperDeletionRequests.Add(new ShopperDeletionRequest
+        {
+            Id = Guid.NewGuid(), ShopperId = Guid.NewGuid(), PhoneAtRequest = TestPhone.NewE164(),
+            RequestedAt = DateTimeOffset.UtcNow.AddDays(-60), HandledAt = DateTimeOffset.UtcNow.AddDays(-31), HandledBy = "admin",
+        });
+        await db.SaveChangesAsync();
+
+        await new SecurityDataRetentionJob(db, Options.Create(new SecurityDataRetentionOptions()),
+            NullLogger<SecurityDataRetentionJob>.Instance).AnonymiseAsync(CancellationToken.None);
+
+        // Paylaşılan InMemory veritabanı: yalnız bu koşunun kayıtları (başka testlerin satırları da boşaltılmış olabilir).
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.OccurredAt >= start).ToListAsync();
+        records.Should().Contain(r => r.Target == "ShopperDeletionRequest.PhoneAtRequest"
+            && r.Action == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Actions.Nulled && r.RowCount >= 1
+            && r.Trigger == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.Retention
+            && r.Actor == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.SystemActor && r.LicenseId == null);
+        records.Should().ContainSingle(r => r.Action == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Actions.RunCompleted
+            && r.Target == SecurityDataRetentionJob.JobId);
+    }
+```
+
+`OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionRelationalTests.cs` (relational yol: `ExecuteUpdate` ile imha kaydı aynı açık işlemde):
+
+```csharp
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.Audit;
+
+/// <summary>SecurityDataRetentionJob gerçek SQL Server'da: ExecuteUpdate ile boşaltma ve imha kaydı aynı işlemde, koşu kaydı
+/// sonda.</summary>
+[Collection(SqlServerCollection.Name)]
+[Trait("Category", "Testcontainers")]
+public sealed class SecurityDataRetentionRelationalTests : IAsyncLifetime
+{
+    private readonly SqlServerContainerFixture _sql;
+    private RelationalApiFactory _factory = null!;
+    public SecurityDataRetentionRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
+
+    public async Task InitializeAsync()
+    {
+        _factory = new RelationalApiFactory(await _sql.CreateDatabaseAsync());
+        _ = _factory.Services; // göçleri şimdi kur
+    }
+
+    public Task DisposeAsync()
+    {
+        _factory.Dispose();
+        return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Telefon_bosaltmasi_ve_imha_kaydi_gercek_SQL_Serverda_ayni_islemde_yazilir_kosu_kaydi_kalir()
+    {
+        var handled = new ShopperDeletionRequest { Id = Guid.NewGuid(), ShopperId = Guid.NewGuid(), PhoneAtRequest = TestPhone.NewE164(),
+            RequestedAt = DateTimeOffset.UtcNow.AddDays(-60), HandledAt = DateTimeOffset.UtcNow.AddDays(-31), HandledBy = "admin" };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.ShopperDeletionRequests.Add(handled);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<SecurityDataRetentionJob>().AnonymiseAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.ShopperDeletionRequests.AsNoTracking().SingleAsync(r => r.Id == handled.Id)).PhoneAtRequest.Should().BeEmpty();
+        var records = await vdb.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().ContainSingle(r => r.Target == "ShopperDeletionRequest.PhoneAtRequest")
+            .Which.Should().Match<DataDestructionRecord>(r => r.Action == DataDestruction.Actions.Nulled && r.RowCount == 1
+                && r.Trigger == DataDestruction.Triggers.Retention);
+        records.Should().ContainSingle(r => r.Action == DataDestruction.Actions.RunCompleted && r.Target == SecurityDataRetentionJob.JobId);
+    }
+}
 ```
 
 - [ ] **Adım 2: Koştur — kırmızı**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SecurityDataRetentionJobTests"`
-Expected: FAIL — telefon boşaltılmadı.
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SecurityDataRetention"`
+Expected: FAIL — `JobId` yok (derleme); sonra telefon boşaltılmadı, imha kaydı yok (Docker gerekli: `SecurityDataRetentionRelationalTests`).
 
 - [ ] **Adım 3: Uygula**
 
@@ -9380,24 +9782,19 @@ Expected: FAIL — telefon boşaltılmadı.
     public int DeletionRequestPhoneDays { get; set; } = 30;
 ```
 
-`AnonymiseAsync`'in başını:
+Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ekle. Sınıfa `public const string JobId = "security-data-retention";` ekle; `Program.cs`'teki `manager.AddOrUpdate<…SecurityDataRetentionJob>("security-data-retention", …)` dizesini `OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob.JobId` yap (koşu kaydının hedefi ile Hangfire kimliği tek yerde).
+
+`AnonymiseAsync`'i ve `RunAsync`'i bütünüyle şununla değiştir (IP/UA hedefleri ve sorguları aynen kalır; yalnız ölçüt ve kayıt eklenir):
 
 ```csharp
+    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task AnonymiseAsync(CancellationToken ct)
     {
-        if (_opt.RetentionDays <= 0)
+        if (_opt.DeletionRequestPhoneDays <= 0 && _opt.RetentionDays <= 0)
         {
-            _log.LogInformation("[SecurityDataRetention] devre dışı (RetentionDays=0)");
+            _log.LogInformation("[SecurityDataRetention] devre dışı (RetentionDays=0, DeletionRequestPhoneDays=0)");
             return;
         }
-
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-_opt.RetentionDays);
-        var relational = _db.Database.IsRelational();
-```
-şununla değiştir:
-```csharp
-    public async Task AnonymiseAsync(CancellationToken ct)
-    {
         var relational = _db.Database.IsRelational();
 
         // KVKK D-5: işlenmiş silme talebinin telefonu (kendi süresi; RetentionDays kapalıyken de). Bekleyen talebe dokunulmaz.
@@ -9405,7 +9802,7 @@ Expected: FAIL — telefon boşaltılmadı.
         {
             var phoneCutoff = DateTimeOffset.UtcNow.AddDays(-_opt.DeletionRequestPhoneDays);
             var phones = await RunAsync(
-                "ShopperDeletionRequest.PhoneAtRequest",
+                "ShopperDeletionRequest.PhoneAtRequest", $"HandledAt+{_opt.DeletionRequestPhoneDays}g, işlenmiş talep",
                 () => _db.ShopperDeletionRequests.Where(r => r.HandledAt != null && r.HandledAt < phoneCutoff && r.PhoneAtRequest != ""),
                 q => q.ExecuteUpdateAsync(s => s.SetProperty(r => r.PhoneAtRequest, ""), ct),
                 rows => { foreach (var r in rows) r.PhoneAtRequest = ""; },
@@ -9415,7 +9812,7 @@ Expected: FAIL — telefon boşaltılmadı.
 
             // KVKK Ö-11: kapanmış banka veri talebinin kısaltılmış IBAN'ı (özet kapanışta boşaldı). Açık talebe dokunulmaz.
             var masks = await RunAsync(
-                "BankSubjectRequest.IbanMasked",
+                "BankSubjectRequest.IbanMasked", $"ClosedAt+{_opt.DeletionRequestPhoneDays}g, kapanmış talep",
                 () => _db.BankSubjectRequests.Where(r => r.ClosedAt != null && r.ClosedAt < phoneCutoff && r.IbanMasked != ""),
                 q => q.ExecuteUpdateAsync(s => s.SetProperty(r => r.IbanMasked, ""), ct),
                 rows => { foreach (var r in rows) r.IbanMasked = ""; },
@@ -9424,16 +9821,134 @@ Expected: FAIL — telefon boşaltılmadı.
                 _log.LogInformation("[SecurityDataRetention] {Count} kapanmış banka veri talebinin kısaltılmış IBAN'ı boşaltıldı", masks);
         }
 
-        if (_opt.RetentionDays <= 0)
+        if (_opt.RetentionDays > 0)
+            await AnonymiseSecurityFieldsAsync(relational, ct);
+        else
+            _log.LogInformation("[SecurityDataRetention] IP/User-Agent boşaltması devre dışı (RetentionDays=0)");
+
+        // Kesilen koşu (Hangfire kapanışı) partilerin döngüsünden sessizce çıkar: başarılı koşu kaydı yazılmasın
+        // (audit-retention kalıbı). Ölçüt metninde ';' yok: dış kopyanın (CSV) ayracı.
+        ct.ThrowIfCancellationRequested();
+        DataDestruction.RecordRun(_db, JobId, $"IP/UA +{_opt.RetentionDays}g / silme talebi telefonu ve banka talebi maskesi " +
+            $"+{_opt.DeletionRequestPhoneDays}g");
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
+    }
+
+    /// <summary>90 günden eski güvenlik kayıtlarındaki IP ve User-Agent alanları (politikadaki "Güvenlik kayıtları: 90 gün").
+    /// Hedefler ve sorgular önceki sürümle aynı; her parti imha kaydı bırakır.</summary>
+    private async Task AnonymiseSecurityFieldsAsync(bool relational, CancellationToken ct)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-_opt.RetentionDays);
+        var days = _opt.RetentionDays;
+
+        var audit = await RunAsync(
+            "AuditLog.IpAddress", $"OccurredAt+{days}g",
+            () => _db.AuditLogs.Where(a => a.OccurredAt < cutoff && a.IpAddress != null),
+            q => q.ExecuteUpdateAsync(s => s.SetProperty(a => a.IpAddress, (string?)null), ct),
+            rows => { foreach (var r in rows) r.IpAddress = null; },
+            relational, ct);
+
+        var refreshTokens = await RunAsync(
+            "RefreshToken.CreatedByIp", $"CreatedAt+{days}g",
+            () => _db.RefreshTokens.Where(t => t.CreatedAt < cutoff && t.CreatedByIp != null),
+            q => q.ExecuteUpdateAsync(s => s.SetProperty(t => t.CreatedByIp, (string?)null), ct),
+            rows => { foreach (var r in rows) r.CreatedByIp = null; },
+            relational, ct);
+
+        var shopperTokens = await RunAsync(
+            "ShopperRefreshToken.CreatedByIp", $"CreatedAt+{days}g",
+            () => _db.ShopperRefreshTokens.Where(t => t.CreatedAt < cutoff && t.CreatedByIp != null),
+            q => q.ExecuteUpdateAsync(s => s.SetProperty(t => t.CreatedByIp, (string?)null), ct),
+            rows => { foreach (var r in rows) r.CreatedByIp = null; },
+            relational, ct);
+
+        var intake = await RunAsync(
+            "IntakeFormSubmission.IpAddress+UserAgent", $"SubmittedAt+{days}g",
+            () => _db.IntakeFormSubmissions.Where(
+                s => s.SubmittedAt < cutoff && (s.IpAddress != null || s.UserAgent != null)),
+            q => q.ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.IpAddress, (string?)null)
+                .SetProperty(x => x.UserAgent, (string?)null), ct),
+            rows => { foreach (var r in rows) { r.IpAddress = null; r.UserAgent = null; } },
+            relational, ct);
+
+        // Mali kayıt: satır ve tutar duruyor, yalnız istemci parmak izi gidiyor.
+        // Sütunlar non-nullable olduğu için null yerine boş string yazılıyor.
+        var paymentAudit = await RunAsync(
+            "PaymentSubmissionAudit.IpAddress+UserAgent", $"CreatedAt+{days}g",
+            () => _db.PaymentSubmissionAudits.Where(
+                a => a.CreatedAt < cutoff && (a.IpAddress != "" || a.UserAgent != "")),
+            q => q.ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.IpAddress, "")
+                .SetProperty(x => x.UserAgent, ""), ct),
+            rows => { foreach (var r in rows) { r.IpAddress = ""; r.UserAgent = ""; } },
+            relational, ct);
+
+        var total = audit + refreshTokens + shopperTokens + intake + paymentAudit;
+        if (total > 0)
+            _log.LogInformation(
+                "[SecurityDataRetention] {Cutoff} öncesi {Total} satır anonimleştirildi "
+                + "(audit={Audit}, refresh={Refresh}, shopperRefresh={ShopperRefresh}, "
+                + "intake={Intake}, paymentAudit={PaymentAudit})",
+                cutoff, total, audit, refreshTokens, shopperTokens, intake, paymentAudit);
+        else
+            _log.LogDebug("[SecurityDataRetention] {Cutoff} öncesi anonimleştirilecek satır yok", cutoff);
+    }
+
+    /// <summary>
+    /// Tek tablo için batch'li boşaltma. Her parti kişisel veri içermeyen imha kaydını (hedef = <paramref name="label"/>,
+    /// <c>nulled</c>, ölçüt, tetikleyici <c>retention</c>, yapan <c>system</c>) boşaltmayla AYNI işlemde yazar (KVKK Ö-13; Görev 9
+    /// kuralı). Relational sağlayıcıda ExecuteUpdate + kayıt açık bir işlemde (AuditRetentionJobs'taki kalıp), InMemory'de
+    /// (testler) load+set ve kayıt tek SaveChanges'te.
+    /// </summary>
+    private async Task<int> RunAsync<TEntity>(
+        string label,
+        string criterion,
+        Func<IQueryable<TEntity>> query,
+        Func<IQueryable<TEntity>, Task<int>> bulkUpdate,
+        Action<List<TEntity>> inMemoryUpdate,
+        bool relational,
+        CancellationToken ct) where TEntity : class
+    {
+        void Record(int count) => DataDestruction.Record(_db, null, label, DataDestruction.Actions.Nulled, count, criterion,
+            DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+
+        var total = 0;
+        while (!ct.IsCancellationRequested)
         {
-            _log.LogInformation("[SecurityDataRetention] devre dışı (RetentionDays=0)");
-            return;
+            int affected;
+            if (relational)
+            {
+                // ExecuteUpdate WHERE'i zaten boşaltılmışları dışlıyor, yani her tur kalan işi küçültüyor ve döngü kesin
+                // sonlanıyor. Kayıt boşaltmayla aynı işlemde: biri olup öbürü olmasın.
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                affected = await bulkUpdate(query().Take(_opt.BatchSize));
+                Record(affected);
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+            }
+            else
+            {
+                var rows = await query().Take(_opt.BatchSize).ToListAsync(ct);
+                inMemoryUpdate(rows);
+                affected = rows.Count;
+                Record(affected);
+                await _db.SaveChangesAsync(ct);
+            }
+            _db.ChangeTracker.Clear();
+            total += affected;
+            if (affected < _opt.BatchSize) break;
         }
 
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-_opt.RetentionDays);
+        if (total > 0)
+            _log.LogDebug("[SecurityDataRetention] {Label}: {Count} satır", label, total);
+
+        return total;
+    }
 ```
 
-Sınıf özetine ekle: `/// Ayrıca işlenmiş silme talebinin telefonu işlenmeden ve kapanmış banka veri talebinin kısaltılmış IBAN'ı kapanıştan <see cref="SecurityDataRetentionOptions.DeletionRequestPhoneDays"/> gün sonra boşaltılır (KVKK D-5, Ö-11).`
+Sınıf özetine ekle: `/// Ayrıca işlenmiş silme talebinin telefonu işlenmeden ve kapanmış banka veri talebinin kısaltılmış IBAN'ı kapanıştan <see cref="SecurityDataRetentionOptions.DeletionRequestPhoneDays"/> gün sonra boşaltılır (KVKK D-5, Ö-11). Her boşaltma partisi kişisel veri içermeyen imha kaydını aynı işlemde yazar; başarılı koşu sonda koşu kaydı (<see cref="JobId"/>) bırakır (KVKK Ö-13).`
 
 `Pages/Admin/BankaVeriTalepleri/Index.cshtml` (Görev 18) boş maskeyi zaten "(silindi)" gösterir.
 
@@ -9441,19 +9956,20 @@ Sınıf özetine ekle: `/// Ayrıca işlenmiş silme talebinin telefonu işlenme
 
 - [ ] **Adım 4: Koştur — yeşil**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SecurityDataRetentionJobTests|FullyQualifiedName~DeletionRequests"`
-Expected: PASS.
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SecurityDataRetention|FullyQualifiedName~DeletionRequests|FullyQualifiedName~DataDestructionDigestJobTests"`
+Expected: PASS (Docker gerekli: `SecurityDataRetentionRelationalTests`; zaman aşımında sınıfı tek başına yeniden koştur).
 
 - [ ] **Adım 5: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Services/Audit/SecurityDataRetentionJob.cs OrderDeck.LicenseServer/Pages/Admin/Shoppers/DeletionRequests.cshtml OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionJobTests.cs
+git add OrderDeck.LicenseServer/Services/Audit/SecurityDataRetentionJob.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer/Pages/Admin/Shoppers/DeletionRequests.cshtml OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionJobTests.cs OrderDeck.LicenseServer.Tests/Services/Audit/SecurityDataRetentionRelationalTests.cs
 git commit -m "fix(kvkk): işlenmiş silme talebindeki telefonu ve banka talebindeki maskeyi 30 gün sonra boşalt
 
 Talebin kaydı kanıt olarak kalır; telefon işlenmeden, banka veri
 talebinin kısaltılmış IBAN'ı kapanıştan 30 gün sonra
-SecurityDataRetentionJob ile boşaltılır, bekleyen/açık talebe dokunulmaz
-(KVKK ön inceleme D-5, Ö-11, P2-25).
+SecurityDataRetentionJob ile boşaltılır, bekleyen/açık talebe dokunulmaz.
+İşin her boşaltma partisi imha kaydını aynı işlemde yazar, başarılı koşu
+koşu kaydı bırakır (KVKK ön inceleme D-5, Ö-11, Ö-13, P2-25).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -9464,16 +9980,24 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 **Neden (not K-3):** politika "veri sorumlusu, banka hesabı kendisine ait olan yayıncıdır" diyor ama yayıncının adı, unvanı, adresi ya da başvuru yolu hiçbir yerde yok; veri modelinde alan bile yok (m. 10/1-a). Yayıncı hesabı (`Customer`) başına yeni `DataControllerProfiles` tablosu: ad soyad / unvan, posta adresi, KVKK başvuru e-postası, KEP (isteğe bağlı). Müşteri düzeyinde, çünkü kayıt formu (`IntakeFormConfig.CustomerId`) ve panel kiracısı müşteri; `License`'a sütun eklenmez (her UPDATE lisansın rowversion'ını ilerletir). Yeni tablo = genişletme. Yazanlar: yönetim (müşteri detay sayfası) ve panel ucu (yalnız hesap sahibi). Yayıncının KVKK silmesinde (`AdminCustomersController.Purge`) silinir. Gösterim Görev 22'de.
 
+**İkinci plan incelemesi (20.10) — bu görevin ek parçaları:**
+- **Bilgi olmadan banka modülü açılmaz (K-3 öneri 3: "banka modülü açılmadan önce"; karar 23).** Plan alanı ve gösterimi ekliyordu ama profili olmayan yayıncı için Obifin bağlantısı kaydedilebiliyor, doğrulanabiliyor ve banka eklenebiliyordu. m. 10/1-a ihlali (yayıncının kimliği hiçbir kanalda yok) yeni bağlantılarda yeniden doğardı. Artık `ObifinConnectionService`'in ilk bağlantı kaydı (`UpsertWithResultAsync`, bağlantı yokken), `VerifyAsync` ve `AddBankConnectionAsync`, lisansın müşterisinde `DataControllerProfile` yoksa `DataControllerMissingMessage` ile reddeder ve Obifin'e gitmez. `Obifin:RequireDataControllerProfile` varsayılan `true`'dur (fail-closed); yalnız pilot geçişi için kapatılır (Prod adımları). Mevcut Verified bağlantının çekimi kapıya takılmaz.
+- **Gösterilen kimliğin ispatı (m. 10/1-a ispat yükü; karar 24).** Form bloğu sürümlenen aydınlatma metninin dışındaydı, profilin de geçmişi yoktu (yalnız `UpdatedAt`). Bir kayıt anında ilgili kişiye hangi kimliğin gösterildiği sonradan ispatlanamıyordu. Artık profil her içerik değişikliğinde `Version`'ı artırır ve içeriği `DataControllerProfileVersions`'a ekler (yalnız eklenir). Formun gösterdiği sürüm kayda yazılır (`IntakeFormSubmission.DataControllerVersion`, Görev 22). Sürüm satırları yayıncı silmesinde profille birlikte silinir.
+- **Yapan = kimlik:** yönetimden yazılan profilin ve sürümün `UpdatedBy`/`CreatedBy`'ı `admin:` + `DataDestruction.ActorOf(User)`, kullanıcı adı değil (Görev 9 kuralı, KVKK Ö-14).
+
 **Files:**
-- Create: `OrderDeck.LicenseServer/Domain/DataControllerProfile.cs`
+- Create: `OrderDeck.LicenseServer/Domain/DataControllerProfile.cs`, `OrderDeck.LicenseServer/Domain/DataControllerProfileVersion.cs`
 - Create: `OrderDeck.LicenseServer/Services/Privacy/DataControllerProfiles.cs`
 - Create: `OrderDeck.LicenseServer/Controllers/Panel/PanelDataControllerController.cs`
+- Modify: `OrderDeck.LicenseServer/Domain/IntakeFormSubmission.cs` (`DataControllerVersion`; Görev 22 yazar)
 - Modify: `OrderDeck.LicenseServer/Data/LicenseDbContext.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs`, `ObifinOptions.cs`; `OrderDeck.LicenseServer/appsettings.json` (`Obifin:RequireDataControllerProfile`)
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/Customers/Detail.cshtml(.cs)`
 - Modify: `OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs` (purge)
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`
 - Create: göç `*_DataControllerProfiles`
-- Test: `OrderDeck.LicenseServer.Tests/Services/Privacy/DataControllerProfilesTests.cs`, `OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelDataControllerControllerTests.cs`, `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminCustomerDataControllerTests.cs` (YENİ); `Controllers/Compliance/GdprFlowTests.cs`
+- Create: `OrderDeck.LicenseServer.Tests/TestHelpers/TestDataController.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Privacy/DataControllerProfilesTests.cs`, `OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelDataControllerControllerTests.cs`, `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminCustomerDataControllerTests.cs`, `OrderDeck.LicenseServer.Tests/Services/Bank/ObifinDataControllerGateTests.cs` (YENİ); `Controllers/Compliance/GdprFlowTests.cs`; banka bağlantısı kuran testlerin tohum yardımcıları (Adım 8b)
 
 - [ ] **Adım 1: Doğrulama testlerini yaz (kırmızı)**
 
@@ -9481,14 +10005,37 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ```csharp
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Privacy;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Privacy;
 
-/// <summary>KVKK K-3: yayıncının veri sorumlusu bilgileri — zorunlu alanlar, e-posta biçimi, kırpma.</summary>
+/// <summary>KVKK K-3: yayıncının veri sorumlusu bilgileri — zorunlu alanlar, e-posta biçimi, kırpma; içerik değişince yeni
+/// sürüm (m. 10/1-a ispatı).</summary>
 public sealed class DataControllerProfilesTests
 {
+    [Fact]
+    public async Task Icerik_degisince_yeni_surum_yazilir_ayni_icerik_surum_artirmaz()
+    {
+        // KVKK m. 10/1-a ispat yükü: formda gösterilen kimlik sonradan ispatlanabilsin (IntakeFormSubmission.DataControllerVersion).
+        using var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase($"dc-{Guid.NewGuid():N}").Options);
+        var customerId = Guid.NewGuid();
+        DataControllerProfiles.Validate(Valid(), out var first);
+        DataControllerProfiles.Validate(Valid() with { PostalAddress = "Yeni Mah. 3. Sok. No:4 İstanbul" }, out var moved);
+
+        (await DataControllerProfiles.UpsertAsync(db, customerId, first, "panel", CancellationToken.None)).Version.Should().Be(1);
+        (await DataControllerProfiles.UpsertAsync(db, customerId, first, "panel", CancellationToken.None)).Version.Should().Be(1);
+        (await DataControllerProfiles.UpsertAsync(db, customerId, moved, "admin:yonetici-1", CancellationToken.None))
+            .Version.Should().Be(2);
+
+        var versions = await db.DataControllerProfileVersions.AsNoTracking().OrderBy(v => v.Version).ToListAsync();
+        versions.Select(v => (v.Version, v.PostalAddress, v.CreatedBy)).Should().Equal(
+            (1, first.PostalAddress!, "panel"), (2, "Yeni Mah. 3. Sok. No:4 İstanbul", "admin:yonetici-1"));
+    }
+
     private static DataControllerInput Valid() => new("Örnek Ticaret Ltd. Şti.", "Örnek Mah. 1. Sok. No:2 Kadıköy/İstanbul",
         "kvkk@example.test", null);
 
@@ -9642,7 +10189,11 @@ public sealed class AdminCustomerDataControllerTests : IClassFixture<ApiFactory>
         var profile = await vdb.DataControllerProfiles.AsNoTracking().SingleAsync(p => p.CustomerId == customerId);
         profile.LegalName.Should().Be("Örnek Ticaret Ltd. Şti.");
         profile.KepAddress.Should().BeNull();
-        profile.UpdatedBy.Should().Be("admin:admin");
+        var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+        profile.UpdatedBy.Should().Be("admin:" + adminId, "yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14)");
+        (await vdb.DataControllerProfileVersions.AsNoTracking().SingleAsync(v => v.CustomerId == customerId))
+            .Should().Match<DataControllerProfileVersion>(v => v.Version == 1 && v.LegalName == "Örnek Ticaret Ltd. Şti."
+                && v.CreatedBy == "admin:" + adminId);
         (await vdb.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.CustomerDataControllerUpdate && a.TargetId == customerId.ToString()))
             .Should().BeTrue();
         (await client.GetStringAsync(path)).Should().Contain("kvkk@example.test");
@@ -9660,7 +10211,12 @@ public sealed class AdminCustomerDataControllerTests : IClassFixture<ApiFactory>
             db.DataControllerProfiles.Add(new OrderDeck.LicenseServer.Domain.DataControllerProfile
             {
                 CustomerId = customerId, LegalName = "Örnek Ticaret", PostalAddress = "Adres", KvkkEmail = "kvkk@example.test",
-                UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "panel",
+                Version = 1, UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "panel",
+            });
+            db.DataControllerProfileVersions.Add(new OrderDeck.LicenseServer.Domain.DataControllerProfileVersion
+            {
+                Id = Guid.NewGuid(), CustomerId = customerId, Version = 1, LegalName = "Örnek Ticaret", PostalAddress = "Adres",
+                KvkkEmail = "kvkk@example.test", CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "panel",
             });
             await db.SaveChangesAsync();
         }
@@ -9670,12 +10226,147 @@ ve `remainingBackups.Should().Be(0);` satırının ALTINA:
 
 ```csharp
         (await verifyDb.DataControllerProfiles.CountAsync(p => p.CustomerId == customerId)).Should().Be(0);
+        (await verifyDb.DataControllerProfileVersions.CountAsync(v => v.CustomerId == customerId)).Should().Be(0,
+            "sürümler şahıs yayıncıda kişisel veri: profille birlikte silinir (karar 24)");
+```
+
+Banka modülü kapısı — `OrderDeck.LicenseServer.Tests/TestHelpers/TestDataController.cs`:
+
+```csharp
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+
+namespace OrderDeck.LicenseServer.Tests.TestHelpers;
+
+/// <summary>Yayıncının veri sorumlusu bilgisi (Görev 21): banka bağlantısı kuran testlerin ön koşulu (KVKK K-3 kapısı,
+/// <c>Obifin:RequireDataControllerProfile</c>). Değerler sahte, e-posta üretilir; kaydetmez.</summary>
+public static class TestDataController
+{
+    public static void Add(LicenseDbContext db, Guid customerId)
+        => db.DataControllerProfiles.Add(new DataControllerProfile
+        {
+            CustomerId = customerId, LegalName = "Test Yayıncı", PostalAddress = "Test Mah. 1. Sok. No:1",
+            KvkkEmail = $"kvkk-{Guid.NewGuid():N}@example.test", Version = 1, UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "test",
+        });
+}
+```
+
+`OrderDeck.LicenseServer.Tests/Services/Bank/ObifinDataControllerGateTests.cs`:
+
+```csharp
+using FluentAssertions;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.Bank;
+
+/// <summary>KVKK K-3 öneri 3 (karar 23): banka modülü yayıncının veri sorumlusu bilgileri toplanmadan açılmaz — ilk bağlantı
+/// kaydı, Doğrula ve Banka ekle reddedilir, Obifin'e gidilmez. Bayrak yalnız pilot geçişi için kapatır; varsayılan açık.</summary>
+public sealed class ObifinDataControllerGateTests
+{
+    /// <summary>Her Obifin çağrısını sayar.</summary>
+    private sealed class CountingObifin : IObifinClient
+    {
+        public int Calls { get; private set; }
+        public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
+        { Calls++; return Task.FromResult<IReadOnlyList<ObifinAccountDto>>([]); }
+        public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
+        { Calls++; return Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>([]); }
+        public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
+        { Calls++; return Task.CompletedTask; }
+        public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
+        { Calls++; return Task.CompletedTask; }
+        public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
+            => throw new NotSupportedException();
+    }
+
+    private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
+
+    private static LicenseDbContext NewDb()
+        => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"dc-gate-{Guid.NewGuid():N}").Options);
+
+    private static ObifinConnectionService Service(LicenseDbContext db, IObifinClient client, bool required = true)
+        => new(db, client, Protection,
+            new BankHasher(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" })),
+            Options.Create(new ObifinOptions { RequireDataControllerProfile = required }), NullLogger<ObifinConnectionService>.Instance);
+
+    private static Guid SeedLicense(LicenseDbContext db, bool withProfile)
+    {
+        var customerId = Guid.NewGuid();
+        db.Customers.Add(new Customer { Id = customerId, Email = $"g-{Guid.NewGuid():N}@x", Name = "G",
+            PasswordHash = $"h-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow });
+        var lic = Guid.NewGuid();
+        db.Licenses.Add(new License { Id = lic, LicenseKey = $"LDK-{Guid.NewGuid():N}", CustomerId = customerId, SkuCode = "STD",
+            ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+        if (withProfile) TestDataController.Add(db, customerId);
+        db.SaveChanges();
+        return lic;
+    }
+
+    private static Task<ObifinConnection> SaveAsync(ObifinConnectionService svc, Guid lic)
+        => svc.UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}",
+            CancellationToken.None);
+
+    [Fact]
+    public async Task Veri_sorumlusu_bilgisi_yoksa_ilk_kayit_reddedilir_Obifine_gidilmez()
+    {
+        using var db = NewDb(); var client = new CountingObifin();
+        var lic = SeedLicense(db, withProfile: false);
+
+        var save = () => SaveAsync(Service(db, client), lic);
+
+        await save.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.DataControllerMissingMessage);
+        (await db.ObifinConnections.CountAsync()).Should().Be(0);
+        client.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Bilgisi_olmayan_yayincida_Dogrula_ve_Banka_ekle_reddedilir_mevcut_baglanti_durur()
+    {
+        // Bağlantı P1'den önce kurulmuş (ya da bilgi sonradan silinmiş): satır ve çekim kalır, ama yeniden doğrulama ve yeni banka
+        // yok.
+        using var db = NewDb(); var client = new CountingObifin();
+        var lic = SeedLicense(db, withProfile: true);
+        var svc = Service(db, client);
+        await SaveAsync(svc, lic);
+        db.DataControllerProfiles.RemoveRange(db.DataControllerProfiles);
+        await db.SaveChangesAsync();
+
+        var verify = () => svc.VerifyAsync(lic, CancellationToken.None);
+        var add = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", new Dictionary<string, string>(), CancellationToken.None);
+
+        await verify.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.DataControllerMissingMessage);
+        await add.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.DataControllerMissingMessage);
+        client.Calls.Should().Be(0);
+        (await db.ObifinConnections.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Bayrak_kapatilirsa_bilgi_olmadan_kayit_yapilir_varsayilan_acik()
+    {
+        new ObifinOptions().RequireDataControllerProfile.Should().BeTrue("fail-closed");
+        using var db = NewDb(); var client = new CountingObifin();
+        var lic = SeedLicense(db, withProfile: false);
+
+        await SaveAsync(Service(db, client, required: false), lic);
+
+        (await db.ObifinConnections.CountAsync()).Should().Be(1);
+    }
+}
 ```
 
 - [ ] **Adım 3: Koştur — derleme hatası bekle**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~DataController|FullyQualifiedName~GdprFlowTests"`
-Expected: FAIL — türler yok.
+Expected: FAIL — türler yok (`DataControllerProfileVersion`, `RequireDataControllerProfile`, `DataControllerMissingMessage`).
 
 - [ ] **Adım 4: Varlık, model, yardımcı**
 
@@ -9700,10 +10391,47 @@ public sealed class DataControllerProfile
     public string KvkkEmail { get; set; } = "";
     /// <summary>Kayıtlı elektronik posta adresi, varsa.</summary>
     public string? KepAddress { get; set; }
+    /// <summary>Gösterilen içeriğin sürümü: her içerik değişikliğinde artar, içeriği <see cref="DataControllerProfileVersion"/>'da
+    /// (KVKK m. 10/1-a ispatı; <see cref="IntakeFormSubmission.DataControllerVersion"/> buna işaret eder).</summary>
+    public int Version { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
-    /// <summary><c>panel</c> ya da <c>admin:&lt;kullanıcı&gt;</c>.</summary>
+    /// <summary><c>panel</c> ya da <c>admin:&lt;yönetici kimliği&gt;</c> (<c>DataDestruction.ActorOf</c>; kullanıcı adı değil).</summary>
     public string UpdatedBy { get; set; } = "";
 }
+```
+
+`OrderDeck.LicenseServer/Domain/DataControllerProfileVersion.cs`:
+
+```csharp
+namespace OrderDeck.LicenseServer.Domain;
+
+/// <summary>
+/// Veri sorumlusu bilgisinin bir sürümü (KVKK m. 10/1-a; ispat yükü veri sorumlusunda — ön inceleme K-3, plan karar 24): kayıt
+/// formunda gösterilen bloğun içeriği sonradan ispatlanabilsin (<see cref="IntakeFormSubmission.DataControllerVersion"/>). Yalnız
+/// eklenir. Şahıs yayıncıda kişisel veridir: yayıncının KVKK silmesinde profille birlikte silinir.
+/// </summary>
+public sealed class DataControllerProfileVersion
+{
+    public Guid Id { get; set; }
+    public Guid CustomerId { get; set; }
+    public int Version { get; set; }
+    public string LegalName { get; set; } = "";
+    public string PostalAddress { get; set; } = "";
+    public string KvkkEmail { get; set; } = "";
+    public string? KepAddress { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    /// <summary><c>panel</c> ya da <c>admin:&lt;yönetici kimliği&gt;</c> (kullanıcı adı değil).</summary>
+    public string CreatedBy { get; set; } = "";
+}
+```
+
+`Domain/IntakeFormSubmission.cs` — `KvkkTextVersion`'ın ALTINA (Görev 22 yazar):
+
+```csharp
+    /// <summary>Kayıt anında formda gösterilen veri sorumlusu bloğunun sürümü (<see cref="DataControllerProfileVersion"/>; KVKK
+    /// m. 10/1-a ispatı, plan karar 24). Null: blok gösterilmedi (yayıncı bilgi girmemişti) ya da sayfanın bildirdiği sürüm o
+    /// yayıncıda yok.</summary>
+    public int? DataControllerVersion { get; set; }
 ```
 
 `OrderDeck.LicenseServer/Services/Privacy/DataControllerProfiles.cs`:
@@ -9716,8 +10444,9 @@ using OrderDeck.LicenseServer.Domain;
 
 namespace OrderDeck.LicenseServer.Services.Privacy;
 
-/// <summary>Veri sorumlusu bilgisinin dışa görünümü (panel, kayıt formu, Shopper).</summary>
-public sealed record DataControllerView(string LegalName, string PostalAddress, string KvkkEmail, string? KepAddress,
+/// <summary>Veri sorumlusu bilgisinin dışa görünümü (panel, kayıt formu, Shopper). <see cref="Version"/>: gösterilen içeriğin
+/// sürümü (kayıt formu gönderimle birlikte geri yollar, karar 24).</summary>
+public sealed record DataControllerView(string LegalName, string PostalAddress, string KvkkEmail, string? KepAddress, int Version,
     DateTimeOffset UpdatedAt);
 
 /// <summary>Panel/yönetim girdisi.</summary>
@@ -9752,27 +10481,46 @@ public static class DataControllerProfiles
 
     public static Task<DataControllerView?> ReadAsync(LicenseDbContext db, Guid customerId, CancellationToken ct)
         => db.DataControllerProfiles.AsNoTracking().Where(p => p.CustomerId == customerId)
-            .Select(p => new DataControllerView(p.LegalName, p.PostalAddress, p.KvkkEmail, p.KepAddress, p.UpdatedAt))
+            .Select(p => new DataControllerView(p.LegalName, p.PostalAddress, p.KvkkEmail, p.KepAddress, p.Version, p.UpdatedAt))
             .FirstOrDefaultAsync(ct);
 
-    /// <summary><see cref="Validate"/>'ten geçmiş girdiyi yazar (yoksa ekler); kendi SaveChanges'ini çağırır.</summary>
+    /// <summary>Bu yayıncıda bu sürüm var mı (kayıt formunun gizli alanı yalnız o zaman kayda yazılır, Görev 22).</summary>
+    public static Task<bool> VersionExistsAsync(LicenseDbContext db, Guid customerId, int version, CancellationToken ct)
+        => db.DataControllerProfileVersions.AnyAsync(v => v.CustomerId == customerId && v.Version == version, ct);
+
+    /// <summary><see cref="Validate"/>'ten geçmiş girdiyi yazar (yoksa ekler); kendi SaveChanges'ini çağırır. İçerik değiştiyse
+    /// (ya da ilk kayıtsa) <see cref="DataControllerProfile.Version"/> artar ve içerik <see cref="DataControllerProfileVersion"/>'a
+    /// eklenir, aynı SaveChanges'te (KVKK m. 10/1-a ispatı, karar 24). İçerik aynıysa hiçbir şey yazılmaz.</summary>
     public static async Task<DataControllerView> UpsertAsync(LicenseDbContext db, Guid customerId, DataControllerInput valid,
         string updatedBy, CancellationToken ct)
     {
         var row = await db.DataControllerProfiles.FirstOrDefaultAsync(p => p.CustomerId == customerId, ct);
-        if (row is null)
+        var unchanged = row is not null && row.LegalName == valid.LegalName && row.PostalAddress == valid.PostalAddress
+            && row.KvkkEmail == valid.KvkkEmail && row.KepAddress == valid.KepAddress;
+        if (!unchanged)
         {
-            row = new DataControllerProfile { CustomerId = customerId };
-            db.DataControllerProfiles.Add(row);
+            if (row is null)
+            {
+                row = new DataControllerProfile { CustomerId = customerId };
+                db.DataControllerProfiles.Add(row);
+            }
+            var now = DateTimeOffset.UtcNow;
+            row.LegalName = valid.LegalName!;
+            row.PostalAddress = valid.PostalAddress!;
+            row.KvkkEmail = valid.KvkkEmail!;
+            row.KepAddress = valid.KepAddress;
+            row.Version++;
+            row.UpdatedAt = now;
+            row.UpdatedBy = updatedBy;
+            db.DataControllerProfileVersions.Add(new DataControllerProfileVersion
+            {
+                Id = Guid.NewGuid(), CustomerId = customerId, Version = row.Version, LegalName = row.LegalName,
+                PostalAddress = row.PostalAddress, KvkkEmail = row.KvkkEmail, KepAddress = row.KepAddress, CreatedAt = now,
+                CreatedBy = updatedBy,
+            });
+            await db.SaveChangesAsync(ct);
         }
-        row.LegalName = valid.LegalName!;
-        row.PostalAddress = valid.PostalAddress!;
-        row.KvkkEmail = valid.KvkkEmail!;
-        row.KepAddress = valid.KepAddress;
-        row.UpdatedAt = DateTimeOffset.UtcNow;
-        row.UpdatedBy = updatedBy;
-        await db.SaveChangesAsync(ct);
-        return new DataControllerView(row.LegalName, row.PostalAddress, row.KvkkEmail, row.KepAddress, row.UpdatedAt);
+        return new DataControllerView(row!.LegalName, row.PostalAddress, row.KvkkEmail, row.KepAddress, row.Version, row.UpdatedAt);
     }
 }
 ```
@@ -9781,6 +10529,7 @@ public static class DataControllerProfiles
 
 ```csharp
     public DbSet<DataControllerProfile> DataControllerProfiles => Set<DataControllerProfile>();
+    public DbSet<DataControllerProfileVersion> DataControllerProfileVersions => Set<DataControllerProfileVersion>();
 ```
 
 `mb.Entity<LicenseShippingSettings>(…)` bloğunun ALTINA:
@@ -9796,6 +10545,20 @@ public static class DataControllerProfiles
             b.Property(p => p.KvkkEmail).HasMaxLength(DataControllerProfiles.EmailMax).IsRequired();
             b.Property(p => p.KepAddress).HasMaxLength(DataControllerProfiles.EmailMax);
             b.Property(p => p.UpdatedBy).HasMaxLength(300).IsRequired();
+        });
+
+        // Veri sorumlusu bilgisinin sürümleri (KVKK m. 10/1-a ispatı, karar 24): yalnız eklenir; müşteri silinirse gider (purge
+        // ayrıca siler, satır anonimleşir ama kalır).
+        mb.Entity<DataControllerProfileVersion>(b =>
+        {
+            b.HasKey(v => v.Id);
+            b.HasOne<Customer>().WithMany().HasForeignKey(v => v.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(v => new { v.CustomerId, v.Version }).IsUnique();
+            b.Property(v => v.LegalName).HasMaxLength(DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(v => v.PostalAddress).HasMaxLength(DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(v => v.KvkkEmail).HasMaxLength(DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(v => v.KepAddress).HasMaxLength(DataControllerProfiles.EmailMax);
+            b.Property(v => v.CreatedBy).HasMaxLength(300).IsRequired();
         });
 ```
 
@@ -9881,8 +10644,8 @@ Yeni işleyici:
             TempData["Error"] = error;
             return RedirectToPage("./Detail", new { id });
         }
-        var admin = User.FindFirst("username")?.Value ?? User.Identity?.Name ?? "admin";
-        await DataControllerProfiles.UpsertAsync(_db, id, valid, "admin:" + admin, ct);
+        // Yapan: yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14; Görev 9 kuralı) — sürüm satırı yayıncı silinene kadar durur.
+        await DataControllerProfiles.UpsertAsync(_db, id, valid, "admin:" + DataDestruction.ActorOf(User), ct);
         await _audit.LogAsync(AuditEvents.CustomerDataControllerUpdate, AuditTargets.Customer, id.ToString(), null, ct);
         TempData["Success"] = "Veri sorumlusu bilgileri kaydedildi.";
         return RedirectToPage("./Detail", new { id });
@@ -9912,25 +10675,83 @@ Yeni işleyici:
 `Controllers/Customers/AdminCustomersController.cs` — `Purge` içinde `_db.EmailConfirmationTokens.RemoveRange(…);` satırının ALTINA:
 
 ```csharp
-        // KVKK K-3: veri sorumlusu bilgileri (şahıs yayıncıda ad ve adres) yayıncının verisidir.
+        // KVKK K-3: veri sorumlusu bilgileri ve sürümleri (şahıs yayıncıda ad ve adres) yayıncının verisidir (karar 24).
         _db.DataControllerProfiles.RemoveRange(_db.DataControllerProfiles.Where(p => p.CustomerId == id));
+        _db.DataControllerProfileVersions.RemoveRange(_db.DataControllerProfileVersions.Where(v => v.CustomerId == id));
 ```
 
 ve Görev 9'daki `Record("Customers.Email+Name+PasswordHash+Notes", …);` satırının ALTINA (kalıcı imha kaydı; sayım izleyiciden, Görev 9 ikinci inceleme 8. madde):
 
 ```csharp
         Record("DataControllerProfiles", DataDestruction.Actions.Deleted, Deleted<DataControllerProfile>());
+        Record("DataControllerProfileVersions", DataDestruction.Actions.Deleted, Deleted<DataControllerProfileVersion>());
 ```
+
+`Detail.cshtml.cs`'te `DataDestruction` için `using OrderDeck.LicenseServer.Services.Privacy;` yukarıda eklendi.
+
+- [ ] **Adım 6b: Banka modülü kapısı**
+
+`Services/Bank/ObifinOptions.cs` — `PageSize`'ın ALTINA:
+
+```csharp
+    /// <summary>KVKK K-3 öneri 3 (plan karar 23): yayıncının veri sorumlusu bilgileri (<c>DataControllerProfiles</c>) olmadan ilk
+    /// bağlantı kaydı, Doğrula ve Banka ekle reddedilir. Varsayılan AÇIK (fail-closed); yalnız pilot geçişinde, metin işi
+    /// yayımlanıp bilgi girilene kadar <c>Obifin__RequireDataControllerProfile=false</c> ile kapatılır.</summary>
+    public bool RequireDataControllerProfile { get; set; } = true;
+```
+
+`appsettings.json` — `"Obifin"` bölümüne `"RequireDataControllerProfile": true` ekle (`"PageSize": 1000`'den sonra).
+
+`Services/Bank/ObifinConnectionService.cs` — `LicenseEndedMessage`'ın ALTINA:
+
+```csharp
+    /// <summary>KVKK K-3 öneri 3: banka modülü yayıncının veri sorumlusu bilgileri toplanmadan açılmaz.</summary>
+    public const string DataControllerMissingMessage =
+        "Önce yayıncının veri sorumlusu bilgilerini girin (Müşteriler → müşteri → Veri sorumlusu bilgileri; KVKK m. 10/1-a).";
+```
+
+`IsLicenseActiveAsync`'in (Görev 13) ALTINA:
+
+```csharp
+    /// <summary>KVKK K-3 öneri 3 (karar 23): lisansın müşterisinde veri sorumlusu bilgisi yoksa <see cref="DataControllerMissingMessage"/>
+    /// fırlatır (<see cref="ObifinOptions.RequireDataControllerProfile"/> kapalıysa denetlemez). İlk bağlantı kaydı, Doğrula ve
+    /// Banka ekle çağırır, Obifin'e gitmeden önce; mevcut Verified bağlantının çekimi çağırmaz (veri kaybı olmasın).</summary>
+    private async Task EnsureDataControllerAsync(Guid licenseId, CancellationToken ct)
+    {
+        if (!_opt.RequireDataControllerProfile) return;
+        var present = await _db.Licenses.Where(l => l.Id == licenseId)
+            .AnyAsync(l => _db.DataControllerProfiles.Any(p => p.CustomerId == l.CustomerId), ct);
+        if (!present) throw new ObifinValidationException(DataControllerMissingMessage);
+    }
+```
+
+Çağrılar:
+- `UpsertWithResultAsync` — `if (conn is null) { … }` bloğunda `İlk kayıtta şifre ve API anahtarı zorunlu.` denetiminin ALTINA, yeni bağlantı oluşturulmadan önce: `await EnsureDataControllerAsync(licenseId, ct);`
+- `VerifyAsync` ve `AddBankConnectionAsync` — Görev 13'ün lisans denetiminin (`if (!await IsLicenseActiveAsync(…)) throw …;`) ALTINA: `await EnsureDataControllerAsync(licenseId, ct);`
+
+`UpsertWithResultAsync` ve `VerifyAsync` özetlerine bir cümle: `İlk kayıt ve doğrulama yayıncının veri sorumlusu bilgisini ister (KVKK K-3, ObifinOptions.RequireDataControllerProfile).`
+
+- [ ] **Adım 6c: Banka bağlantısı kuran testlerin tohumu**
+
+Kapı varsayılan açık olduğu için servisle bağlantı kuran her test tohumuna veri sorumlusu bilgisi eklenir. Her tohum yardımcısında müşteri ve lisans eklendikten sonra, `SaveChanges`'ten önce `TestDataController.Add(db, customerId);` (dosyaya `using OrderDeck.LicenseServer.Tests.TestHelpers;`, yoksa):
+- `Services/Bank/ObifinConnectionServiceTests.cs` → `SeedLicense`
+- `Services/Bank/ObifinConnectionServiceConcurrencyTests.cs` → `SeedAsync`
+- `Services/Bank/ObifinPollJobTests.cs` → `SeedVerifiedAsync`
+- `Services/Bank/ObifinAccountRefreshJobTests.cs` → `SeedVerifiedAsync`
+- `Pages/Admin/AdminObifinPageTests.cs` → `SeedLicenseAsync(ApiFactory)` (Kaydet işleyicisi ilk kaydı da yapar)
+- `Services/Bank/BankConnectionTerminatorTests.cs` → `SeedAsync` (Görev 13)
+
+Lisanssız bir kimlikle `UpsertAsync` çağıran test varsa (kapı lisansın müşterisine bakar) o test `SeedLicense`'e geçirilir. Bu yardımcılar dışında bağlantıyı doğrudan (`db.ObifinConnections.Add`) kuran testler kapıya takılmaz.
 
 - [ ] **Adım 7: Göçü üret ve incele**
 
 Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add DataControllerProfiles --output-dir Data/Migrations`
-Expected: `Up` yalnız `CreateTable("DataControllerProfiles")` (PK `CustomerId`, `Customers`'a kaskad FK).
+Expected: `Up` yalnız `CreateTable("DataControllerProfiles")` (PK `CustomerId`, `Customers`'a kaskad FK, `Version` int), `CreateTable("DataControllerProfileVersions")` (`Customers`'a kaskad FK) + tekil `CreateIndex` (`CustomerId`, `Version`) ve `AddColumn<int>(name: "DataControllerVersion", table: "IntakeFormSubmissions", nullable: true)`.
 
 - [ ] **Adım 8: Koştur — yeşil**
 
-Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~DataController|FullyQualifiedName~GdprFlowTests|FullyQualifiedName~Pages.Admin"`
-Expected: PASS.
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~DataController|FullyQualifiedName~GdprFlowTests|FullyQualifiedName~Pages.Admin|FullyQualifiedName~Services.Bank"`
+Expected: PASS (kapı açık: banka testlerinin tohumunda veri sorumlusu bilgisi var — Adım 6c; kırmızı kalan bir banka testi tohumsuz bağlantı kuruyordur).
 
 Run (Docker): `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~BankDataCleanupRelationalTests|FullyQualifiedName~CustomerPurgeRelationalTests"`
 Expected: PASS.
@@ -9938,13 +10759,16 @@ Expected: PASS.
 - [ ] **Adım 9: Commit**
 
 ```bash
-git add OrderDeck.LicenseServer/Domain/DataControllerProfile.cs OrderDeck.LicenseServer/Services/Privacy/DataControllerProfiles.cs OrderDeck.LicenseServer/Controllers/Panel/PanelDataControllerController.cs OrderDeck.LicenseServer/Data OrderDeck.LicenseServer/Pages/Admin/Customers OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer.Tests/Services/Privacy/DataControllerProfilesTests.cs OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelDataControllerControllerTests.cs OrderDeck.LicenseServer.Tests/Pages/Admin/AdminCustomerDataControllerTests.cs OrderDeck.LicenseServer.Tests/Controllers/Compliance/GdprFlowTests.cs
-git commit -m "feat(kvkk): yayıncının veri sorumlusu bilgilerini topla
+git add OrderDeck.LicenseServer/Domain/DataControllerProfile.cs OrderDeck.LicenseServer/Domain/DataControllerProfileVersion.cs OrderDeck.LicenseServer/Domain/IntakeFormSubmission.cs OrderDeck.LicenseServer/Services/Privacy/DataControllerProfiles.cs OrderDeck.LicenseServer/Controllers/Panel/PanelDataControllerController.cs OrderDeck.LicenseServer/Data OrderDeck.LicenseServer/Services/Bank/ObifinConnectionService.cs OrderDeck.LicenseServer/Services/Bank/ObifinOptions.cs OrderDeck.LicenseServer/appsettings.json OrderDeck.LicenseServer/Pages/Admin/Customers OrderDeck.LicenseServer/Controllers/Customers/AdminCustomersController.cs OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs OrderDeck.LicenseServer.Tests/TestHelpers/TestDataController.cs OrderDeck.LicenseServer.Tests/Services/Privacy/DataControllerProfilesTests.cs OrderDeck.LicenseServer.Tests/Services/Bank OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelDataControllerControllerTests.cs OrderDeck.LicenseServer.Tests/Pages/Admin OrderDeck.LicenseServer.Tests/Controllers/Compliance/GdprFlowTests.cs
+git commit -m "feat(kvkk): yayıncının veri sorumlusu bilgilerini topla, bilgi olmadan banka modülünü açma
 
 DataControllerProfiles (müşteri başına: unvan, posta adresi, KVKK
 e-postası, KEP): panel ucu (yalnız hesap sahibi yazar) ve yönetim
-sayfasından düzenlenir, yayıncı silmesinde silinir (KVKK ön inceleme
-K-3, P1-17).
+sayfasından düzenlenir, her içerik değişikliği sürümlenir
+(DataControllerProfileVersions), yayıncı silmesinde silinir. Bilgi yoksa
+ilk Obifin bağlantı kaydı, Doğrula ve Banka ekle reddedilir
+(Obifin:RequireDataControllerProfile, varsayılan açık). Yönetimden
+yazanın kimliği, kullanıcı adı değil (KVKK ön inceleme K-3, Ö-14, P1-17).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -9957,9 +10781,11 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 **`KvkkNotice.TextVersion` bu görevde ARTMAZ:** blok `<p class="kvkk">` özetinin dışında (`IntakeFormKvkkTests` yalnız o paragrafı ve politika kutusunu özetler) ve hiçbir yayıncı bilgiyi girmeden çizilmez — deploy anında formda görünen metin değişmez. Metin işinin (v2) form paragrafı zaten veri sorumlusunu anacak; sürümü o iş artırır. Bilgiler girilmeden önce metin işinin yayında olması gerekir (Prod adımları).
 
+**Gösterilen sürüm kayda gider (ikinci plan incelemesi; m. 10/1-a ispatı, karar 24):** blok `KvkkNotice.TextVersion`'ın dışında olduğu için kayıt anında hangi kimliğin gösterildiği sonradan ispatlanamıyordu. Blok, profilin sürümünü gizli alana (`Input.DataControllerVersion`) basar. Gönderim, o sürüm bu yayıncıda varsa onu `IntakeFormSubmission.DataControllerVersion`'a yazar; içerik `DataControllerProfileVersions`'tan okunur (Görev 21). Bayat sekme eski sürümü bildirir, doğru olan da odur. Uydurma ya da başka yayıncının sürümü null olur.
+
 **Files:**
-- Modify: `OrderDeck.LicenseServer/Services/IntakeForm/IntakeFormService.cs`
-- Modify: `OrderDeck.LicenseServer/Pages/Public/IntakeForm.cshtml.cs`, `IntakeForm.cshtml` (stil + blok)
+- Modify: `OrderDeck.LicenseServer/Services/IntakeForm/IntakeFormService.cs` (`DataControllerVersionExistsAsync`, `SaveSubmissionAsync`)
+- Modify: `OrderDeck.LicenseServer/Pages/Public/IntakeForm.cshtml.cs`, `IntakeForm.cshtml` (stil + blok + gizli sürüm alanı)
 - Modify: `OrderDeck.LicenseServer/Controllers/Shopper/ShopperBroadcastersController.cs:37, 48-61` + yeni uç
 - Test: `OrderDeck.LicenseServer.Tests/Pages/Public/IntakeFormDataControllerTests.cs` (YENİ), `Controllers/Shopper/ShopperBroadcastersCodeLookupTests.cs`, `Controllers/Shopper/ShopperDataControllerTests.cs` (YENİ)
 
@@ -9997,11 +10823,34 @@ public sealed class IntakeFormDataControllerTests : IClassFixture<ApiFactory>
         db.IntakeFormConfigs.Add(new IntakeFormConfig { Id = Guid.NewGuid(), CustomerId = customer.Id, Slug = slug,
             WhatsAppPhone = TestPhone.NewE164(), IsActive = true, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
         if (withProfile)
+        {
             db.DataControllerProfiles.Add(new DataControllerProfile { CustomerId = customer.Id, LegalName = "Örnek Ticaret Ltd. Şti.",
                 PostalAddress = "Örnek Mah. 1. Sok. No:2 İstanbul", KvkkEmail = "kvkk@example.test", KepAddress = "ornek@hs01.kep.tr",
-                UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "panel" });
+                Version = 1, UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "panel" });
+            db.DataControllerProfileVersions.Add(new DataControllerProfileVersion { Id = Guid.NewGuid(), CustomerId = customer.Id,
+                Version = 1, LegalName = "Örnek Ticaret Ltd. Şti.", PostalAddress = "Örnek Mah. 1. Sok. No:2 İstanbul",
+                KvkkEmail = "kvkk@example.test", KepAddress = "ornek@hs01.kep.tr", CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "panel" });
+        }
         await db.SaveChangesAsync();
         return slug;
+    }
+
+    /// <summary>Kayıt formunun gönderimi (IntakeFormKvkkTests'in alanları; kimlik bilgisi yok, değerler üretilir).</summary>
+    private static FormUrlEncodedContent Submission(string token, string slug, string? dataControllerVersion)
+    {
+        var fields = new List<KeyValuePair<string, string>>
+        {
+            new("__RequestVerificationToken", token), new("Slug", slug),
+            new("Input.InstagramUsername", $"dc_{Guid.NewGuid():N}"[..20]), new("Input.FullName", "Örnek Müşteri"),
+            new("Input.Email", $"musteri-{Guid.NewGuid():N}@example.com"), new("Input.City", "İstanbul"),
+            new("Input.District", "Kadıköy"), new("Input.Address", "Atatürk Cad. No:12"),
+            new("Input.Phone", TestPhone.NewNational()), new("Input.Tckn", TestTckn.NewValid()),
+            new("Input.WhatsAppConsent", "true"), new("Input.WhatsAppConsent", "false"),
+            new("Input.KvkkAcknowledged", "true"), new("Input.KvkkAcknowledged", "false"),
+            new("Input.KvkkTextVersion", KvkkNotice.TextVersion),
+        };
+        if (dataControllerVersion is not null) fields.Add(new("Input.DataControllerVersion", dataControllerVersion));
+        return new FormUrlEncodedContent(fields);
     }
 
     [Fact]
@@ -10024,8 +10873,32 @@ public sealed class IntakeFormDataControllerTests : IClassFixture<ApiFactory>
         var html = await _factory.CreateClient().GetStringAsync($"/musteri-kayit/{slug}");
         html.Should().NotContain("data-block=\"data-controller\"");
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Gonderim_sayfanin_gosterdigi_surumu_yazar_var_olmayan_surum_yazilmaz(bool genuine)
+    {
+        // KVKK m. 10/1-a, ispat yükü veri sorumlusunda (karar 24): kayıt anında hangi kimliğin gösterildiği sonradan ispatlanabilmeli.
+        var slug = await SeedAsync(withProfile: true);
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
+        var html = await client.GetStringAsync($"/r/{slug}");
+        var shown = Regex.Match(html, "name=\"Input\\.DataControllerVersion\" value=\"(\\d+)\"").Groups[1].Value;
+        shown.Should().Be("1", "blok gösterildi, sürümü gizli alanda");
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit",
+            Submission(AdminLoginHelper.ExtractAntiForgeryToken(html), slug, genuine ? shown : "99"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using var scope = _factory.Services.CreateScope();
+        var sub = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().IntakeFormSubmissions.AsNoTracking()
+            .SingleAsync(s => s.Config.Slug == slug);
+        sub.DataControllerVersion.Should().Be(genuine ? 1 : null, "yalnız o yayıncının var olan bir sürümü yazılır");
+    }
 }
 ```
+
+(Dosyanın üstüne `using System.Net;`, `using System.Text.RegularExpressions;`, `using Microsoft.AspNetCore.Mvc.Testing;`, `using Microsoft.EntityFrameworkCore;`, `using OrderDeck.LicenseServer.Services.IntakeForm;` ekle.)
 
 - [ ] **Adım 2: Shopper testlerini yaz (kırmızı)**
 
@@ -10141,7 +11014,13 @@ Expected: FAIL.
     /// <summary>Formu oluşturan yayıncının veri sorumlusu bilgileri (KVKK K-3); girilmediyse null.</summary>
     public Task<Privacy.DataControllerView?> GetDataControllerAsync(Guid customerId, CancellationToken ct = default)
         => Privacy.DataControllerProfiles.ReadAsync(_db, customerId, ct);
+
+    /// <summary>Sayfanın bildirdiği veri sorumlusu sürümü bu yayıncıda var mı (karar 24: yalnız varsa kayda yazılır).</summary>
+    public Task<bool> DataControllerVersionExistsAsync(Guid customerId, int version, CancellationToken ct = default)
+        => Privacy.DataControllerProfiles.VersionExistsAsync(_db, customerId, version, ct);
 ```
+
+`SaveSubmissionAsync`'e son isteğe bağlı parametre `int? dataControllerVersion = null` ekle (`kvkkTextVersion`'dan sonra), özetine `/// <paramref name="dataControllerVersion"/>: formda gösterilen veri sorumlusu bloğunun sürümü (KVKK m. 10/1-a ispatı, karar 24); çağıran doğrular.` ve nesne başlatıcısına `KvkkAcknowledgedAt = …` satırının ALTINA `DataControllerVersion = dataControllerVersion,`.
 
 `Pages/Public/IntakeForm.cshtml.cs` — `using Microsoft.AspNetCore.Mvc.Filters;` ve `using OrderDeck.LicenseServer.Services.Privacy;` ekle; `public IntakeFormConfig? Config { get; private set; }` satırının ALTINA:
 
@@ -10158,6 +11037,25 @@ Expected: FAIL.
             DataController = await _service.GetDataControllerAsync(Config.CustomerId, context.HttpContext.RequestAborted);
     }
 ```
+
+`IntakeFormInput`'a (`KvkkTextVersion`'ın ALTINA):
+
+```csharp
+        /// <summary>Sayfanın gösterdiği veri sorumlusu bloğunun sürümü (gizli alan; KVKK m. 10/1-a ispatı, karar 24). Yalnız o
+        /// yayıncının var olan bir sürümüyse kayda yazılır; bayat sekme eski sürümü bildirir, doğru olan da odur.</summary>
+        public int? DataControllerVersion { get; set; }
+```
+
+Gönderim işleyicisinde `await _service.SaveSubmissionAsync(` çağrısının ÜSTÜNE:
+
+```csharp
+        // KVKK m. 10/1-a ispatı (karar 24): kayıt, sayfanın gösterdiği veri sorumlusu bloğunun sürümünü taşır. Yalnız bu yayıncının
+        // var olan bir sürümü yazılır; uydurma ya da başka yayıncının sürümü null olur.
+        var dataControllerVersion = Input.DataControllerVersion is { } shownVersion
+            && await _service.DataControllerVersionExistsAsync(Config.CustomerId, shownVersion, ct) ? shownVersion : (int?)null;
+```
+
+ve çağrının son argümanından (`kvkkTextVersion: Input.KvkkTextVersion`) sonra `, dataControllerVersion: dataControllerVersion` ekle.
 
 `Pages/Public/IntakeForm.cshtml` — stilde `.kvkk { … }` satırının ALTINA:
 
@@ -10180,8 +11078,12 @@ Expected: FAIL.
                         <text> · KEP: @kep</text>
                     }
                 </p>
+                @* Gösterilen sürüm kayda gider (KVKK m. 10/1-a ispatı, karar 24). Düz input: öznitelik sırası testte sabit. *@
+                <input type="hidden" name="Input.DataControllerVersion" value="@dc.Version" />
             }
 ```
+
+(Blok formun İÇİNDE olmalı: `<p class="kvkk">` ve `Input.KvkkTextVersion` gizli alanı gibi. Değilse gizli alanı `Input.KvkkTextVersion` alanının yanına taşı ve aynı `@if` ile koru.)
 
 - [ ] **Adım 5: Shopper uçları**
 
@@ -10250,9 +11152,9 @@ git add OrderDeck.LicenseServer/Services/IntakeForm/IntakeFormService.cs OrderDe
 git commit -m "feat(kvkk): yayıncının veri sorumlusu bilgisini formda ve Shopper ucunda göster
 
 Kayıt formu bilgi girildiyse aydınlatma paragrafının dışında veri
-sorumlusu bloğunu çizer; Shopper kod sorgusu dataController alanını,
-bağlı müşteri GET {licenseId}/data-controller ucunu alır
-(KVKK ön inceleme K-3, P1-17).
+sorumlusu bloğunu çizer ve gönderim gösterilen sürümü kayda yazar;
+Shopper kod sorgusu dataController alanını, bağlı müşteri GET
+{licenseId}/data-controller ucunu alır (KVKK ön inceleme K-3, P1-17).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
@@ -10674,19 +11576,19 @@ Push ve PR yok (Burak isterse). Burak'a özet: commit listesi, paket sonucu, "Pr
 | P0-6 MaskIban kısa değer; mevcut kısa/eski maskeler | 6, 8, 11 |
 | P0-7 ilk çekim bağlantı anına; bağlanmamış ilk çekim satırlarını sil | 7, 8 |
 | P1-8 purge'ün banka adımı (kanıtında kullanıcı adı geçen hareketler dahil) | 15 |
-| P1-9 IBAN ile arama/dışa aktarma/silme, talep kaydı, doğrulama yöntemi, son tarih; veri silinince açık talebin kapanması; silme taleplerinde son tarih | 17, 18, 20 |
+| P1-9 IBAN ile arama/dışa aktarma/silme, talep kaydı, doğrulama yöntemi, son tarih; veri silinince açık talebin kapanması; sonuç kategorileri (yanıtlandı / doğrulanamadı / kanuni gerekçeyle ret / geri çekildi), silmenin yalnız silme talebinde yapılması, CSV kaçışında sekme ve satır başı; yönetici sütunlarında kimlik; silme taleplerinde son tarih | 17, 18, 20 |
 | P1-10 durdur / kaldır ve sil (Obifin tarafı lisansa özgü, paylaşılan kullanıcıda Obifin'e gidilmez; lisans anahtarıyla yazılı onay); durdurulmuş ya da yerel verisi silinmiş bağlantıda eşleştirme, dekont bağdaştırması ve IBAN öğrenmenin de durması (`MatchingActive`); hizmet sonu + 30 gün işi (yalnız yerel, partili, lisans yenilenince silmez; gerçek SQL testi); Obifin bağlantılı yayıncı silmesinin reddi; Obifin `bankaapi/sil` (hareket silme ucu yok → yazılı teyit kaydı `ObifinCopyDeletions`, günlük hatırlatma, 14 günde GECİKTİ) | 13, 14 |
-| P1-11 saklama işlem tarihinden; eşleşmeyen 30 gün; eşleştirme satırı 180 gün; IBAN bağı LastConfirmedAt + 12 ay; gerçek SQL Server testi | 10 |
+| P1-11 saklama işlem tarihinden; eşleşmeyen 30 gün (yalnız dekont bağı olan da "eşleşen"); eşleştirme satırı 180 gün; IBAN bağı LastConfirmedAt + 12 ay; gerçek SQL Server testi; ilk koşunun beklenen sayımı (Prod adımları) | 10 |
 | P1-12 NormalizeIban (harf/rakam, TR 26, mod-97), sayaç, maskeli kaynaklı özet temizliği; sıfırlamada özetlerin kalması ve yeniden öğrenme kapısı | 11 |
 | P1-13 lisans başına izinli hesap listesi, uyarı; onaysız hesabın reddi ve P1 öncesi verisinin silinmesi, onayın geri alınması | 12, 13 |
 | P1-14 kalıcı imha kaydı ≥ 36 ay (yayıncı silmesi, kimlik değişimi, temizlik komutu dahil), kişisel veri içermeyen olaylarla sınırlı denetim muafiyeti, iş düşerse e-posta, veritabanı dışındaki saatlik kopya | 9 |
 | P1-15 (denetim) sayfa görüntüleme denetimi; kullanıcı adı yerine kimlik; eski satırların çevrilmesi | 16 |
 | P1-16 yerel SQL yedeği şifreli/yalnız bugünkü; HashKey ayrı; geri yüklemeden sonra silmeleri yeniden uygulama prosedürü | 23 (+ 9) |
-| P1-17 veri sorumlusu bilgileri: model, admin, panel, form, Shopper ucu | 21, 22 |
+| P1-17 veri sorumlusu bilgileri: model, admin, panel, form, Shopper ucu; bilgi olmadan banka modülünün açılmaması (fail-closed, pilot bayrağı); gösterilen sürümün kaydı; ödeme mesajına basılması (WPF) | 21, 22; ödeme mesajı kapsam dışı tablosunda (WPF satırı) |
 | P1-19 FCM gövdesinden tutar ve ret gerekçesi | 19 |
 | P1-22 TR/EN yürürlük tarihi eşitlik testi | 24 |
-| P2-25 silme talebindeki telefon (ve kapanmış banka talebinin maskesi) | 20 |
-| P1-15 (iki aşamalı doğrulama), P1-18 / K-8 (Shopper, panel, WPF ödeme şablonu) | Kapsam dışı tablosu: takip planı ve sahibi orada |
+| P2-25 silme talebindeki telefon (ve kapanmış banka talebinin maskesi); işin imha ve koşu kaydı | 20 |
+| P1-15 (iki aşamalı doğrulama), P1-18 / K-8 (Shopper, panel, WPF ödeme şablonu), P1-21 (banka kimliği girişini kaldırma ya da işletenin lisansıyla sınırlama), `CounterpartyTaxIdHash` daraltması, HashKey'li eski `.env` yedekleri | Kapsam dışı tablosu: takip planı ve sahibi orada |
 
 
 
