@@ -18,7 +18,7 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 public sealed class ObifinPollJobTests
 {
     /// <summary>Betikli istemci: hareketler bellekte; sorgu tarih penceresi + sinceId + sayfa ile
-    /// gerçek API gibi filtrelenir (Id artan). 31 gün üstü aralık gerçek istemci gibi fırlatır.</summary>
+    /// gerçek API gibi filtrelenir (Id artan). Ters ya da 31 gün üstü aralık gerçek istemci gibi fırlatır.</summary>
     private sealed class ScriptedObifin : IObifinClient
     {
         public List<ObifinTransactionDto> Transactions { get; } = new();
@@ -62,6 +62,7 @@ public sealed class ObifinPollJobTests
             Calls.Add((f, t, s, p));
             RequestedPageSizes.Add(ps);
             if (BeforeCall is { } hook) await hook(Calls.Count);
+            if (t < f) throw new ArgumentOutOfRangeException(nameof(t));
             if (t.DayNumber - f.DayNumber + 1 > 31) throw new ArgumentOutOfRangeException(nameof(t));
             if (CancelCallerOnCall is { } cts)
             {
@@ -198,6 +199,56 @@ public sealed class ObifinPollJobTests
         (last.From, last.To).Should().Be((new DateOnly(2026, 9, 23), today), "artımlı pencere çapada başlar");
         (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 301L });
         (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).LastObifinTransactionId.Should().Be(301);
+    }
+
+    [Theory]
+    [InlineData(-60)]
+    [InlineData(-31)]
+    public async Task Eski_capa_artimli_pencereyi_degistirmez(int anchorOffsetDays)
+    {
+        // Çapa artımlı pencereyi yalnız pencerenin içindeyse daraltır. Bağlantıdan 30 gün sonra (ya da bank-data-cleanup'ın
+        // eski bağlantıya yazdığı çapada) pencere çapaya genişleseydi 31 günü aşardı: gerçek istemci ArgumentOutOfRange
+        // fırlatır, çekim her turda düşer, banka çekimi tamamen durur. −31: pencerenin bir gün dışı (sınır).
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        seeded.InitialCollectFrom = today.AddDays(anchorOffsetDays);
+        await db.SaveChangesAsync();
+        client.Transactions.Add(Tx(501, new DateTime(2026, 9, 25, 10, 0, 0), 45m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var call = client.Calls.Should().ContainSingle().Subject;
+        (call.From, call.To, call.Since).Should().Be((today.AddDays(-30), today, (long?)0));
+        sink.Received.Should().ContainSingle().Which.ObifinId.Should().Be(501);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.LastObifinTransactionId.Should().Be(501);
+        conn.LastError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Saat_geri_gidip_capa_bugunu_asarsa_artimli_pencere_degismez()
+    {
+        // Çapa bugünden ilerideyse (saat geri gitti) pencere çapaya kaysaydı başlangıç bitişi aşardı: gerçek istemci
+        // ArgumentOutOfRange fırlatır. Pencere [bugün−30, bugün] kalır; çapadan eski hareketi UpsertAsync yine süzer.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        seeded.InitialCollectFrom = today.AddDays(1);
+        await db.SaveChangesAsync();
+        client.Transactions.Add(Tx(601, new DateTime(2026, 9, 25, 10, 0, 0), 45m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var call = client.Calls.Should().ContainSingle().Subject;
+        (call.From, call.To, call.Since).Should().Be((today.AddDays(-30), today, (long?)0));
+        (await db.BankTransactions.CountAsync()).Should().Be(0, "hareket çapadan eski");
+        sink.Received.Should().BeEmpty();
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.LastObifinTransactionId.Should().Be(601, "atlanan hareket de görüldü");
+        conn.LastError.Should().BeNull();
     }
 
     [Theory]
