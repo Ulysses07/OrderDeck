@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Data;
@@ -215,20 +216,23 @@ public class LicenseDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         SyncDerivedColumns();
+        // Ortak bakiye §4.11 kancası; sync: true iken görev tamamlanmış döner (bkz. PersonGroupSaveHook).
+        PersonGroupSaveHook.RunAsync(this, sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
         StampCustomerBalanceVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         SyncDerivedColumns();
+        await PersonGroupSaveHook.RunAsync(this, sync: false, cancellationToken);
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
         StampCustomerBalanceVersions();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     /// <summary>
