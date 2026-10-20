@@ -11,6 +11,17 @@ using Xunit;
 
 namespace OrderDeck.Tests.Services;
 
+/// <summary>Başka sınıfların <c>Dispose</c>'u <see cref="SqliteConnection.ClearAllPools"/>'u GLOBAL çağırıyor. Bu sınıfın
+/// havuzda boşta duran bağlantısını anlık görüntü sürerken kapatırsa, WAL'daki son bağlantının kapanış checkpoint'i kilidi
+/// alır ve <c>SqliteFile.Snapshot</c> "database is locked" ile döner; yükleme hiç olmaz. Ölçüldü: eşzamanlı temizlemeyle
+/// 300 anlık görüntüden 173'ü, temizlemesiz 0'ı.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class BackupServiceCollection
+{
+    public const string Name = "Yedek servisi (paralel değil)";
+}
+
+[Collection(BackupServiceCollection.Name)]
 public class BackupServiceTests : IDisposable
 {
     private readonly string _dir;
@@ -140,10 +151,18 @@ public class BackupServiceTests : IDisposable
         sut.QueueBackup("test1");
         sut.QueueBackup("test2");  // should be skipped (single-flight)
 
-        await startedSignals.WaitAsync(TimeSpan.FromSeconds(2));
-        releaseSignals.Release();
-        await Task.Delay(200);
-
-        fake.Uploads.Count.Should().Be(1, because: "second QueueBackup detected active and skipped");
+        // Yükleme sahteye ancak anlık görüntü + zip + SHA'dan sonra ulaşır; yavaş
+        // runner'da bu saniyeler sürer. Sabit bekleme yerine sinyalin kendisi
+        // beklenir ve sayım, ilk yükleme sahtede tutulurken yapılır.
+        try
+        {
+            (await startedSignals.WaitAsync(TimeSpan.FromSeconds(30))).Should().BeTrue(
+                because: "ilk yedek sahte istemciye ulaşmalı");
+            fake.Uploads.Count.Should().Be(1, because: "second QueueBackup detected active and skipped");
+        }
+        finally
+        {
+            releaseSignals.Release();
+        }
     }
 }
