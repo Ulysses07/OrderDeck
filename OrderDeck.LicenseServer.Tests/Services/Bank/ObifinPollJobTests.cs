@@ -227,14 +227,18 @@ public sealed class ObifinPollJobTests
         conn.LastError.Should().BeNull();
     }
 
-    [Fact]
-    public async Task Saat_geri_gidip_capa_bugunu_asarsa_artimli_pencere_degismez()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Saat_geri_gidip_capa_bugunu_asarsa_Obifine_gidilmez_imlec_yerinde_kalir(bool incremental)
     {
-        // Çapa bugünden ilerideyse (saat geri gitti) pencere çapaya kaysaydı başlangıç bitişi aşardı: gerçek istemci
-        // ArgumentOutOfRange fırlatır. Pencere [bugün−30, bugün] kalır; çapadan eski hareketi UpsertAsync yine süzer.
+        // Çapa bugünden ilerideyse (saat geri gitti) bugüne kadarki her gün çapadan eskidir: istenecek gün yok. Pencere
+        // çapaya kaysaydı başlangıç bitişi aşardı (gerçek istemci ArgumentOutOfRange fırlatır); [bugün−30, bugün] kalsaydı
+        // çapadan eski 31 gün Obifin'den istenirdi. Tur başarılı biter, imleç yerinde kalır: saat düzelince çapadan sonraki
+        // hareketler imleçten alınır.
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, sink) = Build(db, client, today);
-        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: incremental ? 0 : null, backfilled: incremental);
         var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
         seeded.InitialCollectFrom = today.AddDays(1);
         await db.SaveChangesAsync();
@@ -242,13 +246,13 @@ public sealed class ObifinPollJobTests
 
         await job.RunAsync(CancellationToken.None);
 
-        var call = client.Calls.Should().ContainSingle().Subject;
-        (call.From, call.To, call.Since).Should().Be((today.AddDays(-30), today, (long?)0));
-        (await db.BankTransactions.CountAsync()).Should().Be(0, "hareket çapadan eski");
+        client.Calls.Should().BeEmpty("bugüne kadarki her gün çapadan eski");
+        (await db.BankTransactions.CountAsync()).Should().Be(0);
         sink.Received.Should().BeEmpty();
         var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
-        conn.LastObifinTransactionId.Should().Be(601, "atlanan hareket de görüldü");
+        conn.LastObifinTransactionId.Should().Be(incremental ? 0L : (long?)null);
         conn.LastError.Should().BeNull();
+        conn.LastPolledAt.Should().NotBeNull("istenecek gün olmayan tur da başarılı turdur");
     }
 
     [Theory]

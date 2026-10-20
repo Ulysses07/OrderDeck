@@ -10,10 +10,11 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
 /// Obifin'den hareket çekimi (spec §5). Bağlantı başına: ilk çekimde bağlantı anından <see cref="InitialGraceDays"/> gün
-/// geriye (çapa, <see cref="ObifinConnection.InitialCollectFrom"/>; KVKK Ö-5), sonra `[bugün−30, bugün]` (çapadan eskisi
-/// istenmez) + `BaslangicHareketId` imleci. Yazım idempotent ((LicenseId, ObifinId) tekil); imleç yalnız tam başarılı turda
-/// ilerler. Webhook yok — bu iş tek kaynak. Yalnız gelen, tutarı sıfırdan büyük ve işlem günü çapadan eski olmayan hareket
-/// kaydedilir (KVKK K-4, Ö-5).
+/// geriye (çapa, <see cref="ObifinConnection.InitialCollectFrom"/>; KVKK Ö-5), sonra `[bugün−30, bugün]` + `BaslangicHareketId`
+/// imleci. İki yolda da istenen aralık çapada başlar, çapadan eski gün Obifin'den istenmez. Yazım idempotent ((LicenseId,
+/// ObifinId) tekil); imleç yalnız tam başarılı turda ilerler. Webhook yok — bu iş tek kaynak. Yalnız gelen, tutarı sıfırdan
+/// büyük ve işlem günü çapadan eski olmayan hareket kaydedilir (KVKK K-4, Ö-5): Obifin istenen aralığın dışından hareket
+/// döndürse de (tarih süzgecinin hangi tarihe baktığı belgelenmemiş) çapadan eskisi yazılmaz.
 ///
 /// <para><b>Hata sınıfları.</b> Obifin'in kendi mesajı (<see cref="ObifinApiException"/>, ör. kimlik hatalı)
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
@@ -160,9 +161,11 @@ public sealed class ObifinPollJob
             {
                 var from = today.AddDays(-(WindowDays - 1));
                 // KVKK Ö-5: çapadan eskisi Obifin'den istenmez (ilk turu boş geçen bağlantıda imleç yoktur; pencere 31 gün
-                // geriye bakardı). Saat geri gidip çapa bugünü aştıysa pencere değişmez, UpsertAsync yine süzer.
-                if (conn.InitialCollectFrom is { } anchor && anchor > from && anchor <= today) from = anchor;
-                for (var round = 0; round < MaxDrainRounds; round++)
+                // geriye bakardı). Pencere yalnız daralır: çapası 30 günden eski bağlantıda 31 günü aşmaz. Saat geri gidip
+                // çapa bugünü aştıysa istenecek gün yoktur: Obifin'e gidilmez, imleç yerinde kalır (ilk çekimin döngüsü de
+                // aynı durumda hiç istemez).
+                if (conn.InitialCollectFrom is { } anchor && anchor > from) from = anchor;
+                for (var round = 0; round < MaxDrainRounds && from <= today; round++)
                 {
                     var before = conn.LastObifinTransactionId;
                     var (seen, lastPageFull) = await FetchWindowWithMetaAsync(conn, creds, identity, from, today, before, ct);

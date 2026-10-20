@@ -21,8 +21,9 @@ public sealed class ObifinConnection
     public DateTimeOffset? BackfillCompletedAt { get; set; }
     /// <summary>İlk çekim çapası (TR takvim günü, KVKK Ö-5): ilk çekim turunun günü − <c>ObifinPollJob.InitialGraceDays</c>.
     /// O turun başında, Obifin'e gidilmeden kaydedilir; tur yarıda kalsa ya da hiç kayıt yapmadan düşse de (geçici hata,
-    /// Obifin reddi) kalır, sonraki turlar aynı çapadan sürer. Bu günden eski işlem tarihli hareket hiçbir turda yazılmaz.
-    /// Kimlik değişene kadar değişmez, değişince boşalır. Eski bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
+    /// Obifin reddi) kalır, sonraki turlar aynı çapadan sürer. Hiçbir turda bu günden eski gün Obifin'den istenmez, bu
+    /// günden eski işlem tarihli hareket (Obifin istenen aralığın dışından döndürse de) yazılmaz. Kimlik değişene kadar
+    /// değişmez, değişince boşalır. Eski bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
     public DateOnly? InitialCollectFrom { get; set; }
     /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6). Bugün yalnız lisans bitişi
     /// yazar (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>); zaten Disabled olan bağlantıda yeniden yazılmaz.
