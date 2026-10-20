@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 
@@ -13,6 +15,13 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///   (önce izlenenlerde, yoksa tek sorguyla) "değişti" işaretlenir; jetonu <c>StampVersions</c> ilerletir. Apply
 ///   üyeliği okuyup bakiye satırını yükledikten sonra kaydedilen bir ayırma, apply'ın UPDATE'ini tutmaz ve plan
 ///   baştan kurulur. Bakiye satırı olmayan üyede dokunulacak bir şey yok: para taşımaz. Tutar değişmez.</item>
+///   <item><b>Silinmiş üyenin numara izlemesi (K3, M11):</b> canlı asıl bir üye g'den ayrıldıysa (GroupId'si ordinal
+///   değişti → hedef yeni numara; ya da kopyaya döndü → hedef asıl kaydın numarası) ve bu kayıttan sonra g'de canlı
+///   asıl üye kalmadıysa (veritabanı + izlenen değişiklikler, ordinal), g'deki silinmiş asıl üyeler hedefe taşınır,
+///   damgalı (<see cref="CustomerGroupUnion.StampAt"/>). Hedef boşsa (Ayır) silinmiş üye g'de tek kalır (K3'ün
+///   istisnası, sahip kararı bekliyor); ayrılanlar farklı numaralara gittiyse de kalır ve günlüğe yazılır
+///   (verify'ın "grubu dağılmış silinmiş satır" kalemi görür). KVKK silmesi ayrılma değildir. Taşıma da bir GroupId
+///   değişimidir — silinmiş üyenin bakiye jetonu 1. maddeyle ilerler; bu yüzden önce bu madde koşar.</item>
 /// </list>
 /// Sunucuda GroupId'ye yazan üç yer de (senkron, <c>group-customers</c>/<c>--at-twins</c>, kimlik birleşmesi) izlenen
 /// nesnelerle yazar; ham SQL / ExecuteUpdate yazımını <c>GroupIdWriteConventionTests</c> yasaklar.
@@ -29,8 +38,115 @@ internal static class PersonGroupSaveHook
 {
     internal static async Task RunAsync(LicenseDbContext db, bool sync, CancellationToken ct)
     {
+        await FollowPurgedMembersAsync(db, sync, ct);
         await TouchBalancesAsync(db, sync, ct);
     }
+
+    /// <summary>Bu kayıtta canlı asıl bir üyenin <see cref="From"/> numarasından ayrılışı; <see cref="To"/> = gittiği
+    /// numara (gruplu değilse null).</summary>
+    private sealed record Departure(Guid LicenseId, string From, string? To);
+
+    private static async Task FollowPurgedMembersAsync(LicenseDbContext db, bool sync, CancellationToken ct)
+    {
+        // Tek değişiklik algılaması: bu listeden sonra yalnız kancanın kendi yükledikleri izleyiciye eklenir.
+        var entries = db.ChangeTracker.Entries<WpfCustomerProjection>().ToList();
+        var departures = new List<Departure>();
+        foreach (var entry in entries.Where(e => e.State == EntityState.Modified))
+        {
+            var from = entry.Property(p => p.GroupId).OriginalValue;
+            var wasLive = entry.Property(p => p.MergedIntoId).OriginalValue is null
+                          && entry.Property(p => p.PurgedAt).OriginalValue is null;
+            if (!wasLive || !PersonMembership.IsGrouped(from)) continue;
+
+            var row = entry.Entity;
+            if (row.PurgedAt is not null) continue; // KVKK silmesi: satır numarasında silinmiş üye olarak kalır
+            if (row.MergedIntoId is { } canonicalId)
+                departures.Add(new Departure(
+                    row.LicenseId, from!, await GroupOfAsync(db, entries, row.LicenseId, canonicalId, sync, ct)));
+            else if (!string.Equals(row.GroupId, from, StringComparison.Ordinal))
+                departures.Add(new Departure(row.LicenseId, from!, row.GroupId));
+        }
+        if (departures.Count == 0) return;
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var license in departures.GroupBy(d => d.LicenseId))
+        {
+            var origins = license.Select(d => d.From).Distinct(StringComparer.Ordinal).ToList();
+            var pool = await RowsAfterSaveAsync(db, entries, license.Key, origins, sync, ct);
+            foreach (var origin in license.GroupBy(d => d.From, StringComparer.Ordinal))
+            {
+                var group = origin.Key;
+                var members = pool.Where(p => string.Equals(p.GroupId, group, StringComparison.Ordinal)).ToList();
+                if (members.Any(p => p.PurgedAt is null)) continue; // numarada canlı üye kaldı
+                var purged = members.Where(p => p.PurgedAt is not null).ToList();
+                if (purged.Count == 0) continue;
+
+                var targets = origin.Select(d => PersonMembership.IsGrouped(d.To) ? d.To : null).ToList();
+                var target = targets[0];
+                if (targets.Any(t => !string.Equals(t, target, StringComparison.Ordinal)))
+                {
+                    Logger(db).LogWarning(
+                        "Ortak bakiye: numarası boşalan grubun ayrılanları farklı numaralara gitti; {Count} silinmiş üye eski numarada kaldı (lisans {LicenseId})",
+                        purged.Count, license.Key);
+                    continue;
+                }
+                if (target is null) continue; // Ayır: silinmiş üye eski numarada tek kalır (K3 istisnası, §10)
+                // Kopyaya dönen son üyenin asıl kaydı aynı numaradaysa (o da silinmiş) gidilecek yer yok.
+                if (string.Equals(target, group, StringComparison.Ordinal)) continue;
+
+                foreach (var p in purged)
+                {
+                    // Girdi üzerinden yazılır: değişiklik algılamasına kalmadan "değişti" işaretlenir, 1. madde ve
+                    // SaveChanges onu görür.
+                    var moved = db.Entry(p);
+                    moved.Property(x => x.GroupIdChangedAt).CurrentValue =
+                        CustomerGroupUnion.StampAt(now, p.GroupIdChangedAt);
+                    moved.Property(x => x.GroupId).CurrentValue = target;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Kayıttan SONRA numarası <paramref name="groups"/>'tan biri olabilecek asıl kayıtlar (eşitliği çağıran ordinal
+    /// karşılaştırır): veritabanındaki adaylar — SQL yalnız daraltır, sondaki boşluğu yutar — izlenerek yüklenir; izlenen
+    /// örnekler kimlik çözümüyle bellekteki (kaydedilecek) değerleriyle döner. Veritabanında başka numarada olup bu
+    /// kayıtta gelen ya da yeni eklenen izlenen satırlar da eklenir. Silinecek satır ve kopyaya dönen satır süzülür.
+    /// </summary>
+    private static async Task<List<WpfCustomerProjection>> RowsAfterSaveAsync(
+        LicenseDbContext db, IReadOnlyList<EntityEntry<WpfCustomerProjection>> entries, Guid licenseId,
+        List<string> groups, bool sync, CancellationToken ct)
+    {
+        // AsTracking: bağlamın varsayılanı NoTracking olsa da kimlik çözümü izlenen örneği döndürmeli (aksi hâlde
+        // ayrılan üye veritabanındaki eski numarasıyla "kaldı" sayılırdı) ve taşınacak silinmiş üye izlenmeli.
+        var query = db.WpfCustomerProjections.AsTracking()
+            .Where(p => p.LicenseId == licenseId && p.GroupId != null && groups.Contains(p.GroupId));
+        var fromDb = sync ? query.ToList() : await query.ToListAsync(ct);
+        var deleted = entries.Where(e => e.State == EntityState.Deleted)
+            .Select(e => e.Entity).ToHashSet<WpfCustomerProjection>(ReferenceEqualityComparer.Instance);
+        return fromDb
+            .Concat(entries.Select(e => e.Entity))
+            .Distinct<WpfCustomerProjection>(ReferenceEqualityComparer.Instance)
+            .Where(p => !deleted.Contains(p) && p.LicenseId == licenseId && p.MergedIntoId is null)
+            .ToList();
+    }
+
+    /// <summary>Kopyanın asıl kaydının bu kayıttaki numarası: izleniyorsa bellekteki, değilse veritabanındaki.</summary>
+    private static async Task<string?> GroupOfAsync(
+        LicenseDbContext db, IReadOnlyList<EntityEntry<WpfCustomerProjection>> entries, Guid licenseId, Guid id,
+        bool sync, CancellationToken ct)
+    {
+        var tracked = entries.FirstOrDefault(e => e.Entity.Id == id);
+        if (tracked is not null) return tracked.Entity.GroupId;
+        var query = db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.LicenseId == licenseId && p.Id == id)
+            .Select(p => p.GroupId);
+        return sync ? query.FirstOrDefault() : await query.FirstOrDefaultAsync(ct);
+    }
+
+    private static ILogger Logger(LicenseDbContext db) =>
+        (db.GetInfrastructure().GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance)
+            .CreateLogger(typeof(PersonGroupSaveHook).FullName!);
 
     private static async Task TouchBalancesAsync(LicenseDbContext db, bool sync, CancellationToken ct)
     {

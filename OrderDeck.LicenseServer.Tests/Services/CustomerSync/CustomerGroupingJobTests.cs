@@ -472,7 +472,9 @@ public sealed class CustomerGroupingJobTests : IAsyncLifetime
             second.RowsToChange.Should().Be(1);
             rows = await RowsAsync(db, lic);
             rows[a.Id].GroupId.Should().Be(la);
-            rows[aMember.Id].GroupId.Should().NotBe(la, "silinmiş satıra yazılmaz");
+            // İş silinmiş satırı kendisi taşımaz (MoveToGroup atlar); ama a, ga'nın son canlı üyesiydi: ga'da kalan
+            // silinmiş üye numarayı izler (ortak bakiye §4.11, §4.12, K3, M11 — PersonGroupSaveHook).
+            rows[aMember.Id].GroupId.Should().Be(la, "son canlı üye ayrılınca silinmiş üye onun numarasına geçer");
         }
     }
 }
