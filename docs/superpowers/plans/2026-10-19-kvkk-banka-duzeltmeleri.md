@@ -53,7 +53,7 @@
 14. **Lisans yenilenince** (Görev 14) kendiliğinden durdurulmuş bağlantı `Unverified`'a döner ve silinmez; yöneticinin durdurduğu açılmaz, 30. günde yerel verisi silinir.
 15. **`customer.purged` denetim satırındaki `preEmail`** 24 ay kalır (mevcut davranış; 36 ay muafiyetinden çıkarıldı). Avukat "hiç yazılmasın" derse `Purge`'te tek satır.
 16. **Banka veri talebinde doğrulama yöntemleri** (Görev 17): ıslak imzalı dilekçe / KEP–güvenli e-imza–mobil imza / kayıtlı iletişim kanalı, her birinde IBAN sahipliği banka belgesiyle. Liste avukata sorulmalı (Başvuru Tebliği kanallarıyla yeterli mi).
-17. **Geri yükleme sonrası yeniden uygulama** (Görev 9, 23): dış kopya saatlik e-posta; son yedekle felaket arasındaki en çok bir saat için canlı veritabanı gerekir. Avukata: bu boşluk ve elle yeniden uygulama prosedürü yeterli mi.
+17. **Geri yükleme sonrası yeniden uygulama** (Görev 9, 23): dış kopya saatlik e-posta ve durum tutar (`DigestedAt`, Görev 9 incelemesi): gönderim düşerse (SMTP, boş `Admin:AlertEmail`) iş Failed olur ve kayıtlar sonraki saatte yeniden denenir, kesinti birikimi ilk koşuda gider. Boşluk = son başarılı özetten sonraki kayıtlar: olağan durumda en çok ~1 saat 13 dk (saat başı +13'te önceki saatler gider); e-posta saatlerce düşmüşse daha uzun, ama kayıtlar tabloda bekler ve Hangfire'da `data-destruction-digest` Failed görünür. Bu boşluk için canlı veritabanı gerekir. Avukata: bu boşluk ve elle yeniden uygulama prosedürü yeterli mi.
 18. **[S4] açıklama maskesinin metni** (Görev 4; metin işi / **avukat**): kod açıklamada *tanınabilir biçimde yazılmış* TR IBAN'ı ve 11 haneli numarayı maskeler, her yazımı değil. Bilinçli olarak düz kalanlar: kontrol hanesi tutmayan (yanlış yazılmış) IBAN; TR dışı IBAN; `-`, `.` ya da birden çok boşlukla bölünmüş IBAN; boşluk, nokta ya da tireyle bölünmüş 11 hane; daha uzun bir rakam dizisinin içindeki 11 hane; `+90…` ile (12 hane) ya da boşluklu yazılmış telefon; harfe bitişik ama kontrol hanesi tutmayan 11 hane (yanlış yazılmış TCKN, kullanıcı adındaki "0" ile başlayan telefon). Metindeki mutlak "kayda alınırken maskelenir" cümlesi Ö-16'nın "metin mutlak güvence veriyor, kod tutmuyor" sorununu küçük ölçekte tekrarlar. Öneri: "Açıklamada tanınabilir biçimde yazılmış TR IBAN'ları ve 11 haneli kimlik numaraları kayda alınırken maskelenir" gibi niteleyici bir ifade; ya da bu sınırlar avukat paketinde listelensin. Kod değişmez; karar metinde.
 19. **Ham kaydın kopyasında "işlem açıklaması" (`IslemAciklama`)** (Görev 5; metin işi / **avukat**): kod kopyada **yedi** alan tutar (açıklama, işlem açıklaması, gönderen adı, gönderen banka, işlem kodu, referans, makbuz no); notun v2 metni (§4.3 [S3]), §3 Ö-2 öneri 2 ve avukat paketi **altı** sayıyor, işlem açıklaması eksik. Metin bu hâliyle onaylanırsa saklanan kopyayı eksik anlatır (Ö-16). Plan alanı **tutar**: açıklama sütunu `Aciklama` yoksa `IslemAciklama`'dan okunur (`ObifinClient.cs`: `Str(row, "Aciklama") ?? Str(row, "IslemAciklama")`), yani teknik arıza incelemesinde sütunun kaynağı odur; alan `Aciklama` ile aynı maskeden geçer. Metin işinde "işlem açıklaması" eklenecek yerler: notun §4.3 [S3] satırı ve §3 Ö-2 öneri 2; avukat paketinde `01-veri-isleme-sozlesmesi-yayinci.md` (teknik önlemler madde c ve saklama tablosunun "kaydın kopyası" satırı), `05-imha-proseduru.md` (süre tablosunun "kaydın kopyası" satırı), `09-karar-kaydi.md` K3 ("altı alan" → yedi); metin yayımlanınca politikanın iki kopyası (`Pages/Public/_GizlilikPolitikasi.cshtml`, `web/app/(tr)/gizlilik-politikasi/page.tsx`). Alternatif (alanı atmak): `BankRawJsonRedactor.AllowedFields` ve `DescriptionFields`'tan birer kelime + `BankRawJsonRedactorTests.PolicyFieldList`; o zaman açıklaması `IslemAciklama`'dan gelen satırda kopya sütunun kaynağını göstermez. Liste `BankRawJsonRedactorTests.PolicyFieldList`'te metin olarak sabit: kod ya da metin değişirse öbürü de değişir.
 20. **[S5] ilk çekimin metni** (Görev 7; metin işi / **avukat**): kod ilk çekimi bağlantı gününün **iki takvim günü öncesinin başından** başlatır. Çapa, bağlantının ilk çekim turunun TR günü − `InitialGraceDays` (2). Tur çapayı Obifin'e gitmeden kaydeder; tur yarıda kalsa ya da hiç kayıt yapmadan düşse de (geçici hata, Obifin reddi) çapa kalır, sonraki turlar aynı çapadan sürer, kimlik değişene kadar değişmez. İlk tur doğrulanmış bağlantıda en geç 5 dakika içinde koşar (çekim işi gecikirse çapa yalnız daha ileri düşer), yani bağlantı anından en çok yaklaşık üç gün geriye gidilir. Hiçbir turda çapadan eski gün Obifin'den istenmez; Obifin istenen aralığın dışından hareket döndürse de çapadan eskisi yazılmaz. Notun [S5] seçenekleri kodla uyuşmaz. "Son 30 günün" kodu yanlış anlatır. "Bağlantının kurulduğu andan itibaren" ise kodun tutmadığı mutlak bir güvence verir: Ö-16'nın "metin mutlak güvence veriyor, kod tutmuyor" sorunu küçük ölçekte yeniden doğar. Kodla birebir uyan ifade: "bağlantı ilk kurulduğunda, kurulduğu günden en çok iki gün öncesine kadar uzanan hareketler bir kez alınır; daha eski hareketler alınmaz." Metin işinde değişecek yerler: notun §4.3 metnindeki "son {30} günün hareketleri bir kez alınır [S5]" cümlesi ve §4.3 tablosunun [S5] satırı; avukat paketinde `09-karar-kaydi.md` K6, şöyle doldurulur: "İlk bağlantıda geçmişe dönük çekim 90 günden bağlantı gününün iki gün öncesine iner; …". Metin yayımlanınca politikanın iki kopyası da değişir (`Pages/Public/_GizlilikPolitikasi.cshtml` ve `web/app/(tr)/gizlilik-politikasi/page.tsx`; ikisi bugün "son 90 günün" diyor). Karar 2'deki "Alternatif 30 gün" avukata bu ifadeyle yan yana sunulur. 30 gün seçilirse `InitialGraceDays` ile onu aday penceresine bağlayan test (`Ilk_cekim_payi_dekont_aday_penceresine_esit`) değişir; metin de "son 30 günün" olur. Mevcut bağlantılarda (Görev 8) çapa = ilk çekimin günü − 2. Çapadan eski kararsız satırlar çapası olan her bağlantıda silinir (P0 anında yarıda kalmış eski ilk çekim dahil). Çapadan eski olup bir karara, IBAN öğrenmesine ya da gap'e bağlı satırlar kalır ve 180 günlük kuralla silinir (Görev 10); K6'nın ikinci yarısı bunu anlatır. **Sıra:** Görev 7 kodu metinden önce ya da metinle aynı anda canlıya çıkar. [S5] cümlesi (politikanın iki kopyası) ancak P0 deploy'u ve `bank-data-cleanup --apply` bittikten sonra yayımlanır. Kod önce çıkarsa metin bir süre fazlasını ("son 90 gün") anlatır: işleme metinden dardır, ihlal değildir. Ters sıra (önce metin) Ö-16'nın kalıbını kurardı: 90 günlük kod çalışırken ve eski satırlar silinmeden metin mutlak bir güvence vermiş olurdu. Kod değişmez; karar metinde.
@@ -175,14 +175,14 @@
 
 **P1 deploy'undan sonra (Görev 9–25):**
 3. **Hemen** admin/obifin → hesaplar → EMAR hesaplarını "Onayla" (Görev 12; onaylanmayan hesabın hareketi kaydedilmez ve sonra gelmez). Onay ayrıca "Kaldır ve sil"in hangi Obifin bağlantısının bu lisansa ait olduğunu bilmesini sağlar.
-4. `Admin__AlertEmail` `.env`'de dolu mu bak (saklama ve hizmet sonu işlerinin uyarı adresi).
+4. `Admin__AlertEmail` `.env`'de dolu mu bak (saklama, hizmet sonu ve denetim budaması işlerinin uyarı adresi; imha özeti boş adreste her saat Failed olur ve hiçbir şey göndermez).
 5. Karar 5'e göre: `bank-data-cleanup` (kuru) → maskeli kaynaklı özet ve kısa maske sayısı; gerekirse `--apply`; Faz 2'den önce `--reset-iban-memory --apply`. Sınır: sıfırlama yalnız `CustomerIbanMemories`'i siler; hareketlerdeki özetler 180 güne kadar kalır (IBAN ile erişim/silme talebi onlarla bulunur, Görev 17) ve P1 öncesinde çekilmiş hareketlerden hafıza yeniden öğrenilmez (`CounterpartyIbanHashValid`). Tutanak kalıbı P0'dakiyle aynı; P1'den sonra komut `DataDestructionRecords`'a da yazar. Saklama işi ya da bir silme sürerken koşturma (1. madde).
 6. Yedek betikleri CI ile **kopyalanmaz** (CI yalnız `rollback-license-server.sh`'ı kopyalıyor): HashKey'in Bitwarden'da olduğunu doğruladıktan sonra `deploy/scripts/backup-sql-to-r2.sh` ve `backup-env-to-r2.sh`'ı `/opt/orderdeck/scripts/`'e kopyala, birer kez elle çalıştırıp günlüğe bak (Görev 23).
 7. R2'de `sql-bak/` için yaşam döngüsü kuralı (32 gün) ve tarihsiz eski nesne kontrolü (not Ö-12).
 8. Yayıncıların veri sorumlusu bilgileri (Görev 21–22) ancak metin işinin (form paragrafı v2 ve yeni `KvkkNotice.TextVersion`) yayımlanmasından SONRA girilir: form bloğu metin sürümünün özetinin dışında, bilgi girilene kadar çizilmez.
-9. İlk saat başı +13'ten sonra `Admin__AlertEmail` kutusuna "[OrderDeck] İmha kaydı özeti" düştüğünü gör (Görev 9; ilk özet büyük olasılıkla 04:57 saklama koşusundan sonraki saatte). Bu e-postalar **silinmez**: yedekten geri yüklemeden sonra silmeler bunlardan yeniden uygulanır. Posta kutusunda bunlar için bir etiket/klasör ve "silme" kuralı dışı tutma ayarla.
+9. İlk saat başı +13'ten sonra `Admin__AlertEmail` kutusuna "[OrderDeck] İmha kaydı özeti" düştüğünü gör (Görev 9; ilk özet büyük olasılıkla 03:30 `audit-retention` koşusundan sonraki saatte — her başarılı `audit-retention` ve `bank-data-retention` koşusu silecek satır olmasa da bir `run-completed` satırı bırakır, yani özet her gün gelir). Bu e-postalar **silinmez**: yedekten geri yüklemeden sonra silmeler bunlardan yeniden uygulanır. Posta kutusunda bunlar için bir etiket/klasör ve "silme" kuralı dışı tutma ayarla. Haftalık "son başarılı çalışma" kontrolü (iç imha prosedürü §4.3): son günlerin özetlerinde `bank-data-retention`, `audit-retention` (ve Görev 14'ten sonra `bank-service-end-purge`) `run-completed` satırı var mı; yoksa Hangfire panosuna bak. Hangfire'da `data-destruction-digest` Failed ise e-posta gitmiyor demektir: kayıtlar tabloda bekler, SMTP/adres düzelince sonraki koşu (ya da "Trigger now") hepsini gönderir.
 
-**Yedekten geri yükleme yapılırsa (her zaman):** `deploy/README.md` → "Geri yükleme" → "Silmeleri yeniden uygula" (Görev 23). Kısaca: yedek anını not et → `bank-data-retention`, `security-data-retention`, `audit-retention`'ı elle tetikle → yedek anından sonraki "İmha kaydı özeti" e-postalarındaki olay kaynaklı silmeleri tetikleyicisine göre yeniden uygula → yedek anı ile felaket arasındaki en çok bir saatlik boşluk için canlı veritabanına hâlâ erişiliyorsa `DataDestructionRecords`'u (OccurredAt > yedek anı) dışa al.
+**Yedekten geri yükleme yapılırsa (her zaman):** `deploy/README.md` → "Geri yükleme" → "Silmeleri yeniden uygula" (Görev 23). Kısaca: yedek anını not et → `bank-data-retention`, `security-data-retention`, `audit-retention`'ı elle tetikle → yedek anından sonraki "İmha kaydı özeti" e-postalarındaki olay kaynaklı silmeleri tetikleyicisine göre yeniden uygula → son başarılı özetten sonraki kayıtlar (olağan durumda en çok ~1 saat 13 dk; özet işi düşmüşse daha fazla) için canlı veritabanına hâlâ erişiliyorsa `DataDestructionRecords`'u (`DigestedAt IS NULL` ya da OccurredAt > yedek anı) dışa al.
 
 ---
 
@@ -2415,6 +2415,15 @@ Soruyla birlikte Burak'a şunu da söyle: P0 tek başına çıkarsa lisans biti�
 4. **Veritabanı dışında kopya (Ö-12):** imha kayıtları aynı veritabanında durduğu için yedekten geri yükleme onları da yedek anına sarar; tablo tek başına geri yüklemeden sonra silmeleri yeniden uygulamanın dayanağı OLAMAZ. Saatlik `DataDestructionDigestJob` bir önceki tam saatin kayıtlarını (kişisel veri yok) yöneticiye CSV metni olarak e-postalar; geri yükleme prosedürü (Görev 23, `deploy/README.md` "Geri yükleme") bu e-postalardan yürür. Bir saatlik boşluk kalabilir; prosedür onu da anlatır.
 5. Talep silmesinin (Görev 17) yeniden uygulanması IBAN'ı ister ama talep kapanınca özet boşalır: prosedür başvurunun aslına (yazılı başvuru ya da e-postası) dayanır; imha kaydı yalnız talep kimliğini taşır.
 
+**İnceleme sonrası (20.10; aşağıdaki adımların kodu bu maddelerle değişti, güncel hâli dalda):**
+1. **Özet durum tutar.** Pencereli özet SMTP hatasını yutuyor (iş Succeeded, o saat bir daha gitmiyor), `:13`'teki DB hatasında pencereyi kaybediyor, saatlerce süren kesintiden sonra yalnız son saati gönderiyordu; `RunForWindowEndingAsync`'i çağıran bir yol da yoktu. Artık `DataDestructionRecords.DigestedAt` (göç yeniden üretildi: `*_DataDestructionRecords`, süzgeçli dizin `IX_DataDestructionRecords_Undigested`) yalnız e-posta gidince yazılır; her koşu UTC saat başından önceki BÜTÜN gönderilmemiş kayıtları zaman sırasıyla, en çok `MaxRowsPerEmail` (1000) satırlık e-postalarla gönderir. Gönderim `BankJobAlerts.SendOrThrowAsync` ile: SMTP hatası ya da boş `Admin:AlertEmail` işi Failed yapar, işaret yazılmaz, sonraki saat telafi eder. `RunForWindowEndingAsync` kalktı (elle telafi: Hangfire'da `data-destruction-digest` → "Trigger now"). Saat `TimeProvider`'dan (testte UTC+3 yerel dilimle). E-posta gidip işaret yazılamazsa ya da geri yüklemeden sonra yedekte gönderilmemiş kayıtlar yeniden gider: çift satır zararsız, yeniden uygulama idempotent.
+2. **Lisans başına kayıt.** Saklama işi ve `--license` verilmeden koşan `bank-data-cleanup` partileri lisansları karıştırıp `LicenseId=null` yazıyordu; yayıncı kendi verisinin imha kanıtını isteyince (VİS md. 10 denetim ve bilgi verme) cevap verilemezdi. Her parti satırın lisansına göre gruplanır, lisans başına bir kayıt (aynı SaveChanges).
+3. **Denetim budaması ve koşu kaydı.** `audit-retention` kişisel veri taşıyan denetim satırlarını siliyor ama kayıt bırakmıyor, düşünce uyarmıyordu: artık her parti `AuditLogs` imha kaydını ExecuteDelete ile AYNI açık işlemde yazar, düşerse `AuditRetentionJobs.FailureSubject` e-postası gider. `bank-data-retention` ve `audit-retention` her başarılı koşuda, silecek satır olmasa da, `run-completed` kaydı (satır 0, `DataDestruction.RecordRun`) bırakır: iç imha prosedürünün "her çalışma kayıt bırakır" ve haftalık "son başarılı çalışma" kontrolü tablodan ve dış kopyadan okunur. İşin hiç koşmaması (kilit zaman aşımı, Hangfire durması) ayrıca uyarı üretmez; onu bu haftalık kontrol yakalar.
+4. **Yapan = kimlik.** Yönetici eyleminde `Actor`'e kullanıcı adı değil yöneticinin `sub`'ı yazılır: `DataDestruction.ActorOf(User)` (tablo budanmaz; adı aynı işlemin 24 aylık denetim satırında).
+5. **Yayıncı silmesi `PushDevices`'ı da siler** (cihaz kimliği + FCM/APNS jetonu; müşteri satırı kaldığı için FK cascade'i tetiklenmiyordu) ve kayda geçirir.
+
+**Sonraki görevler için kural:** birden çok lisansa dokunan bir parti imha kaydını satırın lisansı başına yazar (Görev 10'un kodu buna göre güncellendi); yönetici eyleminin `actor`'ü `DataDestruction.ActorOf(User)` (Görev 13 "Kaldır ve sil", Görev 17 "Sil ve kapat"); günlük imha işi başarılı koşu sonunda `DataDestruction.RecordRun` yazar (Görev 10, 14).
+
 **Files:**
 - Create: `OrderDeck.LicenseServer/Domain/DataDestructionRecord.cs`
 - Create: `OrderDeck.LicenseServer/Services/Privacy/DataDestruction.cs`, `OrderDeck.LicenseServer/Services/Privacy/DataDestructionDigestJob.cs`
@@ -3486,22 +3495,48 @@ public sealed class BankDataRetentionJobTests
     }
 
     [Fact]
-    public async Task Her_imha_partisi_kisisel_veri_icermeyen_kalici_kayit_yazar()
+    public async Task Her_imha_partisi_kisisel_veri_icermeyen_kalici_kaydi_lisans_basina_yazar()
     {
+        // Görev 9 incelemesi: yayıncı kendi verisinin imha kanıtını isteyebilir — lisansları karıştıran parti satırın lisansı
+        // başına ayrı kayıt yazar, LicenseId null kalmaz.
         using var db = NewDb();
-        var old = Row(200);
-        db.BankTransactions.AddRange(old, Row(100), Row(100));
+        var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        BankTransaction For(Guid lic, int ageDays) { var t = Row(ageDays); t.LicenseId = lic; return t; }
+        var old = For(a, 200);
+        db.BankTransactions.AddRange(old, For(a, 100), For(a, 100), For(b, 100));
         db.PaymentMatches.Add(MatchFor(old, linked: true));
         await db.SaveChangesAsync();
 
         await Job(db).RunAsync(CancellationToken.None);
 
-        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
-        records.Should().OnlyContain(r => r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor);
-        records.Should().Contain(r => r.Target == "BankTransactions" && r.Action == DataDestruction.Actions.Deleted && r.RowCount == 1);
-        records.Should().Contain(r => r.Target == "PaymentMatches" && r.Action == DataDestruction.Actions.Deleted && r.RowCount == 1);
-        records.Should().Contain(r => r.Target == "BankTransactions.RawJson" && r.RowCount == 2);
-        records.Should().Contain(r => r.Target == "BankTransactions.Description+CounterpartyName" && r.RowCount == 2);
+        var records = await db.DataDestructionRecords.AsNoTracking()
+            .Where(r => r.Action != DataDestruction.Actions.RunCompleted).ToListAsync();
+        records.Should().OnlyContain(r => r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
+            && r.LicenseId != null);
+        records.Should().Contain(r => r.Target == "BankTransactions" && r.Action == DataDestruction.Actions.Deleted && r.RowCount == 1
+            && r.LicenseId == a);
+        records.Should().Contain(r => r.Target == "PaymentMatches" && r.Action == DataDestruction.Actions.Deleted && r.RowCount == 1
+            && r.LicenseId == a);
+        records.Where(r => r.Target == "BankTransactions.RawJson").Select(r => (r.LicenseId, r.RowCount))
+            .Should().BeEquivalentTo(new[] { ((Guid?)a, 2), ((Guid?)b, 1) });
+        records.Where(r => r.Target == "BankTransactions.Description+CounterpartyName").Select(r => (r.LicenseId, r.RowCount))
+            .Should().BeEquivalentTo(new[] { ((Guid?)a, 2), ((Guid?)b, 1) });
+    }
+
+    [Fact]
+    public async Task Silinecek_satir_olmayan_kosu_da_kosu_kaydi_birakir()
+    {
+        // İç imha prosedürü §4.2-3: her çalışma kayıt bırakır, "son başarılı çalışma" tablodan (ve dış kopyadan) okunur.
+        using var db = NewDb();
+        db.BankTransactions.Add(Row(1));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should().ContainSingle()
+            .Which.Should().Match<OrderDeck.LicenseServer.Domain.DataDestructionRecord>(r =>
+                r.Action == DataDestruction.Actions.RunCompleted && r.Target == BankDataRetentionJob.JobId && r.RowCount == 0
+                && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor && r.LicenseId == null);
     }
 
     [Fact]
@@ -3518,7 +3553,9 @@ public sealed class BankDataRetentionJobTests
         var r = await Job(db).RunAsync(CancellationToken.None);
 
         r.RawPurged.Should().Be(total); r.UnmatchedDescriptionsPurged.Should().Be(total);
-        counter.ModifiedPerSave.Should().NotBeEmpty().And.OnlyContain(n => n > 0 && n <= BankDataRetentionJob.BatchSize);
+        counter.ModifiedPerSave.Should().HaveCountGreaterThan(1);
+        counter.ModifiedPerSave.SkipLast(1).Should().OnlyContain(n => n > 0 && n <= BankDataRetentionJob.BatchSize);
+        counter.ModifiedPerSave[^1].Should().Be(0, "son kayıt yalnız koşu kaydını ekler");
         db.ChangeTracker.Entries().Should().BeEmpty("partiler arasında ve sonda izleyici boşaltılır");
         (await db.BankTransactions.CountAsync(t => t.RawJson != null || t.Description != null || t.CounterpartyName != null))
             .Should().Be(0);
@@ -3540,6 +3577,9 @@ public sealed class BankDataRetentionJobTests
         var sent = email.Sent.Should().ContainSingle().Subject;
         sent.Subject.Should().Be(BankDataRetentionJob.FailureSubject);
         sent.PlainBody.Should().Contain(nameof(DbUpdateException));
+        failing.Armed = false;
+        (await db.DataDestructionRecords.AsNoTracking().CountAsync(r => r.Action == DataDestruction.Actions.RunCompleted))
+            .Should().Be(0, "düşen koşu başarılı koşu kaydı bırakmaz");
     }
 }
 ```
@@ -3656,7 +3696,8 @@ public sealed record BankRetentionResult(int RawPurged, int UnmatchedDescription
 /// <item>IBAN–müşteri bağı: <see cref="CustomerIbanMemory.LastConfirmedAt"/>'ten (yoksa oluşturmadan)
 /// <see cref="BankOptions.IbanMemoryRetentionMonths"/> ay.</item>
 /// </list>
-/// Her imha partisi kişisel veri içermeyen kalıcı kaydını (<see cref="DataDestruction"/>) AYNI SaveChanges'te yazar. İş düşerse
+/// Her imha partisi kişisel veri içermeyen kalıcı kaydını (<see cref="DataDestruction"/>) satırın lisansı başına, AYNI
+/// SaveChanges'te yazar; başarılı koşu sonda bir koşu kaydı (<see cref="DataDestruction.RecordRun"/>) bırakır. İş düşerse
 /// yöneticiye e-posta gider (<see cref="BankJobAlerts"/>) ve istisna Hangfire'a çıkar. Partiler <see cref="BatchSize"/>'lık;
 /// InMemory ExecuteUpdate/Delete desteklemediği için izlenen parti kalıbı. <c>PaymentMatch.UpdatedAt</c> eşzamanlılık
 /// jetonudur: arada yazılmış eşleşmenin silinmesi düşer, iş ertesi gün yeniden dener.
@@ -3668,6 +3709,7 @@ public sealed class BankDataRetentionJob
     /// <summary>Tek SaveChanges'te en fazla bu kadar satır; partiler arasında izleyici boşaltılır.</summary>
     public const int BatchSize = 500;
 
+    public const string JobId = "bank-data-retention";
     public const string FailureSubject = "[OrderDeck] Banka veri saklama işi düştü";
 
     private readonly LicenseDbContext _db;
@@ -3708,13 +3750,13 @@ public sealed class BankDataRetentionJob
         // 1. Önce süresi dolan hareketlerin tamamı: aşağıdaki boşaltmalar onlar için boşuna koşmasın.
         var (transactions, matches) = await DeleteExpiredTransactionsAsync(transactionCutoff, fetchFloor, ct);
         var gaps = await DeleteInBatchesAsync(
-            _db.PaymentMatchGaps.Where(g => g.CreatedAt < transactionCutoff).OrderBy(g => g.Id),
+            _db.PaymentMatchGaps.Where(g => g.CreatedAt < transactionCutoff).OrderBy(g => g.Id), g => g.LicenseId,
             "PaymentMatchGaps", $"CreatedAt+{_opt.TransactionRetentionDays}g", ct);
 
         // 2. Ham kayıt.
         var raw = await PurgeInBatchesAsync(
             _db.BankTransactions.Where(t => t.RawJson != null && t.OccurredAt < rawCutoff && t.FetchedAt < fetchFloor)
-                .OrderBy(t => t.Id),
+                .OrderBy(t => t.Id), t => t.LicenseId,
             t => t.RawJson = null, "BankTransactions.RawJson", $"OccurredAt+{_opt.RawJsonRetentionDays}g", ct);
 
         // 3. Eşleşmeyen havalenin açıklaması ve gönderen adı.
@@ -3723,7 +3765,7 @@ public sealed class BankDataRetentionJob
         var unmatched = await PurgeInBatchesAsync(
             _db.BankTransactions.Where(t => t.DescriptionPurgedAt == null && t.OccurredAt < unmatchedCutoff
                     && t.FetchedAt < fetchFloor && !linked.Contains(t.Id))
-                .OrderBy(t => t.Id),
+                .OrderBy(t => t.Id), t => t.LicenseId,
             t => { t.Description = null; t.CounterpartyName = null; t.DescriptionPurgedAt = now; },
             "BankTransactions.Description+CounterpartyName", $"OccurredAt+{_opt.UnmatchedDescriptionRetentionDays}g;eşleşmeyen", ct);
 
@@ -3731,21 +3773,27 @@ public sealed class BankDataRetentionJob
         var evidence = await PurgeInBatchesAsync(
             _db.PaymentMatches.Where(m => m.Evidence != null
                     && _db.BankTransactions.Any(t => t.Id == m.BankTransactionId && t.DescriptionPurgedAt != null))
-                .OrderBy(m => m.Id),
+                .OrderBy(m => m.Id), m => m.LicenseId,
             m => { m.Evidence = null; m.UpdatedAt = now; }, "PaymentMatches.Evidence", "hareketin açıklamasıyla", ct);
 
         // 5. IBAN–müşteri bağı.
         var memories = await DeleteInBatchesAsync(
             _db.CustomerIbanMemories.Where(m => (m.LastConfirmedAt ?? m.CreatedAt) < memoryCutoff).OrderBy(m => m.Id),
-            "CustomerIbanMemories", $"LastConfirmedAt+{_opt.IbanMemoryRetentionMonths}ay", ct);
+            m => m.LicenseId, "CustomerIbanMemories", $"LastConfirmedAt+{_opt.IbanMemoryRetentionMonths}ay", ct);
 
         var result = new BankRetentionResult(raw, unmatched, evidence, transactions, matches, gaps, memories);
         if (raw + unmatched + evidence + transactions + matches + gaps + memories > 0)
             _log.LogInformation("Banka veri saklama: {Result}", result);
+        // Başarılı koşunun kaydı, silecek satır olmasa da (Görev 9 incelemesi; iç imha prosedürü §4.2-3).
+        DataDestruction.RecordRun(_db, JobId, $"işlem tarihi+{_opt.TransactionRetentionDays}g; ham, eşleşmeyen " +
+            $"+{_opt.RawJsonRetentionDays}g; IBAN bağı +{_opt.IbanMemoryRetentionMonths}ay");
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
         return result;
     }
 
-    /// <summary>Süresi dolan hareketleri eşleşme satırlarıyla birlikte siler; her parti iki imha kaydı yazar.</summary>
+    /// <summary>Süresi dolan hareketleri eşleşme satırlarıyla birlikte siler; her parti imha kaydını satırın lisansı başına
+    /// yazar.</summary>
     private async Task<(int Transactions, int Matches)> DeleteExpiredTransactionsAsync(DateTimeOffset cutoff,
         DateTimeOffset fetchFloor, CancellationToken ct)
     {
@@ -3760,10 +3808,8 @@ public sealed class BankDataRetentionJob
             _db.PaymentMatches.RemoveRange(rows);
             _db.BankTransactions.RemoveRange(batch);
             var criterion = $"OccurredAt+{_opt.TransactionRetentionDays}g";
-            DataDestruction.Record(_db, null, "BankTransactions", DataDestruction.Actions.Deleted, batch.Count, criterion,
-                DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
-            DataDestruction.Record(_db, null, "PaymentMatches", DataDestruction.Actions.Deleted, rows.Count, criterion,
-                DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+            RecordPerLicense(batch.Select(t => t.LicenseId), "BankTransactions", DataDestruction.Actions.Deleted, criterion);
+            RecordPerLicense(rows.Select(m => m.LicenseId), "PaymentMatches", DataDestruction.Actions.Deleted, criterion);
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             transactions += batch.Count;
@@ -3773,9 +3819,18 @@ public sealed class BankDataRetentionJob
         return (transactions, matches);
     }
 
+    /// <summary>Partinin imha kaydı satırın lisansı başına (Görev 9 incelemesi: yayıncı kendi verisinin imha kanıtını
+    /// isteyebilir). İzleyiciye ekler; partinin SaveChanges'i yazar.</summary>
+    private void RecordPerLicense(IEnumerable<Guid> rowLicenses, string target, string action, string criterion)
+    {
+        foreach (var license in rowLicenses.GroupBy(l => l))
+            DataDestruction.Record(_db, license.Key, target, action, license.Count(), criterion,
+                DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+    }
+
     /// <summary>Sıralı sorgunun seçtiği satırları partiler hâlinde siler; silinen satır sorgudan düşer.</summary>
-    private async Task<int> DeleteInBatchesAsync<T>(IQueryable<T> expired, string target, string criterion, CancellationToken ct)
-        where T : class
+    private async Task<int> DeleteInBatchesAsync<T>(IQueryable<T> expired, Func<T, Guid> licenseOf, string target,
+        string criterion, CancellationToken ct) where T : class
     {
         var total = 0;
         while (true)
@@ -3783,8 +3838,7 @@ public sealed class BankDataRetentionJob
             var batch = await expired.Take(BatchSize).ToListAsync(ct);
             if (batch.Count == 0) return total;
             _db.RemoveRange(batch);
-            DataDestruction.Record(_db, null, target, DataDestruction.Actions.Deleted, batch.Count, criterion,
-                DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+            RecordPerLicense(batch.Select(licenseOf), target, DataDestruction.Actions.Deleted, criterion);
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             total += batch.Count;
@@ -3794,8 +3848,8 @@ public sealed class BankDataRetentionJob
 
     /// <summary>Sorgunun seçtiği satırları boşaltır. Sorgu, boşaltılan satırı artık seçmeyecek biçimde yazılmalı (boşaltılan
     /// alan filtrenin içinde): her parti baştan sorgulanır.</summary>
-    private async Task<int> PurgeInBatchesAsync<T>(IQueryable<T> expired, Action<T> purge, string target, string criterion,
-        CancellationToken ct) where T : class
+    private async Task<int> PurgeInBatchesAsync<T>(IQueryable<T> expired, Func<T, Guid> licenseOf, Action<T> purge,
+        string target, string criterion, CancellationToken ct) where T : class
     {
         var total = 0;
         while (true)
@@ -3803,8 +3857,7 @@ public sealed class BankDataRetentionJob
             var batch = await expired.Take(BatchSize).ToListAsync(ct);
             if (batch.Count == 0) return total;
             foreach (var row in batch) purge(row);
-            DataDestruction.Record(_db, null, target, DataDestruction.Actions.Nulled, batch.Count, criterion,
-                DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+            RecordPerLicense(batch.Select(licenseOf), target, DataDestruction.Actions.Nulled, criterion);
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             total += batch.Count;
@@ -4409,8 +4462,10 @@ Sınıfın sonuna:
             _db.CustomerIbanMemories.RemoveRange(memories);
             if (apply)
             {
-                RecordBatch(license, "BankTransactions.CounterpartyIbanHash", Nulled, txs.Count, "maskeli kaynaklı özet (Ö-7)");
-                RecordBatch(license, "CustomerIbanMemories", Deleted, memories.Count, "maskeli kaynaklı özet (Ö-7)");
+                // RecordBatch satırın lisansı başına yazar (Görev 9 incelemesi).
+                RecordBatch(txs.Select(t => t.LicenseId), "BankTransactions.CounterpartyIbanHash", Nulled,
+                    "maskeli kaynaklı özet (Ö-7)");
+                RecordBatch(memories.Select(m => m.LicenseId), "CustomerIbanMemories", Deleted, "maskeli kaynaklı özet (Ö-7)");
                 await _db.SaveChangesAsync(ct);
             }
             _db.ChangeTracker.Clear();
@@ -4434,7 +4489,7 @@ Sınıfın sonuna:
             var batch = await memories.OrderBy(m => m.Id).Take(BatchSize).ToListAsync(ct);
             if (batch.Count == 0) break;
             _db.CustomerIbanMemories.RemoveRange(batch);
-            RecordBatch(licenseId, "CustomerIbanMemories", Deleted, batch.Count, "IBAN hafızası sıfırlama (Ö-7, karar 5)");
+            RecordBatch(batch.Select(m => m.LicenseId), "CustomerIbanMemories", Deleted, "IBAN hafızası sıfırlama (Ö-7, karar 5)");
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             r.IbanMemoriesReset += batch.Count;
@@ -5690,8 +5745,9 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove,` ekle.
         BankRemovalResult r;
         try
         {
-            r = await _terminator.RemoveAndDeleteAsync(LicenseId, DataDestruction.Triggers.AdminRemove, AdminName(),
-                CancellationToken.None);
+            // Yapan: yöneticinin kimliği, kullanıcı adı değil — imha kaydı budanmaz (Görev 9 incelemesi).
+            r = await _terminator.RemoveAndDeleteAsync(LicenseId, DataDestruction.Triggers.AdminRemove,
+                DataDestruction.ActorOf(User), CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -5713,7 +5769,7 @@ ve `DestructionEvents` kümesine `ObifinConnectionRemove,` ekle.
     }
 ```
 
-(`AdminName()` Görev 12'de eklendi.)
+(`AdminName()` Görev 12'de eklendi; imha kaydına giden `actor` için KULLANILMAZ, Görev 9 incelemesi.)
 
 `Index.cshtml` — `@if (Model.UnapprovedAccounts > 0) { … }` bloğunun (Görev 12) ALTINA:
 
@@ -6265,6 +6321,9 @@ public sealed class BankServiceEndPurgeJob
                 "silindiğine dair YAZILI teyit isteyin (Obifin API'sinde hareket silme ucu yok).", CancellationToken.None);
         if (failures.Count > 0)
             throw new AggregateException($"Hizmet sonu banka silmesi {failures.Count} lisansta düştü.", failures);
+        // Başarılı koşunun kaydı, silinecek lisans olmasa da (Görev 9 incelemesi; iç imha prosedürü §4.2-3).
+        DataDestruction.RecordRun(_db, JobId, "durdurma+30g");
+        await _db.SaveChangesAsync(ct);
         return deleted;
     }
 }
@@ -6936,20 +6995,24 @@ Expected: FAIL — `AuditUsernamesRewritten` yok.
         var customers = await _db.PaymentMatches.AsNoTracking()
             .Where(m => txIds.Contains(m.BankTransactionId) && m.ActualWpfCustomerId != null)
             .ToDictionaryAsync(m => m.BankTransactionId, m => m.ActualWpfCustomerId!.Value, ct);
-        var changed = 0;
+        // Değişen satırın lisansı (hareketi); hareketi silinmiş satırınki bilinmez (null). Kayıt lisans başına (Görev 9 incelemesi).
+        var changed = new List<Guid?>();
         foreach (var a in rows)
         {
             var txId = Guid.TryParse(a.TargetId, out var id) ? id : Guid.Empty;
-            if (licenseId is { } l && (!owners.TryGetValue(txId, out var owner) || owner != l)) continue;
+            Guid? rowOwner = owners.TryGetValue(txId, out var owner) ? owner : null;
+            if (licenseId is { } l && rowOwner != l) continue;
             a.Details = customers.TryGetValue(txId, out var customer)
                 ? JsonSerializer.Serialize(new { wpfCustomerId = customer })
                 : null;
-            changed++;
+            changed.Add(rowOwner);
         }
-        r.AuditUsernamesRewritten = changed;
-        if (apply && changed > 0)
+        r.AuditUsernamesRewritten = changed.Count;
+        if (apply && changed.Count > 0)
         {
-            RecordBatch(licenseId, "AuditLogs.Details", Masked, changed, "elle eşleme denetiminde kullanıcı adı (Ö-14)");
+            foreach (var license in changed.GroupBy(x => x))
+                DataDestruction.Record(_db, license.Key, "AuditLogs.Details", Masked, license.Count(),
+                    "elle eşleme denetiminde kullanıcı adı (Ö-14)", DataDestruction.Triggers.Cleanup, DataDestruction.CliActor);
             await _db.SaveChangesAsync(ct);
         }
         _db.ChangeTracker.Clear();
@@ -7865,6 +7928,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.BankaVeriTalepleri;
 
@@ -7995,7 +8059,8 @@ public class IndexModel : PageModel
         BankSubjectRequestService.EraseResult r;
         try
         {
-            r = await _requests.EraseAsync(id, AdminName(), CancellationToken.None);
+            // Yapan: yöneticinin kimliği — imha kaydı budanmaz, kullanıcı adı girmez (Görev 9 incelemesi).
+            r = await _requests.EraseAsync(id, DataDestruction.ActorOf(User), CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -9431,11 +9496,18 @@ veritabanıyla açtıktan sonra, kullanıcılara açmadan önce:
    - `credential-change`: admin/obifin'de o lisansın Obifin kimliğini yeniden kaydedin.
    - `cleanup`: `bank-data-cleanup --apply` (ve yedekten sonra koşulduysa
      `--reset-iban-memory --apply`) yeniden.
-   - `retention`, `service-end`: 2. adım yeterli.
-4. Yedek anı ile felaket arasındaki son saat e-postaya girmemiş olabilir: eski
-   veritabanına hâlâ erişiliyorsa `SELECT * FROM DataDestructionRecords WHERE OccurredAt > '<yedek anı>'`
+   - `retention`, `service-end`: 2. adım yeterli. Eylemi `run-completed` olan satırlar
+     yalnız periyodik işin koştuğunu gösterir, uygulanacak bir şey yoktur.
+   Aynı satır birden çok e-postada görünebilir (gönderilip işaretlenemeyen kayıt, geri
+   yüklemeden sonra yedekte gönderilmemiş kayıt yeniden gider): yeniden uygulama
+   idempotenttir, ikincisi bir şey değiştirmez.
+4. Son başarılı özetten sonraki kayıtlar e-postaya girmemiştir: olağan durumda saat
+   başı +13'te önceki saatler gider, yani en çok ~1 saat 13 dakika; Hangfire'da
+   `data-destruction-digest` Failed görünüyorduysa (SMTP, boş adres) daha fazlası. Eski
+   veritabanına hâlâ erişiliyorsa
+   `SELECT * FROM DataDestructionRecords WHERE DigestedAt IS NULL OR OccurredAt > '<yedek anı>'`
    çıktısını alıp aynı şekilde uygulayın; erişilemiyorsa admin/shoppers/deletion-requests,
-   admin/banka-veri-talepleri ve günlükleri o saat için elle gözden geçirin.
+   admin/banka-veri-talepleri ve günlükleri o aralık için elle gözden geçirin.
 5. Yeniden uygulanan her silme yeni bir imha kaydı yazar; bitince bir tutanak (tarih,
    yedek anı, uygulanan satır sayısı) KVKK klasörüne eklenir.
 ```
@@ -9629,7 +9701,7 @@ git diff --stat origin/master..HEAD
 git diff origin/master..HEAD -- OrderDeck.LicenseServer.Tests | grep -nE "TR[0-9]{24}|[0-9]{11}|Password *= *\"[^\"]+\"" || echo "LITERAL_YOK"
 git diff origin/master..HEAD -- 'OrderDeck.LicenseServer/Data/Migrations/*.cs' | grep -nE "DropColumn|DropTable|RenameColumn|AlterColumn" || echo "DARALTMA_YOK"
 ```
-Expected: plan commit'leri + her görevin commit adımı başına bir commit (Görev 9'da iki; P0 ayrı PR'a alındıysa bu dalda yalnız P1'inkiler) — sayıyı görev listesindeki "Commit" adımlarıyla karşılaştır; `LITERAL_YOK` (eşleşme çıkarsa satıra bak: üretilmiş değer mi, literal mi); `DARALTMA_YOK`. Ayrıca `git grep -n "bankaapi/sil\|RemoveBankConnectionAsync" OrderDeck.LicenseServer` yalnız `BankConnectionTerminator.RemoveFromObifinAsync`'i ve istemciyi göstermeli (Obifin'de kaldırmanın tek yolu).
+Expected: plan commit'leri + her görevin commit adımı başına bir commit (Görev 9'da iki; inceleme düzeltme commit'leri bunlara ek; P0 ayrı PR'a alındıysa bu dalda yalnız P1'inkiler) — sayıyı görev listesindeki "Commit" adımlarıyla karşılaştır; `LITERAL_YOK` (eşleşme çıkarsa satıra bak: üretilmiş değer mi, literal mi); `DARALTMA_YOK`. Ayrıca `git grep -n "bankaapi/sil\|RemoveBankConnectionAsync" OrderDeck.LicenseServer` yalnız `BankConnectionTerminator.RemoveFromObifinAsync`'i ve istemciyi göstermeli (Obifin'de kaldırmanın tek yolu).
 
 - [ ] **Adım 5: Sonuç**
 
