@@ -1242,7 +1242,8 @@ public sealed class ObifinPollJobTests
     [Fact]
     public async Task Kimlik_degisince_silinen_golge_veri_imha_kaydina_yazilir()
     {
-        // KVKK Ö-13: ResetShadowData'nın toplu silmesi de kalıcı kayda geçer (yapan: aynı işlemin denetim satırındaki yönetici).
+        // KVKK Ö-13: ResetShadowData'nın toplu silmesi de kalıcı kayda geçer. Yapan verilmezse "admin"; yönetici sayfası kimliği
+        // geçirir (AdminObifinPageTests.Kimlik_degisiminin_imha_kaydinda_yapan_yoneticinin_kimligidir).
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, _) = Build(db, client, today);
         var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
@@ -1253,6 +1254,6 @@ public sealed class ObifinPollJobTests
 
         (await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == lic).ToListAsync())
             .Should().Contain(r => r.Target == "BankTransactions" && r.RowCount == 1 && r.Action == DataDestruction.Actions.Deleted
-                && r.Trigger == DataDestruction.Triggers.CredentialChange);
+                && r.Trigger == DataDestruction.Triggers.CredentialChange && r.Actor == DataDestruction.AdminActor);
     }
 }

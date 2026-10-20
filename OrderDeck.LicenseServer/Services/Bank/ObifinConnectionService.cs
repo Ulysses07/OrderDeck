@@ -168,15 +168,18 @@ public sealed class ObifinConnectionService
     /// fırlatılır; bu karar tablo başına "var mı" sorgularıyla verilir, satırlar (ham JSON dahil) yüklenmez. Satırlar
     /// yalnız izin varken yüklenir ve silinen, yüklenen kümedir. Silinecek satır yoksa onay gerekmez (imleç yine
     /// sıfırlanır). İki yol da bir anlık görüntüye bakar: denetimden sonra eklenen satırlar için güvence vermez. Yüklenen bir
-    /// eşleşmeye kayıttan önce eşzamanlı yazılırsa silme bir kez yeniden denenir (bkz. <see cref="SaveAsync"/>).</para></summary>
+    /// eşleşmeye kayıttan önce eşzamanlı yazılırsa silme bir kez yeniden denenir (bkz. <see cref="SaveAsync"/>).</para>
+    /// <para><paramref name="actor"/>: gölge veri silmesinin kalıcı imha kaydındaki yapan — yönetici sayfası
+    /// <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın). Boşsa
+    /// <see cref="DataDestruction.AdminActor"/>.</para></summary>
     public async Task<ObifinConnection> UpsertAsync(Guid licenseId, string baseUrl, string userCode,
-        string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false)
-        => (await UpsertWithResultAsync(licenseId, baseUrl, userCode, password, apiKey, ct, allowShadowReset)).Connection;
+        string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false, string? actor = null)
+        => (await UpsertWithResultAsync(licenseId, baseUrl, userCode, password, apiKey, ct, allowShadowReset, actor)).Connection;
 
     /// <summary><see cref="UpsertAsync"/>'in aynısı; gölge verinin silinip silinmediğini de döner (admin sayfasının audit
     /// kaydı ve bildirimi için — karar burada verilir, çağıran yalnız izni taşır).</summary>
     public async Task<ObifinUpsertResult> UpsertWithResultAsync(Guid licenseId, string baseUrl, string userCode,
-        string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false)
+        string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false, string? actor = null)
     {
         userCode = (userCode ?? "").Trim();
         if (userCode.Length == 0) throw new ObifinValidationException("Kullanıcı adı boş olamaz.");
@@ -232,7 +235,7 @@ public sealed class ObifinConnectionService
         conn.UserCode = userCode;
         if (!string.IsNullOrWhiteSpace(password)) conn.PasswordProtected = _passwordProtector.Protect(password);
         if (!string.IsNullOrWhiteSpace(apiKey)) conn.ApiKeyProtected = _apiKeyProtector.Protect(apiKey);
-        if (shadow is not null) ResetShadowData(conn, shadow);
+        if (shadow is not null) ResetShadowData(conn, shadow, string.IsNullOrWhiteSpace(actor) ? DataDestruction.AdminActor : actor);
         conn.Status = conn.Status == ObifinConnectionStatus.Disabled && !credentialChanged
             ? ObifinConnectionStatus.Disabled : ObifinConnectionStatus.Unverified;
         conn.UpdatedAt = now;
@@ -626,7 +629,7 @@ public sealed class ObifinConnectionService
     /// atar, hesap tazeleme Id çakışmasında yanlış bağlantıya bağlardı ve yeni hesapta aynı Id ile eklenen
     /// kayıt tekil index'e (LicenseId, BankaApiId) takılırdı. Obifin'deki eski kayıtlara dokunulmaz: o hesabın
     /// kimliği artık elimizde değil.</para></summary>
-    private void ResetShadowData(ObifinConnection conn, ShadowRows shadow)
+    private void ResetShadowData(ObifinConnection conn, ShadowRows shadow, string actor)
     {
         var licenseId = conn.LicenseId;
         var (matches, transactions, accounts, memories, gaps, bankConnections) = shadow;
@@ -642,7 +645,7 @@ public sealed class ObifinConnectionService
         // çakışmada izleyiciyi boşaltır: kayıt silmeyle birlikte düşer).
         const string criterion = "Obifin kimliği değişti";
         void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
-            count, criterion, DataDestruction.Triggers.CredentialChange, DataDestruction.AdminActor);
+            count, criterion, DataDestruction.Triggers.CredentialChange, actor);
         Record("PaymentMatches", matches.Count);
         Record("BankTransactions", transactions.Count);
         Record("BankAccounts", accounts.Count);

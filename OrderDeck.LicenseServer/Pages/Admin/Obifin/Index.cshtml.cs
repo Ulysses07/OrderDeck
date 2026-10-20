@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.Obifin;
 
@@ -148,8 +149,9 @@ public class IndexModel : PageModel
         }
         try
         {
+            // Gölge veri silinirse imha kaydının yapanı yöneticinin kimliği (KVKK Ö-14; kaydı budanmaz, adı denetim satırında).
             var saved = await Connections.UpsertWithResultAsync(LicenseId, BaseUrl ?? "", UserCode ?? "", Password, ApiKey, ct,
-                allowShadowReset: ConfirmReset);
+                allowShadowReset: ConfirmReset, actor: DataDestruction.ActorOf(User));
             // Kayıt (ve varsa geri dönüşsüz silme) taahhüt edildi: audit istek iptaliyle düşmesin.
             await _audit.LogAsync(AuditEvents.ObifinConnectionSave, AuditTargets.ObifinConnection, LicenseId.ToString(),
                 new { UserCode = UserCode?.Trim(), shadowDataReset = saved.ShadowDataReset }, CancellationToken.None);

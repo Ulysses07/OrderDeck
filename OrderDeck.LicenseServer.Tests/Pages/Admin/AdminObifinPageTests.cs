@@ -13,6 +13,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -875,6 +876,27 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
         (await ConnectionAsync(licenseId)).UserCode.Should().Be(newUser);
         (await ShadowCountsAsync(licenseId)).Should().Be((0, 0, 0));
+    }
+
+    [Fact]
+    public async Task Kimlik_degisiminin_imha_kaydinda_yapan_yoneticinin_kimligidir()
+    {
+        // KVKK Ö-13/Ö-14: imha kaydı budanmaz; kimin yaptığı yalnız 24 ayda budanan obifin.connection.save satırında kalsa 3 yıllık
+        // kayıtta yapan bilinmez olurdu. Yapan: yöneticinin sub kimliği (DataDestruction.ActorOf), kullanıcı adı değil.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+        await SeedShadowDataAsync(licenseId);
+
+        (await SaveAsync(client, licenseId, $"yeni-{Guid.NewGuid():N}@x", confirmReset: true)).StatusCode
+            .Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var adminId = (await db.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == licenseId).ToListAsync())
+            .Should().NotBeEmpty().And.OnlyContain(r => r.Trigger == DataDestruction.Triggers.CredentialChange
+                && r.Actor == adminId.ToString());
     }
 
     [Fact]
