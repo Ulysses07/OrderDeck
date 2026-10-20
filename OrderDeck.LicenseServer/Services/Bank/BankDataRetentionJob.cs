@@ -9,8 +9,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>Spec §5/§7: ham JSON 30 gün (KVKK karar 5), açıklama/gönderen adı 180 gün; tutar, tarih, hash'ler kalır.
 /// Faz 1'de kanıt metni (PaymentMatch.Evidence) de 180 günde boşaltılır. Her boşaltma partisi kişisel veri içermeyen kalıcı
-/// imha kaydını (<see cref="DataDestruction"/>) satırın lisansı başına, aynı işlemde yazar; iş düşerse yöneticiye e-posta gider
-/// (KVKK Ö-13).</summary>
+/// imha kaydını (<see cref="DataDestruction"/>) satırın lisansı başına, aynı işlemde yazar; başarılı koşu sonda bir koşu kaydı
+/// (<see cref="DataDestruction.RecordRun"/>) bırakır; iş düşerse yöneticiye e-posta gider (KVKK Ö-13).</summary>
 [DisableConcurrentExecution(timeoutInSeconds: 600)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
 public sealed class BankDataRetentionJob
@@ -19,6 +19,7 @@ public sealed class BankDataRetentionJob
     /// kesintiden sonraki) on binlerce satırı — ham JSON dahil — tek listede belleğe almasın, tek dev işlem açmasın.</summary>
     public const int BatchSize = 500;
 
+    public const string JobId = "bank-data-retention";
     public const string FailureSubject = "[OrderDeck] Banka veri saklama işi düştü";
 
     private readonly LicenseDbContext _db;
@@ -69,6 +70,11 @@ public sealed class BankDataRetentionJob
         if (raw + desc + evidence > 0)
             _log.LogInformation("Banka veri saklama: {Raw} ham JSON, {Desc} açıklama, {Evidence} kanıt metni boşaltıldı",
                 raw, desc, evidence);
+        // Başarılı koşunun kaydı, silecek satır olmasa da (iç imha prosedürü §4.2-3: son başarılı çalışma buradan okunur).
+        DataDestruction.RecordRun(_db, JobId,
+            $"RawJson FetchedAt+{_opt.RawJsonRetentionDays}g; açıklama, kanıt +{_opt.DescriptionRetentionDays}g");
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
         return (raw, desc);
     }
 

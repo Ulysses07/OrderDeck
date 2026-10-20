@@ -966,7 +966,7 @@ public class Program
             // Audit log retention — prune rows older than the configured window
             // once a day. Cron different from email reminders to spread DB load.
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>(
-                "audit-retention",
+                OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs.JobId,
                 j => j.PruneAsync(CancellationToken.None),
                 "30 3 * * *");  // 03:30 UTC daily
 
@@ -1351,7 +1351,7 @@ public class Program
         // Ham JSON 30 gün, açıklama 180 gün (spec §5, KVKK karar 5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
         // Anahtarsız da kaydolur (bkz. özet): BankHasher istemez, KVKK silmesi durmamalı.
         manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
-            "bank-data-retention",
+            OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob.JobId,
             j => j.RunAsync(CancellationToken.None),
             "57 4 * * *");
 

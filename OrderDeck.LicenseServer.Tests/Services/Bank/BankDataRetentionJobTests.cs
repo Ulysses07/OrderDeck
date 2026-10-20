@@ -148,7 +148,9 @@ public sealed class BankDataRetentionJobTests
         var (raw, desc) = await Job(db).RunAsync(CancellationToken.None);
 
         raw.Should().Be(total); desc.Should().Be(total);
-        counter.ModifiedPerSave.Should().NotBeEmpty().And.OnlyContain(n => n > 0 && n <= BankDataRetentionJob.BatchSize);
+        counter.ModifiedPerSave.Should().HaveCountGreaterThan(1);
+        counter.ModifiedPerSave.SkipLast(1).Should().OnlyContain(n => n > 0 && n <= BankDataRetentionJob.BatchSize);
+        counter.ModifiedPerSave[^1].Should().Be(0, "son kayıt yalnız koşu kaydını ekler");
         db.ChangeTracker.Entries().Should().BeEmpty("partiler arasında ve sonda izleyici boşaltılır");
         (await db.BankTransactions.CountAsync(t => t.RawJson != null || t.Description != null || t.CounterpartyName != null))
             .Should().Be(0);
@@ -170,7 +172,8 @@ public sealed class BankDataRetentionJobTests
 
         await Job(db).RunAsync(CancellationToken.None);
 
-        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        var records = await db.DataDestructionRecords.AsNoTracking()
+            .Where(r => r.Action != DataDestruction.Actions.RunCompleted).ToListAsync();
         records.Should().OnlyContain(r => r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
             && r.LicenseId != null);
         records.Where(r => r.Target == "BankTransactions.RawJson")
@@ -201,5 +204,24 @@ public sealed class BankDataRetentionJobTests
         var sent = email.Sent.Should().ContainSingle().Subject;
         sent.Subject.Should().Be(BankDataRetentionJob.FailureSubject);
         sent.PlainBody.Should().Contain(nameof(DbUpdateException));
+        failing.Armed = false;
+        (await db.DataDestructionRecords.AsNoTracking().CountAsync(r => r.Action == DataDestruction.Actions.RunCompleted))
+            .Should().Be(0, "düşen koşu başarılı koşu kaydı bırakmaz");
+    }
+
+    [Fact]
+    public async Task Silinecek_satir_olmayan_kosu_da_kosu_kaydi_birakir()
+    {
+        // İç imha prosedürü §4.2-3: her çalışma kayıt bırakır, "son başarılı çalışma" tablodan (ve dış kopyadan) okunur.
+        using var db = NewDb();
+        db.BankTransactions.Add(Row(1));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should().ContainSingle()
+            .Which.Should().Match<OrderDeck.LicenseServer.Domain.DataDestructionRecord>(r =>
+                r.Action == DataDestruction.Actions.RunCompleted && r.Target == BankDataRetentionJob.JobId && r.RowCount == 0
+                && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor && r.LicenseId == null);
     }
 }

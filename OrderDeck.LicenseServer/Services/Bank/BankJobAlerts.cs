@@ -6,7 +6,8 @@ using OrderDeck.LicenseServer.Services.Email;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
-/// Banka saklama ve hizmet sonu işlerinin yöneticiye e-postası (KVKK Ö-13; <c>BackupRestoreDrillJob</c> kalıbı, adres
+/// Periyodik imha işlerinin (banka saklama, hizmet sonu, denetim kaydı budaması) ve imha özetinin yöneticiye e-postası (KVKK
+/// Ö-13; <c>BackupRestoreDrillJob</c> kalıbı, adres
 /// <see cref="AlertEmailKey"/>). İki yol:
 /// <list type="bullet">
 /// <item><see cref="SendAsync"/> — uyarı: adres boşsa yalnız günlüğe uyarı, gönderim hatası yutulur ve günlüğe düşer; uyarının

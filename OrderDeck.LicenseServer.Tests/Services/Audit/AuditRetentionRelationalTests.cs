@@ -6,6 +6,8 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -53,12 +55,21 @@ public sealed class AuditRetentionRelationalTests : IAsyncLifetime
         db.AuditLogs.AddRange(kept.Concat(pruned));
         await db.SaveChangesAsync();
 
+        var olderBefore = await db.AuditLogs.CountAsync(a => a.OccurredAt < DateTimeOffset.UtcNow.AddMonths(-24));
+
         // Parti boyutu 2: iki koşulun ikisi de birden çok parti döner.
         await new AuditRetentionJobs(db, Options.Create(new AuditRetentionOptions { BatchSize = 2 }),
-            NullLogger<AuditRetentionJobs>.Instance).PruneAsync(CancellationToken.None);
+            scope.ServiceProvider.GetRequiredService<BankJobAlerts>(), NullLogger<AuditRetentionJobs>.Instance)
+            .PruneAsync(CancellationToken.None);
 
         var seeded = kept.Concat(pruned).Select(a => a.Id).ToList();
         (await db.AuditLogs.AsNoTracking().Where(a => seeded.Contains(a.Id)).Select(a => a.Id).ToListAsync())
             .Should().BeEquivalentTo(kept.Select(a => a.Id));
+        // ExecuteDelete dalında da her parti imha kaydını aynı işlemde yazar (KVKK Ö-13); koşu kaydı sonda.
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Where(r => r.Target == "AuditLogs").Should().OnlyContain(r => r.RowCount > 0 && r.RowCount <= 2);
+        records.Where(r => r.Target == "AuditLogs").Sum(r => r.RowCount)
+            .Should().Be(olderBefore - 2, "budanan her satır kayıtta; 30 aylık iki shopper.purged kalır");
+        records.Should().ContainSingle(r => r.Action == DataDestruction.Actions.RunCompleted && r.Target == AuditRetentionJobs.JobId);
     }
 }

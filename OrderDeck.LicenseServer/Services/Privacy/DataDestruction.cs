@@ -12,6 +12,9 @@ public static class DataDestruction
         public const string Nulled = "nulled";
         /// <summary>Değer daha az tanımlayıcı bir biçimle değiştirildi (maske, beyaz liste, kimliğe çevirme).</summary>
         public const string Masked = "masked";
+        /// <summary>Periyodik imha işi başarıyla bitti (<see cref="RecordRun"/>): silecek satır bulmasa da. Satır sayısı 0; silinen
+        /// satırlar işin kendi kayıtlarında, toplamda iki kez sayılmasın.</summary>
+        public const string RunCompleted = "run-completed";
     }
 
     public static class Triggers
@@ -45,4 +48,14 @@ public static class DataDestruction
             Action = action, RowCount = rowCount, Criterion = criterion, Trigger = trigger, RequestId = requestId, Actor = actor,
         });
     }
+
+    /// <summary>Periyodik imha işinin başarılı koşusunun kaydı (iç imha prosedürü §4.2-3: her çalışma kayıt bırakır, haftalık
+    /// "son başarılı çalışma" kontrolü bu satırlardan ya da veritabanı dışındaki kopyasından yapılır). <paramref name="job"/>
+    /// Hangfire iş kimliği; <paramref name="criterion"/> işin süreleri. İzleyiciye ekler, kaydetmez.</summary>
+    public static void RecordRun(LicenseDbContext db, string job, string criterion)
+        => db.DataDestructionRecords.Add(new DataDestructionRecord
+        {
+            Id = Guid.NewGuid(), OccurredAt = DateTimeOffset.UtcNow, Target = job, Action = Actions.RunCompleted, RowCount = 0,
+            Criterion = criterion, Trigger = Triggers.Retention, Actor = SystemActor,
+        });
 }
