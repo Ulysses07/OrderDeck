@@ -118,6 +118,16 @@ public sealed class PersonBalance
     /// <see cref="ReverseOutcome.AlreadyReversed"/>; istemci başarı sayar. Para yalnız eklendiği için eksi denetimi
     /// ve kişi kilidi gerekmez.</para>
     ///
+    /// <para><b>Bacak sahibinin ikinci okuması (M12'nin tamamlayıcısı):</b> birleştirici bacağı asıl kayda taşımayı
+    /// ve kopyanın (sıfır bakiyeli de olsa) satırını damgalamayı TEK işlemde yapar. Damga geri almayı ancak kopyanın
+    /// jetonu birleşmeden ÖNCE okunduysa korur; bacak okunduktan sonra, bakiye satırı okunmadan önce commit eden bir
+    /// birleşmede jeton birleşme sonrasınındır, UPDATE tutar ve para kopyaya yazılırdı. Bu yüzden bakiye satırları
+    /// okunduktan SONRA, kayıttan önce bacakların güncel sahipleri yeniden okunur; biri değiştiyse grup baştan kurulur
+    /// (deneme sayılır). Değişmediyse okunan jetonlar birleşmeden öncedir; sonra gelen birleşme kayıtta çakışır. Kalan
+    /// dar pencere jetonsuz yazımlardadır: bu ikinci okumayla kayıt arasında birleşen bir sahip, açılacak (henüz var
+    /// olmayan) bir bakiye satırına ya da tutarı 0 olan bir bacağa denk gelirse geri alma satırı kopyada kalabilir —
+    /// birleştiricinin kendi penceresi gibi (§4.12), <c>verify</c> "kopya satırda hareket ya da bakiye" diye sayar.</para>
+    ///
     /// <para>Çağıran DbContext'te izlenen başka değişiklik bırakmamalı: denemeler arasında izleyici temizlenir.</para>
     /// </summary>
     /// <param name="anchorId">Çapanın Id'si (çağıran bacağı <see cref="AnchorOfAsync"/> ile çözer).</param>
@@ -144,6 +154,16 @@ public sealed class PersonBalance
                     .OrderBy(t => t.Id)
                     .ToListAsync(ct);
             await StageGroupReversalAsync(licenseId, anchor, legs, createdByCustomerId, ct);
+            if (await LegOwnersChangedAsync(licenseId, legs, ct))
+            {
+                // Bakiye satırları okunmadan önce birleşme oldu: okunan jeton birleşme sonrasının, koruma yok.
+                if (attempt < MaxAttempts) continue;
+                _db.ChangeTracker.Clear();
+                _log.LogWarning(
+                    "Ortak bakiye: grup geri almasının bacakları {Attempts} denemede de taşındı, balance-busy (license={LicenseId}, anchor={AnchorId})",
+                    MaxAttempts, licenseId, anchorId);
+                return ReverseOutcome.Busy;
+            }
 
             try
             {
@@ -231,6 +251,22 @@ public sealed class PersonBalance
             balance.Balance += amount;
             balance.UpdatedAt = now;
         }
+    }
+
+    /// <summary>
+    /// Bacaklardan birinin güncel sahibi (<c>WpfCustomerId</c>) hazırlanan geri almadakinden farklı mı, ya da bacak
+    /// artık yok mu. <see cref="StageGroupReversalAsync"/> bakiye satırlarını okuduktan SONRA çağrılır (bkz.
+    /// <see cref="ReverseGroupAsync"/>, "bacak sahibinin ikinci okuması"). Tek sorgu.
+    /// </summary>
+    private async Task<bool> LegOwnersChangedAsync(
+        Guid licenseId, IReadOnlyList<CustomerBalanceTransaction> legs, CancellationToken ct)
+    {
+        var ids = legs.Select(l => l.Id).ToList();
+        var owners = await _db.CustomerBalanceTransactions.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && ids.Contains(t.Id))
+            .Select(t => new { t.Id, t.WpfCustomerId })
+            .ToDictionaryAsync(t => t.Id, t => t.WpfCustomerId, ct);
+        return legs.Any(l => !owners.TryGetValue(l.Id, out var owner) || owner != l.WpfCustomerId);
     }
 
     // ── Hata tanıma ──────────────────────────────────────────────────────────
