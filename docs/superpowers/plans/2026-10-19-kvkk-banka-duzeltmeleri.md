@@ -6716,8 +6716,6 @@ Expected: FAIL — purge 204 döner (bağlantı kaskadla gidiyor, Obifin'e bir �
 
 Metodun özetine bir paragraf: `/// Obifin banka bağlantısı olan lisans varken 409 bank-connection-active: önce admin/obifin → "Kaldır ve sil" (KVKK K-6, Ö-9).`
 
-- [ ] **Adım 10: Koştur — yeşil**
-
 - [ ] **Adım 9b: Gerçek SQL Server testi**
 
 Yerel silme her gün (hizmet sonu) ve yöneticinin tek tıklamasıyla geri dönüşsüz siler. Partili silme, `BankConnections` → `ObifinConnections` sırası (FK), eşleşme jetonunun `WHERE UpdatedAt = özgün` koşuluyla çakışmada yeniden deneme ve imha kaydının partiyle aynı işlemde yazılması InMemory'de sınanamaz. `OrderDeck.LicenseServer.Tests/Services/Bank/BankConnectionTerminatorRelationalTests.cs`:
