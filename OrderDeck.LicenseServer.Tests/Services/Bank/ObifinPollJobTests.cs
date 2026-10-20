@@ -282,8 +282,8 @@ public sealed class ObifinPollJobTests
     [Fact]
     public async Task Yarim_kalan_ilk_cekim_sonraki_gun_ayni_capayla_surer()
     {
-        // Çapa ilk kaydedilen sayfayla birlikte yazılır. Tur geçici hatayla yarıda kalırsa ertesi günün turu çapayı
-        // yeniden hesaplamaz: aradaki günler kaybolmaz, bağlantı anı ilk verinin alındığı gün kalır.
+        // Çapa ilk turun başında kaydedilir. Tur geçici hatayla yarıda kalırsa ertesi günün turu çapayı yeniden
+        // hesaplamaz: aradaki günler kaybolmaz, bağlantı anı ilk turun günü kalır.
         using var db = NewDb(); var today = new DateOnly(2026, 9, 25);
         var client = new ScriptedObifin { PageCap = 1, FailOnCall = 2, FailWith = () => new HttpRequestException("Name or service not known") };
         var (job, svc, _) = Build(db, client, today);
@@ -294,7 +294,7 @@ public sealed class ObifinPollJobTests
         var first = () => job.RunAsync(CancellationToken.None);
         await first.Should().ThrowAsync<AggregateException>();
         var afterFailure = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
-        afterFailure.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23), "ilk sayfayla kaydedildi");
+        afterFailure.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23), "turun başında kaydedildi");
         afterFailure.BackfillCompletedAt.Should().BeNull();
 
         client.FailOnCall = -1;
@@ -302,6 +302,57 @@ public sealed class ObifinPollJobTests
         await job.RunAsync(CancellationToken.None);
 
         client.Calls.Skip(2).Should().NotBeEmpty().And.OnlyContain(c => c.From == new DateOnly(2026, 9, 23));
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 10L, 11L });
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23));
+        conn.BackfillCompletedAt.Should().NotBeNull();
+        conn.LastObifinTransactionId.Should().Be(11);
+    }
+
+    [Theory]
+    [InlineData("gecici")]
+    [InlineData("red")]
+    [InlineData("beklenmeyen")]
+    public async Task Ilk_tur_hic_kayit_yapmadan_duserse_capa_kalir_sonraki_tur_ayni_capadan_surer(string failure)
+    {
+        // Çapa ilk turun başında, Obifin'e gidilmeden kaydedilir. Tur ilk istekte düşse de (geçici hata, Obifin reddi,
+        // beklenmeyen hata) sonraki tur çapayı kendi gününden yeniden hesaplamaz. Hesaplasaydı Obifin ilk bağlantıda
+        // InitialGraceDays'ten uzun kapalı kaldığında bağlantıdan SONRA gelen havaleler hiç alınmazdı (26.09'daki hareket).
+        using var db = NewDb(); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { FailOnCall = 1 };
+        client.FailWith = failure switch
+        {
+            "gecici" => () => new HttpRequestException("Name or service not known"),
+            "beklenmeyen" => () => new InvalidOperationException("beklenmeyen"),
+            _ => client.FailWith, // Obifin'in kendi mesajı: Failed
+        };
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc);
+        client.Transactions.Add(Tx(9, new DateTime(2026, 9, 22, 10, 0, 0), 15m));   // çapadan önce
+        client.Transactions.Add(Tx(10, new DateTime(2026, 9, 24, 10, 0, 0), 20m));
+        client.Transactions.Add(Tx(11, new DateTime(2026, 9, 26, 10, 0, 0), 30m));  // bağlantıdan sonra, Obifin kapalıyken
+
+        var first = () => job.RunAsync(CancellationToken.None);
+        if (failure == "red") await first.Should().NotThrowAsync("Obifin reddi koşuyu düşürmez");
+        else await first.Should().ThrowAsync<AggregateException>();
+        var afterFailure = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        afterFailure.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23), "tur Obifin'e gitmeden kaydetti");
+        afterFailure.BackfillCompletedAt.Should().BeNull();
+        (await db.BankTransactions.CountAsync()).Should().Be(0);
+        if (failure == "red")
+        {
+            // Admin aynı kimlikle yeniden doğruladı: kimlik değişmedi, çapa kalır.
+            var failed = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+            failed.Status.Should().Be(ObifinConnectionStatus.Failed);
+            failed.Status = ObifinConnectionStatus.Verified; failed.LastError = null;
+            await db.SaveChangesAsync();
+        }
+
+        client.FailOnCall = -1;
+        job.TodayTr = () => new DateOnly(2026, 9, 29);
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Skip(1).Should().NotBeEmpty().And.OnlyContain(c => c.From == new DateOnly(2026, 9, 23));
         (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 10L, 11L });
         var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
         conn.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23));

@@ -19,11 +19,10 @@ public sealed class ObifinConnection
     /// <summary>Görülen en büyük Obifin hareket Id'si; yalnız tam başarılı turda ilerler.</summary>
     public long? LastObifinTransactionId { get; set; }
     public DateTimeOffset? BackfillCompletedAt { get; set; }
-    /// <summary>İlk çekim çapası (TR takvim günü, KVKK Ö-5): ilk turun günü − <c>ObifinPollJob.InitialGraceDays</c>; o turun
-    /// ilk kaydıyla yazılır, yarıda kalan ilk çekim sonraki günlerde aynı çapayla sürer. İstisna: hiç kayıt yapmadan düşen ilk
-    /// tur çapayı yazmaz, sonraki tur çapayı kendi gününden hesaplar (aradaki günler alınmaz; çapa yalnız ileri kayar). Bu
-    /// günden eski işlem tarihli hareket hiçbir turda Obifin'den istenmez ve yazılmaz. Kimlik değişince boşalır. Eski
-    /// bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
+    /// <summary>İlk çekim çapası (TR takvim günü, KVKK Ö-5): ilk çekim turunun günü − <c>ObifinPollJob.InitialGraceDays</c>.
+    /// O turun başında, Obifin'e gidilmeden kaydedilir; tur yarıda kalsa ya da hiç kayıt yapmadan düşse de (geçici hata,
+    /// Obifin reddi) kalır, sonraki turlar aynı çapadan sürer. Bu günden eski işlem tarihli hareket hiçbir turda yazılmaz.
+    /// Kimlik değişene kadar değişmez, değişince boşalır. Eski bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
     public DateOnly? InitialCollectFrom { get; set; }
     /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6). Bugün yalnız lisans bitişi
     /// yazar (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>); zaten Disabled olan bağlantıda yeniden yazılmaz.
