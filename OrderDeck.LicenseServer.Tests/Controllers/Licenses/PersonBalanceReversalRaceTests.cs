@@ -36,17 +36,36 @@ public sealed class PersonBalanceReversalRaceTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    /// <summary>TestServer, sunucu tarafında yakalanmayan istisnayı istemciye fırlatır; prod'da 500 olurdu.</summary>
-    private static async Task<HttpStatusCode> StatusAsync(Func<Task<HttpResponseMessage>> call)
+    /// <summary>
+    /// Durum ve (başarısızsa) problem başlığı. TestServer, sunucu tarafında yakalanmayan istisnayı istemciye fırlatır;
+    /// prod'da 500 olurdu — başlık yerine en içteki istisna, düşen koşunun mesajı nedeni göstersin.
+    /// </summary>
+    private static async Task<(HttpStatusCode Status, string? Title)> StatusAsync(Func<Task<HttpResponseMessage>> call)
     {
+        HttpResponseMessage resp;
         try
         {
-            return (await call()).StatusCode;
+            resp = await call();
         }
-        catch (Exception)
+        catch (Exception e)
         {
-            return HttpStatusCode.InternalServerError;
+            var root = e.GetBaseException();
+            return (HttpStatusCode.InternalServerError, $"{root.GetType().Name}: {root.Message}");
         }
+        return (resp.StatusCode, resp.IsSuccessStatusCode ? null : await Kit.TitleAsync(resp));
+    }
+
+    /// <summary>
+    /// Tek kazanan; kaybedenlerin HEPSİ 409 <c>already-reversed</c> (§8.2-3). Başlık da sayılır: yalnız 409 sayılsaydı
+    /// bir yüzeyin yanlış 409'u (ör. panelin <c>not-reversible</c>'ı) öbür yüzey kazandıkça görünmezdi.
+    /// </summary>
+    private static void ShouldHaveSingleWinner((HttpStatusCode Status, string? Title)[] results)
+    {
+        var seen = string.Join(", ", results.Select(r => $"{(int)r.Status} {r.Title}"));
+        results.Count(r => r.Status == HttpStatusCode.OK).Should().Be(1, seen);
+        results.Where(r => r.Status != HttpStatusCode.OK).Should().HaveCount(Parallel - 1, seen)
+            .And.OnlyContain(r => r.Status == HttpStatusCode.Conflict && r.Title == "already-reversed",
+                "kaybedenler already-reversed — 500 varsa N01/kilitlenme yolu eşleşmiyor ({0})", seen);
     }
 
     private static async Task ShouldBeReversedOnceAsync(Kit kit, Kit.Example1 ex)
@@ -70,13 +89,10 @@ public sealed class PersonBalanceReversalRaceTests : IAsyncLifetime
         // Isınma: rota + EF JIT (var olmayan hareket → 404), gerçek turda istekler ayrışmasın.
         await Task.WhenAll(Enumerable.Range(0, Parallel).Select(_ => kit.ReverseAsync(Guid.NewGuid())));
 
-        var statuses = await Task.WhenAll(Enumerable.Range(0, Parallel)
+        var results = await Task.WhenAll(Enumerable.Range(0, Parallel)
             .Select(_ => StatusAsync(() => kit.ReverseAsync(ex.K))));
 
-        var seen = string.Join(", ", statuses);
-        statuses.Count(s => s == HttpStatusCode.OK).Should().Be(1, seen);
-        statuses.Count(s => s == HttpStatusCode.Conflict).Should().Be(Parallel - 1,
-            "kaybedenler already-reversed — 500 varsa N01/kilitlenme yolu eşleşmiyor ({0})", seen);
+        ShouldHaveSingleWinner(results);
         await ShouldBeReversedOnceAsync(kit, ex);
     }
 
@@ -88,13 +104,11 @@ public sealed class PersonBalanceReversalRaceTests : IAsyncLifetime
         var ex = await kit.Example1Async();
         await Task.WhenAll(Enumerable.Range(0, Parallel).Select(_ => kit.PanelReverseAsync(ex.I, Guid.NewGuid())));
 
-        var statuses = await Task.WhenAll(Enumerable.Range(0, Parallel).Select(i => i % 2 == 0
+        var results = await Task.WhenAll(Enumerable.Range(0, Parallel).Select(i => i % 2 == 0
             ? StatusAsync(() => kit.ReverseAsync(ex.K))
             : StatusAsync(() => kit.PanelReverseAsync(ex.I, ex.K))));
 
-        var seen = string.Join(", ", statuses);
-        statuses.Count(s => s == HttpStatusCode.OK).Should().Be(1, seen);
-        statuses.Count(s => s == HttpStatusCode.Conflict).Should().Be(Parallel - 1, seen);
+        ShouldHaveSingleWinner(results);
         await ShouldBeReversedOnceAsync(kit, ex);
     }
 
