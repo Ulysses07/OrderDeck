@@ -94,6 +94,14 @@ public sealed class PersonBalance
             .SumAsync(t => t.Amount, ct);
     }
 
+    /// <summary>
+    /// Grup olarak geri alınabilen çekim (spec §4.9, M8): düşüm ya da elle eksi grubu (çapa ≤ 0). <c>reversal</c>
+    /// türündeki gruplar — çekim türü iptalin çapası/bacağı ve grup geri alma satırları — geri alınamaz
+    /// (409 <c>not-reversible</c>): çok bacaklı "iptalin iptali" zinciri kapalı.
+    /// </summary>
+    public static bool IsGroupReversible(CustomerBalanceTransaction anchor) =>
+        anchor.Amount <= 0m && anchor.Kind is KindPurchaseDeduction or KindManualAdjustment;
+
     // ── Grup geri alması (§4.5) ──────────────────────────────────────────────
 
     public enum ReverseOutcome { Reversed, AlreadyReversed, NotFound, Busy }
