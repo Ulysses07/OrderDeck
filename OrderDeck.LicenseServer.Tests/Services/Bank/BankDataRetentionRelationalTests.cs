@@ -62,9 +62,13 @@ public sealed class BankDataRetentionRelationalTests : IAsyncLifetime
         };
         var expired = Tx(181); var unmatched = Tx(31); var linked = Tx(31); var young = Tx(10);
         var lateFetched = Tx(200, fetchedAgeDays: 1);
+        // İşlem tarihi 40, çekim 10 gün önce: alt sınır geçti, çekimden 30 gün dolmadı. Süre çekim anına dönerse SQL'de de düşer.
+        var unmatchedFetchedLater = Tx(40, fetchedAgeDays: 10); var linkedFetchedLater = Tx(40, fetchedAgeDays: 10);
         var expiredMatch = Match(expired, Guid.NewGuid()); var unmatchedMatch = Match(unmatched, null);
         unmatchedMatch.CreatedAt = now; // geç oluşturulmuş satır: gerekçe metni hareketin tarihine bağlı
         var linkedMatch = Match(linked, Guid.NewGuid());
+        var unmatchedFetchedLaterMatch = Match(unmatchedFetchedLater, null);
+        var linkedFetchedLaterMatch = Match(linkedFetchedLater, Guid.NewGuid());
         var staleConfirmed = Memory(now.AddMonths(-20), now.AddMonths(-12).AddDays(-1));
         var staleNeverConfirmed = Memory(now.AddMonths(-12).AddDays(-1), null);
         var fresh = Memory(now.AddMonths(-20), now.AddMonths(-1));
@@ -76,8 +80,8 @@ public sealed class BankDataRetentionRelationalTests : IAsyncLifetime
             db.Customers.Add(customer);
             db.Licenses.Add(new License { Id = lic, CustomerId = customer.Id, LicenseKey = "br-" + Guid.NewGuid().ToString("N")[..12],
                 SkuCode = "STD", ActivationSlots = 1, IssuedAt = now, ExpiresAt = now.AddYears(1) });
-            db.BankTransactions.AddRange(expired, unmatched, linked, young, lateFetched);
-            db.PaymentMatches.AddRange(expiredMatch, unmatchedMatch, linkedMatch);
+            db.BankTransactions.AddRange(expired, unmatched, linked, young, lateFetched, unmatchedFetchedLater, linkedFetchedLater);
+            db.PaymentMatches.AddRange(expiredMatch, unmatchedMatch, linkedMatch, unmatchedFetchedLaterMatch, linkedFetchedLaterMatch);
             db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = lic, PaymentId = Guid.NewGuid(),
                 CreatedAt = now.AddDays(-181) });
             db.CustomerIbanMemories.AddRange(staleConfirmed, staleNeverConfirmed, fresh);
@@ -89,8 +93,8 @@ public sealed class BankDataRetentionRelationalTests : IAsyncLifetime
             r = await scope.ServiceProvider.GetRequiredService<BankDataRetentionJob>().RunAsync(CancellationToken.None);
 
         (r.TransactionsDeleted, r.MatchesDeleted, r.GapsDeleted, r.IbanMemoriesDeleted).Should().Be((1, 1, 1, 2));
-        r.UnmatchedDescriptionsPurged.Should().Be(1, "öneri eşleşme değildir; bağlı olanın açıklaması kalır");
-        r.EvidencePurged.Should().Be(1);
+        r.UnmatchedDescriptionsPurged.Should().Be(2, "öneri eşleşme değildir; bağlı olanın açıklaması kalır");
+        (r.RawPurged, r.EvidencePurged).Should().Be((4, 2));
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -107,6 +111,14 @@ public sealed class BankDataRetentionRelationalTests : IAsyncLifetime
             (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == young.Id)).RawJson.Should().Be("{}");
             var late = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == lateFetched.Id);
             (late.RawJson, late.Description).Should().Be(("{}", "aciklama"), "çekimden 7 gün geçmeden dokunulmaz");
+            var uf = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == unmatchedFetchedLater.Id);
+            (uf.RawJson, uf.Description, uf.CounterpartyName).Should().Be(((string?)null, (string?)null, (string?)null),
+                "süre çekim anından değil işlem tarihinden");
+            uf.DescriptionPurgedAt.Should().NotBeNull();
+            (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == unmatchedFetchedLaterMatch.Id)).Evidence.Should().BeNull();
+            var lf = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == linkedFetchedLater.Id);
+            (lf.RawJson, lf.Description, lf.DescriptionPurgedAt).Should().Be(((string?)null, "aciklama", (DateTimeOffset?)null));
+            (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == linkedFetchedLaterMatch.Id)).Evidence.Should().Be("kanıt");
             (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { fresh.Id });
             var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
             records.Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.Retention);
@@ -114,8 +126,8 @@ public sealed class BankDataRetentionRelationalTests : IAsyncLifetime
             records.Where(x => x.Action != DataDestruction.Actions.RunCompleted).Select(x => (x.Target, x.RowCount))
                 .Should().BeEquivalentTo(new[]
                 {
-                    ("BankTransactions", 1), ("PaymentMatches", 1), ("PaymentMatchGaps", 1), ("BankTransactions.RawJson", 2),
-                    ("BankTransactions.Description+CounterpartyName", 1), ("PaymentMatches.Evidence", 1), ("CustomerIbanMemories", 2),
+                    ("BankTransactions", 1), ("PaymentMatches", 1), ("PaymentMatchGaps", 1), ("BankTransactions.RawJson", 4),
+                    ("BankTransactions.Description+CounterpartyName", 2), ("PaymentMatches.Evidence", 2), ("CustomerIbanMemories", 2),
                 });
             records.Should().ContainSingle(x => x.Action == DataDestruction.Actions.RunCompleted && x.Target == BankDataRetentionJob.JobId);
         }

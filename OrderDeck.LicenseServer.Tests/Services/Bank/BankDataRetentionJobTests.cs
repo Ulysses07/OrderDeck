@@ -129,6 +129,34 @@ public sealed class BankDataRetentionJobTests
     }
 
     [Fact]
+    public async Task Ham_kayit_ve_eslesmeyen_aciklama_cekim_anindan_degil_islem_tarihinden_sayilir()
+    {
+        // KVKK Ö-14'ün ana bulgusu: süreler çekim anından işliyordu, ilk çekimdeki eski havale ~270 gün kalıyordu. İşlem tarihi 40
+        // gün, çekim 10 gün önce: çekimden sonraki 7 günlük alt sınır geçti, çekimden 30 gün dolmadı. Ham kayıt ve eşleşmeyenin
+        // açıklaması gitmeli; 2. ya da 3. adımın koşulu çekim anına dönerse bu test düşer (öbür testlerde iki an ya eşit ya da
+        // satır 1. adımda siliniyor).
+        using var db = NewDb();
+        var unmatched = Row(TimeSpan.FromDays(40), fetchedAge: TimeSpan.FromDays(10));
+        var linked = Row(TimeSpan.FromDays(40), fetchedAge: TimeSpan.FromDays(10));
+        var unmatchedMatch = MatchFor(unmatched, linked: false); var linkedMatch = MatchFor(linked, linked: true);
+        db.BankTransactions.AddRange(unmatched, linked);
+        db.PaymentMatches.AddRange(unmatchedMatch, linkedMatch);
+        await db.SaveChangesAsync();
+
+        var r = await Job(db).RunAsync(CancellationToken.None);
+
+        (r.RawPurged, r.UnmatchedDescriptionsPurged, r.EvidencePurged).Should().Be((2, 1, 1));
+        var u = (await db.BankTransactions.FindAsync(unmatched.Id))!;
+        (u.RawJson, u.Description, u.CounterpartyName).Should().Be(((string?)null, (string?)null, (string?)null));
+        u.DescriptionPurgedAt.Should().NotBeNull();
+        (await db.PaymentMatches.FindAsync(unmatchedMatch.Id))!.Evidence.Should().BeNull("gerekçe metni açıklamayla gider");
+        var l = (await db.BankTransactions.FindAsync(linked.Id))!;
+        l.RawJson.Should().BeNull("ham kayıt eşleşende de işlem tarihinden 30 günde gider");
+        (l.Description, l.CounterpartyName, l.DescriptionPurgedAt).Should().Be(("aciklama", "ad", (DateTimeOffset?)null));
+        (await db.PaymentMatches.FindAsync(linkedMatch.Id))!.Evidence.Should().Be("kanıt metni");
+    }
+
+    [Fact]
     public async Task Gerekce_metni_hareketin_aciklamasiyla_birlikte_gider_satirin_olusturulma_anina_bakilmaz()
     {
         // KVKK Ö-14: gerekçe metni bağlı hareketin tarihine bağlanır. Tarama ya da elle eşleme satırı geç oluşturduysa metin
