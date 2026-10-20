@@ -42,6 +42,17 @@ public static class AuditEvents
     // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız kullanıcı adı girer: açıklama, tutar, IBAN GİRMEZ.
     public const string BankMatchManual = "bank.match.manual";
     public const string BankMatchUnmatch = "bank.match.unmatch";
+
+    /// <summary>İmha olayları (Silme Yönetmeliği md. 7/3: en az üç yıl). <see cref="AuditRetentionJobs"/> bunları
+    /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta değil <see cref="AuditRetentionOptions.DestructionRetentionMonths"/>'ta
+    /// budar. YALNIZ ayrıntısı kişisel veri İÇERMEYEN (sayılar, kimlikler) olaylar girer: muafiyet kişisel veriyi daha uzun
+    /// tutmamalı. <see cref="CustomerPurged"/> BİLEREK yok — ayrıntısında silinen yayıncının e-postası var, 24 ayda gider;
+    /// yayıncı silmesinin 3 yıllık kaydı kişisel veri içermeyen <c>DataDestructionRecords</c>. Yeni bir silme olayı eklenirse
+    /// ayrıntısı kişisel veri içermiyorsa buraya da eklenir.</summary>
+    public static readonly IReadOnlySet<string> DestructionEvents = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ShopperPurged,
+    };
 }
 
 public static class AuditTargets

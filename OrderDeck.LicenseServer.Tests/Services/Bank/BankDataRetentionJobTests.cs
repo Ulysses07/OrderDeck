@@ -1,11 +1,14 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -32,8 +35,24 @@ public sealed class BankDataRetentionJobTests
         return new LicenseDbContext(options.Options);
     }
 
-    private static BankDataRetentionJob Job(LicenseDbContext db)
-        => new(db, Options.Create(new BankOptions { HashKey = new string('k', 32) }), NullLogger<BankDataRetentionJob>.Instance);
+    /// <summary>Kurulan her kaydı düşürür (yalnız <see cref="Armed"/> iken): DB kesintisi benzetimi.</summary>
+    private sealed class FailingSaveInterceptor : SaveChangesInterceptor
+    {
+        public bool Armed { get; set; }
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            => Armed ? throw new DbUpdateException("DB kesintisi benzetimi") : ValueTask.FromResult(result);
+    }
+
+    private static BankJobAlerts Alerts(TestEmailSender email)
+        => new(email, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [BankJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
+        }).Build(), NullLogger<BankJobAlerts>.Instance);
+
+    private static BankDataRetentionJob Job(LicenseDbContext db, TestEmailSender? email = null)
+        => new(db, Options.Create(new BankOptions { HashKey = new string('k', 32) }), Alerts(email ?? new TestEmailSender()),
+            NullLogger<BankDataRetentionJob>.Instance);
 
     private static BankTransaction Row(int ageDays) => Row(TimeSpan.FromDays(ageDays));
 
@@ -134,5 +153,40 @@ public sealed class BankDataRetentionJobTests
         (await db.BankTransactions.CountAsync(t => t.RawJson != null || t.Description != null || t.CounterpartyName != null))
             .Should().Be(0);
         (await db.PaymentMatches.CountAsync(m => m.Evidence != null)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Her_bosaltma_partisi_kisisel_veri_icermeyen_imha_kaydi_yazar()
+    {
+        using var db = NewDb();
+        db.BankTransactions.AddRange(Row(200), Row(200));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(CancellationToken.None);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().Contain(r => r.Target == "BankTransactions.RawJson" && r.RowCount == 2
+            && r.Action == DataDestruction.Actions.Nulled && r.Trigger == DataDestruction.Triggers.Retention
+            && r.Actor == DataDestruction.SystemActor && r.LicenseId == null);
+        records.Should().Contain(r => r.Target == "BankTransactions.Description+CounterpartyName" && r.RowCount == 2);
+    }
+
+    [Fact]
+    public async Task Is_duserse_yoneticiye_e_posta_gider_ve_hata_yukari_cikar()
+    {
+        // KVKK Ö-13: iş sessizce düşerse saklama süreleri fark edilmeden aşılır.
+        var failing = new FailingSaveInterceptor();
+        var email = new TestEmailSender();
+        using var db = NewDb(failing);
+        db.BankTransactions.Add(Row(200));
+        await db.SaveChangesAsync();
+        failing.Armed = true;
+
+        var act = () => Job(db, email).RunAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<DbUpdateException>();
+        var sent = email.Sent.Should().ContainSingle().Subject;
+        sent.Subject.Should().Be(BankDataRetentionJob.FailureSubject);
+        sent.PlainBody.Should().Contain(nameof(DbUpdateException));
     }
 }

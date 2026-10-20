@@ -328,6 +328,7 @@ public class Program
             OrderDeck.LicenseServer.Services.Bank.MatchingBankTransactionSink>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinPollJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinAccountRefreshJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankJobAlerts>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankMatchSweepJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();

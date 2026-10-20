@@ -896,6 +896,63 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("CustomerBalanceTransactions");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataDestructionRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("Criterion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid?>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("SubjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Target")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.HasIndex("SubjectId");
+
+                    b.ToTable("DataDestructionRecords");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.EmailConfirmationToken", b =>
                 {
                     b.Property<Guid>("Token")

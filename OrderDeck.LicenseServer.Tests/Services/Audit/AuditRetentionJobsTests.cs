@@ -103,4 +103,31 @@ public class AuditRetentionJobsTests : IClassFixture<ApiFactory>
         var remaining = await db.AuditLogs.CountAsync(a => a.EventType == $"{tag}-old");
         remaining.Should().Be(0);
     }
+
+    [Fact]
+    public async Task Kisisel_veri_icermeyen_imha_olaylari_36_ayda_customer_purged_24_ayda_budanir()
+    {
+        // Silme Yönetmeliği md. 7/3: imha kayıtları en az üç yıl. Normal olay 24 ayda gider. customer.purged ayrıntısında
+        // silinen yayıncının e-postası var: muafiyet onu 36 ay tutmasın (kalıcı kaydı DataDestructionRecords'ta).
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        AuditLogEntry Entry(string type, int monthsAgo) => new()
+        {
+            Id = Guid.NewGuid(), EventType = type, OccurredAt = DateTimeOffset.UtcNow.AddMonths(-monthsAgo).AddDays(-1),
+            AdminId = Guid.Empty, AdminUsername = "test",
+        };
+        var purge30 = Entry(AuditEvents.ShopperPurged, 30);
+        var purge37 = Entry(AuditEvents.ShopperPurged, 37);
+        var customerPurge30 = Entry(AuditEvents.CustomerPurged, 30);
+        var normal30 = Entry("test-" + Guid.NewGuid().ToString("N")[..8], 30);
+        db.AuditLogs.AddRange(purge30, purge37, customerPurge30, normal30);
+        await db.SaveChangesAsync();
+
+        await Make(db).PruneAsync(CancellationToken.None);
+
+        var ids = new[] { purge30.Id, purge37.Id, customerPurge30.Id, normal30.Id };
+        (await db.AuditLogs.AsNoTracking().Where(a => ids.Contains(a.Id)).Select(a => a.Id).ToListAsync())
+            .Should().BeEquivalentTo(new[] { purge30.Id });
+        AuditEvents.DestructionEvents.Should().NotContain(AuditEvents.CustomerPurged);
+    }
 }

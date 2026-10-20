@@ -116,6 +116,7 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentMatch> PaymentMatches => Set<PaymentMatch>();
     public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
+    public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -1285,6 +1286,20 @@ public class LicenseDbContext : DbContext
             // Ödeme başına tek boşluk kaydı.
             b.HasIndex(g => g.PaymentId).IsUnique();
             b.Property(g => g.Reason).HasConversion<string>().HasMaxLength(24).IsRequired();
+        });
+
+        // Kalıcı imha kaydı (Silme Yönetmeliği md. 7/3). Lisansa FK BİLEREK yok: lisans silinse de kayıt yaşar.
+        mb.Entity<DataDestructionRecord>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Target).HasMaxLength(100).IsRequired();
+            b.Property(r => r.Action).HasMaxLength(16).IsRequired();
+            b.Property(r => r.Criterion).HasMaxLength(100).IsRequired();
+            b.Property(r => r.Trigger).HasMaxLength(32).IsRequired();
+            b.Property(r => r.Actor).HasMaxLength(256).IsRequired();
+            b.HasIndex(r => r.OccurredAt);
+            b.HasIndex(r => r.LicenseId);
+            b.HasIndex(r => r.SubjectId);
         });
 
         mb.Entity<NetgsmDeparture>(b =>
