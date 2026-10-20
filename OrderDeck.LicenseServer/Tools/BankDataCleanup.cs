@@ -1,0 +1,100 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Bank;
+
+namespace OrderDeck.LicenseServer.Tools;
+
+/// <summary>
+/// Konteyner içinde elle koşulur:
+///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup [--license &lt;guid&gt;] [--apply]
+/// KVKK düzeltmelerinden önce yazılmış banka verisini yeni kurallara indirir; kurallar <see cref="BankDataCleanupJob"/>'ta.
+/// --apply yoksa kuru koşu: uygulamanın sayılarını hesaplar, hiçbir şey yazmaz. Önce kuru koşu, çıktı tutanağa. Saklama işi
+/// (04:57 UTC), shopper silmesi ya da banka veri talebi silmesi sürerken koşturulmaz: maskeleme adımları oku-değiştir-yaz
+/// yapar, arada boşaltılan metni eski hâliyle geri yazabilirdi.
+/// <para>Çıkış kodları: 0 tamam; 1 bazı partiler eşzamanlı bir yazı (eşleştirme ya da bağlantı kimliği değişimi) yüzünden geri
+/// alındı ya da atlandı — yeniden çalıştır (idempotent); 2 kullanım/yapılandırma.</para>
+/// <para>Argümanlar katı (<see cref="GroupCustomers"/> kalıbı): tanınmayan, yinelenen ya da değeri eksik argüman → 2,
+/// yapılandırmaya ve veritabanına dokunmadan. Komut prod'da elle yazılır: yazım hatalı <c>--apply</c> kuru çalıştırmaya
+/// dönüşmemeli. Çıktıda kişisel veri yok — yalnız sayılar ve lisans kimliği.</para>
+/// </summary>
+public static class BankDataCleanup
+{
+    private const string Usage = "Kullanım: bank-data-cleanup [--license <guid>] [--apply]";
+
+    public sealed record Options(Guid? License, bool Apply);
+
+    public static async Task<int> RunAsync(string[] args)
+    {
+        if (!TryParseArgs(args, out var options))
+        {
+            Console.Error.WriteLine(Usage);
+            return 2;
+        }
+        var config = new ConfigurationBuilder()
+            .AddJsonFile("appsettings.json", optional: true)
+            .AddEnvironmentVariables()
+            .Build();
+        var conn = config.GetConnectionString("LicenseDb");
+        if (string.IsNullOrWhiteSpace(conn))
+        {
+            Console.Error.WriteLine("ConnectionStrings:LicenseDb bulunamadı.");
+            return 2;
+        }
+        var dbOptions = new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(conn).Options;
+        await using var db = new LicenseDbContext(dbOptions);
+        using var logs = LoggerFactory.Create(b => b.AddSimpleConsole());
+        return await RunAsync(db, options, Console.Out, logs, CancellationToken.None);
+    }
+
+    /// <summary>Komutun gövdesi: argümanlar ayrıştırılmış, bağlantı nesnesi kurulmuş. Testler gerçek SQL Server'a buradan
+    /// girer.</summary>
+    public static async Task<int> RunAsync(LicenseDbContext db, Options options, TextWriter output, ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        var job = new BankDataCleanupJob(db, loggerFactory.CreateLogger<BankDataCleanupJob>());
+        var r = await job.RunAsync(options.License, options.Apply, ct);
+        output.WriteLine($"{(options.Apply ? "UYGULANDI" : "KURU ÇALIŞTIRMA")} — lisans={options.License?.ToString() ?? "hepsi"}: {Format(r)}");
+        if (r.FailedBatches > 0)
+        {
+            output.WriteLine($"{r.FailedBatches} adım eşzamanlı bir yazı yüzünden yarıda kaldı; komutu yeniden çalıştırın (idempotent).");
+            return 1;
+        }
+        return 0;
+    }
+
+    /// <summary>args[0] komut adıdır. Bkz. sınıf dokümanı: katı ayrıştırma. <c>public</c>: sunucu projesinde
+    /// <c>InternalsVisibleTo</c> yok (<see cref="GroupCustomers.TryParseArgs"/> kalıbı).</summary>
+    public static bool TryParseArgs(string[] args, out Options options)
+    {
+        Guid? license = null;
+        var apply = false;
+        options = new Options(null, false);
+        for (var i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--apply" when !apply:
+                    apply = true;
+                    break;
+                case "--license" when license is null:
+                    if (i + 1 >= args.Length || !Guid.TryParse(args[i + 1], out var parsed)) return false;
+                    license = parsed;
+                    i++;
+                    break;
+                default:
+                    return false;
+            }
+        }
+        options = new Options(license, apply);
+        return true;
+    }
+
+    public static string Format(BankDataCleanupJob.Report r)
+        => $"giden/sıfır silinen={r.OutgoingOrZeroDeleted} (kararlı atlanan={r.OutgoingOrZeroSkippedDecided}) | " +
+           $"çapa yazılan={r.AnchorsSet} çapa öncesi silinen={r.PreAnchorDeleted} (bağlı kalan={r.PreAnchorSkippedLinked}) | " +
+           $"eşleşme silinen={r.MatchesDeleted} | VKN/TCKN kodu boşaltılan={r.TaxIdHashesCleared} | " +
+           $"ham kayıt daraltılan={r.RawJsonRewritten} (okunamayan boşaltılan={r.RawJsonUnreadableCleared}) | " +
+           $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | düşen parti={r.FailedBatches}";
+}
