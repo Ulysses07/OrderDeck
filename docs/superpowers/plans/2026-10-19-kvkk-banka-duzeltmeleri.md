@@ -4945,7 +4945,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Neden (not K-6, Ö-9):** yönetim sayfasında yalnız Kaydet/Doğrula/Banka ekle/Şimdi çek var; durdurma ya da kaldırma yok. `IObifinClient.RemoveBankConnectionAsync` (`bankaapi/sil`) hiçbir yerden çağrılmıyor. Yayıncı silmesi (`AdminCustomersController.Purge`) banka tablolarını lisansla kaskadla götürüyor ama Obifin'e bir şey söylemiyor: Obifin bankadan çekmeyi ve saklamayı sürdürür. Yeni `BankConnectionTerminator`:
 - **Durdur:** `Disabled` + `DisabledAt` (30 günlük sayaç; Görev 14) + `DisabledByAdmin`. Lisans bitişiyle zaten Disabled olan bağlantıda yalnız `DisabledByAdmin` yazılır (tarih değişmez): yönetici kararı, lisans yenilenince kendiliğinden açılmasın (Görev 14).
 - **Etkinleştir:** yalnız lisans geçerliyse; `Unverified`'a döner (yönetici Doğrula'ya basar), hizmet sonu alanları (`DisabledAt`, `BankDataPurgedAt`, `DisabledByAdmin`) boşalır.
-- **Kaldır ve sil (YALNIZ yöneticinin eylemi; `bankaapi/sil`'i çağıran tek yol):** Obifin tarafı **lisansa özgü**. `ObifinConnection`'da yalnız `LicenseId` tekil; aynı (BaseUrl, UserCode) birden çok lisansa girilebilir ve Faz 2 spec §13'te sahibin tercihi "(A) tek paylaşılan Obifin kullanıcısı". Bu yüzden: (1) aynı (BaseUrl, UserCode) başka bir lisansın bağlantısında da varsa Obifin'e **hiç gidilmez**, sonuç "paylaşılan kullanıcı — elle kaldır" olur; (2) yalnız bu lisansın yerel `BankConnections`'ındaki ve **onaylı** hesaplarının (Görev 12; Obifin hesap listesindeki `BankaApiId`) bağlantıları kaldırılır — pilotta QNB bağlantısı Obifin panelinden eklendi, yerelde satırı yok, onaylı hesap üzerinden bulunur; (3) Obifin listesindeki diğer bağlantılara dokunulmaz, "bu lisansa ait olduğu doğrulanamadı — elle kontrol" diye raporlanır (`ObifinConnectionService.ResetShadowData`'nın yabancı `BankaApiId` uyarısının aynısı). Sonra lisansın bütün banka verisi ve Obifin kimliği yerelde silinir, imha kaydı yazılır. **Obifin API'sinde hareket silme ucu yok** (doküman: `bankaapi/liste|ekle|guncelle|sil|bankakodlari`, hesap listesi, hareket listesi): Obifin'deki kopyanın silinmesi yazılı istenir — sonuç mesajı bunu söyler. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır (KVKK), yönetici elle kaldırmaya yönlendirilir.
+- **Kaldır ve sil (YALNIZ yöneticinin eylemi; `bankaapi/sil`'i çağıran tek yol):** Obifin tarafı **lisansa özgü**. `ObifinConnection`'da yalnız `LicenseId` tekil; aynı (BaseUrl, UserCode) birden çok lisansa girilebilir ve Faz 2 spec §13'te sahibin tercihi "(A) tek paylaşılan Obifin kullanıcısı". Bu yüzden: (1) aynı (BaseUrl, UserCode) başka bir lisansın bağlantısında da varsa Obifin'e **hiç gidilmez**, sonuç "paylaşılan kullanıcı — elle kaldır" olur; (2) yalnız bu lisansın yerel `BankConnections`'ındaki ve **onaylı** hesaplarının (Görev 12; Obifin hesap listesindeki `BankaApiId`) bağlantıları kaldırılır — pilotta QNB bağlantısı Obifin panelinden eklendi, yerelde satırı yok, onaylı hesap üzerinden bulunur; (3) Obifin listesindeki diğer bağlantılara dokunulmaz, "bu lisansa ait olduğu doğrulanamadı — elle kontrol" diye raporlanır (`ObifinConnectionService.ResetShadowData`'nın yabancı `BankaApiId` uyarısının aynısı). Sonra lisansın bütün banka verisi ve Obifin kimliği yerelde silinir, imha kaydı yazılır. Obifin'e gitmeden ve partilerden ÖNCE bağlantı tek SaveChanges'le durdurulur (`Disabled`, `DisabledByAdmin`, yeni `UpdatedAt`; aşağıdaki üçüncü inceleme maddesi). **Obifin API'sinde hareket silme ucu yok** (doküman: `bankaapi/liste|ekle|guncelle|sil|bankakodlari`, hesap listesi, hareket listesi): Obifin'deki kopyanın silinmesi yazılı istenir — sonuç mesajı bunu söyler. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır (KVKK), yönetici elle kaldırmaya yönlendirilir.
 - **Yalnız yerel silme (Görev 14'teki otomatik iş için):** Obifin'e **gidilmez**. Lisansın banka verisi silinir. "Kaldır ve sil"in sahiplik kanıtı KALIR ki yönetici Obifin tarafını sonra kapatabilsin: Obifin kimliği, yerel `BankConnections` satırları (yalnız `BankaApiId`, kişisel veri değil) ve **onaylı** hesap satırları. Onaylı hesabın kişisel veri taşıyabilen alanları boşalır (`IbanMasked` = "", `IbanHash` ve `NotificationNote` = null; imha kaydı `nulled`), `ObifinAccountId`, `ApprovedAt` ve `ApprovedBy` kalır. Onaysız hesaplar silinir. Kalan satırları "Kaldır ve sil" siler. `BankDataPurgedAt` yazılır, sayfada uyarı şeridi çıkar.
 - **Yayıncı silmesi:** Obifin bağlantısı olan lisans varken `Purge` 409 `bank-connection-active` ile reddeder ve önce "Kaldır ve sil"i ister. Purge içinde ağ çağrısı yapılmaz; Obifin tarafı tek yoldan (yukarıdaki korumalarla) kapanır.
 - **`DisabledAt` yaşam döngüsü:** Disabled'dan çıkan her yol (Etkinleştir, lisans geçerliyken kimlik değişimi, başarılı doğrulama, Görev 14'teki lisans yenilenmesi) hizmet sonu alanlarını `ObifinConnectionService.ClearServiceEnd` ile boşaltır. Lisansı bitmiş bağlantıda Doğrula ve Banka ekle Obifin'e gitmez; kimlik değişimi Disabled bağlantıyı yalnız lisans geçerliyse açar (sayaç kimlik düzenlemesiyle sıfırlanmaz). Durum hücresi tarihi yalnız `Disabled` iken gösterir.
@@ -4956,10 +4956,11 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - **Obifin tarafı izlenir (Ö-9 öneri 3, K-6 öneri 1; karar 21).** "Kaldır ve sil" `ObifinConnection` satırını sildiği için Obifin'den yazılı silme teyidinin beklendiği hiçbir yerde izlenmiyordu. Denetim satırındaki `writtenConfirmationRequired=true` 24 ayda maskeleniyor ve kapatılamıyordu. Artık "Kaldır ve sil" kişisel veri içermeyen bir `ObifinCopyDeletions` kaydı açar: lisans, istek anı ve yapan, teyit anı ve yapan. Lisansa ve bağlantıya FK yoktur, kayıt budanmaz. Yönetici teyit gelince admin/obifin'de "Teyit alındı"ya basar; imha kaydı (`Obifin.HareketKopyasi`, tetikleyici `processor-confirmation`) aynı `SaveChanges`'te yazılır. Hatırlatma ve 14 günlük gecikme Görev 14'te.
 - **Onaysız hesabın geçmiş verisi; onayı geri alma (Ö-10).** Hesap satırına "Reddet ve verisini sil" eklenir (`RejectAccountAsync`). Onay varsa önce o kaldırılır; arada koşan çekim turu o hesabın yeni hareketini yazmaz. Sonra o hesabın bu lisanstaki hareketleri, eşleşmeleri ve bu hareketlerden öğrenilmiş IBAN bağları (`SourceBankTransactionId`) partilerle silinir. Dekont bağı silinen ödemenin gap'i açılır: gap varsa yeniden açılır, yoksa `UnlinkedByAdmin` gap'i yazılır (bağdaştırıcının kaldırma kuralı, dekont ölçümden düşmez). İmha kaydı tetikleyici `account-rejected` ile yazılır. Yönetici hesap numarasını yazarak onaylar. Hesap satırı yer tutucu olarak kalır.
 - **"Kaldır ve sil" yazılı onay ister (Purge'ün `confirmEmail` kalıbı).** Formun kendisi `ConfirmRemove=true` gönderdiği için sunucu denetimi anlamsızdı; tek koruma JS `confirm()`'uydu. Paylaşılmayan kullanıcıda EMAR'ın QNB bağlantısını Obifin'den kaldırabilen geri dönüşsüz işlem için bu yetmez. Artık yönetici lisans anahtarının son 6 karakterini yazar, sunucu büyük/küçük harf ayırmadan karşılaştırır; gizli alan kalkar.
-- **Yerel silme partilidir.** `DeleteLocalAsync` lisansın bütün satırlarını bir kerede yüklüyordu; saklama işi bunun tersini yapıyor. Artık `BatchSize` (500) partilerle siler, her parti imha kaydını aynı `SaveChanges`'te yazar ve partiler arasında izleyici boşalır. Bağlantının kendisi (ya da `BankDataPurgedAt` işareti) EN SON silinir: arada düşen silme bağlantıyı bırakır, iş ertesi gün ya da yönetici yeniden basınca kalanı siler. Jeton çakışmasında bütün silme bir kez baştan yeniden denenir; sorgular her partide baştan koştuğu için yeniden deneme idempotenttir ve sayılar denemeler boyunca birikir. Gerçek SQL Server'da (FK sırası, `BankConnections` → `ObifinConnections`, jetonun `WHERE` koşulu) `BankConnectionTerminatorRelationalTests` sınar.
+- **Yerel silme partilidir.** `DeleteLocalAsync` lisansın bütün satırlarını bir kerede yüklüyordu; saklama işi bunun tersini yapıyor. Artık `BatchSize` (500) partilerle siler, her parti imha kaydını aynı `SaveChanges`'te yazar ve partiler arasında izleyici boşalır. Bağlantının kendisi (ya da `BankDataPurgedAt` işareti) EN SON silinir: arada düşen silme bağlantıyı bırakır, iş ertesi gün ya da yönetici yeniden basınca kalanı siler. "Kaldır ve sil"de bağlantı partilerden önce durdurulur (üçüncü inceleme): partiler sürerken çekim ve eşleştirme ona yazamaz. Jeton çakışmasında bütün silme bir kez baştan yeniden denenir; sorgular her partide baştan koştuğu için yeniden deneme idempotenttir ve sayılar denemeler boyunca birikir. Gerçek SQL Server'da (FK sırası, `BankConnections` → `ObifinConnections`, jetonun `WHERE` koşulu) `BankConnectionTerminatorRelationalTests` sınar.
 
 **Üçüncü plan incelemesi (20.10) — bu görevin ek parçaları:**
 - **Yerel silme sahiplik kanıtını silmez (K-6).** Yerel silme Obifin kimliğini ve yerel `BankConnections`'ı "yönetici Obifin tarafını sonra Kaldır ve sil ile kapatsın" diye bırakıyordu, ama bütün `BankAccounts` satırlarını onaylılarla birlikte siliyordu. `RemoveFromObifinAsync` Obifin panelinden eklenmiş bağlantının bu lisansa ait olduğunu YALNIZ onaylı hesaptan bilir; pilottaki QNB bağlantısının yerelde satırı yok (testteki #600 / hesap 6). Senaryo: hizmet sonu silmesi hesap 6'yı siler, hatırlatma "Kaldır ve sil"i ister, yönetici basar. #600 "bu lisansa ait olduğu doğrulanamadı — elle kontrol edin, başka lisansınsa dokunmayın" diye raporlanır ve Obifin'den kaldırılmaz. Bağlantı satırı silindiği için "Kaldır ve sil bekliyor" satırı da listeden düşer. Obifin hizmet bittiği halde yayıncının bankasından çekmeyi sürdürür, sistem de bunu "sahibi belirsiz" diye gösterirdi. Artık yerel silme onaylı hesap satırını bırakır, yalnız kişisel veri taşıyabilen alanlarını boşaltır (`IbanMasked`, `IbanHash`, `NotificationNote`; imha kaydı hedefi `BankConnectionTerminator.ScrubbedAccountTarget`, eylem `nulled`). Onaysız hesap kanıt değildir, silinir. Kalan satırları "Kaldır ve sil" siler. Kalan alanlar (`ObifinAccountId`, onay anı, onaylayan yöneticinin takma kimliği) aynı süre kalan Obifin kimliğinden daha tanımlayıcı değildir. Lisans yenilenip bağlantı yeniden doğrulanırsa hesap yenilemesi alanları yeniden doldurur ve onay geçerli kalır. Yönetici o arada satırdaki "Onayı geri al"a basarsa kanıt da gider; o bağlantı "Kaldır ve sil"de elle kontrole düşer (Prod adımları 10). `BankRemovalResult.AccountsScrubbed` boşaltılan satırları sayar. Test: `Yerel_silmeden_sonra_Kaldir_ve_sil_panelden_eklenmis_baglantiyi_onayli_hesaptan_tanir`.
+- **"Kaldır ve sil" önce durdurur.** Partili silme saniyeler sürer ve bağlantı en son adıma kadar `Verified` kalıyordu. Yönetici sayfası `obifin-poll` kilidini almaz; iki parti arasında bir çekim turu ya da "Şimdi çek" araya girebilir. Çekimin kimlik koruması `UpdatedAt`'i karşılaştırır ve partiler sürerken `UpdatedAt` değişmediği için turun kaydı geçerdi. Eşleştirme kapısı (`MatchingActive`) açık kaldığı için sink ve telafi taraması da yeni hareket ve eşleşme yazabilirdi. Hareket döngüsünden sonra ve bağlantı silinmeden önce yazılan satırlar bağlantısız lisansta kalır, imha kaydına girmez ve ancak 180 günlük kuralla silinirdi. Yönetici ise "banka verisi silindi" mesajını görürdü. Pencere eski tek SaveChanges'tekinden geniştir; Obifin tarafı paylaşılan kullanıcı ya da ulaşılamadı olduğunda yeni hareket gelmesi olasıdır. Artık `RemoveAndDeleteAsync` Obifin çağrısından ve partilerden ÖNCE bağlantıyı tek SaveChanges'le durdurur: `StopAsync` ile aynı `MarkStopped` (`Disabled`, Disabled değilse `DisabledAt` ve `LastError`, `DisabledByAdmin`, yeni `UpdatedAt`). Çekimin kimlik koruması yarıdaki turun kaydını düşürür, sonraki turlar ve "Şimdi çek" Disabled bağlantıyı atlar, `MatchingActive` kapısı eşleştirmeyi kapatır. Kapıyı durdurmadan önce geçmiş tek bir yazı kalabilir (denetim ile kayıt arası); pencere saniyelerden milisaniyelere iner. Silme yarıda düşerse bağlantı Disabled kalır: güvenli yön; yönetici yeniden basar, basmazsa hizmet sonu sayacı işler. Test: `Kaldir_ve_sil_once_baglantiyi_tek_kayitla_durdurur_sonra_Obifine_gider_ve_siler` (ilk SaveChanges yalnız durdurmadır; Obifin çağrısı anında depodaki bağlantı Disabled).
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankConnectionTerminator.cs`
@@ -5003,16 +5004,21 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 /// kayıt açar; onaysız hesap reddedilip verisi silinir (Ö-10).</summary>
 public sealed class BankConnectionTerminatorTests
 {
-    /// <summary>Her SaveChanges'te silinen hareket sayısını kaydeder: parti sınırı kanıtı.</summary>
-    private sealed class DeletedCountInterceptor : SaveChangesInterceptor
+    /// <summary>Her SaveChanges'in içeriği: silinen hareket sayısı (parti sınırı kanıtı), silinen satır sayısı ve o kayıtta
+    /// değişen Obifin bağlantısının durumu ("Kaldır ve sil"in bağlantıyı silmeden önce durdurduğunun kanıtı).</summary>
+    private sealed class SaveLogInterceptor : SaveChangesInterceptor
     {
         public List<int> DeletedTransactionsPerSave { get; } = new();
+        public List<(int DeletedRows, ObifinConnectionStatus? ConnectionStatus)> Saves { get; } = new();
 
         public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
             InterceptionResult<int> result, CancellationToken cancellationToken = default)
         {
-            DeletedTransactionsPerSave.Add(eventData.Context!.ChangeTracker.Entries<BankTransaction>()
-                .Count(e => e.State == EntityState.Deleted));
+            var tracker = eventData.Context!.ChangeTracker;
+            DeletedTransactionsPerSave.Add(tracker.Entries<BankTransaction>().Count(e => e.State == EntityState.Deleted));
+            Saves.Add((tracker.Entries().Count(e => e.State == EntityState.Deleted),
+                tracker.Entries<ObifinConnection>().Where(e => e.State == EntityState.Modified)
+                    .Select(e => (ObifinConnectionStatus?)e.Entity.Status).FirstOrDefault()));
             return ValueTask.FromResult(result);
         }
     }
@@ -5022,16 +5028,20 @@ public sealed class BankConnectionTerminatorTests
         public List<ObifinBankConnectionDto> Connections { get; } = new();
         public List<ObifinAccountDto> Accounts { get; } = new();
         public Func<Exception>? ListFails { get; set; }
+        /// <summary>Bağlantı listesi istenmeden hemen önce: Obifin çağrısı anındaki yerel durumu okumak için.</summary>
+        public Func<Task>? BeforeList { get; set; }
         public HashSet<long> RemoveFails { get; } = new();
         public List<long> Removed { get; } = new();
         /// <summary>Obifin'e giden her çağrı (bağlantı listesi, hesap listesi, kaldırma).</summary>
         public int Calls { get; private set; }
 
-        public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
+        public async Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c,
+            CancellationToken ct = default)
         {
             Calls++;
-            return ListFails is { } fail ? Task.FromException<IReadOnlyList<ObifinBankConnectionDto>>(fail())
-                : Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>(Connections.ToList());
+            if (BeforeList is { } hook) await hook();
+            if (ListFails is { } fail) throw fail();
+            return Connections.ToList();
         }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
         {
@@ -5266,6 +5276,41 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Kaldir_ve_sil_once_baglantiyi_tek_kayitla_durdurur_sonra_Obifine_gider_ve_siler()
+    {
+        // Partili silme saniyeler sürer, yönetici sayfası obifin-poll kilidini almaz. Bağlantı en son adıma kadar Verified
+        // kalsaydı arada koşan çekim turunun kaydı kimlik korumasından geçer (UpdatedAt değişmemiş), sink ve telafi taraması
+        // yazar; döngüden sonra yazılan satır bağlantısız lisansta, imha kaydı dışında kalırdı. İlk kayıt yalnız durdurmadır,
+        // Obifin çağrısı anında depodaki bağlantı durdurulmuştur.
+        var log = new SaveLogInterceptor();
+        using var db = NewDb(log); var client = new TerminatorObifin();
+        client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
+        var lic = await SeedAsync(db, client);
+        var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        seeded.Status = ObifinConnectionStatus.Verified;
+        seeded.UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var before = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        ObifinConnection? atObifinCall = null;
+        client.BeforeList = async () =>
+            atObifinCall = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        log.Saves.Clear();
+
+        await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "admin",
+            CancellationToken.None);
+
+        log.Saves[0].Should().Be((0, (ObifinConnectionStatus?)ObifinConnectionStatus.Disabled),
+            "ilk kayıt yalnız durdurma: hiçbir satır silinmeden");
+        atObifinCall.Should().NotBeNull();
+        (atObifinCall!.Status, atObifinCall.DisabledByAdmin).Should().Be((ObifinConnectionStatus.Disabled, true));
+        atObifinCall.DisabledAt.Should().NotBeNull("silme yarıda düşerse hizmet sonu sayacı işler");
+        atObifinCall.UpdatedAt.Should().BeAfter(before.UpdatedAt, "yarıdaki çekim turunun kimlik koruması kaydını düşürsün");
+        log.Saves.Skip(1).Should().Contain(s => s.DeletedRows > 0, "silme durdurmadan sonra");
+        client.Removed.Should().Equal(501L);
+        (await db.ObifinConnections.AnyAsync(c => c.LicenseId == lic)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Yerel_silme_Obifine_gitmez_kimligi_banka_baglantisini_ve_onayli_hesabi_IBANsiz_tutar_isaret_yazar()
     {
         // Otomatik hizmet sonu işi (Görev 14) bankaapi/sil çağırmaz: Obifin tarafını yönetici "Kaldır ve sil" ile kapatır. O da
@@ -5373,7 +5418,7 @@ public sealed class BankConnectionTerminatorTests
     public async Task Yerel_silme_parti_parti_yapilir_izleyici_birikmez_kayit_toplami_tutar()
     {
         // Saklama işinin kalıbı: lisansın bütün satırları bir kerede yüklenmez; her parti kaydını kendi SaveChanges'inde yazar.
-        var counter = new DeletedCountInterceptor();
+        var counter = new SaveLogInterceptor();
         using var db = NewDb(counter); var client = new TerminatorObifin();
         var lic = await SeedAsync(db, client);   // 1 hareket
         var now = DateTimeOffset.UtcNow;
@@ -5718,8 +5763,9 @@ public sealed record BankAccountRejectionResult(int Transactions, int Matches, i
 /// verisinin silinmesi (KVKK K-6, Ö-9); Obifin'in yazılı silme teyidinin kaydı; onaysız hesabın reddi (Ö-10).
 /// <see cref="BankHasher"/> İSTEMEZ: banka modülü anahtarsız kapalıyken de durdurma ve silme çalışır (silme KVKK yükümlülüğü).
 /// <para><b>Kaldır ve sil</b> (<see cref="RemoveAndDeleteAsync"/>, yalnız yöneticinin eylemi — <c>bankaapi/sil</c>'i çağıran
-/// TEK yol): Obifin tarafı lisansa özgüdür, bkz. <see cref="RemoveFromObifinAsync"/>. Sonra lisansın bütün banka verisi ve Obifin
-/// kimliği silinir, imha kaydı aynı işlemde yazılır. Obifin API'sinde hareket silme ucu yok: Obifin'deki kopyanın silinmesi
+/// TEK yol): önce bağlantı tek SaveChanges'le durdurulur (partiler sürerken çekim ve eşleştirme yazmasın). Obifin tarafı lisansa
+/// özgüdür, bkz. <see cref="RemoveFromObifinAsync"/>. Sonra lisansın bütün banka verisi ve Obifin kimliği silinir, imha kaydı
+/// aynı işlemde yazılır. Obifin API'sinde hareket silme ucu yok: Obifin'deki kopyanın silinmesi
 /// yazılı istenir. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır.</para>
 /// <para><b>Yalnız yerel silme</b> (<see cref="PurgeLocalDataAsync"/>, otomatik hizmet sonu işi): Obifin'e gidilmez; banka
 /// verisi silinir, "Kaldır ve sil"in sahiplik kanıtı kalır — Obifin kimliği, yerel <c>BankConnections</c> (yalnız
@@ -5768,21 +5814,24 @@ public sealed class BankConnectionTerminator
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException(NoConnectionMessage);
-        var now = DateTimeOffset.UtcNow;
-        if (conn.Status == ObifinConnectionStatus.Disabled)
-        {
-            if (conn.DisabledByAdmin) return;
-            conn.DisabledByAdmin = true;
-            conn.UpdatedAt = now;
-            await _db.SaveChangesAsync(ct);
-            return;
-        }
-        conn.Status = ObifinConnectionStatus.Disabled;
-        conn.DisabledAt = now;
-        conn.DisabledByAdmin = true;
-        conn.LastError = StoppedByAdminMessage;
-        conn.UpdatedAt = now;
+        if (conn.Status == ObifinConnectionStatus.Disabled && conn.DisabledByAdmin) return;
+        MarkStopped(conn, DateTimeOffset.UtcNow);
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Yönetici durdurması, kaydetmez (<see cref="StopAsync"/>, <see cref="RemoveAndDeleteAsync"/>): Disabled + DisabledAt
+    /// (hizmet sonu sayacı) + LastError; zaten Disabled ise (lisans bitişi) DisabledAt ve LastError değişmez, sayaç baştan
+    /// başlamaz. Her durumda DisabledByAdmin ve yeni UpdatedAt: çekimin kimlik koruması yarıdaki turun kaydını düşürür.</summary>
+    private static void MarkStopped(ObifinConnection conn, DateTimeOffset now)
+    {
+        if (conn.Status != ObifinConnectionStatus.Disabled)
+        {
+            conn.Status = ObifinConnectionStatus.Disabled;
+            conn.DisabledAt = now;
+            conn.LastError = StoppedByAdminMessage;
+        }
+        conn.DisabledByAdmin = true;
+        conn.UpdatedAt = now;
     }
 
     /// <summary>Yalnız lisans geçerliyse: Unverified'a döner (yönetici Doğrula'ya basar), hizmet sonu alanları boşalır.</summary>
@@ -5801,12 +5850,21 @@ public sealed class BankConnectionTerminator
         await _db.SaveChangesAsync(ct);
     }
 
-    /// <summary>Yöneticinin "Kaldır ve sil"i: Obifin'de bu lisansa ait banka bağlantılarını kaldırır (lisansa özgü,
-    /// <see cref="RemoveFromObifinAsync"/>), sonra lisansın bütün banka verisini ve Obifin kimliğini siler.</summary>
+    /// <summary>Yöneticinin "Kaldır ve sil"i. ÖNCE bağlantıyı tek SaveChanges'le durdurur (<see cref="MarkStopped"/>): yönetici
+    /// sayfası <c>obifin-poll</c> kilidini almaz, partili silme saniyeler sürer. Bağlantı en son adıma kadar Verified kalsaydı arada
+    /// koşan çekim turunun kaydı kimlik korumasından geçer (UpdatedAt değişmemiş), sink ve telafi taraması (eşleştirme kapısı açık)
+    /// yeni hareket ve eşleşme yazardı; döngüden sonra yazılan satır bağlantısız lisansta kalır, imha kaydına girmezdi. Durdurmayla
+    /// yarıdaki turun kaydı düşer, sonraki turlar Disabled bağlantıyı atlar, <see cref="ObifinConnectionService.MatchingActive"/>
+    /// eşleştirmeyi kapatır. Silme yarıda düşerse bağlantı Disabled kalır (güvenli yön). Sonra Obifin'de bu lisansa ait banka
+    /// bağlantıları kaldırılır (lisansa özgü, <see cref="RemoveFromObifinAsync"/>) ve lisansın bütün banka verisi ile Obifin
+    /// kimliği silinir.</summary>
     public async Task<BankRemovalResult> RemoveAndDeleteAsync(Guid licenseId, string trigger, string actor, CancellationToken ct)
     {
-        var conn = await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
+        var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException(NoConnectionMessage);
+        MarkStopped(conn, DateTimeOffset.UtcNow);
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();   // conn bundan sonra yalnız okunur (kimlik, lisans)
         var obifin = await RemoveFromObifinAsync(conn, ct);
         return await DeleteLocalWithRetryAsync(licenseId, trigger, actor, keepConnection: false, obifin, ct);
     }
@@ -6977,13 +7035,14 @@ bankaapi/sil ile kaldırır, paylaşılan Obifin kullanıcısında Obifin'e hiç
 gitmez, sahibi doğrulanamayanı elle kontrole bırakır; lisansın banka
 verisini partilerle siler, imha kaydı yazar ve Obifin'in yazılı silme
 teyidini bekleyen kayıt açar (Teyit alındı). Kaldırma lisans anahtarıyla
-yazılı onay ister. Durdurulmuş ya da yerel verisi silinmiş bağlantıda
-eşleştirme, dekont bağdaştırması ve IBAN öğrenme de durur. Onaysız hesap
-reddedilip verisi silinir, onay geri alınabilir. Otomatik iş için Obifin'e
-gitmeyen yerel silme: Kaldır ve sil'in sahiplik kanıtı (yerel banka
-bağlantısı, IBAN'sız onaylı hesap) kalır. Obifin bağlantısı varken yayıncı
-silmesi reddedilir
-(KVKK ön inceleme K-6, Ö-9, Ö-10, P1-10).
+yazılı onay ister ve silmeden önce bağlantıyı tek kayıtla durdurur
+(partiler sürerken çekim ve eşleştirme yazmaz). Durdurulmuş ya da yerel
+verisi silinmiş bağlantıda eşleştirme, dekont bağdaştırması ve IBAN
+öğrenme de durur. Onaysız hesap reddedilip verisi silinir, onay geri
+alınabilir. Otomatik iş için Obifin'e gitmeyen yerel silme: Kaldır ve
+sil'in sahiplik kanıtı (yerel banka bağlantısı, IBAN'sız onaylı hesap)
+kalır. Obifin bağlantısı varken yayıncı silmesi reddedilir (KVKK ön
+inceleme K-6, Ö-9, Ö-10, P1-10).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
