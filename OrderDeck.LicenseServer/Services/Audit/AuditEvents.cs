@@ -45,10 +45,13 @@ public static class AuditEvents
 
     /// <summary>İmha olayları (Silme Yönetmeliği md. 7/3: en az üç yıl). <see cref="AuditRetentionJobs"/> bunları
     /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta değil <see cref="AuditRetentionOptions.DestructionRetentionMonths"/>'ta
-    /// budar. YALNIZ ayrıntısı kişisel veri İÇERMEYEN (sayılar, kimlikler) olaylar girer: muafiyet kişisel veriyi daha uzun
-    /// tutmamalı. <see cref="CustomerPurged"/> BİLEREK yok — ayrıntısında silinen yayıncının e-postası var, 24 ayda gider;
-    /// yayıncı silmesinin 3 yıllık kaydı kişisel veri içermeyen <c>DataDestructionRecords</c>. Yeni bir silme olayı eklenirse
-    /// ayrıntısı kişisel veri içermiyorsa buraya da eklenir.</summary>
+    /// budar. Muafiyet kişisel veriyi daha uzun tutmamalı: YALNIZ ayrıntısı kişisel veri İÇERMEYEN (sayılar, kimlikler) olaylar
+    /// girer, satırın kendi sütunlarındaki kişisel veri — silmeyi yapan yöneticinin kullanıcı adı ve IP'si — ise
+    /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta maskelenir (ad yöneticinin kimliğine çevrilir, IP boşaltılır;
+    /// <see cref="AuditRetentionJobs.MaskedTarget"/>). Satır 36 aya kadar yalnız takma kimlikler ve sayılarla kalır (KVKK Ö-14).
+    /// <see cref="CustomerPurged"/> BİLEREK yok — ayrıntısında silinen yayıncının e-postası var, 24 ayda gider; yayıncı
+    /// silmesinin 3 yıllık kaydı kişisel veri içermeyen <c>DataDestructionRecords</c>. Yeni bir silme olayı eklenirse ayrıntısı
+    /// kişisel veri içermiyorsa buraya da eklenir.</summary>
     public static readonly IReadOnlySet<string> DestructionEvents = new HashSet<string>(StringComparer.Ordinal)
     {
         ShopperPurged,

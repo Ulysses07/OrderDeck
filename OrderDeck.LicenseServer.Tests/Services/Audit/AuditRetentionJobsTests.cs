@@ -164,6 +164,41 @@ public class AuditRetentionJobsTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Imha_olayinin_satiri_24_ayda_yonetici_adini_kimligine_cevirir_IP_yi_bosaltir_bir_kez_kayda_gecer()
+    {
+        // KVKK Ö-14: 36 ay muafiyeti kişisel veriyi 24 aydan uzun tutmasın. shopper.purged satırının kendi sütunlarında silmeyi
+        // yapan yöneticinin kullanıcı adı ve IP'si var: 24 ayda ad yöneticinin kimliğine çevrilir, IP boşaltılır; satır 36 aya
+        // kadar yalnız takma kimlikler ve sayılarla kalır. Maskeleme kalıcı imha kaydına geçer; ikinci koşu aynı satırı yeniden
+        // saymaz.
+        using var db = OwnDb();
+        var adminId = Guid.NewGuid();
+        AuditLogEntry Purge(int monthsAgo) => new()
+        {
+            Id = Guid.NewGuid(), EventType = AuditEvents.ShopperPurged,
+            OccurredAt = DateTimeOffset.UtcNow.AddMonths(-monthsAgo).AddDays(-1), AdminId = adminId,
+            AdminUsername = $"yonetici-{Guid.NewGuid():N}", IpAddress = "192.0.2.10", TargetType = AuditTargets.Shopper,
+        };
+        var old = Purge(30);
+        var recent = Purge(12);
+        db.AuditLogs.AddRange(old, recent);
+        await db.SaveChangesAsync();
+        var recentName = recent.AdminUsername;
+        db.ChangeTracker.Clear();
+
+        await Make(db).PruneAsync(CancellationToken.None);
+        await Make(db).PruneAsync(CancellationToken.None);
+
+        var rows = await db.AuditLogs.AsNoTracking().ToDictionaryAsync(a => a.Id);
+        rows[old.Id].Should().Match<AuditLogEntry>(a => a.AdminUsername == adminId.ToString() && a.IpAddress == null
+            && a.AdminId == adminId && a.EventType == AuditEvents.ShopperPurged);
+        rows[recent.Id].Should().Match<AuditLogEntry>(a => a.AdminUsername == recentName && a.IpAddress == "192.0.2.10");
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.Action == DataDestruction.Actions.Masked).ToListAsync())
+            .Should().ContainSingle().Which.Should().Match<DataDestructionRecord>(r => r.Target == AuditRetentionJobs.MaskedTarget
+                && r.RowCount == 1 && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
+                && r.LicenseId == null);
+    }
+
+    [Fact]
     public async Task Budama_her_partide_imha_kaydi_ve_sonda_kosu_kaydi_yazar()
     {
         // KVKK Ö-13 / iç imha prosedürü §4.2: denetim kaydı budaması da kişisel veri siler (customer.purged'ın e-postası dahil);
