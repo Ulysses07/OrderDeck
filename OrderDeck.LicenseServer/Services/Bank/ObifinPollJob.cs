@@ -135,8 +135,9 @@ public sealed class ObifinPollJob
         {
             if (conn.BackfillCompletedAt is null)
             {
-                // KVKK Ö-5: geçmiş 90 gün çekilmez. Çapa ilk sayfanın kaydıyla yazılır (yarıda kalan ilk çekim sonraki turda
-                // aynı çapayla sürer) ve her turda uygulanır: artımlı pencere de UpsertAsync de ondan eskisini almaz.
+                // KVKK Ö-5: geçmiş 90 gün çekilmez. Çapa ilk kaydedilen sayfayla yazılır (yarıda kalan ilk çekim sonraki turda
+                // aynı çapayla sürer; hiç kayıt yapmadan düşen tur çapayı yazmaz, sonraki tur kendi gününden hesaplar) ve her
+                // turda uygulanır: artımlı pencere de UpsertAsync de ondan eskisini almaz.
                 conn.InitialCollectFrom ??= today.AddDays(-InitialGraceDays);
                 long? maxId = conn.LastObifinTransactionId;
                 var start = conn.InitialCollectFrom.Value;
