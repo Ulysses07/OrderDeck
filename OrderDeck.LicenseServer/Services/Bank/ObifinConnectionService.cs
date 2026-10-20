@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -258,6 +259,7 @@ public sealed class ObifinConnectionService
             _log.LogInformation("Obifin kimliği değişti — lisans={LicenseId}: eşleşme silinirken eşzamanlı bir yazıyla çakıştı; "
                 + "jetonlar tazelenip bir kez yeniden deneniyor", licenseId);
             await RefreshMatchVersionsAsync(licenseId, shadow.Matches, ct);
+            RecountMatchDestruction(shadow.Matches);
             try
             {
                 await _db.SaveChangesAsync(ct);
@@ -272,6 +274,21 @@ public sealed class ObifinConnectionService
 
     private static bool IsMatchConflict(DbUpdateConcurrencyException ex)
         => ex.Entries.Count > 0 && ex.Entries.All(e => e.Entity is PaymentMatch);
+
+    /// <summary>Jeton tazelemesi arada başka bir yazıyla silinmiş eşleşmeyi izleyiciden ayırır: bu işlem onu silmez. İmha kaydı
+    /// (<see cref="ResetShadowData"/>) yalnız bu işlemin sildiğini saysın; hiçbiri kalmadıysa kayıt düşer.</summary>
+    private void RecountMatchDestruction(List<PaymentMatch> matches)
+    {
+        var record = _db.ChangeTracker.Entries<DataDestructionRecord>()
+            .Where(e => e.State == EntityState.Added && e.Entity.Target == "PaymentMatches"
+                && e.Entity.Trigger == DataDestruction.Triggers.CredentialChange)
+            .Select(e => e.Entity)
+            .SingleOrDefault();
+        if (record is null) return;
+        var deletedHere = matches.Count(m => _db.Entry(m).State == EntityState.Deleted);
+        if (deletedHere == 0) _db.Entry(record).State = EntityState.Detached;
+        else record.RowCount = deletedHere;
+    }
 
     /// <summary>Silinmek üzere yüklenmiş eşleşmelerin jetonunu DB'deki değere çeker; arada silinmiş satır izleyiciden ayrılır.
     /// DELETE'in WHERE'ine yalnız anahtar ve jeton girer. Tek sorgu, satır başına Reload değil: lisansın eşleşmesi binlerce
@@ -619,6 +636,19 @@ public sealed class ObifinConnectionService
         _db.CustomerIbanMemories.RemoveRange(memories);
         _db.PaymentMatchGaps.RemoveRange(gaps);
         _db.BankConnections.RemoveRange(bankConnections);
+
+        // KVKK Ö-13: eski hesabın gölge verisi bu işlemde silinir; kişisel veri içermeyen imha kaydı aynı SaveChanges'te (SaveAsync
+        // jeton çakışmasında yeniden dener — arada başkasının sildiği eşleşmeyi kayıttan düşer, RecountMatchDestruction —, ikinci
+        // çakışmada izleyiciyi boşaltır: kayıt silmeyle birlikte düşer).
+        const string criterion = "Obifin kimliği değişti";
+        void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
+            count, criterion, DataDestruction.Triggers.CredentialChange, DataDestruction.AdminActor);
+        Record("PaymentMatches", matches.Count);
+        Record("BankTransactions", transactions.Count);
+        Record("BankAccounts", accounts.Count);
+        Record("CustomerIbanMemories", memories.Count);
+        Record("PaymentMatchGaps", gaps.Count);
+        Record("BankConnections", bankConnections.Count);
 
         var hadCursor = conn.LastObifinTransactionId is not null || conn.BackfillCompletedAt is not null || conn.LastPolledAt is not null;
         conn.LastObifinTransactionId = null;

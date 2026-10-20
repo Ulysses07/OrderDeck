@@ -121,6 +121,16 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
         var purgeAudit = await verifyDb.AuditLogs.CountAsync(
             a => a.EventType == "customer.purged" && a.TargetId == customerId.ToString());
         purgeAudit.Should().BeGreaterThan(0);
+
+        // KVKK Ö-13: kalıcı imha kaydı yayıncı kimliğiyle (anonimleştirilmiş satır kalır) ve kişisel veri İÇERMEZ — silinen
+        // e-posta yalnız 24 ayda budanan customer.purged denetim satırında.
+        var records = await verifyDb.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == customerId).ToListAsync();
+        records.Should().Contain(r => r.Target == "CustomerBackups" && r.RowCount == 1
+            && r.Trigger == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.CustomerPurge);
+        records.Should().Contain(r => r.Target == "Customers.Email+Name+PasswordHash+Notes" && r.RowCount == 1);
+        // Girişin bıraktığı yenileme jetonu (oluşturan IP'yi taşır) da silinir ve kayda geçer.
+        records.Should().Contain(r => r.Target == "RefreshTokens" && r.RowCount >= 1);
+        System.Text.Json.JsonSerializer.Serialize(records).Should().NotContain(originalEmail);
     }
 
     [Fact]

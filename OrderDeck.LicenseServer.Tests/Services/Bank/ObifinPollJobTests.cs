@@ -10,6 +10,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -1236,5 +1237,22 @@ public sealed class ObifinPollJobTests
 
         var tx = await db.BankTransactions.SingleAsync();
         tx.Description.Should().Be($"{filler} {BankHasher.MaskIban(iban)}").And.NotContain(iban[..11]);
+    }
+
+    [Fact]
+    public async Task Kimlik_degisince_silinen_golge_veri_imha_kaydina_yazilir()
+    {
+        // KVKK Ö-13: ResetShadowData'nın toplu silmesi de kalıcı kayda geçer (yapan: aynı işlemin denetim satırındaki yönetici).
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 9, 0, 0), 100m));
+        await job.RunAsync(CancellationToken.None);
+
+        await svc.UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", null, null, CancellationToken.None, allowShadowReset: true);
+
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == lic).ToListAsync())
+            .Should().Contain(r => r.Target == "BankTransactions" && r.RowCount == 1 && r.Action == DataDestruction.Actions.Deleted
+                && r.Trigger == DataDestruction.Triggers.CredentialChange);
     }
 }

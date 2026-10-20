@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -26,6 +27,7 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kaydı, açıklaması ve maskesi sonraki adımlara hiç gelmez. Kuru koşu silmediği için bu satırları
 /// <see cref="_dryRunDeleted"/>'da işaretler ve sonraki adımlarda saymaz: tutanağa önce kuru koşunun çıktısı girer, uygulamanın
 /// çıktısıyla aynı olmalı (eşzamanlı yazı yoksa).</para>
+/// Her uygulama partisi kalıcı imha kaydını aynı işlemde yazar (tetikleyici cleanup, yapan cli; KVKK Ö-13).
 /// </summary>
 public sealed class BankDataCleanupJob
 {
@@ -75,19 +77,14 @@ public sealed class BankDataCleanupJob
         return r;
     }
 
-    // İmha kaydı eylemleri (Görev 9'daki DataDestruction.Actions ile aynı değerler; Görev 9 onlara bağlar).
-    private const string Deleted = "deleted", Nulled = "nulled", Masked = "masked";
+    private const string Deleted = DataDestruction.Actions.Deleted, Nulled = DataDestruction.Actions.Nulled,
+        Masked = DataDestruction.Actions.Masked;
 
-    /// <summary>Bir UYGULAMA partisinin imha kaydı (KVKK Ö-13): partinin SaveChanges'inden hemen önce çağrılır, kayıt silmeyle
-    /// aynı işlemde yazılır. Kuru koşuda çağrılmaz. P0'da kalıcı imha tablosu yok: yalnız günlüğe (sayılar) yazar, P0 koşusu
-    /// tutanakla kayda geçer (Prod adımları); Görev 9 gövdeyi <c>DataDestruction.Record</c>'a bağlar (tetikleyici
-    /// <c>cleanup</c>, yapan <c>cli</c>).</summary>
+    /// <summary>Bir UYGULAMA partisinin kalıcı imha kaydı (KVKK Ö-13): partinin SaveChanges'inden hemen önce çağrılır, kayıt
+    /// silmeyle aynı işlemde yazılır (parti eşzamanlılıkla geri alınırsa kayıt da düşer). Kuru koşuda çağrılmaz.</summary>
     private void RecordBatch(Guid? licenseId, string target, string action, int count, string criterion)
-    {
-        if (count > 0)
-            _log.LogDebug("bank-data-cleanup partisi: {Target} {Action} {Count} ({Criterion}), lisans={LicenseId}",
-                target, action, count, criterion, licenseId);
-    }
+        => DataDestruction.Record(_db, licenseId, target, action, count, criterion, DataDestruction.Triggers.Cleanup,
+            DataDestruction.CliActor);
 
     /// <summary>İlk çekimin TR takvim günü − <see cref="ObifinPollJob.InitialGraceDays"/> (çekim işiyle aynı kural).</summary>
     public static DateOnly AnchorFor(DateTimeOffset backfillCompletedAt)

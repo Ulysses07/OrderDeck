@@ -3,6 +3,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Backup;
+using OrderDeck.LicenseServer.Services.Privacy;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -125,6 +126,8 @@ public sealed class AdminCustomersController : ControllerBase
     /// Caller must echo the customer's current email in the request body to
     /// guard against fat-finger purges. Audit row is written with the
     /// pre-purge email so the action remains traceable.
+    /// The audit row (with the e-mail) is pruned at 24 months like any other; the 3-year destruction record is the PII-free
+    /// DataDestructionRecords rows written in the same SaveChanges (KVKK Ö-13).
     /// </summary>
     [HttpPost("{id:guid}/purge")]
     public async Task<IActionResult> Purge(Guid id, [FromBody] PurgeRequest req, CancellationToken ct)
@@ -190,6 +193,29 @@ public sealed class AdminCustomersController : ControllerBase
         customer.EmailConfirmedAt = null;
         customer.Unsubscribed = true;
         customer.Notes = null;
+
+        // KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. preEmail BURAYA girmez: e-posta
+        // yalnız 24 ayda budanan customer.purged denetim satırında. SubjectId = yayıncı hesabının kimliği (satır anonimleştirilmiş
+        // kalır): yedekten geri yüklemeden sonra silme bununla yeniden uygulanır. Sayımlar DB'den: silme henüz yazılmadı.
+        var actor = User.FindFirst("username")?.Value ?? User.Identity?.Name ?? DataDestruction.AdminActor;
+        const string criterion = "yayıncı silme talebi";
+        void Record(string target, string action, int count, string why = criterion) => DataDestruction.Record(_db, null, target,
+            action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
+        // Lisansa bağlı satırlar (siparişler, katalog, banka verisi …) ayrıca sayılmaz: lisansla birlikte FK cascade'iyle gider.
+        Record("Licenses", DataDestruction.Actions.Deleted, licenseIds.Count, criterion + "; bağlı satırlar FK cascade ile");
+        Record("Activations", DataDestruction.Actions.Deleted,
+            licenseIds.Count == 0 ? 0 : await _db.Activations.CountAsync(a => licenseIds.Contains(a.LicenseId), ct));
+        Record("CustomerBackups", DataDestruction.Actions.Deleted, backupRows.Count);
+        Record("EmailLogs", DataDestruction.Actions.Deleted, await _db.EmailLogs.CountAsync(e => e.CustomerId == id, ct));
+        Record("RefreshTokens", DataDestruction.Actions.Deleted, await _db.RefreshTokens.CountAsync(r => r.CustomerId == id, ct));
+        Record("PasswordResetTokens", DataDestruction.Actions.Deleted,
+            await _db.PasswordResetTokens.CountAsync(p => p.CustomerId == id, ct));
+        Record("EmailConfirmationTokens", DataDestruction.Actions.Deleted,
+            await _db.EmailConfirmationTokens.CountAsync(t => t.CustomerId == id, ct));
+        Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, configIds.Count);
+        Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, configIds.Count == 0 ? 0
+            : await _db.IntakeFormSubmissions.CountAsync(s => configIds.Contains(s.IntakeFormConfigId), ct));
+        Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
 
         try
         {

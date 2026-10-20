@@ -10,9 +10,9 @@ namespace OrderDeck.LicenseServer.Tools;
 /// Konteyner içinde elle koşulur:
 ///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup [--license &lt;guid&gt;] [--apply]
 /// KVKK düzeltmelerinden önce yazılmış banka verisini yeni kurallara indirir; kurallar <see cref="BankDataCleanupJob"/>'ta.
-/// --apply yoksa kuru koşu: uygulamanın sayılarını hesaplar, hiçbir şey yazmaz. Önce kuru koşu, çıktı tutanağa. Saklama işi
-/// (04:57 UTC), shopper silmesi ya da banka veri talebi silmesi sürerken koşturulmaz: maskeleme adımları oku-değiştir-yaz
-/// yapar, arada boşaltılan metni eski hâliyle geri yazabilirdi.
+/// --apply yoksa kuru koşu: uygulamanın sayılarını hesaplar, hiçbir şey yazmaz. Önce kuru koşu, çıktı tutanağa. P1'den sonra
+/// uygulama DataDestructionRecords'a da yazar. Saklama işi (04:57 UTC), shopper silmesi ya da banka veri talebi silmesi
+/// sürerken koşturulmaz: maskeleme adımları oku-değiştir-yaz yapar, arada boşaltılan metni eski hâliyle geri yazabilirdi.
 /// <para>Çıkış kodları: 0 tamam; 1 bazı partiler eşzamanlı bir yazı (eşleştirme ya da bağlantı kimliği değişimi) yüzünden geri
 /// alındı ya da atlandı — yeniden çalıştır (idempotent); 2 kullanım/yapılandırma.</para>
 /// <para>Argümanlar katı (<see cref="GroupCustomers"/> kalıbı): tanınmayan, yinelenen ya da değeri eksik argüman → 2,

@@ -329,6 +329,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinPollJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinAccountRefreshJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankJobAlerts>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankMatchSweepJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
@@ -978,6 +979,13 @@ public class Program
                 "security-data-retention",
                 j => j.AnonymiseAsync(CancellationToken.None),
                 "40 3 * * *");  // 03:40 UTC daily
+
+            // İmha kayıtlarının veritabanı dışındaki kopyası (KVKK Ö-12/Ö-13): saatlik, :13. Yedekten geri yüklemeden sonra
+            // silmeler bu e-postalardan yeniden uygulanır (deploy/README.md, Geri yükleme).
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>(
+                OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob.Cron);
 
             // Weekly backup-restore drill — proves an actual production blob
             // round-trips through decrypt + ZIP + SQLite integrity. Failures

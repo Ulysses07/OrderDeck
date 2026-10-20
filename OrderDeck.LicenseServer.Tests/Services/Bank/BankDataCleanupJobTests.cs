@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -331,5 +332,26 @@ public sealed class BankDataCleanupJobTests
         (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == other)).InitialCollectFrom.Should().BeNull();
         (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == target)).InitialCollectFrom
             .Should().Be(new DateOnly(2026, 9, 18));
+    }
+
+    [Fact]
+    public async Task Uygulama_her_partide_imha_kaydi_yazar_kuru_kosu_yazmaz()
+    {
+        // KVKK Ö-13: tek seferlik temizlik de kalıcı kayda geçer (tetikleyici cleanup, yapan cli), silmeyle aynı işlemde.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        db.BankTransactions.AddRange(Tx(lic, 30m, direction: BankTransactionDirection.Outgoing),
+            Tx(lic, 10m, rawJson: """{"Aciklama":"x","Bakiye":"1"}""", taxIdHash: Hex64()));
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(null, apply: false, CancellationToken.None);
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0, "kuru koşu hiçbir şey yazmaz");
+
+        await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.Cleanup && x.Actor == DataDestruction.CliActor);
+        records.Should().Contain(x => x.Target == "BankTransactions" && x.Action == DataDestruction.Actions.Deleted && x.RowCount == 1);
+        records.Should().Contain(x => x.Target == "BankTransactions.CounterpartyTaxIdHash" && x.Action == DataDestruction.Actions.Nulled);
+        records.Should().Contain(x => x.Target == "BankTransactions.RawJson" && x.Action == DataDestruction.Actions.Masked);
     }
 }

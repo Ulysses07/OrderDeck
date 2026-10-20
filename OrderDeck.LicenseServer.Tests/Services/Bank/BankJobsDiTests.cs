@@ -67,6 +67,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         sp.GetRequiredService<BankHasher>().Should().NotBeNull("Testing'de HashKey ApiFactory'den gelir");
         sp.GetRequiredService<IObifinClient>().Should().BeOfType<NullObifinClient>("test ortamı Obifin'e bağlanmaz");
         sp.GetRequiredService<IBankTransactionSink>().Should().NotBeNull();
+        sp.GetRequiredService<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>().Should().NotBeNull();
     }
 
     [Theory]
