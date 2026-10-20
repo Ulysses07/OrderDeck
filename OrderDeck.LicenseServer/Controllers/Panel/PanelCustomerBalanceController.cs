@@ -60,9 +60,13 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         Guid? ReversesTransactionId,
         DateTimeOffset CreatedAt);
 
+    /// <summary>Ortak bakiye (spec 2026-10-11 §4.6): kişinin bir üyesi — WPF'in Ayır onayı kullanır; panel yok sayar.</summary>
+    public sealed record MemberDto(Guid WpfCustomerId, decimal Balance, bool Purged);
+
     public sealed record BalanceDetailsResponse(
         BalanceDto Balance,
-        TransactionDto[] Transactions);
+        TransactionDto[] Transactions,
+        MemberDto[] Members);
 
     // ── GET — mevcut bakiye + son N transaction ─────────────────────────────
 
@@ -78,24 +82,29 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        // Yanıttaki Id rotadaki Id'dir (önceki davranış); bakiye asıl kaydınki.
-        var balance = await _db.CustomerBalances
+        // Ortak bakiye S1, satır kipi (spec 2026-10-11 §4.6): bakiye ve hareketler rota satırınınki, hareketler
+        // gruplara toplanmış; take grup sayar. UpdatedAt son para hareketidir (M9): grup değişimi kancasının ve
+        // birleştiricinin jeton dokunuşu "güncellendi" zamanını oynatmaz.
+        var row = await _db.CustomerBalances.AsNoTracking()
             .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
-            .Select(b => new BalanceDto(wpfCustomerId, b.LicenseId, b.Balance, b.UpdatedAt))
-            .FirstOrDefaultAsync(ct)
-            ?? new BalanceDto(wpfCustomerId, licenseId, 0m, DateTimeOffset.UtcNow);
+            .Select(b => new { b.Balance, b.UpdatedAt })
+            .FirstOrDefaultAsync(ct);
+        var lastMovement = await _person.LastMovementAtAsync(licenseId, [canonicalId], ct);
+        // Yanıttaki Id rotadaki Id'dir (önceki davranış); bakiye asıl kaydınki.
+        var balance = new BalanceDto(wpfCustomerId, licenseId, row?.Balance ?? 0m,
+            lastMovement ?? row?.UpdatedAt ?? DateTimeOffset.UtcNow);
 
-        var transactions = await _db.CustomerBalanceTransactions
-            .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == canonicalId)
-            .OrderByDescending(t => t.CreatedAt)
-            .Take(take)
-            .Select(t => new TransactionDto(
-                t.Id, t.Amount, t.Kind,
-                t.OriginalAmount, t.ShippingDeducted,
-                t.Reason, t.ReversesTransactionId, t.CreatedAt))
-            .ToArrayAsync(ct);
+        var history = await _person.HistoryAsync(licenseId, [canonicalId], take, ct);
+        var transactions = history
+            .Select(h => new TransactionDto(h.Id, h.Amount, h.Kind, h.OriginalAmount, h.ShippingDeducted,
+                h.Reason, h.ReversesTransactionId, h.CreatedAt))
+            .ToArray();
 
-        return Ok(new BalanceDetailsResponse(balance, transactions));
+        // Members (§4.6): iki kipte de S üzerinden, üye başına satır bakiyesi (silinmişler dahil).
+        var person = await _person.MembersAsync(licenseId, canonicalId, ct);
+        var members = person.Members.Select(m => new MemberDto(m.WpfCustomerId, m.Balance, m.Purged)).ToArray();
+
+        return Ok(new BalanceDetailsResponse(balance, transactions, members));
     }
 
     // ── POST refund-full ────────────────────────────────────────────────────

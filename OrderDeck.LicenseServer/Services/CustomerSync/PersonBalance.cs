@@ -281,6 +281,78 @@ public sealed class PersonBalance
         return legs.Any(l => !owners.TryGetValue(l.Id, out var owner) || owner != l.WpfCustomerId);
     }
 
+    // ── Toplanmış liste (§4.6, §4.10, M9) ────────────────────────────────────
+
+    /// <summary>Listedeki bir grup.</summary>
+    /// <param name="Id">Çapanın Id'si (eski satırda kendi Id'si).</param>
+    /// <param name="AnchorWpfCustomerId">Çapanın satırı — Shopper'ın açıklama maskesi (K4) için.</param>
+    /// <param name="Amount">Grubun verilen satırlardaki bacaklarının toplamı.</param>
+    public sealed record HistoryEntry(
+        Guid Id, Guid AnchorWpfCustomerId, decimal Amount, string Kind, decimal? OriginalAmount,
+        decimal? ShippingDeducted, string? Reason, Guid? ReversesTransactionId, DateTimeOffset CreatedAt);
+
+    /// <summary>
+    /// Hareketleri gruba göre toplar (spec §4.6; saf). Aynı <c>DrawGroupId ?? Id</c>'li satırlar tek satır olur;
+    /// tutar verilen satırların toplamı (ayırmadan sonra öbür kişide kalan bacaklar sayılmaz — listedeki tutarların
+    /// toplamı her zaman bakiyeye eşit); tür, tutarlar, açıklama ve iptal bağı çapadan. Çapası bulunmayan (yetim)
+    /// bacak kendi alanlarıyla listelenir; <c>verify</c> onu ayrıca sayar. Yeniden eskiye sıralı; bir grubun bütün
+    /// satırları aynı <c>CreatedAt</c>'le yazıldığı için grup bölünmez.
+    /// </summary>
+    /// <param name="rows">Listelenecek satırların hareketleri.</param>
+    /// <param name="anchors">Grup anahtarı → çapa (çapa başka bir satırda olabilir).</param>
+    public static IReadOnlyList<HistoryEntry> AggregateHistory(
+        IEnumerable<CustomerBalanceTransaction> rows, IReadOnlyDictionary<Guid, CustomerBalanceTransaction> anchors) =>
+        rows
+            .GroupBy(GroupKeyOf)
+            .Select(g =>
+            {
+                var anchor = anchors.TryGetValue(g.Key, out var found) ? found : g.OrderBy(r => r.Id).First();
+                return new HistoryEntry(
+                    g.Key, anchor.WpfCustomerId, g.Sum(r => r.Amount), anchor.Kind, anchor.OriginalAmount,
+                    anchor.ShippingDeducted, anchor.Reason, anchor.ReversesTransactionId, g.Max(r => r.CreatedAt));
+            })
+            .OrderByDescending(e => e.CreatedAt)
+            .ThenByDescending(e => e.Id)
+            .ToList();
+
+    /// <summary>
+    /// Verilen satırların son <paramref name="take"/> GRUBU, toplanmış (§4.6). Satır kipinde tek satır; havuz kipinde
+    /// (S2) S'nin bütün üyeleri.
+    /// </summary>
+    public async Task<IReadOnlyList<HistoryEntry>> HistoryAsync(
+        Guid licenseId, IReadOnlyCollection<Guid> rowIds, int take, CancellationToken ct)
+    {
+        var ids = rowIds.ToList();
+        var keys = await _db.CustomerBalanceTransactions.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && ids.Contains(t.WpfCustomerId))
+            .GroupBy(t => t.DrawGroupId ?? t.Id)
+            .Select(g => new { g.Key, At = g.Max(t => t.CreatedAt) })
+            .OrderByDescending(x => x.At)
+            .ThenByDescending(x => x.Key)
+            .Take(take)
+            .Select(x => x.Key)
+            .ToListAsync(ct);
+        if (keys.Count == 0) return [];
+
+        var rows = await _db.CustomerBalanceTransactions.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && ids.Contains(t.WpfCustomerId) && keys.Contains(t.DrawGroupId ?? t.Id))
+            .ToListAsync(ct);
+        var anchors = await _db.CustomerBalanceTransactions.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && keys.Contains(t.Id))
+            .ToDictionaryAsync(t => t.Id, ct);
+        return AggregateHistory(rows, anchors);
+    }
+
+    /// <summary>Verilen satırların son para hareketinin anı (M9): kilit dokunuşu "güncellendi" zamanını oynatmaz.</summary>
+    public async Task<DateTimeOffset?> LastMovementAtAsync(
+        Guid licenseId, IReadOnlyCollection<Guid> rowIds, CancellationToken ct)
+    {
+        var ids = rowIds.ToList();
+        return await _db.CustomerBalanceTransactions.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && ids.Contains(t.WpfCustomerId))
+            .MaxAsync(t => (DateTimeOffset?)t.CreatedAt, ct);
+    }
+
     // ── Hata tanıma ──────────────────────────────────────────────────────────
 
     /// <summary>N01 hakemi: 2601/2627 + <c>ReversesTransactionId</c> indeksinin adı (öbür tekil yarışlar karışmasın).</summary>

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -17,7 +18,15 @@ namespace OrderDeck.LicenseServer.Controllers.Shopper;
 public sealed class ShopperBalanceController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public ShopperBalanceController(LicenseDbContext db) => _db = db;
+    private readonly CustomerIdResolver _customerIds;
+    private readonly PersonBalance _person;
+
+    public ShopperBalanceController(LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person)
+    {
+        _db = db;
+        _customerIds = customerIds;
+        _person = person;
+    }
 
     public sealed record BalanceDto(decimal Balance, DateTimeOffset UpdatedAt);
 
@@ -56,21 +65,25 @@ public sealed class ShopperBalanceController : ControllerBase
             .FirstOrDefaultAsync(ct);
         if (link is null) return NotFound();
 
-        var balance = await _db.CustomerBalances
-            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == link.WpfCustomerId)
-            .Select(b => new BalanceDto(b.Balance, b.UpdatedAt))
-            .FirstOrDefaultAsync(ct)
-            ?? new BalanceDto(0m, DateTimeOffset.UtcNow);
+        // Ortak bakiye (spec 2026-10-11 §4.10): kişi çözümü asıl kayıttan başlar. Birleştirme bağlantıyı taşıdığı
+        // için bugün çoğunlukla aynı Id; eski bir bağlantı kopyaya işaret edebilir.
+        var canonicalId = await _customerIds.CanonicalOfAsync(licenseId, link.WpfCustomerId, ct);
 
-        var transactions = await _db.CustomerBalanceTransactions
-            .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == link.WpfCustomerId)
-            .OrderByDescending(t => t.CreatedAt)
-            .Take(take)
-            .Select(t => new TransactionDto(
-                t.Id, t.Amount, t.Kind,
-                t.OriginalAmount, t.ShippingDeducted,
-                t.Reason, t.CreatedAt))
-            .ToArrayAsync(ct);
+        var row = await _db.CustomerBalances.AsNoTracking()
+            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
+            .Select(b => new { b.Balance, b.UpdatedAt })
+            .FirstOrDefaultAsync(ct);
+        // UpdatedAt son para hareketidir (M9): kilit dokunuşu "güncellendi" zamanını oynatmaz.
+        var lastMovement = await _person.LastMovementAtAsync(licenseId, [canonicalId], ct);
+        var balance = new BalanceDto(row?.Balance ?? 0m, lastMovement ?? row?.UpdatedAt ?? DateTimeOffset.UtcNow);
+
+        // Satır kipi: hareketler bağlı satırınki, gruplara toplanmış (§4.10). K4 maskesi: açıklama yalnız grubun
+        // çapası bu satırdaysa döner — başka üyeden gelen grupta tutar ve tür görünür, serbest metin gizli.
+        var history = await _person.HistoryAsync(licenseId, [canonicalId], take, ct);
+        var transactions = history
+            .Select(h => new TransactionDto(h.Id, h.Amount, h.Kind, h.OriginalAmount, h.ShippingDeducted,
+                h.AnchorWpfCustomerId == canonicalId ? h.Reason : null, h.CreatedAt))
+            .ToArray();
 
         return Ok(new BalanceDetailsResponse(balance, transactions));
     }
