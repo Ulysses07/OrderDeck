@@ -27,7 +27,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kaydı, açıklaması ve maskesi sonraki adımlara hiç gelmez. Kuru koşu silmediği için bu satırları
 /// <see cref="_dryRunDeleted"/>'da işaretler ve sonraki adımlarda saymaz: tutanağa önce kuru koşunun çıktısı girer, uygulamanın
 /// çıktısıyla aynı olmalı (eşzamanlı yazı yoksa).</para>
-/// Her uygulama partisi kalıcı imha kaydını aynı işlemde yazar (tetikleyici cleanup, yapan cli; KVKK Ö-13).
+/// Her uygulama partisi kalıcı imha kaydını satırın lisansı başına, aynı işlemde yazar (tetikleyici cleanup, yapan cli; KVKK
+/// Ö-13).
 /// </summary>
 public sealed class BankDataCleanupJob
 {
@@ -81,10 +82,15 @@ public sealed class BankDataCleanupJob
         Masked = DataDestruction.Actions.Masked;
 
     /// <summary>Bir UYGULAMA partisinin kalıcı imha kaydı (KVKK Ö-13): partinin SaveChanges'inden hemen önce çağrılır, kayıt
-    /// silmeyle aynı işlemde yazılır (parti eşzamanlılıkla geri alınırsa kayıt da düşer). Kuru koşuda çağrılmaz.</summary>
-    private void RecordBatch(Guid? licenseId, string target, string action, int count, string criterion)
-        => DataDestruction.Record(_db, licenseId, target, action, count, criterion, DataDestruction.Triggers.Cleanup,
-            DataDestruction.CliActor);
+    /// silmeyle aynı işlemde yazılır (parti eşzamanlılıkla geri alınırsa kayıt da düşer). Kuru koşuda çağrılmaz.
+    /// <paramref name="rowLicenses"/> etkilenen her satırın lisansıdır: kayıt satırın lisansı başına yazılır, <c>--license</c>
+    /// verilmeden koşan parti lisansları karıştırsa da (yayıncı kendi verisinin imha kanıtını isteyebilir).</summary>
+    private void RecordBatch(IEnumerable<Guid> rowLicenses, string target, string action, string criterion)
+    {
+        foreach (var license in rowLicenses.GroupBy(l => l))
+            DataDestruction.Record(_db, license.Key, target, action, license.Count(), criterion, DataDestruction.Triggers.Cleanup,
+                DataDestruction.CliActor);
+    }
 
     /// <summary>İlk çekimin TR takvim günü − <see cref="ObifinPollJob.InitialGraceDays"/> (çekim işiyle aynı kural).</summary>
     public static DateOnly AnchorFor(DateTimeOffset backfillCompletedAt)
@@ -116,7 +122,7 @@ public sealed class BankDataCleanupJob
             r.MatchesDeleted += wouldDeleteMatches;
             return;
         }
-        var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, licenseId, "giden ya da sıfır tutarlı (K-4)", ct);
+        var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, "giden ya da sıfır tutarlı (K-4)", ct);
         r.OutgoingOrZeroDeleted = deleted;
         r.MatchesDeleted += matches;
         if (!completed) r.FailedBatches++;
@@ -177,7 +183,7 @@ public sealed class BankDataCleanupJob
             }
             var deletableCount = await deletable.CountAsync(ct);
             r.PreAnchorSkippedLinked += await before.CountAsync(ct) - deletableCount;
-            var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, c.LicenseId, "ilk çekim çapasından eski (Ö-5)", ct);
+            var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, "ilk çekim çapasından eski (Ö-5)", ct);
             r.PreAnchorDeleted += deleted;
             r.MatchesDeleted += matches;
             if (!completed) r.FailedBatches++; // çapa yazıldı: yeniden koşu aynı bağlantının kalanını siler
@@ -200,7 +206,7 @@ public sealed class BankDataCleanupJob
     /// <summary>Sorgunun seçtiği hareketleri eşleşme satırlarıyla partiler hâlinde siler. Silinen satır sorgudan düşer: her
     /// parti baştan sorgulanır. Eşzamanlı eşleştirme yazısı (jeton) partiyi geri aldırır: Completed = false.</summary>
     private async Task<(int Transactions, int Matches, bool Completed)> DeleteInBatchesAsync(
-        IQueryable<BankTransaction> query, Guid? licenseId, string criterion, CancellationToken ct)
+        IQueryable<BankTransaction> query, string criterion, CancellationToken ct)
     {
         int transactions = 0, matches = 0;
         while (true)
@@ -211,8 +217,8 @@ public sealed class BankDataCleanupJob
             var rows = await _db.PaymentMatches.Where(m => ids.Contains(m.BankTransactionId)).ToListAsync(ct);
             _db.PaymentMatches.RemoveRange(rows);
             _db.BankTransactions.RemoveRange(batch);
-            RecordBatch(licenseId, "BankTransactions", Deleted, batch.Count, criterion);
-            RecordBatch(licenseId, "PaymentMatches", Deleted, rows.Count, criterion);
+            RecordBatch(batch.Select(t => t.LicenseId), "BankTransactions", Deleted, criterion);
+            RecordBatch(rows.Select(m => m.LicenseId), "PaymentMatches", Deleted, criterion);
             try
             {
                 await _db.SaveChangesAsync(ct);
@@ -242,7 +248,7 @@ public sealed class BankDataCleanupJob
             var batch = await query.OrderBy(t => t.Id).Take(BatchSize).ToListAsync(ct);
             if (batch.Count == 0) return;
             foreach (var t in batch) t.CounterpartyTaxIdHash = null;
-            RecordBatch(licenseId, "BankTransactions.CounterpartyTaxIdHash", Nulled, batch.Count, "VKN/TCKN kodu amaçsız (Ö-2)");
+            RecordBatch(batch.Select(t => t.LicenseId), "BankTransactions.CounterpartyTaxIdHash", Nulled, "VKN/TCKN kodu amaçsız (Ö-2)");
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             r.TaxIdHashesCleared += batch.Count;
@@ -259,7 +265,7 @@ public sealed class BankDataCleanupJob
         foreach (var chunk in ids.Chunk(BatchSize))
         {
             var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id) && t.RawJson != null).ToListAsync(ct);
-            int rewrittenHere = 0, unreadableHere = 0;
+            List<Guid> rewrittenHere = new(), unreadableHere = new();
             foreach (var t in rows)
             {
                 string? rewritten;
@@ -270,20 +276,20 @@ public sealed class BankDataCleanupJob
                 catch (ObifinProtocolException)
                 {
                     // Okunamayan ham kayıt tanıya da yaramaz: boşaltılır.
-                    unreadableHere++;
+                    unreadableHere.Add(t.LicenseId);
                     t.RawJson = null;
                     continue;
                 }
                 if (rewritten == t.RawJson) continue;
-                rewrittenHere++;
+                rewrittenHere.Add(t.LicenseId);
                 t.RawJson = rewritten;
             }
-            r.RawJsonRewritten += rewrittenHere;
-            r.RawJsonUnreadableCleared += unreadableHere;
-            if (apply && rewrittenHere + unreadableHere > 0)
+            r.RawJsonRewritten += rewrittenHere.Count;
+            r.RawJsonUnreadableCleared += unreadableHere.Count;
+            if (apply && rewrittenHere.Count + unreadableHere.Count > 0)
             {
-                RecordBatch(licenseId, "BankTransactions.RawJson", Masked, rewrittenHere, "ham kayıt beyaz listesi (Ö-2)");
-                RecordBatch(licenseId, "BankTransactions.RawJson", Nulled, unreadableHere, "okunamayan ham kayıt");
+                RecordBatch(rewrittenHere, "BankTransactions.RawJson", Masked, "ham kayıt beyaz listesi (Ö-2)");
+                RecordBatch(unreadableHere, "BankTransactions.RawJson", Nulled, "okunamayan ham kayıt");
                 await _db.SaveChangesAsync(ct);
             }
             _db.ChangeTracker.Clear();
@@ -297,18 +303,18 @@ public sealed class BankDataCleanupJob
         foreach (var chunk in ids.Chunk(BatchSize))
         {
             var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id) && t.Description != null).ToListAsync(ct);
-            var maskedHere = 0;
+            var maskedHere = new List<Guid>();
             foreach (var t in rows)
             {
                 var masked = BankDescriptionMasker.Mask(t.Description);
                 if (masked == t.Description) continue;
-                maskedHere++;
+                maskedHere.Add(t.LicenseId);
                 t.Description = masked;
             }
-            r.DescriptionsMasked += maskedHere;
-            if (apply && maskedHere > 0)
+            r.DescriptionsMasked += maskedHere.Count;
+            if (apply && maskedHere.Count > 0)
             {
-                RecordBatch(licenseId, "BankTransactions.Description", Masked, maskedHere, "açıklamada IBAN/11 haneli numara (Ö-16)");
+                RecordBatch(maskedHere, "BankTransactions.Description", Masked, "açıklamada IBAN/11 haneli numara (Ö-16)");
                 await _db.SaveChangesAsync(ct);
             }
             _db.ChangeTracker.Clear();
@@ -340,16 +346,16 @@ public sealed class BankDataCleanupJob
         foreach (var chunk in ids.Chunk(BatchSize))
         {
             var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id)).ToListAsync(ct);
-            var changed = 0;
+            var changed = new List<Guid>();
             foreach (var t in rows.Where(t => NeedsRemask(t.CounterpartyIbanMasked)))
             {
                 t.CounterpartyIbanMasked = BankHasher.ShortValueMask;
-                changed++;
+                changed.Add(t.LicenseId);
             }
-            r.ShortMasksReplaced += changed;
-            if (apply && changed > 0)
+            r.ShortMasksReplaced += changed.Count;
+            if (apply && changed.Count > 0)
             {
-                RecordBatch(licenseId, "BankTransactions.CounterpartyIbanMasked", Masked, changed, criterion);
+                RecordBatch(changed, "BankTransactions.CounterpartyIbanMasked", Masked, criterion);
                 await _db.SaveChangesAsync(ct);
             }
             _db.ChangeTracker.Clear();
@@ -359,23 +365,23 @@ public sealed class BankDataCleanupJob
             .ToListAsync(ct);
         var accounts = await (licenseId is { } al ? _db.BankAccounts.Where(a => a.LicenseId == al) : _db.BankAccounts)
             .ToListAsync(ct);
-        var memoriesChanged = 0;
+        var memoriesChanged = new List<Guid>();
         foreach (var m in memories.Where(m => NeedsRemask(m.IbanMasked)))
         {
             m.IbanMasked = BankHasher.ShortValueMask;
-            memoriesChanged++;
+            memoriesChanged.Add(m.LicenseId);
         }
-        var accountsChanged = 0;
+        var accountsChanged = new List<Guid>();
         foreach (var a in accounts.Where(a => NeedsRemask(a.IbanMasked)))
         {
             a.IbanMasked = BankHasher.ShortValueMask;
-            accountsChanged++;
+            accountsChanged.Add(a.LicenseId);
         }
-        r.ShortMasksReplaced += memoriesChanged + accountsChanged;
-        if (apply && memoriesChanged + accountsChanged > 0)
+        r.ShortMasksReplaced += memoriesChanged.Count + accountsChanged.Count;
+        if (apply && memoriesChanged.Count + accountsChanged.Count > 0)
         {
-            RecordBatch(licenseId, "CustomerIbanMemories.IbanMasked", Masked, memoriesChanged, criterion);
-            RecordBatch(licenseId, "BankAccounts.IbanMasked", Masked, accountsChanged, criterion);
+            RecordBatch(memoriesChanged, "CustomerIbanMemories.IbanMasked", Masked, criterion);
+            RecordBatch(accountsChanged, "BankAccounts.IbanMasked", Masked, criterion);
             await _db.SaveChangesAsync(ct);
         }
         _db.ChangeTracker.Clear();

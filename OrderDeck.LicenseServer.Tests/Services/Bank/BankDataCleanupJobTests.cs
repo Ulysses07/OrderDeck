@@ -354,4 +354,34 @@ public sealed class BankDataCleanupJobTests
         records.Should().Contain(x => x.Target == "BankTransactions.CounterpartyTaxIdHash" && x.Action == DataDestruction.Actions.Nulled);
         records.Should().Contain(x => x.Target == "BankTransactions.RawJson" && x.Action == DataDestruction.Actions.Masked);
     }
+
+    [Fact]
+    public async Task Lisans_verilmeden_kosan_uygulama_imha_kaydini_satirin_lisansi_basina_yazar()
+    {
+        // Yayıncı kendi verisinin imha kanıtını isteyebilir: lisansları karıştıran parti lisans başına ayrı kayıt yazar,
+        // lisanssız (null) kayıt kalmaz.
+        using var db = NewDb(); var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        var outgoingA = Tx(a, 30m, direction: BankTransactionDirection.Outgoing);
+        db.BankTransactions.AddRange(outgoingA, Tx(a, 0m), Tx(b, 15m, direction: BankTransactionDirection.Outgoing),
+            Tx(a, 10m, taxIdHash: Hex64()), Tx(b, 10m, taxIdHash: Hex64()), Tx(b, 11m, taxIdHash: Hex64()),
+            Tx(b, 12m, description: $"EFT {TestTckn.NewValid()}"));
+        db.PaymentMatches.Add(Match(outgoingA));
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory
+        {
+            Id = Guid.NewGuid(), LicenseId = b, WpfCustomerId = Guid.NewGuid(), IbanHash = Hex64(), IbanMasked = "1234…890",
+            LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().OnlyContain(x => x.LicenseId == a || x.LicenseId == b);
+        IEnumerable<(Guid?, int)> Of(string target) => records.Where(x => x.Target == target).Select(x => (x.LicenseId, x.RowCount));
+        Of("BankTransactions").Should().BeEquivalentTo(new[] { ((Guid?)a, 2), ((Guid?)b, 1) });
+        Of("PaymentMatches").Should().BeEquivalentTo(new[] { ((Guid?)a, 1) });
+        Of("BankTransactions.CounterpartyTaxIdHash").Should().BeEquivalentTo(new[] { ((Guid?)a, 1), ((Guid?)b, 2) });
+        Of("BankTransactions.Description").Should().BeEquivalentTo(new[] { ((Guid?)b, 1) });
+        Of("CustomerIbanMemories.IbanMasked").Should().BeEquivalentTo(new[] { ((Guid?)b, 1) });
+    }
 }

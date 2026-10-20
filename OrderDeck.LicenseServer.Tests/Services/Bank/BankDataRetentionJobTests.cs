@@ -156,19 +156,32 @@ public sealed class BankDataRetentionJobTests
     }
 
     [Fact]
-    public async Task Her_bosaltma_partisi_kisisel_veri_icermeyen_imha_kaydi_yazar()
+    public async Task Her_bosaltma_partisi_kisisel_veri_icermeyen_imha_kaydini_lisans_basina_yazar()
     {
+        // OrderDeck birden çok yayıncının veri işleyeni: yayıncı kendi verisinin imha kanıtını isteyebilir (VİS denetim ve
+        // bilgi verme). Lisansları karıştıran parti, satırın lisansı başına ayrı kayıt yazar.
         using var db = NewDb();
-        db.BankTransactions.AddRange(Row(200), Row(200));
+        var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        BankTransaction For(Guid lic) { var t = Row(200); t.LicenseId = lic; return t; }
+        var match = Match(TimeSpan.FromDays(200)); match.LicenseId = b;
+        db.BankTransactions.AddRange(For(a), For(a), For(b));
+        db.PaymentMatches.Add(match);
         await db.SaveChangesAsync();
 
         await Job(db).RunAsync(CancellationToken.None);
 
         var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
-        records.Should().Contain(r => r.Target == "BankTransactions.RawJson" && r.RowCount == 2
-            && r.Action == DataDestruction.Actions.Nulled && r.Trigger == DataDestruction.Triggers.Retention
-            && r.Actor == DataDestruction.SystemActor && r.LicenseId == null);
-        records.Should().Contain(r => r.Target == "BankTransactions.Description+CounterpartyName" && r.RowCount == 2);
+        records.Should().OnlyContain(r => r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
+            && r.LicenseId != null);
+        records.Where(r => r.Target == "BankTransactions.RawJson")
+            .Select(r => (r.LicenseId, r.RowCount, r.Action)).Should().BeEquivalentTo(new[]
+            {
+                ((Guid?)a, 2, DataDestruction.Actions.Nulled), ((Guid?)b, 1, DataDestruction.Actions.Nulled),
+            });
+        records.Where(r => r.Target == "BankTransactions.Description+CounterpartyName")
+            .Select(r => (r.LicenseId, r.RowCount)).Should().BeEquivalentTo(new[] { ((Guid?)a, 2), ((Guid?)b, 1) });
+        records.Where(r => r.Target == "PaymentMatches.Evidence")
+            .Select(r => (r.LicenseId, r.RowCount)).Should().BeEquivalentTo(new[] { ((Guid?)b, 1) });
     }
 
     [Fact]
