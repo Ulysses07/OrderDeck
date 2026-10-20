@@ -1331,7 +1331,7 @@ public class Program
     /// (<c>OrderDeck:Bank:HashKey</c>). Anahtar yoksa <c>obifin-poll</c>, <c>obifin-accounts</c> ve <c>bank-match-sweep</c>
     /// KAYDOLMAZ, önceki bir açılıştan kalan kayıtları silinir: Hangfire kaydı depoda kalıcıdır, anahtar kalkınca bile Obifin
     /// işleri her 5 dakikada bir BankHasher hatasıyla düşerlerdi; çekim yokken taranacak yeni hareket de gelmez.
-    /// <c>bank-data-retention</c> ise anahtardan bağımsız HEP kaydolur: BankHasher istemez ve 90/180 günlük silme KVKK
+    /// <c>bank-data-retention</c> ise anahtardan bağımsız HEP kaydolur: BankHasher istemez ve saklama tablosundaki silme KVKK
     /// yükümlülüğüdür — anahtar kalksa da zaten saklanmış satırlar için koşmalı.</para>
     ///
     /// <para><c>obifin-accounts</c> dakika 2'de: çekimle ORTAK kilit tutar
@@ -1348,7 +1348,7 @@ public class Program
     /// </summary>
     public static void ScheduleBankJobs(IRecurringJobManager manager, bool enabled)
     {
-        // Ham JSON 30 gün, açıklama 180 gün (spec §5, KVKK karar 5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
+        // Saklama tablosu: BankDataRetentionJob özeti (KVKK karar 5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
         // Anahtarsız da kaydolur (bkz. özet): BankHasher istemez, KVKK silmesi durmamalı.
         manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
             OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob.JobId,

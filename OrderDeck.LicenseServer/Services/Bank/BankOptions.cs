@@ -13,7 +13,22 @@ public sealed class BankOptions
     /// → [CCP, POS] (prod'da docker-compose'un <c>environment</c> bölümüne de eklenmeli).</para></summary>
     public string[] ExcludedTransactionCodes { get; set; } = ["CCP"];
 
-    /// <summary>Ham kayıt (beyaz listeli, <see cref="BankRawJsonRedactor"/>) saklama süresi — KVKK karar 5: 30 gün.</summary>
+    // Saklama tablosu (KVKK K-6, Ö-14, not karar 5; süreler öneri, avukat onaylamalı) — BankDataRetentionJob. Süreler
+    // hareketin İŞLEM tarihinden işler. Değiştirirsen gizlilik politikasının Bölüm 5'ini (iki kopya) de değiştir.
+
+    /// <summary>Ham kayıt (beyaz listeli, <see cref="BankRawJsonRedactor"/>): 30 gün.</summary>
     public int RawJsonRetentionDays { get; set; } = 30;
-    public int DescriptionRetentionDays { get; set; } = 180;
+
+    /// <summary>Bir müşteriyle eşleşmeyen havalenin açıklaması ve gönderen adı (eşleştirmenin gerekçe metniyle): 30 gün.</summary>
+    public int UnmatchedDescriptionRetentionDays { get; set; } = 30;
+
+    /// <summary>Hareketin tamamı, eşleştirme satırı ve gap (gap oluşturmadan): 180 gün.</summary>
+    public int TransactionRetentionDays { get; set; } = 180;
+
+    /// <summary>IBAN–müşteri bağı, son doğrulanmış havaleden (<c>CustomerIbanMemory.LastConfirmedAt</c>): 12 ay.</summary>
+    public int IbanMemoryRetentionMonths { get; set; } = 12;
+
+    /// <summary>Geç muhasebeleşen hareket çekildikten en az bu kadar gün kalır (eşleştirme ve dekont bağdaştırması yetişsin):
+    /// her süre fiilen <c>max(işlem tarihi + süre, çekim + bu)</c>.</summary>
+    public int MinDaysAfterFetch { get; set; } = 7;
 }

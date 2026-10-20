@@ -157,6 +157,16 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public void Saklama_tablosunun_kalan_sureleri_yapilandirmayla_politikadaki_gibi()
+    {
+        // Aynı gerekçe (yukarıdaki test): prod'daki süreler sınıf varsayılanından değil appsettings.json'dan gelir; oradaki
+        // değer politikadan saparsa saklama testleri yeşil kalır, prod başka süreyle siler (KVKK K-6, Ö-14, karar 1 ve 5).
+        var o = _factory.Services.GetRequiredService<IOptions<BankOptions>>().Value;
+        (o.UnmatchedDescriptionRetentionDays, o.TransactionRetentionDays, o.IbanMemoryRetentionMonths, o.MinDaysAfterFetch)
+            .Should().Be((30, 180, 12, 7));
+    }
+
+    [Fact]
     public void Varsayilan_dislama_listesi_yalniz_CCP_yapilandirma_yinelemez()
     {
         // .NET bağlayıcısı dizi varsayılanının üstüne yazmaz, SONUNA ekler: appsettings.json'da da CCP dursaydı liste

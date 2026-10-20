@@ -390,6 +390,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
 
+                    b.Property<DateTimeOffset?>("LastConfirmedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("LearnedFrom")
                         .IsRequired()
                         .HasMaxLength(16)

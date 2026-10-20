@@ -330,20 +330,32 @@ public sealed class PaymentMatchReconciler
                 + "IBAN öğrenilmedi", tx.Id, paymentId);
     }
 
+    /// <summary>Doğrulanmış bağdan IBAN'ı öğretir; aynı müşteriye kayıtlı bağı tazeler (KVKK K-6: bağ son doğrulanmış havaleden
+    /// 12 ay yaşar, <see cref="CustomerIbanMemory.LastConfirmedAt"/>). Süre havalenin işlem tarihinden işler, doğrulama anından
+    /// değil: politikadaki bütün banka süreleri gibi.</summary>
     private async Task LearnIbanAsync(BankTransaction tx, Guid wpfCustomerId, IbanMemorySource source, CancellationToken ct)
     {
         if (tx.CounterpartyIbanHash is null) return;
+        var now = DateTimeOffset.UtcNow;
+        var confirmedAt = tx.OccurredAt < now ? tx.OccurredAt : now;
         var existing = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == tx.LicenseId && m.IbanHash == tx.CounterpartyIbanHash, ct);
         if (existing is not null)
         {
             if (existing.WpfCustomerId != wpfCustomerId)
+            {
                 _log.LogWarning("IBAN hafızası çelişkisi: hareket {TransactionId} başka müşteriye kayıtlı IBAN'dan geldi", tx.Id);
+                return;
+            }
+            // Aynı müşteriye her doğrulama süreyi tazeler. Saklamanın başlangıcı (LastConfirmedAt, yoksa CreatedAt; saklama işiyle
+            // aynı ifade) yalnız ileri gider: daha eski bir havalenin geç doğrulanması onu geri çekmez.
+            if ((existing.LastConfirmedAt ?? existing.CreatedAt) < confirmedAt) existing.LastConfirmedAt = confirmedAt;
             return;
         }
         _db.CustomerIbanMemories.Add(new CustomerIbanMemory
         {
             Id = Guid.NewGuid(), LicenseId = tx.LicenseId, WpfCustomerId = wpfCustomerId, IbanHash = tx.CounterpartyIbanHash,
-            IbanMasked = tx.CounterpartyIbanMasked ?? "?", LearnedFrom = source, SourceBankTransactionId = tx.Id, CreatedAt = DateTimeOffset.UtcNow,
+            IbanMasked = tx.CounterpartyIbanMasked ?? "?", LearnedFrom = source, SourceBankTransactionId = tx.Id, CreatedAt = now,
+            LastConfirmedAt = confirmedAt,
         });
     }
 

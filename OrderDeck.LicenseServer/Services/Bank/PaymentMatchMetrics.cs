@@ -66,7 +66,8 @@ public sealed record PaymentMatchSummary(
 /// anından <see cref="ObifinPollJob.InitialGraceDays"/> gün; KVKK Ö-5'ten önce kurulan bağlantılarda 90 gün), eski
 /// hareketin önerisi bugün yazılır. Dışlanan hareket (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı, sıfır tutar)
 /// yalnız <see cref="PaymentMatchSummary.Excluded"/>'da sayılır, eşleştirme sayımlarına girmez: müşteri havalesi değildir.
-/// Dışlama hareketin kendi alanlarından okunur; "excluded:*" kanıtı 180 günde boşaltılır. Gecikme ise tüm gelenlerden.
+/// Dışlama hareketin kendi alanlarından okunur; "excluded:*" kanıtı hareketin açıklamasıyla boşaltılır
+/// (<see cref="BankDataRetentionJob"/>). Gecikme ise tüm gelenlerden.
 /// Tek istisna açık gap'tir: dekontun hareketi yoktur, gap'in yaratılma anına (<see cref="PaymentMatchGap.CreatedAt"/>) göre
 /// pencerelenir.</para></summary>
 public sealed class PaymentMatchMetrics
