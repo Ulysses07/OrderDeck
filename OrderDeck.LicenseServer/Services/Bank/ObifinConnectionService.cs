@@ -623,6 +623,7 @@ public sealed class ObifinConnectionService
         var hadCursor = conn.LastObifinTransactionId is not null || conn.BackfillCompletedAt is not null || conn.LastPolledAt is not null;
         conn.LastObifinTransactionId = null;
         conn.BackfillCompletedAt = null;
+        conn.InitialCollectFrom = null; // KVKK Ö-5: yeni hesap, yeni bağlantı anı
         conn.LastPolledAt = null;
         conn.LastError = null;
 

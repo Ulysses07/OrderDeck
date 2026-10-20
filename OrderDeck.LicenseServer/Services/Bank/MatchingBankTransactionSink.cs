@@ -13,7 +13,7 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// düştüyse tarama hareketi bir daha görmez, gap açık kalır ve ölçümde öyle görünür).
 /// <para><b>Kendi kapsamı.</b> Eşleştirici kaydederken bağlamının bekleyen TÜM değişikliklerini yazar. Çekim işinin bağlamında
 /// koşsaydı işin izlediği bağlantının kaydedilmemiş alanlarını (imleç, hata) işin kimlik denetimini atlayarak yazar, öneri
-/// satırları da işin izleyicisinde birikirdi (90 günlük ilk çekimde her DetectChanges büyürdü). Bu yüzden sink örneği —
+/// satırları da işin izleyicisinde birikirdi (yoğun bir pencerede her DetectChanges büyürdü). Bu yüzden sink örneği —
 /// çekim işinin kapsamında çözülür, yani bir çekim koşusu — ilk çağrıda TEK alt kapsam açar, bağdaştırıcıyı (ve onun
 /// eşleştiricisini), bağlamlarını oradan çözer ve koşu boyunca yeniden kullanır (eşleştiricinin lisans başına aday önbelleği
 /// sıcak kalır). Her çağrıdan sonra alt bağlamın izleyicisi boşaltılır; alt kapsam sink ile birlikte, DI kapsamı kapanınca

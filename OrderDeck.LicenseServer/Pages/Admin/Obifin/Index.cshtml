@@ -40,7 +40,7 @@
 </p>
 
 <table class="table table-sm align-middle">
-    <thead><tr><th>Müşteri</th><th>Kullanıcı</th><th>Durum</th><th>Son doğrulama (UTC)</th><th>Son başarılı çekim (UTC)</th><th>İlk çekim (90 gün)</th><th>İmleç</th><th>Banka</th><th>Hesap</th><th>Hareket</th><th>Son hata</th><th></th></tr></thead>
+    <thead><tr><th>Müşteri</th><th>Kullanıcı</th><th>Durum</th><th>Son doğrulama (UTC)</th><th>Son başarılı çekim (UTC)</th><th>İlk çekim (çapa)</th><th>İmleç</th><th>Banka</th><th>Hesap</th><th>Hareket</th><th>Son hata</th><th></th></tr></thead>
     <tbody>
     @foreach (var r in Model.Rows)
     {
@@ -49,7 +49,7 @@
             <td data-cell="status">@r.Status</td>
             <td>@(r.LastVerifiedAt?.ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
             <td data-cell="last-polled">@(r.LastPolledAt is { } polled ? $"{polled:yyyy-MM-dd HH:mm} ({IndexModel.Age(polled, Model.Now)})" : "—")</td>
-            <td>@(r.BackfillCompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "bekliyor")</td>
+            <td data-cell="backfill">@(r.BackfillCompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "bekliyor")@(r.InitialCollectFrom is { } anchor ? $" (≥ {anchor:yyyy-MM-dd})" : "")</td>
             <td>@(r.Cursor?.ToString() ?? "—")</td>
             <td>@r.BankConnections</td><td>@r.Accounts</td><td>@r.Transactions</td>
             <td class="text-danger small" data-cell="last-error">@r.LastError</td>

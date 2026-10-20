@@ -9,10 +9,11 @@ using OrderDeck.LicenseServer.Domain.Bank;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
-/// Obifin'den hareket çekimi (spec §5). Bağlantı başına: ilk çekimde 90 gün 31'lik dilimlerle, sonra
-/// `[bugün−30, bugün]` + `BaslangicHareketId` imleci. Yazım idempotent ((LicenseId, ObifinId) tekil); imleç
-/// yalnız tam başarılı turda ilerler. Webhook yok — bu iş tek kaynak. Yalnız gelen ve tutarı sıfırdan büyük hareket
-/// kaydedilir (KVKK K-4).
+/// Obifin'den hareket çekimi (spec §5). Bağlantı başına: ilk çekimde bağlantı anından <see cref="InitialGraceDays"/> gün
+/// geriye (çapa, <see cref="ObifinConnection.InitialCollectFrom"/>; KVKK Ö-5), sonra `[bugün−30, bugün]` (çapadan eskisi
+/// istenmez) + `BaslangicHareketId` imleci. Yazım idempotent ((LicenseId, ObifinId) tekil); imleç yalnız tam başarılı turda
+/// ilerler. Webhook yok — bu iş tek kaynak. Yalnız gelen, tutarı sıfırdan büyük ve işlem günü çapadan eski olmayan hareket
+/// kaydedilir (KVKK K-4, Ö-5).
 ///
 /// <para><b>Hata sınıfları.</b> Obifin'in kendi mesajı (<see cref="ObifinApiException"/>, ör. kimlik hatalı)
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
@@ -40,7 +41,10 @@ public sealed class ObifinPollJob
     /// (<see cref="ObifinAccountRefreshJob"/>) da AYNI kilidi tutar: başarısı <c>UpdatedAt</c>'i yazar ve kimlik
     /// denetimi eşzamanlı çekimi boşuna iptal ederdi; yer tutucu/gerçek hesap satırı da yarışırdı.</summary>
     public const string LockResource = "obifin-poll";
-    public const int BackfillDays = 90;
+    /// <summary>İlk çekimin bağlantı anından geriye gittiği gün sayısı (KVKK Ö-5). Dekont bağdaştırmasının aday penceresine
+    /// (<see cref="PaymentMatchReconciler.CandidateWindow"/>) eşit: bağlantıdan hemen önce gönderilmiş, dekontu sonra onaylanan
+    /// havale ölçüme girebilsin; daha eskisinin kullanımı yok.</summary>
+    public const int InitialGraceDays = 2;
     public const int WindowDays = 31;
     public const int MaxDrainRounds = 10;
     /// <summary>Tek pencerenin (31 gün) sert sayfa tavanı: 1000'lik sayfayla 100 bin hareket — bu işte anomali. Aşılırsa
@@ -131,8 +135,11 @@ public sealed class ObifinPollJob
         {
             if (conn.BackfillCompletedAt is null)
             {
+                // KVKK Ö-5: geçmiş 90 gün çekilmez. Çapa ilk sayfanın kaydıyla yazılır (yarıda kalan ilk çekim sonraki turda
+                // aynı çapayla sürer) ve her turda uygulanır: artımlı pencere de UpsertAsync de ondan eskisini almaz.
+                conn.InitialCollectFrom ??= today.AddDays(-InitialGraceDays);
                 long? maxId = conn.LastObifinTransactionId;
-                var start = today.AddDays(-(BackfillDays - 1));
+                var start = conn.InitialCollectFrom.Value;
                 for (var from = start; from <= today; from = from.AddDays(WindowDays))
                 {
                     var to = from.AddDays(WindowDays - 1) > today ? today : from.AddDays(WindowDays - 1);
@@ -145,6 +152,9 @@ public sealed class ObifinPollJob
             else
             {
                 var from = today.AddDays(-(WindowDays - 1));
+                // KVKK Ö-5: çapadan eskisi Obifin'den istenmez (ilk turu boş geçen bağlantıda imleç yoktur; pencere 31 gün
+                // geriye bakardı). Saat geri gidip çapa bugünü aştıysa pencere değişmez, UpsertAsync yine süzer.
+                if (conn.InitialCollectFrom is { } anchor && anchor > from && anchor <= today) from = anchor;
                 for (var round = 0; round < MaxDrainRounds; round++)
                 {
                     var before = conn.LastObifinTransactionId;
@@ -291,6 +301,9 @@ public sealed class ObifinPollJob
             // şahsi harcama) ve sıfır tutarlı satır hiçbir amaca hizmet etmez; Obifin'de yön süzgeci yok, burada atılır. İmleç
             // sıralı listeden hesaplanır (FetchWindowWithMetaAsync): atlanan satır imleci yine ilerletir.
             if (dto.SignedAmount <= 0) continue;
+            // KVKK Ö-5: çapadan eski işlem tarihli hareket yazılmaz. Pencere çapada başlasa da süzgeç burada: Obifin'in tarih
+            // süzgecinin hangi tarihe baktığı belgelenmemiş (IslemZamaniDT olmayabilir). İmleç yine ilerler (yukarıdaki not).
+            if (conn.InitialCollectFrom is { } collectFrom && DateOnly.FromDateTime(dto.OccurredAtTr) < collectFrom) continue;
             // Aynı sayfada tekrar eden Id (beklenmez) de tekil index'e çarpmaz.
             if (!existing.Add(dto.Id)) continue;
             if (!accounts.TryGetValue(dto.AccountId, out var account))
@@ -332,7 +345,7 @@ public sealed class ObifinPollJob
         // Yalnız gelen ve sıfırdan büyük satır yazıldı (yukarıdaki süzgeç): hepsi eşleştiriciye gider.
         foreach (var tx in fresh)
             await _sink.OnNewIncomingAsync(tx, ct);
-        // Kaydedilen satırlar koşu boyunca izleyicide birikmesin: 90 günlük ilk çekim on binlerce satır (ham JSON dahil)
+        // Kaydedilen satırlar koşu boyunca izleyicide birikmesin: yoğun bir hesabın penceresi binlerce satır (ham JSON dahil)
         // tutar, her SaveChanges'in DetectChanges'i büyürdü. Bağlantı (conn) izlenmeye devam eder — imleç onun üzerinde;
         // az sayıdaki hesap satırı da kalır.
         foreach (var tx in fresh) _db.Entry(tx).State = EntityState.Detached;

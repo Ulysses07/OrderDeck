@@ -45,6 +45,9 @@ public sealed class ObifinPollJobTests
         /// DEĞİL, yeniden dolu bir sayfa döndürür (burada ilk sayfanın içeriği, istenen numarayla). Açıkken son sayfanın
         /// ötesini isteyen döngü yinelenen veri alır.</summary>
         public bool BeyondLastPageRepeatsFirstPage { get; set; }
+        /// <summary>Sunucu tarih penceresini hareketin işlem anına (<c>IslemZamaniDT</c>) göre süzmez: Obifin'in
+        /// <c>BaslangicTarihi</c>'nin hangi tarihe baktığı belgelenmemiş, pencere dışı hareket de gelebilir.</summary>
+        public bool IgnoreDateWindow { get; set; }
 
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<ObifinAccountDto>>(Transactions.Select(t => t.AccountId).Distinct()
@@ -68,7 +71,7 @@ public sealed class ObifinPollJobTests
             if (Calls.Count == FailOnCall) throw FailWith();
             var size = Math.Min(ps, PageCap);
             var all = Transactions
-                .Where(x => DateOnly.FromDateTime(x.OccurredAtTr) >= f && DateOnly.FromDateTime(x.OccurredAtTr) <= t)
+                .Where(x => IgnoreDateWindow || (DateOnly.FromDateTime(x.OccurredAtTr) >= f && DateOnly.FromDateTime(x.OccurredAtTr) <= t))
                 .Where(x => s is null || x.Id > s)
                 .OrderBy(x => x.Id).ToList();
             // Gerçek Obifin: boş pencere ToplamSayfaSayisi 0 döndürür.
@@ -154,24 +157,124 @@ public sealed class ObifinPollJobTests
     }
 
     [Fact]
-    public async Task Ilk_cekim_90_gunu_31_gunluk_dilimlerle_alir_ve_imleci_kurar()
+    public async Task Ilk_cekim_baglanti_aninin_iki_gun_gerisinden_baslar_capa_yazilir()
     {
+        // KVKK Ö-5: 90 günlük geçmiş çekilmez. Çapa = ilk turun TR günü − 2 (dekont bağdaştırmasının aday penceresi).
         using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
         var (job, svc, _) = Build(db, client, today);
         var lic = await SeedVerifiedAsync(db, svc);
-        client.Transactions.Add(Tx(100, new DateTime(2026, 7, 1, 10, 0, 0), 50m));   // 86 gün önce
-        client.Transactions.Add(Tx(200, new DateTime(2026, 9, 24, 10, 0, 0), 75m));
+        client.Transactions.Add(Tx(100, new DateTime(2026, 7, 1, 10, 0, 0), 50m));    // 86 gün önce
+        client.Transactions.Add(Tx(150, new DateTime(2026, 9, 22, 10, 0, 0), 60m));   // çapadan bir gün önce
+        client.Transactions.Add(Tx(200, new DateTime(2026, 9, 23, 0, 30, 0), 75m));  // çapa günü
 
         await job.RunAsync(CancellationToken.None);
 
-        client.Calls.Select(c => (c.From, c.To)).Distinct().Should().HaveCount(3, "90 gün = 3 dilim");
-        client.Calls.Should().OnlyContain(c => c.To.DayNumber - c.From.DayNumber + 1 <= 31);
-        (await db.BankTransactions.CountAsync()).Should().Be(2);
+        var call = client.Calls.Should().ContainSingle().Subject;
+        (call.From, call.To, call.Since).Should().Be((new DateOnly(2026, 9, 23), today, (long?)null));
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 200L });
         var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23));
         conn.BackfillCompletedAt.Should().NotBeNull();
         conn.LastObifinTransactionId.Should().Be(200);
         conn.LastPolledAt.Should().NotBeNull();
     }
+
+    [Fact]
+    public async Task Ilk_cekim_bos_donerse_sonraki_artimli_tur_capadan_eskiyi_istemez_yazmaz()
+    {
+        // İlk turda hareket yoksa imleç boş kalır ve artımlı tur 31 günü geriye sorgulardı: çapa olmasa bağlantı öncesi
+        // yazılırdı. Çapadan eskisi Obifin'den istenmez bile.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc);
+        await job.RunAsync(CancellationToken.None);
+        client.Transactions.Add(Tx(300, new DateTime(2026, 9, 10, 10, 0, 0), 40m));
+        client.Transactions.Add(Tx(301, new DateTime(2026, 9, 25, 10, 0, 0), 45m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var last = client.Calls.Last();
+        last.Since.Should().BeNull("ilk turda imleç kurulamadı");
+        (last.From, last.To).Should().Be((new DateOnly(2026, 9, 23), today), "artımlı pencere çapada başlar");
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 301L });
+        (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).LastObifinTransactionId.Should().Be(301);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Sunucu_capadan_eski_hareket_dondururse_yazilmaz_imlec_yine_ilerler(bool incremental)
+    {
+        // Obifin'in tarih süzgecinin hangi tarihe baktığı belgelenmemiş: istenen pencerenin dışından gelen çapa öncesi
+        // hareket (ör. geç işlenmiş, Id'si büyük) kayda girmez, eşleştiriciye gitmez; imleç sıralı listeden yine ilerler.
+        // Artımlı yol: çapası sonradan yazılmış eski bağlantı (bank-data-cleanup), pencere 31 gün geriye bakar.
+        using var db = NewDb(); var client = new ScriptedObifin { IgnoreDateWindow = true }; var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: incremental ? 0 : null, backfilled: incremental);
+        if (incremental)
+        {
+            var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+            seeded.InitialCollectFrom = new DateOnly(2026, 9, 23);
+            await db.SaveChangesAsync();
+        }
+        client.Transactions.Add(Tx(401, new DateTime(2026, 9, 23, 0, 0, 0), 45m));    // çapa günü başı
+        client.Transactions.Add(Tx(402, new DateTime(2026, 9, 22, 23, 59, 0), 40m));  // çapadan bir dakika önce
+
+        await job.RunAsync(CancellationToken.None);
+
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 401L });
+        sink.Received.Should().ContainSingle().Which.ObifinId.Should().Be(401);
+        (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).LastObifinTransactionId
+            .Should().Be(402, "atlanan hareket de görüldü");
+    }
+
+    [Fact]
+    public async Task Yarim_kalan_ilk_cekim_sonraki_gun_ayni_capayla_surer()
+    {
+        // Çapa ilk kaydedilen sayfayla birlikte yazılır. Tur geçici hatayla yarıda kalırsa ertesi günün turu çapayı
+        // yeniden hesaplamaz: aradaki günler kaybolmaz, bağlantı anı ilk verinin alındığı gün kalır.
+        using var db = NewDb(); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { PageCap = 1, FailOnCall = 2, FailWith = () => new HttpRequestException("Name or service not known") };
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc);
+        client.Transactions.Add(Tx(10, new DateTime(2026, 9, 24, 10, 0, 0), 20m));
+        client.Transactions.Add(Tx(11, new DateTime(2026, 9, 25, 10, 0, 0), 30m));
+
+        var first = () => job.RunAsync(CancellationToken.None);
+        await first.Should().ThrowAsync<AggregateException>();
+        var afterFailure = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        afterFailure.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23), "ilk sayfayla kaydedildi");
+        afterFailure.BackfillCompletedAt.Should().BeNull();
+
+        client.FailOnCall = -1;
+        job.TodayTr = () => new DateOnly(2026, 9, 27);
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Skip(2).Should().NotBeEmpty().And.OnlyContain(c => c.From == new DateOnly(2026, 9, 23));
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 10L, 11L });
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 23));
+        conn.BackfillCompletedAt.Should().NotBeNull();
+        conn.LastObifinTransactionId.Should().Be(11);
+    }
+
+    [Fact]
+    public async Task Kimlik_degisince_ilk_cekim_capasi_bosalir()
+    {
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc);
+        await job.RunAsync(CancellationToken.None);
+        (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).InitialCollectFrom.Should().NotBeNull();
+
+        await svc.UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", null, null, CancellationToken.None, allowShadowReset: true);
+
+        (await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic)).InitialCollectFrom.Should().BeNull("yeni hesap, yeni bağlantı anı");
+    }
+
+    [Fact]
+    public void Ilk_cekim_payi_dekont_aday_penceresine_esit()
+        => ObifinPollJob.InitialGraceDays.Should().Be((int)PaymentMatchReconciler.CandidateWindow.TotalDays);
 
     [Fact]
     public async Task Artimli_cekim_31_gunluk_pencere_ve_imlecle_yalniz_yeni_hareketleri_yazar()
@@ -543,7 +646,7 @@ public sealed class ObifinPollJobTests
     [Fact]
     public async Task Kaydedilen_hareketler_izleyicide_birikmez_sink_kayitli_varlik_alir()
     {
-        // 90 günlük ilk çekim on binlerce satır olabilir: her sayfa kaydedilip sink'e verildikten sonra izleyiciden
+        // Yoğun bir hesabın penceresi binlerce satır olabilir: her sayfa kaydedilip sink'e verildikten sonra izleyiciden
         // ayrılır; SaveChanges'in DetectChanges'i koşu boyunca büyümez.
         using var db = NewDb(); var client = new ScriptedObifin { PageCap = 2 }; var today = new DateOnly(2026, 9, 25);
         var (job, svc, sink) = Build(db, client, today);

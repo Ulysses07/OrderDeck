@@ -1109,6 +1109,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         {
             c.LastPolledAt = DateTimeOffset.UtcNow.AddMinutes(-5).AddSeconds(-10);
             c.BackfillCompletedAt = DateTimeOffset.UtcNow.AddDays(-1);
+            c.InitialCollectFrom = new DateOnly(2026, 9, 23);
             c.LastObifinTransactionId = 4242;
         });
 
@@ -1117,6 +1118,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var row = doc.QuerySelector($"tr[data-license='{licenseId}']")!;
         row.QuerySelector("[data-cell='status']")!.TextContent.Should().Be("Verified");
         row.QuerySelector("[data-cell='last-polled']")!.TextContent.Should().Contain("5 dk önce");
+        row.QuerySelector("[data-cell='backfill']")!.TextContent.Should().EndWith("(≥ 2026-09-23)", "ilk çekim çapası (KVKK Ö-5)");
         row.TextContent.Should().Contain("4242");
         // Durum yardımı kodla aynı şeyi söylemeli: banka eklemedeki hata (geçici ya da Obifin reddi) durumu değiştirmez.
         doc.QuerySelector("[data-help='status']")!.TextContent.Should().Contain("elle Doğrula'da Obifin'e ulaşılamadı")

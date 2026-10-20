@@ -48,7 +48,8 @@ public class IndexModel : PageModel
 
     public sealed record ConnectionRow(Guid LicenseId, string CustomerEmail, string BaseUrl, string UserCode,
         ObifinConnectionStatus Status, string? LastError, DateTimeOffset? LastVerifiedAt, DateTimeOffset? LastPolledAt,
-        long? Cursor, DateTimeOffset? BackfillCompletedAt, int BankConnections, int Accounts, int Transactions);
+        long? Cursor, DateTimeOffset? BackfillCompletedAt, DateOnly? InitialCollectFrom, int BankConnections, int Accounts,
+        int Transactions);
     public sealed record AccountRow(string BankaKodu, string IbanMasked, string Currency, bool Active,
         DateTimeOffset? LastBankSyncAt, string? NotificationNote);
     public sealed record LicenseOption(Guid Id, string Label);
@@ -94,7 +95,7 @@ public class IndexModel : PageModel
             .Select(c => new ConnectionRow(c.LicenseId,
                 _db.Licenses.Where(l => l.Id == c.LicenseId).Select(l => l.Customer.Email).FirstOrDefault() ?? "(bilinmiyor)",
                 c.BaseUrl, c.UserCode, c.Status, c.LastError, c.LastVerifiedAt, c.LastPolledAt, c.LastObifinTransactionId,
-                c.BackfillCompletedAt,
+                c.BackfillCompletedAt, c.InitialCollectFrom,
                 _db.BankConnections.Count(b => b.LicenseId == c.LicenseId && b.Status == BankConnectionStatus.Active),
                 _db.BankAccounts.Count(a => a.LicenseId == c.LicenseId),
                 _db.BankTransactions.Count(t => t.LicenseId == c.LicenseId)))
