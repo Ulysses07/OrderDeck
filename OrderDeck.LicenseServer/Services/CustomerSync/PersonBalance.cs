@@ -197,7 +197,8 @@ public sealed class PersonBalance
                     // Bacağın satırını eşzamanlı biri açtı (işlem bütünüyle geri alındı).
                     retryReason = "bakiye satırı açma yarışı";
                 }
-                catch (DbUpdateException ex) when (IsDeadlock(ex))
+                // Exception, DbUpdateException değil: varsayılan yürütme stratejisi 1205'i sarar (bkz. IsDeadlock).
+                catch (Exception ex) when (IsDeadlock(ex))
                 {
                     // Kilitlenme kurbanı (işlem bütünüyle geri alındı).
                     retryReason = "kilitlenme (1205)";
@@ -367,6 +368,15 @@ public sealed class PersonBalance
         && sql.Number is 2601 or 2627
         && sql.Message.Contains(BalanceRowIndex, StringComparison.Ordinal);
 
-    /// <summary>SQL Server kilitlenme kurbanı (1205): işlem bütünüyle geri alındı, yeniden kurmak güvenli.</summary>
-    public static bool IsDeadlock(DbUpdateException ex) => ex.InnerException is SqlException { Number: 1205 };
+    /// <summary>
+    /// SQL Server kilitlenme kurbanı (1205): işlem bütünüyle geri alındı, yeniden kurmak güvenli. 1205 geçici bir hata
+    /// sayıldığı için varsayılan yürütme stratejisi (<c>UseSqlServer</c>, <c>EnableRetryOnFailure</c> yok) onu
+    /// <see cref="DbUpdateException"/> olarak DEĞİL, <see cref="InvalidOperationException"/>'a sarılı ("likely due to a
+    /// transient failure") fırlatır; yalnız <see cref="DbUpdateException"/>'a bakan bir süzgeç hiç tutmaz ve kurban 500
+    /// alırdı (Testcontainers §8.2-3'te görüldü). Çıplak <see cref="DbUpdateException"/> da kabul edilir (sarmalamayan
+    /// bir stratejiyle gelen biçim).
+    /// </summary>
+    public static bool IsDeadlock(Exception ex) =>
+        (ex is InvalidOperationException { InnerException: DbUpdateException wrapped } ? wrapped : ex)
+            is DbUpdateException { InnerException: SqlException { Number: 1205 } };
 }
