@@ -199,27 +199,26 @@ public sealed class AdminCustomersController : ControllerBase
 
         // KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. preEmail BURAYA girmez: e-posta
         // yalnız 24 ayda budanan customer.purged denetim satırında. SubjectId = yayıncı hesabının kimliği (satır anonimleştirilmiş
-        // kalır): yedekten geri yüklemeden sonra silme bununla yeniden uygulanır. Sayımlar DB'den: silme henüz yazılmadı.
+        // kalır): yedekten geri yüklemeden sonra silme bununla yeniden uygulanır. Sayımlar İZLEYİCİDEN: yukarıdaki RemoveRange'lerin
+        // silinmek üzere işaretlediği satırlar, yani tam olarak bu SaveChanges'in sildiği. DB'den ayrıca saymak okuma ile kayıt
+        // arasında eklenen satırı (girişin yazdığı yenileme jetonu, herkese açık formdan gelen gönderim) silinmediği hâlde sayardı.
         // Yapan: yöneticinin kimliği, kullanıcı adı değil (tablo budanmaz; adı aşağıdaki denetim satırında, 24 ay).
         var actor = DataDestruction.ActorOf(User);
         const string criterion = "yayıncı silme talebi";
         void Record(string target, string action, int count, string why = criterion) => DataDestruction.Record(_db, null, target,
             action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
+        int Deleted<T>() where T : class => _db.ChangeTracker.Entries<T>().Count(e => e.State == EntityState.Deleted);
         // Lisansa bağlı satırlar (siparişler, katalog, banka verisi …) ayrıca sayılmaz: lisansla birlikte FK cascade'iyle gider.
-        Record("Licenses", DataDestruction.Actions.Deleted, licenseIds.Count, criterion + "; bağlı satırlar FK cascade ile");
-        Record("Activations", DataDestruction.Actions.Deleted,
-            licenseIds.Count == 0 ? 0 : await _db.Activations.CountAsync(a => licenseIds.Contains(a.LicenseId), ct));
-        Record("CustomerBackups", DataDestruction.Actions.Deleted, backupRows.Count);
-        Record("EmailLogs", DataDestruction.Actions.Deleted, await _db.EmailLogs.CountAsync(e => e.CustomerId == id, ct));
-        Record("RefreshTokens", DataDestruction.Actions.Deleted, await _db.RefreshTokens.CountAsync(r => r.CustomerId == id, ct));
-        Record("PasswordResetTokens", DataDestruction.Actions.Deleted,
-            await _db.PasswordResetTokens.CountAsync(p => p.CustomerId == id, ct));
-        Record("EmailConfirmationTokens", DataDestruction.Actions.Deleted,
-            await _db.EmailConfirmationTokens.CountAsync(t => t.CustomerId == id, ct));
-        Record("PushDevices", DataDestruction.Actions.Deleted, await _db.PushDevices.CountAsync(d => d.CustomerId == id, ct));
-        Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, configIds.Count);
-        Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, configIds.Count == 0 ? 0
-            : await _db.IntakeFormSubmissions.CountAsync(s => configIds.Contains(s.IntakeFormConfigId), ct));
+        Record("Licenses", DataDestruction.Actions.Deleted, Deleted<License>(), criterion + "; bağlı satırlar FK cascade ile");
+        Record("Activations", DataDestruction.Actions.Deleted, Deleted<Activation>());
+        Record("CustomerBackups", DataDestruction.Actions.Deleted, Deleted<CustomerBackup>());
+        Record("EmailLogs", DataDestruction.Actions.Deleted, Deleted<EmailLog>());
+        Record("RefreshTokens", DataDestruction.Actions.Deleted, Deleted<RefreshToken>());
+        Record("PasswordResetTokens", DataDestruction.Actions.Deleted, Deleted<PasswordResetToken>());
+        Record("EmailConfirmationTokens", DataDestruction.Actions.Deleted, Deleted<EmailConfirmationToken>());
+        Record("PushDevices", DataDestruction.Actions.Deleted, Deleted<PushDevice>());
+        Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, Deleted<IntakeFormConfig>());
+        Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, Deleted<IntakeFormSubmission>());
         Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
 
         try

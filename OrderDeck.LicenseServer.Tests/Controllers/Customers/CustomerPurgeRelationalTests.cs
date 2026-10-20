@@ -1,8 +1,11 @@
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -31,12 +34,16 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
     private const string Password = "purge-password-123";
 
     private readonly SqlServerContainerFixture _sql;
+    private string _cs = null!;
     private RelationalApiFactory _factory = null!;
 
     public CustomerPurgeRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
 
     public async Task InitializeAsync()
-        => _factory = new RelationalApiFactory(await _sql.CreateDatabaseAsync());
+    {
+        _cs = await _sql.CreateDatabaseAsync();
+        _factory = new RelationalApiFactory(_cs);
+    }
 
     public Task DisposeAsync()
     {
@@ -67,12 +74,101 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
         (await db.ProductVariants.AnyAsync()).Should().BeFalse();
     }
 
-    /// <summary>Admin oluşturur, giriş yapar, silinecek müşteriyi açar.</summary>
-    private async Task<(HttpClient Client, Guid CustomerId, string Email)> SeedCustomerAsync()
+    [Fact]
+    public async Task Imha_kaydi_bu_silmenin_sildigini_sayar_okumadan_sonra_eklenen_satiri_saymaz()
     {
-        var (token, _) = await _factory.SeedAdminAndLoginAsync(
-            username: $"a-{Guid.NewGuid():N}", password: "admin-password");
-        var client = _factory.CreateClient();
+        // KVKK Ö-13: imha kaydı kalıcı, yasal kayıttır; silinenden fazlasını göstermemeli. RemoveRange satırları okuduktan SONRA,
+        // kayıttan ÖNCE eklenen bir satır (girişin yazdığı yenileme jetonu, herkese açık formun gönderimi) bu silmede gitmez:
+        // kayıt onu saymamalı. Yarış zamanlamayla değil sırayla kurulur: jeton silmenin okuyucusu kapanırken eklenir.
+        var hook = new InsertRefreshTokenAfterRead(_cs);
+        using var factory = new HookedRelationalApiFactory(_cs, hook);
+        var (client, customerId, email) = await SeedCustomerAsync(factory);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.RefreshTokens.Add(NewRefreshToken(customerId));
+            await db.SaveChangesAsync();
+        }
+        hook.CustomerId = customerId;
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        hook.Fired.Should().BeTrue("yarış kurulmalı: silmenin okumasından sonra bir jeton eklendi");
+        using var verify = factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await verifyDb.RefreshTokens.CountAsync(r => r.CustomerId == customerId))
+            .Should().Be(1, "arada eklenen jeton bu silmede gitmedi (kimlik nesli ilerlediği için geçersiz)");
+        (await verifyDb.DataDestructionRecords.AsNoTracking()
+                .SingleAsync(r => r.SubjectId == customerId && r.Target == "RefreshTokens"))
+            .RowCount.Should().Be(1, "kayıt bu işlemin sildiğini söyler");
+    }
+
+    private static RefreshToken NewRefreshToken(Guid customerId) => new()
+    {
+        Id = Guid.NewGuid(), CustomerId = customerId, TokenHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}",
+        CreatedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+    };
+
+    private sealed class HookedRelationalApiFactory(string cs, IInterceptor hook) : RelationalApiFactory(cs)
+    {
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(hook);
+    }
+
+    /// <summary>Silinecek müşterinin yenileme jetonlarını okuyan sorgunun okuyucusu kapanırken (satırlar okundu, okuma kilidi
+    /// yok) AYRI bağlantıdan aynı müşteriye bir jeton daha ekler — bir kez. COUNT sorgusu tetiklemez: yarış silmenin
+    /// okumasıyla kayıt arasına kurulur. <c>RemoveRange(IQueryable)</c> eşzamanlı (sync) sayımlar, iki kapanma bildirimi de
+    /// karşılanır.</summary>
+    private sealed class InsertRefreshTokenAfterRead(string cs) : DbCommandInterceptor
+    {
+        private int _fired;
+        public Guid? CustomerId { get; set; }
+        public bool Fired => _fired == 1;
+
+        public override InterceptionResult DataReaderClosing(DbCommand command, DataReaderClosingEventData eventData,
+            InterceptionResult result)
+        {
+            InsertIfDue(command);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult> DataReaderClosingAsync(DbCommand command,
+            DataReaderClosingEventData eventData, InterceptionResult result)
+        {
+            InsertIfDue(command);
+            return ValueTask.FromResult(result);
+        }
+
+        private void InsertIfDue(DbCommand command)
+        {
+            if (CustomerId is not { } customerId
+                || !command.CommandText.Contains("FROM [RefreshTokens]", StringComparison.Ordinal)
+                || command.CommandText.Contains("COUNT(", StringComparison.Ordinal)
+                || Interlocked.Exchange(ref _fired, 1) == 1) return;
+            var late = NewRefreshToken(customerId);
+            using var conn = new SqlConnection(cs);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "INSERT INTO RefreshTokens (Id, CustomerId, TokenHash, AuthVersion, CreatedAt, ExpiresAt) "
+                + "VALUES (@id, @customer, @hash, 0, @created, @expires)";
+            cmd.Parameters.AddWithValue("@id", late.Id);
+            cmd.Parameters.AddWithValue("@customer", late.CustomerId);
+            cmd.Parameters.AddWithValue("@hash", late.TokenHash);
+            cmd.Parameters.AddWithValue("@created", late.CreatedAt);
+            cmd.Parameters.AddWithValue("@expires", late.ExpiresAt);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Admin oluşturur, giriş yapar, silinecek müşteriyi açar.</summary>
+    private Task<(HttpClient Client, Guid CustomerId, string Email)> SeedCustomerAsync() => SeedCustomerAsync(_factory);
+
+    private static async Task<(HttpClient Client, Guid CustomerId, string Email)> SeedCustomerAsync(RelationalApiFactory factory)
+    {
+        var (token, _) = await factory.SeedAdminAndLoginAsync(
+            username: $"a-{Guid.NewGuid():N}", password: $"pw-{Guid.NewGuid():N}");
+        var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var email = $"purge-{Guid.NewGuid():N}@example.com";
