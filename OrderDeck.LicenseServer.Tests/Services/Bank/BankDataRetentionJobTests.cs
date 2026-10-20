@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -44,11 +45,11 @@ public sealed class BankDataRetentionJobTests
             => Armed ? throw new DbUpdateException("DB kesintisi benzetimi") : ValueTask.FromResult(result);
     }
 
-    private static BankJobAlerts Alerts(TestEmailSender email)
+    private static AdminJobAlerts Alerts(TestEmailSender email)
         => new(email, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            [BankJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
-        }).Build(), NullLogger<BankJobAlerts>.Instance);
+            [AdminJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
+        }).Build(), NullLogger<AdminJobAlerts>.Instance);
 
     private static BankDataRetentionJob Job(LicenseDbContext db, TestEmailSender? email = null)
         => new(db, Options.Create(new BankOptions { HashKey = new string('k', 32) }), Alerts(email ?? new TestEmailSender()),

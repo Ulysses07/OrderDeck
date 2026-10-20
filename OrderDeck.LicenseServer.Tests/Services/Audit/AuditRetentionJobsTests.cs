@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
-using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -62,11 +62,11 @@ public class AuditRetentionJobsTests : IClassFixture<ApiFactory>
         {
             RetentionMonths = retentionMonths,
             BatchSize = batchSize
-        }), new BankJobAlerts(email ?? new TestEmailSender(), new ConfigurationBuilder()
+        }), new AdminJobAlerts(email ?? new TestEmailSender(), new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                [BankJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
-            }).Build(), NullLogger<BankJobAlerts>.Instance), NullLogger<AuditRetentionJobs>.Instance);
+                [AdminJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
+            }).Build(), NullLogger<AdminJobAlerts>.Instance), NullLogger<AuditRetentionJobs>.Instance);
 
     /// <summary>Paylaşılan fabrika veritabanı değil, kendi InMemory veritabanı: imha kayıtları tam sayılır.</summary>
     private static LicenseDbContext OwnDb(IInterceptor? interceptor = null)

@@ -3,7 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Services.Email;
 
-namespace OrderDeck.LicenseServer.Services.Bank;
+namespace OrderDeck.LicenseServer.Services.Observability;
 
 /// <summary>
 /// Periyodik imha işlerinin (banka saklama, hizmet sonu, denetim kaydı budaması) ve imha özetinin yöneticiye e-postası (KVKK
@@ -17,15 +17,15 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// </list>
 /// Gövdeye kişisel veri girmez — yalnız iş adı, istisna türü, sayılar, kimlikler. Alıcı adresi günlüğe ve istisnaya yazılmaz.
 /// </summary>
-public sealed class BankJobAlerts
+public sealed class AdminJobAlerts
 {
     public const string AlertEmailKey = "Admin:AlertEmail";
 
     private readonly IEmailSender _email;
     private readonly IConfiguration _config;
-    private readonly ILogger<BankJobAlerts> _log;
+    private readonly ILogger<AdminJobAlerts> _log;
 
-    public BankJobAlerts(IEmailSender email, IConfiguration config, ILogger<BankJobAlerts> log)
+    public AdminJobAlerts(IEmailSender email, IConfiguration config, ILogger<AdminJobAlerts> log)
     { _email = email; _config = config; _log = log; }
 
     public async Task SendAsync(string subject, string body, CancellationToken ct)
@@ -33,7 +33,7 @@ public sealed class BankJobAlerts
         var to = _config[AlertEmailKey];
         if (string.IsNullOrWhiteSpace(to))
         {
-            _log.LogWarning("Banka iş uyarısı gönderilemedi: {Key} boş — {Subject}", AlertEmailKey, subject);
+            _log.LogWarning("İş uyarısı gönderilemedi: {Key} boş — {Subject}", AlertEmailKey, subject);
             return;
         }
         try
@@ -42,7 +42,7 @@ public sealed class BankJobAlerts
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
-            _log.LogError(ex, "Banka iş uyarısı e-postası gönderilemedi — {Subject}", subject);
+            _log.LogError(ex, "İş uyarısı e-postası gönderilemedi — {Subject}", subject);
         }
     }
 

@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Audit;
@@ -42,7 +42,7 @@ public sealed class AuditRetentionOptions
 ///
 /// Budama kişisel veri siler (denetim ayrıntıları, <c>customer.purged</c>'ın e-postası): her parti kişisel veri içermeyen
 /// kalıcı imha kaydını (<see cref="DataDestruction"/>) silmeyle AYNI işlemde yazar, başarılı koşu sonda bir koşu kaydı
-/// bırakır, iş düşerse yöneticiye e-posta gider (<see cref="BankJobAlerts"/>) ve istisna Hangfire'a çıkar (iç imha prosedürü
+/// bırakır, iş düşerse yöneticiye e-posta gider (<see cref="AdminJobAlerts"/>) ve istisna Hangfire'a çıkar (iç imha prosedürü
 /// §4.2-3).
 /// </summary>
 public sealed class AuditRetentionJobs
@@ -55,10 +55,10 @@ public sealed class AuditRetentionJobs
 
     private readonly LicenseDbContext _db;
     private readonly AuditRetentionOptions _opt;
-    private readonly BankJobAlerts _alerts;
+    private readonly AdminJobAlerts _alerts;
     private readonly ILogger<AuditRetentionJobs> _log;
 
-    public AuditRetentionJobs(LicenseDbContext db, IOptions<AuditRetentionOptions> opt, BankJobAlerts alerts,
+    public AuditRetentionJobs(LicenseDbContext db, IOptions<AuditRetentionOptions> opt, AdminJobAlerts alerts,
         ILogger<AuditRetentionJobs> log)
     {
         _db = db;

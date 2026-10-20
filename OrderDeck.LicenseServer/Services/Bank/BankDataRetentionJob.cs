@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
@@ -24,10 +25,10 @@ public sealed class BankDataRetentionJob
 
     private readonly LicenseDbContext _db;
     private readonly BankOptions _opt;
-    private readonly BankJobAlerts _alerts;
+    private readonly AdminJobAlerts _alerts;
     private readonly ILogger<BankDataRetentionJob> _log;
 
-    public BankDataRetentionJob(LicenseDbContext db, IOptions<BankOptions> opt, BankJobAlerts alerts,
+    public BankDataRetentionJob(LicenseDbContext db, IOptions<BankOptions> opt, AdminJobAlerts alerts,
         ILogger<BankDataRetentionJob> log)
     { _db = db; _opt = opt.Value; _alerts = alerts; _log = log; }
 

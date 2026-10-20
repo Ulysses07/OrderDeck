@@ -4,7 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -29,11 +29,11 @@ public sealed class DataDestructionDigestJobTests
     private static LicenseDbContext NewDb() => new(new DbContextOptionsBuilder<LicenseDbContext>()
         .UseInMemoryDatabase($"destruction-digest-{Guid.NewGuid():N}").Options);
 
-    private static BankJobAlerts Alerts(TestEmailSender email, bool withAddress = true)
+    private static AdminJobAlerts Alerts(TestEmailSender email, bool withAddress = true)
         => new(email, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            [BankJobAlerts.AlertEmailKey] = withAddress ? $"ops-{Guid.NewGuid():N}@example.test" : "",
-        }).Build(), NullLogger<BankJobAlerts>.Instance);
+            [AdminJobAlerts.AlertEmailKey] = withAddress ? $"ops-{Guid.NewGuid():N}@example.test" : "",
+        }).Build(), NullLogger<AdminJobAlerts>.Instance);
 
     private static DataDestructionDigestJob Job(LicenseDbContext db, TestEmailSender email, TimeProvider clock,
         bool withAddress = true)
@@ -110,7 +110,7 @@ public sealed class DataDestructionDigestJobTests
 
         var act = () => Job(db, email, new FixedClock(Now), withAddress: false).RunAsync(CancellationToken.None);
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage($"*{BankJobAlerts.AlertEmailKey}*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage($"*{AdminJobAlerts.AlertEmailKey}*");
         (await UndigestedAsync(db)).Should().HaveCount(1);
     }
 

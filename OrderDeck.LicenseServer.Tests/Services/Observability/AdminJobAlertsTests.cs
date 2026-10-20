@@ -1,21 +1,21 @@
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
-using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
-namespace OrderDeck.LicenseServer.Tests.Services.Bank;
+namespace OrderDeck.LicenseServer.Tests.Services.Observability;
 
-/// <summary>Yönetici e-postası: <see cref="BankJobAlerts.SendAsync"/> uyarıdır, düşmesi işi düşürmez;
-/// <see cref="BankJobAlerts.SendOrThrowAsync"/> teslimi şart olan e-postadır (imha özeti), düşerse çağırana çıkar.</summary>
-public sealed class BankJobAlertsTests
+/// <summary>Yönetici e-postası: <see cref="AdminJobAlerts.SendAsync"/> uyarıdır, düşmesi işi düşürmez;
+/// <see cref="AdminJobAlerts.SendOrThrowAsync"/> teslimi şart olan e-postadır (imha özeti), düşerse çağırana çıkar.</summary>
+public sealed class AdminJobAlertsTests
 {
-    private static BankJobAlerts Alerts(TestEmailSender email, string? address)
+    private static AdminJobAlerts Alerts(TestEmailSender email, string? address)
         => new(email, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            [BankJobAlerts.AlertEmailKey] = address,
-        }).Build(), NullLogger<BankJobAlerts>.Instance);
+            [AdminJobAlerts.AlertEmailKey] = address,
+        }).Build(), NullLogger<AdminJobAlerts>.Instance);
 
     private static string Address() => $"ops-{Guid.NewGuid():N}@example.test";
 
@@ -42,7 +42,7 @@ public sealed class BankJobAlertsTests
         await Alerts(email, address).SendAsync("konu", "govde", CancellationToken.None);
         var act = () => Alerts(email, address).SendOrThrowAsync("konu", "govde", CancellationToken.None);
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage($"*{BankJobAlerts.AlertEmailKey}*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage($"*{AdminJobAlerts.AlertEmailKey}*");
         email.Sent.Should().BeEmpty();
     }
 

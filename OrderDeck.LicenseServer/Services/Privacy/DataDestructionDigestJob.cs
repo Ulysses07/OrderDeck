@@ -4,7 +4,7 @@ using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 
 namespace OrderDeck.LicenseServer.Services.Privacy;
 
@@ -16,7 +16,7 @@ namespace OrderDeck.LicenseServer.Services.Privacy;
 /// temizlik komutu) bu e-postalardan yeniden uygulanır (<c>deploy/README.md</c> "Geri yükleme"). Kişisel veri YOK: tarih,
 /// lisans/konu/talep kimliği, hedef, eylem, sayı, ölçüt, tetikleyici, yapan. Kayıt yoksa e-posta gitmez.
 /// <para><b>Durum tutar.</b> <see cref="DataDestructionRecord.DigestedAt"/> yalnız gönderim başarılı olunca yazılır
-/// (<see cref="BankJobAlerts.SendOrThrowAsync"/>). Gönderim düşerse (SMTP hatası, <c>Admin:AlertEmail</c> boş) iş Failed olur
+/// (<see cref="AdminJobAlerts.SendOrThrowAsync"/>). Gönderim düşerse (SMTP hatası, <c>Admin:AlertEmail</c> boş) iş Failed olur
 /// ve kayıtlar sonraki koşuda yeniden denenir; saatlerce süren bir kesinti ya da kuyruk gecikmesinden sonraki ilk koşu biriken
 /// bütün kayıtları gönderir. Birikimi hemen göndermek için Hangfire panosundan <c>data-destruction-digest</c> elle tetiklenir.
 /// E-posta gidip işaret yazılamazsa kayıtlar sonraki koşuda bir kez daha gider: çift satır zararsızdır, yeniden uygulama
@@ -33,10 +33,10 @@ public sealed class DataDestructionDigestJob
     public const int MaxRowsPerEmail = 1000;
 
     private readonly LicenseDbContext _db;
-    private readonly BankJobAlerts _alerts;
+    private readonly AdminJobAlerts _alerts;
     private readonly TimeProvider _clock;
 
-    public DataDestructionDigestJob(LicenseDbContext db, BankJobAlerts alerts, TimeProvider? clock = null)
+    public DataDestructionDigestJob(LicenseDbContext db, AdminJobAlerts alerts, TimeProvider? clock = null)
     { _db = db; _alerts = alerts; _clock = clock ?? TimeProvider.System; }
 
     /// <summary>UTC saat başından önceki, gönderilmemiş kayıtları <see cref="MaxRowsPerEmail"/>'lik e-postalarla gönderir ve

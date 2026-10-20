@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
-using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Observability;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -62,7 +62,7 @@ public sealed class AuditRetentionRelationalTests : IAsyncLifetime
 
         // Parti boyutu 2: iki koşulun ikisi de birden çok parti döner. İkinci koşu: maskelenen satır yeniden seçilmez.
         Task Prune() => new AuditRetentionJobs(db, Options.Create(new AuditRetentionOptions { BatchSize = 2 }),
-            scope.ServiceProvider.GetRequiredService<BankJobAlerts>(), NullLogger<AuditRetentionJobs>.Instance)
+            scope.ServiceProvider.GetRequiredService<AdminJobAlerts>(), NullLogger<AuditRetentionJobs>.Instance)
             .PruneAsync(CancellationToken.None);
         await Prune();
         await Prune();
