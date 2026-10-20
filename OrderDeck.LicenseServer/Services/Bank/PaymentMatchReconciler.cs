@@ -23,8 +23,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <para><b>Bir insan kararı ötekini ezmez.</b> Başka müşteriye elle verilmiş hareket onayda aday değildir; aynı müşteriye
 /// verilmişse dekont satıra yalnız iliştirilir, kararın durumu ve anı korunur. Elle eşleme yalnız karara bağlanmamış
 /// (<see cref="PaymentMatch.DecidedAt"/> ve <see cref="PaymentMatch.PaymentId"/> boş) harekete verilir; yeniden karar önce
-/// kaldırmadan geçer. Kaldırma hafıza satırını SİLER ve öneriyi yeniden hesaplar. Kimlikler admin formundan gelir: bu
-/// kural serviste uygulanır.</para>
+/// kaldırmadan geçer. Kaldırma, hareketin öğrettiği hafıza satırını SİLER; başka havalenin öğrettiği bağı tazelemişse bağın
+/// süresini kalan doğrulamalara geri çeker (<see cref="RewindIbanConfirmationAsync"/>); öneriyi yeniden hesaplar. Kimlikler
+/// admin formundan gelir: bu kural serviste uygulanır.</para>
 /// <para><b>Kaldırma dekontu ölçümden düşürmez.</b> Dekonta bağlı satırın kaldırılmasında dekont açık gap'e döner, aynı
 /// SaveChanges'te: gap'i varsa (gap çözümüyle bağlanmışsa) yeniden açılır, yoksa (onayda bağlanmışsa)
 /// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır. Bu kural olmasaydı dekont ne bağlı ne gap kümesinde
@@ -226,6 +227,10 @@ public sealed class PaymentMatchReconciler
 
         var learned = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId && m.SourceBankTransactionId == tx.Id).ToListAsync(ct);
         _db.CustomerIbanMemories.RemoveRange(learned); // spec §3: iptal bayrağı değil, silme
+        // KVKK K-6: kaldırılan karar başka bir havalenin öğrettiği bağı tazelemiş olabilir; süresi artık doğrulanmış sayılmayan
+        // havalede kalmasın. Dışlanan hareket hiç öğretmez, tazelemez.
+        if (match?.ActualWpfCustomerId is { } decidedFor && !Matcher.IsExcluded(tx))
+            await RewindIbanConfirmationAsync(tx, decidedFor, ct);
         if (match is not null)
         {
             var now = DateTimeOffset.UtcNow;
@@ -337,7 +342,7 @@ public sealed class PaymentMatchReconciler
     {
         if (tx.CounterpartyIbanHash is null) return;
         var now = DateTimeOffset.UtcNow;
-        var confirmedAt = tx.OccurredAt < now ? tx.OccurredAt : now;
+        var confirmedAt = ConfirmedAt(tx, now);
         var existing = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == tx.LicenseId && m.IbanHash == tx.CounterpartyIbanHash, ct);
         if (existing is not null)
         {
@@ -357,6 +362,42 @@ public sealed class PaymentMatchReconciler
             IbanMasked = tx.CounterpartyIbanMasked ?? "?", LearnedFrom = source, SourceBankTransactionId = tx.Id, CreatedAt = now,
             LastConfirmedAt = confirmedAt,
         });
+    }
+
+    /// <summary>Doğrulamanın saklama başlangıcı: havalenin işlem tarihi, ileri tarihliyse (valör) şimdiye kırpılır.</summary>
+    private static DateTimeOffset ConfirmedAt(BankTransaction tx, DateTimeOffset now) => tx.OccurredAt < now ? tx.OccurredAt : now;
+
+    /// <summary>
+    /// <paramref name="customer"/>'a verilmiş kararı kaldırılan <paramref name="removed"/>, aynı IBAN'ın bu müşteriye kayıtlı
+    /// bağının son doğrulamasıysa (işlem tarihi bağın <see cref="CustomerIbanMemory.LastConfirmedAt"/>'inden eski değil) bağın
+    /// başlangıcı kalan insan kararlı havalelerin (aynı lisans ve IBAN, bu müşteriye verilmiş, dışlanmamış) en yenisine geri
+    /// çekilir; hiç ileri gitmez (KVKK K-6: "son doğrulanmış ödemeden 12 ay"). Kalan yoksa bağ silinir: öğreten havale 180 günlük
+    /// kuralla silinmiş, tarihi bilinmiyor. Öğrenme anı ya da tahmini bir tarih süreyi politikanın ötesine taşıyabilirdi (öğrenme
+    /// havaleden aylar sonra olabilir). Bu hareketin öğrettiği bağ zaten siliniyor; P1 öncesi, hiç tazelenmemiş bağın
+    /// (<c>LastConfirmedAt</c> boş) süresi öğrenme anından işler, kaldırma onu değiştirmez. Değişen satır izlenir; denemenin
+    /// SaveChanges'i yazar.
+    /// </summary>
+    private async Task RewindIbanConfirmationAsync(BankTransaction removed, Guid customer, CancellationToken ct)
+    {
+        if (removed.CounterpartyIbanHash is not { } hash) return;
+        var memory = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == removed.LicenseId && m.IbanHash == hash
+            && m.WpfCustomerId == customer, ct);
+        if (memory is null || memory.SourceBankTransactionId == removed.Id || memory.LastConfirmedAt is not { } anchor) return;
+        var now = DateTimeOffset.UtcNow;
+        if (ConfirmedAt(removed, now) < anchor) return; // son doğrulama değildi
+        var remaining = (await _db.BankTransactions.AsNoTracking()
+                .Where(t => t.LicenseId == removed.LicenseId && t.CounterpartyIbanHash == hash && t.Id != removed.Id
+                            && _db.PaymentMatches.Any(m => m.BankTransactionId == t.Id && m.ActualWpfCustomerId == customer))
+                .ToListAsync(ct))
+            .Where(t => !Matcher.IsExcluded(t))
+            .Select(t => ConfirmedAt(t, now)).ToList();
+        if (remaining.Count == 0)
+        {
+            _db.CustomerIbanMemories.Remove(memory);
+            return;
+        }
+        var latest = remaining.Max();
+        if (latest < anchor) memory.LastConfirmedAt = latest;
     }
 
     /// <summary>Bir denemeyi koşar; çakışma, bayat seçim ya da tekil indeks ihlalinde (bkz. sınıf özeti) izini atıp BİR kez
