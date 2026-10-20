@@ -29,4 +29,7 @@ public sealed class DataDestructionRecord
     public Guid? RequestId { get; set; }
     /// <summary><c>system</c> ya da yönetici kullanıcı adı.</summary>
     public string Actor { get; set; } = "";
+    /// <summary>Kaydın veritabanı dışındaki kopyaya (<c>DataDestructionDigestJob</c>'ın e-postası) gittiği an; <c>null</c> = henüz
+    /// gitmedi. Yalnız gönderim başarılı olunca yazılır: düşen gönderim ya da kesinti sonraki koşuda telafi edilir.</summary>
+    public DateTimeOffset? DigestedAt { get; set; }
 }

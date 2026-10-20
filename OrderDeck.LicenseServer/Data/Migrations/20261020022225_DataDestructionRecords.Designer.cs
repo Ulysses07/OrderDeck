@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20261020014640_DataDestructionRecords")]
+    [Migration("20261020022225_DataDestructionRecords")]
     partial class DataDestructionRecords
     {
         /// <inheritdoc />
@@ -920,6 +920,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<DateTimeOffset?>("DigestedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<Guid?>("LicenseId")
                         .HasColumnType("uniqueidentifier");
 
@@ -952,6 +955,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("OccurredAt");
 
                     b.HasIndex("SubjectId");
+
+                    b.HasIndex(new[] { "OccurredAt" }, "IX_DataDestructionRecords_Undigested")
+                        .HasFilter("[DigestedAt] IS NULL");
 
                     b.ToTable("DataDestructionRecords");
                 });

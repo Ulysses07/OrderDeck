@@ -7,9 +7,14 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
 /// Banka saklama ve hizmet sonu işlerinin yöneticiye e-postası (KVKK Ö-13; <c>BackupRestoreDrillJob</c> kalıbı, adres
-/// <see cref="AlertEmailKey"/>). Adres boşsa yalnız günlüğe uyarı. Gönderim hatası yutulur ve günlüğe düşer: uyarının düşmesi
-/// işi düşürmesin. Gövdeye kişisel veri girmez — yalnız iş adı, istisna türü, sayılar, lisans kimliği. Alıcı adresi günlüğe
-/// yazılmaz.
+/// <see cref="AlertEmailKey"/>). İki yol:
+/// <list type="bullet">
+/// <item><see cref="SendAsync"/> — uyarı: adres boşsa yalnız günlüğe uyarı, gönderim hatası yutulur ve günlüğe düşer; uyarının
+/// düşmesi işi düşürmesin.</item>
+/// <item><see cref="SendOrThrowAsync"/> — teslimi şart olan e-posta (imha özeti, <c>DataDestructionDigestJob</c>): adres boşsa ya
+/// da gönderim düşerse fırlatır; çağıran işini Failed bırakır ve gönderilmemiş sayıp yeniden dener.</item>
+/// </list>
+/// Gövdeye kişisel veri girmez — yalnız iş adı, istisna türü, sayılar, kimlikler. Alıcı adresi günlüğe ve istisnaya yazılmaz.
 /// </summary>
 public sealed class BankJobAlerts
 {
@@ -32,12 +37,27 @@ public sealed class BankJobAlerts
         }
         try
         {
-            var html = $"<pre style=\"font-family:monospace\">{WebUtility.HtmlEncode(body)}</pre>";
-            await _email.SendAsync(to, "OrderDeck Admin", subject, html, body, ct);
+            await SendToAsync(to, subject, body, ct);
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
             _log.LogError(ex, "Banka iş uyarısı e-postası gönderilemedi — {Subject}", subject);
         }
+    }
+
+    /// <summary>Teslimi şart olan e-posta: <see cref="AlertEmailKey"/> boşsa <see cref="InvalidOperationException"/>, gönderim
+    /// hatası olduğu gibi çağırana çıkar.</summary>
+    public Task SendOrThrowAsync(string subject, string body, CancellationToken ct)
+    {
+        var to = _config[AlertEmailKey];
+        if (string.IsNullOrWhiteSpace(to))
+            throw new InvalidOperationException($"{AlertEmailKey} boş: e-posta gönderilemedi — {subject}");
+        return SendToAsync(to, subject, body, ct);
+    }
+
+    private Task SendToAsync(string to, string subject, string body, CancellationToken ct)
+    {
+        var html = $"<pre style=\"font-family:monospace\">{WebUtility.HtmlEncode(body)}</pre>";
+        return _email.SendAsync(to, "OrderDeck Admin", subject, html, body, ct);
     }
 }

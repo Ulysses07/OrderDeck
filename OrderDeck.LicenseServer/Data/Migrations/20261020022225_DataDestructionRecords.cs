@@ -25,7 +25,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     Criterion = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
                     Trigger = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                     RequestId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    Actor = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false)
+                    Actor = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    DigestedAt = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -46,6 +47,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 name: "IX_DataDestructionRecords_SubjectId",
                 table: "DataDestructionRecords",
                 column: "SubjectId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_DataDestructionRecords_Undigested",
+                table: "DataDestructionRecords",
+                column: "OccurredAt",
+                filter: "[DigestedAt] IS NULL");
         }
 
         /// <inheritdoc />

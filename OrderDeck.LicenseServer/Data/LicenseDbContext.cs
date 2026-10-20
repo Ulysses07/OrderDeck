@@ -1300,6 +1300,9 @@ public class LicenseDbContext : DbContext
             b.HasIndex(r => r.OccurredAt);
             b.HasIndex(r => r.LicenseId);
             b.HasIndex(r => r.SubjectId);
+            // İmha özetinin sorgusu (DigestedAt IS NULL): tablo hiç budanmaz, gönderilmemiş satır ise birkaç düzinedir.
+            // Adlı dizin: aynı sütundaki adsız dizinden AYRI bir dizin olarak kurulur.
+            b.HasIndex(r => r.OccurredAt, "IX_DataDestructionRecords_Undigested").HasFilter("[DigestedAt] IS NULL");
         });
 
         mb.Entity<NetgsmDeparture>(b =>
