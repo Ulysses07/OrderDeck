@@ -647,8 +647,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// <para>Ortak bakiye §4.5: Id çapaya çözülür ve çekim GRUP olarak geri
     /// alınır (<see cref="PersonBalance.ReverseGroupAsync"/>); eski tek bacaklı
     /// düşümün geri alması bugünkü satırla aynı. Üç çakışmadan sonra 503
-    /// balance-busy — dayanıklılık katmanı yeniden dener, ikinci deneme
-    /// already-reversed'i başarı sayar.</para>
+    /// balance-busy (hiçbir şey yazılmadı); dayanıklılık katmanı aynı isteği
+    /// yeniden dener. Yanıtı kaybolmuş başarılı bir geri almanın tekrarı 409
+    /// already-reversed alır, istemci bunu başarı sayar.</para>
     ///
     /// <para>Mod On'da sürüm kapısı (§6.5-3): eski sürümün revizyonu başka
     /// bilgisayarın teslim edilmiş düşümünü geri alırdı, ardından yeniden
@@ -684,8 +685,9 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     private ObjectResult BalanceBusy(Guid licenseId, string endpoint)
     {
-        _log.LogWarning(
-            "customer-balance/{Endpoint}: bakiye satırları üst üste çakıştı, 503 balance-busy (license={LicenseId})",
+        // Uyarı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü.
+        _log.LogDebug(
+            "customer-balance/{Endpoint}: 503 balance-busy (license={LicenseId})",
             endpoint, licenseId);
         return Problem(title: CodeBalanceBusy, statusCode: 503,
             detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");

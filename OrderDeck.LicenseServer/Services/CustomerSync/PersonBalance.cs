@@ -145,8 +145,10 @@ public sealed class PersonBalance
             if (await _db.CustomerBalanceTransactions.AnyAsync(t => t.ReversesTransactionId == anchorId, ct))
                 return ReverseOutcome.AlreadyReversed;
 
-            // Bacaklar Id sırasıyla: eşzamanlı iki geri alma geri alma satırlarını (N01 tekil anahtarları) aynı
-            // sırayla ekler — biri öbürünü bekler, kilitlenme (1205) olmaz.
+            // Id sırası yalnız okumayı (ve hazırlanan satırları) belirlenimli kılar; INSERT'lerin SQL sırası garanti
+            // DEĞİL (EF eklenen girdileri anahtarla sıralamaz, çok satırlı INSERT planı rastgele reversal Id'sine göre
+            // dizebilir). Eşzamanlı iki grup geri alması N01 anahtarlarını ters sırayla kilitleyip 1205 alabilir: onu
+            // aşağıdaki IsDeadlock dalı karşılar (deneme → hızlı yol → AlreadyReversed). O dal gerekli.
             List<CustomerBalanceTransaction> legs = anchor.DrawGroupId is null
                 ? [anchor]
                 : await _db.CustomerBalanceTransactions.AsNoTracking()
@@ -154,57 +156,59 @@ public sealed class PersonBalance
                     .OrderBy(t => t.Id)
                     .ToListAsync(ct);
             await StageGroupReversalAsync(licenseId, anchor, legs, createdByCustomerId, ct);
+
+            string retryReason;
             if (await LegOwnersChangedAsync(licenseId, legs, ct))
             {
                 // Bakiye satırları okunmadan önce birleşme oldu: okunan jeton birleşme sonrasının, koruma yok.
-                if (attempt < MaxAttempts) continue;
-                _db.ChangeTracker.Clear();
-                _log.LogWarning(
-                    "Ortak bakiye: grup geri almasının bacakları {Attempts} denemede de taşındı, balance-busy (license={LicenseId}, anchor={AnchorId})",
-                    MaxAttempts, licenseId, anchorId);
-                return ReverseOutcome.Busy;
+                retryReason = "bacak taşındı (kimlik birleşmesi)";
+            }
+            else
+            {
+                try
+                {
+                    await _db.SaveChangesAsync(ct);
+                    if (legs.Count > 1)
+                        _log.LogInformation(
+                            "Ortak bakiye: çok bacaklı çekim grup olarak geri alındı ({Legs} bacak, license={LicenseId}, anchor={AnchorId})",
+                            legs.Count, licenseId, anchorId);
+                    return ReverseOutcome.Reversed;
+                }
+                // Sıra önemli: DbUpdateConcurrencyException, DbUpdateException'dan türer.
+                catch (DbUpdateConcurrencyException)
+                {
+                    retryReason = "jeton çakışması";
+                }
+                catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
+                {
+                    _db.ChangeTracker.Clear();
+                    return ReverseOutcome.AlreadyReversed;
+                }
+                catch (DbUpdateException ex) when (IsDuplicateBalanceRow(ex))
+                {
+                    // Bacağın satırını eşzamanlı biri açtı (işlem bütünüyle geri alındı).
+                    retryReason = "bakiye satırı açma yarışı";
+                }
+                catch (DbUpdateException ex) when (IsDeadlock(ex))
+                {
+                    // Kilitlenme kurbanı (işlem bütünüyle geri alındı).
+                    retryReason = "kilitlenme (1205)";
+                }
             }
 
-            try
-            {
-                await _db.SaveChangesAsync(ct);
-                if (legs.Count > 1)
-                    _log.LogInformation(
-                        "Ortak bakiye: çok bacaklı çekim grup olarak geri alındı ({Legs} bacak, license={LicenseId}, anchor={AnchorId})",
-                        legs.Count, licenseId, anchorId);
-                return ReverseOutcome.Reversed;
-            }
-            // Sıra önemli: DbUpdateConcurrencyException, DbUpdateException'dan türer.
-            catch (DbUpdateConcurrencyException) when (attempt < MaxAttempts)
-            {
-                // Grup baştan kurulur (döngü başı).
-            }
-            catch (DbUpdateConcurrencyException)
+            // Hiçbir şey yazılmadı; grup taze okumayla baştan kurulur (döngü başı izleyiciyi temizler).
+            if (attempt >= MaxAttempts)
             {
                 _db.ChangeTracker.Clear();
+                // balance-busy'nin TEK uyarı satırı (denetleyici yalnız Debug yazar).
                 _log.LogWarning(
-                    "Ortak bakiye: grup geri alması {Attempts} denemede de çakıştı, balance-busy (license={LicenseId}, anchor={AnchorId})",
-                    MaxAttempts, licenseId, anchorId);
+                    "Ortak bakiye: grup geri alması {Attempts} denemede kurulamadı, son neden: {Reason}; balance-busy (license={LicenseId}, anchor={AnchorId})",
+                    MaxAttempts, retryReason, licenseId, anchorId);
                 return ReverseOutcome.Busy;
             }
-            catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
-            {
-                _db.ChangeTracker.Clear();
-                return ReverseOutcome.AlreadyReversed;
-            }
-            catch (DbUpdateException ex) when ((IsDuplicateBalanceRow(ex) || IsDeadlock(ex)) && attempt < MaxAttempts)
-            {
-                // Bacağın satırını eşzamanlı biri açtı ya da kilitlenme kurbanı olduk (işlem bütünüyle geri alındı):
-                // taze okumayla baştan.
-            }
-            catch (DbUpdateException ex) when (IsDuplicateBalanceRow(ex) || IsDeadlock(ex))
-            {
-                _db.ChangeTracker.Clear();
-                _log.LogWarning(
-                    "Ortak bakiye: grup geri alması {Attempts} denemede de satır açma yarışı ya da kilitlenme, balance-busy (license={LicenseId}, anchor={AnchorId})",
-                    MaxAttempts, licenseId, anchorId);
-                return ReverseOutcome.Busy;
-            }
+            _log.LogInformation(
+                "Ortak bakiye: grup geri alması {Attempt}. denemede kurulamadı ({Reason}), baştan kuruluyor (license={LicenseId}, anchor={AnchorId})",
+                attempt, retryReason, licenseId, anchorId);
         }
     }
 
