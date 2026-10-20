@@ -130,6 +130,14 @@
 - Alternatif: P0 ile P1 aynı pencerede çıkar; o zaman bu boşluklar hiç açılmaz.
 
 **P0 deploy'undan sonra (Görev 1–8):**
+- **Ön denetim (deploy'dan en az 5 dakika sonra, kuru koşudan önce; 0 satır beklenir):** çapası da ilk çekimi de olmayan ama hareketi olan bağlantı.
+  ```sql
+  SELECT c.LicenseId, c.Status, COUNT(t.Id) AS Hareket
+  FROM ObifinConnections c JOIN BankTransactions t ON t.LicenseId = c.LicenseId
+  WHERE c.InitialCollectFrom IS NULL AND c.BackfillCompletedAt IS NULL
+  GROUP BY c.LicenseId, c.Status;
+  ```
+  Eski kodun 90 günlük ilk çekimi P0 anında yarıda kalmış olabilir. Bağlantı `Verified` ise çekim işi deploy'dan sonraki ilk turda ona çapa yazar, komut da çapadan eski kararsız satırlarını siler (Görev 8): bu sorguya düşmez. Düşen bağlantı `Verified` değildir (Failed/Unverified/Disabled); komut onun çapasını bilemez, atlar. 0 değilse: bağlantı doğrulanıp ilk turu koşunca (çapa yazılır) komutu yeniden `--apply` ile koştur (idempotent). Doğrulanmayacaksa satırlarını 180 günlük kural (Görev 10) ya da hizmet sonu silmesi (Görev 14) siler; sonucu tutanağa yaz.
 1. Kuru koşu, çıktıyı tutanağa kaydet: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup`
 2. Sayılar beklendiği gibiyse: `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup --apply` (çıkış 1 = bazı partiler eşzamanlı yazıyla geri alındı → aynı komutu yeniden çalıştır; idempotent). Çıktıyı tutanağa ekle. P0'da `DataDestructionRecords` yok: bu koşunun Silme Yönetmeliği md. 7/3 kaydı (en az 3 yıl) **tutanağın kendisidir**. P1'den sonraki koşular tabloya da yazar (Görev 9: tetikleyici `cleanup`, yapan `cli`).
    **Ne zaman koşturulmaz:** 04:57 UTC saklama işi (P1) ya da bir shopper silmesi / banka veri talebi silmesi sürerken. Komut oku-değiştir-yaz yapar, `BankTransaction`'da eşzamanlılık jetonu yok: arada boşaltılan bir açıklama ya da ham kayıt maskelenmiş eski hâliyle geri yazılabilirdi. Gündüz, başka silme işlemi yapmadan koştur.
@@ -138,6 +146,7 @@
    ```text
    bank-data-cleanup tutanağı — KVKK ön inceleme §5.1 (P0)
    Tarih/saat (TR): ____          Koşturan: ____          İmaj: master-<sha>
+   Ön denetim (çapasız yarım ilk çekim; 0 satır beklenir):  ____
    Komut ve çıkış kodu (kuru):    bank-data-cleanup  → __
    Kuru koşu çıktısı (satır aynen):  ____
    Komut ve çıkış kodu (uygula):  bank-data-cleanup --apply  → __   Yeniden koşuldu mu: __
@@ -1485,7 +1494,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 Silme kuralları:
 - **Giden/sıfır:** eşleşme satırlarıyla birlikte silinir. İnsan kararına bağlı (karar anı, dekont ya da gerçek müşteri dolu) olan atlanır ve sayılır — olması beklenmez (elle eşleme yalnız geleni kabul ediyor), varsa Burak bakar.
-- **Çapa öncesi:** çapası olmayan ve ilk çekimi bitmiş bağlantıya çapa = ilk çekimin TR günü − 2 yazılır; çapadan eski, kararsız, IBAN öğretmemiş (`CustomerIbanMemory.SourceBankTransactionId`) ve bir gap'i çözmemiş (`PaymentMatchGap.ResolvedBankTransactionId`) hareketler silinir. Bağlı olanlar kalır (180 günlük kural onları sonra siler — Görev 10).
+- **Çapa öncesi:** çapası olmayan ve ilk çekimi bitmiş bağlantıya çapa = ilk çekimin TR günü − 2 yazılır. Çapadan eski, kararsız, IBAN öğretmemiş (`CustomerIbanMemory.SourceBankTransactionId`) ve bir gap'i çözmemiş (`PaymentMatchGap.ResolvedBankTransactionId`) hareketler çapası olan **her** bağlantıda silinir: komutun yazdığı çapa da, çekim işinin yazdığı çapa da. Neden: P0 anında eski kodun 90 günlük ilk çekimi yarıda kalmış bir bağlantı olabilir (`BackfillCompletedAt` boş, sayfa sayfa kaydedilmiş satırlar var). Yeni kod ilk turda ona çapa yazar (bugün − 2); silme yalnız çapasız bağlantıya bakarsa bu satırlar 180 günlük kurala kadar kalırdı. Çapası da ilk çekimi de olmayan bağlantı (Verified değil, çekim işi ona çapa yazmadı) atlanır; Prod adımlarındaki ön denetim onu sayar. Bağlı olanlar kalır (180 günlük kural onları sonra siler — Görev 10).
 - **Eski maskeler (Ö-6):** eski `MaskIban` 8 karakterden kısa değeri ham, 8–14 karakteri `1234…890` biçiminde yazdı. Üç tabloda (`BankTransactions.CounterpartyIbanMasked`, `CustomerIbanMemories.IbanMasked`, `BankAccounts.IbanMasked`) IBAN maskesi biçiminde (`AA00…XXX`) olmayan maske `BankHasher.ShortValueMask` olur; yer tutucu `?` ve boş kalır. (Görev 11'deki `ClearMaskedSourceHashes` yalnız özeti olan satırlara bakar; kısa değerin özeti hiç yoktu — bu adım onları kapsar.)
 - Partiler 500'lük; eşzamanlı bir eşleştirme yazısı (`PaymentMatch.UpdatedAt` jetonu) partiyi geri aldırır → o adım biter, çıkış 1, komut yeniden çalıştırılır (idempotent).
 - Bağlantının `UpdatedAt`'i BİLEREK değişmez: çekim işinin kimlik denetimi onu karşılaştırır.
@@ -1617,6 +1626,38 @@ public sealed class BankDataCleanupJobTests
     }
 
     [Fact]
+    public async Task Capasi_olan_her_baglantida_capadan_eski_kararsiz_satir_silinir_capa_degismez()
+    {
+        // P0 anında eski kodun 90 günlük ilk çekimi yarıda kalmış bağlantı: BackfillCompletedAt boş, sayfa sayfa kaydedilmiş
+        // eski satırları var; yeni çekim işi ilk turda çapayı yazdı (18.09). Komut çapa yazmaz ama çapadan eski kararsız
+        // satırı siler; ikinci koşu silecek bir şey bulmaz.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var created = new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero);
+        db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = lic, BaseUrl = "https://example.invalid",
+            UserCode = $"u-{Guid.NewGuid():N}@x", Status = ObifinConnectionStatus.Verified, BackfillCompletedAt = null,
+            InitialCollectFrom = new DateOnly(2026, 9, 18), CreatedAt = created, UpdatedAt = created });
+        var old = Tx(lic, 10m, new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero));
+        var oldDecided = Tx(lic, 13m, new DateTimeOffset(2026, 7, 2, 9, 0, 0, TimeSpan.Zero));
+        var onAnchor = Tx(lic, 12m, new DateTimeOffset(2026, 9, 17, 21, 0, 0, TimeSpan.Zero)); // 18.09 00:00 TR
+        db.BankTransactions.AddRange(old, oldDecided, onAnchor);
+        db.PaymentMatches.AddRange(Match(old), Match(oldDecided, actual: Guid.NewGuid(), decidedAt: DateTimeOffset.UtcNow));
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None);
+        (dry.AnchorsSet, dry.PreAnchorDeleted, dry.PreAnchorSkippedLinked).Should().Be((0, 1, 1));
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        (r.AnchorsSet, r.PreAnchorDeleted, r.PreAnchorSkippedLinked, r.MatchesDeleted).Should().Be((0, 1, 1, 1));
+        (await db.BankTransactions.Select(t => t.Id).ToListAsync()).Should().BeEquivalentTo(new[] { oldDecided.Id, onAnchor.Id });
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync();
+        conn.InitialCollectFrom.Should().Be(new DateOnly(2026, 9, 18));
+        conn.BackfillCompletedAt.Should().BeNull();
+        conn.UpdatedAt.Should().Be(created);
+        (await Job(db).RunAsync(null, apply: true, CancellationToken.None)).PreAnchorDeleted.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Vkn_kodu_bosaltilir_ham_kayit_daraltilir_aciklama_maskelenir()
     {
         using var db = NewDb(); var lic = Guid.NewGuid();
@@ -1743,8 +1784,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// seferlik; <c>bank-data-cleanup</c> komutu çağırır. Kuru koşu aynı sayıları hesaplar, hiçbir şey yazmaz.
 /// <list type="number">
 /// <item>Giden ve sıfır tutarlı hareketler eşleşme satırlarıyla silinir; insan kararına bağlı olan atlanır ve sayılır.</item>
-/// <item>Çapası olmayan, ilk çekimi bitmiş bağlantıya çapa (<see cref="AnchorFor"/>) yazılır; çapadan eski, kararsız, IBAN
-/// öğretmemiş ve gap çözmemiş hareketler silinir.</item>
+/// <item>Çapası olmayan, ilk çekimi bitmiş bağlantıya çapa (<see cref="AnchorFor"/>) yazılır; çapası olan HER bağlantıda
+/// (çekim işinin yazdığı dahil) çapadan eski, kararsız, IBAN öğretmemiş ve gap çözmemiş hareketler silinir.</item>
 /// <item><c>CounterpartyTaxIdHash</c> boşaltılır.</item>
 /// <item>Ham kayıt beyaz listeye indirilir (<see cref="BankRawJsonRedactor"/>); okunamayan ham kayıt boşaltılır.</item>
 /// <item>Açıklamadaki IBAN ve 11 haneli numara maskelenir (<see cref="BankDescriptionMasker"/>).</item>
@@ -1844,14 +1885,31 @@ public sealed class BankDataCleanupJob
         if (!completed) r.FailedBatches++;
     }
 
+    /// <summary>Çapa yalnız çapası olmayan, ilk çekimi bitmiş bağlantıya (eski kodun 90 günlük ilk çekimi) yazılır. Çapadan eski
+    /// kararsız hareketler ise çapası olan HER bağlantıda silinir: P0 anında eski kodun ilk çekimi yarıda kalmış bir bağlantıya
+    /// yeni çekim işi ilk turda çapa yazar (<c>BackfillCompletedAt</c> o an boş); sayfa sayfa kaydedilmiş eski satırları yalnız
+    /// bu adım siler. Yeniden koşu idempotent: çapa yazılmıştır, silinecek satır kalmamıştır.</summary>
     private async Task ApplyInitialAnchorAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
     {
         var connections = _db.ObifinConnections.AsNoTracking()
-            .Where(c => c.BackfillCompletedAt != null && c.InitialCollectFrom == null);
+            .Where(c => c.InitialCollectFrom != null || c.BackfillCompletedAt != null);
         if (licenseId is { } l) connections = connections.Where(c => c.LicenseId == l);
-        foreach (var c in await connections.Select(c => new { c.Id, c.LicenseId, c.BackfillCompletedAt }).ToListAsync(ct))
+        foreach (var c in await connections.Select(c => new { c.Id, c.LicenseId, c.InitialCollectFrom, c.BackfillCompletedAt })
+                     .ToListAsync(ct))
         {
-            var anchor = AnchorFor(c.BackfillCompletedAt!.Value);
+            var anchor = c.InitialCollectFrom ?? AnchorFor(c.BackfillCompletedAt!.Value);
+            if (c.InitialCollectFrom is null)
+            {
+                r.AnchorsSet++;
+                if (apply)
+                {
+                    // Önce çapa: silme partisi geri alınırsa yeniden koşu bu bağlantıyı yazılmış çapasıyla yeniden dener.
+                    var conn = await _db.ObifinConnections.SingleAsync(x => x.Id == c.Id, ct);
+                    conn.InitialCollectFrom = anchor; // UpdatedAt BİLEREK değişmez (sınıf özeti)
+                    await _db.SaveChangesAsync(ct);
+                    _db.ChangeTracker.Clear();
+                }
+            }
             var anchorUtc = ObifinConnectionService.TrToUtc(anchor.ToDateTime(TimeOnly.MinValue));
             var decided = DecidedTransactionIds();
             var taught = _db.CustomerIbanMemories.Where(m => m.SourceBankTransactionId != null)
@@ -1862,7 +1920,6 @@ public sealed class BankDataCleanupJob
             var deletable = before.Where(t => !decided.Contains(t.Id) && !taught.Contains(t.Id) && !resolved.Contains(t.Id));
             var deletableCount = await deletable.CountAsync(ct);
             r.PreAnchorSkippedLinked += await before.CountAsync(ct) - deletableCount;
-            r.AnchorsSet++;
             if (!apply)
             {
                 r.PreAnchorDeleted += deletableCount;
@@ -1871,16 +1928,7 @@ public sealed class BankDataCleanupJob
             var (deleted, matches, completed) = await DeleteInBatchesAsync(deletable, c.LicenseId, "ilk çekim çapasından eski (Ö-5)", ct);
             r.PreAnchorDeleted += deleted;
             r.MatchesDeleted += matches;
-            if (!completed)
-            {
-                // Çapa yazılmaz: yeniden koşu aynı bağlantıyı yeniden dener.
-                r.FailedBatches++;
-                continue;
-            }
-            var conn = await _db.ObifinConnections.SingleAsync(x => x.Id == c.Id, ct);
-            conn.InitialCollectFrom = anchor; // UpdatedAt BİLEREK değişmez (sınıf özeti)
-            await _db.SaveChangesAsync(ct);
-            _db.ChangeTracker.Clear();
+            if (!completed) r.FailedBatches++; // çapa yazıldı: yeniden koşu aynı bağlantının kalanını siler
         }
     }
 
