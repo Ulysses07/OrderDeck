@@ -74,7 +74,7 @@
 - **Derleme:** sunucu `TreatWarningsAsErrors` — 0 uyarı. `DOTNET_CLI_UI_LANGUAGE=en` her dotnet komutunda.
 - **Filtreli test (Bash, worktree kökünden):**
   `DOTNET_CLI_UI_LANGUAGE=en dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --nologo -v q --filter "FullyQualifiedName~<Sınıf>"`
-- **Göç:** `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add <Ad> --output-dir Data/Migrations` (dotnet-ef 10 global). Göç + Designer + `LicenseDbContextModelSnapshot.cs` birlikte commit'lenir. Üretilen `Up` YALNIZ `AddColumn`/`CreateTable`/`CreateIndex` içermeli (genişletme); `DropColumn`, `AlterColumn` (nullable → not null), `RenameColumn` görürsen dur ve sor. `ortak-bakiye-s1` dalı da göç ekliyor: hangisi ikinci merge edilirse onun göçü yeniden üretilir (snapshot çakışması) — bu planın işi değil, PR açıklamasına not.
+- **Göç:** `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add <Ad> --context LicenseDbContext --output-dir Data/Migrations` (dotnet-ef 10 global). Göç + Designer + `LicenseDbContextModelSnapshot.cs` birlikte commit'lenir. Üretilen `Up` YALNIZ `AddColumn`/`CreateTable`/`CreateIndex` içermeli (genişletme); `DropColumn`, `AlterColumn` (nullable → not null), `RenameColumn` görürsen dur ve sor. `ortak-bakiye-s1` dalı da göç ekliyor: hangisi ikinci merge edilirse onun göçü yeniden üretilir (snapshot çakışması) — bu planın işi değil, PR açıklamasına not.
 - **Testcontainers:** önce `docker version`. "NamedPipeClientStream … ConnectInternal" hatasında koşuyu PowerShell'den yap: `$env:DOCKER_HOST='npipe://./pipe/dockerDesktopLinuxEngine'` (İKİ eğik çizgi), ardından aynı `dotnet test`. Başka bir oturum da Docker kullanıyor: `StartContainerAsync`/`TaskCanceledException` zaman aşımları koddan değildir, o sınıfı tek başına yeniden koştur.
 - **Göçün gerçek SQL Server'da kurulduğunun kanıtı:** göç ekleyen her görevin sonunda bir Testcontainers sınıfı koşulur (`RelationalApiFactory` göçleri `Migrate()` ile kurar; model ile snapshot ayrışırsa EF 10 açılışta düşer). Görev 8'den önce `GroupCustomersRelationalTests`, sonra `BankDataCleanupRelationalTests`.
 - **Public repo hijyeni:** testte kimlik bilgisi/parola/anahtar literali yok (`$"{önek}-{Guid.NewGuid():N}"`), nötr değişken adları, telefon `TestPhone`, TCKN `TestTckn.NewValid()`, IBAN `BankHasherTests.TestIban()` (Görev 4'ten sonra mod-97 geçerli üretilir; bozuk kontrol hanesi `WrongCheckDigits`). Gerçek IBAN/TCKN/müşteri verisi yok. `OneDrive/Masaüstü/obifin-api-key.txt` ve `/root/.obifin.env` ASLA okunmaz.
@@ -455,7 +455,7 @@ Expected: FAIL — `ObifinConnection.DisabledAt` ve `ObifinConnectionService.Lic
 
 - [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinConnectionDisabledAt --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinConnectionDisabledAt --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `migrationBuilder.AddColumn<DateTimeOffset>(name: "DisabledAt", table: "ObifinConnections", … nullable: true)`. Başka değişiklik varsa dur.
 
 - [ ] **Adım 9: Testleri koştur**
@@ -1532,7 +1532,7 @@ satırını şununla değiştir:
 
 - [ ] **Adım 7: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinInitialCollectFrom --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinInitialCollectFrom --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `AddColumn<DateOnly>(name: "InitialCollectFrom", table: "ObifinConnections", type: "date", nullable: true)`.
 
 - [ ] **Adım 8: Koştur — yeşil**
@@ -2967,7 +2967,7 @@ public sealed class BankJobAlerts
 
 - [ ] **Adım 10: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add DataDestructionRecords --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add DataDestructionRecords --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `CreateTable("DataDestructionRecords")` + iki `CreateIndex`.
 
 - [ ] **Adım 11: Koştur — yeşil**
@@ -3327,6 +3327,19 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 | Alt sınır | çekimden sonra en az 7 gün | çekim |
 
 "Eşleşen" = eşleştirme satırında gerçek müşteri ya da dekont bağı var (insan kararı). Eşleşenin açıklaması hareketle birlikte 180'de gider. Not "eşleştirme satırını sil ya da sayılara indir" diyor: plan **siler** (karar 3).
+
+**Uygulama notu (Görev 10 incelemesi, 20.10):** kod aşağıdaki adımlardan şu noktalarda ayrılır. Metin işi, avukat paketi ve sonraki görevler koddakine göre yazılır.
+- **`LastConfirmedAt` = doğrulanan havalenin işlem tarihi, doğrulama anı değil.** Adım 4'teki `now` yerine `ConfirmedAt(tx, now)`: `OccurredAt`, ileri tarihliyse (valör) şimdiye kırpılır. Öğrenmede de böyle: `CreatedAt` öğrenme anı, `LastConfirmedAt` öğreten havalenin işlem tarihi. Tazeleme yalnız ileri gider. Eski bir havalenin geç doğrulanması başlangıcı geri çekmez, eşleme anı da süreyi uzatmaz. Bağ "o IBAN'dan gelen son doğrulanmış havalenin işlem tarihinden 12 ay" yaşar; metin ve avukat paketi süreyi "doğrulama anından" diye yazmaz (politikanın bütün banka süreleri gibi işlem tarihinden). Adım 1'in testi `BeAfter(learnedAt)` yerine `Be(second.OccurredAt)` der; geç doğrulama, dekont onayıyla tazeleme ve ileri tarih kırpması için birer test daha var.
+- **Kaldırma süreyi geri çeker (inceleme sonrası).** Tazeleme tek yönlüydü: B havalesinin eşlemesi kaldırılınca süre B'de kalıyordu. Artık eşlemesi kaldırılan havale bağın son doğrulamasıysa (`PaymentMatchReconciler.RewindIbanConfirmationAsync`, `UnmatchAsync` içinde, aynı SaveChanges) başlangıç kalan insan kararlı havalelerin en yenisine çekilir: aynı lisans ve IBAN özeti, bu müşteriye verilmiş, dışlanmamış. Kalan yoksa (öğreten havale 180 günde silinmiş, tarihi bilinmiyor) bağ silinir; öğrenme anına çekmek süreyi politikanın ötesine taşıyabilirdi (öğrenme havaleden aylar sonra olabilir). Öğreten havalenin kaldırılması bağı zaten siliyordu (spec §3). P1 öncesi, hiç tazelenmemiş bağ (`LastConfirmedAt` boş) öğrenme anından sayılır; kaldırma onu değiştirmez.
+- **Ölçüt metinleri** `;` içermez (Görev 9 kuralı) ve alt sınırı yazar: hareket ve eşleşme `OccurredAt+180g, FetchedAt+7g`; ham kayıt `OccurredAt+30g, FetchedAt+7g`; eşleşmeyen `OccurredAt+30g, FetchedAt+7g, eşleşmeyen`; gerekçe metni `hareketin açıklamasıyla`; gap `CreatedAt+180g`; IBAN bağı `LastConfirmedAt+12ay`; koşu kaydı `işlem tarihi+180g / ham +30g / eşleşmeyen +30g / IBAN bağı +12ay / FetchedAt+7g`.
+- **`RunAsync`** `BankRetentionResult` döndürür; kayıtta `Total` özelliği var, sıfırdan büyükse günlüğe yazılır.
+- **Yapılandırma testi:** `BankJobsDiTests.Saklama_tablosunun_kalan_sureleri_yapilandirmayla_politikadaki_gibi` prod'un okuduğu `appsettings.json` değerlerini (30/180/12/7) sınar, sınıf varsayılanını değil.
+- **Testler adımlardakinden geniş:** gerekçe metni testi satırın `CreatedAt`'ine bakılmadığını, geç çekim testi alt sınırın yalnız çekimden 7 gün olduğunu (`max(işlem tarihi + 180, çekim + 7)`) da sınar. İnceleme sonrası: işlem tarihi 40, çekim 10 gün önceki satırlar 2. ve 3. adımın koşulu çekim anına dönerse InMemory'de ve SQL Server'da düşer. `BankDataRetentionRelationalTests` imha kayıtlarını hedef ve satır sayısıyla birebir karşılaştırır.
+- **Göç komutu** `--context LicenseDbContext` ister: `LicenseReadOnlyDbContext` de bir `LicenseDbContext`. Genel kurallardaki ve görevlerdeki komutlar buna göre güncellendi.
+- **Özet düzeltmeleri:** `Program.cs` takvim yorumu; `PaymentMatcher` ve `PaymentMatchMetrics` özetlerindeki "kanıt 180 gün" artık "hareketin açıklamasıyla".
+- **Prod adımları:** P1 ilk koşu tutanağına hareketle silinecek eşleşme, ham kayıt (işlem tarihinden) ve gerekçe metni sayımları eklendi; sorgular gerçek SQL Server'da koşu sonucuyla karşılaştırıldı. P0 ile P1 aynı pencerede çıkarsa P0'ın `FetchedAt` sayımı yerine bunlar kullanılır.
+
+**Sonraki görevler için kural:** bir havaleyi kararıyla birlikte silen ya da kararını boşaltan yol, o havalenin tazelediği ama başka havalenin öğrettiği IBAN bağının başlangıcını aynı kuralla geri çeker; yoksa süre artık geçersiz bir doğrulamada kalır. Görev 13'ün hesap reddinde (`RejectAccountAsync`) "başka hareketten gelen bağ kalır": reddedilen hesabın havalesi o bağı tazelemişse başlangıç kalan doğrulamalardan yeniden hesaplanır (`RewindIbanConfirmationAsync`'in kuralı; gerekirse ortak yardımcıya taşınır), kalan yoksa bağ silinir ve imha kaydına girer. Bağı doğrudan silen yollar (hizmet sonu silmesi, yayıncı silmesi, kimlik değişimi, Görev 15/17'nin kişi ve IBAN silmesi) bundan etkilenmez.
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Bank/BankDataRetentionJob.cs` (bütünüyle)
@@ -3693,6 +3706,8 @@ Expected: FAIL — `LastConfirmedAt`, `BankRetentionResult` alanları yok.
 
 - [ ] **Adım 4: IBAN bağına son doğrulama tarihi**
 
+(Koddaki hâli farklı: `LastConfirmedAt` = doğrulanan havalenin işlem tarihi, şimdiye kırpılır, yalnız ileri gider; kaldırma geri çeker. Bkz. görevin başındaki uygulama notu. Aşağıdaki `now` ilk taslaktır.)
+
 `Domain/Bank/CustomerIbanMemory.cs` — `public DateTimeOffset CreatedAt { get; set; }` satırının ALTINA:
 
 ```csharp
@@ -3976,7 +3991,7 @@ public sealed class BankDataRetentionJob
 
 - [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add IbanMemoryLastConfirmedAt --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add IbanMemoryLastConfirmedAt --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `AddColumn<DateTimeOffset>(name: "LastConfirmedAt", table: "CustomerIbanMemories", nullable: true)`.
 
 - [ ] **Adım 9: Gerçek SQL Server testi**
@@ -4361,7 +4376,7 @@ Expected: PASS (testler `TestIban()` kullanıyor, Görev 4'ten beri geçerli). K
 
 - [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add IbanQualityCountersAndHashValid --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add IbanQualityCountersAndHashValid --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız üç `AddColumn<int>(… table: "BankAccounts", nullable: false, defaultValue: 0)` ve bir `AddColumn<bool>(name: "CounterpartyIbanHashValid", table: "BankTransactions", nullable: false, defaultValue: false)` (varsayılanlar: eski imajın INSERT'ü sütunları bilmese de geçer; eski hareketler IBAN öğretmez). Eski satırları `true` yapan `UPDATE` EKLEME.
 
 - [ ] **Adım 8b: Eski hareketten IBAN öğrenilmesin (test önce, kırmızı)**
@@ -4926,7 +4941,7 @@ Hesap satırları bloğunu (`@if (Model.AccountsByLicense.TryGetValue(…)) { <t
 
 - [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankAccountApproval --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankAccountApproval --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `AddColumn` × 3 (`ApprovedAt` nullable, `ApprovedBy` nvarchar(256) nullable, `UnapprovedSkippedCount` int default 0). **Mevcut hesapları onaylayan `UPDATE` ekleme** (karar 4).
 
 - [ ] **Adım 9: Koştur — yeşil**
@@ -6756,7 +6771,7 @@ Hesap satırında (Görev 12'nin `<span data-cell="approval">…</span>`'ının 
 
 - [ ] **Adım 8: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinConnectionServiceEnd --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add ObifinConnectionServiceEnd --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `AddColumn<DateTimeOffset>(name: "BankDataPurgedAt", table: "ObifinConnections", nullable: true)`, `AddColumn<bool>(name: "DisabledByAdmin", table: "ObifinConnections", nullable: false, defaultValue: false)`, `CreateTable("ObifinCopyDeletions")` (FK'siz) ve iki `CreateIndex` (`LicenseId`; süzgeçli `IX_ObifinCopyDeletions_Pending`). P0'da lisans bitişiyle Disabled'a çekilmiş bağlantılar `DisabledByAdmin = false` ile gelir — doğru: P1'den önce yönetici durdurması yoktu.
 
 - [ ] **Adım 9: Yayıncı silmesi Obifin bağlantısını atlamasın (test önce, kırmızı)**
@@ -9015,7 +9030,7 @@ Run: aynı komut. Expected: PASS.
 
 - [ ] **Adım 6: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankSubjectRequests --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add BankSubjectRequests --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `CreateTable("BankSubjectRequests")` (CHECK kısıtıyla; `Resolution` nvarchar(32) not null) + `CreateIndex`.
 
 - [ ] **Adım 7: Koştur — yeşil**
@@ -10889,7 +10904,7 @@ Lisanssız bir kimlikle `UpsertAsync` çağıran test varsa (kapı lisansın mü
 
 - [ ] **Adım 7: Göçü üret ve incele**
 
-Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add DataControllerProfiles --output-dir Data/Migrations`
+Run: `cd OrderDeck.LicenseServer && DOTNET_CLI_UI_LANGUAGE=en dotnet ef migrations add DataControllerProfiles --context LicenseDbContext --output-dir Data/Migrations`
 Expected: `Up` yalnız `CreateTable("DataControllerProfiles")` (PK `CustomerId`, `Customers`'a kaskad FK, `Version` int), `CreateTable("DataControllerProfileVersions")` (`Customers`'a kaskad FK) + tekil `CreateIndex` (`CustomerId`, `Version`) ve `AddColumn<int>(name: "DataControllerVersion", table: "IntakeFormSubmissions", nullable: true)`.
 
 - [ ] **Adım 8: Koştur — yeşil**
