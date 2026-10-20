@@ -313,6 +313,41 @@ public sealed class ObifinPollJobTests
         conn.LastObifinTransactionId.Should().Be(11);
     }
 
+    [Fact]
+    public async Task Capasi_31_gunden_eski_ilk_cekim_bitisik_31_gunluk_dilimlerle_surer()
+    {
+        // İlk çekim bitmeden çapa 31 günden eskiye düşebilir: ilk tur çapayı yazdı, bağlantı Obifin reddiyle Failed'a düştü,
+        // admin 40 gün sonra aynı kimlikle yeniden doğruladı (kimlik değişmedi, çapa kalır). İlk çekim çapadan bugüne
+        // dilimlerle sürer: her dilim en çok 31 gün (gerçek istemci üstünü reddeder), dilimler arasında boşluk yok.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc);
+        var anchor = today.AddDays(-40);
+        var seeded = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        seeded.InitialCollectFrom = anchor;
+        await db.SaveChangesAsync();
+        client.Transactions.Add(Tx(19, new DateTime(2026, 8, 15, 23, 0, 0), 10m));  // çapadan önce
+        client.Transactions.Add(Tx(20, new DateTime(2026, 8, 16, 9, 0, 0), 11m));   // çapa günü, ilk dilim
+        client.Transactions.Add(Tx(21, new DateTime(2026, 9, 15, 23, 0, 0), 12m));  // ilk dilimin son günü
+        client.Transactions.Add(Tx(22, new DateTime(2026, 9, 16, 0, 30, 0), 13m));  // ikinci dilimin ilk günü
+        client.Transactions.Add(Tx(23, new DateTime(2026, 9, 25, 10, 0, 0), 14m));  // bugün
+
+        await job.RunAsync(CancellationToken.None);
+
+        var windows = client.Calls.Select(c => (c.From, c.To)).Distinct().ToList();
+        windows.Should().HaveCount(2);
+        windows[0].From.Should().Be(anchor);
+        windows[^1].To.Should().Be(today);
+        windows.Should().OnlyContain(w => w.To.DayNumber - w.From.DayNumber + 1 <= ObifinPollJob.WindowDays);
+        windows.Zip(windows.Skip(1)).Should().OnlyContain(p => p.Second.From == p.First.To.AddDays(1), "dilimler bitişik");
+        client.Calls.Should().OnlyContain(c => c.Since == null);
+        (await db.BankTransactions.Select(t => t.ObifinId).ToListAsync()).Should().BeEquivalentTo(new[] { 20L, 21L, 22L, 23L });
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.InitialCollectFrom.Should().Be(anchor);
+        conn.BackfillCompletedAt.Should().NotBeNull();
+        conn.LastObifinTransactionId.Should().Be(23);
+    }
+
     [Theory]
     [InlineData("gecici")]
     [InlineData("red")]
