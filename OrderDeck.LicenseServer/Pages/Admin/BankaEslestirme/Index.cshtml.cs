@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 
@@ -173,7 +174,10 @@ public class IndexModel : PageModel
         bool recomputed;
         try
         {
-            recomputed = await _reconciler.UnmatchAsync(LicenseId, TransactionId, CancellationToken.None);
+            // Kaldırma IBAN bağını silerse imha kaydının yapanı yöneticinin kimliği (KVKK Ö-14; kaydı budanmaz, adı denetim
+            // satırında).
+            recomputed = await _reconciler.UnmatchAsync(LicenseId, TransactionId, CancellationToken.None,
+                DataDestruction.ActorOf(User));
         }
         catch (ObifinValidationException ex)
         {

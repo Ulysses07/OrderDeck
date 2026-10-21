@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -22,7 +23,7 @@ public sealed class PaymentMatchReconcilerTests
 
     private static PaymentMatchReconciler Recon(LicenseDbContext db, ILogger<PaymentMatchReconciler>? log = null)
         => new(db, new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
-            log ?? NullLogger<PaymentMatchReconciler>.Instance);
+            Options.Create(new BankOptions()), log ?? NullLogger<PaymentMatchReconciler>.Instance);
 
     private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid WpfCustomerId);
 
@@ -685,6 +686,7 @@ public sealed class PaymentMatchReconcilerTests
         var memory = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
         memory.LastConfirmedAt.Should().Be(first.OccurredAt, "kalan tek insan kararı ilk havale; ortadakinin kararı da kalktı");
         memory.SourceBankTransactionId.Should().Be(first.Id);
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0, "geri çekme veri silmez");
     }
 
     [Fact]
@@ -708,5 +710,12 @@ public sealed class PaymentMatchReconcilerTests
         await recon.UnmatchAsync(s.LicenseId, refreshing.Id, CancellationToken.None);
 
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+        // Bu silme bir düzeltme değil, saklama gerekçeli imha: başlangıç artık belirlenemiyor. Silme Yönetmeliği md. 7/3 her
+        // silmenin kaydını ister; yöneticinin kimliği gelmediyse yapan "admin".
+        var record = await db.DataDestructionRecords.AsNoTracking().SingleAsync();
+        (record.LicenseId, record.Target, record.Action, record.RowCount, record.Trigger, record.Actor).Should().Be(
+            ((Guid?)s.LicenseId, "CustomerIbanMemories", DataDestruction.Actions.Deleted, 1, DataDestruction.Triggers.Retention,
+                DataDestruction.AdminActor));
+        record.Criterion.Should().Be("LastConfirmedAt+12ay, kaldırma, kalan doğrulama yok");
     }
 }

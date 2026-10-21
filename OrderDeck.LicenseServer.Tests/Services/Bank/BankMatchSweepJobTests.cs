@@ -65,7 +65,7 @@ public sealed class BankMatchSweepJobTests
     private static BankMatchSweepJob Job(LicenseDbContext db, ILogger<BankMatchSweepJob>? log = null)
         => new(db, new PaymentMatchReconciler(db,
                 new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
-                NullLogger<PaymentMatchReconciler>.Instance),
+                Options.Create(new BankOptions()), NullLogger<PaymentMatchReconciler>.Instance),
             log ?? NullLogger<BankMatchSweepJob>.Instance);
 
     /// <summary>Obifin bağlantısı olan bir lisans (kaydetmez): tarama yalnız bunların hareketlerine bakar. Kimlik alanı

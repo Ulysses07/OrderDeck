@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -24,8 +26,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// verilmişse dekont satıra yalnız iliştirilir, kararın durumu ve anı korunur. Elle eşleme yalnız karara bağlanmamış
 /// (<see cref="PaymentMatch.DecidedAt"/> ve <see cref="PaymentMatch.PaymentId"/> boş) harekete verilir; yeniden karar önce
 /// kaldırmadan geçer. Kaldırma, hareketin öğrettiği hafıza satırını SİLER; başka havalenin öğrettiği bağı tazelemişse bağın
-/// süresini kalan doğrulamalara geri çeker (<see cref="RewindIbanConfirmationAsync"/>); öneriyi yeniden hesaplar. Kimlikler
-/// admin formundan gelir: bu kural serviste uygulanır.</para>
+/// süresini kalan doğrulamalara geri çeker, kalan yoksa bağı imha kaydıyla siler (<see cref="RewindIbanConfirmationAsync"/>);
+/// öneriyi yeniden hesaplar. Kimlikler admin formundan gelir: bu kural serviste uygulanır.</para>
 /// <para><b>Kaldırma dekontu ölçümden düşürmez.</b> Dekonta bağlı satırın kaldırılmasında dekont açık gap'e döner, aynı
 /// SaveChanges'te: gap'i varsa (gap çözümüyle bağlanmışsa) yeniden açılır, yoksa (onayda bağlanmışsa)
 /// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır. Bu kural olmasaydı dekont ne bağlı ne gap kümesinde
@@ -56,8 +58,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// yalnız satırı olmayan hareketi taradığı için öneri kendiliğinden yeniden üretilmez, admin satırı yine elle eşleyebilir.
 /// Yeniden hesap denemenin içinde olsaydı kaydedilmiş kaldırma yeniden denenip "çakışma" diye raporlanır, iptal de sayfanın
 /// audit'ini düşürürdü.</para>
-/// <para>Düşen deneme izleyicide iz bırakmaz (bu üç tablonun izlenen satırları ayrılır): kapsamın sonraki SaveChanges'i onu
-/// yeniden denemez. Hareketler izlenmeden okunur.</para>
+/// <para>Düşen deneme izleyicide iz bırakmaz (bu üç tablonun izlenen satırları ve denemenin eklediği imha kaydı ayrılır):
+/// kapsamın sonraki SaveChanges'i onu yeniden denemez. Hareketler izlenmeden okunur.</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
 /// </summary>
 public sealed class PaymentMatchReconciler
@@ -71,11 +73,13 @@ public sealed class PaymentMatchReconciler
     public const string AlreadyDecidedMessage = "Bu hareket zaten bir karara bağlı; önce kaldırın.";
 
     private readonly LicenseDbContext _db;
+    private readonly BankOptions _bank;
     private readonly ILogger<PaymentMatchReconciler> _log;
     public PaymentMatcher Matcher { get; }
 
-    public PaymentMatchReconciler(LicenseDbContext db, PaymentMatcher matcher, ILogger<PaymentMatchReconciler> log)
-    { _db = db; Matcher = matcher; _log = log; }
+    public PaymentMatchReconciler(LicenseDbContext db, PaymentMatcher matcher, IOptions<BankOptions> bank,
+        ILogger<PaymentMatchReconciler> log)
+    { _db = db; Matcher = matcher; _bank = bank.Value; _log = log; }
 
     /// <summary>Sink ve telafi taramasının ortak yolu: öneriyi yazar, sonra hareketle açık gap'i çözmeyi dener. İki yol da
     /// bunu çağırmalı; yoksa taramanın eşleştirdiği hareket bekleyen gap'i hiç çözmez.</summary>
@@ -107,14 +111,18 @@ public sealed class PaymentMatchReconciler
             throw new ObifinValidationException(ConflictMessage);
     }
 
+    /// <param name="actor">Kaldırma IBAN bağını silerse (<see cref="RewindIbanConfirmationAsync"/>) imha kaydının yapanı: yönetici
+    /// sayfası <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın).
+    /// Boşsa <see cref="DataDestruction.AdminActor"/>.</param>
     /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu); false: kaldırma kaydedildi, yeniden hesap düştü
     /// (sınıf özeti).</returns>
     /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; iki denemede de çakışma; ya da yeniden denemede
     /// satırın insan kararı ilk denemenin gördüğünden farklı. Kaldırma kaydedildiyse fırlatılmaz.</exception>
-    public async Task<bool> UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct)
+    public async Task<bool> UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct, string? actor = null)
     {
         var attempts = new UnmatchAttempts();
-        if (!await RetryOnceAsync(() => UnmatchOnceAsync(licenseId, transactionId, attempts, ct), ct))
+        var by = string.IsNullOrWhiteSpace(actor) ? DataDestruction.AdminActor : actor;
+        if (!await RetryOnceAsync(() => UnmatchOnceAsync(licenseId, transactionId, by, attempts, ct), ct))
             throw new ObifinValidationException(ConflictMessage);
         if (attempts.Recompute is not { } tx) return true;
         // Kaldırma kaydedildi. Yalnız eşleştirici: gap çözümü bu hareketle koşsaydı az önce kaldırılan bağı hemen geri kurardı.
@@ -214,7 +222,8 @@ public sealed class PaymentMatchReconciler
         await _db.SaveChangesAsync(ct);
     }
 
-    private async Task UnmatchOnceAsync(Guid licenseId, Guid transactionId, UnmatchAttempts attempts, CancellationToken ct)
+    private async Task UnmatchOnceAsync(Guid licenseId, Guid transactionId, string actor, UnmatchAttempts attempts,
+        CancellationToken ct)
     {
         var tx = await _db.BankTransactions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == transactionId && t.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException("Hareket bulunamadı.");
@@ -230,7 +239,7 @@ public sealed class PaymentMatchReconciler
         // KVKK K-6: kaldırılan karar başka bir havalenin öğrettiği bağı tazelemiş olabilir; süresi artık doğrulanmış sayılmayan
         // havalede kalmasın. Dışlanan hareket hiç öğretmez, tazelemez.
         if (match?.ActualWpfCustomerId is { } decidedFor && !Matcher.IsExcluded(tx))
-            await RewindIbanConfirmationAsync(tx, decidedFor, ct);
+            await RewindIbanConfirmationAsync(tx, decidedFor, actor, ct);
         if (match is not null)
         {
             var now = DateTimeOffset.UtcNow;
@@ -373,11 +382,13 @@ public sealed class PaymentMatchReconciler
     /// başlangıcı kalan insan kararlı havalelerin (aynı lisans ve IBAN, bu müşteriye verilmiş, dışlanmamış) en yenisine geri
     /// çekilir; hiç ileri gitmez (KVKK K-6: "son doğrulanmış ödemeden 12 ay"). Kalan yoksa bağ silinir: öğreten havale 180 günlük
     /// kuralla silinmiş, tarihi bilinmiyor. Öğrenme anı ya da tahmini bir tarih süreyi politikanın ötesine taşıyabilirdi (öğrenme
-    /// havaleden aylar sonra olabilir). Bu hareketin öğrettiği bağ zaten siliniyor; P1 öncesi, hiç tazelenmemiş bağın
+    /// havaleden aylar sonra olabilir). Bu silme bir düzeltme değil, saklama gerekçeli imhadır (başlangıç artık belirlenemiyor):
+    /// kalıcı imha kaydı aynı SaveChanges'te yazılır (Silme Yönetmeliği md. 7/3; tetikleyici <c>retention</c>, yapan
+    /// <paramref name="actor"/>). Bu hareketin öğrettiği bağ zaten siliniyor; P1 öncesi, hiç tazelenmemiş bağın
     /// (<c>LastConfirmedAt</c> boş) süresi öğrenme anından işler, kaldırma onu değiştirmez. Değişen satır izlenir; denemenin
     /// SaveChanges'i yazar.
     /// </summary>
-    private async Task RewindIbanConfirmationAsync(BankTransaction removed, Guid customer, CancellationToken ct)
+    private async Task RewindIbanConfirmationAsync(BankTransaction removed, Guid customer, string actor, CancellationToken ct)
     {
         if (removed.CounterpartyIbanHash is not { } hash) return;
         var memory = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == removed.LicenseId && m.IbanHash == hash
@@ -394,6 +405,9 @@ public sealed class PaymentMatchReconciler
         if (remaining.Count == 0)
         {
             _db.CustomerIbanMemories.Remove(memory);
+            DataDestruction.Record(_db, memory.LicenseId, "CustomerIbanMemories", DataDestruction.Actions.Deleted, 1,
+                $"LastConfirmedAt+{_bank.IbanMemoryRetentionMonths}ay, kaldırma, kalan doğrulama yok", DataDestruction.Triggers.Retention,
+                actor);
             return;
         }
         var latest = remaining.Max();
@@ -434,12 +448,14 @@ public sealed class PaymentMatchReconciler
     }
 
     /// <summary>Düşen denemenin izini atar: bağdaştırıcının yazdığı tabloların izlenen satırları (Added/Modified/Deleted ve
-    /// okunmuş Unchanged) ayrılır. Yeniden deneme onları DB'den taze okur; kapsamın sonraki SaveChanges'i düşen yazıyı
-    /// tekrar denemez.</summary>
+    /// okunmuş Unchanged) ve denemenin eklediği imha kaydı (<see cref="RewindIbanConfirmationAsync"/>; yalnız Added, kaydedilmiş
+    /// kayda dokunulmaz) ayrılır. Yeniden deneme onları DB'den taze okur ya da yeniden ekler; kapsamın sonraki SaveChanges'i
+    /// düşen yazıyı tekrar denemez, imha kaydı iki kez yazılmaz.</summary>
     private void Discard()
     {
         foreach (var entry in _db.ChangeTracker.Entries()
-                     .Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory).ToList())
+                     .Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory
+                         || (e.Entity is DataDestructionRecord && e.State == EntityState.Added)).ToList())
             entry.State = EntityState.Detached;
     }
 

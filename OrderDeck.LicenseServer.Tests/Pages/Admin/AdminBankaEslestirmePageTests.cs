@@ -13,6 +13,7 @@ using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -438,6 +439,43 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             (await db.AuditLogs.CountAsync(a => a.TargetId == txId.ToString() && a.EventType == AuditEvents.BankMatchUnmatch))
                 .Should().Be(1);
         }
+    }
+
+    [Fact]
+    public async Task Bagi_silen_kaldirmanin_imha_kaydinda_yapan_yoneticinin_kimligidir()
+    {
+        // Öğreten havale 180 günlük kuralla silinmiş, bağın süresini yalnız bu hareket taşıyor: kaldırma bağı siler (KVKK K-6).
+        // İmha kaydı budanmaz; kimin yaptığı yalnız 24 ayda budanan denetim satırında kalsa 3 yıllık kayıtta yapan bilinmezdi.
+        // Yapan: yöneticinin sub kimliği (DataDestruction.ActorOf), kullanıcı adı değil (KVKK Ö-14).
+        var (lic, txId, wpfId) = await SeedAsync();
+        var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        var source = Tx(lic, 90m, "EFT GELEN", DateTimeOffset.UtcNow.AddDays(-200));
+        source.CounterpartyIbanHash = hash;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankTransactions.Add(source);
+            (await db.BankTransactions.SingleAsync(t => t.Id == txId)).CounterpartyIbanHash = hash;
+            await db.SaveChangesAsync();
+            var recon = scope.ServiceProvider.GetRequiredService<PaymentMatchReconciler>();
+            await recon.ManualMatchAsync(lic, source.Id, wpfId, CancellationToken.None);
+            await recon.ManualMatchAsync(lic, txId, wpfId, CancellationToken.None);
+            db.PaymentMatches.RemoveRange(await db.PaymentMatches.Where(m => m.BankTransactionId == source.Id).ToListAsync());
+            db.BankTransactions.Remove(await db.BankTransactions.SingleAsync(t => t.Id == source.Id));
+            await db.SaveChangesAsync(); // saklama işinin 180 günlük silmesi
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        (await PostAsync(client, "Unmatch", lic, txId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.CustomerIbanMemories.AsNoTracking().CountAsync(m => m.LicenseId == lic)).Should().Be(0);
+        var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+        var record = (await vdb.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == lic).ToListAsync())
+            .Should().ContainSingle().Subject;
+        (record.Target, record.Trigger, record.Actor).Should().Be(("CustomerIbanMemories", DataDestruction.Triggers.Retention,
+            adminId.ToString()));
     }
 
     [Fact]

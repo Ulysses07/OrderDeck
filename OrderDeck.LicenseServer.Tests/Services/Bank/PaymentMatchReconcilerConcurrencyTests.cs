@@ -78,7 +78,8 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
     }
 
     private static PaymentMatchReconciler Recon(LicenseDbContext db, ILogger<PaymentMatchReconciler> log)
-        => new(db, new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance), log);
+        => new(db, new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
+            Options.Create(new BankOptions()), log);
 
     /// <summary>Bağdaştırıcının "bir kez yeniden deneniyor" kayıtlarını sayar (iki bağlamdan eşzamanlı yazılır).</summary>
     private sealed class RetryCounter : ILogger<PaymentMatchReconciler>
