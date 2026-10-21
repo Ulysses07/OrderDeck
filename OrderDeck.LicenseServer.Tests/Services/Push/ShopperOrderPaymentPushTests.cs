@@ -237,12 +237,13 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().HaveCount(1);
         var n = _factory.Push.SentToShoppers[0];
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
-        n.Body.Should().Contain("480").And.Contain("onayland");
+        n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentApprovedPushBody);
+        n.Body.Should().NotContain("480", "tutar FCM'ye gitmez (KVKK K-5)");
         n.Data!["type"].Should().Be("payment-approved");
     }
 
     [Fact]
-    public async Task PaymentReject_pushes_shopper_with_reason()
+    public async Task PaymentReject_pushes_shopper_without_amount_or_reason()
     {
         var (client, _, licenseId) = await SetupAsync();
         var (shopperId, _) = await SeedShopperWithLinkAsync(licenseId);
@@ -257,7 +258,8 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().HaveCount(1);
         var n = _factory.Push.SentToShoppers[0];
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
-        n.Body.Should().Contain("reddedildi").And.Contain("Tutar uyu");
+        n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentRejectedPushBody);
+        n.Body.Should().NotContain("Tutar uyu", "serbest metin ret gerekçesi FCM'ye gitmez (KVKK K-5)").And.NotContain("100");
         n.Data!["type"].Should().Be("payment-rejected");
     }
 
