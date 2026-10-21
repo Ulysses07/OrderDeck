@@ -129,6 +129,99 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         (await verify.WpfCustomerProjections.AsNoTracking().SingleAsync(c => c.Id == s.WpfCustomerId)).PurgedAt.Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task Eszamanli_silinen_iban_hafizasiyla_carpisan_silme_tazeleyip_tamamlanir()
+    {
+        // Hareketi silen yollar (saklama işi, hesap reddi, Kaldır ve sil) kişinin IBAN hafızasını da siler. Silme hafızayı
+        // okuduktan sonra o satır başka yoldan silinirse DELETE 0 satır etkiler. Silme 500 ile geri alınmaz: tazelenen hafıza
+        // ayrılır, kişisel verinin geri kalanı yazılır.
+        var s = await SeedAsync();
+        await SeedIbanMemoryAsync(s, NewIbanHash());
+        var remove = new BeforeMatchUpdate(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            await other.CustomerIbanMemories.Where(m => m.LicenseId == s.LicenseId).ExecuteDeleteAsync();
+        });
+        await using var db = NewDb(remove);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        remove.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        (await verify.Shoppers.AsNoTracking().SingleAsync(x => x.Id == s.ShopperId)).FullName.Should().Be("[Silindi]");
+        (await verify.CustomerIbanMemories.AsNoTracking().CountAsync(m => m.LicenseId == s.LicenseId)).Should().Be(0);
+        (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Evidence.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Eszamanli_baglama_silinen_kisiye_iban_ogretirse_o_bag_ve_ozetinden_gelen_hareketin_metni_de_silinir()
+    {
+        // Silme satırı okuduktan sonra dekont onayı (ya da elle eşleme) satırı silinen kişiye bağlar ve havalenin IBAN'ını öğretir
+        // (LearnIbanAsync). Yeniden deneme tazelenen satırın kimliğini boşaltır; öğrenilen bağ da silinmeli, yoksa IBAN ile kişi
+        // arasındaki bağ KVKK silmesinden sonra kalırdı. Bağın özetinden gelen öteki hareketin metni de silinir (3b kuralı) ve
+        // ikisi de imha kaydına girer.
+        var s = await SeedAsync();
+        var hash = NewIbanHash();
+        var sameIbanTxId = await SeedIncomingAsync(s, hash);
+        var paymentId = Guid.NewGuid();
+        var link = new BeforeMatchUpdate(async () =>
+        {
+            await LinkConcurrentlyAsync(s, paymentId);
+            await SeedIbanMemoryAsync(s, hash);
+        });
+        await using var db = NewDb(link);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        link.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        (await verify.CustomerIbanMemories.AsNoTracking().CountAsync(m => m.WpfCustomerId == s.WpfCustomerId)).Should().Be(0,
+            "eşzamanlı yazanın öğrettiği bağ da silinen kişinindir");
+        var row = await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId);
+        row.ActualWpfCustomerId.Should().BeNull("tazelenen satırda silinen kişinin kimliği boşaltılır");
+        row.PaymentId.Should().Be(paymentId, "eşzamanlı yazanın dekont bağı ezilmez");
+        var sameIbanTx = await verify.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == sameIbanTxId);
+        (sameIbanTx.Description, sameIbanTx.CounterpartyName).Should().Be(((string?)null, (string?)null));
+        sameIbanTx.CounterpartyIbanHash.Should().Be(hash, "tanıma kodu kalır (plan karar 6)");
+        var records = await verify.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == s.ShopperId).ToListAsync();
+        records.Where(r => r.Target == "CustomerIbanMemories").Sum(r => r.RowCount).Should().Be(1);
+        records.Where(r => r.Target == "BankTransactions.Description+CounterpartyName+RawJson").Sum(r => r.RowCount)
+            .Should().Be(2, "eşleşmenin hareketi ve aynı IBAN'dan gelen öteki hareket");
+        result!.BankTransactionsScrubbed.Should().Be(2);
+    }
+
+    private static string NewIbanHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    /// <summary>Silinen kişinin bu lisanstaki IBAN hafızası (öğrenilmiş bağ); ayrı bağlamda yazılır.</summary>
+    private async Task SeedIbanMemoryAsync(Seeded s, string hash)
+    {
+        await using var db = NewDb(interceptor: null);
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory
+        {
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = s.WpfCustomerId, IbanHash = hash, IbanMasked = "TR12…345",
+            LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Eşleşmesi olmayan, verilen IBAN özetinden gelen bir havale.</summary>
+    private async Task<Guid> SeedIncomingAsync(Seeded s, string hash)
+    {
+        await using var db = NewDb(interceptor: null);
+        var tx = new BankTransaction
+        {
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
+            BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 120m, Currency = "TL",
+            OccurredAt = DateTimeOffset.UtcNow.AddDays(-3), Description = "HAVALE", CounterpartyName = "Ad Soyad",
+            CounterpartyIbanHash = hash, CounterpartyIbanMasked = "TR12…345", TransactionCode = "FT", FetchedAt = DateTimeOffset.UtcNow,
+        };
+        db.BankTransactions.Add(tx);
+        await db.SaveChangesAsync();
+        return tx.Id;
+    }
+
     /// <summary>Sipariş satırını değiştiren ilk SaveChanges'ten hemen önce öteki bağlamın yazısını koşturur.</summary>
     private sealed class BeforeOrderUpdate(Func<Task> interleave) : SaveChangesInterceptor
     {
