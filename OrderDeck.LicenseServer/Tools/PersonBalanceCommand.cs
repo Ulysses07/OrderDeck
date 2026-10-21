@@ -29,9 +29,9 @@ namespace OrderDeck.LicenseServer.Tools;
 ///   <c>WpfCustomerId</c>'lerini de basar (işaret hariç).</item>
 /// </list>
 /// Yazan bayraklar <c>--apply</c> olmadan yazacağını basar; yalnız <c>PersonBalanceBaselines</c>'a yazar. Rapora
-/// <c>--apply</c> vermek kullanım hatasıdır. Çıkış: 0 tamam; 1 eşzamanlı yazım ya da işaretsiz lisansta inceleme,
-/// hiçbir şey yazılmadı; 2 kullanım, yapılandırma ya da bilinmeyen lisans. Öbür veritabanı hataları yutulmaz:
-/// işlenmemiş istisna olarak yükselir (yığın izi, 0/1/2 dışı çıkış kodu). Argümanlar katı (<see cref="SalesSync"/>
+/// <c>--apply</c> vermek kullanım hatasıdır. Çıkış: 0 tamam; 1 eşzamanlı yazım ya da silme, ya da işaretsiz
+/// lisansta inceleme, hiçbir şey yazılmadı; 2 kullanım, yapılandırma ya da bilinmeyen lisans. Öbür veritabanı
+/// hataları yutulmaz: işlenmemiş istisna olarak yükselir (yığın izi, 0/1/2 dışı çıkış kodu). Argümanlar katı (<see cref="SalesSync"/>
 /// deseni). Bağlantı dizesi web host'unkiyle aynı kaynaktan (<c>ConnectionStrings:LicenseDb</c>). Çıktıda ad, telefon,
 /// makine adı YOK — yalnız sayılar, tutarlar, Id'ler. <c>enable</c>/<c>disable</c> S2'de bu sınıfa eklenir.
 /// </summary>
@@ -39,7 +39,9 @@ public static class PersonBalanceCommand
 {
     private const string Usage =
         "Kullanım:\n"
-        + "  person-balance verify [--license <guid>] [--details] [--capture-baseline | --mark-reviewed] [--apply]";
+        + "  person-balance verify [--license <guid>] [--details]\n"
+        + "  person-balance verify [--license <guid>] [--details] --capture-baseline [--apply]\n"
+        + "  person-balance verify --license <guid> [--details] --mark-reviewed [--apply]";
 
     /// <summary>Ayrıştırılmış <c>verify</c>.</summary>
     public sealed record VerifyArgs(Guid? License, bool Details, bool CaptureBaseline, bool MarkReviewed, bool Apply);

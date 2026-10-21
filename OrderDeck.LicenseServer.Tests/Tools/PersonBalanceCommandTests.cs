@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.LicenseServer.Tools;
@@ -59,10 +60,12 @@ public sealed class PersonBalanceCommandTests : IClassFixture<HookedApiFactory>
             license, Details: false, CaptureBaseline: false, MarkReviewed: true, Apply: true));
     }
 
-    private async Task<(int Exit, string Output, string Error)> RunAsync(string line)
+    private Task<(int Exit, string Output, string Error)> RunAsync(string line) => RunAsync(_factory, line);
+
+    private static async Task<(int Exit, string Output, string Error)> RunAsync(ApiFactory factory, string line)
     {
         PersonBalanceCommand.TryParseArgs(line.Split(' '), out var parsed).Should().BeTrue();
-        using var scope = _factory.Services.CreateScope();
+        using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var output = new StringWriter();
         var error = new StringWriter();
@@ -132,8 +135,36 @@ public sealed class PersonBalanceCommandTests : IClassFixture<HookedApiFactory>
         }
 
         var again = await RunAsync($"person-balance verify --license {kit.LicenseId} --capture-baseline --apply");
+        again.Exit.Should().Be(0);
         again.Output.Should().Contain("Yazılacak satır yok");
         (await BaselineCountAsync(kit.LicenseId)).Should().Be(2);
+    }
+
+    /// <summary>
+    /// Lisanssız yakalama bütün lisanslara yazar, verisizler dahil (plan fark 16): yakalamada verisi olmayan eski
+    /// lisans işaretsiz kalsaydı sonraki sapmasında hiç uyarmazdı. Kendi fabrikası: paylaşılan veritabanında sınıfın
+    /// öbür lisanslarına da işaret yazardı.
+    /// </summary>
+    [Fact]
+    public async Task Lisanssiz_yakalama_verisiz_lisansa_yalniz_isaret_yazar()
+    {
+        using var factory = new ApiFactory();
+        var kit = await Kit.CreateAsync(factory);
+        var negative = await kit.MemberAsync(null, -5m);
+        var idle = await kit.Sales.SecondLicenseAsync(SalesSyncMode.Off);
+
+        var (exit, output, _) = await RunAsync(factory, "person-balance verify --capture-baseline --apply");
+
+        exit.Should().Be(0);
+        output.Should().Contain($"Taban — lisans {idle.LicenseId}: eklenecek 0 satır (eksi 0, D1 0, kopya 0), işaret eklenecek")
+            .And.Contain($"Taban — lisans {kit.LicenseId}: eklenecek 1 satır (eksi 1, D1 0, kopya 0), işaret eklenecek");
+        using var scope = factory.Services.CreateScope();
+        var rows = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().PersonBalanceBaselines
+            .AsNoTracking().Where(b => b.LicenseId == kit.LicenseId || b.LicenseId == idle.LicenseId).ToListAsync();
+        rows.Where(b => b.LicenseId == idle.LicenseId).Should().ContainSingle()
+            .Which.WpfCustomerId.Should().Be(PersonBalanceVerifier.LicenseMarker);
+        rows.Where(b => b.LicenseId == kit.LicenseId).Select(b => b.WpfCustomerId)
+            .Should().BeEquivalentTo([negative, PersonBalanceVerifier.LicenseMarker]);
     }
 
     [Fact]
@@ -208,15 +239,19 @@ public sealed class PersonBalanceCommandTests : IClassFixture<HookedApiFactory>
     }
 
     [Fact]
-    public async Task Details_yalniz_GUID_basar_kullanici_adi_basmaz()
+    public async Task Details_yalniz_GUID_basar_kullanici_adi_ve_grup_numarasi_basmaz()
     {
         var kit = await Kit.CreateAsync(_factory);
         var name = $"gizli{Guid.NewGuid():N}";
         var negative = await kit.MemberAsync(null, -6m, username: name);
+        var number = TestPhone.NewE164();
+        var grouped = await kit.MemberAsync(number, -2m);
+        await kit.MemberAsync(number, 5m);
 
         var (_, output, _) = await RunAsync($"person-balance verify --license {kit.LicenseId} --details");
 
-        output.Should().Contain(negative.ToString()).And.NotContain(name);
+        output.Should().Contain(negative.ToString()).And.Contain(grouped.ToString())
+            .And.NotContain(name).And.NotContain(number, "grup numarası telefondur (PII)");
     }
 
     /// <summary>Taban yazımı sırasında SaveChanges'i verilen SQL hatasıyla düşürür (komut kancası yok, InMemory).</summary>
