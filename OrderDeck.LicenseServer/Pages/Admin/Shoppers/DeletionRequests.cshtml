@@ -44,6 +44,7 @@ else
             <tr>
                 <th>Telefon</th>
                 <th>Talep Tarihi</th>
+                <th>Son tarih</th>
                 <th>Ödeme</th>
                 @if (Model.ShowHandled)
                 {
@@ -60,9 +61,11 @@ else
         <tbody>
             @foreach (var r in Model.Items)
             {
-                <tr>
+                <tr data-request="@r.Id">
                     <td><code>@r.PhoneAtRequest</code></td>
                     <td>@r.RequestedAt.ToString("dd.MM.yyyy HH:mm")</td>
+                    @{ var overdue = r.HandledAt is null && r.DueAt < Model.Now; }
+                    <td data-cell="due" class="@(overdue ? "text-danger fw-bold" : "")">@r.DueAt.ToString("dd.MM.yyyy")@(overdue ? " (gecikti)" : "")</td>
                     <td>@r.PaymentCount</td>
                     @if (Model.ShowHandled)
                     {

@@ -11,7 +11,8 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Pages.Admin;
 
-/// <summary>Müşteri silme talepleri sayfası (admin/shoppers/deletion-requests).</summary>
+/// <summary>Müşteri silme talepleri sayfası (admin/shoppers/deletion-requests). Listede son tarih (talep + 30 gün, KVKK m. 13/2)
+/// ve gecikme işareti.</summary>
 public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
 {
     private const string PagePath = "/admin/shoppers/deletion-requests";
@@ -54,6 +55,29 @@ public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
         (await db.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == shopperId).ToListAsync())
             .Should().NotBeEmpty().And.OnlyContain(r => r.Trigger == DataDestruction.Triggers.ShopperPurge
                 && r.Actor == adminId.ToString() && r.RequestId == requestId);
+    }
+
+    [Fact]
+    public async Task Bekleyen_talepte_son_tarih_gosterilir_gecikeni_isaretlenir()
+    {
+        var late = new ShopperDeletionRequest { Id = Guid.NewGuid(), ShopperId = Guid.NewGuid(), PhoneAtRequest = TestPhone.NewE164(),
+            RequestedAt = DateTimeOffset.UtcNow.AddDays(-31) };
+        var fresh = new ShopperDeletionRequest { Id = Guid.NewGuid(), ShopperId = Guid.NewGuid(), PhoneAtRequest = TestPhone.NewE164(),
+            RequestedAt = DateTimeOffset.UtcNow.AddDays(-1) };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.ShopperDeletionRequests.AddRange(late, fresh);
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var html = await client.GetStringAsync(PagePath);
+        var doc = await BrowsingContext.New(AngleSharp.Configuration.Default).OpenAsync(r => r.Content(html));
+
+        doc.QuerySelector($"tr[data-request='{late.Id}'] [data-cell='due']")!.TextContent.Should()
+            .Contain(late.RequestedAt.AddDays(30).ToString("dd.MM.yyyy")).And.Contain("gecikti");
+        doc.QuerySelector($"tr[data-request='{fresh.Id}'] [data-cell='due']")!.TextContent.Should().NotContain("gecikti");
     }
 
     private async Task<(Guid ShopperId, Guid RequestId)> SeedAsync()

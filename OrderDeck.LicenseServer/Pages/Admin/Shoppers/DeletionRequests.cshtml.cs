@@ -10,11 +10,15 @@ namespace OrderDeck.LicenseServer.Pages.Admin.Shoppers;
 
 /// <summary>
 /// Shopper KVKK silme taleplerinin elle işlendiği sayfa. Silme hiçbir zaman
-/// otomatik koşmuyor; her satır bir insanın "Sil" demesini bekliyor.
+/// otomatik koşmuyor; her satır bir insanın "Sil" demesini bekliyor. Her
+/// talebin son tarihi (talep + <see cref="ResponseDays"/> gün, KVKK m. 13/2)
+/// gösterilir, bekleyen talep geçmişse işaretlenir.
 /// </summary>
 public class DeletionRequestsModel : PageModel
 {
     private const int PageSize = 25;
+    /// <summary>KVKK m. 13/2: talep en geç 30 gün içinde sonuçlandırılır.</summary>
+    public const int ResponseDays = 30;
 
     private readonly LicenseDbContext _db;
     private readonly ShopperPurgeService _purge;
@@ -33,6 +37,7 @@ public class DeletionRequestsModel : PageModel
         Guid ShopperId,
         string PhoneAtRequest,
         DateTimeOffset RequestedAt,
+        DateTimeOffset DueAt,
         DateTimeOffset? HandledAt,
         string? HandledBy,
         string? Notes,
@@ -43,6 +48,7 @@ public class DeletionRequestsModel : PageModel
     public int PendingCount { get; private set; }
     public int CurrentPage { get; private set; }
     public int TotalPages { get; private set; }
+    public DateTimeOffset Now { get; } = DateTimeOffset.UtcNow;
 
     // Sayfa numarası "pageNumber": "page" Razor Pages'in ayrılmış rota değeridir (sayfanın adı). asp-route-page ve
     // RedirectToPage(new { page }) sayfa adını sayıyla ezer, URL üretilemez: satırın "Sil" formu action="" ile çıkıyor ve
@@ -136,7 +142,7 @@ public class DeletionRequestsModel : PageModel
 
         Items = rows
             .Select(r => new Row(
-                r.Id, r.ShopperId, r.PhoneAtRequest, r.RequestedAt,
+                r.Id, r.ShopperId, r.PhoneAtRequest, r.RequestedAt, r.RequestedAt.AddDays(ResponseDays),
                 r.HandledAt, r.HandledBy, r.Notes,
                 paymentCounts.GetValueOrDefault(r.ShopperId)))
             .ToList();

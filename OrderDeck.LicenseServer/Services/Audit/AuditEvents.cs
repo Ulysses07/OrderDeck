@@ -63,8 +63,19 @@ public static class AuditEvents
     /// her açılışı. Ayrıntı yalnız sayfa adı ve sayfa/talep numarası. Banka Eşleştirme ve Obifin sayfalarında hedef banka
     /// modülünün öbür satırları gibi <see cref="AuditTargets.ObifinConnection"/> + lisans KİMLİĞİ (Obifin'de düzenleme formu açık
     /// lisans, yoksa boş); <see cref="AuditTargets.License"/> lisans ANAHTARI taşır ve lisans sayfasının son 20 kaydında
-    /// listelenir, görüntülemeler orayı doldurmasın.</summary>
+    /// listelenir, görüntülemeler orayı doldurmasın. Banka veri talepleri sayfasında hedef <see cref="AuditTargets.BankSubjectRequest"/>
+    /// + sayfanın gösterdiği talebin kimliği (seçili talep yoksa boş).</summary>
     public const string BankPageView = "bank.page.view";
+    // IBAN ile banka veri talebi (admin/banka-veri-talepleri; KVKK K-7). Hedef AuditTargets.BankSubjectRequest + talep kimliği.
+    // Ayrıntıya IBAN (düz ya da kısaltılmış), açıklama, ad GİRMEZ; yalnız tür, yöntem, sonuç kategorisi ve sayılar.
+    public const string BankSubjectCreate = "bank.subject.create";
+    /// <summary>Kimlik + IBAN sahipliği doğrulama yöntemi kaydedildi (ayrıntı: yalnız yöntem adı).</summary>
+    public const string BankSubjectVerify = "bank.subject.verify";
+    public const string BankSubjectExport = "bank.subject.export";
+    /// <summary>Silme talebi uygulandı: imha olayı (<see cref="DestructionEvents"/>). Ayrıntı: silinen sayılar.</summary>
+    public const string BankSubjectErase = "bank.subject.erase";
+    /// <summary>Talep bir sonuç kategorisiyle kapatıldı (ayrıntı: kategori adı).</summary>
+    public const string BankSubjectClose = "bank.subject.close";
 
     /// <summary>İmha olayları (Silme Yönetmeliği md. 7/3: en az üç yıl). <see cref="AuditRetentionJobs"/> bunları
     /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta değil <see cref="AuditRetentionOptions.DestructionRetentionMonths"/>'ta
@@ -81,6 +92,7 @@ public static class AuditEvents
         ObifinConnectionRemove,
         ObifinAccountReject,
         ObifinCopyDeletionConfirm,
+        BankSubjectErase,
     };
 }
 
@@ -96,4 +108,6 @@ public static class AuditTargets
     public const string NetgsmAccount = "netgsm-account";
     public const string ObifinConnection = "obifin-connection";
     public const string BankTransaction = "bank-transaction";
+    /// <summary>IBAN ile banka veri talebi (<c>BankSubjectRequests</c>); hedef kimliği talep kimliği.</summary>
+    public const string BankSubjectRequest = "bank-subject-request";
 }
