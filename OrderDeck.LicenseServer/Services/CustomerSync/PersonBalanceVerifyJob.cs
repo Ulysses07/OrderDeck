@@ -38,18 +38,22 @@ public sealed class PersonBalanceVerifyJob
     /// <summary>Hangfire girişi. Raporu döndürmez: Hangfire dönüş değerini depoya yazardı.</summary>
     public async Task RunAsync(CancellationToken ct) => await VerifyAndAlertAsync(ct);
 
-    /// <summary>Denetler, sayıları günlüğe yazar ve yalnız yeni sapmada uyarır. Testler buradan girer.</summary>
+    /// <summary>Denetler, sayıları günlüğe yazar ve yalnız yeni sapmada uyarır. Testler buradan girer. Günlük satırı
+    /// kırpma ile sekme/satır sonu sayısını birlikte (S2'nin <c>enable</c>'ı ikisini kullanır, plan fark 15) ve
+    /// havuzu &lt; 0 kişilerin yanında tabanla açıklananları (fark 8) taşır.</summary>
     public async Task<PersonBalanceVerifier.Report> VerifyAndAlertAsync(CancellationToken ct)
     {
         var report = PersonBalanceVerifier.Analyze(await _verifier.LoadAsync(null, DateTimeOffset.UtcNow, ct));
         foreach (var l in report.Licenses)
             _log.LogInformation(
                 "person-balance-verify: lisans {LicenseId} — taban {HasBaseline}, eksi {NegIn}/{NegOut}, D1 {MisIn}/{MisOut}, "
-                + "kopya {CopyIn}/{CopyOut}, D4 {D4} D5 {D5} D6 {D6} yetim {Orphans}, havuzu<0 kişi {NegativePersons}, "
-                + "grubu dağılmış silinmiş {Stranded}, kırpma {Trim}",
+                + "kopya {CopyIn}/{CopyOut}, D4 {D4} D5 {D5} D6 {D6} yetim {Orphans}, "
+                + "havuzu<0 kişi {NegativePersons} (tabanla açıklanan {NegativePersonsExplained}), "
+                + "grubu dağılmış silinmiş {Stranded}, kırpma {Trim}, sekme/satır sonu {ControlChars}",
                 l.LicenseId, l.HasBaseline, l.NegativeRows.InBaseline, l.NegativeRows.Outside,
                 l.LedgerMismatches.InBaseline, l.LedgerMismatches.Outside, l.CopyRows.InBaseline, l.CopyRows.Outside,
-                l.D4, l.D5, l.D6, l.OrphanLegs, l.NegativePersons, l.StrandedPurged, l.TrimMismatches);
+                l.D4, l.D5, l.D6, l.OrphanLegs, l.NegativePersons, l.NegativePersonsExplained,
+                l.StrandedPurged, l.TrimMismatches, l.ControlCharGroups);
 
         var alerting = report.Licenses.Where(l => l.Alerts.Count > 0).ToList();
         if (alerting.Count == 0) return report;
