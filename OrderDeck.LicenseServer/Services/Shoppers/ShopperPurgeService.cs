@@ -80,6 +80,10 @@ public sealed class ShopperPurgeService
     /// <summary>İmha kaydının ölçütü (<see cref="DataDestructionRecord.Criterion"/>).</summary>
     public const string PurgeCriterion = "silme talebi";
 
+    /// <summary>Depodan silinen dekont nesnesinin imha kaydı hedefi; geciken silme (<see cref="OrphanedMediaCleanupJob"/>) da
+    /// aynısını yazar.</summary>
+    public const string MediaTarget = "ShopperPaymentMedia";
+
     /// <summary>Yapanı verilmeyen silme: imha kaydına <see cref="DataDestruction.AdminActor"/> yazılır (silme her zaman bir
     /// yöneticinin kararıdır; kim olduğu talebin <c>HandledBy</c>'ında ve denetim satırında).</summary>
     public Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, CancellationToken ct)
@@ -378,7 +382,7 @@ public sealed class ShopperPurgeService
         const string nulled = DataDestruction.Actions.Nulled, deleted = DataDestruction.Actions.Deleted;
         Record(null, "Shoppers.FullName+Phone+Address+Email+TcProtected", nulled, 1);
         RecordPerLicense(payments, p => p.LicenseId, "Payments.PersonalFields", nulled);
-        RecordPerLicense(deletedMediaLicenses, l => l, "ShopperPaymentMedia", deleted);
+        RecordPerLicense(deletedMediaLicenses, l => l, MediaTarget, deleted);
         RecordPerLicense(fingerprintedAudits, a => a.LicenseId, "PaymentSubmissionAudits.IpAddress+UserAgent", nulled);
         RecordPerLicense(projections, c => c.LicenseId, "WpfCustomerProjections.PersonalFields", nulled);
         RecordPerLicense(scrubbedOrders, o => o.LicenseId, "Orders.DisplayName+MessageText", nulled);

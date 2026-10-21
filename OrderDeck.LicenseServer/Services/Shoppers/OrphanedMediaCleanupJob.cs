@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Services.Shoppers;
@@ -56,7 +57,7 @@ public sealed class OrphanedMediaCleanupJob
         if (pending.Count == 0) return 0;
 
         var now = DateTimeOffset.UtcNow;
-        var deleted = 0;
+        var deletedRows = new List<OrphanedMediaObject>();
         var deletedPaymentIds = new List<Guid>();
 
         foreach (var row in pending)
@@ -68,7 +69,7 @@ public sealed class OrphanedMediaCleanupJob
                 await _storage.DeleteAsync(row.ObjectKey, ct);
                 row.DeletedAt = now;
                 row.LastError = null;
-                deleted++;
+                deletedRows.Add(row);
                 if (row.PaymentId is not null) deletedPaymentIds.Add(row.PaymentId.Value);
             }
             catch (Exception ex)
@@ -80,23 +81,33 @@ public sealed class OrphanedMediaCleanupJob
             }
         }
 
-        if (deletedPaymentIds.Count > 0)
-        {
-            var payments = await _db.Payments
+        var payments = deletedPaymentIds.Count == 0
+            ? new List<Payment>()
+            : await _db.Payments
                 .Where(p => deletedPaymentIds.Contains(p.Id))
                 .ToListAsync(ct);
-            foreach (var p in payments)
-            {
-                p.PdfPurgedAt ??= now;
-                p.UpdatedAt = now;
-            }
+        foreach (var p in payments)
+        {
+            p.PdfPurgedAt ??= now;
+            p.UpdatedAt = now;
         }
+
+        // KVKK Ö-13 (Silme Yönetmeliği md. 7/3): geciken silme purge'ün 1. adımının devamıdır ve onunla aynı kaydı yazar,
+        // aynı SaveChanges'te (DeletedAt ile birlikte): hedef, ölçüt ve tetikleyici purge'ünkü, konu = ShopperId, lisans
+        // ödemeden (ödemesi bilinmeyen kuyruk satırında yok), yapan sistem. Talebin kimliği kuyruk satırında yok; kayıt talebe
+        // SubjectId → ShopperDeletionRequests.ShopperId ile bağlanır.
+        var paymentLicenses = payments.ToDictionary(p => p.Id, p => p.LicenseId);
+        foreach (var g in deletedRows.GroupBy(r => (r.ShopperId,
+                     License: r.PaymentId is { } id && paymentLicenses.TryGetValue(id, out var l) ? l : (Guid?)null)))
+            DataDestruction.Record(_db, g.Key.License, ShopperPurgeService.MediaTarget, DataDestruction.Actions.Deleted,
+                g.Count(), ShopperPurgeService.PurgeCriterion, DataDestruction.Triggers.ShopperPurge, DataDestruction.SystemActor,
+                subjectId: g.Key.ShopperId);
 
         await _db.SaveChangesAsync(ct);
 
         _log.LogInformation(
             "[OrphanedMediaCleanup] {Deleted}/{Total} yetim nesne silindi",
-            deleted, pending.Count);
-        return deleted;
+            deletedRows.Count, pending.Count);
+        return deletedRows.Count;
     }
 }
