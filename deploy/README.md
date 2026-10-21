@@ -341,16 +341,49 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > yalnız çapa tutarını döner. Havuz kipi (S2) açılmadan `DrawGroupId` hiç
 > dolmaz; bu sorgu o zamana kadar 0 döner.
 >
-> Otomatik geri alma bir önceki imaja döner ve güvenlidir: S1 göçü yalnız
-> ekleyici, S1 öncesi imaj yeni şemada yazmayı sürdürür
-> (`PersonBalanceS1MigrationTests`). S2 deploy'u düşerse imaj S1'e döner; S1
+> Sorgu 0 dönse de, yani bacak yokken de S1 öncesine elle dönüş temiz
+> değil. S1'in `GroupId` kancası (`PersonGroupSaveHook`) numarası boşalan
+> gruptaki silinmiş üyeleri yeni numaraya taşır (§4.11). Bunu yalnız sunucu
+> yapar; masaüstünde silinmiş satırın numarası değişmez. S1 öncesi
+> `payment-requests/begin` silinmiş üyeyi de istemcinin üye kümesinde arar.
+> Bu yüzden satış senkronu modu açık lisanslarda, kancanın taşıdığı silinmiş
+> üyeli her kişinin ödeme isteği 409 `members-stale` alır (§15-7). Hiçbir
+> müşteri akışı turu bunu kapatmaz: S1 öncesi imajda kalındıkça sürer, S1
+> imajı geri gelince kalkar. Para etkisi yok, ödeme isteği engellenir.
+> Yukarıdaki sorgu bu durumu görmez. Geri dönmek gerekirse ileri düzelt.
+>
+> Otomatik geri alma (yukarıdaki workflow, deploy anında BİR ÖNCEKİ imaja)
+> güvenli. S1 göçü eski imajla uyumlu: kolon, indeks ve tablo ekler, bir de
+> `GroupId` harmanını BIN2'ye çevirir. Eski kod `GroupId`'yi SQL'de yalnız ön
+> süzer, eşitliği bellekte ordinal denetler; harman sonucu değiştirmez. S1
+> öncesi imaj yeni şemada yazmayı sürdürür (`PersonBalanceS1MigrationTests`).
+> Deploy anında kancanın taşıdığı silinmiş üye ya hiç yoktur ya da ilk
+> dakikalarda oluşmuş birkaç tanedir; onların ödeme isteği de S1 imajı geri
+> gelince açılır. S2 deploy'u düşerse imaj S1'e döner; S1
 > kip bayrağını okumaz, bütün lisanslar satır kipine iner ve S1 çok bacaklı
 > geçmişi okur ve grup olarak geri alır (panelde grup olarak geri
 > alınamayan hedefi `not-reversible` ile reddeder; yarım geri alma yok).
 >
-> S1'den sonra (Burak): `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify`
-> (salt okunur) → `… person-balance verify --capture-baseline` (kuru) →
-> `… --capture-baseline --apply`. İnceleme: `… --mark-reviewed --license <id> --apply`.
+> S1'den sonra (Burak; spec §7.1 adım 2–4). Komutlar `--apply` olmadan salt
+> okunur ya da kurudur; `--apply` yalnız `PersonBalanceBaselines`'a yazar.
+>
+> 1. Ön kontrol raporu (salt okunur):
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify`
+> 2. Taban çizgisi. **Önce:** S1 planının
+>    (`docs/superpowers/plans/2026-10-19-ortak-bakiye-s1.md`) fark 22'si
+>    (tabandaki bir D1 satırının farkı değişince her gün tekrar eden uyarı)
+>    karara bağlanmış olmalı. En geç sınır bu adımdır, çünkü ondan önce hiçbir
+>    lisansın tabanı yoktur. Karar yoksa yakalamayı koşma. Önce kuru, sonra yazar:
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --capture-baseline`
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --capture-baseline --apply`
+> 3. İnceleme, lisans lisans: ≥ 1 gün gözlemden (günlük `person-balance-verify`
+>    sapma bildirmemeli) ve `--details` ile her satır için sahip kararından
+>    (düzeltme ya da "olduğu gibi kalsın") sonra, **S2'den önce**:
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --details`
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --details --mark-reviewed`
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --mark-reviewed --apply`
+>    `--mark-reviewed --apply` lisansın incelenmemiş bütün taban satırlarını
+>    tek seferde işaretler ve S2 `enable`'ının 3. ön koşulunu açar.
 
 ## Masaüstü: satış senkronunu yerelde sıfırlama (≤0.9.10'a dönüş)
 
