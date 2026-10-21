@@ -29,6 +29,8 @@ public sealed class BankSubjectRequestService
     public const string NotVerifiedMessage = "Önce başvuranın kimliğini ve IBAN'ın ona ait olduğunu doğrulayıp yöntemi kaydedin.";
     public const string NoMethodMessage = "Doğrulama yöntemini seçin.";
     public const string WrongKindMessage = "Erişim talebiyle silme yapılmaz; silme için ayrı bir silme talebi açın.";
+    public const string ExportWrongKindMessage = "Silme talebinde dışa aktarım yapılmaz; başvuran verinin kopyasını da istiyorsa " +
+        "ayrı bir erişim talebi açın.";
     public const string ResolutionNotAllowedMessage = "Bu sonuç bu talebe uygulanamaz: 'Yanıtlandı' yalnız doğrulanmış erişim talebinde, " +
         "'Doğrulanamadı' yalnız doğrulama kaydı olmayan talepte seçilir; silme 'Sil ve kapat' ile yapılır.";
     /// <summary>Silme yeniden denemede de eşzamanlı bir yazıyla çakıştı: hiçbir şey silinmedi (tek kayıt), talep açık kaldı.</summary>
@@ -126,11 +128,14 @@ public sealed class BankSubjectRequestService
         await SaveOrClosedAsync(ct);
     }
 
-    /// <summary>Dışa aktarım (<see cref="ToCsv"/>): yalnız açık ve doğrulaması kaydedilmiş talepte.</summary>
+    /// <summary>Dışa aktarım (<see cref="ToCsv"/>): yalnız açık, doğrulaması kaydedilmiş ERİŞİM talebinde. Silme talebinde yapılmaz
+    /// (KVKK m. 4/2-ç): başvuran yalnız silme istedi, silmeden önce alınan CSV sistem dışında imha kaydına girmeyen bir kopya
+    /// bırakırdı. Kopya isteyen başvurana ayrı bir erişim talebi açılır; yönetici veriyi <see cref="FindAsync"/> ile görür.</summary>
     public async Task<byte[]> ExportAsync(Guid requestId, CancellationToken ct)
     {
         var lookup = await FindAsync(requestId, ct) ?? throw new ObifinValidationException(NotFoundMessage);
         if (lookup.Request.ClosedAt is not null) throw new ObifinValidationException(ClosedMessage);
+        if (lookup.Request.Kind != BankSubjectRequestKind.Access) throw new ObifinValidationException(ExportWrongKindMessage);
         if (lookup.Request.Verification == BankSubjectVerification.None) throw new ObifinValidationException(NotVerifiedMessage);
         return ToCsv(lookup);
     }
@@ -169,7 +174,7 @@ public sealed class BankSubjectRequestService
     /// <summary>Erişim talebinin dışa aktarımı (KVKK m. 11/1-b). Müşteri kimliği ve kullanıcı adı YAZILMAZ: havaleyi gönderen ile
     /// ödemesi sayılan müşteri farklı kişi olabilir. UTF-8 BOM'lu (Excel), noktalı virgül ayraçlı; '=', '+', '-', '@', sekme ve
     /// satır başı ile başlayan hücre kesme işaretiyle başlar (formül enjeksiyonu, OWASP CSV injection listesi). Doğrulama denetimi
-    /// <see cref="ExportAsync"/>'te.</summary>
+    /// ve tür denetimi <see cref="ExportAsync"/>'te.</summary>
     public static byte[] ToCsv(Lookup lookup)
     {
         var sb = new StringBuilder();

@@ -221,8 +221,11 @@ public sealed class BankSubjectRequestServiceTests
         await db.SaveChangesAsync();
         var r = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Erasure, new DateOnly(2026, 10, 19), "admin",
             CancellationToken.None);
+        // Dışa aktarım yalnız erişim talebinde: doğrulama denetimi orada sınanır.
+        var access = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Access, new DateOnly(2026, 10, 19),
+            "admin", CancellationToken.None);
 
-        var export = () => Service(db).ExportAsync(r.Id, CancellationToken.None);
+        var export = () => Service(db).ExportAsync(access.Id, CancellationToken.None);
         var erase = () => Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
         var noMethod = () => Service(db).VerifyAsync(r.Id, BankSubjectVerification.None, "admin", CancellationToken.None);
 
@@ -233,7 +236,7 @@ public sealed class BankSubjectRequestServiceTests
 
         await Service(db).VerifyAsync(r.Id, BankSubjectVerification.ElectronicSignatureAndBankDocument, "admin", CancellationToken.None);
 
-        var verified = await db.BankSubjectRequests.AsNoTracking().SingleAsync();
+        var verified = await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == r.Id);
         (verified.Verification, verified.VerifiedBy).Should().Be((BankSubjectVerification.ElectronicSignatureAndBankDocument, "admin"));
         verified.VerifiedAt.Should().NotBeNull();
     }
@@ -583,6 +586,23 @@ public sealed class BankSubjectRequestServiceTests
         await erase.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.WrongKindMessage);
         (await db.BankTransactions.AsNoTracking().SingleAsync()).Description.Should().NotBeNull("silme yapılmadı");
         (await db.BankSubjectRequests.AsNoTracking().SingleAsync()).ClosedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Silme_talebinde_disa_aktarim_yapilmaz()
+    {
+        // KVKK m. 4/2-ç: başvuran yalnız silme istedi. Silmeden önce alınan CSV sistem dışında imha kaydına girmeyen bir kopya
+        // bırakırdı; kopya isteyen başvurana ayrı bir erişim talebi açılır. Yönetici veriyi sayfada görür (FindAsync).
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        db.BankTransactions.Add(Tx(lic, iban));
+        await db.SaveChangesAsync();
+        var r = await VerifiedErasureAsync(db, lic, iban);
+
+        var export = () => Service(db).ExportAsync(r.Id, CancellationToken.None);
+
+        await export.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.ExportWrongKindMessage);
+        (await Service(db).FindAsync(r.Id, CancellationToken.None))!.Transactions.Should().ContainSingle("arama yine çalışır");
     }
 
     [Theory]
