@@ -101,6 +101,7 @@ public sealed class PersonBalanceVerifier
         var baselines = await _db.PersonBalanceBaselines.AsNoTracking()
             .Select(b => new BaselineRow(b.LicenseId, b.WpfCustomerId, b.Balance, b.LedgerSum, b.CapturedAt, b.ReviewedAt))
             .ToListAsync(ct);
+        (balances, ledger) = await RereadLedgerSuspectsAsync(licenseId, balances, ledger, baselines, ct);
         var since = now - ActivePcWindow;
         var pcs = await _db.Activations.AsNoTracking()
             .Where(a => (licenseId == null || a.LicenseId == licenseId) && a.DeactivatedAt == null && a.LastSeenAt >= since)
@@ -111,6 +112,74 @@ public sealed class PersonBalanceVerifier
 
         return new Snapshot(licenses, projections, balances, ledger, drawRows, reversed.ToHashSet(), baselines, pcs,
             projectionCount, transactionCount);
+    }
+
+    /// <summary>Yeniden okumanın parti boyu (<c>Contains</c> parametre sınırı).</summary>
+    private const int RereadBatchSize = 500;
+
+    /// <summary>
+    /// D1 adaylarını — ilk okumada <c>Balance ≠ Σ</c> olan satırları ve lisansın bütün taban satırlarını — yeniden
+    /// okur; satır başına bakiye ve defter AYNI ifadede. Bakiyeler ve defter yukarıda ayrı sorgular; prod'da RCSI ya da
+    /// snapshot yalıtımı yok ve aralarında commit eden bir yazım (apply, iade, kimlik birleştirici)
+    /// <c>Balance(eski) ≠ Σ(yeni)</c> üretir: günlük işte sahte "D1" uyarısı, taban yakalamasında yanlış farklı,
+    /// her gün "farkı değişen" diye uyaran kalıcı taban satırı. Tek ifade de anlık görüntü değildir (kilitli READ
+    /// COMMITTED), ama pencere bir satırın iki okuması arasına daralır. Önce bakiye satırı OLMAYANLAR, sonra olanlar
+    /// okunur ve ikincisi önceliklidir: arada açılan bakiye satırı ikincide tutarlı görünür. İkisinde de yoksa satırın
+    /// ne bakiyesi ne hareketi kalmıştır.
+    /// </summary>
+    private async Task<(List<BalanceRow> Balances, List<LedgerRow> Ledger)> RereadLedgerSuspectsAsync(
+        Guid? licenseId, List<BalanceRow> balances, List<LedgerRow> ledger, List<BaselineRow> baselines,
+        CancellationToken ct)
+    {
+        var bal = balances.ToDictionary(b => (b.LicenseId, b.WpfCustomerId));
+        var led = ledger.ToDictionary(l => (l.LicenseId, l.WpfCustomerId));
+        var suspects = bal.Keys.Union(led.Keys)
+            .Where(k => (bal.TryGetValue(k, out var b) ? b.Balance : 0m) != (led.TryGetValue(k, out var l) ? l.Sum : 0m))
+            .Concat(baselines
+                .Where(b => b.WpfCustomerId != LicenseMarker && (licenseId is null || b.LicenseId == licenseId))
+                .Select(b => (b.LicenseId, b.WpfCustomerId)))
+            .ToHashSet();
+        if (suspects.Count == 0) return (balances, ledger);
+
+        foreach (var key in suspects)
+        {
+            bal.Remove(key);
+            led.Remove(key);
+        }
+        foreach (var chunk in suspects.Select(k => k.WpfCustomerId).Distinct().Chunk(RereadBatchSize))
+        {
+            var rows = chunk.ToList();
+            var withoutBalanceRow = await _db.CustomerBalanceTransactions.AsNoTracking()
+                .Where(t => (licenseId == null || t.LicenseId == licenseId) && rows.Contains(t.WpfCustomerId)
+                            && !_db.CustomerBalances.Any(b => b.LicenseId == t.LicenseId
+                                                              && b.WpfCustomerId == t.WpfCustomerId))
+                .GroupBy(t => new { t.LicenseId, t.WpfCustomerId })
+                .Select(g => new LedgerRow(g.Key.LicenseId, g.Key.WpfCustomerId, g.Sum(t => t.Amount), g.Count()))
+                .ToListAsync(ct);
+            var withBalanceRow = await _db.CustomerBalances.AsNoTracking()
+                .Where(b => (licenseId == null || b.LicenseId == licenseId) && rows.Contains(b.WpfCustomerId))
+                .Select(b => new
+                {
+                    b.LicenseId, b.WpfCustomerId, b.Balance,
+                    Sum = _db.CustomerBalanceTransactions
+                        .Where(t => t.LicenseId == b.LicenseId && t.WpfCustomerId == b.WpfCustomerId)
+                        .Sum(t => t.Amount),
+                    Count = _db.CustomerBalanceTransactions
+                        .Count(t => t.LicenseId == b.LicenseId && t.WpfCustomerId == b.WpfCustomerId),
+                })
+                .ToListAsync(ct);
+
+            foreach (var row in withoutBalanceRow.Where(r => suspects.Contains((r.LicenseId, r.WpfCustomerId))))
+                led[(row.LicenseId, row.WpfCustomerId)] = row;
+            foreach (var row in withBalanceRow.Where(r => suspects.Contains((r.LicenseId, r.WpfCustomerId))))
+            {
+                var key = (row.LicenseId, row.WpfCustomerId);
+                bal[key] = new BalanceRow(row.LicenseId, row.WpfCustomerId, row.Balance);
+                if (row.Count > 0) led[key] = new LedgerRow(row.LicenseId, row.WpfCustomerId, row.Sum, row.Count);
+                else led.Remove(key);
+            }
+        }
+        return (bal.Values.ToList(), led.Values.ToList());
     }
 
     // ── Rapor ────────────────────────────────────────────────────────────────

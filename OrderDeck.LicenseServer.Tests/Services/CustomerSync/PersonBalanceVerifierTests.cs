@@ -1,4 +1,7 @@
+using System.Data.Common;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -414,24 +417,83 @@ public sealed class PersonBalanceVerifierCaptureTests
 
 /// <summary>
 /// <see cref="PersonBalanceVerifier.LoadAsync"/> gerçek SQL Server'da: günlük iş prod'da lisanssız (<c>null</c>) yükü
-/// koşar; sorguların (null'da düşen lisans süzgeci, defter gruplaması, geri alma hedefleri) çevrildiği ve lisanslı
-/// yükle aynı raporu verdiği yalnız burada kanıtlanır.
+/// koşar; sorguların (null'da düşen lisans süzgeci, defter gruplaması, geri alma hedefleri, D1 adaylarının yeniden
+/// okuması) çevrildiği ve lisanslı yükle aynı raporu verdiği yalnız burada kanıtlanır. Okumalar arasına commit eden
+/// yazım sorgu kancasıyla sırayla kurulur (InMemory'de komut kancası yok).
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
 public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
 {
     private readonly SqlServerContainerFixture _sql;
-    private RelationalApiFactory _factory = null!;
+    private HookFactory _factory = null!;
 
     public PersonBalanceVerifierRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
 
-    public async Task InitializeAsync() => _factory = new RelationalApiFactory(await _sql.CreateDatabaseAsync());
+    public async Task InitializeAsync() => _factory = new HookFactory(await _sql.CreateDatabaseAsync());
 
     public Task DisposeAsync()
     {
+        _factory.Queries.Disarm();
         _factory.Dispose();
         return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Bakiye_ile_defter_okumasi_arasinda_commit_eden_yazim_sahte_D1_uretmez_kalici_D1_kalir()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var raced = await kit.MemberAsync(null, 10m);
+        // Kalıcı iki D1 bozulması, tabanda: bakiye satırı defterden fazla; defteri olan ama bakiye satırı olmayan.
+        var balanceOnly = await kit.MemberAsync(null, balanceRow: false);
+        var ledgerOnly = await kit.MemberAsync(null, balanceRow: false);
+        var capturedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        await kit.Sales.WithDbAsync(db =>
+        {
+            db.CustomerBalances.Add(new CustomerBalance
+            {
+                Id = Guid.NewGuid(), LicenseId = kit.LicenseId, WpfCustomerId = balanceOnly, Balance = 3m,
+                UpdatedAt = capturedAt,
+            });
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = Guid.NewGuid(), LicenseId = kit.LicenseId, WpfCustomerId = ledgerOnly, Amount = 4m,
+                Kind = "refund-full", OriginalAmount = 4m, CreatedByCustomerId = kit.CustomerId, CreatedAt = capturedAt,
+            });
+            db.PersonBalanceBaselines.AddRange(
+                new PersonBalanceBaseline { LicenseId = kit.LicenseId, WpfCustomerId = V.LicenseMarker, CapturedAt = capturedAt },
+                new PersonBalanceBaseline
+                {
+                    LicenseId = kit.LicenseId, WpfCustomerId = balanceOnly, Balance = 3m, LedgerSum = 0m, CapturedAt = capturedAt,
+                },
+                new PersonBalanceBaseline
+                {
+                    LicenseId = kit.LicenseId, WpfCustomerId = ledgerOnly, Balance = 0m, LedgerSum = 4m, CapturedAt = capturedAt,
+                });
+            return Task.CompletedTask;
+        });
+        var funded = false;
+        _factory.Queries.Arm(
+            sql => sql.Contains("FROM [CustomerBalanceTransactions]", StringComparison.Ordinal)
+                   && sql.Contains("GROUP BY", StringComparison.Ordinal),
+            async () =>
+            {
+                await kit.FundAsync(raced, 5m);   // iade: hareket ve bakiye tek işlemde
+                funded = true;
+            });
+
+        using var scope = _factory.Services.CreateScope();
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = await scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
+            .LoadAsync(kit.LicenseId, now, default);
+        _factory.Queries.Disarm();
+        var r = V.Analyze(snapshot).Licenses.Single();
+
+        funded.Should().BeTrue("kanca iadeyi bakiye okumasıyla defter okuması arasında commit ettirmeli");
+        r.LedgerMismatches.Should().Be(new V.Tally(2, 0, -1m), "yalnız iki kalıcı bozulma: 3 − 0 ve 0 − 4");
+        r.Alerts.Should().BeEmpty("Balance(eski) ≠ Σ(yeni) bir okuma yarışı, D1 bozulması değil");
+        snapshot.Balances.Single(b => b.WpfCustomerId == raced).Balance.Should().Be(15m);
+        V.BaselineRowsToCapture(snapshot, r, now).Should().BeEmpty("yakalama yarışın satırını tabana yazmaz");
     }
 
     [Fact]
@@ -472,5 +534,47 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
         r.Details.NegativeOutside.Should().Equal(negative);
         (r.CopyRowsWithBalance, r.LedgerMismatches.Outside).Should().Be((1, 1));
         single.TransactionCount.Should().Be(9, "üç üye hareketi (I, Y, eksi), üç bacak, üç geri alma; T'nin hareketi yok");
+    }
+
+    /// <summary>
+    /// Sorgu kancası: <c>when</c>'i tutan ilk okuma komutunun hemen öncesinde <c>before</c>'u bir kez koşturur.
+    /// Yeniden girmez (kanca gövdesinin sorguları onu tetiklemez).
+    /// </summary>
+    private sealed class QueryHook : DbCommandInterceptor
+    {
+        private Func<string, bool>? _when;
+        private Func<Task>? _before;
+        private bool _running;
+
+        public void Arm(Func<string, bool> when, Func<Task> before)
+        {
+            _when = when;
+            _before = before;
+        }
+
+        public void Disarm() => _before = null;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (_before is { } hook && !_running && _when!(command.CommandText))
+            {
+                _before = null;
+                _running = true;
+                try { await hook(); }
+                finally { _running = false; }
+            }
+            return result;
+        }
+    }
+
+    private sealed class HookFactory(string connectionString) : RelationalApiFactory(connectionString)
+    {
+        public QueryHook Queries { get; } = new();
+
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Queries);
     }
 }
