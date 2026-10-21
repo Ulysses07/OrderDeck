@@ -286,7 +286,7 @@ Genel bakiye geri alma ucu `bank-overpayment` satırını 409 `use-bank-revert` 
   - Liste: "{tutar} havalen alındı", alt yazı "Banka havalesi".
   - Modal başlığı: "Ödeme Detayı".
   - Zaman çizgisi: "Bankaya ulaştı", ardından "Onaylandı".
-- Push `type=payment-approved` olarak kalır ki eski sürümler doğru ekrana gitsin; yanına `source=bank` eklenir. Metin: "{tutar} ₺ ödemen alındı".
+- Push `type=payment-approved` olarak kalır ki eski sürümler doğru ekrana gitsin; yanına `source=bank` eklenir. Metin sabit ve tutarsız (KVKK K-5; bildirim gövdesi Google FCM'ye gider): `PanelPaymentsController.PaymentApprovedPushBody`, dekont onayıyla aynı sabit. Başlık yayıncı adı; data'da yalnız `type`, `source`, `paymentId`, `licenseId`. Tutar uygulamada görünür (liste: "{tutar} havalen alındı").
 - Push yalnız "Evet" ve otomatik onayda gider. Ayar ipucu "Ödemen onaylandığında…" olarak değişir (`ProfilScreen.tsx:185`).
 - Onaylanmamış öneri shopper'a hiç gösterilmez; tahmin yanlışsa başkasının havalesi sızardı.
 - Geri alma (§11.2): `WrongCustomer` gerekçesinde satırın `ShopperId`'si boşaltılır; satır o shopper'ın uygulamasından kaybolur ve push gitmez. "Reddedildi" olarak kalsaydı başkasının ödemesi onun uygulamasında dururdu. Diğer gerekçelerde satır sabit metinle ("Ödeme doğrulanamadı") `rejected` görünür.
@@ -376,7 +376,7 @@ Havale `Unmatched`'e, dekont açık gap'e döner (bugünkü kaldırma kuralı). 
 
 **OrderDeck-Mobile:** P1 Havaleler segmenti (üç liste, alt sayfa, seçici, bayrak ve yoklama kuralı, "Havale fazlası" etiketi); P2 push deep link. İkisi tek AAB'de.
 
-**OrderDeck-Shopper:** SH1 `source` alanına göre metinler, push metni ve "Havale fazlası" etiketi.
+**OrderDeck-Shopper:** SH1 `source` alanına göre metinler ve "Havale fazlası" etiketi. Push metni Shopper'da değil sunucuda yazılır ve dekont onayının tutarsız sabitidir (`PanelPaymentsController.PaymentApprovedPushBody`, KVKK K-5; §10).
 
 **WPF:** W1 rozet, çekmece, sayfa, yoklama servisi, müşteri seçici ve müşteri silme işareti; W2 beklenti kuyruğu ve banka dışı kapanışlar; W3 payments INSERT yolu, göç, imleç sıfırlama, `PayerName` kuralı, kargo yönergesi ve `LabelOf`. Ardından Velopack sürümü.
 - **Sürüm kapısı:** W2'yi taşıyan en düşük WPF sürümü, ödeme isteği kişi anahtarı düzeltmesini (`fix/odeme-istegi-kisi`) de içermelidir: düzeltme W2 ile aynı ya da daha önceki bir Velopack sürümünde çıkar. Sürüm notuna "W2 ⊇ kişi anahtarı" yazılır. Böylece §5-5'in "bütün etkin PC'ler W2+" koşulu kişi anahtarını da kapsar.
