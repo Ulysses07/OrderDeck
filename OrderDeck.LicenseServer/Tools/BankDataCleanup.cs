@@ -8,7 +8,7 @@ namespace OrderDeck.LicenseServer.Tools;
 
 /// <summary>
 /// Konteyner içinde elle koşulur:
-///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup [--license &lt;guid&gt;] [--apply]
+///   docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll bank-data-cleanup [--license &lt;guid&gt;] [--apply] [--reset-iban-memory]
 /// KVKK düzeltmelerinden önce yazılmış banka verisini yeni kurallara indirir; kurallar <see cref="BankDataCleanupJob"/>'ta.
 /// --apply yoksa kuru koşu: uygulamanın sayılarını hesaplar, hiçbir şey yazmaz. Önce kuru koşu, çıktı tutanağa. P1'den sonra
 /// uygulama DataDestructionRecords'a da yazar. Saklama işi (04:57 UTC), shopper silmesi ya da banka veri talebi silmesi
@@ -18,12 +18,16 @@ namespace OrderDeck.LicenseServer.Tools;
 /// <para>Argümanlar katı (<see cref="GroupCustomers"/> kalıbı): tanınmayan, yinelenen ya da değeri eksik argüman → 2,
 /// yapılandırmaya ve veritabanına dokunmadan. Komut prod'da elle yazılır: yazım hatalı <c>--apply</c> kuru çalıştırmaya
 /// dönüşmemeli. Çıktıda kişisel veri yok — yalnız sayılar ve lisans kimliği.</para>
+/// <para><c>--reset-iban-memory</c>: bütün IBAN hafızasını (lisans verilirse yalnız onunkini) siler; hareket özetleri KALIR
+/// (IBAN talep aracı onlarla arar) ve eski hareketten yeniden öğrenilmez (CounterpartyIbanHashValid kapısı) — maskeli
+/// kaynaklı özetler saklı veriden tam anlaşılamadığı için Faz 2'den önce (KVKK Ö-7, karar Burak'ın). Bayraksız komut yalnız
+/// maskesi maskeli kaynağı ele veren özetleri ve bağları temizler.</para>
 /// </summary>
 public static class BankDataCleanup
 {
-    private const string Usage = "Kullanım: bank-data-cleanup [--license <guid>] [--apply]";
+    private const string Usage = "Kullanım: bank-data-cleanup [--license <guid>] [--apply] [--reset-iban-memory]";
 
-    public sealed record Options(Guid? License, bool Apply);
+    public sealed record Options(Guid? License, bool Apply, bool ResetIbanMemory = false);
 
     public static async Task<int> RunAsync(string[] args)
     {
@@ -54,7 +58,7 @@ public static class BankDataCleanup
         CancellationToken ct)
     {
         var job = new BankDataCleanupJob(db, loggerFactory.CreateLogger<BankDataCleanupJob>());
-        var r = await job.RunAsync(options.License, options.Apply, ct);
+        var r = await job.RunAsync(options.License, options.Apply, ct, options.ResetIbanMemory);
         output.WriteLine($"{(options.Apply ? "UYGULANDI" : "KURU ÇALIŞTIRMA")} — lisans={options.License?.ToString() ?? "hepsi"}: {Format(r)}");
         if (r.FailedBatches > 0)
         {
@@ -70,6 +74,7 @@ public static class BankDataCleanup
     {
         Guid? license = null;
         var apply = false;
+        var reset = false;
         options = new Options(null, false);
         for (var i = 1; i < args.Length; i++)
         {
@@ -77,6 +82,9 @@ public static class BankDataCleanup
             {
                 case "--apply" when !apply:
                     apply = true;
+                    break;
+                case "--reset-iban-memory" when !reset:
+                    reset = true;
                     break;
                 case "--license" when license is null:
                     if (i + 1 >= args.Length || !Guid.TryParse(args[i + 1], out var parsed)) return false;
@@ -87,7 +95,7 @@ public static class BankDataCleanup
                     return false;
             }
         }
-        options = new Options(license, apply);
+        options = new Options(license, apply, reset);
         return true;
     }
 
@@ -97,5 +105,7 @@ public static class BankDataCleanup
            $"eşleşme silinen={r.MatchesDeleted} | VKN/TCKN kodu boşaltılan={r.TaxIdHashesCleared} | " +
            $"ham kayıt daraltılan={r.RawJsonRewritten} (okunamayan boşaltılan={r.RawJsonUnreadableCleared}) | " +
            $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | " +
+           $"maskeli kaynaklı özet boşaltılan={r.MaskedSourceHashesCleared} (hafıza silinen={r.MaskedSourceMemoriesDeleted}) | " +
+           $"sıfırlanan IBAN hafızası={r.IbanMemoriesReset} | " +
            $"IBAN bağı başlangıcı yazılan={r.IbanConfirmationsBackfilled} | düşen parti={r.FailedBatches}";
 }

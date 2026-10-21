@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
@@ -44,6 +45,12 @@ public sealed class BankDataCleanupJobTests
     };
 
     private static string Hex64() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+
+    private static CustomerIbanMemory Memory(Guid lic, string hash, Guid? sourceId = null, string mask = "TR12…345") => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = Guid.NewGuid(), IbanHash = hash, IbanMasked = mask,
+        LearnedFrom = IbanMemorySource.HumanApproval, SourceBankTransactionId = sourceId, CreatedAt = DateTimeOffset.UtcNow,
+    };
 
     [Fact]
     public async Task Kuru_kosu_sayar_hicbir_sey_yazmaz()
@@ -234,7 +241,12 @@ public sealed class BankDataCleanupJobTests
         masks[shortRaw.Id].Should().Be(BankHasher.ShortValueMask);
         masks[oldMasked.Id].Should().Be(BankHasher.ShortValueMask);
         masks[ibanMasked.Id].Should().Be(ibanMasked.CounterpartyIbanMasked, "IBAN maskesi biçimi kalır");
-        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).IbanMasked.Should().Be(BankHasher.ShortValueMask);
+        // Eski biçimli maske IBAN olmayan bir değerden (hesap numarası): bağın özeti de oradan. Önce maskesi çevrilir (Ö-6),
+        // sonra bağ maskeli kaynaklı olarak silinir (Ö-7; Maskeli_kaynakli_… testleri).
+        r.MaskedSourceMemoriesDeleted.Should().Be(1);
+        (await db.CustomerIbanMemories.AsNoTracking().CountAsync()).Should().Be(0);
+        (await db.DataDestructionRecords.AsNoTracking().Select(x => x.Target).ToListAsync())
+            .Should().Contain(new[] { "CustomerIbanMemories.IbanMasked", "CustomerIbanMemories" });
         (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == placeholder.Id)).IbanMasked.Should().Be("?");
         (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == oldAccount.Id)).IbanMasked.Should().Be(BankHasher.ShortValueMask);
     }
@@ -267,7 +279,9 @@ public sealed class BankDataCleanupJobTests
         {
             var t = Tx(lic, amount, at, direction, description: $"EFT {TestTckn.NewValid()}",
                 rawJson: """{"Aciklama":"x","Bakiye":"1"}""", taxIdHash: Hex64());
+            // Hesap numarası: eski kod 8+ karakteri özetliyordu, eski maske ham kısa değer (Ö-6, Ö-7).
             t.CounterpartyIbanMasked = TestPhone.Digits(7);
+            t.CounterpartyIbanHash = Hex64();
             return t;
         }
         var outgoingRecent = Dirty(30m, recentAt, BankTransactionDirection.Outgoing);
@@ -278,6 +292,10 @@ public sealed class BankDataCleanupJobTests
         db.BankTransactions.AddRange(outgoingRecent, outgoingOld, preAnchor, oldDecided, kept);
         db.PaymentMatches.AddRange(Match(outgoingRecent), Match(outgoingOld), Match(preAnchor), Match(kept),
             Match(oldDecided, actual: Guid.NewGuid(), decidedAt: DateTimeOffset.UtcNow));
+        // kept'in öğrettiği bağ maskeli kaynaklı silinir: P1 öncesi başlangıcı da yazılmaz. Silinecek preAnchor'ın özetini
+        // taşıyan bağın maskesi temiz: şüpheyi yalnız silinen satır taşıyor, bağ kalır (kuru koşu da saymaz).
+        db.CustomerIbanMemories.AddRange(Memory(lic, kept.CounterpartyIbanHash!, sourceId: kept.Id),
+            Memory(lic, preAnchor.CounterpartyIbanHash!));
         await db.SaveChangesAsync();
 
         var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None);
@@ -285,8 +303,10 @@ public sealed class BankDataCleanupJobTests
 
         (applied.OutgoingOrZeroDeleted, applied.AnchorsSet, applied.PreAnchorDeleted, applied.PreAnchorSkippedLinked,
             applied.MatchesDeleted).Should().Be((2, 1, 1, 1, 3));
-        (applied.TaxIdHashesCleared, applied.RawJsonRewritten, applied.DescriptionsMasked, applied.ShortMasksReplaced)
-            .Should().Be((2, 2, 2, 2), "yalnız kalan iki satır (karar verilmiş eski ve çapadan sonraki) daraltılır");
+        (applied.TaxIdHashesCleared, applied.RawJsonRewritten, applied.DescriptionsMasked, applied.ShortMasksReplaced,
+                applied.MaskedSourceHashesCleared)
+            .Should().Be((2, 2, 2, 2, 2), "yalnız kalan iki satır (karar verilmiş eski ve çapadan sonraki) daraltılır");
+        (applied.MaskedSourceMemoriesDeleted, applied.IbanConfirmationsBackfilled).Should().Be((1, 0));
         dry.Should().BeEquivalentTo(applied);
         (await db.BankTransactions.Select(t => t.Id).ToListAsync()).Should().BeEquivalentTo(new[] { oldDecided.Id, kept.Id });
     }
@@ -298,18 +318,22 @@ public sealed class BankDataCleanupJobTests
         var backfill = new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero);
         db.ObifinConnections.Add(Connection(lic, backfill, backfill));
         var withShortMask = Tx(lic, 12m); withShortMask.CounterpartyIbanMasked = TestPhone.Digits(7);
+        withShortMask.CounterpartyIbanHash = Hex64();
         db.BankTransactions.AddRange(
             Tx(lic, 30m, direction: BankTransactionDirection.Outgoing),
             Tx(lic, 10m, description: $"EFT {TestTckn.NewValid()}", rawJson: """{"Aciklama":"x","Bakiye":"1"}""", taxIdHash: Hex64()),
             Tx(lic, 9m, new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero)),
             withShortMask);
+        db.CustomerIbanMemories.Add(Memory(lic, withShortMask.CounterpartyIbanHash));
         await db.SaveChangesAsync();
-        await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+        var first = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+        (first.MaskedSourceHashesCleared, first.MaskedSourceMemoriesDeleted).Should().Be((1, 1));
 
         var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
 
         (r.OutgoingOrZeroDeleted, r.TaxIdHashesCleared, r.RawJsonRewritten, r.DescriptionsMasked, r.PreAnchorDeleted, r.AnchorsSet,
             r.ShortMasksReplaced, r.MatchesDeleted, r.FailedBatches).Should().Be((0, 0, 0, 0, 0, 0, 0, 0, 0));
+        (r.MaskedSourceHashesCleared, r.MaskedSourceMemoriesDeleted, r.IbanMemoriesReset).Should().Be((0, 0, 0));
     }
 
     [Fact]
@@ -427,4 +451,122 @@ public sealed class BankDataCleanupJobTests
         (await Job(db).RunAsync(null, apply: true, CancellationToken.None)).IbanConfirmationsBackfilled
             .Should().Be(0, "yeniden koşu idempotent");
     }
+
+    [Fact]
+    public async Task Maskeli_kaynakli_ozet_ve_ona_bagli_IBAN_hafizasi_temizlenir()
+    {
+        // KVKK Ö-7: maskeli IBAN'ın özeti aynı ilk/son karakterleri taşıyan farklı gönderenleri tek özete düşürür. Maskesi
+        // maskeli kaynağı ele veren özet, aynı özeti taşıyan bütün hareketlerde boşaltılır; o özetle öğrenilmiş bağ silinir.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var suspect = Hex64(); var clean = Hex64();
+        BankTransaction Hashed(string hash, string mask) { var t = Tx(lic, 10m); t.CounterpartyIbanHash = hash; t.CounterpartyIbanMasked = mask; return t; }
+        var maskedTx = Hashed(suspect, "TR12…**3");
+        var sameHash = Hashed(suspect, "TR12…**3");
+        var cleanTx = Hashed(clean, BankHasher.MaskIban(BankHasherTests.TestIban()));
+        db.BankTransactions.AddRange(maskedTx, sameHash, cleanTx);
+        var cleanMemory = Memory(lic, clean);
+        db.CustomerIbanMemories.AddRange(Memory(lic, suspect), cleanMemory);
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None);
+        (dry.MaskedSourceHashesCleared, dry.MaskedSourceMemoriesDeleted).Should().Be((2, 1));
+        (await db.BankTransactions.CountAsync(t => t.CounterpartyIbanHash != null)).Should().Be(3, "kuru koşu yazmaz");
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(2, "kuru koşu yazmaz");
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.MaskedSourceHashesCleared.Should().Be(2);
+        r.MaskedSourceMemoriesDeleted.Should().Be(1);
+        dry.Should().BeEquivalentTo(r);
+        (await db.BankTransactions.Where(t => t.CounterpartyIbanHash != null).Select(t => t.Id).ToListAsync())
+            .Should().BeEquivalentTo(new[] { cleanTx.Id });
+        (await db.BankTransactions.AsNoTracking().CountAsync(t => t.CounterpartyIbanMasked == BankHasher.ShortValueMask))
+            .Should().Be(2, "maske satırda kalır, IBAN maskesi biçiminde olmadığı için bir önceki adım (Ö-6) çevirir");
+        (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { cleanMemory.Id });
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().ContainSingle(x => x.Target == "BankTransactions.CounterpartyIbanHash").Which
+            .Should().Match<DataDestructionRecord>(x => x.Action == DataDestruction.Actions.Nulled && x.RowCount == 2
+                && x.LicenseId == lic && x.Trigger == DataDestruction.Triggers.Cleanup);
+        records.Should().ContainSingle(x => x.Target == "CustomerIbanMemories").Which
+            .Should().Match<DataDestructionRecord>(x => x.Action == DataDestruction.Actions.Deleted && x.RowCount == 1
+                && x.LicenseId == lic);
+        records.Should().OnlyContain(x => !x.Criterion.Contains(';'));
+    }
+
+    [Fact]
+    public async Task Kendi_maskesi_maskeli_kaynagi_ele_veren_bag_ogreten_havale_silinmis_olsa_da_silinir()
+    {
+        // Bağ, öğreten havaleden 12 ay yaşar; havale 180 günde gider. Şüphe yalnız hareketin maskesinden okunsaydı öğreten
+        // havalesi silinmiş maskeli kaynaklı bağ kalırdı. Bağın kendi maskesi de aynı değerden: o da şüpheyi taşır. Yer tutucu
+        // "?" maske kaynağı bilinmez: dokunulmaz (--reset-iban-memory'ye kalır).
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var masked = Memory(lic, Hex64(), mask: "TR**…345");
+        var accountNumber = Memory(lic, Hex64(), mask: BankHasher.ShortValueMask);
+        var unknown = Memory(lic, Hex64(), mask: "?");
+        var clean = Memory(lic, Hex64());
+        db.CustomerIbanMemories.AddRange(masked, accountNumber, unknown, clean);
+        await db.SaveChangesAsync();
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.MaskedSourceMemoriesDeleted.Should().Be(2);
+        (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { unknown.Id, clean.Id });
+    }
+
+    [Fact]
+    public async Task Reset_iban_memory_yalniz_hafizayi_siler_hareket_ozeti_kalir_kuru_kosuda_yalniz_sayar()
+    {
+        // KVKK K-7: hareketin özeti kalmalı — IBAN talep aracı (Görev 17) hareketleri yalnız özetle bulur; boşaltılsaydı 180 güne
+        // kadar duran veri "yok" görünürdü. Yeniden öğrenmeyi LearnIbanAsync'in CounterpartyIbanHashValid kapısı engeller.
+        // Silinecek bağın P1 öncesi başlangıcı yazılmaz: kuru koşu da saymaz (sayılar uygulamanınkiler).
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var hash = Hex64();
+        var t = Tx(lic, 10m); t.CounterpartyIbanHash = hash; t.CounterpartyIbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban());
+        db.BankTransactions.Add(t);
+        db.CustomerIbanMemories.Add(Memory(lic, hash, sourceId: t.Id));
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None, resetIbanMemory: true);
+        (dry.IbanMemoriesReset, dry.IbanConfirmationsBackfilled).Should().Be((1, 0));
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(1);
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None, resetIbanMemory: true);
+
+        r.IbanMemoriesReset.Should().Be(1);
+        dry.Should().BeEquivalentTo(r);
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+        (await db.BankTransactions.SingleAsync()).CounterpartyIbanHash.Should().Be(hash, "talep aracı hareketi özetle bulur");
+        (await db.BankTransactions.SingleAsync()).CounterpartyIbanMasked.Should().NotBeNull("maske kalır");
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync(x => x.Target == "CustomerIbanMemories"))
+            .Should().Match<DataDestructionRecord>(x => x.Action == DataDestruction.Actions.Deleted && x.RowCount == 1
+                && x.LicenseId == lic && x.Trigger == DataDestruction.Triggers.Cleanup && x.Actor == DataDestruction.CliActor);
+    }
+
+    [Fact]
+    public async Task Reset_iban_memory_lisans_verilirse_yalniz_o_lisansin_hafizasini_siler()
+    {
+        using var db = NewDb(); var target = Guid.NewGuid(); var other = Guid.NewGuid();
+        var kept = Memory(other, Hex64());
+        db.CustomerIbanMemories.AddRange(Memory(target, Hex64()), kept);
+        await db.SaveChangesAsync();
+
+        var r = await Job(db).RunAsync(target, apply: true, CancellationToken.None, resetIbanMemory: true);
+
+        r.IbanMemoriesReset.Should().Be(1);
+        (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { kept.Id });
+    }
+
+    [Theory]
+    [InlineData("TR12…345", false)]
+    [InlineData("DE89…000", false)]
+    [InlineData("TR12…**3", true)]
+    [InlineData("TR**…345", true)]
+    [InlineData("…", true)]
+    [InlineData("1234…567", true)]
+    [InlineData("1234567", true)]
+    [InlineData("?", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Maske_maskeli_kaynagi_ele_verir(string? mask, bool expected)
+        => BankDataCleanupJob.LooksMasked(mask).Should().Be(expected);
 }

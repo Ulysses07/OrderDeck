@@ -65,7 +65,8 @@ public sealed class IbanBondRewindRelationalTests : IAsyncLifetime
         var at = DateTimeOffset.UtcNow.AddDays(-ageDays);
         var tx = new BankTransaction { Id = Guid.NewGuid(), LicenseId = s.LicenseId, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000),
             ObifinAccountId = 6, BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 100m + ageDays, Currency = "TL",
-            OccurredAt = at, FetchedAt = at, Description = "EFT GELEN", CounterpartyIbanHash = s.Hash };
+            OccurredAt = at, FetchedAt = at, Description = "EFT GELEN", CounterpartyIbanHash = s.Hash,
+            CounterpartyIbanHashValid = true }; // Görev 11'den sonraki çekim: özet geçerli IBAN'dan (KVKK Ö-7)
         db.BankTransactions.Add(tx);
         await db.SaveChangesAsync();
         return tx;

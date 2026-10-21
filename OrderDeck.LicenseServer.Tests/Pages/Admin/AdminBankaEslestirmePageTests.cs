@@ -450,12 +450,14 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var (lic, txId, wpfId) = await SeedAsync();
         var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
         var source = Tx(lic, 90m, "EFT GELEN", DateTimeOffset.UtcNow.AddDays(-200));
-        source.CounterpartyIbanHash = hash;
+        // Görev 11'den sonraki çekim: özetler geçerli IBAN'dan, bağı öğretir ve tazeler (KVKK Ö-7).
+        source.CounterpartyIbanHash = hash; source.CounterpartyIbanHashValid = true;
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             db.BankTransactions.Add(source);
-            (await db.BankTransactions.SingleAsync(t => t.Id == txId)).CounterpartyIbanHash = hash;
+            var tx = await db.BankTransactions.SingleAsync(t => t.Id == txId);
+            tx.CounterpartyIbanHash = hash; tx.CounterpartyIbanHashValid = true;
             await db.SaveChangesAsync();
             var recon = scope.ServiceProvider.GetRequiredService<PaymentMatchReconciler>();
             await recon.ManualMatchAsync(lic, source.Id, wpfId, CancellationToken.None);

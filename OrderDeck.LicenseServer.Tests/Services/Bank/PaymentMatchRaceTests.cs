@@ -383,7 +383,9 @@ public sealed class PaymentMatchRaceTests
         var actor = Guid.NewGuid().ToString();
         await using (var setup = Ctx())
         {
-            (await setup.BankTransactions.SingleAsync(t => t.Id == s.Tx.Id)).CounterpartyIbanHash = hash;
+            var seeded = await setup.BankTransactions.SingleAsync(t => t.Id == s.Tx.Id);
+            // Görev 11'den sonraki çekim: özet geçerli IBAN'dan, bağı tazeleyebilir (KVKK Ö-7).
+            seeded.CounterpartyIbanHash = hash; seeded.CounterpartyIbanHashValid = true;
             var learnedAt = DateTimeOffset.UtcNow.AddDays(-200);
             setup.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId,
                 WpfCustomerId = s.WpfCustomerId, IbanHash = hash, IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch,

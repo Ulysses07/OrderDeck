@@ -349,11 +349,15 @@ public sealed class PaymentMatchReconciler
     /// 12 ay yaşar, <see cref="CustomerIbanMemory.LastConfirmedAt"/>). Süre havalenin işlem tarihinden işler, doğrulama anından
     /// değil: politikadaki bütün banka süreleri gibi. Bağı doğrulayan karar (<paramref name="match"/>) işaretlenir
     /// (<see cref="PaymentMatch.IbanConfirmedAt"/>): kaldırmada bağın süresi yalnız işaretli kararlardan geri hesaplanır.
-    /// IBAN'sız hareket ve başka müşteriye kayıtlı bağ doğrulama değildir, işaretlenmez.</summary>
+    /// IBAN'sız hareket ve başka müşteriye kayıtlı bağ doğrulama değildir, işaretlenmez. Özeti geçerli IBAN'dan üretilmemiş
+    /// hareket (<see cref="BankTransaction.CounterpartyIbanHashValid"/> false: KVKK Ö-7 kesme anından önce çekilmiş) ne öğretir ne
+    /// tazeler.</summary>
     private async Task LearnIbanAsync(PaymentMatch match, BankTransaction tx, Guid wpfCustomerId, IbanMemorySource source,
         CancellationToken ct)
     {
-        if (tx.CounterpartyIbanHash is null) return;
+        // KVKK Ö-7: yalnız geçerli IBAN'dan üretilmiş özet öğretir. Kesme anından (Görev 11) önce çekilen hareketin özeti maskeli
+        // IBAN'dan olabilir; --reset-iban-memory hafızayı silse de o özet buradan geri gelirdi.
+        if (tx.CounterpartyIbanHash is null || !tx.CounterpartyIbanHashValid) return;
         var now = DateTimeOffset.UtcNow;
         var confirmedAt = ConfirmedAt(tx, now);
         var existing = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == tx.LicenseId && m.IbanHash == tx.CounterpartyIbanHash, ct);

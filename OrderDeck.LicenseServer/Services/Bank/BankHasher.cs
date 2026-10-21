@@ -5,6 +5,9 @@ using Microsoft.Extensions.Options;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
+/// <summary>Gelen IBAN'ın niteliği; banka hesabı başına sayılır (KVKK Ö-7). Değer yazılmaz, yalnız sınıf.</summary>
+public enum IbanQuality { Empty = 0, Masked = 1, Full = 2 }
+
 /// <summary>
 /// IBAN için HMAC-SHA256 (spec §7). Düz SHA yetersiz: IBAN'ın entropisi düşük, sızan tablo sözlükle çözülür. Anahtar yalnız
 /// sunucuda; özet yalnız "aynı mı" sorusuna cevap verir (hafıza araması). Anahtarı bilmeyen özetten IBAN elde edemez; anahtarı
@@ -35,19 +38,39 @@ public sealed class BankHasher
     public static bool IsValidKey([NotNullWhen(true)] string? key)
         => !string.IsNullOrWhiteSpace(key) && Encoding.UTF8.GetByteCount(key) >= MinKeyBytes;
 
-    /// <summary>Boşluk/küçük harf farkı hash'i değiştirmez; boş değer null döner.</summary>
+    /// <summary>Yalnız geçerli IBAN özetlenir (<see cref="NormalizeIban"/>); boşluk/küçük harf farkı özeti değiştirmez; boş,
+    /// maskeli ya da geçersiz değer null döner.</summary>
     public string? HashIban(string? iban)
     {
         var norm = NormalizeIban(iban);
         return norm is null ? null : Hmac(norm);
     }
 
+    /// <summary>
+    /// Yalnız tam ve geçerli IBAN normalize edilir (KVKK Ö-7): boşluk atılır, büyük harfe çevrilir; yalnız ASCII harf ve rakam;
+    /// 2 harf ülke + 2 rakam kontrol; uzunluk 15–34, TR'de tam 26; ISO 7064 MOD 97-10 kalanı 1. Aksi hâlde null. Maskeli değer
+    /// (ör. <c>TR12****…</c>) özetlenseydi aynı ilk ve son karakterleri taşıyan farklı gönderenler aynı özete düşer, IBAN
+    /// hafızası farklı kişileri tek müşteriye bağlardı. TR BBAN'ı standarda göre harf içerebilir: "TR'den sonra yalnız rakam"
+    /// koşulu BİLEREK yok.
+    /// </summary>
     public static string? NormalizeIban(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return null;
         var compact = Compact(iban);
-        return compact.Length < 8 ? null : compact;
+        if (compact.Length < MinIbanLength || compact.Length > MaxIbanLength) return null;
+        foreach (var c in compact)
+            if (!char.IsAsciiLetterUpper(c) && !char.IsAsciiDigit(c)) return null;
+        if (!char.IsAsciiLetterUpper(compact[0]) || !char.IsAsciiLetterUpper(compact[1])
+            || !char.IsAsciiDigit(compact[2]) || !char.IsAsciiDigit(compact[3])) return null;
+        if (compact.StartsWith("TR", StringComparison.Ordinal) && compact.Length != TrIbanLength) return null;
+        return HasValidIbanChecksum(compact) ? compact : null;
     }
+
+    /// <summary>Boş → <see cref="IbanQuality.Empty"/>; geçerli → <see cref="IbanQuality.Full"/>; dolu ama geçersiz (maskeli,
+    /// kısaltılmış, bozuk, hesap numarası) → <see cref="IbanQuality.Masked"/>.</summary>
+    public static IbanQuality Classify(string? iban)
+        => string.IsNullOrWhiteSpace(iban) ? IbanQuality.Empty
+            : NormalizeIban(iban) is null ? IbanQuality.Masked : IbanQuality.Full;
 
     /// <summary>IBAN olmayan değerin maskesi: bir değerin geldiği görünür, hiçbir karakteri görünmez (KVKK Ö-6).</summary>
     public const string ShortValueMask = "…";
@@ -55,14 +78,20 @@ public sealed class BankHasher
     /// <summary>En kısa geçerli IBAN uzunluğu (ISO 13616; ör. Norveç 15). Bundan kısa değer IBAN olamaz.</summary>
     public const int MinIbanLength = 15;
 
-    /// <summary>`TR12…345` — yalnız görüntü. Ham girdi ASLA dönmez: boş/boşluk → "", <see cref="MinIbanLength"/>'ten kısa değer
-    /// (hesap numarası vb.) → <see cref="ShortValueMask"/>: 10 haneli bir hesap numarasının 7 hanesi "maske" sütununda açık
-    /// kalmasın. Görev 11 kuralı "geçerli IBAN değilse <see cref="ShortValueMask"/>"a sıkılaştırır.</summary>
+    /// <summary>En uzun IBAN (ISO 13616).</summary>
+    public const int MaxIbanLength = 34;
+
+    /// <summary>TR IBAN'ı: TR + 2 kontrol + 5 banka kodu + 1 rezerv + 16 hesap = 26.</summary>
+    public const int TrIbanLength = 26;
+
+    /// <summary>`TR12…345` — yalnız görüntü, YALNIZ geçerli IBAN için (<see cref="Classify"/> = Full). Ham girdi ASLA dönmez:
+    /// boş/boşluk → ""; maskeli, kısaltılmış, bozuk ya da hesap numarası → <see cref="ShortValueMask"/> (KVKK Ö-6: IBAN olmayan
+    /// değerin hiçbir karakteri "maske" sütununda görünmez; 15+ karakterlik hesap numarası dahil).</summary>
     public static string MaskIban(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return "";
-        var compact = Compact(iban);
-        return compact.Length < MinIbanLength ? ShortValueMask : compact[..4] + "…" + compact[^3..];
+        var normalized = NormalizeIban(iban);
+        return normalized is null ? ShortValueMask : normalized[..4] + "…" + normalized[^3..];
     }
 
     /// <summary>ISO 13616 / ISO 7064 MOD 97-10: boşluksuz, büyük harfli değerin ilk dört karakteri sona alınır, harfler 10–35'e

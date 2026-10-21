@@ -23,6 +23,10 @@ public sealed class BankTransaction
     public string? BankReference { get; set; }
     public string? CounterpartyIbanHash { get; set; }
     public string? CounterpartyIbanMasked { get; set; }
+    /// <summary>Özet mod-97 geçerli bir IBAN'dan üretildi (Görev 11 sonrası çekim). Yalnız bu hareketler IBAN hafızası öğretir
+    /// (<c>PaymentMatchReconciler.LearnIbanAsync</c>, KVKK Ö-7): öncesinde çekilen hareketin özeti maskeli IBAN'dan üretilmiş
+    /// olabilir. Göç eski satırlarda false bırakır.</summary>
+    public bool CounterpartyIbanHashValid { get; set; }
     public string? CounterpartyName { get; set; }
     /// <summary>YAZILMAZ (KVKK Ö-2, 2026-10). Sütun genişlet/daralt kuralıyla bir sonraki sürümde düşürülür; eski değerleri
     /// <c>bank-data-cleanup</c> boşaltır. Yeni kod bu alanı okumamalı.</summary>

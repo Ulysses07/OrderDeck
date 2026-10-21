@@ -195,6 +195,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(3)
                         .HasColumnType("nvarchar(3)");
 
+                    b.Property<int>("IbanEmptyCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("IbanFullCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("IbanHash")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
@@ -203,6 +209,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
+
+                    b.Property<int>("IbanMaskedCount")
+                        .HasColumnType("int");
 
                     b.Property<DateTimeOffset?>("LastBankSyncAt")
                         .HasColumnType("datetimeoffset");
@@ -304,6 +313,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("CounterpartyIbanHash")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<bool>("CounterpartyIbanHashValid")
+                        .HasColumnType("bit");
 
                     b.Property<string>("CounterpartyIbanMasked")
                         .HasMaxLength(40)

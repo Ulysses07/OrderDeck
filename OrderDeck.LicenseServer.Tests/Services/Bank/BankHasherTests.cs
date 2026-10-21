@@ -66,12 +66,12 @@ public sealed class BankHasherTests
     [Fact]
     public void Maske_bosluklu_kucuk_harfli_girdiyi_normalize_ederek_maskeler()
     {
-        // Üretilmiş, ardışık rakamlı IBAN biçimi (repo public — gerçek IBAN yazılmaz). Baş ve
-        // son belirgin: yanlış pencere (ör. son 3 yerine son 4'ün ilk 3'ü) yakalanır.
-        var iban = "TR" + string.Concat(Enumerable.Range(1, 24).Select(i => i % 10));
+        // Üretilmiş, ardışık rakamlı, kontrol haneleri tutan IBAN (repo public — gerçek IBAN yazılmaz; maske artık yalnız
+        // geçerli IBAN'da karakter gösterir). Son belirgin: yanlış pencere (ör. son 3 yerine son 4'ün ilk 3'ü) yakalanır.
+        var iban = WithCheckDigits("TR", string.Concat(Enumerable.Range(1, 22).Select(i => i % 10)));
         var messy = " " + string.Join(" ", iban.Chunk(4).Select(c => new string(c))).ToLowerInvariant() + " ";
 
-        BankHasher.MaskIban(messy).Should().Be("TR12…234");
+        BankHasher.MaskIban(messy).Should().Be(iban[..4] + "…" + "012");
     }
 
     [Fact]
@@ -147,5 +147,55 @@ public sealed class BankHasherTests
         BankHasher.HasValidIbanChecksum(iban[..10] + "******" + iban[16..]).Should().BeFalse("harf/rakam dışı karakter");
         BankHasher.HasValidIbanChecksum(iban.ToLowerInvariant()).Should().BeFalse("büyük harfli, boşluksuz değer bekler");
         BankHasher.HasValidIbanChecksum("TR1").Should().BeFalse("kısa değer");
+    }
+
+    [Fact]
+    public void Gecerli_TR_IBAN_tam_sayilir_ozetlenir_ve_ilk_dort_son_uc_karakterle_maskelenir()
+    {
+        var iban = TestIban();
+        BankHasher.Classify(iban).Should().Be(IbanQuality.Full);
+        NewHasher().HashIban(iban).Should().HaveLength(64);
+        BankHasher.MaskIban(iban).Should().Be(iban[..4] + "…" + iban[^3..]);
+    }
+
+    [Fact]
+    public void Maskeli_kisaltilmis_ya_da_kontrol_hanesi_yanlis_IBAN_ozetlenmez_maskesi_karakter_gostermez()
+    {
+        // KVKK Ö-7: maskeli değer özetlenseydi farklı gönderenler aynı özete düşerdi. Ö-6: IBAN olmayan değerin maskesi
+        // hiçbir karakterini göstermez (15+ karakterlik hesap numarası dahil).
+        var iban = TestIban();
+        var h = NewHasher();
+        var bad = new[]
+        {
+            iban[..10] + "******" + iban[16..],
+            iban[..4] + "…" + iban[^3..],
+            iban[..25],
+            iban + "0",
+            WrongCheckDigits(iban),
+            TestPhone.Digits(16),
+        };
+        foreach (var value in bad)
+        {
+            h.HashIban(value).Should().BeNull(value.Length.ToString());
+            BankHasher.Classify(value).Should().Be(IbanQuality.Masked);
+            BankHasher.MaskIban(value).Should().Be(BankHasher.ShortValueMask, value.Length.ToString());
+        }
+        BankHasher.Classify(null).Should().Be(IbanQuality.Empty);
+        BankHasher.Classify("   ").Should().Be(IbanQuality.Empty);
+    }
+
+    [Fact]
+    public void Harf_iceren_TR_BBAN_kontrol_hanesi_dogruysa_gecerlidir()
+    {
+        // TR BBAN'ın son 16 karakteri standarda göre harf de içerebilir: "TR'den sonra yalnız rakam" koşulu yok.
+        var bban = TestPhone.Digits(5) + "0" + "ABCD" + TestPhone.Digits(12);
+        BankHasher.NormalizeIban(WithCheckDigits("TR", bban)).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Yabanci_IBAN_kendi_uzunlugunda_kabul_edilir()
+    {
+        var de = WithCheckDigits("DE", TestPhone.Digits(18));
+        BankHasher.NormalizeIban(de.ToLowerInvariant()).Should().Be(de);
     }
 }

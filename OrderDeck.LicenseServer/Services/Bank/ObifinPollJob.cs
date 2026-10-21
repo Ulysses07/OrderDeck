@@ -328,9 +328,19 @@ public sealed class ObifinPollJob
                 _db.BankAccounts.Add(account);
                 accounts[dto.AccountId] = account;
             }
-            // IBAN özeti + maske ham DTO değerinden; sütuna ham IBAN girmez (DB CHECK kısıtı da 64 hex ister).
+            // KVKK Ö-7: banka hesabı başına IBAN niteliği sayacı (değer yazılmaz). Maskeli/geçersiz IBAN özetlenmez (HashIban
+            // null). Sayaç izlenen hesap satırında; hareketle aynı kimlik korumalı kayıtta yazılır.
+            switch (BankHasher.Classify(dto.CounterpartyIban))
+            {
+                case IbanQuality.Full: account.IbanFullCount++; break;
+                case IbanQuality.Masked: account.IbanMaskedCount++; break;
+                default: account.IbanEmptyCount++; break;
+            }
+            // IBAN özeti + maske ham DTO değerinden; sütuna ham IBAN girmez (DB CHECK kısıtı da 64 hex ister). Özet ve maske
+            // yalnız geçerli IBAN'da dolu (BankHasher.NormalizeIban); maskeli değerin maskesi ShortValueMask.
             // Boş maske ("") null saklanır: MaskIban ham girdiyi döndürmez, boş değer görüntüde yer tutmasın.
             var masked = BankHasher.MaskIban(dto.CounterpartyIban);
+            var ibanHash = _hasher.HashIban(dto.CounterpartyIban);
             var tx = new BankTransaction
             {
                 Id = Guid.NewGuid(), LicenseId = conn.LicenseId, ObifinId = dto.Id, BankAccountId = account.Id,
@@ -342,7 +352,7 @@ public sealed class ObifinPollJob
                 // ortasına düşerse kırpılmış baş hiçbir kalıba uymaz).
                 Description = Trim(BankDescriptionMasker.Mask(dto.Description), 512), TransactionCode = Trim(dto.TransactionCode, 32),
                 CommonType = Trim(dto.CommonType, 64), BankReference = Trim(dto.BankReference, 64),
-                CounterpartyIbanHash = _hasher.HashIban(dto.CounterpartyIban),
+                CounterpartyIbanHash = ibanHash, CounterpartyIbanHashValid = ibanHash is not null,
                 CounterpartyIbanMasked = masked.Length == 0 ? null : masked,
                 CounterpartyName = Trim(dto.CounterpartyName, 160),
                 RawJson = BankRawJsonRedactor.Redact(dto.RawJson), FetchedAt = now,

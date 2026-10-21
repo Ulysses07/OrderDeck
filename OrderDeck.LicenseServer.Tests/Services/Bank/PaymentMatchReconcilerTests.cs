@@ -50,7 +50,9 @@ public sealed class PaymentMatchReconcilerTests
     {
         var t = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb",
             Direction = BankTransactionDirection.Incoming, Amount = amount, Currency = "TL", OccurredAt = when, Description = desc, CounterpartyIbanHash = ibanHash, FetchedAt = when,
-            TransactionCode = code };
+            TransactionCode = code,
+            // Testlerin hareketleri Görev 11'den sonraki çekimi temsil eder: özet geçerli IBAN'dan (KVKK Ö-7).
+            CounterpartyIbanHashValid = ibanHash is not null };
         db.BankTransactions.Add(t); db.SaveChanges();
         return t;
     }
@@ -887,5 +889,44 @@ public sealed class PaymentMatchReconcilerTests
         var memory = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
         (memory.WpfCustomerId, memory.LastConfirmedAt).Should().Be((other.Id, (DateTimeOffset?)confirmedAt));
         (await db.DataDestructionRecords.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Kesme_anindan_once_cekilmis_hareketin_ozeti_IBAN_ogretmez()
+    {
+        // KVKK Ö-7: Görev 11'den önce çekilen hareketin özeti maskeli IBAN'dan üretilmiş olabilir; --reset-iban-memory'den sonra
+        // ondan yeniden öğrenilen bağ farklı gönderenleri tek müşteriye bağlardı.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var tx = Tx(db, s.LicenseId, 100m, DateTimeOffset.UtcNow.AddHours(-1), "EFT GELEN", Hasher.HashIban(BankHasherTests.TestIban()));
+        tx.CounterpartyIbanHashValid = false;
+        db.SaveChanges();
+
+        await Recon(db).ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).IbanConfirmedAt.Should().BeNull("doğrulama sayılmaz");
+    }
+
+    [Fact]
+    public async Task Kesme_anindan_once_cekilmis_hareket_mevcut_bagi_tazelemez()
+    {
+        // Aynı kapı tazelemeyi de keser: eski hareketin özeti maskeli kaynaklı olabilir, "aynı IBAN'dan yeni doğrulama" sayılmaz.
+        // Hata yönü erken silmedir (bağ son geçerli doğrulamadan 12 ay yaşar).
+        using var db = NewDb(); var s = SeedShopper(db);
+        var iban = BankHasherTests.TestIban();
+        var hash = Hasher.HashIban(iban)!;
+        var confirmedAt = DateTimeOffset.UtcNow.AddDays(-50);
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = s.WpfCustomerId,
+            IbanHash = hash, IbanMasked = BankHasher.MaskIban(iban), LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = confirmedAt,
+            LastConfirmedAt = confirmedAt });
+        db.SaveChanges();
+        var tx = Tx(db, s.LicenseId, 100m, DateTimeOffset.UtcNow.AddDays(-3), "EFT GELEN", hash);
+        tx.CounterpartyIbanHashValid = false;
+        db.SaveChanges();
+
+        await Recon(db).ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(confirmedAt);
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).IbanConfirmedAt.Should().BeNull("doğrulama sayılmaz");
     }
 }

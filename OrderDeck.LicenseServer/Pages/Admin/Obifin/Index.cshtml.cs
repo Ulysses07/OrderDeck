@@ -51,8 +51,10 @@ public class IndexModel : PageModel
         ObifinConnectionStatus Status, string? LastError, DateTimeOffset? LastVerifiedAt, DateTimeOffset? LastPolledAt,
         long? Cursor, DateTimeOffset? BackfillCompletedAt, DateOnly? InitialCollectFrom, int BankConnections, int Accounts,
         int Transactions);
+    /// <summary>Hesap satırı. IBAN niteliği sayaçları (KVKK Ö-7): bu hesaba yazılan hareketlerde karşı IBAN tam / maskeli / boş;
+    /// değer yok, yalnız sayılar.</summary>
     public sealed record AccountRow(string BankaKodu, string IbanMasked, string Currency, bool Active,
-        DateTimeOffset? LastBankSyncAt, string? NotificationNote);
+        DateTimeOffset? LastBankSyncAt, string? NotificationNote, int IbanFullCount, int IbanMaskedCount, int IbanEmptyCount);
     public sealed record LicenseOption(Guid Id, string Label);
     /// <summary>Düzenlenen bağlantı: formda yalnız "kayıtlı" bayrağı — değerler asla geri basılmaz.</summary>
     public sealed record EditTarget(bool PasswordStored, bool ApiKeyStored);
@@ -104,7 +106,8 @@ public class IndexModel : PageModel
         var licenseIds = Rows.Select(r => r.LicenseId).ToList();
         AccountsByLicense = (await _db.BankAccounts.AsNoTracking().Where(a => licenseIds.Contains(a.LicenseId)).ToListAsync(ct))
             .GroupBy(a => a.LicenseId)
-            .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.BankaKodu, a.IbanMasked, a.Currency, a.Active, a.LastBankSyncAt, a.NotificationNote)).ToList());
+            .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.BankaKodu, a.IbanMasked, a.Currency, a.Active,
+                a.LastBankSyncAt, a.NotificationNote, a.IbanFullCount, a.IbanMaskedCount, a.IbanEmptyCount)).ToList());
         // Seçim listesi e-postaya göre ilk 200 lisansla sınırlı; Obifin bağlantısı olan lisanslar ise HER ZAMAN listede
         // (düzenlenen lisans da: düzenleme ancak bağlantısı olan lisansta açılır). Listede olmayan lisans seçili gelemez;
         // tarayıcı ilk seçeneği gönderir ve form, gösterdiği kimliği ya da banka kimliğini BAŞKA bir lisansa yazar.

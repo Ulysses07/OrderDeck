@@ -26,6 +26,17 @@ public sealed class BankDataCleanupTests
         n.Should().Be(new BankDataCleanup.Options(license, Apply: true));
     }
 
+    [Fact]
+    public void Reset_iban_memory_bayragi_kabul_edilir_yinelenirse_reddedilir()
+    {
+        BankDataCleanup.TryParseArgs(["bank-data-cleanup", "--reset-iban-memory", "--apply"], out var o).Should().BeTrue();
+        o.Should().Be(new BankDataCleanup.Options(null, Apply: true, ResetIbanMemory: true));
+        BankDataCleanup.TryParseArgs(["bank-data-cleanup"], out var none).Should().BeTrue();
+        none.ResetIbanMemory.Should().BeFalse("bayraksız komut IBAN hafızasına dokunmaz");
+        BankDataCleanup.TryParseArgs(["bank-data-cleanup", "--reset-iban-memory", "--reset-iban-memory"], out _).Should().BeFalse();
+        BankDataCleanup.TryParseArgs(["bank-data-cleanup", "--reset-iban"], out _).Should().BeFalse("yazım hatası reddedilir");
+    }
+
     public static TheoryData<string[]> UsageErrors()
     {
         var license = Guid.NewGuid().ToString();

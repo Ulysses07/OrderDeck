@@ -1159,4 +1159,28 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             doc.QuerySelector($"input[name='{name}']")!.ParentElement!.QuerySelector("label")!.TextContent
                 .Should().Contain("kayıtlı").And.Contain("boş = değiştirme");
     }
+
+    [Fact]
+    public async Task Hesap_satiri_IBAN_niteligi_sayaclarini_gosterir()
+    {
+        // KVKK Ö-7: maskeli sayısı sıfır değilse o bankanın IBAN'ları özetlenemiyor; yönetici hesap satırında görür (değer yok,
+        // yalnız sayılar).
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x", baseUrl: "https://example.invalid");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankAccounts.Add(new BankAccount { Id = Guid.NewGuid(), LicenseId = licenseId,
+                ObifinAccountId = Random.Shared.NextInt64(1, 1_000_000), BankaKodu = "qnb",
+                IbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban()), Currency = "TL", Active = true,
+                RefreshedAt = DateTimeOffset.UtcNow, IbanFullCount = 7, IbanMaskedCount = 3, IbanEmptyCount = 1 });
+            await db.SaveChangesAsync();
+        }
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+
+        doc.QuerySelector($"tr[data-license-accounts='{licenseId}'] [data-cell='iban-quality']")!.TextContent
+            .Should().Be("7/3/1");
+    }
 }

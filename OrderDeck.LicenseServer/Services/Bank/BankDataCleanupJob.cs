@@ -18,17 +18,20 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <item>Açıklamadaki IBAN ve 11 haneli numara maskelenir (<see cref="BankDescriptionMasker"/>).</item>
 /// <item>IBAN maskesi biçiminde olmayan eski maske (ham kısa değer, <c>1234…890</c>) <see cref="BankHasher.ShortValueMask"/>
 /// olur (<see cref="NeedsRemask"/>; KVKK Ö-6).</item>
+/// <item>Maskesi maskeli ya da geçersiz kaynağı ele veren IBAN özeti (<see cref="LooksMasked"/>) aynı özeti taşıyan bütün
+/// hareketlerde boşaltılır, o özetle öğrenilmiş IBAN bağı silinir (KVKK Ö-7).</item>
+/// <item><c>--reset-iban-memory</c> ile kalan bütün IBAN bağları silinir; hareket özetleri KALIR (KVKK Ö-7, not karar 5).</item>
 /// <item>P1'den önce öğrenilmiş IBAN bağının saklama başlangıcı öğreten havalenin işlem tarihine çekilir (öğrenme anından
-/// hiçbir zaman sonra değil; KVKK K-6). Silme değildir.</item>
+/// hiçbir zaman sonra değil; KVKK K-6). Silme değildir; önceki iki adımın sildiği bağa yazılmaz.</item>
 /// </list>
 /// Yeniden koşu idempotent. Partiler <see cref="BatchSize"/>'lık; eşzamanlı bir eşleştirme yazısıyla çakışan silme partisi geri
 /// alınır, <see cref="Report.FailedBatches"/> artar ve o adım biter — komut yeniden çalıştırılır. Maskeleme adımları
 /// oku-değiştir-yaz yapar (<c>BankTransaction</c>'da jeton yok): saklama işi ya da bir silme sürerken koşturulmaz. Bağlantının
 /// <c>UpdatedAt</c>'i BİLEREK değişmez (çekim işinin kimlik denetimi). Günlüğe yalnız sayılar yazılır.
 /// <para><b>Kuru koşunun sayıları uygulamanınkiler.</b> Uygulama silme adımlarını önce koşar; silinen satırın VKN kodu, ham
-/// kaydı, açıklaması ve maskesi sonraki adımlara hiç gelmez. Kuru koşu silmediği için bu satırları
-/// <see cref="_dryRunDeleted"/>'da işaretler ve sonraki adımlarda saymaz: tutanağa önce kuru koşunun çıktısı girer, uygulamanın
-/// çıktısıyla aynı olmalı (eşzamanlı yazı yoksa).</para>
+/// kaydı, açıklaması, maskesi ve özeti sonraki adımlara hiç gelmez. Kuru koşu silmediği için bu satırları
+/// <see cref="_dryRunDeleted"/>'da (silinecek IBAN bağlarını <see cref="_dryRunDeletedMemories"/>'de) işaretler ve sonraki
+/// adımlarda saymaz: tutanağa önce kuru koşunun çıktısı girer, uygulamanın çıktısıyla aynı olmalı (eşzamanlı yazı yoksa).</para>
 /// Her uygulama partisi kalıcı imha kaydını satırın lisansı başına, aynı işlemde yazar (tetikleyici cleanup, yapan cli; KVKK
 /// Ö-13).
 /// </summary>
@@ -49,6 +52,9 @@ public sealed class BankDataCleanupJob
         public int RawJsonUnreadableCleared { get; set; }
         public int DescriptionsMasked { get; set; }
         public int ShortMasksReplaced { get; set; }
+        public int MaskedSourceHashesCleared { get; set; }
+        public int MaskedSourceMemoriesDeleted { get; set; }
+        public int IbanMemoriesReset { get; set; }
         public int IbanConfirmationsBackfilled { get; set; }
         public int FailedBatches { get; set; }
     }
@@ -60,11 +66,19 @@ public sealed class BankDataCleanupJob
     /// zaten düşer.</summary>
     private readonly HashSet<Guid> _dryRunDeleted = new();
 
+    /// <summary>Kuru koşuda silinecek IBAN bağları (maskeli kaynaklı ya da sıfırlama); sonraki adım (başlangıç yazımı) onları
+    /// saymaz. Uygulamada boş kalır.</summary>
+    private readonly HashSet<Guid> _dryRunDeletedMemories = new();
+
     public BankDataCleanupJob(LicenseDbContext db, ILogger<BankDataCleanupJob> log) { _db = db; _log = log; }
 
-    public async Task<Report> RunAsync(Guid? licenseId, bool apply, CancellationToken ct)
+    /// <param name="resetIbanMemory">KVKK Ö-7, not karar 5: maskeden anlaşılamayan maskeli kaynaklı özetler için bütün IBAN
+    /// hafızasını siler. Hareketlerdeki özetler KALIR (IBAN talep aracı onlarla arar, K-7); yeniden öğrenmeyi
+    /// <see cref="BankTransaction.CounterpartyIbanHashValid"/> kapısı engeller.</param>
+    public async Task<Report> RunAsync(Guid? licenseId, bool apply, CancellationToken ct, bool resetIbanMemory = false)
     {
         _dryRunDeleted.Clear();
+        _dryRunDeletedMemories.Clear();
         var r = new Report();
         await DeleteOutgoingOrZeroAsync(licenseId, apply, r, ct);
         await ApplyInitialAnchorAsync(licenseId, apply, r, ct);
@@ -72,13 +86,17 @@ public sealed class BankDataCleanupJob
         await RewriteRawJsonAsync(licenseId, apply, r, ct);
         await MaskDescriptionsAsync(licenseId, apply, r, ct);
         await RemaskShortValuesAsync(licenseId, apply, r, ct);
+        await ClearMaskedSourceHashesAsync(licenseId, apply, r, ct);
+        if (resetIbanMemory) await ResetIbanMemoryAsync(licenseId, apply, r, ct);
         await BackfillIbanConfirmationAsync(licenseId, apply, r, ct);
         _log.LogInformation("bank-data-cleanup ({Mode}): giden/sıfır={Outgoing} (atlanan {Skipped}), çapa={Anchors}, " +
             "çapa öncesi={PreAnchor} (bağlı {Linked}), eşleşme={Matches}, VKN kodu={TaxIds}, ham kayıt={Raw} (okunamayan {Unreadable}), " +
-            "açıklama={Descriptions}, kısa maske={ShortMasks}, IBAN bağı başlangıcı={IbanStarts}, düşen parti={Failed}",
+            "açıklama={Descriptions}, kısa maske={ShortMasks}, maskeli özet={MaskedHashes} (hafıza {MaskedMemories}), " +
+            "sıfırlanan hafıza={ResetMemories}, IBAN bağı başlangıcı={IbanStarts}, düşen parti={Failed}",
             apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted, r.OutgoingOrZeroSkippedDecided, r.AnchorsSet, r.PreAnchorDeleted,
             r.PreAnchorSkippedLinked, r.MatchesDeleted, r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared,
-            r.DescriptionsMasked, r.ShortMasksReplaced, r.IbanConfirmationsBackfilled, r.FailedBatches);
+            r.DescriptionsMasked, r.ShortMasksReplaced, r.MaskedSourceHashesCleared, r.MaskedSourceMemoriesDeleted,
+            r.IbanMemoriesReset, r.IbanConfirmationsBackfilled, r.FailedBatches);
         return r;
     }
 
@@ -103,6 +121,9 @@ public sealed class BankDataCleanupJob
 
     private IQueryable<BankTransaction> Transactions(Guid? licenseId)
         => licenseId is { } l ? _db.BankTransactions.Where(t => t.LicenseId == l) : _db.BankTransactions;
+
+    private IQueryable<CustomerIbanMemory> Memories(Guid? licenseId)
+        => licenseId is { } l ? _db.CustomerIbanMemories.Where(m => m.LicenseId == l) : _db.CustomerIbanMemories;
 
     /// <summary>Kuru koşuda sonraki adımların gezeceği kimlikler: uygulamanın önceki adımlarda sileceği satırlar çıkarılır.</summary>
     private List<Guid> NotDeletedInDryRun(IEnumerable<Guid> ids) => ids.Where(id => !_dryRunDeleted.Contains(id)).ToList();
@@ -391,6 +412,132 @@ public sealed class BankDataCleanupJob
         _db.ChangeTracker.Clear();
     }
 
+    /// <summary>Saklı maske (<c>XXXX…YYY</c>, <see cref="BankHasher.MaskIban"/>) maskeli ya da IBAN olmayan bir değerden mi
+    /// üretilmiş? Biçim tutmuyorsa (eski ham kısa değer, <c>1234…890</c>, <see cref="BankHasher.ShortValueMask"/>), görünen yedi
+    /// karakterden biri harf/rakam değilse ya da ülke + kontrol biçimi yoksa evet. Boş ve yer tutucu "?" hayır: kaynağı
+    /// bilinmez. Görünen karakterleri sağlam olan maskeli değer buradan anlaşılamaz: o yüzden <c>--reset-iban-memory</c> var.</summary>
+    public static bool LooksMasked(string? masked)
+    {
+        if (string.IsNullOrEmpty(masked) || masked == "?") return false;
+        var parts = masked.Split('…');
+        if (parts.Length != 2 || parts[0].Length != 4 || parts[1].Length != 3) return true;
+        var visible = parts[0] + parts[1];
+        if (visible.Any(c => !char.IsAsciiLetterUpper(c) && !char.IsAsciiDigit(c))) return true;
+        return !(char.IsAsciiLetterUpper(visible[0]) && char.IsAsciiLetterUpper(visible[1])
+            && char.IsAsciiDigit(visible[2]) && char.IsAsciiDigit(visible[3]));
+    }
+
+    /// <summary>KVKK Ö-7: eski kod 8+ karakterlik her değeri özetliyordu (maskeli IBAN, hesap numarası): aynı ilk ve son
+    /// karakterleri taşıyan farklı gönderenler aynı özete düşer, IBAN bağı farklı kişileri tek müşteriye bağlar. Şüpheli
+    /// (lisans, özet) çifti: o özeti taşıyan bir hareketin ya da bağın maskesi maskeli kaynağı ele veriyor
+    /// (<see cref="LooksMasked"/>). Bağın kendi maskesi de sayılır: bağ 12 ay, öğreten havale 180 gün yaşar; öğreten havalesi
+    /// silinmiş maskeli kaynaklı bağ yalnız kendi maskesinden tanınır. Önce bağlar silinir, sonra hareketlerin özeti boşaltılır:
+    /// bağ partisi düşerse yeniden koşu şüpheyi yine hareketlerden ve bağın maskesinden bulur. Maskeli bir değerin özeti gerçek
+    /// bir IBAN'ın özetine eşit olamaz: boşaltmak IBAN talep aramasından bir şey kaybettirmez (talep gerçek IBAN'ın özetiyle
+    /// arar). Maske kalır: değerin geldiği görünür, hiçbir karakteri IBAN'ı göstermez (kısa ve eski biçimli maskeyi bir önceki
+    /// adım çevirdi, Ö-6). Kayıt satırın lisansı başına (Görev 9 incelemesi).</summary>
+    private async Task ClearMaskedSourceHashesAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
+    {
+        const string criterion = "maskeli kaynaklı özet (Ö-7)";
+        var hashed = (await Transactions(licenseId).AsNoTracking().Where(t => t.CounterpartyIbanHash != null)
+                .Select(t => new { t.Id, t.LicenseId, Hash = t.CounterpartyIbanHash!, t.CounterpartyIbanMasked }).ToListAsync(ct))
+            .Where(x => !_dryRunDeleted.Contains(x.Id)).ToList();
+        var memories = await Memories(licenseId).AsNoTracking()
+            .Select(m => new { m.Id, m.LicenseId, m.IbanHash, m.IbanMasked }).ToListAsync(ct);
+        var suspects = hashed.Where(x => LooksMasked(x.CounterpartyIbanMasked)).Select(x => (x.LicenseId, x.Hash))
+            .Concat(memories.Where(m => LooksMasked(m.IbanMasked)).Select(m => (m.LicenseId, Hash: m.IbanHash)))
+            .ToHashSet();
+        if (suspects.Count == 0) return;
+        var memoryIds = memories.Where(m => suspects.Contains((m.LicenseId, m.IbanHash))).Select(m => m.Id).ToList();
+        var transactionIds = hashed.Where(x => suspects.Contains((x.LicenseId, x.Hash))).Select(x => x.Id).ToList();
+        if (!apply)
+        {
+            r.MaskedSourceMemoriesDeleted = memoryIds.Count;
+            r.MaskedSourceHashesCleared = transactionIds.Count;
+            foreach (var id in memoryIds) _dryRunDeletedMemories.Add(id);
+            return;
+        }
+        foreach (var chunk in memoryIds.Chunk(BatchSize))
+        {
+            var rows = await _db.CustomerIbanMemories.Where(m => chunk.Contains(m.Id)).ToListAsync(ct);
+            _db.CustomerIbanMemories.RemoveRange(rows);
+            RecordBatch(rows.Select(m => m.LicenseId), "CustomerIbanMemories", Deleted, criterion);
+            if (!await TrySaveDeletionAsync(ct))
+            {
+                r.FailedBatches++;
+                return;
+            }
+            r.MaskedSourceMemoriesDeleted += rows.Count;
+        }
+        foreach (var chunk in transactionIds.Chunk(BatchSize))
+        {
+            var rows = await _db.BankTransactions.Where(t => chunk.Contains(t.Id) && t.CounterpartyIbanHash != null).ToListAsync(ct);
+            foreach (var t in rows)
+            {
+                t.CounterpartyIbanHash = null;
+                t.CounterpartyIbanHashValid = false; // özetsiz hareket öğretemez (değişmez: eski satırda zaten false)
+            }
+            if (rows.Count > 0)
+            {
+                RecordBatch(rows.Select(t => t.LicenseId), "BankTransactions.CounterpartyIbanHash", Nulled, criterion);
+                await _db.SaveChangesAsync(ct);
+            }
+            _db.ChangeTracker.Clear();
+            r.MaskedSourceHashesCleared += rows.Count;
+        }
+    }
+
+    /// <summary>KVKK Ö-7, not karar 5: kalan bütün IBAN bağları silinir — görünen karakterleri sağlam maskeli değer
+    /// <see cref="LooksMasked"/>'tan kaçar, mevcut özetin kaynağı saklı veriden tam anlaşılamaz. Hareketlerdeki özetler BİLEREK
+    /// KALIR: IBAN talep aracı hareketleri yalnız özetle bulur, boşaltılsaydı 180 güne kadar duran veri erişim/silme talebinde
+    /// "yok" görünürdü (K-7). Eski hareketin özeti hafızaya geri giremez: <c>PaymentMatchReconciler.LearnIbanAsync</c> yalnız
+    /// <see cref="BankTransaction.CounterpartyIbanHashValid"/> hareketten öğrenir; bağ yalnız bu kesmeden sonra çekilmiş, geçerli
+    /// IBAN'lı hareketlerden yeniden öğrenilir. Kayıt satırın lisansı başına.</summary>
+    private async Task ResetIbanMemoryAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
+    {
+        const string criterion = "IBAN hafızası sıfırlama (Ö-7, karar 5)";
+        if (!apply)
+        {
+            var ids = (await Memories(licenseId).Select(m => m.Id).ToListAsync(ct))
+                .Where(id => !_dryRunDeletedMemories.Contains(id)).ToList();
+            r.IbanMemoriesReset = ids.Count;
+            foreach (var id in ids) _dryRunDeletedMemories.Add(id);
+            return;
+        }
+        while (true)
+        {
+            var batch = await Memories(licenseId).OrderBy(m => m.Id).Take(BatchSize).ToListAsync(ct);
+            if (batch.Count == 0) return;
+            _db.CustomerIbanMemories.RemoveRange(batch);
+            RecordBatch(batch.Select(m => m.LicenseId), "CustomerIbanMemories", Deleted, criterion);
+            if (!await TrySaveDeletionAsync(ct))
+            {
+                r.FailedBatches++;
+                return;
+            }
+            r.IbanMemoriesReset += batch.Count;
+            if (batch.Count < BatchSize) return;
+        }
+    }
+
+    /// <summary>Bağ silme partisinin kaydı. Satır okunduktan sonra eşzamanlı bir yol (eşleme kaldırma, saklama işi) onu sildiyse
+    /// DELETE satır bulamaz: parti imha kaydıyla birlikte geri alınır, false — adım biter, komut yeniden çalıştırılır (sınıf
+    /// özeti).</summary>
+    private async Task<bool> TrySaveDeletionAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            _db.ChangeTracker.Clear();
+            return false;
+        }
+        _db.ChangeTracker.Clear();
+        return true;
+    }
+
     /// <summary>KVKK K-6: P1'den önce öğrenilmiş IBAN bağının (<see cref="CustomerIbanMemory.LastConfirmedAt"/> boş) saklama
     /// süresi öğrenme anından (<c>CreatedAt</c>) işliyordu. Öğrenme havalenin işlem tarihinden sonra olur (90 günlük ilk çekim,
     /// geç elle eşleme): bağ "son doğrulanmış ödemeden 12 ay"ı ~90 güne kadar aşabilirdi. P1 öncesi kod bağı tazelemiyordu;
@@ -398,7 +545,8 @@ public sealed class BankDataCleanupJob
     /// başlangıç onun işlem tarihi olur, öğrenme anına kırpılmış: değer hiçbir zaman <c>CreatedAt</c>'ten sonra değildir, süre
     /// uzamaz (bağdaştırıcının öğrenirken yazdığı değerin aynısı). Öğreten havale yoksa <c>CreatedAt</c> kalır. Öğreten havale 180
     /// günlük kuralla silinmeden koşturulmalı. Veri silinmez, imha kaydına girmez; sayım tutanağa. Oku-değiştir-yaz: arada bağı
-    /// tazeleyen bir onay ezilirse başlangıç yalnız daha erkene düşer.</summary>
+    /// tazeleyen bir onay ezilirse başlangıç yalnız daha erkene düşer. Önceki iki adımın sildiği bağ sayılmaz (kuru koşuda
+    /// <see cref="_dryRunDeletedMemories"/>).</summary>
     private async Task BackfillIbanConfirmationAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
     {
         var memories = licenseId is { } l ? _db.CustomerIbanMemories.Where(m => m.LicenseId == l) : _db.CustomerIbanMemories;
@@ -407,7 +555,7 @@ public sealed class BankDataCleanupJob
                               where m.LastConfirmedAt == null && t.LicenseId == m.LicenseId
                               select new { m.Id, m.CreatedAt, TransactionId = t.Id, t.OccurredAt })
                 .ToListAsync(ct))
-            .Where(x => !_dryRunDeleted.Contains(x.TransactionId))
+            .Where(x => !_dryRunDeleted.Contains(x.TransactionId) && !_dryRunDeletedMemories.Contains(x.Id))
             .ToList();
         if (!apply)
         {

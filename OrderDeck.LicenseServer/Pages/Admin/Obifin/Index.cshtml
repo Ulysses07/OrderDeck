@@ -67,10 +67,10 @@
         </tr>
         @if (Model.AccountsByLicense.TryGetValue(r.LicenseId, out var accounts) && accounts.Count > 0)
         {
-            <tr><td colspan="12" class="small text-muted">
+            <tr data-license-accounts="@r.LicenseId"><td colspan="12" class="small text-muted">
                 @foreach (var a in accounts)
                 {
-                    <span class="me-3">@a.BankaKodu @a.IbanMasked (@a.Currency) @(a.Active ? "aktif" : "pasif") · banka senk. @(a.LastBankSyncAt?.ToString("yyyy-MM-dd HH:mm") ?? "—") @(string.IsNullOrEmpty(a.NotificationNote) ? "" : " ⚠ " + a.NotificationNote)</span>
+                    <span class="me-3">@a.BankaKodu @a.IbanMasked (@a.Currency) @(a.Active ? "aktif" : "pasif") · banka senk. @(a.LastBankSyncAt?.ToString("yyyy-MM-dd HH:mm") ?? "—") @(string.IsNullOrEmpty(a.NotificationNote) ? "" : " ⚠ " + a.NotificationNote) · IBAN tam/maskeli/boş: <span data-cell="iban-quality">@a.IbanFullCount/@a.IbanMaskedCount/@a.IbanEmptyCount</span></span>
                 }
             </td></tr>
         }

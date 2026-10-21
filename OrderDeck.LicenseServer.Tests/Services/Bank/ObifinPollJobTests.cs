@@ -1256,4 +1256,37 @@ public sealed class ObifinPollJobTests
             .Should().Contain(r => r.Target == "BankTransactions" && r.RowCount == 1 && r.Action == DataDestruction.Actions.Deleted
                 && r.Trigger == DataDestruction.Triggers.CredentialChange && r.Actor == DataDestruction.AdminActor);
     }
+
+    [Fact]
+    public async Task Maskeli_IBAN_ozetlenmez_hesapta_tam_maskeli_bos_sayilir()
+    {
+        // KVKK Ö-7: maskeli IBAN özetlenseydi farklı gönderenler aynı özete düşerdi. Hesap başına nitelik sayacı (değer yazılmaz);
+        // yalnız yazılan hareket sayılır: giden hareket atılır, sayılmaz.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var iban = BankHasherTests.TestIban();
+        var masked = iban[..6] + "************" + iban[18..];
+        client.Transactions.Add(Tx(31, new DateTime(2026, 9, 25, 9, 0, 0), 10m, iban: iban));
+        client.Transactions.Add(Tx(32, new DateTime(2026, 9, 25, 9, 1, 0), 10m, iban: masked));
+        client.Transactions.Add(Tx(33, new DateTime(2026, 9, 25, 9, 2, 0), 10m, iban: null));
+        client.Transactions.Add(Tx(34, new DateTime(2026, 9, 25, 9, 3, 0), -10m, iban: iban));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var full = await db.BankTransactions.SingleAsync(t => t.ObifinId == 31);
+        full.CounterpartyIbanHash.Should().HaveLength(64);
+        full.CounterpartyIbanHashValid.Should().BeTrue("bu özet geçerli IBAN'dan: IBAN öğretebilir");
+        var m = await db.BankTransactions.SingleAsync(t => t.ObifinId == 32);
+        m.CounterpartyIbanHash.Should().BeNull("maskeli IBAN özetlenmez (KVKK Ö-7)");
+        m.CounterpartyIbanHashValid.Should().BeFalse();
+        m.CounterpartyIbanMasked.Should().Be(BankHasher.ShortValueMask, "IBAN olmayan değerin maskesi karakter göstermez (Ö-6)");
+        var empty = await db.BankTransactions.SingleAsync(t => t.ObifinId == 33);
+        empty.CounterpartyIbanHash.Should().BeNull();
+        empty.CounterpartyIbanHashValid.Should().BeFalse();
+        empty.CounterpartyIbanMasked.Should().BeNull("boş değer görüntüde yer tutmaz");
+        db.ChangeTracker.Clear();
+        var account = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.ObifinAccountId == 6);
+        (account.IbanFullCount, account.IbanMaskedCount, account.IbanEmptyCount).Should().Be((1, 1, 1));
+    }
 }
