@@ -241,6 +241,10 @@ public sealed class ShopperPurgeService
                 .Where(c => projectionKeys.Contains((c.LicenseId, c.Id)))
                 .ToList();
 
+        // 3b'nin kullanıcı adı anahtarları (named satırlar) boşaltmadan ÖNCE alınır: kullanıcı adının da boşaltılması avukat
+        // kararıdır (ScrubPersonal'da tek satır); o satır eklenince arama sessizce durmasın.
+        var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
+
         // Tek boşaltma listesi WpfCustomerProjection'da yaşıyor (ScrubPersonal)
         // ve WPF'teki aynı KVKK politikasını yansıtıyor: Notes ve kara liste
         // alanları BİLEREK kalır. MarkPurged ayrıca PurgedAt'ı İLK silme
@@ -279,8 +283,7 @@ public sealed class ShopperPurgeService
         //     Kişinin aynı lisansta birden çok bağı olabilir (Instagram + TikTok) ve bir satır ikisini birden taşıyabilir:
         //     kural satırın lisansındaki her kimliğe uygulanır (ScrubMatch). UpdatedAt eşleşmenin eşzamanlılık jetonudur;
         //     çakışma SaveAsync'te bir kez yeniden denenir. Kullanıcı adı (ScrubPersonal) ve Payment.ShopperId bağı avukat
-        //     kararına kadar BİLEREK kalır.
-        var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
+        //     kararına kadar BİLEREK kalır; anahtarlar o yüzden boşaltmadan önce alındı (usernames, adım 3).
         var purgedCustomers = projectionKeys.ToLookup(k => k.LicenseId, k => k.WpfCustomerId);
         var ibanMemories = new List<CustomerIbanMemory>();
         var scrubbedMatches = new HashSet<PaymentMatch>();
