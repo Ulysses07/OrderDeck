@@ -101,6 +101,20 @@ public sealed class PersonBalanceVerifierTests
         Single(Snap(draws: rows)).D6.Should().Be(1, "−Σ = 120 > 100");
     }
 
+    [Theory]
+    [InlineData("session:42", null)]
+    [InlineData(null, 20.0)]
+    public void D4_bacakta_kapsam_ya_da_OriginalAmount_dolu(string? saleScope, double? original)
+    {
+        var (k, _, _, rows) = Example1Draw();
+        rows[2] = rows[2] with { SaleScope = saleScope, OriginalAmount = (decimal?)original };   // L2
+
+        var r = Single(Snap(draws: rows));
+
+        r.D4.Should().Be(1, "bacak türü çapayla aynı, ama SaleScope ve OriginalAmount bacakta NULL olmalı");
+        r.Details.RuleBreakingGroups.Should().Equal(k);
+    }
+
     [Fact]
     public void Capasi_olmayan_bacak_yetimdir()
     {
@@ -176,6 +190,48 @@ public sealed class PersonBalanceVerifierTests
         r.HasMarker.Should().BeFalse();
         r.HasBaseline.Should().BeTrue("yeni lisansın S1 öncesi verisi olamaz");
         r.Alerts.Should().ContainSingle().Which.Should().StartWith("eksi:");
+    }
+
+    [Fact]
+    public void Ilk_yakalamadan_once_verilen_isaretsiz_lisans_tabansiz_sayilir()
+    {
+        var neg = Guid.NewGuid();
+
+        var r = Single(Snap(projections: [P(neg)], balances: [B(neg, -3m)], ledger: [L(neg, -3m)],
+            baselines: [Marker(Captured, license: Guid.NewGuid())]));
+
+        (r.HasMarker, r.HasBaseline).Should().Be((false, false),
+            "başka lisansın işareti, yakalamadan önce verilmiş lisansın S1 öncesi verisini kapsamaz");
+        r.Alerts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Isaretli_lisansta_taban_disi_kopya_satir_uyarir()
+    {
+        var (head, copy) = (Guid.NewGuid(), Guid.NewGuid());
+
+        var r = Single(Snap(projections: [P(head), P(copy, mergedInto: head)],
+            balances: [B(copy, 3m)], ledger: [L(copy, 3m)], baselines: [Marker()]));
+
+        r.Alerts.Should().ContainSingle().Which.Should().Be("kopya: taban dışı 1", "D1 tutuyor, kopya eksi sayılmaz");
+        r.Details.CopyOutside.Should().Equal(copy);
+    }
+
+    [Fact]
+    public void Havuzu_eksi_kisi_butun_eksi_satirlari_tabanda_ve_kotulesmemisse_aciklanir()
+    {
+        var g = $"g{Guid.NewGuid():N}";
+        var (a, b) = (Guid.NewGuid(), Guid.NewGuid());
+        V.Snapshot At(decimal balanceOfA) => Snap(
+            projections: [P(a, g), P(b, g)],
+            balances: [B(a, balanceOfA), B(b, 2m)], ledger: [L(a, balanceOfA), L(b, 2m)],
+            baselines: [Marker(), new V.BaselineRow(Lic, a, -10m, -10m, Captured, null)]);
+
+        var same = Single(At(-10m));
+        (same.NegativePersons, same.NegativePersonsExplained).Should().Be((1, 1), "−10 + 2 < 0, eksi satır tabanda");
+
+        var worse = Single(At(-12m));
+        (worse.NegativePersons, worse.NegativePersonsExplained).Should().Be((1, 0), "eksi satır tabandakinin altına indi");
     }
 
     [Fact]
