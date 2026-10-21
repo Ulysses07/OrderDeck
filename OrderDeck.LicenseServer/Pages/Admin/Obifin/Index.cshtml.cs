@@ -180,9 +180,10 @@ public class IndexModel : PageModel
             Editing = editing;
         }
         // KVKK Ö-4: hesap maskeleri, bildirim notları ve yayıncı e-postaları gösteren sayfanın her görüntülenmesi denetime
-        // yazılır (kimlik onayı isteyen kayıt da sayfayı buradan basar). Hedef düzenleme formu açılan lisans, yoksa boş.
-        await _audit.LogAsync(AuditEvents.BankPageView, AuditTargets.ObifinConnection, license?.ToString(),
-            new { page = "obifin" }, ct);
+        // yazılır (kimlik onayı isteyen kayıt da sayfayı buradan basar). Hedef düzenleme formu açılan lisans, yoksa boş: ham
+        // ?license= değil — bağlantısız ya da hiç olmayan lisansta form açılmaz, açılmayan hedef denetime girmez.
+        await _audit.LogAsync(AuditEvents.BankPageView, AuditTargets.ObifinConnection,
+            Editing is not null ? LicenseId.ToString() : null, new { page = "obifin" }, ct);
     }
 
     /// <summary>Düzenlenen bağlantının "kayıtlı" bayrakları; bağlantı yoksa null. Yalnız bayraklar okunur: şifreli değerler

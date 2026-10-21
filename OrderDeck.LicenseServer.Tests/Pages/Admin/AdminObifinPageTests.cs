@@ -1520,19 +1520,24 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     public async Task Sayfa_goruntulemesi_denetime_yazilir()
     {
         // KVKK Ö-4 (Kurul 2018/10 3-c): hesap maskeleri, bildirim notları ve yayıncı e-postaları gösteren sayfanın her
-        // görüntülenmesi denetime girer. Hedef düzenleme formu açılan lisans (yoksa boş).
+        // görüntülenmesi denetime girer. Hedef düzenleme formu açılan lisans, yoksa boş: düzenleme yalnız Obifin bağlantısı olan
+        // lisansta açılır; bağlantısız ya da hiç olmayan lisansın kimliği sorgu parametresinde gelse de hedefe girmez.
         var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        var unconnected = await SeedLicenseAsync();
         var client = await _factory.CreateLoggedInAdminClientAsync();
         var before = DateTimeOffset.UtcNow;
 
         await client.GetStringAsync("/admin/obifin");
         await client.GetStringAsync($"/admin/obifin?license={lic}");
+        await client.GetStringAsync($"/admin/obifin?license={unconnected}");
+        await client.GetStringAsync($"/admin/obifin?license={Guid.NewGuid()}");
 
         using var scope = _factory.Services.CreateScope();
         var views = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().AuditLogs.AsNoTracking()
             .Where(a => a.EventType == AuditEvents.BankPageView && a.OccurredAt >= before).ToListAsync();
-        views.Should().HaveCount(2).And.OnlyContain(a => a.TargetType == AuditTargets.ObifinConnection
+        views.Should().HaveCount(4).And.OnlyContain(a => a.TargetType == AuditTargets.ObifinConnection
             && a.Details == "{\"page\":\"obifin\"}");
-        views.Select(a => a.TargetId).Should().BeEquivalentTo(new[] { null, lic.ToString() });
+        views.Select(a => a.TargetId).Should().BeEquivalentTo(new[] { null, lic.ToString(), null, null });
     }
 }
