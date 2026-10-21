@@ -16,12 +16,12 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// 9 aktif PC sürümleri, 10 iki tablonun satır sayısı. 2, 3 ve 8 taban içi/dışı ayrılır.</para>
 ///
 /// <para><b>Uyarı (§8.1) yalnız YENİ sapmada:</b> D4/D5/D6/yetim ≠ 0 (her zaman); lisansın tabanı varken taban dışı
-/// eksi satır ya da tabandaki eksi satırın daha da eksiye inmesi, taban dışı D1 ya da tabandaki satırın
-/// <c>Balance − LedgerSum</c> farkının değişmesi, taban dışı kopya satır. Havuz kipindeki D3 uyarısı S2'de (S1 kip
-/// bayrağını okumaz); 6. madde yalnız sayı. 4. maddenin "grubunda canlı asıl üye kalmamış" kalemi de yalnız sayı:
-/// uyarıya çevrilmesi spec §10 açık kalanlarda (numara izlemesinin hakemi). <b>Tabanı var</b> ⇔ lisansın işaret
-/// satırı (<see cref="LicenseMarker"/>) var ya da lisans ilk yakalamadan SONRA verilmiş (S1 öncesi verisi
-/// olamaz).</para>
+/// eksi satır ya da tabandaki bir satırın (kopya dahil) tabandakinin altında eksi olması, taban dışı D1 ya da
+/// tabandaki satırın <c>Balance − LedgerSum</c> farkının değişmesi, taban dışı kopya satır. Havuz kipindeki D3
+/// uyarısı S2'de (S1 kip bayrağını okumaz); 6. madde yalnız sayı. 4. maddenin "grubunda canlı asıl üye kalmamış"
+/// kalemi de yalnız sayı: uyarıya çevrilmesi spec §10 açık kalanlarda (numara izlemesinin hakemi). <b>Tabanı
+/// var</b> ⇔ lisansın işaret satırı (<see cref="LicenseMarker"/>) var ya da lisans ilk yakalamadan SONRA verilmiş
+/// (S1 öncesi verisi olamaz).</para>
 /// </summary>
 public sealed class PersonBalanceVerifier
 {
@@ -214,8 +214,10 @@ public sealed class PersonBalanceVerifier
             .GroupBy(a => a.AppVersion ?? "yok", StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
 
-        // §8.1: yalnız yeni sapma.
-        var worsened = negIn.Where(Worsened).ToList();
+        // §8.1: yalnız yeni sapma. "Tabandaki satırın Balance'ı tabandakinden düşük" (D2'nin izi) yalnız şu an eksi
+        // satırlarda: artı satırın düşmesi olağan çekim (eksiye inen artı taban satırı burada yakalanır). Kopyalar da
+        // dahil — 2. madde onları saymaz, ama tabana alınmış kopyaya sonradan yazım §4.12'nin dar penceresidir.
+        var worsened = rows.Where(r => Bal(r) < 0m && Worsened(r)).ToList();
         var changedMismatch = baselines.Values
             .Where(b => Bal(b.WpfCustomerId) - Sum(b.WpfCustomerId) != b.Balance - b.LedgerSum)
             .Select(b => b.WpfCustomerId).ToList();

@@ -168,6 +168,22 @@ public sealed class PersonBalanceVerifierTests
     }
 
     [Fact]
+    public void Tabandaki_kopya_satir_daha_da_eksiye_inerse_uyarir()
+    {
+        var (head, copy) = (Guid.NewGuid(), Guid.NewGuid());
+        V.Snapshot At(decimal balance) => Snap(
+            projections: [P(head), P(copy, mergedInto: head)],
+            balances: [B(copy, balance)], ledger: [L(copy, balance)],
+            baselines: [Marker(), new V.BaselineRow(Lic, copy, -5m, -5m, Captured, null)]);
+
+        Single(At(-5m)).Alerts.Should().BeEmpty();
+        var worse = Single(At(-8m));
+        worse.Alerts.Should().ContainSingle().Which.Should().Be("eksi: taban dışı 0, daha da eksiye inen 1",
+            "tabana alınmış kopyaya sonradan yazım (§4.12'nin dar penceresi) de D2'nin izidir");
+        worse.Details.WorsenedBaselineRows.Should().Equal(copy);
+    }
+
+    [Fact]
     public void Tabandaki_D1_farki_ayni_kalirsa_uyarmaz_degisirse_uyarir()
     {
         var row = Guid.NewGuid();
