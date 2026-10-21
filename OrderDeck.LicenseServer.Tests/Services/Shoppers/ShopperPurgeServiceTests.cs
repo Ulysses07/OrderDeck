@@ -1265,4 +1265,30 @@ public sealed class ShopperPurgeServiceTests
         Count("Shoppers.FullName+Phone+Address+Email+TcProtected", null).Should().Be(1);
         records.Should().HaveCount(9, "IBAN hafızası bağlı satırlarda ikinci kez sayılmaz, boş adım kayıt yazmaz");
     }
+
+    [Fact]
+    public async Task Tekrarlanan_silme_yapilmamis_isi_imha_kaydina_yazmaz()
+    {
+        // Aynı kişi ikinci kez silinirse (çift çağrı; sayfada iki POST'un ikisinin de talebi işlenmemiş okuması) Shopper satırı
+        // ve ödemeleri yeniden bulunur (Payment.ShopperId bağı kalır). Kişisel alanı zaten boş satır sayılmaz: kalıcı kayıt
+        // silmeyi iki kez yapılmış göstermesin (hareketlerin ve ödeme denetimlerinin kuralı). Hesabını uygulamadan silen kişinin
+        // DeletedAt'i talep anında dolar (ShopperMeController.DeleteMe): ölçüt o değil, ilk silme yine kaydedilir.
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        shopper.DeletedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        var license = SeedLicense(db);
+        SeedPayment(db, shopper, license, $"payments/{Guid.NewGuid():N}.pdf");
+        SeedPayment(db, shopper, license, $"payments/{Guid.NewGuid():N}.pdf");
+        await db.SaveChangesAsync();
+        var service = Build(db).Service;
+
+        await service.PurgeAsync(shopper.Id, default);
+        await service.PurgeAsync(shopper.Id, default);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().ContainSingle(r => r.Target == "Shoppers.FullName+Phone+Address+Email+TcProtected")
+            .Which.RowCount.Should().Be(1);
+        records.Should().ContainSingle(r => r.Target == "Payments.PersonalFields").Which.RowCount.Should().Be(2);
+        records.Should().ContainSingle(r => r.Target == ShopperPurgeService.MediaTarget).Which.RowCount.Should().Be(2);
+    }
 }

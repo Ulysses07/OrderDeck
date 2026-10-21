@@ -84,8 +84,14 @@ public sealed class ShopperPurgeService
     /// aynısını yazar.</summary>
     public const string MediaTarget = "ShopperPaymentMedia";
 
+    /// <summary>Ödeme denetimindeki istemci parmak izinin imha kaydı hedefi. 90 günlük güvenlik saklama işi
+    /// (<c>SecurityDataRetentionJob</c>) da bunu yazmalı: aynı sütunun imhası tek hedef adıyla gruplansın (kayıt kuralı: hedef =
+    /// çoğul DbSet adı + sütunlar).</summary>
+    public const string SubmissionAuditFingerprintTarget = "PaymentSubmissionAudits.IpAddress+UserAgent";
+
     private const string IbanMemoryTarget = "CustomerIbanMemories";
     private const string TransactionTextTarget = "BankTransactions.Description+CounterpartyName+RawJson";
+    private const string PurgedName = "[Silindi]";
 
     /// <summary>Yapanı ve talebi verilmeyen silme: imha kaydına <see cref="DataDestruction.AdminActor"/> yazılır (silme her zaman
     /// bir yöneticinin kararıdır; kim olduğu talebin <c>HandledBy</c>'ında ve denetim satırında).</summary>
@@ -184,7 +190,11 @@ public sealed class ShopperPurgeService
             .ToHashSet();
 
         // 2. Ödeme satırlarındaki kişisel alanlar. Tutar, tarih, referans no
-        //    ve hash'ler kalıyor (sınıf özetindeki gerekçe).
+        //    ve hash'ler kalıyor (sınıf özetindeki gerekçe). İmha kaydı yapılmamış
+        //    işi saymaz (hareketlerin ve ödeme denetimlerinin kuralı): tekrarlanan
+        //    silmede ödemeler Payment.ShopperId bağıyla yeniden bulunur, kişisel
+        //    alanı zaten boş olan sayılmaz. Sayım boşaltmadan ÖNCE.
+        var paymentsWithPersonal = payments.Where(HasPersonalFields).ToList();
         foreach (var p in payments)
         {
             p.PayerName = "";
@@ -375,8 +385,11 @@ public sealed class ShopperPurgeService
         //    güçlü tekil alanı o, ve boşaltılınca kişi isterse aynı numarayla
         //    sıfırdan kayıt olabiliyor. PasswordHash hiçbir doğrulamanın
         //    eşleyemeyeceği bir değere çekiliyor — bu hesaba bir daha
-        //    girilemez.
-        shopper.FullName = "[Silindi]";
+        //    girilemez. Kayıt yalnız silinecek kişisel alan kaldıysa (adım 2'nin
+        //    kuralı); DeletedAt ölçüt DEĞİL: hesabını uygulamadan silen kişide
+        //    talep anında dolar (ShopperMeController.DeleteMe), veri ise burada gider.
+        var shopperHadPersonal = HasPersonalFields(shopper);
+        shopper.FullName = PurgedName;
         shopper.Phone = "";
         shopper.Address = "";
         shopper.Email = null;
@@ -398,10 +411,10 @@ public sealed class ShopperPurgeService
             foreach (var g in rows.GroupBy(license)) Record(g.Key, target, action, g.Count());
         }
         const string nulled = DataDestruction.Actions.Nulled, deleted = DataDestruction.Actions.Deleted;
-        Record(null, "Shoppers.FullName+Phone+Address+Email+TcProtected", nulled, 1);
-        RecordPerLicense(payments, p => p.LicenseId, "Payments.PersonalFields", nulled);
+        Record(null, "Shoppers.FullName+Phone+Address+Email+TcProtected", nulled, shopperHadPersonal ? 1 : 0);
+        RecordPerLicense(paymentsWithPersonal, p => p.LicenseId, "Payments.PersonalFields", nulled);
         RecordPerLicense(deletedMediaLicenses, l => l, MediaTarget, deleted);
-        RecordPerLicense(fingerprintedAudits, a => a.LicenseId, "PaymentSubmissionAudits.IpAddress+UserAgent", nulled);
+        RecordPerLicense(fingerprintedAudits, a => a.LicenseId, SubmissionAuditFingerprintTarget, nulled);
         RecordPerLicense(projections, c => c.LicenseId, "WpfCustomerProjections.PersonalFields", nulled);
         RecordPerLicense(scrubbedOrders, o => o.LicenseId, "Orders.DisplayName+MessageText", nulled);
         RecordPerLicense(linkRows, l => l.LicenseId, "ShopperBroadcasterLinks", deleted);
@@ -425,6 +438,16 @@ public sealed class ShopperPurgeService
             PdfsPending: pendingRows.Count,
             BankTransactionsScrubbed: scrubbedTransactions.Count + late.Transactions);
     }
+
+    /// <summary>Ödemede adım 2'nin silecek kişisel alanı kaldı mı.</summary>
+    private static bool HasPersonalFields(Payment p)
+        => !string.IsNullOrEmpty(p.PayerName) || p.RecipientIban is not null || p.RecipientName is not null
+            || p.MediaObjectKey is not null || p.MediaContentType is not null;
+
+    /// <summary>Shopper satırında adım 6'nın silecek kişisel alanı (kaydın hedefindeki alanlar) kaldı mı.</summary>
+    private static bool HasPersonalFields(Shopper s)
+        => s.FullName != PurgedName || !string.IsNullOrEmpty(s.Phone) || !string.IsNullOrEmpty(s.Address)
+            || s.Email is not null || s.TcProtected is not null;
 
     /// <summary>Satır silinen kişinin bu lisanstaki müşteri kimliklerinden birine bağlı mı (öneri ya da gerçek müşteri).</summary>
     private static bool IsLinked(PaymentMatch match, ILookup<Guid, Guid> purgedCustomers)
