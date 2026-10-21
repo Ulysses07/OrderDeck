@@ -960,9 +960,11 @@ public sealed class PaymentMatchReconcilerTests
     }
 
     [Fact]
-    public async Task Durdurulmus_baglantida_kaldirma_acik_kalir()
+    public async Task Durdurulmus_baglantida_kaldirma_acik_kalir_oneri_yeniden_hesaplanmaz()
     {
-        // KVKK K-6: kapı yalnız yazan yolları kapatır; kaldırma bağ siler, durdurulmuş bağlantıda da çalışır.
+        // KVKK K-6: kapı yazan yolları kapatır; kaldırma bağ siler, durdurulmuş bağlantıda da çalışır. Ardından yeniden hesap
+        // koşmaz: saklı hareketin açıklamasından ve IBAN hafızasından yeni öneri yazmak durdurulmuş bağlantının verisini işlemek
+        // olurdu. Satır öneri yok kalır, UnmatchAsync false döner (sayfa "öneri yeniden hesaplanmadı" der).
         using var db = NewDb(); var s = SeedShopper(db);
         var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
         var tx = Tx(db, s.LicenseId, 500m, DateTimeOffset.UtcNow.AddHours(-3), "HAVALE ornek_musteri34", hash);
@@ -974,9 +976,31 @@ public sealed class PaymentMatchReconcilerTests
         db.SaveChanges();
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(1);
 
-        await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+        var recomputed = await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
 
+        recomputed.Should().BeFalse("durdurulmuş bağlantıda yeniden hesap bilerek atlanır");
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "kaldırma öğrettiği bağı siler");
-        (await db.PaymentMatches.AsNoTracking().SingleAsync()).ActualWpfCustomerId.Should().BeNull();
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (row.ActualWpfCustomerId, row.Status, row.ProposedWpfCustomerId)
+            .Should().Be(((Guid?)null, PaymentMatchStatus.NoProposal, (Guid?)null), "açıklamadaki kullanıcı adından öneri yazılmaz");
+    }
+
+    [Fact]
+    public async Task Kaldirmadan_sonra_yeniden_hesap_etkin_baglantida_oneri_yazar()
+    {
+        // Kapının karşı yüzü: bağlantı eşleştirmeye açıksa kaldırma öneriyi yeniden hesaplar (açıklamadaki kullanıcı adı).
+        using var db = NewDb(); var s = SeedShopper(db);
+        var tx = Tx(db, s.LicenseId, 500m, DateTimeOffset.UtcNow.AddHours(-3), "HAVALE ornek_musteri34");
+        var recon = Recon(db);
+        db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BaseUrl = "https://obifin.invalid",
+            UserCode = $"u-{Guid.NewGuid():N}", Status = ObifinConnectionStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+
+        (await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None)).Should().BeTrue();
+
+        var row = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (row.Status, row.ProposedWpfCustomerId).Should().Be((PaymentMatchStatus.Proposed, (Guid?)s.WpfCustomerId));
     }
 }

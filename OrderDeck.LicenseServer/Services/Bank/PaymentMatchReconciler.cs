@@ -41,7 +41,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (<see cref="ObifinConnectionService.MatchingActive"/> yanlış: Disabled ya da yerel verisi silinmiş) onay bağdaştırması ve gap
 /// çözümü hiçbir şey yazmaz, elle eşleme <see cref="MatchingStoppedMessage"/> fırlatır: saklı hareket işlenmez, IBAN öğrenilmez,
 /// LastConfirmedAt tazelenmez, verisi silinmiş bağlantıda gap birikmez. Bağlantısı hiç olmayan lisans bugünkü gibi. Kaldırma
-/// açık kalır (bağ siler).</para>
+/// açık kalır (bağ siler), ama ardından yeniden hesap koşmaz: saklı hareketin açıklamasından ve IBAN hafızasından yeni öneri
+/// yazmak durdurulmuş bağlantının verisini işlemek olurdu. Satır öneri yok kalır, <see cref="UnmatchAsync"/> false döner.</para>
 /// <para><see cref="BankHasher"/> istemez: yalnız harekette ve hafızada saklı hash'leri karşılaştırır.</para>
 /// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> eşzamanlılık jetonudur; her kayıtta DbContext ilerletir. Bir
 /// işlem okuduğu satır kaydetmeden önce değiştiyse (DbUpdateConcurrencyException: eşleştiricinin yeniden hesabı, başka bir
@@ -124,8 +125,8 @@ public sealed class PaymentMatchReconciler
     /// <param name="actor">Kaldırma IBAN bağını silerse (<see cref="RewindIbanConfirmationAsync"/>) imha kaydının yapanı: yönetici
     /// sayfası <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın).
     /// Boşsa <see cref="DataDestruction.AdminActor"/>.</param>
-    /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu); false: kaldırma kaydedildi, yeniden hesap düştü
-    /// (sınıf özeti).</returns>
+    /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu); false: kaldırma kaydedildi, öneri yeniden
+    /// hesaplanmadı — hesap düştü ya da bağlantı eşleştirmeye kapalı (sınıf özeti).</returns>
     /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; iki denemede de çakışma; ya da yeniden denemede
     /// satırın insan kararı ilk denemenin gördüğünden farklı. Kaldırma kaydedildiyse fırlatılmaz.</exception>
     public async Task<bool> UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct, string? actor = null)
@@ -138,6 +139,14 @@ public sealed class PaymentMatchReconciler
         // Kaldırma kaydedildi. Yalnız eşleştirici: gap çözümü bu hareketle koşsaydı az önce kaldırılan bağı hemen geri kurardı.
         try
         {
+            // KVKK K-6: durdurulmuş ya da yerel verisi silinmiş bağlantıda yeniden hesap koşmaz (sınıf özeti). Denetim de
+            // denemenin içinde: düşerse kaldırma yine başarılıdır.
+            if (await ObifinConnectionService.MatchingStateAsync(_db, licenseId, ct) == false)
+            {
+                _log.LogInformation("Gölge bağdaştırma: hareket {TransactionId} eşlemesi kaldırıldı; bağlantı eşleştirmeye kapalı, "
+                    + "öneri yeniden hesaplanmadı", tx.Id);
+                return false;
+            }
             await Matcher.MatchAsync(tx, ct);
             return true;
         }

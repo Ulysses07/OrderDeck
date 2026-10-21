@@ -43,8 +43,9 @@ public class IndexModel : PageModel
 
     public const string UnmatchedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü, öneri yeniden hesaplandı.";
 
-    /// <summary>Kaldırma kaydedildi, öneriyi yeniden hesaplamak düştü (bkz. <see cref="PaymentMatchReconciler.UnmatchAsync"/>).</summary>
-    public const string UnmatchedNotRecomputedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü. Öneri yeniden hesaplanamadı; satır öneri yok durumunda kaldı.";
+    /// <summary>Kaldırma kaydedildi, öneri yeniden hesaplanmadı: hesap düştü ya da bağlantı durdurulmuş (KVKK K-6; bkz.
+    /// <see cref="PaymentMatchReconciler.UnmatchAsync"/>).</summary>
+    public const string UnmatchedNotRecomputedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü. Öneri yeniden hesaplanmadı (hesap düştü ya da banka bağlantısı durdurulmuş); satır öneri yok durumunda kaldı.";
 
     /// <summary>Kaldır düğmesinin onay metinleri. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez. Kaldırma başka
     /// havalenin öğrettiği IBAN bağını da silebilir (<see cref="PaymentMatchReconciler.UnmatchAsync"/>: süresini yalnız bu havale
