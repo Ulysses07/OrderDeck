@@ -8,6 +8,9 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Services.ShopperPayments;
+using OrderDeck.LicenseServer.Services.Shoppers;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -27,9 +30,9 @@ public sealed class PaymentMatchReconcilerTests
 
     private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid WpfCustomerId);
 
-    private static Seed SeedShopper(LicenseDbContext db, string username = "ornek_musteri34")
+    private static Seed SeedShopper(LicenseDbContext db, string username = "ornek_musteri34", Guid? licenseId = null)
     {
-        var lic = Guid.NewGuid(); var shopperId = Guid.NewGuid();
+        var lic = licenseId ?? Guid.NewGuid(); var shopperId = Guid.NewGuid();
         var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = "Ornek Musteri", UpdatedAt = DateTimeOffset.UtcNow };
         db.WpfCustomerProjections.Add(wpf);
         db.Shoppers.Add(new Shopper { Id = shopperId, FullName = "Ornek Musteri", Phone = $"+9050{Random.Shared.Next(10000000, 99999999)}", PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-" });
@@ -373,6 +376,42 @@ public sealed class PaymentMatchReconcilerTests
         m.PaymentId.Should().BeNull();
         m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
         (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+    }
+
+    [Fact]
+    public async Task KVKK_silmesiyle_musterisi_bosalan_karar_baska_musterinin_dekontuna_aday_sayilmaz()
+    {
+        // KVKK silmesi (BankSubjectScrub.MatchForCustomer) sayfada X'e verilmiş kararın müşterisini boşaltır; kararın anı ve
+        // sonucu ölçüm için kalır. Karar kilidi DecidedAt'tir: Y'nin aynı tutarlı dekontu onaylanınca (Y'nin havalesi henüz
+        // gelmemiş) tek aday X'in havalesi olurdu; bağlansaydı silinen kişinin havalesi Y'nin ödemesi sayılır (m. 4/2-b
+        // doğruluk), ölçümün sonucu ezilir, Y'nin gerçek havalesi de dekontu dolu olduğu için bir daha bağlanamazdı. Sabit
+        // fiyatlı satışta aynı tutar yaygın. Gap çözümü de o havaleyle Y'nin açık gap'ini çözmez.
+        using var db = NewDb(); var x = SeedShopper(db);
+        var y = SeedShopper(db, "mehmet_k", x.LicenseId);
+        var when = DateTimeOffset.UtcNow.AddHours(-3);
+        var xTx = Tx(db, x.LicenseId, 250m, when, "HAVALE ornek_musteri34");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(xTx, CancellationToken.None);
+        await recon.ManualMatchAsync(x.LicenseId, xTx.Id, x.WpfCustomerId, CancellationToken.None);
+        await new ShopperPurgeService(db, new StubShopperPaymentStorage(), Options.Create(new SalesSyncOptions()),
+            NullLogger<ShopperPurgeService>.Instance).PurgeAsync(x.ShopperId, CancellationToken.None);
+        var purged = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        (purged.ActualWpfCustomerId, purged.Status, purged.PaymentId).Should().Be(
+            ((Guid?)null, PaymentMatchStatus.ConfirmedByHuman, (Guid?)null), "ön koşul: silme müşteriyi boşalttı, sonucu bıraktı");
+        purged.DecidedAt.Should().NotBeNull();
+        var payment = Approved(db, x.LicenseId, y.ShopperId, 250m, when.AddMinutes(20), "DENEME ALICI");
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        await recon.TryResolveGapAsync(xTx, CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.PaymentId.Should().BeNull("silinen kişinin havalesi başka müşterinin ödemesi sayılmaz");
+        m.ActualWpfCustomerId.Should().BeNull();
+        m.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman, "ölçümün sonucu kalır");
+        m.DecidedAt.Should().Be(purged.DecidedAt);
+        m.UpdatedAt.Should().Be(purged.UpdatedAt, "satıra yazılmaz");
+        var gap = await db.PaymentMatchGaps.AsNoTracking().SingleAsync();
+        (gap.PaymentId, gap.Reason, gap.ResolvedAt).Should().Be(
+            (payment.Id, PaymentMatchGapReason.NoCandidate, (DateTimeOffset?)null), "Y'nin dekontu gap'te bekler");
     }
 
     [Fact]

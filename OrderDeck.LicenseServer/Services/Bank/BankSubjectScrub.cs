@@ -54,6 +54,8 @@ public static class BankSubjectScrub
             match.ActualWpfCustomerId = null;
             // Kararın doğruladığı IBAN bağı kişinin IBAN hafızasıyla birlikte silinir; işaret artık hiçbir bağa ait değildir
             // (kararı boşaltan yol işareti de boşaltır, Görev 10 kuralı). Durum, dekont bağı ve karar anı ölçüm için kalır.
+            // Karar anı bağdaştırıcının karar kilididir (PaymentMatchReconciler): müşterisi boşalan karar başka bir kişinin
+            // dekontuna aday olmaz, elle eşleme de önce kaldırma ister.
             match.IbanConfirmedAt = null;
         }
         match.UpdatedAt = now;

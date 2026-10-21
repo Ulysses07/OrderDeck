@@ -295,6 +295,38 @@ public sealed class PaymentMatchRaceTests
     }
 
     [Fact]
+    public async Task Bagdastirici_secimden_sonra_KVKK_silmesiyle_musterisi_bosalan_karara_dekont_eklemez()
+    {
+        // Karar kilidi DecidedAt'tir: KVKK silmesi (BankSubjectScrub.MatchForCustomer) kararın müşterisini boşaltır, anını ve
+        // sonucunu bırakır. Seçimle satırın izlenerek okunması arasına başka müşteriye verilen karar ve o müşterinin silinmesi
+        // düşerse satırda ne dekont ne müşteri vardır; bağdaştırıcı seçimi yine bayat sayar, taze seçim hareketi aday saymaz.
+        var s = await SeedAsync();
+        var other = await OtherCustomerAsync(s.LicenseId);
+        var payment = await ApprovedAsync(s, s.Tx.Amount);
+        var race = new OnMaterialize(s.Tx.Id, () =>
+        {
+            using var admin = Ctx();
+            var m = admin.PaymentMatches.Single(x => x.BankTransactionId == s.Tx.Id);
+            var now = DateTimeOffset.UtcNow;
+            m.ActualWpfCustomerId = other; m.DecidedAt = now; m.UpdatedAt = now; m.Status = PaymentMatchStatus.ManualOnly;
+            BankSubjectScrub.MatchForCustomer(m, other, now);
+            admin.SaveChanges();
+        });
+        await using var job = Ctx(race);
+
+        await Recon(job).ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        race.Fired.Should().Be(1);
+        var row = await RowAsync(s.Tx.Id);
+        (row.PaymentId, row.ActualWpfCustomerId).Should().Be(((Guid?)null, (Guid?)null), "silinen kişinin kararına bu dekont eklenmez");
+        row.DecidedAt.Should().NotBeNull();
+        row.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        await using var verify = Ctx();
+        (await verify.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+        NoPendingWrites(job);
+    }
+
+    [Fact]
     public async Task Elle_esleme_iki_carpismada_admin_mesajiyla_duser()
     {
         var s = await SeedAsync();

@@ -11,7 +11,7 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
 /// İnsan kararını gölge önerisine bağlar (spec §6). Aday = aynı lisans, gelen, tutar eşit,
-/// ±2 gün, henüz bir dekonta bağlanmamış, başka bir müşteriye elle verilmemiş ve eşleştiricinin dışlamadığı
+/// ±2 gün, henüz bir dekonta bağlanmamış, başka bir müşteriye karar verilmemiş ve eşleştiricinin dışlamadığı
 /// (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı vb. müşteri havalesi değildir). Tek aday → bağla; çoklu → gönderen
 /// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Ret hiçbir şey yapmaz. Elle eşleme
 /// dışlanan kodlu hareketi de kabul eder: admin'in açık kararıdır. Onun karşı IBAN'ını ise öğretmez: POS mutabakatının
@@ -24,7 +24,10 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (ölçüm), yalnız öğretmez; günlüğe yalnız kimlikler yazılır. Onay işinin gecikmesi
 /// (<see cref="PaymentMatchReconcileJob.ApprovalDelay"/>) bu tek adayların çoğunu baştan önler.</para>
 /// <para><b>Bir insan kararı ötekini ezmez.</b> Başka müşteriye elle verilmiş hareket onayda aday değildir; aynı müşteriye
-/// verilmişse dekont satıra yalnız iliştirilir, kararın durumu ve anı korunur. Elle eşleme yalnız karara bağlanmamış
+/// verilmişse dekont satıra yalnız iliştirilir, kararın durumu ve anı korunur. Kararın kilidi <see cref="PaymentMatch.DecidedAt"/>'tir,
+/// müşteri değil: KVKK silmesi kararın müşterisini boşaltır, anını ve sonucunu ölçüm için bırakır
+/// (<see cref="BankSubjectScrub.MatchForCustomer"/>); o satır da başka bir kişinin kararıdır, kimsenin dekontuna aday olmaz
+/// (yoksa silinen kişinin havalesi başka müşterinin ödemesi sayılırdı). Elle eşleme yalnız karara bağlanmamış
 /// (<see cref="PaymentMatch.DecidedAt"/> ve <see cref="PaymentMatch.PaymentId"/> boş) harekete verilir; yeniden karar önce
 /// kaldırmadan geçer. Kaldırma, hareketin öğrettiği hafıza satırını SİLER; başka havalenin öğrettiği bağı tazelemişse bağın
 /// süresini kalan doğrulamalara geri çeker, kalan yoksa bağı imha kaydıyla siler (<see cref="RewindIbanConfirmationAsync"/>);
@@ -318,17 +321,19 @@ public sealed class PaymentMatchReconciler
     }
 
     /// <summary>Dekontun aday hareketleri (sınıf özeti): aynı lisans, gelen, tutar eşit, ödeme anının ±2 günü; bir dekonta
-    /// bağlanmış, başka müşteriye elle verilmiş ya da eşleştiricinin dışladığı (<see cref="PaymentMatcher.IsExcluded"/>)
-    /// hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
+    /// bağlanmış, başka müşteriye karar verilmiş (karar anı dolu, müşterisi bu dekontunki değil — KVKK silmesiyle boşalmış
+    /// müşteri dahil) ya da eşleştiricinin dışladığı (<see cref="PaymentMatcher.IsExcluded"/>) hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
     /// token'larını açıklamasında taşıyan TEK aday seçilir; seçilemezse liste olduğu gibi döner. Onay da gap çözümü de bunu
     /// kullanır: ikisi aynı kuralla karar verir.</summary>
     private async Task<List<BankTransaction>> CandidatesAsync(Guid licenseId, decimal amount, DateTimeOffset paidAt,
         string payerName, Guid wpfCustomerId, CancellationToken ct)
     {
         var windowStart = paidAt - CandidateWindow; var windowEnd = paidAt + CandidateWindow;
+        // Karar kilidi DecidedAt'tir, müşteri değil: KVKK silmesi kararın müşterisini boşaltır, anını bırakır
+        // (BankSubjectScrub.MatchForCustomer). Müşterisi boş karar da başka bir kişinin kararıdır (EF null != X'i doğru çevirir).
         var taken = _db.PaymentMatches
             .Where(m => m.LicenseId == licenseId
-                        && (m.PaymentId != null || (m.ActualWpfCustomerId != null && m.ActualWpfCustomerId != wpfCustomerId)))
+                        && (m.PaymentId != null || (m.DecidedAt != null && m.ActualWpfCustomerId != wpfCustomerId)))
             .Select(m => m.BankTransactionId);
         var candidates = (await _db.BankTransactions.AsNoTracking()
                 .Where(t => t.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming
@@ -365,8 +370,9 @@ public sealed class PaymentMatchReconciler
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct) ?? await Matcher.MatchAsync(tx, ct);
         // Aday seçimi satırı izlemeden okudu; arada başka bir karara bağlandıysa seçim bayattır, yeniden deneme taze seçer.
-        // Buradan kayda kadarki pencereyi jeton korur.
-        if (match.PaymentId is not null || (match.ActualWpfCustomerId is { } decided && decided != wpfCustomerId))
+        // Buradan kayda kadarki pencereyi jeton korur. Ölçüt aday seçimininkiyle aynı: kilit DecidedAt (KVKK silmesinin
+        // müşterisini boşalttığı karar da başkasınındır).
+        if (match.PaymentId is not null || (match.DecidedAt is not null && match.ActualWpfCustomerId != wpfCustomerId))
             throw new StaleCandidateException();
         var now = DateTimeOffset.UtcNow;
         match.PaymentId = paymentId; match.UpdatedAt = now;
