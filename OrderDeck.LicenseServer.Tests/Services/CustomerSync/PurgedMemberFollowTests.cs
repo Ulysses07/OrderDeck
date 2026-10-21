@@ -36,10 +36,13 @@ public sealed class PurgedMemberFollowTests : IClassFixture<PurgedMemberFollowTe
         (await kit.SyncGroupAsync(a1, g0)).EnsureSuccessStatusCode();
         (await kit.ProjectionAsync(p)).GroupId.Should().Be(g1, "g1'de canlı üye (a2) var");
 
+        var before = DateTimeOffset.UtcNow;
         (await kit.SyncGroupAsync(a2, g0)).EnsureSuccessStatusCode();
+        var after = DateTimeOffset.UtcNow;
         var moved = await kit.ProjectionAsync(p);
         moved.GroupId.Should().Be(g0, "g1'i boşaltan kayıttaki ayrılanların numarası");
-        moved.GroupIdChangedAt.Should().NotBeNull("taşıma damgalı (CustomerGroupUnion.StampAt)");
+        // P damgasız kuruldu: CustomerGroupUnion.StampAt koşunun anını yazar — herhangi bir değer değil.
+        moved.GroupIdChangedAt.Should().NotBeNull().And.BeOnOrAfter(before).And.BeOnOrBefore(after);
         moved.PurgedAt.Should().NotBeNull("silinmişlik değişmez");
         (await kit.BalanceRowAsync(p))!.UpdatedAt.Should().BeAfter(pBalanceBefore, "taşıma da bir GroupId değişimi");
         (await kit.BalanceAsync(p)).Should().Be(40m);
