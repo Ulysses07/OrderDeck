@@ -1152,20 +1152,22 @@ public sealed class ObifinConnectionServiceTests
     }
 
     [Fact]
-    public async Task Devre_disi_baglanti_dogrulama_basarisiyla_acilmaz_sonuc_yine_Ok()
+    public async Task Devre_disi_baglantida_Dogrula_Obifine_gitmez_baglanti_acilmaz()
     {
-        // "Doğrula" kimliğin çalıştığını kanıtlar; admin'in kapatma kararını geri almaz.
+        // "Doğrula" admin'in kapatma kararını geri almaz; durdurulmuş bağlantı için Obifin'e de gitmez (KVKK K-6): hesap listesi
+        // durdurulmuş bağlantının hesap verisini yeniden toplardı. Yol: Etkinleştir (Unverified), sonra Doğrula.
         using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
         var svc = Svc(db, stub);
         var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
         conn.Status = ObifinConnectionStatus.Disabled;
         await db.SaveChangesAsync();
 
-        var result = await svc.VerifyAsync(lic, CancellationToken.None);
+        var act = () => svc.VerifyAsync(lic, CancellationToken.None);
 
-        result.Ok.Should().BeTrue();
+        await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.StoppedConnectionMessage);
+        stub.ListAccountsCalls.Should().Be(0);
         conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
-        conn.LastVerifiedAt.Should().NotBeNull();
+        conn.LastVerifiedAt.Should().BeNull();
     }
 
     [Fact]

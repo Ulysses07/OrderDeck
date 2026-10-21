@@ -92,14 +92,18 @@
             <td>@r.BankConnections</td><td>@r.Accounts</td><td>@r.Transactions</td>
             <td class="text-danger small" data-cell="last-error">@r.LastError</td>
             <td class="text-nowrap">
-                <form method="post" class="d-inline">
-                    <input type="hidden" name="LicenseId" value="@r.LicenseId" />
-                    <button class="btn btn-sm btn-outline-primary" asp-page-handler="Verify">Doğrula</button>
-                    @if (r.Status == ObifinConnectionStatus.Verified)
-                    {
-                        <button class="btn btn-sm btn-outline-secondary" asp-page-handler="PollNow">Şimdi çek</button>
-                    }
-                </form>
+                @* KVKK K-6: durdurulmuş bağlantıda Doğrula Obifin'e gitmez (servis reddeder); önce Etkinleştir. *@
+                @if (r.Status != ObifinConnectionStatus.Disabled)
+                {
+                    <form method="post" class="d-inline">
+                        <input type="hidden" name="LicenseId" value="@r.LicenseId" />
+                        <button class="btn btn-sm btn-outline-primary" asp-page-handler="Verify">Doğrula</button>
+                        @if (r.Status == ObifinConnectionStatus.Verified)
+                        {
+                            <button class="btn btn-sm btn-outline-secondary" asp-page-handler="PollNow">Şimdi çek</button>
+                        }
+                    </form>
+                }
                 @* KVKK K-6: banka modülü kapalıyken de çalışır (BankHasher istemez). *@
                 <form method="post" class="d-inline">
                     <input type="hidden" name="LicenseId" value="@r.LicenseId" />

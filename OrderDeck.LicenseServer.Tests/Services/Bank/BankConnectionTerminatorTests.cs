@@ -438,6 +438,38 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Durdurulmus_ve_yerel_verisi_silinmis_baglantida_Dogrula_ve_Banka_ekle_Obifine_gitmez_kanit_hesap_bos_kalir()
+    {
+        // KVKK K-6 / karar 21(a): durdurma işlemeyi de durdurur. Lisans geçerli, yalnız yönetici durdurdu; 30. günde yerel silme
+        // onaylı hesabı (6) IBAN'sız kanıt olarak bıraktı. Doğrula Obifin'in hesap listesiyle o hesabın IBAN'ını, özetini ve
+        // bildirim notunu yeniden doldurur, yeni (onaysız) hesap satırı eklerdi; hizmet sonu işi bağlantıyı bir daha işlemediği
+        // için yeniden toplanan veri "Kaldır ve sil"e kadar dururdu. Banka ekle de durdurulmuş bağlantı için Obifin'de yeni bir
+        // banka çekimi başlatırdı. Yol: önce Etkinleştir (Unverified), sonra Doğrula.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        client.Accounts.Add(new ObifinAccountDto(6, "qnb", 501, null, BankHasherTests.TestIban(), "TL", null, null, true, "bildirim"));
+        client.Accounts.Add(Account(12, 501));
+        var lic = await SeedAsync(db, client);
+        var t = Terminator(db, client);
+        await t.StopAsync(lic, CancellationToken.None);
+        await t.PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor, CancellationToken.None);
+        var svc = Service(db, client);
+
+        var verify = () => svc.VerifyAsync(lic, CancellationToken.None);
+        var add = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", new Dictionary<string, string>(), CancellationToken.None);
+
+        await verify.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.StoppedConnectionMessage);
+        await add.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.StoppedConnectionMessage);
+        client.Calls.Should().Be(0, "durdurulmuş bağlantı için Obifin'e gidilmez");
+        var kept = await db.BankAccounts.AsNoTracking().Where(a => a.LicenseId == lic).ToListAsync();
+        kept.Should().ContainSingle("yeni hesap satırı eklenmez");
+        (kept[0].ObifinAccountId, kept[0].IbanMasked, kept[0].IbanHash, kept[0].NotificationNote)
+            .Should().Be((6L, "", (string?)null, (string?)null), "boşaltılmış kanıt hesap boş kalır");
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        (conn.Status, conn.BankDataPurgedAt is not null, conn.LastVerifiedAt).Should()
+            .Be((ObifinConnectionStatus.Disabled, true, (DateTimeOffset?)null));
+    }
+
+    [Fact]
     public async Task Basarili_dogrulama_Disabled_olmayan_baglantinin_bayat_hizmet_sonu_alanlarini_bosaltir()
     {
         // DisabledAt/BankDataPurgedAt Disabled dışında anlamsız: durum hücresi ve hizmet sonu işi bayat tarih görmesin (elle SQL

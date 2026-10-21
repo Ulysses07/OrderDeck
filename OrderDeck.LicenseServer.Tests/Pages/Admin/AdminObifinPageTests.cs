@@ -1247,7 +1247,9 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         async Task<IElement> RowAsync()
             => (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector($"tr[data-license='{lic}']")!;
 
-        (await RowAsync()).QuerySelector("button[formaction*='handler=Stop']").Should().NotBeNull("Verified satırda Durdur");
+        var verified = await RowAsync();
+        verified.QuerySelector("button[formaction*='handler=Stop']").Should().NotBeNull("Verified satırda Durdur");
+        verified.QuerySelector("button[formaction*='handler=Verify']").Should().NotBeNull("durdurulmamış satırda Doğrula");
         (await PostAsync(client, "Stop", fields())).StatusCode.Should().Be(HttpStatusCode.Redirect);
         using (var scope = factory.Services.CreateScope())
         {
@@ -1260,6 +1262,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var stopped = await RowAsync();
         stopped.QuerySelector("[data-cell='status']")!.TextContent.Should().Contain("silinecek");
         stopped.QuerySelector("button[formaction*='handler=Resume']").Should().NotBeNull("Disabled satırda Etkinleştir");
+        stopped.QuerySelector("button[formaction*='handler=Verify']")
+            .Should().BeNull("durdurulmuş bağlantıda Doğrula Obifin'e gitmez (KVKK K-6); önce Etkinleştir");
 
         (await PostAsync(client, "Resume", fields())).StatusCode.Should().Be(HttpStatusCode.Redirect);
         using (var scope = factory.Services.CreateScope())
@@ -1269,8 +1273,10 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             (await db.AuditLogs.CountAsync(a => a.TargetId == lic.ToString()
                 && (a.EventType == AuditEvents.ObifinConnectionStop || a.EventType == AuditEvents.ObifinConnectionResume))).Should().Be(2);
         }
-        (await RowAsync()).QuerySelector("[data-cell='status']")!.TextContent
+        var resumed = await RowAsync();
+        resumed.QuerySelector("[data-cell='status']")!.TextContent
             .Should().NotContain("silinecek", "tarih yalnız Disabled iken gösterilir");
+        resumed.QuerySelector("button[formaction*='handler=Verify']").Should().NotBeNull("etkinleştirilen satırda Doğrula");
     }
 
     [Fact]
