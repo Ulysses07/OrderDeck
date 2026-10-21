@@ -66,7 +66,7 @@ Son incelemeden (2026-10-21; kod Görev 11'in bloğundan bu maddede ayrılır, g
 
 ## Ön koşullar ve sıra (spec §7.1)
 
-- **Adım 0 (Burak):** prod'da salt okunur `SELECT COUNT(*)` — `WpfCustomerProjections` ve `CustomerBalanceTransactions`. Göç Express'te `ONLINE`'sız iki indeks kurar ve bir kolonun harmanını değiştirir; Görev 1'in göç testi süreyi günlüğe yazar. Sayılar sınıra yakınsa iki indeks ayrı bir göçe bölünür (bu plan tek göçü varsayar).
+- **Adım 0 (Burak):** prod'da salt okunur `SELECT COUNT(*)` — `WpfCustomerProjections` ve `CustomerBalanceTransactions`. Göç Express'te `ONLINE`'sız iki indeks kurar ve bir kolonun harmanını değiştirir; Görev 1'in göç testi süreyi günlüğe yazar. Sayılar sınıra yakınsa iki indeks ayrı bir göçe bölünür (bu plan tek göçü varsayar). **Ölçüt iki sınırdır** (spec §3.1): her göç ifadesi SqlClient varsayılanı **30 sn** komut zaman aşımıyla koşar (`Program.cs:941`'deki `Migrate()`; `CommandTimeout` da bağlantı dizesinde `Command Timeout` da yok), toplam ise açılış süresi düşülmüş 60 sn'ye (`/ready`) sığmalı. Test yalnız toplamı yazar: testteki satır başına maliyetle prod satır sayısına ölçeklenmiş **toplam** 30 sn'nin rahatça altındaysa en uzun ifade de altındadır ve iki sınır birden tutar; değilse indeksler ayrı bakım göçüne. Zaman aşımını büyütmek çözüm değil (`/ready` penceresiyle çatışır).
 - Merge = otomatik prod deploy: **yayın penceresi dışında** (Paz/Pzt/Çar/Per 20:00–01:00 TR değil), Burak yapar.
 - S1'den sonra: `person-balance verify` → `--capture-baseline --apply` (Burak), ≥ 1 gün gözlem, taban incelemesi (S2'den önce).
 
@@ -5682,7 +5682,7 @@ Bu plan push etmez. Burak PR isterse: `git push -u origin feat/ortak-bakiye-s1`,
 
 ## Sürüm / saha notları (S1 sonrası, spec §7.1 adım 1–4, §8.5)
 
-1. Merge öncesi (adım 0): prod'da iki tablonun salt okunur satır sayımı; Görev 1'in göç süresiyle karşılaştır.
+1. Merge öncesi (adım 0): prod'da iki tablonun salt okunur satır sayımı; Görev 1'in göç süresiyle karşılaştır. Ölçüt ifade başına 30 sn ve toplamda 60 sn eksi açılış (yukarıdaki "Ön koşullar ve sıra", spec §3.1).
 2. Deploy sonrası: `/ready` geldi; `__EFMigrationsHistory`'de `*_PersonBalanceS1`; `sys.indexes`'te `IX_WpfCustomerProjections_LicenseId_GroupId` ve `IX_CustomerBalanceTransactions_DrawGroupId`; `sys.tables`'ta `PersonBalanceBaselines`; `sys.columns`'ta `GroupId` harmanı `Latin1_General_100_BIN2`.
 3. Bir müşteride WPF preview yanıtı öncekiyle aynı, `personPool: false`.
 4. `person-balance verify` → rapor Burak'a; `--capture-baseline --apply`; ertesi gün `person-balance-verify` uyarı üretmemeli (Hangfire panosu ve günlük).
