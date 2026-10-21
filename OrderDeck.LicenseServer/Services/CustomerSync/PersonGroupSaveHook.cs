@@ -39,8 +39,17 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// bunu görmez, günlüğe yazmaz; para silinmiş üyenin satırında kalır, <c>verify</c>'ın §7.3-4 "grubunda canlı asıl üye
 /// kalmamış" kalemi sayar (Ayır'ın sonucundan ayırt edilemez). Ters yön — son canlı üye ayrılırken eşzamanlı bir kayıt
 /// g'ye canlı üye ekler, silinmiş üye hedefe gider — "önce ayrılış, sonra katılma" sırasının sonucudur; kural bozulmaz.
+/// <b>İkinci pencere — bayat köken:</b> "nereden ayrıldı" izleyicinin <c>OriginalValue</c>'sudur, yani satırın
+/// yüklendiği anki numara, kayıt anındaki değil; projeksiyonda <c>GroupId</c> için jeton yok (yalnız <c>PurgedAt</c>).
+/// Senkronda yükleme ile kayıt arası bütün partinin işlenme süresidir. Aynı satıra bu arada başka bir yazıcı (bir iş ya
+/// da öbür PC'nin senkronu) <c>GroupId</c> yazıp commit ederse bu kayıt onu sessizce ezer (kayıp güncelleme) ve kanca
+/// bayat numaraya bakar ya da hiç ayrılma görmez. Örnek: <c>--at-twins</c> grupsuz asıl kayıt C'yi kopyaya dönen T'nin
+/// numarası g'ye alır; g'de kalan tek öbür üye silinmiş P'dir. C'yi bu commit'ten önce yüklemiş bir senkron C'ye g0
+/// yazar: köken boş (gruplu değil), ayrılma yok, P g'de canlı üyesiz kalır. Sıralı yürütmede (önce iş, sonra taze
+/// okumalı senkron) P g0'a taşınırdı. Sonuç ve görünürlük ilk pencereyle aynı (para kaybı yok, §7.3-4 sayar).
 /// Kalıcı hakem (numara başına <c>sp_getapplock</c>) senkron yolunda açık işlem ister: sahip kararı (§10 açık
-/// kalanlar).</para>
+/// kalanlar). İkinci pencereyi ancak kanca kökeni kilit altında veritabanından yeniden okursa kapatır: bayat köken
+/// kilitlenecek numarayı da yanlış seçer.</para>
 ///
 /// <para><b>Ne görür:</b> tam olarak <c>SaveChanges</c>'in yazacağını — izleyicinin durumunu. Değişiklik algılaması
 /// kapalı bir bağlam (<c>LicenseReadOnlyDbContext</c>) algılamadığı değişikliği kaydetmez, kanca da görmez; bu yüzden
