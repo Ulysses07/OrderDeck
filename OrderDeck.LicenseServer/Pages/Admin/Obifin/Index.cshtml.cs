@@ -456,10 +456,12 @@ public class IndexModel : PageModel
                 r.Transactions, r.Matches, r.Memories, r.Gaps, r.Accounts, r.BankConnections,
                 obifinRemoved = r.ObifinRemoved.Count, obifinFailed = r.ObifinFailed.Count, obifinUnowned = r.ObifinUnowned.Count,
                 r.ObifinUnreachable, r.SharedObifinUser, needsManualObifinAction = r.NeedsManualObifinAction,
-                obifinCopyDeletionId = r.ObifinCopyDeletionId,
+                obifinCopyDeletionId = r.ObifinCopyDeletionId, r.SubjectRequestsClosed,
             },
             CancellationToken.None);
-        var summary = $"Banka verisi silindi: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı, {r.Accounts} hesap. ";
+        // Kapanan banka veri talebi açık listeden düşer; yanıt yükümlülüğü sürer (m. 13/2): yönetici bunu bildirimden öğrenir.
+        var summary = $"Banka verisi silindi: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı, {r.Accounts} hesap. "
+            + (r.SubjectRequestsClosed > 0 ? r.SubjectRequestsNotice() + " " : "");
         if (r.NeedsManualObifinAction)
             TempData["Error"] = summary + r.ManualActionText() + " " + ObifinCopyWarning;
         else

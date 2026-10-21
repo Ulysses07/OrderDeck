@@ -237,9 +237,9 @@ public sealed class AdminCustomersController : ControllerBase
         // KVKK K-7: yayıncının lisanslarındaki açık banka veri talepleri kapanır (lisansa FK yok: talep satırı belge olarak kalır,
         // IBAN özeti boşalır, imha kaydı talep başına bu tetikleyiciyle). Yönetici başvurana yine yanıt verir. Aynı kayıtta: talebi arada kapatan başka bir istek (ClosedAt
         // jetonu) bu kaydı düşürür, aşağıdaki 409 ile operatör yeniden çağırır.
-        await OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService.CloseOpenForLicensesAsync(_db, licenseIds,
-            "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.", DataDestruction.Triggers.CustomerPurge, actor,
-            DateTimeOffset.UtcNow, ct);
+        var closedBankSubjectRequests = await OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService
+            .CloseOpenForLicensesAsync(_db, licenseIds, "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.",
+                DataDestruction.Triggers.CustomerPurge, actor, DateTimeOffset.UtcNow, ct);
 
         try
         {
@@ -265,7 +265,10 @@ public sealed class AdminCustomersController : ControllerBase
             {
                 preEmail,
                 deletedLicenses = licenseIds.Count,
-                deletedBackups = backupRows.Count
+                deletedBackups = backupRows.Count,
+                // KVKK m. 13/2: kapanan banka veri talebi açık listeden düşer, başvurana yanıt yükümlülüğü sürer (sayı, kişisel
+                // veri değil).
+                closedBankSubjectRequests,
             }, ct: ct);
 
         return NoContent();

@@ -284,6 +284,11 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
         request.Resolution.Should().Be(OrderDeck.LicenseServer.Domain.Bank.BankSubjectResolution.DataDeleted);
         request.Outcome.Should().Contain("Yayıncı hesabı silindi").And.Contain("başvurana yanıt verin");
         Guid.TryParse(request.ClosedBy, out _).Should().BeTrue("kapatan yöneticinin kimliği (sub), kullanıcı adı değil");
+        // m. 13/2: yanıt yükümlülüğü sürer — kapanan talep sayısı (kişisel veri değil) purge'ün denetim satırında.
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().AuditLogs.AsNoTracking()
+                .SingleAsync(a => a.EventType == OrderDeck.LicenseServer.Services.Audit.AuditEvents.CustomerPurged
+                    && a.TargetId == customerId.ToString()))
+            .Details.Should().Contain("\"closedBankSubjectRequests\":1");
         // Silme Yönetmeliği md. 7/1: boşalan özet imha kaydına girer, purge'ün kayıtlarıyla aynı işlemde.
         (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().DataDestructionRecords.AsNoTracking()
                 .Where(x => x.RequestId == requestId).ToListAsync())

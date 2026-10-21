@@ -182,6 +182,27 @@ public sealed class BankServiceEndPurgeJobTests
     }
 
     [Fact]
+    public async Task Yerel_silmenin_kapattigi_banka_veri_talebi_e_postada_sayilir_basvurana_yanit_hatirlatilir()
+    {
+        // KVKK m. 13/2: sistemin kapattığı talep açık listeden ve son tarih takibinden düşer ama başvurana yanıt yükümlülüğü sürer.
+        // Otomatik işte yöneticinin onu öğrendiği tek yer bu e-posta: sayı (kişisel veri değil) lisansın satırında.
+        using var db = NewDb(); var email = new TestEmailSender();
+        var due = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31), Ended);
+        var quiet = await SeedAsync(db, ObifinConnectionStatus.Disabled, DateTimeOffset.UtcNow.AddDays(-31), Ended);
+        db.BankSubjectRequests.Add(new BankSubjectRequest { Id = Guid.NewGuid(), LicenseId = due, Kind = BankSubjectRequestKind.Access,
+            IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", ReceivedAt = DateTimeOffset.UtcNow,
+            DueAt = DateTimeOffset.UtcNow.AddDays(30), CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "yonetici-1" });
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+
+        await Job(db, email).RunAsync(CancellationToken.None);
+
+        var lines = email.Sent.Should().ContainSingle().Subject.PlainBody.Split('\n');
+        lines.Single(l => l.Contains(due.ToString())).Should().Contain("1 açık banka veri talebi kapatıldı")
+            .And.Contain("başvurana yanıt verin");
+        lines.Single(l => l.Contains(quiet.ToString())).Should().NotContain("banka veri talebi", "talep yoksa satır sade kalır");
+    }
+
+    [Fact]
     public async Task Basarili_kosu_silecek_baglanti_olmasa_da_kosu_kaydi_birakir_e_posta_gitmez()
     {
         // Görev 9 kuralı (iç imha prosedürü §4.2-3): haftalık "son başarılı çalışma" kontrolü bu satırdan yapılır.

@@ -1357,8 +1357,16 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var client = await _factory.CreateLoggedInAdminClientAsync();
         string key;
         using (var scope = _factory.Services.CreateScope())
-            key = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().Licenses.Where(l => l.Id == lic)
-                .Select(l => l.LicenseKey).SingleAsync();
+        {
+            var seedDb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            key = await seedDb.Licenses.Where(l => l.Id == lic).Select(l => l.LicenseKey).SingleAsync();
+            // Açık banka veri talebi: silme onu kapatır, yönetici başvurana yanıt vermesi gerektiğini bildirimden öğrenir (m. 13/2).
+            seedDb.BankSubjectRequests.Add(new BankSubjectRequest { Id = Guid.NewGuid(), LicenseId = lic,
+                Kind = BankSubjectRequestKind.Erasure, IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345",
+                ReceivedAt = DateTimeOffset.UtcNow, DueAt = DateTimeOffset.UtcNow.AddDays(30), CreatedAt = DateTimeOffset.UtcNow,
+                CreatedBy = "yonetici-1" });
+            await seedDb.SaveChangesAsync();
+        }
         var form = (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
             .QuerySelector($"tr[data-license='{lic}'] form[action*='handler=Remove']")!;
         form.QuerySelector("input[name='ConfirmLicenseKey']")!.HasAttribute("required").Should().BeTrue();
@@ -1377,11 +1385,13 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         (await ShadowCountsAsync(lic)).Should().Be((0, 0, 0));
         var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
         doc.QuerySelector(".alert-danger.alert-dismissible")!.TextContent
-            .Should().Contain("elle kaldırın").And.Contain(ObifinAdminPage.ObifinCopyWarning);
+            .Should().Contain("elle kaldırın").And.Contain(ObifinAdminPage.ObifinCopyWarning)
+            .And.Contain("1 açık banka veri talebi kapatıldı").And.Contain("başvurana yanıt verin");
         using var verify = _factory.Services.CreateScope();
         var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.ObifinConnections.AnyAsync(c => c.LicenseId == lic)).Should().BeFalse();
-        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinConnectionRemove && a.TargetId == lic.ToString())).Should().BeTrue();
+        (await db.AuditLogs.SingleAsync(a => a.EventType == AuditEvents.ObifinConnectionRemove && a.TargetId == lic.ToString()))
+            .Details.Should().Contain("\"subjectRequestsClosed\":1");
         var adminId = (await db.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id.ToString();
         (await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync())
             .Should().NotBeEmpty().And.OnlyContain(x => x.Trigger == DataDestruction.Triggers.AdminRemove && x.Actor == adminId,

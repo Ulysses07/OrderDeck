@@ -127,9 +127,12 @@ public sealed class BankServiceEndPurgeJob
                 var r = await _terminator.PurgeLocalDataAsync(licenseId, DataDestruction.Triggers.ServiceEnd,
                     DataDestruction.SystemActor, ct);
                 deleted++;
+                // Kapanan banka veri talebi açık listeden düşer; yanıt yükümlülüğü sürer (m. 13/2). Otomatik işte yönetici onu
+                // yalnız bu satırdan öğrenir.
                 notes.Add($"lisans {licenseId}: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı, {r.Gaps} gap, " +
                     $"{r.Accounts} onaysız hesap yerelde silindi; {r.AccountsScrubbed} onaylı hesabın IBAN'ı boşaltıldı (satır " +
-                    $"'Kaldır ve sil'e kadar kalır). {r.ManualActionText()}");
+                    $"'Kaldır ve sil'e kadar kalır). {r.ManualActionText()}" +
+                    (r.SubjectRequestsClosed > 0 ? " " + r.SubjectRequestsNotice() : ""));
             }
             catch (ObifinValidationException ex) when (ex.Message is BankConnectionTerminator.NotStoppedMessage
                 or BankConnectionTerminator.NoConnectionMessage)

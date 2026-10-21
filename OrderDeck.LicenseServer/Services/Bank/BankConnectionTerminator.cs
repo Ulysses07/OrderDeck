@@ -13,12 +13,19 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// gidilmedi), <see cref="ObifinNotAttempted"/> yalnız yerel silme (otomatik hizmet sonu işi; Obifin'e gidilmedi).
 /// <see cref="ObifinCopyDeletionId"/>: "Kaldır ve sil"in açtığı, Obifin'den yazılı silme teyidi bekleyen kayıt
 /// (<c>ObifinCopyDeletions</c>); yalnız yerel silmede null. <see cref="Accounts"/> silinen hesap satırı;
-/// <see cref="AccountsScrubbed"/> yalnız yerel silmede IBAN alanları boşaltılıp sahiplik kanıtı olarak bırakılan onaylı hesap.</summary>
+/// <see cref="AccountsScrubbed"/> yalnız yerel silmede IBAN alanları boşaltılıp sahiplik kanıtı olarak bırakılan onaylı hesap.
+/// <see cref="SubjectRequestsClosed"/>: silmenin kapattığı açık banka veri talebi sayısı — talep açık listeden ve son tarih
+/// takibinden düşer ama başvurana yanıt yükümlülüğü sürer (KVKK m. 13/2); yönetici bildirimi ve hizmet sonu e-postası
+/// (<see cref="SubjectRequestsNotice"/>) onu söyler.</summary>
 public sealed record BankRemovalResult(IReadOnlyList<long> ObifinRemoved, IReadOnlyList<long> ObifinFailed,
     IReadOnlyList<long> ObifinUnowned, bool ObifinUnreachable, bool SharedObifinUser, bool ObifinNotAttempted,
     int Transactions, int Matches, int Memories, int Gaps, int Accounts, int AccountsScrubbed, int BankConnections,
-    Guid? ObifinCopyDeletionId)
+    Guid? ObifinCopyDeletionId, int SubjectRequestsClosed)
 {
+    /// <summary>Kapanan talepler için yöneticiye not (sayı, kişisel veri yok); talep yoksa boş.</summary>
+    public string SubjectRequestsNotice() => SubjectRequestsClosed == 0 ? ""
+        : $"{SubjectRequestsClosed} açık banka veri talebi kapatıldı — başvurana yanıt verin (KVKK m. 13/2; sonuç metni talepte).";
+
     public bool NeedsManualObifinAction => ObifinNotAttempted || ObifinUnreachable || SharedObifinUser
         || ObifinFailed.Count > 0 || ObifinUnowned.Count > 0;
 
@@ -312,7 +319,7 @@ public sealed class BankConnectionTerminator
     /// <summary>Silinen satır sayıları: partiler ayrı kaydedildiği için yeniden denemede birikir.</summary>
     private sealed class Tally
     {
-        public int Transactions, Matches, Memories, Gaps, Accounts, AccountsScrubbed, BankConnections;
+        public int Transactions, Matches, Memories, Gaps, Accounts, AccountsScrubbed, BankConnections, SubjectRequestsClosed;
         public Guid? CopyDeletionId;
     }
 
@@ -356,7 +363,7 @@ public sealed class BankConnectionTerminator
             obifin.Unreachable, obifin.Shared);
         return new BankRemovalResult(obifin.Removed, obifin.Failed, obifin.Unowned, obifin.Unreachable, obifin.Shared,
             obifin.NotAttempted, tally.Transactions, tally.Matches, tally.Memories, tally.Gaps, tally.Accounts,
-            tally.AccountsScrubbed, tally.BankConnections, tally.CopyDeletionId);
+            tally.AccountsScrubbed, tally.BankConnections, tally.CopyDeletionId, tally.SubjectRequestsClosed);
     }
 
     /// <summary>Lisansın banka verisini <see cref="BatchSize"/>'lık partilerle siler: her parti imha kaydını AYNI SaveChanges'te
@@ -482,6 +489,7 @@ public sealed class BankConnectionTerminator
         tally.AccountsScrubbed += scrubbed;
         tally.Accounts += lateAccounts;
         tally.BankConnections += lateBankConnections;
+        tally.SubjectRequestsClosed += closedRequests;
         tally.CopyDeletionId = copyId ?? tally.CopyDeletionId;
     }
 

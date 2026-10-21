@@ -1086,16 +1086,19 @@ public sealed class BankConnectionTerminatorTests
         db.BankSubjectRequests.AddRange(open, alreadyClosed, otherOpen);
         await db.SaveChangesAsync(); db.ChangeTracker.Clear();
 
+        BankRemovalResult result;
         if (remove)
-            await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+            result = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
                 CancellationToken.None);
         else
         {
             await Terminator(db, client).StopAsync(lic, CancellationToken.None);   // yerel silme yalnız durdurulmuş bağlantıda
-            await Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor,
-                CancellationToken.None);
+            result = await Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd,
+                DataDestruction.SystemActor, CancellationToken.None);
         }
 
+        // m. 13/2: yanıt yükümlülüğü sürer; kapanan talep sayısı yöneticinin bildirimine ve hizmet sonu e-postasına gider.
+        result.SubjectRequestsClosed.Should().Be(1);
         var rows = await db.BankSubjectRequests.AsNoTracking().ToDictionaryAsync(r => r.Id);
         rows[open.Id].ClosedAt.Should().NotBeNull();
         rows[open.Id].IbanHash.Should().BeNull();
