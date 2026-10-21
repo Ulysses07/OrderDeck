@@ -11,14 +11,18 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 /// </summary>
 public sealed class RaceSaveHook : SaveChangesInterceptor
 {
-    private Func<Task>? _action;
+    private Func<DbContext, Task>? _action;
     private bool _repeat;
     private int _running;
     private int _concurrencyFailures;
 
     public int ConcurrencyFailures => Volatile.Read(ref _concurrencyFailures);
 
-    public void Once(Func<Task> action)
+    public void Once(Func<Task> action) => Once(_ => action());
+
+    /// <summary><see cref="Once(Func{Task})"/>; eylem kaydedilmekte olan bağlamı görür — kancanın hangi kayıtta
+    /// tetiklendiğini kanıtlamak için.</summary>
+    public void Once(Func<DbContext, Task> action)
     {
         _repeat = false;
         Volatile.Write(ref _action, action);
@@ -27,7 +31,7 @@ public sealed class RaceSaveHook : SaveChangesInterceptor
     public void Always(Func<Task> action)
     {
         _repeat = true;
-        Volatile.Write(ref _action, action);
+        Volatile.Write(ref _action, _ => action());
     }
 
     public void Disarm() => Volatile.Write(ref _action, null);
@@ -39,7 +43,7 @@ public sealed class RaceSaveHook : SaveChangesInterceptor
         try
         {
             var action = _repeat ? Volatile.Read(ref _action) : Interlocked.Exchange(ref _action, null);
-            if (action is not null) await action();
+            if (action is not null) await action(eventData.Context!);
         }
         finally
         {

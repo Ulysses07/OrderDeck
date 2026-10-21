@@ -3,6 +3,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -109,6 +110,37 @@ public sealed class PersonBalanceReversalRaceTests : IAsyncLifetime
             : StatusAsync(() => kit.PanelReverseAsync(ex.I, ex.K))));
 
         ShouldHaveSingleWinner(results);
+        await ShouldBeReversedOnceAsync(kit, ex);
+    }
+
+    /// <summary>
+    /// §8.2-3, belirlenimli: N01 hakemi (<c>IsDuplicateReversal</c> → <c>already-reversed</c>). Paralel testler bu dalı
+    /// yalnız şansa bağlı sınar: istekler sıraya girerse kaybedenlerin hepsi hızlı yoldan 409 alır ve dal bozulsa da
+    /// yeşil kalırlar. Burada rakip geri alma, dış geri almanın SaveChanges'i içinde, SQL gitmeden commit eder. EF defter
+    /// INSERT'lerini bakiye UPDATE'lerinden önce gönderir; dış istek jetona değil tekil indekse çarpar.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Kayit_aninda_commit_eden_rakip_geri_almada_kaybeden_N01_ile_409_already_reversed_alir(bool panelRival)
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var ex = await kit.Example1Async();
+        var atReversalSave = false;
+        _factory.Hook.Once(async saving =>
+        {
+            // Hızlı yoldan önce tetiklenseydi dış istek N01'e hiç varmazdı: kanca onun kaydında olmalı.
+            atReversalSave = saving.ChangeTracker.Entries<CustomerBalanceTransaction>()
+                .Any(e => e.State == EntityState.Added && e.Entity.ReversesTransactionId == ex.K);
+            (await (panelRival ? kit.PanelReverseAsync(ex.I, ex.K) : kit.ReverseAsync(ex.K))).EnsureSuccessStatusCode();
+        });
+
+        var result = await StatusAsync(() => kit.ReverseAsync(ex.K));
+
+        atReversalSave.Should().BeTrue("rakip, dış geri almanın SaveChanges'inde commit etmeli");
+        result.Should().Be((HttpStatusCode.Conflict, "already-reversed"));
+        _factory.Hook.ConcurrencyFailures.Should().Be(0,
+            "jeton çakışması da yeniden denemede hızlı yoldan already-reversed'a varırdı; kaybeden N01'de düşmeli");
         await ShouldBeReversedOnceAsync(kit, ex);
     }
 
