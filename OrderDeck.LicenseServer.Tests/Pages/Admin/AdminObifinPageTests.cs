@@ -116,6 +116,13 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         }
     }
 
+    /// <summary>Hareket silen her kayıt eşzamanlı bir eşleştirme yazısıyla çakışır (yeniden deneme de): silme yarıda kalır.</summary>
+    private sealed class ConflictingDeleteApiFactory : ApiFactory
+    {
+        private readonly BankConnectionTerminatorTests.TransactionDeleteConflict _conflict = new();
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(_conflict);
+    }
+
     private sealed class StubObifinApiFactory : ApiFactory
     {
         public PageObifin Obifin { get; } = new();
@@ -1372,6 +1379,38 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             .Should().BeTrue();
         (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
             .QuerySelector($"tr[data-deletion='{deletion.Id}']").Should().BeNull("teyit edilen satır listeden çıkar");
+    }
+
+    [Fact]
+    public async Task Kaldir_ve_sil_yarida_kalirsa_500_degil_bildirim_durdurma_denetime_girer()
+    {
+        // İkinci jeton çakışması ham istisna olarak yukarı çıksaydı yönetici 500 görür, ilk adımda kaydedilmiş durdurma (hizmet
+        // sonu sayacı işliyor) denetime hiç girmezdi.
+        using var factory = new ConflictingDeleteApiFactory();
+        var lic = await SeedLicenseAsync(factory);
+        await SeedRawConnectionAsync(factory, lic);
+        await SeedShadowDataAsync(factory, lic);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        string key;
+        using (var scope = factory.Services.CreateScope())
+            key = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().Licenses.Where(l => l.Id == lic)
+                .Select(l => l.LicenseKey).SingleAsync();
+
+        var resp = await PostAsync(client, "Remove", new Dictionary<string, string>
+        {
+            ["LicenseId"] = lic.ToString(), ["ConfirmLicenseKey"] = key[^6..],
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "danger")).Should().Contain(BankConnectionTerminator.DeleteIncompleteMessage);
+        using var verify = factory.Services.CreateScope();
+        var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic)).Status
+            .Should().Be(ObifinConnectionStatus.Disabled);
+        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinConnectionStop && a.TargetId == lic.ToString()))
+            .Should().BeTrue("bağlantı durduruldu; silme yarıda kalsa da denetime girer");
+        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinConnectionRemove && a.TargetId == lic.ToString()))
+            .Should().BeFalse();
     }
 
     [Fact]

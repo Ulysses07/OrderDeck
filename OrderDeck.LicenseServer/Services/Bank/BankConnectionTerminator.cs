@@ -43,6 +43,14 @@ public sealed record BankRemovalResult(IReadOnlyList<long> ObifinRemoved, IReadO
     }
 }
 
+/// <summary>Silme yeniden denemede de eşzamanlı bir eşleştirme yazısıyla çakıştı ve yarıda kaldı (kaydedilmiş partiler gitti,
+/// imha kayıtları onları sayar; düşen partinin izi atıldı). İlk adım kalır: "Kaldır ve sil"de bağlantı durdurulmuş, hesap reddinde
+/// onay kaldırılmıştır. Yönetici sayfası mesajı gösterir; yeniden basmak kalanı siler. Mesajda kimlik yok.</summary>
+public sealed class BankDeletionIncompleteException : ObifinValidationException
+{
+    public BankDeletionIncompleteException(string message) : base(message) { }
+}
+
 /// <summary>Hesap reddinin sonucu (KVKK Ö-10): silinen hareket, eşleşme ve IBAN bağı (öğrettiği bağlar ve kalan doğrulaması
 /// kalmadığı için silinen bağlar); açılan dekont gap'i.</summary>
 public sealed record BankAccountRejectionResult(int Transactions, int Matches, int Memories, int GapsReopened);
@@ -64,7 +72,8 @@ public sealed record BankAccountRejectionResult(int Transactions, int Matches, i
 /// <para>Yerel silme <see cref="BatchSize"/>'lık partilerle yapılır (saklama işinin kalıbı): lisansın bütün satırları bir
 /// kerede yüklenmez, her parti imha kaydını aynı SaveChanges'te yazar; bağlantının kendisi ya da <c>BankDataPurgedAt</c>
 /// işareti EN SON. Eşzamanlı bir eşleştirme yazısıyla (jeton) çakışırsa bütün silme bir kez baştan yeniden denenir (her parti
-/// sorgusu baştan koşar; sayılar birikir, düşen partinin izi ve imha kaydı izleyiciden atılır). Günlüğe kimlik bilgisi yazılmaz;
+/// sorgusu baştan koşar; sayılar birikir, düşen partinin izi ve imha kaydı izleyiciden atılır); ikinci çakışmada izleyici boşalır
+/// ve yönetici sayfasının gösterdiği <see cref="BankDeletionIncompleteException"/> fırlar. Günlüğe kimlik bilgisi yazılmaz;
 /// yalnız lisans kimliği, sayılar ve istisna türü.</para>
 /// <para><b>Obifin teyidi</b> (<see cref="ConfirmObifinCopyDeletedAsync"/>): "Kaldır ve sil"in açtığı <c>ObifinCopyDeletions</c>
 /// kaydı yöneticinin "Teyit alındı"sıyla kapanır, imha kaydı yazılır. <b>Hesap reddi</b> (<see cref="RejectAccountAsync"/>):
@@ -91,6 +100,10 @@ public sealed class BankConnectionTerminator
     /// <summary>Yalnız yerel silme durdurulmamış bağlantıda (ör. hizmet sonu işi seçtikten sonra yönetici Etkinleştir'e bastı):
     /// silme yapılmadı ya da son adım (işaret, onaylı hesabın boşaltılması) yazılmadı.</summary>
     public const string NotStoppedMessage = "Bağlantı durdurulmuş değil (yeniden etkinleştirilmiş olabilir); yerel silme yapılmadı.";
+    /// <summary>Banka verisinin silinmesi yeniden denemede de çakıştı (<see cref="BankDeletionIncompleteException"/>).</summary>
+    public const string DeleteIncompleteMessage = "Banka verisi silinirken eşzamanlı bir eşleştirme yazımıyla iki kez çakışıldı; silme yarıda kaldı. Bağlantı durduruldu; yeniden deneyin.";
+    /// <summary>Hesap reddinin silmesi yeniden denemede de çakıştı (<see cref="BankDeletionIncompleteException"/>).</summary>
+    public const string RejectIncompleteMessage = "Hesabın verisi silinirken eşzamanlı bir eşleştirme yazımıyla iki kez çakışıldı; silme yarıda kaldı. Onay kaldırıldı; yeniden deneyin.";
 
     private readonly LicenseDbContext _db;
     private readonly IObifinClient _client;
@@ -295,6 +308,16 @@ public sealed class BankConnectionTerminator
                 _log.LogInformation("Banka verisi silinirken eşzamanlı bir eşleştirme yazısıyla çakışıldı — lisans={LicenseId}; " +
                     "kalan satırlar bir kez yeniden siliniyor", licenseId);
             }
+            catch (DbUpdateConcurrencyException)
+            {
+                // İkinci çakışma: repo kalıbı (ObifinConnectionService.SaveAsync, bağdaştırıcı) — izleyici boşalır, yönetici
+                // gösterilebilir mesaj görür (500 değil). Bağlantı ilk adımda durduruldu; yeniden basmak kalanı siler.
+                _db.ChangeTracker.Clear();
+                _log.LogWarning("Banka verisi silinirken yeniden denemede de eşzamanlı bir eşleştirme yazısıyla çakışıldı — " +
+                    "lisans={LicenseId}; silme yarıda kaldı (hareket={Transactions}, eşleşme={Matches} silindi)", licenseId,
+                    tally.Transactions, tally.Matches);
+                throw new BankDeletionIncompleteException(DeleteIncompleteMessage);
+            }
         }
         _log.LogWarning("Banka verisi silindi — lisans={LicenseId}, tetikleyici={Trigger}, yalnız yerel={Local}: hareket={Transactions}, " +
             "eşleşme={Matches}, IBAN bağı={Memories}, gap={Gaps}, silinen hesap={Accounts}, boşaltılan onaylı hesap={Scrubbed}, " +
@@ -452,7 +475,8 @@ public sealed class BankConnectionTerminator
     /// yedek, reddedilmiş hesabın onayını da geri getirir; numara olmasaydı hangi hesabın yeniden reddedileceği bilinmez, çekim
     /// o hesabın hareketini yeniden yazardı.</para>
     /// <para>Hesap satırı kalır: yer tutucudur, Obifin'den geldikçe onaysız sayılır. Eşzamanlı eşleştirme yazısıyla çakışırsa bir
-    /// kez yeniden denenir (düşen partinin izi ve imha kaydı atılır). <see cref="BankHasher"/> istemez.</para>
+    /// kez yeniden denenir (düşen partinin izi ve imha kaydı atılır); ikinci çakışma <see cref="BankDeletionIncompleteException"/>
+    /// (<see cref="RejectIncompleteMessage"/>). <see cref="BankHasher"/> istemez.</para>
     /// </summary>
     public async Task<BankAccountRejectionResult> RejectAccountAsync(Guid accountId, string actor, CancellationToken ct)
     {
@@ -514,6 +538,15 @@ public sealed class BankConnectionTerminator
             {
                 // Düşen partinin izi (silmeler, açılan gap, geri çekilen bağ ve imha kayıtları) atılır; kaydedilmiş partiler gitti.
                 _db.ChangeTracker.Clear();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // İkinci çakışma: kaldırma yolundaki gibi gösterilebilir hata (onay kaldırıldı; yeniden basmak kalanı siler).
+                _db.ChangeTracker.Clear();
+                _log.LogWarning("Hesap reddinin silmesi yeniden denemede de eşzamanlı bir eşleştirme yazısıyla çakıştı — " +
+                    "lisans={LicenseId}, hesap={ObifinAccountId}; yarıda kaldı (hareket={Transactions} silindi)", licenseId,
+                    obifinAccountId, transactions);
+                throw new BankDeletionIncompleteException(RejectIncompleteMessage);
             }
         }
         _log.LogWarning("Banka hesabı reddedildi, verisi silindi — lisans={LicenseId}, hesap={ObifinAccountId}: hareket={Transactions}, " +

@@ -420,6 +420,15 @@ public class IndexModel : PageModel
             r = await _terminator.RemoveAndDeleteAsync(LicenseId, DataDestruction.Triggers.AdminRemove,
                 DataDestruction.ActorOf(User), CancellationToken.None);
         }
+        catch (BankDeletionIncompleteException ex)
+        {
+            // Silme yarıda kaldı ama ilk adımın durdurması kaydedildi (hizmet sonu sayacı işliyor): durdurma denetime girer.
+            LogHandled("Remove", ex);
+            await _audit.LogAsync(AuditEvents.ObifinConnectionStop, AuditTargets.ObifinConnection, LicenseId.ToString(),
+                new { removeIncomplete = true }, CancellationToken.None);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
         catch (ObifinValidationException ex)
         {
             LogHandled("Remove", ex);

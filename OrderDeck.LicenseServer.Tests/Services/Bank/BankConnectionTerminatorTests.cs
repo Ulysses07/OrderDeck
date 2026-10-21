@@ -42,6 +42,24 @@ public sealed class BankConnectionTerminatorTests
         }
     }
 
+    /// <summary>Hareket silen HER kayıtta eşzamanlı bir eşleştirme yazısını taklit eder (jeton çakışması): yeniden deneme de
+    /// çakışır. Sayfa testi de kullanır.</summary>
+    internal sealed class TransactionDeleteConflict : SaveChangesInterceptor
+    {
+        public int Thrown { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<BankTransaction>().Any(e => e.State == EntityState.Deleted))
+            {
+                Thrown++;
+                throw new DbUpdateConcurrencyException("eşzamanlı eşleştirme yazısı (test)");
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
     private sealed class TerminatorObifin : IObifinClient
     {
         public List<ObifinBankConnectionDto> Connections { get; } = new();
@@ -625,6 +643,47 @@ public sealed class BankConnectionTerminatorTests
         await svc.UpsertAsync(lic, "", before.UserCode, $"pw-{Guid.NewGuid():N}", null, CancellationToken.None);
         var saved = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
         (saved.Status, saved.BankDataPurgedAt).Should().Be((ObifinConnectionStatus.Disabled, before.BankDataPurgedAt));
+    }
+
+    [Fact]
+    public async Task Kaldir_ve_sil_yeniden_denemede_de_cakisirsa_yoneticiye_gosterilebilir_hata_baglanti_durdurulmus_kalir()
+    {
+        // İkinci jeton çakışması ham DbUpdateConcurrencyException olarak yukarı çıksaydı sayfa yalnız ObifinValidationException
+        // yakaladığı için yönetici 500 görürdü; durdurma kaydedilmiş, denetim satırı yazılmamış olurdu. Repo kalıbı
+        // (ObifinConnectionService.SaveAsync, bağdaştırıcı): ikinci çakışma gösterilebilir hataya döner, izleyici boşalır.
+        var conflict = new TransactionDeleteConflict();
+        using var db = NewDb(conflict); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+
+        var act = () => Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<BankDeletionIncompleteException>())
+            .WithMessage(BankConnectionTerminator.DeleteIncompleteMessage);
+        conflict.Thrown.Should().Be(2, "bir kez yeniden denendi");
+        db.ChangeTracker.Entries().Should().BeEmpty("düşen denemenin izi kapsamın sonraki kaydına taşınmasın");
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        (conn.Status, conn.DisabledByAdmin).Should().Be((ObifinConnectionStatus.Disabled, true),
+            "ilk adımın durdurması kalır (güvenli yön)");
+        (await db.ObifinCopyDeletions.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Hesap_reddi_yeniden_denemede_de_cakisirsa_yoneticiye_gosterilebilir_hata_onay_kaldirilmis_kalir()
+    {
+        var conflict = new TransactionDeleteConflict();
+        using var db = NewDb(conflict); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var account6 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 6);
+
+        var act = () => Terminator(db, client).RejectAccountAsync(account6.Id, "yonetici-1", CancellationToken.None);
+
+        (await act.Should().ThrowAsync<BankDeletionIncompleteException>())
+            .WithMessage(BankConnectionTerminator.RejectIncompleteMessage);
+        conflict.Thrown.Should().Be(2);
+        db.ChangeTracker.Entries().Should().BeEmpty();
+        (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == account6.Id)).ApprovedAt
+            .Should().BeNull("onay en önce kaldırıldı: çekim o hesabın yeni hareketini yazmaz");
     }
 
     [Fact]
