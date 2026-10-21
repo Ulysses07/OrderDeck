@@ -664,8 +664,9 @@ public sealed class BankDataCleanupJobTests
     {
         // Eşleşme satırı bugünkü kararı, denetim satırı o günkü eşlemeyi gösterir: kaldırılıp başka müşteriye verilmiş kararın
         // müşterisi eski satıra yazılsaydı iz yanlışa dönerdi (m. 4/2-b). Ad elle eşlemenin aramasıyla (kimlik anahtarı) aranır:
-        // lisansta tek müşteriyi gösteriyorsa o, birden çoğunu gösteriyorsa yalnız eşleşmenin bugünkü müşterisi onlardan biriyse
-        // o. Birleştirilmiş kopya kimliği asıl kayıtla taşır, kişi asıl kayıttır (birleştirme eşleşmeyi de oraya taşır).
+        // lisansta tek müşteriyi gösteriyorsa o, birden çoğunu gösteriyorsa yalnız eşleşmenin bugünkü kararı denetim satırından
+        // önce verilmişse (aynı karar) ve müşterisi onlardan biriyse o. Birleştirilmiş kopya kimliği asıl kayıtla taşır, kişi asıl
+        // kayıttır (birleştirme eşleşmeyi de oraya taşır).
         // KVKK'yla silinmiş müşteriye çevrilmez (silme hareketle bağını kopardı); belirsiz ya da bulunamayan ad boşalır.
         using var db = NewDb(); var lic = Guid.NewGuid();
         var first = Projection(lic, "ilk_musteri");
@@ -687,18 +688,23 @@ public sealed class BankDataCleanupJobTests
         var unmatched = ManualMatchAudit(Decided(null).Id, "Ilk_Musteri");          // first'e eşlendi, kaldırıldı; ad büyük harfle
         var ofPurged = ManualMatchAudit(Decided(null).Id, "silinen_musteri");       // silme kararın müşterisini boşalttı
         var twinDecided = ManualMatchAudit(Decided(twinInstagram.Id).Id, "ikiz_musteri");
+        // Youtube ikizine eşlendi, kaldırıldı; instagram ikizinin dekontu sonra havaleye bağlandı: bugünkü karar denetim
+        // satırından SONRA verildi, satırın kararı değil (kaldırma DecidedAt'i boşaltır, yeni karar daha geç an taşır).
+        var twinRedecided = ManualMatchAudit(Decided(twinInstagram.Id).Id, "ikiz_musteri");
+        twinRedecided.OccurredAt = DateTimeOffset.UtcNow.AddHours(-1);
         var twinUnmatched = ManualMatchAudit(Decided(null).Id, "ikiz_musteri");
         var unknown = ManualMatchAudit(Decided(null).Id, "olmayan_musteri");
-        db.AuditLogs.AddRange(redecided, unmatched, ofPurged, twinDecided, twinUnmatched, unknown);
+        db.AuditLogs.AddRange(redecided, unmatched, ofPurged, twinDecided, twinRedecided, twinUnmatched, unknown);
         await db.SaveChangesAsync();
 
         var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
 
-        r.AuditUsernamesRewritten.Should().Be(6);
+        r.AuditUsernamesRewritten.Should().Be(7);
         (await DetailsOf(db, redecided)).Should().Be(CustomerIdDetails(first.Id), "eşlenen first'tü, bugünkü karar second'ın");
         (await DetailsOf(db, unmatched)).Should().Be(CustomerIdDetails(first.Id));
         (await DetailsOf(db, ofPurged)).Should().BeNull();
         (await DetailsOf(db, twinDecided)).Should().Be(CustomerIdDetails(twinInstagram.Id));
+        (await DetailsOf(db, twinRedecided)).Should().BeNull("karar denetim satırından sonra verildi, o günkü eşleme değil");
         (await DetailsOf(db, twinUnmatched)).Should().BeNull("ad iki müşteriyi gösteriyor, hangisi olduğu tahmin edilmez");
         (await DetailsOf(db, unknown)).Should().BeNull();
     }

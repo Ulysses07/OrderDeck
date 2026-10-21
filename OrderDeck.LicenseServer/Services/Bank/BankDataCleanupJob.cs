@@ -606,7 +606,10 @@ public sealed class BankDataCleanupJob
     /// yazılsaydı iz yanlışa dönerdi (m. 4/2-b). Ad elle eşlemenin aramasıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>)
     /// hareketin lisansındaki asıl kayıtlarda aranır (birleştirilmiş kopya kimliği asıl kayıtla taşır, kişi asıl kayıttır;
     /// birleştirme eşleşmeyi de oraya taşır). Tek kayıt bulunursa o; birden çoksa (aynı ad başka platformda) yalnız eşleşmenin
-    /// bugünkü müşterisi onlardan biriyse o, değilse hangisi olduğu tahmin edilmez. KVKK'yla silinmiş müşteriye çevrilmez:
+    /// bugünkü kararı denetim satırından önce verilmişse (<c>DecidedAt ≤ OccurredAt</c>) ve müşterisi onlardan biriyse o, değilse
+    /// hangisi olduğu tahmin edilmez. Bu ölçüt aynı kararı kanıtlar: elle eşleme kararın anını denetim satırından önce yazar,
+    /// kaldırma anı boşaltır, sonraki her karar (yeni elle eşleme, dekont bağdaştırması) daha geç bir an taşır; kaldırılıp aynı
+    /// adı taşıyan başka platformdaki ikize verilmiş karar eski satıra yazılmaz. KVKK'yla silinmiş müşteriye çevrilmez:
     /// silme bağı eşleşmede (Görev 15) ve yeni biçimli denetim satırında (<c>ShopperPurgeService</c> 3c,
     /// <see cref="BankSubjectScrub.ManualMatchAudits"/>) kopardı, eski satır onu yeniden kurmamalı. Bulunamayan, belirsiz ya da
     /// hareketi silinmiş (180 gün; lisansı bilinmez) satırın ayrıntısı boşaltılır.</para>
@@ -627,9 +630,10 @@ public sealed class BankDataCleanupJob
                 .Select(t => new { t.Id, t.LicenseId }).ToListAsync(ct))
             .Where(t => !_dryRunDeleted.Contains(t.Id))
             .ToDictionary(t => t.Id, t => t.LicenseId);
-        var decided = await _db.PaymentMatches.AsNoTracking()
-            .Where(m => txIds.Contains(m.BankTransactionId) && m.ActualWpfCustomerId != null)
-            .ToDictionaryAsync(m => m.BankTransactionId, m => m.ActualWpfCustomerId!.Value, ct);
+        var decided = (await _db.PaymentMatches.AsNoTracking()
+                .Where(m => txIds.Contains(m.BankTransactionId) && m.ActualWpfCustomerId != null)
+                .Select(m => new { m.BankTransactionId, Customer = m.ActualWpfCustomerId!.Value, m.DecidedAt }).ToListAsync(ct))
+            .ToDictionary(m => m.BankTransactionId, m => (m.Customer, m.DecidedAt));
         var keys = rows.ToDictionary(a => a.Id,
             a => UsernameOf(a.Details!) is { } username ? WpfCustomerProjection.IdentityKeyOf(username) : "");
         var licenses = owners.Values.Distinct().ToList();
@@ -650,8 +654,10 @@ public sealed class BankDataCleanupJob
             if (owner is { } lic && keys[a.Id].Length > 0)
             {
                 var found = candidates[(lic, keys[a.Id])].ToList();
+                // Eşitlik bozma yalnız satırın kendi kararıyla: denetim satırından önce verilmiş karar (metodun özeti).
                 var pick = found.Count == 1 ? found[0]
-                    : decided.TryGetValue(txId, out var actual) ? found.FirstOrDefault(c => c.Id == actual) : null;
+                    : decided.TryGetValue(txId, out var d) && d.DecidedAt <= a.OccurredAt
+                        ? found.FirstOrDefault(c => c.Id == d.Customer) : null;
                 if (pick is { Purged: false }) customer = pick.Id;
             }
             a.Details = customer is { } id ? BankSubjectScrub.ManualMatchAuditDetails(id) : null;
