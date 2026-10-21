@@ -289,11 +289,12 @@ public sealed class BankConnectionTerminatorTests
     [Fact]
     public async Task Obifine_ulasilamazsa_yerel_silme_yine_yapilir_elle_islem_istenir()
     {
+        // "Kaldır ve sil" yalnız yöneticinin eylemi (karar 12): tetikleyici admin-remove, yapan yöneticinin kimliği.
         using var db = NewDb(); var client = new TerminatorObifin { ListFails = () => new HttpRequestException("ağ") };
         var lic = await SeedAsync(db, client);
 
-        var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.ServiceEnd,
-            DataDestruction.SystemActor, CancellationToken.None);
+        var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+            CancellationToken.None);
 
         r.ObifinUnreachable.Should().BeTrue();
         r.NeedsManualObifinAction.Should().BeTrue();

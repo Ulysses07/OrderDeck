@@ -31,8 +31,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// öneriyi yeniden hesaplar. Kimlikler admin formundan gelir: bu kural serviste uygulanır.</para>
 /// <para><b>Kaldırma dekontu ölçümden düşürmez.</b> Dekonta bağlı satırın kaldırılmasında dekont açık gap'e döner, aynı
 /// SaveChanges'te: gap'i varsa (gap çözümüyle bağlanmışsa) yeniden açılır, yoksa (onayda bağlanmışsa)
-/// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır. Bu kural olmasaydı dekont ne bağlı ne gap kümesinde
-/// kalırdı, çözülmüş gap de bağı kalkmış hareketi gösterirdi. Kaldırılan hareketle gap çözümü koşulmaz (yalnız eşleştirici yeniden
+/// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır (<see cref="ReturnPaymentsToGapsAsync"/>; hesap reddi de
+/// bunu kullanır). Bu kural olmasaydı dekont ne bağlı ne gap kümesinde kalırdı, çözülmüş gap de bağı kalkmış hareketi gösterirdi. Kaldırılan hareketle gap çözümü koşulmaz (yalnız eşleştirici yeniden
 /// hesaplar): admin'in kaldırdığı bağ kendiliğinden geri gelmez.</para>
 /// <para>Sonradan gelen hareket açık gap'i ancak dekontun aday seçimi yeniden koşulduğunda TEK aday kendisiyse çözer
 /// (spec §3 ResolvedBankTransactionId). Onaydaki belirsizlik sürüyorsa (iki aday hâlâ bağsız) ya da aynı tutarlı birden
@@ -276,20 +276,8 @@ public sealed class PaymentMatchReconciler
         if (match is not null)
         {
             var now = DateTimeOffset.UtcNow;
-            if (match.PaymentId is { } paymentId)
-            {
-                // Dekont ölçümde kalır (sınıf özeti). Ödeme başına tek gap (tekil indeks): varsa yeniden açılır, yoksa yazılır.
-                var gap = await _db.PaymentMatchGaps.FirstOrDefaultAsync(g => g.PaymentId == paymentId, ct);
-                if (gap is null)
-                {
-                    _db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = licenseId, PaymentId = paymentId,
-                        Reason = PaymentMatchGapReason.UnlinkedByAdmin, CreatedAt = now });
-                }
-                else
-                {
-                    gap.ResolvedAt = null; gap.ResolvedBankTransactionId = null;
-                }
-            }
+            // Dekont ölçümde kalır (sınıf özeti; kural ReturnPaymentsToGapsAsync'te, hesap reddiyle ortak).
+            if (match.PaymentId is { } paymentId) await ReturnPaymentsToGapsAsync(licenseId, [paymentId], ct);
             match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null; match.IbanConfirmedAt = null;
             match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, UnmatchAsync yeniden hesaplatır
             // Öneri durumla birlikte boşaltılır: yeniden hesap düşerse satır tutarlı "öneri yok" kalır (sınıf özeti).
@@ -300,6 +288,25 @@ public sealed class PaymentMatchReconciler
         await _db.SaveChangesAsync(ct);
         // Kaydedildi: yeniden hesap bu denemenin dışında, UnmatchAsync'te koşar (sınıf özeti).
         attempts.Recompute = match is not null ? tx : null;
+    }
+
+    /// <summary>Kaldırma kuralı (sınıf özeti, "Kaldırma dekontu ölçümden düşürmez"): dekont bağı kaldırılan ödemeler açık gap'e
+    /// döner. Gap'i varsa (gap çözümüyle bağlanmışsa) yeniden açılır, yoksa (onayda bağlanmışsa)
+    /// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır; ödeme başına tek gap (tekil indeks). Kuralın TEK yeri:
+    /// kaldırma (<see cref="UnmatchAsync"/>) ve hesap reddi (<c>BankConnectionTerminator.RejectAccountAsync</c>) kullanır, biri
+    /// değişirse öbürü ayrışmasın. Değişen ve eklenen satır izlenir, kaydetmez: çağıranın SaveChanges'i bağın kaldırılmasıyla
+    /// birlikte yazar. Açılan ya da yazılan gap sayısını döner.</summary>
+    public async Task<int> ReturnPaymentsToGapsAsync(Guid licenseId, IReadOnlyCollection<Guid> paymentIds, CancellationToken ct)
+    {
+        var ids = paymentIds.Distinct().ToList();
+        if (ids.Count == 0) return 0;
+        var existing = await _db.PaymentMatchGaps.Where(g => ids.Contains(g.PaymentId)).ToListAsync(ct);
+        foreach (var gap in existing) { gap.ResolvedAt = null; gap.ResolvedBankTransactionId = null; }
+        var now = DateTimeOffset.UtcNow;
+        foreach (var paymentId in ids.Except(existing.Select(g => g.PaymentId)))
+            _db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = licenseId, PaymentId = paymentId,
+                Reason = PaymentMatchGapReason.UnlinkedByAdmin, CreatedAt = now });
+        return ids.Count;
     }
 
     private async Task<Guid?> ResolveWpfCustomerAsync(Guid? shopperId, Guid licenseId, CancellationToken ct)

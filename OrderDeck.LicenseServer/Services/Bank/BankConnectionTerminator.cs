@@ -420,7 +420,8 @@ public sealed class BankConnectionTerminator
     /// hareketlerden öğrenilmiş IBAN bağlarını (<c>SourceBankTransactionId</c>) <see cref="BatchSize"/>'lık partilerle siler; imha
     /// kaydı tetikleyici <c>account-rejected</c>, yapan <paramref name="actor"/>. Onay EN ÖNCE kaldırılır: arada koşan çekim turu
     /// o hesabın yeni hareketini yazmaz (çekim onayı sayfa başına taze okur; yazarsa yeniden basmak yeter, idempotent). Dekont
-    /// bağı silinen ödemenin gap'i açılır (<see cref="ReopenGapsAsync"/>).
+    /// bağı silinen ödemenin gap'i açılır: bağdaştırıcının kaldırma kuralı, tek yerde
+    /// (<see cref="PaymentMatchReconciler.ReturnPaymentsToGapsAsync"/>).
     /// <para>Başka hareketten gelen bağ kalır (Görev 10'un sonraki görev kuralı): reddedilen hesabın havalesi o bağı tazelemişse
     /// (kararı <c>IbanConfirmedAt</c> işaretli) başlangıç reddedilen hesap dışındaki kalan doğrulamalardan yeniden hesaplanır; kalan
     /// yoksa bağ silinir ve partiyle aynı SaveChanges'te imha kaydına girer (ölçüt <c>…, reddedilen hesap #N (Ö-10), kalan
@@ -473,7 +474,8 @@ public sealed class BankConnectionTerminator
                         .Where(m => m.LicenseId == licenseId && m.SourceBankTransactionId != null
                             && ids.Contains(m.SourceBankTransactionId.Value))
                         .ToListAsync(ct);
-                    var reopened = await ReopenGapsAsync(licenseId, batchMatches, ct);
+                    var reopened = await _reconciler.ReturnPaymentsToGapsAsync(licenseId,
+                        batchMatches.Where(m => m.PaymentId != null).Select(m => m.PaymentId!.Value).ToList(), ct);
                     _db.PaymentMatches.RemoveRange(batchMatches);
                     _db.CustomerIbanMemories.RemoveRange(batchMemories);
                     _db.BankTransactions.RemoveRange(batch);
@@ -503,20 +505,4 @@ public sealed class BankConnectionTerminator
     /// satırında da var). Geri yükleme prosedürü (<c>deploy/README.md</c> "Silmeleri yeniden uygula") <c>#N</c>'yi okur.
     /// <c>IbanMemoryRetentionMonths</c> önekiyle de 100 karakterlik sütuna sığar.</summary>
     public static string RejectionCriterion(long obifinAccountId) => $"reddedilen hesap #{obifinAccountId} (Ö-10)";
-
-    /// <summary>Dekont bağı silinecek eşleşmelerin ödemelerine açık gap (bağdaştırıcının kaldırma kuralı: dekont ölçümden
-    /// düşmesin): gap'i varsa yeniden açılır, yoksa <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> yazılır. İzleyiciye ekler;
-    /// partinin SaveChanges'i yazar. Açılan ya da yazılan gap sayısını döner.</summary>
-    private async Task<int> ReopenGapsAsync(Guid licenseId, List<PaymentMatch> matches, CancellationToken ct)
-    {
-        var payments = matches.Where(m => m.PaymentId != null).Select(m => m.PaymentId!.Value).Distinct().ToList();
-        if (payments.Count == 0) return 0;
-        var existing = await _db.PaymentMatchGaps.Where(g => payments.Contains(g.PaymentId)).ToListAsync(ct);
-        foreach (var g in existing) { g.ResolvedAt = null; g.ResolvedBankTransactionId = null; }
-        var now = DateTimeOffset.UtcNow;
-        foreach (var paymentId in payments.Except(existing.Select(g => g.PaymentId)))
-            _db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = licenseId, PaymentId = paymentId,
-                Reason = PaymentMatchGapReason.UnlinkedByAdmin, CreatedAt = now });
-        return payments.Count;
-    }
 }
