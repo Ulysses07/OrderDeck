@@ -983,8 +983,10 @@ public class Program
             // "Güvenlik kayıtları: 90 gün" taahhüdünü fiilen uygulayan iş bu.
             // audit-retention'dan SONRA çalışır: o zaten 24 aydan eski satırları
             // sildiği için burada işlenecek satır sayısı azalmış olur.
+            // Silme talebinin telefonunu ve kapanmış banka veri talebinin kısaltılmış IBAN'ını da 30 günde boşaltır (KVKK D-5,
+            // Ö-11); her boşaltma imha kaydı, başarılı koşu koşu kaydı bırakır (Ö-13).
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob>(
-                "security-data-retention",
+                OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob.JobId,
                 j => j.AnonymiseAsync(CancellationToken.None),
                 "40 3 * * *");  // 03:40 UTC daily
 

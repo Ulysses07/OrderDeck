@@ -80,6 +80,32 @@ public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
         doc.QuerySelector($"tr[data-request='{fresh.Id}'] [data-cell='due']")!.TextContent.Should().NotContain("gecikti");
     }
 
+    [Fact]
+    public async Task Islenmis_talepte_bosaltilmis_telefon_silindi_diye_gosterilir_satir_kalir()
+    {
+        // KVKK D-5: işlenmiş talebin telefonu 30 gün sonra boşalır (SecurityDataRetentionJob); talebin satırı kanıt olarak kalır,
+        // listede boş hücre değil "(silindi)" görünür.
+        var now = DateTimeOffset.UtcNow;
+        var cleared = new ShopperDeletionRequest { Id = Guid.NewGuid(), ShopperId = Guid.NewGuid(), PhoneAtRequest = "",
+            RequestedAt = now, HandledAt = now.AddDays(-31), HandledBy = "admin" };
+        var kept = new ShopperDeletionRequest { Id = Guid.NewGuid(), ShopperId = Guid.NewGuid(), PhoneAtRequest = TestPhone.NewE164(),
+            RequestedAt = now, HandledAt = now.AddDays(-1), HandledBy = "admin" };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.ShopperDeletionRequests.AddRange(cleared, kept);
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var html = await client.GetStringAsync(PagePath + "?handled=true");
+        var doc = await BrowsingContext.New(AngleSharp.Configuration.Default).OpenAsync(r => r.Content(html));
+
+        doc.QuerySelector($"tr[data-request='{cleared.Id}'] [data-cell='phone']")!.TextContent.Trim().Should().Be("(silindi)");
+        doc.QuerySelector($"tr[data-request='{cleared.Id}'] [data-cell='due']").Should().NotBeNull();
+        doc.QuerySelector($"tr[data-request='{kept.Id}'] [data-cell='phone']")!.TextContent.Trim().Should().Be(kept.PhoneAtRequest);
+    }
+
     private async Task<(Guid ShopperId, Guid RequestId)> SeedAsync()
     {
         var now = DateTimeOffset.UtcNow;

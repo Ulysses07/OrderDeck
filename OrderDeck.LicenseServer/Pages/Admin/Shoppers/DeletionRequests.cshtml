@@ -62,7 +62,8 @@ else
             @foreach (var r in Model.Items)
             {
                 <tr data-request="@r.Id">
-                    <td><code>@r.PhoneAtRequest</code></td>
+                    @* KVKK D-5: işlenmiş talebin telefonu 30 gün sonra boşaltılır (SecurityDataRetentionJob); satır kanıt olarak kalır. *@
+                    <td data-cell="phone"><code>@(string.IsNullOrEmpty(r.PhoneAtRequest) ? "(silindi)" : r.PhoneAtRequest)</code></td>
                     <td>@r.RequestedAt.ToString("dd.MM.yyyy HH:mm")</td>
                     @{ var overdue = r.HandledAt is null && r.DueAt < Model.Now; }
                     <td data-cell="due" class="@(overdue ? "text-danger fw-bold" : "")">@r.DueAt.ToString("dd.MM.yyyy")@(overdue ? " (gecikti)" : "")</td>
