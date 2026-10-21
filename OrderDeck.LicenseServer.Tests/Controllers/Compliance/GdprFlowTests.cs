@@ -284,6 +284,16 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
         request.Resolution.Should().Be(OrderDeck.LicenseServer.Domain.Bank.BankSubjectResolution.DataDeleted);
         request.Outcome.Should().Contain("Yayıncı hesabı silindi").And.Contain("başvurana yanıt verin");
         Guid.TryParse(request.ClosedBy, out _).Should().BeTrue("kapatan yöneticinin kimliği (sub), kullanıcı adı değil");
+        // Silme Yönetmeliği md. 7/1: boşalan özet imha kaydına girer, purge'ün kayıtlarıyla aynı işlemde.
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().DataDestructionRecords.AsNoTracking()
+                .Where(x => x.RequestId == requestId).ToListAsync())
+            .Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            {
+                Target = OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService.IbanHashTarget,
+                Action = OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Actions.Nulled, RowCount = 1,
+                Trigger = OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.CustomerPurge,
+                Actor = request.ClosedBy, LicenseId = (Guid?)licenseId,
+            });
     }
 
     private static async Task<string> ReadEntryAsync(ZipArchive zip, string name)

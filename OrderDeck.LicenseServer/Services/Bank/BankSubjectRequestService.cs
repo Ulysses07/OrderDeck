@@ -38,6 +38,13 @@ public sealed class BankSubjectRequestService
     public const string OtherCopiesNotice = "Obifin'deki kopya için Obifin'e yazılı talep gönderin; bankanın kendi kayıtları bankanın sorumluluğundadır.";
     /// <summary>Silmenin imha kayıtlarının ölçütü (<see cref="DataDestructionRecord.Criterion"/>).</summary>
     public const string EraseCriterion = "ilgili kişi talebi";
+    /// <summary>Kapanışta boşalan IBAN özetinin imha kaydı hedefi. Özet takma adlı kişisel veridir, talep kapanınca amacı biter
+    /// (Silme Yönetmeliği md. 7/1): her kapanış yolu (silme, kapatma, lisansın verisinin silinmesi) talep başına bir satır yazar.</summary>
+    public const string IbanHashTarget = "BankSubjectRequests.IbanHash";
+
+    /// <summary>Özet boşaltmasının ölçütü: talebin sonuç kategorisi (kişisel veri değil). Kayıt tek başına yeniden uygulanabilsin
+    /// (Görev 13 kuralı): yedekten geri yüklenen açık talep aynı sonuçla yeniden kapatılır.</summary>
+    public static string ClosedCriterion(BankSubjectResolution resolution) => $"talep kapandı, amaç bitti ({resolution})";
 
     public sealed record TransactionRow(Guid Id, DateTimeOffset OccurredAt, decimal Amount, string Currency, string BankaKodu,
         string? IbanMasked, string? Description, string? CounterpartyName, string? TransactionCode, string? BankReference,
@@ -128,24 +135,35 @@ public sealed class BankSubjectRequestService
         return ToCsv(lookup);
     }
 
-    /// <summary>Lisansların açık taleplerini kapatır (bağlantı kaldırma, hizmet sonu yerel silmesi, yayıncı silmesi): özet boşalır,
-    /// sonuç <see cref="BankSubjectResolution.DataDeleted"/>, <paramref name="outcome"/> (çağıranın sabit metni, yönetici girdisi
-    /// değil) yazılır. Yönetici başvurana yine yanıt vermelidir. KAYDETMEZ: çağıranın silmesiyle aynı SaveChanges. Arada başka bir
-    /// yol talebi kapattıysa o kayıt jetonla düşer (çağıranın çakışma kalıbı). Kapatılan sayısını döner.</summary>
+    /// <summary>Lisansların açık taleplerini kapatır (bağlantı kaldırma, hizmet sonu yerel silmesi, yayıncı silmesi): özet boşalır
+    /// (imha kaydı talep başına, tetikleyici <paramref name="trigger"/>: çağıranın silmesi — <c>admin-remove</c>,
+    /// <c>service-end</c>, <c>customer-purge</c>), sonuç <see cref="BankSubjectResolution.DataDeleted"/>, <paramref name="outcome"/>
+    /// (çağıranın sabit metni, yönetici girdisi değil) yazılır. Yönetici başvurana yine yanıt vermelidir. KAYDETMEZ: çağıranın
+    /// silmesiyle aynı SaveChanges. Arada başka bir yol talebi kapattıysa o kayıt jetonla düşer (çağıranın çakışma kalıbı).
+    /// Kapatılan sayısını döner.</summary>
     public static async Task<int> CloseOpenForLicensesAsync(LicenseDbContext db, IReadOnlyCollection<Guid> licenseIds, string outcome,
-        string actor, DateTimeOffset now, CancellationToken ct)
+        string trigger, string actor, DateTimeOffset now, CancellationToken ct)
     {
         if (licenseIds.Count == 0) return 0;
         var open = await db.BankSubjectRequests.Where(r => licenseIds.Contains(r.LicenseId) && r.ClosedAt == null).ToListAsync(ct);
-        foreach (var r in open)
-        {
-            r.ClosedAt = now;
-            r.ClosedBy = actor;
-            r.IbanHash = null;
-            r.Resolution = BankSubjectResolution.DataDeleted;
-            r.Outcome = outcome;
-        }
+        foreach (var r in open) MarkClosed(db, r, BankSubjectResolution.DataDeleted, outcome, trigger, actor, now);
         return open.Count;
+    }
+
+    /// <summary>Kapanışın ortak adımı (silme, kapatma, lisansın verisinin silinmesi): sonuç yazılır, IBAN özeti boşalır ve
+    /// boşalması imha kaydına girer (<see cref="IbanHashTarget"/>, talep kimliğiyle; Silme Yönetmeliği md. 7/1 — özet takma adlı
+    /// kişisel veri, amacı bitti). KAYDETMEZ: kayıt kapanışla aynı SaveChanges'te, <c>ClosedAt</c> jetonu çakışırsa birlikte
+    /// düşer.</summary>
+    private static void MarkClosed(LicenseDbContext db, BankSubjectRequest request, BankSubjectResolution resolution, string outcome,
+        string trigger, string actor, DateTimeOffset now)
+    {
+        DataDestruction.Record(db, request.LicenseId, IbanHashTarget, DataDestruction.Actions.Nulled, request.IbanHash is null ? 0 : 1,
+            ClosedCriterion(resolution), trigger, actor, request.Id);
+        request.ClosedAt = now;
+        request.ClosedBy = actor;
+        request.IbanHash = null;
+        request.Resolution = resolution;
+        request.Outcome = outcome;
     }
 
     /// <summary>Erişim talebinin dışa aktarımı (KVKK m. 11/1-b). Müşteri kimliği ve kullanıcı adı YAZILMAZ: havaleyi gönderen ile
@@ -191,7 +209,7 @@ public sealed class BankSubjectRequestService
     /// verisidir).</item>
     /// </list>
     /// Yalnız gerçekten silinen sayılır (saklama işinin boşalttığı metin, zaten boş kanıt sayılmaz, o satırlara yazılmaz); sayım
-    /// kuraldan ÖNCE. Talep kapanır, özet boşalır, imha kayıtları talep kimliğiyle aynı SaveChanges'te. Eşzamanlı bir yazıyla
+    /// kuraldan ÖNCE. Talep kapanır, özet boşalır, imha kayıtları (özetinki dahil) talep kimliğiyle aynı SaveChanges'te. Eşzamanlı bir yazıyla
     /// (eşleşme jetonu, arada silinen hareket, hafıza ya da budanan denetim satırı, talebi kapatan başka bir istek) çakışırsa bir kez
     /// baştan yeniden denenir; ikinci çakışmada izleyici boşalır, <see cref="EraseConflictMessage"/> fırlar (tek kayıt: hiçbir şey
     /// silinmedi).</summary>
@@ -267,16 +285,13 @@ public sealed class BankSubjectRequestService
         foreach (var a in audits) BankSubjectScrub.ManualMatchAudit(a);
 
         var matchCount = linked.Count + evidenceOnly.Count;
-        request.ClosedAt = now;
-        request.ClosedBy = actor;
-        request.IbanHash = null;
-        request.Resolution = BankSubjectResolution.Erased;
-        request.Outcome = $"Silindi: {scrubbedTxs.Count} hareketin açıklaması/adı/ham kaydı, {memories.Count} IBAN bağı, " +
-            $"{matchCount} eşleşme satırının kimliği/kanıtı, {audits.Count} elle eşleme denetim satırının müşteri kimliği. " +
-            "Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kaldı.";
-
         // KVKK Ö-13: kişisel veri içermeyen imha kaydı, silmeyle aynı SaveChanges'te; talep kimliğiyle (geri yüklemeden sonra
-        // yeniden uygulama başvurunun aslına dayanır: özet kapanışta boşaldı). Sıfır satırlık hedef yazılmaz.
+        // yeniden uygulama başvurunun aslına dayanır: özet kapanışta boşaldı — boşalması da kayıtta). Sıfır satırlık hedef
+        // yazılmaz.
+        MarkClosed(_db, request, BankSubjectResolution.Erased,
+            $"Silindi: {scrubbedTxs.Count} hareketin açıklaması/adı/ham kaydı, {memories.Count} IBAN bağı, " +
+            $"{matchCount} eşleşme satırının kimliği/kanıtı, {audits.Count} elle eşleme denetim satırının müşteri kimliği. " +
+            "Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kaldı.", DataDestruction.Triggers.SubjectRequest, actor, now);
         void Record(string target, string action, int count) => DataDestruction.Record(_db, licenseId, target, action, count,
             EraseCriterion, DataDestruction.Triggers.SubjectRequest, actor, request.Id);
         Record(BankSubjectScrub.IbanMemoryTarget, DataDestruction.Actions.Deleted, memories.Count);
@@ -289,7 +304,8 @@ public sealed class BankSubjectRequestService
     }
 
     /// <summary>Talebi bir sonuç KATEGORİSİYLE kapatır (KVKK m. 13/3; Silme Yönetmeliği md. 12/1-c gerekçeli ret): sonuç metni
-    /// kategoriden üretilir (<see cref="OutcomeText"/>), serbest metin yok; özet boşalır. Kurallar talep kaydının ispat değerini
+    /// kategoriden üretilir (<see cref="OutcomeText"/>), serbest metin yok; özet boşalır (imha kaydıyla, aynı SaveChanges'te; jeton
+    /// çakışırsa birlikte düşer). Kurallar talep kaydının ispat değerini
     /// korur: <see cref="BankSubjectResolution.Answered"/> yalnız doğrulaması kayıtlı ERİŞİM talebinde (dışa aktarım ancak orada
     /// mümkün); <see cref="BankSubjectResolution.RejectedNotVerified"/> yalnız doğrulama kaydı OLMAYAN talepte;
     /// <see cref="BankSubjectResolution.RejectedLegalGround"/> ve <see cref="BankSubjectResolution.Withdrawn"/> her talepte.
@@ -309,11 +325,8 @@ public sealed class BankSubjectRequestService
             _ => false,
         };
         if (!allowed) throw new ObifinValidationException(ResolutionNotAllowedMessage);
-        request.ClosedAt = DateTimeOffset.UtcNow;
-        request.ClosedBy = actor;
-        request.IbanHash = null;
-        request.Resolution = resolution;
-        request.Outcome = OutcomeText(resolution);
+        MarkClosed(_db, request, resolution, OutcomeText(resolution), DataDestruction.Triggers.SubjectRequest, actor,
+            DateTimeOffset.UtcNow);
         await SaveOrClosedAsync(ct);
     }
 

@@ -141,6 +141,7 @@ public sealed class BankSubjectRequestRelationalTests : IAsyncLifetime
                 new { Target = BankSubjectScrub.LinkedMatchTarget, Action = DataDestruction.Actions.Nulled, RowCount = 1 },
                 new { Target = BankSubjectScrub.MatchEvidenceTarget, Action = DataDestruction.Actions.Nulled, RowCount = 1 },
                 new { Target = BankSubjectScrub.ManualMatchAuditTarget, Action = DataDestruction.Actions.Nulled, RowCount = 2 },
+                new { Target = BankSubjectRequestService.IbanHashTarget, Action = DataDestruction.Actions.Nulled, RowCount = 1 },
             }.Select(e => new { e.Target, e.Action, e.RowCount, Actor = "yonetici-2", Trigger = DataDestruction.Triggers.SubjectRequest,
                 LicenseId = (Guid?)lic }), "ikinci silmenin kayıtları işlemle birlikte geri alındı");
         var matches = await vdb.PaymentMatches.AsNoTracking().Where(m => m.LicenseId == lic).ToDictionaryAsync(m => m.BankTransactionId);

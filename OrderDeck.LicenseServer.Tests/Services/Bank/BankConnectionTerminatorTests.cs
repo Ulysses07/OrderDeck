@@ -1104,5 +1104,14 @@ public sealed class BankConnectionTerminatorTests
         rows[open.Id].ClosedBy.Should().Be(remove ? "yonetici-1" : DataDestruction.SystemActor);
         rows[alreadyClosed.Id].Should().BeEquivalentTo(alreadyClosed, "kapanmış talebe dokunulmaz");
         rows[otherOpen.Id].ClosedAt.Should().BeNull("başka lisansın talebi açık kalır");
+        // Silme Yönetmeliği md. 7/1: boşalan özet imha kaydına girer, tetikleyici silmenin kendisi; talep kimliğiyle.
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.Target == BankSubjectRequestService.IbanHashTarget).ToListAsync())
+            .Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            {
+                RequestId = (Guid?)open.Id, LicenseId = (Guid?)lic, Action = DataDestruction.Actions.Nulled, RowCount = 1,
+                Trigger = remove ? DataDestruction.Triggers.AdminRemove : DataDestruction.Triggers.ServiceEnd,
+                Actor = remove ? "yonetici-1" : DataDestruction.SystemActor,
+                Criterion = BankSubjectRequestService.ClosedCriterion(BankSubjectResolution.DataDeleted),
+            });
     }
 }

@@ -44,8 +44,9 @@ public enum BankSubjectResolution
 
 /// <summary>
 /// Banka hareketi karşı tarafının (Shopper hesabı olsun olmasın) erişim ya da silme talebi (KVKK m. 11, m. 13/2; ön inceleme
-/// K-7). Son tarih alış + 30 gün. IBAN düz saklanmaz: yalnız özet (talep kapanınca boşaltılır) ve kısaltılmış hâli (kapanıştan 30
-/// gün sonra boşaltılır — SecurityDataRetentionJob). Lisansa FK BİLEREK yok (ShopperDeletionRequest kalıbı): talebin belgesi
+/// K-7). Son tarih alış + 30 gün. IBAN düz saklanmaz: yalnız özet (talep kapanınca boşaltılır, imha kaydıyla —
+/// <c>BankSubjectRequestService.IbanHashTarget</c>) ve kısaltılmış hâli (kapanıştan 30 gün sonra boşaltılır —
+/// SecurityDataRetentionJob). Lisansa FK BİLEREK yok (ShopperDeletionRequest kalıbı): talebin belgesi
 /// lisans silinse de yaşar. Sonuç ve doğrulama yöntemi kişisel veri içermez.
 /// </summary>
 public sealed class BankSubjectRequest

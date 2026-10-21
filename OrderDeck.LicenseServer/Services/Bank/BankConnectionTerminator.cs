@@ -463,7 +463,7 @@ public sealed class BankConnectionTerminator
         // talebi arada kapatan başka bir istek (ClosedAt jetonu) bu kaydı düşürür, yeniden deneme taze okur.
         var closedRequests = await BankSubjectRequestService.CloseOpenForLicensesAsync(_db, [licenseId],
             (keepConnection ? "Hizmet sonu" : "Bağlantı kaldırıldı") + ": lisansın banka verisi silindi; talep kapatıldı — " +
-            "başvurana yanıt verin.", actor, now, ct);
+            "başvurana yanıt verin.", trigger, actor, now, ct);
         if (closedRequests > 0)
             _log.LogWarning("Banka verisi silindi, {Count} açık banka veri talebi kapatıldı — lisans={LicenseId}; başvurana yanıt " +
                 "verilmeli", closedRequests, licenseId);

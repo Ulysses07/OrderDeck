@@ -235,10 +235,11 @@ public sealed class AdminCustomersController : ControllerBase
         Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, Deleted<IntakeFormSubmission>());
         Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
         // KVKK K-7: yayıncının lisanslarındaki açık banka veri talepleri kapanır (lisansa FK yok: talep satırı belge olarak kalır,
-        // IBAN özeti boşalır). Yönetici başvurana yine yanıt verir. Aynı kayıtta: talebi arada kapatan başka bir istek (ClosedAt
+        // IBAN özeti boşalır, imha kaydı talep başına bu tetikleyiciyle). Yönetici başvurana yine yanıt verir. Aynı kayıtta: talebi arada kapatan başka bir istek (ClosedAt
         // jetonu) bu kaydı düşürür, aşağıdaki 409 ile operatör yeniden çağırır.
         await OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService.CloseOpenForLicensesAsync(_db, licenseIds,
-            "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.", actor, DateTimeOffset.UtcNow, ct);
+            "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.", DataDestruction.Triggers.CustomerPurge, actor,
+            DateTimeOffset.UtcNow, ct);
 
         try
         {

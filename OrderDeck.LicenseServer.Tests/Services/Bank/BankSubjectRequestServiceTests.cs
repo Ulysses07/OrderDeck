@@ -269,8 +269,15 @@ public sealed class BankSubjectRequestServiceTests
         var closed = await db.BankSubjectRequests.AsNoTracking().SingleAsync();
         closed.ClosedAt.Should().NotBeNull(); closed.IbanHash.Should().BeNull(); closed.ClosedBy.Should().Be("admin");
         closed.Resolution.Should().Be(BankSubjectResolution.Erased);
-        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).ToListAsync())
-            .Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.SubjectRequest).And.HaveCount(3);
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(x => x.RequestId == r.Id).ToListAsync();
+        records.Should().OnlyContain(x => x.Trigger == DataDestruction.Triggers.SubjectRequest).And.HaveCount(4,
+            "IBAN bağı, hareket metni, eşleşme ve kapanışta boşalan talep özeti");
+        // Özet takma adlı kişisel veri; talep kapanınca amacı biter (Silme Yönetmeliği md. 7/1): boşaltması da kayda girer.
+        records.Should().ContainSingle(x => x.Target == BankSubjectRequestService.IbanHashTarget).Which.Should().BeEquivalentTo(new
+        {
+            Action = DataDestruction.Actions.Nulled, RowCount = 1, LicenseId = (Guid?)lic, Actor = "admin",
+            Criterion = BankSubjectRequestService.ClosedCriterion(BankSubjectResolution.Erased),
+        });
 
         var again = () => Service(db).EraseAsync(r.Id, "admin", CancellationToken.None);
         await again.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankSubjectRequestService.ClosedMessage);
@@ -307,6 +314,8 @@ public sealed class BankSubjectRequestServiceTests
             [BankSubjectScrub.TransactionTextTarget] = (DataDestruction.Actions.Nulled, 2, lic, BankSubjectRequestService.EraseCriterion, "admin"),
             [BankSubjectScrub.LinkedMatchTarget] = (DataDestruction.Actions.Nulled, 1, lic, BankSubjectRequestService.EraseCriterion, "admin"),
             [BankSubjectScrub.MatchEvidenceTarget] = (DataDestruction.Actions.Nulled, 1, lic, BankSubjectRequestService.EraseCriterion, "admin"),
+            [BankSubjectRequestService.IbanHashTarget] = (DataDestruction.Actions.Nulled, 1, lic,
+                BankSubjectRequestService.ClosedCriterion(BankSubjectResolution.Erased), "admin"),
         });
     }
 
@@ -340,6 +349,7 @@ public sealed class BankSubjectRequestServiceTests
             {
                 new { Target = BankSubjectScrub.TransactionTextTarget, RowCount = 1 },
                 new { Target = BankSubjectScrub.MatchEvidenceTarget, RowCount = 1 },
+                new { Target = BankSubjectRequestService.IbanHashTarget, RowCount = 1 },
             });
         (await db.BankSubjectRequests.AsNoTracking().SingleAsync()).Outcome.Should().StartWith("Silindi: 1 hareketin");
     }
@@ -479,7 +489,7 @@ public sealed class BankSubjectRequestServiceTests
             new DateOnly(2026, 10, 19), "admin", CancellationToken.None);
 
         var closed = await BankSubjectRequestService.CloseOpenForLicensesAsync(db, [lic], "Lisansın banka verisi silindi.",
-            DataDestruction.SystemActor, DateTimeOffset.UtcNow, CancellationToken.None);
+            DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor, DateTimeOffset.UtcNow, CancellationToken.None);
         await db.SaveChangesAsync();
 
         closed.Should().Be(1);
@@ -489,6 +499,17 @@ public sealed class BankSubjectRequestServiceTests
         (await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == answered.Id)).Should().Match<BankSubjectRequest>(x =>
             x.Resolution == BankSubjectResolution.Answered && x.Outcome == BankSubjectRequestService.OutcomeText(BankSubjectResolution.Answered));
         (await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == otherOpen.Id)).ClosedAt.Should().BeNull();
+        // Özetin boşalması talep başına bir imha kaydı; tetikleyici çağıranın (kaldırma, hizmet sonu, yayıncı silmesi).
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(x => x.Target == BankSubjectRequestService.IbanHashTarget)
+            .ToListAsync();
+        records.Should().ContainSingle(x => x.RequestId == open.Id).Which.Should().BeEquivalentTo(new
+        {
+            LicenseId = (Guid?)lic, Action = DataDestruction.Actions.Nulled, RowCount = 1, Trigger = DataDestruction.Triggers.ServiceEnd,
+            Actor = DataDestruction.SystemActor, Criterion = BankSubjectRequestService.ClosedCriterion(BankSubjectResolution.DataDeleted),
+        });
+        records.Should().ContainSingle(x => x.RequestId == answered.Id, "kapanmış talebin kaydı kendi kapanışından, ikincisi yok")
+            .Which.Trigger.Should().Be(DataDestruction.Triggers.SubjectRequest);
+        records.Should().NotContain(x => x.RequestId == otherOpen.Id);
     }
 
     [Fact]
@@ -529,6 +550,21 @@ public sealed class BankSubjectRequestServiceTests
             && r.ClosedAt != null && r.IbanHash == null);
         rows[verifiedAccess.Id].Resolution.Should().Be(BankSubjectResolution.Answered);
         rows[verifiedErasure.Id].Resolution.Should().Be(BankSubjectResolution.RejectedLegalGround);
+        // Silme Yönetmeliği md. 7/1: kapanışta boşalan özet imha kaydına girer, talep başına bir satır; ölçüt sonucu taşır (geri
+        // yüklenen açık talep aynı sonuçla yeniden kapatılır). Reddedilen kapatma denemeleri kayıt yazmadı.
+        (await db.DataDestructionRecords.AsNoTracking().Select(x => new { x.RequestId, x.Target, x.Action, x.RowCount, x.Trigger,
+                x.Criterion, x.Actor, x.LicenseId }).ToListAsync())
+            .Should().BeEquivalentTo(new[]
+            {
+                (unverifiedAccess.Id, BankSubjectResolution.RejectedNotVerified),
+                (verifiedAccess.Id, BankSubjectResolution.Answered),
+                (verifiedErasure.Id, BankSubjectResolution.RejectedLegalGround),
+            }.Select(e => new
+            {
+                RequestId = (Guid?)e.Item1, Target = BankSubjectRequestService.IbanHashTarget, Action = DataDestruction.Actions.Nulled,
+                RowCount = 1, Trigger = DataDestruction.Triggers.SubjectRequest,
+                Criterion = BankSubjectRequestService.ClosedCriterion(e.Item2), Actor = "admin", LicenseId = (Guid?)lic,
+            }));
     }
 
     [Fact]
