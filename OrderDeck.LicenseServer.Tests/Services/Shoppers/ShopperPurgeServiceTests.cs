@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
 using OrderDeck.LicenseServer.Services.Sync;
@@ -926,5 +927,257 @@ public sealed class ShopperPurgeServiceTests
         var (service, _) = Build(db);
 
         (await service.PurgeAsync(Guid.NewGuid(), default)).Should().BeNull();
+    }
+
+    /// <summary>Silinen kişiye bağlı shopper bağı + projeksiyon; banka satırları için yardımcı.</summary>
+    private static (Shopper Shopper, License License, Guid PurgedId) SeedLinkedShopper(LicenseDbContext db)
+    {
+        var shopper = SeedShopper(db);
+        var license = SeedLicense(db);
+        var purgedId = Guid.NewGuid();
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m",
+            WpfCustomerId = purgedId, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram",
+            Username = "ornek_m", UpdatedAt = DateTimeOffset.UtcNow.AddDays(-3) });
+        return (shopper, license, purgedId);
+    }
+
+    private static BankTransaction BankTx(License license, string? ibanHash = null) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = license.Id, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 6,
+        BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 250m, Currency = "TL",
+        OccurredAt = DateTimeOffset.UtcNow.AddDays(-2), FetchedAt = DateTimeOffset.UtcNow.AddDays(-2),
+        Description = "HAVALE ornek_m", CounterpartyName = "Ad Soyad", RawJson = """{"Aciklama":"HAVALE ornek_m"}""",
+        CounterpartyIbanHash = ibanHash, CounterpartyIbanMasked = ibanHash is null ? null : "TR12…345",
+    };
+
+    /// <summary>Kanıt BİLEREK kullanıcı adı anahtarı taşımaz: "username=…" işaretiyle eşleşen satır kimlikten bağımsız
+    /// boşaltılırdı ve başka müşterinin satırına dokunulmadığı sınanamazdı.</summary>
+    private static PaymentMatch BankMatch(BankTransaction tx, PaymentMatchStatus status, Guid? proposed, Guid? actual) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = tx.LicenseId, BankTransactionId = tx.Id, ProposedWpfCustomerId = proposed,
+        ActualWpfCustomerId = actual, Status = status, Layer = PaymentMatchLayer.IbanMemory, Confidence = 0.9m,
+        Evidence = "iban-memory", DecidedAt = actual is null ? null : DateTimeOffset.UtcNow,
+        CreatedAt = DateTimeOffset.UtcNow.AddDays(-2), UpdatedAt = DateTimeOffset.UtcNow.AddDays(-2),
+    };
+
+    [Fact]
+    public async Task Kisiye_bagli_hareketlerin_metni_silinir_eslesme_kimlikleri_bosaltilir_olcum_sonucu_kalir()
+    {
+        // KVKK K-7: silme talebi banka verisinde de uygulanır; satırlar ölçüm kaydı olarak kalır.
+        using var db = NewDb();
+        var (shopper, license, purgedId) = SeedLinkedShopper(db);
+        var otherId = Guid.NewGuid();
+        var confirmedTx = BankTx(license); var proposedTx = BankTx(license); var manualTx = BankTx(license); var otherTx = BankTx(license);
+        var confirmed = BankMatch(confirmedTx, PaymentMatchStatus.ConfirmedByHuman, purgedId, purgedId);
+        confirmed.IbanConfirmedAt = confirmedTx.OccurredAt;
+        var proposed = BankMatch(proposedTx, PaymentMatchStatus.Proposed, purgedId, null);
+        var manualOther = BankMatch(manualTx, PaymentMatchStatus.ManualOnly, purgedId, otherId);
+        var other = BankMatch(otherTx, PaymentMatchStatus.ConfirmedByHuman, otherId, otherId);
+        db.BankTransactions.AddRange(confirmedTx, proposedTx, manualTx, otherTx);
+        db.PaymentMatches.AddRange(confirmed, proposed, manualOther, other);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        result!.BankTransactionsScrubbed.Should().Be(3);
+        foreach (var id in new[] { confirmedTx.Id, proposedTx.Id, manualTx.Id })
+        {
+            var t = await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == id);
+            t.Description.Should().BeNull(); t.CounterpartyName.Should().BeNull(); t.RawJson.Should().BeNull();
+            t.DescriptionPurgedAt.Should().NotBeNull();
+            t.Amount.Should().Be(250m, "tutar ve tarih kalır");
+        }
+        var matches = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        matches[confirmed.Id].ProposedWpfCustomerId.Should().BeNull();
+        matches[confirmed.Id].ActualWpfCustomerId.Should().BeNull();
+        matches[confirmed.Id].Evidence.Should().BeNull();
+        matches[confirmed.Id].IbanConfirmedAt.Should().BeNull("doğruladığı IBAN bağı da kişiyle birlikte silindi");
+        matches[confirmed.Id].Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman, "ölçüm sonucu durumdan okunur");
+        matches[confirmed.Id].Layer.Should().Be(PaymentMatchLayer.IbanMemory, "katman isabeti ölçümde kalır");
+        matches[proposed.Id].Status.Should().Be(PaymentMatchStatus.NoProposal);
+        matches[proposed.Id].ProposedWpfCustomerId.Should().BeNull();
+        matches[proposed.Id].Layer.Should().Be(PaymentMatchLayer.None);
+        matches[manualOther.Id].Status.Should().Be(PaymentMatchStatus.Contradicted, "öneri silinse de çelişki sayılmaya devam eder");
+        matches[manualOther.Id].ProposedWpfCustomerId.Should().BeNull();
+        matches[manualOther.Id].ActualWpfCustomerId.Should().Be(otherId, "başka müşterinin kararı kalır");
+        matches[other.Id].Evidence.Should().Be("iban-memory");
+        matches[other.Id].UpdatedAt.Should().Be(other.UpdatedAt, "başka müşterinin satırına yazılmaz");
+        (await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == otherTx.Id)).Description.Should().Be("HAVALE ornek_m");
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == license.Id).ToListAsync();
+        records.Should().Contain(r => r.Target == "BankTransactions.Description+CounterpartyName+RawJson" && r.RowCount == 3
+            && r.Trigger == DataDestruction.Triggers.ShopperPurge && r.SubjectId == shopper.Id);
+        records.Should().Contain(r => r.Target == "PaymentMatches.WpfCustomerId+Evidence" && r.RowCount == 3
+            && r.Action == DataDestruction.Actions.Nulled);
+    }
+
+    [Fact]
+    public async Task Kanitinda_kullanici_adi_gecen_baska_musterinin_hareketinin_metni_de_silinir()
+    {
+        // KVKK K-7: kanıtın kaynağı hareketin açıklamasıdır ve silinen kişinin kullanıcı adını taşır. Yalnız kanıt boşaltılsaydı
+        // açıklama, satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
+        using var db = NewDb();
+        var (shopper, license, _) = SeedLinkedShopper(db);
+        var otherId = Guid.NewGuid();
+        var namedTx = BankTx(license);
+        var named = BankMatch(namedTx, PaymentMatchStatus.ManualOnly, null, otherId);
+        named.Evidence = $"conflict:username={BankTextNormalizer.UsernameKey("ornek_m")},iban-memory";
+        db.BankTransactions.Add(namedTx);
+        db.PaymentMatches.Add(named);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        result!.BankTransactionsScrubbed.Should().Be(1);
+        var t = await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == namedTx.Id);
+        (t.Description, t.CounterpartyName, t.RawJson).Should().Be(((string?)null, (string?)null, (string?)null));
+        t.Amount.Should().Be(250m, "tutar ve tarih kalır");
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync(x => x.Id == named.Id);
+        m.Evidence.Should().BeNull();
+        m.ActualWpfCustomerId.Should().Be(otherId, "başka müşterinin kararı kalır");
+        m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == license.Id).ToListAsync();
+        records.Should().Contain(r => r.Target == "PaymentMatches.Evidence" && r.RowCount == 1,
+            "kimliği silinmeyen satırda yalnız kanıt boşaldı; kayıt fazlasını söylemez");
+        records.Should().NotContain(r => r.Target == "PaymentMatches.WpfCustomerId+Evidence");
+    }
+
+    [Fact]
+    public async Task Banka_verisi_olmayan_silme_de_ShopperId_ile_imha_kaydi_yazar()
+    {
+        // KVKK Ö-12/Ö-13: veritabanı dışındaki saatlik özet yalnız imha kaydından beslenir; banka verisi olmayan kişinin silmesi
+        // de geri yüklemeden sonra yeniden uygulanabilmeli.
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        await db.SaveChangesAsync();
+
+        await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == shopper.Id).ToListAsync())
+            .Should().Contain(r => r.Target == "Shoppers.FullName+Phone+Address+Email+TcProtected" && r.RowCount == 1
+                && r.Trigger == DataDestruction.Triggers.ShopperPurge);
+    }
+
+    [Fact]
+    public async Task Silinen_iban_hafizasinin_ozetinden_gelen_diger_hareketler_de_temizlenir()
+    {
+        using var db = NewDb();
+        var (shopper, license, purgedId) = SeedLinkedShopper(db);
+        var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = license.Id, WpfCustomerId = purgedId,
+            IbanHash = hash, IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow });
+        var fromIban = BankTx(license, hash);
+        var unrelated = BankTx(license, $"{Guid.NewGuid():N}{Guid.NewGuid():N}");
+        db.BankTransactions.AddRange(fromIban, unrelated);
+        await db.SaveChangesAsync();
+
+        await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == fromIban.Id)).Description.Should().BeNull();
+        (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == fromIban.Id)).CounterpartyIbanHash
+            .Should().Be(hash, "tanıma kodu kalır — avukat kararı (plan karar 6)");
+        (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == unrelated.Id)).Description.Should().Be("HAVALE ornek_m");
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Ayni_lisanstaki_iki_bagin_kimlikleri_ayni_satirdan_birlikte_silinir()
+    {
+        // Kişinin aynı lisansta iki bağı olabilir (Instagram ve TikTok hesabı). Öneri birine, elle karar öbürüne verilmişse satır
+        // iki kimliği de taşır: ikisi de silinir, sonuç (öneriden farklı müşteriye elle karar = çelişki) kalır. Satır imha
+        // kaydında bir kez sayılır.
+        using var db = NewDb();
+        var (shopper, license, instagramId) = SeedLinkedShopper(db);
+        var tiktokId = Guid.NewGuid();
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "tiktok", Username = "ornek_t",
+            WpfCustomerId = tiktokId, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = tiktokId, LicenseId = license.Id, Platform = "tiktok",
+            Username = "ornek_t", UpdatedAt = DateTimeOffset.UtcNow.AddDays(-3) });
+        var tx = BankTx(license);
+        var both = BankMatch(tx, PaymentMatchStatus.ManualOnly, instagramId, tiktokId);
+        db.BankTransactions.Add(tx);
+        db.PaymentMatches.Add(both);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync(x => x.Id == both.Id);
+        (m.ProposedWpfCustomerId, m.ActualWpfCustomerId).Should().Be(((Guid?)null, (Guid?)null));
+        m.Status.Should().Be(PaymentMatchStatus.Contradicted);
+        result!.BankTransactionsScrubbed.Should().Be(1);
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.Target == "PaymentMatches.WpfCustomerId+Evidence").ToListAsync())
+            .Should().ContainSingle().Which.RowCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Metni_zaten_silinmis_hareket_sayilmaz_eslesmenin_kimligi_yine_silinir()
+    {
+        // 30 günlük saklama kuralı açıklamayı, adı ve ham kaydı çoktan silmiş olabilir: o hareket "silindi" diye sayılmaz,
+        // imha kaydı yapılmamış işi söylemez. Eşleşme satırındaki kimlik ise yine silinir.
+        using var db = NewDb();
+        var (shopper, license, purgedId) = SeedLinkedShopper(db);
+        var tx = BankTx(license);
+        tx.Description = null; tx.CounterpartyName = null; tx.RawJson = null;
+        tx.DescriptionPurgedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        var match = BankMatch(tx, PaymentMatchStatus.ConfirmedByHuman, purgedId, purgedId);
+        match.Evidence = null;
+        db.BankTransactions.Add(tx);
+        db.PaymentMatches.Add(match);
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        result!.BankTransactionsScrubbed.Should().Be(0);
+        (await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == tx.Id)).DescriptionPurgedAt
+            .Should().Be(tx.DescriptionPurgedAt, "ilk silmenin anı kalır");
+        var stored = await db.PaymentMatches.AsNoTracking().SingleAsync(x => x.Id == match.Id);
+        (stored.ProposedWpfCustomerId, stored.ActualWpfCustomerId).Should().Be(((Guid?)null, (Guid?)null));
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == license.Id).ToListAsync();
+        records.Should().NotContain(r => r.Target.StartsWith("BankTransactions"));
+        records.Should().Contain(r => r.Target == "PaymentMatches.WpfCustomerId+Evidence" && r.RowCount == 1);
+    }
+
+    [Fact]
+    public async Task Imha_kayitlari_lisans_basina_yazilir_yapan_silmeyi_isleyen_yoneticidir()
+    {
+        // KVKK Ö-13 (Görev 9 kuralı): birden çok lisansa dokunan silmenin kaydı satırın lisansı başına yazılır; yönetici eyleminin
+        // yapanı yöneticinin takma kimliğidir. IBAN hafızası bağlı satırlarla birlikte iki kez sayılmaz.
+        using var db = NewDb();
+        var (shopper, first, purgedId) = SeedLinkedShopper(db);
+        var second = SeedLicense(db);
+        SeedPayment(db, shopper, first, $"payments/{Guid.NewGuid():N}.pdf");
+        SeedPayment(db, shopper, first, $"payments/{Guid.NewGuid():N}.pdf");
+        SeedPayment(db, shopper, second, $"payments/{Guid.NewGuid():N}.pdf");
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = first.Id, WpfCustomerId = purgedId,
+            IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.HumanApproval,
+            CreatedAt = DateTimeOffset.UtcNow });
+        db.ShopperRefreshTokens.Add(new ShopperRefreshToken { Id = Guid.NewGuid(), ShopperId = shopper.Id,
+            TokenHash = $"h-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(90) });
+        await db.SaveChangesAsync();
+        var actor = $"yonetici-{Guid.NewGuid():N}";
+
+        await Build(db).Service.PurgeAsync(shopper.Id, actor, default);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().OnlyContain(r => r.SubjectId == shopper.Id && r.Trigger == DataDestruction.Triggers.ShopperPurge
+            && r.Actor == actor && r.Criterion == "silme talebi");
+        int Count(string target, Guid? license) => records.Should()
+            .ContainSingle(r => r.Target == target && r.LicenseId == license, $"{target} / {license}").Which.RowCount;
+        Count("Payments.PersonalFields", first.Id).Should().Be(2);
+        Count("Payments.PersonalFields", second.Id).Should().Be(1);
+        Count("ShopperPaymentMedia", first.Id).Should().Be(2);
+        Count("ShopperPaymentMedia", second.Id).Should().Be(1);
+        Count("WpfCustomerProjections.PersonalFields", first.Id).Should().Be(1);
+        Count("ShopperBroadcasterLinks", first.Id).Should().Be(1);
+        Count("CustomerIbanMemories", first.Id).Should().Be(1);
+        Count("ShopperRefreshTokens", null).Should().Be(1);
+        Count("Shoppers.FullName+Phone+Address+Email+TcProtected", null).Should().Be(1);
+        records.Should().HaveCount(9, "IBAN hafızası bağlı satırlarda ikinci kez sayılmaz, boş adım kayıt yazmaz");
     }
 }

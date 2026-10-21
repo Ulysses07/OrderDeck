@@ -16,7 +16,8 @@ public sealed record ShopperPurgeResult(
     int PdfsDeleted,
     int ProjectionsScrubbed,
     int DependentRowsDeleted,
-    int PdfsPending)
+    int PdfsPending,
+    int BankTransactionsScrubbed = 0)
 {
     /// <summary>
     /// Kovadaki her nesne gerçekten silindi mi. <c>false</c> ise silme
@@ -31,6 +32,8 @@ public sealed record ShopperPurgeResult(
             $"{PaymentsScrubbed} ödeme temizlendi, {PdfsDeleted} dekont silindi, "
             + $"{ProjectionsScrubbed} yayıncı kopyası temizlendi, "
             + $"{DependentRowsDeleted} bağlı satır silindi.";
+        if (BankTransactionsScrubbed > 0)
+            note += $" {BankTransactionsScrubbed} banka hareketinin açıklaması, gönderen adı ve ham kaydı silindi.";
         if (PdfsPending > 0)
             note += $" {PdfsPending} dekont depodan silinemedi, "
                 + "temizlik kuyruğunda yeniden denenecek.";
@@ -74,7 +77,17 @@ public sealed class ShopperPurgeService
         _log = log;
     }
 
-    public async Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, CancellationToken ct)
+    /// <summary>İmha kaydının ölçütü (<see cref="DataDestructionRecord.Criterion"/>).</summary>
+    public const string PurgeCriterion = "silme talebi";
+
+    /// <summary>Yapanı verilmeyen silme: imha kaydına <see cref="DataDestruction.AdminActor"/> yazılır (silme her zaman bir
+    /// yöneticinin kararıdır; kim olduğu talebin <c>HandledBy</c>'ında ve denetim satırında).</summary>
+    public Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, CancellationToken ct)
+        => PurgeAsync(shopperId, DataDestruction.AdminActor, ct);
+
+    /// <param name="actor">İmha kaydının yapanı: silmeyi işleyen yöneticinin takma kimliği
+    /// (<see cref="DataDestruction.ActorOf"/>), kullanıcı adı değil (KVKK Ö-14).</param>
+    public async Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, string actor, CancellationToken ct)
     {
         var shopper = await _db.Shoppers.FirstOrDefaultAsync(s => s.Id == shopperId, ct);
         if (shopper is null) return null;
@@ -86,6 +99,7 @@ public sealed class ShopperPurgeService
         var payments = await _db.Payments
             .Where(p => p.ShopperId == shopperId)
             .ToListAsync(ct);
+        var paymentLicenses = payments.ToDictionary(p => p.Id, p => p.LicenseId);
 
         // R4-05: önceki purge'de silinemeyip kuyruğa alınmış anahtarlar da bu
         // tura dahil. Eskiden niyet yalnız log'a yazılıyordu; ödemedeki anahtar
@@ -105,6 +119,8 @@ public sealed class ShopperPurgeService
                 o);
 
         var pdfsDeleted = 0;
+        // Silinen her nesnenin lisansı (ödemesinden; ödemesi bilinmeyen kuyruk satırında null): imha kaydı lisans başına.
+        var deletedMediaLicenses = new List<Guid?>();
         var pendingRows = new List<OrphanedMediaObject>();
         foreach (var (key, target) in targets)
         {
@@ -113,6 +129,8 @@ public sealed class ShopperPurgeService
             {
                 await _storage.DeleteAsync(key, ct);
                 pdfsDeleted++;
+                deletedMediaLicenses.Add(target.PaymentId is { } paymentId
+                    && paymentLicenses.TryGetValue(paymentId, out var paymentLicense) ? paymentLicense : null);
                 if (row is not null)
                 {
                     row.AttemptCount++;
@@ -240,43 +258,64 @@ public sealed class ShopperPurgeService
             _log.LogInformation("[ShopperPurge] {Count} siparişin metni boşaltıldı (ScrubOrderTextOnPurge)",
                 scrubbedOrders.Count);
 
-        // 3b. Gölge banka eşleştirmesinin izi (Obifin). IBAN hafızası "bu IBAN bu
-        //     kişinin" bağıdır: silinir. Eşleşme satırı ölçüm kaydıdır, kalır
-        //     (kişiyi yalnız Id'yle gösterir); kanıt metni kullanıcı adı anahtarı
-        //     taşıyabilir: boşaltılır — müşteriyi öneren ya da ona bağlanan
-        //     satırlarda ve anahtarı önerisiz bir çelişki kanıtında geçen
-        //     satırlarda. Anahtar önek olarak başka bir anahtarın kanıtına da
-        //     uyabilir; fazladan boşaltma zararsız (kanıt 180 günde zaten gider).
-        //     UpdatedAt eşleşmenin eşzamanlılık jetonudur, her yazan ilerletir;
-        //     gölge eşleştirmenin eşzamanlı yazısıyla çakışma SaveAsync'te bir
-        //     kez yeniden denenir.
+        // 3b. Gölge banka eşleştirmesinin izi (Obifin) — KVKK K-7: silme talebi banka verisinde de, ilk periyodik imhayı
+        //     beklemeden uygulanır. Kurallar BankSubjectScrub'da (IBAN ile banka veri talebi aracıyla ortak).
+        //     - IBAN hafızası "bu IBAN bu kişiyle ilişkili" bağıdır: silinir.
+        //     - Kişiye bağlı eşleşme satırında (öneri ya da gerçek müşteri) müşteri kimliği ve kanıt boşaltılır; satır ölçüm
+        //       kaydı olarak kalır, sonucu durumdan okunur (BankSubjectScrub.MatchForCustomer).
+        //     - Kullanıcı adı anahtarı yalnız kanıtında geçen, başka müşteriye bağlı ya da önerisiz satırda (named) yalnız
+        //       kanıt boşaltılır, başka müşterinin kimliği ve kararı kalır. Anahtar önek olarak başka bir anahtara da uyabilir:
+        //       fazladan silme minimizasyondur, zararsız.
+        //     - Bu satırların hareketlerinin ve silinen hafıza özetinden gelen hareketlerin açıklaması, gönderen adı ve ham
+        //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:
+        //       kanıtın kaynağı o açıklamadır ve silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama,
+        //       satır başka müşteriye bağlı olduğu için 180 güne kadar kalırdı.
+        //     Kişinin aynı lisansta birden çok bağı olabilir (Instagram + TikTok) ve bir satır ikisini birden taşıyabilir:
+        //     kural satırın lisansındaki her kimliğe uygulanır (ScrubMatch). UpdatedAt eşleşmenin eşzamanlılık jetonudur;
+        //     çakışma SaveAsync'te bir kez yeniden denenir. Kullanıcı adı (ScrubPersonal) ve Payment.ShopperId bağı avukat
+        //     kararına kadar BİLEREK kalır.
         var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
+        var purgedCustomers = projectionKeys.ToLookup(k => k.LicenseId, k => k.WpfCustomerId);
         var ibanMemories = new List<CustomerIbanMemory>();
         var scrubbedMatches = new HashSet<PaymentMatch>();
+        var scrubbedTransactions = new HashSet<BankTransaction>();
         foreach (var (licenseId, wpfCustomerId) in projectionKeys)
         {
-            ibanMemories.AddRange(await _db.CustomerIbanMemories
+            var memories = await _db.CustomerIbanMemories
                 .Where(m => m.LicenseId == licenseId && m.WpfCustomerId == wpfCustomerId)
-                .ToListAsync(ct));
+                .ToListAsync(ct);
+            ibanMemories.AddRange(memories);
 
             Guid? id = wpfCustomerId;
             var key = usernames.TryGetValue(wpfCustomerId, out var username)
                 ? BankTextNormalizer.UsernameKey(username)
                 : "";
             var marker = key.Length > 0 ? "username=" + key : null;
-            scrubbedMatches.UnionWith(await _db.PaymentMatches
-                .Where(m => m.LicenseId == licenseId && m.Evidence != null
+            var matches = await _db.PaymentMatches
+                .Where(m => m.LicenseId == licenseId
                     && (m.ProposedWpfCustomerId == id
                         || m.ActualWpfCustomerId == id
-                        || (marker != null && m.Evidence.Contains(marker))))
-                .ToListAsync(ct));
+                        || (marker != null && m.Evidence != null && m.Evidence.Contains(marker))))
+                .ToListAsync(ct);
+            scrubbedMatches.UnionWith(matches);
+
+            var matchedTxIds = matches.Select(m => m.BankTransactionId).ToList();
+            var hashes = memories.Select(m => m.IbanHash).ToList();
+            if (matchedTxIds.Count == 0 && hashes.Count == 0) continue;
+            var txs = await _db.BankTransactions
+                .Where(t => t.LicenseId == licenseId
+                    && (matchedTxIds.Contains(t.Id)
+                        || (t.CounterpartyIbanHash != null && hashes.Contains(t.CounterpartyIbanHash))))
+                .ToListAsync(ct);
+            // Saklama kuralının çoktan boşalttığı hareket "silindi" diye sayılmaz.
+            scrubbedTransactions.UnionWith(txs.Where(BankSubjectScrub.HasText));
         }
+        // Sayım kuraldan ÖNCE: kural kimlikleri boşaltır, satırın kişiye bağlı olduğu ondan sonra görünmez.
+        var linkedMatches = scrubbedMatches.Where(m => IsLinked(m, purgedCustomers)).ToList();
+        var evidenceOnlyMatches = scrubbedMatches.Where(m => !IsLinked(m, purgedCustomers)).ToList();
         _db.CustomerIbanMemories.RemoveRange(ibanMemories);
-        foreach (var m in scrubbedMatches)
-        {
-            m.Evidence = null;
-            m.UpdatedAt = now;
-        }
+        foreach (var m in scrubbedMatches) ScrubMatch(m, purgedCustomers, now);
+        foreach (var t in scrubbedTransactions) BankSubjectScrub.Transaction(t, now);
 
         // 4. Bağlı satırlar. Hepsi ya doğrudan kişisel veri taşıyor
         //    (kullanıcı adı, cihaz kimliği, IP) ya da yalnızca oturum
@@ -302,6 +341,8 @@ public sealed class ShopperPurgeService
         var submissionAudits = await _db.PaymentSubmissionAudits
             .Where(a => a.ShopperId == shopperId)
             .ToListAsync(ct);
+        // 90 günlük iş çoktan boşalttıysa kayıt yapılmamış işi söylemesin (o işin kendi ölçütü).
+        var fingerprintedAudits = submissionAudits.Where(a => a.IpAddress != "" || a.UserAgent != "").ToList();
         foreach (var a in submissionAudits)
         {
             a.IpAddress = "";
@@ -323,14 +364,61 @@ public sealed class ShopperPurgeService
         shopper.DeletedAt ??= now;
         shopper.UpdatedAt = now;
 
-        await SaveAsync(scrubbedMatches, scrubbedOrders, now, ct);
+        // 7. KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. Banka verisi olmayan kişinin
+        //    silmesi de yazılır (Ö-12: veritabanı dışındaki saatlik özet yalnız bu tablodan beslenir). SubjectId = ShopperId:
+        //    geri yüklemeden sonra silme bununla yeniden uygulanır (deploy/README "Geri yükleme"). Lisansa ait satırların kaydı
+        //    satırın lisansı başına, sayımlar yüklenen kümelerden (Görev 9 kuralı). IBAN hafızası DependentRowsDeleted'e de girer;
+        //    kayıtta yalnız kendi satırında sayılır.
+        void Record(Guid? license, string target, string action, int count) => DataDestruction.Record(_db, license, target,
+            action, count, PurgeCriterion, DataDestruction.Triggers.ShopperPurge, actor, subjectId: shopperId);
+        void RecordPerLicense<T>(IEnumerable<T> rows, Func<T, Guid?> license, string target, string action)
+        {
+            foreach (var g in rows.GroupBy(license)) Record(g.Key, target, action, g.Count());
+        }
+        const string nulled = DataDestruction.Actions.Nulled, deleted = DataDestruction.Actions.Deleted;
+        Record(null, "Shoppers.FullName+Phone+Address+Email+TcProtected", nulled, 1);
+        RecordPerLicense(payments, p => p.LicenseId, "Payments.PersonalFields", nulled);
+        RecordPerLicense(deletedMediaLicenses, l => l, "ShopperPaymentMedia", deleted);
+        RecordPerLicense(fingerprintedAudits, a => a.LicenseId, "PaymentSubmissionAudits.IpAddress+UserAgent", nulled);
+        RecordPerLicense(projections, c => c.LicenseId, "WpfCustomerProjections.PersonalFields", nulled);
+        RecordPerLicense(scrubbedOrders, o => o.LicenseId, "Orders.DisplayName+MessageText", nulled);
+        RecordPerLicense(linkRows, l => l.LicenseId, "ShopperBroadcasterLinks", deleted);
+        Record(null, "ShopperPushDevices", deleted, devices.Count);
+        Record(null, "ShopperRefreshTokens", deleted, tokens.Count);
+        Record(null, "ShopperPasswordResetCodes", deleted, resetCodes.Count);
+        Record(null, "ShopperSupportRequests", deleted, supportRequests.Count);
+        RecordPerLicense(ibanMemories, m => m.LicenseId, "CustomerIbanMemories", deleted);
+        RecordPerLicense(linkedMatches, m => m.LicenseId, "PaymentMatches.WpfCustomerId+Evidence", nulled);
+        RecordPerLicense(evidenceOnlyMatches, m => m.LicenseId, "PaymentMatches.Evidence", nulled);
+        RecordPerLicense(scrubbedTransactions, t => t.LicenseId, "BankTransactions.Description+CounterpartyName+RawJson", nulled);
+
+        await SaveAsync(scrubbedMatches, scrubbedTransactions, purgedCustomers, scrubbedOrders, now, ct);
 
         return new ShopperPurgeResult(
             PaymentsScrubbed: payments.Count,
             PdfsDeleted: pdfsDeleted,
             ProjectionsScrubbed: projections.Count,
             DependentRowsDeleted: dependents,
-            PdfsPending: pendingRows.Count);
+            PdfsPending: pendingRows.Count,
+            BankTransactionsScrubbed: scrubbedTransactions.Count);
+    }
+
+    /// <summary>Satır silinen kişinin bu lisanstaki müşteri kimliklerinden birine bağlı mı (öneri ya da gerçek müşteri).</summary>
+    private static bool IsLinked(PaymentMatch match, ILookup<Guid, Guid> purgedCustomers)
+        => purgedCustomers[match.LicenseId].Any(id => BankSubjectScrub.References(match, id));
+
+    /// <summary>Eşleşme satırına 3b kuralını uygular: satırın lisansındaki silinen her kimlik için
+    /// <see cref="BankSubjectScrub.MatchForCustomer"/>. Kişiye bağlı satırda kimlik ve kanıt, bağlı olmayan (named) satırda
+    /// yalnız kanıt boşalır. Yeniden uygulanabilir: yeniden denemede tazelenen satıra da aynısı.</summary>
+    private static void ScrubMatch(PaymentMatch match, ILookup<Guid, Guid> purgedCustomers, DateTimeOffset now)
+    {
+        var ids = purgedCustomers[match.LicenseId];
+        if (!ids.Any())
+        {
+            BankSubjectScrub.MatchEvidence(match, now);
+            return;
+        }
+        foreach (var id in ids) BankSubjectScrub.MatchForCustomer(match, id, now);
     }
 
     /// <summary>
@@ -340,20 +428,30 @@ public sealed class ShopperPurgeService
     /// eşleştirme ona yazdıysa (çekimin eşleştiricisi, telafi taraması, dekont
     /// bağdaştırması, admin kararı) kayıt DbUpdateConcurrencyException'la düşer
     /// ve bütün silme geri alınır — R2'deki dekontlar ise çoktan silinmiştir.
-    /// Çakışan girdilerin HEPSİ eşleşmeyse boşaltılan eşleşmeler DB'den tazelenir
-    /// (eşzamanlı yazanın değerleri kalır), kanıt yeniden boşaltılır ve BİR kez
-    /// daha kaydedilir; ikinci çakışma yukarı gider. Başka bir varlığın çakışması
+    /// Çakışan girdilerin HEPSİ boşaltılan eşleşme, hareket ya da sipariş ise
+    /// boşaltılan eşleşmeler DB'den tazelenir (eşzamanlı yazanın değerleri kalır),
+    /// 3b kuralı yeniden uygulanır (kişinin kimliği ve kanıt) ve BİR kez daha
+    /// kaydedilir; ikinci çakışma yukarı gider. Başka bir varlığın çakışması
     /// eskisi gibi doğrudan yukarı gider.
+    ///
+    /// <para>Hareketin jetonu yoktur, ama metni boşaltılan hareket okunduktan sonra
+    /// başka bir yoldan silinebilir (saklama işi, hesap reddi, "Kaldır ve sil";
+    /// eşleşmesi FK kaskadıyla gider): UPDATE 0 satır etkiler. Hareketler de
+    /// tazelenir; silinmiş olan ayrılır, kalanın metni yeniden boşaltılır. İmha
+    /// kaydının sayısı ilk okumadandır: bu yarışta arada silinen satır iki kayıtta
+    /// (bu ve silen yolunki) sayılabilir.</para>
     ///
     /// <para>Aynısı sipariş metni boşaltması için (ayar açıkken, adım 3a):
     /// <see cref="Order.SyncVersion"/> jetondur ve eşzamanlı bir
     /// <c>orders/sync</c> güncellemesi onu ilerletir. Sipariş tazelenir (eşzamanlı
     /// yazanın birimleri kalır; o yol metne dokunmaz), metin yeniden boşaltılır.
-    /// Çakışan girdiler eşleşme ya da sipariş olabilir; ikisi de her zaman
+    /// Çakışan girdiler eşleşme, hareket ya da sipariş olabilir; hepsi her zaman
     /// birlikte tazelenir.</para>
     /// </summary>
     private async Task SaveAsync(
         IReadOnlyCollection<PaymentMatch> scrubbedMatches,
+        IReadOnlyCollection<BankTransaction> scrubbedTransactions,
+        ILookup<Guid, Guid> purgedCustomers,
         IReadOnlyCollection<Order> scrubbedOrders,
         DateTimeOffset now,
         CancellationToken ct)
@@ -364,11 +462,12 @@ public sealed class ShopperPurgeService
         }
         catch (DbUpdateConcurrencyException ex) when (ex.Entries.Count > 0
             && ex.Entries.All(e => (e.Entity is PaymentMatch && scrubbedMatches.Count > 0)
+                || (e.Entity is BankTransaction && scrubbedTransactions.Count > 0)
                 || (e.Entity is Order && scrubbedOrders.Count > 0)))
         {
             _log.LogInformation(
-                "[ShopperPurge] Eşleşme kanıtı ya da sipariş metni boşaltılırken eşzamanlı bir yazıyla çakıştı; "
-                + "satırlar tazelenip bir kez yeniden deneniyor");
+                "[ShopperPurge] Banka eşleşmesi, hareket metni ya da sipariş metni boşaltılırken eşzamanlı bir yazıyla "
+                + "çakıştı; satırlar tazelenip bir kez yeniden deneniyor");
             // Yalnız bildirilen girdi değil, boşaltılan her satır tazelenir:
             // SQL Server'da EF ilk çakışan komutta durur, sonraki çakışan satırı
             // bildirmez. Küme tek kişinin satırları, küçük.
@@ -376,11 +475,17 @@ public sealed class ShopperPurgeService
             {
                 var entry = _db.Entry(m);
                 await entry.ReloadAsync(ct);
-                // Arada silinmiş (ayrıldı) ya da kanıtı zaten boşaltılmış.
-                if (entry.State == EntityState.Detached || m.Evidence is null)
+                // Arada silinmiş (ayrıldı). Tazelenen satıra kural yeniden uygulanır (idempotent).
+                if (entry.State == EntityState.Detached)
                     continue;
-                m.Evidence = null;
-                m.UpdatedAt = now;
+                ScrubMatch(m, purgedCustomers, now);
+            }
+            foreach (var t in scrubbedTransactions)
+            {
+                var entry = _db.Entry(t);
+                await entry.ReloadAsync(ct);
+                if (entry.State == EntityState.Detached) continue;
+                BankSubjectScrub.Transaction(t, now);
             }
             foreach (var o in scrubbedOrders)
             {

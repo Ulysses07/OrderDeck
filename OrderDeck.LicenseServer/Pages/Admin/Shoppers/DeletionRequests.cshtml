@@ -76,7 +76,7 @@ else
                             <form method="post" asp-page-handler="Purge"
                                   asp-route-id="@r.Id"
                                   asp-route-handled="@Model.ShowHandled"
-                                  asp-route-page="@Model.CurrentPage"
+                                  asp-route-pageNumber="@Model.CurrentPage"
                                   onsubmit="return confirm('@r.PhoneAtRequest numaralı müşterinin kişisel verisi kalıcı olarak silinecek. Emin misiniz?');">
                                 <button type="submit" class="btn btn-sm btn-danger">Sil</button>
                             </form>
@@ -93,12 +93,12 @@ else
             <ul class="pagination">
                 @if (Model.CurrentPage > 1)
                 {
-                    <li class="page-item"><a class="page-link" asp-route-handled="@Model.ShowHandled" asp-route-page="@(Model.CurrentPage - 1)">Önceki</a></li>
+                    <li class="page-item"><a class="page-link" asp-route-handled="@Model.ShowHandled" asp-route-pageNumber="@(Model.CurrentPage - 1)">Önceki</a></li>
                 }
                 <li class="page-item active"><span class="page-link">@Model.CurrentPage / @Model.TotalPages</span></li>
                 @if (Model.CurrentPage < Model.TotalPages)
                 {
-                    <li class="page-item"><a class="page-link" asp-route-handled="@Model.ShowHandled" asp-route-page="@(Model.CurrentPage + 1)">Sonraki</a></li>
+                    <li class="page-item"><a class="page-link" asp-route-handled="@Model.ShowHandled" asp-route-pageNumber="@(Model.CurrentPage + 1)">Sonraki</a></li>
                 }
             </ul>
         </nav>

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.Shoppers;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.Shoppers;
@@ -43,13 +44,16 @@ public class DeletionRequestsModel : PageModel
     public int CurrentPage { get; private set; }
     public int TotalPages { get; private set; }
 
-    public async Task OnGetAsync(bool handled, int page, CancellationToken ct)
+    // Sayfa numarası "pageNumber": "page" Razor Pages'in ayrılmış rota değeridir (sayfanın adı). asp-route-page ve
+    // RedirectToPage(new { page }) sayfa adını sayıyla ezer, URL üretilemez: satırın "Sil" formu action="" ile çıkıyor ve
+    // silme işleyiciye hiç ulaşmıyordu, yönlendirme de istisna atıyordu.
+    public async Task OnGetAsync(bool handled, int pageNumber, CancellationToken ct)
     {
-        await LoadAsync(handled, page, ct);
+        await LoadAsync(handled, pageNumber, ct);
     }
 
     public async Task<IActionResult> OnPostPurgeAsync(
-        Guid id, bool handled, int page, CancellationToken ct)
+        Guid id, bool handled, int pageNumber, CancellationToken ct)
     {
         var request = await _db.ShopperDeletionRequests
             .FirstOrDefaultAsync(r => r.Id == id, ct);
@@ -60,10 +64,11 @@ public class DeletionRequestsModel : PageModel
         if (request.HandledAt is not null)
         {
             TempData["Success"] = "Bu talep zaten işlenmiş.";
-            return RedirectToPage(new { handled, page });
+            return RedirectToPage(new { handled, pageNumber });
         }
 
-        var result = await _purge.PurgeAsync(request.ShopperId, ct);
+        // İmha kaydının yapanı yöneticinin takma kimliği, kullanıcı adı değil (KVKK Ö-14; adı HandledBy'da ve denetim satırında).
+        var result = await _purge.PurgeAsync(request.ShopperId, DataDestruction.ActorOf(User), ct);
         if (result is null)
         {
             TempData["Success"] = "Shopper kaydı bulunamadı; talep kapatıldı.";
@@ -86,6 +91,7 @@ public class DeletionRequestsModel : PageModel
                 projectionsScrubbed = result?.ProjectionsScrubbed ?? 0,
                 dependentRowsDeleted = result?.DependentRowsDeleted ?? 0,
                 pdfsPending = result?.PdfsPending ?? 0,
+                bankTransactionsScrubbed = result?.BankTransactionsScrubbed ?? 0,
             }, ct: ct);
 
         // R4-05: dekontların bir kısmı depodan silinemediyse bu "silindi"
@@ -95,7 +101,7 @@ public class DeletionRequestsModel : PageModel
             TempData["Error"] = $"Silme kısmen tamamlandı. {request.Notes}";
         else
             TempData["Success"] ??= $"Silindi. {request.Notes}";
-        return RedirectToPage(new { handled, page });
+        return RedirectToPage(new { handled, pageNumber });
     }
 
     private async Task LoadAsync(bool handled, int page, CancellationToken ct)

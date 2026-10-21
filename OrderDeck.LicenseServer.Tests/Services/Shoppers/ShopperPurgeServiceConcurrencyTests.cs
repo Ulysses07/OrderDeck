@@ -104,6 +104,31 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Evidence.Should().Be(s.Marker);
     }
 
+    [Fact]
+    public async Task Eszamanli_silinen_hareketle_carpisan_silme_tazeleyip_kisisel_veriyi_yine_siler()
+    {
+        // KVKK silmesi kişiye bağlı hareketin metnini de boşaltır (K-7), yani hareket satırı da kaydedilir. Silme hareketi
+        // okuduktan sonra hareket başka bir yoldan silinirse (saklama işi, hesap reddi, Kaldır ve sil; eşleşme FK kaskadıyla
+        // gider) eşleşmenin ve hareketin UPDATE'i 0 satır etkiler. Silme 500 ile geri alınmaz: tazelenen satırlar ayrılır,
+        // kişisel verinin geri kalanı yazılır.
+        var s = await SeedAsync();
+        var remove = new BeforeMatchUpdate(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            await other.BankTransactions.Where(t => t.LicenseId == s.LicenseId).ExecuteDeleteAsync();
+        });
+        await using var db = NewDb(remove);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        remove.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        (await verify.Shoppers.AsNoTracking().SingleAsync(x => x.Id == s.ShopperId)).FullName.Should().Be("[Silindi]");
+        (await verify.PaymentMatches.AsNoTracking().AnyAsync(m => m.Id == s.MatchId)).Should().BeFalse();
+        (await verify.WpfCustomerProjections.AsNoTracking().SingleAsync(c => c.Id == s.WpfCustomerId)).PurgedAt.Should().NotBeNull();
+    }
+
     /// <summary>Sipariş satırını değiştiren ilk SaveChanges'ten hemen önce öteki bağlamın yazısını koşturur.</summary>
     private sealed class BeforeOrderUpdate(Func<Task> interleave) : SaveChangesInterceptor
     {
