@@ -163,6 +163,8 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalance>();
         // Ortak bakiye denetimi (§7.3, §8.1): CLI person-balance verify kendi örneğini kurar, günlük iş DI'dan.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceVerifier>();
+        // Günlük ortak bakiye denetimi (§8.1); takvim SchedulePersonBalanceJobs'ta.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceVerifyJob>();
         // Yayın ve etiket senkronu (spec 2026-10-13): kopya kaydı ve protokolsüz istek izi; ayarlar compose
         // ortamından (SalesSync__MinClientVersion, SalesSync__ScrubOrderTextOnPurge,
         // SalesSync__ForceEndSilenceMinutes). Sessizlik eşiği açılışta doğrulanır: 0 ya da eksi değer başka
@@ -1098,6 +1100,9 @@ public class Program
             // ScheduleSalesSyncJobs'ta.
             ScheduleSalesSyncJobs(manager, scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>());
 
+            // Ortak bakiye denetimi (04:58 UTC): takvim ve gerekçe SchedulePersonBalanceJobs'ta.
+            SchedulePersonBalanceJobs(manager);
+
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen
             // dosyalar DB'ye hiç yazılmıyor, lisans cascade'i o uçtan geçmiyor.
@@ -1318,6 +1323,18 @@ public class Program
             j => j.RunAsync(CancellationToken.None),
             OrderDeck.LicenseServer.Services.Sync.SalesCommandLogRetentionJob.Cron);
     }
+
+    /// <summary>
+    /// Ortak bakiye denetiminin Hangfire takvimi (spec 2026-10-11 §8.1; saatler UTC). <c>person-balance-verify</c>
+    /// günde bir, 04:58'de: yayın penceresi (TR 20:00–01:00) dışında, 04:57 banka saklamasından sonra; 5 dakikalık
+    /// ızgaranın (04:55, 05:00) ve saatlik :02/:07 işlerinin dışında, o dakikada başka iş yok. Açılışta kuyruğa
+    /// alınmaz: S1 deploy'u ile taban yakalama arasındaki günlerde zaten yalnız sayı basar.
+    /// </summary>
+    public static void SchedulePersonBalanceJobs(IRecurringJobManager manager) =>
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceVerifyJob>(
+            OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceVerifyJob.JobId,
+            j => j.RunAsync(CancellationToken.None),
+            OrderDeck.LicenseServer.Services.CustomerSync.PersonBalanceVerifyJob.Cron);
 
     /// <summary>
     /// Banka işlerinin Hangfire takvimi (saatler UTC — Hangfire varsayılanı, bu repo saat dilimi vermiyor).
