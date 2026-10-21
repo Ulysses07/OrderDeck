@@ -25,7 +25,12 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 ///   <item><b>Tek işlem ve uygulama kilitleri.</b> Önce <c>payreq:{lisans}:{PersonKeyHash}:{kapsam}</c>, sonra asıl kayda
 ///   çözülmüş her üye için <c>payreq-m:{lisans}:{üye}:{kapsam}</c>, tekil ve ordinal sıralı (sıra ölü kilitlenmeyi önler):
 ///   grup senkronu gecikmesi yüzünden farklı PersonKey hesaplayan iki bilgisayar ortak üyeleri varsa aynı anda geçemez
-///   (M10). Kapsam kilit adında küçük harfe katlanır: <c>sp_getapplock</c> adları ikili karşılaştırır, ScopeKey'in SQL
+///   (M10). Kilitlenen küme istemcinin üyeleridir. İstemcide olmayan, sunucuda silinmiş bir üye (b'nin istemediği, ortak
+///   bakiye §15-7) kaydın üyesi olur ama kilitlenmez: yalnız o üye üzerinden kesişen, PersonKey'i farklı iki eşzamanlı
+///   isteği ne kilit ne DM6'nın indeksi (PersonKeyHash başına) sıraya sokar; (c–e)'nin araması eşzamanlı, henüz
+///   yazılmamış kaydı göremez. Bilinçli: iki bilgisayarın yerel grubu ayrışmış ve ortak üyeleri yalnız o silinmiş üye
+///   olmalı; sonuç iki ayrı canlı sahibe iki kira, para etkisi yok. Bu üyeleri (b)'den sonra kilitlemek sıralı kilit
+///   düzenini bozardı. Kapsam kilit adında küçük harfe katlanır: <c>sp_getapplock</c> adları ikili karşılaştırır, ScopeKey'in SQL
 ///   eşitliği harf duyarsızdır; kilit en az onun kadar kaba olmalı. Kilit zaman aşımı 409
 ///   <c>in-progress-elsewhere</c> (makine bilinmiyor).</item>
 ///   <item>Kilit altında: (a) yeniden, (b) üyeler (409 <c>members-stale</c>), (c) süresi dolmuş ve bu kopyanın önceki
@@ -234,7 +239,9 @@ public sealed class PaymentRequestLeaseService
         }
 
         // Arama (c–e) ve kaydın üyeleri (h) sunucunun silinmiş üyelerini de taşır: silinmiş sahipli ya da silinmiş üyeye
-        // yazılmış kayıtlar bulunur. Toplam (f) ise istemcinin üyeleriyle (aşağıda).
+        // yazılmış kayıtlar bulunur. Toplam (f) ise istemcinin üyeleriyle (aşağıda). İstemcide olmayan silinmiş üye
+        // kilitlenmedi (kilitler istemcinin üyeleriyle alındı); o üye üzerinden kesişim yalnız yazılmış kayıtlarda
+        // görülür — bilinçli, sınıf yorumu.
         var members = person.Members.Union(group, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
         var lookupMembers = await _people.WithCopiesAsync(licenseId, members, ct);
         var now = DateTimeOffset.UtcNow;

@@ -26,8 +26,21 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///   Taşıma da bir GroupId değişimidir — silinmiş üyenin bakiye jetonu 1. maddeyle ilerler; bu yüzden önce bu madde
 ///   koşar.</item>
 /// </list>
-/// Sunucuda GroupId'ye yazan üç yer de (senkron, <c>group-customers</c>/<c>--at-twins</c>, kimlik birleşmesi) izlenen
-/// nesnelerle yazar; ham SQL / ExecuteUpdate yazımını <c>GroupIdWriteConventionTests</c> yasaklar.
+/// Sunucuda GroupId'ye yazan dört yer de — senkron, <c>group-customers</c>/<c>--at-twins</c>, kimlik birleşmesi ve bu
+/// kancanın kendi numara izlemesi (2. madde; izlenen girdi üzerinden, 1. madde onu görür) — izlenen nesnelerle yazar; ham
+/// SQL / ExecuteUpdate yazımını <c>GroupIdWriteConventionTests</c> yasaklar.
+///
+/// <para><b>Numara izlemesinin hakemi yok</b> (§4.13, §5.5). "Bu kayıttan sonra g'de canlı asıl üye kaldı mı" kararı
+/// <c>base.SaveChanges</c>'ten önce, kilitsiz okunur: senkronda açık işlem yok, işlerin işlemi READ COMMITTED. 1. maddenin
+/// bakiye jetonu yalnız bakiye satırının yazımını hakemler, bu kararı değil. Kalan pencere: g'nin kalan canlı üyelerini
+/// eşzamanlı iki kayıt ayrı ayrı ayırırsa (iki PC'nin senkronu; senkron ile bir iş) ikisi de okumasını öbürünün
+/// UPDATE'inden önce yapabilir. Her biri öbür üyeyi g'de canlı görür, hiçbiri silinmiş üyeyi taşımaz: silinmiş üye g'de
+/// canlı üyesiz kalır ve kişinin havuzundan düşer (K3 o kişide bozulur; hiçbir sıralı yürütme bu sonucu vermez). Kanca
+/// bunu görmez, günlüğe yazmaz; para silinmiş üyenin satırında kalır, <c>verify</c>'ın §7.3-4 "grubunda canlı asıl üye
+/// kalmamış" kalemi sayar (Ayır'ın sonucundan ayırt edilemez). Ters yön — son canlı üye ayrılırken eşzamanlı bir kayıt
+/// g'ye canlı üye ekler, silinmiş üye hedefe gider — "önce ayrılış, sonra katılma" sırasının sonucudur; kural bozulmaz.
+/// Kalıcı hakem (numara başına <c>sp_getapplock</c>) senkron yolunda açık işlem ister: sahip kararı (§10 açık
+/// kalanlar).</para>
 ///
 /// <para><b>Ne görür:</b> tam olarak <c>SaveChanges</c>'in yazacağını — izleyicinin durumunu. Değişiklik algılaması
 /// kapalı bir bağlam (<c>LicenseReadOnlyDbContext</c>) algılamadığı değişikliği kaydetmez, kanca da görmez; bu yüzden
@@ -80,7 +93,9 @@ internal static class PersonGroupSaveHook
             {
                 var group = origin.Key;
                 var members = pool.Where(p => string.Equals(p.GroupId, group, StringComparison.Ordinal)).ToList();
-                if (members.Any(p => p.PurgedAt is null)) continue; // numarada canlı üye kaldı
+                // Numarada canlı üye kaldı. Kilitsiz okuma: eşzamanlı başka bir kaydın ayırdığı üye burada hâlâ canlı
+                // görünebilir (hakemsiz pencere, sınıf yorumu).
+                if (members.Any(p => p.PurgedAt is null)) continue;
                 var purged = members.Where(p => p.PurgedAt is not null).ToList();
                 if (purged.Count == 0) continue;
 
