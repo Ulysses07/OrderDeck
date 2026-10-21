@@ -543,6 +543,44 @@ public sealed class BankDataCleanupJobTests
     }
 
     [Fact]
+    public async Task Reset_iban_memory_ayni_lisansta_gecerli_IBANli_harekette_gorunen_bagi_tutar()
+    {
+        // Maskeli bir değerin özeti geçerli bir IBAN'ın özetine eşit olamaz: aynı lisansta CounterpartyIbanHashValid bir harekette
+        // görünen özetin bağı kanıtlanmış biçimde geçerli IBAN'dandır ve kalır. P1'den sonra öğrenilmiş böyle bir bağ silinseydi
+        // geri gelmezdi (öğreten havalenin kararı verilmiş). Bayraksız harekette görünen bağ gider; kanıt yalnız aynı lisansta
+        // aranır. Sıfırlama idempotent; kuru koşunun sayıları uygulamanınkiler.
+        using var db = NewDb(); var lic = Guid.NewGuid(); var other = Guid.NewGuid();
+        BankTransaction Hashed(Guid license, string hash, bool valid)
+        {
+            var t = Tx(license, 10m);
+            t.CounterpartyIbanHash = hash;
+            t.CounterpartyIbanHashValid = valid;
+            t.CounterpartyIbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban());
+            return t;
+        }
+        var validHash = Hex64(); var oldHash = Hex64(); var otherLicenseHash = Hex64();
+        var validTx = Hashed(lic, validHash, valid: true);
+        var oldTx = Hashed(lic, oldHash, valid: false);
+        db.BankTransactions.AddRange(validTx, oldTx, Hashed(other, otherLicenseHash, valid: true));
+        var kept = Memory(lic, validHash, sourceId: validTx.Id);
+        kept.LastConfirmedAt = validTx.OccurredAt; // P1'den sonra öğrenilmiş: başlangıç öğrenirken yazıldı
+        db.CustomerIbanMemories.AddRange(kept, Memory(lic, oldHash, sourceId: oldTx.Id), Memory(lic, otherLicenseHash));
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None, resetIbanMemory: true);
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(3, "kuru koşu yazmaz");
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None, resetIbanMemory: true);
+
+        (r.IbanMemoriesReset, r.IbanMemoriesKeptValid).Should().Be((2, 1));
+        dry.Should().BeEquivalentTo(r);
+        (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { kept.Id });
+        (await db.DataDestructionRecords.AsNoTracking().SingleAsync(x => x.Target == "CustomerIbanMemories")).RowCount
+            .Should().Be(2);
+        var again = await Job(db).RunAsync(null, apply: true, CancellationToken.None, resetIbanMemory: true);
+        (again.IbanMemoriesReset, again.IbanMemoriesKeptValid).Should().Be((0, 1), "yeniden koşu idempotent");
+    }
+
+    [Fact]
     public async Task Reset_iban_memory_lisans_verilirse_yalniz_o_lisansin_hafizasini_siler()
     {
         using var db = NewDb(); var target = Guid.NewGuid(); var other = Guid.NewGuid();

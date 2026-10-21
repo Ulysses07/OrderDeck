@@ -18,8 +18,10 @@ namespace OrderDeck.LicenseServer.Tools;
 /// <para>Argümanlar katı (<see cref="GroupCustomers"/> kalıbı): tanınmayan, yinelenen ya da değeri eksik argüman → 2,
 /// yapılandırmaya ve veritabanına dokunmadan. Komut prod'da elle yazılır: yazım hatalı <c>--apply</c> kuru çalıştırmaya
 /// dönüşmemeli. Çıktıda kişisel veri yok — yalnız sayılar ve lisans kimliği.</para>
-/// <para><c>--reset-iban-memory</c>: bütün IBAN hafızasını (lisans verilirse yalnız onunkini) siler; hareket özetleri KALIR
-/// (IBAN talep aracı onlarla arar) ve eski hareketten yeniden öğrenilmez (CounterpartyIbanHashValid kapısı) — maskeli
+/// <para><c>--reset-iban-memory</c>: IBAN hafızasını (lisans verilirse yalnız onunkini) siler; özeti aynı lisansta geçerli
+/// IBAN'lı (CounterpartyIbanHashValid) bir harekette görünen bağ kalır — maskeli değerin özeti geçerli IBAN'ınkine eşit
+/// olamaz, P1'den sonra öğrenilmiş bağlar korunur, komut ne zaman koşulursa koşulsun güvenli ve idempotent. Hareket özetleri
+/// KALIR (IBAN talep aracı onlarla arar) ve eski hareketten yeniden öğrenilmez (CounterpartyIbanHashValid kapısı) — maskeli
 /// kaynaklı özetler saklı veriden tam anlaşılamadığı için Faz 2'den önce (KVKK Ö-7, karar Burak'ın). Bayraksız komut yalnız
 /// maskesi maskeli kaynağı ele veren özetleri ve bağları temizler.</para>
 /// </summary>
@@ -106,6 +108,6 @@ public static class BankDataCleanup
            $"ham kayıt daraltılan={r.RawJsonRewritten} (okunamayan boşaltılan={r.RawJsonUnreadableCleared}) | " +
            $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | " +
            $"maskeli kaynaklı özet boşaltılan={r.MaskedSourceHashesCleared} (hafıza silinen={r.MaskedSourceMemoriesDeleted}) | " +
-           $"sıfırlanan IBAN hafızası={r.IbanMemoriesReset} | " +
+           $"sıfırlanan IBAN hafızası={r.IbanMemoriesReset} (geçerli IBAN'lı kalan={r.IbanMemoriesKeptValid}) | " +
            $"IBAN bağı başlangıcı yazılan={r.IbanConfirmationsBackfilled} | düşen parti={r.FailedBatches}";
 }

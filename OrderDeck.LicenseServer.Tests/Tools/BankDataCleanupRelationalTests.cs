@@ -144,12 +144,14 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
     public async Task Maskeli_kaynakli_ozet_bosaltilir_hafiza_sifirlanir_hareket_ozeti_kalir()
     {
         // KVKK Ö-7 gerçek SQL Server'da (CHECK kısıtları, parti sorguları): maskeli kaynaklı özet boşaltılır, o özetle öğrenilmiş
-        // bağ silinir; --reset-iban-memory kalan bütün bağları siler, geçerli IBAN'lı hareketin özeti talep aracı için kalır.
-        // Silinen bağın P1 öncesi başlangıcı yazılmaz; kuru koşunun sayıları uygulamanınkiler.
+        // bağ silinir; --reset-iban-memory geçerli IBAN'lı (CounterpartyIbanHashValid) bir harekette görünmeyen bütün bağları
+        // siler, görüneni tutar; hareketlerin özeti talep aracı için kalır. Silinen bağın P1 öncesi başlangıcı yazılmaz; kuru
+        // koşunun sayıları uygulamanınkiler.
         var seed = await SeedAsync();
         var suspect = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
         var clean = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
-        Guid maskedTxId, cleanTxId;
+        var valid = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        Guid maskedTxId, cleanTxId, validMemoryId;
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -162,15 +164,19 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
             };
             var maskedTx = Hashed(suspect, "TR12…**3", 3);
             var cleanTx = Hashed(clean, BankHasher.MaskIban(seed.Iban), 4);
-            db.BankTransactions.AddRange(maskedTx, cleanTx);
+            var validTx = Hashed(valid, BankHasher.MaskIban(BankHasherTests.TestIban()), 5);
+            validTx.CounterpartyIbanHashValid = true; // Görev 11'den sonra çekilmiş, geçerli IBAN'lı hareket
+            db.BankTransactions.AddRange(maskedTx, cleanTx, validTx);
             CustomerIbanMemory Memory(string hash, Guid source) => new()
             {
                 Id = Guid.NewGuid(), LicenseId = seed.LicenseId, WpfCustomerId = Guid.NewGuid(), IbanHash = hash, IbanMasked = "TR12…345",
                 LearnedFrom = IbanMemorySource.HumanApproval, SourceBankTransactionId = source, CreatedAt = DateTimeOffset.UtcNow,
             };
-            db.CustomerIbanMemories.AddRange(Memory(suspect, maskedTx.Id), Memory(clean, cleanTx.Id));
+            var validMemory = Memory(valid, validTx.Id);
+            validMemory.LastConfirmedAt = validTx.OccurredAt; // P1'den sonra öğrenilmiş: başlangıç öğrenirken yazıldı
+            db.CustomerIbanMemories.AddRange(Memory(suspect, maskedTx.Id), Memory(clean, cleanTx.Id), validMemory);
             await db.SaveChangesAsync();
-            (maskedTxId, cleanTxId) = (maskedTx.Id, cleanTx.Id);
+            (maskedTxId, cleanTxId, validMemoryId) = (maskedTx.Id, cleanTx.Id, validMemory.Id);
         }
 
         string dryLine, appliedLine;
@@ -181,21 +187,22 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
             (await BankDataCleanup.RunAsync(db, new BankDataCleanup.Options(null, Apply: false, ResetIbanMemory: true), dry,
                 NullLoggerFactory.Instance, CancellationToken.None)).Should().Be(0);
             dryLine = dry.ToString();
-            (await db.CustomerIbanMemories.CountAsync()).Should().Be(3, "kuru koşu yazmaz");
+            (await db.CustomerIbanMemories.CountAsync()).Should().Be(4, "kuru koşu yazmaz");
             var applied = new StringWriter();
             (await BankDataCleanup.RunAsync(db, new BankDataCleanup.Options(null, Apply: true, ResetIbanMemory: true), applied,
                 NullLoggerFactory.Instance, CancellationToken.None)).Should().Be(0);
             appliedLine = applied.ToString();
         }
-        // Tohumun bağı (öğreten havale kept) ve temiz bağ sıfırlanır; şüpheli bağ maskeli kaynaklı olarak gider.
-        appliedLine.Should().Contain("maskeli kaynaklı özet boşaltılan=1 (hafıza silinen=1)").And.Contain("sıfırlanan IBAN hafızası=2")
-            .And.Contain("IBAN bağı başlangıcı yazılan=0");
+        // Tohumun bağı (öğreten havale kept) ve temiz bağ sıfırlanır; şüpheli bağ maskeli kaynaklı olarak gider; geçerli IBAN'lı
+        // harekette görünen bağ kalır.
+        appliedLine.Should().Contain("maskeli kaynaklı özet boşaltılan=1 (hafıza silinen=1)")
+            .And.Contain("sıfırlanan IBAN hafızası=2 (geçerli IBAN'lı kalan=1)").And.Contain("IBAN bağı başlangıcı yazılan=0");
         dryLine[dryLine.IndexOf(':')..].Should().Be(appliedLine[appliedLine.IndexOf(':')..]);
 
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+            (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { validMemoryId });
             var hashes = await db.BankTransactions.AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.CounterpartyIbanHash);
             hashes[maskedTxId].Should().BeNull();
             hashes[cleanTxId].Should().Be(clean, "talep aracı hareketi özetle bulur (K-7)");
