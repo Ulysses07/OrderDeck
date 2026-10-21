@@ -420,17 +420,13 @@ public sealed class BankDataCleanupJob
     /// <summary>Saklı maske (<c>XXXX…YYY</c>, <see cref="BankHasher.MaskIban"/>) maskeli ya da IBAN olmayan bir değerden mi
     /// üretilmiş? Biçim tutmuyorsa (eski ham kısa değer, <c>1234…890</c>, <see cref="BankHasher.ShortValueMask"/>), görünen yedi
     /// karakterden biri harf/rakam değilse ya da ülke + kontrol biçimi yoksa evet. Boş ve yer tutucu "?" hayır: kaynağı
-    /// bilinmez. Görünen karakterleri sağlam olan maskeli değer buradan anlaşılamaz: o yüzden <c>--reset-iban-memory</c> var.</summary>
+    /// bilinmez. Görünen karakterleri sağlam olan maskeli değer buradan anlaşılamaz: o yüzden <c>--reset-iban-memory</c> var.
+    /// <para><see cref="NeedsRemask"/>'tan türetilir, biçim denetimi tek yerde: ikisi yalnız <see cref="BankHasher.ShortValueMask"/>'ta
+    /// ayrılır (yeniden maskelenmez, ama IBAN olmayan değerden). Kuru koşu ile uygulamanın aynı sayıları vermesi buna dayanır:
+    /// uygulamada önceki adım eski maskeyi <see cref="BankHasher.ShortValueMask"/>'a çevirir, kuru koşuda eski maske kalır;
+    /// ikisi de burada evet.</para></summary>
     public static bool LooksMasked(string? masked)
-    {
-        if (string.IsNullOrEmpty(masked) || masked == "?") return false;
-        var parts = masked.Split('…');
-        if (parts.Length != 2 || parts[0].Length != 4 || parts[1].Length != 3) return true;
-        var visible = parts[0] + parts[1];
-        if (visible.Any(c => !char.IsAsciiLetterUpper(c) && !char.IsAsciiDigit(c))) return true;
-        return !(char.IsAsciiLetterUpper(visible[0]) && char.IsAsciiLetterUpper(visible[1])
-            && char.IsAsciiDigit(visible[2]) && char.IsAsciiDigit(visible[3]));
-    }
+        => masked == BankHasher.ShortValueMask || NeedsRemask(masked);
 
     /// <summary>KVKK Ö-7: eski kod 8+ karakterlik her değeri özetliyordu (maskeli IBAN, hesap numarası): aynı ilk ve son
     /// karakterleri taşıyan farklı gönderenler aynı özete düşer, IBAN bağı farklı kişileri tek müşteriye bağlar. Şüpheli

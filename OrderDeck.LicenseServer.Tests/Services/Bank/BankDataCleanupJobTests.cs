@@ -602,9 +602,15 @@ public sealed class BankDataCleanupJobTests
     [InlineData("…", true)]
     [InlineData("1234…567", true)]
     [InlineData("1234567", true)]
+    [InlineData("TR12", true)]
+    [InlineData("tr12…345", true)]
     [InlineData("?", false)]
     [InlineData("", false)]
     [InlineData(null, false)]
     public void Maske_maskeli_kaynagi_ele_verir(string? mask, bool expected)
-        => BankDataCleanupJob.LooksMasked(mask).Should().Be(expected);
+    {
+        BankDataCleanupJob.LooksMasked(mask).Should().Be(expected);
+        // Kuru koşu ile uygulama aynı sayıyı verir: biri eski maskeyi görür, öbürü onun çevrildiği ShortValueMask'ı.
+        if (BankDataCleanupJob.NeedsRemask(mask)) BankDataCleanupJob.LooksMasked(BankHasher.ShortValueMask).Should().Be(expected);
+    }
 }
