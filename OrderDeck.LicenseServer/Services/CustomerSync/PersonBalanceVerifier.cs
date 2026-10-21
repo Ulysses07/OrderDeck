@@ -63,34 +63,31 @@ public sealed class PersonBalanceVerifier
         long ProjectionCount,
         long TransactionCount);
 
-    /// <param name="licenseId">null = verisi (projeksiyon, bakiye ya da hareket) olan bütün lisanslar.</param>
+    /// <param name="licenseId">null = BÜTÜN lisanslar, verisi olmayanlar da (raporları boş). Taban yakalaması her
+    /// lisansa işaret yazar (plan fark 7): yakalama anında verisi olmayan eski bir lisans atlansaydı işaretsiz kalır,
+    /// sonradan başlayan sapmasında hiç uyarmazdı.</param>
     public async Task<Snapshot> LoadAsync(Guid? licenseId, DateTimeOffset now, CancellationToken ct)
     {
-        var licenses = licenseId is { } only
-            ? await _db.Licenses.AsNoTracking().Where(l => l.Id == only)
-                .Select(l => new LicenseRow(l.Id, l.IssuedAt)).ToListAsync(ct)
-            : await _db.Licenses.AsNoTracking()
-                .Where(l => _db.WpfCustomerProjections.IgnoreQueryFilters().Any(p => p.LicenseId == l.Id)
-                            || _db.CustomerBalances.Any(b => b.LicenseId == l.Id)
-                            || _db.CustomerBalanceTransactions.Any(t => t.LicenseId == l.Id))
-                .Select(l => new LicenseRow(l.Id, l.IssuedAt)).ToListAsync(ct);
-        var ids = licenses.Select(l => l.Id).ToList();
+        // Lisans süzgeci her sorguda parametre: null'da düşer (lisans Id listesi taşınmaz).
+        var licenses = await _db.Licenses.AsNoTracking()
+            .Where(l => licenseId == null || l.Id == licenseId)
+            .Select(l => new LicenseRow(l.Id, l.IssuedAt)).ToListAsync(ct);
 
         var projections = await _db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
-            .Where(p => ids.Contains(p.LicenseId))
+            .Where(p => licenseId == null || p.LicenseId == licenseId)
             .Select(p => new ProjectionRow(p.Id, p.LicenseId, p.GroupId, p.MergedIntoId, p.PurgedAt != null))
             .ToListAsync(ct);
         var balances = await _db.CustomerBalances.AsNoTracking()
-            .Where(b => ids.Contains(b.LicenseId))
+            .Where(b => licenseId == null || b.LicenseId == licenseId)
             .Select(b => new BalanceRow(b.LicenseId, b.WpfCustomerId, b.Balance))
             .ToListAsync(ct);
         var ledger = await _db.CustomerBalanceTransactions.AsNoTracking()
-            .Where(t => ids.Contains(t.LicenseId))
+            .Where(t => licenseId == null || t.LicenseId == licenseId)
             .GroupBy(t => new { t.LicenseId, t.WpfCustomerId })
             .Select(g => new LedgerRow(g.Key.LicenseId, g.Key.WpfCustomerId, g.Sum(t => t.Amount), g.Count()))
             .ToListAsync(ct);
         var drawRows = await _db.CustomerBalanceTransactions.AsNoTracking()
-            .Where(t => ids.Contains(t.LicenseId) && t.DrawGroupId != null)
+            .Where(t => (licenseId == null || t.LicenseId == licenseId) && t.DrawGroupId != null)
             .Select(t => new DrawRow(t.Id, t.LicenseId, t.WpfCustomerId, t.Amount, t.Kind, t.DrawGroupId!.Value,
                 t.OriginalAmount, t.SaleScope))
             .ToListAsync(ct);
@@ -98,7 +95,7 @@ public sealed class PersonBalanceVerifier
             .Where(r => r.ReversesTransactionId != null
                         && _db.CustomerBalanceTransactions.Any(l => l.Id == r.ReversesTransactionId
                                                                     && l.DrawGroupId != null
-                                                                    && ids.Contains(l.LicenseId)))
+                                                                    && (licenseId == null || l.LicenseId == licenseId)))
             .Select(r => r.ReversesTransactionId!.Value)
             .ToListAsync(ct);
         var baselines = await _db.PersonBalanceBaselines.AsNoTracking()
@@ -106,7 +103,7 @@ public sealed class PersonBalanceVerifier
             .ToListAsync(ct);
         var since = now - ActivePcWindow;
         var pcs = await _db.Activations.AsNoTracking()
-            .Where(a => ids.Contains(a.LicenseId) && a.DeactivatedAt == null && a.LastSeenAt >= since)
+            .Where(a => (licenseId == null || a.LicenseId == licenseId) && a.DeactivatedAt == null && a.LastSeenAt >= since)
             .Select(a => new ActivationRow(a.LicenseId, a.AppVersion))
             .ToListAsync(ct);
         var projectionCount = await _db.WpfCustomerProjections.IgnoreQueryFilters().LongCountAsync(ct);

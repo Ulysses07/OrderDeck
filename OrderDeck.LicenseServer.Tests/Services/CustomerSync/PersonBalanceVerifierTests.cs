@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -335,9 +336,67 @@ public sealed class PersonBalanceVerifierLoadTests : IClassFixture<ApiFactory>
 }
 
 /// <summary>
+/// Taban yakalaması her lisansa işaret yazar (plan fark 7): lisanssız yük verisi olmayan lisansı da getirir. Yakalama
+/// anında verisi olmayan ama ondan önce verilmiş bir lisans sonradan sapma alırsa uyarır — §8.1 susmayı yalnız S1
+/// deploy'u ile §7.1 adım 2 arasına verir. Kendi fabrikasıyla: yakalama fabrikadaki bütün lisanslara yazar.
+/// </summary>
+public sealed class PersonBalanceVerifierCaptureTests
+{
+    [Fact]
+    public async Task Yakalamada_verisi_olmayan_eski_lisans_isaret_alir_sonraki_eksi_satirda_uyarir()
+    {
+        using var factory = new ApiFactory();
+        var kit = await Kit.CreateAsync(factory);
+        await kit.MemberAsync(null, 5m);
+        var idle = await kit.Sales.SecondLicenseAsync(SalesSyncMode.Off);   // yakalamada verisi yok
+        var capturedAt = DateTimeOffset.UtcNow.AddMinutes(1);   // iki lisans da yakalamadan önce verilmiş
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var snapshot = await scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
+                .LoadAsync(null, capturedAt, default);
+            foreach (var license in V.Analyze(snapshot).Licenses)
+                db.PersonBalanceBaselines.AddRange(V.BaselineRowsToCapture(snapshot, license, capturedAt));
+            await db.SaveChangesAsync();
+        }
+
+        var negative = Guid.NewGuid();
+        await idle.WithDbAsync(db =>
+        {
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = negative, LicenseId = idle.LicenseId, Platform = "youtube", Username = $"p{Guid.NewGuid():N}",
+                UpdatedAt = capturedAt.AddHours(1),
+            });
+            db.CustomerBalances.Add(new CustomerBalance
+            {
+                Id = Guid.NewGuid(), LicenseId = idle.LicenseId, WpfCustomerId = negative, Balance = -4m,
+                UpdatedAt = capturedAt.AddHours(1),
+            });
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = Guid.NewGuid(), LicenseId = idle.LicenseId, WpfCustomerId = negative, Amount = -4m,
+                Kind = Kit.KindManual, CreatedByCustomerId = idle.CustomerId, CreatedAt = capturedAt.AddHours(1),
+            });
+            return Task.CompletedTask;
+        });
+
+        using var after = factory.Services.CreateScope();
+        var report = V.Analyze(await after.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
+            .LoadAsync(null, capturedAt.AddDays(1), default));
+
+        var r = report.Licenses.Should().ContainSingle(l => l.LicenseId == idle.LicenseId).Subject;
+        (r.HasMarker, r.HasBaseline).Should().Be((true, true), "yakalama verisiz lisansa da işaret yazmalı");
+        r.Alerts.Should().ContainSingle().Which.Should().Be("eksi: taban dışı 1, daha da eksiye inen 0");
+        r.Details.NegativeOutside.Should().Equal(negative);
+    }
+}
+
+/// <summary>
 /// <see cref="PersonBalanceVerifier.LoadAsync"/> gerçek SQL Server'da: günlük iş prod'da lisanssız (<c>null</c>) yükü
-/// koşar; sorguların (kopyaları da gören alt sorgu, defter gruplaması, geri alma hedefleri) çevrildiği ve InMemory
-/// ile aynı anlık görüntüyü verdiği yalnız burada kanıtlanır.
+/// koşar; sorguların (null'da düşen lisans süzgeci, defter gruplaması, geri alma hedefleri) çevrildiği ve lisanslı
+/// yükle aynı raporu verdiği yalnız burada kanıtlanır.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -357,7 +416,7 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Lisansli_ve_lisanssiz_yukleme_ayni_raporu_kurar_verisiz_lisans_atlanir()
+    public async Task Lisansli_ve_lisanssiz_yukleme_ayni_raporu_kurar_verisiz_lisans_bos_raporla_gelir()
     {
         var kit = await Kit.CreateAsync(_factory);
         var ex = await kit.Example1Async();
@@ -374,7 +433,7 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
             });
             return Task.CompletedTask;
         });
-        await kit.Sales.SecondLicenseAsync(SalesSyncMode.Off);   // verisiz lisans
+        var idle = await kit.Sales.SecondLicenseAsync(SalesSyncMode.Off);   // verisiz lisans
 
         using var scope = _factory.Services.CreateScope();
         var verifier = scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>();
@@ -382,8 +441,11 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
         var single = V.Analyze(await verifier.LoadAsync(kit.LicenseId, now, default));
         var all = V.Analyze(await verifier.LoadAsync(null, now, default));
 
-        all.Licenses.Select(l => l.LicenseId).Should().Equal(kit.LicenseId);
-        all.Licenses.Single().Should().BeEquivalentTo(single.Licenses.Single());
+        all.Licenses.Single(l => l.LicenseId == kit.LicenseId).Should().BeEquivalentTo(single.Licenses.Single());
+        var empty = all.Licenses.Should().ContainSingle(l => l.LicenseId == idle.LicenseId,
+            "taban yakalaması verisiz lisansa da işaret yazar (fark 7)").Subject;
+        (empty.NegativeRows, empty.LedgerMismatches, empty.CopyRows, empty.SpreadPersons, empty.Alerts.Count)
+            .Should().Be((default(V.Tally), default(V.Tally), default(V.Tally), 0, 0));
         var r = single.Licenses.Single();
         (r.D4, r.D5, r.D6, r.OrphanLegs).Should().Be((0, 0, 0, 0), "grup geri alması bütün bacakları kapsar");
         (r.SpreadPersons, r.SpreadPoolTotal).Should().Be((1, 130m), "geri almadan sonra I'da 100, Y'de 30");
