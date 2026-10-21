@@ -24,7 +24,8 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// <see cref="CancellationToken.None"/> ile koşar: sınırlı admin işlemleridir; istek karar kaydedildikten sonra iptal edilse
 /// karar yazılmış, izi ya da bildirimi kaybolmuş olurdu.</para>
 /// <para><b>Kaldır</b> onay ister: dekonta bağlı satırda dekontu bağından koparıp açık gap'e döndürür, bu hareketten öğrenilen
-/// IBAN'ı siler; ikisi de arayüzden geri alınamaz.</para>
+/// IBAN'ı siler; başka havalenin öğrettiği IBAN bağının süresi yalnız bu havaleye dayanıyorsa o bağı da imha kaydıyla siler
+/// (yapan yöneticinin kimliği). Hiçbiri arayüzden geri alınamaz.</para>
 /// <para><b>Banka modülü kapalıyken de sayfa açılır</b> (<see cref="BankHasher.IsValidKey"/>): uyarı basılır, veri
 /// gösterilir, her POST <see cref="BankHasher.DisabledMessage"/> ile döner ve hiçbir şey yazmaz. Bağdaştırıcı, eşleştirici
 /// ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri sayfayı düşürmez.</para></summary>
@@ -45,9 +46,11 @@ public class IndexModel : PageModel
     /// <summary>Kaldırma kaydedildi, öneriyi yeniden hesaplamak düştü (bkz. <see cref="PaymentMatchReconciler.UnmatchAsync"/>).</summary>
     public const string UnmatchedNotRecomputedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü. Öneri yeniden hesaplanamadı; satır öneri yok durumunda kaldı.";
 
-    /// <summary>Kaldır düğmesinin onay metinleri. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez.</summary>
-    public const string UnmatchConfirmMessage = "Eşleşme kaldırılacak ve bu hareketten öğrenilen IBAN silinecek. Arayüzden geri alınamaz. Emin misiniz?";
-    public const string UnmatchReceiptConfirmMessage = "Dekonta bağlı eşleşme kaldırılacak: dekontun bu hareketle bağı kopar, dekont yeniden açık gap olur ve bu hareketten öğrenilen IBAN silinir. Arayüzden geri alınamaz. Emin misiniz?";
+    /// <summary>Kaldır düğmesinin onay metinleri. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez. Kaldırma başka
+    /// havalenin öğrettiği IBAN bağını da silebilir (<see cref="PaymentMatchReconciler.UnmatchAsync"/>: süresini yalnız bu havale
+    /// taşıyorsa, KVKK K-6); metin bunu söyler.</summary>
+    public const string UnmatchConfirmMessage = "Eşleşme kaldırılacak ve bu hareketten öğrenilen IBAN silinecek; IBAN ile müşteri bağının süresi yalnız bu havaleye dayanıyorsa bağ da silinir. Arayüzden geri alınamaz. Emin misiniz?";
+    public const string UnmatchReceiptConfirmMessage = "Dekonta bağlı eşleşme kaldırılacak: dekontun bu hareketle bağı kopar, dekont yeniden açık gap olur ve bu hareketten öğrenilen IBAN silinir; IBAN ile müşteri bağının süresi yalnız bu havaleye dayanıyorsa bağ da silinir. Arayüzden geri alınamaz. Emin misiniz?";
 
     private readonly LicenseDbContext _db;
     private readonly PaymentMatchReconciler _reconciler;

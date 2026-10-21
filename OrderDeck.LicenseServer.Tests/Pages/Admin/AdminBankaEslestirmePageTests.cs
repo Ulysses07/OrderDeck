@@ -497,6 +497,10 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         doc.QuerySelector($"tr[data-tx='{txId}'] button[formaction*='Unmatch']")!.GetAttribute("onclick")
             .Should().Be($"return confirm('{IndexModel.UnmatchReceiptConfirmMessage}')");
         IndexModel.UnmatchReceiptConfirmMessage.Should().Contain("dekont");
+        // Kaldırma başka havalenin öğrettiği IBAN bağını da silebilir (süresi yalnız bu havaleye dayanıyorsa, KVKK K-6):
+        // yönetici geri alınamaz silmeyi bilerek onaylar.
+        IndexModel.UnmatchConfirmMessage.Should().Contain("bağ da silinir");
+        IndexModel.UnmatchReceiptConfirmMessage.Should().Contain("bağ da silinir");
         // Onay metni tek tırnaklı JS dizesine gömülür: kesme işareti dizeyi kırar.
         IndexModel.UnmatchReceiptConfirmMessage.Should().NotContain("'");
         IndexModel.UnmatchConfirmMessage.Should().NotContain("'");
