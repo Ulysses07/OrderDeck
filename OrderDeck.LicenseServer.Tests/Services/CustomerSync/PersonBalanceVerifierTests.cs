@@ -1,7 +1,4 @@
-using System.Data.Common;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -458,11 +455,11 @@ public sealed class PersonBalanceVerifierCaptureTests
 public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
 {
     private readonly SqlServerContainerFixture _sql;
-    private HookFactory _factory = null!;
+    private ReadHookRelationalApiFactory _factory = null!;
 
     public PersonBalanceVerifierRelationalTests(SqlServerContainerFixture sql) => _sql = sql;
 
-    public async Task InitializeAsync() => _factory = new HookFactory(await _sql.CreateDatabaseAsync());
+    public async Task InitializeAsync() => _factory = new ReadHookRelationalApiFactory(await _sql.CreateDatabaseAsync());
 
     public Task DisposeAsync()
     {
@@ -570,47 +567,5 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
         r.Details.NegativeOutside.Should().Equal(negative);
         (r.CopyRowsWithBalance, r.LedgerMismatches.Outside).Should().Be((1, 1));
         single.TransactionCount.Should().Be(9, "üç üye hareketi (I, Y, eksi), üç bacak, üç geri alma; T'nin hareketi yok");
-    }
-
-    /// <summary>
-    /// Sorgu kancası: <c>when</c>'i tutan ilk okuma komutunun hemen öncesinde <c>before</c>'u bir kez koşturur.
-    /// Yeniden girmez (kanca gövdesinin sorguları onu tetiklemez).
-    /// </summary>
-    private sealed class QueryHook : DbCommandInterceptor
-    {
-        private Func<string, bool>? _when;
-        private Func<Task>? _before;
-        private bool _running;
-
-        public void Arm(Func<string, bool> when, Func<Task> before)
-        {
-            _when = when;
-            _before = before;
-        }
-
-        public void Disarm() => _before = null;
-
-        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
-            DbCommand command,
-            CommandEventData eventData,
-            InterceptionResult<DbDataReader> result,
-            CancellationToken cancellationToken = default)
-        {
-            if (_before is { } hook && !_running && _when!(command.CommandText))
-            {
-                _before = null;
-                _running = true;
-                try { await hook(); }
-                finally { _running = false; }
-            }
-            return result;
-        }
-    }
-
-    private sealed class HookFactory(string connectionString) : RelationalApiFactory(connectionString)
-    {
-        public QueryHook Queries { get; } = new();
-
-        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Queries);
     }
 }

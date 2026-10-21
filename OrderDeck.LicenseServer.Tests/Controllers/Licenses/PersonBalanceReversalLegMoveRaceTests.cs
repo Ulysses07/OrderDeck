@@ -1,8 +1,6 @@
-using System.Data.Common;
 using System.Net;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.CustomerSync;
@@ -29,11 +27,11 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 public sealed class PersonBalanceReversalLegMoveRaceTests : IAsyncLifetime
 {
     private readonly SqlServerContainerFixture _sql;
-    private HookFactory _factory = null!;
+    private ReadHookRelationalApiFactory _factory = null!;
 
     public PersonBalanceReversalLegMoveRaceTests(SqlServerContainerFixture sql) => _sql = sql;
 
-    public async Task InitializeAsync() => _factory = new HookFactory(await _sql.CreateDatabaseAsync());
+    public async Task InitializeAsync() => _factory = new ReadHookRelationalApiFactory(await _sql.CreateDatabaseAsync());
 
     public Task DisposeAsync()
     {
@@ -76,47 +74,5 @@ public sealed class PersonBalanceReversalLegMoveRaceTests : IAsyncLifetime
         (await kit.ReversalsOfAsync([ex.K, ex.L1, ex.L2])).Should().HaveCount(3);
         foreach (var row in new[] { ex.T, ex.I, ex.Y, canonical })
             (await kit.LedgerHoldsAsync(row)).Should().BeTrue("D1");
-    }
-
-    /// <summary>
-    /// Sorgu kancası: <c>when</c>'i tutan ilk okuma komutunun hemen öncesinde <c>before</c>'u bir kez koşturur.
-    /// Yeniden girmez (kanca gövdesinin sorguları onu tetiklemez).
-    /// </summary>
-    private sealed class QueryHook : DbCommandInterceptor
-    {
-        private Func<string, bool>? _when;
-        private Func<Task>? _before;
-        private bool _running;
-
-        public void Arm(Func<string, bool> when, Func<Task> before)
-        {
-            _when = when;
-            _before = before;
-        }
-
-        public void Disarm() => _before = null;
-
-        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
-            DbCommand command,
-            CommandEventData eventData,
-            InterceptionResult<DbDataReader> result,
-            CancellationToken cancellationToken = default)
-        {
-            if (_before is { } hook && !_running && _when!(command.CommandText))
-            {
-                _before = null;
-                _running = true;
-                try { await hook(); }
-                finally { _running = false; }
-            }
-            return result;
-        }
-    }
-
-    private sealed class HookFactory(string connectionString) : RelationalApiFactory(connectionString)
-    {
-        public QueryHook Queries { get; } = new();
-
-        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Queries);
     }
 }
