@@ -187,9 +187,38 @@ public sealed class BankHasherTests
     [Fact]
     public void Harf_iceren_TR_BBAN_kontrol_hanesi_dogruysa_gecerlidir()
     {
-        // TR BBAN'ın son 16 karakteri standarda göre harf de içerebilir: "TR'den sonra yalnız rakam" koşulu yok.
+        // TR BBAN'ın son 16 karakteri standarda göre harf de içerebilir: "TR'den sonra yalnız rakam" koşulu yok (karar 26).
+        // Aynı harften iki ardışık karakter maske sayılmaz; üç sayılır (Harfle_maskelenmis_… testi).
         var bban = TestPhone.Digits(5) + "0" + "ABCD" + TestPhone.Digits(12);
         BankHasher.NormalizeIban(WithCheckDigits("TR", bban)).Should().NotBeNull();
+        var pair = TestPhone.Digits(5) + "0" + "XX" + TestPhone.Digits(14);
+        BankHasher.NormalizeIban(WithCheckDigits("TR", pair)).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Harfle_maskelenmis_IBAN_kontrol_hanesi_tutsa_da_ozetlenmez_maskesi_karakter_gostermez()
+    {
+        // KVKK Ö-7: X ile maskelenmiş değer harf/rakam, uzunluk ve TR biçimi denetimlerinden geçer; yalnız mod-97 eler, o da
+        // ~1/97 olasılıkla tutar. Burada kontrol haneleri maskeli değere göre hesaplanır: tutan %1'lik durum. Kurallar: BBAN'da
+        // aynı harften üç ya da daha uzun dizi maskedir (küçük harf de, yabancı IBAN'da da); TR'de banka kodu ve rezerv hane
+        // rakamdır (SWIFT IBAN kaydı TR2!n5!n1!n16!c).
+        var h = NewHasher();
+        var upper = WithCheckDigits("TR", "000120" + new string('X', 12) + TestPhone.Digits(4));
+        var masked = new[]
+        {
+            upper,
+            upper.Replace('X', 'x'),
+            WithCheckDigits("TR", TestPhone.Digits(5) + "0" + TestPhone.Digits(4) + "XXX" + TestPhone.Digits(9)),
+            WithCheckDigits("DE", TestPhone.Digits(4) + new string('X', 10) + TestPhone.Digits(4)),
+            WithCheckDigits("TR", "ABCDE" + "0" + TestPhone.Digits(16)),
+            WithCheckDigits("TR", TestPhone.Digits(5) + "A" + TestPhone.Digits(16)),
+        };
+        for (var i = 0; i < masked.Length; i++)
+        {
+            BankHasher.Classify(masked[i]).Should().Be(IbanQuality.Masked, $"satır {i}");
+            h.HashIban(masked[i]).Should().BeNull($"satır {i}");
+            BankHasher.MaskIban(masked[i]).Should().Be(BankHasher.ShortValueMask, $"satır {i}");
+        }
     }
 
     [Fact]

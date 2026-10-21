@@ -1289,4 +1289,26 @@ public sealed class ObifinPollJobTests
         var account = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.ObifinAccountId == 6);
         (account.IbanFullCount, account.IbanMaskedCount, account.IbanEmptyCount).Should().Be((1, 1, 1));
     }
+
+    [Fact]
+    public async Task Harfle_maskelenmis_kontrol_hanesi_tutan_IBAN_ozetlenmez_maskeli_sayilir()
+    {
+        // KVKK Ö-7: X ile maskelenen değer ~1/97 olasılıkla mod-97'yi tutar (burada kontrol haneleri ona göre hesaplandı). Tutan
+        // değer de özetlenmez, IBAN öğretmez (bayrak false) ve maskeli sayılır; maskesi karakter göstermez.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var masked = BankHasherTests.WithCheckDigits("TR", "000120" + new string('X', 12) + TestPhone.Digits(4));
+        client.Transactions.Add(Tx(41, new DateTime(2026, 9, 25, 9, 0, 0), 10m, iban: masked));
+
+        await job.RunAsync(CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var tx = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.ObifinId == 41);
+        tx.CounterpartyIbanHash.Should().BeNull("harfle maskelenmiş değer özetlenmez");
+        tx.CounterpartyIbanHashValid.Should().BeFalse();
+        tx.CounterpartyIbanMasked.Should().Be(BankHasher.ShortValueMask);
+        var account = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.ObifinAccountId == 6);
+        (account.IbanFullCount, account.IbanMaskedCount, account.IbanEmptyCount).Should().Be((0, 1, 0));
+    }
 }

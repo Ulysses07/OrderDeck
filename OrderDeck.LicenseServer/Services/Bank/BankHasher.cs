@@ -48,10 +48,15 @@ public sealed class BankHasher
 
     /// <summary>
     /// Yalnız tam ve geçerli IBAN normalize edilir (KVKK Ö-7): boşluk atılır, büyük harfe çevrilir; yalnız ASCII harf ve rakam;
-    /// 2 harf ülke + 2 rakam kontrol; uzunluk 15–34, TR'de tam 26; ISO 7064 MOD 97-10 kalanı 1. Aksi hâlde null. Maskeli değer
-    /// (ör. <c>TR12****…</c>) özetlenseydi aynı ilk ve son karakterleri taşıyan farklı gönderenler aynı özete düşer, IBAN
-    /// hafızası farklı kişileri tek müşteriye bağlardı. TR BBAN'ı standarda göre harf içerebilir: "TR'den sonra yalnız rakam"
-    /// koşulu BİLEREK yok.
+    /// 2 harf ülke + 2 rakam kontrol; uzunluk 15–34, TR'de tam 26 ve banka kodu ile rezerv hane rakam (SWIFT IBAN kaydı
+    /// <c>TR2!n5!n1!n16!c</c>); BBAN'da aynı harften <see cref="MaskLetterRun"/> ya da daha uzun dizi yok; ISO 7064 MOD 97-10
+    /// kalanı 1. Aksi hâlde null. Maskeli değer (ör. <c>TR12****…</c>) özetlenseydi aynı ilk ve son karakterleri taşıyan farklı
+    /// gönderenler aynı özete düşer, IBAN hafızası farklı kişileri tek müşteriye bağlardı.
+    /// <para><b>Harfle maskeleme.</b> <c>X</c> ile maskelenmiş değer harf/rakam, uzunluk ve biçim denetimlerinden geçer; yalnız
+    /// mod-97 eler, o da ~1/97 olasılıkla tutar. Kontrol hanesine tek başına güvenilemez: aynı harfin dizisi maske sayılır. TR
+    /// hesap kısmı (16 karakter) standarda göre harf içerebilir; "TR'den sonra yalnız rakam" koşulu konmadı (plan karar 26,
+    /// Burak). Rakamla maskeleyen banka (ortayı 0 yapan) buradan ayırt edilemez: değerlerin ~96/97'si mod-97'de düşer, hesabın
+    /// maskeli sayacı (<see cref="IbanQuality"/>) o bankayı gösterir.</para>
     /// </summary>
     public static string? NormalizeIban(string? iban)
     {
@@ -62,8 +67,36 @@ public sealed class BankHasher
             if (!char.IsAsciiLetterUpper(c) && !char.IsAsciiDigit(c)) return null;
         if (!char.IsAsciiLetterUpper(compact[0]) || !char.IsAsciiLetterUpper(compact[1])
             || !char.IsAsciiDigit(compact[2]) || !char.IsAsciiDigit(compact[3])) return null;
-        if (compact.StartsWith("TR", StringComparison.Ordinal) && compact.Length != TrIbanLength) return null;
+        if (compact.StartsWith("TR", StringComparison.Ordinal))
+        {
+            if (compact.Length != TrIbanLength) return null;
+            // Banka kodu (5) ve rezerv hane (1) rakam: TR2!n5!n1!n16!c.
+            for (var i = 4; i < 10; i++)
+                if (!char.IsAsciiDigit(compact[i])) return null;
+        }
+        if (HasMaskLetterRun(compact)) return null;
         return HasValidIbanChecksum(compact) ? compact : null;
+    }
+
+    /// <summary>BBAN'da (ilk dört karakterden sonra) aynı harften en az bu kadar ardışık karakter maske dizisidir
+    /// (<c>XXX…</c>). İki yetmez: meşru bir hesap numarasında aynı iki harf yan yana gelebilir.</summary>
+    public const int MaskLetterRun = 3;
+
+    /// <summary>Boşluksuz, büyük harfli değerin BBAN'ında aynı harften <see cref="MaskLetterRun"/>+ dizi var mı?</summary>
+    private static bool HasMaskLetterRun(string compactUpper)
+    {
+        var run = 0;
+        for (var i = 4; i < compactUpper.Length; i++)
+        {
+            if (!char.IsAsciiLetterUpper(compactUpper[i]))
+            {
+                run = 0;
+                continue;
+            }
+            run = i > 4 && compactUpper[i] == compactUpper[i - 1] ? run + 1 : 1;
+            if (run >= MaskLetterRun) return true;
+        }
+        return false;
     }
 
     /// <summary>Boş → <see cref="IbanQuality.Empty"/>; geçerli → <see cref="IbanQuality.Full"/>; dolu ama geçersiz (maskeli,
