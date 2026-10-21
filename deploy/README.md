@@ -327,6 +327,31 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > o lisansları `sales-sync disable` ile kapat ve bilgisayarların Off turunu
 > bitirdiğini `sales-sync status`'ta gör; yoksa ileri düzelt.
 
+> **UYARI — Ortak bakiye S1 tabanı (spec 2026-10-11 §7.4).**
+> `OrderDeck.LicenseServer/Services/CustomerSync/PersonBalance.cs` dosyasını
+> İÇERMEYEN bir imaja (etiketin kaynağında
+> `git cat-file -e <sha>:OrderDeck.LicenseServer/Services/CustomerSync/PersonBalance.cs`
+> başarısızsa o imaj S1 öncesidir), `DrawGroupId`'si dolu ve kendi `Id`'sinden
+> farklı bir defter satırı (bir bacak) oluştuktan sonra bu elle yoldan ASLA
+> geçme. Kontrol:
+> `SELECT COUNT(*) FROM CustomerBalanceTransactions WHERE DrawGroupId IS NOT NULL AND DrawGroupId <> Id`
+> sıfırdan büyükse yasak.
+> Eski reverse yalnız çapayı (tutarı 0 olabilir) geri alır; müşterinin öbür
+> hesaplarından düşülen para geri dönmez. Ayrıca `scope` ve `transactions/{id}`
+> yalnız çapa tutarını döner. Havuz kipi (S2) açılmadan `DrawGroupId` hiç
+> dolmaz; bu sorgu o zamana kadar 0 döner.
+>
+> Otomatik geri alma bir önceki imaja döner ve güvenlidir: S1 göçü yalnız
+> ekleyici, S1 öncesi imaj yeni şemada yazmayı sürdürür
+> (`PersonBalanceS1MigrationTests`). S2 deploy'u düşerse imaj S1'e döner; S1
+> kip bayrağını okumaz, bütün lisanslar satır kipine iner ve S1 çok bacaklı
+> geçmişi okur ve grup olarak geri alır (panelde grup olarak geri
+> alınamayan hedefi `not-reversible` ile reddeder; yarım geri alma yok).
+>
+> S1'den sonra (Burak): `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify`
+> (salt okunur) → `… person-balance verify --capture-baseline` (kuru) →
+> `… --capture-baseline --apply`. İnceleme: `… --mark-reviewed --license <id> --apply`.
+
 ## Masaüstü: satış senkronunu yerelde sıfırlama (≤0.9.10'a dönüş)
 
 Spec 2026-10-13 §8.6. Masaüstü uygulamasını Velopack'le satış senkronundan
