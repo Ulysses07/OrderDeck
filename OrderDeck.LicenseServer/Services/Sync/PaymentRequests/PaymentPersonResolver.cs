@@ -82,16 +82,27 @@ public sealed class PaymentPersonResolver
     /// yutarak getirir; kesin eşitlik bellekte, ordinal denetlenir (ortak bakiye §4.13'ün yöntemi).
     /// Gruplanmamış sahipte boş. Sorgu <see cref="PersonMembership"/>'te; ortak bakiye aynı kaynağı kullanır (§15-5).
     /// </summary>
-    public async Task<IReadOnlyList<string>> ServerGroupAsync(Guid licenseId, string? groupId, CancellationToken ct)
+    public async Task<IReadOnlyList<string>> ServerGroupAsync(Guid licenseId, string? groupId, CancellationToken ct) =>
+        (await ServerGroupMembersAsync(licenseId, groupId, ct)).Select(m => m.Id).ToList();
+
+    /// <summary>
+    /// <see cref="ServerGroupAsync"/>'in üyeleri, KVKK silinmişlik bilgisiyle (aynı sorgu, aynı sıra). Kiranın (b) adımı
+    /// yalnız canlı üyeleri ister (ortak bakiye §15-7, §4.0-3); arama ve kayıt silinmişleri de taşır.
+    /// </summary>
+    public async Task<IReadOnlyList<ServerMember>> ServerGroupMembersAsync(
+        Guid licenseId, string? groupId, CancellationToken ct)
     {
         if (groupId is null) return [];
         var rows = await PersonMembership.GroupMembersAsync(_db, licenseId, groupId, ct);
         return rows
-            .Select(r => r.Id.ToString("N"))
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
+            .Select(r => new ServerMember(r.Id.ToString("N"), r.Purged))
+            .DistinctBy(m => m.Id, StringComparer.Ordinal)
+            .OrderBy(m => m.Id, StringComparer.Ordinal)
             .ToList();
     }
+
+    /// <summary>Sunucu grubunun bir üyesi: asıl kaydın "N" hex Id'si ve KVKK ile silinmiş mi.</summary>
+    public sealed record ServerMember(string Id, bool Purged);
 
     /// <summary>
     /// Kayıt aramasının üye kümesi: verilen üyeler ve GUID'li üyelerin kopyaları ("N" hex), ordinal tekil.
