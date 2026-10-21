@@ -23,7 +23,9 @@ public sealed class ObifinConnection
     /// O turun başında, Obifin'e gidilmeden kaydedilir; tur yarıda kalsa ya da hiç kayıt yapmadan düşse de (geçici hata,
     /// Obifin reddi) kalır, sonraki turlar aynı çapadan sürer. Hiçbir turda bu günden eski gün Obifin'den istenmez, bu
     /// günden eski işlem tarihli hareket (Obifin istenen aralığın dışından döndürse de) yazılmaz. Kimlik değişene kadar
-    /// değişmez, değişince boşalır. Eski bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
+    /// değişmez, değişince boşalır. Tek istisna: yerel verisi hizmet sonunda silinmiş bağlantı yeniden açılınca açılış gününe
+    /// çekilir (<c>ObifinConnectionService.ReanchorAfterLocalPurge</c>, plan karar 28): durdurulmuş dönemin hareketleri sonradan
+    /// çekilmez. Eski bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
     public DateOnly? InitialCollectFrom { get; set; }
     /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6): lisans bitti
     /// (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>) ya da yönetici durdurdu (<c>BankConnectionTerminator</c>).

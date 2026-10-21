@@ -148,7 +148,9 @@ public sealed class BankConnectionTerminator
     }
 
     /// <summary>Yalnız lisans geçerliyse: Unverified'a döner (yönetici Doğrula'ya basar), hizmet sonu alanları boşalır
-    /// (<see cref="ObifinConnectionService.ClearServiceEnd"/>). Disabled olmayan bağlantıda bir şey yapmaz.</summary>
+    /// (<see cref="ObifinConnectionService.ClearServiceEnd"/>). Yerel verisi silinmiş bağlantıda ilk çekim çapası açılış gününe
+    /// çekilir (<see cref="ObifinConnectionService.ReanchorAfterLocalPurge"/>, karar 28): durdurulmuş dönemin hareketleri sonradan
+    /// çekilmez. Disabled olmayan bağlantıda bir şey yapmaz.</summary>
     public async Task ResumeAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
@@ -158,6 +160,7 @@ public sealed class BankConnectionTerminator
         if (!await ObifinConnectionService.IsLicenseActiveAsync(_db, licenseId, now, ct))
             throw new ObifinValidationException(LicenseStillEndedMessage);
         conn.Status = ObifinConnectionStatus.Unverified;
+        ObifinConnectionService.ReanchorAfterLocalPurge(conn, now);   // ClearServiceEnd işareti boşaltmadan önce
         ObifinConnectionService.ClearServiceEnd(conn);
         conn.LastError = null;
         conn.UpdatedAt = now;

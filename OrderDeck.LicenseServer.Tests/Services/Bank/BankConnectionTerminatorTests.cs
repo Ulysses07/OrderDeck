@@ -258,6 +258,40 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Yerel_verisi_silinmis_baglanti_etkinlestirilince_cekim_capasi_acilis_gunune_cekilir_kisa_durdurmada_kalir()
+    {
+        // Karar 28 (Ö-5, karar 20'nin "(yeniden) bağlantıda en çok iki gün geriye" ilkesi): yerel verisi silinmiş (en az 30 gün
+        // durmuş) bağlantıda Etkinleştir + Doğrula'dan sonraki ilk artımlı çekim imleçten sonraki 31 günü bir kerede çekerdi; o
+        // hareketlerin hepsi durdurulmuş dönemden ve silinmiş verinin yerine geçerdi. Çapa açılış günü − 2'ye çekilir, imleç kalır;
+        // çekim penceresi ve kayıt koruması çapayı zaten uygular. Kısa yönetici durdurmasında aradaki havaleler gelir (çapa kalır).
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var purged = await SeedAsync(db, client);
+        var paused = await SeedAsync(db, client);
+        var oldAnchor = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-60);
+        foreach (var c in await db.ObifinConnections.ToListAsync())
+        {
+            c.InitialCollectFrom = oldAnchor; c.BackfillCompletedAt = DateTimeOffset.UtcNow.AddDays(-58);
+            c.LastObifinTransactionId = 100;
+        }
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var t = Terminator(db, client);
+        await t.StopAsync(purged, CancellationToken.None);
+        await t.PurgeLocalDataAsync(purged, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor, CancellationToken.None);
+        await t.StopAsync(paused, CancellationToken.None);
+        var before = BankDataCleanupJob.AnchorFor(DateTimeOffset.UtcNow);
+
+        await t.ResumeAsync(purged, CancellationToken.None);
+        await t.ResumeAsync(paused, CancellationToken.None);
+
+        var after = BankDataCleanupJob.AnchorFor(DateTimeOffset.UtcNow);
+        var reopened = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == purged);
+        reopened.InitialCollectFrom.Should().BeOneOf(new DateOnly?[] { before, after }, "açılış günü − InitialGraceDays");
+        reopened.LastObifinTransactionId.Should().Be(100, "imleç kalır; pencere çapadan başlar");
+        (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == paused)).InitialCollectFrom
+            .Should().Be(oldAnchor, "yerel verisi silinmemiş kısa durdurmada aradaki havaleler gelsin");
+    }
+
+    [Fact]
     public async Task Kaldir_yalniz_bu_lisansa_ait_baglantilari_kaldirir_digerini_elle_kontrole_birakir_yerel_veriyi_siler()
     {
         // KVKK K-6/Ö-9 + Faz 2 spec §13: Obifin kullanıcısının altında başka lisansın (ya da sahibi belirsiz) bankası olabilir.

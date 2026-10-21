@@ -181,6 +181,21 @@ public sealed class ObifinConnectionService
         conn.DisabledByAdmin = false;
     }
 
+    /// <summary>Plan karar 28 (KVKK Ö-5; karar 20'nin "(yeniden) bağlantıda en çok iki gün geriye" ilkesi): yerel banka verisi
+    /// hizmet sonunda silinmiş (<see cref="ObifinConnection.BankDataPurgedAt"/> dolu, yani en az 30 gün durmuş) bağlantı yeniden
+    /// açılırken ilk çekim çapası açılış anının TR günü − <see cref="ObifinPollJob.InitialGraceDays"/>'e çekilir
+    /// (<see cref="BankDataCleanupJob.AnchorFor"/>; yalnız ileri). Yoksa Doğrula'dan sonraki ilk artımlı çekim imleçten sonraki
+    /// 31 günü bir kerede çekerdi: hepsi durdurulmuş dönemin hareketleri, silinmiş verinin yerine geçerdi. İmleç kalır; çekim
+    /// penceresi ve kayıt koruması çapayı zaten uygular. Yerel verisi silinmemiş (kısa) durdurmada çapa değişmez: aradaki
+    /// havaleler gelir. Kaydetmez. Disabled'dan çıkış yollarında <see cref="ClearServiceEnd"/>'den ÖNCE çağrılır (işareti o
+    /// boşaltır): Etkinleştir (<c>BankConnectionTerminator.ResumeAsync</c>) ve Görev 14'te lisansın yenilenmesi.</summary>
+    public static void ReanchorAfterLocalPurge(ObifinConnection conn, DateTimeOffset now)
+    {
+        if (conn.BankDataPurgedAt is null) return;
+        var anchor = BankDataCleanupJob.AnchorFor(now);
+        if (conn.InitialCollectFrom is null || conn.InitialCollectFrom < anchor) conn.InitialCollectFrom = anchor;
+    }
+
     /// <summary>KVKK K-6: durdurulmuş (<see cref="ObifinConnectionStatus.Disabled"/>) bağlantı için Doğrula ve Banka ekle Obifin'e
     /// gitmez; durdurma çekimle birlikte işlemeyi de durdurur. Lisans bitişini önceki lisans denetimi keser, bu yönetici
     /// durdurmasını keser. Doğrula'nın hesap listesi yerel silmenin IBAN'sız bıraktığı onaylı hesabı (karar 21(a)) yeniden
