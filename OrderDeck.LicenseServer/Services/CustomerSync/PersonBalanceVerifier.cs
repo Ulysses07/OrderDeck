@@ -223,19 +223,37 @@ public sealed class PersonBalanceVerifier
             .Where(b => b.WpfCustomerId == LicenseMarker)
             .Select(b => (DateTimeOffset?)b.CapturedAt)
             .Min();
-        var reports = s.Licenses.OrderBy(l => l.Id).Select(l => AnalyzeLicense(s, l, firstCapture)).ToList();
+        var data = ByLicense.Of(s);
+        var reports = s.Licenses.OrderBy(l => l.Id)
+            .Select(l => AnalyzeLicense(data, s.ReversedIds, l, firstCapture))
+            .ToList();
         return new Report(reports, s.ProjectionCount, s.TransactionCount);
     }
 
-    private static LicenseReport AnalyzeLicense(Snapshot s, LicenseRow license, DateTimeOffset? firstCapture)
+    /// <summary>Anlık görüntünün listeleri lisansa göre BİR kez gruplanmış. Lisans başına süzmek O(L·N) olurdu:
+    /// lisanssız yük verisizler dahil bütün lisansları getirir (plan fark 16).</summary>
+    private sealed record ByLicense(
+        ILookup<Guid, ProjectionRow> Projections, ILookup<Guid, BalanceRow> Balances, ILookup<Guid, LedgerRow> Ledger,
+        ILookup<Guid, DrawRow> Draws, ILookup<Guid, BaselineRow> Baselines, ILookup<Guid, ActivationRow> ActivePcs)
+    {
+        public static ByLicense Of(Snapshot s) => new(
+            Projections: s.Projections.ToLookup(p => p.LicenseId),
+            Balances: s.Balances.ToLookup(b => b.LicenseId),
+            Ledger: s.Ledger.ToLookup(l => l.LicenseId),
+            Draws: s.DrawRows.ToLookup(r => r.LicenseId),
+            Baselines: s.Baselines.ToLookup(b => b.LicenseId),
+            ActivePcs: s.ActivePcs.ToLookup(a => a.LicenseId));
+    }
+
+    private static LicenseReport AnalyzeLicense(
+        ByLicense data, IReadOnlySet<Guid> reversedIds, LicenseRow license, DateTimeOffset? firstCapture)
     {
         var id = license.Id;
-        var projections = s.Projections.Where(p => p.LicenseId == id).ToDictionary(p => p.Id);
-        var balances = s.Balances.Where(b => b.LicenseId == id).ToDictionary(b => b.WpfCustomerId, b => b.Balance);
-        var ledger = s.Ledger.Where(l => l.LicenseId == id).ToDictionary(l => l.WpfCustomerId);
-        var baselines = s.Baselines.Where(b => b.LicenseId == id && b.WpfCustomerId != LicenseMarker)
-            .ToDictionary(b => b.WpfCustomerId);
-        var hasMarker = s.Baselines.Any(b => b.LicenseId == id && b.WpfCustomerId == LicenseMarker);
+        var projections = data.Projections[id].ToDictionary(p => p.Id);
+        var balances = data.Balances[id].ToDictionary(b => b.WpfCustomerId, b => b.Balance);
+        var ledger = data.Ledger[id].ToDictionary(l => l.WpfCustomerId);
+        var baselines = data.Baselines[id].Where(b => b.WpfCustomerId != LicenseMarker).ToDictionary(b => b.WpfCustomerId);
+        var hasMarker = data.Baselines[id].Any(b => b.WpfCustomerId == LicenseMarker);
         var hasBaseline = hasMarker || (firstCapture is { } first && license.IssuedAt > first);
 
         decimal Bal(Guid row) => balances.GetValueOrDefault(row);
@@ -284,9 +302,9 @@ public sealed class PersonBalanceVerifier
         var explained = negativePersons.Count(m => m.Where(p => Bal(p.Id) < 0m)
             .All(p => baselines.ContainsKey(p.Id) && !Worsened(p.Id)));
         // 7.
-        var (d4, d5, d6, ruleGroups, orphans) = CheckDraws(s, id);
+        var (d4, d5, d6, ruleGroups, orphans) = CheckDraws(data.Draws[id], reversedIds);
         // 9.
-        var versions = s.ActivePcs.Where(a => a.LicenseId == id)
+        var versions = data.ActivePcs[id]
             .GroupBy(a => a.AppVersion ?? "yok", StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
 
@@ -310,37 +328,47 @@ public sealed class PersonBalanceVerifier
                 alerts.Add($"kopya: taban dışı {copyOut.Count}");
         }
 
+        // Adlandırılmış argümanlar: kayıtların çoğu alanı aynı türde (int, Tally, List<Guid>); yer değiştirme sessizce
+        // derlenirdi.
         return new LicenseReport(
-            id, hasMarker, hasBaseline,
-            spread.Count, spread.Sum(m => m.Sum(p => Bal(p.Id))),
-            new Tally(negIn.Count, negOut.Count, negative.Sum(Bal)),
-            new Tally(misIn.Count, misOut.Count, mismatch.Sum(r => Bal(r) - Sum(r))),
-            purgedWithBalance.Count, purgedWithBalance.Sum(p => Bal(p.Id)),
-            stranded.Count, stranded.Sum(p => Bal(p.Id)),
-            trim, control,
-            negativePersons.Count, explained,
-            d4, d5, d6, orphans.Count,
-            new Tally(copyIn.Count, copyOut.Count, copies.Sum(Bal)),
-            copyTx.Count, copyTx.Sum(r => ledger[r].Count), copyBal.Count,
-            versions,
-            alerts,
-            new Details(negOut, negIn, misOut, misIn, copyOut, stranded.Select(p => p.Id).ToList(),
-                ruleGroups.Select(g => g.Key).ToList(), RowsOf(ruleGroups.SelectMany(g => g)),
-                orphans.Select(r => r.Id).ToList(), RowsOf(orphans),
-                worsened, changedMismatch));
+            LicenseId: id, HasMarker: hasMarker, HasBaseline: hasBaseline,
+            SpreadPersons: spread.Count, SpreadPoolTotal: spread.Sum(m => m.Sum(p => Bal(p.Id))),
+            NegativeRows: new Tally(InBaseline: negIn.Count, Outside: negOut.Count, Total: negative.Sum(Bal)),
+            LedgerMismatches: new Tally(
+                InBaseline: misIn.Count, Outside: misOut.Count, Total: mismatch.Sum(r => Bal(r) - Sum(r))),
+            PurgedWithBalance: purgedWithBalance.Count, PurgedBalanceTotal: purgedWithBalance.Sum(p => Bal(p.Id)),
+            StrandedPurged: stranded.Count, StrandedPurgedTotal: stranded.Sum(p => Bal(p.Id)),
+            TrimMismatches: trim, ControlCharGroups: control,
+            NegativePersons: negativePersons.Count, NegativePersonsExplained: explained,
+            D4: d4, D5: d5, D6: d6, OrphanLegs: orphans.Count,
+            CopyRows: new Tally(InBaseline: copyIn.Count, Outside: copyOut.Count, Total: copies.Sum(Bal)),
+            CopyRowsWithTransactions: copyTx.Count,
+            CopyTransactionCount: copyTx.Sum(r => ledger[r].Count),
+            CopyRowsWithBalance: copyBal.Count,
+            ActivePcVersions: versions,
+            Alerts: alerts,
+            Details: new Details(
+                NegativeOutside: negOut, NegativeInBaseline: negIn,
+                LedgerMismatchOutside: misOut, LedgerMismatchInBaseline: misIn,
+                CopyOutside: copyOut, StrandedPurged: stranded.Select(p => p.Id).ToList(),
+                RuleBreakingGroups: ruleGroups.Select(g => g.Key).ToList(),
+                RuleBreakingRows: RowsOf(ruleGroups.SelectMany(g => g)),
+                OrphanLegs: orphans.Select(r => r.Id).ToList(), OrphanLegRows: RowsOf(orphans),
+                WorsenedBaselineRows: worsened, ChangedMismatchRows: changedMismatch));
 
         static List<Guid> RowsOf(IEnumerable<DrawRow> draws) => draws.Select(r => r.WpfCustomerId).Distinct().ToList();
     }
 
     /// <summary>D4 (bacak türü ve boş alanları), D5 (ya hepsi ya hiçbiri geri alınmış), D6 (−Σ ≤ OriginalAmount),
-    /// yetim bacak — yalnız <c>DrawGroupId</c> dolu gruplar. Çekim grubu ⇔ toplamı &lt; 0 (grup geri almaları &gt; 0).</summary>
+    /// yetim bacak — bir lisansın <c>DrawGroupId</c> dolu satırları. Çekim grubu ⇔ toplamı &lt; 0 (grup geri almaları
+    /// &gt; 0).</summary>
     private static (int D4, int D5, int D6, List<IGrouping<Guid, DrawRow>> RuleGroups, List<DrawRow> OrphanLegs) CheckDraws(
-        Snapshot s, Guid licenseId)
+        IEnumerable<DrawRow> licenseDraws, IReadOnlySet<Guid> reversedIds)
     {
         int d4 = 0, d5 = 0, d6 = 0;
         var ruleGroups = new List<IGrouping<Guid, DrawRow>>();
         var orphans = new List<DrawRow>();
-        foreach (var group in s.DrawRows.Where(r => r.LicenseId == licenseId).GroupBy(r => r.DrawGroupId))
+        foreach (var group in licenseDraws.GroupBy(r => r.DrawGroupId))
         {
             var anchor = group.FirstOrDefault(r => r.Id == group.Key);
             if (anchor is null)
@@ -359,7 +387,7 @@ public sealed class PersonBalanceVerifier
             var sum = group.Sum(r => r.Amount);
             if (sum < 0m)
             {
-                var reversedLegs = group.Count(r => s.ReversedIds.Contains(r.Id));
+                var reversedLegs = group.Count(r => reversedIds.Contains(r.Id));
                 if (reversedLegs != 0 && reversedLegs != group.Count())
                 {
                     d5++;
