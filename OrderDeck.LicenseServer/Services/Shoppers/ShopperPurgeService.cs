@@ -84,14 +84,16 @@ public sealed class ShopperPurgeService
     /// aynısını yazar.</summary>
     public const string MediaTarget = "ShopperPaymentMedia";
 
-    /// <summary>Yapanı verilmeyen silme: imha kaydına <see cref="DataDestruction.AdminActor"/> yazılır (silme her zaman bir
-    /// yöneticinin kararıdır; kim olduğu talebin <c>HandledBy</c>'ında ve denetim satırında).</summary>
+    /// <summary>Yapanı ve talebi verilmeyen silme: imha kaydına <see cref="DataDestruction.AdminActor"/> yazılır (silme her zaman
+    /// bir yöneticinin kararıdır; kim olduğu talebin <c>HandledBy</c>'ında ve denetim satırında).</summary>
     public Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, CancellationToken ct)
-        => PurgeAsync(shopperId, DataDestruction.AdminActor, ct);
+        => PurgeAsync(shopperId, DataDestruction.AdminActor, null, ct);
 
     /// <param name="actor">İmha kaydının yapanı: silmeyi işleyen yöneticinin takma kimliği
     /// (<see cref="DataDestruction.ActorOf"/>), kullanıcı adı değil (KVKK Ö-14).</param>
-    public async Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, string actor, CancellationToken ct)
+    /// <param name="requestId">Silmeyi doğuran <see cref="ShopperDeletionRequest"/>'in kimliği; imha kaydına yazılır (KVKK Ö-13:
+    /// süresiz kayıt başvuruya birleştirme olmadan bağlanır).</param>
+    public async Task<ShopperPurgeResult?> PurgeAsync(Guid shopperId, string actor, Guid? requestId, CancellationToken ct)
     {
         var shopper = await _db.Shoppers.FirstOrDefaultAsync(s => s.Id == shopperId, ct);
         if (shopper is null) return null;
@@ -370,11 +372,11 @@ public sealed class ShopperPurgeService
 
         // 7. KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. Banka verisi olmayan kişinin
         //    silmesi de yazılır (Ö-12: veritabanı dışındaki saatlik özet yalnız bu tablodan beslenir). SubjectId = ShopperId:
-        //    geri yüklemeden sonra silme bununla yeniden uygulanır (deploy/README "Geri yükleme"). Lisansa ait satırların kaydı
-        //    satırın lisansı başına, sayımlar yüklenen kümelerden (Görev 9 kuralı). IBAN hafızası DependentRowsDeleted'e de girer;
-        //    kayıtta yalnız kendi satırında sayılır.
+        //    geri yüklemeden sonra silme bununla yeniden uygulanır (deploy/README "Geri yükleme"); RequestId = silme talebi.
+        //    Lisansa ait satırların kaydı satırın lisansı başına, sayımlar yüklenen kümelerden (Görev 9 kuralı). IBAN hafızası
+        //    DependentRowsDeleted'e de girer; kayıtta yalnız kendi satırında sayılır.
         void Record(Guid? license, string target, string action, int count) => DataDestruction.Record(_db, license, target,
-            action, count, PurgeCriterion, DataDestruction.Triggers.ShopperPurge, actor, subjectId: shopperId);
+            action, count, PurgeCriterion, DataDestruction.Triggers.ShopperPurge, actor, requestId, shopperId);
         void RecordPerLicense<T>(IEnumerable<T> rows, Func<T, Guid?> license, string target, string action)
         {
             foreach (var g in rows.GroupBy(license)) Record(g.Key, target, action, g.Count());

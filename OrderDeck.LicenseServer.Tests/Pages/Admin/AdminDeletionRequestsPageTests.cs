@@ -38,10 +38,11 @@ public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Silmenin_imha_kaydinda_yapan_talebi_isleyen_yoneticinin_kimligidir()
+    public async Task Silmenin_imha_kaydinda_yapan_talebi_isleyen_yoneticinin_kimligi_talep_kimligi_de_yazilir()
     {
         // KVKK Ö-13/Ö-14 (Görev 9 kuralı): imha kaydı budanmaz; silmeyi bir yönetici elle işler, kayıt "system" demez. Yapan:
         // yöneticinin sub kimliği (DataDestruction.ActorOf), kullanıcı adı değil (adı talebin HandledBy'ında ve denetim satırında).
+        // Ö-13'ün alan listesindeki talep kimliği de yazılır: süresiz kayıt başvuruya birleştirme olmadan bağlanır.
         var (shopperId, requestId) = await SeedAsync();
         var client = await _factory.CreateLoggedInAdminClientAsync();
 
@@ -52,7 +53,7 @@ public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
         var adminId = (await db.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
         (await db.DataDestructionRecords.AsNoTracking().Where(r => r.SubjectId == shopperId).ToListAsync())
             .Should().NotBeEmpty().And.OnlyContain(r => r.Trigger == DataDestruction.Triggers.ShopperPurge
-                && r.Actor == adminId.ToString());
+                && r.Actor == adminId.ToString() && r.RequestId == requestId);
     }
 
     private async Task<(Guid ShopperId, Guid RequestId)> SeedAsync()

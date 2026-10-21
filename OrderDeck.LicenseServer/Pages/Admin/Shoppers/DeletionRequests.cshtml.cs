@@ -67,8 +67,9 @@ public class DeletionRequestsModel : PageModel
             return RedirectToPage(new { handled, pageNumber });
         }
 
-        // İmha kaydının yapanı yöneticinin takma kimliği, kullanıcı adı değil (KVKK Ö-14; adı HandledBy'da ve denetim satırında).
-        var result = await _purge.PurgeAsync(request.ShopperId, DataDestruction.ActorOf(User), ct);
+        // İmha kaydının yapanı yöneticinin takma kimliği, kullanıcı adı değil (KVKK Ö-14; adı HandledBy'da ve denetim satırında);
+        // kayıt talebin kimliğini de taşır (Ö-13).
+        var result = await _purge.PurgeAsync(request.ShopperId, DataDestruction.ActorOf(User), request.Id, ct);
         if (result is null)
         {
             TempData["Success"] = "Shopper kaydı bulunamadı; talep kapatıldı.";

@@ -1161,12 +1161,13 @@ public sealed class ShopperPurgeServiceTests
             TokenHash = $"h-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(90) });
         await db.SaveChangesAsync();
         var actor = $"yonetici-{Guid.NewGuid():N}";
+        var requestId = Guid.NewGuid();
 
-        await Build(db).Service.PurgeAsync(shopper.Id, actor, default);
+        await Build(db).Service.PurgeAsync(shopper.Id, actor, requestId, default);
 
         var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
         records.Should().OnlyContain(r => r.SubjectId == shopper.Id && r.Trigger == DataDestruction.Triggers.ShopperPurge
-            && r.Actor == actor && r.Criterion == "silme talebi");
+            && r.Actor == actor && r.Criterion == "silme talebi" && r.RequestId == requestId);
         int Count(string target, Guid? license) => records.Should()
             .ContainSingle(r => r.Target == target && r.LicenseId == license, $"{target} / {license}").Which.RowCount;
         Count("Payments.PersonalFields", first.Id).Should().Be(2);
