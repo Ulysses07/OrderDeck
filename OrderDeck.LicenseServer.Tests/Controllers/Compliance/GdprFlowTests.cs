@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -177,6 +178,76 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
             $"/api/v1/admin/customers/{customerId}/purge",
             new { confirmEmail = "wrong@example.com" });
         purge.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>Bearer-Admin istemcisi (üretilmiş yönetici; parola literal değil).</summary>
+    private async Task<HttpClient> AdminApiClientAsync()
+    {
+        string adminToken;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var hasher = scope.ServiceProvider.GetRequiredService<PasswordHasher>();
+            var jwt = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
+            var admin = new OrderDeck.LicenseServer.Domain.AdminUser
+            {
+                Id = Guid.NewGuid(), Username = $"a-{Guid.NewGuid():N}", PasswordHash = hasher.Hash($"p-{Guid.NewGuid():N}"),
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.AdminUsers.Add(admin);
+            await db.SaveChangesAsync();
+            adminToken = jwt.IssueAdminToken(admin.Id, admin.Username).Token;
+        }
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
+        return client;
+    }
+
+    [Fact]
+    public async Task Purge_Obifin_baglantisi_varken_reddedilir_once_Kaldir_ve_sil_istenir()
+    {
+        // KVKK K-6/Ö-9: yayıncı silmesi banka tablolarını kaskadla götürür ama Obifin'e bir şey söylemez; Obifin bankadan çekmeyi
+        // ve saklamayı sürdürürdü. Bağlantı varken silme reddedilir: Obifin tarafı yalnız "Kaldır ve sil"de (lisansa özgü,
+        // paylaşılan kullanıcı korumalı) kapanır.
+        var (_, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var licenseId = Guid.NewGuid();
+        string email;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            email = (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email;
+            db.Licenses.Add(new OrderDeck.LicenseServer.Domain.License { Id = licenseId, LicenseKey = $"LDK-GD-{Guid.NewGuid():N}",
+                CustomerId = customerId, SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+            // Korunan alanlar sahte: kimlik çözülemez → "Kaldır ve sil" Obifin'e gidemez (ulaşılamadı), yerel silme yine yapılır.
+            db.ObifinConnections.Add(new OrderDeck.LicenseServer.Domain.Bank.ObifinConnection { Id = Guid.NewGuid(),
+                LicenseId = licenseId, BaseUrl = "https://example.invalid", UserCode = $"u-{Guid.NewGuid():N}@x",
+                PasswordProtected = $"p-{Guid.NewGuid():N}", ApiKeyProtected = $"a-{Guid.NewGuid():N}",
+                Status = OrderDeck.LicenseServer.Domain.Bank.ObifinConnectionStatus.Verified,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+        using var admin = await AdminApiClientAsync();
+
+        var refused = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        refused.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+        problem.GetProperty("title").GetString().Should().Be("bank-connection-active");
+        problem.GetProperty("detail").GetString().Should().Contain("Kaldır ve sil").And.Contain("yazılı");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email.Should().Be(email, "hiçbir şey silinmedi");
+            (await db.Licenses.AnyAsync(l => l.Id == licenseId)).Should().BeTrue();
+            var r = await scope.ServiceProvider.GetRequiredService<OrderDeck.LicenseServer.Services.Bank.BankConnectionTerminator>()
+                .RemoveAndDeleteAsync(licenseId, OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.AdminRemove,
+                    "admin", CancellationToken.None);
+            r.NeedsManualObifinAction.Should().BeTrue("kimlik çözülemedi: Obifin'de elle kaldırılacak");
+        }
+
+        (await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent, "Obifin tarafı kapandıktan sonra silme yapılır");
     }
 
     private static async Task<string> ReadEntryAsync(ZipArchive zip, string name)

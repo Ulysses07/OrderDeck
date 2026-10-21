@@ -39,6 +39,34 @@
         @Model.UnapprovedAccounts hesap onaysız: hareketleri kaydedilmiyor. Yalnız yayıncının müşteri tahsilatı hesabını onaylayın (KVKK).
     </div>
 }
+@if (Model.PendingObifinRemoval > 0)
+{
+    <div class="alert alert-warning" data-banner="pending-obifin-removal">
+        @Model.PendingObifinRemoval bağlantının banka verisi hizmet sonunda silindi; Obifin tarafı bekliyor: satırdaki "Kaldır ve sil"e basın.
+    </div>
+}
+@if (Model.PendingCopyDeletions.Count > 0)
+{
+    <div class="alert alert-warning" data-banner="obifin-copy-pending">
+        <strong>Obifin silme teyidi bekleyenler</strong> — Obifin'den hareket kopyasının silindiğine dair yazılı teyit gelince "Teyit alındı"ya basın (KVKK).
+        <table class="table table-sm mb-0" data-table="obifin-copy-pending">
+            @foreach (var d in Model.PendingCopyDeletions)
+            {
+                var overdue = d.RequestedAt < Model.Now - BankConnectionTerminator.ObifinFollowUpOverdue;
+                <tr data-deletion="@d.Id">
+                    <td>@(d.CustomerEmail ?? d.LicenseId.ToString())</td>
+                    <td class="@(overdue ? "text-danger fw-bold" : "")">istendi @d.RequestedAt.ToString("yyyy-MM-dd")@(overdue ? " (GECİKTİ)" : "")</td>
+                    <td>
+                        <form method="post" asp-page-handler="ConfirmObifinCopyDeleted" class="d-inline">
+                            <input type="hidden" name="DeletionId" value="@d.Id" />
+                            <button class="btn btn-sm btn-outline-success">Teyit alındı</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </table>
+    </div>
+}
 
 <p class="small text-muted" data-help="status">
     Failed = Obifin kimliği reddetti (Doğrula, hesap yenileme ya da çekimde), saklı kimlik çözülemedi ya da elle Doğrula'da Obifin'e ulaşılamadı → düzeltip Doğrula.
@@ -52,7 +80,11 @@
     {
         <tr data-license="@r.LicenseId">
             <td>@r.CustomerEmail</td><td>@r.UserCode</td>
-            <td data-cell="status">@r.Status</td>
+            @* Tarih yalnız Disabled iken (KVKK K-6): hizmet sonu sayacı, yerel silmeden sonra Obifin tarafının beklediği. *@
+            <td data-cell="status">@r.Status@(r.Status != ObifinConnectionStatus.Disabled || r.DisabledAt is not { } disabledAt ? ""
+                : r.BankDataPurgedAt is { } purgedAt
+                    ? $" ({disabledAt:yyyy-MM-dd}; banka verisi {purgedAt:yyyy-MM-dd} silindi — Obifin için Kaldır ve sil)"
+                    : $" ({disabledAt:yyyy-MM-dd}; silinecek {disabledAt.AddDays(IndexModel.ServiceEndGraceDays):yyyy-MM-dd})")</td>
             <td>@(r.LastVerifiedAt?.ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
             <td data-cell="last-polled">@(r.LastPolledAt is { } polled ? $"{polled:yyyy-MM-dd HH:mm} ({IndexModel.Age(polled, Model.Now)})" : "—")</td>
             <td data-cell="backfill">@(r.BackfillCompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "bekliyor")@(r.InitialCollectFrom is { } anchor ? $" (≥ {anchor:yyyy-MM-dd})" : "")</td>
@@ -67,6 +99,25 @@
                     {
                         <button class="btn btn-sm btn-outline-secondary" asp-page-handler="PollNow">Şimdi çek</button>
                     }
+                </form>
+                @* KVKK K-6: banka modülü kapalıyken de çalışır (BankHasher istemez). *@
+                <form method="post" class="d-inline">
+                    <input type="hidden" name="LicenseId" value="@r.LicenseId" />
+                    @if (r.Status == ObifinConnectionStatus.Disabled)
+                    {
+                        <button class="btn btn-sm btn-outline-success" asp-page-handler="Resume">Etkinleştir</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-sm btn-outline-warning" asp-page-handler="Stop">Durdur</button>
+                    }
+                </form>
+                @* Geri dönüşsüz: yazılı onay (lisans anahtarının son 6 karakteri) sunucuda denetlenir; confirm() yalnız ek uyarı. *@
+                <form method="post" class="d-inline" asp-page-handler="Remove" onsubmit="return confirm('@IndexModel.RemoveConfirmMessage')">
+                    <input type="hidden" name="LicenseId" value="@r.LicenseId" />
+                    <input name="ConfirmLicenseKey" class="form-control form-control-sm d-inline-block w-auto" maxlength="@IndexModel.RemoveConfirmLength" required
+                           autocomplete="off" placeholder="lisans anahtarının son 6" aria-label="Onay: lisans anahtarının son 6 karakteri" />
+                    <button class="btn btn-sm btn-outline-danger">Kaldır ve sil</button>
                 </form>
                 <a class="btn btn-sm btn-link" asp-page="/Admin/Obifin/Index" asp-route-license="@r.LicenseId">Düzenle</a>
             </td>
@@ -93,6 +144,14 @@
                                 </form>
                             }
                         </span>
+                        @* KVKK Ö-10: yazılı onay (hesap numarası) sunucuda denetlenir; confirm() yalnız ek uyarı. *@
+                        <form method="post" asp-page-handler="RejectAccount" class="d-inline" data-form="reject-account"
+                              onsubmit="return confirm('@IndexModel.RejectConfirmMessage')">
+                            <input type="hidden" name="AccountId" value="@a.Id" />
+                            <input name="ConfirmAccount" class="form-control form-control-sm d-inline-block w-auto" required autocomplete="off"
+                                   placeholder="hesap no" aria-label="Onay: hesap numarası (#@a.ObifinAccountId)" />
+                            <button class="btn btn-sm btn-outline-danger">@(a.ApprovedAt is null ? "Reddet ve verisini sil" : "Onayı geri al ve verisini sil")</button>
+                        </form>
                     </div>
                 }
             </td></tr>

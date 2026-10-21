@@ -30,6 +30,12 @@ public static class DataDestruction
         public const string CredentialChange = "credential-change";
         /// <summary>Tek seferlik <c>bank-data-cleanup</c> komutu.</summary>
         public const string Cleanup = "cleanup";
+        /// <summary>Yönetici onaysız hesabı reddetti ya da onayı geri aldı; hesabın verisi silindi (KVKK Ö-10;
+        /// <c>BankConnectionTerminator.RejectAccountAsync</c>).</summary>
+        public const string AccountRejected = "account-rejected";
+        /// <summary>Veri işleyenin (Obifin) kendi kopyasını sildiğine dair yazılı teyidi kaydedildi (KVKK Ö-9;
+        /// <c>BankConnectionTerminator.ConfirmObifinCopyDeletedAsync</c>).</summary>
+        public const string ProcessorConfirmation = "processor-confirmation";
     }
 
     public const string SystemActor = "system";

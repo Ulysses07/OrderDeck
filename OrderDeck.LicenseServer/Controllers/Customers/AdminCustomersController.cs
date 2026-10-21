@@ -128,6 +128,7 @@ public sealed class AdminCustomersController : ControllerBase
     /// pre-purge email so the action remains traceable.
     /// The audit row (with the e-mail) is pruned at 24 months like any other; the 3-year destruction record is the PII-free
     /// DataDestructionRecords rows written in the same SaveChanges (KVKK Ö-13).
+    /// Obifin banka bağlantısı olan lisans varken 409 bank-connection-active: önce admin/obifin → "Kaldır ve sil" (KVKK K-6, Ö-9).
     /// </summary>
     [HttpPost("{id:guid}/purge")]
     public async Task<IActionResult> Purge(Guid id, [FromBody] PurgeRequest req, CancellationToken ct)
@@ -138,6 +139,18 @@ public sealed class AdminCustomersController : ControllerBase
             return Problem(title: "email-mismatch",
                 detail: "Body confirmEmail must match the customer's current email.",
                 statusCode: 400);
+
+        // KVKK K-6/Ö-9: banka tabloları lisansla kaskadla gider ama Obifin'e bir şey söylenmez — Obifin bankadan çekmeyi ve
+        // saklamayı sürdürür. Obifin bağlantısı olan lisans varken silme reddedilir: Obifin tarafı (lisansa özgü kaldırma,
+        // paylaşılan kullanıcı koruması, yazılı teyit kaydı) yalnız admin/obifin'deki "Kaldır ve sil"de kapanır. Purge içinde
+        // ağ çağrısı yapılmaz.
+        var customerLicenseIds = _db.Licenses.Where(l => l.CustomerId == id).Select(l => l.Id);
+        var bankLicenses = await _db.ObifinConnections.CountAsync(c => customerLicenseIds.Contains(c.LicenseId), ct);
+        if (bankLicenses > 0)
+            return Problem(title: "bank-connection-active", statusCode: 409,
+                detail: $"Bu yayıncının {bankLicenses} lisansında Obifin banka bağlantısı var. Önce admin/obifin'de her biri için " +
+                    "'Kaldır ve sil' çalıştırın ve Obifin'den hareket kopyasının silindiğine dair yazılı teyit isteyin; sonra " +
+                    "silmeyi yineleyin.");
 
         var preEmail = customer.Email;
 

@@ -320,6 +320,9 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinConnectionService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatcher>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconciler>();
+        // Durdur/Etkinleştir/Kaldır ve sil, hizmet sonu yerel silmesi, hesap reddi (KVKK K-6, Ö-9, Ö-10). BankHasher İSTEMEZ
+        // (bağdaştırıcı da istemez): anahtarsız modülde de durdurma ve silme çalışır.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankConnectionTerminator>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchMetrics>();
         // Dekont onayı bu işi ApprovalDelay sonrasına zamanlar (PanelPaymentsController.Approve); tekrarlayan iş değil.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconcileJob>();

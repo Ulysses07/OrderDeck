@@ -117,6 +117,7 @@ public class LicenseDbContext : DbContext
     public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
     public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
+    public DbSet<ObifinCopyDeletion> ObifinCopyDeletions => Set<ObifinCopyDeletion>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -1304,6 +1305,17 @@ public class LicenseDbContext : DbContext
             // İmha özetinin sorgusu (DigestedAt IS NULL): tablo hiç budanmaz, gönderilmemiş satır ise birkaç düzinedir.
             // Adlı dizin: aynı sütundaki adsız dizinden AYRI bir dizin olarak kurulur.
             b.HasIndex(r => r.OccurredAt, "IX_DataDestructionRecords_Undigested").HasFilter("[DigestedAt] IS NULL");
+        });
+
+        // Obifin kopyasının yazılı silme teyidi (KVKK Ö-9). Lisansa ve bağlantıya FK BİLEREK yok: kayıt ikisinden de uzun yaşar.
+        mb.Entity<ObifinCopyDeletion>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.Property(d => d.RequestedBy).HasMaxLength(256).IsRequired();
+            b.Property(d => d.ConfirmedBy).HasMaxLength(256);
+            b.HasIndex(d => d.LicenseId);
+            // Hatırlatma ve sayfa sorgusu (ConfirmedAt IS NULL): bekleyen satır birkaç tanedir.
+            b.HasIndex(d => d.RequestedAt, "IX_ObifinCopyDeletions_Pending").HasFilter("[ConfirmedAt] IS NULL");
         });
 
         mb.Entity<NetgsmDeparture>(b =>

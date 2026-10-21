@@ -41,6 +41,18 @@ public static class AuditEvents
     public const string ObifinPollNow = "obifin.poll.now";
     // KVKK Ö-10: yönetici banka hesabını lisansa bağladı (hesap numarası + banka kodu; IBAN GİRMEZ).
     public const string ObifinAccountApprove = "obifin.account.approve";
+    // KVKK K-6: yönetici çekimi durdurdu / bağlantıyı yeniden etkinleştirdi (ayrıntı yok).
+    public const string ObifinConnectionStop = "obifin.connection.stop";
+    public const string ObifinConnectionResume = "obifin.connection.resume";
+    /// <summary>Bağlantı kaldırıldı ve banka verisi silindi (KVKK K-6, Ö-9): imha olayı (<see cref="DestructionEvents"/>).
+    /// Ayrıntı: sayılar, Obifin tarafının sonucu ve teyit kaydının kimliği.</summary>
+    public const string ObifinConnectionRemove = "obifin.connection.remove";
+    /// <summary>Hesap reddedildi ya da onayı geri alındı, verisi silindi (KVKK Ö-10): imha olayı. Ayrıntı: hesap numarası ve
+    /// sayılar.</summary>
+    public const string ObifinAccountReject = "obifin.account.reject";
+    /// <summary>Obifin'in hareket kopyasını sildiğine dair yazılı teyit kaydedildi (KVKK Ö-9): imha olayı. Ayrıntı: teyit kaydının
+    /// kimliği.</summary>
+    public const string ObifinCopyDeletionConfirm = "obifin.copy.confirm";
     // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız kullanıcı adı girer: açıklama, tutar, IBAN GİRMEZ.
     public const string BankMatchManual = "bank.match.manual";
     public const string BankMatchUnmatch = "bank.match.unmatch";
@@ -57,6 +69,9 @@ public static class AuditEvents
     public static readonly IReadOnlySet<string> DestructionEvents = new HashSet<string>(StringComparer.Ordinal)
     {
         ShopperPurged,
+        ObifinConnectionRemove,
+        ObifinAccountReject,
+        ObifinCopyDeletionConfirm,
     };
 }
 

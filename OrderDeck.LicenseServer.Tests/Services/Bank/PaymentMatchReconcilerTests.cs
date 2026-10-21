@@ -929,4 +929,54 @@ public sealed class PaymentMatchReconcilerTests
         (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(confirmedAt);
         (await db.PaymentMatches.AsNoTracking().SingleAsync()).IbanConfirmedAt.Should().BeNull("doğrulama sayılmaz");
     }
+
+    [Fact]
+    public async Task Durdurulmus_baglantida_gap_cozulmez_onay_bagdastirilmaz_elle_esleme_reddedilir()
+    {
+        // KVKK K-6: durdurulmuş bağlantının saklı hareketi 30 günlük beklemede işlenmez: gap çözümü dekontu bağlamaz, yeni onay gap
+        // yazmaz, elle eşleme IBAN öğretmez ve LastConfirmedAt'i tazelemez. Bağlantısı hiç olmayan lisans bugünkü gibi (ilk onay).
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 750m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);   // bağlantı yok: NoCandidate gap'i (bugünkü davranış)
+        (await db.PaymentMatchGaps.SingleAsync()).PaymentId.Should().Be(payment.Id);
+        db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BaseUrl = "https://obifin.invalid",
+            UserCode = $"u-{Guid.NewGuid():N}", Status = ObifinConnectionStatus.Disabled, DisabledAt = DateTimeOffset.UtcNow.AddDays(-1),
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        var late = Tx(db, s.LicenseId, 750m, paidAt.AddHours(4), "HAVALE ornek_musteri34", Hasher.HashIban(BankHasherTests.TestIban()));
+        var second = Approved(db, s.LicenseId, s.ShopperId, 120m, DateTimeOffset.UtcNow.AddHours(-1));
+
+        await recon.TryResolveGapAsync(late, CancellationToken.None);
+        await recon.ReconcileApprovalAsync(second, CancellationToken.None);
+        var manual = () => recon.ManualMatchAsync(s.LicenseId, late.Id, s.WpfCustomerId, CancellationToken.None);
+
+        await manual.Should().ThrowAsync<ObifinValidationException>().WithMessage(PaymentMatchReconciler.MatchingStoppedMessage);
+        (await db.PaymentMatchGaps.SingleAsync()).ResolvedAt.Should().BeNull("gap çözülmedi");
+        (await db.PaymentMatchGaps.AnyAsync(g => g.PaymentId == second.Id)).Should().BeFalse("durdurulmuş bağlantıda yeni gap yok");
+        (await db.PaymentMatches.AnyAsync(m => m.PaymentId != null || m.ActualWpfCustomerId != null)).Should().BeFalse();
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Durdurulmus_baglantida_kaldirma_acik_kalir()
+    {
+        // KVKK K-6: kapı yalnız yazan yolları kapatır; kaldırma bağ siler, durdurulmuş bağlantıda da çalışır.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var tx = Tx(db, s.LicenseId, 500m, DateTimeOffset.UtcNow.AddHours(-3), "HAVALE ornek_musteri34", hash);
+        var recon = Recon(db);
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);   // bağlantısız: bugünkü gibi
+        db.ObifinConnections.Add(new ObifinConnection { Id = Guid.NewGuid(), LicenseId = s.LicenseId, BaseUrl = "https://obifin.invalid",
+            UserCode = $"u-{Guid.NewGuid():N}", Status = ObifinConnectionStatus.Disabled, DisabledAt = DateTimeOffset.UtcNow,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(1);
+
+        await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "kaldırma öğrettiği bağı siler");
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).ActualWpfCustomerId.Should().BeNull();
+    }
 }

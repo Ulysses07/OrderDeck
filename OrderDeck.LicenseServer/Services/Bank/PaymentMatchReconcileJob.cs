@@ -9,8 +9,10 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <summary>Dekont onayından sonra gölge bağdaştırma (spec §6). Onay isteği bağdaştırmayı beklemez ve onun hatasıyla
 /// düşmez: <c>PanelPaymentsController.Approve</c> onay kaydedildikten sonra bu işi <see cref="ApprovalDelay"/> sonrasına
 /// zamanlar.
-/// <para>Yalnız hâlâ Approved olan ödeme ve Obifin bağlantısı olan lisans işlenir: bağlantısız lisansta banka hareketi
-/// yoktur, her onay anlamsız bir NoCandidate gap'i yazıp ölçümü kirletirdi.</para>
+/// <para>Yalnız hâlâ Approved olan ödeme ve eşleştirmeye açık Obifin bağlantısı
+/// (<see cref="ObifinConnectionService.MatchingActive"/>) olan lisans işlenir: bağlantısız lisansta banka hareketi yoktur, her
+/// onay anlamsız bir NoCandidate gap'i yazıp ölçümü kirletirdi. Durdurulmuş ya da yerel verisi silinmiş bağlantıda saklı hareket
+/// işlenmez (KVKK K-6); verisi silinmiş bağlantıda her onay yeni bir gap yazardı.</para>
 /// <para>İdempotent (ödemenin gap'i ya da bağlı eşleşmesi varsa bir şey yazılmaz; bkz.
 /// <see cref="PaymentMatchReconciler"/>): Hangfire yeniden denemesi ve çift teslim güvenli. İkinci eşzamanlılık
 /// çakışmasında bağdaştırıcı uyarı loglayıp vazgeçer, iş başarıyla biter.</para></summary>
@@ -41,7 +43,10 @@ public sealed class PaymentMatchReconcileJob
             _log.LogInformation("Gölge bağdaştırma atlandı: ödeme {PaymentId} yok ya da onaylı değil", paymentId);
             return;
         }
-        if (!await _db.ObifinConnections.AnyAsync(c => c.LicenseId == payment.LicenseId, ct)) return;
+        // KVKK K-6: durdurulmuş ya da yerel verisi silinmiş bağlantının lisansında dekont bağdaştırılmaz
+        // (ObifinConnectionService.MatchingActive). Bağlantısız lisansta da koşulmaz: banka hareketi yoktur, her onay anlamsız bir
+        // NoCandidate gap'i yazıp ölçümü kirletirdi.
+        if (await ObifinConnectionService.MatchingStateAsync(_db, payment.LicenseId, ct) != true) return;
         await _reconciler.ReconcileApprovalAsync(payment, ct);
     }
 }

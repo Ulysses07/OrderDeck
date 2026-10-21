@@ -25,13 +25,20 @@ public sealed class ObifinConnection
     /// günden eski işlem tarihli hareket (Obifin istenen aralığın dışından döndürse de) yazılmaz. Kimlik değişene kadar
     /// değişmez, değişince boşalır. Eski bağlantılara <c>bank-data-cleanup</c> yazar.</summary>
     public DateOnly? InitialCollectFrom { get; set; }
-    /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6). Bugün yalnız lisans bitişi
-    /// yazar (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>); zaten Disabled olan bağlantıda yeniden yazılmaz.
-    /// Görev 13/14 ile: yöneticinin durdurması da yazar, hizmet sonu silmesi (BankServiceEndPurgeJob) bu andan 30 gün sonra
-    /// koşar, Disabled'dan çıkan her yol boşaltır. O zamana dek bilinen boşluk: kimlik değişimi Disabled bağlantıyı
-    /// Unverified'a çevirir ama bu alanı boşaltmaz; lisans hâlâ bitmişse sonraki koşu yeni tarih yazar, sayaç baştan
-    /// başlar (Görev 13 kapatır).</summary>
+    /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6): lisans bitti
+    /// (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>) ya da yönetici durdurdu (<c>BankConnectionTerminator</c>).
+    /// Zaten Disabled olan bağlantıda yeniden yazılmaz: sayaç baştan başlamaz. Hizmet sonu silmesi (Görev 14) bu andan 30 gün
+    /// sonra koşar; Disabled'dan çıkan her yol <c>ObifinConnectionService.ClearServiceEnd</c> ile boşaltır.</summary>
     public DateTimeOffset? DisabledAt { get; set; }
+    /// <summary>Bağlantıyı yönetici durdurdu (KVKK K-6). Lisans bitişiyle kendiliğinden durdurulan bağlantı lisans yenilenince
+    /// kendiliğinden Unverified'a döner (Görev 14); yöneticinin durdurduğu dönmez. Disabled'dan çıkınca boşalır.</summary>
+    public bool DisabledByAdmin { get; set; }
+    /// <summary>Hizmet sonu işinin bu bağlantının banka verisini YEREL olarak sildiği an (Obifin'e gidilmez;
+    /// <c>BankConnectionTerminator.PurgeLocalDataAsync</c>). Obifin kimliği, yerel <c>BankConnections</c> ve onaylı hesap satırları
+    /// (IBAN alanları boş) durur: yönetici Obifin tarafını "Kaldır ve sil" ile kapatır, o da bu lisansa ait bağlantıyı onlardan
+    /// bilir. Doluyken bağlantı eşleştirmeye kapalıdır (<c>ObifinConnectionService.MatchingActive</c>) ve iş onu yeniden işlemez;
+    /// Disabled'dan çıkınca boşalır.</summary>
+    public DateTimeOffset? BankDataPurgedAt { get; set; }
     public string? LastError { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

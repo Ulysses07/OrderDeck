@@ -456,6 +456,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset?>("BackfillCompletedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("BankDataPurgedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("BaseUrl")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -466,6 +469,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<DateTimeOffset?>("DisabledAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("DisabledByAdmin")
+                        .HasColumnType("bit");
 
                     b.Property<DateOnly?>("InitialCollectFrom")
                         .HasColumnType("date");
@@ -510,6 +516,40 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("ObifinConnections");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.ObifinCopyDeletion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ConfirmedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RequestedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
+
+                    b.HasIndex(new[] { "RequestedAt" }, "IX_ObifinCopyDeletions_Pending")
+                        .HasFilter("[ConfirmedAt] IS NULL");
+
+                    b.ToTable("ObifinCopyDeletions");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.PaymentMatch", b =>

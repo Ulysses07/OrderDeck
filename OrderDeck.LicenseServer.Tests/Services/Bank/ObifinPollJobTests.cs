@@ -784,6 +784,46 @@ public sealed class ObifinPollJobTests
     }
 
     [Fact]
+    public async Task Hesap_reddi_tur_ortasinda_gelirse_sonraki_sayfa_yazilmaz_onceki_sayfanin_hareketi_silinir()
+    {
+        // Görev 11 kuralı 3, Görev 13: "Reddet ve verisini sil" (BankConnectionTerminator.RejectAccountAsync) iki sayfa arasında
+        // koşar. Onay en önce kalkar: turun sonraki sayfası o hesabın hareketini yazmaz (onay sayfa başına taze okunur). Önceki
+        // sayfanın kaydedilmiş hareketlerini ret siler. Çekimin tur sonu kaydı onayı geri yazmaz.
+        var dbName = $"obifin-poll-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName); var client = new ScriptedObifin { PageCap = 2 }; var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var account7 = new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 7, BankaKodu = "qnb",
+            IbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban()), Currency = "TL", Active = true,
+            RefreshedAt = DateTimeOffset.UtcNow, ApprovedAt = DateTimeOffset.UtcNow, ApprovedBy = "test" };
+        db.BankAccounts.Add(account7); await db.SaveChangesAsync();
+        for (var i = 1; i <= 4; i++)
+            client.Transactions.Add(new ObifinTransactionDto(i, 7, "qnb", new DateTime(2026, 9, 25, 8, i, 0), 10m, "TL",
+                null, null, null, null, null, null, "{}"));
+        BankAccountRejectionResult? rejected = null;
+        client.BeforeCall = async call =>
+        {
+            if (call != 2) return;
+            // İkinci bağlam = yöneticinin isteği, iki sayfa arasında.
+            using var admin = NewDb(dbName);
+            rejected = await BankConnectionTerminatorTests.Terminator(admin, client)
+                .RejectAccountAsync(account7.Id, "yonetici-1", CancellationToken.None);
+        };
+
+        await job.RunAsync(CancellationToken.None);
+
+        rejected.Should().NotBeNull();
+        rejected!.Transactions.Should().Be(2, "ilk sayfanın hareketleri ret anında kayıtlıydı");
+        using var fresh = NewDb(dbName);
+        (await fresh.BankTransactions.AnyAsync(t => t.LicenseId == lic && t.ObifinAccountId == 7))
+            .Should().BeFalse("ret önceki sayfayı sildi, sonraki sayfa yazılmadı");
+        var after = await fresh.BankAccounts.SingleAsync(x => x.Id == account7.Id);
+        after.ApprovedAt.Should().BeNull("çekimin kaydı yöneticinin kararını geri yazmaz");
+        after.UnapprovedSkippedCount.Should().Be(2);
+        (await fresh.ObifinConnections.SingleAsync()).LastObifinTransactionId.Should().Be(4);
+    }
+
+    [Fact]
     public async Task Kimlik_degisirse_kalan_sayfalar_yazilmaz_imlec_ilerlemez()
     {
         // Admin çekim sürerken kimliği değiştirdi: UpsertAsync imleci sıfırlar, gölge veriyi siler. Eski koşu ne
