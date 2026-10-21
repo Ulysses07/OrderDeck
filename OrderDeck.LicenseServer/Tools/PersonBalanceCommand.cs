@@ -15,15 +15,18 @@ namespace OrderDeck.LicenseServer.Tools;
 /// Ortak bakiye denetimi (spec 2026-10-11 §7.3; çekirdek <see cref="PersonBalanceVerifier"/>):
 /// <list type="bullet">
 ///   <item><c>verify [--license &lt;guid&gt;] [--details]</c> — salt okunur rapor (§7.3 maddeleri 1–10). Lisans
-///   verilmezse bütün lisanslar, verisizler dahil (plan fark 16). <c>--details</c> eksi, D1, kopya ve kural bozan
-///   satırların <c>WpfCustomerId</c>'lerini, kural bozan grupların ve yetim bacakların hareket Id'lerini (GUID; ad,
-///   telefon yok) konsola basar; dosyaya yazılmaz.</item>
+///   verilmezse bütün lisanslar, verisizler dahil (plan fark 16). <c>--details</c> şu satırların
+///   <c>WpfCustomerId</c>'lerini basar: eksi, D1 ve kopya (her biri tabanda ve taban dışı ayrı), grubu dağılmış
+///   silinmiş üye, kural bozan grubun ve yetim bacağın satırı, daha da eksiye inen ve D1 farkı değişen taban satırı;
+///   ayrıca kural bozan grupların çapa ve yetim bacakların HAREKET Id'lerini. Yalnız GUID (ad, telefon, numara yok),
+///   yalnız konsola; dosyaya yazılmaz.</item>
 ///   <item><c>--capture-baseline [--apply]</c> — taban çizgisi (§7.1 adım 2): tabanı olmayan lisansın taban dışı eksi,
 ///   D1 ve kopya satırları o anki Balance ve LedgerSum'la, lisans başına bir işaret satırıyla. Var olan taban satırına
 ///   dokunmaz; tabanı olan lisansın taban dışı satırı yakalamadan sonra doğmuş yeni sapmadır, tabana alınmaz (plan
 ///   fark 20, <see cref="PersonBalanceVerifier.BaselineRowsToCapture"/>).</item>
-///   <item><c>--mark-reviewed --license &lt;guid&gt; [--apply]</c> — sahip incelemesi (§7.1 adım 4): lisansın
-///   incelenmemiş taban satırlarının <c>ReviewedAt</c>'i.</item>
+///   <item><c>--mark-reviewed --license &lt;guid&gt; [--details] [--apply]</c> — sahip incelemesi (§7.1 adım 4):
+///   lisansın incelenmemiş taban satırlarının <c>ReviewedAt</c>'i. <c>--details</c> işaretlenecek satırların
+///   <c>WpfCustomerId</c>'lerini de basar (işaret hariç).</item>
 /// </list>
 /// Yazan bayraklar <c>--apply</c> olmadan yazacağını basar; yalnız <c>PersonBalanceBaselines</c>'a yazar. Rapora
 /// <c>--apply</c> vermek kullanım hatasıdır. Çıkış: 0 tamam; 1 eşzamanlı yazım ya da işaretsiz lisansta inceleme,
@@ -92,7 +95,8 @@ public static class PersonBalanceCommand
             $"10. Satır sayıları: WpfCustomerProjections {report.ProjectionCount}, CustomerBalanceTransactions {report.TransactionCount}");
 
         if (args.CaptureBaseline) return await CaptureAsync(db, snapshot, report, args.Apply, now, output, error, ct);
-        if (args.MarkReviewed) return await MarkReviewedAsync(db, args.License!.Value, args.Apply, now, output, error, ct);
+        if (args.MarkReviewed)
+            return await MarkReviewedAsync(db, args.License!.Value, args.Details, args.Apply, now, output, error, ct);
         return 0;
     }
 
@@ -161,8 +165,8 @@ public static class PersonBalanceCommand
     private const string BaselineKey = "PK_PersonBalanceBaselines";
 
     private static async Task<int> MarkReviewedAsync(
-        LicenseDbContext db, Guid licenseId, bool apply, DateTimeOffset now, TextWriter output, TextWriter error,
-        CancellationToken ct)
+        LicenseDbContext db, Guid licenseId, bool details, bool apply, DateTimeOffset now, TextWriter output,
+        TextWriter error, CancellationToken ct)
     {
         if (!await db.PersonBalanceBaselines.AnyAsync(
                 b => b.LicenseId == licenseId && b.WpfCustomerId == PersonBalanceVerifier.LicenseMarker, ct))
@@ -175,6 +179,11 @@ public static class PersonBalanceCommand
             .Where(b => b.LicenseId == licenseId && b.ReviewedAt == null)
             .ToListAsync(ct);
         output.WriteLine($"İnceleme — lisans {licenseId}: incelenmemiş {pending.Count} taban satırı (işaret dahil)");
+        // §7.1 adım 4 "her satır için karar": sahip işaretleyeceği satırları görür (yalnız GUID).
+        if (details)
+            WriteIds(output, "incelenecek taban satırı (işaret hariç)", pending
+                .Where(b => b.WpfCustomerId != PersonBalanceVerifier.LicenseMarker)
+                .Select(b => b.WpfCustomerId).ToList());
         if (!apply)
         {
             output.WriteLine("Kuru çalıştırma: hiçbir şey yazılmadı. Yazmak için --apply ekle.");
@@ -224,6 +233,7 @@ public static class PersonBalanceCommand
         WriteIds(o, "D1 (taban dışı)", r.Details.LedgerMismatchOutside);
         WriteIds(o, "D1 (tabanda)", r.Details.LedgerMismatchInBaseline);
         WriteIds(o, "kopya (taban dışı)", r.Details.CopyOutside);
+        WriteIds(o, "kopya (tabanda)", r.Details.CopyInBaseline);
         WriteIds(o, "grubu dağılmış silinmiş", r.Details.StrandedPurged);
         WriteIds(o, "kural bozan grup (çapa hareketi)", r.Details.RuleBreakingGroups);
         WriteIds(o, "kural bozan satır", r.Details.RuleBreakingRows);

@@ -312,6 +312,50 @@ public sealed class PersonBalanceCommandTests : IClassFixture<HookedApiFactory>
         output.ToString().Should().BeEmpty("rapor basılmadan, veritabanı okunmadan");
     }
 
+    /// <summary>Kopya satır: bakiyeli (hareketli) bir projeksiyon, sonra başka bir asıl kayda birleştirilmiş.</summary>
+    private static async Task<Guid> CopyAsync(Kit kit, decimal balance)
+    {
+        var head = await kit.MemberAsync(null);
+        var copy = await kit.MemberAsync(null, balance);
+        await kit.Sales.WithDbAsync(async db =>
+            (await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(p => p.Id == copy)).MergedIntoId = head);
+        return copy;
+    }
+
+    [Fact]
+    public async Task Details_tabana_alinmis_kopya_satirini_basar()
+    {
+        var kit = await OldLicenseAsync();
+        var copy = await CopyAsync(kit, 2m);
+        (await RunAsync($"person-balance verify --license {kit.LicenseId} --capture-baseline --apply")).Exit.Should().Be(0);
+
+        var (_, output, _) = await RunAsync($"person-balance verify --license {kit.LicenseId} --details");
+
+        output.Should().Contain("8. Kopya satır: hareketli 1 (1 hareket), bakiyeli 1; tabanda 1, taban dışı 0")
+            .And.Contain($"kopya (tabanda): {copy}", "yakalamadan sonra tabandaki kopya da CLI'dan görünmeli");
+    }
+
+    [Fact]
+    public async Task Inceleme_details_incelenecek_taban_satirlarini_listeler_isaret_haric()
+    {
+        var kit = await OldLicenseAsync();
+        var negative = await kit.MemberAsync(null, -4m);
+        var copy = await CopyAsync(kit, 3m);
+        (await RunAsync($"person-balance verify --license {kit.LicenseId} --capture-baseline --apply")).Exit.Should().Be(0);
+
+        var dry = await RunAsync($"person-balance verify --license {kit.LicenseId} --mark-reviewed --details");
+
+        dry.Exit.Should().Be(0);
+        var listed = dry.Output.Split('\n').Should()
+            .ContainSingle(l => l.Contains("incelenecek taban satırı (işaret hariç)")).Subject;
+        listed.Should().Contain(negative.ToString()).And.Contain(copy.ToString())
+            .And.NotContain(PersonBalanceVerifier.LicenseMarker.ToString());
+
+        (await RunAsync($"person-balance verify --license {kit.LicenseId} --mark-reviewed --apply")).Exit.Should().Be(0);
+        (await RunAsync($"person-balance verify --license {kit.LicenseId} --mark-reviewed --details")).Output
+            .Should().Contain("incelenmemiş 0 taban satırı").And.NotContain("incelenecek taban satırı");
+    }
+
     [Fact]
     public async Task Bilinmeyen_lisans_2_doner()
     {

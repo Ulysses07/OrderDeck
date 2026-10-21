@@ -242,7 +242,7 @@ public sealed class PersonBalanceVerifier
     public sealed record Details(
         IReadOnlyList<Guid> NegativeOutside, IReadOnlyList<Guid> NegativeInBaseline,
         IReadOnlyList<Guid> LedgerMismatchOutside, IReadOnlyList<Guid> LedgerMismatchInBaseline,
-        IReadOnlyList<Guid> CopyOutside, IReadOnlyList<Guid> StrandedPurged,
+        IReadOnlyList<Guid> CopyOutside, IReadOnlyList<Guid> CopyInBaseline, IReadOnlyList<Guid> StrandedPurged,
         IReadOnlyList<Guid> RuleBreakingGroups, IReadOnlyList<Guid> RuleBreakingRows,
         IReadOnlyList<Guid> OrphanLegs, IReadOnlyList<Guid> OrphanLegRows,
         IReadOnlyList<Guid> WorsenedBaselineRows, IReadOnlyList<Guid> ChangedMismatchRows);
@@ -400,7 +400,7 @@ public sealed class PersonBalanceVerifier
             Details: new Details(
                 NegativeOutside: negOut, NegativeInBaseline: negIn,
                 LedgerMismatchOutside: misOut, LedgerMismatchInBaseline: misIn,
-                CopyOutside: copyOut, StrandedPurged: stranded.Select(p => p.Id).ToList(),
+                CopyOutside: copyOut, CopyInBaseline: copyIn, StrandedPurged: stranded.Select(p => p.Id).ToList(),
                 RuleBreakingGroups: ruleGroups.Select(g => g.Key).ToList(),
                 RuleBreakingRows: RowsOf(ruleGroups.SelectMany(g => g)),
                 OrphanLegs: orphans.Select(r => r.Id).ToList(), OrphanLegRows: RowsOf(orphans),
