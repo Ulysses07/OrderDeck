@@ -580,20 +580,22 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var (lic, _, _) = await SeedAsync();
         var unknown = Guid.NewGuid();
         var client = await _factory.CreateLoggedInAdminClientAsync();
+        var before = DateTimeOffset.UtcNow;
 
         await client.GetStringAsync(PathFor(lic, pageNo: 2));
         await client.GetStringAsync(PagePath);           // lisans seçili değil: veri gösterilmez
         await client.GetStringAsync(PathFor(unknown));   // listede olmayan lisans seçilmiş sayılmaz
 
+        // Olumsuz denetim sayıyla: seçimsiz istek hangi hedefle (boş, bilinmeyen, Guid.Empty) yazsa da yakalanır. Sınıfın
+        // testleri sırayla koşar, bu testten sonraki görüntülemeler yalnız bu üç istek.
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var view = await db.AuditLogs.AsNoTracking()
-            .SingleAsync(a => a.EventType == AuditEvents.BankPageView && a.TargetId == lic.ToString());
+        var views = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.EventType == AuditEvents.BankPageView && a.OccurredAt >= before).ToListAsync();
+        var view = views.Should().ContainSingle("veri gösterilmeyen görüntüleme yazılmaz").Subject;
+        view.TargetId.Should().Be(lic.ToString());
         view.TargetType.Should().Be(AuditTargets.ObifinConnection);
         view.Details.Should().Be("{\"page\":\"banka-eslestirme\",\"pageNo\":2}");
-        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.BankPageView
-                && (a.TargetId == unknown.ToString() || (a.TargetId == null && a.Details!.Contains("banka-eslestirme")))))
-            .Should().BeFalse("veri gösterilmeyen görüntüleme yazılmaz");
     }
 
     [Fact]
