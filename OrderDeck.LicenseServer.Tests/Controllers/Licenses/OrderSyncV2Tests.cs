@@ -17,14 +17,14 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// (kaynak kopya, başka kopyanın canlı yayını), öğe başına yanıt ve <c>current</c>. Birim kuralının kendisi ortak
 /// vektörlerde; burada ucun biçimi ve yanıtı sabitlenir. Bugünkü istemcinin (v1) yanıtı değişmez.
 /// </summary>
-public sealed class OrderSyncV2Tests : IClassFixture<SessionOwnershipSyncTests.LogApiFactory>
+public sealed class OrderSyncV2Tests : IClassFixture<LogApiFactory>
 {
     private static readonly DateTimeOffset StartedAt = new(2026, 10, 12, 18, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset AddedAt = StartedAt.AddMinutes(10);
 
-    private readonly SessionOwnershipSyncTests.LogApiFactory _factory;
+    private readonly LogApiFactory _factory;
 
-    public OrderSyncV2Tests(SessionOwnershipSyncTests.LogApiFactory factory) => _factory = factory;
+    public OrderSyncV2Tests(LogApiFactory factory) => _factory = factory;
 
     // ── Ekleme ────────────────────────────────────────────────────────────────
 

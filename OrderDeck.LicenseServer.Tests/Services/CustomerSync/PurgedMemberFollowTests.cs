@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
 using FluentAssertions;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -12,14 +10,15 @@ namespace OrderDeck.LicenseServer.Tests.Services.CustomerSync;
 /// <summary>
 /// Silinmiş üyenin numara izlemesi, senkron yolu (spec 2026-10-11 §4.11, §4.12, K3): grup boşalınca silinmiş üye
 /// ayrılanların numarasına geçer; Ayır'da, dağılan ayrılışta ve grupsuz asıl kayda kopya dönüşünde eski numarada kalır.
+/// Kanca günlüğü bağlamın <c>ILoggerFactory</c>'sinden, yani uygulamanınkinden yazar (<see cref="LogApiFactory"/>).
 /// </summary>
-public sealed class PurgedMemberFollowTests : IClassFixture<PurgedMemberFollowTests.LogFactory>
+public sealed class PurgedMemberFollowTests : IClassFixture<LogApiFactory>
 {
     private const string HookCategory = "OrderDeck.LicenseServer.Services.CustomerSync.PersonGroupSaveHook";
 
-    private readonly LogFactory _factory;
+    private readonly LogApiFactory _factory;
 
-    public PurgedMemberFollowTests(LogFactory factory) => _factory = factory;
+    public PurgedMemberFollowTests(LogApiFactory factory) => _factory = factory;
 
     [Fact]
     public async Task Iki_partide_birlesen_grupta_silinmis_uye_son_canli_uye_ayrilinca_yeni_numaraya_gecer()
@@ -149,40 +148,5 @@ public sealed class PurgedMemberFollowTests : IClassFixture<PurgedMemberFollowTe
             id, platform = row.Platform, username = row.Username, updatedAt = at, format = 2,
             groupId, groupIdChangedAt = at,
         };
-    }
-
-    /// <summary><see cref="ApiFactory"/> + günlük satırları (kategori, düzey, metin); kanca günlüğü bağlamın
-    /// <c>ILoggerFactory</c>'sinden, yani uygulamanınkinden yazar.</summary>
-    public sealed class LogFactory : ApiFactory
-    {
-        public LogRecorderProvider Log { get; } = new();
-
-        protected override void ConfigureWebHost(IWebHostBuilder builder)
-        {
-            base.ConfigureWebHost(builder);
-            builder.ConfigureLogging(l => l.AddProvider(Log));
-        }
-    }
-
-    public sealed class LogRecorderProvider : ILoggerProvider
-    {
-        private readonly ConcurrentQueue<(string Category, LogLevel Level, string Message)> _entries = new();
-
-        public IReadOnlyList<(string Category, LogLevel Level, string Message)> Entries => _entries.ToArray();
-
-        public ILogger CreateLogger(string categoryName) => new Recorder(this, categoryName);
-
-        public void Dispose() { }
-
-        private sealed class Recorder(LogRecorderProvider owner, string category) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                if (IsEnabled(logLevel)) owner._entries.Enqueue((category, logLevel, formatter(state, exception)));
-            }
-        }
     }
 }
