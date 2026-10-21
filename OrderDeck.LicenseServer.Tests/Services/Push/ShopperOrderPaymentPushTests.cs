@@ -239,6 +239,9 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
         n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentApprovedPushBody);
         n.Body.Should().NotContain("480", "tutar FCM'ye gitmez (KVKK K-5)");
+        n.Title.Should().NotContain("480", "başlık yalnız yayıncı adı");
+        // data yükü de Google'a gider: yalnız tür ve takma kimlikler (KVKK K-5).
+        n.Data!.Keys.Should().BeEquivalentTo(new[] { "type", "paymentId", "licenseId" });
         n.Data!["type"].Should().Be("payment-approved");
     }
 
@@ -260,6 +263,9 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
         n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentRejectedPushBody);
         n.Body.Should().NotContain("Tutar uyu", "serbest metin ret gerekçesi FCM'ye gitmez (KVKK K-5)").And.NotContain("100");
+        n.Title.Should().NotContain("Tutar uyu", "başlık yalnız yayıncı adı").And.NotContain("100");
+        // data yükü de Google'a gider: yalnız tür ve takma kimlikler (KVKK K-5).
+        n.Data!.Keys.Should().BeEquivalentTo(new[] { "type", "paymentId", "licenseId" });
         n.Data!["type"].Should().Be("payment-rejected");
     }
 
