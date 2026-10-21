@@ -653,11 +653,13 @@ public sealed class PaymentMatchReconcilerTests
         var learned = (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt;
         learned.Should().NotBeNull();
         learned!.Value.Should().BeOnOrAfter(before).And.BeOnOrBefore(DateTimeOffset.UtcNow, "öğrenme anına kırpılır");
+        await Task.Delay(20);
 
         await recon.ManualMatchAsync(s.LicenseId, later.Id, s.WpfCustomerId, CancellationToken.None);
 
         (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt!.Value
-            .Should().BeOnOrBefore(DateTimeOffset.UtcNow, "tazeleme de şimdiye kırpılır");
+            .Should().BeAfter(learned.Value, "ileri tarihli havale de bağı tazeler")
+            .And.BeOnOrBefore(DateTimeOffset.UtcNow, "tazeleme de şimdiye kırpılır");
     }
 
     [Fact]
@@ -717,5 +719,78 @@ public sealed class PaymentMatchReconcilerTests
             ((Guid?)s.LicenseId, "CustomerIbanMemories", DataDestruction.Actions.Deleted, 1, DataDestruction.Triggers.Retention,
                 DataDestruction.AdminActor));
         record.Criterion.Should().Be("LastConfirmedAt+12ay, kaldırma, kalan doğrulama yok");
+    }
+
+    [Fact]
+    public async Task Dekonta_bagli_dogrulamanin_kaldirilmasi_da_bag_suresini_geri_ceker()
+    {
+        // Dekont onayı IBAN hafızasının önerdiği müşteriye bağladı (doğrulanmış): bağın süresi bu havaleye taşındı. Kaldırma
+        // dekontu gap'e döndürür ve süreyi kalan doğrulamaya (öğreten elle eşleme) geri çeker.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var learned = Tx(db, s.LicenseId, 100m, DateTimeOffset.UtcNow.AddDays(-20), "EFT GELEN", hash);
+        var recon = Recon(db);
+        await recon.ManualMatchAsync(s.LicenseId, learned.Id, s.WpfCustomerId, CancellationToken.None);
+        var when = DateTimeOffset.UtcNow.AddHours(-3);
+        var tx = Tx(db, s.LicenseId, 450m, when, "EFT GELEN", hash);
+        await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 450m, when.AddMinutes(10));
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var linked = await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.BankTransactionId == tx.Id);
+        (linked.PaymentId, linked.ActualWpfCustomerId).Should().Be(((Guid?)payment.Id, (Guid?)s.WpfCustomerId));
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(tx.OccurredAt);
+
+        await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(learned.OccurredAt);
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.UnlinkedByAdmin);
+    }
+
+    [Fact]
+    public async Task Dislanan_hareketin_eslemesini_kaldirmak_IBAN_bagina_dokunmaz()
+    {
+        // POS tahsilatı (dışlanan kod) elle eşlenir ama IBAN öğretmez, bağı tazelemez; kaldırılması da bağın süresine
+        // dokunmaz. Bağın son doğrulaması 180 günlük kuralla silinmiş öğreten havale: dışlanan hareket son doğrulama sayılsaydı
+        // kalan doğrulama bulunamaz, hâlâ geçerli bağ silinirdi.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var source = Tx(db, s.LicenseId, 100m, DateTimeOffset.UtcNow.AddDays(-200), "EFT GELEN", hash);
+        var recon = Recon(db);
+        await recon.ManualMatchAsync(s.LicenseId, source.Id, s.WpfCustomerId, CancellationToken.None);
+        db.PaymentMatches.RemoveRange(await db.PaymentMatches.Where(m => m.BankTransactionId == source.Id).ToListAsync());
+        db.BankTransactions.Remove(source);
+        await db.SaveChangesAsync(); // saklama işinin 180 günlük silmesi
+        var pos = Tx(db, s.LicenseId, 130m, DateTimeOffset.UtcNow.AddDays(-1), "POS TAHSILAT", hash, code: "CCP");
+        await recon.ManualMatchAsync(s.LicenseId, pos.Id, s.WpfCustomerId, CancellationToken.None);
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(source.OccurredAt);
+
+        await recon.UnmatchAsync(s.LicenseId, pos.Id, CancellationToken.None);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().Be(source.OccurredAt);
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Baska_musteriye_kayitli_bagin_suresi_kaldirmayla_degismez()
+    {
+        // IBAN'ın bağı başka müşterinin: elle eşleme onu ezmez, tazelemez (çelişki). Kaldırma da o bağa dokunmaz; bağ yalnız
+        // IBAN'la aransaydı başka müşterinin bağı geri çekilir ya da silinirdi.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var confirmedAt = DateTimeOffset.UtcNow.AddDays(-50);
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = other.Id,
+            IbanHash = hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = confirmedAt,
+            LastConfirmedAt = confirmedAt });
+        db.SaveChanges();
+        var tx = Tx(db, s.LicenseId, 140m, DateTimeOffset.UtcNow.AddDays(-3), "EFT GELEN", hash);
+        var recon = Recon(db);
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+
+        await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+
+        var memory = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
+        (memory.WpfCustomerId, memory.LastConfirmedAt).Should().Be((other.Id, (DateTimeOffset?)confirmedAt));
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0);
     }
 }
