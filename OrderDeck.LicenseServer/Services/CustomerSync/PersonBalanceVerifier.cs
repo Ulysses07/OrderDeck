@@ -21,7 +21,9 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// uyarısı S2'de (S1 kip bayrağını okumaz); 6. madde yalnız sayı. 4. maddenin "grubunda canlı asıl üye kalmamış"
 /// kalemi de yalnız sayı: uyarıya çevrilmesi spec §10 açık kalanlarda (numara izlemesinin hakemi). <b>Tabanı
 /// var</b> ⇔ lisansın işaret satırı (<see cref="LicenseMarker"/>) var ya da lisans ilk yakalamadan SONRA verilmiş
-/// (S1 öncesi verisi olamaz).</para>
+/// (S1 öncesi verisi olamaz). Kimlik birleştiricinin asıl kayda taşıdığı (bakiyesi 0, hareketi yok) kopyanın taban
+/// satırı o asıl kayda katlanır; "tabanda" ve karşılaştırmalar bu etkin tabanı okur (plan fark 26,
+/// <see cref="EffectiveBaselines"/>).</para>
 /// </summary>
 public sealed class PersonBalanceVerifier
 {
@@ -302,28 +304,34 @@ public sealed class PersonBalanceVerifier
         var projections = data.Projections[id].ToDictionary(p => p.Id);
         var balances = data.Balances[id].ToDictionary(b => b.WpfCustomerId, b => b.Balance);
         var ledger = data.Ledger[id].ToDictionary(l => l.WpfCustomerId);
-        var baselines = data.Baselines[id].Where(b => b.WpfCustomerId != LicenseMarker).ToDictionary(b => b.WpfCustomerId);
         var hasMarker = data.Baselines[id].Any(b => b.WpfCustomerId == LicenseMarker);
         var hasBaseline = hasMarker || (firstCapture is { } first && license.IssuedAt > first);
 
         decimal Bal(Guid row) => balances.GetValueOrDefault(row);
         decimal Sum(Guid row) => ledger.TryGetValue(row, out var l) ? l.Sum : 0m;
         bool IsCopy(Guid row) => projections.TryGetValue(row, out var p) && p.MergedIntoId is not null;
+
+        // Etkin taban: taşınmış kopyaların taban satırları asıl kayda katlanmış (plan fark 26). Bütün "tabanda mı",
+        // "daha da eksiye indi mi" ve "farkı değişti mi" soruları bunu okur.
+        var baselines = EffectiveBaselines(
+            data.Baselines[id].Where(b => b.WpfCustomerId != LicenseMarker), projections,
+            row => IsCopy(row) && Bal(row) == 0m && !ledger.ContainsKey(row));
+        bool InBaseline(Guid row) => baselines.ContainsKey(row);
         bool Worsened(Guid row) => baselines.TryGetValue(row, out var b) && Bal(row) < b.Balance;
 
         var rows = balances.Keys.Union(ledger.Keys).ToList();
 
         // 2. Eksi satırlar (kopyalar 8'de).
         var negative = rows.Where(r => !IsCopy(r) && Bal(r) < 0m).ToList();
-        var (negIn, negOut) = Split(negative, baselines);
+        var (negIn, negOut) = Split(negative, InBaseline);
         // 3. D1.
         var mismatch = rows.Where(r => Bal(r) != Sum(r)).ToList();
-        var (misIn, misOut) = Split(mismatch, baselines);
+        var (misIn, misOut) = Split(mismatch, InBaseline);
         // 8. Kopya satırlar: kopyaya bağlı hareket ya da sıfır olmayan bakiye.
         var copyTx = rows.Where(r => IsCopy(r) && ledger.TryGetValue(r, out var l) && l.Count > 0).ToList();
         var copyBal = rows.Where(r => IsCopy(r) && Bal(r) != 0m).ToList();
         var copies = copyTx.Union(copyBal).ToList();
-        var (copyIn, copyOut) = Split(copies, baselines);
+        var (copyIn, copyOut) = Split(copies, InBaseline);
 
         // Kişiler: asıl kayıtlar, numara ordinal (PersonMembership kuralı); gruplanmamış satır tek başına kişi.
         var canonical = projections.Values.Where(p => p.MergedIntoId is null).ToList();
@@ -350,7 +358,7 @@ public sealed class PersonBalanceVerifier
         // 6.
         var negativePersons = persons.Where(m => m.Sum(p => Bal(p.Id)) < 0m).ToList();
         var explained = negativePersons.Count(m => m.Where(p => Bal(p.Id) < 0m)
-            .All(p => baselines.ContainsKey(p.Id) && !Worsened(p.Id)));
+            .All(p => InBaseline(p.Id) && !Worsened(p.Id)));
         // 7.
         var (d4, d5, d6, ruleGroups, orphans) = CheckDraws(data.Draws[id], reversedIds);
         // 9.
@@ -363,9 +371,10 @@ public sealed class PersonBalanceVerifier
         // dahil — 2. madde onları saymaz, ama tabana alınmış kopyaya sonradan yazım §4.12'nin dar penceresidir.
         var worsened = rows.Where(r => Bal(r) < 0m && Worsened(r)).ToList();
         // Spec'in lafzı: farkın her değişimi, düzeltilip 0'a inmesi de. Susturma yolu sahip kararı (plan fark 22).
-        var changedMismatch = baselines.Values
-            .Where(b => Bal(b.WpfCustomerId) - Sum(b.WpfCustomerId) != b.Balance - b.LedgerSum)
-            .Select(b => b.WpfCustomerId).ToList();
+        // Taşınmış kopyanın 0'a inen farkı değişim değildir: asıl kaydın etkin tabanında (fark 26).
+        var changedMismatch = baselines
+            .Where(b => Bal(b.Key) - Sum(b.Key) != b.Value.Balance - b.Value.LedgerSum)
+            .Select(b => b.Key).ToList();
         var alerts = new List<string>();
         if (d4 + d5 + d6 + orphans.Count > 0)
             alerts.Add($"kural: D4={d4} D5={d5} D6={d6} yetim={orphans.Count}");
@@ -456,8 +465,53 @@ public sealed class PersonBalanceVerifier
         return (d4, d5, d6, ruleGroups, orphans);
     }
 
-    private static (List<Guid> In, List<Guid> Out) Split(List<Guid> rows, Dictionary<Guid, BaselineRow> baselines) =>
-        (rows.Where(baselines.ContainsKey).ToList(), rows.Where(r => !baselines.ContainsKey(r)).ToList());
+    private static (List<Guid> In, List<Guid> Out) Split(List<Guid> rows, Func<Guid, bool> inBaseline) =>
+        (rows.Where(inBaseline).ToList(), rows.Where(r => !inBaseline(r)).ToList());
+
+    /// <summary>
+    /// Satır başına etkin taban (plan fark 26). Taban satır anahtarlıdır; kimlik birleştirici
+    /// (<c>CustomerIdentityMerger</c>: IdentityKeyRepairJob, birleştirme işi/<c>--at-twins</c>, senkronun takma ad ve
+    /// devralma yolu) ise S1'den sonra da bir satırın bütün hareketlerini ve bakiyesini asıl kayda taşır — spec §3.3
+    /// D2'nin bilerek kapsam dışı yazarı ("bu bir çekim değildir"). Tabandaki eksi ya da D1 satırı kopyaya dönünce
+    /// sapması taban dışı bir asıl kayda geçer. Satır başına karşılaştırma bunu yeni sapma sayar, kopyanın 0'a inen
+    /// farkını da "farkı değişen"; hiçbir araç susturamaz (yakalama tabanı olan lisansa yazmaz, fark 20) ve uyarı her
+    /// gün tekrarlanırdı.
+    ///
+    /// <para>Bu yüzden <b>taşınmış</b> bir kopyanın (<paramref name="moved"/>: bakiyesi 0, hareketi yok) taban satırı,
+    /// <c>MergedIntoId</c> zincirinin kökündeki asıl kayda katlanır: asıl kaydın etkin tabanı kendi taban satırı ile
+    /// katlananların <c>Balance</c> ve <c>LedgerSum</c> toplamıdır. Yazım yok; tablo yalnız CLI'nin. Kökü bulunamayan
+    /// (zincir projeksiyonu olmayan bir Id'de bitiyor ya da döngü) kopya katlanmaz.</para>
+    ///
+    /// <para><b>Taşınmamış kopya</b> (bakiyesi ya da hareketi kalmış: §4.12'nin dar penceresi, birleşmeden sonra kopyaya
+    /// gelen yazım, eski birleştirmelerin tabana alınmış artığı) katlanmaz, kendi taban satırıyla karşılaştırılır. Kopya
+    /// 0'dan ayrıldığı an analiz katlamasız hâline döner; uyarı sürer.</para>
+    /// </summary>
+    private static Dictionary<Guid, (decimal Balance, decimal LedgerSum)> EffectiveBaselines(
+        IEnumerable<BaselineRow> rows, IReadOnlyDictionary<Guid, ProjectionRow> projections, Func<Guid, bool> moved)
+    {
+        Guid? RootOf(Guid copy)
+        {
+            var seen = new HashSet<Guid>();
+            var row = copy;
+            while (projections.TryGetValue(row, out var p))
+            {
+                if (p.MergedIntoId is not { } next) return row;
+                if (!seen.Add(row)) return null;
+                row = next;
+            }
+            return null;
+        }
+
+        var effective = new Dictionary<Guid, (decimal Balance, decimal LedgerSum)>();
+        foreach (var b in rows)
+        {
+            var owner = moved(b.WpfCustomerId) && RootOf(b.WpfCustomerId) is { } root ? root : b.WpfCustomerId;
+            effective[owner] = effective.TryGetValue(owner, out var e)
+                ? (e.Balance + b.Balance, e.LedgerSum + b.LedgerSum)
+                : (b.Balance, b.LedgerSum);
+        }
+        return effective;
+    }
 
     // ── Taban ────────────────────────────────────────────────────────────────
 

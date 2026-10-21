@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -199,6 +200,84 @@ public sealed class PersonBalanceVerifierTests
             .Which.Should().Be("D1: taban dışı 0, farkı değişen 1");
     }
 
+    /// <summary>
+    /// Kimlik birleştirici (§3.3 D2'nin kapsam dışı yazarı) tabandaki satırın bakiyesini ve hareketlerini asıl kayda
+    /// taşır: eski sapma satır değiştirir, yeni sapma değildir. Taşınmış kopyanın (bakiyesi 0, hareketi yok) taban satırı
+    /// asıl kayda katlanır (plan fark 26).
+    /// </summary>
+    [Fact]
+    public void Tabandaki_eksi_satir_asil_kayda_tasininca_uyarmaz_asil_kayit_daha_da_eksiye_inerse_uyarir()
+    {
+        var (copy, head) = (Guid.NewGuid(), Guid.NewGuid());
+        V.Snapshot After(decimal headBalance) => Snap(
+            projections: [P(head), P(copy, mergedInto: head)],
+            balances: [B(copy, 0m), B(head, headBalance)], ledger: [L(head, headBalance)],
+            baselines: [Marker(), new V.BaselineRow(Lic, copy, -10m, -10m, Captured, null)]);
+
+        var moved = Single(After(-10m));
+        moved.Alerts.Should().BeEmpty("§3.3 D2: birleştirici çekim değildir; eski borç asıl kayda taşındı");
+        moved.NegativeRows.Should().Be(new V.Tally(1, 0, -10m), "asıl kayıt kopyanın tabanıyla açıklanır");
+        (moved.NegativePersons, moved.NegativePersonsExplained).Should().Be((1, 1));
+        Single(After(-6m)).Alerts.Should().BeEmpty("asıl kaydın kendi 4'ü borcu küçültür");
+
+        var worse = Single(After(-15m));
+        worse.Alerts.Should().Equal("eksi: taban dışı 0, daha da eksiye inen 1");
+        worse.Details.WorsenedBaselineRows.Should().Equal(head);
+    }
+
+    [Fact]
+    public void Tabandaki_D1_satiri_asil_kayda_tasininca_fark_asil_kayitta_korunur_uyarmaz()
+    {
+        var (copy, head) = (Guid.NewGuid(), Guid.NewGuid());
+        // Taban: kopya 100 / 90 (fark 10). Asıl kaydın defterle tutarlı kendi 20'si vardı; birleşmeden sonra 120 / 110.
+        V.Snapshot After(decimal headLedger) => Snap(
+            projections: [P(head), P(copy, mergedInto: head)],
+            balances: [B(copy, 0m), B(head, 120m)], ledger: [L(head, headLedger, count: 2)],
+            baselines: [Marker(), new V.BaselineRow(Lic, copy, 100m, 90m, Captured, null)]);
+
+        var moved = Single(After(110m));
+        moved.Alerts.Should().BeEmpty("fark 10 asıl kayda taşındı; kopyanın 0'a inen farkı bir değişim değil");
+        moved.LedgerMismatches.Should().Be(new V.Tally(1, 0, 10m));
+        moved.Details.ChangedMismatchRows.Should().BeEmpty();
+
+        var changed = Single(After(115m));
+        changed.Alerts.Should().Equal("D1: taban dışı 0, farkı değişen 1");
+        changed.Details.ChangedMismatchRows.Should().Equal(head);
+    }
+
+    [Fact]
+    public void Zincirdeki_tasinmis_kopyanin_tabani_kokteki_asil_kayda_katlanir()
+    {
+        var (copy, middle, head) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        var r = Single(Snap(
+            projections: [P(head), P(middle, mergedInto: head), P(copy, mergedInto: middle)],
+            balances: [B(copy, 0m), B(middle, 0m), B(head, -10m)], ledger: [L(head, -10m)],
+            baselines: [Marker(), new V.BaselineRow(Lic, copy, -10m, -10m, Captured, null)]));
+
+        r.Alerts.Should().BeEmpty("A → B → C: para ve hareket zincirin sonundaki asıl kayıtta");
+    }
+
+    /// <summary>
+    /// Taşınmamış kopya katlanmaz, kendi taban satırıyla karşılaştırılır — sonuç katlamadan önceki analizle aynı. §4.12'nin
+    /// dar penceresi: birleştirici hareketleri okuduktan sonra kopyaya +3 yazıldı; bakiye (−7) asıl kayda taşındı,
+    /// hareket kopyada kaldı. Kopyanın kendi değerleri 0'dan ayrıldı: uyarı sürer.
+    /// </summary>
+    [Fact]
+    public void Kopyada_bakiye_ya_da_hareket_kalirsa_taban_katlanmaz_uyari_surer()
+    {
+        var (copy, head) = (Guid.NewGuid(), Guid.NewGuid());
+
+        var r = Single(Snap(
+            projections: [P(head), P(copy, mergedInto: head)],
+            balances: [B(copy, 0m), B(head, -7m)], ledger: [L(copy, 3m), L(head, -10m)],
+            baselines: [Marker(), new V.BaselineRow(Lic, copy, -10m, -10m, Captured, null)]));
+
+        r.Alerts.Should().Equal("eksi: taban dışı 1, daha da eksiye inen 0", "D1: taban dışı 1, farkı değişen 1");
+        r.Details.NegativeOutside.Should().Equal(head);
+        r.Details.ChangedMismatchRows.Should().Equal(copy);
+    }
+
     [Fact]
     public void Ilk_yakalamadan_sonra_verilen_lisans_isaretsiz_de_tabanli_sayilir()
     {
@@ -393,6 +472,27 @@ public sealed class PersonBalanceVerifierLoadTests : IClassFixture<ApiFactory>
 /// </summary>
 public sealed class PersonBalanceVerifierCaptureTests
 {
+    /// <summary><c>--capture-baseline --apply</c>'ın çekirdeği: lisanssız yük, her lisansın yakalanacak satırları.</summary>
+    private static async Task CaptureAsync(ApiFactory factory, DateTimeOffset capturedAt)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var snapshot = await scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
+            .LoadAsync(null, capturedAt, default);
+        var data = V.ByLicense.Of(snapshot);
+        foreach (var license in V.Analyze(snapshot).Licenses)
+            db.PersonBalanceBaselines.AddRange(V.BaselineRowsToCapture(data, license, capturedAt));
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task<V.LicenseReport> ReportAsync(ApiFactory factory, Guid licenseId, DateTimeOffset now)
+    {
+        using var scope = factory.Services.CreateScope();
+        var report = V.Analyze(await scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
+            .LoadAsync(null, now, default));
+        return report.Licenses.Should().ContainSingle(l => l.LicenseId == licenseId).Subject;
+    }
+
     [Fact]
     public async Task Yakalamada_verisi_olmayan_eski_lisans_isaret_alir_sonraki_eksi_satirda_uyarir()
     {
@@ -402,16 +502,7 @@ public sealed class PersonBalanceVerifierCaptureTests
         var idle = await kit.Sales.SecondLicenseAsync(SalesSyncMode.Off);   // yakalamada verisi yok
         var capturedAt = DateTimeOffset.UtcNow.AddMinutes(1);   // iki lisans da yakalamadan önce verilmiş
 
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            var snapshot = await scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
-                .LoadAsync(null, capturedAt, default);
-            var data = V.ByLicense.Of(snapshot);
-            foreach (var license in V.Analyze(snapshot).Licenses)
-                db.PersonBalanceBaselines.AddRange(V.BaselineRowsToCapture(data, license, capturedAt));
-            await db.SaveChangesAsync();
-        }
+        await CaptureAsync(factory, capturedAt);
 
         var negative = Guid.NewGuid();
         await idle.WithDbAsync(db =>
@@ -434,14 +525,67 @@ public sealed class PersonBalanceVerifierCaptureTests
             return Task.CompletedTask;
         });
 
-        using var after = factory.Services.CreateScope();
-        var report = V.Analyze(await after.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
-            .LoadAsync(null, capturedAt.AddDays(1), default));
-
-        var r = report.Licenses.Should().ContainSingle(l => l.LicenseId == idle.LicenseId).Subject;
+        var r = await ReportAsync(factory, idle.LicenseId, capturedAt.AddDays(1));
         (r.HasMarker, r.HasBaseline).Should().Be((true, true), "yakalama verisiz lisansa da işaret yazmalı");
         r.Alerts.Should().ContainSingle().Which.Should().Be("eksi: taban dışı 1, daha da eksiye inen 0");
         r.Details.NegativeOutside.Should().Equal(negative);
+    }
+
+    /// <summary>
+    /// Taban yakalandıktan sonra kimlik birleştirici (IdentityKeyRepairJob, <c>--at-twins</c>, senkronun takma ad yolu)
+    /// tabandaki eksi ve D1 satırlarını taban dışı asıl kayıtlara taşır. Denetim bunu yeni sapma saymaz — saysaydı
+    /// susturacak araç olmadan her gün e-posta atardı (plan fark 26); asıl kayıt birleşmeden sonra daha da eksiye inerse
+    /// uyarır.
+    /// </summary>
+    [Fact]
+    public async Task Birlestirici_tabandaki_eksi_ve_D1_satirini_tasiyinca_uyarmaz_asil_kayit_daha_da_eksiye_inerse_uyarir()
+    {
+        using var factory = new ApiFactory();
+        var kit = await Kit.CreateAsync(factory);
+        var negative = await kit.MemberAsync(null, -10m);
+        var broken = await kit.MemberAsync(null, 90m);
+        await kit.Sales.WithDbAsync(async db =>
+        {
+            (await db.CustomerBalances.SingleAsync(b => b.WpfCustomerId == broken)).Balance = 100m;   // D1: 100 / 90
+        });
+        var negativeHead = await kit.MemberAsync(null, balanceRow: false);
+        var brokenHead = await kit.MemberAsync(null, 20m);
+        var capturedAt = DateTimeOffset.UtcNow.AddMinutes(1);
+        await CaptureAsync(factory, capturedAt);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var merger = scope.ServiceProvider.GetRequiredService<CustomerIdentityMerger>();
+            foreach (var (from, to) in new[] { (negative, negativeHead), (broken, brokenHead) })
+            {
+                await merger.RepointReferencesAsync(kit.LicenseId, from, to, default);
+                (await db.WpfCustomerProjections.SingleAsync(p => p.Id == from)).MergedIntoId = to;
+            }
+            await db.SaveChangesAsync();
+        }
+        (await kit.BalanceAsync(negativeHead), await kit.LedgerSumAsync(brokenHead)).Should().Be((-10m, 110m),
+            "birleştirici parayı ve hareketleri asıl kayda taşıdı");
+
+        var merged = await ReportAsync(factory, kit.LicenseId, capturedAt.AddDays(1));
+        merged.Alerts.Should().BeEmpty("§3.3 D2: birleştirici çekim değildir; eski sapma satır değiştirdi");
+        (merged.NegativeRows, merged.LedgerMismatches).Should().Be((new V.Tally(1, 0, -10m), new V.Tally(1, 0, 10m)));
+        (merged.NegativePersons, merged.NegativePersonsExplained).Should().Be((1, 1));
+
+        // Birleşmeden sonra asıl kayda yeni bir eksi yazım (çekim değil: eski tip elle ayar) — yeni sapma.
+        await kit.Sales.WithDbAsync(async db =>
+        {
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = Guid.NewGuid(), LicenseId = kit.LicenseId, WpfCustomerId = negativeHead, Amount = -5m,
+                Kind = Kit.KindManual, CreatedByCustomerId = kit.CustomerId, CreatedAt = capturedAt.AddHours(1),
+            });
+            (await db.CustomerBalances.SingleAsync(b => b.WpfCustomerId == negativeHead)).Balance -= 5m;
+        });
+
+        var worse = await ReportAsync(factory, kit.LicenseId, capturedAt.AddDays(1));
+        worse.Alerts.Should().Equal("eksi: taban dışı 0, daha da eksiye inen 1");
+        worse.Details.WorsenedBaselineRows.Should().Equal(negativeHead);
     }
 }
 
