@@ -423,8 +423,13 @@ public sealed class BankConnectionTerminator
     /// bağı silinen ödemenin gap'i açılır (<see cref="ReopenGapsAsync"/>).
     /// <para>Başka hareketten gelen bağ kalır (Görev 10'un sonraki görev kuralı): reddedilen hesabın havalesi o bağı tazelemişse
     /// (kararı <c>IbanConfirmedAt</c> işaretli) başlangıç reddedilen hesap dışındaki kalan doğrulamalardan yeniden hesaplanır; kalan
-    /// yoksa bağ silinir ve partiyle aynı SaveChanges'te imha kaydına girer (ölçüt <c>hesap reddi, kalan doğrulama yok</c>).
-    /// Kural bağdaştırıcıda (<see cref="PaymentMatchReconciler.RewindIbanConfirmationsAsync"/>), kaldırmayla ortak.</para>
+    /// yoksa bağ silinir ve partiyle aynı SaveChanges'te imha kaydına girer (ölçüt <c>…, reddedilen hesap #N (Ö-10), kalan
+    /// doğrulama yok</c>). Kural bağdaştırıcıda (<see cref="PaymentMatchReconciler.RewindIbanConfirmationsAsync"/>), kaldırmayla
+    /// ortak.</para>
+    /// <para>Bütün imha kayıtlarının ölçütü hesabın Obifin numarasını taşır (<see cref="RejectionCriterion"/>): kayıt tek başına
+    /// yeniden uygulanabilir olmalı. Geri yüklemeden sonra silmelerin dayanağı veritabanı dışındaki saatlik özettir (Görev 9) ve
+    /// yedek, reddedilmiş hesabın onayını da geri getirir; numara olmasaydı hangi hesabın yeniden reddedileceği bilinmez, çekim
+    /// o hesabın hareketini yeniden yazardı.</para>
     /// <para>Hesap satırı kalır: yer tutucudur, Obifin'den geldikçe onaysız sayılır. Eşzamanlı eşleştirme yazısıyla çakışırsa bir
     /// kez yeniden denenir (düşen partinin izi ve imha kaydı atılır). <see cref="BankHasher"/> istemez.</para>
     /// </summary>
@@ -441,7 +446,7 @@ public sealed class BankConnectionTerminator
         }
         _db.ChangeTracker.Clear();
 
-        const string criterion = "onaysız ya da reddedilen hesap (Ö-10)";
+        var criterion = RejectionCriterion(obifinAccountId);
         void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
             count, criterion, DataDestruction.Triggers.AccountRejected, actor);
         int transactions = 0, matches = 0, memories = 0, gaps = 0;
@@ -462,7 +467,7 @@ public sealed class BankConnectionTerminator
                     var byId = batch.ToDictionary(t => t.Id);
                     var rewound = await _reconciler.RewindIbanConfirmationsAsync(
                         batchMatches.Select(m => (m, byId[m.BankTransactionId])).ToList(),
-                        t => t.LicenseId == licenseId && t.ObifinAccountId == obifinAccountId, "hesap reddi",
+                        t => t.LicenseId == licenseId && t.ObifinAccountId == obifinAccountId, criterion,
                         DataDestruction.Triggers.AccountRejected, actor, ct);
                     var batchMemories = await _db.CustomerIbanMemories
                         .Where(m => m.LicenseId == licenseId && m.SourceBankTransactionId != null
@@ -493,6 +498,11 @@ public sealed class BankConnectionTerminator
             "eşleşme={Matches}, IBAN bağı={Memories}, açılan gap={Gaps}", licenseId, obifinAccountId, transactions, matches, memories, gaps);
         return new BankAccountRejectionResult(transactions, matches, memories, gaps);
     }
+
+    /// <summary>Hesap reddinin imha kaydı ölçütü: reddedilen hesabın Obifin numarası (kişisel veri değil; 36 aylık denetim
+    /// satırında da var). Geri yükleme prosedürü (<c>deploy/README.md</c> "Silmeleri yeniden uygula") <c>#N</c>'yi okur.
+    /// <c>IbanMemoryRetentionMonths</c> önekiyle de 100 karakterlik sütuna sığar.</summary>
+    public static string RejectionCriterion(long obifinAccountId) => $"reddedilen hesap #{obifinAccountId} (Ö-10)";
 
     /// <summary>Dekont bağı silinecek eşleşmelerin ödemelerine açık gap (bağdaştırıcının kaldırma kuralı: dekont ölçümden
     /// düşmesin): gap'i varsa yeniden açılır, yoksa <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> yazılır. İzleyiciye ekler;

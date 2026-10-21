@@ -673,9 +673,11 @@ public sealed class BankConnectionTerminatorTests
         var reopened = await db.PaymentMatchGaps.AsNoTracking().SingleAsync(g => g.PaymentId == resolvedPaymentId);
         (reopened.Reason, reopened.ResolvedAt, reopened.ResolvedBankTransactionId)
             .Should().Be((PaymentMatchGapReason.NoCandidate, (DateTimeOffset?)null, (Guid?)null), "çözülmüş gap yeniden açılır");
+        // Ölçüt reddedilen hesabın Obifin numarasını taşır: geri yüklemeden sonra ret, imha kaydının veritabanı dışındaki
+        // kopyasından (saatlik özet) tek başına yeniden uygulanabilsin; yedek onayı da geri getirir (Görev 23 prosedürü).
         (await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync())
             .Should().NotBeEmpty().And.OnlyContain(x => x.Trigger == DataDestruction.Triggers.AccountRejected
-                && x.Actor == "yonetici-1");
+                && x.Actor == "yonetici-1" && x.Criterion == "reddedilen hesap #9 (Ö-10)");
         var rejected = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == account9.Id);
         (rejected.ApprovedAt, rejected.ObifinAccountId).Should().Be(((DateTimeOffset?)null, 9L), "satır yer tutucu olarak kalır");
 
@@ -743,8 +745,8 @@ public sealed class BankConnectionTerminatorTests
         var record = await db.DataDestructionRecords.AsNoTracking()
             .SingleAsync(x => x.LicenseId == lic && x.Target == "CustomerIbanMemories");
         (record.RowCount, record.Criterion, record.Trigger, record.Actor).Should().Be((1,
-            $"LastConfirmedAt+{new BankOptions().IbanMemoryRetentionMonths}ay, hesap reddi, kalan doğrulama yok",
-            DataDestruction.Triggers.AccountRejected, "yonetici-1"));
+            $"LastConfirmedAt+{new BankOptions().IbanMemoryRetentionMonths}ay, reddedilen hesap #9 (Ö-10), kalan doğrulama yok",
+            DataDestruction.Triggers.AccountRejected, "yonetici-1"), "IBAN bağı satırı da reddedilen hesabı gösterir");
     }
 
     [Fact]
