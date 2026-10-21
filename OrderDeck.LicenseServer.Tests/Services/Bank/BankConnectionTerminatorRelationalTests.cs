@@ -88,6 +88,13 @@ public sealed class BankConnectionTerminatorRelationalTests : IAsyncLifetime
         return (lic, firstMatch);
     }
 
+    /// <summary>Yerel silme yalnız durdurulmuş bağlantıda koşar (hizmet sonu işinin seçimi; <c>PurgeLocalDataAsync</c> denetler).</summary>
+    private async Task StopAsync(Guid lic)
+    {
+        using var scope = _factory.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<BankConnectionTerminator>().StopAsync(lic, CancellationToken.None);
+    }
+
     [Fact]
     public async Task Kaldir_ve_sil_gercek_SQL_Serverda_parti_parti_siler_baglanti_en_son_gider_teyit_kaydi_kalir()
     {
@@ -126,6 +133,7 @@ public sealed class BankConnectionTerminatorRelationalTests : IAsyncLifetime
     public async Task Yerel_silme_gercek_SQL_Serverda_kimligi_banka_baglantisini_ve_onayli_hesabi_IBANsiz_tutar_isaret_yazar()
     {
         var (lic, _) = await SeedAsync(3);
+        await StopAsync(lic);
 
         using (var scope = _factory.Services.CreateScope())
             await scope.ServiceProvider.GetRequiredService<BankConnectionTerminator>()
@@ -147,6 +155,7 @@ public sealed class BankConnectionTerminatorRelationalTests : IAsyncLifetime
     public async Task Eszamanli_eslestirme_yazisiyla_carpisan_silme_bir_kez_yeniden_denenir_sayilar_birikir()
     {
         var (lic, firstMatch) = await SeedAsync(2);
+        await StopAsync(lic);
         _factory.Hook.BeforeSave = async () =>
         {
             _factory.Hook.BeforeSave = null;   // yalnız ilk parti çakışsın

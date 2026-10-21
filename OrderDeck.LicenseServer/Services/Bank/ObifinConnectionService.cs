@@ -198,7 +198,8 @@ public sealed class ObifinConnectionService
     /// bağdaştırma işi, telafi taraması, gap çözümü, onay bağdaştırması ve elle eşleme yalnız bunu tutan bağlantının lisansında
     /// koşar (talimat bittikten sonra işlemeyi sürdüren taraf kendi amacını belirleyen konuma düşer). Banka modülündeki tek tanım
     /// (<see cref="LicenseActiveAt"/> gibi); EF sorgusuna çevrilir. İki koşul ayrı ayrı sınanır: kod <c>BankDataPurgedAt</c>'i
-    /// yalnız Disabled'da yazar, elle (SQL) düzeltilmiş bir satırda da kapı tutsun.</summary>
+    /// yalnız Disabled'da yazar (<c>BankConnectionTerminator.PurgeLocalDataAsync</c> durumu başta ve son adımda taze okur), elle
+    /// (SQL) düzeltilmiş bir satırda da kapı tutsun.</summary>
     public static Expression<Func<ObifinConnection, bool>> MatchingActive
         => c => c.Status != ObifinConnectionStatus.Disabled && c.BankDataPurgedAt == null;
 

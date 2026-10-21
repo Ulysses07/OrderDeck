@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -9,6 +10,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -88,6 +90,18 @@ public sealed class BankConnectionTerminatorTests
         var options = new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"bank-term-{Guid.NewGuid():N}");
         if (interceptor is not null) options.AddInterceptors(interceptor);
         return new LicenseDbContext(options.Options);
+    }
+
+    /// <summary>Kancalı bağlam + aynı InMemory veritabanına kancasız ikinci bağlam üreten fabrika: eşzamanlı yazanı (yönetici
+    /// sayfası, hesap yenilemesi) sıraya dayalı olarak taklit eder.</summary>
+    private static (LicenseDbContext Db, Func<LicenseDbContext> Other) SharedDb(IInterceptor interceptor)
+    {
+        var name = $"bank-term-{Guid.NewGuid():N}";
+        var root = new InMemoryDatabaseRoot();
+        var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(name, root)
+            .AddInterceptors(interceptor).Options);
+        return (db, () => new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(name, root)
+            .Options));
     }
 
     /// <summary>Üretimdeki gibi: sonlandırıcı ve bağdaştırıcı (IBAN bağı süre kuralı) aynı kapsamlı bağlamı paylaşır.</summary>
@@ -366,6 +380,7 @@ public sealed class BankConnectionTerminatorTests
         using var db = NewDb(); var client = new TerminatorObifin();
         client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
         var lic = await SeedAsync(db, client);
+        await Terminator(db, client).StopAsync(lic, CancellationToken.None);   // iş yalnız durdurulmuş bağlantıyı siler
 
         var r = await Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd,
             DataDestruction.SystemActor, CancellationToken.None);
@@ -399,6 +414,59 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Yerel_silme_durdurulmamis_baglantida_bir_sey_silmez_isaret_yazmaz()
+    {
+        // Hizmet sonu işi Disabled ve 30 günü geçmiş bağlantıyı seçer; yönetici sayfası obifin-poll kilidini almaz, arada
+        // "Etkinleştir"e basılabilir. Yerel silme durumu kendisi denetlemeseydi yeni açılmış bağlantının bütün banka verisini
+        // siler, Unverified bağlantıya BankDataPurgedAt yazardı.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);   // Unverified
+
+        var act = () => Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd,
+            DataDestruction.SystemActor, CancellationToken.None);
+
+        await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankConnectionTerminator.NotStoppedMessage);
+        db.ChangeTracker.Clear();
+        (await db.BankTransactions.CountAsync(x => x.LicenseId == lic)).Should().Be(1, "hiçbir şey silinmez");
+        (await db.BankAccounts.CountAsync(a => a.LicenseId == lic)).Should().Be(2);
+        (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic)).BankDataPurgedAt.Should().BeNull();
+        (await db.DataDestructionRecords.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Yerel_silme_surerken_etkinlestirilen_baglantiya_isaret_yazilmaz_kanit_hesap_bosaltilmaz()
+    {
+        // Son adımdaki işaret yazımı ve onaylı hesabın boşaltılması da aynı denetimden geçer: partiler sürerken yönetici
+        // "Etkinleştir"e basarsa açılmış bağlantı "yerel verisi silindi" diye işaretlenmez (eşleştirmeye kapanır, şerit ve
+        // hatırlatma yanlış olurdu), onaylı hesabın IBAN'ı boşaltılmaz. Kaydedilmiş partiler gitti; imha kayıtları onları sayar.
+        var hook = new SaveHookInterceptor();
+        var (db, other) = SharedDb(hook);
+        using var _ = db;
+        var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var t = Terminator(db, client);
+        await t.StopAsync(lic, CancellationToken.None);
+        hook.AfterSave = async () =>
+        {
+            hook.AfterSave = null;   // yalnız ilk partiden sonra
+            await using var admin = other();
+            await Terminator(admin, client).ResumeAsync(lic, CancellationToken.None);
+        };
+
+        var act = () => t.PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor,
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankConnectionTerminator.NotStoppedMessage);
+        db.ChangeTracker.Entries().Should().BeEmpty();
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        (conn.Status, conn.BankDataPurgedAt).Should().Be((ObifinConnectionStatus.Unverified, (DateTimeOffset?)null));
+        (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 6)).IbanMasked
+            .Should().Be("TR12…345", "açılmış bağlantının onaylı hesabı boşaltılmaz");
+        (await db.DataDestructionRecords.AnyAsync(x => x.Target == BankConnectionTerminator.ScrubbedAccountTarget))
+            .Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Yerel_silmeden_sonra_Kaldir_ve_sil_panelden_eklenmis_baglantiyi_onayli_hesaptan_tanir()
     {
         // KVKK K-6: Obifin panelinden eklenmiş bağlantının (#600; pilottaki QNB gibi) yerelde satırı yok, bu lisansa ait olduğu
@@ -410,6 +478,7 @@ public sealed class BankConnectionTerminatorTests
         client.Accounts.Add(Account(6, 600));
         var lic = await SeedAsync(db, client);
         var t = Terminator(db, client);
+        await t.StopAsync(lic, CancellationToken.None);
         await t.PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor, CancellationToken.None);
 
         var r = await t.RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "admin", CancellationToken.None);
@@ -572,6 +641,7 @@ public sealed class BankConnectionTerminatorTests
             Direction = BankTransactionDirection.Incoming, Amount = 10m, Currency = "TL", OccurredAt = now, FetchedAt = now,
         }));
         await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        await Terminator(db, client).StopAsync(lic, CancellationToken.None);
         counter.DeletedTransactionsPerSave.Clear();
         var total = BankConnectionTerminator.BatchSize * 2 + 1;
 
@@ -596,6 +666,7 @@ public sealed class BankConnectionTerminatorTests
         var t = Terminator(db, client);
 
         var r = await t.RemoveAndDeleteAsync(removed, DataDestruction.Triggers.AdminRemove, "yonetici-1", CancellationToken.None);
+        await t.StopAsync(purged, CancellationToken.None);
         await t.PurgeLocalDataAsync(purged, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor,
             CancellationToken.None);
 

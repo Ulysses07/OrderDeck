@@ -57,8 +57,8 @@ public sealed record BankAccountRejectionResult(int Transactions, int Matches, i
 /// özgüdür, bkz. <see cref="RemoveFromObifinAsync"/>. Sonra lisansın bütün banka verisi ve Obifin kimliği silinir, imha kaydı
 /// aynı işlemde yazılır. Obifin API'sinde hareket silme ucu yok: Obifin'deki kopyanın silinmesi yazılı istenir ve
 /// <c>ObifinCopyDeletions</c> kaydıyla izlenir. Obifin'e ulaşılamazsa ya da kaldırma düşerse yerel silme yine yapılır.</para>
-/// <para><b>Yalnız yerel silme</b> (<see cref="PurgeLocalDataAsync"/>, otomatik hizmet sonu işi): Obifin'e gidilmez; banka
-/// verisi silinir, "Kaldır ve sil"in sahiplik kanıtı kalır — Obifin kimliği, yerel <c>BankConnections</c> (yalnız
+/// <para><b>Yalnız yerel silme</b> (<see cref="PurgeLocalDataAsync"/>, otomatik hizmet sonu işi; yalnız durdurulmuş bağlantıda,
+/// durum başta ve son adımda taze okunur): Obifin'e gidilmez; banka verisi silinir, "Kaldır ve sil"in sahiplik kanıtı kalır — Obifin kimliği, yerel <c>BankConnections</c> (yalnız
 /// <c>BankaApiId</c>) ve ONAYLI hesap satırları (kişisel veri taşıyabilen alanları boşaltılmış; onaysız hesaplar silinir).
 /// <c>BankDataPurgedAt</c> yazılır — yönetici Obifin tarafını sonra "Kaldır ve sil" ile kapatır.</para>
 /// <para>Yerel silme <see cref="BatchSize"/>'lık partilerle yapılır (saklama işinin kalıbı): lisansın bütün satırları bir
@@ -88,6 +88,9 @@ public sealed class BankConnectionTerminator
     public const string CopyDeletionNotFoundMessage = "Obifin silme teyidi kaydı bulunamadı.";
     public const string AlreadyConfirmedMessage = "Bu Obifin silme teyidi zaten kaydedilmiş.";
     public const string AccountNotFoundMessage = "Hesap bulunamadı.";
+    /// <summary>Yalnız yerel silme durdurulmamış bağlantıda (ör. hizmet sonu işi seçtikten sonra yönetici Etkinleştir'e bastı):
+    /// silme yapılmadı ya da son adım (işaret, onaylı hesabın boşaltılması) yazılmadı.</summary>
+    public const string NotStoppedMessage = "Bağlantı durdurulmuş değil (yeniden etkinleştirilmiş olabilir); yerel silme yapılmadı.";
 
     private readonly LicenseDbContext _db;
     private readonly IObifinClient _client;
@@ -163,11 +166,18 @@ public sealed class BankConnectionTerminator
 
     /// <summary>Otomatik hizmet sonu silmesi (Görev 14): Obifin'e GİDİLMEZ. Banka verisi silinir; Obifin kimliği, yerel
     /// <c>BankConnections</c> ve onaylı hesap satırları (IBAN alanları boş) kalır, <c>BankDataPurgedAt</c> yazılır. İdempotent:
-    /// ikinci koşu kalan satırları siler, boşaltılmış hesabı yeniden saymaz.</summary>
+    /// ikinci koşu kalan satırları siler, boşaltılmış hesabı yeniden saymaz.
+    /// <para><b>Yalnız durdurulmuş (<see cref="ObifinConnectionStatus.Disabled"/>) bağlantıda.</b> Durum burada taze okunur, çağıranın
+    /// seçimine güvenilmez: iş bağlantıyı seçtikten sonra yönetici "Etkinleştir"e basabilir (sayfa <c>obifin-poll</c> kilidini
+    /// almaz). Disabled değilse hiçbir şey silinmeden <see cref="NotStoppedMessage"/> fırlatılır. Son adım (işaret ve onaylı
+    /// hesapların boşaltılması) aynı denetimi yeniden yapar: partiler sürerken açılan bağlantı işaretlenmez (kaydedilmiş partiler
+    /// gitti, imha kayıtları onları sayar).</para></summary>
     public async Task<BankRemovalResult> PurgeLocalDataAsync(Guid licenseId, string trigger, string actor, CancellationToken ct)
     {
-        if (!await _db.ObifinConnections.AnyAsync(c => c.LicenseId == licenseId, ct))
-            throw new ObifinValidationException(NoConnectionMessage);
+        var status = await _db.ObifinConnections.AsNoTracking().Where(c => c.LicenseId == licenseId)
+            .Select(c => (ObifinConnectionStatus?)c.Status).FirstOrDefaultAsync(ct)
+            ?? throw new ObifinValidationException(NoConnectionMessage);
+        if (status != ObifinConnectionStatus.Disabled) throw new ObifinValidationException(NotStoppedMessage);
         return await DeleteLocalWithRetryAsync(licenseId, trigger, actor, keepConnection: true, ObifinOutcome.Skipped, ct);
     }
 
@@ -352,6 +362,16 @@ public sealed class BankConnectionTerminator
         var connections = await _db.ObifinConnections.Where(c => c.LicenseId == licenseId).ToListAsync(ct);
         if (keepConnection)
         {
+            // PurgeLocalDataAsync'in başındaki denetim, taze satırla: partiler sürerken "Etkinleştir"e basıldıysa açılmış bağlantı
+            // "yerel verisi silindi" diye işaretlenmez (eşleştirmeye kapanır, sayfanın şeridi ve hatırlatma yanlış olurdu), onaylı
+            // hesabı boşaltılmaz.
+            if (connections.Any(c => c.Status != ObifinConnectionStatus.Disabled))
+            {
+                _db.ChangeTracker.Clear();
+                _log.LogWarning("Banka verisinin yerel silmesi yarıda bırakıldı: bağlantı silme sürerken etkinleştirildi — " +
+                    "lisans={LicenseId}; kaydedilmiş partiler imha kayıtlarında, işaret yazılmadı", licenseId);
+                throw new ObifinValidationException(NotStoppedMessage);
+            }
             foreach (var c in connections) { c.BankDataPurgedAt ??= now; c.UpdatedAt = now; }
             // Onaylı hesap: kimlik (ObifinAccountId, ApprovedAt, ApprovedBy) kalır, kişisel veri taşıyabilen alanlar boşalır.
             // Lisansın onaylı hesabı birkaç tanedir, parti gerekmez. Kalan satırı "Kaldır ve sil" siler; lisans yenilenip
