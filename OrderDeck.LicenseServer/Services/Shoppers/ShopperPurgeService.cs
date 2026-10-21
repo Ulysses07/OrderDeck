@@ -274,8 +274,10 @@ public sealed class ShopperPurgeService
         //     - Kişiye bağlı eşleşme satırında (öneri ya da gerçek müşteri) müşteri kimliği ve kanıt boşaltılır; satır ölçüm
         //       kaydı olarak kalır, sonucu durumdan okunur (BankSubjectScrub.MatchForCustomer).
         //     - Kullanıcı adı anahtarı yalnız kanıtında geçen, başka müşteriye bağlı ya da önerisiz satırda (named) yalnız
-        //       kanıt boşaltılır, başka müşterinin kimliği ve kararı kalır. Anahtar önek olarak başka bir anahtara da uyabilir:
-        //       fazladan silme minimizasyondur, zararsız.
+        //       kanıt boşaltılır, başka müşterinin kimliği ve kararı kalır. Anahtar kanıtta TAM aranır: PaymentMatcher'ın
+        //       biçimleri "username={key}", "username={key};iban-memory" ve "conflict:username={key},iban-memory"; anahtar
+        //       yalnız [a-z0-9], ardından son, ';' ya da ',' gelir. Önek araması ("ali" → "username=alican") başka müşterinin
+        //       hareketinin metnini geri dönüşsüz siler, imha kaydında da onu bu kişiye yazardı.
         //     - Bu satırların hareketlerinin ve silinen hafıza özetinden gelen hareketlerin açıklaması, gönderen adı ve ham
         //       kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı, plan karar 6). named satırın hareketi de:
         //       kanıtın kaynağı o açıklamadır ve silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama,
@@ -299,12 +301,19 @@ public sealed class ShopperPurgeService
             var key = usernames.TryGetValue(wpfCustomerId, out var username)
                 ? BankTextNormalizer.UsernameKey(username)
                 : "";
-            var marker = key.Length > 0 ? "username=" + key : null;
+            // Anahtar tam: işaret kanıtın sonunda ya da ardından ';' / ',' ile (yukarıdaki biçimler). Hepsi SQL'e çevrilir.
+            var hasKey = key.Length > 0;
+            var marker = "username=" + key;
+            var markerThenSemicolon = marker + ";";
+            var markerThenComma = marker + ",";
             var matches = await _db.PaymentMatches
                 .Where(m => m.LicenseId == licenseId
                     && (m.ProposedWpfCustomerId == id
                         || m.ActualWpfCustomerId == id
-                        || (marker != null && m.Evidence != null && m.Evidence.Contains(marker))))
+                        || (hasKey && m.Evidence != null
+                            && (m.Evidence.EndsWith(marker)
+                                || m.Evidence.Contains(markerThenSemicolon)
+                                || m.Evidence.Contains(markerThenComma)))))
                 .ToListAsync(ct);
             scrubbedMatches.UnionWith(matches);
 

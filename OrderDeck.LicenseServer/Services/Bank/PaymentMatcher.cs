@@ -153,6 +153,8 @@ public sealed class PaymentMatcher
         if (byUsername.Count == 1)
         {
             var id = byUsername[0].Id; var key = byUsername[0].Key;
+            // Kanıttaki kullanıcı adı biçimleri KVKK silmesinde (ShopperPurgeService 3b) tam anahtarla aranır: anahtardan sonra
+            // son, ';' ya da ','. Biçim değişirse orası da değişir.
             if (byIban is { } ib && ib != id)
             {
                 Set(match, null, PaymentMatchLayer.None, 0m, $"conflict:username={key},iban-memory", PaymentMatchStatus.NoProposal);

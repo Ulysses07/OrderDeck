@@ -954,18 +954,19 @@ public sealed class ShopperPurgeServiceTests
     }
 
     /// <summary>Silinen kişiye bağlı shopper bağı + projeksiyon; banka satırları için yardımcı.</summary>
-    private static (Shopper Shopper, License License, Guid PurgedId) SeedLinkedShopper(LicenseDbContext db)
+    private static (Shopper Shopper, License License, Guid PurgedId) SeedLinkedShopper(LicenseDbContext db,
+        string username = "ornek_m")
     {
         var shopper = SeedShopper(db);
         var license = SeedLicense(db);
         var purgedId = Guid.NewGuid();
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
-            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ornek_m",
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = username,
             WpfCustomerId = purgedId, JoinedAt = DateTimeOffset.UtcNow,
         });
         db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram",
-            Username = "ornek_m", UpdatedAt = DateTimeOffset.UtcNow.AddDays(-3) });
+            Username = username, UpdatedAt = DateTimeOffset.UtcNow.AddDays(-3) });
         return (shopper, license, purgedId);
     }
 
@@ -1067,6 +1068,65 @@ public sealed class ShopperPurgeServiceTests
         records.Should().Contain(r => r.Target == "PaymentMatches.Evidence" && r.RowCount == 1,
             "kimliği silinmeyen satırda yalnız kanıt boşaldı; kayıt fazlasını söylemez");
         records.Should().NotContain(r => r.Target == "PaymentMatches.WpfCustomerId+Evidence");
+    }
+
+    [Fact]
+    public async Task Kanitta_kullanici_adi_anahtari_tam_aranir_onu_onek_olarak_tasiyan_baska_anahtara_dokunulmaz()
+    {
+        // Silinen kişinin anahtarı "ornek", başka müşterininki "ornekm": "username=ornek" işareti "username=ornekm"in önekidir.
+        // Alt dize araması o müşterinin satırlarını named sayar; hareketlerinin açıklaması, gönderen adı ve ham kaydı geri
+        // dönüşsüz silinir, imha kaydında da silinen kişiye yazılırdı. Kanıt biçimleri (PaymentMatcher) anahtarı tam taşır:
+        // ardından son, ';' ya da ',' gelir. Üç biçimin üçü de tam anahtarla yine bulunur.
+        using var db = NewDb();
+        var (shopper, license, _) = SeedLinkedShopper(db, username: "ornek");
+        var otherId = Guid.NewGuid();
+        var purgedKey = BankTextNormalizer.UsernameKey("ornek");
+        var otherKey = BankTextNormalizer.UsernameKey("ornek_m");
+        otherKey.Should().StartWith(purgedKey, "sınanan durum: silinen anahtar başkasınınkinin öneki");
+        // İzlenen varlıkları silme değiştirir: beklenen değerler kayıttan önce kopyalanır.
+        var rows = new List<(Guid TxId, Guid MatchId, string Evidence, Guid? Proposed, DateTimeOffset UpdatedAt, bool NamesPurged)>();
+        foreach (var key in new[] { otherKey, purgedKey })
+        {
+            foreach (var evidence in new[] { $"username={key}", $"username={key};iban-memory", $"conflict:username={key},iban-memory" })
+            {
+                var tx = BankTx(license);
+                var conflict = evidence.StartsWith("conflict:", StringComparison.Ordinal);
+                var match = BankMatch(tx, conflict ? PaymentMatchStatus.NoProposal : PaymentMatchStatus.Proposed,
+                    conflict ? null : otherId, null);
+                match.Evidence = evidence;
+                db.BankTransactions.Add(tx);
+                db.PaymentMatches.Add(match);
+                rows.Add((tx.Id, match.Id, evidence, match.ProposedWpfCustomerId, match.UpdatedAt, key == purgedKey));
+            }
+        }
+        await db.SaveChangesAsync();
+
+        var result = await Build(db).Service.PurgeAsync(shopper.Id, default);
+
+        foreach (var row in rows)
+        {
+            var storedTx = await db.BankTransactions.AsNoTracking().SingleAsync(x => x.Id == row.TxId);
+            var storedMatch = await db.PaymentMatches.AsNoTracking().SingleAsync(x => x.Id == row.MatchId);
+            storedMatch.ProposedWpfCustomerId.Should().Be(row.Proposed, "başka müşterinin kimliği kalır ({0})", row.Evidence);
+            if (row.NamesPurged)
+            {
+                storedTx.Description.Should().BeNull(row.Evidence);
+                storedMatch.Evidence.Should().BeNull(row.Evidence);
+            }
+            else
+            {
+                (storedTx.Description, storedTx.CounterpartyName, storedTx.RawJson).Should()
+                    .Be(("HAVALE ornek_m", "Ad Soyad", """{"Aciklama":"HAVALE ornek_m"}"""), row.Evidence);
+                storedMatch.Evidence.Should().Be(row.Evidence);
+                storedMatch.UpdatedAt.Should().Be(row.UpdatedAt, "başka müşterinin satırına yazılmaz ({0})", row.Evidence);
+            }
+        }
+        result!.BankTransactionsScrubbed.Should().Be(3);
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == license.Id).ToListAsync();
+        records.Should().ContainSingle(r => r.Target == "PaymentMatches.Evidence").Which.RowCount
+            .Should().Be(3, "başka müşterinin satırı silinen kişinin kaydına sayılmaz");
+        records.Should().ContainSingle(r => r.Target == "BankTransactions.Description+CounterpartyName+RawJson").Which.RowCount
+            .Should().Be(3);
     }
 
     [Fact]
