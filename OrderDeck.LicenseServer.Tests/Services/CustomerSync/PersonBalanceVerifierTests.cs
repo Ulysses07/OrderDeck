@@ -568,4 +568,81 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
         (r.CopyRowsWithBalance, r.LedgerMismatches.Outside).Should().Be((1, 1));
         single.TransactionCount.Should().Be(9, "üç üye hareketi (I, Y, eksi), üç bacak, üç geri alma; T'nin hareketi yok");
     }
+
+    /// <summary>
+    /// Çekim satırları ve geri alma hedefleri ayrı taramalardır. Kilitli READ COMMITTED'da bir tarama, tek işlemde
+    /// eklenmiş bir grubun bir kısmını görüp kalanını kaçırabilir. Kısmi görünüm burada sırayla kurulur: grubun bir
+    /// kısmı taramadan önce, kalanı yeniden okumadan önce commit edilir. Denetim için ikisi aynıdır: okuduğu kısım
+    /// commit edilmiş, kalanı sonra görünür. Yeniden okuma sahte yetimi ve D5'i kaldırır, gerçek yetim kalır. Bakiye
+    /// satırları güncellenmez: test yalnız çekim kurallarını okur (taban yok, D1 uyarmaz).
+    /// </summary>
+    [Fact]
+    public async Task Cekim_taramasi_grubun_bir_kismini_gorurse_yeniden_okuma_sahte_kural_bozulmasi_uretmez()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var ex = await kit.Example1Async();   // K, L1, L2: tam, geri alınmamış
+        var (a, b) = (await kit.MemberAsync(null, 50m), await kit.MemberAsync(null, 50m));
+        var lost = Tx(kit, a, -5m, Kit.KindManual, group: Guid.NewGuid());   // gerçek yetim: çapası hiç yazılmaz
+        await AddAsync(kit, lost);
+        var lateId = Guid.NewGuid();
+        var lateAnchor = Tx(kit, a, -3m, Kit.KindManual, group: lateId, id: lateId);
+        var lateLeg = Tx(kit, b, -2m, Kit.KindManual, group: lateId);
+        var undoId = Guid.NewGuid();   // K grubunun grup geri alması
+        var undoK = Tx(kit, ex.T, 0m, Kit.KindReversal, group: undoId, id: undoId, reverses: ex.K);
+        var undoL1 = Tx(kit, ex.I, 100m, Kit.KindReversal, group: undoId, reverses: ex.L1);
+        var undoL2 = Tx(kit, ex.Y, 20m, Kit.KindReversal, group: undoId, reverses: ex.L2);
+        var reread = false;
+        _factory.Queries.Arm(
+            sql => sql.Contains("[DrawGroupId] IS NOT NULL", StringComparison.Ordinal),   // çekim taraması
+            async () =>
+            {
+                await AddAsync(kit, lateLeg);   // tarama bacağı görür, çapayı görmez
+                _factory.Queries.Arm(
+                    sql => sql.Contains("[ReversesTransactionId]", StringComparison.Ordinal),   // geri alma hedefleri
+                    async () =>
+                    {
+                        await AddAsync(kit, undoL1);   // geri almanın yalnız L1 kısmı görünür
+                        _factory.Queries.Arm(
+                            sql => sql.Contains("[DrawGroupId]", StringComparison.Ordinal),   // yeniden okuma
+                            async () =>
+                            {
+                                await AddAsync(kit, lateAnchor, undoK, undoL2);
+                                reread = true;
+                            });
+                    });
+            });
+
+        using var scope = _factory.Services.CreateScope();
+        var verifier = scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>();
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = await verifier.LoadAsync(kit.LicenseId, now, default);
+        _factory.Queries.Disarm();
+        var r = V.Analyze(snapshot).Licenses.Single();
+
+        reread.Should().BeTrue("kural bozan grup ve yetim bacağın grubu tek ifadede yeniden okunmalı");
+        (r.D4, r.D5, r.D6, r.OrphanLegs).Should().Be((0, 0, 0, 1), "yalnız çapası hiç yazılmamış bacak kalır");
+        r.Details.OrphanLegs.Should().Equal(lost.Id);
+        r.Details.RuleBreakingGroups.Should().BeEmpty();
+        r.Alerts.Should().Equal("kural: D4=0 D5=0 D6=0 yetim=1");
+
+        // Lisanssız yükte gerçek yetim yeniden okumayı yine tetikler: sorgu çevrilir, kural sonucu aynı.
+        var all = V.Analyze(await verifier.LoadAsync(null, now, default)).Licenses.Single(l => l.LicenseId == kit.LicenseId);
+        (all.D4, all.D5, all.D6, all.OrphanLegs, all.Alerts.Single()).Should().Be((0, 0, 0, 1, r.Alerts.Single()));
+        all.Details.OrphanLegs.Should().Equal(lost.Id);
+    }
+
+    private static CustomerBalanceTransaction Tx(
+        Kit kit, Guid row, decimal amount, string kind, Guid group, Guid? id = null, Guid? reverses = null) => new()
+    {
+        Id = id ?? Guid.NewGuid(), LicenseId = kit.LicenseId, WpfCustomerId = row, Amount = amount, Kind = kind,
+        DrawGroupId = group, ReversesTransactionId = reverses, CreatedByCustomerId = kit.CustomerId,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+
+    private static Task AddAsync(Kit kit, params CustomerBalanceTransaction[] rows) =>
+        kit.Sales.WithDbAsync(db =>
+        {
+            db.CustomerBalanceTransactions.AddRange(rows);
+            return Task.CompletedTask;
+        });
 }

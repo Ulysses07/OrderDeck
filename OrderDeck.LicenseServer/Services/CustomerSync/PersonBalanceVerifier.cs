@@ -98,6 +98,8 @@ public sealed class PersonBalanceVerifier
                                                                     && (licenseId == null || l.LicenseId == licenseId)))
             .Select(r => r.ReversesTransactionId!.Value)
             .ToListAsync(ct);
+        var reversedIds = reversed.ToHashSet();
+        (drawRows, reversedIds) = await RereadDrawSuspectsAsync(licenseId, drawRows, reversedIds, ct);
         var baselines = await _db.PersonBalanceBaselines.AsNoTracking()
             .Select(b => new BaselineRow(b.LicenseId, b.WpfCustomerId, b.Balance, b.LedgerSum, b.CapturedAt, b.ReviewedAt))
             .ToListAsync(ct);
@@ -110,12 +112,59 @@ public sealed class PersonBalanceVerifier
         var projectionCount = await _db.WpfCustomerProjections.IgnoreQueryFilters().LongCountAsync(ct);
         var transactionCount = await _db.CustomerBalanceTransactions.LongCountAsync(ct);
 
-        return new Snapshot(licenses, projections, balances, ledger, drawRows, reversed.ToHashSet(), baselines, pcs,
+        return new Snapshot(licenses, projections, balances, ledger, drawRows, reversedIds, baselines, pcs,
             projectionCount, transactionCount);
     }
 
     /// <summary>Yeniden okumanın parti boyu (<c>Contains</c> parametre sınırı).</summary>
     private const int RereadBatchSize = 500;
+
+    /// <summary>
+    /// Kural bozan çekim gruplarını ve yetim bacakların gruplarını yeniden okur: grubun satırları ve geri alınıp
+    /// alınmadıkları AYNI ifadede (<see cref="RereadLedgerSuspectsAsync"/>'un kalıbı). Çekim satırları ve geri alma
+    /// hedefleri ayrı taramalardır. Kilitli READ COMMITTED'da bir tarama, tek işlemde eklenmiş bir grubun bir kısmını
+    /// görüp taramanın geçtiği konumlara eklenenleri kaçırabilir. O zaman çapası görünmeyen bacak yetim, geri
+    /// almasının bir kısmı görünen grup D5 sayılır ve 'kural' uyarısı tabandan bağımsız çıkar (sahte e-posta).
+    /// Görülen kısım commit edilmişse grubun tamamı da edilmiştir; yeniden okuma onu bütün görür. İki okumada da tutan
+    /// ihlal kalır. S1'de dolu <c>DrawGroupId</c> yok (havuz kipi açılmadan dolmaz, spec §3.2); S2'nin verisiyle aynı
+    /// kod koşar.
+    /// </summary>
+    private async Task<(List<DrawRow> Draws, HashSet<Guid> Reversed)> RereadDrawSuspectsAsync(
+        Guid? licenseId, List<DrawRow> draws, HashSet<Guid> reversed, CancellationToken ct)
+    {
+        var suspects = new HashSet<Guid>();
+        foreach (var license in draws.GroupBy(d => d.LicenseId))
+        {
+            var (_, _, _, ruleGroups, orphans) = CheckDraws(license, reversed);
+            suspects.UnionWith(ruleGroups.Select(g => g.Key));
+            suspects.UnionWith(orphans.Select(o => o.DrawGroupId));
+        }
+        if (suspects.Count == 0) return (draws, reversed);
+
+        var fresh = new List<DrawRow>();
+        var freshReversed = new HashSet<Guid>();
+        foreach (var chunk in suspects.Chunk(RereadBatchSize))
+        {
+            var groups = chunk.Select(g => (Guid?)g).ToList();
+            var rows = await _db.CustomerBalanceTransactions.AsNoTracking()
+                .Where(t => (licenseId == null || t.LicenseId == licenseId) && groups.Contains(t.DrawGroupId))
+                .Select(t => new
+                {
+                    t.Id, t.LicenseId, t.WpfCustomerId, t.Amount, t.Kind, DrawGroupId = t.DrawGroupId!.Value,
+                    t.OriginalAmount, t.SaleScope,
+                    Reversed = _db.CustomerBalanceTransactions.Any(r => r.ReversesTransactionId == t.Id),
+                })
+                .ToListAsync(ct);
+            fresh.AddRange(rows.Select(t => new DrawRow(
+                t.Id, t.LicenseId, t.WpfCustomerId, t.Amount, t.Kind, t.DrawGroupId, t.OriginalAmount, t.SaleScope)));
+            freshReversed.UnionWith(rows.Where(t => t.Reversed).Select(t => t.Id));
+        }
+
+        // Şüpheli grupların satırları ve geri alınmışlıkları yalnız yeniden okumadan gelir.
+        reversed.ExceptWith(draws.Where(d => suspects.Contains(d.DrawGroupId)).Select(d => d.Id));
+        reversed.UnionWith(freshReversed);
+        return (draws.Where(d => !suspects.Contains(d.DrawGroupId)).Concat(fresh).ToList(), reversed);
+    }
 
     /// <summary>
     /// D1 adaylarını — ilk okumada <c>Balance ≠ Σ</c> olan satırları ve lisansın bütün taban satırlarını — yeniden
@@ -312,6 +361,7 @@ public sealed class PersonBalanceVerifier
         // satırlarda: artı satırın düşmesi olağan çekim (eksiye inen artı taban satırı burada yakalanır). Kopyalar da
         // dahil — 2. madde onları saymaz, ama tabana alınmış kopyaya sonradan yazım §4.12'nin dar penceresidir.
         var worsened = rows.Where(r => Bal(r) < 0m && Worsened(r)).ToList();
+        // Spec'in lafzı: farkın her değişimi, düzeltilip 0'a inmesi de. Susturma yolu sahip kararı (plan fark 22).
         var changedMismatch = baselines.Values
             .Where(b => Bal(b.WpfCustomerId) - Sum(b.WpfCustomerId) != b.Balance - b.LedgerSum)
             .Select(b => b.WpfCustomerId).ToList();
