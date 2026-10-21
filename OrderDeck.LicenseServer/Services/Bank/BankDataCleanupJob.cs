@@ -18,6 +18,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <item>Açıklamadaki IBAN ve 11 haneli numara maskelenir (<see cref="BankDescriptionMasker"/>).</item>
 /// <item>IBAN maskesi biçiminde olmayan eski maske (ham kısa değer, <c>1234…890</c>) <see cref="BankHasher.ShortValueMask"/>
 /// olur (<see cref="NeedsRemask"/>; KVKK Ö-6).</item>
+/// <item>P1'den önce öğrenilmiş IBAN bağının saklama başlangıcı öğreten havalenin işlem tarihine çekilir (öğrenme anından
+/// hiçbir zaman sonra değil; KVKK K-6). Silme değildir.</item>
 /// </list>
 /// Yeniden koşu idempotent. Partiler <see cref="BatchSize"/>'lık; eşzamanlı bir eşleştirme yazısıyla çakışan silme partisi geri
 /// alınır, <see cref="Report.FailedBatches"/> artar ve o adım biter — komut yeniden çalıştırılır. Maskeleme adımları
@@ -47,6 +49,7 @@ public sealed class BankDataCleanupJob
         public int RawJsonUnreadableCleared { get; set; }
         public int DescriptionsMasked { get; set; }
         public int ShortMasksReplaced { get; set; }
+        public int IbanConfirmationsBackfilled { get; set; }
         public int FailedBatches { get; set; }
     }
 
@@ -69,12 +72,13 @@ public sealed class BankDataCleanupJob
         await RewriteRawJsonAsync(licenseId, apply, r, ct);
         await MaskDescriptionsAsync(licenseId, apply, r, ct);
         await RemaskShortValuesAsync(licenseId, apply, r, ct);
+        await BackfillIbanConfirmationAsync(licenseId, apply, r, ct);
         _log.LogInformation("bank-data-cleanup ({Mode}): giden/sıfır={Outgoing} (atlanan {Skipped}), çapa={Anchors}, " +
             "çapa öncesi={PreAnchor} (bağlı {Linked}), eşleşme={Matches}, VKN kodu={TaxIds}, ham kayıt={Raw} (okunamayan {Unreadable}), " +
-            "açıklama={Descriptions}, kısa maske={ShortMasks}, düşen parti={Failed}", apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted,
-            r.OutgoingOrZeroSkippedDecided, r.AnchorsSet, r.PreAnchorDeleted, r.PreAnchorSkippedLinked, r.MatchesDeleted,
-            r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared, r.DescriptionsMasked, r.ShortMasksReplaced,
-            r.FailedBatches);
+            "açıklama={Descriptions}, kısa maske={ShortMasks}, IBAN bağı başlangıcı={IbanStarts}, düşen parti={Failed}",
+            apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted, r.OutgoingOrZeroSkippedDecided, r.AnchorsSet, r.PreAnchorDeleted,
+            r.PreAnchorSkippedLinked, r.MatchesDeleted, r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared,
+            r.DescriptionsMasked, r.ShortMasksReplaced, r.IbanConfirmationsBackfilled, r.FailedBatches);
         return r;
     }
 
@@ -385,5 +389,40 @@ public sealed class BankDataCleanupJob
             await _db.SaveChangesAsync(ct);
         }
         _db.ChangeTracker.Clear();
+    }
+
+    /// <summary>KVKK K-6: P1'den önce öğrenilmiş IBAN bağının (<see cref="CustomerIbanMemory.LastConfirmedAt"/> boş) saklama
+    /// süresi öğrenme anından (<c>CreatedAt</c>) işliyordu. Öğrenme havalenin işlem tarihinden sonra olur (90 günlük ilk çekim,
+    /// geç elle eşleme): bağ "son doğrulanmış ödemeden 12 ay"ı ~90 güne kadar aşabilirdi. P1 öncesi kod bağı tazelemiyordu;
+    /// öğreten havale (<see cref="CustomerIbanMemory.SourceBankTransactionId"/>) bağın bilinen tek doğrulamasıdır. Duruyorsa
+    /// başlangıç onun işlem tarihi olur, öğrenme anına kırpılmış: değer hiçbir zaman <c>CreatedAt</c>'ten sonra değildir, süre
+    /// uzamaz (bağdaştırıcının öğrenirken yazdığı değerin aynısı). Öğreten havale yoksa <c>CreatedAt</c> kalır. Öğreten havale 180
+    /// günlük kuralla silinmeden koşturulmalı. Veri silinmez, imha kaydına girmez; sayım tutanağa. Oku-değiştir-yaz: arada bağı
+    /// tazeleyen bir onay ezilirse başlangıç yalnız daha erkene düşer.</summary>
+    private async Task BackfillIbanConfirmationAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
+    {
+        var memories = licenseId is { } l ? _db.CustomerIbanMemories.Where(m => m.LicenseId == l) : _db.CustomerIbanMemories;
+        var targets = (await (from m in memories.AsNoTracking()
+                              join t in _db.BankTransactions.AsNoTracking() on m.SourceBankTransactionId equals (Guid?)t.Id
+                              where m.LastConfirmedAt == null && t.LicenseId == m.LicenseId
+                              select new { m.Id, m.CreatedAt, TransactionId = t.Id, t.OccurredAt })
+                .ToListAsync(ct))
+            .Where(x => !_dryRunDeleted.Contains(x.TransactionId))
+            .ToList();
+        if (!apply)
+        {
+            r.IbanConfirmationsBackfilled = targets.Count;
+            return;
+        }
+        foreach (var chunk in targets.Chunk(BatchSize))
+        {
+            var start = chunk.ToDictionary(x => x.Id, x => x.OccurredAt < x.CreatedAt ? x.OccurredAt : x.CreatedAt);
+            var ids = start.Keys.ToList();
+            var rows = await _db.CustomerIbanMemories.Where(m => ids.Contains(m.Id) && m.LastConfirmedAt == null).ToListAsync(ct);
+            foreach (var m in rows) m.LastConfirmedAt = start[m.Id];
+            await _db.SaveChangesAsync(ct);
+            _db.ChangeTracker.Clear();
+            r.IbanConfirmationsBackfilled += rows.Count;
+        }
     }
 }

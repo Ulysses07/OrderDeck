@@ -73,6 +73,10 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
         foreach (var t in new[] { outgoing, preAnchor, kept })
             db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = license.Id, BankTransactionId = t.Id,
                 Status = PaymentMatchStatus.NoProposal, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+        // P1 öncesi öğrenilmiş bağ (LastConfirmedAt boş): öğreten havale kept, öğrenme ondan 10 gün sonra.
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = license.Id, WpfCustomerId = Guid.NewGuid(),
+            IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch,
+            SourceBankTransactionId = kept.Id, CreatedAt = kept.OccurredAt.AddDays(10) });
         await db.SaveChangesAsync();
         return new Seed(license.Id, outgoing.Id, preAnchor.Id, kept.Id, iban, tckn);
     }
@@ -90,7 +94,8 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
                 CancellationToken.None)).Should().Be(0);
             dryLine = dry.ToString();
             dryLine.Should().StartWith("KURU ÇALIŞTIRMA").And.Contain("giden/sıfır silinen=1").And.Contain("çapa yazılan=1")
-                .And.Contain("çapa öncesi silinen=1").And.Contain("eşleşme silinen=2");
+                .And.Contain("çapa öncesi silinen=1").And.Contain("eşleşme silinen=2").And.Contain("IBAN bağı başlangıcı yazılan=1");
+            (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt.Should().BeNull("kuru koşu yazmaz");
             (await db.BankTransactions.CountAsync()).Should().Be(3);
             (await db.ObifinConnections.AsNoTracking().SingleAsync()).InitialCollectFrom.Should().BeNull();
         }
@@ -123,12 +128,15 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
             kept.CounterpartyIbanMasked.Should().Be(BankHasher.ShortValueMask);
             kept.Description.Should().Be($"HAVALE {BankHasher.MaskIban(seed.Iban)} {BankDescriptionMasker.ElevenDigitMask}");
             kept.RawJson.Should().Be($$"""{"Aciklama":"HAVALE {{BankHasher.MaskIban(seed.Iban)}}"}""");
+            (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).LastConfirmedAt
+                .Should().Be(kept.OccurredAt, "P1 öncesi bağın başlangıcı öğreten havalenin işlem tarihi");
 
             var again = new StringWriter();
             (await BankDataCleanup.RunAsync(db, new BankDataCleanup.Options(null, Apply: true), again, NullLoggerFactory.Instance,
                 CancellationToken.None)).Should().Be(0);
             again.ToString().Should().Contain("giden/sıfır silinen=0").And.Contain("çapa yazılan=0").And.Contain("çapa öncesi silinen=0")
-                .And.Contain("VKN/TCKN kodu boşaltılan=0").And.Contain("açıklama maskelenen=0").And.Contain("kısa maske çevrilen=0");
+                .And.Contain("VKN/TCKN kodu boşaltılan=0").And.Contain("açıklama maskelenen=0").And.Contain("kısa maske çevrilen=0")
+                .And.Contain("IBAN bağı başlangıcı yazılan=0");
         }
     }
 

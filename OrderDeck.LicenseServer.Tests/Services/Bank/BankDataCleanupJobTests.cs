@@ -384,4 +384,47 @@ public sealed class BankDataCleanupJobTests
         Of("BankTransactions.Description").Should().BeEquivalentTo(new[] { ((Guid?)b, 1) });
         Of("CustomerIbanMemories.IbanMasked").Should().BeEquivalentTo(new[] { ((Guid?)b, 1) });
     }
+
+    [Fact]
+    public async Task P1_oncesi_IBAN_baginin_baslangici_ogreten_havalenin_islem_tarihine_cekilir()
+    {
+        // KVKK K-6: P1'den önce öğrenilmiş bağın (LastConfirmedAt boş) süresi öğrenme anından işliyordu. Öğrenme havaleden sonra
+        // olur (90 günlük ilk çekim, geç elle eşleme): bağ "son doğrulanmış ödemeden 12 ay"ı aşabilirdi. P1 öncesi kod bağı
+        // tazelemiyordu, öğreten havale bilinen tek doğrulama: başlangıç onun işlem tarihi, öğrenme anına kırpılmış (süre hiç
+        // uzamaz). Öğreten havale yoksa CreatedAt kalır; tazelenmiş bağa dokunulmaz. Veri silinmez: imha kaydı yazılmaz.
+        using var db = NewDb(); var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
+        var source = Tx(lic, 100m, now.AddDays(-80));
+        var valor = Tx(lic, 110m, now.AddDays(5)); // ileri tarihli (valör) öğreten havale
+        var refreshedSource = Tx(lic, 120m, now.AddDays(-70));
+        db.BankTransactions.AddRange(source, valor, refreshedSource);
+        CustomerIbanMemory Memory(Guid? sourceId, DateTimeOffset createdAt, DateTimeOffset? lastConfirmedAt = null) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, WpfCustomerId = Guid.NewGuid(), IbanHash = Hex64(), IbanMasked = "TR12…345",
+            LearnedFrom = IbanMemorySource.ManualMatch, SourceBankTransactionId = sourceId, CreatedAt = createdAt,
+            LastConfirmedAt = lastConfirmedAt,
+        };
+        var learnedLate = Memory(source.Id, now.AddDays(-10));
+        var learnedFromValor = Memory(valor.Id, now.AddDays(-1));
+        var sourceGone = Memory(Guid.NewGuid(), now.AddDays(-10));
+        var refreshed = Memory(refreshedSource.Id, now.AddDays(-60), now.AddDays(-5));
+        db.CustomerIbanMemories.AddRange(learnedLate, learnedFromValor, sourceGone, refreshed);
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(null, apply: false, CancellationToken.None);
+        dry.IbanConfirmationsBackfilled.Should().Be(2);
+        (await db.CustomerIbanMemories.AsNoTracking().CountAsync(m => m.LastConfirmedAt == null)).Should().Be(3, "kuru koşu yazmaz");
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.IbanConfirmationsBackfilled.Should().Be(2);
+        var starts = await db.CustomerIbanMemories.AsNoTracking().ToDictionaryAsync(m => m.Id, m => m.LastConfirmedAt);
+        starts[learnedLate.Id].Should().Be(source.OccurredAt);
+        starts[learnedFromValor.Id].Should().Be(learnedFromValor.CreatedAt, "ileri tarih öğrenme anına kırpılır");
+        starts[sourceGone.Id].Should().BeNull("öğreten havale yoksa öğrenme anı kalır");
+        starts[refreshed.Id].Should().Be(refreshed.LastConfirmedAt, "P1'de tazelenmiş bağa dokunulmaz");
+        (await db.DataDestructionRecords.AsNoTracking().CountAsync(x => x.Target.StartsWith("CustomerIbanMemories")))
+            .Should().Be(0, "veri silinmez");
+        (await Job(db).RunAsync(null, apply: true, CancellationToken.None)).IbanConfirmationsBackfilled
+            .Should().Be(0, "yeniden koşu idempotent");
+    }
 }

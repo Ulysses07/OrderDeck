@@ -96,5 +96,6 @@ public static class BankDataCleanup
            $"çapa yazılan={r.AnchorsSet} çapa öncesi silinen={r.PreAnchorDeleted} (bağlı kalan={r.PreAnchorSkippedLinked}) | " +
            $"eşleşme silinen={r.MatchesDeleted} | VKN/TCKN kodu boşaltılan={r.TaxIdHashesCleared} | " +
            $"ham kayıt daraltılan={r.RawJsonRewritten} (okunamayan boşaltılan={r.RawJsonUnreadableCleared}) | " +
-           $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | düşen parti={r.FailedBatches}";
+           $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | " +
+           $"IBAN bağı başlangıcı yazılan={r.IbanConfirmationsBackfilled} | düşen parti={r.FailedBatches}";
 }
