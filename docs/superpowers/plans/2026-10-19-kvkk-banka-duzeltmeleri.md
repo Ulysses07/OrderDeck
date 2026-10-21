@@ -7669,7 +7669,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Neden (not K-7):** Shopper KVKK silmesi yalnız IBAN hafızasını siliyor ve kanıt metnini boşaltıyor; aynı kişiye bağlı hareketlerin açıklaması, gönderen adı ve ham kaydı 30/180. güne kadar kalıyor; eşleştirme satırında müşteri kimlikleri duruyor. Kurul 2021/670: "ilk periyodik imhada sileriz" cevabı yetersiz. Genişletilen 3b adımı:
 - Kişiye bağlı eşleşme satırı (öneri ya da gerçek müşteri = silinen kişi): müşteri kimliği ve kanıt silinir; satır ölçüm kaydı olarak kalır. Kararsız öneri "öneri yok"a iner; öneriden farklı müşteriye elle verilmiş karar (ManualOnly + öneri) ölçümde çelişki sayıldığı için durum `Contradicted` olur (sonuç kaybolmasın — `PaymentMatchMetrics.Classify`).
 - Bu satırların hareketleri ile **silinen IBAN hafızası özetinden gelen diğer hareketler**: açıklama, gönderen adı, ham kayıt silinir. Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kalır (karar 6).
-- Kanıtında silinen kişinin kullanıcı adı anahtarı geçen ama başka müşteriye bağlı ya da önerisiz satır (`named`): kanıt boşaltılır **ve hareketinin açıklaması, gönderen adı, ham kaydı da silinir** — kanıtın kaynağı o açıklamadır, silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama, satır başka müşteriye bağlıysa 180 güne kadar kalırdı (K-7: 30 gün içinde silme). Satırdaki başka müşterinin kimliği ve kararı kalır; o hareketin metnini fazladan silmek minimizasyondur, zararsız.
+- Kanıtında silinen kişinin kullanıcı adı anahtarı geçen ama başka müşteriye bağlı ya da önerisiz satır (`named`): kanıt boşaltılır **ve hareketinin açıklaması, gönderen adı, ham kaydı da silinir** — kanıtın kaynağı o açıklamadır, silinen kişinin kullanıcı adını taşır; yalnız kanıt boşaltılsaydı açıklama, satır başka müşteriye bağlıysa 180 güne kadar kalırdı (K-7: 30 gün içinde silme). Satırdaki başka müşterinin kimliği ve kararı kalır. Anahtar kanıtta **tam** aranır, önekle değil (uygulama notundaki "Kanıtta tam anahtar"): silme geri dönüşsüz olduğu için başka müşterinin hareketine yalnız kanıtı silinen kişinin anahtarını taşıyorsa dokunulur.
 - İmha kayıtları (tetikleyici `shopper-purge`, `SubjectId` = ShopperId) aynı işlemde. Purge'ün banka dışı adımları da (Shopper satırı, ödemeler, yayıncı kopyaları, bağlı satırlar, dekontlar) birer kayıt yazar: banka verisi olmayan kişinin silmesi de veritabanı dışındaki özete (Görev 9) girer ve geri yüklemeden sonra yeniden uygulanabilir.
 - **Dokunulmayanlar (avukat kararı):** `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını bırakması; `Payment.ShopperId` bağı.
 
@@ -7685,11 +7685,15 @@ Ortak kurallar yeni `BankSubjectScrub`'da; Görev 17'deki IBAN talep aracı da a
 - **Kullanıcı adı anahtarları `MarkPurged`'dan ÖNCE alınır** (`usernames`, adım 3): "kullanıcı adı da boşaltılsın" avukat kararı `ScrubPersonal`'a tek satır olarak girerse named araması sessizce durmaz (Kapsam dışı tablosundaki "kod tek satır" notu bu sıraya dayanır).
 - **Silme talepleri sayfasının "Sil" formu çalışmıyordu:** sayfa numarası Razor Pages'in ayrılmış `page` rota değeriyle taşınıyordu, form `action=""` ile çıkıyor, silme işleyiciye hiç ulaşmıyordu. Parametre `pageNumber` oldu (`asp-route-pageNumber`, `RedirectToPage(new { handled, pageNumber })`). `AdminDeletionRequestsPageTests` bu görevde açıldı: "Sil" formunun işleyiciye gitmesi ve imha kaydında yapan + talep kimliği.
 - **Karar kilidi `DecidedAt`'tir (Görev 15 incelemesi, Important; m. 4/2-b).** `MatchForCustomer` karar verilmiş satırın müşterisini boşaltır, anını (`DecidedAt`) ve sonucunu (durum) bırakır. "Karar verilmiş, dekontsuz, müşterisiz" satır yalnız bu yoldan doğar (kaldırma `DecidedAt`'i de boşaltır). Bağdaştırıcı "başka müşteriye karar verilmiş" ölçütünü yalnız `ActualWpfCustomerId != null`'dan kuruyordu: silinen X'in sayfada kararlı 250 TL'lik havalesi, ±2 gün içinde onaylanan aynı tutarlı Y dekontunun (Y'nin havalesi henüz gelmemiş) tek adayı olur, ona bağlanırdı (dekont, Actual = Y, `ManualOnly`; ölçümün `ConfirmedByHuman` sonucu ezilir, Y'nin gerçek havalesi de bir daha bağlanamaz). Planın "satır ölçüm kaydı olarak kalır" sözü tutmazdı. Artık `PaymentMatchReconciler.CandidatesAsync`'in `taken` koşulu `m.PaymentId != null || (m.DecidedAt != null && m.ActualWpfCustomerId != wpfCustomerId)`, `LinkAsync`'in bayat seçim denetimi aynı ölçütte (EF `null != X`'i SQL'de doğru çevirir). Elle eşleme zaten `DecidedAt`'e bakıyordu: müşterisi boşalan karara önce kaldırma. Testler: `PaymentMatchReconcilerTests.KVKK_silmesiyle_musterisi_bosalan_karar_baska_musterinin_dekontuna_aday_sayilmaz` (gerçek purge, ardından onay bağdaştırması ve gap çözümü) ve `PaymentMatchRaceTests.Bagdastirici_secimden_sonra_KVKK_silmesiyle_musterisi_bosalan_karara_dekont_eklemez`.
+- **Kanıtta tam anahtar (Görev 15 ikinci incelemesi, Important).** named araması `m.Evidence.Contains("username=" + key)` idi: "ali" işareti başka müşterinin `username=alican` kanıtına uyuyordu. Bu görevden önce yalnız o kanıt boşalıyordu (180 günde zaten gidecekti); artık named satırın hareketinin açıklaması, gönderen adı ve ham kaydı da geri dönüşsüz silindiği için başka müşterinin havale metni silinir, elle eşlemede açıklama görünmez, satırlar da silinen kişinin `SubjectId`'siyle imha kaydına sayılırdı. Kısa anahtarda ("a") toplu silme olurdu. Kanıt biçimleri (`PaymentMatcher`) anahtarı tam taşır: `username={key}`, `username={key};iban-memory`, `conflict:username={key},iban-memory`; anahtar yalnız `[a-z0-9]`. Arama artık `EndsWith(marker) || Contains(marker + ";") || Contains(marker + ",")` (SQL'e çevrilir; Testcontainers sınıfı sorguyu gerçek SQL Server'da koşturur). Kısa anahtar için ayrı bir kapı eklenmedi: tam eşleşme toplu silmeyi zaten önler (eşleştirici 3 karakterden kısa anahtar için kanıt yazmaz; öyle bir eski kanıt varsa yalnız tam eşleşeni gider). Eşleştiricideki biçimlerin yanında purge'e işaret eden not var. Test: `Kanitta_kullanici_adi_anahtari_tam_aranir_onu_onek_olarak_tasiyan_baska_anahtara_dokunulmaz` (üç biçimin üçü: önekli anahtar dokunulmaz, tam anahtar bulunur).
+- **Yeniden deneme IBAN hafızasını da kapsar (Görev 15 ikinci incelemesi).** Hareketi silen yollar (`BankConnectionTerminator`, `BankDataRetentionJob`, `ObifinConnectionService`) kişinin hafızasını da siler; silme okuduktan sonra hafıza silinirse DELETE 0 satır etkiliyor, girdi süzgece girmediği için silme 500 ile düşüyordu. Süzgece `CustomerIbanMemory` eklendi; hafızalar tazelenir (ayrılan atlanır, kalan yeniden silinir). Ters yön: tazelenen eşleşmeyi eşzamanlı yazan silinen kişiye bağlarken `LearnIbanAsync` ile IBAN'ı öğretmişse kimlik boşalıyor, bağ kalıyordu. Yeniden deneme kişinin hafızasını yeniden sorgular (`ScrubLateIbanMemoriesAsync`), yeni bağı ve özetinden gelen hareketlerin metnini (yalnız `HasText`) siler; ikisi ilk okumanın kaydından ayrı bir kayıt satırıyla yazılır, sonuca (`DependentRowsDeleted`, `BankTransactionsScrubbed`) eklenir. Testler (Testcontainers): `Eszamanli_silinen_iban_hafizasiyla_carpisan_silme_tazeleyip_tamamlanir`, `Eszamanli_baglama_silinen_kisiye_iban_ogretirse_o_bag_ve_ozetinden_gelen_hareketin_metni_de_silinir`.
+- **Tekrarlanan silme yapılmamış işi kaydetmez (Görev 15 ikinci incelemesi).** Shopper satırı ve ödemeler "yalnız gerçekten silineni say" kuralının dışındaydı: ikinci silmede ödemeler `Payment.ShopperId` bağıyla yeniden bulunur, aynı `RequestId`'le ikinci kayıt kümesi yazılırdı. Sayımlar boşaltmadan önce alınır: Shopper kaydı yalnız hedefteki alanlardan biri doluysa, ödeme yalnız kişisel alanı (ad, alıcı IBAN/adı, dekont anahtarı/türü) doluysa. Ölçüt `DeletedAt` **değil**: uygulamadan hesabını silen kişide talep anında dolar (`ShopperMeController.DeleteMe`), veri ise purge'de gider. `PaymentsScrubbed` (not ve denetim satırı) değişmedi. Sayfada talebi atomik sahiplenme eklenmedi: "Sil" formu `confirm()` ile çift tıklamayı keser; eşzamanlı iki POST'ta jeton olmadığı için iki silme de kaydedilebilir (bilinçli sınır; kapatmak `ShopperDeletionRequest.HandledAt` jetonu ve göç ister). Test: `Tekrarlanan_silme_yapilmamis_isi_imha_kaydina_yazmaz`.
 - **Sonraki görev kuralları:**
   1. **Görev 17 (IBAN talep aracı) aynı `MatchForCustomer`'ı kullanır, aynı durumu doğurur.** Kilit bağdaştırıcıda kuruldu; Görev 17 ek bir şey yapmaz. Yeni bir yol "karar verilmiş satırı" tanırsa ölçüt `DecidedAt`'tir, müşteri değil. `IbanConfirmedAt`'i `MatchForCustomer` boşaltır, Görev 17 ayrıca yazmaz.
   2. **Görev 17'nin eşleşme kuralı satırın taşıdığı her silinen kimliğe uygulanır** (purge'ün `ScrubMatch` kalıbı): plan kodundaki `subject = Actual ∈ customers ? Actual : Proposed ∈ customers ? Proposed : null` yalnız birini boşaltır; aynı IBAN iki müşterinin hafızasındaysa ve satır ikisini taşıyorsa öneri kalırdı. `foreach (var c in customers) BankSubjectScrub.MatchForCustomer(m, c, now)` (bağlı değilse `MatchEvidence` ile aynı), satırda hiçbiri yoksa `MatchEvidence`.
   3. **Görev 17'nin sayımları purge'ünkiyle aynı kuralla:** hareket sayısı ve kaydı yalnız `BankSubjectScrub.HasText` olanlar; eşleşme kaydı `References` ile ikiye ayrılır (`PaymentMatches.WpfCustomerId+Evidence` / `PaymentMatches.Evidence`), sayım kuraldan önce. `Outcome` metnindeki sayılar da bunlar.
   4. **Görev 18:** `AdminDeletionRequestsPageTests.cs` VAR. Görev 18'in "(YENİ)" satırı ve dosyanın tamamını veren bloğu uygulanmaz: son tarih testi mevcut sınıfa EKLENİR (Görev 18'deki blok buna göre düzeltildi), mevcut iki test kalır. Sayfa numarası parametresi `pageNumber`'dır, `page` değil: yeni bağlantı ve yönlendirmeler de onu kullanır.
+  5. **Görev 20: imha kaydı hedefleri çoğul DbSet adıyla** (repodaki kural: `CustomerIbanMemories`, `BankTransactions.…`, `AuditLogs.AdminUsername+IpAddress`). Aynı sütunun imhası tek hedef adıyla gruplanmalı: dış özet, geri yükleme prosedürü ve avukat paketi hedefe göre gruplar. Görev 20'nin hedefleri: `ShopperDeletionRequests.PhoneAtRequest`, `BankSubjectRequests.IbanMasked`, `AuditLogs.IpAddress`, `RefreshTokens.CreatedByIp`, `ShopperRefreshTokens.CreatedByIp`, `IntakeFormSubmissions.IpAddress+UserAgent`; ödeme denetiminin parmak izi purge'ünkiyle aynı sabitten: `ShopperPurgeService.SubmissionAuditFingerprintTarget`. Günlük (log) metinleri ayrı kalabilir. Görev 20'nin blokları buna göre düzeltildi.
 
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankSubjectScrub.cs`
@@ -7953,8 +7957,8 @@ public sealed record ShopperPurgeResult(
         //     yalnız kanıtta geçen satırların (named) hareketleri ve silinen hafıza özetinden gelen hareketlerin açıklaması,
         //     gönderen adı ve ham kaydı silinir; tutar, tarih, maske ve özet kalır (özet avukat kararı). named satırda yalnız
         //     kanıt boşaltılır, başka müşterinin kimliği kalır; hareket metni ise silinir — kanıtın kaynağı o açıklamadır ve
-        //     silinen kişinin kullanıcı adını taşır. Anahtar önek olarak başka bir anahtara da uyabilir: fazladan silme
-        //     minimizasyondur, zararsız. UpdatedAt eşleşmenin jetonudur; çakışma SaveAsync'te bir kez yeniden denenir.
+        //     silinen kişinin kullanıcı adını taşır. Anahtar kanıtta tam aranır (ardından son, ';' ya da ','): önek araması
+        //     başka müşterinin hareketini silerdi. UpdatedAt eşleşmenin jetonudur; çakışma SaveAsync'te bir kez yeniden denenir.
         //     Kullanıcı adı (ScrubPersonal) ve Payment.ShopperId bağı avukat kararına kadar BİLEREK kalır.
         var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
         var ibanMemories = new List<CustomerIbanMemory>();
@@ -7980,7 +7984,8 @@ public sealed record ShopperPurgeResult(
             var named = marker is null
                 ? new List<PaymentMatch>()
                 : await _db.PaymentMatches
-                    .Where(m => m.LicenseId == licenseId && m.Evidence != null && m.Evidence.Contains(marker)
+                    .Where(m => m.LicenseId == licenseId && m.Evidence != null
+                        && (m.Evidence.EndsWith(marker) || m.Evidence.Contains(marker + ";") || m.Evidence.Contains(marker + ","))
                         && m.ProposedWpfCustomerId != id && m.ActualWpfCustomerId != id)
                     .ToListAsync(ct);
             foreach (var m in linked) scrubbedMatches[m] = wpfCustomerId;
@@ -9908,7 +9913,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
         // Paylaşılan InMemory veritabanı: yalnız bu koşunun kayıtları (başka testlerin satırları da boşaltılmış olabilir).
         var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.OccurredAt >= start).ToListAsync();
-        records.Should().Contain(r => r.Target == "ShopperDeletionRequest.PhoneAtRequest"
+        records.Should().Contain(r => r.Target == "ShopperDeletionRequests.PhoneAtRequest"
             && r.Action == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Actions.Nulled && r.RowCount >= 1
             && r.Trigger == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Triggers.Retention
             && r.Actor == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.SystemActor && r.LicenseId == null);
@@ -9973,7 +9978,7 @@ public sealed class SecurityDataRetentionRelationalTests : IAsyncLifetime
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await vdb.ShopperDeletionRequests.AsNoTracking().SingleAsync(r => r.Id == handled.Id)).PhoneAtRequest.Should().BeEmpty();
         var records = await vdb.DataDestructionRecords.AsNoTracking().ToListAsync();
-        records.Should().ContainSingle(r => r.Target == "ShopperDeletionRequest.PhoneAtRequest")
+        records.Should().ContainSingle(r => r.Target == "ShopperDeletionRequests.PhoneAtRequest")
             .Which.Should().Match<DataDestructionRecord>(r => r.Action == DataDestruction.Actions.Nulled && r.RowCount == 1
                 && r.Trigger == DataDestruction.Triggers.Retention);
         records.Should().ContainSingle(r => r.Action == DataDestruction.Actions.RunCompleted && r.Target == SecurityDataRetentionJob.JobId);
@@ -9997,7 +10002,7 @@ Expected: FAIL — `JobId` yok (derleme); sonra telefon boşaltılmadı, imha ka
     public int DeletionRequestPhoneDays { get; set; } = 30;
 ```
 
-Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ekle. Sınıfa `public const string JobId = "security-data-retention";` ekle; `Program.cs`'teki `manager.AddOrUpdate<…SecurityDataRetentionJob>("security-data-retention", …)` dizesini `OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob.JobId` yap (koşu kaydının hedefi ile Hangfire kimliği tek yerde).
+Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ve `using OrderDeck.LicenseServer.Services.Shoppers;` ekle (ödeme denetimi hedefi `ShopperPurgeService.SubmissionAuditFingerprintTarget`; Görev 15 incelemesinin kuralı 5: imha kaydı hedefleri çoğul DbSet adıyla). Sınıfa `public const string JobId = "security-data-retention";` ekle; `Program.cs`'teki `manager.AddOrUpdate<…SecurityDataRetentionJob>("security-data-retention", …)` dizesini `OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob.JobId` yap (koşu kaydının hedefi ile Hangfire kimliği tek yerde).
 
 `AnonymiseAsync`'i ve `RunAsync`'i bütünüyle şununla değiştir (IP/UA hedefleri ve sorguları aynen kalır; yalnız ölçüt ve kayıt eklenir):
 
@@ -10017,7 +10022,7 @@ Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ekle. Sın�
         {
             var phoneCutoff = DateTimeOffset.UtcNow.AddDays(-_opt.DeletionRequestPhoneDays);
             var phones = await RunAsync(
-                "ShopperDeletionRequest.PhoneAtRequest", $"HandledAt+{_opt.DeletionRequestPhoneDays}g, işlenmiş talep",
+                "ShopperDeletionRequests.PhoneAtRequest", $"HandledAt+{_opt.DeletionRequestPhoneDays}g, işlenmiş talep",
                 () => _db.ShopperDeletionRequests.Where(r => r.HandledAt != null && r.HandledAt < phoneCutoff && r.PhoneAtRequest != ""),
                 q => q.ExecuteUpdateAsync(s => s.SetProperty(r => r.PhoneAtRequest, ""), ct),
                 rows => { foreach (var r in rows) r.PhoneAtRequest = ""; },
@@ -10027,7 +10032,7 @@ Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ekle. Sın�
 
             // KVKK Ö-11: kapanmış banka veri talebinin kısaltılmış IBAN'ı (özet kapanışta boşaldı). Açık talebe dokunulmaz.
             var masks = await RunAsync(
-                "BankSubjectRequest.IbanMasked", $"ClosedAt+{_opt.DeletionRequestPhoneDays}g, kapanmış talep",
+                "BankSubjectRequests.IbanMasked", $"ClosedAt+{_opt.DeletionRequestPhoneDays}g, kapanmış talep",
                 () => _db.BankSubjectRequests.Where(r => r.ClosedAt != null && r.ClosedAt < phoneCutoff && r.IbanMasked != ""),
                 q => q.ExecuteUpdateAsync(s => s.SetProperty(r => r.IbanMasked, ""), ct),
                 rows => { foreach (var r in rows) r.IbanMasked = ""; },
@@ -10058,28 +10063,28 @@ Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ekle. Sın�
         var days = _opt.RetentionDays;
 
         var audit = await RunAsync(
-            "AuditLog.IpAddress", $"OccurredAt+{days}g",
+            "AuditLogs.IpAddress", $"OccurredAt+{days}g",
             () => _db.AuditLogs.Where(a => a.OccurredAt < cutoff && a.IpAddress != null),
             q => q.ExecuteUpdateAsync(s => s.SetProperty(a => a.IpAddress, (string?)null), ct),
             rows => { foreach (var r in rows) r.IpAddress = null; },
             relational, ct);
 
         var refreshTokens = await RunAsync(
-            "RefreshToken.CreatedByIp", $"CreatedAt+{days}g",
+            "RefreshTokens.CreatedByIp", $"CreatedAt+{days}g",
             () => _db.RefreshTokens.Where(t => t.CreatedAt < cutoff && t.CreatedByIp != null),
             q => q.ExecuteUpdateAsync(s => s.SetProperty(t => t.CreatedByIp, (string?)null), ct),
             rows => { foreach (var r in rows) r.CreatedByIp = null; },
             relational, ct);
 
         var shopperTokens = await RunAsync(
-            "ShopperRefreshToken.CreatedByIp", $"CreatedAt+{days}g",
+            "ShopperRefreshTokens.CreatedByIp", $"CreatedAt+{days}g",
             () => _db.ShopperRefreshTokens.Where(t => t.CreatedAt < cutoff && t.CreatedByIp != null),
             q => q.ExecuteUpdateAsync(s => s.SetProperty(t => t.CreatedByIp, (string?)null), ct),
             rows => { foreach (var r in rows) r.CreatedByIp = null; },
             relational, ct);
 
         var intake = await RunAsync(
-            "IntakeFormSubmission.IpAddress+UserAgent", $"SubmittedAt+{days}g",
+            "IntakeFormSubmissions.IpAddress+UserAgent", $"SubmittedAt+{days}g",
             () => _db.IntakeFormSubmissions.Where(
                 s => s.SubmittedAt < cutoff && (s.IpAddress != null || s.UserAgent != null)),
             q => q.ExecuteUpdateAsync(s => s
@@ -10091,7 +10096,7 @@ Dosyanın üstüne `using OrderDeck.LicenseServer.Services.Privacy;` ekle. Sın�
         // Mali kayıt: satır ve tutar duruyor, yalnız istemci parmak izi gidiyor.
         // Sütunlar non-nullable olduğu için null yerine boş string yazılıyor.
         var paymentAudit = await RunAsync(
-            "PaymentSubmissionAudit.IpAddress+UserAgent", $"CreatedAt+{days}g",
+            ShopperPurgeService.SubmissionAuditFingerprintTarget, $"CreatedAt+{days}g",
             () => _db.PaymentSubmissionAudits.Where(
                 a => a.CreatedAt < cutoff && (a.IpAddress != "" || a.UserAgent != "")),
             q => q.ExecuteUpdateAsync(s => s
