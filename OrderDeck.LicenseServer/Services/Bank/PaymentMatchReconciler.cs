@@ -218,7 +218,7 @@ public sealed class PaymentMatchReconciler
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now; match.UpdatedAt = now;
         match.Status = match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.ManualOnly;
         // Dışlanan hareketin (POS tahsilatı vb.) karşı IBAN'ı müşterinin değildir (sınıf özeti): karar yazılır, öğretilmez.
-        if (!Matcher.IsExcluded(tx)) await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.ManualMatch, ct);
+        if (!Matcher.IsExcluded(tx)) await LearnIbanAsync(match, tx, wpfCustomerId, IbanMemorySource.ManualMatch, ct);
         await _db.SaveChangesAsync(ct);
     }
 
@@ -237,9 +237,10 @@ public sealed class PaymentMatchReconciler
         var learned = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId && m.SourceBankTransactionId == tx.Id).ToListAsync(ct);
         _db.CustomerIbanMemories.RemoveRange(learned); // spec §3: iptal bayrağı değil, silme
         // KVKK K-6: kaldırılan karar başka bir havalenin öğrettiği bağı tazelemiş olabilir; süresi artık doğrulanmış sayılmayan
-        // havalede kalmasın. Dışlanan hareket hiç öğretmez, tazelemez.
-        if (match?.ActualWpfCustomerId is { } decidedFor && !Matcher.IsExcluded(tx))
-            await RewindIbanConfirmationAsync(tx, decidedFor, actor, ct);
+        // havalede kalmasın. Bağı doğrulamamış karar (işaretsiz: doğrulanmamış dekont bağı, dışlanan hareket, çatışma) süreyi
+        // taşımadı, kaldırılması da değiştirmez.
+        if (match is { ActualWpfCustomerId: { } decidedFor, IbanConfirmedAt: { } confirmed } && !Matcher.IsExcluded(tx))
+            await RewindIbanConfirmationAsync(tx, decidedFor, confirmed, actor, ct);
         if (match is not null)
         {
             var now = DateTimeOffset.UtcNow;
@@ -257,7 +258,7 @@ public sealed class PaymentMatchReconciler
                     gap.ResolvedAt = null; gap.ResolvedBankTransactionId = null;
                 }
             }
-            match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null;
+            match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null; match.IbanConfirmedAt = null;
             match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, UnmatchAsync yeniden hesaplatır
             // Öneri durumla birlikte boşaltılır: yeniden hesap düşerse satır tutarlı "öneri yok" kalır (sınıf özeti).
             // Başarılı yeniden hesap bunların üstüne yazar.
@@ -338,7 +339,7 @@ public sealed class PaymentMatchReconciler
             : match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.Contradicted;
         // Yalnız doğrulanmış bağ öğretir (sınıf özeti): tutar ve zamandan ibaret bağ başka müşterinin havalesi olabilir.
         if (match.ProposedWpfCustomerId == wpfCustomerId || NamesPayer(PayerTokens(payerName), tx.Description))
-            await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.HumanApproval, ct);
+            await LearnIbanAsync(match, tx, wpfCustomerId, IbanMemorySource.HumanApproval, ct);
         else if (tx.CounterpartyIbanHash is not null)
             _log.LogInformation("Gölge bağdaştırma: hareket {TransactionId} ödeme {PaymentId}'e yalnız tutar ve zamanla bağlandı; "
                 + "IBAN öğrenilmedi", tx.Id, paymentId);
@@ -346,8 +347,11 @@ public sealed class PaymentMatchReconciler
 
     /// <summary>Doğrulanmış bağdan IBAN'ı öğretir; aynı müşteriye kayıtlı bağı tazeler (KVKK K-6: bağ son doğrulanmış havaleden
     /// 12 ay yaşar, <see cref="CustomerIbanMemory.LastConfirmedAt"/>). Süre havalenin işlem tarihinden işler, doğrulama anından
-    /// değil: politikadaki bütün banka süreleri gibi.</summary>
-    private async Task LearnIbanAsync(BankTransaction tx, Guid wpfCustomerId, IbanMemorySource source, CancellationToken ct)
+    /// değil: politikadaki bütün banka süreleri gibi. Bağı doğrulayan karar (<paramref name="match"/>) işaretlenir
+    /// (<see cref="PaymentMatch.IbanConfirmedAt"/>): kaldırmada bağın süresi yalnız işaretli kararlardan geri hesaplanır.
+    /// IBAN'sız hareket ve başka müşteriye kayıtlı bağ doğrulama değildir, işaretlenmez.</summary>
+    private async Task LearnIbanAsync(PaymentMatch match, BankTransaction tx, Guid wpfCustomerId, IbanMemorySource source,
+        CancellationToken ct)
     {
         if (tx.CounterpartyIbanHash is null) return;
         var now = DateTimeOffset.UtcNow;
@@ -361,8 +365,10 @@ public sealed class PaymentMatchReconciler
                 return;
             }
             // Aynı müşteriye her doğrulama süreyi tazeler. Saklamanın başlangıcı (LastConfirmedAt, yoksa CreatedAt; saklama işiyle
-            // aynı ifade) yalnız ileri gider: daha eski bir havalenin geç doğrulanması onu geri çekmez.
+            // aynı ifade) yalnız ileri gider: daha eski bir havalenin geç doğrulanması onu geri çekmez. Karar yine de
+            // işaretlenir: daha yeni doğrulama kaldırılırsa bu havale kalan doğrulamadır.
             if ((existing.LastConfirmedAt ?? existing.CreatedAt) < confirmedAt) existing.LastConfirmedAt = confirmedAt;
+            match.IbanConfirmedAt = confirmedAt;
             return;
         }
         _db.CustomerIbanMemories.Add(new CustomerIbanMemory
@@ -371,37 +377,36 @@ public sealed class PaymentMatchReconciler
             IbanMasked = tx.CounterpartyIbanMasked ?? "?", LearnedFrom = source, SourceBankTransactionId = tx.Id, CreatedAt = now,
             LastConfirmedAt = confirmedAt,
         });
+        match.IbanConfirmedAt = confirmedAt;
     }
 
     /// <summary>Doğrulamanın saklama başlangıcı: havalenin işlem tarihi, ileri tarihliyse (valör) şimdiye kırpılır.</summary>
     private static DateTimeOffset ConfirmedAt(BankTransaction tx, DateTimeOffset now) => tx.OccurredAt < now ? tx.OccurredAt : now;
 
     /// <summary>
-    /// <paramref name="customer"/>'a verilmiş kararı kaldırılan <paramref name="removed"/>, aynı IBAN'ın bu müşteriye kayıtlı
-    /// bağının son doğrulamasıysa (işlem tarihi bağın <see cref="CustomerIbanMemory.LastConfirmedAt"/>'inden eski değil) bağın
-    /// başlangıcı kalan insan kararlı havalelerin (aynı lisans ve IBAN, bu müşteriye verilmiş, dışlanmamış) en yenisine geri
-    /// çekilir; hiç ileri gitmez (KVKK K-6: "son doğrulanmış ödemeden 12 ay"). Kalan yoksa bağ silinir: öğreten havale 180 günlük
-    /// kuralla silinmiş, tarihi bilinmiyor. Öğrenme anı ya da tahmini bir tarih süreyi politikanın ötesine taşıyabilirdi (öğrenme
-    /// havaleden aylar sonra olabilir). Bu silme bir düzeltme değil, saklama gerekçeli imhadır (başlangıç artık belirlenemiyor):
-    /// kalıcı imha kaydı aynı SaveChanges'te yazılır (Silme Yönetmeliği md. 7/3; tetikleyici <c>retention</c>, yapan
-    /// <paramref name="actor"/>). Bu hareketin öğrettiği bağ zaten siliniyor; P1 öncesi, hiç tazelenmemiş bağın
-    /// (<c>LastConfirmedAt</c> boş) süresi öğrenme anından işler, kaldırma onu değiştirmez. Değişen satır izlenir; denemenin
-    /// SaveChanges'i yazar.
+    /// <paramref name="customer"/>'a verilmiş ve aynı IBAN'ın bu müşteriye kayıtlı bağını doğrulamış (<paramref name="confirmed"/>
+    /// = kararın <see cref="PaymentMatch.IbanConfirmedAt"/> işareti) kararı kaldırılan <paramref name="removed"/>, bağın son
+    /// doğrulamasıysa (işaret bağın <see cref="CustomerIbanMemory.LastConfirmedAt"/>'inden eski değil) bağın başlangıcı kalan
+    /// doğrulamaların en yenisine geri çekilir; hiç ileri gitmez (KVKK K-6: "son doğrulanmış ödemeden 12 ay"). Kalan doğrulama
+    /// (<see cref="RemainingConfirmationsAsync"/>) yalnız işaretli kararlar ve öğreten havaledir: insan kararı tek başına
+    /// doğrulama sayılmaz. Yalnız tutar ve zamanla kurulmuş dekont bağı kalan sayılsaydı bağ son gerçek doğrulamadan uzun yaşardı.
+    /// Kalan yoksa bağ silinir: öğreten havale 180 günlük kuralla silinmiş, tarihi bilinmiyor. Öğrenme anı ya da tahmini bir
+    /// tarih süreyi politikanın ötesine taşıyabilirdi (öğrenme havaleden aylar sonra olabilir). Bu silme bir düzeltme değil,
+    /// saklama gerekçeli imhadır (başlangıç artık belirlenemiyor): kalıcı imha kaydı aynı SaveChanges'te yazılır (Silme
+    /// Yönetmeliği md. 7/3; tetikleyici <c>retention</c>, yapan <paramref name="actor"/>). Bu hareketin öğrettiği bağ zaten
+    /// siliniyor; P1 öncesi, hiç tazelenmemiş bağın (<c>LastConfirmedAt</c> boş) süresi öğrenme anından işler, kaldırma onu
+    /// değiştirmez. P1 öncesi kararlar işaretsizdir: hata yönü erken silmedir. Değişen satır izlenir; denemenin SaveChanges'i
+    /// yazar.
     /// </summary>
-    private async Task RewindIbanConfirmationAsync(BankTransaction removed, Guid customer, string actor, CancellationToken ct)
+    private async Task RewindIbanConfirmationAsync(BankTransaction removed, Guid customer, DateTimeOffset confirmed, string actor,
+        CancellationToken ct)
     {
         if (removed.CounterpartyIbanHash is not { } hash) return;
         var memory = await _db.CustomerIbanMemories.FirstOrDefaultAsync(m => m.LicenseId == removed.LicenseId && m.IbanHash == hash
             && m.WpfCustomerId == customer, ct);
         if (memory is null || memory.SourceBankTransactionId == removed.Id || memory.LastConfirmedAt is not { } anchor) return;
-        var now = DateTimeOffset.UtcNow;
-        if (ConfirmedAt(removed, now) < anchor) return; // son doğrulama değildi
-        var remaining = (await _db.BankTransactions.AsNoTracking()
-                .Where(t => t.LicenseId == removed.LicenseId && t.CounterpartyIbanHash == hash && t.Id != removed.Id
-                            && _db.PaymentMatches.Any(m => m.BankTransactionId == t.Id && m.ActualWpfCustomerId == customer))
-                .ToListAsync(ct))
-            .Where(t => !Matcher.IsExcluded(t))
-            .Select(t => ConfirmedAt(t, now)).ToList();
+        if (confirmed < anchor) return; // son doğrulama değildi
+        var remaining = await RemainingConfirmationsAsync(memory, removed.Id, ct);
         if (remaining.Count == 0)
         {
             _db.CustomerIbanMemories.Remove(memory);
@@ -412,6 +417,26 @@ public sealed class PaymentMatchReconciler
         }
         var latest = remaining.Max();
         if (latest < anchor) memory.LastConfirmedAt = latest;
+    }
+
+    /// <summary>Bağın <paramref name="excludedTransactionId"/> dışındaki doğrulamalarının saklama başlangıçları: aynı lisans ve
+    /// IBAN, bağın müşterisine verilmiş, dışlanmamış hareketlerden (a) kararı işaretli olanlar (işaretin değeri) ve (b) öğreten
+    /// havale (<see cref="CustomerIbanMemory.SourceBankTransactionId"/>; tanımı gereği doğrulamadır, P1 öncesi öğrenilmişse
+    /// işaretsizdir; değeri işlem tarihi, öğrenme anına kırpılmış — öğrenmenin yazdığı değerin aynısı). Öğreten havale 180 günlük
+    /// kuralla silindiyse yoktur.</summary>
+    private async Task<List<DateTimeOffset>> RemainingConfirmationsAsync(CustomerIbanMemory memory, Guid excludedTransactionId,
+        CancellationToken ct)
+    {
+        var sourceId = memory.SourceBankTransactionId ?? Guid.Empty;
+        var rows = await (from m in _db.PaymentMatches.AsNoTracking()
+                          join t in _db.BankTransactions.AsNoTracking() on m.BankTransactionId equals t.Id
+                          where m.LicenseId == memory.LicenseId && t.LicenseId == memory.LicenseId
+                                && m.ActualWpfCustomerId == memory.WpfCustomerId && t.CounterpartyIbanHash == memory.IbanHash
+                                && t.Id != excludedTransactionId && (m.IbanConfirmedAt != null || t.Id == sourceId)
+                          select new { Tx = t, m.IbanConfirmedAt })
+            .ToListAsync(ct);
+        return rows.Where(r => !Matcher.IsExcluded(r.Tx))
+            .Select(r => r.IbanConfirmedAt ?? ConfirmedAt(r.Tx, memory.CreatedAt)).ToList();
     }
 
     /// <summary>Bir denemeyi koşar; çakışma, bayat seçim ya da tekil indeks ihlalinde (bkz. sınıf özeti) izini atıp BİR kez

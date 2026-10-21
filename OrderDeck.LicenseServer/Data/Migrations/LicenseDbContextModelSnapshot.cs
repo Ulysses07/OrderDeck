@@ -516,6 +516,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<DateTimeOffset?>("IbanConfirmedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Layer")
                         .IsRequired()
                         .HasMaxLength(32)
