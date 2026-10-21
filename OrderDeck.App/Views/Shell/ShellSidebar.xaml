@@ -139,7 +139,7 @@
             </StackPanel>
 
             <!-- Navigasyon. Tag = sayfa anahtarı (Faz 3 vurgusu). Çekmece
-                 açan satırların (Müşteriler, Yeni Dekont) Tag'i YOK: çekmece
+                 açan satırların (Müşteriler, Gelen Ödemeler) Tag'i YOK: çekmece
                  sayfa değil, nav'da "buradasın" demek yanlış olurdu. -->
             <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top6}">
                 <Button Style="{StaticResource NavButton}" Tag="history"
@@ -164,10 +164,10 @@
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
-                        Command="{Binding OpenDekontEkleCommand}" ToolTip="Yeni Dekont">
+                        Command="{Binding OpenDekontEkleCommand}" ToolTip="Gelen Ödemeler">
                     <StackPanel Style="{StaticResource NavRow}">
                         <Path Data="{StaticResource OD.Path.Receipt}" Style="{StaticResource OD.IconPath}"/>
-                        <TextBlock Text="Yeni Dekont" Style="{StaticResource NavLabel}"/>
+                        <TextBlock Text="Gelen Ödemeler" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}" Tag="bulk-sms"

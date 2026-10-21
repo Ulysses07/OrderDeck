@@ -435,7 +435,7 @@ Karar tek yerde verilir. Mod Off'ta her zaman bugünkü `LabelService`/`Shipment
 | Yedek çekmecesi | `BackupTransferDrawer.xaml.cs:96` | confirm-backup |
 | Fiyatı düzelt | `PriceCorrectionViewModel.cs:401-402` | set-code-price |
 | FİYAT kutusu | `MainShellViewModel.cs:621-647` | yalnız canlı oturum → yerel (değişmez) |
-| Dekont kargo adımı | `DekontEkleViewModel.cs:421-475` | attach-shipment, shipment-decision |
+| Dekont kargo adımı (2026-10-19'dan beri "Gelen Ödemeler" çekmecesi) | `DekontEkleViewModel.cs:421-475` | attach-shipment, shipment-decision |
 | Eşik çekmecesi kararı | `DekontEkleViewModel.cs:485-491` | shipment-decision |
 
 409'ların ele alınışı:
@@ -543,7 +543,7 @@ Karar tek yerde verilir. Mod Off'ta her zaman bugünkü `LabelService`/`Shipment
 | Kalıntı kuyruk etiketinin iptali ya da ilk baskısı | bekleyen komut (§5.5) |
 | Başka bilgisayarın yayınındaki satırın (ör. yedek) ilk baskısı | basılmaz, kuyrukta bekler; sebep şeritte, açılır pencere yok. Kuyrukta yalnız bu satırlar kaldıysa "Yayını bitir" yayını açık bırakır, sebep yine şeritte. Bağlantı gelince basılır, onay bekleyen komutla gider (§5.5, Y11). Kendi canlı ve önceki yayınlarının etiketleri basılır |
 | Devredilmiş yayında fiyat, iptal (kart ya da Basılanlar), yedek, kargo | düğmeler pasif |
-| Dekont kaydı | çalışır. Kargo adımı atlanır ve uyarı gösterilir. Bir sonraki dekont ya da bağlama bütün bağlanmamış etiketleri alır; bugünkü "bir sonraki dekontta tekrar denenir" sözleşmesi bu (`DekontEkleViewModel.cs:467-473`) |
+| Dekont kaydı | çalışır. Kargo adımı atlanır ve uyarı gösterilir. Bir sonraki dekont ya da bağlama bütün bağlanmamış etiketleri alır; bugünkü "bir sonraki dekontta tekrar denenir" sözleşmesi bu (`DekontEkleViewModel.cs:467-473`). **Not (2026-10-19):** WPF dekont kaydı kalktı; çekmece "Gelen Ödemeler" oldu ve Payment yazmıyor. Çevrimdışıyken kaydedilen bir şey yoktur: uyarı "Kargo adımı yapılamadı … yeniden kaydet" der, operatör bağlantı gelince yeniden kaydeder |
 | Ödeme isteği | GUID'li üyesi olan kişide engellenir; bugün de önizleme yüzünden engelleniyor (`PaymentRequestService.cs:1062-1066`). Mod On'da kapsamına uzak etiket giren kişide de engellenir (kira zorunlu, §6.5). Yalnız kendi etiketleri olan GUID'siz kişide bugünkü gibi yerel; kayıt bağlantı gelince yazılır |
 | Yeniden baskı | önbellekten, notla |
 
@@ -698,7 +698,7 @@ Bugünkü davranışta 10:00'da iki bilgisayar da mesaj gönderirdi: PC-A 550 �
 ### 7.1 Sahiplik
 
 - Mod On'da dosya ve etiket–dosya bağı yalnız sunucuda yazılır. Yerel `Shipment` tablosu salt okunur bir aynadır; tetikleyici ABORT eder.
-- Dekont ekranı `attach-shipment` ve `shipment-decision` komutlarını kullanır. Eşik, `EvaluateAfterPayment` (`ShipmentService.cs:121-153`) mantığıyla, yanıttaki sunucu havuzu üzerinden değerlendirilir.
+- Dekont ekranı (2026-10-19'dan beri "Gelen Ödemeler" çekmecesi; Payment yazmaz, yalnız kargo zincirini yürütür) `attach-shipment` ve `shipment-decision` komutlarını kullanır. Eşik, `EvaluateAfterPayment` (`ShipmentService.cs:121-153`) mantığıyla, yanıttaki sunucu havuzu üzerinden değerlendirilir.
 - Havuz, asıl müşteri satırının bütün Pending/Held dosyalarıdır. Bugünkü gibi satır bazlıdır (`ShipmentRepository.cs:71-94`); kişi (grup) bazına çıkarılmaz.
 - Mod On'da `ShipmentSyncService` (`ShipmentSyncService.cs:128-163`) gönderim yapmaz. `/since` çekmesi zaten uygulanmıyordu; o da kalkar. Dosyalar akışla iner.
 - Sunucu mod On'da `shipments/sync`'i yok sayar. Tek istisna, açılış penceresindeki kopyanın (§4.0) v2 gönderimidir (§8.4). Bu durumda dosya Shipped değilse ve `CommandedAt` boşsa karar alanları (Status, HeldAt, ShippedAt) alınır (Shipped'e geçişte iptalli bağlar §7.2'deki gibi çözülür), yeni dosya eklenir. Tutar push'tan değil bağlardan türetilir; bağlar sonradan `orders/sync` ile gelirse K7 dosyayı yeniden türetir (kargo gönderimi 30 sn'de, etiket gönderimi 60 sn'de bir koşuyor, `ShipmentSyncHostedService.cs:19`, `SessionOrderSyncHostedService.cs:20`; dosya çoğu zaman bağlarından önce gelir).

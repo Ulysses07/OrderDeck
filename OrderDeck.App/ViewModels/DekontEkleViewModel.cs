@@ -1,233 +1,104 @@
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
-using OrderDeck.PdfParsing;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
-using OrderDeck.Core.Time;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Logging;
 
 namespace OrderDeck.App.ViewModels;
 
 /// <summary>
-/// Yayıncının elinde olan banka dekontunu (WhatsApp/email PDF) manuel
-/// olarak OrderDeck'e girmesi için form ViewModel. Save sonrası Payment
-/// SyncedAt=null ile yaratılır → PaymentSyncHostedService 30 sn içinde
-/// LicenseServer'a push'lar → mobile Panel app dekont kuyruğunda görür.
+/// "Gelen Ödemeler" çekmecesinin ViewModel'i: müşteriden ödeme geldiğinde kargo zincirini yürütür. Form yalnız
+/// müşteri (platform + kullanıcı adı) ve gelen tutardır.
 ///
-/// Kargo PR D (2026-05-11): Müşteri seçimi + matcher entegrasyonu eklendi.
-/// Vendor Platform+Username doldurursa ve aktif yayın varsa, dekont
-/// tutarı müşterinin ürün toplamı + kargo eşiğiyle karşılaştırılır.
-/// Kargo ücreti eksikse <c>SaveResult.NeedsShipmentDecision</c> dönülür.
+/// 2026-10-19: WPF'ten dekont kaydı kalktı (iş sahibi kararı). Çekmece eskiden "Yeni Dekont"tu: PDF'ten okunan ya da
+/// elle girilen dekontu bir <c>Payment</c> satırı olarak yazıyor, satır payments/sync ile panelin Dekontlar kuyruğuna
+/// gidiyordu. Artık hiçbir <c>Payment</c> satırı YAZMAZ; PDF, alıcı IBAN/hesap sahibi uyarısı, ödeyen, tarih ve
+/// referans no alanları da kalktı. <c>PaymentSyncService</c> ve payments/sync sözleşmesi değişmedi: yerelde
+/// gönderilmemiş eski satırlar yine gider. Sınıf ve komut adları (<c>DekontEkle*</c>) bilerek korundu; spec
+/// 2026-10-13 (§5.3, §5.8, W2-08) ve testler bu adlarla anar.
 ///
-/// Faz 2b (2026-08-10): iki soruyu soran ZİNCİR buraya taşındı. Eskiden
-/// <c>DekontEkleDialog</c> code-behind'ında duruyordu; pencereler çekmeceye
-/// dönüşünce (spec §6) sahibi kalmadı. <see cref="SaveAsync"/> artık
-/// <c>TrySave</c> → kargo yönergesi → <c>CommitWithDirective</c> → kargo
-/// eşiği sırasını kendi yürütüyor, view yalnız "kapandı mı" cevabını alıyor.
-/// Alt çekmeceleri <see cref="Services.Drawers.IDrawerService"/> üzerinden
-/// açar; servis verilmezse (test fixture'ları) sorular atlanır.
+/// Kargo zinciri değişmedi (Kargo PR D/F, Faz 2b, W2-08): oturum seçilir (aktif yayın, yoksa son biten), gelen tutar
+/// <see cref="PaymentMatcherService"/> ile müşterinin ürün toplamı + kargo ücretiyle karşılaştırılır; kargo ücreti
+/// eksikse "Kargo Ücreti Eksik" alt çekmecesi yönergeyi sorar (Alıcı Ödemeli / Kargo Beklesin / Vazgeç).
+/// RecipientPays seçildiyse müşterinin yapışkan bayrağı açılır. Ardından kargo adımı (dosyaya bağlama, yönerge, eşik
+/// kararı) düzenleme yönlendiricisinden geçer (<see cref="Services.Sales.IShipmentEditor"/>): mod Off'ta yerel sıra,
+/// eşzamanlı; mod On'da <c>attach-shipment</c> ve <c>shipment-decision</c> komutları, ağ işi arka planda, kaydetme
+/// zinciri bekler. Eşik aşıldıysa "Ücretsiz Kargo Hakkı" alt çekmecesi açılır; ShipNow'da "kazandın" mesajı. Kargo
+/// adımı yapılamazsa <see cref="ShipmentWarning"/> dolar (kabuk satış şeridinde gösterir, açılır pencere yok).
 ///
-/// Satış senkronu W2-08 (spec 2026-10-13 §5.3, §5.8, §7.1): kargo adımı
-/// (dosyaya bağlama, yönerge, eşik kararı) düzenleme yönlendiricisinden
-/// geçer (<see cref="Services.Sales.IShipmentEditor"/>). Mod Off'ta bugünkü
-/// yerel sıra, eşzamanlı. Mod On'da dosya sunucunun: <c>attach-shipment</c>
-/// ve <c>shipment-decision</c> komutları, ağ işi arka planda, kaydetme zinciri
-/// bekler; dekont her durumda kaydedilir, kargo adımı yapılamazsa
-/// <see cref="ShipmentWarning"/> dolar (kabuk satış şeridinde gösterir).
+/// Müşteri ZORUNLU: kargo zinciri müşterisiz çalışmaz. Boşsa ya da bulunamazsa satır içi hata, hiçbir şey yazılmaz.
+/// Alt çekmeceleri <see cref="Services.Drawers.IDrawerService"/> üzerinden açar; servis verilmezse (test
+/// fixture'ları) sorular atlanır.
 /// </summary>
 public sealed partial class DekontEkleViewModel : ObservableObject
 {
-    private readonly PaymentRepository _payments;
+    /// <summary>Çekmecenin başlığı; sol menüdeki satır da aynı metni taşır (<c>ShellSidebar.xaml</c>, testle bağlı).</summary>
+    public const string DrawerTitle = "Gelen Ödemeler";
+
     private readonly CustomerRepository _customers;
     private readonly SessionRepository _sessions;
     private readonly PaymentMatcherService _matcher;
     private readonly Services.Sales.IShipmentEditor _shipmentEditor;
     private readonly OrderDeck.App.Services.PaymentRequestService? _paymentRequest;
-    private readonly IClock _clock;
     private readonly ILogger<DekontEkleViewModel> _log;
 
-    [ObservableProperty] private string _payerName = "";
     [ObservableProperty] private string _amountText = "";
-    [ObservableProperty] private DateTime _paidAt = DateTime.Today;
-    [ObservableProperty] private string _referansNo = "";
 
-    // Kargo PR D: müşteri seçimi (opsiyonel — boş bırakılırsa matcher
-    // çalışmaz, basit Payment kaydı yapılır).
+    // Müşteri: kargo zincirinin anahtarı (zorunlu).
     [ObservableProperty] private string _customerPlatform = "";
     [ObservableProperty] private string _customerUsername = "";
 
     [ObservableProperty] private string? _errorMessage;
 
-    /// <summary>PDF parse sonrası alıcı IBAN'ı Settings.Payment.Iban ile
-    /// uyuşmazsa burada warning gösterilir (Save'i engellemez — edge case'lerde
-    /// operatör override edebilir, ama görsel uyarı kritik bilgi).</summary>
-    [ObservableProperty] private string? _ibanWarning;
-
-    /// <summary>W2-08 (spec 2026-10-13 §5.8 "Dekont kaydı"): dekont kaydedildi ama
-    /// kargo adımı ya da eşik kararı uygulanamadı (çevrimdışı, komut ucu yok,
-    /// sunucu reddetti). Kaydetmeyi engellemez; çekmece kapanınca kabuk satış
-    /// şeridinde gösterir (açılır pencere yok). Her kaydetmede sıfırlanır.</summary>
+    /// <summary>W2-08 (spec 2026-10-13 §5.8): kargo adımı ya da eşik kararı uygulanamadı (çevrimdışı, komut ucu yok,
+    /// sunucu reddetti). Kaydetmeyi engellemez; çekmece kapanınca kabuk satış şeridinde gösterir (açılır pencere yok).
+    /// Her kaydetmede sıfırlanır.</summary>
     [ObservableProperty] private string? _shipmentWarning;
 
-    // PDF parse hash (Payment.PdfHash'e CommitInternal'da yazılır — duplicate
-    // dedect için). Operator PDF yüklemediyse null kalır.
-    private string? _pendingPdfHash;
+    /// <summary>Kaydetme zinciri sürüyor (<see cref="SaveAsync"/>): Kaydet pasif, ikinci çağrı zinciri yeniden
+    /// koşturmaz. 2026-10-19'a kadar bu işi referans no tekrar kontrolü yan etki olarak yapıyordu (Payment satırı ilk
+    /// await'ten önce yazılırdı); mod On'da attach-shipment ağda beklerken çift tıklama zinciri iki kez
+    /// koşturuyordu.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    private bool _isSaving;
 
-    private readonly PdfDekontParser _pdfParser;
-    private readonly AppSettings _settings;
     private readonly IShippingSettingsProvider _shipping;
     private readonly Services.Drawers.IDrawerService? _drawers;
 
-    /// <param name="settings">Hesap bilgileri (IBAN ve hesap sahibi denetimi).</param>
     /// <param name="shipping">Eşik çekmecesinin eşik metni (spec 2026-10-13 §6.2): değerlendirmeyle aynı kaynak — mod
     /// Off'ta yerel ayar, mod On'da lisans geneli ayar.</param>
     public DekontEkleViewModel(
-        PaymentRepository payments,
         CustomerRepository customers,
         SessionRepository sessions,
         PaymentMatcherService matcher,
-        LabelRepository labels,
         ShipmentService shipments,
-        PdfDekontParser pdfParser,
-        AppSettings settings,
         IShippingSettingsProvider shipping,
-        IClock clock,
         ILogger<DekontEkleViewModel> log,
         OrderDeck.App.Services.PaymentRequestService? paymentRequest = null,
         Services.Drawers.IDrawerService? drawers = null,
         Services.Sales.ILabelEditor? editor = null)
     {
-        _payments = payments;
         _customers = customers;
         _sessions = sessions;
         _matcher = matcher;
         // Kargo adımı (W2-08) düzenleyiciden geçer: uygulamada DI yönlendiriciyi verir; verilmezse (testler) bugünkü
-        // yerel yol. Bağlanmamış etiketleri ShipmentService kendi deposundan okur — labels artık saklanmaz (parametre
-        // DI ve testlerin kurucusu için kalır).
+        // yerel yol. Bağlanmamış etiketleri ShipmentService kendi deposundan okur.
         _shipmentEditor = editor ?? (Services.Sales.IShipmentEditor)new Services.Sales.LocalShipmentEditor(shipments);
-        _pdfParser = pdfParser;
-        _settings = settings;
         _shipping = shipping;
-        _clock = clock;
         _log = log;
         _paymentRequest = paymentRequest;
         _drawers = drawers;
     }
 
-    /// <summary>PDF Yükle butonu çağırır: PdfDekontParser'la 4 alan + hash
-    /// çıkarılır, form alanlarına best-effort doldurulur. Bulunamayanlar boş
-    /// kalır; operatör elle düzeltir. Çağrı dışsal (çekmece code-behind) çünkü
-    /// dosya seçici WPF tarafında.</summary>
-    public string? TryFillFromPdf(byte[] pdfBytes)
-    {
-        try
-        {
-            var result = _pdfParser.Parse(pdfBytes);
-            if (!string.IsNullOrWhiteSpace(result.PayerName)) PayerName = result.PayerName;
-            if (result.Amount is { } amount) AmountText = amount.ToString("0.##",
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (result.PaidAt is { } paidAt) PaidAt = paidAt;
-            if (!string.IsNullOrWhiteSpace(result.ReferansNo)) ReferansNo = result.ReferansNo;
-            _pendingPdfHash = result.PdfHash;
-            ErrorMessage = null;
+    public bool CanSave => !IsSaving && Validate() is null;
 
-            // Alıcı IBAN + isim check (2026-05-12): müşteri yanlış hesaba
-            // transfer yapmış olabilir. Bankalar IBAN + isim kombinasyonunu
-            // doğrular — uyuşmazsa para gelmez. Bu noktada yine warning
-            // (Save'i engelleme — PDF parse hatası, sub-account, manuel
-            // doğrulama edge case'leri için).
-            IbanWarning = CombineWarnings(
-                CheckIbanMatch(result.RecipientIban),
-                CheckRecipientNameMatch(result.RecipientName));
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex, "PDF parse failed");
-            return "PDF okunamadı: " + ex.Message;
-        }
-    }
-
-    private string? CheckIbanMatch(string? pdfRecipientIban)
-    {
-        if (string.IsNullOrWhiteSpace(pdfRecipientIban)) return null; // parser bulamadı, sessiz geç
-
-        var expected = NormalizeIban(_settings.Payment.Iban);
-        if (string.IsNullOrWhiteSpace(expected))
-        {
-            // Vendor henüz Settings'te IBAN tanımlamamış → karşılaştırma yapma
-            return null;
-        }
-
-        var actual = NormalizeIban(pdfRecipientIban);
-        if (string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
-        {
-            // Eşleşti — uyarı yok
-            _log.LogInformation("PDF recipient IBAN matches Settings IBAN");
-            return null;
-        }
-
-        _log.LogWarning(
-            "PDF recipient IBAN does NOT match Settings IBAN. Expected={Expected}, Actual={Actual}",
-            expected, actual);
-        return $"⚠ DİKKAT: Dekontun alıcı IBAN'ı sizin IBAN'ınızla eşleşmiyor!\n" +
-               $"Dekont alıcı:  {actual}\n" +
-               $"Sizin IBAN:    {expected}\n" +
-               $"Para başka bir hesaba gitmiş olabilir — kayıttan önce kontrol edin.";
-    }
-
-    private static string NormalizeIban(string? raw)
-        => string.IsNullOrWhiteSpace(raw)
-            ? ""
-            : System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", "").ToUpperInvariant();
-
-    private string? CheckRecipientNameMatch(string? pdfRecipientName)
-    {
-        if (string.IsNullOrWhiteSpace(pdfRecipientName)) return null;
-
-        var expected = PdfDekontParser.NormalizeName(_settings.Payment.AccountHolder);
-        if (string.IsNullOrWhiteSpace(expected))
-        {
-            // Vendor henüz Settings'te hesap sahibi tanımlamamış → karşılaştırma yok
-            return null;
-        }
-
-        var actual = PdfDekontParser.NormalizeName(pdfRecipientName);
-
-        // Substring match: PDF alıcı adı vendor isminin SUPERSET'i olabilir
-        // (örn. "ERDEM HAN GIDA Kuveyt Türk Katılım" gibi banka adı ekli).
-        // Vendor adı, PDF içinde geçiyorsa eşleşme sayılır.
-        if (actual.Contains(expected) || expected.Contains(actual))
-        {
-            _log.LogInformation("PDF recipient name matches Settings AccountHolder");
-            return null;
-        }
-
-        _log.LogWarning(
-            "PDF recipient name does NOT match Settings AccountHolder. Expected={Expected}, Actual={Actual}",
-            expected, actual);
-        return $"⚠ DİKKAT: Dekontun alıcı adı sizin hesap sahibi adınızla eşleşmiyor!\n" +
-               $"Dekont alıcı:  {pdfRecipientName}\n" +
-               $"Sizin hesap:   {_settings.Payment.AccountHolder}\n" +
-               $"Banka transfer'i reddetmiş veya para başka hesaba gitmiş olabilir.";
-    }
-
-    private static string? CombineWarnings(string? a, string? b)
-    {
-        if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return null;
-        if (string.IsNullOrEmpty(a)) return b;
-        if (string.IsNullOrEmpty(b)) return a;
-        return a + "\n\n" + b;
-    }
-
-    public bool CanSave => Validate() is null;
-
-    partial void OnPayerNameChanged(string value) => RefreshCanSave();
     partial void OnAmountTextChanged(string value) => RefreshCanSave();
-    partial void OnReferansNoChanged(string value) => RefreshCanSave();
+    partial void OnCustomerPlatformChanged(string value) => RefreshCanSave();
+    partial void OnCustomerUsernameChanged(string value) => RefreshCanSave();
 
     private void RefreshCanSave()
     {
@@ -248,15 +119,13 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         SaveResultKind Kind,
         PaymentMatcherService.MatchResult? Shortage = null,
         string? Error = null,
-        // PR-C/2: Save başarılı + kümülatif eşik aşıldıysa kargo eşiği
+        // PR-C/2: kayıt başarılı + kümülatif eşik aşıldıysa kargo eşiği
         // çekmecesi açılmalı. Null = eşik aşılmadı veya hook çalışmadı
-        // (müşteri çözülemedi, feature kapalı, vs.).
+        // (feature kapalı, adım atlandı, vs.).
         ShipmentDecisionContext? ThresholdContext = null)
     {
-        /// <summary>W2-08: mod On'da kargo adımı (komut) kayıttan sonra arka
-        /// planda sürüyor; <see cref="SaveAsync"/> bekler ve sonucu
-        /// <see cref="ThresholdContext"/>'e yazar. Mod Off'ta adım eşzamanlı
-        /// biter, bu null'dır.</summary>
+        /// <summary>W2-08: mod On'da kargo adımı (komut) arka planda sürüyor; <see cref="SaveAsync"/> bekler ve
+        /// sonucu <see cref="ThresholdContext"/>'e yazar. Mod Off'ta adım eşzamanlı biter, bu null'dır.</summary>
         internal Task<ShipmentDecisionContext?>? PendingShipmentStep { get; init; }
     }
 
@@ -264,34 +133,44 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     /// <summary>
     /// Kaydetme zincirinin tamamı — çekmecenin "Kaydet" düğmesi yalnız bunu
-    /// çağırır. <c>true</c>: kayıt tamam, çekmece kapansın. <c>false</c>:
-    /// doğrulama hatası (<see cref="ErrorMessage"/> bağlı) ya da operatör
-    /// kargo yönergesinden vazgeçti — form açık kalsın, düzeltilebilsin.
+    /// çağırır. <c>true</c>: zincir tamam, çekmece kapansın. <c>false</c>:
+    /// doğrulama hatası (<see cref="ErrorMessage"/> bağlı), operatör kargo
+    /// yönergesinden vazgeçti — form açık kalsın, düzeltilebilsin — ya da
+    /// zincir zaten sürüyor (<see cref="IsSaving"/>; çift tıklama), ikinci
+    /// çağrı hiçbir şey yapmaz.
     ///
     /// Faz 2b'de <c>DekontEkleDialog.OnSave</c>'in switch'inden birebir
     /// taşındı; sıra ve dallanma aynı.
     /// </summary>
     public async Task<bool> SaveAsync()
     {
-        ShipmentWarning = null;
-        var result = TrySave();
-
-        if (result.Kind == SaveResultKind.NeedsShipmentDecision)
+        if (IsSaving) return false;
+        IsSaving = true;
+        try
         {
-            var directive = await AskShipmentDirectiveAsync(result.Shortage!);
-            if (directive is null) return false;
-            result = CommitWithDirective(directive.Value);
+            ShipmentWarning = null;
+            var result = TrySave();
+
+            if (result.Kind == SaveResultKind.NeedsShipmentDecision)
+            {
+                var directive = await AskShipmentDirectiveAsync(result.Shortage!);
+                if (directive is null) return false;
+                result = CommitWithDirective(directive.Value);
+            }
+
+            if (result.Kind != SaveResultKind.Saved) return false;
+
+            // W2-08: mod On'da kargo adımı (attach-shipment) arka planda sürüyor; eşik sorusu adımın sonucuyla.
+            if (result.PendingShipmentStep is { } pending)
+                result = result with { ThresholdContext = await pending, PendingShipmentStep = null };
+
+            await MaybePromptThresholdAsync(result);
+            return true;
         }
-
-        if (result.Kind != SaveResultKind.Saved) return false;
-
-        // W2-08: mod On'da kargo adımı (attach-shipment) arka planda sürüyor —
-        // dekont zaten kaydedildi; eşik sorusu adımın sonucuyla.
-        if (result.PendingShipmentStep is { } pending)
-            result = result with { ThresholdContext = await pending, PendingShipmentStep = null };
-
-        await MaybePromptThresholdAsync(result);
-        return true;
+        finally
+        {
+            IsSaving = false;
+        }
     }
 
     private async Task<ShipmentDirective?> AskShipmentDirectiveAsync(
@@ -314,9 +193,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         if (result.ThresholdContext is not { Shipment: not null } ctx) return;
         if (_drawers is null) return;
 
-        var customerDisplay = !string.IsNullOrWhiteSpace(CustomerUsername)
-            ? $"{CustomerPlatform}/{CustomerUsername}"
-            : PayerName;
+        var customerDisplay = $"{CustomerPlatform}/{CustomerUsername}";
 
         string? notice = null;
         for (var shown = 0; shown < 2; shown++)
@@ -341,8 +218,9 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         }
     }
 
-    /// <summary>İlk kaydetme denemesi: doğrulama + duplicate kontrolü +
-    /// matcher. Dallanmayı <see cref="SaveAsync"/> yapar.</summary>
+    /// <summary>İlk kaydetme denemesi: doğrulama + müşteri çözümü +
+    /// matcher. Dallanmayı <see cref="SaveAsync"/> yapar. Müşteri boşsa
+    /// ya da bulunamazsa satır içi hata döner, hiçbir şey yazılmaz.</summary>
     public SaveResult TrySave()
     {
         var validationError = Validate();
@@ -352,44 +230,39 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             return new SaveResult(SaveResultKind.Error, Error: validationError);
         }
 
-        var refNo = ReferansNo.Trim();
-        if (_payments.FindByReferansNo(refNo) is not null)
+        // Kargo zinciri müşterisiz çalışmaz: eskiden bulunamayan müşteride yalnız dekont yazılıyordu, artık
+        // yazılacak bir şey kalmadı — sessizce kapanmak "oldu" sanılırdı.
+        var customer = ResolveCustomer();
+        if (customer is null)
         {
-            ErrorMessage = "Bu referans no zaten kayıtlı.";
+            _log.LogInformation(
+                "Gelen ödeme: müşteri bulunamadı ({Platform}/{Username}); hiçbir şey yazılmadı.",
+                CustomerPlatform, CustomerUsername);
+            ErrorMessage = "Müşteri bulunamadı. Platformu ve kullanıcı adını kontrol et.";
             return new SaveResult(SaveResultKind.Error, Error: ErrorMessage);
         }
 
-        // Customer + session resolution (her ikisi de varsa matcher çalıştır).
-        // Operatörlerin %90'ı yayın bittikten sonra dekont giriyor → aktif
-        // yayın yokken matcher devre dışı kalmasın diye son yayına fallback.
-        // (PR F'de cross-session aggregation eklenecek; bu hotfix tek-yayın
-        // senaryolarını kapsar.)
-        var customer = ResolveCustomer();
+        // Oturum: operatörlerin çoğu ödemeyi yayın bittikten sonra işliyor → aktif yayın yokken matcher devre dışı
+        // kalmasın diye son yayına düşülür.
         var session = _sessions.GetActive() ?? _sessions.GetLatestEnded();
         var amount = ParseAmount(AmountText)!.Value;
 
-        if (customer is not null && session is not null)
+        if (session is not null)
         {
+            // Matcher yalnız gelen tutarı alır; kayıt yazılmaz.
             var match = _matcher.Match(customer.Id, session.Id, amount);
             if (match.Outcome == PaymentMatcherService.MatchOutcome.ShippingShortage)
             {
-                // Save henüz yok — vendor'dan directive bekleniyor.
+                // Operatörün yönergesi bekleniyor.
                 return new SaveResult(SaveResultKind.NeedsShipmentDecision, Shortage: match);
             }
-        }
-        else if (!string.IsNullOrWhiteSpace(CustomerUsername))
-        {
-            // Operator müşteri girdi ama bulunamadı — log + sessizce devam
-            _log.LogInformation(
-                "Dekont save: customer not found by {Platform}/{Username}; matcher skipped.",
-                CustomerPlatform, CustomerUsername);
         }
 
         return CommitInternal(ShipmentDirective.Normal);
     }
 
     /// <summary>Operatör kargo yönergesi çekmecesinde seçim yaptıktan sonra
-    /// çağrılır. Payment'ı seçilen directive ile kalıcılaştırır.</summary>
+    /// çağrılır. Seçilen yönergeyle kargo zincirini yürütür.</summary>
     public SaveResult CommitWithDirective(ShipmentDirective directive)
     {
         return CommitInternal(directive);
@@ -397,35 +270,10 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     private SaveResult CommitInternal(ShipmentDirective directive)
     {
-        var refNo = ReferansNo.Trim();
-        var paidAtUtc = new DateTimeOffset(PaidAt.Date, TimeZoneInfo.Local.GetUtcOffset(PaidAt.Date));
-        var amount = ParseAmount(AmountText)!.Value;
-        var now = _clock.UnixNow();
-
-        var payment = new Payment(
-            Id: Guid.NewGuid().ToString(),
-            PayerName: PayerName.Trim(),
-            Amount: amount,
-            PaidAt: paidAtUtc.ToUnixTimeSeconds(),
-            ReferansNo: refNo,
-            PdfHash: _pendingPdfHash,   // PDF parse'tan geldiyse set, yoksa null
-            Status: PaymentStatus.Pending,
-            CreatedAt: now,
-            UpdatedAt: now,
-            SyncedAt: null,
-            ApprovedAt: null,
-            RejectedAt: null,
-            RejectReason: null,
-            ShipmentDirective: directive);
-
         try
         {
-            _payments.Insert(payment);
-
-            // Kargo PR F: RecipientPays seçildiyse müşterinin sticky flag'i set
-            // edilir; print template etikete "ALICI ÖDEMELİ" render edecek.
-            // Resolved customer null ise (operatör müşteri girmediyse) bu nokta
-            // hiç çalışmaz — flag set etmek için CustomerId şart.
+            // Kargo PR F: RecipientPays seçildiyse müşterinin yapışkan bayrağı açılır; baskı şablonu etikete
+            // "ALICI ÖDEMELİ" basar. Bayrak için CustomerId şart.
             if (directive == ShipmentDirective.RecipientPays)
             {
                 var resolved = ResolveCustomer();
@@ -433,22 +281,19 @@ public sealed partial class DekontEkleViewModel : ObservableObject
                 {
                     _customers.SetRecipientPaysActive(resolved.Id, true);
                     _log.LogInformation(
-                        "Customer {Id} RecipientPaysActive=true (kargo bedeli al\u0131c\u0131dan tahsil edilecek)",
+                        "Customer {Id} RecipientPaysActive=true (kargo bedeli alıcıdan tahsil edilecek)",
                         resolved.Id);
                 }
             }
 
             _log.LogInformation(
-                "Dekont eklendi: Id={Id} ref={Ref} tutar={Amount} directive={Directive}",
-                payment.Id, payment.ReferansNo, payment.Amount, directive);
+                "Gelen ödeme: tutar={Amount} directive={Directive} — kargo adımı başlıyor",
+                ParseAmount(AmountText), directive);
 
-            // PR-C/2: Kümülatif kargo hook. Vendor "Hold" dediyse Shipment'ı
-            // Held'e aldık ama yine de kümülatif Label'ları attach etmek için
-            // hook'u çağırıyoruz — sonraki yayında threshold kontrol akışı
-            // doğru hesaplasın.
-            // W2-08: adım düzenleyiciden geçer. Mod Off'ta yerel sıra burada,
-            // eşzamanlı biter (görev tamamlanmış döner — bugünkü sonuç); mod
-            // On'da komut arka planda sürer, SaveAsync bekler.
+            // PR-C/2: Kümülatif kargo adımı. Vendor "Hold" dediyse Shipment Held'e alınır ama kümülatif Label'lar yine
+            // bağlanır — sonraki yayında eşik doğru hesaplansın.
+            // W2-08: adım düzenleyiciden geçer. Mod Off'ta yerel sıra burada, eşzamanlı biter (görev tamamlanmış
+            // döner); mod On'da komut arka planda sürer, SaveAsync bekler.
             var step = TryEvaluateShipmentAsync(directive);
             return step.IsCompletedSuccessfully
                 ? new SaveResult(SaveResultKind.Saved, ThresholdContext: step.Result)
@@ -456,29 +301,25 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Dekont kaydedilemedi");
+            _log.LogWarning(ex, "Gelen ödeme kaydedilemedi");
             ErrorMessage = "Kaydetme başarısız: " + ex.Message;
             return new SaveResult(SaveResultKind.Error, Error: ErrorMessage);
         }
     }
 
     /// <summary>
-    /// Payment kaydedildikten sonra kümülatif kargo akışını ilerletir:
-    /// müşterinin açık Shipment'ını bul/oluştur, henüz bağlanmamış Label'ları
-    /// attach et, threshold check yap. Müşteri çözülemezse veya feature
-    /// kapalıysa sessiz çıkar.
+    /// Kümülatif kargo akışını ilerletir: müşterinin açık Shipment'ını bul/oluştur, henüz bağlanmamış Label'ları
+    /// attach et, threshold check yap. Müşteri çözülemezse veya feature kapalıysa sessiz çıkar.
     ///
-    /// Vendor "Hold" seçtiyse Shipment'ı Held'e alır (ApplyDecision); eşik
-    /// aşılsa bile eşik sorusu sorulmaz çünkü vendor zaten beklet dedi.
-    /// Vendor "RecipientPays" seçtiyse Shipment RecipientPays'a alınır —
-    /// yine sorulmaz (sticky kararı).
+    /// Vendor "Hold" seçtiyse Shipment'ı Held'e alır (ApplyDecision); eşik aşılsa bile eşik sorusu sorulmaz çünkü
+    /// vendor zaten beklet dedi. Vendor "RecipientPays" seçtiyse Shipment RecipientPays'a alınır — yine sorulmaz
+    /// (sticky kararı).
     ///
-    /// Yalnız "Normal" directive + threshold aşılmışsa context döndürülür;
-    /// <see cref="SaveAsync"/> kargo eşiği çekmecesini açar.
+    /// Yalnız "Normal" directive + threshold aşılmışsa context döndürülür; <see cref="SaveAsync"/> kargo eşiği
+    /// çekmecesini açar.
     ///
-    /// W2-08: adım <see cref="Services.Sales.IShipmentEditor"/>'dan geçer.
-    /// Mod On'da adım atlanırsa (çevrimdışı, komut ucu yok, ret) dekont yine
-    /// kaydedilmiştir; uyarı <see cref="ShipmentWarning"/>'e yazılır. Hiç
+    /// W2-08: adım <see cref="Services.Sales.IShipmentEditor"/>'dan geçer. Mod On'da adım atlanırsa (çevrimdışı, komut
+    /// ucu yok, ret) ya da adım hata verirse (her iki mod) uyarı <see cref="ShipmentWarning"/>'e yazılır. Hiç
     /// fırlatmaz.
     /// </summary>
     private async Task<ShipmentDecisionContext?> TryEvaluateShipmentAsync(ShipmentDirective directive)
@@ -493,7 +334,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             if (step.Warning is { } warning)
             {
                 ShipmentWarning = warning;
-                _log.LogInformation("Dekont kargo adımı: Customer={Cid} — adım tamamlanmadı, uyarı gösterildi", customer.Id);
+                _log.LogInformation("Gelen ödeme kargo adımı: Customer={Cid} — adım tamamlanmadı, uyarı gösterildi", customer.Id);
             }
             var ctx = step.Threshold;
             if (ctx is not null)
@@ -506,10 +347,12 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            // Hook silent: ana save akışını bozmasın — bir sonraki dekontta
-            // tekrar denenir (Shipment idempotent).
+            // Ana akışı bozmasın — bir sonraki gelen ödemede tekrar denenir (Shipment idempotent). Ama sessiz değil:
+            // 2026-10-19'dan beri çekmece Payment yazmıyor, uyarı olmazsa operatör "oldu" sanır.
             _log.LogWarning(ex,
-                "Shipment evaluate hook hata verdi (silent skip); ana save akışı etkilenmedi.");
+                "Gelen ödeme kargo adımı hata verdi; uyarı şeride yazıldı.");
+            ShipmentWarning = Services.Sync.SalesCommandMessages.DekontShipmentFailed(
+                Services.Sync.SalesCommandMessages.ContentConflict);
             return null;
         }
     }
@@ -615,19 +458,14 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     private string? Validate()
     {
-        if (string.IsNullOrWhiteSpace(PayerName))
-            return "Ödeyenin adı boş olamaz.";
-        if (string.IsNullOrWhiteSpace(ReferansNo))
-            return "Referans no boş olamaz.";
+        if (string.IsNullOrWhiteSpace(CustomerPlatform) || string.IsNullOrWhiteSpace(CustomerUsername))
+            return "Müşteri gerekli: platformu ve kullanıcı adını gir.";
 
         var amount = ParseAmount(AmountText);
         if (amount is null)
             return "Tutar geçersiz (örn: 250,50 veya 250.50).";
         if (amount.Value <= 0)
             return "Tutar 0'dan büyük olmalı.";
-
-        if (PaidAt > DateTime.Today.AddDays(1))
-            return "Dekont tarihi gelecekte olamaz.";
 
         return null;
     }

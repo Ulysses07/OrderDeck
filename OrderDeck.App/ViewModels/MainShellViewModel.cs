@@ -1570,18 +1570,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
-        // Form ViewModel'i DI'dan geliyor (11 bağımlılığı var); kaydetme
-        // zincirini kendisi yürütüyor, kabuğun sonucu okumasına gerek yok.
+        // "Gelen Ödemeler" (2026-10-19'a kadar "Yeni Dekont"). Form ViewModel'i
+        // DI'dan geliyor; kaydetme zincirini kendisi yürütüyor, kabuğun sonucu
+        // okumasına gerek yok. Payment satırı yazmaz (bkz. DekontEkleViewModel).
         var vm = global::OrderDeck.App.App.Host.Services
             .GetRequiredService<DekontEkleViewModel>();
 
-        await _drawers.ShowAsync("Yeni Dekont",
+        await _drawers.ShowAsync(DekontEkleViewModel.DrawerTitle,
             d => new Views.Drawers.DekontEkleDrawer(d, vm));
-        // Payment outbox 30sn içinde sync'ler — UI feedback yok, mobile app
-        // listede otomatik görünür.
-        // W2-08 (spec 2026-10-13 §5.8): dekont kaydedildi ama kargo adımı ya da
-        // eşik kararı uygulanamadıysa (mod On: çevrimdışı, komut ucu yok, ret)
-        // sebebi satış şeridinde — açılır pencere yok, "Tamam" kapatır.
+        // W2-08 (spec 2026-10-13 §5.8): kargo adımı ya da eşik kararı
+        // uygulanamadıysa (mod On: çevrimdışı, komut ucu yok, ret) sebebi
+        // satış şeridinde — açılır pencere yok, "Tamam" kapatır.
         if (vm.ShipmentWarning is { } shipmentWarning)
             ShowSalesNotice([], [shipmentWarning]);
     }

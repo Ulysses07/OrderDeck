@@ -23,7 +23,6 @@ using OrderDeck.Licensing.Backup;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Licensing.Storage;
 using OrderDeck.Licensing.Trial;
-using OrderDeck.PdfParsing;
 using OrderDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -108,8 +107,6 @@ public sealed class AppHost : IDisposable
         // değerler ayrışabilir.
         services.AddSingleton<BroadcastCodeResolver>();
         services.AddSingleton<CatalogPhotoCache>();
-        // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
-        services.AddSingleton<PdfDekontParser>();
         // Satış senkronu W3 (spec 2026-10-13 §6.2, Y4): kargo eşiği ve ücretinin TEK okuma noktası — mod Off'ta CANLI
         // AppSettings örneği, mod On'da lisans geneli ayarın önbelleği (SalesSyncState). Tek örnek; okuyucular (ödeme
         // isteği, #508 planı, dekont eşleştirmesi, eşik değerlendirmesi, dekont ekranı) bunu alır (CustomerSyncDiTests
@@ -809,8 +806,9 @@ public sealed class AppHost : IDisposable
         services.AddSingleton(System.Windows.Threading.Dispatcher.CurrentDispatcher);
         services.AddHostedService<Services.Diagnostics.UiHeartbeatHostedService>();
 
-        // Manuel dekont ekleme formu (Payment sync PR C). Faz 2b'de çekmeceye
-        // döndü: view kaydı yok, kabuk çekmeceyi ViewModel'le kendi kuruyor.
+        // "Gelen Ödemeler" çekmecesi (eski manuel dekont formu, Payment sync PR C;
+        // 2026-10-19'dan beri Payment yazmaz, yalnız kargo zincirini yürütür). Faz 2b'de
+        // çekmeceye döndü: view kaydı yok, kabuk çekmeceyi ViewModel'le kendi kuruyor.
         services.AddTransient<ViewModels.DekontEkleViewModel>();
 
         // Intake form settings (Phase 4f Task 10)

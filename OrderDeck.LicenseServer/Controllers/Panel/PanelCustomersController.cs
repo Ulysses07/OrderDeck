@@ -324,8 +324,11 @@ public sealed class PanelCustomersController : ControllerBase
     /// alanda gelecek. Bu düşüş olmasa panel o müşteriyi @kullanıcı adıyla
     /// gösterirdi. Eski satırlarda FullName zaten takma adı taşıdığı için
     /// davranış değişmez.
+    ///
+    /// <para>Panelin kargo listesi de (<see cref="PanelShipmentsController"/>)
+    /// aynı adı göstermek için bu kuralı kullanır.</para>
     /// </summary>
-    private static string? ResolveDisplayName(string? fullName, string? displayName)
+    internal static string? ResolveDisplayName(string? fullName, string? displayName)
         => string.IsNullOrWhiteSpace(fullName) ? displayName : fullName;
 
     private static (string? sortValue, string? customerId) ParseCursor(string? cursor)

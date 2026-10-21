@@ -36,9 +36,12 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 ///
 /// <para>Sürüm geçmişi: <c>kvkk-2026-10-13</c> politika orderdeckapp.com'a
 /// yeni sekmede giden bağlantıydı; <c>kvkk-2026-10-14</c> politika metni
-/// formun içinde açılan kutuda.</para>
+/// formun içinde açılan kutuda; <c>kvkk-2026-10-19</c> banka hesap
+/// hareketleri (politika Bölüm 1.4, saklama ve haklar) ve form paragrafında
+/// havale cümlesi. TASLAK: tarih yer tutucu, yayın günü gerçek tarihe
+/// çekilir (yürürlük tarihiyle birlikte).</para>
 /// </summary>
 public static class KvkkNotice
 {
-    public const string TextVersion = "kvkk-2026-10-14";
+    public const string TextVersion = "kvkk-2026-10-19";
 }
