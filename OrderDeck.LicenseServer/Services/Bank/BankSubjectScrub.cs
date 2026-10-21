@@ -1,4 +1,7 @@
+using System.Text.Json;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -7,7 +10,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// banka veri talebi aracı (BankSubjectRequestService) aynı kuralları kullanır. Yeniden uygulanabilir (idempotent); kaydetmez.
 /// <para>Hareket: açıklama, gönderen adı ve ham kayıt silinir; tutar, tarih, kısaltılmış IBAN ve tanıma kodu kalır (özetin
 /// silinmesi avukat kararı). Eşleşme: kişinin müşteri kimliği ve gerekçe metni silinir; satır ölçüm kaydı olarak kalır, ölçüm
-/// sonucu durumdan okunur (<see cref="PaymentMatchMetrics"/>).</para>
+/// sonucu durumdan okunur (<see cref="PaymentMatchMetrics"/>). Elle eşleme denetimi: satır kalır, müşteriyi gösteren ayrıntı
+/// silinir (<see cref="ManualMatchAudits"/>).</para>
 /// </summary>
 public static class BankSubjectScrub
 {
@@ -66,4 +70,28 @@ public static class BankSubjectScrub
         match.Evidence = null;
         match.UpdatedAt = now;
     }
+
+    /// <summary>Elle eşleme denetim satırının ayrıntısının imha kaydı hedefi. bank-data-cleanup'ın eski satır çevirmesi de bunu
+    /// yazar: aynı sütunun imhası tek hedef adıyla gruplanır.</summary>
+    public const string ManualMatchAuditTarget = "AuditLogs.Details";
+
+    /// <summary>Elle eşleme denetim satırının (<see cref="AuditEvents.BankMatchManual"/>) müşteriyi gösteren ayrıntısı:
+    /// <c>{"wpfCustomerId":"…"}</c>. Banka Eşleştirme sayfası aynı metni AuditService'le yazar (camelCase); iki taraf da testte
+    /// metin olarak sabit (<c>AdminBankaEslestirmePageTests</c>, <c>ShopperPurgeServiceTests</c>).</summary>
+    public static string ManualMatchAuditDetails(Guid wpfCustomerId) => JsonSerializer.Serialize(new { wpfCustomerId });
+
+    /// <summary>Bu müşterilerden birini gösteren elle eşleme denetim satırları (KVKK Ö-14). Satır 24 ay durur ve hareketi
+    /// (tutar, tarih, maskeli IBAN) hedefler: eşleşme satırında müşteriyi boşaltan silme bunların ayrıntısını da boşaltır
+    /// (<see cref="ManualMatchAudit"/>), yoksa "bu kişi bu havaleyi ödedi" bağı denetimde yaşardı. Hedef hareket (TargetId)
+    /// süzülmez: hareket 180 günde silinir, denetim satırı kalır. AuditLogs'ta ayrıntı indeksi yok, sorgu tabloyu tarar (seyrek,
+    /// elle tetiklenen silme).</summary>
+    public static IQueryable<AuditLogEntry> ManualMatchAudits(IQueryable<AuditLogEntry> audits, IEnumerable<Guid> wpfCustomerIds)
+    {
+        var details = wpfCustomerIds.Select(ManualMatchAuditDetails).Distinct().ToList();
+        return audits.Where(a => a.EventType == AuditEvents.BankMatchManual && a.Details != null && details.Contains(a.Details));
+    }
+
+    /// <summary>Denetim satırında müşterinin kimliği gider; satır (hangi yöneticinin hangi havaleyi ne zaman elle eşlediği)
+    /// hesap verebilirlik için kalır.</summary>
+    public static void ManualMatchAudit(AuditLogEntry audit) => audit.Details = null;
 }

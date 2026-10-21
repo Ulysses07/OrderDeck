@@ -171,7 +171,7 @@ public class IndexModel : PageModel
             return Back();
         }
         // Karar kaydedildi: audit istek iptaliyle düşmesin. Ayrıntı kullanıcı adı değil kayıt numarası (KVKK Ö-14: satır 24 ay
-        // durur, KVKK silmesi onu temizlemez).
+        // durur). Biçim BankSubjectScrub.ManualMatchAuditDetails'inkiyle aynı: KVKK silmesi kişinin satırını onunla bulup boşaltır.
         await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(),
             new { wpfCustomerId = customerIds[0] }, CancellationToken.None);
         TempData["Success"] = "Eşlendi.";

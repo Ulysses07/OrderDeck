@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
@@ -1290,5 +1291,53 @@ public sealed class ShopperPurgeServiceTests
             .Which.RowCount.Should().Be(1);
         records.Should().ContainSingle(r => r.Target == "Payments.PersonalFields").Which.RowCount.Should().Be(2);
         records.Should().ContainSingle(r => r.Target == ShopperPurgeService.MediaTarget).Which.RowCount.Should().Be(2);
+    }
+
+    /// <summary>Görev 16'dan sonraki elle eşleme denetim satırı; ayrıntı sayfanın AuditService'le yazdığı metin
+    /// (<c>AdminBankaEslestirmePageTests</c> aynı metni sabitler).</summary>
+    private static AuditLogEntry ManualMatchAudit(Guid txId, Guid wpfCustomerId) => new()
+    {
+        Id = Guid.NewGuid(), EventType = AuditEvents.BankMatchManual, TargetType = AuditTargets.BankTransaction,
+        TargetId = txId.ToString(), Details = $"{{\"wpfCustomerId\":\"{wpfCustomerId}\"}}", OccurredAt = DateTimeOffset.UtcNow,
+        AdminId = Guid.NewGuid(), AdminUsername = "admin",
+    };
+
+    [Fact]
+    public async Task Elle_eslemenin_denetim_satirinda_silinen_kisinin_ve_kopyasinin_kimligi_bosaltilir()
+    {
+        // KVKK Ö-14, K-7: elle eşleme denetimi müşterinin kayıt numarasını taşır ve 24 ay durur. 3b eşleşme satırında kimliği
+        // boşaltarak "bu kişi bu havaleyi ödedi" bağını koparır; denetim satırı onu taşımaya devam etmemeli (hareketin tutarı,
+        // tarihi ve maskeli IBAN'ı kalır, projeksiyon kullanıcı adını korur: kimlik kişiye çözülürdü). Ayrıntı boşalır, satır
+        // (hangi yöneticinin hangi havaleyi elle eşlediği) kalır. Elle eşleme o günkü asıl kaydı yazar: kayıt sonradan başka bir
+        // kayda birleştirildiyse eski kimlik (kopya) de kişinindir. Başka müşterinin satırına dokunulmaz.
+        using var db = NewDb();
+        var (shopper, license, purgedId) = SeedLinkedShopper(db);
+        var copyId = Guid.NewGuid();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = copyId, LicenseId = license.Id, Platform = "instagram",
+            Username = "ornek_m", MergedIntoId = purgedId, UpdatedAt = DateTimeOffset.UtcNow.AddDays(-5) });
+        var tx = BankTx(license);
+        db.BankTransactions.Add(tx);
+        var ofPurged = ManualMatchAudit(tx.Id, purgedId);
+        var ofCopy = ManualMatchAudit(Guid.NewGuid(), copyId);   // hareketi 180 günde silinmiş: satır 24 ay durur
+        var ofOther = ManualMatchAudit(tx.Id, Guid.NewGuid());
+        db.AuditLogs.AddRange(ofPurged, ofCopy, ofOther);
+        await db.SaveChangesAsync();
+        var actor = $"yonetici-{Guid.NewGuid():N}";
+        var requestId = Guid.NewGuid();
+
+        await Build(db).Service.PurgeAsync(shopper.Id, actor, requestId, default);
+
+        var audits = await db.AuditLogs.AsNoTracking().ToDictionaryAsync(a => a.Id);
+        audits[ofPurged.Id].Details.Should().BeNull();
+        audits[ofPurged.Id].TargetId.Should().Be(tx.Id.ToString(), "hangi havalenin elle eşlendiği kalır");
+        audits[ofCopy.Id].Details.Should().BeNull("birleştirilmiş kopyanın kimliği de kişinindir");
+        audits[ofOther.Id].Details.Should().Be(ofOther.Details, "başka müşterinin satırı kalır");
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.Target == "AuditLogs.Details").ToListAsync())
+            .Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            {
+                LicenseId = (Guid?)license.Id, Action = DataDestruction.Actions.Nulled, RowCount = 2,
+                Trigger = DataDestruction.Triggers.ShopperPurge, Criterion = ShopperPurgeService.PurgeCriterion,
+                SubjectId = (Guid?)shopper.Id, RequestId = (Guid?)requestId, Actor = actor,
+            });
     }
 }

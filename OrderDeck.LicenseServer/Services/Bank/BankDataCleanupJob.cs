@@ -607,15 +607,16 @@ public sealed class BankDataCleanupJob
     /// hareketin lisansındaki asıl kayıtlarda aranır (birleştirilmiş kopya kimliği asıl kayıtla taşır, kişi asıl kayıttır;
     /// birleştirme eşleşmeyi de oraya taşır). Tek kayıt bulunursa o; birden çoksa (aynı ad başka platformda) yalnız eşleşmenin
     /// bugünkü müşterisi onlardan biriyse o, değilse hangisi olduğu tahmin edilmez. KVKK'yla silinmiş müşteriye çevrilmez:
-    /// silme hareketle bağını kopardı (Görev 15), denetim satırı onu yeniden kurmamalı. Bulunamayan, belirsiz ya da hareketi
-    /// silinmiş (180 gün; lisansı bilinmez) satırın ayrıntısı boşaltılır.</para>
+    /// silme bağı eşleşmede (Görev 15) ve yeni biçimli denetim satırında (<c>ShopperPurgeService</c> 3c,
+    /// <see cref="BankSubjectScrub.ManualMatchAudits"/>) kopardı, eski satır onu yeniden kurmamalı. Bulunamayan, belirsiz ya da
+    /// hareketi silinmiş (180 gün; lisansı bilinmez) satırın ayrıntısı boşaltılır.</para>
     /// Lisans verilirse yalnız o lisansın hareketini hedefleyen satırlar; hareketi silinmiş satırları yalnız lisanssız koşu işler.
     /// Uygulamanın önceki adımlarının sileceği hareket kuru koşuda da silinmiş sayılır (sınıf özeti). İmha kaydı satırın lisansı
     /// başına: kimliğe çevirme <see cref="DataDestruction.Actions.Masked"/>, boşaltma <see cref="DataDestruction.Actions.Nulled"/>.
     /// Az satır (pilot, 28.09'dan beri): tek seferde.</summary>
     private async Task RewriteManualMatchAuditAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
     {
-        const string target = "AuditLogs.Details", criterion = "elle eşleme denetiminde kullanıcı adı (Ö-14)";
+        const string target = BankSubjectScrub.ManualMatchAuditTarget, criterion = "elle eşleme denetiminde kullanıcı adı (Ö-14)";
         var rows = await _db.AuditLogs
             .Where(a => a.EventType == AuditEvents.BankMatchManual && a.Details != null && a.Details.Contains("\"username\""))
             .ToListAsync(ct);
@@ -653,7 +654,7 @@ public sealed class BankDataCleanupJob
                     : decided.TryGetValue(txId, out var actual) ? found.FirstOrDefault(c => c.Id == actual) : null;
                 if (pick is { Purged: false }) customer = pick.Id;
             }
-            a.Details = customer is { } id ? JsonSerializer.Serialize(new { wpfCustomerId = id }) : null;
+            a.Details = customer is { } id ? BankSubjectScrub.ManualMatchAuditDetails(id) : null;
             (customer is null ? cleared : converted).Add(owner);
         }
         r.AuditUsernamesRewritten = converted.Count + cleared.Count;

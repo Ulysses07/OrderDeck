@@ -54,7 +54,9 @@ public static class AuditEvents
     /// kimliği.</summary>
     public const string ObifinCopyDeletionConfirm = "obifin.copy.confirm";
     // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız müşteri kayıt numarası (WpfCustomerId) girer:
-    // kullanıcı adı, açıklama, tutar, IBAN GİRMEZ (KVKK Ö-14; Görev 16'dan önceki satırları bank-data-cleanup çevirir).
+    // kullanıcı adı, açıklama, tutar, IBAN GİRMEZ (KVKK Ö-14; Görev 16'dan önceki satırları bank-data-cleanup çevirir). Biçim
+    // BankSubjectScrub.ManualMatchAuditDetails; KVKK silmesi kişinin satırlarında ayrıntıyı boşaltır
+    // (BankSubjectScrub.ManualMatchAudits).
     public const string BankMatchManual = "bank.match.manual";
     public const string BankMatchUnmatch = "bank.match.unmatch";
     /// <summary>Banka yönetim sayfasının görüntülenmesi (KVKK Ö-4; Kurul 2018/10 3-c): açıklama, kanıt, maske gösteren sayfanın

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
@@ -190,6 +191,93 @@ public sealed class ShopperPurgeServiceConcurrencyTests : IAsyncLifetime
         records.Where(r => r.Target == "BankTransactions.Description+CounterpartyName+RawJson").Sum(r => r.RowCount)
             .Should().Be(2, "eşleşmenin hareketi ve aynı IBAN'dan gelen öteki hareket");
         result!.BankTransactionsScrubbed.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Eszamanli_budanan_denetim_satiriyla_carpisan_silme_tazeleyip_tamamlanir()
+    {
+        // KVKK silmesi elle eşleme denetiminde kişinin kimliğini de boşaltır (Ö-14), yani denetim satırı da kaydedilir. Silme
+        // satırı okuduktan sonra 24 aylık denetim budaması (audit-retention) onu silerse UPDATE 0 satır etkiler. Silme 500 ile
+        // geri alınmaz: tazelenen satır ayrılır, kişisel verinin geri kalanı yazılır.
+        var s = await SeedAsync();
+        var auditId = await SeedManualMatchAuditAsync(s);
+        var prune = new BeforeMatchUpdate(async () =>
+        {
+            await using var other = NewDb(interceptor: null);
+            await other.AuditLogs.Where(a => a.Id == auditId).ExecuteDeleteAsync();
+        });
+        await using var db = NewDb(prune);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        prune.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        (await verify.Shoppers.AsNoTracking().SingleAsync(x => x.Id == s.ShopperId)).FullName.Should().Be("[Silindi]");
+        (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).Evidence.Should().BeNull();
+        (await verify.AuditLogs.AsNoTracking().AnyAsync(a => a.Id == auditId)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Eszamanli_elle_esleme_silinen_kisiye_denetim_yazarsa_yeniden_deneme_onu_da_bosaltir()
+    {
+        // Silme satırı okuduktan sonra elle eşleme satırı silinen kişiye bağlar, sayfa da kararın ardından denetim satırını yazar.
+        // Yeniden deneme tazelenen satırın kimliğini boşaltır; arada yazılmış denetim satırı da kişinin kimliğini taşımamalı.
+        // İlk okumanın satırı ve sonradan bulunan satır ayrı kayıt satırlarıyla imha kaydına girer.
+        var s = await SeedAsync();
+        var earlyId = await SeedManualMatchAuditAsync(s);
+        var lateId = Guid.Empty;
+        var manual = new BeforeMatchUpdate(async () => lateId = await ManualMatchConcurrentlyAsync(s));
+        await using var db = NewDb(manual);
+
+        var result = await Service(db).PurgeAsync(s.ShopperId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        manual.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        (await verify.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == s.MatchId)).ActualWpfCustomerId
+            .Should().BeNull("tazelenen satırda silinen kişinin kimliği boşaltılır");
+        var audits = await verify.AuditLogs.AsNoTracking().Where(a => a.Id == earlyId || a.Id == lateId)
+            .ToDictionaryAsync(a => a.Id, a => a.Details);
+        audits.Should().HaveCount(2);
+        audits[earlyId].Should().BeNull();
+        audits[lateId].Should().BeNull("eşzamanlı elle eşlemenin denetim satırı da silinen kişinindir");
+        (await verify.DataDestructionRecords.AsNoTracking()
+                .Where(r => r.SubjectId == s.ShopperId && r.Target == "AuditLogs.Details").Select(r => r.RowCount).ToListAsync())
+            .Should().BeEquivalentTo(new[] { 1, 1 }, "ilk okuma ve yeniden denemenin bulduğu ayrı satırlarda");
+    }
+
+    /// <summary>Elle eşleme denetim satırı (Görev 16'dan sonraki biçim: sayfanın yazdığı ayrıntı) eşleşmenin hareketine; ayrı
+    /// bağlamda yazılır.</summary>
+    private async Task<Guid> SeedManualMatchAuditAsync(Seeded s)
+    {
+        await using var db = NewDb(interceptor: null);
+        var txId = await db.PaymentMatches.Where(m => m.Id == s.MatchId).Select(m => m.BankTransactionId).SingleAsync();
+        var row = new AuditLogEntry
+        {
+            Id = Guid.NewGuid(), EventType = AuditEvents.BankMatchManual, TargetType = AuditTargets.BankTransaction,
+            TargetId = txId.ToString(), Details = $"{{\"wpfCustomerId\":\"{s.WpfCustomerId}\"}}", OccurredAt = DateTimeOffset.UtcNow,
+            AdminId = Guid.NewGuid(), AdminUsername = "admin",
+        };
+        db.AuditLogs.Add(row);
+        await db.SaveChangesAsync();
+        return row.Id;
+    }
+
+    /// <summary>Elle eşleme gibi: satırı ayrı bir bağlamda silinen kişiye bağlar (jeton ilerler), ardından sayfanın denetim
+    /// satırını yazar.</summary>
+    private async Task<Guid> ManualMatchConcurrentlyAsync(Seeded s)
+    {
+        await using (var other = NewDb(interceptor: null))
+        {
+            var m = await other.PaymentMatches.SingleAsync(x => x.Id == s.MatchId);
+            m.ActualWpfCustomerId = s.WpfCustomerId;
+            m.DecidedAt = DateTimeOffset.UtcNow;
+            m.Status = PaymentMatchStatus.ConfirmedByHuman;
+            m.UpdatedAt = DateTimeOffset.UtcNow;
+            await other.SaveChangesAsync();
+        }
+        return await SeedManualMatchAuditAsync(s);
     }
 
     private static string NewIbanHash() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";

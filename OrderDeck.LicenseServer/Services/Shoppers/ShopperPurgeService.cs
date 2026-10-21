@@ -349,6 +349,24 @@ public sealed class ShopperPurgeService
         foreach (var m in scrubbedMatches) ScrubMatch(m, purgedCustomers, now);
         foreach (var t in scrubbedTransactions) BankSubjectScrub.Transaction(t, now);
 
+        // 3c. Elle eşleme denetimi (KVKK Ö-14, K-7). bank.match.manual ayrıntısı kişinin kayıt numarasını taşır
+        //     ({"wpfCustomerId":…}, Görev 16) ve 24 ay durur. 3b eşleşme satırında kimliği boşaltarak "bu kişi bu havaleyi
+        //     ödedi" bağını koparır; denetim satırı onu taşımaya devam etmesin: hareketin tutarı, tarihi ve maskeli IBAN'ı
+        //     kalır, projeksiyon kullanıcı adını korur (avukat kararı), kimlik kişiye çözülürdü. Ayrıntı boşalır; satır (hangi
+        //     yöneticinin hangi havaleyi elle eşlediği) kalır. Aranan kimlikler kişinin bu lisanstaki kayıtları VE onlara
+        //     birleştirilmiş kopyalar: elle eşleme o günkü asıl kaydı yazar, birleştirme eşleşmeyi taşır, denetim satırını
+        //     taşımaz. Görev 16'dan önceki {"username":…} satırlarını bank-data-cleanup çevirir (silinmiş müşteriye çevirmez,
+        //     boşaltır). Satır yeniden denemede tazelenir (SaveAsync); sayım boşaltmadan ÖNCE, lisans ayrıntıdan.
+        var auditCustomers = new Dictionary<Guid, Guid>();   // kimlik → lisans
+        foreach (var group in projectionKeys.GroupBy(k => k.LicenseId))
+            foreach (var id in await WithMergedCopiesAsync(group.Key, group.Select(k => k.WpfCustomerId), ct))
+                auditCustomers[id] = group.Key;
+        var manualMatchAudits = auditCustomers.Count == 0
+            ? new List<AuditLogEntry>()
+            : await BankSubjectScrub.ManualMatchAudits(_db.AuditLogs, auditCustomers.Keys).ToListAsync(ct);
+        var auditLicenses = LicensesOf(manualMatchAudits, auditCustomers);
+        foreach (var a in manualMatchAudits) BankSubjectScrub.ManualMatchAudit(a);
+
         // 4. Bağlı satırlar. Hepsi ya doğrudan kişisel veri taşıyor
         //    (kullanıcı adı, cihaz kimliği, IP) ya da yalnızca oturum
         //    açmaya yarıyor; hiçbirinin mali kayıt değeri yok.
@@ -426,8 +444,10 @@ public sealed class ShopperPurgeService
         RecordPerLicense(linkedMatches, m => m.LicenseId, "PaymentMatches.WpfCustomerId+Evidence", nulled);
         RecordPerLicense(evidenceOnlyMatches, m => m.LicenseId, "PaymentMatches.Evidence", nulled);
         RecordPerLicense(scrubbedTransactions, t => t.LicenseId, TransactionTextTarget, nulled);
+        RecordPerLicense(auditLicenses, l => l, BankSubjectScrub.ManualMatchAuditTarget, nulled);
 
-        var late = await SaveAsync(new PendingBankScrub(scrubbedMatches, scrubbedTransactions, ibanMemories, purgedCustomers),
+        var late = await SaveAsync(new PendingBankScrub(scrubbedMatches, scrubbedTransactions, ibanMemories, purgedCustomers,
+                manualMatchAudits, auditCustomers),
             scrubbedOrders, Record, now, ct);
 
         return new ShopperPurgeResult(
@@ -452,6 +472,15 @@ public sealed class ShopperPurgeService
     /// <summary>Satır silinen kişinin bu lisanstaki müşteri kimliklerinden birine bağlı mı (öneri ya da gerçek müşteri).</summary>
     private static bool IsLinked(PaymentMatch match, ILookup<Guid, Guid> purgedCustomers)
         => purgedCustomers[match.LicenseId].Any(id => BankSubjectScrub.References(match, id));
+
+    /// <summary>Denetim satırlarının lisansları (satır başına bir; imha kaydı lisans başına): ayrıntının gösterdiği kimliğin
+    /// lisansı, AuditLogs'ta lisans sütunu yok. Ayrıntı boşaltılmadan ÖNCE çağrılır.</summary>
+    private static List<Guid?> LicensesOf(IEnumerable<AuditLogEntry> audits, IReadOnlyDictionary<Guid, Guid> customers)
+    {
+        var byDetails = customers.ToDictionary(kv => BankSubjectScrub.ManualMatchAuditDetails(kv.Key), kv => kv.Value,
+            StringComparer.OrdinalIgnoreCase);
+        return audits.Select(a => a.Details is { } d && byDetails.TryGetValue(d, out var l) ? (Guid?)l : null).ToList();
+    }
 
     /// <summary>Eşleşme satırına 3b kuralını uygular: satırın lisansındaki silinen her kimlik için
     /// <see cref="BankSubjectScrub.MatchForCustomer"/>. Kişiye bağlı satırda kimlik ve kanıt, bağlı olmayan (named) satırda
@@ -498,8 +527,18 @@ public sealed class ShopperPurgeService
     /// <see cref="Order.SyncVersion"/> jetondur ve eşzamanlı bir
     /// <c>orders/sync</c> güncellemesi onu ilerletir. Sipariş tazelenir (eşzamanlı
     /// yazanın birimleri kalır; o yol metne dokunmaz), metin yeniden boşaltılır.
-    /// Çakışan girdiler eşleşme, hareket, hafıza ya da sipariş olabilir; hepsi her
-    /// zaman birlikte tazelenir.</para>
+    /// Çakışan girdiler eşleşme, hareket, hafıza, sipariş ya da denetim satırı
+    /// olabilir; hepsi her zaman birlikte tazelenir.</para>
+    ///
+    /// <para>Elle eşleme denetim satırının (adım 3c) jetonu yok, ama okunduktan sonra
+    /// 24 aylık denetim budaması onu silebilir: UPDATE 0 satır etkiler. Tazelenir,
+    /// silinmiş olan ayrılır, kalanın ayrıntısı yeniden boşaltılır. Tazelenen eşleşmeyi
+    /// eşzamanlı bir elle eşleme silinen kişiye bağladıysa sayfa kararın ardından
+    /// denetim satırını yazar: kişinin denetim satırları yeniden sorgulanır
+    /// (<see cref="ScrubLateManualMatchAuditsAsync"/>), yeni bulunan ayrı kayıtla
+    /// boşaltılır. Bu silmenin kaydından SONRA yazılan satırı yakalamaz: elle eşleme
+    /// silinmiş müşteriyi reddeder (<c>PurgedAt</c>); kalan pencere, eşlemenin müşteri
+    /// denetimiyle sayfanın denetim satırını yazması arasıdır.</para>
     /// </summary>
     /// <returns>Yalnız yeniden denemenin bulduğu, eşzamanlı öğrenilmiş hafızalar ve onların hareketleri (sonuca eklenir).</returns>
     private async Task<(int Memories, int Transactions)> SaveAsync(
@@ -518,11 +557,12 @@ public sealed class ShopperPurgeService
             && ex.Entries.All(e => (e.Entity is PaymentMatch && bank.Matches.Count > 0)
                 || (e.Entity is BankTransaction && bank.Transactions.Count > 0)
                 || (e.Entity is CustomerIbanMemory && bank.IbanMemories.Count > 0)
+                || (e.Entity is AuditLogEntry && bank.ManualMatchAudits.Count > 0)
                 || (e.Entity is Order && scrubbedOrders.Count > 0)))
         {
             _log.LogInformation(
-                "[ShopperPurge] Banka eşleşmesi, hareket metni, IBAN hafızası ya da sipariş metni boşaltılırken eşzamanlı bir "
-                + "yazıyla çakıştı; satırlar tazelenip bir kez yeniden deneniyor");
+                "[ShopperPurge] Banka eşleşmesi, hareket metni, IBAN hafızası, elle eşleme denetimi ya da sipariş metni "
+                + "boşaltılırken eşzamanlı bir yazıyla çakıştı; satırlar tazelenip bir kez yeniden deneniyor");
             // Yalnız bildirilen girdi değil, boşaltılan her satır tazelenir:
             // SQL Server'da EF ilk çakışan komutta durur, sonraki çakışan satırı
             // bildirmez. Küme tek kişinin satırları, küçük.
@@ -557,18 +597,51 @@ public sealed class ShopperPurgeService
                 if (entry.State == EntityState.Detached) continue;
                 ScrubOrderText(o, now);
             }
+            foreach (var a in bank.ManualMatchAudits)
+            {
+                var entry = _db.Entry(a);
+                await entry.ReloadAsync(ct);
+                // Denetim budaması arada sildi (ayrıldı); kalanın ayrıntısı yeniden boşaltılır.
+                if (entry.State == EntityState.Detached) continue;
+                BankSubjectScrub.ManualMatchAudit(a);
+            }
             var late = await ScrubLateIbanMemoriesAsync(bank, record, now, ct);
+            await ScrubLateManualMatchAuditsAsync(bank, record, ct);
             await _db.SaveChangesAsync(ct);
             return late;
         }
     }
 
-    /// <summary>3b'nin kaydedilmeyi bekleyen işi; yeniden deneme bunları tazeler.</summary>
+    /// <summary>3b ve 3c'nin kaydedilmeyi bekleyen işi; yeniden deneme bunları tazeler. <paramref name="AuditCustomers"/>:
+    /// 3c'nin aradığı kimlikler (birleştirilmiş kopyalar dahil) → lisans.</summary>
     private sealed record PendingBankScrub(
         IReadOnlyCollection<PaymentMatch> Matches,
         IReadOnlyCollection<BankTransaction> Transactions,
         IReadOnlyCollection<CustomerIbanMemory> IbanMemories,
-        ILookup<Guid, Guid> PurgedCustomers);
+        ILookup<Guid, Guid> PurgedCustomers,
+        IReadOnlyCollection<AuditLogEntry> ManualMatchAudits,
+        IReadOnlyDictionary<Guid, Guid> AuditCustomers);
+
+    /// <summary>
+    /// Yeniden denemede, ilk okumadan sonra yazılmış elle eşleme denetim satırı: eşzamanlı bir elle eşleme tazelenen eşleşmeyi
+    /// silinen kişiye bağladıysa sayfa kararın ardından denetim satırını yazar. 3b kimliği eşleşmede boşaltır; denetim satırı
+    /// kalsaydı bağ orada dururdu. Ayrıntı boşaltılır; ilk okumanın kaydı zaten eklendi, bunların kaydı ayrı satırdır.
+    /// </summary>
+    private async Task ScrubLateManualMatchAuditsAsync(
+        PendingBankScrub bank, Action<Guid?, string, string, int> record, CancellationToken ct)
+    {
+        if (bank.AuditCustomers.Count == 0) return;
+        var known = bank.ManualMatchAudits.Select(a => a.Id).ToHashSet();
+        // İlk okumanın satırları veritabanında henüz dolu: sorguya yeniden girer (izlenen örnek döner), known ayırır.
+        var late = (await BankSubjectScrub.ManualMatchAudits(_db.AuditLogs, bank.AuditCustomers.Keys).ToListAsync(ct))
+            .Where(a => !known.Contains(a.Id))
+            .ToList();
+        if (late.Count == 0) return;
+        var licenses = LicensesOf(late, bank.AuditCustomers);
+        foreach (var a in late) BankSubjectScrub.ManualMatchAudit(a);
+        foreach (var g in licenses.GroupBy(l => l))
+            record(g.Key, BankSubjectScrub.ManualMatchAuditTarget, DataDestruction.Actions.Nulled, g.Count());
+    }
 
     /// <summary>
     /// Yeniden denemede, ilk okumadan sonra silinen kişi adına öğrenilmiş IBAN hafızası: eşzamanlı yazan tazelenen eşleşmeyi
@@ -613,12 +686,10 @@ public sealed class ShopperPurgeService
     }
 
     /// <summary>
-    /// Silinen asıl kayıtlara ve kopyalarına bağlı, metni henüz boşaltılmamış
-    /// siparişler (adım 3a). Kopyalar varsayılan sorgulardan gizli; burada açıkça
-    /// istenir ve zincir <see cref="SalesCustomerDirectory.MaxHops"/> adım geriye
-    /// izlenir (CustomerIdResolver'ın ileri yönde izlediği kadar). Zaten
-    /// boşaltılmış satır yeniden yazılmaz: tekrarlanan silme rowversion'ı ve akışı
-    /// boşuna ilerletmez.
+    /// Silinen asıl kayıtlara ve kopyalarına (<see cref="WithMergedCopiesAsync"/>)
+    /// bağlı, metni henüz boşaltılmamış siparişler (adım 3a). Zaten boşaltılmış
+    /// satır yeniden yazılmaz: tekrarlanan silme rowversion'ı ve akışı boşuna
+    /// ilerletmez.
     /// </summary>
     private async Task<List<Order>> OrdersWithTextAsync(
         IReadOnlyCollection<WpfCustomerProjection> purged, CancellationToken ct)
@@ -627,20 +698,7 @@ public sealed class ShopperPurgeService
         foreach (var group in purged.GroupBy(p => p.LicenseId))
         {
             var licenseId = group.Key;
-            var ids = group.Select(p => p.Id).ToHashSet();
-            var frontier = ids.ToList();
-            for (var hop = 0; hop < SalesCustomerDirectory.MaxHops && frontier.Count > 0; hop++)
-            {
-                var targets = frontier;
-                var copies = await _db.WpfCustomerProjections
-                    .IgnoreQueryFilters()
-                    .Where(p => p.LicenseId == licenseId
-                        && p.MergedIntoId != null
-                        && targets.Contains(p.MergedIntoId.Value))
-                    .Select(p => p.Id)
-                    .ToListAsync(ct);
-                frontier = copies.Where(ids.Add).ToList();
-            }
+            var ids = await WithMergedCopiesAsync(licenseId, group.Select(p => p.Id), ct);
 
             var hexes = ids.Select(id => id.ToString("N")).ToList();
             orders.AddRange(await _db.Orders
@@ -650,6 +708,33 @@ public sealed class ShopperPurgeService
                 .ToListAsync(ct));
         }
         return orders;
+    }
+
+    /// <summary>
+    /// Verilen asıl kayıtlar ve onlara birleştirilmiş kopyaları (eski Id'ler; asıl
+    /// kayıtlar dahil). Kopyalar varsayılan sorgulardan gizli; burada açıkça istenir
+    /// ve zincir <see cref="SalesCustomerDirectory.MaxHops"/> adım geriye izlenir
+    /// (CustomerIdResolver'ın ileri yönde izlediği kadar). Eski Id'yle kalmış geç
+    /// sipariş (3a) ve birleştirmeden önce yazılmış elle eşleme denetimi (3c) için.
+    /// </summary>
+    private async Task<HashSet<Guid>> WithMergedCopiesAsync(
+        Guid licenseId, IEnumerable<Guid> canonical, CancellationToken ct)
+    {
+        var ids = canonical.ToHashSet();
+        var frontier = ids.ToList();
+        for (var hop = 0; hop < SalesCustomerDirectory.MaxHops && frontier.Count > 0; hop++)
+        {
+            var targets = frontier;
+            var copies = await _db.WpfCustomerProjections
+                .IgnoreQueryFilters()
+                .Where(p => p.LicenseId == licenseId
+                    && p.MergedIntoId != null
+                    && targets.Contains(p.MergedIntoId.Value))
+                .Select(p => p.Id)
+                .ToListAsync(ct);
+            frontier = copies.Where(ids.Add).ToList();
+        }
+        return ids;
     }
 
     /// <summary>Sipariş metnini boşaltır (<see cref="OrderTextScrub.Apply"/>);
