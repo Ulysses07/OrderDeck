@@ -186,9 +186,9 @@ public sealed class BankConnectionTerminator
         return await DeleteLocalWithRetryAsync(licenseId, trigger, actor, keepConnection: false, obifin, ct);
     }
 
-    /// <summary>Otomatik hizmet sonu silmesi (Görev 14): Obifin'e GİDİLMEZ. Banka verisi silinir; Obifin kimliği, yerel
-    /// <c>BankConnections</c> ve onaylı hesap satırları (IBAN alanları boş) kalır, <c>BankDataPurgedAt</c> yazılır. İdempotent:
-    /// ikinci koşu kalan satırları siler, boşaltılmış hesabı yeniden saymaz.
+    /// <summary>Otomatik hizmet sonu silmesi (<see cref="BankServiceEndPurgeJob"/>): Obifin'e GİDİLMEZ. Banka verisi silinir;
+    /// Obifin kimliği, yerel <c>BankConnections</c> ve onaylı hesap satırları (IBAN alanları boş) kalır, <c>BankDataPurgedAt</c>
+    /// yazılır. İdempotent: ikinci koşu kalan satırları siler, boşaltılmış hesabı yeniden saymaz.
     /// <para><b>Yalnız durdurulmuş (<see cref="ObifinConnectionStatus.Disabled"/>) bağlantıda.</b> Durum burada taze okunur, çağıranın
     /// seçimine güvenilmez: iş bağlantıyı seçtikten sonra yönetici "Etkinleştir"e basabilir (sayfa <c>obifin-poll</c> kilidini
     /// almaz). Disabled değilse hiçbir şey silinmeden <see cref="NotStoppedMessage"/> fırlatılır. Son adım (işaret ve onaylı
@@ -359,7 +359,8 @@ public sealed class BankConnectionTerminator
     private async Task DeleteLocalAsync(Guid licenseId, string trigger, string actor, bool keepConnection, string? manualAction,
         Tally tally, CancellationToken ct)
     {
-        var criterion = keepConnection ? "hizmet sonu + 30 gün (yalnız yerel)" : "bağlantı kaldırıldı";
+        var criterion = keepConnection
+            ? $"hizmet sonu + {BankServiceEndPurgeJob.GracePeriodDays} gün (yalnız yerel)" : "bağlantı kaldırıldı";
         void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
             count, criterion, trigger, actor);
 
@@ -441,8 +442,8 @@ public sealed class BankConnectionTerminator
             _db.ObifinConnections.RemoveRange(connections);
             Record("ObifinConnections", connections.Count);
             // KVKK Ö-9 öneri 3: Obifin'deki kopyanın yazılı silme teyidi bağlantı satırından bağımsız izlenir (FK yok, budanmaz).
-            // Hatırlatma: hizmet sonu işi (Görev 14); kapatma: ConfirmObifinCopyDeletedAsync. Bağlantı satırı yoksa kaydı onu
-            // silen açtı (aynı anda iki "Kaldır ve sil"): ikinci kayıt hatırlatmayı ve "Teyit alındı"yı ikilerdi.
+            // Hatırlatma: hizmet sonu işi (BankServiceEndPurgeJob); kapatma: ConfirmObifinCopyDeletedAsync. Bağlantı satırı yoksa
+            // kaydı onu silen açtı (aynı anda iki "Kaldır ve sil"): ikinci kayıt hatırlatmayı ve "Teyit alındı"yı ikilerdi.
             if (connections.Count > 0)
             {
                 // Elle iş de kayda girer: Obifin kimliği ve sahiplik kanıtı burada siliniyor, bildirimi kaçıran yönetici Obifin'de

@@ -68,6 +68,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         sp.GetRequiredService<IObifinClient>().Should().BeOfType<NullObifinClient>("test ortamı Obifin'e bağlanmaz");
         sp.GetRequiredService<IBankTransactionSink>().Should().NotBeNull();
         sp.GetRequiredService<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>().Should().NotBeNull();
+        sp.GetRequiredService<BankServiceEndPurgeJob>().Should().NotBeNull();
+        sp.GetRequiredService<BankConnectionTerminator>().Should().NotBeNull();
     }
 
     [Theory]
@@ -102,7 +104,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public void Anahtar_gecerliyse_dort_banka_isi_UTC_takvimiyle_kaydolur()
+    public void Anahtar_gecerliyse_bes_banka_isi_UTC_takvimiyle_kaydolur()
     {
         var storage = new MemoryStorage();
 
@@ -119,6 +121,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
             // 04:52 eşitlemeden sonra ve 5 dakikalık ızgaranın DIŞINDA: 04:55'te obifin-poll (aynı BankTransactions
             // tablosuna yazar) ve üç */5 iş daha koşar; */15 ise 04:45 ve 05:00'te.
             ("bank-data-retention", "57 4 * * *"),
+            // Hizmet sonu + 30 gün silmesi (KVKK K-6): ızgara ve diğer günlük işlerin dışında; çekimle ortak kilit tutar.
+            ("bank-service-end-purge", "17 5 * * *"),
         });
         connection.GetRecurringJobs().Should().OnlyContain(j => j.TimeZoneId == "UTC",
             "saatler UTC olarak seçildi (04:52 İYS eşitlemesine göre); sunucu saat dilimine kaymamalı");
@@ -140,10 +144,12 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         Program.ScheduleBankJobs(manager, enabled: false);
 
         using var connection = storage.GetConnection();
-        var job = connection.GetRecurringJobs().Should().ContainSingle().Subject;
-        job.Id.Should().Be("bank-data-retention");
-        job.Cron.Should().Be("57 4 * * *");
-        job.TimeZoneId.Should().Be("UTC");
+        connection.GetRecurringJobs().Select(j => (j.Id, j.Cron, j.TimeZoneId)).Should().BeEquivalentTo(new[]
+        {
+            ("bank-data-retention", "57 4 * * *", "UTC"),
+            // Hizmet sonu silmesi de KVKK yükümlülüğü; BankHasher istemez.
+            ("bank-service-end-purge", "17 5 * * *", "UTC"),
+        });
     }
 
     [Fact]

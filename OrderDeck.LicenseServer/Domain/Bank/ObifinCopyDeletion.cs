@@ -5,7 +5,8 @@ namespace OrderDeck.LicenseServer.Domain.Bank;
 /// sil" açar (<c>BankConnectionTerminator.RemoveAndDeleteAsync</c>); yönetici Obifin'in yazılı teyidi gelince admin/obifin'de
 /// "Teyit alındı" ile kapatır (<c>BankConnectionTerminator.ConfirmObifinCopyDeletedAsync</c>). Kişisel veri İÇERMEZ: lisans,
 /// anlar, yöneticinin takma kimliği, Obifin'de elle yapılacak iş (<see cref="ManualAction"/>). Lisansa ve bağlantıya FK YOK:
-/// ikisi de silinse kayıt yaşar; hiçbir iş budamaz. Kapanana kadar hizmet sonu işi (Görev 14) her gün hatırlatır.
+/// ikisi de silinse kayıt yaşar; hiçbir iş budamaz. Kapanana kadar hizmet sonu işi (<c>BankServiceEndPurgeJob</c>) her gün
+/// hatırlatır.
 /// </summary>
 public sealed class ObifinCopyDeletion
 {

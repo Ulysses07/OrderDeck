@@ -53,9 +53,9 @@ public class IndexModel : PageModel
     public const string RejectConfirmMismatchMessage = "Onay için hesap numarasını yazın; eşleşmedi, hiçbir şey silinmedi.";
     /// <summary>"Kaldır ve sil"in yazılı onayındaki karakter sayısı (lisans anahtarının sonu).</summary>
     public const int RemoveConfirmLength = 6;
-    /// <summary>Hizmet sonu silmesinin durdurmadan sonraki süresi (gün; Görev 14'ün iş sabitiyle aynı) — durum hücresindeki
-    /// "silinecek" tarihi.</summary>
-    public const int ServiceEndGraceDays = 30;
+    /// <summary>Hizmet sonu silmesinin durdurmadan sonraki süresi (gün) — durum hücresindeki "silinecek" tarihi ve "Durdur"
+    /// bildirimi. Tek kaynak işin sabiti (<see cref="BankServiceEndPurgeJob.GracePeriodDays"/>).</summary>
+    public const int ServiceEndGraceDays = BankServiceEndPurgeJob.GracePeriodDays;
 
     private readonly LicenseDbContext _db;
     private readonly IServiceProvider _services;

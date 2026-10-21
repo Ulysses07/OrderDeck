@@ -29,11 +29,12 @@ public sealed class ObifinConnection
     public DateOnly? InitialCollectFrom { get; set; }
     /// <summary>Bağlantının <see cref="ObifinConnectionStatus.Disabled"/>'a çekildiği an (KVKK K-6): lisans bitti
     /// (<c>ObifinConnectionService.DisableEndedLicensesAsync</c>) ya da yönetici durdurdu (<c>BankConnectionTerminator</c>).
-    /// Zaten Disabled olan bağlantıda yeniden yazılmaz: sayaç baştan başlamaz. Hizmet sonu silmesi (Görev 14) bu andan 30 gün
-    /// sonra koşar; Disabled'dan çıkan her yol <c>ObifinConnectionService.ClearServiceEnd</c> ile boşaltır.</summary>
+    /// Zaten Disabled olan bağlantıda yeniden yazılmaz: sayaç baştan başlamaz. Hizmet sonu silmesi (<c>BankServiceEndPurgeJob</c>)
+    /// bu andan 30 gün sonra koşar; Disabled'dan çıkan her yol <c>ObifinConnectionService.ClearServiceEnd</c> ile boşaltır.</summary>
     public DateTimeOffset? DisabledAt { get; set; }
     /// <summary>Bağlantıyı yönetici durdurdu (KVKK K-6). Lisans bitişiyle kendiliğinden durdurulan bağlantı lisans yenilenince
-    /// kendiliğinden Unverified'a döner (Görev 14); yöneticinin durdurduğu dönmez. Disabled'dan çıkınca boşalır.</summary>
+    /// kendiliğinden Unverified'a döner (<c>ObifinConnectionService.ReviveRenewedLicensesAsync</c>); yöneticinin durdurduğu
+    /// dönmez. Disabled'dan çıkınca boşalır.</summary>
     public bool DisabledByAdmin { get; set; }
     /// <summary>Hizmet sonu işinin bu bağlantının banka verisini YEREL olarak sildiği an (Obifin'e gidilmez;
     /// <c>BankConnectionTerminator.PurgeLocalDataAsync</c>). Obifin kimliği, yerel <c>BankConnections</c> ve onaylı hesap satırları
