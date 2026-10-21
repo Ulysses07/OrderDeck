@@ -426,6 +426,8 @@ public sealed class ShopperPurgeServiceTests
         var orders = await db.Orders.AsNoTracking().ToListAsync();
         orders.Should().OnlyContain(o => o.DisplayName == "Takma ad" && o.MessageText == "A1 alırım"
             && o.TextScrubbedAt == null);
+        (await db.DataDestructionRecords.AsNoTracking().ToListAsync())
+            .Should().NotContain(r => r.Target.StartsWith("Orders"), "boşaltılmayan sipariş imha kaydına girmez");
     }
 
     /// <summary>
@@ -462,6 +464,11 @@ public sealed class ShopperPurgeServiceTests
             orders[id].MessageText.Should().Be("A1 alırım");
             orders[id].TextScrubbedAt.Should().BeNull();
         }
+        // KVKK Ö-13: boşaltma silmenin imha kaydına lisansıyla ve sayısıyla girer (asıl kayıt + iki kopya).
+        var record = (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should()
+            .ContainSingle(r => r.Target == "Orders.DisplayName+MessageText").Subject;
+        (record.LicenseId, record.RowCount, record.Action, record.SubjectId).Should().Be(
+            ((Guid?)orders[seed.OnCanonical].LicenseId, 3, DataDestruction.Actions.Nulled, (Guid?)seed.ShopperId));
 
         var firstScrub = orders[seed.OnCanonical].TextScrubbedAt;
         await service.PurgeAsync(seed.ShopperId, default);
@@ -791,15 +798,32 @@ public sealed class ShopperPurgeServiceTests
             ParserConfidence = "High",
             CreatedAt = DateTimeOffset.UtcNow,
         });
+        // 90 günlük işin (SecurityDataRetentionJob) çoktan boşalttığı satır: imha kaydı yapılmamış işi saymaz.
+        db.PaymentSubmissionAudits.Add(new PaymentSubmissionAudit
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            PaymentId = Guid.NewGuid(),
+            LicenseId = license.Id,
+            IpAddress = "",
+            UserAgent = "",
+            FraudFlags = "",
+            ParserConfidence = "High",
+            CreatedAt = DateTimeOffset.UtcNow.AddDays(-120),
+        });
         await db.SaveChangesAsync();
 
         var (service, _) = Build(db);
         await service.PurgeAsync(shopper.Id, default);
 
-        var audit = await db.PaymentSubmissionAudits.FirstAsync();
+        var audit = await db.PaymentSubmissionAudits.FirstAsync(a => a.PaymentId == paymentId);
         audit.IpAddress.Should().BeEmpty();
         audit.UserAgent.Should().BeEmpty();
         audit.PaymentId.Should().Be(paymentId);
+        var record = (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should()
+            .ContainSingle(r => r.Target == "PaymentSubmissionAudits.IpAddress+UserAgent").Subject;
+        (record.LicenseId, record.RowCount, record.Action).Should().Be(
+            ((Guid?)license.Id, 1, DataDestruction.Actions.Nulled), "yalnız parmak izi dolu satır sayılır");
     }
 
     [Fact]
