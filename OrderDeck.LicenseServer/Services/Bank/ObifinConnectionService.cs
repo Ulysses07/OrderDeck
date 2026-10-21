@@ -73,6 +73,10 @@ public sealed class ObifinConnectionService
     public const string LicenseEndedMessage = "Lisans sona erdi ya da iptal edildi; banka çekimi durduruldu.";
     /// <summary>Durdurulmuş (<see cref="ObifinConnectionStatus.Disabled"/>) bağlantıda Doğrula ya da Banka ekle (KVKK K-6).</summary>
     public const string StoppedConnectionMessage = "Bağlantı durdurulmuş; önce Etkinleştir.";
+    /// <summary>Yerel banka verisi hizmet sonunda silinmiş (<see cref="ObifinConnection.BankDataPurgedAt"/> dolu) bağlantıda kimlik
+    /// değişimi (karar 21(a)). Hiçbir şey değiştirilmemiştir.</summary>
+    public const string PurgedCredentialChangeMessage =
+        "Bu bağlantının banka verisi hizmet sonunda silindi; Obifin tarafı 'Kaldır ve sil' bekliyor. Kullanıcı ya da adres değiştirilemez: önce 'Kaldır ve sil'.";
 
     /// <summary>DB sütunu 500 (<c>LicenseDbContext</c>).</summary>
     private const int LastErrorMaxLength = 500;
@@ -168,8 +172,8 @@ public sealed class ObifinConnectionService
 
     /// <summary>Bağlantı Disabled'dan çıkarken hizmet sonu alanları boşalır (KVKK K-6): 30 günlük sayaç, yerel silme işareti,
     /// yönetici durdurması. Disabled'dan çıkan her yol bunu çağırır: Etkinleştir (<c>BankConnectionTerminator.ResumeAsync</c>),
-    /// lisans geçerliyken kimlik değişimi, başarılı doğrulama (Disabled olmayan bağlantıda bayat alanlar), lisansın yenilenmesi
-    /// (Görev 14). Kaydetmez.</summary>
+    /// lisans geçerliyken kimlik değişimi (yerel verisi silinmiş bağlantıda kimlik değişimi reddedilir, karar 21(a)), başarılı
+    /// doğrulama (Disabled olmayan bağlantıda bayat alanlar), lisansın yenilenmesi (Görev 14). Kaydetmez.</summary>
     public static void ClearServiceEnd(ObifinConnection conn)
     {
         conn.DisabledAt = null;
@@ -220,6 +224,8 @@ public sealed class ObifinConnectionService
     /// yalnız izin varken yüklenir ve silinen, yüklenen kümedir. Silinecek satır yoksa onay gerekmez (imleç yine
     /// sıfırlanır). İki yol da bir anlık görüntüye bakar: denetimden sonra eklenen satırlar için güvence vermez. Yüklenen bir
     /// eşleşmeye kayıttan önce eşzamanlı yazılırsa silme bir kez yeniden denenir (bkz. <see cref="SaveAsync"/>).</para>
+    /// <para>Yerel banka verisi hizmet sonunda silinmiş bağlantıda (<see cref="ObifinConnection.BankDataPurgedAt"/> dolu) kimlik
+    /// değişimi reddedilir (<see cref="PurgedCredentialChangeMessage"/>; karar 21(a)): önce "Kaldır ve sil".</para>
     /// <para><paramref name="actor"/>: gölge veri silmesinin kalıcı imha kaydındaki yapan — yönetici sayfası
     /// <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın). Boşsa
     /// <see cref="DataDestruction.AdminActor"/>.</para></summary>
@@ -272,6 +278,13 @@ public sealed class ObifinConnectionService
             // Saklı adres de kırpılarak karşılaştırılır: yapılandırmadan gelen varsayılan adres '/' ile bitebilir.
             credentialChanged = !string.Equals(conn.UserCode, userCode, StringComparison.Ordinal)
                 || (explicitBaseUrl is not null && !string.Equals(conn.BaseUrl.TrimEnd('/'), explicitBaseUrl, StringComparison.Ordinal));
+            // Karar 21(a): yerel verisi hizmet sonunda silinmiş bağlantıda kalan Obifin kimliği, yerel banka bağlantıları ve
+            // IBAN'sız onaylı hesaplar "Kaldır ve sil"in sahiplik kanıtıdır; BankDataPurgedAt sayfanın şeridini ve hizmet sonu işinin
+            // hatırlatmasını tutar. Kimlik değişimi gölge veriyle kanıtı siler, lisans geçerliyse işareti de boşaltırdı: eski Obifin
+            // kullanıcısındaki banka bağlantısı izlenmeden çekmeyi sürdürürdü. Lisans durumundan bağımsız reddedilir, hiçbir şey
+            // değişmez; aynı kimliğe yeni parola/anahtar kimlik değişimi değildir, kaydedilir.
+            if (credentialChanged && conn.BankDataPurgedAt is not null)
+                throw new ObifinValidationException(PurgedCredentialChangeMessage);
             if (credentialChanged)
             {
                 // İzin yoksa yalnız "var mı" sorulur (satır yüklenmez): varsa onay istenir, yoksa silinecek bir şey yoktur
@@ -290,6 +303,7 @@ public sealed class ObifinConnectionService
         // Disabled bağlantı kimlik değişince açılır — YALNIZ lisans geçerliyse (KVKK K-6: lisansı bitmiş bağlantının hizmet
         // sonu sayacı kimlik düzenlemesiyle sıfırlanmasın; açılsaydı çekim onu hemen yeni tarihle yeniden durdururdu). Açılan
         // bağlantının hizmet sonu alanları boşalır (yönetici durdurması dahil: kimliği değiştiren yönetici bağlantıyı açar).
+        // BankDataPurgedAt dolu bağlantıda kimlik değişimi yukarıda reddedildi: buradan boşalan işaret yalnız bayat olabilir.
         var stayDisabled = conn.Status == ObifinConnectionStatus.Disabled
             && (!credentialChanged || !await IsLicenseActiveAsync(_db, licenseId, now, ct));
         conn.Status = stayDisabled ? ObifinConnectionStatus.Disabled : ObifinConnectionStatus.Unverified;

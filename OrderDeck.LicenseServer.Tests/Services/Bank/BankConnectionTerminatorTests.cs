@@ -520,6 +520,43 @@ public sealed class BankConnectionTerminatorTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Yerel_verisi_silinmis_baglantida_kimlik_degisimi_reddedilir_Kaldir_ve_sil_kaniti_ve_isareti_kalir(
+        bool licenseActive)
+    {
+        // Karar 21(a): yerel silme "Kaldır ve sil"in sahiplik kanıtını (yerel banka bağlantısı #501, IBAN'sız onaylı hesap 6)
+        // bırakır, BankDataPurgedAt sayfanın şeridini ve hizmet sonu işinin hatırlatmasını tutar. Kimlik değişimi gölge veriyle
+        // kanıtı silerdi, lisans geçerliyse işareti de boşaltırdı: takip kaybolur, eski Obifin kullanıcısındaki banka bağlantısı
+        // izlenmeden çekmeyi sürdürürdü. Lisans bitmişken de kanıt silinirdi. Önce "Kaldır ve sil".
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client, licenseActive);
+        var t = Terminator(db, client);
+        await t.StopAsync(lic, CancellationToken.None);
+        await t.PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor, CancellationToken.None);
+        var before = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        var svc = Service(db, client);
+
+        var change = () => svc.UpsertAsync(lic, "", $"api-{Guid.NewGuid():N}@x", null, null, CancellationToken.None,
+            allowShadowReset: true);
+
+        await change.Should().ThrowAsync<ObifinValidationException>()
+            .WithMessage(ObifinConnectionService.PurgedCredentialChangeMessage);
+        db.ChangeTracker.Clear();
+        var after = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        (after.UserCode, after.Status, after.BankDataPurgedAt, after.DisabledByAdmin)
+            .Should().Be((before.UserCode, ObifinConnectionStatus.Disabled, before.BankDataPurgedAt, true));
+        (await db.BankConnections.AnyAsync(b => b.LicenseId == lic && b.BankaApiId == 501)).Should().BeTrue();
+        (await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic)).ObifinAccountId.Should().Be(6);
+        (await db.DataDestructionRecords.AnyAsync(x => x.Trigger == DataDestruction.Triggers.CredentialChange)).Should().BeFalse();
+
+        // Aynı kimliğe yeni parola kimlik değişimi değildir: kaydedilir, bağlantı durdurulmuş ve işaretli kalır.
+        await svc.UpsertAsync(lic, "", before.UserCode, $"pw-{Guid.NewGuid():N}", null, CancellationToken.None);
+        var saved = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        (saved.Status, saved.BankDataPurgedAt).Should().Be((ObifinConnectionStatus.Disabled, before.BankDataPurgedAt));
+    }
+
     [Fact]
     public async Task Yerel_silme_parti_parti_yapilir_izleyici_birikmez_kayit_toplami_tutar()
     {
