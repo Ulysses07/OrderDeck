@@ -29,6 +29,14 @@ Spec `7f8d1efa` kesitine göre yazıldı; arada satış senkronu S3 (#520) ve ö
 13. **Göç: istatistik düşürme kapsamı.** §3.1 "otomatik istatistik (`_WA_Sys_*`) varsa göç düşürür". **Çözüm:** göç `GroupId`'ye bağlı, indekse ait OLMAYAN bütün istatistikleri (otomatik ve kullanıcı) düşürür — ikisi de `ALTER COLUMN`'u engeller, motor gerektiğinde yeniden oluşturur. Göç testi kullanıcı istatistiğini kesin, otomatik istatistiği motor isterse oluşturur.
 14. **Ordinal süzgeç testi gerçek SQL'de.** §8.3 "`g1` / `g1 ` / `G1` ayrı kişi"yi InMemory'ye koyuyor; InMemory zaten ordinal karşılaştırır, iddiayı kanıtlamaz. **Çözüm:** aynı test Testcontainers'ta da (Görev 3) koşar; göç testi BIN2'nin harf farkını ayırıp sondaki boşluğu yuttuğunu ayrıca gösterir.
 
+Görev 11 incelemesinden (2026-10-21; kod Görev 11'in aşağıdaki bloğundan bu maddelerde ayrılır, geçerli olan koddur):
+
+15. **Kırpma farkının tanımı (§7.3-5).** Spec kalemi SQL'le tanımlıyor (`DATALENGTH` ↔ `LTRIM(RTRIM())`, bütün satırlar). **Çözüm:** `verify` sunucu işlerinin `KeyOf`'u (`CustomerGroupUnion.cs:35-36`) ile birebir sayar: yalnız asıl kayıtlar (`KeyOf` yalnız `MergedIntoId` boş satırlara uygulanır, `:56`), .NET `Trim()` (bütün boşluk karakterleri; `LTRIM/RTRIM` yalnız boşluk karakterini kırpar), yalnız boşluktan oluşan numara sayılmaz (`KeyOf` ve WPF'in `CustomerGroup.IsGrouped`'ı ikisi de grupsuz der). Ölçülen şey sunucu ↔ WPF ayrışma riski olduğu için bilerek spec SQL'inden farklıdır. S2'nin `enable`'ı (§7.2-2) SQL'i değil bu sayıyı (`LicenseReport.TrimMismatches`) kullanır.
+16. **Lisanssız `verify` bütün lisansları getirir.** Yalnız verisi olan lisansları getirseydi, taban yakalaması (Görev 12 yalnız raporun lisanslarına işaret yazar) yakalama anında verisi olmayan ama ondan önce verilmiş lisansı işaretsiz bırakır, o lisans sonradan kullanılınca uyarı süresiz susardı (fark 7'nin kapatmak istediği durum; §8.1 susmayı yalnız S1 deploy'u ile §7.1 adım 2 arasına verir). **Çözüm:** `LoadAsync(null)` bütün lisansları döndürür, verisizlerin raporu boştur; lisans süzgeci her sorguda parametredir (Id listesi taşınmaz). Görev 12 ve 13 değişmeden bunu kullanır; rapor verisiz lisansları da basar.
+17. **D1 adayları yeniden okunur.** Anlık görüntünün bakiye ve defter okumaları ayrı sorgular; prod'da RCSI ya da snapshot yalıtımı yok. Aralarında commit eden yazım `Balance(eski) ≠ Σ(yeni)` üretir: sahte D1 uyarısı, yakalamada yanlış farklı ve her gün "farkı değişen" diye uyaran kalıcı taban satırı. **Çözüm:** ilk okumada `Balance ≠ Σ` olan satırlar ve lisansın taban satırları, bakiye ile defter aynı `SELECT`'te olacak biçimde yeniden okunur (tek ifade de anlık görüntü değildir, ama pencere bir satırın iki okuması arasına daralır).
+18. **"Daha da eksiye inen" (§8.1 "tabandaki bir satırın Balance'ının tabandakinden düşük olması").** **Çözüm:** yalnız şu an eksi olan taban satırları, kopyalar dahil. Artı satırın düşmesi olağan çekimdir (D1 taban satırları artı olabilir); eksiye inen artı taban satırı yine yakalanır. Kopya: 2. madde onları saymaz, ama tabana alınmış kopyaya sonradan yazım §4.12'nin dar penceresidir.
+19. **`--details` ve kopya hareket sayısı.** §7.3 `--details`'in "kural bozan satırların `WpfCustomerId`'lerini" basmasını, §7.3-8 kopyaya bağlı "hareket sayısını" istiyor. **Çözüm:** kural bozan grup ve yetim bacak için hem hareket Id'leri (çapa / bacak; defterde bulmak için) hem satırlar (`RuleBreakingRows`, `OrphanLegRows`); 8. maddede hareketli kopya satır sayısının yanında hareket sayısı (`CopyTransactionCount`). Görev 12 üçünü de basar.
+
 ## Bilerek S1 dışında bırakılanlar
 
 - Kip bayrağının okunması, `ResolveDrawSetAsync`, `PlanDraw`, `DrawAsync`, havuzlu preview/apply, K5 (panelde çok bacaklı eksi ayar / iade iptali), havuz kipinde eski `reversal` → `not-reversible`, `person-balance enable/disable`, `PersonBalance:MinClientVersion`, metrikler (§8.6), Testcontainers 1, 2, 6–10, 14, 15 → **S2**.
@@ -4171,6 +4179,8 @@ MSG
 
 Denetim iki parçadır: `LoadAsync` lisansların anlık görüntüsünü (yalnız Id'ler, tutarlar, numaralar; ad/telefon yok) okur, `Analyze` saf bir fonksiyondur — CLI (Görev 12) ve günlük iş (Görev 13) aynısını çağırır. Taban işareti ve "tabanı var" kuralı: fark 7. D3 uyarısı S2'de (fark 8); 6. madde yalnız sayı. 4. maddenin "grubunda canlı asıl üye kalmamış" kalemi de yalnız sayı: uyarıya çevrilmesi spec §10 açık kalanlarda (numara izlemesinin hakemi, §5.5; Görev 10 inceleme eki 2) — sahip karar vermeden ekleme.
 
+> **İnceleme sonrası (fark 15–19):** kod aşağıdaki bloktan ayrıldı — lisanssız yük bütün lisansları getirir, D1 adayları yeniden okunur, "daha da eksiye inen" kopyaları da kapsar, rapor `CopyTransactionCount`, `Details.RuleBreakingRows` ve `Details.OrphanLegRows` taşır, testler §8.1'in her dalını sabitler. Geçerli olan `PersonBalanceVerifier.cs`'tir.
+
 - [ ] **Adım 1: Saf analiz testleri (kırmızı)**
 
 `OrderDeck.LicenseServer.Tests/Services/CustomerSync/PersonBalanceVerifierTests.cs`:
@@ -5015,8 +5025,9 @@ namespace OrderDeck.LicenseServer.Tools;
 /// Ortak bakiye denetimi (spec 2026-10-11 §7.3; çekirdek <see cref="PersonBalanceVerifier"/>):
 /// <list type="bullet">
 ///   <item><c>verify [--license &lt;guid&gt;] [--details]</c> — salt okunur rapor (§7.3 maddeleri 1–10). Lisans
-///   verilmezse verisi olan bütün lisanslar. <c>--details</c> eksi ve kural bozan satırların Id'lerini (GUID; ad,
-///   telefon yok) konsola basar; dosyaya yazılmaz.</item>
+///   verilmezse bütün lisanslar, verisizler dahil (fark 16). <c>--details</c> eksi ve kural bozan satırların
+///   <c>WpfCustomerId</c>'lerini, kural bozan grupların ve yetim bacakların hareket Id'lerini (GUID; ad, telefon yok)
+///   konsola basar; dosyaya yazılmaz.</item>
 ///   <item><c>--capture-baseline [--apply]</c> — taban çizgisi (§7.1 adım 2): taban dışı eksi, D1 ve kopya satırları
 ///   o anki Balance ve LedgerSum'la, lisans başına bir işaret satırıyla. Var olan taban satırına dokunmaz.</item>
 ///   <item><c>--mark-reviewed --license &lt;guid&gt; [--apply]</c> — sahip incelemesi (§7.1 adım 4): lisansın
@@ -5166,7 +5177,7 @@ public static class PersonBalanceCommand
         o.WriteLine($"  5. Kırpma farkı: {r.TrimMismatches}; sekme/satır sonu içeren numara: {r.ControlCharGroups}");
         o.WriteLine($"  6. Havuzu < 0 kişi: {r.NegativePersons} (tabanla açıklanan {r.NegativePersonsExplained})");
         o.WriteLine($"  7. D4 {r.D4}, D5 {r.D5}, D6 {r.D6}, yetim bacak {r.OrphanLegs}");
-        o.WriteLine($"  8. Kopya satır: hareketli {r.CopyRowsWithTransactions}, bakiyeli {r.CopyRowsWithBalance}; tabanda {r.CopyRows.InBaseline}, taban dışı {r.CopyRows.Outside}");
+        o.WriteLine($"  8. Kopya satır: hareketli {r.CopyRowsWithTransactions} ({r.CopyTransactionCount} hareket), bakiyeli {r.CopyRowsWithBalance}; tabanda {r.CopyRows.InBaseline}, taban dışı {r.CopyRows.Outside}");
         o.WriteLine($"  9. Aktif PC sürümleri (son {PersonBalanceVerifier.ActivePcWindow.Days} gün): "
             + (r.ActivePcVersions.Count == 0
                 ? "yok"
@@ -5179,8 +5190,10 @@ public static class PersonBalanceCommand
         WriteIds(o, "D1 (tabanda)", r.Details.LedgerMismatchInBaseline);
         WriteIds(o, "kopya (taban dışı)", r.Details.CopyOutside);
         WriteIds(o, "grubu dağılmış silinmiş", r.Details.StrandedPurged);
-        WriteIds(o, "kural bozan grup", r.Details.RuleBreakingGroups);
-        WriteIds(o, "yetim bacak", r.Details.OrphanLegs);
+        WriteIds(o, "kural bozan grup (çapa hareketi)", r.Details.RuleBreakingGroups);
+        WriteIds(o, "kural bozan satır", r.Details.RuleBreakingRows);
+        WriteIds(o, "yetim bacak (hareket)", r.Details.OrphanLegs);
+        WriteIds(o, "yetim bacağın satırı", r.Details.OrphanLegRows);
         WriteIds(o, "daha da eksiye inen", r.Details.WorsenedBaselineRows);
         WriteIds(o, "D1 farkı değişen", r.Details.ChangedMismatchRows);
     }

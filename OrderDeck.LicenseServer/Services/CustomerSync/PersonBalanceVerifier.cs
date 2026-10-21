@@ -272,7 +272,10 @@ public sealed class PersonBalanceVerifier
             .Select(p => p.GroupId!).ToHashSet(StringComparer.Ordinal);
         var stranded = purgedWithBalance
             .Where(p => PersonMembership.IsGrouped(p.GroupId) && !liveGroups.Contains(p.GroupId!)).ToList();
-        // 5. Ham ↔ kırpılmış (gruplama işlerinin KeyOf'u .Trim() ile, WPF ham karşılaştırır).
+        // 5. Ham ↔ kırpılmış (gruplama işlerinin KeyOf'u .Trim() ile, WPF ham karşılaştırır). Tanım spec §7.3-5'in
+        // SQL'inden (DATALENGTH ↔ LTRIM/RTRIM, bütün satırlar) BİLEREK farklı, KeyOf ile birebir: yalnız asıl kayıtlar,
+        // .NET Trim (bütün boşluk karakterleri), yalnız boşluk numara grupsuz. S2'nin enable'ı bu sayıyı kullanır
+        // (plan fark 15).
         var trim = canonical.Count(p => !string.IsNullOrWhiteSpace(p.GroupId) && p.GroupId != p.GroupId.Trim());
         var control = canonical.Count(p => p.GroupId is { } g && g.IndexOfAny(['\t', '\n', '\r']) >= 0);
         // 6.
