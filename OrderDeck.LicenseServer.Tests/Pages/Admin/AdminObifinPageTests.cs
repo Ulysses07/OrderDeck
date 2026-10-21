@@ -1287,6 +1287,26 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Durdurulmus_baglantida_kimlik_kaydi_once_Etkinlestir_der_Simdi_dogrulayin_demez()
+    {
+        // Durdurulmuş bağlantıda aynı kimliğe yeni parola kaydedilir (ya da lisans bitmişken kimlik değişir), bağlantı Disabled
+        // kalır. "Şimdi doğrulayın" yanlış yönlendirirdi: Doğrula düğmesi gizli, servis StoppedConnectionMessage ile reddeder.
+        var lic = await SeedLicenseAsync();
+        var seeded = await SeedRawConnectionAsync(_factory, lic);
+        await SetStatusAsync(lic, ObifinConnectionStatus.Disabled, c =>
+        {
+            c.DisabledAt = DateTimeOffset.UtcNow.AddDays(-1); c.DisabledByAdmin = true;
+        });
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        await SaveAsync(client, lic, seeded.UserCode);   // aynı kullanıcı, yeni parola ve anahtar
+
+        (await ToastAsync(client, "success")).Should().Contain(ObifinConnectionService.StoppedConnectionMessage)
+            .And.NotContain("Şimdi doğrulayın");
+        (await ConnectionAsync(lic)).Status.Should().Be(ObifinConnectionStatus.Disabled);
+    }
+
+    [Fact]
     public async Task Etkinlestir_lisansi_bitmis_baglantida_reddedilir()
     {
         var lic = await SeedLicenseAsync();

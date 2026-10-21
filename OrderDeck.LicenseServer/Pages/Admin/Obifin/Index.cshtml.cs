@@ -210,9 +210,14 @@ public class IndexModel : PageModel
             // Kayıt (ve varsa geri dönüşsüz silme) taahhüt edildi: audit istek iptaliyle düşmesin.
             await _audit.LogAsync(AuditEvents.ObifinConnectionSave, AuditTargets.ObifinConnection, LicenseId.ToString(),
                 new { UserCode = UserCode?.Trim(), shadowDataReset = saved.ShadowDataReset }, CancellationToken.None);
+            // Durdurulmuş bağlantı kayıtla açılmaz (aynı kimliğe yeni parola, ya da lisans bitmişken kimlik değişimi): Doğrula
+            // gizli ve servis onu reddeder, "Şimdi doğrulayın" yanlış yönlendirirdi.
+            var next = saved.Connection.Status == ObifinConnectionStatus.Disabled
+                ? ObifinConnectionService.StoppedConnectionMessage
+                : "Şimdi doğrulayın.";
             TempData["Success"] = saved.ShadowDataReset
-                ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın."
-                : "Obifin kimliği kaydedildi. Şimdi doğrulayın.";
+                ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. " + next
+                : "Obifin kimliği kaydedildi. " + next;
         }
         catch (ShadowResetConfirmationRequiredException ex)
         {
