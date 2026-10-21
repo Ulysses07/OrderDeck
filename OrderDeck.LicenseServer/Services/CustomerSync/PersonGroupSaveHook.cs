@@ -18,10 +18,13 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///   <item><b>Silinmiş üyenin numara izlemesi (K3, M11):</b> canlı asıl bir üye g'den ayrıldıysa (GroupId'si ordinal
 ///   değişti → hedef yeni numara; ya da kopyaya döndü → hedef asıl kaydın numarası) ve bu kayıttan sonra g'de canlı
 ///   asıl üye kalmadıysa (veritabanı + izlenen değişiklikler, ordinal), g'deki silinmiş asıl üyeler hedefe taşınır,
-///   damgalı (<see cref="CustomerGroupUnion.StampAt"/>). Hedef boşsa (Ayır) silinmiş üye g'de tek kalır (K3'ün
-///   istisnası, sahip kararı bekliyor); ayrılanlar farklı numaralara gittiyse de kalır ve günlüğe yazılır
-///   (verify'ın "grubu dağılmış silinmiş satır" kalemi görür). KVKK silmesi ayrılma değildir. Taşıma da bir GroupId
-///   değişimidir — silinmiş üyenin bakiye jetonu 1. maddeyle ilerler; bu yüzden önce bu madde koşar.</item>
+///   damgalı (<see cref="CustomerGroupUnion.StampAt"/>). Hedef boşsa (Ayır; ya da son canlı üye grupsuz bir asıl kayda
+///   kopya oldu) silinmiş üye g'de tek kalır (K3'ün istisnası, sahip kararı bekliyor, §10); ayrılanlar farklı numaralara
+///   gittiyse de kalır ve günlüğe yazılır (verify'ın "grubu dağılmış silinmiş satır" kalemi hepsini görür). Taşıma
+///   yalnız sunucudadır, WPF'te silinmiş satırın numarası değişmez: sunucu grubunu istemcinin üye listesiyle
+///   karşılaştıran denetimler yalnız canlı üyeleri karşılaştırır (§4.0-3, §15-7). KVKK silmesi ayrılma değildir.
+///   Taşıma da bir GroupId değişimidir — silinmiş üyenin bakiye jetonu 1. maddeyle ilerler; bu yüzden önce bu madde
+///   koşar.</item>
 /// </list>
 /// Sunucuda GroupId'ye yazan üç yer de (senkron, <c>group-customers</c>/<c>--at-twins</c>, kimlik birleşmesi) izlenen
 /// nesnelerle yazar; ham SQL / ExecuteUpdate yazımını <c>GroupIdWriteConventionTests</c> yasaklar.
@@ -90,7 +93,8 @@ internal static class PersonGroupSaveHook
                         purged.Count, license.Key);
                     continue;
                 }
-                if (target is null) continue; // Ayır: silinmiş üye eski numarada tek kalır (K3 istisnası, §10)
+                // Ayır ya da grupsuz asıl kayda kopya dönüşü: silinmiş üye eski numarada tek kalır (K3 istisnası, §10).
+                if (target is null) continue;
                 // Kopyaya dönen son üyenin asıl kaydı aynı numaradaysa (o da silinmiş) gidilecek yer yok.
                 if (string.Equals(target, group, StringComparison.Ordinal)) continue;
 

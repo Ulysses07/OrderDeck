@@ -465,7 +465,8 @@ public sealed class CustomerGroupingJobTests : IAsyncLifetime
             rows[a.Id].GroupId.Should().NotBe(la, "çakışan bileşen BÜTÜNÜYLE geri alındı");
             rows[b.Id].GroupId.Should().Be(lb, "öteki bileşen uygulandı");
 
-            // Yeniden koşu kalanı tamamlar; silinen üye artık grubun dışında.
+            // Yeniden koşu kalanı tamamlar. İş silinen üyeyi planına almaz; kanca onu son canlı üyenin numarasına
+            // taşır (aşağıda).
             var second = await Job(db).RunAsync(lic, pairs, apply: true, default);
             second.FailedComponents.Should().Be(0);
             second.Components.Should().Be(1);
