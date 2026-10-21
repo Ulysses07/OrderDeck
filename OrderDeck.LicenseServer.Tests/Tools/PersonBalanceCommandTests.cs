@@ -264,6 +264,55 @@ public sealed class PersonBalanceCommandTests : IClassFixture<HookedApiFactory>
     }
 
     [Fact]
+    public async Task Inceleme_yazimindan_once_taban_satirlari_silindiyse_1_doner()
+    {
+        var kit = await OldLicenseAsync();
+        await kit.MemberAsync(null, -4m);
+        (await RunAsync($"person-balance verify --license {kit.LicenseId} --capture-baseline --apply")).Exit.Should().Be(0);
+        // Okuma ile yazma arasında lisans silinir (taban satırları cascade ile gider).
+        _factory.Hook.BeforeSave = async () =>
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.PersonBalanceBaselines.RemoveRange(
+                await db.PersonBalanceBaselines.Where(b => b.LicenseId == kit.LicenseId).ToListAsync());
+            await db.SaveChangesAsync();
+        };
+
+        (int Exit, string Output, string Error) result;
+        try
+        {
+            result = await RunAsync($"person-balance verify --license {kit.LicenseId} --mark-reviewed --apply");
+        }
+        finally
+        {
+            _factory.Hook.Reset();
+        }
+
+        result.Exit.Should().Be(1, "çıkış kodu sözleşmesi: eşzamanlı değişiklik, hiçbir şey yazılmadı");
+        result.Error.Should().Contain("bu arada");
+    }
+
+    /// <summary>Gövde public: elle kurulmuş, ayrıştırıcının reddedeceği kayıt veritabanına gitmeden reddedilir.</summary>
+    [Theory]
+    [InlineData(false, false, true, false)]   // lisanssız inceleme
+    [InlineData(true, false, false, true)]    // rapora --apply
+    [InlineData(true, true, true, false)]     // yakalama ve inceleme birlikte
+    public async Task Govde_ayristiricinin_reddettigi_argumanlari_reddeder(bool license, bool capture, bool mark, bool apply)
+    {
+        var args = new PersonBalanceCommand.VerifyArgs(
+            license ? Guid.NewGuid() : null, Details: false, CaptureBaseline: capture, MarkReviewed: mark, Apply: apply);
+        using var scope = _factory.Services.CreateScope();
+        var output = new StringWriter();
+
+        var act = () => PersonBalanceCommand.RunAsync(
+            scope.ServiceProvider.GetRequiredService<LicenseDbContext>(), args, output, new StringWriter(), default);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        output.ToString().Should().BeEmpty("rapor basılmadan, veritabanı okunmadan");
+    }
+
+    [Fact]
     public async Task Bilinmeyen_lisans_2_doner()
     {
         var (exit, _, error) = await RunAsync($"person-balance verify --license {Guid.NewGuid()}");

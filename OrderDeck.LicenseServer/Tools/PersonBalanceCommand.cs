@@ -65,10 +65,15 @@ public static class PersonBalanceCommand
         return await RunAsync(db, parsed, Console.Out, Console.Error, CancellationToken.None);
     }
 
-    /// <summary>Gövde: argümanlar ayrıştırılmış, bağlam kurulmuş. Testler buradan girer.</summary>
+    /// <summary>Gövde: argümanlar ayrıştırılmış, bağlam kurulmuş. Testler buradan girer. Ayrıştırıcının reddedeceği
+    /// bir kayıt (<see cref="IsConsistent"/>) programlama hatasıdır: veritabanına gitmeden
+    /// <see cref="ArgumentException"/>.</summary>
     public static async Task<int> RunAsync(
         LicenseDbContext db, VerifyArgs args, TextWriter output, TextWriter error, CancellationToken ct)
     {
+        if (!IsConsistent(args))
+            throw new ArgumentException($"Ayrıştırıcının reddedeceği argümanlar: {args}. TryParseArgs çıktısını geçir.", nameof(args));
+
         var now = DateTimeOffset.UtcNow;
         if (args.License is { } only && !await db.Licenses.AsNoTracking().AnyAsync(l => l.Id == only, ct))
         {
@@ -177,7 +182,17 @@ public static class PersonBalanceCommand
         }
 
         foreach (var row in pending) row.ReviewedAt = now;
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Okunan bir satır yazımdan önce silindi (lisans silindi, taban cascade ile gitti). SaveChanges tek işlemdir.
+            db.ChangeTracker.Clear();
+            error.WriteLine("Taban satırları bu arada silindi ya da değişti; hiçbir şey yazılmadı. Komutu yeniden çalıştır.");
+            return 1;
+        }
         output.WriteLine($"UYGULANDI: {pending.Count} satır incelendi olarak işaretlendi.");
         return 0;
     }
@@ -261,14 +276,17 @@ public static class PersonBalanceCommand
             }
         }
 
-        var capture = flags.Contains("--capture-baseline");
-        var mark = flags.Contains("--mark-reviewed");
-        var apply = flags.Contains("--apply");
-        if (capture && mark) return false;
-        if (apply && !capture && !mark) return false;
-        if (mark && license is null) return false;
-
-        parsed = new VerifyArgs(license, flags.Contains("--details"), capture, mark, apply);
+        var candidate = new VerifyArgs(license, flags.Contains("--details"), flags.Contains("--capture-baseline"),
+            flags.Contains("--mark-reviewed"), flags.Contains("--apply"));
+        if (!IsConsistent(candidate)) return false;
+        parsed = candidate;
         return true;
     }
+
+    /// <summary>Bayrakların birbirine kuralları — ayrıştırıcı ve gövde aynısını kullanır: yakalama ile inceleme
+    /// birlikte olmaz, <c>--apply</c> yalnız yazan bayrakla, <c>--mark-reviewed</c> lisans ister.</summary>
+    private static bool IsConsistent(VerifyArgs a) =>
+        !(a.CaptureBaseline && a.MarkReviewed)
+        && (!a.Apply || a.CaptureBaseline || a.MarkReviewed)
+        && (!a.MarkReviewed || a.License is not null);
 }
