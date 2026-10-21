@@ -1,7 +1,10 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
@@ -24,6 +27,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (görünen bağ kanıtlanmış biçimde geçerli IBAN'dandır, kalır); hareket özetleri KALIR (KVKK Ö-7, not karar 5).</item>
 /// <item>P1'den önce öğrenilmiş IBAN bağının saklama başlangıcı öğreten havalenin işlem tarihine çekilir (öğrenme anından
 /// hiçbir zaman sonra değil; KVKK K-6). Silme değildir; önceki iki adımın sildiği bağa yazılmaz.</item>
+/// <item>Görev 16'dan önce yazılmış elle eşleme denetim satırlarındaki müşteri kullanıcı adı kayıt numarasına çevrilir ya da
+/// boşaltılır (<see cref="RewriteManualMatchAuditAsync"/>; KVKK Ö-14).</item>
 /// </list>
 /// Yeniden koşu idempotent. Partiler <see cref="BatchSize"/>'lık; eşzamanlı bir eşleştirme yazısıyla çakışan silme partisi geri
 /// alınır, <see cref="Report.FailedBatches"/> artar ve o adım biter — komut yeniden çalıştırılır. Maskeleme adımları
@@ -60,6 +65,9 @@ public sealed class BankDataCleanupJob
         /// (<see cref="ResetIbanMemoryAsync"/>). Sıfırlama istenmediyse 0.</summary>
         public int IbanMemoriesKeptValid { get; set; }
         public int IbanConfirmationsBackfilled { get; set; }
+        /// <summary>Kullanıcı adı taşıyan eski elle eşleme denetim satırı: kayıt numarasına çevrilen ya da ayrıntısı boşaltılan
+        /// (<see cref="RewriteManualMatchAuditAsync"/>).</summary>
+        public int AuditUsernamesRewritten { get; set; }
         public int FailedBatches { get; set; }
     }
 
@@ -93,15 +101,16 @@ public sealed class BankDataCleanupJob
         await ClearMaskedSourceHashesAsync(licenseId, apply, r, ct);
         if (resetIbanMemory) await ResetIbanMemoryAsync(licenseId, apply, r, ct);
         await BackfillIbanConfirmationAsync(licenseId, apply, r, ct);
+        await RewriteManualMatchAuditAsync(licenseId, apply, r, ct);
         _log.LogInformation("bank-data-cleanup ({Mode}): giden/sıfır={Outgoing} (atlanan {Skipped}), çapa={Anchors}, " +
             "çapa öncesi={PreAnchor} (bağlı {Linked}), eşleşme={Matches}, VKN kodu={TaxIds}, ham kayıt={Raw} (okunamayan {Unreadable}), " +
             "açıklama={Descriptions}, kısa maske={ShortMasks}, maskeli özet={MaskedHashes} (hafıza {MaskedMemories}), " +
             "sıfırlanan hafıza={ResetMemories} (geçerli kalan {KeptMemories}), IBAN bağı başlangıcı={IbanStarts}, " +
-            "düşen parti={Failed}",
+            "denetim kullanıcı adı={AuditUsernames}, düşen parti={Failed}",
             apply ? "uygula" : "kuru", r.OutgoingOrZeroDeleted, r.OutgoingOrZeroSkippedDecided, r.AnchorsSet, r.PreAnchorDeleted,
             r.PreAnchorSkippedLinked, r.MatchesDeleted, r.TaxIdHashesCleared, r.RawJsonRewritten, r.RawJsonUnreadableCleared,
             r.DescriptionsMasked, r.ShortMasksReplaced, r.MaskedSourceHashesCleared, r.MaskedSourceMemoriesDeleted,
-            r.IbanMemoriesReset, r.IbanMemoriesKeptValid, r.IbanConfirmationsBackfilled, r.FailedBatches);
+            r.IbanMemoriesReset, r.IbanMemoriesKeptValid, r.IbanConfirmationsBackfilled, r.AuditUsernamesRewritten, r.FailedBatches);
         return r;
     }
 
@@ -586,6 +595,93 @@ public sealed class BankDataCleanupJob
             await _db.SaveChangesAsync(ct);
             _db.ChangeTracker.Clear();
             r.IbanConfirmationsBackfilled += rows.Count;
+        }
+    }
+
+    /// <summary>KVKK Ö-14: Görev 16'ya kadar elle eşleme denetim satırı ayrıntıya müşterinin kullanıcı adını yazdı
+    /// (<c>{"username":…}</c>; 24 ay durur, KVKK silmesi temizlemez). Ayrıntı yeni satırların biçimine,
+    /// <c>{"wpfCustomerId":…}</c>'e çevrilir; çevrilemeyen satırınki boşaltılır.
+    /// <para><b>Kayıt numarası kullanıcı adından bulunur</b>, eşleşme satırının bugünkü müşterisinden değil: eşleşme bugünkü
+    /// kararı, denetim satırı o günkü eşlemeyi gösterir. Kaldırılıp başka müşteriye verilmiş kararın müşterisi eski satıra
+    /// yazılsaydı iz yanlışa dönerdi (m. 4/2-b). Ad elle eşlemenin aramasıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>)
+    /// hareketin lisansındaki asıl kayıtlarda aranır (birleştirilmiş kopya kimliği asıl kayıtla taşır, kişi asıl kayıttır;
+    /// birleştirme eşleşmeyi de oraya taşır). Tek kayıt bulunursa o; birden çoksa (aynı ad başka platformda) yalnız eşleşmenin
+    /// bugünkü müşterisi onlardan biriyse o, değilse hangisi olduğu tahmin edilmez. KVKK'yla silinmiş müşteriye çevrilmez:
+    /// silme hareketle bağını kopardı (Görev 15), denetim satırı onu yeniden kurmamalı. Bulunamayan, belirsiz ya da hareketi
+    /// silinmiş (180 gün; lisansı bilinmez) satırın ayrıntısı boşaltılır.</para>
+    /// Lisans verilirse yalnız o lisansın hareketini hedefleyen satırlar; hareketi silinmiş satırları yalnız lisanssız koşu işler.
+    /// Uygulamanın önceki adımlarının sileceği hareket kuru koşuda da silinmiş sayılır (sınıf özeti). İmha kaydı satırın lisansı
+    /// başına: kimliğe çevirme <see cref="DataDestruction.Actions.Masked"/>, boşaltma <see cref="DataDestruction.Actions.Nulled"/>.
+    /// Az satır (pilot, 28.09'dan beri): tek seferde.</summary>
+    private async Task RewriteManualMatchAuditAsync(Guid? licenseId, bool apply, Report r, CancellationToken ct)
+    {
+        const string target = "AuditLogs.Details", criterion = "elle eşleme denetiminde kullanıcı adı (Ö-14)";
+        var rows = await _db.AuditLogs
+            .Where(a => a.EventType == AuditEvents.BankMatchManual && a.Details != null && a.Details.Contains("\"username\""))
+            .ToListAsync(ct);
+        if (rows.Count == 0) return;
+        static Guid TransactionOf(AuditLogEntry a) => Guid.TryParse(a.TargetId, out var id) ? id : Guid.Empty;
+        var txIds = rows.Select(TransactionOf).Distinct().ToList();
+        var owners = (await _db.BankTransactions.AsNoTracking().Where(t => txIds.Contains(t.Id))
+                .Select(t => new { t.Id, t.LicenseId }).ToListAsync(ct))
+            .Where(t => !_dryRunDeleted.Contains(t.Id))
+            .ToDictionary(t => t.Id, t => t.LicenseId);
+        var decided = await _db.PaymentMatches.AsNoTracking()
+            .Where(m => txIds.Contains(m.BankTransactionId) && m.ActualWpfCustomerId != null)
+            .ToDictionaryAsync(m => m.BankTransactionId, m => m.ActualWpfCustomerId!.Value, ct);
+        var keys = rows.ToDictionary(a => a.Id,
+            a => UsernameOf(a.Details!) is { } username ? WpfCustomerProjection.IdentityKeyOf(username) : "");
+        var licenses = owners.Values.Distinct().ToList();
+        var searched = keys.Values.Where(k => k.Length > 0).Distinct().ToList();
+        // IdentityKey BIN2 (ordinal): bellekteki eşitlik SQL'deki aramayla aynı.
+        var candidates = (await _db.WpfCustomerProjections.AsNoTracking()
+                .Where(c => licenses.Contains(c.LicenseId) && searched.Contains(c.IdentityKey) && c.MergedIntoId == null)
+                .Select(c => new { c.Id, c.LicenseId, c.IdentityKey, Purged = c.PurgedAt != null }).ToListAsync(ct))
+            .ToLookup(c => (c.LicenseId, c.IdentityKey));
+        // Değişen satırın lisansı (hareketinin); hareketi silinmiş satırınki bilinmez (null). Kayıt lisans başına (Görev 9).
+        List<Guid?> converted = new(), cleared = new();
+        foreach (var a in rows)
+        {
+            var txId = TransactionOf(a);
+            Guid? owner = owners.TryGetValue(txId, out var o) ? o : null;
+            if (licenseId is { } l && owner != l) continue;
+            Guid? customer = null;
+            if (owner is { } lic && keys[a.Id].Length > 0)
+            {
+                var found = candidates[(lic, keys[a.Id])].ToList();
+                var pick = found.Count == 1 ? found[0]
+                    : decided.TryGetValue(txId, out var actual) ? found.FirstOrDefault(c => c.Id == actual) : null;
+                if (pick is { Purged: false }) customer = pick.Id;
+            }
+            a.Details = customer is { } id ? JsonSerializer.Serialize(new { wpfCustomerId = id }) : null;
+            (customer is null ? cleared : converted).Add(owner);
+        }
+        r.AuditUsernamesRewritten = converted.Count + cleared.Count;
+        if (apply && r.AuditUsernamesRewritten > 0)
+        {
+            foreach (var g in converted.GroupBy(x => x))
+                DataDestruction.Record(_db, g.Key, target, Masked, g.Count(), criterion, DataDestruction.Triggers.Cleanup,
+                    DataDestruction.CliActor);
+            foreach (var g in cleared.GroupBy(x => x))
+                DataDestruction.Record(_db, g.Key, target, Nulled, g.Count(), criterion, DataDestruction.Triggers.Cleanup,
+                    DataDestruction.CliActor);
+            await _db.SaveChangesAsync(ct);
+        }
+        _db.ChangeTracker.Clear();
+    }
+
+    /// <summary>Eski ayrıntının kullanıcı adı; okunamıyorsa null (ayrıntı boşaltılır).</summary>
+    private static string? UsernameOf(string details)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(details);
+            return doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("username", out var u)
+                && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 }

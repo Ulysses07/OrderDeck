@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -592,6 +593,150 @@ public sealed class BankDataCleanupJobTests
 
         r.IbanMemoriesReset.Should().Be(1);
         (await db.CustomerIbanMemories.Select(m => m.Id).ToListAsync()).Should().BeEquivalentTo(new[] { kept.Id });
+    }
+
+    /// <summary>Görev 16'dan önceki biçimde elle eşleme denetim satırı: ayrıntıda müşterinin kullanıcı adı.</summary>
+    private static AuditLogEntry ManualMatchAudit(Guid txId, string username) => new()
+    {
+        Id = Guid.NewGuid(), EventType = AuditEvents.BankMatchManual, TargetType = AuditTargets.BankTransaction,
+        TargetId = txId.ToString(), Details = $"{{\"username\":\"{username}\"}}", OccurredAt = DateTimeOffset.UtcNow,
+        AdminId = Guid.Empty, AdminUsername = "admin",
+    };
+
+    /// <summary>Görev 16'dan sonraki biçim (sayfanın yazdığı).</summary>
+    private static string CustomerIdDetails(Guid customerId) => $"{{\"wpfCustomerId\":\"{customerId}\"}}";
+
+    private static WpfCustomerProjection Projection(Guid lic, string username, string platform = "youtube",
+        DateTimeOffset? purgedAt = null) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = lic, Platform = platform, Username = username, UpdatedAt = DateTimeOffset.UtcNow,
+        PurgedAt = purgedAt,
+    };
+
+    private static async Task<string?> DetailsOf(LicenseDbContext db, AuditLogEntry row)
+        => (await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Id == row.Id)).Details;
+
+    [Fact]
+    public async Task Elle_eslemenin_eski_denetim_satirinda_kullanici_adi_kimlige_cevrilir_kuru_kosu_yazmaz()
+    {
+        // KVKK Ö-14: 28.09'dan Görev 16'ya kadar bank.match.manual ayrıntısı {"username":…} taşıdı; 24 ay durur, purge
+        // temizlemez. Ad, hareketin lisansında gösterdiği müşterinin kayıt numarasına çevrilir (yeni satırların biçimi);
+        // hareketi silinmiş (180 gün) satırın lisansı bilinmez, ayrıntısı boşalır. Yeni biçimdeki satıra dokunulmaz.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var customer = Projection(lic, "ornek_musteri34");
+        var matchedTx = Tx(lic, 10m);
+        db.WpfCustomerProjections.Add(customer);
+        db.BankTransactions.Add(matchedTx);
+        db.PaymentMatches.Add(Match(matchedTx, actual: customer.Id, decidedAt: DateTimeOffset.UtcNow));
+        var withMatch = ManualMatchAudit(matchedTx.Id, "ornek_musteri34");
+        var orphan = ManualMatchAudit(Guid.NewGuid(), "ornek_musteri35");
+        var already = ManualMatchAudit(matchedTx.Id, "x");
+        already.Details = CustomerIdDetails(customer.Id);
+        db.AuditLogs.AddRange(withMatch, orphan, already);
+        await db.SaveChangesAsync();
+
+        (await Job(db).RunAsync(null, apply: false, CancellationToken.None)).AuditUsernamesRewritten.Should().Be(2);
+        (await DetailsOf(db, withMatch)).Should().Contain("ornek_musteri34", "kuru koşu yazmaz");
+        (await db.DataDestructionRecords.CountAsync()).Should().Be(0);
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.AuditUsernamesRewritten.Should().Be(2);
+        (await DetailsOf(db, withMatch)).Should().Be(CustomerIdDetails(customer.Id));
+        (await DetailsOf(db, orphan)).Should().BeNull();
+        (await DetailsOf(db, already)).Should().Be(already.Details);
+        // İmha kaydı satırın lisansı başına (Görev 9 kuralı): kimliğe çevirme maske, boşaltma boşaltma.
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.Target == "AuditLogs.Details")
+                .Select(x => new { x.LicenseId, x.Action, x.RowCount, x.Trigger, x.Actor }).ToListAsync())
+            .Should().BeEquivalentTo(new[]
+            {
+                new { LicenseId = (Guid?)lic, Action = DataDestruction.Actions.Masked, RowCount = 1,
+                    Trigger = DataDestruction.Triggers.Cleanup, Actor = DataDestruction.CliActor },
+                new { LicenseId = (Guid?)null, Action = DataDestruction.Actions.Nulled, RowCount = 1,
+                    Trigger = DataDestruction.Triggers.Cleanup, Actor = DataDestruction.CliActor },
+            });
+        (await Job(db).RunAsync(null, apply: true, CancellationToken.None)).AuditUsernamesRewritten
+            .Should().Be(0, "yeniden koşu idempotent");
+    }
+
+    [Fact]
+    public async Task Eski_denetim_satiri_kullanici_adindan_cevrilir_eslesmenin_bugunku_musterisinden_degil()
+    {
+        // Eşleşme satırı bugünkü kararı, denetim satırı o günkü eşlemeyi gösterir: kaldırılıp başka müşteriye verilmiş kararın
+        // müşterisi eski satıra yazılsaydı iz yanlışa dönerdi (m. 4/2-b). Ad elle eşlemenin aramasıyla (kimlik anahtarı) aranır:
+        // lisansta tek müşteriyi gösteriyorsa o, birden çoğunu gösteriyorsa yalnız eşleşmenin bugünkü müşterisi onlardan biriyse
+        // o. Birleştirilmiş kopya kimliği asıl kayıtla taşır, kişi asıl kayıttır (birleştirme eşleşmeyi de oraya taşır).
+        // KVKK'yla silinmiş müşteriye çevrilmez (silme hareketle bağını kopardı); belirsiz ya da bulunamayan ad boşalır.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var first = Projection(lic, "ilk_musteri");
+        var firstCopy = Projection(lic, "ilk_musteri");
+        firstCopy.MergedIntoId = first.Id;
+        var second = Projection(lic, "ikinci_musteri");
+        var purged = Projection(lic, "silinen_musteri", purgedAt: DateTimeOffset.UtcNow);
+        var twinYoutube = Projection(lic, "ikiz_musteri");
+        var twinInstagram = Projection(lic, "ikiz_musteri", platform: "instagram");
+        db.WpfCustomerProjections.AddRange(first, firstCopy, second, purged, twinYoutube, twinInstagram);
+        BankTransaction Decided(Guid? actual)
+        {
+            var t = Tx(lic, 10m);
+            db.BankTransactions.Add(t);
+            db.PaymentMatches.Add(Match(t, actual, actual is null ? null : DateTimeOffset.UtcNow));
+            return t;
+        }
+        var redecided = ManualMatchAudit(Decided(second.Id).Id, "ilk_musteri");     // first'e eşlendi, kaldırıldı, second'a verildi
+        var unmatched = ManualMatchAudit(Decided(null).Id, "Ilk_Musteri");          // first'e eşlendi, kaldırıldı; ad büyük harfle
+        var ofPurged = ManualMatchAudit(Decided(null).Id, "silinen_musteri");       // silme kararın müşterisini boşalttı
+        var twinDecided = ManualMatchAudit(Decided(twinInstagram.Id).Id, "ikiz_musteri");
+        var twinUnmatched = ManualMatchAudit(Decided(null).Id, "ikiz_musteri");
+        var unknown = ManualMatchAudit(Decided(null).Id, "olmayan_musteri");
+        db.AuditLogs.AddRange(redecided, unmatched, ofPurged, twinDecided, twinUnmatched, unknown);
+        await db.SaveChangesAsync();
+
+        var r = await Job(db).RunAsync(null, apply: true, CancellationToken.None);
+
+        r.AuditUsernamesRewritten.Should().Be(6);
+        (await DetailsOf(db, redecided)).Should().Be(CustomerIdDetails(first.Id), "eşlenen first'tü, bugünkü karar second'ın");
+        (await DetailsOf(db, unmatched)).Should().Be(CustomerIdDetails(first.Id));
+        (await DetailsOf(db, ofPurged)).Should().BeNull();
+        (await DetailsOf(db, twinDecided)).Should().Be(CustomerIdDetails(twinInstagram.Id));
+        (await DetailsOf(db, twinUnmatched)).Should().BeNull("ad iki müşteriyi gösteriyor, hangisi olduğu tahmin edilmez");
+        (await DetailsOf(db, unknown)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Eski_denetim_satiri_lisans_verilirse_yalniz_o_lisansta_cevrilir_kuru_kosu_uygulamayla_ayni_sayar()
+    {
+        // Lisans verilirse yalnız o lisansın hareketini hedefleyen satır; hareketi silinmiş satırın lisansı bilinmez, yalnız
+        // lisanssız koşu boşaltır. Uygulamanın önceki adımının sileceği hareket kuru koşuda da silinmiş sayılır (sınıf özeti).
+        using var db = NewDb(); var target = Guid.NewGuid(); var other = Guid.NewGuid();
+        var backfill = new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero);
+        db.ObifinConnections.Add(Connection(target, backfill, backfill));
+        var targetCustomer = Projection(target, "ornek_musteri34");
+        db.WpfCustomerProjections.AddRange(targetCustomer, Projection(other, "ornek_musteri34"));
+        var targetTx = Tx(target, 10m);
+        var otherTx = Tx(other, 10m);
+        // Elle eşlenmiş, sonra kaldırılmış (kararsız), çapadan eski havale: uygulamanın çapa adımı siler.
+        var preAnchor = Tx(target, 11m, new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero));
+        db.BankTransactions.AddRange(targetTx, otherTx, preAnchor);
+        var inTarget = ManualMatchAudit(targetTx.Id, "ornek_musteri34");
+        var inOther = ManualMatchAudit(otherTx.Id, "ornek_musteri34");
+        var onPreAnchor = ManualMatchAudit(preAnchor.Id, "ornek_musteri34");
+        var orphan = ManualMatchAudit(Guid.NewGuid(), "ornek_musteri34");
+        db.AuditLogs.AddRange(inTarget, inOther, onPreAnchor, orphan);
+        await db.SaveChangesAsync();
+
+        var dry = await Job(db).RunAsync(target, apply: false, CancellationToken.None);
+        var applied = await Job(db).RunAsync(target, apply: true, CancellationToken.None);
+
+        (dry.AuditUsernamesRewritten, applied.AuditUsernamesRewritten).Should().Be((1, 1));
+        (await DetailsOf(db, inTarget)).Should().Be(CustomerIdDetails(targetCustomer.Id));
+        foreach (var untouched in new[] { inOther, onPreAnchor, orphan })
+            (await DetailsOf(db, untouched)).Should().Be(untouched.Details);
+
+        (await Job(db).RunAsync(null, apply: true, CancellationToken.None)).AuditUsernamesRewritten
+            .Should().Be(3, "lisanssız koşu öbür lisansı ve hareketi silinmiş satırları da işler");
+        (await DetailsOf(db, onPreAnchor)).Should().BeNull();
+        (await DetailsOf(db, orphan)).Should().BeNull();
     }
 
     [Theory]

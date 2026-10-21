@@ -53,9 +53,16 @@ public static class AuditEvents
     /// <summary>Obifin'in hareket kopyasını sildiğine dair yazılı teyit kaydedildi (KVKK Ö-9): imha olayı. Ayrıntı: teyit kaydının
     /// kimliği.</summary>
     public const string ObifinCopyDeletionConfirm = "obifin.copy.confirm";
-    // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız kullanıcı adı girer: açıklama, tutar, IBAN GİRMEZ.
+    // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız müşteri kayıt numarası (WpfCustomerId) girer:
+    // kullanıcı adı, açıklama, tutar, IBAN GİRMEZ (KVKK Ö-14; Görev 16'dan önceki satırları bank-data-cleanup çevirir).
     public const string BankMatchManual = "bank.match.manual";
     public const string BankMatchUnmatch = "bank.match.unmatch";
+    /// <summary>Banka yönetim sayfasının görüntülenmesi (KVKK Ö-4; Kurul 2018/10 3-c): açıklama, kanıt, maske gösteren sayfanın
+    /// her açılışı. Ayrıntı yalnız sayfa adı ve sayfa/talep numarası. Banka Eşleştirme ve Obifin sayfalarında hedef banka
+    /// modülünün öbür satırları gibi <see cref="AuditTargets.ObifinConnection"/> + lisans KİMLİĞİ (Obifin'de düzenleme formu açık
+    /// lisans, yoksa boş); <see cref="AuditTargets.License"/> lisans ANAHTARI taşır ve lisans sayfasının son 20 kaydında
+    /// listelenir, görüntülemeler orayı doldurmasın.</summary>
+    public const string BankPageView = "bank.page.view";
 
     /// <summary>İmha olayları (Silme Yönetmeliği md. 7/3: en az üç yıl). <see cref="AuditRetentionJobs"/> bunları
     /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta değil <see cref="AuditRetentionOptions.DestructionRetentionMonths"/>'ta

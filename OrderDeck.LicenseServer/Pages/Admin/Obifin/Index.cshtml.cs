@@ -25,7 +25,8 @@ namespace OrderDeck.LicenseServer.Pages.Admin.Obifin;
 /// yalnız işleyici adı ve istisna türü — istisna metni (Obifin/banka yankısı taşıyabilir) ve form değerleri asla.</para>
 /// <para>Taahhüt edilmiş bir yazımın (kimlik kaydı — belki geri dönüşsüz gölge veri silmesi —, doğrulama, kuyruğa atma,
 /// banka ekleme) ardındaki audit kaydı istek jetonuyla DEĞİL <see cref="CancellationToken.None"/> ile yazılır: istek o anda
-/// iptal edilse iş yapılmış, izi kaybolmuş olurdu.</para>
+/// iptal edilse iş yapılmış, izi kaybolmuş olurdu. Sayfanın her görüntülenmesi de denetime yazılır
+/// (<see cref="AuditEvents.BankPageView"/>, KVKK Ö-4).</para>
 /// <para><b>Durdur / Etkinleştir / Kaldır ve sil / Teyit alındı / hesap reddi</b> (KVKK K-6, Ö-9, Ö-10;
 /// <see cref="BankConnectionTerminator"/>) <see cref="BankHasher"/> istemez: banka modülü kapalıyken de çalışır. Geri dönüşsüz
 /// iki eylem yazılı onay ister (Purge'ün <c>confirmEmail</c> kalıbı): "Kaldır ve sil" lisans anahtarının son 6 karakterini, hesap
@@ -178,6 +179,10 @@ public class IndexModel : PageModel
             LicenseId = id; BaseUrl = row.BaseUrl; UserCode = row.UserCode;
             Editing = editing;
         }
+        // KVKK Ö-4: hesap maskeleri, bildirim notları ve yayıncı e-postaları gösteren sayfanın her görüntülenmesi denetime
+        // yazılır (kimlik onayı isteyen kayıt da sayfayı buradan basar). Hedef düzenleme formu açılan lisans, yoksa boş.
+        await _audit.LogAsync(AuditEvents.BankPageView, AuditTargets.ObifinConnection, license?.ToString(),
+            new { page = "obifin" }, ct);
     }
 
     /// <summary>Düzenlenen bağlantının "kayıtlı" bayrakları; bağlantı yoksa null. Yalnız bayraklar okunur: şifreli değerler

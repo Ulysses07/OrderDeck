@@ -182,13 +182,13 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         m.Status.Should().Be(PaymentMatchStatus.NoProposal); m.ActualWpfCustomerId.Should().BeNull();
         (await ToastAsync(client, path, "success")).Should().Be(IndexModel.UnmatchedMessage);
 
-        // Audit ayrıntısı yalnız kullanıcı adı: açıklama, tutar, IBAN girmez.
+        // Audit ayrıntısı yalnız müşteri kayıt numarası (KVKK Ö-14): kullanıcı adı, açıklama, tutar, IBAN girmez.
         using var scope = _factory.Services.CreateScope();
         var audits = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().AuditLogs.AsNoTracking()
             .Where(a => a.TargetId == txId.ToString()).ToListAsync();
         audits.Should().OnlyContain(a => a.TargetType == AuditTargets.BankTransaction);
         audits.Should().ContainSingle(a => a.EventType == AuditEvents.BankMatchManual, "reddedilen ikinci eşleme audit yazmaz")
-            .Which.Details.Should().Be("{\"username\":\"ornek_musteri34\"}");
+            .Which.Details.Should().Be($"{{\"wpfCustomerId\":\"{wpfId}\"}}");
         audits.Should().ContainSingle(a => a.EventType == AuditEvents.BankMatchUnmatch).Which.Details.Should().BeNull();
     }
 
@@ -570,6 +570,30 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             .Should().Be($"4/200, çelişki 1/4 ({PaymentMatchMetrics.Rate(1, 4)!.Value.ToString("P1", Tr)})");
         box.QuerySelector("[data-phase2='page']")!.TextContent.Trim().Should().Be("✓2 ✗1");
         box.QuerySelector("[data-fraction='overall']")!.TextContent.Trim().Should().Be("(çelişki 2/7)");
+    }
+
+    [Fact]
+    public async Task Lisans_secili_sayfa_goruntulemesi_denetime_yazilir_secimsiz_sayfa_yazmaz()
+    {
+        // KVKK Ö-4 (Kurul 2018/10 3-c): açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime girer. Hedef banka
+        // modülünün öbür denetim satırları gibi lisansın kimliği (obifin-connection); "license" hedefi lisans ANAHTARI taşır.
+        var (lic, _, _) = await SeedAsync();
+        var unknown = Guid.NewGuid();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        await client.GetStringAsync(PathFor(lic, pageNo: 2));
+        await client.GetStringAsync(PagePath);           // lisans seçili değil: veri gösterilmez
+        await client.GetStringAsync(PathFor(unknown));   // listede olmayan lisans seçilmiş sayılmaz
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var view = await db.AuditLogs.AsNoTracking()
+            .SingleAsync(a => a.EventType == AuditEvents.BankPageView && a.TargetId == lic.ToString());
+        view.TargetType.Should().Be(AuditTargets.ObifinConnection);
+        view.Details.Should().Be("{\"page\":\"banka-eslestirme\",\"pageNo\":2}");
+        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.BankPageView
+                && (a.TargetId == unknown.ToString() || (a.TargetId == null && a.Details!.Contains("banka-eslestirme")))))
+            .Should().BeFalse("veri gösterilmeyen görüntüleme yazılmaz");
     }
 
     [Fact]

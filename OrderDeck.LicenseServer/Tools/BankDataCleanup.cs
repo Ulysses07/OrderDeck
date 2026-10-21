@@ -24,6 +24,8 @@ namespace OrderDeck.LicenseServer.Tools;
 /// KALIR (IBAN talep aracı onlarla arar) ve eski hareketten yeniden öğrenilmez (CounterpartyIbanHashValid kapısı) — maskeli
 /// kaynaklı özetler saklı veriden tam anlaşılamadığı için Faz 2'den önce (KVKK Ö-7, karar Burak'ın). Bayraksız komut yalnız
 /// maskesi maskeli kaynağı ele veren özetleri ve bağları temizler.</para>
+/// <para>Görev 16'dan önce yazılmış elle eşleme denetim satırlarındaki müşteri kullanıcı adını kayıt numarasına çevirir;
+/// çevrilemeyeni (hareketi silinmiş, müşterisi bulunamayan, belirsiz ya da KVKK'yla silinmiş) boşaltır (KVKK Ö-14).</para>
 /// </summary>
 public static class BankDataCleanup
 {
@@ -109,5 +111,6 @@ public static class BankDataCleanup
            $"açıklama maskelenen={r.DescriptionsMasked} | kısa maske çevrilen={r.ShortMasksReplaced} | " +
            $"maskeli kaynaklı özet boşaltılan={r.MaskedSourceHashesCleared} (hafıza silinen={r.MaskedSourceMemoriesDeleted}) | " +
            $"sıfırlanan IBAN hafızası={r.IbanMemoriesReset} (geçerli IBAN'lı kalan={r.IbanMemoriesKeptValid}) | " +
-           $"IBAN bağı başlangıcı yazılan={r.IbanConfirmationsBackfilled} | düşen parti={r.FailedBatches}";
+           $"IBAN bağı başlangıcı yazılan={r.IbanConfirmationsBackfilled} | " +
+           $"denetimde kullanıcı adı çevrilen={r.AuditUsernamesRewritten} | düşen parti={r.FailedBatches}";
 }

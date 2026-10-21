@@ -5,7 +5,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using OrderDeck.LicenseServer.Tools;
@@ -209,6 +211,78 @@ public sealed class BankDataCleanupRelationalTests : IAsyncLifetime
             var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == seed.LicenseId).ToListAsync();
             records.Where(r => r.Target == "BankTransactions.CounterpartyIbanHash").Sum(r => r.RowCount).Should().Be(1);
             records.Where(r => r.Target == "CustomerIbanMemories").Sum(r => r.RowCount).Should().Be(3);
+        }
+    }
+
+    [Fact]
+    public async Task Elle_eslemenin_eski_denetim_satiri_kimlige_cevrilir_cikti_kullanici_adi_icermez()
+    {
+        // KVKK Ö-14 gerçek SQL Server'da (ayrıntıda LIKE, BIN2 kimlik anahtarı, filtreli kimlik indeksi): Görev 16'dan önce
+        // yazılmış elle eşleme denetim satırındaki kullanıcı adı müşterinin kayıt numarasına çevrilir; hareketi silinmiş ya da
+        // uygulamanın çapa adımının sildiği satırın ayrıntısı boşalır. Kuru koşu yazmaz, sayıları uygulamanınkiler.
+        var seed = await SeedAsync();
+        var username = $"m{Guid.NewGuid():N}"[..16];
+        Guid customerId, onKeptId, onPreAnchorId, orphanId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "youtube",
+                Username = username, UpdatedAt = DateTimeOffset.UtcNow };
+            // Birleştirilmiş kopya aynı kimliği taşır (filtreli tekil indeks onu dışarıda bırakır); kişi asıl kayıttır.
+            var copy = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = seed.LicenseId, Platform = "youtube",
+                Username = username, UpdatedAt = DateTimeOffset.UtcNow, MergedIntoId = customer.Id };
+            db.WpfCustomerProjections.AddRange(customer, copy);
+            AuditLogEntry Audit(Guid txId) => new()
+            {
+                Id = Guid.NewGuid(), EventType = AuditEvents.BankMatchManual, TargetType = AuditTargets.BankTransaction,
+                TargetId = txId.ToString(), Details = $"{{\"username\":\"{username}\"}}", OccurredAt = DateTimeOffset.UtcNow,
+                AdminId = Guid.NewGuid(), AdminUsername = "admin",
+            };
+            var onKept = Audit(seed.KeptId);
+            var onPreAnchor = Audit(seed.PreAnchorId);
+            var orphan = Audit(Guid.NewGuid());
+            db.AuditLogs.AddRange(onKept, onPreAnchor, orphan);
+            await db.SaveChangesAsync();
+            (customerId, onKeptId, onPreAnchorId, orphanId) = (customer.Id, onKept.Id, onPreAnchor.Id, orphan.Id);
+        }
+
+        string dryLine, appliedLine;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var dry = new StringWriter();
+            (await BankDataCleanup.RunAsync(db, new BankDataCleanup.Options(null, Apply: false), dry, NullLoggerFactory.Instance,
+                CancellationToken.None)).Should().Be(0);
+            dryLine = dry.ToString();
+            (await db.AuditLogs.AsNoTracking().CountAsync(a => a.Details!.Contains(username))).Should().Be(3, "kuru koşu yazmaz");
+            var applied = new StringWriter();
+            (await BankDataCleanup.RunAsync(db, new BankDataCleanup.Options(null, Apply: true), applied, NullLoggerFactory.Instance,
+                CancellationToken.None)).Should().Be(0);
+            appliedLine = applied.ToString();
+        }
+        appliedLine.Should().Contain("denetimde kullanıcı adı çevrilen=3");
+        dryLine[dryLine.IndexOf(':')..].Should().Be(appliedLine[appliedLine.IndexOf(':')..]);
+        foreach (var line in new[] { dryLine, appliedLine }) line.Should().NotContain(username);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var details = await db.AuditLogs.AsNoTracking().Where(a => a.EventType == AuditEvents.BankMatchManual)
+                .ToDictionaryAsync(a => a.Id, a => a.Details);
+            details[onKeptId].Should().Be($"{{\"wpfCustomerId\":\"{customerId}\"}}");
+            details[onPreAnchorId].Should().BeNull("uygulamanın çapa adımı hareketi sildi");
+            details[orphanId].Should().BeNull();
+            var records = await db.DataDestructionRecords.AsNoTracking().Where(r => r.Target == "AuditLogs.Details").ToListAsync();
+            records.Should().BeEquivalentTo(new[]
+            {
+                new { LicenseId = (Guid?)seed.LicenseId, Action = DataDestruction.Actions.Masked, RowCount = 1 },
+                new { LicenseId = (Guid?)null, Action = DataDestruction.Actions.Nulled, RowCount = 2 },
+            });
+
+            var again = new StringWriter();
+            (await BankDataCleanup.RunAsync(db, new BankDataCleanup.Options(null, Apply: true), again, NullLoggerFactory.Instance,
+                CancellationToken.None)).Should().Be(0);
+            again.ToString().Should().Contain("denetimde kullanıcı adı çevrilen=0");
         }
     }
 

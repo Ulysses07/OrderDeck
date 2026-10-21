@@ -20,9 +20,10 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// ve istisna türüyle düşer (<see cref="LogHandled"/>).</para>
 /// <para>Görünüme ham JSON ve IBAN/VKN hash'i çıkmaz (satır modeli onları taşımaz, sorgu okumaz); karşı IBAN yalnız
 /// maskeli. Açıklama ve kanıt admin'e gösterilir. KVKK'yla silinmiş müşterinin kullanıcı adı gösterilmez. Audit ayrıntısı
-/// yalnız kullanıcı adıdır (açıklama, tutar, IBAN girmez). Kararı yazan çağrı (elle eşle, kaldır) ve ardından audit
-/// <see cref="CancellationToken.None"/> ile koşar: sınırlı admin işlemleridir; istek karar kaydedildikten sonra iptal edilse
-/// karar yazılmış, izi ya da bildirimi kaybolmuş olurdu.</para>
+/// yalnız müşteri kayıt numarasıdır (KVKK Ö-14; kullanıcı adı, açıklama, tutar, IBAN girmez); lisans seçili sayfanın her
+/// görüntülenmesi de denetime yazılır (<see cref="AuditEvents.BankPageView"/>, KVKK Ö-4). Kararı yazan çağrı (elle eşle,
+/// kaldır) ve ardından audit <see cref="CancellationToken.None"/> ile koşar: sınırlı admin işlemleridir; istek karar
+/// kaydedildikten sonra iptal edilse karar yazılmış, izi ya da bildirimi kaybolmuş olurdu.</para>
 /// <para><b>Kaldır</b> onay ister: dekonta bağlı satırda dekontu bağından koparıp açık gap'e döndürür, bu hareketten öğrenilen
 /// IBAN'ı siler; başka havalenin öğrettiği IBAN bağının süresi yalnız bu havaleye dayanıyorsa o bağı da imha kaydıyla siler
 /// (yapan yöneticinin kimliği). Hiçbiri arayüzden geri alınamaz.</para>
@@ -132,6 +133,10 @@ public class IndexModel : PageModel
                 NameOf(m?.ProposedWpfCustomerId), m?.Layer ?? PaymentMatchLayer.None, m?.Confidence ?? 0m, m?.Evidence, m?.Status,
                 NameOf(m?.ActualWpfCustomerId), m?.PaymentId);
         }).ToList();
+        // KVKK Ö-4: açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime yazılır (lisans seçili değilse veri
+        // gösterilmez, yazılmaz). Hedef banka modülünün öbür satırları gibi lisans kimliği (AuditEvents.BankPageView).
+        await _audit.LogAsync(AuditEvents.BankPageView, AuditTargets.ObifinConnection, LicenseId.ToString(),
+            new { page = "banka-eslestirme", pageNo = PageNo }, ct);
     }
 
     /// <summary>Kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>: kırpılmış, küçük harf,
@@ -165,9 +170,10 @@ public class IndexModel : PageModel
             TempData["Error"] = ex.Message;
             return Back();
         }
-        // Karar kaydedildi: audit istek iptaliyle düşmesin.
-        await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(), new { username },
-            CancellationToken.None);
+        // Karar kaydedildi: audit istek iptaliyle düşmesin. Ayrıntı kullanıcı adı değil kayıt numarası (KVKK Ö-14: satır 24 ay
+        // durur, KVKK silmesi onu temizlemez).
+        await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(),
+            new { wpfCustomerId = customerIds[0] }, CancellationToken.None);
         TempData["Success"] = "Eşlendi.";
         return Back();
     }

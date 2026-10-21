@@ -1515,4 +1515,24 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             AuditEvents.ObifinConnectionRemove, AuditEvents.ObifinAccountReject, AuditEvents.ObifinCopyDeletionConfirm,
         });
     }
+
+    [Fact]
+    public async Task Sayfa_goruntulemesi_denetime_yazilir()
+    {
+        // KVKK Ö-4 (Kurul 2018/10 3-c): hesap maskeleri, bildirim notları ve yayıncı e-postaları gösteren sayfanın her
+        // görüntülenmesi denetime girer. Hedef düzenleme formu açılan lisans (yoksa boş).
+        var lic = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var before = DateTimeOffset.UtcNow;
+
+        await client.GetStringAsync("/admin/obifin");
+        await client.GetStringAsync($"/admin/obifin?license={lic}");
+
+        using var scope = _factory.Services.CreateScope();
+        var views = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().AuditLogs.AsNoTracking()
+            .Where(a => a.EventType == AuditEvents.BankPageView && a.OccurredAt >= before).ToListAsync();
+        views.Should().HaveCount(2).And.OnlyContain(a => a.TargetType == AuditTargets.ObifinConnection
+            && a.Details == "{\"page\":\"obifin\"}");
+        views.Select(a => a.TargetId).Should().BeEquivalentTo(new[] { null, lic.ToString() });
+    }
 }
