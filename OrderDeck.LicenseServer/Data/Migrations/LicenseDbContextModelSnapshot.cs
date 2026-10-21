@@ -525,6 +525,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetimeoffset");
 
                     b.Property<string>("ConfirmedBy")

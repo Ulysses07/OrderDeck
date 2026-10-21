@@ -189,6 +189,46 @@ public sealed class BankConnectionTerminatorRelationalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Teyit_alindi_ayni_anda_iki_kez_basilinca_gercek_SQL_Serverda_ikincisi_reddedilir_tek_imha_kaydi_kalir()
+    {
+        // ConfirmedAt jetonu UPDATE ... WHERE ConfirmedAt IS NULL'a çevrilir: ikinci teyit 0 satır etkiler, imha kaydı aynı işlemde
+        // geri alınır (çift tık ya da iki yönetici ikinci bir imha kaydı ve denetim satırı açmaz).
+        var (lic, _) = await SeedAsync(1);
+        Guid id;
+        using (var scope = _factory.Services.CreateScope())
+            id = (await scope.ServiceProvider.GetRequiredService<BankConnectionTerminator>()
+                .RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1", CancellationToken.None))
+                .ObifinCopyDeletionId!.Value;
+        _factory.Hook.BeforeSave = async () =>
+        {
+            _factory.Hook.BeforeSave = null;   // öbür yöneticinin teyidi önce iner
+            using var scope = _factory.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<BankConnectionTerminator>()
+                .ConfirmObifinCopyDeletedAsync(id, "yonetici-2", CancellationToken.None);
+        };
+
+        try
+        {
+            using var scope = _factory.Services.CreateScope();
+            var act = () => scope.ServiceProvider.GetRequiredService<BankConnectionTerminator>()
+                .ConfirmObifinCopyDeletedAsync(id, "yonetici-1", CancellationToken.None);
+            await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankConnectionTerminator.AlreadyConfirmedMessage);
+        }
+        finally
+        {
+            _factory.Hook.Reset();
+        }
+
+        using var verify = _factory.Services.CreateScope();
+        var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.Id == id)).ConfirmedBy.Should().Be("yonetici-2");
+        (await db.DataDestructionRecords.AsNoTracking()
+                .Where(x => x.LicenseId == lic && x.Trigger == DataDestruction.Triggers.ProcessorConfirmation)
+                .Select(x => x.Actor).ToListAsync())
+            .Should().Equal(new[] { "yonetici-2" }, "ikinci teyidin imha kaydı işlemle birlikte geri alındı");
+    }
+
+    [Fact]
     public async Task Hesap_reddi_gercek_SQL_Serverda_parti_parti_siler_dekont_gapi_acar_IBAN_bagi_suresini_kalan_dogrulamaya_ceker()
     {
         // Görev 10 kuralının sorgu çevirisi: silinen küme (reddedilen hesabın bütün hareketleri) kalan doğrulamadan ve öğreten

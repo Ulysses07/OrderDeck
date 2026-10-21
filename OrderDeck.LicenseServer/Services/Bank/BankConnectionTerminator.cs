@@ -423,10 +423,17 @@ public sealed class BankConnectionTerminator
             _db.ObifinConnections.RemoveRange(connections);
             Record("ObifinConnections", connections.Count);
             // KVKK Ö-9 öneri 3: Obifin'deki kopyanın yazılı silme teyidi bağlantı satırından bağımsız izlenir (FK yok, budanmaz).
-            // Hatırlatma: hizmet sonu işi (Görev 14); kapatma: ConfirmObifinCopyDeletedAsync.
-            var copy = new ObifinCopyDeletion { Id = Guid.NewGuid(), LicenseId = licenseId, RequestedAt = now, RequestedBy = actor };
-            _db.ObifinCopyDeletions.Add(copy);
-            copyId = copy.Id;
+            // Hatırlatma: hizmet sonu işi (Görev 14); kapatma: ConfirmObifinCopyDeletedAsync. Bağlantı satırı yoksa kaydı onu
+            // silen açtı (aynı anda iki "Kaldır ve sil"): ikinci kayıt hatırlatmayı ve "Teyit alındı"yı ikilerdi.
+            if (connections.Count > 0)
+            {
+                var copy = new ObifinCopyDeletion { Id = Guid.NewGuid(), LicenseId = licenseId, RequestedAt = now, RequestedBy = actor };
+                _db.ObifinCopyDeletions.Add(copy);
+                copyId = copy.Id;
+            }
+            else
+                _log.LogWarning("Kaldır ve sil: bağlantı satırı bu sırada başka bir 'Kaldır ve sil'le silinmiş — lisans={LicenseId}; " +
+                    "Obifin teyit kaydını o açtı", licenseId);
         }
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
@@ -458,7 +465,9 @@ public sealed class BankConnectionTerminator
 
     /// <summary>Obifin'in hareket kopyasını sildiğine dair yazılı teyit alındı (KVKK Ö-9 öneri 3; plan karar 21): kayıt kapanır,
     /// imha kaydı (<see cref="ObifinCopyTarget"/>, tetikleyici <c>processor-confirmation</c>) aynı SaveChanges'te yazılır. Teyit
-    /// yazısının kendisi sistemde saklanmaz (repo dışı KVKK klasörü). Kişisel veri yok. Kaydın lisansını döner (denetim).</summary>
+    /// yazısının kendisi sistemde saklanmaz (repo dışı KVKK klasörü). Kişisel veri yok. Kaydın lisansını döner (denetim).
+    /// <c>ConfirmedAt</c> eşzamanlılık jetonudur: aynı anda iki "Teyit alındı" (çift tık, iki yönetici) olursa ikincisi
+    /// <see cref="AlreadyConfirmedMessage"/> alır, imha kaydı teyitle aynı işlemde geri alınır.</summary>
     public async Task<Guid> ConfirmObifinCopyDeletedAsync(Guid copyDeletionId, string actor, CancellationToken ct)
     {
         var row = await _db.ObifinCopyDeletions.FirstOrDefaultAsync(d => d.Id == copyDeletionId, ct)
@@ -468,7 +477,17 @@ public sealed class BankConnectionTerminator
         row.ConfirmedBy = actor;
         DataDestruction.Record(_db, row.LicenseId, ObifinCopyTarget, DataDestruction.Actions.Deleted, 1,
             "Obifin yazılı silme teyidi", DataDestruction.Triggers.ProcessorConfirmation, actor);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // ConfirmedAt jetondur: arada başka bir "Teyit alındı" (çift tık, iki yönetici) kaydı kapattı. İkinci imha kaydı
+            // teyitle birlikte düşer; izi kapsamın sonraki kaydına taşınmasın.
+            _db.ChangeTracker.Clear();
+            throw new ObifinValidationException(AlreadyConfirmedMessage);
+        }
         return row.LicenseId;
     }
 

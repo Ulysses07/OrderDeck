@@ -805,6 +805,63 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Teyit_alindi_ayni_anda_iki_kez_basilinca_ikincisi_reddedilir_tek_imha_kaydi_yazilir()
+    {
+        // Çift tık ya da iki yönetici: ikisi de kaydı açık okur. ConfirmedAt eşzamanlılık jetonu olmasaydı ikincisi ilkinin
+        // teyidinin üstüne yazar, ikinci imha kaydı ve denetim satırı açılırdı.
+        var hook = new SaveHookInterceptor();
+        var (db, other) = SharedDb(hook);
+        using var _ = db;
+        var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var t = Terminator(db, client);
+        var id = (await t.RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1", CancellationToken.None))
+            .ObifinCopyDeletionId!.Value;
+        hook.BeforeSave = async () =>
+        {
+            hook.BeforeSave = null;
+            await using var second = other();
+            await Terminator(second, client).ConfirmObifinCopyDeletedAsync(id, "yonetici-2", CancellationToken.None);
+        };
+
+        var act = () => t.ConfirmObifinCopyDeletedAsync(id, "yonetici-1", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(BankConnectionTerminator.AlreadyConfirmedMessage);
+        db.ChangeTracker.Entries().Should().BeEmpty();
+        (await db.ObifinCopyDeletions.AsNoTracking().SingleAsync()).ConfirmedBy.Should().Be("yonetici-2", "ilk teyit kalır");
+        // İkinci teyidin imha kaydının teyitle birlikte geri alındığını gerçek SQL Server sınar: InMemory'de işlem yok
+        // (BankConnectionTerminatorRelationalTests.Teyit_alindi_ayni_anda_…).
+    }
+
+    [Fact]
+    public async Task Ayni_anda_iki_Kaldir_ve_sil_ikinci_teyit_kaydi_acmaz()
+    {
+        // İki yönetici aynı anda basar: ikisi de bağlantıyı bulur. Önce biten bağlantıyı siler ve teyit kaydını açar; ikincinin son
+        // adımı bağlantıyı bulamadığı halde ikinci bir ObifinCopyDeletions kaydı açardı (hatırlatma iki kez, iki "Teyit alındı").
+        var (db, other) = SharedDb(new SaveHookInterceptor());
+        using var _ = db;
+        var client = new TerminatorObifin();
+        client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
+        var lic = await SeedAsync(db, client);
+        client.BeforeList = async () =>
+        {
+            client.BeforeList = null;
+            await using var first = other();   // öbür yöneticinin "Kaldır ve sil"i bu anda bitti
+            first.ObifinConnections.Remove(await first.ObifinConnections.SingleAsync(c => c.LicenseId == lic));
+            first.ObifinCopyDeletions.Add(new ObifinCopyDeletion { Id = Guid.NewGuid(), LicenseId = lic,
+                RequestedAt = DateTimeOffset.UtcNow, RequestedBy = "yonetici-2" });
+            await first.SaveChangesAsync();
+        };
+
+        var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+            CancellationToken.None);
+
+        r.ObifinCopyDeletionId.Should().BeNull("teyit kaydını bağlantıyı silen deneme açtı");
+        (await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.LicenseId == lic)).RequestedBy.Should().Be("yonetici-2");
+        (await db.BankTransactions.AnyAsync(x => x.LicenseId == lic)).Should().BeFalse("yerel silme yine tamamlanır");
+    }
+
+    [Fact]
     public async Task Hesap_reddedilince_hareketleri_eslesmeleri_ogrettigi_IBAN_bagi_silinir_dekont_gapi_acilir_onay_geri_alinir()
     {
         // KVKK Ö-10: Görev 12'nin kapısı ileriye dönük; P1'den önce onaysız hesaptan yazılmış veri ancak bu eylemle gider.
