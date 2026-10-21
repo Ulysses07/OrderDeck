@@ -323,6 +323,9 @@ public class Program
         // Durdur/Etkinleştir/Kaldır ve sil, hizmet sonu yerel silmesi, hesap reddi (KVKK K-6, Ö-9, Ö-10). BankHasher İSTEMEZ
         // (bağdaştırıcı da istemez): anahtarsız modülde de durdurma ve silme çalışır.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankConnectionTerminator>();
+        // IBAN ile banka verisi talebi (KVKK K-7). BankHasher yalnız talep açarken (çağıran verir): anahtarsız modülde de açık
+        // talepler kapatılıp silinebilir.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchMetrics>();
         // Dekont onayı bu işi ApprovalDelay sonrasına zamanlar (PanelPaymentsController.Approve); tekrarlayan iş değil.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconcileJob>();

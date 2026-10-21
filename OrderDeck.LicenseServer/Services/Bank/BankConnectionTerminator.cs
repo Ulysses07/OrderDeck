@@ -351,8 +351,9 @@ public sealed class BankConnectionTerminator
 
     /// <summary>Lisansın banka verisini <see cref="BatchSize"/>'lık partilerle siler: her parti imha kaydını AYNI SaveChanges'te
     /// yazar, partiler arasında izleyici boşalır. Bağlantının kendisi (kaldırma) ya da <c>BankDataPurgedAt</c> işareti ile onaylı
-    /// hesapların boşaltılması (yerel silme) ve "Kaldır ve sil"in Obifin teyit kaydı EN SON, tek SaveChanges'te: önceki bir parti
-    /// düşerse bağlantı ve işaret kalır, iş ertesi gün (ya da yönetici yeniden basınca) kalanı siler.
+    /// hesapların boşaltılması (yerel silme), "Kaldır ve sil"in Obifin teyit kaydı ve lisansın açık banka veri taleplerinin
+    /// kapanması (<see cref="BankSubjectRequestService.CloseOpenForLicensesAsync"/>, KVKK K-7) EN SON, tek SaveChanges'te: önceki
+    /// bir parti düşerse bağlantı ve işaret kalır, iş ertesi gün (ya da yönetici yeniden basınca) kalanı siler.
     /// <paramref name="keepConnection"/>: "Kaldır ve sil"in sahiplik kanıtı kalır — Obifin kimliği, yerel BankConnections ve onaylı
     /// hesap satırları (kişisel veri taşıyabilen alanları son adımda boşalır); onaysız hesaplar silinir, BankDataPurgedAt
     /// yazılır. <paramref name="manualAction"/>: teyit kaydının elle iş metni (<see cref="ObifinCopyDeletion.ManualAction"/>).</summary>
@@ -397,7 +398,8 @@ public sealed class BankConnectionTerminator
             tally.BankConnections += await DeleteBatchesAsync(
                 _db.BankConnections.Where(b => b.LicenseId == licenseId).OrderBy(b => b.Id), "BankConnections", Record, ct);
 
-        // Son adım, tek SaveChanges: bağlantı (ya da işaret ve onaylı hesapların boşaltılması) ve Obifin teyit kaydı.
+        // Son adım, tek SaveChanges: bağlantı (ya da işaret ve onaylı hesapların boşaltılması), Obifin teyit kaydı ve lisansın açık
+        // banka veri taleplerinin kapanması.
         var now = DateTimeOffset.UtcNow;
         var scrubbed = 0;
         int lateAccounts = 0, lateBankConnections = 0;
@@ -457,6 +459,14 @@ public sealed class BankConnectionTerminator
                 _log.LogWarning("Kaldır ve sil: bağlantı satırı bu sırada başka bir 'Kaldır ve sil'le silinmiş — lisans={LicenseId}; " +
                     "Obifin teyit kaydını o açtı", licenseId);
         }
+        // KVKK K-7: veri yokken açık banka veri talebi ve IBAN özeti kalmasın; yönetici başvurana yine yanıt verir. Aynı kayıtta:
+        // talebi arada kapatan başka bir istek (ClosedAt jetonu) bu kaydı düşürür, yeniden deneme taze okur.
+        var closedRequests = await BankSubjectRequestService.CloseOpenForLicensesAsync(_db, [licenseId],
+            (keepConnection ? "Hizmet sonu" : "Bağlantı kaldırıldı") + ": lisansın banka verisi silindi; talep kapatıldı — " +
+            "başvurana yanıt verin.", actor, now, ct);
+        if (closedRequests > 0)
+            _log.LogWarning("Banka verisi silindi, {Count} açık banka veri talebi kapatıldı — lisans={LicenseId}; başvurana yanıt " +
+                "verilmeli", closedRequests, licenseId);
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
         // Kayıttan sonra: yeniden denemede iki kez sayılmasın, düşen denemenin kimliği dönmesin.

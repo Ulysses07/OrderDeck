@@ -89,8 +89,9 @@ public sealed class ShopperPurgeService
     /// çoğul DbSet adı + sütunlar).</summary>
     public const string SubmissionAuditFingerprintTarget = "PaymentSubmissionAudits.IpAddress+UserAgent";
 
-    private const string IbanMemoryTarget = "CustomerIbanMemories";
-    private const string TransactionTextTarget = "BankTransactions.Description+CounterpartyName+RawJson";
+    // Banka hedefleri banka veri talebi aracıyla ortak (BankSubjectScrub): aynı sütunun imhası tek hedef adıyla.
+    private const string IbanMemoryTarget = BankSubjectScrub.IbanMemoryTarget;
+    private const string TransactionTextTarget = BankSubjectScrub.TransactionTextTarget;
     private const string PurgedName = "[Silindi]";
 
     /// <summary>Yapanı ve talebi verilmeyen silme: imha kaydına <see cref="DataDestruction.AdminActor"/> yazılır (silme her zaman
@@ -441,8 +442,8 @@ public sealed class ShopperPurgeService
         Record(null, "ShopperPasswordResetCodes", deleted, resetCodes.Count);
         Record(null, "ShopperSupportRequests", deleted, supportRequests.Count);
         RecordPerLicense(ibanMemories, m => m.LicenseId, IbanMemoryTarget, deleted);
-        RecordPerLicense(linkedMatches, m => m.LicenseId, "PaymentMatches.WpfCustomerId+Evidence", nulled);
-        RecordPerLicense(evidenceOnlyMatches, m => m.LicenseId, "PaymentMatches.Evidence", nulled);
+        RecordPerLicense(linkedMatches, m => m.LicenseId, BankSubjectScrub.LinkedMatchTarget, nulled);
+        RecordPerLicense(evidenceOnlyMatches, m => m.LicenseId, BankSubjectScrub.MatchEvidenceTarget, nulled);
         RecordPerLicense(scrubbedTransactions, t => t.LicenseId, TransactionTextTarget, nulled);
         RecordPerLicense(auditLicenses, l => l, BankSubjectScrub.ManualMatchAuditTarget, nulled);
 
@@ -716,26 +717,11 @@ public sealed class ShopperPurgeService
     /// ve zincir <see cref="SalesCustomerDirectory.MaxHops"/> adım geriye izlenir
     /// (CustomerIdResolver'ın ileri yönde izlediği kadar). Eski Id'yle kalmış geç
     /// sipariş (3a) ve birleştirmeden önce yazılmış elle eşleme denetimi (3c) için.
+    /// Kural banka veri talebinin silmesiyle ortak (<see cref="BankSubjectScrub.WithMergedCopiesAsync"/>).
     /// </summary>
-    private async Task<HashSet<Guid>> WithMergedCopiesAsync(
+    private Task<HashSet<Guid>> WithMergedCopiesAsync(
         Guid licenseId, IEnumerable<Guid> canonical, CancellationToken ct)
-    {
-        var ids = canonical.ToHashSet();
-        var frontier = ids.ToList();
-        for (var hop = 0; hop < SalesCustomerDirectory.MaxHops && frontier.Count > 0; hop++)
-        {
-            var targets = frontier;
-            var copies = await _db.WpfCustomerProjections
-                .IgnoreQueryFilters()
-                .Where(p => p.LicenseId == licenseId
-                    && p.MergedIntoId != null
-                    && targets.Contains(p.MergedIntoId.Value))
-                .Select(p => p.Id)
-                .ToListAsync(ct);
-            frontier = copies.Where(ids.Add).ToList();
-        }
-        return ids;
-    }
+        => BankSubjectScrub.WithMergedCopiesAsync(_db, licenseId, canonical, ct);
 
     /// <summary>Sipariş metnini boşaltır (<see cref="OrderTextScrub.Apply"/>);
     /// satır değiştiği için <see cref="Order.UpdatedAt"/> ilerler.

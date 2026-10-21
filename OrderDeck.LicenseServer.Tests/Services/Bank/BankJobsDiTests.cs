@@ -70,6 +70,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         sp.GetRequiredService<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>().Should().NotBeNull();
         sp.GetRequiredService<BankServiceEndPurgeJob>().Should().NotBeNull();
         sp.GetRequiredService<BankConnectionTerminator>().Should().NotBeNull();
+        sp.GetRequiredService<BankSubjectRequestService>().Should().NotBeNull();
     }
 
     [Theory]
@@ -87,6 +88,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         using var scope = factory.Services.CreateScope();
         var resolve = () => scope.ServiceProvider.GetRequiredService<ObifinPollJob>();
         resolve.Should().Throw<InvalidOperationException>().WithMessage(BankHasher.DisabledMessage);
+        scope.ServiceProvider.GetRequiredService<BankSubjectRequestService>().Should()
+            .NotBeNull("banka veri talebi anahtarsız da kapatılıp silinir (KVKK yükümlülüğü)");
         BankHasher.DisabledMessage.Should().Be("Banka modülü kapalı: OrderDeck:Bank:HashKey yok ya da 32 bayttan kısa");
         factory.Log.Warnings.Where(w => w.StartsWith(BankHasher.DisabledMessage)).Should().ContainSingle("açılışta tek uyarı")
             .Which.Should().Contain("bank-data-retention", "operatör saklama işinin anahtarsız da koştuğunu görmeli");

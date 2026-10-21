@@ -1,7 +1,10 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Sync;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
@@ -15,6 +18,17 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// </summary>
 public static class BankSubjectScrub
 {
+    // İmha kaydı hedefleri (KVKK Ö-13): aynı sütunun imhası her silme yolunda tek hedef adıyla yazılır — dış özet, geri yükleme
+    // prosedürü ve avukat paketi hedefe göre gruplar. KVKK silmesi ve banka veri talebi aracı bunları ortak kullanır.
+    /// <summary>Silinen IBAN bağı (satır).</summary>
+    public const string IbanMemoryTarget = "CustomerIbanMemories";
+    /// <summary>Boşaltılan hareket metni (<see cref="Transaction"/>).</summary>
+    public const string TransactionTextTarget = "BankTransactions.Description+CounterpartyName+RawJson";
+    /// <summary>Kişiye bağlı eşleşme satırında müşteri kimliği ve kanıt (<see cref="MatchForCustomer"/>).</summary>
+    public const string LinkedMatchTarget = "PaymentMatches.WpfCustomerId+Evidence";
+    /// <summary>Kişiye bağlı olmayan eşleşme satırında yalnız kanıt (<see cref="MatchEvidence"/>).</summary>
+    public const string MatchEvidenceTarget = "PaymentMatches.Evidence";
+
     /// <summary>Kaydedildiğinde bir şey silecek mi: açıklama, gönderen adı ya da ham kayıt hâlâ dolu. Saklama kuralının çoktan
     /// boşalttığı hareket "silindi" diye sayılmaz.</summary>
     public static bool HasText(BankTransaction tx) => tx.Description is not null || tx.CounterpartyName is not null || tx.RawJson is not null;
@@ -94,4 +108,31 @@ public static class BankSubjectScrub
     /// <summary>Denetim satırında müşterinin kimliği gider; satır (hangi yöneticinin hangi havaleyi ne zaman elle eşlediği)
     /// hesap verebilirlik için kalır.</summary>
     public static void ManualMatchAudit(AuditLogEntry audit) => audit.Details = null;
+
+    /// <summary>
+    /// Verilen asıl kayıtlar ve onlara birleştirilmiş kopyaları (eski Id'ler; asıl kayıtlar dahil). Kopyalar varsayılan
+    /// sorgulardan gizli; burada açıkça istenir ve zincir <see cref="SalesCustomerDirectory.MaxHops"/> adım geriye izlenir
+    /// (CustomerIdResolver'ın ileri yönde izlediği kadar). Birleştirme eşleşmeyi ve IBAN bağını asıl kayda taşır, eski Id'yle
+    /// yazılmış satırları taşımaz: geç sipariş ve birleştirmeden önce yazılmış elle eşleme denetimi (<see cref="ManualMatchAudits"/>;
+    /// elle eşleme o günkü asıl kaydı yazar). KVKK silmesi ve banka veri talebinin silmesi kullanır.
+    /// </summary>
+    public static async Task<HashSet<Guid>> WithMergedCopiesAsync(LicenseDbContext db, Guid licenseId, IEnumerable<Guid> canonical,
+        CancellationToken ct)
+    {
+        var ids = canonical.ToHashSet();
+        var frontier = ids.ToList();
+        for (var hop = 0; hop < SalesCustomerDirectory.MaxHops && frontier.Count > 0; hop++)
+        {
+            var targets = frontier;
+            var copies = await db.WpfCustomerProjections
+                .IgnoreQueryFilters()
+                .Where(p => p.LicenseId == licenseId
+                    && p.MergedIntoId != null
+                    && targets.Contains(p.MergedIntoId.Value))
+                .Select(p => p.Id)
+                .ToListAsync(ct);
+            frontier = copies.Where(ids.Add).ToList();
+        }
+        return ids;
+    }
 }

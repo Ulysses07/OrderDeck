@@ -1061,4 +1061,48 @@ public sealed class BankConnectionTerminatorTests
         (await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic && x.Target == "BankTransactions")
             .SumAsync(x => x.RowCount)).Should().Be(total);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Kaldirma_ve_yerel_silme_lisansin_acik_banka_veri_talebini_kapatir(bool remove)
+    {
+        // KVKK K-7: veri silindikten sonra açık talep ve IBAN özeti kalmasın; yönetici başvurana yanıt verir. Kapanmış talebe
+        // ve başka lisansın talebine dokunulmaz.
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var otherLic = await SeedAsync(db, client);
+        BankSubjectRequest Request(Guid license, DateTimeOffset? closedAt = null) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = license, Kind = BankSubjectRequestKind.Erasure, IbanHash = closedAt is null ? NewHash() : null,
+            IbanMasked = "TR12…345", ReceivedAt = DateTimeOffset.UtcNow, DueAt = DateTimeOffset.UtcNow.AddDays(30),
+            CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "admin", ClosedAt = closedAt, ClosedBy = closedAt is null ? null : "admin",
+            Resolution = closedAt is null ? BankSubjectResolution.None : BankSubjectResolution.Withdrawn,
+            Outcome = closedAt is null ? null : BankSubjectRequestService.OutcomeText(BankSubjectResolution.Withdrawn),
+        };
+        var open = Request(lic);
+        var alreadyClosed = Request(lic, DateTimeOffset.UtcNow.AddDays(-1));
+        var otherOpen = Request(otherLic);
+        db.BankSubjectRequests.AddRange(open, alreadyClosed, otherOpen);
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+
+        if (remove)
+            await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+                CancellationToken.None);
+        else
+        {
+            await Terminator(db, client).StopAsync(lic, CancellationToken.None);   // yerel silme yalnız durdurulmuş bağlantıda
+            await Terminator(db, client).PurgeLocalDataAsync(lic, DataDestruction.Triggers.ServiceEnd, DataDestruction.SystemActor,
+                CancellationToken.None);
+        }
+
+        var rows = await db.BankSubjectRequests.AsNoTracking().ToDictionaryAsync(r => r.Id);
+        rows[open.Id].ClosedAt.Should().NotBeNull();
+        rows[open.Id].IbanHash.Should().BeNull();
+        rows[open.Id].Resolution.Should().Be(BankSubjectResolution.DataDeleted);
+        rows[open.Id].Outcome.Should().StartWith(remove ? "Bağlantı kaldırıldı" : "Hizmet sonu").And.Contain("başvurana yanıt verin");
+        rows[open.Id].ClosedBy.Should().Be(remove ? "yonetici-1" : DataDestruction.SystemActor);
+        rows[alreadyClosed.Id].Should().BeEquivalentTo(alreadyClosed, "kapanmış talebe dokunulmaz");
+        rows[otherOpen.Id].ClosedAt.Should().BeNull("başka lisansın talebi açık kalır");
+    }
 }

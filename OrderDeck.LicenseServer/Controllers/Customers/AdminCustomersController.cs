@@ -129,6 +129,7 @@ public sealed class AdminCustomersController : ControllerBase
     /// The audit row (with the e-mail) is pruned at 24 months like any other; the 3-year destruction record is the PII-free
     /// DataDestructionRecords rows written in the same SaveChanges (KVKK Ö-13).
     /// Obifin banka bağlantısı olan lisans varken 409 bank-connection-active: önce admin/obifin → "Kaldır ve sil" (KVKK K-6, Ö-9).
+    /// Lisanslardaki açık banka veri talepleri kapanır, satırları belge olarak kalır (KVKK K-7).
     /// </summary>
     [HttpPost("{id:guid}/purge")]
     public async Task<IActionResult> Purge(Guid id, [FromBody] PurgeRequest req, CancellationToken ct)
@@ -233,6 +234,11 @@ public sealed class AdminCustomersController : ControllerBase
         Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, Deleted<IntakeFormConfig>());
         Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, Deleted<IntakeFormSubmission>());
         Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
+        // KVKK K-7: yayıncının lisanslarındaki açık banka veri talepleri kapanır (lisansa FK yok: talep satırı belge olarak kalır,
+        // IBAN özeti boşalır). Yönetici başvurana yine yanıt verir. Aynı kayıtta: talebi arada kapatan başka bir istek (ClosedAt
+        // jetonu) bu kaydı düşürür, aşağıdaki 409 ile operatör yeniden çağırır.
+        await OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService.CloseOpenForLicensesAsync(_db, licenseIds,
+            "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.", actor, DateTimeOffset.UtcNow, ct);
 
         try
         {

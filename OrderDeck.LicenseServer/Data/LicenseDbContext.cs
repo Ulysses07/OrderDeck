@@ -117,6 +117,7 @@ public class LicenseDbContext : DbContext
     public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
     public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
+    public DbSet<BankSubjectRequest> BankSubjectRequests => Set<BankSubjectRequest>();
     public DbSet<ObifinCopyDeletion> ObifinCopyDeletions => Set<ObifinCopyDeletion>();
 
     /// <summary>
@@ -1305,6 +1306,29 @@ public class LicenseDbContext : DbContext
             // İmha özetinin sorgusu (DigestedAt IS NULL): tablo hiç budanmaz, gönderilmemiş satır ise birkaç düzinedir.
             // Adlı dizin: aynı sütundaki adsız dizinden AYRI bir dizin olarak kurulur.
             b.HasIndex(r => r.OccurredAt, "IX_DataDestructionRecords_Undigested").HasFilter("[DigestedAt] IS NULL");
+        });
+
+        // IBAN ile banka veri talebi (KVKK K-7). Lisansa FK BİLEREK yok: talebin belgesi lisans silinse de yaşar. Özet yalnız 64
+        // hex (diğer banka tablolarının kısıtı): ham IBAN'ı buraya yazan bir kod yolu DB'de patlar.
+        mb.Entity<BankSubjectRequest>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(r => r.IbanHash).HasMaxLength(64);
+            b.Property(r => r.IbanMasked).HasMaxLength(40).IsRequired();
+            b.Property(r => r.Verification).HasConversion<string>().HasMaxLength(40).IsRequired();
+            b.Property(r => r.VerifiedBy).HasMaxLength(256);
+            b.Property(r => r.CreatedBy).HasMaxLength(256).IsRequired();
+            b.Property(r => r.ClosedBy).HasMaxLength(256);
+            b.Property(r => r.Resolution).HasConversion<string>().HasMaxLength(32).IsRequired();
+            b.Property(r => r.Outcome).HasMaxLength(500);
+            // Talep bir kez kapanır (UPDATE ... WHERE ClosedAt IS NULL): aynı anda iki silme ya da kapatma ikinci kez sonuç ve imha
+            // kaydı yazmaz (BankSubjectRequestService çakışmayı ClosedMessage'a çevirir). Şema değişmez.
+            b.Property(r => r.ClosedAt).IsConcurrencyToken();
+            b.HasIndex(r => new { r.ClosedAt, r.DueAt });
+            b.HasIndex(r => r.LicenseId);
+            b.ToTable(tb => tb.HasCheckConstraint("CK_BankSubjectRequests_IbanHash_Hex64",
+                "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'"));
         });
 
         // Obifin kopyasının yazılı silme teyidi (KVKK Ö-9). Lisansa ve bağlantıya FK BİLEREK yok: kayıt ikisinden de uzun yaşar.

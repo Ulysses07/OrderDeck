@@ -250,6 +250,42 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
             .StatusCode.Should().Be(HttpStatusCode.NoContent, "Obifin tarafı kapandıktan sonra silme yapılır");
     }
 
+    [Fact]
+    public async Task Purge_yayincinin_acik_banka_veri_talebini_kapatir()
+    {
+        // KVKK K-7: talebin lisansa FK'sı yok (belge lisans silinse de yaşar); açık kalırsa IBAN özeti süresiz durur. Yönetici
+        // başvurana yine yanıt verir.
+        var (_, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var licenseId = Guid.NewGuid(); var requestId = Guid.NewGuid();
+        string email;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            email = (await db.Customers.AsNoTracking().FirstAsync(c => c.Id == customerId)).Email;
+            db.Licenses.Add(new OrderDeck.LicenseServer.Domain.License { Id = licenseId, LicenseKey = $"LDK-GD-{Guid.NewGuid():N}",
+                CustomerId = customerId, SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+            db.BankSubjectRequests.Add(new OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequest { Id = requestId,
+                LicenseId = licenseId, Kind = OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequestKind.Access,
+                IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345", ReceivedAt = DateTimeOffset.UtcNow,
+                DueAt = DateTimeOffset.UtcNow.AddDays(30), CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "admin" });
+            await db.SaveChangesAsync();
+        }
+        using var admin = await AdminApiClientAsync();
+
+        (await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var verify = _factory.Services.CreateScope();
+        var request = await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().BankSubjectRequests.AsNoTracking()
+            .SingleAsync(r => r.Id == requestId);
+        request.ClosedAt.Should().NotBeNull();
+        request.IbanHash.Should().BeNull();
+        request.Resolution.Should().Be(OrderDeck.LicenseServer.Domain.Bank.BankSubjectResolution.DataDeleted);
+        request.Outcome.Should().Contain("Yayıncı hesabı silindi").And.Contain("başvurana yanıt verin");
+        Guid.TryParse(request.ClosedBy, out _).Should().BeTrue("kapatan yöneticinin kimliği (sub), kullanıcı adı değil");
+    }
+
     private static async Task<string> ReadEntryAsync(ZipArchive zip, string name)
     {
         var entry = zip.GetEntry(name) ?? throw new InvalidOperationException($"entry {name} missing");
