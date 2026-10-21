@@ -33,6 +33,12 @@
 {
     <div class="alert alert-danger" data-banner="bank-disabled">@BankHasher.DisabledMessage</div>
 }
+@if (Model.UnapprovedAccounts > 0)
+{
+    <div class="alert alert-warning" data-banner="unapproved-accounts">
+        @Model.UnapprovedAccounts hesap onaysız: hareketleri kaydedilmiyor. Yalnız yayıncının müşteri tahsilatı hesabını onaylayın (KVKK).
+    </div>
+}
 
 <p class="small text-muted" data-help="status">
     Failed = Obifin kimliği reddetti (Doğrula, hesap yenileme ya da çekimde), saklı kimlik çözülemedi ya da elle Doğrula'da Obifin'e ulaşılamadı → düzeltip Doğrula.
@@ -70,7 +76,24 @@
             <tr data-license-accounts="@r.LicenseId"><td colspan="12" class="small text-muted">
                 @foreach (var a in accounts)
                 {
-                    <span class="me-3">@a.BankaKodu @a.IbanMasked (@a.Currency) @(a.Active ? "aktif" : "pasif") · banka senk. @(a.LastBankSyncAt?.ToString("yyyy-MM-dd HH:mm") ?? "—") @(string.IsNullOrEmpty(a.NotificationNote) ? "" : " ⚠ " + a.NotificationNote) · IBAN tam/maskeli/boş: <span data-cell="iban-quality">@a.IbanFullCount/@a.IbanMaskedCount/@a.IbanEmptyCount</span></span>
+                    <div data-account="@a.Id">
+                        #@a.ObifinAccountId @a.BankaKodu @a.IbanMasked (@a.Currency) @(a.Active ? "aktif" : "pasif") · banka senk. @(a.LastBankSyncAt?.ToString("yyyy-MM-dd HH:mm") ?? "—") @(string.IsNullOrEmpty(a.NotificationNote) ? "" : " ⚠ " + a.NotificationNote)
+                        · IBAN tam/maskeli/boş: <span data-cell="iban-quality">@a.IbanFullCount/@a.IbanMaskedCount/@a.IbanEmptyCount</span>
+                        <span data-cell="approval">
+                            @if (a.ApprovedAt is { } approvedAt)
+                            {
+                                <text>· onaylı (@approvedAt.ToString("yyyy-MM-dd"))</text>
+                            }
+                            else
+                            {
+                                <strong class="text-danger">· ONAYSIZ — @a.UnapprovedSkippedCount hareket kaydedilmedi</strong>
+                                <form method="post" asp-page-handler="ApproveAccount" class="d-inline">
+                                    <input type="hidden" name="AccountId" value="@a.Id" />
+                                    <button class="btn btn-sm btn-outline-success">Onayla</button>
+                                </form>
+                            }
+                        </span>
+                    </div>
                 }
             </td></tr>
         }

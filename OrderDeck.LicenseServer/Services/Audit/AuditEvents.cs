@@ -39,6 +39,8 @@ public static class AuditEvents
     public const string ObifinConnectionVerify = "obifin.connection.verify";
     public const string ObifinBankAdd = "obifin.bank.add";
     public const string ObifinPollNow = "obifin.poll.now";
+    // KVKK Ö-10: yönetici banka hesabını lisansa bağladı (hesap numarası + banka kodu; IBAN GİRMEZ).
+    public const string ObifinAccountApprove = "obifin.account.approve";
     // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız kullanıcı adı girer: açıklama, tutar, IBAN GİRMEZ.
     public const string BankMatchManual = "bank.match.manual";
     public const string BankMatchUnmatch = "bank.match.unmatch";

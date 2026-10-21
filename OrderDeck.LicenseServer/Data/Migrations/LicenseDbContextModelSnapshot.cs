@@ -182,6 +182,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<bool>("Active")
                         .HasColumnType("bit");
 
+                    b.Property<DateTimeOffset?>("ApprovedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ApprovedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<Guid?>("BankConnectionId")
                         .HasColumnType("uniqueidentifier");
 
@@ -228,6 +235,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<DateTimeOffset>("RefreshedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("UnapprovedSkippedCount")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 

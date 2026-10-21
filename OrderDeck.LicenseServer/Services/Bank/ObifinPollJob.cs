@@ -14,7 +14,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// imleci. İki yolda da istenen aralık çapada başlar, çapadan eski gün Obifin'den istenmez. Yazım idempotent ((LicenseId,
 /// ObifinId) tekil); imleç yalnız tam başarılı turda ilerler. Webhook yok — bu iş tek kaynak. Yalnız gelen, tutarı sıfırdan
 /// büyük ve işlem günü çapadan eski olmayan hareket kaydedilir (KVKK K-4, Ö-5): Obifin istenen aralığın dışından hareket
-/// döndürse de (tarih süzgecinin hangi tarihe baktığı belgelenmemiş) çapadan eskisi yazılmaz.
+/// döndürse de (tarih süzgecinin hangi tarihe baktığı belgelenmemiş) çapadan eskisi yazılmaz. Yalnız yöneticinin onayladığı
+/// hesabın hareketi kaydedilir (KVKK Ö-10, <see cref="BankAccount.ApprovedAt"/>; fail-closed): onaysız ya da bilinmeyen hesabın
+/// hareketi atılır, sayılır, imleci yine ilerletir — onaydan sonra geriye dönük gelmez.
 ///
 /// <para><b>Hata sınıfları.</b> Obifin'in kendi mesajı (<see cref="ObifinApiException"/>, ör. kimlik hatalı)
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
@@ -132,6 +134,7 @@ public sealed class ObifinPollJob
         }
         var identity = new IdentitySnapshot(conn.UserCode, conn.BaseUrl, conn.UpdatedAt);
         var today = TodayTr();
+        var skipped = new UnapprovedTally();
         try
         {
             if (conn.BackfillCompletedAt is null)
@@ -151,7 +154,7 @@ public sealed class ObifinPollJob
                 for (var from = start; from <= today; from = from.AddDays(WindowDays))
                 {
                     var to = from.AddDays(WindowDays - 1) > today ? today : from.AddDays(WindowDays - 1);
-                    var (seen, _) = await FetchWindowWithMetaAsync(conn, creds, identity, from, to, sinceId: null, ct);
+                    var (seen, _) = await FetchWindowWithMetaAsync(conn, creds, identity, from, to, sinceId: null, skipped, ct);
                     if (seen is { } s && (maxId is null || s > maxId)) maxId = s;
                 }
                 conn.LastObifinTransactionId = maxId;
@@ -168,16 +171,21 @@ public sealed class ObifinPollJob
                 for (var round = 0; round < MaxDrainRounds && from <= today; round++)
                 {
                     var before = conn.LastObifinTransactionId;
-                    var (seen, lastPageFull) = await FetchWindowWithMetaAsync(conn, creds, identity, from, today, before, ct);
+                    var (seen, lastPageFull) = await FetchWindowWithMetaAsync(conn, creds, identity, from, today, before, skipped, ct);
                     if (seen is { } s && (before is null || s > before)) conn.LastObifinTransactionId = s;
                     if (!lastPageFull || conn.LastObifinTransactionId == before) break;
                 }
             }
+            // KVKK Ö-10: onaysız hesapta atlanan hareketlerin sayımı imleçle AYNI kayıtta yazılır (bkz. UnapprovedTally).
+            var skippedTotal = skipped.ApplyToAccounts();
             var now = DateTimeOffset.UtcNow;
             conn.LastPolledAt = now;
             conn.LastError = null;
             conn.UpdatedAt = now;
             await SaveIfIdentityUnchangedAsync(connectionId, identity, ct);
+            if (skippedTotal > 0)
+                _log.LogWarning("Obifin çekimi: onaysız hesap(lar)ın {Count} hareketi yazılmadı — bağlantı={ConnectionId}; " +
+                    "admin/obifin'de yalnız yayıncının müşteri tahsilatı hesabını onaylayın", skippedTotal, connectionId);
         }
         catch (IdentityChangedException)
         {
@@ -265,7 +273,7 @@ public sealed class ObifinPollJob
     /// dolu, hep yeni Id'li sayfalar <see cref="MaxPagesPerWindow"/>'da <see cref="ObifinProtocolException"/> ile
     /// kesilir. Böylece hiçbir sunucu davranışı kilidi (<see cref="LockResource"/>) sonsuza dek tutamaz.</para></summary>
     private async Task<(long? MaxId, bool LastPageFull)> FetchWindowWithMetaAsync(ObifinConnection conn, ObifinCredentials creds,
-        IdentitySnapshot identity, DateOnly from, DateOnly to, long? sinceId, CancellationToken ct)
+        IdentitySnapshot identity, DateOnly from, DateOnly to, long? sinceId, UnapprovedTally skipped, CancellationToken ct)
     {
         long? maxId = null; var lastPageFull = false;
         HashSet<long>? previousIds = null;
@@ -281,7 +289,7 @@ public sealed class ObifinPollJob
                     page, result.PageNo, from, to, conn.Id);
                 break;
             }
-            await UpsertAsync(conn, identity, ordered, ct);
+            await UpsertAsync(conn, identity, ordered, skipped, ct);
             if (ordered.Count > 0) maxId = Math.Max(maxId ?? 0, ordered[^1].Id);
             lastPageFull = result.PageSize > 0 && result.Items.Count >= result.PageSize;
             var hasMore = result.TotalPages is { } totalPages ? page < totalPages : lastPageFull;
@@ -294,7 +302,9 @@ public sealed class ObifinPollJob
         return (maxId, lastPageFull);
     }
 
-    private async Task UpsertAsync(ObifinConnection conn, IdentitySnapshot identity, IReadOnlyList<ObifinTransactionDto> items, CancellationToken ct)
+    /// <param name="skipped">Turun onaysız hesap sayımı (<see cref="UnapprovedTally"/>); sayfa kaydı yazmaz, tur sonu yazar.</param>
+    private async Task UpsertAsync(ObifinConnection conn, IdentitySnapshot identity, IReadOnlyList<ObifinTransactionDto> items,
+        UnapprovedTally skipped, CancellationToken ct)
     {
         if (items.Count == 0) return;
         var ids = items.Select(i => i.Id).ToList();
@@ -303,6 +313,18 @@ public sealed class ObifinPollJob
             .Select(t => t.ObifinId).ToHashSetAsync(ct);
         var accounts = await _db.BankAccounts.Where(a => a.LicenseId == conn.LicenseId)
             .ToDictionaryAsync(a => a.ObifinAccountId, ct);
+        // Önceki sayfada açılmış ama henüz kaydedilmemiş yer tutucu (o sayfada yazılacak hareket yoktu, sayfa kaydı olmadı): sorgu
+        // onu döndürmez. Yeniden açılsaydı aynı (LicenseId, ObifinAccountId) iki kez eklenir, tekil indekse çarpan tur her seferinde
+        // düşer, imleç ilerlemezdi. Yalnız Added: silinmiş satırın bayat örneği kullanılmaz (Görev 11 kuralı, çakışma yolu aynı).
+        foreach (var pending in _db.ChangeTracker.Entries<BankAccount>())
+            if (pending.State == EntityState.Added && pending.Entity.LicenseId == conn.LicenseId)
+                accounts.TryAdd(pending.Entity.ObifinAccountId, pending.Entity);
+        // KVKK Ö-10: onay sayfa başına TAZE okunur. Hesap satırı tur boyunca izlenir ve yukarıdaki sorgu izlenen örneği döndürür
+        // (EF kimlik çözümü değerleri tazelemez): tur ortasında verilen onay da kaldırılan onay da (Görev 13'ün reddi) ancak böyle
+        // sonraki sayfada görülür. Çekimin kaydı onay sütunlarına yazmaz; yöneticinin kararını geri yazamaz.
+        var approved = await _db.BankAccounts.AsNoTracking()
+            .Where(a => a.LicenseId == conn.LicenseId && a.ApprovedAt != null)
+            .Select(a => a.ObifinAccountId).ToHashSetAsync(ct);
         var now = DateTimeOffset.UtcNow;
         var fresh = new List<BankTransaction>();
         foreach (var dto in items)
@@ -318,7 +340,8 @@ public sealed class ObifinPollJob
             if (!existing.Add(dto.Id)) continue;
             if (!accounts.TryGetValue(dto.AccountId, out var account))
             {
-                // Bilinmeyen hesap: yer tutucu; saatlik yenileme (ObifinAccountRefreshJob) tamamlar.
+                // Bilinmeyen hesap: yer tutucu; saatlik yenileme (ObifinAccountRefreshJob) tamamlar. Onaysız doğar (KVKK Ö-10):
+                // yönetici admin/obifin'de görür, hesap numarasıyla onaylar ya da reddeder.
                 account = new BankAccount
                 {
                     Id = Guid.NewGuid(), LicenseId = conn.LicenseId, ObifinAccountId = dto.AccountId,
@@ -327,6 +350,14 @@ public sealed class ObifinPollJob
                 };
                 _db.BankAccounts.Add(account);
                 accounts[dto.AccountId] = account;
+            }
+            // KVKK Ö-10: yönetici onaylamadıkça hesabın hareketi hiçbir lisansa yazılmaz (fail-closed). İmleç sıralı listeden
+            // hesaplanır: atlanan hareket onaydan sonra geriye dönük gelmez — bilinçli, onay öncesi toplanmaz. Süzgeç IBAN niteliği
+            // sayacından ÖNCE (Görev 11 kuralı 1): onaysız hareket o sayaca girmez.
+            if (!approved.Contains(dto.AccountId))
+            {
+                skipped.Add(account);
+                continue;
             }
             // KVKK Ö-7: banka hesabı başına IBAN niteliği sayacı (değer yazılmaz). Maskeli/geçersiz IBAN özetlenmez (HashIban
             // null). Sayaç izlenen hesap satırında; hareketle aynı kimlik korumalı kayıtta yazılır.
@@ -360,6 +391,8 @@ public sealed class ObifinPollJob
             _db.BankTransactions.Add(tx);
             fresh.Add(tx);
         }
+        // Onaysız hesabın sayımı sayfa kaydına girmez, turun sonundaki kayıtta imleçle birlikte yazılır (UnapprovedTally). Yazılacak
+        // hareket yoksa sayfa kaydı da yok: yeni yer tutucu izleyicide kalır, sonraki sayfa onu yeniden açmaz (yukarıda).
         if (fresh.Count == 0) return;
         await SaveIfIdentityUnchangedAsync(conn.Id, identity, ct);
         // Yalnız gelen ve sıfırdan büyük satır yazıldı (yukarıdaki süzgeç): hepsi eşleştiriciye gider.
@@ -394,6 +427,34 @@ public sealed class ObifinPollJob
             => string.Equals(userCode, UserCode, StringComparison.Ordinal)
                && string.Equals(baseUrl, BaseUrl, StringComparison.Ordinal)
                && updatedAt == UpdatedAt;
+    }
+
+    /// <summary>
+    /// Bir çekim turunda onaysız hesap başına atlanan hareket sayısı (KVKK Ö-10, <see cref="BankAccount.UnapprovedSkippedCount"/>).
+    /// Sayım sayfa kaydıyla değil, turun sonunda imleçle aynı kayıtta yazılır (<see cref="ApplyToAccounts"/>): atlanan hareket
+    /// imleç onu geçince "görülmüş" olur ve imleç yalnız tam başarılı turda yazılır. Yazılan hareketin izi tablodadır, sonraki tur
+    /// <c>existing</c> denetiminde atlar; atılan hareketin izi yok. Sayfa kaydıyla yazılsaydı yarıda kalan turun kaydedilmiş
+    /// sayfasındaki onaysız hareket, aynı imleçten yeniden çeken turda bir daha sayılırdı. Anahtar izlenen hesap örneğidir (yer
+    /// tutucu kaydedilmeden de sayılır).
+    /// </summary>
+    private sealed class UnapprovedTally
+    {
+        private readonly Dictionary<BankAccount, int> _byAccount = new(ReferenceEqualityComparer.Instance);
+
+        public void Add(BankAccount account) => _byAccount[account] = _byAccount.GetValueOrDefault(account) + 1;
+
+        /// <summary>Sayımı izlenen hesap satırlarına ekler (kaydetmez; turun son kaydı yazar), toplamı döner.</summary>
+        public int ApplyToAccounts()
+        {
+            var total = 0;
+            foreach (var (account, count) in _byAccount)
+            {
+                account.UnapprovedSkippedCount += count;
+                total += count;
+            }
+            _byAccount.Clear();
+            return total;
+        }
     }
 
     /// <summary>Koşu içi kontrol akışı; <see cref="PollConnectionAsync"/> yakalar, dışarı çıkmaz.</summary>

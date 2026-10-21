@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -1182,5 +1183,49 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
 
         doc.QuerySelector($"tr[data-license-accounts='{licenseId}'] [data-cell='iban-quality']")!.TextContent
             .Should().Be("7/3/1");
+    }
+
+    [Fact]
+    public async Task Onaysiz_hesap_uyariyla_listelenir_onaylaninca_onay_ve_denetim_yazilir()
+    {
+        // KVKK Ö-10: onaysız hesabın hareketi kaydedilmez; yönetici hesap numarasıyla görür, onaylar. Onaylayan kimlikle yazılır.
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        var accountId = Guid.NewGuid();
+        var obifinAccountId = Random.Shared.NextInt64(1, 1_000_000);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankAccounts.Add(new BankAccount { Id = accountId, LicenseId = lic, ObifinAccountId = obifinAccountId,
+                BankaKodu = "qnb", IbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban()), Currency = "TL",
+                RefreshedAt = DateTimeOffset.UtcNow, UnapprovedSkippedCount = 3 });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+        doc.QuerySelector("[data-banner='unapproved-accounts']").Should().NotBeNull();
+        var row = doc.QuerySelector($"tr[data-license-accounts='{lic}'] [data-account='{accountId}']")!;
+        row.TextContent.Should().Contain($"#{obifinAccountId}", "ret formu (Görev 13) hesap numarasını yazdırır");
+        row.QuerySelector("[data-cell='approval']")!.TextContent.Should().Contain("3 hareket kaydedilmedi");
+        row.QuerySelector("form[action*='handler=ApproveAccount']").Should().NotBeNull();
+
+        var resp = await PostAsync(client, "ApproveAccount", new Dictionary<string, string> { ["AccountId"] = accountId.ToString() });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using (var verify = _factory.Services.CreateScope())
+        {
+            var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var account = await vdb.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId);
+            account.ApprovedAt.Should().NotBeNull();
+            var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+            account.ApprovedBy.Should().Be(adminId.ToString(), "yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14)");
+            (await vdb.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinAccountApprove && a.TargetId == lic.ToString()))
+                .Should().BeTrue();
+        }
+        var after = (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+            .QuerySelector($"[data-account='{accountId}'] [data-cell='approval']")!;
+        after.TextContent.Should().Contain("onaylı").And.NotContain("ONAYSIZ");
+        after.QuerySelector("form[action*='handler=ApproveAccount']").Should().BeNull();
     }
 }

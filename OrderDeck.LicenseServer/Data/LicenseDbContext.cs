@@ -1207,6 +1207,7 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.IbanHash).HasMaxLength(64);
             b.Property(a => a.Currency).HasMaxLength(3).IsRequired();
             b.Property(a => a.NotificationNote).HasMaxLength(500);
+            b.Property(a => a.ApprovedBy).HasMaxLength(256);
         });
 
         mb.Entity<BankTransaction>(b =>

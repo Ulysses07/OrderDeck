@@ -52,9 +52,12 @@ public class IndexModel : PageModel
         long? Cursor, DateTimeOffset? BackfillCompletedAt, DateOnly? InitialCollectFrom, int BankConnections, int Accounts,
         int Transactions);
     /// <summary>Hesap satırı. IBAN niteliği sayaçları (KVKK Ö-7): bu hesaba yazılan hareketlerde karşı IBAN tam / maskeli / boş;
-    /// değer yok, yalnız sayılar.</summary>
-    public sealed record AccountRow(string BankaKodu, string IbanMasked, string Currency, bool Active,
-        DateTimeOffset? LastBankSyncAt, string? NotificationNote, int IbanFullCount, int IbanMaskedCount, int IbanEmptyCount);
+    /// değer yok, yalnız sayılar. Onay (KVKK Ö-10): <see cref="ApprovedAt"/> boşsa hesabın hareketi kaydedilmez,
+    /// <see cref="UnapprovedSkippedCount"/> atlananları sayar. Obifin hesap numarası yöneticinin hesabı tanıması ve reddin yazılı
+    /// onayı (Görev 13) için.</summary>
+    public sealed record AccountRow(Guid Id, long ObifinAccountId, string BankaKodu, string IbanMasked, string Currency, bool Active,
+        DateTimeOffset? LastBankSyncAt, string? NotificationNote, int IbanFullCount, int IbanMaskedCount, int IbanEmptyCount,
+        DateTimeOffset? ApprovedAt, int UnapprovedSkippedCount);
     public sealed record LicenseOption(Guid Id, string Label);
     /// <summary>Düzenlenen bağlantı: formda yalnız "kayıtlı" bayrağı — değerler asla geri basılmaz.</summary>
     public sealed record EditTarget(bool PasswordStored, bool ApiKeyStored);
@@ -85,6 +88,9 @@ public class IndexModel : PageModel
     /// <summary>Açılıştaki kararın aynısı (Program.cs): anahtar yoksa banka modülü kapalı.</summary>
     public bool BankDisabled => !BankHasher.IsValidKey(_bank.HashKey);
 
+    /// <summary>Onaysız hesap sayısı (sayfanın üstündeki uyarı; KVKK Ö-10).</summary>
+    public int UnapprovedAccounts => AccountsByLicense.Values.Sum(list => list.Count(a => a.ApprovedAt is null));
+
     /// <summary>Yalnız modül açıkken çözülür (bkz. sınıf özeti).</summary>
     private ObifinConnectionService Connections => _services.GetRequiredService<ObifinConnectionService>();
 
@@ -106,8 +112,9 @@ public class IndexModel : PageModel
         var licenseIds = Rows.Select(r => r.LicenseId).ToList();
         AccountsByLicense = (await _db.BankAccounts.AsNoTracking().Where(a => licenseIds.Contains(a.LicenseId)).ToListAsync(ct))
             .GroupBy(a => a.LicenseId)
-            .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.BankaKodu, a.IbanMasked, a.Currency, a.Active,
-                a.LastBankSyncAt, a.NotificationNote, a.IbanFullCount, a.IbanMaskedCount, a.IbanEmptyCount)).ToList());
+            .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.Id, a.ObifinAccountId,
+                a.BankaKodu, a.IbanMasked, a.Currency, a.Active, a.LastBankSyncAt, a.NotificationNote, a.IbanFullCount,
+                a.IbanMaskedCount, a.IbanEmptyCount, a.ApprovedAt, a.UnapprovedSkippedCount)).ToList());
         // Seçim listesi e-postaya göre ilk 200 lisansla sınırlı; Obifin bağlantısı olan lisanslar ise HER ZAMAN listede
         // (düzenlenen lisans da: düzenleme ancak bağlantısı olan lisansta açılır). Listede olmayan lisans seçili gelemez;
         // tarayıcı ilk seçeneği gönderir ve form, gösterdiği kimliği ya da banka kimliğini BAŞKA bir lisansa yazar.
@@ -277,6 +284,32 @@ public class IndexModel : PageModel
             TempData["Error"] = $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}) ama hesap listesi yenilenemedi: {msg}. Saatlik yenileme tekrar dener.";
         }
         return BackToForm();
+    }
+
+    /// <summary>KVKK Ö-10: hesabı lisansa bağlar; bundan sonraki hareketleri kaydedilir (önceki atlananlar geriye dönük gelmez).
+    /// Yalnız yayıncının müşteri tahsilatı hesabı onaylanmalı. <see cref="BankHasher"/> istemez: modül kapalıyken de çalışır,
+    /// Obifin'e gitmez. Onaylı hesapta bir şey değiştirmez (ilk onay anı ve onaylayan kalır). Geri alma: "Reddet ve verisini
+    /// sil" (Görev 13).</summary>
+    public async Task<IActionResult> OnPostApproveAccountAsync(Guid accountId, CancellationToken ct)
+    {
+        var account = await _db.BankAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct);
+        if (account is null)
+        {
+            TempData["Error"] = "Hesap bulunamadı.";
+            return RedirectToPage();
+        }
+        if (account.ApprovedAt is null)
+        {
+            account.ApprovedAt = DateTimeOffset.UtcNow;
+            // Yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14; Görev 9 kuralı): sütun budanmaz, ad denetim satırında.
+            account.ApprovedBy = DataDestruction.ActorOf(User);
+            await _db.SaveChangesAsync(ct);
+            // Onay taahhüt edildi: audit istek iptaliyle düşmesin. Ayrıntıda IBAN yok.
+            await _audit.LogAsync(AuditEvents.ObifinAccountApprove, AuditTargets.ObifinConnection, account.LicenseId.ToString(),
+                new { account.ObifinAccountId, account.BankaKodu }, CancellationToken.None);
+        }
+        TempData["Success"] = "Hesap onaylandı; bundan sonraki hareketleri kaydedilecek.";
+        return RedirectToPage();
     }
 
     public async Task<IActionResult> OnPostPollNowAsync(CancellationToken ct)
