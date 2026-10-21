@@ -298,6 +298,36 @@ public sealed class PersonBalanceVerifierTests
             .Which.Should().BeEquivalentTo(new { Balance = -10m, LedgerSum = -8m, CapturedAt = Captured, ReviewedAt = (DateTimeOffset?)null });
         rows.Should().ContainSingle(x => x.WpfCustomerId == V.LicenseMarker);
     }
+
+    [Fact]
+    public void Isaretli_lisansta_yeniden_yakalama_taban_disi_yeni_sapmayi_tabana_almaz()
+    {
+        var (old, fresh, broken, head, copy) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var s = Snap(
+            projections: [P(old), P(fresh), P(broken), P(head), P(copy, mergedInto: head)],
+            balances: [B(old, -10m), B(fresh, -5m), B(broken, 9m), B(copy, 2m)],
+            ledger: [L(old, -10m), L(fresh, -5m), L(broken, 7m), L(copy, 2m)],
+            baselines: [Marker(), new V.BaselineRow(Lic, old, -10m, -10m, Captured, null)]);
+        var r = Single(s);
+        r.Alerts.Should().HaveCount(3, "taban dışı eksi, D1 ve kopya: yakalamadan sonra doğmuş yeni sapmalar");
+
+        V.BaselineRowsToCapture(s, r, Captured.AddDays(5)).Should().BeEmpty(
+            "§7.3: taban S1 öncesinden kalanı yazar; yeniden yakalama (pilot --license, prosedür tekrarı) "
+            + "yeni sapmayı tabana alıp §8.1 uyarısını susturmamalı");
+    }
+
+    [Fact]
+    public void Ilk_yakalamadan_sonra_verilen_lisansta_yakalama_yalniz_isaret_yazar()
+    {
+        var neg = Guid.NewGuid();
+        var s = Snap(projections: [P(neg)], balances: [B(neg, -3m)], ledger: [L(neg, -3m)],
+            baselines: [Marker(Captured, license: Guid.NewGuid())], issued: Captured.AddDays(1));
+        var r = Single(s);
+        (r.HasMarker, r.HasBaseline).Should().Be((false, true));
+
+        V.BaselineRowsToCapture(s, r, Captured.AddDays(2)).Should().ContainSingle()
+            .Which.WpfCustomerId.Should().Be(V.LicenseMarker, "yeni lisansın sapması S1 sonrasıdır, tabana girmez");
+    }
 }
 
 /// <summary><see cref="PersonBalanceVerifier.LoadAsync"/> InMemory'de: anlık görüntü lisansın gerçek satırlarından.</summary>
@@ -493,7 +523,11 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
         r.LedgerMismatches.Should().Be(new V.Tally(2, 0, -1m), "yalnız iki kalıcı bozulma: 3 − 0 ve 0 − 4");
         r.Alerts.Should().BeEmpty("Balance(eski) ≠ Σ(yeni) bir okuma yarışı, D1 bozulması değil");
         snapshot.Balances.Single(b => b.WpfCustomerId == raced).Balance.Should().Be(15m);
-        V.BaselineRowsToCapture(snapshot, r, now).Should().BeEmpty("yakalama yarışın satırını tabana yazmaz");
+        // İşaretli lisansta yakalama zaten hiçbir şey yazmaz; işaretsiz (ilk yakalama) hâlinde de yarışın satırı girmez.
+        var unmarked = snapshot with { Baselines = snapshot.Baselines.Where(b => b.WpfCustomerId != V.LicenseMarker).ToList() };
+        V.BaselineRowsToCapture(unmarked, V.Analyze(unmarked).Licenses.Single(), now)
+            .Should().ContainSingle("yakalama yarışın satırını tabana yazmaz; yalnız işaret")
+            .Which.WpfCustomerId.Should().Be(V.LicenseMarker);
     }
 
     [Fact]

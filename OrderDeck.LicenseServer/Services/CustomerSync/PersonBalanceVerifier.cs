@@ -382,26 +382,38 @@ public sealed class PersonBalanceVerifier
     // ── Taban ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// <c>--capture-baseline</c>'ın yazacağı satırlar (§7.3 "Taban çizgisi"): lisansın taban DIŞI eksi, D1 ve kopya
-    /// satırları (satır başına bir kez, o anki Balance ve LedgerSum'la) ve işaret yoksa işaret. Var olan taban
-    /// satırına dokunulmaz.
+    /// <c>--capture-baseline</c>'ın yazacağı satırlar (§7.3 "Taban çizgisi"). Tabanı OLMAYAN lisansta taban dışı eksi,
+    /// D1 ve kopya satırları (satır başına bir kez, o anki Balance ve LedgerSum'la) ve işaret; tabanı olup işareti
+    /// olmayan lisansta (ilk yakalamadan sonra verilmiş) yalnız işaret; işaretli lisansta hiçbir şey.
+    ///
+    /// <para><b>Yeniden yakalama yeni sapmayı tabana almaz.</b> Taban S1 öncesinden kalanı tutar ("yeni kod onları
+    /// üretmez", §7.3); tabanı olan lisansın taban dışı satırı yakalamadan sonra doğmuştur ve §8.1'in uyardığı yeni
+    /// sapmadır. Yakalama yeniden koşunca (pilot için <c>--license</c>, prosedürün tekrarı) onu tabana yazsaydı uyarı
+    /// kalıcı olarak susardı. Taban dışı bir satırı bilinçli kabul etmek ayrı, hedefli bir iştir (sahip kararı). Var olan
+    /// taban satırına dokunulmaz.</para>
     /// </summary>
     public static IReadOnlyList<PersonBalanceBaseline> BaselineRowsToCapture(Snapshot s, LicenseReport r, DateTimeOffset now)
     {
-        var balances = s.Balances.Where(b => b.LicenseId == r.LicenseId).ToDictionary(b => b.WpfCustomerId, b => b.Balance);
-        var ledger = s.Ledger.Where(l => l.LicenseId == r.LicenseId).ToDictionary(l => l.WpfCustomerId, l => l.Sum);
-        var rows = r.Details.NegativeOutside
+        if (r.HasMarker) return [];
+        var marker = new PersonBalanceBaseline { LicenseId = r.LicenseId, WpfCustomerId = LicenseMarker, CapturedAt = now };
+        if (r.HasBaseline) return [marker];
+
+        var ids = r.Details.NegativeOutside
             .Concat(r.Details.LedgerMismatchOutside)
             .Concat(r.Details.CopyOutside)
-            .Distinct()
+            .ToHashSet();
+        var balances = s.Balances.Where(b => b.LicenseId == r.LicenseId && ids.Contains(b.WpfCustomerId))
+            .ToDictionary(b => b.WpfCustomerId, b => b.Balance);
+        var ledger = s.Ledger.Where(l => l.LicenseId == r.LicenseId && ids.Contains(l.WpfCustomerId))
+            .ToDictionary(l => l.WpfCustomerId, l => l.Sum);
+        var rows = ids
             .Select(id => new PersonBalanceBaseline
             {
                 LicenseId = r.LicenseId, WpfCustomerId = id,
                 Balance = balances.GetValueOrDefault(id), LedgerSum = ledger.GetValueOrDefault(id), CapturedAt = now,
             })
             .ToList();
-        if (!r.HasMarker)
-            rows.Add(new PersonBalanceBaseline { LicenseId = r.LicenseId, WpfCustomerId = LicenseMarker, CapturedAt = now });
+        rows.Add(marker);
         return rows;
     }
 }
