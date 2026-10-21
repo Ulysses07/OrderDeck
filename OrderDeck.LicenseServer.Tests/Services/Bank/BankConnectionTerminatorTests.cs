@@ -352,6 +352,25 @@ public sealed class BankConnectionTerminatorTests
         r.ObifinFailed.Should().BeEquivalentTo(new[] { 502L });
         r.NeedsManualObifinAction.Should().BeTrue();
         r.ManualActionText().Should().Contain("#502");
+        // Elle iş bildirimde ve 24 aylık denetim ayrıntısında kalmaz: Obifin kimliği ve sahiplik kanıtı silindi, bildirimi kaçıran
+        // yönetici bekleyenler tablosunda ve hatırlatmada Obifin'de hâlâ çekim yapan bağlantıyı görür (karar 21).
+        (await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.LicenseId == lic)).ManualAction
+            .Should().Be(r.ManualActionText());
+    }
+
+    [Fact]
+    public async Task Elle_is_yoksa_teyit_kaydinin_elle_is_metni_bos_kalir()
+    {
+        using var db = NewDb(); var client = new TerminatorObifin();
+        client.Connections.Add(new ObifinBankConnectionDto(501, "qnb", "QNB", true));
+        var lic = await SeedAsync(db, client);
+
+        var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+            CancellationToken.None);
+
+        r.NeedsManualObifinAction.Should().BeFalse();
+        (await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.LicenseId == lic)).ManualAction
+            .Should().BeNull("yalnız yazılı teyit bekleniyor");
     }
 
     [Fact]

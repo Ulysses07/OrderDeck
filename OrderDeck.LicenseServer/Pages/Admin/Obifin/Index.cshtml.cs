@@ -76,8 +76,9 @@ public class IndexModel : PageModel
         DateTimeOffset? LastVerifiedAt, DateTimeOffset? LastPolledAt, long? Cursor, DateTimeOffset? BackfillCompletedAt,
         DateOnly? InitialCollectFrom, int BankConnections, int Accounts, int Transactions);
     /// <summary>"Kaldır ve sil"den sonra Obifin'in yazılı silme teyidini bekleyen kayıt (karar 21). Lisans silinmişse e-posta yok,
-    /// kimlik gösterilir.</summary>
-    public sealed record CopyDeletionRow(Guid Id, Guid LicenseId, string? CustomerEmail, DateTimeOffset RequestedAt);
+    /// kimlik gösterilir. <see cref="ManualAction"/>: Obifin'de elle yapılacak iş (null = yalnız yazılı teyit).</summary>
+    public sealed record CopyDeletionRow(Guid Id, Guid LicenseId, string? CustomerEmail, DateTimeOffset RequestedAt,
+        string? ManualAction);
     /// <summary>Hesap satırı. IBAN niteliği sayaçları (KVKK Ö-7): bu hesaba yazılan hareketlerde karşı IBAN tam / maskeli / boş;
     /// değer yok, yalnız sayılar. Onay (KVKK Ö-10): <see cref="ApprovedAt"/> boşsa hesabın hareketi kaydedilmez,
     /// <see cref="UnapprovedSkippedCount"/> atlananları sayar. Obifin hesap numarası yöneticinin hesabı tanıması ve reddin yazılı
@@ -166,7 +167,8 @@ public class IndexModel : PageModel
         PendingCopyDeletions = await _db.ObifinCopyDeletions.AsNoTracking().Where(d => d.ConfirmedAt == null)
             .OrderBy(d => d.RequestedAt)
             .Select(d => new CopyDeletionRow(d.Id, d.LicenseId,
-                _db.Licenses.Where(l => l.Id == d.LicenseId).Select(l => l.Customer.Email).FirstOrDefault(), d.RequestedAt))
+                _db.Licenses.Where(l => l.Id == d.LicenseId).Select(l => l.Customer.Email).FirstOrDefault(), d.RequestedAt,
+                d.ManualAction))
             .ToListAsync(ct);
 
         // Kullanıcı kodu ve adres tablonun satırından (aynı bağlantı, bu istekte yüklendi); "kayıtlı" bayrakları ayrıca.

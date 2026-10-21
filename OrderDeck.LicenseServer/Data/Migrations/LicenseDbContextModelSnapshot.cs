@@ -535,6 +535,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<Guid>("LicenseId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("ManualAction")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<DateTimeOffset>("RequestedAt")
                         .HasColumnType("datetimeoffset");
 

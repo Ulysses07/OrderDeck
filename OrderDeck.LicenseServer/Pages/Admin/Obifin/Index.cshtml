@@ -56,6 +56,7 @@
                 <tr data-deletion="@d.Id">
                     <td>@(d.CustomerEmail ?? d.LicenseId.ToString())</td>
                     <td class="@(overdue ? "text-danger fw-bold" : "")">istendi @d.RequestedAt.ToString("yyyy-MM-dd")@(overdue ? " (GECİKTİ)" : "")</td>
+                    <td data-cell="manual-action" class="@(d.ManualAction is null ? "text-muted" : "text-danger")">@(d.ManualAction ?? "yalnız yazılı teyit")</td>
                     <td>
                         <form method="post" asp-page-handler="ConfirmObifinCopyDeleted" class="d-inline">
                             <input type="hidden" name="DeletionId" value="@d.Id" />

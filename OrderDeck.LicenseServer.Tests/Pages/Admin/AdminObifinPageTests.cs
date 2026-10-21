@@ -1368,7 +1368,11 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
                 "yapan yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14)");
         var deletion = await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.LicenseId == lic);
         deletion.RequestedBy.Should().Be(adminId);
-        doc.QuerySelector($"[data-table='obifin-copy-pending'] tr[data-deletion='{deletion.Id}']").Should().NotBeNull();
+        var pendingRow = doc.QuerySelector($"[data-table='obifin-copy-pending'] tr[data-deletion='{deletion.Id}']");
+        pendingRow.Should().NotBeNull();
+        // Elle iş (sahte kimlik çözülemez ya da sınıf fikstüründeki öbür ham bağlantılarla paylaşılan kullanıcı): bildirimi kaçıran
+        // yönetici de görsün.
+        pendingRow!.QuerySelector("[data-cell='manual-action']")!.TextContent.Should().Contain("elle kaldırın");
 
         (await PostAsync(client, "ConfirmObifinCopyDeleted", new Dictionary<string, string> { ["DeletionId"] = deletion.Id.ToString() }))
             .StatusCode.Should().Be(HttpStatusCode.Redirect);

@@ -22,22 +22,28 @@ public sealed record BankRemovalResult(IReadOnlyList<long> ObifinRemoved, IReadO
     public bool NeedsManualObifinAction => ObifinNotAttempted || ObifinUnreachable || SharedObifinUser
         || ObifinFailed.Count > 0 || ObifinUnowned.Count > 0;
 
-    /// <summary>Yöneticinin Obifin'de elle yapacağı iş (admin bildirimi ve hizmet sonu e-postası); kimlik bilgisi içermez. Elle iş
-    /// yoksa boş.</summary>
+    /// <summary>Yöneticinin Obifin'de elle yapacağı iş (admin bildirimi, hizmet sonu e-postası ve "Kaldır ve sil"in teyit kaydı,
+    /// <c>ObifinCopyDeletion.ManualAction</c>); kimlik bilgisi içermez. Elle iş yoksa boş.</summary>
     public string ManualActionText()
+        => DescribeManualAction(ObifinNotAttempted, SharedObifinUser, ObifinUnreachable, ObifinFailed, ObifinUnowned);
+
+    /// <summary><see cref="ManualActionText"/>'in tek tanımı: sonuç kurulmadan önce de (Obifin tarafı bilinince, teyit kaydı
+    /// yazılırken) aynı metin üretilsin.</summary>
+    internal static string DescribeManualAction(bool notAttempted, bool shared, bool unreachable, IReadOnlyList<long> failed,
+        IReadOnlyList<long> unowned)
     {
-        if (ObifinNotAttempted)
+        if (notAttempted)
             return "Obifin'e gidilmedi (yalnız yerel silme): admin/obifin'de bu lisans için 'Kaldır ve sil'e basın.";
-        if (SharedObifinUser)
+        if (shared)
             return "Bu Obifin kullanıcısı başka bir lisansta da kayıtlı; Obifin'e hiç gidilmedi. Obifin panelinden YALNIZ bu " +
                 "lisansın banka bağlantısını elle kaldırın, diğer lisansınkine dokunmayın.";
-        if (ObifinUnreachable)
+        if (unreachable)
             return "Obifin'e ulaşılamadı: Obifin panelinden bu lisansın banka bağlantılarını elle kaldırın.";
         var parts = new List<string>();
-        if (ObifinFailed.Count > 0)
-            parts.Add($"kaldırılamayan banka bağlantıları #{string.Join(", #", ObifinFailed)}: Obifin panelinden elle kaldırın");
-        if (ObifinUnowned.Count > 0)
-            parts.Add($"bu lisansa ait olduğu doğrulanamayan #{string.Join(", #", ObifinUnowned)}: elle kontrol edin, başka " +
+        if (failed.Count > 0)
+            parts.Add($"kaldırılamayan banka bağlantıları #{string.Join(", #", failed)}: Obifin panelinden elle kaldırın");
+        if (unowned.Count > 0)
+            parts.Add($"bu lisansa ait olduğu doğrulanamayan #{string.Join(", #", unowned)}: elle kontrol edin, başka " +
                 "lisansınsa dokunmayın");
         return parts.Count == 0 ? "" : "Obifin'de " + string.Join("; ", parts) + ".";
     }
@@ -199,6 +205,15 @@ public sealed class BankConnectionTerminator
     {
         public static ObifinOutcome Skipped => new([], [], [], false, false, true);
         public static ObifinOutcome Unreached => new([], [], [], true, false, false);
+
+        /// <summary>Teyit kaydına yazılan elle iş; yoksa null (<see cref="BankRemovalResult.ManualActionText"/> ile aynı metin).</summary>
+        public string? ManualAction()
+        {
+            var text = BankRemovalResult.DescribeManualAction(NotAttempted, Shared, Unreachable, Failed, Unowned);
+            if (text.Length == 0) return null;
+            return text.Length <= ObifinCopyDeletion.ManualActionMaxLength
+                ? text : text[..(ObifinCopyDeletion.ManualActionMaxLength - 1)] + "…";
+        }
     }
 
     /// <summary>
@@ -296,7 +311,7 @@ public sealed class BankConnectionTerminator
         {
             try
             {
-                await DeleteLocalAsync(licenseId, trigger, actor, keepConnection, tally, ct);
+                await DeleteLocalAsync(licenseId, trigger, actor, keepConnection, obifin.ManualAction(), tally, ct);
                 break;
             }
             catch (DbUpdateConcurrencyException) when (attempt == 1)
@@ -337,9 +352,9 @@ public sealed class BankConnectionTerminator
     /// düşerse bağlantı ve işaret kalır, iş ertesi gün (ya da yönetici yeniden basınca) kalanı siler.
     /// <paramref name="keepConnection"/>: "Kaldır ve sil"in sahiplik kanıtı kalır — Obifin kimliği, yerel BankConnections ve onaylı
     /// hesap satırları (kişisel veri taşıyabilen alanları son adımda boşalır); onaysız hesaplar silinir, BankDataPurgedAt
-    /// yazılır.</summary>
-    private async Task DeleteLocalAsync(Guid licenseId, string trigger, string actor, bool keepConnection, Tally tally,
-        CancellationToken ct)
+    /// yazılır. <paramref name="manualAction"/>: teyit kaydının elle iş metni (<see cref="ObifinCopyDeletion.ManualAction"/>).</summary>
+    private async Task DeleteLocalAsync(Guid licenseId, string trigger, string actor, bool keepConnection, string? manualAction,
+        Tally tally, CancellationToken ct)
     {
         var criterion = keepConnection ? "hizmet sonu + 30 gün (yalnız yerel)" : "bağlantı kaldırıldı";
         void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
@@ -427,7 +442,10 @@ public sealed class BankConnectionTerminator
             // silen açtı (aynı anda iki "Kaldır ve sil"): ikinci kayıt hatırlatmayı ve "Teyit alındı"yı ikilerdi.
             if (connections.Count > 0)
             {
-                var copy = new ObifinCopyDeletion { Id = Guid.NewGuid(), LicenseId = licenseId, RequestedAt = now, RequestedBy = actor };
+                // Elle iş de kayda girer: Obifin kimliği ve sahiplik kanıtı burada siliniyor, bildirimi kaçıran yönetici Obifin'de
+                // hâlâ çekim yapan bağlantıyı bekleyenler tablosundan ve hatırlatmadan görür.
+                var copy = new ObifinCopyDeletion { Id = Guid.NewGuid(), LicenseId = licenseId, RequestedAt = now, RequestedBy = actor,
+                    ManualAction = manualAction };
                 _db.ObifinCopyDeletions.Add(copy);
                 copyId = copy.Id;
             }

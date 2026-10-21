@@ -1313,6 +1313,7 @@ public class LicenseDbContext : DbContext
             b.HasKey(d => d.Id);
             b.Property(d => d.RequestedBy).HasMaxLength(256).IsRequired();
             b.Property(d => d.ConfirmedBy).HasMaxLength(256);
+            b.Property(d => d.ManualAction).HasMaxLength(ObifinCopyDeletion.ManualActionMaxLength);
             // Çift tık / iki yönetici: ikinci "Teyit alındı" ilkinin üstüne yazıp ikinci imha kaydını açmasın (UPDATE ... WHERE
             // ConfirmedAt IS NULL; BankConnectionTerminator.ConfirmObifinCopyDeletedAsync çakışmayı AlreadyConfirmedMessage'a çevirir).
             b.Property(d => d.ConfirmedAt).IsConcurrencyToken();
