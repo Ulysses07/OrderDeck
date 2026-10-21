@@ -118,12 +118,15 @@ public sealed class PersonBalanceVerifier
     /// <summary>Taban içi / dışı sayı ve tutar toplamı.</summary>
     public readonly record struct Tally(int InBaseline, int Outside, decimal Total);
 
-    /// <summary><c>--details</c>'in GUID listeleri (ad/telefon yok).</summary>
+    /// <summary><c>--details</c>'in GUID listeleri (ad/telefon yok). <c>*Rows</c> ve satır listeleri
+    /// <c>WpfCustomerId</c>'dir (§7.3); <see cref="RuleBreakingGroups"/> (çapa) ve <see cref="OrphanLegs"/> (bacak)
+    /// ise HAREKET Id'leri — grubu defterde bulmak için, satırları yanlarında.</summary>
     public sealed record Details(
         IReadOnlyList<Guid> NegativeOutside, IReadOnlyList<Guid> NegativeInBaseline,
         IReadOnlyList<Guid> LedgerMismatchOutside, IReadOnlyList<Guid> LedgerMismatchInBaseline,
         IReadOnlyList<Guid> CopyOutside, IReadOnlyList<Guid> StrandedPurged,
-        IReadOnlyList<Guid> RuleBreakingGroups, IReadOnlyList<Guid> OrphanLegs,
+        IReadOnlyList<Guid> RuleBreakingGroups, IReadOnlyList<Guid> RuleBreakingRows,
+        IReadOnlyList<Guid> OrphanLegs, IReadOnlyList<Guid> OrphanLegRows,
         IReadOnlyList<Guid> WorsenedBaselineRows, IReadOnlyList<Guid> ChangedMismatchRows);
 
     public sealed record LicenseReport(
@@ -138,7 +141,7 @@ public sealed class PersonBalanceVerifier
         int TrimMismatches, int ControlCharGroups,
         int NegativePersons, int NegativePersonsExplained,
         int D4, int D5, int D6, int OrphanLegs,
-        Tally CopyRows, int CopyRowsWithTransactions, int CopyRowsWithBalance,
+        Tally CopyRows, int CopyRowsWithTransactions, int CopyTransactionCount, int CopyRowsWithBalance,
         IReadOnlyDictionary<string, int> ActivePcVersions,
         IReadOnlyList<string> Alerts,
         Details Details);
@@ -244,26 +247,32 @@ public sealed class PersonBalanceVerifier
             trim, control,
             negativePersons.Count, explained,
             d4, d5, d6, orphans.Count,
-            new Tally(copyIn.Count, copyOut.Count, copies.Sum(Bal)), copyTx.Count, copyBal.Count,
+            new Tally(copyIn.Count, copyOut.Count, copies.Sum(Bal)),
+            copyTx.Count, copyTx.Sum(r => ledger[r].Count), copyBal.Count,
             versions,
             alerts,
             new Details(negOut, negIn, misOut, misIn, copyOut, stranded.Select(p => p.Id).ToList(),
-                ruleGroups, orphans, worsened, changedMismatch));
+                ruleGroups.Select(g => g.Key).ToList(), RowsOf(ruleGroups.SelectMany(g => g)),
+                orphans.Select(r => r.Id).ToList(), RowsOf(orphans),
+                worsened, changedMismatch));
+
+        static List<Guid> RowsOf(IEnumerable<DrawRow> draws) => draws.Select(r => r.WpfCustomerId).Distinct().ToList();
     }
 
     /// <summary>D4 (bacak türü ve boş alanları), D5 (ya hepsi ya hiçbiri geri alınmış), D6 (−Σ ≤ OriginalAmount),
     /// yetim bacak — yalnız <c>DrawGroupId</c> dolu gruplar. Çekim grubu ⇔ toplamı &lt; 0 (grup geri almaları &gt; 0).</summary>
-    private static (int D4, int D5, int D6, List<Guid> RuleGroups, List<Guid> OrphanLegs) CheckDraws(Snapshot s, Guid licenseId)
+    private static (int D4, int D5, int D6, List<IGrouping<Guid, DrawRow>> RuleGroups, List<DrawRow> OrphanLegs) CheckDraws(
+        Snapshot s, Guid licenseId)
     {
         int d4 = 0, d5 = 0, d6 = 0;
-        var ruleGroups = new List<Guid>();
-        var orphans = new List<Guid>();
+        var ruleGroups = new List<IGrouping<Guid, DrawRow>>();
+        var orphans = new List<DrawRow>();
         foreach (var group in s.DrawRows.Where(r => r.LicenseId == licenseId).GroupBy(r => r.DrawGroupId))
         {
             var anchor = group.FirstOrDefault(r => r.Id == group.Key);
             if (anchor is null)
             {
-                orphans.AddRange(group.Select(r => r.Id));
+                orphans.AddRange(group);
                 continue;
             }
 
@@ -290,7 +299,7 @@ public sealed class PersonBalanceVerifier
                     broken = true;
                 }
             }
-            if (broken) ruleGroups.Add(group.Key);
+            if (broken) ruleGroups.Add(group);
         }
         return (d4, d5, d6, ruleGroups, orphans);
     }

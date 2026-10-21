@@ -82,6 +82,8 @@ public sealed class PersonBalanceVerifierTests
 
         r.D4.Should().Be(1);
         r.Details.RuleBreakingGroups.Should().Equal(k);
+        r.Details.RuleBreakingRows.Should().BeEquivalentTo(rows.Select(x => x.WpfCustomerId),
+            "§7.3: --details kural bozan satırların WpfCustomerId'lerini basar");
         r.Alerts.Should().ContainSingle().Which.Should().StartWith("kural:");
     }
 
@@ -125,6 +127,7 @@ public sealed class PersonBalanceVerifierTests
 
         r.OrphanLegs.Should().Be(1);
         r.Details.OrphanLegs.Should().Equal(leg.Id);
+        r.Details.OrphanLegRows.Should().Equal(leg.WpfCustomerId);
         r.Alerts.Should().ContainSingle().Which.Should().Contain("yetim=1");
     }
 
@@ -142,7 +145,7 @@ public sealed class PersonBalanceVerifierTests
         r.NegativeRows.Should().Be(new V.Tally(0, 1, -10m));
         r.LedgerMismatches.Should().Be(new V.Tally(0, 1, 10m));
         r.CopyRows.Outside.Should().Be(1);
-        r.CopyRowsWithTransactions.Should().Be(1);
+        (r.CopyRowsWithTransactions, r.CopyTransactionCount).Should().Be((1, 2), "§7.3-8: kopyaya bağlı hareket sayısı");
         r.Alerts.Should().BeEmpty("§8.1: taban alınana kadar yalnız sayı");
     }
 
