@@ -274,10 +274,11 @@ public sealed class PersonBalanceVerifier
             .Where(p => PersonMembership.IsGrouped(p.GroupId) && !liveGroups.Contains(p.GroupId!)).ToList();
         // 5. Ham ↔ kırpılmış (gruplama işlerinin KeyOf'u .Trim() ile, WPF ham karşılaştırır). Tanım spec §7.3-5'in
         // SQL'inden (DATALENGTH ↔ LTRIM/RTRIM, bütün satırlar) BİLEREK farklı, KeyOf ile birebir: yalnız asıl kayıtlar,
-        // .NET Trim (bütün boşluk karakterleri), yalnız boşluk numara grupsuz. S2'nin enable'ı bu sayıyı kullanır
-        // (plan fark 15).
-        var trim = canonical.Count(p => !string.IsNullOrWhiteSpace(p.GroupId) && p.GroupId != p.GroupId.Trim());
-        var control = canonical.Count(p => p.GroupId is { } g && g.IndexOfAny(['\t', '\n', '\r']) >= 0);
+        // .NET Trim (bütün boşluk karakterleri), yalnız boşluk numara grupsuz. Sekme/satır sonu sayısı da aynı kuralla:
+        // yalnız sekme ve satır sonundan oluşan numara iki yanda da grupsuzdur, ayrışma riski taşımaz. S2'nin enable'ı
+        // bu iki sayıyı kullanır (plan fark 15).
+        var trim = canonical.Count(p => PersonMembership.IsGrouped(p.GroupId) && p.GroupId != p.GroupId!.Trim());
+        var control = canonical.Count(p => PersonMembership.IsGrouped(p.GroupId) && p.GroupId!.IndexOfAny(['\t', '\n', '\r']) >= 0);
         // 6.
         var negativePersons = persons.Where(m => m.Sum(p => Bal(p.Id)) < 0m).ToList();
         var explained = negativePersons.Count(m => m.Where(p => Bal(p.Id) < 0m)

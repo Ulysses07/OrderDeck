@@ -262,14 +262,15 @@ public sealed class PersonBalanceVerifierTests
     {
         var g = $"g{Guid.NewGuid():N}";
         var orphanGroup = $"g{Guid.NewGuid():N}";
-        var (a, b, purged, stranded, spaced, tabbed, neg) =
-            (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var (a, b, purged, stranded, spaced, tabbed, neg, tabOnly) =
+            (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+                Guid.NewGuid());
 
         var r = Single(Snap(
             projections:
             [
                 P(a, g), P(b, g), P(purged, g, purged: true), P(stranded, orphanGroup, purged: true),
-                P(spaced, "x "), P(tabbed, "y\tz"), P(neg, "   "),
+                P(spaced, "x "), P(tabbed, "y\tz"), P(neg, "   "), P(tabOnly, "\t\r\n"),
             ],
             balances: [B(a, 30m), B(b, 20m), B(purged, 5m), B(stranded, 7m), B(neg, -2m)],
             ledger: [L(a, 30m), L(b, 20m), L(purged, 5m), L(stranded, 7m), L(neg, -2m)],
@@ -279,7 +280,8 @@ public sealed class PersonBalanceVerifierTests
         (r.PurgedWithBalance, r.PurgedBalanceTotal).Should().Be((2, 12m));
         (r.StrandedPurged, r.StrandedPurgedTotal).Should().Be((1, 7m));
         r.Details.StrandedPurged.Should().Equal(stranded);
-        (r.TrimMismatches, r.ControlCharGroups).Should().Be((1, 1), "yalnız boşluk numara grupsuz sayılır");
+        (r.TrimMismatches, r.ControlCharGroups).Should().Be((1, 1),
+            "yalnız boşluktan (sekme, satır sonu dahil) oluşan numara iki yanda da grupsuz: ayrışma riski yok");
         (r.NegativePersons, r.NegativePersonsExplained).Should().Be((1, 0));
         r.ActivePcVersions.Should().BeEquivalentTo(new Dictionary<string, int> { ["0.9.11"] = 2, ["yok"] = 1 });
     }
