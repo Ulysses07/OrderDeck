@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using OrderDeck.LicenseServer.Data;
@@ -26,7 +27,8 @@ namespace OrderDeck.LicenseServer.Tools;
 /// </list>
 /// Yazan bayraklar <c>--apply</c> olmadan yazacağını basar; yalnız <c>PersonBalanceBaselines</c>'a yazar. Rapora
 /// <c>--apply</c> vermek kullanım hatasıdır. Çıkış: 0 tamam; 1 eşzamanlı yazım ya da işaretsiz lisansta inceleme,
-/// hiçbir şey yazılmadı; 2 kullanım, yapılandırma ya da bilinmeyen lisans. Argümanlar katı (<see cref="SalesSync"/>
+/// hiçbir şey yazılmadı; 2 kullanım, yapılandırma ya da bilinmeyen lisans. Öbür veritabanı hataları yutulmaz:
+/// işlenmemiş istisna olarak yükselir (yığın izi, 0/1/2 dışı çıkış kodu). Argümanlar katı (<see cref="SalesSync"/>
 /// deseni). Bağlantı dizesi web host'unkiyle aynı kaynaktan (<c>ConnectionStrings:LicenseDb</c>). Çıktıda ad, telefon,
 /// makine adı YOK — yalnız sayılar, tutarlar, Id'ler. <c>enable</c>/<c>disable</c> S2'de bu sınıfa eklenir.
 /// </summary>
@@ -130,7 +132,7 @@ public static class PersonBalanceCommand
         {
             await db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex) when (IsDuplicateBaseline(ex))
         {
             // Anahtar (LicenseId, WpfCustomerId): eşzamanlı bir yakalama aynı satırı yazdıysa birincil anahtar ihlali.
             // SaveChanges tek işlemdir; bu koşunun hiçbir satırı yazılmadı.
@@ -141,6 +143,17 @@ public static class PersonBalanceCommand
         output.WriteLine($"UYGULANDI: {rows.Count} taban satırı yazıldı (işaretler dahil).");
         return 0;
     }
+
+    /// <summary>Taban tablosunun birincil anahtar ihlali (2627/2601 + anahtarın adı): yalnız eşzamanlı yakalama.
+    /// Öbür hatalar (arada silinen lisansın FK'sı, zaman aşımı, taşma, öbür tekil yarışlar) yükselir; teşhisleri
+    /// "yeniden çalıştır" iletisine gömülmesin (kalıp <see cref="PersonBalance.IsDuplicateBalanceRow"/>).</summary>
+    private static bool IsDuplicateBaseline(DbUpdateException ex) =>
+        ex.InnerException is SqlException sql
+        && sql.Number is 2601 or 2627
+        && sql.Message.Contains(BaselineKey, StringComparison.Ordinal);
+
+    /// <summary>Göçün adı (<c>PersonBalanceS1</c>): <c>PK_PersonBalanceBaselines</c> (LicenseId, WpfCustomerId).</summary>
+    private const string BaselineKey = "PK_PersonBalanceBaselines";
 
     private static async Task<int> MarkReviewedAsync(
         LicenseDbContext db, Guid licenseId, bool apply, DateTimeOffset now, TextWriter output, TextWriter error,

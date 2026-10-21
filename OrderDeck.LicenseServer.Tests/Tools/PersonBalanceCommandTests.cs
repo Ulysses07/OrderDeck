@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
@@ -11,12 +12,13 @@ using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.PersonBalanceTest
 namespace OrderDeck.LicenseServer.Tests.Tools;
 
 /// <summary><c>person-balance verify</c> (spec 2026-10-11 §7.3): rapor salt okunur, taban yakalama ve inceleme
-/// işareti yalnız <c>--apply</c> ile ve yalnız <c>PersonBalanceBaselines</c>'a yazar.</summary>
-public sealed class PersonBalanceCommandTests : IClassFixture<ApiFactory>
+/// işareti yalnız <c>--apply</c> ile ve yalnız <c>PersonBalanceBaselines</c>'a yazar. Kanca (<see cref="HookedApiFactory"/>)
+/// yalnız yazım hatası testlerinde dolu; öbür testler için fabrika <see cref="ApiFactory"/>'yle aynı.</summary>
+public sealed class PersonBalanceCommandTests : IClassFixture<HookedApiFactory>
 {
-    private readonly ApiFactory _factory;
+    private readonly HookedApiFactory _factory;
 
-    public PersonBalanceCommandTests(ApiFactory factory) => _factory = factory;
+    public PersonBalanceCommandTests(HookedApiFactory factory) => _factory = factory;
 
     /// <summary>Satırdaki <c>{L}</c> her koşuda üretilen bir lisans GUID'iyle değişir (literal GUID yok).</summary>
     private static string[] Args(string line) => line.Replace("{L}", Guid.NewGuid().ToString()).Split(' ');
@@ -215,6 +217,50 @@ public sealed class PersonBalanceCommandTests : IClassFixture<ApiFactory>
         var (_, output, _) = await RunAsync($"person-balance verify --license {kit.LicenseId} --details");
 
         output.Should().Contain(negative.ToString()).And.NotContain(name);
+    }
+
+    /// <summary>Taban yazımı sırasında SaveChanges'i verilen SQL hatasıyla düşürür (komut kancası yok, InMemory).</summary>
+    private async Task<(int Exit, string Output, string Error)> CaptureFailingWithAsync(Guid licenseId, int number, string message)
+    {
+        _factory.Hook.BeforeSave = () => throw new DbUpdateException("test", SqlExceptionFactory.Create(number, message));
+        try
+        {
+            return await RunAsync($"person-balance verify --license {licenseId} --capture-baseline --apply");
+        }
+        finally
+        {
+            _factory.Hook.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task Eszamanli_taban_yazimi_birincil_anahtar_ihlalinde_1_doner()
+    {
+        var kit = await OldLicenseAsync();
+        await kit.MemberAsync(null, -10m);
+
+        var (exit, _, error) = await CaptureFailingWithAsync(kit.LicenseId, 2627,
+            "Violation of PRIMARY KEY constraint 'PK_PersonBalanceBaselines'. Cannot insert duplicate key.");
+
+        exit.Should().Be(1);
+        error.Should().Contain("başka bir koşuyla yazıldı");
+        (await BaselineCountAsync(kit.LicenseId)).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(547, "The INSERT statement conflicted with the FOREIGN KEY constraint \"FK_PersonBalanceBaselines_Licenses_LicenseId\".")]
+    [InlineData(8115, "Arithmetic overflow error converting numeric to data type numeric.")]
+    [InlineData(2627, "Violation of PRIMARY KEY constraint 'PK_Baska'. Cannot insert duplicate key.")]
+    public async Task Taban_yaziminda_baska_veritabani_hatasi_eszamanli_yazim_diye_yutulmaz(int number, string message)
+    {
+        var kit = await OldLicenseAsync();
+        await kit.MemberAsync(null, -10m);
+
+        var act = () => CaptureFailingWithAsync(kit.LicenseId, number, message);
+
+        (await act.Should().ThrowAsync<DbUpdateException>(
+                "yalnız taban anahtarının yarışı 1'dir; öbür hatanın teşhisi operatöre ulaşmalı"))
+            .Which.InnerException.Should().BeOfType<SqlException>().Which.Number.Should().Be(number);
     }
 
     [Fact]
