@@ -646,6 +646,50 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Kaldir_ve_sil_hesap_partisinden_sonra_yazilan_hesap_ve_banka_baglantisi_satirini_da_siler()
+    {
+        // Saatlik hesap yenilemesi bağlantıyı durdurmadan önce Verified okumuş, Obifin çağrısı uzun sürmüş olsun: kaydı hesap
+        // partisinden sonra ama bağlantı silinmeden önce düşerse eklediği hesap satırı (IBAN, özeti, bildirim notu dolu)
+        // bağlantısız lisansta kalırdı — BankAccounts'un ObifinConnection'a FK'si yok, saklama işi hesaplara dokunmuyor, sayfa
+        // bağlantısız lisansı göstermiyor. Bağlantı silindikten sonraki kayıt ise bağlantının UPDATE'i 0 satır etkilediği için
+        // bütünüyle düşer.
+        var hook = new SaveHookInterceptor();
+        var (db, other) = SharedDb(hook);
+        using var _ = db;
+        var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);
+        var connId = (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic)).Id;
+        var late = false;
+        hook.AfterSave = async () =>
+        {
+            if (late) return;
+            await using var refresh = other();
+            // Hesap ve banka bağlantısı partileri bitti, bağlantı satırı duruyor: son adımdan hemen önce.
+            if (await refresh.BankAccounts.AnyAsync(a => a.LicenseId == lic)
+                || await refresh.BankConnections.AnyAsync(b => b.LicenseId == lic)
+                || !await refresh.ObifinConnections.AnyAsync(c => c.LicenseId == lic)) return;
+            late = true;
+            var now = DateTimeOffset.UtcNow;
+            refresh.BankAccounts.Add(new BankAccount { Id = Guid.NewGuid(), LicenseId = lic, ObifinAccountId = 6, BankaKodu = "qnb",
+                IbanMasked = "TR12…345", IbanHash = NewHash(), NotificationNote = "bildirim", Currency = "TL", RefreshedAt = now });
+            refresh.BankConnections.Add(new BankConnection { Id = Guid.NewGuid(), LicenseId = lic, ObifinConnectionId = connId,
+                BankaKodu = "qnb", BankaApiId = 502, Label = "QNB-2", Status = BankConnectionStatus.Active, CreatedAt = now });
+            await refresh.SaveChangesAsync();
+        };
+
+        var r = await Terminator(db, client).RemoveAndDeleteAsync(lic, DataDestruction.Triggers.AdminRemove, "yonetici-1",
+            CancellationToken.None);
+
+        late.Should().BeTrue("yarış kuruldu");
+        (await db.BankAccounts.AnyAsync(a => a.LicenseId == lic)).Should().BeFalse("geç yazılan hesap satırı da gider");
+        (await db.BankConnections.AnyAsync(b => b.LicenseId == lic)).Should().BeFalse();
+        (r.Accounts, r.BankConnections).Should().Be((3, 2));
+        var records = await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync();
+        records.Where(x => x.Target == "BankAccounts").Sum(x => x.RowCount).Should().Be(3);
+        records.Where(x => x.Target == "BankConnections").Sum(x => x.RowCount).Should().Be(2);
+    }
+
+    [Fact]
     public async Task Kaldir_ve_sil_yeniden_denemede_de_cakisirsa_yoneticiye_gosterilebilir_hata_baglanti_durdurulmus_kalir()
     {
         // İkinci jeton çakışması ham DbUpdateConcurrencyException olarak yukarı çıksaydı sayfa yalnız ObifinValidationException

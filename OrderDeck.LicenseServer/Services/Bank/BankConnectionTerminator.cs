@@ -381,6 +381,7 @@ public sealed class BankConnectionTerminator
         // Son adım, tek SaveChanges: bağlantı (ya da işaret ve onaylı hesapların boşaltılması) ve Obifin teyit kaydı.
         var now = DateTimeOffset.UtcNow;
         var scrubbed = 0;
+        int lateAccounts = 0, lateBankConnections = 0;
         Guid? copyId = null;
         var connections = await _db.ObifinConnections.Where(c => c.LicenseId == licenseId).ToListAsync(ct);
         if (keepConnection)
@@ -408,6 +409,17 @@ public sealed class BankConnectionTerminator
         }
         else
         {
+            // Saatlik hesap yenilemesiyle yarış: yenileme bağlantıyı durdurmadan önce Verified okumuş, kaydı hesap partisinden
+            // sonra düşmüş olabilir. Eklediği hesap satırı (IBAN, özet, bildirim notu) bağlantısız lisansta kalırdı: BankAccounts'un
+            // ObifinConnection'a FK'si yok, saklama işi hesaplara dokunmuyor. Kalanlar bağlantıyla aynı kayıtta gider (birkaç satır).
+            // Bu kayıttan sonra düşen yenileme bütünüyle geri alınır: bağlantının UPDATE'i 0 satır etkiler.
+            var accountsLeft = await _db.BankAccounts.Where(a => a.LicenseId == licenseId).ToListAsync(ct);
+            var bankConnectionsLeft = await _db.BankConnections.Where(b => b.LicenseId == licenseId).ToListAsync(ct);
+            _db.BankAccounts.RemoveRange(accountsLeft);
+            _db.BankConnections.RemoveRange(bankConnectionsLeft);
+            Record("BankAccounts", accountsLeft.Count);
+            Record("BankConnections", bankConnectionsLeft.Count);
+            (lateAccounts, lateBankConnections) = (accountsLeft.Count, bankConnectionsLeft.Count);
             _db.ObifinConnections.RemoveRange(connections);
             Record("ObifinConnections", connections.Count);
             // KVKK Ö-9 öneri 3: Obifin'deki kopyanın yazılı silme teyidi bağlantı satırından bağımsız izlenir (FK yok, budanmaz).
@@ -420,6 +432,8 @@ public sealed class BankConnectionTerminator
         _db.ChangeTracker.Clear();
         // Kayıttan sonra: yeniden denemede iki kez sayılmasın, düşen denemenin kimliği dönmesin.
         tally.AccountsScrubbed += scrubbed;
+        tally.Accounts += lateAccounts;
+        tally.BankConnections += lateBankConnections;
         tally.CopyDeletionId = copyId ?? tally.CopyDeletionId;
     }
 
