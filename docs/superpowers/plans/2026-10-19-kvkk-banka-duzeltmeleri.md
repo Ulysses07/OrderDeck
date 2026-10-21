@@ -31,7 +31,7 @@
 | 26 | Açıklama sütununu şifreleme | P2 değerlendirme. | P2 listesi; **Burak**. |
 | 27 | Geri alma gerekçelerine "İlgili kişi itirazı" | Faz 2 (otomatik onay) işi. | Faz 2 spec. |
 | — | Faz 2 işleri (havale onayı, otomatik onay, `BankIbanState`, `PaymentExpectation`) | Ayrı spec (`2026-10-10-banka-havale-onay-design.md`). | Faz 2 spec. |
-| — | `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını da boşaltması; `Payment.ShopperId` bağının kaderi | Avukat kararı (not K-7 öneri 1–2, §7 soru 8). Görev 15 bu ikisine dokunmaz. | Karar **avukat**; kod tek satır (Görev 15'in notu). |
+| — | `WpfCustomerProjection.ScrubPersonal`'ın kullanıcı adını da boşaltması; `Payment.ShopperId` bağının kaderi | Avukat kararı (not K-7 öneri 1–2, §7 soru 8). Görev 15 bu ikisine dokunmaz. | Karar **avukat**; kod tek satır (`ScrubPersonal`; Görev 15'in uygulama notu: silmenin banka adımı kullanıcı adı anahtarını boşaltmadan önce alır, satır eklenince de çalışır). |
 | — | Sipariş bildiriminin (yeni sipariş push'u) gövdesindeki tutar | Not §5.1/19 yalnız dekont onay/ret bildirimini sayıyor; sipariş push'u ayrıca değerlendirilmeli (aşağıda karar listesinde). | Karar **Burak** (karar 9). |
 | — | R2 yaşam döngüsü kuralı (`sql-bak/` önekine 32 gün), R2 kova konumu, Hostinger veri merkezi tespiti | Cloudflare/Hostinger panosu işi. | **Burak** (Prod adımları 7). |
 | — | `BankTransactions.CounterpartyTaxIdHash` sütununu düşürme (daraltma adımı) | Genişlet/daralt kuralı: P0 (Görev 3) yazmayı kesti, Görev 8 değerleri boşalttı. Sütun ancak eski imaja dönme ihtimali kalmayınca düşürülür; varlık özeti "bir sonraki sürümde düşürülür" diyor. Bu plan yalnız genişletme yapar (`DropColumn` yasak). | Ayrı küçük plan (`DropColumn` göçü + varlıktan alan), P1 prod'da bir sürüm döndükten sonra. Sahibi **Burak**. |
@@ -104,10 +104,10 @@
 | 12 | `Domain/Bank/BankAccount.cs`; `Data/LicenseDbContext.cs`; `ObifinPollJob.cs`; `Pages/Admin/Obifin/Index.cshtml(.cs)` (onaylayan = yönetici kimliği); `AuditEvents.cs`; göç `*_BankAccountApproval`; testler `ObifinPollJobTests.cs` (sayaç kalıcılığı dahil), `Pages/Admin/AdminObifinPageTests.cs` |
 | 13 | YENİ `Services/Bank/BankConnectionTerminator.cs` (partili yerel silme, Obifin teyidi, hesap reddi), YENİ `Domain/Bank/ObifinCopyDeletion.cs`; `Domain/Bank/ObifinConnection.cs`; `Data/LicenseDbContext.cs`; `Services/Privacy/DataDestruction.cs` (iki tetikleyici); `ObifinConnectionService.cs` (statik kimlik çözümü, `IsLicenseActiveAsync`, `ClearServiceEnd`, `MatchingActive`, lisans denetimi); `PaymentMatchReconcileJob.cs`, `BankMatchSweepJob.cs`, `PaymentMatchReconciler.cs` (eşleştirme kapısı); `Pages/Admin/Obifin/Index.cshtml(.cs)`; `AuditEvents.cs`; `Controllers/Customers/AdminCustomersController.cs` (purge reddi); `Program.cs`; göçler `*_ObifinConnectionServiceEnd`, `*_ObifinCopyDeletionManualAction`; YENİ testler `Services/Bank/BankConnectionTerminatorTests.cs`, `Services/Bank/BankConnectionTerminatorRelationalTests.cs`; `PaymentMatchReconcileJobTests.cs`, `BankMatchSweepJobTests.cs`, `PaymentMatchReconcilerTests.cs`, `AdminObifinPageTests.cs`, `Controllers/Compliance/GdprFlowTests.cs` |
 | 14 | YENİ `Services/Bank/BankServiceEndPurgeJob.cs` (hizmet sonu silmesi + Obifin takibi hatırlatması); `ObifinConnectionService.cs` (`ReviveRenewedLicensesAsync`); `Program.cs`; YENİ test `Services/Bank/BankServiceEndPurgeJobTests.cs`; `BankJobsDiTests.cs` |
-| 15 | YENİ `Services/Bank/BankSubjectScrub.cs`; `Services/Shoppers/ShopperPurgeService.cs`; testler `ShopperPurgeServiceTests.cs` |
+| 15 | YENİ `Services/Bank/BankSubjectScrub.cs`; `Services/Shoppers/ShopperPurgeService.cs`, `OrphanedMediaCleanupJob.cs` (geciken dekont silmesinin imha kaydı); `Services/Bank/PaymentMatchReconciler.cs` (karar kilidi `DecidedAt`); `Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)` (`pageNumber`, talep kimliği); testler `ShopperPurgeServiceTests.cs`, `ShopperPurgeServiceConcurrencyTests.cs`, `OrphanedMediaCleanupJobTests.cs`, `PaymentMatchReconcilerTests.cs`, `PaymentMatchRaceTests.cs`, YENİ `Pages/Admin/AdminDeletionRequestsPageTests.cs` |
 | 16 | `Pages/Admin/BankaEslestirme/Index.cshtml.cs`; `Pages/Admin/Obifin/Index.cshtml.cs`; `AuditEvents.cs`; `BankDataCleanupJob.cs`, `Tools/BankDataCleanup.cs` (eski denetim satırları); testler `AdminBankaEslestirmePageTests.cs`, `AdminObifinPageTests.cs`, `BankDataCleanupJobTests.cs` |
 | 17 | YENİ `Domain/Bank/BankSubjectRequest.cs`, `Services/Bank/BankSubjectRequestService.cs`; `LicenseDbContext.cs`; `BankConnectionTerminator.cs`, `Controllers/Customers/AdminCustomersController.cs` (açık talepleri kapat); `Program.cs`; göç `*_BankSubjectRequests`; YENİ test `Services/Bank/BankSubjectRequestServiceTests.cs` (sonuç kategorileri, tür denetimi, CSV kaçışı); `BankConnectionTerminatorTests.cs`, `GdprFlowTests.cs` |
-| 18 | YENİ `Pages/Admin/BankaVeriTalepleri/Index.cshtml(.cs)`; `Pages/Shared/_AdminLayout.cshtml`; `Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)`; `AuditEvents.cs`; YENİ testler `Pages/Admin/AdminBankaVeriTalepleriPageTests.cs`, `Pages/Admin/AdminDeletionRequestsPageTests.cs` |
+| 18 | YENİ `Pages/Admin/BankaVeriTalepleri/Index.cshtml(.cs)`; `Pages/Shared/_AdminLayout.cshtml`; `Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)`; `AuditEvents.cs`; YENİ test `Pages/Admin/AdminBankaVeriTalepleriPageTests.cs`; `Pages/Admin/AdminDeletionRequestsPageTests.cs` (Görev 15'te açıldı, ekleme) |
 | 19 | `Controllers/Panel/PanelPaymentsController.cs`; test `Services/Push/ShopperOrderPaymentPushTests.cs` |
 | 20 | `Services/Audit/SecurityDataRetentionJob.cs` (telefon + banka talebi maskesi; her hedefin imha kaydı ve koşu kaydı); `Program.cs` (`JobId`); `Pages/Admin/Shoppers/DeletionRequests.cshtml`; testler `Services/Audit/SecurityDataRetentionJobTests.cs`, YENİ `Services/Audit/SecurityDataRetentionRelationalTests.cs` |
 | 21 | YENİ `Domain/DataControllerProfile.cs`, `Domain/DataControllerProfileVersion.cs`, `Services/Privacy/DataControllerProfiles.cs`, `Controllers/Panel/PanelDataControllerController.cs`; `Domain/IntakeFormSubmission.cs` (`DataControllerVersion`); `LicenseDbContext.cs`; `Services/Bank/ObifinConnectionService.cs`, `ObifinOptions.cs`, `appsettings.json` (veri sorumlusu kapısı); `Pages/Admin/Customers/Detail.cshtml(.cs)`; `Controllers/Customers/AdminCustomersController.cs`; `AuditEvents.cs`; göç `*_DataControllerProfiles`; YENİ `OrderDeck.LicenseServer.Tests/TestHelpers/TestDataController.cs`; YENİ testler `Services/Privacy/DataControllerProfilesTests.cs`, `Controllers/Panel/PanelDataControllerControllerTests.cs`, `Pages/Admin/AdminCustomerDataControllerTests.cs`, `Services/Bank/ObifinDataControllerGateTests.cs`; banka bağlantısı kuran testlerin tohum yardımcıları (`ObifinConnectionServiceTests`, `ObifinConnectionServiceConcurrencyTests`, `ObifinPollJobTests`, `ObifinAccountRefreshJobTests`, `AdminObifinPageTests`, `BankConnectionTerminatorTests`); `GdprFlowTests.cs` |
@@ -7675,6 +7675,22 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 Ortak kurallar yeni `BankSubjectScrub`'da; Görev 17'deki IBAN talep aracı da aynılarını kullanır. Purge'ün mevcut tek yeniden deneme kalıbı (eşleşme jetonu çakışırsa satırları tazele, kuralı yeniden uygula) korunur.
 
+**Uygulama notu (Görev 15 ve incelemesi, 21.10):** kod aşağıdaki adımlardan şu noktalarda ayrılır; sonraki görevler (özellikle 17 ve 18) koddakine göre yazılır.
+- **İmza:** `PurgeAsync(shopperId, ct)` (yapan `DataDestruction.AdminActor`, talep yok; testler ve eski çağıranlar) ve `PurgeAsync(shopperId, actor, requestId, ct)`. Silme talepleri sayfası `DataDestruction.ActorOf(User)` ve `request.Id` geçirir. Her imha kaydında `SubjectId` = ShopperId, `RequestId` = talep (Ö-13'ün alan listesi; süresiz kayıt başvuruya birleştirmesiz bağlanır), yapan = yöneticinin takma kimliği, ölçüt `ShopperPurgeService.PurgeCriterion` ("silme talebi").
+- **Kayıtlar tablo tablo ve lisans başına** (Görev 9 kuralı; planın toplu `ShopperDependents` kaydı yok, sıfır satır yazılmaz): `Shoppers.FullName+Phone+Address+Email+TcProtected`, `ShopperPushDevices`, `ShopperRefreshTokens`, `ShopperPasswordResetCodes`, `ShopperSupportRequests` (lisanssız); `Payments.PersonalFields`, `ShopperPaymentMedia` (`ShopperPurgeService.MediaTarget`; ödemesi bilinmeyen kuyruk satırının nesnesi lisanssız), `PaymentSubmissionAudits.IpAddress+UserAgent` (yalnız parmak izi hâlâ dolu satırlar: 90 günlük işin boşalttığı sayılmaz), `WpfCustomerProjections.PersonalFields`, `Orders.DisplayName+MessageText` (yalnız `ScrubOrderTextOnPurge` açıkken), `ShopperBroadcasterLinks`, `CustomerIbanMemories`, `PaymentMatches.WpfCustomerId+Evidence` (kişiye bağlı satır), `PaymentMatches.Evidence` (named satır: yalnız kanıt), `BankTransactions.Description+CounterpartyName+RawJson`. IBAN hafızası `DependentRowsDeleted`'e de girer ama kayıtta yalnız kendi satırında sayılır.
+- **Geciken dekont silmesi de kayıt yazar:** purge'de depodan silinemeyen nesneyi sonradan `OrphanedMediaCleanupJob` siler; gerçek silmeyle (`DeletedAt`) aynı SaveChanges'te `ShopperPaymentMedia` kaydı yazar: tetikleyici `shopper-purge`, ölçüt `PurgeCriterion`, konu kuyruk satırının ShopperId'si, lisans ödemeden (yoksa boş), yapan `system`. Talep kimliği kuyruk satırında yok; kayıt talebe `SubjectId` → `ShopperDeletionRequests.ShopperId` ile bağlanır.
+- **`BankSubjectScrub` yardımcıları:** `HasText(tx)`: açıklama, ad ya da ham kayıt hâlâ dolu mu. Saklama kuralının çoktan boşalttığı hareket "silindi" diye sayılmaz: `BankTransactionsScrubbed` ve imha kaydı yalnız metni dolu hareketleri sayar (ilk silmenin `DescriptionPurgedAt`'i kalır). `References(match, id)`: satır o kimliğe bağlı mı (öneri ya da gerçek müşteri); kayıt kişiye bağlı satırı (`WpfCustomerId+Evidence`) yalnız kanıtı boşalanından (`Evidence`) bununla ayırır, sayım kuraldan ÖNCE yapılır (kural kimlikleri boşaltır). `MatchForCustomer` gerçek müşteriyi boşaltırken `IbanConfirmedAt`'i de boşaltır (Görev 10 kuralı: kararı boşaltan yol işareti de boşaltır; kişinin IBAN hafızası zaten silinir). Satır o kimliğe bağlı değilse `MatchEvidence` ile aynıdır, kişinin birden çok kimliği için sırayla çağrılabilir.
+- **Kişinin bütün bağları:** 3b kişinin lisanstaki her `WpfCustomerId`'si için koşar (aynı lisansta Instagram + TikTok bağı; bir satır ikisini birden taşıyabilir). `ScrubMatch` satırın lisansındaki her silinen kimliğe `MatchForCustomer` uygular; lisansında silinen kimlik yoksa (yalnız named) `MatchEvidence`. Kişiye bağlı ve named satırlar tek sorguyla okunur.
+- **Yeniden deneme hareketleri de tazeler:** hareketin jetonu yok, ama metni boşaltılan hareket okunduktan sonra başka yoldan silinebilir (saklama işi, hesap reddi, "Kaldır ve sil"; eşleşmesi FK kaskadıyla gider) ve UPDATE 0 satır etkiler. Ayrılan atlanır, kalanın metni yeniden boşaltılır. Sipariş metni (3a) de aynı kalıpta. İmha kaydının sayısı ilk okumadandır.
+- **Kullanıcı adı anahtarları `MarkPurged`'dan ÖNCE alınır** (`usernames`, adım 3): "kullanıcı adı da boşaltılsın" avukat kararı `ScrubPersonal`'a tek satır olarak girerse named araması sessizce durmaz (Kapsam dışı tablosundaki "kod tek satır" notu bu sıraya dayanır).
+- **Silme talepleri sayfasının "Sil" formu çalışmıyordu:** sayfa numarası Razor Pages'in ayrılmış `page` rota değeriyle taşınıyordu, form `action=""` ile çıkıyor, silme işleyiciye hiç ulaşmıyordu. Parametre `pageNumber` oldu (`asp-route-pageNumber`, `RedirectToPage(new { handled, pageNumber })`). `AdminDeletionRequestsPageTests` bu görevde açıldı: "Sil" formunun işleyiciye gitmesi ve imha kaydında yapan + talep kimliği.
+- **Karar kilidi `DecidedAt`'tir (Görev 15 incelemesi, Important; m. 4/2-b).** `MatchForCustomer` karar verilmiş satırın müşterisini boşaltır, anını (`DecidedAt`) ve sonucunu (durum) bırakır. "Karar verilmiş, dekontsuz, müşterisiz" satır yalnız bu yoldan doğar (kaldırma `DecidedAt`'i de boşaltır). Bağdaştırıcı "başka müşteriye karar verilmiş" ölçütünü yalnız `ActualWpfCustomerId != null`'dan kuruyordu: silinen X'in sayfada kararlı 250 TL'lik havalesi, ±2 gün içinde onaylanan aynı tutarlı Y dekontunun (Y'nin havalesi henüz gelmemiş) tek adayı olur, ona bağlanırdı (dekont, Actual = Y, `ManualOnly`; ölçümün `ConfirmedByHuman` sonucu ezilir, Y'nin gerçek havalesi de bir daha bağlanamaz). Planın "satır ölçüm kaydı olarak kalır" sözü tutmazdı. Artık `PaymentMatchReconciler.CandidatesAsync`'in `taken` koşulu `m.PaymentId != null || (m.DecidedAt != null && m.ActualWpfCustomerId != wpfCustomerId)`, `LinkAsync`'in bayat seçim denetimi aynı ölçütte (EF `null != X`'i SQL'de doğru çevirir). Elle eşleme zaten `DecidedAt`'e bakıyordu: müşterisi boşalan karara önce kaldırma. Testler: `PaymentMatchReconcilerTests.KVKK_silmesiyle_musterisi_bosalan_karar_baska_musterinin_dekontuna_aday_sayilmaz` (gerçek purge, ardından onay bağdaştırması ve gap çözümü) ve `PaymentMatchRaceTests.Bagdastirici_secimden_sonra_KVKK_silmesiyle_musterisi_bosalan_karara_dekont_eklemez`.
+- **Sonraki görev kuralları:**
+  1. **Görev 17 (IBAN talep aracı) aynı `MatchForCustomer`'ı kullanır, aynı durumu doğurur.** Kilit bağdaştırıcıda kuruldu; Görev 17 ek bir şey yapmaz. Yeni bir yol "karar verilmiş satırı" tanırsa ölçüt `DecidedAt`'tir, müşteri değil. `IbanConfirmedAt`'i `MatchForCustomer` boşaltır, Görev 17 ayrıca yazmaz.
+  2. **Görev 17'nin eşleşme kuralı satırın taşıdığı her silinen kimliğe uygulanır** (purge'ün `ScrubMatch` kalıbı): plan kodundaki `subject = Actual ∈ customers ? Actual : Proposed ∈ customers ? Proposed : null` yalnız birini boşaltır; aynı IBAN iki müşterinin hafızasındaysa ve satır ikisini taşıyorsa öneri kalırdı. `foreach (var c in customers) BankSubjectScrub.MatchForCustomer(m, c, now)` (bağlı değilse `MatchEvidence` ile aynı), satırda hiçbiri yoksa `MatchEvidence`.
+  3. **Görev 17'nin sayımları purge'ünkiyle aynı kuralla:** hareket sayısı ve kaydı yalnız `BankSubjectScrub.HasText` olanlar; eşleşme kaydı `References` ile ikiye ayrılır (`PaymentMatches.WpfCustomerId+Evidence` / `PaymentMatches.Evidence`), sayım kuraldan önce. `Outcome` metnindeki sayılar da bunlar.
+  4. **Görev 18:** `AdminDeletionRequestsPageTests.cs` VAR. Görev 18'in "(YENİ)" satırı ve dosyanın tamamını veren bloğu uygulanmaz: son tarih testi mevcut sınıfa EKLENİR (Görev 18'deki blok buna göre düzeltildi), mevcut iki test kalır. Sayfa numarası parametresi `pageNumber`'dır, `page` değil: yeni bağlantı ve yönlendirmeler de onu kullanır.
+
 **Files:**
 - Create: `OrderDeck.LicenseServer/Services/Bank/BankSubjectScrub.cs`
 - Modify: `OrderDeck.LicenseServer/Services/Shoppers/ShopperPurgeService.cs:13-39` (sonuç kaydı), `:243-279` (3b), `:326-333` (dönüş), `:352-390` (`SaveAsync`)
@@ -9126,7 +9142,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - Modify: `OrderDeck.LicenseServer/Pages/Shared/_AdminLayout.cshtml:23`
 - Modify: `OrderDeck.LicenseServer/Pages/Admin/Shoppers/DeletionRequests.cshtml(.cs)`
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`
-- Test: `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminBankaVeriTalepleriPageTests.cs`, `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminDeletionRequestsPageTests.cs` (YENİ)
+- Test: `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminBankaVeriTalepleriPageTests.cs` (YENİ)
+- Modify (test): `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminDeletionRequestsPageTests.cs` — Görev 15'te açıldı ("Sil" formu, imha kaydı); mevcut dosyaya EKLE, yeniden yazma
 
 - [ ] **Adım 1: Sayfa testlerini yaz (kırmızı)**
 
@@ -9297,25 +9314,9 @@ public sealed class AdminBankaVeriTalepleriPageTests : IClassFixture<ApiFactory>
 }
 ```
 
-`OrderDeck.LicenseServer.Tests/Pages/Admin/AdminDeletionRequestsPageTests.cs`:
+`OrderDeck.LicenseServer.Tests/Pages/Admin/AdminDeletionRequestsPageTests.cs` — dosya VAR (Görev 15: `PagePath` sabiti, kurucu, `SeedAsync`, `PurgeViaFormAsync`, iki test; using'lerde `AngleSharp`, `Microsoft.Extensions.DependencyInjection`, `OrderDeck.LicenseServer.Data`, `OrderDeck.LicenseServer.Domain`, `OrderDeck.LicenseServer.Tests.TestHelpers` zaten var). Dosyayı YENİDEN YAZMA; sınıf özetine "Listede son tarih (talep + 30 gün, KVKK m. 13/2) ve gecikme işareti." cümlesini ekle ve aşağıdaki testi sınıfa EKLE (mevcut testler kalır; sayfa numarası parametresi `pageNumber`):
 
 ```csharp
-using AngleSharp;
-using FluentAssertions;
-using Microsoft.Extensions.DependencyInjection;
-using OrderDeck.LicenseServer.Data;
-using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Tests.TestHelpers;
-using Xunit;
-
-namespace OrderDeck.LicenseServer.Tests.Pages.Admin;
-
-/// <summary>Silme talepleri listesinde son tarih (talep + 30 gün, KVKK m. 13/2) ve gecikme işareti.</summary>
-public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
-{
-    private readonly ApiFactory _factory;
-    public AdminDeletionRequestsPageTests(ApiFactory factory) => _factory = factory;
-
     [Fact]
     public async Task Bekleyen_talepte_son_tarih_gosterilir_gecikeni_isaretlenir()
     {
@@ -9331,14 +9332,13 @@ public sealed class AdminDeletionRequestsPageTests : IClassFixture<ApiFactory>
         }
         var client = await _factory.CreateLoggedInAdminClientAsync();
 
-        var html = await client.GetStringAsync("/admin/shoppers/deletion-requests");
+        var html = await client.GetStringAsync(PagePath);
         var doc = await BrowsingContext.New(AngleSharp.Configuration.Default).OpenAsync(r => r.Content(html));
 
         doc.QuerySelector($"tr[data-request='{late.Id}'] [data-cell='due']")!.TextContent.Should()
             .Contain(late.RequestedAt.AddDays(30).ToString("dd.MM.yyyy")).And.Contain("gecikti");
         doc.QuerySelector($"tr[data-request='{fresh.Id}'] [data-cell='due']")!.TextContent.Should().NotContain("gecikti");
     }
-}
 ```
 
 - [ ] **Adım 2: Koştur — kırmızı**
