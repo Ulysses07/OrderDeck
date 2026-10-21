@@ -290,7 +290,7 @@ public sealed class PersonBalanceVerifierTests
         var s = Snap(projections: [P(row)], balances: [B(row, -10m)], ledger: [L(row, -8m)]);
         var r = Single(s);
 
-        var rows = V.BaselineRowsToCapture(s, r, Captured);
+        var rows = V.BaselineRowsToCapture(V.ByLicense.Of(s), r, Captured);
 
         rows.Should().HaveCount(2, "eksi ve D1 aynı satır — bir kez; artı işaret");
         rows.Should().ContainSingle(x => x.WpfCustomerId == row)
@@ -310,7 +310,7 @@ public sealed class PersonBalanceVerifierTests
         var r = Single(s);
         r.Alerts.Should().HaveCount(3, "taban dışı eksi, D1 ve kopya: yakalamadan sonra doğmuş yeni sapmalar");
 
-        V.BaselineRowsToCapture(s, r, Captured.AddDays(5)).Should().BeEmpty(
+        V.BaselineRowsToCapture(V.ByLicense.Of(s), r, Captured.AddDays(5)).Should().BeEmpty(
             "§7.3: taban S1 öncesinden kalanı yazar; yeniden yakalama (pilot --license, prosedür tekrarı) "
             + "yeni sapmayı tabana alıp §8.1 uyarısını susturmamalı");
     }
@@ -324,7 +324,7 @@ public sealed class PersonBalanceVerifierTests
         var r = Single(s);
         (r.HasMarker, r.HasBaseline).Should().Be((false, true));
 
-        V.BaselineRowsToCapture(s, r, Captured.AddDays(2)).Should().ContainSingle()
+        V.BaselineRowsToCapture(V.ByLicense.Of(s), r, Captured.AddDays(2)).Should().ContainSingle()
             .Which.WpfCustomerId.Should().Be(V.LicenseMarker, "yeni lisansın sapması S1 sonrasıdır, tabana girmez");
     }
 }
@@ -407,8 +407,9 @@ public sealed class PersonBalanceVerifierCaptureTests
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             var snapshot = await scope.ServiceProvider.GetRequiredService<PersonBalanceVerifier>()
                 .LoadAsync(null, capturedAt, default);
+            var data = V.ByLicense.Of(snapshot);
             foreach (var license in V.Analyze(snapshot).Licenses)
-                db.PersonBalanceBaselines.AddRange(V.BaselineRowsToCapture(snapshot, license, capturedAt));
+                db.PersonBalanceBaselines.AddRange(V.BaselineRowsToCapture(data, license, capturedAt));
             await db.SaveChangesAsync();
         }
 
@@ -524,7 +525,7 @@ public sealed class PersonBalanceVerifierRelationalTests : IAsyncLifetime
         snapshot.Balances.Single(b => b.WpfCustomerId == raced).Balance.Should().Be(15m);
         // İşaretli lisansta yakalama zaten hiçbir şey yazmaz; işaretsiz (ilk yakalama) hâlinde de yarışın satırı girmez.
         var unmarked = snapshot with { Baselines = snapshot.Baselines.Where(b => b.WpfCustomerId != V.LicenseMarker).ToList() };
-        V.BaselineRowsToCapture(unmarked, V.Analyze(unmarked).Licenses.Single(), now)
+        V.BaselineRowsToCapture(V.ByLicense.Of(unmarked), V.Analyze(unmarked).Licenses.Single(), now)
             .Should().ContainSingle("yakalama yarışın satırını tabana yazmaz; yalnız işaret")
             .Which.WpfCustomerId.Should().Be(V.LicenseMarker);
     }

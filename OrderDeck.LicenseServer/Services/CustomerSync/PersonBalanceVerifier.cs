@@ -280,8 +280,9 @@ public sealed class PersonBalanceVerifier
     }
 
     /// <summary>Anlık görüntünün listeleri lisansa göre BİR kez gruplanmış. Lisans başına süzmek O(L·N) olurdu:
-    /// lisanssız yük verisizler dahil bütün lisansları getirir (plan fark 16).</summary>
-    private sealed record ByLicense(
+    /// lisanssız yük verisizler dahil bütün lisansları getirir (plan fark 16). <see cref="Analyze"/> ve lisans lisans
+    /// çağrılan <see cref="BaselineRowsToCapture"/> bunu alır.</summary>
+    public sealed record ByLicense(
         ILookup<Guid, ProjectionRow> Projections, ILookup<Guid, BalanceRow> Balances, ILookup<Guid, LedgerRow> Ledger,
         ILookup<Guid, DrawRow> Draws, ILookup<Guid, BaselineRow> Baselines, ILookup<Guid, ActivationRow> ActivePcs)
     {
@@ -470,8 +471,11 @@ public sealed class PersonBalanceVerifier
     /// sapmadır. Yakalama yeniden koşunca (pilot için <c>--license</c>, prosedürün tekrarı) onu tabana yazsaydı uyarı
     /// kalıcı olarak susardı. Taban dışı bir satırı bilinçli kabul etmek ayrı, hedefli bir iştir (sahip kararı). Var olan
     /// taban satırına dokunulmaz.</para>
+    ///
+    /// <para>Lisanssız yakalama her lisans için çağırır; tutarlar <paramref name="data"/>'nın lisans gruplarından
+    /// okunur (bütün anlık görüntüyü her çağrıda süzmek ilk yakalamada O(L·N) olurdu).</para>
     /// </summary>
-    public static IReadOnlyList<PersonBalanceBaseline> BaselineRowsToCapture(Snapshot s, LicenseReport r, DateTimeOffset now)
+    public static IReadOnlyList<PersonBalanceBaseline> BaselineRowsToCapture(ByLicense data, LicenseReport r, DateTimeOffset now)
     {
         if (r.HasMarker) return [];
         var marker = new PersonBalanceBaseline { LicenseId = r.LicenseId, WpfCustomerId = LicenseMarker, CapturedAt = now };
@@ -481,9 +485,9 @@ public sealed class PersonBalanceVerifier
             .Concat(r.Details.LedgerMismatchOutside)
             .Concat(r.Details.CopyOutside)
             .ToHashSet();
-        var balances = s.Balances.Where(b => b.LicenseId == r.LicenseId && ids.Contains(b.WpfCustomerId))
+        var balances = data.Balances[r.LicenseId].Where(b => ids.Contains(b.WpfCustomerId))
             .ToDictionary(b => b.WpfCustomerId, b => b.Balance);
-        var ledger = s.Ledger.Where(l => l.LicenseId == r.LicenseId && ids.Contains(l.WpfCustomerId))
+        var ledger = data.Ledger[r.LicenseId].Where(l => ids.Contains(l.WpfCustomerId))
             .ToDictionary(l => l.WpfCustomerId, l => l.Sum);
         var rows = ids
             .Select(id => new PersonBalanceBaseline

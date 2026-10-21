@@ -105,9 +105,10 @@ public static class PersonBalanceCommand
         DateTimeOffset now, TextWriter output, TextWriter error, CancellationToken ct)
     {
         var rows = new List<PersonBalanceBaseline>();
+        var data = PersonBalanceVerifier.ByLicense.Of(snapshot);
         foreach (var license in report.Licenses)
         {
-            var add = PersonBalanceVerifier.BaselineRowsToCapture(snapshot, license, now);
+            var add = PersonBalanceVerifier.BaselineRowsToCapture(data, license, now);
             var marker = add.Any(r => r.WpfCustomerId == PersonBalanceVerifier.LicenseMarker);
             var captured = add.Where(r => r.WpfCustomerId != PersonBalanceVerifier.LicenseMarker)
                 .Select(r => r.WpfCustomerId).ToHashSet();
