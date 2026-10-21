@@ -110,6 +110,16 @@ public sealed class BankConnectionTerminator
     public const string DeleteIncompleteMessage = "Banka verisi silinirken eşzamanlı bir eşleştirme yazımıyla iki kez çakışıldı; silme yarıda kaldı. Bağlantı durduruldu; yeniden deneyin.";
     /// <summary>Hesap reddinin silmesi yeniden denemede de çakıştı (<see cref="BankDeletionIncompleteException"/>).</summary>
     public const string RejectIncompleteMessage = "Hesabın verisi silinirken eşzamanlı bir eşleştirme yazımıyla iki kez çakışıldı; silme yarıda kaldı. Onay kaldırıldı; yeniden deneyin.";
+    // Silmenin kapattığı açık banka veri talebinin sonuç metni (BankSubjectRequest.Outcome, 500 karakter). Yönetici başvurana bu
+    // metne göre yanıt verir: yalnız OrderDeck'teki veri silindi, Obifin'deki kopya için ne beklendiği de yazılı (Ö-16 kalıbı —
+    // metin kodun tutmadığı mutlak bir güvence vermesin).
+    /// <summary>"Kaldır ve sil": Obifin'deki kopyanın yazılı silme teyidi <c>ObifinCopyDeletions</c>'ta bekleniyor.</summary>
+    public const string RemovedRequestOutcome = "Bağlantı kaldırıldı: lisansın OrderDeck'teki banka verisi silindi; Obifin'deki " +
+        "kopya için Obifin'in yazılı silme teyidi bekleniyor (admin/obifin). Talep kapatıldı — başvurana yanıt verin.";
+    /// <summary>Hizmet sonu yerel silmesi: Obifin'e gidilmedi, kopya ve Obifin'in bankadan çekmesi "Kaldır ve sil"e kadar sürer.</summary>
+    public const string ServiceEndRequestOutcome = "Hizmet sonu: lisansın banka verisi yalnız OrderDeck'te silindi; Obifin'deki " +
+        "kopya (ve Obifin'in bankadan çekmesi) admin/obifin'deki 'Kaldır ve sil' ile Obifin'in yazılı silme teyidine kadar sürer. " +
+        "Talep kapatıldı — başvurana yanıt verin.";
 
     private readonly LicenseDbContext _db;
     private readonly IObifinClient _client;
@@ -462,8 +472,7 @@ public sealed class BankConnectionTerminator
         // KVKK K-7: veri yokken açık banka veri talebi ve IBAN özeti kalmasın; yönetici başvurana yine yanıt verir. Aynı kayıtta:
         // talebi arada kapatan başka bir istek (ClosedAt jetonu) bu kaydı düşürür, yeniden deneme taze okur.
         var closedRequests = await BankSubjectRequestService.CloseOpenForLicensesAsync(_db, [licenseId],
-            (keepConnection ? "Hizmet sonu" : "Bağlantı kaldırıldı") + ": lisansın banka verisi silindi; talep kapatıldı — " +
-            "başvurana yanıt verin.", trigger, actor, now, ct);
+            keepConnection ? ServiceEndRequestOutcome : RemovedRequestOutcome, trigger, actor, now, ct);
         if (closedRequests > 0)
             _log.LogWarning("Banka verisi silindi, {Count} açık banka veri talebi kapatıldı — lisans={LicenseId}; başvurana yanıt " +
                 "verilmeli", closedRequests, licenseId);

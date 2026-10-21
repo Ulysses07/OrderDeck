@@ -1101,6 +1101,11 @@ public sealed class BankConnectionTerminatorTests
         rows[open.Id].IbanHash.Should().BeNull();
         rows[open.Id].Resolution.Should().Be(BankSubjectResolution.DataDeleted);
         rows[open.Id].Outcome.Should().StartWith(remove ? "Bağlantı kaldırıldı" : "Hizmet sonu").And.Contain("başvurana yanıt verin");
+        // Ö-16 kalıbı: yönetici başvurana bu metne göre yanıt verir; Obifin'deki kopya henüz silinmemişken "silindi" demesin
+        // (kaldırmada yazılı silme teyidi bekleniyor, hizmet sonunda Obifin'e hiç gidilmedi).
+        rows[open.Id].Outcome.Should().Contain("Obifin'deki kopya").And.Contain("OrderDeck")
+            .And.Contain(remove ? "yazılı silme teyidi bekleniyor" : "Kaldır ve sil");
+        rows[open.Id].Outcome!.Length.Should().BeLessThanOrEqualTo(500, "Outcome sütunu 500 karakter");
         rows[open.Id].ClosedBy.Should().Be(remove ? "yonetici-1" : DataDestruction.SystemActor);
         rows[alreadyClosed.Id].Should().BeEquivalentTo(alreadyClosed, "kapanmış talebe dokunulmaz");
         rows[otherOpen.Id].ClosedAt.Should().BeNull("başka lisansın talebi açık kalır");
