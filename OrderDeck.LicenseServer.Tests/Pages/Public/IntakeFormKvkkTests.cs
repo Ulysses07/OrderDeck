@@ -18,8 +18,8 @@ namespace OrderDeck.LicenseServer.Tests.Pages.Public;
 
 /// <summary>
 /// Kayıt formundaki ZORUNLU KVKK aydınlatma onayı (sahip kararı 2026-10-13):
-/// açık rıza değil, "aydınlatma metnini ve Gizlilik Politikası'nı okudum"
-/// beyanı. Yetkili kapı sunucu — kutu işaretli gelmeyen gönderim kayıt açmaz,
+/// açık rıza değil, "yukarıdaki bilgilendirmeyi okudum" beyanı (kvkk-2026-10-21'e
+/// kadar "aydınlatma metnini ve Gizlilik Politikası'nı okudum"). Yetkili kapı sunucu — kutu işaretli gelmeyen gönderim kayıt açmaz,
 /// girilen veri ekranda kalır; kabul edilen gönderim onayın zamanını ve metin
 /// sürümünü taşır.
 /// </summary>
@@ -489,7 +489,7 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 
         var label = Tag(html, "<label class=\"check\">\\s*<input[^>]*name=\"Input\\.KvkkAcknowledged\".*?</label>");
         var text = Regex.Replace(WebUtility.HtmlDecode(Regex.Replace(label, "<[^>]+>", "")), "\\s+", " ").Trim();
-        text.Should().Be("Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. *");
+        text.Should().Be("Yukarıdaki bilgilendirmeyi okudum. *");
         label.Should().Contain("<span class=\"req\">*</span>", "zorunluluk diğer alanlarla aynı işaretle görünür");
 
         // Yer: aydınlatma paragrafı → Gizlilik Politikası kutusu → onay; bal
@@ -677,10 +677,10 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Metin_degisirse_surum_de_degismeli()
     {
-        const string ExpectedVersion = "kvkk-2026-10-19";
-        const string ExpectedFormSha256 = "462FFB4368F84CB451C157BA1B93BA6C3E94C02F5274435825F6CF217BCB9994";
-        const string ExpectedPolicyBoxSha256 = "910746E0100C613B8AD8BB6A1AC39DE6C6210D301B8451CD445EAEFAE324573D";
-        const string ExpectedPolicySourceSha256 = "AE77FB9BECDDBDD0B86DFCAC7858B4BFA970FE12F3930CBABB7CDC1FBC4B43FE";
+        const string ExpectedVersion = "kvkk-2026-10-21";
+        const string ExpectedFormSha256 = "045A215C17A9C757ACA03CAF9F68C1477199D26CBA6ED6EACD4269E5E74C0BFC";
+        const string ExpectedPolicyBoxSha256 = "FC96F9E7BB519D859988D4350F22492CCFB4866ADF22F23F3842B4A6A024D286";
+        const string ExpectedPolicySourceSha256 = "2953C2A2DD49E90EB64B229306C3224C0B4E0993A5D39B49246D5347BCE787E6";
 
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();

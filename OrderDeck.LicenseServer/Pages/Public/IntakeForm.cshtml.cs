@@ -184,7 +184,8 @@ public class IntakeFormModel : PageModel
         public bool SmsConsent { get; set; }
 
         /// <summary>
-        /// "Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum." — ZORUNLU.
+        /// "Yukarıdaki bilgilendirmeyi okudum." — ZORUNLU (kvkk-2026-10-21'e kadar
+        /// "Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum.").
         /// Açık rıza değil, aydınlatmanın yapıldığının beyanı (sahip kararı
         /// 2026-10-13). WhatsApp/SMS izinlerinden farkı tam bu: onlar
         /// isteğe bağlı rıza, bu her kayıtta şart. Doğrulaması

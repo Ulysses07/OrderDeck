@@ -38,10 +38,17 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 /// yeni sekmede giden bağlantıydı; <c>kvkk-2026-10-14</c> politika metni
 /// formun içinde açılan kutuda; <c>kvkk-2026-10-19</c> banka hesap
 /// hareketleri (politika Bölüm 1.4, saklama ve haklar) ve form paragrafında
-/// havale cümlesi. TASLAK: tarih yer tutucu, yayın günü gerçek tarihe
-/// çekilir (yürürlük tarihiyle birlikte).</para>
+/// havale cümlesi; <c>kvkk-2026-10-21</c> hukuki ön inceleme notuna göre
+/// düzeltilmiş sürüm (v2): Bölüm 1.4 kodun davranışına göre yeniden yazıldı
+/// (rol amaca göre ayrıldı, yanlış olgu beyanları çıktı), yeni Bölüm 1.5
+/// (müşteri uygulaması ve dekontlar) ve 1.6 (hizmet sağlayıcılar ve yurt
+/// dışına aktarım), Bölüm 5–7 ve 9 yeniden yazıldı; form paragrafı iki
+/// katmanlı (veri sorumlusu, amaç, havale / izinler), onay etiketi
+/// "Yukarıdaki bilgilendirmeyi okudum". TASLAK: tarih yer tutucu, yayın günü
+/// gerçek tarihe çekilir (iki kopyanın yürürlük tarihi, İngilizce sayfadaki
+/// TURKISH_EFFECTIVE_DATE ve IntakeFormKvkkTests'in özetleriyle birlikte).</para>
 /// </summary>
 public static class KvkkNotice
 {
-    public const string TextVersion = "kvkk-2026-10-19";
+    public const string TextVersion = "kvkk-2026-10-21";
 }
