@@ -182,6 +182,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<bool>("Active")
                         .HasColumnType("bit");
 
+                    b.Property<DateTimeOffset?>("ApprovedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ApprovedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<Guid?>("BankConnectionId")
                         .HasColumnType("uniqueidentifier");
 
@@ -195,6 +202,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(3)
                         .HasColumnType("nvarchar(3)");
 
+                    b.Property<int>("IbanEmptyCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("IbanFullCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("IbanHash")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
@@ -203,6 +216,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
+
+                    b.Property<int>("IbanMaskedCount")
+                        .HasColumnType("int");
 
                     b.Property<DateTimeOffset?>("LastBankSyncAt")
                         .HasColumnType("datetimeoffset");
@@ -219,6 +235,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<DateTimeOffset>("RefreshedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("UnapprovedSkippedCount")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
@@ -275,6 +294,84 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("BankConnections");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.BankSubjectRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ClosedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ClosedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("DueAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("IbanHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("IbanMasked")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Resolution")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Verification")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTimeOffset?>("VerifiedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("VerifiedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
+
+                    b.HasIndex("ClosedAt", "DueAt");
+
+                    b.ToTable("BankSubjectRequests", t =>
+                        {
+                            t.HasCheckConstraint("CK_BankSubjectRequests_IbanHash_Hex64", "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'");
+                        });
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.BankTransaction", b =>
                 {
                     b.Property<Guid>("Id")
@@ -304,6 +401,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("CounterpartyIbanHash")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<bool>("CounterpartyIbanHashValid")
+                        .HasColumnType("bit");
 
                     b.Property<string>("CounterpartyIbanMasked")
                         .HasMaxLength(40)
@@ -390,6 +490,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
 
+                    b.Property<DateTimeOffset?>("LastConfirmedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("LearnedFrom")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -431,6 +534,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset?>("BackfillCompletedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("BankDataPurgedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("BaseUrl")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -438,6 +544,15 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("DisabledAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("DisabledByAdmin")
+                        .HasColumnType("bit");
+
+                    b.Property<DateOnly?>("InitialCollectFrom")
+                        .HasColumnType("date");
 
                     b.Property<string>("LastError")
                         .HasMaxLength(500)
@@ -481,6 +596,45 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("ObifinConnections");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.ObifinCopyDeletion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ConfirmedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ManualAction")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RequestedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
+
+                    b.HasIndex(new[] { "RequestedAt" }, "IX_ObifinCopyDeletions_Pending")
+                        .HasFilter("[ConfirmedAt] IS NULL");
+
+                    b.ToTable("ObifinCopyDeletions");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.PaymentMatch", b =>
                 {
                     b.Property<Guid>("Id")
@@ -506,6 +660,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("Evidence")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTimeOffset?>("IbanConfirmedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("Layer")
                         .IsRequired()
@@ -844,6 +1001,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<Guid>("CreatedByCustomerId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid?>("DrawGroupId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -876,6 +1036,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DrawGroupId")
+                        .HasDatabaseName("IX_CustomerBalanceTransactions_DrawGroupId")
+                        .HasFilter("[DrawGroupId] IS NOT NULL");
+
                     b.HasIndex("ReversesTransactionId")
                         .IsUnique()
                         .HasFilter("[ReversesTransactionId] IS NOT NULL");
@@ -888,6 +1052,157 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasFilter("[SaleScope] IS NOT NULL");
 
                     b.ToTable("CustomerBalanceTransactions");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfile", b =>
+                {
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("KepAddress")
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("KvkkEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("LegalName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PostalAddress")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("CustomerId");
+
+                    b.ToTable("DataControllerProfiles");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfileVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("KepAddress")
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("KvkkEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("LegalName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PostalAddress")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("DataControllerProfileVersions");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataDestructionRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("Criterion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset?>("DigestedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("SubjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Target")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.HasIndex("SubjectId");
+
+                    b.HasIndex(new[] { "OccurredAt" }, "IX_DataDestructionRecords_Undigested")
+                        .HasFilter("[DigestedAt] IS NULL");
+
+                    b.ToTable("DataDestructionRecords");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.EmailConfirmationToken", b =>
@@ -1057,6 +1372,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("City")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("DataControllerVersion")
+                        .HasColumnType("int");
 
                     b.Property<string>("District")
                         .HasMaxLength(50)
@@ -1327,6 +1645,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("PaymentIban")
                         .HasMaxLength(34)
                         .HasColumnType("nvarchar(34)");
+
+                    b.Property<DateTimeOffset?>("PersonBalancePoolSince")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("RevokeReason")
                         .HasMaxLength(500)
@@ -2071,6 +2392,33 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("ShopperId", "CreatedAt");
 
                     b.ToTable("PaymentSubmissionAudits");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PersonBalanceBaseline", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("WpfCustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Balance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset>("CapturedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<decimal>("LedgerSum")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset?>("ReviewedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("LicenseId", "WpfCustomerId");
+
+                    b.ToTable("PersonBalanceBaselines");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>
@@ -3638,7 +3986,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<string>("GroupId")
                         .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
+                        .HasColumnType("nvarchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
 
                     b.Property<DateTimeOffset?>("GroupIdChangedAt")
                         .HasColumnType("datetimeoffset");
@@ -3718,6 +4067,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("LicenseId", "ChangeSeq");
+
+                    b.HasIndex("LicenseId", "GroupId")
+                        .HasFilter("[MergedIntoId] IS NULL AND [GroupId] IS NOT NULL");
 
                     b.HasIndex("LicenseId", "Platform", "IdentityKey")
                         .IsUnique()
@@ -3984,6 +4336,26 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("WpfCustomer");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfile", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.Customer", "Customer")
+                        .WithOne()
+                        .HasForeignKey("OrderDeck.LicenseServer.Domain.DataControllerProfile", "CustomerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfileVersion", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.Customer", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.EmailConfirmationToken", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.Customer", "Customer")
@@ -4151,6 +4523,15 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Record");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PersonBalanceBaseline", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", null)
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>

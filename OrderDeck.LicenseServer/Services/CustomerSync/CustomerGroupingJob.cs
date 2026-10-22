@@ -149,9 +149,9 @@ public sealed class CustomerGroupingJob
 
         var components = nodes.Components().Where(c => c.Count >= 2).ToList();
         // Grup üyeleri: lisansın grubu olan asıl kayıtları — silinmişler DAHİL
-        // (yalnız kara liste kaynağı olarak). Eşleme bellekte, ORDİNAL: kolonun
-        // SQL karşılaştırması (varsayılan collation) harf ve sondaki boşluk
-        // farkını yok sayar, bilgisayarlar ise numarayı bayt bayt karşılaştırır.
+        // (yalnız kara liste kaynağı olarak). Eşleme bellekte, ORDİNAL: kolon
+        // BIN2 olsa da SQL '=' sondaki boşluk farkını yok sayar, bilgisayarlar
+        // ise numarayı bayt bayt karşılaştırır.
         var byGroup = components.Count == 0
             ? Enumerable.Empty<Info>().ToLookup(i => "", StringComparer.Ordinal)
             : (await _db.WpfCustomerProjections.AsNoTracking()

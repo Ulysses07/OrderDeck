@@ -29,6 +29,8 @@ public sealed class ObifinAccountRefreshJob
     /// <summary>Başarıyla yenilenen bağlantı sayısı.</summary>
     public async Task<int> RunAsync(CancellationToken ct = default)
     {
+        // KVKK K-6: lisansı bitenin hesap listesi de sorgulanmaz; önce Disabled'a çekilir, aşağıdaki listeye girmez.
+        await ObifinConnectionService.DisableEndedLicensesAsync(_db, DateTimeOffset.UtcNow, _log, ct);
         var licenseIds = await _db.ObifinConnections.AsNoTracking()
             .Where(c => c.Status == ObifinConnectionStatus.Verified).Select(c => c.LicenseId).ToListAsync(ct);
         var ok = 0;

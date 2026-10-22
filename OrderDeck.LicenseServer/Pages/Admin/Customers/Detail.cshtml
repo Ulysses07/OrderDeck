@@ -35,6 +35,21 @@
             <tr><th>Kayıt</th><td>@Model.Customer.CreatedAt.ToString("dd.MM.yyyy HH:mm")</td></tr>
         </table>
     </div>
+    <div class="col-md-6">
+        <h5>Veri sorumlusu bilgileri (KVKK)</h5>
+        <p class="small text-muted">Kayıt formunda ve müşteri uygulamasında ilgili kişiye gösterilir. Bilgi girilmeden bu yayıncı için banka modülü açılmaz.</p>
+        <form method="post" asp-page-handler="DataController" asp-route-id="@Model.Customer.Id" class="row g-2">
+            <div class="col-12"><label class="form-label" for="DcLegalName">Ad soyad / unvan</label>
+                <input id="DcLegalName" name="DcLegalName" class="form-control" value="@Model.DataController?.LegalName" required /></div>
+            <div class="col-12"><label class="form-label" for="DcPostalAddress">Posta adresi</label>
+                <input id="DcPostalAddress" name="DcPostalAddress" class="form-control" value="@Model.DataController?.PostalAddress" required /></div>
+            <div class="col-md-6"><label class="form-label" for="DcKvkkEmail">KVKK başvuru e-postası</label>
+                <input id="DcKvkkEmail" name="DcKvkkEmail" type="email" class="form-control" value="@Model.DataController?.KvkkEmail" required /></div>
+            <div class="col-md-6"><label class="form-label" for="DcKepAddress">KEP (varsa)</label>
+                <input id="DcKepAddress" name="DcKepAddress" class="form-control" value="@Model.DataController?.KepAddress" /></div>
+            <div class="col-12"><button class="btn btn-outline-primary btn-sm">Kaydet</button></div>
+        </form>
+    </div>
 </div>
 
 <h5>Lisanslar</h5>

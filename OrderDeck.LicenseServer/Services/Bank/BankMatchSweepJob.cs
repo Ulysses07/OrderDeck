@@ -8,15 +8,16 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>Telafi taraması: <see cref="MatchingBankTransactionSink"/>'in kaçırdığı gelen hareketleri eşleştirir. Çekim işi bir
 /// hareketi sink'e yalnız bir kez verir (<see cref="IBankTransactionSink"/> sözleşmesi); sink düşerse (DB kesintisi, hata)
-/// hareket sonsuza dek önerisiz kalırdı. Obifin bağlantısı olan lisansların son <see cref="LookbackDays"/> gündeki, tutarı
+/// hareket sonsuza dek önerisiz kalırdı. Eşleştirmeye açık Obifin bağlantısı (<see cref="ObifinConnectionService.MatchingActive"/>;
+/// KVKK K-6) olan lisansların son <see cref="LookbackDays"/> gündeki, tutarı
 /// sıfır olmayan, en az <see cref="FetchGrace"/> önce çekilmiş, hiç <see cref="PaymentMatch"/>'i olmayan GELEN hareketleri en
 /// eskiden başlanarak koşu başına en çok <see cref="MaxPerRun"/> tane eşleştirilir. Eşleştirici her işlenen harekete bir satır
 /// yazar (Proposed ya da dışlanan dahil NoProposal): işlenen hareket bir daha taranmaz. Sink gibi eşleştirmenin ardından
 /// hareketle açık gap'i de çözmeyi dener (<see cref="PaymentMatchReconciler.MatchAndResolveGapAsync"/>); yoksa taramanın
 /// eşleştirdiği hareketi bekleyen gap hiç çözülmezdi. Öneri yazılıp gap çözümü düşerse hareket bir daha taranmaz, gap açık
 /// kalır.
-/// <para>Lisans süzgeci sorguyu (LicenseId, Direction, OccurredAt) indeksinde lisans başına aramaya çevirir (bağlantısız
-/// lisansın hareketi de gelmez). Tampon süre: uzun bir çekim hareketi kaydedip henüz sink'e vermemişken (çekim :05'te
+/// <para>Lisans süzgeci sorguyu (LicenseId, Direction, OccurredAt) indeksinde lisans başına aramaya çevirir (bağlantısız,
+/// durdurulmuş ya da yerel verisi silinmiş lisansın hareketi de gelmez). Tampon süre: uzun bir çekim hareketi kaydedip henüz sink'e vermemişken (çekim :05'te
 /// başlar, tarama :07'de) tarama aynı hareketi kapmasın; sink bir hareketi çekimden saniyeler sonra işler.</para>
 /// <para>Bir hareketin hatası sıradakileri bekletmez: loglanır (hareket Id'si + istisna; açıklama, ad, tutar değil),
 /// sıradakine geçilir, sonda tek <see cref="AggregateException"/> fırlar (Hangfire koşuyu Failed gösterir). Aksi hâlde en
@@ -58,8 +59,12 @@ public sealed class BankMatchSweepJob
         var now = DateTimeOffset.UtcNow;
         var since = now.AddDays(-LookbackDays);
         var settled = now - FetchGrace;
+        // KVKK K-6: yalnız eşleştirmeye açık bağlantının lisansı (ObifinConnectionService.MatchingActive). Alt sorgu yerel
+        // değişkende (DisableEndedLicensesAsync'teki activeLicenseIds kalıbı): ifade özelliği lambda'nın içinde çağrılsaydı EF onu
+        // çeviremeyebilirdi.
+        var matchingLicenses = _db.ObifinConnections.Where(ObifinConnectionService.MatchingActive).Select(c => c.LicenseId);
         var missed = await _db.BankTransactions.AsNoTracking()
-            .Where(t => _db.ObifinConnections.Select(c => c.LicenseId).Contains(t.LicenseId)
+            .Where(t => matchingLicenses.Contains(t.LicenseId)
                 && t.Direction == BankTransactionDirection.Incoming && t.Amount != 0 && t.OccurredAt >= since
                 && t.FetchedAt < settled
                 && !_db.PaymentMatches.Any(m => m.BankTransactionId == t.Id))

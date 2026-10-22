@@ -111,7 +111,7 @@ public sealed class PaymentMatchMetricsTests
     [Fact]
     public async Task Pencere_hareketin_anina_gore_cizilir_satirin_yaratilma_anina_gore_degil()
     {
-        // İlk çekim 90 günü geri doldurur: eski hareketin önerisi bugün yazılır. O satır 30 günlük pencereye girmez; penceredeki
+        // İlk çekim geçmişi geri doldurur: eski hareketin önerisi bugün yazılır. O satır 30 günlük pencereye girmez; penceredeki
         // hareketin eski tarihli satırı da dışarıda kalmaz.
         using var db = NewDb();
         var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
@@ -131,7 +131,7 @@ public sealed class PaymentMatchMetricsTests
     [Fact]
     public async Task Gecikme_medyani_cift_sayida_ortalama_yedi_gunu_asan_ve_negatif_fark_sayim_disi()
     {
-        // İlk çekim 90 günü geri doldurur: o hareketlerin çekim farkı günlerce sürer ve maksimumu şişirirdi; saat kayması da
+        // İlk çekim geçmişi geri doldurur: o hareketlerin çekim farkı günlerce sürer ve maksimumu şişirirdi; saat kayması da
         // negatif fark üretebilir. İkisi de gecikme ölçümünden düşer, gelen sayımında kalır.
         using var db = NewDb();
         var lic = Guid.NewGuid(); var allCapped = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;

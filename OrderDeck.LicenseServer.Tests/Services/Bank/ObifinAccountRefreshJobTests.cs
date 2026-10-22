@@ -9,6 +9,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -52,6 +53,7 @@ public sealed class ObifinAccountRefreshJobTests
         var licenseId = Guid.NewGuid();
         db.Licenses.Add(new License { Id = licenseId, LicenseKey = $"LDK-{Guid.NewGuid():N}", CustomerId = customerId,
             SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+        TestDataController.Add(db, customerId);   // KVKK K-3 kapısı: bilgisiz yayıncıda bağlantı kaydedilmez
         await db.SaveChangesAsync();
         var conn = await svc.UpsertAsync(licenseId, "", userCode, $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}", CancellationToken.None);
         conn.Status = ObifinConnectionStatus.Verified;
@@ -173,5 +175,28 @@ public sealed class ObifinAccountRefreshJobTests
 
         ok.Should().Be(0);
         client.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Lisansi_biten_baglantinin_hesaplari_yenilenmez_Disabled_yazilir()
+    {
+        // KVKK K-6: hizmeti bitmiş yayıncının hesap listesi de Obifin'den sorgulanmaz.
+        using var db = NewDb(); var client = new PerUserObifin();
+        var (job, svc) = Build(db, client);
+        var userCode = $"u-{Guid.NewGuid():N}@x";
+        var lic = await SeedVerifiedAsync(db, svc, userCode);
+        client.Accounts[userCode] = () => new[] { Account(9298) };
+        (await db.Licenses.SingleAsync(l => l.Id == lic)).ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await db.SaveChangesAsync();
+
+        var ok = await job.RunAsync(CancellationToken.None);
+
+        ok.Should().Be(0);
+        client.Calls.Should().BeEmpty();
+        (await db.BankAccounts.CountAsync(a => a.LicenseId == lic)).Should().Be(0);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.DisabledAt.Should().NotBeNull();
+        conn.LastError.Should().Be(ObifinConnectionService.LicenseEndedMessage);
     }
 }

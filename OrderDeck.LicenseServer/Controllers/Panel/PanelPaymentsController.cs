@@ -25,6 +25,10 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
 public sealed class PanelPaymentsController : ControllerBase
 {
+    /// <summary>KVKK K-5: bildirim gövdesi Google FCM'ye gider; tutar ve serbest metin ret gerekçesi YAZILMAZ, ayrıntı uygulamada.</summary>
+    public const string PaymentApprovedPushBody = "Dekontun onaylandı.";
+    public const string PaymentRejectedPushBody = "Dekontun reddedildi. Ayrıntıyı uygulamada görebilirsin.";
+
     private readonly LicenseDbContext _db;
     private readonly INotificationSender _push;
     private readonly LabelRuleApplier _labels;
@@ -137,7 +141,7 @@ public sealed class PanelPaymentsController : ControllerBase
         // Onay commit edildi. Ölçüm etiket ve bildirimden ÖNCE zamanlanır (bkz. ScheduleShadowReconcile).
         ScheduleShadowReconcile(payment.Id);
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
-        await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
+        await NotifyShopperPaymentDecisionAsync(payment, approved: true, ct);
         return NoContent();
     }
 
@@ -175,8 +179,7 @@ public sealed class PanelPaymentsController : ControllerBase
         }
 
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentRejected, ct);
-        await NotifyShopperPaymentDecisionAsync(payment, approved: false,
-            reason: payment.RejectReason, ct);
+        await NotifyShopperPaymentDecisionAsync(payment, approved: false, ct);
         return NoContent();
     }
 
@@ -231,9 +234,10 @@ public sealed class PanelPaymentsController : ControllerBase
     /// ShopperId NULL ise legacy WhatsApp akışından gelen dekont — kimseye
     /// bildirim yok. NotificationsEnabledPayments kapalıysa skip. Best-effort:
     /// fail throw etmez, controller response'unu engellemez.
+    /// Gövdede tutar ve ret gerekçesi yok (KVKK K-5): FCM üçüncü taraf, ayrıntı uygulamada.
     /// </summary>
     private async Task NotifyShopperPaymentDecisionAsync(
-        Payment payment, bool approved, string? reason, CancellationToken ct)
+        Payment payment, bool approved, CancellationToken ct)
     {
         if (payment.ShopperId is null) return;
 
@@ -252,14 +256,9 @@ public sealed class PanelPaymentsController : ControllerBase
                 .Select(l => l.Customer.Name)
                 .FirstOrDefaultAsync(ct) ?? "Yayıncı";
 
-            var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
-            var amount = payment.Amount.ToString("N2", tr);
-            var (title, body) = approved
-                ? (broadcasterName, $"{amount} ₺ dekontun onaylandı")
-                : (broadcasterName,
-                    string.IsNullOrWhiteSpace(reason)
-                        ? $"{amount} ₺ dekontun reddedildi"
-                        : $"{amount} ₺ dekontun reddedildi: {reason}");
+            // KVKK K-5: tutar ve ret gerekçesi FCM'ye gitmez; yayıncı adı (başlık) ve olgu kalır.
+            var title = broadcasterName;
+            var body = approved ? PaymentApprovedPushBody : PaymentRejectedPushBody;
 
             await _push.SendToShoppersAsync(
                 new[] { shopper.Id },

@@ -150,6 +150,9 @@ OrderDeck__BroadcastMedia__Provider=r2
 # DEĞİŞTİRME: var olan bütün hash'ler geçersiz olur. docker-compose.yml'de de
 # listeli — orada olmayan anahtar container'a girmez.
 OrderDeck__Bank__HashKey=
+# Veri sorumlusu kapısı (KVKK K-3): yazılmazsa "true" (fail-closed). Yalnız pilot
+# geçişinde, geçici olarak; aşağıda "Veri sorumlusu kapısı".
+# Obifin__RequireDataControllerProfile=false
 
 # Yayın ve etiket senkronu (spec 2026-10-13). Hepsi docker-compose.yml'de
 # listeli.
@@ -197,6 +200,35 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
   ```
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
+  Bu **düz** bir kopyadır: işin bitince sil (KVKK Ö-12: sunucu diskinde yalnız şifreli
+  kopya, en çok 1 gün). Unutulursa `backup-sql-to-r2.sh` ilk gece koşusunda siler
+  (`sql-data/backup/` içindeki bütün `orderdeck-*.bak`/`.bak.gz`). Şifreli ve R2'ye de
+  giden bir yedek için betiğin kendisini çalıştır; aynı UTC gününde sonra koşan gece
+  yedeği o kopyayı yerelde ve R2'de ezer (ad tarihten).
+
+### Veri sorumlusu kapısı
+
+Banka modülü, lisansın müşterisinde veri sorumlusu bilgisi yoksa Obifin'e ilk
+kaydı, **Doğrula**'yı ve **Banka ekle**'yi reddeder (KVKK K-3,
+`Obifin:RequireDataControllerProfile`, varsayılan `true`). Mevcut doğrulanmış
+bağlantının çekimi kapıya takılmaz. Yalnız pilot geçişinde, metin işi (form
+paragrafı v2) yayımlanıp yayıncının bilgisi girilene kadar bir Doğrula gerekirse
+kapı geçici olarak kapatılır:
+
+```bash
+cd /opt/orderdeck
+echo 'Obifin__RequireDataControllerProfile=false' >> .env
+docker compose up -d license-server
+# Değerin container'a ulaştığını doğrula ("false" basmalı):
+docker compose exec license-server printenv Obifin__RequireDataControllerProfile
+```
+
+Değer `.env`'den yalnız `docker-compose.yml`'deki
+`Obifin__RequireDataControllerProfile: "${…:-true}"` satırı üzerinden geçer;
+compose dosyası CI'ın olduğu için VPS'te elle eklenen satır sonraki deploy'da
+silinir. Bilgi girilince `.env`'deki satırı sil, `docker compose up -d
+license-server`, `printenv` yine çalıştır (`true` basmalı) ve admin/obifin'de bir
+Doğrula'nın geçtiğini gör (kapı devrede, bilgi girildiği için engellemez).
 
 ## SQL Server sürüm yükseltme (artık elle)
 
@@ -326,6 +358,64 @@ imaj geçmişi yalnız bir prune ayrıntısı, bir güvenlik SINIRI değil.
 > uyar. Mod On bir lisans varken S1 öncesine dönmek gerçekten gerekirse önce
 > o lisansları `sales-sync disable` ile kapat ve bilgisayarların Off turunu
 > bitirdiğini `sales-sync status`'ta gör; yoksa ileri düzelt.
+
+> **UYARI — Ortak bakiye S1 tabanı (spec 2026-10-11 §7.4).**
+> `OrderDeck.LicenseServer/Services/CustomerSync/PersonBalance.cs` dosyasını
+> İÇERMEYEN bir imaja (etiketin kaynağında
+> `git cat-file -e <sha>:OrderDeck.LicenseServer/Services/CustomerSync/PersonBalance.cs`
+> başarısızsa o imaj S1 öncesidir), `DrawGroupId`'si dolu ve kendi `Id`'sinden
+> farklı bir defter satırı (bir bacak) oluştuktan sonra bu elle yoldan ASLA
+> geçme. Kontrol:
+> `SELECT COUNT(*) FROM CustomerBalanceTransactions WHERE DrawGroupId IS NOT NULL AND DrawGroupId <> Id`
+> sıfırdan büyükse yasak.
+> Eski reverse yalnız çapayı (tutarı 0 olabilir) geri alır; müşterinin öbür
+> hesaplarından düşülen para geri dönmez. Ayrıca `scope` ve `transactions/{id}`
+> yalnız çapa tutarını döner. Havuz kipi (S2) açılmadan `DrawGroupId` hiç
+> dolmaz; bu sorgu o zamana kadar 0 döner.
+>
+> Sorgu 0 dönse de, yani bacak yokken de S1 öncesine elle dönüş temiz
+> değil. S1'in `GroupId` kancası (`PersonGroupSaveHook`) numarası boşalan
+> gruptaki silinmiş üyeleri yeni numaraya taşır (§4.11). Bunu yalnız sunucu
+> yapar; masaüstünde silinmiş satırın numarası değişmez. S1 öncesi
+> `payment-requests/begin` silinmiş üyeyi de istemcinin üye kümesinde arar.
+> Bu yüzden satış senkronu modu açık lisanslarda, kancanın taşıdığı silinmiş
+> üyeli her kişinin ödeme isteği 409 `members-stale` alır (§15-7). Hiçbir
+> müşteri akışı turu bunu kapatmaz: S1 öncesi imajda kalındıkça sürer, S1
+> imajı geri gelince kalkar. Para etkisi yok, ödeme isteği engellenir.
+> Yukarıdaki sorgu bu durumu görmez. Geri dönmek gerekirse ileri düzelt.
+>
+> Otomatik geri alma (yukarıdaki workflow, deploy anında BİR ÖNCEKİ imaja)
+> güvenli. S1 göçü eski imajla uyumlu: kolon, indeks ve tablo ekler, bir de
+> `GroupId` harmanını BIN2'ye çevirir. Eski kod `GroupId`'yi SQL'de yalnız ön
+> süzer, eşitliği bellekte ordinal denetler; harman sonucu değiştirmez. S1
+> öncesi imaj yeni şemada yazmayı sürdürür (`PersonBalanceS1MigrationTests`).
+> Deploy anında kancanın taşıdığı silinmiş üye ya hiç yoktur ya da ilk
+> dakikalarda oluşmuş birkaç tanedir; onların ödeme isteği de S1 imajı geri
+> gelince açılır. S2 deploy'u düşerse imaj S1'e döner; S1
+> kip bayrağını okumaz, bütün lisanslar satır kipine iner ve S1 çok bacaklı
+> geçmişi okur ve grup olarak geri alır (panelde grup olarak geri
+> alınamayan hedefi `not-reversible` ile reddeder; yarım geri alma yok).
+>
+> S1'den sonra (Burak; spec §7.1 adım 2–4). Komutlar `--apply` olmadan salt
+> okunur ya da kurudur; `--apply` yalnız `PersonBalanceBaselines`'a yazar.
+>
+> 1. Ön kontrol raporu (salt okunur):
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify`
+> 2. Taban çizgisi. **Önce:** S1 planının
+>    (`docs/superpowers/plans/2026-10-19-ortak-bakiye-s1.md`) fark 22'si
+>    (tabandaki bir D1 satırının farkı değişince her gün tekrar eden uyarı)
+>    karara bağlanmış olmalı. En geç sınır bu adımdır, çünkü ondan önce hiçbir
+>    lisansın tabanı yoktur. Karar yoksa yakalamayı koşma. Önce kuru, sonra yazar:
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --capture-baseline`
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --capture-baseline --apply`
+> 3. İnceleme, lisans lisans: ≥ 1 gün gözlemden (günlük `person-balance-verify`
+>    sapma bildirmemeli) ve `--details` ile her satır için sahip kararından
+>    (düzeltme ya da "olduğu gibi kalsın") sonra, **S2'den önce**:
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --details`
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --details --mark-reviewed`
+>    `docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll person-balance verify --license <id> --mark-reviewed --apply`
+>    `--mark-reviewed --apply` lisansın incelenmemiş bütün taban satırlarını
+>    tek seferde işaretler ve S2 `enable`'ının 3. ön koşulunu açar.
 
 ## Masaüstü: satış senkronunu yerelde sıfırlama (≤0.9.10'a dönüş)
 
@@ -503,6 +593,28 @@ Dördü birlikte anlamlı: blob'lar şifreli, çözmek için `.env`'deki ana ana
 gerekli, hangi blob'un hangi anahtar sürümüyle yazıldığı ise SQL'deki
 `CustomerBackups.KeyVersion` satırında. Biri eksikse geri dönüş yapılamaz.
 
+**HashKey yedeklenmez.** `.env` yedeği `OrderDeck__Bank__HashKey` satırı süzülerek
+alınır: IBAN tanıma kodlarının anahtarı özetlerle aynı kovada ve aynı parolayla
+durmasın (KVKK Ö-6). Asıl kopyası parola yöneticisinde; R2'deki eski `env/` yedekleri
+30 günde budanınca tek dış kopya odur. Geri yüklemede `.env`'e elle eklenir. Anahtar
+kaybolursa eski özetler hiçbir yerde eşleşmez: IBAN hafızası baştan öğrenilir, IBAN'la
+açılan banka veri talebi (admin/banka-veri-talepleri) de eski hareketleri ve bağları
+bulamaz. O veride (hareketler 180 günde, IBAN bağları en geç 12 ayda silinene kadar)
+m. 11 erişim ve silme talepleri karşılanamaz.
+
+Bu yüzden betiği VPS'e ilk kez kurmadan önce parola yöneticisindeki değerin VPS'tekiyle
+aynı olduğunu doğrulayın. Değeri ekrana basmadan, iki tarafın özetini karşılaştırın; iki
+çıktı aynı olmalı:
+
+```bash
+# VPS'te (boş dizenin özeti e3b0c442… çıkarsa satır bu biçimde bulunamadı):
+sed -n 's/^OrderDeck__Bank__HashKey=//p' /opt/orderdeck/.env | tr -d '\r\n' | sha256sum
+# Kendi makinende; değeri parola yöneticisinden yapıştır, ekrana ve geçmişe düşmez:
+read -rs K && printf '%s' "$K" | sha256sum; unset K
+```
+
+Betik süzdüğü satır sayısını günlüğe yazar (`hashkey_lines_filtered=1` beklenir).
+
 **Dördü de uzakta şifreli**, ilk üçü aynı GPG parolasıyla
 (`/opt/orderdeck/.env-backup-pass`; asıl kopya parola yöneticisinde). Bir süre
 `.bak` ve anahtarlar **düz** gidiyordu — o hâlde `.env`'i şifrelemek tiyatroydu:
@@ -513,8 +625,14 @@ veritabanı temiz bir makinede restore edilebildi.
 
 Tehdit modeli: bu şifreleme VPS'i ele geçirene karşı hiçbir şey yapmaz (adam
 zaten canlı DB'yi okuyor), **R2'nin veya bir token'ın sızmasına** karşı yapar.
-Yereldeki `.bak` kopyaları bilerek şifresiz; host'a erişen zaten DB'ye erişiyor,
-şifrelemek yalnızca restore'u zorlaştırırdı.
+Yereldeki SQL kopyası da şifreli (`orderdeck-<tarih>.bak.gz.gpg`) ve yalnız 1 gün
+tutulur (KVKK ön inceleme Ö-12, 2026-10): betik her koşunun başında önceki günlerin
+kopyasını siler, koşu düşse de diskte bir günden eski kopya kalmaz (R2'de durur). Düz `.bak`/`.bak.gz`
+yalnız şifrelenene kadar yaşar, betik düşerse de silinir; bu klasörde elle
+bırakılmış düz `orderdeck-*` kopyaları da ilk gece koşusunda gider. Başka adla
+bırakılmış yedeği betik silmez, her gece günlüğe UYARI yazar. Aynı anda tek koşu:
+elle başlatılan koşu gece koşusuna denk gelirse kilitte (`/run/orderdeck-sql-backup.lock`)
+"başka bir koşu sürüyor" yazıp hiçbir şeye dokunmadan çıkar; bitince yeniden çalıştır.
 
 Anahtarlar `aws s3 sync` yerine **tarihli tarball** olarak gidiyor: sync dosya
 başına şifreleme yapamaz. Anahtarlar KB boyutunda ve nadiren değişiyor, her
@@ -573,12 +691,128 @@ gpg --decrypt orderdeck-YYYY-MM-DD.bak.gz.gpg | gunzip > orderdeck.bak
 gpg --decrypt keys-YYYY-MM-DD.tar.gz.gpg  | tar -xz -C /opt/orderdeck/keys
 ```
 
+`OrderDeck__Bank__HashKey` satırını parola yöneticisindeki değerle `.env`'e ekleyin (gece
+yedeği bu satırı bilerek içermez, KVKK Ö-6), ama uygulamanın **ilk açılışından sonra**:
+ilk açılış bu satır olmadan yapılır, satır aşağıdaki "Silmeleri yeniden uygula"nın 2.
+adımında eklenir. Satırsız açılışta banka modülü kapalıdır, banka çekimi zamanlanmaz.
+
 R2 kimlik bilgileri **ölen host'ta** (`/root/.aws/credentials`) ve `.env`'in
 içinde (`R2__SecretAccessKey`) — ama `.env` R2'nin içinde olduğu için ondan
 bootstrap edilemez. Kurtarma **Cloudflare hesabına giriş** gerektirir: panelden
 yeni bir *Object Read only* R2 token'ı üretilir. Parola yöneticisinde saklanması
 gereken şey uzun ömürlü bir token değil (bayatlar, kimse fark etmez), Cloudflare
 hesap erişimidir.
+
+##### Silmeleri yeniden uygula (KVKK)
+
+Yedek, alındığı andan sonra yapılan silmeleri geri getirir. `DataDestructionRecords`
+tablosu da aynı veritabanında olduğu için yedek anına sarılır: yeniden uygulamanın
+dayanağı tablo değil, saatlik **"[OrderDeck] İmha kaydı özeti"** e-postalarıdır
+(`DataDestructionDigestJob`; `Admin__AlertEmail` kutusu). Uygulamayı geri yüklenen
+veritabanıyla açtıktan sonra, kullanıcılara açmadan önce:
+
+1. Yedeğin anını not edin (`orderdeck-<tarih>.bak.gz.gpg` → gece koşusunda o günün
+   ~03:00 UTC'si; gün içinde elle alınıp aynı adı ezen kopyada R2 nesnesinin zamanı,
+   `aws s3 ls`).
+2. **Banka çekimi açılmadan önce.** İlk açılış `.env`'de `OrderDeck__Bank__HashKey` satırı
+   OLMADAN yapılır: banka modülü kapalı açılır, `obifin-poll`, `obifin-accounts` ve
+   `bank-match-sweep` zamanlanmaz (kayıtlıysa kaldırılır). Aşağıdaki admin/obifin eylemleri
+   modül kapalıyken de çalışır.
+   - **Yöneticinin durdurduğu bağlantıları yeniden durdurun.** "Durdur"un veritabanı
+     dışında izi yoktur: imha kaydına girmez, e-posta gitmez, yalnız aynı veritabanındaki
+     `obifin.connection.stop` denetim satırı vardır. Yedek anından sonra durdurulan
+     bağlantı geri yüklemede Verified döner, hizmet sonu sayacı da kaybolur. Çekim açılınca
+     5 dakika içinde durdurulmuş yayıncının yeni hareketleri yazılır; bu, durdurulan
+     bağlantıdan yeni hareket alınmayacağı sözüne aykırıdır. Eski veritabanına erişiliyorsa
+     `SELECT LicenseId, DisabledAt FROM ObifinConnections WHERE DisabledByAdmin = 1`
+     çıktısını alın; geri yüklenen sistemde bu lisanslardan durumu `Disabled` olmayanlarda
+     admin/obifin → "Durdur". Erişilemiyorsa lisansları tutanaktan ya da yayıncı
+     yazışmalarından bulun; bulunamazsa tutanağa yazın. Yeniden durdurma `DisabledAt`'i
+     bugüne çeker: hizmet sonu silmesi en çok yedeğin yaşı kadar gecikir, bu da tutanağa
+     girer. Lisans bitişiyle durmuş bağlantılar için bir şey gerekmez: çekim işi her turdan
+     önce onları yeniden durdurur (sayaçları da bugünden başlar). Ters yön güvenlidir:
+     yedek anından sonra "Etkinleştir"ilen bağlantı durmuş döner, gerekiyorsa yeniden açın.
+   - 4. adımdaki `admin-remove` ve `account-rejected` satırlarını da şimdi uygulayın:
+     geri yükleme bağlantıyı ya da hesap onayını geri getirdiyse çekim onların hareketini
+     yeniden yazar.
+   - Sonra `OrderDeck__Bank__HashKey` satırını parola yöneticisindeki değerle `.env`'e
+     ekleyip `docker compose up -d license-server`: banka işleri açılışta yeniden zamanlanır.
+3. Hangfire panosundan (`/admin/hangfire`) `bank-data-retention`, `security-data-retention` ve
+   `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler kendiliğinden yeniden
+   uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
+4. Yedek anından sonraki özet e-postalarını açın; her satırı **tetikleyicisine** göre
+   yeniden uygulayın (`konu` = ShopperId/CustomerId, `talep` = talep kimliği):
+   - `shopper-purge`: admin/shoppers/deletion-requests'te o ShopperId'nin talebi geri
+     yüklenmişse yeniden "Sil"; talep yedekten sonra geldiyse satır yoktur — aynı
+     ShopperId için `ShopperDeletionRequests`'e talep satırı ekleyip sayfadan işleyin.
+   - `customer-purge`: `POST /api/v1/admin/customers/{konu}/purge` (onay e-postası geri
+     yüklenen satırdaki adres). Obifin bağlantısı varsa önce admin/obifin → "Kaldır ve sil".
+   - `subject-request`: talep satırı geri yüklenmiş ve açıksa admin/banka-veri-talepleri'nde
+     yeniden "Sil ve kapat"; yoksa başvurunun aslındaki (yazılı başvuru / e-posta) IBAN'la
+     yeni talep açıp silin — talep kapanınca IBAN özeti boşaldığı için kayıt IBAN taşımaz.
+     Talebin kayıtlarında yalnız `BankSubjectRequests.IbanHash` hedefi varsa talep silinmemiş,
+     kapatılmıştır: geri yüklenen açık talebi ölçütteki sonuçla (`talep kapandı, amaç bitti
+     (<sonuç>)`) yeniden kapatın.
+   - Hedefi `BankSubjectRequests.IbanHash` olan `admin-remove`, `service-end` ve
+     `customer-purge` satırları: lisansın açık banka veri talebini o silme kapatmıştı; aynı
+     eylemin yeniden uygulanması onu yeniden kapatır.
+   - `admin-remove`: 2. adımda, çekim açılmadan, admin/obifin'de o lisans için yeniden
+     "Kaldır ve sil" (Obifin tarafı zaten kaldırıldıysa liste boş döner).
+   - `account-rejected`: ölçütteki `#N` reddedilen hesabın Obifin numarasıdır
+     (`reddedilen hesap #N (Ö-10)`). admin/obifin'de o lisansın `#N` hesabında yeniden
+     "Reddet ve verisini sil" (geri yükleme onayı da geri getirdiyse düğme "Onayı geri al ve
+     verisini sil" der; yazılı onay yine hesap numarası). Bunu 2. adımda, çekim açılmadan
+     yapın: onay geri geldiyse çekim o hesabın hareketini yeniden yazar.
+   - `processor-confirmation`: admin/obifin → "Obifin silme teyidi bekleyenler"de o lisansın
+     kaydında yeniden "Teyit alındı" (teyit yazısı KVKK klasöründe). Kayıt yedekten sonra
+     açıldıysa önce aynı lisansın `admin-remove` satırı onu yeniden açar.
+   - `credential-change`: admin/obifin'de o lisansın Obifin kimliğini yeniden kaydedin.
+   - `cleanup`: `bank-data-cleanup --apply` (ve yedekten sonra koşulduysa
+     `--reset-iban-memory --apply`) yeniden.
+   - `retention`, `service-end`: 3. adım yeterli. Eylemi `run-completed` olan satırlar
+     yalnız periyodik işin koştuğunu gösterir, uygulanacak bir şey yoktur. İstisna:
+     ölçütünde `kaldırma` geçen `retention` satırı (hedef `CustomerIbanMemories`, yapan
+     yöneticinin kimliği) admin/banka-eslestirme'deki bir eşleşme kaldırmasından gelir;
+     geri yükleme kaldırılan kararı da geri getirmiştir. Kayıt havaleyi göstermez: o
+     lisansta yedek anından sonra kaldırılan kararları yeniden "Kaldır"ın, bilinemiyorsa
+     tutanağa yazın (bağ, geri gelen kararın doğrulamasından 12 ay sonra saklama işiyle
+     gider).
+   Aynı satır birden çok e-postada görünebilir (gönderilip işaretlenemeyen kayıt, geri
+   yüklemeden sonra yedekte gönderilmemiş kayıt yeniden gider): yeniden uygulama
+   idempotenttir, ikincisi bir şey değiştirmez.
+5. Son başarılı özetten sonraki kayıtlar e-postaya girmemiştir: olağan durumda saat
+   başı +13'te önceki saatler gider, yani en çok ~1 saat 13 dakika; Hangfire'da
+   `data-destruction-digest` Failed görünüyorduysa (SMTP, boş adres) daha fazlası. Yedek
+   anından sonra gelmiş ama henüz işlenmemiş başvurular ise hiç imha kaydı bırakmaz, e-posta
+   da göndermez; geri yüklemede iz bırakmadan kaybolurlar, oysa m. 13'ün 30 günlük cevap
+   süresi işliyor. Aynı aralıkta girilen veri sorumlusu bilgileri (yayıncının adı, adresi,
+   KVKK e-postası) de geri sarılır. Eski veritabanına hâlâ erişiliyorsa şu çıktıları alın:
+   - `SELECT * FROM DataDestructionRecords WHERE DigestedAt IS NULL OR OccurredAt > '<yedek anı>'`:
+     satırları 4. adımdaki gibi uygulayın.
+   - `SELECT * FROM ShopperDeletionRequests WHERE RequestedAt > '<yedek anı>' OR HandledAt > '<yedek anı>'`:
+     geri yüklenen veritabanında aynı ShopperId için bekleyen ya da 4. adımda eklenmiş talep
+     yoksa satırı aynen ekleyin (`Id`, `ShopperId`, `PhoneAtRequest`, `RequestedAt`: süre talebin
+     gerçek anından işler) ve hesabı talepteki gibi kapatın:
+     `UPDATE Shoppers SET DeletedAt = '<RequestedAt>' WHERE Id = '<ShopperId>' AND DeletedAt IS NULL`.
+     İşlenmiş olanları 4. adımdaki `shopper-purge` satırı yeniden işler.
+   - `SELECT * FROM BankSubjectRequests WHERE CreatedAt > '<yedek anı>' OR ClosedAt > '<yedek anı>'`
+     (`ReceivedAt`'e değil `CreatedAt`'e bakılır: başvuru yedekten önce ulaşıp kaydı sonra
+     açılmış olabilir). Geri yüklenen veritabanında olmayan satırı, 4. adımda yeni talep
+     olarak yeniden açılanlar hariç, aynen ekleyin: son tarih `DueAt` korunur, kapanmışsa
+     kapanışıyla. Geri yüklenmiş ama yedek anından sonra kapanmış talebin kapanışını 4. adım
+     yeniden uygular (kapanış imha kaydı yazar); kaydı e-postaya girmediyse ilk sorgunun
+     çıktısından.
+   - `SELECT * FROM DataControllerProfileVersions WHERE CreatedAt > '<yedek anı>'`: her
+     yayıncının en son sürümünü admin'de müşterinin sayfasında (`/admin/customers/<id>`,
+     "Veri sorumlusu bilgileri") yeniden girin; yeni bir sürüm numarası alır.
+
+   Bu çıktılar kişisel veri içerir (telefon, kısaltılmış IBAN, şahıs yayıncının adı ve
+   adresi): iş bitince silin. Eski veritabanına erişilemiyorsa admin/shoppers/deletion-requests,
+   admin/banka-veri-talepleri ve günlükleri o aralık için elle gözden geçirin; o aralıktaki
+   başvuruların ve veri sorumlusu düzenlemelerinin kaybolmuş olabileceğini tutanağa yazın.
+6. Yeniden uygulanan her silme yeni bir imha kaydı yazar; bitince bir tutanak (tarih,
+   yedek anı, uygulanan satır sayısı; 2. adımda yeniden durdurulan bağlantılar ve
+   gecikmeleri) KVKK klasörüne eklenir.
 
 #### Bir kereye mahsus: eski şifresiz nesneleri sil
 

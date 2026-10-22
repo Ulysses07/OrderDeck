@@ -219,8 +219,9 @@ public sealed class PaymentRequestTestKit
 
     // ── Kurulum ───────────────────────────────────────────────────────────────
 
-    /// <summary>Bir müşteri projeksiyonu; <paramref name="mergedInto"/> doluysa kopya. Id üretilir.</summary>
-    public async Task<string> SeedProjectionAsync(string? groupId, Guid? mergedInto = null)
+    /// <summary>Bir müşteri projeksiyonu; <paramref name="mergedInto"/> doluysa kopya, <paramref name="purged"/> ise KVKK
+    /// ile silinmiş. Id üretilir.</summary>
+    public async Task<string> SeedProjectionAsync(string? groupId, Guid? mergedInto = null, bool purged = false)
     {
         var id = Guid.NewGuid();
         await Sales.WithDbAsync(db =>
@@ -233,6 +234,7 @@ public sealed class PaymentRequestTestKit
                 Username = $"p-{Guid.NewGuid():N}",
                 GroupId = groupId,
                 MergedIntoId = mergedInto,
+                PurgedAt = purged ? DateTimeOffset.UtcNow : null,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             return Task.CompletedTask;

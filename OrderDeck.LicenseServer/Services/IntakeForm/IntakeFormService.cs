@@ -33,6 +33,14 @@ public sealed class IntakeFormService
     public Task<IntakeFormConfig?> GetByCustomerAsync(Guid customerId, CancellationToken ct = default) =>
         _db.IntakeFormConfigs.FirstOrDefaultAsync(c => c.CustomerId == customerId, ct);
 
+    /// <summary>Formu oluşturan yayıncının veri sorumlusu bilgileri (KVKK K-3); girilmediyse null.</summary>
+    public Task<Privacy.DataControllerView?> GetDataControllerAsync(Guid customerId, CancellationToken ct = default)
+        => Privacy.DataControllerProfiles.ReadAsync(_db, customerId, ct);
+
+    /// <summary>Sayfanın bildirdiği veri sorumlusu sürümü bu yayıncıda var mı (karar 24: yalnız varsa kayda yazılır).</summary>
+    public Task<bool> DataControllerVersionExistsAsync(Guid customerId, int version, CancellationToken ct = default)
+        => Privacy.DataControllerProfiles.VersionExistsAsync(_db, customerId, version, ct);
+
     /// <summary>
     /// Bu form SMS onayı toplayabilir mi? Kutu bunu okur, böylece görünürlük
     /// ile toplayıcının davranışı aynı sorgudan beslenir: ikisi ayrı yazılırsa
@@ -141,7 +149,11 @@ public sealed class IntakeFormService
     /// Onay ZAMANI burada, gönderim damgasıyla aynı okumadan yazılır — ikisi
     /// ayrı parametre olsaydı biri dolu diğeri boş bir satır mümkün olurdu.
     /// Onayın zorunluluğu formun kapısında (IntakeForm.cshtml.cs); bu
-    /// metod yalnız kanıtı yazar.</summary>
+    /// metod yalnız kanıtı yazar.
+    ///
+    /// <paramref name="dataControllerVersion"/>: formda gösterilen veri
+    /// sorumlusu bloğunun sürümü (KVKK m. 10/1-a ispatı, karar 24); çağıran
+    /// doğrular.</summary>
     public async Task<IntakeFormSubmission> SaveSubmissionAsync(
         Guid configId,
         string? youTubeUsername, string? instagramUsername,
@@ -151,7 +163,8 @@ public sealed class IntakeFormService
         string? ipAddress, string? userAgent, CancellationToken ct = default,
         string? youTubeChannelId = null,
         string? city = null, string? district = null,
-        string? kvkkTextVersion = null)
+        string? kvkkTextVersion = null,
+        int? dataControllerVersion = null)
     {
         var now = DateTimeOffset.UtcNow;
         var sub = new IntakeFormSubmission
@@ -181,6 +194,7 @@ public sealed class IntakeFormService
             SmsConsent = smsConsent,
             KvkkTextVersion = kvkkTextVersion,
             KvkkAcknowledgedAt = kvkkTextVersion is null ? null : now,
+            DataControllerVersion = dataControllerVersion,
             SubmittedAt = now,
             IpAddress = ipAddress,
             UserAgent = userAgent

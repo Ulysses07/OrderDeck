@@ -13,6 +13,7 @@ using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -181,13 +182,13 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         m.Status.Should().Be(PaymentMatchStatus.NoProposal); m.ActualWpfCustomerId.Should().BeNull();
         (await ToastAsync(client, path, "success")).Should().Be(IndexModel.UnmatchedMessage);
 
-        // Audit ayrıntısı yalnız kullanıcı adı: açıklama, tutar, IBAN girmez.
+        // Audit ayrıntısı yalnız müşteri kayıt numarası (KVKK Ö-14): kullanıcı adı, açıklama, tutar, IBAN girmez.
         using var scope = _factory.Services.CreateScope();
         var audits = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().AuditLogs.AsNoTracking()
             .Where(a => a.TargetId == txId.ToString()).ToListAsync();
         audits.Should().OnlyContain(a => a.TargetType == AuditTargets.BankTransaction);
         audits.Should().ContainSingle(a => a.EventType == AuditEvents.BankMatchManual, "reddedilen ikinci eşleme audit yazmaz")
-            .Which.Details.Should().Be("{\"username\":\"ornek_musteri34\"}");
+            .Which.Details.Should().Be($"{{\"wpfCustomerId\":\"{wpfId}\"}}");
         audits.Should().ContainSingle(a => a.EventType == AuditEvents.BankMatchUnmatch).Which.Details.Should().BeNull();
     }
 
@@ -441,6 +442,45 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Bagi_silen_kaldirmanin_imha_kaydinda_yapan_yoneticinin_kimligidir()
+    {
+        // Öğreten havale 180 günlük kuralla silinmiş, bağın süresini yalnız bu hareket taşıyor: kaldırma bağı siler (KVKK K-6).
+        // İmha kaydı budanmaz; kimin yaptığı yalnız 24 ayda budanan denetim satırında kalsa 3 yıllık kayıtta yapan bilinmezdi.
+        // Yapan: yöneticinin sub kimliği (DataDestruction.ActorOf), kullanıcı adı değil (KVKK Ö-14).
+        var (lic, txId, wpfId) = await SeedAsync();
+        var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        var source = Tx(lic, 90m, "EFT GELEN", DateTimeOffset.UtcNow.AddDays(-200));
+        // Görev 11'den sonraki çekim: özetler geçerli IBAN'dan, bağı öğretir ve tazeler (KVKK Ö-7).
+        source.CounterpartyIbanHash = hash; source.CounterpartyIbanHashValid = true;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankTransactions.Add(source);
+            var tx = await db.BankTransactions.SingleAsync(t => t.Id == txId);
+            tx.CounterpartyIbanHash = hash; tx.CounterpartyIbanHashValid = true;
+            await db.SaveChangesAsync();
+            var recon = scope.ServiceProvider.GetRequiredService<PaymentMatchReconciler>();
+            await recon.ManualMatchAsync(lic, source.Id, wpfId, CancellationToken.None);
+            await recon.ManualMatchAsync(lic, txId, wpfId, CancellationToken.None);
+            db.PaymentMatches.RemoveRange(await db.PaymentMatches.Where(m => m.BankTransactionId == source.Id).ToListAsync());
+            db.BankTransactions.Remove(await db.BankTransactions.SingleAsync(t => t.Id == source.Id));
+            await db.SaveChangesAsync(); // saklama işinin 180 günlük silmesi
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        (await PostAsync(client, "Unmatch", lic, txId)).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.CustomerIbanMemories.AsNoTracking().CountAsync(m => m.LicenseId == lic)).Should().Be(0);
+        var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+        var record = (await vdb.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == lic).ToListAsync())
+            .Should().ContainSingle().Subject;
+        (record.Target, record.Trigger, record.Actor).Should().Be(("CustomerIbanMemories", DataDestruction.Triggers.Retention,
+            adminId.ToString()));
+    }
+
+    [Fact]
     public async Task Dekonta_bagli_satirin_Kaldir_onayi_dekontu_anar()
     {
         var (lic, txId, wpfId) = await SeedAsync();
@@ -459,6 +499,10 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         doc.QuerySelector($"tr[data-tx='{txId}'] button[formaction*='Unmatch']")!.GetAttribute("onclick")
             .Should().Be($"return confirm('{IndexModel.UnmatchReceiptConfirmMessage}')");
         IndexModel.UnmatchReceiptConfirmMessage.Should().Contain("dekont");
+        // Kaldırma başka havalenin öğrettiği IBAN bağını da silebilir (süresi yalnız bu havaleye dayanıyorsa, KVKK K-6):
+        // yönetici geri alınamaz silmeyi bilerek onaylar.
+        IndexModel.UnmatchConfirmMessage.Should().Contain("bağ da silinir");
+        IndexModel.UnmatchReceiptConfirmMessage.Should().Contain("bağ da silinir");
         // Onay metni tek tırnaklı JS dizesine gömülür: kesme işareti dizeyi kırar.
         IndexModel.UnmatchReceiptConfirmMessage.Should().NotContain("'");
         IndexModel.UnmatchConfirmMessage.Should().NotContain("'");
@@ -526,6 +570,32 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
             .Should().Be($"4/200, çelişki 1/4 ({PaymentMatchMetrics.Rate(1, 4)!.Value.ToString("P1", Tr)})");
         box.QuerySelector("[data-phase2='page']")!.TextContent.Trim().Should().Be("✓2 ✗1");
         box.QuerySelector("[data-fraction='overall']")!.TextContent.Trim().Should().Be("(çelişki 2/7)");
+    }
+
+    [Fact]
+    public async Task Lisans_secili_sayfa_goruntulemesi_denetime_yazilir_secimsiz_sayfa_yazmaz()
+    {
+        // KVKK Ö-4 (Kurul 2018/10 3-c): açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime girer. Hedef banka
+        // modülünün öbür denetim satırları gibi lisansın kimliği (obifin-connection); "license" hedefi lisans ANAHTARI taşır.
+        var (lic, _, _) = await SeedAsync();
+        var unknown = Guid.NewGuid();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var before = DateTimeOffset.UtcNow;
+
+        await client.GetStringAsync(PathFor(lic, pageNo: 2));
+        await client.GetStringAsync(PagePath);           // lisans seçili değil: veri gösterilmez
+        await client.GetStringAsync(PathFor(unknown));   // listede olmayan lisans seçilmiş sayılmaz
+
+        // Olumsuz denetim sayıyla: seçimsiz istek hangi hedefle (boş, bilinmeyen, Guid.Empty) yazsa da yakalanır. Sınıfın
+        // testleri sırayla koşar, bu testten sonraki görüntülemeler yalnız bu üç istek.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var views = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.EventType == AuditEvents.BankPageView && a.OccurredAt >= before).ToListAsync();
+        var view = views.Should().ContainSingle("veri gösterilmeyen görüntüleme yazılmaz").Subject;
+        view.TargetId.Should().Be(lic.ToString());
+        view.TargetType.Should().Be(AuditTargets.ObifinConnection);
+        view.Details.Should().Be("{\"page\":\"banka-eslestirme\",\"pageNo\":2}");
     }
 
     [Fact]

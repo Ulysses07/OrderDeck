@@ -17,6 +17,8 @@ public static class AuditEvents
     // KVKK / GDPR compliance (Phase 5d)
     public const string CustomerDataExported = "customer.data-exported";
     public const string CustomerPurged = "customer.purged";
+    // Yayıncının veri sorumlusu bilgileri (KVKK K-3) yönetimden değiştirildi. Ayrıntı yok.
+    public const string CustomerDataControllerUpdate = "customer.data-controller.update";
 
     // Shopper (müşteri app) silme talebi — elle işlenen KVKK akışı.
     public const string ShopperPurged = "shopper.purged";
@@ -39,9 +41,61 @@ public static class AuditEvents
     public const string ObifinConnectionVerify = "obifin.connection.verify";
     public const string ObifinBankAdd = "obifin.bank.add";
     public const string ObifinPollNow = "obifin.poll.now";
-    // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız kullanıcı adı girer: açıklama, tutar, IBAN GİRMEZ.
+    // KVKK Ö-10: yönetici banka hesabını lisansa bağladı (hesap numarası + banka kodu; IBAN GİRMEZ).
+    public const string ObifinAccountApprove = "obifin.account.approve";
+    // KVKK K-6: yönetici çekimi durdurdu / bağlantıyı yeniden etkinleştirdi (ayrıntı yok).
+    public const string ObifinConnectionStop = "obifin.connection.stop";
+    public const string ObifinConnectionResume = "obifin.connection.resume";
+    /// <summary>Bağlantı kaldırıldı ve banka verisi silindi (KVKK K-6, Ö-9): imha olayı (<see cref="DestructionEvents"/>).
+    /// Ayrıntı: sayılar, Obifin tarafının sonucu ve teyit kaydının kimliği.</summary>
+    public const string ObifinConnectionRemove = "obifin.connection.remove";
+    /// <summary>Hesap reddedildi ya da onayı geri alındı, verisi silindi (KVKK Ö-10): imha olayı. Ayrıntı: hesap numarası ve
+    /// sayılar.</summary>
+    public const string ObifinAccountReject = "obifin.account.reject";
+    /// <summary>Obifin'in hareket kopyasını sildiğine dair yazılı teyit kaydedildi (KVKK Ö-9): imha olayı. Ayrıntı: teyit kaydının
+    /// kimliği.</summary>
+    public const string ObifinCopyDeletionConfirm = "obifin.copy.confirm";
+    // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız müşteri kayıt numarası (WpfCustomerId) girer:
+    // kullanıcı adı, açıklama, tutar, IBAN GİRMEZ (KVKK Ö-14; Görev 16'dan önceki satırları bank-data-cleanup çevirir). Biçim
+    // BankSubjectScrub.ManualMatchAuditDetails; KVKK silmesi kişinin satırlarında ayrıntıyı boşaltır
+    // (BankSubjectScrub.ManualMatchAudits).
     public const string BankMatchManual = "bank.match.manual";
     public const string BankMatchUnmatch = "bank.match.unmatch";
+    /// <summary>Banka yönetim sayfasının görüntülenmesi (KVKK Ö-4; Kurul 2018/10 3-c): açıklama, kanıt, maske gösteren sayfanın
+    /// her açılışı. Ayrıntı yalnız sayfa adı ve sayfa/talep numarası. Banka Eşleştirme ve Obifin sayfalarında hedef banka
+    /// modülünün öbür satırları gibi <see cref="AuditTargets.ObifinConnection"/> + lisans KİMLİĞİ (Obifin'de düzenleme formu açık
+    /// lisans, yoksa boş); <see cref="AuditTargets.License"/> lisans ANAHTARI taşır ve lisans sayfasının son 20 kaydında
+    /// listelenir, görüntülemeler orayı doldurmasın. Banka veri talepleri sayfasında hedef <see cref="AuditTargets.BankSubjectRequest"/>
+    /// + sayfanın gösterdiği talebin kimliği (seçili talep yoksa boş).</summary>
+    public const string BankPageView = "bank.page.view";
+    // IBAN ile banka veri talebi (admin/banka-veri-talepleri; KVKK K-7). Hedef AuditTargets.BankSubjectRequest + talep kimliği.
+    // Ayrıntıya IBAN (düz ya da kısaltılmış), açıklama, ad GİRMEZ; yalnız tür, yöntem, sonuç kategorisi ve sayılar.
+    public const string BankSubjectCreate = "bank.subject.create";
+    /// <summary>Kimlik + IBAN sahipliği doğrulama yöntemi kaydedildi (ayrıntı: yalnız yöntem adı).</summary>
+    public const string BankSubjectVerify = "bank.subject.verify";
+    public const string BankSubjectExport = "bank.subject.export";
+    /// <summary>Silme talebi uygulandı: imha olayı (<see cref="DestructionEvents"/>). Ayrıntı: silinen sayılar.</summary>
+    public const string BankSubjectErase = "bank.subject.erase";
+    /// <summary>Talep bir sonuç kategorisiyle kapatıldı (ayrıntı: kategori adı).</summary>
+    public const string BankSubjectClose = "bank.subject.close";
+
+    /// <summary>İmha olayları (Silme Yönetmeliği md. 7/3: en az üç yıl). <see cref="AuditRetentionJobs"/> bunları
+    /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta değil <see cref="AuditRetentionOptions.DestructionRetentionMonths"/>'ta
+    /// budar. Muafiyet kişisel veriyi daha uzun tutmamalı: YALNIZ ayrıntısı kişisel veri İÇERMEYEN (sayılar, kimlikler) olaylar
+    /// girer, satırın kendi sütunlarındaki kişisel veri — silmeyi yapan yöneticinin kullanıcı adı ve IP'si — ise
+    /// <see cref="AuditRetentionOptions.RetentionMonths"/>'ta maskelenir (ad yöneticinin kimliğine çevrilir, IP boşaltılır;
+    /// <see cref="AuditRetentionJobs.MaskedTarget"/>). Satır 36 aya kadar yalnız takma kimlikler ve sayılarla kalır (KVKK Ö-14).
+    /// <see cref="CustomerPurged"/> BİLEREK yok — ayrıntısında silinen yayıncının e-postası var, 24 ayda gider; yayıncı
+    /// silmesinin 3 yıllık kaydı kişisel veri içermeyen <c>DataDestructionRecords</c>. Yeni bir silme olayı eklenirse ayrıntısı
+    /// kişisel veri içermiyorsa buraya da eklenir.</summary>
+    public static readonly IReadOnlySet<string> DestructionEvents = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ShopperPurged,
+        ObifinConnectionRemove,
+        ObifinAccountReject,
+        ObifinCopyDeletionConfirm,
+        BankSubjectErase,
+    };
 }
 
 public static class AuditTargets
@@ -56,4 +110,6 @@ public static class AuditTargets
     public const string NetgsmAccount = "netgsm-account";
     public const string ObifinConnection = "obifin-connection";
     public const string BankTransaction = "bank-transaction";
+    /// <summary>IBAN ile banka veri talebi (<c>BankSubjectRequests</c>); hedef kimliği talep kimliği.</summary>
+    public const string BankSubjectRequest = "bank-subject-request";
 }

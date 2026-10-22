@@ -25,7 +25,12 @@ namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 ///   <item><b>Tek işlem ve uygulama kilitleri.</b> Önce <c>payreq:{lisans}:{PersonKeyHash}:{kapsam}</c>, sonra asıl kayda
 ///   çözülmüş her üye için <c>payreq-m:{lisans}:{üye}:{kapsam}</c>, tekil ve ordinal sıralı (sıra ölü kilitlenmeyi önler):
 ///   grup senkronu gecikmesi yüzünden farklı PersonKey hesaplayan iki bilgisayar ortak üyeleri varsa aynı anda geçemez
-///   (M10). Kapsam kilit adında küçük harfe katlanır: <c>sp_getapplock</c> adları ikili karşılaştırır, ScopeKey'in SQL
+///   (M10). Kilitlenen küme istemcinin üyeleridir. İstemcide olmayan, sunucuda silinmiş bir üye (b'nin istemediği, ortak
+///   bakiye §15-7) kaydın üyesi olur ama kilitlenmez: yalnız o üye üzerinden kesişen, PersonKey'i farklı iki eşzamanlı
+///   isteği ne kilit ne DM6'nın indeksi (PersonKeyHash başına) sıraya sokar; (c–e)'nin araması eşzamanlı, henüz
+///   yazılmamış kaydı göremez. Bilinçli: iki bilgisayarın yerel grubu ayrışmış ve ortak üyeleri yalnız o silinmiş üye
+///   olmalı; sonuç iki ayrı canlı sahibe iki kira, para etkisi yok. Bu üyeleri (b)'den sonra kilitlemek sıralı kilit
+///   düzenini bozardı. Kapsam kilit adında küçük harfe katlanır: <c>sp_getapplock</c> adları ikili karşılaştırır, ScopeKey'in SQL
 ///   eşitliği harf duyarsızdır; kilit en az onun kadar kaba olmalı. Kilit zaman aşımı 409
 ///   <c>in-progress-elsewhere</c> (makine bilinmiyor).</item>
 ///   <item>Kilit altında: (a) yeniden, (b) üyeler (409 <c>members-stale</c>), (c) süresi dolmuş ve bu kopyanın önceki
@@ -214,11 +219,14 @@ public sealed class PaymentRequestLeaseService
         // (a) kilit altında yeniden: eşzamanlı aynı istek bizden önce yazdıysa.
         if (await ReplayAsync(licenseId, begin, ct) is { } replay) return replay;
 
-        // (b) Sunucunun grubu istemcinin üye kümesinde olmalı: aksi hâlde istemci kişiyi eksik kurmuştur (grup senkronu
-        // gecikmesi) ve başka üyeye yazılmış istekleri göremezdi.
-        var group = await _people.ServerGroupAsync(licenseId, person.GroupId, ct);
+        // (b) Sunucu grubunun CANLI üyeleri istemcinin üye kümesinde olmalı: aksi hâlde istemci kişiyi eksik kurmuştur
+        // (grup senkronu gecikmesi) ve başka üyeye yazılmış istekleri göremezdi. Silinmiş üye sayılmaz (ortak bakiye
+        // §15-7, §4.0-3'ün kuralı): sunucuda numarası boşalan grubun yeni numarasını izler (PersonGroupSaveHook), WPF'te
+        // izlemez — hiçbir müşteri akışı turu onu istemcinin kümesine getirmez, istek kalıcı olarak engellenirdi.
+        var serverGroup = await _people.ServerGroupMembersAsync(licenseId, person.GroupId, ct);
+        var group = serverGroup.Select(m => m.Id).ToList();
         var clientMembers = person.Members.ToHashSet(StringComparer.Ordinal);
-        var missing = group.Where(id => !clientMembers.Contains(id)).ToList();
+        var missing = serverGroup.Where(m => !m.Purged && !clientMembers.Contains(m.Id)).ToList();
         if (missing.Count > 0)
         {
             _log.LogInformation(
@@ -230,6 +238,10 @@ public sealed class PaymentRequestLeaseService
                 new Dictionary<string, object?> { ["members"] = group });
         }
 
+        // Arama (c–e) ve kaydın üyeleri (h) sunucunun silinmiş üyelerini de taşır: silinmiş sahipli ya da silinmiş üyeye
+        // yazılmış kayıtlar bulunur. Toplam (f) ise istemcinin üyeleriyle (aşağıda). İstemcide olmayan silinmiş üye
+        // kilitlenmedi (kilitler istemcinin üyeleriyle alındı); o üye üzerinden kesişim yalnız yazılmış kayıtlarda
+        // görülür — bilinçli, sınıf yorumu.
         var members = person.Members.Union(group, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
         var lookupMembers = await _people.WithCopiesAsync(licenseId, members, ct);
         var now = DateTimeOffset.UtcNow;
@@ -317,8 +329,11 @@ public sealed class PaymentRequestLeaseService
                 priors.Count, licenseId, begin.ReplicaId, begin.RecordId);
         }
 
-        // (f) Sunucu toplamı: istemcinin sipariş kümesi ve ürün toplamı sunucununkiyle aynı olmalı (M11).
-        if (await CheckServerTotalAsync(licenseId, begin, members, expired, ct) is { } staleTotal) return staleTotal;
+        // (f) Sunucu toplamı: istemcinin sipariş kümesi ve ürün toplamı sunucununkiyle aynı olmalı (M11). Üyeler istemcinin
+        // üyeleri: (b)'den sonra sunucunun canlı üyeleri zaten onlarda. İstemcide olmayan silinmiş üyenin (§15-7)
+        // siparişi sayılsaydı istemci onu hiç saymadığı için stale-total kalıcı olurdu.
+        if (await CheckServerTotalAsync(licenseId, begin, person.Members, expired, ct) is { } staleTotal)
+            return staleTotal;
 
         // (g) Kargo ayarı: tutar lisansın güncel ayarıyla hesaplanmış olmalı (§6.2).
         if (await CheckShippingAsync(licenseId, begin, expired, ct) is { } settingsStale) return settingsStale;

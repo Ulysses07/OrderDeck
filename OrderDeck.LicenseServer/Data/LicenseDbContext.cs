@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Data;
@@ -72,6 +73,8 @@ public class LicenseDbContext : DbContext
     public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
     public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<LicenseShippingSettings> LicenseShippingSettings => Set<LicenseShippingSettings>();
+    public DbSet<DataControllerProfile> DataControllerProfiles => Set<DataControllerProfile>();
+    public DbSet<DataControllerProfileVersion> DataControllerProfileVersions => Set<DataControllerProfileVersion>();
     public DbSet<SalesCommandLog> SalesCommandLogs => Set<SalesCommandLog>();
     public DbSet<PaymentRequestRecord> PaymentRequestRecords => Set<PaymentRequestRecord>();
     public DbSet<PaymentRequestMember> PaymentRequestMembers => Set<PaymentRequestMember>();
@@ -84,6 +87,7 @@ public class LicenseDbContext : DbContext
     public DbSet<OrphanedMediaObject> OrphanedMediaObjects => Set<OrphanedMediaObject>();
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
+    public DbSet<PersonBalanceBaseline> PersonBalanceBaselines => Set<PersonBalanceBaseline>();
     public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
@@ -116,6 +120,9 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentMatch> PaymentMatches => Set<PaymentMatch>();
     public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
+    public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
+    public DbSet<BankSubjectRequest> BankSubjectRequests => Set<BankSubjectRequest>();
+    public DbSet<ObifinCopyDeletion> ObifinCopyDeletions => Set<ObifinCopyDeletion>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -173,6 +180,14 @@ public class LicenseDbContext : DbContext
     private void StampPaymentMatchVersions() => StampVersions<PaymentMatch>(m => m.UpdatedAt);
 
     /// <summary>
+    /// <see cref="CustomerBalance.UpdatedAt"/> (F02 jetonu) ortak bakiyenin kişi kilidinin de jetonudur (spec
+    /// 2026-10-11 §4.11, M6): grup değişimi kancası ve birleştiricinin sıfır bakiye damgası satırı yalnız "değişti"
+    /// işaretler, değeri burada ilerler. <c>UtcNow</c> atamasına güvenen bugünkü yazarlar saat geri giderse aynı
+    /// değeri yazabilirdi; <c>max(UtcNow, özgün + 1 tick)</c> ile bir dokunuş hiçbir zaman kaybolmaz.
+    /// </summary>
+    private void StampCustomerBalanceVersions() => StampVersions<CustomerBalance>(b => b.UpdatedAt);
+
+    /// <summary>
     /// <typeparamref name="TEntity"/>'nin değişmiş (<see cref="EntityState.Modified"/>)
     /// her girdisinde sürüm sütununu <c>max(UtcNow, özgün + 1 tick)</c> yapar ve
     /// değişmiş işaretler. Eklenen satır kendi değeriyle yazılır; silinen satırın
@@ -206,18 +221,23 @@ public class LicenseDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         SyncDerivedColumns();
+        // Ortak bakiye §4.11 kancası; sync: true iken görev tamamlanmış döner (bkz. PersonGroupSaveHook).
+        PersonGroupSaveHook.RunAsync(this, sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
+        StampCustomerBalanceVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         SyncDerivedColumns();
+        await PersonGroupSaveHook.RunAsync(this, sync: false, cancellationToken);
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        StampCustomerBalanceVersions();
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     /// <summary>
@@ -660,6 +680,35 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.UpdatedBy).HasMaxLength(64);
         });
 
+        // Yayıncının veri sorumlusu bilgileri (KVKK K-3): müşteri başına bir satır, müşteri silinirse gider. Version
+        // eşzamanlılık jetonu: aynı sürümü okuyan iki yazımdan ikincisi çakışır, yeniden okuyup dener
+        // (Services.Privacy.DataControllerProfiles.UpsertAsync). Sınırların adı tam yazılır: bu sınıfın DbSet'i aynı adı taşır.
+        mb.Entity<DataControllerProfile>(b =>
+        {
+            b.HasKey(p => p.CustomerId);
+            b.HasOne(p => p.Customer).WithOne().HasForeignKey<DataControllerProfile>(p => p.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(p => p.LegalName).HasMaxLength(Services.Privacy.DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(p => p.PostalAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(p => p.KvkkEmail).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(p => p.KepAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax);
+            b.Property(p => p.Version).IsConcurrencyToken();
+            b.Property(p => p.UpdatedBy).HasMaxLength(300).IsRequired();
+        });
+
+        // Veri sorumlusu bilgisinin sürümleri (KVKK m. 10/1-a ispatı, karar 24): yalnız eklenir; müşteri silinirse gider (purge
+        // ayrıca siler, satır anonimleşir ama kalır). (Müşteri, sürüm) tekil: bir sürüm numarası tek içeriğe verilir.
+        mb.Entity<DataControllerProfileVersion>(b =>
+        {
+            b.HasKey(v => v.Id);
+            b.HasOne<Customer>().WithMany().HasForeignKey(v => v.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(v => new { v.CustomerId, v.Version }).IsUnique();
+            b.Property(v => v.LegalName).HasMaxLength(Services.Privacy.DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(v => v.PostalAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(v => v.KvkkEmail).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(v => v.KepAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax);
+            b.Property(v => v.CreatedBy).HasMaxLength(300).IsRequired();
+        });
+
         // Satış komutu günlüğü (yayın ve etiket senkronu S2, spec 2026-10-13 §3.1,
         // §4.6): idempotency ve denetim izi. Birincil anahtar istemcinin CommandId'si
         // — lisans sınırı yok, aynı Id başka lisansta görülürse content-conflict.
@@ -867,7 +916,10 @@ public class LicenseDbContext : DbContext
              .UseCollation("Latin1_General_100_BIN2");
             b.Property(c => c.FullName).HasMaxLength(200);
             b.Property(c => c.DisplayName).HasMaxLength(200);
-            b.Property(c => c.GroupId).HasMaxLength(64);
+            // BIN2 (ortak bakiye M5, spec 2026-10-11 §3.1): kişi eşitliği WPF'teki gibi ordinal. BIN2 harf farkını
+            // SQL'de ayırır; sondaki boşluğu SQL '=' hiçbir harmanda ayırmaz — onu bellekteki süzgeç ayırır
+            // (PersonMembership). Emsal IdentityKey.
+            b.Property(c => c.GroupId).HasMaxLength(64).UseCollation("Latin1_General_100_BIN2");
             b.Property(c => c.Phone).HasMaxLength(20);
             b.Property(c => c.Address).HasMaxLength(500);
             b.Property(c => c.City).HasMaxLength(64);
@@ -893,6 +945,10 @@ public class LicenseDbContext : DbContext
              .HasFilter(Services.CustomerSync.CustomerIdentityIndex.Filter)
              .HasDatabaseName(Services.CustomerSync.CustomerIdentityIndex.Name);
             b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
+            // Kişi sorgusu (PersonMembership): lisansın asıl, gruplu kayıtları. Bugüne kadar GroupId'de indeks yoktu
+            // ve kişi sorgusu lisansın bütün kayıtlarını tarıyordu (spec §3.1).
+            b.HasIndex(c => new { c.LicenseId, c.GroupId })
+             .HasFilter("[MergedIntoId] IS NULL AND [GroupId] IS NOT NULL");
             // Kopya (MergedIntoId dolu) bir YÖNLENDİRMEDİR, müşteri değil: kişisel
             // alanları boş, kullanıcı adı asıl kayıtla aynı. Varsayılan sorgulardan
             // GİZLİ — panel listesi, Shopper eşleştirme, banka eşleştirmesi, eski
@@ -1060,6 +1116,22 @@ public class LicenseDbContext : DbContext
              .HasMaxLength(CustomerBalanceTransaction.SaleScopeMaxLength);
             b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.SaleScope })
              .HasFilter("[SaleScope] IS NOT NULL");
+            // Ortak bakiye (spec §3.1): grup okuması ve geri alma. TEKİL DEĞİL — bir grubun bütün satırları (çapa ve
+            // bacaklar) aynı DrawGroupId'yi taşır. Bacak başına (DrawGroupId, WpfCustomerId) tekilliği de kurulamaz:
+            // kimlik birleşmesi aynı çekimin iki bacağını aynı satıra taşıyabilir (CustomerIdentityMerger).
+            b.HasIndex(t => t.DrawGroupId)
+             .HasFilter("[DrawGroupId] IS NOT NULL")
+             .HasDatabaseName("IX_CustomerBalanceTransactions_DrawGroupId");
+        });
+
+        // Ortak bakiye denetiminin taban çizgisi (spec §3.1, §7.3). Projeksiyona FK yok, çünkü
+        // WpfCustomerId = Guid.Empty lisans işaret satırıdır (hiçbir projeksiyona karşılık gelmez). Lisans silinince cascade.
+        mb.Entity<PersonBalanceBaseline>(b =>
+        {
+            b.HasKey(x => new { x.LicenseId, x.WpfCustomerId });
+            b.HasOne<License>().WithMany().HasForeignKey(x => x.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(x => x.Balance).HasPrecision(18, 2);
+            b.Property(x => x.LedgerSum).HasPrecision(18, 2);
         });
 
         mb.Entity<SmsCampaign>(b =>
@@ -1206,6 +1278,7 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.IbanHash).HasMaxLength(64);
             b.Property(a => a.Currency).HasMaxLength(3).IsRequired();
             b.Property(a => a.NotificationNote).HasMaxLength(500);
+            b.Property(a => a.ApprovedBy).HasMaxLength(256);
         });
 
         mb.Entity<BankTransaction>(b =>
@@ -1285,6 +1358,61 @@ public class LicenseDbContext : DbContext
             // Ödeme başına tek boşluk kaydı.
             b.HasIndex(g => g.PaymentId).IsUnique();
             b.Property(g => g.Reason).HasConversion<string>().HasMaxLength(24).IsRequired();
+        });
+
+        // Kalıcı imha kaydı (Silme Yönetmeliği md. 7/3). Lisansa FK BİLEREK yok: lisans silinse de kayıt yaşar.
+        mb.Entity<DataDestructionRecord>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Target).HasMaxLength(100).IsRequired();
+            b.Property(r => r.Action).HasMaxLength(16).IsRequired();
+            b.Property(r => r.Criterion).HasMaxLength(100).IsRequired();
+            b.Property(r => r.Trigger).HasMaxLength(32).IsRequired();
+            b.Property(r => r.Actor).HasMaxLength(256).IsRequired();
+            b.HasIndex(r => r.OccurredAt);
+            b.HasIndex(r => r.LicenseId);
+            b.HasIndex(r => r.SubjectId);
+            // İmha özetinin sorgusu (DigestedAt IS NULL): tablo hiç budanmaz, gönderilmemiş satır ise birkaç düzinedir.
+            // Adlı dizin: aynı sütundaki adsız dizinden AYRI bir dizin olarak kurulur.
+            b.HasIndex(r => r.OccurredAt, "IX_DataDestructionRecords_Undigested").HasFilter("[DigestedAt] IS NULL");
+        });
+
+        // IBAN ile banka veri talebi (KVKK K-7). Lisansa FK BİLEREK yok: talebin belgesi lisans silinse de yaşar. Özet yalnız 64
+        // hex (diğer banka tablolarının kısıtı): ham IBAN'ı buraya yazan bir kod yolu DB'de patlar.
+        mb.Entity<BankSubjectRequest>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(r => r.IbanHash).HasMaxLength(64);
+            b.Property(r => r.IbanMasked).HasMaxLength(40).IsRequired();
+            b.Property(r => r.Verification).HasConversion<string>().HasMaxLength(40).IsRequired();
+            b.Property(r => r.VerifiedBy).HasMaxLength(256);
+            b.Property(r => r.CreatedBy).HasMaxLength(256).IsRequired();
+            b.Property(r => r.ClosedBy).HasMaxLength(256);
+            b.Property(r => r.Resolution).HasConversion<string>().HasMaxLength(32).IsRequired();
+            b.Property(r => r.Outcome).HasMaxLength(500);
+            // Talep bir kez kapanır (UPDATE ... WHERE ClosedAt IS NULL): aynı anda iki silme ya da kapatma ikinci kez sonuç ve imha
+            // kaydı yazmaz (BankSubjectRequestService çakışmayı ClosedMessage'a çevirir). Şema değişmez.
+            b.Property(r => r.ClosedAt).IsConcurrencyToken();
+            b.HasIndex(r => new { r.ClosedAt, r.DueAt });
+            b.HasIndex(r => r.LicenseId);
+            b.ToTable(tb => tb.HasCheckConstraint("CK_BankSubjectRequests_IbanHash_Hex64",
+                "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'"));
+        });
+
+        // Obifin kopyasının yazılı silme teyidi (KVKK Ö-9). Lisansa ve bağlantıya FK BİLEREK yok: kayıt ikisinden de uzun yaşar.
+        mb.Entity<ObifinCopyDeletion>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.Property(d => d.RequestedBy).HasMaxLength(256).IsRequired();
+            b.Property(d => d.ConfirmedBy).HasMaxLength(256);
+            b.Property(d => d.ManualAction).HasMaxLength(ObifinCopyDeletion.ManualActionMaxLength);
+            // Çift tık / iki yönetici: ikinci "Teyit alındı" ilkinin üstüne yazıp ikinci imha kaydını açmasın (UPDATE ... WHERE
+            // ConfirmedAt IS NULL; BankConnectionTerminator.ConfirmObifinCopyDeletedAsync çakışmayı AlreadyConfirmedMessage'a çevirir).
+            b.Property(d => d.ConfirmedAt).IsConcurrencyToken();
+            b.HasIndex(d => d.LicenseId);
+            // Hatırlatma ve sayfa sorgusu (ConfirmedAt IS NULL): bekleyen satır birkaç tanedir.
+            b.HasIndex(d => d.RequestedAt, "IX_ObifinCopyDeletions_Pending").HasFilter("[ConfirmedAt] IS NULL");
         });
 
         mb.Entity<NetgsmDeparture>(b =>

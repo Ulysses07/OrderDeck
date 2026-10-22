@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Reflection;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Controllers;
@@ -6,7 +7,9 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Instagram;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.IntakeForm.Login;
+using OrderDeck.LicenseServer.Services.Privacy;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -55,6 +58,19 @@ public class IntakeFormModel : PageModel
     public IntakeFormInput Input { get; set; } = new();
 
     public IntakeFormConfig? Config { get; private set; }
+
+    /// <summary>Formu oluşturan yayıncının veri sorumlusu bilgileri (KVKK K-3); girilmediyse null ve blok çizilmez.</summary>
+    public DataControllerView? DataController { get; private set; }
+
+    /// <summary>Sayfa çizilecekse (PageResult) veri sorumlusu bilgisi yüklenir: her <c>Page()</c> dönüşüne ayrı yükleme yazılmasın.
+    /// Yönlendirme ve 410 dönüşlerinde yüklenmez. Yeniden çizimde (hatalı gönderim) güncel bilgi ve sürümü gösterilir; sonraki
+    /// gönderim o sürümü bildirir.</summary>
+    public override async Task OnPageHandlerExecutionAsync(PageHandlerExecutingContext context, PageHandlerExecutionDelegate next)
+    {
+        var executed = await next();
+        if (executed.Result is PageResult && Config is not null)
+            DataController = await _service.GetDataControllerAsync(Config.CustomerId, context.HttpContext.RequestAborted);
+    }
 
     /// <summary>SMS onay kutusu render edilsin mi. Hem GET hem POST'ta set
     /// edilir; POST'ta ayrıca gelen değeri EZER (gizleme istemci tarafı).</summary>
@@ -210,7 +226,27 @@ public class IntakeFormModel : PageModel
         /// hatasına düşüyor.
         /// </summary>
         public string? KvkkTextVersion { get; set; }
+
+        /// <summary>
+        /// Sayfanın gösterdiği veri sorumlusu bloğunun sürümü (gizli alan;
+        /// KVKK m. 10/1-a ispatı, karar 24). Yalnız o yayıncının var olan bir
+        /// sürümüyse kayda yazılır; bayat sekme eski sürümü bildirir, doğru
+        /// olan da odur.
+        ///
+        /// Bilerek <c>string</c> (<c>int?</c> değil): bozuk değer ("abc",
+        /// taşan sayı) bağlayıcı hatası üretir, hatanın ekranda kutusu yok ve
+        /// sayfa kaydı açmadan sessizce geri dönerdi. Değer
+        /// <see cref="ShownDataControllerVersion"/> ile okunur; okunamayan
+        /// değer gösterilmemiş sayılır, kaydı engellemez.
+        /// </summary>
+        public string? DataControllerVersion { get; set; }
     }
+
+    /// <summary>Gizli alandaki sürüm, yalnız düz pozitif tam sayıysa (sayfanın bastığı biçim); değilse null.</summary>
+    private int? ShownDataControllerVersion
+        => int.TryParse(Input.DataControllerVersion, NumberStyles.None, CultureInfo.InvariantCulture, out var v) && v > 0
+            ? v
+            : null;
 
     private const string KvkkKey = "Input.KvkkAcknowledged";
     // Mesajlar onay etiketiyle ("Yukarıdaki bilgilendirmeyi okudum") aynı kelimeleri kullanır; istemci kapısındaki
@@ -522,6 +558,11 @@ public class IntakeFormModel : PageModel
         // Eski WPF sync'i için legacy Username = ilk dolu platform adı.
         var legacyUsername = yt ?? ig ?? fb ?? tt ?? channelIdFromUrl ?? resolvedChannelId ?? "";
 
+        // KVKK m. 10/1-a ispatı (karar 24): kayıt, sayfanın gösterdiği veri sorumlusu bloğunun sürümünü taşır. Yalnız bu yayıncının
+        // var olan bir sürümü yazılır; uydurma ya da başka yayıncının sürümü null olur.
+        var dataControllerVersion = ShownDataControllerVersion is { } shownVersion
+            && await _service.DataControllerVersionExistsAsync(Config.CustomerId, shownVersion, ct) ? shownVersion : (int?)null;
+
         await _service.SaveSubmissionAsync(
             Config.Id,
             youTubeUsername: yt, instagramUsername: ig,
@@ -542,7 +583,8 @@ public class IntakeFormModel : PageModel
             district: Input.District,
             // Buraya yalnız geçerli ModelState ile gelinir, o da onayı ve
             // sayfanın gösterdiği sürümün güncel sürüme eşit olduğunu içerir.
-            kvkkTextVersion: Input.KvkkTextVersion);
+            kvkkTextVersion: Input.KvkkTextVersion,
+            dataControllerVersion: dataControllerVersion);
 
         // Kimlik tek gönderimlik: bırakılsaydı aynı tarayıcıdan ikinci kayıt
         // (örn. aile üyesi) öncekinin kanalıyla açılırdı.

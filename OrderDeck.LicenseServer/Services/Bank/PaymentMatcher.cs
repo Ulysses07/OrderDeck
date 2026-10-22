@@ -18,7 +18,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// istek), partideki her hareket için müşteri tablosu yeniden okunmaz.</para>
 /// <para><see cref="BankHasher"/> istemez: hash'ler harekette ve hafızada hazır saklı. Hasher anahtar yokken kurulamaz;
 /// eşleştirici dekont onay yolundan da çözülecek ve orayı hiçbir koşulda düşürmemeli.</para>
-/// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>, 180 gün saklanır) yalnız katman adı ve kullanıcı adı anahtarı
+/// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>; hareketin açıklamasıyla birlikte silinir, bkz.
+/// <see cref="BankDataRetentionJob"/>) yalnız katman adı ve kullanıcı adı anahtarı
 /// taşır; ham açıklama, IBAN, VKN, hash ya da müşterinin adı yazılmaz. Ad kişisel veridir ve kanıta hiç girmez; ad
 /// katmanı yalnız eşleşen token sayısını yazar ("name:2"), ad gerekirse önerilen müşteriden okunur — silinmişse orada
 /// da yoktur. Kullanıcı adı anahtarı taşıyan kanıtı KVKK silmesi (ShopperPurgeService) boşaltır.</para>
@@ -152,6 +153,8 @@ public sealed class PaymentMatcher
         if (byUsername.Count == 1)
         {
             var id = byUsername[0].Id; var key = byUsername[0].Key;
+            // Kanıttaki kullanıcı adı biçimleri KVKK silmesinde (ShopperPurgeService 3b) tam anahtarla aranır: anahtardan sonra
+            // son, ';' ya da ','. Biçim değişirse orası da değişir.
             if (byIban is { } ib && ib != id)
             {
                 Set(match, null, PaymentMatchLayer.None, 0m, $"conflict:username={key},iban-memory", PaymentMatchStatus.NoProposal);

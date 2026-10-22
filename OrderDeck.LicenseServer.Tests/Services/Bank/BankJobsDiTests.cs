@@ -67,6 +67,10 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         sp.GetRequiredService<BankHasher>().Should().NotBeNull("Testing'de HashKey ApiFactory'den gelir");
         sp.GetRequiredService<IObifinClient>().Should().BeOfType<NullObifinClient>("test ortamı Obifin'e bağlanmaz");
         sp.GetRequiredService<IBankTransactionSink>().Should().NotBeNull();
+        sp.GetRequiredService<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>().Should().NotBeNull();
+        sp.GetRequiredService<BankServiceEndPurgeJob>().Should().NotBeNull();
+        sp.GetRequiredService<BankConnectionTerminator>().Should().NotBeNull();
+        sp.GetRequiredService<BankSubjectRequestService>().Should().NotBeNull();
     }
 
     [Theory]
@@ -84,6 +88,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         using var scope = factory.Services.CreateScope();
         var resolve = () => scope.ServiceProvider.GetRequiredService<ObifinPollJob>();
         resolve.Should().Throw<InvalidOperationException>().WithMessage(BankHasher.DisabledMessage);
+        scope.ServiceProvider.GetRequiredService<BankSubjectRequestService>().Should()
+            .NotBeNull("banka veri talebi anahtarsız da kapatılıp silinir (KVKK yükümlülüğü)");
         BankHasher.DisabledMessage.Should().Be("Banka modülü kapalı: OrderDeck:Bank:HashKey yok ya da 32 bayttan kısa");
         factory.Log.Warnings.Where(w => w.StartsWith(BankHasher.DisabledMessage)).Should().ContainSingle("açılışta tek uyarı")
             .Which.Should().Contain("bank-data-retention", "operatör saklama işinin anahtarsız da koştuğunu görmeli");
@@ -101,7 +107,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public void Anahtar_gecerliyse_dort_banka_isi_UTC_takvimiyle_kaydolur()
+    public void Anahtar_gecerliyse_bes_banka_isi_UTC_takvimiyle_kaydolur()
     {
         var storage = new MemoryStorage();
 
@@ -118,6 +124,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
             // 04:52 eşitlemeden sonra ve 5 dakikalık ızgaranın DIŞINDA: 04:55'te obifin-poll (aynı BankTransactions
             // tablosuna yazar) ve üç */5 iş daha koşar; */15 ise 04:45 ve 05:00'te.
             ("bank-data-retention", "57 4 * * *"),
+            // Hizmet sonu + 30 gün silmesi (KVKK K-6): ızgara ve diğer günlük işlerin dışında; çekimle ortak kilit tutar.
+            ("bank-service-end-purge", "17 5 * * *"),
         });
         connection.GetRecurringJobs().Should().OnlyContain(j => j.TimeZoneId == "UTC",
             "saatler UTC olarak seçildi (04:52 İYS eşitlemesine göre); sunucu saat dilimine kaymamalı");
@@ -130,7 +138,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     {
         // Önceki açılışta (anahtar varken) kaydolmuş Obifin işleri anahtar kalkınca Hangfire'da kalıp her 5 dakikada bir
         // BankHasher hatasıyla düşmesin; çekim yokken eşleştirme taraması (bank-match-sweep) da kalkar. Saklama işi ise
-        // BankHasher istemez ve 90/180 günlük silme KVKK yükümlülüğüdür: anahtar kalksa da zaten saklanmış satırlar için
+        // BankHasher istemez ve 30/180 günlük silme KVKK yükümlülüğüdür: anahtar kalksa da zaten saklanmış satırlar için
         // koşmaya devam eder.
         var storage = new MemoryStorage();
         var manager = new RecurringJobManager(storage);
@@ -139,10 +147,32 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         Program.ScheduleBankJobs(manager, enabled: false);
 
         using var connection = storage.GetConnection();
-        var job = connection.GetRecurringJobs().Should().ContainSingle().Subject;
-        job.Id.Should().Be("bank-data-retention");
-        job.Cron.Should().Be("57 4 * * *");
-        job.TimeZoneId.Should().Be("UTC");
+        connection.GetRecurringJobs().Select(j => (j.Id, j.Cron, j.TimeZoneId)).Should().BeEquivalentTo(new[]
+        {
+            ("bank-data-retention", "57 4 * * *", "UTC"),
+            // Hizmet sonu silmesi de KVKK yükümlülüğü; BankHasher istemez.
+            ("bank-service-end-purge", "17 5 * * *", "UTC"),
+        });
+    }
+
+    [Fact]
+    public void Ham_kayit_saklama_suresi_yapilandirmayla_30_gun()
+    {
+        // Prod'daki süre sınıf varsayılanından değil appsettings.json'daki OrderDeck:Bank bölümünden gelir (Program.cs): orada
+        // 90 kalsaydı ya da geri dönseydi saklama testleri (sınıf varsayılanıyla) yeşil kalır, prod 90 gün saklardı (KVKK Ö-2,
+        // karar 5).
+        _factory.Services.GetRequiredService<IOptions<BankOptions>>().Value.RawJsonRetentionDays
+            .Should().Be(30, "politikadaki ham kayıt süresi 30 gün");
+    }
+
+    [Fact]
+    public void Saklama_tablosunun_kalan_sureleri_yapilandirmayla_politikadaki_gibi()
+    {
+        // Aynı gerekçe (yukarıdaki test): prod'daki süreler sınıf varsayılanından değil appsettings.json'dan gelir; oradaki
+        // değer politikadan saparsa saklama testleri yeşil kalır, prod başka süreyle siler (KVKK K-6, Ö-14, karar 1 ve 5).
+        var o = _factory.Services.GetRequiredService<IOptions<BankOptions>>().Value;
+        (o.UnmatchedDescriptionRetentionDays, o.TransactionRetentionDays, o.IbanMemoryRetentionMonths, o.MinDaysAfterFetch)
+            .Should().Be((30, 180, 12, 7));
     }
 
     [Fact]

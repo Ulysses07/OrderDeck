@@ -1,3 +1,4 @@
+using System.Globalization;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -7,6 +8,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.Obifin;
 
@@ -23,7 +25,13 @@ namespace OrderDeck.LicenseServer.Pages.Admin.Obifin;
 /// yalnız işleyici adı ve istisna türü — istisna metni (Obifin/banka yankısı taşıyabilir) ve form değerleri asla.</para>
 /// <para>Taahhüt edilmiş bir yazımın (kimlik kaydı — belki geri dönüşsüz gölge veri silmesi —, doğrulama, kuyruğa atma,
 /// banka ekleme) ardındaki audit kaydı istek jetonuyla DEĞİL <see cref="CancellationToken.None"/> ile yazılır: istek o anda
-/// iptal edilse iş yapılmış, izi kaybolmuş olurdu.</para></summary>
+/// iptal edilse iş yapılmış, izi kaybolmuş olurdu. Sayfanın her görüntülenmesi de denetime yazılır
+/// (<see cref="AuditEvents.BankPageView"/>, KVKK Ö-4).</para>
+/// <para><b>Durdur / Etkinleştir / Kaldır ve sil / Teyit alındı / hesap reddi</b> (KVKK K-6, Ö-9, Ö-10;
+/// <see cref="BankConnectionTerminator"/>) <see cref="BankHasher"/> istemez: banka modülü kapalıyken de çalışır. Geri dönüşsüz
+/// iki eylem yazılı onay ister (Purge'ün <c>confirmEmail</c> kalıbı): "Kaldır ve sil" lisans anahtarının son 6 karakterini, hesap
+/// reddi hesap numarasını. İmha kaydının ve teyit kaydının yapanı yöneticinin kimliğidir
+/// (<see cref="DataDestruction.ActorOf"/>), kullanıcı adı değil.</para></summary>
 public class IndexModel : PageModel
 {
     public const string NotVerifiedMessage = "Bağlantı doğrulanmamış; önce Doğrula.";
@@ -35,22 +43,50 @@ public class IndexModel : PageModel
     public const string WebServiceHelp = "Bu bilgileri banka, kurumsal internet şubesinden ya da şubeden 'hesap hareketleri web servisi' başvurusuyla verir.";
     public const string ApiHelp = "Bu bilgiler bankanın API başvurusuyla alınır.";
 
+    /// <summary>"Kaldır ve sil" onayı. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez.</summary>
+    public const string RemoveConfirmMessage = "Bu lisansın Obifin bağlantısı kaldırılacak ve bütün banka verisi (hareketler, eşleşmeler, IBAN hafızası, hesaplar) silinecek. Geri alınamaz. Emin misiniz?";
+    /// <summary>Hesap reddinin onayı. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez.</summary>
+    public const string RejectConfirmMessage = "Bu hesabın bu lisanstaki hareketleri, eşleşmeleri ve öğrettiği IBAN bağları silinecek; onayı kalkacak. Geri alınamaz.";
+    /// <summary>Kaldırmanın sonuç bildirimine eklenir (TempData; JS'e gömülmez).</summary>
+    public const string ObifinCopyWarning = "Obifin'deki hareket kopyasının silinmesini Obifin'den YAZILI isteyin (API'de hareket silme ucu yok); teyit gelince 'Obifin silme teyidi bekleyenler'de 'Teyit alındı'ya basın.";
+    /// <summary>Yazılı onay (Purge'ün confirmEmail kalıbı) tutmadı.</summary>
+    public const string RemoveConfirmMismatchMessage = "Onay için lisans anahtarının son 6 karakterini yazın; eşleşmedi, hiçbir şey silinmedi.";
+    public const string RejectConfirmMismatchMessage = "Onay için hesap numarasını yazın; eşleşmedi, hiçbir şey silinmedi.";
+    /// <summary>"Kaldır ve sil"in yazılı onayındaki karakter sayısı (lisans anahtarının sonu).</summary>
+    public const int RemoveConfirmLength = 6;
+    /// <summary>Hizmet sonu silmesinin durdurmadan sonraki süresi (gün) — durum hücresindeki "silinecek" tarihi ve "Durdur"
+    /// bildirimi. Tek kaynak işin sabiti (<see cref="BankServiceEndPurgeJob.GracePeriodDays"/>).</summary>
+    public const int ServiceEndGraceDays = BankServiceEndPurgeJob.GracePeriodDays;
+
     private readonly LicenseDbContext _db;
     private readonly IServiceProvider _services;
     private readonly IBackgroundJobClient _jobs;
     private readonly IAuditService _audit;
+    private readonly BankConnectionTerminator _terminator;
     private readonly BankOptions _bank;
     private readonly ILogger<IndexModel> _log;
 
     public IndexModel(LicenseDbContext db, IServiceProvider services, IBackgroundJobClient jobs, IAuditService audit,
-        IOptions<BankOptions> bank, ILogger<IndexModel> log)
-    { _db = db; _services = services; _jobs = jobs; _audit = audit; _bank = bank.Value; _log = log; }
+        BankConnectionTerminator terminator, IOptions<BankOptions> bank, ILogger<IndexModel> log)
+    { _db = db; _services = services; _jobs = jobs; _audit = audit; _terminator = terminator; _bank = bank.Value; _log = log; }
 
+    /// <summary>Bağlantı satırı. <see cref="DisabledAt"/> ve <see cref="BankDataPurgedAt"/> durum hücresinde yalnız Disabled iken
+    /// gösterilir (KVKK K-6: hizmet sonu sayacı, yerel silme).</summary>
     public sealed record ConnectionRow(Guid LicenseId, string CustomerEmail, string BaseUrl, string UserCode,
-        ObifinConnectionStatus Status, string? LastError, DateTimeOffset? LastVerifiedAt, DateTimeOffset? LastPolledAt,
-        long? Cursor, DateTimeOffset? BackfillCompletedAt, int BankConnections, int Accounts, int Transactions);
-    public sealed record AccountRow(string BankaKodu, string IbanMasked, string Currency, bool Active,
-        DateTimeOffset? LastBankSyncAt, string? NotificationNote);
+        ObifinConnectionStatus Status, DateTimeOffset? DisabledAt, DateTimeOffset? BankDataPurgedAt, string? LastError,
+        DateTimeOffset? LastVerifiedAt, DateTimeOffset? LastPolledAt, long? Cursor, DateTimeOffset? BackfillCompletedAt,
+        DateOnly? InitialCollectFrom, int BankConnections, int Accounts, int Transactions);
+    /// <summary>"Kaldır ve sil"den sonra Obifin'in yazılı silme teyidini bekleyen kayıt (karar 21). Lisans silinmişse e-posta yok,
+    /// kimlik gösterilir. <see cref="ManualAction"/>: Obifin'de elle yapılacak iş (null = yalnız yazılı teyit).</summary>
+    public sealed record CopyDeletionRow(Guid Id, Guid LicenseId, string? CustomerEmail, DateTimeOffset RequestedAt,
+        string? ManualAction);
+    /// <summary>Hesap satırı. IBAN niteliği sayaçları (KVKK Ö-7): bu hesaba yazılan hareketlerde karşı IBAN tam / maskeli / boş;
+    /// değer yok, yalnız sayılar. Onay (KVKK Ö-10): <see cref="ApprovedAt"/> boşsa hesabın hareketi kaydedilmez,
+    /// <see cref="UnapprovedSkippedCount"/> atlananları sayar. Obifin hesap numarası yöneticinin hesabı tanıması ve reddin yazılı
+    /// onayı (Görev 13) için.</summary>
+    public sealed record AccountRow(Guid Id, long ObifinAccountId, string BankaKodu, string IbanMasked, string Currency, bool Active,
+        DateTimeOffset? LastBankSyncAt, string? NotificationNote, int IbanFullCount, int IbanMaskedCount, int IbanEmptyCount,
+        DateTimeOffset? ApprovedAt, int UnapprovedSkippedCount);
     public sealed record LicenseOption(Guid Id, string Label);
     /// <summary>Düzenlenen bağlantı: formda yalnız "kayıtlı" bayrağı — değerler asla geri basılmaz.</summary>
     public sealed record EditTarget(bool PasswordStored, bool ApiKeyStored);
@@ -65,6 +101,9 @@ public class IndexModel : PageModel
     [BindProperty] public bool ConfirmReset { get; set; }
     [BindProperty] public string? BankaKodu { get; set; }
     [BindProperty] public string? Label { get; set; }
+    /// <summary>"Kaldır ve sil"in yazılı onayı: lisans anahtarının son <see cref="RemoveConfirmLength"/> karakteri (harf
+    /// duyarsız). Gizli bir onay alanı YOK: formun kendisi onu gönderdiği için sunucu denetimi anlamsız olurdu.</summary>
+    [BindProperty] public string? ConfirmLicenseKey { get; set; }
 
     public List<ConnectionRow> Rows { get; private set; } = new();
     public Dictionary<Guid, List<AccountRow>> AccountsByLicense { get; private set; } = new();
@@ -81,6 +120,15 @@ public class IndexModel : PageModel
     /// <summary>Açılıştaki kararın aynısı (Program.cs): anahtar yoksa banka modülü kapalı.</summary>
     public bool BankDisabled => !BankHasher.IsValidKey(_bank.HashKey);
 
+    /// <summary>Onaysız hesap sayısı (sayfanın üstündeki uyarı; KVKK Ö-10).</summary>
+    public int UnapprovedAccounts => AccountsByLicense.Values.Sum(list => list.Count(a => a.ApprovedAt is null));
+
+    /// <summary>Banka verisi hizmet sonunda yerelde silinmiş, Obifin tarafı "Kaldır ve sil" bekleyen bağlantı sayısı (karar 21).</summary>
+    public int PendingObifinRemoval => Rows.Count(r => r.BankDataPurgedAt is not null);
+
+    /// <summary>"Kaldır ve sil"den sonra Obifin'in yazılı silme teyidini bekleyen kayıtlar (eskiden yeniye; karar 21).</summary>
+    public List<CopyDeletionRow> PendingCopyDeletions { get; private set; } = new();
+
     /// <summary>Yalnız modül açıkken çözülür (bkz. sınıf özeti).</summary>
     private ObifinConnectionService Connections => _services.GetRequiredService<ObifinConnectionService>();
 
@@ -93,8 +141,9 @@ public class IndexModel : PageModel
         Rows = await _db.ObifinConnections.AsNoTracking().OrderBy(c => c.CreatedAt)
             .Select(c => new ConnectionRow(c.LicenseId,
                 _db.Licenses.Where(l => l.Id == c.LicenseId).Select(l => l.Customer.Email).FirstOrDefault() ?? "(bilinmiyor)",
-                c.BaseUrl, c.UserCode, c.Status, c.LastError, c.LastVerifiedAt, c.LastPolledAt, c.LastObifinTransactionId,
-                c.BackfillCompletedAt,
+                c.BaseUrl, c.UserCode, c.Status, c.DisabledAt, c.BankDataPurgedAt, c.LastError, c.LastVerifiedAt,
+                c.LastPolledAt, c.LastObifinTransactionId,
+                c.BackfillCompletedAt, c.InitialCollectFrom,
                 _db.BankConnections.Count(b => b.LicenseId == c.LicenseId && b.Status == BankConnectionStatus.Active),
                 _db.BankAccounts.Count(a => a.LicenseId == c.LicenseId),
                 _db.BankTransactions.Count(t => t.LicenseId == c.LicenseId)))
@@ -102,7 +151,9 @@ public class IndexModel : PageModel
         var licenseIds = Rows.Select(r => r.LicenseId).ToList();
         AccountsByLicense = (await _db.BankAccounts.AsNoTracking().Where(a => licenseIds.Contains(a.LicenseId)).ToListAsync(ct))
             .GroupBy(a => a.LicenseId)
-            .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.BankaKodu, a.IbanMasked, a.Currency, a.Active, a.LastBankSyncAt, a.NotificationNote)).ToList());
+            .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.Id, a.ObifinAccountId,
+                a.BankaKodu, a.IbanMasked, a.Currency, a.Active, a.LastBankSyncAt, a.NotificationNote, a.IbanFullCount,
+                a.IbanMaskedCount, a.IbanEmptyCount, a.ApprovedAt, a.UnapprovedSkippedCount)).ToList());
         // Seçim listesi e-postaya göre ilk 200 lisansla sınırlı; Obifin bağlantısı olan lisanslar ise HER ZAMAN listede
         // (düzenlenen lisans da: düzenleme ancak bağlantısı olan lisansta açılır). Listede olmayan lisans seçili gelemez;
         // tarayıcı ilk seçeneği gönderir ve form, gösterdiği kimliği ya da banka kimliğini BAŞKA bir lisansa yazar.
@@ -113,6 +164,13 @@ public class IndexModel : PageModel
             .Select(l => new LicenseOption(l.Id, l.Customer.Email + " · " + l.LicenseKey)).ToListAsync(ct);
         var connected = licenseIds.ToHashSet();
         BankLicenses = Licenses.Where(l => connected.Contains(l.Id)).ToList(); // Licenses bağlantılıları hep içerir (yukarıda)
+        // Obifin silme teyidi bekleyenler (karar 21). Kayıt bağlantıdan bağımsız: bağlantı satırı "Kaldır ve sil"le silindi.
+        PendingCopyDeletions = await _db.ObifinCopyDeletions.AsNoTracking().Where(d => d.ConfirmedAt == null)
+            .OrderBy(d => d.RequestedAt)
+            .Select(d => new CopyDeletionRow(d.Id, d.LicenseId,
+                _db.Licenses.Where(l => l.Id == d.LicenseId).Select(l => l.Customer.Email).FirstOrDefault(), d.RequestedAt,
+                d.ManualAction))
+            .ToListAsync(ct);
 
         // Kullanıcı kodu ve adres tablonun satırından (aynı bağlantı, bu istekte yüklendi); "kayıtlı" bayrakları ayrıca.
         if (license is { } id && Rows.FirstOrDefault(r => r.LicenseId == id) is { } row
@@ -121,6 +179,11 @@ public class IndexModel : PageModel
             LicenseId = id; BaseUrl = row.BaseUrl; UserCode = row.UserCode;
             Editing = editing;
         }
+        // KVKK Ö-4: hesap maskeleri, bildirim notları ve yayıncı e-postaları gösteren sayfanın her görüntülenmesi denetime
+        // yazılır (kimlik onayı isteyen kayıt da sayfayı buradan basar). Hedef düzenleme formu açılan lisans, yoksa boş: ham
+        // ?license= değil — bağlantısız ya da hiç olmayan lisansta form açılmaz, açılmayan hedef denetime girmez.
+        await _audit.LogAsync(AuditEvents.BankPageView, AuditTargets.ObifinConnection,
+            Editing is not null ? LicenseId.ToString() : null, new { page = "obifin" }, ct);
     }
 
     /// <summary>Düzenlenen bağlantının "kayıtlı" bayrakları; bağlantı yoksa null. Yalnız bayraklar okunur: şifreli değerler
@@ -147,14 +210,21 @@ public class IndexModel : PageModel
         }
         try
         {
+            // Gölge veri silinirse imha kaydının yapanı yöneticinin kimliği (KVKK Ö-14; kaydı budanmaz, adı denetim satırında).
             var saved = await Connections.UpsertWithResultAsync(LicenseId, BaseUrl ?? "", UserCode ?? "", Password, ApiKey, ct,
-                allowShadowReset: ConfirmReset);
+                allowShadowReset: ConfirmReset, actor: DataDestruction.ActorOf(User));
             // Kayıt (ve varsa geri dönüşsüz silme) taahhüt edildi: audit istek iptaliyle düşmesin.
             await _audit.LogAsync(AuditEvents.ObifinConnectionSave, AuditTargets.ObifinConnection, LicenseId.ToString(),
                 new { UserCode = UserCode?.Trim(), shadowDataReset = saved.ShadowDataReset }, CancellationToken.None);
+            // Durdurulmuş bağlantı kayıtla açılmaz (aynı kimliğe yeni parola, ya da lisans bitmişken kimlik değişimi): Doğrula
+            // gizli ve servis onu reddeder, "Şimdi doğrulayın" yanlış yönlendirirdi.
+            var next = saved.Connection.Status == ObifinConnectionStatus.Disabled
+                ? ObifinConnectionService.StoppedConnectionMessage
+                : "Şimdi doğrulayın.";
             TempData["Success"] = saved.ShadowDataReset
-                ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın."
-                : "Obifin kimliği kaydedildi. Şimdi doğrulayın.";
+                ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. "
+                    + ObifinConnectionService.CredentialChangeObifinSideNote + " " + next
+                : "Obifin kimliği kaydedildi. " + next;
         }
         catch (ShadowResetConfirmationRequiredException ex)
         {
@@ -271,6 +341,190 @@ public class IndexModel : PageModel
             TempData["Error"] = $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}) ama hesap listesi yenilenemedi: {msg}. Saatlik yenileme tekrar dener.";
         }
         return BackToForm();
+    }
+
+    /// <summary>KVKK Ö-10: hesabı lisansa bağlar; bundan sonraki hareketleri kaydedilir (önceki atlananlar geriye dönük gelmez).
+    /// Yalnız yayıncının müşteri tahsilatı hesabı onaylanmalı. <see cref="BankHasher"/> istemez: modül kapalıyken de çalışır,
+    /// Obifin'e gitmez. Onaylı hesapta bir şey değiştirmez (ilk onay anı ve onaylayan kalır). Geri alma: "Onayı geri al ve
+    /// verisini sil" (<see cref="OnPostRejectAccountAsync"/>).</summary>
+    public async Task<IActionResult> OnPostApproveAccountAsync(Guid accountId, CancellationToken ct)
+    {
+        var account = await _db.BankAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct);
+        if (account is null)
+        {
+            TempData["Error"] = "Hesap bulunamadı.";
+            return RedirectToPage();
+        }
+        if (account.ApprovedAt is null)
+        {
+            account.ApprovedAt = DateTimeOffset.UtcNow;
+            // Yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14; Görev 9 kuralı): sütun budanmaz, ad denetim satırında.
+            account.ApprovedBy = DataDestruction.ActorOf(User);
+            await _db.SaveChangesAsync(ct);
+            // Onay taahhüt edildi: audit istek iptaliyle düşmesin. Ayrıntıda IBAN yok.
+            await _audit.LogAsync(AuditEvents.ObifinAccountApprove, AuditTargets.ObifinConnection, account.LicenseId.ToString(),
+                new { account.ObifinAccountId, account.BankaKodu }, CancellationToken.None);
+        }
+        TempData["Success"] = "Hesap onaylandı; bundan sonraki hareketleri kaydedilecek.";
+        return RedirectToPage();
+    }
+
+    /// <summary>Çekimi durdurur (KVKK K-6): çekim ve eşleştirme durur; <see cref="ServiceEndGraceDays"/> gün içinde
+    /// etkinleştirilmezse hizmet sonu işi bu lisansın banka verisini yerelde siler. Lisans yenilense de kendiliğinden açılmaz
+    /// (yönetici kararı). BankHasher istemez.</summary>
+    public async Task<IActionResult> OnPostStopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _terminator.StopAsync(LicenseId, ct);
+        }
+        catch (ObifinValidationException ex)
+        {
+            LogHandled("Stop", ex);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
+        // Durdurma kaydedildi: audit istek iptaliyle düşmesin.
+        await _audit.LogAsync(AuditEvents.ObifinConnectionStop, AuditTargets.ObifinConnection, LicenseId.ToString(), null,
+            CancellationToken.None);
+        TempData["Success"] = $"Çekim durduruldu. {ServiceEndGraceDays} gün içinde etkinleştirilmezse bu lisansın banka verisi silinir.";
+        return RedirectToPage();
+    }
+
+    /// <summary>Durdurulmuş bağlantıyı yalnız lisans geçerliyse açar (Unverified; yönetici Doğrula'ya basar). BankHasher
+    /// istemez.</summary>
+    public async Task<IActionResult> OnPostResumeAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _terminator.ResumeAsync(LicenseId, ct);
+        }
+        catch (ObifinValidationException ex)
+        {
+            LogHandled("Resume", ex);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
+        await _audit.LogAsync(AuditEvents.ObifinConnectionResume, AuditTargets.ObifinConnection, LicenseId.ToString(), null,
+            CancellationToken.None);
+        TempData["Success"] = "Bağlantı etkinleştirildi; şimdi Doğrula'ya basın.";
+        return RedirectToPage();
+    }
+
+    /// <summary>Obifin'de bu lisansa ait banka bağlantılarını kaldırır (paylaşılan Obifin kullanıcısında Obifin'e gitmez, sahibi
+    /// doğrulanamayana dokunmaz) ve lisansın bütün banka verisini siler (KVKK K-6, Ö-9). <c>bankaapi/sil</c>'i çağıran TEK yol.
+    /// İstek jetonu BİLEREK kullanılmaz: yarıda kesilen kaldırma Obifin'de bağlantı bırakıp yerelde iz kaybettirirdi. Yazılı onay:
+    /// lisans anahtarının son <see cref="RemoveConfirmLength"/> karakteri (Purge'ün <c>confirmEmail</c> kalıbı) — geri dönüşsüz
+    /// işlem tek JS confirm()'una kalmasın. Bildirim ve denetim kimlik bilgisi içermez.</summary>
+    public async Task<IActionResult> OnPostRemoveAsync()
+    {
+        var licenseKey = await _db.Licenses.AsNoTracking().Where(l => l.Id == LicenseId).Select(l => l.LicenseKey)
+            .FirstOrDefaultAsync(CancellationToken.None);
+        var typed = (ConfirmLicenseKey ?? "").Trim();
+        if (licenseKey is null || typed.Length != RemoveConfirmLength
+            || !licenseKey.EndsWith(typed, StringComparison.OrdinalIgnoreCase))
+        {
+            TempData["Error"] = RemoveConfirmMismatchMessage;
+            return RedirectToPage();
+        }
+        BankRemovalResult r;
+        try
+        {
+            // Yapan: yöneticinin kimliği, kullanıcı adı değil — imha kaydı ve teyit kaydı budanmaz (Görev 9 kuralı).
+            r = await _terminator.RemoveAndDeleteAsync(LicenseId, DataDestruction.Triggers.AdminRemove,
+                DataDestruction.ActorOf(User), CancellationToken.None);
+        }
+        catch (BankDeletionIncompleteException ex)
+        {
+            // Silme yarıda kaldı ama ilk adımın durdurması kaydedildi (hizmet sonu sayacı işliyor): durdurma denetime girer.
+            LogHandled("Remove", ex);
+            await _audit.LogAsync(AuditEvents.ObifinConnectionStop, AuditTargets.ObifinConnection, LicenseId.ToString(),
+                new { removeIncomplete = true }, CancellationToken.None);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
+        catch (ObifinValidationException ex)
+        {
+            LogHandled("Remove", ex);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
+        // Denetimde "elle iş" bilgisi de durur. Yazılı silme teyidinin takibi denetim satırında DEĞİL (24 ayda maskelenir,
+        // kapatılamaz): ObifinCopyDeletions kaydında, hatırlatması hizmet sonu işinde (karar 21).
+        await _audit.LogAsync(AuditEvents.ObifinConnectionRemove, AuditTargets.ObifinConnection, LicenseId.ToString(),
+            new
+            {
+                r.Transactions, r.Matches, r.Memories, r.Gaps, r.Accounts, r.BankConnections,
+                obifinRemoved = r.ObifinRemoved.Count, obifinFailed = r.ObifinFailed.Count, obifinUnowned = r.ObifinUnowned.Count,
+                r.ObifinUnreachable, r.SharedObifinUser, needsManualObifinAction = r.NeedsManualObifinAction,
+                obifinCopyDeletionId = r.ObifinCopyDeletionId, r.SubjectRequestsClosed,
+            },
+            CancellationToken.None);
+        // Kapanan banka veri talebi açık listeden düşer; yanıt yükümlülüğü sürer (m. 13/2): yönetici bunu bildirimden öğrenir.
+        var summary = $"Banka verisi silindi: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı, {r.Accounts} hesap. "
+            + (r.SubjectRequestsClosed > 0 ? r.SubjectRequestsNotice() + " " : "");
+        if (r.NeedsManualObifinAction)
+            TempData["Error"] = summary + r.ManualActionText() + " " + ObifinCopyWarning;
+        else
+            TempData["Success"] = summary + $"Obifin'de {r.ObifinRemoved.Count} banka bağlantısı kaldırıldı. " + ObifinCopyWarning;
+        return RedirectToPage();
+    }
+
+    /// <summary>Obifin'in hareket kopyasını sildiğine dair yazılı teyit alındı (KVKK Ö-9 öneri 3; karar 21): kayıt kapanır, imha
+    /// kaydı yazılır. Teyit yazısı sistemde saklanmaz (KVKK klasörü). BankHasher istemez.</summary>
+    public async Task<IActionResult> OnPostConfirmObifinCopyDeletedAsync(Guid deletionId)
+    {
+        Guid licenseId;
+        try
+        {
+            licenseId = await _terminator.ConfirmObifinCopyDeletedAsync(deletionId, DataDestruction.ActorOf(User),
+                CancellationToken.None);
+        }
+        catch (ObifinValidationException ex)
+        {
+            LogHandled("ConfirmObifinCopyDeleted", ex);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
+        await _audit.LogAsync(AuditEvents.ObifinCopyDeletionConfirm, AuditTargets.ObifinConnection, licenseId.ToString(),
+            new { deletionId }, CancellationToken.None);
+        TempData["Success"] = "Obifin'in yazılı silme teyidi kaydedildi. Teyit yazısını KVKK klasöründe saklayın.";
+        return RedirectToPage();
+    }
+
+    /// <summary>KVKK Ö-10: hesabı reddeder (onaylıysa onayını geri alır) ve o hesabın bu lisanstaki hareketlerini, eşleşmelerini,
+    /// öğrettiği IBAN bağlarını siler; tazelediği bağın süresini kalan doğrulamalara geri çeker. Yazılı onay: hesap numarası.
+    /// İstek jetonu BİLEREK kullanılmaz (silmenin denetimi düşmesin). BankHasher istemez.</summary>
+    public async Task<IActionResult> OnPostRejectAccountAsync(Guid accountId, string? confirmAccount)
+    {
+        var account = await _db.BankAccounts.AsNoTracking().Where(a => a.Id == accountId)
+            .Select(a => new { a.LicenseId, a.ObifinAccountId }).FirstOrDefaultAsync(CancellationToken.None);
+        if (account is null)
+        {
+            TempData["Error"] = BankConnectionTerminator.AccountNotFoundMessage;
+            return RedirectToPage();
+        }
+        if ((confirmAccount ?? "").Trim() != account.ObifinAccountId.ToString(CultureInfo.InvariantCulture))
+        {
+            TempData["Error"] = RejectConfirmMismatchMessage;
+            return RedirectToPage();
+        }
+        BankAccountRejectionResult r;
+        try
+        {
+            r = await _terminator.RejectAccountAsync(accountId, DataDestruction.ActorOf(User), CancellationToken.None);
+        }
+        catch (ObifinValidationException ex)
+        {
+            LogHandled("RejectAccount", ex);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
+        }
+        await _audit.LogAsync(AuditEvents.ObifinAccountReject, AuditTargets.ObifinConnection, account.LicenseId.ToString(),
+            new { account.ObifinAccountId, r.Transactions, r.Matches, r.Memories, r.GapsReopened }, CancellationToken.None);
+        TempData["Success"] = $"Hesap reddedildi: {r.Transactions} hareket, {r.Matches} eşleşme, {r.Memories} IBAN bağı silindi; " +
+            "bundan sonraki hareketleri kaydedilmez.";
+        return RedirectToPage();
     }
 
     public async Task<IActionResult> OnPostPollNowAsync(CancellationToken ct)

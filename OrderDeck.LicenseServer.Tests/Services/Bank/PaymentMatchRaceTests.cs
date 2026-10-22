@@ -74,18 +74,31 @@ public sealed class PaymentMatchRaceTests
         => db.ChangeTracker.Entries<PaymentMatch>().Any(e => e.State == EntityState.Modified && e.Entity.DecidedAt is null
             && e.OriginalValues.GetValue<DateTimeOffset?>(nameof(PaymentMatch.DecidedAt)) is null);
 
-    private LicenseDbContext Ctx(IInterceptor? interceptor = null)
+    private LicenseDbContext Ctx(params IInterceptor[] interceptors)
     {
         var options = new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(_name, _root);
-        if (interceptor is not null) options.AddInterceptors(interceptor);
+        if (interceptors.Length > 0) options.AddInterceptors(interceptors);
         return new LicenseDbContext(options.Options);
+    }
+
+    /// <summary>Her SaveChanges'te izleyicide kaç imha kaydının eklenmeyi beklediğini kaydeder.</summary>
+    private sealed class AddedRecordCounter : SaveChangesInterceptor
+    {
+        public List<int> PerSave { get; } = new();
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            PerSave.Add(eventData.Context!.ChangeTracker.Entries<DataDestructionRecord>().Count(e => e.State == EntityState.Added));
+            return ValueTask.FromResult(result);
+        }
     }
 
     private static PaymentMatcher Matcher(LicenseDbContext db)
         => new(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance);
 
     private static PaymentMatchReconciler Recon(LicenseDbContext db, ILogger<PaymentMatchReconciler>? log = null)
-        => new(db, Matcher(db), log ?? NullLogger<PaymentMatchReconciler>.Instance);
+        => new(db, Matcher(db), Options.Create(new BankOptions()), log ?? NullLogger<PaymentMatchReconciler>.Instance);
 
     private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid WpfCustomerId, BankTransaction Tx);
 
@@ -145,7 +158,7 @@ public sealed class PaymentMatchRaceTests
     }
 
     private static void NoPendingWrites(LicenseDbContext db)
-        => db.ChangeTracker.Entries().Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory)
+        => db.ChangeTracker.Entries().Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory or DataDestructionRecord)
             .Should().NotContain(e => e.State != EntityState.Unchanged, "düşen deneme izleyicide iz bırakmaz");
 
     [Fact]
@@ -282,6 +295,38 @@ public sealed class PaymentMatchRaceTests
     }
 
     [Fact]
+    public async Task Bagdastirici_secimden_sonra_KVKK_silmesiyle_musterisi_bosalan_karara_dekont_eklemez()
+    {
+        // Karar kilidi DecidedAt'tir: KVKK silmesi (BankSubjectScrub.MatchForCustomer) kararın müşterisini boşaltır, anını ve
+        // sonucunu bırakır. Seçimle satırın izlenerek okunması arasına başka müşteriye verilen karar ve o müşterinin silinmesi
+        // düşerse satırda ne dekont ne müşteri vardır; bağdaştırıcı seçimi yine bayat sayar, taze seçim hareketi aday saymaz.
+        var s = await SeedAsync();
+        var other = await OtherCustomerAsync(s.LicenseId);
+        var payment = await ApprovedAsync(s, s.Tx.Amount);
+        var race = new OnMaterialize(s.Tx.Id, () =>
+        {
+            using var admin = Ctx();
+            var m = admin.PaymentMatches.Single(x => x.BankTransactionId == s.Tx.Id);
+            var now = DateTimeOffset.UtcNow;
+            m.ActualWpfCustomerId = other; m.DecidedAt = now; m.UpdatedAt = now; m.Status = PaymentMatchStatus.ManualOnly;
+            BankSubjectScrub.MatchForCustomer(m, other, now);
+            admin.SaveChanges();
+        });
+        await using var job = Ctx(race);
+
+        await Recon(job).ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        race.Fired.Should().Be(1);
+        var row = await RowAsync(s.Tx.Id);
+        (row.PaymentId, row.ActualWpfCustomerId).Should().Be(((Guid?)null, (Guid?)null), "silinen kişinin kararına bu dekont eklenmez");
+        row.DecidedAt.Should().NotBeNull();
+        row.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        await using var verify = Ctx();
+        (await verify.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+        NoPendingWrites(job);
+    }
+
+    [Fact]
     public async Task Elle_esleme_iki_carpismada_admin_mesajiyla_duser()
     {
         var s = await SeedAsync();
@@ -354,6 +399,54 @@ public sealed class PaymentMatchRaceTests
         row.PaymentId.Should().BeNull();
         row.DecidedAt.Should().BeNull();
         row.Status.Should().Be(PaymentMatchStatus.Proposed, "insan kararı kalkınca öneri yeniden hesaplanır");
+        NoPendingWrites(admin);
+    }
+
+    [Fact]
+    public async Task Bagi_silen_kaldirma_yeniden_denenince_imha_kaydini_bir_kez_ekler()
+    {
+        // Bağı öğreten havale 180 günlük kuralla silinmiş; süresini yalnız bu hareketin elle eşlemesi taşıyor. Kaldırma bağı
+        // siler ve imha kaydını aynı kayda ekler. Kayıt kanıt temizliğinin ilerlettiği jetona takılır, deneme yeniden koşar.
+        // İlk denemenin eklediği kayıt izde kalsaydı ikinci denemenin kaydında iki kez yazılırdı. InMemory işlemsel değil
+        // (düşen kaydın eklemeleri depoda kalır): burada izleyici sınanır, depodaki tek kayıt gerçek SQL Server'da
+        // (IbanBondRewindRelationalTests).
+        var s = await SeedAsync();
+        var hash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        var actor = Guid.NewGuid().ToString();
+        await using (var setup = Ctx())
+        {
+            var seeded = await setup.BankTransactions.SingleAsync(t => t.Id == s.Tx.Id);
+            // Görev 11'den sonraki çekim: özet geçerli IBAN'dan, bağı tazeleyebilir (KVKK Ö-7).
+            seeded.CounterpartyIbanHash = hash; seeded.CounterpartyIbanHashValid = true;
+            var learnedAt = DateTimeOffset.UtcNow.AddDays(-200);
+            setup.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId,
+                WpfCustomerId = s.WpfCustomerId, IbanHash = hash, IbanMasked = "TR12…345", LearnedFrom = IbanMemorySource.ManualMatch,
+                SourceBankTransactionId = Guid.NewGuid(), CreatedAt = learnedAt, LastConfirmedAt = learnedAt });
+            await setup.SaveChangesAsync();
+        }
+        await using (var first = Ctx())
+            await Recon(first).ManualMatchAsync(s.LicenseId, s.Tx.Id, s.WpfCustomerId, CancellationToken.None);
+        var race = new BeforeSave(ModifiesMatch, async () =>
+        {
+            await using var cleanup = Ctx();
+            var m = await cleanup.PaymentMatches.SingleAsync(x => x.BankTransactionId == s.Tx.Id);
+            // Jeton kesin değişsin diye aynı tick'e düşmeden ilerletilir.
+            m.Evidence = null; m.UpdatedAt = m.UpdatedAt.AddMilliseconds(1);
+            await cleanup.SaveChangesAsync();
+        });
+        var counter = new AddedRecordCounter();
+        await using var admin = Ctx(race, counter);
+        var log = new LogRecorder<PaymentMatchReconciler>();
+
+        await Recon(admin, log).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None, actor);
+
+        race.Fired.Should().Be(1);
+        log.Entries.Should().Contain(e => e.Message.Contains("yeniden deneniyor"));
+        counter.PerSave.Where(n => n > 0).Should().Equal(new[] { 1, 1 }, "düşen denemenin kaydı izden atılır, yeniden deneme yalnız kendisininkini ekler");
+        await using var verify = Ctx();
+        (await verify.CustomerIbanMemories.AsNoTracking().CountAsync()).Should().Be(0);
+        (await verify.DataDestructionRecords.AsNoTracking().ToListAsync())
+            .Should().OnlyContain(r => r.LicenseId == s.LicenseId && r.Target == "CustomerIbanMemories" && r.RowCount == 1 && r.Actor == actor);
         NoPendingWrites(admin);
     }
 

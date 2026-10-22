@@ -1,11 +1,15 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Observability;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -52,12 +56,40 @@ public class AuditRetentionJobsTests : IClassFixture<ApiFactory>
         return tag;
     }
 
-    private AuditRetentionJobs Make(LicenseDbContext db, int retentionMonths = 24, int batchSize = 1000)
+    private static AuditRetentionJobs Make(LicenseDbContext db, int retentionMonths = 24, int batchSize = 1000,
+        TestEmailSender? email = null)
         => new(db, Options.Create(new AuditRetentionOptions
         {
             RetentionMonths = retentionMonths,
             BatchSize = batchSize
-        }), NullLogger<AuditRetentionJobs>.Instance);
+        }), new AdminJobAlerts(email ?? new TestEmailSender(), new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [AdminJobAlerts.AlertEmailKey] = $"ops-{Guid.NewGuid():N}@example.test",
+            }).Build(), NullLogger<AdminJobAlerts>.Instance), NullLogger<AuditRetentionJobs>.Instance);
+
+    /// <summary>Paylaşılan fabrika veritabanı değil, kendi InMemory veritabanı: imha kayıtları tam sayılır.</summary>
+    private static LicenseDbContext OwnDb(IInterceptor? interceptor = null)
+    {
+        var options = new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"audit-ret-{Guid.NewGuid():N}");
+        if (interceptor is not null) options.AddInterceptors(interceptor);
+        return new LicenseDbContext(options.Options);
+    }
+
+    /// <summary>Kurulan her kaydı düşürür (yalnız <see cref="Armed"/> iken): DB kesintisi benzetimi.</summary>
+    private sealed class FailingSaveInterceptor : SaveChangesInterceptor
+    {
+        public bool Armed { get; set; }
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            => Armed ? throw new DbUpdateException("DB kesintisi benzetimi") : ValueTask.FromResult(result);
+    }
+
+    private static AuditLogEntry Entry(string type, int monthsAgo) => new()
+    {
+        Id = Guid.NewGuid(), EventType = type, OccurredAt = DateTimeOffset.UtcNow.AddMonths(-monthsAgo).AddDays(-1),
+        AdminId = Guid.Empty, AdminUsername = "test",
+    };
 
     [Fact]
     public async Task Prune_deletes_rows_older_than_retention_keeps_recent()
@@ -102,5 +134,128 @@ public class AuditRetentionJobsTests : IClassFixture<ApiFactory>
 
         var remaining = await db.AuditLogs.CountAsync(a => a.EventType == $"{tag}-old");
         remaining.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Kisisel_veri_icermeyen_imha_olaylari_36_ayda_customer_purged_24_ayda_budanir()
+    {
+        // Silme Yönetmeliği md. 7/3: imha kayıtları en az üç yıl. Normal olay 24 ayda gider. customer.purged ayrıntısında
+        // silinen yayıncının e-postası var: muafiyet onu 36 ay tutmasın (kalıcı kaydı DataDestructionRecords'ta).
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        AuditLogEntry Entry(string type, int monthsAgo) => new()
+        {
+            Id = Guid.NewGuid(), EventType = type, OccurredAt = DateTimeOffset.UtcNow.AddMonths(-monthsAgo).AddDays(-1),
+            AdminId = Guid.Empty, AdminUsername = "test",
+        };
+        var purge30 = Entry(AuditEvents.ShopperPurged, 30);
+        var purge37 = Entry(AuditEvents.ShopperPurged, 37);
+        var customerPurge30 = Entry(AuditEvents.CustomerPurged, 30);
+        var normal30 = Entry("test-" + Guid.NewGuid().ToString("N")[..8], 30);
+        db.AuditLogs.AddRange(purge30, purge37, customerPurge30, normal30);
+        await db.SaveChangesAsync();
+
+        await Make(db).PruneAsync(CancellationToken.None);
+
+        var ids = new[] { purge30.Id, purge37.Id, customerPurge30.Id, normal30.Id };
+        (await db.AuditLogs.AsNoTracking().Where(a => ids.Contains(a.Id)).Select(a => a.Id).ToListAsync())
+            .Should().BeEquivalentTo(new[] { purge30.Id });
+        AuditEvents.DestructionEvents.Should().NotContain(AuditEvents.CustomerPurged);
+    }
+
+    [Fact]
+    public async Task Imha_olayinin_satiri_24_ayda_yonetici_adini_kimligine_cevirir_IP_yi_bosaltir_bir_kez_kayda_gecer()
+    {
+        // KVKK Ö-14: 36 ay muafiyeti kişisel veriyi 24 aydan uzun tutmasın. shopper.purged satırının kendi sütunlarında silmeyi
+        // yapan yöneticinin kullanıcı adı ve IP'si var: 24 ayda ad yöneticinin kimliğine çevrilir, IP boşaltılır; satır 36 aya
+        // kadar yalnız takma kimlikler ve sayılarla kalır. Maskeleme kalıcı imha kaydına geçer; ikinci koşu aynı satırı yeniden
+        // saymaz.
+        using var db = OwnDb();
+        var adminId = Guid.NewGuid();
+        AuditLogEntry Purge(int monthsAgo) => new()
+        {
+            Id = Guid.NewGuid(), EventType = AuditEvents.ShopperPurged,
+            OccurredAt = DateTimeOffset.UtcNow.AddMonths(-monthsAgo).AddDays(-1), AdminId = adminId,
+            AdminUsername = $"yonetici-{Guid.NewGuid():N}", IpAddress = "192.0.2.10", TargetType = AuditTargets.Shopper,
+        };
+        var old = Purge(30);
+        var recent = Purge(12);
+        db.AuditLogs.AddRange(old, recent);
+        await db.SaveChangesAsync();
+        var recentName = recent.AdminUsername;
+        db.ChangeTracker.Clear();
+
+        await Make(db).PruneAsync(CancellationToken.None);
+        await Make(db).PruneAsync(CancellationToken.None);
+
+        var rows = await db.AuditLogs.AsNoTracking().ToDictionaryAsync(a => a.Id);
+        rows[old.Id].Should().Match<AuditLogEntry>(a => a.AdminUsername == adminId.ToString() && a.IpAddress == null
+            && a.AdminId == adminId && a.EventType == AuditEvents.ShopperPurged);
+        rows[recent.Id].Should().Match<AuditLogEntry>(a => a.AdminUsername == recentName && a.IpAddress == "192.0.2.10");
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.Action == DataDestruction.Actions.Masked).ToListAsync())
+            .Should().ContainSingle().Which.Should().Match<DataDestructionRecord>(r => r.Target == AuditRetentionJobs.MaskedTarget
+                && r.RowCount == 1 && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
+                && r.LicenseId == null);
+    }
+
+    [Fact]
+    public async Task Budama_her_partide_imha_kaydi_ve_sonda_kosu_kaydi_yazar()
+    {
+        // KVKK Ö-13 / iç imha prosedürü §4.2: denetim kaydı budaması da kişisel veri siler (customer.purged'ın e-postası dahil);
+        // her parti kalıcı imha kaydı bırakır, her başarılı koşu bir koşu kaydı ("son başarılı çalışma" tablodan okunur).
+        using var db = OwnDb();
+        db.AuditLogs.AddRange(Enumerable.Range(0, 5).Select(_ => Entry("test.normal", 30)));
+        db.AuditLogs.AddRange(Entry(AuditEvents.ShopperPurged, 37), Entry(AuditEvents.ShopperPurged, 37),
+            Entry(AuditEvents.ShopperPurged, 30), Entry("test.normal", 1));
+        await db.SaveChangesAsync();
+
+        await Make(db, batchSize: 3).PruneAsync(CancellationToken.None);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().OnlyContain(r => r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
+            && r.LicenseId == null);
+        records.Where(r => r.Target == "AuditLogs").Should().OnlyContain(r => r.Action == DataDestruction.Actions.Deleted);
+        records.Where(r => r.Target == "AuditLogs").Select(r => (r.Criterion, r.RowCount)).Should().BeEquivalentTo(new[]
+        {
+            ("OccurredAt+24ay", 3), ("OccurredAt+24ay", 2), ("OccurredAt+36ay, imha olayı", 2),
+        });
+        // Ölçütler dış kopyanın (CSV) ayracını taşımaz: e-postadaki değer tablodakiyle aynı.
+        records.Should().OnlyContain(r => !r.Criterion.Contains(';'));
+        records.Should().ContainSingle(r => r.Action == DataDestruction.Actions.RunCompleted)
+            .Which.Should().Match<DataDestructionRecord>(r => r.Target == AuditRetentionJobs.JobId && r.RowCount == 0);
+        (await db.AuditLogs.CountAsync()).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Silinecek_satir_yoksa_yalniz_kosu_kaydi_yazar()
+    {
+        using var db = OwnDb();
+        db.AuditLogs.Add(Entry("test.normal", 1));
+        await db.SaveChangesAsync();
+
+        await Make(db).PruneAsync(CancellationToken.None);
+
+        (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should().ContainSingle()
+            .Which.Should().Match<DataDestructionRecord>(r => r.Action == DataDestruction.Actions.RunCompleted
+                && r.Target == AuditRetentionJobs.JobId);
+    }
+
+    [Fact]
+    public async Task Budama_duserse_yoneticiye_e_posta_gider_hata_yukari_cikar_kosu_kaydi_yazilmaz()
+    {
+        var failing = new FailingSaveInterceptor(); var email = new TestEmailSender();
+        using var db = OwnDb(failing);
+        db.AuditLogs.Add(Entry("test.normal", 30));
+        await db.SaveChangesAsync();
+        failing.Armed = true;
+
+        var act = () => Make(db, email: email).PruneAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<DbUpdateException>();
+        var sent = email.Sent.Should().ContainSingle().Subject;
+        sent.Subject.Should().Be(AuditRetentionJobs.FailureSubject);
+        sent.PlainBody.Should().Contain(nameof(DbUpdateException));
+        failing.Armed = false;
+        (await db.DataDestructionRecords.AsNoTracking().CountAsync()).Should().Be(0);
     }
 }

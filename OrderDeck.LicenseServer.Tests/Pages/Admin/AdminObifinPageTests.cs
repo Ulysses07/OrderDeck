@@ -12,7 +12,9 @@ using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -36,7 +38,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>Betikli istemci: başarılı ekleme kaydı banka bağlantı listesine koyar (BankaApiId rastgele), hesap listesi
-    /// boş döner; ayarlanan çağrı istenen istisnayı fırlatır. Kaldırma/hareket çağrısı beklenmez.</summary>
+    /// boş döner; ayarlanan çağrı istenen istisnayı fırlatır. Hareket çağrısı beklenmez; kaldırma kaydedilir.</summary>
     private sealed class PageObifin : IObifinClient
     {
         /// <summary>Null = ekleme başarılı.</summary>
@@ -81,8 +83,14 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             if (ListBankConnectionsFails is { } fail) return Task.FromException<IReadOnlyList<ObifinBankConnectionDto>>(fail());
             lock (_connections) return Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>(_connections.ToList());
         }
+        private readonly List<long> _removed = new();
+        /// <summary>Kaldırılan banka bağlantıları (BankaApiId).</summary>
+        public List<long> Removed { get { lock (_removed) return _removed.ToList(); } }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
-            => throw new NotSupportedException("Bu testte beklenmiyor.");
+        {
+            lock (_removed) _removed.Add(id);
+            return Task.CompletedTask;
+        }
         public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
             => throw new NotSupportedException("Bu testte beklenmiyor.");
     }
@@ -106,6 +114,13 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
                 lock (owner._warnings) owner._warnings.Add(formatter(state, exception) + (exception is null ? "" : " " + exception));
             }
         }
+    }
+
+    /// <summary>Hareket silen her kayıt eşzamanlı bir eşleştirme yazısıyla çakışır (yeniden deneme de): silme yarıda kalır.</summary>
+    private sealed class ConflictingDeleteApiFactory : ApiFactory
+    {
+        private readonly BankConnectionTerminatorTests.TransactionDeleteConflict _conflict = new();
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(_conflict);
     }
 
     private sealed class StubObifinApiFactory : ApiFactory
@@ -136,8 +151,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>Müşteri + lisans ekler (kaydetmez); e-posta <paramref name="emailPrefix"/> ile başlar — seçim listesi
-    /// e-postaya göre sıralı.</summary>
-    private static Guid AddLicense(LicenseDbContext db, string emailPrefix = "ob")
+    /// e-postaya göre sıralı. <paramref name="withDataController"/>: yayıncının veri sorumlusu bilgisi (KVKK K-3 kapısı).</summary>
+    private static Guid AddLicense(LicenseDbContext db, string emailPrefix = "ob", bool withDataController = true)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer { Id = customerId, Email = $"{emailPrefix}-{Guid.NewGuid():N}@x", Name = "Ob",
@@ -145,6 +160,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var licenseId = Guid.NewGuid();
         db.Licenses.Add(new License { Id = licenseId, LicenseKey = $"LDK-OB-{Guid.NewGuid():N}", CustomerId = customerId,
             SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+        if (withDataController) TestDataController.Add(db, customerId);   // KVKK K-3 kapısı: Kaydet ilk kaydı da yapar
         return licenseId;
     }
 
@@ -748,6 +764,29 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Veri_sorumlusu_bilgisi_olmayan_yayincida_ilk_kayit_reddedilir_bildirim_yolu_gosterir()
+    {
+        // KVKK K-3 öneri 3 (karar 23): uygulamanın gerçek yapılandırmasında (appsettings, Obifin:RequireDataControllerProfile)
+        // kapı açık; bildirim yöneticiye bilginin nereye girileceğini söyler, bağlantı satırı açılmaz.
+        Guid licenseId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            licenseId = AddLicense(db, withDataController: false);
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var resp = await SaveAsync(client, licenseId, "api@x");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "danger")).Should().Be(ObifinConnectionService.DataControllerMissingMessage);
+        using var verify = _factory.Services.CreateScope();
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.CountAsync(c => c.LicenseId == licenseId))
+            .Should().Be(0);
+    }
+
+    [Fact]
     public async Task Kayit_dogrulama_hatasi_bildirime_servisin_mesajiyla_duser()
     {
         // Servisin doğrulama mesajı olduğu gibi gösterilir (parametre adı eki yok).
@@ -853,7 +892,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         }, confirmReset: true);
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
+        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. "
+            + ObifinConnectionService.CredentialChangeObifinSideNote + " Şimdi doğrulayın.");
         var conn = await ConnectionAsync(licenseId);
         conn.UserCode.Should().Be(newUser);
         conn.BaseUrl.Should().Be(newBaseUrl);
@@ -872,9 +912,46 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var resp = await SaveAsync(client, licenseId, newUser, confirmReset: true);
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
+        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. "
+            + ObifinConnectionService.CredentialChangeObifinSideNote + " Şimdi doğrulayın.");
         (await ConnectionAsync(licenseId)).UserCode.Should().Be(newUser);
         (await ShadowCountsAsync(licenseId)).Should().Be((0, 0, 0));
+    }
+
+    [Fact]
+    public async Task Kimlik_degisimi_onayi_eski_Obifin_kullanicisindaki_baglantilara_dokunulmadigini_soyler()
+    {
+        // Kimlik değişimi yalnız yereli siler; eski Obifin kullanıcısında "Banka ekle" ile açılmış bağlantılar çekmeyi sürdürür.
+        // Aynı firmanın yeni (salt okuma) kullanıcısında bu istenen durumdur; başka firmaya geçişte yönetici elle kaldırmalı.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var page = await ParseAsync(await client.GetStringAsync($"/admin/obifin?license={licenseId}"));
+
+        page.QuerySelector("label[for='confirmReset']")!.TextContent
+            .Should().Contain(ObifinConnectionService.CredentialChangeObifinSideNote);
+    }
+
+    [Fact]
+    public async Task Kimlik_degisiminin_imha_kaydinda_yapan_yoneticinin_kimligidir()
+    {
+        // KVKK Ö-13/Ö-14: imha kaydı budanmaz; kimin yaptığı yalnız 24 ayda budanan obifin.connection.save satırında kalsa 3 yıllık
+        // kayıtta yapan bilinmez olurdu. Yapan: yöneticinin sub kimliği (DataDestruction.ActorOf), kullanıcı adı değil.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+        await SeedShadowDataAsync(licenseId);
+
+        (await SaveAsync(client, licenseId, $"yeni-{Guid.NewGuid():N}@x", confirmReset: true)).StatusCode
+            .Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var adminId = (await db.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+        (await db.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == licenseId).ToListAsync())
+            .Should().NotBeEmpty().And.OnlyContain(r => r.Trigger == DataDestruction.Triggers.CredentialChange
+                && r.Actor == adminId.ToString());
     }
 
     [Fact]
@@ -1109,6 +1186,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         {
             c.LastPolledAt = DateTimeOffset.UtcNow.AddMinutes(-5).AddSeconds(-10);
             c.BackfillCompletedAt = DateTimeOffset.UtcNow.AddDays(-1);
+            c.InitialCollectFrom = new DateOnly(2026, 9, 23);
             c.LastObifinTransactionId = 4242;
         });
 
@@ -1117,6 +1195,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var row = doc.QuerySelector($"tr[data-license='{licenseId}']")!;
         row.QuerySelector("[data-cell='status']")!.TextContent.Should().Be("Verified");
         row.QuerySelector("[data-cell='last-polled']")!.TextContent.Should().Contain("5 dk önce");
+        row.QuerySelector("[data-cell='backfill']")!.TextContent.Should().EndWith("(≥ 2026-09-23)", "ilk çekim çapası (KVKK Ö-5)");
         row.TextContent.Should().Contain("4242");
         // Durum yardımı kodla aynı şeyi söylemeli: banka eklemedeki hata (geçici ya da Obifin reddi) durumu değiştirmez.
         doc.QuerySelector("[data-help='status']")!.TextContent.Should().Contain("elle Doğrula'da Obifin'e ulaşılamadı")
@@ -1134,5 +1213,382 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         foreach (var name in new[] { "Password", "ApiKey" })
             doc.QuerySelector($"input[name='{name}']")!.ParentElement!.QuerySelector("label")!.TextContent
                 .Should().Contain("kayıtlı").And.Contain("boş = değiştirme");
+    }
+
+    [Fact]
+    public async Task Hesap_satiri_IBAN_niteligi_sayaclarini_gosterir()
+    {
+        // KVKK Ö-7: maskeli sayısı sıfır değilse o bankanın IBAN'ları özetlenemiyor; yönetici hesap satırında görür (değer yok,
+        // yalnız sayılar).
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x", baseUrl: "https://example.invalid");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankAccounts.Add(new BankAccount { Id = Guid.NewGuid(), LicenseId = licenseId,
+                ObifinAccountId = Random.Shared.NextInt64(1, 1_000_000), BankaKodu = "qnb",
+                IbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban()), Currency = "TL", Active = true,
+                RefreshedAt = DateTimeOffset.UtcNow, IbanFullCount = 7, IbanMaskedCount = 3, IbanEmptyCount = 1 });
+            await db.SaveChangesAsync();
+        }
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+
+        doc.QuerySelector($"tr[data-license-accounts='{licenseId}'] [data-cell='iban-quality']")!.TextContent
+            .Should().Be("7/3/1");
+    }
+
+    [Fact]
+    public async Task Onaysiz_hesap_uyariyla_listelenir_onaylaninca_onay_ve_denetim_yazilir()
+    {
+        // KVKK Ö-10: onaysız hesabın hareketi kaydedilmez; yönetici hesap numarasıyla görür, onaylar. Onaylayan kimlikle yazılır.
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        var accountId = Guid.NewGuid();
+        var obifinAccountId = Random.Shared.NextInt64(1, 1_000_000);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankAccounts.Add(new BankAccount { Id = accountId, LicenseId = lic, ObifinAccountId = obifinAccountId,
+                BankaKodu = "qnb", IbanMasked = BankHasher.MaskIban(BankHasherTests.TestIban()), Currency = "TL",
+                RefreshedAt = DateTimeOffset.UtcNow, UnapprovedSkippedCount = 3 });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+        doc.QuerySelector("[data-banner='unapproved-accounts']").Should().NotBeNull();
+        var row = doc.QuerySelector($"tr[data-license-accounts='{lic}'] [data-account='{accountId}']")!;
+        row.TextContent.Should().Contain($"#{obifinAccountId}", "ret formu (Görev 13) hesap numarasını yazdırır");
+        row.QuerySelector("[data-cell='approval']")!.TextContent.Should().Contain("3 hareket kaydedilmedi");
+        row.QuerySelector("form[action*='handler=ApproveAccount']").Should().NotBeNull();
+
+        var resp = await PostAsync(client, "ApproveAccount", new Dictionary<string, string> { ["AccountId"] = accountId.ToString() });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using (var verify = _factory.Services.CreateScope())
+        {
+            var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var account = await vdb.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId);
+            account.ApprovedAt.Should().NotBeNull();
+            var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id;
+            account.ApprovedBy.Should().Be(adminId.ToString(), "yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14)");
+            (await vdb.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinAccountApprove && a.TargetId == lic.ToString()))
+                .Should().BeTrue();
+        }
+        var after = (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+            .QuerySelector($"[data-account='{accountId}'] [data-cell='approval']")!;
+        after.TextContent.Should().Contain("onaylı").And.NotContain("ONAYSIZ");
+        after.QuerySelector("form[action*='handler=ApproveAccount']").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Durdur_ve_etkinlestir_modul_kapaliyken_de_calisir()
+    {
+        // KVKK K-6: durdurma ve silme BankHasher istemez; anahtarsız modülde de çalışır.
+        using var factory = new DisabledBankApiFactory();
+        var lic = await SeedLicenseAsync(factory);
+        await SeedRawConnectionAsync(factory, lic);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        var fields = () => new Dictionary<string, string> { ["LicenseId"] = lic.ToString() };
+        async Task<IElement> RowAsync()
+            => (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector($"tr[data-license='{lic}']")!;
+
+        var verified = await RowAsync();
+        verified.QuerySelector("button[formaction*='handler=Stop']").Should().NotBeNull("Verified satırda Durdur");
+        verified.QuerySelector("button[formaction*='handler=Verify']").Should().NotBeNull("durdurulmamış satırda Doğrula");
+        (await PostAsync(client, "Stop", fields())).StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var conn = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.AsNoTracking()
+                .SingleAsync(c => c.LicenseId == lic);
+            conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+            conn.DisabledAt.Should().NotBeNull();
+            conn.DisabledByAdmin.Should().BeTrue();
+        }
+        var stopped = await RowAsync();
+        stopped.QuerySelector("[data-cell='status']")!.TextContent.Should().Contain("silinecek");
+        stopped.QuerySelector("button[formaction*='handler=Resume']").Should().NotBeNull("Disabled satırda Etkinleştir");
+        stopped.QuerySelector("button[formaction*='handler=Verify']")
+            .Should().BeNull("durdurulmuş bağlantıda Doğrula Obifin'e gitmez (KVKK K-6); önce Etkinleştir");
+
+        (await PostAsync(client, "Resume", fields())).StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic)).Status.Should().Be(ObifinConnectionStatus.Unverified);
+            (await db.AuditLogs.CountAsync(a => a.TargetId == lic.ToString()
+                && (a.EventType == AuditEvents.ObifinConnectionStop || a.EventType == AuditEvents.ObifinConnectionResume))).Should().Be(2);
+        }
+        var resumed = await RowAsync();
+        resumed.QuerySelector("[data-cell='status']")!.TextContent
+            .Should().NotContain("silinecek", "tarih yalnız Disabled iken gösterilir");
+        resumed.QuerySelector("button[formaction*='handler=Verify']").Should().NotBeNull("etkinleştirilen satırda Doğrula");
+    }
+
+    [Fact]
+    public async Task Durdurulmus_baglantida_kimlik_kaydi_once_Etkinlestir_der_Simdi_dogrulayin_demez()
+    {
+        // Durdurulmuş bağlantıda aynı kimliğe yeni parola kaydedilir (ya da lisans bitmişken kimlik değişir), bağlantı Disabled
+        // kalır. "Şimdi doğrulayın" yanlış yönlendirirdi: Doğrula düğmesi gizli, servis StoppedConnectionMessage ile reddeder.
+        var lic = await SeedLicenseAsync();
+        var seeded = await SeedRawConnectionAsync(_factory, lic);
+        await SetStatusAsync(lic, ObifinConnectionStatus.Disabled, c =>
+        {
+            c.DisabledAt = DateTimeOffset.UtcNow.AddDays(-1); c.DisabledByAdmin = true;
+        });
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        await SaveAsync(client, lic, seeded.UserCode);   // aynı kullanıcı, yeni parola ve anahtar
+
+        (await ToastAsync(client, "success")).Should().Contain(ObifinConnectionService.StoppedConnectionMessage)
+            .And.NotContain("Şimdi doğrulayın");
+        (await ConnectionAsync(lic)).Status.Should().Be(ObifinConnectionStatus.Disabled);
+    }
+
+    [Fact]
+    public async Task Etkinlestir_lisansi_bitmis_baglantida_reddedilir()
+    {
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Licenses.SingleAsync(l => l.Id == lic)).ExpiresAt = DateTimeOffset.UtcNow.AddDays(-1);
+            await db.SaveChangesAsync();
+        }
+        await SetStatusAsync(lic, ObifinConnectionStatus.Disabled, c => c.DisabledAt = DateTimeOffset.UtcNow.AddDays(-2));
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        await PostAsync(client, "Resume", new Dictionary<string, string> { ["LicenseId"] = lic.ToString() });
+
+        (await ToastAsync(client, "danger")).Should().Contain(BankConnectionTerminator.LicenseStillEndedMessage);
+        (await ConnectionAsync(lic)).Status.Should().Be(ObifinConnectionStatus.Disabled);
+    }
+
+    [Fact]
+    public async Task Yerel_verisi_silinmis_baglanti_seritle_ve_durum_hucresinde_Kaldir_ve_sil_bekler()
+    {
+        // KVKK K-6 / karar 21: hizmet sonu yerel silmesinden sonra Obifin tarafı "Kaldır ve sil" bekler; yönetici sayfada görür.
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        await SetStatusAsync(lic, ObifinConnectionStatus.Disabled, c =>
+        {
+            c.DisabledAt = new DateTimeOffset(2026, 9, 1, 8, 0, 0, TimeSpan.Zero);
+            c.BankDataPurgedAt = new DateTimeOffset(2026, 10, 1, 8, 0, 0, TimeSpan.Zero);
+        });
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+
+        doc.QuerySelector("[data-banner='pending-obifin-removal']").Should().NotBeNull();
+        doc.QuerySelector($"tr[data-license='{lic}'] [data-cell='status']")!.TextContent
+            .Should().Contain("2026-09-01").And.Contain("2026-10-01 silindi").And.Contain("Kaldır ve sil");
+    }
+
+    [Fact]
+    public async Task Kaldir_lisans_anahtari_yazilmadan_bir_sey_yapmaz_yazilinca_siler_teyit_bekleyenlere_ekler()
+    {
+        // Purge'ün confirmEmail kalıbı: geri dönüşsüz işlem yalnız JS confirm()'una kalmasın. Obifin'in yazılı silme teyidi
+        // bağlantı silindikten sonra da izlenir (KVKK Ö-9 öneri 3).
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);   // sahte korunan alanlar: kimlik çözülemez → Obifin'e gidilmez
+        await SeedShadowDataAsync(lic);
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        string key;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var seedDb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            key = await seedDb.Licenses.Where(l => l.Id == lic).Select(l => l.LicenseKey).SingleAsync();
+            // Açık banka veri talebi: silme onu kapatır, yönetici başvurana yanıt vermesi gerektiğini bildirimden öğrenir (m. 13/2).
+            seedDb.BankSubjectRequests.Add(new BankSubjectRequest { Id = Guid.NewGuid(), LicenseId = lic,
+                Kind = BankSubjectRequestKind.Erasure, IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}", IbanMasked = "TR12…345",
+                ReceivedAt = DateTimeOffset.UtcNow, DueAt = DateTimeOffset.UtcNow.AddDays(30), CreatedAt = DateTimeOffset.UtcNow,
+                CreatedBy = "yonetici-1" });
+            await seedDb.SaveChangesAsync();
+        }
+        var form = (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+            .QuerySelector($"tr[data-license='{lic}'] form[action*='handler=Remove']")!;
+        form.QuerySelector("input[name='ConfirmLicenseKey']")!.HasAttribute("required").Should().BeTrue();
+        form.QuerySelector("input[name='ConfirmRemove']").Should().BeNull("gizli onay alanı yok: sunucu denetimi anlamsızdı");
+
+        await PostAsync(client, "Remove", new Dictionary<string, string> { ["LicenseId"] = lic.ToString() });
+        await PostAsync(client, "Remove", new Dictionary<string, string> { ["LicenseId"] = lic.ToString(), ["ConfirmLicenseKey"] = "XXXXXX" });
+        (await ShadowCountsAsync(lic)).Should().Be((1, 1, 1), "lisans anahtarı yazılmadan hiçbir şey silinmez");
+        (await ToastAsync(client, "danger")).Should().Contain(ObifinAdminPage.RemoveConfirmMismatchMessage);
+
+        await PostAsync(client, "Remove", new Dictionary<string, string>
+        {
+            ["LicenseId"] = lic.ToString(), ["ConfirmLicenseKey"] = key[^6..].ToUpperInvariant(),
+        });
+
+        (await ShadowCountsAsync(lic)).Should().Be((0, 0, 0));
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+        doc.QuerySelector(".alert-danger.alert-dismissible")!.TextContent
+            .Should().Contain("elle kaldırın").And.Contain(ObifinAdminPage.ObifinCopyWarning)
+            .And.Contain("1 açık banka veri talebi kapatıldı").And.Contain("başvurana yanıt verin");
+        using var verify = _factory.Services.CreateScope();
+        var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ObifinConnections.AnyAsync(c => c.LicenseId == lic)).Should().BeFalse();
+        (await db.AuditLogs.SingleAsync(a => a.EventType == AuditEvents.ObifinConnectionRemove && a.TargetId == lic.ToString()))
+            .Details.Should().Contain("\"subjectRequestsClosed\":1");
+        var adminId = (await db.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id.ToString();
+        (await db.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync())
+            .Should().NotBeEmpty().And.OnlyContain(x => x.Trigger == DataDestruction.Triggers.AdminRemove && x.Actor == adminId,
+                "yapan yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14)");
+        var deletion = await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.LicenseId == lic);
+        deletion.RequestedBy.Should().Be(adminId);
+        var pendingRow = doc.QuerySelector($"[data-table='obifin-copy-pending'] tr[data-deletion='{deletion.Id}']");
+        pendingRow.Should().NotBeNull();
+        // Elle iş (sahte kimlik çözülemez ya da sınıf fikstüründeki öbür ham bağlantılarla paylaşılan kullanıcı): bildirimi kaçıran
+        // yönetici de görsün.
+        pendingRow!.QuerySelector("[data-cell='manual-action']")!.TextContent.Should().Contain("elle kaldırın");
+
+        (await PostAsync(client, "ConfirmObifinCopyDeleted", new Dictionary<string, string> { ["DeletionId"] = deletion.Id.ToString() }))
+            .StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var confirmed = await db.ObifinCopyDeletions.AsNoTracking().SingleAsync(d => d.Id == deletion.Id);
+        (confirmed.ConfirmedAt is not null, confirmed.ConfirmedBy).Should().Be((true, adminId));
+        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinCopyDeletionConfirm && a.TargetId == lic.ToString()))
+            .Should().BeTrue();
+        (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+            .QuerySelector($"tr[data-deletion='{deletion.Id}']").Should().BeNull("teyit edilen satır listeden çıkar");
+    }
+
+    [Fact]
+    public async Task Kaldir_ve_sil_yarida_kalirsa_500_degil_bildirim_durdurma_denetime_girer()
+    {
+        // İkinci jeton çakışması ham istisna olarak yukarı çıksaydı yönetici 500 görür, ilk adımda kaydedilmiş durdurma (hizmet
+        // sonu sayacı işliyor) denetime hiç girmezdi.
+        using var factory = new ConflictingDeleteApiFactory();
+        var lic = await SeedLicenseAsync(factory);
+        await SeedRawConnectionAsync(factory, lic);
+        await SeedShadowDataAsync(factory, lic);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        string key;
+        using (var scope = factory.Services.CreateScope())
+            key = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().Licenses.Where(l => l.Id == lic)
+                .Select(l => l.LicenseKey).SingleAsync();
+
+        var resp = await PostAsync(client, "Remove", new Dictionary<string, string>
+        {
+            ["LicenseId"] = lic.ToString(), ["ConfirmLicenseKey"] = key[^6..],
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "danger")).Should().Contain(BankConnectionTerminator.DeleteIncompleteMessage);
+        using var verify = factory.Services.CreateScope();
+        var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic)).Status
+            .Should().Be(ObifinConnectionStatus.Disabled);
+        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinConnectionStop && a.TargetId == lic.ToString()))
+            .Should().BeTrue("bağlantı durduruldu; silme yarıda kalsa da denetime girer");
+        (await db.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinConnectionRemove && a.TargetId == lic.ToString()))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Kaldir_ve_sil_Obifinde_bu_lisansin_banka_baglantisini_kaldirir()
+    {
+        // Uçtan uca: gerçek şifreli kimlik (Kaydet), Obifin'e eklenmiş banka (Banka ekle) → "Kaldır ve sil" bankaapi/sil'i o
+        // bağlantı için çağırır, başarı bildirimi yazılı silme uyarısını taşır.
+        using var factory = new StubObifinApiFactory();
+        var lic = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, lic, $"api-{Guid.NewGuid():N}@x");
+        await AddBankAsync(client, lic, $"ws-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}");
+        long bankaApiId; string key;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            bankaApiId = (await db.BankConnections.AsNoTracking().SingleAsync(b => b.LicenseId == lic)).BankaApiId;
+            key = await db.Licenses.Where(l => l.Id == lic).Select(l => l.LicenseKey).SingleAsync();
+        }
+
+        await PostAsync(client, "Remove", new Dictionary<string, string>
+        {
+            ["LicenseId"] = lic.ToString(), ["ConfirmLicenseKey"] = key[^6..],
+        });
+
+        factory.Obifin.Removed.Should().Equal(bankaApiId);
+        (await ToastAsync(client, "success")).Should().Contain("Obifin'de 1 banka bağlantısı kaldırıldı")
+            .And.Contain(ObifinAdminPage.ObifinCopyWarning);
+        using var verify = factory.Services.CreateScope();
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.AnyAsync(c => c.LicenseId == lic))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Hesap_reddi_hesap_numarasi_yazilinca_verisini_siler_onayi_kaldirir_denetime_yazar()
+    {
+        // KVKK Ö-10: P1'den önce onaysız hesaptan yazılmış veri ve yanlış verilmiş onay bu eylemle geri alınır.
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        var accountId = Guid.NewGuid(); var obifinAccountId = Random.Shared.NextInt64(1, 1_000_000);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BankAccounts.Add(new BankAccount { Id = accountId, LicenseId = lic, ObifinAccountId = obifinAccountId, BankaKodu = "garanti",
+                IbanMasked = "?", Currency = "TL", RefreshedAt = DateTimeOffset.UtcNow, ApprovedAt = DateTimeOffset.UtcNow,
+                ApprovedBy = "test" });
+            db.BankTransactions.Add(new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic,
+                ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = obifinAccountId, BankaKodu = "garanti",
+                Direction = BankTransactionDirection.Incoming, Amount = 5m, Currency = "TL", OccurredAt = DateTimeOffset.UtcNow,
+                FetchedAt = DateTimeOffset.UtcNow, Description = "yabanci" });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var form = (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+            .QuerySelector($"[data-account='{accountId}'] form[data-form='reject-account']")!;
+        form.QuerySelector("button")!.TextContent.Should().Contain("Onayı geri al", "onaylı hesapta düğme onayı geri alır");
+        Dictionary<string, string> Fields(string confirm) => new() { ["AccountId"] = accountId.ToString(), ["ConfirmAccount"] = confirm };
+
+        await PostAsync(client, "RejectAccount", Fields("0"));
+        using (var scope = _factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().BankTransactions.CountAsync(t => t.LicenseId == lic))
+                .Should().Be(1, "hesap numarası yazılmadan hiçbir şey silinmez");
+        (await ToastAsync(client, "danger")).Should().Contain(ObifinAdminPage.RejectConfirmMismatchMessage);
+
+        (await PostAsync(client, "RejectAccount", Fields(obifinAccountId.ToString()))).StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.BankTransactions.CountAsync(t => t.LicenseId == lic)).Should().Be(0);
+        (await vdb.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId)).ApprovedAt.Should().BeNull();
+        (await vdb.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.ObifinAccountReject && a.TargetId == lic.ToString()))
+            .Should().BeTrue();
+        var adminId = (await vdb.AdminUsers.AsNoTracking().SingleAsync(a => a.Username == "admin")).Id.ToString();
+        (await vdb.DataDestructionRecords.AsNoTracking().Where(x => x.LicenseId == lic).ToListAsync())
+            .Should().NotBeEmpty().And.OnlyContain(x => x.Trigger == DataDestruction.Triggers.AccountRejected && x.Actor == adminId);
+        AuditEvents.DestructionEvents.Should().Contain(new[]
+        {
+            AuditEvents.ObifinConnectionRemove, AuditEvents.ObifinAccountReject, AuditEvents.ObifinCopyDeletionConfirm,
+        });
+    }
+
+    [Fact]
+    public async Task Sayfa_goruntulemesi_denetime_yazilir()
+    {
+        // KVKK Ö-4 (Kurul 2018/10 3-c): hesap maskeleri, bildirim notları ve yayıncı e-postaları gösteren sayfanın her
+        // görüntülenmesi denetime girer. Hedef düzenleme formu açılan lisans, yoksa boş: düzenleme yalnız Obifin bağlantısı olan
+        // lisansta açılır; bağlantısız ya da hiç olmayan lisansın kimliği sorgu parametresinde gelse de hedefe girmez.
+        var lic = await SeedLicenseAsync();
+        await SeedRawConnectionAsync(_factory, lic);
+        var unconnected = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var before = DateTimeOffset.UtcNow;
+
+        await client.GetStringAsync("/admin/obifin");
+        await client.GetStringAsync($"/admin/obifin?license={lic}");
+        await client.GetStringAsync($"/admin/obifin?license={unconnected}");
+        await client.GetStringAsync($"/admin/obifin?license={Guid.NewGuid()}");
+
+        using var scope = _factory.Services.CreateScope();
+        var views = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().AuditLogs.AsNoTracking()
+            .Where(a => a.EventType == AuditEvents.BankPageView && a.OccurredAt >= before).ToListAsync();
+        views.Should().HaveCount(4).And.OnlyContain(a => a.TargetType == AuditTargets.ObifinConnection
+            && a.Details == "{\"page\":\"obifin\"}");
+        views.Select(a => a.TargetId).Should().BeEquivalentTo(new[] { null, lic.ToString(), null, null });
     }
 }

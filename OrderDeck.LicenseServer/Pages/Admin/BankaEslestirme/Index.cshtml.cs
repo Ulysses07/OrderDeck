@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 
@@ -19,11 +20,13 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// ve istisna türüyle düşer (<see cref="LogHandled"/>).</para>
 /// <para>Görünüme ham JSON ve IBAN/VKN hash'i çıkmaz (satır modeli onları taşımaz, sorgu okumaz); karşı IBAN yalnız
 /// maskeli. Açıklama ve kanıt admin'e gösterilir. KVKK'yla silinmiş müşterinin kullanıcı adı gösterilmez. Audit ayrıntısı
-/// yalnız kullanıcı adıdır (açıklama, tutar, IBAN girmez). Kararı yazan çağrı (elle eşle, kaldır) ve ardından audit
-/// <see cref="CancellationToken.None"/> ile koşar: sınırlı admin işlemleridir; istek karar kaydedildikten sonra iptal edilse
-/// karar yazılmış, izi ya da bildirimi kaybolmuş olurdu.</para>
+/// yalnız müşteri kayıt numarasıdır (KVKK Ö-14; kullanıcı adı, açıklama, tutar, IBAN girmez); lisans seçili sayfanın her
+/// görüntülenmesi de denetime yazılır (<see cref="AuditEvents.BankPageView"/>, KVKK Ö-4). Kararı yazan çağrı (elle eşle,
+/// kaldır) ve ardından audit <see cref="CancellationToken.None"/> ile koşar: sınırlı admin işlemleridir; istek karar
+/// kaydedildikten sonra iptal edilse karar yazılmış, izi ya da bildirimi kaybolmuş olurdu.</para>
 /// <para><b>Kaldır</b> onay ister: dekonta bağlı satırda dekontu bağından koparıp açık gap'e döndürür, bu hareketten öğrenilen
-/// IBAN'ı siler; ikisi de arayüzden geri alınamaz.</para>
+/// IBAN'ı siler; başka havalenin öğrettiği IBAN bağının süresi yalnız bu havaleye dayanıyorsa o bağı da imha kaydıyla siler
+/// (yapan yöneticinin kimliği). Hiçbiri arayüzden geri alınamaz.</para>
 /// <para><b>Banka modülü kapalıyken de sayfa açılır</b> (<see cref="BankHasher.IsValidKey"/>): uyarı basılır, veri
 /// gösterilir, her POST <see cref="BankHasher.DisabledMessage"/> ile döner ve hiçbir şey yazmaz. Bağdaştırıcı, eşleştirici
 /// ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri sayfayı düşürmez.</para></summary>
@@ -41,12 +44,15 @@ public class IndexModel : PageModel
 
     public const string UnmatchedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü, öneri yeniden hesaplandı.";
 
-    /// <summary>Kaldırma kaydedildi, öneriyi yeniden hesaplamak düştü (bkz. <see cref="PaymentMatchReconciler.UnmatchAsync"/>).</summary>
-    public const string UnmatchedNotRecomputedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü. Öneri yeniden hesaplanamadı; satır öneri yok durumunda kaldı.";
+    /// <summary>Kaldırma kaydedildi, öneri yeniden hesaplanmadı: hesap düştü ya da bağlantı durdurulmuş (KVKK K-6; bkz.
+    /// <see cref="PaymentMatchReconciler.UnmatchAsync"/>).</summary>
+    public const string UnmatchedNotRecomputedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü. Öneri yeniden hesaplanmadı (hesap düştü ya da banka bağlantısı durdurulmuş); satır öneri yok durumunda kaldı.";
 
-    /// <summary>Kaldır düğmesinin onay metinleri. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez.</summary>
-    public const string UnmatchConfirmMessage = "Eşleşme kaldırılacak ve bu hareketten öğrenilen IBAN silinecek. Arayüzden geri alınamaz. Emin misiniz?";
-    public const string UnmatchReceiptConfirmMessage = "Dekonta bağlı eşleşme kaldırılacak: dekontun bu hareketle bağı kopar, dekont yeniden açık gap olur ve bu hareketten öğrenilen IBAN silinir. Arayüzden geri alınamaz. Emin misiniz?";
+    /// <summary>Kaldır düğmesinin onay metinleri. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez. Kaldırma başka
+    /// havalenin öğrettiği IBAN bağını da silebilir (<see cref="PaymentMatchReconciler.UnmatchAsync"/>: süresini yalnız bu havale
+    /// taşıyorsa, KVKK K-6); metin bunu söyler.</summary>
+    public const string UnmatchConfirmMessage = "Eşleşme kaldırılacak ve bu hareketten öğrenilen IBAN silinecek; IBAN ile müşteri bağının süresi yalnız bu havaleye dayanıyorsa bağ da silinir. Arayüzden geri alınamaz. Emin misiniz?";
+    public const string UnmatchReceiptConfirmMessage = "Dekonta bağlı eşleşme kaldırılacak: dekontun bu hareketle bağı kopar, dekont yeniden açık gap olur ve bu hareketten öğrenilen IBAN silinir; IBAN ile müşteri bağının süresi yalnız bu havaleye dayanıyorsa bağ da silinir. Arayüzden geri alınamaz. Emin misiniz?";
 
     private readonly LicenseDbContext _db;
     private readonly PaymentMatchReconciler _reconciler;
@@ -127,6 +133,10 @@ public class IndexModel : PageModel
                 NameOf(m?.ProposedWpfCustomerId), m?.Layer ?? PaymentMatchLayer.None, m?.Confidence ?? 0m, m?.Evidence, m?.Status,
                 NameOf(m?.ActualWpfCustomerId), m?.PaymentId);
         }).ToList();
+        // KVKK Ö-4: açıklama, kanıt ve maske gösteren sayfanın her görüntülenmesi denetime yazılır (lisans seçili değilse veri
+        // gösterilmez, yazılmaz). Hedef banka modülünün öbür satırları gibi lisans kimliği (AuditEvents.BankPageView).
+        await _audit.LogAsync(AuditEvents.BankPageView, AuditTargets.ObifinConnection, LicenseId.ToString(),
+            new { page = "banka-eslestirme", pageNo = PageNo }, ct);
     }
 
     /// <summary>Kullanıcı adı kimlik anahtarıyla (<see cref="WpfCustomerProjection.IdentityKeyOf"/>: kırpılmış, küçük harf,
@@ -160,9 +170,10 @@ public class IndexModel : PageModel
             TempData["Error"] = ex.Message;
             return Back();
         }
-        // Karar kaydedildi: audit istek iptaliyle düşmesin.
-        await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(), new { username },
-            CancellationToken.None);
+        // Karar kaydedildi: audit istek iptaliyle düşmesin. Ayrıntı kullanıcı adı değil kayıt numarası (KVKK Ö-14: satır 24 ay
+        // durur). Biçim BankSubjectScrub.ManualMatchAuditDetails'inkiyle aynı: KVKK silmesi kişinin satırını onunla bulup boşaltır.
+        await _audit.LogAsync(AuditEvents.BankMatchManual, AuditTargets.BankTransaction, TransactionId.ToString(),
+            new { wpfCustomerId = customerIds[0] }, CancellationToken.None);
         TempData["Success"] = "Eşlendi.";
         return Back();
     }
@@ -173,7 +184,10 @@ public class IndexModel : PageModel
         bool recomputed;
         try
         {
-            recomputed = await _reconciler.UnmatchAsync(LicenseId, TransactionId, CancellationToken.None);
+            // Kaldırma IBAN bağını silerse imha kaydının yapanı yöneticinin kimliği (KVKK Ö-14; kaydı budanmaz, adı denetim
+            // satırında).
+            recomputed = await _reconciler.UnmatchAsync(LicenseId, TransactionId, CancellationToken.None,
+                DataDestruction.ActorOf(User));
         }
         catch (ObifinValidationException ex)
         {

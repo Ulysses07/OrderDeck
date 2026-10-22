@@ -8,6 +8,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -82,6 +83,35 @@ public sealed class ObifinConnectionServiceConcurrencyTests : IAsyncLifetime
         (await verify.BankTransactions.AsNoTracking().CountAsync(t => t.LicenseId == s.LicenseId)).Should().Be(0);
         (await verify.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == s.LicenseId)).UserCode
             .Should().Be(newUserCode);
+        // KVKK Ö-13: imha kaydı yeniden denenen kayıtla birlikte yazılır, bir kez.
+        (await verify.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == s.LicenseId)
+                .Select(r => new { r.Target, r.RowCount, r.Trigger }).ToListAsync())
+            .Should().BeEquivalentTo(new[]
+            {
+                new { Target = "PaymentMatches", RowCount = 1, Trigger = DataDestruction.Triggers.CredentialChange },
+                new { Target = "BankTransactions", RowCount = 1, Trigger = DataDestruction.Triggers.CredentialChange },
+            });
+    }
+
+    [Fact]
+    public async Task Arada_baskasinin_sildigi_eslesme_imha_kaydinda_sayilmaz()
+    {
+        // Servis eşleşmeyi yükledikten sonra başka bir yazı (saklama işi, temizlik komutu) onu siler: DELETE 0 satır etkiler,
+        // jeton tazelemesi satırı izleyiciden ayırır, sıfırlama yine yazılır. O satırı bu işlem silmedi: kayda girmez.
+        var s = await SeedAsync();
+        var delete = new BeforeMatchDelete(() => DeleteMatchConcurrentlyAsync(s));
+        await using var db = NewDb(delete);
+
+        var result = await Svc(db).UpsertWithResultAsync(s.LicenseId, "", $"api-{Guid.NewGuid():N}@x", password: null,
+            apiKey: null, CancellationToken.None, allowShadowReset: true);
+
+        result.ShadowDataReset.Should().BeTrue();
+        delete.Fired.Should().Be(1);
+        await using var verify = NewDb(interceptor: null);
+        (await verify.BankTransactions.AsNoTracking().CountAsync(t => t.LicenseId == s.LicenseId)).Should().Be(0);
+        (await verify.DataDestructionRecords.AsNoTracking().Where(r => r.LicenseId == s.LicenseId)
+                .Select(r => new { r.Target, r.RowCount }).ToListAsync())
+            .Should().BeEquivalentTo(new[] { new { Target = "BankTransactions", RowCount = 1 } });
     }
 
     [Fact]
@@ -103,6 +133,16 @@ public sealed class ObifinConnectionServiceConcurrencyTests : IAsyncLifetime
         (await verify.BankTransactions.AsNoTracking().CountAsync(t => t.Id == s.TransactionId)).Should().Be(1);
         (await verify.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == s.LicenseId)).UserCode
             .Should().Be(s.UserCode, "kimlik yazımı silmeyle aynı işlemdeydi");
+        (await verify.DataDestructionRecords.AsNoTracking().CountAsync(r => r.LicenseId == s.LicenseId))
+            .Should().Be(0, "imha kaydı geri alınan silmeyle aynı işlemdeydi");
+    }
+
+    /// <summary>Saklama işi ya da temizlik komutu gibi: eşleşme satırını ayrı bir bağlamda siler.</summary>
+    private async Task DeleteMatchConcurrentlyAsync(Seeded s)
+    {
+        await using var other = NewDb(interceptor: null);
+        other.PaymentMatches.Remove(await other.PaymentMatches.SingleAsync(x => x.Id == s.MatchId));
+        await other.SaveChangesAsync();
     }
 
     /// <summary>Eşleştiricinin yeniden hesabı gibi: satırın önerisini ayrı bir bağlamda yeniden yazar, jetonu ilerletir.</summary>
@@ -133,6 +173,7 @@ public sealed class ObifinConnectionServiceConcurrencyTests : IAsyncLifetime
         };
         db.Customers.Add(customer);
         db.Licenses.Add(license);
+        TestDataController.Add(db, customer.Id);   // KVKK K-3 kapısı: bilgisiz yayıncıda bağlantı kaydedilmez
         await db.SaveChangesAsync();
 
         var userCode = $"api-{Guid.NewGuid():N}@x";

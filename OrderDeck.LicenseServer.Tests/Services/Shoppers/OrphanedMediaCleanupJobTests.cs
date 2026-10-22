@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
 
@@ -115,6 +116,36 @@ public sealed class OrphanedMediaCleanupJobTests
 
         (await db.Payments.FirstAsync(p => p.Id == paymentId))
             .PdfPurgedAt.Should().BeNull();
+        db.DataDestructionRecords.Should().BeEmpty("silinmeyen nesne imha kaydına girmez");
+    }
+
+    [Fact]
+    public async Task Gec_silinen_dekont_silmenin_imha_kaydina_girer()
+    {
+        // KVKK Ö-13 (Silme Yönetmeliği md. 7/3): purge'de depodan silinemeyen dekont burada silinir; bu, purge'ün 1. adımının
+        // devamıdır ve onunla aynı kayıtla yazılır (hedef, tetikleyici, konu = ShopperId, lisans ödemeden). Yoksa gecikmeli
+        // silme veritabanı dışındaki özete hiç girmez.
+        using var db = NewDb();
+        var (paymentId, key) = Seed(db);
+        var queuedWithoutPayment = new OrphanedMediaObject
+        {
+            Id = Guid.NewGuid(), ObjectKey = $"payments/{Guid.NewGuid():N}.pdf", ShopperId = Guid.NewGuid(), AttemptCount = 1,
+            CreatedAt = DateTimeOffset.UtcNow.AddDays(-1), LastAttemptAt = DateTimeOffset.UtcNow.AddDays(-1),
+        };
+        db.OrphanedMediaObjects.Add(queuedWithoutPayment);
+        await db.SaveChangesAsync();
+        var row = await db.OrphanedMediaObjects.AsNoTracking().SingleAsync(o => o.ObjectKey == key);
+        var licenseId = (await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId)).LicenseId;
+
+        (await Build(db, new FlakyStorage()).RunAsync(default)).Should().Be(2);
+
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Should().HaveCount(2).And.OnlyContain(r => r.Target == ShopperPurgeService.MediaTarget
+            && r.Action == DataDestruction.Actions.Deleted && r.RowCount == 1 && r.Trigger == DataDestruction.Triggers.ShopperPurge
+            && r.Criterion == ShopperPurgeService.PurgeCriterion && r.Actor == DataDestruction.SystemActor);
+        records.Should().ContainSingle(r => r.SubjectId == row.ShopperId && r.LicenseId == licenseId);
+        records.Should().ContainSingle(r => r.SubjectId == queuedWithoutPayment.ShopperId && r.LicenseId == null,
+            "ödemesi bilinmeyen kuyruk satırının lisansı yok");
     }
 
     [Fact]

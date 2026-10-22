@@ -89,6 +89,14 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         return (shopperId, wpfCustomerId);
     }
 
+    private async Task<string> BroadcasterNameAsync(Guid customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var customer = await db.Customers.FindAsync(customerId);
+        return customer!.Name;
+    }
+
     // ─── Order push ──────────────────────────────────────────────────────────
 
     [Fact]
@@ -237,14 +245,20 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().HaveCount(1);
         var n = _factory.Push.SentToShoppers[0];
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
-        n.Body.Should().Contain("480").And.Contain("onayland");
+        n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentApprovedPushBody);
+        n.Body.Should().NotContain("480", "tutar FCM'ye gitmez (KVKK K-5)");
+        // Başlık yalnız yayıncı adı: ödeyen adı, referans no gibi bir alan eklenirse düşer (KVKK K-5).
+        n.Title.Should().Be(await BroadcasterNameAsync(customerId));
+        n.Title.Should().NotContain("480", "başlık yalnız yayıncı adı");
+        // data yükü de Google'a gider: yalnız tür ve takma kimlikler (KVKK K-5).
+        n.Data!.Keys.Should().BeEquivalentTo(new[] { "type", "paymentId", "licenseId" });
         n.Data!["type"].Should().Be("payment-approved");
     }
 
     [Fact]
-    public async Task PaymentReject_pushes_shopper_with_reason()
+    public async Task PaymentReject_pushes_shopper_without_amount_or_reason()
     {
-        var (client, _, licenseId) = await SetupAsync();
+        var (client, customerId, licenseId) = await SetupAsync();
         var (shopperId, _) = await SeedShopperWithLinkAsync(licenseId);
         var paymentId = await SeedPendingPaymentAsync(licenseId, shopperId, amount: 100m);
         _factory.Push.Clear();
@@ -257,7 +271,13 @@ public class ShopperOrderPaymentPushTests : IClassFixture<ApiFactory>
         _factory.Push.SentToShoppers.Should().HaveCount(1);
         var n = _factory.Push.SentToShoppers[0];
         n.ShopperIds.Should().BeEquivalentTo(new[] { shopperId });
-        n.Body.Should().Contain("reddedildi").And.Contain("Tutar uyu");
+        n.Body.Should().Be(OrderDeck.LicenseServer.Controllers.Panel.PanelPaymentsController.PaymentRejectedPushBody);
+        n.Body.Should().NotContain("Tutar uyu", "serbest metin ret gerekçesi FCM'ye gitmez (KVKK K-5)").And.NotContain("100");
+        // Başlık yalnız yayıncı adı: ödeyen adı, referans no gibi bir alan eklenirse düşer (KVKK K-5).
+        n.Title.Should().Be(await BroadcasterNameAsync(customerId));
+        n.Title.Should().NotContain("Tutar uyu", "başlık yalnız yayıncı adı").And.NotContain("100");
+        // data yükü de Google'a gider: yalnız tür ve takma kimlikler (KVKK K-5).
+        n.Data!.Keys.Should().BeEquivalentTo(new[] { "type", "paymentId", "licenseId" });
         n.Data!["type"].Should().Be("payment-rejected");
     }
 

@@ -54,8 +54,9 @@ public sealed class SalesSyncS1MigrationTests
 /// (<see cref="SalesSyncS1MigrationScriptTests"/>) ONLINE'ı metinden yakalar;
 /// bu test göçün Express motorunda gerçekten uygulandığını ve süresini gösterir.
 /// </summary>
+[Collection(SqlServerExpressCollection.Name)]
 [Trait("Category", "Testcontainers")]
-public sealed class SalesSyncS1MigrationExpressTests : IClassFixture<SqlServerExpressContainerFixture>
+public sealed class SalesSyncS1MigrationExpressTests
 {
     private readonly SqlServerExpressContainerFixture _sql;
     private readonly ITestOutputHelper _output;
@@ -316,7 +317,13 @@ internal static class SalesSyncS1MigrationScenario
         (await ScalarAsync<int>(conn, "SELECT COUNT(*) FROM Shipments WHERE Version <> 0")).Should().Be(0);
 
         // 4. EF modeli şemayla aynı: varlıklar yeni kolonlarla okunabiliyor.
-        var license = await db.Licenses.AsNoTracking().SingleAsync(l => l.Id == seed.LicenseId);
+        //    Licenses yalnız bu göçün kolonlarıyla okunur: model sonraki göçlerin
+        //    Licenses kolonlarını da taşır (PersonBalanceS1'in PersonBalancePoolSince'i),
+        //    bu noktadaki şemada onlar henüz yok.
+        var license = await db.Licenses.AsNoTracking()
+            .Where(l => l.Id == seed.LicenseId)
+            .Select(l => new { l.SalesSyncMode, l.SalesSyncModeChangedAt })
+            .SingleAsync();
         license.SalesSyncMode.Should().Be(SalesSyncMode.Off);
         license.SalesSyncModeChangedAt.Should().BeNull();
         (await db.SalesLegacyTraces.AsNoTracking().AnyAsync()).Should().BeFalse("göç iz yazmaz");
