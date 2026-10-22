@@ -9,6 +9,13 @@ export const metadata: Metadata = {
 
 const EFFECTIVE_DATE = '2026-09-04';
 
+/**
+ * Effective date of the Turkish policy (web/app/(tr)/gizlilik-politikasi/page.tsx). While this translation lags behind, the note
+ * below says the Turkish text prevails; PolicyEffectiveDateParityTests (server tests) keeps this equal to the Turkish date.
+ * When the full translation is published with the Turkish effective date, delete this constant and the note.
+ */
+const TURKISH_EFFECTIVE_DATE = '2026-10-21';
+
 export default function PrivacyEn() {
   return (
     <LegalLayout
@@ -17,6 +24,14 @@ export default function PrivacyEn() {
       title="Privacy Policy"
       effectiveDate={EFFECTIVE_DATE}
     >
+      <p>
+        <strong>Note:</strong> This English text is a convenience translation. The Turkish version at{' '}
+        <a href="/gizlilik-politikasi/">orderdeckapp.com/gizlilik-politikasi</a>, effective {TURKISH_EFFECTIVE_DATE},
+        prevails. It currently contains sections not yet reflected here, including its wider scope (broadcaster panel,
+        customer app and registration form), Section 1.4 on the processing of broadcasters&apos; bank account
+        transactions, Section 1.5 on the customer app and payment receipts, Section 1.6 on service providers and
+        transfers abroad, and the updated retention periods, rights, application channels and data security sections.
+      </p>
       <p>
         This Privacy Policy describes how the <strong>{BRAND}</strong> Windows desktop
         application and the <strong>orderdeckapp.com</strong> website collect, use,
@@ -28,13 +43,13 @@ export default function PrivacyEn() {
       </p>
 
       <h2>1. Data we collect</h2>
-      <p>The {BRAND} desktop application processes two kinds of data:</p>
+      <p>{BRAND} works with the following kinds of data:</p>
 
       <h3>1.1. Account and license data</h3>
       <ul>
         <li>Email address (for sign-up and license management)</li>
         <li>License key, machine fingerprint</li>
-        <li>Payment amount, license and update-pack status (payment details are stored only by our payment processors, never by us)</li>
+        <li>License payment amount, license and update-pack status (card and payment instrument details are held only by the payment processor and are not stored by us; for broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version)</li>
         <li>IP address and login timestamp (for security logs, deleted within 90 days)</li>
       </ul>
 
@@ -78,12 +93,15 @@ export default function PrivacyEn() {
         <li>Explicit consent to receive informational messages via WhatsApp and/or SMS (checkboxes)</li>
       </ul>
       <p>
-        This data is processed solely for the relevant broadcaster&apos;s order, shipping,
-        and invoicing purposes; it is never shared or sold to third parties for marketing.
-        Messages are only sent through channels the buyer has explicitly consented to, and
-        the buyer may withdraw consent at any time. The broadcaster who created the form is
-        the data controller for this information; {BRAND} hosts it on the broadcaster&apos;s
-        behalf and delivers it to the broadcaster&apos;s application.
+        This data is processed for the relevant broadcaster&apos;s order, payment, shipping
+        and invoicing purposes, including identifying which customer a bank transfer to the
+        broadcaster&apos;s account belongs to (see Section 1.4 of the Turkish version); it is
+        never shared or sold to third parties for marketing. Messages are only sent through
+        channels the buyer has explicitly consented to, and the buyer may withdraw consent at
+        any time. The broadcaster who created the form is the data controller for this
+        information; {BRAND} hosts it on the broadcaster&apos;s behalf and delivers it to the
+        broadcaster&apos;s application. To measure the accuracy of that transfer matching, {BRAND}
+        uses this data on its own behalf.
       </p>
 
       <h2>2. YouTube API usage</h2>
@@ -219,8 +237,10 @@ export default function PrivacyEn() {
 
       <h2>7. Data security</h2>
       <p>
-        Transit is encrypted with TLS 1.2+. Backups are encrypted with AES-256-GCM. JWT
-        tokens are signed with a secure secret. That said, no method of internet
+        Transit is encrypted with TLS 1.2+. Remote backups of the server database are
+        encrypted with OpenPGP (AES-256), and backups uploaded by the desktop application with
+        AES-256-GCM; the short-lived backup copy on the server&apos;s own disk is also encrypted.
+        JWT tokens are signed with a secure secret. That said, no method of internet
         transmission is 100% secure; you are also responsible for keeping your password
         confidential.
       </p>
