@@ -38,7 +38,8 @@ export default function PrivacyTr() {
         düzeltildi ve genişletildi; yayıncının müşteri ve satış kayıtları (Bölüm 1.2a), müşteri uygulaması ve dekontlar
         (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri
         eklendi; politikanın kapsamı ve veri
-        sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı) ve kayıt formu
+        sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı, müşteri kayıtlarına
+        giren yorumcular) ve kayıt formu
         bilgileri (Bölüm 1.1–1.3), YouTube API kullanımı ve tarayıcı eklentisi (Bölüm 2–3), saklama süreleri, haklarınız
         ve başvuru yolları, veri güvenliği (Bölüm 5–7) ve politika
         değişikliklerinin bildirimi (Bölüm 9) güncellendi; kayıt formundaki bilgilendirme metni yenilendi. Önceki sürüm:
@@ -94,6 +95,9 @@ export default function PrivacyTr() {
         yayıncının işini yürütebilmesi (sipariş, kargo, itiraz takibi) için
         sipariş kaydının bir parçası olarak yayıncının bilgisayarında saklanır
         ve sipariş verisiyle birlikte {BRAND} sunucularına aktarılır (Bölüm 1.2a).
+        Yorumu yazan kişi sipariş verdiğinde ya da yayıncının açtığı bir çekilişe katıldığında kullanıcı adı ve görünen
+        adı, yayıncı onu sohbetten engellediğinde kullanıcı adı yayıncının müşteri kayıtlarına girer ve bu kayıtlarla
+        birlikte {BRAND} sunucularına aktarılır (Bölüm 1.2a); çekiliş ve engelleme kayıtlarına yorumun metni girmez.
         Ayrıntı için <a href="/veri-silme">Veri Silme</a> sayfasına bakın.
       </p>
       <p>
@@ -563,12 +567,15 @@ export default function PrivacyTr() {
       <p>Masaüstü akışında YouTube API üzerinden alınan veriler:</p>
       <ul>
         <li>
-          Siparişe/etikete dönüştürülen yorumlar ile bu yorumları yazanların kanal adı ve kullanıcı adı dışında (Bölüm
-          1.2, 1.2a) yalnızca kullanıcının kendi makinesinde işlenir
+          Siparişe/etikete dönüştürülen yorumlar ile yayıncının müşteri kayıtlarına giren yorumcuların (sipariş veren,
+          çekilişe katılan ya da yayıncının sohbetten engellediği kişiler) kanal adı ve kanal kimliği dışında (Bölüm 1.2,
+          1.2a) yalnızca kullanıcının kendi makinesinde işlenir. Yayıncının bilgisayarındaki müşteri, sipariş ve çekiliş
+          kayıtları, bu yorumcuların profil resminin adresiyle birlikte, masaüstü uygulamasının sunucuya yüklediği şifreli
+          yedeklerde de bulunur (Bölüm 5)
         </li>
         <li>
-          Bu istisnalar dışında {BRAND} sunucularına aktarılmaz; sunucuya aktarılan adlar, yayıncının banka bağlantısı
-          varsa Bölüm 1.4'teki havale eşleştirmesinde ve doğruluk ölçümünde de kullanılır
+          Bu istisnalar dışında {BRAND} sunucularına aktarılmaz; sunucuya aktarılan bu bilgiler, yayıncının banka
+          bağlantısı varsa Bölüm 1.4'teki havale eşleştirmesinde ve doğruluk ölçümünde de kullanılır
         </li>
         <li>Reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz</li>
         <li>Üçüncü kişilere satılmaz veya devredilmez</li>
