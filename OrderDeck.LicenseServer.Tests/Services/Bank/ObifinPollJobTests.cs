@@ -134,6 +134,7 @@ public sealed class ObifinPollJobTests
         var licenseId = Guid.NewGuid();
         db.Licenses.Add(new License { Id = licenseId, LicenseKey = $"LDK-{Guid.NewGuid():N}", CustomerId = customerId,
             SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+        TestDataController.Add(db, customerId);   // KVKK K-3 kapısı: bilgisiz yayıncıda bağlantı kaydedilmez
         await db.SaveChangesAsync();
         var conn = await svc.UpsertAsync(licenseId, "", "api@x", $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}", CancellationToken.None);
         conn.Status = ObifinConnectionStatus.Verified;

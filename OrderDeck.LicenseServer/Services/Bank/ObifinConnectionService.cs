@@ -71,6 +71,10 @@ public sealed class ObifinConnectionService
         "Eşzamanlı bir eşleştirme yazımı nedeniyle işlem tamamlanamadı; yeniden deneyin.";
     /// <summary>Lisansı biten bağlantının <c>LastError</c> metni (admin ekranında görünür).</summary>
     public const string LicenseEndedMessage = "Lisans sona erdi ya da iptal edildi; banka çekimi durduruldu.";
+    /// <summary>KVKK K-3 öneri 3: banka modülü yayıncının veri sorumlusu bilgileri toplanmadan açılmaz
+    /// (<see cref="EnsureDataControllerAsync"/>).</summary>
+    public const string DataControllerMissingMessage =
+        "Önce yayıncının veri sorumlusu bilgilerini girin (Müşteriler → müşteri → Veri sorumlusu bilgileri; KVKK m. 10/1-a).";
     /// <summary>Lisansı yenilenen, kendiliğinden (lisans bitişiyle) durdurulmuş bağlantının <c>LastError</c> metni
     /// (<see cref="ReviveRenewedLicensesAsync"/>).</summary>
     public const string LicenseRenewedMessage = "Lisans yenilendi; çekimi sürdürmek için Doğrula'ya basın.";
@@ -173,6 +177,18 @@ public sealed class ObifinConnectionService
     /// tanım — burada yeniden yazılmaz. Lisans satırı yoksa false.</summary>
     public static Task<bool> IsLicenseActiveAsync(LicenseDbContext db, Guid licenseId, DateTimeOffset now, CancellationToken ct)
         => db.Licenses.Where(LicenseActiveAt(now)).AnyAsync(l => l.Id == licenseId, ct);
+
+    /// <summary>KVKK K-3 öneri 3 (karar 23): lisansın müşterisinde veri sorumlusu bilgisi yoksa <see cref="DataControllerMissingMessage"/>
+    /// fırlatır (<see cref="ObifinOptions.RequireDataControllerProfile"/> kapalıysa denetlemez). İlk bağlantı kaydı, Doğrula ve
+    /// Banka ekle çağırır, Obifin'e gitmeden önce; mevcut Verified bağlantının çekimi ve saatlik hesap yenilemesi çağırmaz (veri
+    /// kaybı olmasın). Lisans satırı yoksa da fırlatır (müşterisi bilinmez).</summary>
+    private async Task EnsureDataControllerAsync(Guid licenseId, CancellationToken ct)
+    {
+        if (!_opt.RequireDataControllerProfile) return;
+        var present = await _db.Licenses.Where(l => l.Id == licenseId)
+            .AnyAsync(l => _db.DataControllerProfiles.Any(p => p.CustomerId == l.CustomerId), ct);
+        if (!present) throw new ObifinValidationException(DataControllerMissingMessage);
+    }
 
     /// <summary>Bağlantı Disabled'dan çıkarken hizmet sonu alanları boşalır (KVKK K-6): 30 günlük sayaç, yerel silme işareti,
     /// yönetici durdurması. Disabled'dan çıkan her yol bunu çağırır: Etkinleştir (<c>BankConnectionTerminator.ResumeAsync</c>),
@@ -280,13 +296,16 @@ public sealed class ObifinConnectionService
     /// değişimi reddedilir (<see cref="PurgedCredentialChangeMessage"/>; karar 21(a)): önce "Kaldır ve sil".</para>
     /// <para><paramref name="actor"/>: gölge veri silmesinin kalıcı imha kaydındaki yapan — yönetici sayfası
     /// <c>DataDestruction.ActorOf(User)</c> geçirir (KVKK Ö-14; kim yaptığı 24 ayda budanan denetim satırına kalmasın). Boşsa
-    /// <see cref="DataDestruction.AdminActor"/>.</para></summary>
+    /// <see cref="DataDestruction.AdminActor"/>.</para>
+    /// <para>İlk kayıt ve doğrulama yayıncının veri sorumlusu bilgisini ister (KVKK K-3,
+    /// <see cref="ObifinOptions.RequireDataControllerProfile"/>; <see cref="DataControllerMissingMessage"/>).</para></summary>
     public async Task<ObifinConnection> UpsertAsync(Guid licenseId, string baseUrl, string userCode,
         string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false, string? actor = null)
         => (await UpsertWithResultAsync(licenseId, baseUrl, userCode, password, apiKey, ct, allowShadowReset, actor)).Connection;
 
     /// <summary><see cref="UpsertAsync"/>'in aynısı; gölge verinin silinip silinmediğini de döner (admin sayfasının audit
-    /// kaydı ve bildirimi için — karar burada verilir, çağıran yalnız izni taşır).</summary>
+    /// kaydı ve bildirimi için — karar burada verilir, çağıran yalnız izni taşır). İlk kayıt yayıncının veri sorumlusu bilgisini
+    /// ister (KVKK K-3, <see cref="ObifinOptions.RequireDataControllerProfile"/>).</summary>
     public async Task<ObifinUpsertResult> UpsertWithResultAsync(Guid licenseId, string baseUrl, string userCode,
         string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false, string? actor = null)
     {
@@ -320,6 +339,8 @@ public sealed class ObifinConnectionService
         {
             if (string.IsNullOrWhiteSpace(password) || string.IsNullOrWhiteSpace(apiKey))
                 throw new ObifinValidationException("İlk kayıtta şifre ve API anahtarı zorunlu.");
+            // KVKK K-3 öneri 3 (karar 23): banka modülü yayıncının veri sorumlusu bilgileri olmadan açılmaz.
+            await EnsureDataControllerAsync(licenseId, ct);
             conn = new ObifinConnection { Id = Guid.NewGuid(), LicenseId = licenseId, CreatedAt = now, Status = ObifinConnectionStatus.Unverified };
             _db.ObifinConnections.Add(conn);
         }
@@ -449,6 +470,10 @@ public sealed class ObifinConnectionService
         catch (System.Security.Cryptography.CryptographicException) { return null; }
     }
 
+    /// <summary>Obifin'den hesap listesini alır; başarıda bağlantı Verified, hesaplar yazılır. Lisans geçerli olmalı, bağlantı
+    /// durdurulmamış olmalı. Doğrulama yayıncının veri sorumlusu bilgisini ister (KVKK K-3,
+    /// <see cref="ObifinOptions.RequireDataControllerProfile"/>; <see cref="DataControllerMissingMessage"/>): bu denetimler
+    /// Obifin'e gitmeden önce.</summary>
     public async Task<ObifinVerifyResult> VerifyAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
@@ -456,6 +481,7 @@ public sealed class ObifinConnectionService
         // KVKK K-6: lisansı bitmiş yayıncının bankası için Obifin'e gidilmez (çekim ve hesap yenilemeyle aynı kural).
         if (!await IsLicenseActiveAsync(_db, licenseId, DateTimeOffset.UtcNow, ct))
             throw new ObifinValidationException(LicenseEndedMessage);
+        await EnsureDataControllerAsync(licenseId, ct);
         EnsureNotStopped(conn);
         var creds = TryResolveCredentials(conn);
         var now = DateTimeOffset.UtcNow;
@@ -530,6 +556,8 @@ public sealed class ObifinConnectionService
         // KVKK K-6: lisansı bitmiş yayıncının bankası için Obifin'e gidilmez (çekim ve hesap yenilemeyle aynı kural).
         if (!await IsLicenseActiveAsync(_db, licenseId, DateTimeOffset.UtcNow, ct))
             throw new ObifinValidationException(LicenseEndedMessage);
+        // KVKK K-3 öneri 3 (karar 23): yeni banka yayıncının veri sorumlusu bilgileri olmadan eklenmez.
+        await EnsureDataControllerAsync(licenseId, ct);
         EnsureNotStopped(conn);
         var creds = TryResolveCredentials(conn) ?? throw new ObifinValidationException(UndecryptableMessage);
         // Obifin tarafında tekil etiket: liste dönüşünde bunu ararız; sonucu belirsiz kalan bir denemede de admin'in

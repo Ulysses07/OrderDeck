@@ -1,6 +1,7 @@
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Privacy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,13 @@ public class DetailModel : PageModel
     public List<License> Licenses { get; private set; } = new();
     public List<AuditLogEntry> AuditEntries { get; private set; } = new();
 
+    /// <summary>Yayıncının veri sorumlusu bilgileri (KVKK K-3); girilmediyse null.</summary>
+    public DataControllerView? DataController { get; private set; }
+    [BindProperty] public string? DcLegalName { get; set; }
+    [BindProperty] public string? DcPostalAddress { get; set; }
+    [BindProperty] public string? DcKvkkEmail { get; set; }
+    [BindProperty] public string? DcKepAddress { get; set; }
+
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken ct)
     {
         // Customer + Licenses in a single round-trip. AsNoTracking — render-only path.
@@ -42,7 +50,34 @@ public class DetailModel : PageModel
             .Take(20)
             .ToListAsync(ct);
 
+        DataController = await DataControllerProfiles.ReadAsync(_db, id, ct);
         return Page();
+    }
+
+    /// <summary>KVKK K-3: yayıncının veri sorumlusu bilgileri (formda ve Shopper'da gösterilir).</summary>
+    public async Task<IActionResult> OnPostDataControllerAsync(Guid id, CancellationToken ct)
+    {
+        if (!await _db.Customers.AnyAsync(c => c.Id == id, ct)) return NotFound();
+        if (DataControllerProfiles.Validate(new DataControllerInput(DcLegalName, DcPostalAddress, DcKvkkEmail, DcKepAddress),
+                out var valid) is { } error)
+        {
+            TempData["Error"] = error;
+            return RedirectToPage("./Detail", new { id });
+        }
+        try
+        {
+            // Yapan: yöneticinin kimliği, kullanıcı adı değil (KVKK Ö-14; Görev 9 kuralı) — sürüm satırı yayıncı silinene kadar
+            // durur.
+            await DataControllerProfiles.UpsertAsync(_db, id, valid, "admin:" + DataDestruction.ActorOf(User), ct);
+        }
+        catch (DataControllerConflictException ex)
+        {
+            TempData["Error"] = ex.Message;
+            return RedirectToPage("./Detail", new { id });
+        }
+        await _audit.LogAsync(AuditEvents.CustomerDataControllerUpdate, AuditTargets.Customer, id.ToString(), null, ct);
+        TempData["Success"] = "Veri sorumlusu bilgileri kaydedildi.";
+        return RedirectToPage("./Detail", new { id });
     }
 
     public async Task<IActionResult> OnPostConfirmEmailAsync(Guid id, CancellationToken ct)

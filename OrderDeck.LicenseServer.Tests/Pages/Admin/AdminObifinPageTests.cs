@@ -151,8 +151,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>Müşteri + lisans ekler (kaydetmez); e-posta <paramref name="emailPrefix"/> ile başlar — seçim listesi
-    /// e-postaya göre sıralı.</summary>
-    private static Guid AddLicense(LicenseDbContext db, string emailPrefix = "ob")
+    /// e-postaya göre sıralı. <paramref name="withDataController"/>: yayıncının veri sorumlusu bilgisi (KVKK K-3 kapısı).</summary>
+    private static Guid AddLicense(LicenseDbContext db, string emailPrefix = "ob", bool withDataController = true)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer { Id = customerId, Email = $"{emailPrefix}-{Guid.NewGuid():N}@x", Name = "Ob",
@@ -160,6 +160,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var licenseId = Guid.NewGuid();
         db.Licenses.Add(new License { Id = licenseId, LicenseKey = $"LDK-OB-{Guid.NewGuid():N}", CustomerId = customerId,
             SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
+        if (withDataController) TestDataController.Add(db, customerId);   // KVKK K-3 kapısı: Kaydet ilk kaydı da yapar
         return licenseId;
     }
 
@@ -760,6 +761,29 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var act = () => PostAsync(client, "Verify", new Dictionary<string, string> { ["LicenseId"] = licenseId.ToString() });
 
         (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Be(marker);
+    }
+
+    [Fact]
+    public async Task Veri_sorumlusu_bilgisi_olmayan_yayincida_ilk_kayit_reddedilir_bildirim_yolu_gosterir()
+    {
+        // KVKK K-3 öneri 3 (karar 23): uygulamanın gerçek yapılandırmasında (appsettings, Obifin:RequireDataControllerProfile)
+        // kapı açık; bildirim yöneticiye bilginin nereye girileceğini söyler, bağlantı satırı açılmaz.
+        Guid licenseId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            licenseId = AddLicense(db, withDataController: false);
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var resp = await SaveAsync(client, licenseId, "api@x");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "danger")).Should().Be(ObifinConnectionService.DataControllerMissingMessage);
+        using var verify = _factory.Services.CreateScope();
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.CountAsync(c => c.LicenseId == licenseId))
+            .Should().Be(0);
     }
 
     [Fact]

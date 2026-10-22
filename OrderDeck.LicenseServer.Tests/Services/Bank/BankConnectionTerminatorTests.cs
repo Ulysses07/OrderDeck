@@ -152,6 +152,7 @@ public sealed class BankConnectionTerminatorTests
         db.Licenses.Add(new License { Id = lic, LicenseKey = $"LDK-{Guid.NewGuid():N}", CustomerId = customerId, SkuCode = "STD",
             ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = licenseActive ? DateTimeOffset.UtcNow.AddDays(30) : DateTimeOffset.UtcNow.AddDays(-1) });
+        TestDataController.Add(db, customerId);   // KVKK K-3 kapısı: bilgisiz yayıncıda bağlantı kaydedilmez
         await db.SaveChangesAsync();
         var conn = await Service(db, client).UpsertAsync(lic, "", userCode ?? $"api-{Guid.NewGuid():N}@x",
             $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}", CancellationToken.None);

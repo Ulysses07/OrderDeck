@@ -117,7 +117,8 @@ public sealed class AdminCustomersController : ControllerBase
     /// <summary>
     /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
     /// data (licenses, activations, refresh tokens, intake form submissions,
-    /// email logs, panel push devices, backup blobs + metadata) and anonymises the Customer row
+    /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3)
+    /// and anonymises the Customer row
     /// itself. The Customer row stays — its Id is referenced from AuditLog
     /// rows that we MUST retain for the configured retention window. Email
     /// + Name are blanked, PasswordHash is set to a sentinel that no hash
@@ -179,6 +180,10 @@ public sealed class AdminCustomersController : ControllerBase
         _db.RefreshTokens.RemoveRange(_db.RefreshTokens.Where(r => r.CustomerId == id));
         _db.PasswordResetTokens.RemoveRange(_db.PasswordResetTokens.Where(p => p.CustomerId == id));
         _db.EmailConfirmationTokens.RemoveRange(_db.EmailConfirmationTokens.Where(t => t.CustomerId == id));
+        // KVKK K-3: veri sorumlusu bilgileri ve sürümleri (şahıs yayıncıda ad ve adres) yayıncının verisidir (karar 24). Müşteri
+        // satırı anonimleştirilip kaldığı için FK cascade'i tetiklenmez, açıkça silinir.
+        _db.DataControllerProfiles.RemoveRange(_db.DataControllerProfiles.Where(p => p.CustomerId == id));
+        _db.DataControllerProfileVersions.RemoveRange(_db.DataControllerProfileVersions.Where(v => v.CustomerId == id));
         // Panel push devices (device id + FCM/APNS token). The FK cascades on Customer delete, but the Customer row is
         // anonymised and kept — the cascade never fires, so they go explicitly.
         _db.PushDevices.RemoveRange(_db.PushDevices.Where(d => d.CustomerId == id));
@@ -234,6 +239,8 @@ public sealed class AdminCustomersController : ControllerBase
         Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, Deleted<IntakeFormConfig>());
         Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, Deleted<IntakeFormSubmission>());
         Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
+        Record("DataControllerProfiles", DataDestruction.Actions.Deleted, Deleted<DataControllerProfile>());
+        Record("DataControllerProfileVersions", DataDestruction.Actions.Deleted, Deleted<DataControllerProfileVersion>());
         // KVKK K-7: yayıncının lisanslarındaki açık banka veri talepleri kapanır (lisansa FK yok: talep satırı belge olarak kalır,
         // IBAN özeti boşalır, imha kaydı talep başına bu tetikleyiciyle). Yönetici başvurana yine yanıt verir. Aynı kayıtta: talebi arada kapatan başka bir istek (ClosedAt
         // jetonu) bu kaydı düşürür, aşağıdaki 409 ile operatör yeniden çağırır.

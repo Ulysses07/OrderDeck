@@ -1047,6 +1047,94 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("CustomerBalanceTransactions");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfile", b =>
+                {
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("KepAddress")
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("KvkkEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("LegalName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PostalAddress")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("CustomerId");
+
+                    b.ToTable("DataControllerProfiles");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfileVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("KepAddress")
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("KvkkEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)");
+
+                    b.Property<string>("LegalName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PostalAddress")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("DataControllerProfileVersions");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataDestructionRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1277,6 +1365,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("City")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("DataControllerVersion")
+                        .HasColumnType("int");
 
                     b.Property<string>("District")
                         .HasMaxLength(50)
@@ -4202,6 +4293,26 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("License");
 
                     b.Navigation("WpfCustomer");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfile", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.Customer", "Customer")
+                        .WithOne()
+                        .HasForeignKey("OrderDeck.LicenseServer.Domain.DataControllerProfile", "CustomerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.DataControllerProfileVersion", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.Customer", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.EmailConfirmationToken", b =>

@@ -173,6 +173,7 @@ public sealed class ObifinConnectionServiceConcurrencyTests : IAsyncLifetime
         };
         db.Customers.Add(customer);
         db.Licenses.Add(license);
+        TestDataController.Add(db, customer.Id);   // KVKK K-3 kapısı: bilgisiz yayıncıda bağlantı kaydedilmez
         await db.SaveChangesAsync();
 
         var userCode = $"api-{Guid.NewGuid():N}@x";

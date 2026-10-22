@@ -72,6 +72,8 @@ public class LicenseDbContext : DbContext
     public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
     public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<LicenseShippingSettings> LicenseShippingSettings => Set<LicenseShippingSettings>();
+    public DbSet<DataControllerProfile> DataControllerProfiles => Set<DataControllerProfile>();
+    public DbSet<DataControllerProfileVersion> DataControllerProfileVersions => Set<DataControllerProfileVersion>();
     public DbSet<SalesCommandLog> SalesCommandLogs => Set<SalesCommandLog>();
     public DbSet<PaymentRequestRecord> PaymentRequestRecords => Set<PaymentRequestRecord>();
     public DbSet<PaymentRequestMember> PaymentRequestMembers => Set<PaymentRequestMember>();
@@ -661,6 +663,35 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.ShippingFee).HasPrecision(18, 2);
             b.Property(s => s.Version).IsConcurrencyToken();
             b.Property(s => s.UpdatedBy).HasMaxLength(64);
+        });
+
+        // Yayıncının veri sorumlusu bilgileri (KVKK K-3): müşteri başına bir satır, müşteri silinirse gider. Version
+        // eşzamanlılık jetonu: aynı sürümü okuyan iki yazımdan ikincisi çakışır, yeniden okuyup dener
+        // (Services.Privacy.DataControllerProfiles.UpsertAsync). Sınırların adı tam yazılır: bu sınıfın DbSet'i aynı adı taşır.
+        mb.Entity<DataControllerProfile>(b =>
+        {
+            b.HasKey(p => p.CustomerId);
+            b.HasOne(p => p.Customer).WithOne().HasForeignKey<DataControllerProfile>(p => p.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(p => p.LegalName).HasMaxLength(Services.Privacy.DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(p => p.PostalAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(p => p.KvkkEmail).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(p => p.KepAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax);
+            b.Property(p => p.Version).IsConcurrencyToken();
+            b.Property(p => p.UpdatedBy).HasMaxLength(300).IsRequired();
+        });
+
+        // Veri sorumlusu bilgisinin sürümleri (KVKK m. 10/1-a ispatı, karar 24): yalnız eklenir; müşteri silinirse gider (purge
+        // ayrıca siler, satır anonimleşir ama kalır). (Müşteri, sürüm) tekil: bir sürüm numarası tek içeriğe verilir.
+        mb.Entity<DataControllerProfileVersion>(b =>
+        {
+            b.HasKey(v => v.Id);
+            b.HasOne<Customer>().WithMany().HasForeignKey(v => v.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(v => new { v.CustomerId, v.Version }).IsUnique();
+            b.Property(v => v.LegalName).HasMaxLength(Services.Privacy.DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(v => v.PostalAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(v => v.KvkkEmail).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(v => v.KepAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax);
+            b.Property(v => v.CreatedBy).HasMaxLength(300).IsRequired();
         });
 
         // Satış komutu günlüğü (yayın ve etiket senkronu S2, spec 2026-10-13 §3.1,

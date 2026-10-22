@@ -84,6 +84,23 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
+        // Veri sorumlusu bilgileri de yayıncının verisi: purge siler (KVKK K-3).
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.DataControllerProfiles.Add(new OrderDeck.LicenseServer.Domain.DataControllerProfile
+            {
+                CustomerId = customerId, LegalName = "Örnek Ticaret", PostalAddress = "Adres", KvkkEmail = "kvkk@example.test",
+                Version = 1, UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "panel",
+            });
+            db.DataControllerProfileVersions.Add(new OrderDeck.LicenseServer.Domain.DataControllerProfileVersion
+            {
+                Id = Guid.NewGuid(), CustomerId = customerId, Version = 1, LegalName = "Örnek Ticaret", PostalAddress = "Adres",
+                KvkkEmail = "kvkk@example.test", CreatedAt = DateTimeOffset.UtcNow, CreatedBy = "panel",
+            });
+            await db.SaveChangesAsync();
+        }
+
         // Mint an admin token.
         string adminToken;
         OrderDeck.LicenseServer.Domain.AdminUser admin;
@@ -127,6 +144,9 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
 
         var remainingBackups = await verifyDb.CustomerBackups.CountAsync(b => b.CustomerId == customerId);
         remainingBackups.Should().Be(0);
+        (await verifyDb.DataControllerProfiles.CountAsync(p => p.CustomerId == customerId)).Should().Be(0);
+        (await verifyDb.DataControllerProfileVersions.CountAsync(v => v.CustomerId == customerId)).Should().Be(0,
+            "sürümler şahıs yayıncıda kişisel veri: profille birlikte silinir (karar 24)");
 
         // AuditLog must record the purge — the row stays even though customer data is gone.
         var purgeAudit = await verifyDb.AuditLogs.CountAsync(
@@ -145,6 +165,11 @@ public class GdprFlowTests : IClassFixture<ApiFactory>
         // Push cihazı (cihaz kimliği + jeton) silinir ve kayda geçer.
         (await verifyDb.PushDevices.CountAsync(d => d.CustomerId == customerId)).Should().Be(0);
         records.Should().Contain(r => r.Target == "PushDevices" && r.RowCount == 1);
+        // Veri sorumlusu bilgisi ve sürümü silinir ve kayda geçer (KVKK K-3, karar 24; sayım izleyiciden).
+        records.Should().Contain(r => r.Target == "DataControllerProfiles" && r.RowCount == 1
+            && r.Action == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Actions.Deleted);
+        records.Should().Contain(r => r.Target == "DataControllerProfileVersions" && r.RowCount == 1
+            && r.Action == OrderDeck.LicenseServer.Services.Privacy.DataDestruction.Actions.Deleted);
         // Yapan: yöneticinin kimliği (sub), kullanıcı adı değil — tablo budanmaz, ad bir gerçek kişiyi gösterir (KVKK Ö-14).
         records.Should().OnlyContain(r => r.Actor == admin.Id.ToString());
     }

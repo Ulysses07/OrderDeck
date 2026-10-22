@@ -17,6 +17,8 @@ public static class AuditEvents
     // KVKK / GDPR compliance (Phase 5d)
     public const string CustomerDataExported = "customer.data-exported";
     public const string CustomerPurged = "customer.purged";
+    // Yayıncının veri sorumlusu bilgileri (KVKK K-3) yönetimden değiştirildi. Ayrıntı yok.
+    public const string CustomerDataControllerUpdate = "customer.data-controller.update";
 
     // Shopper (müşteri app) silme talebi — elle işlenen KVKK akışı.
     public const string ShopperPurged = "shopper.purged";
