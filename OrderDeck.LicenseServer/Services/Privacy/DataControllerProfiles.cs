@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Net.Mail;
+using System.Text;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
@@ -42,24 +44,49 @@ public static class DataControllerProfiles
     private const string ProfileKeyName = "PK_DataControllerProfiles";
     private const string VersionIndexName = "IX_DataControllerProfileVersions_CustomerId_Version";
 
-    /// <summary>Kırpar ve doğrular: ad/unvan ve adres zorunlu, e-posta geçerli (görünen ad olmadan), KEP varsa e-posta biçiminde;
-    /// boşluk KEP null olur. Hata varsa Türkçe ileti, yoksa null.</summary>
+    /// <summary>Kırpar, boşlukları tekler ve doğrular: ad/unvan ve adres zorunlu, e-posta geçerli (görünen ad olmadan), KEP varsa
+    /// e-posta biçiminde; boşluk KEP null olur. Değer ilgili kişiye tek satır kimlik olarak gösterilir (kayıt formu, Shopper'ın
+    /// " · " ile birleştirdiği satır, WPF ödeme mesajı): satır sonu, sekme ve ardışık boşluk tek boşluğa iner; kalan denetim
+    /// (Cc: NUL …) ya da biçim (Cf: yazı yönü işaretleri U+202A–U+202E, U+2066–U+2069, sıfır genişlikli karakterler) karakteri
+    /// reddedilir — gösterilen kimliği bozar ya da görsel olarak çarpıtır. Hata varsa Türkçe ileti, yoksa null.</summary>
     public static string? Validate(DataControllerInput input, out DataControllerInput normalized)
     {
-        var name = (input.LegalName ?? "").Trim();
-        var address = (input.PostalAddress ?? "").Trim();
-        var email = (input.KvkkEmail ?? "").Trim();
-        var kep = string.IsNullOrWhiteSpace(input.KepAddress) ? null : input.KepAddress.Trim();
+        var name = Collapse(input.LegalName);
+        var address = Collapse(input.PostalAddress);
+        var email = Collapse(input.KvkkEmail);
+        var kep = string.IsNullOrWhiteSpace(input.KepAddress) ? null : Collapse(input.KepAddress);
         normalized = new DataControllerInput(name, address, email, kep);
         if (name.Length is 0 or > LegalNameMax) return $"Ad soyad / unvan zorunlu, en fazla {LegalNameMax} karakter.";
+        if (HasHiddenCharacter(name)) return "Ad soyad / unvan görünmez ya da denetim karakteri (ör. yazı yönü işareti) içeremez.";
         if (address.Length is 0 or > PostalAddressMax) return $"Posta adresi zorunlu, en fazla {PostalAddressMax} karakter.";
+        if (HasHiddenCharacter(address)) return "Posta adresi görünmez ya da denetim karakteri (ör. yazı yönü işareti) içeremez.";
         if (!IsEmail(email)) return "KVKK başvuru e-postası geçerli bir e-posta adresi olmalı.";
         if (kep is not null && !IsEmail(kep)) return "KEP adresi geçerli bir e-posta biçiminde olmalı.";
         return null;
     }
 
+    /// <summary>Boşluk dizilerini (satır sonu, sekme, U+2028 dahil: <see cref="char.IsWhiteSpace(char)"/>) tek boşluğa indirir,
+    /// baştan ve sondan kırpar.</summary>
+    private static string Collapse(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        var sb = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var c in value)
+        {
+            if (char.IsWhiteSpace(c)) { pendingSpace = sb.Length > 0; continue; }
+            if (pendingSpace) { sb.Append(' '); pendingSpace = false; }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private static bool HasHiddenCharacter(string value)
+        => value.Any(c => char.IsControl(c) || char.GetUnicodeCategory(c) == UnicodeCategory.Format);
+
     private static bool IsEmail(string value)
-        => value.Length is > 0 and <= EmailMax && MailAddress.TryCreate(value, out var parsed) && parsed.Address == value;
+        => value.Length is > 0 and <= EmailMax && !HasHiddenCharacter(value) && MailAddress.TryCreate(value, out var parsed)
+            && parsed.Address == value;
 
     public static Task<DataControllerView?> ReadAsync(LicenseDbContext db, Guid customerId, CancellationToken ct)
         => db.DataControllerProfiles.AsNoTracking().Where(p => p.CustomerId == customerId)
