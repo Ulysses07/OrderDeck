@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -157,39 +156,17 @@ public sealed class PanelNetgsmAccountErrorSurfaceTests : IDisposable
     }
 
     /// <summary>
-    /// Gerçek bir <c>SqlException</c> üretir. Genel ctor'u yok — SQL Server'ın
-    /// kendisi dışında kimse kuramasın diye kapalı. Yansımayla kuruyoruz çünkü
-    /// alternatifin ikisi de kötü: ya <c>IsUniqueIndexConflict</c>'in ASIL
-    /// mantığı (2601/2627 + indeks adı) hiç sınanmaz, ya da üretim kodu yalnız
-    /// test uğruna ikinci bir imzaya bölünür.
+    /// Gerçek bir <c>SqlException</c> (<see cref="SqlExceptionFactory"/>):
+    /// <c>IsUniqueIndexConflict</c>'in ASIL mantığı (2601/2627 + indeks adı)
+    /// sınanır.
     ///
     /// <para><b>Neden InMemory'den geçemiyoruz.</b> InMemory sağlayıcı tekil
     /// indeksleri UYGULAMIYOR; aynı lisansa iki satır sessizce yazılır ve
     /// <c>DbUpdateException</c> hiç doğmaz. Yani bu dal HTTP üzerinden
     /// kanıtlanamaz, saf fonksiyon olarak kanıtlanır.</para>
     /// </summary>
-    private static SqlException NewSqlException(int number, string message)
-    {
-        var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
-        var asm = typeof(SqlException).Assembly;
-
-        var errorType = asm.GetType("Microsoft.Data.SqlClient.SqlError")!;
-        var error = errorType.GetConstructor(flags, new[]
-        {
-            typeof(int), typeof(byte), typeof(byte), typeof(string),
-            typeof(string), typeof(string), typeof(int), typeof(Exception),
-        })!.Invoke(new object?[] { number, (byte)0, (byte)0, "test", message, "", 0, null });
-
-        var collectionType = asm.GetType("Microsoft.Data.SqlClient.SqlErrorCollection")!;
-        var collection = collectionType.GetConstructor(flags, Type.EmptyTypes)!.Invoke(null);
-        collectionType.GetMethod("Add", flags)!.Invoke(collection, new[] { error });
-
-        return (SqlException)typeof(SqlException).GetMethod(
-                "CreateException",
-                BindingFlags.Static | BindingFlags.NonPublic,
-                new[] { collectionType, typeof(string) })!
-            .Invoke(null, new[] { collection, "11.0.0" })!;
-    }
+    private static SqlException NewSqlException(int number, string message) =>
+        SqlExceptionFactory.Create(number, message);
 
     [Fact]
     public void Lisans_tekil_indeks_ihlali_de_catisma_sayilir()

@@ -1,11 +1,8 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -18,7 +15,7 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 /// damgalaması burada izlenen varlıklarla yürür; aynı işlem ve rowversion sırası
 /// <see cref="SessionReleaseRelationalTests"/>'te gerçek SQL Server'da.
 /// </summary>
-public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSyncTests.LogApiFactory>
+public sealed class SessionOwnershipSyncTests : IClassFixture<LogApiFactory>
 {
     private static readonly DateTimeOffset StartedAt = DateTimeOffset.UtcNow.AddHours(-3);
     private static readonly DateTimeOffset EndedAt = StartedAt.AddHours(2);
@@ -759,39 +756,5 @@ public sealed class SessionOwnershipSyncTests : IClassFixture<SessionOwnershipSy
         db.Licenses.Add(license);
         await db.SaveChangesAsync();
         return (client, license.Id);
-    }
-
-    /// <summary><see cref="ApiFactory"/> + Information ve üstü günlük satırlarının toplayıcısı.</summary>
-    public sealed class LogApiFactory : ApiFactory
-    {
-        public MessageRecorder Log { get; } = new();
-
-        protected override void ConfigureWebHost(IWebHostBuilder builder)
-        {
-            base.ConfigureWebHost(builder);
-            builder.ConfigureLogging(l => l.AddProvider(Log));
-        }
-    }
-
-    public sealed class MessageRecorder : ILoggerProvider
-    {
-        private readonly ConcurrentQueue<string> _messages = new();
-
-        public IReadOnlyList<string> Messages => _messages.ToArray();
-
-        public ILogger CreateLogger(string categoryName) => new Recorder(this);
-
-        public void Dispose() { }
-
-        private sealed class Recorder(MessageRecorder owner) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                if (logLevel >= LogLevel.Information) owner._messages.Enqueue(formatter(state, exception));
-            }
-        }
     }
 }

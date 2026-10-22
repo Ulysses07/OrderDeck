@@ -465,14 +465,17 @@ public sealed class CustomerGroupingJobTests : IAsyncLifetime
             rows[a.Id].GroupId.Should().NotBe(la, "çakışan bileşen BÜTÜNÜYLE geri alındı");
             rows[b.Id].GroupId.Should().Be(lb, "öteki bileşen uygulandı");
 
-            // Yeniden koşu kalanı tamamlar; silinen üye artık grubun dışında.
+            // Yeniden koşu kalanı tamamlar. İş silinen üyeyi planına almaz; kanca onu son canlı üyenin numarasına
+            // taşır (aşağıda).
             var second = await Job(db).RunAsync(lic, pairs, apply: true, default);
             second.FailedComponents.Should().Be(0);
             second.Components.Should().Be(1);
             second.RowsToChange.Should().Be(1);
             rows = await RowsAsync(db, lic);
             rows[a.Id].GroupId.Should().Be(la);
-            rows[aMember.Id].GroupId.Should().NotBe(la, "silinmiş satıra yazılmaz");
+            // İş silinmiş satırı kendisi taşımaz (MoveToGroup atlar); ama a, ga'nın son canlı üyesiydi: ga'da kalan
+            // silinmiş üye numarayı izler (ortak bakiye §4.11, §4.12, K3, M11 — PersonGroupSaveHook).
+            rows[aMember.Id].GroupId.Should().Be(la, "son canlı üye ayrılınca silinmiş üye onun numarasına geçer");
         }
     }
 }

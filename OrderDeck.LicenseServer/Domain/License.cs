@@ -46,6 +46,12 @@ public sealed class License
     public SalesSyncMode SalesSyncMode { get; set; }
     public DateTimeOffset? SalesSyncModeChangedAt { get; set; }
 
+    /// <summary>
+    /// Ortak bakiye havuz kipi bayrağı (spec 2026-10-11 §3.1, §7.2): doluysa lisans havuz kipindedir. S1'de hiçbir
+    /// kod okumaz ve yazmaz; S2 okur, yalnız <c>person-balance enable|disable</c> CLI'si yazar.
+    /// </summary>
+    public DateTimeOffset? PersonBalancePoolSince { get; set; }
+
     // Protokolsüz satış isteği izi bu satırda DEĞİL, SalesLegacyTrace'te:
     // her UPDATE RowVersion'ı ilerletir ve izlenen License'ı kaydeden yollar
     // (payment-account, shopper-code) o çakışmayı yakalamıyor.

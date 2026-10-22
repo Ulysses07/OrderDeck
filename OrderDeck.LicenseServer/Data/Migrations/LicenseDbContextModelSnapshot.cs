@@ -1001,6 +1001,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<Guid>("CreatedByCustomerId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid?>("DrawGroupId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -1032,6 +1035,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("DrawGroupId")
+                        .HasDatabaseName("IX_CustomerBalanceTransactions_DrawGroupId")
+                        .HasFilter("[DrawGroupId] IS NOT NULL");
 
                     b.HasIndex("ReversesTransactionId")
                         .IsUnique()
@@ -1638,6 +1645,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("PaymentIban")
                         .HasMaxLength(34)
                         .HasColumnType("nvarchar(34)");
+
+                    b.Property<DateTimeOffset?>("PersonBalancePoolSince")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("RevokeReason")
                         .HasMaxLength(500)
@@ -2382,6 +2392,33 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("ShopperId", "CreatedAt");
 
                     b.ToTable("PaymentSubmissionAudits");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PersonBalanceBaseline", b =>
+                {
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("WpfCustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Balance")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset>("CapturedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<decimal>("LedgerSum")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset?>("ReviewedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("LicenseId", "WpfCustomerId");
+
+                    b.ToTable("PersonBalanceBaselines");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>
@@ -3949,7 +3986,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<string>("GroupId")
                         .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
+                        .HasColumnType("nvarchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
 
                     b.Property<DateTimeOffset?>("GroupIdChangedAt")
                         .HasColumnType("datetimeoffset");
@@ -4029,6 +4067,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("LicenseId", "ChangeSeq");
+
+                    b.HasIndex("LicenseId", "GroupId")
+                        .HasFilter("[MergedIntoId] IS NULL AND [GroupId] IS NOT NULL");
 
                     b.HasIndex("LicenseId", "Platform", "IdentityKey")
                         .IsUnique()
@@ -4482,6 +4523,15 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Record");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PersonBalanceBaseline", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", null)
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>

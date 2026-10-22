@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Data;
@@ -86,6 +87,7 @@ public class LicenseDbContext : DbContext
     public DbSet<OrphanedMediaObject> OrphanedMediaObjects => Set<OrphanedMediaObject>();
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
+    public DbSet<PersonBalanceBaseline> PersonBalanceBaselines => Set<PersonBalanceBaseline>();
     public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
@@ -178,6 +180,14 @@ public class LicenseDbContext : DbContext
     private void StampPaymentMatchVersions() => StampVersions<PaymentMatch>(m => m.UpdatedAt);
 
     /// <summary>
+    /// <see cref="CustomerBalance.UpdatedAt"/> (F02 jetonu) ortak bakiyenin kişi kilidinin de jetonudur (spec
+    /// 2026-10-11 §4.11, M6): grup değişimi kancası ve birleştiricinin sıfır bakiye damgası satırı yalnız "değişti"
+    /// işaretler, değeri burada ilerler. <c>UtcNow</c> atamasına güvenen bugünkü yazarlar saat geri giderse aynı
+    /// değeri yazabilirdi; <c>max(UtcNow, özgün + 1 tick)</c> ile bir dokunuş hiçbir zaman kaybolmaz.
+    /// </summary>
+    private void StampCustomerBalanceVersions() => StampVersions<CustomerBalance>(b => b.UpdatedAt);
+
+    /// <summary>
     /// <typeparamref name="TEntity"/>'nin değişmiş (<see cref="EntityState.Modified"/>)
     /// her girdisinde sürüm sütununu <c>max(UtcNow, özgün + 1 tick)</c> yapar ve
     /// değişmiş işaretler. Eklenen satır kendi değeriyle yazılır; silinen satırın
@@ -211,18 +221,23 @@ public class LicenseDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         SyncDerivedColumns();
+        // Ortak bakiye §4.11 kancası; sync: true iken görev tamamlanmış döner (bkz. PersonGroupSaveHook).
+        PersonGroupSaveHook.RunAsync(this, sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
+        StampCustomerBalanceVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         SyncDerivedColumns();
+        await PersonGroupSaveHook.RunAsync(this, sync: false, cancellationToken);
         StampNetgsmAccountVersions();
         StampPaymentMatchVersions();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        StampCustomerBalanceVersions();
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     /// <summary>
@@ -901,7 +916,10 @@ public class LicenseDbContext : DbContext
              .UseCollation("Latin1_General_100_BIN2");
             b.Property(c => c.FullName).HasMaxLength(200);
             b.Property(c => c.DisplayName).HasMaxLength(200);
-            b.Property(c => c.GroupId).HasMaxLength(64);
+            // BIN2 (ortak bakiye M5, spec 2026-10-11 §3.1): kişi eşitliği WPF'teki gibi ordinal. BIN2 harf farkını
+            // SQL'de ayırır; sondaki boşluğu SQL '=' hiçbir harmanda ayırmaz — onu bellekteki süzgeç ayırır
+            // (PersonMembership). Emsal IdentityKey.
+            b.Property(c => c.GroupId).HasMaxLength(64).UseCollation("Latin1_General_100_BIN2");
             b.Property(c => c.Phone).HasMaxLength(20);
             b.Property(c => c.Address).HasMaxLength(500);
             b.Property(c => c.City).HasMaxLength(64);
@@ -927,6 +945,10 @@ public class LicenseDbContext : DbContext
              .HasFilter(Services.CustomerSync.CustomerIdentityIndex.Filter)
              .HasDatabaseName(Services.CustomerSync.CustomerIdentityIndex.Name);
             b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
+            // Kişi sorgusu (PersonMembership): lisansın asıl, gruplu kayıtları. Bugüne kadar GroupId'de indeks yoktu
+            // ve kişi sorgusu lisansın bütün kayıtlarını tarıyordu (spec §3.1).
+            b.HasIndex(c => new { c.LicenseId, c.GroupId })
+             .HasFilter("[MergedIntoId] IS NULL AND [GroupId] IS NOT NULL");
             // Kopya (MergedIntoId dolu) bir YÖNLENDİRMEDİR, müşteri değil: kişisel
             // alanları boş, kullanıcı adı asıl kayıtla aynı. Varsayılan sorgulardan
             // GİZLİ — panel listesi, Shopper eşleştirme, banka eşleştirmesi, eski
@@ -1094,6 +1116,22 @@ public class LicenseDbContext : DbContext
              .HasMaxLength(CustomerBalanceTransaction.SaleScopeMaxLength);
             b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.SaleScope })
              .HasFilter("[SaleScope] IS NOT NULL");
+            // Ortak bakiye (spec §3.1): grup okuması ve geri alma. TEKİL DEĞİL — bir grubun bütün satırları (çapa ve
+            // bacaklar) aynı DrawGroupId'yi taşır. Bacak başına (DrawGroupId, WpfCustomerId) tekilliği de kurulamaz:
+            // kimlik birleşmesi aynı çekimin iki bacağını aynı satıra taşıyabilir (CustomerIdentityMerger).
+            b.HasIndex(t => t.DrawGroupId)
+             .HasFilter("[DrawGroupId] IS NOT NULL")
+             .HasDatabaseName("IX_CustomerBalanceTransactions_DrawGroupId");
+        });
+
+        // Ortak bakiye denetiminin taban çizgisi (spec §3.1, §7.3). Projeksiyona FK yok, çünkü
+        // WpfCustomerId = Guid.Empty lisans işaret satırıdır (hiçbir projeksiyona karşılık gelmez). Lisans silinince cascade.
+        mb.Entity<PersonBalanceBaseline>(b =>
+        {
+            b.HasKey(x => new { x.LicenseId, x.WpfCustomerId });
+            b.HasOne<License>().WithMany().HasForeignKey(x => x.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(x => x.Balance).HasPrecision(18, 2);
+            b.Property(x => x.LedgerSum).HasPrecision(18, 2);
         });
 
         mb.Entity<SmsCampaign>(b =>

@@ -102,7 +102,7 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Kopyanin_bakiyesi_sifirsa_asil_kayda_hicbir_sey_eklenmez_sayilmaz()
+    public async Task Kopyanin_bakiyesi_sifirsa_asil_kayda_hicbir_sey_eklenmez_sayilmaz_satiri_yalniz_damgalanir()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -121,13 +121,15 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         await db.SaveChangesAsync();
 
         counts.Balances.Should().Be(0, "kopyanın bakiyesi zaten 0 — sayılmaz");
-        var balances = await db.CustomerBalances.Where(b => b.LicenseId == license.Id).ToListAsync();
+        var balances = await db.CustomerBalances.AsNoTracking().Where(b => b.LicenseId == license.Id).ToListAsync();
         balances.Should().ContainSingle("asıl kayıt için satır AÇILMAMALI — eklenecek tutar yok");
         var copyBal = balances.Single();
-        copyBal.Id.Should().Be(balanceId, "kopyanın satırı dokunulmadan kalır");
+        copyBal.Id.Should().Be(balanceId);
         copyBal.WpfCustomerId.Should().Be(copy.Id);
         copyBal.Balance.Should().Be(0m);
-        copyBal.UpdatedAt.Should().Be(originalUpdatedAt, "satıra hiç dokunulmamalı — UpdatedAt bile ilerlememeli");
+        // Ortak bakiye M12 (spec 2026-10-11 §4.12): sıfır bakiyeli kopya satırı da damgalanır. Damgasız, bu satırı
+        // okuyan eşzamanlı bir grup geri alması çakışmadan commit eder ve parayı kopyaya (görünmez) yazardı.
+        copyBal.UpdatedAt.Should().BeAfter(originalUpdatedAt, "jeton ilerlemeli — eşzamanlı geri alma çakışsın");
     }
 
     [Fact]

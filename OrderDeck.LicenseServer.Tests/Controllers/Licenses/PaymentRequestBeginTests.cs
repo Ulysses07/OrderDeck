@@ -483,6 +483,42 @@ public sealed class PaymentRequestBeginTests : IClassFixture<SalesSyncConfigured
         (await kit.RecordsAsync()).Should().BeEmpty();
     }
 
+    /// <summary>
+    /// Ortak bakiye §15-7 (§4.0-3'ün kuralı): (b) sunucu grubunun yalnız CANLI üyelerini ister. Silinmiş üye sunucuda
+    /// numarası boşalan grubun yeni numarasını izler (<c>PersonGroupSaveHook</c>), WPF'te izlemez: g1'in son canlı üyesi
+    /// g0'a geçince kanca silinmiş üyeyi g0'a taşır, öbür bilgisayarın g0'ı onu içermez ve hiçbir müşteri akışı turu
+    /// içermesini sağlamaz. Kira yine açılır; silinmiş üye kaydın üyelerine girer (silinmiş sahipli kayıtlar bulunur),
+    /// toplama yalnız istemcinin üyeleri girer. Canlı üye eksikse yine 409 <c>members-stale</c>.
+    /// </summary>
+    [Fact]
+    public async Task Sunucuda_tasinan_silinmis_uye_istemcide_yoksa_kira_acilir_canli_uye_eksikse_409()
+    {
+        var kit = await Kit.CreateAsync(_factory);
+        var g1 = $"grp-{Guid.NewGuid():N}";
+        var g0 = $"grp-{Guid.NewGuid():N}";
+        var owner = await kit.SeedProjectionAsync(g1);
+        var purged = await kit.SeedProjectionAsync(g1, purged: true);
+        var sibling = await kit.SeedProjectionAsync(g0);
+        // Silinmiş üyenin sayılan bir siparişi: toplama girseydi istemci (onu üye saymıyor) stale-total alırdı.
+        await kit.SeedOrderAsync(purged, 70m);
+        // group-customers ya da başka bilgisayarın Birleştir'i: g1'in son canlı üyesi g0'a geçer.
+        await kit.GroupAsync(g0, owner);
+
+        var stale = await kit.BeginAsync(Kit.Body(Guid.NewGuid(), Guid.NewGuid(), owner, [owner]));
+        stale.StatusCode.Should().Be(HttpStatusCode.Conflict, await stale.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(stale);
+        problem.GetProperty("title").GetString().Should().Be("members-stale", "canlı üye (sibling) eksik");
+        problem.GetProperty("members").EnumerateArray().Select(m => m.GetString())
+            .Should().BeEquivalentTo([owner, sibling, purged], "kanca silinmiş üyeyi g0'a taşıdı");
+
+        var recordId = Guid.NewGuid();
+        var body = await BeginOkAsync(kit, Kit.Body(recordId, Guid.NewGuid(), owner, [owner, sibling]));
+
+        var expected = new[] { owner, sibling, purged }.Order(StringComparer.Ordinal).ToList();
+        body.Members.Should().Equal(expected);
+        (await kit.RecordAsync(recordId))!.Members.Select(m => m.WpfCustomerId).Should().BeEquivalentTo(expected);
+    }
+
     // ── (d) in-progress-elsewhere ────────────────────────────────────────────
 
     /// <summary>§6.4-d: başka kopyanın canlı kirası — 409 <c>in-progress-elsewhere {machine, since, recordId}</c>; ikinci

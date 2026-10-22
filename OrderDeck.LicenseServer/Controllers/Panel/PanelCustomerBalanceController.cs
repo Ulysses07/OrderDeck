@@ -31,11 +31,17 @@ public sealed class PanelCustomerBalanceController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly CustomerIdResolver _customerIds;
+    private readonly PersonBalance _person;
+    private readonly ILogger<PanelCustomerBalanceController> _log;
 
-    public PanelCustomerBalanceController(LicenseDbContext db, CustomerIdResolver customerIds)
+    public PanelCustomerBalanceController(
+        LicenseDbContext db, CustomerIdResolver customerIds, PersonBalance person,
+        ILogger<PanelCustomerBalanceController> log)
     {
         _db = db;
         _customerIds = customerIds;
+        _person = person;
+        _log = log;
     }
 
     public sealed record BalanceDto(
@@ -54,9 +60,13 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         Guid? ReversesTransactionId,
         DateTimeOffset CreatedAt);
 
+    /// <summary>Ortak bakiye (spec 2026-10-11 §4.6): kişinin bir üyesi — WPF'in Ayır onayı kullanır; panel yok sayar.</summary>
+    public sealed record MemberDto(Guid WpfCustomerId, decimal Balance, bool Purged);
+
     public sealed record BalanceDetailsResponse(
         BalanceDto Balance,
-        TransactionDto[] Transactions);
+        TransactionDto[] Transactions,
+        MemberDto[] Members);
 
     // ── GET — mevcut bakiye + son N transaction ─────────────────────────────
 
@@ -72,24 +82,29 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        // Yanıttaki Id rotadaki Id'dir (önceki davranış); bakiye asıl kaydınki.
-        var balance = await _db.CustomerBalances
+        // Ortak bakiye S1, satır kipi (spec 2026-10-11 §4.6): bakiye ve hareketler rota satırınınki, hareketler
+        // gruplara toplanmış; take grup sayar. UpdatedAt son para hareketidir (M9): grup değişimi kancasının ve
+        // birleştiricinin jeton dokunuşu "güncellendi" zamanını oynatmaz.
+        var row = await _db.CustomerBalances.AsNoTracking()
             .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == canonicalId)
-            .Select(b => new BalanceDto(wpfCustomerId, b.LicenseId, b.Balance, b.UpdatedAt))
-            .FirstOrDefaultAsync(ct)
-            ?? new BalanceDto(wpfCustomerId, licenseId, 0m, DateTimeOffset.UtcNow);
+            .Select(b => new { b.Balance, b.UpdatedAt })
+            .FirstOrDefaultAsync(ct);
+        var lastMovement = await _person.LastMovementAtAsync(licenseId, [canonicalId], ct);
+        // Yanıttaki Id rotadaki Id'dir (önceki davranış); bakiye asıl kaydınki.
+        var balance = new BalanceDto(wpfCustomerId, licenseId, row?.Balance ?? 0m,
+            lastMovement ?? row?.UpdatedAt ?? DateTimeOffset.UtcNow);
 
-        var transactions = await _db.CustomerBalanceTransactions
-            .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == canonicalId)
-            .OrderByDescending(t => t.CreatedAt)
-            .Take(take)
-            .Select(t => new TransactionDto(
-                t.Id, t.Amount, t.Kind,
-                t.OriginalAmount, t.ShippingDeducted,
-                t.Reason, t.ReversesTransactionId, t.CreatedAt))
-            .ToArrayAsync(ct);
+        var history = await _person.HistoryAsync(licenseId, [canonicalId], take, ct);
+        var transactions = history
+            .Select(h => new TransactionDto(h.Id, h.Amount, h.Kind, h.OriginalAmount, h.ShippingDeducted,
+                h.Reason, h.ReversesTransactionId, h.CreatedAt))
+            .ToArray();
 
-        return Ok(new BalanceDetailsResponse(balance, transactions));
+        // Members (§4.6): iki kipte de S üzerinden, üye başına satır bakiyesi (silinmişler dahil).
+        var person = await _person.MembersAsync(licenseId, canonicalId, ct);
+        var members = person.Members.Select(m => new MemberDto(m.WpfCustomerId, m.Balance, m.Purged)).ToArray();
+
+        return Ok(new BalanceDetailsResponse(balance, transactions, members));
     }
 
     // ── POST refund-full ────────────────────────────────────────────────────
@@ -204,11 +219,18 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, canonicalId, valid) = await ResolveAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        var original = await _db.CustomerBalanceTransactions
-            .FirstOrDefaultAsync(t => t.Id == transactionId
-                && t.LicenseId == licenseId
-                && t.WpfCustomerId == canonicalId, ct);
-        if (original is null) return NotFound();
+        var target = await _db.CustomerBalanceTransactions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == transactionId && t.LicenseId == licenseId, ct);
+        if (target is null) return NotFound();
+
+        // Ortak bakiye S1 tabanı (spec 2026-10-11 §4.9): çekim grubuna ait hedef iki kipte de grup olarak ele
+        // alınır — tek satırı geri almak yarım bir geri alma bırakırdı.
+        if (target.DrawGroupId is { } anchorId)
+            return await ReverseDrawGroupAsync(licenseId, canonicalId, customerId, anchorId, target, ct);
+
+        // Eski, tek satırlık hedef: bugünkü yol, birebir (satır kipi).
+        if (target.WpfCustomerId != canonicalId) return NotFound();
 
         // Daha önce reverse edilmiş mi? Bu ön kontrol hızlı yol — yarışta iki
         // istek de buradan geçebilir (check-then-insert). Asıl hakem aşağıdaki
@@ -220,7 +242,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
 
         // Reversal balance'ı sıfırın altına düşürmesin — kontrol retry
         // döngüsünün içinde (F02, bkz. ManualAdjustment).
-        var reverseAmount = -original.Amount;
+        var reverseAmount = -target.Amount;
         bool applied;
         try
         {
@@ -234,7 +256,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
                 disallowNegative: true,
                 ct: ct);
         }
-        catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
+        catch (DbUpdateException ex) when (PersonBalance.IsDuplicateReversal(ex))
         {
             // N01: eşzamanlı ikinci reverse — index hakemliğini kaybetti.
             // Transaction geri alındı, bakiyeye hiçbir şey yazılmadı.
@@ -243,6 +265,49 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         if (!applied) return Problem(title: "insufficient-balance", statusCode: 409);
 
         return Ok();
+    }
+
+    /// <summary>
+    /// Çekim grubuna ait hedef (spec §4.9, M8). Üyelik: grubun herhangi bir satırı rota satırında olmalı (S1 kip
+    /// bayrağını okumaz → satır kipi koşulu; havuz kipinin S(rota) genişlemesi S2'de). Panel listesi grubu çapa
+    /// Id'siyle gösterdiği için (§4.6) çapa başka satırda olsa da rota satırındaki bacaktan açılan iptal bulunur;
+    /// <c>disable</c> sonrası düzeltme yolu da budur. Düşüm ve elle eksi grubu grup olarak geri alınır
+    /// (<see cref="PersonBalance.ReverseGroupAsync"/>, §4.5); <c>reversal</c> grupları 409 <c>not-reversible</c>.
+    /// </summary>
+    private async Task<IActionResult> ReverseDrawGroupAsync(
+        Guid licenseId, Guid canonicalId, Guid customerId, Guid anchorId, CustomerBalanceTransaction target,
+        CancellationToken ct)
+    {
+        var group = await _db.CustomerBalanceTransactions
+            .AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && (t.Id == anchorId || t.DrawGroupId == anchorId))
+            .ToListAsync(ct);
+        if (!group.Any(t => t.WpfCustomerId == canonicalId)) return NotFound();
+        // Çapa kendi grubundadır (DrawGroupId = Id, §3.2). Öyle bir satır yoksa bacak yetimdir — verify sayar
+        // (§7.3-7); DrawGroupId'si boş bir satırı çapa saymak yalnız onu geri alıp bacağı açıkta bırakırdı (D5).
+        var anchor = group.FirstOrDefault(t => t.Id == anchorId && t.DrawGroupId == anchorId);
+        if (anchor is null) return NotFound();
+
+        // Bacak çapasıyla aynı türü taşır (D4); tür farkı bozuk veride başka bir grubu geri almayı önler.
+        if (!PersonBalance.IsGroupReversible(anchor) || target.Kind != anchor.Kind)
+            return Problem(title: "not-reversible", statusCode: 409,
+                detail: "Bu hareket bir çekim grubunun iptali; iptal edilemez.");
+
+        switch (await _person.ReverseGroupAsync(licenseId, anchorId, customerId, ct))
+        {
+            case PersonBalance.ReverseOutcome.Reversed:
+                return Ok();
+            case PersonBalance.ReverseOutcome.AlreadyReversed:
+                return Problem(title: "already-reversed", statusCode: 409);
+            case PersonBalance.ReverseOutcome.Busy:
+                // Uyarı servisin (neden ve çapayla); burada yalnız hangi ucun 503 döndüğü.
+                _log.LogDebug(
+                    "panel balance/reverse: 503 balance-busy (license={LicenseId})", licenseId);
+                return Problem(title: "balance-busy", statusCode: 503,
+                    detail: "Bakiye şu an başka bir işlemle güncelleniyor; yeniden deneyin.");
+            default:
+                return NotFound();
+        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -337,17 +402,6 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             }
         }
     }
-
-    /// <summary>
-    /// N01: SaveChanges'in fırlattığı DbUpdateException, reversal tekillik
-    /// index'inin ihlali mi? 2601/2627 = unique index/constraint violation;
-    /// mesajdaki index adı, CustomerBalance (LicenseId, WpfCustomerId) insert
-    /// yarışının aynı hata koduyla karışmasını önler.
-    /// </summary>
-    private static bool IsDuplicateReversal(DbUpdateException ex) =>
-        ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
-        && sql.Number is 2601 or 2627
-        && sql.Message.Contains("ReversesTransactionId", StringComparison.Ordinal);
 
     private static string? TrimReason(string? reason)
     {
