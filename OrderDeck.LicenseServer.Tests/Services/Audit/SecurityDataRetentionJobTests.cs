@@ -129,16 +129,18 @@ public class SecurityDataRetentionJobTests : IClassFixture<ApiFactory>
         UserAgent = "Mozilla/5.0",
         FraudFlags = "",
         ParserConfidence = "high",
+        ParserRawText = $"dekont-metni-{Guid.NewGuid():N}",
     };
 
     private static SecurityDataRetentionJob Make(
         LicenseDbContext db, int retentionDays = 90, int batchSize = 1000, int deletionRequestPhoneDays = 30,
-        TestEmailSender? email = null)
+        TestEmailSender? email = null, int submissionRawTextDays = 30)
         => new(db, Options.Create(new SecurityDataRetentionOptions
         {
             RetentionDays = retentionDays,
             BatchSize = batchSize,
             DeletionRequestPhoneDays = deletionRequestPhoneDays,
+            SubmissionRawTextDays = submissionRawTextDays,
         }), new AdminJobAlerts(email ?? new TestEmailSender(), new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -368,16 +370,17 @@ public class SecurityDataRetentionJobTests : IClassFixture<ApiFactory>
         records.Where(r => r.Action == DataDestruction.Actions.Nulled).Select(r => r.Target).Should().BeEquivalentTo(
             "ShopperDeletionRequests.PhoneAtRequest", "BankSubjectRequests.IbanMasked", "AuditLogs.IpAddress",
             "RefreshTokens.CreatedByIp", "ShopperRefreshTokens.CreatedByIp", "IntakeFormSubmissions.IpAddress+UserAgent",
-            ShopperPurgeService.SubmissionAuditFingerprintTarget);
+            ShopperPurgeService.SubmissionAuditFingerprintTarget, ShopperPurgeService.SubmissionAuditRawTextTarget);
         records.Where(r => r.Action == DataDestruction.Actions.Nulled).Should().OnlyContain(r => r.RowCount == 1
             && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor
             && r.LicenseId == null && r.SubjectId == null && r.RequestId == null);
         records.Single(r => r.Target == "ShopperDeletionRequests.PhoneAtRequest").Criterion.Should().Contain("HandledAt+30g");
         records.Single(r => r.Target == "BankSubjectRequests.IbanMasked").Criterion.Should().Contain("ClosedAt+30g");
+        records.Single(r => r.Target == ShopperPurgeService.SubmissionAuditRawTextTarget).Criterion.Should().Be("CreatedAt+30g");
         records.Where(r => r.Action == DataDestruction.Actions.RunCompleted).Should().HaveCount(2)
             .And.OnlyContain(r => r.Target == SecurityDataRetentionJob.JobId && r.RowCount == 0
                 && r.Trigger == DataDestruction.Triggers.Retention && r.Actor == DataDestruction.SystemActor);
-        records.Should().HaveCount(9);
+        records.Should().HaveCount(10);
     }
 
     [Fact]
@@ -403,7 +406,43 @@ public class SecurityDataRetentionJobTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Telefon_suresi_kapaliysa_telefon_ve_maske_kalir_ikisi_de_kapaliysa_is_kosmaz()
+    public async Task Dekont_tam_metni_30_gun_sonra_bosaltilir_parmak_izinin_suresinden_bagimsiz_satir_kalir()
+    {
+        // KVKK K22: gönderim kaydındaki dekont tam metni (gönderen adı, açık IBAN'lar) süresiz kalıyordu. Süresi parmak izinin
+        // 90 gününden ayrı (avukat kararı); IP/UA süresi kapalıyken de işler. Metni zaten boş satır yeniden sayılmaz.
+        using var db = OwnDb();
+        var old = NewPaymentAudit(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-31));
+        var recent = NewPaymentAudit(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-29));
+        var rejected = NewPaymentAudit(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-31));
+        rejected.ParserRawText = null;
+        db.PaymentSubmissionAudits.AddRange(old, recent, rejected);
+        await db.SaveChangesAsync();
+
+        await Make(db, retentionDays: 0).AnonymiseAsync(CancellationToken.None);
+
+        var rows = await db.PaymentSubmissionAudits.AsNoTracking().ToDictionaryAsync(a => a.Id);
+        rows.Should().HaveCount(3, "satır mali iz olarak kalır");
+        rows[old.Id].ParserRawText.Should().BeNull();
+        rows[old.Id].IpAddress.Should().Be("203.0.113.7", "parmak izinin süresi ayrı (burada kapalı)");
+        rows[old.Id].FraudFlags.Should().Be(old.FraudFlags);
+        rows[recent.Id].ParserRawText.Should().Be(recent.ParserRawText);
+        var record = (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should()
+            .ContainSingle(r => r.Target == ShopperPurgeService.SubmissionAuditRawTextTarget).Subject;
+        (record.RowCount, record.Action, record.Trigger, record.Criterion).Should().Be(
+            (1, DataDestruction.Actions.Nulled, DataDestruction.Triggers.Retention, "CreatedAt+30g"));
+
+        // Süre kapalı: metin kalır.
+        using var other = OwnDb();
+        var kept = NewPaymentAudit(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-400));
+        other.PaymentSubmissionAudits.Add(kept);
+        await other.SaveChangesAsync();
+        await Make(other, submissionRawTextDays: 0).AnonymiseAsync(CancellationToken.None);
+        (await other.PaymentSubmissionAudits.AsNoTracking().SingleAsync(a => a.Id == kept.Id)).ParserRawText
+            .Should().Be(kept.ParserRawText);
+    }
+
+    [Fact]
+    public async Task Telefon_suresi_kapaliysa_telefon_ve_maske_kalir_hepsi_kapaliysa_is_kosmaz()
     {
         using var db = OwnDb();
         var phone = DeletionRequest(DateTimeOffset.UtcNow.AddDays(-31));
@@ -419,7 +458,11 @@ public class SecurityDataRetentionJobTests : IClassFixture<ApiFactory>
         (await db.DataDestructionRecords.AsNoTracking().CountAsync()).Should().Be(1, "IP/UA açık: koşu kaydı yine yazılır");
 
         await Make(db, retentionDays: 0, deletionRequestPhoneDays: 0).AnonymiseAsync(CancellationToken.None);
-        (await db.DataDestructionRecords.AsNoTracking().CountAsync()).Should().Be(1, "iş kapalı: koşu kaydı da yazılmaz");
+        (await db.DataDestructionRecords.AsNoTracking().CountAsync()).Should().Be(2, "dekont metni süresi açık: koşu kaydı yazılır");
+
+        await Make(db, retentionDays: 0, deletionRequestPhoneDays: 0, submissionRawTextDays: 0)
+            .AnonymiseAsync(CancellationToken.None);
+        (await db.DataDestructionRecords.AsNoTracking().CountAsync()).Should().Be(2, "iş kapalı: koşu kaydı da yazılmaz");
     }
 
     [Fact]

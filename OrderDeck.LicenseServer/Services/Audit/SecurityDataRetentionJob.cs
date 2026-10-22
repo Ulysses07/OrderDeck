@@ -24,6 +24,13 @@ public sealed class SecurityDataRetentionOptions
     /// talebindeki kısaltılmış IBAN'ın (<c>BankSubjectRequest.IbanMasked</c>) boşaltılacağı gün, işlenme/kapanış tarihinden.
     /// 0 = kapalı. <see cref="RetentionDays"/>'ten bağımsız. KVKK ön inceleme D-5, Ö-11; gizlilik politikasına yazılmalı.</summary>
     public int DeletionRequestPhoneDays { get; set; } = 30;
+
+    /// <summary>Ödeme denetimindeki dekont tam metninin (<c>PaymentSubmissionAudit.ParserRawText</c>: gönderen adı, IBAN'ların
+    /// açık hâli, referans, dekontta varsa kimlik numarası) boşaltılacağı gün, gönderimden (<c>CreatedAt</c>). 0 = kapalı.
+    /// <see cref="RetentionDays"/>'ten bağımsız. KVKK K22: alan süresiz kalıyordu. 30, 20.05 tasarımının (customer-app-design
+    /// §veri sınıflandırması) hiç uygulanmamış süresi ve banka ham kaydınınkiyle aynı; metni hiçbir kod okumaz, dekontun
+    /// kendisi ayrıca saklanır. Süre avukat kararı (plan karar 30); değişirse politikadaki dekont satırı da değişir.</summary>
+    public int SubmissionRawTextDays { get; set; } = 30;
 }
 
 /// <summary>
@@ -39,7 +46,8 @@ public sealed class SecurityDataRetentionOptions
 /// Ayrıca işlenmiş silme talebinin telefonu işlenmeden ve kapanmış banka veri talebinin kısaltılmış IBAN'ı kapanıştan
 /// <see cref="SecurityDataRetentionOptions.DeletionRequestPhoneDays"/> gün sonra boşaltılır (KVKK D-5, Ö-11): talebin satırı
 /// kanıt olarak kalır, bekleyen/açık talebe dokunulmaz. Bu süre <see cref="SecurityDataRetentionOptions.RetentionDays"/>
-/// kapalıyken de işler.
+/// kapalıyken de işler. Dekont gönderim kaydındaki okunan tam metin de (<c>PaymentSubmissionAudit.ParserRawText</c>, KVKK K22)
+/// gönderimden <see cref="SecurityDataRetentionOptions.SubmissionRawTextDays"/> gün sonra, kendi süresiyle boşaltılır.
 ///
 /// Her boşaltma partisi kişisel veri içermeyen imha kaydını (<see cref="DataDestruction"/>; hedef çoğul DbSet adı + sütunlar)
 /// boşaltmayla aynı işlemde yazar; başarılı koşu sonda koşu kaydı (<see cref="JobId"/>) bırakır; iş düşerse yöneticiye e-posta
@@ -86,9 +94,10 @@ public sealed class SecurityDataRetentionJob
     [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task AnonymiseAsync(CancellationToken ct)
     {
-        if (_opt.DeletionRequestPhoneDays <= 0 && _opt.RetentionDays <= 0)
+        if (_opt.DeletionRequestPhoneDays <= 0 && _opt.RetentionDays <= 0 && _opt.SubmissionRawTextDays <= 0)
         {
-            _log.LogInformation("[SecurityDataRetention] devre dışı (RetentionDays=0, DeletionRequestPhoneDays=0)");
+            _log.LogInformation(
+                "[SecurityDataRetention] devre dışı (RetentionDays=0, DeletionRequestPhoneDays=0, SubmissionRawTextDays=0)");
             return;
         }
 
@@ -101,7 +110,8 @@ public sealed class SecurityDataRetentionJob
             _log.LogError(ex, "[SecurityDataRetention] düştü");
             await _alerts.SendAsync(FailureSubject,
                 $"{JobId} düştü: {ex.GetType().Name}. Hangfire panosuna bakın; iş ertesi gün yeniden koşar, o güne kadar " +
-                "güvenlik kayıtlarındaki IP/User-Agent ve silme taleplerindeki telefonun saklama süresi aşılmış olur.",
+                "güvenlik kayıtlarındaki IP/User-Agent, silme taleplerindeki telefonun ve dekont gönderim kayıtlarındaki " +
+                "tam metnin saklama süresi aşılmış olur.",
                 CancellationToken.None);
             throw;
         }
@@ -139,6 +149,22 @@ public sealed class SecurityDataRetentionJob
                 _log.LogInformation("[SecurityDataRetention] {Count} kapanmış banka veri talebinin kısaltılmış IBAN'ı boşaltıldı", masks);
         }
 
+        // KVKK K22: dekont gönderim kaydındaki okunan tam metin (gönderen adı, IBAN'ların açık hâli, referans). Kendi süresi;
+        // RetentionDays kapalıyken de. Satır (oran sınırı defteri, karar gerekçesi) ve parmak izi kendi kurallarıyla kalır.
+        if (_opt.SubmissionRawTextDays > 0)
+        {
+            var days = _opt.SubmissionRawTextDays;
+            var rawTextCutoff = DateTimeOffset.UtcNow.AddDays(-days);
+            var rawTexts = await RunAsync(
+                ShopperPurgeService.SubmissionAuditRawTextTarget, $"CreatedAt+{days}g",
+                () => _db.PaymentSubmissionAudits.Where(a => a.CreatedAt < rawTextCutoff && a.ParserRawText != null),
+                q => q.ExecuteUpdateAsync(s => s.SetProperty(a => a.ParserRawText, (string?)null), ct),
+                rows => { foreach (var r in rows) r.ParserRawText = null; },
+                relational, ct);
+            if (rawTexts > 0)
+                _log.LogInformation("[SecurityDataRetention] {Count} dekont gönderim kaydının tam metni boşaltıldı", rawTexts);
+        }
+
         if (_opt.RetentionDays > 0)
             await AnonymiseSecurityFieldsAsync(relational, ct);
         else
@@ -148,7 +174,7 @@ public sealed class SecurityDataRetentionJob
         // (audit-retention kalıbı). Ölçüt metninde ';' yok: dış kopyanın (CSV) ayracı.
         ct.ThrowIfCancellationRequested();
         DataDestruction.RecordRun(_db, JobId, $"IP/UA +{_opt.RetentionDays}g / silme talebi telefonu ve banka talebi maskesi " +
-            $"+{_opt.DeletionRequestPhoneDays}g");
+            $"+{_opt.DeletionRequestPhoneDays}g / dekont tam metni +{_opt.SubmissionRawTextDays}g");
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
     }

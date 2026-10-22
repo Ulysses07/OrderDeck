@@ -89,6 +89,10 @@ public sealed class ShopperPurgeService
     /// çoğul DbSet adı + sütunlar).</summary>
     public const string SubmissionAuditFingerprintTarget = "PaymentSubmissionAudits.IpAddress+UserAgent";
 
+    /// <summary>Ödeme denetimindeki dekont tam metninin (<see cref="PaymentSubmissionAudit.ParserRawText"/>) imha kaydı hedefi;
+    /// güvenlik saklama işi (<c>SecurityDataRetentionJob</c>, kendi süresiyle) de bunu yazar (KVKK K22).</summary>
+    public const string SubmissionAuditRawTextTarget = "PaymentSubmissionAudits.ParserRawText";
+
     // Banka hedefleri banka veri talebi aracıyla ortak (BankSubjectScrub): aynı sütunun imhası tek hedef adıyla.
     private const string IbanMemoryTarget = BankSubjectScrub.IbanMemoryTarget;
     private const string TransactionTextTarget = BankSubjectScrub.TransactionTextTarget;
@@ -386,18 +390,24 @@ public sealed class ShopperPurgeService
         var dependents = devices.Count + tokens.Count + resetCodes.Count
             + supportRequests.Count + linkRows.Count + ibanMemories.Count;
 
-        // 5. Ödeme denetim kayıtları: satır mali izin parçası, yalnız istemci
-        //    parmak izi gidiyor. SecurityDataRetentionJob'ın 90 günde yaptığı
-        //    şeyin aynısını şimdi yapıyoruz.
+        // 5. Ödeme denetim kayıtları: satır mali izin parçası (oran sınırının
+        //    defteri, karar gerekçesi), istemci parmak izi ve dekontun okunan
+        //    tam metni gidiyor. Metin (ParserRawText) gönderen adını, gönderen
+        //    ve alıcı IBAN'ının açık hâlini, referansı ve dekontta yazıyorsa
+        //    kimlik numarasını taşır: adım 2'nin sildiği ad ve IBAN'ın kaynağıdır,
+        //    kalsaydı silme talebi uygulanmamış olurdu (KVKK K22). Güvenlik
+        //    saklama işi ikisini kendi süreleriyle boşaltır; burada hemen.
         var submissionAudits = await _db.PaymentSubmissionAudits
             .Where(a => a.ShopperId == shopperId)
             .ToListAsync(ct);
-        // 90 günlük iş çoktan boşalttıysa kayıt yapılmamış işi söylemesin (o işin kendi ölçütü).
+        // Saklama işi çoktan boşalttıysa kayıt yapılmamış işi söylemesin (o işin kendi ölçütü). Sayım boşaltmadan ÖNCE.
         var fingerprintedAudits = submissionAudits.Where(a => a.IpAddress != "" || a.UserAgent != "").ToList();
+        var rawTextAudits = submissionAudits.Where(a => a.ParserRawText is not null).ToList();
         foreach (var a in submissionAudits)
         {
             a.IpAddress = "";
             a.UserAgent = "";
+            a.ParserRawText = null;
         }
 
         // 6. Shopper satırının kendisi. Telefon boşaltılıyor: kimliğin en
@@ -434,6 +444,7 @@ public sealed class ShopperPurgeService
         RecordPerLicense(paymentsWithPersonal, p => p.LicenseId, "Payments.PersonalFields", nulled);
         RecordPerLicense(deletedMediaLicenses, l => l, MediaTarget, deleted);
         RecordPerLicense(fingerprintedAudits, a => a.LicenseId, SubmissionAuditFingerprintTarget, nulled);
+        RecordPerLicense(rawTextAudits, a => a.LicenseId, SubmissionAuditRawTextTarget, nulled);
         RecordPerLicense(projections, c => c.LicenseId, "WpfCustomerProjections.PersonalFields", nulled);
         RecordPerLicense(scrubbedOrders, o => o.LicenseId, "Orders.DisplayName+MessageText", nulled);
         RecordPerLicense(linkRows, l => l.LicenseId, "ShopperBroadcasterLinks", deleted);

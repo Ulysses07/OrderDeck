@@ -69,7 +69,14 @@ public sealed class SecurityDataRetentionRelationalTests : IAsyncLifetime
         var pending = DeletionRequest(null);
         var closed = BankRequest(DateTimeOffset.UtcNow.AddDays(-31));
         var open = BankRequest(null);
-        await SeedAsync(handled, pending, closed, open);
+        // KVKK K22: dekont tam metni 30 günde boşalır (parmak izinin 90 gününden ayrı); satır ve parmak izi kalır.
+        var submission = new PaymentSubmissionAudit
+        {
+            Id = Guid.NewGuid(), PaymentId = Guid.NewGuid(), ShopperId = Guid.NewGuid(), LicenseId = Guid.NewGuid(),
+            Outcome = SubmissionOutcomes.Ok, IpAddress = "203.0.113.7", UserAgent = "OrderDeck/1.0 Android",
+            ParserRawText = $"dekont-metni-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow.AddDays(-31),
+        };
+        await SeedAsync(handled, pending, closed, open, submission);
 
         // DI'dan: üretimdeki kurulum (yönetici uyarısı dahil) çözülür.
         using (var scope = _factory.Services.CreateScope())
@@ -84,6 +91,9 @@ public sealed class SecurityDataRetentionRelationalTests : IAsyncLifetime
         closedAfter.IbanMasked.Should().BeEmpty();
         closedAfter.ClosedAt.Should().Be(closed.ClosedAt, "ExecuteUpdate kapanış anına (eşzamanlılık jetonu) dokunmaz");
         (await vdb.BankSubjectRequests.AsNoTracking().SingleAsync(r => r.Id == open.Id)).IbanMasked.Should().Be("TR12…345");
+        var submissionAfter = await vdb.PaymentSubmissionAudits.AsNoTracking().SingleAsync(a => a.Id == submission.Id);
+        submissionAfter.ParserRawText.Should().BeNull();
+        submissionAfter.IpAddress.Should().Be("203.0.113.7", "parmak izinin süresi 90 gün");
 
         var records = await vdb.DataDestructionRecords.AsNoTracking().ToListAsync();
         records.Should().ContainSingle(r => r.Target == "ShopperDeletionRequests.PhoneAtRequest")
@@ -92,6 +102,9 @@ public sealed class SecurityDataRetentionRelationalTests : IAsyncLifetime
         records.Should().ContainSingle(r => r.Target == "BankSubjectRequests.IbanMasked")
             .Which.Should().Match<DataDestructionRecord>(r => r.Action == DataDestruction.Actions.Nulled && r.RowCount == 1
                 && r.Trigger == DataDestruction.Triggers.Retention);
+        records.Should().ContainSingle(r => r.Target == "PaymentSubmissionAudits.ParserRawText")
+            .Which.Should().Match<DataDestructionRecord>(r => r.Action == DataDestruction.Actions.Nulled && r.RowCount == 1
+                && r.Trigger == DataDestruction.Triggers.Retention && r.Criterion == "CreatedAt+30g");
         records.Should().ContainSingle(r => r.Action == DataDestruction.Actions.RunCompleted && r.Target == SecurityDataRetentionJob.JobId);
     }
 

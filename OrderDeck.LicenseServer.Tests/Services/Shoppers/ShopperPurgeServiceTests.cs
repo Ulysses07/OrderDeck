@@ -775,12 +775,13 @@ public sealed class ShopperPurgeServiceTests
     }
 
     /// <summary>
-    /// Denetim satırı mali izin parçası olduğu için silinmiyor; yalnız
-    /// istemci parmak izi gidiyor. SecurityDataRetentionJob'ın 90 günde
-    /// yaptığının aynısı.
+    /// Denetim satırı mali izin parçası olduğu için silinmiyor; istemci parmak
+    /// izi ve dekontun okunan tam metni (<c>ParserRawText</c>: gönderen adı,
+    /// IBAN'ların açık hâli, referans, varsa TCKN) gidiyor. Metin kalsaydı
+    /// ödemedeki ad ve IBAN silinip kaynakları süresiz dururdu (KVKK K22).
     /// </summary>
     [Fact]
-    public async Task Odeme_denetiminde_yalniz_parmak_izini_siler()
+    public async Task Odeme_denetiminde_parmak_izini_ve_dekont_tam_metnini_siler_satiri_birakir()
     {
         using var db = NewDb();
         var shopper = SeedShopper(db);
@@ -797,9 +798,11 @@ public sealed class ShopperPurgeServiceTests
             UserAgent = "OrderDeck/1.0 Android",
             FraudFlags = "",
             ParserConfidence = "High",
+            ParserRawText = $"dekont-metni-{Guid.NewGuid():N}",
             CreatedAt = DateTimeOffset.UtcNow,
         });
-        // 90 günlük işin (SecurityDataRetentionJob) çoktan boşalttığı satır: imha kaydı yapılmamış işi saymaz.
+        // 90 günlük işin (SecurityDataRetentionJob) parmak izini çoktan boşalttığı satır: o imha kaydı yapılmamış işi saymaz.
+        // Metni hâlâ dolu (metnin süresi ayrı): metin kaydında sayılır.
         db.PaymentSubmissionAudits.Add(new PaymentSubmissionAudit
         {
             Id = Guid.NewGuid(),
@@ -810,21 +813,41 @@ public sealed class ShopperPurgeServiceTests
             UserAgent = "",
             FraudFlags = "",
             ParserConfidence = "High",
+            ParserRawText = $"dekont-metni-{Guid.NewGuid():N}",
             CreatedAt = DateTimeOffset.UtcNow.AddDays(-120),
+        });
+        // Reddedilen deneme: metin hiç yazılmadı (ShopperPaymentSubmissionService yalnız başarıda yazar). Metin kaydı saymaz.
+        db.PaymentSubmissionAudits.Add(new PaymentSubmissionAudit
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            PaymentId = null,
+            LicenseId = license.Id,
+            Outcome = "invalid-pdf",
+            IpAddress = "203.0.113.8",
+            UserAgent = "OrderDeck/1.0 Android",
+            FraudFlags = "",
+            ParserConfidence = "",
+            CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
 
         var (service, _) = Build(db);
         await service.PurgeAsync(shopper.Id, default);
 
-        var audit = await db.PaymentSubmissionAudits.FirstAsync(a => a.PaymentId == paymentId);
-        audit.IpAddress.Should().BeEmpty();
-        audit.UserAgent.Should().BeEmpty();
-        audit.PaymentId.Should().Be(paymentId);
-        var record = (await db.DataDestructionRecords.AsNoTracking().ToListAsync()).Should()
-            .ContainSingle(r => r.Target == "PaymentSubmissionAudits.IpAddress+UserAgent").Subject;
-        (record.LicenseId, record.RowCount, record.Action).Should().Be(
-            ((Guid?)license.Id, 1, DataDestruction.Actions.Nulled), "yalnız parmak izi dolu satır sayılır");
+        var audits = await db.PaymentSubmissionAudits.AsNoTracking().Where(a => a.ShopperId == shopper.Id).ToListAsync();
+        audits.Should().HaveCount(3, "satırlar mali iz olarak kalır");
+        audits.Should().OnlyContain(a => a.IpAddress == "" && a.UserAgent == "" && a.ParserRawText == null);
+        audits.Should().ContainSingle(a => a.PaymentId == paymentId);
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        var fingerprint = records.Should().ContainSingle(r => r.Target == "PaymentSubmissionAudits.IpAddress+UserAgent").Subject;
+        (fingerprint.LicenseId, fingerprint.RowCount, fingerprint.Action).Should().Be(
+            ((Guid?)license.Id, 2, DataDestruction.Actions.Nulled), "yalnız parmak izi dolu satır sayılır");
+        var rawText = records.Should().ContainSingle(r => r.Target == "PaymentSubmissionAudits.ParserRawText").Subject;
+        (rawText.LicenseId, rawText.RowCount, rawText.Action, rawText.Trigger).Should().Be(
+            ((Guid?)license.Id, 2, DataDestruction.Actions.Nulled, DataDestruction.Triggers.ShopperPurge),
+            "yalnız metni dolu satır sayılır");
+        rawText.SubjectId.Should().Be(shopper.Id);
     }
 
     [Fact]
