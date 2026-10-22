@@ -412,6 +412,9 @@ else
                 <span class="err" asp-validation-for="Input.Tckn"></span>
             </div>
 
+            @* İsteğe bağlı açık rıza kutuları kendi başlığının altında: alttaki zorunlu "okudum" beyanından görsel olarak ayrı
+               (KVKK ön inceleme notu §4.5 Seçenek 2). Başlık aydınlatma özetinin (KvkkNotice.TextVersion) dışında. *@
+            <div class="section-label">İsteğe bağlı izinler</div>
             <label class="check">
                 <input asp-for="Input.WhatsAppConsent" type="checkbox" />
                 <span>WhatsApp üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
@@ -1247,8 +1250,8 @@ else
         if (kvkk && !kvkk.checked) {
             e.preventDefault();
             if (kvkkErr) kvkkErr.textContent =
-                'Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.';
-            formErr.textContent = 'Formu tamamlayamadık: aydınlatma metnini '
+                'Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.';
+            formErr.textContent = 'Formu tamamlayamadık: yukarıdaki bilgilendirmeyi '
                                 + 'okuduğunu onaylaman gerekli.';
             kvkk.focus();
             return;

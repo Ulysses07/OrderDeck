@@ -213,10 +213,12 @@ public class IntakeFormModel : PageModel
     }
 
     private const string KvkkKey = "Input.KvkkAcknowledged";
+    // Mesajlar onay etiketiyle ("Yukarıdaki bilgilendirmeyi okudum") aynı kelimeleri kullanır; istemci kapısındaki
+    // (IntakeForm.cshtml betiği) metin de aynı.
     private const string KvkkRequiredMessage =
-        "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
+        "Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.";
     private const string KvkkOutdatedMessage =
-        "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
+        "Yukarıdaki bilgilendirme güncellendi; yeniden okuyup onayla.";
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
     {

@@ -27,8 +27,10 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
 {
     private const string KvkkField = "Input.KvkkAcknowledged";
     private const string VersionField = "Input.KvkkTextVersion";
-    private const string RequiredMessage = "Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.";
-    private const string OutdatedMessage = "Aydınlatma metni güncellendi; yeniden okuyup onayla.";
+    /// <summary>Hata mesajları onay etiketiyle ("Yukarıdaki bilgilendirmeyi okudum") aynı kelimeleri kullanır: müşteri
+    /// işaretlemesi istenen kutuyu mesajdan tanısın (KVKK ön inceleme v2 incelemesi).</summary>
+    private const string RequiredMessage = "Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.";
+    private const string OutdatedMessage = "Yukarıdaki bilgilendirme güncellendi; yeniden okuyup onayla.";
     /// <summary>Politikanın web sayfası. Form artık oraya gitmiyor; metin
     /// formun içindeki kutuda (sahip kararı 2026-10-13).</summary>
     private const string PolicyPagePath = "orderdeckapp.com/gizlilik-politikasi";
@@ -512,6 +514,31 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
         var formEnd = html.IndexOf("</form>", StringComparison.Ordinal);
         Regex.Match(html[..formEnd], "<input name=\"Input\\.KvkkAcknowledged\" type=\"hidden\" value=\"false\"")
             .Success.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// İsteğe bağlı açık rıza kutuları (WhatsApp, SMS) kendi başlıklarının altında, zorunlu "okudum" beyanından görsel olarak
+    /// ayrı durur (KVKK ön inceleme notu §4.5 Seçenek 2): müşteri zorunlu kutuyu bir izin, izin kutularını zorunlu sanmasın.
+    /// Sıra: başlık → izin kutuları → aydınlatma paragrafı → politika kutusu → "okudum".
+    /// </summary>
+    [Fact]
+    public async Task Istege_bagli_izinler_kendi_basliginin_altinda_okudum_beyanindan_ayri_durur()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+
+        var heading = Tag(html, "<div class=\"section-label\">[^<]*</div>(?=\\s*<label class=\"check\">\\s*<input[^>]*name=\"Input\\.WhatsAppConsent\")");
+        WebUtility.HtmlDecode(Regex.Replace(heading, "<[^>]+>", "")).Trim().Should().Be("İsteğe bağlı izinler");
+
+        var headingAt = html.IndexOf(heading, StringComparison.Ordinal);
+        var paragraphAt = html.IndexOf("<p class=\"kvkk\">", StringComparison.Ordinal);
+        var acknowledgementAt = html.IndexOf(KvkkInputTag(html), StringComparison.Ordinal);
+        headingAt.Should().BeLessThan(html.IndexOf("name=\"Input.WhatsAppConsent\"", StringComparison.Ordinal));
+        html.IndexOf("name=\"Input.WhatsAppConsent\"", StringComparison.Ordinal).Should().BeLessThan(paragraphAt,
+            "izin kutuları başlığın altında, aydınlatma paragrafından önce");
+        paragraphAt.Should().BeLessThan(acknowledgementAt);
+        html[headingAt..acknowledgementAt].Should().NotContain("name=\"Input.KvkkAcknowledged\"",
+            "zorunlu beyan izin başlığının altına girmemeli");
     }
 
     /// <summary>
