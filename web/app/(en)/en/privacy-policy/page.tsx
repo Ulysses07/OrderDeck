@@ -53,7 +53,10 @@ export default function PrivacyEn() {
         <li>Email address (for sign-up and license management)</li>
         <li>License key, machine fingerprint</li>
         <li>License payment amount, license and update-pack status (card and payment instrument details are held only by the payment processor and are not stored by us; for broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version)</li>
-        <li>IP address and login timestamp (for security logs, deleted within 90 days)</li>
+        <li>
+          IP address (in security logs; deleted after 90 days) and login time (in session records until the account is
+          deleted, in audit records for 24 months)
+        </li>
       </ul>
 
       <h3>1.2. Live-stream chat data</h3>
@@ -104,6 +107,10 @@ export default function PrivacyEn() {
         <li>Full name, email, phone (WhatsApp) number, and shipping address</li>
         <li>Optional Turkish national ID (T.C. Kimlik No) for invoicing (only if the buyer chooses to provide it)</li>
         <li>Explicit consent to receive informational messages via WhatsApp and/or SMS (checkboxes)</li>
+        <li>
+          The IP address and browser details from which the form was submitted (deleted after 90 days), and the version
+          of the notice and of the broadcaster&apos;s data-controller information shown to the buyer
+        </li>
       </ul>
       <p>
         This data is processed for the relevant broadcaster&apos;s order, payment, shipping
@@ -143,8 +150,15 @@ export default function PrivacyEn() {
       </ul>
       <p>Data obtained via the YouTube API in the desktop flow:</p>
       <ul>
-        <li>Is processed only on the user's own machine</li>
-        <li>Is never transmitted to {BRAND} servers</li>
+        <li>
+          Apart from comments converted into an order/label and the channel name and username of the people who wrote
+          them (Section 1.2 above; Section 1.2a of the Turkish version), is processed only on the user&apos;s own machine
+        </li>
+        <li>
+          Apart from these exceptions, is not transmitted to {BRAND} servers; where the broadcaster has a bank
+          connection, the names transmitted to the server are also used in the transfer matching and accuracy
+          measurement described in Section 1.4 of the Turkish version
+        </li>
         <li>Is not used for advertising, profiling, or training machine-learning models</li>
         <li>Is not sold or transferred to third parties</li>
       </ul>
@@ -180,8 +194,11 @@ export default function PrivacyEn() {
         </li>
         <li>
           The retrieved channel title, handle and channel ID are stored solely as part of
-          that buyer&apos;s own registration and are visible only to the broadcaster the
-          buyer is registering with (retention: Section 5, &quot;Buyer information&quot;)
+          that buyer&apos;s own registration and are visible to the broadcaster the buyer is
+          registering with; where the broadcaster has a bank connection, they are also used in
+          the matching and accuracy measurement described in Section 1.4 of the Turkish version
+          and may be seen by {BRAND}&apos;s authorised administrator (retention: Section 5,
+          &quot;Buyer information&quot;)
         </li>
         <li>The data is not used for advertising, profiling, or training machine-learning models, and is not sold or transferred to third parties</li>
         <li>
@@ -210,7 +227,11 @@ export default function PrivacyEn() {
       <ul>
         <li>Reads chat messages from the live-stream page the user opens</li>
         <li>Forwards messages over a local WebSocket connection to the desktop app</li>
-        <li>Sends data to no other destination</li>
+        <li>
+          Sends chat data to no other destination; it only downloads up-to-date page selectors (technical definitions
+          used to locate the chat area on the page) from the {BRAND} server. That request carries no chat data; its IP
+          address and browser details end up in the server access logs (Section 5)
+        </li>
       </ul>
 
       <h2>4. Cookies and site analytics</h2>
@@ -223,17 +244,25 @@ export default function PrivacyEn() {
 
       <h2>5. Data retention</h2>
       <ul>
-        <li>Account data (email, license): until the account is deleted</li>
+        <li>
+          Account data (email, license): until the account is deleted; after deletion, the email address remains in the
+          audit record of the deletion for 24 months
+        </li>
         <li>Buyer information from the registration form: on the server, until the broadcaster&apos;s account is deleted (see Section 5 of the Turkish version)</li>
         <li>Server access logs: 30 days</li>
-        <li>Security logs: 90 days</li>
+        <li>IP addresses and browser details in security logs: 90 days</li>
         <li>
           Live-stream chat messages: only while the application is open
           (except the text of comments converted into an order/label — that
           text is retained as part of the order record, for as long as the
           order record itself)
         </li>
-        <li>OAuth tokens: until the user revokes consent (stored on user's machine)</li>
+        <li>
+          OAuth tokens: until the user revokes consent (stored on user&apos;s machine). The broadcaster&apos;s Meta access
+          tokens for the Instagram registration link (Section 1.2) and the WhatsApp line are kept encrypted on the server:
+          the WhatsApp token until the line is disconnected, the Instagram token until the broadcaster&apos;s account is
+          deleted
+        </li>
       </ul>
 
       <h2>6. User rights</h2>
