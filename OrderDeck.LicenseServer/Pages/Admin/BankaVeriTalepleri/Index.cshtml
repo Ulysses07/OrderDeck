@@ -84,7 +84,8 @@
     <h2 class="h5 mt-4">Talep @(string.IsNullOrEmpty(q.IbanMasked) ? "(IBAN silindi)" : q.IbanMasked) — @IndexModel.KindLabel(q.Kind).ToLowerInvariant()</h2>
     <p class="small text-muted">Ulaştı @TimeZoneInfo.ConvertTime(q.ReceivedAt, tr).ToString("dd.MM.yyyy"), son tarih
         @TimeZoneInfo.ConvertTime(q.DueAt, tr).ToString("dd.MM.yyyy"). Bu IBAN'ın bağlı olduğu müşteri kaydı: @s.IbanMemories.
-        Hareket: @s.Transactions.Count.</p>
+        Hareket: @s.Transactions.Count. Bağlı dekont kaydı: <span data-cell="receipts">@s.LinkedReceipts</span>
+        (ödeyen adı ve dekont dosyası bu araçla dışa aktarılmaz ve silinmez; başvurana gerekçesiyle bildirin).</p>
     @if (q.ClosedAt is { } closedAt)
     {
         <p class="small" data-cell="outcome">Kapandı @TimeZoneInfo.ConvertTime(closedAt, tr).ToString("dd.MM.yyyy HH:mm"): @q.Outcome</p>

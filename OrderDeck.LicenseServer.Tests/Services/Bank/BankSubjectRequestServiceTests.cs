@@ -287,6 +287,39 @@ public sealed class BankSubjectRequestServiceTests
     }
 
     [Fact]
+    public async Task Havaleye_bagli_dekont_kaydi_aramada_sayilir_disa_aktarimda_ve_silme_sonucunda_anilir()
+    {
+        // KVKK Ö-3, K-7: müşteri adına ödeyen üçüncü kişinin adı ve açık IBAN'ı harekete bağlı dekontta da durur (Payments.PayerName,
+        // dekont dosyası). Araç o kopyayı silmez ve dışa aktarmaz; yönetici bunu görmeli ve başvurana gerekçesiyle bildirmeli
+        // (Silme Yönetmeliği md. 12/1-c kısmi ret; gerekçe avukat kararı, plan karar 33). Sayı kişisel veri değil.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var iban = BankHasherTests.TestIban();
+        var paid = Tx(lic, iban); var unpaid = Tx(lic, iban);
+        db.BankTransactions.AddRange(paid, unpaid);
+        var receipt = Match(paid, actual: Guid.NewGuid());
+        receipt.PaymentId = Guid.NewGuid();
+        db.PaymentMatches.AddRange(receipt, Match(unpaid));
+        await db.SaveChangesAsync();
+        var access = await Service(db).CreateAsync(Hasher, lic, iban, BankSubjectRequestKind.Access, new DateOnly(2026, 10, 19),
+            "admin", CancellationToken.None);
+        await Service(db).VerifyAsync(access.Id, BankSubjectVerification.WetSignatureAndBankDocument, "admin", CancellationToken.None);
+
+        (await Service(db).FindAsync(access.Id, CancellationToken.None))!.LinkedReceipts.Should().Be(1);
+        var csv = Encoding.UTF8.GetString(await Service(db).ExportAsync(access.Id, CancellationToken.None));
+        csv.Should().Contain("# Bu havalelere bağlı dekont kaydı sayısı: 1");
+
+        var erasure = await VerifiedErasureAsync(db, lic, iban);
+        var result = await Service(db).EraseAsync(erasure.Id, "admin", CancellationToken.None);
+
+        result.LinkedReceipts.Should().Be(1);
+        (await db.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == receipt.Id)).PaymentId.Should().Be(receipt.PaymentId,
+            "dekont bağı silinmez");
+        (await db.BankSubjectRequests.AsNoTracking().SingleAsync(x => x.Id == erasure.Id)).Outcome
+            .Should().Contain("1 bağlı dekont kaydı");
+        BankSubjectRequestService.OtherCopiesNotice.Should().Contain("dekont");
+    }
+
+    [Fact]
     public async Task Silme_IBAN_bagi_olmayan_kararin_musterisini_birakir_yalniz_kaniti_siler_kayitlar_ikiye_ayrilir()
     {
         // Karar 7: IBAN hafızası yoksa havaleyi gönderen ile ödemesi sayılan müşteri farklı kişi olabilir; karar ve müşteri

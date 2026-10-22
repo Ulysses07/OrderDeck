@@ -201,9 +201,10 @@ public class IndexModel : PageModel
             return RedirectToPage(new { id });
         }
         await _audit.LogAsync(AuditEvents.BankSubjectErase, AuditTargets.BankSubjectRequest, id.ToString(),
-            new { r.Transactions, r.IbanMemories, r.Matches, r.ManualMatchAudits }, CancellationToken.None);
+            new { r.Transactions, r.IbanMemories, r.Matches, r.ManualMatchAudits, r.LinkedReceipts }, CancellationToken.None);
         TempData["Success"] = $"Silindi: {r.Transactions} hareketin açıklaması/adı/ham kaydı, {r.IbanMemories} IBAN bağı, " +
             $"{r.Matches} eşleşme satırı, {r.ManualMatchAudits} elle eşleme denetim satırı. Talep kapatıldı. " +
+            (r.LinkedReceipts > 0 ? $"Silinmeyen bağlı dekont kaydı: {r.LinkedReceipts}. " : "") +
             BankSubjectRequestService.OtherCopiesNotice;
         return RedirectToPage(new { id });
     }

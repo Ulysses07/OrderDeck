@@ -36,8 +36,12 @@ public sealed class BankSubjectRequestService
     /// <summary>Silme yeniden denemede de eşzamanlı bir yazıyla çakıştı: hiçbir şey silinmedi (tek kayıt), talep açık kaldı.</summary>
     public const string EraseConflictMessage = "Silme eşzamanlı bir eşleştirme yazımıyla iki kez çakıştı; hiçbir şey silinmedi, " +
         "talep açık. Yeniden deneyin.";
-    /// <summary>Silmenin bildirimine eklenir: OrderDeck'in silemediği kopyalar.</summary>
-    public const string OtherCopiesNotice = "Obifin'deki kopya için Obifin'e yazılı talep gönderin; bankanın kendi kayıtları bankanın sorumluluğundadır.";
+    /// <summary>Silmenin bildirimine eklenir: bu aracın silmediği kopyalar. Havaleye bağlı dekontta (müşteri adına ödeyen üçüncü
+    /// kişi olabilir, Ö-3) ödeyenin adı, dekont dosyası ve okunan metni durur; araç onlara dokunmaz (ödeme kaydı; gerekçe avukat
+    /// kararı, plan karar 33). Yönetici bunu başvurana gerekçeli kısmi ret olarak yazar (Silme Yönetmeliği md. 12/1-c).</summary>
+    public const string OtherCopiesNotice = "Havaleye bağlı dekont kaydı (ödeyen adı, dekont dosyası ve okunan metni) bu araçla " +
+        "silinmez; bunu başvurana gerekçesiyle yazılı bildirin. Obifin'deki kopya için Obifin'e yazılı talep gönderin; bankanın " +
+        "kendi kayıtları bankanın sorumluluğundadır.";
     /// <summary>Silmenin imha kayıtlarının ölçütü (<see cref="DataDestructionRecord.Criterion"/>).</summary>
     public const string EraseCriterion = "ilgili kişi talebi";
     /// <summary>Kapanışta boşalan IBAN özetinin imha kaydı hedefi. Özet takma adlı kişisel veridir, talep kapanınca amacı biter
@@ -52,11 +56,15 @@ public sealed class BankSubjectRequestService
         string? IbanMasked, string? Description, string? CounterpartyName, string? TransactionCode, string? BankReference,
         PaymentMatchStatus? MatchStatus, bool LinkedToCustomer);
 
-    public sealed record Lookup(BankSubjectRequest Request, IReadOnlyList<TransactionRow> Transactions, int IbanMemories);
+    /// <param name="LinkedReceipts">Bu havalelere eşleşme satırıyla bağlı dekont (ödeme) sayısı: dekontta ödeyenin adı ve dosyası
+    /// durur, araç onları dışa aktarmaz ve silmez (<see cref="OtherCopiesNotice"/>). Sayı kişisel veri değil.</param>
+    public sealed record Lookup(BankSubjectRequest Request, IReadOnlyList<TransactionRow> Transactions, int IbanMemories,
+        int LinkedReceipts = 0);
 
     /// <summary>Gerçekten silinenler: metni hâlâ dolu hareket, IBAN bağı, kimliği ya da kanıtı boşalan eşleşme satırı, müşteri
-    /// kimliği boşalan elle eşleme denetim satırı.</summary>
-    public sealed record EraseResult(int Transactions, int IbanMemories, int Matches, int ManualMatchAudits);
+    /// kimliği boşalan elle eşleme denetim satırı. <paramref name="LinkedReceipts"/>: silinMEYEN, havalelere bağlı dekont sayısı
+    /// (<see cref="Lookup.LinkedReceipts"/>).</summary>
+    public sealed record EraseResult(int Transactions, int IbanMemories, int Matches, int ManualMatchAudits, int LinkedReceipts = 0);
 
     private readonly LicenseDbContext _db;
 
@@ -101,8 +109,10 @@ public sealed class BankSubjectRequestService
             .ToListAsync(ct);
         var ids = txs.Select(t => t.Id).ToList();
         var matches = await _db.PaymentMatches.AsNoTracking().Where(m => ids.Contains(m.BankTransactionId))
-            .Select(m => new { m.BankTransactionId, m.Status, Linked = m.ActualWpfCustomerId != null || m.PaymentId != null })
+            .Select(m => new { m.BankTransactionId, m.Status, m.PaymentId,
+                Linked = m.ActualWpfCustomerId != null || m.PaymentId != null })
             .ToDictionaryAsync(m => m.BankTransactionId, ct);
+        var receipts = matches.Values.Where(m => m.PaymentId != null).Select(m => m.PaymentId).Distinct().Count();
         var memories = await _db.CustomerIbanMemories
             .CountAsync(m => m.LicenseId == request.LicenseId && m.IbanHash == request.IbanHash, ct);
         var rows = txs.Select(t =>
@@ -111,7 +121,7 @@ public sealed class BankSubjectRequestService
             return new TransactionRow(t.Id, t.OccurredAt, t.Amount, t.Currency, t.BankaKodu, t.CounterpartyIbanMasked, t.Description,
                 t.CounterpartyName, t.TransactionCode, t.BankReference, m?.Status, m?.Linked ?? false);
         }).ToList();
-        return new Lookup(request, rows, memories);
+        return new Lookup(request, rows, memories, receipts);
     }
 
     /// <summary>Kimlik ve IBAN sahipliğinin doğrulama YÖNTEMİNİ kaydeder (KVKK Ö-11). Açık talepte, dışa aktarma ve silmeden önce
@@ -190,6 +200,8 @@ public sealed class BankSubjectRequestService
                 Cell(t.LinkedToCustomer ? "bir müşteriyle eşleşti" : "eşleşmedi")));
         }
         sb.AppendLine($"# Bu IBAN'ın bağlı olduğu müşteri kaydı sayısı: {lookup.IbanMemories} (müşteri kimliği yazılmaz)");
+        sb.AppendLine($"# Bu havalelere bağlı dekont kaydı sayısı: {lookup.LinkedReceipts} (dekonttaki ödeyen adı ve dekont " +
+            "dosyası bu dosyada yok; ayrıca saklanır)");
         return [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(sb.ToString())];
     }
 
@@ -265,6 +277,8 @@ public sealed class BankSubjectRequestService
         // Sayım kuraldan ÖNCE (kural kimlikleri ve kanıtı boşaltır). Saklama işinin çoktan boşalttığı hareket ve kanıtı zaten boş,
         // kişiye bağlı olmayan eşleşme silinmiş sayılmaz; onlara yazılmaz (eşleşme jetonu boşuna ilerlemez).
         var scrubbedTxs = txs.Where(BankSubjectScrub.HasText).ToList();
+        // Havalelere bağlı dekontlar silinmez (ödeme kaydı; plan karar 33): sonuç metni ve bildirim onları anar.
+        var receipts = matches.Where(m => m.PaymentId != null).Select(m => m.PaymentId).Distinct().Count();
         var linked = matches.Where(m => customers.Any(c => BankSubjectScrub.References(m, c))).ToList();
         var evidenceOnly = matches.Where(m => !linked.Contains(m) && m.Evidence is not null).ToList();
         // Görev 16 kuralı (KVKK Ö-14): kararın müşterisi boşalan havalenin elle eşleme denetim satırı da o müşteriyi göstermesin.
@@ -296,7 +310,9 @@ public sealed class BankSubjectRequestService
         MarkClosed(_db, request, BankSubjectResolution.Erased,
             $"Silindi: {scrubbedTxs.Count} hareketin açıklaması/adı/ham kaydı, {memories.Count} IBAN bağı, " +
             $"{matchCount} eşleşme satırının kimliği/kanıtı, {audits.Count} elle eşleme denetim satırının müşteri kimliği. " +
-            "Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kaldı.", DataDestruction.Triggers.SubjectRequest, actor, now);
+            "Tutar, tarih, kısaltılmış IBAN ve tanıma kodu kaldı." +
+            (receipts > 0 ? $" {receipts} bağlı dekont kaydı (ödeyen adı, dekont dosyası) bu araçla silinmedi." : ""),
+            DataDestruction.Triggers.SubjectRequest, actor, now);
         void Record(string target, string action, int count) => DataDestruction.Record(_db, licenseId, target, action, count,
             EraseCriterion, DataDestruction.Triggers.SubjectRequest, actor, request.Id);
         Record(BankSubjectScrub.IbanMemoryTarget, DataDestruction.Actions.Deleted, memories.Count);
@@ -305,7 +321,7 @@ public sealed class BankSubjectRequestService
         Record(BankSubjectScrub.MatchEvidenceTarget, DataDestruction.Actions.Nulled, evidenceOnly.Count);
         Record(BankSubjectScrub.ManualMatchAuditTarget, DataDestruction.Actions.Nulled, audits.Count);
         await _db.SaveChangesAsync(ct);
-        return new EraseResult(scrubbedTxs.Count, memories.Count, matchCount, audits.Count);
+        return new EraseResult(scrubbedTxs.Count, memories.Count, matchCount, audits.Count, receipts);
     }
 
     /// <summary>Talebi bir sonuç KATEGORİSİYLE kapatır (KVKK m. 13/3; Silme Yönetmeliği md. 12/1-c gerekçeli ret): sonuç metni
