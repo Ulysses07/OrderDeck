@@ -222,7 +222,8 @@ public class IndexModel : PageModel
                 ? ObifinConnectionService.StoppedConnectionMessage
                 : "Şimdi doğrulayın.";
             TempData["Success"] = saved.ShadowDataReset
-                ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. " + next
+                ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. "
+                    + ObifinConnectionService.CredentialChangeObifinSideNote + " " + next
                 : "Obifin kimliği kaydedildi. " + next;
         }
         catch (ShadowResetConfirmationRequiredException ex)

@@ -40,8 +40,24 @@ public sealed class ObifinConnectionServiceTests
         public long NextBankaApiId { get; set; } = 4242;
         /// <summary>Ayarlıysa ekleme başarılı döner ama kayıt banka bağlantı listesinde görünmez.</summary>
         public bool HideAddedFromList { get; set; }
+        /// <summary>Ayarlıysa hesap listesi ve banka bağlantı listesi çağrısı sürerken bir kez koşar: yavaş Obifin yanıtı
+        /// beklenirken başka bir isteğin (ör. yönetici "Durdur") kendi bağlamında commit ettiği yazı.</summary>
+        public Func<Task>? DuringListCall { get; set; }
 
-        public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
+        private async Task RunDuringListCallAsync()
+        {
+            if (DuringListCall is not { } during) return;
+            DuringListCall = null;
+            await during();
+        }
+
+        public async Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
+        {
+            await RunDuringListCallAsync();
+            return await ListAccountsCoreAsync(c);
+        }
+
+        private Task<IReadOnlyList<ObifinAccountDto>> ListAccountsCoreAsync(ObifinCredentials c)
         {
             LastCreds = c;
             ListAccountsCalls++;
@@ -53,10 +69,11 @@ public sealed class ObifinConnectionServiceTests
             if (ListAccountsError is not null) throw ListAccountsError;
             return Task.FromResult<IReadOnlyList<ObifinAccountDto>>(Accounts);
         }
-        public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
+        public async Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
         {
+            await RunDuringListCallAsync();
             if (ListBankConnectionsError is not null) throw ListBankConnectionsError;
-            return Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>(Connections);
+            return Connections;
         }
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
         {
@@ -1170,6 +1187,112 @@ public sealed class ObifinConnectionServiceTests
         stub.ListAccountsCalls.Should().Be(0);
         conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
         conn.LastVerifiedAt.Should().BeNull();
+    }
+
+    /// <summary>Başka bir isteğin (yönetici "Durdur" ya da "Kaldır ve sil"in ilk adımı) kilitsiz, kendi bağlamında commit ettiği
+    /// durdurma: <c>BankConnectionTerminator.MarkStopped</c>'ın yazdığı alanlar.</summary>
+    private static async Task StopFromAnotherRequestAsync(string dbName, Guid licenseId)
+    {
+        using var other = NewDb(dbName);
+        var row = await other.ObifinConnections.SingleAsync(c => c.LicenseId == licenseId);
+        row.Status = ObifinConnectionStatus.Disabled;
+        row.DisabledAt = DateTimeOffset.UtcNow;
+        row.DisabledByAdmin = true;
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        await other.SaveChangesAsync();
+    }
+
+    private static async Task<ObifinConnection> FreshConnectionAsync(string dbName, Guid licenseId)
+    {
+        using var other = NewDb(dbName);
+        return await other.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == licenseId);
+    }
+
+    [Fact]
+    public async Task Dogrula_surerken_durdurulan_baglanti_Verifieda_donmez_durdurma_kaybolmaz()
+    {
+        // İstek başında Unverified okunan izlenen durum, Obifin yanıtı beklenirken (zaman aşımı 40 sn'ye kadar) başka bir istekte
+        // commit edilen Disabled'ın üstüne Verified yazılırdı; DisabledAt/DisabledByAdmin özgün değerlerine (null/false) eşit
+        // kaldığı için yazılmaz, satır "Verified + DisabledByAdmin" olurdu: çekim durdurulmuş yayıncının hareketlerini yeniden
+        // yazar, hizmet sonu silmesi hiç tetiklenmez, yöneticinin durdurması sessizce kaybolur.
+        var name = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(name); var lic = SeedLicense(db);
+        var stub = new StubObifin();
+        stub.Accounts.Add(new ObifinAccountDto(9298, "qnb", 77, "123", BankHasherTests.TestIban(), "TL", 10m, null, true, ""));
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        stub.DuringListCall = () => StopFromAnotherRequestAsync(name, lic);
+
+        var result = await svc.VerifyAsync(lic, CancellationToken.None);
+
+        result.Ok.Should().BeFalse("bağlantı doğrulanmış sayılmadı");
+        result.Error.Should().Be(ObifinConnectionService.StoppedDuringCallMessage);
+        var after = await FreshConnectionAsync(name, lic);
+        after.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        after.DisabledByAdmin.Should().BeTrue();
+        after.DisabledAt.Should().NotBeNull("hizmet sonu sayacı");
+        after.LastVerifiedAt.Should().NotBeNull("kanıt alanları yine yazılır (hesap yenilemesi yarışıyla aynı kural)");
+    }
+
+    [Fact]
+    public async Task Dogrulama_hatasi_surerken_durdurulan_baglanti_Faileda_donmez()
+    {
+        var name = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(name); var lic = SeedLicense(db);
+        var stub = new StubObifin { ListAccountsError = new ObifinApiException(new[] { "Kullanici Bilgileri Hatali!" }) };
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        stub.DuringListCall = () => StopFromAnotherRequestAsync(name, lic);
+
+        var result = await svc.VerifyAsync(lic, CancellationToken.None);
+
+        result.Ok.Should().BeFalse();
+        var after = await FreshConnectionAsync(name, lic);
+        after.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        after.DisabledByAdmin.Should().BeTrue();
+        after.LastError.Should().Be("Kullanici Bilgileri Hatali!");
+    }
+
+    [Fact]
+    public async Task Banka_ekle_surerken_durdurulan_baglanti_Verifieda_donmez_yerel_kayit_yazilir()
+    {
+        // Obifin'de kayıt açıldı: yerel satır "Kaldır ve sil"in sahiplik kanıtıdır, yazılır; durdurma korunur.
+        var name = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(name); var lic = SeedLicense(db);
+        var stub = new StubObifin();
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        stub.DuringListCall = () => StopFromAnotherRequestAsync(name, lic);
+
+        var bc = await svc.AddBankConnectionAsync(lic, "qnb", "", new Dictionary<string, string> { ["Kullanici"] = "u" },
+            CancellationToken.None);
+
+        (await db.BankConnections.AsNoTracking().CountAsync(b => b.Id == bc.Id)).Should().Be(1);
+        var after = await FreshConnectionAsync(name, lic);
+        after.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        after.DisabledByAdmin.Should().BeTrue();
+        after.DisabledAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Hesap_yenileme_hatasi_surerken_durdurulan_baglanti_Faileda_donmez()
+    {
+        // Saatlik iş Verified listesini okuduktan sonra durdurulan bağlantı: Obifin reddi Failed yazmaz, Disabled kalır.
+        var name = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(name); var lic = SeedLicense(db);
+        var stub = new StubObifin();
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        (await svc.VerifyAsync(lic, CancellationToken.None)).Ok.Should().BeTrue();
+        stub.ListAccountsError = new ObifinApiException(new[] { "Kullanici Bilgileri Hatali!" });
+        stub.DuringListCall = () => StopFromAnotherRequestAsync(name, lic);
+
+        var act = () => svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        await act.Should().ThrowAsync<ObifinApiException>();
+        var after = await FreshConnectionAsync(name, lic);
+        after.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        after.DisabledByAdmin.Should().BeTrue();
     }
 
     [Fact]

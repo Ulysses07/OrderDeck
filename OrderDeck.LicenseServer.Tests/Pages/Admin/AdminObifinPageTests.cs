@@ -892,7 +892,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         }, confirmReset: true);
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
+        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. "
+            + ObifinConnectionService.CredentialChangeObifinSideNote + " Şimdi doğrulayın.");
         var conn = await ConnectionAsync(licenseId);
         conn.UserCode.Should().Be(newUser);
         conn.BaseUrl.Should().Be(newBaseUrl);
@@ -911,9 +912,25 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var resp = await SaveAsync(client, licenseId, newUser, confirmReset: true);
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
+        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. "
+            + ObifinConnectionService.CredentialChangeObifinSideNote + " Şimdi doğrulayın.");
         (await ConnectionAsync(licenseId)).UserCode.Should().Be(newUser);
         (await ShadowCountsAsync(licenseId)).Should().Be((0, 0, 0));
+    }
+
+    [Fact]
+    public async Task Kimlik_degisimi_onayi_eski_Obifin_kullanicisindaki_baglantilara_dokunulmadigini_soyler()
+    {
+        // Kimlik değişimi yalnız yereli siler; eski Obifin kullanıcısında "Banka ekle" ile açılmış bağlantılar çekmeyi sürdürür.
+        // Aynı firmanın yeni (salt okuma) kullanıcısında bu istenen durumdur; başka firmaya geçişte yönetici elle kaldırmalı.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var page = await ParseAsync(await client.GetStringAsync($"/admin/obifin?license={licenseId}"));
+
+        page.QuerySelector("label[for='confirmReset']")!.TextContent
+            .Should().Contain(ObifinConnectionService.CredentialChangeObifinSideNote);
     }
 
     [Fact]
