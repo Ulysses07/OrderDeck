@@ -55,7 +55,7 @@ export default function PrivacyEn() {
         <li>License payment amount, license and update-pack status (card and payment instrument details are held only by the payment processor and are not stored by us; for broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version)</li>
         <li>
           IP address (in security logs; deleted after 90 days) and login time (in session records until the account is
-          deleted, in audit records for 24 months)
+          deleted; in audit records, together with the email address, for 24 months, see Section 5)
         </li>
       </ul>
 
@@ -75,8 +75,11 @@ export default function PrivacyEn() {
         comment is kept as part of the order record on the broadcaster&apos;s
         computer and is transferred to {BRAND} servers together with the order
         data, so the broadcaster can run their business (orders, shipping,
-        dispute tracking). See the <a href="/en/data-deletion">Data Deletion</a>{' '}
-        page for details.
+        dispute tracking). When a commenter places an order or enters a giveaway run by the broadcaster, their username
+        and display name (and, when the broadcaster blocks them from chat, their username) enter the broadcaster&apos;s
+        customer records and are transferred to {BRAND} servers with those records (Section 1.2a of the Turkish
+        version); giveaway and block records do not contain the comment text. See the{' '}
+        <a href="/en/data-deletion">Data Deletion</a> page for details.
       </p>
       <p>
         <strong>Second exception: Instagram registration link.</strong> For broadcasters who have connected their
@@ -108,8 +111,10 @@ export default function PrivacyEn() {
         <li>Optional Turkish national ID (T.C. Kimlik No) for invoicing (only if the buyer chooses to provide it)</li>
         <li>Explicit consent to receive informational messages via WhatsApp and/or SMS (checkboxes)</li>
         <li>
-          The IP address and browser details from which the form was submitted (deleted after 90 days), and the version
-          of the notice and of the broadcaster&apos;s data-controller information shown to the buyer
+          The IP address and browser details from which the form was submitted (deleted from the form record after 90
+          days; if the buyer gives SMS consent, they are also kept as proof of the consent action in the SMS consent
+          records, where they are retained for 3 more years after the broadcaster leaves the platform, see Section 5),
+          and the version of the notice and of the broadcaster&apos;s data-controller information shown to the buyer
         </li>
       </ul>
       <p>
@@ -151,12 +156,16 @@ export default function PrivacyEn() {
       <p>Data obtained via the YouTube API in the desktop flow:</p>
       <ul>
         <li>
-          Apart from comments converted into an order/label and the channel name and username of the people who wrote
-          them (Section 1.2 above; Section 1.2a of the Turkish version), is processed only on the user&apos;s own machine
+          Apart from comments converted into an order/label and the channel name and channel ID of commenters who enter
+          the broadcaster&apos;s customer records (those who order, enter a giveaway or are blocked from chat by the
+          broadcaster) (Section 1.2 above; Section 1.2a of the Turkish version), is processed only on the user&apos;s
+          own machine. The customer, order and giveaway records on the broadcaster&apos;s computer, together with these
+          commenters&apos; profile picture URLs, are also contained in the encrypted backups the desktop application
+          uploads to the server (Section 5 of the Turkish version)
         </li>
         <li>
           Apart from these exceptions, is not transmitted to {BRAND} servers; where the broadcaster has a bank
-          connection, the names transmitted to the server are also used in the transfer matching and accuracy
+          connection, the data transmitted to the server is also used in the transfer matching and accuracy
           measurement described in Section 1.4 of the Turkish version
         </li>
         <li>Is not used for advertising, profiling, or training machine-learning models</li>
@@ -245,10 +254,19 @@ export default function PrivacyEn() {
       <h2>5. Data retention</h2>
       <ul>
         <li>
-          Account data (email, license): until the account is deleted; after deletion, the email address remains in the
-          audit record of the deletion for 24 months
+          Account data (email, license): until the account is deleted; after deletion, the email address remains in audit
+          records (records of sign-ins, session renewals and sign-outs, data exports, adding and removing panel staff,
+          license issuance and account deletion) for at most 24 months from the date of each record. The email address
+          and name of staff the broadcaster added in the panel likewise remain in the staff add/remove records for the
+          same period
         </li>
         <li>Buyer information from the registration form: on the server, until the broadcaster&apos;s account is deleted (see Section 5 of the Turkish version)</li>
+        <li>
+          SMS consents (Section 1.3): the current consent record is deleted 30 days after the broadcaster leaves the
+          platform; proof of consent actions (phone number, consent or refusal, its date and source, and the IP address
+          and browser details of the request) is kept until the broadcaster leaves and for 3 years afterwards (Law No.
+          6563, Art. 13). For consents given or withdrawn in the customer app, see Section 5 of the Turkish version
+        </li>
         <li>Server access logs: 30 days</li>
         <li>IP addresses and browser details in security logs: 90 days</li>
         <li>
