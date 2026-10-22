@@ -163,8 +163,10 @@ export default function PrivacyTr() {
         <li>Fatura için opsiyonel T.C. Kimlik Numarası (yalnızca alıcı girmek isterse)</li>
         <li>WhatsApp ve/veya SMS ile bilgilendirme mesajı almaya dair açık rıza (onay kutuları)</li>
         <li>
-          Formun gönderildiği IP adresi ve tarayıcı bilgisi (90 gün sonra silinir) ile alıcıya gösterilen bilgilendirme
-          metninin ve yayıncının veri sorumlusu bilgisinin sürümü
+          Formun gönderildiği IP adresi ve tarayıcı bilgisi (form kaydında 90 gün sonra silinir; alıcı SMS izni verdiyse
+          bu bilgiler izin işleminin ispatı olarak SMS izin kayıtlarında da tutulur ve orada yayıncı platformdan
+          ayrıldıktan sonra 3 yıl daha saklanır, Bölüm 5) ile alıcıya gösterilen bilgilendirme metninin ve yayıncının
+          veri sorumlusu bilgisinin sürümü
         </li>
       </ul>
       <p>
@@ -190,11 +192,12 @@ export default function PrivacyTr() {
         </li>
         <li>
           Bilgilendirme ve kampanya mesajları: alıcının açık rızası ve 6563 sayılı Kanun kapsamındaki onayı. SMS izninin
-          İleti Yönetim Sistemi'ne bildirilmesi ve izin kayıtlarının saklanması: 6563 sayılı Kanun ve ilgili yönetmelikten
-          doğan hukuki yükümlülük (KVKK m. 5/2-ç).
+          İleti Yönetim Sistemi'ne bildirilmesi ve izin kayıtlarının (izin işleminin ispatı olarak tutulan IP adresi ve
+          tarayıcı bilgisi dahil) saklanması: 6563 sayılı Kanun ve ilgili yönetmelikten doğan hukuki yükümlülük (KVKK m.
+          5/2-ç).
         </li>
         <li>
-          Formun gönderildiği IP adresi ve tarayıcı bilgisi ile gösterilen metin sürümleri: [YER TUTUCU: hukuki sebep —
+          Form kaydındaki IP adresi ve tarayıcı bilgisi ile gösterilen metin sürümleri: [YER TUTUCU: hukuki sebep —
           avukat 08/19; öneri: formun kötüye kullanılmasının önlenmesi ve bilgilendirmenin yapıldığının ispatı için
           yayıncının ve {BRAND}'in meşru menfaati (KVKK m. 5/2-f)].
         </li>
@@ -351,7 +354,8 @@ export default function PrivacyTr() {
         dekontunu yüklemek için T.C. kimlik numarası gerekir). Bağlandığınız her yayıncı için hangi yayıncıya
         bağlandığınız, platform ve o platformdaki kullanıcı adınız kaydedilir. Parolanın kendisi saklanmaz; yalnızca parolanızı doğrulamaya
         yarayan bir özeti saklanır. Bildirim tercihleriniz ve ticari ileti (SMS) izniniz, iznin verildiği ve geri
-        çekildiği tarih ve kaynağıyla birlikte kaydedilir.
+        çekildiği tarih ve kaynağıyla birlikte kaydedilir; izni verdiğiniz ya da geri çektiğiniz isteğin IP adresi ve
+        tarayıcı bilgisi de izin işleminin ispatı olarak SMS izin kayıtlarında saklanır (süre: Bölüm 5).
       </p>
       <p>
         <strong>Telefon doğrulama ve parola sıfırlama.</strong> Telefonunuzu doğrulamak ve parolanızı sıfırlamak için SMS
@@ -418,7 +422,12 @@ export default function PrivacyTr() {
           5/2-c). Bildirim jetonu yalnızca cihazınızda bildirimlere izin verdiğinizde alınır; izni cihaz ayarlarınızdan
           geri alabilirsiniz.
         </li>
-        <li>Yayıncının kampanya SMS'leri: açık rızanız ve 6563 sayılı Kanun kapsamındaki onayınız.</li>
+        <li>
+          Yayıncının kampanya SMS'leri: açık rızanız ve 6563 sayılı Kanun kapsamındaki onayınız. SMS izninin ve geri
+          çekilmesinin İleti Yönetim Sistemi'ne bildirilmesi ve izin kayıtlarının (izin işleminin ispatı olarak tutulan IP
+          adresi ve tarayıcı bilgisi dahil) saklanması: 6563 sayılı Kanun ve ilgili yönetmelikten doğan hukuki yükümlülük
+          (KVKK m. 5/2-ç).
+        </li>
         <li>Havale eşleştirmesi ve doğruluk ölçümü: Bölüm 1.4.</li>
       </ul>
       <p>
@@ -444,8 +453,9 @@ export default function PrivacyTr() {
         (takma adınız) ve siparişe dönüşen yorumlarınızın metni [YER TUTUCU: sipariş metni boşaltması
         (SalesSync__ScrubOrderTextOnPurge) yayından önce açılırsa görünen ad ve yorum metni bu listeden çıkar ve silinenler
         arasına girer, kullanıcı adı kalır — Burak]; yayıncıya kayıt formuyla verdiğiniz bilgiler (Bölüm 1.3); yayıncıyla
-        WhatsApp yazışmalarınız ve pazarlama mesajı tercihiniz (Bölüm 1.7); İleti Yönetim Sistemi'ne bildirilmiş SMS izin
-        kayıtlarınız; yayıncının masaüstü uygulamasına elle girdiği ödeme kayıtları (ödeyen adı dahil; Bölüm 1.2a); hesabı
+        WhatsApp yazışmalarınız ve pazarlama mesajı tercihiniz (Bölüm 1.7); SMS izin kayıtlarınız (İleti Yönetim
+        Sistemi'ne bildirilenler dahil) ve izin işlemlerinizin ispat kayıtları (isteğin IP adresi ve tarayıcı bilgisi
+        dahil; Bölüm 5); yayıncının masaüstü uygulamasına elle girdiği ödeme kayıtları (ödeyen adı dahil; Bölüm 1.2a); hesabı
         silinmiş bir yayıncıya yüklediğiniz dekont dosyaları (yukarıda) [YER TUTUCU: silmenin kayıt formu, WhatsApp
         yazışmaları ve elle girilen ödeme kayıtlarına genişletilmesi — Burak]. Silinen veriler sunucu veritabanının
         yedeklerinde en fazla 30 gün daha kalır; yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o
@@ -679,6 +689,14 @@ export default function PrivacyTr() {
           kalanlar: Bölüm 1.5); dekontun yüklendiği yayıncının hesabı silinirse dekont dosyaları: bugün otomatik olarak
           silinmez [YER TUTUCU: saklama süresi ve silinme yolu — Burak, avukat 08/15]; dekonttan okunan tam metin:
           gönderimden 30 gün; SMS doğrulama ve parola sıfırlama kodları ile isteğin IP adresi: 7 gün
+        </li>
+        <li>
+          SMS izinleri (Bölüm 1.3, 1.5): yayıncı adına tutulan güncel izin kaydı (telefon numarası, izin ya da ret ve
+          tarihi) yayıncı platformdan ayrıldıktan 30 gün sonra silinir; izin işlemlerinin ispat kayıtları (telefon
+          numarası, izin ya da ret, tarihi ve kaynağı, izni veren ya da geri çeken isteğin IP adresi ve tarayıcı bilgisi)
+          yayıncı ayrılana kadar ve ayrıldıktan sonra 3 yıl saklanır (6563 sayılı Kanun, m. 13). Yayıncının SMS gönderimi
+          için doğrulanmış bir markası yokken müşteri uygulamasından verilen ya da geri çekilen iznin ispat kaydı bugün
+          otomatik olarak silinmez [YER TUTUCU: bu kayıtların saklama süresi ve silinme yolu — Burak]
         </li>
         <li>
           WhatsApp yazışmaları (bağlantıdan önceki geçmiş sohbetler dahil), rehberden alınan adlar ve WhatsApp'tan gelen
