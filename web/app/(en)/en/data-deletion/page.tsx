@@ -50,7 +50,9 @@ export default function DataDeletionEn() {
         <li>To permanently delete specific customer/order records, or your entire
           account and associated data, email{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. We conclude your request{' '}
-          <strong>within 30 days</strong> of receiving it.</li>
+          <strong>within 30 days</strong> of receiving it. If you connected your WhatsApp line to {BRAND}, the files
+          in those conversations (photos, audio, video and documents) are currently not deleted automatically when
+          your account is deleted (Privacy Policy, Section 1.7, in Turkish).</li>
       </ul>
 
       <h2>3. If you are a viewer / commenter</h2>

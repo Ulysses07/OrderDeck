@@ -29,7 +29,8 @@ export default function PrivacyEn() {
         <a href="/gizlilik-politikasi/">orderdeckapp.com/gizlilik-politikasi</a>, effective {TURKISH_EFFECTIVE_DATE},
         prevails. It currently contains sections not yet reflected here, including its wider scope (broadcaster panel,
         customer app and registration form), the data controller&apos;s postal address, the legal grounds for the
-        registration form, Section 1.4 on the processing of broadcasters&apos; bank account transactions, Section 1.5 on
+        registration form, Section 1.2a on the broadcaster&apos;s customer and sales records held on the server, Section
+        1.4 on the processing of broadcasters&apos; bank account transactions, Section 1.5 on
         the customer app and payment receipts, Section 1.6 on service providers and transfers abroad, Section 1.7 on
         WhatsApp conversations, and the updated retention periods, rights, application channels, data security and
         policy-change sections.
@@ -223,7 +224,7 @@ export default function PrivacyEn() {
       <h2>5. Data retention</h2>
       <ul>
         <li>Account data (email, license): until the account is deleted</li>
-        <li>Buyer information from the registration form: until deleted by the relevant broadcaster</li>
+        <li>Buyer information from the registration form: on the server, until the broadcaster&apos;s account is deleted (see Section 5 of the Turkish version)</li>
         <li>Server access logs: 30 days</li>
         <li>Security logs: 90 days</li>
         <li>

@@ -54,7 +54,9 @@ export default function DataDeletionTr() {
           hesabınızın ve ilişkili verilerin silinmesi için{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine yazın.
           Talebinizi, bize ulaştığı tarihten itibaren <strong>en geç 30 gün içinde</strong>{' '}
-          sonuçlandırırız.</li>
+          sonuçlandırırız. WhatsApp hattınızı {BRAND}&apos;e bağladıysanız, yazışmalardaki dosyalar (fotoğraf, ses,
+          video ve belgeler) hesabınız silindiğinde bugün otomatik olarak silinmez (Gizlilik Politikası, Bölüm
+          1.7).</li>
       </ul>
 
       <h2>3. İzleyici / yorumcuysanız</h2>
