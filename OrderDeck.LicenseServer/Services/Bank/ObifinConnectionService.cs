@@ -809,11 +809,18 @@ public sealed class ObifinConnectionService
             // Obifin kaynaklı metinler sütun sınırına kırpılır (bkz. NotificationNoteMaxLength). Hash 64 hex sabittir.
             row.BankaKodu = Truncate(dto.BankaKodu, BankaKoduMaxLength);
             row.IbanMasked = Truncate(BankHasher.MaskIban(dto.Iban), IbanMaskedMaxLength);
-            row.IbanHash = _hasher.HashIban(dto.Iban);
             row.Currency = Truncate(dto.Currency, CurrencyMaxLength);
             row.Active = dto.Active;
             row.LastBankSyncAt = dto.UpdatedAtTr is { } tr ? TrToUtc(tr) : null;
-            row.NotificationNote = dto.NotificationNote is null ? null : Truncate(dto.NotificationNote, NotificationNoteMaxLength);
+            // KVKK Ö-6, Ö-10: IBAN özeti ve Obifin bildirim notu yalnız onaylı (lisansa bağlanmış) hesapta yazılır. Onaysız ya da
+            // reddedilmiş (EMAR dışı, ör. şahsi) hesabın onay kararı için maske yeter; ret anında ikisi imha kaydıyla boşalır
+            // (BankConnectionTerminator.RejectAccountAsync). Onaysız hesapta eskiden yazılmış değer burada silinmez (kayıtsız imha
+            // olurdu): ret ya da onaydan sonraki ilk yenileme onu işler.
+            if (row.ApprovedAt is not null)
+            {
+                row.IbanHash = _hasher.HashIban(dto.Iban);
+                row.NotificationNote = dto.NotificationNote is null ? null : Truncate(dto.NotificationNote, NotificationNoteMaxLength);
+            }
             row.RefreshedAt = now;
         }
         await _db.SaveChangesAsync(ct);

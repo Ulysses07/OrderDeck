@@ -103,6 +103,9 @@ public sealed class BankConnectionTerminator
     /// <summary>Yerel silmede sahiplik kanıtı olarak bırakılan onaylı hesabın boşaltılan alanları (imha kaydı hedefi, eylem
     /// <c>nulled</c>).</summary>
     public const string ScrubbedAccountTarget = "BankAccounts.IbanMasked+IbanHash+NotificationNote";
+    /// <summary>Reddedilen (ya da onayı geri alınan) hesabın boşaltılan alanları (<see cref="RejectAccountAsync"/>; eylem
+    /// <c>nulled</c>). Maske yer tutucunun tanınması ve yeniden onay kararı için kalır.</summary>
+    public const string RejectedAccountTarget = "BankAccounts.IbanHash+NotificationNote";
 
     public const string StoppedByAdminMessage = "Yönetici çekimi durdurdu.";
     public const string LicenseStillEndedMessage = "Lisans sona ermiş ya da iptal edilmiş; bağlantı etkinleştirilemez.";
@@ -556,7 +559,9 @@ public sealed class BankConnectionTerminator
     /// yeniden uygulanabilir olmalı. Geri yüklemeden sonra silmelerin dayanağı veritabanı dışındaki saatlik özettir (Görev 9) ve
     /// yedek, reddedilmiş hesabın onayını da geri getirir; numara olmasaydı hangi hesabın yeniden reddedileceği bilinmez, çekim
     /// o hesabın hareketini yeniden yazardı.</para>
-    /// <para>Hesap satırı kalır: yer tutucudur, Obifin'den geldikçe onaysız sayılır. Eşzamanlı eşleştirme yazısıyla çakışırsa bir
+    /// <para>Hesap satırı kalır: yer tutucudur, Obifin'den geldikçe onaysız sayılır. IBAN özeti ve Obifin bildirim notu onayla
+    /// birlikte boşalır (<see cref="RejectedAccountTarget"/>; saatlik yenileme onaysız hesapta onları yazmaz), maske yeniden onay
+    /// kararı için kalır (plan karar 32). Eşzamanlı eşleştirme yazısıyla çakışırsa bir
     /// kez yeniden denenir (düşen partinin izi ve imha kaydı atılır); ikinci çakışma <see cref="BankDeletionIncompleteException"/>
     /// (<see cref="RejectIncompleteMessage"/>). <see cref="BankHasher"/> istemez.</para>
     /// </summary>
@@ -565,15 +570,23 @@ public sealed class BankConnectionTerminator
         var account = await _db.BankAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct)
             ?? throw new ObifinValidationException(AccountNotFoundMessage);
         var (licenseId, obifinAccountId) = (account.LicenseId, account.ObifinAccountId);
-        if (account.ApprovedAt is not null)
+        var criterion = RejectionCriterion(obifinAccountId);
+        // Onayla birlikte hesabın IBAN özeti ve Obifin bildirim notu da gider (KVKK Ö-6, Ö-10): saatlik yenileme onaysız hesapta
+        // onları yazmaz (ObifinConnectionService.UpsertAccountsAsync), maske yer tutucu için kalır. Boşaltma kaydıyla aynı işlemde.
+        var hadDetails = account.IbanHash is not null || account.NotificationNote is not null;
+        if (account.ApprovedAt is not null || hadDetails)
         {
             account.ApprovedAt = null;
             account.ApprovedBy = null;
+            account.IbanHash = null;
+            account.NotificationNote = null;
+            if (hadDetails)
+                DataDestruction.Record(_db, licenseId, RejectedAccountTarget, DataDestruction.Actions.Nulled, 1, criterion,
+                    DataDestruction.Triggers.AccountRejected, actor);
             await _db.SaveChangesAsync(ct);
         }
         _db.ChangeTracker.Clear();
 
-        var criterion = RejectionCriterion(obifinAccountId);
         void Record(string target, int count) => DataDestruction.Record(_db, licenseId, target, DataDestruction.Actions.Deleted,
             count, criterion, DataDestruction.Triggers.AccountRejected, actor);
         int transactions = 0, matches = 0, memories = 0, gaps = 0;

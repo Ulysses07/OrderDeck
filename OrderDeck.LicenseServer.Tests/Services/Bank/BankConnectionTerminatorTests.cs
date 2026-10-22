@@ -977,6 +977,31 @@ public sealed class BankConnectionTerminatorTests
     }
 
     [Fact]
+    public async Task Hesap_reddi_hesabin_IBAN_ozetini_ve_bildirim_notunu_imha_kaydiyla_bosaltir_maske_kalir()
+    {
+        // Reddedilen (EMAR dışı, ör. şahsi) hesabın IBAN özeti ve Obifin bildirim notu satırda kalıp saatlik yenilemeyle yeniden
+        // yazılıyordu. Ret anında boşalır; yenileme onaysız hesapta onları yazmaz (ObifinConnectionService). Maske yer tutucunun
+        // tanınması ve yeniden onay kararı için kalır (plan karar 32).
+        using var db = NewDb(); var client = new TerminatorObifin();
+        var lic = await SeedAsync(db, client);   // hesap 6 onaylı (özet + not), hesap 9 onaysız (yalnız maske)
+        var account6 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 6);
+        var account9 = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == lic && a.ObifinAccountId == 9);
+        var t = Terminator(db, client);
+
+        await t.RejectAccountAsync(account6.Id, "yonetici-1", CancellationToken.None);
+        await t.RejectAccountAsync(account9.Id, "yonetici-1", CancellationToken.None);
+
+        var rejected = await db.BankAccounts.AsNoTracking().SingleAsync(a => a.Id == account6.Id);
+        (rejected.ApprovedAt, rejected.IbanHash, rejected.NotificationNote, rejected.IbanMasked)
+            .Should().Be(((DateTimeOffset?)null, (string?)null, (string?)null, "TR12…345"));
+        var records = await db.DataDestructionRecords.AsNoTracking()
+            .Where(x => x.LicenseId == lic && x.Target == BankConnectionTerminator.RejectedAccountTarget).ToListAsync();
+        records.Should().ContainSingle("yalnız özeti ya da notu dolu hesap sayılır").Which.Should().Match<DataDestructionRecord>(x =>
+            x.RowCount == 1 && x.Action == DataDestruction.Actions.Nulled && x.Trigger == DataDestruction.Triggers.AccountRejected
+            && x.Actor == "yonetici-1" && x.Criterion == "reddedilen hesap #6 (Ö-10)");
+    }
+
+    [Fact]
     public async Task Hesap_reddi_baska_havalenin_ogrettigi_IBAN_bagini_kalan_dogrulamaya_ceker_kalan_yoksa_imha_kaydiyla_siler()
     {
         // Görev 10 kuralı: bir havaleyi kararıyla birlikte silen yol, o havalenin tazelediği ama başka havalenin öğrettiği bağın

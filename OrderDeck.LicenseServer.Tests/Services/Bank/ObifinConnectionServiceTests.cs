@@ -1031,6 +1031,9 @@ public sealed class ObifinConnectionServiceTests
         await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
 
         await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+        // IBAN özeti yalnız onaylı hesapta yazılır (onaysızda yalnız maske).
+        (await db.BankAccounts.SingleAsync()).ApprovedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
         await svc.RefreshAccountsAsync(lic, CancellationToken.None);
 
         var acc = (await db.BankAccounts.ToListAsync()).Should().ContainSingle("ikinci yenileme upsert").Subject;
@@ -1332,6 +1335,33 @@ public sealed class ObifinConnectionServiceTests
     }
 
     [Fact]
+    public async Task Onaysiz_hesapta_IBAN_ozeti_ve_bildirim_notu_yazilmaz_yalniz_maske_onaylida_yazilir()
+    {
+        // KVKK Ö-6/Ö-10: onaysız (ya da reddedilmiş, EMAR dışı) hesabın IBAN özeti ve Obifin bildirim notu saatlik yenilemeyle
+        // her saat yeniden yazılıyordu; onay kararı için maske yeter. Onaylanan hesap bir sonraki yenilemede tam yazılır.
+        using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
+        var iban = BankHasherTests.TestIban();
+        stub.Accounts.Add(new ObifinAccountDto(9298, "qnb", 77, "123", iban, "TL", 10m, null, true, "bildirim notu"));
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+
+        (await svc.VerifyAsync(lic, CancellationToken.None)).Ok.Should().BeTrue();
+
+        var unapproved = await db.BankAccounts.AsNoTracking().SingleAsync();
+        (unapproved.IbanMasked, unapproved.IbanHash, unapproved.NotificationNote)
+            .Should().Be((BankHasher.MaskIban(iban), (string?)null, (string?)null));
+
+        var row = await db.BankAccounts.SingleAsync();
+        row.ApprovedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        var approved = await db.BankAccounts.AsNoTracking().SingleAsync();
+        approved.IbanHash.Should().NotBeNullOrEmpty();
+        approved.NotificationNote.Should().Be("bildirim notu");
+    }
+
+    [Fact]
     public async Task Hesap_yenileme_Obifin_kaynakli_uzun_alanlari_sutun_sinirina_kirpar()
     {
         // NotificationNote 500, BankaKodu 32, Currency 3, IbanMasked 40 (LicenseDbContext). Obifin'den gelen
@@ -1341,6 +1371,10 @@ public sealed class ObifinConnectionServiceTests
             10m, null, true, new string('n', 600)));
         var svc = Svc(db, stub);
         await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+        // Bildirim notu yalnız onaylı hesapta yazılır (onaysızda yalnız maske).
+        (await db.BankAccounts.SingleAsync()).ApprovedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
 
         await svc.RefreshAccountsAsync(lic, CancellationToken.None);
 
