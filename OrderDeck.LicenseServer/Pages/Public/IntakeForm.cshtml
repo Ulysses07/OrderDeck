@@ -82,10 +82,6 @@
         .check { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; font-size:13.5px; color:var(--od-ink); }
         .check input { width:18px; height:18px; margin-top:1px; accent-color:var(--od-red); flex:0 0 auto; }
         .kvkk { font-size:11.5px; color:var(--od-muted); margin:14px 0 4px; }
-        /* Aydınlatmanın iki katmanı tek p.kvkk içinde iki blok: özet (KvkkNotice.TextVersion) ve "hemen ardından politika
-           kutusu" kuralı tek paragrafa bağlı (IntakeFormKvkkTests). */
-        .kvkk-part { display:block; }
-        .kvkk-part + .kvkk-part { margin-top:8px; }
         /* Gizlilik Politikası sayfa içinde açılır kutu (details/summary): JS
            yok, uygulama içi tarayıcıda da JS kapalıyken de açılıp kapanıyor.
            Aydınlatma paragrafının altında, onay kutusunun üstünde; metin
@@ -109,6 +105,10 @@
         .policy-box code { font-size:11.5px; word-break:break-all; }
         .policy-box a { color:var(--od-red); overflow-wrap:anywhere; }
         .policy-box .policy-date { color:var(--od-muted); font-size:12px; }
+        /* Aydınlatmanın iki katmanı tek p.kvkk içinde iki blok: özet (KvkkNotice.TextVersion) ve "hemen ardından politika
+           kutusu" kuralı tek paragrafa bağlı (IntakeFormKvkkTests). */
+        .kvkk-part { display:block; }
+        .kvkk-part + .kvkk-part { margin-top:8px; }
         .btn { width:100%; padding:14px; font-size:16px; font-weight:700; color:#fff; background:var(--od-red);
                border:0; border-radius:12px; cursor:pointer; margin-top:16px;
                transition:background .15s, transform .05s; }
