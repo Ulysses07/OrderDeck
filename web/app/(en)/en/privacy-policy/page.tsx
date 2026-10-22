@@ -7,9 +7,7 @@ export const metadata: Metadata = {
   description: `How ${BRAND} handles personal data — scope, retention, sharing, user rights.`,
 };
 
-// This page's own text changed with the Turkish v2 (Sections 1.1-1.3, 7 and the note below), so its own date moves with
-// it. On publication day both dates are set to the real date (see the Turkish page and PolicyEffectiveDateParityTests).
-const EFFECTIVE_DATE = '2026-10-21';
+const EFFECTIVE_DATE = '2026-09-04';
 
 /**
  * Effective date of the Turkish policy (web/app/(tr)/gizlilik-politikasi/page.tsx). While this translation lags behind, the note
