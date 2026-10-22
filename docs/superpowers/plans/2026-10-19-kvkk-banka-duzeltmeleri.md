@@ -11862,6 +11862,12 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 25: Tam sunucu paketi (ayrık koşu)
 
+**Uygulama notu (Görev 25, 22.10):** paket `f6fa14ea`'da yeşil: `Passed! - Failed: 0, Passed: 5046, Total: 5046, Duration: 1 h 44 m` (Debug; ayrıca `OrderDeck.LicenseServer` Release 0 uyarı/0 hata). İki docker borusu da yanıt verdi, `DOCKER_HOST` satırı çıkarıldı. Adım 4'ün komutları gerçek dalda şu noktalarda düzeltilerek koşuldu; son inceleme aynısını kullanır.
+- **Fark aralığı `origin/master...HEAD` (üç nokta).** Dal açıldıktan sonra master ilerledi (`a2a011fb` → `86c6ab5a`, #517 #530–#532; göç yok, dalla ortak dosya yok, `git merge-tree` çakışmasız). İki noktalı `git diff origin/master..HEAD` master'daki değişiklikleri de ters yönde gösterir; `git log origin/master..HEAD` doğrudur (131 commit: her görevin commit adımı, Görev 9'da iki, inceleme düzeltmeleri ve plan notları).
+- **Daraltma taraması `Up` gövdesinde.** Adımdaki grep göçlerin `Down` gövdesindeki `DropColumn`/`DropTable`'ı da yakalar (20 eşleşme, hepsi `Down`). 11 yeni göçün `Up`'ı yalnız `AddColumn`/`CreateTable`/`CreateIndex`: `awk '/void Up/{u=1} /void Down/{u=0} u' <göç> | grep -E "Drop|Rename|Alter|Sql\("` boş.
+- **Literal taramasının iki eşleşmesi literal değil:** `CustomerPurgeRelationalTests`'teki `Password = "purge-password-123"` fark bağlamı (master'da duran satır; test kimlik bilgisi literalleri için açık çip, bu planın kapsamı dışında) ve `IntakeFormDataControllerTests`'te `[InlineData("99999999999")]` (sürüm alanının taşma girdisi; TCKN kontrol hanesini tutmaz). Ek tarama (test dışı eklenen satırlarda IBAN, 11 hane, telefon, e-posta, anahtar kalıbı) boş.
+- `bankaapi/sil` / `RemoveBankConnectionAsync`'i çağıran tek yer `BankConnectionTerminator.cs:303`; öbür eşleşmeler arayüz, istemci, `NullObifinClient` ve belge yorumları.
+
 **Files:** yok (doğrulama).
 
 - [ ] **Adım 1: Docker'ı denetle**
