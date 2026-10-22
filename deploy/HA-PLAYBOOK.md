@@ -89,11 +89,16 @@ time; promote on primary failure.
 3. Restore `.env` from `s3://orderdeck-prod-backups/env/` — it is GPG
    symmetric-encrypted, the passphrase is in the password manager, NOT on the
    host (see "Operational gaps" 5). This is what carries `BACKUP_MASTER_KEYS_*`;
-   without it the customer backup blobs are undecryptable ciphertext.
+   without it the customer backup blobs are undecryptable ciphertext. It
+   deliberately does **not** carry `OrderDeck__Bank__HashKey` (KVKK Ö-6): add
+   that line from the password manager, or stored IBAN hashes stop matching.
 4. Restore customer backup blobs from
    `s3://orderdeck-prod-backups/customer-blobs/` into `/opt/orderdeck/backups`
    (see "Operational gaps" 6).
 5. Bring the standby's containers up.
+5b. **Before DNS points at it:** re-apply the deletions made after the backup
+   was taken — the restored database has rolled them back (KVKK). Procedure:
+   `deploy/README.md`, "Geri yükleme" → "Silmeleri yeniden uygula".
 6. Update DNS A record to point at the standby IP.
 7. Wait for TTL.
 8. (Important) flip the primary's containers OFF so two writers can't both
@@ -172,8 +177,9 @@ These are the parts code can't help with — pure ops hygiene.
    to R2 via [`deploy/scripts/backup-sql-to-r2.sh`](scripts/backup-sql-to-r2.sh),
    cron `0 3 * * *`. Target:
    `s3://orderdeck-prod-backups/sql-bak/orderdeck-<date>.bak.gz.gpg`.
-   Retention: 3 days local (plaintext, deliberately), 30 days remote. Logs:
-   `/var/log/orderdeck-sql-backup.log`.
+   Retention: locally only the latest **encrypted** copy, deleted at the start
+   of the next run (at most 1 day; KVKK Ö-12, 2026-10 — it used to be 3 days of
+   plaintext), 30 days remote. Logs: `/var/log/orderdeck-sql-backup.log`.
 
    The `.bak` is raw customer data — `Customers`, `Payments`,
    `GiveawayParticipants`, i.e. KVKK-scoped PII. While it sat there as plain
@@ -204,7 +210,10 @@ These are the parts code can't help with — pure ops hygiene.
    (AES256) copy to R2 via
    [`deploy/scripts/backup-env-to-r2.sh`](scripts/backup-env-to-r2.sh), cron
    `45 3 * * *`. Target: `s3://orderdeck-prod-backups/env/`, 30-day retention.
-   Logs: `/var/log/orderdeck-env-backup.log`.
+   Logs: `/var/log/orderdeck-env-backup.log`. The `OrderDeck__Bank__HashKey`
+   line is filtered out (KVKK Ö-6, 2026-10): the IBAN hash key must not sit in
+   the same bucket under the same passphrase as the hashes; its only backup is
+   the password manager.
 
    This is the gap that made gaps 1, 2 and 6 only *look* complete. Customer
    backup blobs are AES-256-GCM ciphertext and the master key ring lives

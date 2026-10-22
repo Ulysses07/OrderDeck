@@ -197,6 +197,11 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
   ```
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
+  Bu **düz** bir kopyadır: işin bitince sil (KVKK Ö-12: sunucu diskinde yalnız şifreli
+  kopya, en çok 1 gün). Unutulursa `backup-sql-to-r2.sh` ilk gece koşusunda siler
+  (`sql-data/backup/` içindeki bütün `orderdeck-*.bak`/`.bak.gz`). Şifreli ve R2'ye de
+  giden bir yedek için betiğin kendisini çalıştır; aynı UTC gününde sonra koşan gece
+  yedeği o kopyayı yerelde ve R2'de ezer (ad tarihten).
 
 ## SQL Server sürüm yükseltme (artık elle)
 
@@ -503,6 +508,12 @@ Dördü birlikte anlamlı: blob'lar şifreli, çözmek için `.env`'deki ana ana
 gerekli, hangi blob'un hangi anahtar sürümüyle yazıldığı ise SQL'deki
 `CustomerBackups.KeyVersion` satırında. Biri eksikse geri dönüş yapılamaz.
 
+**HashKey yedeklenmez.** `.env` yedeği `OrderDeck__Bank__HashKey` satırı süzülerek
+alınır: IBAN tanıma kodlarının anahtarı özetlerle aynı kovada ve aynı parolayla
+durmasın (KVKK Ö-6). Asıl kopyası parola yöneticisinde; geri yüklemede `.env`'e elle
+eklenir. Anahtar kaybolursa eski özetler eşleşmez, IBAN hafızası yeniden öğrenilir.
+Betik süzdüğü satır sayısını günlüğe yazar (`hashkey_lines_filtered=1` beklenir).
+
 **Dördü de uzakta şifreli**, ilk üçü aynı GPG parolasıyla
 (`/opt/orderdeck/.env-backup-pass`; asıl kopya parola yöneticisinde). Bir süre
 `.bak` ve anahtarlar **düz** gidiyordu — o hâlde `.env`'i şifrelemek tiyatroydu:
@@ -513,8 +524,12 @@ veritabanı temiz bir makinede restore edilebildi.
 
 Tehdit modeli: bu şifreleme VPS'i ele geçirene karşı hiçbir şey yapmaz (adam
 zaten canlı DB'yi okuyor), **R2'nin veya bir token'ın sızmasına** karşı yapar.
-Yereldeki `.bak` kopyaları bilerek şifresiz; host'a erişen zaten DB'ye erişiyor,
-şifrelemek yalnızca restore'u zorlaştırırdı.
+Yereldeki SQL kopyası da şifreli (`orderdeck-<tarih>.bak.gz.gpg`) ve yalnız 1 gün
+tutulur (KVKK ön inceleme Ö-12, 2026-10): betik her koşunun başında önceki günlerin
+kopyasını siler, koşu düşse de diskte bir günden eski kopya kalmaz (R2'de durur). Düz `.bak`/`.bak.gz`
+yalnız şifrelenene kadar yaşar, betik düşerse de silinir; bu klasörde elle
+bırakılmış düz `orderdeck-*` kopyaları da ilk gece koşusunda gider. Başka adla
+bırakılmış yedeği betik silmez, her gece günlüğe UYARI yazar.
 
 Anahtarlar `aws s3 sync` yerine **tarihli tarball** olarak gidiyor: sync dosya
 başına şifreleme yapamaz. Anahtarlar KB boyutunda ve nadiren değişiyor, her
@@ -573,12 +588,79 @@ gpg --decrypt orderdeck-YYYY-MM-DD.bak.gz.gpg | gunzip > orderdeck.bak
 gpg --decrypt keys-YYYY-MM-DD.tar.gz.gpg  | tar -xz -C /opt/orderdeck/keys
 ```
 
+`.env`'i çözdükten sonra `OrderDeck__Bank__HashKey` satırını parola yöneticisindeki
+değerle ekleyin: gece yedeği bu satırı bilerek içermez (KVKK Ö-6).
+
 R2 kimlik bilgileri **ölen host'ta** (`/root/.aws/credentials`) ve `.env`'in
 içinde (`R2__SecretAccessKey`) — ama `.env` R2'nin içinde olduğu için ondan
 bootstrap edilemez. Kurtarma **Cloudflare hesabına giriş** gerektirir: panelden
 yeni bir *Object Read only* R2 token'ı üretilir. Parola yöneticisinde saklanması
 gereken şey uzun ömürlü bir token değil (bayatlar, kimse fark etmez), Cloudflare
 hesap erişimidir.
+
+##### Silmeleri yeniden uygula (KVKK)
+
+Yedek, alındığı andan sonra yapılan silmeleri geri getirir. `DataDestructionRecords`
+tablosu da aynı veritabanında olduğu için yedek anına sarılır: yeniden uygulamanın
+dayanağı tablo değil, saatlik **"[OrderDeck] İmha kaydı özeti"** e-postalarıdır
+(`DataDestructionDigestJob`; `Admin__AlertEmail` kutusu). Uygulamayı geri yüklenen
+veritabanıyla açtıktan sonra, kullanıcılara açmadan önce:
+
+1. Yedeğin anını not edin (`orderdeck-<tarih>.bak.gz.gpg` → gece koşusunda o günün
+   ~03:00 UTC'si; gün içinde elle alınıp aynı adı ezen kopyada R2 nesnesinin zamanı,
+   `aws s3 ls`).
+2. Hangfire panosundan (`/admin/hangfire`) `bank-data-retention`, `security-data-retention` ve
+   `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler kendiliğinden yeniden
+   uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
+3. Yedek anından sonraki özet e-postalarını açın; her satırı **tetikleyicisine** göre
+   yeniden uygulayın (`konu` = ShopperId/CustomerId, `talep` = talep kimliği):
+   - `shopper-purge`: admin/shoppers/deletion-requests'te o ShopperId'nin talebi geri
+     yüklenmişse yeniden "Sil"; talep yedekten sonra geldiyse satır yoktur — aynı
+     ShopperId için `ShopperDeletionRequests`'e talep satırı ekleyip sayfadan işleyin.
+   - `customer-purge`: `POST /api/v1/admin/customers/{konu}/purge` (onay e-postası geri
+     yüklenen satırdaki adres). Obifin bağlantısı varsa önce admin/obifin → "Kaldır ve sil".
+   - `subject-request`: talep satırı geri yüklenmiş ve açıksa admin/banka-veri-talepleri'nde
+     yeniden "Sil ve kapat"; yoksa başvurunun aslındaki (yazılı başvuru / e-posta) IBAN'la
+     yeni talep açıp silin — talep kapanınca IBAN özeti boşaldığı için kayıt IBAN taşımaz.
+     Talebin kayıtlarında yalnız `BankSubjectRequests.IbanHash` hedefi varsa talep silinmemiş,
+     kapatılmıştır: geri yüklenen açık talebi ölçütteki sonuçla (`talep kapandı, amaç bitti
+     (<sonuç>)`) yeniden kapatın.
+   - Hedefi `BankSubjectRequests.IbanHash` olan `admin-remove`, `service-end` ve
+     `customer-purge` satırları: lisansın açık banka veri talebini o silme kapatmıştı; aynı
+     eylemin yeniden uygulanması onu yeniden kapatır.
+   - `admin-remove`: admin/obifin'de o lisans için yeniden "Kaldır ve sil" (Obifin tarafı
+     zaten kaldırıldıysa liste boş döner).
+   - `account-rejected`: ölçütteki `#N` reddedilen hesabın Obifin numarasıdır
+     (`reddedilen hesap #N (Ö-10)`). admin/obifin'de o lisansın `#N` hesabında yeniden
+     "Reddet ve verisini sil" (geri yükleme onayı da geri getirdiyse düğme "Onayı geri al ve
+     verisini sil" der; yazılı onay yine hesap numarası). Bunu kullanıcılara açmadan ve ilk
+     çekim turundan önce yapın: onay geri geldiyse çekim o hesabın hareketini yeniden yazar.
+   - `processor-confirmation`: admin/obifin → "Obifin silme teyidi bekleyenler"de o lisansın
+     kaydında yeniden "Teyit alındı" (teyit yazısı KVKK klasöründe). Kayıt yedekten sonra
+     açıldıysa önce aynı lisansın `admin-remove` satırı onu yeniden açar.
+   - `credential-change`: admin/obifin'de o lisansın Obifin kimliğini yeniden kaydedin.
+   - `cleanup`: `bank-data-cleanup --apply` (ve yedekten sonra koşulduysa
+     `--reset-iban-memory --apply`) yeniden.
+   - `retention`, `service-end`: 2. adım yeterli. Eylemi `run-completed` olan satırlar
+     yalnız periyodik işin koştuğunu gösterir, uygulanacak bir şey yoktur. İstisna:
+     ölçütünde `kaldırma` geçen `retention` satırı (hedef `CustomerIbanMemories`, yapan
+     yöneticinin kimliği) admin/banka-eslestirme'deki bir eşleşme kaldırmasından gelir;
+     geri yükleme kaldırılan kararı da geri getirmiştir. Kayıt havaleyi göstermez: o
+     lisansta yedek anından sonra kaldırılan kararları yeniden "Kaldır"ın, bilinemiyorsa
+     tutanağa yazın (bağ, geri gelen kararın doğrulamasından 12 ay sonra saklama işiyle
+     gider).
+   Aynı satır birden çok e-postada görünebilir (gönderilip işaretlenemeyen kayıt, geri
+   yüklemeden sonra yedekte gönderilmemiş kayıt yeniden gider): yeniden uygulama
+   idempotenttir, ikincisi bir şey değiştirmez.
+4. Son başarılı özetten sonraki kayıtlar e-postaya girmemiştir: olağan durumda saat
+   başı +13'te önceki saatler gider, yani en çok ~1 saat 13 dakika; Hangfire'da
+   `data-destruction-digest` Failed görünüyorduysa (SMTP, boş adres) daha fazlası. Eski
+   veritabanına hâlâ erişiliyorsa
+   `SELECT * FROM DataDestructionRecords WHERE DigestedAt IS NULL OR OccurredAt > '<yedek anı>'`
+   çıktısını alıp aynı şekilde uygulayın; erişilemiyorsa admin/shoppers/deletion-requests,
+   admin/banka-veri-talepleri ve günlükleri o aralık için elle gözden geçirin.
+5. Yeniden uygulanan her silme yeni bir imha kaydı yazar; bitince bir tutanak (tarih,
+   yedek anı, uygulanan satır sayısı) KVKK klasörüne eklenir.
 
 #### Bir kereye mahsus: eski şifresiz nesneleri sil
 

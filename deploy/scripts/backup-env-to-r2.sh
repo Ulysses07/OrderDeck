@@ -13,6 +13,8 @@
 # verirdi. Tehdit modeli açık: bu şifreleme VPS'i ele geçirene karşı hiçbir
 # şey yapmaz (adam zaten `.env`'i düz okuyor), R2'nin sızmasına karşı yapar.
 #
+# OrderDeck__Bank__HashKey satırı süzülür (Bitwarden'da): bkz. aşağıdaki FILTERED.
+#
 # Cron: 45 3 * * * /opt/orderdeck/scripts/backup-env-to-r2.sh >>/var/log/orderdeck-env-backup.log 2>&1
 set -euo pipefail
 
@@ -40,11 +42,31 @@ chmod 700 "$TMPDIR"
 
 CIPHER="$TMPDIR/env-${STAMP}.gpg"
 
-encrypt_verified "$ENV_FILE" "$CIPHER"
+# IBAN tanıma kodlarının anahtarı (OrderDeck__Bank__HashKey) BİLEREK yedeğe
+# girmez (KVKK ön inceleme Ö-6, 2026-10): özetlerle aynı kovada ve aynı
+# parolayla durmasın. Asıl kopyası parola yöneticisinde (Bitwarden); geri
+# yüklemede .env'e elle eklenir. Yorum satırına alınmış eski değer ve "=" önünde
+# boşluk da süzülür; başka bir değişkenin değerinde geçen ad süzülmez.
+HASHKEY_LINE='^[[:space:]]*(#[[:space:]]*)?(export[[:space:]]+)?OrderDeck__Bank__HashKey[[:space:]]*='
+FILTERED="$TMPDIR/env.filtered"
+# grep çıkışı 1 = hiçbir satır kalmadı (aşağıda boş dosya olarak yakalanır); 2 = okuma hatası.
+rc=0
+grep -Ev "$HASHKEY_LINE" "$ENV_FILE" > "$FILTERED" || rc=$?
+if (( rc > 1 )); then
+  echo "$LOG_PREFIX HATA: .env süzülemedi (grep çıkışı $rc), yükleme yapılmadı"
+  exit 1
+fi
+if [[ ! -s "$FILTERED" ]]; then
+  echo "$LOG_PREFIX HATA: süzülmüş .env boş, yükleme yapılmadı"
+  exit 1
+fi
+FILTERED_LINES=$(grep -cE "$HASHKEY_LINE" "$ENV_FILE" || true)
+
+encrypt_verified "$FILTERED" "$CIPHER"
 SIZE=$(stat -c%s "$CIPHER")
 
 aws s3 cp "$CIPHER" "${BUCKET}/env-${STAMP}.gpg" --profile r2 --only-show-errors
 
 prune_dated_objects "$BUCKET" "$KEEP_DAYS"
 
-echo "$LOG_PREFIX env-backup done size=${SIZE}B remote=${BUCKET}/env-${STAMP}.gpg"
+echo "$LOG_PREFIX env-backup done size=${SIZE}B hashkey_lines_filtered=${FILTERED_LINES} remote=${BUCKET}/env-${STAMP}.gpg"
