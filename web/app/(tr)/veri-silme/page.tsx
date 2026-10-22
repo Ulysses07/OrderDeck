@@ -87,7 +87,8 @@ export default function DataDeletionTr() {
         ödeme yaptığınız yayıncıdan ya da{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresinden isteyebilirsiniz; {BRAND} hesabınız
         olmasa da başvurabilirsiniz. Hangi yayıncının hesabı olduğunu bilmiyorsanız havalenin tarihini ve tutarını
-        yazmanız yeterlidir; IBAN&apos;ınızı düz e-postayla göndermeyin. Başvuru yolları ve silmenin kapsamı:{' '}
+        yazmanız yeterlidir; IBAN&apos;ınızı e-postanın içine yazmayın, gerekirse size güvenli bir yol bildiririz.
+        Başvuru yolları ve silmenin kapsamı:{' '}
         <a href="/gizlilik-politikasi/#haklar">Gizlilik Politikası, Bölüm 6</a>.
       </p>
     </LegalLayout>

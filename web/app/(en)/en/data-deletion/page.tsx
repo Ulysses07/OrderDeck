@@ -72,6 +72,19 @@ export default function DataDeletionEn() {
           Facebook → Settings → Business Integrations</a>. Once removed, {BRAND} can no
         longer access your data, and any token stored on the machine becomes invalid.
       </p>
+
+      <h2>5. If you sent a bank transfer to a broadcaster</h2>
+      <p>
+        For broadcasters with a bank connection, the details of incoming transfers to the broadcaster&apos;s account are
+        processed on the {BRAND} server (<a href="/gizlilik-politikasi/#banka">Privacy Policy, Section 1.4</a>, in
+        Turkish). You can ask the broadcaster you paid, or{' '}
+        <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>, to delete this data; you can apply even if you do not
+        have a {BRAND} account. If you do not know which broadcaster&apos;s account it was, the date and amount of the
+        transfer are enough; do not write your IBAN in the body of an email, we will tell you a secure way if needed.
+        Application channels and the scope of deletion:{' '}
+        <a href="/gizlilik-politikasi/#haklar">Privacy Policy, Section 6</a> (in Turkish). Where this English page and
+        the Turkish version differ, the Turkish version prevails.
+      </p>
     </LegalLayout>
   );
 }

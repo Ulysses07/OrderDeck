@@ -7,7 +7,9 @@ export const metadata: Metadata = {
   description: `How ${BRAND} handles personal data — scope, retention, sharing, user rights.`,
 };
 
-const EFFECTIVE_DATE = '2026-09-04';
+// This page's own text changed with the Turkish v2 (Sections 1.1-1.3, 7 and the note below), so its own date moves with
+// it. On publication day both dates are set to the real date (see the Turkish page and PolicyEffectiveDateParityTests).
+const EFFECTIVE_DATE = '2026-10-21';
 
 /**
  * Effective date of the Turkish policy (web/app/(tr)/gizlilik-politikasi/page.tsx). While this translation lags behind, the note
@@ -28,9 +30,11 @@ export default function PrivacyEn() {
         <strong>Note:</strong> This English text is a convenience translation. The Turkish version at{' '}
         <a href="/gizlilik-politikasi/">orderdeckapp.com/gizlilik-politikasi</a>, effective {TURKISH_EFFECTIVE_DATE},
         prevails. It currently contains sections not yet reflected here, including its wider scope (broadcaster panel,
-        customer app and registration form), Section 1.4 on the processing of broadcasters&apos; bank account
-        transactions, Section 1.5 on the customer app and payment receipts, Section 1.6 on service providers and
-        transfers abroad, and the updated retention periods, rights, application channels and data security sections.
+        customer app and registration form), the data controller&apos;s postal address, the legal grounds for the
+        registration form, Section 1.4 on the processing of broadcasters&apos; bank account transactions, Section 1.5 on
+        the customer app and payment receipts, Section 1.6 on service providers and transfers abroad, Section 1.7 on
+        WhatsApp conversations, and the updated retention periods, rights, application channels, data security and
+        policy-change sections.
       </p>
       <p>
         This Privacy Policy describes how the <strong>{BRAND}</strong> Windows desktop
@@ -61,17 +65,27 @@ export default function PrivacyEn() {
       <ul>
         <li><strong>Stored only on your own computer</strong> in a memory ring buffer (max 500 messages)</li>
         <li><strong>Discarded entirely</strong> when the application closes</li>
-        <li><strong>Never sent to {BRAND} servers</strong> and never shared with third parties</li>
+        <li><strong>Not sent to {BRAND} servers</strong> (except in the two cases below) and never shared with third parties</li>
       </ul>
       <p>
-        <strong>The one exception:</strong> comments the broadcaster{' '}
+        <strong>First exception:</strong> comments the broadcaster{' '}
         <strong>converts into an order/label</strong>. The text of such a
         comment is kept as part of the order record on the broadcaster&apos;s
         computer and is transferred to {BRAND} servers together with the order
         data, so the broadcaster can run their business (orders, shipping,
-        dispute tracking). The raw chat stream itself is never sent to our
-        servers in bulk. See the <a href="/en/data-deletion">Data Deletion</a>{' '}
+        dispute tracking). See the <a href="/en/data-deletion">Data Deletion</a>{' '}
         page for details.
+      </p>
+      <p>
+        <strong>Second exception: Instagram registration link.</strong> For broadcasters who have connected their
+        Instagram account to {BRAND} for the registration-link flow (&quot;!kayıt&quot;), Meta also forwards the comments
+        posted on that account&apos;s live broadcasts (comment text and the commenter&apos;s Instagram username and ID) to
+        the {BRAND} server. The server only sends a private Instagram message with the broadcaster&apos;s registration-form
+        link to viewers who type &quot;!kayıt&quot;; all other comments are discarded without being stored. A forwarded
+        notification stays in the server&apos;s job queue for 1 day after it is processed and is then deleted; if
+        processing fails, it may stay until the error is examined and the entry deleted. The broadcaster is the data
+        controller for this processing; {BRAND} processes it on the broadcaster&apos;s behalf. Apart from these two
+        exceptions, the raw chat stream is not sent to our servers.
       </p>
 
       <h3>1.3. Buyer information collected via the registration form</h3>
@@ -96,9 +110,11 @@ export default function PrivacyEn() {
         This data is processed for the relevant broadcaster&apos;s order, payment, shipping
         and invoicing purposes, including identifying which customer a bank transfer to the
         broadcaster&apos;s account belongs to (see Section 1.4 of the Turkish version); it is
-        never shared or sold to third parties for marketing. Messages are only sent through
-        channels the buyer has explicitly consented to, and the buyer may withdraw consent at
-        any time. The broadcaster who created the form is the data controller for this
+        never shared or sold to third parties for marketing. Consent for informational and
+        marketing messages is requested with the checkboxes on the form, and the buyer may
+        withdraw it at any time; marketing SMS are not sent through {BRAND} to numbers without
+        SMS consent. Messages about the buyer&apos;s order, payment and shipping are sent to the
+        WhatsApp number the buyer provides. The broadcaster who created the form is the data controller for this
         information; {BRAND} hosts it on the broadcaster&apos;s behalf and delivers it to the
         broadcaster&apos;s application. To measure the accuracy of that transfer matching, {BRAND}
         uses this data on its own behalf.
