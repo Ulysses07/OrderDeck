@@ -69,6 +69,13 @@
         IP adresi (güvenlik kayıtlarında; 90 gün sonra silinir) ve giriş zamanı (oturum kayıtlarında hesap silinene
         kadar; denetim kayıtlarında e-posta adresiyle birlikte 24 ay, Bölüm 5)
     </li>
+    <li>
+        Yayıncının panelde eklediği personel hesapları: personelin e-posta adresi, adı, rolü, parolasını doğrulamaya
+        yarayan özeti (parolanın kendisi saklanmaz), hesabın eklendiği ve son giriş yapıldığı zaman. Bu bilgiler yayıncı
+        personel hesabını kaldırana ya da yayıncının hesabı silinene kadar saklanır; personel ekleme ve silme
+        kayıtlarındaki e-posta adresi ve ad için Bölüm 5. [YER TUTUCU: personel hesaplarının veri sorumlusu ve hukuki
+        sebebi — avukat, Burak]
+    </li>
 </ul>
 
 <h3>1.2. Canlı yayın chat verileri</h3>
@@ -451,8 +458,10 @@
     silinmiş bir yayıncıya yüklediğiniz dekont dosyaları (yukarıda) [YER TUTUCU: silmenin kayıt formu, WhatsApp
     yazışmaları ve elle girilen ödeme kayıtlarına genişletilmesi — Burak]. Silinen veriler sunucu veritabanının
     yedeklerinde en fazla 30 gün daha kalır; yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o
-    yedeklerin saklama süresi boyunca kalır ve yalnızca geri yüklemede ve geri yüklemenin çalıştığını sınayan
-    tatbikatlarda kullanılır (Bölüm 5).
+    yedeklerin saklama süresi boyunca kalır. Bu yedekler geri yüklemede ve geri yüklemenin çalıştığını sınayan
+    tatbikatlarda kullanılır; ayrıca OrderDeck'in yetkili yöneticisi destek amacıyla yönetim panelinden bir yedeğin
+    içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları) görüntüleyebilir ve her görüntüleme denetim kaydına
+    yazılır (Bölüm 5).
 </p>
 
 <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
@@ -570,14 +579,15 @@
 <ul>
     <li>
         Siparişe/etikete dönüştürülen yorumlar ile yayıncının müşteri kayıtlarına giren yorumcuların (sipariş veren,
-        çekilişe katılan ya da yayıncının sohbetten engellediği kişiler) kanal adı ve kanal kimliği dışında (Bölüm 1.2,
-        1.2a) yalnızca kullanıcının kendi makinesinde işlenir. Yayıncının bilgisayarındaki müşteri, sipariş ve çekiliş
+        çekilişe katılan ya da yayıncının sohbetten engellediği kişiler) kanal adı ve kanal kimliği (sohbetten engellenip
+        başka bir kaydı olmayan kişide yalnızca kanal kimliği) dışında (Bölüm 1.2, 1.2a) yalnızca kullanıcının kendi
+        makinesinde işlenir. Yayıncının bilgisayarındaki müşteri, sipariş ve çekiliş
         kayıtları, bu yorumcuların profil resminin adresiyle birlikte, masaüstü uygulamasının sunucuya yüklediği şifreli
         yedeklerde de bulunur (Bölüm 5)
     </li>
     <li>
-        Bu istisnalar dışında OrderDeck sunucularına aktarılmaz; sunucuya aktarılan bu bilgiler, yayıncının banka
-        bağlantısı varsa Bölüm 1.4'teki havale eşleştirmesinde ve doğruluk ölçümünde de kullanılır
+        Bu istisnalar dışında OrderDeck sunucularına aktarılmaz; sunucuya aktarılan kanal adları ve kanal kimlikleri,
+        yayıncının banka bağlantısı varsa Bölüm 1.4'teki havale eşleştirmesinde ve doğruluk ölçümünde de kullanılır
     </li>
     <li>Reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz</li>
     <li>Üçüncü kişilere satılmaz veya devredilmez</li>
@@ -664,6 +674,10 @@
         adı da personel ekleme ve silme kayıtlarında aynı süre kalır
     </li>
     <li>
+        Yayıncının panelde eklediği personel hesapları (Bölüm 1.1): yayıncı personel hesabını kaldırana ya da yayıncının
+        hesabı silinene kadar
+    </li>
+    <li>
         Yayıncının müşteri ve satış kayıtlarının sunucudaki kopyası (Bölüm 1.2a): yayıncının hesabı silinene kadar [YER
         TUTUCU: saklama süresi — avukat 08/15]; müşteri uygulaması hesabını silen kişinin, hesabının bağlandığı
         kayıtlardaki kişisel bilgileri silme talebinden itibaren en geç 30 gün içinde (Bölüm 1.5)
@@ -743,9 +757,12 @@
         çekiliş kayıtlarının şifreli kopyası): her yayıncı için son 5 yedek ile her ayın ilk yedeği, yayıncının hesabı
         silinene kadar [YER TUTUCU: aylık yedeklerin saklama süresi — Burak, avukat 08/15]; bu yedeklerin Cloudflare
         R2'deki kopyası sunucudakiyle her gece eşitlenir. Bir kayıt sonradan silinse de (örneğin müşteri uygulaması
-        hesabının silinmesiyle) daha önce alınmış yedeklerdeki kopyası o yedeğin süresi boyunca kalır ve yalnızca geri
+        hesabının silinmesiyle) daha önce alınmış yedeklerdeki kopyası o yedeğin süresi boyunca kalır. Bu yedekler geri
         yüklemede ve geri yükleme tatbikatlarında kullanılır (her hafta en son alınan yedek geçici bir kopyada açılıp
-        bütünlüğü sınanır; kopya hemen silinir)
+        bütünlüğü sınanır; kopya hemen silinir); ayrıca OrderDeck'in yetkili yöneticisi destek amacıyla yönetim
+        panelinden bir yedeğin içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları) görüntüleyebilir. Görüntüleme
+        için yedek sunucuda geçici bir kopyada açılır ve sayfa gösterildikten sonra bu kopya silinir; her görüntüleme
+        denetim kaydına yazılır
     </li>
     <li>
         Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece
