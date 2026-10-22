@@ -122,8 +122,8 @@ export default function PrivacyEn() {
         SMS consent. Messages about the buyer&apos;s order, payment and shipping are sent to the
         WhatsApp number the buyer provides. The broadcaster who created the form is the data controller for this
         information; {BRAND} hosts it on the broadcaster&apos;s behalf and delivers it to the
-        broadcaster&apos;s application. To measure the accuracy of that transfer matching, {BRAND}
-        uses this data on its own behalf.
+        broadcaster&apos;s application. To measure the accuracy of that transfer matching,
+        {' '}{BRAND} uses this data on its own behalf.
       </p>
 
       <h2>2. YouTube API usage</h2>

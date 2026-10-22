@@ -32,8 +32,8 @@ export default function DataDeletionEn() {
           ID (PSID)</strong>,</li>
         <li>stores the <strong>Page access token</strong> granted via Facebook Login
           (encrypted, on the operator&apos;s machine); if the operator turned on the Instagram
-          registration-link flow, a Page access token is also stored encrypted on the {BRAND}
-          server.</li>
+          registration-link flow, a Page access token is also stored encrypted on the
+          {' '}{BRAND} server.</li>
       </ul>
       <p>
         The live chat stream itself is transient and is deleted when the app is closed.
