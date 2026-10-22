@@ -9,6 +9,13 @@ export const metadata: Metadata = {
 
 const EFFECTIVE_DATE = '2026-09-04';
 
+/**
+ * Effective date of the Turkish policy (web/app/(tr)/gizlilik-politikasi/page.tsx). While this translation lags behind, the note
+ * below says the Turkish text prevails; PolicyEffectiveDateParityTests (server tests) keeps this equal to the Turkish date.
+ * When the full translation is published with the Turkish effective date, delete this constant and the note.
+ */
+const TURKISH_EFFECTIVE_DATE = '2026-10-19';
+
 export default function PrivacyEn() {
   return (
     <LegalLayout
@@ -17,6 +24,12 @@ export default function PrivacyEn() {
       title="Privacy Policy"
       effectiveDate={EFFECTIVE_DATE}
     >
+      <p>
+        <strong>Note:</strong> This English text is a convenience translation. The Turkish version at{' '}
+        <a href="/gizlilik-politikasi/">orderdeckapp.com/gizlilik-politikasi</a>, effective {TURKISH_EFFECTIVE_DATE},
+        prevails. It currently contains sections not yet reflected here, including Section 1.4 on the processing of
+        broadcasters&apos; bank account transactions, and the related retention periods and rights.
+      </p>
       <p>
         This Privacy Policy describes how the <strong>{BRAND}</strong> Windows desktop
         application and the <strong>orderdeckapp.com</strong> website collect, use,
