@@ -202,6 +202,14 @@ services:
       # kalır (açılışta tek uyarı, banka işleri zamanlanmaz). `:?` eksik satırda
       # CI'ın `config -q` kapısını düşürüp HER deploy'u kilitlerdi.
       OrderDeck__Bank__HashKey: "${OrderDeck__Bank__HashKey:-}"
+      # Veri sorumlusu kapısı (KVKK K-3, karar 23): yayıncının veri sorumlusu
+      # bilgisi yoksa Obifin'e ilk kayıt, Doğrula ve Banka ekle reddedilir.
+      # Yalnız pilot geçişinde .env'e `Obifin__RequireDataControllerProfile=false`
+      # yazılır (deploy/README.md "Veri sorumlusu kapısı"); bu satır olmadan .env
+      # değeri container'a ULAŞMAZ ve kapı sessizce devrede kalır (ret sürer). Varsayılan "true"
+      # ZORUNLU, boş string DEĞİL: bool binder'ı boşu çeviremez (IntakeLogin
+      # dersi) ve fail-closed varsayılan kaybolmasın.
+      Obifin__RequireDataControllerProfile: "${Obifin__RequireDataControllerProfile:-true}"
       # Yayın ve etiket senkronu (spec 2026-10-13 §2, §8.1, §9). MinClientVersion
       # Ws yayımlanana kadar BOŞ: boşken mod açılamaz, mod On'da komut ve kira
       # uçları kapalı-hata (409). `:?` DEĞİL `:-`: eksik satır `config -q`

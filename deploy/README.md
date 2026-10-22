@@ -150,6 +150,9 @@ OrderDeck__BroadcastMedia__Provider=r2
 # DEĞİŞTİRME: var olan bütün hash'ler geçersiz olur. docker-compose.yml'de de
 # listeli — orada olmayan anahtar container'a girmez.
 OrderDeck__Bank__HashKey=
+# Veri sorumlusu kapısı (KVKK K-3): yazılmazsa "true" (fail-closed). Yalnız pilot
+# geçişinde, geçici olarak; aşağıda "Veri sorumlusu kapısı".
+# Obifin__RequireDataControllerProfile=false
 
 # Yayın ve etiket senkronu (spec 2026-10-13). Hepsi docker-compose.yml'de
 # listeli.
@@ -202,6 +205,30 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
   (`sql-data/backup/` içindeki bütün `orderdeck-*.bak`/`.bak.gz`). Şifreli ve R2'ye de
   giden bir yedek için betiğin kendisini çalıştır; aynı UTC gününde sonra koşan gece
   yedeği o kopyayı yerelde ve R2'de ezer (ad tarihten).
+
+### Veri sorumlusu kapısı
+
+Banka modülü, lisansın müşterisinde veri sorumlusu bilgisi yoksa Obifin'e ilk
+kaydı, **Doğrula**'yı ve **Banka ekle**'yi reddeder (KVKK K-3,
+`Obifin:RequireDataControllerProfile`, varsayılan `true`). Mevcut doğrulanmış
+bağlantının çekimi kapıya takılmaz. Yalnız pilot geçişinde, metin işi (form
+paragrafı v2) yayımlanıp yayıncının bilgisi girilene kadar bir Doğrula gerekirse
+kapı geçici olarak kapatılır:
+
+```bash
+cd /opt/orderdeck
+echo 'Obifin__RequireDataControllerProfile=false' >> .env
+docker compose up -d license-server
+# Değerin container'a ulaştığını doğrula ("false" basmalı):
+docker compose exec license-server printenv Obifin__RequireDataControllerProfile
+```
+
+Değer `.env`'den yalnız `docker-compose.yml`'deki
+`Obifin__RequireDataControllerProfile: "${…:-true}"` satırı üzerinden geçer;
+compose dosyası CI'ın olduğu için VPS'te elle eklenen satır sonraki deploy'da
+silinir. Bilgi girilince `.env`'deki satırı sil, `docker compose up -d
+license-server`, `printenv` yine çalıştır (`true` basmalı) ve admin/obifin'de bir
+Doğrula'nın geçtiğini gör (kapı devrede, bilgi girildiği için engellemez).
 
 ## SQL Server sürüm yükseltme (artık elle)
 

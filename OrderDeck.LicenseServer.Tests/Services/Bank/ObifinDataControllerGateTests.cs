@@ -144,4 +144,32 @@ public sealed class ObifinDataControllerGateTests
 
         (await db.ObifinConnections.CountAsync()).Should().Be(1);
     }
+
+    /// <summary>Prod'da license-server'ın <c>env_file</c>'ı yok: <c>.env</c>'deki anahtar container'a yalnız compose'un
+    /// <c>environment:</c> eşlemesindeki satırla geçer. Satır yoksa pilot kaçış yolu (deploy/README.md "Veri sorumlusu kapısı")
+    /// sessizce etkisiz kalır. Varsayılan <c>true</c>: boş dize bool binder'ını düşürür ve fail-closed varsayılanı kaybolmasın.</summary>
+    [Fact]
+    public void Bayrak_compose_ile_containera_gecer_varsayilani_true()
+    {
+        var compose = File.ReadAllText(FindRepoFile("deploy/docker-compose.yml"));
+
+        compose.Should().Contain(
+            "Obifin__RequireDataControllerProfile: \"${Obifin__RequireDataControllerProfile:-true}\"",
+            "deploy/docker-compose.yml license-server environment: bloğunda bayrağın satırı olmalı");
+    }
+
+    /// <summary>Testler bin klasöründen koşuyor; repo kökünü yukarı yürüyerek buluyoruz (PolicyEffectiveDateParityTests gibi).</summary>
+    private static string FindRepoFile(string relativePath)
+    {
+        var parts = relativePath.Split('/');
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, Path.Combine(parts));
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException(
+            $"{relativePath} bulunamadı ({AppContext.BaseDirectory} klasöründen yukarı arandı). " +
+            "Dosya taşındıysa bu testi güncelle; testi silme.");
+    }
 }
