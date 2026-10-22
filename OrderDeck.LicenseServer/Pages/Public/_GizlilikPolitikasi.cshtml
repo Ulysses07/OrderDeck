@@ -64,7 +64,10 @@
     <li>E-posta adresi (kayıt ve lisans yönetimi için)</li>
     <li>Lisans anahtarı, makine kimliği (parmak izi)</li>
     <li>Lisans ödemesine ait tutar, lisans ve güncelleme paketi durumu (kart ve ödeme aracı bilgileri yalnızca ödeme sağlayıcısında tutulur, biz saklamayız; yayıncının banka hesap hareketleri için bkz. Bölüm 1.4)</li>
-    <li>IP adresi ve giriş zamanı (güvenlik kayıtları için, 90 gün içinde silinir)</li>
+    <li>
+        IP adresi (güvenlik kayıtlarında; 90 gün sonra silinir) ve giriş zamanı (oturum kayıtlarında hesap silinene
+        kadar, denetim kayıtlarında 24 ay)
+    </li>
 </ul>
 
 <h3>1.2. Canlı yayın chat verileri</h3>
@@ -408,22 +411,34 @@
 </ul>
 <p>
     <strong>Saklama ve silme.</strong> Hesap bilgileriniz, dekont dosyalarınız ve dekonttan okunan bilgiler hesabınızı
-    silene kadar saklanır. Bir yayıncıya bağlandığınızda adınız, telefonunuz ve adresiniz o yayıncının müşteri
-    kayıtlarına eklenir ve yayıncıya gösterilir (yayıncı paneli ve masaüstü uygulaması; Bölüm 1.2a). Hesabınızı Profil
-    ekranından silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız kaldırılır; kişisel verileriniz silme
-    talebinizden itibaren en geç 30 gün içinde silinir. Silme, yayıncıların müşteri kayıtlarındaki adınızı,
-    telefonunuzu ve adresinizi de kapsar; yayıncının bilgisayarında bunlar, masaüstü uygulaması sunucuyla
-    eşitlendiğinde silinir. Silmeden sonra ödemelerinizin tutarı, tarihi ve banka referansı, dekontlarınızın özeti ve
-    bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme itirazları ve aynı dekontun yeniden
-    kullanılmasının önlenmesi için, [YER TUTUCU: hukuki sebep, örneğin KVKK m. 5/2-e — avukat 08/8] nedeniyle [YER
-    TUTUCU: süre — avukat 08/8, 08/15] saklanır. Şunlar bu silmeyle silinmez; bunlar için yayıncıya başvurabilirsiniz:
-    yayıncının müşteri kayıtlarında (sunucuda ve yayıncının bilgisayarında) kalan platform kullanıcı adınız, yayıncının
-    sizinle ilgili notları ve engelleme bilgisi; yayıncının sipariş kayıtlarındaki (sunucuda ve yayıncının bilgisayarında)
-    kullanıcı adınız, görünen adınız (takma adınız) ve siparişe dönüşen yorumlarınızın metni [YER TUTUCU: sipariş metni
-    boşaltması (SalesSync__ScrubOrderTextOnPurge) yayından önce açılırsa görünen ad ve yorum metni bu listeden çıkar ve
-    silinenler arasına girer, kullanıcı adı kalır — Burak]. Silinen veriler sunucu veritabanının yedeklerinde en fazla 30
-    gün daha kalır; yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o yedeklerin saklama süresi
-    boyunca kalır ve yalnızca geri yüklemede kullanılır (Bölüm 5).
+    silene kadar saklanır. Dekont yüklediğiniz bir yayıncının OrderDeck hesabı silinirse o yayıncıdaki ödeme
+    kayıtlarınız da silinir; o yayıncıya yüklediğiniz dekont dosyaları ise bugün otomatik olarak silinmez ve kendi
+    hesabınızı silmeniz de bu dosyaları kapsamaz [YER TUTUCU: yayıncı hesabı silinince dekont dosyalarının da
+    silinmesi — Burak; saklama süresi — avukat 08/15]. Bağlandığınız yayıncıda o platformdaki kullanıcı adınızla bir
+    müşteri kaydı yoksa adınız, telefonunuz ve adresiniz yayıncının müşteri kayıtlarına eklenir ve yayıncı panelinde
+    gösterilir (Bölüm 1.2a); bu kayıt yayıncının masaüstü uygulamasına aktarılmaz. Böyle bir kayıt varsa bu
+    bilgileriniz o kayda eklenmez; hesabınız o kayda yalnızca doğrulanmış telefon numaranız kayıttaki numarayla aynıysa
+    bağlanır. Hesabınızı Profil ekranından silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız
+    kaldırılır; kişisel verileriniz silme talebinizden itibaren en geç 30 gün içinde silinir. Silme, hesabınızın
+    bağlandığı müşteri kayıtlarındaki adınızı, telefonunuzu ve adresinizi de kapsar; yayıncının bilgisayarında bunlar,
+    masaüstü uygulaması sunucuyla eşitlendiğinde silinir. Silmeden sonra ödemelerinizin tutarı, tarihi ve banka
+    referansı, dekontlarınızın özeti ve bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme
+    itirazları ve aynı dekontun yeniden kullanılmasının önlenmesi için, [YER TUTUCU: hukuki sebep, örneğin KVKK m.
+    5/2-e — avukat 08/8] nedeniyle [YER TUTUCU: süre — avukat 08/8, 08/15] saklanır. Şunlar bu silmeyle silinmez;
+    bunlar için yayıncıya ya da Bölüm 6'daki yollarla bize başvurabilirsiniz: hesabınızın bağlanamadığı (telefon
+    numaranız eşleşmediği için bağlantısı beklemede kalan) müşteri kayıtları; yayıncının müşteri kayıtlarında (sunucuda
+    ve yayıncının bilgisayarında) kalan platform kullanıcı adınız, yayıncının sizinle ilgili notları ve engelleme
+    bilgisi; yayıncının sipariş kayıtlarındaki (sunucuda ve yayıncının bilgisayarında) kullanıcı adınız, görünen adınız
+    (takma adınız) ve siparişe dönüşen yorumlarınızın metni [YER TUTUCU: sipariş metni boşaltması
+    (SalesSync__ScrubOrderTextOnPurge) yayından önce açılırsa görünen ad ve yorum metni bu listeden çıkar ve silinenler
+    arasına girer, kullanıcı adı kalır — Burak]; yayıncıya kayıt formuyla verdiğiniz bilgiler (Bölüm 1.3); yayıncıyla
+    WhatsApp yazışmalarınız ve pazarlama mesajı tercihiniz (Bölüm 1.7); İleti Yönetim Sistemi'ne bildirilmiş SMS izin
+    kayıtlarınız; yayıncının masaüstü uygulamasına elle girdiği ödeme kayıtları (ödeyen adı dahil; Bölüm 1.2a); hesabı
+    silinmiş bir yayıncıya yüklediğiniz dekont dosyaları (yukarıda) [YER TUTUCU: silmenin kayıt formu, WhatsApp
+    yazışmaları ve elle girilen ödeme kayıtlarına genişletilmesi — Burak]. Silinen veriler sunucu veritabanının
+    yedeklerinde en fazla 30 gün daha kalır; yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o
+    yedeklerin saklama süresi boyunca kalır ve yalnızca geri yüklemede ve geri yüklemenin çalıştığını sınayan
+    tatbikatlarda kullanılır (Bölüm 5).
 </p>
 
 <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
@@ -624,11 +639,14 @@
 
 <h2>5. Veri saklama süreleri</h2>
 <ul>
-    <li>Hesap verileri (e-posta, lisans): hesap silinene kadar</li>
+    <li>
+        Hesap verileri (e-posta, lisans): hesap silinene kadar; silmeden sonra e-posta adresi, silme işleminin denetim
+        kaydında 24 ay
+    </li>
     <li>
         Yayıncının müşteri ve satış kayıtlarının sunucudaki kopyası (Bölüm 1.2a): yayıncının hesabı silinene kadar [YER
-        TUTUCU: saklama süresi — avukat 08/15]; müşteri uygulaması hesabını silen kişinin bu kayıtlardaki kişisel
-        bilgileri silme talebinden itibaren en geç 30 gün içinde (Bölüm 1.5)
+        TUTUCU: saklama süresi — avukat 08/15]; müşteri uygulaması hesabını silen kişinin, hesabının bağlandığı
+        kayıtlardaki kişisel bilgileri silme talebinden itibaren en geç 30 gün içinde (Bölüm 1.5)
     </li>
     <li>
         Kayıt formu ile toplanan alıcı bilgileri: form kaydı sunucuda yayıncının hesabı silinene kadar [YER TUTUCU:
@@ -637,8 +655,9 @@
     </li>
     <li>
         Müşteri uygulaması hesabı, dekont dosyaları ve dekonttan okunan bilgiler: hesap silinene kadar (silmeden sonra
-        kalanlar: Bölüm 1.5); dekonttan okunan tam metin: gönderimden 30 gün; SMS doğrulama ve parola sıfırlama kodları
-        ile isteğin IP adresi: 7 gün
+        kalanlar: Bölüm 1.5); dekontun yüklendiği yayıncının hesabı silinirse dekont dosyaları: bugün otomatik olarak
+        silinmez [YER TUTUCU: saklama süresi ve silinme yolu — Burak, avukat 08/15]; dekonttan okunan tam metin:
+        gönderimden 30 gün; SMS doğrulama ve parola sıfırlama kodları ile isteğin IP adresi: 7 gün
     </li>
     <li>
         WhatsApp yazışmaları (bağlantıdan önceki geçmiş sohbetler dahil), rehberden alınan adlar ve WhatsApp'tan gelen
@@ -682,12 +701,13 @@
     </li>
     <li>Silme ve imha işlemlerinin kayıtları (kişi adı içermez): en az 3 yıl</li>
     <li>Sunucu erişim logları: 30 gün</li>
-    <li>Güvenlik kayıtları: 90 gün</li>
+    <li>Güvenlik kayıtlarındaki IP adresi ve tarayıcı bilgisi: 90 gün</li>
     <li>
         Yedekler: sunucu veritabanının şifreli uzak yedekleri en fazla 30 gün tutulur; silinen veriler bu yedeklerde en
         fazla bu süre kadar daha kalır ve yedeğin süresi dolunca kendiliğinden silinir. Sunucunun kendi diskindeki
-        şifreli yedek kopya en fazla 1 gün tutulur. Yedekler yalnızca bir arıza sonrası geri yükleme için kullanılır;
-        geri yükleme yapılırsa, yedeğin alındığı tarihten sonra yapılmış silme işlemleri yeniden uygulanır (son kayıtlı
+        şifreli yedek kopya en fazla 1 gün tutulur. Yedekler yalnızca bir arıza sonrası geri yükleme ve geri yüklemenin
+        çalıştığını sınayan tatbikatlar için kullanılır (tatbikat canlı veriyi değiştirmez; tatbikatta açılan geçici kopya
+        tatbikat bitince silinir); geri yükleme yapılırsa, yedeğin alındığı tarihten sonra yapılmış silme işlemleri yeniden uygulanır (son kayıtlı
         imha özetine kadar)
     </li>
     <li>
@@ -696,14 +716,19 @@
         silinene kadar [YER TUTUCU: aylık yedeklerin saklama süresi — Burak, avukat 08/15]; bu yedeklerin Cloudflare
         R2'deki kopyası sunucudakiyle her gece eşitlenir. Bir kayıt sonradan silinse de (örneğin müşteri uygulaması
         hesabının silinmesiyle) daha önce alınmış yedeklerdeki kopyası o yedeğin süresi boyunca kalır ve yalnızca geri
-        yüklemede kullanılır
+        yüklemede ve geri yükleme tatbikatlarında kullanılır (her hafta en son alınan yedek geçici bir kopyada açılıp
+        bütünlüğü sınanır; kopya hemen silinir)
     </li>
     <li>
         Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece
         (siparişe/etikete dönüştürülen yorumların metni hariç — o metin,
         sipariş kaydının parçası olarak sipariş kaydıyla aynı süre saklanır)
     </li>
-    <li>OAuth token: kullanıcı izni iptal edene kadar (kullanıcının makinesinde)</li>
+    <li>
+        OAuth token: kullanıcı izni iptal edene kadar (kullanıcının makinesinde). Instagram kayıt bağlantısı (Bölüm 1.2)
+        ve WhatsApp hattı (Bölüm 1.7) için yayıncının Meta erişim jetonları ise sunucuda şifreli olarak tutulur: WhatsApp
+        jetonu hat bağlantısı kaldırılana, Instagram jetonu yayıncının hesabı silinene kadar
+    </li>
 </ul>
 
 <h2 id="haklar">6. Haklarınız ve başvuru</h2>
@@ -746,7 +771,9 @@
     Silme talebiniz kabul edildiğinde sizinle ilişkilendirilmiş IBAN bağı silinir; ilgili havalelerin açıklaması,
     gönderen adı ve bankanın kaydının kopyası silinir ve eşleştirme kayıtlarındaki sizinle bağ kaldırılır.
     Havalelerin tutarı, tarihi, kısaltılmış IBAN'ı ve tanıma kodu [YER TUTUCU: saklama sebebi — avukat 08/8, plan
-    karar 6] nedeniyle Bölüm 5'teki süre dolana kadar kalır. Bir alanın
+    karar 6] nedeniyle Bölüm 5'teki süre dolana kadar kalır. Havaleye bağlı bir dekont kaydı varsa (ödeyenin adı,
+    dekont dosyası ve gönderimden 30 güne kadar dekonttan okunan tam metin), bu kayıt [YER TUTUCU: saklama sebebi —
+    avukat, plan karar 33] nedeniyle bu silmeyle silinmez; bunu size gerekçesiyle yazılı olarak bildiririz. Bir alanın
     saklanmasını gerektiren hukuki bir sebep sürüyorsa (örneğin devam eden bir ödeme itirazı), hangi alanın, hangi
     sebeple ve ne zamana kadar saklanacağını size yazılı olarak bildiririz. Obifin'deki kopyanın silinmesini
     gerektiğinde Obifin'den isteriz. Bankaların kendi kayıtları bankaların sorumluluğundadır; OrderDeck bu kayıtları
