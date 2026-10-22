@@ -99,7 +99,11 @@ jobs:
     # kez 30 bin satırlık göç tohumu ekliyor. Yavaş bir runner merge kapısını
     # kararsız biçimde kırmızıya çevirmesin. Yerel tam koşu S1 ile 37–44 dk
     # sürdü (yük altında); CI daha hızlı ama pay bırakıldı.
-    timeout-minutes: 45
+    # 45 → 60 (2026-10-22): ortak bakiye S1 (#533) 38 dk, KVKK banka
+    # düzeltmeleri (#534) 42 dk sürdü; ikisi birlikte master'da 45'i aşar ve
+    # sunucu deploy'u bu işin başarısına bağlı (license-server-deploy.yml,
+    # workflow_run). Aşağıdaki EF günlük süzgeci süreyi ayrıca kısaltır.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,7 +143,16 @@ jobs:
       #     ve container bir kez kalkıyor.
       # Doğrulama: bayrak kaldırıldıktan sonra yerelde 3 kez koşuldu,
       # 1808/1808, sıfır flake.
+      #
+      # EF Core günlüğü Warning'e süzülür: test sunucusu her SQL komutunu
+      # Information düzeyinde yazıyordu ve konsol + trx günlüğü koşu başına
+      # ~135 MB'a çıkmıştı (#533 ve #534'te runner "shutdown signal" ile
+      # kapandı). Yerel ölçüm (SalesSyncEnableRelationalTests): çıktı 3,9 MB →
+      # 11 KB, süre 3,4 → 2,5 dk. Uyarı ve hatalar yine görünür; ortam
+      # değişkeni yalnız bu adımda, prod yapılandırmasına dokunmaz.
       - name: Test - OrderDeck.LicenseServer.Tests
+        env:
+          Logging__LogLevel__Microsoft.EntityFrameworkCore: Warning
         run: >
           dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
           --configuration Release --nologo
