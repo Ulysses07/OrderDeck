@@ -90,15 +90,19 @@ time; promote on primary failure.
    symmetric-encrypted, the passphrase is in the password manager, NOT on the
    host (see "Operational gaps" 5). This is what carries `BACKUP_MASTER_KEYS_*`;
    without it the customer backup blobs are undecryptable ciphertext. It
-   deliberately does **not** carry `OrderDeck__Bank__HashKey` (KVKK Ö-6): add
-   that line from the password manager, or stored IBAN hashes stop matching.
+   deliberately does **not** carry `OrderDeck__Bank__HashKey` (KVKK Ö-6). Leave
+   it out for the first start: the bank module comes up disabled and the bank
+   poll is not scheduled until connections stopped after the backup are
+   stopped again (5b; README "Silmeleri yeniden uygula" step 2). Then add the
+   line from the password manager, or stored IBAN hashes stop matching.
 4. Restore customer backup blobs from
    `s3://orderdeck-prod-backups/customer-blobs/` into `/opt/orderdeck/backups`
    (see "Operational gaps" 6).
 5. Bring the standby's containers up.
-5b. **Before DNS points at it:** re-apply the deletions made after the backup
-   was taken — the restored database has rolled them back (KVKK). Procedure:
-   `deploy/README.md`, "Geri yükleme" → "Silmeleri yeniden uygula".
+5b. **Before DNS points at it:** re-apply the deletions and admin connection
+   stops made after the backup was taken, and re-enter the requests that
+   arrived after it — the restored database has rolled them back (KVKK).
+   Procedure: `deploy/README.md`, "Geri yükleme" → "Silmeleri yeniden uygula".
 6. Update DNS A record to point at the standby IP.
 7. Wait for TTL.
 8. (Important) flip the primary's containers OFF so two writers can't both
