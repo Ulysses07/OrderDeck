@@ -39,7 +39,8 @@ export default function PrivacyTr() {
         (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri
         eklendi; politikanın kapsamı ve veri
         sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı) ve kayıt formu
-        bilgileri (Bölüm 1.1–1.3), saklama süreleri, haklarınız ve başvuru yolları, veri güvenliği (Bölüm 5–7) ve politika
+        bilgileri (Bölüm 1.1–1.3), YouTube API kullanımı ve tarayıcı eklentisi (Bölüm 2–3), saklama süreleri, haklarınız
+        ve başvuru yolları, veri güvenliği (Bölüm 5–7) ve politika
         değişikliklerinin bildirimi (Bölüm 9) güncellendi; kayıt formundaki bilgilendirme metni yenilendi. Önceki sürüm:
         2026-10-19.
       </p>
@@ -154,6 +155,10 @@ export default function PrivacyTr() {
         <li>Ad soyad, e-posta, telefon (WhatsApp) numarası ve kargo adresi</li>
         <li>Fatura için opsiyonel T.C. Kimlik Numarası (yalnızca alıcı girmek isterse)</li>
         <li>WhatsApp ve/veya SMS ile bilgilendirme mesajı almaya dair açık rıza (onay kutuları)</li>
+        <li>
+          Formun gönderildiği IP adresi ve tarayıcı bilgisi (90 gün sonra silinir) ile alıcıya gösterilen bilgilendirme
+          metninin ve yayıncının veri sorumlusu bilgisinin sürümü
+        </li>
       </ul>
       <p>
         Bu veriler ilgili yayıncının sipariş, ödeme, kargo ve fatura süreçleri için işlenir; buna, yayıncının hesabına
@@ -163,8 +168,8 @@ export default function PrivacyTr() {
         SMS'i gönderilmez. Siparişi, ödemesi ve kargosuyla ilgili mesajlar alıcının verdiği WhatsApp numarasına gönderilir.
         Bu verilerin veri sorumlusu, formu oluşturan yayıncıdır; {BRAND} verileri yayıncı adına barındırır ve yayıncının
         uygulamasına iletir. Bölüm 1.4'te anlatılan eşleştirme doğruluğu ölçümünde ise {BRAND} bu verileri kendi adına
-        kullanır. Yayıncı veri sorumlusu bilgilerini (adı veya unvanı, posta adresi ve KVKK başvuru e-postası) girdiyse bu
-        bilgiler formda gösterilir; girmediyse bu bilgileri bize yazarak öğrenebilirsiniz.
+        kullanır. Yayıncı veri sorumlusu bilgilerini (adı veya unvanı, posta adresi ve KVKK başvuru e-postası) bize
+        bildirdiyse bu bilgiler formda gösterilir; bildirmediyse bu bilgileri bize yazarak öğrenebilirsiniz.
       </p>
       <p>Hukuki sebepler:</p>
       <ul>
@@ -180,6 +185,11 @@ export default function PrivacyTr() {
           Bilgilendirme ve kampanya mesajları: alıcının açık rızası ve 6563 sayılı Kanun kapsamındaki onayı. SMS izninin
           İleti Yönetim Sistemi'ne bildirilmesi ve izin kayıtlarının saklanması: 6563 sayılı Kanun ve ilgili yönetmelikten
           doğan hukuki yükümlülük (KVKK m. 5/2-ç).
+        </li>
+        <li>
+          Formun gönderildiği IP adresi ve tarayıcı bilgisi ile gösterilen metin sürümleri: [YER TUTUCU: hukuki sebep —
+          avukat 08/19; öneri: formun kötüye kullanılmasının önlenmesi ve bilgilendirmenin yapıldığının ispatı için
+          yayıncının ve {BRAND}'in meşru menfaati (KVKK m. 5/2-f)].
         </li>
         <li>Havale eşleştirmesi ve doğruluk ölçümü: Bölüm 1.4.</li>
       </ul>
@@ -204,8 +214,8 @@ export default function PrivacyTr() {
         hareketleri kaydedilir; diğer hesapların hareketleri kaydedilmeden atılır. Bugün banka bağlantısı yalnızca bir
         yayıncının hesabında açıktır. {BRAND} bu bağlantıyla yalnızca hesap hareketlerini okur; yayıncı adına ödeme
         başlatmaz. Yayıncının banka web servis bilgileri {BRAND}'te saklanmaz; Obifin'in hareketleri bankadan
-        alabilmesi için Obifin'de saklanır. {BRAND}'in Obifin'e bağlanmak için kullandığı erişim bilgileri sunucuda
-        şifrelenmiş olarak tutulur.
+        alabilmesi için Obifin'de saklanır. {BRAND}'in Obifin'e bağlanmak için kullandığı erişim bilgilerinden parola ve
+        API anahtarı sunucuda şifrelenmiş olarak tutulur.
       </p>
       <p>
         Bu hareketler havaleyi gönderen kişiden değil, yayıncının bankasından gelir. Eşleştirmede ise müşterilerin kendi
@@ -216,7 +226,8 @@ export default function PrivacyTr() {
       <ul>
         <li>
           Bağlantı altında görünen banka hesapları: banka, para birimi ve IBAN'ın kısaltılmış hâli (yöneticinin hesabı
-          tanıyıp onaylayabilmesi ya da reddedebilmesi için); onaylanan hesapta ayrıca IBAN'ın tanıma kodu.
+          tanıyıp onaylayabilmesi ya da reddedebilmesi için); onaylanan hesapta ayrıca IBAN'ın tanıma kodu ve Obifin'in
+          hesap için ilettiği bildirim notu.
         </li>
         <li>Hesaba gelen her havalenin tutarı, para birimi, işlem zamanı, işlem kodu ve tipi ile banka referans numarası.</li>
         <li>
@@ -246,7 +257,7 @@ export default function PrivacyTr() {
         eşlemesiyle bir müşteriye bağlanmamış) havalelerin açıklaması ve gönderen adı işlem tarihinden 30 gün sonra
         silinir; tutar, tarih ve banka referansı Bölüm 5'teki süre kadar kalır. Yayıncının hesabından giden hareketler ve
         tutarı sıfır olan hareketler Obifin'in gönderdiği listede yer alır; {BRAND} bunları kaydetmeden atar. POS
-        tahsilatları eşleştirmede kullanılmaz.
+        tahsilatı olarak tanımlanan hareketler otomatik eşleştirmede kullanılmaz ve bunlardan IBAN öğrenilmez.
       </p>
       <p>
         <strong>Açıklamalardaki hassas bilgiler.</strong> Havale açıklaması serbest metindir. Açıklamaya sağlık, din,
@@ -280,9 +291,9 @@ export default function PrivacyTr() {
       <ul>
         <li>
           (i) amacındaki işlemenin veri sorumlusu, banka hesabı izlenen yayıncıdır; {BRAND} bu işlemeyi yayıncı adına
-          yürütür. Yayıncının adı veya unvanı, posta adresi ve KVKK başvuru e-postası, yayıncı bu bilgileri girdiyse
-          yayıncının kayıt formunda ve müşteri uygulamasında yayıncıya ait ekranlarda gösterilir; girmediyse bu bilgileri
-          bize yazarak öğrenebilirsiniz.
+          yürütür. Yayıncının adı veya unvanı, posta adresi ve KVKK başvuru e-postası, yayıncı bu bilgileri bize
+          bildirdiyse yayıncının kayıt formunda ve müşteri uygulamasında yayıncıya ait ekranlarda gösterilir; bildirmediyse
+          bu bilgileri bize yazarak öğrenebilirsiniz.
         </li>
         <li>(ii) amacındaki doğruluk ölçümünün veri sorumlusu {BRAND}'tir (iletişim bilgileri sayfanın başındadır).</li>
       </ul>
@@ -330,8 +341,8 @@ export default function PrivacyTr() {
       <p>
         <strong>Hesap.</strong> Müşteri uygulamasında hesap açarken ad soyad, cep telefonu, teslimat adresi ve parola;
         isteğe bağlı olarak e-posta adresi ve fatura için T.C. kimlik numarası alınır (9.990 TL'yi aşan bir ödemenin
-        dekontunu yüklemek için T.C. kimlik numarası gerekir). Bağlandığınız her yayıncı için o yayıncının kodu, platform
-        ve o platformdaki kullanıcı adınız kaydedilir. Parolanın kendisi saklanmaz; yalnızca parolanızı doğrulamaya
+        dekontunu yüklemek için T.C. kimlik numarası gerekir). Bağlandığınız her yayıncı için hangi yayıncıya
+        bağlandığınız, platform ve o platformdaki kullanıcı adınız kaydedilir. Parolanın kendisi saklanmaz; yalnızca parolanızı doğrulamaya
         yarayan bir özeti saklanır. Bildirim tercihleriniz ve ticari ileti (SMS) izniniz, iznin verildiği ve geri
         çekildiği tarih ve kaynağıyla birlikte kaydedilir.
       </p>
@@ -536,8 +547,14 @@ export default function PrivacyTr() {
       </ul>
       <p>Masaüstü akışında YouTube API üzerinden alınan veriler:</p>
       <ul>
-        <li>Sadece kullanıcının kendi makinesinde işlenir</li>
-        <li>{BRAND} sunucularına aktarılmaz</li>
+        <li>
+          Siparişe/etikete dönüştürülen yorumlar ile bu yorumları yazanların kanal adı ve kullanıcı adı dışında (Bölüm
+          1.2, 1.2a) yalnızca kullanıcının kendi makinesinde işlenir
+        </li>
+        <li>
+          Bu istisnalar dışında {BRAND} sunucularına aktarılmaz; sunucuya aktarılan adlar, yayıncının banka bağlantısı
+          varsa Bölüm 1.4'teki havale eşleştirmesinde ve doğruluk ölçümünde de kullanılır
+        </li>
         <li>Reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz</li>
         <li>Üçüncü kişilere satılmaz veya devredilmez</li>
       </ul>
@@ -573,8 +590,9 @@ export default function PrivacyTr() {
         </li>
         <li>
           Alınan kanal adı, handle ve kanal kimliği yalnızca alıcının kendi kaydının bir
-          parçası olarak saklanır ve yalnızca alıcının kayıt olduğu yayıncıya görünür
-          (saklama süresi: Bölüm 5, &quot;Kayıt formu ile toplanan alıcı bilgileri&quot;)
+          parçası olarak saklanır ve alıcının kayıt olduğu yayıncıya görünür; yayıncının banka bağlantısı varsa
+          Bölüm 1.4'teki eşleştirmede ve doğruluk ölçümünde de kullanılır ve {BRAND}'in yetkili yöneticisi
+          tarafından görülebilir (saklama süresi: Bölüm 5, &quot;Kayıt formu ile toplanan alıcı bilgileri&quot;)
         </li>
         <li>Bu veri reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz; üçüncü kişilere satılmaz veya devredilmez</li>
         <li>
@@ -604,7 +622,11 @@ export default function PrivacyTr() {
       <ul>
         <li>Kullanıcının açtığı canlı yayın sayfasındaki chat mesajlarını okur</li>
         <li>Mesajları yerel WebSocket bağlantısı ile masaüstü uygulamasına iletir</li>
-        <li>Hiçbir veriyi başka bir adrese göndermez</li>
+        <li>
+          Sohbet verisini başka bir adrese göndermez; yalnızca {BRAND} sunucusundan güncel sayfa seçicilerini (sohbet
+          alanını sayfada bulmaya yarayan teknik tanımları) indirir. Bu istekte sohbet verisi yoktur; isteğin IP adresi
+          ve tarayıcı bilgisi sunucu erişim loglarına düşer (Bölüm 5)
+        </li>
       </ul>
 
       <h2>4. Çerezler ve site analitiği</h2>
@@ -749,9 +771,9 @@ export default function PrivacyTr() {
       <p>
         Sunucularımızda iletim TLS 1.2 ve üzeri ile şifrelenir. Sunucu veritabanının uzak yedekleri OpenPGP (AES-256)
         ile, masaüstü uygulamasının sunucuya yüklediği yedekler AES-256-GCM ile şifrelenir; sunucunun kendi diskindeki
-        kısa süreli yedek kopya da şifrelenir. Banka hareketlerinde gönderen hesabın IBAN'ı yalnızca kısaltılmış hâli ve
-        anahtarlı bir tanıma kodu (HMAC-SHA256) olarak tutulur; bu kodun anahtarı sunucu yedeklerine alınmaz, ayrı
-        saklanır. Banka yönetim sayfalarının görüntülenmesi ve banka eşleştirmesindeki elle eşleme ve eşlemeyi kaldırma
+        kısa süreli yedek kopya da şifrelenir. Banka hareketlerinde gönderen hesabın IBAN'ı ayrı bir alanda yalnızca
+        kısaltılmış hâli ve anahtarlı bir tanıma kodu (HMAC-SHA256) olarak tutulur (gönderenin açıklamaya yazdığı
+        IBAN'lar için Bölüm 1.4); bu kodun anahtarı sunucu yedeklerine alınmaz, ayrı saklanır. Banka yönetim sayfalarının görüntülenmesi ve banka eşleştirmesindeki elle eşleme ve eşlemeyi kaldırma
         işlemleri denetim kaydına yazılır. JWT token'ları güvenli bir secret ile imzalanır. Bir veri ihlali olursa,
         {' '}{BRAND}'in veri sorumlusu olduğu veride KVKK m. 12/5 ve Kurul kararları uyarınca Kurul'a ve ilgili kişilere biz
         bildiririz; yayıncı adına işlediğimiz verileri etkileyen bir ihlali ilgili yayıncıya gecikmeksizin bildiririz ve
