@@ -82,6 +82,7 @@
         .check { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; font-size:13.5px; color:var(--od-ink); }
         .check input { width:18px; height:18px; margin-top:1px; accent-color:var(--od-red); flex:0 0 auto; }
         .kvkk { font-size:11.5px; color:var(--od-muted); margin:14px 0 4px; }
+        .kvkk-controller { font-size:11.5px; color:var(--od-ink); margin:14px 0 4px; }
         /* Gizlilik Politikası sayfa içinde açılır kutu (details/summary): JS
            yok, uygulama içi tarayıcıda da JS kapalıyken de açılıp kapanıyor.
            Aydınlatma paragrafının altında, onay kutusunun üstünde; metin
@@ -420,6 +421,22 @@ else
                 </label>
             }
 
+            @* Veri sorumlusunun kimliği (KVKK m. 10/1-a, ön inceleme K-3): yayıncının panelde/yönetimde girdiği bilgiler. Girilmediyse
+               çizilmez. Bilerek p.kvkk DEĞİL: aydınlatma paragrafının özeti (KvkkNotice.TextVersion, IntakeFormKvkkTests) yayıncıya
+               göre değişmesin. Paragrafın metni (ve sürümü) metin işinde. *@
+            @if (Model.DataController is { } dc)
+            {
+                <p class="kvkk-controller" data-block="data-controller">
+                    Veri sorumlusu: <strong>@dc.LegalName</strong>, @dc.PostalAddress · KVKK başvuru: @dc.KvkkEmail
+                    @if (dc.KepAddress is { } kep)
+                    {
+                        <text> · KEP: @kep</text>
+                    }
+                </p>
+                @* Gösterilen sürüm kayda gider (KVKK m. 10/1-a ispatı, karar 24). Düz input (asp-for yok): değer hep o an gösterilen
+                   sürüm, postalanan eski değer yeniden çizimde geri basılmıyor; öznitelik sırası testte sabit. *@
+                <input type="hidden" name="Input.DataControllerVersion" value="@dc.Version" />
+            }
             @* Bu paragrafın, alttaki onay kutusu etiketinin ya da politika
                kutusunun (_GizlilikPolitikasi.cshtml) ANLAMINI değiştirirsen
                KvkkNotice.TextVersion'ı artır (kural orada yazılı): her kayıt
