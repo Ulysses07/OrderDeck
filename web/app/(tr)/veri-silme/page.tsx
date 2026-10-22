@@ -33,7 +33,8 @@ export default function DataDeletionTr() {
         <li>Yorumu yazan kullanıcının Facebook tarafından sağlanan <strong>adı ve
           sayfa-kapsamlı kimliğini (PSID)</strong> alır,</li>
         <li>Facebook Login ile verilen <strong>Sayfa erişim jetonunu</strong> (yayıncının
-          makinesinde şifreli olarak) saklar.</li>
+          makinesinde şifreli olarak) saklar; yayıncı Instagram kayıt bağlantısı akışını açtıysa
+          bir Sayfa erişim jetonu {BRAND} sunucusunda da şifreli olarak saklanır.</li>
       </ul>
       <p>
         Canlı chat akışının kendisi geçicidir ve uygulama kapatıldığında silinir.
@@ -49,14 +50,18 @@ export default function DataDeletionTr() {
           Kayıtların kalıcı olarak silinmesi bu ekrandan yapılmaz; aşağıdaki
           e-posta yoluyla talep edilir.</li>
         <li>Ayarlar → Facebook üzerinden <strong>“Bağlantıyı Kaldır”</strong> ile Sayfa
-          erişim jetonunu ve OAuth verilerini kaldırabilirsiniz.</li>
+          erişim jetonunu ve OAuth verilerini bilgisayarınızdan kaldırabilirsiniz. Instagram kayıt
+          bağlantısı için sunucuda tutulan jeton bu işlemle silinmez; hesabınız silinene kadar kalır,
+          daha önce silinmesi için aşağıdaki adrese yazın.</li>
         <li>Belirli müşteri/sipariş kayıtlarının kalıcı olarak silinmesi ya da tüm
           hesabınızın ve ilişkili verilerin silinmesi için{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine yazın.
           Talebinizi, bize ulaştığı tarihten itibaren <strong>en geç 30 gün içinde</strong>{' '}
-          sonuçlandırırız. WhatsApp hattınızı {BRAND}&apos;e bağladıysanız, yazışmalardaki dosyalar (fotoğraf, ses,
-          video ve belgeler) hesabınız silindiğinde bugün otomatik olarak silinmez (Gizlilik Politikası, Bölüm
-          1.7).</li>
+          sonuçlandırırız. Hesabınız silindiğinde şu dosyalar (Cloudflare R2&apos;de) bugün otomatik olarak
+          silinmez: WhatsApp hattınızı {BRAND}&apos;e bağladıysanız yazışmalardaki fotoğraf, ses, video ve
+          belgeler (Gizlilik Politikası, Bölüm 1.7); müşterilerinizin müşteri uygulamasından size yüklediği
+          dekont dosyaları (Gizlilik Politikası, Bölüm 1.5); yayın paylaşımlarınızdaki ve ürün
+          kataloğunuzdaki fotoğraflar.</li>
       </ul>
 
       <h2>3. İzleyici / yorumcuysanız</h2>
