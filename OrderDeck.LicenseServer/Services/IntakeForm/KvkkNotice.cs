@@ -41,12 +41,21 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 /// havale cümlesi; <c>kvkk-2026-10-21</c> hukuki ön inceleme notuna göre
 /// düzeltilmiş sürüm (v2): Bölüm 1.4 kodun davranışına göre yeniden yazıldı
 /// (rol amaca göre ayrıldı, yanlış olgu beyanları çıktı), yeni Bölüm 1.5
-/// (müşteri uygulaması ve dekontlar) ve 1.6 (hizmet sağlayıcılar ve yurt
-/// dışına aktarım), Bölüm 5–7 ve 9 yeniden yazıldı; form paragrafı iki
+/// (müşteri uygulaması ve dekontlar, yayıncılar arası dekont özeti
+/// karşılaştırması), 1.6 (hizmet sağlayıcılar ve yurt dışına aktarım) ve 1.7
+/// (WhatsApp yazışmaları), 1.2'de Instagram kayıt bağlantısı istisnası, 1.3 ve
+/// 1.5'te hukuki sebepler, Bölüm 5–7 ve 9 yeniden yazıldı; form paragrafı iki
 /// katmanlı (veri sorumlusu, amaç, havale / izinler), onay etiketi
-/// "Yukarıdaki bilgilendirmeyi okudum". TASLAK: tarih yer tutucu, yayın günü
-/// gerçek tarihe çekilir (iki kopyanın yürürlük tarihi, İngilizce sayfadaki
-/// TURKISH_EFFECTIVE_DATE ve IntakeFormKvkkTests'in özetleriyle birlikte).</para>
+/// "Yukarıdaki bilgilendirmeyi okudum".</para>
+///
+/// <para><b>kvkk-2026-10-21 TASLAKTIR, yayın kapılıdır.</b> Metin henüz
+/// master'da olmayan kodu (fix/kvkk-banka-veri, #534) ve elle yapılacak prod
+/// adımlarını anlatır; "[YER TUTUCU: …]" işaretli yerleri avukat ve Burak
+/// kararı bekler. Yayın kapısının tam listesi bu metnin PR açıklamasında. Tarih
+/// yer tutucudur: yayın günü gerçek tarihe çekilir (iki kopyanın yürürlük
+/// tarihi ve "Son değişiklik" satırı, Veri Silme sayfaları, İngilizce sayfanın
+/// EFFECTIVE_DATE ve TURKISH_EFFECTIVE_DATE'i, IntakeFormKvkkTests'in
+/// özetleriyle birlikte).</para>
 /// </summary>
 public static class KvkkNotice
 {

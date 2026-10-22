@@ -35,9 +35,12 @@ export default function PrivacyTr() {
     >
       <p>
         <strong>Son değişiklik (2026-10-21):</strong> Yayıncının banka hesap hareketlerinin işlenmesi (Bölüm 1.4)
-        düzeltildi ve genişletildi; müşteri uygulaması ve dekontlar (Bölüm 1.5) ile hizmet sağlayıcılar ve yurt dışına
-        aktarım (Bölüm 1.6) bölümleri eklendi; saklama süreleri, haklarınız ve başvuru yolları ile veri güvenliği
-        (Bölüm 5–7) güncellendi. Önceki sürüm: 2026-10-19.
+        düzeltildi ve genişletildi; müşteri uygulaması ve dekontlar (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına
+        aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri eklendi; politikanın kapsamı ve veri
+        sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı) ve kayıt formu
+        bilgileri (Bölüm 1.1–1.3), saklama süreleri, haklarınız ve başvuru yolları, veri güvenliği (Bölüm 5–7) ve politika
+        değişikliklerinin bildirimi (Bölüm 9) güncellendi; kayıt formundaki bilgilendirme metni yenilendi. Önceki sürüm:
+        2026-10-19.
       </p>
       <p>
         Bu gizlilik politikası, <strong>{BRAND}</strong> hizmetinin (Windows masaüstü uygulaması, yayıncı paneli,
@@ -45,13 +48,16 @@ export default function PrivacyTr() {
         sitesinin kişisel verileri nasıl topladığını, işlediğini, sakladığını ve paylaştığını açıklar.
       </p>
       <p>
-        <strong>Veri sorumlusu:</strong> {LEGAL_NAME} (şahıs). İletişim:{' '}
+        <strong>Veri sorumlusu:</strong> {LEGAL_NAME} (şahıs). Posta adresi: [YER TUTUCU: posta adresi ve varsa KEP
+        adresi — avukat 08/2, 08/9]. İletişim:{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
       </p>
       <p>
-        Bölüm 1.3'teki alıcı bilgilerinin, Bölüm 1.5'teki sipariş, ödeme, dekont ve kargo bilgilerinin ve Bölüm 1.4'teki
-        havale eşleştirmesinin veri sorumlusu ise ilgili yayıncıdır; {BRAND} bu verileri yayıncı adına işler. Bölüm
-        1.4'te anlatılan eşleştirme doğruluğu ölçümünü ise {BRAND} kendi adına yapar.
+        Bölüm 1.3'teki alıcı bilgilerinin, Bölüm 1.5'teki sipariş, ödeme, dekont ve kargo bilgilerinin, Bölüm 1.4'teki
+        havale eşleştirmesinin, Bölüm 1.2'deki Instagram kayıt bağlantısı akışının ve Bölüm 1.7'deki WhatsApp
+        yazışmalarının veri sorumlusu ise ilgili yayıncıdır; {BRAND} bu verileri yayıncı adına işler. Bölüm 1.4'te
+        anlatılan eşleştirme doğruluğu ölçümünü ve Bölüm 1.5'te anlatılan, dekont özetlerinin bütün yayıncılar arasında
+        karşılaştırılmasını ise {BRAND} kendi adına yapar.
       </p>
 
       <h2>1. Toplanan veriler</h2>
@@ -75,16 +81,26 @@ export default function PrivacyTr() {
       <ul>
         <li><strong>Sadece kullanıcının kendi bilgisayarında</strong> bellek tamponunda tutulur (en fazla son 500 mesaj)</li>
         <li>Uygulama kapatıldığında <strong>tamamen silinir</strong></li>
-        <li><strong>{BRAND} sunucularına gönderilmez</strong>, üçüncü kişilerle paylaşılmaz</li>
+        <li><strong>{BRAND} sunucularına gönderilmez</strong> (aşağıdaki iki istisna dışında), üçüncü kişilerle paylaşılmaz</li>
       </ul>
       <p>
-        <strong>Tek istisna:</strong> yayıncının <strong>siparişe/etikete
+        <strong>Birinci istisna:</strong> yayıncının <strong>siparişe/etikete
         dönüştürdüğü</strong> yorumlar. Sipariş kaydına dönüşen yorumun metni,
         yayıncının işini yürütebilmesi (sipariş, kargo, itiraz takibi) için
         sipariş kaydının bir parçası olarak yayıncının bilgisayarında saklanır
-        ve sipariş verisiyle birlikte {BRAND} sunucularına aktarılır. Ham chat
-        akışının kendisi hiçbir zaman toplu olarak sunucuya gönderilmez.
+        ve sipariş verisiyle birlikte {BRAND} sunucularına aktarılır.
         Ayrıntı için <a href="/veri-silme">Veri Silme</a> sayfasına bakın.
+      </p>
+      <p>
+        <strong>İkinci istisna: Instagram kayıt bağlantısı.</strong> Instagram hesabını kayıt bağlantısı akışı (&quot;!kayıt&quot;)
+        için {BRAND}'e bağlamış yayıncılarda, o hesabın canlı yayınlarına yazılan yorumlar (yorum metni, yorumu yazanın
+        Instagram kullanıcı adı ve kimliği) Meta tarafından {BRAND} sunucusuna da iletilir (Bölüm 1.6). Sunucu yalnızca
+        &quot;!kayıt&quot; yazan izleyiciye Instagram'dan özel mesajla yayıncının kayıt formunun bağlantısını gönderir; diğer yorumlar
+        kaydedilmeden atılır. Meta'dan gelen bildirim, işlendikten sonra sunucunun iş kuyruğunda 1 gün kalır ve silinir;
+        işlenemezse hata incelenip kaydı silinene kadar kalabilir. Bu işlemenin veri sorumlusu yayıncıdır;
+        {' '}{BRAND} yayıncı adına işler. Hukuki sebepler: &quot;!kayıt&quot; yazan izleyicinin isteğinin karşılanması için sözleşmenin kurulmasıyla
+        doğrudan ilgili işleme (KVKK m. 5/2-c); diğer yorumların sunucuya gelip atılması için yayıncının bu akışı yürütme
+        konusundaki meşru menfaati (KVKK m. 5/2-f). Bu iki istisna dışında ham chat akışı sunucuya gönderilmez.
       </p>
       <p>
         Yayıncının masaüstü uygulamasındaki müşteri kayıtları (canlı yayından oluşturulanlar dahil) {BRAND} sunucusunda
@@ -112,12 +128,31 @@ export default function PrivacyTr() {
       <p>
         Bu veriler ilgili yayıncının sipariş, ödeme, kargo ve fatura süreçleri için işlenir; buna, yayıncının hesabına
         gelen bir havalenin hangi müşteriye ait olduğunun belirlenmesi de dahildir (Bölüm 1.4). Üçüncü kişilerle
-        pazarlama amacıyla paylaşılmaz veya satılmaz. Mesaj gönderimi yalnızca alıcının açıkça onay verdiği kanallardan
-        yapılır; alıcı bu onayı dilediği an geri çekebilir. Bu verilerin veri sorumlusu, formu oluşturan yayıncıdır;
-        {' '}{BRAND} verileri yayıncı adına barındırır ve yayıncının uygulamasına iletir. Bölüm 1.4'te anlatılan eşleştirme
-        doğruluğu ölçümünde ise {BRAND} bu verileri kendi adına kullanır. Yayıncı veri sorumlusu bilgilerini (adı veya
-        unvanı, posta adresi ve KVKK başvuru e-postası) girdiyse bu bilgiler formda gösterilir.
+        pazarlama amacıyla paylaşılmaz veya satılmaz. Bilgilendirme ve kampanya mesajları için alıcının izni formdaki onay
+        kutularıyla istenir; alıcı bu izni dilediği an geri çekebilir. SMS izni olmayan numaraya {BRAND} üzerinden kampanya
+        SMS'i gönderilmez. Siparişi, ödemesi ve kargosuyla ilgili mesajlar alıcının verdiği WhatsApp numarasına gönderilir.
+        Bu verilerin veri sorumlusu, formu oluşturan yayıncıdır; {BRAND} verileri yayıncı adına barındırır ve yayıncının
+        uygulamasına iletir. Bölüm 1.4'te anlatılan eşleştirme doğruluğu ölçümünde ise {BRAND} bu verileri kendi adına
+        kullanır. Yayıncı veri sorumlusu bilgilerini (adı veya unvanı, posta adresi ve KVKK başvuru e-postası) girdiyse bu
+        bilgiler formda gösterilir; girmediyse bu bilgileri bize yazarak öğrenebilirsiniz.
       </p>
+      <p>Hukuki sebepler:</p>
+      <ul>
+        <li>
+          Sipariş, ödeme, kargo ve fatura işlemleri ile platform kullanıcı adının (isteğe bağlı olarak Google veya
+          Facebook ile) doğrulanması: alıcı ile yayıncı arasındaki satış sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c).
+        </li>
+        <li>
+          Fatura için T.C. kimlik numarası: [YER TUTUCU: dayanak mevzuat — avukat 08/19] uyarınca yayıncının hukuki
+          yükümlülüğü (KVKK m. 5/2-ç).
+        </li>
+        <li>
+          Bilgilendirme ve kampanya mesajları: alıcının açık rızası ve 6563 sayılı Kanun kapsamındaki onayı. SMS izninin
+          İleti Yönetim Sistemi'ne bildirilmesi ve izin kayıtlarının saklanması: 6563 sayılı Kanun ve ilgili yönetmelikten
+          doğan hukuki yükümlülük (KVKK m. 5/2-ç).
+        </li>
+        <li>Havale eşleştirmesi ve doğruluk ölçümü: Bölüm 1.4.</li>
+      </ul>
 
       <h3 id="banka">1.4. Yayıncının banka hesap hareketleri (havale ve EFT eşleştirme)</h3>
       <p>
@@ -160,7 +195,7 @@ export default function PrivacyTr() {
           telefon numarası) kayda alınırken maskelenir; bazı yazımlar (örneğin bölünerek ya da hatalı yazılmış
           numaralar) maskelenmeyebilir.
         </li>
-        <li>Bankanın iletmesi hâlinde gönderenin adı.</li>
+        <li>Bankanın iletmesi hâlinde gönderenin adı. [YER TUTUCU: bu alanın bugünkü amacı — Burak, plan karar 24]</li>
         <li>
           Gönderen hesabın IBAN'ı: IBAN'ın kendisi ayrı bir alanda saklanmaz. Yalnızca ilk 4 ve son 3 karakteri görünen
           kısaltılmış hâli ile, aynı IBAN'dan yeniden ödeme geldiğinde bunu tanımaya yarayan ve gizli bir anahtarla
@@ -185,8 +220,8 @@ export default function PrivacyTr() {
       </p>
       <p>
         <strong>Açıklamalardaki hassas bilgiler.</strong> Havale açıklaması serbest metindir. Açıklamaya sağlık, din,
-        dernek veya sendika üyeliği gibi bilgiler yazmamanızı rica ederiz. Böyle bir bilgi yazılmışsa hiçbir amaçla
-        kullanılmaz ve açıklamayla birlikte Bölüm 5'teki sürede silinir.
+        dernek veya sendika üyeliği gibi bilgiler yazmamanızı rica ederiz. Böyle bir bilgi yazılmışsa ayrıca bir işleme
+        konu edilmez ve açıklamayla birlikte Bölüm 5'teki sürede silinir.
       </p>
       <p><strong>Amaçlar.</strong></p>
       <ul>
@@ -215,8 +250,9 @@ export default function PrivacyTr() {
       <ul>
         <li>
           (i) amacındaki işlemenin veri sorumlusu, banka hesabı izlenen yayıncıdır; {BRAND} bu işlemeyi yayıncı adına
-          yürütür. Yayıncının adı veya unvanı, posta adresi ve KVKK başvuru e-postası, yayıncının kayıt formunda ve
-          müşteri uygulamasında yayıncıya ait ekranlarda gösterilir; bu bilgileri bize yazarak da öğrenebilirsiniz.
+          yürütür. Yayıncının adı veya unvanı, posta adresi ve KVKK başvuru e-postası, yayıncı bu bilgileri girdiyse
+          yayıncının kayıt formunda ve müşteri uygulamasında yayıncıya ait ekranlarda gösterilir; girmediyse bu bilgileri
+          bize yazarak öğrenebilirsiniz.
         </li>
         <li>(ii) amacındaki doğruluk ölçümünün veri sorumlusu {BRAND}'tir (iletişim bilgileri sayfanın başındadır).</li>
       </ul>
@@ -233,6 +269,12 @@ export default function PrivacyTr() {
           sözleşmesinin ifası (KVKK m. 5/2-c); müşteri adına başkasının hesabından ödeme yapan kişiler, karşılaştırmada
           adı ve kullanıcı adı kullanılan diğer müşteriler ve müşteri olmayan gönderenler için yayıncının gelen ödemeleri
           doğru müşteriye bağlama konusundaki meşru menfaati (KVKK m. 5/2-f).
+        </li>
+        <li>
+          Bankanın kaydının kopyası (teknik arızaların incelenmesi): kopyanın ait olduğu amacın veri sorumlusunun ((i)
+          amacında yayıncının, (ii) amacında {BRAND}'in) banka bağlantısının ve eşleştirmenin doğru çalışmasını sağlama
+          konusundaki meşru menfaati (KVKK m. 5/2-f). Kopya yalnızca yukarıda sayılan alanlarla ve Bölüm 5'teki süre kadar
+          tutulur.
         </li>
         <li>
           Yayıncının kendi hesap bilgileri: veri sorumlusu {BRAND}'tir; hukuki sebep yayıncı ile {BRAND} arasındaki
@@ -283,11 +325,18 @@ export default function PrivacyTr() {
         30 gün tutulur ve sonra silinir; gönderimin IP adresi ve tarayıcı bilgisi 90 gün sonra silinir.
       </p>
       <p>
-        Dekont, yayıncının kontrolüne yardımcı olmak için otomatik olarak denetlenir: aynı dosya ikinci kez yüklenemez;
-        aynı bilgilerle daha önce dekont yüklenip yüklenmediği, dekonttaki alıcı IBAN'ının yayıncının ödeme IBAN'ıyla
-        uyumu ve dekontun ne kadar güvenle okunduğu yayıncıya uyarı olarak gösterilir. Ödemeyi onaylama ya da reddetme
-        kararını yayıncı verir. Yayıncı dekontunuzu onaylarsa ve yayıncının banka bağlantısı varsa dekont bilgileri Bölüm
-        1.4'teki havale eşleştirmesinde kullanılır.
+        Dekont, yayıncının kontrolüne yardımcı olmak için otomatik olarak denetlenir: aynı dosya ikinci kez yüklenemez
+        (bu denetim bütün yayıncıları kapsar, aşağıda); aynı bilgilerle daha önce dekont yüklenip yüklenmediği, dekonttaki
+        alıcı IBAN'ının yayıncının ödeme IBAN'ıyla uyumu ve dekontun ne kadar güvenle okunduğu yayıncıya uyarı olarak
+        gösterilir. Ödemeyi onaylama ya da reddetme kararını yayıncı verir. Yayıncı dekontunuzu onaylarsa ve yayıncının
+        banka bağlantısı varsa dekont bilgileri Bölüm 1.4'teki havale eşleştirmesinde kullanılır.
+      </p>
+      <p>
+        <strong>Yayıncılar arası mükerrer dekont denetimi.</strong> Dekont dosyasının özeti, aynı dekontun başka bir
+        yayıncıda da kullanılmasını önlemek için {BRAND}'teki bütün yayıncıların dekont özetleriyle karşılaştırılır; aynı
+        dosya daha önce herhangi bir yayıncıya yüklenmişse yükleme reddedilir. Hesap silindikten sonra kalan dekont özetleri
+        de bu amaçla kullanılır. Bu karşılaştırmanın veri sorumlusu {BRAND}'tir; hukuki sebebi, sahte ve mükerrer
+        dekontun önlenmesindeki meşru menfaatimizdir (KVKK m. 5/2-f).
       </p>
       <p>
         <strong>Amaçlar.</strong> Hesabınızı açmak ve korumak; bağlandığınız yayıncıların siparişlerinizi, ödemelerinizi
@@ -297,38 +346,125 @@ export default function PrivacyTr() {
       <p>
         <strong>Veri sorumlusu.</strong> Sipariş, ödeme, dekont ve kargo bilgilerinin veri sorumlusu ilgili yayıncıdır;
         {' '}{BRAND} bunları yayıncı adına işler. Hesabın kendisi (giriş, telefon doğrulama, bildirimler) için veri
-        sorumlusu {BRAND}'tir. Bölüm 1.4'teki doğruluk ölçümünde {BRAND} kendi adına işler.
+        sorumlusu {BRAND}'tir [YER TUTUCU: avukat 08/10; müşteri uygulamasının kayıt ekranı metniyle aynı karar]. Bölüm
+        1.4'teki doğruluk ölçümünde ve yukarıdaki yayıncılar arası mükerrer dekont denetiminde {BRAND} kendi adına işler.
       </p>
+      <p>Hukuki sebepler:</p>
+      <ul>
+        <li>
+          Hesabın açılması ve yönetimi; bağlandığınız yayıncıların siparişlerinizi, ödemelerinizi ve kargonuzu yönetmesi;
+          dekontun okunması ve yayıncının kontrolüne sunulması: sizinle {BRAND} arasındaki kullanım ilişkisinin ve
+          sizinle yayıncı arasındaki satış sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c).
+        </li>
+        <li>
+          Hesap güvenliği (telefon doğrulama, parola sıfırlama, isteklerin ve dekont gönderimlerinin IP adresi ve
+          tarayıcı bilgisi) ile sahte ve mükerrer dekontun önlenmesi: {BRAND}'in ve yayıncının meşru menfaati (KVKK
+          m. 5/2-f); yayıncılar arası mükerrer dekont denetiminde yalnızca {BRAND}'in meşru menfaati.
+        </li>
+        <li>
+          T.C. kimlik numarası (fatura için ve 9.990 TL'yi aşan bir ödemenin dekontunda): [YER TUTUCU: dayanak mevzuat —
+          avukat 08/19] uyarınca hukuki yükümlülük (KVKK m. 5/2-ç).
+        </li>
+        <li>
+          Bildirimler: hesabınız ve siparişlerinizle ilgili bilgilendirme olarak kullanım ilişkisinin ifası (KVKK m.
+          5/2-c). Bildirim jetonu yalnızca cihazınızda bildirimlere izin verdiğinizde alınır; izni cihaz ayarlarınızdan
+          geri alabilirsiniz.
+        </li>
+        <li>Yayıncının kampanya SMS'leri: açık rızanız ve 6563 sayılı Kanun kapsamındaki onayınız.</li>
+        <li>Havale eşleştirmesi ve doğruluk ölçümü: Bölüm 1.4.</li>
+      </ul>
       <p>
         <strong>Saklama ve silme.</strong> Hesap bilgileriniz, dekont dosyalarınız ve dekonttan okunan bilgiler hesabınızı
-        silene kadar saklanır. Hesabınızı Profil ekranından silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla
-        bağlantınız kaldırılır; kişisel verileriniz silme talebinizden itibaren en geç 30 gün içinde silinir. Silmeden
-        sonra ödemelerinizin tutarı, tarihi ve banka referansı, dekontlarınızın özeti ve bu ödeme kayıtlarının, kişisel
-        bilgileri silinmiş hesabınıza bağı, ödeme itirazları ve aynı dekontun yeniden kullanılmasının önlenmesi için
-        kalır. Yayıncının müşteri ve sipariş kayıtlarında kalan bilgiler (örneğin platform kullanıcı adınız) için
-        yayıncıya da başvurabilirsiniz. Silinen veriler yedeklerde en fazla 30 gün daha kalır (Bölüm 5).
+        silene kadar saklanır. Bir yayıncıya bağlandığınızda adınız, telefonunuz ve adresiniz o yayıncının müşteri
+        kayıtlarına eklenir ve yayıncıya gösterilir (yayıncı paneli ve masaüstü uygulaması). Hesabınızı Profil ekranından
+        silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız kaldırılır; kişisel verileriniz silme
+        talebinizden itibaren en geç 30 gün içinde silinir. Silme, yayıncıların müşteri kayıtlarındaki adınızı,
+        telefonunuzu ve adresinizi de kapsar; yayıncının bilgisayarında bunlar, masaüstü uygulaması sunucuyla
+        eşitlendiğinde silinir. Silmeden sonra ödemelerinizin tutarı, tarihi ve banka referansı, dekontlarınızın özeti ve
+        bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme itirazları ve aynı dekontun yeniden
+        kullanılmasının önlenmesi için, [YER TUTUCU: hukuki sebep, örneğin KVKK m. 5/2-e — avukat 08/8] nedeniyle [YER
+        TUTUCU: süre — avukat 08/8, 08/15] saklanır. Yayıncının müşteri kayıtlarında (sunucuda ve yayıncının bilgisayarında)
+        kalan platform kullanıcı adınız, yayıncının sizinle ilgili notları ve engelleme bilgisi bu silmeyle silinmez;
+        bunlar için yayıncıya başvurabilirsiniz. Silinen veriler yedeklerde en fazla 30 gün daha kalır (Bölüm 5).
       </p>
 
       <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
       <p>
         {BRAND} sunucusu, Hostinger International Ltd.'in Almanya'daki (Frankfurt) veri merkezinde barındırılır. Bu
         politikada sunucuda tutulduğu belirtilen bütün veriler (yayıncı hesapları, kayıt formu bilgileri, müşteri
-        kayıtları, müşteri uygulaması hesapları, ödeme ve dekont kayıtları, banka hareketleri) bu nedenle yurt dışında
-        saklanır. Ayrıca şu hizmet sağlayıcılar kullanılır:
+        kayıtları, müşteri uygulaması hesapları, ödeme ve dekont kayıtları, banka hareketleri, WhatsApp yazışmaları) bu
+        nedenle yurt dışında saklanır. Ayrıca şu hizmet sağlayıcılar kullanılır:
       </p>
       <ul>
         <li>
           Cloudflare, Inc. (R2 depolama hizmeti, yurt dışı): sunucu veritabanının ve masaüstü uygulamasının sunucuya
-          yüklediği yedeklerin şifreli kopyaları ile müşteri uygulamasından yüklenen dekont dosyaları.
+          yüklediği yedeklerin şifreli kopyaları, müşteri uygulamasından yüklenen dekont dosyaları ve WhatsApp
+          yazışmalarındaki dosyalar (Bölüm 1.7).
         </li>
         <li>
           Google (Firebase Cloud Messaging, yurt dışı): yayıncı paneli ve müşteri uygulaması bildirimleri. Bildirimi
           alacak cihazın bildirim jetonu ve bildirimin metni (örneğin yayıncıya giden dekont bildiriminde ödeyenin adı ve
           tutar, müşteriye giden sipariş bildiriminde tutar) bu hizmetten geçer.
         </li>
-        <li>Netgsm (Türkiye): SMS ile gönderilen doğrulama kodları ve yayıncıların, izin verilen kampanya SMS'leri.</li>
-        <li>Obifin: yayıncının banka hesap hareketleri (Bölüm 1.4).</li>
+        <li>
+          Meta (WhatsApp Business Cloud API ile Instagram ve Facebook Graph API, yurt dışı): yayıncının WhatsApp hattına
+          gelen ve o hattan giden mesajlar ve dosyalar (Bölüm 1.7); Instagram canlı yayın yorumlarının {BRAND}'e
+          iletilmesi ve kayıt bağlantısının özel mesajla gönderilmesi (Bölüm 1.2).
+        </li>
+        <li>
+          Netgsm (Türkiye): SMS ile gönderilen doğrulama kodları, yayıncıların izin verilen kampanya SMS'leri ve İleti
+          Yönetim Sistemi'ne iletilen SMS izinleri.
+        </li>
+        <li>
+          İleti Yönetim Sistemi A.Ş. (İYS, Türkiye): verilen ve geri çekilen SMS ticari ileti izinleri, yayıncının markası
+          adına, Netgsm aracılığıyla bildirilir.
+        </li>
+        <li>Brevo (e-posta iletimi, yurt dışı): yayıncılara giden hesap, lisans ve bilgilendirme e-postaları.</li>
+        <li>
+          Lisans ödemesinin alındığı ödeme kuruluşu: [YER TUTUCU: adı ve ülkesi; lisans ödemesi bir ödeme kuruluşu
+          üzerinden alınmıyorsa bu satır çıkar ve Bölüm 1.1'deki ifade düzeltilir].
+        </li>
+        <li>
+          Obifin [YER TUTUCU: ticaret unvanı] (Türkiye; verilerin barındırıldığı yer: [YER TUTUCU: doğrulanacak]):
+          yayıncının banka hesap hareketleri (Bölüm 1.4).
+        </li>
       </ul>
+      <p>
+        [YER TUTUCU: sağlayıcıların sözleşme tarafı tüzel kişileri ve verinin işlendiği ülkeler (Google, Meta, Brevo,
+        Cloudflare R2 kova konumu) — avukat paketi 06 §7; yurt dışına aktarımın dayanağı ve bu bölümün ara metni — avukat
+        08/4]
+      </p>
+
+      <h3>1.7. WhatsApp yazışmaları</h3>
+      <p>
+        WhatsApp Business hattını {BRAND}'e bağlayan yayıncılarda, o hatta gelen ve o hattan giden WhatsApp mesajları
+        Meta'nın WhatsApp Business Cloud API'si üzerinden {BRAND} sunucusuna gelir ve sunucuda saklanır; yayıncının
+        panelden, otomatik olarak ya da telefonundaki WhatsApp Business uygulamasından gönderdiği mesajlar da buna dahildir.
+        Saklananlar: karşı tarafın telefon numarası ve WhatsApp profil adı, mesaj metinleri, gönderilen ve alınan fotoğraf,
+        ses, video ve belgeler (Cloudflare R2'de, Bölüm 1.6), mesajların iletim durumu, yayıncının sohbete verdiği
+        etiketler ve kişinin pazarlama mesajı tercihi. WhatsApp'tan gönderilen PDF dekontlar sunucuda okunur; gönderen adı,
+        tutar, tarih ve referans numarası ile dosyanın bir özeti, yayıncı dekontu açmadan kontrol edebilsin diye sohbetin
+        yanında gösterilir. Bu dekontlar kendiliğinden ödeme kaydına dönüşmez; kararı yayıncı verir.
+      </p>
+      <p>
+        <strong>Amaçlar.</strong> Yayıncının müşterileriyle ve kendisine yazan diğer kişilerle sipariş, ödeme ve kargo
+        konusunda yazışması; mesajların yayıncı panelinde gösterilmesi ve yanıtlanması; yayıncının bilgilendirme ve
+        kampanya mesajı göndermesi ve pazarlama mesajı almak istemediğini bildiren kişiye göndermemesi.
+      </p>
+      <p>
+        <strong>Veri sorumlusu ve hukuki sebepler.</strong> Bu yazışmaların veri sorumlusu, WhatsApp hattının sahibi olan
+        yayıncıdır; {BRAND} bunları yayıncı adına işler. Hukuki sebepler: sipariş, ödeme ve kargo yazışmaları için
+        müşteri ile yayıncı arasındaki satış sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c); müşteri olmayan kişilerle
+        yazışmalar ve dekontların ön kontrolü için yayıncının meşru menfaati (KVKK m. 5/2-f); kampanya mesajları için
+        kişinin açık rızası ve 6563 sayılı Kanun kapsamındaki onayı; pazarlama mesajı tercihinin saklanması için 6563
+        sayılı Kanundan doğan hukuki yükümlülük (KVKK m. 5/2-ç).
+      </p>
+      <p>
+        <strong>Saklama.</strong> Yazışmalar, dosyalar ve dekontlardan okunan bilgiler için bugün ayrı bir saklama süresi
+        yoktur; yayıncının {BRAND} hesabı silinene kadar saklanır [YER TUTUCU: saklama süresi — avukat 08/15]. Mesaj
+        gönderimlerinin teknik deneme kayıtları 30 gün sonra silinir. Bu verilerin silinmesini yayıncıdan ya da Bölüm 6'daki
+        yollarla bizden isteyebilirsiniz.
+      </p>
 
       <h2>2. YouTube API kullanımı</h2>
       <p>
@@ -439,6 +575,14 @@ export default function PrivacyTr() {
           ile isteğin IP adresi: 7 gün
         </li>
         <li>
+          WhatsApp yazışmaları, dosyaları ve WhatsApp'tan gelen dekontlardan okunan bilgiler (Bölüm 1.7): yayıncının hesabı
+          silinene kadar [YER TUTUCU: saklama süresi — avukat 08/15]; mesaj gönderimlerinin teknik deneme kayıtları: 30 gün
+        </li>
+        <li>
+          Instagram canlı yayın yorumlarının bildirimleri (Bölüm 1.2): kaydedilmez; bildirim işlendikten sonra sunucunun iş
+          kuyruğunda 1 gün
+        </li>
+        <li>
           Banka hesap hareketleri (Bölüm 1.4): bankanın gönderdiği kaydın kopyası 30 gün; açıklama metni, gönderen adı ve
           eşleştirmenin gerekçe metni 180 gün, bir müşteriyle eşleştirilmemiş havalelerde 30 gün; tutar, tarih, işlem
           kodu ve tipi, banka referans numarası, kısaltılmış IBAN, IBAN tanıma kodu ve eşleştirme kaydı 180 gün. Süreler
@@ -459,22 +603,28 @@ export default function PrivacyTr() {
           kadar kalır
         </li>
         <li>
-          Banka veri talepleri ve müşteri uygulamasından gelen silme talepleri: talebin kaydı (tarihi ve sonucu) saklanır;
-          banka veri talebindeki IBAN tanıma kodu talep kapanınca, kısaltılmış IBAN talep kapandıktan 30 gün sonra, silme
+          Banka veri talepleri ve müşteri uygulamasından gelen silme talepleri: talebin kaydı (tarihi ve sonucu) [YER
+          TUTUCU: süre — avukat, plan karar 22] saklanır; banka veri talebindeki IBAN tanıma kodu talep kapanınca, kısaltılmış IBAN talep kapandıktan 30 gün sonra, silme
           talebindeki telefon numarası talep işlendikten 30 gün sonra silinir
         </li>
         <li>
           Banka eşleştirmesinde {BRAND} yöneticisinin işlemlerine ve banka yönetim sayfalarının görüntülenmesine ait
           denetim kayıtları (işlem, zaman, müşteri kayıt numarası): 24 ay
         </li>
-        <li>Silme ve imha işlemlerinin kayıtları (kişisel veri içermez): en az 3 yıl</li>
+        <li>Silme ve imha işlemlerinin kayıtları (kişi adı içermez): en az 3 yıl</li>
         <li>Sunucu erişim logları: 30 gün</li>
         <li>Güvenlik kayıtları: 90 gün</li>
         <li>
           Yedekler: sunucu veritabanının şifreli uzak yedekleri en fazla 30 gün tutulur; silinen veriler bu yedeklerde en
           fazla bu süre kadar daha kalır ve yedeğin süresi dolunca kendiliğinden silinir. Sunucunun kendi diskindeki
           şifreli yedek kopya en fazla 1 gün tutulur. Yedekler yalnızca bir arıza sonrası geri yükleme için kullanılır;
-          geri yükleme yapılırsa, yedeğin alındığı tarihten sonra yapılmış silme işlemleri yeniden uygulanır
+          geri yükleme yapılırsa, yedeğin alındığı tarihten sonra yapılmış silme işlemleri yeniden uygulanır (son kayıtlı
+          imha özetine kadar)
+        </li>
+        <li>
+          Masaüstü uygulamasının sunucuya yüklediği yedekler (yayıncının bilgisayarındaki müşteri, sipariş, etiket, yayın ve
+          çekiliş kayıtlarının şifreli kopyası): her yayıncı için son 5 yedek ile her ayın ilk yedeği, yayıncının hesabı
+          silinene kadar; bu yedeklerin Cloudflare R2'deki kopyası sunucudakiyle her gece eşitlenir
         </li>
         <li>
           Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece
@@ -499,11 +649,11 @@ export default function PrivacyTr() {
       </ul>
       <p>GDPR kapsamındaki kişiler ayrıca veri taşınabilirliği hakkına sahiptir.</p>
       <p>
-        <strong>Başvuru yolları.</strong> Başvurunuzu yazılı olarak, güvenli elektronik imza veya mobil imza ile ya da
-        bize daha önce bildirdiğiniz ve sistemimizde kayıtlı e-posta adresinizden{' '}
+        <strong>Başvuru yolları.</strong> Başvurunuzu yazılı olarak [YER TUTUCU: posta adresi — avukat 08/2, 08/9]
+        adresine, [YER TUTUCU: varsa KEP adresi] kayıtlı elektronik posta adresimize, güvenli elektronik imza veya mobil
+        imza ile ya da bize daha önce bildirdiğiniz ve sistemimizde kayıtlı e-posta adresinizden{' '}
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>{' '}
-        adresine iletebilirsiniz; yazılı başvuru için posta adresimizi bu e-posta adresinden isteyebilirsiniz.
-        Başvurunuzda ad soyadınızı, yazılı başvuruda imzanızı, T.C. kimlik numaranızı (yabancılar için uyruk ve pasaport
+        adresine iletebilirsiniz. Başvurunuzda ad soyadınızı, yazılı başvuruda imzanızı, T.C. kimlik numaranızı (yabancılar için uyruk ve pasaport
         ya da kimlik numarası), tebligata esas adresinizi, varsa e-posta, telefon ve faks numaranızı ve talebinizi
         belirtin. Başvurular, talebin niteliğine göre en kısa sürede ve en geç 30 gün içinde ücretsiz olarak
         sonuçlandırılır. Başvurunuz reddedilir, cevabı yetersiz bulursanız ya da süresinde cevap verilmezse, cevabı
@@ -514,15 +664,17 @@ export default function PrivacyTr() {
         <strong>Banka hesap hareketleri (Bölüm 1.4).</strong> Havale eşleştirmesine ilişkin veri sorumlusu yayıncıdır;
         başvurunuzu ödeme yaptığınız ya da ödeme aldığınız yayıncıya veya yukarıdaki yollarla bize iletebilirsiniz. Bize
         gelen ve yayıncıyı ilgilendiren başvuruyu en geç 5 iş günü içinde yayıncıya iletir ve bunu size bildiririz;
-        başvurunuz, bize ulaştığı tarihten itibaren en geç 30 gün içinde yayıncıyla birlikte sonuçlandırılır ve sonucu
-        size bildirilir. Doğruluk ölçümüne ilişkin başvurunuzu doğrudan biz sonuçlandırırız. Hangi yayıncının hesabı
-        olduğunu bilmiyorsanız havalenin tarihini ve tutarını yazmanız yeterlidir; IBAN'ınızı düz e-postayla göndermeyin.
-        Kimliğinizi ve hesabın size ait olduğunu doğrulamak için ek bilgi ve belge isteyebiliriz.
+        başvurunun havale eşleştirmesine ilişkin kısmını veri sorumlusu olarak yayıncı sonuçlandırır. Doğruluk ölçümüne
+        ilişkin kısmını, başvurunuzun bize ulaştığı tarihten itibaren en geç 30 gün içinde biz sonuçlandırırız. Hangi
+        yayıncının hesabı olduğunu bilmiyorsanız havalenin tarihini ve tutarını yazmanız yeterlidir; IBAN'ınızı e-postanın
+        içine yazmayın, gerekirse size güvenli bir yol bildiririz. Kimliğinizi ve hesabın size ait olduğunu doğrulamak için
+        ek bilgi ve belge isteyebiliriz.
       </p>
       <p>
         Silme talebiniz kabul edildiğinde sizinle ilişkilendirilmiş IBAN bağı silinir; ilgili havalelerin açıklaması,
         gönderen adı ve bankanın kaydının kopyası silinir ve eşleştirme kayıtlarındaki sizinle bağ kaldırılır.
-        Havalelerin tutarı, tarihi, kısaltılmış IBAN'ı ve tanıma kodu Bölüm 5'teki süre dolana kadar kalır. Bir alanın
+        Havalelerin tutarı, tarihi, kısaltılmış IBAN'ı ve tanıma kodu [YER TUTUCU: saklama sebebi — avukat 08/8, plan
+        karar 6] nedeniyle Bölüm 5'teki süre dolana kadar kalır. Bir alanın
         saklanmasını gerektiren hukuki bir sebep sürüyorsa (örneğin devam eden bir ödeme itirazı), hangi alanın, hangi
         sebeple ve ne zamana kadar saklanacağını size yazılı olarak bildiririz. Obifin'deki kopyanın silinmesini
         gerektiğinde Obifin'den isteriz. Bankaların kendi kayıtları bankaların sorumluluğundadır; {BRAND} bu kayıtları
@@ -536,10 +688,11 @@ export default function PrivacyTr() {
         kısa süreli yedek kopya da şifrelenir. Banka hareketlerinde gönderen hesabın IBAN'ı yalnızca kısaltılmış hâli ve
         anahtarlı bir tanıma kodu (HMAC-SHA256) olarak tutulur; bu kodun anahtarı sunucu yedeklerine alınmaz, ayrı
         saklanır. Banka yönetim sayfalarının görüntülenmesi ve banka eşleştirmesindeki elle eşleme ve eşlemeyi kaldırma
-        işlemleri denetim kaydına yazılır. JWT token'ları güvenli bir secret ile imzalanır. Bir veri ihlali olursa, KVKK
-        m. 12/5 ve Kurul kararları uyarınca Kurul'a ve etkilenen kişilere bildirim yapılır; banka verilerini etkileyen bir
-        ihlali ilgili yayıncıya gecikmeksizin bildiririz. Yine de internet üzerinden veri iletiminin %100 güvenli olduğu
-        garanti edilemez; siz de hesap şifrenizi gizli tutmakla yükümlüsünüz.
+        işlemleri denetim kaydına yazılır. JWT token'ları güvenli bir secret ile imzalanır. Bir veri ihlali olursa,
+        {' '}{BRAND}'in veri sorumlusu olduğu veride KVKK m. 12/5 ve Kurul kararları uyarınca Kurul'a ve ilgili kişilere biz
+        bildiririz; yayıncı adına işlediğimiz verileri etkileyen bir ihlali ilgili yayıncıya gecikmeksizin bildiririz ve
+        yayıncının Kurul'a ve ilgili kişilere yapacağı bildirimde ona yardımcı oluruz. Yine de internet üzerinden veri
+        iletiminin %100 güvenli olduğu garanti edilemez; siz de hesap şifrenizi gizli tutmakla yükümlüsünüz.
       </p>
 
       <h2>8. Çocuklar</h2>
@@ -551,9 +704,10 @@ export default function PrivacyTr() {
       <h2>9. Politika değişiklikleri</h2>
       <p>
         Bu politikayı güncellediğimizde, üst kısımdaki &quot;Yürürlük tarihi&quot; güncellenir ve değişikliğin kısa özeti sayfanın
-        başında gösterilir. Önemli değişikliklerde yayıncılara e-posta ile bilgi veririz; kayıt formuyla ya da müşteri
-        uygulamasıyla kaydolan müşterilere önemli değişiklikleri ilk temas noktasında (örneğin müşteri uygulamasında bir
-        duyuruyla) bildiririz.
+        başında gösterilir. Önemli değişikliklerde yayıncılara e-posta ile bilgi veririz. Müşteri uygulaması kullanıcılarına
+        önemli değişiklikleri, veri sorumlusu yayıncı olan veriler için yayıncı adına da, uygulamada bir kez gösterilen bir
+        duyuruyla bildiririz. Kayıt formunu yeniden dolduran müşterilere formda güncel bilgilendirme gösterilir ve
+        okunduğunun onayı yeniden istenir.
       </p>
 
       <h2>10. İletişim</h2>
