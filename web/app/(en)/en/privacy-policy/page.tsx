@@ -57,6 +57,12 @@ export default function PrivacyEn() {
           IP address (in security logs; deleted after 90 days) and login time (in session records until the account is
           deleted; in audit records, together with the email address, for 24 months, see Section 5)
         </li>
+        <li>
+          Staff accounts the broadcaster adds in the panel: the staff member&apos;s email address, name and role, a hash
+          used to verify their password (the password itself is not stored), and the times the account was added and
+          last signed in. This data is kept until the broadcaster removes the staff account or the broadcaster&apos;s
+          account is deleted; for the email address and name in the staff add/remove records, see Section 5
+        </li>
       </ul>
 
       <h3>1.2. Live-stream chat data</h3>
@@ -158,15 +164,15 @@ export default function PrivacyEn() {
         <li>
           Apart from comments converted into an order/label and the channel name and channel ID of commenters who enter
           the broadcaster&apos;s customer records (those who order, enter a giveaway or are blocked from chat by the
-          broadcaster) (Section 1.2 above; Section 1.2a of the Turkish version), is processed only on the user&apos;s
-          own machine. The customer, order and giveaway records on the broadcaster&apos;s computer, together with these
+          broadcaster; for someone blocked from chat who has no other record, only the channel ID) (Section 1.2 above;
+          Section 1.2a of the Turkish version), is processed only on the user&apos;s own machine. The customer, order and giveaway records on the broadcaster&apos;s computer, together with these
           commenters&apos; profile picture URLs, are also contained in the encrypted backups the desktop application
           uploads to the server (Section 5 of the Turkish version)
         </li>
         <li>
           Apart from these exceptions, is not transmitted to {BRAND} servers; where the broadcaster has a bank
-          connection, the data transmitted to the server is also used in the transfer matching and accuracy
-          measurement described in Section 1.4 of the Turkish version
+          connection, the channel names and channel IDs transmitted to the server are also used in the transfer
+          matching and accuracy measurement described in Section 1.4 of the Turkish version
         </li>
         <li>Is not used for advertising, profiling, or training machine-learning models</li>
         <li>Is not sold or transferred to third parties</li>
@@ -260,12 +266,24 @@ export default function PrivacyEn() {
           and name of staff the broadcaster added in the panel likewise remain in the staff add/remove records for the
           same period
         </li>
+        <li>
+          Staff accounts the broadcaster adds in the panel (Section 1.1): until the broadcaster removes the staff account
+          or the broadcaster&apos;s account is deleted
+        </li>
         <li>Buyer information from the registration form: on the server, until the broadcaster&apos;s account is deleted (see Section 5 of the Turkish version)</li>
         <li>
           SMS consents (Section 1.3): the current consent record is deleted 30 days after the broadcaster leaves the
           platform; proof of consent actions (phone number, consent or refusal, its date and source, and the IP address
           and browser details of the request) is kept until the broadcaster leaves and for 3 years afterwards (Law No.
           6563, Art. 13). For consents given or withdrawn in the customer app, see Section 5 of the Turkish version
+        </li>
+        <li>
+          Backups the desktop application uploads to the server (the encrypted copy of the customer, order, label, stream
+          and giveaway records on the broadcaster&apos;s computer): retention as set out in Section 5 of the Turkish
+          version. These backups are used for restores and restore drills; in addition, {BRAND}&apos;s authorised
+          administrator may view the contents of a backup (customer, label, giveaway and stream records) in the admin
+          panel for support purposes. For viewing, the backup is opened in a temporary copy on the server, which is
+          deleted once the page has been shown; every view is written to the audit log
         </li>
         <li>Server access logs: 30 days</li>
         <li>IP addresses and browser details in security logs: 90 days</li>
