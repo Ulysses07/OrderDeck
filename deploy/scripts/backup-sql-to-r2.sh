@@ -32,6 +32,13 @@ STAMP=$(date -u +%Y-%m-%d)
 LOCAL_DIR="/opt/orderdeck/sql-data/backup"
 CIPHER="${LOCAL_DIR}/orderdeck-${STAMP}.bak.gz.gpg"
 
+# Tek koşu: aynı anda ikinci bir kopya (elle koşu gece koşusuna denk gelirse) 0. adımda
+# birincinin yarıdaki .bak'ını ve çalışma klasörünü, tuzağıyla da ortak adlı .bak'ı
+# silerdi; ikisi de düşer, dünkü kopya da gitmiş olurdu. İkincisi hiçbir şeye
+# dokunmadan çıkar. Kilit süreç bitince (düşse de) kendiliğinden bırakılır.
+exec 9>/run/orderdeck-sql-backup.lock
+flock -n 9 || { echo "$LOG_PREFIX başka bir koşu sürüyor, bu koşu hiçbir şeye dokunmadan çıktı"; exit 1; }
+
 # 0) Yerel saklama, koşunun BAŞINDA ve parola denetiminden de önce: koşu hangi
 #    adımda düşerse düşsün (parola dosyası yok, SQL kapalı, R2'ye ulaşılamıyor)
 #    diskte bir günden eski kopya kalmaz. Zamana değil ada bakar: cron saati

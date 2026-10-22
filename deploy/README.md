@@ -529,7 +529,9 @@ tutulur (KVKK ön inceleme Ö-12, 2026-10): betik her koşunun başında önceki
 kopyasını siler, koşu düşse de diskte bir günden eski kopya kalmaz (R2'de durur). Düz `.bak`/`.bak.gz`
 yalnız şifrelenene kadar yaşar, betik düşerse de silinir; bu klasörde elle
 bırakılmış düz `orderdeck-*` kopyaları da ilk gece koşusunda gider. Başka adla
-bırakılmış yedeği betik silmez, her gece günlüğe UYARI yazar.
+bırakılmış yedeği betik silmez, her gece günlüğe UYARI yazar. Aynı anda tek koşu:
+elle başlatılan koşu gece koşusuna denk gelirse kilitte (`/run/orderdeck-sql-backup.lock`)
+"başka bir koşu sürüyor" yazıp hiçbir şeye dokunmadan çıkar; bitince yeniden çalıştır.
 
 Anahtarlar `aws s3 sync` yerine **tarihli tarball** olarak gidiyor: sync dosya
 başına şifreleme yapamaz. Anahtarlar KB boyutunda ve nadiren değişiyor, her
