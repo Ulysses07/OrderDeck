@@ -16,12 +16,14 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 /// kaydı, Doğrula ve Banka ekle reddedilir, Obifin'e gidilmez. Bayrak yalnız pilot geçişi için kapatır; varsayılan açık.</summary>
 public sealed class ObifinDataControllerGateTests
 {
-    /// <summary>Her Obifin çağrısını sayar.</summary>
+    /// <summary>Her Obifin çağrısını sayar; hareket sorgusu boş sayfa döner.</summary>
     private sealed class CountingObifin : IObifinClient
     {
         public int Calls { get; private set; }
+        public int AccountListCalls { get; private set; }
+        public int TransactionCalls { get; private set; }
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
-        { Calls++; return Task.FromResult<IReadOnlyList<ObifinAccountDto>>([]); }
+        { Calls++; AccountListCalls++; return Task.FromResult<IReadOnlyList<ObifinAccountDto>>([]); }
         public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
         { Calls++; return Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>([]); }
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
@@ -29,7 +31,10 @@ public sealed class ObifinDataControllerGateTests
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
         { Calls++; return Task.CompletedTask; }
         public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            Calls++; TransactionCalls++;
+            return Task.FromResult(new ObifinPage<ObifinTransactionDto>([], p, 0, 0, ps));
+        }
     }
 
     private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
@@ -73,10 +78,10 @@ public sealed class ObifinDataControllerGateTests
     }
 
     [Fact]
-    public async Task Bilgisi_olmayan_yayincida_Dogrula_ve_Banka_ekle_reddedilir_mevcut_baglanti_durur()
+    public async Task Bilgisi_olmayan_yayincida_Dogrula_ve_Banka_ekle_reddedilir()
     {
-        // Bağlantı P1'den önce kurulmuş (ya da bilgi sonradan silinmiş): satır ve çekim kalır, ama yeniden doğrulama ve yeni banka
-        // yok.
+        // Bağlantı P1'den önce kurulmuş (ya da bilgi sonradan silinmiş): yeniden doğrulama ve yeni banka yok. Çekimin ve hesap
+        // yenilemenin sürdüğü: Mevcut_Verified_baglantinin_cekimi_ve_hesap_yenilemesi_kapiya_takilmaz.
         using var db = NewDb(); var client = new CountingObifin();
         var lic = SeedLicense(db, withProfile: true);
         var svc = Service(db, client);
@@ -91,6 +96,41 @@ public sealed class ObifinDataControllerGateTests
         await add.Should().ThrowAsync<ObifinValidationException>().WithMessage(ObifinConnectionService.DataControllerMissingMessage);
         client.Calls.Should().Be(0);
         (await db.ObifinConnections.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Mevcut_Verified_baglantinin_cekimi_ve_hesap_yenilemesi_kapiya_takilmaz()
+    {
+        // Karar 23'ün deploy için kritik yarısı: P1'de EMAR'ın Verified bağlantısı var ama bilgisi yok (bilgi metin v2'den sonra
+        // girilir, Prod adımları 8). Saatlik hesap yenileme (Banka ekle'den hemen sonra da çağrılır) ya da çekim kapıya
+        // bağlanırsa banka senkronu sessizce durur: hesap yenileme hatayı yutar, çekim hatayı bağlantıya yazar.
+        using var db = NewDb(); var client = new CountingObifin();
+        var lic = SeedLicense(db, withProfile: true);
+        var svc = Service(db, client);
+        var conn = await SaveAsync(svc, lic);
+        conn.Status = ObifinConnectionStatus.Verified;
+        db.DataControllerProfiles.RemoveRange(db.DataControllerProfiles);
+        await db.SaveChangesAsync();
+
+        var refreshed = await new ObifinAccountRefreshJob(db, svc, NullLogger<ObifinAccountRefreshJob>.Instance)
+            .RunAsync(CancellationToken.None);
+
+        refreshed.Should().Be(1, "hesap yenileme bilgisiz yayıncıda da başarılı biter");
+        client.AccountListCalls.Should().BeGreaterThan(0, "Obifin'e gidildi");
+        (await db.ObifinConnections.AsNoTracking().SingleAsync()).Status.Should().Be(ObifinConnectionStatus.Verified);
+
+        var hasher = new BankHasher(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" }));
+        var poll = new ObifinPollJob(db, client, svc, hasher, new NoopBankTransactionSink(),
+            Options.Create(new ObifinOptions { RequireDataControllerProfile = true }), NullLogger<ObifinPollJob>.Instance)
+        { TodayTr = () => DateOnly.FromDateTime(DateTime.UtcNow) };
+
+        await poll.RunAsync(CancellationToken.None);
+
+        client.TransactionCalls.Should().BeGreaterThan(0, "hareket sorgusu yapıldı");
+        var after = await db.ObifinConnections.AsNoTracking().SingleAsync();
+        after.LastError.Should().BeNull();
+        after.LastPolledAt.Should().NotBeNull();
+        after.Status.Should().Be(ObifinConnectionStatus.Verified);
     }
 
     [Fact]
