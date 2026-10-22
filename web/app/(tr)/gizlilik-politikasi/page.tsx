@@ -35,8 +35,9 @@ export default function PrivacyTr() {
     >
       <p>
         <strong>Son değişiklik (2026-10-21):</strong> Yayıncının banka hesap hareketlerinin işlenmesi (Bölüm 1.4)
-        düzeltildi ve genişletildi; müşteri uygulaması ve dekontlar (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına
-        aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri eklendi; politikanın kapsamı ve veri
+        düzeltildi ve genişletildi; yayıncının müşteri ve satış kayıtları (Bölüm 1.2a), müşteri uygulaması ve dekontlar
+        (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri
+        eklendi; politikanın kapsamı ve veri
         sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı) ve kayıt formu
         bilgileri (Bölüm 1.1–1.3), saklama süreleri, haklarınız ve başvuru yolları, veri güvenliği (Bölüm 5–7) ve politika
         değişikliklerinin bildirimi (Bölüm 9) güncellendi; kayıt formundaki bilgilendirme metni yenilendi. Önceki sürüm:
@@ -53,9 +54,9 @@ export default function PrivacyTr() {
         <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
       </p>
       <p>
-        Bölüm 1.3'teki alıcı bilgilerinin, Bölüm 1.5'teki sipariş, ödeme, dekont ve kargo bilgilerinin, Bölüm 1.4'teki
-        havale eşleştirmesinin, Bölüm 1.2'deki Instagram kayıt bağlantısı akışının ve Bölüm 1.7'deki WhatsApp
-        yazışmalarının veri sorumlusu ise ilgili yayıncıdır; {BRAND} bu verileri yayıncı adına işler. Bölüm 1.4'te
+        Bölüm 1.2a'daki müşteri ve satış kayıtlarının, Bölüm 1.3'teki alıcı bilgilerinin, Bölüm 1.5'teki sipariş, ödeme,
+        dekont ve kargo bilgilerinin, Bölüm 1.4'teki havale eşleştirmesinin, Bölüm 1.2'deki Instagram kayıt bağlantısı
+        akışının ve Bölüm 1.7'deki WhatsApp yazışmalarının veri sorumlusu ise ilgili yayıncıdır; {BRAND} bu verileri yayıncı adına işler. Bölüm 1.4'te
         anlatılan eşleştirme doğruluğu ölçümünü ve Bölüm 1.5'te anlatılan, dekont özetlerinin bütün yayıncılar arasında
         karşılaştırılmasını ise {BRAND} kendi adına yapar.
       </p>
@@ -88,7 +89,7 @@ export default function PrivacyTr() {
         dönüştürdüğü</strong> yorumlar. Sipariş kaydına dönüşen yorumun metni,
         yayıncının işini yürütebilmesi (sipariş, kargo, itiraz takibi) için
         sipariş kaydının bir parçası olarak yayıncının bilgisayarında saklanır
-        ve sipariş verisiyle birlikte {BRAND} sunucularına aktarılır.
+        ve sipariş verisiyle birlikte {BRAND} sunucularına aktarılır (Bölüm 1.2a).
         Ayrıntı için <a href="/veri-silme">Veri Silme</a> sayfasına bakın.
       </p>
       <p>
@@ -102,10 +103,39 @@ export default function PrivacyTr() {
         doğrudan ilgili işleme (KVKK m. 5/2-c); diğer yorumların sunucuya gelip atılması için yayıncının bu akışı yürütme
         konusundaki meşru menfaati (KVKK m. 5/2-f). Bu iki istisna dışında ham chat akışı sunucuya gönderilmez.
       </p>
+
+      <h3>1.2a. Yayıncının müşteri ve satış kayıtları</h3>
       <p>
-        Yayıncının masaüstü uygulamasındaki müşteri kayıtları (canlı yayından oluşturulanlar dahil) {BRAND} sunucusunda
-        da tutulur; bu kayıtlardaki platform kullanıcı adı, ad soyad ve görünen ad Bölüm 1.4'teki havale eşleştirmesinde
-        kullanılır.
+        Yayıncının masaüstü uygulamasındaki müşteri kayıtlarının tam bir kopyası {BRAND} sunucusunda da tutulur; canlı
+        yayından oluşturulan kayıtlar ile kayıt formundan (Bölüm 1.3) ve müşteri uygulamasından (Bölüm 1.5) gelen kayıtlar
+        buna dahildir. Bu kayıtlarda şunlar bulunabilir: platform ve kullanıcı adı, ad soyad, görünen ad (takma ad), telefon
+        numarası, e-posta adresi, teslimat adresi, şifrelenmiş T.C. kimlik numarası, WhatsApp ve SMS izinlerinin kaydı,
+        yayıncının kişi hakkındaki notları, engelleme bilgisi ve engelleme gerekçesi. Sunucuda ayrıca yayıncının sipariş ve
+        etiket kayıtları (kullanıcı adı, görünen ad, siparişe dönüşen yorumun metni, ürün kodu ve fiyat), yayıncının masaüstü
+        uygulamasına girdiği ödeme kayıtları (ödeyen adı, tutar ve tarih dahil), kargo ve müşteri bakiyesi kayıtları ile yayın
+        kayıtları tutulur.
+      </p>
+      <p>
+        <strong>Amaçlar.</strong> Bu kayıtların yayıncının bilgisayarları ve yayıncı paneli arasında eşitlenmesi ve panelde
+        gösterilmesi; aynı kişiye ait kayıtların birleştirilmesi; müşteri uygulaması hesabının yayıncının müşteri kaydına
+        bağlanması (Bölüm 1.5); müşterilerin İleti Yönetim Sistemi'nde (İYS) yayıncı adına kayıtlı SMS izinlerinin {BRAND}'e
+        alınması (bunun için telefon numaraları Netgsm aracılığıyla İYS'de sorgulanır); yayıncının WhatsApp sohbetlerine
+        sipariş ve kargo durumuna göre otomatik etiket konması (Bölüm 1.7); Bölüm 1.4'teki havale eşleştirmesi.
+      </p>
+      <p>
+        <strong>Veri sorumlusu ve hukuki sebepler.</strong> Bu kayıtların veri sorumlusu yayıncıdır; {BRAND} bunları
+        yayıncı adına barındırır ve işler. Bölüm 1.4'te anlatılan doğruluk ölçümünde ise {BRAND} bu kayıtlardaki kullanıcı
+        adlarını ve adları kendi adına kullanır. Hukuki sebepler: [YER TUTUCU: hukuki sebep — avukat 08/19; öneri: kayıtların
+        eşitlenmesi ve gösterilmesi ile sipariş, ödeme ve kargo kayıtları için müşteri ile yayıncı arasındaki satış
+        sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c); yayıncının notları, engelleme bilgisi, kayıtların birleştirilmesi
+        ve sohbet etiketleri için yayıncının meşru menfaati (KVKK m. 5/2-f); T.C. kimlik numarası ve SMS izinleri için
+        Bölüm 1.3'teki dayanaklar; havale eşleştirmesi ve doğruluk ölçümü için Bölüm 1.4].
+      </p>
+      <p>
+        <strong>Saklama.</strong> Bu kayıtlar yayıncının {BRAND} hesabı silinene kadar saklanır [YER TUTUCU: saklama süresi
+        — avukat 08/15]. Bir kaydın silinmesini yayıncıdan ya da Bölüm 6'daki yollarla bizden isteyebilirsiniz. Müşteri
+        uygulaması hesabını silen kişinin bu kayıtlardaki kişisel bilgileri Bölüm 1.5'te anlatıldığı gibi silinir. Yayıncının
+        masaüstü uygulamasının sunucuya yüklediği yedekler için Bölüm 5.
       </p>
 
       <h3>1.3. Kayıt formu ile toplanan alıcı bilgileri</h3>
@@ -376,24 +406,29 @@ export default function PrivacyTr() {
       <p>
         <strong>Saklama ve silme.</strong> Hesap bilgileriniz, dekont dosyalarınız ve dekonttan okunan bilgiler hesabınızı
         silene kadar saklanır. Bir yayıncıya bağlandığınızda adınız, telefonunuz ve adresiniz o yayıncının müşteri
-        kayıtlarına eklenir ve yayıncıya gösterilir (yayıncı paneli ve masaüstü uygulaması). Hesabınızı Profil ekranından
-        silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız kaldırılır; kişisel verileriniz silme
+        kayıtlarına eklenir ve yayıncıya gösterilir (yayıncı paneli ve masaüstü uygulaması; Bölüm 1.2a). Hesabınızı Profil
+        ekranından silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız kaldırılır; kişisel verileriniz silme
         talebinizden itibaren en geç 30 gün içinde silinir. Silme, yayıncıların müşteri kayıtlarındaki adınızı,
         telefonunuzu ve adresinizi de kapsar; yayıncının bilgisayarında bunlar, masaüstü uygulaması sunucuyla
         eşitlendiğinde silinir. Silmeden sonra ödemelerinizin tutarı, tarihi ve banka referansı, dekontlarınızın özeti ve
         bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme itirazları ve aynı dekontun yeniden
         kullanılmasının önlenmesi için, [YER TUTUCU: hukuki sebep, örneğin KVKK m. 5/2-e — avukat 08/8] nedeniyle [YER
-        TUTUCU: süre — avukat 08/8, 08/15] saklanır. Yayıncının müşteri kayıtlarında (sunucuda ve yayıncının bilgisayarında)
-        kalan platform kullanıcı adınız, yayıncının sizinle ilgili notları ve engelleme bilgisi bu silmeyle silinmez;
-        bunlar için yayıncıya başvurabilirsiniz. Silinen veriler yedeklerde en fazla 30 gün daha kalır (Bölüm 5).
+        TUTUCU: süre — avukat 08/8, 08/15] saklanır. Şunlar bu silmeyle silinmez; bunlar için yayıncıya başvurabilirsiniz:
+        yayıncının müşteri kayıtlarında (sunucuda ve yayıncının bilgisayarında) kalan platform kullanıcı adınız, yayıncının
+        sizinle ilgili notları ve engelleme bilgisi; yayıncının sipariş kayıtlarındaki (sunucuda ve yayıncının bilgisayarında)
+        kullanıcı adınız, görünen adınız (takma adınız) ve siparişe dönüşen yorumlarınızın metni [YER TUTUCU: sipariş metni
+        boşaltması (SalesSync__ScrubOrderTextOnPurge) yayından önce açılırsa görünen ad ve yorum metni bu listeden çıkar ve
+        silinenler arasına girer, kullanıcı adı kalır — Burak]. Silinen veriler sunucu veritabanının yedeklerinde en fazla 30
+        gün daha kalır; yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o yedeklerin saklama süresi
+        boyunca kalır ve yalnızca geri yüklemede kullanılır (Bölüm 5).
       </p>
 
       <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
       <p>
         {BRAND} sunucusu, Hostinger International Ltd.'in Almanya'daki (Frankfurt) veri merkezinde barındırılır. Bu
-        politikada sunucuda tutulduğu belirtilen bütün veriler (yayıncı hesapları, kayıt formu bilgileri, müşteri
-        kayıtları, müşteri uygulaması hesapları, ödeme ve dekont kayıtları, banka hareketleri, WhatsApp yazışmaları) bu
-        nedenle yurt dışında saklanır. Ayrıca şu hizmet sağlayıcılar kullanılır:
+        politikada sunucuda tutulduğu belirtilen bütün veriler (yayıncı hesapları, kayıt formu bilgileri, yayıncının
+        müşteri ve satış kayıtları, müşteri uygulaması hesapları, ödeme ve dekont kayıtları, banka hareketleri, WhatsApp
+        yazışmaları) bu nedenle yurt dışında saklanır. Ayrıca şu hizmet sağlayıcılar kullanılır:
       </p>
       <ul>
         <li>
@@ -408,7 +443,8 @@ export default function PrivacyTr() {
         </li>
         <li>
           Meta (WhatsApp Business Cloud API ile Instagram ve Facebook Graph API, yurt dışı): yayıncının WhatsApp hattına
-          gelen ve o hattan giden mesajlar ve dosyalar (Bölüm 1.7); Instagram canlı yayın yorumlarının {BRAND}'e
+          gelen ve o hattan giden mesajlar ve dosyalar, WhatsApp Business uygulamasından aktarılan geçmiş sohbetler ve
+          yayıncının telefon rehberindeki kişi adları (Bölüm 1.7); Instagram canlı yayın yorumlarının {BRAND}'e
           iletilmesi ve kayıt bağlantısının özel mesajla gönderilmesi (Bölüm 1.2).
         </li>
         <li>
@@ -417,7 +453,8 @@ export default function PrivacyTr() {
         </li>
         <li>
           İleti Yönetim Sistemi A.Ş. (İYS, Türkiye): verilen ve geri çekilen SMS ticari ileti izinleri, yayıncının markası
-          adına, Netgsm aracılığıyla bildirilir.
+          adına, Netgsm aracılığıyla bildirilir; yayıncının müşteri kayıtlarındaki telefon numaraları için İYS'deki izin
+          kaydı da Netgsm aracılığıyla sorgulanır (Bölüm 1.2a).
         </li>
         <li>Brevo (e-posta iletimi, yurt dışı): yayıncılara giden hesap, lisans ve bilgilendirme e-postaları.</li>
         <li>
@@ -440,30 +477,42 @@ export default function PrivacyTr() {
         WhatsApp Business hattını {BRAND}'e bağlayan yayıncılarda, o hatta gelen ve o hattan giden WhatsApp mesajları
         Meta'nın WhatsApp Business Cloud API'si üzerinden {BRAND} sunucusuna gelir ve sunucuda saklanır; yayıncının
         panelden, otomatik olarak ya da telefonundaki WhatsApp Business uygulamasından gönderdiği mesajlar da buna dahildir.
-        Saklananlar: karşı tarafın telefon numarası ve WhatsApp profil adı, mesaj metinleri, gönderilen ve alınan fotoğraf,
-        ses, video ve belgeler (Cloudflare R2'de, Bölüm 1.6), mesajların iletim durumu, yayıncının sohbete verdiği
-        etiketler ve kişinin pazarlama mesajı tercihi. WhatsApp'tan gönderilen PDF dekontlar sunucuda okunur; gönderen adı,
-        tutar, tarih ve referans numarası ile dosyanın bir özeti, yayıncı dekontu açmadan kontrol edebilsin diye sohbetin
-        yanında gösterilir. Bu dekontlar kendiliğinden ödeme kaydına dönüşmez; kararı yayıncı verir.
+        Hat, telefondaki WhatsApp Business uygulamasıyla birlikte bağlanırsa ve yayıncı bağlantı sırasında sohbet geçmişini
+        paylaşmayı onaylarsa, bağlantı kurulduğunda o uygulamadaki bire bir sohbetlerin bağlantıdan önceki en çok 180 güne
+        ait mesajları (grup sohbetleri hariç) bir kez sunucuya aktarılır; bu geçmiş mesajlardaki dosyalar indirilmez. Aynı
+        bağlantıda yayıncının telefon rehberindeki kişilerin adları da Meta'dan gelir: bir ad yalnızca, WhatsApp profil adı
+        bilinmeyen bir sohbette kişinin adı olarak gösterilmek için kaydedilir; sohbeti olmayan kişilerin rehber bilgileri
+        kaydedilmez, rehber bildirimi işlendikten sonra sunucunun iş kuyruğunda 1 gün kalır ve silinir. Saklananlar: karşı
+        tarafın telefon numarası ve WhatsApp profil adı (profil adı yoksa yayıncının rehberindeki adı), mesaj metinleri
+        (bağlantıdan önceki geçmiş sohbetler dahil), gönderilen ve alınan fotoğraf, ses, video ve belgeler (Cloudflare R2'de,
+        Bölüm 1.6), mesajların iletim durumu, yayıncının sohbete verdiği etiketler ve kişinin pazarlama mesajı tercihi.
+        WhatsApp'tan gönderilen PDF dekontlar sunucuda okunur; gönderen adı, tutar, tarih ve referans numarası ile dosyanın
+        bir özeti, yayıncı dekontu açmadan kontrol edebilsin diye sohbetin yanında gösterilir. Bu dekontlar kendiliğinden
+        ödeme kaydına dönüşmez; kararı yayıncı verir.
       </p>
       <p>
         <strong>Amaçlar.</strong> Yayıncının müşterileriyle ve kendisine yazan diğer kişilerle sipariş, ödeme ve kargo
-        konusunda yazışması; mesajların yayıncı panelinde gösterilmesi ve yanıtlanması; yayıncının bilgilendirme ve
-        kampanya mesajı göndermesi ve pazarlama mesajı almak istemediğini bildiren kişiye göndermemesi.
+        konusunda yazışması; mesajların (bağlantıdan önceki geçmiş sohbetler dahil) yayıncı panelinde gösterilmesi ve
+        yanıtlanması, profil adı bilinmeyen sohbetlerde kişinin yayıncının rehberindeki adıyla gösterilmesi; yayıncının
+        bilgilendirme ve kampanya mesajı göndermesi; kişinin pazarlama mesajı tercihinin (Meta'nın bildirdiği ya da bir
+        gönderim hatasından anlaşılan) kaydının tutulması.
       </p>
       <p>
         <strong>Veri sorumlusu ve hukuki sebepler.</strong> Bu yazışmaların veri sorumlusu, WhatsApp hattının sahibi olan
         yayıncıdır; {BRAND} bunları yayıncı adına işler. Hukuki sebepler: sipariş, ödeme ve kargo yazışmaları için
         müşteri ile yayıncı arasındaki satış sözleşmesinin kurulması ve ifası (KVKK m. 5/2-c); müşteri olmayan kişilerle
-        yazışmalar ve dekontların ön kontrolü için yayıncının meşru menfaati (KVKK m. 5/2-f); kampanya mesajları için
-        kişinin açık rızası ve 6563 sayılı Kanun kapsamındaki onayı; pazarlama mesajı tercihinin saklanması için 6563
-        sayılı Kanundan doğan hukuki yükümlülük (KVKK m. 5/2-ç).
+        yazışmalar, bağlantıdan önceki geçmiş sohbetlerin aktarılması, rehberdeki adların kaydı ve dekontların ön kontrolü
+        için yayıncının meşru menfaati (KVKK m. 5/2-f); kampanya mesajları için kişinin açık rızası ve 6563 sayılı Kanun
+        kapsamındaki onayı; pazarlama mesajı tercihinin kaydı için 6563 sayılı Kanundan doğan hukuki yükümlülük (KVKK m.
+        5/2-ç).
       </p>
       <p>
-        <strong>Saklama.</strong> Yazışmalar, dosyalar ve dekontlardan okunan bilgiler için bugün ayrı bir saklama süresi
-        yoktur; yayıncının {BRAND} hesabı silinene kadar saklanır [YER TUTUCU: saklama süresi — avukat 08/15]. Mesaj
-        gönderimlerinin teknik deneme kayıtları 30 gün sonra silinir. Bu verilerin silinmesini yayıncıdan ya da Bölüm 6'daki
-        yollarla bizden isteyebilirsiniz.
+        <strong>Saklama.</strong> Yazışmalar (bağlantıdan önceki geçmiş sohbetler dahil), rehberden alınan adlar ve
+        dekontlardan okunan bilgiler için bugün ayrı bir saklama süresi yoktur; yayıncının {BRAND} hesabı silinene kadar
+        saklanır [YER TUTUCU: saklama süresi — avukat 08/15]. Gönderilen ve alınan dosyalar (Cloudflare R2'de) bugün otomatik
+        olarak silinmez; yayıncının hesabı silindiğinde de kalır [YER TUTUCU: dosyaların saklama süresi ve silinme yolu —
+        Burak (hesap silmesinde dosyaların da silinmesi), avukat 08/15]. Mesaj gönderimlerinin teknik deneme kayıtları 30 gün
+        sonra silinir. Bu verilerin silinmesini yayıncıdan ya da Bölüm 6'daki yollarla bizden isteyebilirsiniz.
       </p>
 
       <h2>2. YouTube API kullanımı</h2>
@@ -568,15 +617,27 @@ export default function PrivacyTr() {
       <h2>5. Veri saklama süreleri</h2>
       <ul>
         <li>Hesap verileri (e-posta, lisans): hesap silinene kadar</li>
-        <li>Kayıt formu ile toplanan alıcı bilgileri: ilgili yayıncı silene kadar</li>
+        <li>
+          Yayıncının müşteri ve satış kayıtlarının sunucudaki kopyası (Bölüm 1.2a): yayıncının hesabı silinene kadar [YER
+          TUTUCU: saklama süresi — avukat 08/15]; müşteri uygulaması hesabını silen kişinin bu kayıtlardaki kişisel
+          bilgileri silme talebinden itibaren en geç 30 gün içinde (Bölüm 1.5)
+        </li>
+        <li>
+          Kayıt formu ile toplanan alıcı bilgileri: form kaydı sunucuda yayıncının hesabı silinene kadar [YER TUTUCU:
+          saklama süresi — avukat 08/15]; yayıncının müşteri kayıtlarına aktarılan kopyası Bölüm 1.2a'daki, masaüstü
+          uygulamasının sunucuya yüklediği yedeklerdeki kopyası aşağıdaki masaüstü yedekleri satırındaki süreyle
+        </li>
         <li>
           Müşteri uygulaması hesabı, dekont dosyaları ve dekonttan okunan bilgiler: hesap silinene kadar (silmeden sonra
           kalanlar: Bölüm 1.5); dekonttan okunan tam metin: gönderimden 30 gün; SMS doğrulama ve parola sıfırlama kodları
           ile isteğin IP adresi: 7 gün
         </li>
         <li>
-          WhatsApp yazışmaları, dosyaları ve WhatsApp'tan gelen dekontlardan okunan bilgiler (Bölüm 1.7): yayıncının hesabı
-          silinene kadar [YER TUTUCU: saklama süresi — avukat 08/15]; mesaj gönderimlerinin teknik deneme kayıtları: 30 gün
+          WhatsApp yazışmaları (bağlantıdan önceki geçmiş sohbetler dahil), rehberden alınan adlar ve WhatsApp'tan gelen
+          dekontlardan okunan bilgiler (Bölüm 1.7): yayıncının hesabı silinene kadar [YER TUTUCU: saklama süresi — avukat
+          08/15]; yazışmalardaki dosyalar: bugün otomatik olarak silinmez, yayıncının hesabı silindiğinde de kalır [YER
+          TUTUCU: dosyaların saklama süresi ve silinme yolu — Burak, avukat 08/15]; rehberden gelip kaydedilmeyen kişi
+          bilgileri: iş kuyruğunda 1 gün; mesaj gönderimlerinin teknik deneme kayıtları: 30 gün
         </li>
         <li>
           Instagram canlı yayın yorumlarının bildirimleri (Bölüm 1.2): kaydedilmez; bildirim işlendikten sonra sunucunun iş
@@ -624,7 +685,10 @@ export default function PrivacyTr() {
         <li>
           Masaüstü uygulamasının sunucuya yüklediği yedekler (yayıncının bilgisayarındaki müşteri, sipariş, etiket, yayın ve
           çekiliş kayıtlarının şifreli kopyası): her yayıncı için son 5 yedek ile her ayın ilk yedeği, yayıncının hesabı
-          silinene kadar; bu yedeklerin Cloudflare R2'deki kopyası sunucudakiyle her gece eşitlenir
+          silinene kadar [YER TUTUCU: aylık yedeklerin saklama süresi — Burak, avukat 08/15]; bu yedeklerin Cloudflare
+          R2'deki kopyası sunucudakiyle her gece eşitlenir. Bir kayıt sonradan silinse de (örneğin müşteri uygulaması
+          hesabının silinmesiyle) daha önce alınmış yedeklerdeki kopyası o yedeğin süresi boyunca kalır ve yalnızca geri
+          yüklemede kullanılır
         </li>
         <li>
           Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece

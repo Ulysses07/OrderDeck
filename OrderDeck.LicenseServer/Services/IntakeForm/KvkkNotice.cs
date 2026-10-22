@@ -40,10 +40,12 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 /// hareketleri (politika Bölüm 1.4, saklama ve haklar) ve form paragrafında
 /// havale cümlesi; <c>kvkk-2026-10-21</c> hukuki ön inceleme notuna göre
 /// düzeltilmiş sürüm (v2): Bölüm 1.4 kodun davranışına göre yeniden yazıldı
-/// (rol amaca göre ayrıldı, yanlış olgu beyanları çıktı), yeni Bölüm 1.5
-/// (müşteri uygulaması ve dekontlar, yayıncılar arası dekont özeti
-/// karşılaştırması), 1.6 (hizmet sağlayıcılar ve yurt dışına aktarım) ve 1.7
-/// (WhatsApp yazışmaları), 1.2'de Instagram kayıt bağlantısı istisnası, 1.3 ve
+/// (rol amaca göre ayrıldı, yanlış olgu beyanları çıktı), yeni Bölüm 1.2a
+/// (yayıncının sunucuda tutulan müşteri ve satış kayıtları), 1.5 (müşteri
+/// uygulaması ve dekontlar, yayıncılar arası dekont özeti karşılaştırması),
+/// 1.6 (hizmet sağlayıcılar ve yurt dışına aktarım) ve 1.7 (WhatsApp
+/// yazışmaları; geçmiş sohbet ve rehber aktarımı, silinmeyen dosyalar), 1.2'de
+/// Instagram kayıt bağlantısı istisnası, 1.3 ve
 /// 1.5'te hukuki sebepler, Bölüm 5–7 ve 9 yeniden yazıldı; form paragrafı iki
 /// katmanlı (veri sorumlusu, amaç, havale / izinler), onay etiketi
 /// "Yukarıdaki bilgilendirmeyi okudum".</para>
