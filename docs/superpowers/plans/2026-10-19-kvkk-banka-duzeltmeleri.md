@@ -11876,6 +11876,17 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - **Literal taramasının iki eşleşmesi literal değil:** `CustomerPurgeRelationalTests`'teki `Password = "purge-password-123"` fark bağlamı (master'da duran satır; test kimlik bilgisi literalleri için açık çip, bu planın kapsamı dışında) ve `IntakeFormDataControllerTests`'te `[InlineData("99999999999")]` (sürüm alanının taşma girdisi; TCKN kontrol hanesini tutmaz). Ek tarama (test dışı eklenen satırlarda IBAN, 11 hane, telefon, e-posta, anahtar kalıbı) boş.
 - `bankaapi/sil` / `RemoveBankConnectionAsync`'i çağıran tek yer `BankConnectionTerminator.cs:303`; öbür eşleşmeler arayüz, istemci, `NullObifinClient` ve belge yorumları.
 
+**Son inceleme düzeltmeleri (22.10, `ff414913` üzerine):** üç mercekli son inceleme beş doğrulanmış bulgu ve iki Minor bıraktı. Her biri önce düşen testle:
+- **Dekont gönderim kaydının tam metni (K22; Important).** `ShopperPurgeService` adım 5 `ParserRawText`'i de boşaltır (imha kaydı `PaymentSubmissionAudits.ParserRawText`, lisans başına, sayım boşaltmadan önce); `SecurityDataRetentionJob` metni gönderimden 30 gün sonra kendi hedefiyle boşaltır (`SubmissionRawTextDays`). Karar 30; P1 ilk koşu tutanağına sayım eklendi.
+- **Kapı bayrağı container'a ulaşmıyordu (Important).** `deploy/docker-compose.yml`'e `Obifin__RequireDataControllerProfile: "${…:-true}"`; `deploy/README.md` "Veri sorumlusu kapısı" (printenv doğrulaması); `ObifinDataControllerGateTests.Bayrak_compose_ile_containera_gecer_varsayilani_true`. `docker compose config` geçici `.env` ile denendi: varsayılan `"true"`, `.env`'deki `false` geçer. Karar 23 ve Prod adımları güncellendi.
+- **Obifin yanıtı beklenirken durdurulan bağlantı (Minor, dogruluk F2).** `ObifinConnectionService.SyncServiceEndAsync`: Doğrula, Banka ekle, hesap yenilemesi ve başarısız çağrı kaydı durum kararından hemen önce hizmet sonu alanlarını tazeler; kimlik kaydının `stayDisabled` kararı da. Dört yarış testi düzeltmeyi kapatınca kırmızı.
+- **Kimlik değişiminde Obifin tarafı (Minor, kvkk F2).** Yalnız metin: onay kutusu ve bildirim `CredentialChangeObifinSideNote`; `ResetShadowData` yorumu düzeltildi. Otomatik `bankaapi/sil` ve `ObifinCopyDeletions` doğrulayıcının gerekçesiyle seçilmedi. Karar 31.
+- **Reddedilen hesabın özeti ve notu (Minor F3).** Yenileme IBAN özetini ve bildirim notunu yalnız onaylı hesapta yazar; ret ikisini imha kaydıyla boşaltır. Maske kalır. Karar 32.
+- **IBAN talebinde bağlı dekont (Minor F4).** Arama ve silme bağlı dekont sayısını döner; CSV, sayfa, sonuç metni ve bildirim dekontun silinmediğini söyler. Dekonta dokunulmaz. Karar 33.
+- **Shopper metin sürümü (Minor F5).** Kod yok: Kapsam dışı tablosunda satır (avukat sorusu 08/10, Shopper ön koşulu 4).
+- `origin/master` (`86c6ab5a`: #517 #530 #531 #532) `git merge` ile alındı; çakışma ve göç yok. Web lint/typecheck/build yeşil (build `web/tsconfig.json`'u yeniden biçimlendirdi, worktree'de geri alındı).
+- Birleştirmeden sonra: `OrderDeck.LicenseServer` Release `--no-incremental` 0 uyarı/0 hata; tam sunucu paketi (ayrık, `DOCKER_HOST`'suz; Testcontainers dahil) `Passed! - Failed: 0, Passed: 5063, Total: 5063, Duration: 1 h 51 m`. Hijyen taraması: test literal'i yalnız bilinen `[InlineData("99999999999")]`; 11 göçün `Up`'ında daraltma yok; `RemoveBankConnectionAsync`'i çağıran tek yer `BankConnectionTerminator`.
+
 **Files:** yok (doğrulama).
 
 - [ ] **Adım 1: Docker'ı denetle**
@@ -11932,6 +11943,7 @@ Push ve PR yok (Burak isterse). Burak'a özet: commit listesi, paket sonucu, "Pr
 | P0-6 MaskIban kısa değer; mevcut kısa/eski maskeler | 6, 8, 11 |
 | P0-7 ilk çekim bağlantı anına; bağlanmamış ilk çekim satırlarını sil | 7, 8 |
 | P1-8 purge'ün banka adımı (kanıtında kullanıcı adı geçen hareketler dahil) | 15 |
+| K22 (avukat paketi; notta yok) dekont gönderim kaydının tam metni: KVKK silmesi ve 30 günlük süre | son inceleme (22.10), karar 30 |
 | P1-9 IBAN ile arama/dışa aktarma/silme, talep kaydı, doğrulama yöntemi, son tarih; veri silinince açık talebin kapanması; sonuç kategorileri (yanıtlandı / doğrulanamadı / kanuni gerekçeyle ret / geri çekildi), silmenin yalnız silme talebinde yapılması, CSV kaçışında sekme ve satır başı; yönetici sütunlarında kimlik; silme taleplerinde son tarih | 17, 18, 20 |
 | P1-10 durdur / kaldır ve sil (Obifin tarafı lisansa özgü, paylaşılan kullanıcıda Obifin'e gidilmez; lisans anahtarıyla yazılı onay); durdurulmuş ya da yerel verisi silinmiş bağlantıda eşleştirme, dekont bağdaştırması ve IBAN öğrenmenin de durması (`MatchingActive`); hizmet sonu + 30 gün işi (yalnız yerel, partili, lisans yenilenince silmez; gerçek SQL testi); Obifin bağlantılı yayıncı silmesinin reddi; Obifin `bankaapi/sil` (hareket silme ucu yok → yazılı teyit kaydı `ObifinCopyDeletions`, günlük hatırlatma, 14 günde GECİKTİ) | 13, 14 |
 | P1-11 saklama işlem tarihinden; eşleşmeyen 30 gün (yalnız dekont bağı olan da "eşleşen"); eşleştirme satırı 180 gün; IBAN bağı LastConfirmedAt + 12 ay; gerçek SQL Server testi; ilk koşunun beklenen sayımı (Prod adımları) | 10 |
