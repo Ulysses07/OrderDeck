@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `${BRAND} ve Facebook Login ile toplanan verilerin nasıl sildirileceği.`,
 };
 
-const EFFECTIVE_DATE = '2026-07-02';
+const EFFECTIVE_DATE = '2026-10-21';
 
 export default function DataDeletionTr() {
   return (
@@ -53,7 +53,8 @@ export default function DataDeletionTr() {
         <li>Belirli müşteri/sipariş kayıtlarının kalıcı olarak silinmesi ya da tüm
           hesabınızın ve ilişkili verilerin silinmesi için{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine yazın.
-          Talebinizi doğruladıktan sonra <strong>30 gün içinde</strong> sileriz.</li>
+          Talebinizi, bize ulaştığı tarihten itibaren <strong>en geç 30 gün içinde</strong>{' '}
+          sonuçlandırırız.</li>
       </ul>
 
       <h2>3. İzleyici / yorumcuysanız</h2>
@@ -66,8 +67,8 @@ export default function DataDeletionTr() {
           başvurabilirsiniz, ya da</li>
         <li>Facebook adınız ve varsa yorum detayınızla birlikte{' '}
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine e-posta
-          gönderebilirsiniz. Talebinizi doğruladıktan sonra ilgili kayıtları
-          <strong> 30 gün içinde</strong> sileriz.</li>
+          gönderebilirsiniz. Talebinizi, bize ulaştığı tarihten itibaren
+          <strong> en geç 30 gün içinde</strong> sonuçlandırırız.</li>
       </ul>
 
       <h2>4. Facebook Login verisi</h2>
@@ -77,6 +78,17 @@ export default function DataDeletionTr() {
           Facebook → Ayarlar → İş Araçları</a>{' '}
         bölümünden kaldırabilirsiniz. İzin kaldırıldığında {BRAND} artık verinize
         erişemez; makinede saklanan jeton da geçersiz olur.
+      </p>
+
+      <h2>5. Bir yayıncının banka hesabına havale gönderdiyseniz</h2>
+      <p>
+        Banka bağlantısı kurulan yayıncılarda, yayıncının hesabına gelen havalelerin bilgileri {BRAND} sunucusunda
+        işlenir (<a href="/gizlilik-politikasi/#banka">Gizlilik Politikası, Bölüm 1.4</a>). Bu verilerin silinmesini
+        ödeme yaptığınız yayıncıdan ya da{' '}
+        <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresinden isteyebilirsiniz; {BRAND} hesabınız
+        olmasa da başvurabilirsiniz. Hangi yayıncının hesabı olduğunu bilmiyorsanız havalenin tarihini ve tutarını
+        yazmanız yeterlidir; IBAN&apos;ınızı düz e-postayla göndermeyin. Başvuru yolları ve silmenin kapsamı:{' '}
+        <a href="/gizlilik-politikasi/#haklar">Gizlilik Politikası, Bölüm 6</a>.
       </p>
     </LegalLayout>
   );

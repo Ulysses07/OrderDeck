@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `How to delete data collected by ${BRAND}, including via Facebook Login.`,
 };
 
-const EFFECTIVE_DATE = '2026-07-02';
+const EFFECTIVE_DATE = '2026-10-21';
 
 export default function DataDeletionEn() {
   return (
@@ -49,8 +49,8 @@ export default function DataDeletionEn() {
           Page access token and OAuth data.</li>
         <li>To permanently delete specific customer/order records, or your entire
           account and associated data, email{' '}
-          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. After verifying your
-          request, we delete the data <strong>within 30 days</strong>.</li>
+          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. We conclude your request{' '}
+          <strong>within 30 days</strong> of receiving it.</li>
       </ul>
 
       <h2>3. If you are a viewer / commenter</h2>
@@ -61,8 +61,8 @@ export default function DataDeletionEn() {
       <ul>
         <li>Contact the <strong>operator (Page owner)</strong> who processes your data, or</li>
         <li>Email <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> with your Facebook
-          name and any comment details. After verifying your request, we delete the
-          relevant records <strong>within 30 days</strong>.</li>
+          name and any comment details. We conclude your request{' '}
+          <strong>within 30 days</strong> of receiving it.</li>
       </ul>
 
       <h2>4. Facebook Login data</h2>
