@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Domain;
@@ -155,6 +156,81 @@ public class NetgsmIysClientTests
 
         result.Statuses[onayli].Should().Be(IysConsentStatus.Onay);
         result.Statuses[retli].Should().Be(IysConsentStatus.Ret);
+    }
+
+    /// <summary>
+    /// 2026-10-22 prod olayı: Netgsm TEK alıcılı sorguda <c>query</c>'yi diziye
+    /// sarmıyor, NESNE döndürüyor. İstemci yalnız diziyi okuduğu için İYS'nin
+    /// ONAY olarak tuttuğu kayıt Unknown sayıldı; doğrulama takvimi tükendi,
+    /// kurtarma son tarih geçince Expired yazdı — 24 onay "Süresi Doldu"da
+    /// kaldı. Gövde prod'daki SearchResult olayının alan setiyle birebir.
+    /// </summary>
+    [Theory]
+    [InlineData("ONAY", IysConsentStatus.Onay)]
+    [InlineData("RET", IysConsentStatus.Ret)]
+    public async Task SearchAsync_tek_alicili_yanitta_query_nesnesinden_durum_okur(
+        string iysDurumu, IysConsentStatus beklenen)
+    {
+        var telefon = TestPhone.NewE164();
+        var (client, _) = Build($$"""
+        {"code":"0","error":"false","query":{"consentDate":"","source":"","recipientType":"BIREYSEL",
+         "status":"{{iysDurumu}}","type":"MESAJ","recipient":"{{telefon}}","retailerCode":"",
+         "creationDate":"","retailerTitle":"","retailerAccessCount":"","transactionId":"{{Guid.NewGuid():N}}"}
+        }
+        """);
+
+        var result = await client.SearchAsync(Account("731734"), new[] { telefon });
+
+        result.Code.Should().Be("0");
+        result.Statuses.Should().ContainSingle();
+        result.Statuses[telefon].Should().Be(beklenen);
+    }
+
+    /// <summary>
+    /// <c>query</c>'nin ne dizi ne nesne olduğu (ya da hiç olmadığı) bir biçim:
+    /// eskisi gibi BOŞ sonuç — kimse ONAY sayılmaz (fail-closed) — ama artık
+    /// günlüğe uyarı düşer. Tek alıcılı nesne biçimi de böyle sessizce boş
+    /// dönüyordu; sessizlik 24 onayın kaybının yarısıydı.
+    ///
+    /// <para><c>Code</c> "0" KALIR: Netgsm kimliği ve markayı kabul etmiş;
+    /// biçimi okuyamamak kurulum hatası değil. "parse-error"a çevirmek
+    /// <c>NetgsmAccountVerifier</c>'ı Unavailable'a, ayna işini yeniden
+    /// denemeye sokardı — bu PR'ın kapsamı dışında bir davranış değişikliği.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(",\"query\":null")]
+    [InlineData(",\"query\":\"beklenmeyen\"")]
+    [InlineData(",\"query\":5")]
+    [InlineData("")]   // query alanı hiç yok
+    public async Task SearchAsync_query_bilinmeyen_bicimdeyse_bos_sonuc_ve_uyari(string queryParcasi)
+    {
+        var telefon = TestPhone.NewE164();
+        var log = new LogRecorder<NetgsmIysClient>();
+        var client = new NetgsmIysClient(
+            new HttpClient(new CapturingHandler($$"""{"code":"0","error":"false"{{queryParcasi}}}""")),
+            Options.Create(Opt()), log);
+
+        var result = await client.SearchAsync(Account("731734"), new[] { telefon });
+
+        result.Statuses.Should().BeEmpty("tanınmayan biçimde kimse ONAY sayılmaz");
+        result.Code.Should().Be("0");
+        log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().Contain("query").And.NotContain(telefon[^8..],
+                "günlüğe telefon yazılmaz (KVKK)");
+    }
+
+    [Fact]
+    public async Task SearchAsync_dizi_ve_nesne_yaniti_uyari_uretmez()
+    {
+        var telefon = TestPhone.NewE164();
+        var log = new LogRecorder<NetgsmIysClient>();
+        var handler = new NetgsmIysSearchHandler { Statuses = { [telefon] = "ONAY" } };
+        var client = new NetgsmIysClient(new HttpClient(handler), Options.Create(Opt()), log);
+
+        await client.SearchAsync(Account("731734"), new[] { telefon });                       // nesne
+        await client.SearchAsync(Account("731734"), new[] { telefon, TestPhone.NewE164() });  // dizi
+
+        log.Entries.Should().NotContain(e => e.Level >= LogLevel.Warning);
     }
 
     [Fact]

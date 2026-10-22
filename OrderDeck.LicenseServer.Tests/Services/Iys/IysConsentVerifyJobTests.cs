@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
@@ -165,6 +166,31 @@ public class IysConsentVerifyJobTests
         row.LastVerifiedStatus.Should().Be(IysConsentStatus.Onay);
         row.LastVerifiedAt.Should().NotBeNull();
         row.PushState.Should().Be(IysPushState.Confirmed);
+        IysConsentGate.CanSend(row).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 2026-10-22 prod olayı uçtan uca: randevusu gelen TEK kayıt tek alıcılı
+    /// /iys/search'e gider ve Netgsm <c>query</c>'yi NESNE döndürür. Sahte
+    /// yalnız HTTP katmanında — gerçek istemci yanıtı okumalı ve kayıt
+    /// Confirmed olmalı. Eskiden Unknown sayılıyor, takvim tükeniyor, kurtarma
+    /// son tarih geçince Expired yazıyordu (24 kayıt, hepsi İYS'de ONAY).
+    /// </summary>
+    [Fact]
+    public async Task Tek_kayitlik_tur_gercek_istemciyle_nesne_yanitindan_Confirmed_olur()
+    {
+        using var db = await SeedPushedAsync();
+        var handler = new NetgsmIysSearchHandler { Statuses = { [Phone] = "ONAY" } };
+        var client = new NetgsmIysClient(new HttpClient(handler),
+            Options.Create(new NetgsmOptions()), NullLogger<NetgsmIysClient>.Instance);
+
+        await Job(db, client).RunAsync();
+
+        handler.Requests.Should().ContainSingle().Which.Should().Equal(Phone);
+        var row = await db.IysConsents.SingleAsync();
+        row.LastVerifiedStatus.Should().Be(IysConsentStatus.Onay);
+        row.PushState.Should().Be(IysPushState.Confirmed);
+        row.NextVerifyAt.Should().BeNull();
         IysConsentGate.CanSend(row).Should().BeTrue();
     }
 

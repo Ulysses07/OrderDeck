@@ -77,26 +77,35 @@ public sealed class NetgsmIysClient : IIysClient
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("query", out var query)
-                && query.ValueKind == JsonValueKind.Array)
+            var hasQuery = doc.RootElement.TryGetProperty("query", out var query);
+            switch (hasQuery ? query.ValueKind : JsonValueKind.Undefined)
             {
-                foreach (var row in query.EnumerateArray())
-                {
-                    var recipient = row.TryGetProperty("recipient", out var r) ? r.GetString() : null;
-                    var status = row.TryGetProperty("status", out var s) ? s.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(recipient)) continue;
+                case JsonValueKind.Array:
+                    foreach (var row in query.EnumerateArray())
+                        ReadRow(row, statuses);
+                    break;
 
-                    // "Kayıt yok" ile "reddetti" ayırt EDİLEMEZ: İYS ikisine de
-                    // RET diyor (2026-09-17'de kayıtsız numarayla doğrulandı) ve
-                    // transactionId sorgu kimliği olduğu için ayırt edici değil.
-                    // Fail-closed: ONAY olmayan her şey gönderimi keser.
-                    statuses[recipient] = status switch
-                    {
-                        "ONAY" => IysConsentStatus.Onay,
-                        "RET" => IysConsentStatus.Ret,
-                        _ => IysConsentStatus.Unknown,
-                    };
-                }
+                // Netgsm TEK alıcılı sorguda satırı diziye SARMIYOR, nesne olarak
+                // döndürüyor (2026-10-22 prod ölçümü). Yalnız diziyi okuduğumuz
+                // için İYS'nin ONAY olarak tuttuğu kayıt Unknown sayıldı: tek
+                // başına sorulan her onay doğrulama takvimini tüketti, kurtarma
+                // son tarih geçince Expired yazdı (24 kayıt). Tek okuyucu, iki biçim.
+                case JsonValueKind.Object:
+                    ReadRow(query, statuses);
+                    break;
+
+                // Tanınmayan biçim (null, metin, sayı) ya da hiç query yok:
+                // boş sonuç — kimse ONAY sayılmaz (fail-closed). Ama SESSİZ
+                // DEĞİL: tek alıcılı biçim de böyle sessizce boş dönüyordu ve
+                // fark edilmesi 24 onayın son tarihine mal oldu. Hata kodunda
+                // query beklenmez, uyarı yalnız "0"da. Telefon yazılmaz (KVKK).
+                default:
+                    if (code == "0")
+                        _log.LogWarning(
+                            "İYS search yanıtında 'query' tanınmayan biçimde ({Kind}); "
+                            + "{Count} alıcının hiçbiri okunamadı, hepsi Unknown sayılacak",
+                            hasQuery ? query.ValueKind.ToString() : "yok", recipients.Count);
+                    break;
             }
         }
         catch (JsonException ex)
@@ -110,6 +119,26 @@ public sealed class NetgsmIysClient : IIysClient
         }
 
         return new IysSearchResult(code, Diagnostic(body), statuses);
+    }
+
+    /// <summary>/iys/search yanıtının TEK satırını okur — dizi ve nesne biçimi
+    /// aynı okuyucudan geçer, iki biçimin kuralları ayrışamaz.</summary>
+    private static void ReadRow(JsonElement row, Dictionary<string, IysConsentStatus> statuses)
+    {
+        var recipient = row.TryGetProperty("recipient", out var r) ? r.GetString() : null;
+        var status = row.TryGetProperty("status", out var s) ? s.GetString() : null;
+        if (string.IsNullOrWhiteSpace(recipient)) return;
+
+        // "Kayıt yok" ile "reddetti" ayırt EDİLEMEZ: İYS ikisine de
+        // RET diyor (2026-09-17'de kayıtsız numarayla doğrulandı) ve
+        // transactionId sorgu kimliği olduğu için ayırt edici değil.
+        // Fail-closed: ONAY olmayan her şey gönderimi keser.
+        statuses[recipient] = status switch
+        {
+            "ONAY" => IysConsentStatus.Onay,
+            "RET" => IysConsentStatus.Ret,
+            _ => IysConsentStatus.Unknown,
+        };
     }
 
     private async Task<(string Code, string Body)> PostAsync(
