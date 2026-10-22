@@ -24,10 +24,15 @@ public class IysConsentVerifyJobTests
         /// <summary>Marka kodu → o markada fırlatılacak hata.</summary>
         public Dictionary<string, Exception> ThrowByBrand { get; } = new();
 
+        public int AddCalls { get; private set; }
+
         public Task<IysAddResult> AddAsync(
             IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
             CancellationToken ct = default)
-            => Task.FromResult(new IysAddResult("0", "{}", true));
+        {
+            AddCalls++;
+            return Task.FromResult(new IysAddResult("0", "{}", true));
+        }
 
         public Task<IysSearchResult> SearchAsync(
             IysAccountContext account, IReadOnlyList<string> recipients,
@@ -192,6 +197,84 @@ public class IysConsentVerifyJobTests
         row.PushState.Should().Be(IysPushState.Confirmed);
         row.NextVerifyAt.Should().BeNull();
         IysConsentGate.CanSend(row).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// <c>iys-reverify</c> onarımı son tarihi GEÇMİŞ kaydı Pushed'a döndürür.
+    /// Doğrulama işi <see cref="IysConsent.PushDeadline"/>'a bakmaz: İYS ONAY
+    /// diyorsa onay İYS'de zaten süresinde kayıtlı demektir, kayıt Confirmed
+    /// olur ve gönderim açılır.
+    /// </summary>
+    [Fact]
+    public async Task Son_tarihi_gecmis_Pushed_kayit_ONAY_gelirse_Confirmed_olur()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var row = Pushed(Phone, BrandA);
+        row.PushDeadline = DateTimeOffset.UtcNow.AddDays(-2);
+        db.IysConsents.Add(row);
+        await db.SaveChangesAsync();
+        var client = new FakeIysClient { Answer = { [Phone] = IysConsentStatus.Onay } };
+
+        await Job(db, client).RunAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.PushState.Should().Be(IysPushState.Confirmed);
+        row.LastError.Should().BeNull();
+        IysConsentGate.CanSend(row).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Onarımın döngüsü SONLU olmalı: son tarihi geçmiş, Pushed'a döndürülmüş
+    /// kaydı İYS doğrulamazsa takvim (4 sorgu) tükenir → Failed; kurtarma
+    /// son tarih geçtiği için Pending'e DEĞİL Expired'a çevirir; push işi
+    /// Expired'ı taramaz — eski consentDate ile yeniden İTİLMEZ (H467 riski).
+    /// </summary>
+    [Fact]
+    public async Task Son_tarihi_gecmis_Pushed_kayit_dogrulanamazsa_yeniden_itilmeden_Expired_da_biter()
+    {
+        var dbName = $"iys-verify-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName);
+        SeedAccount(db, LicenseA, BrandA);
+        var row = Pushed(Phone, BrandA);
+        row.PushDeadline = DateTimeOffset.UtcNow.AddDays(-2);
+        db.IysConsents.Add(row);
+        await db.SaveChangesAsync();
+        var client = new FakeIysClient(); // her sorguda Unknown
+
+        for (var i = 0; i < IysVerifySchedule.Backoff.Length; i++)
+        {
+            row = await db.IysConsents.SingleAsync();
+            row.PushState.Should().Be(IysPushState.Pushed, $"{i}. sorgudan önce takvim sürüyor");
+            row.NextVerifyAt = DateTimeOffset.UtcNow.AddMinutes(-1);   // randevuyu getir
+            await db.SaveChangesAsync();
+            await Job(db, client).RunAsync();
+        }
+
+        row = await db.IysConsents.SingleAsync();
+        row.PushState.Should().Be(IysPushState.Failed);
+        row.LastError.Should().StartWith("iys-not-confirmed");
+        row.NextVerifyAt.Should().BeNull();
+        client.SearchCalls.Should().HaveCount(IysVerifySchedule.Backoff.Length);
+
+        // Kurtarmanın bekleme süresi geçmiş gibi.
+        row.UpdatedAt = DateTimeOffset.UtcNow - IysConsentRecoveryJob.FailedRetryGrace - TimeSpan.FromMinutes(1);
+        await db.SaveChangesAsync();
+        await new IysConsentRecoveryJob(db, NullLogger<IysConsentRecoveryJob>.Instance).RunAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.PushState.Should().Be(IysPushState.Expired, "son tarih geçmiş — Pending'e dönmez");
+        row.LastError.Should().Be("push-deadline-passed");
+
+        await new IysConsentPushJob(db, client, Accounts(db),
+            Options.Create(new NetgsmOptions()), NullLogger<IysConsentPushJob>.Instance).RunAsync();
+        await Job(db, client).RunAsync();
+
+        client.AddCalls.Should().Be(0, "son tarihi geçmiş onay İYS'ye yeniden itilmez");
+        client.SearchCalls.Should().HaveCount(IysVerifySchedule.Backoff.Length,
+            "Expired kayıt doğrulama işince de taranmaz — döngü burada biter");
+        using var fresh = NewDb(dbName);
+        (await fresh.IysConsents.SingleAsync()).PushState.Should().Be(IysPushState.Expired);
     }
 
     [Fact]
