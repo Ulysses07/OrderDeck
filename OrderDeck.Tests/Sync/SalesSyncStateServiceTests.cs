@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Dapper;
@@ -481,6 +480,11 @@ public sealed class SalesSyncStateServiceTests : IDisposable
     public async Task Yanit_vermeyen_sunucu_canli_yolu_bekletmez(string hangingEndpoint)
     {
         // Üretimdeki kilit davranışı için dosya veritabanı (gerçek fabrika, WAL, 10 sn yazma bekleme bütçesi).
+        //
+        // Kanıt yazmaların sonucu, süreleri değil. Sunucu iptale dek yanıt vermiyor; tur ağı beklerken yazma
+        // kilidini tutsaydı kilit de o ana dek bırakılmazdı ve canlı yolun ilk yazması bütçeyi (10 sn) bekleyip
+        // "database is locked" ile düşerdi. Kilit çekişmesi yokken yazmanın ne kadar sürdüğü runner'ın hızıdır:
+        // eski 2 sn'lik sınır yüklü Windows runner'ında dört yazma 3-3.7 sn sürünce düştü (PR #536'nın CI'ı).
         Directory.CreateDirectory(_dir);
         var db = new SqliteConnectionFactory(Path.Combine(_dir, "orderdeck.db"));
         var pc = new Pc(_server, db);
@@ -501,20 +505,22 @@ public sealed class SalesSyncStateServiceTests : IDisposable
             await _server.RequestHanging.WaitAsync(Patience);
 
             var sessionId = Guid.NewGuid().ToString("N");
-            var watch = Stopwatch.StartNew();
-            sessions.Insert(new StreamSession(sessionId, null, clock.UnixNow(), null, new[] { "tiktok" }, null));
-            var label = labels.Add(sessionId,
-                new ChatMessage(Guid.NewGuid().ToString("N"), "tiktok", null, "u" + Guid.NewGuid().ToString("N")[..8],
-                    null, null, "A1", clock.UnixNow(), Array.Empty<string>()),
-                10m, "A1");
-            labels.MarkPrintedAndRecord(new[] { label.Id });
-            sessions.End(sessionId, clock.UnixNow());
-            watch.Stop();
+            Label? label = null;
+            var livePath = () =>
+            {
+                sessions.Insert(new StreamSession(sessionId, null, clock.UnixNow(), null, new[] { "tiktok" }, null));
+                label = labels.Add(sessionId,
+                    new ChatMessage(Guid.NewGuid().ToString("N"), "tiktok", null, "u" + Guid.NewGuid().ToString("N")[..8],
+                        null, null, "A1", clock.UnixNow(), Array.Empty<string>()),
+                    10m, "A1");
+                labels.MarkPrintedAndRecord(new[] { label.Id });
+                sessions.End(sessionId, clock.UnixNow());
+            };
 
-            watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2),
-                "tur ağı beklerken SQLite kilidi tutmaz; canlı yol yazma bütçesini (10 sn) beklemez");
-            tour.IsCompleted.Should().BeFalse("sunucu hâlâ yanıt vermiyor");
-            labelRepo.GetById(label.Id)!.PrintedAt.Should().NotBeNull();
+            livePath.Should().NotThrow(
+                "tur ağı beklerken SQLite kilidi tutmaz; tutsaydı canlı yol yazma bütçesini (10 sn) bekleyip düşerdi");
+            tour.IsCompleted.Should().BeFalse("sunucu hâlâ yanıt vermiyor: yazmalar tur asılıyken bitti");
+            labelRepo.GetById(label!.Id)!.PrintedAt.Should().NotBeNull();
             sessions.GetById(sessionId)!.EndedAt.Should().NotBeNull();
         }
         finally
