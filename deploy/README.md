@@ -230,6 +230,42 @@ silinir. Bilgi girilince `.env`'deki satırı sil, `docker compose up -d
 license-server`, `printenv` yine çalıştır (`true` basmalı) ve admin/obifin'de bir
 Doğrula'nın geçtiğini gör (kapı devrede, bilgi girildiği için engellemez).
 
+### İYS yeniden doğrulama (tek seferlik)
+
+2026-10-22'ye kadar sunucu tek alıcılı `/iys/search` yanıtını okuyamıyordu
+(Netgsm orada `query`'yi dizi değil nesne döndürüyor): İYS'nin ONAY tuttuğu
+onaylar /admin/iys'de **Düştü** / **Süresi Doldu**'ya düştü. **Ne zaman:** bu
+düzeltmenin imajı deploy edildikten SONRA, bir kez; prod'a yazdığı için yayın
+penceresinin (TR 20:00–01:00) dışında.
+
+```bash
+# 1) Kuru koşu: yalnız sayar (marka / durum / hata dağılımı), hiçbir şey yazmaz,
+#    kişisel veri basmaz. Çıktıyı tutanağa al.
+docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll iys-reverify
+# 2) Uygula (tek markaya daraltmak için: --brand <marka kodu>).
+docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll iys-reverify --apply
+```
+
+`--apply` hedef kayıtları (yerel beyan Onay, Düştü/Süresi Doldu, hata
+`push-deadline-passed` ya da `iys-not-confirmed…`, en az bir kez kuyruğa
+alınmış) **Bildirildi**'ye döndürür ve doğrulama randevusunu şimdiye çeker.
+**İYS'ye yeniden itmez** — son tarihi geçmiş onayı eski tarihle göndermek H467
+riskidir; kayıt İYS'de zaten var, yalnız yeniden sorulur.
+
+**Beklenen sonuç:** birkaç dakika içinde (doğrulama işi 5 dakikada bir)
+/admin/iys'de **Süresi Doldu** / **Düştü** azalır, **İYS ile eşleşti** aynı
+kadar artar; gönderim bu numaralara açılır. Birkaç dakika sonra kuru koşuyu
+tekrarla: `Hedef: 0 kayıt.` beklenir (komut idempotent; sıfır değilse
+`--apply`'ı yeniden çalıştır). Hâlâ **Bildirildi**'de bekleyenlere komut
+dokunmaz; düzeltilmiş doğrulama işi onları sıradaki randevularında (en geç
+24 sa) okur.
+
+İYS'nin ONAY demediği kayıt takvimini (~31 sa) tamamlayıp yeniden Düştü /
+Süresi Doldu olur — döngü sonludur, yeniden itilmez. O kayıtlar İYS'de
+gerçekten ONAY değildir; komutu **onlar için yeniden çalıştırma** (yine
+süzgece girerler ve aynı ~31 saati boşuna tekrar ederler) — kişiden yeni onay
+gerekir.
+
 ## SQL Server sürüm yükseltme (artık elle)
 
 `sqlserver` imajı **digest'e pinli** (`2022-latest@sha256:2dca9ee5…`). Sebep:
