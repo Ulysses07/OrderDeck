@@ -207,7 +207,7 @@ public sealed class AdminCustomersController : ControllerBase
         //    never be logged into again.
         customer.Email = $"purged-{customer.Id:N}@deleted.invalid";
         customer.Name = "[Deleted]";
-        customer.PasswordHash = "PURGED";
+        customer.PasswordHash = Customer.PurgedSentinel;
         // R11-S01: purge, yukarıdaki RemoveRange ile token satırlarını siler
         // ama silmenin SELECT'inden sonra düşen bir login insert'i tabloda
         // kalırdı. Nesil ilerlemesi o kaçağı da geçersizler.
@@ -260,6 +260,22 @@ public sealed class AdminCustomersController : ControllerBase
             // idempotent. Blob silme aşağıda — buraya düşen istek ona hiç
             // ulaşmaz, yani satırlar dururken dosyalar silinmiş olmaz.
             return Problem(title: "concurrent-credential-change", statusCode: 409);
+        }
+
+        // KVKK K-3: veri sorumlusu bilgisini bu silmenin okumasıyla kaydı arasında İLK KEZ yazan bir yazım (açık panel: erişim
+        // jetonu silmeden sonra da 15 dk geçerli) yukarıdaki listede yoktu; müşteri satırı kaldığı için FK geçerli, satır
+        // kalırdı. Kayıttan sonra yeniden aranır ve silinir. Kayıttan sonra kaydedilmek isteyen yazım ise müşterinin silindiğini
+        // görür ya da kimlik nesli koşuluna takılır, yazmaz (DataControllerProfiles.UpsertAsync): bu arama hiçbirini kaçırmaz.
+        var lateProfiles = await _db.DataControllerProfiles.Where(p => p.CustomerId == id).ToListAsync(ct);
+        var lateVersions = await _db.DataControllerProfileVersions.Where(v => v.CustomerId == id).ToListAsync(ct);
+        if (lateProfiles.Count + lateVersions.Count > 0)
+        {
+            _db.DataControllerProfiles.RemoveRange(lateProfiles);
+            _db.DataControllerProfileVersions.RemoveRange(lateVersions);
+            const string late = criterion + ", silmeyle eşzamanlı yazılmış";
+            Record("DataControllerProfiles", DataDestruction.Actions.Deleted, lateProfiles.Count, late);
+            Record("DataControllerProfileVersions", DataDestruction.Actions.Deleted, lateVersions.Count, late);
+            await _db.SaveChangesAsync(ct);
         }
 
         // Rows are gone — now the files. A failure here leaves an orphan blob,

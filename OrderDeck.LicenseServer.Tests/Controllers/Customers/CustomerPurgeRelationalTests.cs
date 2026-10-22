@@ -9,6 +9,8 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Tests.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -103,6 +105,68 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
         (await verifyDb.DataDestructionRecords.AsNoTracking()
                 .SingleAsync(r => r.SubjectId == customerId && r.Target == "RefreshTokens"))
             .RowCount.Should().Be(1, "kayıt bu işlemin sildiğini söyler");
+    }
+
+    [Fact]
+    public async Task Silmenin_okumasindan_sonra_ilk_kez_yazilan_veri_sorumlusu_bilgisi_de_silinir()
+    {
+        // KVKK K-3: yayıncı bilgisini silme veri sorumlusu tablosunu okuduktan SONRA, kaydından ÖNCE ilk kez girdi (açık panel:
+        // erişim jetonu silmeden sonra da 15 dk geçerli). Okuma boş döndü, satır bu silmenin listesinde yok; müşteri satırı
+        // anonimleşip kaldığı için FK geçerli, satır kalırdı. Silme kayıttan sonra müşteriye bağlı satırı yeniden arar, siler ve
+        // imha kaydına yazar. Kayıttan sonra gelen yazım ise müşterinin silindiğini görür, yazmaz (DataControllerProfilesTests).
+        var hook = new UpsertDataControllerAfterRead(_cs);
+        using var factory = new HookedRelationalApiFactory(_cs, hook);
+        var (client, customerId, email) = await SeedCustomerAsync(factory);
+        hook.CustomerId = customerId;
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        hook.Fired.Should().BeTrue("yarış kurulmalı: silmenin okumasından sonra bilgi ilk kez yazıldı");
+        using var verify = factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await verifyDb.DataControllerProfiles.AnyAsync(p => p.CustomerId == customerId)).Should().BeFalse();
+        (await verifyDb.DataControllerProfileVersions.AnyAsync(v => v.CustomerId == customerId)).Should().BeFalse();
+        (await verifyDb.DataDestructionRecords.AsNoTracking()
+                .Where(r => r.SubjectId == customerId && r.Target == "DataControllerProfiles").SumAsync(r => r.RowCount))
+            .Should().Be(1);
+        (await verifyDb.DataDestructionRecords.AsNoTracking()
+                .Where(r => r.SubjectId == customerId && r.Target == "DataControllerProfileVersions").SumAsync(r => r.RowCount))
+            .Should().Be(1);
+    }
+
+    /// <summary>Silmenin veri sorumlusu bilgisini okuyan sorgusunun okuyucusu kapanırken AYRI bağlamda o müşteriye ilk kez bilgi
+    /// yazar (panelin yolu, <see cref="DataControllerProfiles.UpsertAsync"/>) — bir kez.</summary>
+    private sealed class UpsertDataControllerAfterRead(string cs) : DbCommandInterceptor
+    {
+        private int _fired;
+        public Guid? CustomerId { get; set; }
+        public bool Fired => _fired == 1;
+
+        public override InterceptionResult DataReaderClosing(DbCommand command, DataReaderClosingEventData eventData,
+            InterceptionResult result)
+        {
+            UpsertIfDue(command);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult> DataReaderClosingAsync(DbCommand command,
+            DataReaderClosingEventData eventData, InterceptionResult result)
+        {
+            UpsertIfDue(command);
+            return ValueTask.FromResult(result);
+        }
+
+        private void UpsertIfDue(DbCommand command)
+        {
+            if (CustomerId is not { } customerId
+                || !command.CommandText.Contains("FROM [DataControllerProfiles] AS", StringComparison.Ordinal)
+                || Interlocked.Exchange(ref _fired, 1) == 1) return;
+            using var other = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>().UseSqlServer(cs).Options);
+            DataControllerProfiles.UpsertAsync(other, customerId, DataControllerProfilesTests.Valid(), "panel",
+                CancellationToken.None).GetAwaiter().GetResult();
+        }
     }
 
     private static RefreshToken NewRefreshToken(Guid customerId) => new()

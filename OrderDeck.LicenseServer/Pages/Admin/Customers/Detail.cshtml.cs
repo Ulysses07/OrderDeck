@@ -70,8 +70,9 @@ public class DetailModel : PageModel
             // durur.
             await DataControllerProfiles.UpsertAsync(_db, id, valid, "admin:" + DataDestruction.ActorOf(User), ct);
         }
-        catch (DataControllerConflictException ex)
+        catch (Exception ex) when (ex is DataControllerConflictException or DataControllerCustomerPurgedException)
         {
+            // Silinmiş (anonimleştirilmiş) yayıncıya yeni kişisel veri yazılmaz; denetim satırı da yazılmaz.
             TempData["Error"] = ex.Message;
             return RedirectToPage("./Detail", new { id });
         }

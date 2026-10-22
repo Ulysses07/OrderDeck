@@ -2,6 +2,11 @@ namespace OrderDeck.LicenseServer.Domain;
 
 public sealed class Customer
 {
+    /// <summary>KVKK silmesinin (<c>AdminCustomersController.Purge</c>) <see cref="PasswordHash"/>'e yazdığı işaret: hiçbir
+    /// Argon2 özetiyle eşleşmez (giriş yapılamaz) ve satırın anonimleştirildiğini gösterir. Silinmiş müşteriye yeni kişisel veri
+    /// yazmaması gereken yollar buna bakar (<c>DataControllerProfiles.UpsertAsync</c>).</summary>
+    public const string PurgedSentinel = "PURGED";
+
     public Guid Id { get; set; }
     public string Email { get; set; } = "";
     public string Name { get; set; } = "";

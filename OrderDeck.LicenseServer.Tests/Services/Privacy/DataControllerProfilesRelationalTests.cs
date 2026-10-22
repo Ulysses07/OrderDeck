@@ -13,8 +13,9 @@ namespace OrderDeck.LicenseServer.Tests.Services.Privacy;
 /// KVKK K-3, karar 24: veri sorumlusu bilgisinin eşzamanlı iki yazımı (çift tıklama, panel ile yönetim aynı anda) gerçek SQL
 /// Server'da. İkinci yazan çakışır (birincil anahtar, sürüm jetonu ya da (müşteri, sürüm) tekil indeksi), satırı taze okuyup
 /// bir kez yeniden dener: içerik aynıysa hiçbir şey yazmaz, değilse yeni sürüm alır. Hiçbir sürüm numarası iki içeriğe
-/// verilmez. InMemory'de SaveChanges işlem değildir ve tekil indeks yoktur: çakışan yazımın bir kısmı kalırdı, burada sınanır.
-/// Testcontainers kullanır; CI ubuntu işinde koşar.
+/// verilmez. Yazımla yarışan silme (yayıncının KVKK silmesi ya da yalnız satırların silinmesi) silinmiş veriyi geri
+/// eklettirmez. InMemory'de SaveChanges işlem değildir ve tekil indeks yoktur: çakışan yazımın bir kısmı kalırdı, burada
+/// sınanır. Testcontainers kullanır; CI ubuntu işinde koşar.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -141,5 +142,75 @@ public sealed class DataControllerProfilesRelationalTests : IAsyncLifetime
         (await VersionsAsync(customerId)).Should().Equal((1, "Diğer Unvan 1", "panel"), (2, "Diğer Unvan 2", "panel"));
         db.ChangeTracker.Entries().Should().NotContain(e => e.State == EntityState.Added || e.State == EntityState.Modified,
             "düşen yazım izleyicide kalmaz: kapsamın sonraki bir SaveChanges'i (denetim satırı) onu yeniden denemesin");
+    }
+
+    /// <summary>Yazımın kaydetmesinden hemen önce, ayrı bir bağlamda profili ve sürümlerini siler; <paramref name="purgeCustomer"/>
+    /// ise müşteri satırını da yayıncı silmesi gibi anonimleştirir (<c>AdminCustomersController.Purge</c>: parola özeti
+    /// <see cref="Customer.PurgedSentinel"/>, kimlik nesli artar). Bir kez.</summary>
+    private SaveHookInterceptor DeleteBeforeSave(Guid customerId, bool purgeCustomer)
+    {
+        var hook = new SaveHookInterceptor();
+        hook.BeforeSave = async () =>
+        {
+            hook.BeforeSave = null;
+            await using var other = NewDb();
+            other.DataControllerProfiles.RemoveRange(other.DataControllerProfiles.Where(p => p.CustomerId == customerId));
+            other.DataControllerProfileVersions.RemoveRange(
+                other.DataControllerProfileVersions.Where(v => v.CustomerId == customerId));
+            if (purgeCustomer)
+            {
+                var customer = await other.Customers.SingleAsync(c => c.Id == customerId);
+                customer.PasswordHash = Customer.PurgedSentinel;
+                customer.AuthVersion++;
+            }
+            await other.SaveChangesAsync();
+        };
+        return hook;
+    }
+
+    private async Task AssertNoRowsAsync(Guid customerId)
+    {
+        await using var verify = NewDb();
+        (await verify.DataControllerProfiles.AnyAsync(p => p.CustomerId == customerId)).Should().BeFalse();
+        (await verify.DataControllerProfileVersions.AnyAsync(v => v.CustomerId == customerId)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Guncellemenin_okudugu_satir_eszamanli_silinirse_yeniden_eklenmez()
+    {
+        // Okunan satır kayıttan önce silindi (UPDATE … WHERE Version = N 0 satır): yeniden deneme onu sürüm 1 olarak geri
+        // eklemez, çakışma verir. Silmeden sonra kişisel veri kalmaz.
+        var customerId = await SeedCustomerAsync();
+        await using (var seed = NewDb())
+            await DataControllerProfiles.UpsertAsync(seed, customerId, Input("İlk Unvan"), "panel", CancellationToken.None);
+        await using var db = NewDb(DeleteBeforeSave(customerId, purgeCustomer: false));
+
+        var act = () => DataControllerProfiles.UpsertAsync(db, customerId, Input("Benim Unvanım"), "panel", CancellationToken.None);
+
+        await act.Should().ThrowAsync<DataControllerConflictException>();
+        await AssertNoRowsAsync(customerId);
+        db.ChangeTracker.Entries().Should().NotContain(e => e.State == EntityState.Added || e.State == EntityState.Modified);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Yayici_silmesiyle_yarisan_yazim_anonim_musteriye_bilgi_birakmaz(bool existing)
+    {
+        // KVKK silmesi yazımın denetiminden SONRA, kaydından ÖNCE işlendi. İlk kayıtta (existing: false) profil satırı yoktu,
+        // sürüm jetonu bir şey yakalamaz; müşterinin kimlik nesli (yazım onu da koşul olarak gönderir) yakalar. Yeniden deneme
+        // silinmiş müşteriyi görür ve yazmaz.
+        var customerId = await SeedCustomerAsync();
+        if (existing)
+        {
+            await using var seed = NewDb();
+            await DataControllerProfiles.UpsertAsync(seed, customerId, Input("İlk Unvan"), "panel", CancellationToken.None);
+        }
+        await using var db = NewDb(DeleteBeforeSave(customerId, purgeCustomer: true));
+
+        var act = () => DataControllerProfiles.UpsertAsync(db, customerId, Input("Benim Unvanım"), "panel", CancellationToken.None);
+
+        await act.Should().ThrowAsync<DataControllerCustomerPurgedException>();
+        await AssertNoRowsAsync(customerId);
     }
 }

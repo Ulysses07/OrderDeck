@@ -52,4 +52,36 @@ public sealed class AdminCustomerDataControllerTests : IClassFixture<ApiFactory>
             .Should().BeTrue();
         (await client.GetStringAsync(path)).Should().Contain("kvkk@example.test");
     }
+
+    [Fact]
+    public async Task Silinmis_yayicida_bilgi_kaydedilmez_bildirim_gosterilir()
+    {
+        // KVKK silmesinden sonra müşteri satırı anonim kalır ve detay sayfası açılır; yazım ona yeni kişisel veri bırakmamalı.
+        var customerId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Customers.Add(new Customer { Id = customerId, Email = $"purged-{customerId:N}@deleted.invalid", Name = "[Deleted]",
+                PasswordHash = Customer.PurgedSentinel, CreatedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var path = $"/admin/customers/{customerId}";
+        var token = AdminLoginHelper.ExtractAntiForgeryToken(await client.GetStringAsync(path));
+
+        var resp = await client.PostAsync($"{path}?handler=DataController", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = token, ["DcLegalName"] = "Örnek Ticaret Ltd. Şti.",
+            ["DcPostalAddress"] = "Örnek Mah. 1. Sok. No:2 İstanbul", ["DcKvkkEmail"] = "kvkk@example.test",
+        }));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.DataControllerProfiles.AnyAsync(p => p.CustomerId == customerId)).Should().BeFalse();
+        (await vdb.DataControllerProfileVersions.AnyAsync(v => v.CustomerId == customerId)).Should().BeFalse();
+        (await vdb.AuditLogs.AnyAsync(a => a.EventType == AuditEvents.CustomerDataControllerUpdate && a.TargetId == customerId.ToString()))
+            .Should().BeFalse("yazılmayan değişiklik denetime 'güncellendi' diye girmez");
+        AdminLoginHelper.ExtractAlertText(await client.GetStringAsync(path)).Should().Contain("silinmiş");
+    }
 }
