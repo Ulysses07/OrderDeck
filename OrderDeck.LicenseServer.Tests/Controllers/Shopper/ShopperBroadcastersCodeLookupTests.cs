@@ -90,4 +90,37 @@ public class ShopperBroadcastersCodeLookupTests : IClassFixture<ApiFactory>
             .GetAsync("/api/v1/shopper/broadcasters/code-lookup?code=");
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    // ── KVKK K-3: yayıncının veri sorumlusu bilgisi (kayıt ekranı) ───────────
+
+    /// <summary>Shopper'ın okuduğu ad (camelCase <c>dataController</c>; OrderDeck-Shopper
+    /// <c>apps/shopper/src/privacy/dataController.ts</c>).</summary>
+    private sealed record ControllerDto(string LegalName, string PostalAddress, string KvkkEmail, string? KepAddress);
+    private sealed record LookupWithController(Guid LicenseId, string DisplayName, ControllerDto? DataController);
+
+    [Fact]
+    public async Task Lookup_yayincinin_veri_sorumlusu_bilgisini_doner_girilmediyse_null()
+    {
+        var withCode = "dc-" + Guid.NewGuid().ToString("N")[..8];
+        var withoutCode = "nodc-" + Guid.NewGuid().ToString("N")[..8];
+        var (licenseId, _) = await SeedLicenseAsync(withCode);
+        await SeedLicenseAsync(withoutCode);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customerId = await db.Licenses.Where(l => l.Id == licenseId).Select(l => l.CustomerId).SingleAsync();
+            db.DataControllerProfiles.Add(new DataControllerProfile { CustomerId = customerId, LegalName = "Örnek Ticaret",
+                PostalAddress = "Adres", KvkkEmail = "kvkk@example.test", UpdatedAt = DateTimeOffset.UtcNow, UpdatedBy = "panel" });
+            await db.SaveChangesAsync();
+        }
+        var client = _factory.CreateClient();
+
+        var with = await client.GetFromJsonAsync<LookupWithController>($"/api/v1/shopper/broadcasters/code-lookup?code={withCode}");
+        var without = await client.GetFromJsonAsync<LookupWithController>($"/api/v1/shopper/broadcasters/code-lookup?code={withoutCode}");
+
+        with!.DataController.Should().Be(new ControllerDto("Örnek Ticaret", "Adres", "kvkk@example.test", null));
+        without!.DataController.Should().BeNull();
+        var raw = await client.GetStringAsync($"/api/v1/shopper/broadcasters/code-lookup?code={withoutCode}");
+        raw.Should().Contain("\"dataController\":null", "alan her zaman var; Shopper null'ı 'bilgi girilmedi' okur");
+    }
 }

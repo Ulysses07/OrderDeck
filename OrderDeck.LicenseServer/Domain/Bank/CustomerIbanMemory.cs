@@ -15,4 +15,10 @@ public sealed class CustomerIbanMemory
     public IbanMemorySource LearnedFrom { get; set; }
     public Guid? SourceBankTransactionId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>Bu bağı doğrulayan en yeni havalenin İŞLEM tarihi (elle eşleme ya da dekont onayıyla doğrulanmış; ileri tarih
+    /// şimdiye kırpılır). Doğrulama anı süreyi uzatmaz; eski bir havalenin geç doğrulanması saklamanın başlangıcını geri
+    /// çekmez. Saklama: bundan (yoksa <see cref="CreatedAt"/>'ten — P1 öncesi satırlar) 12 ay (KVKK K-6; politika "son
+    /// doğrulanmış ödemeden 12 ay", <c>BankDataRetentionJob</c>).</summary>
+    public DateTimeOffset? LastConfirmedAt { get; set; }
 }

@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Services.Pagination;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
@@ -34,15 +35,21 @@ public sealed class ShopperBroadcastersController : ControllerBase
         _log = log;
     }
 
-    public sealed record CodeLookupResponse(Guid LicenseId, string DisplayName);
+    /// <param name="DataController">Yayıncının veri sorumlusu bilgileri (KVKK K-3, kayıt ekranı); girilmediyse null. JSON adı
+    /// (<c>dataController</c>) ve içi (<see cref="DataControllerView"/>) Shopper'ın sözleşmesidir.</param>
+    public sealed record CodeLookupResponse(Guid LicenseId, string DisplayName, DataControllerView? DataController);
 
     public sealed record JoinRequest(string BroadcasterCode, string Platform, string Username);
     public sealed record JoinResponse(BroadcasterSummary[] Broadcasters);
 
     // Anonim ve numaralandırılabilir: kod uzayı taranarak platformdaki her
-    // yayıncının lisans kimliği ve müşteri adı toplanabilir. Limit, kayıt/giriş
-    // ile aynı kovayı kullanıyor — gerçek akışta kullanıcı kodu bir kez yazıp
-    // hemen kaydolduğu için çakışma yaratmıyor, tarama ise ilk dakikada duruyor.
+    // yayıncının lisans kimliği, müşteri adı ve (girildiyse) veri sorumlusu
+    // bilgileri toplanabilir. Sonuncusu bilerek anonim: kayıt ekranı ilgili
+    // kişiye veri sorumlusunu kayıttan ÖNCE göstermeli (KVKK m. 10/1-a; şahıs
+    // yayıncının adresinin bu yolla açılması avukata soruldu, plan karar 10).
+    // Limit, kayıt/giriş ile aynı kovayı kullanıyor — gerçek akışta kullanıcı
+    // kodu bir kez yazıp hemen kaydolduğu için çakışma yaratmıyor, tarama ise
+    // ilk dakikada duruyor.
     [AllowAnonymous]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("auth-login")]
     [HttpGet("code-lookup")]
@@ -54,11 +61,12 @@ public sealed class ShopperBroadcastersController : ControllerBase
         var normalized = code.Trim().ToLowerInvariant();
         var license = await _db.Licenses
             .Where(l => l.ShopperCode == normalized)
-            .Select(l => new { l.Id, CustomerName = l.Customer.Name })
+            .Select(l => new { l.Id, l.CustomerId, CustomerName = l.Customer.Name })
             .FirstOrDefaultAsync(ct);
         if (license is null) return NotFound();
 
-        return Ok(new CodeLookupResponse(license.Id, license.CustomerName));
+        var controller = await DataControllerProfiles.ReadAsync(_db, license.CustomerId, ct);
+        return Ok(new CodeLookupResponse(license.Id, license.CustomerName, controller));
     }
 
     // ── POST /api/v1/shopper/broadcasters/join ────────────────────────────────
@@ -482,6 +490,26 @@ public sealed class ShopperBroadcastersController : ControllerBase
         {
             return Problem(title: ex.ErrorCode, statusCode: ex.StatusCode, detail: ex.Message);
         }
+    }
+
+    // ── GET /api/v1/shopper/broadcasters/{licenseId}/data-controller ─────────
+
+    /// <param name="Profile">Bağlı yayıncının veri sorumlusu bilgileri; girilmediyse null. JSON adı (<c>profile</c>) Shopper'ın
+    /// sözleşmesidir.</param>
+    public sealed record DataControllerResponse(DataControllerView? Profile);
+
+    /// <summary>Bağlı yayıncının veri sorumlusu bilgileri (KVKK K-3, dekont ve Profil ekranı). Bağlı değilse 403 not-linked
+    /// (Shopper "bilgi yok" okur).</summary>
+    [HttpGet("{licenseId:guid}/data-controller")]
+    public async Task<IActionResult> GetDataController(Guid licenseId, CancellationToken ct)
+    {
+        var shopperId = User.GetShopperId();
+        if (shopperId is null) return Unauthorized();
+        if (!await _db.Shoppers.AnyAsync(s => s.Id == shopperId && s.DeletedAt == null, ct)) return Unauthorized();
+        if (!await _db.ShopperBroadcasterLinks.AnyAsync(l => l.ShopperId == shopperId && l.LicenseId == licenseId && l.LeftAt == null, ct))
+            return Problem(title: "not-linked", statusCode: 403);
+        var customerId = await _db.Licenses.Where(l => l.Id == licenseId).Select(l => l.CustomerId).FirstAsync(ct);
+        return Ok(new DataControllerResponse(await DataControllerProfiles.ReadAsync(_db, customerId, ct)));
     }
 
     // ── DELETE /api/v1/shopper/broadcasters/{licenseId} ───────────────────────

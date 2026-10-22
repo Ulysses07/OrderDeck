@@ -65,6 +65,12 @@ public class Program
             Environment.Exit(exit);
             return;
         }
+        if (args.Length > 0 && args[0] == "bank-data-cleanup")
+        {
+            var exit = await OrderDeck.LicenseServer.Tools.BankDataCleanup.RunAsync(args);
+            Environment.Exit(exit);
+            return;
+        }
         if (args.Length > 0 && args[0] == "person-balance")
         {
             var exit = await OrderDeck.LicenseServer.Tools.PersonBalanceCommand.RunAsync(args);
@@ -326,6 +332,12 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinConnectionService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatcher>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconciler>();
+        // Durdur/Etkinleştir/Kaldır ve sil, hizmet sonu yerel silmesi, hesap reddi (KVKK K-6, Ö-9, Ö-10). BankHasher İSTEMEZ
+        // (bağdaştırıcı da istemez): anahtarsız modülde de durdurma ve silme çalışır.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankConnectionTerminator>();
+        // IBAN ile banka verisi talebi (KVKK K-7). BankHasher yalnız talep açarken (çağıran verir): anahtarsız modülde de açık
+        // talepler kapatılıp silinebilir.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchMetrics>();
         // Dekont onayı bu işi ApprovalDelay sonrasına zamanlar (PanelPaymentsController.Approve); tekrarlayan iş değil.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconcileJob>();
@@ -334,8 +346,12 @@ public class Program
             OrderDeck.LicenseServer.Services.Bank.MatchingBankTransactionSink>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinPollJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinAccountRefreshJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Observability.AdminJobAlerts>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankMatchSweepJob>();
+        // Hizmet sonu + 30 gün yerel silme ve Obifin tarafının hatırlatması (KVKK K-6, Ö-9). BankHasher İSTEMEZ.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankServiceEndPurgeJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
@@ -947,12 +963,12 @@ public class Program
         // Banka modülü anahtarsız KAPALI açılır: master merge = otomatik prod deploy, .env'de eksik bir
         // OrderDeck__Bank__HashKey lisans sunucusunu düşürmemeli. Karar tüm yapılandırma kaynakları yüklendikten sonra
         // (IOptions) verilir; uyarı açılışta tek sefer. Obifin çekimi, hesap yenileme ve eşleştirme taraması zamanlanmaz;
-        // saklama işi BankHasher istemez, zaten saklanmış satırlar için yine koşar (ScheduleBankJobs).
+        // saklama ve hizmet sonu işleri BankHasher istemez, zaten saklanmış satırlar için yine koşar (ScheduleBankJobs).
         var bankEnabled = OrderDeck.LicenseServer.Services.Bank.BankHasher.IsValidKey(
             app.Services.GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.Bank.BankOptions>>().Value.HashKey);
         if (!bankEnabled)
             app.Logger.LogWarning(
-                "{Reason} — obifin-poll, obifin-accounts ve bank-match-sweep zamanlanmadı; saklama işi (bank-data-retention) yine koşar",
+                "{Reason} — obifin-poll, obifin-accounts ve bank-match-sweep zamanlanmadı; saklama işleri (bank-data-retention, bank-service-end-purge) yine koşar",
                 OrderDeck.LicenseServer.Services.Bank.BankHasher.DisabledMessage);
 
         // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
@@ -970,7 +986,7 @@ public class Program
             // Audit log retention — prune rows older than the configured window
             // once a day. Cron different from email reminders to spread DB load.
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>(
-                "audit-retention",
+                OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs.JobId,
                 j => j.PruneAsync(CancellationToken.None),
                 "30 3 * * *");  // 03:30 UTC daily
 
@@ -979,10 +995,19 @@ public class Program
             // "Güvenlik kayıtları: 90 gün" taahhüdünü fiilen uygulayan iş bu.
             // audit-retention'dan SONRA çalışır: o zaten 24 aydan eski satırları
             // sildiği için burada işlenecek satır sayısı azalmış olur.
+            // Silme talebinin telefonunu ve kapanmış banka veri talebinin kısaltılmış IBAN'ını da 30 günde boşaltır (KVKK D-5,
+            // Ö-11); her boşaltma imha kaydı, başarılı koşu koşu kaydı bırakır (Ö-13).
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob>(
-                "security-data-retention",
+                OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob.JobId,
                 j => j.AnonymiseAsync(CancellationToken.None),
                 "40 3 * * *");  // 03:40 UTC daily
+
+            // İmha kayıtlarının veritabanı dışındaki kopyası (KVKK Ö-12/Ö-13): saatlik, :13. Yedekten geri yüklemeden sonra
+            // silmeler bu e-postalardan yeniden uygulanır (deploy/README.md, Geri yükleme).
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob>(
+                OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                OrderDeck.LicenseServer.Services.Privacy.DataDestructionDigestJob.Cron);
 
             // Weekly backup-restore drill — proves an actual production blob
             // round-trips through decrypt + ZIP + SQLite integrity. Failures
@@ -1147,8 +1172,8 @@ public class Program
                 "52 4 * * *");  // 04:52 UTC daily
 
             // Banka (Obifin): obifin-poll */5, obifin-accounts :02 saatlik, bank-match-sweep :07 saatlik,
-            // bank-data-retention 04:57 UTC. Anahtar yoksa Obifin işleri ve tarama kayıtlanmaz, eskileri silinir;
-            // saklama işi yine kaydolur — takvim ve gerekçeler ScheduleBankJobs'ta.
+            // bank-data-retention 04:57 UTC, bank-service-end-purge 05:17 UTC. Anahtar yoksa Obifin işleri ve tarama
+            // kayıtlanmaz, eskileri silinir; saklama ve hizmet sonu işleri yine kaydolur — takvim ve gerekçeler ScheduleBankJobs'ta.
             ScheduleBankJobs(manager, bankEnabled);
         }
 
@@ -1343,8 +1368,9 @@ public class Program
     /// (<c>OrderDeck:Bank:HashKey</c>). Anahtar yoksa <c>obifin-poll</c>, <c>obifin-accounts</c> ve <c>bank-match-sweep</c>
     /// KAYDOLMAZ, önceki bir açılıştan kalan kayıtları silinir: Hangfire kaydı depoda kalıcıdır, anahtar kalkınca bile Obifin
     /// işleri her 5 dakikada bir BankHasher hatasıyla düşerlerdi; çekim yokken taranacak yeni hareket de gelmez.
-    /// <c>bank-data-retention</c> ise anahtardan bağımsız HEP kaydolur: BankHasher istemez ve 90/180 günlük silme KVKK
-    /// yükümlülüğüdür — anahtar kalksa da zaten saklanmış satırlar için koşmalı.</para>
+    /// <c>bank-data-retention</c> ve <c>bank-service-end-purge</c> ise anahtardan bağımsız HEP kaydolur: BankHasher istemezler ve
+    /// saklama tablosundaki ve hizmet sonundaki silme KVKK yükümlülüğüdür — anahtar kalksa da zaten saklanmış satırlar için
+    /// koşmalı.</para>
     ///
     /// <para><c>obifin-accounts</c> dakika 2'de: çekimle ORTAK kilit tutar
     /// (<see cref="OrderDeck.LicenseServer.Services.Bank.ObifinPollJob.LockResource"/>); 5 dakikalık ızgarada olsaydı
@@ -1357,15 +1383,24 @@ public class Program
     /// <para><c>bank-data-retention</c> 04:57'de: 04:52 İYS eşitlemesinden sonra ve yine ızgara DIŞINDA. 04:55'te
     /// obifin-poll aynı BankTransactions tablosuna yazar, sms-campaign-recovery / iys-consent-push / iys-consent-verify
     /// da koşar; */15 04:45 ve 05:00'te. 04:57'de başka hiçbir iş tetiklenmez.</para>
+    ///
+    /// <para><c>bank-service-end-purge</c> 05:17'de, anahtardan bağımsız: hizmet sonu + 30 gün silmesi KVKK yükümlülüğü (K-6),
+    /// BankHasher istemez. Yalnız yerel siler; Obifin'e gitmez. Çekimle ortak kilit tutar; 05:15 ve 05:20 ızgarasının arasında,
+    /// başka hiçbir günlük iş 05:17'de koşmaz.</para>
     /// </summary>
     public static void ScheduleBankJobs(IRecurringJobManager manager, bool enabled)
     {
-        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
+        // Saklama tablosu: BankDataRetentionJob özeti (KVKK karar 5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
         // Anahtarsız da kaydolur (bkz. özet): BankHasher istemez, KVKK silmesi durmamalı.
         manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
-            "bank-data-retention",
+            OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob.JobId,
             j => j.RunAsync(CancellationToken.None),
             "57 4 * * *");
+        // Hizmet sonu + 30 gün silme (KVKK K-6): BankHasher istemez, anahtarsız da kaydolur. 05:17 UTC, ızgara dışı.
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankServiceEndPurgeJob>(
+            OrderDeck.LicenseServer.Services.Bank.BankServiceEndPurgeJob.JobId,
+            j => j.RunAsync(CancellationToken.None),
+            OrderDeck.LicenseServer.Services.Bank.BankServiceEndPurgeJob.Cron);
 
         if (!enabled)
         {

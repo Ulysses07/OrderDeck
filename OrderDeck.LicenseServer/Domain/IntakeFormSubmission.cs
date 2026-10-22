@@ -70,6 +70,11 @@ public sealed class IntakeFormSubmission
     /// birlikte null.</summary>
     public string? KvkkTextVersion { get; set; }
 
+    /// <summary>Kayıt anında formda gösterilen veri sorumlusu bloğunun sürümü (<see cref="DataControllerProfileVersion"/>; KVKK
+    /// m. 10/1-a ispatı, plan karar 24). Null: blok gösterilmedi (yayıncı bilgi girmemişti) ya da sayfanın bildirdiği sürüm o
+    /// yayıncıda yok.</summary>
+    public int? DataControllerVersion { get; set; }
+
     public DateTimeOffset SubmittedAt { get; set; }
     public string? IpAddress { get; set; }
     public string? UserAgent { get; set; }

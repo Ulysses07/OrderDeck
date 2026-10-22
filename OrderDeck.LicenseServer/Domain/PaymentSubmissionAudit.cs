@@ -49,6 +49,12 @@ public sealed class PaymentSubmissionAudit
     public string UserAgent { get; set; } = "";
     public string FraudFlags { get; set; } = "";
     public string ParserConfidence { get; set; } = "";
+    /// <summary>
+    /// Dekonttan okunan tam metin (yalnız başarılı gönderimde; <c>PdfDekontParser</c>'ın 200.000 karaktere kırptığı
+    /// metin). Gönderen adı, gönderen ve alıcı IBAN'ının açık hâli, referans, dekontta varsa kimlik numarası: kişisel veri.
+    /// Hiçbir kod okumaz. KVKK K22: KVKK silmesi (<c>ShopperPurgeService</c> adım 5) ve gönderimden
+    /// <c>SecurityDataRetentionOptions.SubmissionRawTextDays</c> gün sonra güvenlik saklama işi boşaltır; satır kalır.
+    /// </summary>
     public string? ParserRawText { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }

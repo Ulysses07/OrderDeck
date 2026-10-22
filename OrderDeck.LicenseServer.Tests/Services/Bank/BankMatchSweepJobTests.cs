@@ -65,7 +65,7 @@ public sealed class BankMatchSweepJobTests
     private static BankMatchSweepJob Job(LicenseDbContext db, ILogger<BankMatchSweepJob>? log = null)
         => new(db, new PaymentMatchReconciler(db,
                 new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
-                NullLogger<PaymentMatchReconciler>.Instance),
+                Options.Create(new BankOptions()), NullLogger<PaymentMatchReconciler>.Instance),
             log ?? NullLogger<BankMatchSweepJob>.Instance);
 
     /// <summary>Obifin bağlantısı olan bir lisans (kaydetmez): tarama yalnız bunların hareketlerine bakar. Kimlik alanı
@@ -319,5 +319,27 @@ public sealed class BankMatchSweepJobTests
         (await Job(db).RunAsync(CancellationToken.None)).Should().Be(1);
 
         (await db.PaymentMatches.AsNoTracking().SingleAsync()).BankTransactionId.Should().Be(settled.Id);
+    }
+
+    [Theory]
+    [InlineData(ObifinConnectionStatus.Disabled, false)]
+    [InlineData(ObifinConnectionStatus.Unverified, true)]
+    public async Task Durdurulmus_ya_da_verisi_silinmis_baglantinin_hareketi_taranmaz(ObifinConnectionStatus status, bool purged)
+    {
+        // KVKK K-6: telafi taraması durdurulmuş bağlantının saklı hareketini eşleştirmez (öneri, gap çözümü). İki koşul ayrı ayrı
+        // sınanır (Unverified + işaret: elle düzeltilmiş satır).
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var conn = db.ObifinConnections.Local.Single(c => c.LicenseId == lic);
+        conn.Status = status;
+        if (purged) conn.BankDataPurgedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube",
+            Username = "ornek_musteri34", UpdatedAt = DateTimeOffset.UtcNow });
+        db.BankTransactions.Add(Tx(lic, "HAVALE ornek_musteri34", TimeSpan.FromDays(2)));
+        await db.SaveChangesAsync();
+
+        var swept = await Job(db).RunAsync(CancellationToken.None);
+
+        swept.Should().Be(0);
+        (await db.PaymentMatches.CountAsync()).Should().Be(0);
     }
 }

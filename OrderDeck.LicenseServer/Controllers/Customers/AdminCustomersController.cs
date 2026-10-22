@@ -3,6 +3,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Backup;
+using OrderDeck.LicenseServer.Services.Privacy;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -116,7 +117,8 @@ public sealed class AdminCustomersController : ControllerBase
     /// <summary>
     /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
     /// data (licenses, activations, refresh tokens, intake form submissions,
-    /// email logs, backup blobs + metadata) and anonymises the Customer row
+    /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3)
+    /// and anonymises the Customer row
     /// itself. The Customer row stays — its Id is referenced from AuditLog
     /// rows that we MUST retain for the configured retention window. Email
     /// + Name are blanked, PasswordHash is set to a sentinel that no hash
@@ -125,6 +127,10 @@ public sealed class AdminCustomersController : ControllerBase
     /// Caller must echo the customer's current email in the request body to
     /// guard against fat-finger purges. Audit row is written with the
     /// pre-purge email so the action remains traceable.
+    /// The audit row (with the e-mail) is pruned at 24 months like any other; the 3-year destruction record is the PII-free
+    /// DataDestructionRecords rows written in the same SaveChanges (KVKK Ö-13).
+    /// Obifin banka bağlantısı olan lisans varken 409 bank-connection-active: önce admin/obifin → "Kaldır ve sil" (KVKK K-6, Ö-9).
+    /// Lisanslardaki açık banka veri talepleri kapanır, satırları belge olarak kalır (KVKK K-7).
     /// </summary>
     [HttpPost("{id:guid}/purge")]
     public async Task<IActionResult> Purge(Guid id, [FromBody] PurgeRequest req, CancellationToken ct)
@@ -135,6 +141,18 @@ public sealed class AdminCustomersController : ControllerBase
             return Problem(title: "email-mismatch",
                 detail: "Body confirmEmail must match the customer's current email.",
                 statusCode: 400);
+
+        // KVKK K-6/Ö-9: banka tabloları lisansla kaskadla gider ama Obifin'e bir şey söylenmez — Obifin bankadan çekmeyi ve
+        // saklamayı sürdürür. Obifin bağlantısı olan lisans varken silme reddedilir: Obifin tarafı (lisansa özgü kaldırma,
+        // paylaşılan kullanıcı koruması, yazılı teyit kaydı) yalnız admin/obifin'deki "Kaldır ve sil"de kapanır. Purge içinde
+        // ağ çağrısı yapılmaz.
+        var customerLicenseIds = _db.Licenses.Where(l => l.CustomerId == id).Select(l => l.Id);
+        var bankLicenses = await _db.ObifinConnections.CountAsync(c => customerLicenseIds.Contains(c.LicenseId), ct);
+        if (bankLicenses > 0)
+            return Problem(title: "bank-connection-active", statusCode: 409,
+                detail: $"Bu yayıncının {bankLicenses} lisansında Obifin banka bağlantısı var. Önce admin/obifin'de her biri için " +
+                    "'Kaldır ve sil' çalıştırın ve Obifin'den hareket kopyasının silindiğine dair yazılı teyit isteyin; sonra " +
+                    "silmeyi yineleyin.");
 
         var preEmail = customer.Email;
 
@@ -162,6 +180,13 @@ public sealed class AdminCustomersController : ControllerBase
         _db.RefreshTokens.RemoveRange(_db.RefreshTokens.Where(r => r.CustomerId == id));
         _db.PasswordResetTokens.RemoveRange(_db.PasswordResetTokens.Where(p => p.CustomerId == id));
         _db.EmailConfirmationTokens.RemoveRange(_db.EmailConfirmationTokens.Where(t => t.CustomerId == id));
+        // KVKK K-3: veri sorumlusu bilgileri ve sürümleri (şahıs yayıncıda ad ve adres) yayıncının verisidir (karar 24). Müşteri
+        // satırı anonimleştirilip kaldığı için FK cascade'i tetiklenmez, açıkça silinir.
+        _db.DataControllerProfiles.RemoveRange(_db.DataControllerProfiles.Where(p => p.CustomerId == id));
+        _db.DataControllerProfileVersions.RemoveRange(_db.DataControllerProfileVersions.Where(v => v.CustomerId == id));
+        // Panel push devices (device id + FCM/APNS token). The FK cascades on Customer delete, but the Customer row is
+        // anonymised and kept — the cascade never fires, so they go explicitly.
+        _db.PushDevices.RemoveRange(_db.PushDevices.Where(d => d.CustomerId == id));
         // Intake form submissions reference IntakeFormConfig (not Customer directly).
         // Drop the customer's config + all submissions that fed into it.
         var configIds = await _db.IntakeFormConfigs
@@ -182,7 +207,7 @@ public sealed class AdminCustomersController : ControllerBase
         //    never be logged into again.
         customer.Email = $"purged-{customer.Id:N}@deleted.invalid";
         customer.Name = "[Deleted]";
-        customer.PasswordHash = "PURGED";
+        customer.PasswordHash = Customer.PurgedSentinel;
         // R11-S01: purge, yukarıdaki RemoveRange ile token satırlarını siler
         // ama silmenin SELECT'inden sonra düşen bir login insert'i tabloda
         // kalırdı. Nesil ilerlemesi o kaçağı da geçersizler.
@@ -190,6 +215,38 @@ public sealed class AdminCustomersController : ControllerBase
         customer.EmailConfirmedAt = null;
         customer.Unsubscribed = true;
         customer.Notes = null;
+
+        // KVKK Ö-13: kişisel veri İÇERMEYEN kalıcı imha kaydı, silmeyle aynı SaveChanges'te. preEmail BURAYA girmez: e-posta
+        // yalnız 24 ayda budanan customer.purged denetim satırında. SubjectId = yayıncı hesabının kimliği (satır anonimleştirilmiş
+        // kalır): yedekten geri yüklemeden sonra silme bununla yeniden uygulanır. Sayımlar İZLEYİCİDEN: yukarıdaki RemoveRange'lerin
+        // silinmek üzere işaretlediği satırlar, yani tam olarak bu SaveChanges'in sildiği. DB'den ayrıca saymak okuma ile kayıt
+        // arasında eklenen satırı (girişin yazdığı yenileme jetonu, herkese açık formdan gelen gönderim) silinmediği hâlde sayardı.
+        // Yapan: yöneticinin kimliği, kullanıcı adı değil (tablo budanmaz; adı aşağıdaki denetim satırında, 24 ay).
+        var actor = DataDestruction.ActorOf(User);
+        const string criterion = "yayıncı silme talebi";
+        void Record(string target, string action, int count, string why = criterion) => DataDestruction.Record(_db, null, target,
+            action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
+        int Deleted<T>() where T : class => _db.ChangeTracker.Entries<T>().Count(e => e.State == EntityState.Deleted);
+        // Lisansa bağlı satırlar (siparişler, katalog, banka verisi …) ayrıca sayılmaz: lisansla birlikte FK cascade'iyle gider.
+        Record("Licenses", DataDestruction.Actions.Deleted, Deleted<License>(), criterion + ", bağlı satırlar FK cascade ile");
+        Record("Activations", DataDestruction.Actions.Deleted, Deleted<Activation>());
+        Record("CustomerBackups", DataDestruction.Actions.Deleted, Deleted<CustomerBackup>());
+        Record("EmailLogs", DataDestruction.Actions.Deleted, Deleted<EmailLog>());
+        Record("RefreshTokens", DataDestruction.Actions.Deleted, Deleted<RefreshToken>());
+        Record("PasswordResetTokens", DataDestruction.Actions.Deleted, Deleted<PasswordResetToken>());
+        Record("EmailConfirmationTokens", DataDestruction.Actions.Deleted, Deleted<EmailConfirmationToken>());
+        Record("PushDevices", DataDestruction.Actions.Deleted, Deleted<PushDevice>());
+        Record("IntakeFormConfigs", DataDestruction.Actions.Deleted, Deleted<IntakeFormConfig>());
+        Record("IntakeFormSubmissions", DataDestruction.Actions.Deleted, Deleted<IntakeFormSubmission>());
+        Record("Customers.Email+Name+PasswordHash+Notes", DataDestruction.Actions.Nulled, 1);
+        Record("DataControllerProfiles", DataDestruction.Actions.Deleted, Deleted<DataControllerProfile>());
+        Record("DataControllerProfileVersions", DataDestruction.Actions.Deleted, Deleted<DataControllerProfileVersion>());
+        // KVKK K-7: yayıncının lisanslarındaki açık banka veri talepleri kapanır (lisansa FK yok: talep satırı belge olarak kalır,
+        // IBAN özeti boşalır, imha kaydı talep başına bu tetikleyiciyle). Yönetici başvurana yine yanıt verir. Aynı kayıtta: talebi arada kapatan başka bir istek (ClosedAt
+        // jetonu) bu kaydı düşürür, aşağıdaki 409 ile operatör yeniden çağırır.
+        var closedBankSubjectRequests = await OrderDeck.LicenseServer.Services.Bank.BankSubjectRequestService
+            .CloseOpenForLicensesAsync(_db, licenseIds, "Yayıncı hesabı silindi; talep kapatıldı — başvurana yanıt verin.",
+                DataDestruction.Triggers.CustomerPurge, actor, DateTimeOffset.UtcNow, ct);
 
         try
         {
@@ -205,6 +262,22 @@ public sealed class AdminCustomersController : ControllerBase
             return Problem(title: "concurrent-credential-change", statusCode: 409);
         }
 
+        // KVKK K-3: veri sorumlusu bilgisini bu silmenin okumasıyla kaydı arasında İLK KEZ yazan bir yazım (açık panel: erişim
+        // jetonu silmeden sonra da 15 dk geçerli) yukarıdaki listede yoktu; müşteri satırı kaldığı için FK geçerli, satır
+        // kalırdı. Kayıttan sonra yeniden aranır ve silinir. Kayıttan sonra kaydedilmek isteyen yazım ise müşterinin silindiğini
+        // görür ya da kimlik nesli koşuluna takılır, yazmaz (DataControllerProfiles.UpsertAsync): bu arama hiçbirini kaçırmaz.
+        var lateProfiles = await _db.DataControllerProfiles.Where(p => p.CustomerId == id).ToListAsync(ct);
+        var lateVersions = await _db.DataControllerProfileVersions.Where(v => v.CustomerId == id).ToListAsync(ct);
+        if (lateProfiles.Count + lateVersions.Count > 0)
+        {
+            _db.DataControllerProfiles.RemoveRange(lateProfiles);
+            _db.DataControllerProfileVersions.RemoveRange(lateVersions);
+            const string late = criterion + ", silmeyle eşzamanlı yazılmış";
+            Record("DataControllerProfiles", DataDestruction.Actions.Deleted, lateProfiles.Count, late);
+            Record("DataControllerProfileVersions", DataDestruction.Actions.Deleted, lateVersions.Count, late);
+            await _db.SaveChangesAsync(ct);
+        }
+
         // Rows are gone — now the files. A failure here leaves an orphan blob,
         // which BackupOrphanCleanupJob sweeps; DeleteBlob already logs and
         // swallows so a locked file can't fail an otherwise-completed purge.
@@ -215,7 +288,10 @@ public sealed class AdminCustomersController : ControllerBase
             {
                 preEmail,
                 deletedLicenses = licenseIds.Count,
-                deletedBackups = backupRows.Count
+                deletedBackups = backupRows.Count,
+                // KVKK m. 13/2: kapanan banka veri talebi açık listeden düşer, başvurana yanıt yükümlülüğü sürer (sayı, kişisel
+                // veri değil).
+                closedBankSubjectRequests,
             }, ct: ct);
 
         return NoContent();

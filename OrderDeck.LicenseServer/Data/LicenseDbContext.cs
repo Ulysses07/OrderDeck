@@ -73,6 +73,8 @@ public class LicenseDbContext : DbContext
     public DbSet<WpfReplica> WpfReplicas => Set<WpfReplica>();
     public DbSet<SalesLegacyTrace> SalesLegacyTraces => Set<SalesLegacyTrace>();
     public DbSet<LicenseShippingSettings> LicenseShippingSettings => Set<LicenseShippingSettings>();
+    public DbSet<DataControllerProfile> DataControllerProfiles => Set<DataControllerProfile>();
+    public DbSet<DataControllerProfileVersion> DataControllerProfileVersions => Set<DataControllerProfileVersion>();
     public DbSet<SalesCommandLog> SalesCommandLogs => Set<SalesCommandLog>();
     public DbSet<PaymentRequestRecord> PaymentRequestRecords => Set<PaymentRequestRecord>();
     public DbSet<PaymentRequestMember> PaymentRequestMembers => Set<PaymentRequestMember>();
@@ -118,6 +120,9 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentMatch> PaymentMatches => Set<PaymentMatch>();
     public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
     public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
+    public DbSet<DataDestructionRecord> DataDestructionRecords => Set<DataDestructionRecord>();
+    public DbSet<BankSubjectRequest> BankSubjectRequests => Set<BankSubjectRequest>();
+    public DbSet<ObifinCopyDeletion> ObifinCopyDeletions => Set<ObifinCopyDeletion>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -673,6 +678,35 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.ShippingFee).HasPrecision(18, 2);
             b.Property(s => s.Version).IsConcurrencyToken();
             b.Property(s => s.UpdatedBy).HasMaxLength(64);
+        });
+
+        // Yayıncının veri sorumlusu bilgileri (KVKK K-3): müşteri başına bir satır, müşteri silinirse gider. Version
+        // eşzamanlılık jetonu: aynı sürümü okuyan iki yazımdan ikincisi çakışır, yeniden okuyup dener
+        // (Services.Privacy.DataControllerProfiles.UpsertAsync). Sınırların adı tam yazılır: bu sınıfın DbSet'i aynı adı taşır.
+        mb.Entity<DataControllerProfile>(b =>
+        {
+            b.HasKey(p => p.CustomerId);
+            b.HasOne(p => p.Customer).WithOne().HasForeignKey<DataControllerProfile>(p => p.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(p => p.LegalName).HasMaxLength(Services.Privacy.DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(p => p.PostalAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(p => p.KvkkEmail).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(p => p.KepAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax);
+            b.Property(p => p.Version).IsConcurrencyToken();
+            b.Property(p => p.UpdatedBy).HasMaxLength(300).IsRequired();
+        });
+
+        // Veri sorumlusu bilgisinin sürümleri (KVKK m. 10/1-a ispatı, karar 24): yalnız eklenir; müşteri silinirse gider (purge
+        // ayrıca siler, satır anonimleşir ama kalır). (Müşteri, sürüm) tekil: bir sürüm numarası tek içeriğe verilir.
+        mb.Entity<DataControllerProfileVersion>(b =>
+        {
+            b.HasKey(v => v.Id);
+            b.HasOne<Customer>().WithMany().HasForeignKey(v => v.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(v => new { v.CustomerId, v.Version }).IsUnique();
+            b.Property(v => v.LegalName).HasMaxLength(Services.Privacy.DataControllerProfiles.LegalNameMax).IsRequired();
+            b.Property(v => v.PostalAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.PostalAddressMax).IsRequired();
+            b.Property(v => v.KvkkEmail).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax).IsRequired();
+            b.Property(v => v.KepAddress).HasMaxLength(Services.Privacy.DataControllerProfiles.EmailMax);
+            b.Property(v => v.CreatedBy).HasMaxLength(300).IsRequired();
         });
 
         // Satış komutu günlüğü (yayın ve etiket senkronu S2, spec 2026-10-13 §3.1,
@@ -1244,6 +1278,7 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.IbanHash).HasMaxLength(64);
             b.Property(a => a.Currency).HasMaxLength(3).IsRequired();
             b.Property(a => a.NotificationNote).HasMaxLength(500);
+            b.Property(a => a.ApprovedBy).HasMaxLength(256);
         });
 
         mb.Entity<BankTransaction>(b =>
@@ -1323,6 +1358,61 @@ public class LicenseDbContext : DbContext
             // Ödeme başına tek boşluk kaydı.
             b.HasIndex(g => g.PaymentId).IsUnique();
             b.Property(g => g.Reason).HasConversion<string>().HasMaxLength(24).IsRequired();
+        });
+
+        // Kalıcı imha kaydı (Silme Yönetmeliği md. 7/3). Lisansa FK BİLEREK yok: lisans silinse de kayıt yaşar.
+        mb.Entity<DataDestructionRecord>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Target).HasMaxLength(100).IsRequired();
+            b.Property(r => r.Action).HasMaxLength(16).IsRequired();
+            b.Property(r => r.Criterion).HasMaxLength(100).IsRequired();
+            b.Property(r => r.Trigger).HasMaxLength(32).IsRequired();
+            b.Property(r => r.Actor).HasMaxLength(256).IsRequired();
+            b.HasIndex(r => r.OccurredAt);
+            b.HasIndex(r => r.LicenseId);
+            b.HasIndex(r => r.SubjectId);
+            // İmha özetinin sorgusu (DigestedAt IS NULL): tablo hiç budanmaz, gönderilmemiş satır ise birkaç düzinedir.
+            // Adlı dizin: aynı sütundaki adsız dizinden AYRI bir dizin olarak kurulur.
+            b.HasIndex(r => r.OccurredAt, "IX_DataDestructionRecords_Undigested").HasFilter("[DigestedAt] IS NULL");
+        });
+
+        // IBAN ile banka veri talebi (KVKK K-7). Lisansa FK BİLEREK yok: talebin belgesi lisans silinse de yaşar. Özet yalnız 64
+        // hex (diğer banka tablolarının kısıtı): ham IBAN'ı buraya yazan bir kod yolu DB'de patlar.
+        mb.Entity<BankSubjectRequest>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(r => r.IbanHash).HasMaxLength(64);
+            b.Property(r => r.IbanMasked).HasMaxLength(40).IsRequired();
+            b.Property(r => r.Verification).HasConversion<string>().HasMaxLength(40).IsRequired();
+            b.Property(r => r.VerifiedBy).HasMaxLength(256);
+            b.Property(r => r.CreatedBy).HasMaxLength(256).IsRequired();
+            b.Property(r => r.ClosedBy).HasMaxLength(256);
+            b.Property(r => r.Resolution).HasConversion<string>().HasMaxLength(32).IsRequired();
+            b.Property(r => r.Outcome).HasMaxLength(500);
+            // Talep bir kez kapanır (UPDATE ... WHERE ClosedAt IS NULL): aynı anda iki silme ya da kapatma ikinci kez sonuç ve imha
+            // kaydı yazmaz (BankSubjectRequestService çakışmayı ClosedMessage'a çevirir). Şema değişmez.
+            b.Property(r => r.ClosedAt).IsConcurrencyToken();
+            b.HasIndex(r => new { r.ClosedAt, r.DueAt });
+            b.HasIndex(r => r.LicenseId);
+            b.ToTable(tb => tb.HasCheckConstraint("CK_BankSubjectRequests_IbanHash_Hex64",
+                "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'"));
+        });
+
+        // Obifin kopyasının yazılı silme teyidi (KVKK Ö-9). Lisansa ve bağlantıya FK BİLEREK yok: kayıt ikisinden de uzun yaşar.
+        mb.Entity<ObifinCopyDeletion>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.Property(d => d.RequestedBy).HasMaxLength(256).IsRequired();
+            b.Property(d => d.ConfirmedBy).HasMaxLength(256);
+            b.Property(d => d.ManualAction).HasMaxLength(ObifinCopyDeletion.ManualActionMaxLength);
+            // Çift tık / iki yönetici: ikinci "Teyit alındı" ilkinin üstüne yazıp ikinci imha kaydını açmasın (UPDATE ... WHERE
+            // ConfirmedAt IS NULL; BankConnectionTerminator.ConfirmObifinCopyDeletedAsync çakışmayı AlreadyConfirmedMessage'a çevirir).
+            b.Property(d => d.ConfirmedAt).IsConcurrencyToken();
+            b.HasIndex(d => d.LicenseId);
+            // Hatırlatma ve sayfa sorgusu (ConfirmedAt IS NULL): bekleyen satır birkaç tanedir.
+            b.HasIndex(d => d.RequestedAt, "IX_ObifinCopyDeletions_Pending").HasFilter("[ConfirmedAt] IS NULL");
         });
 
         mb.Entity<NetgsmDeparture>(b =>

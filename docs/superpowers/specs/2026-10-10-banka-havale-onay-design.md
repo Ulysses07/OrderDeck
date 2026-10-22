@@ -286,7 +286,12 @@ Genel bakiye geri alma ucu `bank-overpayment` satırını 409 `use-bank-revert` 
   - Liste: "{tutar} havalen alındı", alt yazı "Banka havalesi".
   - Modal başlığı: "Ödeme Detayı".
   - Zaman çizgisi: "Bankaya ulaştı", ardından "Onaylandı".
-- Push `type=payment-approved` olarak kalır ki eski sürümler doğru ekrana gitsin; yanına `source=bank` eklenir. Metin: "{tutar} ₺ ödemen alındı".
+- Push `type=payment-approved` olarak kalır ki eski sürümler doğru ekrana gitsin; yanına `source=bank` eklenir. Gövde banka onayına ait, sabit ve tutarsız bir metindir (KVKK K-5; bildirim gövdesi Google FCM'ye gider): `BankPaymentApprovedPushBody = "Ödemen alındı."`.
+  - Dekont onayının sabiti ("Dekontun onaylandı.") kullanılmaz. `Source = Bank` satırının dekontu yok; dekont yüklememiş müşterinin kilit ekranına "Dekontun onaylandı." düşerdi.
+  - Sabit, servisin de erişebildiği tarafsız bir yerde durur: `Services/Push/PaymentPushTexts`. İki dekont sabiti (`PaymentApprovedPushBody`, `PaymentRejectedPushBody`) de `PanelPaymentsController`'dan oraya taşınır. Push `BankPaymentDecisionService`'ten (§6) gider; sabiti controller'dan okusaydı Services→Controllers bağımlılığı doğardı (bugün `Services/` altında `Controllers` ad alanını kullanan dosya yok).
+  - Başlık yayıncı adı. data'da yalnız `type=payment-approved`, `source=bank`, `paymentId`, `licenseId` bulunur.
+  - Bir test bunu KVKK planı Görev 19'un testiyle (`ShopperOrderPaymentPushTests`) aynı biçimde sınar: gövde sabite, başlık yayıncı adına tam eşit, `Data.Keys` tam olarak bu dört anahtar.
+  - Tutar FCM'ye gitmez; uygulamada görünür (liste: "{tutar} havalen alındı").
 - Push yalnız "Evet" ve otomatik onayda gider. Ayar ipucu "Ödemen onaylandığında…" olarak değişir (`ProfilScreen.tsx:185`).
 - Onaylanmamış öneri shopper'a hiç gösterilmez; tahmin yanlışsa başkasının havalesi sızardı.
 - Geri alma (§11.2): `WrongCustomer` gerekçesinde satırın `ShopperId`'si boşaltılır; satır o shopper'ın uygulamasından kaybolur ve push gitmez. "Reddedildi" olarak kalsaydı başkasının ödemesi onun uygulamasında dururdu. Diğer gerekçelerde satır sabit metinle ("Ödeme doğrulanamadı") `rejected` görünür.
@@ -369,14 +374,14 @@ Havale `Unmatched`'e, dekont açık gap'e döner (bugünkü kaldırma kuralı). 
 **LiveDeck (sunucu)**
 1. `PaymentApprovalService` çıkarımı; davranış değişmez.
 2. Şema ve korumalar: Payment sütunları (+ `Source` geri doldurması), `Decision` / `DecisionRevision` / `AskReasons`, IBAN indeksi (tekilleştiren göç), `BankIbanState` ve upsert, `MergedIntoId` çözümü ve birleştirici, `BankDecisionEvent`, `PaymentExpectation` ve tahsis tablosu, bayraklar, ölçüm süzgeci, bütün enum değerleri, kaskadsız FK'lar, gölge sıfırlama reddi, eşleştirici kilidi.
-3. `bank-transfers` uçları (dört liste, sayfalama, sayaç ve sağlık alanları, seçici), tek SaveChanges'li değerlendirme ve tarama yüklemi, dekont etkileşimi (§4.4), geri alma ve bağ kaldırma, yayıncı push, shopper DTO boşaltması, admin sayfası korumaları, watchdog. Otomatik onay yok; bakiye satırı yok.
+3. `bank-transfers` uçları (dört liste, sayfalama, sayaç ve sağlık alanları, seçici), tek SaveChanges'li değerlendirme ve tarama yüklemi, dekont etkileşimi (§4.4), geri alma ve bağ kaldırma, yayıncı push, shopper banka onayı push'u ve `PaymentPushTexts` taşıması (§10), shopper DTO boşaltması, admin sayfası korumaları, watchdog. Otomatik onay yok; bakiye satırı yok.
 4. KVKK: WPF silme işaretinin sunucu tarafı, purge boşaltması, RawJson temizliği, 180 gün arşivi.
 5. Beklenti ucu (sunucu revizyonu), beklenti okuma ve vazgeçme uçları, tahsis ve fazla hesabı, dekont onayında tahsis, `payments/since` genişlemesi, `bank-already-approved` bayrağı.
 6. Otomatik onay kuralı (bayrak arkasında).
 
 **OrderDeck-Mobile:** P1 Havaleler segmenti (üç liste, alt sayfa, seçici, bayrak ve yoklama kuralı, "Havale fazlası" etiketi); P2 push deep link. İkisi tek AAB'de.
 
-**OrderDeck-Shopper:** SH1 `source` alanına göre metinler, push metni ve "Havale fazlası" etiketi.
+**OrderDeck-Shopper:** SH1 `source` alanına göre metinler ve "Havale fazlası" etiketi. Push metni Shopper'da değil sunucuda yazılır: banka onayının kendi tutarsız sabiti (`PaymentPushTexts.BankPaymentApprovedPushBody`, "Ödemen alındı."; KVKK K-5, §10).
 
 **WPF:** W1 rozet, çekmece, sayfa, yoklama servisi, müşteri seçici ve müşteri silme işareti; W2 beklenti kuyruğu ve banka dışı kapanışlar; W3 payments INSERT yolu, göç, imleç sıfırlama, `PayerName` kuralı, kargo yönergesi ve `LabelOf`. Ardından Velopack sürümü.
 - **Sürüm kapısı:** W2'yi taşıyan en düşük WPF sürümü, ödeme isteği kişi anahtarı düzeltmesini (`fix/odeme-istegi-kisi`) de içermelidir: düzeltme W2 ile aynı ya da daha önceki bir Velopack sürümünde çıkar. Sürüm notuna "W2 ⊇ kişi anahtarı" yazılır. Böylece §5-5'in "bütün etkin PC'ler W2+" koşulu kişi anahtarını da kapsar.

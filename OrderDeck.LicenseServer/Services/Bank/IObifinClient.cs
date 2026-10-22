@@ -15,11 +15,12 @@ public sealed record ObifinAccountDto(
 
 public sealed record ObifinBankConnectionDto(long BankaApiId, string BankaKodu, string? Name, bool Active);
 
-/// <summary>Tek hareket. Tarih TR yerel (dönüşüm çağıranda); tutar işaretli.</summary>
+/// <summary>Tek hareket. Tarih TR yerel (dönüşüm çağıranda); tutar işaretli. Karşı tarafın VKN/TCKN alanları
+/// (BorcluVKN, AmirVKN, LehdarTCKN) BİLEREK okunmaz (KVKK Ö-2): amaçsız veri.</summary>
 public sealed record ObifinTransactionDto(
     long Id, long AccountId, string BankaKodu, DateTime OccurredAtTr, decimal SignedAmount, string Currency,
     string? Description, string? TransactionCode, string? CommonType, string? BankReference,
-    string? CounterpartyIban, string? CounterpartyName, string? CounterpartyTaxId, string RawJson);
+    string? CounterpartyIban, string? CounterpartyName, string RawJson);
 
 public sealed record ObifinPage<T>(IReadOnlyList<T> Items, int PageNo, int? TotalPages, int? TotalCount, int PageSize);
 

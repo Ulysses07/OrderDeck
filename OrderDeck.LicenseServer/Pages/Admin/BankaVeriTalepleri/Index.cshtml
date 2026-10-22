@@ -1,0 +1,167 @@
+@page "/admin/banka-veri-talepleri"
+@model IndexModel
+@using OrderDeck.LicenseServer.Domain.Bank
+@using OrderDeck.LicenseServer.Services.Bank
+@{
+    ViewData["Title"] = "Banka Veri Talepleri";
+    var tr = ObifinConnectionService.TrZone;
+    const string self = "/Admin/BankaVeriTalepleri/Index";
+}
+@* TempData şeritleri _AdminLayout → _ToastPartial'da basılır. Girilen IBAN hiçbir yerde geri basılmaz; yalnız kısaltılmış hâli. *@
+<h1 class="h3 mb-3">Banka Veri Talepleri (IBAN ile)</h1>
+
+<div class="alert alert-warning small">
+    Dışa aktarmadan ya da silmeden önce başvuranın <strong>kimliğini ve IBAN'ın ona ait olduğunu</strong> doğrulayın ve yöntemi
+    kaydedin; başka birinin havale bilgisi açıklanmamalı. Son tarih talebin ulaştığı günden 30 gündür (KVKK m. 13/2).
+</div>
+@if (Model.BankDisabled)
+{
+    <div class="alert alert-danger" data-banner="bank-disabled">@BankHasher.DisabledMessage — yeni talep açılamaz; açık talepler işlenebilir.</div>
+}
+
+<h2 class="h5">Yeni talep</h2>
+<form method="post" asp-page-handler="Create" class="row g-2 mb-4" autocomplete="off" data-form="create">
+    <div class="col-md-4"><label class="form-label">Lisans</label>
+        <select name="LicenseId" class="form-select" required>
+            <option value="">— lisans seçin —</option>
+            @foreach (var l in Model.Licenses)
+            {
+                <option value="@l.Id">@l.Label</option>
+            }
+        </select></div>
+    <div class="col-md-4"><label class="form-label">IBAN (boşluklu yazılabilir)</label>
+        <input name="Iban" class="form-control" required autocomplete="off" /></div>
+    <div class="col-md-2"><label class="form-label">Tür</label>
+        <select name="Kind" class="form-select" required>
+            <option value="">— tür seçin —</option>
+            <option value="Access">Erişim (verinin kopyası)</option>
+            <option value="Erasure">Silme</option>
+        </select></div>
+    <div class="col-md-2"><label class="form-label">Talebin ulaştığı gün</label>
+        <input name="ReceivedOn" type="date" class="form-control" value="@Model.TodayTrIso" max="@Model.TodayTrIso" /></div>
+    <div class="col-12"><button class="btn btn-primary">Talep aç</button></div>
+</form>
+
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item"><a class="nav-link @(Model.ShowClosed ? "" : "active")" asp-page="@self" asp-route-closed="false">Açık</a></li>
+    <li class="nav-item"><a class="nav-link @(Model.ShowClosed ? "active" : "")" asp-page="@self" asp-route-closed="true">Kapalı</a></li>
+</ul>
+@if (!Model.ShowClosed && Model.Requests.Any(r => r.AwaitingReply(Model.Now)))
+{
+    <div class="alert alert-info small" data-banner="awaiting-reply">
+        "Yanıt bekleniyor": lisansın banka verisi silindiği için sistem bu talepleri kapattı, ama başvurana yanıt yükümlülüğü sürer.
+        Son tarihe kadar burada kalırlar; sonuç metnine göre başvurana yanıt verin.
+    </div>
+}
+<table class="table table-sm" data-table="subject-requests">
+    <thead><tr><th>Lisans</th><th>Tür</th><th>IBAN</th><th>Ulaştı</th><th>Son tarih</th><th>Durum</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var r in Model.Requests)
+    {
+        var overdue = r.Overdue(Model.Now);
+        <tr data-request="@r.Id">
+            <td>@r.License</td>
+            <td>@IndexModel.KindLabel(r.Kind)</td>
+            <td><code>@(string.IsNullOrEmpty(r.IbanMasked) ? "(silindi)" : r.IbanMasked)</code></td>
+            <td>@TimeZoneInfo.ConvertTime(r.ReceivedAt, tr).ToString("dd.MM.yyyy")</td>
+            <td data-cell="due" class="@(overdue ? "text-danger fw-bold" : "")">@TimeZoneInfo.ConvertTime(r.DueAt, tr).ToString("dd.MM.yyyy")@(overdue ? " (gecikti)" : "")</td>
+            <td><small>
+                @if (r.AwaitingReply(Model.Now))
+                {
+                    <span class="badge bg-warning text-dark" data-badge="awaiting-reply">yanıt bekleniyor</span>
+                }
+                @(r.ClosedAt is { } c ? $"kapandı {TimeZoneInfo.ConvertTime(c, tr):dd.MM.yyyy}: {r.Outcome}" : "açık")
+            </small></td>
+            <td><a asp-page="@self" asp-route-id="@r.Id" asp-route-closed="@Model.ShowClosed">Aç</a></td>
+        </tr>
+    }
+    </tbody>
+</table>
+
+@if (Model.Selected is { } s)
+{
+    var q = s.Request;
+    <h2 class="h5 mt-4">Talep @(string.IsNullOrEmpty(q.IbanMasked) ? "(IBAN silindi)" : q.IbanMasked) — @IndexModel.KindLabel(q.Kind).ToLowerInvariant()</h2>
+    <p class="small text-muted">Ulaştı @TimeZoneInfo.ConvertTime(q.ReceivedAt, tr).ToString("dd.MM.yyyy"), son tarih
+        @TimeZoneInfo.ConvertTime(q.DueAt, tr).ToString("dd.MM.yyyy"). Bu IBAN'ın bağlı olduğu müşteri kaydı: @s.IbanMemories.
+        Hareket: @s.Transactions.Count. Bağlı dekont kaydı: <span data-cell="receipts">@s.LinkedReceipts</span>
+        (ödeyen adı ve dekont dosyası bu araçla dışa aktarılmaz ve silinmez; başvurana gerekçesiyle bildirin).</p>
+    @if (q.ClosedAt is { } closedAt)
+    {
+        <p class="small" data-cell="outcome">Kapandı @TimeZoneInfo.ConvertTime(closedAt, tr).ToString("dd.MM.yyyy HH:mm"): @q.Outcome</p>
+    }
+    @if (s.Transactions.Count > 0)
+    {
+        <table class="table table-sm">
+            <thead><tr><th>İşlem (TR)</th><th>Tutar</th><th>IBAN</th><th>Açıklama</th><th>Gönderen</th><th>Eşleştirme</th></tr></thead>
+            <tbody>
+            @foreach (var t in s.Transactions)
+            {
+                <tr data-tx="@t.Id">
+                    <td>@TimeZoneInfo.ConvertTime(t.OccurredAt, tr).ToString("dd.MM.yyyy HH:mm")</td>
+                    <td>@t.Amount.ToString("N2") @t.Currency</td>
+                    <td><code>@t.IbanMasked</code></td>
+                    <td>@t.Description</td>
+                    <td>@t.CounterpartyName</td>
+                    <td>@(t.LinkedToCustomer ? "eşleşti" : "eşleşmedi")</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+    @if (q.ClosedAt is null)
+    {
+        <form method="post" class="row g-2 mb-2" asp-page-handler="Verify" asp-route-id="@q.Id" data-form="verify">
+            <div class="col-md-8"><label class="form-label">Kimlik ve IBAN sahipliği nasıl doğrulandı? (zorunlu; belge saklanmaz)</label>
+                <select name="Verification" class="form-select" required>
+                    <option value="">— yöntem seçin —</option>
+                    @foreach (var method in new[] { BankSubjectVerification.WetSignatureAndBankDocument,
+                        BankSubjectVerification.ElectronicSignatureAndBankDocument, BankSubjectVerification.RegisteredContactAndBankDocument })
+                    {
+                        <option value="@method">@IndexModel.VerificationLabel(method)</option>
+                    }
+                </select></div>
+            <div class="col-md-4 align-self-end"><button class="btn btn-outline-secondary">Doğrulamayı kaydet</button></div>
+        </form>
+        @* Doğrulayanın kimliği (sub) basılmaz: yöneticiye bir şey söylemez, yalnız tarih ve yöntem. *@
+        <p class="small" data-cell="verification">@(q.Verification == BankSubjectVerification.None
+            ? "Doğrulama kaydı yok: dışa aktarma ve silme yapılamaz."
+            : $"Doğrulandı: {IndexModel.VerificationLabel(q.Verification)} ({TimeZoneInfo.ConvertTime(q.VerifiedAt!.Value, tr):dd.MM.yyyy HH:mm})")</p>
+        @* Dışa aktarım yalnız erişim talebinde, silme yalnız silme talebinde (servis de reddeder; KVKK m. 4/2-ç). *@
+        @if (q.Kind == BankSubjectRequestKind.Access)
+        {
+            <form method="post" class="d-inline" asp-page-handler="Export" asp-route-id="@q.Id" data-form="export">
+                <button class="btn btn-outline-primary">CSV dışa aktar</button>
+            </form>
+        }
+        @if (q.Kind == BankSubjectRequestKind.Erasure)
+        {
+            <form method="post" class="d-inline" asp-page-handler="Erase" asp-route-id="@q.Id" data-form="erase"
+                  onsubmit="return confirm('Bu IBAN ile ilgili havale metinleri ve IBAN bağı silinecek. Geri alınamaz. Emin misiniz?')">
+                <button class="btn btn-outline-danger">Sil ve kapat</button>
+            </form>
+        }
+        @if (q.Kind == BankSubjectRequestKind.Access && q.Verification != BankSubjectVerification.None)
+        {
+            <form method="post" class="d-inline" asp-page-handler="Close" asp-route-id="@q.Id" data-form="answer">
+                <input type="hidden" name="Resolution" value="@BankSubjectResolution.Answered" />
+                <button class="btn btn-outline-secondary">Yanıtlandı (dışa aktarım iletildi), kapat</button>
+            </form>
+        }
+        @* KVKK m. 13/3, Silme Yönetmeliği md. 12/1-c: gerekçeli ret kategoridir; gerekçenin kendisi başvurana yazılı gider, sisteme
+           serbest metin girmez. *@
+        <form method="post" class="row g-2 mt-2" asp-page-handler="Close" asp-route-id="@q.Id" data-form="reject">
+            <div class="col-md-8"><label class="form-label">Reddet / kapat (gerekçe başvurana yazılı bildirilir)</label>
+                <select name="Resolution" class="form-select" required>
+                    <option value="">— sonuç seçin —</option>
+                    @if (q.Verification == BankSubjectVerification.None)
+                    {
+                        <option value="@BankSubjectResolution.RejectedNotVerified">Kimlik ya da IBAN sahipliği doğrulanamadı</option>
+                    }
+                    <option value="@BankSubjectResolution.RejectedLegalGround">Kanuni gerekçeyle (tamamen ya da kısmen) reddedildi</option>
+                    <option value="@BankSubjectResolution.Withdrawn">Başvuran talebi geri çekti</option>
+                </select></div>
+            <div class="col-md-4 align-self-end"><button class="btn btn-outline-danger">Reddet / kapat</button></div>
+        </form>
+    }
+}

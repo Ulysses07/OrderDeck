@@ -3,17 +3,22 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.Shoppers;
 
 namespace OrderDeck.LicenseServer.Pages.Admin.Shoppers;
 
 /// <summary>
 /// Shopper KVKK silme taleplerinin elle işlendiği sayfa. Silme hiçbir zaman
-/// otomatik koşmuyor; her satır bir insanın "Sil" demesini bekliyor.
+/// otomatik koşmuyor; her satır bir insanın "Sil" demesini bekliyor. Her
+/// talebin son tarihi (talep + <see cref="ResponseDays"/> gün, KVKK m. 13/2)
+/// gösterilir, bekleyen talep geçmişse işaretlenir.
 /// </summary>
 public class DeletionRequestsModel : PageModel
 {
     private const int PageSize = 25;
+    /// <summary>KVKK m. 13/2: talep en geç 30 gün içinde sonuçlandırılır.</summary>
+    public const int ResponseDays = 30;
 
     private readonly LicenseDbContext _db;
     private readonly ShopperPurgeService _purge;
@@ -32,6 +37,7 @@ public class DeletionRequestsModel : PageModel
         Guid ShopperId,
         string PhoneAtRequest,
         DateTimeOffset RequestedAt,
+        DateTimeOffset DueAt,
         DateTimeOffset? HandledAt,
         string? HandledBy,
         string? Notes,
@@ -42,14 +48,18 @@ public class DeletionRequestsModel : PageModel
     public int PendingCount { get; private set; }
     public int CurrentPage { get; private set; }
     public int TotalPages { get; private set; }
+    public DateTimeOffset Now { get; } = DateTimeOffset.UtcNow;
 
-    public async Task OnGetAsync(bool handled, int page, CancellationToken ct)
+    // Sayfa numarası "pageNumber": "page" Razor Pages'in ayrılmış rota değeridir (sayfanın adı). asp-route-page ve
+    // RedirectToPage(new { page }) sayfa adını sayıyla ezer, URL üretilemez: satırın "Sil" formu action="" ile çıkıyor ve
+    // silme işleyiciye hiç ulaşmıyordu, yönlendirme de istisna atıyordu.
+    public async Task OnGetAsync(bool handled, int pageNumber, CancellationToken ct)
     {
-        await LoadAsync(handled, page, ct);
+        await LoadAsync(handled, pageNumber, ct);
     }
 
     public async Task<IActionResult> OnPostPurgeAsync(
-        Guid id, bool handled, int page, CancellationToken ct)
+        Guid id, bool handled, int pageNumber, CancellationToken ct)
     {
         var request = await _db.ShopperDeletionRequests
             .FirstOrDefaultAsync(r => r.Id == id, ct);
@@ -60,10 +70,12 @@ public class DeletionRequestsModel : PageModel
         if (request.HandledAt is not null)
         {
             TempData["Success"] = "Bu talep zaten işlenmiş.";
-            return RedirectToPage(new { handled, page });
+            return RedirectToPage(new { handled, pageNumber });
         }
 
-        var result = await _purge.PurgeAsync(request.ShopperId, ct);
+        // İmha kaydının yapanı yöneticinin takma kimliği, kullanıcı adı değil (KVKK Ö-14; adı HandledBy'da ve denetim satırında);
+        // kayıt talebin kimliğini de taşır (Ö-13).
+        var result = await _purge.PurgeAsync(request.ShopperId, DataDestruction.ActorOf(User), request.Id, ct);
         if (result is null)
         {
             TempData["Success"] = "Shopper kaydı bulunamadı; talep kapatıldı.";
@@ -86,6 +98,7 @@ public class DeletionRequestsModel : PageModel
                 projectionsScrubbed = result?.ProjectionsScrubbed ?? 0,
                 dependentRowsDeleted = result?.DependentRowsDeleted ?? 0,
                 pdfsPending = result?.PdfsPending ?? 0,
+                bankTransactionsScrubbed = result?.BankTransactionsScrubbed ?? 0,
             }, ct: ct);
 
         // R4-05: dekontların bir kısmı depodan silinemediyse bu "silindi"
@@ -95,7 +108,7 @@ public class DeletionRequestsModel : PageModel
             TempData["Error"] = $"Silme kısmen tamamlandı. {request.Notes}";
         else
             TempData["Success"] ??= $"Silindi. {request.Notes}";
-        return RedirectToPage(new { handled, page });
+        return RedirectToPage(new { handled, pageNumber });
     }
 
     private async Task LoadAsync(bool handled, int page, CancellationToken ct)
@@ -129,7 +142,7 @@ public class DeletionRequestsModel : PageModel
 
         Items = rows
             .Select(r => new Row(
-                r.Id, r.ShopperId, r.PhoneAtRequest, r.RequestedAt,
+                r.Id, r.ShopperId, r.PhoneAtRequest, r.RequestedAt, r.RequestedAt.AddDays(ResponseDays),
                 r.HandledAt, r.HandledBy, r.Notes,
                 paymentCounts.GetValueOrDefault(r.ShopperId)))
             .ToList();
