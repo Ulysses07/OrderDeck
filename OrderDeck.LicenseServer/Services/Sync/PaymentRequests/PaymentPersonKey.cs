@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 
 namespace OrderDeck.LicenseServer.Services.Sync.PaymentRequests;
 
@@ -29,8 +30,9 @@ public static class PaymentPersonKey
     public const string CanonicalPrefix = "c:";
     public const string RawPrefix = "r:";
 
-    /// <summary>Satır bir gruba bağlı mı (<c>CustomerGroup.IsGrouped</c> ile aynı kural).</summary>
-    public static bool IsGrouped(string? groupId) => !string.IsNullOrWhiteSpace(groupId);
+    /// <summary>Satır bir gruba bağlı mı (<c>CustomerGroup.IsGrouped</c> ile aynı kural; tek tanım
+    /// <see cref="PersonMembership.IsGrouped"/>).</summary>
+    public static bool IsGrouped(string? groupId) => PersonMembership.IsGrouped(groupId);
 
     /// <summary>
     /// Müşteri Id'si GUID mi: sipariş, kargo ve WPF müşteri Id'leri "N" biçimli hex'tir (<c>PaymentOwnerRule.IsOwnerCapable</c>,

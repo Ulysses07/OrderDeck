@@ -298,6 +298,38 @@ public sealed class PaymentRequestBeginRelationalTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Ortak bakiye §15-7: g1'in son canlı üyesi g0'a geçince kanca silinmiş üyeyi gerçek SQL Server'da g0'a taşır;
+    /// onu içermeyen (WPF'te silinmiş satırın numarası değişmez) <c>memberIds</c> yine kira alır, silinmiş üyenin siparişi
+    /// toplama girmez, kaydın üyelerine girer. Canlı üye eksikse 409 <c>members-stale</c>.
+    /// </summary>
+    [Fact]
+    public async Task Sunucuda_tasinan_silinmis_uye_istemcide_yoksa_kira_acilir_canli_uye_eksikse_409()
+    {
+        var g1 = $"grp-{Guid.NewGuid():N}";
+        var g0 = $"grp-{Guid.NewGuid():N}";
+        var owner = await _kit.SeedProjectionAsync(g1);
+        var purged = await _kit.SeedProjectionAsync(g1, purged: true);
+        var sibling = await _kit.SeedProjectionAsync(g0);
+        await _kit.SeedOrderAsync(purged, 70m);
+        await _kit.GroupAsync(g0, owner);
+
+        var stale = await _kit.BeginAsync(Kit.Body(Guid.NewGuid(), _pcA, owner, [owner]));
+        stale.StatusCode.Should().Be(HttpStatusCode.Conflict, await stale.Content.ReadAsStringAsync());
+        var problem = await SalesKit.ProblemAsync(stale);
+        problem.GetProperty("title").GetString().Should().Be("members-stale");
+        problem.GetProperty("members").EnumerateArray().Select(m => m.GetString())
+            .Should().BeEquivalentTo([owner, sibling, purged], "kanca silinmiş üyeyi g0'a taşıdı");
+
+        var recordId = Guid.NewGuid();
+        var resp = await _kit.BeginAsync(Kit.Body(recordId, _pcA, owner, [owner, sibling]));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+        var expected = new[] { owner, sibling, purged }.Order(StringComparer.Ordinal).ToList();
+        (await Kit.ReadAsync(resp)).Members.Should().Equal(expected);
+        (await _kit.RecordAsync(recordId))!.Members.Select(m => m.WpfCustomerId).Should().BeEquivalentTo(expected);
+    }
+
+    /// <summary>
     /// §10.1-17, §6.4-e: başka bir PersonKey ile yazılmış teslim kaydı (grup senkronu gecikmişken başka bilgisayarın
     /// kurduğu kişi) paylaşılan üye üzerinden bulunur — 409 <c>already-requested</c>.
     /// </summary>
