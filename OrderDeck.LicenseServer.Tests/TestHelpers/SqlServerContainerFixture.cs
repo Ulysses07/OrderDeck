@@ -76,13 +76,19 @@ public class SqlServerContainerFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        // Kayıt fixture TÜRÜNE göre: bir tür ikinci bir koleksiyonda da kullanılırsa
+        // ikinci örnek birincinin kaydını ezer, After() başka koleksiyonun koşan testinin
+        // DB'sini "bitti"ye taşır ve birinci örneğin DB'leri hiç silinmez (sızıntı sessizce
+        // döner). Bunu sessiz bırakmak yerine kurulumda düşür.
         await _container.StartAsync();
-        Running[GetType()] = this;
+        if (!Running.TryAdd(GetType(), this))
+            throw new InvalidOperationException(
+                $"{GetType().Name} yalnız tek bir test koleksiyonunda kullanılabilir (DB silme kaydı türe bağlı).");
     }
 
     public async Task DisposeAsync()
     {
-        Running.TryRemove(GetType(), out _);
+        Running.TryRemove(new KeyValuePair<Type, SqlServerContainerFixture>(GetType(), this));
         int remaining;
         lock (_gate) remaining = _open.Count + _finished.Count;
         Log($"{GetType().Name}: {_created} test DB'si açıldı, {_dropped} silindi, " +

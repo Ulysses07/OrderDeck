@@ -1,11 +1,16 @@
 using System.Runtime.CompilerServices;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.InMemory.Infrastructure.Internal;
+using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Data;
 
 namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
 /// <summary>
-/// Dispose edilen bir <see cref="ApiFactory"/> (host'u, servis sağlayıcısı ve
-/// InMemory deposuyla) çöp toplayıcıya bırakılmalı.
+/// Dispose edilen bir <see cref="ApiFactory"/> (host'u ve servis sağlayıcısıyla)
+/// çöp toplayıcıya bırakılmalı; InMemory deposu fabrikaya özel bir köke bağlı
+/// olmalı (ayrı test: adlı depo fabrikayı tutmadığı için ilk test onu görmez).
 ///
 /// Neden test var: paket binlerce fabrika açıyor. Bir tanesi bile statik bir
 /// kökten (zamanlayıcı, statik olay, önbellek) erişilebilir kalırsa hepsi
@@ -42,6 +47,30 @@ public sealed class ApiFactoryReleaseTests
 
         factory.IsAlive.Should().BeFalse("dispose edilen fabrikayı statik bir kök tutmamalı");
         derived.IsAlive.Should().BeFalse("WithWebHostBuilder ile türetilen fabrikayı da");
+    }
+
+    // Yukarıdaki test yalnız fabrika nesnesini izliyor. Adlı InMemory deposu EF'in
+    // statik iç önbelleğinde durur ve fabrikaya geri referans tutmaz: fabrika başına
+    // kök (ApiFactory._dbRoot) kaldırılırsa fabrika yine toplanır, o test yeşil kalır,
+    // depolar ise süreç boyunca birikir. Kökün fabrikaya özel olduğunu ayrıca sabitle.
+    [Fact]
+    public void Her_fabrika_kendi_InMemory_kokunu_kullanir()
+    {
+        using var a = new ApiFactory();
+        using var b = new ApiFactory();
+
+        var rootA = InMemoryRoot(a);
+        rootA.Should().NotBeNull("adlı depo süreç geneli önbellekte kalmamalı");
+        rootA.Should().NotBeSameAs(InMemoryRoot(b));
+    }
+
+    private static object? InMemoryRoot(ApiFactory factory)
+    {
+        using var scope = factory.Services.CreateScope();
+        var options = scope.ServiceProvider.GetRequiredService<DbContextOptions<LicenseDbContext>>();
+#pragma warning disable EF1001 // InMemoryOptionsExtension iç API; yalnız testte okunuyor
+        return options.FindExtension<InMemoryOptionsExtension>()?.DatabaseRoot;
+#pragma warning restore EF1001
     }
 
     // Ayrı yöntem: yerel değişkenler çağıranın durum makinesinde kalıp
