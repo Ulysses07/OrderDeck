@@ -737,9 +737,9 @@ veritabanıyla açtıktan sonra, kullanıcılara açmadan önce:
      yeniden yazar.
    - Sonra `OrderDeck__Bank__HashKey` satırını parola yöneticisindeki değerle `.env`'e
      ekleyip `docker compose up -d license-server`: banka işleri açılışta yeniden zamanlanır.
-3. Hangfire panosundan (`/admin/hangfire`) `bank-data-retention`, `security-data-retention` ve
-   `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler kendiliğinden yeniden
-   uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
+3. Hangfire panosundan (`/admin/hangfire`) `bank-data-retention`, `security-data-retention`,
+   `backup-monthly-retention` ve `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler
+   kendiliğinden yeniden uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
 4. Yedek anından sonraki özet e-postalarını açın; her satırı **tetikleyicisine** göre
    yeniden uygulayın (`konu` = ShopperId/CustomerId, `talep` = talep kimliği):
    - `shopper-purge`: admin/shoppers/deletion-requests'te o ShopperId'nin talebi geri

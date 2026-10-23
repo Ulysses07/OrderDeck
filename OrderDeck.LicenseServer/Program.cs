@@ -453,6 +453,7 @@ public class Program
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
         builder.Services.AddSingleton<BackupUploadThrottle>();
         builder.Services.AddScoped<BackupRetentionService>();
+        builder.Services.AddScoped<BackupMonthlyRetentionJob>();
         builder.Services.AddScoped<BackupViewerService>();
 
         // Push notifications. Provider: "stub" (default) veya "fcm".
@@ -1139,6 +1140,15 @@ public class Program
                 "product-photo-orphan-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "15 4 * * *");  // 04:15 UTC daily
+
+            // Aylık masaüstü yedeği saklaması (karar 7: 12 ay) — yükleme sonrası tur
+            // yalnız yükleyen müşteride koşar; yüklemeyi bırakan müşterinin süresi
+            // dolan aylık yedeklerini bu iş siler (en yeni yedek kalır). Yetim
+            // süpürmesinden (04:20) ÖNCE: dosyası silinemeyen yedek aynı gece toplanır.
+            manager.AddOrUpdate<BackupMonthlyRetentionJob>(
+                BackupMonthlyRetentionJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                "17 4 * * *");  // 04:17 UTC daily
 
             // Yedek blob mutabakatı — depolama kökünde kalmış yetim dosyaları
             // süpürür. Silme yollarındaki sıra artık "önce satır, sonra dosya";

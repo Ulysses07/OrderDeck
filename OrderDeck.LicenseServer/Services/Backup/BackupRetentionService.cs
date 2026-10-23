@@ -14,8 +14,9 @@ namespace OrderDeck.LicenseServer.Services.Backup;
 /// - Non-milestones trimmed to 5 most recent (older deleted from DB + filesystem).
 /// - Aylık yedek alındığı andan <see cref="BackupOptions.MonthlyRetentionMonths"/> ay (varsayılan 12) sonra silinir; müşterinin
 ///   en yeni yedeği hariç (karar 7, 23.10.2026). Her silme kişisel veri içermeyen imha kaydını (<see cref="DataDestruction"/>)
-///   satırlarla aynı SaveChanges'te yazar (KVKK Ö-13). Son-5 kırpması bugünkü gibi kayıtsız.
-/// Per-customer SemaphoreSlim serializes concurrent uploads.
+///   satırlarla aynı SaveChanges'te yazar (KVKK Ö-13). Son-5 kırpması bugünkü gibi kayıtsız. Yükleme yapmayan müşteri için
+///   aynı süre kuralını <see cref="ExpireMonthliesAsync"/> (günlük <see cref="BackupMonthlyRetentionJob"/>) uygular.
+/// Per-customer SemaphoreSlim serializes concurrent uploads (ve süpürmeyi yüklemelerle).
 /// </summary>
 public sealed class BackupRetentionService
 {
@@ -42,13 +43,58 @@ public sealed class BackupRetentionService
         _clock = clock ?? TimeProvider.System;
     }
 
-    public async Task EnforceAfterInsertAsync(Guid customerId, Guid newBackupId, CancellationToken ct = default)
+    public Task EnforceAfterInsertAsync(Guid customerId, Guid newBackupId, CancellationToken ct = default)
+        => UnderCustomerLockAsync(customerId, () => EnforceCoreAsync(customerId, newBackupId, ct), ct);
+
+    /// <summary>
+    /// Süresi dolan aylık yedekleri tüm müşterilerde siler (<see cref="ExpiredMonthlies"/>; en yeni yedek kalır). Yükleme sonrası
+    /// tur yalnız yükleyen müşteride koşar: yüklemeyi bırakan (ör. ayrılan) müşterinin aylık yedekleri bu olmadan süresiz kalırdı.
+    /// Yalnız süre kuralı: son-5 kırpması ve ay işareti onarımı yüklemeye bağlı kalır. Müşteri başına yükleme turuyla aynı kilit;
+    /// her müşteri kendi SaveChanges'inde (satırlar + imha kaydı), sonra dosyaları. Silinen satır sayısı döner. Süre 0 ya da
+    /// eksiyse hiçbir şey yapmaz.
+    /// </summary>
+    public async Task<int> ExpireMonthliesAsync(CancellationToken ct = default)
+    {
+        if (_opt.MonthlyRetentionMonths <= 0) return 0;
+        var cutoff = _clock.GetUtcNow().AddMonths(-_opt.MonthlyRetentionMonths);
+        var customerIds = await _db.CustomerBackups
+            .Where(b => b.IsMonthlyMilestone && b.CreatedAt < cutoff)
+            .Select(b => b.CustomerId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        var total = 0;
+        foreach (var customerId in customerIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            await UnderCustomerLockAsync(customerId, async () =>
+            {
+                // Kilidin içinde baştan okunur: arada bir yükleme turu satırları değiştirmiş olabilir.
+                var backups = await _db.CustomerBackups
+                    .Where(b => b.CustomerId == customerId)
+                    .OrderByDescending(b => b.CreatedAt)
+                    .ToListAsync(ct);
+                var expired = ExpiredMonthlies(backups);
+                if (expired.Count == 0) return;
+                await DeleteAsync(customerId, expired, expired.Count, ct);
+                total += expired.Count;
+            }, ct);
+            // Müşteriler arasında izleyici boşaltılır: tüm tablo tek izleyicide birikmesin.
+            _db.ChangeTracker.Clear();
+        }
+
+        if (total > 0)
+            _log.LogInformation("Monthly backup retention expired {Count} backups (cutoff {Cutoff})", total, cutoff);
+        return total;
+    }
+
+    private static async Task UnderCustomerLockAsync(Guid customerId, Func<Task> action, CancellationToken ct)
     {
         var sem = _customerLocks.GetOrAdd(customerId, _ => new SemaphoreSlim(1, 1));
         await sem.WaitAsync(ct);
         try
         {
-            await EnforceCoreAsync(customerId, newBackupId, ct);
+            await action();
         }
         finally
         {

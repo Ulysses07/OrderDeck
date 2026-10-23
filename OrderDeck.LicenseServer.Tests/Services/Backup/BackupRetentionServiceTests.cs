@@ -364,4 +364,88 @@ public class BackupRetentionServiceTests : IClassFixture<ApiFactory>
         (await db.CustomerBackups.FindAsync(ancient.Id)).Should().NotBeNull();
         (await RecordsAsync(db, customerId)).Should().BeEmpty();
     }
+
+    // ── Günlük süpürme: yükleme yapmayan müşterinin aylık yedekleri de süresinde gitsin ────────────────
+
+    private static async Task<Guid> AddCustomerAsync(LicenseDbContext db)
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            Email = $"retention-{Guid.NewGuid():N}@example.test",
+            Name = "T",
+            PasswordHash = "x",
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.Customers.Add(customer);
+        await db.SaveChangesAsync();
+        return customer.Id;
+    }
+
+    [Fact]
+    public async Task Supurme_yukleme_yapmayan_musterilerin_suresi_dolan_aylik_yedeklerini_siler_en_yenisini_birakir()
+    {
+        var clock = new FixedClock(TestNow);
+        var (db, svc, storage, a) = await SetupAsync(_factory, clock);
+        // A: 14 aydır yükleme yok; üç aylık yedeği var, en yenisi de süresi dolmuş.
+        var a16 = await UploadAsync(db, svc, storage, a, TestNow.AddMonths(-16), clock);
+        var a15 = await UploadAsync(db, svc, storage, a, TestNow.AddMonths(-15), clock);
+        var a14 = await UploadAsync(db, svc, storage, a, TestNow.AddMonths(-14), clock);
+        // B: biri süresi dolmuş, biri taze iki aylık yedek.
+        var b = await AddCustomerAsync(db);
+        var b13 = await UploadAsync(db, svc, storage, b, TestNow.AddMonths(-13), clock);
+        var b1 = await UploadAsync(db, svc, storage, b, TestNow.AddMonths(-1), clock);
+        (await db.CustomerBackups.CountAsync()).Should().Be(5, "yükleme anında hiçbirinin süresi dolmamıştı");
+
+        clock.UtcNow = TestNow;
+        var deleted = await svc.ExpireMonthliesAsync();
+
+        deleted.Should().Be(3);
+        db.ChangeTracker.Clear();
+        (await db.CustomerBackups.Select(x => x.Id).ToListAsync()).Should().BeEquivalentTo(new[] { a14.Id, b1.Id },
+            "süresi dolan aylıklar gider; A'nın en yeni yedeği süresi dolmuş olsa da kalır");
+        new[] { a16.BlobPath, a15.BlobPath, b13.BlobPath }.Should().OnlyContain(p => !File.Exists(p));
+        File.Exists(a14.BlobPath).Should().BeTrue();
+        (await RecordsAsync(db, a)).Should().ContainSingle().Which.RowCount.Should().Be(2);
+        (await RecordsAsync(db, b)).Should().ContainSingle().Which.Should().Match<DataDestructionRecord>(r =>
+            r.RowCount == 1 && r.Target == BackupRetentionService.DestructionTarget
+            && r.Trigger == DataDestruction.Triggers.Retention && r.Criterion == "CreatedAt+12ay, aylık yedek");
+    }
+
+    [Fact]
+    public async Task Supurme_yalniz_sure_kuralini_uygular_aylik_olmayanlara_dokunmaz()
+    {
+        var clock = new FixedClock(TestNow);
+        var (db, svc, storage, customerId) = await SetupAsync(_factory, clock);
+        var oldMonth = TestNow.AddMonths(-14);
+        var monthly = await UploadAsync(db, svc, storage, customerId, oldMonth, clock);
+        var regulars = new List<CustomerBackup>();
+        for (var day = 1; day <= 3; day++)
+            regulars.Add(await UploadAsync(db, svc, storage, customerId, oldMonth.AddDays(day), clock));
+        // Kırpmayı atlatılmış 7 aylık olmayan: süpürme son-5 kırpmasını yapmaz (o yüklemeye bağlı kalır).
+        for (var day = 4; day <= 7; day++)
+            regulars.Add(await InsertBackupAsync(db, storage, customerId, oldMonth.AddDays(day)));
+
+        clock.UtcNow = TestNow;
+        (await svc.ExpireMonthliesAsync()).Should().Be(1);
+
+        db.ChangeTracker.Clear();
+        (await db.CustomerBackups.Select(x => x.Id).ToListAsync())
+            .Should().BeEquivalentTo(regulars.Select(x => x.Id), "aylık olmayanlar yaşa bakılmadan kalır");
+        (await db.CustomerBackups.FindAsync(monthly.Id)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Supurme_sure_0_ise_hicbir_sey_silmez()
+    {
+        var clock = new FixedClock(TestNow);
+        var (db, svc, storage, customerId) = await SetupAsync(_factory, clock, monthlyRetentionMonths: 0);
+        await UploadAsync(db, svc, storage, customerId, TestNow.AddMonths(-30), clock);
+        await UploadAsync(db, svc, storage, customerId, TestNow.AddMonths(-20), clock);
+
+        clock.UtcNow = TestNow;
+        (await svc.ExpireMonthliesAsync()).Should().Be(0);
+
+        (await db.CustomerBackups.CountAsync(x => x.CustomerId == customerId)).Should().Be(2);
+    }
 }
