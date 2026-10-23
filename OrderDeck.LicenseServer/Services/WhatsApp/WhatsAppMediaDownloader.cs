@@ -204,11 +204,11 @@ public class WhatsAppMediaDownloader
     }
 
     /// <summary>Anahtar tenant'a ve aya göre bölünür: listeleme makul kalır,
-    /// lisans bazlı silme (KVKK) tek prefix taramasıyla yapılabilir.</summary>
+    /// lisans bazlı silme (KVKK, yayıncı silmesi) tek prefix taramasıyla yapılır.</summary>
     private static string BuildObjectKey(Guid licenseId, string mediaId, string? mime)
     {
         var ext = mime is not null && ExtByMime.TryGetValue(mime, out var e) ? e : ".bin";
         var now = DateTimeOffset.UtcNow;
-        return $"wa/{licenseId:N}/{now:yyyy}/{now:MM}/{mediaId}{ext}";
+        return $"{WhatsAppMediaKeys.LicensePrefix(licenseId)}{now:yyyy}/{now:MM}/{mediaId}{ext}";
     }
 }

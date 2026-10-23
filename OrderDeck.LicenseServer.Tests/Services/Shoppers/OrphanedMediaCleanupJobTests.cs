@@ -3,9 +3,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Shoppers;
 
@@ -40,11 +42,19 @@ public sealed class OrphanedMediaCleanupJobTests
             return _inner.DeleteAsync(objectKey, ct);
         }
 
+        public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+            => _inner.ListLicenseObjectsAsync(licenseId, ct);
+
+        public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys,
+            CancellationToken ct = default)
+            => _inner.DeleteObjectsAsync(keys, ct);
+
         public bool Contains(string objectKey) => _inner.Contains(objectKey);
     }
 
-    private static OrphanedMediaCleanupJob Build(LicenseDbContext db, IShopperPaymentStorage storage)
-        => new(db, storage, NullLogger<OrphanedMediaCleanupJob>.Instance);
+    private static OrphanedMediaCleanupJob Build(LicenseDbContext db, IShopperPaymentStorage storage,
+        IWhatsAppMediaStore? whatsApp = null)
+        => new(db, storage, whatsApp ?? new InMemoryWhatsAppMediaStore(), NullLogger<OrphanedMediaCleanupJob>.Instance);
 
     private static (Guid PaymentId, string Key) Seed(LicenseDbContext db)
     {
@@ -146,6 +156,40 @@ public sealed class OrphanedMediaCleanupJobTests
         records.Should().ContainSingle(r => r.SubjectId == row.ShopperId && r.LicenseId == licenseId);
         records.Should().ContainSingle(r => r.SubjectId == queuedWithoutPayment.ShopperId && r.LicenseId == null,
             "ödemesi bilinmeyen kuyruk satırının lisansı yok");
+    }
+
+    [Fact]
+    public async Task Yayinci_silmesinden_kalan_nesneyi_kendi_deposundan_siler_ve_yayinci_silmesi_kaydini_yazar()
+    {
+        // Yayıncı silmesinin (AdminCustomersController.Purge) kuyruğa bıraktığı satırda ShopperId yok: lisans anahtarın önekinde,
+        // tür (dekont / WhatsApp) de öyle. WhatsApp nesnesi WhatsApp deposundan silinir; geciken silme, yayıncı silmesinin
+        // kaydıyla (tetikleyici, ölçüt, hedef) yazılır — müşteri silmesinin kaydıyla değil.
+        using var db = NewDb();
+        var license = Guid.NewGuid();
+        var waKey = $"{WhatsAppMediaKeys.LicensePrefix(license)}2026/10/m1.jpg";
+        var receiptKey = $"{ShopperPaymentKeys.LicensePrefix(license)}r1.pdf";
+        foreach (var key in new[] { waKey, receiptKey })
+            db.OrphanedMediaObjects.Add(new OrphanedMediaObject
+            {
+                Id = Guid.NewGuid(), ObjectKey = key, AttemptCount = 1, LastError = "depo geçici olarak erişilemez",
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-1), LastAttemptAt = DateTimeOffset.UtcNow.AddDays(-1),
+            });
+        await db.SaveChangesAsync();
+        var storage = new FlakyStorage();
+        await storage.UploadAsync(receiptKey, new byte[] { 1 }, "application/pdf");
+        var whatsApp = new InMemoryWhatsAppMediaStore();
+        await whatsApp.SaveAsync(waKey, new byte[] { 1 }, "image/jpeg");
+
+        (await Build(db, storage, whatsApp).RunAsync(default)).Should().Be(2);
+
+        whatsApp.TryGet(waKey, out _).Should().BeFalse();
+        storage.Contains(receiptKey).Should().BeFalse();
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Select(r => r.Target).Should().BeEquivalentTo(
+            new[] { LicenseMediaPurge.WhatsAppMediaTarget, ShopperPurgeService.MediaTarget });
+        records.Should().OnlyContain(r => r.LicenseId == license && r.SubjectId == null && r.RowCount == 1
+            && r.Action == DataDestruction.Actions.Deleted && r.Trigger == DataDestruction.Triggers.CustomerPurge
+            && r.Criterion == LicenseMediaPurge.CustomerPurgeCriterion && r.Actor == DataDestruction.SystemActor);
     }
 
     [Fact]

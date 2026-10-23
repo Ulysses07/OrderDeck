@@ -254,6 +254,8 @@ public sealed class ShopperPaymentSubmissionServiceTests
         // Storage: bytes uploaded
         storage.Contains(payment.MediaObjectKey!).Should().BeTrue();
         storage.GetBytes(payment.MediaObjectKey!)!.Should().BeEquivalentTo(PdfBytes.Valid);
+        payment.MediaObjectKey.Should().StartWith(ShopperPaymentKeys.LicensePrefix(license.Id),
+            "yayıncı silmesi lisansın dekontlarını bu önekle bulur (KVKK)");
     }
 
     // ─── 2. Magic byte mismatch ──────────────────────────────────────────────

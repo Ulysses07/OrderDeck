@@ -19,14 +19,16 @@ public sealed class AdminCustomersController : ControllerBase
     private readonly PasswordHasher _hasher;
     private readonly BackupStorageService _backups;
     private readonly IAuditService _audit;
+    private readonly LicenseMediaPurge _mediaPurge;
 
     public AdminCustomersController(LicenseDbContext db, PasswordHasher hasher,
-        BackupStorageService backups, IAuditService audit)
+        BackupStorageService backups, IAuditService audit, LicenseMediaPurge mediaPurge)
     {
         _db = db;
         _hasher = hasher;
         _backups = backups;
         _audit = audit;
+        _mediaPurge = mediaPurge;
     }
 
     [HttpGet]
@@ -117,7 +119,8 @@ public sealed class AdminCustomersController : ControllerBase
     /// <summary>
     /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
     /// data (licenses, activations, refresh tokens, intake form submissions,
-    /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3)
+    /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3,
+    /// the licenses' bucket objects: receipts shoppers uploaded and WhatsApp media — karar 5/6, <see cref="LicenseMediaPurge"/>)
     /// and anonymises the Customer row
     /// itself. The Customer row stays — its Id is referenced from AuditLog
     /// rows that we MUST retain for the configured retention window. Email
@@ -170,6 +173,15 @@ public sealed class AdminCustomersController : ControllerBase
         //    self-documenting and survives any future cascade changes.
         var licenseIds = await _db.Licenses.Where(l => l.CustomerId == id)
             .Select(l => l.Id).ToListAsync(ct);
+
+        // KVKK karar 5/6: lisansların kova nesneleri (müşterilerin yüklediği dekontlar, WhatsApp medyası) satırları kaskadla
+        // gidiyor, nesneler kalıyordu. Anahtarlar satırlar silinmeden ÖNCE listelenir: lisans satırı gidince öneki bir daha
+        // bulunamaz. Liste alınamıyorsa silme hiç başlamaz; nesneler aşağıda, satırlar silindikten SONRA silinir.
+        var media = await _mediaPurge.TryListAsync(licenseIds, ct);
+        if (media is null)
+            return Problem(title: "media-storage-unavailable", statusCode: 503,
+                detail: "Dekont ve WhatsApp dosyaları listelenemedi; hiçbir şey silinmedi. Biraz sonra silmeyi yineleyin.");
+
         if (licenseIds.Count > 0)
         {
             _db.Activations.RemoveRange(_db.Activations.Where(a => licenseIds.Contains(a.LicenseId)));
@@ -223,7 +235,7 @@ public sealed class AdminCustomersController : ControllerBase
         // arasında eklenen satırı (girişin yazdığı yenileme jetonu, herkese açık formdan gelen gönderim) silinmediği hâlde sayardı.
         // Yapan: yöneticinin kimliği, kullanıcı adı değil (tablo budanmaz; adı aşağıdaki denetim satırında, 24 ay).
         var actor = DataDestruction.ActorOf(User);
-        const string criterion = "yayıncı silme talebi";
+        const string criterion = LicenseMediaPurge.CustomerPurgeCriterion;
         void Record(string target, string action, int count, string why = criterion) => DataDestruction.Record(_db, null, target,
             action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
         int Deleted<T>() where T : class => _db.ChangeTracker.Entries<T>().Count(e => e.State == EntityState.Deleted);
@@ -283,12 +295,20 @@ public sealed class AdminCustomersController : ControllerBase
         // swallows so a locked file can't fail an otherwise-completed purge.
         foreach (var path in backupBlobPaths) _backups.DeleteBlob(path);
 
+        // Lisansların kova nesneleri (yukarıda listelendi). Satırlar dururken dosya silinmez (R12-S01: 409'a düşen istek buraya
+        // ulaşmaz). Silinemeyen her anahtar OrphanedMediaObjects kuyruğuna düşer (OrphanedMediaCleanupJob yeniden dener); imha
+        // kaydı lisans ve tür başına, kendi SaveChanges'inde.
+        var (deletedMedia, pendingMedia) = await _mediaPurge.DeleteAsync(media, actor, id);
+
         await _audit.LogAsync(AuditEvents.CustomerPurged, AuditTargets.Customer, id.ToString(),
             details: new
             {
                 preEmail,
                 deletedLicenses = licenseIds.Count,
                 deletedBackups = backupRows.Count,
+                // Kuyrukta bekleyen nesne varsa silme henüz kapanmadı; OrphanedMediaCleanupJob kapatır.
+                deletedMediaObjects = deletedMedia,
+                pendingMediaObjects = pendingMedia,
                 // KVKK m. 13/2: kapanan banka veri talebi açık listeden düşer, başvurana yanıt yükümlülüğü sürer (sayı, kişisel
                 // veri değil).
                 closedBankSubjectRequests,

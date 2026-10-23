@@ -33,4 +33,24 @@ public class StubShopperPaymentStorageTests
         await stub.DeleteAsync("p/x.pdf");
         stub.Contains("p/x.pdf").Should().BeFalse();
     }
+
+    [Fact]
+    public async Task Lisans_oneki_yalniz_o_lisansin_dekontlarini_listeler_ve_toplu_siler()
+    {
+        var stub = new StubShopperPaymentStorage();
+        var mine = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var mineKeys = new[] { $"{ShopperPaymentKeys.LicensePrefix(mine)}a.pdf", $"{ShopperPaymentKeys.LicensePrefix(mine)}b.pdf" };
+        var otherKey = $"{ShopperPaymentKeys.LicensePrefix(other)}c.pdf";
+        foreach (var k in mineKeys.Append(otherKey)) await stub.UploadAsync(k, new byte[] { 1 }, "application/pdf");
+
+        var listed = await stub.ListLicenseObjectsAsync(mine);
+        var failures = await stub.DeleteObjectsAsync(listed);
+
+        listed.Should().BeEquivalentTo(mineKeys);
+        failures.Should().BeEmpty();
+        stub.Contains(mineKeys[0]).Should().BeFalse();
+        stub.Contains(mineKeys[1]).Should().BeFalse();
+        stub.Contains(otherKey).Should().BeTrue();
+    }
 }

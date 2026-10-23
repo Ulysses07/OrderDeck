@@ -124,6 +124,13 @@ public sealed class ShopperPurgeServiceTests
             return _inner.DeleteAsync(objectKey, ct);
         }
 
+        public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+            => _inner.ListLicenseObjectsAsync(licenseId, ct);
+
+        public Task<IReadOnlyList<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaDeleteFailure>> DeleteObjectsAsync(
+            IReadOnlyList<string> keys, CancellationToken ct = default)
+            => _inner.DeleteObjectsAsync(keys, ct);
+
         public bool Contains(string objectKey) => _inner.Contains(objectKey);
     }
 
