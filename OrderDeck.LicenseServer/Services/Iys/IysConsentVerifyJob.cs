@@ -19,6 +19,13 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// <para>Randevu takvimi <see cref="IysVerifySchedule"/>: 15dk → 1sa → 6sa →
 /// 24sa. Erken sorgu, henüz işlenmemiş kaydı "RET" sanmaya yol açar.</para>
 ///
+/// <para><b>Takvim yalnız İYS'nin CEVABIYLA ilerler.</b> Cevapsızlık — ağ
+/// hatası, <c>code ≠ "0"</c>, ya da alıcının ONAY/RET'i yanıtta okunamadı —
+/// kaydı <see cref="TransientRetryDelay"/> kadar erteler;
+/// <see cref="IysConsent.VerifyAttempts"/>'e ve İYS durumuna dokunmaz. Okuma
+/// hatası takvimi tüketirse kayıt Failed, son tarih geçince Expired olur:
+/// 2026-10-22'de 24 onay böyle kaybedildi.</para>
+///
 /// <para><b>Marka başına adalet:</b> hem sorgu hem koşu sınırı marka başına
 /// uygulanır. Sınır markadan önce uygulanırsa, kalıcı hata veren bir
 /// yayıncının kayıtları her koşuda ilk sıraları kapar ve diğer yayıncılar
@@ -163,16 +170,7 @@ public sealed class IysConsentVerifyJob
                 // VerifyAttempts'e DOKUNULMAZ — o sayaç İYS'nin cevabını
                 // bekleme takvimidir; bir ağ hatası onu tüketip kaydı erken
                 // Failed yapmamalı.
-                var failedAt = DateTimeOffset.UtcNow;
-                var retryAt = failedAt + TransientRetryDelay;
-                foreach (var c in batch)
-                {
-                    c.NextVerifyAt = retryAt;
-                    // UpdatedAt randevu DEĞİL, "en son ne zaman dokunuldu"
-                    // damgası; retryAt yazmak onu geleceğe atardı ve satırı
-                    // zaman aralığına göre süzen her sorguyu yanıltırdı.
-                    c.UpdatedAt = failedAt;
-                }
+                Defer(batch, DateTimeOffset.UtcNow);
                 await _db.SaveChangesAsync(ct);
                 _log.LogWarning(ex,
                     "İYS doğrulama: {Brand} markasında {Count} kayıtlık sorgu başarısız",
@@ -180,12 +178,44 @@ public sealed class IysConsentVerifyJob
                 continue;
             }
 
+            // CEVAPSIZLIK İYS'NİN CEVABI DEĞİLDİR. code ≠ "0" (oran sınırı,
+            // istemcinin kendi bastığı "parse-error", boş gövde) Netgsm'in
+            // isteği işlemediği demek; satırlara güvenilmez, bütün parti ağ
+            // hatası gibi ertelenir. Eskiden herkes Unknown sayılıp takvim
+            // tüketiliyordu: Failed → kurtarma son tarih geçince Expired. Aynı
+            // sınıf iki kez onay kaybettirdi (2026-09-22 kesik gövde, 2026-10-22
+            // tek alıcılı nesne yanıtı); tetikleyiciyi kapatmak yetmez, takvim
+            // cevapsızlıktan düşülmemeli. Telefon yazılmaz (KVKK).
+            if (result.Code != "0")
+            {
+                Defer(batch, DateTimeOffset.UtcNow);
+                await _db.SaveChangesAsync(ct);
+                _log.LogError(
+                    "İYS doğrulama: {Brand} markasında {Count} kayıtlık sorgu code={Code} döndü; "
+                    + "cevapsız sayıldı, takvim tüketilmedi, {Delay} sonra yeniden sorulacak",
+                    account.BrandCode, batch.Length, result.Code, TransientRetryDelay);
+                continue;
+            }
+
             var stamp = DateTimeOffset.UtcNow;
+            var unanswered = 0;
             foreach (var c in batch)
             {
-                // Yanıtta hiç görünmeyen alıcı Unknown — fail-closed.
-                var status = result.Statuses.TryGetValue(c.Recipient, out var s)
-                    ? s : IysConsentStatus.Unknown;
+                // code "0" ama alıcının ONAY/RET'i okunamadı (yanıtta yok ya da
+                // durumu tanınmıyor): bu da cevapsızlık. İYS kayıtsız numaraya
+                // da RET satırı döner (2026-09-17 ölçümü) — eksik ya da okunamaz
+                // satır meşru bir cevap değil, okuma/biçim hatasıdır. Yalnız o
+                // satır ertelenir; İYS durumu yazılmaz, olay eklenmez (5 dk'da
+                // bir tekrarlayan cevapsızlık ekle-only ispat tablosunu
+                // şişirirdi). Fail-closed korunur: kapı LastVerifiedStatus ==
+                // Onay ister.
+                if (!result.Statuses.TryGetValue(c.Recipient, out var status)
+                    || status == IysConsentStatus.Unknown)
+                {
+                    Defer(new[] { c }, stamp);
+                    unanswered++;
+                    continue;
+                }
 
                 c.LastVerifiedStatus = status;
                 c.LastVerifiedAt = stamp;
@@ -216,7 +246,8 @@ public sealed class IysConsentVerifyJob
                 // RET tarafında "kayıt yok" ile "reddetti" ayırt edilemez ama
                 // ikisi de aynı sonuca çıkar: gönderim yok. Confirmed RET
                 // gönderim izni DEĞİLDİR — kapı Status'u da okur (kural 4).
-                if (status != IysConsentStatus.Unknown && status == c.Status)
+                // (Unknown buraya ulaşmaz — yukarıda cevapsız sayıldı.)
+                if (status == c.Status)
                 {
                     c.PushState = IysPushState.Confirmed;
                     c.NextVerifyAt = null;
@@ -237,12 +268,32 @@ public sealed class IysConsentVerifyJob
             }
 
             await _db.SaveChangesAsync(ct);
+
+            if (unanswered > 0)
+                _log.LogError(
+                    "İYS doğrulama: {Brand} markasında code=0 yanıtında {Unanswered}/{Count} alıcının "
+                    + "ONAY/RET'i okunamadı; cevapsız sayıldı, takvim tüketilmedi, {Delay} sonra yeniden sorulacak",
+                    account.BrandCode, unanswered, batch.Length, TransientRetryDelay);
         }
 
         var confirmed = due.Count(c => c.PushState == IysPushState.Confirmed);
         _log.LogInformation(
             "İYS doğrulama ({Brand}): {Total} kayıt soruldu, {Confirmed} beyanla eşleşti (kabul)",
             account.BrandCode, due.Count, confirmed);
+    }
+
+    /// <summary>Cevapsız kaydı ertele: randevu <see cref="TransientRetryDelay"/>
+    /// ileri, <see cref="IysConsent.VerifyAttempts"/> ve İYS durumu yerinde.</summary>
+    private static void Defer(IEnumerable<IysConsent> rows, DateTimeOffset at)
+    {
+        foreach (var c in rows)
+        {
+            c.NextVerifyAt = at + TransientRetryDelay;
+            // UpdatedAt randevu DEĞİL, "en son ne zaman dokunuldu" damgası;
+            // randevuyu yazmak onu geleceğe atardı ve satırı zaman aralığına
+            // göre süzen her sorguyu yanıltırdı.
+            c.UpdatedAt = at;
+        }
     }
 
     private static string? Truncate(string? s, int max)

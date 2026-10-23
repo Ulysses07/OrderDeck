@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -18,6 +19,10 @@ public class IysConsentVerifyJobTests
     private sealed class FakeIysClient : IIysClient
     {
         public Dictionary<string, IysConsentStatus> Answer { get; set; } = new();
+
+        /// <summary>Yanıtın <c>code</c> alanı; "0" dışı Netgsm'in isteği işlemediği demek.</summary>
+        public string Code { get; set; } = "0";
+
         public List<IReadOnlyList<string>> SearchCalls { get; } = new();
         public List<IysAccountContext> SearchAccounts { get; } = new();
 
@@ -41,7 +46,7 @@ public class IysConsentVerifyJobTests
             SearchAccounts.Add(account);
             SearchCalls.Add(recipients);
             if (ThrowByBrand.TryGetValue(account.BrandCode, out var ex)) throw ex;
-            return Task.FromResult(new IysSearchResult("0", "{\"code\":\"0\"}", Answer));
+            return Task.FromResult(new IysSearchResult(Code, $"{{\"code\":\"{Code}\"}}", Answer));
         }
     }
 
@@ -53,19 +58,21 @@ public class IysConsentVerifyJobTests
     /// </summary>
     private sealed class FailOnceOnSaveInterceptor : SaveChangesInterceptor
     {
-        private bool _fired;
-
         public string? FailBrand { get; set; }
+
+        /// <summary>Testin öncülü: patlama gerçekten oldu mu. Olmadıysa (ör. o
+        /// markanın turu hiç olay eklemediyse) test yanlış sebeple yeşildir.</summary>
+        public bool Fired { get; private set; }
 
         public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
             DbContextEventData eventData, InterceptionResult<int> result,
             CancellationToken ct = default)
         {
-            if (!_fired && FailBrand is not null
+            if (!Fired && FailBrand is not null
                 && eventData.Context!.ChangeTracker.Entries<IysConsentEvent>()
                     .Any(e => e.State == EntityState.Added && e.Entity.BrandCode == FailBrand))
             {
-                _fired = true;
+                Fired = true;
                 throw new InvalidOperationException("veritabanı yazımı düştü");
             }
 
@@ -240,7 +247,10 @@ public class IysConsentVerifyJobTests
         row.PushDeadline = DateTimeOffset.UtcNow.AddDays(-2);
         db.IysConsents.Add(row);
         await db.SaveChangesAsync();
-        var client = new FakeIysClient(); // her sorguda Unknown
+        // İYS'nin "ONAY değil" cevabı RET'tir — kayıtsız numaraya da RET der
+        // (2026-09-17 ölçümü). Cevapsızlık (alıcı yanıtta yok) takvimi tüketmez,
+        // bkz. Okunamayan_cevap_takvimi_hic_tuketmez_kayit_Failed_a_dusmez.
+        var client = new FakeIysClient { Answer = { [Phone] = IysConsentStatus.Ret } };
 
         for (var i = 0; i < IysVerifySchedule.Backoff.Length; i++)
         {
@@ -326,21 +336,128 @@ public class IysConsentVerifyJobTests
         IysConsentGate.CanSend(row).Should().BeFalse("yerel Status Ret — kapı kapalı");
     }
 
-    [Fact]
-    public async Task Yanitta_gorunmeyen_alici_Unknown_beklemeye_devam_eder()
+    /// <summary>
+    /// Cevapsızlık İYS'nin cevabı DEĞİLDİR. İYS kayıtsız numaraya da RET satırı
+    /// döner (2026-09-17 ölçümü); code "0" yanıtında hiç görünmeyen alıcı, ya da
+    /// durumu okunamayan satır (Unknown), okuma/biçim hatasıdır. Eskiden ikisi de
+    /// "ONAY demedi" sayılıp takvimi tüketiyordu: 24 onayı kaybettiren mekanizma
+    /// buydu (tetikleyici tek alıcılı nesne yanıtıydı). Şimdi o satır geçici hata
+    /// gibi ertelenir: randevu ileri, VerifyAttempts ve İYS durumu yerinde, olay
+    /// yok. Aynı partinin okunan satırı normal işlenir.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]   // alıcı yanıtta hiç yok
+    [InlineData(true)]    // satır var ama durumu okunamadı
+    public async Task Okunamayan_alici_cevapsiz_sayilir_takvimi_tuketmez_partinin_okunani_islenir(
+        bool satirVarDurumOkunamadi)
     {
-        // Fail-closed: cevapta hiç geçmeyen numara Unknown'dır; Unknown hiçbir
-        // beyanla eşleşmez (guard: status != Unknown), kabul yok, takvim ilerler.
-        using var db = await SeedPushedAsync();
-        var client = new FakeIysClient(); // Answer boş
+        var name = $"iys-verify-{Guid.NewGuid():N}";
+        var (okunan, okunamayan) = TwoPhones();
+        var log = new LogRecorder<IysConsentVerifyJob>();
+        using (var db = NewDb(name))
+        {
+            SeedAccount(db, LicenseA, BrandA);
+            db.IysConsents.Add(Pushed(okunan, BrandA));
+            db.IysConsents.Add(Pushed(okunamayan, BrandA));
+            await db.SaveChangesAsync();
+            var client = new FakeIysClient { Answer = { [okunan] = IysConsentStatus.Onay } };
+            if (satirVarDurumOkunamadi) client.Answer[okunamayan] = IysConsentStatus.Unknown;
 
-        await Job(db, client).RunAsync();
+            await new IysConsentVerifyJob(db, client, Accounts(db), log).RunAsync();
 
-        var row = await db.IysConsents.SingleAsync();
-        row.LastVerifiedStatus.Should().Be(IysConsentStatus.Unknown);
+            client.SearchCalls.Should().ContainSingle("ikisi aynı partide soruldu");
+        }
+
+        using var fresh = NewDb(name);
+        var rows = await fresh.IysConsents.AsNoTracking().ToDictionaryAsync(c => c.Recipient);
+        rows[okunan].PushState.Should().Be(IysPushState.Confirmed, "okunan satır normal işlenir");
+
+        var row = rows[okunamayan];
         row.PushState.Should().Be(IysPushState.Pushed);
-        row.NextVerifyAt.Should().NotBeNull();
+        row.VerifyAttempts.Should().Be(0, "takvim İYS'nin CEVABINI bekler; cevapsızlık onu tüketmez");
+        row.LastVerifiedStatus.Should().BeNull("İYS bir şey söylemedi — yazılacak durum yok");
+        row.LastVerifiedAt.Should().BeNull();
+        row.NextVerifyAt.Should().BeAfter(DateTimeOffset.UtcNow)
+            .And.BeOnOrBefore(DateTimeOffset.UtcNow + IysConsentVerifyJob.TransientRetryDelay,
+                "geçici hata gibi kısa erteleme");
+        row.LastError.Should().BeNull();
+        IysConsentGate.CanSend(row).Should().BeFalse("fail-closed");
+
+        (await fresh.IysConsentEvents.Select(e => e.Recipient).ToListAsync())
+            .Should().Equal(new[] { okunan }, "cevapsız satır için SearchResult olayı yazılmaz");
+        log.Entries.Should().Contain(e => e.Level == LogLevel.Error,
+            "okuma hatası görünür olmalı — 24 onayın kaybının yarısı sessizlikti");
+        var (ulusalA, ulusalB) = (okunan[3..], okunamayan[3..]);
+        log.Entries.Should().NotContain(e => e.Message.Contains(ulusalA) || e.Message.Contains(ulusalB),
+            "günlüğe telefon yazılmaz (KVKK)");
+    }
+
+    /// <summary>
+    /// code ≠ "0" (oran sınırı, istemcinin kendi bastığı "parse-error", boş
+    /// gövde): Netgsm isteği işlemedi, satırlara güvenilmez — bütün parti
+    /// cevapsızdır, ağ hatasıyla aynı yoldan ertelenir.
+    /// </summary>
+    [Theory]
+    [InlineData("80")]
+    [InlineData("parse-error")]
+    [InlineData("")]
+    public async Task Kod_sifir_degilse_parti_cevapsiz_sayilir_takvim_tuketilmez(string code)
+    {
+        var name = $"iys-verify-{Guid.NewGuid():N}";
+        using (var db = await SeedPushedAsync(name: name))
+        {
+            // Satır ONAY olsa bile: kod başarısızsa yanıtın içeriği kanıt değil.
+            var client = new FakeIysClient { Code = code, Answer = { [Phone] = IysConsentStatus.Onay } };
+
+            await Job(db, client).RunAsync();
+        }
+
+        using var fresh = NewDb(name);
+        var row = await fresh.IysConsents.AsNoTracking().SingleAsync();
+        row.PushState.Should().Be(IysPushState.Pushed);
+        row.VerifyAttempts.Should().Be(0);
+        row.LastVerifiedStatus.Should().BeNull();
+        row.NextVerifyAt.Should().BeAfter(DateTimeOffset.UtcNow)
+            .And.BeOnOrBefore(DateTimeOffset.UtcNow + IysConsentVerifyJob.TransientRetryDelay);
         IysConsentGate.CanSend(row).Should().BeFalse();
+        (await fresh.IysConsentEvents.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>
+    /// Mekanizmanın kendisi: okunamayan yanıt kaç kez gelirse gelsin takvim
+    /// tükenmez, kayıt Failed'a düşmez, kurtarma onu Expired yapamaz. Eskiden
+    /// 4 okunamayan yanıt → Failed → (son tarih geçmişse) Expired idi.
+    /// </summary>
+    [Fact]
+    public async Task Okunamayan_cevap_takvimi_hic_tuketmez_kayit_Failed_a_dusmez()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var row = Pushed(Phone, BrandA);
+        row.PushDeadline = DateTimeOffset.UtcNow.AddDays(-2);
+        db.IysConsents.Add(row);
+        await db.SaveChangesAsync();
+        var client = new FakeIysClient(); // code "0", alıcı yanıtta yok
+
+        for (var i = 0; i <= IysVerifySchedule.Backoff.Length; i++)
+        {
+            row = await db.IysConsents.SingleAsync();
+            row.NextVerifyAt = DateTimeOffset.UtcNow.AddMinutes(-1);   // randevuyu getir
+            await db.SaveChangesAsync();
+            await Job(db, client).RunAsync();
+        }
+
+        client.SearchCalls.Should().HaveCount(IysVerifySchedule.Backoff.Length + 1);
+        row = await db.IysConsents.SingleAsync();
+        row.PushState.Should().Be(IysPushState.Pushed);
+        row.VerifyAttempts.Should().Be(0);
+        row.LastError.Should().BeNull();
+
+        row.UpdatedAt = DateTimeOffset.UtcNow - IysConsentRecoveryJob.FailedRetryGrace - TimeSpan.FromMinutes(1);
+        await db.SaveChangesAsync();
+        await new IysConsentRecoveryJob(db, NullLogger<IysConsentRecoveryJob>.Instance).RunAsync();
+        (await db.IysConsents.SingleAsync()).PushState.Should().Be(IysPushState.Pushed,
+            "kurtarma yalnız Failed'a bakar; cevapsız kayıt Expired'a sürüklenmez");
     }
 
     [Fact]
@@ -475,10 +592,16 @@ public class IysConsentVerifyJobTests
         db.IysConsents.Add(Pushed(telefonB, BrandB));
         await db.SaveChangesAsync();
 
-        var client = new FakeIysClient { Answer = { [telefonB] = IysConsentStatus.Onay } };
+        // A da CEVAP almalı: cevapsız satır olay eklemez, o zaman A'nın kaydı
+        // patlamaz ve test yanlış sebeple yeşil kalır.
+        var client = new FakeIysClient
+        {
+            Answer = { [telefonA] = IysConsentStatus.Ret, [telefonB] = IysConsentStatus.Onay },
+        };
 
         await Job(db, client).RunAsync();
 
+        fail.Fired.Should().BeTrue("öncül: A'nın kaydı gerçekten patladı");
         var leaked = await db.IysConsentEvents.CountAsync(e => e.BrandCode == BrandA);
         leaked.Should().Be(0,
             "A'nın kaydedilemeyen doğrulama olayı B'nin SaveChanges'ine binerek "
@@ -515,11 +638,14 @@ public class IysConsentVerifyJobTests
             var brokenB = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
             brokenB.PasswordProtected = foreign;
 
-            db.IysConsents.Add(Pushed(TestPhone.NewE164(), BrandA));
-            db.IysConsents.Add(Pushed(TestPhone.NewE164(), BrandB));
+            var (telefonA, telefonB) = TwoPhones();
+            db.IysConsents.Add(Pushed(telefonA, BrandA));
+            db.IysConsents.Add(Pushed(telefonB, BrandB));
             await db.SaveChangesAsync();
 
-            await Job(db, new FakeIysClient()).RunAsync();
+            // A CEVAP almalı ki turu olay eklesin ve kaydı patlasın (öncül).
+            await Job(db, new FakeIysClient { Answer = { [telefonA] = IysConsentStatus.Ret } }).RunAsync();
+            fail.Fired.Should().BeTrue("öncül: A'nın kaydı gerçekten patladı");
         }
 
         // TEMİZ context'ten oku: aynı context'ten okumak EF identity-map
