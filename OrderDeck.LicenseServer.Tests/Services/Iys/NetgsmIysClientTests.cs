@@ -187,22 +187,33 @@ public class NetgsmIysClientTests
     }
 
     /// <summary>
-    /// <c>query</c>'nin ne dizi ne nesne olduğu (ya da hiç olmadığı) bir biçim:
-    /// eskisi gibi BOŞ sonuç — kimse ONAY sayılmaz (fail-closed) — ama artık
-    /// günlüğe uyarı düşer. Tek alıcılı nesne biçimi de böyle sessizce boş
-    /// dönüyordu; sessizlik 24 onayın kaybının yarısıydı.
+    /// code "0" yanıtında istenen alıcı OKUNAMADI: BOŞ sonuç — kimse ONAY
+    /// sayılmaz (fail-closed) — ve günlüğe uyarı düşer. Uyarı türe göre değil
+    /// SONUCA göre: <c>query</c>'nin türü doğru olsa da içeriği okunamıyorsa
+    /// (boş dizi, boş nesne, nesne olmayan eleman, metin olmayan recipient)
+    /// sonuç aynı sessiz kayıptır. Tek alıcılı nesne biçimi de böyle sessizce
+    /// boş dönüyordu; sessizlik 24 onayın kaybının yarısıydı. Okuyucu
+    /// beklenmeyen JSON türünde fırlatmaz: <c>NetgsmAccountVerifier</c> yalnız
+    /// HTTP/iptal/JSON hatalarını yakalıyor.
     ///
     /// <para><c>Code</c> "0" KALIR: Netgsm kimliği ve markayı kabul etmiş;
     /// biçimi okuyamamak kurulum hatası değil. "parse-error"a çevirmek
     /// <c>NetgsmAccountVerifier</c>'ı Unavailable'a, ayna işini yeniden
-    /// denemeye sokardı — bu PR'ın kapsamı dışında bir davranış değişikliği.</para>
+    /// denemeye sokardı. Doğrulama işi okunamayan alıcıyı zaten cevapsız sayar
+    /// (takvimden düşmez).</para>
     /// </summary>
     [Theory]
     [InlineData(",\"query\":null")]
     [InlineData(",\"query\":\"beklenmeyen\"")]
     [InlineData(",\"query\":5")]
     [InlineData("")]   // query alanı hiç yok
-    public async Task SearchAsync_query_bilinmeyen_bicimdeyse_bos_sonuc_ve_uyari(string queryParcasi)
+    [InlineData(",\"query\":[]")]
+    [InlineData(",\"query\":{}")]
+    [InlineData(",\"query\":[null]")]
+    [InlineData(",\"query\":[\"beklenmeyen\"]")]
+    [InlineData(",\"query\":{\"recipient\":905,\"status\":\"ONAY\"}")]   // recipient metin değil
+    [InlineData(",\"query\":[{\"status\":\"ONAY\"}]")]                  // recipient yok
+    public async Task SearchAsync_istenen_alici_okunamazsa_bos_sonuc_ve_uyari(string queryParcasi)
     {
         var telefon = TestPhone.NewE164();
         var log = new LogRecorder<NetgsmIysClient>();
@@ -231,6 +242,70 @@ public class NetgsmIysClientTests
         await client.SearchAsync(Account("731734"), new[] { telefon, TestPhone.NewE164() });  // dizi
 
         log.Entries.Should().NotContain(e => e.Level >= LogLevel.Warning);
+    }
+
+    /// <summary>
+    /// Biçim kayması: Netgsm alıcıyı başka biçimde yansıtırsa (ör. '+' olmadan)
+    /// satır okunur ama İSTENEN anahtar sözlükte yoktur — tür doğru, sonuç yine
+    /// sessiz kayıp. Testlerin sahte işleyicisi alıcıyı birebir yansıttığı için
+    /// bu yol başka hiçbir testte görünmez.
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_alici_baska_bicimde_yansirsa_uyari_verir()
+    {
+        var telefon = TestPhone.NewE164();
+        var log = new LogRecorder<NetgsmIysClient>();
+        var client = new NetgsmIysClient(new HttpClient(new CapturingHandler($$"""
+            {"code":"0","error":"false","query":{"status":"ONAY","type":"MESAJ","recipient":"{{telefon[1..]}}"} }
+            """)), Options.Create(Opt()), log);
+
+        var result = await client.SearchAsync(Account("731734"), new[] { telefon });
+
+        result.Statuses.Should().NotContainKey(telefon, "istenen anahtar okunmadı — ONAY sayılmaz");
+        log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().NotContain(telefon[^8..], "günlüğe telefon yazılmaz (KVKK)");
+    }
+
+    /// <summary>Kısmi okuma da uyarır ve yalnız SAYILARI yazar: hangi alıcının
+    /// okunamadığı değil, kaçının.</summary>
+    [Fact]
+    public async Task SearchAsync_partinin_bir_kismi_okunamazsa_sayilarla_uyarir()
+    {
+        // Üretilen ortak gövde, farklı son hane: iki numara kesin farklı.
+        var govde = TestPhone.NewNational()[..9];
+        var (okunan, okunamayan) = ($"+90{govde}1", $"+90{govde}2");
+        var log = new LogRecorder<NetgsmIysClient>();
+        var client = new NetgsmIysClient(new HttpClient(new CapturingHandler($$"""
+            {"code":"0","error":"false","query":[{"status":"ONAY","type":"MESAJ","recipient":"{{okunan}}"}]}
+            """)), Options.Create(Opt()), log);
+
+        var result = await client.SearchAsync(Account("731734"), new[] { okunan, okunamayan });
+
+        result.Statuses[okunan].Should().Be(IysConsentStatus.Onay);
+        log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().Contain("1/2")
+            .And.NotContain(okunamayan[^8..]).And.NotContain(okunan[^8..]);
+    }
+
+    /// <summary>
+    /// <c>status</c> metin değilse (ör. sayı) okuyucu fırlatmaz: alıcı Unknown
+    /// olur. ONAY/RET okunamadığı için bu da "okunamadı" sayılır ve uyarılır —
+    /// doğrulama işi Unknown'ı da cevapsız sayar.
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_status_metin_degilse_Unknown_istisna_yok_uyari_var()
+    {
+        var telefon = TestPhone.NewE164();
+        var log = new LogRecorder<NetgsmIysClient>();
+        var client = new NetgsmIysClient(new HttpClient(new CapturingHandler($$"""
+            {"code":"0","query":{"recipient":"{{telefon}}","status":1} }
+            """)), Options.Create(Opt()), log);
+
+        var result = await client.SearchAsync(Account("731734"), new[] { telefon });
+
+        result.Code.Should().Be("0");
+        result.Statuses[telefon].Should().Be(IysConsentStatus.Unknown);
+        log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning);
     }
 
     [Fact]
@@ -295,6 +370,25 @@ public class NetgsmIysClientTests
 
         var act = async () => await client.AddAsync(
             Account("731734"), new[] { Rec(TestPhone.NewE164()) });
+
+        await act.Should().ThrowAsync<IysConfigurationException>();
+    }
+
+    /// <summary>
+    /// Düz metin kod (<c>30</c>, <c>"60"</c>) geçerli bir JSON DEĞERİDİR ama nesne
+    /// değildir: kök üzerinde alan aramak <c>InvalidOperationException</c>
+    /// fırlatıyordu — ne yapılandırma hatası olarak durur, ne de
+    /// <c>NetgsmAccountVerifier</c>'ın yakaladığı türdendi. Kod okuyucusu da
+    /// satır okuyucusu gibi beklenmeyen JSON türünde fırlatmamalı.
+    /// </summary>
+    [Theory]
+    [InlineData("30")]
+    [InlineData("\"60\"")]
+    public async Task Duz_metin_yapilandirma_kodu_da_boru_hattini_durdurur(string body)
+    {
+        var (client, _) = Build(body);
+
+        var act = async () => await client.SearchAsync(Account("731734"), new[] { TestPhone.NewE164() });
 
         await act.Should().ThrowAsync<IysConfigurationException>();
     }
