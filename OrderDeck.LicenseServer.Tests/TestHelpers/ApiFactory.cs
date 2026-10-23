@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -25,6 +26,19 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 public class ApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _dbName = Guid.NewGuid().ToString();
+
+    // InMemory deposu bu fabrikanın kökünde durur, sürecin ortak önbelleğinde
+    // değil. Kök verilmezse EF adlandırılmış depoyu statik ServiceProviderCache'in
+    // tuttuğu iç servis sağlayıcısında saklar ve süreç bitene kadar bırakmaz:
+    // fabrika dispose edilse de verisi kalır. Binlerce fabrika açan bu pakette
+    // testhost'un 0,7 → 7 GB büyümesinin bir kaynağı buydu (CI runner'ı
+    // 2026-10-22'de bellekten düştü). Yerel ölçüm (EF 10.0.10, 200 host ×
+    // ~0,4 MB veri): köksüz 83 MB kalıyor, kökle 1 MB; iç sağlayıcı sayısı
+    // artmıyor, iki kök aynı adı paylaşmıyor. Ad + kök ikisi de
+    // örnek alanı: LicenseDbContext ile LicenseReadOnlyDbContext aynı depoyu
+    // görmeye devam eder, başka bir fabrika görmez.
+    private readonly InMemoryDatabaseRoot _dbRoot = new();
+
     private readonly string _backupRoot = Path.Combine(Path.GetTempPath(), $"orderdeck-backup-{Guid.NewGuid():N}");
 
     public TestEmailSender Email { get; } = new();
@@ -71,7 +85,7 @@ public class ApiFactory : WebApplicationFactory<Program>
     /// SQL Server container'ına karşı koşar.
     /// </summary>
     protected virtual void ConfigureDatabase(DbContextOptionsBuilder opt)
-        => opt.UseInMemoryDatabase(_dbName);
+        => opt.UseInMemoryDatabase(_dbName, _dbRoot);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
