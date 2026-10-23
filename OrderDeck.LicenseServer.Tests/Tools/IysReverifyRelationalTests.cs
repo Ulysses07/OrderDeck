@@ -15,9 +15,9 @@ namespace OrderDeck.LicenseServer.Tests.Tools;
 
 /// <summary>iys-reverify gerçek SQL Server'da (göçlerle kurulmuş şema; <c>ExecuteUpdate</c> InMemory'de çalışmaz): kuru
 /// koşu yazmaz ve marka/durum dağılımını kişisel veri olmadan basar; uygulama yalnız hedef kümeyi (Onay + Expired/Failed +
-/// son tarih / iys-not-confirmed hatası + bir kez kuyruğa alınmış) Pushed'a döndürür, randevuyu şimdiye çeker, olay yazmaz,
-/// yeniden itmez; düzeltilmiş doğrulama işi ardından İYS'nin ONAY dediğini eşler. Ayrıştırma <see cref="IysReverifyTests"/>'te.
-/// Değerler (telefon, marka, kimlik) üretilir.</summary>
+/// son tarih / iys-not-confirmed hatası + bir kez kuyruğa alınmış + son tarihi geçmiş + son İYS cevabı okunamamış)
+/// Pushed'a döndürür, randevuyu şimdiye çeker, olay yazmaz, yeniden itmez; düzeltilmiş doğrulama işi ardından İYS'nin
+/// ONAY dediğini eşler. Ayrıştırma <see cref="IysReverifyTests"/>'te. Değerler (telefon, marka, kimlik) üretilir.</summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
 public sealed class IysReverifyRelationalTests : IAsyncLifetime
@@ -39,7 +39,7 @@ public sealed class IysReverifyRelationalTests : IAsyncLifetime
     }
 
     /// <summary>A markasında iki hedef (son tarihi geçmiş Expired; takvimi tükenmiş Failed), B markasında bir hedef ve
-    /// dokunulmaması gereken beş kayıt. Hedef olmayanların her biri süzgecin tek bir koşulunu çiğner.</summary>
+    /// dokunulmaması gereken sekiz kayıt. Hedef olmayanların her biri süzgecin tek bir koşulunu çiğner.</summary>
     private sealed record Seed(
         Guid LicenseA, string BrandA, string BrandB,
         Guid ExpiredA, Guid FailedA, Guid ExpiredB,
@@ -70,7 +70,7 @@ public sealed class IysReverifyRelationalTests : IAsyncLifetime
         });
 
         var phones = new HashSet<string>();
-        while (phones.Count < 8) phones.Add(TestPhone.NewE164());
+        while (phones.Count < 11) phones.Add(TestPhone.NewE164());
         var p = phones.ToArray();
 
         IysConsent Row(string phone, string brand, IysConsentStatus status, IysPushState state, string? lastError,
@@ -96,10 +96,19 @@ public sealed class IysReverifyRelationalTests : IAsyncLifetime
             Row(p[5], brandA, IysConsentStatus.Onay, IysPushState.Failed, "iys-add code=70"),                 // push hatası
             Row(p[6], brandA, IysConsentStatus.Onay, IysPushState.Confirmed, null),                           // zaten eşleşti
             Row(p[7], brandA, IysConsentStatus.Onay, IysPushState.Pushed, null),                              // takvimi sürüyor
+            // Son tarihi geçmemiş Düştü: kurtarma işinin — 20–35 dk içinde yeniden iter. Komut alsaydı ~31 sa
+            // bekletir, İYS ONAY demezse kurtarma yine Pending'e çekip yeniden iterdi (döngü kodla sonlu olmazdı).
+            Row(p[8], brandA, IysConsentStatus.Onay, IysPushState.Failed, "iys-not-confirmed status=Unknown"),
+            // Son İYS cevabı gerçek RET (çok alıcılı dizi doğru okunmuştu): hata yalnız Unknown üretti.
+            Row(p[9], brandA, IysConsentStatus.Onay, IysPushState.Expired, IysReverify.DeadlinePassed),
+            Row(p[10], brandA, IysConsentStatus.Onay, IysPushState.Failed, "iys-not-confirmed status=Ret"),
         };
         untouched[4].NextVerifyAt = now.AddHours(6);   // randevusu gelmemiş: doğrulama işi sormaz
         untouched[4].VerifyAttempts = 2;
         untouched[3].LastVerifiedStatus = IysConsentStatus.Onay;
+        untouched[5].PushDeadline = now.AddDays(1);
+        untouched[6].LastVerifiedStatus = IysConsentStatus.Ret;
+        untouched[7].LastVerifiedStatus = IysConsentStatus.Ret;
         db.IysConsents.AddRange(expiredA, failedA, expiredB);
         db.IysConsents.AddRange(untouched);
         await db.SaveChangesAsync();
@@ -134,11 +143,13 @@ public sealed class IysReverifyRelationalTests : IAsyncLifetime
 
         exit.Should().Be(0);
         output.Should().Contain("KURU ÇALIŞTIRMA")
-            .And.Contain($"marka={seed.BrandA} durum=Expired hata=push-deadline-passed: 1")
-            .And.Contain($"marka={seed.BrandA} durum=Failed hata=iys-not-confirmed status=Unknown: 1")
-            .And.Contain($"marka={seed.BrandB} durum=Expired hata=push-deadline-passed: 1")
+            .And.Contain($"marka={seed.BrandA} durum=Expired hata=push-deadline-passed son-iys=Unknown: 1")
+            .And.Contain($"marka={seed.BrandA} durum=Failed hata=iys-not-confirmed status=Unknown son-iys=Unknown: 1")
+            .And.Contain($"marka={seed.BrandB} durum=Expired hata=push-deadline-passed son-iys=Unknown: 1")
             .And.Contain("Hedef: 3 kayıt.")
-            .And.Contain("Bilgi: 1 kayıt", "takvimi süren Pushed+Unknown kayıt bilgi olarak sayılır");
+            .And.Contain("Bilgi: 1 kayıt", "takvimi süren Pushed+Unknown kayıt bilgi olarak sayılır")
+            .And.Contain("Bilgi: 1 RET beyanı", "aynı hatanın vurmuş olabileceği RET beyanı sayılır, dokunulmaz")
+            .And.NotContain("son-iys=Ret", "son İYS cevabı gerçek RET olan kayıt hedef değil");
         foreach (var phone in seed.Phones)
             output.Should().NotContain(phone[3..], "çıktıda telefon yok (KVKK)");
 
