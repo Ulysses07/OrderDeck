@@ -10,6 +10,7 @@ using OrderDeck.LicenseServer.Services.Email;
 using OrderDeck.LicenseServer.Services.Push;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.RateLimiting;
@@ -241,6 +242,7 @@ public class ApiFactory : WebApplicationFactory<Program>
     protected override IHost CreateHost(IHostBuilder builder)
     {
         var host = base.CreateHost(builder);
+        TrackRateLimiters(host);
 
         // EnsureCreated must run after the host is built — calling it inside
         // ConfigureServices triggers EF Core 9's "providers SqlServer + InMemory
@@ -250,6 +252,118 @@ public class ApiFactory : WebApplicationFactory<Program>
         db.Database.EnsureCreated();
 
         return host;
+    }
+
+    // Bu fabrikanın (ve WithWebHostBuilder ile türettiklerinin) host'larındaki
+    // hız sınırlayıcılar; host kapandıktan sonra DisposeAsync'te bırakılır.
+    private readonly List<IDisposable> _rateLimiters = new();
+
+    /// <summary>
+    /// ASP.NET Core'un <c>RateLimitingMiddleware</c>'i iki
+    /// <see cref="PartitionedRateLimiter{TResource}"/> tutar (uç başına ve
+    /// global) ve onları hiç dispose etmez. İkisi de 100 ms'lik bir zamanlayıcı
+    /// çalıştırır; statik <c>TimerQueue</c> zamanlayıcıyı, zamanlayıcı
+    /// sınırlayıcıyı, sınırlayıcı ara katmanı, ara katman da <c>_next</c>
+    /// zinciriyle tüm boru hattını ve host'un servis sağlayıcısını kök tutar.
+    /// Prod'da zararsız (süreç başına bir host), ama testte her fabrika host'u
+    /// kapandıktan sonra da bellekte kalıyordu: 40 fabrikalık yerel prob, 40'ı
+    /// da canlı, fabrika başına ~8,5 MB (2026-10-23). Tam pakette binlerce
+    /// fabrika × 8,5 MB = CI runner'ının bellekten düşmesi.
+    ///
+    /// Ara katman örneği dışarıya açık değil; boru hattının delege zinciri
+    /// (TestServer → uygulama → <c>_next</c> ...) izlenerek bulunur. Alan adına
+    /// bağlı değil: ara katmanın <see cref="PartitionedRateLimiter{TResource}"/>
+    /// türündeki her alanı alınır. Bulunamazsa testler yine koşar, yalnız sızıntı
+    /// geri gelir — onu <c>ApiFactoryReleaseTests</c> yakalar.
+    /// </summary>
+    private void TrackRateLimiters(IHost host)
+    {
+        if (host.Services.GetService<IServer>() is not { } server) return;
+
+        foreach (var middleware in FindInPipeline(server, "Microsoft.AspNetCore.RateLimiting.RateLimitingMiddleware"))
+        {
+            for (var type = middleware.GetType(); type is not null; type = type.BaseType)
+            {
+                foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                {
+                    if (field.GetValue(middleware) is PartitionedRateLimiter<HttpContext> limiter)
+                        lock (_rateLimiters) _rateLimiters.Add(limiter);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sunucudan başlayıp boru hattının delege zincirini gezer ve adı verilen
+    /// türdeki nesneleri döner. İzlenen kenarlar: delege → hedefi; her nesneden
+    /// delege ya da <c>IHttpApplication&lt;&gt;</c> değerli alanlar; derleyicinin
+    /// ürettiği kapanışlardan ise her alan (ek parametreli <c>Invoke</c>'u olan
+    /// ara katmanlar, örneği bir kapanışta tutar ve zincir o örneğin
+    /// <c>_next</c>'inden sürer). Servis sağlayıcının içine dağılmaz; birkaç
+    /// yüz düğümde biter.
+    /// </summary>
+    private static List<object> FindInPipeline(object start, string typeFullName)
+    {
+        var found = new List<object>();
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance) { start };
+        var queue = new Queue<object>();
+        queue.Enqueue(start);
+
+        while (queue.Count > 0 && seen.Count < 5_000)
+        {
+            var current = queue.Dequeue();
+            if (current is Delegate d)
+            {
+                foreach (var inner in d.GetInvocationList()) Visit(inner.Target, expand: true);
+                continue;
+            }
+
+            var closure = current.GetType().Name.StartsWith('<');
+            for (var type = current.GetType(); type is not null; type = type.BaseType)
+            {
+                foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                {
+                    if (field.FieldType.IsValueType || field.FieldType == typeof(string)) continue;
+                    object? value;
+                    try { value = field.GetValue(current); } catch { continue; }
+                    var link = value is Delegate || (value is not null && IsHttpApplication(value.GetType()));
+                    Visit(value, expand: link || closure);
+                }
+            }
+        }
+
+        return found;
+
+        void Visit(object? value, bool expand)
+        {
+            if (value is null) return;
+            if (value.GetType().FullName == typeFullName)
+            {
+                if (seen.Add(value)) found.Add(value);
+                return;
+            }
+            if (expand && seen.Add(value)) queue.Enqueue(value);
+        }
+
+        static bool IsHttpApplication(Type type) =>
+            type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IHttpApplication<>));
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        await base.DisposeAsync();
+
+        // Host'lar kapandıktan SONRA: kapanırken gelen bir istek dispose edilmiş
+        // sınırlayıcıya çarpmasın. WithWebHostBuilder ile türetilen fabrikalar
+        // base.DisposeAsync içinde kapanır ve host'ları da bu listeye
+        // CreateHost üzerinden (bu örnek) girmiştir.
+        IDisposable[] limiters;
+        lock (_rateLimiters)
+        {
+            limiters = _rateLimiters.ToArray();
+            _rateLimiters.Clear();
+        }
+        foreach (var limiter in limiters) limiter.Dispose();
     }
 
     public async Task<(string Token, Guid AdminId)> SeedAdminAndLoginAsync(
