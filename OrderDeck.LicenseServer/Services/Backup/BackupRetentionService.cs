@@ -1,15 +1,20 @@
 using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Backup;
 
 /// <summary>
 /// Phase 5a: enforces retention policy after each backup insert.
-/// - First backup of any calendar month is marked IsMonthlyMilestone=true (preserved indefinitely).
+/// - First backup of any calendar month is marked IsMonthlyMilestone=true.
 /// - Non-milestones trimmed to 5 most recent (older deleted from DB + filesystem).
+/// - Aylık yedek alındığı andan <see cref="BackupOptions.MonthlyRetentionMonths"/> ay (varsayılan 12) sonra silinir; müşterinin
+///   en yeni yedeği hariç (karar 7, 23.10.2026). Her silme kişisel veri içermeyen imha kaydını (<see cref="DataDestruction"/>)
+///   satırlarla aynı SaveChanges'te yazar (KVKK Ö-13). Son-5 kırpması bugünkü gibi kayıtsız.
 /// Per-customer SemaphoreSlim serializes concurrent uploads.
 /// </summary>
 public sealed class BackupRetentionService
@@ -17,15 +22,24 @@ public sealed class BackupRetentionService
     private const int MaxNonMilestones = 5;
     private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> _customerLocks = new();
 
+    /// <summary>İmha kaydının hedefi; yayıncı silmesinin yedek satırı da bu adla yazılır (aynı tablonun imhası tek hedefte
+    /// gruplanır).</summary>
+    public const string DestructionTarget = "CustomerBackups";
+
     private readonly LicenseDbContext _db;
     private readonly BackupStorageService _storage;
+    private readonly BackupOptions _opt;
     private readonly ILogger<BackupRetentionService> _log;
+    private readonly TimeProvider _clock;
 
-    public BackupRetentionService(LicenseDbContext db, BackupStorageService storage, ILogger<BackupRetentionService> log)
+    public BackupRetentionService(LicenseDbContext db, BackupStorageService storage, IOptions<BackupOptions> opt,
+        ILogger<BackupRetentionService> log, TimeProvider? clock = null)
     {
         _db = db;
         _storage = storage;
+        _opt = opt.Value;
         _log = log;
+        _clock = clock ?? TimeProvider.System;
     }
 
     public async Task EnforceAfterInsertAsync(Guid customerId, Guid newBackupId, CancellationToken ct = default)
@@ -80,24 +94,57 @@ public sealed class BackupRetentionService
         var nonMilestones = customerBackups
             .Where(b => !b.IsMonthlyMilestone)
             .ToList();
+        var trimmed = nonMilestones.Skip(MaxNonMilestones).ToList();
 
-        if (nonMilestones.Count > MaxNonMilestones)
+        // Step 3: süresi dolan aylık yedekler (karar 7). Son-5 kuralı yalnız aylık
+        // olmayanları sayar ve değişmedi: süresi dolan aylık yedek aylık olmayana
+        // dönüşüp o beşten yer kapmaz, doğrudan gider. Tracked (onarılmış) bayrakla
+        // seçilir, kırpmayla aynı atomik SaveChanges'e girer.
+        var expired = ExpiredMonthlies(customerBackups);
+
+        if (trimmed.Count + expired.Count > 0)
         {
-            var toDelete = nonMilestones.Skip(MaxNonMilestones).ToList();
-            // ÖNCE satırlar, SONRA dosyalar. Ters sırada SaveChanges patlarsa
-            // dosyaları silinmiş ama satırları duran bir yığın "hayalet yedek"
-            // kalırdı — müşteri listede görür, geri yükleyemez. Bu sırada en
-            // kötü ihtimalle yetim dosya kalır; BackupOrphanCleanupJob toplar.
-            var blobPaths = toDelete.Select(b => b.BlobPath).ToList();
-            _db.CustomerBackups.RemoveRange(toDelete);
-            await _db.SaveChangesAsync(ct);
-            foreach (var path in blobPaths) _storage.DeleteBlob(path);
-            _log.LogInformation("Retention trimmed {Count} backups for customer {CustomerId}",
-                toDelete.Count, customerId);
+            await DeleteAsync(customerId, trimmed.Concat(expired).ToList(), expired.Count, ct);
+            _log.LogInformation(
+                "Retention trimmed {Count} backups and expired {Expired} monthly backups for customer {CustomerId}",
+                trimmed.Count, expired.Count, customerId);
         }
         else if (milestoneChanged)
         {
             await _db.SaveChangesAsync(ct);
         }
+    }
+
+    /// <summary>Alındığı andan (<see cref="CustomerBackup.CreatedAt"/>) <see cref="BackupOptions.MonthlyRetentionMonths"/> aydan
+    /// ESKİ aylık yedekler; tam o sınırda alınan kalır. Müşterinin en yeni yedeği (<paramref name="newestFirst"/>'in ilki) aylık
+    /// ve süresi dolmuş olsa da seçilmez: süre kuralı müşteriyi yedeksiz bırakmasın. Süre 0 ya da eksiyse boş (süresiz).</summary>
+    private List<CustomerBackup> ExpiredMonthlies(List<CustomerBackup> newestFirst)
+    {
+        var months = _opt.MonthlyRetentionMonths;
+        if (months <= 0 || newestFirst.Count == 0) return [];
+        var cutoff = _clock.GetUtcNow().AddMonths(-months);
+        var newestId = newestFirst[0].Id;
+        return newestFirst
+            .Where(b => b.IsMonthlyMilestone && b.CreatedAt < cutoff && b.Id != newestId)
+            .ToList();
+    }
+
+    /// <summary>Satırları ve dosyalarını siler. <paramref name="rows"/> içindeki süresi dolan aylık yedekler
+    /// (<paramref name="expiredCount"/> adet) için imha kaydı (hedef <see cref="DestructionTarget"/>, konu müşteri) aynı
+    /// SaveChanges'e girer; son-5 kırpmasının satırları kayıtsız (bugünkü davranış).</summary>
+    private async Task DeleteAsync(Guid customerId, List<CustomerBackup> rows, int expiredCount, CancellationToken ct)
+    {
+        // ÖNCE satırlar, SONRA dosyalar. Ters sırada SaveChanges patlarsa
+        // dosyaları silinmiş ama satırları duran bir yığın "hayalet yedek"
+        // kalırdı — müşteri listede görür, geri yükleyemez. Bu sırada en
+        // kötü ihtimalle yetim dosya kalır; BackupOrphanCleanupJob toplar.
+        var blobPaths = rows.Select(b => b.BlobPath).ToList();
+        _db.CustomerBackups.RemoveRange(rows);
+        // Ölçüt metninde ';' yok: dış kopyanın (CSV) ayracı.
+        DataDestruction.Record(_db, null, DestructionTarget, DataDestruction.Actions.Deleted, expiredCount,
+            $"CreatedAt+{_opt.MonthlyRetentionMonths}ay, aylık yedek", DataDestruction.Triggers.Retention,
+            DataDestruction.SystemActor, subjectId: customerId);
+        await _db.SaveChangesAsync(ct);
+        foreach (var path in blobPaths) _storage.DeleteBlob(path);
     }
 }
