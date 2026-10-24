@@ -46,18 +46,4 @@ public static class BroadcastMediaKeys
     public static string ProductPhotoPrefix(Guid licenseId) => $"{licenseId:N}/products/";
 
     public static string ProductPhotoPrefix(Guid licenseId, Guid productId) => $"{ProductPhotoPrefix(licenseId)}{productId:N}/";
-
-    /// <summary>Paylaşım medyası anahtarının lisansı; başka biçimde null.</summary>
-    public static Guid? PostLicenseOf(string key)
-    {
-        var parts = key.Split('/', 3);
-        return parts.Length == 3 && Guid.TryParseExact(parts[0], "D", out var id) ? id : null;
-    }
-
-    /// <summary>Ürün fotoğrafı anahtarının lisansı; başka biçimde null.</summary>
-    public static Guid? ProductPhotoLicenseOf(string key)
-    {
-        var parts = key.Split('/', 3);
-        return parts.Length == 3 && parts[1] == "products" && Guid.TryParseExact(parts[0], "N", out var id) ? id : null;
-    }
 }
