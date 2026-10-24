@@ -13,7 +13,7 @@ public sealed class BankRawJsonRedactorTests
     /// <summary>Gizlilik politikasındaki "bankanın gönderdiği kaydın kopyası" listesi, metin olarak sabit. Hukuken riskli yön
     /// listeye alan EKLEMEK (metin saklananı eksik anlatır): liste değişince bu test kırılır; o zaman politikanın iki kopyası ve
     /// avukata giden metin de değişmeli (<see cref="BankRawJsonRedactor"/> özeti).</summary>
-    private const string PolicyFieldList = "Aciklama,GonderenAdi,GonderenBanka,IslemAciklama,IslemKodu,MakbuzNo,ReferansNo";
+    private const string PolicyFieldList = "Aciklama,GonderenBanka,IslemAciklama,IslemKodu,MakbuzNo,ReferansNo";
 
     private static string Kept(string redacted)
         => string.Join(",", JsonDocument.Parse(redacted).RootElement.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
@@ -40,7 +40,8 @@ public sealed class BankRawJsonRedactorTests
         var redacted = BankRawJsonRedactor.Redact(json);
 
         Kept(redacted).Should().Be(PolicyFieldList, "politikadaki 'kaydın kopyası' listesiyle aynı olmalı");
-        redacted.Should().NotContain(iban).And.NotContain(vkn).And.NotContain("123.45").And.NotContain("Alici").And.NotContain("Sube");
+        redacted.Should().NotContain(iban).And.NotContain(vkn).And.NotContain("123.45").And.NotContain("Alici").And.NotContain("Sube")
+            .And.NotContain("Ad Soyad", "gönderen adı kopyaya da girmez (KVKK veri küçültme)");
     }
 
     [Fact]
@@ -54,7 +55,7 @@ public sealed class BankRawJsonRedactorTests
 
         root.GetProperty("Aciklama").GetString().Should().Be($"HAVALE {BankHasher.MaskIban(iban)}");
         root.GetProperty("IslemAciklama").GetString().Should().Be($"FAST {BankDescriptionMasker.ElevenDigitMask}");
-        root.GetProperty("GonderenAdi").GetString().Should().Be("Ad Soyad");
+        root.TryGetProperty("GonderenAdi", out _).Should().BeFalse("gönderen adı beyaz listede değil");
     }
 
     [Fact]
@@ -76,12 +77,12 @@ public sealed class BankRawJsonRedactorTests
     [Fact]
     public void Ic_ice_nesne_ve_dizi_alinmaz_null_ve_sayi_aynen_kalir()
     {
-        var json = """{"Aciklama":{"x":"y"},"GonderenAdi":["a"],"ReferansNo":null,"MakbuzNo":42}""";
+        var json = """{"Aciklama":{"x":"y"},"GonderenBanka":["a"],"ReferansNo":null,"MakbuzNo":42}""";
 
         var root = JsonDocument.Parse(BankRawJsonRedactor.Redact(json)).RootElement;
 
         root.TryGetProperty("Aciklama", out _).Should().BeFalse();
-        root.TryGetProperty("GonderenAdi", out _).Should().BeFalse();
+        root.TryGetProperty("GonderenBanka", out _).Should().BeFalse();
         root.GetProperty("ReferansNo").ValueKind.Should().Be(JsonValueKind.Null);
         root.GetProperty("MakbuzNo").GetInt32().Should().Be(42);
     }
@@ -89,7 +90,7 @@ public sealed class BankRawJsonRedactorTests
     [Fact]
     public void Turkce_karakterler_kacislanmaz_ve_islem_idempotent()
     {
-        const string json = """{"Aciklama":"ÖDEME çğışü","GonderenAdi":"Şükrü"}""";
+        const string json = """{"Aciklama":"ÖDEME çğışü","GonderenBanka":"Güneş Bankası"}""";
 
         var once = BankRawJsonRedactor.Redact(json);
 

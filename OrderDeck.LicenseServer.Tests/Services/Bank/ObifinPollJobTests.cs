@@ -626,18 +626,39 @@ public sealed class ObifinPollJobTests
         await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
         var iban = BankHasherTests.TestIban();
         var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
-        var raw = $$"""{"Id":"9","KarsiHesapIBAN":"{{iban}}","BorcluVKN":"{{vkn}}","GonderenAdi":"Ad Soyad"}""";
+        var raw = $$"""{"Id":"9","KarsiHesapIBAN":"{{iban}}","BorcluVKN":"{{vkn}}","ReferansNo":"R9"}""";
         client.Transactions.Add(new ObifinTransactionDto(9, 6, "qnb", new DateTime(2026, 9, 25, 12, 0, 0), 10m, "TL",
-            "EFT", "FT", "EFT", "ref-9", iban, "Ad Soyad", raw));
+            "EFT", "FT", "EFT", "ref-9", iban, null, raw));
 
         await job.RunAsync(CancellationToken.None);
 
         var tx = await db.BankTransactions.SingleAsync();
-        tx.RawJson.Should().Be("""{"GonderenAdi":"Ad Soyad"}""", "yalnız beyaz listedeki alanlar kalır (KVKK Ö-2)");
+        tx.RawJson.Should().Be("""{"ReferansNo":"R9"}""", "yalnız beyaz listedeki alanlar kalır (KVKK Ö-2)");
         tx.CounterpartyIbanHash.Should().HaveLength(64);
         tx.CounterpartyIbanMasked.Should().Be(BankHasher.MaskIban(iban));
         tx.CounterpartyTaxIdHash.Should().BeNull("VKN/TCKN kodu amaçsız: yazılmaz (KVKK Ö-2)");
-        tx.CounterpartyName.Should().Be("Ad Soyad");
+    }
+
+    [Fact]
+    public async Task Gonderen_adi_ne_sutuna_ne_ham_kayda_yazilir_hareket_yine_eslestiriciye_gider()
+    {
+        // KVKK veri küçültme: Faz 1'de gönderen adını okuyan kod yok (eşleştirme adı açıklamada arar). Banka iletse de
+        // ne CounterpartyName sütununa ne ham kaydın kopyasına girer. Değer üretilir (repo public).
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var name = $"Gonderen {Guid.NewGuid():N}";
+        var raw = $$"""{"Id":"9","Aciklama":"HAVALE","GonderenAdi":"{{name}}","IslemKodu":"FT"}""";
+        client.Transactions.Add(new ObifinTransactionDto(9, 6, "qnb", new DateTime(2026, 9, 25, 12, 0, 0), 10m, "TL",
+            "HAVALE", "FT", "EFT", "ref-9", null, name, raw));
+
+        await job.RunAsync(CancellationToken.None);
+
+        var tx = await db.BankTransactions.AsNoTracking().SingleAsync();
+        tx.CounterpartyName.Should().BeNull("gönderen adı kaydedilmez");
+        tx.RawJson.Should().NotContain(name).And.NotContain("GonderenAdi");
+        tx.RawJson.Should().Be("""{"Aciklama":"HAVALE","IslemKodu":"FT"}""");
+        sink.Received.Should().ContainSingle().Which.ObifinId.Should().Be(9);
     }
 
     [Fact]
