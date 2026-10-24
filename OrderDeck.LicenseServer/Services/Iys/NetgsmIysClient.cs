@@ -74,28 +74,34 @@ public sealed class NetgsmIysClient : IIysClient
         var (code, body) = await PostAsync(account, "search", data, ct);
 
         var statuses = new Dictionary<string, IysConsentStatus>(StringComparer.Ordinal);
+        var queryKind = "yok";
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("query", out var query)
-                && query.ValueKind == JsonValueKind.Array)
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("query", out var query))
             {
-                foreach (var row in query.EnumerateArray())
+                queryKind = query.ValueKind.ToString();
+                switch (query.ValueKind)
                 {
-                    var recipient = row.TryGetProperty("recipient", out var r) ? r.GetString() : null;
-                    var status = row.TryGetProperty("status", out var s) ? s.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(recipient)) continue;
+                    case JsonValueKind.Array:
+                        foreach (var row in query.EnumerateArray())
+                            ReadRow(row, statuses);
+                        break;
 
-                    // "Kayıt yok" ile "reddetti" ayırt EDİLEMEZ: İYS ikisine de
-                    // RET diyor (2026-09-17'de kayıtsız numarayla doğrulandı) ve
-                    // transactionId sorgu kimliği olduğu için ayırt edici değil.
-                    // Fail-closed: ONAY olmayan her şey gönderimi keser.
-                    statuses[recipient] = status switch
-                    {
-                        "ONAY" => IysConsentStatus.Onay,
-                        "RET" => IysConsentStatus.Ret,
-                        _ => IysConsentStatus.Unknown,
-                    };
+                    // Netgsm TEK alıcılı sorguda satırı diziye SARMIYOR, nesne
+                    // olarak döndürüyor (2026-10-22 prod ölçümü). Yalnız diziyi
+                    // okuduğumuz için İYS'nin ONAY olarak tuttuğu kayıt Unknown
+                    // sayıldı: tek başına sorulan her onay doğrulama takvimini
+                    // tüketti, kurtarma son tarih geçince Expired yazdı (24 kayıt).
+                    // Tek okuyucu, iki biçim.
+                    case JsonValueKind.Object:
+                        ReadRow(query, statuses);
+                        break;
+
+                    // Tanınmayan biçim (null, metin, sayı): boş sonuç — kimse
+                    // ONAY sayılmaz (fail-closed). Sessiz değil: aşağıdaki
+                    // sonuç denetimi uyarır.
                 }
             }
         }
@@ -103,13 +109,59 @@ public sealed class NetgsmIysClient : IIysClient
         {
             _log.LogWarning(ex, "İYS search yanıtı ayrıştırılamadı (code={Code})", code);
             // Tam gövde ayrıştırılamadıysa "0" güvenilir DEĞİL: "0 + boş Statuses"
-            // çağıranda herkes Unknown olur ve kapı sessizce kapanır (2026-09-22
+            // çağıranda herkes okunamamış olur ve kapı sessizce kapanır (2026-09-22
             // olayı). Bugün erişilemez (ReadCode aynı gövdeyi aynı ayrıştırıcıyla
             // okuyor) ama bu eşitlik yapısal değil, rastlantısal — burada çivilenir.
+            // Doğrulama işi "0" dışı her kodu cevapsız sayar (takvim tüketilmez).
             if (code == "0") code = "parse-error";
         }
 
+        // Uyarı TÜRE göre değil SONUCA göre: "query" doğru türde olsa da içeriği
+        // okunamayabilir (boş dizi/nesne, recipient'sız satır, alıcının başka
+        // biçimde yansıması, tanınmayan status). Hepsinin sonucu aynı sessiz
+        // kayıp — tek alıcılı nesne biçimi de böyle sessizce boş dönüyordu ve
+        // fark edilmesi 24 onayın son tarihine mal oldu. Hata kodunda satır
+        // beklenmez, denetim yalnız "0"da. Yalnız sayılar; telefon yazılmaz (KVKK).
+        if (code == "0")
+        {
+            var asked = recipients.Distinct(StringComparer.Ordinal).ToArray();
+            var unread = asked.Count(r =>
+                !statuses.TryGetValue(r, out var s) || s == IysConsentStatus.Unknown);
+            if (unread > 0)
+                _log.LogWarning(
+                    "İYS search: code=0 yanıtında {Unread}/{Asked} alıcının ONAY/RET'i okunamadı "
+                    + "(query={Kind}, okunan satır {Read})",
+                    unread, asked.Length, queryKind, statuses.Count);
+        }
+
         return new IysSearchResult(code, Diagnostic(body), statuses);
+    }
+
+    /// <summary>/iys/search yanıtının TEK satırını okur — dizi ve nesne biçimi
+    /// aynı okuyucudan geçer, iki biçimin kuralları ayrışamaz. Beklenmeyen JSON
+    /// türünde FIRLATMAZ (nesne olmayan eleman atlanır, metin olmayan alan yok
+    /// sayılır): çağıranlardan <c>NetgsmAccountVerifier</c> yalnız HTTP/iptal/
+    /// JSON hatalarını yakalıyor; fırlayan <c>InvalidOperationException</c>
+    /// oradan kaçar.</summary>
+    private static void ReadRow(JsonElement row, Dictionary<string, IysConsentStatus> statuses)
+    {
+        if (row.ValueKind != JsonValueKind.Object) return;
+        var recipient = row.TryGetProperty("recipient", out var r) && r.ValueKind == JsonValueKind.String
+            ? r.GetString() : null;
+        var status = row.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String
+            ? s.GetString() : null;
+        if (string.IsNullOrWhiteSpace(recipient)) return;
+
+        // "Kayıt yok" ile "reddetti" ayırt EDİLEMEZ: İYS ikisine de
+        // RET diyor (2026-09-17'de kayıtsız numarayla doğrulandı) ve
+        // transactionId sorgu kimliği olduğu için ayırt edici değil.
+        // Fail-closed: ONAY olmayan her şey gönderimi keser.
+        statuses[recipient] = status switch
+        {
+            "ONAY" => IysConsentStatus.Onay,
+            "RET" => IysConsentStatus.Ret,
+            _ => IysConsentStatus.Unknown,
+        };
     }
 
     private async Task<(string Code, string Body)> PostAsync(
@@ -165,7 +217,11 @@ public sealed class NetgsmIysClient : IIysClient
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("code", out var el))
+            // Düz metin kod ("30", "\"60\"") geçerli JSON ama nesne değil; kökte
+            // alan aramak InvalidOperationException fırlatırdı — aşağıdaki düz
+            // metin yoluna düşmeli.
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("code", out var el))
                 return el.ValueKind == JsonValueKind.String ? el.GetString() ?? "" : el.ToString();
         }
         catch (JsonException) { /* düz metin yanıt */ }
