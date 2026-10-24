@@ -121,6 +121,34 @@ public sealed class LicenseMediaPurgeJobTests : IDisposable
     }
 
     [Fact]
+    public async Task Planlanan_gorevi_is_istekteki_turla_ayni_anda_ele_almaz_istek_olurse_pencere_sonunda_devralir()
+    {
+        // Saatlik iş (:25) lisans satırlarının kaydıyla istekteki ilk turun bitişi arasına denk gelebilir. Görev o anda işe
+        // açık olsaydı iki tur aynı anahtarları listeleyip silerdi (R2'de zararsız) ama ikisi de imha kaydı yazardı: sayılar
+        // ikiye katlanırdı. İlk turu istek koşuyor; iş görevi ancak geç yazım penceresinden sonra devralır.
+        var (license, subject) = (Guid.NewGuid(), Guid.NewGuid());
+        var task = LicenseMediaPurge.Schedule(_db, [license], subject, T0).Single();
+        await _db.SaveChangesAsync();
+        var receipt = ReceiptKey(license);
+        await PutAsync(receipt);
+
+        foreach (var at in new[] { T0, T0.AddMinutes(29) })
+        {
+            _clock.Now = at;
+            (await Job().RunAsync(default)).Should().Be(0, "ilk tur isteğin: iş aynı görevi aynı anda ele almaz");
+        }
+        Exists(receipt).Should().BeTrue();
+        (await TaskAsync(task.Id)).AttemptCount.Should().Be(0);
+        (await _db.DataDestructionRecords.AnyAsync()).Should().BeFalse();
+
+        // İstek turu hiç koşmadan öldü: iş pencere sonunda devralır. Kapanış zaten bundan önce olamazdı.
+        _clock.Now = T0 + LicenseMediaPurge.LateWriteWindow;
+        (await Job().RunAsync(default)).Should().Be(1);
+        Exists(receipt).Should().BeFalse();
+        (await _db.DataDestructionRecords.AsNoTracking().SingleAsync()).RowCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Gec_yazim_penceresinde_yuklenen_nesneyi_sonraki_tur_siler_pencere_dolmadan_gorev_kapanmaz()
     {
         // İmzalı yükleme URL'si 10 dk yaşar: silme sırasında alınmış bir URL'yle nesne, istekteki tur bittikten sonra yüklenebilir.

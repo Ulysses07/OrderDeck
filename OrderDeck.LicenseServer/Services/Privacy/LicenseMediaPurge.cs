@@ -86,13 +86,16 @@ public sealed class LicenseMediaPurge
     }
 
     /// <summary>Lisans başına görev satırını izleyiciye EKLER, kaydetmez: lisans satırlarını silen SaveChanges'te yazılsın (ikisi
-    /// birlikte olur ya da hiçbiri). İlk tur hemen koşabilsin diye zamanı şimdi.</summary>
+    /// birlikte olur ya da hiçbiri). İlk turu istek, kayıttan hemen sonra, elindeki görevle koşar; işe görev ancak
+    /// <see cref="LateWriteWindow"/> sonra açılır. Şimdiye açık olsaydı saatlik iş kayıtla istekteki turun bitişi arasına denk
+    /// gelince aynı görevi aynı anda ele alır, iki tur da imha kaydı yazardı (sayılar ikiye katlanır). İstek ilk turu koşamadan
+    /// ölürse iş pencere sonunda devralır; görev zaten bundan önce kapanamaz. Tur sonunda yazılan değer de aynı.</summary>
     public static List<LicenseMediaPurgeTask> Schedule(LicenseDbContext db, IEnumerable<Guid> licenseIds, Guid subjectId,
         DateTimeOffset now)
     {
         var tasks = licenseIds.Select(id => new LicenseMediaPurgeTask
         {
-            Id = Guid.NewGuid(), LicenseId = id, SubjectId = subjectId, CreatedAt = now, NextAttemptAt = now,
+            Id = Guid.NewGuid(), LicenseId = id, SubjectId = subjectId, CreatedAt = now, NextAttemptAt = now + LateWriteWindow,
         }).ToList();
         db.LicenseMediaPurgeTasks.AddRange(tasks);
         return tasks;

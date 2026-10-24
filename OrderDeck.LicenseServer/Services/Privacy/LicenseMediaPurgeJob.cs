@@ -1,3 +1,4 @@
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -31,7 +32,9 @@ public sealed class LicenseMediaPurgeJob
         _clock = clock ?? TimeProvider.System;
     }
 
-    /// <summary>Silinen nesne sayısını döndürür.</summary>
+    /// <summary>Silinen nesne sayısını döndürür. Üst üste binen iki koşu aynı görevleri ele alıp ikisi de imha kaydı yazardı
+    /// (görev satırında eşzamanlılık jetonu yok): ikinci koşu birincinin bitmesini bekler.</summary>
+    [DisableConcurrentExecution(timeoutInSeconds: 600)]
     public async Task<int> RunAsync(CancellationToken ct)
     {
         var now = _clock.GetUtcNow();
