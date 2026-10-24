@@ -276,8 +276,12 @@ public sealed class ShopperPurgeService
         // 3a. Satış kayıtlarındaki metin (yayın ve etiket senkronu, spec 2026-10-13 §9). Ayar KAPATILMIŞSA sipariş
         //     satırlarına dokunulmaz; akış asıl kaydı silinmiş müşterinin siparişini okuma anında maskeler. AÇIKKEN
         //     (varsayılan, sahip kararı 8, 2026-10-23) silinen asıl kayda ve kopyalarına (eski Id'yle kalmış geç sipariş) bağlı
-        //     siparişlerde takma ad ve yorum aynı kayıtta boşaltılır; rowversion ilerlediği için boşaltma bütün
-        //     bilgisayarlara iner. Kullanıcı adı, kod ve fiyat mali kayıt olarak kalır.
+        //     siparişlerde takma ad ve yorum aynı kayıtta boşaltılır. Kullanıcı adı, kod ve fiyat mali kayıt olarak kalır.
+        //     Bilgisayarlara satış akışıyla İNMEZ: akış var olan etiketin metnini güncellemez (SalesFeedRepository.WriteUnitsSql
+        //     yalnız birimleri yazar) ve yalnız mod On'da çekilir. Bilgisayardaki etiketleri müşteri akışındaki silme kararı
+        //     boşaltır (CustomerRepository.RecordPurge → ScrubPurgedLabelTextSql): v0.9.11+ masaüstünde, yerel
+        //     SalesSyncState.ScrubOrderText = 1 iken (sales/state'ten öğrenilir). Ayar açılmadan önceki silmelere geriye
+        //     dönük uygulanmaz.
         var scrubbedOrders = _salesSync.ScrubOrderTextOnPurge
             ? await OrdersWithTextAsync(projections, ct)
             : new List<Order>();
