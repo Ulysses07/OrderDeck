@@ -14,7 +14,7 @@ const EFFECTIVE_DATE = '2026-09-04';
  * below says the Turkish text prevails; PolicyEffectiveDateParityTests (server tests) keeps this equal to the Turkish date.
  * When the full translation is published with the Turkish effective date, delete this constant and the note.
  */
-const TURKISH_EFFECTIVE_DATE = '2026-10-21';
+const TURKISH_EFFECTIVE_DATE = '2026-10-19';
 
 export default function PrivacyEn() {
   return (
@@ -27,13 +27,8 @@ export default function PrivacyEn() {
       <p>
         <strong>Note:</strong> This English text is a convenience translation. The Turkish version at{' '}
         <a href="/gizlilik-politikasi/">orderdeckapp.com/gizlilik-politikasi</a>, effective {TURKISH_EFFECTIVE_DATE},
-        prevails. It currently contains sections not yet reflected here, including its wider scope (broadcaster panel,
-        customer app and registration form), the data controller&apos;s postal address, the legal grounds for the
-        registration form, Section 1.2a on the broadcaster&apos;s customer and sales records held on the server, Section
-        1.4 on the processing of broadcasters&apos; bank account transactions, Section 1.5 on
-        the customer app and payment receipts, Section 1.6 on service providers and transfers abroad, Section 1.7 on
-        WhatsApp conversations, and the updated retention periods, rights, application channels, data security and
-        policy-change sections.
+        prevails. It currently contains sections not yet reflected here, including Section 1.4 on the processing of
+        broadcasters&apos; bank account transactions, and the related retention periods and rights.
       </p>
       <p>
         This Privacy Policy describes how the <strong>{BRAND}</strong> Windows desktop
@@ -46,23 +41,14 @@ export default function PrivacyEn() {
       </p>
 
       <h2>1. Data we collect</h2>
-      <p>{BRAND} works with the following kinds of data:</p>
+      <p>The {BRAND} desktop application processes two kinds of data:</p>
 
       <h3>1.1. Account and license data</h3>
       <ul>
         <li>Email address (for sign-up and license management)</li>
         <li>License key, machine fingerprint</li>
-        <li>License payment amount, license and update-pack status (card and payment instrument details are held only by the payment processor and are not stored by us; for broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version)</li>
-        <li>
-          IP address (in security logs; deleted after 90 days) and login time (in session records until the account is
-          deleted; in audit records, together with the email address, for 24 months, see Section 5)
-        </li>
-        <li>
-          Staff accounts the broadcaster adds in the panel: the staff member&apos;s email address, name and role, a hash
-          used to verify their password (the password itself is not stored), and the times the account was added and
-          last signed in. This data is kept until the broadcaster removes the staff account or the broadcaster&apos;s
-          account is deleted; for the email address and name in the staff add/remove records, see Section 5
-        </li>
+        <li>Payment amount, license and update-pack status (payment details are stored only by our payment processors, never by us)</li>
+        <li>IP address and login timestamp (for security logs, deleted within 90 days)</li>
       </ul>
 
       <h3>1.2. Live-stream chat data</h3>
@@ -73,30 +59,17 @@ export default function PrivacyEn() {
       <ul>
         <li><strong>Stored only on your own computer</strong> in a memory ring buffer (max 500 messages)</li>
         <li><strong>Discarded entirely</strong> when the application closes</li>
-        <li><strong>Not sent to {BRAND} servers</strong> (except in the two cases below) and never shared with third parties</li>
+        <li><strong>Never sent to {BRAND} servers</strong> and never shared with third parties</li>
       </ul>
       <p>
-        <strong>First exception:</strong> comments the broadcaster{' '}
+        <strong>The one exception:</strong> comments the broadcaster{' '}
         <strong>converts into an order/label</strong>. The text of such a
         comment is kept as part of the order record on the broadcaster&apos;s
         computer and is transferred to {BRAND} servers together with the order
         data, so the broadcaster can run their business (orders, shipping,
-        dispute tracking). When a commenter places an order or enters a giveaway run by the broadcaster, their username
-        and display name (and, when the broadcaster blocks them from chat, their username) enter the broadcaster&apos;s
-        customer records and are transferred to {BRAND} servers with those records (Section 1.2a of the Turkish
-        version); giveaway and block records do not contain the comment text. See the{' '}
-        <a href="/en/data-deletion">Data Deletion</a> page for details.
-      </p>
-      <p>
-        <strong>Second exception: Instagram registration link.</strong> For broadcasters who have connected their
-        Instagram account to {BRAND} for the registration-link flow (&quot;!kayıt&quot;), Meta also forwards the comments
-        posted on that account&apos;s live broadcasts (comment text and the commenter&apos;s Instagram username and ID) to
-        the {BRAND} server. The server only sends a private Instagram message with the broadcaster&apos;s registration-form
-        link to viewers who type &quot;!kayıt&quot;; all other comments are discarded without being stored. A forwarded
-        notification stays in the server&apos;s job queue for 1 day after it is processed and is then deleted; if
-        processing fails, it may stay until the error is examined and the entry deleted. The broadcaster is the data
-        controller for this processing; {BRAND} processes it on the broadcaster&apos;s behalf. Apart from these two
-        exceptions, the raw chat stream is not sent to our servers.
+        dispute tracking). The raw chat stream itself is never sent to our
+        servers in bulk. See the <a href="/en/data-deletion">Data Deletion</a>{' '}
+        page for details.
       </p>
 
       <h3>1.3. Buyer information collected via the registration form</h3>
@@ -116,25 +89,14 @@ export default function PrivacyEn() {
         <li>Full name, email, phone (WhatsApp) number, and shipping address</li>
         <li>Optional Turkish national ID (T.C. Kimlik No) for invoicing (only if the buyer chooses to provide it)</li>
         <li>Explicit consent to receive informational messages via WhatsApp and/or SMS (checkboxes)</li>
-        <li>
-          The IP address and browser details from which the form was submitted (deleted from the form record after 90
-          days; if the buyer gives SMS consent, they are also kept as proof of the consent action in the SMS consent
-          records, where they are retained for 3 more years after the broadcaster leaves the platform, see Section 5),
-          and the version of the notice and of the broadcaster&apos;s data-controller information shown to the buyer
-        </li>
       </ul>
       <p>
-        This data is processed for the relevant broadcaster&apos;s order, payment, shipping
-        and invoicing purposes, including identifying which customer a bank transfer to the
-        broadcaster&apos;s account belongs to (see Section 1.4 of the Turkish version); it is
-        never shared or sold to third parties for marketing. Consent for informational and
-        marketing messages is requested with the checkboxes on the form, and the buyer may
-        withdraw it at any time; marketing SMS are not sent through {BRAND} to numbers without
-        SMS consent. Messages about the buyer&apos;s order, payment and shipping are sent to the
-        WhatsApp number the buyer provides. The broadcaster who created the form is the data controller for this
-        information; {BRAND} hosts it on the broadcaster&apos;s behalf and delivers it to the
-        broadcaster&apos;s application. To measure the accuracy of that transfer matching,
-        {' '}{BRAND} uses this data on its own behalf.
+        This data is processed solely for the relevant broadcaster&apos;s order, shipping,
+        and invoicing purposes; it is never shared or sold to third parties for marketing.
+        Messages are only sent through channels the buyer has explicitly consented to, and
+        the buyer may withdraw consent at any time. The broadcaster who created the form is
+        the data controller for this information; {BRAND} hosts it on the broadcaster&apos;s
+        behalf and delivers it to the broadcaster&apos;s application.
       </p>
 
       <h2>2. YouTube API usage</h2>
@@ -161,19 +123,8 @@ export default function PrivacyEn() {
       </ul>
       <p>Data obtained via the YouTube API in the desktop flow:</p>
       <ul>
-        <li>
-          Apart from comments converted into an order/label and the channel name and channel ID of commenters who enter
-          the broadcaster&apos;s customer records (those who order, enter a giveaway or are blocked from chat by the
-          broadcaster; for someone blocked from chat who has no other record, only the channel ID) (Section 1.2 above;
-          Section 1.2a of the Turkish version), is processed only on the user&apos;s own machine. The customer, order and giveaway records on the broadcaster&apos;s computer, together with these
-          commenters&apos; profile picture URLs, are also contained in the encrypted backups the desktop application
-          uploads to the server (Section 5 of the Turkish version)
-        </li>
-        <li>
-          Apart from these exceptions, is not transmitted to {BRAND} servers; where the broadcaster has a bank
-          connection, the channel names and channel IDs transmitted to the server are also used in the transfer
-          matching and accuracy measurement described in Section 1.4 of the Turkish version
-        </li>
+        <li>Is processed only on the user's own machine</li>
+        <li>Is never transmitted to {BRAND} servers</li>
         <li>Is not used for advertising, profiling, or training machine-learning models</li>
         <li>Is not sold or transferred to third parties</li>
       </ul>
@@ -209,11 +160,8 @@ export default function PrivacyEn() {
         </li>
         <li>
           The retrieved channel title, handle and channel ID are stored solely as part of
-          that buyer&apos;s own registration and are visible to the broadcaster the buyer is
-          registering with; where the broadcaster has a bank connection, they are also used in
-          the matching and accuracy measurement described in Section 1.4 of the Turkish version
-          and may be seen by {BRAND}&apos;s authorised administrator (retention: Section 5,
-          &quot;Buyer information&quot;)
+          that buyer&apos;s own registration and are visible only to the broadcaster the
+          buyer is registering with (retention: Section 5, &quot;Buyer information&quot;)
         </li>
         <li>The data is not used for advertising, profiling, or training machine-learning models, and is not sold or transferred to third parties</li>
         <li>
@@ -242,11 +190,7 @@ export default function PrivacyEn() {
       <ul>
         <li>Reads chat messages from the live-stream page the user opens</li>
         <li>Forwards messages over a local WebSocket connection to the desktop app</li>
-        <li>
-          Sends chat data to no other destination; it only downloads up-to-date page selectors (technical definitions
-          used to locate the chat area on the page) from the {BRAND} server. That request carries no chat data; its IP
-          address and browser details end up in the server access logs (Section 5)
-        </li>
+        <li>Sends data to no other destination</li>
       </ul>
 
       <h2>4. Cookies and site analytics</h2>
@@ -259,46 +203,17 @@ export default function PrivacyEn() {
 
       <h2>5. Data retention</h2>
       <ul>
-        <li>
-          Account data (email, license): until the account is deleted; after deletion, the email address remains in audit
-          records (records of sign-ins, session renewals and sign-outs, data exports, adding and removing panel staff,
-          license issuance and account deletion) for at most 24 months from the date of each record. The email address
-          and name of staff the broadcaster added in the panel likewise remain in the staff add/remove records for the
-          same period
-        </li>
-        <li>
-          Staff accounts the broadcaster adds in the panel (Section 1.1): until the broadcaster removes the staff account
-          or the broadcaster&apos;s account is deleted
-        </li>
-        <li>Buyer information from the registration form: on the server, until the broadcaster&apos;s account is deleted (see Section 5 of the Turkish version)</li>
-        <li>
-          SMS consents (Section 1.3): the current consent record is deleted 30 days after the broadcaster leaves the
-          platform; proof of consent actions (phone number, consent or refusal, its date and source, and the IP address
-          and browser details of the request) is kept until the broadcaster leaves and for 3 years afterwards (Law No.
-          6563, Art. 13). For consents given or withdrawn in the customer app, see Section 5 of the Turkish version
-        </li>
-        <li>
-          Backups the desktop application uploads to the server (the encrypted copy of the customer, order, label, stream
-          and giveaway records on the broadcaster&apos;s computer): retention as set out in Section 5 of the Turkish
-          version. These backups are used for restores and restore drills; in addition, {BRAND}&apos;s authorised
-          administrator may view the contents of a backup (customer, label, giveaway and stream records) in the admin
-          panel for support purposes. For viewing, the backup is opened in a temporary copy on the server, which is
-          deleted once the page has been shown; every view is written to the audit log
-        </li>
+        <li>Account data (email, license): until the account is deleted</li>
+        <li>Buyer information from the registration form: until deleted by the relevant broadcaster</li>
         <li>Server access logs: 30 days</li>
-        <li>IP addresses and browser details in security logs: 90 days</li>
+        <li>Security logs: 90 days</li>
         <li>
           Live-stream chat messages: only while the application is open
           (except the text of comments converted into an order/label — that
           text is retained as part of the order record, for as long as the
           order record itself)
         </li>
-        <li>
-          OAuth tokens: until the user revokes consent (stored on user&apos;s machine). The broadcaster&apos;s Meta access
-          tokens for the Instagram registration link (Section 1.2) and the WhatsApp line are kept encrypted on the server:
-          the WhatsApp token until the line is disconnected, the Instagram token until the broadcaster&apos;s account is
-          deleted
-        </li>
+        <li>OAuth tokens: until the user revokes consent (stored on user's machine)</li>
       </ul>
 
       <h2>6. User rights</h2>
@@ -317,10 +232,8 @@ export default function PrivacyEn() {
 
       <h2>7. Data security</h2>
       <p>
-        Transit is encrypted with TLS 1.2+. Remote backups of the server database are
-        encrypted with OpenPGP (AES-256), and backups uploaded by the desktop application with
-        AES-256-GCM; the short-lived backup copy on the server&apos;s own disk is also encrypted.
-        JWT tokens are signed with a secure secret. That said, no method of internet
+        Transit is encrypted with TLS 1.2+. Backups are encrypted with AES-256-GCM. JWT
+        tokens are signed with a secure secret. That said, no method of internet
         transmission is 100% secure; you are also responsible for keeping your password
         confidential.
       </p>
