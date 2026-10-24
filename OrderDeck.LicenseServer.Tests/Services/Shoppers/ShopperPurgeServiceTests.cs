@@ -67,7 +67,8 @@ public sealed class ShopperPurgeServiceTests
         return license;
     }
 
-    /// <param name="scrubOrderText"><c>SalesSync:ScrubOrderTextOnPurge</c>; varsayılan kapalı (§9).</param>
+    /// <param name="scrubOrderText"><c>SalesSync:ScrubOrderTextOnPurge</c>; bu yardımcıda kapalı — sipariş metnini
+    /// sınamayan testler o adıma girmesin. Üretim varsayılanı açık (karar 8, <see cref="SalesSyncOptions"/>).</param>
     private static (ShopperPurgeService Service, StubShopperPaymentStorage Storage) Build(
         LicenseDbContext db, bool scrubOrderText = false)
     {

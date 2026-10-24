@@ -273,9 +273,9 @@ public sealed class ShopperPurgeService
             c.MarkPurged(now);
         }
 
-        // 3a. Satış kayıtlarındaki metin (yayın ve etiket senkronu, spec 2026-10-13 §9). Ayar KAPALIYKEN (varsayılan,
-        //     bugünkü politika) sipariş satırlarına dokunulmaz; akış asıl kaydı silinmiş müşterinin siparişini okuma
-        //     anında maskeler. AÇIKKEN silinen asıl kayda ve kopyalarına (eski Id'yle kalmış geç sipariş) bağlı
+        // 3a. Satış kayıtlarındaki metin (yayın ve etiket senkronu, spec 2026-10-13 §9). Ayar KAPATILMIŞSA sipariş
+        //     satırlarına dokunulmaz; akış asıl kaydı silinmiş müşterinin siparişini okuma anında maskeler. AÇIKKEN
+        //     (varsayılan, sahip kararı 8, 2026-10-23) silinen asıl kayda ve kopyalarına (eski Id'yle kalmış geç sipariş) bağlı
         //     siparişlerde takma ad ve yorum aynı kayıtta boşaltılır; rowversion ilerlediği için boşaltma bütün
         //     bilgisayarlara iner. Kullanıcı adı, kod ve fiyat mali kayıt olarak kalır.
         var scrubbedOrders = _salesSync.ScrubOrderTextOnPurge

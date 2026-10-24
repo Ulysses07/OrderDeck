@@ -11,12 +11,14 @@ using Kit = OrderDeck.LicenseServer.Tests.Controllers.Licenses.SalesCommandTestK
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
-/// <summary>Alt sürümü tanımlı, KVKK metin boşaltması KAPALI (varsayılan; sahip kararı, §11) sunucu.</summary>
+/// <summary>Alt sürümü tanımlı, KVKK metin boşaltması açıkça KAPATILMIŞ sunucu (varsayılan açık; sahip kararı 8,
+/// 2026-10-23).</summary>
 public sealed class SalesSyncNoScrubApiFactory : ApiFactory
 {
     protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
     {
         ["SalesSync:MinClientVersion"] = SalesSyncConfiguredApiFactory.MinClientVersion,
+        ["SalesSync:ScrubOrderTextOnPurge"] = "false",
     };
 }
 
@@ -215,7 +217,7 @@ public sealed class SalesLabelCommandsTests
 
     /// <summary>
     /// KVKK (§9, §4.2 ekleme kuralı): ayar açıkken asıl projeksiyonu silinmiş müşteriye eklenen yedek metinsiz yazılır
-    /// (<c>TextScrubbedAt</c> basılır) — müşteri kopyanın Id'siyle gelse de; ayar kapalıyken (varsayılan) metin kalır.
+    /// (<c>TextScrubbedAt</c> basılır) — müşteri kopyanın Id'siyle gelse de; ayar kapatılmışsa metin kalır.
     /// </summary>
     [Theory]
     [InlineData(true)]
