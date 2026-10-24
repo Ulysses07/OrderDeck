@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 
 namespace OrderDeck.LicenseServer.Services.Iys;
 
@@ -15,8 +16,11 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// Faz 2 — hesabı hiç kalmamış YETİM markaların onayları: son onay hareketi
 /// üzerinden 30 günlük ödemsiz süre dolunca silinir + takvim kaydı açılır
 /// (LicenseId olay izinden best-effort geri kazanılır).
+/// Faz 2b — MARKASIZ yayıncının ispatı (sahip kararı 10): lisansı silinmiş
+/// yayıncının BrandCode'suz olayları için markasız takvim kaydı açılır.
 /// Faz 3 — ayrılış + 3 yılı dolanlar: DÖNEM ispatı (OccurredAt ≤ DepartedAt
-/// olayları) ve o lisansın dönem kampanyaları imha edilir, PurgedAt damgalanır.
+/// olayları) ve o lisansın dönem kampanyaları imha edilir, PurgedAt damgalanır,
+/// imha kaydı (DataDestructionRecords) aynı kayıtta yazılır.
 /// Aydınlatma metni iki kademeyi de söyler; "tamamen sildik" İDDİA EDİLMEZ.
 /// </summary>
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
@@ -31,6 +35,10 @@ public sealed class IysDepartureRetentionJob
     // m.13: 3 yıl. FromDays(3*365)=1095 gün artık yıllarda 3 takvim yılının
     // GERİSİNDE kalabilir; +2 gün pay süreyi uzatır, asla kısaltmaz.
     public static readonly TimeSpan ProofRetention = TimeSpan.FromDays(3 * 365 + 2);
+
+    // İmha kaydının (DataDestructionRecords) ölçütü — kişisel veri, marka kodu yok.
+    private const string BrandProofCriterion = "ayrılış+3 yıl (6563 m.13), marka dönemi";
+    private const string NoBrandProofCriterion = "lisansın silinişi+3 yıl (6563 m.13), markasız dönem";
 
     private readonly LicenseDbContext _db;
     private readonly ILogger<IysDepartureRetentionJob> _log;
@@ -48,6 +56,7 @@ public sealed class IysDepartureRetentionJob
         var now = DateTimeOffset.UtcNow;
         await DeleteDepartedConsentsAsync(now, ct);
         await DeleteOrphanConsentsAsync(now, ct);
+        await ScheduleNoBrandDeparturesAsync(now, ct);
         await PurgeExpiredProofAsync(now, ct);
     }
 
@@ -242,6 +251,85 @@ public sealed class IysDepartureRetentionJob
         }
     }
 
+    /// <summary>
+    /// Faz 2b — markasız yayıncının ispat takvimi (sahip kararı 10, 2026-10-23).
+    ///
+    /// <para>Doğrulanmış markası olmayan yayıncıda toplayıcı olayı BrandCode=null
+    /// yazar (<c>no-brand</c>, <c>invalid-phone</c>) ve kayıt satırı açmaz; olay
+    /// lisansa bağlıdır, FK'sız olduğu için lisansla kaskad GİTMEZ. Faz 3 olayları
+    /// markayla eşlediği için bu olaylar hiçbir takvime girmiyordu.</para>
+    ///
+    /// <para><b>Ayrılış = lisansın silinmesi.</b> Lisans yaşadıkça dönem bitmez:
+    /// markasız RET'ler lisansın her yeni doğrulamasında yeniden oynatılır
+    /// (<see cref="IysConsentCollector.StageReplayNoBrandEventsAsync"/>), yani
+    /// olaylar belirli bir markanın dönemine ait değil, lisansın kendi kaydıdır.
+    /// Marka ayrılışında (Faz 1/2) bunları da imha etmek, aynı lisansın sonraki
+    /// markasına oynatılmış ispatı o marka yaşarken silerdi. Markalı yolun
+    /// "hesap/lisans gitti" anlamındaki ayrılışı burada lisansın silinmesidir;
+    /// aydınlatma metnindeki "yayıncı platformdan ayrılırsa" da budur.</para>
+    ///
+    /// <para>Silinme anı bilinmiyor (lisans satırı yok): Faz 2 gibi TESPİT anı
+    /// yazılır; süre uzar, asla kısalmaz. Olaylar 3 yıl yaşadığı için aynı dönemi
+    /// her gece yeniden açmamak gerekir: lisansın en yeni markasız olayı mevcut
+    /// bir markasız randevunun ayrılış anından eskiyse dokunulmaz. LicenseId'si
+    /// de null olan eski olaylar (kimin olduğu bilinmiyor) otomatik imha edilmez —
+    /// Faz 2'nin boş marka kuralının aynısı.</para>
+    /// </summary>
+    private async Task ScheduleNoBrandDeparturesAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        // Faz 2'deki InMemory notu: alt sorgu yerine ayrı listeler, fark bellekte.
+        var newestByLicense = await _db.IysConsentEvents.AsNoTracking()
+            .Where(e => e.BrandCode == null && e.LicenseId != null)
+            .GroupBy(e => e.LicenseId)
+            .Select(g => new { LicenseId = g.Key, Newest = g.Max(e => e.OccurredAt) })
+            .ToListAsync(ct);
+        if (newestByLicense.Count == 0) return;
+
+        var candidateIds = newestByLicense.Select(x => x.LicenseId!.Value).ToList();
+        var aliveLicenses = (await _db.Licenses.AsNoTracking()
+                .Where(l => candidateIds.Contains(l.Id))
+                .Select(l => l.Id)
+                .ToListAsync(ct))
+            .ToHashSet();
+        // Markasız randevular az (silinen lisans başına bir) — hepsi okunur.
+        var scheduled = (await _db.NetgsmDepartures.AsNoTracking()
+                .Where(d => d.BrandCode == null && d.LicenseId != null)
+                .Select(d => new { d.LicenseId, d.DepartedAt })
+                .ToListAsync(ct))
+            .GroupBy(d => d.LicenseId!.Value)
+            .ToDictionary(g => g.Key, g => g.Max(d => d.DepartedAt));
+
+        foreach (var x in newestByLicense)
+        {
+            var licenseId = x.LicenseId!.Value;
+            if (aliveLicenses.Contains(licenseId)) continue;
+            if (scheduled.TryGetValue(licenseId, out var departedAt) && departedAt >= x.Newest)
+                continue; // bu olaylar zaten açık (ya da imha edilmiş) bir randevunun dönemi içinde
+
+            try
+            {
+                _db.NetgsmDepartures.Add(new NetgsmDeparture
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = licenseId,
+                    BrandCode = null, // markasız dönem — imha LicenseId ile
+                    DepartedAt = now, // gerçek silinme anı bilinmiyor — tespit anı
+                    ConsentsDeletedAt = now, // markasız dönemde silinecek durum satırı yok
+                });
+                await _db.SaveChangesAsync(ct);
+
+                _log.LogInformation(
+                    "Markasız ispat takvimi: lisans {LicenseId} silinmiş — markasız olaylar için "
+                    + "3 yıllık imha randevusu açıldı", licenseId);
+            }
+            catch (DbUpdateException ex)
+            {
+                _db.ChangeTracker.Clear();
+                _log.LogError(ex, "Markasız ispat takvimi açılamadı (lisans {LicenseId})", licenseId);
+            }
+        }
+    }
+
     /// <summary>Faz 3 — m.13 süresi dolan dönem ispatının imhası.</summary>
     private async Task PurgeExpiredProofAsync(DateTimeOffset now, CancellationToken ct)
     {
@@ -261,10 +349,26 @@ public sealed class IysDepartureRetentionJob
 
                 // DÖNEM sınırı: yalnız ayrılış ANINA KADAR olan olaylar.
                 // Marka devredildiyse yeni dönemin ispatı bu imhaya KARIŞMAZ.
-                var events = await _db.IysConsentEvents
-                    .Where(e => e.BrandCode == dep.BrandCode
-                                && e.OccurredAt <= dep.DepartedAt)
-                    .ToListAsync(ct);
+                //
+                // İki dal AYRI kalmalı: `e.BrandCode == dep.BrandCode` markasız
+                // randevuda (null) IS NULL'a çevrilir ve BÜTÜN lisansların
+                // markasız olaylarını imha ederdi.
+                List<IysConsentEvent> events;
+                if (dep.BrandCode is { } brand)
+                    events = await _db.IysConsentEvents
+                        .Where(e => e.BrandCode == brand
+                                    && e.OccurredAt <= dep.DepartedAt)
+                        .ToListAsync(ct);
+                else if (dep.LicenseId is { } noBrandLicenseId)
+                    // Markasız dönem (Faz 2b): o lisansın BrandCode'suz olayları.
+                    // Aynı lisansın markalı olayları kendi marka randevusunda.
+                    events = await _db.IysConsentEvents
+                        .Where(e => e.LicenseId == noBrandLicenseId
+                                    && e.BrandCode == null
+                                    && e.OccurredAt <= dep.DepartedAt)
+                        .ToListAsync(ct);
+                else
+                    events = []; // markasız VE lisanssız randevu yazılmaz; yazılmışsa kimin ispatı belirsiz — dokunma
                 _db.IysConsentEvents.RemoveRange(events);
 
                 var campaignCount = 0;
@@ -286,14 +390,27 @@ public sealed class IysDepartureRetentionJob
                     _db.SmsCampaigns.RemoveRange(campaigns);
                 }
 
+                // Kalıcı imha kaydı (KVKK Ö-13): lisans ve tablo başına, imhayla aynı
+                // SaveChanges'te (Record izleyiciye ekler; sıfır satır yazılmaz). İki dönem
+                // türü aynı kaydı bırakır, yalnız ölçüt ayrışır.
+                var criterion = dep.BrandCode is null ? NoBrandProofCriterion : BrandProofCriterion;
+                var recordLicenseId = dep.LicenseId;
+                void Record(string target, int count) => DataDestruction.Record(_db, recordLicenseId,
+                    target, DataDestruction.Actions.Deleted, count, criterion,
+                    DataDestruction.Triggers.Retention, DataDestruction.SystemActor);
+                Record("IysConsentEvents", events.Count);
+                Record("SmsCampaigns", campaignCount);
+                Record("SmsCampaignRecipients", recipientCount);
+
                 var (departureId, brandCode) = (dep.Id, dep.BrandCode);
                 dep.PurgedAt = now;
                 await _db.SaveChangesAsync(ct);
 
                 _log.LogInformation(
-                    "m.13 imhası: ayrılış {DepartureId} marka {Brand} — {EventCount} olay, "
-                    + "{CampaignCount} kampanya, {RecipientCount} alıcı imha edildi",
-                    departureId, brandCode, events.Count, campaignCount, recipientCount);
+                    "m.13 imhası: ayrılış {DepartureId} marka {Brand} lisans {LicenseId} — "
+                    + "{EventCount} olay, {CampaignCount} kampanya, {RecipientCount} alıcı imha edildi",
+                    departureId, brandCode ?? "(markasız)", recordLicenseId, events.Count,
+                    campaignCount, recipientCount);
             }
             catch (DbUpdateConcurrencyException)
             {

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.Sms;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -457,6 +458,19 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
             .Should().BeTrue("yeni dönem kampanyasının alıcısı da hayatta kalmalı");
         (await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand))
             .PurgedAt.Should().NotBeNull();
+        // Kalıcı imha kaydı (KVKK Ö-13): lisans ve tablo başına, imhayla aynı kayıtta.
+        var records = await vdb.DataDestructionRecords
+            .Where(r => r.LicenseId == licenseId).ToListAsync();
+        records.Should().ContainSingle(r => r.Target == "IysConsentEvents")
+            .Which.RowCount.Should().Be(1);
+        records.Should().ContainSingle(r => r.Target == "SmsCampaigns")
+            .Which.RowCount.Should().Be(1);
+        records.Should().ContainSingle(r => r.Target == "SmsCampaignRecipients")
+            .Which.RowCount.Should().Be(1);
+        records.Should().OnlyContain(r => r.Action == DataDestruction.Actions.Deleted
+            && r.Trigger == DataDestruction.Triggers.Retention
+            && r.Actor == DataDestruction.SystemActor
+            && r.Criterion.Contains("m.13"));
     }
 
     [Fact]
@@ -526,6 +540,205 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         (await vdb.IysConsentEvents.AnyAsync(e => e.Id == eventId)).Should().BeFalse();
         (await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand))
             .PurgedAt.Should().NotBeNull();
+    }
+
+    // ── Markasız yayıncı (sahip kararı 10, 2026-10-23) ────────────────────
+    // Doğrulanmış markası olmayan yayıncıda toplayıcı olayı BrandCode=null
+    // yazar (ErrorCode no-brand ya da invalid-phone) ve kayıt satırı açmaz.
+    // Olaylar LİSANSA bağlıdır, lisansla kaskad gitmez (FK yok) ve lisansın
+    // sonraki doğrulamasında yeniden oynatılır — lisans yaşadıkça dönem
+    // bitmez. Ayrılış = lisansın silinmesi (yayıncı platformdan ayrıldı).
+
+    private static async Task<Guid> SeedLicenseAsync(LicenseDbContext db)
+    {
+        var customerId = Guid.NewGuid();
+        db.Customers.Add(new Customer
+        {
+            Id = customerId,
+            Email = $"cu-{Guid.NewGuid():N}@t.test",
+            Name = "Markasiz",
+            PasswordHash = $"h-{Guid.NewGuid():N}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        var licenseId = Guid.NewGuid();
+        db.Licenses.Add(new License
+        {
+            Id = licenseId,
+            LicenseKey = $"LDK-{Guid.NewGuid():N}"[..24],
+            CustomerId = customerId,
+            SkuCode = "STD",
+            ActivationSlots = 1,
+            IssuedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddYears(1),
+        });
+        await db.SaveChangesAsync();
+        return licenseId;
+    }
+
+    /// <summary>Toplayıcının markasız yayıncı için yazdığı olayın biçimi.</summary>
+    private static IysConsentEvent NoBrandEvent(Guid? licenseId, DateTimeOffset at,
+        string errorCode = "no-brand")
+        => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, BrandCode = null,
+            Recipient = TestPhone.NewE164(), OccurredAt = at,
+            EventType = IysConsentEventType.LocalConsent, Status = IysConsentStatus.Onay,
+            SourceTable = "Shopper", SourceId = Guid.NewGuid(), ErrorCode = errorCode,
+        };
+
+    [Fact]
+    public async Task Markasiz_yayincinin_lisansi_silinince_ispat_takvimi_acilir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        // Lisans satırı YOK: KVKK silmesi lisansı sildi, olaylar (FK'sız) kaldı.
+        var licenseId = Guid.NewGuid();
+        db.IysConsentEvents.Add(NoBrandEvent(licenseId, DateTimeOffset.UtcNow.AddDays(-10)));
+        db.IysConsentEvents.Add(NoBrandEvent(licenseId, DateTimeOffset.UtcNow.AddDays(-3),
+            errorCode: "invalid-phone"));
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        var before = DateTimeOffset.UtcNow;
+        await job.RunAsync(CancellationToken.None);
+        var after = DateTimeOffset.UtcNow;
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var dep = await vdb.NetgsmDepartures.SingleAsync(d => d.LicenseId == licenseId);
+        dep.BrandCode.Should().BeNull("markasız dönem: ispat markaya değil lisansa bağlı");
+        dep.DepartedAt.Should().BeOnOrAfter(before).And.BeOnOrBefore(after,
+            "silinme anı bilinmiyor — tespit anı (Faz 2'nin yetim markadaki kuralı)");
+        dep.PurgedAt.Should().BeNull();
+        (await vdb.IysConsentEvents.CountAsync(e => e.LicenseId == licenseId))
+            .Should().Be(2, "m.13: takvim açılır ama 3 yıl dolmadan ispat imha edilmez");
+    }
+
+    [Fact]
+    public async Task Markasiz_yayincinin_lisansi_yasarken_takvim_acilmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var licenseId = await SeedLicenseAsync(db);
+        // Eski olay bile: lisans yaşıyor, RET'ler bir sonraki doğrulamada yeniden
+        // oynatılır (StageReplayNoBrandEventsAsync) — dönem henüz bitmedi.
+        db.IysConsentEvents.Add(NoBrandEvent(licenseId, DateTimeOffset.UtcNow.AddYears(-4)));
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.NetgsmDepartures.AnyAsync(d => d.LicenseId == licenseId))
+            .Should().BeFalse("lisans yaşıyor — ayrılış yok");
+        (await vdb.IysConsentEvents.AnyAsync(e => e.LicenseId == licenseId)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Markasiz_ayrilis_ikinci_kosuda_yeniden_acilmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var licenseId = Guid.NewGuid();
+        db.IysConsentEvents.Add(NoBrandEvent(licenseId, DateTimeOffset.UtcNow.AddDays(-1)));
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.NetgsmDepartures.CountAsync(d => d.LicenseId == licenseId))
+            .Should().Be(1, "olaylar 3 yıl yaşar; her gece yeni randevu açılırsa saat her gün ileri kayar");
+    }
+
+    [Fact]
+    public async Task Markasiz_donem_uc_yil_dolunca_yalniz_o_lisansin_markasiz_olaylari_imha_edilir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var licenseId = Guid.NewGuid();
+        var departedAt = DateTimeOffset.UtcNow - (IysDepartureRetentionJob.ProofRetention
+            + TimeSpan.FromDays(1));
+        db.NetgsmDepartures.Add(new NetgsmDeparture
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, BrandCode = null,
+            DepartedAt = departedAt, ConsentsDeletedAt = departedAt,
+        });
+        // Dönem içi, o lisansın markasız olayları → imha.
+        var noBrand = NoBrandEvent(licenseId, departedAt.AddDays(-10));
+        var badPhone = NoBrandEvent(licenseId, departedAt.AddDays(-5), errorCode: "invalid-phone");
+        // Başka lisansın markasız olayı → yaşar. `e.BrandCode == dep.BrandCode`
+        // null'da IS NULL'a döner ve TÜM lisansların markasız olaylarını seçerdi.
+        var otherLicense = NoBrandEvent(Guid.NewGuid(), departedAt.AddDays(-10));
+        // Aynı lisansın MARKALI olayı → yaşar: marka döneminin kendi takvimi var.
+        var branded = NoBrandEvent(licenseId, departedAt.AddDays(-10));
+        branded.BrandCode = NewBrandCode();
+        branded.ErrorCode = null;
+        // Sahipsiz eski olay (LicenseId de BrandCode da null) → yaşar: kimin olduğu bilinmiyor.
+        var ownerless = NoBrandEvent(null, departedAt.AddDays(-10));
+        db.IysConsentEvents.AddRange(noBrand, badPhone, otherLicense, branded, ownerless);
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsentEvents.AnyAsync(e => e.Id == noBrand.Id || e.Id == badPhone.Id))
+            .Should().BeFalse("markasız dönemin ispatı m.13 süresi dolunca imha edilir");
+        (await vdb.IysConsentEvents.AnyAsync(e => e.Id == otherLicense.Id))
+            .Should().BeTrue("başka lisansın ispatı bu imhaya karışmaz");
+        (await vdb.IysConsentEvents.AnyAsync(e => e.Id == branded.Id))
+            .Should().BeTrue("markalı olay marka döneminin takvimine bağlı");
+        (await vdb.IysConsentEvents.AnyAsync(e => e.Id == ownerless.Id))
+            .Should().BeTrue("sahipsiz olay otomatik imha edilmez");
+        var departures = await vdb.NetgsmDepartures
+            .Where(d => d.LicenseId == licenseId).ToListAsync();
+        departures.Should().ContainSingle("dönem içi olaylar mevcut randevuya giriyor — yeni randevu açılmaz")
+            .Which.PurgedAt.Should().NotBeNull();
+        // İmha kaydı marka yoluyla aynı: lisans ve tablo başına.
+        var record = await vdb.DataDestructionRecords
+            .SingleAsync(r => r.LicenseId == licenseId && r.Target == "IysConsentEvents");
+        record.RowCount.Should().Be(2);
+        record.Action.Should().Be(DataDestruction.Actions.Deleted);
+        record.Trigger.Should().Be(DataDestruction.Triggers.Retention);
+        record.Actor.Should().Be(DataDestruction.SystemActor);
+        record.Criterion.Should().Contain("m.13");
+    }
+
+    [Fact]
+    public async Task Markasiz_donem_uc_yil_dolmadan_ispat_yasar()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var licenseId = Guid.NewGuid();
+        var departedAt = DateTimeOffset.UtcNow.AddYears(-2);
+        db.NetgsmDepartures.Add(new NetgsmDeparture
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, BrandCode = null,
+            DepartedAt = departedAt, ConsentsDeletedAt = departedAt,
+        });
+        var ev = NoBrandEvent(licenseId, departedAt.AddDays(-1));
+        db.IysConsentEvents.Add(ev);
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsentEvents.AnyAsync(e => e.Id == ev.Id))
+            .Should().BeTrue("m.13: 3 yıl dolmadan ispat İMHA EDİLEMEZ");
+        (await vdb.NetgsmDepartures.SingleAsync(d => d.LicenseId == licenseId))
+            .PurgedAt.Should().BeNull();
     }
 
     [Fact]

@@ -1420,7 +1420,8 @@ public class LicenseDbContext : DbContext
             b.HasKey(d => d.Id);
             // LicenseId bilinçli FK'sız — IysConsentEvent'teki kararın aynısı: lisans
             // KVKK ile silinse bile 3 yıllık imha randevusu yaşamalı.
-            b.Property(d => d.BrandCode).HasMaxLength(16).IsRequired();
+            // null = markasız dönem (lisansa bağlı ispat; bkz. NetgsmDeparture.BrandCode).
+            b.Property(d => d.BrandCode).HasMaxLength(16);
             b.HasIndex(d => new { d.PurgedAt, d.DepartedAt });
             b.HasIndex(d => d.BrandCode);
         });
