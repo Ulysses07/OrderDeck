@@ -14,7 +14,7 @@ public interface IBroadcastMediaStorage
     /// </summary>
     Task<IReadOnlyList<MediaObjectListing>> ListAsync(string prefix, CancellationToken ct = default);
 
-    /// <summary>Toplu silme (yayıncı silmesi, KVKK). Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran kuyruğa yazar.
+    /// <summary>Toplu silme (yayıncı silmesi, KVKK). Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran yeniden dener.
     /// <see cref="DeleteAsync"/> R2'de hatayı yutar; silindiğinin bilinmesi gereken yer bunu kullanır.</summary>
     Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
 }

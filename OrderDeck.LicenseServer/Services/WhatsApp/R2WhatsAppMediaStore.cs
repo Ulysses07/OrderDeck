@@ -73,15 +73,6 @@ public sealed class R2WhatsAppMediaStore : IWhatsAppMediaStore, IDisposable
         return Task.FromResult(url);
     }
 
-    public async Task DeleteAsync(string objectKey, CancellationToken ct = default)
-    {
-        await _s3.DeleteObjectAsync(new DeleteObjectRequest
-        {
-            BucketName = _opt.BucketName,
-            Key = objectKey,
-        }, ct);
-    }
-
     public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
         => R2BulkObjects.ListKeysAsync(_s3, _opt.BucketName, WhatsAppMediaKeys.LicensePrefix(licenseId), ct);
 

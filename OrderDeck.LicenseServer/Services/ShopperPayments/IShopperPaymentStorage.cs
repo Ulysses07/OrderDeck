@@ -12,7 +12,7 @@ public interface IShopperPaymentStorage
     /// Yayıncı silmesi (KVKK) için.</summary>
     Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default);
 
-    /// <summary>Toplu silme. Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran kuyruğa yazar.</summary>
+    /// <summary>Toplu silme. Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran yeniden dener.</summary>
     Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
 }
 

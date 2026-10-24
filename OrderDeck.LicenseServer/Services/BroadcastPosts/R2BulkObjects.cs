@@ -4,7 +4,7 @@ using Amazon.S3.Model;
 
 namespace OrderDeck.LicenseServer.Services.BroadcastPosts;
 
-/// <summary>Toplu silmede silinemeyen nesne: anahtarı ve hata metni (kuyruğun <c>LastError</c>'ına gider).</summary>
+/// <summary>Toplu silmede silinemeyen nesne: anahtarı ve hata metni (silme görevinin <c>LastError</c>'ına gider).</summary>
 public sealed record MediaDeleteFailure(string Key, string Error);
 
 /// <summary>
@@ -42,9 +42,11 @@ public static class R2BulkObjects
     /// Anahtarları <see cref="MaxKeysPerDelete"/>'lik parçalarla siler. Fırlatmaz: silinemeyen her anahtar hata metniyle döner.
     ///
     /// <para>R2, AWS SDK'nın yeni varsayılan sağlama başlığını (CRC32) <c>DeleteObjects</c>'te bir dönem 501 NotImplemented ile
-    /// reddetti; bu SDK sürümüyle canlı R2'de toplu silme denenmedi. 501 gelirse tek nesne silmeye (<c>DeleteObject</c>,
-    /// üretimde müşteri silmesinin kullandığı yol) düşülür, kalan parçalar da öyle silinir. Başka bir hatada (kesinti) parçanın
-    /// her anahtarı silinemedi sayılır: tek tek denemek kesintiyi bin kez beklemek olurdu, kuyruk zaten yeniden dener.</para>
+    /// reddetti; bu SDK sürümüyle canlı R2'de toplu silme denenmedi. Toplu istek 501 ya da başka bir istemci hatasıyla (4xx: imza,
+    /// sağlama başlığı, istek biçimi) reddedilirse tek nesne silmeye (<c>DeleteObject</c>, üretimde müşteri silmesinin kullandığı
+    /// yol) düşülür, kalan parçalar da öyle silinir: ret isteğin biçimine, her yeniden deneme aynı nedenle düşer ve nesneler hiç
+    /// silinmezdi. Kesintide (5xx, ağ hatası) ve geçici 4xx'te (408, 429) parçanın her anahtarı silinemedi sayılır: tek tek
+    /// denemek kesintiyi bin kez beklemek olurdu, çağıran zaten yeniden dener.</para>
     /// </summary>
     public static async Task<IReadOnlyList<MediaDeleteFailure>> DeleteKeysAsync(IAmazonS3 s3, string bucket,
         IReadOnlyList<string> keys, CancellationToken ct)
@@ -73,7 +75,7 @@ public static class R2BulkObjects
                     failures.AddRange(ToFailures(ex.Response?.DeleteErrors));
                     continue;
                 }
-                catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotImplemented)
+                catch (AmazonS3Exception ex) when (BatchRejected(ex.StatusCode))
                 {
                     batchUnsupported = true;
                 }
@@ -98,6 +100,12 @@ public static class R2BulkObjects
         }
         return failures;
     }
+
+    /// <summary>Toplu isteğin kendisi reddedildi (kesinti değil): 501 ya da geçici olmayan bir 4xx.</summary>
+    private static bool BatchRejected(HttpStatusCode status)
+        => status == HttpStatusCode.NotImplemented
+           || ((int)status is >= 400 and < 500
+               && status is not HttpStatusCode.RequestTimeout and not HttpStatusCode.TooManyRequests);
 
     private static IEnumerable<MediaDeleteFailure> ToFailures(List<DeleteError>? errors)
         => (errors ?? []).Select(e => new MediaDeleteFailure(e.Key, $"{e.Code}: {e.Message}"));

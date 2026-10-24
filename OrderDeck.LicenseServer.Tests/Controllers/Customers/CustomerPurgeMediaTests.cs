@@ -91,8 +91,6 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
         public Task<string> CreateDownloadUrlAsync(string objectKey, TimeSpan? expiry = null, CancellationToken ct = default)
             => Inner.CreateDownloadUrlAsync(objectKey, expiry, ct);
 
-        public Task DeleteAsync(string objectKey, CancellationToken ct = default) => Inner.DeleteAsync(objectKey, ct);
-
         public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
             => Inner.ListLicenseObjectsAsync(licenseId, ct);
 
@@ -115,20 +113,42 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
     private static string PhotoKey(Guid license) => $"{license:N}/products/{Guid.NewGuid():N}/{Guid.NewGuid():N}.img";
 
     private static bool IsPaymentKey(string key) => key.StartsWith("payments/", StringComparison.Ordinal);
+    private static bool IsWhatsAppKey(string key) => key.StartsWith(WhatsAppMediaKeys.Root, StringComparison.Ordinal);
 
     private async Task PutAsync(params string[] keys)
     {
         foreach (var key in keys)
         {
-            if (LicenseMediaPurge.IsWhatsAppKey(key)) await _factory.WhatsApp.SaveAsync(key, new byte[] { 1 }, "image/jpeg");
+            if (IsWhatsAppKey(key)) await _factory.WhatsApp.SaveAsync(key, new byte[] { 1 }, "image/jpeg");
             else if (IsPaymentKey(key)) await _factory.Payments.UploadAsync(key, new byte[] { 1 }, "application/pdf");
             else _factory.BroadcastMedia.Seed(key, 1, "image/jpeg");
         }
     }
 
-    private bool Exists(string key) => LicenseMediaPurge.IsWhatsAppKey(key) ? _factory.WhatsApp.Inner.TryGet(key, out _)
+    private bool Exists(string key) => IsWhatsAppKey(key) ? _factory.WhatsApp.Inner.TryGet(key, out _)
         : IsPaymentKey(key) ? _factory.Payments.Inner.Contains(key)
         : _factory.BroadcastMedia.Contains(key);
+
+    private async Task<List<LicenseMediaPurgeTask>> TasksAsync(Guid customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().LicenseMediaPurgeTasks.AsNoTracking()
+            .Where(t => t.SubjectId == customerId).ToListAsync();
+    }
+
+    /// <summary>Görevleri zamanı gelmiş ve geç yazım penceresi geçmiş hâle getirip işi DI'dan koşar (saatlik turun yerine).</summary>
+    private async Task RunJobAfterWindowAsync(Guid customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        foreach (var t in await db.LicenseMediaPurgeTasks.Where(t => t.SubjectId == customerId).ToListAsync())
+        {
+            t.CreatedAt = t.CreatedAt.AddHours(-2);
+            t.NextAttemptAt = t.NextAttemptAt.AddHours(-2);
+        }
+        await db.SaveChangesAsync();
+        await scope.ServiceProvider.GetRequiredService<LicenseMediaPurgeJob>().RunAsync(default);
+    }
 
     /// <summary>Yönetici istemcisi + silinecek yayıncı ve lisansları (üretilmiş kimlik bilgileri; literal parola yok).</summary>
     private async Task<(HttpClient Admin, Guid AdminId, Guid CustomerId, string Email, Guid[] Licenses)> SeedAsync(int licenses)
@@ -204,7 +224,29 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
     }
 
     [Fact]
-    public async Task Purge_silinemeyen_dosyayi_kuyruga_yazar_ve_imha_kaydina_saymaz()
+    public async Task Purge_silme_niyetini_lisans_satirlariyla_ayni_kayitta_kalici_yazar()
+    {
+        // Lisans satırları gidince önek başka hiçbir yerden bulunamaz. Niyet yalnız bellekte dursaydı, kayıttan sonra istek
+        // iptal edilince ya da konteyner yeniden başlayınca nesneler kovada süresiz kalırdı (silmeyi yinelemek de bulamaz).
+        // Görev istekteki turdan sonra açık kalır: geç yazım penceresinden sonra öneki boş gören tur kapatır.
+        var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 2);
+        await PutAsync(PaymentKey(licenses[0]));
+
+        (await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var tasks = await TasksAsync(customerId);
+        tasks.Select(t => t.LicenseId).Should().BeEquivalentTo(licenses);
+        tasks.Should().OnlyContain(t => t.CompletedAt == null && t.AttemptCount == 1 && t.LastError == null
+            && t.NextAttemptAt == t.CreatedAt + LicenseMediaPurge.LateWriteWindow);
+
+        await RunJobAfterWindowAsync(customerId);
+
+        (await TasksAsync(customerId)).Should().OnlyContain(t => t.CompletedAt != null, "pencereden sonra önekler boş");
+    }
+
+    [Fact]
+    public async Task Purge_silinemeyen_dosyayi_gorevde_acik_birakir_ve_imha_kaydina_saymaz()
     {
         var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
         var license = licenses[0];
@@ -218,29 +260,38 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
         resp.StatusCode.Should().Be(HttpStatusCode.NoContent, "tek dosyanın silinememesi yasal silmeyi durdurmaz");
         Exists(paymentOk).Should().BeFalse();
         Exists(waOk).Should().BeFalse();
-        // Niyet kaybolmaz: lisans satırı gitti, anahtar yalnız kuyrukta yaşar; OrphanedMediaCleanupJob yeniden dener.
+        // Niyet kaybolmaz: lisans satırı gitti, görev lisansı taşır; LicenseMediaPurgeJob öneki yeniden listeleyip dener.
+        // Anahtar başına kuyruk satırı açılmaz.
         using (var scope = _factory.Services.CreateScope())
-        {
-            var queued = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().OrphanedMediaObjects.AsNoTracking()
-                .Where(o => o.ObjectKey == paymentStuck || o.ObjectKey == waStuck).ToListAsync();
-            queued.Select(o => o.ObjectKey).Should().BeEquivalentTo(new[] { paymentStuck, waStuck });
-            queued.Should().OnlyContain(o => o.ShopperId == null && o.PaymentId == null && o.DeletedAt == null
-                && o.AttemptCount == 1 && o.LastError!.Contains("kilitli"));
-        }
+            (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().OrphanedMediaObjects.AsNoTracking()
+                .AnyAsync(o => o.ObjectKey == paymentStuck || o.ObjectKey == waStuck)).Should().BeFalse();
+        var task = (await TasksAsync(customerId)).Should().ContainSingle().Subject;
+        task.CompletedAt.Should().BeNull();
+        task.LastError.Should().Contain("2 nesne silinemedi").And.Contain("kilitli");
         (await RecordsAsync(customerId, ShopperPurgeService.MediaTarget)).Should().ContainSingle()
             .Which.RowCount.Should().Be(1, "imha kaydı yalnız gerçekten silineni sayar");
         (await RecordsAsync(customerId, LicenseMediaPurge.WhatsAppMediaTarget)).Should().ContainSingle()
             .Which.RowCount.Should().Be(1);
         (await PurgeAuditDetailsAsync(customerId)).Should().Contain("\"deletedMediaObjects\":2")
             .And.Contain("\"pendingMediaObjects\":2");
+
+        // Depo düzelince iş kalanları siler, kaydı yapan sistem.
+        _factory.Payments.FailingKeys.TryRemove(paymentStuck, out _);
+        _factory.WhatsApp.FailingKeys.TryRemove(waStuck, out _);
+        await RunJobAfterWindowAsync(customerId);
+
+        Exists(paymentStuck).Should().BeFalse();
+        Exists(waStuck).Should().BeFalse();
+        (await RecordsAsync(customerId, ShopperPurgeService.MediaTarget)).Should().HaveCount(2)
+            .And.Contain(r => r.Actor == DataDestruction.SystemActor && r.RowCount == 1 && r.LicenseId == license);
     }
 
     [Fact]
-    public async Task Purge_kuyrukta_bekleyen_ayni_anahtara_ikinci_satir_acmaz()
+    public async Task Purge_kuyrukta_bekleyen_dekontu_silerse_satiri_kapatir_silemezse_dokunmaz()
     {
-        // Müşteri silmesinden (ShopperPurgeService) kuyrukta kalmış dekontlar: kuyruk anahtarı tekil. Yeniden silinemeyen anahtarın
-        // satırı güncellenir (ikinci satır SQL Server'da tekil indeksi patlatır, kuyruk yazımı düşerdi); bu silmede silinenin
-        // satırı kapanır (yoksa temizlik işi aynı nesneyi bir daha silip imha kaydına ikinci kez yazardı).
+        // Müşteri silmesinden (ShopperPurgeService) kuyrukta kalmış dekontlar. Bu silmede silinenin satırı kapanır (yoksa temizlik
+        // işi aynı nesneyi bir daha "silip" imha kaydına ikinci kez yazardı). Silinemeyenin satırı müşteri silmesinindir, olduğu
+        // gibi kalır (ikinci satır da açılmaz): yayıncı silmesi kendi görevinde yeniden dener.
         var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
         var license = licenses[0];
         var (stillStuck, nowDeleted) = (PaymentKey(license), PaymentKey(license));
@@ -267,9 +318,9 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
             .Where(o => o.ObjectKey == stillStuck || o.ObjectKey == nowDeleted).ToListAsync();
         rows.Should().HaveCount(2, "aynı anahtara ikinci satır açılmaz");
         var stuck = rows.Single(o => o.ObjectKey == stillStuck);
-        stuck.AttemptCount.Should().Be(4);
+        stuck.AttemptCount.Should().Be(3);
         stuck.DeletedAt.Should().BeNull();
-        stuck.LastError.Should().Contain("kilitli");
+        stuck.LastError.Should().Be("eski hata");
         stuck.ShopperId.Should().Be(shopperId, "satırın konusu değişmez");
         var closed = rows.Single(o => o.ObjectKey == nowDeleted);
         closed.DeletedAt.Should().NotBeNull("gerçek silme onayı bu silmeden geldi");
@@ -277,9 +328,10 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
     }
 
     [Fact]
-    public async Task Purge_dosyalar_listelenemezse_hicbir_seyi_silmez()
+    public async Task Purge_dosyalar_listelenemese_de_satirlari_siler_dosyalari_gorev_sonra_siler()
     {
-        // Lisans satırı silinince lisansın öneki bir daha bulunamaz: liste alınamıyorsa silme hiç başlamaz, operatör yineler.
+        // Görev lisansı taşıdığı için önek lisans satırı gittikten sonra da bulunur: depo kesintisi yasal silmeyi bekletmez.
+        // Satırlar silinir, görev açık kalır; depo düzelince iş dosyaları siler.
         var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
         var license = licenses[0];
         var receipt = PaymentKey(license);
@@ -288,15 +340,25 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
 
         var resp = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
 
-        resp.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
-        (await resp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString()
-            .Should().Be("media-storage-unavailable");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
         Exists(receipt).Should().BeTrue();
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        (await db.Customers.AsNoTracking().SingleAsync(c => c.Id == customerId)).Email.Should().Be(email, "hiçbir şey silinmedi");
-        (await db.Licenses.AnyAsync(l => l.Id == license)).Should().BeTrue();
-        (await db.DataDestructionRecords.AnyAsync(r => r.SubjectId == customerId)).Should().BeFalse();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Customers.AsNoTracking().SingleAsync(c => c.Id == customerId)).Email.Should().NotBe(email);
+            (await db.Licenses.AnyAsync(l => l.Id == license)).Should().BeFalse();
+        }
+        var task = (await TasksAsync(customerId)).Should().ContainSingle().Subject;
+        task.CompletedAt.Should().BeNull();
+        task.LastError.Should().Contain("listelenemiyor");
+        (await PurgeAuditDetailsAsync(customerId)).Should().Contain("\"unlistedLicenses\":1");
+
+        _factory.Payments.UnlistableLicenses.TryRemove(license, out _);
+        await RunJobAfterWindowAsync(customerId);
+
+        Exists(receipt).Should().BeFalse();
+        (await RecordsAsync(customerId, ShopperPurgeService.MediaTarget)).Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new { LicenseId = (Guid?)license, RowCount = 1, Actor = DataDestruction.SystemActor });
     }
 
     [Fact]
@@ -331,7 +393,7 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
     }
 
     [Fact]
-    public async Task Purge_silinemeyen_yayin_dosyasini_kuyruga_yazar_ve_imha_kaydina_saymaz()
+    public async Task Purge_silinemeyen_yayin_dosyasini_gorevde_acik_birakir_ve_imha_kaydina_saymaz()
     {
         var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
         var license = licenses[0];
@@ -347,24 +409,23 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
         Exists(postStuck).Should().BeTrue();
         Exists(photoStuck).Should().BeTrue();
         using (var scope = _factory.Services.CreateScope())
-        {
-            var queued = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().OrphanedMediaObjects.AsNoTracking()
-                .Where(o => o.ObjectKey == postStuck || o.ObjectKey == photoStuck).ToListAsync();
-            queued.Select(o => o.ObjectKey).Should().BeEquivalentTo(new[] { postStuck, photoStuck });
-            queued.Should().OnlyContain(o => o.ShopperId == null && o.PaymentId == null && o.DeletedAt == null
-                && o.AttemptCount == 1 && o.LastError!.Contains("kilitli"));
-        }
+            (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().OrphanedMediaObjects.AsNoTracking()
+                .AnyAsync(o => o.ObjectKey == postStuck || o.ObjectKey == photoStuck)).Should().BeFalse();
+        var task = (await TasksAsync(customerId)).Should().ContainSingle().Subject;
+        task.CompletedAt.Should().BeNull();
+        task.LastError.Should().Contain("2 nesne silinemedi");
         (await RecordsAsync(customerId, LicenseMediaPurge.BroadcastPostMediaTarget)).Should().ContainSingle()
             .Which.RowCount.Should().Be(1, "imha kaydı yalnız gerçekten silineni sayar");
         (await RecordsAsync(customerId, LicenseMediaPurge.ProductPhotoMediaTarget)).Should().BeEmpty(
-            "tek ürün fotoğrafı silinemedi: kayıt temizlik işi sildiğinde yazılır");
+            "tek ürün fotoğrafı silinemedi: kayıt iş sildiğinde yazılır");
         (await PurgeAuditDetailsAsync(customerId)).Should().Contain("\"deletedMediaObjects\":1")
             .And.Contain("\"pendingMediaObjects\":2");
     }
 
     [Fact]
-    public async Task Purge_yayin_dosyalari_listelenemezse_hicbir_seyi_silmez()
+    public async Task Purge_yayin_dosyalari_listelenemezse_tur_hicbir_dosyayi_silmez_gorev_acik_kalir()
     {
+        // Eksik listeyle tur başlamaz (dekont ve paylaşım medyası da beklerdi): görev bir sonraki turda dört öneki yeniden listeler.
         var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
         var license = licenses[0];
         var (receipt, post) = (PaymentKey(license), PostKey(license));
@@ -373,14 +434,13 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
 
         var resp = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
 
-        resp.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
-        (await resp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString()
-            .Should().Be("media-storage-unavailable");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
         Exists(receipt).Should().BeTrue();
         Exists(post).Should().BeTrue();
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        (await db.Licenses.AnyAsync(l => l.Id == license)).Should().BeTrue("hiçbir şey silinmedi");
-        (await db.DataDestructionRecords.AnyAsync(r => r.SubjectId == customerId)).Should().BeFalse();
+        var task = (await TasksAsync(customerId)).Should().ContainSingle().Subject;
+        task.CompletedAt.Should().BeNull();
+        task.LastError.Should().Contain("listelenemiyor");
+        (await RecordsAsync(customerId, ShopperPurgeService.MediaTarget)).Should().BeEmpty();
+        _factory.BroadcastMedia.UnlistablePrefixes.TryRemove($"{license:N}/products/", out _);
     }
 }

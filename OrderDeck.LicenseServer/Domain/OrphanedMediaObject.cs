@@ -23,8 +23,7 @@ public sealed class OrphanedMediaObject
     /// <summary>Kovadaki nesne anahtarı. Tekil — aynı anahtar iki kez kuyruğa girmez.</summary>
     public string ObjectKey { get; set; } = "";
 
-    /// <summary>Hangi silme talebinden arta kaldı (teşhis + yeniden deneme kapsamı). Yayıncı silmesinin
-    /// (<c>LicenseMediaPurge</c>) bıraktığı satırda boş: lisans ve tür anahtarın önekinde.</summary>
+    /// <summary>Hangi silme talebinden arta kaldı (teşhis + yeniden deneme kapsamı).</summary>
     public Guid? ShopperId { get; set; }
 
     /// <summary>

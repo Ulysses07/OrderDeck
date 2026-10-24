@@ -141,11 +141,12 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Kuyrukta_bekleyen_dekont_yeniden_silinemezse_ikinci_kuyruk_satiri_acilmaz()
+    public async Task Lisans_dosyalari_silme_gorevi_sql_serverda_satirlarla_yazilir_kuyrugu_kapatir_is_tamamlar()
     {
-        // KVKK karar 5: yayıncı silmesi lisansın dekontlarını siler, silinemeyeni kuyruğa yazar. Kuyruk anahtarı SQL Server'da
-        // tekil (InMemory bunu uygulamaz): müşteri silmesinden bekleyen anahtara ikinci satır açılsaydı kuyruk yazımı düşer, silme
-        // 500 döner, anahtar lisansla birlikte kaybolurdu. Bekleyen satır önekle (LIKE) bulunup güncellenir.
+        // KVKK karar 5/6 ve 23.10.2026: silme niyeti lisans satırlarıyla aynı SaveChanges'te kalıcı (LicenseMediaPurgeTasks; göç
+        // ve tekil indeks gerçek şemada). Müşteri silmesinden kuyrukta bekleyen dekontu bu silme silerse satırı önekle (LIKE)
+        // bulunup kapanır; silinemeyenin satırına dokunulmaz (ikinci satır da açılmaz, kuyruk anahtarı tekil). İşin zaman sorgusu
+        // (DateTimeOffset karşılaştırması ve sıralaması) SQL Server'a çevrilir.
         using var factory = new MediaRelationalApiFactory(_cs);
         var (client, customerId, email) = await SeedCustomerAsync(factory);
         var licenseId = Guid.NewGuid();
@@ -159,11 +160,12 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
                 Id = licenseId, CustomerId = customerId, LicenseKey = "LDK-P-" + Guid.NewGuid().ToString("N")[..12],
                 SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
             });
-            db.OrphanedMediaObjects.Add(new OrphanedMediaObject
-            {
-                Id = Guid.NewGuid(), ObjectKey = stuck, ShopperId = Guid.NewGuid(), AttemptCount = 1, LastError = "eski hata",
-                CreatedAt = DateTimeOffset.UtcNow.AddDays(-1), LastAttemptAt = DateTimeOffset.UtcNow.AddDays(-1),
-            });
+            foreach (var key in new[] { stuck, deletable })
+                db.OrphanedMediaObjects.Add(new OrphanedMediaObject
+                {
+                    Id = Guid.NewGuid(), ObjectKey = key, ShopperId = Guid.NewGuid(), AttemptCount = 1, LastError = "eski hata",
+                    CreatedAt = DateTimeOffset.UtcNow.AddDays(-1), LastAttemptAt = DateTimeOffset.UtcNow.AddDays(-1),
+                });
             await db.SaveChangesAsync();
         }
         foreach (var key in new[] { stuck, deletable }) await factory.Payments.UploadAsync(key, new byte[] { 1 }, "application/pdf");
@@ -173,15 +175,43 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
             $"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
 
         resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
-        using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var row = await verifyDb.OrphanedMediaObjects.AsNoTracking().SingleAsync(o => o.ObjectKey == stuck);
-        row.AttemptCount.Should().Be(2);
-        row.DeletedAt.Should().BeNull();
-        factory.Payments.Inner.Contains(deletable).Should().BeFalse();
-        (await verifyDb.DataDestructionRecords.AsNoTracking()
-                .SingleAsync(r => r.SubjectId == customerId && r.Target == "ShopperPaymentMedia"))
-            .Should().BeEquivalentTo(new { LicenseId = (Guid?)licenseId, RowCount = 1 });
+        using (var verify = factory.Services.CreateScope())
+        {
+            var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var task = await verifyDb.LicenseMediaPurgeTasks.AsNoTracking().SingleAsync(t => t.LicenseId == licenseId);
+            task.SubjectId.Should().Be(customerId);
+            task.CompletedAt.Should().BeNull();
+            task.LastError.Should().Contain("kilitli");
+            var rows = await verifyDb.OrphanedMediaObjects.AsNoTracking()
+                .Where(o => o.ObjectKey == stuck || o.ObjectKey == deletable).ToListAsync();
+            rows.Should().HaveCount(2);
+            rows.Single(o => o.ObjectKey == stuck).Should().BeEquivalentTo(new { AttemptCount = 1, DeletedAt = (DateTimeOffset?)null });
+            rows.Single(o => o.ObjectKey == deletable).DeletedAt.Should().NotBeNull();
+            factory.Payments.Inner.Contains(deletable).Should().BeFalse();
+            (await verifyDb.DataDestructionRecords.AsNoTracking()
+                    .SingleAsync(r => r.SubjectId == customerId && r.Target == "ShopperPaymentMedia"))
+                .Should().BeEquivalentTo(new { LicenseId = (Guid?)licenseId, RowCount = 1 });
+        }
+
+        // Depo düzeldi, yeniden deneme ve geç yazım penceresi geçti: iş kalanı siler, sonraki turda öneki boş görüp kapatır.
+        factory.Payments.FailingKeys.Clear();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var task = await db.LicenseMediaPurgeTasks.SingleAsync(t => t.LicenseId == licenseId);
+            task.CreatedAt = task.CreatedAt.AddHours(-2);
+            task.NextAttemptAt = task.NextAttemptAt.AddHours(-2);
+            await db.SaveChangesAsync();
+        }
+        using (var scope = factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<LicenseMediaPurgeJob>().RunAsync(default)).Should().Be(1);
+        using (var scope = factory.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<LicenseMediaPurgeJob>().RunAsync(default);
+
+        factory.Payments.Inner.Contains(stuck).Should().BeFalse();
+        using var final = factory.Services.CreateScope();
+        (await final.ServiceProvider.GetRequiredService<LicenseDbContext>().LicenseMediaPurgeTasks.AsNoTracking()
+            .SingleAsync(t => t.LicenseId == licenseId)).CompletedAt.Should().NotBeNull();
     }
 
     /// <summary>Dekont ve WhatsApp depoları <see cref="CustomerPurgeMediaTests"/>'in hata üretebilen sahteleriyle.</summary>

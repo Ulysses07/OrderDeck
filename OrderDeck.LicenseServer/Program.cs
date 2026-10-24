@@ -224,6 +224,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
         // Yayıncı silmesinde lisansın dekont, WhatsApp, yayın paylaşımı ve ürün fotoğrafı nesneleri (KVKK karar 5/6, 23.10.2026).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurge>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurgeJob>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
@@ -1043,6 +1044,15 @@ public class Program
                 "orphaned-media-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "50 3 * * *");  // 03:50 UTC daily
+
+            // Yayıncı silmesinin lisans medyası görevleri (KVKK karar 5/6, 23.10.2026): silme
+            // niyeti lisans satırlarıyla aynı kayıtta kalıcı; istekteki ilk turdan sonra geç
+            // yazım penceresi (30 dk) doğrulaması ve yeniden denemeler burada. İstek ilk turu
+            // koşamadıysa (iptal, deploy, DB hatası) bütün işi bu yapar. Açık görev yoksa tek sorgu.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurgeJob>(
+                OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurgeJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                "25 * * * *");  // saatte bir, :25
 
             // WhatsApp gönderim rezervasyonları — idempotency penceresi dakikalarla
             // ölçülüyor, satırlar yalnız teşhis için saklanıyor. Süresi dolanlar

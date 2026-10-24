@@ -138,15 +138,18 @@ public sealed class R2BulkObjectsTests
         fake.Keys.Should().Equal(keys[1000]);
     }
 
-    [Fact]
-    public async Task Toplu_istek_duserse_parcadaki_her_anahtar_hata_olarak_doner()
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    public async Task Toplu_istek_duserse_parcadaki_her_anahtar_hata_olarak_doner(HttpStatusCode status)
     {
-        // Kesinti: her anahtarı tek tek denemek kesintiyi bin kez beklemek olurdu. Parça silinemedi sayılır, anahtarların hepsi
-        // döner (çağıran kuyruğa yazar).
+        // Kesinti ya da hız sınırı: her anahtarı tek tek denemek kesintiyi bin kez beklemek olurdu. Parça silinemedi sayılır,
+        // anahtarların hepsi döner (çağıran sonraki turda yeniden dener).
         var (s3, fake) = NewS3();
         var keys = Seed(fake, "payments/dddd/", 3);
         fake.BatchFailure = new AmazonS3Exception("hizmet kullanılamıyor", ErrorType.Receiver, "ServiceUnavailable", "istek-2",
-            HttpStatusCode.ServiceUnavailable);
+            status);
 
         var failures = await R2BulkObjects.DeleteKeysAsync(s3, Bucket, keys, default);
 
@@ -154,5 +157,25 @@ public sealed class R2BulkObjectsTests
         failures.Should().OnlyContain(f => f.Error.Contains("hizmet kullanılamıyor"));
         fake.SingleDeletes.Should().Be(0);
         fake.Keys.Should().HaveCount(3);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "InvalidRequest")]
+    [InlineData(HttpStatusCode.Forbidden, "SignatureDoesNotMatch")]
+    public async Task Toplu_istek_501_disinda_bir_istemci_hatasiyla_reddedilirse_tek_tek_siler(HttpStatusCode status, string code)
+    {
+        // R2 toplu silmeyi 501 dışında bir istemci hatasıyla da reddedebilir (sağlama ya da imza başlığı; bu SDK sürümüyle canlıda
+        // denenmedi). Ret isteğin biçimine: her yeniden deneme aynı nedenle düşer, bu yoldaki nesneler hiç silinmezdi. Tek nesne
+        // silme üretimde müşteri silmesinin yolu; ona düşülür.
+        var (s3, fake) = NewS3();
+        var keys = Seed(fake, "wa/eeee/", 3);
+        fake.RefusedKeys.Add(keys[2]);
+        fake.BatchFailure = new AmazonS3Exception("istek reddedildi", ErrorType.Sender, code, "istek-3", status);
+
+        var failures = await R2BulkObjects.DeleteKeysAsync(s3, Bucket, keys, default);
+
+        fake.SingleDeletes.Should().Be(3);
+        failures.Should().ContainSingle().Which.Key.Should().Be(keys[2]);
+        fake.Keys.Should().Equal(keys[2]);
     }
 }

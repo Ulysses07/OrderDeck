@@ -15,18 +15,21 @@ namespace OrderDeck.LicenseServer.Services.Privacy;
 /// ve ürün fotoğrafları (<see cref="BroadcastMediaKeys.ProductPhotoPrefix(Guid)"/>; kararların hepsi 23.10.2026). Satırları
 /// (Payment, WaMessage, BroadcastPost, ProductPhoto) lisansla kaskad gidiyor, nesneler kovada süresiz kalıyordu.
 ///
-/// <para>Hepsi kovadan lisans önekiyle listelenir, satırlardan değil: satırı hiç yazılmamış nesne (ürüne bağlanmadan bırakılan
-/// fotoğraf yüklemesi, silinmesi yutulmuş eski paylaşım medyası) de gider.</para>
+/// <para><b>Niyet kalıcı.</b> Lisans satırlarını silen SaveChanges'e lisans başına bir <see cref="LicenseMediaPurgeTask"/> girer
+/// (<see cref="Schedule"/>). İlk tur istekte, kayıttan hemen sonra koşar; sonrakileri <see cref="LicenseMediaPurgeJob"/>. İstek
+/// iptal edilse, konteyner yeniden başlasa (master'a merge = otomatik deploy) ya da tur yarıda kalsa görev açık kalır, iş
+/// tamamlar. Yeniden deneme idempotent: silinmiş nesne listede yoktur.</para>
 ///
-/// <para>İki adım, ikisinin arasında satırların silinmesi: anahtarlar satırlar silinmeden ÖNCE listelenir
-/// (<see cref="TryListAsync"/>) — lisans satırı gidince öneki bir daha bulunamaz, liste alınamıyorsa silme hiç başlamaz.
-/// Nesneler satırlar silindikten SONRA silinir (<see cref="DeleteAsync"/>) — satırlar dururken dosya silinmiş olmaz (R12-S01).
-/// Silinemeyen her anahtar <see cref="OrphanedMediaObject"/> kuyruğuna yazılır, <see cref="OrphanedMediaCleanupJob"/> yeniden
-/// dener; kuyruk satırında ShopperId boş: konu yayıncı, lisans ve tür anahtarın önekinde.</para>
+/// <para><b>Bir tur</b> (<see cref="RunAsync"/>): lisansın dört öneki kovadan listelenir, satırlardan değil (satırı hiç yazılmamış
+/// nesne de gider: ürüne bağlanmadan bırakılan fotoğraf, silinmesi yutulmuş eski paylaşım medyası). Bulunanlar silinir; gerçekten
+/// silinenler imha kaydına lisans ve tür başına, görevin yeni durumuyla aynı SaveChanges'te yazılır. Silinemeyen nesne ya da
+/// listelenemeyen depo görevi açık tutar (<see cref="RetryDelay"/> sonra yeniden).</para>
 ///
-/// <para>Listeleme ile silme arasında yazılan nesne (yayıncı silinirken yüklenen dekont, o sırada indirilen WhatsApp medyası,
-/// imzalı URL'yle o anda yüklenen paylaşım ya da fotoğraf) listede yoktur ve kalır; pencere bir isteğin süresi kadar (imzalı
-/// yükleme URL'si 10 dakika yaşar).</para>
+/// <para><b>Kapanış:</b> görev ancak <see cref="LateWriteWindow"/> geçtikten sonraki bir tur dört öneki de BOŞ görünce kapanır.
+/// Silme sırasında alınmış imzalı URL'yle sonradan yüklenen nesne de böylece gider.</para>
+///
+/// <para>Kalan pencere: R2 silmesiyle turun SaveChanges'i arasında süreç ölürse nesne silinmiş ama imha kaydına sayılmamış olur;
+/// sonraki tur öneki boş görüp görevi kapatır. Silme niyetinin ve kapanışının kaydı görev satırında kalır.</para>
 /// </summary>
 public sealed class LicenseMediaPurge
 {
@@ -40,19 +43,28 @@ public sealed class LicenseMediaPurge
     /// <summary>Silinen ürün fotoğrafı nesnesinin imha kaydı hedefi.</summary>
     public const string ProductPhotoMediaTarget = "ProductPhotoMedia";
 
-    /// <summary>Yayıncı silmesinin imha kaydı ölçütü; geciken silme (<see cref="OrphanedMediaCleanupJob"/>) da bunu yazar.</summary>
+    /// <summary>Yayıncı silmesinin imha kaydı ölçütü; işin sonraki turları da bunu yazar.</summary>
     public const string CustomerPurgeCriterion = "yayıncı silme talebi";
 
-    public sealed record LicenseObject(Guid LicenseId, string Key);
+    /// <summary>Lisans satırları silindikten sonra lisansın önekine hâlâ yazılabilecek süre: imzalı yükleme URL'si 10 dk yaşar
+    /// (<see cref="R2BroadcastMediaStorage.CreateUploadUrlAsync"/>) ve süresi dolmadan başlamış büyük bir yükleme sonra biter;
+    /// dekont ve WhatsApp medyası istek içinde yazılır. Görev bu süre geçmeden kapanmaz.</summary>
+    public static readonly TimeSpan LateWriteWindow = TimeSpan.FromMinutes(30);
 
-    /// <summary>Satırlar silinmeden önce alınan anahtar listesi, tür başına. Paylaşım medyası ve ürün fotoğrafı aynı depoda
+    /// <summary>Silinemeyen nesne ya da listelenemeyen depo: görev bu kadar sonra yeniden ele alınır (iş saatte bir koşar).</summary>
+    public static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(45);
+
+    /// <summary>Bir turun sonucu: silinen ve silinemeyen nesne sayısı, listelenemeyen lisans sayısı.</summary>
+    public sealed record RoundResult(int Deleted, int Failed, int Unlisted);
+
+    /// <summary>Bir lisansın dört önekinde bulunan anahtarlar; paylaşım medyası ve ürün fotoğrafı aynı depoda
     /// (<see cref="IBroadcastMediaStorage"/>), imha kaydında ayrı hedef.</summary>
-    public sealed record Listing(IReadOnlyList<LicenseObject> Receipts, IReadOnlyList<LicenseObject> WhatsApp,
-        IReadOnlyList<LicenseObject> BroadcastPosts, IReadOnlyList<LicenseObject> ProductPhotos)
+    private sealed record Listing(IReadOnlyList<string> Receipts, IReadOnlyList<string> WhatsApp,
+        IReadOnlyList<string> BroadcastPosts, IReadOnlyList<string> ProductPhotos)
     {
         public int Count => Receipts.Count + WhatsApp.Count + BroadcastPosts.Count + ProductPhotos.Count;
 
-        public IEnumerable<LicenseObject> All => Receipts.Concat(WhatsApp).Concat(BroadcastPosts).Concat(ProductPhotos);
+        public IEnumerable<string> All => Receipts.Concat(WhatsApp).Concat(BroadcastPosts).Concat(ProductPhotos);
     }
 
     private readonly LicenseDbContext _db;
@@ -60,153 +72,151 @@ public sealed class LicenseMediaPurge
     private readonly IWhatsAppMediaStore _whatsApp;
     private readonly IBroadcastMediaStorage _broadcast;
     private readonly ILogger<LicenseMediaPurge> _log;
+    private readonly TimeProvider _clock;
 
     public LicenseMediaPurge(LicenseDbContext db, IShopperPaymentStorage receipts, IWhatsAppMediaStore whatsApp,
-        IBroadcastMediaStorage broadcast, ILogger<LicenseMediaPurge> log)
+        IBroadcastMediaStorage broadcast, ILogger<LicenseMediaPurge> log, TimeProvider? clock = null)
     {
         _db = db;
         _receipts = receipts;
         _whatsApp = whatsApp;
         _broadcast = broadcast;
         _log = log;
+        _clock = clock ?? TimeProvider.System;
     }
 
-    public static bool IsWhatsAppKey(string key) => key.StartsWith(WhatsAppMediaKeys.Root, StringComparison.Ordinal);
-
-    /// <summary>Yayın kovasının nesnesi (paylaşım medyası ya da ürün fotoğrafı): <see cref="IBroadcastMediaStorage"/>'dan
-    /// silinir.</summary>
-    public static bool IsBroadcastMediaKey(string key)
-        => BroadcastMediaKeys.PostLicenseOf(key) is not null || BroadcastMediaKeys.ProductPhotoLicenseOf(key) is not null;
-
-    /// <summary>Kuyruktaki anahtarın imha kaydı hedefi; tanınmayan biçim dekont sayılır (kuyruğun ilk ve en eski türü).</summary>
-    public static string TargetOf(string key)
-        => IsWhatsAppKey(key) ? WhatsAppMediaTarget
-            : BroadcastMediaKeys.ProductPhotoLicenseOf(key) is not null ? ProductPhotoMediaTarget
-            : BroadcastMediaKeys.PostLicenseOf(key) is not null ? BroadcastPostMediaTarget
-            : ShopperPurgeService.MediaTarget;
-
-    /// <summary>Anahtarın lisansı: dekont ve WhatsApp <c>{kök}/{lisans:N}/…</c>, yayın kovası <c>{lisans}/…</c>
-    /// (<see cref="BroadcastMediaKeys"/>). Biçim dışı anahtarda null.</summary>
-    public static Guid? LicenseOf(string key)
+    /// <summary>Lisans başına görev satırını izleyiciye EKLER, kaydetmez: lisans satırlarını silen SaveChanges'te yazılsın (ikisi
+    /// birlikte olur ya da hiçbiri). İlk tur hemen koşabilsin diye zamanı şimdi.</summary>
+    public static List<LicenseMediaPurgeTask> Schedule(LicenseDbContext db, IEnumerable<Guid> licenseIds, Guid subjectId,
+        DateTimeOffset now)
     {
-        if (BroadcastMediaKeys.ProductPhotoLicenseOf(key) is { } photoLicense) return photoLicense;
-        if (BroadcastMediaKeys.PostLicenseOf(key) is { } postLicense) return postLicense;
-        var parts = key.Split('/', 3);
-        return parts.Length == 3 && Guid.TryParseExact(parts[1], "N", out var id) ? id : null;
+        var tasks = licenseIds.Select(id => new LicenseMediaPurgeTask
+        {
+            Id = Guid.NewGuid(), LicenseId = id, SubjectId = subjectId, CreatedAt = now, NextAttemptAt = now,
+        }).ToList();
+        db.LicenseMediaPurgeTasks.AddRange(tasks);
+        return tasks;
     }
 
-    /// <summary>Lisansların dekont, WhatsApp, paylaşım medyası ve ürün fotoğrafı anahtarları. Depo listelenemezse null (günlüğe
-    /// yazılır): çağıran silmeyi başlatmaz.</summary>
-    public async Task<Listing?> TryListAsync(IReadOnlyCollection<Guid> licenseIds, CancellationToken ct)
+    /// <summary>Görevlerin birer turu; her görev kendi SaveChanges'iyle kaydedilir. İptal yalnız görevler ARASINDA dinlenir: başlamış
+    /// tur, sildiği nesnenin kaydını yazmadan bırakılmaz. <paramref name="actor"/> imha kaydının yapanı (istekte yönetici, işte
+    /// sistem).</summary>
+    public async Task<RoundResult> RunAsync(IReadOnlyList<LicenseMediaPurgeTask> tasks, string actor, CancellationToken ct)
     {
-        var receipts = new List<LicenseObject>();
-        var whatsApp = new List<LicenseObject>();
-        var posts = new List<LicenseObject>();
-        var photos = new List<LicenseObject>();
+        int deleted = 0, failed = 0, unlisted = 0;
+        foreach (var task in tasks)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (d, f, listed) = await RunOneAsync(task, actor);
+            deleted += d;
+            failed += f;
+            if (!listed) unlisted++;
+        }
+        return new RoundResult(deleted, failed, unlisted);
+    }
+
+    private async Task<(int Deleted, int Failed, bool Listed)> RunOneAsync(LicenseMediaPurgeTask task, string actor)
+    {
+        var ct = CancellationToken.None;
+        var now = _clock.GetUtcNow();
+        task.AttemptCount++;
+        task.LastAttemptAt = now;
+
+        Listing listing;
         try
         {
-            foreach (var licenseId in licenseIds)
-            {
-                foreach (var key in await _receipts.ListLicenseObjectsAsync(licenseId, ct))
-                    receipts.Add(new LicenseObject(licenseId, key));
-                foreach (var key in await _whatsApp.ListLicenseObjectsAsync(licenseId, ct))
-                    whatsApp.Add(new LicenseObject(licenseId, key));
-                // ListAsync R2 hatasını yutmaz (eksik liste "nesne yok" görünmesin): buradaki catch'e düşer.
-                foreach (var o in await _broadcast.ListAsync(BroadcastMediaKeys.PostPrefix(licenseId), ct))
-                    posts.Add(new LicenseObject(licenseId, o.Key));
-                foreach (var o in await _broadcast.ListAsync(BroadcastMediaKeys.ProductPhotoPrefix(licenseId), ct))
-                    photos.Add(new LicenseObject(licenseId, o.Key));
-            }
+            listing = await ListAsync(task.LicenseId, ct);
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
+        catch (Exception ex)
         {
-            _log.LogError(ex, "[CustomerPurge] Lisans nesneleri listelenemedi; silme başlatılmadı");
-            return null;
+            // Eksik listeyle tur başlamaz: "nesne yok" sanılıp görev kapanmasın.
+            _log.LogError(ex, "[LicenseMediaPurge] {LicenseId} lisansının nesneleri listelenemedi; görev açık", task.LicenseId);
+            task.LastError = OrphanedMedia.TruncateError($"listelenemedi: {ex.Message}");
+            task.NextAttemptAt = now + RetryDelay;
+            await _db.SaveChangesAsync(ct);
+            return (0, 0, false);
         }
-        return new Listing(receipts, whatsApp, posts, photos);
-    }
 
-    /// <summary>
-    /// Listelenen nesneleri siler; silinemeyenleri kuyruğa yazar, imha kaydını lisans ve tür başına yazar ve kaydeder.
-    /// Satırlar zaten silinmiş olduğundan isteğin iptaline bağlı değil: yarıda kesilse anahtarlar hiçbir yerde kalmazdı.
-    /// </summary>
-    /// <returns>Silinen ve kuyrukta bekleyen nesne sayısı.</returns>
-    public async Task<(int Deleted, int Pending)> DeleteAsync(Listing listing, string actor, Guid subjectId)
-    {
-        if (listing.Count == 0) return (0, 0);
-        var ct = CancellationToken.None;
+        var windowEnd = task.CreatedAt + LateWriteWindow;
+        if (listing.Count == 0)
+        {
+            task.LastError = null;
+            if (now >= windowEnd) task.CompletedAt = now;
+            else task.NextAttemptAt = windowEnd;
+            await _db.SaveChangesAsync(ct);
+            return (0, 0, true);
+        }
 
         var failures = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var f in await _receipts.DeleteObjectsAsync(listing.Receipts.Select(o => o.Key).ToList(), ct))
-            failures[f.Key] = f.Error;
-        foreach (var f in await _whatsApp.DeleteObjectsAsync(listing.WhatsApp.Select(o => o.Key).ToList(), ct))
-            failures[f.Key] = f.Error;
+        foreach (var f in await _receipts.DeleteObjectsAsync(listing.Receipts, ct)) failures[f.Key] = f.Error;
+        foreach (var f in await _whatsApp.DeleteObjectsAsync(listing.WhatsApp, ct)) failures[f.Key] = f.Error;
         // Tek silme (DeleteAsync) R2'de hatayı yutar: silinemeyen nesne silinmiş sayılmasın diye hata döndüren toplu silme.
-        foreach (var f in await _broadcast.DeleteObjectsAsync(
-                     listing.BroadcastPosts.Concat(listing.ProductPhotos).Select(o => o.Key).ToList(), ct))
+        foreach (var f in await _broadcast.DeleteObjectsAsync([.. listing.BroadcastPosts, .. listing.ProductPhotos], ct))
             failures[f.Key] = f.Error;
 
-        // Kuyruk anahtarı tekil: müşteri silmesinden (ShopperPurgeService) bekleyen satır varsa ikinci satır açılmaz, o güncellenir;
-        // bu silmede silinen nesnenin bekleyen satırı kapanır (yoksa temizlik işi nesneyi bir daha "silip" ikinci kez kayda yazardı).
-        var queued = new Dictionary<string, OrphanedMediaObject>(StringComparer.Ordinal);
-        foreach (var licenseId in listing.All.Select(o => o.LicenseId).Distinct())
-            foreach (var prefix in new[]
-                     {
-                         ShopperPaymentKeys.LicensePrefix(licenseId), WhatsAppMediaKeys.LicensePrefix(licenseId),
-                         BroadcastMediaKeys.PostPrefix(licenseId), BroadcastMediaKeys.ProductPhotoPrefix(licenseId),
-                     })
-                foreach (var row in await _db.OrphanedMediaObjects.Where(o => o.ObjectKey.StartsWith(prefix)).ToListAsync(ct))
-                    queued[row.ObjectKey] = row;
+        await CloseQueuedAsync(task.LicenseId, listing, failures, now, ct);
 
-        var now = DateTimeOffset.UtcNow;
+        // KVKK Ö-13: yalnız gerçekten silinen sayılır; silinemeyen, sildiği turun kaydına girer.
         var deleted = 0;
-        void Settle(IReadOnlyList<LicenseObject> objects, string target)
+        void Record(IReadOnlyList<string> keys, string target)
         {
-            foreach (var license in objects.GroupBy(o => o.LicenseId))
-            {
-                var count = 0;
-                foreach (var (_, key) in license)
-                {
-                    queued.TryGetValue(key, out var row);
-                    if (failures.TryGetValue(key, out var error))
-                    {
-                        if (row is null)
-                        {
-                            row = new OrphanedMediaObject { Id = Guid.NewGuid(), ObjectKey = key, CreatedAt = now };
-                            _db.OrphanedMediaObjects.Add(row);
-                        }
-                        row.AttemptCount++;
-                        row.LastAttemptAt = now;
-                        row.LastError = OrphanedMedia.TruncateError(error);
-                        row.DeletedAt = null;
-                        continue;
-                    }
-                    count++;
-                    if (row is { DeletedAt: null })
-                    {
-                        row.AttemptCount++;
-                        row.LastAttemptAt = now;
-                        row.LastError = null;
-                        row.DeletedAt = now;   // gerçek silme onayı
-                    }
-                }
-                // KVKK Ö-13: yalnız gerçekten silinen sayılır; kuyruktaki, silindiğinde temizlik işinin kaydına girer.
-                DataDestruction.Record(_db, license.Key, target, DataDestruction.Actions.Deleted, count, CustomerPurgeCriterion,
-                    DataDestruction.Triggers.CustomerPurge, actor, subjectId: subjectId);
-                deleted += count;
-            }
+            var count = keys.Count(k => !failures.ContainsKey(k));
+            DataDestruction.Record(_db, task.LicenseId, target, DataDestruction.Actions.Deleted, count, CustomerPurgeCriterion,
+                DataDestruction.Triggers.CustomerPurge, actor, subjectId: task.SubjectId);
+            deleted += count;
         }
-        Settle(listing.Receipts, ShopperPurgeService.MediaTarget);
-        Settle(listing.WhatsApp, WhatsAppMediaTarget);
-        Settle(listing.BroadcastPosts, BroadcastPostMediaTarget);
-        Settle(listing.ProductPhotos, ProductPhotoMediaTarget);
+        Record(listing.Receipts, ShopperPurgeService.MediaTarget);
+        Record(listing.WhatsApp, WhatsAppMediaTarget);
+        Record(listing.BroadcastPosts, BroadcastPostMediaTarget);
+        Record(listing.ProductPhotos, ProductPhotoMediaTarget);
 
-        // Kesintide binlerce anahtar düşebilir: anahtar başına değil, tek satır (anahtarlar ve hataları kuyrukta).
         if (failures.Count > 0)
-            _log.LogError("[CustomerPurge] {Pending} nesne silinemedi, kuyruğa alındı (ilk: {Key} — {Error})",
-                failures.Count, failures.First().Key, failures.First().Value);
-
+        {
+            // Kesintide binlerce anahtar düşebilir: anahtar başına değil, tek satır.
+            var (key, error) = failures.First();
+            task.LastError = OrphanedMedia.TruncateError($"{failures.Count} nesne silinemedi (ilk: {key} — {error})");
+            task.NextAttemptAt = now + RetryDelay;
+            _log.LogError("[LicenseMediaPurge] {LicenseId}: {Failed} nesne silinemedi, görev açık (ilk: {Key} — {Error})",
+                task.LicenseId, failures.Count, key, error);
+        }
+        else
+        {
+            // Bulunan her şey silindi; kapanış, pencereden sonra öneki boş gören turda.
+            task.LastError = null;
+            task.NextAttemptAt = now > windowEnd ? now : windowEnd;
+        }
         await _db.SaveChangesAsync(ct);
-        return (deleted, failures.Count);
+        return (deleted, failures.Count, true);
+    }
+
+    private async Task<Listing> ListAsync(Guid licenseId, CancellationToken ct)
+        => new(
+            await _receipts.ListLicenseObjectsAsync(licenseId, ct),
+            await _whatsApp.ListLicenseObjectsAsync(licenseId, ct),
+            // ListAsync R2 hatasını yutmaz (eksik liste "nesne yok" görünmesin).
+            (await _broadcast.ListAsync(BroadcastMediaKeys.PostPrefix(licenseId), ct)).Select(o => o.Key).ToList(),
+            (await _broadcast.ListAsync(BroadcastMediaKeys.ProductPhotoPrefix(licenseId), ct)).Select(o => o.Key).ToList());
+
+    /// <summary>Müşteri silmesinden (<see cref="ShopperPurgeService"/>) kuyrukta bekleyen anahtarı bu tur sildiyse satırı kapanır:
+    /// temizlik işi nesneyi bir daha "silip" imha kaydına ikinci kez yazmasın. Silinemeyenin satırına dokunulmaz: kuyruk müşteri
+    /// silmesinin, bu görev zaten yeniden dener.</summary>
+    private async Task CloseQueuedAsync(Guid licenseId, Listing listing, IReadOnlyDictionary<string, string> failures,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        var deletedKeys = listing.All.Where(k => !failures.ContainsKey(k)).ToHashSet(StringComparer.Ordinal);
+        foreach (var prefix in new[]
+                 {
+                     ShopperPaymentKeys.LicensePrefix(licenseId), WhatsAppMediaKeys.LicensePrefix(licenseId),
+                     BroadcastMediaKeys.PostPrefix(licenseId), BroadcastMediaKeys.ProductPhotoPrefix(licenseId),
+                 })
+            foreach (var row in await _db.OrphanedMediaObjects
+                         .Where(o => o.DeletedAt == null && o.ObjectKey.StartsWith(prefix)).ToListAsync(ct))
+            {
+                if (!deletedKeys.Contains(row.ObjectKey)) continue;
+                row.AttemptCount++;
+                row.LastAttemptAt = now;
+                row.LastError = null;
+                row.DeletedAt = now;   // gerçek silme onayı
+            }
     }
 }

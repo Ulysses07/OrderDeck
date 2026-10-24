@@ -21,15 +21,11 @@ public interface IWhatsAppMediaStore
     /// <summary>Panelde göstermek için kısa ömürlü indirme linki üretir.</summary>
     Task<string> CreateDownloadUrlAsync(string objectKey, TimeSpan? expiry = null, CancellationToken ct = default);
 
-    /// <summary>Tek nesne siler; yayıncı silmesinde silinemeyip kuyruğa düşen WhatsApp anahtarını
-    /// <c>OrphanedMediaCleanupJob</c> bununla yeniden dener.</summary>
-    Task DeleteAsync(string objectKey, CancellationToken ct = default);
-
     /// <summary>Lisansın WhatsApp önekindeki (<see cref="WhatsAppMediaKeys.LicensePrefix"/>) TÜM anahtarlar; sayfalama içeride.
     /// Yayıncı silmesi (KVKK) için.</summary>
     Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default);
 
-    /// <summary>Toplu silme. Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran kuyruğa yazar.</summary>
+    /// <summary>Toplu silme. Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran yeniden dener.</summary>
     Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
 }
 
@@ -60,12 +56,6 @@ public sealed class InMemoryWhatsAppMediaStore : IWhatsAppMediaStore
 
     public Task<string> CreateDownloadUrlAsync(string objectKey, TimeSpan? expiry = null, CancellationToken ct = default)
         => Task.FromResult($"memory://wa-media/{objectKey}");
-
-    public Task DeleteAsync(string objectKey, CancellationToken ct = default)
-    {
-        _store.TryRemove(objectKey, out _);
-        return Task.CompletedTask;
-    }
 
     public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
     {

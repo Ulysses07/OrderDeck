@@ -25,9 +25,5 @@ public sealed class InMemoryWhatsAppMediaStoreTests
         failures.Should().BeEmpty();
         store.Count.Should().Be(1);
         store.TryGet(otherKey, out _).Should().BeTrue("başka lisansın medyası kalır");
-
-        // Tek nesne silme: geciken silmeyi (OrphanedMediaCleanupJob) WhatsApp anahtarında bu depo yapar.
-        await store.DeleteAsync(otherKey);
-        store.Count.Should().Be(0);
     }
 }
