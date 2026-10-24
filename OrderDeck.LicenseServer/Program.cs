@@ -975,6 +975,14 @@ public class Program
                 "{Reason} — obifin-poll, obifin-accounts ve bank-match-sweep zamanlanmadı; saklama işleri (bank-data-retention, bank-service-end-purge) yine koşar",
                 OrderDeck.LicenseServer.Services.Bank.BankHasher.DisabledMessage);
 
+        // KVKK karar 8 (2026-10-23): silinen müşterinin sipariş metni boşaltması varsayılan açık. .env'de eski örnekten kalmış
+        // `SalesSync__ScrubOrderTextOnPurge=false` satırı compose varsayılanını ezer: ayar görünmeden kapalı kalmasın, açılışta
+        // tek uyarı. Kapatmak bilinçli sahip kararıysa uyarı beklenir.
+        if (!app.Services.GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>>().Value
+                .ScrubOrderTextOnPurge)
+            app.Logger.LogWarning(
+                "SalesSync:ScrubOrderTextOnPurge kapalı — silinen müşterinin sipariş metni (takma ad, yorum) boşaltılmıyor, yalnız okurken maskeleniyor. Varsayılan açık (KVKK sahip kararı 8, 2026-10-23); kapatma bilinçli değilse .env'deki SalesSync__ScrubOrderTextOnPurge=false satırını silin ya da true yapın");
+
         // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
         if (!app.Environment.IsEnvironment("Testing"))
         {
