@@ -17,11 +17,11 @@ public sealed class SalesSyncOptions
     public string? MinClientVersion { get; set; }
 
     /// <summary>
-    /// Silinen müşterinin sipariş metinlerinin (görünen ad, yorum) kalıcı olarak boşaltılması. Varsayılan KAPALI:
-    /// geri dönüşsüz olduğu için açılması sahip kararıdır (§9, §11 açık kalanlar). Kapalıyken de akış okuma anında
-    /// maskeler.
+    /// Silinen müşterinin sipariş metinlerinin (görünen ad, yorum) kalıcı olarak boşaltılması. Varsayılan AÇIK
+    /// (sahip kararı 8, 2026-10-23; §9): kullanıcı adı, kod ve fiyat kalır. Geri dönüşsüzdür; kapatmak
+    /// (<c>false</c>) da sahip kararıdır. Kapalıyken de akış okuma anında maskeler.
     /// </summary>
-    public bool ScrubOrderTextOnPurge { get; set; }
+    public bool ScrubOrderTextOnPurge { get; set; } = true;
 
     /// <summary><see cref="ForceEndSilenceMinutes"/>'in varsayılanı (Y7: ≥ 15 dk sessizlik).</summary>
     public const int DefaultForceEndSilenceMinutes = 15;

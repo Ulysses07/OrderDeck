@@ -19,14 +19,19 @@ public sealed class AdminCustomersController : ControllerBase
     private readonly PasswordHasher _hasher;
     private readonly BackupStorageService _backups;
     private readonly IAuditService _audit;
+    private readonly LicenseMediaPurge _mediaPurge;
+    private readonly ILogger<AdminCustomersController> _log;
 
     public AdminCustomersController(LicenseDbContext db, PasswordHasher hasher,
-        BackupStorageService backups, IAuditService audit)
+        BackupStorageService backups, IAuditService audit, LicenseMediaPurge mediaPurge,
+        ILogger<AdminCustomersController> log)
     {
         _db = db;
         _hasher = hasher;
         _backups = backups;
         _audit = audit;
+        _mediaPurge = mediaPurge;
+        _log = log;
     }
 
     [HttpGet]
@@ -117,7 +122,10 @@ public sealed class AdminCustomersController : ControllerBase
     /// <summary>
     /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
     /// data (licenses, activations, refresh tokens, intake form submissions,
-    /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3)
+    /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3,
+    /// the licenses' bucket objects: receipts shoppers uploaded, WhatsApp media, broadcast post media and product photos — karar
+    /// 5/6 and 23.10.2026, <see cref="LicenseMediaPurge"/>; the intent is a <see cref="LicenseMediaPurgeTask"/> row saved with the
+    /// license rows, the first round runs here and <see cref="LicenseMediaPurgeJob"/> finishes it)
     /// and anonymises the Customer row
     /// itself. The Customer row stays — its Id is referenced from AuditLog
     /// rows that we MUST retain for the configured retention window. Email
@@ -170,6 +178,13 @@ public sealed class AdminCustomersController : ControllerBase
         //    self-documenting and survives any future cascade changes.
         var licenseIds = await _db.Licenses.Where(l => l.CustomerId == id)
             .Select(l => l.Id).ToListAsync(ct);
+
+        // KVKK karar 5/6 ve 23.10.2026: lisansların kova nesneleri (müşterilerin yüklediği dekontlar, WhatsApp medyası, yayın
+        // paylaşımı medyası, ürün fotoğrafları) satırları kaskadla gidiyor, nesneler kalıyordu. Lisans satırı gidince öneki başka
+        // hiçbir yerden bulunamaz: silme niyeti lisans başına bir görev satırı olarak BU SaveChanges'e girer, satırlarla birlikte
+        // olur ya da hiç olmaz. Nesneler aşağıda, satırlar silindikten SONRA silinir (R12-S01).
+        var mediaTasks = LicenseMediaPurge.Schedule(_db, licenseIds, id, DateTimeOffset.UtcNow);
+
         if (licenseIds.Count > 0)
         {
             _db.Activations.RemoveRange(_db.Activations.Where(a => licenseIds.Contains(a.LicenseId)));
@@ -223,7 +238,7 @@ public sealed class AdminCustomersController : ControllerBase
         // arasında eklenen satırı (girişin yazdığı yenileme jetonu, herkese açık formdan gelen gönderim) silinmediği hâlde sayardı.
         // Yapan: yöneticinin kimliği, kullanıcı adı değil (tablo budanmaz; adı aşağıdaki denetim satırında, 24 ay).
         var actor = DataDestruction.ActorOf(User);
-        const string criterion = "yayıncı silme talebi";
+        const string criterion = LicenseMediaPurge.CustomerPurgeCriterion;
         void Record(string target, string action, int count, string why = criterion) => DataDestruction.Record(_db, null, target,
             action, count, why, DataDestruction.Triggers.CustomerPurge, actor, subjectId: id);
         int Deleted<T>() where T : class => _db.ChangeTracker.Entries<T>().Count(e => e.State == EntityState.Deleted);
@@ -262,12 +277,16 @@ public sealed class AdminCustomersController : ControllerBase
             return Problem(title: "concurrent-credential-change", statusCode: 409);
         }
 
+        // Satırlar kaydedildi: buradan sonrası isteğin iptaline bağlı değil (yönetici sekmeyi kapatsa da geç profil silmesi, dosyalar
+        // ve denetim satırı yazılır). Lisans dosyalarının silme niyeti zaten kalıcı; aşağıdaki tur yarıda kalsa da iş tamamlar.
+        var after = CancellationToken.None;
+
         // KVKK K-3: veri sorumlusu bilgisini bu silmenin okumasıyla kaydı arasında İLK KEZ yazan bir yazım (açık panel: erişim
         // jetonu silmeden sonra da 15 dk geçerli) yukarıdaki listede yoktu; müşteri satırı kaldığı için FK geçerli, satır
         // kalırdı. Kayıttan sonra yeniden aranır ve silinir. Kayıttan sonra kaydedilmek isteyen yazım ise müşterinin silindiğini
         // görür ya da kimlik nesli koşuluna takılır, yazmaz (DataControllerProfiles.UpsertAsync): bu arama hiçbirini kaçırmaz.
-        var lateProfiles = await _db.DataControllerProfiles.Where(p => p.CustomerId == id).ToListAsync(ct);
-        var lateVersions = await _db.DataControllerProfileVersions.Where(v => v.CustomerId == id).ToListAsync(ct);
+        var lateProfiles = await _db.DataControllerProfiles.Where(p => p.CustomerId == id).ToListAsync(after);
+        var lateVersions = await _db.DataControllerProfileVersions.Where(v => v.CustomerId == id).ToListAsync(after);
         if (lateProfiles.Count + lateVersions.Count > 0)
         {
             _db.DataControllerProfiles.RemoveRange(lateProfiles);
@@ -275,7 +294,7 @@ public sealed class AdminCustomersController : ControllerBase
             const string late = criterion + ", silmeyle eşzamanlı yazılmış";
             Record("DataControllerProfiles", DataDestruction.Actions.Deleted, lateProfiles.Count, late);
             Record("DataControllerProfileVersions", DataDestruction.Actions.Deleted, lateVersions.Count, late);
-            await _db.SaveChangesAsync(ct);
+            await _db.SaveChangesAsync(after);
         }
 
         // Rows are gone — now the files. A failure here leaves an orphan blob,
@@ -283,16 +302,35 @@ public sealed class AdminCustomersController : ControllerBase
         // swallows so a locked file can't fail an otherwise-completed purge.
         foreach (var path in backupBlobPaths) _backups.DeleteBlob(path);
 
+        // Lisansların kova nesneleri: görevlerin ilk turu, hemen. Satırlar dururken dosya silinmez (R12-S01: 409'a düşen istek
+        // buraya ulaşmaz). Silinemeyen nesne ya da listelenemeyen depo görevi açık tutar; LicenseMediaPurgeJob yeniden dener ve
+        // geç yazım penceresinden sonra öneki boş görünce kapatır. Tur düşerse (veritabanı) görev yine açık: silme ve denetim
+        // satırı bunun yüzünden yarım kalmaz. İmha kaydı lisans ve tür başına, turun kendi SaveChanges'inde.
+        var media = new LicenseMediaPurge.RoundResult(0, 0, 0);
+        try
+        {
+            media = await _mediaPurge.RunAsync(mediaTasks, actor, after);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[CustomerPurge] {CustomerId}: lisans dosyalarının ilk turu düştü; görevleri iş tamamlayacak", id);
+        }
+
         await _audit.LogAsync(AuditEvents.CustomerPurged, AuditTargets.Customer, id.ToString(),
             details: new
             {
                 preEmail,
                 deletedLicenses = licenseIds.Count,
                 deletedBackups = backupRows.Count,
+                // İlk turun sonucu. Silinemeyen nesne ya da listelenemeyen lisans varsa silme henüz kapanmadı;
+                // LicenseMediaPurgeJob kapatır (LicenseMediaPurgeTasks).
+                deletedMediaObjects = media.Deleted,
+                pendingMediaObjects = media.Failed,
+                unlistedLicenses = media.Unlisted,
                 // KVKK m. 13/2: kapanan banka veri talebi açık listeden düşer, başvurana yanıt yükümlülüğü sürer (sayı, kişisel
                 // veri değil).
                 closedBankSubjectRequests,
-            }, ct: ct);
+            }, ct: after);
 
         return NoContent();
     }

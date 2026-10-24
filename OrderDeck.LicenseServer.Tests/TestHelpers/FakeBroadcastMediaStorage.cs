@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Services.BroadcastPosts;
 
@@ -24,15 +25,27 @@ public sealed class FakeBroadcastMediaStorage : IBroadcastMediaStorage
     /// <summary>Silinen anahtarlar — yetim temizliği ve inline silme testleri için.</summary>
     public List<string> DeleteCalls { get; } = new();
 
+    /// <summary>Silinemeyen anahtarlar (yayıncı silmesi, KVKK): toplu silme hata metniyle döndürür; tek silme
+    /// <see cref="R2BroadcastMediaStorage.DeleteAsync"/> gibi hatayı YUTAR, nesne kalır.</summary>
+    public ConcurrentDictionary<string, byte> FailingKeys { get; } = new();
+
+    /// <summary>Listelenemeyen önekler (R2 kesintisi taklidi): bunlarla örtüşen önekte <see cref="ListAsync"/> fırlatır.</summary>
+    public ConcurrentDictionary<string, byte> UnlistablePrefixes { get; } = new();
+
     public void Seed(string key, long size, string contentType,
         DateTimeOffset? lastModified = null)
         => _inner.Seed(key, size, contentType, lastModified);
+
+    /// <summary>Nesne kovada mı (test denetimi).</summary>
+    public bool Contains(string key) => _inner.HeadAsync(key).GetAwaiter().GetResult() is not null;
 
     /// <summary>Test izolasyonu için kayıtları sıfırla.</summary>
     public void Reset()
     {
         UploadCalls.Clear();
         DeleteCalls.Clear();
+        FailingKeys.Clear();
+        UnlistablePrefixes.Clear();
     }
 
     public Task<string> CreateUploadUrlAsync(string objectKey, string contentType, long sizeBytes, CancellationToken ct = default)
@@ -49,11 +62,27 @@ public sealed class FakeBroadcastMediaStorage : IBroadcastMediaStorage
 
     public Task<IReadOnlyList<MediaObjectListing>> ListAsync(
         string prefix, CancellationToken ct = default)
-        => _inner.ListAsync(prefix, ct);
+        => UnlistablePrefixes.Keys.Any(p => prefix.StartsWith(p, StringComparison.Ordinal)
+                || p.StartsWith(prefix, StringComparison.Ordinal))
+            ? throw new IOException("kova listelenemiyor")
+            : _inner.ListAsync(prefix, ct);
 
     public Task DeleteAsync(string objectKey, CancellationToken ct = default)
     {
         DeleteCalls.Add(objectKey);
-        return _inner.DeleteAsync(objectKey, ct);
+        return FailingKeys.ContainsKey(objectKey) ? Task.CompletedTask : _inner.DeleteAsync(objectKey, ct);
+    }
+
+    public async Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys,
+        CancellationToken ct = default)
+    {
+        var failures = new List<MediaDeleteFailure>();
+        foreach (var key in keys)
+        {
+            DeleteCalls.Add(key);
+            if (FailingKeys.ContainsKey(key)) failures.Add(new MediaDeleteFailure(key, "AccessDenied: nesne kilitli"));
+            else await _inner.DeleteAsync(key, ct);
+        }
+        return failures;
     }
 }

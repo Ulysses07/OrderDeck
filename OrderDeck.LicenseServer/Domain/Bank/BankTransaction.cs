@@ -27,6 +27,8 @@ public sealed class BankTransaction
     /// (<c>PaymentMatchReconciler.LearnIbanAsync</c>, KVKK Ö-7): öncesinde çekilen hareketin özeti maskeli IBAN'dan üretilmiş
     /// olabilir. Göç eski satırlarda false bırakır.</summary>
     public bool CounterpartyIbanHashValid { get; set; }
+    /// <summary>YAZILMAZ (KVKK veri küçültme, 2026-10; <c>ObifinPollJob</c>). Faz 2'de amacıyla birlikte açılabilir; sütun ve
+    /// okuyucuları (veri talebi dökümü, saklama, silme) eski satırlar için kalır.</summary>
     public string? CounterpartyName { get; set; }
     /// <summary>YAZILMAZ (KVKK Ö-2, 2026-10). Sütun genişlet/daralt kuralıyla bir sonraki sürümde düşürülür; eski değerleri
     /// <c>bank-data-cleanup</c> boşaltır. Yeni kod bu alanı okumamalı.</summary>

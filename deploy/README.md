@@ -162,9 +162,10 @@ OrderDeck__Bank__HashKey=
 # yayımlanınca sürümü yaz ve `docker compose up -d license-server` (§8.1 adım 5).
 SalesSync__MinClientVersion=
 # Silinen müşterinin sipariş metinlerini (görünen ad, yorum) sunucuda ve bütün
-# bilgisayarlarda kalıcı olarak boşalt. Geri dönüşsüz; açmak sahip kararı
-# (§9, §11). Kapalıyken de akış silinmiş müşterinin metnini okurken maskeler.
-SalesSync__ScrubOrderTextOnPurge=false
+# bilgisayarlarda kalıcı olarak boşalt; kullanıcı adı kalır. Yazılmazsa "true"
+# (sahip kararı 8, 2026-10-23). Geri dönüşsüz; `=false` yazmak (kapatmak) da
+# sahip kararı. Kapalıyken de akış silinmiş müşterinin metnini okurken maskeler.
+SalesSync__ScrubOrderTextOnPurge=true
 # Canlı yayının sahibi kaç dakika susunca başka makinedeki (geri yüklenmiş) kopya
 # yayını devralabilir (Y7, Y8; devrediliyor yayın hiç devralınmaz). 0'dan büyük
 # olmalı; 0 ya da eksi değerle sunucu açılmaz.
@@ -804,9 +805,9 @@ veritabanıyla açtıktan sonra, kullanıcılara açmadan önce:
      yeniden yazar.
    - Sonra `OrderDeck__Bank__HashKey` satırını parola yöneticisindeki değerle `.env`'e
      ekleyip `docker compose up -d license-server`: banka işleri açılışta yeniden zamanlanır.
-3. Hangfire panosundan (`/admin/hangfire`) `bank-data-retention`, `security-data-retention` ve
-   `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler kendiliğinden yeniden
-   uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
+3. Hangfire panosundan (`/admin/hangfire`) `bank-data-retention`, `security-data-retention`,
+   `backup-monthly-retention` ve `audit-retention`'ı elle tetikleyin: süreye bağlı silmeler
+   kendiliğinden yeniden uygulanır (`bank-service-end-purge` ertesi 05:17'de kendisi koşar).
 4. Yedek anından sonraki özet e-postalarını açın; her satırı **tetikleyicisine** göre
    yeniden uygulayın (`konu` = ShopperId/CustomerId, `talep` = talep kimliği):
    - `shopper-purge`: admin/shoppers/deletion-requests'te o ShopperId'nin talebi geri

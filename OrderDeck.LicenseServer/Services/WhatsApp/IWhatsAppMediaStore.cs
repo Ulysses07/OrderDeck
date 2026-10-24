@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 
 namespace OrderDeck.LicenseServer.Services.WhatsApp;
 
@@ -19,6 +20,23 @@ public interface IWhatsAppMediaStore
 
     /// <summary>Panelde göstermek için kısa ömürlü indirme linki üretir.</summary>
     Task<string> CreateDownloadUrlAsync(string objectKey, TimeSpan? expiry = null, CancellationToken ct = default);
+
+    /// <summary>Lisansın WhatsApp önekindeki (<see cref="WhatsAppMediaKeys.LicensePrefix"/>) TÜM anahtarlar; sayfalama içeride.
+    /// Yayıncı silmesi (KVKK) için.</summary>
+    Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default);
+
+    /// <summary>Toplu silme. Fırlatmaz: silinemeyen her anahtar hata metniyle döner, çağıran yeniden dener.</summary>
+    Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
+}
+
+/// <summary>WhatsApp medya anahtarı <c>wa/{lisans:N}/{yyyy}/{MM}/{medya}{uzantı}</c>. Yazan
+/// (<see cref="WhatsAppMediaDownloader"/>) ve yayıncı silmesi öneki buradan alır.</summary>
+public static class WhatsAppMediaKeys
+{
+    /// <summary>Kovadaki bütün WhatsApp nesnelerinin kökü; dekontlar ve yayın medyası aynı kovada başka öneklerde.</summary>
+    public const string Root = "wa/";
+
+    public static string LicensePrefix(Guid licenseId) => $"{Root}{licenseId:N}/";
 }
 
 /// <summary>
@@ -38,6 +56,19 @@ public sealed class InMemoryWhatsAppMediaStore : IWhatsAppMediaStore
 
     public Task<string> CreateDownloadUrlAsync(string objectKey, TimeSpan? expiry = null, CancellationToken ct = default)
         => Task.FromResult($"memory://wa-media/{objectKey}");
+
+    public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+    {
+        var prefix = WhatsAppMediaKeys.LicensePrefix(licenseId);
+        return Task.FromResult<IReadOnlyList<string>>(
+            _store.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList());
+    }
+
+    public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+    {
+        foreach (var key in keys) _store.TryRemove(key, out _);
+        return Task.FromResult<IReadOnlyList<MediaDeleteFailure>>([]);
+    }
 
     /// <summary>Testlerin yazılan baytları doğrulaması için.</summary>
     public bool TryGet(string objectKey, out byte[] bytes)

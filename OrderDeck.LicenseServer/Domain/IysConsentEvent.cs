@@ -15,7 +15,10 @@ public enum IysConsentEventType
 /// <summary>
 /// İzin geçmişi — <b>ekle-only</b>. Hiç güncellenmez; tek silinme yolu m.13
 /// imhasıdır — IysDepartureRetentionJob ayrılan markanın DÖNEM olaylarını
-/// (OccurredAt ≤ ayrılış) 3 yıl dolunca imha eder.
+/// (OccurredAt ≤ ayrılış) 3 yıl dolunca imha eder. <see cref="BrandCode"/>'u
+/// null olan olaylar (markasız yayıncı: <c>no-brand</c>, <c>invalid-phone</c>)
+/// lisansın silinişinden 3 yıl sonra, <see cref="LicenseId"/> ile imha edilir;
+/// ikisi de null olan eski olaylar otomatik imha edilmez.
 ///
 /// <para>İspat burada yaşamak zorunda: <c>/iys/search</c> bize
 /// <c>consentDate</c> ve <c>source</c> alanlarını BOŞ döndürüyor

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
@@ -39,6 +40,13 @@ public sealed class OrphanedMediaCleanupJobTests
             if (FailDeletes) throw new IOException("depo geçici olarak erişilemez");
             return _inner.DeleteAsync(objectKey, ct);
         }
+
+        public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+            => _inner.ListLicenseObjectsAsync(licenseId, ct);
+
+        public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys,
+            CancellationToken ct = default)
+            => _inner.DeleteObjectsAsync(keys, ct);
 
         public bool Contains(string objectKey) => _inner.Contains(objectKey);
     }

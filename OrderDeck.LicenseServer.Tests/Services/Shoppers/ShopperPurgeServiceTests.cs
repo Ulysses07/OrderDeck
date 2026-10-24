@@ -67,7 +67,8 @@ public sealed class ShopperPurgeServiceTests
         return license;
     }
 
-    /// <param name="scrubOrderText"><c>SalesSync:ScrubOrderTextOnPurge</c>; varsayılan kapalı (§9).</param>
+    /// <param name="scrubOrderText"><c>SalesSync:ScrubOrderTextOnPurge</c>; bu yardımcıda kapalı — sipariş metnini
+    /// sınamayan testler o adıma girmesin. Üretim varsayılanı açık (karar 8, <see cref="SalesSyncOptions"/>).</param>
     private static (ShopperPurgeService Service, StubShopperPaymentStorage Storage) Build(
         LicenseDbContext db, bool scrubOrderText = false)
     {
@@ -123,6 +124,13 @@ public sealed class ShopperPurgeServiceTests
             if (FailDeletes) throw new IOException("depo geçici olarak erişilemez");
             return _inner.DeleteAsync(objectKey, ct);
         }
+
+        public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+            => _inner.ListLicenseObjectsAsync(licenseId, ct);
+
+        public Task<IReadOnlyList<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaDeleteFailure>> DeleteObjectsAsync(
+            IReadOnlyList<string> keys, CancellationToken ct = default)
+            => _inner.DeleteObjectsAsync(keys, ct);
 
         public bool Contains(string objectKey) => _inner.Contains(objectKey);
     }

@@ -204,7 +204,7 @@ public sealed class BankDataCleanupJobTests
         r.DescriptionsMasked.Should().Be(1);
         var row = await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == tx.Id);
         row.CounterpartyTaxIdHash.Should().BeNull();
-        row.RawJson.Should().Be($$"""{"Aciklama":"HAVALE {{BankHasher.MaskIban(iban)}}","GonderenAdi":"Ad Soyad"}""");
+        row.RawJson.Should().Be($$"""{"Aciklama":"HAVALE {{BankHasher.MaskIban(iban)}}"}""", "gönderen adı da beyaz listede değil");
         row.Description.Should().Be($"HAVALE {BankHasher.MaskIban(iban)} {BankDescriptionMasker.ElevenDigitMask}");
         (await db.BankTransactions.AsNoTracking().SingleAsync(t => t.Id == broken.Id)).RawJson.Should().BeNull();
     }

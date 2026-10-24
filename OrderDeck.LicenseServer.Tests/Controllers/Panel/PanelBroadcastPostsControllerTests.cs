@@ -50,6 +50,8 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadAsStringAsync();
         body.Should().Contain("uploadUrl").And.Contain($"{licenseId}");
+        // Sabit metin, BroadcastMediaKeys değil (yazan o yardımcıyı kullanıyor): yayıncı silmesi lisansın paylaşım medyasını
+        // tireli lisans önekiyle bulur, biçim değişirse kovadaki eski nesneler görünmez olur (KVKK).
         _factory.BroadcastMedia.UploadCalls
             .Should().Contain(c => c.Key.StartsWith($"{licenseId}/") && c.ContentType == "image/jpeg" && c.Size == 500_000);
     }

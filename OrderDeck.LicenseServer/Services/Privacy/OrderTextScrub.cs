@@ -8,9 +8,9 @@ namespace OrderDeck.LicenseServer.Services.Privacy;
 /// <list type="bullet">
 ///   <item><b>Okuma anı maskesi (her zaman):</b> asıl projeksiyonu silinmiş müşterinin siparişi akışta metinsiz gider
 ///   (<see cref="MasksOnRead"/>). Hiçbir şey silinmez; yalnız metnin yeni bilgisayarlara yayılması önlenir.</item>
-///   <item><b>Kalıcı boşaltma (<c>SalesSync:ScrubOrderTextOnPurge</c>, varsayılan kapalı):</b> silmede sipariş
-///   satırlarında (<c>ShopperPurgeService</c>) ve silmeden sonra gelen eklemede (<see cref="AppliesOnInsert"/>):
-///   <see cref="Apply"/>. Geri dönüşsüz olduğu için açılması sahip kararıdır (§11).</item>
+///   <item><b>Kalıcı boşaltma (<c>SalesSync:ScrubOrderTextOnPurge</c>, varsayılan açık — sahip kararı 8,
+///   2026-10-23):</b> silmede sipariş satırlarında (<c>ShopperPurgeService</c>) ve silmeden sonra gelen eklemede
+///   (<see cref="AppliesOnInsert"/>): <see cref="Apply"/>. Geri dönüşsüzdür.</item>
 /// </list>
 /// </summary>
 public static class OrderTextScrub

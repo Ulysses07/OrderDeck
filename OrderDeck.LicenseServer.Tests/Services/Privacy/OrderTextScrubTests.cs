@@ -6,7 +6,7 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Services.Privacy;
 
 /// <summary>
-/// Sipariş metninin KVKK politikası — spec 2026-10-13 §9. Kalıcı boşaltma tek bir ayara bağlı ve varsayılan kapalı;
+/// Sipariş metninin KVKK politikası — spec 2026-10-13 §9. Kalıcı boşaltma tek bir ayara bağlı ve varsayılan açık (karar 8);
 /// açıkken yalnız takma ad ve yorum gider, mali kayıt kalır. Boşaltma anı adli kayıttır: ilk an korunur.
 /// </summary>
 public sealed class OrderTextScrubTests

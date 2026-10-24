@@ -85,5 +85,11 @@ public sealed class R2ShopperPaymentStorage : IShopperPaymentStorage, IDisposabl
         }, ct);
     }
 
+    public Task<IReadOnlyList<string>> ListLicenseObjectsAsync(Guid licenseId, CancellationToken ct = default)
+        => R2BulkObjects.ListKeysAsync(_s3, _opt.BucketName, ShopperPaymentKeys.LicensePrefix(licenseId), ct);
+
+    public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+        => R2BulkObjects.DeleteKeysAsync(_s3, _opt.BucketName, keys, ct);
+
     public void Dispose() => _s3.Dispose();
 }

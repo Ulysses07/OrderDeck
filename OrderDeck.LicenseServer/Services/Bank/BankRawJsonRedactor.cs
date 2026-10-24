@@ -18,10 +18,11 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// </summary>
 public static class BankRawJsonRedactor
 {
-    /// <summary>Saklanan alanlar: açıklama, işlem açıklaması (açıklama yoksa açıklama sütunu ondan okunur), gönderen adı,
-    /// gönderen banka, işlem kodu, referans ve makbuz no.</summary>
+    /// <summary>Saklanan alanlar: açıklama, işlem açıklaması (açıklama yoksa açıklama sütunu ondan okunur), gönderen banka,
+    /// işlem kodu, referans ve makbuz no. Gönderen adı (<c>GonderenAdi</c>) BİLEREK yok: sütuna da yazılmaz
+    /// (<see cref="ObifinPollJob"/>, KVKK veri küçültme).</summary>
     public static readonly IReadOnlyList<string> AllowedFields =
-        ["Aciklama", "IslemAciklama", "GonderenAdi", "GonderenBanka", "IslemKodu", "ReferansNo", "MakbuzNo"];
+        ["Aciklama", "IslemAciklama", "GonderenBanka", "IslemKodu", "ReferansNo", "MakbuzNo"];
 
     private static readonly HashSet<string> Allowed = new(AllowedFields, StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> DescriptionFields = new(["Aciklama", "IslemAciklama"], StringComparer.OrdinalIgnoreCase);

@@ -234,7 +234,7 @@ public sealed class ShopperPaymentSubmissionService
         if (confidence == "Low") flags.Add("low-confidence");
 
         // 11. Upload to R2
-        var objectKey = $"payments/{input.LicenseId:N}/{Guid.NewGuid():N}.pdf";
+        var objectKey = $"{ShopperPaymentKeys.LicensePrefix(input.LicenseId)}{Guid.NewGuid():N}.pdf";
         await _storage.UploadAsync(objectKey, input.PdfBytes, "application/pdf", ct);
 
         // 12. Persist Payment + Audit

@@ -1,8 +1,11 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -221,14 +224,71 @@ public sealed class LicensesSalesControllerTests
     }
 
     [Fact]
-    public async Task State_ayarsiz_sunucuda_alt_surum_tanimsiz_bosaltma_kapali()
+    public async Task State_ayarsiz_sunucuda_alt_surum_tanimsiz_bosaltma_acik()
     {
         var (client, licenseId) = await SetupAsync(_defaults);
 
         var state = await StateAsync(client, licenseId);
 
         state.MinClientVersion.Should().BeNull("boş ayar tanımsızdır: kapı kapalı");
-        state.ScrubOrderTextOnPurge.Should().BeFalse("KVKK boşaltması varsayılan kapalı (§9)");
+        state.ScrubOrderTextOnPurge.Should().BeTrue("KVKK boşaltması varsayılan açık (sahip kararı 8, 2026-10-23)");
+    }
+
+    /// <summary>Prod'da ayar compose ortamından gelir: <c>.env</c>'de satır yoksa da açık kalmalı (karar 8). Varsayılan
+    /// "true" ZORUNLU, boş dize DEĞİL: bool binder'ı boşu çeviremez.</summary>
+    [Fact]
+    public void Compose_bosaltma_varsayilani_acik()
+    {
+        var compose = File.ReadAllText(FindRepoFile("deploy/docker-compose.yml"));
+
+        compose.Should().Contain(
+            "SalesSync__ScrubOrderTextOnPurge: \"${SalesSync__ScrubOrderTextOnPurge:-true}\"",
+            "deploy/docker-compose.yml license-server environment: bloğunda ayarın varsayılanı açık olmalı");
+    }
+
+    /// <summary>Prod <c>.env</c>'de eski örnekten kalmış <c>=false</c> satırı compose varsayılanını ezer: boşaltma görünmeden
+    /// kapalı kalmasın, açılışta uyarı yazılır (karar 8). Açıkken yazılmaz.</summary>
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Bosaltma_kapaliysa_acilista_uyari_yazilir(bool scrub, bool warned)
+    {
+        var logs = new CapturingLoggerProvider();
+        using var factory = new ScrubConfiguredApiFactory(scrub);
+        using var app = factory.WithWebHostBuilder(b => b.ConfigureLogging(l => l.AddProvider(logs)));
+
+        _ = app.Services; // host'u kurar: açılış kodu koşar
+
+        logs.Entries.Any(e => e.Level == LogLevel.Warning && e.Message.Contains("SalesSync:ScrubOrderTextOnPurge kapalı"))
+            .Should().Be(warned);
+    }
+
+    private sealed class ScrubConfiguredApiFactory(bool scrub) : ApiFactory
+    {
+        protected override IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>
+        {
+            ["SalesSync:ScrubOrderTextOnPurge"] = scrub ? "true" : "false",
+        };
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new Logger(Entries);
+
+        public void Dispose() { }
+
+        private sealed class Logger(ConcurrentQueue<(LogLevel Level, string Message)> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+                => entries.Enqueue((logLevel, formatter(state, exception)));
+        }
     }
 
     /// <summary>Yalnız devredilmemiş oturumlar (<c>ReleasedAt</c> NULL) ve yalnız bu lisansınkiler; hâl
@@ -539,5 +599,20 @@ public sealed class LicensesSalesControllerTests
         db.Licenses.Add(license);
         await db.SaveChangesAsync();
         return (client, license.Id);
+    }
+
+    /// <summary>Testler bin klasöründen koşuyor; repo kökünü yukarı yürüyerek buluyoruz (ObifinDataControllerGateTests gibi).</summary>
+    private static string FindRepoFile(string relativePath)
+    {
+        var parts = relativePath.Split('/');
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, Path.Combine(parts));
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException(
+            $"{relativePath} bulunamadı ({AppContext.BaseDirectory} klasöründen yukarı arandı). " +
+            "Dosya taşındıysa bu testi güncelle; testi silme.");
     }
 }

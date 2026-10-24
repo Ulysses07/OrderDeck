@@ -228,6 +228,9 @@ public class Program
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
+        // Yayıncı silmesinde lisansın dekont, WhatsApp, yayın paylaşımı ve ürün fotoğrafı nesneleri (KVKK karar 5/6, 23.10.2026).
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurge>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurgeJob>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
@@ -457,6 +460,7 @@ public class Program
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
         builder.Services.AddSingleton<BackupUploadThrottle>();
         builder.Services.AddScoped<BackupRetentionService>();
+        builder.Services.AddScoped<BackupMonthlyRetentionJob>();
         builder.Services.AddScoped<BackupViewerService>();
 
         // Push notifications. Provider: "stub" (default) veya "fcm".
@@ -977,6 +981,14 @@ public class Program
                 "{Reason} — obifin-poll, obifin-accounts ve bank-match-sweep zamanlanmadı; saklama işleri (bank-data-retention, bank-service-end-purge) yine koşar",
                 OrderDeck.LicenseServer.Services.Bank.BankHasher.DisabledMessage);
 
+        // KVKK karar 8 (2026-10-23): silinen müşterinin sipariş metni boşaltması varsayılan açık. .env'de eski örnekten kalmış
+        // `SalesSync__ScrubOrderTextOnPurge=false` satırı compose varsayılanını ezer: ayar görünmeden kapalı kalmasın, açılışta
+        // tek uyarı. Kapatmak bilinçli sahip kararıysa uyarı beklenir.
+        if (!app.Services.GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.Sync.SalesSyncOptions>>().Value
+                .ScrubOrderTextOnPurge)
+            app.Logger.LogWarning(
+                "SalesSync:ScrubOrderTextOnPurge kapalı — silinen müşterinin sipariş metni (takma ad, yorum) boşaltılmıyor, yalnız okurken maskeleniyor. Varsayılan açık (KVKK sahip kararı 8, 2026-10-23); kapatma bilinçli değilse .env'deki SalesSync__ScrubOrderTextOnPurge=false satırını silin ya da true yapın");
+
         // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
         if (!app.Environment.IsEnvironment("Testing"))
         {
@@ -1046,6 +1058,15 @@ public class Program
                 "orphaned-media-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "50 3 * * *");  // 03:50 UTC daily
+
+            // Yayıncı silmesinin lisans medyası görevleri (KVKK karar 5/6, 23.10.2026): silme
+            // niyeti lisans satırlarıyla aynı kayıtta kalıcı; istekteki ilk turdan sonra geç
+            // yazım penceresi (30 dk) doğrulaması ve yeniden denemeler burada. İstek ilk turu
+            // koşamadıysa (iptal, deploy, DB hatası) bütün işi bu yapar. Açık görev yoksa tek sorgu.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurgeJob>(
+                OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurgeJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                "25 * * * *");  // saatte bir, :25
 
             // WhatsApp gönderim rezervasyonları — idempotency penceresi dakikalarla
             // ölçülüyor, satırlar yalnız teşhis için saklanıyor. Süresi dolanlar
@@ -1143,6 +1164,15 @@ public class Program
                 "product-photo-orphan-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "15 4 * * *");  // 04:15 UTC daily
+
+            // Aylık masaüstü yedeği saklaması (karar 7: 12 ay) — yükleme sonrası tur
+            // yalnız yükleyen müşteride koşar; yüklemeyi bırakan müşterinin süresi
+            // dolan aylık yedeklerini bu iş siler (en yeni yedek kalır). Yetim
+            // süpürmesinden (04:20) ÖNCE: dosyası silinemeyen yedek aynı gece toplanır.
+            manager.AddOrUpdate<BackupMonthlyRetentionJob>(
+                BackupMonthlyRetentionJob.JobId,
+                j => j.RunAsync(CancellationToken.None),
+                "17 4 * * *");  // 04:17 UTC daily
 
             // Yedek blob mutabakatı — depolama kökünde kalmış yetim dosyaları
             // süpürür. Silme yollarındaki sıra artık "önce satır, sonra dosya";

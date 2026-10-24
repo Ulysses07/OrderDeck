@@ -385,7 +385,10 @@ public sealed class ObifinPollJob
                 CommonType = Trim(dto.CommonType, 64), BankReference = Trim(dto.BankReference, 64),
                 CounterpartyIbanHash = ibanHash, CounterpartyIbanHashValid = ibanHash is not null,
                 CounterpartyIbanMasked = masked.Length == 0 ? null : masked,
-                CounterpartyName = Trim(dto.CounterpartyName, 160),
+                // KVKK veri küçültme: gönderen adı yazılmaz (ham kaydın beyaz listesinde de yok). Faz 1'de okuyan kod yok,
+                // prod'da hiç dolu gelmedi; eşleştirme adı açıklamada arar. Faz 2'de amacıyla birlikte açılır. Sütun ve
+                // okuyucuları (veri talebi dökümü, saklama işi, silme) eski satırlar için kalır.
+                CounterpartyName = null,
                 RawJson = BankRawJsonRedactor.Redact(dto.RawJson), FetchedAt = now,
             };
             _db.BankTransactions.Add(tx);
