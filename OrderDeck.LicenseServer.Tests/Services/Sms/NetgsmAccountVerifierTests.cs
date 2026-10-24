@@ -1,8 +1,10 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
 using OrderDeck.LicenseServer.Services.Sms;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Sms;
@@ -33,6 +35,29 @@ public sealed class NetgsmAccountVerifierTests
 
         var result = await Verifier(client).VerifyAsync(NewAccount());
 
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Ok);
+        result.Message.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Doğrulayıcının yoklaması HER ZAMAN tek alıcılı ve Netgsm tek alıcılı
+    /// sorguda <c>query</c>'yi NESNE döndürüyor (2026-10-22 prod ölçümü). Gerçek
+    /// istemciyle (yalnız HTTP sahte) bu biçim kurulumu Ok yapmalı: doğrulayıcı
+    /// satırlara değil koda bakıyor, istemcideki okuyucu değişikliği bunu
+    /// bozmamalı. Prob numarası tahsis edilmemiş — İYS ona RET der.
+    /// </summary>
+    [Fact]
+    public async Task Gercek_istemciyle_tek_alicili_nesne_yaniti_Ok()
+    {
+        var handler = new NetgsmIysSearchHandler();
+        var client = new NetgsmIysClient(new HttpClient(handler),
+            Options.Create(new NetgsmOptions()),
+            NullLogger<NetgsmIysClient>.Instance);
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        handler.Requests.Should().ContainSingle()
+            .Which.Should().Equal(NetgsmAccountVerifier.ProbeRecipient);
         result.Outcome.Should().Be(NetgsmVerifyOutcome.Ok);
         result.Message.Should().BeNull();
     }

@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
@@ -279,6 +280,46 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await vdb.IysConsents.CountAsync(c => c.BrandCode == brand)).Should().Be(21);
+    }
+
+    /// <summary>
+    /// Gerçek istemciyle (yalnız HTTP sahte, Netgsm biçimli): 21 numaranın son
+    /// parçası TEK alıcılıdır ve Netgsm o sorguda <c>query</c>'yi NESNE döndürür
+    /// (2026-10-22 prod ölçümü). İstemci yalnız diziyi okurken 21. numaranın
+    /// ONAY'ı sessizce "kayıt yok" sayılıyor, ayna 20 satır yazıyordu.
+    /// </summary>
+    [Fact]
+    public async Task Gercek_istemciyle_tek_elemanli_son_parca_da_aynalanir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var uretilen = new HashSet<string>();
+        while (uretilen.Count < 21) uretilen.Add(TestPhone.NewE164());
+        var phones = uretilen.ToArray();
+        var (licenseId, brand) = await SeedAsync(db, accounts,
+            NetgsmAccountStatus.Verified, phones);
+
+        var handler = new NetgsmIysSearchHandler();
+        foreach (var p in phones) handler.Statuses[p] = "ONAY";
+        var client = new NetgsmIysClient(new HttpClient(handler),
+            Options.Create(new NetgsmOptions()),
+            NullLogger<NetgsmIysClient>.Instance);
+        var job = new IysMirrorImportJob(db, accounts, client,
+            NullLogger<IysMirrorImportJob>.Instance)
+        {
+            DelayAsync = (_, _) => Task.CompletedTask,
+        };
+
+        await job.RunAsync(licenseId, CancellationToken.None);
+
+        handler.Requests.Select(r => r.Length).Should().Equal(new[] { 20, 1 },
+            "son parça tek alıcılı — Netgsm'in nesne döndürdüğü biçim");
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var mirrored = await vdb.IysConsents.AsNoTracking()
+            .Where(c => c.BrandCode == brand).Select(c => c.Recipient).ToListAsync();
+        mirrored.Should().BeEquivalentTo(phones);
     }
 
     [Fact]

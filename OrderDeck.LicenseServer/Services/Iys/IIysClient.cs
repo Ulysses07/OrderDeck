@@ -76,7 +76,10 @@ public interface IIysClient
         CancellationToken ct = default);
 
     /// <summary>
-    /// Toplu izin sorgusu. Yanıtta olmayan alıcı <see cref="IysConsentStatus.Unknown"/> sayılır.
+    /// Toplu izin sorgusu. Yanıtta okunamayan alıcı <see cref="IysSearchResult.Statuses"/>'ta
+    /// yer almaz (ya da durumu <see cref="IysConsentStatus.Unknown"/>'dır) — ONAY sayılmaz.
+    /// Bu İYS'nin cevabı DEĞİL, cevapsızlıktır: İYS kayıtsız numaraya da RET der; doğrulama
+    /// işi onu takvimden düşmez, ertelenir.
     /// Sorgu <paramref name="account"/> markası altında yapılır — onay marka başına
     /// tutulduğu için başka markaya sormak anlamsız bir cevap döndürür.
     /// </summary>

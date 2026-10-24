@@ -230,6 +230,73 @@ silinir. Bilgi girilince `.env`'deki satırı sil, `docker compose up -d
 license-server`, `printenv` yine çalıştır (`true` basmalı) ve admin/obifin'de bir
 Doğrula'nın geçtiğini gör (kapı devrede, bilgi girildiği için engellemez).
 
+### İYS yeniden doğrulama (tek seferlik)
+
+2026-10-22'ye kadar sunucu tek alıcılı `/iys/search` yanıtını okuyamıyordu
+(Netgsm orada `query`'yi dizi değil nesne döndürüyor): İYS'nin ONAY tuttuğu
+onaylar /admin/iys'de **Düştü** / **Süresi Doldu**'ya düştü. **Ne zaman:** bu
+düzeltmenin imajı deploy edildikten SONRA, bir kez; prod'a yazdığı için yayın
+penceresinin (TR 20:00–01:00) dışında.
+
+**Deploy'dan ÖNCE (salt okunur):** düzeltilmiş okuyucu alıcıyı Netgsm'in
+yansıttığı biçimle birebir eşler. Saklı tek alıcılı yanıtlarda alıcının `+90`
+ile başladığını gör — yalnız ilk 3 karakter basılır, telefon basılmaz:
+
+```bash
+docker exec -i orderdeck-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$SQL_PASSWORD" -d OrderDeckLicense -C -No -Q "
+SELECT TOP 5 OccurredAt, ApiResponseCode,
+       LEFT(JSON_VALUE(ApiResponseBody, '\$.query.recipient'), 3) AS OnEk
+FROM IysConsentEvents
+WHERE EventType = 'SearchResult' AND ISJSON(ApiResponseBody) = 1
+  AND LEFT(JSON_QUERY(ApiResponseBody, '\$.query'), 1) = '{'
+ORDER BY OccurredAt DESC;"
+```
+
+`OnEk` hep `+90` olmalı. Başka bir şeyse (ör. `905`) deploy etme: okuyucu o
+biçimde de kimseyi eşlemez. Bu durumda doğrulama işi kayıtları artık takvimden
+düşmez (cevapsız sayar, 5 dk'da bir yeniden sorar) ama hiçbirini de eşleyemez;
+sunucu günlüğünde `ONAY/RET'i okunamadı` satırları görünür.
+
+```bash
+# 1) Kuru koşu: yalnız sayar (marka / durum / hata / son İYS cevabı dağılımı),
+#    hiçbir şey yazmaz, kişisel veri basmaz. Çıktıyı tutanağa al.
+docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll iys-reverify
+# 2) Uygula (tek markaya daraltmak için: --brand <marka kodu>).
+docker exec orderdeck-license dotnet OrderDeck.LicenseServer.dll iys-reverify --apply
+```
+
+`--apply` hedef kayıtları (yerel beyan Onay, Düştü/Süresi Doldu, hata
+`push-deadline-passed` ya da `iys-not-confirmed…`, en az bir kez kuyruğa
+alınmış, **son tarihi geçmiş**, **son İYS cevabı okunamamış**) **Bildirildi**'ye
+döndürür ve doğrulama randevusunu şimdiye çeker. **İYS'ye yeniden itmez** — son
+tarihi geçmiş onayı eski tarihle göndermek H467 riskidir; kayıt İYS'de zaten
+var, yalnız yeniden sorulur. Dışarıda kalanlar:
+
+- **Son tarihi geçmemiş Düştü:** kurtarma işinin. Düzeltilmiş okuyucuyla 20–35
+  dk içinde kendiliğinden yeniden itilip doğrulanır.
+- **Son İYS cevabı gerçek RET:** hata yalnız "okunamadı" üretti, RET üretmedi.
+  Bu kayıtlar İYS'de gerçekten ONAY değildir.
+- **RET beyanları:** kuru koşu `Bilgi: N RET beyanı …` satırında yalnız
+  sayar. Aynı hata RET'lerin İYS'ye işlendiğinin doğrulanmasını da engellemiş
+  olabilir; gönderim etkilenmez (kapı yerel RET'i okur) ama İYS'de hâlâ ONAY
+  görünüyor olabilirler. Yeniden sorgulamak ayrı karar.
+
+**Beklenen sonuç:** birkaç dakika içinde (doğrulama işi 5 dakikada bir)
+/admin/iys'de **Süresi Doldu** / **Düştü** azalır, **İYS ile eşleşti** aynı
+kadar artar; gönderim bu numaralara açılır. Birkaç dakika sonra kuru koşuyu
+tekrarla: `Hedef: 0 kayıt.` beklenir (komut idempotent; sıfır değilse
+`--apply`'ı yeniden çalıştır). Hâlâ **Bildirildi**'de bekleyenlere komut
+dokunmaz; düzeltilmiş doğrulama işi onları sıradaki randevularında (en geç
+24 sa) okur.
+
+İYS'nin RET dediği kayıt takvimini (~31 sa) tamamlayıp Düştü → Süresi Doldu
+olur; yeniden itilmez (son tarihi geçmiş — kurtarma onu Bekleyen'e çekmez).
+Son İYS cevabı artık RET olduğu için komutun sonraki koşuları onu yeniden
+seçmez; kişiden yeni onay gerekir. Yanıt okunamazsa kayıt **Bildirildi**'de
+kalır ve 5 dk'da bir yeniden sorulur (takvim tüketilmez); sunucu günlüğündeki
+`İYS doğrulama: … okunamadı` / `code=… döndü` hatalarına bak.
+
 ## SQL Server sürüm yükseltme (artık elle)
 
 `sqlserver` imajı **digest'e pinli** (`2022-latest@sha256:2dca9ee5…`). Sebep:
