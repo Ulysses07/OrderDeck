@@ -44,9 +44,10 @@ public sealed class LicenseMediaPurgeJobTests : IDisposable
     private LicenseMediaPurgeJob Job()
         => new(_db, Purge(), NullLogger<LicenseMediaPurgeJob>.Instance, _clock);
 
-    private static string ReceiptKey(Guid license) => $"{ShopperPaymentKeys.LicensePrefix(license)}{Guid.NewGuid():N}.pdf";
-    private static string WaKey(Guid license) => $"{WhatsAppMediaKeys.LicensePrefix(license)}2026/10/{Guid.NewGuid():N}.jpg";
-    // Yayın kovasının iki biçimi üretimdeki yazanlarla birebir (CustomerPurgeMediaTests'teki gibi bilerek sabit metin).
+    // Dört anahtar biçimi üretimdeki yazanlarla birebir, önek yardımcısıyla değil bilerek sabit metin (gerekçesi
+    // CustomerPurgeMediaTests'te: kovadaki eski nesneler yardımcı değişse de bu biçimde kalır).
+    private static string ReceiptKey(Guid license) => $"payments/{license:N}/{Guid.NewGuid():N}.pdf";
+    private static string WaKey(Guid license) => $"wa/{license:N}/2026/10/{Guid.NewGuid():N}.jpg";
     private static string PostKey(Guid license) => $"{license}/{Guid.NewGuid()}/media.bin";
     private static string PhotoKey(Guid license) => $"{license:N}/products/{Guid.NewGuid():N}/{Guid.NewGuid():N}.img";
 

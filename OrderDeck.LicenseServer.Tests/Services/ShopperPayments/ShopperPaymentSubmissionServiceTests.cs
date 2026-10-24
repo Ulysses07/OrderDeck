@@ -254,7 +254,9 @@ public sealed class ShopperPaymentSubmissionServiceTests
         // Storage: bytes uploaded
         storage.Contains(payment.MediaObjectKey!).Should().BeTrue();
         storage.GetBytes(payment.MediaObjectKey!)!.Should().BeEquivalentTo(PdfBytes.Valid);
-        payment.MediaObjectKey.Should().StartWith(ShopperPaymentKeys.LicensePrefix(license.Id),
+        // Sabit metin, ShopperPaymentKeys değil: yazan da o yardımcıyı kullanıyor, onunla karşılaştırmak hiçbir şey kanıtlamaz.
+        // Biçim değişirse kovadaki eski dekontlar yayıncı silmesinde görünmez olur (KVKK).
+        payment.MediaObjectKey.Should().MatchRegex($"^payments/{license.Id:N}/[0-9a-f]{{32}}\\.pdf$",
             "yayıncı silmesi lisansın dekontlarını bu önekle bulur (KVKK)");
     }
 

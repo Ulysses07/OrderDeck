@@ -150,8 +150,9 @@ public sealed class CustomerPurgeRelationalTests : IAsyncLifetime
         using var factory = new MediaRelationalApiFactory(_cs);
         var (client, customerId, email) = await SeedCustomerAsync(factory);
         var licenseId = Guid.NewGuid();
-        var stuck = $"{ShopperPaymentKeys.LicensePrefix(licenseId)}{Guid.NewGuid():N}.pdf";
-        var deletable = $"{ShopperPaymentKeys.LicensePrefix(licenseId)}{Guid.NewGuid():N}.pdf";
+        // Üretimdeki dekont biçimi, bilerek sabit metin (gerekçesi CustomerPurgeMediaTests'te).
+        var stuck = $"payments/{licenseId:N}/{Guid.NewGuid():N}.pdf";
+        var deletable = $"payments/{licenseId:N}/{Guid.NewGuid():N}.pdf";
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();

@@ -144,7 +144,8 @@ public sealed class WhatsAppMediaDownloaderTests
         var msg = db.WaMessages.Single();
         msg.MediaR2Key.Should().NotBeNullOrEmpty();
         msg.MediaR2Key.Should().EndWith(".jpg", "uzantı mime'dan türetiliyor");
-        msg.MediaR2Key.Should().StartWith(WhatsAppMediaKeys.LicensePrefix(msg.LicenseId),
+        // Sabit metin, WhatsAppMediaKeys değil: yazan da o yardımcıyı kullanıyor, onunla karşılaştırmak hiçbir şey kanıtlamaz.
+        msg.MediaR2Key.Should().MatchRegex($"^wa/{msg.LicenseId:N}/\\d{{4}}/\\d{{2}}/",
             "yayıncı silmesi lisansın medyasını bu önekle bulur (KVKK)");
         msg.MediaMimeType.Should().Be("image/jpeg");
         msg.MediaSizeBytes.Should().Be(bytes.Length);

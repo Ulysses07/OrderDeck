@@ -103,17 +103,19 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
         }
     }
 
-    private static string PaymentKey(Guid license) => $"{ShopperPaymentKeys.LicensePrefix(license)}{Guid.NewGuid():N}.pdf";
-    private static string WaKey(Guid license) => $"{WhatsAppMediaKeys.LicensePrefix(license)}2026/10/{Guid.NewGuid():N}.jpg";
-
-    // Yayın kovasının iki biçimi üretimdeki yazanlarla birebir, BİLEREK sabit metin (kovada bu biçimlerde nesneler var; önek
-    // sınıfı değişse bile eski nesneler bu biçimde kalır): paylaşım medyası tireli lisans kimliğiyle
-    // (PanelBroadcastPostsController), ürün fotoğrafı tiresiz (PanelProductPhotoController).
+    // Dört anahtar biçimi üretimdeki yazanlarla birebir, BİLEREK sabit metin, önek yardımcısıyla (ShopperPaymentKeys,
+    // WhatsAppMediaKeys, BroadcastMediaKeys) DEĞİL: kovada bu biçimlerde nesneler var, yardımcının biçimi değişse bile eski
+    // nesneler bu biçimde kalır. Yardımcıdan üretilseydi yazan, silen ve test birlikte değişir, eski nesneler silmede görünmez
+    // olurken testler yeşil kalırdı. Dekont tiresiz lisansla (ShopperPaymentSubmissionService), WhatsApp tiresiz lisans ve ayla
+    // (WhatsAppMediaDownloader), paylaşım medyası tireli lisansla (PanelBroadcastPostsController), ürün fotoğrafı tiresiz
+    // (PanelProductPhotoController).
+    private static string PaymentKey(Guid license) => $"payments/{license:N}/{Guid.NewGuid():N}.pdf";
+    private static string WaKey(Guid license) => $"wa/{license:N}/2026/10/{Guid.NewGuid():N}.jpg";
     private static string PostKey(Guid license) => $"{license}/{Guid.NewGuid()}/media.bin";
     private static string PhotoKey(Guid license) => $"{license:N}/products/{Guid.NewGuid():N}/{Guid.NewGuid():N}.img";
 
     private static bool IsPaymentKey(string key) => key.StartsWith("payments/", StringComparison.Ordinal);
-    private static bool IsWhatsAppKey(string key) => key.StartsWith(WhatsAppMediaKeys.Root, StringComparison.Ordinal);
+    private static bool IsWhatsAppKey(string key) => key.StartsWith("wa/", StringComparison.Ordinal);
 
     private async Task PutAsync(params string[] keys)
     {
