@@ -52,6 +52,9 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         body.Should().Contain("uploadUrl").And.Contain($"{licenseId}");
         _factory.BroadcastMedia.UploadCalls
             .Should().Contain(c => c.Key.StartsWith($"{licenseId}/") && c.ContentType == "image/jpeg" && c.Size == 500_000);
+        _factory.BroadcastMedia.UploadCalls.Should().Contain(
+            c => c.Key.StartsWith(OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastMediaKeys.PostPrefix(licenseId)),
+            "yayıncı silmesi lisansın paylaşım medyasını bu önekle bulur (KVKK)");
     }
 
     [Fact]

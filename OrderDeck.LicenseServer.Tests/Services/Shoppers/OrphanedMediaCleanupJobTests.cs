@@ -8,6 +8,7 @@ using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Shoppers;
 
@@ -53,8 +54,9 @@ public sealed class OrphanedMediaCleanupJobTests
     }
 
     private static OrphanedMediaCleanupJob Build(LicenseDbContext db, IShopperPaymentStorage storage,
-        IWhatsAppMediaStore? whatsApp = null)
-        => new(db, storage, whatsApp ?? new InMemoryWhatsAppMediaStore(), NullLogger<OrphanedMediaCleanupJob>.Instance);
+        IWhatsAppMediaStore? whatsApp = null, IBroadcastMediaStorage? broadcast = null)
+        => new(db, storage, whatsApp ?? new InMemoryWhatsAppMediaStore(), broadcast ?? new FakeBroadcastMediaStorage(),
+            NullLogger<OrphanedMediaCleanupJob>.Instance);
 
     private static (Guid PaymentId, string Key) Seed(LicenseDbContext db)
     {
@@ -206,5 +208,70 @@ public sealed class OrphanedMediaCleanupJobTests
 
         (await Build(db, storage).RunAsync(default)).Should().Be(0);
         (await db.OrphanedMediaObjects.SingleAsync()).AttemptCount.Should().Be(1);
+    }
+
+    // Yayın kovasının iki biçimi üretimdeki yazanlarla birebir (CustomerPurgeMediaTests'teki gibi bilerek sabit metin).
+    private static string PostKey(Guid license) => $"{license}/{Guid.NewGuid()}/media.bin";
+    private static string PhotoKey(Guid license) => $"{license:N}/products/{Guid.NewGuid():N}/{Guid.NewGuid():N}.img";
+
+    private static void Queue(LicenseDbContext db, params string[] keys)
+    {
+        foreach (var key in keys)
+            db.OrphanedMediaObjects.Add(new OrphanedMediaObject
+            {
+                Id = Guid.NewGuid(), ObjectKey = key, AttemptCount = 1, LastError = "depo geçici olarak erişilemez",
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-1), LastAttemptAt = DateTimeOffset.UtcNow.AddDays(-1),
+            });
+    }
+
+    [Fact]
+    public async Task Yayinci_silmesinden_kalan_paylasim_medyasini_ve_urun_fotografini_yayin_kovasindan_siler()
+    {
+        // Yayıncı silmesi (karar 23.10.2026) paylaşım medyasını ve ürün fotoğrafını da kuyruğa bırakabilir. Lisans anahtarın
+        // BAŞINDA (paylaşımda tireli, fotoğrafta tiresiz), dekont/WhatsApp'taki gibi ikinci parçada değil; kayıt yayıncı
+        // silmesinin kaydıyla, kendi hedefiyle yazılır.
+        using var db = NewDb();
+        var license = Guid.NewGuid();
+        var (postKey, photoKey) = (PostKey(license), PhotoKey(license));
+        Queue(db, postKey, photoKey);
+        await db.SaveChangesAsync();
+        var broadcast = new FakeBroadcastMediaStorage();
+        broadcast.Seed(postKey, 1, "video/mp4");
+        broadcast.Seed(photoKey, 1, "image/jpeg");
+        var receipts = new FlakyStorage { FailDeletes = true };   // dekont deposuna gitmemeli
+
+        (await Build(db, receipts, broadcast: broadcast).RunAsync(default)).Should().Be(2);
+
+        broadcast.Contains(postKey).Should().BeFalse();
+        broadcast.Contains(photoKey).Should().BeFalse();
+        var records = await db.DataDestructionRecords.AsNoTracking().ToListAsync();
+        records.Select(r => r.Target).Should().BeEquivalentTo(
+            new[] { LicenseMediaPurge.BroadcastPostMediaTarget, LicenseMediaPurge.ProductPhotoMediaTarget });
+        records.Should().OnlyContain(r => r.LicenseId == license && r.SubjectId == null && r.RowCount == 1
+            && r.Action == DataDestruction.Actions.Deleted && r.Trigger == DataDestruction.Triggers.CustomerPurge
+            && r.Criterion == LicenseMediaPurge.CustomerPurgeCriterion && r.Actor == DataDestruction.SystemActor);
+    }
+
+    [Fact]
+    public async Task Yayin_kovasi_silmeyi_reddederse_satir_acik_kalir_kayit_yazilmaz()
+    {
+        // R2BroadcastMediaStorage.DeleteAsync hatayı yutar (yayın uçlarının sözleşmesi): iş onunla silseydi reddedilen nesneyi
+        // silinmiş sayar, satırı kapatır, imha kaydına yazardı — nesne kovada kaldığı hâlde.
+        using var db = NewDb();
+        var postKey = PostKey(Guid.NewGuid());
+        Queue(db, postKey);
+        await db.SaveChangesAsync();
+        var broadcast = new FakeBroadcastMediaStorage();
+        broadcast.Seed(postKey, 1, "image/jpeg");
+        broadcast.FailingKeys[postKey] = 0;
+
+        (await Build(db, new FlakyStorage(), broadcast: broadcast).RunAsync(default)).Should().Be(0);
+
+        broadcast.Contains(postKey).Should().BeTrue();
+        var row = await db.OrphanedMediaObjects.AsNoTracking().SingleAsync();
+        row.DeletedAt.Should().BeNull();
+        row.AttemptCount.Should().Be(2);
+        row.LastError.Should().Contain("kilitli");
+        (await db.DataDestructionRecords.AnyAsync()).Should().BeFalse();
     }
 }

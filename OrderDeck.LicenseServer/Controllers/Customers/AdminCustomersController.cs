@@ -120,7 +120,8 @@ public sealed class AdminCustomersController : ControllerBase
     /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
     /// data (licenses, activations, refresh tokens, intake form submissions,
     /// email logs, panel push devices, backup blobs + metadata, the data-controller profile and its versions — KVKK K-3,
-    /// the licenses' bucket objects: receipts shoppers uploaded and WhatsApp media — karar 5/6, <see cref="LicenseMediaPurge"/>)
+    /// the licenses' bucket objects: receipts shoppers uploaded, WhatsApp media, broadcast post media and product photos — karar
+    /// 5/6 and 23.10.2026, <see cref="LicenseMediaPurge"/>)
     /// and anonymises the Customer row
     /// itself. The Customer row stays — its Id is referenced from AuditLog
     /// rows that we MUST retain for the configured retention window. Email
@@ -174,13 +175,15 @@ public sealed class AdminCustomersController : ControllerBase
         var licenseIds = await _db.Licenses.Where(l => l.CustomerId == id)
             .Select(l => l.Id).ToListAsync(ct);
 
-        // KVKK karar 5/6: lisansların kova nesneleri (müşterilerin yüklediği dekontlar, WhatsApp medyası) satırları kaskadla
-        // gidiyor, nesneler kalıyordu. Anahtarlar satırlar silinmeden ÖNCE listelenir: lisans satırı gidince öneki bir daha
-        // bulunamaz. Liste alınamıyorsa silme hiç başlamaz; nesneler aşağıda, satırlar silindikten SONRA silinir.
+        // KVKK karar 5/6 ve 23.10.2026: lisansların kova nesneleri (müşterilerin yüklediği dekontlar, WhatsApp medyası, yayın
+        // paylaşımı medyası, ürün fotoğrafları) satırları kaskadla gidiyor, nesneler kalıyordu. Anahtarlar satırlar silinmeden
+        // ÖNCE listelenir: lisans satırı gidince öneki bir daha bulunamaz. Liste alınamıyorsa silme hiç başlamaz; nesneler aşağıda,
+        // satırlar silindikten SONRA silinir.
         var media = await _mediaPurge.TryListAsync(licenseIds, ct);
         if (media is null)
             return Problem(title: "media-storage-unavailable", statusCode: 503,
-                detail: "Dekont ve WhatsApp dosyaları listelenemedi; hiçbir şey silinmedi. Biraz sonra silmeyi yineleyin.");
+                detail: "Lisansın dosyaları (dekont, WhatsApp, yayın paylaşımı, ürün fotoğrafı) listelenemedi; hiçbir şey " +
+                    "silinmedi. Biraz sonra silmeyi yineleyin.");
 
         if (licenseIds.Count > 0)
         {

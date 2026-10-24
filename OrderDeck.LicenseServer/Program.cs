@@ -222,7 +222,7 @@ public class Program
         // merge-customer-identities kendi örneğini kurar).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMergeJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
-        // Yayıncı silmesinde lisansın dekont ve WhatsApp nesneleri (KVKK karar 5/6).
+        // Yayıncı silmesinde lisansın dekont, WhatsApp, yayın paylaşımı ve ürün fotoğrafı nesneleri (KVKK karar 5/6, 23.10.2026).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.LicenseMediaPurge>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();

@@ -63,8 +63,8 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         var licenseId = await ResolveActiveLicenseAsync(customerId, ct);
         if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
 
-        var postId = Guid.NewGuid();
-        var objectKey = $"{licenseId.Value}/{postId}/media.bin";
+        // Önek yayıncı silmesiyle (KVKK) ortak: BroadcastMediaKeys.
+        var objectKey = BroadcastMediaKeys.PostKey(licenseId.Value, Guid.NewGuid());
         var url = await _storage.CreateUploadUrlAsync(objectKey, req.ContentType!, req.SizeBytes, ct);
 
         return Ok(new UploadUrlResponse(url, objectKey, DateTimeOffset.UtcNow.AddMinutes(10)));
@@ -120,7 +120,7 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         {
             if (req.Media is null) return Problem(title: "media-required", statusCode: 400);
 
-            if (!req.Media.ObjectKey.StartsWith($"{licenseId.Value}/"))
+            if (!req.Media.ObjectKey.StartsWith(BroadcastMediaKeys.PostPrefix(licenseId.Value), StringComparison.Ordinal))
                 return Problem(title: "invalid-object-key", statusCode: 400);
 
             if (type == BroadcastPostType.Video &&

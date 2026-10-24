@@ -423,6 +423,11 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
 
         public Task DeleteAsync(string objectKey, CancellationToken ct = default)
             => Task.CompletedTask;
+
+        public Task<IReadOnlyList<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaDeleteFailure>> DeleteObjectsAsync(
+            IReadOnlyList<string> keys, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaDeleteFailure>>(
+                Array.Empty<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaDeleteFailure>());
     }
 
     [Fact]

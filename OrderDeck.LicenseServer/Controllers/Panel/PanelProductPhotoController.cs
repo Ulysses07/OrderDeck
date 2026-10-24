@@ -260,8 +260,9 @@ public sealed class PanelProductPhotoController : ControllerBase
         => new(p.Id, p.ObjectKey, p.ContentType, p.SizeBytes, p.Width, p.Height,
             p.SortOrder, await _storage.CreateDownloadUrlAsync(p.ObjectKey, ct));
 
+    /// <summary>Önek yayıncı silmesi (KVKK) ve yetim süpürücüyle ortak: <see cref="BroadcastMediaKeys"/>.</summary>
     private static string Prefix(Guid licenseId, Guid productId)
-        => $"{licenseId:N}/products/{productId:N}/";
+        => BroadcastMediaKeys.ProductPhotoPrefix(licenseId, productId);
 
     private static bool IsAllowed(string? contentType)
         => contentType is not null

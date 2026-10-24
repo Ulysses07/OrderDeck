@@ -46,4 +46,10 @@ public sealed class StubBroadcastMediaStorage : IBroadcastMediaStorage
         _objects.TryRemove(objectKey, out _);
         return Task.CompletedTask;
     }
+
+    public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+    {
+        foreach (var key in keys) _objects.TryRemove(key, out _);
+        return Task.FromResult<IReadOnlyList<MediaDeleteFailure>>([]);
+    }
 }

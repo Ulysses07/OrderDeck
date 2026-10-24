@@ -141,5 +141,8 @@ public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposabl
         }
     }
 
+    public Task<IReadOnlyList<MediaDeleteFailure>> DeleteObjectsAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+        => R2BulkObjects.DeleteKeysAsync(_client, _opt.BucketName, keys, ct);
+
     public void Dispose() => _client.Dispose();
 }

@@ -19,7 +19,9 @@ namespace OrderDeck.LicenseServer.Services.Catalog;
 /// <item>...lisans cascade'iyle giden ürünler o uçtan geçmez.</item>
 /// <item>Commit ile silme arasında süreç ölürse nesne yetim kalır.</item>
 /// </list>
-/// Bu iş, kaynağı ne olursa olsun hepsini tek noktadan toplar.
+/// Bu iş, kaynağı ne olursa olsun hepsini tek noktadan toplar. Yalnız var olan
+/// lisansları dolaşır: lisansın kendisi silinince (yayıncı silmesi) öneki
+/// <c>LicenseMediaPurge</c> siler.
 ///
 /// <b>YIKICI iş.</b> Yanlış kurgulanırsa canlı fotoğrafları siler. Bu yüzden
 /// silme ölçütü iki koşulun BİRLİKTE sağlanmasıdır: anahtar DB'de yok
@@ -85,7 +87,7 @@ public sealed class ProductPhotoOrphanCleanupJob
     private async Task<int> CleanLicenseAsync(
         Guid licenseId, DateTimeOffset cutoff, CancellationToken ct)
     {
-        var prefix = $"{licenseId:N}/products/";
+        var prefix = BroadcastMediaKeys.ProductPhotoPrefix(licenseId);
         var listed = await _storage.ListAsync(prefix, ct);
         if (listed.Count == 0) return 0;
 

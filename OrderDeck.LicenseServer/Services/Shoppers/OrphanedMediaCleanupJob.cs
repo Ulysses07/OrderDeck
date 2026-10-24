@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.WhatsApp;
@@ -35,17 +36,20 @@ public sealed class OrphanedMediaCleanupJob
     private readonly LicenseDbContext _db;
     private readonly IShopperPaymentStorage _storage;
     private readonly IWhatsAppMediaStore _whatsApp;
+    private readonly IBroadcastMediaStorage _broadcast;
     private readonly ILogger<OrphanedMediaCleanupJob> _log;
 
     public OrphanedMediaCleanupJob(
         LicenseDbContext db,
         IShopperPaymentStorage storage,
         IWhatsAppMediaStore whatsApp,
+        IBroadcastMediaStorage broadcast,
         ILogger<OrphanedMediaCleanupJob> log)
     {
         _db = db;
         _storage = storage;
         _whatsApp = whatsApp;
+        _broadcast = broadcast;
         _log = log;
     }
 
@@ -70,8 +74,10 @@ public sealed class OrphanedMediaCleanupJob
             row.LastAttemptAt = now;
             try
             {
-                // Yayıncı silmesi WhatsApp medyasını da kuyruğa bırakabilir: anahtar kendi deposundan silinir.
+                // Yayıncı silmesi WhatsApp medyasını, paylaşım medyasını ve ürün fotoğrafını da kuyruğa bırakabilir: anahtar kendi
+                // deposundan silinir.
                 if (LicenseMediaPurge.IsWhatsAppKey(row.ObjectKey)) await _whatsApp.DeleteAsync(row.ObjectKey, ct);
+                else if (LicenseMediaPurge.IsBroadcastMediaKey(row.ObjectKey)) await DeleteBroadcastAsync(row.ObjectKey, ct);
                 else await _storage.DeleteAsync(row.ObjectKey, ct);
                 row.DeletedAt = now;
                 row.LastError = null;
@@ -109,7 +115,8 @@ public sealed class OrphanedMediaCleanupJob
                 g.Count(), ShopperPurgeService.PurgeCriterion, DataDestruction.Triggers.ShopperPurge, DataDestruction.SystemActor,
                 subjectId: g.Key.ShopperId);
         // ShopperId'siz satır yayıncı silmesinden (LicenseMediaPurge): kaydı yayıncı silmesinin tetikleyicisi ve ölçütüyle, lisans
-        // ve hedef (dekont / WhatsApp) anahtarın önekinden. Yayıncı hesabının kimliği kuyruk satırında yok: konu boş kalır.
+        // ve hedef (dekont / WhatsApp / paylaşım medyası / ürün fotoğrafı) anahtarın önekinden. Yayıncı hesabının kimliği kuyruk
+        // satırında yok: konu boş kalır.
         foreach (var g in deletedRows.Where(r => r.ShopperId is null).GroupBy(r =>
                      (License: LicenseMediaPurge.LicenseOf(r.ObjectKey), Target: LicenseMediaPurge.TargetOf(r.ObjectKey))))
             DataDestruction.Record(_db, g.Key.License, g.Key.Target, DataDestruction.Actions.Deleted, g.Count(),
@@ -121,5 +128,14 @@ public sealed class OrphanedMediaCleanupJob
             "[OrphanedMediaCleanup] {Deleted}/{Total} yetim nesne silindi",
             deletedRows.Count, pending.Count);
         return deletedRows.Count;
+    }
+
+    /// <summary>Yayın kovasının tek silmesi (<see cref="IBroadcastMediaStorage.DeleteAsync"/>) R2'de hatayı yutar (yayın uçlarının
+    /// sözleşmesi); onunla silinseydi reddedilen nesne silinmiş sayılıp kuyruktan düşer, imha kaydına yazılırdı. Hata döndüren
+    /// toplu silme kullanılır, hata yukarıdaki yeniden deneme yoluna fırlatılır.</summary>
+    private async Task DeleteBroadcastAsync(string key, CancellationToken ct)
+    {
+        var failures = await _broadcast.DeleteObjectsAsync([key], ct);
+        if (failures.Count > 0) throw new IOException(failures[0].Error);
     }
 }

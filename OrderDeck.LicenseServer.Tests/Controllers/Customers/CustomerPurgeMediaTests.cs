@@ -23,7 +23,8 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Customers;
 /// <summary>
 /// Yayıncı silmesi (KVKK, <c>POST /api/v1/admin/customers/{id}/purge</c>) lisansa ait kova nesnelerini de siler (karar 5 ve 6,
 /// 23.10.2026): müşterilerin o yayıncıya yüklediği dekontlar (<c>payments/{lisans}/</c>) ve WhatsApp medyası
-/// (<c>wa/{lisans}/</c>). Satırları (Payment, WaMessage) lisansla kaskad gidiyordu, nesneler kovada süresiz kalıyordu.
+/// (<c>wa/{lisans}/</c>); yayın paylaşımı medyası ve ürün fotoğrafları (karar 23.10.2026, "silinsin"). Satırları (Payment,
+/// WaMessage, BroadcastPost, ProductPhoto) lisansla kaskad gidiyordu, nesneler kovada süresiz kalıyordu.
 /// </summary>
 public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTests.MediaApiFactory>
 {
@@ -107,18 +108,27 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
     private static string PaymentKey(Guid license) => $"{ShopperPaymentKeys.LicensePrefix(license)}{Guid.NewGuid():N}.pdf";
     private static string WaKey(Guid license) => $"{WhatsAppMediaKeys.LicensePrefix(license)}2026/10/{Guid.NewGuid():N}.jpg";
 
+    // Yayın kovasının iki biçimi üretimdeki yazanlarla birebir, BİLEREK sabit metin (kovada bu biçimlerde nesneler var; önek
+    // sınıfı değişse bile eski nesneler bu biçimde kalır): paylaşım medyası tireli lisans kimliğiyle
+    // (PanelBroadcastPostsController), ürün fotoğrafı tiresiz (PanelProductPhotoController).
+    private static string PostKey(Guid license) => $"{license}/{Guid.NewGuid()}/media.bin";
+    private static string PhotoKey(Guid license) => $"{license:N}/products/{Guid.NewGuid():N}/{Guid.NewGuid():N}.img";
+
+    private static bool IsPaymentKey(string key) => key.StartsWith("payments/", StringComparison.Ordinal);
+
     private async Task PutAsync(params string[] keys)
     {
         foreach (var key in keys)
         {
             if (LicenseMediaPurge.IsWhatsAppKey(key)) await _factory.WhatsApp.SaveAsync(key, new byte[] { 1 }, "image/jpeg");
-            else await _factory.Payments.UploadAsync(key, new byte[] { 1 }, "application/pdf");
+            else if (IsPaymentKey(key)) await _factory.Payments.UploadAsync(key, new byte[] { 1 }, "application/pdf");
+            else _factory.BroadcastMedia.Seed(key, 1, "image/jpeg");
         }
     }
 
-    private bool Exists(string key) => LicenseMediaPurge.IsWhatsAppKey(key)
-        ? _factory.WhatsApp.Inner.TryGet(key, out _)
-        : _factory.Payments.Inner.Contains(key);
+    private bool Exists(string key) => LicenseMediaPurge.IsWhatsAppKey(key) ? _factory.WhatsApp.Inner.TryGet(key, out _)
+        : IsPaymentKey(key) ? _factory.Payments.Inner.Contains(key)
+        : _factory.BroadcastMedia.Contains(key);
 
     /// <summary>Yönetici istemcisi + silinecek yayıncı ve lisansları (üretilmiş kimlik bilgileri; literal parola yok).</summary>
     private async Task<(HttpClient Admin, Guid AdminId, Guid CustomerId, string Email, Guid[] Licenses)> SeedAsync(int licenses)
@@ -176,8 +186,6 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
         resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
         mine.Should().OnlyContain(k => !Exists(k), "yayıncının lisanslarındaki dekont ve WhatsApp dosyaları silinir");
         others.Should().OnlyContain(k => Exists(k), "başka lisansın nesneleri kalır");
-        _factory.BroadcastMedia.DeleteCalls.Should().NotContain(k => k.Contains(l1.ToString("N")) || k.Contains(l2.ToString("N")),
-            "yayın paylaşımı medyası ve ürün fotoğrafları bu silmenin kapsamında değil");
 
         // KVKK Ö-13: imha kaydı lisans ve tür başına, yayıncı silmesinin tetikleyicisi ve ölçütüyle, yapan yöneticinin kimliği.
         var receipts = await RecordsAsync(customerId, ShopperPurgeService.MediaTarget);
@@ -288,6 +296,91 @@ public sealed class CustomerPurgeMediaTests : IClassFixture<CustomerPurgeMediaTe
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.Customers.AsNoTracking().SingleAsync(c => c.Id == customerId)).Email.Should().Be(email, "hiçbir şey silinmedi");
         (await db.Licenses.AnyAsync(l => l.Id == license)).Should().BeTrue();
+        (await db.DataDestructionRecords.AnyAsync(r => r.SubjectId == customerId)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Purge_lisanslarin_yayin_paylasimi_medyasini_ve_urun_fotograflarini_siler_baska_lisansinkiler_kalir()
+    {
+        // Karar 23.10.2026 ("silinsin"): BroadcastPost ve ProductPhoto satırları lisansla kaskad gidiyordu, nesneler kovada
+        // kalıyordu (ürün fotoğrafı yetim süpürücüsü yalnız VAR OLAN lisansları dolaşır). Kovadan önekle listelenir: hiç ürüne
+        // bağlanmamış yükleme ve silinmesi yutulmuş eski paylaşım medyası da gider.
+        var (admin, adminId, customerId, email, licenses) = await SeedAsync(licenses: 2);
+        var (l1, l2) = (licenses[0], licenses[1]);
+        var otherLicense = Guid.NewGuid();
+        var posts = new[] { PostKey(l1), PostKey(l1), PostKey(l2) };
+        var photos = new[] { PhotoKey(l1), PhotoKey(l2), PhotoKey(l2) };
+        var others = new[] { PostKey(otherLicense), PhotoKey(otherLicense) };
+        await PutAsync(posts.Concat(photos).Concat(others).ToArray());
+
+        var resp = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        posts.Concat(photos).Should().OnlyContain(k => !Exists(k), "yayıncının paylaşım medyası ve ürün fotoğrafları silinir");
+        others.Should().OnlyContain(k => Exists(k), "başka lisansın nesneleri kalır");
+
+        var postRecords = await RecordsAsync(customerId, LicenseMediaPurge.BroadcastPostMediaTarget);
+        var photoRecords = await RecordsAsync(customerId, LicenseMediaPurge.ProductPhotoMediaTarget);
+        postRecords.Select(r => (r.LicenseId, r.RowCount)).Should().BeEquivalentTo(new[] { ((Guid?)l1, 2), ((Guid?)l2, 1) });
+        photoRecords.Select(r => (r.LicenseId, r.RowCount)).Should().BeEquivalentTo(new[] { ((Guid?)l1, 1), ((Guid?)l2, 2) });
+        postRecords.Concat(photoRecords).Should().OnlyContain(r => r.Action == DataDestruction.Actions.Deleted
+            && r.Trigger == DataDestruction.Triggers.CustomerPurge && r.Criterion == LicenseMediaPurge.CustomerPurgeCriterion
+            && r.Actor == adminId.ToString());
+        (await PurgeAuditDetailsAsync(customerId)).Should().Contain("\"deletedMediaObjects\":6")
+            .And.Contain("\"pendingMediaObjects\":0");
+    }
+
+    [Fact]
+    public async Task Purge_silinemeyen_yayin_dosyasini_kuyruga_yazar_ve_imha_kaydina_saymaz()
+    {
+        var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
+        var license = licenses[0];
+        var (postOk, postStuck, photoStuck) = (PostKey(license), PostKey(license), PhotoKey(license));
+        await PutAsync(postOk, postStuck, photoStuck);
+        _factory.BroadcastMedia.FailingKeys[postStuck] = 0;
+        _factory.BroadcastMedia.FailingKeys[photoStuck] = 0;
+
+        var resp = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent, "tek dosyanın silinememesi yasal silmeyi durdurmaz");
+        Exists(postOk).Should().BeFalse();
+        Exists(postStuck).Should().BeTrue();
+        Exists(photoStuck).Should().BeTrue();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var queued = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().OrphanedMediaObjects.AsNoTracking()
+                .Where(o => o.ObjectKey == postStuck || o.ObjectKey == photoStuck).ToListAsync();
+            queued.Select(o => o.ObjectKey).Should().BeEquivalentTo(new[] { postStuck, photoStuck });
+            queued.Should().OnlyContain(o => o.ShopperId == null && o.PaymentId == null && o.DeletedAt == null
+                && o.AttemptCount == 1 && o.LastError!.Contains("kilitli"));
+        }
+        (await RecordsAsync(customerId, LicenseMediaPurge.BroadcastPostMediaTarget)).Should().ContainSingle()
+            .Which.RowCount.Should().Be(1, "imha kaydı yalnız gerçekten silineni sayar");
+        (await RecordsAsync(customerId, LicenseMediaPurge.ProductPhotoMediaTarget)).Should().BeEmpty(
+            "tek ürün fotoğrafı silinemedi: kayıt temizlik işi sildiğinde yazılır");
+        (await PurgeAuditDetailsAsync(customerId)).Should().Contain("\"deletedMediaObjects\":1")
+            .And.Contain("\"pendingMediaObjects\":2");
+    }
+
+    [Fact]
+    public async Task Purge_yayin_dosyalari_listelenemezse_hicbir_seyi_silmez()
+    {
+        var (admin, _, customerId, email, licenses) = await SeedAsync(licenses: 1);
+        var license = licenses[0];
+        var (receipt, post) = (PaymentKey(license), PostKey(license));
+        await PutAsync(receipt, post);
+        _factory.BroadcastMedia.UnlistablePrefixes[$"{license:N}/products/"] = 0;
+
+        var resp = await admin.PostAsJsonAsync($"/api/v1/admin/customers/{customerId}/purge", new { confirmEmail = email });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        (await resp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString()
+            .Should().Be("media-storage-unavailable");
+        Exists(receipt).Should().BeTrue();
+        Exists(post).Should().BeTrue();
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Licenses.AnyAsync(l => l.Id == license)).Should().BeTrue("hiçbir şey silinmedi");
         (await db.DataDestructionRecords.AnyAsync(r => r.SubjectId == customerId)).Should().BeFalse();
     }
 }
