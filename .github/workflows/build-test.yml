@@ -2,7 +2,8 @@ name: build-test
 
 on:
   push:
-    branches: [main, master]
+    # GEÇİCİ: parçalı CI'ı PR açmadan ölçmek için. PR'dan önce kaldırılacak.
+    branches: [main, master, chore/ci-server-test-shards]
   pull_request:
     branches: [main, master]
 
