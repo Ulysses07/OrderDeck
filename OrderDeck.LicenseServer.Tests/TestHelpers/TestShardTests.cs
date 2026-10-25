@@ -120,16 +120,19 @@ public sealed class TestShardTests
         try
         {
             var shard = new TestShard(TestShardKind.InMemory, 0, 1);
-            var row1 = new TestShardEntry(TestShardKind.InMemory, "Ns.C", "Theory");
-            var row2 = new TestShardEntry(TestShardKind.InMemory, "Ns.C", "Theory");
+            var row1 = new TestShardEntry(TestShardKind.InMemory, "Ns.C", "Theory", "Ns.C.Theory(x: 1)");
+            var row2 = new TestShardEntry(TestShardKind.InMemory, "Ns.C", "Theory", "Ns.C.Theory(x: 2)");
+            var named = new TestShardEntry(TestShardKind.InMemory, "Ns.C", "Named", "Özel görünen ad");
             var rel = new TestShardEntry(TestShardKind.Relational, "Ns.R", "M");
 
-            TestShard.AppendManifest(path, shard, [row1, row2, rel], [row1, row2]);
+            TestShard.AppendManifest(path, shard, [row1, row2, named, rel], [row1, row2, named]);
 
             File.ReadAllLines(path).Should().Equal(
-                "SHARD\tinmemory\t0\t1\t3\t2",
-                "ALL\tinmemory\tNs.C.Theory",
-                "ALL\trelational\tNs.R.M",
+                "SHARD\tinmemory\t0\t1\t4\t3",
+                "ALL\tinmemory\tNs.C.Named\tÖzel görünen ad",
+                "ALL\tinmemory\tNs.C.Theory\tNs.C.Theory",
+                "ALL\trelational\tNs.R.M\tNs.R.M",
+                "MINE\tNs.C.Named",
                 "MINE\tNs.C.Theory");
         }
         finally
@@ -137,6 +140,21 @@ public sealed class TestShardTests
             Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
         }
     }
+
+    [Theory]
+    // check-test-shards.py, --list-tests satırlarına aynı kuralı uygular
+    // (name.split("(", 1)[0].strip()); ikisi ayrışırsa koruma master'da kırmızı yanar.
+    [InlineData("Ns.C.M", "Ns.C.M")]
+    [InlineData("Ns.C.M(x: 1, y: \"a(b)\")", "Ns.C.M")]
+    [InlineData("Ns.Dis+Ic.M", "Ns.Dis+Ic.M")]
+    [InlineData("Özel ad (açıklama)", "Özel ad")]
+    [InlineData("  Ns.C.M  ", "Ns.C.M")]
+    public void Gorunen_ad_koku_ilk_parantezden_oncesi(string displayName, string root)
+        => TestShard.DisplayRootOf(displayName).Should().Be(root);
+
+    [Fact]
+    public void Gorunen_ad_verilmezse_kok_metot_anahtari()
+        => new TestShardEntry(TestShardKind.InMemory, "Ns.C", "M").DisplayRoot.Should().Be("Ns.C.M");
 
     private sealed class UnrelatedFixture;
 

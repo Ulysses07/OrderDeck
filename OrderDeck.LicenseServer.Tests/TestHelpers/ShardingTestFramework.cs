@@ -29,13 +29,19 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 /// sessizce ya hepsini ya hiçbirini koşmak, eksik koşan bir parçayı yeşil
 /// gösterirdi.</para>
 ///
-/// <para>Bir CI parçasını yerelde birebir üretmek için:
-/// <c>ORDERDECK_TEST_SHARD=relational:0/4 dotnet test ...</c></para>
+/// <para>Bir CI parçasını yerelde birebir üretmek için (adet, build-test.yml'deki
+/// changes işinin sayısı olmalı):
+/// bash <c>ORDERDECK_TEST_SHARD=relational:0/4 dotnet test ...</c>,
+/// PowerShell <c>$env:ORDERDECK_TEST_SHARD='relational:0/4'; dotnet test ...</c>
+/// (değişken oturumda kalır; sonra <c>Remove-Item Env:ORDERDECK_TEST_SHARD</c>,
+/// yoksa bir sonraki "tam" koşu da parça olur). İlişkisel parça tam koşu gibi
+/// Docker ister.</para>
 ///
 /// <para>Eksiksizlik CI'da denetlenir: her parça <c>ORDERDECK_TEST_SHARD_MANIFEST</c>
 /// yoluna gördüğü ve seçtiği vakaları yazar; toplayıcı iş (license-server-test)
-/// birleşimin her vakayı tam bir kez kapsadığını ve <c>--list-tests</c>
-/// çıktısıyla aynı olduğunu doğrular (.github/scripts/check-test-shards.py).</para>
+/// birleşimin her vakayı tam bir kez kapsadığını, <c>--list-tests</c>
+/// çıktısıyla aynı olduğunu ve her parçanın TRX'inde tam olarak seçtiği
+/// metotların koştuğunu doğrular (.github/scripts/check-test-shards.py).</para>
 /// </summary>
 public sealed class ShardingTestFramework(IMessageSink messageSink) : XunitTestFramework(messageSink)
 {
@@ -77,6 +83,9 @@ public sealed class ShardingTestFrameworkExecutor(
         DiagnosticMessageSink.OnMessage(new DiagnosticMessage(
             $"Test parçası {shard}: {mine.Count}/{all.Count} vaka koşuyor."));
 
+        // Manifest seçimi kanıtlar, yürütmeyi değil: buradan sonra eklenen bir
+        // süzgeç manifesti tam gösterip testleri sessizce düşürürdü. Toplayıcı
+        // bu yüzden TRX'te koşan metotları MINE ile ayrıca karşılaştırır.
         base.RunTestCases(mine.Select(x => x.Case).ToList(), executionMessageSink, executionOptions);
     }
 }
@@ -94,10 +103,15 @@ public enum TestShardKind
 /// <param name="Kind">Hangi eksende koştuğu.</param>
 /// <param name="ClassName">Test sınıfının tam adı (iç içe sınıfta <c>Dış+İç</c>).</param>
 /// <param name="MethodName">Test metodunun adı.</param>
-public sealed record TestShardEntry(TestShardKind Kind, string ClassName, string MethodName)
+/// <param name="DisplayName">Vakanın görünen adı (<c>--list-tests</c>'in bastığı);
+/// verilmezse varsayılan biçim, yani <see cref="MethodKey"/>.</param>
+public sealed record TestShardEntry(TestShardKind Kind, string ClassName, string MethodName, string? DisplayName = null)
 {
-    /// <summary>Manifestte ve <c>--list-tests</c> karşılaştırmasında kullanılan ad.</summary>
+    /// <summary>Manifestte parça bölüşümünün ve TRX karşılaştırmasının kimliği.</summary>
     public string MethodKey => ClassName + "." + MethodName;
+
+    /// <summary><c>--list-tests</c> karşılaştırmasının anahtarı; bkz. <see cref="TestShard.DisplayRootOf"/>.</summary>
+    public string DisplayRoot => TestShard.DisplayRootOf(DisplayName ?? MethodKey);
 
     /// <summary>Kovayı belirleyen anahtar. İlişkiselde metot düzeyi (zincir eşit
     /// bölünsün; teori satırları yine aynı parçada kalır), InMemory'de sınıf
@@ -183,7 +197,23 @@ public sealed record TestShard(TestShardKind Kind, int Index, int Count)
                 $"Koleksiyon tanımı '{definition.Name}' yansıma tabanlı değil; test parçası belirlenemiyor."),
         };
 
-        return new TestShardEntry(Classify(definitionType), method.TestClass.Class.Name, method.Method.Name);
+        return new TestShardEntry(
+            Classify(definitionType), method.TestClass.Class.Name, method.Method.Name, testCase.DisplayName);
+    }
+
+    /// <summary>
+    /// Görünen adın kökü: ilk <c>(</c>'e kadarki kısım, kırpılmış. Teori satırları
+    /// (<c>Metot(x: 1)</c>, <c>Metot(x: 2)</c>) aynı kökü paylaşır. <c>--list-tests</c>
+    /// görünen adı bastığı için karşılaştırma bununla yapılır, <see cref="TestShardEntry.MethodKey"/>
+    /// ile değil: bir teste <c>[Fact(DisplayName = ...)]</c> verilir ya da
+    /// xunit.runner.json'a <c>methodDisplay: method</c> girerse görünen ad
+    /// <c>Sınıf.Metot</c> olmaktan çıkar. check-test-shards.py, <c>--list-tests</c>
+    /// satırlarına aynı kuralı uygular; biri değişirse öbürü de değişmeli.
+    /// </summary>
+    public static string DisplayRootOf(string displayName)
+    {
+        var paren = displayName.IndexOf('(', StringComparison.Ordinal);
+        return (paren < 0 ? displayName : displayName[..paren]).Trim();
     }
 
     public bool Owns(TestShardEntry entry)
@@ -191,10 +221,10 @@ public sealed record TestShard(TestShardKind Kind, int Index, int Count)
 
     /// <summary>
     /// Manifest satırları (sekmeyle ayrılmış):
-    /// <c>SHARD kind index count vakaların-tümü seçilen-vakalar</c>, her metot için
-    /// <c>ALL kind Sınıf.Metot</c>, seçilenler için <c>MINE Sınıf.Metot</c>.
-    /// Karşılaştırma metot düzeyinde, UniqueID ile değil: teori verisindeki Guid
-    /// gibi değerler UniqueID'yi süreçten sürece değiştirebilir.
+    /// <c>SHARD kind index count vakaların-tümü seçilen-vakalar</c>, her metot (ve
+    /// görünen ad kökü) için <c>ALL kind Sınıf.Metot kök</c>, seçilenler için
+    /// <c>MINE Sınıf.Metot</c>. Karşılaştırma metot düzeyinde, UniqueID ile değil:
+    /// teori verisindeki Guid gibi değerler UniqueID'yi süreçten sürece değiştirebilir.
     /// </summary>
     public static void AppendManifest(
         string path, TestShard shard, IReadOnlyCollection<TestShardEntry> all, IReadOnlyCollection<TestShardEntry> mine)
@@ -202,8 +232,13 @@ public sealed record TestShard(TestShardKind Kind, int Index, int Count)
         var text = new StringBuilder();
         text.Append("SHARD\t").Append(shard.KindLabel).Append('\t').Append(shard.Index).Append('\t').Append(shard.Count)
             .Append('\t').Append(all.Count).Append('\t').Append(mine.Count).Append('\n');
-        foreach (var entry in all.DistinctBy(e => (e.Kind, e.MethodKey)).OrderBy(e => e.MethodKey, StringComparer.Ordinal))
-            text.Append("ALL\t").Append(LabelOf(entry.Kind)).Append('\t').Append(entry.MethodKey).Append('\n');
+        foreach (var entry in all.DistinctBy(e => (e.Kind, e.MethodKey, e.DisplayRoot))
+                     .OrderBy(e => e.MethodKey, StringComparer.Ordinal)
+                     .ThenBy(e => e.DisplayRoot, StringComparer.Ordinal))
+        {
+            text.Append("ALL\t").Append(LabelOf(entry.Kind)).Append('\t').Append(entry.MethodKey)
+                .Append('\t').Append(entry.DisplayRoot).Append('\n');
+        }
         foreach (var key in mine.Select(e => e.MethodKey).Distinct().Order(StringComparer.Ordinal))
             text.Append("MINE\t").Append(key).Append('\n');
 

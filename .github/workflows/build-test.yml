@@ -275,12 +275,18 @@ jobs:
           if-no-files-found: warn
 
   # Sunucu testlerinin TEK sonucu (adı tek-iş döneminden korunuyor). İleride
-  # zorunlu check eklenirse bu ve build-test seçilmeli; matris işleri
-  # (license-server-shard (...)) değil — atlandıklarında genişletilmeden
+  # zorunlu check eklenirse bu, build-test ve docker-build seçilmeli; matris
+  # işleri (license-server-shard (...)) değil — atlandıklarında genişletilmeden
   # raporlanırlar.
   #
   # if: always() bilerek: parça düşse ya da koşu iptal edilse de bu iş koşar
   # ve kırmızı yanar; "skipped" zorunlu check açısından başarılı sayılırdı.
+  #
+  # Kapı fail-closed: testleri atlamak YALNIZ PR'da ve code tam olarak 'false'
+  # iken kabul edilir. Boş ya da beklenmeyen bir değer (adım id'si değişti,
+  # yeni bir tetikleyici eklenirken koşul bozuldu...) bütün .NET işlerini
+  # sessizce atlatır; burası da yeşil yansaydı iş akışı success biter ve
+  # master'da deploy test kanıtı olmadan koşardı.
   #
   # Parçalar yeşil olsa bile koruma (.github/scripts/check-test-shards.py) her
   # vakanın TAM BİR parçada koştuğunu ve birleşimin --list-tests ile aynı
@@ -297,6 +303,7 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          EVENT: ${{ github.event_name }}
           SHARDS: ${{ needs.license-server-shard.result }}
         run: |
           set -euo pipefail
@@ -304,10 +311,14 @@ jobs:
             echo "::error::changes işi '$CHANGES' bitti; testlerin koşup koşmadığı bilinmiyor."
             exit 1
           fi
-          if [ "$CODE" != "true" ]; then
+          if [ "$CODE" = "false" ] && [ "$EVENT" = "pull_request" ]; then
             echo "Sunucu kodu değişmedi (yalnız docs/web); sunucu testleri atlandı."
             echo "check=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ "$CODE" != "true" ]; then
+            echo "::error::Beklenmeyen code='$CODE' ($EVENT): atlama yalnız pull_request'te code=false iken geçerli; .NET işleri koşmadı."
+            exit 1
           fi
           if [ "$SHARDS" != "success" ]; then
             echo "::error::En az bir sunucu test parçası başarısız ya da iptal: '$SHARDS'."

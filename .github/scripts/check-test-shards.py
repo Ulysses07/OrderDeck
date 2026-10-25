@@ -14,8 +14,16 @@ betik onları kırmızıya çevirir:
      hiç koşmamış test, fazla = iki kez koşmuş test); her MINE parçanın türünde;
      boş MINE yok; seçilen vakaların toplamı tüm vakalara eşit.
   4. ALL, assembly'nin kendi raporuna dayanmayan bağımsız listeyle (dotnet test
-     --list-tests) aynı: metot kümesi ve vaka sayısı.
-  5. Bilgi: parça başına vaka sayısı ve TRX'teki start→finish süresi.
+     --list-tests) aynı: görünen ad kökü kümesi ve vaka sayısı. --list-tests
+     görünen adı basar; kök = ilk '(' öncesi, kırpılmış (teori satırları aynı
+     kökte birleşir; DisplayName/methodDisplay kullanan testler de eşleşir).
+     Kural TestShard.DisplayRootOf ile aynı olmalı.
+  5. Manifest seçimi kanıtlar, yürütmeyi değil (MINE ile yürütücüye giden liste
+     aynı değişkenden gelir). Bu yüzden her parçanın TRX'i zorunlu: TRX'te sonucu
+     olan metot kümesi MINE'a eşit ve sonuç sayısı en az seçilen vaka kadar
+     (çalışma anında açılan teori satırları yalnız ekler; Skip'li testler
+     NotExecuted olarak yine listede).
+  6. Bilgi: parça başına vaka/sonuç sayısı ve TRX'teki start→finish süresi.
 
 Kullanım: check-test-shards.py --dir <indirilen artifact'ler> --matrix '<json>'
 Çıkış kodu 0 = geçti, 1 = en az bir ihlal.
@@ -55,8 +63,9 @@ def read_manifest(path, errors):
                     "all_cases": int(parts[4]),
                     "mine_cases": int(parts[5]),
                 }
-            elif tag == "ALL" and len(parts) == 3:
-                all_entries.add((parts[1], parts[2]))
+            elif tag == "ALL" and len(parts) == 4:
+                # (tür, Sınıf.Metot, görünen ad kökü)
+                all_entries.add((parts[1], parts[2], parts[3]))
             elif tag == "MINE" and len(parts) == 2:
                 mine.append(parts[1])
             else:
@@ -66,10 +75,15 @@ def read_manifest(path, errors):
     return header, all_entries, mine
 
 
+def display_root(name):
+    """TestShard.DisplayRootOf ile aynı kural: ilk '(' öncesi, kırpılmış."""
+    return name.split("(", 1)[0].strip()
+
+
 def read_list_tests(path):
     """`dotnet test --list-tests`: başlık satırlarından sonra her vaka 4 boşluk
     girintiyle, görünen adıyla (teoride '(arg: ...)' ekiyle) yazılır."""
-    methods = set()
+    roots = set()
     cases = 0
     with open(path, encoding="utf-8", errors="replace") as f:
         for raw in f:
@@ -79,8 +93,8 @@ def read_list_tests(path):
             if not name:
                 continue
             cases += 1
-            methods.add(name.split("(", 1)[0])
-    return methods, cases
+            roots.add(display_root(name))
+    return roots, cases
 
 
 def parse_trx_time(value):
@@ -94,8 +108,30 @@ def parse_trx_time(value):
 
 
 def read_trx(path):
+    """Süre, sayaçlar ve sonucu olan metotlar. TRX'te her UnitTestResult bir
+    UnitTest tanımına (testId) bağlı; tanımın TestMethod'u className + name
+    taşır (xUnit adaptöründe Sınıf.Metot, iç içe sınıfta Dış+İç — manifestteki
+    MethodKey ile aynı biçim)."""
     root = ET.parse(path).getroot()
     info = {}
+    methods_by_id = {}
+    for unit in root.findall(f"{TRX_NS}TestDefinitions/{TRX_NS}UnitTest"):
+        method = unit.find(f"{TRX_NS}TestMethod")
+        if method is not None:
+            methods_by_id[unit.get("id")] = f"{method.get('className')}.{method.get('name')}"
+    ran = set()
+    results = 0
+    unmapped = 0
+    for result in root.findall(f"{TRX_NS}Results/{TRX_NS}UnitTestResult"):
+        results += 1
+        method = methods_by_id.get(result.get("testId"))
+        if method is None:
+            unmapped += 1
+        else:
+            ran.add(method)
+    info["ran"] = ran
+    info["results"] = results
+    info["unmapped"] = unmapped
     times = root.find(f"{TRX_NS}Times")
     if times is not None and times.get("start") and times.get("finish"):
         try:
@@ -159,10 +195,12 @@ def main():
             errors.append(f"{path}: vaka sayısı {header['all_cases']}, {ref_path}'de {ref_header['all_cases']}")
 
     kind_of = {}
-    for kind, method in ref_all:
+    display_roots = set()
+    for kind, method, root in ref_all:
         if method in kind_of and kind_of[method] != kind:
             errors.append(f"{method}: iki farklı türde ({kind_of[method]}, {kind})")
         kind_of[method] = kind
+        display_roots.add(root)
 
     # --- 3. MINE birleşimi = ALL, her anahtar tam bir kez ---
     owners = collections.defaultdict(list)
@@ -194,26 +232,51 @@ def main():
     if len(list_paths) != 1:
         errors.append(f"{LIST_FILE} tam bir kez bulunmalı, {len(list_paths)} bulundu")
     else:
-        listed_methods, listed_cases = read_list_tests(list_paths[0])
+        listed_roots, listed_cases = read_list_tests(list_paths[0])
         listed = listed_cases
-        if not listed_methods:
+        if not listed_roots:
             errors.append(f"{LIST_FILE} boş ya da okunamadı")
-        not_run = sorted(listed_methods - set(kind_of))
-        unknown = sorted(set(kind_of) - listed_methods)
+        not_run = sorted(listed_roots - display_roots)
+        unknown = sorted(display_roots - listed_roots)
         if not_run:
-            errors.append(f"{len(not_run)} metot --list-tests'te var, manifestlerde yok: {not_run[:10]}")
+            errors.append(f"{len(not_run)} görünen ad --list-tests'te var, manifestlerde yok: {not_run[:10]}")
         if unknown:
-            errors.append(f"{len(unknown)} metot manifestlerde var, --list-tests'te yok: {unknown[:10]}")
+            errors.append(f"{len(unknown)} görünen ad manifestlerde var, --list-tests'te yok: {unknown[:10]}")
         if listed_cases != ref_header["all_cases"]:
             errors.append(f"--list-tests {listed_cases} vaka, parçalar {ref_header['all_cases']} vaka gördü")
 
-    # --- 5. bilgi: parça başına sayı ve süre ---
+    # --- 5. yürütme: her parçanın TRX'inde tam olarak seçtiği metotlar koştu ---
     rows = []
     trx_by_name = {os.path.basename(p): p for p in glob.glob(os.path.join(args.dir, "**", "*.trx"), recursive=True)}
     for key, (header, _, mine, _) in sorted(manifests.items()):
-        trx = trx_by_name.get(f"license-server-{key[0]}-{key[1]}.trx")
-        info = read_trx(trx) if trx else {}
-        rows.append((f"{key[0]}:{key[1]}/{header['count']}", len(mine), header["mine_cases"], info))
+        label = f"{key[0]}:{key[1]}"
+        trx_name = f"license-server-{key[0]}-{key[1]}.trx"
+        trx = trx_by_name.get(trx_name)
+        info = {}
+        if trx is None:
+            errors.append(f"{label}: {trx_name} yok; seçilen testlerin koştuğu doğrulanamıyor")
+        else:
+            try:
+                info = read_trx(trx)
+            except ET.ParseError as e:
+                errors.append(f"{label}: {trx_name} okunamadı ({e})")
+        if "ran" in info:
+            selected = set(mine)
+            not_ran = sorted(selected - info["ran"])
+            stray = sorted(info["ran"] - selected)
+            if not_ran:
+                errors.append(f"{label}: {len(not_ran)} seçilen metodun TRX'te sonucu yok (seçildi ama koşmadı): {not_ran[:10]}")
+            if stray:
+                errors.append(f"{label}: {len(stray)} metot TRX'te koşmuş ama parça seçmemiş: {stray[:10]}")
+            if info["unmapped"]:
+                errors.append(f"{label}: TRX'te {info['unmapped']} sonuç bir test tanımına bağlanamadı")
+            if info["results"] < header["mine_cases"]:
+                errors.append(
+                    f"{label}: TRX'te {info['results']} sonuç, parça {header['mine_cases']} vaka seçti "
+                    f"(sonuç en az seçilen vaka kadar olmalı)")
+        rows.append((f"{label}/{header['count']}", len(mine), header["mine_cases"], info))
+
+    # --- 6. bilgi: parça başına sayı ve süre (aşağıdaki tablo) ---
 
     summary = {
         "methods": len(kind_of),
@@ -235,18 +298,21 @@ def report(errors, rows, summary):
             f"--list-tests: {summary['listed']} vaka.")
         lines.append("")
     if rows:
-        lines.append("| parça | metot | vaka | TRX koşulan | başarısız | süre (sn) |")
-        lines.append("|---|---:|---:|---:|---:|---:|")
+        lines.append("| parça | metot | vaka | TRX sonuç | TRX koşulan | başarısız | süre (sn) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
         for label, methods, cases, info in rows:
             seconds = f"{info['seconds']:.0f}" if "seconds" in info else "?"
             lines.append(
-                f"| {label} | {methods} | {cases} | {info.get('executed', '?')} | {info.get('failed', '?')} | {seconds} |")
+                f"| {label} | {methods} | {cases} | {info.get('results', '?')} | {info.get('executed', '?')} "
+                f"| {info.get('failed', '?')} | {seconds} |")
         lines.append("")
     if errors:
         lines.append(f"**Eksiksizlik denetimi BAŞARISIZ ({len(errors)} ihlal):**")
         lines.extend(f"- {e}" for e in errors)
     else:
-        lines.append("Eksiksizlik denetimi geçti: her vaka tam bir parçada koştu ve birleşim --list-tests ile aynı.")
+        lines.append(
+            "Eksiksizlik denetimi geçti: her vaka tam bir parçada seçildi, birleşim --list-tests ile aynı "
+            "ve her parçanın TRX'inde tam olarak seçtiği metotlar koştu.")
     text = "\n".join(lines) + "\n"
     print(text)
     for e in errors:
