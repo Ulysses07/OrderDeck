@@ -59,8 +59,17 @@ Both live next to this one under `source/repos/`.
   there. **Docker must be running** or those tests fail
 - `dotnet build OrderDeck.App/OrderDeck.App.csproj` — WPF (Windows-only)
 - CI runs both via `.github/workflows/build-test.yml`; server deploy via
-  `license-server-deploy.yml`. Server tests run in their own **ubuntu** job —
-  the Windows runner can't start Linux containers
+  `license-server-deploy.yml`. Server tests run on **ubuntu** — the Windows
+  runner can't start Linux containers — as a 6-job matrix
+  (`license-server-shard`: SQL Server tests ×4, InMemory ×2; counts at the top
+  of the workflow, `changes` job) gathered by **`license-server-test`**, the
+  single result to look at. The test assembly picks its own slice
+  (`TestHelpers/ShardingTestFramework.cs`, stable SHA-256 split); the gatherer
+  checks every test ran in exactly one shard and matches `--list-tests`. To
+  reproduce one CI shard locally: `ORDERDECK_TEST_SHARD=relational:0/4 dotnet
+  test ...`; without the variable it's a full run. PRs that only touch
+  `docs/**`, root `*.md` or `web/**` skip the .NET jobs (except web files the
+  server tests read); master pushes always run everything
 - Test counts are deliberately not written down here. Every number that was
   ever pinned in this file went stale within weeks and then misled; read the
   count off the CI run instead.
