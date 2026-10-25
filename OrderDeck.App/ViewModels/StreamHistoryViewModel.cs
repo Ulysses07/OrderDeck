@@ -25,12 +25,18 @@ public sealed partial class StreamHistoryViewModel : ViewModelBase
         Reload();
     }
 
+    /// <summary>Listedeki en çok satır. Gizlenen (cirosuz) yayın bu sınırdan yer yemez: sorgu sınırsız okunur, liste
+    /// dolunca durulur.</summary>
+    private const int MaxRows = 365;
+
     private void Reload()
     {
         Sessions.Clear();
-        foreach (var s in _sessions.GetAllEnded(limit: 365))
+        foreach (var s in _sessions.GetAllEnded(limit: int.MaxValue))
         {
+            if (Sessions.Count == MaxRows) break;
             var totals = _labels.GetSessionTotals(s.Id);
+            if (!IsListed(s, totals.TotalAmount)) continue;
             var endedAt = s.EndedAt ?? s.StartedAt;
             var seconds = endedAt - s.StartedAt;
 
@@ -46,6 +52,14 @@ public sealed partial class StreamHistoryViewModel : ViewModelBase
         HasRemoteSessions = Sessions.Any(r => r.Machine is not null);
         OnPropertyChanged(nameof(HasRemoteSessions));
     }
+
+    /// <summary>Cirosu 0 olan bitmiş yayın listelenmez (Burak, 25.10.2026). Ciro, "Ciro" sütununun gösterdiği değerdir
+    /// (<see cref="LabelRepository.GetSessionTotals"/>'ın <c>TotalAmount</c>'u); yerel ve başka bilgisayarın yayınına
+    /// aynı kural. Yayın silinmez, yalnız listede görünmez; raporu ve verisi yerinde. Süren (açık) yayın cirosu 0 olsa
+    /// da gizlenmez: bugün <see cref="SessionRepository.GetAllEnded"/> açık yayın döndürmez, koşul sorgu genişlerse
+    /// canlı yayının satışsız ilk dakikalarında listeden düşmesin diye.</summary>
+    internal static bool IsListed(StreamSession s, decimal totalAmount) =>
+        totalAmount != 0m || s.EndedAt is null;
 
     /// <summary>Başka bilgisayarın yayını için yayını açan makinenin adı (<c>OwnerMachineName</c>); adı bilinmiyorsa
     /// "Başka bilgisayar". Bu bilgisayarın yayınında null.</summary>
