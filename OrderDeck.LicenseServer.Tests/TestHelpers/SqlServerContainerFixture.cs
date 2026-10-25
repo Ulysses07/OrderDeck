@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
 using Microsoft.Data.SqlClient;
 using Testcontainers.MsSql;
 using Xunit;
@@ -22,7 +23,7 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 /// Container koleksiyon başına <b>bir kez</b> başlar (başlangıç ~30-60 sn);
 /// izolasyon container değil <b>veritabanı</b> düzeyinde sağlanır:
 /// <see cref="CreateDatabaseAsync"/> her test için ayrı bir DB açar ve test
-/// bittikten sonra o DB silinir (bkz. <see cref="DropTestDatabasesAttribute"/>).
+/// bittikten sonra o DB arka planda silinir (bkz. <see cref="DropTestDatabasesAttribute"/>).
 ///
 /// Motor bilerek SQL Server: prod bugün bu. Postgres göçünde bu dosyada
 /// <c>MsSqlBuilder</c> yerine <c>PostgreSqlBuilder</c> kullanılacak ve testler
@@ -44,6 +45,11 @@ public class SqlServerContainerFixture : IAsyncLifetime
     // bellek dahil) sınırlar — o yüzden iki konteynere de verilir.
     private const string MemoryLimitMb = "2048";
 
+    // DisposeAsync kuyruktaki silmeleri en çok bu kadar bekler. Kuyrukta normalde
+    // en çok bir testin DB'leri durur, silme başına birkaç saniye; süre dolarsa
+    // kalanlar konteynerle gider ve yalnız tanılama iletisine yazılır.
+    private static readonly TimeSpan DropDrainTimeout = TimeSpan.FromSeconds(60);
+
     // Koleksiyon başına tek örnek; DropTestDatabasesAttribute onu buradan bulur.
     private static readonly ConcurrentDictionary<Type, SqlServerContainerFixture> Running = new();
 
@@ -57,7 +63,15 @@ public class SqlServerContainerFixture : IAsyncLifetime
 
     private readonly object _gate = new();
     private readonly List<string> _open = new();     // açıldı, testi sürüyor olabilir
-    private readonly List<string> _finished = new(); // testi bitti, sıradaki CreateDatabaseAsync siler
+    private readonly List<string> _finished = new(); // testi bitti, sıradaki CreateDatabaseAsync kuyruğa verir
+
+    // Arka plan silme kuyruğu: tek okuyucu, sırayla siler (aynı anda tek DROP).
+    private readonly Channel<string> _dropQueue =
+        Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly CancellationTokenSource _dropStop = new();
+    private Task _dropWorker = Task.CompletedTask;
+    private int _queuedDrops; // kuyruğa girdi, silme denemesi henüz bitmedi
+
     private int _created;
     private int _dropped;
     private int _dropFailures;
@@ -84,15 +98,38 @@ public class SqlServerContainerFixture : IAsyncLifetime
         if (!Running.TryAdd(GetType(), this))
             throw new InvalidOperationException(
                 $"{GetType().Name} yalnız tek bir test koleksiyonunda kullanılabilir (DB silme kaydı türe bağlı).");
+        _dropWorker = Task.Run(() => DrainDropQueueAsync(_dropStop.Token));
     }
 
     public async Task DisposeAsync()
     {
         Running.TryRemove(new KeyValuePair<Type, SqlServerContainerFixture>(GetType(), this));
+
+        // Kuyruktaki silmeler bitsin: sayaçlar doğru kalsın, konteyner yarım bir
+        // DROP'un altından çekilmesin. Son testin DB'leri kuyruğa hiç girmez
+        // (ardından CreateDatabaseAsync yok), konteynerle gider. Bekleme başarısız
+        // olursa koleksiyon düşmez, yalnız tanılamaya yazılır.
+        _dropQueue.Writer.TryComplete();
+        try
+        {
+            await _dropWorker.WaitAsync(DropDrainTimeout);
+        }
+        catch (TimeoutException)
+        {
+            _dropStop.Cancel();
+            Log($"{GetType().Name}: kuyruktaki DB silmeleri {DropDrainTimeout.TotalSeconds:0} sn içinde bitmedi, " +
+                "kalanlar konteynerle gidiyor.");
+        }
+        catch (Exception ex)
+        {
+            Log($"{GetType().Name}: DB silme kuyruğu durdu: {ex.GetType().Name}: {ex.Message}");
+        }
+
         int remaining;
         lock (_gate) remaining = _open.Count + _finished.Count;
-        Log($"{GetType().Name}: {_created} test DB'si açıldı, {_dropped} silindi, " +
-            $"{_dropFailures} silinemedi, {remaining} konteynerle birlikte gidiyor.");
+        remaining += Volatile.Read(ref _queuedDrops);
+        Log($"{GetType().Name}: {_created} test DB'si açıldı, {Volatile.Read(ref _dropped)} silindi, " +
+            $"{Volatile.Read(ref _dropFailures)} silinemedi, {remaining} konteynerle birlikte gidiyor.");
         await _container.DisposeAsync();
     }
 
@@ -101,27 +138,46 @@ public class SqlServerContainerFixture : IAsyncLifetime
     /// döner. Testler arası izolasyon buradan gelir — aynı container'ı paylaşan
     /// iki test birbirinin satırlarını görmez.
     ///
-    /// Önce, testi bitmiş önceki DB'leri siler. Silme burada yapılıyor, testin
-    /// bittiği anda değil: xUnit'te <see cref="BeforeAfterTestAttribute.After"/>
-    /// test sınıfının <c>DisposeAsync</c>'inden ÖNCE çalışır, yani o an
-    /// fabrikanın host'u hâlâ ayaktadır ve DB'yi kullanıyor olabilir. Koleksiyon
-    /// seri koştuğu için bir sonraki testin açılışı, öncekinin bütünüyle
-    /// kapandığı ilk güvenli andır.
+    /// DB açılınca, testi bitmiş önceki DB'leri arka plan silme kuyruğuna verir;
+    /// silinmelerini BEKLEMEZ. Kuyruğa burada veriliyor, testin bittiği anda
+    /// değil: xUnit'te <see cref="BeforeAfterTestAttribute.After"/> test
+    /// sınıfının <c>DisposeAsync</c>'inden ÖNCE çalışır, yani o an fabrikanın
+    /// host'u hâlâ ayaktadır ve DB'yi kullanıyor olabilir. Koleksiyon seri
+    /// koştuğu için bir sonraki testin açılışı, öncekinin bütünüyle kapandığı ilk
+    /// güvenli andır; silme bu andan önce başlamaz.
+    ///
+    /// Neden beklemiyor: silme DB başına ~3 sn sürüyor ve neredeyse tamamı
+    /// SINGLE_USER ... ROLLBACK IMMEDIATE'in DB'de kalan oturumu kesip beklemesi
+    /// (PRINT_ROLLBACK_PROGRESS, CPU ~5 ms; yerelde ölçüldü). Bunu her testin
+    /// açılışında beklemek seri koşan koleksiyonun kritik yolunu uzattı: #539
+    /// sonrası master'da license-server-test 60 dk sınırında iptal edildi. (CI'da
+    /// silme başına süre ölçülmedi; zincir farkını ~384 DB'ye bölmek ~2,4 sn
+    /// veriyor.) Kuyrukta silme sıradaki testin göçleri ve gövdesiyle aynı anda
+    /// yürür; sınır korunur, konteynerde aynı anda yalnız birkaç test DB'si durur.
+    ///
+    /// Neden CREATE'ten sonra: CREATE DATABASE, eşzamanlı bir ALTER/DROP DATABASE
+    /// bitene kadar bekliyor. Kuyruk CREATE'ten önce dolunca kazanç CREATE'te geri
+    /// gitti (yerel ölçüm: CREATE ~1 sn → ~3,6 sn). CREATE'ten sonra verilse de
+    /// hızlı biten bir testin ardından ya da ikinci DB açan bir testte CREATE
+    /// arka plandaki silmeye denk gelebilir; o durumda yalnız o silmeyi bekler.
     /// </summary>
     public async Task<string> CreateDatabaseAsync()
     {
-        await DropFinishedDatabasesAsync();
-
         var dbName = "t" + Guid.NewGuid().ToString("N");
 
-        await using (var conn = new SqlConnection(_container.GetConnectionString()))
+        try
         {
+            await using var conn = new SqlConnection(_container.GetConnectionString());
             await conn.OpenAsync();
             await using var cmd = conn.CreateCommand();
             // dbName tamamen bizim ürettiğimiz sabit alfabe (harf + hex), dışarıdan
             // veri almıyor; yine de köşeli parantezle sarılıyor.
             cmd.CommandText = $"CREATE DATABASE [{dbName}]";
             await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            QueueFinishedDatabasesForDrop();
         }
 
         var connectionString = new SqlConnectionStringBuilder(_container.GetConnectionString())
@@ -140,8 +196,9 @@ public class SqlServerContainerFixture : IAsyncLifetime
 
     /// <summary>
     /// <see cref="CreateDatabaseAsync"/>'in açtığı bir DB'yi siler. Normalde
-    /// çağırmaya gerek yok — testi biten DB'ler kendiliğinden silinir; bir testin
-    /// içinde çok sayıda DB açılıp hemen bırakılıyorsa elle çağrılabilir.
+    /// çağırmaya gerek yok — testi biten DB'ler kendiliğinden, arka planda
+    /// silinir; bir testin içinde çok sayıda DB açılıp hemen bırakılıyorsa elle
+    /// çağrılabilir.
     ///
     /// Asla atmaz: silinemeyen bir DB testi düşürmemeli, yalnız tanılama
     /// iletisine yazılır (<c>-- xUnit.DiagnosticMessages=true</c> ile görünür)
@@ -214,7 +271,9 @@ public class SqlServerContainerFixture : IAsyncLifetime
         }
     }
 
-    private async Task DropFinishedDatabasesAsync()
+    // Yalnız "bitti" listesindekiler kuyruğa girer; açık (testi sürüyor olabilecek)
+    // DB'ye dokunulmaz.
+    private void QueueFinishedDatabasesForDrop()
     {
         string[] batch;
         lock (_gate)
@@ -224,7 +283,30 @@ public class SqlServerContainerFixture : IAsyncLifetime
         }
 
         foreach (var connectionString in batch)
-            await DropDatabaseAsync(connectionString);
+        {
+            Interlocked.Increment(ref _queuedDrops);
+            if (_dropQueue.Writer.TryWrite(connectionString)) continue;
+
+            // Kuyruk kapandı (DisposeAsync başladı): DB konteynerle gider, sayımda kalsın.
+            Interlocked.Decrement(ref _queuedDrops);
+            lock (_gate) _finished.Add(connectionString);
+        }
+    }
+
+    private async Task DrainDropQueueAsync(CancellationToken stop)
+    {
+        try
+        {
+            await foreach (var connectionString in _dropQueue.Reader.ReadAllAsync(stop))
+            {
+                await DropDatabaseAsync(connectionString); // atmaz
+                Interlocked.Decrement(ref _queuedDrops);
+            }
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+            // DisposeAsync beklemeyi bıraktı; kuyrukta kalanlar konteynerle gider.
+        }
     }
 
     private void Log(string message) => _diagnostics.OnMessage(new DiagnosticMessage(message));
@@ -247,8 +329,8 @@ public sealed class SqlServerExpressContainerFixture : SqlServerContainerFixture
 
 /// <summary>
 /// Koleksiyondaki her testin sonunda, o teste kadar açılmış test DB'lerini
-/// "bitti" diye işaretler; silme sıradaki <see cref="SqlServerContainerFixture.CreateDatabaseAsync"/>'te
-/// yapılır.
+/// "bitti" diye işaretler; sıradaki <see cref="SqlServerContainerFixture.CreateDatabaseAsync"/>
+/// onları arka plan silme kuyruğuna verir.
 ///
 /// Neden test başına bir dispose çağrısı değil: ~80 sınıf DB'yi dört farklı
 /// biçimde açıyor (InitializeAsync'te, test gövdesinde, yardımcı kit içinde;

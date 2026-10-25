@@ -103,7 +103,12 @@ jobs:
     # düzeltmeleri (#534) 42 dk sürdü; ikisi birlikte master'da 45'i aşar ve
     # sunucu deploy'u bu işin başarısına bağlı (license-server-deploy.yml,
     # workflow_run). Aşağıdaki EF günlük süzgeci süreyi ayrıca kısaltır.
-    timeout-minutes: 60
+    # 60 → 90 (2026-10-24): #539'un test DB silmesi kritik yola ~15 dk ekledi;
+    # master'da iki koşu 60. dakikada kesildi, deploy atlandı ve geri alma
+    # (#540) prod'a çıkamadı. Silme arka plana alındı (SqlServerContainerFixture);
+    # bu pay, beklenmedik bir yavaşlığın deploy'u bir daha kilitlememesi için.
+    # Repo public: Actions dakikaları ölçümsüz, payın maliyeti yok.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
