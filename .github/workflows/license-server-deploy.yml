@@ -53,9 +53,21 @@ concurrency:
 jobs:
   deploy:
     # Skip if upstream build-test failed; allow workflow_dispatch unconditionally.
+    #
+    # Only a PUSH to this repository's master may deploy. `head_branch` alone is
+    # not enough: build-test also runs on pull_request, and for a PR opened from
+    # a FORK `head_branch` is the fork's branch name — a fork's own `master`
+    # matches it (as does the `branches:` filter above, which reads the same
+    # field). This job runs in the base repo's context with the deploy secrets
+    # and checks out `head_sha`, so without these two checks a green fork PR
+    # would build the fork's code, push it to GHCR and run it on the VPS.
+    # (The repo is public; fork-PR workflow approval only covers first-time
+    # contributors.)
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     timeout-minutes: 20
