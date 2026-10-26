@@ -25,33 +25,49 @@ public sealed class StreamHistoryMachineNameTests : IDisposable
     private readonly SessionRepository _sessions;
     private readonly LabelRepository _labels;
 
+    private const string CustomerId = "izleyici-1";
+
     public StreamHistoryMachineNameTests()
     {
         new MigrationRunner(_db).Run();
         _sessions = new SessionRepository(_db);
         _labels = new LabelRepository(_db);
+        new CustomerRepository(_db).Insert(
+            new Customer(CustomerId, "tiktok", "@izleyici", null, null, 100, 100,
+                false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
     }
 
     public void Dispose() => _db.Dispose();
+
+    /// <summary>Geçmiş cirosu 0 olan bitmiş yayını listelemez (<see cref="StreamHistoryZeroRevenueTests"/>): buradaki
+    /// yayınlar birer basılmış satışla doğar.</summary>
+    private void Sale(string sessionId, long startedAt) =>
+        _labels.Insert(new OrderDeck.Core.Sales.Label(Guid.NewGuid().ToString("N"), sessionId, CustomerId, "tiktok",
+            "@izleyici", "A12 aldım", "A12", 150m, AddedAt: startedAt + 50, PrintedAt: startedAt + 60));
 
     private string LocalEnded(long startedAt)
     {
         var id = Guid.NewGuid().ToString("N");
         _sessions.Insert(new StreamSession(id, "Yerel yayın", startedAt, startedAt + 3600, ["tiktok"], null));
+        Sale(id, startedAt);
         return id;
     }
 
-    /// <summary>Akıştan inmiş başka bilgisayarın devredilmiş yayını (<c>SalesFeedRepository</c>'nin eklediği biçim).</summary>
+    /// <summary>Akıştan inmiş başka bilgisayarın devredilmiş yayını (<c>SalesFeedRepository</c>'nin eklediği biçim).
+    /// Akış etiketi kilit altında yazar; testte önce etiket yerel yetkiyle eklenir, sonra yetki sunucuya geçer.</summary>
     private string Remote(long startedAt, string? machine)
     {
         var id = Guid.NewGuid().ToString("N");
-        using var c = _db.Open();
-        c.Execute(
-            @"INSERT INTO StreamSession
-                (Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Origin, Authority, OwnerMachineName, ReleasedAt)
-              VALUES (@id, 'Akşam yayını', @startedAt, @endedAt, '[""tiktok""]', NULL, @endedAt, 'remote', 'server',
-                      @machine, @endedAt)",
-            new { id, startedAt, endedAt = startedAt + 3600, machine });
+        using (var c = _db.Open())
+            c.Execute(
+                @"INSERT INTO StreamSession
+                    (Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Origin, Authority, OwnerMachineName, ReleasedAt)
+                  VALUES (@id, 'Akşam yayını', @startedAt, @endedAt, '[""tiktok""]', NULL, @endedAt, 'remote', 'local',
+                          @machine, @endedAt)",
+                new { id, startedAt, endedAt = startedAt + 3600, machine });
+        Sale(id, startedAt);
+        using (var c = _db.Open())
+            c.Execute("UPDATE StreamSession SET Authority = 'server' WHERE Id = @id", new { id });
         return id;
     }
 
