@@ -106,6 +106,10 @@
         .policy-box code { font-size:11.5px; word-break:break-all; }
         .policy-box a { color:var(--od-red); overflow-wrap:anywhere; }
         .policy-box .policy-date { color:var(--od-muted); font-size:12px; }
+        /* Aydınlatmanın iki katmanı tek p.kvkk içinde iki blok: özet (KvkkNotice.TextVersion) ve "hemen ardından politika
+           kutusu" kuralı tek paragrafa bağlı (IntakeFormKvkkTests). */
+        .kvkk-part { display:block; }
+        .kvkk-part + .kvkk-part { margin-top:8px; }
         .btn { width:100%; padding:14px; font-size:16px; font-weight:700; color:#fff; background:var(--od-red);
                border:0; border-radius:12px; cursor:pointer; margin-top:16px;
                transition:background .15s, transform .05s; }
@@ -409,6 +413,9 @@ else
                 <span class="err" asp-validation-for="Input.Tckn"></span>
             </div>
 
+            @* İsteğe bağlı açık rıza kutuları kendi başlığının altında: alttaki zorunlu "okudum" beyanından görsel olarak ayrı
+               (KVKK ön inceleme notu §4.5 Seçenek 2). Başlık aydınlatma özetinin (KvkkNotice.TextVersion) dışında. *@
+            <div class="section-label">İsteğe bağlı izinler</div>
             <label class="check">
                 <input asp-for="Input.WhatsAppConsent" type="checkbox" />
                 <span>WhatsApp üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
@@ -440,20 +447,37 @@ else
             @* Bu paragrafın, alttaki onay kutusu etiketinin ya da politika
                kutusunun (_GizlilikPolitikasi.cshtml) ANLAMINI değiştirirsen
                KvkkNotice.TextVersion'ı artır (kural orada yazılı): her kayıt
-               okuduğunu onayladığı metnin sürümünü taşıyor. *@
+               okuduğunu onayladığı metnin sürümünü taşıyor.
+               İki katman (KVKK ön inceleme notu §4.5, katmanlı aydınlatma): ilk blok veri sorumlusu, amaç ve havale;
+               ikinci blok izin, Google/Facebook bağlantısı ve İYS cümleleri. İzin cümlesi bilerek kodun tuttuğu kadar:
+               SMS kampanyası izin kapısından geçiyor (IysConsentGate), WhatsApp şablonu formdaki WhatsApp iznini
+               denetlemiyor; "yalnızca izin verdiğin kanallardan" gibi mutlak bir güvence yazılmaz. Veri sorumlusunun
+               adı ve iletişim bilgisi bu paragrafın içinde DEĞİL: yayıncıya göre değiştiği için özete girmesin diye
+               ayrı blokta, paragrafın üstünde, yayıncı girdiyse (blok fix/kvkk-banka-veri #534 ile gelir); girilmediyse
+               ilk cümlenin ardındaki yedek cümle bize yazmayı söyler. *@
             <p class="kvkk">
-                Gönderdiğin bilgiler yalnızca sipariş, ödeme, kargo ve fatura işlemlerin için yayıncı tarafından
-                kullanılır. Yayıncıya havale veya EFT ile ödeme yaparsan, yayıncının bankasından gelen
-                havale bilgilerin (tutar, tarih, açıklama ve gönderen adı; IBAN yalnızca özet ve maskeli
-                hâliyle) ödemenin sana ait olduğunu bulmak için yayıncı adına işlenir.
-                Üçüncü kişilerle pazarlama amacıyla paylaşılmaz. İzin verdiğin kanallardan iletişim kurulabilir.
-                Google veya Facebook ile bağlanırsan yalnızca herkese açık profil adını
-                (YouTube'da kanal adı ve kimliği) alırız; şifren bize gelmez, hesabına başka
-                erişimimiz olmaz.
-                SMS iznin yayıncının markası adına İleti Yönetim Sistemi'ne (İYS) bildirilir.
-                Yayıncı platformdan ayrılırsa güncel izin kayıtların ayrılıştan 30 gün sonra silinir;
-                izin işlemlerine ait ispat kayıtları ise mevzuat gereği (6563 sayılı Kanun,
-                m.13) ayrılıştan itibaren 3 yıl saklanır ve süre sonunda imha edilir.
+                <span class="kvkk-part">
+                    Bu formdaki bilgilerin veri sorumlusu, formu sana gönderen yayıncıdır; yayıncının adı ve iletişim
+                    bilgileri formda yazmıyorsa bunları support&#64;orderdeckapp.com adresine yazarak öğrenebilirsin.
+                    OrderDeck bilgilerini yayıncı adına saklar ve işler. Bilgilerin yayıncıyla yaptığın alışverişin
+                    sipariş, ödeme, kargo ve fatura işlemleri için kullanılır; pazarlama amacıyla üçüncü kişilerle
+                    paylaşılmaz. Yayıncının banka hesabı OrderDeck'e bağlıysa, hesaba gelen havalelerin kime ait olduğunu
+                    bulmak için kullanıcı adın ve adın havale açıklamalarıyla karşılaştırılır; OrderDeck bu
+                    karşılaştırmanın doğruluğunu kendi adına ölçer. Havale ile ödersen (başkasının hesabından ödersen o
+                    hesabın da) havalenin tutarı, tarihi, açıklaması, gönderen adı, IBAN'ın kısaltılmış hâli ve
+                    IBAN'dan üretilen tanıma kodu bu amaçla işlenir; IBAN'ın kendisi ayrı bir alanda saklanmaz. Ayrıntılar ve hakların: Gizlilik Politikası,
+                    Bölüm 1.3, 1.4 ve 6 (aşağıda).
+                </span>
+                <span class="kvkk-part">
+                    Bilgilendirme ve kampanya mesajları için iznin yukarıdaki kutularla istenir ve iznini dilediğin an
+                    geri çekebilirsin; SMS iznin yoksa sana OrderDeck üzerinden kampanya SMS'i gönderilmez. Siparişin,
+                    ödemen ve kargonla ilgili mesajlar verdiğin WhatsApp numarasına gönderilir. Google veya Facebook ile
+                    bağlanırsan yalnızca herkese açık profil adını (YouTube'da kanal adı ve kimliği) alırız; şifren bize
+                    gelmez, hesabına başka erişimimiz olmaz. SMS iznin yayıncının markası adına İleti Yönetim Sistemi'ne
+                    (İYS) bildirilir. Yayıncı platformdan ayrılırsa güncel izin kayıtların ayrılıştan 30 gün sonra
+                    silinir; izin işlemlerine ait ispat kayıtları ise mevzuat gereği (6563 sayılı Kanun, m.13)
+                    ayrılıştan itibaren 3 yıl saklanır ve süre sonunda imha edilir.
+                </span>
             </p>
             @* Gizlilik Politikası sayfa içinde: okumak için yeni sekme ya da
                orderdeckapp.com'a gidiş yok (sahip kararı 2026-10-13). Yerel
@@ -463,9 +487,9 @@ else
                de etikete giremez (etiketin içeriği yalnız satır içi öğe). Metin
                _GizlilikPolitikasi.cshtml'de, web sayfasıyla aynı tutuluyor.
                Yer: aydınlatma paragrafı ile onay ARASINDA. Sıra metin →
-               politika → "okudum"; etiketteki "Gizlilik Politikası" düz metin
-               ve ona dokunmak kutuyu işaretler — politika onaydan sonra
-               keşfedilmesin.
+               politika → "okudum"; etiket ("Yukarıdaki bilgilendirmeyi okudum")
+               düz metin ve ona dokunmak kutuyu işaretler — politika onaydan
+               sonra keşfedilmesin.
                tabindex: kayan metin kutusu klavyeyle de kaydırılabilsin. *@
             <details class="policy">
                 <summary>Gizlilik Politikası</summary>
@@ -480,10 +504,12 @@ else
                onları bloklamaz. Etikette bağlantı YOK: politika sayfadan
                ayrılmadan, üstteki açılır kutuda okunuyor.
                Özniteliklerde at-işareti YOK — tag helper'lı öğede o kaçış bozuk
-               derleniyor (bkz. e-posta alanı notu). *@
+               derleniyor (bkz. e-posta alanı notu).
+               Kutunun kalması ya da kaldırılması avukat kararı (KVKK ön inceleme
+               Ö-1; not §4.5): kalırken etiket notun Seçenek 2'si. *@
             <label class="check">
                 <input asp-for="Input.KvkkAcknowledged" type="checkbox" required />
-                <span>Bu aydınlatma metnini ve Gizlilik Politikası'nı okudum. <span class="req">*</span></span>
+                <span>Yukarıdaki bilgilendirmeyi okudum. <span class="req">*</span></span>
             </label>
             <span class="err" id="kvkkErr" asp-validation-for="Input.KvkkAcknowledged"></span>
             @* Müşterinin GÖRDÜĞÜ metnin sürümü. Sunucu onayı yalnız bu değer
@@ -1248,8 +1274,8 @@ else
         if (kvkk && !kvkk.checked) {
             e.preventDefault();
             if (kvkkErr) kvkkErr.textContent =
-                'Devam etmek için aydınlatma metnini okuduğunu onaylamalısın.';
-            formErr.textContent = 'Formu tamamlayamadık: aydınlatma metnini '
+                'Devam etmek için yukarıdaki bilgilendirmeyi okuduğunu onaylamalısın.';
+            formErr.textContent = 'Formu tamamlayamadık: yukarıdaki bilgilendirmeyi '
                                 + 'okuduğunu onaylaman gerekli.';
             kvkk.focus();
             return;
