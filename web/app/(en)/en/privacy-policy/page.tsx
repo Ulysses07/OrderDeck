@@ -52,7 +52,12 @@ export default function PrivacyEn() {
       <ul>
         <li>Email address (for sign-up and license management)</li>
         <li>License key, machine fingerprint</li>
-        <li>License payment amount, license and update-pack status (card and payment instrument details are held only by the payment processor and are not stored by us; for broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version)</li>
+        <li>
+          License and update-pack status (license type, term and number of devices that can be activated). The license
+          fee is paid by bank transfer, with no payment institution in between; payment details (payer name, amount,
+          date) are not stored on the {BRAND} server but in our invoicing and accounting records (Section 1.1 of the
+          Turkish version). For broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version
+        </li>
         <li>
           IP address (in security logs; deleted after 90 days) and login time (in session records until the account is
           deleted; in audit records, together with the email address, for 24 months, see Section 5)

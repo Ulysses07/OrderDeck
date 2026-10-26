@@ -72,7 +72,14 @@ export default function PrivacyTr() {
       <ul>
         <li>E-posta adresi (kayıt ve lisans yönetimi için)</li>
         <li>Lisans anahtarı, makine kimliği (parmak izi)</li>
-        <li>Lisans ödemesine ait tutar, lisans ve güncelleme paketi durumu (kart ve ödeme aracı bilgileri yalnızca ödeme sağlayıcısında tutulur, biz saklamayız; yayıncının banka hesap hareketleri için bkz. Bölüm 1.4)</li>
+        <li>
+          Lisans ve güncelleme paketi durumu (lisans türü, süresi ve etkinleştirilebilecek cihaz sayısı). Lisans bedeli
+          banka havalesiyle alınır; arada bir ödeme kuruluşu yoktur. Ödemeye ilişkin bilgiler (ödeyenin adı, tutar,
+          tarih) {BRAND} sunucusunda tutulmaz; fatura ve muhasebe kayıtlarımızda saklanır [YER TUTUCU: avukat onayı — önerimiz:
+          hukuki sebep, vergi mevzuatından doğan fatura ve muhasebe kaydı yükümlülüğü (KVKK m. 5/2-ç); süre, vergi ve
+          ticaret mevzuatındaki saklama süresi (VUK m. 253 mü, TTK m. 82 mi?) (12-listesi madde 8)]. Yayıncının banka hesap
+          hareketleri için bkz. Bölüm 1.4.
+        </li>
         <li>
           IP adresi (güvenlik kayıtlarında; 90 gün sonra silinir) ve giriş zamanı (oturum kayıtlarında hesap silinene
           kadar; denetim kayıtlarında e-posta adresiyle birlikte 24 ay, Bölüm 5)
@@ -507,12 +514,8 @@ export default function PrivacyTr() {
         </li>
         <li>Brevo (e-posta iletimi, yurt dışı): yayıncılara giden hesap, lisans ve bilgilendirme e-postaları.</li>
         <li>
-          Lisans ödemesinin alındığı ödeme kuruluşu: [YER TUTUCU: adı ve ülkesi; lisans ödemesi bir ödeme kuruluşu
-          üzerinden alınmıyorsa bu satır çıkar ve Bölüm 1.1'deki ifade düzeltilir].
-        </li>
-        <li>
-          Obifin [YER TUTUCU: ticaret unvanı] (Türkiye; verilerin barındırıldığı yer: [YER TUTUCU: doğrulanacak]):
-          yayıncının banka hesap hareketleri (Bölüm 1.4).
+          Obifin Ödeme Hizmetleri A.Ş. (Türkiye; verilerin barındırıldığı yer: [YER TUTUCU: Obifin'in yazılı teyidi —
+          Burak]): yayıncının banka hesap hareketleri (Bölüm 1.4).
         </li>
       </ul>
       <p>
