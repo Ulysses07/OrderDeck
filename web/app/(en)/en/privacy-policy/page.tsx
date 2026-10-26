@@ -291,9 +291,10 @@ export default function PrivacyEn() {
           deleted 12 months after it was taken. The broadcaster&apos;s newest backup is not deleted even if it is older
           than 12 months, and if the broadcaster stops uploading backups, their last backups remain until the
           broadcaster&apos;s account is deleted. These backups are used for restores and restore drills; in addition, {BRAND}&apos;s authorised
-          administrator may view the contents of a backup (customer, label, giveaway and stream records) in the admin
-          panel for support purposes. For viewing, the backup is opened in a temporary copy on the server, which is
-          deleted once the page has been shown; every view is written to the audit log
+          administrator may, only upon the broadcaster&apos;s technical support request, view the contents of a backup
+          (customer, label, giveaway and stream records) in the admin panel on the broadcaster&apos;s behalf. For
+          viewing, the backup is opened in a temporary copy on the server, which is deleted as soon as the page&apos;s
+          data has been read; every view is written to the audit log
         </li>
         <li>Server access logs: 30 days</li>
         <li>IP addresses and browser details in security logs: 90 days</li>

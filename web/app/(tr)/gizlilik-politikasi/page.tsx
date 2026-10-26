@@ -472,12 +472,14 @@ export default function PrivacyTr() {
         WhatsApp yazışmalarınız ve pazarlama mesajı tercihiniz (Bölüm 1.7); SMS izin kayıtlarınız (İleti Yönetim
         Sistemi'ne bildirilenler dahil) ve izin işlemlerinizin ispat kayıtları (isteğin IP adresi ve tarayıcı bilgisi
         dahil; Bölüm 5); yayıncının masaüstü uygulamasına elle girdiği ödeme kayıtları (ödeyen adı dahil; Bölüm 1.2a).
-        Silinen veriler sunucu veritabanının
-        yedeklerinde en fazla 30 gün daha kalır; yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o
-        yedeklerin saklama süresi boyunca kalır. Bu yedekler geri yüklemede ve geri yüklemenin çalıştığını sınayan
-        tatbikatlarda kullanılır; ayrıca {BRAND}'in yetkili yöneticisi destek amacıyla yönetim panelinden bir yedeğin
-        içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları) görüntüleyebilir ve her görüntüleme denetim kaydına
-        yazılır (Bölüm 5).
+        Silinen veriler sunucu veritabanının yedeklerinde en fazla 30 gün daha kalır; yayıncının masaüstü uygulamasının
+        sunucuya yüklediği yedeklerde ise o yedeklerin saklama süresi boyunca kalır (Bölüm 5). Her iki yedek türü de geri
+        yüklemede ve geri yüklemenin çalıştığını sınayan tatbikatlarda kullanılır; ayrıca {BRAND}'in yetkili yöneticisi,
+        yalnızca yayıncının teknik destek talebi üzerine, yönetim panelinden bir masaüstü yedeğinin içeriğini (müşteri,
+        etiket, çekiliş ve yayın kayıtları) yayıncı adına görüntüleyebilir; her görüntüleme denetim kaydına yazılır (Bölüm
+        5) [YER TUTUCU: avukat onayı — önerimiz: hukuki sebep, yayıncının yedeğinin doğru geri yüklenmesini ve verisine
+        ilişkin sorunların giderilmesini sağlama konusundaki meşru menfaati (KVKK m. 5/2-f); destek talebinin kendisi
+        sistemde ayrıca kayda alınmaz (12-listesi madde 4)].
       </p>
 
       <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
@@ -778,10 +780,10 @@ export default function PrivacyTr() {
           yayıncının hesabı silinene kadar kalır. Bu yedeklerin Cloudflare R2'deki kopyası sunucudakiyle her gece eşitlenir. Bir kayıt sonradan silinse de (örneğin müşteri uygulaması
           hesabının silinmesiyle) daha önce alınmış yedeklerdeki kopyası o yedeğin süresi boyunca kalır. Bu yedekler geri
           yüklemede ve geri yükleme tatbikatlarında kullanılır (her hafta en son alınan yedek geçici bir kopyada açılıp
-          bütünlüğü sınanır; kopya hemen silinir); ayrıca {BRAND}'in yetkili yöneticisi destek amacıyla yönetim
-          panelinden bir yedeğin içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları) görüntüleyebilir. Görüntüleme
-          için yedek sunucuda geçici bir kopyada açılır ve sayfa gösterildikten sonra bu kopya silinir; her görüntüleme
-          denetim kaydına yazılır
+          bütünlüğü sınanır; kopya hemen silinir); ayrıca {BRAND}'in yetkili yöneticisi, yalnızca yayıncının teknik
+          destek talebi üzerine, yönetim panelinden bir yedeğin içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları)
+          yayıncı adına görüntüleyebilir. Görüntüleme için yedek sunucuda geçici bir kopyada açılır ve sayfanın bilgileri
+          okunur okunmaz bu kopya silinir; her görüntüleme denetim kaydına yazılır
         </li>
         <li>
           Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece
