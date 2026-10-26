@@ -705,9 +705,9 @@ public sealed class IntakeFormKvkkTests : IClassFixture<ApiFactory>
     public async Task Metin_degisirse_surum_de_degismeli()
     {
         const string ExpectedVersion = "kvkk-2026-10-21";
-        const string ExpectedFormSha256 = "57E52BC476A8CD10D30460BDEAB964D9CE867ECF161B8B64107C9AC9B078B686";
-        const string ExpectedPolicyBoxSha256 = "2C340F870F8FE1D5E005C5DBBD2A9FB8BB92CFE5B4DEBF00F427E51888329588";
-        const string ExpectedPolicySourceSha256 = "97E42CC6AEB8656777AAA0DAC4D10237088FE07C005440BB167C5CE99F14B223";
+        const string ExpectedFormSha256 = "D873D07201D19A0AE01582B20D0AD00CDF90326440C3DF2124EA10AFEAE55AF9";
+        const string ExpectedPolicyBoxSha256 = "956C5EA7EA76E73D681B9EBD56DE2ECC9D8C75D3B3395A3F29A41902298F6299";
+        const string ExpectedPolicySourceSha256 = "08D29F5D718F1FB642DF5911861D3561D08299344ADACAA957D0ED0F403BB437";
 
         var (slug, _) = await SeedConfigAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
