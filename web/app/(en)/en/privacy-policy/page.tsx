@@ -54,9 +54,10 @@ export default function PrivacyEn() {
         <li>License key, machine fingerprint</li>
         <li>
           License and update-pack status (license type, term and number of devices that can be activated). The license
-          fee is paid by bank transfer, with no payment institution in between; payment details (payer name, amount,
-          date) are not stored on the {BRAND} server but in our invoicing and accounting records (Section 1.1 of the
-          Turkish version). For broadcasters&apos; bank account transactions, see Section 1.4 of the Turkish version
+          fee is paid by bank transfer, with no payment institution in between. No separate record of the license
+          payment is kept on the {BRAND} server; payment details (payer name, amount, date) are kept in our invoicing
+          and accounting records (Section 1.1 of the Turkish version). For broadcasters&apos; bank account
+          transactions, see Section 1.4 of the Turkish version
         </li>
         <li>
           IP address (in security logs; deleted after 90 days) and login time (in session records until the account is
@@ -282,7 +283,7 @@ export default function PrivacyEn() {
           platform; proof of consent actions (phone number, consent or refusal, its date and source, and the IP address
           and browser details of the request) is kept until the broadcaster leaves and for 3 years afterwards (Law No.
           6563, Art. 13). Proof of a consent given or withdrawn in the customer app while the broadcaster had no
-          verified SMS brand is kept until the broadcaster&apos;s license is deleted and for 3 years afterwards
+          verified SMS brand is kept until the broadcaster&apos;s account (license) is deleted and for 3 years afterwards
         </li>
         <li>
           Backups the desktop application uploads to the server (the encrypted copy of the customer, order, label, stream

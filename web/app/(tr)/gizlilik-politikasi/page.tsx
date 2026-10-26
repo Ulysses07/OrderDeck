@@ -37,7 +37,7 @@ export default function PrivacyTr() {
         <strong>Son değişiklik (2026-10-21):</strong> Yayıncının banka hesap hareketlerinin işlenmesi (Bölüm 1.4)
         düzeltildi ve genişletildi; yayıncının müşteri ve satış kayıtları (Bölüm 1.2a), müşteri uygulaması ve dekontlar
         (Bölüm 1.5), hizmet sağlayıcılar ve yurt dışına aktarım (Bölüm 1.6) ile WhatsApp yazışmaları (Bölüm 1.7) bölümleri
-        eklendi; politikanın kapsamı ve veri
+        eklendi; veri sorumlusunun posta adresi ve KEP adresi eklendi, iletişim e-posta adresi değişti; politikanın kapsamı ve veri
         sorumluları, lisans ve hesap verileri, canlı yayın chat verileri (Instagram kayıt bağlantısı, müşteri kayıtlarına
         giren yorumcular) ve kayıt formu
         bilgileri (Bölüm 1.1–1.3), YouTube API kullanımı ve tarayıcı eklentisi (Bölüm 2–3), saklama süreleri, haklarınız
@@ -74,11 +74,15 @@ export default function PrivacyTr() {
         <li>Lisans anahtarı, makine kimliği (parmak izi)</li>
         <li>
           Lisans ve güncelleme paketi durumu (lisans türü, süresi ve etkinleştirilebilecek cihaz sayısı). Lisans bedeli
-          banka havalesiyle alınır; arada bir ödeme kuruluşu yoktur. Ödemeye ilişkin bilgiler (ödeyenin adı, tutar,
-          tarih) {BRAND} sunucusunda tutulmaz; fatura ve muhasebe kayıtlarımızda saklanır [YER TUTUCU: avukat onayı — önerimiz:
-          hukuki sebep, vergi mevzuatından doğan fatura ve muhasebe kaydı yükümlülüğü (KVKK m. 5/2-ç); süre, vergi ve
-          ticaret mevzuatındaki saklama süresi (VUK m. 253 mü, TTK m. 82 mi?) (12-listesi madde 8)]. Yayıncının banka hesap
-          hareketleri için bkz. Bölüm 1.4.
+          banka havalesiyle alınır; arada bir ödeme kuruluşu yoktur. Lisans ödemesi için {BRAND} sunucusunda ayrı bir
+          kayıt tutulmaz; ödemeye ilişkin bilgiler (ödeyenin adı, tutar, tarih) fatura ve muhasebe kayıtlarımızda saklanır
+          [YER TUTUCU: avukat onayı — önerimiz: hukuki sebep, vergi mevzuatından doğan fatura ve muhasebe kaydı yükümlülüğü
+          (KVKK m. 5/2-ç); süre, vergi ve ticaret mevzuatındaki saklama süresi (VUK m. 253 mü, TTK m. 82 mi?); fatura ve
+          muhasebe kayıtlarının aktarıldığı mali müşavir ve, e-Arşiv fatura düzenleniyorsa, entegratör ile Gelir İdaresi
+          Başkanlığı Bölüm 1.6'ya alıcı olarak yazılmalı mı? (12-listesi madde 8)] [YER TUTUCU: Burak — lisans bedelinin
+          yatırıldığı hesap banka bağlantısıyla (Bölüm 1.4) izleniyor mu? İzleniyorsa bu işaretin yerine şu cümle yazılır:
+          «Lisans bedelinin yatırıldığı hesap banka bağlantısıyla izlendiğinden bu havaleler de Bölüm 1.4'teki kurallarla
+          işlenir.»; izlenmiyorsa işaret silinir]. Yayıncının banka hesap hareketleri için bkz. Bölüm 1.4.
         </li>
         <li>
           IP adresi (güvenlik kayıtlarında; 90 gün sonra silinir) ve giriş zamanı (oturum kayıtlarında hesap silinene
@@ -331,7 +335,7 @@ export default function PrivacyTr() {
           Doğruluk ölçümü: {BRAND}'in, sunduğu eşleştirme hizmetinin yanlış ödeme onaylarına yol açmamasını sağlama
           konusundaki meşru menfaati (KVKK m. 5/2-f). Bu menfaatin ilgili kişilerin hak ve özgürlüklerine zarar vermemesi
           için yalnızca hesaba gelen havaleler kaydedilir, IBAN açık hâliyle ayrı bir alanda saklanmaz, açıklamalar ve
-          adlar Bölüm 5'teki sürede silinir ve sonuçları yalnızca {BRAND}'in yetkili yöneticisi görür.
+          eşleştirme gerekçeleri Bölüm 5'teki sürede silinir ve sonuçları yalnızca {BRAND}'in yetkili yöneticisi görür.
         </li>
         <li>
           (i) amacı, yayıncıya sunulduğunda: havaleyi gönderen müşteri için müşteri ile yayıncı arasındaki satış
@@ -369,7 +373,8 @@ export default function PrivacyTr() {
       <p>
         <strong>Hesap.</strong> Müşteri uygulamasında hesap açarken ad soyad, cep telefonu, teslimat adresi ve parola;
         isteğe bağlı olarak e-posta adresi ve fatura için T.C. kimlik numarası alınır (9.990 TL'yi aşan bir ödemenin
-        dekontunu yüklemek için T.C. kimlik numarası gerekir). Bağlandığınız her yayıncı için hangi yayıncıya
+        dekontunu yüklemek için T.C. kimlik numarası gerekir [YER TUTUCU: avukat onayı — dayanak yoksa bu zorunluluk
+        kaldırılır ve bu parantez çıkar (12-listesi madde 7)]). Bağlandığınız her yayıncı için hangi yayıncıya
         bağlandığınız, platform ve o platformdaki kullanıcı adınız kaydedilir. Parolanın kendisi saklanmaz; yalnızca parolanızı doğrulamaya
         yarayan bir özeti saklanır. Bildirim tercihleriniz ve ticari ileti (SMS) izniniz, iznin verildiği ve geri
         çekildiği tarih ve kaynağıyla birlikte kaydedilir; izni verdiğiniz ya da geri çektiğiniz isteğin IP adresi ve
@@ -455,41 +460,76 @@ export default function PrivacyTr() {
         <strong>Saklama ve silme.</strong> Hesap bilgileriniz, dekont dosyalarınız ve dekonttan okunan bilgiler hesabınızı
         silene kadar saklanır. Dekont yüklediğiniz bir yayıncının {BRAND} hesabı silinirse o yayıncıdaki ödeme
         kayıtlarınız ve o yayıncıya yüklediğiniz dekont dosyaları da silinir; o an silinemeyen dosyalar için silme,
-        başarılı olana kadar yeniden denenir. Bağlandığınız yayıncıda o platformdaki kullanıcı adınızla bir
-        müşteri kaydı yoksa adınız, telefonunuz ve adresiniz yayıncının müşteri kayıtlarına eklenir ve yayıncı panelinde
-        gösterilir (Bölüm 1.2a); bu kayıt yayıncının masaüstü uygulamasına aktarılmaz. Böyle bir kayıt varsa bu
-        bilgileriniz o kayda eklenmez; hesabınız o kayda yalnızca doğrulanmış telefon numaranız kayıttaki numarayla aynıysa
-        bağlanır. Hesabınızı Profil ekranından silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız
-        kaldırılır; kişisel verileriniz silme talebinizden itibaren en geç 30 gün içinde silinir. Silme, hesabınızın
-        bağlandığı müşteri kayıtlarındaki adınızı, telefonunuzu ve adresinizi de kapsar; yayıncının bilgisayarında bunlar,
-        masaüstü uygulaması sunucuyla eşitlendiğinde silinir. Bu müşteri kayıtlarına bağlı siparişlerdeki görünen adınız
-        (takma adınız) ve siparişe dönüşen yorumlarınızın metni de sunucuda ve yayıncının masaüstü uygulamasında (0.9.11 ve
-        sonraki sürümlerde, uygulama internete bağlandığında) kalıcı olarak silinir; kullanıcı adınız, ürün kodu ve fiyat
-        satış kaydı olarak kalır. Sipariş metnindeki bu silme, uygulanmaya başladığı tarihten önce silinmiş hesaplara
-        geriye dönük olarak uygulanmaz. Silmeden sonra ödemelerinizin tutarı, tarihi ve banka
-        referansı, dekontlarınızın özeti ve bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme
-        itirazları ve aynı dekontun yeniden kullanılmasının önlenmesi için [YER TUTUCU: avukat onayı — önerimiz: hukuki
-        sebep KVKK m. 5/2-e; süre ödeme tarihinden 5 yıl (TBK m. 147) mı, 10 yıl (TBK m. 146) mı? Bugün bu bilgiler
-        yayıncının hesabı silinene kadar kalıyor; seçilen süre kodla uygulanacak (12-listesi madde 10)] saklanır. Şunlar bu
-        silmeyle silinmez;
-        bunlar için yayıncıya ya da Bölüm 6'daki yollarla bize başvurabilirsiniz: hesabınızın bağlanamadığı (telefon
-        numaranız eşleşmediği için bağlantısı beklemede kalan) müşteri kayıtları; yayıncının müşteri kayıtlarında (sunucuda
-        ve yayıncının bilgisayarında) kalan platform kullanıcı adınız, yayıncının sizinle ilgili notları ve engelleme
-        bilgisi; yayıncının sipariş kayıtlarındaki (sunucuda ve yayıncının bilgisayarında) kullanıcı adınız (ürün kodu ve
-        fiyatla birlikte); masaüstü uygulamasının 0.9.11'den eski bir sürümünün çalıştığı ya da internete bağlanmayan bir
-        bilgisayardaki sipariş kayıtlarında görünen adınız ve yorumlarınızın metni; yayıncıya kayıt formuyla verdiğiniz
-        bilgiler (Bölüm 1.3); yayıncıyla
-        WhatsApp yazışmalarınız ve pazarlama mesajı tercihiniz (Bölüm 1.7); SMS izin kayıtlarınız (İleti Yönetim
-        Sistemi'ne bildirilenler dahil) ve izin işlemlerinizin ispat kayıtları (isteğin IP adresi ve tarayıcı bilgisi
-        dahil; Bölüm 5); yayıncının masaüstü uygulamasına elle girdiği ödeme kayıtları (ödeyen adı dahil; Bölüm 1.2a).
-        Silinen veriler sunucu veritabanının yedeklerinde en fazla 30 gün daha kalır; yayıncının masaüstü uygulamasının
-        sunucuya yüklediği yedeklerde ise o yedeklerin saklama süresi boyunca kalır (Bölüm 5). Her iki yedek türü de geri
-        yüklemede ve geri yüklemenin çalıştığını sınayan tatbikatlarda kullanılır; ayrıca {BRAND}'in yetkili yöneticisi,
-        yalnızca yayıncının teknik destek talebi üzerine, yönetim panelinden bir masaüstü yedeğinin içeriğini (müşteri,
-        etiket, çekiliş ve yayın kayıtları) yayıncı adına görüntüleyebilir; her görüntüleme denetim kaydına yazılır (Bölüm
-        5) [YER TUTUCU: avukat onayı — önerimiz: hukuki sebep, yayıncının yedeğinin doğru geri yüklenmesini ve verisine
-        ilişkin sorunların giderilmesini sağlama konusundaki meşru menfaati (KVKK m. 5/2-f); destek talebinin kendisi
-        sistemde ayrıca kayda alınmaz (12-listesi madde 4)].
+        başarılı olana kadar yeniden denenir [YER TUTUCU: Burak kararı — bu silme, #542'nin yayına girdiği 2026-10-26'dan
+        önce silinmiş yayıncıların depolamada kalan dosyalarını kapsamıyor. Önerimiz: yayından önce bu dosyaların tek
+        seferlik temizliği (önce canlı sistemde sayım); yapılırsa bu işaret silinir, yapılmazsa yerine «2026-10-26'dan önce
+        silinmiş yayıncı hesaplarının dosyalarına uygulanmaz» çekincesi yazılır (Bölüm 1.7'deki ve Bölüm 5'teki ilgili
+        satırlara da)]. Bağlandığınız yayıncıda o platformdaki kullanıcı adınızla bir müşteri kaydı yoksa adınız,
+        telefonunuz ve adresiniz yayıncının müşteri kayıtlarına eklenir ve yayıncı panelinde gösterilir (Bölüm 1.2a); bu
+        kayıt yayıncının masaüstü uygulamasına aktarılmaz. Böyle bir kayıt varsa bu bilgileriniz o kayda eklenmez; hesabınız
+        o kayda yalnızca doğrulanmış telefon numaranız kayıttaki numarayla aynıysa bağlanır. Hesabınızı Profil ekranından
+        silebilirsiniz: hesabınız hemen kapanır ve yayıncılarla bağlantınız kaldırılır; kişisel verileriniz silme
+        talebinizden itibaren en geç 30 gün içinde silinir.
+      </p>
+      <p><strong>Hesabınızı sildiğinizde ayrıca silinenler:</strong></p>
+      <ul>
+        <li>
+          Hesabınızın bağlandığı müşteri kayıtlarındaki adınız, telefonunuz ve adresiniz. Yayıncının bilgisayarında
+          bunlar, masaüstü uygulaması sunucuyla eşitlendiğinde silinir.
+        </li>
+        <li>
+          Bu müşteri kayıtlarına bağlı siparişlerdeki görünen adınız (takma adınız) ve siparişe dönüşen yorumlarınızın
+          metni: sunucuda kalıcı olarak silinir; yayıncının bilgisayarında, masaüstü uygulaması güncelse, uygulama
+          internete bağlandığında silinir. Kullanıcı adınız, ürün kodu ve fiyat satış kaydı olarak kalır. Bu silme,
+          [YER TUTUCU: yayın kapısı — ayarın canlıda açık olduğunun doğrulandığı tarih; #542 2026-10-26'da yayına girdi;
+          doğrulama: bir lisansın sales/state yanıtında scrubOrderTextOnPurge: true ve açılış günlüğünde
+          ScrubOrderTextOnPurge kapalı uyarısı yok] tarihinden önce silinmiş hesaplara geriye dönük olarak uygulanmaz.
+        </li>
+      </ul>
+      <p>
+        <strong>Silmeden sonra kalanlar.</strong> Ödemelerinizin tutarı, tarihi ve banka referansı, dekontlarınızın özeti
+        ve bu ödeme kayıtlarının, kişisel bilgileri silinmiş hesabınıza bağı, ödeme itirazları ve aynı dekontun yeniden
+        kullanılmasının önlenmesi için [YER TUTUCU: avukat onayı — önerimiz: hukuki sebep KVKK m. 5/2-e; süre ödeme
+        tarihinden 5 yıl (TBK m. 147) mı, 10 yıl (TBK m. 146) mı? Bugün bu bilgiler yayıncının hesabı silinene kadar
+        kalıyor; seçilen süre kodla uygulanacak (12-listesi madde 10)] saklanır.
+      </p>
+      <p>
+        <strong>Bu silmeyle silinmeyenler.</strong> Bunlar için yayıncıya ya da Bölüm 6'daki yollarla bize
+        başvurabilirsiniz:
+      </p>
+      <ul>
+        <li>
+          hesabınızın bağlanamadığı (telefon numaranız eşleşmediği için bağlantısı beklemede kalan) müşteri kayıtları;
+        </li>
+        <li>
+          yayıncının müşteri kayıtlarında (sunucuda ve yayıncının bilgisayarında) kalan platform kullanıcı adınız,
+          yayıncının sizinle ilgili notları ve engelleme bilgisi;
+        </li>
+        <li>
+          yayıncının sipariş kayıtlarındaki (sunucuda ve yayıncının bilgisayarında) kullanıcı adınız, ürün kodu ve
+          fiyatla birlikte;
+        </li>
+        <li>
+          yayıncının bilgisayarındaki masaüstü uygulaması güncel değilse ya da internete bağlanmıyorsa, o bilgisayardaki
+          sipariş kayıtlarında kalabilen görünen adınız ve yorumlarınızın metni;
+        </li>
+        <li>yayıncıya kayıt formuyla verdiğiniz bilgiler (Bölüm 1.3);</li>
+        <li>yayıncıyla WhatsApp yazışmalarınız ve pazarlama mesajı tercihiniz (Bölüm 1.7);</li>
+        <li>
+          SMS izin kayıtlarınız (İleti Yönetim Sistemi'ne bildirilenler dahil) ve izin işlemlerinizin ispat kayıtları
+          (isteğin IP adresi ve tarayıcı bilgisi dahil; Bölüm 5);
+        </li>
+        <li>yayıncının masaüstü uygulamasına elle girdiği ödeme kayıtları (ödeyen adı dahil; Bölüm 1.2a).</li>
+      </ul>
+      <p>
+        <strong>Yedekler.</strong> Silinen veriler sunucu veritabanının yedeklerinde en fazla 30 gün daha kalır;
+        yayıncının masaüstü uygulamasının sunucuya yüklediği yedeklerde ise o yedeklerin saklama süresi boyunca kalır
+        (Bölüm 5). Her iki yedek türü de geri yüklemede ve geri yüklemenin çalıştığını sınayan tatbikatlarda kullanılır;
+        ayrıca {BRAND}'in yetkili yöneticisi, yalnızca yayıncının teknik destek talebi üzerine, yönetim panelinden bir
+        masaüstü yedeğinin içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları) yayıncı adına görüntüleyebilir; her
+        görüntüleme denetim kaydına yazılır (Bölüm 5) [YER TUTUCU: avukat onayı — önerimiz: hukuki sebep, yayıncının
+        yedeğinin doğru geri yüklenmesini ve verisine ilişkin sorunların giderilmesini sağlama konusundaki meşru menfaati
+        (KVKK m. 5/2-f); destek talebinin kendisi sistemde ayrıca kayda alınmaz (12-listesi madde 4)].
       </p>
 
       <h3>1.6. Hizmet sağlayıcılar ve yurt dışına aktarım</h3>
@@ -502,8 +542,8 @@ export default function PrivacyTr() {
       <ul>
         <li>
           Cloudflare, Inc. (R2 depolama hizmeti, yurt dışı): sunucu veritabanının ve masaüstü uygulamasının sunucuya
-          yüklediği yedeklerin şifreli kopyaları, müşteri uygulamasından yüklenen dekont dosyaları ve WhatsApp
-          yazışmalarındaki dosyalar (Bölüm 1.7).
+          yüklediği yedeklerin şifreli kopyaları, müşteri uygulamasından yüklenen dekont dosyaları, WhatsApp
+          yazışmalarındaki dosyalar (Bölüm 1.7), yayın paylaşımlarının fotoğraf ve videoları ile ürün fotoğrafları.
         </li>
         <li>
           Google (Firebase Cloud Messaging, yurt dışı): yayıncı paneli ve müşteri uygulaması bildirimleri. Bildirimi
@@ -734,7 +774,7 @@ export default function PrivacyTr() {
           numarası, izin ya da ret, tarihi ve kaynağı, izni veren ya da geri çeken isteğin IP adresi ve tarayıcı bilgisi)
           yayıncı ayrılana kadar ve ayrıldıktan sonra 3 yıl saklanır (6563 sayılı Kanun, m. 13). Yayıncının SMS gönderimi
           için doğrulanmış bir markası yokken müşteri uygulamasından verilen ya da geri çekilen iznin ispat kaydı ise
-          yayıncının lisansı silinene kadar ve silindikten sonra 3 yıl saklanır [YER TUTUCU: avukat onayı — önerimiz: ispat
+          yayıncının hesabı (lisansı) silinene kadar ve silindikten sonra 3 yıl saklanır [YER TUTUCU: avukat onayı — önerimiz: ispat
           kayıtları ayrılıştan, markası olmayan yayıncıda lisansın silinmesinden sonra 3 yıl; dayanak 6563 sayılı Kanun
           m. 13 mü, Ticari İletişim ve Ticari İletiler Hakkında Yönetmelik mi? (12-listesi madde 11)]
         </li>
@@ -745,6 +785,11 @@ export default function PrivacyTr() {
           yazışmalardaki dosyalar: yayıncının hesabı silinene kadar, hesapla birlikte silinir; rehberden gelip
           kaydedilmeyen kişi
           bilgileri: iş kuyruğunda 1 gün; mesaj gönderimlerinin teknik deneme kayıtları: 30 gün
+        </li>
+        <li>
+          Yayın paylaşımlarının fotoğraf ve videoları ile ürün fotoğrafları (Cloudflare R2'de): yayıncı paylaşımı ya da
+          fotoğrafı silene kadar (sabitlenmemiş paylaşımlar 30 gün sonra kendiliğinden silinir), en geç yayıncının hesabı
+          silinene kadar; hesapla birlikte silinir
         </li>
         <li>
           Instagram canlı yayın yorumlarının bildirimleri (Bölüm 1.2): kaydedilmez; bildirim işlendikten sonra sunucunun iş
@@ -802,7 +847,8 @@ export default function PrivacyTr() {
           yüklemede ve geri yükleme tatbikatlarında kullanılır (her hafta en son alınan yedek geçici bir kopyada açılıp
           bütünlüğü sınanır; kopya hemen silinir); ayrıca {BRAND}'in yetkili yöneticisi, yalnızca yayıncının teknik
           destek talebi üzerine, yönetim panelinden bir yedeğin içeriğini (müşteri, etiket, çekiliş ve yayın kayıtları)
-          yayıncı adına görüntüleyebilir. Görüntüleme için yedek sunucuda geçici bir kopyada açılır ve sayfanın bilgileri
+          yayıncı adına görüntüleyebilir [YER TUTUCU: avukat onayı — rol ve hukuki sebep Bölüm 1.5'teki işaretle birlikte
+          kapanır (12-listesi madde 4)]. Görüntüleme için yedek sunucuda geçici bir kopyada açılır ve sayfanın bilgileri
           okunur okunmaz bu kopya silinir; her görüntüleme denetim kaydına yazılır
         </li>
         <li>
