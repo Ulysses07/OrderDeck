@@ -79,10 +79,8 @@ export default function PrivacyTr() {
           [YER TUTUCU: avukat onayı — önerimiz: hukuki sebep, vergi mevzuatından doğan fatura ve muhasebe kaydı yükümlülüğü
           (KVKK m. 5/2-ç); süre, vergi ve ticaret mevzuatındaki saklama süresi (VUK m. 253 mü, TTK m. 82 mi?); fatura ve
           muhasebe kayıtlarının aktarıldığı mali müşavir ve, e-Arşiv fatura düzenleniyorsa, entegratör ile Gelir İdaresi
-          Başkanlığı Bölüm 1.6'ya alıcı olarak yazılmalı mı? (12-listesi madde 8)] [YER TUTUCU: Burak — lisans bedelinin
-          yatırıldığı hesap banka bağlantısıyla (Bölüm 1.4) izleniyor mu? İzleniyorsa bu işaretin yerine şu cümle yazılır:
-          «Lisans bedelinin yatırıldığı hesap banka bağlantısıyla izlendiğinden bu havaleler de Bölüm 1.4'teki kurallarla
-          işlenir.»; izlenmiyorsa işaret silinir]. Yayıncının banka hesap hareketleri için bkz. Bölüm 1.4.
+          Başkanlığı Bölüm 1.6'ya alıcı olarak yazılmalı mı? (12-listesi madde 8)]. Yayıncının banka hesap hareketleri için
+          bkz. Bölüm 1.4.
         </li>
         <li>
           IP adresi (güvenlik kayıtlarında; 90 gün sonra silinir) ve giriş zamanı (oturum kayıtlarında hesap silinene
@@ -460,11 +458,8 @@ export default function PrivacyTr() {
         <strong>Saklama ve silme.</strong> Hesap bilgileriniz, dekont dosyalarınız ve dekonttan okunan bilgiler hesabınızı
         silene kadar saklanır. Dekont yüklediğiniz bir yayıncının {BRAND} hesabı silinirse o yayıncıdaki ödeme
         kayıtlarınız ve o yayıncıya yüklediğiniz dekont dosyaları da silinir; o an silinemeyen dosyalar için silme,
-        başarılı olana kadar yeniden denenir [YER TUTUCU: Burak kararı — bu silme, #542'nin yayına girdiği 2026-10-26'dan
-        önce silinmiş yayıncıların depolamada kalan dosyalarını kapsamıyor. Önerimiz: yayından önce bu dosyaların tek
-        seferlik temizliği (önce canlı sistemde sayım); yapılırsa bu işaret silinir, yapılmazsa yerine «2026-10-26'dan önce
-        silinmiş yayıncı hesaplarının dosyalarına uygulanmaz» çekincesi yazılır (Bölüm 1.7'deki ve Bölüm 5'teki ilgili
-        satırlara da)]. Bağlandığınız yayıncıda o platformdaki kullanıcı adınızla bir müşteri kaydı yoksa adınız,
+        başarılı olana kadar yeniden denenir. Bağlandığınız yayıncıda o platformdaki kullanıcı adınızla bir müşteri kaydı
+        yoksa adınız,
         telefonunuz ve adresiniz yayıncının müşteri kayıtlarına eklenir ve yayıncı panelinde gösterilir (Bölüm 1.2a); bu
         kayıt yayıncının masaüstü uygulamasına aktarılmaz. Böyle bir kayıt varsa bu bilgileriniz o kayda eklenmez; hesabınız
         o kayda yalnızca doğrulanmış telefon numaranız kayıttaki numarayla aynıysa bağlanır. Hesabınızı Profil ekranından
@@ -481,9 +476,7 @@ export default function PrivacyTr() {
           Bu müşteri kayıtlarına bağlı siparişlerdeki görünen adınız (takma adınız) ve siparişe dönüşen yorumlarınızın
           metni: sunucuda kalıcı olarak silinir; yayıncının bilgisayarında, masaüstü uygulaması güncelse, uygulama
           internete bağlandığında silinir. Kullanıcı adınız, ürün kodu ve fiyat satış kaydı olarak kalır. Bu silme,
-          [YER TUTUCU: yayın kapısı — ayarın canlıda açık olduğunun doğrulandığı tarih; #542 2026-10-26'da yayına girdi;
-          doğrulama: bir lisansın sales/state yanıtında scrubOrderTextOnPurge: true ve açılış günlüğünde
-          ScrubOrderTextOnPurge kapalı uyarısı yok] tarihinden önce silinmiş hesaplara geriye dönük olarak uygulanmaz.
+          26 Ekim 2026 tarihinden önce silinmiş hesaplara geriye dönük olarak uygulanmaz.
         </li>
       </ul>
       <p>
