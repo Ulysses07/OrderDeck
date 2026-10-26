@@ -59,8 +59,24 @@ Both live next to this one under `source/repos/`.
   there. **Docker must be running** or those tests fail
 - `dotnet build OrderDeck.App/OrderDeck.App.csproj` — WPF (Windows-only)
 - CI runs both via `.github/workflows/build-test.yml`; server deploy via
-  `license-server-deploy.yml`. Server tests run in their own **ubuntu** job —
-  the Windows runner can't start Linux containers
+  `license-server-deploy.yml`. Server tests run on **ubuntu** — the Windows
+  runner can't start Linux containers — as a matrix (`license-server-shard`:
+  SQL Server tests and InMemory tests split separately; shard counts live only
+  in the workflow's `changes` job) gathered by **`license-server-test`**, the
+  single result to look at. The test assembly picks its own slice
+  (`TestHelpers/ShardingTestFramework.cs`, stable SHA-256 split); the gatherer
+  checks every test was picked by exactly one shard, matches `--list-tests`,
+  and actually shows up in that shard's TRX. To reproduce one CI shard locally
+  (PowerShell; use the counts from the `changes` job):
+  `$env:ORDERDECK_TEST_SHARD='relational:0/4'; dotnet test ...` (it sticks to
+  the session: `Remove-Item Env:ORDERDECK_TEST_SHARD` afterwards, or the next
+  "full" run is a slice) — bash, per command:
+  `ORDERDECK_TEST_SHARD=relational:0/4 dotnet test ...`. Relational shards need
+  Docker like the full run (if Testcontainers can't reach Docker Desktop, set
+  `DOCKER_HOST` to the answering pipe, two slashes: `npipe://./pipe/...`).
+  Without the variable it's a full run. PRs that only touch `docs/**`, root
+  `*.md` or `web/**` skip the .NET jobs (except web files the server tests
+  read); master pushes always run everything
 - Test counts are deliberately not written down here. Every number that was
   ever pinned in this file went stale within weeks and then misled; read the
   count off the CI run instead.
